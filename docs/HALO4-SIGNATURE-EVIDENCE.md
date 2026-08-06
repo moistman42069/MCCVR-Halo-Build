@@ -86,6 +86,84 @@ goes through ManagedBlam/Corinth reflection, not tool.exe.
   array. `player_view_count` evidence decides; cross-check
   `halo4_tag_play.exe` and `sapien_play.exe`.
 
+### E-H4-3: player-view / render-view transaction, kit survey (2026-08-06)
+
+Full assert quotes, disassembly and per-binary tables:
+`out/h4ek-evidence/camera/player-view-survey.md`. H4EK binaries only — no
+retail module was opened, per the kit-first policy. **Every RVA below is a kit
+RVA in `halo4_tag_test.exe`, never retail.**
+
+**The plan's open structural question is settled: it is BOTH, and they are
+different objects.** Halo 4 has a fixed per-player view array *and* a
+render-view stack; the stack symbols that prompted the question are the
+active-view scope mechanism, not the per-player storage. Reach has both too.
+**The Reach-shaped M1 hook architecture therefore carries over.**
+
+**The count bound is 4**, proven three independent ways rather than assumed:
+the `MAXIMUM_PLAYER_WINDOWS` assert guard is `cmp ecx,3; jbe`, the
+`MAX_SPLIT_SCREEN_VIEWS` and `m_window_count` guards are `cmp esi,4; jle`, and
+`main_render_game` *computes* `m_window_count = clamp(n,1,4)` in registers.
+
+**(a) The per-player array — the direct homolog of Reach's 4 × 0xA40.**
+Constructor loop `mov edi,4` / `call <element ctor>` / `add rbx,0xAD0`, base
+`0x5570970`; `main_render_game` walks the same base with the same stride.
+**4 slots, stride `0xAD0`.** Byte-evidenced element fields so far: `+0x389` a
+first-window flag written per window, `+0x39C` and `+0x3A4` dwords read during
+the transaction.
+
+**(b) The render-view stack — the homolog of Reach's camera stack.**
+`g_view_stack_top` at `0x24733D8` (static initialiser `0xFFFFFFFF`, i.e. −1 =
+empty); four 8-byte pointer slots at `0x5536330`; push `0x873F10` refuses at
+`top >= 3` and emits `view overflowed!!!`; pop `0x874000`; top `0x8741E0`.
+Every view object carries a **re-entry callback at `+0x298`** which push and
+pop invoke for the new top. Reach's equivalents: depth global, four slots,
+callback at workspace `+0x2A8`, push skips at depth ≥ 3 — the identical
+architecture with one field of drift.
+
+**(c) The publication pair.** `g_player_view_stack_element`, a single global
+c_player_view-shaped object at `0x55605A0` (proven by its one-instruction
+accessor `0x8B6240` plus NaN-check asserts reading its render camera at
+`+0x14C`); its render camera is position `+0x14C`, forward `+0x158`, up
+`+0x164`. A second camera block passed as `element+0x1D4` is **inferred, not
+proven**, to be the rasterizer camera. The active player-view pointer lives at
+`0x5573F28`, written by set-current `0x8B9530` (NULL allowed = clear) — the
+homolog of Reach's active-view global and setter/clearer.
+
+**The transaction, statically ordered.** Dispatcher `0xB8DB0` → `main_render`
+`0x1F6C60` → `main_render_game` `0x1F6FF0` → per-window loop: setup
+`0x8B9990` → inner wrapper **`0x1F7C00`** → per-view post `0x8B93C0`. The
+inner wrapper is the exact Reach-shaped scope:
+
+```
+call 0x8B9530        ; SET current player view    -> [0x5573F28]
+call 0x873F10        ; PUSH g_player_view_stack_element, callback 0x8B8890
+call 0x8B5930        ; RENDER the player view
+call 0x874000        ; POP
+jmp  0x8B9530        ; CLEAR current (tail-call set(NULL))
+```
+
+Its ABI is `rcx` = view element to publish, `rdx` = `c_player_view*` (array
+slot), `r8d` = player window index — the same three-argument shape as Reach's
+`main_render_view`.
+
+**Cross-checked in both optimized builds**, as the plan required:
+`halo4_tag_play.exe` (push `0x754868`, top `0x1D483D0`, slots `0x2414F80`,
+array `0x4D97EE0`) and `sapien_play.exe` (push `0xAA8C5C`, top `0x2002010`,
+slots `0x26EC890`, array `0x51760A0`) both carry the same `cmp ?,3` refusal,
+the same `mov [rcx+0x298],rdx` callback store, and the same `mov e?i,4` +
+`add r??,0xAD0` constructor loop. The storage shape is build-invariant, not a
+debug artifact — which makes all three shapes strong retail AOB candidates.
+
+**What is explicitly incomplete:** the `element+0x1D4` rasterizer-camera
+identity, the meaning of `+0x389`/`+0x39C`/`+0x3A4`, the internals of setup
+`0x8B9990` and render body `0x8B5930` (where the M1 camera-write point lives),
+and the identity of callbacks `0x8B8890` vs `0x8BAE30`. None of those affect
+the storage-shape verdict, and all are named as the next measurements.
+
+**Numbers that change from Reach, to be carried carefully:** stride
+`0xA40` → `0xAD0`, callback offset `+0x2A8` → `+0x298`, and the pushed
+workspace is a *named single global* rather than an anonymous one.
+
 ## Candidate status
 
 ### C-H4-1 — adapter identity + controller input (headset-PENDING)

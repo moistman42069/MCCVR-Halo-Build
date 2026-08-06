@@ -233,8 +233,73 @@
     "consumed_layout_fields"
   ],
   "player_view_transaction": {
-    "status": "NOT_STARTED",
-    "note": "H4 symbols suggest a render_view STACK and may not match Reach's fixed 4 x 0xA40 array; player_view_count evidence settles it before any AOB is authored"
+    "status": "KIT_SURVEY_COMPLETE_NO_RETAIL_ANCHOR_YET",
+    "measured": "2026-08-06",
+    "evidence": "out/h4ek-evidence/camera/player-view-survey.md; ledger section E-H4-3 in docs/HALO4-SIGNATURE-EVIDENCE.md",
+    "evidence_source": "H4EK binaries only; no retail module was opened. ALL RVAs here are kit RVAs in halo4_tag_test.exe unless a build is named.",
+    "array_vs_stack_verdict": "BOTH, and they are different objects: a fixed per-player view ARRAY plus a render-view pointer STACK used as the active-view scope. The stack symbols that prompted the question are the scope mechanism, not per-player storage - Reach has both as well, so the Reach-shaped M1 hook architecture carries over.",
+    "player_window_count": {
+      "value": 4,
+      "proofs": [
+        "MAXIMUM_PLAYER_WINDOWS assert guard cmp ecx,3 / jbe",
+        "MAX_SPLIT_SCREEN_VIEWS and m_window_count guards cmp esi,4 / jle",
+        "main_render_game computes m_window_count = clamp(n,1,4) in registers"
+      ]
+    },
+    "player_view_array": {
+      "slot_count": 4,
+      "stride": "0xAD0",
+      "reach_stride_for_contrast": "0xA40",
+      "base_rva_tag_test": "0x05570970",
+      "base_rva_tag_play": "0x04D97EE0",
+      "base_rva_sapien_play": "0x051760A0",
+      "element_ctor_rva_tag_test": "0x008B51D0",
+      "known_element_fields": {
+        "0x389": "byte first-window flag written per window (compare Reach's last-window byte at +0xA30)",
+        "0x39C": "dword handle read during the transaction",
+        "0x3A4": "dword read by the render body"
+      }
+    },
+    "render_view_stack": {
+      "capacity": 4,
+      "top_global_rva_tag_test": "0x024733D8",
+      "top_empty_value": -1,
+      "slots_rva_tag_test": "0x05536330",
+      "push_rva_tag_test": "0x00873F10",
+      "pop_rva_tag_test": "0x00874000",
+      "top_rva_tag_test": "0x008741E0",
+      "push_refuses_at_top_at_least": 3,
+      "view_reentry_callback_offset": "0x298",
+      "reach_callback_offset_for_contrast": "0x2A8",
+      "overflow_telemetry": "view overflowed!!! / view underflowed!!! from render_view_stack.cpp"
+    },
+    "publication_pair": {
+      "pushed_workspace_global_rva_tag_test": "0x055605A0",
+      "pushed_workspace_symbol": "g_player_view_stack_element",
+      "pushed_workspace_accessor_rva": "0x008B6240",
+      "render_camera_offsets": { "position": "0x14C", "forward": "0x158", "up": "0x164" },
+      "rasterizer_camera_offset": "0x1D4 - INFERRED, NOT PROVEN",
+      "active_player_view_pointer_rva_tag_test": "0x05573F28",
+      "set_current_rva_tag_test": "0x008B9530",
+      "set_current_null_clears": true
+    },
+    "transaction_order": {
+      "dispatcher_rva": "0x000B8DB0",
+      "main_render_rva": "0x001F6C60",
+      "main_render_game_rva": "0x001F6FF0",
+      "per_window_setup_rva": "0x008B9990",
+      "inner_wrapper_rva": "0x001F7C00",
+      "inner_wrapper_abi": "rcx = view element to publish, rdx = c_player_view* array slot, r8d = player window index (the same three-argument shape as Reach main_render_view)",
+      "inner_wrapper_body": "call set-current -> call push (callback 0x008B8890) -> call render body 0x008B5930 -> call pop -> tail-jmp set-current(NULL)",
+      "per_view_post_rva": "0x008B93C0"
+    },
+    "cross_check": "both optimized builds agree on the cmp ?,3 refusal, the mov [rcx+0x298],rdx callback store, and the mov e?i,4 + add r??,0xAD0 constructor loop; the storage shape is build-invariant, making all three strong retail AOB candidates",
+    "incomplete": [
+      "element+0x1D4 rasterizer-camera identity",
+      "meaning of element fields +0x389 / +0x39C / +0x3A4",
+      "internals of setup 0x008B9990 and render body 0x008B5930, where the M1 camera-write point lives",
+      "identity of callbacks 0x008B8890 (player view) vs 0x008BAE30 (non-game view)"
+    ]
   },
   "headset_acceptance_complete": false,
   "accepted_release_eligible": false
