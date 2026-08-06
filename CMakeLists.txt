@@ -184,7 +184,8 @@ add_library(halo3xr SHARED
     src/dll/ik.cpp
     src/dll/input.cpp
     src/dll/title_adapter.cpp
-    src/dll/reach_adapter.cpp)
+    src/dll/reach_adapter.cpp
+    src/dll/halo4_adapter.cpp)
 target_include_directories(halo3xr PRIVATE
     ${HALOMCCVR_GENERATED_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src/dll
@@ -247,7 +248,8 @@ if(BUILD_TESTING)
         src/common/config.cpp
         src/common/log.cpp
         src/dll/sigscan.cpp
-        src/dll/reach_adapter.cpp)
+        src/dll/reach_adapter.cpp
+        src/dll/halo4_adapter.cpp)
     if(HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE)
         target_sources(halomccvr_core_tests PRIVATE
             src/dll/reach_render_candidate.cpp

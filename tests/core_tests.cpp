@@ -25,6 +25,8 @@
 #include "odst_bringup_logic.h"
 #include "sigscan.h"
 #include "odst_vehicle_logic.h"
+#include "halo4_adapter.h"
+#include "halo4_render_logic.h"
 #include "reach_adapter.h"
 #include "reach_chud_logic.h"
 #include "reach_observer_logic.h"
@@ -5707,6 +5709,36 @@ int main()
               GameTitle::HaloReach, false, true, false,
               reachControllerAdmission),
         "Camera-only ownership cannot leak controller input into Reach");
+    Check(Halo4Adapter_GetStage() == Halo4AdapterStage::Disabled,
+        "The Halo 4 adapter skeleton stays disabled until its first candidate");
+    Check(!Halo4Adapter_RuntimeHooksPermitted(),
+        "No Halo 4 runtime hook is permitted before a proven camera core");
+    const Halo4EvidenceIdentity& halo4Identity =
+        Halo4Adapter_GetEvidenceIdentity();
+    const TitleDescriptor* halo4Row = TitleRegistry_Find(GameTitle::Halo4);
+    Check(halo4Row && std::wstring_view(halo4Identity.moduleName) ==
+              std::wstring_view(halo4Row->moduleName),
+        "The Halo 4 adapter identity names the registry's own module");
+    Check(std::string_view(halo4Identity.moduleSha256Steam) ==
+              "7C53E7D5BC9848545A1B70E2768242479336FBA1B7630D7AB955F7FD0C34FA84" &&
+          std::string_view(halo4Identity.moduleSha256Store) ==
+              "5767CD564C1E8E8D012D002A8DE8E92960A3DE46442399ED054E3C4EF44AA496" &&
+          halo4Identity.peTimestamp == 0x68A0E7BFu &&
+          halo4Identity.sizeOfImage == 0x04A3F000u &&
+          kHalo4RetailFileSize == 17829336u &&
+          std::string_view(halo4Identity.h4ekBuild) ==
+              "2023.06.27.176405.1-Release",
+        "The Halo 4 adapter pins the independently verified retail and H4EK identities");
+    Halo4HookProof halo4Proof{ true, 1, true, true, true, true, true, true };
+    Check(Halo4Adapter_HookProofComplete(halo4Proof),
+        "A synthetic Halo 4 proof is complete only with every evidence gate present");
+    halo4Proof.loadedImageMatchCount = 2;
+    Check(!Halo4Adapter_HookProofComplete(halo4Proof),
+        "A multiple-match loaded-image signature fails the Halo 4 proof closed");
+    halo4Proof.loadedImageMatchCount = 1;
+    halo4Proof.h4ekSemantics = false;
+    Check(!Halo4Adapter_HookProofComplete(halo4Proof),
+        "Missing H4EK semantics fail the Halo 4 proof closed");
     const GameTitle unsupportedTitles[] = {
         GameTitle::Halo4, GameTitle::HaloCE,
         GameTitle::Halo2, GameTitle::Unknown, GameTitle::None,

@@ -56,6 +56,19 @@ and names transfer, each with its own retail verification.
 retail identity above. The pinned-identity preflight makes that a loud
 refusal, never a wrong hook.
 
+## Tooling facts (negative result, measured 2026-08-06)
+
+The H4EK `tool.exe` verb table (captured to
+`out/h4ek-evidence/identity/tool-verbs.txt`, 264 lines) does **not** contain
+`export-enum-tables`, `export-string-tables`, `export-script`, or
+`export-node-object-function`. The bring-up plan carried those verbs over
+from HREK; that assumption is refuted for H4EK. What the H4 verb table does
+provide: `export-tag-to-xml <tag-file> <output-file>`,
+`extract-unicode-strings <multilingual_unicode_string_list>`,
+`script-doc <function-or-global-name>` (useful for the script-table
+bootstrap), and `dump-cinematics-script`. Enum and schema recovery therefore
+goes through ManagedBlam/Corinth reflection, not tool.exe.
+
 ## Confirmed engine-structure facts
 
 - **No CHUD.** `bin\!public_tags.txt` (85,634 lines, census re-run
@@ -72,6 +85,29 @@ refusal, never a wrong hook.
   symbols suggest a render_view STACK, possibly not Reach's fixed 4×0xA40
   array. `player_view_count` evidence decides; cross-check
   `halo4_tag_play.exe` and `sapien_play.exe`.
+
+## Deliberate decision: groundhog.dll stays out of the registry (D-H4-5)
+
+Recorded 2026-08-06, per the plan's skip option. `groundhog.dll` (Halo 2
+Anniversary MP) appears nowhere in `src/` and has no row in `kTitles[]`
+(`title_registry.cpp:58-71`). Two facts make the considered fix wrong for a
+desk commit:
+
+1. A registry row alone is provably inert: `TitleAdapter_PollLoaded`
+   (`title_adapter.cpp:484-486`) skips any module whose title has no runtime
+   slot **before** `detected`/`detectedCount++`, so a slotless groundhog row
+   would change no observable behavior at all.
+2. Making slotless modules count into `detectedCount` would change live
+   ambiguity semantics in states users actually occupy (an H2A MP session
+   would flip from "no MCC game module is loaded"/Shell to a counted
+   unknown, and every menu transition's ambiguity accounting would shift) -
+   a behavioral change to shipped titles with no headset gate.
+
+The bias this was meant to address only materializes if `groundhog.dll` is
+ever resident simultaneously with exactly one supported title DLL during
+gameplay; no such state has been recorded. If one ever is, the fix belongs
+in `TitleAdapter_PollLoaded`'s counting policy as its own headset-gated
+candidate, not in the registry.
 
 ## Proof ledger
 
