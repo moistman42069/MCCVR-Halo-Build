@@ -2094,6 +2094,207 @@ float4 ps_rcas(VSOut i) : SV_Target
         return true;
     }
 
+    // --- GPU timing for the eye publish ------------------------------------
+    //
+    // Until now NOTHING in this repo measured GPU time. Every number in the log
+    // - renderWindow, xrEndFrame, fps - is CPU wall clock, so the cost of the
+    // work we actually ask the GPU to do had never once been observed. That is
+    // why three reasoned performance passes in a row missed and two made it
+    // worse (AGENTS.md). This prices the eye publish directly: the resolve pass
+    // and the post passes (FXAA/SMAA/RCAS) are timed separately, per eye, so
+    // "what does the second pass cost?" becomes a number instead of an
+    // argument.
+    //
+    // It never blocks. Results are read back several frames later with
+    // DONOTFLUSH and simply skipped while the GPU is still busy, so a query
+    // that is not ready costs a load and nothing else. A disjoint frame (the
+    // GPU changed clocks mid-measurement) is discarded rather than reported.
+    constexpr std::size_t kIqTimerDepth = 4;      // frames in flight
+    constexpr std::size_t kIqTimerStamps = 6;     // 3 per eye, 2 eyes
+
+    struct IqTimerSlot
+    {
+        ID3D11Query* disjoint = nullptr;
+        ID3D11Query* stamps[kIqTimerStamps]{};
+        uint32_t written = 0;
+        bool pending = false;
+    };
+
+    IqTimerSlot g_iqTimer[kIqTimerDepth];
+    std::size_t g_iqTimerCursor = 0;   // which slot this frame is recording into
+    uint32_t g_iqTimerStampIndex = 0;  // stamps written so far this frame
+    bool g_iqTimerArmed = false;
+    bool g_iqTimerUsable = false;
+    bool g_iqTimerTried = false;
+    // Accumulated over the reporting window, in microseconds.
+    double g_iqResolveUs = 0.0;
+    double g_iqPostUs = 0.0;
+    uint32_t g_iqTimedFrames = 0;
+    uint32_t g_iqDisjointFrames = 0;
+
+    bool EnsureIqTimer()
+    {
+        if (g_iqTimerTried)
+            return g_iqTimerUsable;
+        g_iqTimerTried = true;
+        if (!g_device)
+            return false;
+        D3D11_QUERY_DESC disjointDesc{};
+        disjointDesc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+        D3D11_QUERY_DESC stampDesc{};
+        stampDesc.Query = D3D11_QUERY_TIMESTAMP;
+        for (auto& slot : g_iqTimer)
+        {
+            if (FAILED(g_device->CreateQuery(&disjointDesc, &slot.disjoint)))
+                return false;
+            for (auto*& stamp : slot.stamps)
+            {
+                if (FAILED(g_device->CreateQuery(&stampDesc, &stamp)))
+                    return false;
+            }
+        }
+        g_iqTimerUsable = true;
+        LOG("IQ TIMING: GPU timestamps armed; the eye publish now reports real "
+            "GPU milliseconds, split resolve vs post");
+        return true;
+    }
+
+    void ReleaseIqTimer()
+    {
+        for (auto& slot : g_iqTimer)
+        {
+            if (slot.disjoint) { slot.disjoint->Release(); slot.disjoint = nullptr; }
+            for (auto*& stamp : slot.stamps)
+            {
+                if (stamp) { stamp->Release(); stamp = nullptr; }
+            }
+            slot.written = 0;
+            slot.pending = false;
+        }
+        g_iqTimerArmed = false;
+        g_iqTimerUsable = false;
+        g_iqTimerTried = false;
+    }
+
+    // Harvest whichever in-flight slots the GPU has finished with. Never waits.
+    void CollectIqTimings()
+    {
+        if (!g_iqTimerUsable || !g_context)
+            return;
+        for (auto& slot : g_iqTimer)
+        {
+            if (!slot.pending || slot.written < 2)
+                continue;
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};
+            if (g_context->GetData(slot.disjoint, &dj, sizeof(dj),
+                                   D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
+                continue;  // still busy; try again next frame
+
+            bool complete = true;
+            uint64_t values[kIqTimerStamps]{};
+            for (uint32_t i = 0; i < slot.written && complete; ++i)
+            {
+                complete = g_context->GetData(slot.stamps[i], &values[i],
+                                              sizeof(values[i]),
+                                              D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+            }
+            if (!complete)
+                continue;
+
+            slot.pending = false;
+            if (dj.Disjoint || dj.Frequency == 0)
+            {
+                ++g_iqDisjointFrames;
+                continue;
+            }
+            const double toUs = 1e6 / static_cast<double>(dj.Frequency);
+            // Stamps arrive in threes: start, after the resolve, after the
+            // post passes. A partial triple (an eye that failed early) is
+            // skipped rather than mis-attributed.
+            for (uint32_t base = 0; base + 3 <= slot.written; base += 3)
+            {
+                g_iqResolveUs += (values[base + 1] - values[base]) * toUs;
+                g_iqPostUs += (values[base + 2] - values[base + 1]) * toUs;
+            }
+            ++g_iqTimedFrames;
+        }
+    }
+
+    void IqTimerBeginFrame()
+    {
+        g_iqTimerArmed = false;
+        g_iqTimerStampIndex = 0;
+        if (!EnsureIqTimer() || !g_context)
+            return;
+        CollectIqTimings();
+        // Never overwrite a slot the GPU has not finished reporting.
+        IqTimerSlot& slot = g_iqTimer[g_iqTimerCursor];
+        if (slot.pending)
+            return;
+        slot.written = 0;
+        g_context->Begin(slot.disjoint);
+        g_iqTimerArmed = true;
+    }
+
+    // One timestamp inside the publish. Out of stamps is not an error: the
+    // theatre path runs extra blits and simply goes untimed.
+    void IqTimerStamp()
+    {
+        if (!g_iqTimerArmed || g_iqTimerStampIndex >= kIqTimerStamps)
+            return;
+        IqTimerSlot& slot = g_iqTimer[g_iqTimerCursor];
+        g_context->End(slot.stamps[g_iqTimerStampIndex]);
+        ++g_iqTimerStampIndex;
+        slot.written = g_iqTimerStampIndex;
+    }
+
+    // The eye publish, in real GPU time, on the same two-second window as the
+    // other steady reports. `resolve` is the bicubic/linear expand into headset
+    // resolution; `post` is FXAA/SMAA/RCAS layered on top. Both are summed over
+    // BOTH eyes, so together they are what this mod costs the GPU each frame
+    // beyond the game's own rendering.
+    //
+    // What to do with the number: `post` IS the price of the second pass. It is
+    // paid whenever sharpness > 0, which is every configuration ever shipped or
+    // logged, and the sharpness slider in the F1 menu turns it off live. So one
+    // sitting and one slider move settles what removing that pass is worth -
+    // without guessing, and without another build.
+    void ReportIqGpuTiming()
+    {
+        static uint64_t lastMs = 0;
+        const uint64_t nowMs = GetTickCount64();
+        if (nowMs - lastMs < 2000)
+            return;
+        lastMs = nowMs;
+        if (!g_iqTimerUsable || !g_iqTimedFrames)
+            return;
+        const double frames = static_cast<double>(g_iqTimedFrames);
+        LOG("IQ GPU: eye publish %.3f ms/frame (resolve %.3f + post %.3f, both "
+            "eyes) over %u timed frames%s",
+            (g_iqResolveUs + g_iqPostUs) / frames / 1000.0,
+            g_iqResolveUs / frames / 1000.0,
+            g_iqPostUs / frames / 1000.0,
+            g_iqTimedFrames,
+            g_iqDisjointFrames
+                ? " (some frames discarded: the GPU changed clocks)" : "");
+        g_iqResolveUs = 0.0;
+        g_iqPostUs = 0.0;
+        g_iqTimedFrames = 0;
+        g_iqDisjointFrames = 0;
+    }
+
+    void IqTimerEndFrame()
+    {
+        if (!g_iqTimerArmed)
+            return;
+        IqTimerSlot& slot = g_iqTimer[g_iqTimerCursor];
+        g_context->End(slot.disjoint);
+        // A frame that produced no complete triple is not worth collecting.
+        slot.pending = slot.written >= 3;
+        g_iqTimerArmed = false;
+        g_iqTimerCursor = (g_iqTimerCursor + 1) % kIqTimerDepth;
+    }
+
     // Expand one captured eye (src, render resolution) into the XR eye image
     // (dst, headset resolution) with the user's chosen resolve filter, optional
     // anti-aliasing, and optional sharpening. Universal to every title. This
@@ -2226,6 +2427,11 @@ float4 ps_rcas(VSOut i) : SV_Target
         };
 
         ID3D11PixelShader* resolve = wantSharp ? g_iqResolveSharp : g_iqResolveLinear;
+        // Exactly three stamps per eye on BOTH branches, so the collector can
+        // read them as fixed triples: before the resolve, after the resolve,
+        // after everything. On the single-pass branch the third equals the
+        // second and post reads as zero, which is the answer we want it to give.
+        IqTimerStamp();
         if (!post)
         {
             // One pass straight to XR: linear for an sRGB RTV, perceptual for
@@ -2233,12 +2439,14 @@ float4 ps_rcas(VSOut i) : SV_Target
             pass(g_blitVs, resolve, srcSrv, nullptr, nullptr, dstRtv,
                  srcDesc.Width, srcDesc.Height, dstW, dstH,
                  finalPerceptual, srcIsSrgb);
+            IqTimerStamp();
         }
         else
         {
             int cur = 0;
             pass(g_blitVs, resolve, srcSrv, nullptr, nullptr, g_iqChainRtv[cur],
                  srcDesc.Width, srcDesc.Height, dstW, dstH, true, srcIsSrgb);
+            IqTimerStamp();
 
             if (wantSmaa)
             {
@@ -2279,6 +2487,7 @@ float4 ps_rcas(VSOut i) : SV_Target
                      finalPerceptual, 1.0f);
             }
         }
+        IqTimerStamp();
 
         backup.Restore(g_context);
         g_context->PSSetConstantBuffers(0, 1, &savedPsCb0);
@@ -7714,6 +7923,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     }
                     if (stereoAcquired && stereoWaitCompleted)
                     {
+                        // Bracket only the two-eye publish. Everything the GPU
+                        // does between these two calls is what this mod adds on
+                        // top of the game's own rendering.
+                        IqTimerBeginFrame();
                         bool everyReachEyeUploaded = reachImages;
                         bool everyEyeUploaded = true;
                         for (uint32_t targetEye = 0; targetEye < 2; ++targetEye)
@@ -7777,6 +7990,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 everyReachEyeUploaded =
                                     everyReachEyeUploaded && eyeUploaded;
                         }
+                        IqTimerEndFrame();
+                        ReportIqGpuTiming();
                         theaterProjectionReady =
                             theaterProjectionAttempted && everyEyeUploaded;
                         const XrResult stereoRelease =
@@ -9316,6 +9531,7 @@ void VR_DetachGamePresentation()
 #endif
     ReleaseSourceViews();
     ReleaseIqChain();
+    ReleaseIqTimer();
     ReleaseTheaterProjectionResources();
     if (g_sceneColorRtv)
     {
