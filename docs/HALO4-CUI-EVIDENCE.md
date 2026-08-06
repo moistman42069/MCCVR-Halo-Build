@@ -157,13 +157,46 @@ first establish **which resolution class and theme the live VR player view
 actually resolves to**, and prove it from the runtime rather than assuming
 `resolution_widescreen` because VR renders a single non-split view.
 
-### Per-weapon screens spot-check
+### `ui\hud\weapons\human\ar\assault_rifle` (cui_screen) — the crosshair, componentised
 
-`assault_rifle.cui_screen` (214 KB) and `magnum.cui_screen` (294 KB) both
-export and parse, confirming the per-weapon HUD screens are readable
-evidence. `base_hud.cui_screen` (507 KB) and `mc_hud.cui_screen` (1.3 MB)
-also parse after repair. Their internals are not yet surveyed — that is the
-next CUI step, along with the draw-order question below.
+A per-weapon screen is a graph of typed components. The assault rifle's
+reticle surface, quoted from the export's `type` fields:
+
+- Containers: **`reticule_container`**, **`reticule_art_container`**,
+  **`reticule_offset_container`**, `all_weapon_art_container`,
+  `parallax_container`, `scope_container`,
+  `unique_weapon_positioning_container`.
+- Art states: **`unscoped_art`**, **`scoped_art`**, **`hit_art`**,
+  `hit_indicator_art`, **`headshot_dot`**, `headshot_art`, plus
+  **`reticule_art_color`** and 8 `bitmap_widget` leaves.
+- Data feeds: **`reticule_base_data_reader`** and
+  **`reticule_spread_data_reader`**, alongside `weapon_data_reader`,
+  `view_data_reader`, `player_weapon_data_provider`.
+- Ammo/affiliation logic, and a `rampancy_*` family (11 components: position
+  and scale jitter expressions, shearing and chromatic shaders) — Cortana's
+  rampancy distortion, which is a screen-space effect worth remembering for
+  VR comfort.
+
+**Two consequences that bear directly on the M3 decision.**
+
+1. **`reticule_spread_data_reader` is the same hazard that broke Reach.**
+   Reach's crosshair vanished on damage because its five petal widgets were
+   driven by weapon barrel error, bloomed outward on a hit, and left the
+   magnified centre crop the capture used — the empty middle then published
+   over good art (see `docs/CURRENT-STATE.md`, GitHub #70). Halo 4 feeds its
+   reticle from spread data by the same design, so **any future centre-crop
+   capture of the Halo 4 reticle should be expected to fail the same way**,
+   and must be designed against that from the start rather than discovering
+   it in a headset. This is positive support for the plan of record:
+   procedural VR reticle first, capture only if later proven.
+2. **`reticule_offset_container` means the reticle is authored to be
+   offsettable**, which is the natural attachment point if a captured or
+   native reticle ever has to ride a controller ray instead of screen centre.
+   What drives that offset is not yet measured.
+
+`base_hud.cui_screen` (507 KB) and `mc_hud.cui_screen` (1.3 MB) also parse
+after repair; their internals and the draw-order question below are the next
+CUI steps.
 
 ## Research plan (not findings)
 
