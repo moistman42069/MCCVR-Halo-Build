@@ -462,16 +462,26 @@ namespace
     // cached set is the two eyes, the menu, the screen quad, the reticle and
     // the scope: all textures that are alive regardless. Added VRAM: none.
     //
-    // An intermediate IS a full copy of its source, so this pool is sized
-    // tightly rather than generously. Only sources we cannot sample directly
-    // reach it - a non-SRV-capable or multisampled texture - and the eye caches
-    // are neither, so they never land here at all. Beating the old
-    // create-every-frame thrash needs just TWO resident shapes; four leaves
-    // room for a level-load transition without ever holding more than a couple
-    // of full-size copies. The live count and its byte total are logged, so the
-    // real figure comes from a session instead of from this comment.
+    // An intermediate IS a full copy of its source, so this number is a
+    // CEILING, not a preallocation - and that distinction is the whole reason
+    // 32 is safe here. Slots fill lazily, one per distinct shape actually
+    // requested, and only sources we cannot sample directly ever reach this
+    // pool at all: a non-SRV-capable or multisampled texture. The eye caches
+    // are neither (the scene target carries a UAV binding, which forces
+    // single-sampling, and they are created SRV-capable), so the whole stereo
+    // path skips this pool. In practice one or two shapes are ever live.
+    //
+    // An earlier revision capped this at 4, sized against a worst case of 32
+    // full-resolution copies at ~29 MB each. That worst case cannot occur: it
+    // would need 32 genuinely different shapes in one session, and the pool
+    // holds only what is asked for. Sizing against an unreachable worst case
+    // just reintroduced a smaller version of the thrash this pool exists to
+    // remove. The live slot count and its real byte total are logged every two
+    // seconds, so the actual figure is read from a session rather than argued
+    // about here - and LRU eviction plus the full drain on resize and detach
+    // bound it either way.
     constexpr std::size_t kSrcViewCacheCapacity = 32;
-    constexpr std::size_t kIntermediatePoolCapacity = 4;
+    constexpr std::size_t kIntermediatePoolCapacity = 32;
     ViewCacheTable<kSrcViewCacheCapacity> g_srcSrvCache;
     IntermediatePoolTable<kIntermediatePoolCapacity> g_intermediatePool;
     ID3D11Texture2D* g_intermediateTex[kIntermediatePoolCapacity]{};

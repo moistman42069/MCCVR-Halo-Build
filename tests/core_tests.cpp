@@ -8878,6 +8878,27 @@ int main()
             "The intermediate pool keeps one copy per shape, so alternating "
             "sources stop rebuilding a full-resolution texture every frame");
 
+        // THE PROPERTY THAT MAKES A CAPACITY OF 32 SAFE: the pool is a ceiling,
+        // not a preallocation. A big cap must hold only the shapes actually
+        // asked for, so raising it cannot cost VRAM that is never requested.
+        IntermediatePoolTable<32> ceiling;
+        const bool emptyUntilAsked = ceiling.Size() == 0;
+        const IntermediateShape onlyShape{2064, 2208, 28};
+        for (int frame = 0; frame < 50; ++frame)
+        {
+            const IntermediatePoolSlot s = ceiling.Acquire(onlyShape);
+            if (s.needsCreate)
+                ceiling.Commit(s.index, onlyShape);
+        }
+        // Fifty frames of one shape occupy exactly one slot out of thirty-two,
+        // and only the first frame created anything.
+        const bool onlyWhatWasAskedFor = ceiling.Size() == 1 &&
+            ceiling.Stats().misses == 1 && ceiling.Stats().hits == 49 &&
+            ceiling.Stats().evictions == 0;
+        Check(emptyUntilAsked && onlyWhatWasAskedFor,
+            "The intermediate pool's capacity is a ceiling, not a "
+            "preallocation: 32 slots hold only the shapes actually requested");
+
         // A shape differing only in format is a different shape - reusing a
         // copy across formats would sample the wrong bits.
         const IntermediateShape sameSizeOtherFormat{2064, 2208, 87};
