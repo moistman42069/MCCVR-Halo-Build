@@ -93,6 +93,17 @@ goes through ManagedBlam/Corinth reflection, not tool.exe.
 The first Halo 4 candidate and the first headset touch. It needs identity
 evidence only, which E-H4-1's preflight already pins.
 
+| Identity | Value |
+| --- | --- |
+| Runtime source | `954359b7f786b78c76824b662ead3c1fc8cd7917` (branch `feature/halo4-bringup`) |
+| Build | Release x64, preset `release`, ODST ON, Reach ON, ReachRender ON |
+| Candidate package | `out/candidates/954359b-reach-fp-parity-20260806-212516151Z` |
+| `halo3xr.dll` SHA-256 | `8B327A0B2FFC20135ECBEB71BEA698C78908EC1AA7C09C810CA329482ADE74AD` |
+| `halo3xr_launcher.exe` SHA-256 | `930BEA232BFC3F8010BC2B385834DEBF796CD3DBEC02ECD0E8475E0DE8A72CE6` |
+| Installed editions | Steam and Microsoft Store; both DLL hashes verified independently in each `Halo_MCC_VR` folder after install |
+| Preserved priors | `out/deploy-backups/1c6101f-steam-before-954359b-...`, `...-store-before-954359b-...` |
+| Headset result | **PENDING** — not yet run |
+
 **What it changes.** `Halo4Adapter_GetStage()` returns `ControllerInputOnly`;
 the registry row's `admissionCapabilities` gains
 `TitleCapability_ControllerInput` (the identical staging shape ODST and Reach
