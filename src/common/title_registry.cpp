@@ -54,6 +54,12 @@ namespace
 #else
     constexpr uint32_t kReachAdmissionCapabilities = TitleCapability_None;
 #endif
+    // Halo 4 bring-up C-H4-1: shared virtual-controller transport only, the
+    // same staging shape ODST and Reach used. Halo 4 advertises no runtime
+    // capability yet, so it installs no hook and owns no camera; it plays
+    // stock with the VR controllers acting as a gamepad.
+    constexpr uint32_t kHalo4AdmissionCapabilities =
+        TitleCapability_ControllerInput;
 
     constexpr TitleDescriptor kTitles[] = {
         { GameTitle::Halo3, L"halo3.dll", "Halo 3", true,
@@ -63,7 +69,7 @@ namespace
         { GameTitle::HaloReach, L"haloreach.dll", "Halo: Reach", true,
           kReachCapabilities, kReachAdmissionCapabilities },
         { GameTitle::Halo4, L"halo4.dll", "Halo 4", false,
-          TitleCapability_None, TitleCapability_None },
+          TitleCapability_None, kHalo4AdmissionCapabilities },
         { GameTitle::HaloCE, L"halo1.dll", "Halo: CE Anniversary", false,
           TitleCapability_None, TitleCapability_None },
         { GameTitle::Halo2, L"halo2.dll", "Halo 2 Anniversary", false,

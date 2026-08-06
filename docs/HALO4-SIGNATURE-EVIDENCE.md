@@ -86,6 +86,35 @@ goes through ManagedBlam/Corinth reflection, not tool.exe.
   array. `player_view_count` evidence decides; cross-check
   `halo4_tag_play.exe` and `sapien_play.exe`.
 
+## Candidate status
+
+### C-H4-1 — adapter identity + controller input (headset-PENDING)
+
+The first Halo 4 candidate and the first headset touch. It needs identity
+evidence only, which E-H4-1's preflight already pins.
+
+**What it changes.** `Halo4Adapter_GetStage()` returns `ControllerInputOnly`;
+the registry row's `admissionCapabilities` gains
+`TitleCapability_ControllerInput` (the identical staging shape ODST and Reach
+used); the title-adapter poll replaces "adapter not implemented" with a
+transport line plus a pinned-identity line.
+
+**What it deliberately does not do.** `Halo4Adapter_RuntimeHooksPermitted()`
+stays `false`, the row advertises `TitleCapability_None`, and
+`TitleRegistry_HookPlan(Halo4)` stays `None` — so no hook is created, no
+camera is owned, and no capability is published. The identity line is printed
+from **compile-time constants only**: nothing in the loaded `halo4.dll` is
+read, not even PE headers, because touching a title whose level is still
+loading is what caused the recorded load bounce. Verifying the loaded image
+belongs to C-H4-2's preflight, behind the level-load gate.
+
+**Expected headset result.** Halo 4 plays entirely stock, with the VR
+controllers working as a gamepad through the shared virtual-pad transport.
+The log must carry the edition, the OpenXR runtime, the headset, the
+transport line, and the pinned-identity line. Halo 3, ODST and Reach are
+untouched by construction — the only shared-code edit is the additive
+`else if` branch in the poll's unsupported-title reporting.
+
 ## Deliberate decision: groundhog.dll stays out of the registry (D-H4-5)
 
 Recorded 2026-08-06, per the plan's skip option. `groundhog.dll` (Halo 2

@@ -5709,13 +5709,27 @@ int main()
               GameTitle::HaloReach, false, true, false,
               reachControllerAdmission),
         "Camera-only ownership cannot leak controller input into Reach");
-    Check(Halo4Adapter_GetStage() == Halo4AdapterStage::Disabled,
-        "The Halo 4 adapter skeleton stays disabled until its first candidate");
-    Check(!Halo4Adapter_RuntimeHooksPermitted(),
-        "No Halo 4 runtime hook is permitted before a proven camera core");
     const Halo4EvidenceIdentity& halo4Identity =
         Halo4Adapter_GetEvidenceIdentity();
     const TitleDescriptor* halo4Row = TitleRegistry_Find(GameTitle::Halo4);
+    Check(Halo4Adapter_GetStage() == Halo4AdapterStage::ControllerInputOnly,
+        "C-H4-1 stages Halo 4 at shared virtual-controller transport only");
+    Check(!Halo4Adapter_RuntimeHooksPermitted(),
+        "No Halo 4 runtime hook is permitted before a proven camera core");
+    Check(halo4Row && halo4Row->admissionCapabilities ==
+              TitleCapability_ControllerInput,
+        "Halo 4 admits shared controller input and nothing else");
+    Check(halo4Row && halo4Row->capabilities == TitleCapability_None,
+        "Halo 4 advertises no runtime capability at the controller-only stage");
+    Check(TitleRegistry_AllowsSharedControllerInput(
+              GameTitle::Halo4, false, false, false, true),
+        "Explicit Halo 4 receives the virtual pad through its own admission");
+    Check(!TitleRegistry_AllowsSharedControllerInput(
+              GameTitle::Halo4, false, true, false, true),
+        "Camera-only ownership cannot leak controller input into Halo 4");
+    Check(!TitleRegistry_AllowsSharedGameplayFeatures(
+              GameTitle::Halo4, true, false),
+        "Stale Halo 3 ownership cannot admit Halo 4 gameplay features");
     Check(halo4Row && std::wstring_view(halo4Identity.moduleName) ==
               std::wstring_view(halo4Row->moduleName),
         "The Halo 4 adapter identity names the registry's own module");
@@ -5739,6 +5753,8 @@ int main()
     halo4Proof.h4ekSemantics = false;
     Check(!Halo4Adapter_HookProofComplete(halo4Proof),
         "Missing H4EK semantics fail the Halo 4 proof closed");
+    // Halo 4 stays here until C-H4-3 installs its camera core: the
+    // controller-only stage grants admission, never a hook plan.
     const GameTitle unsupportedTitles[] = {
         GameTitle::Halo4, GameTitle::HaloCE,
         GameTitle::Halo2, GameTitle::Unknown, GameTitle::None,
@@ -5747,7 +5763,7 @@ int main()
         Check(TitleRegistry_HookPlan(title) == TitleHookPlan::None,
             "Unsupported titles never receive game hooks");
     const GameTitle stockControllerTitles[] = {
-        GameTitle::Halo4, GameTitle::HaloCE, GameTitle::Halo2,
+        GameTitle::HaloCE, GameTitle::Halo2,
     };
     for (GameTitle title : stockControllerTitles)
     {
@@ -5757,7 +5773,7 @@ int main()
                 TitleCapability_ControllerInput) != 0;
         Check(!admitted && !TitleRegistry_AllowsSharedControllerInput(
                   title, false, false, true, admitted),
-            "CE, H2, and H4 remain stock despite private title flags");
+            "CE and H2 remain stock despite private title flags");
     }
     Check(TitleRegistry_FromModuleName(L"MCC-Win64-Shipping.exe") == nullptr,
         "The MCC host is not mistaken for a game title");

@@ -16,9 +16,10 @@ namespace
 
 Halo4AdapterStage Halo4Adapter_GetStage()
 {
-    // C-H4-1 (the first Halo 4 headset candidate) flips this to
-    // ControllerInputOnly together with the registry admission capability.
-    return Halo4AdapterStage::Disabled;
+    // C-H4-1: shared virtual-controller transport only. This grants no engine
+    // hook of any kind - see Halo4Adapter_RuntimeHooksPermitted below, which
+    // stays false until C-H4-3 carries a proven camera core.
+    return Halo4AdapterStage::ControllerInputOnly;
 }
 
 const Halo4EvidenceIdentity& Halo4Adapter_GetEvidenceIdentity()

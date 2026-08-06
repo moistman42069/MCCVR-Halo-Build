@@ -9,6 +9,7 @@
 #include "../common/coop_probe_logic.h"
 #include "../common/log.h"
 #include "d3d11_hook.h"
+#include "halo4_adapter.h"
 #include "reach_adapter.h"
 
 namespace
@@ -554,6 +555,29 @@ const TitleDescriptor* TitleAdapter_PollLoaded(uint64_t observedAtMs)
                 "transforms, HUD, haptics, lifecycle, and runtime hooks remain "
                 "disabled",
                 detected->displayName, detected->moduleName);
+        }
+        else if (detected->title == GameTitle::Halo4 &&
+            Halo4Adapter_GetStage() ==
+                Halo4AdapterStage::ControllerInputOnly)
+        {
+            // The pinned identity is reported from compile-time constants
+            // only. Nothing in the loaded Halo 4 image is read here: a title
+            // whose level is still loading must not be touched at all, which
+            // is what caused the load bounce. Verifying the loaded image is
+            // C-H4-2's preflight, behind the level-load gate.
+            const Halo4EvidenceIdentity& identity =
+                Halo4Adapter_GetEvidenceIdentity();
+            LOG("Title adapter: detected %s (%ls); shared virtual-controller "
+                "transport is enabled; Halo 4 camera, render, aim/movement "
+                "transforms, HUD, haptics, lifecycle, and runtime hooks remain "
+                "disabled",
+                detected->displayName, detected->moduleName);
+            LOG("Halo 4 pinned identity (expected, NOT yet verified against "
+                "the loaded image): PE timestamp 0x%08X, SizeOfImage 0x%08X, "
+                "H4EK build %s, SHA-256 Steam %s, Store %s",
+                identity.peTimestamp, identity.sizeOfImage,
+                identity.h4ekBuild, identity.moduleSha256Steam,
+                identity.moduleSha256Store);
         }
         else if (TitleRegistry_HookPlan(detected->title) ==
             TitleHookPlan::OdstExperimentalCameraCore)
