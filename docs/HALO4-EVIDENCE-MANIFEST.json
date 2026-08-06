@@ -13,7 +13,7 @@
     "allowed_sources": [
       "official H4EK executables, symbols, assert text, and source-path strings",
       "official H4EK tag schemas via ManagedBlam/Corinth reflection",
-      "official H4EK tool.exe exports (tag XML, enum tables, string tables, scripts)",
+      "official H4EK tool.exe exports (export-tag-to-xml, extract-unicode-strings, script-doc, dump-cinematics-script)",
       "bin\\!public_tags.txt and bin\\debug_menu_init.txt shipped by the kit"
     ],
     "forbidden_sources": [
@@ -24,9 +24,43 @@
     "retail_module_role": "match and verify targets already explained by H4EK; never a source to invent a binding"
   },
   "retail_resolution_method": {
-    "status": "UNPROVEN",
-    "reach_script_table_chain": "name string -> single qword xref -> entry+0x18 = implementation; proven for REACH ONLY",
-    "admission_requirement": "re-prove the chain on two harmless Halo 4 script functions and record H4's actual entry stride and implementation offset here before any retail anchoring trusts it"
+    "status": "PROVEN_H4_SPECIFIC_CHAIN",
+    "proven_date": "2026-08-06",
+    "evidence": "out/h4ek-evidence/identity/script-table-bootstrap.md",
+    "reach_form_verdict": "REFUTED for Halo 4: zero on-disk qword (VA) and zero dword (RVA) references to any probe name string; no static script-function table exists in the disk image; Halo 4 stores the DOCS string at entry+0x18, so Reach's +0x18 constant would dereference documentation text",
+    "probe_names": [
+      "game_difficulty_get_real",
+      "player_action_test_grenade_trigger",
+      "device_group_set_immediate"
+    ],
+    "h4_chain": {
+      "name_reference_form": "exactly one RIP-relative lea rdx (48 8D 15 rel32) in .text per name",
+      "registrar_function_rva_range": "0x001466E4-0x0017BA98",
+      "registrar_size": "0x353B4",
+      "registration_count_measured": 1247,
+      "block_shape": "mov ecx,0x68; call alloc -> lea r9,[docs] -> lea r8,[IMPL] -> lea rdx,[NAME] -> call per-signature ctor -> call register",
+      "implementation_derivation": "the lea r8 (4C 8D 05 rel32) 7 bytes before the unique name lea rdx",
+      "entry_allocation_size": "0x68",
+      "entry_layout": {
+        "+0x00": "vtable pointer",
+        "+0x08": "return-type code dword",
+        "+0x0C": "flags",
+        "+0x10": "name string pointer",
+        "+0x18": "docs string pointer (NOT the implementation)",
+        "+0x20": "per-signature helper pointer",
+        "+0x30": "parameter count word",
+        "+0x34": "parameter type code dwords",
+        "+0x60": "implementation function pointer"
+      },
+      "runtime_table": "array of 8-byte entry POINTERS at registrar_object+0x260, count dword at +0x6264; entries are heap allocations, no inline stride",
+      "validation_rule": "implementation RVA must be an exact .pdata function begin, OR a .pdata-exempt leaf thunk (e.g. mov ecx,imm; jmp rel32) whose single jmp target is an exact .pdata function begin",
+      "validation_rule_measured_thunk_case": "player_action_test_grenade_trigger -> 0x000AB2AC (10-byte leaf thunk: mov ecx,5; jmp 0x000AB128) -> 0x000AB128 exact .pdata per-action bit-test dispatcher",
+      "entry_allocator_rva": "0x0080F648",
+      "register_helper_rva": "0x0014646C",
+      "registrar_direct_callers": ["0x000605CB", "0x0013C4AF"],
+      "independent_identity_cross_check": "the lea r9 documentation string in retail matches tool.exe script-doc output verbatim for every probe name, so each future anchor carries a kit-corroborated identity"
+    },
+    "scope": "admits the derivation METHOD and pins this module's registrar bounds plus the entry layout; it admits NO camera, render, HUD, or vehicle binding - each of those still needs its own H4EK semantics plus its own recorded retail match"
   },
   "retail_module": {
     "name": "halo4.dll",
@@ -88,7 +122,10 @@
         "file_size_bytes": 47460592,
         "pe_timestamp": "0x649B075D",
         "size_of_image": "0x06E66000",
-        "role": "export_tag_to_xml, export_enum_tables, export_string_tables, export_script, export_node_object_function"
+        "role": "export-tag-to-xml, extract-unicode-strings, script-doc, dump-cinematics-script",
+        "verb_table_measured": "out/h4ek-evidence/identity/tool-verbs.txt (264 lines, captured 2026-08-06)",
+        "hrek_verbs_absent": "export-enum-tables, export-string-tables, export-script, and export-node-object-function do NOT exist in H4EK tool.exe; the bring-up plan carried those over from HREK and that assumption is refuted. Enum and schema recovery goes through ManagedBlam/Corinth reflection.",
+        "xml_wellformedness_caveat": "export-tag-to-xml writes raw bytes (e.g. FF FF FF FF NONE tag references) unescaped into attribute values under a UTF-8 declaration; 11 of 18 exports on the first full run were not well-formed. Use an encoding-tolerant reader; tools/export_h4_kit.ps1 quarantines malformed output as .xml.raw."
       },
       "tool_fast.exe": {
         "sha256": "BBC8478A762838EE7CC4D0DB2A2327D585A3EC52EC2D30E07444BC47206DF17F",
@@ -154,6 +191,37 @@
       "vehicle": 79,
       "weapon": 140
     }
+  },
+  "debug_variable_census": {
+    "status": "NAME_EXISTENCE_AND_UNIQUENESS_ONLY",
+    "measured": "2026-08-06",
+    "evidence": "out/h4ek-evidence/debugvars/triage.md; ledger section E-H4-2 in docs/HALO4-SIGNATURE-EVIDENCE.md",
+    "authorises_retail_resolution": false,
+    "open_gate": "debug-var entry layout and type (global vs command) discipline is a separate proof, not yet done",
+    "menu_format": "tab-indented pseudo-XML; 1830 items = 1464 type=command + 366 type=global (338 distinct global names); inc/min/max on a global implies numeric, absence implies boolean",
+    "scan_condition": "exact ASCII name with a 0x00 terminator AND a 0x00 preceding byte - the same boundary the project's FindDebugVar* matcher uses (src/dll/game.cpp:1572 ff.)",
+    "command_vs_global_trap": "H4EK's own menu drives render_atmosphere_fog as a COMMAND - the identical name that burned the Reach work. Command-shaped names require typed slot resolution; never float-resolve them.",
+    "unique_anchors": {
+      "gamma": ["render_screen_gamma", "render_buffer_gamma_curve"],
+      "motion_blur": ["motion_blur_scale", "motion_blur_max"],
+      "draw_distance": ["render_far_clip_distance"],
+      "cinematic_fov": ["reduce_widescreen_fov_during_cinematics", "cinematic_letterbox_style"],
+      "first_person_fov_scale": ["render_first_person_fov_scale", "enable_first_person_fov"],
+      "exposure_hold": ["render_exposure_lock", "render_exposure_stops", "render_autoexposure_enable"],
+      "tonemap": ["render_tone_curve", "render_tone_curve_white"],
+      "rain_weather": ["render_rain", "rain_intensity", "render_weather"],
+      "fog_command_shaped": ["render_patchy_fog", "render_atmosphere_fog"],
+      "depth_of_field": ["cinematic_depth_of_field_enable", "render_first_person_dof"]
+    },
+    "negative_results": {
+      "ssao": "no debug global; only the hs function cinematic_set_ssao_mode and shader tokens",
+      "promethean_vision": "the substring vision_mode does not occur anywhere in retail halo4.dll; kit-only tag vocabulary. Any lever would be tag data.",
+      "camera_shake": "no camera_shake debug name in retail; recoil/shake suppression must come from the observer camera path",
+      "brightness": "no engine debug global named brightness; only MCC UI option strings. Use the gamma pair.",
+      "halo3_style_motion_blur_axes": "motion_blur_*_x/_y absent from kit and retail; Halo 4 follows Reach's single-axis naming",
+      "dead_menu_reference": "render_force_mipmap_lodbias is in the kit menu but absent from kit strings AND retail"
+    },
+    "menu_is_not_a_completeness_bound": "several retail names (rain family, render_far_clip_distance, the FP-FOV pair) do not appear in H4EK's debug menu at all"
   },
   "required_runtime_proof": [
     "loaded_image_uniqueness",
