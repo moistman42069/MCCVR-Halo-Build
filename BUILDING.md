@@ -250,8 +250,14 @@ runtime-hook, nested first-person camera workspace, and world-projection
 execution-status fields in the candidate manifest. After packaging succeeds it
 automatically invokes `tools/install-candidate.ps1` for those exact bytes.
 
-The command refuses a dirty worktree and runs
-`tools/check-reach-fp-parity.ps1` before configuring. Packaging fails if the
+The command refuses a dirty worktree. It does **not** run
+`tools/check-reach-fp-parity.ps1` — verified 2026-08-06, the packager contains
+no invocation of it — yet it still writes
+`reach_fp_h3_odst_transaction_parity_gate = $true` into the candidate manifest
+(`tools/package-candidate.ps1:167`). **That manifest field therefore asserts a
+gate that never ran; do not read it as evidence.** Run the parity script by
+hand when you need it. The description below is of what that script checks, not
+of anything packaging enforces: it fails if the
 rejected single-context, body-only, or separated-live-owner paths reappear, or
 if bounded per-transaction contexts, exact source-pointer palette matching,
 full-source scratch reconstruction, the appended held-object boundary, or the

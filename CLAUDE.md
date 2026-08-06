@@ -1,8 +1,9 @@
 # Project instructions
 
-Halo MCC VR is a native C++20 OpenXR mod for the Steam edition of Halo: The
-Master Chief Collection. The accepted cumulative release supports Halo 3 and
-Halo 3: ODST.
+Halo MCC VR is a native C++20 OpenXR mod for Halo: The Master Chief Collection,
+supporting both the Steam and the Microsoft Store editions. The published
+cumulative release (Alpha 0.3.3) supports Halo 3, Halo 3: ODST and Halo: Reach.
+Halo 4 is in bring-up from the `f4c641f` development baseline.
 
 Read and obey `AGENTS.md`, then read `docs/CURRENT-STATE.md` before changing
 code. Use `docs/RE-notes.md` only for verified Halo 3 facts and the ODST evidence

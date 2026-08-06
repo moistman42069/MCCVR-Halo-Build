@@ -4,9 +4,14 @@ Authoritative as of 2026-08-06. This file is the only active accepted-build
 pointer. Detailed pre-cleanup experiments remain available in Git history; they
 are evidence, not instructions.
 
-> **Start here: "PUBLIC RELEASE: MCC VR Alpha 0.3.3 - 2026-08-06" below is both
-> the current published state AND the current development baseline. Halo 4
-> bring-up starts from it.** It supersedes the 0.3.1 public release and the
+> **Start here: the baseline is `f4c641f`** - the section immediately below
+> this note. User-directed on 2026-08-06: "no this build is our baseline now."
+> It supersedes MCC VR Alpha 0.3.3 (`94dc09f`) as the development baseline for
+> all work, Halo 4 included. 0.3.3 remains the *published* release on GitHub
+> and its section is retained below for its per-behavior evidence and its open
+> list, every item of which carries forward.
+>
+> The 0.3.3 section also supersedes the 0.3.1 public release and the
 > 2026-08-06 Reach first-person vehicle development baseline, which are both
 > retained below for their per-behavior evidence and their open lists. Every
 > item still open on the Reach vehicle line carries forward - read it before
@@ -24,10 +29,89 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
-## PUBLIC RELEASE: MCC VR Alpha 0.3.3 - 2026-08-06
+## CURRENT BASELINE: `f4c641f` - 2026-08-06
 
-**The public known-good product and the development baseline are both now
-`MCC_VR_ALPHA_0.3.3`, the FP Vehicle Update.** It supersedes
+**This is the development baseline for all work, Halo 4 included.** It
+supersedes MCC VR Alpha 0.3.3 (`94dc09f`), which remains the published release
+on GitHub but is no longer what development descends from. Set by direct user
+instruction: "ok we're building halo 4 off this one we just spent hours
+testing", then "no this build is our baseline now."
+
+**Scope of that directive, stated plainly so it is not overread.** The user ran
+these exact bytes and set them as the baseline; they did not enumerate
+per-behavior acceptance, and the three commits below were never individually
+confirmed in a headset. Treat the baseline as user-set and the individual
+items as evidenced only by what the log and the sections below actually show.
+
+| Identity | Value |
+| --- | --- |
+| Runtime source | `f4c641f7b1b707991f2bda71ba485090a16f1e9a` (branch `feature/halo3-vehicle-view-follow`) |
+| Build | Release x64, preset `release`, ODST ON, Reach ON, ReachRender ON |
+| Candidate package | `out/candidates/f4c641f-reach-fp-parity-20260806-180258546Z` |
+| `halo3xr.dll` SHA-256 | `1C6101FD63B4A86822FC110CE86AE29EA174E50CA949A58A801265DEAA98537A` |
+| `halo3xr_launcher.exe` SHA-256 | `930BEA232BFC3F8010BC2B385834DEBF796CD3DBEC02ECD0E8475E0DE8A72CE6` |
+| Title coverage | Halo 3, Halo 3: ODST, Halo: Reach |
+| Installed editions | Steam and Microsoft Store; DLL hashes verified independently in both `Halo_MCC_VR` folders |
+| Ran on | Steam, VirtualDesktopXR 1.0.10, Meta Quest 3 - a 36-minute 90 Hz session and a shorter 120 Hz session, both on these exact bytes |
+
+**Three commits over 0.3.3, none of which changed the frame rate:**
+
+1. **`49e59b2` - one cached source view per texture, instead of one in total.**
+   `AcquireSrcSrv` held a SINGLE shader resource view keyed on the source
+   pointer, and the stereo publish alternates between two different eye
+   textures, so it released and recreated a view on every eye of every frame -
+   a COM call in a hot hook, which `AGENTS.md` bans. Measured effect: view
+   creations fell from ~2 per frame to **4 in a 36-minute session**
+   (`upload reuse: ... 360 hit / 0 miss ... 4 created (+0 this window)`).
+   Worth microseconds against an 8.33 ms budget. A correctness and
+   allocation-churn fix, **not** a performance fix - do not report it as one.
+2. **`997c5cd` - GPU timestamps around the eye publish.** The valuable one.
+   Before it, nothing in this repo had ever measured GPU time: `renderWindow`,
+   `xrEndFrame` and fps are all CPU wall clock, and a tree-wide search found no
+   `D3D11_QUERY_TIMESTAMP` anywhere. Non-blocking, 4 frames in flight,
+   discards disjoint frames. Logs every two seconds:
+   `IQ GPU: eye publish 0.321 ms/frame (resolve 0.200 + post 0.121, both eyes)`.
+3. **`f4c641f` - intermediate texture pool raised 4 -> 32.** The capacity is a
+   ceiling, not a preallocation; `core_tests` pins that 50 frames of one shape
+   occupy exactly one slot. Measured live at `intermediates 0/32 live = 0 KB`
+   for a whole session: the pool is never reached in normal play, because the
+   eye caches are directly samplable and skip it.
+
+**What the measurement bought, which is the real reason this is the baseline:**
+the eye publish costs **0.321 ms/frame for both eyes**, under 4% of a 120 Hz
+budget. That closes, on evidence rather than argument, the idea of removing the
+second (RCAS sharpen) publish pass - it is worth 0.120 ms. It also means no
+buffering or publish-path change can move this mod's frame rate, and the
+remaining cost is the scene being rendered twice at `resolution_scale`.
+
+**Open on this line - do not treat as working:**
+
+- **Micro stutter above 90 Hz is OPEN and unfixed.** At 120 Hz the average
+  holds (`fps 120 (stereo on)`) but the tail does not: frame interval p95
+  9.55-14.64 ms, p99 10.33-16.83 ms against an 8.33 ms period. At 90 Hz the
+  same tail fits inside 11.1 ms and the session is clean with ~0 missed frames
+  in gameplay. Not the mod's GPU work (0.321 ms). `renderWindow` and
+  `xrEndFrame` ANTI-correlate, which is a blocking wait moving between the two
+  stamps rather than two independent costs.
+- **`docs/FRAME-PACING-120-60-EVIDENCE.md`'s "do not reopen without
+  contradictory measurement" list is STALE and must not be relied on.** It was
+  written 2026-07-26 on a different runtime. Two entries are provably false
+  now: it excluded `xrEndFrame` at "approximately 0.35-1.66 ms" when the
+  current measurement is **3.90-8.67 ms**, and it excluded "the eye blit, which
+  uses fast `CopyResource` with sample count 1" when the eye blit has not used
+  `CopyResource` since the image-quality pipeline landed. Its exclusion of
+  SteamVR Motion Smoothing is irrelevant on VirtualDesktopXR, whose own
+  reprojection was never tested. Re-measure before reusing any number in it.
+- None of the three commits was individually confirmed in a headset. The user
+  ran the bytes and reported no regression; that is not per-item acceptance.
+
+## SUPERSEDED AS BASELINE, STILL THE PUBLISHED RELEASE: MCC VR Alpha 0.3.3 - 2026-08-06
+
+**`MCC_VR_ALPHA_0.3.3`, the FP Vehicle Update, is what is published on GitHub
+and what users are running. It is NO LONGER the development baseline** -
+`f4c641f` above replaced it by user direction on 2026-08-06. Everything in this
+section still applies to the shipped product and every open item carries
+forward. It supersedes
 `MCC_VR_ALPHA_0.3.2` publicly and supersedes the Reach first-person vehicle
 development baseline `558d0bf` recorded below. The user's directive on this
 exact source and DLL: "the dll i tested on steam is the best version we have
