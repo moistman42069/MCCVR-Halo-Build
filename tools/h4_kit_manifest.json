@@ -1,0 +1,127 @@
+{
+  "schema": 1,
+  "title": "Halo 4",
+  "kit": "H4EK",
+  "tool_convention": "tool.exe runs with cwd at the kit root and the input tag path ABSOLUTE under the kit's tags root; a relative input path fails with 'Input tag path is not located in the tags directory structure'",
+  "available_export_verbs": [
+    "export-tag-to-xml",
+    "extract-unicode-strings",
+    "script-doc",
+    "dump-cinematics-script"
+  ],
+  "missing_verbs_vs_hrek": [
+    "export-enum-tables",
+    "export-string-tables",
+    "export-script"
+  ],
+  "exports": [
+    {
+      "id": "colors",
+      "tag": "ui\\cui\\common\\colors",
+      "class": "cui_static_data",
+      "proven": true
+    },
+    {
+      "id": "loadout_colors",
+      "tag": "ui\\cui\\in_game\\loadout\\loadout_colors",
+      "class": "cui_static_data",
+      "proven": true
+    },
+    {
+      "id": "frontend_static_color",
+      "tag": "ui\\frontend\\menus\\shared\\frontend_static_color",
+      "class": "cui_static_data",
+      "proven": true
+    },
+    {
+      "id": "data_av_menu",
+      "tag": "ui\\frontend\\menus\\start_menu\\data\\data_av_menu",
+      "class": "cui_static_data",
+      "proven": true
+    },
+    {
+      "id": "data_controller_button_layout",
+      "tag": "ui\\frontend\\menus\\start_menu\\data\\data_controller_button_layout",
+      "class": "cui_static_data",
+      "proven": true
+    },
+    {
+      "id": "data_controller_menu",
+      "tag": "ui\\frontend\\menus\\start_menu\\data\\data_controller_menu",
+      "class": "cui_static_data",
+      "proven": true
+    },
+    {
+      "id": "data_flying_camera",
+      "tag": "ui\\frontend\\menus\\start_menu\\data\\data_flying_camera",
+      "class": "cui_static_data",
+      "proven": true
+    },
+    {
+      "id": "data_start_menu_in_game_static",
+      "tag": "ui\\frontend\\menus\\start_menu\\data\\data_start_menu_in_game_static",
+      "class": "cui_static_data",
+      "proven": true
+    },
+    {
+      "id": "data_ordnance_string_table",
+      "tag": "ui\\hud\\player_huds\\shared\\ordnance\\data_ordnance_string_table",
+      "class": "cui_static_data",
+      "proven": true
+    },
+    {
+      "id": "main_logic",
+      "tag": "ui\\hud\\main\\main",
+      "class": "cui_logic",
+      "proven": true
+    },
+    {
+      "id": "scoreboard_logic",
+      "tag": "ui\\in_game\\scoreboard\\scoreboard",
+      "class": "cui_logic",
+      "proven": true
+    },
+    {
+      "id": "hud_globals",
+      "tag": "ui\\hud_globals",
+      "class": "user_interface_hud_globals_definition",
+      "proven": true
+    },
+    {
+      "id": "main_screen",
+      "tag": "ui\\hud\\main\\main",
+      "class": "cui_screen",
+      "proven": false
+    },
+    {
+      "id": "base_hud",
+      "tag": "ui\\hud\\player_huds\\shared\\base_hud",
+      "class": "cui_screen",
+      "proven": false
+    },
+    {
+      "id": "mc_hud",
+      "tag": "ui\\hud\\player_huds\\mc_hud\\mc_hud",
+      "class": "cui_screen",
+      "proven": false
+    },
+    {
+      "id": "assault_rifle",
+      "tag": "ui\\hud\\weapons\\human\\ar\\assault_rifle",
+      "class": "cui_screen",
+      "proven": false
+    },
+    {
+      "id": "magnum",
+      "tag": "ui\\hud\\weapons\\human\\pistol\\magnum",
+      "class": "cui_screen",
+      "proven": false
+    },
+    {
+      "id": "hud_curve_global",
+      "tag": "ui\\hud\\player_huds\\shared\\curve_template\\hud_curve_global",
+      "class": "cui_screen",
+      "proven": false
+    }
+  ]
+}

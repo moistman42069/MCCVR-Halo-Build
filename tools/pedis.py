@@ -2,10 +2,18 @@
 # Read-only. Never modifies the game file.
 #   py -3 pedis.py fn   <rva_hex> [maxbytes]     - disassemble a function
 #   py -3 pedis.py scan <off_hex> [off_hex ...]  - find [reg+off] memory operands
+#   py -3 pedis.py --module <pe_path> <cmd> ...  - target another module
 import sys, struct
 from capstone import Cs, CS_ARCH_X86, CS_MODE_64
 
 PATH = r"N:\SteamLibrary\steamapps\common\Halo The Master Chief Collection\halo3\halo3.dll"
+
+# Optional module override; default stays halo3.dll so existing usage is
+# unchanged. Must be handled before load() runs at import time below.
+if "--module" in sys.argv:
+    _i = sys.argv.index("--module")
+    PATH = sys.argv[_i + 1]
+    del sys.argv[_i:_i + 2]
 
 def load():
     data = open(PATH, "rb").read()

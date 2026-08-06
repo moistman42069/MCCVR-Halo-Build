@@ -1,12 +1,24 @@
 # Disassemble a range of halo3.dll in the running game, by RVA.
 # Read-only: attaches with PROCESS_VM_READ and uses capstone. No game files touched.
 #   py -3 disasm.py <rva_hex> <length>
+#   py -3 disasm.py --module <pe_path> <rva_hex> <length>  - target another module
 import sys, ctypes as C
 from ctypes import wintypes as W
 from capstone import Cs, CS_ARCH_X86, CS_MODE_64
 
 GAME = "MCC-Win64-Shipping.exe"
 DLL  = "halo3.dll"
+DLL_PATH = r"N:\SteamLibrary\steamapps\common\Halo The Master Chief Collection\halo3\halo3.dll"
+# Optional module override; default stays halo3.dll so existing usage is
+# unchanged. Live lookup uses the file's basename; the offline fallback reads
+# the given file.
+MODULE_OVERRIDE = False
+if "--module" in sys.argv:
+    _i = sys.argv.index("--module")
+    DLL_PATH = sys.argv[_i + 1]
+    del sys.argv[_i:_i + 2]
+    DLL = DLL_PATH.replace("/", "\\").rsplit("\\", 1)[-1]
+    MODULE_OVERRIDE = True
 TH32CS_SNAPPROCESS = 0x2
 TH32CS_SNAPMODULE   = 0x8
 TH32CS_SNAPMODULE32 = 0x10
@@ -49,6 +61,22 @@ def module_base(pid):
         ok = k32.Module32Next(snap, C.byref(me))
     k32.CloseHandle(snap); return base, size
 
+def rva_to_file_offset(f, rva):
+    """Map an RVA to a raw file offset via the PE section table. Generic
+    replacement for halo3's fixed 0xC00 .text delta when --module is used."""
+    import struct
+    f.seek(0)
+    hdr = f.read(0x2000)
+    pe = struct.unpack_from("<I", hdr, 0x3C)[0]
+    nsec = struct.unpack_from("<H", hdr, pe + 6)[0]
+    optsz = struct.unpack_from("<H", hdr, pe + 20)[0]
+    off = pe + 24 + optsz
+    for i in range(nsec):
+        vsz, va, rsz, ra = struct.unpack_from("<IIII", hdr, off + 40 * i + 8)
+        if va <= rva < va + max(vsz, rsz):
+            return ra + (rva - va)
+    raise SystemExit("rva 0x%X not mapped in %s" % (rva, DLL_PATH))
+
 def main():
     float_mode = sys.argv[1].lower() == "floats"
     arg = 2 if float_mode else 1
@@ -70,9 +98,12 @@ def main():
         # halo3.dll can unload when the title returns to a menu. Code RVAs in
         # its .text section map to raw file offsets with this build's 0xC00
         # section delta, so retain an offline read-only fallback for RE work.
-        path = r"N:\SteamLibrary\steamapps\common\Halo The Master Chief Collection\halo3\halo3.dll"
-        with open(path, "rb") as f:
-            f.seek(rva - 0xC00)
+        # An overridden module gets a proper section-table mapping instead.
+        with open(DLL_PATH, "rb") as f:
+            if MODULE_OVERRIDE:
+                f.seek(rva_to_file_offset(f, rva))
+            else:
+                f.seek(rva - 0xC00)
             raw = f.read(length)
         code = raw
         k32.CloseHandle(h)

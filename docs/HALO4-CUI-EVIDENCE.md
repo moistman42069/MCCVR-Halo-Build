@@ -45,6 +45,36 @@ as Megalo/navpoint/debug-var leftovers until proven otherwise.
 - `cui_render_view.cpp` is among `halo4_tag_test.exe`'s retained source
   names.
 
+**cui_screen census** (409 names saved to
+`out/h4ek-evidence/cui/cui_screen_census.txt`; measured 2026-08-06):
+
+- **Per-weapon HUD screens**: every weapon has
+  `ui\hud\weapons\<faction>\<path>\<weapon>.cui_screen`, and scoped weapons a
+  separate `<weapon>_scope.cui_screen` (e.g. `dmr.cui_screen` +
+  `dmr_scope.cui_screen`). The per-weapon crosshair analog therefore lives in
+  the weapon's own screen, not a central crosshair collection.
+- **Root/in-game composition candidates**: `ui\hud\main\main.cui_screen` (+
+  the exported `main.cui_logic`), `ui\hud\player_huds\shared\base_hud.cui_screen`,
+  `ui\hud\player_huds\mc_hud\mc_hud.cui_screen` (campaign),
+  `mp_hud`, `forge_hud`, and per-game-engine screens
+  (`...\game_engines\campaign\campaign.cui_screen` etc.).
+- **`ui\hud\player_huds\shared\curve_template\hud_curve_global.cui_screen`**
+  exists — a named curvature construct for the later HUD-layout milestone.
+- **Vehicle/turret screens** per vehicle seat family
+  (`ui\hud\vehicles\warthog\warthog_driver.cui_screen`, `banshee`, `mantis`,
+  `scorpion_cannon`, `ui\hud\turrets\...`), relevant to M5.
+- 12 tag XML exports (9 `cui_static_data`, 2 `cui_logic`, 1
+  `user_interface_hud_globals_definition`) are in `out/h4ek-evidence/cui/`,
+  all non-empty; the working `tool.exe` convention is an **absolute tag path
+  under the kit's `tags` root** with cwd at the kit root.
+- **Non-empty is NOT well-formed.** `tool.exe` writes raw bytes (e.g.
+  `FF FF FF FF` NONE tag references) unescaped into attribute values under a
+  UTF-8 XML declaration. On the first full 18-tag `export_h4_kit.ps1` run,
+  7 exports parsed as valid XML and 11 were quarantined as `.xml.raw`
+  (byte-identical to the evidence copies above, SHA-256 matched) — including
+  `main.cui_logic` and `hud_globals`. Any consumer of those exports needs a
+  deliberately encoding-tolerant reader; plain ElementTree will reject them.
+
 ## Research plan (not findings)
 
 Ordered, per the approved bring-up plan; each step produces exports or
