@@ -1,6 +1,6 @@
 #include "halo4_adapter.h"
 
-#include "halo4_render_logic.h"
+#include "../common/halo4_render_logic.h"
 
 namespace
 {
