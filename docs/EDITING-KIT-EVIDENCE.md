@@ -28,6 +28,22 @@ MCC title without independent validation against that title's editing kit,
 installed module, and a disposable runtime probe. Copyrighted kit/game files
 must never be committed, packaged, uploaded, or used as CI fixtures.
 
+## Halo 4 mod-tools-only rule (2026-08-06)
+
+New Halo 4 feature evidence must come from the official H4EK executables,
+symbols/source names, assert text, tag schemas (ManagedBlam/Corinth — H4EK
+has no guerilla.exe; Foundation.exe is the tag editor), and `tool.exe`
+exports. The kit corpus is pinned in `docs/HALO4-EVIDENCE-MANIFEST.json`
+(`H4EK.7z` hashed before extraction).
+
+The loaded `halo4.dll` may be used only to match and verify an H4EK-derived
+identity, with unique-match, executable-range, boundary, ABI, and layout
+checks — never to discover a binding. The Reach script-table retail-derivation
+chain is proven for Reach only and is inadmissible for Halo 4 until re-proved
+on two harmless Halo 4 script functions. Halo 3, ODST, and Reach facts are
+not Halo 4 evidence. Halo 4 has no CHUD tag classes at all
+(`docs/HALO4-CUI-EVIDENCE.md`); no CHUD-derived construct may be assumed.
+
 ## Reach mod-tools-only rule (2026-07-26)
 
 New Halo: Reach feature evidence must come from the official HREK executables,

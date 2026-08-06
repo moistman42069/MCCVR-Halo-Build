@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "status": "PHASE0_IDENTITIES_PINNED_NO_RUNTIME_WORK",
+  "hook_eligible": false,
+  "hook_eligibility_scope": "NONE; no Halo 4 hook, probe, or runtime binding exists yet",
+  "development_baseline": {
+    "source_commit": "f4c641f7b1b707991f2bda71ba485090a16f1e9a",
+    "dll_sha256": "1C6101FD63B4A86822FC110CE86AE29EA174E50CA949A58A801265DEAA98537A",
+    "note": "user-directed development baseline 2026-08-06; 0.3.3 (94dc09f) remains the published GitHub release only"
+  },
+  "new_work_evidence_policy": {
+    "effective_date": "2026-08-06",
+    "allowed_sources": [
+      "official H4EK executables, symbols, assert text, and source-path strings",
+      "official H4EK tag schemas via ManagedBlam/Corinth reflection",
+      "official H4EK tool.exe exports (tag XML, enum tables, string tables, scripts)",
+      "bin\\!public_tags.txt and bin\\debug_menu_init.txt shipped by the kit"
+    ],
+    "forbidden_sources": [
+      "retail binary analysis as a discovery tool",
+      "Reclaimer or archived console binaries",
+      "Halo 3, ODST, or Reach offsets, structs, bones, markers, tag meanings, or constants without independent Halo 4 proof"
+    ],
+    "retail_module_role": "match and verify targets already explained by H4EK; never a source to invent a binding"
+  },
+  "retail_resolution_method": {
+    "status": "UNPROVEN",
+    "reach_script_table_chain": "name string -> single qword xref -> entry+0x18 = implementation; proven for REACH ONLY",
+    "admission_requirement": "re-prove the chain on two harmless Halo 4 script functions and record H4's actual entry stride and implementation offset here before any retail anchoring trusts it"
+  },
+  "retail_module": {
+    "name": "halo4.dll",
+    "file_size_bytes": 17829336,
+    "sha256_steam": "7C53E7D5BC9848545A1B70E2768242479336FBA1B7630D7AB955F7FD0C34FA84",
+    "sha256_store": "5767CD564C1E8E8D012D002A8DE8E92960A3DE46442399ED054E3C4EF44AA496",
+    "editions_note": "byte-identical apart from Authenticode signature (docs/MCC-EDITIONS-EVIDENCE.md); whole-file hashes therefore differ per edition and BOTH must be admitted",
+    "pe_machine": "0x8664",
+    "pe_magic": "0x020B",
+    "pe_timestamp": "0x68A0E7BF",
+    "pe_timestamp_utc": "2025-08-16 20:19:11",
+    "size_of_image": "0x04A3F000",
+    "retail_build_tag": "2025.08.16.178512.1",
+    "measured": "2026-08-06 from the Steam install; PE fields identical across editions because the images differ only in signature"
+  },
+  "editing_kit": {
+    "name": "H4EK",
+    "install_path": "N:\\SteamLibrary\\steamapps\\common\\H4EK",
+    "steam_appid": 1695792,
+    "build_tag": "2023.06.27.176405.1-Release",
+    "archive": {
+      "name": "H4EK.7z",
+      "file_size_bytes": 9598520866,
+      "sha256": "C7214D90C37557ECAF4215E35EF6C3A2F578E83D35EAE5C15F7BCEFFACBF941F",
+      "hashed_before_extraction": true,
+      "extraction_method": "kit's own bin\\x64\\7zr.exe with -aos so loose Steam-validated files are never overwritten"
+    },
+    "kit_binaries": {
+      "halo4_tag_test.exe": {
+        "sha256": "B7468DB9FD160B035C329540EE0B0D47BCF609E1BA6E85AE4F204B70661113A6",
+        "file_size_bytes": 41664752,
+        "pe_timestamp": "0x649B096A",
+        "size_of_image": "0x068F2000",
+        "role": "debug, symbol-rich camera/render/seat evidence binary; the reach_tag_test equivalent"
+      },
+      "halo4_tag_play.exe": {
+        "sha256": "B796A1249004AD1C1A7B1E482A4A92C57F4C6E342E1D769DBB25F69EBC6709A8",
+        "file_size_bytes": 36419824,
+        "pe_timestamp": "0x649B0D4A",
+        "size_of_image": "0x061BA000",
+        "role": "independent optimized build for production-layout cross-checks"
+      },
+      "sapien.exe": {
+        "sha256": "21F1D17BE5A50ED8C3B3AD4CCA8BF549EFC59531A8C5083A48047E503DEB49CE",
+        "file_size_bytes": 44788976,
+        "pe_timestamp": "0x649B064E",
+        "size_of_image": "0x06D2F000",
+        "role": "scenario editor; controlled runtime experiments"
+      },
+      "sapien_play.exe": {
+        "sha256": "F305674C1BA7417818F23D31C6161CA38E643AA3401B9F98FD6A1FF92656081A",
+        "file_size_bytes": 39568112,
+        "pe_timestamp": "0x649B0810",
+        "size_of_image": "0x065FE000",
+        "role": "second independent optimized build for cross-checks"
+      },
+      "tool.exe": {
+        "sha256": "5E0AD8D03EC4B1C7F4C0C2A18C92CEC9F92F3EB7E7F0CBB7376BA9D866E3A758",
+        "file_size_bytes": 47460592,
+        "pe_timestamp": "0x649B075D",
+        "size_of_image": "0x06E66000",
+        "role": "export_tag_to_xml, export_enum_tables, export_string_tables, export_script, export_node_object_function"
+      },
+      "tool_fast.exe": {
+        "sha256": "BBC8478A762838EE7CC4D0DB2A2327D585A3EC52EC2D30E07444BC47206DF17F",
+        "file_size_bytes": 41327344,
+        "pe_timestamp": "0x649B0A11",
+        "size_of_image": "0x06644000",
+        "role": "optimized tool variant"
+      },
+      "Foundation.exe": {
+        "sha256": "A50C55A52EB3380A41EA8A94B3A783F6057C8551B27170A972A8B4148F669C68",
+        "file_size_bytes": 101616,
+        "role": "the H4 tag editor; H4EK has NO guerilla.exe"
+      },
+      "MegaloEdit.exe": {
+        "sha256": "4CFA2270A1E3F4B81B3083ADD2D80449E72432E68223E80EA8EA9F26B0E52E2E",
+        "file_size_bytes": 196336,
+        "role": "Megalo script editor"
+      },
+      "bin\\ManagedBlam.dll": {
+        "sha256": "D2048A593399DA022BFC930D52A5CBA22B9197663F6416C20522E2B5235810CC",
+        "file_size_bytes": 55305968,
+        "role": "tag schema authority via .NET reflection"
+      },
+      "bin\\ManagedMegalo.dll": {
+        "sha256": "43CBAB8EBF32F5DAB72994C54866C046CBB6B2CB5EEE4E0BBB7EE3A537D31A2A",
+        "file_size_bytes": 1509616,
+        "role": "Megalo managed interface"
+      },
+      "bin\\tools\\bonobo\\Corinth.Schema.Blam.dll": {
+        "sha256": "C3FD1C4A1BAE2BDDC8A62EEEEBC90BA37EB48068B1472D5A1D52B530C03F5BAF",
+        "file_size_bytes": 133872,
+        "role": "Corinth schema layer over ManagedBlam"
+      },
+      "bin\\x64\\7zr.exe": {
+        "sha256": "502DBDCE8C838CF07BBB0170AB0489C001998F58006BA5307322AA68ADCAEC8C",
+        "file_size_bytes": 878592,
+        "role": "the kit's own extractor, used for the pinned extraction"
+      }
+    },
+    "required_roots": [
+      "tags",
+      "data"
+    ]
+  },
+  "tag_census": {
+    "source": "bin\\!public_tags.txt as shipped by the kit",
+    "measured": "2026-08-06",
+    "total_lines": 85634,
+    "hud_break": {
+      "chud_definition": 0,
+      "chud_globals_definition": 0,
+      "chud_animation_definition": 0,
+      "any_chud_tag_class": 0,
+      "cui_screen": 409,
+      "cui_static_data": 9,
+      "cui_logic": 2,
+      "user_interface_hud_globals_definition": 1,
+      "consequence": "every Halo 3/ODST/Reach CHUD finding is inapplicable to Halo 4; HUD/crosshair work is CUI research recorded in docs/HALO4-CUI-EVIDENCE.md"
+    },
+    "camera_and_vehicle_constructs_survive": {
+      "camera_fx_settings": 152,
+      "camera_shake": 134,
+      "vehicle": 79,
+      "weapon": 140
+    }
+  },
+  "required_runtime_proof": [
+    "loaded_image_uniqueness",
+    "executable_range",
+    "abi",
+    "callers",
+    "data_flow",
+    "h4ek_semantics",
+    "consumed_layout_fields"
+  ],
+  "player_view_transaction": {
+    "status": "NOT_STARTED",
+    "note": "H4 symbols suggest a render_view STACK and may not match Reach's fixed 4 x 0xA40 array; player_view_count evidence settles it before any AOB is authored"
+  },
+  "headset_acceptance_complete": false,
+  "accepted_release_eligible": false
+}
