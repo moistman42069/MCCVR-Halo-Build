@@ -37,6 +37,7 @@
 #include "scope_logic.h"
 #include "title_registry.h"
 #include "title_runtime_state.h"
+#include "view_cache_logic.h"
 
 #include <authored_reticle_logic.h>
 
@@ -8710,6 +8711,216 @@ int main()
               !CoopProbeIsInLevelMode(RuntimeMode::Loading) &&
               !CoopProbeIsInLevelMode(RuntimeMode::Unsupported),
             "Co-op probe dumps only when a live level falls to Loading");
+    }
+
+    {
+        // The upload path's source-view cache. The defect this replaces was a
+        // ONE-entry cache keyed on the source texture pointer: a frame that
+        // publishes two eyes from two different textures missed on every
+        // single call and asked the device for a new view each time.
+
+        // Stand-ins for the resources and the views made from them. Only the
+        // addresses matter; the cache never dereferences either.
+        int eyeLeft = 0, eyeRight = 0, menu = 0, screen = 0;
+        int viewLeft = 0, viewRight = 0, viewMenu = 0, viewScreen = 0;
+
+        ViewCacheTable<32> cache;
+
+        // A cold frame misses once per distinct source, which is unavoidable.
+        const bool coldMisses =
+            !cache.Find(&eyeLeft).hit && !cache.Find(&eyeRight).hit;
+        cache.Insert(&eyeLeft, &viewLeft);
+        cache.Insert(&eyeRight, &viewRight);
+
+        // THE REGRESSION THIS LOCKS DOWN: alternating between the two eyes
+        // must hit every time. The old single slot returned a miss on all
+        // four of these lookups.
+        bool alternatingHits = true;
+        for (int frame = 0; frame < 4; ++frame)
+        {
+            const ViewCacheLookup left = cache.Find(&eyeLeft);
+            const ViewCacheLookup right = cache.Find(&eyeRight);
+            alternatingHits = alternatingHits &&
+                left.hit && left.view == &viewLeft &&
+                right.hit && right.view == &viewRight;
+        }
+
+        // Adding the menu and the screen quad to the same frame does not
+        // evict the eyes, which is what a one-slot cache could not manage.
+        cache.Insert(&menu, &viewMenu);
+        cache.Insert(&screen, &viewScreen);
+        const bool busyFrameHolds =
+            cache.Contains(&eyeLeft) && cache.Contains(&eyeRight) &&
+            cache.Contains(&menu) && cache.Contains(&screen) &&
+            cache.Size() == 4;
+
+        Check(coldMisses && alternatingHits && busyFrameHolds,
+            "Source-view cache holds every source a frame touches, so "
+            "alternating eyes stop recreating a view per eye per frame");
+
+        // Nothing is displaced while capacity remains, so steady-state play
+        // performs no releases at all.
+        ViewCacheTable<32> steady;
+        int sources[6]{};
+        int views[6]{};
+        bool noDisplacement = true;
+        for (int i = 0; i < 6; ++i)
+            noDisplacement = noDisplacement &&
+                steady.Insert(&sources[i], &views[i]) == nullptr;
+        // Replay ten frames over that working set: all hits, no misses.
+        steady.ResetStats();
+        for (int frame = 0; frame < 10; ++frame)
+            for (int i = 0; i < 6; ++i)
+                (void)steady.Find(&sources[i]);
+        const bool steadyStateIsFree =
+            steady.Stats().hits == 60 && steady.Stats().misses == 0 &&
+            steady.Stats().evictions == 0;
+        Check(noDisplacement && steadyStateIsFree,
+            "A working set inside capacity reaches a steady state with zero "
+            "view creation and zero eviction");
+
+        // Eviction, exercised at a small capacity: the least recently USED
+        // entry goes, not the least recently inserted. Touching a stale entry
+        // must save it.
+        ViewCacheTable<3> tight;
+        int a = 0, b = 0, c = 0, d = 0;
+        int va = 0, vb = 0, vc = 0, vd = 0;
+        tight.Insert(&a, &va);
+        tight.Insert(&b, &vb);
+        tight.Insert(&c, &vc);
+        (void)tight.Find(&a);            // `a` is now the freshest, `b` oldest
+        void* evicted = tight.Insert(&d, &vd);
+        const bool lru = evicted == &vb && !tight.Contains(&b) &&
+            tight.Contains(&a) && tight.Contains(&c) && tight.Contains(&d) &&
+            tight.Size() == 3 && tight.Stats().evictions == 1;
+        Check(lru, "The cache evicts the least recently used view and keeps "
+                   "the resources the current frame is still touching");
+
+        // Re-inserting the same key hands back the previous view to release,
+        // and never grows the table - otherwise a resource that legitimately
+        // gets a fresh view would leak one every time.
+        ViewCacheTable<4> replace;
+        int key = 0, first = 0, second = 0;
+        replace.Insert(&key, &first);
+        void* superseded = replace.Insert(&key, &second);
+        const bool replaced = superseded == &first && replace.Size() == 1 &&
+            replace.Find(&key).view == &second;
+
+        // Forget() is how the owner drops a resource it is about to destroy,
+        // which is what stops the table pinning a dead texture alive.
+        void* forgotten = replace.Forget(&key);
+        const bool forgets = forgotten == &second && replace.Size() == 0 &&
+            !replace.Find(&key).hit && replace.Forget(&key) == nullptr;
+        Check(replaced && forgets,
+            "Re-inserting a key returns the superseded view, and Forget drops "
+            "a resource the owner is recreating");
+
+        // Guards. A failed view creation must not be stored: a poisoned slot
+        // would report a hit and hand back nothing, which is worse than the
+        // miss it replaced.
+        ViewCacheTable<4> guarded;
+        int live = 0, view = 0;
+        const bool rejectsNulls =
+            guarded.Insert(&live, nullptr) == nullptr &&
+            !guarded.Find(&live).hit && guarded.Size() == 0 &&
+            guarded.Insert(nullptr, &view) == &view &&
+            !guarded.Find(nullptr).hit && !guarded.Contains(nullptr) &&
+            guarded.Forget(nullptr) == nullptr;
+
+        // Teardown drains every entry exactly once, so nothing leaks and
+        // nothing is released twice.
+        guarded.Insert(&live, &view);
+        int extra = 0, extraView = 0;
+        guarded.Insert(&extra, &extraView);
+        int drained = 0;
+        while (guarded.TakeAny() != nullptr)
+            ++drained;
+        const bool drains = drained == 2 && guarded.Size() == 0;
+        Check(rejectsNulls && drains,
+            "A failed creation is never cached, and teardown drains each held "
+            "view exactly once");
+    }
+
+    {
+        // The intermediate-copy pool. The defect this replaces kept ONE
+        // intermediate and rebuilt it whenever the requested shape differed,
+        // so two different-sized slow-path sources in one frame destroyed and
+        // recreated a full-resolution texture every frame.
+        IntermediatePoolTable<8> pool;
+
+        const IntermediateShape eye{2064, 2208, 28};
+        const IntermediateShape reticle{64, 64, 28};
+
+        const IntermediatePoolSlot firstEye = pool.Acquire(eye);
+        const bool coldCreate = firstEye.valid && firstEye.needsCreate &&
+            !firstEye.evicted.Valid();
+        pool.Commit(firstEye.index, eye);
+
+        const IntermediatePoolSlot firstReticle = pool.Acquire(reticle);
+        const bool secondShapeGetsItsOwnSlot = firstReticle.valid &&
+            firstReticle.needsCreate && !firstReticle.evicted.Valid() &&
+            firstReticle.index != firstEye.index;
+        pool.Commit(firstReticle.index, reticle);
+
+        // THE REGRESSION THIS LOCKS DOWN: alternating shapes must both be
+        // resident. The old single intermediate reported needsCreate on every
+        // one of these, at full render size.
+        bool alternatingReuse = true;
+        for (int frame = 0; frame < 4; ++frame)
+        {
+            const IntermediatePoolSlot e = pool.Acquire(eye);
+            const IntermediatePoolSlot r = pool.Acquire(reticle);
+            alternatingReuse = alternatingReuse &&
+                e.valid && !e.needsCreate && e.index == firstEye.index &&
+                r.valid && !r.needsCreate && r.index == firstReticle.index;
+        }
+        Check(coldCreate && secondShapeGetsItsOwnSlot && alternatingReuse,
+            "The intermediate pool keeps one copy per shape, so alternating "
+            "sources stop rebuilding a full-resolution texture every frame");
+
+        // A shape differing only in format is a different shape - reusing a
+        // copy across formats would sample the wrong bits.
+        const IntermediateShape sameSizeOtherFormat{2064, 2208, 87};
+        const IntermediatePoolSlot recoloured = pool.Acquire(sameSizeOtherFormat);
+        const bool formatIsPartOfIdentity =
+            recoloured.needsCreate && recoloured.index != firstEye.index;
+        Check(formatIsPartOfIdentity,
+            "Format is part of an intermediate's identity, so a copy is never "
+            "reused across formats");
+
+        // Eviction at a small capacity reports the shape whose resource the
+        // caller must release, so a slot is never overwritten while occupied.
+        IntermediatePoolTable<2> tight;
+        const IntermediateShape s1{100, 100, 1};
+        const IntermediateShape s2{200, 200, 1};
+        const IntermediateShape s3{300, 300, 1};
+        const IntermediatePoolSlot t1 = tight.Acquire(s1);
+        tight.Commit(t1.index, s1);
+        const IntermediatePoolSlot t2 = tight.Acquire(s2);
+        tight.Commit(t2.index, s2);
+        (void)tight.Acquire(s1);  // `s1` freshest, so `s2` is the victim
+        const IntermediatePoolSlot t3 = tight.Acquire(s3);
+        const bool evictsLru = t3.needsCreate && t3.evicted == s2 &&
+            t3.index == t2.index && tight.Stats().evictions == 1;
+        tight.Commit(t3.index, s3);
+
+        // A creation that fails must abandon its slot rather than leave a
+        // shape claimed by a resource that does not exist.
+        const IntermediatePoolSlot failing = tight.Acquire(IntermediateShape{400, 400, 1});
+        tight.Abandon(failing.index);
+        const bool abandonClears = !tight.Live(failing.index) &&
+            tight.Acquire(IntermediateShape{400, 400, 1}).needsCreate;
+
+        // Degenerate shapes are refused outright rather than claiming a slot.
+        IntermediatePoolTable<2> guards;
+        const bool rejectsDegenerate =
+            !guards.Acquire(IntermediateShape{0, 100, 1}).valid &&
+            !guards.Acquire(IntermediateShape{100, 0, 1}).valid &&
+            guards.Size() == 0;
+
+        Check(evictsLru && abandonClears && rejectsDegenerate,
+            "The intermediate pool evicts least-recently-used, clears an "
+            "abandoned slot, and refuses a degenerate shape");
     }
 
     if (g_failures == 0)

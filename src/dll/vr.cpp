@@ -41,6 +41,7 @@
 #include "../common/input_logic.h"
 #include "../common/reach_vehicle_logic.h"
 #include "../common/scope_logic.h"
+#include "../common/view_cache_logic.h"
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -440,11 +441,45 @@ namespace
     ID3D11SamplerState* g_blitSampler = nullptr;
     ID3D11RasterizerState* g_blitRasterizer = nullptr;
     ID3D11DepthStencilState* g_blitDepthOff = nullptr;
-    ID3D11Texture2D* g_intermediate = nullptr; // SRV-capable copy of the backbuffer
-    ID3D11ShaderResourceView* g_intermediateSrv = nullptr;
-    D3D11_TEXTURE2D_DESC g_intermediateDesc{};
-    ID3D11ShaderResourceView* g_srcSrv = nullptr; // direct SRV of the backbuffer, when allowed
-    ID3D11Texture2D* g_srcSrvKey = nullptr;
+    // Source views for the upload path, and SRV-capable intermediate copies for
+    // sources we cannot sample directly.
+    //
+    // Both used to be a SINGLE slot. The eye publish alternates between
+    // g_eyeCache[0] and g_eyeCache[1], so a one-entry cache keyed on the source
+    // pointer missed on every eye of every frame and asked the device for a new
+    // view each time - a COM call per eye per frame in a hot hook. The
+    // intermediate was keyed on shape, so two different-sized slow-path sources
+    // in one frame destroyed and recreated a FULL-RESOLUTION texture every
+    // frame, which the comment in Blit() below already names as the kind of
+    // cost that halves the frame rate on level load.
+    //
+    // VRAM, deliberately: the two capacities are NOT the same kind of thing.
+    //
+    // A source view is a descriptor, not an image - a few hundred bytes of
+    // driver memory - so 32 of them cost nothing measurable. What a view DOES
+    // cost is a strong reference on its texture, which is why every site that
+    // destroys a sampled texture calls ForgetSourceView. In steady play the
+    // cached set is the two eyes, the menu, the screen quad, the reticle and
+    // the scope: all textures that are alive regardless. Added VRAM: none.
+    //
+    // An intermediate IS a full copy of its source, so this pool is sized
+    // tightly rather than generously. Only sources we cannot sample directly
+    // reach it - a non-SRV-capable or multisampled texture - and the eye caches
+    // are neither, so they never land here at all. Beating the old
+    // create-every-frame thrash needs just TWO resident shapes; four leaves
+    // room for a level-load transition without ever holding more than a couple
+    // of full-size copies. The live count and its byte total are logged, so the
+    // real figure comes from a session instead of from this comment.
+    constexpr std::size_t kSrcViewCacheCapacity = 32;
+    constexpr std::size_t kIntermediatePoolCapacity = 4;
+    ViewCacheTable<kSrcViewCacheCapacity> g_srcSrvCache;
+    IntermediatePoolTable<kIntermediatePoolCapacity> g_intermediatePool;
+    ID3D11Texture2D* g_intermediateTex[kIntermediatePoolCapacity]{};
+    ID3D11ShaderResourceView* g_intermediateSrvs[kIntermediatePoolCapacity]{};
+    // Steady-state creation must reach zero. These counters are what prove it
+    // from one session instead of from an argument.
+    uint64_t g_srcViewCreated = 0;
+    uint64_t g_intermediateCreated = 0;
 
     // Image-quality pipeline: sharp bicubic resolve + selectable FXAA/SMAA 1x +
     // RCAS-based sharpen, applied when each eye is expanded into the headset.
@@ -1229,6 +1264,24 @@ namespace
         return f == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || f == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
     }
 
+    // Only used to report how much VRAM the intermediate pool is holding, so
+    // the log states a real byte total instead of a guess. The four-byte
+    // default covers every format this path has been observed to carry; a
+    // wider format is reported low rather than wrongly precise.
+    uint32_t DxgiBytesPerPixel(DXGI_FORMAT f)
+    {
+        switch (FormatFamily(f))
+        {
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+            return 8;
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+        case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+        default:
+            return 4;
+        }
+    }
+
     DXGI_FORMAT UnormSibling(DXGI_FORMAT f)
     {
         if (f == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) return DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -1401,36 +1454,151 @@ float4 ps_pass(VSOut i) : SV_Target
 
     void ReleaseSourceViews()
     {
-        if (g_srcSrv) { g_srcSrv->Release(); g_srcSrv = nullptr; }
-        g_srcSrvKey = nullptr;
-        if (g_intermediateSrv) { g_intermediateSrv->Release(); g_intermediateSrv = nullptr; }
-        if (g_intermediate) { g_intermediate->Release(); g_intermediate = nullptr; }
-        g_intermediateDesc = {};
+        // Drains every cached view and intermediate. A cached view holds a
+        // strong reference on its source, so this is also what stops the table
+        // pinning a resource the game is about to destroy - every caller below
+        // runs on a resize or a detach, before the backbuffer goes away.
+        while (void* view = g_srcSrvCache.TakeAny())
+            static_cast<ID3D11ShaderResourceView*>(view)->Release();
+        for (std::size_t i = 0; i < kIntermediatePoolCapacity; ++i)
+        {
+            if (g_intermediateSrvs[i])
+            {
+                g_intermediateSrvs[i]->Release();
+                g_intermediateSrvs[i] = nullptr;
+            }
+            if (g_intermediateTex[i])
+            {
+                g_intermediateTex[i]->Release();
+                g_intermediateTex[i] = nullptr;
+            }
+        }
+        g_intermediatePool.Clear();
+    }
+
+    // Release a slot's resources so the pool can rebuild it into a new shape.
+    void ReleaseIntermediateSlot(std::size_t slot)
+    {
+        if (slot >= kIntermediatePoolCapacity)
+            return;
+        if (g_intermediateSrvs[slot])
+        {
+            g_intermediateSrvs[slot]->Release();
+            g_intermediateSrvs[slot] = nullptr;
+        }
+        if (g_intermediateTex[slot])
+        {
+            g_intermediateTex[slot]->Release();
+            g_intermediateTex[slot] = nullptr;
+        }
+    }
+
+    // Drop one source's cached view. The owner calls this before it destroys or
+    // recreates a texture we may have sampled, so the table never keeps a dead
+    // resource alive and never matches a recycled address.
+    void ForgetSourceView(ID3D11Texture2D* source)
+    {
+        if (!source)
+            return;
+        if (void* view = g_srcSrvCache.Forget(source))
+            static_cast<ID3D11ShaderResourceView*>(view)->Release();
+    }
+
+    // Once per two seconds, say what the upload path actually reused. This is
+    // the line that settles the change from one session: `created` must stop
+    // rising once a level is up, and `miss` must fall to 0 per window. If
+    // either keeps climbing, the working set is bigger than the table and the
+    // capacity is wrong - which is a number to read, not to argue about.
+    // `intermediates` is the only part that holds real VRAM, so its live slot
+    // count and byte total are printed rather than assumed.
+    void ReportUploadResourceReuse()
+    {
+        static uint64_t lastMs = 0;
+        static uint64_t lastCreatedViews = 0;
+        static uint64_t lastCreatedIntermediates = 0;
+        const uint64_t nowMs = GetTickCount64();
+        if (nowMs - lastMs < 2000)
+            return;
+        lastMs = nowMs;
+
+        uint64_t intermediateBytes = 0;
+        std::size_t intermediateLive = 0;
+        for (std::size_t i = 0; i < kIntermediatePoolCapacity; ++i)
+        {
+            if (!g_intermediateTex[i])
+                continue;
+            ++intermediateLive;
+            D3D11_TEXTURE2D_DESC d{};
+            g_intermediateTex[i]->GetDesc(&d);
+            intermediateBytes += static_cast<uint64_t>(d.Width) * d.Height *
+                                 DxgiBytesPerPixel(d.Format);
+        }
+
+        const ViewCacheStats& views = g_srcSrvCache.Stats();
+        LOG("upload reuse: views %zu/%zu resident, %llu hit / %llu miss / %llu "
+            "evicted, %llu created (+%llu this window); intermediates %zu/%zu "
+            "live = %llu KB, %llu created (+%llu this window)",
+            g_srcSrvCache.Size(), kSrcViewCacheCapacity,
+            static_cast<unsigned long long>(views.hits),
+            static_cast<unsigned long long>(views.misses),
+            static_cast<unsigned long long>(views.evictions),
+            static_cast<unsigned long long>(g_srcViewCreated),
+            static_cast<unsigned long long>(g_srcViewCreated - lastCreatedViews),
+            intermediateLive, kIntermediatePoolCapacity,
+            static_cast<unsigned long long>(intermediateBytes / 1024),
+            static_cast<unsigned long long>(g_intermediateCreated),
+            static_cast<unsigned long long>(g_intermediateCreated -
+                                            lastCreatedIntermediates));
+        lastCreatedViews = g_srcViewCreated;
+        lastCreatedIntermediates = g_intermediateCreated;
+        g_srcSrvCache.ResetStats();
     }
 
     // Acquire an SRV we can sample `src` from. Backbuffers usually can't be used
     // as shader input directly, so we may need an SRV-capable intermediate copy.
-    // Returns a borrowed SRV (owned by g_srcSrv / g_intermediateSrv), or nullptr.
+    // Returns a borrowed SRV, owned by the caches above; never release it here.
     ID3D11ShaderResourceView* AcquireSrcSrv(ID3D11Texture2D* src,
                                             const D3D11_TEXTURE2D_DESC& srcDesc)
     {
+        // A null source is rejected up front. The cache treats a null key as
+        // "do not store" and hands the view straight back, which the caller
+        // below would then release and return - a use-after-free. Refusing here
+        // is cheaper than making every caller prove it.
+        if (!src || !g_device)
+            return nullptr;
         if ((srcDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE) && srcDesc.SampleDesc.Count <= 1)
         {
-            if (g_srcSrvKey != src)
+            // A hit is the whole point: both eyes, the menu, the screen quad
+            // and the reticle each keep their own view, so a settled frame
+            // creates nothing at all here.
+            const ViewCacheLookup cached = g_srcSrvCache.Find(src);
+            if (cached.hit)
+                return static_cast<ID3D11ShaderResourceView*>(cached.view);
+
+            ID3D11ShaderResourceView* fresh = nullptr;
+            if (SUCCEEDED(g_device->CreateShaderResourceView(src, nullptr, &fresh)) &&
+                fresh)
             {
-                if (g_srcSrv) { g_srcSrv->Release(); g_srcSrv = nullptr; }
-                if (FAILED(g_device->CreateShaderResourceView(src, nullptr, &g_srcSrv)))
-                    g_srcSrv = nullptr;
-                g_srcSrvKey = g_srcSrv ? src : nullptr;
+                ++g_srcViewCreated;
+                if (void* displaced = g_srcSrvCache.Insert(src, fresh))
+                    static_cast<ID3D11ShaderResourceView*>(displaced)->Release();
+                return fresh;
             }
-            if (g_srcSrv)
-                return g_srcSrv;
+            // Creation failed; fall through to the intermediate copy rather
+            // than caching a null and reporting a hit that hands back nothing.
         }
-        if (!g_intermediate || g_intermediateDesc.Width != srcDesc.Width ||
-            g_intermediateDesc.Height != srcDesc.Height || g_intermediateDesc.Format != srcDesc.Format)
+
+        IntermediateShape shape{};
+        shape.width = srcDesc.Width;
+        shape.height = srcDesc.Height;
+        shape.format = static_cast<uint32_t>(srcDesc.Format);
+        const IntermediatePoolSlot slot = g_intermediatePool.Acquire(shape);
+        if (!slot.valid)
+            return nullptr;
+        if (slot.needsCreate)
         {
-            if (g_intermediateSrv) { g_intermediateSrv->Release(); g_intermediateSrv = nullptr; }
-            if (g_intermediate) { g_intermediate->Release(); g_intermediate = nullptr; }
+            // The slot may still hold a resource of the evicted shape.
+            ReleaseIntermediateSlot(slot.index);
             D3D11_TEXTURE2D_DESC d{};
             d.Width = srcDesc.Width;
             d.Height = srcDesc.Height;
@@ -1440,20 +1608,26 @@ float4 ps_pass(VSOut i) : SV_Target
             d.SampleDesc.Count = 1;
             d.Usage = D3D11_USAGE_DEFAULT;
             d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            if (FAILED(g_device->CreateTexture2D(&d, nullptr, &g_intermediate)) ||
-                FAILED(g_device->CreateShaderResourceView(g_intermediate, nullptr, &g_intermediateSrv)))
+            if (FAILED(g_device->CreateTexture2D(&d, nullptr,
+                                                 &g_intermediateTex[slot.index])) ||
+                FAILED(g_device->CreateShaderResourceView(
+                    g_intermediateTex[slot.index], nullptr,
+                    &g_intermediateSrvs[slot.index])))
             {
                 LOG("blit: intermediate texture creation failed (fmt %d)", (int)srcDesc.Format);
-                ReleaseSourceViews();
+                ReleaseIntermediateSlot(slot.index);
+                g_intermediatePool.Abandon(slot.index);
                 return nullptr;
             }
-            g_intermediateDesc = d;
+            ++g_intermediateCreated;
+            g_intermediatePool.Commit(slot.index, shape);
         }
         if (srcDesc.SampleDesc.Count > 1)
-            g_context->ResolveSubresource(g_intermediate, 0, src, 0, srcDesc.Format);
+            g_context->ResolveSubresource(g_intermediateTex[slot.index], 0, src, 0,
+                                          srcDesc.Format);
         else
-            g_context->CopyResource(g_intermediate, src);
-        return g_intermediateSrv;
+            g_context->CopyResource(g_intermediateTex[slot.index], src);
+        return g_intermediateSrvs[slot.index];
     }
 
     // Copy src into dst (an XR swapchain image). Uses a plain GPU copy when
@@ -2960,6 +3134,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             return true;
         for (auto*& texture : g_eyeCache)
         {
+            // Drop the cached source view first. Ours is a strong reference, so
+            // without this the old eye texture would survive the Release below
+            // and stay pinned at its old resolution.
+            ForgetSourceView(texture);
             if (texture) texture->Release();
             texture = nullptr;
         }
@@ -4637,6 +4815,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         }
         if (g_authoredReticleGoodTexture)
         {
+            // The reticle publish samples this texture, so its cached view
+            // holds a reference; drop that before releasing ours.
+            ForgetSourceView(g_authoredReticleGoodTexture);
             g_authoredReticleGoodTexture->Release();
             g_authoredReticleGoodTexture = nullptr;
         }
@@ -7477,6 +7658,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 #endif
                     if (!reachTitle)
                         ValidateStereoImagesOnce();
+                    // Once per frame, but it only writes a line every two
+                    // seconds; the same shape every other steady report here
+                    // uses. All three titles reach this point.
+                    ReportUploadResourceReuse();
                     uint32_t idx = 0;
                     XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
                     XrSwapchainImageWaitInfo swi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
