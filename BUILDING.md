@@ -243,12 +243,20 @@ Commit the intended source first, then run:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-candidate.ps1
 ```
 
-There are no title switches or alternate candidate presets. The command always
-performs a clean rebuild and tests the one cumulative Release configuration,
-then records the permanent Reach preflight, capture, engine-write, camera-core,
-runtime-hook, nested first-person camera workspace, and world-projection
-execution-status fields in the candidate manifest. After packaging succeeds it
-automatically invokes `tools/install-candidate.ps1` for those exact bytes.
+There are no title switches or alternate candidate presets. The command builds
+and tests the one cumulative Release configuration, then records the permanent
+Reach preflight, capture, engine-write, camera-core, runtime-hook, nested
+first-person camera workspace, and world-projection execution-status fields in
+the candidate manifest. After packaging succeeds it automatically invokes
+`tools/install-candidate.ps1` for those exact bytes.
+
+**The rebuild is incremental, not clean** - verified 2026-08-06 against
+`tools/package-candidate.ps1`, which passes `--clean-first` only when you opt
+in with `-Clean`. That is deliberate: a clean rebuild recompiled the whole tree
+every time and cost minutes per candidate. Two consequences worth knowing:
+a stale object file can in principle survive into a candidate, so pass `-Clean`
+after a build-system change; and packaging is not a substitute for checking
+that your own incremental build actually produced every target.
 
 The command refuses a dirty worktree. It does **not** run
 `tools/check-reach-fp-parity.ps1` — verified 2026-08-06, the packager contains
