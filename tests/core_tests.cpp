@@ -4202,10 +4202,10 @@ int main()
 
     {
         const CinematicControlPublication locked{
-            GameTitle::Halo4, 77, CinematicControlState::AuthoredLocked, 1000};
+            GameTitle::HaloCE, 77, CinematicControlState::AuthoredLocked, 1000};
         const uint32_t capability = TitleCapability_CutsceneTheater;
         Check(ResolveCinematicControl(
-                  locked, GameTitle::Halo4, 77, capability, 1100) ==
+                  locked, GameTitle::HaloCE, 77, capability, 1100) ==
                   CinematicControlState::AuthoredLocked,
             "a mock future title receives the generic theatre contract without a title check");
         Check(CutsceneTheaterRequested(
@@ -4331,48 +4331,48 @@ int main()
                   16.0f / 9.0f, 0.75f, 1.0f),
             "a rebuilt theatre projection must still match the pristine authored aspect");
         const CutsceneTheaterProjectionPublication authoredProjection{
-            GameTitle::Halo4, 77, 4.0f / 3.0f, 1000};
+            GameTitle::HaloCE, 77, 4.0f / 3.0f, 1000};
         float resolvedAspect = 0.0f;
         Check(ResolveCutsceneTheaterProjection(
-                  authoredProjection, GameTitle::Halo4, 77,
+                  authoredProjection, GameTitle::HaloCE, 77,
                   capability, 1100, resolvedAspect) &&
                   std::fabs(resolvedAspect - 4.0f / 3.0f) < 0.00001f,
             "a future title's fresh generation-tagged authored aspect resolves generically");
         Check(!ResolveCutsceneTheaterProjection(
-                  authoredProjection, GameTitle::Halo4, 78,
+                  authoredProjection, GameTitle::HaloCE, 78,
                   capability, 1100, resolvedAspect) &&
               !ResolveCutsceneTheaterProjection(
                   authoredProjection, GameTitle::Halo3, 77,
                   capability, 1100, resolvedAspect) &&
               !ResolveCutsceneTheaterProjection(
-                  authoredProjection, GameTitle::Halo4, 77,
+                  authoredProjection, GameTitle::HaloCE, 77,
                   TitleCapability_None, 1100, resolvedAspect) &&
               !ResolveCutsceneTheaterProjection(
-                  authoredProjection, GameTitle::Halo4, 77,
+                  authoredProjection, GameTitle::HaloCE, 77,
                   capability, 1501, resolvedAspect),
             "authored aspect rejects title, generation, capability, and freshness mismatches");
         CinematicControlPublication publication = locked;
         publication.state = CinematicControlState::PlayerControlled;
         Check(ResolveCinematicControl(
-                  publication, GameTitle::Halo4, 77, capability, 1100) ==
+                  publication, GameTitle::HaloCE, 77, capability, 1100) ==
                   CinematicControlState::PlayerControlled,
             "player-controlled sequences remain immersive");
         publication.state = CinematicControlState::Unknown;
         Check(ResolveCinematicControl(
-                  publication, GameTitle::Halo4, 77, capability, 1100) ==
+                  publication, GameTitle::HaloCE, 77, capability, 1100) ==
                   CinematicControlState::Unknown,
             "unproven sequences remain immersive");
         Check(ResolveCinematicControl(
-                  locked, GameTitle::Halo4, 78, capability, 1100) ==
+                  locked, GameTitle::HaloCE, 78, capability, 1100) ==
                   CinematicControlState::Unknown &&
               ResolveCinematicControl(
                   locked, GameTitle::Halo3, 77, capability, 1100) ==
                   CinematicControlState::Unknown &&
               ResolveCinematicControl(
-                  locked, GameTitle::Halo4, 77, TitleCapability_None, 1100) ==
+                  locked, GameTitle::HaloCE, 77, TitleCapability_None, 1100) ==
                   CinematicControlState::Unknown &&
               ResolveCinematicControl(
-                  locked, GameTitle::Halo4, 77, capability, 1501) ==
+                  locked, GameTitle::HaloCE, 77, capability, 1501) ==
                   CinematicControlState::Unknown,
             "title transitions, generation changes, capability loss, and stale state exit theatre");
 
