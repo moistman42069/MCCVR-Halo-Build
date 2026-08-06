@@ -4198,6 +4198,23 @@ int main()
                   static_cast<uint32_t>(TitleCapability_CutsceneTheater) == 0x100u &&
                   kTitleRuntimeKnownCapabilities == 0x1FFu,
             "controller input, haptics, and cutscene theatre extend the known capability mask exactly");
+        Check(TitleRuntimeHeartbeatWindowMs(GameTitle::Halo3) == 500 &&
+                  TitleRuntimeHeartbeatWindowMs(GameTitle::Halo3ODST) == 5001 &&
+                  TitleRuntimeHeartbeatWindowMs(GameTitle::HaloReach) == 500 &&
+                  TitleRuntimeHeartbeatWindowMs(GameTitle::Halo4) == 500 &&
+                  TitleRuntimeHeartbeatWindowMs(GameTitle::HaloCE) == 0 &&
+                  TitleRuntimeHeartbeatWindowMs(GameTitle::Halo2) == 0 &&
+                  TitleRuntimeHeartbeatWindowMs(GameTitle::Unknown) == 0,
+            "heartbeat windows pin H3/ODST/Reach byte-for-byte and every runtime title is nonzero because a zero window silently disqualifies ownership");
+        const TitleRuntimeHeartbeatPolicy windowPolicy =
+            MakeTitleRuntimeHeartbeatPolicy();
+        bool heartbeatWindowsMirrorTable = true;
+        for (size_t slot = 0; slot < kTitleRuntimeSlotCount; ++slot)
+            heartbeatWindowsMirrorTable = heartbeatWindowsMirrorTable &&
+                windowPolicy.freshForMs[slot] ==
+                    TitleRuntimeHeartbeatWindowMs(TitleRuntimeSlotTitle(slot));
+        Check(heartbeatWindowsMirrorTable,
+            "the built heartbeat policy mirrors the window table slot for slot");
     }
 
     {

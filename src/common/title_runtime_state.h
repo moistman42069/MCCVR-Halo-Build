@@ -57,6 +57,35 @@ constexpr uint32_t kTitleRuntimeKnownCapabilities =
     TitleCapability_Haptics |
     TitleCapability_CutsceneTheater;
 
+// Heartbeat freshness windows, promoted from src/dll/game.cpp so an offline
+// test pins every value. ResolveTitleRuntime disqualifies a candidate whose
+// window is zero, silently and unconditionally: a runtime-slotted title left
+// out of this table can never become the resolved owner, every shared
+// capability is denied, and the worker's fallback publication fights the
+// present path (the Reach "Runtime mode: gameplay -> loading" flap). Every
+// title that gains a runtime MUST gain a nonzero entry here in the same
+// change.
+constexpr uint64_t kTitleRuntimeHeartbeatFreshMs = 500;
+// ODST's camera copy can legitimately go quiet for its hard timeout, so its
+// window must outlast kOdstCameraHardTimeoutMs (5000); a static_assert in
+// src/dll/game.cpp, where both headers are visible, pins the +1 relation.
+constexpr uint64_t kOdstTitleRuntimeHeartbeatWindowMs = 5001;
+
+constexpr uint64_t TitleRuntimeHeartbeatWindowMs(GameTitle title)
+{
+    switch (title)
+    {
+    case GameTitle::Halo3: return kTitleRuntimeHeartbeatFreshMs;
+    case GameTitle::Halo3ODST: return kOdstTitleRuntimeHeartbeatWindowMs;
+    // Reach and Halo 4 have no camera-copy hook; each heartbeats once per
+    // armed Present, the fastest cadence of the titles, so Halo 3's window
+    // fits both.
+    case GameTitle::HaloReach: return kTitleRuntimeHeartbeatFreshMs;
+    case GameTitle::Halo4: return kTitleRuntimeHeartbeatFreshMs;
+    default: return 0;
+    }
+}
+
 struct TitleRuntimeCandidate
 {
     GameTitle title = GameTitle::None;
@@ -139,6 +168,15 @@ struct TitleRuntimeHeartbeatPolicy
 {
     std::array<uint64_t, kTitleRuntimeSlotCount> freshForMs{};
 };
+
+constexpr TitleRuntimeHeartbeatPolicy MakeTitleRuntimeHeartbeatPolicy()
+{
+    TitleRuntimeHeartbeatPolicy policy{};
+    for (size_t slot = 0; slot < kTitleRuntimeSlotCount; ++slot)
+        policy.freshForMs[slot] =
+            TitleRuntimeHeartbeatWindowMs(TitleRuntimeSlotTitle(slot));
+    return policy;
+}
 
 // Fixed storage only. Publications are generation tagged, and snapshots use
 // double-generation reads so data from a departed/reloaded title cannot become

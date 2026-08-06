@@ -98,7 +98,6 @@ namespace
         TitleCapability_RoomScale |
         TitleCapability_Haptics |
         TitleCapability_CutsceneTheater;
-    constexpr uint64_t kTitleRuntimeHeartbeatFreshMs = 500;
 
     constexpr uintptr_t kCamCopyRva = 0x2A628C; // fastcall(dst, src) camera copy
     constexpr uintptr_t kSrcFwd = 0x28;         // forward vec offset in src
@@ -1931,28 +1930,16 @@ namespace
     std::atomic<uintptr_t> g_nativePauseFlag{0};
     std::atomic<bool> g_enginePauseValidated{false};
 
+    // The window table lives in title_runtime_state.h so the offline tests
+    // pin every value; the Reach zero-window incident is documented there.
+    static_assert(kOdstTitleRuntimeHeartbeatWindowMs ==
+            kOdstCameraHardTimeoutMs + 1,
+        "the ODST heartbeat window must outlast the ODST camera hard timeout");
+
     const TitleRuntimeHeartbeatPolicy& RuntimeHeartbeatPolicy()
     {
-        static const TitleRuntimeHeartbeatPolicy policy = [] {
-            TitleRuntimeHeartbeatPolicy value{};
-            value.freshForMs[TitleRuntimeSlotIndex(GameTitle::Halo3)] =
-                kTitleRuntimeHeartbeatFreshMs;
-            value.freshForMs[TitleRuntimeSlotIndex(GameTitle::Halo3ODST)] =
-                kOdstCameraHardTimeoutMs + 1;
-#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
-            // Reach heartbeats once per armed Present (Game_AutoVrTick), the
-            // fastest cadence of the three titles, so Halo 3's window fits.
-            // A zero window here made ResolveTitleRuntime disqualify Reach
-            // unconditionally (heartbeatFreshForMs == 0): Reach was never the
-            // resolved owner, Game_HasTitleCapability denied every shared
-            // capability (rumble stayed dead), and the worker's fallback-mode
-            // publication stomped the present path's Gameplay back to Loading
-            // every 50 ms - the "Runtime mode: gameplay -> loading" log flap.
-            value.freshForMs[TitleRuntimeSlotIndex(GameTitle::HaloReach)] =
-                kTitleRuntimeHeartbeatFreshMs;
-#endif
-            return value;
-        }();
+        static const TitleRuntimeHeartbeatPolicy policy =
+            MakeTitleRuntimeHeartbeatPolicy();
         return policy;
     }
 
