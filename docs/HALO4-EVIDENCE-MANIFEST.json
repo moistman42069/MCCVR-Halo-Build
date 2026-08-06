@@ -125,7 +125,12 @@
         "role": "export-tag-to-xml, extract-unicode-strings, script-doc, dump-cinematics-script",
         "verb_table_measured": "out/h4ek-evidence/identity/tool-verbs.txt (264 lines, captured 2026-08-06)",
         "hrek_verbs_absent": "export-enum-tables, export-string-tables, export-script, and export-node-object-function do NOT exist in H4EK tool.exe; the bring-up plan carried those over from HREK and that assumption is refuted. Enum and schema recovery goes through ManagedBlam/Corinth reflection.",
-        "xml_wellformedness_caveat": "export-tag-to-xml writes raw bytes (e.g. FF FF FF FF NONE tag references) unescaped into attribute values under a UTF-8 declaration; 11 of 18 exports on the first full run were not well-formed. Use an encoding-tolerant reader; tools/export_h4_kit.ps1 quarantines malformed output as .xml.raw."
+        "xml_defects": {
+          "note": "two distinct, separately-repairable defects; an earlier manifest entry conflated them and wrongly called 11 of 18 exports unusable",
+          "encoding": "raw tag bytes (notably FF FF FF FF for a NONE tag reference) are written into attribute values under an <?xml version=\"1.0\"?> declaration naming no encoding, so the file is invalid UTF-8. Affected 11 of 18. This is why a byte-reading parser (XmlDocument.Load) rejected all 11 while a string parser accepted 8 - an encoding artefact, not malformed markup.",
+          "unescaped_ampersands": "authored string content is written into attribute values unescaped, e.g. value=\"a&&b\". Genuinely malformed markup. Affected exactly 3 of 18: scoreboard.cui_logic (2), base_hud.cui_screen (2), mc_hud.cui_screen (4).",
+          "resolution": "tools/export_h4_kit.ps1 declares iso-8859-1 and escapes only ampersands not already opening a valid entity; all 18 exports now parse with zero quarantined. Repairs are reported and the pristine tool.exe bytes are preserved as .xml.orig - never a silent rewrite."
+        }
       },
       "tool_fast.exe": {
         "sha256": "BBC8478A762838EE7CC4D0DB2A2327D585A3EC52EC2D30E07444BC47206DF17F",

@@ -73,6 +73,11 @@ $exported = @()
 $skippedMissing = @()
 $failedExport = @()
 $quarantined = @()
+$repaired = @()
+
+# Strict UTF-8 (throws on invalid bytes) is how we DETECT the encoding defect;
+# ISO-8859-1 is how we then decode without losing a byte.
+$utf8Strict = New-Object Text.UTF8Encoding($false, $true)
 
 Push-Location $KitRoot
 try {
@@ -83,7 +88,8 @@ try {
         $proven = $asset.proven -eq $true
         $tagPath = Join-Path $tagsRoot ($tag + '.' + $class)
         $outPath = Join-Path $resolvedOutput ($id + '.' + $class + '.xml')
-        $rawPath = $outPath + '.raw'
+        $rawPath = $outPath + '.raw'   # quarantined: still malformed after repair
+        $origPath = $outPath + '.orig' # pristine tool.exe bytes when repaired
 
         if (-not $Refresh) {
             if ((Test-Path -LiteralPath $outPath) -and
@@ -109,7 +115,7 @@ try {
         }
 
         Write-Host "Exporting Halo 4 authoring source: $id ($class)"
-        foreach ($stale in @($outPath, $rawPath)) {
+        foreach ($stale in @($outPath, $rawPath, $origPath)) {
             if (Test-Path -LiteralPath $stale) {
                 Remove-Item -LiteralPath $stale -Force
             }
@@ -129,23 +135,82 @@ try {
             continue
         }
 
-        # tool.exe can emit malformed XML. No scrubber precedent exists in the
-        # Reach tooling (export_reach_vehicle_kit.ps1 only checks non-empty),
-        # so validate well-formedness and quarantine bad output as .raw
-        # instead of failing the whole run.
+        # H4EK tool.exe emits XML with two distinct, separately-fixable
+        # defects, both measured 2026-08-06 across an 18-tag run:
+        #
+        #  1. ENCODING. It writes raw tag bytes - notably the FF FF FF FF of a
+        #     NONE tag reference - straight into attribute values, under an
+        #     `<?xml version="1.0"?>` declaration that names no encoding and so
+        #     defaults to UTF-8. Every one of the 11 affected exports is
+        #     therefore invalid UTF-8, which is why XmlDocument.Load (which
+        #     reads BYTES and honours the declared encoding) rejected them all,
+        #     while parsing the same bytes as an already-decoded string
+        #     accepted 8 of them. That difference is an encoding artefact, NOT
+        #     malformed markup - do not conflate the two.
+        #  2. UNESCAPED AMPERSANDS. Authored string content is written into
+        #     attribute values without XML escaping, so a HaloScript-style
+        #     expression appears literally as value="a&&b". That IS malformed
+        #     markup and it is what genuinely broke 3 of the 18.
+        #
+        # Both are mechanically repairable, so quarantining on either would
+        # throw away usable evidence. The pristine bytes are always preserved
+        # next to any repaired file, and every repair is reported - nothing is
+        # silently rewritten.
+        $rawBytes = [IO.File]::ReadAllBytes($outPath)
+        $latin1 = [Text.Encoding]::GetEncoding(28591) # ISO-8859-1, byte-preserving
+        $text = $latin1.GetString($rawBytes)
+        $repairs = @()
+
+        $isValidUtf8 = $true
+        try { [void]$utf8Strict.GetString($rawBytes) } catch { $isValidUtf8 = $false }
+        if (-not $isValidUtf8) {
+            # Declare the encoding we actually decoded with, so any downstream
+            # byte-reading parser agrees with us.
+            if ($text -match '^\s*<\?xml[^>]*\?>') {
+                $text = [Text.RegularExpressions.Regex]::Replace(
+                    $text, '^\s*<\?xml[^>]*\?>',
+                    '<?xml version="1.0" encoding="iso-8859-1"?>', 1)
+            }
+            else {
+                $text = '<?xml version="1.0" encoding="iso-8859-1"?>' + "`r`n" + $text
+            }
+            $repairs += 'declared iso-8859-1 (raw non-UTF-8 tag bytes present)'
+        }
+
+        # Escape only ampersands that do not already begin a valid entity.
+        $ampPattern = '&(?!(?:amp|lt|gt|quot|apos);|#[0-9]+;|#x[0-9A-Fa-f]+;)'
+        $bareAmps = [Text.RegularExpressions.Regex]::Matches($text, $ampPattern).Count
+        if ($bareAmps -gt 0) {
+            $text = [Text.RegularExpressions.Regex]::Replace($text, $ampPattern, '&amp;')
+            $repairs += "escaped $bareAmps bare ampersand(s)"
+        }
+
         $wellFormed = $true
+        $parseError = ''
         try {
             $xmlDoc = New-Object System.Xml.XmlDocument
-            $xmlDoc.Load($outPath)
+            $xmlDoc.LoadXml($text)
         }
         catch {
             $wellFormed = $false
+            $parseError = $_.Exception.Message
         }
+
         if (-not $wellFormed) {
             Move-Item -LiteralPath $outPath -Destination $rawPath -Force
-            Write-Warning "Malformed XML quarantined: $rawPath"
+            Write-Warning ("Still malformed after repair, quarantined: $rawPath" +
+                " -- $parseError")
             $quarantined += $id
             continue
+        }
+
+        if ($repairs.Count -gt 0) {
+            # Preserve the untouched tool.exe bytes beside the repaired file.
+            [IO.File]::WriteAllBytes($origPath, $rawBytes)
+            $xmlDoc.Save($outPath)
+            Write-Host ("  repaired: " + ($repairs -join '; ') +
+                " (pristine bytes kept at $([IO.Path]::GetFileName($origPath)))")
+            $repaired += $id
         }
         $exported += $id
     }
@@ -155,6 +220,9 @@ finally {
 }
 
 Write-Host ("Halo 4 kit source ready: {0} valid XML export(s)" -f $exported.Count)
+if ($repaired.Count -gt 0) {
+    Write-Host ("Repaired (pristine .orig kept): " + ($repaired -join ', '))
+}
 if ($skippedMissing.Count -gt 0) {
     Write-Host ("Missing target tags skipped: " + ($skippedMissing -join ', '))
 }

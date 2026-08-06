@@ -67,13 +67,103 @@ as Megalo/navpoint/debug-var leftovers until proven otherwise.
   `user_interface_hud_globals_definition`) are in `out/h4ek-evidence/cui/`,
   all non-empty; the working `tool.exe` convention is an **absolute tag path
   under the kit's `tags` root** with cwd at the kit root.
-- **Non-empty is NOT well-formed.** `tool.exe` writes raw bytes (e.g.
-  `FF FF FF FF` NONE tag references) unescaped into attribute values under a
-  UTF-8 XML declaration. On the first full 18-tag `export_h4_kit.ps1` run,
-  7 exports parsed as valid XML and 11 were quarantined as `.xml.raw`
-  (byte-identical to the evidence copies above, SHA-256 matched) — including
-  `main.cui_logic` and `hud_globals`. Any consumer of those exports needs a
-  deliberately encoding-tolerant reader; plain ElementTree will reject them.
+- **`tool.exe`'s XML has two distinct defects, both mechanically repairable.**
+  Measured across the full 18-tag `export_h4_kit.ps1` run, then corrected —
+  an earlier version of this section claimed 11 exports were unusable, which
+  was wrong, and the error is worth recording because the two defects look
+  like one:
+  1. **Encoding.** `tool.exe` writes raw tag bytes — notably the
+     `FF FF FF FF` of a NONE tag reference — straight into attribute values
+     under an `<?xml version="1.0"?>` declaration that names no encoding and
+     therefore defaults to UTF-8. All 11 affected exports are consequently
+     invalid UTF-8. This is why `XmlDocument.Load` (which reads **bytes** and
+     honours the declared encoding) rejected all 11, while parsing the same
+     bytes as an already-decoded **string** accepted 8 of them. That gap is
+     an encoding artefact, not malformed markup.
+  2. **Unescaped ampersands.** Authored string content is written into
+     attribute values without XML escaping, so a HaloScript-style expression
+     appears literally as `value="a&&b"`. That *is* malformed markup, and it
+     is the genuine fault in exactly 3 of the 18 —
+     `scoreboard.cui_logic` (2 bare `&`), `base_hud.cui_screen` (2), and
+     `mc_hud.cui_screen` (4).
+  `tools/export_h4_kit.ps1` now repairs both — declaring `iso-8859-1` and
+  escaping only ampersands that do not already open a valid entity — and
+  **all 18 exports parse, zero quarantined**. Every repair is reported and
+  the untouched `tool.exe` bytes are preserved beside the repaired file as
+  `.xml.orig`, so nothing is silently rewritten.
+
+## Measured from the repaired exports (2026-08-06)
+
+These come from `out/h4-kit-source/canonical/`, produced by
+`tools/export_h4_kit.ps1` and readable only after the two XML defects above
+were repaired. Plan steps 1 and 2 are now partly discharged.
+
+### `ui\hud_globals` — the single hud-globals tag (70 fields)
+
+VR-relevant fields, quoted with their authored values:
+
+- **`screen transform basis`** — an array of exactly **9 `real point 2d`
+  elements**, a 3x3 grid: `(-1,-1) (-0.98,0) (-1,1)` / `(0,-0.92) (0,0)
+  (0,0.92)` / `(1,-1) (0.98,0) (1,1)`. The mid-edge points are pulled inward
+  (0.98 and 0.92 rather than 1.0), i.e. this is Halo 4's authored HUD screen
+  **warp**. It is the construct a flat VR HUD would need to neutralise, and
+  the functional counterpart of Reach's curvature records.
+- **`Reticule maximum spread angle` = 1** — a reticle global living in
+  hud_globals rather than in a per-weapon screen. Relevant to M3.
+- High-contrast HUD levers, matching the `high_contrast_hud_*` debug globals
+  found in E-H4-2: `High Contrast Flags`, `Minimum Threshold` 0.05,
+  `Maximum Threshold` 0.41, `Clamp Threshold` 0.5, `Darken Factor` 0.75,
+  `Brighten Factor` 1.25.
+- First-person damage overlay: `tiled mesh seen when hit in 1st person` →
+  `ui\hud\player_huds\shared\damage_flash\microtexture`, with
+  `number of tiles across the screen` 35 and four mesh-alpha reals — a
+  screen-space overlay worth knowing about for VR comfort.
+- Radar/detection ranges (`vehicle radar range` 100, `remote sensor range`
+  7.62, the height-classification pair +/-3.28) — note 3.28 and 7.62 are
+  foot/metre-flavoured constants; do **not** infer a world-scale factor from
+  them without its own proof.
+
+### `ui\hud\player_huds\shared\curve_template\hud_curve_global` (cui_screen)
+
+The curvature construct is a CUI widget, not a flat record:
+
+- Component type **`curvature_container_widget`**, instantiated as
+  `component_[visual]_[curvature_container_widget]_[0]`.
+- **Nine named per-point properties**, matching the nine-element basis above:
+  `prop_curvature_point_top_left_y`, `prop_curvature_point_top_middle_x`,
+  `prop_curvature_point_top_middle_y`, `prop_curvature_point_top_right_y`,
+  `prop_curvature_point_center_left_y`,
+  `prop_curvature_point_bottom_left_y`,
+  `prop_curvature_point_bottom_middle_x`,
+  `prop_curvature_point_bottom_middle_y`,
+  `prop_curvature_point_bottom_right_y`.
+- **Six resolution classes**, each appearing twice:
+  `resolution_widescreen`, `resolution_widescreen_half`,
+  `resolution_widescreen_quarter`, `resolution_standard`,
+  `resolution_standard_half`, `resolution_standard_quarter`. One theme:
+  `theme_default` (12 occurrences).
+- Also present: a **`parallax_component`** named
+  `metrics_parallax_listner` with `metrics_parallax_x_expression` /
+  `metrics_parallax_y_expression` — HUD parallax driven by expressions.
+
+**Warning recorded in advance, because this is a known way to lose hours.**
+`AGENTS.md` and the Reach record both describe the failure where a write is
+verified correct yet has no visible effect because the engine reads a
+*different copy* of that data, selected at runtime by resolution class or
+skin — Reach's HUD sliders appeared inert for exactly that reason. Halo 4
+presents the same hazard in a more elaborate form: six resolution classes
+times a theme, per curvature point. Any future HUD-layout candidate must
+first establish **which resolution class and theme the live VR player view
+actually resolves to**, and prove it from the runtime rather than assuming
+`resolution_widescreen` because VR renders a single non-split view.
+
+### Per-weapon screens spot-check
+
+`assault_rifle.cui_screen` (214 KB) and `magnum.cui_screen` (294 KB) both
+export and parse, confirming the per-weapon HUD screens are readable
+evidence. `base_hud.cui_screen` (507 KB) and `mc_hud.cui_screen` (1.3 MB)
+also parse after repair. Their internals are not yet surveyed — that is the
+next CUI step, along with the draw-order question below.
 
 ## Research plan (not findings)
 
