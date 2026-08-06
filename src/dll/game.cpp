@@ -1943,19 +1943,28 @@ namespace
         return policy;
     }
 
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+    // Defined after g_reachCamera; its install-scoped generation is the Reach
+    // parallel of g_halo3RuntimeGeneration / g_odstRuntimeGeneration.
+    uint32_t ReachRetainedRuntimeGeneration();
+#endif
+
     GameTitle RetainedRuntimeTitle()
     {
-        const bool halo3 =
-            g_halo3RuntimeGeneration.load(std::memory_order_acquire) != 0;
+        std::array<uint32_t, kTitleRuntimeSlotCount> generations{};
+        generations[TitleRuntimeSlotIndex(GameTitle::Halo3)] =
+            g_halo3RuntimeGeneration.load(std::memory_order_acquire);
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
-        const bool odst =
-            g_odstRuntimeGeneration.load(std::memory_order_acquire) != 0;
-        if (halo3 == odst)
-            return GameTitle::None;
-        return halo3 ? GameTitle::Halo3 : GameTitle::Halo3ODST;
-#else
-        return halo3 ? GameTitle::Halo3 : GameTitle::None;
+        generations[TitleRuntimeSlotIndex(GameTitle::Halo3ODST)] =
+            g_odstRuntimeGeneration.load(std::memory_order_acquire);
 #endif
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+        generations[TitleRuntimeSlotIndex(GameTitle::HaloReach)] =
+            ReachRetainedRuntimeGeneration();
+#endif
+        // Halo 4's slot joins here in the candidate that installs its camera
+        // core (C-H4-3); until then its generation is structurally zero.
+        return RetainedRuntimeTitleFromGenerations(generations);
     }
 
     TitleAdapterRuntimeSnapshot RuntimeSnapshot(uint64_t nowMs)
@@ -16479,6 +16488,11 @@ namespace
             static_cast<uint8_t>(
                 ReachVehicleCameraBindingState::StockFallback)};
     } g_reachCamera;
+
+    uint32_t ReachRetainedRuntimeGeneration()
+    {
+        return g_reachCamera.generation.load(std::memory_order_acquire);
+    }
     // High 32 bits are the title-module generation; low 32 bits are the
     // ReachVehicleInputState value. One atomic publication prevents the input
     // thread from combining a new generation with an old vehicle result.

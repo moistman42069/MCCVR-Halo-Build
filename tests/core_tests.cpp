@@ -4215,6 +4215,27 @@ int main()
                     TitleRuntimeHeartbeatWindowMs(TitleRuntimeSlotTitle(slot));
         Check(heartbeatWindowsMirrorTable,
             "the built heartbeat policy mirrors the window table slot for slot");
+        bool retainedTruthTable = true;
+        for (uint32_t mask = 0; mask < (1u << kTitleRuntimeSlotCount); ++mask)
+        {
+            std::array<uint32_t, kTitleRuntimeSlotCount> generations{};
+            size_t nonzeroCount = 0;
+            size_t nonzeroSlot = 0;
+            for (size_t slot = 0; slot < kTitleRuntimeSlotCount; ++slot)
+            {
+                if ((mask & (uint32_t{1} << slot)) == 0)
+                    continue;
+                generations[slot] = static_cast<uint32_t>(slot) + 7u;
+                ++nonzeroCount;
+                nonzeroSlot = slot;
+            }
+            const GameTitle expected = nonzeroCount == 1
+                ? TitleRuntimeSlotTitle(nonzeroSlot) : GameTitle::None;
+            retainedTruthTable = retainedTruthTable &&
+                RetainedRuntimeTitleFromGenerations(generations) == expected;
+        }
+        Check(retainedTruthTable,
+            "over all 64 generation combinations the retained runtime title is the unique nonzero-generation title, else None (H3-only stays Halo3, H3+ODST stays None)");
     }
 
     {

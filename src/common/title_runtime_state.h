@@ -178,6 +178,27 @@ constexpr TitleRuntimeHeartbeatPolicy MakeTitleRuntimeHeartbeatPolicy()
     return policy;
 }
 
+// The pending-ownership retention title, from the per-slot camera-core
+// install generations (nonzero from install to teardown - NOT the module
+// residency generations, which are nonzero for every resident DLL). Exactly
+// one nonzero generation retains its title through the 100 ms
+// post-transition grace; zero or multiple fail closed to None, matching the
+// established Halo 3 + ODST rule.
+constexpr GameTitle RetainedRuntimeTitleFromGenerations(
+    const std::array<uint32_t, kTitleRuntimeSlotCount>& generations) noexcept
+{
+    GameTitle retained = GameTitle::None;
+    for (size_t slot = 0; slot < kTitleRuntimeSlotCount; ++slot)
+    {
+        if (generations[slot] == 0)
+            continue;
+        if (retained != GameTitle::None)
+            return GameTitle::None;
+        retained = TitleRuntimeSlotTitle(slot);
+    }
+    return retained;
+}
+
 // Fixed storage only. Publications are generation tagged, and snapshots use
 // double-generation reads so data from a departed/reloaded title cannot become
 // another title's state. PublishHeartbeat is suitable for a hot camera hook:
