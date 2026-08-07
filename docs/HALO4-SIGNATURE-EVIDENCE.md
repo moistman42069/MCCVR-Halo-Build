@@ -503,6 +503,15 @@ check.
 
 ### C-H4-5 — pick Halo 4's scene target by watching a whole eye (BUILT 2026-08-07, headset-PENDING)
 
+| Identity | Value |
+| --- | --- |
+| Source | `89b89efbed581f9b303f513ba88c0d489ec4681d` (branch `feature/halo4-bringup`) |
+| Candidate package | `out/candidates/89b89ef-reach-fp-parity-20260807-153209741Z` |
+| `halo3xr.dll` SHA-256 | `72CE654FEAA1B8D23F0F68D9C0E506D15AD7FD9CE893975506EB57A3CD71B49E` |
+| Installed editions | Steam and Microsoft Store; both hashes verified independently after install |
+| Preserved priors | `out/deploy-backups/fd97617-steam-before-89b89ef-...`, `...-store-before-89b89ef-...` |
+| Headset result | **PENDING** |
+
 No camera-core change again; C-H4-3's per-eye rendering has now been correct in
 two separate runs, on two different runtimes and headsets.
 
