@@ -431,6 +431,16 @@ submitting native per-eye FOV; eye 1 cover 54.0/55.0 deg`.
 
 ### C-H4-4 — identify Halo 4's scene target, and never present a black headset (BUILT 2026-08-07, headset-PENDING)
 
+| Identity | Value |
+| --- | --- |
+| Source | `68daa2730be1ff7c4ff37221d143f10b9425396d` (branch `feature/halo4-bringup`) |
+| Candidate package | `out/candidates/68daa27-reach-fp-parity-20260807-145817666Z` |
+| `halo3xr.dll` SHA-256 | `FD976175D1B2BC9899CEBBE7866561056AD0ECEA2819DCA86D406C4C596306BE` |
+| `halo3xr_launcher.exe` SHA-256 | `930BEA232BFC3F8010BC2B385834DEBF796CD3DBEC02ECD0E8475E0DE8A72CE6` |
+| Installed editions | Steam and Microsoft Store; both DLL hashes verified independently after install |
+| Preserved priors | `out/deploy-backups/9afe77e-steam-before-68daa27-...`, `...-store-before-68daa27-...` |
+| Headset result | **PENDING** |
+
 Three changes, no camera-core change: C-H4-3's camera work is proven by its own
 run and is left exactly as it is.
 
