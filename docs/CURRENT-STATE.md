@@ -1,6 +1,6 @@
 # Current state
 
-Authoritative as of 2026-08-06. This file is the only active accepted-build
+Authoritative as of 2026-08-07. This file is the only active accepted-build
 pointer. Detailed pre-cleanup experiments remain available in Git history; they
 are evidence, not instructions.
 
@@ -139,16 +139,42 @@ the *negative* result, that arming the registry row was inert.
 
 **Open on this line - do not treat as covered:**
 
-- The accepted Halo 4 window is ~68 s and menu-heavy. **No Halo 4 level-load or
-  level-exit cycle was exercised**, so the load-bounce gate is unproven for
-  this title. It belongs to C-H4-2, behind the level-load gate.
-- The pinned identity is still `NOT yet verified against the loaded image` by
-  construction - nothing in `halo4.dll` is read, not even PE headers. C-H4-2's
-  preflight is what verifies it.
+- On this accepted C-H4-1 line, the ~68 s window is menu-heavy and **no Halo 4
+  level-load or level-exit cycle was exercised**. The later unaccepted C-H4-2
+  run did log-verify the load gate and loaded-image identity; that evidence does
+  not retroactively change C-H4-1's accepted behavior.
+- On C-H4-1, the pinned identity is `NOT yet verified against the loaded image`
+  by construction - nothing in `halo4.dll` is read, not even PE headers. The
+  later C-H4-2 preflight closed that evidence gap on its own unaccepted line.
 - Everything on the `f4c641f` baseline and the 0.3.3 line carries forward.
 
 Per-candidate evidence, the full log citation and the cross-title regression
 datapoints are in `docs/HALO4-SIGNATURE-EVIDENCE.md` under "Candidate status".
+
+### Installed forward ledger — NOT accepted; C-H4-1 remains the rollback pointer
+
+The installed files can be newer than the accepted pointer. That is the case
+now: C-H4-7 is installed in both editions for a geometry-only headset test, but
+**none of C-H4-2 through C-H4-7 advances C-H4-1**.
+
+| Candidate | Result / status |
+| --- | --- |
+| C-H4-2 `3656da9` | Level-load gate and loaded-image cold observation log-verified PASS; explicit acceptance and repeat exit/reload remain pending. |
+| C-H4-3 `2987dc2` | **FAILED:** wrapper replay ran but all eyes were uncaptured, `layers=0`, black headset; no head-pose read. |
+| C-H4-4 `68daa27` | **FAILED:** captured the wrong deferred target; unlit scene without lighting/shadows/post/HUD. |
+| C-H4-5 `89b89ef` | **FAILED / user rejected:** lit distinct eyes and sustained `layers=1`, but malformed 3D/FOV, no head tracking/6DOF/HUD. |
+| C-H4-6 `4fc3c84` | **FAILED:** zero completed pairs, visible stall/title bounce, wrong FOV representation, and wrong outer-function return ABI. Behavior reverted by `7d58a68`. |
+| C-H4-7 `dbf1382` | **INSTALLED, HEADSET-PENDING:** stock-projection exact-serial stereo geometry only. Head tracking, 6DOF, and HUD are intentionally absent until later milestones. |
+
+| C-H4-7 installed identity | Value |
+| --- | --- |
+| Source | `dbf1382219907c514dcd80650e43d6829821c8b3` |
+| Package | `out/candidates/dbf1382-halo4-c7-stock-geometry-20260807-173743014Z` |
+| `halo3xr.dll` SHA-256 | `7A7E1448BC38405943C5F20F3C7E4E6340B01AE58B54A6C0C0623FBADD2C0C0E` |
+| `halo3xr_launcher.exe` SHA-256 | `81BD9A7BECEA92EDA586D1A82A2D570F7728846CEDCF8BB25849EA0E50F6C021` |
+| Installed editions | Steam and Microsoft Store; package and both installed DLL/launcher hashes independently matched |
+| Preserved failed C-H4-6 installs | `out/deploy-backups/a6488b4-steam-before-dbf1382-20260807-173743858Z`, `...-store-before-dbf1382-20260807-173743858Z` |
+| Acceptance | **Not accepted.** Test Halo 4 geometry at 90 Hz first, then run the required Halo 3 regression before this pointer can move. |
 
 ## SUPERSEDED AS BASELINE, STILL THE PUBLISHED RELEASE: MCC VR Alpha 0.3.3 - 2026-08-06
 

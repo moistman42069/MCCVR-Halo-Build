@@ -810,6 +810,17 @@ runtime proof.
 
 ### C-H4-7 — stock-projection exact-serial stereo geometry (OFFLINE-PASS 2026-08-07; headset-PENDING)
 
+| Identity | Value |
+| --- | --- |
+| Source | `dbf1382219907c514dcd80650e43d6829821c8b3` (branch `feature/halo4-bringup`) |
+| Build | Clean Release x64, preset `release`, ODST ON, Reach ON, ReachRender ON, Halo4 ON |
+| Candidate package | `out/candidates/dbf1382-halo4-c7-stock-geometry-20260807-173743014Z` |
+| `halo3xr.dll` SHA-256 | `7A7E1448BC38405943C5F20F3C7E4E6340B01AE58B54A6C0C0623FBADD2C0C0E` |
+| `halo3xr_launcher.exe` SHA-256 | `81BD9A7BECEA92EDA586D1A82A2D570F7728846CEDCF8BB25849EA0E50F6C021` |
+| Installed editions | Steam and Microsoft Store; package and both installed DLL/launcher hashes independently matched |
+| Preserved failed C-H4-6 installs | `out/deploy-backups/a6488b4-steam-before-dbf1382-20260807-173743858Z`, `...-store-before-dbf1382-20260807-173743858Z` |
+| Headset result | **PENDING** — package manifest is explicitly unaccepted; C-H4-1 remains the accepted pointer |
+
 **One player-visible claim:** the C-H4-5 lit scene pair has sane, mutually
 consistent stereo geometry when Halo 4's own FOV inputs and finished projection
 are left authoritative. This candidate does not apply the HMD midpoint's
@@ -844,8 +855,8 @@ capture, with these measured invariants:
    Only repeated, actual eye-capture misses may trip C-H4-5's loud flat fallback.
 
 Offline verification passed: Release configure/build, `core_tests`, and the
-Reach consistency gate. The exact source/package/DLL identity is recorded after
-the clean package step rather than invented in advance.
+Reach consistency gate. The clean package step repeated all three before
+creating and installing the exact identity recorded above.
 
 **Geometry-only headset pass.** Test at 90 Hz first so the separately open
 120-Hz pacing tail cannot confound the result. With the head held near center,

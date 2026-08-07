@@ -600,7 +600,19 @@
     "C-H4-7": {
       "title": "stock-projection exact-serial stereo geometry",
       "status": "OFFLINE_PASS_HEADSET_PENDING",
-      "identity_recording": "source/package/DLL hashes are filled only after the clean commit is packaged and installed",
+      "source_commit": "dbf1382219907c514dcd80650e43d6829821c8b3",
+      "dll_sha256": "7A7E1448BC38405943C5F20F3C7E4E6340B01AE58B54A6C0C0623FBADD2C0C0E",
+      "launcher_sha256": "81BD9A7BECEA92EDA586D1A82A2D570F7728846CEDCF8BB25849EA0E50F6C021",
+      "candidate_package": "out/candidates/dbf1382-halo4-c7-stock-geometry-20260807-173743014Z",
+      "editions_installed": [
+        "Steam",
+        "Microsoft Store"
+      ],
+      "install_verified": "package and both installed DLL/launcher hashes independently matched; MCC remained closed; config unchanged",
+      "preserved_failed_c_h4_6_installs": [
+        "out/deploy-backups/a6488b4-steam-before-dbf1382-20260807-173743858Z",
+        "out/deploy-backups/a6488b4-store-before-dbf1382-20260807-173743858Z"
+      ],
       "behavior": "eye separation/cant only on the sustained setup+wrapper boundary; stock H4 FOV inputs and finished projection authoritative",
       "expected_absent": [
         "HMD head rotation",
