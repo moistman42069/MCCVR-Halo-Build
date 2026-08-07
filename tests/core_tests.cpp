@@ -5841,8 +5841,9 @@ int main()
     }
 
     // ---- C-H4-3: the camera anchors and the per-eye camera math ----
-    Check(kHalo4CameraAnchorCount == 4,
-        "C-H4-3 pins exactly the four E-H4-6 camera anchors");
+    Check(kHalo4CameraAnchorCount == 6,
+        "C-H4-6 pins the four E-H4-6 camera anchors plus main_render_game and "
+        "its call site");
     for (const Halo4RetailAnchor& anchor : kHalo4CameraAnchors)
     {
         size_t tokenBytes = 0;
@@ -5901,6 +5902,14 @@ int main()
               kHalo4ActiveViewRva,
         "The loop and setup anchors derive the SAME stack element, and the "
         "wrapper anchor derives the active-view global");
+    Check(kHalo4CameraAnchors[kHalo4CameraAnchorMainRenderGame].rva ==
+              kHalo4MainRenderGameRva &&
+          kHalo4MainRenderGameReturnRva ==
+              kHalo4MainRenderGameCallRva + 5 &&
+          Halo4MainRenderGameCallAgrees(kHalo4MainRenderGameRva) &&
+          !Halo4MainRenderGameCallAgrees(kHalo4WrapperRva),
+        "The Halo 4 whole-frame eye scope pins main_render_game, its call "
+        "site's 5-byte call and its exact return address");
     Check(kHalo4CameraAnchorRipTargets == 3,
         "Exactly three Halo 4 camera anchors carry rip decodes");
     Check(Halo4CameraLoopTargetsAgree(kHalo4SetupRva, kHalo4WrapperRva) &&
@@ -5923,6 +5932,7 @@ int main()
         static_cast<uint32_t>(kHalo4CameraAnchorCount);
     halo4Install.ripTargetsAtPinnedRva = kHalo4CameraAnchorRipTargets;
     halo4Install.loopCallTargetsAgree = true;
+    halo4Install.mainRenderGameCallAgrees = true;
     halo4Install.executableRange = true;
     halo4Install.mappingStable = true;
     Check(Halo4CameraInstallComplete(halo4Install),
@@ -5948,6 +5958,11 @@ int main()
         broken.loopCallTargetsAgree = false;
         Check(!Halo4CameraInstallComplete(broken),
             "A loop that does not call the two pinned functions refuses the "
+            "hook");
+        broken = halo4Install;
+        broken.mainRenderGameCallAgrees = false;
+        Check(!Halo4CameraInstallComplete(broken),
+            "A main_render_game call site that does not target it refuses the "
             "hook");
         broken = halo4Install;
         broken.executableRange = false;
