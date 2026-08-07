@@ -1,12 +1,15 @@
 # Halo 4 signature evidence
 
-Status: **C-H4-3 built, headset-PENDING — the first Halo 4 hooks exist.** Two
-hooks on the per-window camera transaction (E-H4-6), behind an all-or-nothing
-install proof; everything else in Halo 4 is still stock. This file
-is the proof ledger for every Halo 4 signature, RVA, layout, and hook the
-runtime will consume. Nothing may be hooked, scanned for, or shipped for
-Halo 4 unless its proof is recorded here first. The machine-readable identity
-set lives in `docs/HALO4-EVIDENCE-MANIFEST.json`.
+Status: **C-H4-6 headset-FAILED; C-H4-1 remains the accepted Halo 4 line.**
+C-H4-5 is the last candidate that sustained two captured scene eyes, but it had
+no head pose and no HUD and is not accepted. C-H4-6 widened the eye scope to
+`main_render_game`; the exact run completed zero pairs, stalled the visible
+game, and proved that the engine overwrote the requested camera before setup.
+That behavior must be reverted before the next candidate. This file is the
+proof ledger for every Halo 4 signature, RVA, layout, and hook the runtime will
+consume. Nothing may be hooked, scanned for, or shipped for Halo 4 unless its
+proof is recorded here first. The machine-readable identity set lives in
+`docs/HALO4-EVIDENCE-MANIFEST.json`.
 
 The template for this file is `docs/REACH-SIGNATURE-EVIDENCE.md` — Reach is
 the only other proven new-engine-branch port. Halo 4 is a third distinct
@@ -662,7 +665,7 @@ Scoping the eye here also **simplifies** the core: setup runs naturally inside
 each call, so nothing has to re-invoke it, and the observer substitution is a
 single write before the engine rebuilds its own window records.
 
-### C-H4-6 — head tracking, 6DOF and a HUD-inclusive eye (BUILT 2026-08-07, headset-PENDING)
+### C-H4-6 — head tracking, 6DOF and a HUD-inclusive eye (HEADSET-FAILED 2026-08-07)
 
 | Identity | Value |
 | --- | --- |
@@ -671,7 +674,9 @@ single write before the engine rebuilds its own window records.
 | `halo3xr.dll` SHA-256 | `A6488B4DC15323372BB1D7F93FD55F2323D3A08C5F09E580500A2C0E9915FA90` |
 | Installed editions | Steam and Microsoft Store; both hashes verified independently after install |
 | Preserved priors | `out/deploy-backups/72ce654-steam-before-4fc3c84-...`, `...-store-before-4fc3c84-...` |
-| Headset result | **PENDING** |
+| Headset result | **FAILED** — zero completed stereo pairs, camera `NOT TAKING`, and a visible game stall after the first eye |
+| Preserved evidence | `out/test-runs/4fc3c84-halo4-c6-steamvr-failed-20260807-112043` |
+| Preserved log SHA-256 | `4BF4992E18A92ACE266AF26D4A4115642348D7C0E6B9B8F2D945175FB5955D4A` |
 
 **The defect this fixes was a hole in C-H4-3, not a tuning problem.** The user
 reported *"its not even 6dof the ground follows my head"*, *"the fov is
@@ -713,6 +718,36 @@ diagnostic = wrong mechanism" rule exist to prevent.
 **Expected headset result.** Halo 4 with real head tracking and 6DOF - looking
 around moves the view and the world stays put - stereo depth, the headset's
 FOV, and the HUD present. The `Halo 4 stereo:` line should read `TOOK`.
+
+**RESULT: FAILED, and the whole C-H4-6 behavior must be reverted before the
+next candidate.** Steam edition, SteamVR/OpenXR 2.17.6, PSVR2 at 120 Hz; the
+Halo 4 window began at `11:20:19`, and the first owned attempt began at
+`11:20:26`. The first log line names source `4fc3c84`, so these are the intended
+bytes.
+
+1. The level-load gate, loaded-image proof and six camera anchors all passed.
+   The engine's live camera also confirmed the expected Z-up basis, and the
+   headset pose was available: the core logged its `-77.2` degree recenter.
+2. The widened transaction never completed one pair. It reached the first
+   learning eye and only the beginning of the second, then the runtime mode
+   bounced `unsupported -> shell`; one second later the stall watchdog reported
+   that the visible headset was holding the last submitted frame. Every later
+   interval reported **0 owned pairs**.
+3. The new readback caught the mechanism exactly: requested tangents stayed at
+   `1.8418/1.3290`, while the engine held its stock `1.4361/1.2077` and reported
+   `NOT TAKING` on every sample. Writing the observer before
+   `main_render_game` is too early; code inside that function rebuilds or
+   replaces it before the proven setup call consumes it.
+4. E-H4-7 still proves that `main_render_game` contains the UI bracket. It does
+   **not** prove that this stateful whole-frame function is re-callable twice.
+   This run is the negative runtime proof: using it as the eye loop both loses
+   the camera substitution and stalls the title.
+
+The recovery point is C-H4-5's sustained per-window wrapper transaction, not a
+new tuning guess. The next player-visible candidate may add head pose and 6DOF
+inside that already-running transaction, with post-setup camera readback. HUD
+capture remains a separate later feature and must not widen the render scope
+again without its own engine boundary and runtime proof.
 
 ## Deliberate decision: groundhog.dll stays out of the registry (D-H4-5)
 
