@@ -185,7 +185,8 @@ add_library(halo3xr SHARED
     src/dll/input.cpp
     src/dll/title_adapter.cpp
     src/dll/reach_adapter.cpp
-    src/dll/halo4_adapter.cpp)
+    src/dll/halo4_adapter.cpp
+    src/dll/halo4_cold_observation.cpp)
 target_include_directories(halo3xr PRIVATE
     ${HALOMCCVR_GENERATED_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src/dll

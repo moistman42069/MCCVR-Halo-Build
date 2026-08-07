@@ -248,6 +248,68 @@ transport line, and the pinned-identity line. Halo 3, ODST and Reach are
 untouched by construction — the only shared-code edit is the additive
 `else if` branch in the poll's unsupported-title reporting.
 
+### C-H4-2 — level-load gate + cold observation (headset-PENDING)
+
+**One behavior, stated plainly: Halo 4 stops being a title nothing checks.**
+It joins the level-load gate the other three titles already use, and once
+that gate proves a level is actually running, the mod verifies — exactly once
+per module instance, read-only — that the `halo4.dll` in memory is the build
+this repository's evidence describes. **No hook is created, no camera is
+owned, nothing is written into the game.**
+`Halo4Adapter_RuntimeHooksPermitted()` stays `false`.
+
+**Why the gate half is not cosmetic.** Before this candidate, the worker's
+gate `switch` had no `Halo4` case, so `activeLevelRunning` kept its
+initialiser of `true` for the whole Halo 4 session. Two things then ran
+against a module that might still be loading a level: the draw-distance
+reassert, which resolves `render_far_clip_distance` by a whole-module name
+scan and **writes** it, and the process-wide safe-frame publication. That is
+precisely the "touch nothing while a level loads" invariant that
+`docs/ODST-LEVEL-LOAD-LOCKOUT.md` records eight bounced loads for. Halo 4 was
+outside it by omission. (Halo CE and Halo 2 still take the `default` branch
+and keep their pre-existing behavior; they have no adapter work and are out
+of scope here.)
+
+**What the cold observation measures**, all against the loaded image and all
+from the 50 ms title worker — never from Present or a render callback:
+
+1. the module size equals the pinned `SizeOfImage`;
+2. the loaded PE headers carry the pinned machine, timestamp and image size;
+3. each of the four E-H4-4 anchors matches **exactly once** in the loaded
+   image (a second match anywhere fails the anchor, as it should);
+4. each anchor sits at its pinned RVA;
+5. the three anchors carrying a RIP displacement **decode** to their pinned
+   data anchors — the constructor's `lea` to the player-view array
+   `0x30AD1C0`, and push and pop independently to the same
+   `g_view_stack_top` `0xE84634`;
+6. the module is still mapped at the same base after the scan.
+
+Anything short of all six logs a named FAIL and changes nothing. The verdict
+function is pure data (`Halo4ColdObservationPass`) so `core_tests` can prove
+each field fails closed on its own, and the anchor table is validated
+offline: every pattern parses, every RIP offset indexes bytes inside its own
+match, and the named indices bind the constructor to the array and push/pop
+to one stack top.
+
+**Ordering that is load-bearing, not incidental.** The preflight takes a
+refcount pin and scans the whole image. Both are touches. It therefore runs
+only on a tick where the gate was actually sampled *and* reported the level
+running, and it is **withheld entirely when the gate failed open** — a gate
+that could not resolve the player-view array cannot see the module's loading
+state, and that is exactly the stale-evidence case where scanning is least
+justified. The withholding is logged. A failed pin does **not** consume the
+one attempt; it retries, because a permanently-consumed attempt on a
+transient loader race is how the level-load gate's own one-shot defect hid
+for two builds.
+
+**Expected headset result.** Halo 4 still plays entirely stock and still
+renders flat — that is the design, not a shortfall. What is new is in the
+log: a `Halo 4 level-load gate:` line, and one `Halo 4 cold observation
+PASS`/`FAIL`/`WITHHELD` line. **This is the candidate that finally exercises
+a Halo 4 level load and level exit**, which C-H4-1's ~68 s menu-heavy window
+never did. Halo 3, ODST and Reach are untouched by construction: the gate
+change is additive per-title, and the observation is Halo 4-only.
+
 ## Deliberate decision: groundhog.dll stays out of the registry (D-H4-5)
 
 Recorded 2026-08-06, per the plan's skip option. `groundhog.dll` (Halo 2

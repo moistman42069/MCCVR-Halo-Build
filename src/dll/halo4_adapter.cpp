@@ -16,10 +16,13 @@ namespace
 
 Halo4AdapterStage Halo4Adapter_GetStage()
 {
-    // C-H4-1: shared virtual-controller transport only. This grants no engine
-    // hook of any kind - see Halo4Adapter_RuntimeHooksPermitted below, which
-    // stays false until C-H4-3 carries a proven camera core.
-    return Halo4AdapterStage::ControllerInputOnly;
+    // C-H4-2: the C-H4-1 virtual-controller transport, plus the Halo 4
+    // level-load gate and the one-shot cold observation that verifies the
+    // pinned identity and the E-H4-4 anchors against the loaded image. This
+    // still grants no engine hook of any kind - see
+    // Halo4Adapter_RuntimeHooksPermitted below, which stays false until
+    // C-H4-3 carries a proven camera core.
+    return Halo4AdapterStage::ControllerInputAndColdObservation;
 }
 
 const Halo4EvidenceIdentity& Halo4Adapter_GetEvidenceIdentity()

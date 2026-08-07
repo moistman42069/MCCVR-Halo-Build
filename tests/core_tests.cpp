@@ -5712,10 +5712,124 @@ int main()
     const Halo4EvidenceIdentity& halo4Identity =
         Halo4Adapter_GetEvidenceIdentity();
     const TitleDescriptor* halo4Row = TitleRegistry_Find(GameTitle::Halo4);
-    Check(Halo4Adapter_GetStage() == Halo4AdapterStage::ControllerInputOnly,
-        "C-H4-1 stages Halo 4 at shared virtual-controller transport only");
+    Check(Halo4Adapter_GetStage() ==
+              Halo4AdapterStage::ControllerInputAndColdObservation,
+        "C-H4-2 stages Halo 4 at controller transport plus cold observation");
     Check(!Halo4Adapter_RuntimeHooksPermitted(),
         "No Halo 4 runtime hook is permitted before a proven camera core");
+
+    // C-H4-2 anchor table: every entry must be well-formed offline, because
+    // the runtime scan trusts its shape (docs/HALO4-SIGNATURE-EVIDENCE.md
+    // E-H4-4 records each pattern's on-disk uniqueness proof; the offline
+    // grammar here is deliberately STRICTER than sig::Find's - uppercase hex
+    // and '??' only - so a house-style violation fails before it ships).
+    Check(kHalo4RetailAnchorCount == 4,
+        "C-H4-2 pins exactly the four E-H4-4 anchors");
+    for (const Halo4RetailAnchor& anchor : kHalo4RetailAnchors)
+    {
+        Check(anchor.name && anchor.name[0] && anchor.pattern &&
+                  anchor.pattern[0] != '?' &&
+                  anchor.rva != 0 && anchor.rva < kHalo4RetailImageSize,
+            "Every Halo 4 anchor names itself, starts concrete, and pins an "
+            "in-image RVA");
+        size_t tokenBytes = 0;
+        bool tokensValid = true;
+        const char* p = anchor.pattern;
+        while (*p)
+        {
+            if (*p == ' ') { ++p; continue; }
+            const char a = p[0];
+            const char b = p[1];
+            const bool wild = a == '?' && b == '?';
+            const bool hex =
+                ((a >= '0' && a <= '9') || (a >= 'A' && a <= 'F')) &&
+                ((b >= '0' && b <= '9') || (b >= 'A' && b <= 'F'));
+            if ((!wild && !hex) || (p[2] != ' ' && p[2] != '\0'))
+            {
+                tokensValid = false;
+                break;
+            }
+            ++tokenBytes;
+            p += 2;
+        }
+        Check(tokensValid && tokenBytes >= 12,
+            "Every Halo 4 anchor pattern parses and is long enough to be "
+            "meaningfully unique");
+        // A rip decode must index bytes the pattern actually matched, and
+        // must aim at a real in-image data anchor.
+        Check(anchor.ripDispOffset == 0 ||
+                  (static_cast<size_t>(anchor.ripDispOffset) + 4 <=
+                       tokenBytes &&
+                   anchor.ripTargetRva != 0 &&
+                   anchor.ripTargetRva < kHalo4RetailImageSize),
+            "Every Halo 4 rip decode stays inside its own match and lands "
+            "in-image");
+    }
+    Check(kHalo4PlayerViewArrayRva == 0x30AD1C0u &&
+              kHalo4PlayerViewStride == 0xAD0u &&
+              kHalo4ViewStackTopRva == 0xE84634u,
+        "The Halo 4 data anchors pin E-H4-4's array, stride, and stack top");
+    Check(kHalo4PlayerViewArrayRva +
+                  4ull * kHalo4PlayerViewStride <= kHalo4RetailImageSize &&
+              kHalo4ViewStackTopRva + 4u <= kHalo4RetailImageSize,
+        "The Halo 4 array span and stack top fit inside the pinned image");
+    // The named indices are part of the contract: the level-load gate reuses
+    // the ctor pattern by index, and push/pop must cross-check on ONE stack
+    // top.
+    Check(kHalo4RetailAnchors[kHalo4AnchorCtor].ripDispOffset == 0x0D &&
+              kHalo4RetailAnchors[kHalo4AnchorCtor].ripTargetRva ==
+                  kHalo4PlayerViewArrayRva &&
+              kHalo4RetailAnchors[kHalo4AnchorPush].ripTargetRva ==
+                  kHalo4ViewStackTopRva &&
+              kHalo4RetailAnchors[kHalo4AnchorPop].ripTargetRva ==
+                  kHalo4ViewStackTopRva &&
+              kHalo4RetailAnchors[kHalo4AnchorClamp].ripDispOffset == 0,
+        "The Halo 4 anchor indices bind ctor->array, push/pop->stack top, "
+        "clamp->no decode");
+    Check(kHalo4RetailAnchorRipTargets == 3,
+        "Exactly three Halo 4 anchors carry rip decodes");
+
+    // C-H4-2 verdict truth table: complete observations pass, and each
+    // degraded field fails closed on its own.
+    Halo4ColdObservationResult halo4Cold{};
+    halo4Cold.moduleRangeValid = true;
+    halo4Cold.peIdentity = true;
+    halo4Cold.anchorsMatchedOnce =
+        static_cast<uint32_t>(kHalo4RetailAnchorCount);
+    halo4Cold.anchorsAtPinnedRva =
+        static_cast<uint32_t>(kHalo4RetailAnchorCount);
+    halo4Cold.ripTargetsAtPinnedRva = kHalo4RetailAnchorRipTargets;
+    halo4Cold.mappingStable = true;
+    Check(Halo4ColdObservationPass(halo4Cold),
+        "A complete Halo 4 cold observation passes");
+    {
+        Halo4ColdObservationResult broken = halo4Cold;
+        broken.moduleRangeValid = false;
+        Check(!Halo4ColdObservationPass(broken),
+            "A wrong Halo 4 module size fails the cold observation closed");
+        broken = halo4Cold;
+        broken.peIdentity = false;
+        Check(!Halo4ColdObservationPass(broken),
+            "A wrong Halo 4 PE identity fails the cold observation closed");
+        broken = halo4Cold;
+        broken.anchorsMatchedOnce -= 1;
+        Check(!Halo4ColdObservationPass(broken),
+            "A missing or duplicated Halo 4 anchor fails the cold "
+            "observation closed");
+        broken = halo4Cold;
+        broken.anchorsAtPinnedRva -= 1;
+        Check(!Halo4ColdObservationPass(broken),
+            "A moved Halo 4 anchor fails the cold observation closed");
+        broken = halo4Cold;
+        broken.ripTargetsAtPinnedRva -= 1;
+        Check(!Halo4ColdObservationPass(broken),
+            "A Halo 4 rip decode off its pinned target fails the cold "
+            "observation closed");
+        broken = halo4Cold;
+        broken.mappingStable = false;
+        Check(!Halo4ColdObservationPass(broken),
+            "A remapped halo4.dll fails the cold observation closed");
+    }
     Check(halo4Row && halo4Row->admissionCapabilities ==
               TitleCapability_ControllerInput,
         "Halo 4 admits shared controller input and nothing else");

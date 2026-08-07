@@ -33,7 +33,9 @@
 #include "../common/halo3_vehicle_logic.h"
 #include "../common/hud_layout_logic.h"
 #include "../common/input_logic.h"
+#include "../common/halo4_render_logic.h"
 #include "../common/level_load_gate_logic.h"
+#include "halo4_cold_observation.h"
 #include "../common/odst_bringup_logic.h"
 #include "../common/odst_vehicle_logic.h"
 #include "../common/scope_logic.h"
@@ -489,6 +491,16 @@ namespace
         "48 89 5C 24 08 57 48 83 EC 20 48 8D 1D ?? ?? ?? ?? "
         "BF 04 00 00 00 48 8B CB E8 ?? ?? ?? ?? 48 81 C3 40 0A 00 00 "
         "48 83 EF 01 75 ?? 48 8B 5C 24 30", 0x0A40};
+    // Halo 4: stride 0xAD0, array +0x30AD1C0 (E-H4-4, byte-proven against
+    // the pinned retail module; the constructor is the same four-slot shape
+    // as the other three titles, and the adjacent six-slot constructor of
+    // identical shape at +0x22A88 is why the stride bytes stay pinned).
+    // The pattern is the SAME string C-H4-2's cold observation verifies, on
+    // purpose: a future byte fix updates the one anchor table and both the
+    // gate and the observation follow, instead of drifting apart.
+    const PlayerViewArrayEvidence kHalo4PlayerViewArray = {
+        kHalo4RetailAnchors[kHalo4AnchorCtor].pattern,
+        kHalo4PlayerViewStride};
 
     uintptr_t ResolvePlayerViewArray(
         uintptr_t base, size_t size, const PlayerViewArrayEvidence& evidence)
@@ -616,6 +628,13 @@ namespace
             return !kLevelLoadGateEnabled || !m_array || m_logic.IsOpen();
         }
 
+        // Whether the last AllowsInstall resolved the player-view array. A
+        // consumer that must distinguish "the gate PROVED the level running"
+        // from "the gate failed open on unprovable evidence" asks this: on a
+        // fail-open, IsOpen() is true while the gate cannot actually see the
+        // module's loading state.
+        bool ArrayProven() const { return m_array != 0; }
+
     private:
         // FREEZE, THEN TICK. A plain "has it changed?" test is not enough, and
         // the user's own observation is what exposed the hole: the bug happens
@@ -720,6 +739,7 @@ namespace
     PlayerViewLivenessGate g_halo3LevelLoadGate;
     PlayerViewLivenessGate g_odstLevelLoadGate;
     PlayerViewLivenessGate g_reachLevelLoadGate;
+    PlayerViewLivenessGate g_halo4LevelLoadGate;
 
     // TOUCH NOTHING WHILE A LEVEL LOADS (2026-08-06). The gate stopped us
     // INSTALLING into a loading screen, and the user still had to load twice.
@@ -29115,6 +29135,13 @@ namespace
             // path double-consumes a sample. See the gate declaration for why
             // the invariant is "touch nothing", not merely "install nothing".
             bool activeLevelRunning = true;
+            // Captured by the Halo 4 gate case so the cold observation below
+            // reuses the SAME module range and only ever runs on a tick the
+            // gate actually sampled: if the range query failed, the gate
+            // never ran and activeLevelRunning is only its fail-open default.
+            uintptr_t halo4GateBase = 0;
+            size_t halo4GateSize = 0;
+            bool halo4GateSampled = false;
             if (activeTitle)
             {
                 uintptr_t gateBase = 0;
@@ -29144,6 +29171,26 @@ namespace
                                 gateGeneration, gateBase,
                                 kReachRetailImageSize,
                                 kReachPlayerViewArray, "Reach");
+                        break;
+                    case GameTitle::Halo4:
+                        // C-H4-2: Halo 4 joins the level-load gate. Before
+                        // this case existed, the default left
+                        // activeLevelRunning TRUE for Halo 4, so the
+                        // draw-distance debug-var name scan below touched
+                        // halo4.dll even during its loading screens - the
+                        // exact touch the load-bounce rule forbids. Gating
+                        // Halo 4 closes that pre-existing hole; hooks remain
+                        // hard-off regardless. (Halo CE and Halo 2 still take
+                        // the default and keep the pre-existing behavior;
+                        // they have no adapter work and are out of C-H4-2's
+                        // scope.)
+                        activeLevelRunning =
+                            g_halo4LevelLoadGate.AllowsInstall(
+                                gateGeneration, gateBase, gateSize,
+                                kHalo4PlayerViewArray, "Halo 4");
+                        halo4GateBase = gateBase;
+                        halo4GateSize = gateSize;
+                        halo4GateSampled = true;
                         break;
                     default:
                         break;
@@ -29191,6 +29238,37 @@ namespace
                     reachLevelRunning);
             }
 #endif
+            {
+                const bool halo4Active = activeTitle &&
+                    activeTitle->title == GameTitle::Halo4;
+                // Gate lifecycle first, independent of the observation below
+                // (C-H4-3 may replace the observation; this re-arm must
+                // outlive it). Same title-exit re-arm as the other three
+                // titles: stillness observed while Halo 4 is not the active
+                // title must never satisfy the frozen half of the NEXT
+                // level's proof. The condition is the exact complement of
+                // the gate-sample condition in the switch above, so a
+                // sampled tick is never also a re-armed tick.
+                if (!halo4Active)
+                    g_halo4LevelLoadGate.Rearm();
+                // C-H4-2: Halo 4 cold observation. Verifies the pinned
+                // identity and the E-H4-4 anchors against the loaded image,
+                // once per module instance, only on a tick the gate sampled
+                // AND proved the level running (the preflight takes a short
+                // refcount pin and scans the whole image - touches that must
+                // never hit a loading module, and that a fail-open gate
+                // cannot vouch for). Read-only either way; Halo 4 hooks stay
+                // hard-off.
+                else if (halo4GateSampled && activeLevelRunning)
+                {
+                    const uint32_t halo4Generation =
+                        TitleAdapter_GetGeneration(GameTitle::Halo4);
+                    if (Halo4ColdObservation_Pending(halo4Generation))
+                        Halo4ColdObservation_Poll(
+                            halo4GateBase, halo4GateSize, halo4Generation,
+                            true, g_halo4LevelLoadGate.ArrayProven());
+                }
+            }
             // Snapshot resolution is deliberately side-effect free so render
             // and input callers cannot log. The worker owns fallback-mode
             // publication when no title render path is publishing a mode.

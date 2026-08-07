@@ -6,6 +6,9 @@ enum class Halo4AdapterStage : uint8_t
 {
     Disabled = 0,
     ControllerInputOnly,
+    // C-H4-2: ControllerInputOnly plus the level-load gate and the one-shot
+    // loaded-image identity/anchor preflight. Still no hook of any kind.
+    ControllerInputAndColdObservation,
 };
 
 struct Halo4EvidenceIdentity
