@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -129,4 +130,303 @@ constexpr bool Halo4ColdObservationPass(const Halo4ColdObservationResult& r)
         r.anchorsAtPinnedRva == kHalo4RetailAnchorCount &&
         r.ripTargetsAtPinnedRva == kHalo4RetailAnchorRipTargets &&
         r.mappingStable;
+}
+
+// ===========================================================================
+// E-H4-6: the per-window camera transaction, retail-anchored 2026-08-07.
+// Proof: docs/HALO4-SIGNATURE-EVIDENCE.md, section E-H4-6. Every RVA below was
+// derived three independent ways that agree - the per-window loop's own rel32
+// decodes, each function's entry signature, and the converter's copy map - and
+// every pattern was measured to match EXACTLY ONCE over the pinned .text.
+// ===========================================================================
+
+// The per-window loop body inside main_render_game (fn 0x12259C-0x123115). It
+// marshals all six setup arguments, calls setup, writes the first-window flag,
+// then calls the inner wrapper. Anchoring the loop rather than the callees is
+// what proves the ABI: its three displacements decode to the two functions we
+// hook and to the element they publish.
+inline constexpr uint32_t kHalo4PerWindowLoopRva = 0x122CA6;
+// Byte offsets of the three displacements inside that pattern.
+inline constexpr uint32_t kHalo4LoopSetupRel32Offset = 0x1E;
+inline constexpr uint32_t kHalo4LoopElementRipOffset = 0x38;
+inline constexpr uint32_t kHalo4LoopWrapperRel32Offset = 0x3D;
+
+// The producer. setup(view, window, count, mode, user, observer*) writes the
+// rasterizer camera, the projection, the render pair and the constant bank in
+// ONE straight-line call - so per-eye state must be substituted before it, not
+// after it (E-H4-5's beta-1 boundary).
+inline constexpr uint32_t kHalo4SetupRva = 0x374C84;
+// The render transaction: set-current, push, render, pop, clear.
+// wrapper(element, view, window).
+inline constexpr uint32_t kHalo4WrapperRva = 0x1222F4;
+// The observer -> camera converter's copy map. Not hooked; its bytes are the
+// layout proof for the observer offsets below.
+inline constexpr uint32_t kHalo4ConverterCopyRva = 0x38F074;
+// g_player_view_stack_element - the single camera-bearing object the wrapper
+// pushes, and the destination setup writes every camera artifact into.
+inline constexpr uint32_t kHalo4StackElementRva = 0x10DAFE0;
+// The active c_player_view* the wrapper sets and clears.
+inline constexpr uint32_t kHalo4ActiveViewRva = 0x4969AA0;
+
+// s_observer_result layout, proven by the converter's copy map at 0x38F074:
+//   [rdx+0x00] -> element+0x00 (position)   [rdx+0x28] -> +0x0C (forward)
+//   [rdx+0x34] -> element+0x18 (up)         [rdx+0x78] -> +0x28 (tangent X)
+//   [rdx+0x7C] -> element+0x2C (tangent Y)
+// This is the ONE block a per-eye substitution has to own.
+inline constexpr uint32_t kHalo4ObserverPositionOffset = 0x00;
+inline constexpr uint32_t kHalo4ObserverForwardOffset = 0x28;
+inline constexpr uint32_t kHalo4ObserverUpOffset = 0x34;
+inline constexpr uint32_t kHalo4ObserverTangentXOffset = 0x78;
+inline constexpr uint32_t kHalo4ObserverTangentYOffset = 0x7C;
+// Saved and restored around the whole stereo transaction. 0x80 covers every
+// field the converter reads plus the +0x44..+0x5C block setup copies onto the
+// view element right after it (0x374D65-0x374D7A).
+inline constexpr uint32_t kHalo4ObserverSnapshotBytes = 0x80;
+
+// c_player_view fields setup writes (0x374E7A-0x374E99), which let the wrapper
+// detour recover setup's own arguments without re-deriving the TLS chain.
+inline constexpr uint32_t kHalo4ViewWindowIndexOffset = 0x38C;
+inline constexpr uint32_t kHalo4ViewWindowCountOffset = 0x390;
+inline constexpr uint32_t kHalo4ViewModeOffset = 0x394;
+inline constexpr uint32_t kHalo4ViewOutputUserOffset = 0x39C;
+inline constexpr uint32_t kHalo4ViewFirstWindowFlagOffset = 0x389;
+
+inline constexpr size_t kHalo4CameraAnchorLoop = 0;
+inline constexpr size_t kHalo4CameraAnchorSetup = 1;
+inline constexpr size_t kHalo4CameraAnchorWrapper = 2;
+inline constexpr size_t kHalo4CameraAnchorConverter = 3;
+
+// Reuses Halo4RetailAnchor so the cold observation's proven matcher validates
+// this table with no new scanning code.
+inline constexpr Halo4RetailAnchor kHalo4CameraAnchors[] = {
+    // The loop body. Its lea displacement decodes to the stack element; the two
+    // rel32s are checked separately by Halo4CameraLoopTargetsAgree below,
+    // because a Halo4RetailAnchor carries only one displacement.
+    { "per-window-camera-loop",
+      "48 8B 47 08 48 89 44 24 28 8B 07 89 44 24 20 44 8B 4C 24 50 "
+      "45 8B C7 8B 57 10 49 8B CD E8 ?? ?? ?? ?? 85 F6 0F 94 C0 "
+      "41 88 85 89 03 00 00 44 8B 47 10 49 8B D5 48 8D 0D ?? ?? ?? ?? "
+      "E8 ?? ?? ?? ??",
+      kHalo4PerWindowLoopRva, kHalo4LoopElementRipOffset,
+      kHalo4StackElementRva },
+    // Setup's entry. Its lea r13 displacement decodes to the same stack
+    // element the loop's lea does - an independent second derivation.
+    { "player-view-setup-entry",
+      "48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 50 "
+      "48 8B D9 0F 29 74 24 40 4C 8D 2D ?? ?? ?? ?? 49 63 E8",
+      kHalo4SetupRva, 0x1F, kHalo4StackElementRva },
+    // The wrapper's entry. Its displacement decodes to the active-view global.
+    { "player-view-wrapper-entry",
+      "48 89 5C 24 08 48 89 7C 24 10 41 56 48 83 EC 20 48 8B FA "
+      "48 89 15 ?? ?? ?? ?? 48 8D 15 ?? ?? ?? ?? 41 8B D8 E8",
+      kHalo4WrapperRva, 0x16, kHalo4ActiveViewRva },
+    // The converter's copy map: the literal instructions that read the observer
+    // offsets this file pins. If the layout ever moves, this stops matching.
+    { "observer-camera-copy-map",
+      "F2 0F 10 42 28 F2 0F 11 43 0C 8B 42 30 89 43 14 "
+      "F2 0F 10 42 34 F2 0F 11 43 18 8B 42 3C 89 43 20 "
+      "F3 0F 10 42 78 F3 0F 11 43 28 F3 0F 10 72 7C F3 0F 11 73 2C",
+      kHalo4ConverterCopyRva, 0, 0 },
+};
+
+inline constexpr size_t kHalo4CameraAnchorCount =
+    sizeof(kHalo4CameraAnchors) / sizeof(kHalo4CameraAnchors[0]);
+
+constexpr uint32_t Halo4CameraAnchorRipTargetCount()
+{
+    uint32_t count = 0;
+    for (const Halo4RetailAnchor& anchor : kHalo4CameraAnchors)
+        if (anchor.ripDispOffset != 0)
+            ++count;
+    return count;
+}
+
+inline constexpr uint32_t kHalo4CameraAnchorRipTargets =
+    Halo4CameraAnchorRipTargetCount();
+
+// The loop's own two rel32 call targets must be the functions we are about to
+// hook. This is the edge that makes the hook a proven caller relationship
+// rather than two addresses that merely matched a pattern.
+constexpr bool Halo4CameraLoopTargetsAgree(
+    uint32_t setupTargetRva, uint32_t wrapperTargetRva)
+{
+    return setupTargetRva == kHalo4SetupRva &&
+        wrapperTargetRva == kHalo4WrapperRva;
+}
+
+// Everything the camera core proves before it creates a single hook. Pure data
+// so core_tests can prove each field fails closed on its own.
+struct Halo4CameraInstallProof
+{
+    bool coldObservationPassed = false; // C-H4-2's identity+anchor preflight
+    uint32_t anchorsMatchedOnce = 0;
+    uint32_t anchorsAtPinnedRva = 0;
+    uint32_t ripTargetsAtPinnedRva = 0;
+    bool loopCallTargetsAgree = false;  // the loop calls setup and the wrapper
+    bool executableRange = false;       // both hook sites inside .text
+    bool mappingStable = false;
+};
+
+constexpr bool Halo4CameraInstallComplete(const Halo4CameraInstallProof& p)
+{
+    return p.coldObservationPassed &&
+        p.anchorsMatchedOnce == kHalo4CameraAnchorCount &&
+        p.anchorsAtPinnedRva == kHalo4CameraAnchorCount &&
+        p.ripTargetsAtPinnedRva == kHalo4CameraAnchorRipTargets &&
+        p.loopCallTargetsAgree && p.executableRange && p.mappingStable;
+}
+
+// ---------------------------------------------------------------------------
+// Per-eye camera math. Allocation-free, engine-free and exhaustively testable:
+// the hot detour does nothing here that core_tests cannot reproduce offline.
+// ---------------------------------------------------------------------------
+
+struct Halo4CameraBasis
+{
+    float position[3]{};
+    float forward[3]{};
+    float up[3]{};
+    float tangentX = 0.0f;
+    float tangentY = 0.0f;
+};
+
+// Rejects anything the engine could not have produced, so a torn or
+// mid-transition observer read can never become a rendered eye.
+inline bool Halo4ValidateCameraBasis(const Halo4CameraBasis& basis) noexcept
+{
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        if (!std::isfinite(basis.position[axis]) ||
+            !std::isfinite(basis.forward[axis]) ||
+            !std::isfinite(basis.up[axis]))
+        {
+            return false;
+        }
+    }
+    const float forwardLengthSquared =
+        basis.forward[0] * basis.forward[0] +
+        basis.forward[1] * basis.forward[1] +
+        basis.forward[2] * basis.forward[2];
+    const float upLengthSquared =
+        basis.up[0] * basis.up[0] + basis.up[1] * basis.up[1] +
+        basis.up[2] * basis.up[2];
+    // Halo keeps these unit length; accept a generous band rather than an
+    // exact compare so ordinary float drift is not read as corruption.
+    return forwardLengthSquared > 0.5f && forwardLengthSquared < 2.0f &&
+        upLengthSquared > 0.5f && upLengthSquared < 2.0f;
+}
+
+// The symmetric frustum that covers an asymmetric OpenXR eye. Halo 4 stores one
+// tangent pair per camera, so the raster has to cover the widest side of each
+// axis; the compositor is told the cover through Game_GetRenderHalfFovs and
+// samples the part it needs. Angles are OpenXR's (left<0, right>0, up>0,
+// down<0).
+inline bool Halo4SymmetricCoverFromFov(
+    const float fov[4], float& tangentX, float& tangentY) noexcept
+{
+    if (!fov)
+        return false;
+    for (int i = 0; i < 4; ++i)
+        if (!std::isfinite(fov[i]))
+            return false;
+    const float halfHorizontal = fov[1] > -fov[0] ? fov[1] : -fov[0];
+    const float halfVertical = fov[2] > -fov[3] ? fov[2] : -fov[3];
+    constexpr float kMaximumHalfAngle = 1.5533f; // ~89 degrees
+    if (halfHorizontal <= 0.0f || halfHorizontal >= kMaximumHalfAngle ||
+        halfVertical <= 0.0f || halfVertical >= kMaximumHalfAngle)
+    {
+        return false;
+    }
+    tangentX = std::tan(halfHorizontal);
+    tangentY = std::tan(halfVertical);
+    return std::isfinite(tangentX) && std::isfinite(tangentY) &&
+        tangentX > 0.0f && tangentY > 0.0f;
+}
+
+inline void Halo4RotateAboutAxis(
+    float vector[3], const float axis[3], float cosAngle,
+    float sinAngle) noexcept
+{
+    const float dot =
+        axis[0] * vector[0] + axis[1] * vector[1] + axis[2] * vector[2];
+    const float cross[3] = {
+        axis[1] * vector[2] - axis[2] * vector[1],
+        axis[2] * vector[0] - axis[0] * vector[2],
+        axis[0] * vector[1] - axis[1] * vector[0]};
+    for (int i = 0; i < 3; ++i)
+    {
+        vector[i] = vector[i] * cosAngle + cross[i] * sinAngle +
+            axis[i] * dot * (1.0f - cosAngle);
+    }
+}
+
+// Displaces and cants the mono camera into one eye. eyePosition/eyeOrientation
+// are this eye's offset from the stereo midpoint in OpenXR view axes
+// (+X right, +Y up, -Z forward); worldScale converts meters to world units.
+// The cant is applied because a headset whose panels are angled outward reports
+// its FOV around that canted axis - rendering both eyes straight ahead leaves
+// the outer lens edge uncovered.
+inline bool Halo4BuildEyeCamera(
+    const Halo4CameraBasis& mono, const float eyePosition[3],
+    const float* eyeOrientation, float worldScale, float tangentX,
+    float tangentY, Halo4CameraBasis& out) noexcept
+{
+    if (!Halo4ValidateCameraBasis(mono) || !eyePosition ||
+        !std::isfinite(worldScale) || worldScale <= 0.0f ||
+        !std::isfinite(tangentX) || !std::isfinite(tangentY) ||
+        tangentX <= 0.0f || tangentY <= 0.0f)
+    {
+        return false;
+    }
+    for (int axis = 0; axis < 3; ++axis)
+        if (!std::isfinite(eyePosition[axis]))
+            return false;
+
+    const float right[3] = {
+        mono.forward[1] * mono.up[2] - mono.forward[2] * mono.up[1],
+        mono.forward[2] * mono.up[0] - mono.forward[0] * mono.up[2],
+        mono.forward[0] * mono.up[1] - mono.forward[1] * mono.up[0]};
+
+    out = mono;
+    out.tangentX = tangentX;
+    out.tangentY = tangentY;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        out.position[axis] = mono.position[axis] +
+            (right[axis] * eyePosition[0] + mono.up[axis] * eyePosition[1] -
+             mono.forward[axis] * eyePosition[2]) * worldScale;
+    }
+
+    if (eyeOrientation)
+    {
+        bool orientationFinite = true;
+        for (int i = 0; i < 4; ++i)
+            orientationFinite = orientationFinite &&
+                std::isfinite(eyeOrientation[i]);
+        if (orientationFinite)
+        {
+            const float sinHalf = std::sqrt(
+                eyeOrientation[0] * eyeOrientation[0] +
+                eyeOrientation[1] * eyeOrientation[1] +
+                eyeOrientation[2] * eyeOrientation[2]);
+            if (sinHalf > 1.0e-5f)
+            {
+                float angle = 2.0f * std::atan2(sinHalf, eyeOrientation[3]);
+                if (angle > 3.14159265f)
+                    angle -= 6.2831853f; // shortest arc
+                const float ax = eyeOrientation[0] / sinHalf;
+                const float ay = eyeOrientation[1] / sinHalf;
+                const float az = eyeOrientation[2] / sinHalf;
+                const float worldAxis[3] = {
+                    ax * right[0] + ay * mono.up[0] - az * mono.forward[0],
+                    ax * right[1] + ay * mono.up[1] - az * mono.forward[1],
+                    ax * right[2] + ay * mono.up[2] - az * mono.forward[2]};
+                const float cosAngle = std::cos(angle);
+                const float sinAngle = std::sin(angle);
+                Halo4RotateAboutAxis(out.forward, worldAxis, cosAngle, sinAngle);
+                Halo4RotateAboutAxis(out.up, worldAxis, cosAngle, sinAngle);
+            }
+        }
+    }
+    return Halo4ValidateCameraBasis(out);
 }

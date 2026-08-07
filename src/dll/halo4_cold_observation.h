@@ -23,3 +23,10 @@ void Halo4ColdObservation_Poll(
 // module pin does not complete the attempt (it retries); a finished PASS or
 // FAIL verdict does. Lets the worker skip module-range queries once settled.
 bool Halo4ColdObservation_Pending(uint32_t generation) noexcept;
+
+// True only when THIS generation completed its observation with a PASS. Any
+// other state - never run, withheld, failed, or passed on a previous module
+// instance - reports false. C-H4-3's camera core requires this before it may
+// resolve a single signature: a build whose pinned evidence does not describe
+// the loaded image has no business being hooked.
+bool Halo4ColdObservation_Passed(uint32_t generation) noexcept;

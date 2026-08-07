@@ -9,6 +9,10 @@ enum class Halo4AdapterStage : uint8_t
     // C-H4-2: ControllerInputOnly plus the level-load gate and the one-shot
     // loaded-image identity/anchor preflight. Still no hook of any kind.
     ControllerInputAndColdObservation,
+    // C-H4-3: the above plus the per-eye camera core - two hooks on the
+    // proven per-window camera transaction, per-eye substitution at the
+    // observer result. Stereo only; aim, HUD, haptics and IK stay stock.
+    ControllerInputAndStereoCamera,
 };
 
 struct Halo4EvidenceIdentity

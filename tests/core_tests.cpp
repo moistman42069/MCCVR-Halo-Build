@@ -5712,11 +5712,20 @@ int main()
     const Halo4EvidenceIdentity& halo4Identity =
         Halo4Adapter_GetEvidenceIdentity();
     const TitleDescriptor* halo4Row = TitleRegistry_Find(GameTitle::Halo4);
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    Check(Halo4Adapter_GetStage() ==
+              Halo4AdapterStage::ControllerInputAndStereoCamera,
+        "C-H4-3 stages Halo 4 at controller transport plus the camera core");
+    Check(Halo4Adapter_RuntimeHooksPermitted(),
+        "C-H4-3 permits the camera core's hooks; the install proof, not this "
+        "flag, is what actually admits them");
+#else
     Check(Halo4Adapter_GetStage() ==
               Halo4AdapterStage::ControllerInputAndColdObservation,
         "C-H4-2 stages Halo 4 at controller transport plus cold observation");
     Check(!Halo4Adapter_RuntimeHooksPermitted(),
         "No Halo 4 runtime hook is permitted before a proven camera core");
+#endif
 
     // C-H4-2 anchor table: every entry must be well-formed offline, because
     // the runtime scan trusts its shape (docs/HALO4-SIGNATURE-EVIDENCE.md
@@ -5829,6 +5838,206 @@ int main()
         broken.mappingStable = false;
         Check(!Halo4ColdObservationPass(broken),
             "A remapped halo4.dll fails the cold observation closed");
+    }
+
+    // ---- C-H4-3: the camera anchors and the per-eye camera math ----
+    Check(kHalo4CameraAnchorCount == 4,
+        "C-H4-3 pins exactly the four E-H4-6 camera anchors");
+    for (const Halo4RetailAnchor& anchor : kHalo4CameraAnchors)
+    {
+        size_t tokenBytes = 0;
+        bool tokensValid = true;
+        const char* p = anchor.pattern;
+        while (*p)
+        {
+            if (*p == ' ') { ++p; continue; }
+            const char a = p[0];
+            const char b = p[1];
+            const bool wild = a == '?' && b == '?';
+            const bool hex =
+                ((a >= '0' && a <= '9') || (a >= 'A' && a <= 'F')) &&
+                ((b >= '0' && b <= '9') || (b >= 'A' && b <= 'F'));
+            if ((!wild && !hex) || (p[2] != ' ' && p[2] != '\0'))
+            {
+                tokensValid = false;
+                break;
+            }
+            ++tokenBytes;
+            p += 2;
+        }
+        Check(anchor.name && anchor.name[0] && anchor.pattern &&
+                  anchor.pattern[0] != '?' && anchor.rva != 0 &&
+                  anchor.rva < kHalo4RetailImageSize && tokensValid &&
+                  tokenBytes >= 12,
+            "Every Halo 4 camera anchor names itself, parses, starts concrete "
+            "and pins an in-image RVA");
+        Check(anchor.ripDispOffset == 0 ||
+                  (static_cast<size_t>(anchor.ripDispOffset) + 4 <=
+                       tokenBytes &&
+                   anchor.ripTargetRva != 0 &&
+                   anchor.ripTargetRva < kHalo4RetailImageSize),
+            "Every Halo 4 camera rip decode stays inside its own match and "
+            "lands in-image");
+    }
+    // The loop anchor's three displacements must all index bytes it matched -
+    // a lengthened prefix that did not move these offsets would decode
+    // garbage into a hook address.
+    Check(kHalo4CameraAnchors[kHalo4CameraAnchorLoop].rva ==
+              kHalo4PerWindowLoopRva &&
+          kHalo4CameraAnchors[kHalo4CameraAnchorLoop].ripDispOffset ==
+              kHalo4LoopElementRipOffset &&
+          kHalo4LoopSetupRel32Offset < kHalo4LoopElementRipOffset &&
+          kHalo4LoopElementRipOffset < kHalo4LoopWrapperRel32Offset,
+        "The Halo 4 loop anchor's three displacements are in program order");
+    Check(kHalo4CameraAnchors[kHalo4CameraAnchorSetup].rva ==
+              kHalo4SetupRva &&
+          kHalo4CameraAnchors[kHalo4CameraAnchorSetup].ripTargetRva ==
+              kHalo4StackElementRva &&
+          kHalo4CameraAnchors[kHalo4CameraAnchorLoop].ripTargetRva ==
+              kHalo4StackElementRva &&
+          kHalo4CameraAnchors[kHalo4CameraAnchorWrapper].rva ==
+              kHalo4WrapperRva &&
+          kHalo4CameraAnchors[kHalo4CameraAnchorWrapper].ripTargetRva ==
+              kHalo4ActiveViewRva,
+        "The loop and setup anchors derive the SAME stack element, and the "
+        "wrapper anchor derives the active-view global");
+    Check(kHalo4CameraAnchorRipTargets == 3,
+        "Exactly three Halo 4 camera anchors carry rip decodes");
+    Check(Halo4CameraLoopTargetsAgree(kHalo4SetupRva, kHalo4WrapperRva) &&
+          !Halo4CameraLoopTargetsAgree(kHalo4SetupRva, kHalo4SetupRva) &&
+          !Halo4CameraLoopTargetsAgree(0, kHalo4WrapperRva),
+        "The loop's call-edge check accepts only the two pinned functions");
+    Check(kHalo4ObserverTangentYOffset + 4 <= kHalo4ObserverSnapshotBytes &&
+          kHalo4ObserverUpOffset + 12 <= kHalo4ObserverSnapshotBytes &&
+          kHalo4ObserverForwardOffset + 12 <= kHalo4ObserverUpOffset &&
+          kHalo4ObserverPositionOffset + 12 <= kHalo4ObserverForwardOffset,
+        "Every substituted observer field fits inside the saved snapshot and "
+        "the three vectors do not overlap");
+
+    // The install proof is all-or-nothing: each field fails closed alone.
+    Halo4CameraInstallProof halo4Install{};
+    halo4Install.coldObservationPassed = true;
+    halo4Install.anchorsMatchedOnce =
+        static_cast<uint32_t>(kHalo4CameraAnchorCount);
+    halo4Install.anchorsAtPinnedRva =
+        static_cast<uint32_t>(kHalo4CameraAnchorCount);
+    halo4Install.ripTargetsAtPinnedRva = kHalo4CameraAnchorRipTargets;
+    halo4Install.loopCallTargetsAgree = true;
+    halo4Install.executableRange = true;
+    halo4Install.mappingStable = true;
+    Check(Halo4CameraInstallComplete(halo4Install),
+        "A complete Halo 4 camera install proof admits the hooks");
+    {
+        Halo4CameraInstallProof broken = halo4Install;
+        broken.coldObservationPassed = false;
+        Check(!Halo4CameraInstallComplete(broken),
+            "Halo 4 refuses to hook without C-H4-2's PASS for this module");
+        broken = halo4Install;
+        broken.anchorsMatchedOnce -= 1;
+        Check(!Halo4CameraInstallComplete(broken),
+            "A missing or duplicated Halo 4 camera anchor refuses the hook");
+        broken = halo4Install;
+        broken.anchorsAtPinnedRva -= 1;
+        Check(!Halo4CameraInstallComplete(broken),
+            "A moved Halo 4 camera anchor refuses the hook");
+        broken = halo4Install;
+        broken.ripTargetsAtPinnedRva -= 1;
+        Check(!Halo4CameraInstallComplete(broken),
+            "A Halo 4 camera rip decode off target refuses the hook");
+        broken = halo4Install;
+        broken.loopCallTargetsAgree = false;
+        Check(!Halo4CameraInstallComplete(broken),
+            "A loop that does not call the two pinned functions refuses the "
+            "hook");
+        broken = halo4Install;
+        broken.executableRange = false;
+        Check(!Halo4CameraInstallComplete(broken),
+            "An out-of-image Halo 4 hook site refuses the hook");
+        broken = halo4Install;
+        broken.mappingStable = false;
+        Check(!Halo4CameraInstallComplete(broken),
+            "A remapped halo4.dll refuses the Halo 4 camera hook");
+    }
+
+    // The symmetric cover must take the WIDER side of each asymmetric axis;
+    // taking the narrower one is how an eye gets a black outer border.
+    {
+        float tanX = 0.0f;
+        float tanY = 0.0f;
+        const float asymmetric[4] = {-0.9f, 0.7f, 0.8f, -1.0f};
+        Check(Halo4SymmetricCoverFromFov(asymmetric, tanX, tanY) &&
+                  fabsf(tanX - tanf(0.9f)) < 1e-5f &&
+                  fabsf(tanY - tanf(1.0f)) < 1e-5f,
+            "The Halo 4 symmetric cover takes the wider half of each axis");
+        const float degenerate[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        Check(!Halo4SymmetricCoverFromFov(degenerate, tanX, tanY),
+            "A zero Halo 4 FOV is refused rather than rasterized");
+        const float absurd[4] = {-1.6f, 1.6f, 1.6f, -1.6f};
+        Check(!Halo4SymmetricCoverFromFov(absurd, tanX, tanY),
+            "A past-90-degree Halo 4 half angle is refused");
+    }
+
+    // Per-eye displacement: identity basis, so the eye offset must appear on
+    // the world axes unchanged, scaled by world units per meter.
+    {
+        Halo4CameraBasis mono{};
+        mono.forward[0] = 1.0f;   // +X forward
+        mono.up[2] = 1.0f;        // +Z up  => right = forward x up = -Y
+        mono.position[0] = 10.0f;
+        mono.tangentX = 1.0f;
+        mono.tangentY = 1.0f;
+        Check(Halo4ValidateCameraBasis(mono),
+            "A unit Halo 4 camera basis validates");
+
+        const float eyePosition[3] = {0.032f, 0.0f, 0.0f}; // 32 mm right
+        Halo4CameraBasis eye{};
+        Check(Halo4BuildEyeCamera(mono, eyePosition, nullptr, 0.33f, 1.0f,
+                                  1.2f, eye),
+            "Halo 4 builds an eye camera from a valid basis");
+        Check(fabsf(eye.position[0] - 10.0f) < 1e-6f &&
+                  fabsf(eye.position[1] - (-0.032f * 0.33f)) < 1e-6f &&
+                  fabsf(eye.position[2]) < 1e-6f,
+            "The Halo 4 eye offset lands on the camera's own right axis, "
+            "scaled to world units");
+        Check(fabsf(eye.tangentX - 1.0f) < 1e-6f &&
+                  fabsf(eye.tangentY - 1.2f) < 1e-6f,
+            "The Halo 4 eye camera carries the requested cover tangents");
+        Check(fabsf(eye.forward[0] - 1.0f) < 1e-6f &&
+                  fabsf(eye.up[2] - 1.0f) < 1e-6f,
+            "A null Halo 4 eye orientation leaves the basis uncanted");
+
+        // A +90 degree yaw about the eye's own up axis turns the view LEFT.
+        // The camera's right axis here is -Y, so left is +Y: forward must land
+        // on +Y and up must be unchanged. This is what proves the cant is
+        // applied in the camera's basis rather than in world axes.
+        const float quarterTurnAboutUp[4] = {
+            0.0f, 0.70710678f, 0.0f, 0.70710678f};
+        Halo4CameraBasis canted{};
+        Check(Halo4BuildEyeCamera(mono, eyePosition, quarterTurnAboutUp, 0.33f,
+                                  1.0f, 1.0f, canted) &&
+                  fabsf(canted.forward[1] - 1.0f) < 1e-5f &&
+                  fabsf(canted.forward[0]) < 1e-5f &&
+                  fabsf(canted.up[2] - 1.0f) < 1e-5f,
+            "A Halo 4 eye cant rotates forward about the camera's own up axis");
+
+        // Fail-closed inputs.
+        Halo4CameraBasis rejected{};
+        Halo4CameraBasis degenerate = mono;
+        degenerate.forward[0] = 0.0f;
+        Check(!Halo4ValidateCameraBasis(degenerate) &&
+                  !Halo4BuildEyeCamera(degenerate, eyePosition, nullptr, 0.33f,
+                                       1.0f, 1.0f, rejected),
+            "A zero-length Halo 4 forward vector is refused");
+        Halo4CameraBasis infinite = mono;
+        infinite.position[1] = std::numeric_limits<float>::infinity();
+        Check(!Halo4ValidateCameraBasis(infinite),
+            "A non-finite Halo 4 camera position is refused");
+        Check(!Halo4BuildEyeCamera(mono, eyePosition, nullptr, 0.0f, 1.0f,
+                                   1.0f, rejected) &&
+                  !Halo4BuildEyeCamera(mono, eyePosition, nullptr, 0.33f, 0.0f,
+                                       1.0f, rejected),
+            "A zero world scale or zero tangent is refused rather than "
+            "rendered");
     }
     Check(halo4Row && halo4Row->admissionCapabilities ==
               TitleCapability_ControllerInput,

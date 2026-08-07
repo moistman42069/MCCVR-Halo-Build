@@ -17,6 +17,10 @@ namespace
     uintptr_t g_attemptedBase = 0;
     uint32_t g_attemptedGeneration = 0;
     bool g_attempted = false;
+    // The PASS verdict, tagged with the generation that earned it, so a later
+    // module instance can never inherit an earlier instance's proof.
+    uint32_t g_passedGeneration = 0;
+    bool g_passed = false;
     // One-time log throttles; retries stay silent.
     uint32_t g_withheldLoggedGeneration = 0;
     uint32_t g_pinFailLoggedGeneration = 0;
@@ -102,6 +106,11 @@ namespace
 bool Halo4ColdObservation_Pending(uint32_t generation) noexcept
 {
     return !(g_attempted && g_attemptedGeneration == generation);
+}
+
+bool Halo4ColdObservation_Passed(uint32_t generation) noexcept
+{
+    return generation != 0 && g_passed && g_passedGeneration == generation;
 }
 
 void Halo4ColdObservation_Poll(
@@ -205,6 +214,9 @@ void Halo4ColdObservation_Poll(
     }
 
     result.mappingStable = pin.IsCurrent(moduleBase);
+
+    g_passed = Halo4ColdObservationPass(result);
+    g_passedGeneration = g_passed ? generation : 0;
 
     if (Halo4ColdObservationPass(result))
     {

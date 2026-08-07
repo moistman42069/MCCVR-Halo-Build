@@ -64,8 +64,24 @@ set(HALOMCCVR_BUILD_REACH "ON")
 set(HALOMCCVR_BUILD_REACH_RENDER "ON")
 message(STATUS
     "Halo MCC VR: Halo: Reach is permanent with all-or-nothing gated ownership")
+
+# Halo 4 bring-up C-H4-3: the per-eye camera core. Like Reach's, it is
+# all-or-nothing at runtime - it installs nothing unless C-H4-2's cold
+# observation PASSED for the live module and every E-H4-6 camera anchor is
+# unique at its pinned RVA - so the compile flag exists only to isolate an
+# unaccepted title, not to gate correctness. OFF returns Halo 4 to the accepted
+# C-H4-2 behavior (recognised, gamepad transport, flat).
+option(HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    "Enable the Halo 4 per-eye camera core (C-H4-3)" ON)
+if(HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA)
+    set(HALOMCCVR_BUILD_HALO4 "ON")
+    message(STATUS "Halo MCC VR: Halo 4 per-eye camera core enabled (C-H4-3)")
+else()
+    set(HALOMCCVR_BUILD_HALO4 "OFF")
+endif()
+
 message(STATUS
-    "Halo MCC VR build identity: ${HALOMCCVR_BUILD_COMMIT}, ODST=${HALOMCCVR_BUILD_ODST}, Reach=${HALOMCCVR_BUILD_REACH}, ReachRender=${HALOMCCVR_BUILD_REACH_RENDER}")
+    "Halo MCC VR build identity: ${HALOMCCVR_BUILD_COMMIT}, ODST=${HALOMCCVR_BUILD_ODST}, Reach=${HALOMCCVR_BUILD_REACH}, ReachRender=${HALOMCCVR_BUILD_REACH_RENDER}, Halo4=${HALOMCCVR_BUILD_HALO4}")
 
 # Exact dependency commits used by the accepted release source. Shallow clones
 # avoid pulling entire third-party histories into the ignored build tree.
@@ -202,10 +218,12 @@ target_compile_definitions(halo3xr PRIVATE
     HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP=$<BOOL:${HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP}>
     HALOMCCVR_EXPERIMENTAL_REACH_BRINGUP=$<BOOL:${HALOMCCVR_EXPERIMENTAL_REACH_BRINGUP}>
     HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE=$<BOOL:${HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE}>
+    HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA=$<BOOL:${HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA}>
     HALOMCCVR_BUILD_COMMIT="${HALOMCCVR_BUILD_COMMIT}"
     HALOMCCVR_BUILD_ODST="${HALOMCCVR_BUILD_ODST}"
     HALOMCCVR_BUILD_REACH="${HALOMCCVR_BUILD_REACH}"
-    HALOMCCVR_BUILD_REACH_RENDER="${HALOMCCVR_BUILD_REACH_RENDER}")
+    HALOMCCVR_BUILD_REACH_RENDER="${HALOMCCVR_BUILD_REACH_RENDER}"
+    HALOMCCVR_BUILD_HALO4="${HALOMCCVR_BUILD_HALO4}")
 target_link_libraries(halo3xr PRIVATE
     openxr_loader minhook imgui_lib
     d3d11 dxgi d3dcompiler)
@@ -262,7 +280,8 @@ if(BUILD_TESTING)
         UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
         HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP=$<BOOL:${HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP}>
         HALOMCCVR_EXPERIMENTAL_REACH_BRINGUP=$<BOOL:${HALOMCCVR_EXPERIMENTAL_REACH_BRINGUP}>
-        HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE=$<BOOL:${HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE}>)
+        HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE=$<BOOL:${HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE}>
+        HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA=$<BOOL:${HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA}>)
     add_test(NAME halomccvr_core_tests COMMAND halomccvr_core_tests)
 endif()
 

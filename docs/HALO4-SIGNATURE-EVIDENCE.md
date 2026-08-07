@@ -1,6 +1,8 @@
 # Halo 4 signature evidence
 
-Status: **Phase 0 — identities pinned, no runtime bindings exist.** This file
+Status: **C-H4-3 built, headset-PENDING — the first Halo 4 hooks exist.** Two
+hooks on the per-window camera transaction (E-H4-6), behind an all-or-nothing
+install proof; everything else in Halo 4 is still stock. This file
 is the proof ledger for every Halo 4 signature, RVA, layout, and hook the
 runtime will consume. Nothing may be hooked, scanned for, or shipped for
 Halo 4 unless its proof is recorded here first. The machine-readable identity
@@ -363,6 +365,96 @@ PASS`/`FAIL`/`WITHHELD` line. **This is the candidate that finally exercises
 a Halo 4 level load and level exit**, which C-H4-1's ~68 s menu-heavy window
 never did. Halo 3, ODST and Reach are untouched by construction: the gate
 change is additive per-title, and the observation is Halo 4-only.
+
+### C-H4-3 — the per-eye camera core (BUILT 2026-08-07, headset-PENDING)
+
+**The candidate that puts Halo 4 in stereo.** It is the first Halo 4 hook of
+any kind. Everything below is what the code does and what proves it; **no
+headset has run it yet**, so nothing here is a result.
+
+**One behavior: Halo 4 renders the scene twice per frame, once per eye, from
+two cameras the engine derives itself.**
+
+**The design, and why it is smaller than Reach's.** E-H4-5 proved that Halo 4
+produces every camera artifact — rasterizer camera, projection, render pair
+and constant bank — inside ONE straight-line setup call per window, so writing
+the published element afterwards is stale by construction. Rather than rebuild
+those four artifacts per eye the way Reach must, this core substitutes setup's
+**input** and re-runs the engine's own unmodified producer:
+
+1. hook setup `0x374C84` purely to capture its six arguments at the one proven
+   call site;
+2. hook the render wrapper `0x1222F4`; inside it, per eye — write that eye's
+   camera into the observer result, call the engine's own setup through the
+   trampoline, call the engine's own render transaction through the
+   trampoline, capture the eye;
+3. restore the observer bytes and run setup once more, so the UI bracket that
+   follows the loop in `main_render_game` sees the mono camera it expects.
+
+Nothing on our side computes a projection, a render pair or a constant bank.
+Halo 4 does, twice.
+
+**What must be true before a single hook is created** (all of it, or Halo 4
+stays stock and flat, loudly):
+
+- C-H4-2's cold observation **PASSED for this exact module generation** — a
+  new base or generation re-earns it;
+- all four E-H4-6 camera anchors match **exactly once** in the loaded image
+  and at their pinned RVAs;
+- their three rip decodes land on their pinned data anchors, with the loop and
+  setup independently deriving the **same** element `0x10DAFE0`;
+- the per-window loop's own two `call` instructions target the two functions
+  being hooked — the edge that makes this a proven caller relationship rather
+  than two addresses that matched a pattern;
+- both hook sites are in-image and `halo4.dll` is still mapped at the observed
+  base;
+- the install is all-or-nothing: a failed second `MH_CreateHook` or a failed
+  `MH_EnableHook` backs the first one out.
+
+**Per-transaction gates, every frame.** The wrapper detour renders stock
+unless the core is armed, the caller's return address is exactly `0x122CE7`,
+the element argument is exactly the pinned `0x10DAFE0`, the window index is 0
+(a split-screen guest keeps its flat render), and the immediately preceding
+setup call was for this same view and window. The observer read/write is
+SEH-guarded, the camera basis is validated for finiteness and unit length
+before it is used, and a failed eye pair falls back to one stock render while
+the core stays armed — a single bad frame never drops the player out of VR.
+
+**FOV.** Halo 4 stores one tangent pair per camera, so the raster uses a
+symmetric cover taken as the wider half of each axis across both eyes, and
+`Game_GetRenderHalfFovs` reports that cover to the compositor through the
+existing shared path.
+
+**Capabilities published: `Stereo` and `ControllerInput` only.** Aim, HUD,
+haptics, room-scale locomotion, IK and the cutscene theatre are deliberately
+NOT published — none has Halo 4 evidence, and publishing one would switch on
+shared code that has never run in this title.
+
+**The three things most likely to be wrong, named in advance.**
+
+1. **Eye capture may not find Halo 4's scene target.** `VR_RedirectRenderTargets`
+   learns the scene-colour RTV by Halo 3's shape (the unique full-resolution
+   `R8G8B8A8_TYPELESS` target at slot 0 carrying RTV+SRV+UAV). Whether Halo 4's
+   renderer presents that shape is **unverified**. If it does not, the game
+   renders twice and neither eye is captured. The log separates that case
+   explicitly: `Halo 4 stereo:` reports owned pairs, stock windows **and
+   uncaptured eyes** every two seconds, so "not rendering twice" and "rendering
+   twice, capturing nothing" cannot be confused.
+2. **Temporal passes may cross-contaminate the eyes.** Running setup twice per
+   frame rebuilds the constant bank twice; any previous-frame bank or history
+   buffer Halo 4 keeps will now see two cameras per frame. This is the same
+   hazard that produced Reach's effects eye-desync. The bank builder's
+   prev-bank copy internals are recorded as undissected in E-H4-5 and were not
+   opened for this candidate.
+3. **Cost.** The scene is rendered twice at `resolution_scale`, which is the
+   inherent cost of stereo in every title here and was measured as the
+   dominant frame cost on the `f4c641f` baseline.
+
+**Expected headset result.** Halo 4 enters a level and turns stereo on about a
+second after the level-load gate opens, with head tracking and 6DOF, the same
+as the other three titles. Halo 3, ODST and Reach are untouched by
+construction: every edit is inside `#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA`
+or a Halo 4-only branch, and the Reach parity gate passes.
 
 ## Deliberate decision: groundhog.dll stays out of the registry (D-H4-5)
 
@@ -839,3 +931,115 @@ must behave in menus.
 written, what derives from it, and where a per-eye substitution must land.
 The hook itself is C-H4-3's business and needs its own candidate with its own
 proofs.
+
+### E-H4-6: the two hook sites, their ABI, and setup's re-callability (PROVEN 2026-08-07)
+
+The evidence C-H4-3 consumes. E-H4-5 said *where* a per-eye camera must be
+substituted; this entry pins *what to hook*, *how to call it*, and the one
+property that makes the β1 design legal at all — that setup can be invoked
+more than once in a frame. Measured against the pinned Steam `halo4.dll`
+(SHA-256 `7C53E7D5…0C34FA84`, preflight PASS before any read) with
+`tools/h4-probes/rdis.py`; static file analysis only, no process touched.
+
+**The whole per-window loop body, byte-quoted at `0x122CA6`.** This is the
+single anchor the candidate resolves; everything else follows from its own
+displacements.
+
+```
+00122CA6  48 8B 47 08              mov  rax,[rdi+8]        ; observer result
+00122CAA  48 89 44 24 28           mov  [rsp+0x28],rax     ; arg6 = observer*
+00122CAF  8B 07                    mov  eax,[rdi]          ; output_user_index
+00122CB1  89 44 24 20              mov  [rsp+0x20],eax     ; arg5 = user
+00122CB5  44 8B 4C 24 50           mov  r9d,[rsp+0x50]     ; arg4 = mode
+00122CBA  45 8B C7                 mov  r8d,r15d           ; arg3 = count
+00122CBD  8B 57 10                 mov  edx,[rdi+0x10]     ; arg2 = window
+00122CC0  49 8B CD                 mov  rcx,r13            ; arg1 = view
+00122CC3  E8 BC 1F 25 00           call 0x374C84           ; SETUP
+00122CC8  85 F6 / 0F 94 C0         test esi,esi / sete al  ; window == 0
+00122CCA
+00122CCD  41 88 85 89 03 00 00     mov  [r13+0x389],al      ; first-window flag
+00122CD4  44 8B 47 10              mov  r8d,[rdi+0x10]     ; window
+00122CD8  49 8B D5                 mov  rdx,r13            ; view
+00122CDB  48 8D 0D FE 82 FB 00     lea  rcx,[rip+0xFB82FE] ; -> 0x10DAFE0
+00122CE2  E8 0D F6 FF FF           call 0x1222F4           ; WRAPPER
+```
+
+`rdi` is the 0x20-byte window record E-H4-5 described (`+0x00` user, `+0x08`
+observer result, `+0x10` window index, `+0x18` view) and `r13` is that
+record's `view`, loaded at `0x122C44`. So:
+
+| Callee | Retail ABI, measured at the call site |
+| --- | --- |
+| setup `0x374C84` | `(rcx=view, edx=window, r8d=count, r9d=mode, [rsp+0x20]=user, [rsp+0x28]=observer*)` |
+| wrapper `0x1222F4` | `(rcx=element `0x10DAFE0`, rdx=view, r8d=window)` |
+
+Confirmed inside each callee rather than only at the call site: setup's
+prologue moves `rcx` into `rbx` and writes `[rbx+0x3A4]`/`[rbx+0x3A8]`/
+`[rbx+0x398]`, loads its own `r13 = lea [rip+0xD66339] = 0x10DAFE0`, and reads
+its sixth argument as `mov rdi,[rsp+0xB8]` — which is exactly `entry_rsp+0x30`
+after seven pushes and `sub rsp,0x50`. The wrapper's prologue moves `rdx` into
+`rdi` and stores it to `0x4969AA0`, and keeps `r8d` in `ebx`.
+
+**Both hook targets have EXACTLY ONE caller, and it is this loop.** A
+whole-image xref scan returns one hit for each (`0x122CC3` → setup,
+`0x122CE2` → wrapper). That is what lets each detour additionally require its
+exact retail return address (`0x122CC8` and `0x122CE7`) before it may claim a
+transaction, and it means our own re-invocations through the MinHook
+trampolines can never re-enter a detour.
+
+**The observer-result layout, from the converter's own instructions**
+(`0x38F066`–`0x38F0A7`, unique in `.text`):
+
+```
+F2 0F 10 02 / F2 0F 11 03    [rdx+0x00] -> [rbx+0x00]   position.xy
+8B 42 08    / 89 43 08       [rdx+0x08] -> [rbx+0x08]   position.z
+F2 0F 10 42 28 / F2 0F 11 43 0C  [rdx+0x28] -> [rbx+0x0C] forward.xy
+8B 42 30    / 89 43 14       [rdx+0x30] -> [rbx+0x14]   forward.z
+F2 0F 10 42 34 / F2 0F 11 43 18  [rdx+0x34] -> [rbx+0x18] up.xy
+8B 42 3C    / 89 43 20       [rdx+0x3C] -> [rbx+0x20]   up.z
+F3 0F 10 42 78 / F3 0F 11 43 28  [rdx+0x78] -> [rbx+0x28] tangent X
+F3 0F 10 72 7C / F3 0F 11 73 2C  [rdx+0x7C] -> [rbx+0x2C] tangent Y
+```
+
+So the observer result carries **position `+0x00`, forward `+0x28`, up
+`+0x34`, tangents `+0x78`/`+0x7C`** — five fields, 0x80 bytes covering all of
+them plus the `+0x44..+0x5C` block setup copies onto the view immediately
+after (`0x374D65`-`0x374D7A`). That block is the entire per-eye substitution
+surface.
+
+**Setup is re-callable within one frame — measured, not assumed.** This is the
+load-bearing property of the β1 design and it was the one real hazard: setup
+contains six in-place `sub`s on the element rect
+(`0x374CE5`-`0x374D0D`, targets `0x10DB014`/`0x10DB016`/`0x10DB018`/
+`0x10DB01A`/`0x10DB01C`/`0x10DB01E`, i.e. element `+0x34`..`+0x3E`), and
+accumulating arithmetic run twice per frame would drift the viewport every
+frame. It does not, because setup's **first** callee `0x38EF78` rewrites that
+rect from scratch on every call:
+
+```
+0038EF86  mov  [rcx+0x44], eax        ; fresh from the frame-dimension globals
+0038EF92  mov  [rcx+0x4A], ax
+...
+0038EFFB  mov  rax,[rbx+0x44] / mov [rbx+0x30], rax    ; +0x44.. -> +0x30..
+0038F003  mov  rax,[rbx+0x4C] / mov [rbx+0x38], rax
+```
+
+The subtrahends `ax`/`r8w` are then re-read from the freshly written
+`+0x30`/`+0x32` (`0x374CCF`, `0x374CDA`). A disassembly-wide scan of setup for
+read-modify-write instructions on rip-relative memory returns **only** those
+six subs, so no other accumulating state exists in the function.
+
+**Signature uniqueness, measured over `.text` of the pinned image.** Four
+patterns, four single matches, and three independent derivations that agree on
+the same two functions:
+
+| Signature | Matches | Derives |
+| --- | --- | --- |
+| the per-window loop body above | **UNIQUE** `0x122CA6` | rel32 → setup `0x374C84`; rip → element `0x10DAFE0`; rel32 → wrapper `0x1222F4` |
+| setup entry `48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 50 48 8B D9 0F 29 74 24 40 4C 8D 2D ?? ?? ?? ?? 49 63 E8` | **UNIQUE** `0x374C84` | rip → element `0x10DAFE0` (agrees with the loop) |
+| wrapper entry `48 89 5C 24 08 48 89 7C 24 10 41 56 48 83 EC 20 48 8B FA 48 89 15 ?? ?? ?? ?? 48 8D 15 ?? ?? ?? ?? 41 8B D8 E8` | **UNIQUE** `0x1222F4` | rip → active view `0x4969AA0` |
+| converter copy map (quoted above) | **UNIQUE** `0x38F074` | the observer offsets themselves |
+
+**Scope.** This admits the two hooks C-H4-3 creates and nothing else. It says
+nothing about Halo 4's render-target shape, its HUD, its aim, or its temporal
+passes.
