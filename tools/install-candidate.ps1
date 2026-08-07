@@ -103,21 +103,42 @@ $repoStatus = @(& git -C $repoRoot status --porcelain=v1 --untracked-files=norma
 if ($LASTEXITCODE -ne 0 -or $repoStatus.Count -ne 0) {
     throw 'Repository is dirty; refusing automatic deployment.'
 }
-if ([int]$manifest.schema_version -ne 7 -or
+if ([int]$manifest.schema_version -ne 8 -or
         [string]$manifest.status -cne 'UNTESTED_LOCAL_CANDIDATE' -or
         $manifest.accepted -ne $false -or
-        [string]$manifest.base_release -cne 'MCC_VR_ALPHA_0.3.1' -or
+        [string]$manifest.base_release -cne 'MCC_VR_ALPHA_0.3.3' -or
+        [string]$manifest.development_baseline -cne
+            'f4c641f7b1b707991f2bda71ba485090a16f1e9a' -or
         [string]$manifest.package_id -cne $packageId -or
         [string]$manifest.source_commit -notmatch '^[0-9a-f]{40}$' -or
         [string]$manifest.source_commit -cne $head -or
         -not $packageId.StartsWith(
             $head.Substring(0, 7) + '-',
             [StringComparison]::Ordinal) -or
+        @($manifest.titles).Count -ne 4 -or
+        [string]$manifest.titles[0] -cne 'Halo 3' -or
+        [string]$manifest.titles[1] -cne 'Halo 3: ODST' -or
+        [string]$manifest.titles[2] -cne 'Halo: Reach' -or
+        [string]$manifest.titles[3] -cne 'Halo 4' -or
         $manifest.embedded_build_identity.source_commit -cne
             $manifest.source_commit -or
         $manifest.embedded_build_identity.odst -ne $true -or
         $manifest.embedded_build_identity.reach -ne $true -or
         $manifest.embedded_build_identity.reach_render -ne $true -or
+        $manifest.embedded_build_identity.halo4 -ne $true -or
+        [string]$manifest.accepted_halo4_identity.candidate -cne 'C-H4-1' -or
+        [string]$manifest.accepted_halo4_identity.source_commit -cne
+            '954359b7f786b78c76824b662ead3c1fc8cd7917' -or
+        [string]$manifest.halo4_candidate.id -cne 'C-H4-7' -or
+        [string]$manifest.halo4_candidate.status -cne
+            'OFFLINE_PASS_HEADSET_PENDING' -or
+        [string]$manifest.halo4_candidate.behavior -cne
+            'stock-projection-exact-serial-stereo-geometry' -or
+        $manifest.halo4_candidate.head_tracking -ne $false -or
+        $manifest.halo4_candidate.six_dof -ne $false -or
+        $manifest.halo4_candidate.hud -ne $false -or
+        [string]$manifest.halo4_candidate.failure_policy -cne
+            'pre-claim-stock-post-claim-frame-drop-core-remains-armed' -or
         $manifest.deployment_policy.automatic_after_package -ne $true -or
         [string]$manifest.deployment_policy.installer -cne
             'tools/install-candidate.ps1' -or

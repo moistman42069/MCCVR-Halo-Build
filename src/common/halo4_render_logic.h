@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 // Halo 4-only render evidence and (eventually) allocation-free policy. This
 // file contains no Windows, COM, MinHook, logging, or engine writes, so its
@@ -168,20 +169,35 @@ inline constexpr uint32_t kHalo4StackElementRva = 0x10DAFE0;
 // The active c_player_view* the wrapper sets and clears.
 inline constexpr uint32_t kHalo4ActiveViewRva = 0x4969AA0;
 
-// s_observer_result layout, proven by the converter's copy map at 0x38F074:
+// s_observer_result layout, proven by H4EK symbols/source strings and the
+// retail converter copy map at 0x38F074:
 //   [rdx+0x00] -> element+0x00 (position)   [rdx+0x28] -> +0x0C (forward)
-//   [rdx+0x34] -> element+0x18 (up)         [rdx+0x78] -> +0x28 (tangent X)
-//   [rdx+0x7C] -> element+0x2C (tangent Y)
-// This is the ONE block a per-eye substitution has to own.
+//   [rdx+0x34] -> element+0x18 (up)         [rdx+0x78] -> +0x28 (vertical FOV)
+//   [rdx+0x7C] -> element+0x2C (FOV ratio)
+// The snapshot covers every converter input, but C-H4-7 substitutes only the
+// three pose vectors; every FOV/focus/aspect byte remains stock.
 inline constexpr uint32_t kHalo4ObserverPositionOffset = 0x00;
 inline constexpr uint32_t kHalo4ObserverForwardOffset = 0x28;
 inline constexpr uint32_t kHalo4ObserverUpOffset = 0x34;
-inline constexpr uint32_t kHalo4ObserverTangentXOffset = 0x78;
-inline constexpr uint32_t kHalo4ObserverTangentYOffset = 0x7C;
+inline constexpr uint32_t kHalo4ObserverVerticalFovOffset = 0x78;
+inline constexpr uint32_t kHalo4ObserverFovRatioOffset = 0x7C;
 // Saved and restored around the whole stereo transaction. 0x80 covers every
 // field the converter reads plus the +0x44..+0x5C block setup copies onto the
 // view element right after it (0x374D65-0x374D7A).
 inline constexpr uint32_t kHalo4ObserverSnapshotBytes = 0x80;
+
+// setup writes the converted camera vectors directly into the stack element,
+// then builds its raster projection at element+0x88. H4EK proves the final
+// row-vector 4x4 begins at projection+0x78, hence element+0x100. The camera
+// transaction reads these engine-held outputs after each stock setup call; it
+// never guesses a projection from the observer's FOV-ratio field.
+inline constexpr uint32_t kHalo4ElementPositionOffset = 0x00;
+inline constexpr uint32_t kHalo4ElementForwardOffset = 0x0C;
+inline constexpr uint32_t kHalo4ElementUpOffset = 0x18;
+inline constexpr uint32_t kHalo4RasterProjectionOffset = 0x88;
+inline constexpr uint32_t kHalo4ProjectionMatrixOffset = 0x78;
+inline constexpr uint32_t kHalo4ElementProjectionMatrixOffset =
+    kHalo4RasterProjectionOffset + kHalo4ProjectionMatrixOffset;
 
 // c_player_view fields setup writes (0x374E7A-0x374E99), which let the wrapper
 // detour recover setup's own arguments without re-deriving the TLS chain.
@@ -286,8 +302,8 @@ struct Halo4CameraBasis
     float position[3]{};
     float forward[3]{};
     float up[3]{};
-    float tangentX = 0.0f;
-    float tangentY = 0.0f;
+    float verticalFov = 0.0f;
+    float fovRatio = 0.0f;
 };
 
 // Rejects anything the engine could not have produced, so a torn or
@@ -310,17 +326,55 @@ inline bool Halo4ValidateCameraBasis(const Halo4CameraBasis& basis) noexcept
     const float upLengthSquared =
         basis.up[0] * basis.up[0] + basis.up[1] * basis.up[1] +
         basis.up[2] * basis.up[2];
-    // Halo keeps these unit length; accept a generous band rather than an
-    // exact compare so ordinary float drift is not read as corruption.
-    return forwardLengthSquared > 0.5f && forwardLengthSquared < 2.0f &&
-        upLengthSquared > 0.5f && upLengthSquared < 2.0f;
+    const float forwardUpDot =
+        basis.forward[0] * basis.up[0] +
+        basis.forward[1] * basis.up[1] +
+        basis.forward[2] * basis.up[2];
+    // Eye displacement uses forward x up as the right axis, so admitting a
+    // merely finite but skewed basis would visibly distort IPD. Halo's camera
+    // producer supplies an orthonormal basis; leave a small float-drift band
+    // while refusing geometry that no longer has that shape.
+    return std::fabs(forwardLengthSquared - 1.0f) < 0.05f &&
+        std::fabs(upLengthSquared - 1.0f) < 0.05f &&
+        std::fabs(forwardUpDot) < 0.05f &&
+        std::isfinite(basis.verticalFov) && basis.verticalFov > 1.0e-4f &&
+        basis.verticalFov < 3.14149284f && std::isfinite(basis.fovRatio) &&
+        basis.fovRatio > 0.0f;
 }
 
-// The symmetric frustum that covers an asymmetric OpenXR eye. Halo 4 stores one
-// tangent pair per camera, so the raster has to cover the widest side of each
-// axis; the compositor is told the cover through Game_GetRenderHalfFovs and
-// samples the part it needs. Angles are OpenXR's (left<0, right>0, up>0,
-// down<0).
+constexpr bool Halo4PreparedPairMatches(
+    uint64_t expectedSerial, uint64_t leftSerial, uint64_t rightSerial) noexcept
+{
+    return expectedSerial != 0 && leftSerial == expectedSerial &&
+        rightSerial == expectedSerial;
+}
+
+constexpr bool Halo4EyeCaptureIsCurrent(
+    int requestedEye, int activeRasterEye, bool redirected,
+    bool cacheAvailable) noexcept
+{
+    return requestedEye >= 0 && requestedEye < 2 &&
+        activeRasterEye == requestedEye && redirected && cacheAvailable;
+}
+
+constexpr bool Halo4XrPairUploadComplete(
+    bool acquired, bool waited, bool bothEyesUploaded,
+    bool released) noexcept
+{
+    return acquired && waited && bothEyesUploaded && released;
+}
+
+constexpr bool Halo4XrPairSubmissionAccepted(
+    bool projectionQueued, bool exactEndFrameSuccess) noexcept
+{
+    return projectionQueued && exactEndFrameSuccess;
+}
+
+// Generic OpenXR cover math retained for later projection work. These tangents
+// are NOT the values stored at observer +0x78/+0x7C; those fields are a full
+// vertical FOV in radians and an engine-defined FOV ratio. C-H4-7 deliberately
+// leaves both observer fields byte-identical and reads the projection Halo 4
+// actually built instead. Angles here are left/right/up/down.
 inline bool Halo4SymmetricCoverFromFov(
     const float fov[4], float& tangentX, float& tangentY) noexcept
 {
@@ -360,6 +414,64 @@ inline void Halo4RotateAboutAxis(
     }
 }
 
+inline bool Halo4NormalizeQuaternion(
+    const float input[4], float output[4]) noexcept
+{
+    if (!input || !output)
+        return false;
+    float lengthSquared = 0.0f;
+    for (int i = 0; i < 4; ++i)
+    {
+        if (!std::isfinite(input[i]))
+            return false;
+        lengthSquared += input[i] * input[i];
+    }
+    if (!std::isfinite(lengthSquared) || lengthSquared < 1.0e-8f)
+        return false;
+    const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+    for (int i = 0; i < 4; ++i)
+        output[i] = input[i] * inverseLength;
+    return true;
+}
+
+inline bool Halo4RotateCameraByLocalOrientation(
+    Halo4CameraBasis& camera, const float orientation[4]) noexcept
+{
+    float q[4];
+    if (!Halo4ValidateCameraBasis(camera) ||
+        !Halo4NormalizeQuaternion(orientation, q))
+    {
+        return false;
+    }
+    const float sinHalf = std::sqrt(
+        q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
+    if (sinHalf <= 1.0e-5f)
+        return true;
+
+    float angle = 2.0f * std::atan2(sinHalf, q[3]);
+    if (angle > 3.14159265f)
+        angle -= 6.2831853f;
+    const float right[3] = {
+        camera.forward[1] * camera.up[2] -
+            camera.forward[2] * camera.up[1],
+        camera.forward[2] * camera.up[0] -
+            camera.forward[0] * camera.up[2],
+        camera.forward[0] * camera.up[1] -
+            camera.forward[1] * camera.up[0]};
+    const float worldAxis[3] = {
+        (q[0] / sinHalf) * right[0] + (q[1] / sinHalf) * camera.up[0] -
+            (q[2] / sinHalf) * camera.forward[0],
+        (q[0] / sinHalf) * right[1] + (q[1] / sinHalf) * camera.up[1] -
+            (q[2] / sinHalf) * camera.forward[1],
+        (q[0] / sinHalf) * right[2] + (q[1] / sinHalf) * camera.up[2] -
+            (q[2] / sinHalf) * camera.forward[2]};
+    const float cosAngle = std::cos(angle);
+    const float sinAngle = std::sin(angle);
+    Halo4RotateAboutAxis(camera.forward, worldAxis, cosAngle, sinAngle);
+    Halo4RotateAboutAxis(camera.up, worldAxis, cosAngle, sinAngle);
+    return Halo4ValidateCameraBasis(camera);
+}
+
 // Displaces and cants the mono camera into one eye. eyePosition/eyeOrientation
 // are this eye's offset from the stereo midpoint in OpenXR view axes
 // (+X right, +Y up, -Z forward); worldScale converts meters to world units.
@@ -368,13 +480,11 @@ inline void Halo4RotateAboutAxis(
 // the outer lens edge uncovered.
 inline bool Halo4BuildEyeCamera(
     const Halo4CameraBasis& mono, const float eyePosition[3],
-    const float* eyeOrientation, float worldScale, float tangentX,
-    float tangentY, Halo4CameraBasis& out) noexcept
+    const float* eyeOrientation, float worldScale,
+    Halo4CameraBasis& out) noexcept
 {
     if (!Halo4ValidateCameraBasis(mono) || !eyePosition ||
-        !std::isfinite(worldScale) || worldScale <= 0.0f ||
-        !std::isfinite(tangentX) || !std::isfinite(tangentY) ||
-        tangentX <= 0.0f || tangentY <= 0.0f)
+        !std::isfinite(worldScale) || worldScale <= 0.0f)
     {
         return false;
     }
@@ -388,8 +498,6 @@ inline bool Halo4BuildEyeCamera(
         mono.forward[0] * mono.up[1] - mono.forward[1] * mono.up[0]};
 
     out = mono;
-    out.tangentX = tangentX;
-    out.tangentY = tangentY;
     for (int axis = 0; axis < 3; ++axis)
     {
         out.position[axis] = mono.position[axis] +
@@ -397,36 +505,60 @@ inline bool Halo4BuildEyeCamera(
              mono.forward[axis] * eyePosition[2]) * worldScale;
     }
 
-    if (eyeOrientation)
+    return eyeOrientation
+        ? Halo4RotateCameraByLocalOrientation(out, eyeOrientation)
+        : Halo4ValidateCameraBasis(out);
+}
+
+inline bool Halo4CameraOutputMatches(
+    const Halo4CameraBasis& requested, const float position[3],
+    const float forward[3], const float up[3]) noexcept
+{
+    if (!Halo4ValidateCameraBasis(requested) || !position || !forward || !up)
+        return false;
+    for (int axis = 0; axis < 3; ++axis)
     {
-        bool orientationFinite = true;
-        for (int i = 0; i < 4; ++i)
-            orientationFinite = orientationFinite &&
-                std::isfinite(eyeOrientation[i]);
-        if (orientationFinite)
+        if (!std::isfinite(position[axis]) || !std::isfinite(forward[axis]) ||
+            !std::isfinite(up[axis]))
         {
-            const float sinHalf = std::sqrt(
-                eyeOrientation[0] * eyeOrientation[0] +
-                eyeOrientation[1] * eyeOrientation[1] +
-                eyeOrientation[2] * eyeOrientation[2]);
-            if (sinHalf > 1.0e-5f)
-            {
-                float angle = 2.0f * std::atan2(sinHalf, eyeOrientation[3]);
-                if (angle > 3.14159265f)
-                    angle -= 6.2831853f; // shortest arc
-                const float ax = eyeOrientation[0] / sinHalf;
-                const float ay = eyeOrientation[1] / sinHalf;
-                const float az = eyeOrientation[2] / sinHalf;
-                const float worldAxis[3] = {
-                    ax * right[0] + ay * mono.up[0] - az * mono.forward[0],
-                    ax * right[1] + ay * mono.up[1] - az * mono.forward[1],
-                    ax * right[2] + ay * mono.up[2] - az * mono.forward[2]};
-                const float cosAngle = std::cos(angle);
-                const float sinAngle = std::sin(angle);
-                Halo4RotateAboutAxis(out.forward, worldAxis, cosAngle, sinAngle);
-                Halo4RotateAboutAxis(out.up, worldAxis, cosAngle, sinAngle);
-            }
+            return false;
         }
     }
-    return Halo4ValidateCameraBasis(out);
+    // Retail converter instructions copy these nine floats directly. Exact
+    // bytes are therefore the proof that setup consumed our observer write;
+    // a tolerance could mislabel a small ignored transform as TAKING.
+    return std::memcmp(
+               position, requested.position, sizeof(requested.position)) == 0 &&
+        std::memcmp(
+               forward, requested.forward, sizeof(requested.forward)) == 0 &&
+        std::memcmp(up, requested.up, sizeof(requested.up)) == 0;
+}
+
+// Decode only the proven normal H4 row-vector projection. The retail setup
+// passes an exact zero center to this builder and produces positive X/Y scales.
+// H4 also has a custom-window path whose p[8]/p[9] center terms cannot be
+// represented by the compositor's current symmetric-half-FOV API. Reject that
+// distinct path instead of publishing a geometrically false projection.
+inline bool Halo4DecodeSymmetricProjectionHalfFovs(
+    const float matrix[16], float& halfX, float& halfY,
+    float& centerX, float& centerY) noexcept
+{
+    if (!matrix)
+        return false;
+    const float scaleX = matrix[0];
+    const float scaleY = matrix[5];
+    centerX = matrix[8];
+    centerY = matrix[9];
+    if (!std::isfinite(scaleX) || !std::isfinite(scaleY) ||
+        !std::isfinite(centerX) || !std::isfinite(centerY) ||
+        !std::isfinite(matrix[11]) || scaleX <= 0.0f || scaleY <= 0.0f ||
+        matrix[11] != -1.0f ||
+        centerX != 0.0f || centerY != 0.0f)
+    {
+        return false;
+    }
+    halfX = std::atan(1.0f / scaleX);
+    halfY = std::atan(1.0f / scaleY);
+    return std::isfinite(halfX) && std::isfinite(halfY) && halfX > 0.0f &&
+        halfX < 1.5707f && halfY > 0.0f && halfY < 1.5707f;
 }

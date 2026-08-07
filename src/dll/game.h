@@ -31,7 +31,12 @@ void Game_ReadFramePerfCounters(GameFramePerfCounters& out);
 
 void Game_Init();
 bool Game_IsHooked();
-bool Game_IsHeadTracking(); // true while F2 head tracking is on
+// Historical immersive-presentation gate. H4 C-H4-7 uses it to admit stereo
+// even though that geometry-only candidate does not yet consume HMD head pose.
+bool Game_IsHeadTracking();
+// User-visible truth: the active camera actually consumes HMD rotation/position.
+bool Game_IsHeadTrackingApplied();
+bool Game_IsStereoGeometryOnlyBringup();
 bool Game_IsCameraOnlyBringup(); // private ODST camera core; no gameplay features
 // True only while the exact Reach stereo + mandatory authored-crosshair
 // transaction owns the active title. Used to admit its frame-bound authored
@@ -93,7 +98,9 @@ void Game_Recenter();           // F3; Halo camera + OpenXR screen origin
 void Game_FlipYaw();            // F1 menu only (was F4: SteamVR's Alt+F4 kept triggering it)
 void Game_FlipPitch();          // F1 menu only (was F5)
 void Game_TogglePositional();   // F6: leaning / positional tracking on/off
-void Game_ForcePositional();    // stereo VR requires 6DOF
+// Forces positional tracking for established title cores; H4 C-H4-7 keeps
+// only the shared immersive-stereo flag until its separate 6DOF milestone.
+void Game_ForcePositional();
 void Game_ToggleUp();           // F1 menu only (was F7)
 float Game_GetYawSign();        // current calibration state, shown in the menu
 float Game_GetPitchSign();

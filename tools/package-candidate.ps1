@@ -7,10 +7,10 @@ param(
     [switch]$Clean
 )
 
-# Halo MCC VR is one cumulative build: Halo 3 + ODST + Halo: Reach. Reach's
-# camera core is permanent while optional player-visible features fail open
-# independently. There is one release preset and no Reach on/off switch. This
-# stages one unaccepted local candidate under out/candidates
+# Halo MCC VR is one cumulative build: Halo 3 + ODST + Halo: Reach + Halo 4.
+# Reach's camera core is permanent while Halo 4 is still an explicitly
+# unaccepted bring-up line. Optional player-visible features fail open
+# independently. This stages one unaccepted local candidate under out/candidates
 # after a passing build and tests, then automatically installs those
 # exact manifest-verified bytes into the dedicated MCC mod directory. It never
 # launches MCC and never labels rebuilt bytes as an accepted release.
@@ -57,10 +57,18 @@ try {
         throw 'Could not resolve the candidate source commit.'
     }
 
-    $acceptedSource = 'a5524d3fe58e4ed5507c27429ccca52a3d4fdf7d'
-    & git -C $repoRoot merge-base --is-ancestor $acceptedSource $commit
-    if ($LASTEXITCODE -ne 0) {
-        throw "Refusing to package: HEAD does not descend from accepted source $acceptedSource."
+    $acceptedSources = [ordered]@{
+        'cumulative Halo 3/ODST/Reach' =
+            'a5524d3fe58e4ed5507c27429ccca52a3d4fdf7d'
+        'accepted Halo 4 C-H4-1' =
+            '954359b7f786b78c76824b662ead3c1fc8cd7917'
+    }
+    foreach ($acceptedLine in $acceptedSources.GetEnumerator()) {
+        & git -C $repoRoot merge-base --is-ancestor `
+            $acceptedLine.Value $commit
+        if ($LASTEXITCODE -ne 0) {
+            throw "Refusing to package: HEAD does not descend from $($acceptedLine.Name) source $($acceptedLine.Value)."
+        }
     }
 
     Invoke-Tool { & cmake --preset $packagePreset }
@@ -73,6 +81,10 @@ try {
     if ($cache -notmatch
             '(?m)^HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP:BOOL=ON\r?$') {
         throw 'Refusing to package: ODST is not ON in the cumulative build.'
+    }
+    if ($cache -notmatch
+            '(?m)^HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA:BOOL=ON\r?$') {
+        throw 'Refusing to package C-H4-7: the Halo 4 camera core is not ON.'
     }
 
     # Incremental. A clean rebuild was recompiling the whole tree for every
@@ -92,6 +104,14 @@ try {
         throw 'Core tests failed.'
     }
 
+    Invoke-Tool {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File `
+            (Join-Path $repoRoot 'tools\check-reach-fp-parity.ps1')
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Reach consistency check failed.'
+    }
+
     $finalCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
     $finalStatus =
         @(& git -C $repoRoot status --porcelain=v1 --untracked-files=normal)
@@ -101,7 +121,8 @@ try {
     }
 
     $createdUtc = [DateTime]::UtcNow
-    $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7), 'reach-fp-parity',
+    $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
+        'halo4-c7-stock-geometry',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -133,25 +154,41 @@ try {
         (Get-FileHash -LiteralPath $launcherPath -Algorithm SHA256).Hash
 
     $manifest = [ordered]@{
-        schema_version = 7
+        schema_version = 8
         status = 'UNTESTED_LOCAL_CANDIDATE'
         accepted = $false
         package_id = $packageId
         created_utc = $createdUtc.ToString('o')
         source_commit = $commit
         package_preset = $packagePreset
-        titles = @('Halo 3', 'Halo 3: ODST', 'Halo: Reach')
+        titles = @('Halo 3', 'Halo 3: ODST', 'Halo: Reach', 'Halo 4')
         embedded_build_identity = [ordered]@{
             source_commit = $commit
             odst = $true
             reach = $true
             reach_render = $true
+            halo4 = $true
         }
         deployment_policy = [ordered]@{
             automatic_after_package = $true
             installer = 'tools/install-candidate.ps1'
             launches_mcc = $false
             changes_config = $false
+        }
+        accepted_halo4_identity = [ordered]@{
+            candidate = 'C-H4-1'
+            source_commit =
+                '954359b7f786b78c76824b662ead3c1fc8cd7917'
+        }
+        halo4_candidate = [ordered]@{
+            id = 'C-H4-7'
+            status = 'OFFLINE_PASS_HEADSET_PENDING'
+            behavior = 'stock-projection-exact-serial-stereo-geometry'
+            head_tracking = $false
+            six_dof = $false
+            hud = $false
+            failure_policy =
+                'pre-claim-stock-post-claim-frame-drop-core-remains-armed'
         }
         # Reach support is permanent, while player-visible optional features
         # fail open independently and never disarm the working camera core.
@@ -214,7 +251,8 @@ try {
         reach_copyresource_enabled = $true
         reach_engine_memory_writes_enabled = $true
         reach_runtime_hooks_enabled = $true
-        base_release = 'MCC_VR_ALPHA_0.3.1'
+        base_release = 'MCC_VR_ALPHA_0.3.3'
+        development_baseline = 'f4c641f7b1b707991f2bda71ba485090a16f1e9a'
         files = [ordered]@{
             'halo3xr.dll' = [ordered]@{
                 bytes = $dll.Length
@@ -225,7 +263,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'Cumulative Reach vehicle repair: headset-reported-good View Follow OFF is preserved; View Follow ON uses the render-matched carrier basis with no refresh-rate filter; all 25 user-authored Blender camera placements plus exact retail aliases remain embedded. Each exact occupied-seat entry performs one full play-space recenter against the render-matched root/carrier heading in both View Follow modes; settled exit remains position-only. The rejected between-frame seat camera-mode lease and rejected native passenger show/hide call are dormant. A render-scoped unit-camera hide-player bit hides only the controlling player world body, while the exact checksum/count/tag-qualified native fp_body palette retains Halo 3/ODST-style seated legs. An exact HREK-homologous render_first_person_view predicate admits the native hands/personal gun only for the current allows-weapons passenger, without changing seat flags, camera, steering or simulation state; the established palette then tracks both controllers. The floating controller crosshair remains authoritative; personal and vehicle central pre-spread shot lines pass through the same presented stabilized sight while stock origins, spread, ballistics, aim assist and tracking remain title-owned. Both firing records have a 50 ms bound for 72-144 Hz. Reach trim sliders retain full travel, add explicit one-millimetre controls and three-decimal persistence, and keep an occupied seat locked until the user explicitly selects universal trim. No Workshop content is required, activated, copied or redistributed. Not accepted until this exact DLL hash passes both View Follow options, entry orientation, passenger legs/hands/gun tracking, camera placement, trim safety, body hide, visible crosshair, Warthog/Scorpion/Covenant turret firing, lifecycle, and required Halo 3/ODST regression tests.'
+        note = 'Unaccepted Halo 4 C-H4-7 geometry-only candidate. It proves exact-serial lit stereo using Halo 4 stock projection on the sustained setup+wrapper boundary; head tracking, 6DOF, and HUD are intentionally absent. C-H4-1 remains the accepted Halo 4 pointer. The cumulative Halo 3, ODST, and Reach implementation is retained. Acceptance requires this exact DLL hash to pass the named Halo 4 geometry test plus the required Halo 3 regression.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

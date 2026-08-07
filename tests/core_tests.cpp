@@ -5907,12 +5907,38 @@ int main()
           !Halo4CameraLoopTargetsAgree(kHalo4SetupRva, kHalo4SetupRva) &&
           !Halo4CameraLoopTargetsAgree(0, kHalo4WrapperRva),
         "The loop's call-edge check accepts only the two pinned functions");
-    Check(kHalo4ObserverTangentYOffset + 4 <= kHalo4ObserverSnapshotBytes &&
+    Check(Halo4PreparedPairMatches(17, 17, 17) &&
+              !Halo4PreparedPairMatches(0, 0, 0) &&
+              !Halo4PreparedPairMatches(18, 17, 18) &&
+              !Halo4PreparedPairMatches(18, 18, 17),
+        "Halo 4 pair admission rejects zero, partial, and stale eye/FOV "
+        "serials");
+    Check(Halo4EyeCaptureIsCurrent(1, 1, true, true) &&
+              !Halo4EyeCaptureIsCurrent(1, -1, true, true) &&
+              !Halo4EyeCaptureIsCurrent(1, 0, true, true) &&
+              !Halo4EyeCaptureIsCurrent(1, 1, false, true) &&
+              !Halo4EyeCaptureIsCurrent(1, 1, true, false),
+        "Halo 4 stamps an eye only while that exact raster scope is active, "
+        "redirected, and backed by a cache");
+    Check(Halo4XrPairUploadComplete(true, true, true, true) &&
+              !Halo4XrPairUploadComplete(false, true, true, true) &&
+              !Halo4XrPairUploadComplete(true, false, true, true) &&
+              !Halo4XrPairUploadComplete(true, true, false, true) &&
+              !Halo4XrPairUploadComplete(true, true, true, false),
+        "Halo 4 submits an XR pair only after exact acquire, wait, both-eye "
+        "upload, and release completion");
+    Check(Halo4XrPairSubmissionAccepted(true, true) &&
+              !Halo4XrPairSubmissionAccepted(false, true) &&
+              !Halo4XrPairSubmissionAccepted(true, false),
+        "Halo 4 reports a headset pair only when its projection was queued "
+        "and xrEndFrame returned exact success");
+    Check(kHalo4ObserverFovRatioOffset + 4 <= kHalo4ObserverSnapshotBytes &&
           kHalo4ObserverUpOffset + 12 <= kHalo4ObserverSnapshotBytes &&
           kHalo4ObserverForwardOffset + 12 <= kHalo4ObserverUpOffset &&
-          kHalo4ObserverPositionOffset + 12 <= kHalo4ObserverForwardOffset,
+          kHalo4ObserverPositionOffset + 12 <= kHalo4ObserverForwardOffset &&
+          kHalo4ElementProjectionMatrixOffset == 0x100,
         "Every substituted observer field fits inside the saved snapshot and "
-        "the three vectors do not overlap");
+        "the proven finished projection begins at element+0x100");
 
     // The install proof is all-or-nothing: each field fails closed alone.
     Halo4CameraInstallProof halo4Install{};
@@ -5959,8 +5985,9 @@ int main()
             "A remapped halo4.dll refuses the Halo 4 camera hook");
     }
 
-    // The symmetric cover must take the WIDER side of each asymmetric axis;
-    // taking the narrower one is how an eye gets a black outer border.
+    // Generic cover math remains available for a later FOV milestone, but it
+    // is not an observer-field layout claim: +0x78/+0x7C are full-vFOV and a
+    // reference-FOV ratio, not tangents.
     {
         float tanX = 0.0f;
         float tanY = 0.0f;
@@ -5968,40 +5995,39 @@ int main()
         Check(Halo4SymmetricCoverFromFov(asymmetric, tanX, tanY) &&
                   fabsf(tanX - tanf(0.9f)) < 1e-5f &&
                   fabsf(tanY - tanf(1.0f)) < 1e-5f,
-            "The Halo 4 symmetric cover takes the wider half of each axis");
+            "The dormant OpenXR cover helper takes the wider side of each axis");
         const float degenerate[4] = {0.0f, 0.0f, 0.0f, 0.0f};
         Check(!Halo4SymmetricCoverFromFov(degenerate, tanX, tanY),
-            "A zero Halo 4 FOV is refused rather than rasterized");
+            "A zero OpenXR FOV is refused by the generic cover helper");
         const float absurd[4] = {-1.6f, 1.6f, 1.6f, -1.6f};
         Check(!Halo4SymmetricCoverFromFov(absurd, tanX, tanY),
-            "A past-90-degree Halo 4 half angle is refused");
+            "A past-90-degree half angle is refused");
     }
 
-    // Per-eye displacement: identity basis, so the eye offset must appear on
-    // the world axes unchanged, scaled by world units per meter.
+    // Per-eye displacement changes pose only. Halo 4's stock full vertical FOV
+    // and FOV-ratio fields are carried through byte-for-byte.
     {
         Halo4CameraBasis mono{};
         mono.forward[0] = 1.0f;   // +X forward
         mono.up[2] = 1.0f;        // +Z up  => right = forward x up = -Y
         mono.position[0] = 10.0f;
-        mono.tangentX = 1.0f;
-        mono.tangentY = 1.0f;
+        mono.verticalFov = 1.4f;
+        mono.fovRatio = 1.125f;
         Check(Halo4ValidateCameraBasis(mono),
             "A unit Halo 4 camera basis validates");
 
         const float eyePosition[3] = {0.032f, 0.0f, 0.0f}; // 32 mm right
         Halo4CameraBasis eye{};
-        Check(Halo4BuildEyeCamera(mono, eyePosition, nullptr, 0.33f, 1.0f,
-                                  1.2f, eye),
+        Check(Halo4BuildEyeCamera(mono, eyePosition, nullptr, 0.33f, eye),
             "Halo 4 builds an eye camera from a valid basis");
         Check(fabsf(eye.position[0] - 10.0f) < 1e-6f &&
                   fabsf(eye.position[1] - (-0.032f * 0.33f)) < 1e-6f &&
                   fabsf(eye.position[2]) < 1e-6f,
             "The Halo 4 eye offset lands on the camera's own right axis, "
             "scaled to world units");
-        Check(fabsf(eye.tangentX - 1.0f) < 1e-6f &&
-                  fabsf(eye.tangentY - 1.2f) < 1e-6f,
-            "The Halo 4 eye camera carries the requested cover tangents");
+        Check(memcmp(&eye.verticalFov, &mono.verticalFov, sizeof(float)) == 0 &&
+                  memcmp(&eye.fovRatio, &mono.fovRatio, sizeof(float)) == 0,
+            "Eye separation preserves Halo 4's stock FOV fields bit-for-bit");
         Check(fabsf(eye.forward[0] - 1.0f) < 1e-6f &&
                   fabsf(eye.up[2] - 1.0f) < 1e-6f,
             "A null Halo 4 eye orientation leaves the basis uncanted");
@@ -6014,7 +6040,7 @@ int main()
             0.0f, 0.70710678f, 0.0f, 0.70710678f};
         Halo4CameraBasis canted{};
         Check(Halo4BuildEyeCamera(mono, eyePosition, quarterTurnAboutUp, 0.33f,
-                                  1.0f, 1.0f, canted) &&
+                                  canted) &&
                   fabsf(canted.forward[1] - 1.0f) < 1e-5f &&
                   fabsf(canted.forward[0]) < 1e-5f &&
                   fabsf(canted.up[2] - 1.0f) < 1e-5f,
@@ -6025,19 +6051,131 @@ int main()
         Halo4CameraBasis degenerate = mono;
         degenerate.forward[0] = 0.0f;
         Check(!Halo4ValidateCameraBasis(degenerate) &&
-                  !Halo4BuildEyeCamera(degenerate, eyePosition, nullptr, 0.33f,
-                                       1.0f, 1.0f, rejected),
+                  !Halo4BuildEyeCamera(
+                      degenerate, eyePosition, nullptr, 0.33f, rejected),
             "A zero-length Halo 4 forward vector is refused");
         Halo4CameraBasis infinite = mono;
         infinite.position[1] = std::numeric_limits<float>::infinity();
         Check(!Halo4ValidateCameraBasis(infinite),
             "A non-finite Halo 4 camera position is refused");
-        Check(!Halo4BuildEyeCamera(mono, eyePosition, nullptr, 0.0f, 1.0f,
-                                   1.0f, rejected) &&
-                  !Halo4BuildEyeCamera(mono, eyePosition, nullptr, 0.33f, 0.0f,
-                                       1.0f, rejected),
-            "A zero world scale or zero tangent is refused rather than "
-            "rendered");
+        Halo4CameraBasis parallel = mono;
+        memcpy(parallel.up, parallel.forward, sizeof(parallel.up));
+        Check(!Halo4ValidateCameraBasis(parallel),
+            "Parallel Halo 4 forward/up vectors are refused before eye "
+            "separation can collapse");
+        const float invalidOrientation[4] = {
+            std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f, 1.0f};
+        Check(!Halo4BuildEyeCamera(
+                  mono, eyePosition, nullptr, 0.0f, rejected) &&
+                  !Halo4BuildEyeCamera(
+                      mono, eyePosition, invalidOrientation, 0.33f, rejected),
+            "A zero world scale or invalid eye orientation is refused");
+
+        Halo4CameraBasis extremeRatio = mono;
+        extremeRatio.fovRatio = 100.0f;
+        Check(Halo4ValidateCameraBasis(extremeRatio),
+            "The evidence-backed camera gate does not reject a legal wide "
+            "reference-FOV ratio");
+        extremeRatio.fovRatio = -1.0f;
+        Check(!Halo4ValidateCameraBasis(extremeRatio),
+            "A negative Halo 4 reference-FOV ratio is refused");
+    }
+
+    // The engine-held camera result and finished projection are the acceptance
+    // proof. A material center term is rejected until the compositor can carry
+    // an off-axis H4 raster exactly.
+    {
+        Halo4CameraBasis requested{};
+        requested.position[0] = 10.0f;
+        requested.forward[0] = 1.0f;
+        requested.up[2] = 1.0f;
+        requested.verticalFov = 1.4f;
+        requested.fovRatio = 1.125f;
+        Check(Halo4CameraOutputMatches(
+                  requested, requested.position, requested.forward,
+                  requested.up),
+            "An exact Halo 4 setup readback proves the requested camera took");
+        float movedPosition[3] = {10.0f, 0.0f, 0.0f};
+        movedPosition[0] = std::nextafter(movedPosition[0], 11.0f);
+        Check(!Halo4CameraOutputMatches(
+                  requested, movedPosition, requested.forward, requested.up),
+            "Even a one-ULP engine-held camera difference fails the exact "
+            "claim proof");
+
+        float projection[16]{};
+        projection[0] = 1.0f / tanf(0.7f);
+        projection[5] = 1.0f / tanf(0.6f);
+        projection[11] = -1.0f;
+        float halfX = 0.0f, halfY = 0.0f, centerX = 0.0f, centerY = 0.0f;
+        Check(Halo4DecodeSymmetricProjectionHalfFovs(
+                  projection, halfX, halfY, centerX, centerY) &&
+                  fabsf(halfX - 0.7f) < 1e-5f &&
+                  fabsf(halfY - 0.6f) < 1e-5f && centerX == 0.0f &&
+                  centerY == 0.0f,
+            "Halo 4's finished symmetric row-vector matrix decodes exactly");
+        projection[0] = 0.0f;
+        Check(!Halo4DecodeSymmetricProjectionHalfFovs(
+                  projection, halfX, halfY, centerX, centerY),
+            "A zero Halo 4 projection scale is refused");
+        projection[0] = -1.0f / tanf(0.7f);
+        Check(!Halo4DecodeSymmetricProjectionHalfFovs(
+                  projection, halfX, halfY, centerX, centerY),
+            "A negative scale is refused because H4's proven normal projection "
+            "writes positive X/Y scales");
+        projection[0] = 1.0f / tanf(0.7f);
+        projection[11] = 0.0f;
+        Check(!Halo4DecodeSymmetricProjectionHalfFovs(
+                  projection, halfX, halfY, centerX, centerY),
+            "A matrix without Halo 4's proven row-vector -1 is refused");
+        projection[11] = -1.0f;
+        projection[8] = std::numeric_limits<float>::epsilon();
+        Check(!Halo4DecodeSymmetricProjectionHalfFovs(
+                  projection, halfX, halfY, centerX, centerY),
+            "Any nonzero off-axis center is refused by the symmetric API");
+        projection[8] = 0.0f;
+        projection[5] = std::numeric_limits<float>::quiet_NaN();
+        Check(!Halo4DecodeSymmetricProjectionHalfFovs(
+                  projection, halfX, halfY, centerX, centerY),
+            "A non-finite Halo 4 projection scale is refused");
+    }
+
+    // Model the observer substitution itself: every byte except the three
+    // proven pose vectors must survive unchanged, especially +0x78/+0x7C.
+    {
+        unsigned char stockObserver[kHalo4ObserverSnapshotBytes];
+        unsigned char eyeObserver[kHalo4ObserverSnapshotBytes];
+        for (size_t i = 0; i < sizeof(stockObserver); ++i)
+            stockObserver[i] = static_cast<unsigned char>(i ^ 0xA5u);
+        memcpy(eyeObserver, stockObserver, sizeof(eyeObserver));
+        const float replacement[3] = {1.0f, 2.0f, 3.0f};
+        memcpy(eyeObserver + kHalo4ObserverPositionOffset, replacement,
+               sizeof(replacement));
+        memcpy(eyeObserver + kHalo4ObserverForwardOffset, replacement,
+               sizeof(replacement));
+        memcpy(eyeObserver + kHalo4ObserverUpOffset, replacement,
+               sizeof(replacement));
+        bool untouchedBytesMatch = true;
+        for (size_t i = 0; i < sizeof(stockObserver); ++i)
+        {
+            const bool mutableByte =
+                (i >= kHalo4ObserverPositionOffset &&
+                 i < kHalo4ObserverPositionOffset + 12) ||
+                (i >= kHalo4ObserverForwardOffset &&
+                 i < kHalo4ObserverForwardOffset + 12) ||
+                (i >= kHalo4ObserverUpOffset &&
+                 i < kHalo4ObserverUpOffset + 12);
+            if (!mutableByte && eyeObserver[i] != stockObserver[i])
+                untouchedBytesMatch = false;
+        }
+        Check(untouchedBytesMatch &&
+                  memcmp(eyeObserver + kHalo4ObserverVerticalFovOffset,
+                         stockObserver + kHalo4ObserverVerticalFovOffset,
+                         sizeof(float)) == 0 &&
+                  memcmp(eyeObserver + kHalo4ObserverFovRatioOffset,
+                         stockObserver + kHalo4ObserverFovRatioOffset,
+                         sizeof(float)) == 0,
+            "C-H4-7 changes only position/forward/up and preserves every FOV "
+            "input byte");
     }
     Check(halo4Row && halo4Row->admissionCapabilities ==
               TitleCapability_ControllerInput,

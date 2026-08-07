@@ -38,6 +38,7 @@
 #include "../common/config.h"
 #include "../common/cutscene_theater_logic.h"
 #include "../common/frame_pacing_logic.h"
+#include "../common/halo4_render_logic.h"
 #include "../common/input_logic.h"
 #include "../common/reach_vehicle_logic.h"
 #include "../common/scope_logic.h"
@@ -126,13 +127,13 @@ namespace
     XrSwapchain g_reticleChain = XR_NULL_HANDLE;
     std::atomic<bool> g_reticleChainFailed{false};
     std::atomic<bool> g_authoredReticlePreparationReady{false};
-    // A strict Reach swapchain failure aborts the current layer transaction and
+    // A strict world-swapchain failure aborts the current layer transaction and
     // enters the existing fatal session drain. Some failures (for example a
     // wait timeout) can leave an image acquired; other non-XR_SUCCESS results
     // (for example XR_SESSION_LOSS_PENDING from release) can still mean the
     // operation completed. In either case, submit no layers and pair a begun
     // frame with one empty xrEndFrame before session recovery.
-    bool g_abortFrameForReachSwapchainFailure = false;
+    bool g_abortFrameForSwapchainFailure = false;
     std::vector<ID3D11Texture2D*> g_reticleImages;
     std::vector<ID3D11RenderTargetView*> g_reticleRtvs;
     constexpr uint32_t kReticleSize = 512;
@@ -284,6 +285,18 @@ namespace
     std::atomic<bool> g_stereoEnabled{false};
     int g_renderEye = 0;
     bool g_eyeHasImage[2] = {false, false};
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    std::atomic<uint64_t> g_halo4EyeSerial[2]{};
+    enum class Halo4XrPairDropReason : uint32_t
+    {
+        None = 0,
+        EyeUploadIncomplete,
+        ProjectionIncomplete,
+    };
+    std::atomic<uint64_t> g_halo4XrPairsSubmitted{};
+    std::atomic<uint64_t> g_halo4XrPairsDropped{};
+    std::atomic<uint32_t> g_halo4LastXrPairDropReason{};
+#endif
     bool g_stereoValidationDone = false;
     std::atomic<int> g_rasterEye{-1};
     bool g_rasterRedirected[2] = {false, false};
@@ -1202,6 +1215,16 @@ namespace
         kReachRenderSnapshotInvalid};
     static_assert(std::atomic<uint32_t>::is_always_lock_free);
     static_assert(std::is_trivially_copyable_v<ReachVrRenderSnapshot>);
+#endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    constexpr uint32_t kHalo4RenderSnapshotWriter = 0x80000000u;
+    constexpr uint32_t kHalo4RenderSnapshotInvalid = 0xFFFFFFFFu;
+    Halo4VrRenderSnapshot g_halo4RenderSnapshots[2]{};
+    std::atomic<uint32_t> g_halo4RenderSnapshotStates[2]{};
+    std::atomic<uint32_t> g_halo4RenderSnapshotIndex{
+        kHalo4RenderSnapshotInvalid};
+    static_assert(std::atomic<uint32_t>::is_always_lock_free);
+    static_assert(std::is_trivially_copyable_v<Halo4VrRenderSnapshot>);
 #endif
 
     // ---------------------------------------------------------------- utils
@@ -3406,6 +3429,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         }
         g_eyeCacheDesc = desc;
         g_eyeHasImage[0] = g_eyeHasImage[1] = false;
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        g_halo4EyeSerial[0].store(0, std::memory_order_release);
+        g_halo4EyeSerial[1].store(0, std::memory_order_release);
+#endif
         g_stereoValidationDone = false;
         LOG("M2: persistent eye frame caches created: %ux%u", desc.Width, desc.Height);
         return true;
@@ -4726,17 +4753,18 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         Game_DetachForVrRuntimeFailure();
     }
 
-    bool RequireReachSwapchainCompletion(
+    bool RequireExactSwapchainCompletion(
         XrResult result, const char* failureReason)
     {
-        // Reach accepts only exact XR_SUCCESS. XR_TIMEOUT_EXPIRED does not
+        // Strict title transactions accept only exact XR_SUCCESS.
+        // XR_TIMEOUT_EXPIRED does not
         // complete a wait; XR_SESSION_LOSS_PENDING is a successful operation
         // result but signals an unhealthy session. Both abort this candidate's
         // complete layer transaction and enter terminal session recovery. Do
         // not attempt another acquire/release from this frame.
         if (result == XR_SUCCESS)
             return true;
-        g_abortFrameForReachSwapchainFailure = true;
+        g_abortFrameForSwapchainFailure = true;
         EnterFrameWaitFatalDrain(failureReason);
         return false;
     }
@@ -5483,7 +5511,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         {
             if (XR_SUCCEEDED(acquireResult))
             {
-                (void)RequireReachSwapchainCompletion(
+                (void)RequireExactSwapchainCompletion(
                     acquireResult,
                     "Reach authored-reticle swapchain acquire did not complete");
             }
@@ -5495,7 +5523,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             xrWaitSwapchainImage(g_reticleChain, &wait);
         if (requireSuccessfulRelease)
         {
-            if (!RequireReachSwapchainCompletion(
+            if (!RequireExactSwapchainCompletion(
                     waitResult,
                     "Reach authored-reticle swapchain wait did not complete"))
             {
@@ -5514,7 +5542,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         const XrResult releaseResult =
             xrReleaseSwapchainImage(g_reticleChain, &release);
         const bool released = requireSuccessfulRelease
-            ? RequireReachSwapchainCompletion(
+            ? RequireExactSwapchainCompletion(
                   releaseResult,
                   "Reach authored-reticle swapchain release did not complete")
             : XR_SUCCEEDED(releaseResult);
@@ -6945,6 +6973,44 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     }
 #endif
 
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    bool PublishHalo4RenderSnapshot(uint64_t preparedSerial) noexcept
+    {
+        if (!preparedSerial || g_views.size() != 2)
+            return false;
+
+        Halo4VrRenderSnapshot next{};
+        next.preparedSerial = preparedSerial;
+        for (int eye = 0; eye < 2; ++eye)
+        {
+            if (!VR_GetEyeViewOffset(
+                    eye, next.eyes[eye].position,
+                    next.eyes[eye].orientation))
+            {
+                return false;
+            }
+        }
+
+        const uint32_t current =
+            g_halo4RenderSnapshotIndex.load(std::memory_order_seq_cst);
+        const uint32_t target = current < 2 ? 1u - current : 0u;
+        uint32_t expectedState = 0;
+        if (!g_halo4RenderSnapshotStates[target].compare_exchange_strong(
+                expectedState, kHalo4RenderSnapshotWriter,
+                std::memory_order_seq_cst, std::memory_order_seq_cst))
+        {
+            // The old slot still has a reader. Never wait in the OpenXR frame
+            // path; the exact-serial camera hook will render stock this frame.
+            return false;
+        }
+        g_halo4RenderSnapshots[target] = next;
+        g_halo4RenderSnapshotIndex.store(target, std::memory_order_seq_cst);
+        g_halo4RenderSnapshotStates[target].store(
+            0, std::memory_order_seq_cst);
+        return true;
+    }
+#endif
+
     // The wait thread: block in xrWaitFrame here instead of on the game's render
     // thread, then hand the state over. Once the render thread claims Wait(N),
     // it releases this worker immediately before Begin(N). The next Wait(N+1)
@@ -7104,7 +7170,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         g_waitCallInFlight.store(0, std::memory_order_release);
         g_waitConsumedSequence.store(0, std::memory_order_release);
         g_waitPipelineFaulted.store(false, std::memory_order_release);
-        g_abortFrameForReachSwapchainFailure = false;
+        g_abortFrameForSwapchainFailure = false;
         g_waitedPacketSequence.store(0, std::memory_order_release);
         g_waitedPacketVersion.store(0, std::memory_order_release);
         g_waitReadyEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -7436,7 +7502,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             pacing.shouldRender = frameState.shouldRender == XR_TRUE;
             pacing.focused = g_sessionState == XR_SESSION_STATE_FOCUSED;
             pacing.stereo = g_stereoEnabled.load(std::memory_order_relaxed);
-            pacing.headTracking = Game_IsHeadTracking();
+            pacing.headTracking = Game_IsHeadTrackingApplied();
             pacing.scopeActive = g_scopeActive.load(std::memory_order_relaxed);
             Game_ReadFramePerfCounters(g_framePacingPerfStart);
         }
@@ -7483,6 +7549,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         g_preparedViewSerialPublished.store(
             upcomingViewsValid ? g_preparedFrame.serial : 0,
             std::memory_order_release);
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        if (upcomingViewsValid &&
+            TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
+        {
+            PublishHalo4RenderSnapshot(g_preparedFrame.serial);
+        }
+#endif
         const bool upcomingHeadValid =
             CaptureHeadPose(frameState.predictedDisplayTime);
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
@@ -7582,6 +7655,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         static std::vector<XrCompositionLayerBaseHeader*> layers;
         projectionViews.clear();
         layers.clear();
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        // Count a headset-visible C-H4-7 pair only after the frame that queues
+        // its projection layer is accepted by xrEndFrame.
+        bool halo4ProjectionQueued = false;
+#endif
 
         // Build the descriptors every frame from the predicted eye poses/FOV.
         // A later M2 render hook only needs to fill/release both swapchain
@@ -7597,9 +7675,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             // per-eye orientations. Submitting a shared midpoint orientation
             // here under-covers the outward-angled lens edge and shows as a
             // black border at the outer edge of each eye.
-            // Halo can only raster a SYMMETRIC frustum, so RenderViewHook renders
-            // a symmetric cover wide enough to contain the headset's asymmetric
-            // per-eye angles, and Game_GetRenderHalfFovs reports that cover.
+            // The current compositor contract accepts a symmetric raster cover.
+            // Established title paths render one wide enough to contain the
+            // headset's asymmetric per-eye angles; H4 C-H4-7 instead admits only
+            // a runtime-confirmed zero-center native projection.
             //
             // We used to submit the cover itself as the layer FOV over the whole
             // slice. That is legal OpenXR and SteamVR's compositor resolves it
@@ -7899,6 +7978,20 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     const bool reachImages = false;
                     const uint32_t reachGeneration = 0;
 #endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+                    const bool halo4Title =
+                        TitleAdapter_GetActiveTitle() == GameTitle::Halo4;
+                    const bool halo4Images = !halo4Title ||
+                        Halo4PreparedPairMatches(
+                            g_preparedFrame.serial,
+                            g_halo4EyeSerial[0].load(
+                                std::memory_order_acquire),
+                            g_halo4EyeSerial[1].load(
+                                std::memory_order_acquire));
+#else
+                    const bool halo4Title = false;
+                    const bool halo4Images = true;
+#endif
                     if (!reachTitle)
                         ValidateStereoImagesOnce();
                     // Once per frame, but it only writes a line every two
@@ -7934,27 +8027,46 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     }
                     const XrResult stereoAcquire =
                         xrAcquireSwapchainImage(g_stereoChain, &ai, &idx);
-                    const bool stereoAcquired = reachTitle
+                    const bool exactStereoTransaction =
+                        reachTitle || halo4Title;
+                    // An ordinary failed acquire owns no image and is therefore
+                    // a frame-local miss. An exact-title positive non-success
+                    // may nevertheless have acquired one (for example session
+                    // loss pending), so enter the named runtime-recovery path
+                    // rather than guessing at its call-order state. This keeps
+                    // Reach's established acquire behavior byte-for-behavior.
+                    const bool stereoAcquired = exactStereoTransaction
                         ? stereoAcquire == XR_SUCCESS
                         : XR_SUCCEEDED(stereoAcquire);
-                    if (reachTitle && stereoAcquire != XR_SUCCESS &&
+                    if (exactStereoTransaction &&
+                        stereoAcquire != XR_SUCCESS &&
                         XR_SUCCEEDED(stereoAcquire))
                     {
-                        (void)RequireReachSwapchainCompletion(
+                        (void)RequireExactSwapchainCompletion(
                             stereoAcquire,
-                            "Reach world swapchain acquire did not complete");
+                            halo4Title
+                                ? "Halo 4 world swapchain acquire did not "
+                                  "complete"
+                                : "Reach world swapchain acquire did not "
+                                  "complete");
                     }
                     bool stereoWaitCompleted = false;
                     if (stereoAcquired)
                     {
                         const XrResult stereoWait =
                             xrWaitSwapchainImage(g_stereoChain, &swi);
-                        stereoWaitCompleted = reachTitle
-                            ? RequireReachSwapchainCompletion(
+                        stereoWaitCompleted = exactStereoTransaction
+                            ? RequireExactSwapchainCompletion(
                                   stereoWait,
-                                  "Reach world swapchain wait did not complete")
+                                  halo4Title
+                                      ? "Halo 4 world swapchain wait did not "
+                                        "complete"
+                                      : "Reach world swapchain wait did not "
+                                        "complete")
                             : XR_SUCCEEDED(stereoWait);
                     }
+                    bool everyEyeUploaded = false;
+                    bool stereoReleased = false;
                     if (stereoAcquired && stereoWaitCompleted)
                     {
                         // Bracket only the two-eye publish. Everything the GPU
@@ -7962,7 +8074,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         // top of the game's own rendering.
                         IqTimerBeginFrame();
                         bool everyReachEyeUploaded = reachImages;
-                        bool everyEyeUploaded = true;
+                        everyEyeUploaded = true;
                         for (uint32_t targetEye = 0; targetEye < 2; ++targetEye)
                         {
                             const uint32_t sourceEye = theaterProjectionAttempted
@@ -7971,7 +8083,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                       g_config.cutscene_theater_flip_depth)
                                 : targetEye;
                             const bool haveImage = reachImages ||
-                                (!reachTitle && g_eyeHasImage[sourceEye]);
+                                (!reachTitle && (!halo4Title || halo4Images) &&
+                                 g_eyeHasImage[sourceEye]);
                             ID3D11Texture2D* source = reachImages
                                 ? reachAccess.eyes[sourceEye]
                                 : (reachTitle ? nullptr : g_eyeCache[sourceEye]);
@@ -8030,10 +8143,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             theaterProjectionAttempted && everyEyeUploaded;
                         const XrResult stereoRelease =
                             xrReleaseSwapchainImage(g_stereoChain, &ri);
-                        const bool stereoReleased = reachTitle
-                            ? RequireReachSwapchainCompletion(
+                        stereoReleased = exactStereoTransaction
+                            ? RequireExactSwapchainCompletion(
                                   stereoRelease,
-                                  "Reach world swapchain release did not complete")
+                                  halo4Title
+                                      ? "Halo 4 world swapchain release did not "
+                                        "complete"
+                                      : "Reach world swapchain release did not "
+                                        "complete")
                             : XR_SUCCEEDED(stereoRelease);
                         if (theaterProjectionAttempted &&
                             !theaterProjectionReady)
@@ -8054,6 +8171,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 (!theaterProjectionAttempted ||
                                  theaterProjectionReady);
                     }
+                    const bool halo4StereoUploadComplete = !halo4Title ||
+                        Halo4XrPairUploadComplete(
+                            stereoAcquired, stereoWaitCompleted,
+                            everyEyeUploaded, stereoReleased);
 
                     // A Reach frame that cannot expose a complete stereo pair
                     // is SKIPPED, not fatal. Revoke this frame's copied eye
@@ -8096,9 +8217,31 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         }
                     }
 #endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+                    if (halo4Title && halo4Images &&
+                        (!halo4StereoUploadComplete ||
+                         projection.viewCount != 2))
+                    {
+                        VR_InvalidateHalo4PreparedFrame();
+                        if (!g_abortFrameForSwapchainFailure)
+                        {
+                            g_halo4XrPairsDropped.fetch_add(
+                                1, std::memory_order_relaxed);
+                            g_halo4LastXrPairDropReason.store(
+                                static_cast<uint32_t>(
+                                    !halo4StereoUploadComplete
+                                        ? Halo4XrPairDropReason::EyeUploadIncomplete
+                                        : Halo4XrPairDropReason::ProjectionIncomplete),
+                                std::memory_order_relaxed);
+                        }
+                    }
+#endif
                     const bool projectionImagesReady = reachTitle
                         ? reachImages && reachStereoUploadComplete
-                        : g_eyeHasImage[0] && g_eyeHasImage[1];
+                        : halo4Title
+                            ? halo4Images && halo4StereoUploadComplete &&
+                                g_eyeHasImage[0] && g_eyeHasImage[1]
+                            : g_eyeHasImage[0] && g_eyeHasImage[1];
                     if (projectionImagesReady &&
                         projection.viewCount == 2)
                     {
@@ -8453,6 +8596,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 layers.push_back(
                                     reinterpret_cast<XrCompositionLayerBaseHeader*>(
                                         &projection));
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+                                if (halo4Title)
+                                    halo4ProjectionQueued = true;
+#endif
                             }
                         }
                         const bool reticleChainAdmitted =
@@ -8717,16 +8864,16 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     }
                 }
 
-                if (g_abortFrameForReachSwapchainFailure)
+                if (g_abortFrameForSwapchainFailure)
                 {
                     // Do not acquire menu/fade images or submit any partial
-                    // Reach layer set. xrBeginFrame still requires a matching
+                    // exact-title layer set. xrBeginFrame still requires a matching
                     // xrEndFrame; an empty layer list references no potentially
                     // outstanding swapchain image.
                     Menu_ClearVrPointer();
                     backbuffer->Release();
                     EndPreparedFrameWithoutLayers(
-                        "Reach swapchain transaction failed");
+                        "world swapchain transaction failed");
                     return;
                 }
 
@@ -8845,6 +8992,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         XrResult r = xrEndFrame(g_session, &ei);
         QueryPerformanceCounter(&endEnd);
         g_endFrameDurationsMs.Add(QpcMs(endEnd.QuadPart - endStart.QuadPart));
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        if (Halo4XrPairSubmissionAccepted(
+                halo4ProjectionQueued, r == XR_SUCCESS))
+        {
+            g_halo4XrPairsSubmitted.fetch_add(
+                1, std::memory_order_relaxed);
+        }
+#endif
         if constexpr (kEnableFramePacingTransitionCapture)
         {
             if (g_framePacingPending.serial == g_preparedFrame.serial)
@@ -8888,6 +9043,56 @@ void VR_InitInstance()
     else
         g_instanceFailed = true; // Fail() already showed a message
 }
+
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+bool VR_Halo4GetRenderSnapshot(Halo4VrRenderSnapshot& snapshot)
+{
+    snapshot = {};
+    const uint64_t serial =
+        g_preparedSerialPublished.load(std::memory_order_acquire);
+    if (!serial ||
+        g_preparedViewSerialPublished.load(std::memory_order_acquire) != serial ||
+        !g_preparedShouldRender.load(std::memory_order_acquire))
+    {
+        return false;
+    }
+
+    const uint32_t index =
+        g_halo4RenderSnapshotIndex.load(std::memory_order_seq_cst);
+    if (index >= 2)
+        return false;
+    uint32_t state =
+        g_halo4RenderSnapshotStates[index].load(std::memory_order_seq_cst);
+    if ((state & kHalo4RenderSnapshotWriter) != 0 ||
+        state >= kHalo4RenderSnapshotWriter - 1 ||
+        !g_halo4RenderSnapshotStates[index].compare_exchange_strong(
+            state, state + 1, std::memory_order_seq_cst,
+            std::memory_order_seq_cst))
+    {
+        return false;
+    }
+    if (g_halo4RenderSnapshotIndex.load(std::memory_order_seq_cst) != index)
+    {
+        g_halo4RenderSnapshotStates[index].fetch_sub(
+            1, std::memory_order_seq_cst);
+        return false;
+    }
+    const Halo4VrRenderSnapshot local = g_halo4RenderSnapshots[index];
+    g_halo4RenderSnapshotStates[index].fetch_sub(1, std::memory_order_seq_cst);
+
+    // Close publication rollover on both sides of the copy. A snapshot from a
+    // prior or newly prepared frame is never admitted into this transaction.
+    if (local.preparedSerial != serial ||
+        g_preparedSerialPublished.load(std::memory_order_acquire) != serial ||
+        g_preparedViewSerialPublished.load(std::memory_order_acquire) != serial ||
+        !g_preparedShouldRender.load(std::memory_order_acquire))
+    {
+        return false;
+    }
+    snapshot = local;
+    return true;
+}
+#endif
 
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
 void VR_ReachRenderCandidate_ColdPoll()
@@ -9230,6 +9435,34 @@ void VR_FramePacingWorkerPoll()
     static uint64_t lastSignalFailureReportMs = 0;
     static bool pipelineFaultReported = false;
     const uint64_t workerNowMs = GetTickCount64();
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    static uint64_t lastHalo4XrPairReportMs = 0;
+    if (!lastHalo4XrPairReportMs ||
+        workerNowMs - lastHalo4XrPairReportMs >= 2000)
+    {
+        const uint64_t submitted = g_halo4XrPairsSubmitted.exchange(
+            0, std::memory_order_relaxed);
+        const uint64_t dropped = g_halo4XrPairsDropped.exchange(
+            0, std::memory_order_relaxed);
+        uint32_t reason = g_halo4LastXrPairDropReason.exchange(
+            0, std::memory_order_relaxed);
+        static const char* const kDropReasons[] = {
+            "none", "eye upload incomplete", "projection incomplete"};
+        if (reason >= sizeof(kDropReasons) / sizeof(kDropReasons[0]))
+            reason = 0;
+        if (submitted || dropped ||
+            TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
+        {
+            LOG("Halo 4 C-H4-7 XR publish: %llu pairs submitted, %llu "
+                "recoverable frame drops in 2s; last drop: %s (recoverable "
+                "drops keep the core/session armed)",
+                static_cast<unsigned long long>(submitted),
+                static_cast<unsigned long long>(dropped),
+                kDropReasons[reason]);
+        }
+        lastHalo4XrPairReportMs = workerNowMs;
+    }
+#endif
     const uint64_t packetMisses =
         g_waitPacketMisses.load(std::memory_order_relaxed);
     if (!packetMisses)
@@ -9487,6 +9720,10 @@ void VR_ToggleStereo()
         Game_ForcePositional();
     g_renderEye = 0;
     g_eyeHasImage[0] = g_eyeHasImage[1] = false;
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    g_halo4EyeSerial[0].store(0, std::memory_order_release);
+    g_halo4EyeSerial[1].store(0, std::memory_order_release);
+#endif
     Game_SetStereoEye(on ? 0 : -1);
     LOG("M2 alternate-eye stereo %s%s", on ? "ON" : "OFF",
         on && !Game_IsHeadTracking() ? " (enable head tracking with F2)" : "");
@@ -9553,6 +9790,10 @@ void VR_DetachGamePresentation()
         Game_SetStereoEye(-1);
     g_renderEye = 0;
     g_eyeHasImage[0] = g_eyeHasImage[1] = false;
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    g_halo4EyeSerial[0].store(0, std::memory_order_release);
+    g_halo4EyeSerial[1].store(0, std::memory_order_release);
+#endif
     g_stereoValidationDone = false;
     g_rasterEye = -1;
     g_rasterRedirected[0] = g_rasterRedirected[1] = false;
@@ -9605,6 +9846,32 @@ bool VR_CaptureRenderedEye(int eye)
     return false;
 }
 
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+bool VR_CaptureHalo4RenderedEye(int eye, uint64_t preparedSerial)
+{
+    if (eye < 0 || eye > 1 || !preparedSerial)
+        return false;
+    if (!Halo4EyeCaptureIsCurrent(
+            eye, g_rasterEye.load(std::memory_order_acquire),
+            g_rasterRedirected[eye], g_eyeCache[eye] != nullptr))
+    {
+        g_halo4EyeSerial[eye].store(0, std::memory_order_release);
+        return false;
+    }
+    g_eyeHasImage[eye] = true;
+    g_halo4EyeSerial[eye].store(preparedSerial, std::memory_order_release);
+    return true;
+}
+
+void VR_InvalidateHalo4PreparedFrame()
+{
+    g_halo4EyeSerial[0].store(0, std::memory_order_release);
+    g_halo4EyeSerial[1].store(0, std::memory_order_release);
+    g_eyeHasImage[0] = false;
+    g_eyeHasImage[1] = false;
+}
+#endif
+
 bool VR_CaptureBackbufferEye(int eye)
 {
     if (eye < 0 || eye > 1 || !g_context || !g_gameBackbufferDescValid ||
@@ -9653,13 +9920,18 @@ void VR_TraceEvent(const char* tag, int a, int b)
 
 void VR_BeginRasterEye(int eye)
 {
+    // Revoke the prior scope before any resource precondition. Otherwise a
+    // transient resize/no-device return can leave yesterday's redirect flag
+    // looking like a capture from this prepared frame.
+    g_rasterEye.store(-1, std::memory_order_release);
+    if (eye >= 0 && eye < 2)
+        g_rasterRedirected[eye] = false;
     if (eye < 0 || eye > 1 || !g_gameSwapchain || !g_device)
         return;
     // Eye caches are created lazily when Halo binds its final scene-color RTV.
     // That RTV's typed view format (not the swapchain resource format) controls
     // the required sRGB conversion.
-    g_rasterRedirected[eye] = false;
-    g_rasterEye = eye;
+    g_rasterEye.store(eye, std::memory_order_release);
     if constexpr (kEnableRetiredRasterTrace)
         VR_TraceEvent("eye-begin", eye, 0);
 }

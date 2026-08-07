@@ -19,6 +19,23 @@ struct ReachVrRenderAccess
 };
 #endif
 
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+// One immutable, exact-prepared-serial eye-offset sample for Halo 4's narrow
+// setup+wrapper transaction. Publication is double-buffered and lock-free so
+// the render hook never takes the tracking critical section.
+struct Halo4VrEyeSnapshot
+{
+    float position[3]{};
+    float orientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+};
+
+struct Halo4VrRenderSnapshot
+{
+    uint64_t preparedSerial = 0;
+    Halo4VrEyeSnapshot eyes[2]{};
+};
+#endif
+
 // Called once on the DLL's background init thread. Creates the OpenXR instance
 // and finds the headset (slow), so the render thread never blocks on it.
 void VR_InitInstance();
@@ -49,6 +66,14 @@ bool VR_ReachBeginRenderAccess(
     ReachVrRenderAccess& access);
 bool VR_ReachCopyEye(ReachVrRenderAccess& access, int eye);
 void VR_ReachEndRenderAccess(ReachVrRenderAccess& access);
+#endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+bool VR_Halo4GetRenderSnapshot(Halo4VrRenderSnapshot& snapshot);
+// Captures only the already-redirected Halo 4 eye and stamps it with the
+// prepared serial. No logging, discovery, or COM work occurs here.
+bool VR_CaptureHalo4RenderedEye(int eye, uint64_t preparedSerial);
+// Revokes partial/stale eye stamps when a claimed Halo 4 pair is dropped.
+void VR_InvalidateHalo4PreparedFrame();
 #endif
 
 // Timing beacon from Halo's camera-copy hook. The first call after

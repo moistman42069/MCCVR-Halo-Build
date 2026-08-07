@@ -1,8 +1,13 @@
 {
-  "schema_version": 1,
-  "status": "PHASE0_IDENTITIES_PINNED_NO_RUNTIME_WORK",
-  "hook_eligible": false,
-  "hook_eligibility_scope": "NONE; no Halo 4 hook, probe, or runtime binding exists yet",
+  "schema_version": 2,
+  "status": "C_H4_7_OFFLINE_PASS_HEADSET_PENDING_C_H4_1_ACCEPTED",
+  "hook_eligible": true,
+  "hook_eligibility_scope": "C-H4-7 only: exact retail setup 0x374C84 plus per-window wrapper 0x1222F4, called by loop 0x122CA6 at return addresses 0x122CC8/0x122CE7, element 0x10DAFE0 and active view 0x4969AA0; all anchors unique and pinned. No main_render_game, CUI/HUD, head-pose, aim, hands, or weapon hook is admitted.",
+  "accepted_halo4_pointer": {
+    "candidate": "C-H4-1",
+    "source_commit": "954359b7f786b78c76824b662ead3c1fc8cd7917",
+    "note": "C-H4-2 through C-H4-7 are forward evidence/candidates and do not advance acceptance without an explicit headset result"
+  },
   "development_baseline": {
     "source_commit": "f4c641f7b1b707991f2bda71ba485090a16f1e9a",
     "dll_sha256": "1C6101FD63B4A86822FC110CE86AE29EA174E50CA949A58A801265DEAA98537A",
@@ -493,6 +498,20 @@
       "admits_hook": false
     }
   },
+  "runtime_hook_proof": {
+    "evidence_id": "E-H4-6",
+    "retail_image_size": "0x04A3F000",
+    "per_window_loop_rva": "0x122CA6",
+    "setup_rva": "0x374C84",
+    "wrapper_rva": "0x1222F4",
+    "stack_element_rva": "0x10DAFE0",
+    "active_view_rva": "0x4969AA0",
+    "setup_return_rva": "0x122CC8",
+    "wrapper_return_rva": "0x122CE7",
+    "signature_match_count_each": 1,
+    "install_policy": "all anchors unique, at pinned RVAs, RIP targets exact, loaded-image identity exact; otherwise both hooks stay out",
+    "c_h4_7_mutation_scope": "observer position +0x00, forward +0x28, up +0x34 only; stock full-vFOV +0x78 and FOV ratio +0x7C preserved"
+  },
   "headset_acceptance_complete": false,
   "accepted_release_eligible": false,
   "candidates": {
@@ -515,7 +534,7 @@
     },
     "C-H4-2": {
       "title": "level-load gate + cold observation (loaded-image verification)",
-      "status": "HEADSET_PENDING",
+      "status": "LOG_VERIFIED_PASS_EXPLICIT_ACCEPTANCE_PENDING",
       "packaged_date": "2026-08-07",
       "source_commit": "3656da999a581a4b5acdbeade22a4c743925eb9a",
       "dll_sha256": "ABCBE8232031D9019949611A3B842CB2A74C399148E43F241AB256FB61371EAC",
@@ -526,6 +545,7 @@
         "Microsoft Store"
       ],
       "install_verified": "installed DLL hashes read back independently in both Halo_MCC_VR folders and matched",
+      "preserved_log_sha256": "3D1F18F390450F7ABDC1EA6536EB6C1407A8CA24981765C2E92F8B0AFEC85037",
       "behavior": "Halo 4 joins the level-load gate; once the gate proves the level is running, one read-only verification per module instance that the loaded halo4.dll matches the pinned identity and the four E-H4-4 anchors (unique, at pinned RVAs, RIP decodes landing on the pinned array and stack-top globals, mapping still current)",
       "admits_hook": false,
       "what_it_closes": "before this, activeLevelRunning stayed true for Halo 4, so the draw-distance name scan and write plus the safe-frame publication could run against a module still loading a level",
@@ -535,6 +555,62 @@
       ],
       "test_asks": "exercise a Halo 4 level load AND a level exit - the cycle C-H4-1 never covered",
       "unchanged_titles": "Halo 3, ODST, Reach - gate change is additive per-title, observation is Halo 4-only"
+    },
+    "C-H4-3": {
+      "title": "first setup+wrapper stereo replay",
+      "status": "HEADSET_FAILED",
+      "source_commit": "2987dc217b43094e49ce09c5bb32ed960bd96b81",
+      "dll_sha256": "9AFE77E2A9BA13691A59EF520721ABFDA1D3D5DF875F21D99B161390BB9C4ED5",
+      "candidate_package": "out/candidates/2987dc2-reach-fp-parity-20260807-144434557Z",
+      "preserved_evidence": "out/test-runs/2987dc2-halo4-c3-steam-blackscreen-20260807-094854",
+      "preserved_log_sha256": "1C10257061F2ECD0CF610575113BF1A7D20502A86003EC74A4987E18A4CD8943",
+      "result": "wrapper replay sustained, but 486 of 486 eyes were uncaptured and layers stayed 0; black headset; no head-pose read"
+    },
+    "C-H4-4": {
+      "title": "first qualifying scene-target capture",
+      "status": "HEADSET_FAILED",
+      "source_commit": "68daa2730be1ff7c4ff37221d143f10b9425396d",
+      "dll_sha256": "FD976175D1B2BC9899CEBBE7866561056AD0ECEA2819DCA86D406C4C596306BE",
+      "candidate_package": "out/candidates/68daa27-reach-fp-parity-20260807-145817666Z",
+      "preserved_evidence": "out/test-runs/68daa27-halo4-c4-steamvr-unlit-20260807",
+      "preserved_log_sha256": "BFC239487725A2B706D0F1514F706D8C384B0CF9C33C828061BA333EEAC65A9C",
+      "result": "captured the wrong deferred target; unlit meshes with no lighting, shadows, post-processing, or HUD"
+    },
+    "C-H4-5": {
+      "title": "last-target full-eye scene capture",
+      "status": "HEADSET_FAILED_USER_REJECTED",
+      "source_commit": "89b89efbed581f9b303f513ba88c0d489ec4681d",
+      "dll_sha256": "72CE654FEAA1B8D23F0F68D9C0E506D15AD7FD9CE893975506EB57A3CD71B49E",
+      "candidate_package": "out/candidates/89b89ef-reach-fp-parity-20260807-153209741Z",
+      "preserved_evidence": "out/deploy-backups/72ce654-steam-before-4fc3c84-20260807-155606716Z/halo3xr.log",
+      "preserved_log_sha256": "775066A161B277528D337869A074677185CBAE7975E974145F6AA52EF7574E06",
+      "result": "lit and post-processed distinct eyes sustained at layers=1, but the user rejected malformed 3D/FOV; no head pose, 6DOF, or HUD"
+    },
+    "C-H4-6": {
+      "title": "failed bundled head-pose, projection, and main_render_game replay",
+      "status": "HEADSET_FAILED_REVERTED",
+      "source_commit": "4fc3c84834162c8154f9ac5e34771b4971c0dc4b",
+      "behavior_revert_commit": "7d58a685fc6209ac9f4f31bf55d00f263dc63950",
+      "dll_sha256": "A6488B4DC15323372BB1D7F93FD55F2323D3A08C5F09E580500A2C0E9915FA90",
+      "candidate_package": "out/candidates/4fc3c84-reach-fp-parity-20260807-155605774Z",
+      "preserved_evidence": "out/test-runs/4fc3c84-halo4-c6-steamvr-failed-20260807-112043",
+      "preserved_log_sha256": "4BF4992E18A92ACE266AF26D4A4115642348D7C0E6B9B8F2D945175FB5955D4A",
+      "result": "zero completed pairs, visible stall/title bounce, wrong FOV representation, and a void detour for a caller-consumed AL return"
+    },
+    "C-H4-7": {
+      "title": "stock-projection exact-serial stereo geometry",
+      "status": "OFFLINE_PASS_HEADSET_PENDING",
+      "identity_recording": "source/package/DLL hashes are filled only after the clean commit is packaged and installed",
+      "behavior": "eye separation/cant only on the sustained setup+wrapper boundary; stock H4 FOV inputs and finished projection authoritative",
+      "expected_absent": [
+        "HMD head rotation",
+        "6DOF translation",
+        "HUD/CUI",
+        "turn/look ownership",
+        "aim/reticle",
+        "hands/weapons"
+      ],
+      "acceptance": "90 Hz first; lit distinct sane stereo, layers=1, no stall, geometry TAKING, XR pairs submitted >0, zero steady drops/readback errors/uncaptured eyes, followed by required Halo 3 regression"
     }
   }
 }

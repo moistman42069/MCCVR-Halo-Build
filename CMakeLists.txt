@@ -65,17 +65,18 @@ set(HALOMCCVR_BUILD_REACH_RENDER "ON")
 message(STATUS
     "Halo MCC VR: Halo: Reach is permanent with all-or-nothing gated ownership")
 
-# Halo 4 bring-up C-H4-3: the per-eye camera core. Like Reach's, it is
-# all-or-nothing at runtime - it installs nothing unless C-H4-2's cold
-# observation PASSED for the live module and every E-H4-6 camera anchor is
-# unique at its pinned RVA - so the compile flag exists only to isolate an
-# unaccepted title, not to gate correctness. OFF returns Halo 4 to the accepted
-# C-H4-2 behavior (recognised, gamepad transport, flat).
+# Halo 4 bring-up C-H4-7: stock-projection stereo geometry on the sustained
+# per-window transaction. Hook installation is atomic and still requires
+# C-H4-2's cold observation plus every unique pinned camera anchor. Runtime
+# frame failures drop only that frame and retry with the core armed. The compile
+# flag isolates this unaccepted title line; OFF returns Halo 4 to C-H4-2's
+# recognised, gamepad-enabled flat behavior.
 option(HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
-    "Enable the Halo 4 per-eye camera core (C-H4-3)" ON)
+    "Enable Halo 4 stock-projection stereo geometry (C-H4-7)" ON)
 if(HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA)
     set(HALOMCCVR_BUILD_HALO4 "ON")
-    message(STATUS "Halo MCC VR: Halo 4 per-eye camera core enabled (C-H4-3)")
+    message(STATUS
+        "Halo MCC VR: Halo 4 stock-projection stereo geometry enabled (C-H4-7)")
 else()
     set(HALOMCCVR_BUILD_HALO4 "OFF")
 endif()

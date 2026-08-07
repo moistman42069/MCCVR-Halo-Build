@@ -29099,7 +29099,7 @@ namespace
 
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
     // =======================================================================
-    // C-H4-3: the Halo 4 per-eye camera core.
+    // C-H4-7: Halo 4 stock-projection stereo geometry on C-H4-5's wrapper.
     //
     // Halo 4 derives EVERY camera artifact - rasterizer camera, projection,
     // render pair and constant bank - inside one straight-line setup call per
@@ -29108,7 +29108,10 @@ namespace
     // the observer result. Per eye it rewrites that camera, re-runs the
     // engine's own unmodified setup, and then runs the engine's own unmodified
     // render transaction. Nothing derives the projection, the bank or the
-    // render pair on our side - Halo 4 does, twice, from two cameras.
+    // render pair on our side - Halo 4 does, twice, from two cameras. C-H4-7
+    // changes only position/forward/up for the runtime's two eye offsets and
+    // reads back the camera and finished stock projection before rendering.
+    // HMD head pose, 6DOF, and HUD/CUI remain explicitly outside this milestone.
     //
     // Both hooked functions have exactly ONE caller each and it is the same
     // proven loop, so each detour additionally requires its exact retail
@@ -29123,6 +29126,9 @@ namespace
 
     Halo4SetupFn g_halo4OrigSetup = nullptr;
     Halo4WrapperFn g_halo4OrigWrapper = nullptr;
+    std::atomic<float> g_halo4RenderHalfFovX[2]{};
+    std::atomic<float> g_halo4RenderHalfFovY[2]{};
+    std::atomic<uint64_t> g_halo4RenderFovSerial[2]{};
 
     // Deliberately narrow. This candidate proves stereo and nothing else;
     // ControllerInput is carried forward because C-H4-1 accepted it. Aim, HUD,
@@ -29153,6 +29159,16 @@ namespace
         // Reported by the worker, never from the detour.
         std::atomic<uint64_t> stereoFrames{0};
         std::atomic<uint64_t> stockFrames{0};
+        std::atomic<uint64_t> droppedFrames{0};
+        std::atomic<uint64_t> cameraClaims{0};
+        std::atomic<uint64_t> projectionReadbacks{0};
+        std::atomic<float> lastPositionError{0.0f};
+        std::atomic<float> lastForwardError{0.0f};
+        std::atomic<float> lastUpError{0.0f};
+        std::atomic<float> lastProjectionCenterX{0.0f};
+        std::atomic<float> lastProjectionCenterY{0.0f};
+        std::atomic<float> lastHalfFovX{0.0f};
+        std::atomic<float> lastHalfFovY{0.0f};
         // Pairs that rendered both eyes but whose eye image never reached a
         // cache, i.e. the scene-colour RTV redirect never happened. That is
         // the difference between "Halo 4 is not rendering twice" and "Halo 4
@@ -29161,9 +29177,9 @@ namespace
         std::atomic<uint64_t> uncapturedEyes{0};
         // Consecutive eyes that rendered but were never captured, and the
         // latch it trips. Submitting no eye image means submitting NO LAYER,
-        // which is a black headset with no head tracking - strictly worse for
-        // the player than the flat screen. When capture is provably not
-        // happening we give the flat screen back, loudly.
+        // which is a black headset - strictly worse for the player than the
+        // flat screen. When capture is provably not happening we give the flat
+        // screen back, loudly.
         std::atomic<uint32_t> consecutiveUncaptured{0};
         std::atomic<bool> sceneTargetMissing{false};
         std::atomic<uint32_t> lastRejection{0};
@@ -29173,8 +29189,8 @@ namespace
     // of start-up discovery are never mistaken for a failure.
     constexpr uint32_t kHalo4UncapturedEyeLimit = 240;
 
-    // Why a frame fell back to one stock render. Reported once per window by
-    // the worker so a flat headset comes with its reason attached.
+    // Why a frame rendered stock before ownership or was dropped after a
+    // claimed eye transaction began. Reported by the worker only.
     enum class Halo4StereoRejection : uint32_t
     {
         None = 0,
@@ -29184,9 +29200,21 @@ namespace
         SplitScreenWindow,
         ObserverUnreadable,
         CameraInvalid,
-        EyeFovUnavailable,
+        PreparedFrameUnavailable,
         EyeBuildFailed,
+        CameraClaimMismatch,
+        ProjectionInvalid,
+        EyeCaptureMissing,
+        RestoreFailed,
+        TransactionException,
         SceneTargetMissing,
+    };
+
+    enum class Halo4StereoResult : uint8_t
+    {
+        NotStarted,
+        Complete,
+        StartedFrameDropped,
     };
 
     // Setup's own arguments, captured at the one proven call site so the eye
@@ -29218,11 +29246,65 @@ namespace
         return 1;
     }
 
-    void Halo4NoteRejection(Halo4StereoRejection reason)
+    void Halo4NoteRejection(Halo4StereoRejection reason, bool frameStarted)
     {
         g_halo4Camera.lastRejection.store(
             static_cast<uint32_t>(reason), std::memory_order_relaxed);
-        g_halo4Camera.stockFrames.fetch_add(1, std::memory_order_relaxed);
+        (frameStarted ? g_halo4Camera.droppedFrames
+                      : g_halo4Camera.stockFrames)
+            .fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void Halo4InvalidatePublishedFrame()
+    {
+        g_halo4RenderFovSerial[0].store(0, std::memory_order_release);
+        g_halo4RenderFovSerial[1].store(0, std::memory_order_release);
+        VR_InvalidateHalo4PreparedFrame();
+    }
+
+    void Halo4ResetTelemetry()
+    {
+        g_halo4Camera.stereoFrames.store(0, std::memory_order_relaxed);
+        g_halo4Camera.stockFrames.store(0, std::memory_order_relaxed);
+        g_halo4Camera.droppedFrames.store(0, std::memory_order_relaxed);
+        g_halo4Camera.cameraClaims.store(0, std::memory_order_relaxed);
+        g_halo4Camera.projectionReadbacks.store(0, std::memory_order_relaxed);
+        g_halo4Camera.uncapturedEyes.store(0, std::memory_order_relaxed);
+        g_halo4Camera.consecutiveUncaptured.store(
+            0, std::memory_order_relaxed);
+        g_halo4Camera.lastPositionError.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastForwardError.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastUpError.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastProjectionCenterX.store(
+            0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastProjectionCenterY.store(
+            0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastHalfFovX.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastHalfFovY.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastRejection.store(0, std::memory_order_relaxed);
+        g_halo4RenderFovSerial[0].store(0, std::memory_order_release);
+        g_halo4RenderFovSerial[1].store(0, std::memory_order_release);
+    }
+
+    int Halo4RestoreMonoCamera(
+        const Halo4SetupArgs& args,
+        const unsigned char savedObserver[kHalo4ObserverSnapshotBytes])
+    {
+        if (!Halo4SafeWrite(reinterpret_cast<void*>(args.observer),
+                            savedObserver, kHalo4ObserverSnapshotBytes))
+        {
+            return 0;
+        }
+        __try
+        {
+            g_halo4OrigSetup(args.view, args.window, args.count, args.mode,
+                             args.user, args.observer);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return 0;
+        }
+        return 1;
     }
 
     void __fastcall Halo4SetupDetour(
@@ -29232,166 +29314,292 @@ namespace
         const uintptr_t returnAddress =
             reinterpret_cast<uintptr_t>(_ReturnAddress());
         g_halo4Camera.activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
-        Halo4SetupArgs& args = g_halo4SetupArgs;
-        // Only the proven call site inside the per-window loop may establish a
-        // transaction. Our own re-invocations go through the trampoline and
-        // never reach this detour at all.
-        if (returnAddress == g_halo4Camera.setupReturnAddress && view &&
-            observer)
+        __try
         {
-            args.valid = true;
-            args.view = view;
-            args.window = window;
-            args.count = count;
-            args.mode = mode;
-            args.user = user;
-            args.observer = observer;
+            Halo4SetupArgs& args = g_halo4SetupArgs;
+            // Only the proven call site inside the per-window loop may
+            // establish a transaction. Our own re-invocations go through the
+            // trampoline and never reach this detour at all.
+            if (returnAddress == g_halo4Camera.setupReturnAddress && view &&
+                observer)
+            {
+                args.valid = true;
+                args.view = view;
+                args.window = window;
+                args.count = count;
+                args.mode = mode;
+                args.user = user;
+                args.observer = observer;
+            }
+            else
+            {
+                args.valid = false;
+            }
+            g_halo4OrigSetup(view, window, count, mode, user, observer);
         }
-        else
+        __finally
         {
-            args.valid = false;
+            g_halo4Camera.activeCallbacks.fetch_sub(
+                1, std::memory_order_acq_rel);
         }
-        g_halo4OrigSetup(view, window, count, mode, user, observer);
-        g_halo4Camera.activeCallbacks.fetch_sub(1, std::memory_order_acq_rel);
     }
 
-    // The per-eye transaction. POD-only by construction: it runs under SEH in
-    // the caller, so nothing here may own a destructor.
-    bool Halo4StereoTransaction(
+    // C-H4-7: stock-projection geometry on C-H4-5's sustained wrapper scope.
+    // The snapshot, camera basis, and both eye transforms are validated before
+    // the first mutation. Once mutation begins, any failure drops this frame;
+    // it never mixes a partial eye with another stock wrapper render.
+    // POD-only: this function owns no C++ destructor because SEH must always run
+    // the eye/observer cleanup below.
+    Halo4StereoResult Halo4StereoTransaction(
         uintptr_t element, uintptr_t view, uint32_t window,
-        const Halo4SetupArgs& args)
+        const Halo4SetupArgs& args, bool& frameStarted)
     {
+        frameStarted = false;
+        Halo4VrRenderSnapshot snapshot{};
+        if (!VR_Halo4GetRenderSnapshot(snapshot))
+        {
+            Halo4NoteRejection(
+                Halo4StereoRejection::PreparedFrameUnavailable, false);
+            return Halo4StereoResult::NotStarted;
+        }
+
         unsigned char savedObserver[kHalo4ObserverSnapshotBytes];
         if (!Halo4SafeRead(reinterpret_cast<const void*>(args.observer),
                            savedObserver, sizeof(savedObserver)))
         {
-            Halo4NoteRejection(Halo4StereoRejection::ObserverUnreadable);
-            return false;
+            Halo4NoteRejection(Halo4StereoRejection::ObserverUnreadable, false);
+            return Halo4StereoResult::NotStarted;
         }
 
-        Halo4CameraBasis mono{};
-        memcpy(mono.position, savedObserver + kHalo4ObserverPositionOffset,
-               sizeof(mono.position));
-        memcpy(mono.forward, savedObserver + kHalo4ObserverForwardOffset,
-               sizeof(mono.forward));
-        memcpy(mono.up, savedObserver + kHalo4ObserverUpOffset,
-               sizeof(mono.up));
-        memcpy(&mono.tangentX, savedObserver + kHalo4ObserverTangentXOffset,
-               sizeof(mono.tangentX));
-        memcpy(&mono.tangentY, savedObserver + kHalo4ObserverTangentYOffset,
-               sizeof(mono.tangentY));
-        if (!Halo4ValidateCameraBasis(mono))
+        Halo4CameraBasis stock{};
+        memcpy(stock.position, savedObserver + kHalo4ObserverPositionOffset,
+               sizeof(stock.position));
+        memcpy(stock.forward, savedObserver + kHalo4ObserverForwardOffset,
+               sizeof(stock.forward));
+        memcpy(stock.up, savedObserver + kHalo4ObserverUpOffset,
+               sizeof(stock.up));
+        memcpy(&stock.verticalFov,
+               savedObserver + kHalo4ObserverVerticalFovOffset,
+               sizeof(stock.verticalFov));
+        memcpy(&stock.fovRatio,
+               savedObserver + kHalo4ObserverFovRatioOffset,
+               sizeof(stock.fovRatio));
+        if (!Halo4ValidateCameraBasis(stock))
         {
-            Halo4NoteRejection(Halo4StereoRejection::CameraInvalid);
-            return false;
+            Halo4NoteRejection(Halo4StereoRejection::CameraInvalid, false);
+            return Halo4StereoResult::NotStarted;
         }
 
-        // One symmetric cover for both eyes, taken as the widest of the two, so
-        // the single tangent pair Halo 4 stores per camera covers whichever eye
-        // is being displayed and Game_GetRenderHalfFovs reports one truth for
-        // the submitted pair.
-        float coverTangentX = 0.0f;
-        float coverTangentY = 0.0f;
+        const float worldScale = g_worldScale.load(std::memory_order_acquire);
+        Halo4CameraBasis eyeCameras[2]{};
         for (int eye = 0; eye < 2; ++eye)
         {
-            float fov[4];
-            float eyeTangentX = 0.0f;
-            float eyeTangentY = 0.0f;
-            if (!VR_GetEyeFov(eye, fov) ||
-                !Halo4SymmetricCoverFromFov(fov, eyeTangentX, eyeTangentY))
-            {
-                Halo4NoteRejection(Halo4StereoRejection::EyeFovUnavailable);
-                return false;
-            }
-            if (eyeTangentX > coverTangentX) coverTangentX = eyeTangentX;
-            if (eyeTangentY > coverTangentY) coverTangentY = eyeTangentY;
-        }
-
-        const float worldScale = g_worldScale.load();
-        const int firstEye = g_config.right_eye_first ? 1 : 0;
-        bool completed = true;
-        for (int pass = 0; pass < 2 && completed; ++pass)
-        {
-            const int eye = pass == 0 ? firstEye : 1 - firstEye;
-            float eyePosition[3] = {
-                (eye == 0 ? -1.0f : 1.0f) * 0.5f * 0.0675f, 0.0f, 0.0f};
-            float eyeOrientation[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-            const bool haveEyeView =
-                VR_GetEyeViewOffset(eye, eyePosition, eyeOrientation);
-
-            Halo4CameraBasis eyeCamera{};
             if (!Halo4BuildEyeCamera(
-                    mono, eyePosition, haveEyeView ? eyeOrientation : nullptr,
-                    worldScale, coverTangentX, coverTangentY, eyeCamera))
+                    stock, snapshot.eyes[eye].position,
+                    snapshot.eyes[eye].orientation, worldScale,
+                    eyeCameras[eye]))
             {
-                Halo4NoteRejection(Halo4StereoRejection::EyeBuildFailed);
-                completed = false;
-                break;
+                Halo4NoteRejection(
+                    Halo4StereoRejection::EyeBuildFailed, false);
+                return Halo4StereoResult::NotStarted;
             }
-
-            unsigned char eyeObserver[kHalo4ObserverSnapshotBytes];
-            memcpy(eyeObserver, savedObserver, sizeof(eyeObserver));
-            memcpy(eyeObserver + kHalo4ObserverPositionOffset,
-                   eyeCamera.position, sizeof(eyeCamera.position));
-            memcpy(eyeObserver + kHalo4ObserverForwardOffset,
-                   eyeCamera.forward, sizeof(eyeCamera.forward));
-            memcpy(eyeObserver + kHalo4ObserverUpOffset, eyeCamera.up,
-                   sizeof(eyeCamera.up));
-            memcpy(eyeObserver + kHalo4ObserverTangentXOffset,
-                   &eyeCamera.tangentX, sizeof(eyeCamera.tangentX));
-            memcpy(eyeObserver + kHalo4ObserverTangentYOffset,
-                   &eyeCamera.tangentY, sizeof(eyeCamera.tangentY));
-            if (!Halo4SafeWrite(reinterpret_cast<void*>(args.observer),
-                                eyeObserver, sizeof(eyeObserver)))
-            {
-                Halo4NoteRejection(Halo4StereoRejection::ObserverUnreadable);
-                completed = false;
-                break;
-            }
-
-            g_stereoEye = eye;
-            VR_BeginRasterEye(eye);
-            // Re-derive A/B/C/D for this eye in unmodified engine code, then
-            // run the engine's own render transaction against it. Setup is
-            // re-callable: its first callee rebuilds the element rect from
-            // +0x44 on every call, so the in-place rect arithmetic that
-            // follows is deterministic rather than accumulating.
-            g_halo4OrigSetup(args.view, args.window, args.count, args.mode,
-                             args.user, args.observer);
-            g_halo4OrigWrapper(element, view, window);
-            if (VR_CaptureRenderedEye(eye))
-            {
-                g_halo4Camera.consecutiveUncaptured.store(
-                    0, std::memory_order_relaxed);
-            }
-            else
-            {
-                g_halo4Camera.uncapturedEyes.fetch_add(
-                    1, std::memory_order_relaxed);
-                g_halo4Camera.consecutiveUncaptured.fetch_add(
-                    1, std::memory_order_relaxed);
-            }
-            VR_EndRasterEye();
         }
-        g_stereoEye = -1;
 
-        // Put the engine back on the mono camera before the UI bracket that
-        // follows this loop in main_render_game reads the element and bank.
-        Halo4SafeWrite(reinterpret_cast<void*>(args.observer), savedObserver,
-                       sizeof(savedObserver));
-        g_halo4OrigSetup(args.view, args.window, args.count, args.mode,
-                         args.user, args.observer);
+        float halfFovX[2]{};
+        float halfFovY[2]{};
+        float maximumPositionError = 0.0f;
+        float maximumForwardError = 0.0f;
+        float maximumUpError = 0.0f;
+        float lastCenterX = 0.0f;
+        float lastCenterY = 0.0f;
+        int completedEyes = 0;
+        int uncapturedEyes = 0;
+        bool eyeActive = false;
+        bool restoreSucceeded = false;
+        Halo4StereoRejection rejection = Halo4StereoRejection::None;
 
-        if (completed)
+        Halo4InvalidatePublishedFrame();
+        frameStarted = true;
+        __try
         {
-            g_renderHalfFovX = atanf(coverTangentX);
-            g_renderHalfFovY = atanf(coverTangentY);
-            g_halo4Camera.stereoFrames.fetch_add(1, std::memory_order_relaxed);
-            g_halo4Camera.lastRejection.store(
-                static_cast<uint32_t>(Halo4StereoRejection::None),
-                std::memory_order_relaxed);
+            const int firstEye = g_config.right_eye_first ? 1 : 0;
+            for (int pass = 0; pass < 2; ++pass)
+            {
+                const int eye = pass == 0 ? firstEye : 1 - firstEye;
+                unsigned char eyeObserver[kHalo4ObserverSnapshotBytes];
+                memcpy(eyeObserver, savedObserver, sizeof(eyeObserver));
+                // C-H4-7 changes only pose/basis. In particular +0x78/+0x7C
+                // remain bit-identical full-vFOV/FOV-ratio inputs.
+                memcpy(eyeObserver + kHalo4ObserverPositionOffset,
+                       eyeCameras[eye].position,
+                       sizeof(eyeCameras[eye].position));
+                memcpy(eyeObserver + kHalo4ObserverForwardOffset,
+                       eyeCameras[eye].forward,
+                       sizeof(eyeCameras[eye].forward));
+                memcpy(eyeObserver + kHalo4ObserverUpOffset,
+                       eyeCameras[eye].up, sizeof(eyeCameras[eye].up));
+                if (!Halo4SafeWrite(reinterpret_cast<void*>(args.observer),
+                                    eyeObserver, sizeof(eyeObserver)))
+                {
+                    rejection = Halo4StereoRejection::ObserverUnreadable;
+                    break;
+                }
+
+                g_stereoEye = eye;
+                VR_BeginRasterEye(eye);
+                eyeActive = true;
+                g_halo4OrigSetup(args.view, args.window, args.count, args.mode,
+                                 args.user, args.observer);
+
+                float actualPosition[3];
+                float actualForward[3];
+                float actualUp[3];
+                float projection[16];
+                if (!Halo4SafeRead(
+                        reinterpret_cast<const void*>(
+                            element + kHalo4ElementPositionOffset),
+                        actualPosition, sizeof(actualPosition)) ||
+                    !Halo4SafeRead(
+                        reinterpret_cast<const void*>(
+                            element + kHalo4ElementForwardOffset),
+                        actualForward, sizeof(actualForward)) ||
+                    !Halo4SafeRead(
+                        reinterpret_cast<const void*>(
+                            element + kHalo4ElementUpOffset),
+                        actualUp, sizeof(actualUp)) ||
+                    !Halo4SafeRead(
+                        reinterpret_cast<const void*>(
+                            element + kHalo4ElementProjectionMatrixOffset),
+                        projection, sizeof(projection)))
+                {
+                    rejection = Halo4StereoRejection::ObserverUnreadable;
+                    break;
+                }
+
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    const float positionError = fabsf(
+                        actualPosition[axis] - eyeCameras[eye].position[axis]);
+                    const float forwardError = fabsf(
+                        actualForward[axis] - eyeCameras[eye].forward[axis]);
+                    const float upError =
+                        fabsf(actualUp[axis] - eyeCameras[eye].up[axis]);
+                    if (positionError > maximumPositionError)
+                        maximumPositionError = positionError;
+                    if (forwardError > maximumForwardError)
+                        maximumForwardError = forwardError;
+                    if (upError > maximumUpError)
+                        maximumUpError = upError;
+                }
+                g_halo4Camera.lastPositionError.store(
+                    maximumPositionError, std::memory_order_relaxed);
+                g_halo4Camera.lastForwardError.store(
+                    maximumForwardError, std::memory_order_relaxed);
+                g_halo4Camera.lastUpError.store(
+                    maximumUpError, std::memory_order_relaxed);
+                if (!Halo4CameraOutputMatches(
+                        eyeCameras[eye], actualPosition, actualForward,
+                        actualUp))
+                {
+                    rejection = Halo4StereoRejection::CameraClaimMismatch;
+                    break;
+                }
+                ++completedEyes;
+                g_halo4Camera.cameraClaims.fetch_add(
+                    1, std::memory_order_relaxed);
+
+                float centerX = 0.0f;
+                float centerY = 0.0f;
+                if (!Halo4DecodeSymmetricProjectionHalfFovs(
+                        projection, halfFovX[eye], halfFovY[eye], centerX,
+                        centerY))
+                {
+                    g_halo4Camera.lastProjectionCenterX.store(
+                        centerX, std::memory_order_relaxed);
+                    g_halo4Camera.lastProjectionCenterY.store(
+                        centerY, std::memory_order_relaxed);
+                    rejection = Halo4StereoRejection::ProjectionInvalid;
+                    break;
+                }
+                lastCenterX = centerX;
+                lastCenterY = centerY;
+                g_halo4Camera.projectionReadbacks.fetch_add(
+                    1, std::memory_order_relaxed);
+
+                g_halo4OrigWrapper(element, view, window);
+                if (!VR_CaptureHalo4RenderedEye(
+                        eye, snapshot.preparedSerial))
+                {
+                    ++uncapturedEyes;
+                }
+                VR_EndRasterEye();
+                eyeActive = false;
+            }
         }
-        return completed;
+        __finally
+        {
+            if (eyeActive)
+                VR_EndRasterEye();
+            g_stereoEye = -1;
+            restoreSucceeded = Halo4RestoreMonoCamera(args, savedObserver) != 0;
+        }
+
+        if (!restoreSucceeded)
+            rejection = Halo4StereoRejection::RestoreFailed;
+        else if (rejection == Halo4StereoRejection::None &&
+                 completedEyes == 2 && uncapturedEyes != 0)
+            rejection = Halo4StereoRejection::EyeCaptureMissing;
+
+        if (restoreSucceeded && completedEyes == 2 && uncapturedEyes == 0 &&
+            rejection == Halo4StereoRejection::None)
+        {
+            for (int eye = 0; eye < 2; ++eye)
+            {
+                g_halo4RenderHalfFovX[eye].store(
+                    halfFovX[eye], std::memory_order_relaxed);
+                g_halo4RenderHalfFovY[eye].store(
+                    halfFovY[eye], std::memory_order_relaxed);
+                g_halo4RenderFovSerial[eye].store(
+                    snapshot.preparedSerial, std::memory_order_release);
+            }
+            g_halo4Camera.consecutiveUncaptured.store(
+                0, std::memory_order_relaxed);
+            g_halo4Camera.lastPositionError.store(
+                maximumPositionError, std::memory_order_relaxed);
+            g_halo4Camera.lastForwardError.store(
+                maximumForwardError, std::memory_order_relaxed);
+            g_halo4Camera.lastUpError.store(
+                maximumUpError, std::memory_order_relaxed);
+            g_halo4Camera.lastProjectionCenterX.store(
+                lastCenterX, std::memory_order_relaxed);
+            g_halo4Camera.lastProjectionCenterY.store(
+                lastCenterY, std::memory_order_relaxed);
+            g_halo4Camera.lastHalfFovX.store(
+                halfFovX[1], std::memory_order_relaxed);
+            g_halo4Camera.lastHalfFovY.store(
+                halfFovY[1], std::memory_order_relaxed);
+            g_halo4Camera.stereoFrames.fetch_add(
+                1, std::memory_order_relaxed);
+            return Halo4StereoResult::Complete;
+        }
+
+        if (uncapturedEyes)
+        {
+            g_halo4Camera.uncapturedEyes.fetch_add(
+                static_cast<uint64_t>(uncapturedEyes),
+                std::memory_order_relaxed);
+            if (rejection == Halo4StereoRejection::EyeCaptureMissing)
+            {
+                g_halo4Camera.consecutiveUncaptured.fetch_add(
+                    static_cast<uint32_t>(uncapturedEyes),
+                    std::memory_order_relaxed);
+            }
+        }
+        Halo4InvalidatePublishedFrame();
+        if (rejection == Halo4StereoRejection::None)
+            rejection = Halo4StereoRejection::TransactionException;
+        Halo4NoteRejection(rejection, true);
+        return Halo4StereoResult::StartedFrameDropped;
     }
 
     void Halo4WrapperBody(
@@ -29406,21 +29614,22 @@ namespace
             // Rendering twice and capturing nothing is pure cost with a black
             // headset at the end of it. Stop claiming the transaction until a
             // new module generation re-earns it.
-            Halo4NoteRejection(Halo4StereoRejection::SceneTargetMissing);
+            Halo4NoteRejection(
+                Halo4StereoRejection::SceneTargetMissing, false);
             g_halo4OrigWrapper(element, view, window);
             return;
         }
         if (!g_halo4Camera.armed.load(std::memory_order_acquire) ||
             !VR_IsStereoEnabled() || !g_enabled.load())
         {
-            Halo4NoteRejection(Halo4StereoRejection::NotArmed);
+            Halo4NoteRejection(Halo4StereoRejection::NotArmed, false);
             g_halo4OrigWrapper(element, view, window);
             return;
         }
         if (returnAddress != g_halo4Camera.wrapperReturnAddress ||
             element != g_halo4Camera.elementAddress)
         {
-            Halo4NoteRejection(Halo4StereoRejection::ForeignCaller);
+            Halo4NoteRejection(Halo4StereoRejection::ForeignCaller, false);
             g_halo4OrigWrapper(element, view, window);
             return;
         }
@@ -29428,7 +29637,8 @@ namespace
         // owns the headset; a split-screen guest keeps its stock flat render.
         if (window != 0)
         {
-            Halo4NoteRejection(Halo4StereoRejection::SplitScreenWindow);
+            Halo4NoteRejection(
+                Halo4StereoRejection::SplitScreenWindow, false);
             g_halo4OrigWrapper(element, view, window);
             return;
         }
@@ -29438,27 +29648,41 @@ namespace
         if (!args.valid || args.view != view || args.window != window ||
             !args.observer)
         {
-            Halo4NoteRejection(Halo4StereoRejection::SetupArgsMissing);
+            Halo4NoteRejection(
+                Halo4StereoRejection::SetupArgsMissing, false);
             g_halo4OrigWrapper(element, view, window);
             return;
         }
 
-        bool handled = false;
+        Halo4StereoResult result = Halo4StereoResult::NotStarted;
+        bool frameStarted = false;
+        bool transactionException = false;
         __try
         {
-            handled = Halo4StereoTransaction(element, view, window, args);
+            result = Halo4StereoTransaction(
+                element, view, window, args, frameStarted);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            handled = false;
+            transactionException = true;
+            result = frameStarted
+                ? Halo4StereoResult::StartedFrameDropped
+                : Halo4StereoResult::NotStarted;
         }
-        if (!handled)
+        if (transactionException)
         {
-            // Skip the frame, keep the core. A single failure after minutes of
-            // correct rendering is not a reason to drop the player out of VR.
+            Halo4InvalidatePublishedFrame();
+            Halo4NoteRejection(
+                Halo4StereoRejection::TransactionException, frameStarted);
+        }
+        if (result == Halo4StereoResult::NotStarted)
+        {
+            // Ownership never began, so the untouched stock wrapper is safe.
             g_stereoEye = -1;
             g_halo4OrigWrapper(element, view, window);
         }
+        // StartedFrameDropped intentionally does not re-run the wrapper. The
+        // next prepared frame retries with the camera core still armed.
     }
 
     __declspec(noinline) void __fastcall Halo4WrapperDetour(
@@ -29549,14 +29773,9 @@ namespace
         g_halo4Camera.installed.store(false, std::memory_order_release);
         g_halo4Camera.generation.store(0, std::memory_order_release);
         g_halo4Camera.teardownRequested.store(false, std::memory_order_release);
-        g_halo4Camera.stereoFrames.store(0, std::memory_order_relaxed);
-        g_halo4Camera.stockFrames.store(0, std::memory_order_relaxed);
-        g_halo4Camera.uncapturedEyes.store(0, std::memory_order_relaxed);
-        g_halo4Camera.consecutiveUncaptured.store(
-            0, std::memory_order_relaxed);
+        Halo4ResetTelemetry();
         g_halo4Camera.sceneTargetMissing.store(
             false, std::memory_order_release);
-        g_halo4Camera.lastRejection.store(0, std::memory_order_relaxed);
         g_halo4LevelLoadGate.Rearm();
         LOG("Halo 4 camera core removed (generation %u); Halo 4 is stock "
             "again and the next level must re-earn the install proof",
@@ -29714,14 +29933,9 @@ namespace
         g_halo4OrigWrapper = originalWrapper;
         g_halo4Camera.generation.store(generation, std::memory_order_release);
         g_halo4Camera.teardownRequested.store(false, std::memory_order_release);
-        g_halo4Camera.stereoFrames.store(0, std::memory_order_relaxed);
-        g_halo4Camera.stockFrames.store(0, std::memory_order_relaxed);
-        g_halo4Camera.uncapturedEyes.store(0, std::memory_order_relaxed);
-        g_halo4Camera.consecutiveUncaptured.store(
-            0, std::memory_order_relaxed);
+        Halo4ResetTelemetry();
         g_halo4Camera.sceneTargetMissing.store(
             false, std::memory_order_release);
-        g_halo4Camera.lastRejection.store(0, std::memory_order_relaxed);
         g_halo4Camera.installedAtMs = GetTickCount64();
 
         if (MH_EnableHook(setupTarget) != MH_OK ||
@@ -29798,9 +30012,12 @@ namespace
                 kReachRenderSafetyIntervalMs)
         {
             g_halo4Camera.armed.store(true, std::memory_order_release);
-            LOG("Halo 4 camera core armed: the engine's own setup now runs "
-                "twice per frame, once per eye, from a substituted observer "
-                "camera; a failed eye pair falls back to one stock render");
+            LOG("Halo 4 camera core armed: C-H4-7 stock-projection stereo "
+                "geometry uses the sustained setup+wrapper scope; only eye "
+                "position/forward/up change, stock FOV inputs remain byte-"
+                "identical, and a failed claimed pair drops one frame then "
+                "retries; head tracking, 6DOF, and HUD are not in this "
+                "candidate");
         }
         PublishHalo4Lifecycle();
     }
@@ -29834,24 +30051,50 @@ namespace
         static const char* const kRejectionNames[] = {
             "none", "not armed", "foreign caller", "setup args missing",
             "split-screen window", "observer unreadable", "camera invalid",
-            "eye FOV unavailable", "eye build failed",
+            "prepared frame unavailable", "eye build failed",
+            "engine camera readback mismatch", "projection invalid/off-axis",
+            "eye capture missing", "mono restore failed",
+            "transaction exception",
             "scene target never identified"};
         const uint64_t stereo =
             g_halo4Camera.stereoFrames.exchange(0, std::memory_order_relaxed);
         const uint64_t stock =
             g_halo4Camera.stockFrames.exchange(0, std::memory_order_relaxed);
+        const uint64_t dropped =
+            g_halo4Camera.droppedFrames.exchange(0, std::memory_order_relaxed);
+        const uint64_t claims =
+            g_halo4Camera.cameraClaims.exchange(0, std::memory_order_relaxed);
+        const uint64_t projections =
+            g_halo4Camera.projectionReadbacks.exchange(
+                0, std::memory_order_relaxed);
         const uint64_t uncaptured =
             g_halo4Camera.uncapturedEyes.exchange(
                 0, std::memory_order_relaxed);
-        uint32_t reason = g_halo4Camera.lastRejection.load(
-            std::memory_order_relaxed);
+        uint32_t reason = g_halo4Camera.lastRejection.exchange(
+            0, std::memory_order_relaxed);
         if (reason >= sizeof(kRejectionNames) / sizeof(kRejectionNames[0]))
             reason = 0;
-        LOG("Halo 4 stereo: %llu owned pairs, %llu stock windows, %llu "
-            "uncaptured eyes in the last 2s (last stock reason: %s); armed=%d",
+        LOG("Halo 4 C-H4-7: %llu completed pairs, %llu stock windows, %llu "
+            "dropped frames, %llu/%llu camera/projection readbacks, %llu "
+            "uncaptured eyes in 2s; geometry %s; last readback max error "
+            "pos %.6f fwd %.6f up %.6f; last stock projection half "
+            "%.2f/%.2f deg center %.6f/%.6f; last rejection: %s; armed=%d",
             static_cast<unsigned long long>(stereo),
             static_cast<unsigned long long>(stock),
+            static_cast<unsigned long long>(dropped),
+            static_cast<unsigned long long>(claims),
+            static_cast<unsigned long long>(projections),
             static_cast<unsigned long long>(uncaptured),
+            stereo != 0 ? "TAKING" : "UNPROVEN",
+            g_halo4Camera.lastPositionError.load(std::memory_order_relaxed),
+            g_halo4Camera.lastForwardError.load(std::memory_order_relaxed),
+            g_halo4Camera.lastUpError.load(std::memory_order_relaxed),
+            g_halo4Camera.lastHalfFovX.load(std::memory_order_relaxed) * 57.2958f,
+            g_halo4Camera.lastHalfFovY.load(std::memory_order_relaxed) * 57.2958f,
+            g_halo4Camera.lastProjectionCenterX.load(
+                std::memory_order_relaxed),
+            g_halo4Camera.lastProjectionCenterY.load(
+                std::memory_order_relaxed),
             kRejectionNames[reason],
             g_halo4Camera.armed.load(std::memory_order_acquire) ? 1 : 0);
     }
@@ -30467,6 +30710,19 @@ void Game_Init()
 
 bool Game_IsHooked() { return g_hooked; }
 bool Game_IsHeadTracking() { return g_enabled.load(); }
+bool Game_IsStereoGeometryOnlyBringup()
+{
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    return TitleAdapter_GetActiveTitle() == GameTitle::Halo4;
+#else
+    return false;
+#endif
+}
+bool Game_IsHeadTrackingApplied()
+{
+    return g_enabled.load(std::memory_order_acquire) &&
+        !Game_IsStereoGeometryOnlyBringup();
+}
 bool Game_IsCameraOnlyBringup()
 {
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
@@ -31326,11 +31582,11 @@ void Game_AutoVrTick()
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
     if (TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
     {
-        // Halo 4 owns head tracking and stereo exactly while its camera core
-        // is armed. Enabling them is what lets the present path composite the
-        // two eye caches the wrapper detour captured. The heartbeat is the
-        // shared resolver's liveness signal: without it Halo 4 never qualifies
-        // as runtime owner and its Stereo capability is denied.
+        // Halo 4 owns stereo presentation exactly while its camera core is
+        // armed. g_enabled is also the shared presentation gate used by the
+        // wrapper detour; C-H4-7 does not yet apply HMD head pose or 6DOF. The
+        // heartbeat is the shared resolver's liveness signal: without it Halo 4
+        // never qualifies as runtime owner and its Stereo capability is denied.
         const bool halo4StereoUsable =
             g_halo4Camera.armed.load(std::memory_order_acquire) &&
             !g_halo4Camera.sceneTargetMissing.load(std::memory_order_acquire);
@@ -31343,8 +31599,8 @@ void Game_AutoVrTick()
                 Game_ForcePositional();
                 if (!VR_IsStereoEnabled())
                     VR_ToggleStereo();
-                LOG("Halo 4 camera bring-up: head tracking, stereo, and 6DOF "
-                    "ON");
+                LOG("Halo 4 C-H4-7 stereo geometry ON; head tracking, 6DOF, "
+                    "and HUD remain intentionally pending");
             }
             const uint32_t halo4Generation =
                 TitleAdapter_GetGeneration(GameTitle::Halo4);
@@ -31687,6 +31943,14 @@ void Game_TogglePositional()
 
 void Game_ForcePositional()
 {
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    if (Game_IsStereoGeometryOnlyBringup())
+    {
+        LOG("Halo 4 C-H4-7 immersive stereo flag ON; positional state and "
+            "HMD translation/6DOF are intentionally unchanged");
+        return;
+    }
+#endif
     g_positional = true;
     g_needPosRecenter = true;
     LOG("positional 6DOF forced ON for stereo VR");
@@ -32637,6 +32901,33 @@ bool Game_GetRenderHalfFovs(
     halfX[1] = fallbackX;
     halfY[0] = fallbackY;
     halfY[1] = fallbackY;
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    if (TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
+    {
+        if (!g_halo4Camera.armed.load(std::memory_order_acquire) ||
+            !Halo4PreparedPairMatches(
+                preparedFrameSerial,
+                g_halo4RenderFovSerial[0].load(std::memory_order_acquire),
+                g_halo4RenderFovSerial[1].load(std::memory_order_acquire)))
+        {
+            return false;
+        }
+        for (int eye = 0; eye < 2; ++eye)
+        {
+            halfX[eye] =
+                g_halo4RenderHalfFovX[eye].load(std::memory_order_relaxed);
+            halfY[eye] =
+                g_halo4RenderHalfFovY[eye].load(std::memory_order_relaxed);
+            if (!isfinite(halfX[eye]) || !isfinite(halfY[eye]) ||
+                halfX[eye] <= 0.0f || halfX[eye] >= 1.5707f ||
+                halfY[eye] <= 0.0f || halfY[eye] >= 1.5707f)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+#endif
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     if (TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
     {

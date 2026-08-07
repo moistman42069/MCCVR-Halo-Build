@@ -1,12 +1,13 @@
 # Halo 4 signature evidence
 
-Status: **C-H4-6 headset-FAILED; C-H4-1 remains the accepted Halo 4 line.**
-C-H4-5 is the last candidate that sustained two captured scene eyes, but it had
-no head pose and no HUD and is not accepted. C-H4-6 widened the eye scope to
-`main_render_game`; the exact run completed zero pairs, stalled the visible
+Status: **C-H4-3, C-H4-4, C-H4-5, and C-H4-6 headset-FAILED; C-H4-1 remains
+the only accepted Halo 4 line.** C-H4-6 widened the eye scope to
+`main_render_game`; its exact run completed zero pairs, stalled the visible
 game, exposed a `void` detour on a return value the caller consumes from `AL`,
-and exposed an invalid FOV diagnostic built on misidentified fields. That
-behavior must be reverted before the next candidate. This file is the
+and exposed an invalid FOV diagnostic built on misidentified fields. Commit
+`7d58a68` reverted that failed behavior before C-H4-7. C-H4-7 is a deliberately
+narrow stock-projection stereo-geometry candidate; it does not claim head
+tracking, 6DOF, or HUD. This file is the
 proof ledger for every Halo 4 signature, RVA, layout, and hook the runtime will
 consume. Nothing may be hooked, scanned for, or shipped for Halo 4 unless its
 proof is recorded here first. The machine-readable identity set lives in
@@ -370,11 +371,11 @@ a Halo 4 level load and level exit**, which C-H4-1's ~68 s menu-heavy window
 never did. Halo 3, ODST and Reach are untouched by construction: the gate
 change is additive per-title, and the observation is Halo 4-only.
 
-### C-H4-3 — the per-eye camera core (BUILT 2026-08-07, headset-PENDING)
+### C-H4-3 — the per-eye camera core (HEADSET-FAILED 2026-08-07)
 
-**The candidate that puts Halo 4 in stereo.** It is the first Halo 4 hook of
-any kind. Everything below is what the code does and what proves it; **no
-headset has run it yet**, so nothing here is a result.
+**The first Halo 4 hook candidate.** Its headset run proved sustained wrapper
+replay but produced a black headset because no eye image was captured. It did
+not prove head tracking, projection correctness, or camera parity.
 
 | Identity | Value |
 | --- | --- |
@@ -389,7 +390,7 @@ headset has run it yet**, so nothing here is a result.
 | Preserved evidence | `out/test-runs/2987dc2-halo4-c3-steam-blackscreen-20260807-094854` |
 | Preserved log SHA-256 | `1C10257061F2ECD0CF610575113BF1A7D20502A86003EC74A4987E18A4CD8943` |
 
-**RESULT: the camera half worked; the capture half did not. Risk 1 fired
+**RESULT: the setup+wrapper replay ran; the capture half did not. Risk 1 fired
 exactly as written.** Steam edition, VirtualDesktopXR 1.0.10, Meta Quest 3,
 120 Hz panel; Halo 4 window `09:48:20`-`09:48:47`. The log's first line names
 `2987dc2`, so this is the intended bytes.
@@ -401,39 +402,43 @@ What the run proves, in order:
    frozen→ticking at 5656 ms, the cold observation PASSED, and
    `Halo 4 camera core installed (generation 1)` names both pinned RVAs and
    records that the loop's own call targets agreed. The core armed ~0.9 s
-   later and `Halo 4 camera bring-up: head tracking, stereo, and 6DOF ON`
-   followed.
-2. **The double render works.** `Halo 4 stereo: 243 owned pairs, 0 stock
+   later and emitted the historical `head tracking, stereo, and 6DOF ON`
+   label. Source audit later proved that label false: this candidate never read
+   HMD head pose.
+2. **The double wrapper replay ran.** `Halo 4 stereo: 243 owned pairs, 0 stock
    windows` sustained for ~20 s — ~121 claimed transactions per second at
-   `fps 120 (stereo on)`, with **zero** rejections of any kind. The observer
-   substitution, the re-invoked setup and the re-invoked wrapper all ran, every
-   frame, without one fallback. No crash, no load bounce, no kick to menu.
+   `fps 120 (stereo on)`, with **zero** rejections of any kind. That proves code
+   execution and transaction liveness, not that the observer projection or
+   camera geometry was correct. No crash, no load bounce, no kick to menu.
 3. **Not one eye was ever captured.** `M2 RASTER: no internal scene-color RTV
    redirect occurred; refusing fake eye copy` at `09:48:27.531`, then
    **486 uncaptured eyes against 243 owned pairs** — exactly two per pair,
    i.e. 100%.
-4. **That is the black screen, and it is a complete explanation.** With no eye
+4. **That is the black screen, and it completely explains layers=0.** With no eye
    image there is no projection layer, and because stereo was on there was no
    flat screen layer either: `status: session=focused shouldRender=1
    **layers=0**` for the entire Halo 4 window. Zero submitted layers is a black
-   headset with nothing to head-track — which is precisely what the user
-   reported. Head tracking was never broken; there was no image to track.
+   headset with nothing to assess — which is precisely what the user reported.
+   Later source audit proved C-H4-3 through C-H4-5 never read the head pose, so
+   this run cannot be cited as head-tracking evidence.
 
-**So the defect is not in the camera core at all.** It is in
+**The capture defect fully explains this run's black output.** It is in
 `VR_RedirectRenderTargets`' scene-target discovery, which identifies the eye
 image by **Halo 3's exact resource signature**: full-backbuffer-size
 `R8G8B8A8_TYPELESS` at slot 0 carrying `RENDER_TARGET|SHADER_RESOURCE|
 UNORDERED_ACCESS`. Halo 4 never binds that shape. This was named as risk 1
 before the run and the log was instrumented to separate it from "not rendering
-twice", which is what made it a five-minute diagnosis rather than a hunt.
+twice", which is what made it a five-minute diagnosis rather than a hunt. It
+does not establish that the camera/projection geometry was correct.
 
 **Two smaller facts worth keeping.** `renderWindow p95` was 5.93 ms while
 rendering the scene twice, against 16.22 ms in the menu beforehand — the
 double render is not obviously expensive, though nothing was being captured so
-this is not yet a fair cost measurement. And the FOV path worked: `M2:
-submitting native per-eye FOV; eye 1 cover 54.0/55.0 deg`.
+this is not yet a fair cost measurement. The FOV log ran, but it was based on
+fields later proven not to be tangents; it is not evidence that the FOV path
+worked.
 
-### C-H4-4 — identify Halo 4's scene target, and never present a black headset (BUILT 2026-08-07, headset-PENDING)
+### C-H4-4 — identify Halo 4's scene target, and never present a black headset (HEADSET-FAILED 2026-08-07)
 
 | Identity | Value |
 | --- | --- |
@@ -443,10 +448,12 @@ submitting native per-eye FOV; eye 1 cover 54.0/55.0 deg`.
 | `halo3xr_launcher.exe` SHA-256 | `930BEA232BFC3F8010BC2B385834DEBF796CD3DBEC02ECD0E8475E0DE8A72CE6` |
 | Installed editions | Steam and Microsoft Store; both DLL hashes verified independently after install |
 | Preserved priors | `out/deploy-backups/9afe77e-steam-before-68daa27-...`, `...-store-before-68daa27-...` |
-| Headset result | **PENDING** |
+| Headset result | **FAILED** — captured an early deferred target; unlit meshes, no lighting, shadows, post-processing, or HUD |
+| Preserved evidence | `out/test-runs/68daa27-halo4-c4-steamvr-unlit-20260807` |
+| Preserved log SHA-256 | `BFC239487725A2B706D0F1514F706D8C384B0CF9C33C828061BA333EEAC65A9C` |
 
-Three changes, no camera-core change: C-H4-3's camera work is proven by its own
-run and is left exactly as it is.
+Three changes, no camera-core change: C-H4-3 proved that the hooks and wrapper
+replay execute, not that camera geometry or tracking is correct.
 
 1. **A self-arming scene-target census.** The existing `fsr_probe` diagnostic
    already logs each distinct scene-scale render target once per eye context.
@@ -505,7 +512,7 @@ target that was already wrong, and the rest of the pipeline was never
 described. The diagnostic could not contradict the decision it was meant to
 check.
 
-### C-H4-5 — pick Halo 4's scene target by watching a whole eye (BUILT 2026-08-07, headset-PENDING)
+### C-H4-5 — pick Halo 4's scene target by watching a whole eye (HEADSET-FAILED 2026-08-07)
 
 | Identity | Value |
 | --- | --- |
@@ -514,10 +521,14 @@ check.
 | `halo3xr.dll` SHA-256 | `72CE654FEAA1B8D23F0F68D9C0E506D15AD7FD9CE893975506EB57A3CD71B49E` |
 | Installed editions | Steam and Microsoft Store; both hashes verified independently after install |
 | Preserved priors | `out/deploy-backups/fd97617-steam-before-89b89ef-...`, `...-store-before-89b89ef-...` |
-| Headset result | **PENDING** |
+| Headset result | **FAILED** — lit, captured stereo sustained, but the 3D/FOV was malformed; no head pose, 6DOF, or HUD |
+| Ran on | Steam edition, SteamVR/OpenXR 2.17.6, PSVR2, 120 Hz; Halo 4 window `10:42:33`-`10:43:10` |
+| Preserved evidence | `out/deploy-backups/72ce654-steam-before-4fc3c84-20260807-155606716Z/halo3xr.log` |
+| Preserved log SHA-256 | `775066A161B277528D337869A074677185CBAE7975E974145F6AA52EF7574E06` |
 
-No camera-core change again; C-H4-3's per-eye rendering has now been correct in
-two separate runs, on two different runtimes and headsets.
+No camera-core change again. The setup+wrapper transaction and scene capture
+now sustained on two runtimes/headsets; camera geometry and tracking still did
+not pass.
 
 1. **Halo 4 no longer decides at bind time.** It observes an entire eye,
    remembers the **LAST** qualifying full-size colour target bound in it, and
@@ -534,17 +545,24 @@ two separate runs, on two different runtimes and headsets.
 3. **Discovery resets at every backbuffer resize and presentation detach**, so
    a new level re-learns rather than inheriting a dead pointer.
 
+**RESULT.** The last-target rule solved the deferred-capture defect: after two
+learning eyes, the run sustained `layers=1`, zero steady uncaptured eyes, and
+roughly 108-120 fps with lit/post-processed scene images. The user nevertheless
+rejected the result as weird/malformed 3D with awful FOV, no 6DOF ("the ground
+follows my head"), and no HUD. Source audit then found zero Halo 4 head-pose
+reads, while the FOV fields were being used with the wrong representation.
+
 **If it is still wrong**, the `SCENEPROBE:` census now lists every scene-scale
 target Halo 4 binds during an owned eye, in bind order, with resource format,
 RTV view format, bind flags, sample count and slot. Pin the right one from that
 list. Do NOT re-theorise.
 
-**Known limitation, stated now rather than discovered later.** The per-eye
+**Known limitation, now measured rather than inferred.** The per-eye
 scope is the render wrapper `0x1222F4`, and E-H4-5 places Halo 4's UI bracket
-**after** the per-window loop, outside that scope. If the HUD is still missing
-once the scene looks correct, that is the cause, and the fix is to widen the
-eye scope to `main_render_game` `0x12259C` - which is a camera-core change and
-belongs to its own candidate.
+**after** the per-window loop, outside that scope. C-H4-6 proved that replaying
+the enclosing `main_render_game` as an eye scope is unsafe. HUD must instead
+use its own title-native, H4EK-proven CUI boundary; it must not widen the camera
+transaction again merely because the outer function contains UI.
 
 **Not a change, but worth recording because it was asked:** the 32-slot source
 view cache and intermediate texture pool from the `f4c641f` baseline are
@@ -601,18 +619,32 @@ unless the core is armed, the caller's return address is exactly `0x122CE7`,
 the element argument is exactly the pinned `0x10DAFE0`, the window index is 0
 (a split-screen guest keeps its flat render), and the immediately preceding
 setup call was for this same view and window. The observer read/write is
-SEH-guarded, the camera basis is validated for finiteness and unit length
-before it is used, and a failed eye pair falls back to one stock render while
-the core stays armed — a single bad frame never drops the player out of VR.
+SEH-guarded, and the camera basis is validated before it is used. C-H4-5's
+historical implementation rerendered stock after a partial eye attempt. C-H4-7
+supersedes that unsafe mixing rule: a failure before mutation runs stock once;
+after a claimed transaction starts, `__finally` restores mono state, both eye
+and FOV serials are invalidated, that frame is dropped, the core stays armed,
+and the next prepared frame retries.
 
-**FOV CORRECTION (2026-08-07).** This candidate got the observer layout wrong.
-H4EK's `s_observer_result` producer and asserts prove `+0x78` is a full vertical
-FOV in radians and `+0x7C` is an FOV ratio, not horizontal/vertical tangents.
-C-H4-3 through C-H4-6 wrote `tan(OpenXR half-angle)` into both fields and then
-reported those half-angles to the compositor. That projection path is invalid
-and is a direct candidate for the user's "awful FOV" result. Preserve both
-stock fields until the native FOV/ratio consumer and resulting projection are
-derived; do not tune the wrong representation.
+**FOV CORRECTION (2026-08-07).** C-H4-3 through C-H4-6 got the observer layout
+wrong. H4EK's `s_observer_result` finisher proves `+0x40` is horizontal FOV,
+`+0x60` is aspect, `+0x78` is full vertical FOV
+`2*atan(tan(horizontal/2)/aspect)`, and `+0x7C` is the dimensionless
+horizontal/reference-FOV ratio (default reference 78 degrees), not a pair of
+tangents. The converter copies `+0x78/+0x7C` to camera `+0x28/+0x2C`; the
+projection consumes the vertical-FOV field. Writing OpenXR half-angle tangents
+into those two observer fields directly explains the malformed C-H4-5 result.
+
+The finished row-vector projection matrix begins at raster projection `+0x78`,
+therefore element `+0x100`. Let `Sx=p[0]`, `Sy=p[5]`, `Cx=p[8]`, and `Cy=p[9]`
+with `p[11]=-1`; exact raster-edge tangents are
+`L=(Cx-1)/Sx`, `R=(Cx+1)/Sx`, `D=(Cy-1)/Sy`, and `U=(Cy+1)/Sy`. The normal
+retail setup passes an exact zero center and produces positive scales. C-H4-7
+therefore admits only finite `Sx/Sy>0`, `Cx=Cy=0`, and publishes
+`halfX=atan(1/Sx)`, `halfY=atan(1/Sy)`. A custom/off-axis or unrecognized
+matrix drops that frame because the current symmetric compositor API cannot
+represent it honestly. C-H4-7 leaves `+0x78/+0x7C` and every other non-pose
+observer byte stock.
 
 **Capabilities published: `Stereo` and `ControllerInput` only.** Aim, HUD,
 haptics, room-scale locomotion, IK and the cutscene theatre are deliberately
@@ -639,13 +671,11 @@ shared code that has never run in this title.
    inherent cost of stereo in every title here and was measured as the
    dominant frame cost on the `f4c641f` baseline.
 
-**Expected headset result.** Halo 4 enters a level and turns stereo on about a
-second after the level-load gate opens, with head tracking and 6DOF, the same
-as the other three titles. Halo 3, ODST and Reach are untouched by
-construction: every edit is inside `#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA`
-or a Halo 4-only branch, and the Reach parity gate passes.
+**Historical C-H4-5 outcome.** Halo 4 entered stereo, but head tracking/6DOF
+were absent and projection geometry was invalid. No future candidate may call
+wrapper execution or pair count alone a camera-parity pass.
 
-### E-H4-7: main_render_game identity and extent (scope PROVEN; return ABI corrected 2026-08-07)
+### E-H4-7: main_render_game identity/extent proven; eye scope refuted (return ABI corrected 2026-08-07)
 
 The per-window render wrapper `0x1222F4` cannot contain Halo 4's later UI
 bracket: the UI runs after the per-window loop. Static evidence proves that the
@@ -695,9 +725,10 @@ work.
 | Preserved evidence | `out/test-runs/4fc3c84-halo4-c6-steamvr-failed-20260807-112043` |
 | Preserved log SHA-256 | `4BF4992E18A92ACE266AF26D4A4115642348D7C0E6B9B8F2D945175FB5955D4A` |
 
-**The defect this fixes was a hole in C-H4-3, not a tuning problem.** The user
+**Historical bundled hypothesis, not a validated fix.** The user
 reported *"its not even 6dof the ground follows my head"*, *"the fov is
-awful"* and *"the hud has to be in there"*. All three trace to one fact:
+awful"* and *"the hud has to be in there"*. C-H4-6 attempted all three at
+once even though they are separate behaviors with separate evidence:
 
 > **C-H4-3 through C-H4-5 never read the head pose. A search for
 > `VR_GetHeadPose` across the entire Halo 4 core returned zero.**
@@ -710,20 +741,20 @@ throughout, which counted that **our code ran** and never what **the engine
 held** - the precise failure mode `docs/CURRENT-STATE.md` and the "clean
 diagnostic = wrong mechanism" rule exist to prevent.
 
-**What C-H4-6 adds.**
+**What C-H4-6 attempted.** None of these claims passed the headset:
 
-1. **`Halo4ApplyHeadLook`**, a direct match of Halo 3's `ApplyHeadLook`, so
-   every shared control behaves as it already does in the other three titles:
+1. **`Halo4ApplyHeadLook`**, intended to match Halo 3's `ApplyHeadLook`:
    yaw relative to a recentre reference (the stick still turns the player
    underneath), pitch absolute plus `pitch_trim`, roll measured against a
    horizon-level up so tilting your head leaves the world fixed, and 6DOF that
    decomposes the headset's room-space movement in the head's horizontal frame,
    re-applies it in the game's frame, scales by `world_scale` and clamps. It
-   runs once per frame on the mono camera, before the eyes split off it.
+   runs once per frame on the mono camera, before the eyes split off it. Halo 4
+   turn-stick ownership was not wired, so the old text's turn claim was false.
 2. **The eye scope moves to `main_render_game`** (E-H4-7 above), so each eye
    renders the window loop *and* the UI bracket - the HUD is inside the eye by
    construction rather than excluded by it.
-3. **The camera claim is now measured.** The setup detour reads the element's
+3. **A camera-claim diagnostic was added.** The setup detour reads the element's
    forward and tangent pair back **after the engine's own converter has run**,
    and the two-second line reports `tangents requested X/Y, engine holds X/Y ->
    TOOK / NOT TAKING` plus the engine's `fwd.z`. A substitution that does not
@@ -732,12 +763,12 @@ diagnostic = wrong mechanism" rule exist to prevent.
    head-look depends on is confirmed against real values rather than inherited
    from the other titles.
 
-**Expected headset result.** Halo 4 with real head tracking and 6DOF - looking
+**Historical expected result.** Halo 4 with real head tracking and 6DOF - looking
 around moves the view and the world stays put - stereo depth, the headset's
 FOV, and the HUD present. The `Halo 4 stereo:` line should read `TOOK`.
 
-**RESULT: FAILED, and the whole C-H4-6 behavior must be reverted before the
-next candidate.** Steam edition, SteamVR/OpenXR 2.17.6, PSVR2 at 120 Hz; the
+**RESULT: FAILED. Commit `7d58a68` reverted the whole C-H4-6 behavior before
+the next candidate.** Steam edition, SteamVR/OpenXR 2.17.6, PSVR2 at 120 Hz; the
 Halo 4 window began at `11:20:19`, and the first owned attempt began at
 `11:20:26`. The first log line names source `4fc3c84`, so these are the intended
 bytes.
@@ -761,8 +792,9 @@ bytes.
 4. The pinned call site exposes an independent ABI defect: it executes
    `test al, al` immediately after `main_render_game`, but C-H4-6 declared the
    original function, its body and the detour `void`. The detour therefore did
-   not preserve a live return status. That is a concrete explanation for the
-   title-state bounce and stall.
+   not preserve a live return status. That independently invalidates the run
+   and is a plausible contributor to the title-state bounce/stall; the log
+   cannot isolate it as the sole cause.
 5. E-H4-7 still proves that `main_render_game` contains the UI bracket. It does
    **not** prove that the function is re-callable twice. Because the return-ABI
    defect independently invalidates the run, the stall cannot honestly prove
@@ -770,12 +802,83 @@ bytes.
    C-H4-6's exact outer transaction is unsafe.
 
 The recovery point is C-H4-5's sustained per-window wrapper transaction, not a
-new tuning guess. The next player-visible candidate may add head pose and 6DOF
-inside that already-running transaction while preserving the native FOV fields.
-Any post-setup camera proof must match position/basis to the same eye
-transaction; FOV waits for its own representation proof. HUD capture remains a
-separate later feature and must not widen the render scope again without its
-own engine boundary and runtime proof.
+new tuning guess. C-H4-7 first repairs and proves stock projection geometry on
+that boundary. Only after its headset result may C-H4-8 add head pose/6DOF in
+the same wrapper transaction. HUD remains a separate later feature and must not
+widen the render scope again without its own title-native CUI boundary and
+runtime proof.
+
+### C-H4-7 — stock-projection exact-serial stereo geometry (OFFLINE-PASS 2026-08-07; headset-PENDING)
+
+**One player-visible claim:** the C-H4-5 lit scene pair has sane, mutually
+consistent stereo geometry when Halo 4's own FOV inputs and finished projection
+are left authoritative. This candidate does not apply the HMD midpoint's
+rotation or translation. Head tracking, 6DOF, HUD/CUI, turn/look ownership,
+aim, reticle, hands, and weapons are explicitly absent.
+
+The runtime keeps C-H4-5's sustained setup+wrapper boundary and last-target
+capture, with these measured invariants:
+
+1. The OpenXR frame path publishes an H4-only, lock-free snapshot containing
+   the exact prepared serial and the two eyes' midpoint-relative position/cant.
+2. The transaction mutates only observer position `+0x00`, forward `+0x28`,
+   and up `+0x34`. Every other observer byte, especially full-vFOV `+0x78` and
+   FOV ratio `+0x7C`, is restored from the stock snapshot unchanged.
+3. After each stock setup call, element position/forward/up at
+   `+0x00/+0x0C/+0x18` must match the requested bytes exactly. The finished
+   projection at element `+0x100` must pass the normal zero-center H4 matrix
+   contract above before that eye renders.
+4. Both eye images and both half-FOV publications carry the same nonzero
+   prepared serial. The compositor admits the pair only when all four stamps
+   match the frame being submitted; a prior redirected cache cannot be stamped
+   unless that exact raster-eye scope is active now.
+5. Headset publication additionally requires exact swapchain acquire, wait,
+   both eye uploads, release, and an `xrEndFrame == XR_SUCCESS` that actually
+   queued the H4 projection. A failed acquire or completed-release eye/projection
+   miss drops only that frame; a non-completing wait/release is an OpenXR
+   ownership failure and enters the existing named runtime-recovery path rather
+   than pretending the image is reusable.
+6. All mono restoration runs in `__finally`. A failure before mutation renders
+   stock once. A failure after mutation begins invalidates both eye/FOV stamps,
+   drops only that frame, leaves the camera core armed, and retries next frame.
+   Only repeated, actual eye-capture misses may trip C-H4-5's loud flat fallback.
+
+Offline verification passed: Release configure/build, `core_tests`, and the
+Reach consistency gate. The exact source/package/DLL identity is recorded after
+the clean package step rather than invented in advance.
+
+**Geometry-only headset pass.** Test at 90 Hz first so the separately open
+120-Hz pacing tail cannot confound the result. With the head held near center,
+the scene must be lit/post-processed, visibly distinct in depth, free of the
+grotesque stretch/eye mismatch from C-H4-5, and free of stalls/title bounce.
+`layers=1`; steady two-second telemetry must show completed pairs > 0,
+`geometry TAKING`, two camera and two projection readbacks per pair, exact-zero
+camera errors, center `0/0`, zero drops/uncaptured eyes, and `Halo 4 C-H4-7 XR
+publish` reporting submitted pairs > 0 with recoverable drops 0. A narrower stock
+H4 raster is allowed here and belongs to the later coverage milestone. The
+world following physical head motion, absent 6DOF, and absent HUD are expected
+in C-H4-7 and cannot be used to accept or reject its geometry claim.
+
+### Forward milestone ladder — one visible claim per candidate
+
+1. **C-H4-7:** stock-projection/exact-serial stereo geometry only.
+2. **C-H4-8:** head rotation and 6DOF/recenter only, on the accepted wrapper
+   transaction, with C-H4-7 projection bytes and publication unchanged.
+3. **C-H4-9:** native headset-FOV/off-axis coverage only, after the converter
+   scale and `+0x2C` consumers are proved and the compositor can carry exact
+   four-edge geometry.
+4. **C-H4-10:** CUI HUD presence only, on its own H4EK-proven draw boundary.
+5. **C-H4-11:** turn/look ownership and configuration parity only.
+6. **C-H4-12:** controller aim and reticle only.
+7. **C-H4-13:** first-person weapons/hands only. Lifecycle, vehicles, and
+   further features remain separate candidates after that.
+
+Every rung requires H4EK evidence, offline gates, a unique commit and artifact
+hash installed to both editions, a log naming edition/runtime/headset, an
+explicit Halo 4 headset result, and a Halo 3 regression whenever shared or
+lifecycle code changes. A failed experiment gets its own behavior-revert commit
+before the next rung. `docs/CURRENT-STATE.md` advances only on explicit headset
+acceptance, never on a build or clean log alone.
 
 ## Deliberate decision: groundhog.dll stays out of the registry (D-H4-5)
 
