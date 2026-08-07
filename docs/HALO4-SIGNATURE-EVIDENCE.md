@@ -637,6 +637,83 @@ as the other three titles. Halo 3, ODST and Reach are untouched by
 construction: every edit is inside `#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA`
 or a Halo 4-only branch, and the Reach parity gate passes.
 
+### E-H4-7: main_render_game as the per-eye scope (PROVEN 2026-08-07)
+
+The per-window render wrapper `0x1222F4` is the wrong per-eye boundary, and
+E-H4-5 already said why without the consequence being drawn: **Halo 4's UI
+bracket runs AFTER the per-window loop**, so a wrapper-scoped eye can never
+contain the HUD no matter which render target is captured. The enclosing
+function is the correct scope.
+
+| Retail fact | Value |
+| --- | --- |
+| `main_render_game` | `0x12259C`-`0x123115` (contains the window loop AND the UI bracket) |
+| Arguments | **NONE** - its call site marshals nothing |
+| Callers | **exactly one**, `call 0x12259C` at `0x122076` |
+| Return address | `0x12207B` |
+| Entry signature | `48 8B C4 55 41 54 41 55 41 56 41 57 48 8D A8 48 F9 FF FF 48 81 EC 90 07 00 00 48 C7 45 C8 FE FF FF FF` - **UNIQUE** |
+| Call-site signature | `E8 ?? ?? ?? ?? 84 C0 75 07 E8 ?? ?? ?? ?? EB 0A B9 01 00 00 00` - **UNIQUE** at `0x12206D`, its rel32 at +0x0A decodes to `0x12259C` |
+
+Both were measured over `.text` of the pinned image. The single caller is what
+lets the detour additionally require its exact return address, exactly as the
+setup detour does.
+
+Scoping the eye here also **simplifies** the core: setup runs naturally inside
+each call, so nothing has to re-invoke it, and the observer substitution is a
+single write before the engine rebuilds its own window records.
+
+### C-H4-6 — head tracking, 6DOF and a HUD-inclusive eye (BUILT 2026-08-07, headset-PENDING)
+
+| Identity | Value |
+| --- | --- |
+| Source | `4fc3c84834162c8154f9ac5e34771b4971c0dc4b` (branch `feature/halo4-bringup`) |
+| Candidate package | `out/candidates/4fc3c84-reach-fp-parity-20260807-155605774Z` |
+| `halo3xr.dll` SHA-256 | `A6488B4DC15323372BB1D7F93FD55F2323D3A08C5F09E580500A2C0E9915FA90` |
+| Installed editions | Steam and Microsoft Store; both hashes verified independently after install |
+| Preserved priors | `out/deploy-backups/72ce654-steam-before-4fc3c84-...`, `...-store-before-4fc3c84-...` |
+| Headset result | **PENDING** |
+
+**The defect this fixes was a hole in C-H4-3, not a tuning problem.** The user
+reported *"its not even 6dof the ground follows my head"*, *"the fov is
+awful"* and *"the hud has to be in there"*. All three trace to one fact:
+
+> **C-H4-3 through C-H4-5 never read the head pose. A search for
+> `VR_GetHeadPose` across the entire Halo 4 core returned zero.**
+
+Those builds took the engine's own camera and applied only the per-eye IPD
+split. There was stereo separation but no head tracking and no 6DOF, so the
+rendered image never responded to the headset and the world read as
+head-locked. And the two-second line reported `243 owned pairs, 0 rejections`
+throughout, which counted that **our code ran** and never what **the engine
+held** - the precise failure mode `docs/CURRENT-STATE.md` and the "clean
+diagnostic = wrong mechanism" rule exist to prevent.
+
+**What C-H4-6 adds.**
+
+1. **`Halo4ApplyHeadLook`**, a direct match of Halo 3's `ApplyHeadLook`, so
+   every shared control behaves as it already does in the other three titles:
+   yaw relative to a recentre reference (the stick still turns the player
+   underneath), pitch absolute plus `pitch_trim`, roll measured against a
+   horizon-level up so tilting your head leaves the world fixed, and 6DOF that
+   decomposes the headset's room-space movement in the head's horizontal frame,
+   re-applies it in the game's frame, scales by `world_scale` and clamps. It
+   runs once per frame on the mono camera, before the eyes split off it.
+2. **The eye scope moves to `main_render_game`** (E-H4-7 above), so each eye
+   renders the window loop *and* the UI bracket - the HUD is inside the eye by
+   construction rather than excluded by it.
+3. **The camera claim is now measured.** The setup detour reads the element's
+   forward and tangent pair back **after the engine's own converter has run**,
+   and the two-second line reports `tangents requested X/Y, engine holds X/Y ->
+   TOOK / NOT TAKING` plus the engine's `fwd.z`. A substitution that does not
+   land can no longer hide behind a healthy pair count. The engine's own camera
+   basis is also logged once per generation, so the Blam Z-up assumption the
+   head-look depends on is confirmed against real values rather than inherited
+   from the other titles.
+
+**Expected headset result.** Halo 4 with real head tracking and 6DOF - looking
+around moves the view and the world stays put - stereo depth, the headset's
+FOV, and the HUD present. The `Halo 4 stereo:` line should read `TOOK`.
+
 ## Deliberate decision: groundhog.dll stays out of the registry (D-H4-5)
 
 Recorded 2026-08-06, per the plan's skip option. `groundhog.dll` (Halo 2
