@@ -294,6 +294,30 @@ namespace
     // plus a 128-entry linear scan on nearly every RTV bind and could collapse
     // stereo from 90 fps into the 20s.
     ID3D11RenderTargetView* g_sceneColorRtv = nullptr;
+
+    // Halo 4 scene-target discovery state. Two-phase, because deciding at bind
+    // time picked an early pass and put unlit geometry in the headset: phase 1
+    // watches a whole eye and remembers the LAST qualifying target, phase 2
+    // redirects it once two consecutive eyes name the same one. Declared here
+    // so both the resize/detach reset and the end-of-eye resolver can reach it.
+    ID3D11RenderTargetView* g_h4LastCandidate = nullptr;
+    D3D11_TEXTURE2D_DESC g_h4LastCandidateDesc{};
+    DXGI_FORMAT g_h4LastCandidateViewFormat = DXGI_FORMAT_UNKNOWN;
+    ID3D11RenderTargetView* g_h4PreviousEyeCandidate = nullptr;
+    unsigned g_h4CandidatesThisEye = 0;
+    unsigned g_h4LearningEyes = 0;
+
+    // Only ever holds raw comparison pointers, never a reference: the latched
+    // target is the one that gets AddRef'd, and it lives in g_sceneColorRtv.
+    void Halo4ResetSceneTargetDiscovery()
+    {
+        g_h4LastCandidate = nullptr;
+        g_h4LastCandidateDesc = {};
+        g_h4LastCandidateViewFormat = DXGI_FORMAT_UNKNOWN;
+        g_h4PreviousEyeCandidate = nullptr;
+        g_h4CandidatesThisEye = 0;
+        g_h4LearningEyes = 0;
+    }
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
     ID3D11Resource* g_sceneColorResource = nullptr;
     struct NativeHudEyeRouteState
@@ -9394,6 +9418,9 @@ void VR_OnResizeBuffers(IDXGISwapChain*)
         g_sceneColorRtv->Release();
         g_sceneColorRtv = nullptr;
     }
+    // Halo 4 must re-learn its scene target from scratch for the next level:
+    // the retained candidate pointers belong to resources that are going away.
+    Halo4ResetSceneTargetDiscovery();
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
     if (g_sceneColorResource)
     {
@@ -9548,6 +9575,9 @@ void VR_DetachGamePresentation()
         g_sceneColorRtv->Release();
         g_sceneColorRtv = nullptr;
     }
+    // Halo 4 must re-learn its scene target from scratch for the next level:
+    // the retained candidate pointers belong to resources that are going away.
+    Halo4ResetSceneTargetDiscovery();
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
     if (g_sceneColorResource)
     {
@@ -9635,10 +9665,62 @@ void VR_BeginRasterEye(int eye)
 }
 
 
+// Decides Halo 4's scene target at the END of an eye, when the whole bind
+// sequence has been seen. Called only from VR_EndRasterEye.
+static void Halo4ResolveSceneTargetAtEyeEnd()
+{
+    if (g_sceneColorRtv)
+        return;
+    ID3D11RenderTargetView* const candidate = g_h4LastCandidate;
+    const unsigned seen = g_h4CandidatesThisEye;
+    g_h4LastCandidate = nullptr;
+    g_h4CandidatesThisEye = 0;
+    if (!candidate)
+        return;
+    ++g_h4LearningEyes;
+    if (candidate != g_h4PreviousEyeCandidate)
+    {
+        // First sighting, or the sequence is still settling. Report the shape
+        // so an unstable pipeline is visible rather than silent.
+        g_h4PreviousEyeCandidate = candidate;
+        LOG("SCENEPROBE: Halo 4 learning eye %u ended; %u qualifying "
+            "full-size colour target(s) bound, last = RTV %p (%ux%u fmt=%u "
+            "viewfmt=%u). Waiting for a second eye to agree before latching",
+            g_h4LearningEyes, seen, candidate,
+            g_h4LastCandidateDesc.Width, g_h4LastCandidateDesc.Height,
+            static_cast<UINT>(g_h4LastCandidateDesc.Format),
+            static_cast<UINT>(g_h4LastCandidateViewFormat));
+        return;
+    }
+
+    D3D11_TEXTURE2D_DESC eyeDesc = g_h4LastCandidateDesc;
+    eyeDesc.Format = g_h4LastCandidateViewFormat;
+    if (!EnsureEyeCaches(eyeDesc))
+    {
+        LOG("SCENEPROBE: Halo 4 scene target RTV %p agreed twice but the eye "
+            "caches could not be created for viewfmt=%u; not latching",
+            candidate, static_cast<UINT>(g_h4LastCandidateViewFormat));
+        return;
+    }
+    candidate->AddRef();
+    g_sceneColorRtv = candidate;
+    LOG("M2 RASTER: learned Halo 4 scene-color RTV %p as the LAST qualifying "
+        "target of the eye (%ux%u fmt=%u viewfmt=%u), agreed by two "
+        "consecutive eyes after %u learning eye(s); steady-state redirect is "
+        "pointer-only",
+        g_sceneColorRtv, g_h4LastCandidateDesc.Width,
+        g_h4LastCandidateDesc.Height,
+        static_cast<UINT>(g_h4LastCandidateDesc.Format),
+        static_cast<UINT>(g_h4LastCandidateViewFormat), g_h4LearningEyes);
+}
+
 void VR_EndRasterEye()
 {
     if constexpr (kEnableRetiredRasterTrace)
         VR_TraceEvent("eye-end", g_rasterEye.load(), 0);
+    if (g_rasterEye.load() >= 0 &&
+        TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
+        Halo4ResolveSceneTargetAtEyeEnd();
     // Promote any newly identified history, then save this eye's copies of
     // every tracked target before the other eye (or next frame) overwrites
     // them. A ping-pong pair only reveals its read side a frame after its
@@ -9867,13 +9949,20 @@ static void ProbeFsrTargets(ID3D11DeviceContext* context, UINT count,
     // scene-scale targets, and only 96 distinct shapes in the process.
     const int rasterEye = g_rasterEye.load(std::memory_order_relaxed);
     const bool discoveryFailing = rasterEye >= 0 && !g_sceneColorRtv;
-    if (!g_config.fsr_probe && !discoveryFailing)
+    // Keep censusing for a few eyes AFTER Halo 4 latches. Stopping at the
+    // latch is what made the previous run undiagnosable: exactly one line was
+    // logged, the one target we then wrongly picked, and the rest of the
+    // pipeline was never described. g_h4LearningEyes only leaves zero for
+    // Halo 4, so this window cannot arm for any other title.
+    const bool halo4CensusWindow =
+        rasterEye >= 0 && g_h4LearningEyes > 0 && g_h4LearningEyes <= 6;
+    if (!g_config.fsr_probe && !discoveryFailing && !halo4CensusWindow)
         return;
 
     // When self-armed, walk every bound slot rather than slot 0 alone: a
     // deferred renderer binds an MRT set, and assuming the scene lands on
     // slot 0 is precisely the assumption that failed.
-    const UINT slots = discoveryFailing ? count : 1u;
+    const UINT slots = (discoveryFailing || halo4CensusWindow) ? count : 1u;
     const UINT bbW = g_gameBackbufferDescValid ? g_gameBackbufferDesc.Width : 0;
     const UINT bbH = g_gameBackbufferDescValid ? g_gameBackbufferDesc.Height : 0;
     const UINT minWidth = bbW ? (bbW * 2) / 5 : 800u;
@@ -10041,21 +10130,21 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
                 (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE |
                  D3D11_BIND_UNORDERED_ACCESS);
 
-        // Halo 4 does NOT present that shape. C-H4-3 rendered both eyes
-        // correctly and captured neither: 486 uncaptured eyes against 243
-        // owned pairs, with `no internal scene-color RTV redirect occurred`
-        // (preserved run 2987dc2, 2026-08-07). The rule above is Halo 3's
-        // exact resource signature, and requiring a UAV binding plus a
-        // TYPELESS resource format is what excludes Halo 4.
+        // Halo 4 does NOT present that shape, and picking its scene target by
+        // "first thing that looks right" is measurably WRONG: C-H4-4 latched
+        // the FIRST full-size 8-bit colour target bound in the eye and the
+        // headset showed unlit meshes with no lighting, shadows, post or HUD
+        // (run 68daa27, 2026-08-07). That target is an early pass; everything
+        // after it composites into other targets we never touched.
         //
-        // The relaxation is deliberately the smallest one that can still only
-        // name a final scene image: full backbuffer size, single-sampled, and
-        // both renderable and samplable - a target the title renders into and
-        // then reads, which is what a scene-colour buffer is and what a
-        // depth/shadow/UI-overlay target is not. The 8-bit RGBA family is
-        // required because MCC's own backbuffer is R8G8B8A8_UNORM here, so the
-        // final composited scene image is in that family. Anything wider is
-        // an HDR intermediate that still has tonemapping ahead of it.
+        // So Halo 4 does not decide at bind time at all. It OBSERVES a whole
+        // eye, remembers the LAST qualifying target bound in it, and latches
+        // that once two consecutive eyes agree - the last full-size colour
+        // target written inside the eye scope is the composited result, not an
+        // input to it. Qualification stays narrow: full backbuffer size,
+        // single-sampled, renderable AND samplable, 8-bit RGBA/BGRA (MCC's
+        // backbuffer here is R8G8B8A8_UNORM, so the composited image is in
+        // that family; anything wider still has tonemapping ahead of it).
         const bool rgba8Family =
             candidateDesc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS ||
             candidateDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
@@ -10063,8 +10152,8 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
             candidateDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
             candidateDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
             candidateDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-        const bool isHalo4SceneColor = !isInternalSceneColor && i == 0 &&
-            candidate && g_gameBackbufferDescValid &&
+        const bool halo4Learning = !isInternalSceneColor && i == 0 &&
+            candidate && g_gameBackbufferDescValid && eye >= 0 && eye <= 1 &&
             TitleAdapter_GetActiveTitle() == GameTitle::Halo4 &&
             candidateDesc.Width == g_gameBackbufferDesc.Width &&
             candidateDesc.Height == g_gameBackbufferDesc.Height &&
@@ -10072,6 +10161,19 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
             (candidateDesc.BindFlags & (D3D11_BIND_RENDER_TARGET |
                                         D3D11_BIND_SHADER_RESOURCE)) ==
                 (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+        if (halo4Learning)
+        {
+            // Remember it and keep going. The eye's LAST one wins, decided in
+            // VR_EndRasterEye. Nothing is redirected during a learning eye.
+            D3D11_RENDER_TARGET_VIEW_DESC lastViewDesc{};
+            input[i]->GetDesc(&lastViewDesc);
+            g_h4LastCandidate = input[i];
+            g_h4LastCandidateDesc = candidateDesc;
+            g_h4LastCandidateViewFormat = lastViewDesc.Format;
+            ++g_h4CandidatesThisEye;
+        }
+        // Never latch at bind time for Halo 4.
+        const bool isHalo4SceneColor = false;
 
         const bool learnSceneColor =
             isInternalSceneColor || isHalo4SceneColor;

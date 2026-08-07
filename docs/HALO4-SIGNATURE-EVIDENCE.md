@@ -474,6 +474,76 @@ run and is left exactly as it is.
 named reason plus a `SCENEPROBE:` census that identifies the real target.
 Black is no longer a possible outcome.
 
+**RESULT: capture now happens, but it captured the WRONG target.** Steam
+edition, **SteamVR/OpenXR 2.17.6, PSVR2** (a runtime and headset change from
+every previous Halo 4 result), Halo 4 window `10:22:04`-`10:22:45`; preserved
+at `out/test-runs/68daa27-halo4-c4-steamvr-unlit-20260807`. The headset showed
+**unlit meshes with no lighting, shadows, post-processing or HUD**.
+
+- `Halo 4 stereo: 244 owned pairs, 0 stock windows, **0 uncaptured eyes**` —
+  capture is fixed, and `layers=1` throughout, so the black-screen defect is
+  gone and the fallback never had to fire.
+- `M2 RASTER: learned scene-color RTV ... via the Halo 4 relaxed rule
+  (2912x2100 fmt=29 viewfmt=29 bind=0x28)` — `fmt 29` is
+  `R8G8B8A8_UNORM_SRGB`, `bind 0x28` is `RENDER_TARGET|SHADER_RESOURCE`, full
+  backbuffer size, `rtCount=1`.
+- **The census emitted exactly ONE line**, and it is the target we then
+  latched.
+
+**Two separate mistakes, both mine, both in the discovery and neither in the
+camera core.** First, the rule latched on the FIRST qualifying target bound in
+the eye. In a deferred pipeline the first full-size colour target is an input
+to the composite, not the composite — everything after it (lighting, post,
+HUD) writes to other targets we never redirected, which is exactly "unlit
+meshes". Second, the census was armed only while nothing had been learned, so
+**latching switched the census off**: one line was logged, describing the one
+target that was already wrong, and the rest of the pipeline was never
+described. The diagnostic could not contradict the decision it was meant to
+check.
+
+### C-H4-5 — pick Halo 4's scene target by watching a whole eye (BUILT 2026-08-07, headset-PENDING)
+
+No camera-core change again; C-H4-3's per-eye rendering has now been correct in
+two separate runs, on two different runtimes and headsets.
+
+1. **Halo 4 no longer decides at bind time.** It observes an entire eye,
+   remembers the **LAST** qualifying full-size colour target bound in it, and
+   latches that only once **two consecutive eyes name the same one**. The last
+   target written inside the eye scope is the composited result; the first is
+   an input to it. Qualification is unchanged and still narrow (backbuffer
+   size, single-sampled, `RENDER_TARGET|SHADER_RESOURCE`, 8-bit RGBA/BGRA).
+   Nothing is redirected during a learning eye, which costs two or three
+   uncaptured eyes at level start - far under the 240-eye fallback threshold.
+2. **The census outlives the decision.** It now keeps logging for six eyes
+   after Halo 4 latches, across every bound slot, so the full ordered pipeline
+   is in the log whether or not the pick was right. A wrong pick is now
+   selectable from the census instead of requiring another guess.
+3. **Discovery resets at every backbuffer resize and presentation detach**, so
+   a new level re-learns rather than inheriting a dead pointer.
+
+**If it is still wrong**, the `SCENEPROBE:` census now lists every scene-scale
+target Halo 4 binds during an owned eye, in bind order, with resource format,
+RTV view format, bind flags, sample count and slot. Pin the right one from that
+list. Do NOT re-theorise.
+
+**Known limitation, stated now rather than discovered later.** The per-eye
+scope is the render wrapper `0x1222F4`, and E-H4-5 places Halo 4's UI bracket
+**after** the per-window loop, outside that scope. If the HUD is still missing
+once the scene looks correct, that is the cause, and the fix is to widen the
+eye scope to `main_render_game` `0x12259C` - which is a camera-core change and
+belongs to its own candidate.
+
+**Not a change, but worth recording because it was asked:** the 32-slot source
+view cache and intermediate texture pool from the `f4c641f` baseline are
+title-agnostic (`src/common/view_cache_logic.h` contains no title reference at
+all) and were already live in every Halo 4 run - `upload reuse: views 0/32
+resident ... intermediates 0/32 live = 0 KB`. Both read zero because the eye
+caches are directly samplable and skip the intermediate pool entirely, which is
+the same thing the baseline measured. Per
+`docs/CURRENT-STATE.md` this is a correctness/allocation-churn fix worth about
+0.15% of a frame, **not** a frame-rate fix, and 32-deep on the display path
+would cost 267-355 ms of latency - do not extend it there.
+
 **One behavior: Halo 4 renders the scene twice per frame, once per eye, from
 two cameras the engine derives itself.**
 
