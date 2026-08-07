@@ -9855,63 +9855,96 @@ bool VR_GetScopeRenderAspect(float& outAspect)
 static void ProbeFsrTargets(ID3D11DeviceContext* context, UINT count,
                             ID3D11RenderTargetView* const* input)
 {
-    if (!g_config.fsr_probe || !context || !count || !input || !input[0])
+    if (!context || !count || !input)
+        return;
+    // Normally an opt-in FSR investigation aid. It ALSO self-arms whenever a
+    // per-eye redirect scope is active but no scene-colour target has ever
+    // been learned - that exact combination IS the discovery failure, and this
+    // census is the only thing that can name a new title's real scene target.
+    // Self-arming matters because handing the user a config flag to prove a
+    // mod bug is forbidden here: the answer has to arrive from a normal run.
+    // Bounded three ways: only while discovery is failing, only for
+    // scene-scale targets, and only 96 distinct shapes in the process.
+    const int rasterEye = g_rasterEye.load(std::memory_order_relaxed);
+    const bool discoveryFailing = rasterEye >= 0 && !g_sceneColorRtv;
+    if (!g_config.fsr_probe && !discoveryFailing)
         return;
 
-    ID3D11Resource* resource = nullptr;
-    input[0]->GetResource(&resource);
-    if (!resource)
-        return;
-    ID3D11Texture2D* tex = nullptr;
-    D3D11_TEXTURE2D_DESC desc{};
-    const bool isTexture = SUCCEEDED(resource->QueryInterface(
-        __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&tex)));
-    if (isTexture)
-        tex->GetDesc(&desc);
-    if (tex)
-        tex->Release();
-    resource->Release();
-    if (!isTexture)
-        return;
-
-    // Only scene-scale targets are interesting for the FSR question. Anything
-    // below ~40% of the backbuffer width is a shadow/post-fx buffer, not a
-    // candidate scene render (FSR's lowest tier is 50%). Fail-open if the
-    // backbuffer size is not known yet: keep a fixed 800px floor.
+    // When self-armed, walk every bound slot rather than slot 0 alone: a
+    // deferred renderer binds an MRT set, and assuming the scene lands on
+    // slot 0 is precisely the assumption that failed.
+    const UINT slots = discoveryFailing ? count : 1u;
     const UINT bbW = g_gameBackbufferDescValid ? g_gameBackbufferDesc.Width : 0;
     const UINT bbH = g_gameBackbufferDescValid ? g_gameBackbufferDesc.Height : 0;
     const UINT minWidth = bbW ? (bbW * 2) / 5 : 800u;
-    if (desc.Width < minWidth)
-        return;
 
-    // Dedup on (size, format, bind, rasterEye) so each distinct large target is
-    // logged once PER eye-context. The raster eye is the key new signal: it tells
-    // us whether a given FSR target is bound inside the per-eye redirect scope
-    // (0/1) or outside it (-1), which the old flat log could not show.
-    const int rasterEye = g_rasterEye.load(std::memory_order_relaxed);
-    struct SeenTarget { UINT w, h; UINT format, bind; int eye; };
-    static SeenTarget seen[96]{};
-    static unsigned seenCount = 0;
-    const UINT descFormat = static_cast<UINT>(desc.Format);
-    for (unsigned i = 0; i < seenCount; ++i)
-        if (seen[i].w == desc.Width && seen[i].h == desc.Height &&
-            seen[i].format == descFormat && seen[i].bind == desc.BindFlags &&
-            seen[i].eye == rasterEye)
-            return; // already logged this exact target shape in this eye-context
+    for (UINT slot = 0; slot < slots; ++slot)
+    {
+        if (!input[slot])
+            continue;
+        ID3D11Resource* resource = nullptr;
+        input[slot]->GetResource(&resource);
+        if (!resource)
+            continue;
+        ID3D11Texture2D* tex = nullptr;
+        D3D11_TEXTURE2D_DESC desc{};
+        const bool isTexture = SUCCEEDED(resource->QueryInterface(
+            __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&tex)));
+        if (isTexture)
+            tex->GetDesc(&desc);
+        if (tex)
+            tex->Release();
+        resource->Release();
+        if (!isTexture)
+            continue;
 
-    D3D11_VIEWPORT vp{};
-    UINT vpCount = 1;
-    context->RSGetViewports(&vpCount, &vp);
+        // Only scene-scale targets are interesting. Anything below ~40% of the
+        // backbuffer width is a shadow/post-fx buffer, not a candidate scene
+        // render (FSR's lowest tier is 50%). Fail-open if the backbuffer size
+        // is not known yet: keep a fixed 800px floor.
+        if (desc.Width < minWidth)
+            continue;
 
-    LOG("FSRPROBE: slot0 RT %ux%u fmt=%u bind=0x%X | viewport %.0fx%.0f at (%.0f,%.0f) "
-        "| backbuffer %ux%u | rasterEye=%d | rtCount=%u",
-        desc.Width, desc.Height, descFormat, desc.BindFlags,
-        vpCount ? vp.Width : 0.0f, vpCount ? vp.Height : 0.0f,
-        vpCount ? vp.TopLeftX : 0.0f, vpCount ? vp.TopLeftY : 0.0f,
-        bbW, bbH, rasterEye, count);
+        // Dedup on (slot, size, format, bind, rasterEye) so each distinct
+        // large target is logged once PER slot and eye-context. The raster eye
+        // tells us whether a target is bound inside the per-eye redirect scope
+        // (0/1) or outside it (-1).
+        struct SeenTarget { UINT slot, w, h, format, bind; int eye; };
+        static SeenTarget seen[96]{};
+        static unsigned seenCount = 0;
+        const UINT descFormat = static_cast<UINT>(desc.Format);
+        bool already = false;
+        for (unsigned i = 0; i < seenCount && !already; ++i)
+            already = seen[i].slot == slot && seen[i].w == desc.Width &&
+                seen[i].h == desc.Height && seen[i].format == descFormat &&
+                seen[i].bind == desc.BindFlags && seen[i].eye == rasterEye;
+        if (already)
+            continue;
 
-    if (seenCount < 96)
-        seen[seenCount++] = {desc.Width, desc.Height, descFormat, desc.BindFlags, rasterEye};
+        D3D11_VIEWPORT vp{};
+        UINT vpCount = 1;
+        context->RSGetViewports(&vpCount, &vp);
+
+        // The RTV's own view format matters as much as the resource format: a
+        // TYPELESS resource is only usable through its typed view, and that is
+        // what the eye cache has to be created as.
+        D3D11_RENDER_TARGET_VIEW_DESC viewDesc{};
+        input[slot]->GetDesc(&viewDesc);
+
+        LOG("SCENEPROBE: slot%u RT %ux%u fmt=%u viewfmt=%u bind=0x%X samples=%u "
+            "| viewport %.0fx%.0f at (%.0f,%.0f) | backbuffer %ux%u "
+            "| rasterEye=%d | rtCount=%u",
+            slot, desc.Width, desc.Height, descFormat,
+            static_cast<UINT>(viewDesc.Format), desc.BindFlags,
+            desc.SampleDesc.Count,
+            vpCount ? vp.Width : 0.0f, vpCount ? vp.Height : 0.0f,
+            vpCount ? vp.TopLeftX : 0.0f, vpCount ? vp.TopLeftY : 0.0f,
+            bbW, bbH, rasterEye, count);
+
+        if (seenCount < 96)
+            seen[seenCount++] = {slot, desc.Width, desc.Height, descFormat,
+                                 desc.BindFlags, rasterEye};
+    }
 }
 
 bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
@@ -10008,14 +10041,48 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
                 (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE |
                  D3D11_BIND_UNORDERED_ACCESS);
 
+        // Halo 4 does NOT present that shape. C-H4-3 rendered both eyes
+        // correctly and captured neither: 486 uncaptured eyes against 243
+        // owned pairs, with `no internal scene-color RTV redirect occurred`
+        // (preserved run 2987dc2, 2026-08-07). The rule above is Halo 3's
+        // exact resource signature, and requiring a UAV binding plus a
+        // TYPELESS resource format is what excludes Halo 4.
+        //
+        // The relaxation is deliberately the smallest one that can still only
+        // name a final scene image: full backbuffer size, single-sampled, and
+        // both renderable and samplable - a target the title renders into and
+        // then reads, which is what a scene-colour buffer is and what a
+        // depth/shadow/UI-overlay target is not. The 8-bit RGBA family is
+        // required because MCC's own backbuffer is R8G8B8A8_UNORM here, so the
+        // final composited scene image is in that family. Anything wider is
+        // an HDR intermediate that still has tonemapping ahead of it.
+        const bool rgba8Family =
+            candidateDesc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS ||
+            candidateDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
+            candidateDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
+            candidateDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+            candidateDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+            candidateDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        const bool isHalo4SceneColor = !isInternalSceneColor && i == 0 &&
+            candidate && g_gameBackbufferDescValid &&
+            TitleAdapter_GetActiveTitle() == GameTitle::Halo4 &&
+            candidateDesc.Width == g_gameBackbufferDesc.Width &&
+            candidateDesc.Height == g_gameBackbufferDesc.Height &&
+            candidateDesc.SampleDesc.Count == 1 && rgba8Family &&
+            (candidateDesc.BindFlags & (D3D11_BIND_RENDER_TARGET |
+                                        D3D11_BIND_SHADER_RESOURCE)) ==
+                (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+
+        const bool learnSceneColor =
+            isInternalSceneColor || isHalo4SceneColor;
         D3D11_RENDER_TARGET_VIEW_DESC sceneViewDesc{};
-        if (isInternalSceneColor)
+        if (learnSceneColor)
             input[i]->GetDesc(&sceneViewDesc);
         D3D11_TEXTURE2D_DESC eyeDesc = candidateDesc;
-        if (isInternalSceneColor)
+        if (learnSceneColor)
             eyeDesc.Format = sceneViewDesc.Format;
 
-        if (isInternalSceneColor && EnsureEyeCaches(eyeDesc) && g_eyeCacheRtvs[eye])
+        if (learnSceneColor && EnsureEyeCaches(eyeDesc) && g_eyeCacheRtvs[eye])
         {
             input[i]->AddRef();
             g_sceneColorRtv = input[i];
@@ -10026,8 +10093,19 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
             output[i] = g_eyeCacheRtvs[eye];
             changed = true;
             sceneChanged = true;
-            LOG("M2 RASTER: learned scene-color RTV %p; steady-state redirect is pointer-only",
-                g_sceneColorRtv);
+            // Say WHICH rule matched and with what shape. If the relaxed rule
+            // ever latches the wrong target, this line plus the SCENEPROBE
+            // census above are what identify the right one without another
+            // guess.
+            LOG("M2 RASTER: learned scene-color RTV %p via the %s rule "
+                "(%ux%u fmt=%u viewfmt=%u bind=0x%X); steady-state redirect "
+                "is pointer-only",
+                g_sceneColorRtv,
+                isInternalSceneColor ? "Halo 3 exact-shape" : "Halo 4 relaxed",
+                candidateDesc.Width, candidateDesc.Height,
+                static_cast<UINT>(candidateDesc.Format),
+                static_cast<UINT>(sceneViewDesc.Format),
+                candidateDesc.BindFlags);
         }
         if (candidate) candidate->Release();
         if (resource) resource->Release();

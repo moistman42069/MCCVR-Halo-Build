@@ -29159,8 +29159,19 @@ namespace
         // is rendering twice and we are not capturing it" - two very different
         // faults that look identical in a headset.
         std::atomic<uint64_t> uncapturedEyes{0};
+        // Consecutive eyes that rendered but were never captured, and the
+        // latch it trips. Submitting no eye image means submitting NO LAYER,
+        // which is a black headset with no head tracking - strictly worse for
+        // the player than the flat screen. When capture is provably not
+        // happening we give the flat screen back, loudly.
+        std::atomic<uint32_t> consecutiveUncaptured{0};
+        std::atomic<bool> sceneTargetMissing{false};
         std::atomic<uint32_t> lastRejection{0};
     } g_halo4Camera;
+
+    // ~1 second at 120 Hz, two eyes per frame. Long enough that a few frames
+    // of start-up discovery are never mistaken for a failure.
+    constexpr uint32_t kHalo4UncapturedEyeLimit = 240;
 
     // Why a frame fell back to one stock render. Reported once per window by
     // the worker so a flat headset comes with its reason attached.
@@ -29175,6 +29186,7 @@ namespace
         CameraInvalid,
         EyeFovUnavailable,
         EyeBuildFailed,
+        SceneTargetMissing,
     };
 
     // Setup's own arguments, captured at the one proven call site so the eye
@@ -29347,9 +29359,18 @@ namespace
             g_halo4OrigSetup(args.view, args.window, args.count, args.mode,
                              args.user, args.observer);
             g_halo4OrigWrapper(element, view, window);
-            if (!VR_CaptureRenderedEye(eye))
+            if (VR_CaptureRenderedEye(eye))
+            {
+                g_halo4Camera.consecutiveUncaptured.store(
+                    0, std::memory_order_relaxed);
+            }
+            else
+            {
                 g_halo4Camera.uncapturedEyes.fetch_add(
                     1, std::memory_order_relaxed);
+                g_halo4Camera.consecutiveUncaptured.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
             VR_EndRasterEye();
         }
         g_stereoEye = -1;
@@ -29380,6 +29401,15 @@ namespace
         const Halo4SetupArgs args = g_halo4SetupArgs;
         g_halo4SetupArgs.valid = false;
 
+        if (g_halo4Camera.sceneTargetMissing.load(std::memory_order_acquire))
+        {
+            // Rendering twice and capturing nothing is pure cost with a black
+            // headset at the end of it. Stop claiming the transaction until a
+            // new module generation re-earns it.
+            Halo4NoteRejection(Halo4StereoRejection::SceneTargetMissing);
+            g_halo4OrigWrapper(element, view, window);
+            return;
+        }
         if (!g_halo4Camera.armed.load(std::memory_order_acquire) ||
             !VR_IsStereoEnabled() || !g_enabled.load())
         {
@@ -29522,6 +29552,10 @@ namespace
         g_halo4Camera.stereoFrames.store(0, std::memory_order_relaxed);
         g_halo4Camera.stockFrames.store(0, std::memory_order_relaxed);
         g_halo4Camera.uncapturedEyes.store(0, std::memory_order_relaxed);
+        g_halo4Camera.consecutiveUncaptured.store(
+            0, std::memory_order_relaxed);
+        g_halo4Camera.sceneTargetMissing.store(
+            false, std::memory_order_release);
         g_halo4Camera.lastRejection.store(0, std::memory_order_relaxed);
         g_halo4LevelLoadGate.Rearm();
         LOG("Halo 4 camera core removed (generation %u); Halo 4 is stock "
@@ -29683,6 +29717,10 @@ namespace
         g_halo4Camera.stereoFrames.store(0, std::memory_order_relaxed);
         g_halo4Camera.stockFrames.store(0, std::memory_order_relaxed);
         g_halo4Camera.uncapturedEyes.store(0, std::memory_order_relaxed);
+        g_halo4Camera.consecutiveUncaptured.store(
+            0, std::memory_order_relaxed);
+        g_halo4Camera.sceneTargetMissing.store(
+            false, std::memory_order_release);
         g_halo4Camera.lastRejection.store(0, std::memory_order_relaxed);
         g_halo4Camera.installedAtMs = GetTickCount64();
 
@@ -29771,6 +29809,23 @@ namespace
     {
         if (!g_halo4Camera.installed.load(std::memory_order_acquire))
             return;
+        // Trip the flat-screen fallback from the worker, never from the hot
+        // detour: the detour only counts.
+        if (!g_halo4Camera.sceneTargetMissing.load(std::memory_order_acquire) &&
+            g_halo4Camera.consecutiveUncaptured.load(
+                std::memory_order_acquire) >= kHalo4UncapturedEyeLimit)
+        {
+            g_halo4Camera.sceneTargetMissing.store(
+                true, std::memory_order_release);
+            LOG("Halo 4 stereo DISABLED: %u consecutive eyes rendered and NOT "
+                "captured, so no eye image existed and no OpenXR layer could "
+                "be submitted - that is a black headset, which is worse than "
+                "flat. Halo 4 keeps rendering once, flat, for the rest of this "
+                "level. The scene-colour render target was never identified; "
+                "the SCENEPROBE lines above list every scene-scale target the "
+                "title bound during an owned eye",
+                kHalo4UncapturedEyeLimit);
+        }
         static uint64_t lastLogMs = 0;
         const uint64_t now = GetTickCount64();
         if (now - lastLogMs < 2000)
@@ -29779,7 +29834,8 @@ namespace
         static const char* const kRejectionNames[] = {
             "none", "not armed", "foreign caller", "setup args missing",
             "split-screen window", "observer unreadable", "camera invalid",
-            "eye FOV unavailable", "eye build failed"};
+            "eye FOV unavailable", "eye build failed",
+            "scene target never identified"};
         const uint64_t stereo =
             g_halo4Camera.stereoFrames.exchange(0, std::memory_order_relaxed);
         const uint64_t stock =
@@ -31275,7 +31331,10 @@ void Game_AutoVrTick()
         // two eye caches the wrapper detour captured. The heartbeat is the
         // shared resolver's liveness signal: without it Halo 4 never qualifies
         // as runtime owner and its Stereo capability is denied.
-        if (g_halo4Camera.armed.load(std::memory_order_acquire))
+        const bool halo4StereoUsable =
+            g_halo4Camera.armed.load(std::memory_order_acquire) &&
+            !g_halo4Camera.sceneTargetMissing.load(std::memory_order_acquire);
+        if (halo4StereoUsable)
         {
             if (!g_enabled.load(std::memory_order_relaxed) ||
                 !VR_IsStereoEnabled())

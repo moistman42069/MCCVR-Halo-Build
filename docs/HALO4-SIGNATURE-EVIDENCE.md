@@ -381,7 +381,88 @@ headset has run it yet**, so nothing here is a result.
 | `halo3xr_launcher.exe` SHA-256 | `930BEA232BFC3F8010BC2B385834DEBF796CD3DBEC02ECD0E8475E0DE8A72CE6` |
 | Installed editions | Steam and Microsoft Store; both DLL hashes verified independently in each `Halo_MCC_VR` folder after install |
 | Preserved priors | `out/deploy-backups/abcbe82-steam-before-2987dc2-...`, `...-store-before-2987dc2-...` |
-| Headset result | **PENDING** |
+| Headset result | **FAILED** — black headset, no head tracking. Root cause measured, see below. |
+| Preserved evidence | `out/test-runs/2987dc2-halo4-c3-steam-blackscreen-20260807-094854` |
+| Preserved log SHA-256 | `1C10257061F2ECD0CF610575113BF1A7D20502A86003EC74A4987E18A4CD8943` |
+
+**RESULT: the camera half worked; the capture half did not. Risk 1 fired
+exactly as written.** Steam edition, VirtualDesktopXR 1.0.10, Meta Quest 3,
+120 Hz panel; Halo 4 window `09:48:20`-`09:48:47`. The log's first line names
+`2987dc2`, so this is the intended bytes.
+
+What the run proves, in order:
+
+1. **Every install proof passed and the hooks went in.** The gate held the
+   loading screen (`holding install` at 47/2062/4094 ms), opened on
+   frozen→ticking at 5656 ms, the cold observation PASSED, and
+   `Halo 4 camera core installed (generation 1)` names both pinned RVAs and
+   records that the loop's own call targets agreed. The core armed ~0.9 s
+   later and `Halo 4 camera bring-up: head tracking, stereo, and 6DOF ON`
+   followed.
+2. **The double render works.** `Halo 4 stereo: 243 owned pairs, 0 stock
+   windows` sustained for ~20 s — ~121 claimed transactions per second at
+   `fps 120 (stereo on)`, with **zero** rejections of any kind. The observer
+   substitution, the re-invoked setup and the re-invoked wrapper all ran, every
+   frame, without one fallback. No crash, no load bounce, no kick to menu.
+3. **Not one eye was ever captured.** `M2 RASTER: no internal scene-color RTV
+   redirect occurred; refusing fake eye copy` at `09:48:27.531`, then
+   **486 uncaptured eyes against 243 owned pairs** — exactly two per pair,
+   i.e. 100%.
+4. **That is the black screen, and it is a complete explanation.** With no eye
+   image there is no projection layer, and because stereo was on there was no
+   flat screen layer either: `status: session=focused shouldRender=1
+   **layers=0**` for the entire Halo 4 window. Zero submitted layers is a black
+   headset with nothing to head-track — which is precisely what the user
+   reported. Head tracking was never broken; there was no image to track.
+
+**So the defect is not in the camera core at all.** It is in
+`VR_RedirectRenderTargets`' scene-target discovery, which identifies the eye
+image by **Halo 3's exact resource signature**: full-backbuffer-size
+`R8G8B8A8_TYPELESS` at slot 0 carrying `RENDER_TARGET|SHADER_RESOURCE|
+UNORDERED_ACCESS`. Halo 4 never binds that shape. This was named as risk 1
+before the run and the log was instrumented to separate it from "not rendering
+twice", which is what made it a five-minute diagnosis rather than a hunt.
+
+**Two smaller facts worth keeping.** `renderWindow p95` was 5.93 ms while
+rendering the scene twice, against 16.22 ms in the menu beforehand — the
+double render is not obviously expensive, though nothing was being captured so
+this is not yet a fair cost measurement. And the FOV path worked: `M2:
+submitting native per-eye FOV; eye 1 cover 54.0/55.0 deg`.
+
+### C-H4-4 — identify Halo 4's scene target, and never present a black headset (BUILT 2026-08-07, headset-PENDING)
+
+Three changes, no camera-core change: C-H4-3's camera work is proven by its own
+run and is left exactly as it is.
+
+1. **A self-arming scene-target census.** The existing `fsr_probe` diagnostic
+   already logs each distinct scene-scale render target once per eye context.
+   It now **self-arms whenever a per-eye redirect scope is active and no scene
+   colour target has ever been learned** — that combination *is* the discovery
+   failure — and while self-armed it walks **every bound slot**, not slot 0
+   alone, since assuming slot 0 is the assumption that just failed. It also
+   logs the RTV's own view format and sample count. No config flag: handing
+   this user a config experiment to prove a mod bug is forbidden here, so the
+   answer has to arrive from a normal run. Bounded to 96 distinct shapes and
+   to the failing case only. Lines are tagged `SCENEPROBE:`.
+2. **A relaxed Halo 4 discovery rule**, the smallest relaxation that can still
+   only name a final scene image: Halo 4 only, slot 0, backbuffer-sized,
+   single-sampled, `RENDER_TARGET|SHADER_RESOURCE` (dropping Halo 3's UAV
+   requirement), and an 8-bit RGBA/BGRA format — MCC's backbuffer here is
+   `R8G8B8A8_UNORM` (fmt 28), so the final composited scene image is in that
+   family, while anything wider is an HDR intermediate with tonemapping still
+   ahead of it. Whichever rule matches now logs **which rule and the full
+   shape it matched**, so a wrong latch is as diagnosable as no latch.
+3. **A loud flat-screen fallback.** After 240 consecutive uncaptured eyes
+   (~1 s at 120 Hz) the core stops claiming transactions, logs
+   `Halo 4 stereo DISABLED: … that is a black headset, which is worse than
+   flat`, and hands the flat screen back. The latch clears with the module
+   generation. This is not a silent degrade — it is the loudest line in the
+   log — and it means a future capture failure costs the player a flat screen
+   instead of a black void.
+
+**Expected headset result.** Either Halo 4 is in stereo, or it is flat with a
+named reason plus a `SCENEPROBE:` census that identifies the real target.
+Black is no longer a possible outcome.
 
 **One behavior: Halo 4 renders the scene twice per frame, once per eye, from
 two cameras the engine derives itself.**
