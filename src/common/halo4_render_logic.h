@@ -191,22 +191,10 @@ inline constexpr uint32_t kHalo4ViewModeOffset = 0x394;
 inline constexpr uint32_t kHalo4ViewOutputUserOffset = 0x39C;
 inline constexpr uint32_t kHalo4ViewFirstWindowFlagOffset = 0x389;
 
-// E-H4-7: main_render_game itself. The per-window render wrapper is too narrow
-// a per-eye scope - E-H4-5 places Halo 4's UI bracket AFTER the per-window
-// loop, so a wrapper-scoped eye can never contain the HUD. This function
-// contains the window loop AND that UI bracket. Measured 2026-08-07: it takes
-// NO arguments (its single call site at 0x122076 marshals none), and it has
-// exactly one caller, so the detour can require an exact return address.
-inline constexpr uint32_t kHalo4MainRenderGameRva = 0x12259C;
-inline constexpr uint32_t kHalo4MainRenderGameCallRva = 0x122076;
-inline constexpr uint32_t kHalo4MainRenderGameReturnRva = 0x12207B;
-
 inline constexpr size_t kHalo4CameraAnchorLoop = 0;
 inline constexpr size_t kHalo4CameraAnchorSetup = 1;
 inline constexpr size_t kHalo4CameraAnchorWrapper = 2;
 inline constexpr size_t kHalo4CameraAnchorConverter = 3;
-inline constexpr size_t kHalo4CameraAnchorMainRenderGame = 4;
-inline constexpr size_t kHalo4CameraAnchorMainRenderGameCall = 5;
 
 // Reuses Halo4RetailAnchor so the cold observation's proven matcher validates
 // this table with no new scanning code.
@@ -239,21 +227,7 @@ inline constexpr Halo4RetailAnchor kHalo4CameraAnchors[] = {
       "F2 0F 10 42 34 F2 0F 11 43 18 8B 42 3C 89 43 20 "
       "F3 0F 10 42 78 F3 0F 11 43 28 F3 0F 10 72 7C F3 0F 11 73 2C",
       kHalo4ConverterCopyRva, 0, 0 },
-    // main_render_game's entry - the per-eye scope that contains the HUD.
-    { "main-render-game-entry",
-      "48 8B C4 55 41 54 41 55 41 56 41 57 48 8D A8 48 F9 FF FF "
-      "48 81 EC 90 07 00 00 48 C7 45 C8 FE FF FF FF",
-      kHalo4MainRenderGameRva, 0, 0 },
-    // Its ONE call site. The rel32 at +0x0A is checked separately against
-    // kHalo4MainRenderGameRva, which is what proves the caller edge and pins
-    // the exact return address the detour requires.
-    { "main-render-game-call-site",
-      "E8 ?? ?? ?? ?? 84 C0 75 07 E8 ?? ?? ?? ?? EB 0A B9 01 00 00 00",
-      kHalo4MainRenderGameCallRva - 9, 0, 0 },
 };
-
-// Byte offset of the rel32 inside the call-site pattern above.
-inline constexpr uint32_t kHalo4MainRenderGameCallRel32Offset = 0x0A;
 
 inline constexpr size_t kHalo4CameraAnchorCount =
     sizeof(kHalo4CameraAnchors) / sizeof(kHalo4CameraAnchors[0]);
@@ -280,12 +254,6 @@ constexpr bool Halo4CameraLoopTargetsAgree(
         wrapperTargetRva == kHalo4WrapperRva;
 }
 
-// The same edge proof for the function the eye loop actually hooks.
-constexpr bool Halo4MainRenderGameCallAgrees(uint32_t callTargetRva)
-{
-    return callTargetRva == kHalo4MainRenderGameRva;
-}
-
 // Everything the camera core proves before it creates a single hook. Pure data
 // so core_tests can prove each field fails closed on its own.
 struct Halo4CameraInstallProof
@@ -295,8 +263,7 @@ struct Halo4CameraInstallProof
     uint32_t anchorsAtPinnedRva = 0;
     uint32_t ripTargetsAtPinnedRva = 0;
     bool loopCallTargetsAgree = false;  // the loop calls setup and the wrapper
-    bool mainRenderGameCallAgrees = false; // its call site targets it
-    bool executableRange = false;       // every hook site inside .text
+    bool executableRange = false;       // both hook sites inside .text
     bool mappingStable = false;
 };
 
@@ -306,8 +273,7 @@ constexpr bool Halo4CameraInstallComplete(const Halo4CameraInstallProof& p)
         p.anchorsMatchedOnce == kHalo4CameraAnchorCount &&
         p.anchorsAtPinnedRva == kHalo4CameraAnchorCount &&
         p.ripTargetsAtPinnedRva == kHalo4CameraAnchorRipTargets &&
-        p.loopCallTargetsAgree && p.mainRenderGameCallAgrees &&
-        p.executableRange && p.mappingStable;
+        p.loopCallTargetsAgree && p.executableRange && p.mappingStable;
 }
 
 // ---------------------------------------------------------------------------
