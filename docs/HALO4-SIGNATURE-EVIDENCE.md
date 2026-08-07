@@ -4,8 +4,9 @@ Status: **C-H4-6 headset-FAILED; C-H4-1 remains the accepted Halo 4 line.**
 C-H4-5 is the last candidate that sustained two captured scene eyes, but it had
 no head pose and no HUD and is not accepted. C-H4-6 widened the eye scope to
 `main_render_game`; the exact run completed zero pairs, stalled the visible
-game, and proved that the engine overwrote the requested camera before setup.
-That behavior must be reverted before the next candidate. This file is the
+game, exposed a `void` detour on a return value the caller consumes from `AL`,
+and exposed an invalid FOV diagnostic built on misidentified fields. That
+behavior must be reverted before the next candidate. This file is the
 proof ledger for every Halo 4 signature, RVA, layout, and hook the runtime will
 consume. Nothing may be hooked, scanned for, or shipped for Halo 4 unless its
 proof is recorded here first. The machine-readable identity set lives in
@@ -604,10 +605,14 @@ SEH-guarded, the camera basis is validated for finiteness and unit length
 before it is used, and a failed eye pair falls back to one stock render while
 the core stays armed — a single bad frame never drops the player out of VR.
 
-**FOV.** Halo 4 stores one tangent pair per camera, so the raster uses a
-symmetric cover taken as the wider half of each axis across both eyes, and
-`Game_GetRenderHalfFovs` reports that cover to the compositor through the
-existing shared path.
+**FOV CORRECTION (2026-08-07).** This candidate got the observer layout wrong.
+H4EK's `s_observer_result` producer and asserts prove `+0x78` is a full vertical
+FOV in radians and `+0x7C` is an FOV ratio, not horizontal/vertical tangents.
+C-H4-3 through C-H4-6 wrote `tan(OpenXR half-angle)` into both fields and then
+reported those half-angles to the compositor. That projection path is invalid
+and is a direct candidate for the user's "awful FOV" result. Preserve both
+stock fields until the native FOV/ratio consumer and resulting projection are
+derived; do not tune the wrong representation.
 
 **Capabilities published: `Stereo` and `ControllerInput` only.** Aim, HUD,
 haptics, room-scale locomotion, IK and the cutscene theatre are deliberately
@@ -640,13 +645,15 @@ as the other three titles. Halo 3, ODST and Reach are untouched by
 construction: every edit is inside `#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA`
 or a Halo 4-only branch, and the Reach parity gate passes.
 
-### E-H4-7: main_render_game as the per-eye scope (PROVEN 2026-08-07)
+### E-H4-7: main_render_game identity and extent (scope PROVEN; return ABI corrected 2026-08-07)
 
-The per-window render wrapper `0x1222F4` is the wrong per-eye boundary, and
-E-H4-5 already said why without the consequence being drawn: **Halo 4's UI
-bracket runs AFTER the per-window loop**, so a wrapper-scoped eye can never
-contain the HUD no matter which render target is captured. The enclosing
-function is the correct scope.
+The per-window render wrapper `0x1222F4` cannot contain Halo 4's later UI
+bracket: the UI runs after the per-window loop. Static evidence proves that the
+enclosing `main_render_game` contains both regions. It does **not** make that
+stateful outer function a legal per-eye boundary. C-H4-6 treated containment as
+re-callability, missed the live return register, and failed in the headset.
+The wrapper remains the only runtime-sustained camera/scene boundary; HUD needs
+its own later CUI transaction.
 
 | Retail fact | Value |
 | --- | --- |
@@ -654,6 +661,7 @@ function is the correct scope.
 | Arguments | **NONE** - its call site marshals nothing |
 | Callers | **exactly one**, `call 0x12259C` at `0x122076` |
 | Return address | `0x12207B` |
+| Return ABI | A status value is returned in `AL`; the caller executes `test al, al` immediately after the call. C-H4-6's `void` typedef/detour was wrong. |
 | Entry signature | `48 8B C4 55 41 54 41 55 41 56 41 57 48 8D A8 48 F9 FF FF 48 81 EC 90 07 00 00 48 C7 45 C8 FE FF FF FF` - **UNIQUE** |
 | Call-site signature | `E8 ?? ?? ?? ?? 84 C0 75 07 E8 ?? ?? ?? ?? EB 0A B9 01 00 00 00` - **UNIQUE** at `0x12206D`, its rel32 at +0x0A decodes to `0x12259C` |
 
@@ -661,9 +669,18 @@ Both were measured over `.text` of the pinned image. The single caller is what
 lets the detour additionally require its exact return address, exactly as the
 setup detour does.
 
-Scoping the eye here also **simplifies** the core: setup runs naturally inside
-each call, so nothing has to re-invoke it, and the observer substitution is a
-single write before the engine rebuilds its own window records.
+The call-site signature itself continues `84 C0 75 07`: `test al, al` followed
+by a conditional branch. That is direct proof that the return register is live,
+even though C-H4-6 declared the function pointer and detour `void`. No future
+hook may consume this boundary until it preserves that status exactly. Identity,
+extent, no-argument ABI and the UI placement remain proven; re-callability was
+never proven.
+
+**Refuted C-H4-6 design inference.** Scoping the eye here looked simpler because
+setup would run naturally inside each call. Runtime proved that exact design
+unsafe; its invalid FOV readback did not establish whether the substitution
+survived. Do not reuse the outer scope merely because it contains more drawing
+work.
 
 ### C-H4-6 — head tracking, 6DOF and a HUD-inclusive eye (HEADSET-FAILED 2026-08-07)
 
@@ -674,7 +691,7 @@ single write before the engine rebuilds its own window records.
 | `halo3xr.dll` SHA-256 | `A6488B4DC15323372BB1D7F93FD55F2323D3A08C5F09E580500A2C0E9915FA90` |
 | Installed editions | Steam and Microsoft Store; both hashes verified independently after install |
 | Preserved priors | `out/deploy-backups/72ce654-steam-before-4fc3c84-...`, `...-store-before-4fc3c84-...` |
-| Headset result | **FAILED** — zero completed stereo pairs, camera `NOT TAKING`, and a visible game stall after the first eye |
+| Headset result | **FAILED** — zero completed stereo pairs and a visible game stall after the first eye; its `NOT TAKING` diagnostic was itself invalid |
 | Preserved evidence | `out/test-runs/4fc3c84-halo4-c6-steamvr-failed-20260807-112043` |
 | Preserved log SHA-256 | `4BF4992E18A92ACE266AF26D4A4115642348D7C0E6B9B8F2D945175FB5955D4A` |
 
@@ -733,21 +750,32 @@ bytes.
    bounced `unsupported -> shell`; one second later the stall watchdog reported
    that the visible headset was holding the last submitted frame. Every later
    interval reported **0 owned pairs**.
-3. The new readback caught the mechanism exactly: requested tangents stayed at
-   `1.8418/1.3290`, while the engine held its stock `1.4361/1.2077` and reported
-   `NOT TAKING` on every sample. Writing the observer before
-   `main_render_game` is too early; code inside that function rebuilds or
-   replaces it before the proven setup call consumes it.
-4. E-H4-7 still proves that `main_render_game` contains the UI bracket. It does
-   **not** prove that this stateful whole-frame function is re-callable twice.
-   This run is the negative runtime proof: using it as the eye loop both loses
-   the camera substitution and stalls the title.
+3. The new `NOT TAKING` readback is **not valid evidence**. The requested values
+   were OpenXR half-angle tangents written into fields that actually hold full
+   vertical FOV and FOV ratio. The engine values were read after every natural
+   setup, including stock windows, with no matching eye/frame serial, and the
+   converter applies its own native FOV processing. Comparing
+   `1.8418/1.3290` directly with `1.4361/1.2077` therefore compares different
+   representations and potentially different transactions. It proves only
+   that the diagnostic was wrong, not that the observer write was ignored.
+4. The pinned call site exposes an independent ABI defect: it executes
+   `test al, al` immediately after `main_render_game`, but C-H4-6 declared the
+   original function, its body and the detour `void`. The detour therefore did
+   not preserve a live return status. That is a concrete explanation for the
+   title-state bounce and stall.
+5. E-H4-7 still proves that `main_render_game` contains the UI bracket. It does
+   **not** prove that the function is re-callable twice. Because the return-ABI
+   defect independently invalidates the run, the stall cannot honestly prove
+   that the engine function itself is never re-callable; it proves only that
+   C-H4-6's exact outer transaction is unsafe.
 
 The recovery point is C-H4-5's sustained per-window wrapper transaction, not a
 new tuning guess. The next player-visible candidate may add head pose and 6DOF
-inside that already-running transaction, with post-setup camera readback. HUD
-capture remains a separate later feature and must not widen the render scope
-again without its own engine boundary and runtime proof.
+inside that already-running transaction while preserving the native FOV fields.
+Any post-setup camera proof must match position/basis to the same eye
+transaction; FOV waits for its own representation proof. HUD capture remains a
+separate later feature and must not widen the render scope again without its
+own engine boundary and runtime proof.
 
 ## Deliberate decision: groundhog.dll stays out of the registry (D-H4-5)
 
@@ -1290,15 +1318,17 @@ F2 0F 10 42 28 / F2 0F 11 43 0C  [rdx+0x28] -> [rbx+0x0C] forward.xy
 8B 42 30    / 89 43 14       [rdx+0x30] -> [rbx+0x14]   forward.z
 F2 0F 10 42 34 / F2 0F 11 43 18  [rdx+0x34] -> [rbx+0x18] up.xy
 8B 42 3C    / 89 43 20       [rdx+0x3C] -> [rbx+0x20]   up.z
-F3 0F 10 42 78 / F3 0F 11 43 28  [rdx+0x78] -> [rbx+0x28] tangent X
-F3 0F 10 72 7C / F3 0F 11 73 2C  [rdx+0x7C] -> [rbx+0x2C] tangent Y
+F3 0F 10 42 78 / F3 0F 11 43 28  [rdx+0x78] -> [rbx+0x28] vertical FOV
+F3 0F 10 72 7C / F3 0F 11 73 2C  [rdx+0x7C] -> [rbx+0x2C] FOV ratio
 ```
 
 So the observer result carries **position `+0x00`, forward `+0x28`, up
-`+0x34`, tangents `+0x78`/`+0x7C`** — five fields, 0x80 bytes covering all of
-them plus the `+0x44..+0x5C` block setup copies onto the view immediately
-after (`0x374D65`-`0x374D7A`). That block is the entire per-eye substitution
-surface.
+`+0x34`, vertical FOV `+0x78`, and FOV ratio `+0x7C`** — five fields, 0x80
+bytes covering all of them plus the `+0x44..+0x5C` block setup copies onto the
+view immediately after (`0x374D65`-`0x374D7A`). H4EK independently proves the
+field meanings: its observer finisher computes full vertical FOV at `+0x78`,
+and its converter asserts camera `+0x28` as `vertical_field_of_view`. That
+block is the entire per-eye substitution surface.
 
 **Setup is re-callable within one frame — measured, not assumed.** This is the
 load-bearing property of the β1 design and it was the one real hazard: setup
