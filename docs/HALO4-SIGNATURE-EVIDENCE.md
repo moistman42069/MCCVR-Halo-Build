@@ -166,7 +166,7 @@ workspace is a *named single global* rather than an anonymous one.
 
 ## Candidate status
 
-### C-H4-1 — adapter identity + controller input (headset-PENDING)
+### C-H4-1 — adapter identity + controller input (headset-ACCEPTED 2026-08-06)
 
 The first Halo 4 candidate and the first headset touch. It needs identity
 evidence only, which E-H4-1's preflight already pins.
@@ -180,7 +180,51 @@ evidence only, which E-H4-1's preflight already pins.
 | `halo3xr_launcher.exe` SHA-256 | `930BEA232BFC3F8010BC2B385834DEBF796CD3DBEC02ECD0E8475E0DE8A72CE6` |
 | Installed editions | Steam and Microsoft Store; both DLL hashes verified independently in each `Halo_MCC_VR` folder after install |
 | Preserved priors | `out/deploy-backups/1c6101f-steam-before-954359b-...`, `...-store-before-954359b-...` |
-| Headset result | **PENDING** — not yet run |
+| Accepted run | Steam edition, VirtualDesktopXR 1.0.10, Meta Quest 3, 120 Hz panel; Halo 4 window `17:20:46`–`17:21:54` on 2026-08-06 |
+| Headset result | **ACCEPTED** — user: "itested halo 4 i think the controls work" |
+| Preserved evidence | `out/test-runs/954359b-halo4-c1-controller-steam-pass-20260806-172046` |
+| Preserved log SHA-256 | `07B3030B41662411D1C1235348D61EB62F8AD80624E8873095FF4568806BBBE6` |
+
+**What the accepted log proves, line by line.** The run is in the Steam
+install's `halo3xr.log.prev` (the live `halo3xr.log` had already rolled to a
+later Halo 3/Reach session), preserved above before the next launch could
+overwrite it.
+
+- Header: `source 954359b7f786b78c76824b662ead3c1fc8cd7917 ... compiled
+  Aug  6 2026 16:25:08` — the exact installed bytes, matching the installed
+  DLL's own timestamp.
+- `MCC edition: Steam`, `OpenXR runtime: VirtualDesktopXR 1.0.10`,
+  `headset: 'Meta Quest 3' (vendor 0xFFFFD23E)`, `panel is running at 120.0Hz`.
+- `17:20:46.465 Title adapter: detected Halo 4 (halo4.dll); shared
+  virtual-controller transport is enabled; Halo 4 camera, render, aim/movement
+  transforms, HUD, haptics, lifecycle, and runtime hooks remain disabled` —
+  the transport line, exactly as designed.
+- The pinned-identity line printed `PE timestamp 0x68A0E7BF, SizeOfImage
+  0x04A3F000, H4EK build 2023.06.27.176405.1-Release`, matching the pinned
+  identities section of this document.
+- `controller edge: A / Y / B / Menu/Start` recur through the whole Halo 4
+  window, so the shared virtual-pad transport was live in Halo 4 specifically.
+- **`fps ... (stereo off)` for the entire Halo 4 window.** No stereo, no camera
+  ownership, no hook — the negative half of the claim, which is the half that
+  actually mattered.
+- Zero warnings and zero errors between `17:20:46` and `17:21:54`;
+  `stalls=0 worstStall=0ms orderFailures=0`, and no load bounce or kick to
+  menu on either the entry or the exit transition.
+
+**Scope of the acceptance, stated so it is not overread.** What is proven is
+that adding Halo 4 to the registry changes nothing else and that the gamepad
+transport reaches Halo 4. The transport itself is a process-wide XInput hook
+installed at DLL load and shared with the other titles, so this result is a
+weak test *of the transport* and a strong test *of the inertness*. The Halo 4
+window is ~68 s and menu-heavy; no long level-load/exit cycle was exercised in
+Halo 4, so the load-bounce gate remains unexercised for this title. That is
+C-H4-2's business, behind the level-load gate.
+
+**Incidental cross-title regression evidence, on these exact bytes.** The same
+session went on to Reach (`17:22:09 Reach camera core armed`), and the
+follow-on ~1 hour session on the same DLL (`17:47`–`18:50`) detected Halo 3 and
+Reach as supported titles across nine transitions with **303** `stereo on`
+windows. The additive `else if` branch broke neither shipped title.
 
 **What it changes.** `Halo4Adapter_GetStage()` returns `ControllerInputOnly`;
 the registry row's `admissionCapabilities` gains

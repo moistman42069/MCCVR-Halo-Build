@@ -105,6 +105,51 @@ remaining cost is the scene being rendered twice at `resolution_scale`.
 - None of the three commits was individually confirmed in a headset. The user
   ran the bytes and reported no regression; that is not per-item acceptance.
 
+## ACCEPTED, HALO 4 BRING-UP LINE: C-H4-1 adapter identity + controller input - 2026-08-06
+
+**This does not move the baseline.** `f4c641f` above remains the development
+baseline and 0.3.3 remains the published release. This is the first Halo 4
+candidate and the first Halo 4 headset touch, on branch
+`feature/halo4-bringup`. Title coverage of the shipped product is unchanged:
+Halo 3, ODST and Reach.
+
+| Identity | Value |
+| --- | --- |
+| Accepted source | `954359b7f786b78c76824b662ead3c1fc8cd7917` (branch `feature/halo4-bringup`) |
+| Build | Release x64, preset `release`, ODST ON, Reach ON, ReachRender ON |
+| Candidate package | `out/candidates/954359b-reach-fp-parity-20260806-212516151Z` |
+| `halo3xr.dll` SHA-256 | `8B327A0B2FFC20135ECBEB71BEA698C78908EC1AA7C09C810CA329482ADE74AD` |
+| Installed editions | Steam and Microsoft Store; DLL hashes verified independently in both `Halo_MCC_VR` folders |
+| Accepted runtime | Steam edition, VirtualDesktopXR 1.0.10, Meta Quest 3 at 120 Hz; Halo 4 window `17:20:46`-`17:21:54` |
+| Headset result | Accepted: "itested halo 4 i think the controls work" |
+| Preserved evidence | `out/test-runs/954359b-halo4-c1-controller-steam-pass-20260806-172046` |
+| Preserved log SHA-256 | `07B3030B41662411D1C1235348D61EB62F8AD80624E8873095FF4568806BBBE6` |
+
+**What is now true.** Halo 4 is a recognised title. The adapter detects
+`halo4.dll`, prints its pinned identity from compile-time constants, and
+enables the shared virtual-controller transport, so VR controllers drive Halo 4
+as a gamepad. Nothing else changes: `stereo off` for the whole Halo 4 window,
+no hook created, no camera owned, no load bounce, zero warnings or errors.
+
+**What this is NOT.** Halo 4 renders flat in the headset - no stereo, no
+head-tracked camera. That is the design of C-H4-1, not a shortfall. The
+gamepad transport is a process-wide XInput hook shared with the other titles,
+so its working in Halo 4 was never seriously at risk; the load's real value is
+the *negative* result, that arming the registry row was inert.
+
+**Open on this line - do not treat as covered:**
+
+- The accepted Halo 4 window is ~68 s and menu-heavy. **No Halo 4 level-load or
+  level-exit cycle was exercised**, so the load-bounce gate is unproven for
+  this title. It belongs to C-H4-2, behind the level-load gate.
+- The pinned identity is still `NOT yet verified against the loaded image` by
+  construction - nothing in `halo4.dll` is read, not even PE headers. C-H4-2's
+  preflight is what verifies it.
+- Everything on the `f4c641f` baseline and the 0.3.3 line carries forward.
+
+Per-candidate evidence, the full log citation and the cross-title regression
+datapoints are in `docs/HALO4-SIGNATURE-EVIDENCE.md` under "Candidate status".
+
 ## SUPERSEDED AS BASELINE, STILL THE PUBLISHED RELEASE: MCC VR Alpha 0.3.3 - 2026-08-06
 
 **`MCC_VR_ALPHA_0.3.3`, the FP Vehicle Update, is what is published on GitHub
