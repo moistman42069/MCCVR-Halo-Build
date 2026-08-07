@@ -573,3 +573,153 @@ views live, how the render-view stack admits and releases them, and how many
 windows exist — for this exact module hash. It admits **no hook**: the camera
 write point is item 3 above and is not yet located. Nothing here may be
 shipped until the wrapper and render body carry their own retail proof.
+
+**Item 3's premise was wrong, and E-H4-5 corrects it:** the camera-write
+point is not in the render body at all. See the next section.
+
+### E-H4-5: the camera producer chain and the M1 camera-write point (PROVEN 2026-08-07)
+
+Closes every item of E-H4-4's OPEN list. Method: an eleven-agent evidence
+workflow — three kit agents first (H4EK-first rule), two retail matchers
+working from structural idioms, three retail anchor agents, then three
+adversarial audits that independently re-measured every signature count with
+freshly written scanners, attacked every kit→retail correspondence, and
+spot-verified disputed byte sites on disk. Module identity verified by
+preflight before any retail read (`halo4.dll` SHA-256 `7C53E7D5...0C34FA84`,
+unchanged). Full quoted disassembly is in
+`out/h4ek-evidence/camera/camera-producer-chain.md` (kit) and
+`out/h4ek-evidence/camera/retail-camera-transaction.md` (retail); this entry
+records the verdicts and the anchors.
+
+**Kit half (halo4_tag_test.exe, cross-checked in halo4_tag_play.exe).** A
+module-wide rip-relative write index proves the per-window SETUP (kit
+`0x8B9990`, in `render_player_view.cpp` by its own assert record) is the ONLY
+writer of `g_player_view_stack_element`. The camera source is the observer
+result — TLS gamestate slot `+0x4A0` → observer[user] (stride `0x428`, base
+`+8`) → result at `+0x154` — produced by `observer_update` (kit `0x168710`).
+Inside one setup call, in order: **(A)** the observer→camera converter (kit
+`0x8AB580`) writes position/forward/up/fov into the element's rasterizer
+camera `+0x00..+0x2C`; **(B)** the projection builder derives basis and
+position into `+0x88`; **(C)** the raster pair is copied to the render pair
+`+0x14C`/`+0x1D4`; **(D)** the constant bank `+0x480` is rebuilt, rows
+`+0xC0..+0xF0` = right/up/backward/position — exactly what the re-entry
+callback uploads. Three prior kit claims are corrected in place: the "render
+body" `0x8B5930` is the auxiliary-texture/UI pass, NOT the scene renderer and
+NOT the camera-write point (it never dereferences its `c_player_view`
+argument); its `0x8B5C6A` push callback is `0x89CBB0`, not `0x8A2BB0`; and
+the kit wrapper has three callers, not one.
+
+**Retail anchors. All PROVEN with quoted bytes; the audit reproduced every
+signature count below.**
+
+| Retail item | RVA | Kit homolog |
+| --- | --- | --- |
+| active `c_player_view*` global | `0x4969AA0` (`.data` zero-init) | `0x5573F28` |
+| inner wrapper (whole transaction) | `0x1222F4`-`0x122599` | `0x1F7C00` |
+| set-current | **INLINED**: store `0x122307`, clear `0x122580` | setter `0x8B9530` |
+| `g_player_view_stack_element` | `0x10DAFE0` (+0x30 rect at `0x10DB010`) | `0x55605A0` |
+| player-view re-entry callback | `0x374A60`-`0x374ADF` | `0x8B8890` |
+| menu re-entry callback | `0x382B8C`-`0x382BB6` (object `0x10EDEC0`) | `0x8BAE30` |
+| **per-window SETUP (the producer)** | **`0x374C84`-`0x3750C2`** | `0x8B9990` |
+| **camera converter (write point A)** | **`0x38F014`, called at `0x374D5B`** | `0x8AB580` |
+| projection builder | `0x38F658`, called at `0x374DA2` | `0x8ACBB0` |
+| raster→render pair copy | inline `0x374DA7`-`0x374E77`, UNCONDITIONAL | `0x8B9DE7` |
+| constant-bank builder | `0x395A7C`, called at `0x37502B` | `0x8FFBE0` |
+| render body (aux-texture/UI pass) | `0x378D50`-`0x379118` | `0x8B5930` |
+| viewport+scissor commit | `0x340148` (setters `0x34EAA0`/`0x34E618`) | `0x857040` |
+| camera-const uploaders | `0x3737F4` / `0x3735A8`, writer `0x383CF8` | `0x8D9F90` / `0x8DA310` |
+| split-screen layout table | `0xE84CC0`, stride `0x14`, initialized `.data` | `0x24A1200` |
+| published layout-mode global | `0x4969950` (written by post-2 `0x3751D0`) | `0x5560308` |
+
+E-H4-4's inlining question is answered: the wrapper is a real function and
+the kit's tail-jmp negative is explained by **set-current** being inlined to
+one store and one `and qword ..., 0`. Its census is complete and closed: 41
+references, zero `lea`, zero data-section pointers, so the only durable
+writers are those two instructions, plus two scoped save/set/restore pairs.
+
+Element fields settled: `+0x389` = first-window flag, one module-wide write
+(`0x122CCD`), and **no reader found under displacement or absolute
+addressing in either binary** — recorded as a census-bounded negative, not as
+deadness. `+0x38C/+0x390/+0x394/+0x39C` = window_index / window_count / mode
+/ **output_user_index**, written only by setup; E-H4-4's `+0x39C` selector is
+therefore an output-user filter. `+0x3A4` = split-screen layout mode
+(0=full, 3=half, 2=quarter), published per window to `0x4969950`. The two
+remaining E-H4-4 array consumers are a **dynamic-resolution controller**
+(`0x287DB0`, which clears the rescale gate byte `0xE84CA0` that callback
+`0x374A60` tests) and a smoothed **world→screen projector** (`0x4CCEDC`),
+which independently re-proves the retail observer geometry as
+`TLS[+0x680] + 0x15C + user*0x428` — the exact composite of the kit's
+`+0x4A0 → +8 + user*0x428 + 0x154`.
+
+**THE M1 CAMERA-WRITE POINT.** All four camera artifacts are produced inside
+ONE setup invocation per window as straight-line code; A is the master write
+and B/C/D derive from it in the same call. Writing the element after setup
+returns is therefore stale by construction. The per-eye substitution boundary
+for the future camera hook is:
+
+- **β1 (preferred): before the setup call at `0x122CC3`** — substitute the
+  content of the observer result the window record's `+0x08` points at, and
+  let setup derive projection, render pair and bank per eye inside
+  unmodified engine code;
+- **β2: around the converter call at `0x374D5B`** — after A and before B at
+  `0x374DA2` nothing has yet derived from the camera.
+
+Retail simplifies the kit here, which helps: the kit's copy-skip argument and
+its alternate object-attached render-camera path are both absent from retail
+setup, so there is ONE write point, not two. The confirmed trap is the
+opposite of Reach's: the re-entry callback takes **no arguments** and
+re-publishes from singletons on every push and every pop; the render body's
+nested pushes hand-commit from the element's rasterizer pair and swap the
+active-view global mid-transaction. Per-eye state must therefore live in the
+element and bank via β1/β2 and must never be written to the active global
+mid-render.
+
+**What the adversarial audits changed, recorded because it is the reason to
+trust the rest.** The correspondence audit forced two identifications that
+had been positional inferences — the camera-constant uploaders are proven
+internally, and CB `0x17` registers 4-7 (the camera basis and position) are
+written nowhere else in the module — and it defended the sole-writer claim by
+resolving `rcx` at all five converter call sites, only one of which targets
+the element. It **refuted** a subsidiary claim that `0x340148` is the only
+viewport writer: `0x346668`, `0x12F0A0` and `0x395404` call both setters
+directly and `0x34D664` issues `RSSetViewports` itself, so a second live
+viewport path exists and is uncharacterized. The uniqueness audit reproduced
+every signature and census number except four, all now corrected here and in
+the evidence documents: a "contiguous six-sub" setup signature matches **zero
+times** (retail interleaves `4C 8B F6`; the interleaved form is the correct
+one — re-verified by hand this session), a weak projection-basis pattern is
+**11 hits, not 1**, the render body's two Bink gate bytes are **`0x2F4EAD2`
+and `0x2F4F0FC`** (re-verified by hand), and the kit `imul 0x428` shape has
+**1** tag_play hit rather than zero (it survives optimization; it is simply
+useless in retail at 66 hits).
+
+**Homology labels that stay INFERRED — never promote these to findings.**
+"fn `0x12259C` = main_render_game" (structure only; its own callers are
+untraced); "record+0x08 = `s_observer_result`" (layout retail-proven, the
+NAME rests on kit asserts compiled out of retail); post-1 `0x3750C4` has no
+kit identity at all; "post-2 `0x3751D0` = kit `0x8B63C0`" rests on a
+four-instruction opening plus call position, and "post-2 contains the scene
+walk" is a candidate, not a finding; `0x38F178`, `0x12F738` and `0x357014`
+are positional labels; the minor view-object name map is inferred except
+`0x10BFA20`'s layout; the COM vtable slot names (`+0x160`/`+0x168`/`+0x190`)
+are documented-interface-order inference; every subsystem name in this entry
+(dynamic-resolution controller, world→screen projector) labels a proven
+mechanism with an inferred purpose.
+
+**Still OPEN, ordered by how much each blocks the M1 hook.** (1) The retail
+scene-geometry submission point — post-2 `0x3751D0` versus the wrapper callee
+`0x3532B4`; settle by diffing post-2 against kit `0x8B63C0`. (2) The last
+writer-census gap: `0x3A0FA0` (receives the render pair) and `0x341658`
+(receives bank+0x80) are undissected, so the β1/β2 boundary inherits that
+gap. (3) `0x12F738`, the callback's conditional rect rescaler, and its
+interaction with the dynamic-resolution controller. (4) fn `0x12259C`'s own
+callers. (5) The retail force-window-count global (kit `0x46F5248`) via
+`0x95D0C` — the deterministic single-window lever for VR. (6) A full census
+of camera-constant re-publishers (`0x3443DC`, `0x378210`, and the bank
+re-uploaders). (7) The NULL-observer default camera, needed only if the hook
+must behave in menus.
+
+**Scope.** This entry admits **no hook**. It pins where the camera is
+written, what derives from it, and where a per-eye substitution must land.
+The hook itself is C-H4-3's business and needs its own candidate with its own
+proofs.

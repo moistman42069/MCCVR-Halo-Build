@@ -272,9 +272,9 @@
     "consumed_layout_fields"
   ],
   "player_view_transaction": {
-    "status": "RETAIL_ANCHORED_STORAGE_AND_SCOPE_NO_HOOK_POINT_YET",
+    "status": "RETAIL_ANCHORED_CAMERA_WRITE_POINT_PROVEN_NO_HOOK_ADMITTED",
     "measured": "2026-08-06",
-    "evidence": "out/h4ek-evidence/camera/player-view-survey.md; ledger section E-H4-3 in docs/HALO4-SIGNATURE-EVIDENCE.md",
+    "evidence": "out/h4ek-evidence/camera/player-view-survey.md, view-callbacks.md, camera-producer-chain.md, retail-camera-transaction.md; ledger sections E-H4-3, E-H4-4 and E-H4-5 in docs/HALO4-SIGNATURE-EVIDENCE.md",
     "evidence_source": "H4EK binaries only; no retail module was opened. ALL RVAs here are kit RVAs in halo4_tag_test.exe unless a build is named.",
     "array_vs_stack_verdict": "BOTH, and they are different objects: a fixed per-player view ARRAY plus a render-view pointer STACK used as the active-view scope. The stack symbols that prompted the question are the scope mechanism, not per-player storage - Reach has both as well, so the Reach-shaped M1 hook architecture carries over.",
     "player_window_count": {
@@ -321,7 +321,7 @@
         "forward": "0x158",
         "up": "0x164"
       },
-      "rasterizer_camera_offset": "0x1D4 - INFERRED, NOT PROVEN",
+      "rasterizer_camera_offset": "CORRECTED and PROVEN (E-H4-5): the rasterizer camera is at element+0x00 and its projection at +0x88; +0x14C is the RENDER camera and +0x1D4 the RENDER projection. The earlier \"+0x1D4 = rasterizer camera\" inference was wrong.",
       "active_player_view_pointer_rva_tag_test": "0x05573F28",
       "set_current_rva_tag_test": "0x008B9530",
       "set_current_null_clears": true
@@ -401,6 +401,94 @@
         "element+0x1D4 rasterizer camera identity",
         "element+0x389 and +0x3A4",
         "the two callbacks"
+      ],
+      "admits_hook": false
+    },
+    "camera_producer_chain": {
+      "status": "PROVEN_KIT_AND_RETAIL",
+      "measured": "2026-08-07",
+      "ledger_section": "E-H4-5",
+      "audit": "three adversarial passes: signature counts independently re-measured, kit-to-retail correspondence attacked, completeness critiqued; four numeric claims refuted and corrected, all corrections re-verified by hand",
+      "camera_source": {
+        "kit": "TLS gamestate slot +0x4A0 -> observer[user] (stride 0x428, base +8) -> s_observer_result at +0x154",
+        "retail": "TLS[+0x680] + 0x15C + user*0x428 (same composite; tls-index global 0x1057218)",
+        "observer_result_layout": {
+          "position": "+0x00",
+          "forward": "+0x28",
+          "up": "+0x34",
+          "horizontal_fov": "+0x40",
+          "vertical_fov": "+0x78",
+          "fov_ratio": "+0x7C"
+        }
+      },
+      "retail_producer": {
+        "setup_fn": "0x374C84-0x3750C2",
+        "setup_call_site": "0x122CC3",
+        "write_point_A_converter": "0x38F014",
+        "write_point_A_call_site": "0x374D5B",
+        "write_point_B_projection": "0x38F658 called at 0x374DA2",
+        "write_point_C_pair_copy": "inline 0x374DA7-0x374E77, UNCONDITIONAL in retail",
+        "write_point_D_bank_builder": "0x395A7C called at 0x37502B, rows +0xC0..+0xF0",
+        "derivation": "A is the master write; B/C/D derive from it as straight-line code in the same call"
+      },
+      "retail_transaction": {
+        "inner_wrapper": "0x1222F4-0x122599",
+        "wrapper_call_site": "0x122CE2",
+        "set_current": "INLINED: store 0x122307, clear 0x122580",
+        "active_view_global": "0x4969AA0",
+        "stack_element": "0x10DAFE0",
+        "stack_element_viewport_rect": "0x10DB010",
+        "player_view_callback": "0x374A60",
+        "menu_callback": "0x382B8C",
+        "menu_view_object": "0x10EDEC0",
+        "render_body": "0x378D50-0x379118",
+        "render_body_role": "auxiliary-texture/UI pass; NOT the scene renderer and NOT the camera-write point",
+        "per_view_post": [
+          "0x3750C4",
+          "0x3751D0"
+        ],
+        "layout_table": "0xE84CC0 stride 0x14 index window+4*count+12",
+        "published_layout_mode_global": "0x4969950"
+      },
+      "element_fields": {
+        "0x389": "first-window flag; single module-wide write at 0x122CCD; NO reader found (census-bounded negative, not proven dead)",
+        "0x38C": "window_index",
+        "0x390": "window_count",
+        "0x394": "split-layout mode",
+        "0x39C": "output_user_index - the selector E-H4-4 saw compared in the 0x2998EC walk",
+        "0x3A4": "split-screen layout mode 0=full 3=half 2=quarter, published to 0x4969950",
+        "0x14C": "render camera (PROVEN by the retail pair copy; E-H4-4 had this INFERRED)",
+        "0x1D4": "render projection (PROVEN)",
+        "0x480": "camera constant bank; rows +0xC0/D0/E0/F0 = right/up/backward/position"
+      },
+      "m1_substitution_boundary": {
+        "beta1_preferred": "before the setup call at 0x122CC3: substitute the observer-result content the window record +0x08 points at, per eye",
+        "beta2": "around the converter call at 0x374D5B, after A and before B at 0x374DA2",
+        "forbidden": "writing the element after setup returns is stale by construction; a per-eye write to the active-view global does not survive the render body swap",
+        "caveat": "the sole-writer census is exhaustive for rip-relative stores and all disassembled register writers; 0x3A0FA0 and 0x341658 receive interior pointers and are undissected"
+      },
+      "traps": [
+        "the re-entry callback takes NO arguments and re-publishes from singletons on every push and pop",
+        "the render body swaps the active-view global mid-transaction (0x378FFE save / 0x379013 set / 0x37903A restore)",
+        "a second live RSSetViewports path exists outside the 0x340148 commit (0x346668, 0x12F0A0, 0x395404, 0x34D664) - uncharacterized",
+        "the dynamic-resolution controller 0x287DB0 clears the rescale gate byte 0xE84CA0 that callback 0x374A60 tests"
+      ],
+      "refuted_do_not_reuse": [
+        "a CONTIGUOUS six-sub setup signature matches ZERO times in retail; the real cluster interleaves 4C 8B F6",
+        "the weak projection-basis store pattern is 11 hits, not 1",
+        "the render body Bink gate bytes are 0x2F4EAD2 and 0x2F4F0FC (earlier values were wrong rip arithmetic)",
+        "kit imul 0x428 has 1 tag_play hit, not 0; and 66 in retail, so it is useless as a retail anchor",
+        "kit push 0x8B5C6A callback is 0x89CBB0, not 0x8A2BB0",
+        "kit 0x8B5930 is NOT the camera-write point and NOT the scene renderer"
+      ],
+      "open": [
+        "the retail scene-geometry submission point (post-2 0x3751D0 vs wrapper callee 0x3532B4)",
+        "writer-census gap: 0x3A0FA0 and 0x341658 undissected",
+        "rect rescaler 0x12F738 and its interaction with the dynamic-resolution controller",
+        "fn 0x12259C's own callers (main_render_game naming stays INFERRED)",
+        "retail force-window-count global (kit 0x46F5248) via 0x95D0C",
+        "full census of camera-constant re-publishers (0x3443DC, 0x378210, bank re-uploaders)",
+        "NULL-observer default camera path (menus)"
       ],
       "admits_hook": false
     }
