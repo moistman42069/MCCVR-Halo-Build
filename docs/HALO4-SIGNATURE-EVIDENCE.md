@@ -420,3 +420,156 @@ title had. Motion blur follows Reach's single-axis naming: the Halo 3-style
 Many of these names are in retail while absent from H4EK's own debug menu
 (rain, far-clip, the FP-FOV pair), so the menu is a lead source, never a
 completeness bound.
+
+### E-H4-4: retail anchoring of the player-view transaction (PROVEN 2026-08-07)
+
+The first retail camera measurement for Halo 4, taken under the H4EK-first
+rule: E-H4-3 explained the system from the kit, and this entry only **matches
+and verifies** those shapes in retail. Module verified before any read —
+`halo4.dll` SHA-256 `7C53E7D5...0C34FA84`, the pinned Steam identity above,
+unchanged.
+
+**Method note, and the first negative result.** E-H4-3's discovery handles
+were assert strings (`view overflowed!!!`, `MAXIMUM_PLAYER_WINDOWS`,
+`m_window_count`). **All of them are compiled out of retail** — measured, not
+assumed: zero occurrences of `view overflowed`, `render_view`,
+`MAXIMUM_PLAYER_WINDOWS`, `m_window_count` or `main_render_game` in the whole
+17,829,336-byte image (`player_view` occurs 3x in unrelated data). The string
+route is dead for Halo 4 camera work exactly as it was for Reach. What *did*
+transfer is E-H4-3's structural constants — the stride, the refusal bound and
+the callback offset — which is precisely why that entry cross-checked them in
+two optimized kit builds first.
+
+**Anchor 1 — the per-player view array. PROVEN.** Only **three**
+`add r64, 0xAD0` instructions exist in the entire module, and one of them is
+the constructor loop, byte-for-byte the kit's `mov edi,4` / `call <ctor>` /
+`add rbx,0xAD0` shape:
+
+```
+00022A50  mov  [rsp+8], rbx
+00022A55  push rdi
+00022A56  sub  rsp, 0x20
+00022A5A  lea  rbx, [rip+0x308A75F]   ; array base -> 0x30AD1C0 (.data)
+00022A61  mov  edi, 4                 ; 4 slots
+00022A66  mov  rcx, rbx
+00022A69  call 0x356BC4               ; element constructor (size 0xC0)
+00022A6E  add  rbx, 0xAD0             ; stride 0xAD0
+00022A75  sub  rdi, 1
+00022A79  jne  0x22A66
+```
+
+| Retail fact | Value |
+| --- | --- |
+| Player-view array base | RVA `0x30AD1C0` (`.data`, zero-init tail) |
+| Slots x stride | **4 x `0xAD0`** — matches E-H4-3 exactly |
+| Array extent | `0x30AD1C0` .. `0x30AFD00` |
+| Element constructor | `0x356BC4`, size `0xC0`, bodySHA256 `BB4EB691...D79626` |
+
+Two independent confirmations, neither assumed:
+
+1. **A second, unrelated walk agrees.** The loop at `0x2998EC` iterates the
+   same array with the same stride from a biased pointer
+   (`lea rdi,[rip+...] -> 0x30ADC68` = base + `0xAA8`) and then *reconstructs
+   the element base* with `lea rax,[rdi-0xAA8]` before calling `0x32CF6C`.
+   The bias arithmetic closes on `element+0`, so this is the same object.
+2. **The reference set is tiny and auditable.** Exactly **five**
+   RIP-relative operands in the whole module land inside
+   `[0x30AD1C0, 0x30AFD00)`: the constructor `0x22A5A`, the walk `0x299993`,
+   and three consumers at `0x122951` (fn `0x12259C`), `0x287DB6`, `0x4CCF93`.
+
+**Anchor 2 — element field `+0x39C` is a per-window selector.** E-H4-3 listed
+`+0x389`/`+0x39C`/`+0x3A4` as byte-evidenced but unexplained. The `0x2998EC`
+walk resolves one of them: with `rdi = element + 0xAA8`, its loop head reads
+
+```
+002999A3  cmp  dword ptr [rdi-0x70C], r12d    ; = element+0x39C
+002999AA  jne  <next element>                 ; skip this window
+```
+
+so **`+0x39C` is a dword compared against an index and used to skip
+non-matching elements** — a selector/filter, not payload. `+0x389` and
+`+0x3A4` remain open.
+
+**Anchor 3 — the render-view stack. PROVEN, and self-corroborating.** The
+kit's `mov [rcx+0x298],rdx` callback store appears in retail with its exact
+encoding `48 89 91 98 02 00 00` at `0x341774`, inside a 0x47-byte function
+whose shape is the kit's push verbatim, with the pop immediately after it:
+
+```
+PUSH  0x341760 - 0x3417A7   bodySHA256 5581D218...8ECB4FC4
+  sub  rsp,0x28
+  mov  r8d,[rip+...]         ; g_view_stack_top -> 0xE84634
+  cmp  r8d,3 / jge <refuse>  ; REFUSES AT top >= 3
+  inc  r8d
+  mov  [rcx+0x298], rdx      ; store re-entry callback
+  lea  r9,[rip+...]          ; slot array -> 0x10BEE08
+  mov  [rip+...], r8d        ; commit new top
+  mov  [r9+rax*8], rcx       ; store view pointer
+  call qword ptr [rax+0x298] ; invoke the NEW TOP's callback
+
+POP   0x3417A8 - 0x3417DC   bodySHA256 CC97D2C6...E35A477B
+  mov  eax,[rip+...]         ; same top   -> 0xE84634
+  sub  eax,1 / mov back / js <empty>      ; underflow guard
+  lea  rcx,[rip+...]         ; same slots -> 0x10BEE08
+  mov  rcx,[rax+0x298] / test / call rcx  ; new top's callback
+```
+
+| Retail fact | Value | Corroboration |
+| --- | --- | --- |
+| `g_view_stack_top` | RVA `0xE84634` (`.data`) | derived independently from push and pop — **they agree** |
+| Static initialiser | **`-1`** (empty) | read from the file, matches the kit's `0xFFFFFFFF` |
+| Slot array | RVA `0x10BEE08`, 4 x 8 bytes | derived independently from push and pop — **they agree** |
+| Capacity | **4** | refusal at `top>=3` + post-increment indexing |
+| Re-entry callback offset | **`+0x298`** | in both push and pop (Reach's is `+0x2A8`) |
+
+Each has **16 direct callers**, confirming E-H4-3's reading that this stack is
+a *generic* render-view scope mechanism, not player-view-specific.
+
+**Anchor 4 — the window count. PROVEN.** E-H4-3's third independent proof of
+the bound 4 was `main_render_game` *computing* `clamp(n,1,4)` in registers.
+Retail `0x122188` (size `0x66`, bodySHA256 `A8903B11...BC88BF4C`) is that
+computation, and it is the `0x2998EC` walk's own loop count:
+
+```
+001221C9  call 0x95D0C          ; raw count
+001221CE  mov  ecx,1 / cmp eax,ecx / cmovg ecx,eax   ; max(n,1)
+001221D8  mov  eax,4 / cmp ecx,eax / cmovl eax,ecx   ; min(...,4)
+001221E4  mov  eax,1            ; every early-out returns 1
+```
+
+**Candidate retail signatures, uniqueness measured over `.text`** (`??` =
+wildcarded RIP displacement or rel32). Four of five are unique on the first
+try; the fifth is recorded as unusable alone:
+
+| Signature | Matches | Anchors |
+| --- | --- | --- |
+| `48 8D 1D ?? ?? ?? ?? BF 04 00 00 00 48 8B CB E8 ?? ?? ?? ?? 48 81 C3 D0 0A 00 00 48 83 EF 01 75` | **UNIQUE** `0x22A5A` | array base, stride, count, element ctor |
+| `48 83 EC 28 44 8B 05 ?? ?? ?? ?? 41 83 F8 03 7D ?? 41 FF C0 48 89 91 98 02 00 00` | **UNIQUE** `0x341760` | push, top global, refusal, `+0x298` |
+| `48 83 EC 28 8B 05 ?? ?? ?? ?? 83 E8 01 89 05 ?? ?? ?? ?? 78 ?? 48 8D 0D` | **UNIQUE** `0x3417A8` | pop, top global, slot array |
+| `B9 01 00 00 00 3B C1 0F 4F C8 B8 04 00 00 00 3B C8 0F 4C C1` | **UNIQUE** `0x1221CE` | window count `clamp(n,1,4)` |
+| `FF 90 98 02 00 00` (callback invoke alone) | 3 matches | **NOT usable alone** — `0xCB5E9`, `0x34179C`, `0x9A3084` |
+
+**What is still OPEN, and one kit shape that did NOT transfer.** E-H4-3's
+inner-wrapper signature was `call set-current -> push -> render -> pop ->
+**tail-jmp** set-current(NULL)`. **That tail-call does not exist in retail:**
+all 16 push call sites were enumerated and disassembled, and not one enclosing
+function contains a `jmp` to a target it also `call`s. The retail compiler
+emitted a plain call/ret, so the wrapper must be found another way. Still
+unanchored in retail, in the order they are needed:
+
+1. the set-current setter and the active player-view pointer global
+   (kit `0x8B9530` / `0x5573F28`);
+2. the inner wrapper itself (kit `0x1F7C00`) — **leading candidate is fn
+   `0x12259C`-`0x123115`**, the only function that both references the
+   player-view array (at `0x122951`) and pushes a view;
+3. the render body (kit `0x8B5930`), which is where the M1 camera-write point
+   lives, and setup (kit `0x8B9990`);
+4. the `element+0x1D4` rasterizer-camera identity, still INFERRED;
+5. element fields `+0x389` and `+0x3A4`;
+6. callbacks `0x8B8890` vs `0x8BAE30`.
+
+**Scope of this proof.** It pins storage and scope — where the per-player
+views live, how the render-view stack admits and releases them, and how many
+windows exist — for this exact module hash. It admits **no hook**: the camera
+write point is item 3 above and is not yet located. Nothing here may be
+shipped until the wrapper and render body carry their own retail proof.

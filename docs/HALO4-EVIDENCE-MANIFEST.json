@@ -57,7 +57,10 @@
       "validation_rule_measured_thunk_case": "player_action_test_grenade_trigger -> 0x000AB2AC (10-byte leaf thunk: mov ecx,5; jmp 0x000AB128) -> 0x000AB128 exact .pdata per-action bit-test dispatcher",
       "entry_allocator_rva": "0x0080F648",
       "register_helper_rva": "0x0014646C",
-      "registrar_direct_callers": ["0x000605CB", "0x0013C4AF"],
+      "registrar_direct_callers": [
+        "0x000605CB",
+        "0x0013C4AF"
+      ],
       "independent_identity_cross_check": "the lea r9 documentation string in retail matches tool.exe script-doc output verbatim for every probe name, so each future anchor carries a kit-corroborated identity"
     },
     "scope": "admits the derivation METHOD and pins this module's registrar bounds plus the entry layout; it admits NO camera, render, HUD, or vehicle binding - each of those still needs its own H4EK semantics plus its own recorded retail match"
@@ -207,16 +210,47 @@
     "scan_condition": "exact ASCII name with a 0x00 terminator AND a 0x00 preceding byte - the same boundary the project's FindDebugVar* matcher uses (src/dll/game.cpp:1572 ff.)",
     "command_vs_global_trap": "H4EK's own menu drives render_atmosphere_fog as a COMMAND - the identical name that burned the Reach work. Command-shaped names require typed slot resolution; never float-resolve them.",
     "unique_anchors": {
-      "gamma": ["render_screen_gamma", "render_buffer_gamma_curve"],
-      "motion_blur": ["motion_blur_scale", "motion_blur_max"],
-      "draw_distance": ["render_far_clip_distance"],
-      "cinematic_fov": ["reduce_widescreen_fov_during_cinematics", "cinematic_letterbox_style"],
-      "first_person_fov_scale": ["render_first_person_fov_scale", "enable_first_person_fov"],
-      "exposure_hold": ["render_exposure_lock", "render_exposure_stops", "render_autoexposure_enable"],
-      "tonemap": ["render_tone_curve", "render_tone_curve_white"],
-      "rain_weather": ["render_rain", "rain_intensity", "render_weather"],
-      "fog_command_shaped": ["render_patchy_fog", "render_atmosphere_fog"],
-      "depth_of_field": ["cinematic_depth_of_field_enable", "render_first_person_dof"]
+      "gamma": [
+        "render_screen_gamma",
+        "render_buffer_gamma_curve"
+      ],
+      "motion_blur": [
+        "motion_blur_scale",
+        "motion_blur_max"
+      ],
+      "draw_distance": [
+        "render_far_clip_distance"
+      ],
+      "cinematic_fov": [
+        "reduce_widescreen_fov_during_cinematics",
+        "cinematic_letterbox_style"
+      ],
+      "first_person_fov_scale": [
+        "render_first_person_fov_scale",
+        "enable_first_person_fov"
+      ],
+      "exposure_hold": [
+        "render_exposure_lock",
+        "render_exposure_stops",
+        "render_autoexposure_enable"
+      ],
+      "tonemap": [
+        "render_tone_curve",
+        "render_tone_curve_white"
+      ],
+      "rain_weather": [
+        "render_rain",
+        "rain_intensity",
+        "render_weather"
+      ],
+      "fog_command_shaped": [
+        "render_patchy_fog",
+        "render_atmosphere_fog"
+      ],
+      "depth_of_field": [
+        "cinematic_depth_of_field_enable",
+        "render_first_person_dof"
+      ]
     },
     "negative_results": {
       "ssao": "no debug global; only the hs function cinematic_set_ssao_mode and shader tokens",
@@ -238,7 +272,7 @@
     "consumed_layout_fields"
   ],
   "player_view_transaction": {
-    "status": "KIT_SURVEY_COMPLETE_NO_RETAIL_ANCHOR_YET",
+    "status": "RETAIL_ANCHORED_STORAGE_AND_SCOPE_NO_HOOK_POINT_YET",
     "measured": "2026-08-06",
     "evidence": "out/h4ek-evidence/camera/player-view-survey.md; ledger section E-H4-3 in docs/HALO4-SIGNATURE-EVIDENCE.md",
     "evidence_source": "H4EK binaries only; no retail module was opened. ALL RVAs here are kit RVAs in halo4_tag_test.exe unless a build is named.",
@@ -282,7 +316,11 @@
       "pushed_workspace_global_rva_tag_test": "0x055605A0",
       "pushed_workspace_symbol": "g_player_view_stack_element",
       "pushed_workspace_accessor_rva": "0x008B6240",
-      "render_camera_offsets": { "position": "0x14C", "forward": "0x158", "up": "0x164" },
+      "render_camera_offsets": {
+        "position": "0x14C",
+        "forward": "0x158",
+        "up": "0x164"
+      },
       "rasterizer_camera_offset": "0x1D4 - INFERRED, NOT PROVEN",
       "active_player_view_pointer_rva_tag_test": "0x05573F28",
       "set_current_rva_tag_test": "0x008B9530",
@@ -304,8 +342,88 @@
       "meaning of element fields +0x389 / +0x39C / +0x3A4",
       "internals of setup 0x008B9990 and render body 0x008B5930, where the M1 camera-write point lives",
       "identity of callbacks 0x008B8890 (player view) vs 0x008BAE30 (non-game view)"
-    ]
+    ],
+    "retail_anchors": {
+      "measured": "2026-08-07",
+      "ledger_section": "E-H4-4",
+      "module_sha256_verified_before_read": "7C53E7D5BC9848545A1B70E2768242479336FBA1B7630D7AB955F7FD0C34FA84",
+      "assert_strings_in_retail": "NONE; view overflowed / render_view / MAXIMUM_PLAYER_WINDOWS / m_window_count / main_render_game all compiled out. String anchoring is dead for H4 camera work.",
+      "player_view_array": {
+        "base_rva": "0x30AD1C0",
+        "section": ".data",
+        "slots": 4,
+        "stride": "0xAD0",
+        "extent_end_rva": "0x30AFD00",
+        "constructor_loop_rva": "0x22A50",
+        "element_constructor_rva": "0x356BC4",
+        "element_constructor_body_sha256": "BB4EB691EC72AB4A6521F6156ED6428E649605E9938AC9D3C5047CF128D79626",
+        "corroboration": "only 3 add-r64-0xAD0 sites in the module; a second walk at 0x2998EC reconstructs element+0 via lea rax,[rdi-0xAA8]; exactly 5 RIP-relative refs land in the array"
+      },
+      "render_view_stack": {
+        "top_global_rva": "0xE84634",
+        "top_static_initialiser": -1,
+        "slot_array_rva": "0x10BEE08",
+        "capacity": 4,
+        "reentry_callback_offset": "0x298",
+        "push_rva": "0x341760",
+        "push_size": "0x47",
+        "push_body_sha256": "5581D218F0F23267A90A05AAAB017F5A3DD625576166904C3D125D278ECB4FC4",
+        "pop_rva": "0x3417A8",
+        "pop_size": "0x35",
+        "pop_body_sha256": "CC97D2C6F80B8CFC2EDB6AE89E640B679D5CA0207CB3A664E2C5B1A6E35A477B",
+        "direct_callers_each": 16,
+        "corroboration": "top global and slot array each derived independently from push and pop; both agree"
+      },
+      "window_count": {
+        "rva": "0x122188",
+        "size": "0x66",
+        "body_sha256": "A8903B1180ECA504887ADE5E536530BF2B2AA709DE5C4DA146CF9C01BC88BF4C",
+        "computation": "clamp(n,1,4) via cmovg then cmovl; every early-out returns 1"
+      },
+      "element_fields": {
+        "0x39C": "PROVEN per-window selector: cmp dword[element+0x39C],index / jne skips the element",
+        "0x389": "OPEN",
+        "0x3A4": "OPEN",
+        "0x1D4": "INFERRED rasterizer camera, still unproven"
+      },
+      "candidate_signatures_unique_in_text": [
+        "48 8D 1D ?? ?? ?? ?? BF 04 00 00 00 48 8B CB E8 ?? ?? ?? ?? 48 81 C3 D0 0A 00 00 48 83 EF 01 75  -> 0x22A5A",
+        "48 83 EC 28 44 8B 05 ?? ?? ?? ?? 41 83 F8 03 7D ?? 41 FF C0 48 89 91 98 02 00 00  -> 0x341760",
+        "48 83 EC 28 8B 05 ?? ?? ?? ?? 83 E8 01 89 05 ?? ?? ?? ?? 78 ?? 48 8D 0D  -> 0x3417A8",
+        "B9 01 00 00 00 3B C1 0F 4F C8 B8 04 00 00 00 3B C8 0F 4C C1  -> 0x1221CE"
+      ],
+      "rejected_signature": "FF 90 98 02 00 00 (callback invoke alone) matches 3 sites; NOT usable alone",
+      "kit_shape_that_did_not_transfer": "the inner wrapper tail-jmp to set-current(NULL): all 16 push callers disassembled, none contains a jmp to a target it also calls",
+      "still_open": [
+        "set-current setter + active player-view global",
+        "inner wrapper (leading candidate fn 0x12259C-0x123115, the only fn that both references the array and pushes a view)",
+        "render body (the M1 camera-write point) and setup",
+        "element+0x1D4 rasterizer camera identity",
+        "element+0x389 and +0x3A4",
+        "the two callbacks"
+      ],
+      "admits_hook": false
+    }
   },
   "headset_acceptance_complete": false,
-  "accepted_release_eligible": false
+  "accepted_release_eligible": false,
+  "candidates": {
+    "C-H4-1": {
+      "title": "adapter identity + controller input",
+      "status": "HEADSET_ACCEPTED",
+      "accepted_date": "2026-08-06",
+      "source_commit": "954359b7f786b78c76824b662ead3c1fc8cd7917",
+      "dll_sha256": "8B327A0B2FFC20135ECBEB71BEA698C78908EC1AA7C09C810CA329482ADE74AD",
+      "editions_installed": [
+        "Steam",
+        "Microsoft Store"
+      ],
+      "accepted_runtime": "Steam / VirtualDesktopXR 1.0.10 / Meta Quest 3 / 120 Hz",
+      "user_words": "itested halo 4 i think the controls work",
+      "preserved_evidence": "out/test-runs/954359b-halo4-c1-controller-steam-pass-20260806-172046",
+      "preserved_log_sha256": "07B3030B41662411D1C1235348D61EB62F8AD80624E8873095FF4568806BBBE6",
+      "proves": "Halo 4 is a recognised title; gamepad transport reaches it; everything else inert (stereo off whole window, no hook, no camera owned, no load bounce, zero warnings)",
+      "does_not_prove": "no H4 level-load/exit cycle exercised (~68s menu-heavy window); pinned identity still unverified against the loaded image"
+    }
+  }
 }
