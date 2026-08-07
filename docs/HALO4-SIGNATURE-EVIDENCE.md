@@ -248,7 +248,61 @@ transport line, and the pinned-identity line. Halo 3, ODST and Reach are
 untouched by construction — the only shared-code edit is the additive
 `else if` branch in the poll's unsupported-title reporting.
 
-### C-H4-2 — level-load gate + cold observation (headset-PENDING)
+### C-H4-2 — level-load gate + cold observation (RAN 2026-08-07, log-verified; explicit acceptance pending)
+
+| Identity | Value |
+| --- | --- |
+| Source | `3656da999a581a4b5acdbeade22a4c743925eb9a` |
+| `halo3xr.dll` SHA-256 | `ABCBE8232031D9019949611A3B842CB2A74C399148E43F241AB256FB61371EAC` |
+| Candidate package | `out/candidates/3656da9-reach-fp-parity-20260807-135318906Z` |
+| Ran on | Steam edition, VirtualDesktopXR 1.0.10, Meta Quest 3, 120 Hz panel |
+| Halo 4 window | `09:03:47`-`09:04:59` |
+| Preserved evidence | `out/test-runs/3656da9-halo4-c2-steam-20260807` |
+| Preserved log SHA-256 | `3D1F18F390450F7ABDC1EA6536EB6C1407A8CA24981765C2E92F8B0AFEC85037` |
+
+**The log's first line names this exact source**, so the result is against
+the intended bytes.
+
+**Both halves of the candidate did exactly what they were built to do, and
+this is the first Halo 4 level load ever exercised with the mod running.**
+
+1. **The gate held through the loading screen.** Halo 4 was detected at
+   `09:03:47.382`; the gate then reported `holding install` at 47 ms, 2062 ms
+   and 4078 ms with `frozen seen=1, still run=1 → 41 → 81, change run=0` —
+   the engine's player-view memory sat still for the whole load, exactly as
+   the frozen half of the proof requires.
+2. **It opened on the real transition, once.** At `09:03:53.326`:
+   `the engine's camera was frozen and has now started ticking (5906 ms); the
+   level is running, so installing here instead of during its loading
+   screen`. One open event in the session, via the frozen-then-ticking path —
+   not the 6 s already-running fallback.
+3. **The cold observation PASSED against the loaded image** 48 ms later at
+   `09:03:53.374`: pinned PE identity matched, **all 4 E-H4-4 anchors unique
+   at their pinned RVAs**, and the player-view array `0x30AD1C0` (stride
+   `0xAD0`) plus `g_view_stack_top` `0xE84634` **decoded correctly from the
+   loaded bytes**. Zero `FAIL`, zero `WITHHELD`. This is the first time any
+   Halo 4 RVA in this repository has been verified against the running game
+   rather than the file on disk.
+4. **No load bounce, no kick to menu.** The level loaded and ran to the
+   player quitting from in-level at `09:04:54.778` (Alt+F4). The gate then
+   re-armed on teardown at `09:04:57.861`, so the next install must re-earn
+   its proof.
+5. **Frame behavior is clean and unchanged in character.** `fps 120 (stereo
+   off)` for the whole gameplay stretch — flat by design — and `missed`
+   froze at **2139** from `09:04:02` through `09:04:42`, i.e. essentially
+   zero missed frames across ~50 s of play; every accumulated miss predates
+   the level, from the 61-62 fps menu period. `stalls=0 orderFailures=0`
+   throughout. The one `STALL` line is at `09:04:58.827`, after Alt+F4, and
+   is the game shutting down.
+
+**What this run does NOT cover.** The player quit from inside the level
+rather than exiting to the menu and loading again, so the **repeat-load
+cycle is still unexercised** — and that is precisely the shape of the
+recorded load-bounce bug (the *first* load back into a title whose module we
+previously touched). Halo 3, ODST and Reach never became the active title in
+this session, so it carries no cross-title regression evidence for them.
+
+### C-H4-2 — as designed
 
 **One behavior, stated plainly: Halo 4 stops being a title nothing checks.**
 It joins the level-load gate the other three titles already use, and once
