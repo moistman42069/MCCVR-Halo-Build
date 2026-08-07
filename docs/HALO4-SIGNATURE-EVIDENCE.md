@@ -372,6 +372,17 @@ change is additive per-title, and the observation is Halo 4-only.
 any kind. Everything below is what the code does and what proves it; **no
 headset has run it yet**, so nothing here is a result.
 
+| Identity | Value |
+| --- | --- |
+| Source | `2987dc217b43094e49ce09c5bb32ed960bd96b81` (branch `feature/halo4-bringup`) |
+| Build | Release x64, preset `release`, ODST ON, Reach ON, ReachRender ON, Halo4 ON |
+| Candidate package | `out/candidates/2987dc2-reach-fp-parity-20260807-144434557Z` |
+| `halo3xr.dll` SHA-256 | `9AFE77E2A9BA13691A59EF520721ABFDA1D3D5DF875F21D99B161390BB9C4ED5` |
+| `halo3xr_launcher.exe` SHA-256 | `930BEA232BFC3F8010BC2B385834DEBF796CD3DBEC02ECD0E8475E0DE8A72CE6` |
+| Installed editions | Steam and Microsoft Store; both DLL hashes verified independently in each `Halo_MCC_VR` folder after install |
+| Preserved priors | `out/deploy-backups/abcbe82-steam-before-2987dc2-...`, `...-store-before-2987dc2-...` |
+| Headset result | **PENDING** |
+
 **One behavior: Halo 4 renders the scene twice per frame, once per eye, from
 two cameras the engine derives itself.**
 
