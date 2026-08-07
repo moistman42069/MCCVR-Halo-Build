@@ -512,6 +512,29 @@
       "preserved_log_sha256": "07B3030B41662411D1C1235348D61EB62F8AD80624E8873095FF4568806BBBE6",
       "proves": "Halo 4 is a recognised title; gamepad transport reaches it; everything else inert (stereo off whole window, no hook, no camera owned, no load bounce, zero warnings)",
       "does_not_prove": "no H4 level-load/exit cycle exercised (~68s menu-heavy window); pinned identity still unverified against the loaded image"
+    },
+    "C-H4-2": {
+      "title": "level-load gate + cold observation (loaded-image verification)",
+      "status": "HEADSET_PENDING",
+      "packaged_date": "2026-08-07",
+      "source_commit": "3656da999a581a4b5acdbeade22a4c743925eb9a",
+      "dll_sha256": "ABCBE8232031D9019949611A3B842CB2A74C399148E43F241AB256FB61371EAC",
+      "launcher_sha256": "930BEA232BFC3F8010BC2B385834DEBF796CD3DBEC02ECD0E8475E0DE8A72CE6",
+      "candidate_package": "out/candidates/3656da9-reach-fp-parity-20260807-135318906Z",
+      "editions_installed": [
+        "Steam",
+        "Microsoft Store"
+      ],
+      "install_verified": "installed DLL hashes read back independently in both Halo_MCC_VR folders and matched",
+      "behavior": "Halo 4 joins the level-load gate; once the gate proves the level is running, one read-only verification per module instance that the loaded halo4.dll matches the pinned identity and the four E-H4-4 anchors (unique, at pinned RVAs, RIP decodes landing on the pinned array and stack-top globals, mapping still current)",
+      "admits_hook": false,
+      "what_it_closes": "before this, activeLevelRunning stayed true for Halo 4, so the draw-distance name scan and write plus the safe-frame publication could run against a module still loading a level",
+      "log_lines_to_expect": [
+        "Halo 4 level-load gate: ...",
+        "Halo 4 cold observation PASS (C-H4-2): ... | FAIL (C-H4-2): ... | WITHHELD: ..."
+      ],
+      "test_asks": "exercise a Halo 4 level load AND a level exit - the cycle C-H4-1 never covered",
+      "unchanged_titles": "Halo 3, ODST, Reach - gate change is additive per-title, observation is Halo 4-only"
     }
   }
 }
