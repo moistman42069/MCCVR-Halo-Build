@@ -1424,6 +1424,87 @@ rebuild, overwrite the pair with the CURRENT EYE's world camera and derived
 block and re-run the uploader, so the gun and hands render in true world
 perspective with real stereo disparity instead of a crushed mono slab.
 
+### E-H4-14 — H4EK is the discovery tool for the first-person layer (KIT-FIRST)
+
+**Process correction, recorded because it cost real time.** E-H4-13 was derived
+by disassembling stripped retail. `AGENTS.md` already says the opposite is
+required - *"Reach facts come from HREK. Retail is not a discovery tool ...
+reading it to discover behavior produces plausible-looking wrong answers"* - and
+the same applies to Halo 4 with H4EK. The user's words: *"my god can't you use
+halo 4 mod tools"*. They were right. Retail verifies; the kit explains.
+
+**Two false negatives are worth recording so they are not repeated:** `strings`
+is NOT installed on this machine, so `strings <kit exe> | grep ...` returns
+nothing and looks like "the kit has no symbols". It has plenty. Extract ASCII
+runs with a script instead.
+
+**The kit binaries carry full source paths and assert text.**
+`N:\SteamLibrary\steamapps\common\H4EK\halo4_tag_test.exe` (and `sapien.exe`,
+`tool.exe`) embed `c:\mcc\release\h4\shared\engine\source\...` paths beside the
+assert expressions for each file. The three that own the layer the gun and
+hands live in:
+
+    blofeld\camera\first_person_camera.cpp
+    blofeld\interface\first_person_weapons.cpp
+    blofeld\interface\first_person_animation.cpp
+
+plus `blofeld\dx9\render\views\render_view.cpp` and `render_view_stack.cpp`,
+which is independent confirmation of the render_view STACK that E-H4-4's open
+structural question asked about.
+
+**From `first_person_camera.cpp` (asserts, verbatim):**
+
+    camera: first person camera #%d attached to object 0x%08X != user object 0x%08X, this should never happen
+    object_index==NONE || TEST_BIT(_object_mask_unit, object_get_type(object_index))
+    valid_real_vector3d_axes2(&result->forward, &result->up)
+
+So the first-person camera is **per-user**, is attached to a unit object, and
+produces a `result` carrying `forward` and `up` - the same orthonormal pair
+shape the observer result uses (E-H4-6), which is why the same validation and
+the same basis convention apply.
+
+**From `first_person_weapons.cpp` (asserts, verbatim):**
+
+    VALID_INDEX(weapon_slot, k_first_person_max_weapons)
+    first_person_weapons                     <- the globals allocation
+    fp weapons                               <- named sub-allocation
+    fp orientations                          <- named sub-allocation, SEPARATE
+    node_matrices_count == weapon_data->node_matrices_count
+    (pBodyModel->render_model.index != NONE)
+    model_count<=maximum_model_count
+    1st person body model nodes do not match 3rd person model in count or attachment. Legs will not render.
+    first person: Too many child-objects for unit-index %x, at child %x
+    node_index>=0 && node_index<MAXIMUM_NODES_PER_FIRST_PERSON_MODEL
+    node_count_interpolated == node_count
+
+This names the whole structure without a single guessed offset:
+
+- a **`first_person_weapons` globals block**, split into a **`fp weapons`**
+  array indexed by `weapon_slot` (bounded by `k_first_person_max_weapons`) and a
+  **separate `fp orientations`** array;
+- each weapon entry carries **`node_matrices`** with a `node_matrices_count`
+  (the gun-and-arms bones), bounded by `MAXIMUM_NODES_PER_FIRST_PERSON_MODEL`,
+  and an interpolated variant (`node_count_interpolated == node_count`);
+- Halo 4 has a **first-person BODY model** with legs that must match the
+  third-person model's node count - which is the construct any future VRIK work
+  needs, and which Halo 3 does not have in this form.
+
+**Why this matters for the hands candidate.** E-H4-13's remaining unknowns were
+"where does `0x34EC44` deposit the first-person camera pair, and which uploader
+does it feed". The kit answers the *shape* of both, so the retail search is now
+a targeted match rather than a hunt: the camera result is a `{forward, up}`
+pair validated by `valid_real_vector3d_axes2`, and the placement of the visible
+gun and arms goes through `fp orientations` + per-weapon `node_matrices` rather
+than through the camera at all. Those are two separable levers - camera for
+stereo/depth, orientations for where the gun sits in the hand - and they should
+not be conflated the way a camera-only fix would.
+
+**Next discovery step, and it is kit-first:** locate the same functions inside
+`halo4_tag_test.exe` by their assert call sites, read the field offsets they
+use, then match the homologous code in retail `halo4.dll` to confirm. Per
+`AGENTS.md`, byte-matching kit prologues to retail fails - transfer semantics
+and layouts, never addresses.
+
 ### Forward milestone ladder — one visible claim per candidate
 
 1. **C-H4-7:** stock-projection/exact-serial stereo geometry only.
