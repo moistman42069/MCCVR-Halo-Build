@@ -29458,6 +29458,79 @@ namespace
     // record. The weapon records of the same frame are carried by it. Sequence
     // -guarded so a reader never sees a half-written matrix, and the serial
     // stays zero until an arms record has actually solved.
+    // THE CENTER VR CAMERA, IN WORLD UNITS. This is the same fix Halo 3, ODST
+    // and Reach all needed (BuildOdstCenterFpRoot / ReachBuildCenterFpRoot and
+    // the centerRoot block in the Halo 3 palette solve), and Halo 4 needs it
+    // for the same reason.
+    //
+    // Halo 4 roots its whole first-person assembly on the render camera it
+    // reads from its own table, and that root does NOT carry the headset's
+    // 6DOF translation. Anchoring the solve to the record's own node 0 - which
+    // IS that root, because b_pedestal is identity at the model origin - glues
+    // the hands and gun to the game's camera: they rotate with the head but
+    // never translate when the player leans, which is precisely "it doesn't
+    // translate in 6DOF and it's all warped".
+    //
+    // So the palette is composed back against the VR camera instead. CENTER,
+    // not per-eye: this detour runs once per eye, and an eye-dependent root
+    // makes the two eyes solve different arms, which is the stereo split Halo 3
+    // hit in 2026-07-19.
+    struct Halo4CenterRoot
+    {
+        std::atomic<uint32_t> sequence{0};
+        std::atomic<float> value[12]{};   // position, forward, left, up
+    };
+    Halo4CenterRoot g_halo4CenterRoot;
+
+    void Halo4PublishCenterRoot(const Halo4CameraBasis& center)
+    {
+        const float left[3] = {
+            center.up[1]*center.forward[2]-center.up[2]*center.forward[1],
+            center.up[2]*center.forward[0]-center.up[0]*center.forward[2],
+            center.up[0]*center.forward[1]-center.up[1]*center.forward[0]};
+        const float packed[12] = {
+            center.position[0],center.position[1],center.position[2],
+            center.forward[0],center.forward[1],center.forward[2],
+            left[0],left[1],left[2],
+            center.up[0],center.up[1],center.up[2]};
+        for (float component : packed)
+            if (!isfinite(component)) return;
+        g_halo4CenterRoot.sequence.fetch_add(1,std::memory_order_acq_rel);
+        for (int i=0;i<12;++i)
+            g_halo4CenterRoot.value[i].store(
+                packed[i],std::memory_order_relaxed);
+        g_halo4CenterRoot.sequence.fetch_add(1,std::memory_order_release);
+    }
+
+    // Blam column order is forward / left / up, matching BoneMatrix::rotation.
+    bool Halo4LoadCenterRoot(float scale, BoneMatrix& root)
+    {
+        for (int attempt=0;attempt<4;++attempt)
+        {
+            const uint32_t before=
+                g_halo4CenterRoot.sequence.load(std::memory_order_acquire);
+            if (!before || (before&1)) continue;
+            float packed[12];
+            for (int i=0;i<12;++i)
+                packed[i]=g_halo4CenterRoot.value[i].load(
+                    std::memory_order_relaxed);
+            const uint32_t after=
+                g_halo4CenterRoot.sequence.load(std::memory_order_acquire);
+            if (before!=after || (after&1)) continue;
+            root=BoneMatrix{};
+            root.scale=isfinite(scale)&&fabsf(scale)>0.001f ? scale : 1.0f;
+            for (int i=0;i<3;++i)
+            {
+                root.translation[i]=packed[i];
+                root.rotation[i]=packed[3+i];      // forward
+                root.rotation[3+i]=packed[6+i];    // left
+                root.rotation[6+i]=packed[9+i];    // up
+            }
+            return true;
+        }
+        return false;
+    }
+
     AtomicBoneMatrix g_halo4WeaponDelta;
     std::atomic<uint64_t> g_halo4WeaponDeltaSerial{0};
     std::atomic<uint64_t> g_halo4WeaponDeltaPublishedAt{0};
@@ -29892,17 +29965,23 @@ namespace
         // manufactured NaNs. Halo 4's weapon is a SEPARATE record, and it is
         // carried below instead.
 
-        // Back into the frame the engine handed us. THIS MUST HAPPEN BEFORE ANY
-        // SCALE COLLAPSE. ComposeBoneMatrices refuses a matrix whose scale is
-        // under 0.001, and floating hands deliberately drives arm scales to
-        // 0.0001. Collapsing first made this transform fail on every solved
-        // palette: the arms reverted to stock while the weapon delta below had
-        // already been published, which is precisely "the gun follows my hand
-        // but the arms do not, and it is in the wrong space".
+        // Back out to world - but rooted on the VR CAMERA, not on the frame the
+        // engine handed us. Composing back with `anchor` would put the assembly
+        // straight back on Halo 4's own first-person root, which carries no
+        // 6DOF: the hands and gun would rotate with the head and never
+        // translate when the player leans. This is the same centerRoot fix
+        // Halo 3, ODST and Reach each needed.
+        //
+        // It must also happen BEFORE any scale collapse: ComposeBoneMatrices
+        // refuses a matrix whose scale is under 0.001, and floating hands
+        // deliberately drives arm scales to 0.0001.
+        BoneMatrix outputRoot{};
+        if (!Halo4LoadCenterRoot(anchor.scale,outputRoot))
+            return Halo4VrikStage::AnchorFailed;
         for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
         {
             BoneMatrix world{};
-            if (!ComposeBoneMatrices(anchor,solved[i],world))
+            if (!ComposeBoneMatrices(outputRoot,solved[i],world))
                 return Halo4VrikStage::AnchorFailed;
             solved[i]=world;
         }
@@ -30826,6 +30905,23 @@ namespace
                 Halo4NoteRejection(
                     Halo4StereoRejection::EyeBuildFailed, false);
                 return Halo4StereoResult::NotStarted;
+            }
+        }
+
+        // The CENTER camera, built by the exact same function and inputs the
+        // eyes are built from, published for the first-person palette to root
+        // itself on. Halo 4's own first-person root carries no 6DOF, so without
+        // this the hands and gun rotate with the head but never translate.
+        // Center rather than per-eye, so both eyes solve the same arms.
+        if (snapshot.headPoseValid)
+        {
+            Halo4CameraBasis centerCamera{};
+            const float centerEye[3] = {0.0f, 0.0f, 0.0f};
+            if (Halo4BuildEyeCamera(stock, centerEye,
+                                    snapshot.headOrientation, worldScale,
+                                    centerCamera))
+            {
+                Halo4PublishCenterRoot(centerCamera);
             }
         }
 
