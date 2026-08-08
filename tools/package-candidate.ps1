@@ -181,12 +181,21 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-7'
+            id = 'C-H4-10'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'stock-projection-exact-serial-stereo-geometry'
-            head_tracking = $false
-            six_dof = $false
-            hud = $false
+            behavior = 'motion-aim-vr-turn-rumble-on-headset-owned-look'
+            head_tracking = $true
+            six_dof = $true
+            headset_owned_pitch = $true
+            headset_owned_yaw = $true
+            controller_aim = $true
+            haptics = $true
+            head_relative_locomotion = $true
+            # Halo 4's CUI arrives inside the captured scene target, so it is
+            # visible without any HUD redirect. User-confirmed 2026-08-08.
+            hud = 'native-inside-captured-scene-no-redirect'
+            first_person_hands = $false
+            arm_ik = $false
             failure_policy =
                 'pre-claim-stock-post-claim-frame-drop-core-remains-armed'
         }
