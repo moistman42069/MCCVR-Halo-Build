@@ -277,6 +277,41 @@ inline constexpr uint32_t kHalo4FirstPersonNodeStride = 0x20;
 // 0xF00 / 0x20 = 120, which also bounds MAXIMUM_NODES_PER_FIRST_PERSON_MODEL.
 inline constexpr uint32_t kHalo4FirstPersonMaxNodes =
     kHalo4FirstPersonPreviousNodeArrayOffset / kHalo4FirstPersonNodeStride;
+// E-H4-21b: H4EK model_skinning.cpp builds the final 3x4 GPU palette from
+// immutable 0x34-byte absolute object-node matrices.  Retail's structural
+// homolog is unique at this RVA; its third (and only first-person) caller
+// returns to kHalo4FirstPersonSkinningReturnRva.
+inline constexpr uint32_t kHalo4ModelSkinningRva = 0x33D8B8;
+inline constexpr uint32_t kHalo4FirstPersonSkinningReturnRva = 0x36F3C9;
+inline constexpr char kHalo4ModelSkinningPattern[] =
+    "48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 "
+    "B8 30 31 00 00 E8 ?? ?? ?? ?? 48 2B E0 48 8D AC 24 A0 00 00 00 "
+    "48 83 E5 80";
+
+// storm_fp.render_model, H4EK 1.890.0.0.  The body owns nodes 0..79; the
+// composed first-person record observed in retail has five appended weapon
+// nodes.  These indices and parent relationships are tag facts, not copied
+// from another Halo title.
+inline constexpr int kHalo4StormFpBodyNodeCount = 80;
+inline constexpr int kHalo4StormFpComposedNodeCount = 85;
+inline constexpr int kHalo4RightShoulderNode = 4;
+inline constexpr int kHalo4RightElbowNode = 16;
+inline constexpr int kHalo4RightHandNode = 29;
+inline constexpr int kHalo4LeftShoulderNode = 5;
+inline constexpr int kHalo4LeftElbowNode = 8;
+inline constexpr int kHalo4LeftHandNode = 37;
+
+// Authored v4 pole directions and controller-local attachment positions.
+// Positions are metres and are intentionally independent of Blender empty
+// scale (runtime_uses_scale=false in the exported evidence JSON).
+inline constexpr float kHalo4RightPoleDirection[3] =
+    {-0.665396988f, -0.692102790f, -0.279715300f};
+inline constexpr float kHalo4LeftPoleDirection[3] =
+    {-0.417066097f, 0.881134331f, -0.222840950f};
+inline constexpr float kHalo4RightAttachmentMetres[3] =
+    {-0.000000045f, 0.059896708f, -0.000000089f};
+inline constexpr float kHalo4LeftAttachmentMetres[3] =
+    {-0.000000007f, 0.059896648f, -0.000000045f};
 // A Blam skeleton's root is node 0; the assembly hangs off it, so writing it
 // moves the whole gun-and-arms rig rather than one part of it.
 inline constexpr uint32_t kHalo4FirstPersonRootNode = 0;

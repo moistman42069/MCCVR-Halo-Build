@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c12-reverted-stock-hands',
+        'halo4-c13-final-palette-vrik',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-11'
+            id = 'C-H4-13'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'first-person-hands-on-controller-with-live-format-proof'
+            behavior = 'final-palette-two-bone-vrik-with-floaty-hands-and-weapon-follow'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -195,9 +195,11 @@ try {
             # visible without any HUD redirect. User-confirmed 2026-08-08.
             hud = 'native-inside-captured-scene-no-redirect'
             first_person_hands = $true
-            arm_ik = $false
+            arm_ik = $true
             failure_policy =
                 'pre-claim-stock-post-claim-frame-drop-core-remains-armed'
+            vrik_failure_policy =
+                'optional-vrik-stock-fallback-camera-core-remains-armed'
         }
         # Reach support is permanent, while player-visible optional features
         # fail open independently and never disarm the working camera core.
@@ -272,7 +274,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'Unaccepted Halo 4 C-H4-7 geometry-only candidate. It proves exact-serial lit stereo using Halo 4 stock projection on the sustained setup+wrapper boundary; head tracking, 6DOF, and HUD are intentionally absent. C-H4-1 remains the accepted Halo 4 pointer. The cumulative Halo 3, ODST, and Reach implementation is retained. Acceptance requires this exact DLL hash to pass the named Halo 4 geometry test plus the required Halo 3 regression.'
+        note = 'Unaccepted Halo 4 C-H4-13 final-palette VRIK candidate. It solves the H4EK-proven Storm arm chains from the authored v4 Blender poles, applies controller-parented attachment offsets in metres while ignoring empty scale, keeps the complete hand/finger subtrees aligned, and moves the appended weapon nodes with the right-hand/two-hand-adjusted aim. The optional hook falls back to stock hands without disarming the accepted camera core. C-H4-1 remains the accepted Halo 4 pointer. Acceptance requires this exact DLL hash to pass the Halo 4 headset test plus the required Halo 3 regression.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

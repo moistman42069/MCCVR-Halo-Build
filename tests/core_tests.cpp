@@ -6605,6 +6605,31 @@ int main()
         Check(kHalo4FirstPersonRootNode == 0,
             "The assembly is written at its root node");
 
+        // E-H4-21b / C-H4-13: these are title-specific H4EK/tag facts.  If
+        // they drift, the runtime must not silently solve a different rig.
+        Check(kHalo4ModelSkinningRva == 0x33D8B8u &&
+                  kHalo4FirstPersonSkinningReturnRva == 0x36F3C9u,
+            "Halo 4 VRIK pins the final palette consumer and its sole FP return");
+        Check(kHalo4StormFpBodyNodeCount == 80 &&
+                  kHalo4StormFpComposedNodeCount == 85 &&
+                  kHalo4RightShoulderNode == 4 &&
+                  kHalo4RightElbowNode == 16 &&
+                  kHalo4RightHandNode == 29 &&
+                  kHalo4LeftShoulderNode == 5 &&
+                  kHalo4LeftElbowNode == 8 &&
+                  kHalo4LeftHandNode == 37,
+            "The Storm body/composed counts and both arm chains match the H4EK tag");
+        const auto lengthSquared = [](const float value[3]) {
+            return value[0] * value[0] + value[1] * value[1] +
+                value[2] * value[2];
+        };
+        Check(fabsf(lengthSquared(kHalo4RightPoleDirection) - 1.0f) < 1.0e-3f &&
+                  fabsf(lengthSquared(kHalo4LeftPoleDirection) - 1.0f) < 1.0e-3f,
+            "The Blender-authored pole directions remain normalized");
+        Check(fabsf(kHalo4RightAttachmentMetres[1] - 0.059896708f) < 1.0e-6f &&
+                  fabsf(kHalo4LeftAttachmentMetres[1] - 0.059896648f) < 1.0e-6f,
+            "The two controller-parented attachment offsets preserve authored metres");
+
         Halo4FirstPersonNode stock{};
         stock.rotation[3] = 1.0f;
         stock.translation[0] = 0.2f;
@@ -6796,23 +6821,25 @@ int main()
     Check(halo4Row && halo4Row->admissionCapabilities ==
               TitleCapability_ControllerInput,
         "Halo 4 admits shared controller input and nothing else");
-    // C-H4-10: Halo 4 now advertises the shared motion set its own evidence
+    // C-H4-13: Halo 4 now advertises the shared motion set its own evidence
     // supports. Each exclusion below is a deliberate withholding, not an
     // oversight, and each cost a title a real defect when it was granted early.
     Check(halo4Row &&
               (halo4Row->capabilities &
                (TitleCapability_Stereo | TitleCapability_ControllerAim |
-                TitleCapability_Haptics | TitleCapability_RuntimeModes |
+                 TitleCapability_Haptics | TitleCapability_ArmIk |
+                 TitleCapability_RuntimeModes |
                 TitleCapability_RoomScale | TitleCapability_ControllerInput)) ==
                   (TitleCapability_Stereo | TitleCapability_ControllerAim |
-                   TitleCapability_Haptics | TitleCapability_RuntimeModes |
+                    TitleCapability_Haptics | TitleCapability_ArmIk |
+                    TitleCapability_RuntimeModes |
                    TitleCapability_RoomScale |
                    TitleCapability_ControllerInput),
-        "Halo 4 advertises stereo, controller aim, haptics, runtime modes, "
-        "room scale and controller input");
-    Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
-        "Halo 4 withholds ArmIk: granting it to Reach before its arm solve was "
-        "proven attached the left hand to the player's face");
+        "Halo 4 advertises stereo, controller aim, haptics, ArmIk, runtime "
+        "modes, room scale and controller input");
+    Check(halo4Row && (halo4Row->capabilities & TitleCapability_ArmIk),
+        "C-H4-13 advertises ArmIk only after the title-specific final-palette "
+        "consumer and Storm hierarchy were proven");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
         "Halo 4 withholds Hud: its CUI arrives inside the captured scene "
         "target, so no title-specific HUD redirect is installed to gate");

@@ -29123,9 +29123,15 @@ namespace
         uint32_t user, uintptr_t observer);
     using Halo4WrapperFn = void(__fastcall*)(
         uintptr_t element, uintptr_t view, uint32_t window);
+    using Halo4ModelSkinningFn = void(__fastcall*)(
+        int32_t objectIndex, uint16_t renderModelIndex,
+        const BoneMatrix* inputObjectNodeMatrices, const void* nodeMap,
+        bool flagA, bool flagB, int32_t totalNodeMatrixCount,
+        void* skinning);
 
     Halo4SetupFn g_halo4OrigSetup = nullptr;
     Halo4WrapperFn g_halo4OrigWrapper = nullptr;
+    Halo4ModelSkinningFn g_halo4OrigModelSkinning = nullptr;
     std::atomic<float> g_halo4RenderHalfFovX[2]{};
     std::atomic<float> g_halo4RenderHalfFovY[2]{};
     std::atomic<uint64_t> g_halo4RenderFovSerial[2]{};
@@ -29140,7 +29146,8 @@ namespace
     constexpr uint32_t kHalo4RuntimeCapabilities =
         TitleCapability_Stereo | TitleCapability_ControllerInput |
         TitleCapability_ControllerAim | TitleCapability_Haptics |
-        TitleCapability_RuntimeModes | TitleCapability_RoomScale;
+        TitleCapability_RuntimeModes | TitleCapability_RoomScale |
+        TitleCapability_ArmIk;
 
     struct Halo4CameraCore
     {
@@ -29157,9 +29164,13 @@ namespace
         HMODULE moduleReference = nullptr;
         void* setupTarget = nullptr;
         void* wrapperTarget = nullptr;
+        void* modelSkinningTarget = nullptr;
         uintptr_t elementAddress = 0;
         uintptr_t setupReturnAddress = 0;
         uintptr_t wrapperReturnAddress = 0;
+        std::atomic<uint64_t> vrikSolvedPalettes{0};
+        std::atomic<uint64_t> vrikStockPalettes{0};
+        std::atomic<uint64_t> vrikAlignmentRefusals{0};
         uint64_t installedAtMs = 0;
         // Reported by the worker, never from the detour.
         std::atomic<uint64_t> stereoFrames{0};
@@ -29390,6 +29401,304 @@ namespace
             return false;
         }
         return out.weapons > 0;
+    }
+
+    // E-H4-21b / C-H4-13.  The final model-skinning consumer receives absolute
+    // 0x34-byte matrices.  Work only on a private copy: unlike C-H4-12's
+    // animation-producer write this cannot feed our pose back into Halo 4.
+    thread_local BoneMatrix g_halo4VrikScratch[kHalo4StormFpComposedNodeCount];
+
+    constexpr int kHalo4RightShoulderSubtree[] = {
+        4,11,12,14,15,16,17,18,22,26,27,29,30,31,34,36,38,40,41,42,
+        44,45,49,50,52,53,55,56,58,63,65,66,67,68,71,72,76,77,78};
+    constexpr int kHalo4RightElbowSubtree[] = {
+        16,22,26,27,29,30,31,34,36,38,40,41,42,44,45,49,50,52,53,
+        55,56,58,63,65,66,67,68,71,72,76,77,78};
+    constexpr int kHalo4RightHandSubtree[] = {
+        29,40,41,42,44,45,49,50,52,53,55,56,58,63,65,66,67,68,71,
+        72,76,77,78};
+    constexpr int kHalo4LeftShoulderSubtree[] = {
+        5,7,8,9,10,13,19,20,21,23,24,25,28,32,33,35,37,39,43,46,47,
+        48,51,54,57,59,60,61,62,64,69,70,73,74,75,79};
+    constexpr int kHalo4LeftElbowSubtree[] = {
+        8,21,23,24,25,28,32,33,35,37,39,43,46,47,48,51,54,57,59,60,
+        61,62,64,69,70,73,74,75,79};
+    constexpr int kHalo4LeftHandSubtree[] = {
+        37,39,43,46,47,48,51,54,57,59,60,61,62,64,69,70,73,74,75,79};
+
+    float Halo4VrikDistance(const BoneMatrix& a, const BoneMatrix& b)
+    {
+        const float x=b.translation[0]-a.translation[0];
+        const float y=b.translation[1]-a.translation[1];
+        const float z=b.translation[2]-a.translation[2];
+        return sqrtf(x*x+y*y+z*z);
+    }
+
+    bool Halo4StormAlignmentMatches(const BoneMatrix* nodes)
+    {
+        if (!nodes) return false;
+        const int indices[] = {4,16,29,5,8,37};
+        for (int index : indices)
+        {
+            float basis[9];
+            if (!NormalizedBasis(nodes[index],basis)) return false;
+            for (float v : nodes[index].translation)
+                if (!isfinite(v) || fabsf(v)>10.0f) return false;
+        }
+        const float ru=Halo4VrikDistance(nodes[4],nodes[16]);
+        const float rl=Halo4VrikDistance(nodes[16],nodes[29]);
+        const float lu=Halo4VrikDistance(nodes[5],nodes[8]);
+        const float ll=Halo4VrikDistance(nodes[8],nodes[37]);
+        // H4EK tag lengths are 0.0915251 / 0.116662 world units. Animation
+        // rotates these links but does not change their lengths. The tolerance
+        // admits float/scale noise while rejecting a coincidental node map.
+        return ru>0.075f && ru<0.110f && rl>0.095f && rl<0.140f &&
+               lu>0.075f && lu<0.110f && ll>0.095f && ll<0.140f &&
+               nodes[4].translation[1] < nodes[5].translation[1];
+    }
+
+    bool Halo4QuaternionToBoneBasis(const float qIn[4], float out[9])
+    {
+        float q[4];
+        if (!Halo4NormalizeQuaternion(qIn,q)) return false;
+        const float x=q[0],y=q[1],z=q[2],w=q[3];
+        const float row[9] = {
+            1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w),
+            2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w),
+            2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)};
+        for (int r=0;r<3;++r)
+            for (int c=0;c<3;++c)
+                out[c*3+r]=row[r*3+c];
+        return true;
+    }
+
+    bool Halo4BuildTrackedHandTarget(bool left, const BoneMatrix& stock,
+                                     BoneMatrix& target)
+    {
+        float cq[4],cp[3],hq[4],hp[3];
+        if ((left ? !VR_GetLeftControllerPose(cq,cp) : !VR_GetAimPose(cq,cp)) ||
+            !VR_GetHeadPose(hq,hp)) return false;
+        float unitHead[4];
+        if (!Halo4NormalizeQuaternion(hq,unitHead)) return false;
+        const float inverseHead[4] =
+            {-unitHead[0],-unitHead[1],-unitHead[2],unitHead[3]};
+        float relativeQ[4];
+        Halo4MultiplyQuaternion(inverseHead,cq,relativeQ);
+        float roomDelta[3] = {cp[0]-hp[0],cp[1]-hp[1],cp[2]-hp[2]};
+        float relativeP[3];
+        Halo4RotateVectorByQuaternion(inverseHead,roomDelta,relativeP);
+
+        Halo4HandPlacementInput placement{};
+        memcpy(placement.controllerOffset,relativeP,sizeof(relativeP));
+        memcpy(placement.controllerOrientation,relativeQ,sizeof(relativeQ));
+        placement.worldScale=g_worldScale.load(std::memory_order_relaxed);
+        placement.forwardTrim=g_config.halo4_hand_forward_m;
+        placement.verticalTrim=g_config.halo4_hand_vertical_m;
+        placement.lateralTrim=g_config.halo4_hand_lateral_m;
+        placement.mirrored=g_config.halo4_hands_mirrored;
+        Halo4FirstPersonNode identity{},placed{};
+        identity.rotation[3]=1.0f;
+        identity.scale=1.0f;
+        if (!Halo4BuildHandNode(placement,identity,placed)) return false;
+
+        const float authoredRight[4] =
+            {-0.583606601f,0.000000213f,-0.698711872f,0.413769424f};
+        const float authoredLeft[4] =
+            {-0.265249819f,0.000000008f,-0.317565471f,0.910381734f};
+        float calibrated[4];
+        Halo4MultiplyQuaternion(placed.rotation,
+            left?authoredLeft:authoredRight,calibrated);
+        target=stock;
+        if (!Halo4QuaternionToBoneBasis(calibrated,target.rotation)) return false;
+        memcpy(target.translation,placed.translation,sizeof(target.translation));
+        const float* attachment =
+            left?kHalo4LeftAttachmentMetres:kHalo4RightAttachmentMetres;
+        float attachmentWorld[3];
+        Halo4RotateVectorByQuaternion(calibrated,attachment,attachmentWorld);
+        for (int i=0;i<3;++i)
+            target.translation[i] += attachmentWorld[i]*placement.worldScale;
+        return isfinite(target.translation[0]) && isfinite(target.translation[1]) &&
+               isfinite(target.translation[2]);
+    }
+
+    bool Halo4BuildDirectionDelta(const float from[3], const float to[3],
+                                  const float pivot[3], BoneMatrix& delta)
+    {
+        float a[3]={from[0],from[1],from[2]},b[3]={to[0],to[1],to[2]};
+        auto normalize=[](float v[3]) {
+            const float n=sqrtf(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
+            if (!isfinite(n)||n<1.0e-5f) return false;
+            for(int i=0;i<3;++i)v[i]/=n;
+            return true;
+        };
+        if (!normalize(a)||!normalize(b)) return false;
+        float v[3]={a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],
+                    a[0]*b[1]-a[1]*b[0]};
+        float c=a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+        c=Clamp(c,-1.0f,1.0f);
+        float q[4]={v[0],v[1],v[2],1.0f+c};
+        if (1.0f+c<1.0e-4f)
+        {
+            const float axis[3]={fabsf(a[0])<0.8f?1.0f:0.0f,
+                                 fabsf(a[0])<0.8f?0.0f:1.0f,0.0f};
+            q[0]=a[1]*axis[2]-a[2]*axis[1];
+            q[1]=a[2]*axis[0]-a[0]*axis[2];
+            q[2]=a[0]*axis[1]-a[1]*axis[0]; q[3]=0.0f;
+        }
+        delta=BoneMatrix{}; delta.scale=1.0f;
+        if (!Halo4QuaternionToBoneBasis(q,delta.rotation)) return false;
+        for(int r=0;r<3;++r)
+        {
+            float rotated=0.0f;
+            for(int col=0;col<3;++col)
+                rotated+=delta.rotation[col*3+r]*pivot[col];
+            delta.translation[r]=pivot[r]-rotated;
+        }
+        return true;
+    }
+
+    template<size_t N>
+    bool Halo4ApplyDelta(BoneMatrix* nodes, const int (&indices)[N],
+                         const BoneMatrix& delta)
+    {
+        BoneMatrix transformed{};
+        for (int index : indices)
+        {
+            if (!ComposeBoneMatrices(delta,nodes[index],transformed)) return false;
+            nodes[index]=transformed;
+        }
+        return true;
+    }
+
+    bool Halo4SolveArm(BoneMatrix* nodes, bool left, const BoneMatrix& desired,
+                       BoneMatrix* outHandDelta)
+    {
+        const int shoulder=left?kHalo4LeftShoulderNode:kHalo4RightShoulderNode;
+        const int elbow=left?kHalo4LeftElbowNode:kHalo4RightElbowNode;
+        const int hand=left?kHalo4LeftHandNode:kHalo4RightHandNode;
+        const float upper=Halo4VrikDistance(nodes[shoulder],nodes[elbow]);
+        const float lower=Halo4VrikDistance(nodes[elbow],nodes[hand]);
+        const float* pole=left?kHalo4LeftPoleDirection:kHalo4RightPoleDirection;
+        float solvedElbow[3];
+        if (!IK_SolveTwoBone(nodes[shoulder].translation,desired.translation,
+                             upper,lower,pole,solvedElbow)) return false;
+        float oldUpper[3],newUpper[3];
+        for(int i=0;i<3;++i){oldUpper[i]=nodes[elbow].translation[i]-nodes[shoulder].translation[i];
+                             newUpper[i]=solvedElbow[i]-nodes[shoulder].translation[i];}
+        BoneMatrix shoulderDelta{};
+        if (!Halo4BuildDirectionDelta(oldUpper,newUpper,nodes[shoulder].translation,
+                                      shoulderDelta)) return false;
+        if (left)
+        {
+            if (!Halo4ApplyDelta(nodes,kHalo4LeftShoulderSubtree,shoulderDelta)) return false;
+        }
+        else if (!Halo4ApplyDelta(nodes,kHalo4RightShoulderSubtree,shoulderDelta)) return false;
+
+        float oldLower[3],newLower[3];
+        for(int i=0;i<3;++i){oldLower[i]=nodes[hand].translation[i]-nodes[elbow].translation[i];
+                             newLower[i]=desired.translation[i]-nodes[elbow].translation[i];}
+        BoneMatrix elbowDelta{};
+        if (!Halo4BuildDirectionDelta(oldLower,newLower,nodes[elbow].translation,
+                                      elbowDelta)) return false;
+        if (left)
+        {
+            if (!Halo4ApplyDelta(nodes,kHalo4LeftElbowSubtree,elbowDelta)) return false;
+        }
+        else if (!Halo4ApplyDelta(nodes,kHalo4RightElbowSubtree,elbowDelta)) return false;
+
+        BoneMatrix inverseHand{},handDelta{};
+        if (!InvertBoneMatrix(nodes[hand],inverseHand) ||
+            !ComposeBoneMatrices(desired,inverseHand,handDelta)) return false;
+        if (left)
+        {
+            if (!Halo4ApplyDelta(nodes,kHalo4LeftHandSubtree,handDelta)) return false;
+        }
+        else if (!Halo4ApplyDelta(nodes,kHalo4RightHandSubtree,handDelta)) return false;
+        if (outHandDelta) *outHandDelta=handDelta;
+        return true;
+    }
+
+    bool Halo4BuildVrikPalette(const BoneMatrix* source, BoneMatrix* solved)
+    {
+        if (!source||!solved) return false;
+        if (!Halo4SafeRead(source,solved,
+                sizeof(BoneMatrix)*kHalo4StormFpComposedNodeCount))
+            return false;
+        if (!Halo4StormAlignmentMatches(solved)) return false;
+        BoneMatrix rightTarget{},leftTarget{};
+        if (!Halo4BuildTrackedHandTarget(false,solved[kHalo4RightHandNode],rightTarget) ||
+            !Halo4BuildTrackedHandTarget(true,solved[kHalo4LeftHandNode],leftTarget)) return false;
+        BoneMatrix rightHandDelta{};
+        if (!Halo4SolveArm(solved,false,rightTarget,&rightHandDelta) ||
+            !Halo4SolveArm(solved,true,leftTarget,nullptr)) return false;
+        // Five appended weapon nodes keep their authored relationship to the
+        // right hand while following the two-hand-adjusted aim pose.
+        for(int i=kHalo4StormFpBodyNodeCount;i<kHalo4StormFpComposedNodeCount;++i)
+        {
+            BoneMatrix moved{};
+            if (!ComposeBoneMatrices(rightHandDelta,solved[i],moved)) return false;
+            solved[i]=moved;
+        }
+        if (g_config.floating_hands)
+        {
+            for(int index:kHalo4RightShoulderSubtree)
+                if(index!=29 && index!=40 && index!=41 && index!=42 && index!=44 &&
+                   index!=45 && index!=49 && index!=50 && index!=52 && index!=53 &&
+                   index!=55 && index!=56 && index!=58 && index!=63 && index!=65 &&
+                   index!=66 && index!=67 && index!=68 && index!=71 && index!=72 &&
+                   index!=76 && index!=77 && index!=78) solved[index].scale=0.0001f;
+            for(int index:kHalo4LeftShoulderSubtree)
+                if(index!=37 && index!=39 && index!=43 && index!=46 && index!=47 &&
+                   index!=48 && index!=51 && index!=54 && index!=57 && index!=59 &&
+                   index!=60 && index!=61 && index!=62 && index!=64 && index!=69 &&
+                   index!=70 && index!=73 && index!=74 && index!=75 && index!=79)
+                    solved[index].scale=0.0001f;
+        }
+        return true;
+    }
+
+    __declspec(noinline) void __fastcall Halo4ModelSkinningDetour(
+        int32_t objectIndex, uint16_t renderModelIndex,
+        const BoneMatrix* inputObjectNodeMatrices, const void* nodeMap,
+        bool flagA, bool flagB, int32_t totalNodeMatrixCount, void* skinning)
+    {
+        g_halo4Camera.activeCallbacks.fetch_add(1,std::memory_order_acq_rel);
+        const BoneMatrix* selected=inputObjectNodeMatrices;
+        __try
+        {
+            if (!g_halo4Camera.teardownRequested.load(std::memory_order_acquire) &&
+                g_halo4Camera.armed.load(std::memory_order_acquire) &&
+                g_config.halo4_hands && g_config.arm_ik &&
+                reinterpret_cast<uintptr_t>(_ReturnAddress())==
+                    g_halo4Camera.base+kHalo4FirstPersonSkinningReturnRva)
+            {
+                Halo4FirstPersonAccess access{};
+                bool liveCount=false;
+                if (Halo4ResolveFirstPerson(0,access))
+                    for(int count:access.nodeCount)
+                        liveCount=liveCount||count==kHalo4StormFpComposedNodeCount;
+                const bool exact = liveCount &&
+                    totalNodeMatrixCount==kHalo4StormFpComposedNodeCount;
+                if (exact && Halo4BuildVrikPalette(inputObjectNodeMatrices,
+                                                   g_halo4VrikScratch))
+                {
+                    selected=g_halo4VrikScratch;
+                    g_halo4Camera.vrikSolvedPalettes.fetch_add(1,std::memory_order_relaxed);
+                }
+                else
+                {
+                    g_halo4Camera.vrikAlignmentRefusals.fetch_add(1,std::memory_order_relaxed);
+                }
+            }
+            else g_halo4Camera.vrikStockPalettes.fetch_add(1,std::memory_order_relaxed);
+            Halo4ModelSkinningFn original=g_halo4OrigModelSkinning;
+            if(original) original(objectIndex,renderModelIndex,selected,nodeMap,
+                                  flagA,flagB,totalNodeMatrixCount,skinning);
+        }
+        __finally
+        {
+            g_halo4Camera.activeCallbacks.fetch_sub(1,std::memory_order_acq_rel);
+        }
     }
 
     // C-H4-11. Put Halo 4's own first-person weapon assembly on the controller.
@@ -29710,6 +30019,9 @@ namespace
 
     void Halo4ResetTelemetry()
     {
+        g_halo4Camera.vrikSolvedPalettes.store(0,std::memory_order_relaxed);
+        g_halo4Camera.vrikStockPalettes.store(0,std::memory_order_relaxed);
+        g_halo4Camera.vrikAlignmentRefusals.store(0,std::memory_order_relaxed);
         g_halo4Camera.stereoFrames.store(0, std::memory_order_relaxed);
         g_halo4Camera.stockFrames.store(0, std::memory_order_relaxed);
         g_halo4Camera.droppedFrames.store(0, std::memory_order_relaxed);
@@ -30561,6 +30873,47 @@ namespace
         return published;
     }
 
+    bool InstallHalo4Vrik(uintptr_t base, size_t size)
+    {
+        const uintptr_t hit=sig::Find(base,size,kHalo4ModelSkinningPattern);
+        const bool unique=hit &&
+            !sig::Find(hit+1,base+size-hit-1,kHalo4ModelSkinningPattern);
+        if (!unique || hit-base!=kHalo4ModelSkinningRva)
+        {
+            LOG("Halo 4 VRIK: final model-skinning consumer is %s (RVA 0x%zX, "
+                "pinned 0x%X); stock hands remain and camera core stays armed",
+                hit?(unique?"moved":"ambiguous"):"unavailable",
+                hit?hit-base:0,kHalo4ModelSkinningRva);
+            return false;
+        }
+        void* target=reinterpret_cast<void*>(hit);
+        Halo4ModelSkinningFn original=nullptr;
+        if (MH_CreateHook(target,reinterpret_cast<void*>(&Halo4ModelSkinningDetour),
+                          reinterpret_cast<void**>(&original))!=MH_OK)
+        {
+            LOG("Halo 4 VRIK: MinHook rejected the optional final-palette hook; "
+                "stock hands remain and camera core stays armed");
+            return false;
+        }
+        g_halo4OrigModelSkinning=original;
+        g_halo4Camera.modelSkinningTarget=target;
+        if (MH_EnableHook(target)!=MH_OK)
+        {
+            MH_RemoveHook(target);
+            g_halo4Camera.modelSkinningTarget=nullptr;
+            g_halo4OrigModelSkinning=nullptr;
+            LOG("Halo 4 VRIK: optional final-palette hook could not be enabled; "
+                "stock hands remain and camera core stays armed");
+            return false;
+        }
+        LOG("Halo 4 VRIK: final palette 0x%X hooked; only return 0x%X is "
+            "admitted, Storm bind alignment is mandatory, poles are authored "
+            "v4, attachment scale is ignored, arm_ik=%d floating_hands=%d",
+            kHalo4ModelSkinningRva,kHalo4FirstPersonSkinningReturnRva,
+            g_config.arm_ik?1:0,g_config.floating_hands?1:0);
+        return true;
+    }
+
     bool RemoveHalo4CameraCore()
     {
         g_halo4Camera.teardownRequested.store(true, std::memory_order_release);
@@ -30570,6 +30923,8 @@ namespace
             MH_DisableHook(g_halo4Camera.setupTarget);
         if (g_halo4Camera.wrapperTarget)
             MH_DisableHook(g_halo4Camera.wrapperTarget);
+        if (g_halo4Camera.modelSkinningTarget)
+            MH_DisableHook(g_halo4Camera.modelSkinningTarget);
         // Both detours must have returned before a trampoline is freed or the
         // module reference is released.
         if (g_halo4Camera.activeCallbacks.load(std::memory_order_acquire) != 0)
@@ -30578,6 +30933,8 @@ namespace
             MH_RemoveHook(g_halo4Camera.setupTarget);
         if (g_halo4Camera.wrapperTarget)
             MH_RemoveHook(g_halo4Camera.wrapperTarget);
+        if (g_halo4Camera.modelSkinningTarget)
+            MH_RemoveHook(g_halo4Camera.modelSkinningTarget);
         if (g_halo4Camera.moduleReference)
             FreeLibrary(g_halo4Camera.moduleReference);
         const uint32_t generation =
@@ -30585,8 +30942,10 @@ namespace
         g_halo4Camera.moduleReference = nullptr;
         g_halo4Camera.setupTarget = nullptr;
         g_halo4Camera.wrapperTarget = nullptr;
+        g_halo4Camera.modelSkinningTarget = nullptr;
         g_halo4OrigSetup = nullptr;
         g_halo4OrigWrapper = nullptr;
+        g_halo4OrigModelSkinning = nullptr;
         g_halo4Camera.base = 0;
         g_halo4Camera.size = 0;
         g_halo4Camera.elementAddress = 0;
@@ -30794,6 +31153,9 @@ namespace
         }
 
         g_halo4Camera.installed.store(true, std::memory_order_release);
+        // Optional and fail-open: a missing palette proof leaves the already
+        // working camera/session fully armed with stock hands.
+        InstallHalo4Vrik(base,size);
         PublishHalo4Lifecycle();
         LOG("Halo 4 camera core installed (generation %u): setup 0x%X and the "
             "render wrapper 0x%X are hooked at their pinned RVAs, both proven "
@@ -30848,7 +31210,8 @@ namespace
                 kReachRenderSafetyIntervalMs)
         {
             g_halo4Camera.armed.store(true, std::memory_order_release);
-            LOG("Halo 4 camera core armed: C-H4-10 motion aim, VR turn and "
+            LOG("Halo 4 camera core armed: C-H4-13 final-palette hand/weapon "
+                "placement and authored-pole arm IK on C-H4-10 motion aim, VR turn and "
                 "rumble on C-H4-9's headset-owned look, C-H4-8's 6DOF and "
                 "native headset-FOV coverage. The hand steers Halo 4's own aim "
                 "through the shared closed loop the other three titles use, "
@@ -30863,8 +31226,8 @@ namespace
                 "returns aim to C-H4-9's stick yaw + headset pitch; F2 returns "
                 "everything to C-H4-8. Halo 4 needs no HUD redirect - its CUI "
                 "is inside the captured scene target - so the floating reticle "
-                "is the shared procedural one. Arm IK, hands and the cutscene "
-                "theatre are not in this candidate");
+                "is the shared procedural one. VRIK failure is feature-local: "
+                "it leaves stock hands without disarming stereo or OpenXR");
         }
         PublishHalo4Lifecycle();
     }
@@ -31034,53 +31397,21 @@ namespace
             static_cast<unsigned long long>(turns),
             g_config.turn_smooth ? "smooth" : "snap", "turn");
 
-        // C-H4-11's own line. It reports what the ENGINE held before we wrote,
-        // never just that we wrote: a quaternion length near 1 and a sane scale
-        // are the proof that the 0x20-byte node really is
-        // {rotation, translation, scale}. If those look wrong, the placement
-        // refuses and this line is how that is attributable.
-        const uint64_t handsPlaced =
-            g_halo4Camera.handsPlacedFrames.exchange(
-                0, std::memory_order_relaxed);
-        const uint64_t handsBlocked =
-            g_halo4Camera.handsBlockedFrames.exchange(
-                0, std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-11b hands: %s; %llu placed / %llu refused frames in "
-            "2s, %d weapon slot(s), %d nodes, %d transformed, write survived "
-            "readback: %s; engine's stock ROOT node: "
-            "|quat| %.4f scale %.3f translation %.3f/%.3f/%.3f; after the "
-            "write it holds %.3f/%.3f/%.3f (world scale %.2f)",
-            g_halo4Camera.nodeFormatRejected.load(std::memory_order_acquire)
-                ? "REFUSED - the 0x20 node is NOT {quat,translation,scale}, "
-                  "nothing was written"
-                : (g_halo4Camera.nodeFormatProven.load(
-                       std::memory_order_acquire)
-                       ? (g_config.halo4_hands
-                              ? "node format PROVEN from live values, placing"
-                              : "node format proven, but halo4_hands is off")
-                       : "waiting for a first-person weapon to exist"),
-            static_cast<unsigned long long>(handsPlaced),
-            static_cast<unsigned long long>(handsBlocked),
-            g_halo4Camera.lastWeaponCount.load(std::memory_order_relaxed),
-            g_halo4Camera.lastRootNode.load(std::memory_order_relaxed),
-            g_halo4Camera.lastNodesWritten.load(std::memory_order_relaxed),
-            g_halo4Camera.lastWriteSurvived.load(std::memory_order_relaxed)
-                ? "YES" : "no - the engine overwrote us",
-            g_halo4Camera.stockNodeQuaternionLength.load(
-                std::memory_order_relaxed),
-            g_halo4Camera.stockNodeScale.load(std::memory_order_relaxed),
-            g_halo4Camera.stockNodeTranslation[0].load(
-                std::memory_order_relaxed),
-            g_halo4Camera.stockNodeTranslation[1].load(
-                std::memory_order_relaxed),
-            g_halo4Camera.stockNodeTranslation[2].load(
-                std::memory_order_relaxed),
-            g_halo4Camera.lastHandTranslation[0].load(
-                std::memory_order_relaxed),
-            g_halo4Camera.lastHandTranslation[1].load(
-                std::memory_order_relaxed),
-            g_halo4Camera.lastHandTranslation[2].load(
-                std::memory_order_relaxed),
+        const uint64_t solved=g_halo4Camera.vrikSolvedPalettes.exchange(
+            0,std::memory_order_relaxed);
+        const uint64_t stockPalettes=g_halo4Camera.vrikStockPalettes.exchange(
+            0,std::memory_order_relaxed);
+        const uint64_t refused=g_halo4Camera.vrikAlignmentRefusals.exchange(
+            0,std::memory_order_relaxed);
+        LOG("Halo 4 C-H4-13 VRIK: palette %s; %llu solved / %llu stock / %llu "
+            "alignment-or-pose refused in 2s; Storm nodes R 4/16/29 L 5/8/37, "
+            "authored v4 poles, attachment scale IGNORED; arm_ik=%d "
+            "floating_hands=%d world_scale=%.3f",
+            g_halo4Camera.modelSkinningTarget?"hooked":"UNAVAILABLE - stock",
+            static_cast<unsigned long long>(solved),
+            static_cast<unsigned long long>(stockPalettes),
+            static_cast<unsigned long long>(refused),g_config.arm_ik?1:0,
+            g_config.floating_hands?1:0,
             g_worldScale.load(std::memory_order_relaxed));
 
         const uint64_t widened =

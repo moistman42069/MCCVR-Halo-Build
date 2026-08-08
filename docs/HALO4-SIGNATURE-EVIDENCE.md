@@ -2534,3 +2534,63 @@ the same two functions:
 **Scope.** This admits the two hooks C-H4-3 creates and nothing else. It says
 nothing about Halo 4's render-target shape, its HUD, its aim, or its temporal
 passes.
+
+### E-H4-21b — final-palette VRIK boundary and Storm arm hierarchy (PROVEN 2026-08-08)
+
+C-H4-12 (`8b7bba0`) wrote at an animation producer and produced visible
+feedback/re-entry: the gun and hands regressed toward the face. It was fully
+disabled by rollback `4273c8f`. That producer is not a permissible VRIK
+boundary. C-H4-13 instead works on a private copy at the final skinning
+consumer, after animation has finished and before the GPU palette is emitted;
+its result cannot become input to a later animation frame.
+
+The official H4EK `halo4_tag_test.exe` function at `0x793D80`, identified by
+its `model_skinning.cpp` assert strings and three callers, has the measured
+ABI `(object_index, render_model_index, input_object_node_matrices, node_map,
+flag_a, flag_b, total_node_matrix_count, skinning)`. Its input elements are
+0x34-byte absolute `BoneMatrix` records. It writes 0x30-byte 3x4 final palette
+matrices at `skinning+0xA8`. The pinned retail homolog is `halo4.dll+0x33D8B8`.
+Its entry pattern is unique in the image:
+
+```
+48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57
+B8 30 31 00 00 E8 ?? ?? ?? ?? 48 2B E0
+48 8D AC 24 A0 00 00 00 48 83 E5 80
+```
+
+Retail has exactly three callers (`0x3362B3`, `0x343100`, `0x36F3C4`). Only
+the third is reached by the first-person path: the unique caller of its
+containing function `0x36EF20` is `0x34EFDC`, inside the first-person function
+beginning at `0x34EF7C`. Therefore C-H4-13 admits only the exact return address
+`0x36F3C9`; the other two palette uses remain byte-for-byte stock.
+
+The official `storm_fp.render_model` tag proves 80 body nodes and the arm
+chains right `4 -> 16 -> 29` and left `5 -> 8 -> 37`, with bind link lengths
+0.0915251 and 0.116662 world units. The retail composed record measured by the
+existing first-person access proof contains 85 nodes: 80 body plus five
+appended weapon nodes. The complete shoulder, elbow and hand descendant sets
+used by the implementation were mechanically extracted from that tag's parent
+table. Applying rigid deltas to whole descendant sets preserves every local
+bone-to-mesh relationship, including fingers; `floating_hands` changes only
+the non-hand arm subtree scales.
+
+The user-authored Blender evidence is
+`out/halo4-vrik-kit/halo4_storm_fp_vrik_v4_authored.blend` (SHA-256
+`37E5A6D0E4F35BF350929A1A18228E819481C2AFF1A7E119B4A664088B826251`) and
+`out/halo4-vrik-kit/halo4_vrik_points.v4-authored.json` (SHA-256
+`A964969D47976EF5495F986E83B70164092915EA5F9E4B2A46003014DF2A519C`).
+Only the pole locations changed in v4. Runtime uses the exported normalized
+pole directions, and the two controller-parented attachment offsets are
+applied in metres. Empty scale is explicitly ignored
+(`runtime_uses_scale=false`). The right-hand delta is also applied to composed
+nodes 80..84, so Halo 4's weapon remains attached to the controller/two-hand
+aim while both hand subtrees retain their authored alignment.
+
+**Failure isolation.** The final-palette hook is optional. Its entry signature
+must be unique and at the pinned RVA; the call must return to the exact FP
+site; the live count must be 85; both arm matrices must match the Storm bind
+length envelope and side ordering; and both tracked poses must be finite. Any
+miss passes the original matrix pointer to the engine for that palette. Hook
+installation failure leaves stock hands and never disarms the camera core or
+OpenXR session. C-H4-13 is an unaccepted headset candidate; this evidence does
+not advance the accepted-build pointer.

@@ -59,11 +59,13 @@ namespace
     // controller aim, VR turn and haptics the other titles already have, on the
     // same shared code paths. Halo 4's CUI arrives inside the captured scene
     // target rather than through a HUD redirect, so TitleCapability_Hud stays
-    // out: nothing title-specific is installed for it. ArmIk and
-    // CutsceneTheater remain withheld - neither has Halo 4 evidence yet.
+    // out: nothing title-specific is installed for it. C-H4-13 adds the
+    // evidence-backed final-palette arm solve. CutsceneTheater remains
+    // withheld because it has no Halo 4 evidence yet.
     constexpr uint32_t kHalo4Capabilities =
         TitleCapability_Stereo |
         TitleCapability_ControllerAim |
+        TitleCapability_ArmIk |
         TitleCapability_RuntimeModes |
         TitleCapability_RoomScale |
         TitleCapability_ControllerInput |
