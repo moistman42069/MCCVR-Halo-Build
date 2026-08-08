@@ -291,6 +291,19 @@ static_assert(kHalo4FirstPersonWeaponStride * kHalo4FirstPersonMaxWeapons <
 static_assert(kHalo4FirstPersonMaxNodes == 120,
     "the node bank is 120 transforms of 0x20 bytes");
 
+// E-H4-21: this is the first instruction sequence after the first-person
+// animation producer's prologue.  The match begins 0x7B bytes after the entry,
+// whose prologue is variable enough that anchoring there would be needlessly
+// fragile.  It is an OPTIONAL hands hook, deliberately outside the mandatory
+// camera-anchor table below: losing it leaves the working camera core alone.
+inline constexpr uint32_t kHalo4FpAnimationProducerRva = 0x003B6D04;
+inline constexpr uint32_t kHalo4FpAnimationProducerSignatureOffset = 0x7B;
+inline constexpr const char* kHalo4FpAnimationProducerPattern =
+    "44 88 44 24 68 89 55 90 4C 63 C1 44 89 45 94 "
+    "8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 "
+    "48 8B 04 C8 48 89 45 80 41 B9 A0 06 00 00 "
+    "4C 89 45 88 49 69 C8 48 5F 00 00";
+
 inline constexpr size_t kHalo4CameraAnchorLoop = 0;
 inline constexpr size_t kHalo4CameraAnchorSetup = 1;
 inline constexpr size_t kHalo4CameraAnchorWrapper = 2;

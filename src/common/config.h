@@ -480,7 +480,7 @@ struct Config
     float vehicle_wheel_max_deg = 75.0f;      // wheel angle at full lock
     float vehicle_wheel_deadzone_deg = 6.0f;  // slack around centre
 
-    // Halo 4 first-person hands (C-H4-11). Places the engine's own
+    // Halo 4 first-person hands (C-H4-12). Places the engine's own
     // first-person weapon assembly at the controller instead of at the head,
     // so the gun and arms follow your hand. The trims are metres, applied in
     // the controller's own frame before the transform reaches the engine, so
