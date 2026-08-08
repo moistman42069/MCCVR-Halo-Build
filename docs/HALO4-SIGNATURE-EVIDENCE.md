@@ -1792,6 +1792,14 @@ sites): `mov edx, ebx; mov rcx, rbp; xor r8d, r8d; xor r9d, r9d; call 0x34EC44`
 (`edx`) is an index/count, `r8`/`r9` are zeroed booleans matching the two flag
 bytes the body reads (`mov bpl, r8b` / `mov r14b, r9b`).
 
+**Correction to this entry's own first pass.** The global buffer's RVA was
+first computed by hand as `0x1047280`; that arithmetic was wrong. The correct
+address, from `struct.unpack('<i', ...)` over the actual disp32 bytes, is
+**RVA `0x10BEE80`**. Every "zero references" claim below this line in the
+original pass was searching for the WRONG address and is superseded by
+E-H4-20, which re-ran the same searches against the corrected RVA and found
+real results. Left here as a record of the mistake, not a finding.
+
 **Not yet proven, and NOT to be guessed:**
 
 1. **The exact field layout of the 128-byte block** - which 16-byte lanes hold
@@ -1814,7 +1822,66 @@ defaulting and whatever else it does keeps working), then overwrite the
 using the SAME `g_eyeFpView`-style thread-local handoff `FpCameraRebuildHook`
 already establishes for Halo 3 in this codebase.
 
-### Forward milestone ladder — one visible claim per candidate
+### E-H4-20 — the FP camera global's real consumers, and the corrected RVA
+
+**Two of E-H4-19's three unknowns closed. The third narrowed, not closed.**
+
+**Unknown #2 (was: is there a hidden 3rd float argument?) — CLOSED, it was a
+misreading.** Re-examining the disassembly: the instruction at the point in
+question is `0F 28 EE` = `movaps xmm5, xmm6` (xmm5 := xmm6), not
+`movaps xmm6, xmm2` as the earlier pass transcribed. There is no `xmm2`
+reference anywhere in this function. The confirmed signature, cross-checked
+against the call site at `0x34F0EE` (`mov edx, ebx; mov rcx, rbp; xor r8d,
+r8d; xor r9d, r9d; call 0x34EC44`), is four plain arguments:
+`void(void* context, int32_t index, bool flagA, bool flagB)` - safe to type
+for a MinHook trampoline with no ambiguity.
+
+**Unknown #1 (the 128-byte layout) — strong structural evidence, not yet
+live-confirmed.** The block is exactly `0x80` bytes, matching
+`kHalo4ObserverSnapshotBytes` byte-for-byte - the SAME size as the
+`s_observer_result` layout E-H4-6/E-H4-8 already proved for the main camera
+(position `0x00`, forward `0x28`, up `0x34`, verticalFov `0x78`, fovRatio
+`0x7C`). This is circumstantial but strong: same engine, same size, same
+apparent role (a camera being staged for a render pass). It is not yet
+confirmed by a live readback the way E-H4-16/17 confirmed the node layout, and
+must not be treated as proven until it is.
+
+**Unknown #3 (the consumer) - corrected and re-run, narrowed but not closed.**
+The RVA used to search for consumers in the first pass of this entry was
+computed by a hand-arithmetic error (`0x1047280`, wrong) instead of the actual
+decode (`0x10BEE80` - use `struct.unpack('<i', ...)`, never manual hex
+addition, for every future disp32 decode). Re-run against the CORRECT address:
+
+    rip-relative .text refs to 0x10BEE80: 10
+      0x34EC63, 0x34EE59, 0x34EE70, 0x34EF57   <- inside 0x34EC44 itself
+      0x372093, 0x3724CF, 0x372FE7, 0x373132, 0x37699B, 0x377C24   <- elsewhere
+
+Six references outside the writer function, in a distinct region
+(`0x372000`-`0x378000`). The first one traced (function entry `0x372044`,
+reference at `0x372093`) is NOT a simple field read: it conditionally selects
+between our buffer's address and an array-indexed alternate (`ecx`-keyed,
+0-3+ slots) into `rdx`, then performs what reads as a **world-point-to-screen
+projection** - `subss`/`mulss` against a 3D point in `r8` using fields at
+`rdx+0x14C` through `rdx+0x228`, offsets **far past our 128-byte block**. That
+proves the structure our buffer sits inside is LARGER than what
+`0x34EC44` writes, and this particular consumer may be a shared
+projection/marker utility (HUD waypoints, hit indicators) that happens to read
+the same camera slot, not necessarily the weapon mesh's own render path.
+
+**Explicitly not concluded:** whether ANY of the remaining five references
+(`0x3724CF`, `0x372FE7`, `0x373132`, `0x37699B`, `0x377C24`) is the actual
+mesh/vertex path. That is the next thing to check, in the same way - read the
+function from its real entry (found by scanning back to the nearest `CC CC`
+padding, not from the raw reference address, which desynchronizes a linear
+disassembler), and trace what it does with the pointer.
+
+**Do not hook `0x34EC44` until this is closed.** A camera-only override is
+safe once the write targets are confirmed; writing before that risks either
+another silent no-op (if the mesh path reads a still-unwritten larger
+structure) or, if a hook is added to the WRONG downstream function instead,
+a crash on the next first-person draw.
+
+### Forward milestone ladder — one visible claim per candidate### Forward milestone ladder — one visible claim per candidate
 
 1. **C-H4-7:** stock-projection/exact-serial stereo geometry only.
 2. **C-H4-8:** head rotation, 6DOF/recenter, AND native headset-FOV coverage,
