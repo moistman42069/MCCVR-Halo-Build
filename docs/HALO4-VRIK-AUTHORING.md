@@ -56,4 +56,7 @@ pole directions, full audit matrices, and the embedded H4EK provenance.
 
 The generated kit was clean-loaded in Blender 5.1.2. Validation confirmed 80
 bones, four official skinned meshes, six controls, successful draft JSON
-export, and an evaluated forearm change when the right-hand target moved.
+export, and an evaluated forearm change when the right-hand target moved. The
+builder solves each mirrored chain's Blender pole angle independently and
+rejects the scene if enabled neutral IK moves any arm joint from the official
+tag bind pose.

@@ -22,6 +22,14 @@ def main():
         raise SystemExit("ERROR: storm_fp 80-node armature missing")
     if len(controls) != 6 or len(meshes) != 4:
         raise SystemExit("ERROR: expected six controls and four meshes")
+    for name in ("b_r_upperarm", "b_r_forearm", "b_r_hand",
+                 "b_l_upperarm", "b_l_forearm", "b_l_hand"):
+        pose_head = armature.pose.bones[name].head
+        rest_head = armature.data.bones[name].head_local
+        delta = (pose_head - rest_head).length
+        if delta > 2.5e-4:
+            raise SystemExit(
+                "ERROR: neutral IK moves %s by %.9g m" % (name, delta))
 
     camera_data = bpy.data.cameras.new("validation_camera")
     camera = bpy.data.objects.new("validation_camera", camera_data)

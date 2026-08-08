@@ -30,7 +30,7 @@ MESH_NAMES = {
 
 README = """HALO 4 storm_fp VRIK LANDMARK KIT
 
-Open halo4_storm_fp_vrik_v1.blend in Blender 4.3 or newer.
+Open the newest halo4_storm_fp_vrik_v*.blend in Blender 4.3 or newer.
 
 Enable the panel by either:
   * Edit > Preferences > Add-ons > Install from Disk, then choose
@@ -233,6 +233,41 @@ def pole_position(shoulder, elbow, wrist, side):
     return elbow + bend.normalized() * 0.35
 
 
+def calibrate_pole_angle(armature, pose_bone, constraint, expected_head):
+    """Choose the mirrored-chain pole angle that preserves the tag bind pose."""
+    best_angle = 0.0
+    best_error = float("inf")
+
+    def consider(angle):
+        nonlocal best_angle, best_error
+        constraint.pole_angle = angle
+        bpy.context.view_layer.update()
+        world_head = armature.matrix_world @ pose_bone.head
+        error = (world_head - expected_head).length_squared
+        if error < best_error:
+            best_angle, best_error = angle, error
+
+    # Blender's pole basis depends on each edit bone's roll. Search once while
+    # building the scene, then store the solved constant in the .blend. This
+    # avoids copying a right-arm angle onto the mirrored left chain.
+    for sample in range(361):
+        consider(-math.pi + sample * (2.0 * math.pi / 360.0))
+    for radius, samples in ((math.radians(2.0), 81),
+                            (math.radians(0.05), 101)):
+        center = best_angle
+        for sample in range(samples):
+            consider(center - radius + sample * (2.0 * radius / (samples - 1)))
+    constraint.pole_angle = best_angle
+    bpy.context.view_layer.update()
+    # Blender's iterative IK solver settles within a fraction of a millimetre
+    # even when the target is exactly the bind-pose wrist.
+    if math.sqrt(best_error) > 2.5e-4:
+        raise ValueError(
+            "neutral IK moves %s elbow by %.9g m" %
+            (pose_bone.name, math.sqrt(best_error)))
+    return best_angle
+
+
 def add_controls(nodes, worlds, armature, collection):
     by_name = {node["name"]: node["index"] for node in nodes}
     result = {}
@@ -273,6 +308,9 @@ def add_controls(nodes, worlds, armature, collection):
         ik.chain_count = 2
         ik.use_tail = True
         ik.use_rotation = False
+        solved_angle = calibrate_pole_angle(
+            armature, fore_bone, ik, fore.translation)
+        pole["halo4_vrik_solved_pole_angle"] = solved_angle
         hand_bone = armature.pose.bones[hand_name]
         rotation = hand_bone.constraints.new('COPY_ROTATION')
         rotation.name = "Authored hand orientation"
@@ -280,6 +318,18 @@ def add_controls(nodes, worlds, armature, collection):
         rotation.target_space = 'WORLD'
         rotation.owner_space = 'WORLD'
     return result
+
+
+def validate_neutral_arm_pose(armature):
+    bpy.context.view_layer.update()
+    for name in ("b_r_upperarm", "b_r_forearm", "b_r_hand",
+                 "b_l_upperarm", "b_l_forearm", "b_l_hand"):
+        pose_head = armature.pose.bones[name].head
+        rest_head = armature.data.bones[name].head_local
+        delta = (pose_head - rest_head).length
+        if delta > 2.5e-4:
+            raise ValueError(
+                "neutral IK moves %s by %.9g m" % (name, delta))
 
 
 def add_reference(name, matrix, collection, display='PLAIN_AXES', size=0.08):
@@ -337,6 +387,7 @@ def main():
                   nodes, armature,
                   model_collection, tech_material if index == 3 else armor_material)
     add_controls(nodes, worlds, armature, control_collection)
+    validate_neutral_arm_pose(armature)
     add_reference("ref:tag_origin", Matrix.Identity(4), reference_collection)
     camera_index = next(node["index"] for node in nodes
                         if node["name"] == "b_camera_control")
