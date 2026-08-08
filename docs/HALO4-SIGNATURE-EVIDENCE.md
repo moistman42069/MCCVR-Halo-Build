@@ -1203,6 +1203,12 @@ threshold). Cinematic ownership is its own rung.
 
 ### C-H4-10 — motion aim, VR turn and rumble (OFFLINE-PASS 2026-08-08; headset-PENDING)
 
+Source `140e15dcdba983b02bc99444f707f1ef61492c56` (behavior `8395c97`),
+`halo3xr.dll` SHA-256
+`765D3D7844F863A6755029991EAD22614BE83ECD14DA683EB99D9B787B990A47`, package
+`out/candidates/140e15d-halo4-c10-motion-aim-turn-rumble-20260808-130741925Z`,
+installed and hash-verified in both editions.
+
 **Two premises the headset corrected first.** The user reported *"i can see the
 hud"*, refuting the assumption carried from C-H4-5 that Halo 4 draws no HUD -
 its CUI arrives inside the captured scene target, so Halo 4 needs **no HUD

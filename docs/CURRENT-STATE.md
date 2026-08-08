@@ -168,7 +168,21 @@ now: C-H4-9 is installed in both editions for a look-pitch headset test, but
 | C-H4-8 `6cf0b76` | **PASSED both of its own log claims, experience REJECTED (2026-08-08):** `geometry TAKING`, 137 pairs/2s, `138 tracked frames`, `reference captured`, `lean 0.006 world units (6DOF ON)`, `276 widened eyes`, `calibration learned`, engine built `61.75/53.31 deg`, `contains headset frustum: YES` - the `M2 WARNING` is gone. Stereo, head tracking, 6DOF and native FOV all work. Rejected for one thing it did not cover: the look stick's vertical axis pitches the engine's camera and C-H4-8 adds head pitch ON TOP of it, so the stick tilts the world away from the player's real horizon. |
 | C-H4-9 `0e450d5` | **PITCH CLAIM PASSED, shot line MISSED (2026-08-08):** "6dof is working and it looks and runs great" - the stick no longer tilts the world, and the log confirms `head pitch ... (ABSOLUTE, headset owns pitch)`, 242 tracked frames/2s, `lean ... = +0.024/+0.010/-0.006 xyz`. The loop's third part missed: "shots don't follow my view", explicitly deprioritised by the user. Cause measured, not guessed - see below. |
 
-| C-H4-9 installed identity | Value |
+| C-H4-10 `140e15d` | **INSTALLED, HEADSET-PENDING:** motion aim, VR turn and rumble. |
+
+| C-H4-10 installed identity | Value |
+| --- | --- |
+| Source | `140e15dcdba983b02bc99444f707f1ef61492c56` (branch `feature/halo4-bringup`) |
+| Behavior commit | `8395c97`; `8915840` and `140e15d` are manifest/installer fixes only |
+| Package | `out/candidates/140e15d-halo4-c10-motion-aim-turn-rumble-20260808-130741925Z` |
+| `halo3xr.dll` SHA-256 | `765D3D7844F863A6755029991EAD22614BE83ECD14DA683EB99D9B787B990A47` |
+| `halo3xr_launcher.exe` SHA-256 | `B578160109BDE9A94AF12099A5E6A7509CB6C8513265749A2F0BA9B006F141A6` |
+| Installed editions | Steam and Microsoft Store; package and both installed DLL/launcher hashes independently matched after install |
+| Preserved previous installs | `out/deploy-backups/33fc9e4-steam-before-140e15d-20260808-130742787Z`, `...-store-...` |
+| Offline gates | Release x64 build, `core_tests`, Reach consistency gate - all passing |
+| Acceptance | **Not accepted.** C-H4-1 remains the rollback pointer. |
+
+| C-H4-9 identity (superseded) | Value |
 | --- | --- |
 | Source | `0e450d504ef2f37971281fc756f67ae55676e498` (branch `feature/halo4-bringup`) |
 | Package | `out/candidates/0e450d5-halo4-c9-headset-owns-pitch-20260808-121246432Z` |
@@ -176,8 +190,7 @@ now: C-H4-9 is installed in both editions for a look-pitch headset test, but
 | `halo3xr_launcher.exe` SHA-256 | `B578160109BDE9A94AF12099A5E6A7509CB6C8513265749A2F0BA9B006F141A6` |
 | Installed editions | Steam and Microsoft Store; package and both installed DLL/launcher hashes independently matched after install |
 | Preserved previous installs | `out/deploy-backups/f4164eb-steam-before-0e450d5-20260808-121247428Z`, `...-store-before-0e450d5-20260808-121247428Z` |
-| Offline gates | Release x64 build, `core_tests`, Reach consistency gate - all passing |
-| Acceptance | **Not accepted.** C-H4-1 remains the rollback pointer. |
+| Acceptance | **Not accepted**, and superseded by C-H4-10 above. Its pitch/orientation behaviour carries forward unchanged. |
 
 The superseded C-H4-8 bytes were source
 `6cf0b76f027369d115d4df67c01e6218921663d4` (behavior `55e890d`), DLL SHA-256
