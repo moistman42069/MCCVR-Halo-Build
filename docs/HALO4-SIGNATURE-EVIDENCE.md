@@ -1334,7 +1334,14 @@ NULL per-thread globals the fault shows: the engine tears its thread-local game
 state down on exit and the second entry on the same module instance re-enters
 without it.
 
-**What is NOT yet proven.** That the fault also occurs with the mod absent. The
+**MECHANISM NOW PROVEN - see E-H4-15.** `0x5F48` is the `fp weapons`
+per-user stride and `0x6A0` is that block's TLS offset, both cross-checked
+against H4EK. The faulting code indexes `first_person_weapons[user]` while
+the block pointer is NULL, and reads the record's `+4` unit field. Halo 4's
+first-person weapons globals are simply not present on a level re-entry that
+reuses the same module instance.
+
+**What is still NOT proven.** That the fault also occurs with the mod absent. The
 decisive test is a no-mod control run of the same exit/re-enter sequence, and it
 is the one thing this evidence cannot supply. Everything above establishes that
 no frame of ours is executing, that we hold no hooks and no pin at fault time,
@@ -1504,6 +1511,88 @@ not be conflated the way a camera-only fix would.
 use, then match the homologous code in retail `halo4.dll` to confirm. Per
 `AGENTS.md`, byte-matching kit prologues to retail fails - transfer semantics
 and layouts, never addresses.
+
+### E-H4-15 — the first-person weapons globals, KIT-EXPLAINED and RETAIL-VERIFIED
+
+This is the structure the gun and hands live in, **and it is the same block the
+E-H4-11 crash dereferences as NULL.** Both open asks turn out to be one
+subsystem.
+
+**Kit (`halo4_tag_test.exe`), the two named allocations at `0x931A90`:**
+
+    lea  rdx, [rip+...]     ; "fp weapons"
+    mov  r9d, 0x17D20       ; total size
+    lea  ecx, [rsi+4]       ; count = 4
+    call <named allocator>
+    ...
+    mov  edi, 0x1960        ; TLS block offset (KIT layout)
+    mov  [rdi+rbx], rax     ; store the block pointer into this thread's TLS
+    ...
+    lea  rdx, [rip+...]     ; "fp orientations"
+    mov  r9d, 0xF000        ; total size
+    mov  dword [rsp+0x20], 4
+
+**Retail (`halo4.dll`), the homologous function at `0x3C647C`** - found by
+searching for the kit's own constants, exactly the "kit explains, retail
+verifies" flow `AGENTS.md` requires:
+
+    003C6495  lea  rdx, [rip+0x99BA6C]   ; -> RVA 0xD61F08 = "fp weapons"
+    003C64A9  mov  r9d, 0x17D20          ; SAME total size
+    003C64C0  lea  ecx, [r8+4]           ; SAME count = 4
+    003C64C4  call 0x113BB0              ; named allocator
+    003C64C9  mov  rcx, gs:[0x58]        ; TLS array
+    003C64E8  mov  r9d, 0xF000           ; SAME orientations size
+    003C6510  mov  edx, 0x6A0            ; fp weapons  -> TLS + 0x6A0
+    003C6515  mov  ebp, 0x6E0            ; fp orients  -> TLS + 0x6E0
+
+**The resulting map, every number cross-checked in both images:**
+
+| Quantity | Kit | Retail |
+| --- | --- | --- |
+| `fp weapons` total bytes | `0x17D20` | `0x17D20` |
+| user count | 4 | 4 |
+| **`fp weapons` per-user stride** | `0x5F48` (0x17D20/4) | `0x5F48` |
+| `fp weapons` TLS offset | `0x1960` | **`0x6A0`** |
+| `fp orientations` total bytes | `0xF000` | `0xF000` |
+| **`fp orientations` per-user stride** | `0x3C00` (0xF000/4) | `0x3C00` |
+| `fp orientations` TLS offset | - | **`0x6E0`** |
+
+The TLS offsets differ between kit and retail, as expected; the sizes, count and
+strides are identical. Layouts transfer, addresses never do.
+
+**This closes E-H4-11's mechanism.** The crash instruction was
+
+    imul rbx, r14, 0x5F48        ; user_index * 0x5F48
+    add  rbx, [rcx + rsi]        ; + *(TLS + 0x6A0)
+    mov  eax, [rbx + 4]          ; FAULT, read of address 0x4
+
+`0x5F48` is the `fp weapons` per-user stride and `0x6A0` is its TLS offset, both
+now proven. So the faulting code is indexing **`first_person_weapons[user]`**
+while the whole block pointer is NULL, and it reads field `+4` - which the
+surrounding retail code compares against a unit handle and writes back, i.e. the
+record's current unit. On a Halo 4 level re-entry that reuses the same module
+instance, the first-person weapons block is not there.
+
+**Two consequences that must shape the hands candidate:**
+
+1. **Null-check the block, always.** The engine itself does not, and that is the
+   crash. Any hook of ours that reads `first_person_weapons` or
+   `fp orientations` must prove the TLS slot, the block pointer and the user
+   index before dereferencing, and degrade to stock rather than fault - the
+   `AGENTS.md` failure-isolation rule, with a live example of what happens
+   without it.
+2. **`fp orientations` is the placement lever.** It is a separate 0x3C00-per-user
+   array from the weapon records themselves, which is what E-H4-14 predicted
+   from the kit's assert names. Where the gun and arms SIT is written there, not
+   through the first-person camera - so the camera fix (stereo/depth) and the
+   placement fix (gun in your hand) remain two distinct changes.
+
+**Still to derive, kit-first:** the field layout inside one `0x5F48` weapon
+record (`node_matrices`, `node_matrices_count`) and inside one `0x3C00`
+orientation record. The kit's `first_person_weapons.cpp` asserts name both; the
+next step is to locate those assert call sites through the kit's assert pointer
+table (they are referenced indirectly, not by a direct `lea`, so the rip-relative
+scan finds zero - use a qword pointer scan for the string VA instead).
 
 ### Forward milestone ladder — one visible claim per candidate
 
