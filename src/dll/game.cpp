@@ -30930,22 +30930,33 @@ namespace
             }
         }
 
-        // The CENTER camera, built by the exact same function and inputs the
-        // eyes are built from, published for the first-person palette to root
-        // itself on. Halo 4's own first-person root carries no 6DOF, so without
-        // this the hands and gun rotate with the head but never translate.
-        // Center rather than per-eye, so both eyes solve the same arms.
-        if (snapshot.headPoseValid)
-        {
-            Halo4CameraBasis centerCamera{};
-            const float centerEye[3] = {0.0f, 0.0f, 0.0f};
-            if (Halo4BuildEyeCamera(stock, centerEye,
-                                    snapshot.headOrientation, worldScale,
-                                    centerCamera))
-            {
-                Halo4PublishCenterRoot(centerCamera);
-            }
-        }
+        // The CENTER camera, built by the exact same function and the exact
+        // same snapshot the two eye cameras are built from, published for the
+        // first-person palette to root itself on. Halo 4's own first-person
+        // root carries no 6DOF, so without this the hands and gun rotate with
+        // the head but never translate. Center rather than per-eye, so both
+        // eyes solve the same arms.
+        //
+        // `stock` AT THIS POINT ALREADY CARRIES HEAD-LOOK. The head pose was
+        // applied to it above - that is what the lean measurement immediately
+        // above this is differencing. So the center root is `stock` ITSELF,
+        // with no further offset and no further rotation.
+        //
+        // This is the same rule Halo 3 and Reach each wrote down after paying
+        // for it: "already carries head-look. Touching it would double-apply"
+        // (the Reach world render camera), and "writing here would apply the
+        // hand twice" (the Halo 3 sim bank). Feeding snapshot.headPosition or
+        // snapshot.headOrientation back into Halo4BuildEyeCamera here adds the
+        // headset pose a SECOND time, which is exactly the double-tracking the
+        // player sees: the hands move with the head once from the camera the
+        // eyes render from, and again from the root the palette is placed on.
+        //
+        // Passing a zero offset instead is equally wrong in the other
+        // direction only if `stock` were the raw game camera - it is not, it is
+        // the post-head-look camera, the direct analogue of Halo 3's g_camX/Y/Z
+        // which is read back AFTER ApplyHeadLook.
+        if (Halo4ValidateCameraBasis(stock))
+            Halo4PublishCenterRoot(stock);
 
         // C-H4-8: solve each eye's raster cover from the runtime's own reported
         // frustum. Nothing here names a headset. Halo 4's stock cover is
