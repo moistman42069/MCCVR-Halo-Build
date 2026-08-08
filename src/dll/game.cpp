@@ -29241,6 +29241,8 @@ namespace
         std::atomic<float> stockNodeScale{0.0f};
         std::atomic<float> stockNodeTranslation[3]{};
         std::atomic<float> lastHandTranslation[3]{};
+        std::atomic<bool> lastWriteSurvived{false};
+        std::atomic<int> lastNodesWritten{0};
         std::atomic<float> lastPitchError{0.0f};
         std::atomic<float> lastPitchCommand{0.0f};
         std::atomic<float> lastPitchTarget{0.0f};
@@ -29485,16 +29487,58 @@ namespace
             g_halo4Camera.nodeFormatProven.store(
                 true, std::memory_order_release);
 
+            // The rigid transform the whole assembly gets. `placed` carries the
+            // controller's rotation and the offset in engine units; applying it
+            // to EVERY node moves the gun and arms as one body, so nothing here
+            // depends on which node is the root.
             Halo4FirstPersonNode placed{};
             if (!Halo4BuildHandNode(placement, stock, placed))
                 continue;
-            if (!Halo4SafeWrite(node, &placed, sizeof(placed)))
-                continue;
-            for (int axis = 0; axis < 3; ++axis)
+
+            const int count = access.nodeCount[weapon];
+            int written = 0;
+            for (int index = 0; index < count; ++index)
             {
-                g_halo4Camera.lastHandTranslation[axis].store(
-                    placed.translation[axis], std::memory_order_relaxed);
+                unsigned char* target = access.nodes[weapon] +
+                    static_cast<size_t>(index) * kHalo4FirstPersonNodeStride;
+                Halo4FirstPersonNode current{};
+                if (!Halo4SafeRead(target, &current, sizeof(current)))
+                    continue;
+                Halo4FirstPersonNode moved{};
+                if (!Halo4TransformAssemblyNode(
+                        current, placed.rotation, placed.translation, moved))
+                {
+                    continue;
+                }
+                if (Halo4SafeWrite(target, &moved, sizeof(moved)))
+                    ++written;
             }
+            if (written == 0)
+                continue;
+
+            // Read the root straight back. This reports what the ENGINE holds
+            // after the write, not that we issued one - the only form of
+            // confirmation worth logging.
+            Halo4FirstPersonNode readback{};
+            if (Halo4SafeRead(node, &readback, sizeof(readback)))
+            {
+                float delta = 0.0f;
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    const float d =
+                        readback.translation[axis] - stock.translation[axis];
+                    delta += d * d;
+                }
+                g_halo4Camera.lastWriteSurvived.store(
+                    sqrtf(delta) > 1.0e-4f, std::memory_order_relaxed);
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    g_halo4Camera.lastHandTranslation[axis].store(
+                        readback.translation[axis], std::memory_order_relaxed);
+                }
+            }
+            g_halo4Camera.lastNodesWritten.store(
+                written, std::memory_order_relaxed);
             placedAny = true;
         }
         (placedAny ? g_halo4Camera.handsPlacedFrames
@@ -29746,6 +29790,8 @@ namespace
             g_halo4Camera.lastHandTranslation[axis].store(
                 0.0f, std::memory_order_relaxed);
         }
+        g_halo4Camera.lastWriteSurvived.store(false, std::memory_order_relaxed);
+        g_halo4Camera.lastNodesWritten.store(0, std::memory_order_relaxed);
         // The shared aim-liveness flag Halo 4's transaction now sets. Bound it
         // to this core's lifetime: MCC keeps every title's module loaded, so a
         // flag left true by Halo 4 would otherwise tell the shared loop that
@@ -30300,6 +30346,13 @@ namespace
                         1, std::memory_order_relaxed);
                 }
 
+                // C-H4-11a: place immediately before the draw, per eye. The
+                // engine composes these nodes from animation earlier in the
+                // frame, so the last writer before the draw is what renders.
+                // Doing it here rather than once per frame removes any
+                // ordering question between our write and the engine's own
+                // node work.
+                Halo4PlaceFirstPersonHands();
                 g_halo4OrigWrapper(element, view, window);
                 if (!VR_CaptureHalo4RenderedEye(
                         eye, snapshot.preparedSerial))
@@ -30997,10 +31050,11 @@ namespace
         const uint64_t handsBlocked =
             g_halo4Camera.handsBlockedFrames.exchange(
                 0, std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-11a hands: %s; %llu placed / %llu refused frames in "
-            "2s, %d weapon slot(s), %d nodes; engine's stock ROOT node: "
-            "|quat| %.4f scale %.3f translation %.3f/%.3f/%.3f; placed "
-            "translation %.3f/%.3f/%.3f (world scale %.2f)",
+        LOG("Halo 4 C-H4-11b hands: %s; %llu placed / %llu refused frames in "
+            "2s, %d weapon slot(s), %d nodes, %d transformed, write survived "
+            "readback: %s; engine's stock ROOT node: "
+            "|quat| %.4f scale %.3f translation %.3f/%.3f/%.3f; after the "
+            "write it holds %.3f/%.3f/%.3f (world scale %.2f)",
             g_halo4Camera.nodeFormatRejected.load(std::memory_order_acquire)
                 ? "REFUSED - the 0x20 node is NOT {quat,translation,scale}, "
                   "nothing was written"
@@ -31014,6 +31068,9 @@ namespace
             static_cast<unsigned long long>(handsBlocked),
             g_halo4Camera.lastWeaponCount.load(std::memory_order_relaxed),
             g_halo4Camera.lastRootNode.load(std::memory_order_relaxed),
+            g_halo4Camera.lastNodesWritten.load(std::memory_order_relaxed),
+            g_halo4Camera.lastWriteSurvived.load(std::memory_order_relaxed)
+                ? "YES" : "no - the engine overwrote us",
             g_halo4Camera.stockNodeQuaternionLength.load(
                 std::memory_order_relaxed),
             g_halo4Camera.stockNodeScale.load(std::memory_order_relaxed),

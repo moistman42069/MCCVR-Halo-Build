@@ -1208,6 +1208,66 @@ struct Halo4HandPlacementInput
     bool mirrored = false;       // left-handed
 };
 
+// Hamilton product, (x, y, z, w).
+inline void Halo4MultiplyQuaternion(
+    const float a[4], const float b[4], float out[4]) noexcept
+{
+    const float ax = a[0], ay = a[1], az = a[2], aw = a[3];
+    const float bx = b[0], by = b[1], bz = b[2], bw = b[3];
+    out[0] = aw * bx + ax * bw + ay * bz - az * by;
+    out[1] = aw * by - ax * bz + ay * bw + az * bx;
+    out[2] = aw * bz + ax * by - ay * bx + az * bw;
+    out[3] = aw * bw - ax * bx - ay * by - az * bz;
+}
+
+inline void Halo4RotateVectorByQuaternion(
+    const float q[4], const float v[3], float out[3]) noexcept
+{
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    const float tx = 2.0f * (y * v[2] - z * v[1]);
+    const float ty = 2.0f * (z * v[0] - x * v[2]);
+    const float tz = 2.0f * (x * v[1] - y * v[0]);
+    out[0] = v[0] + w * tx + (y * tz - z * ty);
+    out[1] = v[1] + w * ty + (z * tx - x * tz);
+    out[2] = v[2] + w * tz + (x * ty - y * tx);
+}
+
+// Apply one rigid transform to an ENTIRE composed first-person assembly.
+//
+// These are absolute per-node transforms (that is why the engine keeps a
+// whole second bank to interpolate against), so transforming every node by the
+// same rotation and translation moves the gun and arms as one rigid body -
+// with no dependence on which node is the root or how the hierarchy is
+// arranged. That independence is the point: it is what makes the placement
+// work without betting on a hierarchy fact that is not proven.
+inline bool Halo4TransformAssemblyNode(
+    const Halo4FirstPersonNode& node, const float rotation[4],
+    const float translation[3], Halo4FirstPersonNode& out) noexcept
+{
+    if (!Halo4FirstPersonNodeLooksValid(node))
+        return false;
+    float unitRotation[4];
+    if (!Halo4NormalizeQuaternion(rotation, unitRotation))
+        return false;
+    for (int axis = 0; axis < 3; ++axis)
+        if (!std::isfinite(translation[axis]))
+            return false;
+
+    out = node;
+    float rotated[3];
+    Halo4RotateVectorByQuaternion(unitRotation, node.translation, rotated);
+    for (int axis = 0; axis < 3; ++axis)
+        out.translation[axis] = rotated[axis] + translation[axis];
+    float composed[4];
+    Halo4MultiplyQuaternion(unitRotation, node.rotation, composed);
+    float normalised[4];
+    if (!Halo4NormalizeQuaternion(composed, normalised))
+        return false;
+    for (int i = 0; i < 4; ++i)
+        out.rotation[i] = normalised[i];
+    return Halo4FirstPersonNodeLooksValid(out);
+}
+
 // Map the controller's offset-from-head into the engine's first-person node
 // space and build the node the weapon root should carry.
 //
@@ -1255,6 +1315,8 @@ inline bool Halo4BuildHandNode(
     out.translation[0] = forward * input.worldScale;
     out.translation[1] = left * input.worldScale;
     out.translation[2] = up * input.worldScale;
+    // The controller's own orientation, permuted into Blam axes. This is the
+    // ROTATION half of the rigid transform; the translation above is the other.
     out.rotation[0] = -q[2];
     out.rotation[1] = -q[0] * lateralSign;
     out.rotation[2] = q[1];

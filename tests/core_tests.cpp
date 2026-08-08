@@ -6697,6 +6697,39 @@ int main()
         Halo4FirstPersonNode fromBad{};
         Check(!Halo4BuildHandNode(input, notANode, fromBad),
             "A stock node that failed the format proof produces no placement");
+
+        // The rigid assembly transform: applying one rotation+translation to
+        // every node must move the whole rig without depending on which node
+        // is the root, and must PRESERVE the shape between nodes.
+        Halo4FirstPersonNode a{}, b{};
+        a.rotation[3] = 1.0f; a.translation[0] = 0.10f; a.scale = 1.0f;
+        b.rotation[3] = 1.0f; b.translation[0] = 0.40f; b.scale = 1.0f;
+        const float halfTurn = 0.5f * 1.5707963f; // 90 deg about Blam +Z (up)
+        const float yaw[4] = {0.0f, 0.0f, sinf(halfTurn), cosf(halfTurn)};
+        const float shift[3] = {1.0f, 2.0f, 3.0f};
+        Halo4FirstPersonNode movedA{}, movedB{};
+        Check(Halo4TransformAssemblyNode(a, yaw, shift, movedA) &&
+                  Halo4TransformAssemblyNode(b, yaw, shift, movedB),
+            "Every node accepts the rigid assembly transform");
+        const float beforeGap = b.translation[0] - a.translation[0];
+        float afterGap = 0.0f;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            const float d = movedB.translation[axis] - movedA.translation[axis];
+            afterGap += d * d;
+        }
+        Check(fabsf(sqrtf(afterGap) - fabsf(beforeGap)) < 1.0e-4f,
+            "The distance between two nodes is unchanged, so the gun and arms "
+            "move as ONE RIGID BODY rather than being distorted");
+        Check(fabsf(movedA.translation[1] - (0.10f + 2.0f)) < 1.0e-4f &&
+                  fabsf(movedA.translation[0] - 1.0f) < 1.0e-4f,
+            "A 90 degree yaw carries a node's own offset around with it before "
+            "the translation is added");
+        Check(fabsf(movedA.scale - a.scale) < 1.0e-6f,
+            "The rigid transform never touches a node's scale");
+        Halo4FirstPersonNode fromBadNode{};
+        Check(!Halo4TransformAssemblyNode(notANode, yaw, shift, fromBadNode),
+            "A node that fails the format check is left alone");
     }
 
     // C-H4-9: the closed loop that keeps Halo 4's own look pitch - and so its
