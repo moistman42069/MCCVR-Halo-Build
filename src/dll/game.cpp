@@ -29953,23 +29953,42 @@ namespace
                 sizeof(BoneMatrix)*kHalo4FirstPersonBankTransforms))
             return Halo4VrikStage::CopyFailed;
 
-        // THE WHOLE SOLVE RUNS IN WORLD SPACE, exactly as the accepted Halo 3
-        // one does. This bank is already world-absolute, and the only thing
-        // needed to place a head-relative controller in it is the VR camera.
+        // THE SOLVE RUNS IN THE FIRST-PERSON CAMERA'S OWN SPACE.
         //
-        // C-H4-17 instead lifted the bank into node 0's frame first. That was
-        // wrong twice over: for the body fill node 0 is the PLAYER BIPED's
-        // frame - origin at the biped, upright, heading-only - while every
-        // authored quantity here (the controller offset, the v4 poles, the
-        // attachment offsets) is expressed about the CAMERA. Solving in one
-        // frame and composing back in the other rotates the whole assembly by
-        // the mismatch between them, which is why the gun's orientation was
-        // wrong and why leaning forward and back moved nothing.
+        // docs/RE-notes.md, written when Halo 3's gun first tracked: the
+        // first-person bones "live in a space anchored at the origin with
+        // identity orientation = the first-person camera's own space, at
+        // world-unit scale", and that "validates the space our hook writes in
+        // (head-relative, game camera axes x=forward/y=left/z=up)". Halo 4
+        // agrees: 0x3B1C28 builds the root from the render camera, both bank
+        // fills compose every bone against it, and it is stored at
+        // per_user+0x5E48.
         //
-        // There is no lift and no put-back now. World in, world out.
-        BoneMatrix vrRoot{};
-        if (!Halo4LoadCenterRoot(1.0f,vrRoot))
+        // So the ONE correct frame is the camera's. Lift the bank out of the
+        // engine's camera root, solve there - where the head-relative
+        // controller offset, the authored v4 poles and the attachment offsets
+        // are all already expressed - and compose straight back with the SAME
+        // root. Using one root for both directions is what makes a double
+        // application arithmetically impossible.
+        //
+        // C-H4-17 lifted by node 0 instead, which for the body fill is the
+        // biped's frame, not the camera's: solving in one and returning in the
+        // other rotated the assembly by the mismatch (wrecked gun orientation)
+        // and dropped the camera's pitch axis (dead front-to-back).
+        BoneMatrix cameraRoot{},inverseCameraRoot{};
+        if (!Halo4LoadCenterRoot(1.0f,cameraRoot) ||
+            !InvertBoneMatrix(cameraRoot,inverseCameraRoot))
             return Halo4VrikStage::AnchorFailed;
+        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
+        {
+            BoneMatrix local{};
+            if (!ComposeBoneMatrices(inverseCameraRoot,solved[i],local))
+                return Halo4VrikStage::AnchorFailed;
+            solved[i]=local;
+        }
+        // Identity: the solve below is now entirely in camera-local space, so
+        // the target needs no root applied to it at all.
+        const BoneMatrix vrRoot{1.0f,{1,0,0, 0,1,0, 0,0,1},{0,0,0}};
 
         const Halo4VrikStage classified=
             Halo4ClassifyStormArms(solved,vrRoot,bodyFill);
@@ -30009,14 +30028,31 @@ namespace
         // manufactured NaNs. Halo 4's weapon is a SEPARATE record, and it is
         // carried below instead.
 
+        // Back through the SAME root we lifted by. One root, both directions:
+        // the engine's own camera pose is reapplied exactly once, so the
+        // headset pose can never land twice. Must precede any scale collapse -
+        // ComposeBoneMatrices refuses a matrix under 0.001 scale and floating
+        // hands drives arm scales to 0.0001.
+        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
+        {
+            BoneMatrix world{};
+            if (!ComposeBoneMatrices(cameraRoot,solved[i],world))
+                return Halo4VrikStage::AnchorFailed;
+            solved[i]=world;
+        }
+
         // Publish the right hand's motion as a WORLD-space rigid transform, so
         // the separate weapon records can be carried by exactly the motion the
-        // hand holding them just made. Both banks are world-absolute, so one
+        // hand holding them just made. Both banks share the camera root, so one
         // world delta is valid for both. Published only once the palette above
         // is fully built, so the gun can never be moved by a solve the arms did
         // not actually receive.
-        BoneMatrix inverseWorldStock{},weaponDelta{};
-        if (InvertBoneMatrix(stockRightHand,inverseWorldStock) &&
+        // stockRightHand was captured in camera-local space, before the solve;
+        // solved[] is world again by now. Carry the stock hand through the same
+        // root so the delta compares like with like.
+        BoneMatrix worldStock{},inverseWorldStock{},weaponDelta{};
+        if (ComposeBoneMatrices(cameraRoot,stockRightHand,worldStock) &&
+            InvertBoneMatrix(worldStock,inverseWorldStock) &&
             ComposeBoneMatrices(solved[kHalo4RightHandNode],inverseWorldStock,
                                 weaponDelta))
         {

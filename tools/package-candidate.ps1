@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c19-no-double-headlook',
+        'halo4-c20-camera-local-solve',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-19'
+            id = 'C-H4-20'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'first-person-root-taken-from-the-post-head-look-camera-so-the-headset-pose-is-never-applied-twice'
+            behavior = 'arms-solved-in-the-first-person-cameras-own-space-with-one-root-lifted-and-reapplied-so-the-headset-pose-lands-exactly-once'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
