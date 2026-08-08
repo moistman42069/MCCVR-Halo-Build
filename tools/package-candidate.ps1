@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-13'
-            status = 'HEADSET_FAILED_DISABLED'
-            behavior = 'stock-hands-after-final-palette-admission-refused-all-live-palettes'
+            id = 'C-H4-14'
+            status = 'OFFLINE_PASS_HEADSET_PENDING'
+            behavior = 'final-palette-vrik-admitting-storm-records-by-bind-geometry-with-per-stage-refusal-counters'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -194,12 +194,13 @@ try {
             # Halo 4's CUI arrives inside the captured scene target, so it is
             # visible without any HUD redirect. User-confirmed 2026-08-08.
             hud = 'native-inside-captured-scene-no-redirect'
-            first_person_hands = $false
-            arm_ik = $false
+            first_person_hands = $true
+            arm_ik = $true
+            floating_hands = $true
             failure_policy =
                 'pre-claim-stock-post-claim-frame-drop-core-remains-armed'
             vrik_failure_policy =
-                'disabled-after-zero-solved-palettes-stock-fallback-camera-core-remains-armed'
+                'per-stage-counted-refusal-passes-the-engines-own-matrices-camera-core-remains-armed'
         }
         # Reach support is permanent, while player-visible optional features
         # fail open independently and never disarm the working camera core.

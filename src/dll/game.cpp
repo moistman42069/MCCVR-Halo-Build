@@ -29146,7 +29146,16 @@ namespace
     constexpr uint32_t kHalo4RuntimeCapabilities =
         TitleCapability_Stereo | TitleCapability_ControllerInput |
         TitleCapability_ControllerAim | TitleCapability_Haptics |
-        TitleCapability_RuntimeModes | TitleCapability_RoomScale;
+        TitleCapability_RuntimeModes | TitleCapability_RoomScale |
+        TitleCapability_ArmIk;
+
+    // C-H4-14. Argument 7 of the final-palette call is a per-render-model
+    // count, and the first-person assembly submits about a dozen records per
+    // eye. Which counts actually arrive is the one fact C-H4-13 could not
+    // report, so the detour bins them into a fixed table: no allocation, no
+    // lock, a bounded probe, and a value that means the same thing every run.
+    constexpr int kHalo4VrikCountSlots = 16;
+    constexpr int32_t kHalo4VrikCountSlotEmpty = -1;
 
     struct Halo4CameraCore
     {
@@ -29170,6 +29179,29 @@ namespace
         std::atomic<uint64_t> vrikSolvedPalettes{0};
         std::atomic<uint64_t> vrikStockPalettes{0};
         std::atomic<uint64_t> vrikAlignmentRefusals{0};
+        // C-H4-14: one bucket per Halo4VrikStage, indexed by the enum, plus the
+        // number of calls that reached the proven first-person return site at
+        // all. A combined bucket is exactly what made C-H4-13's zero-solve
+        // result unactionable.
+        std::atomic<uint64_t> vrikStageRefusals[
+            static_cast<size_t>(Halo4VrikStage::Count)]{};
+        std::atomic<uint64_t> vrikExactReturnHits{0};
+        // Records that carried nodes beyond the 80 body nodes and therefore
+        // took the right-hand rigid delta on them.
+        std::atomic<uint64_t> vrikExtraNodeRecords{0};
+        // The four live arm-link distances of the last record to get past the
+        // basis stage. A window that solves nothing still publishes what the
+        // ENGINE holds, which is what decides whether the bind envelope or the
+        // node map is wrong - never a log of only our own values.
+        std::atomic<uint64_t> vrikLinkMeasurements{0};
+        std::atomic<float> vrikLastRightUpper{0.0f};
+        std::atomic<float> vrikLastRightLower{0.0f};
+        std::atomic<float> vrikLastLeftUpper{0.0f};
+        std::atomic<float> vrikLastLeftLower{0.0f};
+        // Histogram of argument 7 at the first-person return site.
+        std::atomic<int32_t> vrikCountValue[kHalo4VrikCountSlots]{};
+        std::atomic<uint64_t> vrikCountHits[kHalo4VrikCountSlots]{};
+        std::atomic<uint64_t> vrikCountOverflow{0};
         uint64_t installedAtMs = 0;
         // Reported by the worker, never from the detour.
         std::atomic<uint64_t> stereoFrames{0};
@@ -29405,7 +29437,9 @@ namespace
     // E-H4-21b / C-H4-13.  The final model-skinning consumer receives absolute
     // 0x34-byte matrices.  Work only on a private copy: unlike C-H4-12's
     // animation-producer write this cannot feed our pose back into Halo 4.
-    thread_local BoneMatrix g_halo4VrikScratch[kHalo4StormFpComposedNodeCount];
+    // Sized to the bank bound, not to a believed node count: argument 7 is the
+    // record's own count and the copy below is bounded by it.
+    thread_local BoneMatrix g_halo4VrikScratch[kHalo4StormFpMaxSkinningNodes];
 
     constexpr int kHalo4RightShoulderSubtree[] = {
         4,11,12,14,15,16,17,18,22,26,27,29,30,31,34,36,38,40,41,42,
@@ -29433,27 +29467,80 @@ namespace
         return sqrtf(x*x+y*y+z*z);
     }
 
-    bool Halo4StormAlignmentMatches(const BoneMatrix* nodes)
+    // Bin argument 7. Lock-free, bounded to kHalo4VrikCountSlots probes, and
+    // deterministic: the same palette traffic always produces the same bins.
+    void Halo4RecordSkinningCount(int32_t count)
     {
-        if (!nodes) return false;
-        const int indices[] = {4,16,29,5,8,37};
+        // The caller's `jle` path can reach this call site with a non-positive
+        // count, so the empty-slot sentinel is the one value that cannot be
+        // binned without a slot claiming itself.
+        if (count!=kHalo4VrikCountSlotEmpty)
+        {
+            for (int slot=0;slot<kHalo4VrikCountSlots;++slot)
+            {
+                std::atomic<int32_t>& value=g_halo4Camera.vrikCountValue[slot];
+                int32_t seen=value.load(std::memory_order_acquire);
+                if (seen==kHalo4VrikCountSlotEmpty)
+                {
+                    // A successful exchange leaves `seen` untouched; a lost
+                    // race overwrites it with the winner's value, which is
+                    // exactly what the match below needs either way.
+                    if (value.compare_exchange_strong(seen,count,
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire))
+                        seen=count;
+                }
+                if (seen==count)
+                {
+                    g_halo4Camera.vrikCountHits[slot].fetch_add(
+                        1,std::memory_order_relaxed);
+                    return;
+                }
+            }
+        }
+        g_halo4Camera.vrikCountOverflow.fetch_add(1,std::memory_order_relaxed);
+    }
+
+    // Decide whether this record IS the Storm first-person body, from matrix
+    // relationships the H4EK tag proves - never from argument 7, which
+    // E-H4-21c measured to be a per-render-model output count.
+    Halo4VrikStage Halo4ClassifyStormArms(const BoneMatrix* nodes)
+    {
+        const int indices[] = {
+            kHalo4RightShoulderNode,kHalo4RightElbowNode,kHalo4RightHandNode,
+            kHalo4LeftShoulderNode,kHalo4LeftElbowNode,kHalo4LeftHandNode};
         for (int index : indices)
         {
             float basis[9];
-            if (!NormalizedBasis(nodes[index],basis)) return false;
+            if (!NormalizedBasis(nodes[index],basis))
+                return Halo4VrikStage::BasisFailed;
             for (float v : nodes[index].translation)
-                if (!isfinite(v) || fabsf(v)>10.0f) return false;
+                if (!isfinite(v) || fabsf(v)>10.0f)
+                    return Halo4VrikStage::BasisFailed;
         }
-        const float ru=Halo4VrikDistance(nodes[4],nodes[16]);
-        const float rl=Halo4VrikDistance(nodes[16],nodes[29]);
-        const float lu=Halo4VrikDistance(nodes[5],nodes[8]);
-        const float ll=Halo4VrikDistance(nodes[8],nodes[37]);
-        // H4EK tag lengths are 0.0915251 / 0.116662 world units. Animation
-        // rotates these links but does not change their lengths. The tolerance
-        // admits float/scale noise while rejecting a coincidental node map.
-        return ru>0.075f && ru<0.110f && rl>0.095f && rl<0.140f &&
-               lu>0.075f && lu<0.110f && ll>0.095f && ll<0.140f &&
-               nodes[4].translation[1] < nodes[5].translation[1];
+        const float ru=Halo4VrikDistance(nodes[kHalo4RightShoulderNode],
+                                         nodes[kHalo4RightElbowNode]);
+        const float rl=Halo4VrikDistance(nodes[kHalo4RightElbowNode],
+                                         nodes[kHalo4RightHandNode]);
+        const float lu=Halo4VrikDistance(nodes[kHalo4LeftShoulderNode],
+                                         nodes[kHalo4LeftElbowNode]);
+        const float ll=Halo4VrikDistance(nodes[kHalo4LeftElbowNode],
+                                         nodes[kHalo4LeftHandNode]);
+        // Publish the measurement BEFORE judging it, so a window that admits
+        // nothing still reports the four distances the engine actually holds.
+        g_halo4Camera.vrikLastRightUpper.store(ru,std::memory_order_relaxed);
+        g_halo4Camera.vrikLastRightLower.store(rl,std::memory_order_relaxed);
+        g_halo4Camera.vrikLastLeftUpper.store(lu,std::memory_order_relaxed);
+        g_halo4Camera.vrikLastLeftLower.store(ll,std::memory_order_relaxed);
+        g_halo4Camera.vrikLinkMeasurements.fetch_add(
+            1,std::memory_order_relaxed);
+        if (!Halo4StormLinkLengthsMatch(ru,rl,lu,ll))
+            return Halo4VrikStage::LinkFailed;
+        if (!Halo4StormSideOrderMatches(
+                nodes[kHalo4RightShoulderNode].translation[1],
+                nodes[kHalo4LeftShoulderNode].translation[1]))
+            return Halo4VrikStage::SideFailed;
+        return Halo4VrikStage::Solved;
     }
 
     bool Halo4QuaternionToBoneBasis(const float qIn[4], float out[9])
@@ -29471,12 +29558,15 @@ namespace
         return true;
     }
 
-    bool Halo4BuildTrackedHandTarget(bool left, const BoneMatrix& stock,
+    // The head pose is passed in rather than re-read per hand: two reads can
+    // straddle a pose update and skew the hands relative to each other.
+    bool Halo4BuildTrackedHandTarget(bool left, const float hq[4],
+                                     const float hp[3], const BoneMatrix& stock,
                                      BoneMatrix& target)
     {
-        float cq[4],cp[3],hq[4],hp[3];
-        if ((left ? !VR_GetLeftControllerPose(cq,cp) : !VR_GetAimPose(cq,cp)) ||
-            !VR_GetHeadPose(hq,hp)) return false;
+        float cq[4],cp[3];
+        if (left ? !VR_GetLeftControllerPose(cq,cp) : !VR_GetAimPose(cq,cp))
+            return false;
         float unitHead[4];
         if (!Halo4NormalizeQuaternion(hq,unitHead)) return false;
         const float inverseHead[4] =
@@ -29617,43 +29707,78 @@ namespace
         return true;
     }
 
-    bool Halo4BuildVrikPalette(const BoneMatrix* source, BoneMatrix* solved)
+    template<size_t N>
+    bool Halo4SubtreeContains(const int (&indices)[N], int index)
     {
-        if (!source||!solved) return false;
+        for (int candidate : indices)
+            if (candidate==index) return true;
+        return false;
+    }
+
+    Halo4VrikStage Halo4BuildVrikPalette(const BoneMatrix* source,
+                                         BoneMatrix* solved, int32_t count)
+    {
+        if (!source||!solved||!Halo4SkinningCountCanBeStorm(count))
+            return Halo4VrikStage::CountRefused;
+        // Bounded by the record's OWN count, never by a believed node total.
         if (!Halo4SafeRead(source,solved,
-                sizeof(BoneMatrix)*kHalo4StormFpComposedNodeCount))
-            return false;
-        if (!Halo4StormAlignmentMatches(solved)) return false;
+                sizeof(BoneMatrix)*static_cast<size_t>(count)))
+            return Halo4VrikStage::CopyFailed;
+        const Halo4VrikStage classified=Halo4ClassifyStormArms(solved);
+        if (classified!=Halo4VrikStage::Solved) return classified;
+
+        float headQuaternion[4],headPosition[3];
+        if (!VR_GetHeadPose(headQuaternion,headPosition))
+            return Halo4VrikStage::HeadPoseFailed;
         BoneMatrix rightTarget{},leftTarget{};
-        if (!Halo4BuildTrackedHandTarget(false,solved[kHalo4RightHandNode],rightTarget) ||
-            !Halo4BuildTrackedHandTarget(true,solved[kHalo4LeftHandNode],leftTarget)) return false;
+        if (!Halo4BuildTrackedHandTarget(false,headQuaternion,headPosition,
+                                         solved[kHalo4RightHandNode],rightTarget))
+            return Halo4VrikStage::RightPoseFailed;
+        if (!Halo4BuildTrackedHandTarget(true,headQuaternion,headPosition,
+                                         solved[kHalo4LeftHandNode],leftTarget))
+            return Halo4VrikStage::LeftPoseFailed;
         BoneMatrix rightHandDelta{};
-        if (!Halo4SolveArm(solved,false,rightTarget,&rightHandDelta) ||
-            !Halo4SolveArm(solved,true,leftTarget,nullptr)) return false;
-        // Five appended weapon nodes keep their authored relationship to the
-        // right hand while following the two-hand-adjusted aim pose.
-        for(int i=kHalo4StormFpBodyNodeCount;i<kHalo4StormFpComposedNodeCount;++i)
+        if (!Halo4SolveArm(solved,false,rightTarget,&rightHandDelta))
+            return Halo4VrikStage::RightIkFailed;
+        if (!Halo4SolveArm(solved,true,leftTarget,nullptr))
+            return Halo4VrikStage::LeftIkFailed;
+
+        // Any nodes this record carries beyond the tag's 80 body nodes keep
+        // their authored relationship to the right hand, so whatever the
+        // engine appended here follows the two-hand-adjusted aim pose. Only
+        // nodes inside this already-classified record are touched: E-H4-21c
+        // proves the caller walks separate 0x1910 records, so nothing here
+        // assumes where Halo 4's weapon render model lives. A record with
+        // exactly 80 nodes simply skips this loop.
+        if (count>kHalo4StormFpBodyNodeCount)
         {
-            BoneMatrix moved{};
-            if (!ComposeBoneMatrices(rightHandDelta,solved[i],moved)) return false;
-            solved[i]=moved;
+            for(int i=kHalo4StormFpBodyNodeCount;i<count;++i)
+            {
+                BoneMatrix moved{};
+                if (!ComposeBoneMatrices(rightHandDelta,solved[i],moved))
+                    break;
+                solved[i]=moved;
+            }
+            g_halo4Camera.vrikExtraNodeRecords.fetch_add(
+                1,std::memory_order_relaxed);
         }
+
+        // FLOATING HANDS: a presentation filter over the already-solved
+        // palette, identical in mechanism to the accepted Halo 3 one. Scale is
+        // a proven render input, so collapsing a bone drives its vertices to
+        // the joint origin - an invisible speck, no crash risk. Only the arm
+        // bones that are NOT part of either hand subtree collapse, which is
+        // what keeps every finger and hand-armour transform intact.
         if (g_config.floating_hands)
         {
             for(int index:kHalo4RightShoulderSubtree)
-                if(index!=29 && index!=40 && index!=41 && index!=42 && index!=44 &&
-                   index!=45 && index!=49 && index!=50 && index!=52 && index!=53 &&
-                   index!=55 && index!=56 && index!=58 && index!=63 && index!=65 &&
-                   index!=66 && index!=67 && index!=68 && index!=71 && index!=72 &&
-                   index!=76 && index!=77 && index!=78) solved[index].scale=0.0001f;
+                if(!Halo4SubtreeContains(kHalo4RightHandSubtree,index))
+                    solved[index].scale=0.0001f;
             for(int index:kHalo4LeftShoulderSubtree)
-                if(index!=37 && index!=39 && index!=43 && index!=46 && index!=47 &&
-                   index!=48 && index!=51 && index!=54 && index!=57 && index!=59 &&
-                   index!=60 && index!=61 && index!=62 && index!=64 && index!=69 &&
-                   index!=70 && index!=73 && index!=74 && index!=75 && index!=79)
+                if(!Halo4SubtreeContains(kHalo4LeftHandSubtree,index))
                     solved[index].scale=0.0001f;
         }
-        return true;
+        return Halo4VrikStage::Solved;
     }
 
     __declspec(noinline) void __fastcall Halo4ModelSkinningDetour(
@@ -29671,21 +29796,27 @@ namespace
                 reinterpret_cast<uintptr_t>(_ReturnAddress())==
                     g_halo4Camera.base+kHalo4FirstPersonSkinningReturnRva)
             {
-                Halo4FirstPersonAccess access{};
-                bool liveCount=false;
-                if (Halo4ResolveFirstPerson(0,access))
-                    for(int count:access.nodeCount)
-                        liveCount=liveCount||count==kHalo4StormFpComposedNodeCount;
-                const bool exact = liveCount &&
-                    totalNodeMatrixCount==kHalo4StormFpComposedNodeCount;
-                if (exact && Halo4BuildVrikPalette(inputObjectNodeMatrices,
-                                                   g_halo4VrikScratch))
+                // C-H4-13 gated on a second animation TLS record and on
+                // argument 7 equalling 85. E-H4-21c proves argument 7 is the
+                // per-render-model output count, and the TLS record is not
+                // evidence about WHICH record this callback is carrying - it
+                // may not even be reachable on this thread. Both are gone. The
+                // record is classified from the matrices themselves.
+                g_halo4Camera.vrikExactReturnHits.fetch_add(
+                    1,std::memory_order_relaxed);
+                Halo4RecordSkinningCount(totalNodeMatrixCount);
+                const Halo4VrikStage stage=Halo4BuildVrikPalette(
+                    inputObjectNodeMatrices,g_halo4VrikScratch,
+                    totalNodeMatrixCount);
+                if (stage==Halo4VrikStage::Solved)
                 {
                     selected=g_halo4VrikScratch;
                     g_halo4Camera.vrikSolvedPalettes.fetch_add(1,std::memory_order_relaxed);
                 }
                 else
                 {
+                    g_halo4Camera.vrikStageRefusals[static_cast<size_t>(stage)]
+                        .fetch_add(1,std::memory_order_relaxed);
                     g_halo4Camera.vrikAlignmentRefusals.fetch_add(1,std::memory_order_relaxed);
                 }
             }
@@ -30021,6 +30152,24 @@ namespace
         g_halo4Camera.vrikSolvedPalettes.store(0,std::memory_order_relaxed);
         g_halo4Camera.vrikStockPalettes.store(0,std::memory_order_relaxed);
         g_halo4Camera.vrikAlignmentRefusals.store(0,std::memory_order_relaxed);
+        for (std::atomic<uint64_t>& stage : g_halo4Camera.vrikStageRefusals)
+            stage.store(0,std::memory_order_relaxed);
+        g_halo4Camera.vrikExactReturnHits.store(0,std::memory_order_relaxed);
+        g_halo4Camera.vrikExtraNodeRecords.store(0,std::memory_order_relaxed);
+        g_halo4Camera.vrikLinkMeasurements.store(0,std::memory_order_relaxed);
+        g_halo4Camera.vrikLastRightUpper.store(0.0f,std::memory_order_relaxed);
+        g_halo4Camera.vrikLastRightLower.store(0.0f,std::memory_order_relaxed);
+        g_halo4Camera.vrikLastLeftUpper.store(0.0f,std::memory_order_relaxed);
+        g_halo4Camera.vrikLastLeftLower.store(0.0f,std::memory_order_relaxed);
+        // Slot 0 would otherwise claim the legitimate count 0, because the
+        // caller's `jle` path can reach this call site with a zero count.
+        for (int slot=0;slot<kHalo4VrikCountSlots;++slot)
+        {
+            g_halo4Camera.vrikCountHits[slot].store(0,std::memory_order_relaxed);
+            g_halo4Camera.vrikCountValue[slot].store(
+                kHalo4VrikCountSlotEmpty,std::memory_order_release);
+        }
+        g_halo4Camera.vrikCountOverflow.store(0,std::memory_order_relaxed);
         g_halo4Camera.stereoFrames.store(0, std::memory_order_relaxed);
         g_halo4Camera.stockFrames.store(0, std::memory_order_relaxed);
         g_halo4Camera.droppedFrames.store(0, std::memory_order_relaxed);
@@ -30905,10 +31054,14 @@ namespace
                 "stock hands remain and camera core stays armed");
             return false;
         }
-        LOG("Halo 4 VRIK: final palette 0x%X hooked; only return 0x%X is "
-            "admitted, Storm bind alignment is mandatory, poles are authored "
-            "v4, attachment scale is ignored, arm_ik=%d floating_hands=%d",
+        LOG("Halo 4 C-H4-14 VRIK: final palette 0x%X hooked; only return 0x%X "
+            "is admitted; the record is classified by Storm bind geometry, and "
+            "argument 7 is now only required to be within [%d,%d] because "
+            "E-H4-21c measured it to be a per-render-model output count; poles "
+            "are authored v4, attachment scale is ignored, arm_ik=%d "
+            "floating_hands=%d",
             kHalo4ModelSkinningRva,kHalo4FirstPersonSkinningReturnRva,
+            kHalo4StormFpMinSkinningNodes,kHalo4StormFpMaxSkinningNodes,
             g_config.arm_ik?1:0,g_config.floating_hands?1:0);
         return true;
     }
@@ -31152,12 +31305,9 @@ namespace
         }
 
         g_halo4Camera.installed.store(true, std::memory_order_release);
-        // C-H4-13 headset result: 0 solved and every attempted first-person
-        // palette refused because the per-model output count was incorrectly
-        // compared with the composed animation-record count. Preserve the
-        // implementation inert for the required revert commit.
-        LOG("Halo 4 VRIK: C-H4-13 disabled after headset refusal; stock hands "
-            "remain and camera core stays armed");
+        // Optional and fail-open: a missing palette proof leaves the already
+        // working camera/session fully armed with stock hands.
+        InstallHalo4Vrik(base,size);
         PublishHalo4Lifecycle();
         LOG("Halo 4 camera core installed (generation %u): setup 0x%X and the "
             "render wrapper 0x%X are hooked at their pinned RVAs, both proven "
@@ -31405,16 +31555,104 @@ namespace
             0,std::memory_order_relaxed);
         const uint64_t refused=g_halo4Camera.vrikAlignmentRefusals.exchange(
             0,std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-13 VRIK: palette %s; %llu solved / %llu stock / %llu "
-            "alignment-or-pose refused in 2s; Storm nodes R 4/16/29 L 5/8/37, "
-            "authored v4 poles, attachment scale IGNORED; arm_ik=%d "
+        const uint64_t exactHits=g_halo4Camera.vrikExactReturnHits.exchange(
+            0,std::memory_order_relaxed);
+        uint64_t stageRefusals[static_cast<size_t>(Halo4VrikStage::Count)]={};
+        for (size_t stage=0;stage<static_cast<size_t>(Halo4VrikStage::Count);
+             ++stage)
+            stageRefusals[stage]=
+                g_halo4Camera.vrikStageRefusals[stage].exchange(
+                    0,std::memory_order_relaxed);
+        LOG("Halo 4 C-H4-14 VRIK: palette %s; %llu solved / %llu stock / %llu "
+            "refused of %llu first-person calls in 2s; Storm nodes R 4/16/29 "
+            "L 5/8/37, authored v4 poles, attachment scale IGNORED; arm_ik=%d "
             "floating_hands=%d world_scale=%.3f",
             g_halo4Camera.modelSkinningTarget?"hooked":"UNAVAILABLE - stock",
             static_cast<unsigned long long>(solved),
             static_cast<unsigned long long>(stockPalettes),
-            static_cast<unsigned long long>(refused),g_config.arm_ik?1:0,
+            static_cast<unsigned long long>(refused),
+            static_cast<unsigned long long>(exactHits),g_config.arm_ik?1:0,
             g_config.floating_hands?1:0,
             g_worldScale.load(std::memory_order_relaxed));
+        // The stage breakdown is the whole point of this candidate: C-H4-13
+        // could only say "everything refused", which is why its zero-solve
+        // result cost a headset sitting and answered nothing.
+        LOG("Halo 4 C-H4-14 VRIK stages in 2s: count=%llu copy=%llu basis=%llu "
+            "link=%llu side=%llu head-pose=%llu right-pose=%llu left-pose=%llu "
+            "right-ik=%llu left-ik=%llu; %llu records carried nodes past the "
+            "80 body nodes",
+            static_cast<unsigned long long>(
+                stageRefusals[static_cast<size_t>(
+                    Halo4VrikStage::CountRefused)]),
+            static_cast<unsigned long long>(
+                stageRefusals[static_cast<size_t>(Halo4VrikStage::CopyFailed)]),
+            static_cast<unsigned long long>(
+                stageRefusals[static_cast<size_t>(
+                    Halo4VrikStage::BasisFailed)]),
+            static_cast<unsigned long long>(
+                stageRefusals[static_cast<size_t>(Halo4VrikStage::LinkFailed)]),
+            static_cast<unsigned long long>(
+                stageRefusals[static_cast<size_t>(Halo4VrikStage::SideFailed)]),
+            static_cast<unsigned long long>(
+                stageRefusals[static_cast<size_t>(
+                    Halo4VrikStage::HeadPoseFailed)]),
+            static_cast<unsigned long long>(
+                stageRefusals[static_cast<size_t>(
+                    Halo4VrikStage::RightPoseFailed)]),
+            static_cast<unsigned long long>(
+                stageRefusals[static_cast<size_t>(
+                    Halo4VrikStage::LeftPoseFailed)]),
+            static_cast<unsigned long long>(
+                stageRefusals[static_cast<size_t>(
+                    Halo4VrikStage::RightIkFailed)]),
+            static_cast<unsigned long long>(
+                stageRefusals[static_cast<size_t>(
+                    Halo4VrikStage::LeftIkFailed)]),
+            static_cast<unsigned long long>(
+                g_halo4Camera.vrikExtraNodeRecords.exchange(
+                    0,std::memory_order_relaxed)));
+        // What the ENGINE holds, next to what the H4EK tag says it should.
+        LOG("Halo 4 C-H4-14 VRIK live arm links: R %.4f/%.4f L %.4f/%.4f from "
+            "%llu measured records; H4EK storm_fp bind is %.4f upper / %.4f "
+            "forearm, admitted upper (0.075,0.110) forearm (0.095,0.140)",
+            g_halo4Camera.vrikLastRightUpper.load(std::memory_order_relaxed),
+            g_halo4Camera.vrikLastRightLower.load(std::memory_order_relaxed),
+            g_halo4Camera.vrikLastLeftUpper.load(std::memory_order_relaxed),
+            g_halo4Camera.vrikLastLeftLower.load(std::memory_order_relaxed),
+            static_cast<unsigned long long>(
+                g_halo4Camera.vrikLinkMeasurements.exchange(
+                    0,std::memory_order_relaxed)),
+            kHalo4StormUpperArmBind,kHalo4StormForearmBind);
+        // Which per-render-model counts actually arrive. This is the fact
+        // C-H4-13 assumed instead of measuring.
+        {
+            char counts[256];
+            size_t written=0;
+            for (int slot=0;slot<kHalo4VrikCountSlots;++slot)
+            {
+                const int32_t value=g_halo4Camera.vrikCountValue[slot].load(
+                    std::memory_order_acquire);
+                const uint64_t hits=g_halo4Camera.vrikCountHits[slot].exchange(
+                    0,std::memory_order_relaxed);
+                if (value==kHalo4VrikCountSlotEmpty || hits==0)
+                    continue;
+                const size_t room=sizeof(counts)-written;
+                const int step=snprintf(counts+written,room,"%s%dx%llu",
+                    written?" ":"",value,
+                    static_cast<unsigned long long>(hits));
+                if (step<=0 || static_cast<size_t>(step)>=room)
+                    break;
+                written+=static_cast<size_t>(step);
+            }
+            if (!written)
+                snprintf(counts,sizeof(counts),"none");
+            LOG("Halo 4 C-H4-14 VRIK argument-7 histogram in 2s: %s (%llu past "
+                "%d slots)",counts,
+                static_cast<unsigned long long>(
+                    g_halo4Camera.vrikCountOverflow.exchange(
+                        0,std::memory_order_relaxed)),
+                kHalo4VrikCountSlots);
+        }
 
         const uint64_t widened =
             g_halo4Camera.fovWidenedFrames.exchange(

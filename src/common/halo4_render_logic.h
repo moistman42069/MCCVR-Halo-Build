@@ -316,6 +316,84 @@ inline constexpr float kHalo4LeftAttachmentMetres[3] =
 // moves the whole gun-and-arms rig rather than one part of it.
 inline constexpr uint32_t kHalo4FirstPersonRootNode = 0;
 
+// --- C-H4-14: one counter per refusal stage ---------------------------------
+//
+// C-H4-13 shipped a single combined refusal bucket. Its headset log therefore
+// said only "every palette was refused", which cannot separate a wrong
+// admission gate from a wrong node map, and the wrong one turned out to be the
+// gate. Every stage below is counted on its own so a single sitting names the
+// exact predicate that refused.
+enum class Halo4VrikStage : uint8_t
+{
+    // Nothing refused. Also returned by the classifier to mean "this record is
+    // the Storm first-person body".
+    Solved = 0,
+    CountRefused,
+    CopyFailed,
+    BasisFailed,
+    LinkFailed,
+    SideFailed,
+    HeadPoseFailed,
+    RightPoseFailed,
+    LeftPoseFailed,
+    RightIkFailed,
+    LeftIkFailed,
+    Count,
+};
+
+// E-H4-21c, measured in retail. At `halo4.dll+0x36F346` the caller loads the
+// current record's render-model index from `[rsi-4]`, calls `0x33D6F0`, and
+// keeps the result in `r15d`. `0x36F35C..0x36F365` size the output allocation
+// as `r15d * 0x30 + 0xA8`, and `0x36F3B1` stores that same `r15d` as argument
+// 7 of the `0x36F3C4` call. Argument 7 is therefore the CURRENT render model's
+// own skinning-matrix count. It is NOT the 85-node composed animation count
+// that C-H4-13 demanded, which is why that candidate admitted nothing: the
+// loop at `0x36F5DA` walks 0x1910-byte records, each carrying its own matrix
+// bank at `+0xAC`.
+//
+// A record can only be storm_fp if it carries at least the tag's 80 body nodes
+// (the arm indices and descendant sets this file pins all live below 80) and no
+// more than the 120-transform bank bound. Never restore an equality test here.
+inline constexpr int32_t kHalo4StormFpMinSkinningNodes =
+    static_cast<int32_t>(kHalo4StormFpBodyNodeCount);
+inline constexpr int32_t kHalo4StormFpMaxSkinningNodes =
+    static_cast<int32_t>(kHalo4FirstPersonMaxNodes);
+
+inline constexpr bool Halo4SkinningCountCanBeStorm(int32_t count) noexcept
+{
+    return count >= kHalo4StormFpMinSkinningNodes &&
+           count <= kHalo4StormFpMaxSkinningNodes;
+}
+
+// H4EK storm_fp.render_model bind lengths in world units: upper arms 0.0915251,
+// forearms 0.116662. Animation rotates a link but cannot change its length, so
+// these four distances identify the Storm arms inside a palette whose node
+// meaning is otherwise unproven. The envelopes are C-H4-13's own, unchanged:
+// they have never been measured against a live palette, so widening them now
+// would trade one guess for another. The split counters exist to measure them.
+inline constexpr float kHalo4StormUpperArmBind = 0.0915251f;
+inline constexpr float kHalo4StormForearmBind = 0.116662f;
+
+inline constexpr bool Halo4StormLinkLengthsMatch(
+    float rightUpper, float rightLower,
+    float leftUpper, float leftLower) noexcept
+{
+    // NaN fails every comparison, so no separate finite test is needed.
+    return rightUpper > 0.075f && rightUpper < 0.110f &&
+           rightLower > 0.095f && rightLower < 0.140f &&
+           leftUpper > 0.075f && leftUpper < 0.110f &&
+           leftLower > 0.095f && leftLower < 0.140f;
+}
+
+// Blam's second basis axis is "left", so the right shoulder sits at the lower
+// value. This separates the Storm arms from a mirrored or transposed node map
+// that happens to carry the same four link lengths.
+inline constexpr bool Halo4StormSideOrderMatches(
+    float rightShoulderLeftAxis, float leftShoulderLeftAxis) noexcept
+{
+    return rightShoulderLeftAxis < leftShoulderLeftAxis;
+}
+
 static_assert(kHalo4FirstPersonOrientationStride *
                   kHalo4FirstPersonMaxWeapons * kHalo4FirstPersonMaxUsers ==
               0xF000,

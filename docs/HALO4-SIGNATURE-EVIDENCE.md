@@ -2618,3 +2618,86 @@ equal 85 and thereby admitted nothing. The implementation is preserved but
 disabled; the next candidate must not restore that predicate. Whether the
 Storm distance/side predicate accepts live matrices remains unmeasured because
 the count gate ran first. Split all refusal stages before weakening it.
+
+## E-H4-21c / C-H4-14 - argument 7 measured, and the refusal stages split
+
+C-H4-13's zero-solve headset result was re-read against the retail caller
+rather than against a theory. Offline disassembly of the pinned
+`halo4.dll+0x36F346..0x36F3D4` window (read-only, from the installed Steam
+image) reproduces byte-for-byte:
+
+```
+36F346  mov  ecx, dword ptr [rsi - 4]     ; this record's render-model index
+36F349  lea  rdx, [r13 + 0xE]
+36F34D  call 0x33D6F0                     ; -> the model's skinning count
+36F352  mov  r15d, eax
+36F35C  lea  ebp, [rax + rax*2]
+36F35F  shl  ebp, 4                       ; count * 0x30
+36F365  add  ebp, 0xA8                    ; + the 0xA8 header
+36F37A  call 0x3402F4                     ; allocate exactly that many bytes
+36F399  mov  edx, dword ptr [rsi - 4]     ; arg 2: render_model_index
+36F39C  lea  r8,  [rsi + 0xAC]            ; arg 3: this record's matrix bank
+36F3A3  mov  ecx, dword ptr [rsi]         ; arg 1: object_index
+36F3A5  lea  r9,  [r13 + 0xE]             ; arg 4: node_map
+36F3B1  mov  dword ptr [rsp + 0x30], r15d ; arg 7: the SAME count
+36F3C4  call 0x33D8B8
+36F3C9                                    ; the admitted return site
+...
+36F5DA  add  rsi, 0x1910                  ; next render-model record
+36F5E9  jl   0x36F042
+```
+
+Argument 7 is therefore the current render model's own skinning-output count -
+the value that sizes its `count * 0x30 + 0xA8` output palette - and each
+0x1910-byte record owns the input matrices at `+0xAC`. It is not the 85-node
+composed animation count. Requiring equality with 85, as C-H4-13 did, can only
+admit a record that happens to have exactly 85 skinning matrices, which is why
+its log reported roughly 5,800 refusals and zero solves every two seconds.
+That refusal figure is itself a measurement: about twelve render-model records
+reach the first-person return site per rendered eye.
+
+**C-H4-14 replaces the predicate and, more importantly, replaces the single
+refusal bucket.** Admission is now:
+
+- the same unique entry signature at the same pinned RVA;
+- the same exact first-person return address `0x36F3C9`;
+- argument 7 within `[80, 120]` - at least the tag's body-node count, because
+  every Storm index and descendant set used by the solve lies below 80, and no
+  more than the 120-transform bank bound. The copy into the private scratch
+  palette is bounded by argument 7 itself, never by a believed total;
+- the record classified as storm_fp from matrix relationships only: six
+  orthonormal, finite, in-range node bases, the four H4EK bind link lengths
+  (0.0915251 upper, 0.116662 forearm) inside C-H4-13's own unchanged
+  envelopes, and Blam left-axis side ordering.
+
+The separate `Halo4ResolveFirstPerson` TLS dependency is gone from admission
+entirely: it was never evidence about which record this callback carries, and
+it may not be reachable on the render thread.
+
+Every stage now has its own counter, and the worker publishes four lines every
+two seconds: the solved/stock/refused totals against the number of calls that
+reached the first-person return site; a per-stage refusal breakdown (count,
+copy, basis, link, side, head pose, right pose, left pose, right IK, left IK);
+the four live arm-link distances the engine actually holds next to the H4EK
+bind values and the admitted envelopes; and a fixed-slot histogram of argument
+7. The link envelopes and side ordering are deliberately unchanged from
+C-H4-13 - they have never been measured against a live palette, so widening
+them now would trade one guess for another. The histogram and the live link
+line exist to measure them.
+
+Nodes a classified record carries beyond the 80 body nodes take the right
+hand's rigid delta, so anything the engine appended inside that record follows
+the two-hand-adjusted aim pose. Nothing is written to any other record: the
+caller proves the weapon render model is a separate 0x1910 record, and which
+record that is remains unidentified. A classified record with exactly 80 nodes
+simply skips that step.
+
+`floating_hands` collapses only the arm bones outside either hand subtree, by
+the same scale mechanism the accepted Halo 3 path uses, so finger and hand
+armour transforms keep their authored alignment.
+
+Failure isolation is unchanged and unconditional: any refusal at any stage
+passes the engine's original matrix pointer for that palette, the hook is
+optional and fail-open, and neither the camera core nor the OpenXR session is
+ever disarmed. C-H4-14 is an unaccepted headset candidate; this evidence does
+not advance the accepted-build pointer.

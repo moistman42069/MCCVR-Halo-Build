@@ -6630,6 +6630,43 @@ int main()
                   fabsf(kHalo4LeftAttachmentMetres[1] - 0.059896648f) < 1.0e-6f,
             "The two controller-parented attachment offsets preserve authored metres");
 
+        // E-H4-21c / C-H4-14.  C-H4-13's headset failure was one predicate:
+        // argument 7 is the CURRENT render model's skinning-output count, so
+        // requiring it to equal the 85-node composed animation count refused
+        // every live palette.  These lock the replacement in.
+        Check(Halo4SkinningCountCanBeStorm(kHalo4StormFpBodyNodeCount) &&
+                  Halo4SkinningCountCanBeStorm(kHalo4StormFpComposedNodeCount) &&
+                  Halo4SkinningCountCanBeStorm(kHalo4StormFpMaxSkinningNodes),
+            "The 80-node body, the 85-node composed size and a full bank are "
+            "all admitted, instead of one believed count");
+        Check(!Halo4SkinningCountCanBeStorm(kHalo4StormFpBodyNodeCount - 1) &&
+                  !Halo4SkinningCountCanBeStorm(
+                      kHalo4StormFpMaxSkinningNodes + 1) &&
+                  !Halo4SkinningCountCanBeStorm(0) &&
+                  !Halo4SkinningCountCanBeStorm(-1),
+            "Counts that cannot index the Storm node map or overrun the bank "
+            "are refused, including the caller's jle-path zero");
+
+        // The Storm classifier is what identifies the record now, so it must
+        // keep rejecting a rig that merely has enough nodes.
+        Check(Halo4StormLinkLengthsMatch(kHalo4StormUpperArmBind,
+                  kHalo4StormForearmBind, kHalo4StormUpperArmBind,
+                  kHalo4StormForearmBind),
+            "The H4EK storm_fp bind lengths sit inside the admitted envelope");
+        Check(!Halo4StormLinkLengthsMatch(0.5f, kHalo4StormForearmBind,
+                  kHalo4StormUpperArmBind, kHalo4StormForearmBind) &&
+                  !Halo4StormLinkLengthsMatch(kHalo4StormUpperArmBind, 0.0f,
+                      kHalo4StormUpperArmBind, kHalo4StormForearmBind),
+            "A single out-of-envelope link refuses the whole record");
+        const float notANumber = std::numeric_limits<float>::quiet_NaN();
+        Check(!Halo4StormLinkLengthsMatch(notANumber, kHalo4StormForearmBind,
+                  kHalo4StormUpperArmBind, kHalo4StormForearmBind),
+            "A NaN link length is refused by the comparisons themselves");
+        Check(Halo4StormSideOrderMatches(-0.1f, 0.1f) &&
+                  !Halo4StormSideOrderMatches(0.1f, -0.1f) &&
+                  !Halo4StormSideOrderMatches(0.1f, 0.1f),
+            "Blam's left axis orders the right shoulder below the left one");
+
         Halo4FirstPersonNode stock{};
         stock.rotation[3] = 1.0f;
         stock.translation[0] = 0.2f;
@@ -6821,11 +6858,8 @@ int main()
     Check(halo4Row && halo4Row->admissionCapabilities ==
               TitleCapability_ControllerInput,
         "Halo 4 admits shared controller input and nothing else");
-    // C-H4-13 headset result: its final-palette hook fired, but the disproven
-    // composed-count admission refused every palette. ArmIk is withheld again
-    // until the replacement candidate is headset-proven.
-    // supports. Each exclusion below is a deliberate withholding, not an
-    // oversight, and each cost a title a real defect when it was granted early.
+    // Each exclusion below is a deliberate withholding, not an oversight, and
+    // each cost a title a real defect when it was granted early.
     Check(halo4Row &&
               (halo4Row->capabilities &
                (TitleCapability_Stereo | TitleCapability_ControllerAim |
@@ -6837,8 +6871,9 @@ int main()
                    TitleCapability_ControllerInput),
         "Halo 4 advertises stereo, controller aim, haptics, runtime modes, "
         "room scale and controller input");
-    Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
-        "Halo 4 withholds ArmIk after C-H4-13 refused every live palette");
+    Check(halo4Row && (halo4Row->capabilities & TitleCapability_ArmIk),
+        "Halo 4 advertises ArmIk: C-H4-14 installs the final-palette solve on "
+        "the proven first-person return site");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
         "Halo 4 withholds Hud: its CUI arrives inside the captured scene "
         "target, so no title-specific HUD redirect is installed to gate");
