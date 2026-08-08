@@ -170,27 +170,31 @@ now: C-H4-9 is installed in both editions for a look-pitch headset test, but
 
 | C-H4-10 `140e15d` | **RAN 2026-08-08, no fault reported.** Log: `aim GRANTED, haptics GRANTED, room scale GRANTED, locomotion head-relative`, `MOTION AIM: the hand steers, the stick turns`. Not explicitly accepted. |
 | C-H4-11 `28a20a7` | **REFUSED, as designed (2026-08-08):** "no floaty hands, gun still stuck to my face". It wrote nothing; its probe proved the whole addressing chain live (2 weapon slots, field value 85) and disproved two reads - see E-H4-17. |
-| C-H4-11a `e9bd65b` | **INSTALLED, HEADSET-PENDING:** Halo 4's own first-person gun and arms placed on the controller, with the node format proven from live engine values before anything is written. |
+| C-H4-11a `0f06506` | Superseded before testing by C-H4-11b: it placed only node 0 and assumed that was the assembly root. |
+| C-H4-11b `127c678` | **INSTALLED, HEADSET-PENDING:** Halo 4's own first-person gun and arms placed on the controller, with the node format proven from live engine values before anything is written. |
 
-| C-H4-11a installed identity | Value |
+| C-H4-11b installed identity | Value |
 | --- | --- |
-| Source | `0f06506a3252649a550b861e8d09feaadafb6abb` (branch `feature/halo4-bringup`); behavior `e9bd65b`, `0f06506` relabels the log line only |
-| Package | `out/candidates/0f06506-halo4-c11a-first-person-hands-live-bank-20260808-163918353Z` |
-| `halo3xr.dll` SHA-256 | `C9287B6F0630D51661D7D82B350863239A65AB911945CCFBD09C024B236D31C1` |
+| Source | `127c678b8af39a71f80db73e6061f0070febfc8f` (branch `feature/halo4-bringup`) |
+| Package | `out/candidates/127c678-halo4-c11b-rigid-assembly-hands-20260808-164956723Z` |
+| `halo3xr.dll` SHA-256 | `EA319B4FE5422059FC18DD97D55C516ADD2BB70F619C9DF2C77E64CC720BA2E0` |
 | `halo3xr_launcher.exe` SHA-256 | `5625F9A5782741B705C57F4C9C7628B8135FCE270C9CE815E427125AED5F9444` |
 | Installed editions | Steam and Microsoft Store; both installed hashes independently matched |
 | Offline gates | Release x64 build, `core_tests`, Reach consistency gate - all passing |
 | Acceptance | **Not accepted.** C-H4-1 remains the rollback pointer. |
 
-**What changed from C-H4-11.** It read the wrong half of the record. `+0x15D4`
-is the node COUNT, not an index, and the live node bank is at `+0x00` - `+0xF00`
-is the previous-frame copy. Full derivation in E-H4-17; the zeros the probe
-returned are what proved both.
+**What changed.** C-H4-11 read the wrong half of the record (`+0x15D4` is the
+node COUNT, not an index; the live bank is `+0x00`, E-H4-17). C-H4-11b then
+stopped placing a single node: it applies one rotation and translation to
+EVERY composed node, so the assembly moves as a rigid body regardless of which
+node is the root, and it writes immediately before each eye's draw.
 
-**What C-H4-11a must show.** `Halo 4 C-H4-11a hands:` reading `node format
-PROVEN from live values, placing`, placed frames climbing, and an engine stock
-ROOT node with `|quat|` about 1.000 and a sane scale. In the headset: the gun
-and arms follow your controller.
+**What C-H4-11b must show.** `Halo 4 C-H4-11b hands:` reading `node format
+PROVEN from live values, placing`, a node count and a transformed count that
+match, and **`write survived readback: YES`**. In the headset: the gun and arms
+follow your controller. `write survived readback: no` means the engine is
+discarding the write and the placement has to move later in the frame - that
+single field separates "placed wrongly" from "placed and overwritten".
 
 | C-H4-11 identity (superseded) | Value |
 | --- | --- |
