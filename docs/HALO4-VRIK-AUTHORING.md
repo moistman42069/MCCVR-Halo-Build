@@ -55,6 +55,14 @@ renamed, non-finite, or not explicitly marked placed. Its JSON contains metre
 and world-unit positions, hand quaternions, shoulder-to-hand vectors, normalized
 pole directions, full audit matrices, and the embedded H4EK provenance.
 
+The authored v4 pass deliberately retains only the two moved pole controls;
+hand and shoulder controls are restored from their embedded seed matrices.
+`Gun placement left` is parented to `vrik:left_hand`, and `right hand, two
+handed lock in zone` is parented to `vrik:right_hand`, with parenting required
+to preserve their world origins. Both attachments export at approximately
+`(0, 0.0598967, 0)` metres in their respective controller spaces. Empty scale
+is display-only and explicitly excluded from runtime attachment data.
+
 ## Validation
 
 The generated kit was clean-loaded in Blender 5.1.2. Validation confirmed 80

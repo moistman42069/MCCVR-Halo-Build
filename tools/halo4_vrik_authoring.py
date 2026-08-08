@@ -172,6 +172,23 @@ class H4VRIK_PT_panel(bpy.types.Panel):
         row = layout.row(align=True)
         row.operator("h4vrik.mark_all", icon='CHECKMARK')
         row.operator("h4vrik.reset_all", icon='LOOP_BACK')
+        attachments = [
+            obj for obj in bpy.data.objects
+            if obj.get("halo4_vrik_attachment_role")]
+        if attachments:
+            box = layout.box()
+            box.label(text="Controller-local attachments")
+            for obj in sorted(attachments, key=lambda item: item.name):
+                parent = obj.parent.name if obj.parent else "UNPARENTED"
+                row = box.row(align=True)
+                row.label(text=obj.name, icon=(
+                    'CON_CHILDOF' if obj.parent else 'ERROR'))
+                select = row.operator(
+                    "h4vrik.select_control", text="Select",
+                    icon='RESTRICT_SELECT_OFF')
+                select.control_name = obj.name
+                box.label(text="Parent: " + parent)
+                box.label(text="Empty display scale is ignored")
         layout.operator("h4vrik.export_points", icon='EXPORT')
         layout.label(text="Exporter refuses controls not marked Placed.")
 
