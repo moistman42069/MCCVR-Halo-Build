@@ -1665,6 +1665,56 @@ block plus `+0x678`. The hands candidate must prove the engine TLS index, the
 TLS slot, each block pointer, the user index and the weapon slot before touching
 a byte, and degrade to stock on any failure.
 
+### E-H4-17 — C-H4-11's probe corrected two reads (headset, 2026-08-08)
+
+**Result: "no floaty hands, gun still stuck to my face."** The candidate wrote
+NOTHING - it refused, exactly as designed - and its probe line is what corrects
+the layout.
+
+    Halo 4 C-H4-11 hands: REFUSED - the 0x20 node is NOT {quat,translation,scale},
+    nothing was written; 0 placed / 243 refused frames in 2s, 2 weapon slot(s),
+    root node 85; engine's stock node: |quat| 0.0000 scale 0.000
+    translation 0.000/0.000/0.000
+
+**What it PROVED (the whole addressing chain is right).** 2 weapon slots
+resolved and a field value of 85 came back, which means the TLS index, the slot,
+`*(TLS+0x6A0)`, the `0x5F48` user stride, the active flag, the unit handle, the
+`0x2EC8` weapon stride and `*(TLS+0x678)` are all correct against the running
+game. E-H4-15/16 stand.
+
+**What it DISPROVED, and the arithmetic that settles it.** The read came back
+all zeros, which is not a different layout - it is unwritten memory. Re-reading
+retail `0x3B53B3`-`0x3B53D6`:
+
+    movsxd r8, [rdi + rbx + 0x15D4]   ; the field
+    shl    r8, 5                      ; << 5 = a BYTE LENGTH, not an element index
+    lea    rcx, [rdx + 0xF00]         ; dst
+    call   0xA62FB0                   ; an IMPORT THUNK (jmp [rip+...]), i.e. a CRT copy
+
+with `rdx` = the orientation record base. So the call is
+
+    memcpy(record + 0xF00, record + 0x00, node_count * 0x20)
+
+Therefore **`+0x15D4` is the node COUNT, not a node index**, and **the LIVE node
+bank is at `+0x00`** while `+0xF00` is the previous-frame copy the engine
+interpolates against (the kit's `node_count_interpolated == node_count`).
+
+The zeros confirm it exactly: the probe read `+0xF00 + 85*0x20`, and 85 nodes
+copied to `+0xF00` occupy `0xF00..0x19A0` - so index 85 lands precisely one byte
+past the end of the valid data. Two independent facts (the count's meaning and
+which bank is live) fall out of one measured value.
+
+    node bank A  record + 0x000 .. 0xF00   LIVE, 120 x 0x20
+    node bank B  record + 0xF00 .. 0x1E00  previous frame, copied each frame
+
+**Corrected in C-H4-11a:** read and write bank A, treat `+0x15D4` as a count
+(reject 0 or > 120), and write the assembly's root at node 0.
+
+**Process note.** The candidate refusing to write on an unproven layout is the
+reason this cost one headset run and no damage. Had it written a guessed
+transform into a live bone array on a NULL-prone block, the outcome would have
+been a crash rather than a log line that hands over the answer.
+
 ### Forward milestone ladder — one visible claim per candidate
 
 1. **C-H4-7:** stock-projection/exact-serial stereo geometry only.

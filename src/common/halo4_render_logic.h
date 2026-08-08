@@ -245,7 +245,19 @@ inline constexpr uint32_t kHalo4FirstPersonWeaponStride = 0x2EC8;
 inline constexpr uint32_t kHalo4FirstPersonMaxWeapons = 2;
 inline constexpr uint32_t kHalo4FirstPersonMaxUsers = 4;
 // Per-weapon fields, all relative to the weapon sub-record.
-inline constexpr uint32_t kHalo4FirstPersonWeaponRootNodeOffset = 0x15D4;
+//
+// E-H4-17, corrected by the C-H4-11 headset probe. This field was first read
+// as a node INDEX; the live run proved it is the node COUNT. Retail
+// 0x3B53B3-0x3B53D6 loads it, shifts it left 5 (a BYTE LENGTH, not an element
+// offset) and passes it as the third argument of a CRT copy whose destination
+// is orientation+0xF00 and whose source is orientation+0x00:
+//
+//     memcpy(record + 0xF00, record + 0x00, node_count * 0x20)
+//
+// The probe read 85 here and found zeros at record+0xF00+85*0x20, which is
+// exactly one byte past the end of 85 copied nodes - the arithmetic that
+// confirms both the meaning of this field and which bank is live.
+inline constexpr uint32_t kHalo4FirstPersonWeaponNodeCountOffset = 0x15D4;
 // Per-user record fields.
 inline constexpr uint32_t kHalo4FirstPersonRecordFlagsOffset = 0x00;
 inline constexpr uint32_t kHalo4FirstPersonRecordUnitOffset = 0x04;
@@ -254,13 +266,20 @@ inline constexpr uint32_t kHalo4FirstPersonRecordActiveFlag = 0x2;
 // fp orientations: 0xF000 total = 0x1E00 x 2 weapons x 4 users, indexed
 // (weapon_slot + user * 2).
 inline constexpr uint32_t kHalo4FirstPersonOrientationStride = 0x1E00;
-inline constexpr uint32_t kHalo4FirstPersonNodeArrayOffset = 0xF00;
+// The record is TWO equal banks of 0xF00. The LIVE nodes are the first bank;
+// +0xF00 is the destination of the per-frame copy above, i.e. the previous
+// frame's pose used for interpolation (the kit's
+// `node_count_interpolated == node_count` assert). C-H4-11 read the copy and
+// found zeros; that is what identified the pair.
+inline constexpr uint32_t kHalo4FirstPersonNodeArrayOffset = 0x000;
+inline constexpr uint32_t kHalo4FirstPersonPreviousNodeArrayOffset = 0xF00;
 inline constexpr uint32_t kHalo4FirstPersonNodeStride = 0x20;
-// (0x1E00 - 0xF00) / 0x20 = 120, which also bounds
-// MAXIMUM_NODES_PER_FIRST_PERSON_MODEL.
+// 0xF00 / 0x20 = 120, which also bounds MAXIMUM_NODES_PER_FIRST_PERSON_MODEL.
 inline constexpr uint32_t kHalo4FirstPersonMaxNodes =
-    (kHalo4FirstPersonOrientationStride -
-     kHalo4FirstPersonNodeArrayOffset) / kHalo4FirstPersonNodeStride;
+    kHalo4FirstPersonPreviousNodeArrayOffset / kHalo4FirstPersonNodeStride;
+// A Blam skeleton's root is node 0; the assembly hangs off it, so writing it
+// moves the whole gun-and-arms rig rather than one part of it.
+inline constexpr uint32_t kHalo4FirstPersonRootNode = 0;
 
 static_assert(kHalo4FirstPersonOrientationStride *
                   kHalo4FirstPersonMaxWeapons * kHalo4FirstPersonMaxUsers ==

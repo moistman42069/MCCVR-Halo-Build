@@ -29305,7 +29305,7 @@ namespace
     {
         unsigned char* record = nullptr;   // fp_weapons[user]
         unsigned char* nodes[kHalo4FirstPersonMaxWeapons]{};
-        int32_t rootNode[kHalo4FirstPersonMaxWeapons]{-1, -1};
+        int32_t nodeCount[kHalo4FirstPersonMaxWeapons]{0, 0};
         int weapons = 0;
     };
 
@@ -29363,10 +29363,12 @@ namespace
             {
                 unsigned char* sub = record +
                     static_cast<size_t>(weapon) * kHalo4FirstPersonWeaponStride;
-                const int32_t root = *reinterpret_cast<int32_t*>(
-                    sub + kHalo4FirstPersonWeaponRootNodeOffset);
-                if (root < 0 ||
-                    root >= static_cast<int32_t>(kHalo4FirstPersonMaxNodes))
+                // E-H4-17: a COUNT, not an index. A weapon with no composed
+                // skeleton reports 0 and must be skipped rather than written.
+                const int32_t nodes = *reinterpret_cast<int32_t*>(
+                    sub + kHalo4FirstPersonWeaponNodeCountOffset);
+                if (nodes <= 0 ||
+                    nodes > static_cast<int32_t>(kHalo4FirstPersonMaxNodes))
                 {
                     continue;
                 }
@@ -29376,7 +29378,7 @@ namespace
                 out.nodes[weapon] = orientations +
                     index * kHalo4FirstPersonOrientationStride +
                     kHalo4FirstPersonNodeArrayOffset;
-                out.rootNode[weapon] = root;
+                out.nodeCount[weapon] = nodes;
                 ++out.weapons;
             }
         }
@@ -29437,10 +29439,12 @@ namespace
         for (int weapon = 0; weapon < static_cast<int>(
                  kHalo4FirstPersonMaxWeapons); ++weapon)
         {
-            if (!access.nodes[weapon] || access.rootNode[weapon] < 0)
+            if (!access.nodes[weapon] || access.nodeCount[weapon] <= 0)
                 continue;
+            // The root is node 0 of the live bank; the rest of the assembly
+            // hangs off it, so this moves the whole rig.
             unsigned char* node = access.nodes[weapon] +
-                static_cast<size_t>(access.rootNode[weapon]) *
+                static_cast<size_t>(kHalo4FirstPersonRootNode) *
                     kHalo4FirstPersonNodeStride;
 
             Halo4FirstPersonNode stock{};
@@ -29465,7 +29469,7 @@ namespace
                     stock.translation[axis], std::memory_order_relaxed);
             }
             g_halo4Camera.lastRootNode.store(
-                access.rootNode[weapon], std::memory_order_relaxed);
+                access.nodeCount[weapon], std::memory_order_relaxed);
 
             if (!Halo4FirstPersonNodeLooksValid(stock))
             {
@@ -30994,7 +30998,7 @@ namespace
             g_halo4Camera.handsBlockedFrames.exchange(
                 0, std::memory_order_relaxed);
         LOG("Halo 4 C-H4-11 hands: %s; %llu placed / %llu refused frames in "
-            "2s, %d weapon slot(s), root node %d; engine's stock node: "
+            "2s, %d weapon slot(s), %d nodes; engine's stock ROOT node: "
             "|quat| %.4f scale %.3f translation %.3f/%.3f/%.3f; placed "
             "translation %.3f/%.3f/%.3f (world scale %.2f)",
             g_halo4Camera.nodeFormatRejected.load(std::memory_order_acquire)

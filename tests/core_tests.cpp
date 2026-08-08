@@ -6592,6 +6592,18 @@ int main()
             "The fp-weapons dimensions reproduce H4EK's 0x17D20 allocation");
         Check(kHalo4FirstPersonMaxNodes == 120,
             "A first-person node bank holds 120 transforms of 0x20 bytes");
+        // E-H4-17, corrected by the C-H4-11 headset probe: the LIVE bank is
+        // the first one. Reading the +0xF00 copy is what returned zeros.
+        Check(kHalo4FirstPersonNodeArrayOffset == 0 &&
+                  kHalo4FirstPersonPreviousNodeArrayOffset == 0xF00,
+            "The live node bank is the record's FIRST half; +0xF00 is the "
+            "per-frame copy the engine interpolates against");
+        Check(kHalo4FirstPersonPreviousNodeArrayOffset +
+                  kHalo4FirstPersonMaxNodes * kHalo4FirstPersonNodeStride ==
+                      kHalo4FirstPersonOrientationStride,
+            "The two banks exactly fill the 0x1E00 orientation record");
+        Check(kHalo4FirstPersonRootNode == 0,
+            "The assembly is written at its root node");
 
         Halo4FirstPersonNode stock{};
         stock.rotation[3] = 1.0f;
