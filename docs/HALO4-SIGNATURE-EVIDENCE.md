@@ -1064,6 +1064,11 @@ Blam's ten-foot world unit, `0.33` over-scales head motion and IPD by 0.58%.
 
 ### C-H4-9 — the headset owns Halo 4's look pitch (OFFLINE-PASS 2026-08-08; headset-PENDING)
 
+Source `0e450d504ef2f37971281fc756f67ae55676e498`, `halo3xr.dll` SHA-256
+`33FC9E41612D8AC1A92F4CC1A92E26DFA9BB5B3E4AB5DAA67F33F5C5A31D3579`, package
+`out/candidates/0e450d5-halo4-c9-headset-owns-pitch-20260808-121246432Z`,
+installed and hash-verified in both editions.
+
 **C-H4-8 PASSED both of its own log claims and was rejected on one experience
 defect.** Its preserved run reads `geometry TAKING`, 137 completed pairs/2s,
 `138 tracked frames`, `reference captured`, `lean 0.006 world units (6DOF ON)`,

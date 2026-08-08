@@ -154,8 +154,8 @@ datapoints are in `docs/HALO4-SIGNATURE-EVIDENCE.md` under "Candidate status".
 ### Installed forward ledger — NOT accepted; C-H4-1 remains the rollback pointer
 
 The installed files can be newer than the accepted pointer. That is the case
-now: C-H4-8 is installed in both editions for a head-tracking/6DOF/FOV headset
-test, but **none of C-H4-2 through C-H4-8 advances C-H4-1**.
+now: C-H4-9 is installed in both editions for a look-pitch headset test, but
+**none of C-H4-2 through C-H4-9 advances C-H4-1**.
 
 | Candidate | Result / status |
 | --- | --- |
@@ -166,19 +166,24 @@ test, but **none of C-H4-2 through C-H4-8 advances C-H4-1**.
 | C-H4-6 `4fc3c84` | **FAILED:** zero completed pairs, visible stall/title bounce, wrong FOV representation, and wrong outer-function return ABI. Behavior reverted by `7d58a68`. |
 | C-H4-7 `dbf1382` | **PASSED its own claim, experience REJECTED (2026-08-08):** 226-243 pairs/2s, `geometry TAKING`, zero drops, distinct eye pixels, 120 fps. The user rejected it for the two things it deliberately excluded - no 6DOF, and an FOV that did not fill the headset. It also exposed a NEW defect: Halo 4's stock cover (50.46/41.14 deg) does not contain PSVR2's frustum (61.5/53.0), so the whole slice was submitted at the wrong FOV (`M2 WARNING`). Evidence preserved at `out/test-runs/dbf1382-halo4-c7-stock-geometry-20260808-0553`. |
 | C-H4-8 `6cf0b76` | **PASSED both of its own log claims, experience REJECTED (2026-08-08):** `geometry TAKING`, 137 pairs/2s, `138 tracked frames`, `reference captured`, `lean 0.006 world units (6DOF ON)`, `276 widened eyes`, `calibration learned`, engine built `61.75/53.31 deg`, `contains headset frustum: YES` - the `M2 WARNING` is gone. Stereo, head tracking, 6DOF and native FOV all work. Rejected for one thing it did not cover: the look stick's vertical axis pitches the engine's camera and C-H4-8 adds head pitch ON TOP of it, so the stick tilts the world away from the player's real horizon. |
-| C-H4-9 `<pending>` | **INSTALLED, HEADSET-PENDING:** the headset owns look pitch. |
+| C-H4-9 `0e450d5` | **INSTALLED, HEADSET-PENDING:** the headset owns look pitch. |
 
-| C-H4-8 installed identity | Value |
+| C-H4-9 installed identity | Value |
 | --- | --- |
-| Source | `6cf0b76f027369d115d4df67c01e6218921663d4` (branch `feature/halo4-bringup`) |
-| Behavior commit | `55e890d9123161828712a5d3d8e60f2cb14d086f`; `6cf0b76` is a packaging-label fix only |
-| Package | `out/candidates/6cf0b76-halo4-c8-headtracking-fov-20260808-114408358Z` |
-| `halo3xr.dll` SHA-256 | `F4164EB2B3DF41459CD1839101BFA72768D4A0EEA263D5AB36B0A47E817AE660` |
+| Source | `0e450d504ef2f37971281fc756f67ae55676e498` (branch `feature/halo4-bringup`) |
+| Package | `out/candidates/0e450d5-halo4-c9-headset-owns-pitch-20260808-121246432Z` |
+| `halo3xr.dll` SHA-256 | `33FC9E41612D8AC1A92F4CC1A92E26DFA9BB5B3E4AB5DAA67F33F5C5A31D3579` |
 | `halo3xr_launcher.exe` SHA-256 | `B578160109BDE9A94AF12099A5E6A7509CB6C8513265749A2F0BA9B006F141A6` |
 | Installed editions | Steam and Microsoft Store; package and both installed DLL/launcher hashes independently matched after install |
-| Preserved previous installs | `out/deploy-backups/53faf48-steam-before-6cf0b76-20260808-114409182Z`, `...-store-before-6cf0b76-20260808-114409182Z` |
-| Offline gates | Clean Release x64 build, `core_tests`, Reach consistency gate - all passing |
+| Preserved previous installs | `out/deploy-backups/f4164eb-steam-before-0e450d5-20260808-121247428Z`, `...-store-before-0e450d5-20260808-121247428Z` |
+| Offline gates | Release x64 build, `core_tests`, Reach consistency gate - all passing |
 | Acceptance | **Not accepted.** C-H4-1 remains the rollback pointer. |
+
+The superseded C-H4-8 bytes were source
+`6cf0b76f027369d115d4df67c01e6218921663d4` (behavior `55e890d`), DLL SHA-256
+`F4164EB2B3DF41459CD1839101BFA72768D4A0EEA263D5AB36B0A47E817AE660`, package
+`out/candidates/6cf0b76-halo4-c8-headtracking-fov-20260808-114408358Z`. Its run
+is the reference log for everything C-H4-9 must not regress.
 
 **What C-H4-9 must show in the headset.** One claim, on its own log line:
 
