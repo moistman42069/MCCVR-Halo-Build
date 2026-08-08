@@ -391,15 +391,54 @@ inline constexpr int32_t kHalo4FirstPersonBodyFillFlag = 0;
 inline constexpr float kHalo4StormUpperArmBind = 0.0915251f;
 inline constexpr float kHalo4StormForearmBind = 0.116662f;
 
+// CALIBRATED FROM THE LIVE ENGINE, NOT FROM THE TAG BIND POSE.
+//
+// C-H4-14 derived this window from the H4EK storm_fp bind (0.0915 upper /
+// 0.1167 forearm) and admitted +-20% around it. The 2026-08-08 17:56 headset
+// log measured what the engine actually holds for the body-fill record:
+//
+//   window A: R 0.2113 / 0.2341   L 0.2135 / 0.3144   (1942 records)
+//   window B: R 0.2100 / 0.2209   L 0.2027 / 0.3192   ( 512 records)
+//
+// Every one of those is outside the bind-derived window, so the gate refused
+// 100% of real body records - 1942 link refusals against 1942 body fills, an
+// exact match - while a weapon record slipped through it. The live bank is
+// simply not in the tag's units: the ratio to bind is not even constant
+// (2.01x to 2.69x across the four links), so it is not a pure scale and must
+// not be "corrected" by a guessed factor.
+//
+// What the measurements DO establish, and what this gate now uses:
+//   - the two UPPER arms agree to within 3.5% across every sample, which is
+//     the mirror symmetry only a real pair of arms produces;
+//   - the FOREARM distance is pose-dependent (0.22 to 0.32) because nodes
+//     16->29 and 8->37 are not direct parent-child links, so it can only ever
+//     be a loose sanity bound.
+//
+// The absolute range deliberately spans BOTH regimes - the tag bind and the
+// measured live geometry - because the record's identity is now established
+// by the engine's own fill flag before this is ever called (see the body-fill
+// gate in Halo4ModelSkinningDetour). This is a sanity check on the geometry,
+// not the thing that decides which record the arms are.
 inline constexpr bool Halo4StormLinkLengthsMatch(
     float rightUpper, float rightLower,
     float leftUpper, float leftLower) noexcept
 {
     // NaN fails every comparison, so no separate finite test is needed.
-    return rightUpper > 0.075f && rightUpper < 0.110f &&
-           rightLower > 0.095f && rightLower < 0.140f &&
-           leftUpper > 0.075f && leftUpper < 0.110f &&
-           leftLower > 0.095f && leftLower < 0.140f;
+    const bool inRange =
+        rightUpper > 0.050f && rightUpper < 0.350f &&
+        rightLower > 0.050f && rightLower < 0.500f &&
+        leftUpper > 0.050f && leftUpper < 0.350f &&
+        leftLower > 0.050f && leftLower < 0.500f;
+    if (!inRange) return false;
+    // Mirror symmetry on the upper arm: pose-invariant (it is a true
+    // parent-child bone length), measured at <=3.5% on real Storm arms, and
+    // the discriminator a weapon record cannot fake.
+    const float larger =
+        leftUpper > rightUpper ? leftUpper : rightUpper;
+    const float difference =
+        leftUpper > rightUpper ? leftUpper - rightUpper
+                               : rightUpper - leftUpper;
+    return difference <= larger * 0.25f;
 }
 
 // Blam's second basis axis is "left", so the right shoulder sits at the lower

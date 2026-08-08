@@ -6664,6 +6664,72 @@ int main()
         Check(!Halo4StormLinkLengthsMatch(notANumber, kHalo4StormForearmBind,
                   kHalo4StormUpperArmBind, kHalo4StormForearmBind),
             "A NaN link length is refused by the comparisons themselves");
+
+        // THE REGRESSION THIS SUITE EXISTS TO PREVENT.
+        //
+        // The bind-derived envelope refused 100% of real body records in the
+        // headset - the 2026-08-08 17:56 log recorded 1942 link refusals
+        // against exactly 1942 body fills, while a weapon record passed it and
+        // received the arm solve instead. These are the engine's own measured
+        // arm links from that session; the gate must admit them.
+        Check(Halo4StormLinkLengthsMatch(0.2113f, 0.2341f, 0.2135f, 0.3144f),
+            "The live Halo 4 arm links measured in the headset are admitted (window A)");
+        Check(Halo4StormLinkLengthsMatch(0.2100f, 0.2209f, 0.2027f, 0.3192f),
+            "The live Halo 4 arm links measured in the headset are admitted (window B)");
+        // Mirror symmetry on the upper arm is the discriminator that survives
+        // the widened absolute range: a real pair of arms agreed to within
+        // 3.5% in every sample, and an unrelated rig will not.
+        Check(!Halo4StormLinkLengthsMatch(0.2100f, 0.2300f, 0.0800f, 0.2000f),
+            "Mismatched left/right upper arms are still refused");
+
+        // The 28 helper/fixup/armour bones between the joints. The shared
+        // solver writes only the shoulder, the elbow and the hand mask, so
+        // these are carried separately; if the band tables ever drift out of
+        // the subtree tables the arm tears open between shoulder and hand.
+        {
+            const int rightShoulder[] = {
+                4,11,12,14,15,16,17,18,22,26,27,29,30,31,34,36,38,40,41,42,
+                44,45,49,50,52,53,55,56,58,63,65,66,67,68,71,72,76,77,78};
+            const int rightElbow[] = {
+                16,22,26,27,29,30,31,34,36,38,40,41,42,44,45,49,50,52,53,
+                55,56,58,63,65,66,67,68,71,72,76,77,78};
+            const int rightHand[] = {
+                29,40,41,42,44,45,49,50,52,53,55,56,58,63,65,66,67,68,71,
+                72,76,77,78};
+            const int rightUpperBand[] = {11,12,14,15,17,18};
+            const int rightForearmBand[] = {22,26,27,30,31,34,36,38};
+            auto has = [](const int* set, size_t n, int v) {
+                for (size_t i = 0; i < n; ++i) if (set[i] == v) return true;
+                return false;
+            };
+            bool upperExact = true;
+            for (int i = 0; i < 80; ++i)
+            {
+                const bool expected =
+                    has(rightShoulder, std::size(rightShoulder), i) &&
+                    !has(rightElbow, std::size(rightElbow), i) && i != 4;
+                if (expected !=
+                    has(rightUpperBand, std::size(rightUpperBand), i))
+                    upperExact = false;
+            }
+            bool forearmExact = true;
+            for (int i = 0; i < 80; ++i)
+            {
+                const bool expected =
+                    has(rightElbow, std::size(rightElbow), i) &&
+                    !has(rightHand, std::size(rightHand), i) && i != 16;
+                if (expected !=
+                    has(rightForearmBand, std::size(rightForearmBand), i))
+                    forearmExact = false;
+            }
+            Check(upperExact,
+                "The right upper-arm band is exactly shoulder minus elbow minus the joint");
+            Check(forearmExact,
+                "The right forearm band is exactly elbow minus hand minus the joint");
+            Check(!has(rightUpperBand, std::size(rightUpperBand), 4) &&
+                      !has(rightForearmBand, std::size(rightForearmBand), 16),
+                "No joint appears inside the band it drives");
+        }
         Check(Halo4StormSideOrderMatches(-0.1f, 0.1f) &&
                   !Halo4StormSideOrderMatches(0.1f, -0.1f) &&
                   !Halo4StormSideOrderMatches(0.1f, 0.1f),
