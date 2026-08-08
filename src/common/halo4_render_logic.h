@@ -330,7 +330,17 @@ enum class Halo4VrikStage : uint8_t
     Solved = 0,
     CountRefused,
     CopyFailed,
+    // C-H4-14 lumped "the 3x3 is not orthonormal" together with "the
+    // translation is outside an assumed range", and its headset log could
+    // therefore only say `basis`. They are different faults with different
+    // fixes - a wrong element layout versus a wrong assumption about which
+    // space the matrices live in - so they are counted apart from here on.
     BasisFailed,
+    RangeFailed,
+    // E-H4-21d: the bank is world-absolute, so the model's own frame has to be
+    // recovered from its root node before any authored, model-space quantity
+    // means anything.
+    AnchorFailed,
     LinkFailed,
     SideFailed,
     HeadPoseFailed,
@@ -341,29 +351,36 @@ enum class Halo4VrikStage : uint8_t
     Count,
 };
 
-// E-H4-21c, measured in retail. At `halo4.dll+0x36F346` the caller loads the
-// current record's render-model index from `[rsi-4]`, calls `0x33D6F0`, and
-// keeps the result in `r15d`. `0x36F35C..0x36F365` size the output allocation
-// as `r15d * 0x30 + 0xA8`, and `0x36F3B1` stores that same `r15d` as argument
-// 7 of the `0x36F3C4` call. Argument 7 is therefore the CURRENT render model's
-// own skinning-matrix count. It is NOT the 85-node composed animation count
-// that C-H4-13 demanded, which is why that candidate admitted nothing: the
-// loop at `0x36F5DA` walks 0x1910-byte records, each carrying its own matrix
-// bank at `+0xAC`.
+// E-H4-21d, measured in retail and confirmed against the H4EK tag.
 //
-// A record can only be storm_fp if it carries at least the tag's 80 body nodes
-// (the arm indices and descendant sets this file pins all live below 80) and no
-// more than the 120-transform bank bound. Never restore an equality test here.
-inline constexpr int32_t kHalo4StormFpMinSkinningNodes =
-    static_cast<int32_t>(kHalo4StormFpBodyNodeCount);
-inline constexpr int32_t kHalo4StormFpMaxSkinningNodes =
+// ARGUMENT 7 IS NOT A NODE COUNT, AND NOTHING MAY EVER GATE ON IT AGAIN.
+// `halo4.dll+0x33D6F0` returns the SKINNING PALETTE SIZE - the number of
+// 0x30-byte output matrices the caller must allocate, which is exactly why the
+// caller sizes its buffer `count * 0x30 + 0xA8`. For a node-mapped render model
+// (`tag+0x04` flags bit 2, which storm_fp has) it is
+// `1 + sum over drawn regions of the selected mesh's node-map length`.
+// Master Chief's live permutation set gives `1 + 60 + 28 + 4 + 3 = 96`, which
+// is why the headset log showed records of 96, 5 and 33 and no record of 80.
+// storm_fp's node count really is 80; 80 is simply not a reachable palette
+// size for it, so C-H4-14's `[80,120]` window admitted the arms by luck and
+// would have rejected them outright whenever a region was masked off.
+//
+// The consumer's own loop bound is the render model's node count
+// (`+0x33D99C mov r10d,[rdx+r13*4+0x30]`), NOT argument 7, and the record's
+// bank is a fixed 120 transforms inside a 0x1910-byte global record
+// (`(0x1910 - 0xB0) / 0x34 == 120`). Copying the bank bound is therefore
+// bounded by the structure itself and needs no count predicate at all.
+inline constexpr int32_t kHalo4FirstPersonBankTransforms =
     static_cast<int32_t>(kHalo4FirstPersonMaxNodes);
 
-inline constexpr bool Halo4SkinningCountCanBeStorm(int32_t count) noexcept
-{
-    return count >= kHalo4StormFpMinSkinningNodes &&
-           count <= kHalo4StormFpMaxSkinningNodes;
-}
+// The 0x1910-byte record's own header. `+0x08` is written by the bank filler
+// (`halo4.dll+0x3B95B8 mov [rbx+8],r8d`) from its third argument: the two
+// weapon fills at `+0x3B1E15` / `+0x3B1F1D` pass 1, and the body fill at
+// `+0x3B23AD` passes 0. It is a free discriminator, so it is LOGGED - the
+// authored bind geometry is what actually identifies the arms.
+inline constexpr uint32_t kHalo4FirstPersonRecordBankOffset = 0xB0;
+inline constexpr uint32_t kHalo4FirstPersonRecordFillFlagOffset = 0x08;
+inline constexpr int32_t kHalo4FirstPersonBodyFillFlag = 0;
 
 // H4EK storm_fp.render_model bind lengths in world units: upper arms 0.0915251,
 // forearms 0.116662. Animation rotates a link but cannot change its length, so
@@ -388,6 +405,12 @@ inline constexpr bool Halo4StormLinkLengthsMatch(
 // Blam's second basis axis is "left", so the right shoulder sits at the lower
 // value. This separates the Storm arms from a mirrored or transposed node map
 // that happens to carry the same four link lengths.
+//
+// This is only true in the MODEL's own frame. The live bank is world-absolute,
+// where the shoulder separation is the model's left axis rotated by the
+// player's heading, so its second component changes sign as the player turns -
+// the predicate would pass for about half of all facings and fail for the
+// rest. Call it only after lifting the nodes into model space.
 inline constexpr bool Halo4StormSideOrderMatches(
     float rightShoulderLeftAxis, float leftShoulderLeftAxis) noexcept
 {

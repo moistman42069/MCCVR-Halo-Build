@@ -1,0 +1,196 @@
+# DESIGN CONCLUSION — C-H4-15 (Halo 4 first-person hands)
+
+Everything below marked **[read this session]** I disassembled myself out of `N:\SteamLibrary\...\halo4\halo4.dll` in this session. Everything marked **[inferred]** is reasoning, not measurement.
+
+---
+
+## 0. The one new fact that changes the whole picture
+
+**The three records per frame are produced by exactly three call sites of one filler, and they are not equivalent. The 96 record is built by the odd one out.** **[read this session]**
+
+`0x3B9564` (the record bank filler) has exactly three callers, all inside the first-person producer `0x3B1B4C`:
+
+| call site | arg3 → stored at `record+0x08` | arg7 (node map) | arg4 (ROOT) | arg6 (source bank) |
+|---|---|---|---|---|
+| `+0x3B1E15` | `1` (`+0x3B1E01 mov r8d,1`) | `rbx+0x1354` **non-null** | `lea r9,[rbp-0x48]` = camera root | `rbx+0x1540` |
+| `+0x3B1F1D` | `1` (`+0x3B1EF7 mov r8d,1`) | `rbx+0x0F94` **non-null** | `lea r9,[rbp-0x48]` = camera root | `rbx+0x1540` |
+| `+0x3B23AD` | `0` (`+0x3B238C xor r8d,r8d`) | **`rdi` = NULL** (`+0x3B2399`) | `[rsp+0x70]` | result of `call 0x5D81E8` |
+
+`rdi` is written exactly once in the entire function — `+0x3B1B7E xor edi,edi` — and never again (I grepped every write to `rdi/edi/dil` across `0x3B1B4C..0x3B2448`). So the third fill's node map is provably NULL.
+
+Argument slots decoded from the prologue (`mov [rsp+8],rbx` / `[rsp+0x10],rbp` / `[rsp+0x18],rsi`, 5 pushes, `sub rsp,0x20`): `[rsp+0x70]`=arg5, `[rsp+0x78]`=arg6, `[rsp+0x80]`=arg7, `[rsp+0xa0]`=arg11=the record. `+0x3B95AB mov [rbx+4],ecx` (object index), `+0x3B95B6 mov [rbx],edx` (render-model index), `+0x3B95B8 mov [rbx+8],r8d` (the flag above), `+0x3B969D lea rsi,[rbx+0xb0]` (bank base).
+
+**Consequence:** `record+0x08` is a free, zero-cost discriminator. At the mod's detour, `inputObjectNodeMatrices` = `record+0xB0`, so `record+0x08` is `*(int32_t*)((const uint8_t*)inputObjectNodeMatrices - 0xA8)`. **`0` = the body/arms fill. `1` = a weapon fill.**
+
+---
+
+## 1. Why the basis stage rejected the 96-node record
+
+**Single most likely cause: it was NOT the orthonormality half. It was `fabsf(v) <= 10.0`, because the matrices are world-absolute. Confidence: HIGH — but this is an inference chain over measured code, not a live measurement.**
+
+The chain, and why it is much tighter than the earlier attempts:
+
+**(a) The 96 record has no holes.** The "unwritten slot / `-1` remap leaves a zero matrix" mechanism (`+0x3B96D5 cmp dword [rdi+r10*4],-1` / `+0x3B96DA je 0x3B9720`, with `+0x3B9725 add r9,0x34` still advancing) only exists on the **node-mapped** path. The 96 record is filled at `+0x3B23AD` with a **NULL** map, so it takes `+0x3B9730` and writes `min(arg5,120)` consecutive elements — either `ROOT ∘ src[i]` in the loop at `+0x3B9752`, or a straight `memmove` via `+0x3B9782 call 0xA62FB0`. No skipping is possible. **[read this session]** That kills the leading competing theory for a basis failure.
+
+**(b) Its ROOT cannot disturb a basis.** `[rsp+0x70]` is `rdi`(=NULL) unless the branch at `+0x3B22BC ja 0x3B2327` is not taken, in which case `[rbp-0x48]` is built from three constants I read out of the file: **[read this session]**
+
+- `0xD96180` = `1.0, 1.0, 0.0, 0.0` → matrix `+0x00`(scale)=1.0, basis0=(1,0,0)
+- `0xD96170` = `0.0, 1.0, 0.0, 0.0` → basis1=(0,1,0), `+0x1C`=0
+- `+0x3B22D9 and dword [rbp-0x28],edi` → `+0x20`=0; `0xD956D0` = `1.0` → `+0x24`=1.0 → basis2=(0,0,1)
+- `+0x28/+0x2C/+0x30` = a horizontal offset vector (z zeroed at `+0x3B22BE`, normalized by `0x48314`, scaled by `xmm6`, and skipped entirely when its magnitude is below `0xD95224` = `9.99999975e-05`)
+
+That is **scale 1, identity rotation, translation only**. So every element of the 96 record has a basis byte-identical to its source, whichever branch runs.
+
+**(c) The source is world-absolute.** `+0x3B20AC call 0x5D81E8` = `object_get_node_matrices`: count = `word[obj+0x1BC] / 52`, array = `obj + word[obj+0x1BE]` (`+0x5D8242` `movabs rax,0x4EC4EC4EC4EC4EC5` / `mul` / `shr rdx,4`). It has only **three** callers: `0x336238`, `0x3364EF`, `0x3B20AC`. **[read this session]**
+
+The proof that its output carries world position is the ordinary world-object render path at `0x336210`: **[read this session]**
+
+```
++0x336238  call 0x5D81E8
++0x33623D  mov  [rsp+0x88], rax          ; the node matrices
++0x336277  mov  r8d, 0xA8
++0x336280  call 0x8104AA                 ; memset(skinning_output, 0, 0xA8)  <-- header ZEROED
++0x336285  mov  r8, [rsp+0x88]           ; passed verbatim as arg3
++0x3362B3  call 0x33D8B8
++0x3362BE  call 0x33DC48                 ; min/max bounds only
+```
+
+The 0xA8 skinning header is **zero-filled**, so there is no object-to-world matrix anywhere in the palette; `0x33D8B8` only composes `input[i]` with the render model's inverse bind at `node+0x28`; `0x33DC48` only derives quantisation bounds. A world object drawn through this path would render at the map origin unless `input[i].translation` already contained its world position. **[inferred, but the inference has no free parameters]**
+
+**(d) Therefore only the range half could fail.** `NormalizedBasis` divides each column by its own length before the 0.02 dot test, so no scale can make it fail; a sheared animation basis would be an engine bug. Meanwhile `fabsf(v) <= 10.0` applied to a world coordinate fails everywhere except within 10 world units (≈30 m) of the map origin **on all three axes**, which matches "it failed every single frame".
+
+**What I could NOT rule out (label this honestly):** that the 96 record is a weapon rather than the arms. I did not measure the record identity. See §2 and §4.
+
+---
+
+## 2. Is the mod targeting the right render model?
+
+**Probably yes — but for a reason that is provably wrong, and the mod currently has no way to know.**
+
+- `Halo4SkinningCountCanBeStorm` gates on argument 7 in `[80,120]`. Argument 7 is **not a node count**. `0x33D6F0` returns a **skinning-palette size**: `(flags&4 ? 1 : nodes.count) + Σ per-region selected mesh's node-map length`. `storm_fp` has `flags=4`, so its palette base is 1, and Chief's permutation set gives `1+60+28+4+3 = 96` exactly. `storm_fp`'s node count is **80**, which the palette formula can never produce.
+- So the `[80,120]` window admits 96 **by luck**. It will also **reject** `storm_fp` outright whenever a region is masked off (achievable palette values include 61–69), and it admits any unrelated model that happens to land in the window.
+- Chief's first-person arm model is `objects\characters\storm_fp\storm_fp.render_model`: 80 nodes, 4 regions, flags=4, 452 meshes, and the six tracked indices/names/bind lengths the mod uses are all correct (`4/16/29` = `b_r_upperarm/b_r_forearm/b_r_hand`, `5/8/37` = left, links `0.0915251` and `0.116662`).
+- Its bank is fed from the **player object's** node matrices, reused for the first-person render model behind an equality guard I read at `+0x3B20BF`/`+0x3B20CE`: the two render models must have identical `nodes.count` (`tag+0x30`) **and** identical node-list checksum (`tag+0x2C`) or the fill is skipped (`jne 0x3B23E8`). **[read this session]** That is the classic Blam FP/3P node-list match.
+
+**The identity test that replaces the guess** — resolve the tag from `renderModelIndex` (argument 2, which the detour already receives), exactly as `0x33D8B8` does:
+
+```
+tbl  = *(void**)(base + 0x107C0B0);                        // +0x33D717 / +0x3B2332
+ent  = (uint8_t*)tbl + (renderModelIndex & 0xFFFF) * 8;
+datum= *(uint32_t*)(ent + 4);                              // +0x33D72C
+seg  = *(void**)(base + 0x496A180 + (datum >> 28) * 8);    // +0x33D71E, literal at +0x3B2350
+tag  = (uint8_t*)seg + (uint64_t)datum * 4;
+nameStringId = *(uint32_t*)(tag + 0x00);
+flags        = *(uint16_t*)(tag + 0x04);   // storm_fp = 4
+regionCount  = *(int32_t*) (tag + 0x0C);   // storm_fp = 4
+nodeCount    = *(int32_t*) (tag + 0x30);   // storm_fp = 80
+```
+
+Both globals are BSS (runtime-initialised) — null-check `tbl` and `seg`. This is 4 loads, deterministic, allocation-free, and it runs inside the detour's existing `__try`.
+
+---
+
+## 3. What must change in the code
+
+### 3a. The `fabsf(v) <= 10.0` translation clamp — **DELETE IT** (already done in the working tree)
+
+The uncommitted diff already removes it and splits `RangeFailed` from `BasisFailed`. **Keep that.** The clamp assumed object-local matrices; the matrices are world-absolute. Arm link lengths are translation-invariant, so nothing downstream in the classifier needed the bound.
+
+### 3b. The `{ scale, basis[9], translation[3] }` element order — **DO NOT TOUCH. IT IS CORRECT.**
+
+Three independent proofs, one of which I re-read this session:
+- `0x33E02C`: `+0x33E0CB shufps xmm12,xmm12,0` broadcasts `[rcx+0x00]` and that broadcast multiplies both the composed basis (`+0x33E0D4`) and the composed translation (`+0x33E151`) → uniform scale at `+0x00`; `+0x33E0F2 shufps xmm13,xmm13,0x39` yields `+0x28/+0x2C/+0x30`, added last at `+0x33E155` → translation at `+0x28`. Stride `0x34` from `+0x33D9C5 imul rcx,rcx,0x34`.
+- `0x3417E0` (camera→matrix builder): `+0x341889 mov dword [rdx],0x3F800000` writes **1.0f into float 0** — the scale slot — and writes camera position to `+0x28`.
+- The H4EK `storm_fp` node inverse-bind stream reinterprets to a clean identity **only** when read scale-first.
+
+**No headset sitting should ever be spent on element order again.**
+
+### 3c. The tracked-hand target — **YES, THIS IS A SECOND, INDEPENDENT BUG, AND IT WOULD HAVE RUINED THE NEXT SITTING ON ITS OWN**
+
+`Halo4BuildTrackedHandTarget` (game.cpp:29621) produces `target.translation = placed.translation + attachment`, where `placed` comes from `roomDelta = controller − head` rotated into head space. **That is a head-relative offset, magnitude ~0.1–0.4 world units.** `Halo4SolveArm` then does:
+
+```cpp
+newUpper/newLower = desired.translation − nodes[elbow].translation
+```
+
+mixing a head-relative target against a **world-absolute** elbow. The resulting direction points from the player's world position back toward the map origin. Even if the classifier had passed, the arms would have been stretched across the level. **This must be fixed in the same candidate or C-H4-15 fails for a brand-new reason.**
+
+**Recommended fix — anchor to the record's own frame, not to the map.** It is self-calibrating and needs no new global:
+
+1. Pick an anchor node from the same palette — `node 1` (`b_base`) is the parent of both shoulders; `node 6` (`b_camera_control`) is the FP camera node. Both are present in the bank: the NULL-map path copies **all** global-indexed object node matrices, so nodes that appear in no mesh node map are still valid here.
+2. `localHand = inverse(anchor) ∘ nodes[hand]` — this is the small, near-origin hand the existing head-relative math already assumes it is working with.
+3. Build `desiredLocal` with the **existing, unchanged** `Halo4BuildTrackedHandTarget` math.
+4. `worldTarget = anchor ∘ desiredLocal`, and feed that to `Halo4SolveArm`.
+
+Whatever world offset the record carries cancels exactly. `InvertBoneMatrix` and `ComposeBoneMatrices` already exist in the file.
+
+**Cross-check available (log it, don't gate on it):** the mod already captures the stock observer (`kHalo4ObserverPositionOffset 0x00`, forward `0x28`, up `0x34`) in the Halo 4 camera hook. Publishing that world camera position to an atomic snapshot and logging `|anchor.translation − observer.position|` proves in one number whether the anchor node really sits at the camera. Do **not** make the camera the anchor in this candidate — the palette anchor is lower-risk because it cannot desynchronise from the record.
+
+### 3d. `Halo4StormSideOrderMatches` — **BROKEN IN WORLD SPACE, MUST CHANGE**
+
+`Halo4StormSideOrderMatches(right.translation[1], left.translation[1])` compares the **world Y** of the two shoulders. In object space the shoulders differ by exactly `(0, +0.140934, 0)` (tag: node 4 at `y=−0.070467`, node 5 at `y=+0.070467`). In world space that difference is `0.140934 × (the object's world left-axis)`, whose Y component **flips sign with the player's heading**. This predicate therefore passes for roughly half of all facings and fails for the other half. It would have produced an intermittent `side=` refusal that looked like a haunting.
+
+Replace it with a frame-relative test — `dot(anchor.leftAxis, left.translation − right.translation) > 0` — or, better for this candidate, **demote it to a logged value** once tag identity (§2) is doing the identification.
+
+### 3e. Two more things to remove because they rest on refuted premises
+
+- **The `[80,120]` palette-count gate** (`Halo4SkinningCountCanBeStorm`). Replace with `nodeCount == 80 && regionCount == 4 && (flags & 4)` from the tag. Never gate on argument 7 in any form again.
+- **The "extra nodes past 80" loop** (game.cpp:29811–29822) and `kHalo4StormFpComposedNodeCount = 85`. Argument 7 is a palette size, not `80 + 5 appended weapon bones`. The consumer reads only `nodes.count` (`+0x33D99C mov r10d,[rdx+r13*4+0x30]`) elements, so slots 80..95 are never read — and on the NULL-map path they are stale bytes, so composing them just manufactures NaNs in the scratch. Also change `Halo4SafeRead` to copy `nodeCount` elements, not `count`.
+
+---
+
+## 4. What must be MEASURED, not changed
+
+All of these are integer/float stores into existing atomics — no allocation, no locks, no I/O in the hook. Log them from the existing 2-second reporter.
+
+**Per record (all three, keyed by the three `vrikCountValue` slots that already exist — today the probe only fires for the one record that survives the count gate, which is exactly why the last log said nothing):**
+
+1. `renderModelIndex`, and from the tag: `nameStringId`, `flags`, `regionCount`, **`nodeCount`**. This is the single datum that turns "96 vs 5 vs 33" into "which one is `storm_fp`". Expect `80 / 4 / 4` on exactly one of them.
+2. `record+0x08` = `*(int32_t*)((const uint8_t*)input − 0xA8)` → **0 = body fill, 1 = weapon fill**. Free, no globals, and it directly names which of the three engine call sites built the record.
+3. `record` index = `((uintptr_t)input − 0xB0 − base − 0x30B076C) / 0x1910` (optional; the flag above is cheaper and safer).
+4. The existing decode probe — `scale`, worst column-length error, worst pairwise dot, `|translation|` — for **node 4 and node 37** (a second, far-apart index makes a mid-bank hole visible).
+
+**Space discriminator — one line, settles world-vs-local live and forever:**
+
+5. `|nodes[4].translation|` next to `distance(nodes[4], nodes[16])`. If you see something like `translation magnitude 137.4 world units, upper arm 0.0915`, world-absolute is proven from the headset, not from me.
+
+**Space-error tripwire for the new target math:**
+
+6. `|rightTarget.translation − nodes[29].translation|` in world units. Correct anchoring gives well under ~0.5. A large number means the anchor compose is wrong and the log says so before the user has to describe exploded arms.
+
+**Keep as measurements, not gates (they have never been validated against a live palette):**
+
+7. The four link lengths (already published) against the tag's `0.0915251 / 0.116662`.
+8. The side-order quantity from §3d as a signed float, not a boolean.
+
+**Stage counters:** keep the split `BasisFailed` / `RangeFailed` from the working tree, and add `AnchorFailed` if the anchor inverse fails, so a refusal can never again be lumped.
+
+---
+
+## 5. What must NOT be touched
+
+Nothing in this candidate goes anywhere near the accepted Halo 4 stack:
+
+- **The camera core.** `0x374C84` (setup), `0x1222F4` (wrapper), the loop at `0x122CA6`, and the camera global `0x10DAFE0`. Read-only if read at all — the observer snapshot is already captured; do not add a new publisher, and if you do, it must sit **below** `CaptureHeadPose`.
+- **Stereo, head tracking, 6DOF, FOV, headset-owned pitch** — all accepted (C-H4-8 / C-H4-9). No new snapshot publishers, no change to the observer write order, no change to `observer[+0x78]`.
+- **Motion aim / VR turn / rumble (C-H4-10)** — installed and untested. Leave it exactly as installed so this sitting tests one thing.
+- **The HUD.** Halo 4 draws its own; the redirect rung is cancelled.
+- **The first-person weapons producer `0x3B1B4C` and the `0x5F48` per-user block at TLS+0x6A0.** Do not hook it, do not write to it. That is the proven re-entry-crash subsystem, and `0x3B97A4` itself dereferences the block with no null check (`mov rax,[r8+r9]` then `cmp [rax+rcx+0x2e3c],-1`). The ROOT published at `per_user+0x5E48` belongs to the **weapon** records only — it is *not* the arms record's root, and subtracting it would move the hands by the player's full world coordinate.
+- **The existing detour placement.** Keep the exact-return-address gate on `0x36F3C9`, keep `flagA/flagB` untouched, keep writing only into `g_halo4VrikScratch` and substituting the pointer. Never write into the engine's record.
+- **The `halo3+0x120DF8` prohibition** and the no-guessed-address rule, as always.
+
+---
+
+## Recommended shape of C-H4-15 — one candidate, one headset claim
+
+**Claim: "Halo 4's first-person hands follow your controllers."**
+
+Behavioural changes (all four are required together — any one alone still fails):
+1. Identify the arms record by **tag `nodeCount == 80` + `regionCount == 4` + `flags & 4`**, not by palette count; drop the `[80,120]` gate and the 80..95 extra-node loop.
+2. Keep the `10.0` clamp deleted and the `Basis`/`Range` counters split (already in the tree).
+3. Build the hand target in the record's own frame via an anchor node compose, so head-relative math meets world-absolute matrices correctly.
+4. Demote link lengths and side order from gates to logged measurements.
+
+Instrumentation (§4 items 1–8), published for **all three** records.
+
+Failure is safe: on any refusal the engine's own pointer is passed through unchanged, so the worst outcome is stock Halo 4 arms plus a log that names the exact stage — and, for the first time, names *which record* it was talking about.

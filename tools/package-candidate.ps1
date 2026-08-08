@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     # Force a from-scratch compile. Off by default: the packaged identity comes
     # from the git commit check and the SHA-256 of the installed files, not from
@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c14-storm-bind-vrik',
+        'halo4-c15-model-frame-vrik',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-14'
+            id = 'C-H4-15'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'final-palette-vrik-admitting-storm-records-by-bind-geometry-with-per-stage-refusal-counters'
+            behavior = 'final-palette-vrik-solved-in-the-models-own-frame-with-the-weapon-record-carried-by-the-right-hand'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -197,6 +197,7 @@ try {
             first_person_hands = $true
             arm_ik = $true
             floating_hands = $true
+            weapon_follows_hand = $true
             failure_policy =
                 'pre-claim-stock-post-claim-frame-drop-core-remains-armed'
             vrik_failure_policy =

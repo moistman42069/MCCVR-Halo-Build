@@ -2701,3 +2701,113 @@ passes the engine's original matrix pointer for that palette, the hook is
 optional and fail-open, and neither the camera core nor the OpenXR session is
 ever disarmed. C-H4-14 is an unaccepted headset candidate; this evidence does
 not advance the accepted-build pointer.
+
+## E-H4-21d / C-H4-15 - argument 7 is a palette size, and the bank is world-absolute
+
+**HEADSET RESULT for C-H4-14 - FAILED, 2026-08-08 (Steam, SteamVR/OpenXR
+2.17.6, PSVR2, 120 Hz).** Candidate `27411fa`, DLL SHA-256
+`DB82A69E5BBBBF1EFDE24FD64B73065B29F1FFD0BFAD2D46F7EAB7158621E6D5`. The user
+reported no hands, no arm IK and no floating hands, with the weapon still
+attached to the camera. Log preserved at
+`out/test-runs/27411fa-halo4-c14-steam-psvr2-20260808/halo3xr.log`.
+
+Unlike C-H4-13, the candidate reported enough to end the guessing. Its split
+counters and histogram, stable across the whole session:
+
+```
+palette hooked; 0 solved / 2889 stock / 2904 refused of 2904 first-person
+calls in 2s
+stages in 2s: count=1936 copy=0 basis=968 link=0 side=0 head-pose=0 ...
+argument-7 histogram in 2s: 96x968 5x968 33x968
+```
+
+Exactly three records reach the first-person return site per frame, carrying
+argument 7 = 96, 5 and 33. No record carries 80 or 85. The 96 record passed the
+`[80,120]` window and was refused by the combined basis/range check every
+single time; nothing ever reached the arm-length measurement.
+
+**Argument 7 is a skinning PALETTE SIZE, not a node count.** `0x33D6F0` returns
+`(tag+0x04 flags & 4 ? 1 : nodes.count)` plus the node-map length of the mesh
+selected in each drawn region (`+0x33D73E` tests the flag bit, `+0x33D746`
+loads `nodes.count` from `tag+0x30` only when it is clear, and `+0x33D787`
+accumulates the per-region extras). `storm_fp` has `flags=4`, so its palette
+base is 1, and Master Chief's live permutation set gives `1 + 60 + 28 + 4 + 3 =
+96`. The H4EK tag was re-counted directly: exactly one `nodes` block with
+`count="80"`, node 0 `b_pedestal` (parent -1, translation 0,0,0), 4/16/29 =
+`b_r_upperarm`/`b_r_forearm`/`b_r_hand`, 5/8/37 = the left chain, and
+`distance from parent` exactly `0.0915251` and `0.116662`. So every index, name
+and bind length the implementation uses is correct, **and 80 is not a reachable
+palette size for this model at all** - the `[80,120]` window admitted the arms
+by luck and would reject them outright whenever a region is masked off.
+
+The consumer's own loop bound is the render model's node count
+(`+0x33D99C mov r10d,[rdx+r13*4+0x30]`), never argument 7, and each record's
+bank is a fixed 120 transforms (`(0x1910 - 0xB0) / 0x34 == 120`). Copying the
+bank bound is therefore bounded by the structure itself. **Nothing may gate on
+argument 7 again.**
+
+**The element layout was re-proven, and it is the one already implemented.**
+`0x33E02C` broadcasts `[rcx+0x00]` as a scalar (`+0x33E0CB shufps xmm12,xmm12,0`)
+and multiplies both the composed basis and the composed translation by it, and
+adds `[rcx+0x28..0x30]` last (`+0x33E0F2` / `+0x33E155`); the camera-to-matrix
+builder `0x3417E0` writes `1.0f` into float 0 (`+0x341889 mov dword [rdx],
+0x3F800000`) and the camera position into `+0x28`. So an element is
+`{ float scale @0x00; float basis[9] @0x04; float translation[3] @0x28 }`,
+stride `0x34` (`+0x33D9C5 imul rcx,rcx,0x34`). **No candidate should ever spend
+a headset sitting on element order again.**
+
+**The bank is WORLD-ABSOLUTE.** The filler `0x3B9564` composes each entry as
+`root o object_node_matrix` through `0x11D4D8`, whose translation arithmetic is
+`out.t = A.scale * (A.basis . B.t) + A.t` (`+0x11D606 mulss xmm11,[rcx]`,
+`+0x11D60B addss xmm11,[rcx+0x28]`) - additive, never cancelled - and the root
+is built from the render camera (`+0x3B1C17` indexes the camera table,
+`+0x3B1C24 call 0x3417E0`), whose translation is the camera's world position.
+A node translation is therefore the player's world coordinate plus a small
+local offset.
+
+That is what refused C-H4-14: its inherited `fabsf(translation) <= 10.0` sanity
+bound assumed object-local matrices, so it rejected every first-person record
+except within ten world units of the map origin. The bound was counted together
+with orthonormality, which is why the log could only say `basis`.
+
+It also invalidated two other things silently. `Halo4StormSideOrderMatches`
+compares the shoulders' second translation component, which in world space is
+the model's left axis rotated by the player's heading and therefore changes
+sign as the player turns. And the tracked-hand target was built head-relative
+(magnitude ~0.1-0.4 world units) and then subtracted from world-absolute elbow
+positions, which would have pointed the arms back toward the map origin even if
+the classifier had passed.
+
+**C-H4-15** therefore lifts the record into the model's own frame before doing
+anything authored with it: it inverts node 0 - `b_pedestal`, the tag's
+parentless root at the model origin - composes all 80 body nodes into that
+frame, runs the classifier, hand targets, poles and IK entirely there, and
+composes back. Every authored quantity is then expressed in the frame it was
+authored in. The `10.0` bound stays deleted and `Basis` / `Range` / `Anchor`
+are counted separately.
+
+**The weapon is a separate record and is carried, not guessed at.** The bank
+filler has exactly three call sites, all inside the first-person producer
+`0x3B1B4C`: `+0x3B1E15` and `+0x3B1F1D` pass 1 as their third argument, and
+`+0x3B23AD` passes 0 (`+0x3B238C xor r8d,r8d`); the filler stores that argument
+at `record+0x08` (`+0x3B95B8 mov [rbx+8],r8d`). So `record+0x08` is `0` for the
+body fill and `1` for a weapon fill, and the mod reads it back through the
+input pointer it already holds. It is logged, and it is used for exactly one
+decision: whether a record may be moved by the weapon delta. An unreadable
+header reads as "not the body", because being wrong that way only costs the
+gun-follow, while being wrong the other way would drag the arms model by a
+transform meant for the gun. Identification of the arms themselves remains the
+authored bind geometry, never the header and never argument 7.
+
+Every solved arms record republishes the right hand's motion as a world-space
+rigid transform through a sequence-guarded slot, and records that fail
+*classification* - not records that fail pose or IK, which are the arms - are
+composed by it. Both banks are built against the same camera root, so one world
+delta is valid for both. The delta is at most one record-order older than the
+frame, because the producer fills the two weapon records before the body one.
+
+Failure isolation is unchanged: any refusal at any stage passes the engine's
+original matrix pointer for that palette, the hook is optional and fail-open,
+and neither the camera core nor the OpenXR session is ever disarmed. C-H4-15 is
+an unaccepted headset candidate; this evidence does not advance the
+accepted-build pointer.

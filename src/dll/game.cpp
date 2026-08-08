@@ -29186,14 +29186,27 @@ namespace
         std::atomic<uint64_t> vrikStageRefusals[
             static_cast<size_t>(Halo4VrikStage::Count)]{};
         std::atomic<uint64_t> vrikExactReturnHits{0};
-        // Records that carried nodes beyond the 80 body nodes and therefore
-        // took the right-hand rigid delta on them.
-        std::atomic<uint64_t> vrikExtraNodeRecords{0};
+        // Weapon records moved by the right hand's world delta.
+        std::atomic<uint64_t> vrikWeaponRecordsCarried{0};
+        // The record header's own fill flag, per record: 0 = the body/arms
+        // fill, 1 = a weapon fill. Logged, never gated on.
+        std::atomic<uint64_t> vrikBodyFillRecords{0};
+        std::atomic<uint64_t> vrikWeaponFillRecords{0};
+        std::atomic<uint64_t> vrikUnreadableFillRecords{0};
         // The four live arm-link distances of the last record to get past the
         // basis stage. A window that solves nothing still publishes what the
         // ENGINE holds, which is what decides whether the bind envelope or the
         // node map is wrong - never a log of only our own values.
         std::atomic<uint64_t> vrikLinkMeasurements{0};
+        // What the engine holds in the first arm node of every record that
+        // reaches the classifier, published before it is judged. Orthonormality
+        // is a property no correctly-decoded animation matrix can lack, so
+        // these separate a decode error from a wrong model.
+        std::atomic<uint64_t> vrikClassifyAttempts{0};
+        std::atomic<float> vrikProbeScale{0.0f};
+        std::atomic<float> vrikProbeColumnError{0.0f};
+        std::atomic<float> vrikProbeOrthoError{0.0f};
+        std::atomic<float> vrikProbeTranslation{0.0f};
         std::atomic<float> vrikLastRightUpper{0.0f};
         std::atomic<float> vrikLastRightLower{0.0f};
         std::atomic<float> vrikLastLeftUpper{0.0f};
@@ -29437,9 +29450,16 @@ namespace
     // E-H4-21b / C-H4-13.  The final model-skinning consumer receives absolute
     // 0x34-byte matrices.  Work only on a private copy: unlike C-H4-12's
     // animation-producer write this cannot feed our pose back into Halo 4.
-    // Sized to the bank bound, not to a believed node count: argument 7 is the
-    // record's own count and the copy below is bounded by it.
-    thread_local BoneMatrix g_halo4VrikScratch[kHalo4StormFpMaxSkinningNodes];
+    // Sized to the record's fixed bank, which is what actually bounds the copy.
+    // One record is processed per detour call, so a single scratch serves both
+    // the arms solve and the weapon carry.
+    thread_local BoneMatrix g_halo4VrikScratch[kHalo4FirstPersonBankTransforms];
+    // The right hand's world-space motion, republished by every solved arms
+    // record. The weapon records of the same frame are carried by it. Sequence
+    // -guarded so a reader never sees a half-written matrix, and the serial
+    // stays zero until an arms record has actually solved.
+    AtomicBoneMatrix g_halo4WeaponDelta;
+    std::atomic<uint64_t> g_halo4WeaponDeltaSerial{0};
 
     constexpr int kHalo4RightShoulderSubtree[] = {
         4,11,12,14,15,16,17,18,22,26,27,29,30,31,34,36,38,40,41,42,
@@ -29501,22 +29521,101 @@ namespace
         g_halo4Camera.vrikCountOverflow.fetch_add(1,std::memory_order_relaxed);
     }
 
+    // The 0x1910 record's own header flag, read back through the input pointer
+    // the detour already holds. Measurement only: the authored bind geometry is
+    // what identifies the arms, so a header that cannot be read costs nothing.
+    // Returns the flag, or -1 when the header could not be read. An unreadable
+    // header deliberately reads as "not the body": the only thing this gates is
+    // whether a record may be carried by the weapon delta, so being wrong that
+    // way costs the gun-follow, while being wrong the other way would drag the
+    // whole arms model by a transform meant for the gun.
+    int32_t Halo4RecordFillFlag(const BoneMatrix* input)
+    {
+        int32_t flag=0;
+        const unsigned char* record=
+            reinterpret_cast<const unsigned char*>(input) -
+            kHalo4FirstPersonRecordBankOffset;
+        if (!Halo4SafeRead(record+kHalo4FirstPersonRecordFillFlagOffset,
+                           &flag,sizeof(flag)))
+        {
+            g_halo4Camera.vrikUnreadableFillRecords.fetch_add(
+                1,std::memory_order_relaxed);
+            return -1;
+        }
+        if (flag==kHalo4FirstPersonBodyFillFlag)
+            g_halo4Camera.vrikBodyFillRecords.fetch_add(
+                1,std::memory_order_relaxed);
+        else
+            g_halo4Camera.vrikWeaponFillRecords.fetch_add(
+                1,std::memory_order_relaxed);
+        return flag;
+    }
+
     // Decide whether this record IS the Storm first-person body, from matrix
     // relationships the H4EK tag proves - never from argument 7, which
-    // E-H4-21c measured to be a per-render-model output count.
+    // E-H4-21d measured to be a per-render-model skinning PALETTE SIZE.
     Halo4VrikStage Halo4ClassifyStormArms(const BoneMatrix* nodes)
     {
         const int indices[] = {
             kHalo4RightShoulderNode,kHalo4RightElbowNode,kHalo4RightHandNode,
             kHalo4LeftShoulderNode,kHalo4LeftElbowNode,kHalo4LeftHandNode};
+
+        // Publish what the ENGINE holds for the first arm node BEFORE judging
+        // any of it. A real animation basis is orthonormal to float noise, so
+        // these four numbers separate "we are decoding the element wrongly"
+        // from "this is not the model we think it is" without another guess.
+        g_halo4Camera.vrikClassifyAttempts.fetch_add(
+            1,std::memory_order_relaxed);
+        {
+            const BoneMatrix& probe=nodes[kHalo4RightShoulderNode];
+            float column[3][3]{};
+            float worstColumn=0.0f,worstDot=0.0f,translationMagnitude=0.0f;
+            for (int c=0;c<3;++c)
+            {
+                float lengthSquared=0.0f;
+                for (int r=0;r<3;++r)
+                {
+                    column[c][r]=probe.rotation[c*3+r];
+                    lengthSquared+=column[c][r]*column[c][r];
+                }
+                const float length=sqrtf(lengthSquared);
+                const float deviation=fabsf(length-1.0f);
+                if (!(deviation<=worstColumn)) worstColumn=deviation;
+                if (isfinite(length) && length>1.0e-6f)
+                    for (int r=0;r<3;++r) column[c][r]/=length;
+            }
+            for (int a=0;a<3;++a)
+                for (int b=a+1;b<3;++b)
+                {
+                    float dot=0.0f;
+                    for (int r=0;r<3;++r) dot+=column[a][r]*column[b][r];
+                    if (!(fabsf(dot)<=worstDot)) worstDot=fabsf(dot);
+                }
+            for (float v : probe.translation) translationMagnitude+=v*v;
+            translationMagnitude=sqrtf(translationMagnitude);
+            g_halo4Camera.vrikProbeScale.store(
+                probe.scale,std::memory_order_relaxed);
+            g_halo4Camera.vrikProbeColumnError.store(
+                worstColumn,std::memory_order_relaxed);
+            g_halo4Camera.vrikProbeOrthoError.store(
+                worstDot,std::memory_order_relaxed);
+            g_halo4Camera.vrikProbeTranslation.store(
+                translationMagnitude,std::memory_order_relaxed);
+        }
+
         for (int index : indices)
         {
             float basis[9];
             if (!NormalizedBasis(nodes[index],basis))
                 return Halo4VrikStage::BasisFailed;
+            // Only non-finite is a refusal now. C-H4-14 also demanded every
+            // component be within 10 units of the origin, which silently
+            // assumed these matrices are object-local; the arm-link lengths
+            // this classifier actually depends on are translation-invariant,
+            // so that bound could only ever cause a false refusal.
             for (float v : nodes[index].translation)
-                if (!isfinite(v) || fabsf(v)>10.0f)
-                    return Halo4VrikStage::BasisFailed;
+                if (!isfinite(v))
+                    return Halo4VrikStage::RangeFailed;
         }
         const float ru=Halo4VrikDistance(nodes[kHalo4RightShoulderNode],
                                          nodes[kHalo4RightElbowNode]);
@@ -29716,16 +29815,45 @@ namespace
     }
 
     Halo4VrikStage Halo4BuildVrikPalette(const BoneMatrix* source,
-                                         BoneMatrix* solved, int32_t count)
+                                         BoneMatrix* solved)
     {
-        if (!source||!solved||!Halo4SkinningCountCanBeStorm(count))
-            return Halo4VrikStage::CountRefused;
-        // Bounded by the record's OWN count, never by a believed node total.
+        if (!source||!solved) return Halo4VrikStage::CopyFailed;
+        // Bounded by the STRUCTURE, not by argument 7. E-H4-21d: argument 7 is
+        // a skinning palette size, the consumer's own loop bound is the render
+        // model's node count, and the record's bank is a fixed 120 transforms.
         if (!Halo4SafeRead(source,solved,
-                sizeof(BoneMatrix)*static_cast<size_t>(count)))
+                sizeof(BoneMatrix)*kHalo4FirstPersonBankTransforms))
             return Halo4VrikStage::CopyFailed;
+
+        // E-H4-21d: this bank is WORLD-ABSOLUTE. The filler builds every entry
+        // as `root o object_node_matrix`, and root's translation is the
+        // first-person camera's own world position, so a node translation is
+        // the player's world coordinate plus a small local offset.
+        //
+        // Every authored quantity below - the bind link envelope, the side
+        // ordering, the v4 poles, and the head-relative hand target - is
+        // expressed in the MODEL's frame. Recover that frame from the model
+        // root once, solve entirely inside it, and put the result back. Node 0
+        // is `b_pedestal`, the H4EK tag's parentless root at the model origin,
+        // so this composes to exactly the frame the authoring was done in.
+        const BoneMatrix anchor=solved[kHalo4FirstPersonRootNode];
+        BoneMatrix inverseAnchor{};
+        if (!InvertBoneMatrix(anchor,inverseAnchor))
+            return Halo4VrikStage::AnchorFailed;
+        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
+        {
+            BoneMatrix local{};
+            if (!ComposeBoneMatrices(inverseAnchor,solved[i],local))
+                return Halo4VrikStage::AnchorFailed;
+            solved[i]=local;
+        }
+
         const Halo4VrikStage classified=Halo4ClassifyStormArms(solved);
         if (classified!=Halo4VrikStage::Solved) return classified;
+
+        // Kept before the solve so the weapon records can be carried by the
+        // same rigid motion the right hand just made.
+        const BoneMatrix stockRightHand=solved[kHalo4RightHandNode];
 
         float headQuaternion[4],headPosition[3];
         if (!VR_GetHeadPose(headQuaternion,headPosition))
@@ -29743,25 +29871,12 @@ namespace
         if (!Halo4SolveArm(solved,true,leftTarget,nullptr))
             return Halo4VrikStage::LeftIkFailed;
 
-        // Any nodes this record carries beyond the tag's 80 body nodes keep
-        // their authored relationship to the right hand, so whatever the
-        // engine appended here follows the two-hand-adjusted aim pose. Only
-        // nodes inside this already-classified record are touched: E-H4-21c
-        // proves the caller walks separate 0x1910 records, so nothing here
-        // assumes where Halo 4's weapon render model lives. A record with
-        // exactly 80 nodes simply skips this loop.
-        if (count>kHalo4StormFpBodyNodeCount)
-        {
-            for(int i=kHalo4StormFpBodyNodeCount;i<count;++i)
-            {
-                BoneMatrix moved{};
-                if (!ComposeBoneMatrices(rightHandDelta,solved[i],moved))
-                    break;
-                solved[i]=moved;
-            }
-            g_halo4Camera.vrikExtraNodeRecords.fetch_add(
-                1,std::memory_order_relaxed);
-        }
+        // C-H4-14 also composed nodes 80..argument7 here, believing they were
+        // appended weapon bones. E-H4-21d disproves that: argument 7 is a
+        // palette size, the consumer reads only the model's 80 nodes, and
+        // slots past 80 are stale bytes on this fill path. Composing them only
+        // manufactured NaNs. Halo 4's weapon is a SEPARATE record, and it is
+        // carried below instead.
 
         // FLOATING HANDS: a presentation filter over the already-solved
         // palette, identical in mechanism to the accepted Halo 3 one. Scale is
@@ -29778,7 +29893,64 @@ namespace
                 if(!Halo4SubtreeContains(kHalo4LeftHandSubtree,index))
                     solved[index].scale=0.0001f;
         }
+
+        // Publish the right hand's motion as a WORLD-space rigid transform, so
+        // the separate weapon records can be carried by exactly the motion the
+        // hand holding them just made. Both banks are built against the same
+        // camera root, so one world delta is valid for both.
+        BoneMatrix worldStock{},worldSolved{},inverseWorldStock{},weaponDelta{};
+        if (ComposeBoneMatrices(anchor,stockRightHand,worldStock) &&
+            ComposeBoneMatrices(anchor,solved[kHalo4RightHandNode],worldSolved) &&
+            InvertBoneMatrix(worldStock,inverseWorldStock) &&
+            ComposeBoneMatrices(worldSolved,inverseWorldStock,weaponDelta))
+        {
+            StoreAtomicBoneMatrix(g_halo4WeaponDelta,weaponDelta);
+            g_halo4WeaponDeltaSerial.fetch_add(1,std::memory_order_acq_rel);
+        }
+
+        // Back into the frame the engine handed us.
+        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
+        {
+            BoneMatrix world{};
+            if (!ComposeBoneMatrices(anchor,solved[i],world))
+                return Halo4VrikStage::AnchorFailed;
+            solved[i]=world;
+        }
         return Halo4VrikStage::Solved;
+    }
+
+    // The weapon records are the other two of the three the first-person path
+    // submits per eye. They are filled from a different source bank against the
+    // same camera root, so they are already in the world frame the delta above
+    // is expressed in - no anchor recovery is needed or possible here (their
+    // node 0 is not storm_fp's root).
+    //
+    // These records are NOT identified from the engine; they are simply "not
+    // the arms". That is deliberate: Halo 4 has no dual wield, every other
+    // first-person record hangs off the weapon the right hand is holding, and
+    // the alternative is leaving the gun welded to the player's face.
+    bool Halo4CarryWeaponRecord(const BoneMatrix* source, BoneMatrix* moved)
+    {
+        if (!source||!moved) return false;
+        if (!g_halo4WeaponDeltaSerial.load(std::memory_order_acquire))
+            return false;
+        BoneMatrix delta{};
+        if (!LoadAtomicBoneMatrix(g_halo4WeaponDelta,delta)) return false;
+        if (!Halo4SafeRead(source,moved,
+                sizeof(BoneMatrix)*kHalo4FirstPersonBankTransforms))
+            return false;
+        bool carried=false;
+        for (int i=0;i<kHalo4FirstPersonBankTransforms;++i)
+        {
+            BoneMatrix result{};
+            // Slots past the weapon model's own node count hold stale bytes
+            // the engine never reads. Skipping one is correct; failing the
+            // whole record because of one would put the gun back on the face.
+            if (!ComposeBoneMatrices(delta,moved[i],result)) continue;
+            moved[i]=result;
+            carried=true;
+        }
+        return carried;
     }
 
     __declspec(noinline) void __fastcall Halo4ModelSkinningDetour(
@@ -29805,9 +29977,10 @@ namespace
                 g_halo4Camera.vrikExactReturnHits.fetch_add(
                     1,std::memory_order_relaxed);
                 Halo4RecordSkinningCount(totalNodeMatrixCount);
+                const int32_t fillFlag=
+                    Halo4RecordFillFlag(inputObjectNodeMatrices);
                 const Halo4VrikStage stage=Halo4BuildVrikPalette(
-                    inputObjectNodeMatrices,g_halo4VrikScratch,
-                    totalNodeMatrixCount);
+                    inputObjectNodeMatrices,g_halo4VrikScratch);
                 if (stage==Halo4VrikStage::Solved)
                 {
                     selected=g_halo4VrikScratch;
@@ -29818,6 +29991,26 @@ namespace
                     g_halo4Camera.vrikStageRefusals[static_cast<size_t>(stage)]
                         .fetch_add(1,std::memory_order_relaxed);
                     g_halo4Camera.vrikAlignmentRefusals.fetch_add(1,std::memory_order_relaxed);
+                    // Only a CLASSIFICATION refusal means "this is not the arms
+                    // record". A pose or IK failure means it IS the arms and
+                    // the solve could not be built this frame - carrying those
+                    // by a stale delta would move the arms by the wrong
+                    // transform, so they stay stock.
+                    const bool notTheArms =
+                        stage==Halo4VrikStage::BasisFailed ||
+                        stage==Halo4VrikStage::RangeFailed ||
+                        stage==Halo4VrikStage::AnchorFailed ||
+                        stage==Halo4VrikStage::LinkFailed ||
+                        stage==Halo4VrikStage::SideFailed;
+                    if (notTheArms &&
+                        fillFlag!=kHalo4FirstPersonBodyFillFlag &&
+                        Halo4CarryWeaponRecord(inputObjectNodeMatrices,
+                                               g_halo4VrikScratch))
+                    {
+                        selected=g_halo4VrikScratch;
+                        g_halo4Camera.vrikWeaponRecordsCarried.fetch_add(
+                            1,std::memory_order_relaxed);
+                    }
                 }
             }
             else g_halo4Camera.vrikStockPalettes.fetch_add(1,std::memory_order_relaxed);
@@ -30155,8 +30348,19 @@ namespace
         for (std::atomic<uint64_t>& stage : g_halo4Camera.vrikStageRefusals)
             stage.store(0,std::memory_order_relaxed);
         g_halo4Camera.vrikExactReturnHits.store(0,std::memory_order_relaxed);
-        g_halo4Camera.vrikExtraNodeRecords.store(0,std::memory_order_relaxed);
+        g_halo4Camera.vrikWeaponRecordsCarried.store(
+            0,std::memory_order_relaxed);
+        g_halo4Camera.vrikBodyFillRecords.store(0,std::memory_order_relaxed);
+        g_halo4Camera.vrikWeaponFillRecords.store(0,std::memory_order_relaxed);
+        g_halo4Camera.vrikUnreadableFillRecords.store(
+            0,std::memory_order_relaxed);
+        g_halo4WeaponDeltaSerial.store(0,std::memory_order_release);
         g_halo4Camera.vrikLinkMeasurements.store(0,std::memory_order_relaxed);
+        g_halo4Camera.vrikClassifyAttempts.store(0,std::memory_order_relaxed);
+        g_halo4Camera.vrikProbeScale.store(0.0f,std::memory_order_relaxed);
+        g_halo4Camera.vrikProbeColumnError.store(0.0f,std::memory_order_relaxed);
+        g_halo4Camera.vrikProbeOrthoError.store(0.0f,std::memory_order_relaxed);
+        g_halo4Camera.vrikProbeTranslation.store(0.0f,std::memory_order_relaxed);
         g_halo4Camera.vrikLastRightUpper.store(0.0f,std::memory_order_relaxed);
         g_halo4Camera.vrikLastRightLower.store(0.0f,std::memory_order_relaxed);
         g_halo4Camera.vrikLastLeftUpper.store(0.0f,std::memory_order_relaxed);
@@ -31054,14 +31258,15 @@ namespace
                 "stock hands remain and camera core stays armed");
             return false;
         }
-        LOG("Halo 4 C-H4-14 VRIK: final palette 0x%X hooked; only return 0x%X "
-            "is admitted; the record is classified by Storm bind geometry, and "
-            "argument 7 is now only required to be within [%d,%d] because "
-            "E-H4-21c measured it to be a per-render-model output count; poles "
-            "are authored v4, attachment scale is ignored, arm_ik=%d "
-            "floating_hands=%d",
+        LOG("Halo 4 C-H4-15 VRIK: final palette 0x%X hooked; only return 0x%X "
+            "is admitted; %d bank transforms are copied per record and argument "
+            "7 is never gated on (E-H4-21d: it is a skinning palette size); the "
+            "arms are lifted into the model's own frame by root node %u before "
+            "the authored bind geometry identifies them; the right hand's world "
+            "delta carries the separate weapon records; poles are authored v4, "
+            "attachment scale is ignored, arm_ik=%d floating_hands=%d",
             kHalo4ModelSkinningRva,kHalo4FirstPersonSkinningReturnRva,
-            kHalo4StormFpMinSkinningNodes,kHalo4StormFpMaxSkinningNodes,
+            kHalo4FirstPersonBankTransforms,kHalo4FirstPersonRootNode,
             g_config.arm_ik?1:0,g_config.floating_hands?1:0);
         return true;
     }
@@ -31577,18 +31782,21 @@ namespace
         // The stage breakdown is the whole point of this candidate: C-H4-13
         // could only say "everything refused", which is why its zero-solve
         // result cost a headset sitting and answered nothing.
-        LOG("Halo 4 C-H4-14 VRIK stages in 2s: count=%llu copy=%llu basis=%llu "
-            "link=%llu side=%llu head-pose=%llu right-pose=%llu left-pose=%llu "
-            "right-ik=%llu left-ik=%llu; %llu records carried nodes past the "
-            "80 body nodes",
-            static_cast<unsigned long long>(
-                stageRefusals[static_cast<size_t>(
-                    Halo4VrikStage::CountRefused)]),
+        LOG("Halo 4 C-H4-15 VRIK stages in 2s: copy=%llu basis=%llu "
+            "range=%llu anchor=%llu link=%llu side=%llu head-pose=%llu "
+            "right-pose=%llu left-pose=%llu right-ik=%llu left-ik=%llu; "
+            "%llu weapon records carried by the right hand",
             static_cast<unsigned long long>(
                 stageRefusals[static_cast<size_t>(Halo4VrikStage::CopyFailed)]),
             static_cast<unsigned long long>(
                 stageRefusals[static_cast<size_t>(
                     Halo4VrikStage::BasisFailed)]),
+            static_cast<unsigned long long>(
+                stageRefusals[static_cast<size_t>(
+                    Halo4VrikStage::RangeFailed)]),
+            static_cast<unsigned long long>(
+                stageRefusals[static_cast<size_t>(
+                    Halo4VrikStage::AnchorFailed)]),
             static_cast<unsigned long long>(
                 stageRefusals[static_cast<size_t>(Halo4VrikStage::LinkFailed)]),
             static_cast<unsigned long long>(
@@ -31609,8 +31817,38 @@ namespace
                 stageRefusals[static_cast<size_t>(
                     Halo4VrikStage::LeftIkFailed)]),
             static_cast<unsigned long long>(
-                g_halo4Camera.vrikExtraNodeRecords.exchange(
+                g_halo4Camera.vrikWeaponRecordsCarried.exchange(
                     0,std::memory_order_relaxed)));
+        // Which of the engine's three first-person fills each record came from,
+        // straight out of the record header. Measurement only.
+        LOG("Halo 4 C-H4-15 VRIK record fills in 2s: %llu body / %llu weapon / "
+            "%llu header unreadable; argument 7 is a skinning PALETTE SIZE "
+            "(E-H4-21d) and is never gated on",
+            static_cast<unsigned long long>(
+                g_halo4Camera.vrikBodyFillRecords.exchange(
+                    0,std::memory_order_relaxed)),
+            static_cast<unsigned long long>(
+                g_halo4Camera.vrikWeaponFillRecords.exchange(
+                    0,std::memory_order_relaxed)),
+            static_cast<unsigned long long>(
+                g_halo4Camera.vrikUnreadableFillRecords.exchange(
+                    0,std::memory_order_relaxed)));
+        // The decode probe. If the element layout is right, column error and
+        // ortho error are both near zero for every real animation matrix; if
+        // they are large, we are reading the 0x34-byte element in the wrong
+        // order and no amount of tolerance widening will ever help.
+        LOG("Halo 4 C-H4-14 VRIK decode probe (node %d of %llu classified "
+            "records): scale %.4f, basis column error %.4f, orthogonality "
+            "error %.4f, translation magnitude %.3f world units; a correctly "
+            "decoded animation basis has both errors near zero",
+            kHalo4RightShoulderNode,
+            static_cast<unsigned long long>(
+                g_halo4Camera.vrikClassifyAttempts.exchange(
+                    0,std::memory_order_relaxed)),
+            g_halo4Camera.vrikProbeScale.load(std::memory_order_relaxed),
+            g_halo4Camera.vrikProbeColumnError.load(std::memory_order_relaxed),
+            g_halo4Camera.vrikProbeOrthoError.load(std::memory_order_relaxed),
+            g_halo4Camera.vrikProbeTranslation.load(std::memory_order_relaxed));
         // What the ENGINE holds, next to what the H4EK tag says it should.
         LOG("Halo 4 C-H4-14 VRIK live arm links: R %.4f/%.4f L %.4f/%.4f from "
             "%llu measured records; H4EK storm_fp bind is %.4f upper / %.4f "

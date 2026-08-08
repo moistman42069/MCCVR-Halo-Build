@@ -6630,22 +6630,24 @@ int main()
                   fabsf(kHalo4LeftAttachmentMetres[1] - 0.059896648f) < 1.0e-6f,
             "The two controller-parented attachment offsets preserve authored metres");
 
-        // E-H4-21c / C-H4-14.  C-H4-13's headset failure was one predicate:
-        // argument 7 is the CURRENT render model's skinning-output count, so
-        // requiring it to equal the 85-node composed animation count refused
-        // every live palette.  These lock the replacement in.
-        Check(Halo4SkinningCountCanBeStorm(kHalo4StormFpBodyNodeCount) &&
-                  Halo4SkinningCountCanBeStorm(kHalo4StormFpComposedNodeCount) &&
-                  Halo4SkinningCountCanBeStorm(kHalo4StormFpMaxSkinningNodes),
-            "The 80-node body, the 85-node composed size and a full bank are "
-            "all admitted, instead of one believed count");
-        Check(!Halo4SkinningCountCanBeStorm(kHalo4StormFpBodyNodeCount - 1) &&
-                  !Halo4SkinningCountCanBeStorm(
-                      kHalo4StormFpMaxSkinningNodes + 1) &&
-                  !Halo4SkinningCountCanBeStorm(0) &&
-                  !Halo4SkinningCountCanBeStorm(-1),
-            "Counts that cannot index the Storm node map or overrun the bank "
-            "are refused, including the caller's jle-path zero");
+        // E-H4-21d / C-H4-15.  Two headset sittings were lost to gating on
+        // argument 7.  It is a skinning PALETTE SIZE, not a node count: the
+        // live records measured 96, 5 and 33 while storm_fp genuinely has 80
+        // nodes, and 80 is not even a reachable palette size for it.  The copy
+        // is bounded by the record's fixed bank instead, which is a structural
+        // fact rather than a belief about any model.
+        Check(kHalo4FirstPersonBankTransforms == 120 &&
+                  kHalo4FirstPersonBankTransforms >=
+                      kHalo4StormFpBodyNodeCount,
+            "The record bank bound covers every Storm body node without "
+            "consulting argument 7");
+        Check(0xB0u + static_cast<uint32_t>(kHalo4FirstPersonBankTransforms) *
+                  0x34u <= 0x1910u,
+            "The whole copied bank fits inside one 0x1910 first-person record");
+        Check(kHalo4FirstPersonRecordBankOffset == 0xB0u &&
+                  kHalo4FirstPersonRecordFillFlagOffset == 0x08u &&
+                  kHalo4FirstPersonBodyFillFlag == 0,
+            "The record header offsets match the engine's own bank filler");
 
         // The Storm classifier is what identifies the record now, so it must
         // keep rejecting a rig that merely has enough nodes.
