@@ -174,9 +174,9 @@ now: C-H4-9 is installed in both editions for a look-pitch headset test, but
 
 | C-H4-11a installed identity | Value |
 | --- | --- |
-| Source | `e9bd65b824592daffd5adde4ddf578f254e58508` (branch `feature/halo4-bringup`) |
-| Package | `out/candidates/e9bd65b-halo4-c11a-first-person-hands-live-bank-20260808-163811888Z` |
-| `halo3xr.dll` SHA-256 | `240E608B21A415B0B039478866688C92D4B7734512167A9A690C61D59F91EF27` |
+| Source | `0f06506a3252649a550b861e8d09feaadafb6abb` (branch `feature/halo4-bringup`); behavior `e9bd65b`, `0f06506` relabels the log line only |
+| Package | `out/candidates/0f06506-halo4-c11a-first-person-hands-live-bank-20260808-163918353Z` |
+| `halo3xr.dll` SHA-256 | `C9287B6F0630D51661D7D82B350863239A65AB911945CCFBD09C024B236D31C1` |
 | `halo3xr_launcher.exe` SHA-256 | `5625F9A5782741B705C57F4C9C7628B8135FCE270C9CE815E427125AED5F9444` |
 | Installed editions | Steam and Microsoft Store; both installed hashes independently matched |
 | Offline gates | Release x64 build, `core_tests`, Reach consistency gate - all passing |
