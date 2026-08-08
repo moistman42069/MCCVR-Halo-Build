@@ -29460,6 +29460,11 @@ namespace
     // stays zero until an arms record has actually solved.
     AtomicBoneMatrix g_halo4WeaponDelta;
     std::atomic<uint64_t> g_halo4WeaponDeltaSerial{0};
+    std::atomic<uint64_t> g_halo4WeaponDeltaPublishedAt{0};
+    // Three records reach the first-person site per eye, two eyes per frame.
+    // Twelve is a couple of frames' worth, so a delta survives normal record
+    // ordering but expires as soon as the arms stop solving.
+    constexpr uint64_t kHalo4WeaponDeltaMaxRecordAge = 12;
 
     constexpr int kHalo4RightShoulderSubtree[] = {
         4,11,12,14,15,16,17,18,22,26,27,29,30,31,34,36,38,40,41,42,
@@ -29554,7 +29559,12 @@ namespace
     // Decide whether this record IS the Storm first-person body, from matrix
     // relationships the H4EK tag proves - never from argument 7, which
     // E-H4-21d measured to be a per-render-model skinning PALETTE SIZE.
-    Halo4VrikStage Halo4ClassifyStormArms(const BoneMatrix* nodes)
+    // `publish` is true only for the engine's own body fill. The two weapon
+    // records reach this classifier too, and their slots 4/16/29/5/8/37 are
+    // unrelated bones - letting them write the probe made the measured arm
+    // links an average of the real arms and a weapon, which reads as
+    // "bone lengths that change every window" and is deeply misleading.
+    Halo4VrikStage Halo4ClassifyStormArms(const BoneMatrix* nodes, bool publish)
     {
         const int indices[] = {
             kHalo4RightShoulderNode,kHalo4RightElbowNode,kHalo4RightHandNode,
@@ -29564,9 +29574,10 @@ namespace
         // any of it. A real animation basis is orthonormal to float noise, so
         // these four numbers separate "we are decoding the element wrongly"
         // from "this is not the model we think it is" without another guess.
-        g_halo4Camera.vrikClassifyAttempts.fetch_add(
-            1,std::memory_order_relaxed);
+        if (publish)
         {
+            g_halo4Camera.vrikClassifyAttempts.fetch_add(
+                1,std::memory_order_relaxed);
             const BoneMatrix& probe=nodes[kHalo4RightShoulderNode];
             float column[3][3]{};
             float worstColumn=0.0f,worstDot=0.0f,translationMagnitude=0.0f;
@@ -29627,12 +29638,15 @@ namespace
                                          nodes[kHalo4LeftHandNode]);
         // Publish the measurement BEFORE judging it, so a window that admits
         // nothing still reports the four distances the engine actually holds.
-        g_halo4Camera.vrikLastRightUpper.store(ru,std::memory_order_relaxed);
-        g_halo4Camera.vrikLastRightLower.store(rl,std::memory_order_relaxed);
-        g_halo4Camera.vrikLastLeftUpper.store(lu,std::memory_order_relaxed);
-        g_halo4Camera.vrikLastLeftLower.store(ll,std::memory_order_relaxed);
-        g_halo4Camera.vrikLinkMeasurements.fetch_add(
-            1,std::memory_order_relaxed);
+        if (publish)
+        {
+            g_halo4Camera.vrikLastRightUpper.store(ru,std::memory_order_relaxed);
+            g_halo4Camera.vrikLastRightLower.store(rl,std::memory_order_relaxed);
+            g_halo4Camera.vrikLastLeftUpper.store(lu,std::memory_order_relaxed);
+            g_halo4Camera.vrikLastLeftLower.store(ll,std::memory_order_relaxed);
+            g_halo4Camera.vrikLinkMeasurements.fetch_add(
+                1,std::memory_order_relaxed);
+        }
         if (!Halo4StormLinkLengthsMatch(ru,rl,lu,ll))
             return Halo4VrikStage::LinkFailed;
         if (!Halo4StormSideOrderMatches(
@@ -29815,7 +29829,7 @@ namespace
     }
 
     Halo4VrikStage Halo4BuildVrikPalette(const BoneMatrix* source,
-                                         BoneMatrix* solved)
+                                         BoneMatrix* solved, bool bodyFill)
     {
         if (!source||!solved) return Halo4VrikStage::CopyFailed;
         // Bounded by the STRUCTURE, not by argument 7. E-H4-21d: argument 7 is
@@ -29848,7 +29862,7 @@ namespace
             solved[i]=local;
         }
 
-        const Halo4VrikStage classified=Halo4ClassifyStormArms(solved);
+        const Halo4VrikStage classified=Halo4ClassifyStormArms(solved,bodyFill);
         if (classified!=Halo4VrikStage::Solved) return classified;
 
         // Kept before the solve so the weapon records can be carried by the
@@ -29878,12 +29892,48 @@ namespace
         // manufactured NaNs. Halo 4's weapon is a SEPARATE record, and it is
         // carried below instead.
 
-        // FLOATING HANDS: a presentation filter over the already-solved
-        // palette, identical in mechanism to the accepted Halo 3 one. Scale is
-        // a proven render input, so collapsing a bone drives its vertices to
-        // the joint origin - an invisible speck, no crash risk. Only the arm
-        // bones that are NOT part of either hand subtree collapse, which is
-        // what keeps every finger and hand-armour transform intact.
+        // Back into the frame the engine handed us. THIS MUST HAPPEN BEFORE ANY
+        // SCALE COLLAPSE. ComposeBoneMatrices refuses a matrix whose scale is
+        // under 0.001, and floating hands deliberately drives arm scales to
+        // 0.0001. Collapsing first made this transform fail on every solved
+        // palette: the arms reverted to stock while the weapon delta below had
+        // already been published, which is precisely "the gun follows my hand
+        // but the arms do not, and it is in the wrong space".
+        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
+        {
+            BoneMatrix world{};
+            if (!ComposeBoneMatrices(anchor,solved[i],world))
+                return Halo4VrikStage::AnchorFailed;
+            solved[i]=world;
+        }
+
+        // Publish the right hand's motion as a WORLD-space rigid transform, so
+        // the separate weapon records can be carried by exactly the motion the
+        // hand holding them just made. Both banks are built against the same
+        // camera root, so one world delta is valid for both. Published only
+        // once the palette above is fully built, so the gun can never be moved
+        // by a solve the arms did not actually receive.
+        BoneMatrix worldStock{},inverseWorldStock{},weaponDelta{};
+        if (ComposeBoneMatrices(anchor,stockRightHand,worldStock) &&
+            InvertBoneMatrix(worldStock,inverseWorldStock) &&
+            ComposeBoneMatrices(solved[kHalo4RightHandNode],inverseWorldStock,
+                                weaponDelta))
+        {
+            StoreAtomicBoneMatrix(g_halo4WeaponDelta,weaponDelta);
+            g_halo4WeaponDeltaPublishedAt.store(
+                g_halo4Camera.vrikExactReturnHits.load(
+                    std::memory_order_relaxed),
+                std::memory_order_release);
+            g_halo4WeaponDeltaSerial.fetch_add(1,std::memory_order_acq_rel);
+        }
+
+        // FLOATING HANDS: a presentation filter over the finished palette, and
+        // deliberately the LAST thing that touches it - nothing composes after
+        // this point. Identical in mechanism to the accepted Halo 3 one: scale
+        // is a proven render input, so collapsing a bone drives its vertices to
+        // the joint origin, an invisible speck with no crash risk. Only the arm
+        // bones outside either hand subtree collapse, which is what keeps every
+        // finger and hand-armour transform intact.
         if (g_config.floating_hands)
         {
             for(int index:kHalo4RightShoulderSubtree)
@@ -29892,29 +29942,6 @@ namespace
             for(int index:kHalo4LeftShoulderSubtree)
                 if(!Halo4SubtreeContains(kHalo4LeftHandSubtree,index))
                     solved[index].scale=0.0001f;
-        }
-
-        // Publish the right hand's motion as a WORLD-space rigid transform, so
-        // the separate weapon records can be carried by exactly the motion the
-        // hand holding them just made. Both banks are built against the same
-        // camera root, so one world delta is valid for both.
-        BoneMatrix worldStock{},worldSolved{},inverseWorldStock{},weaponDelta{};
-        if (ComposeBoneMatrices(anchor,stockRightHand,worldStock) &&
-            ComposeBoneMatrices(anchor,solved[kHalo4RightHandNode],worldSolved) &&
-            InvertBoneMatrix(worldStock,inverseWorldStock) &&
-            ComposeBoneMatrices(worldSolved,inverseWorldStock,weaponDelta))
-        {
-            StoreAtomicBoneMatrix(g_halo4WeaponDelta,weaponDelta);
-            g_halo4WeaponDeltaSerial.fetch_add(1,std::memory_order_acq_rel);
-        }
-
-        // Back into the frame the engine handed us.
-        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
-        {
-            BoneMatrix world{};
-            if (!ComposeBoneMatrices(anchor,solved[i],world))
-                return Halo4VrikStage::AnchorFailed;
-            solved[i]=world;
         }
         return Halo4VrikStage::Solved;
     }
@@ -29933,6 +29960,17 @@ namespace
     {
         if (!source||!moved) return false;
         if (!g_halo4WeaponDeltaSerial.load(std::memory_order_acquire))
+            return false;
+        // The producer fills both weapon records before the body one, so the
+        // freshest delta a weapon can see is one record-order old. Anything
+        // older than a couple of frames' worth of records means the arms have
+        // stopped solving - in a vehicle, a cutscene, a menu - and dragging the
+        // gun around by a frozen transform is worse than leaving it stock.
+        const uint64_t hits=g_halo4Camera.vrikExactReturnHits.load(
+            std::memory_order_relaxed);
+        const uint64_t publishedAt=g_halo4WeaponDeltaPublishedAt.load(
+            std::memory_order_acquire);
+        if (hits<publishedAt || hits-publishedAt>kHalo4WeaponDeltaMaxRecordAge)
             return false;
         BoneMatrix delta{};
         if (!LoadAtomicBoneMatrix(g_halo4WeaponDelta,delta)) return false;
@@ -29980,7 +30018,8 @@ namespace
                 const int32_t fillFlag=
                     Halo4RecordFillFlag(inputObjectNodeMatrices);
                 const Halo4VrikStage stage=Halo4BuildVrikPalette(
-                    inputObjectNodeMatrices,g_halo4VrikScratch);
+                    inputObjectNodeMatrices,g_halo4VrikScratch,
+                    fillFlag==kHalo4FirstPersonBodyFillFlag);
                 if (stage==Halo4VrikStage::Solved)
                 {
                     selected=g_halo4VrikScratch;

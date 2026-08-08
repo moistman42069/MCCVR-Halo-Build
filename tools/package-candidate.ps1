@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c15-model-frame-vrik',
+        'halo4-c16-floating-hands-order',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-15'
+            id = 'C-H4-16'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'final-palette-vrik-solved-in-the-models-own-frame-with-the-weapon-record-carried-by-the-right-hand'
+            behavior = 'model-frame-vrik-with-the-scale-collapse-moved-after-the-transform-back-so-solved-palettes-reach-the-engine'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
