@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "aim_servo_logic.h"
+
 // Halo 4-only render evidence and (eventually) allocation-free policy. This
 // file contains no Windows, COM, MinHook, logging, or engine writes, so its
 // contents can be exhaustively tested offline before any detour is
@@ -823,7 +825,43 @@ struct Halo4HeadPoseInput
     float pitchTrim = 0.0f;     // radians
     float worldScale = 0.33f;   // game units per meter
     bool positional = true;     // 6DOF on
+    // C-H4-9. False reproduces C-H4-8 exactly: the head is a delta ON TOP of
+    // whatever pitch and roll the engine's camera already carries. True keeps
+    // only the engine's HEADING and gives the headset pitch and roll outright,
+    // which is what every other title does.
+    bool headOwnsPitch = false;
 };
+
+// Halo 3's ApplyHeadLook composition (game.cpp, the accepted first-person
+// camera), reused here term for term so the two titles build the same basis
+// from the same head. Halo 4's basis was independently PROVEN to be the same
+// shape - right-handed, Z-up, yaw = atan2(fwd.y, fwd.x) - by the retail
+// projection builder at 0x38F658 and the live C-H4-6 camera dump.
+//
+//   forward = (cos p cos y, cos p sin y, sin p)
+//   up      = horizon-level up * cos(roll) + right * sin(roll),
+//             where right = (sin y, -cos y, 0)
+//
+// Orthonormal by construction, so it can never fail Halo4ValidateCameraBasis
+// the way C-H4-6's partial rewrite did.
+inline void Halo4ComposeHeadOwnedBasis(
+    float gameYaw, float pitch, float roll, float outForward[3],
+    float outUp[3]) noexcept
+{
+    const float cp = std::cos(pitch), sp = std::sin(pitch);
+    const float cy = std::cos(gameYaw), sy = std::sin(gameYaw);
+    const float cr = std::cos(roll), sr = std::sin(roll);
+    outForward[0] = cp * cy;
+    outForward[1] = cp * sy;
+    outForward[2] = sp;
+    outUp[0] = (-sp * cy) * cr + sy * sr;
+    outUp[1] = (-sp * sy) * cr - cy * sr;
+    outUp[2] = cp * cr;
+}
+
+inline bool Halo4ApplyHeadLean(
+    Halo4CameraBasis& camera, const Halo4HeadPoseInput& input,
+    const Halo4HeadOrientation& head) noexcept;
 
 // Rotate the engine's mono camera by the headset's orientation and displace it
 // by the headset's room-space movement.
@@ -880,6 +918,37 @@ inline bool Halo4ApplyHeadPose(
         return false;
     }
 
+    // C-H4-9: the headset owns pitch and roll. The engine keeps its HEADING
+    // and nothing else, so a level head is a level horizon no matter what the
+    // engine's own camera pitch is doing.
+    //
+    // C-H4-8 added head pitch on top of the engine's pitch, which is correct
+    // only while the engine's pitch is zero. It is not: the look stick's
+    // vertical axis drives it, and so does weapon kick. Every degree of engine
+    // pitch tilted the whole world away from the player's real horizon - the
+    // reported "the up and down stick is breaking my orientation on my head".
+    // No amount of stick suppression fixes that on its own, because engine
+    // pitch that is already non-zero simply stays there with nothing to
+    // return it to level.
+    if (input.headOwnsPitch)
+    {
+        const float engineYaw =
+            std::atan2(camera.forward[1], camera.forward[0]);
+        if (!std::isfinite(engineYaw))
+            return false;
+        // Same +-1.5 rad clamp Halo 3 applies, so the basis can never
+        // degenerate at the poles.
+        const float pitch = deltaPitch < -1.5f
+            ? -1.5f : (deltaPitch > 1.5f ? 1.5f : deltaPitch);
+        Halo4ComposeHeadOwnedBasis(
+            engineYaw + deltaYaw, pitch, deltaRoll, camera.forward, camera.up);
+        if (!Halo4ValidateCameraBasis(camera))
+            return false;
+        return input.positional
+            ? Halo4ApplyHeadLean(camera, input, head)
+            : true;
+    }
+
     // Yaw about world up, then pitch about the resulting right, then roll about
     // the resulting forward - the standard intrinsic head composition, applied
     // on top of whatever the engine is already looking at.
@@ -921,10 +990,17 @@ inline bool Halo4ApplyHeadPose(
 
     if (!input.positional)
         return true;
+    return Halo4ApplyHeadLean(camera, input, head);
+}
 
-    // Leaning. Decompose the room-space move in the head's own horizontal frame
-    // and re-apply it in the game's frame, so it stays correct as you turn.
-    // Same construction and the same +-1.5 world-unit clamp Halo 3 ships.
+// Leaning. Decompose the room-space move in the head's own horizontal frame
+// and re-apply it in the game's frame, so it stays correct as you turn.
+// Same construction and the same +-1.5 world-unit clamp Halo 3 ships. Shared
+// by both composition paths so 6DOF is bit-identical whoever owns pitch.
+inline bool Halo4ApplyHeadLean(
+    Halo4CameraBasis& camera, const Halo4HeadPoseInput& input,
+    const Halo4HeadOrientation& head) noexcept
+{
     const float dx = input.position[0] - input.headPositionReference[0];
     const float dy = input.position[1] - input.headPositionReference[1];
     const float dz = input.position[2] - input.headPositionReference[2];
@@ -959,4 +1035,106 @@ inline bool Halo4ApplyHeadPose(
         camera.position[axis] += offset[axis];
     }
     return Halo4ValidateCameraBasis(camera);
+}
+
+// --- C-H4-9: keeping Halo 4's OWN look pitch under the headset ---------------
+//
+// Taking pitch off the stick fixes the view, and on its own would break the
+// game: Halo spawns first-person shots along the ENGINE's camera ray, so a
+// frozen engine pitch means every shot leaves level however far up or down the
+// player is looking.
+//
+// Halo 3 solves the same problem with a closed loop that emits a right-stick
+// deflection proportional to the angular error and lets the engine integrate it
+// through its own turn-rate path (Game_ComputeAimStick). Halo 4 has exactly one
+// proven aim anchor at this stage - the observer camera the C-H4-7 transaction
+// already reads every frame, which IS the ray shots leave along - and exactly
+// one proven actuator, the virtual right stick C-H4-1 accepted. That is enough
+// to close the same loop on the pitch axis alone.
+//
+// Two things are deliberately MEASURED rather than assumed:
+//
+//  * The direction of the engine's own stick->pitch mapping. `direction`
+//    estimates its sign from what the engine's pitch actually did after our
+//    last command, so a player with inverted look is followed instead of
+//    fought, and a wrong initial guess costs a handful of frames rather than a
+//    session. Nothing here encodes a belief about which way Halo 4 pitches.
+//  * The actuator's own resolution, through the shared AimServoAxis. ToRawStick
+//    floors every non-zero command at 27.5% deflection to clear MCC's inner
+//    deadzone, so the engine only ever hears "stop" or "at least 27.5%" - the
+//    quantised actuator that produced the Halo 3/ODST turret wiggle. The rest
+//    hysteresis parks the loop inside a band widened by the measured step,
+//    which is the only thing that stops a limit cycle on an axis this coarse.
+struct Halo4PitchServo
+{
+    AimServoAxis axis{};
+    float lastCommand = 0.0f;       // signed stick value we issued last frame
+    float lastEnginePitch = 0.0f;
+    bool haveLastEnginePitch = false;
+    float directionEvidence = 0.0f; // running estimate of the mapping's sign
+    float direction = 1.0f;
+    uint64_t commandedFrames = 0;
+    uint64_t parkedFrames = 0;
+};
+
+inline void Halo4ResetPitchServo(Halo4PitchServo& servo) noexcept
+{
+    servo = Halo4PitchServo{};
+}
+
+// Full deflection at ~4.8 degrees of error, the same constant Halo 3's accepted
+// aim loop uses. The real ceiling is the engine's own look rate.
+inline constexpr float kHalo4PitchServoGain = 12.0f;
+// Bounded so the estimate can still flip within a few frames if the mapping
+// changes under it (a sensitivity or invert-look change mid-session).
+inline constexpr float kHalo4PitchServoEvidenceCap = 6.0f;
+// Below this the engine did not measurably move, so the frame says nothing
+// about the mapping's direction and must not be counted as evidence.
+inline constexpr float kHalo4PitchServoMotionEpsilon = 1.0e-4f;
+
+inline float Halo4PitchServoStep(
+    Halo4PitchServo& servo, float enginePitch, float desiredPitch,
+    float gain) noexcept
+{
+    if (!std::isfinite(enginePitch) || !std::isfinite(desiredPitch) ||
+        !std::isfinite(gain))
+    {
+        servo.lastCommand = 0.0f;
+        servo.haveLastEnginePitch = false;
+        return 0.0f;
+    }
+
+    if (servo.haveLastEnginePitch && std::fabs(servo.lastCommand) > 1.0e-3f)
+    {
+        const float observed = enginePitch - servo.lastEnginePitch;
+        if (std::isfinite(observed) &&
+            std::fabs(observed) > kHalo4PitchServoMotionEpsilon)
+        {
+            // sign(observed * issued) IS the sign of the engine's mapping, not
+            // "was our guess right" - so the estimate is stable once correct
+            // instead of oscillating with the value it is estimating.
+            servo.directionEvidence +=
+                observed * servo.lastCommand > 0.0f ? 1.0f : -1.0f;
+            if (servo.directionEvidence > kHalo4PitchServoEvidenceCap)
+                servo.directionEvidence = kHalo4PitchServoEvidenceCap;
+            if (servo.directionEvidence < -kHalo4PitchServoEvidenceCap)
+                servo.directionEvidence = -kHalo4PitchServoEvidenceCap;
+            servo.direction = servo.directionEvidence < 0.0f ? -1.0f : 1.0f;
+        }
+    }
+
+    AimServoObserve(servo.axis, enginePitch, std::fabs(servo.lastCommand));
+    const float command = AimServoCommand(
+        servo.axis, desiredPitch - enginePitch, gain,
+        kAimServoRestEnterRadians, kAimServoRestExitRadians);
+    const float output = command * servo.direction;
+
+    servo.lastCommand = output;
+    servo.lastEnginePitch = enginePitch;
+    servo.haveLastEnginePitch = true;
+    if (output == 0.0f)
+        ++servo.parkedFrames;
+    else
+        ++servo.commandedFrames;
+    return output;
 }

@@ -285,6 +285,21 @@ namespace
             state->Gamepad.sThumbRX = 0;
             state->Gamepad.sThumbRY = 0;
         }
+        else if (Game_Halo4OwnsLookPitch())
+        {
+            // Halo 4 (C-H4-9): the headset owns pitch, the engine keeps yaw.
+            // The vertical axis never reaches the game again - a closed loop
+            // drives the engine's own look pitch onto the head's instead, so
+            // the shot line follows the view without artificial pitch tilting
+            // the world away from the player's real horizon. Horizontal is
+            // untouched: Halo 4 has no VR turn or aim loop yet, so the engine
+            // must keep turning the body, the aim and the view together.
+            if (fabsf(pad.turnX) > 0.15f)
+                state->Gamepad.sThumbRX = ToRawStick(pad.turnX);
+            float servoRy = 0.0f;
+            state->Gamepad.sThumbRY =
+                Game_ComputeHalo4PitchStick(servoRy) ? ToRawStick(servoRy) : 0;
+        }
         else
         {
             const bool scopeActive = VR_IsScopeActive();

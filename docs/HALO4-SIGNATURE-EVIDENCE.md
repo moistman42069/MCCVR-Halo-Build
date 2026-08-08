@@ -1062,6 +1062,104 @@ Blam's ten-foot world unit, `0.33` over-scales head motion and IPD by 0.58%.
   **absent**, replaced by `M2: submitting native per-eye FOV; ... cover
   61.5/53.0 deg` on this headset.
 
+### C-H4-9 — the headset owns Halo 4's look pitch (OFFLINE-PASS 2026-08-08; headset-PENDING)
+
+**C-H4-8 PASSED both of its own log claims and was rejected on one experience
+defect.** Its preserved run reads `geometry TAKING`, 137 completed pairs/2s,
+`138 tracked frames`, `reference captured`, `lean 0.006 world units (6DOF ON)`,
+`276 widened eyes`, `calibration learned (gain 0.3925, ratio 1.3866)`, engine
+built `61.75/53.31 deg` and **`contains headset frustum: YES`** — the `M2
+WARNING` C-H4-7 exposed is gone. Stereo, head tracking, 6DOF and native FOV all
+work. The user's report was narrower: *"the up and down stick is breaking my
+orientation on my head — have it working like the other halo games."*
+
+**The defect, stated exactly.** C-H4-8 applies the headset as a DELTA on Halo
+4's own camera, so the view pitch is `enginePitch + headPitch`. That is correct
+only while `enginePitch` is zero, and it is not: the look stick's vertical axis
+drives it, and so does weapon kick. Every degree of engine pitch tilts the whole
+world away from the player's real horizon. Artificial pitch fights the inner ear
+in a way artificial yaw does not, which is why the same stick's horizontal axis
+was not reported.
+
+**Suppressing the stick alone does not fix it, and would break the game.**
+Engine pitch that is already non-zero simply stays there with nothing to return
+it to level; and because Halo spawns first-person shots along the ENGINE's
+camera ray, a frozen engine pitch means every shot leaves level however far up
+or down the player looks. The fix therefore has three inseparable parts.
+
+1. **The view takes pitch and roll outright.** `Halo4ApplyHeadPose` keeps only
+   the engine's HEADING (`atan2(fwd.y, fwd.x)`) and rebuilds the basis through
+   `Halo4ComposeHeadOwnedBasis`, which is Halo 3's `ApplyHeadLook` composition
+   term for term — `forward = (cos p cos y, cos p sin y, sin p)`, `up =` level
+   up `* cos(roll) +` right `* sin(roll)`, with Halo 3's own ±1.5 rad clamp.
+   Orthonormal by construction, so it cannot fail `Halo4ValidateCameraBasis` the
+   way C-H4-6's partial rewrite did. Yaw is unchanged from C-H4-8.
+2. **The stick's vertical axis never reaches the game again.** A new
+   `Game_Halo4OwnsLookPitch()` branch in the XInput hook holds RY. It is
+   deliberately narrower than `Game_VrOwnsLookStick`, which zeroes BOTH axes:
+   Halo 3 can do that because `ApplyVrTurn` owns yaw and a controller aim loop
+   keeps the gun on the VR sight, and Halo 4 has neither yet. Zeroing yaw too
+   would leave the player unable to turn and unable to shoot where they turned,
+   so the horizontal axis stays with the engine and keeps turning body, aim and
+   view together. This is a stated implementation difference, which `AGENTS.md`
+   permits, not a degradation.
+3. **A closed loop puts the engine's own pitch back under the head**, so shots
+   follow the view. Halo 4 has exactly one proven aim anchor at this stage — the
+   observer camera the C-H4-7 transaction already reads every frame, which IS
+   the ray shots leave along — and exactly one proven actuator, the virtual
+   right stick C-H4-1 accepted. `Halo4PitchServoStep` closes that loop on the
+   pitch axis alone, reusing the shared `AimServoAxis` rest hysteresis.
+
+**Two quantities are MEASURED, not assumed.**
+
+- **The sign of the engine's stick→pitch mapping.** `direction` estimates it
+  from what the engine's pitch actually did after our last command:
+  `sign(observed * issued)` is the mapping's own sign, not "was our guess
+  right", so the estimate is stable once correct instead of oscillating with the
+  value it estimates. A player with inverted look is followed rather than
+  fought; a wrong starting value costs a handful of frames, bounded by a ±6
+  saturating counter, and is printed in the log.
+- **The actuator's resolution.** `ToRawStick` floors every non-zero command at
+  `9000/32767 = 27.5%` to clear MCC's inner deadzone, so the engine only ever
+  hears "stop" or "at least 27.5%" — the quantised actuator that produced the
+  Halo 3/ODST turret wiggle. The shared `AimServoObserve` samples only frames
+  whose command was inside that floor region and widens the rest band by the
+  measured step, which is the only thing that stops a limit cycle on an axis
+  this coarse.
+
+**Fail-closed, on the render thread's own evidence.** The engine pitch is
+published once per OWNED frame (window 0, armed, correct caller) with a serial.
+The input thread steers only while that serial is advancing; 250 ms without a
+new one parks the stick and resets the loop, because commanding against a stale
+error is exactly how a runaway starts. `Halo4ResetTelemetry` drops the
+publication on every install and removal, so a level change cannot inherit the
+previous level's error. A declined poll holds the axis at zero and never falls
+back to the raw stick — that would silently restore the artificial pitch.
+
+**One predicate decides all three parts.** `Halo4LookPitchOwned()` is sampled by
+the render camera, the XInput hook and the loop, so there is no state where the
+view has taken pitch and the stick has not. F2 turns the whole behaviour off
+together, returning exactly C-H4-8's additive head pose.
+
+**Known limitation, stated rather than guessed.** Halo 4 has no cinematic
+detection with evidence behind it, so an authored cutscene camera's pitch is
+flattened to the head's, exactly as C-H4-8 already added head pitch on top of
+it. The loop is inert there (Halo ignores look input in a cutscene, so the
+command saturates harmlessly and the direction estimate is guarded by a motion
+threshold). Cinematic ownership is its own rung.
+
+**What the log must show for a pass**, beside the C-H4-8 lines, now relabelled
+`C-H4-9`:
+
+- `Halo 4 C-H4-9 head tracking:` `head pitch ... (ABSOLUTE, headset owns
+  pitch)`, plus the per-axis `lean ... = +x/+y/+z xyz` that makes 6DOF provable
+  on each axis instead of as one magnitude.
+- `Halo 4 C-H4-9 look pitch:` `the headset owns the vertical axis`, a small
+  `error`, a `learned direction` of `+1` or `-1`, and `commanded` polls falling
+  away to `parked` ones as the gun settles. A large steady error with the stick
+  pinned means the engine refused to be steered — a different fault, and it must
+  not be reported as head tracking.
+
 ### Forward milestone ladder — one visible claim per candidate
 
 1. **C-H4-7:** stock-projection/exact-serial stereo geometry only.
@@ -1072,8 +1170,13 @@ Blam's ten-foot world unit, `0.33` over-scales head motion and IPD by 0.58%.
    was waiting on. `+0x2C` remains unresolved and unwritten; exact four-edge
    off-axis geometry remains future work and is unnecessary while a solved
    symmetric cover contains the frustum.
+3. **C-H4-9:** headset-owned look pitch only — the view takes pitch and roll,
+   the stick's vertical axis is held, and a closed loop keeps the engine's own
+   pitch (and so the shot line) under the head. Yaw ownership deliberately
+   stays with the engine until there is a VR turn and an aim loop to replace it.
 4. **C-H4-10:** CUI HUD presence only, on its own H4EK-proven draw boundary.
-5. **C-H4-11:** turn/look ownership and configuration parity only.
+5. **C-H4-11:** turn/look ownership and configuration parity only — the yaw
+   half of C-H4-9, once `ApplyVrTurn`'s Halo 4 equivalent exists.
 6. **C-H4-12:** controller aim and reticle only.
 7. **C-H4-13:** first-person weapons/hands only. Lifecycle, vehicles, and
    further features remain separate candidates after that.

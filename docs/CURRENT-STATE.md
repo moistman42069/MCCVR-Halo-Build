@@ -165,7 +165,8 @@ test, but **none of C-H4-2 through C-H4-8 advances C-H4-1**.
 | C-H4-5 `89b89ef` | **FAILED / user rejected:** lit distinct eyes and sustained `layers=1`, but malformed 3D/FOV, no head tracking/6DOF/HUD. |
 | C-H4-6 `4fc3c84` | **FAILED:** zero completed pairs, visible stall/title bounce, wrong FOV representation, and wrong outer-function return ABI. Behavior reverted by `7d58a68`. |
 | C-H4-7 `dbf1382` | **PASSED its own claim, experience REJECTED (2026-08-08):** 226-243 pairs/2s, `geometry TAKING`, zero drops, distinct eye pixels, 120 fps. The user rejected it for the two things it deliberately excluded - no 6DOF, and an FOV that did not fill the headset. It also exposed a NEW defect: Halo 4's stock cover (50.46/41.14 deg) does not contain PSVR2's frustum (61.5/53.0), so the whole slice was submitted at the wrong FOV (`M2 WARNING`). Evidence preserved at `out/test-runs/dbf1382-halo4-c7-stock-geometry-20260808-0553`. |
-| C-H4-8 `6cf0b76` | **INSTALLED, HEADSET-PENDING:** head tracking, 6DOF and headset-agnostic native FOV coverage. |
+| C-H4-8 `6cf0b76` | **PASSED both of its own log claims, experience REJECTED (2026-08-08):** `geometry TAKING`, 137 pairs/2s, `138 tracked frames`, `reference captured`, `lean 0.006 world units (6DOF ON)`, `276 widened eyes`, `calibration learned`, engine built `61.75/53.31 deg`, `contains headset frustum: YES` - the `M2 WARNING` is gone. Stereo, head tracking, 6DOF and native FOV all work. Rejected for one thing it did not cover: the look stick's vertical axis pitches the engine's camera and C-H4-8 adds head pitch ON TOP of it, so the stick tilts the world away from the player's real horizon. |
+| C-H4-9 `<pending>` | **INSTALLED, HEADSET-PENDING:** the headset owns look pitch. |
 
 | C-H4-8 installed identity | Value |
 | --- | --- |
@@ -179,22 +180,25 @@ test, but **none of C-H4-2 through C-H4-8 advances C-H4-1**.
 | Offline gates | Clean Release x64 build, `core_tests`, Reach consistency gate - all passing |
 | Acceptance | **Not accepted.** C-H4-1 remains the rollback pointer. |
 
-**What C-H4-8 must show in the headset.** Two independent claims, each on its own
-log line so either can be accepted or rejected alone:
+**What C-H4-9 must show in the headset.** One claim, on its own log line:
 
-1. **You are inside the world.** Looking around moves the view and the world
-   stays put; leaning moves the camera. Log: `Halo 4 C-H4-8 head tracking:`
-   tracked frames > 0, `reference captured`, yaw/pitch deltas that track the
-   head.
-2. **The image fills the headset.** Log: `Halo 4 C-H4-8 FOV cover:`
-   `calibration learned`, widened eyes > 0, and **`contains headset frustum:
-   YES`**. The `M2 WARNING` about the cover not containing the native frustum
-   must be gone, replaced by `M2: submitting native per-eye FOV`.
+1. **Your head owns up and down.** Standing with your head level, the horizon is
+   level, whatever the look stick has been doing. Pushing the stick up or down
+   no longer tilts the world - it aims the gun, and the view stays where your
+   head put it. Looking up and firing sends the shot up. Log: `Halo 4 C-H4-9
+   look pitch:` `the headset owns the vertical axis`, a small `error`, a
+   `learned direction` of `+1` or `-1`, and `commanded` polls falling away to
+   `parked` ones as the gun settles.
 
-Geometry must stay as good as C-H4-7's: completed pairs > 0, `geometry TAKING`,
-exact-zero camera readback error, center `0/0`, zero drops and zero uncaptured
-eyes. Test at 90 Hz first so the separately open 120 Hz pacing tail cannot
-confound the result.
+Everything C-H4-8 already proved must stay proved: `geometry TAKING`, completed
+pairs > 0, exact-zero camera readback error, center `0/0`, zero drops and zero
+uncaptured eyes, `contains headset frustum: YES`, and - now reported per axis so
+6DOF is provable on each one - `Halo 4 C-H4-9 head tracking: ... lean ... =
++x/+y/+z xyz`, with `head pitch ... (ABSOLUTE, headset owns pitch)`.
+
+Test at 90 Hz first so the separately open 120 Hz pacing tail cannot confound the
+result. F2 turns the whole pitch behaviour off and returns C-H4-8's, which is the
+A/B if anything feels wrong.
 
 **Watch for, and report if seen:** ghosting, smearing or trailing behind moving
 objects. Halo 4's per-eye setup gives the engine's own previous-frame history an

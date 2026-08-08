@@ -29196,6 +29196,28 @@ namespace
         std::atomic<float> lastHeadYawDelta{0.0f};
         std::atomic<float> lastHeadPitchDelta{0.0f};
         std::atomic<float> lastLeanMagnitude{0.0f};
+        // Per-axis so a headset report can say WHICH of the three translation
+        // axes moved. A magnitude alone cannot distinguish real 6DOF from one
+        // working axis.
+        std::atomic<float> lastLean[3]{};
+
+        // --- C-H4-9 look pitch ownership -------------------------------
+        // The engine's own camera pitch, published by the render thread once
+        // per owned frame from the observer it already reads. The serial is
+        // what the input thread uses to prove the publication is live: a
+        // stalled serial means no owned render is happening, and steering a
+        // camera we cannot observe is how a runaway starts.
+        std::atomic<bool> enginePitchValid{false};
+        std::atomic<float> enginePitch{0.0f};
+        std::atomic<uint64_t> enginePitchSerial{0};
+        std::atomic<float> lastPitchError{0.0f};
+        std::atomic<float> lastPitchCommand{0.0f};
+        std::atomic<float> lastPitchTarget{0.0f};
+        std::atomic<float> pitchServoDirection{1.0f};
+        std::atomic<float> pitchServoMinStep{0.0f};
+        std::atomic<uint64_t> pitchCommandedFrames{0};
+        std::atomic<uint64_t> pitchParkedFrames{0};
+        std::atomic<uint64_t> pitchServoStalls{0};
 
         // --- C-H4-8 native FOV coverage --------------------------------
         // Learned from the engine's own finished projection, never assumed.
@@ -29224,6 +29246,22 @@ namespace
     // The cost is ~1% of raster area; the alternative is an intermittent,
     // frame-dependent geometry fault.
     constexpr float kHalo4CoverMargin = 1.01f;
+
+    // C-H4-9. The single predicate that decides who owns Halo 4's look pitch.
+    // The render camera, the XInput hook and the closed loop all sample this
+    // one function, so there is no state in which the view has taken pitch and
+    // the stick has not, or the loop steers while the view still adds.
+    //
+    // F2 (g_enabled) is a real off switch: turning it off returns every part of
+    // this to C-H4-8's behaviour rather than leaving a half-owned camera.
+    bool Halo4LookPitchOwned()
+    {
+        return TitleAdapter_GetActiveTitle() == GameTitle::Halo4 &&
+            g_halo4Camera.armed.load(std::memory_order_acquire) &&
+            !g_halo4Camera.sceneTargetMissing.load(std::memory_order_acquire) &&
+            g_enabled.load(std::memory_order_acquire) &&
+            VR_IsStereoEnabled();
+    }
 
     // Why a frame rendered stock before ownership or was dropped after a
     // claimed eye transaction began. Reported by the worker only.
@@ -29337,6 +29375,24 @@ namespace
         g_halo4Camera.lastHeadYawDelta.store(0.0f, std::memory_order_relaxed);
         g_halo4Camera.lastHeadPitchDelta.store(0.0f, std::memory_order_relaxed);
         g_halo4Camera.lastLeanMagnitude.store(0.0f, std::memory_order_relaxed);
+        for (int axis = 0; axis < 3; ++axis)
+            g_halo4Camera.lastLean[axis].store(0.0f, std::memory_order_relaxed);
+
+        // C-H4-9. Dropping the published engine pitch is what makes the input
+        // thread's loop fail closed across a level change: its freshness gate
+        // sees the serial stop advancing and parks the stick at zero rather
+        // than steering the next level's camera with the last one's error.
+        g_halo4Camera.enginePitchValid.store(false, std::memory_order_release);
+        g_halo4Camera.enginePitch.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.enginePitchSerial.store(0, std::memory_order_release);
+        g_halo4Camera.lastPitchError.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastPitchCommand.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastPitchTarget.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.pitchServoDirection.store(1.0f, std::memory_order_relaxed);
+        g_halo4Camera.pitchServoMinStep.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.pitchCommandedFrames.store(0, std::memory_order_relaxed);
+        g_halo4Camera.pitchParkedFrames.store(0, std::memory_order_relaxed);
+        g_halo4Camera.pitchServoStalls.store(0, std::memory_order_relaxed);
 
         // The FOV calibration is re-learned per generation for the same reason:
         // a different level or window layout may build its projection
@@ -29461,6 +29517,21 @@ namespace
             return Halo4StereoResult::NotStarted;
         }
 
+        // C-H4-9: publish the ENGINE's own look pitch, taken before any of our
+        // head transform touches it. This observer forward is the ray Halo
+        // spawns first-person shots along, so it is both what the closed loop
+        // must steer and what proves it worked. Allocation-free and lock-free:
+        // three relaxed stores and one release increment.
+        {
+            const float z = stock.forward[2] < -1.0f
+                ? -1.0f : (stock.forward[2] > 1.0f ? 1.0f : stock.forward[2]);
+            g_halo4Camera.enginePitch.store(asinf(z), std::memory_order_relaxed);
+            g_halo4Camera.enginePitchValid.store(
+                true, std::memory_order_release);
+            g_halo4Camera.enginePitchSerial.fetch_add(
+                1, std::memory_order_release);
+        }
+
         // C-H4-8: put the player inside. The headset's orientation and its
         // room-space movement are applied to the MONO camera here, before the
         // eyes split off it, so both eyes inherit one consistent head pose and
@@ -29542,6 +29613,12 @@ namespace
                 headInput.worldScale = worldScale;
                 headInput.positional =
                     g_positional.load(std::memory_order_relaxed);
+                // C-H4-9: the same predicate the XInput hook uses to take the
+                // stick's vertical axis. Sampling one predicate for both means
+                // the view and the stick can never disagree about who owns
+                // pitch - and F2 turns the whole behaviour off together,
+                // returning exactly C-H4-8's additive head pose.
+                headInput.headOwnsPitch = Halo4LookPitchOwned();
 
                 const Halo4CameraBasis beforeHead = stock;
                 if (Halo4ApplyHeadPose(stock, headInput))
@@ -29564,6 +29641,8 @@ namespace
                         const float d =
                             stock.position[axis] - beforeHead.position[axis];
                         lean += d * d;
+                        g_halo4Camera.lastLean[axis].store(
+                            d, std::memory_order_relaxed);
                     }
                     g_halo4Camera.lastLeanMagnitude.store(
                         sqrtf(lean), std::memory_order_relaxed);
@@ -30296,15 +30375,20 @@ namespace
                 kReachRenderSafetyIntervalMs)
         {
             g_halo4Camera.armed.store(true, std::memory_order_release);
-            LOG("Halo 4 camera core armed: C-H4-8 head tracking, 6DOF and "
-                "native headset-FOV coverage on the sustained setup+wrapper "
-                "scope. The HMD's orientation and room-space translation are "
-                "applied to the mono camera before the eyes split, and the "
-                "raster cover is solved from the runtime's own reported "
-                "per-eye frustum - no headset is named in the code. A failed "
-                "claimed pair drops one frame then retries; a refused head "
-                "pose or FOV solve degrades only itself. HUD/CUI, turn/look "
-                "ownership, aim and hands are not in this candidate");
+            LOG("Halo 4 camera core armed: C-H4-9 headset-owned look pitch on "
+                "C-H4-8's head tracking, 6DOF and native headset-FOV "
+                "coverage. The engine keeps only its HEADING; the headset owns "
+                "pitch and roll outright, as in Halo 3, so a level head is a "
+                "level horizon whatever the engine's camera does. The look "
+                "stick's vertical axis no longer reaches the game - a closed "
+                "loop steers the engine's own pitch onto the head instead, so "
+                "shots follow the view. The horizontal axis stays with the "
+                "engine: Halo 4 has no VR turn or aim loop yet, so it must "
+                "keep turning body, aim and view together. F2 returns every "
+                "part of this to C-H4-8. A failed claimed pair drops one frame "
+                "then retries; a refused head pose, FOV solve or pitch loop "
+                "degrades only itself. HUD/CUI, VR turn, controller aim and "
+                "hands are not in this candidate");
         }
         PublishHalo4Lifecycle();
     }
@@ -30361,7 +30445,7 @@ namespace
             0, std::memory_order_relaxed);
         if (reason >= sizeof(kRejectionNames) / sizeof(kRejectionNames[0]))
             reason = 0;
-        LOG("Halo 4 C-H4-8: %llu completed pairs, %llu stock windows, %llu "
+        LOG("Halo 4 C-H4-9: %llu completed pairs, %llu stock windows, %llu "
             "dropped frames, %llu/%llu camera/projection readbacks, %llu "
             "uncaptured eyes in 2s; geometry %s; last readback max error "
             "pos %.6f fwd %.6f up %.6f; last projection half "
@@ -30391,9 +30475,10 @@ namespace
         const uint64_t headFrames =
             g_halo4Camera.headTrackedFrames.exchange(
                 0, std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-8 head tracking: %llu tracked frames in 2s, "
-            "reference %s; last yaw delta %.1f deg, pitch delta %.1f deg, "
-            "lean %.3f world units (6DOF %s, world scale %.2f units/m)",
+        LOG("Halo 4 C-H4-9 head tracking: %llu tracked frames in 2s, "
+            "reference %s; last yaw delta %.1f deg, head pitch %.1f deg "
+            "(%s), lean %.3f world units = %+.3f/%+.3f/%+.3f xyz "
+            "(6DOF %s, world scale %.2f units/m)",
             static_cast<unsigned long long>(headFrames),
             g_halo4Camera.headReferenceValid.load(std::memory_order_acquire)
                 ? "captured"
@@ -30402,9 +30487,48 @@ namespace
                 57.2958f,
             g_halo4Camera.lastHeadPitchDelta.load(std::memory_order_relaxed) *
                 57.2958f,
+            Halo4LookPitchOwned() ? "ABSOLUTE, headset owns pitch"
+                                  : "added to the engine's pitch",
             g_halo4Camera.lastLeanMagnitude.load(std::memory_order_relaxed),
+            g_halo4Camera.lastLean[0].load(std::memory_order_relaxed),
+            g_halo4Camera.lastLean[1].load(std::memory_order_relaxed),
+            g_halo4Camera.lastLean[2].load(std::memory_order_relaxed),
             g_positional.load(std::memory_order_relaxed) ? "ON" : "OFF",
             g_worldScale.load(std::memory_order_relaxed));
+
+        // C-H4-9's own line, so the pitch claim can be accepted or rejected on
+        // its own. `commanded` falling to near zero while `error` stays small
+        // is the loop working; a large steady error with the stick pinned is
+        // the engine refusing to be steered, which is a different fault
+        // entirely and must not be reported as head tracking.
+        const uint64_t pitchCommanded =
+            g_halo4Camera.pitchCommandedFrames.exchange(
+                0, std::memory_order_relaxed);
+        const uint64_t pitchParked =
+            g_halo4Camera.pitchParkedFrames.exchange(
+                0, std::memory_order_relaxed);
+        const uint64_t pitchStalls =
+            g_halo4Camera.pitchServoStalls.exchange(
+                0, std::memory_order_relaxed);
+        LOG("Halo 4 C-H4-9 look pitch: %s; engine pitch %.1f deg vs head "
+            "%.1f deg (error %.2f deg), stick %+.2f, learned direction %+.0f, "
+            "min step %.3f deg; %llu commanded / %llu parked polls, %llu "
+            "stale-publication stalls in 2s",
+            Halo4LookPitchOwned() ? "the headset owns the vertical axis"
+                                  : "stock stick pitch (not owned)",
+            g_halo4Camera.enginePitch.load(std::memory_order_relaxed) *
+                57.2958f,
+            g_halo4Camera.lastPitchTarget.load(std::memory_order_relaxed) *
+                57.2958f,
+            g_halo4Camera.lastPitchError.load(std::memory_order_relaxed) *
+                57.2958f,
+            g_halo4Camera.lastPitchCommand.load(std::memory_order_relaxed),
+            g_halo4Camera.pitchServoDirection.load(std::memory_order_relaxed),
+            g_halo4Camera.pitchServoMinStep.load(std::memory_order_relaxed) *
+                57.2958f,
+            static_cast<unsigned long long>(pitchCommanded),
+            static_cast<unsigned long long>(pitchParked),
+            static_cast<unsigned long long>(pitchStalls));
 
         const uint64_t widened =
             g_halo4Camera.fovWidenedFrames.exchange(
@@ -30412,7 +30536,7 @@ namespace
         const uint64_t stockFov =
             g_halo4Camera.fovStockFovFrames.exchange(
                 0, std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-8 FOV cover: %llu widened eyes, %llu stock-FOV eyes "
+        LOG("Halo 4 C-H4-9 FOV cover: %llu widened eyes, %llu stock-FOV eyes "
             "in 2s; calibration %s (gain %.4f, ratio %.4f); requested half-Y "
             "%.2f deg, engine built %.2f/%.2f deg; contains headset frustum: "
             "%s",
@@ -30436,7 +30560,7 @@ namespace
         // chosen at halo4.dll 0x38F01A-0x38F05E: 0.785, or 0.168214291 only
         // when the engine's FOV global is exactly zero. Logging the live pair
         // makes any future branch flip visible instead of silent.
-        LOG("Halo 4 C-H4-8 FOV converter: observer +0x78 %.5f rad -> element "
+        LOG("Halo 4 C-H4-9 FOV converter: observer +0x78 %.5f rad -> element "
             "+0x28 %.5f rad, measured scale K %.5f (static candidates 0.78500 "
             "/ 0.16821)",
             g_halo4Camera.lastObserverVerticalFov.load(
@@ -31219,6 +31343,118 @@ bool Game_VrOwnsLookStick()
 #endif
 }
 
+bool Game_Halo4OwnsLookPitch()
+{
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    return Halo4LookPitchOwned();
+#else
+    return false;
+#endif
+}
+
+// C-H4-9. Halo 4's answer to "the HMD owns pitch", reached the way AGENTS.md
+// permits: a different implementation for the same player experience, because
+// this engine's look ownership sits at a different rung than Halo 3's.
+//
+// Halo 3 zeroes BOTH stick axes because ApplyVrTurn owns yaw and a controller
+// aim loop keeps the gun on the VR sight. Halo 4 has neither yet, so zeroing
+// yaw as well would leave the player unable to turn and unable to shoot where
+// they turned. The horizontal axis therefore stays with the engine - it turns
+// the body, the aim and the view together, exactly as it always has - and only
+// the VERTICAL axis changes hands. That axis is the one the user reported:
+// artificial pitch fights the inner ear in a way artificial yaw does not.
+//
+// Returns false when the loop declines this poll, which the caller reads as
+// "hold the stick at zero": we still own the axis, we simply have nothing to
+// command. It never falls back to the raw stick, because that would put the
+// artificial pitch back with no warning.
+bool Game_ComputeHalo4PitchStick(float& outRy)
+{
+    outRy = 0.0f;
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    static Halo4PitchServo servo;
+    static uint64_t lastSerial = 0;
+    static uint64_t lastSerialChangeMs = 0;
+    static std::atomic<int> lastBlock{-1};
+    auto blocked = [](int reason, const char* what) {
+        if (lastBlock.exchange(reason) != reason)
+            LOG("Halo 4 look pitch: loop idle: %s", what);
+        return false;
+    };
+
+    if (!Halo4LookPitchOwned())
+    {
+        Halo4ResetPitchServo(servo);
+        lastSerial = 0;
+        lastSerialChangeMs = 0;
+        return false;
+    }
+    if (!g_halo4Camera.enginePitchValid.load(std::memory_order_acquire))
+        return blocked(1, "the engine's own camera pitch has not been read yet");
+
+    // Freshness, not liveness-by-assumption. The render thread republishes the
+    // serial once per owned frame; if it stops advancing, no owned render is
+    // happening (a load, a menu, a teardown) and the last pitch we saw is
+    // stale. Commanding a stick against a stale error is exactly the runaway
+    // this gate exists to prevent.
+    const uint64_t serial =
+        g_halo4Camera.enginePitchSerial.load(std::memory_order_acquire);
+    const uint64_t now = GetTickCount64();
+    if (serial != lastSerial)
+    {
+        lastSerial = serial;
+        lastSerialChangeMs = now;
+    }
+    else if (!lastSerialChangeMs || now - lastSerialChangeMs > 250)
+    {
+        Halo4ResetPitchServo(servo);
+        g_halo4Camera.pitchServoStalls.fetch_add(1, std::memory_order_relaxed);
+        return blocked(2, "no owned Halo 4 frame in the last 250 ms");
+    }
+
+    float q[4], p[3];
+    if (!VR_GetHeadPose(q, p))
+    {
+        Halo4ResetPitchServo(servo);
+        return blocked(3, "headset not tracked");
+    }
+    Halo4HeadOrientation head{};
+    if (!Halo4DecodeHeadOrientation(q, head))
+    {
+        Halo4ResetPitchServo(servo);
+        return blocked(4, "head orientation could not be decoded");
+    }
+    lastBlock.store(0, std::memory_order_relaxed);
+
+    // The same target the render camera is already pointing at, built from the
+    // same head sample, the same signs and the same trim - so the gun converges
+    // on the middle of the view rather than somewhere near it.
+    const float target = Clamp(
+        g_pitchSign.load(std::memory_order_relaxed) * head.pitch +
+            g_pitchTrim.load(std::memory_order_relaxed), -1.5f, 1.5f);
+    const float enginePitch =
+        g_halo4Camera.enginePitch.load(std::memory_order_relaxed);
+    outRy = Halo4PitchServoStep(
+        servo, enginePitch, target, kHalo4PitchServoGain);
+
+    g_halo4Camera.lastPitchTarget.store(target, std::memory_order_relaxed);
+    g_halo4Camera.lastPitchError.store(
+        target - enginePitch, std::memory_order_relaxed);
+    g_halo4Camera.lastPitchCommand.store(outRy, std::memory_order_relaxed);
+    g_halo4Camera.pitchServoDirection.store(
+        servo.direction, std::memory_order_relaxed);
+    g_halo4Camera.pitchServoMinStep.store(
+        servo.axis.minStep, std::memory_order_relaxed);
+    (outRy == 0.0f ? g_halo4Camera.pitchParkedFrames
+                   : g_halo4Camera.pitchCommandedFrames)
+        .fetch_add(1, std::memory_order_relaxed);
+    return true;
+#else
+    (void)outRy;
+    return false;
+#endif
+}
+
 bool Game_ProcessPresentationDetachRequest()
 {
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
@@ -31948,8 +32184,9 @@ void Game_AutoVrTick()
                 Game_ForcePositional();
                 if (!VR_IsStereoEnabled())
                     VR_ToggleStereo();
-                LOG("Halo 4 C-H4-8 immersive VR ON: stereo geometry, head "
-                    "tracking and 6DOF are live; HUD/CUI remains pending");
+                LOG("Halo 4 C-H4-9 immersive VR ON: stereo geometry, head "
+                    "tracking, 6DOF and headset-owned look pitch are live; "
+                    "HUD/CUI remains pending");
             }
             const uint32_t halo4Generation =
                 TitleAdapter_GetGeneration(GameTitle::Halo4);

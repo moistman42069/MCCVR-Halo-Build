@@ -187,6 +187,14 @@ bool Game_GetReachVehicleReticleAimDirection(
 // XInput hook must then suppress stock RX/RY so the game cannot create a second
 // camera motion underneath the HMD-owned view.
 bool Game_VrOwnsLookStick();
+// True while Halo 4's armed camera core owns the look stick's VERTICAL axis.
+// Halo 4 keeps the horizontal axis on the engine (it has no VR turn or aim loop
+// yet), so this is deliberately narrower than Game_VrOwnsLookStick.
+bool Game_Halo4OwnsLookPitch();
+// The closed-loop right-stick Y that keeps Halo 4's own look pitch - and so its
+// shot line - under the headset. Returns false when the loop has nothing to
+// command; the caller must still hold the axis at zero.
+bool Game_ComputeHalo4PitchStick(float& outRy);
 // Hooks XInputGetState in every loaded xinput DLL; returns how many are
 // hooked. Safe to call repeatedly until it succeeds.
 int Input_InstallXInputHook();

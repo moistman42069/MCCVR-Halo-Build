@@ -6415,6 +6415,158 @@ int main()
         Check(!Halo4ApplyHeadPose(untouched, broken),
             "A non-finite head pose is refused, so the eyes fall back to the "
             "engine's own camera instead of rendering garbage");
+
+        // ---- C-H4-9: the headset owns pitch --------------------------------
+        //
+        // The reported defect: with the head level, the engine's own camera
+        // pitch went straight into the view, so the look stick tilted the world
+        // away from the player's real horizon.
+        Halo4CameraBasis enginePitched = mono;
+        {
+            const float p = 0.4f; // engine looking ~23 deg up, e.g. after stick
+            const float y = atan2f(mono.forward[1], mono.forward[0]);
+            Halo4ComposeHeadOwnedBasis(
+                y, p, 0.0f, enginePitched.forward, enginePitched.up);
+            Check(Halo4ValidateCameraBasis(enginePitched),
+                "Halo4ComposeHeadOwnedBasis builds an orthonormal Z-up basis");
+            Check(fabsf(asinf(enginePitched.forward[2]) - p) < 1.0e-4f &&
+                      fabsf(Halo4WrapPi(
+                          atan2f(enginePitched.forward[1],
+                                 enginePitched.forward[0]) - y)) < 1.0e-4f,
+                "It reproduces exactly the yaw and pitch it was asked for");
+        }
+
+        Halo4HeadPoseInput levelOwned{};
+        levelOwned.quaternion[3] = 1.0f;
+        levelOwned.positional = false;
+        levelOwned.headOwnsPitch = true;
+        Halo4CameraBasis levelled = enginePitched;
+        Check(Halo4ApplyHeadPose(levelled, levelOwned) &&
+                  fabsf(levelled.forward[2]) < 1.0e-4f,
+            "C-H4-9: a LEVEL head produces a LEVEL horizon even though the "
+            "engine's own camera is pitched 23 degrees up - the reported "
+            "'the up and down stick is breaking my orientation on my head'");
+        Check(fabsf(Halo4WrapPi(
+                  atan2f(levelled.forward[1], levelled.forward[0]) -
+                  atan2f(mono.forward[1], mono.forward[0]))) < 1.0e-4f,
+            "Taking pitch does not disturb the engine's HEADING, so the stick "
+            "still turns the player, the aim and the view together");
+
+        Halo4CameraBasis added = enginePitched;
+        Check(Halo4ApplyHeadPose(added, level) &&
+                  fabsf(asinf(added.forward[2]) - 0.4f) < 1.0e-3f,
+            "With headOwnsPitch off the C-H4-8 behaviour is bit-for-bit "
+            "unchanged: the engine's own pitch survives into the view");
+
+        Halo4HeadPoseInput pitchedOwned = pitched;
+        pitchedOwned.headOwnsPitch = true;
+        Halo4CameraBasis ownedLook = enginePitched;
+        Check(Halo4ApplyHeadPose(ownedLook, pitchedOwned) &&
+                  fabsf(asinf(ownedLook.forward[2]) - 0.5235988f) < 1.0e-3f,
+            "A 30 degree head pitch puts the view at 30 degrees, not at 30 "
+            "PLUS whatever the engine was already holding");
+        Check(Halo4ValidateCameraBasis(ownedLook),
+            "The head-owned basis stays orthonormal, so the IPD split and the "
+            "|fwd.up| validator that rejected C-H4-6 both stay satisfied");
+
+        // 6DOF is shared by both paths and must be identical in each.
+        Halo4HeadPoseInput leanOwned{};
+        leanOwned.quaternion[3] = 1.0f;
+        leanOwned.position[0] = 1.0f;
+        leanOwned.positional = true;
+        leanOwned.worldScale = 0.33f;
+        leanOwned.headOwnsPitch = true;
+        Halo4CameraBasis movedOwned = mono;
+        Halo4CameraBasis movedDelta = mono;
+        Halo4HeadPoseInput leanDelta = leanOwned;
+        leanDelta.headOwnsPitch = false;
+        Check(Halo4ApplyHeadPose(movedOwned, leanOwned) &&
+                  Halo4ApplyHeadPose(movedDelta, leanDelta),
+            "Both composition paths accept the same leaning head");
+        Check(fabsf(movedOwned.position[0] - movedDelta.position[0]) < 1.0e-5f &&
+                  fabsf(movedOwned.position[1] - movedDelta.position[1]) <
+                      1.0e-5f &&
+                  fabsf(movedOwned.position[2] - movedDelta.position[2]) <
+                      1.0e-5f,
+            "6DOF is the SAME shared code on both paths, so taking pitch "
+            "cannot quietly change how much the world leans");
+
+        // A pitch far past the poles must clamp rather than degenerate.
+        Halo4HeadPoseInput extreme{};
+        const float halfExtreme = 0.5f * 3.0f;
+        extreme.quaternion[0] = sinf(halfExtreme);
+        extreme.quaternion[3] = cosf(halfExtreme);
+        extreme.positional = false;
+        extreme.headOwnsPitch = true;
+        extreme.pitchTrim = 1.4f;
+        Halo4CameraBasis extremeCamera = mono;
+        Check(Halo4ApplyHeadPose(extremeCamera, extreme) &&
+                  Halo4ValidateCameraBasis(extremeCamera) &&
+                  fabsf(asinf(extremeCamera.forward[2])) <= 1.5f + 1.0e-3f,
+            "An extreme head pitch plus trim clamps at 1.5 rad instead of "
+            "degenerating the basis at the pole");
+    }
+
+    // C-H4-9: the closed loop that keeps Halo 4's own look pitch - and so its
+    // shot line - under the headset.
+    {
+        Halo4PitchServo servo;
+        // A simulated engine: pitch integrates the stick through a mapping
+        // whose SIGN the servo is not told. -1 is the inverted-look player.
+        for (float mapping : {1.0f, -1.0f})
+        {
+            Halo4ResetPitchServo(servo);
+            float enginePitch = 0.0f;
+            const float target = 0.35f; // ~20 deg up
+            int frames = 0;
+            for (; frames < 400; ++frames)
+            {
+                const float stick = Halo4PitchServoStep(
+                    servo, enginePitch, target, kHalo4PitchServoGain);
+                // ToRawStick floors every non-zero command at 27.5%, which is
+                // the quantised actuator the rest hysteresis exists for.
+                float applied = 0.0f;
+                if (fabsf(stick) >= 1.0e-3f)
+                {
+                    applied = kAimServoStickFloor +
+                        fabsf(stick) * (1.0f - kAimServoStickFloor);
+                    if (stick < 0.0f)
+                        applied = -applied;
+                }
+                enginePitch += applied * mapping * 0.02f; // 0.02 rad/frame max
+                if (fabsf(enginePitch - target) < 0.01f && stick == 0.0f)
+                    break;
+            }
+            Check(frames < 400 && fabsf(enginePitch - target) < 0.01f,
+                mapping > 0.0f
+                    ? "The loop drives the engine's own pitch onto the head's "
+                      "and parks there, so shots leave along the view"
+                    : "It learns an INVERTED look mapping from what the engine "
+                      "actually did, instead of encoding a belief about it");
+            Check(servo.direction == mapping,
+                mapping > 0.0f
+                    ? "The learned direction matches a normal look mapping"
+                    : "The learned direction matches an inverted look mapping");
+        }
+
+        // Parked means EXACTLY zero. A proportional command cannot express a
+        // small correction through a 27.5% floor, so anything else is the
+        // turret limit cycle all over again.
+        Halo4ResetPitchServo(servo);
+        float parkedStick = 1.0f;
+        for (int i = 0; i < 8; ++i)
+            parkedStick = Halo4PitchServoStep(servo, 0.2f, 0.2f, 12.0f);
+        Check(parkedStick == 0.0f,
+            "With the gun already on the head's pitch the loop commands "
+            "exactly zero rather than chattering against the stick floor");
+
+        // Feature-local failure: a non-finite input must command nothing.
+        Halo4ResetPitchServo(servo);
+        Check(Halo4PitchServoStep(
+                  servo, std::numeric_limits<float>::quiet_NaN(), 0.1f,
+                  12.0f) == 0.0f,
+            "A non-finite engine pitch parks the stick instead of steering the "
+            "camera with garbage");
     }
     Check(halo4Row && halo4Row->admissionCapabilities ==
               TitleCapability_ControllerInput,
