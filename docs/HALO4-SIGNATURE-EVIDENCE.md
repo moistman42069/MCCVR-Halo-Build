@@ -1715,6 +1715,105 @@ reason this cost one headset run and no damage. Had it written a guessed
 transform into a live bone array on a NULL-prone block, the outcome would have
 been a crash rather than a log line that hands over the answer.
 
+### E-H4-18 — fp_orientations is NOT the render input. Proven, not guessed.
+
+**C-H4-11b's headset result: still no floaty hands, gun still on the face**,
+despite the log showing `write survived readback: YES`, 84 nodes transformed,
+`|quat| 1.0000`, plausible translations that track the controller frame to
+frame. The write is real, lands on live memory, and survives its own
+immediate readback. It still has zero visible effect.
+
+**What settles it.** Two consecutive 2-second log windows from the SAME run:
+
+    window 1: stock ROOT node translation -0.087/0.036/-0.247
+    window 2: stock ROOT node translation -0.288/0.227/-0.106
+
+If nothing but our own write ever touched this memory, window 2's "stock"
+value should equal window 1's "after write" value (0.042/-0.031/-0.341, from
+the same log). It does not - it is a completely different number. Something
+INSIDE THE ENGINE is continuously rewriting `fp_weapons`/`fp_orientations`
+independent of anything we do. That is the signature of continuously-refreshed
+telemetry, not a render input: a buffer the renderer actually consumed would
+either hold our value (if we are the last writer) or hold a value derived from
+it (if composited), never a value that ignores it entirely every single frame.
+
+**Kit corroboration, found while re-reading `first_person_weapons.cpp`'s wider
+assert region:**
+
+    ata->node_orientations_count==animation_manager->get_node_count()
+
+This is a guard checked before some operation touching `node_orientations`
+(our `fp_orientations`) against `animation_manager`'s own node count. Read
+alongside `weapon_data->attachment.unit_index`/`weapon_index` (the actual
+render-object handles the weapon and hands are attached to) and the separate
+`first_person_camera.cpp` construct with its own `{forward, up}` result, the
+picture is: `first_person_weapons`/`fp_orientations` is per-user CONTROLLER
+bookkeeping (muzzle tracking, aim/reticle alignment, animation-graph mirror)
+that the engine refreshes from its own animation system every frame. It is
+downstream output, not upstream control. Writing into it can never move what
+is drawn, because the draw does not read from it.
+
+**This closes C-H4-11/11a/11b as a mechanism, without invalidating E-H4-15/16.**
+Every address, stride and dimension proven there is still correct - the block
+exists exactly as described and our write genuinely lands on it. It simply is
+not the lever that moves the visible mesh.
+
+### E-H4-19 — the real candidate: Halo 4's per-eye first-person camera, `0x34EC44`
+
+This is the SAME construct E-H4-13 identified and set aside in favour of the
+node-write path - that was the wrong call, corrected here. It is Halo 4's
+homolog of Halo 3's `FpCameraRebuildHook`: an engine function, invoked
+immediately before every first-person draw pass, that rebuilds a dedicated
+camera/projection block the FP layer renders through - which is exactly why
+Halo 3 needed to override it per eye rather than write bones.
+
+**What is now proven about `0x34EC44` (retail, from its own body):**
+
+    0034EC5C  lea  r10, [rip+0xD7021D]        ; r10 = fixed GLOBAL RVA 0x1047280
+    0034EC67  mov  rax, [rcx + 8]              ; rax = *(arg1 + 8), the SOURCE
+    0034EC76  mov  ecx, 0x80                   ; 128 bytes
+    0034EC89..0034ECDA  8 x 16-byte movups copies rax[0..0x80) -> r10[0..0x80)
+    0034ECDE  mov dword [rip+0xB35990], 0x3F800000   ; default 1.0 at RVA 0xE84678
+                                                        ; (= render_first_person_fov_scale,
+                                                        ;   confirming this IS E-H4-13's
+                                                        ;   function - same target, same role)
+    0034ED15/22/2E  the render_first_person_fov_scale write chain E-H4-13 found
+
+So: on entry, the function bulk-copies a 128-byte block from `*(arg1+8)` into a
+**single fixed global address (RVA `0x1047280`, not per-thread, not per-eye)**,
+then conditionally computes and republishes the first-person FOV scale. The
+128-byte global is the camera/projection state every first-person draw pass
+reads through - the direct analogue of Halo 3's `{view+0x08, view+0x1E8}` pair,
+just staged through one shared address instead of two view-relative offsets.
+
+**Confirmed call-site shape.** At `0x34F0EE` (one of the nine E-H4-13 call
+sites): `mov edx, ebx; mov rcx, rbp; xor r8d, r8d; xor r9d, r9d; call 0x34EC44`
+- arg1 (`rcx`) is a saved local (`rbp`) established earlier in the caller, arg2
+(`edx`) is an index/count, `r8`/`r9` are zeroed booleans matching the two flag
+bytes the body reads (`mov bpl, r8b` / `mov r14b, r9b`).
+
+**Not yet proven, and NOT to be guessed:**
+
+1. **The exact field layout of the 128-byte block** - which 16-byte lanes hold
+   position/forward/up/right, and in what basis. E-H4-16's mistake (guessing a
+   plausible-sized layout instead of proving it) is not being repeated here.
+2. **Whether `xmm2` at `movaps xmm6, xmm2` is a real third parameter** (a
+   float/vector arg passed alongside `rcx`/`edx`) or incidental register reuse.
+   A detour that gets this wrong corrupts the call and can crash on the very
+   next first-person draw - a strictly worse failure than an unmoved gun.
+3. **What reads the global buffer after this function returns** (the
+   consumer/uploader, Halo 3's `0x2770F0` homolog) - a direct rip-relative scan
+   for RVA `0x1047280` found zero references, meaning it is reached through a
+   stored pointer variable rather than a fresh `lea` at each use site, and
+   locating that requires tracing the pointer, not the address.
+
+**The fix, once those three are closed, is a direct port of Halo 3's own
+proven pattern**: hook `0x34EC44`, call the original unchanged (so its FOV
+defaulting and whatever else it does keeps working), then overwrite the
+128-byte global with the CURRENT eye's world camera in the now-proven layout,
+using the SAME `g_eyeFpView`-style thread-local handoff `FpCameraRebuildHook`
+already establishes for Halo 3 in this codebase.
+
 ### Forward milestone ladder — one visible claim per candidate
 
 1. **C-H4-7:** stock-projection/exact-serial stereo geometry only.
