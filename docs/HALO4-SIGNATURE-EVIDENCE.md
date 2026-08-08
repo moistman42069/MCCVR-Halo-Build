@@ -1594,6 +1594,77 @@ next step is to locate those assert call sites through the kit's assert pointer
 table (they are referenced indirectly, not by a direct `lea`, so the rip-relative
 scan finds zero - use a qword pointer scan for the string VA instead).
 
+### E-H4-16 — the first-person weapon/orientation record layout
+
+Kit-explained, retail-verified, continuing E-H4-15. This is the structure the
+hands candidate writes into.
+
+**The kit's accessor (`halo4_tag_test.exe` `0x928290`)** carries both bound
+checks in its own asserts, which is what makes the dimensions certain rather
+than inferred:
+
+    movsxd rbx, edx            ; arg2 = weapon_slot
+    movsxd rdi, ecx            ; arg1 = user_index
+    cmp    edi, 3 / jbe        ; user_index <= 3          -> 4 users
+    cmp    ebx, 1 / jbe        ; weapon_slot <= 1         -> k_first_person_max_weapons = 2
+    lea    rcx, [rbx + rdi*2]  ; index = weapon_slot + user_index * 2
+    imul   rax, rcx, 0x1E00    ; element size 0x1E00
+    mov    r8d, 0x1968         ; KIT TLS offset of the orientations block
+    add    rax, [rcx + r8]
+
+`0x1E00 * 2 * 4 = 0xF000`, which is exactly the `fp orientations` allocation
+size from E-H4-15 - the dimensions close on themselves.
+
+**The retail homolog (`halo4.dll` `0x3B5380`-`0x3B53CF`)**, in the same region
+of the module as the E-H4-11 crash:
+
+    imul rbx, r8, 0x5F48                    ; user_index * fp-weapons stride
+    mov  eax, 0x6A0                         ; fp weapons TLS offset
+    imul rdi, rcx, 0x2EC8                   ; weapon_slot * per-weapon stride
+    add  rbx, [rax + r9]                    ; rbx = fp_weapons[user]
+    mov  eax, [rbx]                         ; record +0x00 = flags dword
+    shr  eax, 1 / test al, 1 / je bail      ; gated on flags bit 1
+    lea  rax, [rcx + r8*2]                  ; index = weapon_slot + user*2
+    movsxd r8, [rdi + rbx + 0x15D4]         ; per-weapon node index
+    imul rdx, rax, 0x1E00                   ; orientations element
+    mov  eax, 0x678                         ; a THIRD related TLS block
+    shl  r8, 5                              ; node index * 0x20
+    add  rdx, [rax + r9]
+    lea  rcx, [rdx + 0xF00]                 ; node array at +0xF00
+
+**What that establishes:**
+
+| Field | Value |
+| --- | --- |
+| users | 4 |
+| `k_first_person_max_weapons` | **2** |
+| `fp weapons` per-user record | `0x5F48` at TLS `+0x6A0` |
+| per-weapon sub-record stride | **`0x2EC8`** (2 x 0x2EC8 = 0x5D90, leaving a 0x1B8 header) |
+| orientations element | **`0x1E00`**, indexed `weapon_slot + user*2`, base TLS `+0x678` |
+| node transform stride | **`0x20`** (`shl r8, 5`) |
+| node array inside an orientation | at **`+0xF00`** |
+
+`0x1E00 - 0xF00 = 0xF00`, and `0xF00 / 0x20 = 120` nodes - so an orientation
+record holds **two 120-node arrays of 32-byte transforms**, which matches the
+kit's `node_count_interpolated == node_count` assert (a current and an
+interpolated bank) and bounds `MAXIMUM_NODES_PER_FIRST_PERSON_MODEL` at 120.
+A 32-byte Blam node transform is the standard rotation quaternion + translation
++ scale (4+3+1 floats); **this must be confirmed by reading live values before
+anything is written, not assumed from the size.**
+
+Further per-weapon fields observed in the same function, all relative to
+`fp_weapons[user] + weapon_slot*0x2EC8`: `+0xBC` dword compared to NONE,
+`+0xC6` word compared >= 0, `+0xDA` byte flag, `+0x1DC` a substructure address,
+`+0x208` dword compared to NONE, `+0x240` dword flags (bit 2), `+0x15D4` the
+node index used above.
+
+**The safety rule this evidence forces, restated because it is the crash.**
+E-H4-11/E-H4-15 proved `*(TLS + 0x6A0)` is NULL on a Halo 4 level re-entry and
+the engine dereferences it anyway. Every access above chains through that same
+block plus `+0x678`. The hands candidate must prove the engine TLS index, the
+TLS slot, each block pointer, the user index and the weapon slot before touching
+a byte, and degrade to stock on any failure.
+
 ### Forward milestone ladder — one visible claim per candidate
 
 1. **C-H4-7:** stock-projection/exact-serial stereo geometry only.
