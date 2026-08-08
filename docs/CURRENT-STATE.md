@@ -171,7 +171,7 @@ now: C-H4-9 is installed in both editions for a look-pitch headset test, but
 | C-H4-10 `140e15d` | **RAN 2026-08-08, no fault reported.** Log: `aim GRANTED, haptics GRANTED, room scale GRANTED, locomotion head-relative`, `MOTION AIM: the hand steers, the stick turns`. Not explicitly accepted. |
 | C-H4-11 `28a20a7` | **REFUSED, as designed (2026-08-08):** "no floaty hands, gun still stuck to my face". It wrote nothing; its probe proved the whole addressing chain live (2 weapon slots, field value 85) and disproved two reads - see E-H4-17. |
 | C-H4-11a `0f06506` | Superseded before testing by C-H4-11b: it placed only node 0 and assumed that was the assembly root. |
-| C-H4-11b `127c678` | **INSTALLED, HEADSET-PENDING:** Halo 4's own first-person gun and arms placed on the controller, with the node format proven from live engine values before anything is written. |
+| C-H4-11b `127c678` | **RAN 2026-08-08, no visible effect: "still no floaty hands with the gun still stuck to my face."** The log shows the write landing and surviving its own readback (84 nodes, `write survived readback: YES`, `|quat| 1.0000`), which PROVES the write is real - and DISPROVES the mechanism. Two consecutive log windows show the "stock" value change completely between them with nothing else touching it, meaning the engine continuously republishes this block from its own animation system every frame. It is telemetry the engine writes OUT, not something the renderer reads FROM. Full derivation in E-H4-18. |
 
 | C-H4-11b installed identity | Value |
 | --- | --- |
@@ -183,18 +183,14 @@ now: C-H4-9 is installed in both editions for a look-pitch headset test, but
 | Offline gates | Release x64 build, `core_tests`, Reach consistency gate - all passing |
 | Acceptance | **Not accepted.** C-H4-1 remains the rollback pointer. |
 
-**What changed.** C-H4-11 read the wrong half of the record (`+0x15D4` is the
-node COUNT, not an index; the live bank is `+0x00`, E-H4-17). C-H4-11b then
-stopped placing a single node: it applies one rotation and translation to
-EVERY composed node, so the assembly moves as a rigid body regardless of which
-node is the root, and it writes immediately before each eye's draw.
-
-**What C-H4-11b must show.** `Halo 4 C-H4-11b hands:` reading `node format
-PROVEN from live values, placing`, a node count and a transformed count that
-match, and **`write survived readback: YES`**. In the headset: the gun and arms
-follow your controller. `write survived readback: no` means the engine is
-discarding the write and the placement has to move later in the frame - that
-single field separates "placed wrongly" from "placed and overwritten".
+**The `first_person_weapons`/`fp_orientations` block is a closed line as of
+2026-08-08.** Every address, stride and dimension E-H4-15/16 derived is
+correct, and C-H4-11b's write genuinely lands there - it is simply not the
+render input. See E-H4-18 for the proof and E-H4-19 for the corrected target: a
+per-eye first-person camera Halo 4 rebuilds before every gun draw (`0x34EC44`),
+the direct analogue of Halo 3's own `FpCameraRebuildHook`. Its 128-byte camera
+block, exact field layout and consumer are located but not yet fully proven -
+see E-H4-19's three open items before any hook is written there.
 
 | C-H4-11 identity (superseded) | Value |
 | --- | --- |
