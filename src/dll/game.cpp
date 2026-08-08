@@ -29146,8 +29146,7 @@ namespace
     constexpr uint32_t kHalo4RuntimeCapabilities =
         TitleCapability_Stereo | TitleCapability_ControllerInput |
         TitleCapability_ControllerAim | TitleCapability_Haptics |
-        TitleCapability_RuntimeModes | TitleCapability_RoomScale |
-        TitleCapability_ArmIk;
+        TitleCapability_RuntimeModes | TitleCapability_RoomScale;
 
     struct Halo4CameraCore
     {
@@ -31153,9 +31152,12 @@ namespace
         }
 
         g_halo4Camera.installed.store(true, std::memory_order_release);
-        // Optional and fail-open: a missing palette proof leaves the already
-        // working camera/session fully armed with stock hands.
-        InstallHalo4Vrik(base,size);
+        // C-H4-13 headset result: 0 solved and every attempted first-person
+        // palette refused because the per-model output count was incorrectly
+        // compared with the composed animation-record count. Preserve the
+        // implementation inert for the required revert commit.
+        LOG("Halo 4 VRIK: C-H4-13 disabled after headset refusal; stock hands "
+            "remain and camera core stays armed");
         PublishHalo4Lifecycle();
         LOG("Halo 4 camera core installed (generation %u): setup 0x%X and the "
             "render wrapper 0x%X are hooked at their pinned RVAs, both proven "

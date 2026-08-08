@@ -2594,3 +2594,27 @@ miss passes the original matrix pointer to the engine for that palette. Hook
 installation failure leaves stock hands and never disarms the camera core or
 OpenXR session. C-H4-13 is an unaccepted headset candidate; this evidence does
 not advance the accepted-build pointer.
+
+**HEADSET RESULT — FAILED/INERT, 2026-08-08 (Steam, SteamVR/OpenXR 2.17.6,
+PSVR2, 120 Hz).** Candidate `50899d5`, DLL SHA-256
+`7251C1B3F59D3350AAA5374A9593ADF322B2912893B8A2A117729DF752B66015`,
+installed the optional hook without disturbing the working camera. The user
+reported that nothing changed, including after toggling the F1 options. The
+log agrees exactly: repeated lines report `palette hooked`, `arm_ik=1`,
+`floating_hands=1`, **0 solved**, roughly 5,800
+`alignment-or-pose refused` every two seconds, and thousands of deliberately
+stock non-FP calls. Camera stereo/6DOF remained healthy with 243 pairs per two
+seconds and zero frame drops.
+
+The first disproven predicate is now visible in the already-pinned caller.
+At `0x36F346`, retail calls `0x33D6F0` for the current render-model record and
+stores its result in `r15d`; that value sizes the 0x30-byte output palette and
+is passed as argument 7 at `0x36F3B1`. The surrounding function loops records
+with `add rsi,0x1910` at `0x36F5DA`; each record owns its own fixed 120-matrix
+bank beginning at `rsi+0xAC`. Therefore argument 7 is a per-render-model
+skinning-output count. It is **not** the 85-node count held by the separate
+composed first-person animation record. C-H4-13 incorrectly required both to
+equal 85 and thereby admitted nothing. The implementation is preserved but
+disabled; the next candidate must not restore that predicate. Whether the
+Storm distance/side predicate accepts live matrices remains unmeasured because
+the count gate ran first. Split all refusal stages before weakening it.

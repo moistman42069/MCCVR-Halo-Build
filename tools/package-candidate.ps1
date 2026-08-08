@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c13-final-palette-vrik',
+        'halo4-c13-disabled-stock-hands',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -182,8 +182,8 @@ try {
         }
         halo4_candidate = [ordered]@{
             id = 'C-H4-13'
-            status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'final-palette-two-bone-vrik-with-floaty-hands-and-weapon-follow'
+            status = 'HEADSET_FAILED_DISABLED'
+            behavior = 'stock-hands-after-final-palette-admission-refused-all-live-palettes'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -194,12 +194,12 @@ try {
             # Halo 4's CUI arrives inside the captured scene target, so it is
             # visible without any HUD redirect. User-confirmed 2026-08-08.
             hud = 'native-inside-captured-scene-no-redirect'
-            first_person_hands = $true
-            arm_ik = $true
+            first_person_hands = $false
+            arm_ik = $false
             failure_policy =
                 'pre-claim-stock-post-claim-frame-drop-core-remains-armed'
             vrik_failure_policy =
-                'optional-vrik-stock-fallback-camera-core-remains-armed'
+                'disabled-after-zero-solved-palettes-stock-fallback-camera-core-remains-armed'
         }
         # Reach support is permanent, while player-visible optional features
         # fail open independently and never disarm the working camera core.
@@ -274,7 +274,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'Unaccepted Halo 4 C-H4-13 final-palette VRIK candidate. It solves the H4EK-proven Storm arm chains from the authored v4 Blender poles, applies controller-parented attachment offsets in metres while ignoring empty scale, keeps the complete hand/finger subtrees aligned, and moves the appended weapon nodes with the right-hand/two-hand-adjusted aim. The optional hook falls back to stock hands without disarming the accepted camera core. C-H4-1 remains the accepted Halo 4 pointer. Acceptance requires this exact DLL hash to pass the Halo 4 headset test plus the required Halo 3 regression.'
+        note = 'C-H4-13 headset-failed disable point. Its optional final-palette hook installed and fired, but an incorrect comparison between a per-render-model skinning output count and the 85-node composed animation record refused every live palette: 0 solved and about 5800 refused per two seconds. The VRIK hook is inert; stock hands and the accepted camera core remain. This source is a handoff/revert point and must not be packaged as a new candidate.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

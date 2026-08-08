@@ -6821,25 +6821,24 @@ int main()
     Check(halo4Row && halo4Row->admissionCapabilities ==
               TitleCapability_ControllerInput,
         "Halo 4 admits shared controller input and nothing else");
-    // C-H4-13: Halo 4 now advertises the shared motion set its own evidence
+    // C-H4-13 headset result: its final-palette hook fired, but the disproven
+    // composed-count admission refused every palette. ArmIk is withheld again
+    // until the replacement candidate is headset-proven.
     // supports. Each exclusion below is a deliberate withholding, not an
     // oversight, and each cost a title a real defect when it was granted early.
     Check(halo4Row &&
               (halo4Row->capabilities &
                (TitleCapability_Stereo | TitleCapability_ControllerAim |
-                 TitleCapability_Haptics | TitleCapability_ArmIk |
-                 TitleCapability_RuntimeModes |
+                 TitleCapability_Haptics | TitleCapability_RuntimeModes |
                 TitleCapability_RoomScale | TitleCapability_ControllerInput)) ==
                   (TitleCapability_Stereo | TitleCapability_ControllerAim |
-                    TitleCapability_Haptics | TitleCapability_ArmIk |
-                    TitleCapability_RuntimeModes |
+                    TitleCapability_Haptics | TitleCapability_RuntimeModes |
                    TitleCapability_RoomScale |
                    TitleCapability_ControllerInput),
-        "Halo 4 advertises stereo, controller aim, haptics, ArmIk, runtime "
-        "modes, room scale and controller input");
-    Check(halo4Row && (halo4Row->capabilities & TitleCapability_ArmIk),
-        "C-H4-13 advertises ArmIk only after the title-specific final-palette "
-        "consumer and Storm hierarchy were proven");
+        "Halo 4 advertises stereo, controller aim, haptics, runtime modes, "
+        "room scale and controller input");
+    Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
+        "Halo 4 withholds ArmIk after C-H4-13 refused every live palette");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
         "Halo 4 withholds Hud: its CUI arrives inside the captured scene "
         "target, so no title-specific HUD redirect is installed to gate");
