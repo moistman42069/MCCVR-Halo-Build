@@ -30106,13 +30106,11 @@ namespace
         }
         (void)headTracked;
 
-        // C-H4-11: place the first-person weapon assembly on the controller
-        // before either eye renders, so both eyes draw the same hand pose. The
-        // engine recomposes these nodes every frame from animation, so this is
-        // a per-frame write, not a one-shot. Feature-local by construction: it
-        // touches nothing the stereo pair depends on, and a refusal costs the
-        // hands only.
-        Halo4PlaceFirstPersonHands();
+        // C-H4-11b's verified writes land in the animation system's telemetry
+        // mirror, not in the render input. Leave the investigation code intact,
+        // but do not keep overwriting that dead block while the real producer is
+        // being traced. This is feature-local: Halo 4's camera transaction and
+        // motion aim remain completely unchanged.
 
         Halo4CameraBasis eyeCameras[2]{};
         for (int eye = 0; eye < 2; ++eye)
@@ -30346,13 +30344,10 @@ namespace
                         1, std::memory_order_relaxed);
                 }
 
-                // C-H4-11a: place immediately before the draw, per eye. The
-                // engine composes these nodes from animation earlier in the
-                // frame, so the last writer before the draw is what renders.
-                // Doing it here rather than once per frame removes any
-                // ordering question between our write and the engine's own
-                // node work.
-                Halo4PlaceFirstPersonHands();
+                // C-H4-11b proved that this write reaches only an animation
+                // telemetry mirror. Do not write it again here: the visible
+                // weapon remains stock until the real animation producer is
+                // identified and independently verified.
                 g_halo4OrigWrapper(element, view, window);
                 if (!VR_CaptureHalo4RenderedEye(
                         eye, snapshot.preparedSerial))
