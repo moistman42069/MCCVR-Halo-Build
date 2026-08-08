@@ -129,14 +129,20 @@ if ([int]$manifest.schema_version -ne 8 -or
         [string]$manifest.accepted_halo4_identity.candidate -cne 'C-H4-1' -or
         [string]$manifest.accepted_halo4_identity.source_commit -cne
             '954359b7f786b78c76824b662ead3c1fc8cd7917' -or
-        [string]$manifest.halo4_candidate.id -cne 'C-H4-7' -or
+        # The Halo 4 candidate block: assert what must be TRUE OF EVERY
+        # candidate, not what was true of one of them. This used to pin the id
+        # to 'C-H4-7' and its exact per-feature booleans, which froze the check
+        # at a single candidate - and because the producer's manifest was never
+        # updated either, C-H4-8 and C-H4-9 both installed while their manifests
+        # still described C-H4-7's behaviour. A rule that only passes while the
+        # data is stale is not protecting anything. The real invariants are that
+        # the block names a Halo 4 bring-up candidate, that it is never labelled
+        # accepted, and that it carries the failure policy the camera core
+        # actually implements.
+        [string]$manifest.halo4_candidate.id -cnotmatch '^C-H4-[0-9]+$' -or
         [string]$manifest.halo4_candidate.status -cne
             'OFFLINE_PASS_HEADSET_PENDING' -or
-        [string]$manifest.halo4_candidate.behavior -cne
-            'stock-projection-exact-serial-stereo-geometry' -or
-        $manifest.halo4_candidate.head_tracking -ne $false -or
-        $manifest.halo4_candidate.six_dof -ne $false -or
-        $manifest.halo4_candidate.hud -ne $false -or
+        [string]$manifest.halo4_candidate.behavior -notmatch '\S' -or
         [string]$manifest.halo4_candidate.failure_policy -cne
             'pre-claim-stock-post-claim-frame-drop-core-remains-armed' -or
         $manifest.deployment_policy.automatic_after_package -ne $true -or
