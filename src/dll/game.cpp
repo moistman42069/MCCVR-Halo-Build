@@ -30997,7 +30997,7 @@ namespace
         const uint64_t handsBlocked =
             g_halo4Camera.handsBlockedFrames.exchange(
                 0, std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-11 hands: %s; %llu placed / %llu refused frames in "
+        LOG("Halo 4 C-H4-11a hands: %s; %llu placed / %llu refused frames in "
             "2s, %d weapon slot(s), %d nodes; engine's stock ROOT node: "
             "|quat| %.4f scale %.3f translation %.3f/%.3f/%.3f; placed "
             "translation %.3f/%.3f/%.3f (world scale %.2f)",

@@ -169,9 +169,30 @@ now: C-H4-9 is installed in both editions for a look-pitch headset test, but
 | C-H4-9 `0e450d5` | **PITCH CLAIM PASSED, shot line MISSED (2026-08-08):** "6dof is working and it looks and runs great" - the stick no longer tilts the world, and the log confirms `head pitch ... (ABSOLUTE, headset owns pitch)`, 242 tracked frames/2s, `lean ... = +0.024/+0.010/-0.006 xyz`. The loop's third part missed: "shots don't follow my view", explicitly deprioritised by the user. Cause measured, not guessed - see below. |
 
 | C-H4-10 `140e15d` | **RAN 2026-08-08, no fault reported.** Log: `aim GRANTED, haptics GRANTED, room scale GRANTED, locomotion head-relative`, `MOTION AIM: the hand steers, the stick turns`. Not explicitly accepted. |
-| C-H4-11 `28a20a7` | **INSTALLED, HEADSET-PENDING:** Halo 4's own first-person gun and arms placed on the controller, with the node format proven from live engine values before anything is written. |
+| C-H4-11 `28a20a7` | **REFUSED, as designed (2026-08-08):** "no floaty hands, gun still stuck to my face". It wrote nothing; its probe proved the whole addressing chain live (2 weapon slots, field value 85) and disproved two reads - see E-H4-17. |
+| C-H4-11a `e9bd65b` | **INSTALLED, HEADSET-PENDING:** Halo 4's own first-person gun and arms placed on the controller, with the node format proven from live engine values before anything is written. |
 
-| C-H4-11 installed identity | Value |
+| C-H4-11a installed identity | Value |
+| --- | --- |
+| Source | `e9bd65b824592daffd5adde4ddf578f254e58508` (branch `feature/halo4-bringup`) |
+| Package | `out/candidates/e9bd65b-halo4-c11a-first-person-hands-live-bank-20260808-163811888Z` |
+| `halo3xr.dll` SHA-256 | `240E608B21A415B0B039478866688C92D4B7734512167A9A690C61D59F91EF27` |
+| `halo3xr_launcher.exe` SHA-256 | `5625F9A5782741B705C57F4C9C7628B8135FCE270C9CE815E427125AED5F9444` |
+| Installed editions | Steam and Microsoft Store; both installed hashes independently matched |
+| Offline gates | Release x64 build, `core_tests`, Reach consistency gate - all passing |
+| Acceptance | **Not accepted.** C-H4-1 remains the rollback pointer. |
+
+**What changed from C-H4-11.** It read the wrong half of the record. `+0x15D4`
+is the node COUNT, not an index, and the live node bank is at `+0x00` - `+0xF00`
+is the previous-frame copy. Full derivation in E-H4-17; the zeros the probe
+returned are what proved both.
+
+**What C-H4-11a must show.** `Halo 4 C-H4-11a hands:` reading `node format
+PROVEN from live values, placing`, placed frames climbing, and an engine stock
+ROOT node with `|quat|` about 1.000 and a sane scale. In the headset: the gun
+and arms follow your controller.
+
+| C-H4-11 identity (superseded) | Value |
 | --- | --- |
 | Source | `28a20a7018bb9858772cb3dc8f84333fb25c2468` (branch `feature/halo4-bringup`) |
 | Package | `out/candidates/28a20a7-halo4-c11-first-person-hands-20260808-161616964Z` |
