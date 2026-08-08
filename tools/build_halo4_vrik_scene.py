@@ -18,6 +18,7 @@ from mathutils import Matrix, Quaternion, Vector
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 from halo4_fp_tag import parse_render_model  # noqa: E402
+from validate_halo4_vrik_alignment import validate_alignment  # noqa: E402
 
 
 WU_TO_M = 3.048
@@ -128,6 +129,7 @@ def make_armature(nodes, worlds, collection):
     preferred = {
         4: 16, 16: 29,
         5: 8, 8: 37,
+        29: 49, 37: 43,
     }
     for node in nodes:
         index = node["index"]
@@ -141,9 +143,15 @@ def make_armature(nodes, worlds, collection):
         if child is not None and (worlds[child].translation - head).length > 0.002:
             tail = worlds[child].translation
         else:
-            axis = worlds[index].to_quaternion() @ Vector((0.035, 0.0, 0.0))
+            parent = node["parent"]
+            axis = (head - worlds[parent].translation
+                    if parent >= 0 else Vector())
+            if axis.length >= 0.002:
+                axis = axis.normalized() * min(0.035, max(0.012, axis.length * 0.5))
+            else:
+                axis = worlds[index].to_quaternion() @ Vector((0.025, 0.0, 0.0))
             if axis.length < 0.002:
-                axis = Vector((0.035, 0.0, 0.0))
+                axis = Vector((0.025, 0.0, 0.0))
             tail = head + axis
         bone.head = head
         bone.tail = tail
@@ -386,6 +394,7 @@ def main():
         make_mesh(index, parsed["meshes"][index], parsed["compression"],
                   nodes, armature,
                   model_collection, tech_material if index == 3 else armor_material)
+    validate_alignment(verbose=False)
     add_controls(nodes, worlds, armature, control_collection)
     validate_neutral_arm_pose(armature)
     add_reference("ref:tag_origin", Matrix.Identity(4), reference_collection)

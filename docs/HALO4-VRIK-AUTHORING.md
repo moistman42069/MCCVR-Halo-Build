@@ -30,8 +30,11 @@ chains used by the authoring rig are:
 
 The visible Chief scene uses raw meshes 3, 50, 97, and 98: techsuit, Chief
 arms, left shoulder, and right shoulder. Raw positions are decoded through the
-tag's authored position-compression bounds. Skin indices are resolved through
-each mesh's official per-mesh node map.
+tag's authored position-compression bounds. H4EK serializes the underlying
+`real_bounds position_bounds[3]` as six sequential values split across two XML
+point fields; the decoder therefore consumes them as `xmin, xmax, ymin, ymax,
+zmin, zmax`, not as two XYZ corners. Skin indices are resolved through each
+mesh's official per-mesh node map.
 
 Coordinates retain Blam's `+X forward, +Y left, +Z up` convention and convert
 world units to metres with `1 wu = 3.048 m`.
@@ -59,4 +62,7 @@ bones, four official skinned meshes, six controls, successful draft JSON
 export, and an evaluated forearm change when the right-hand target moved. The
 builder solves each mirrored chain's Blender pole angle independently and
 rejects the scene if enabled neutral IK moves any arm joint from the official
-tag bind pose.
+tag bind pose. It also rejects a build when strongly weighted arm/finger
+vertices exceed the bone-segment or bilateral-mirror alignment limits; this is
+the gate that detects an incorrectly decoded compression layout even when an
+armature modifier happens to preserve an undeformed rest mesh.

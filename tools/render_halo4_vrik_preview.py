@@ -12,6 +12,7 @@ from mathutils import Vector
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--show-bones", action="store_true")
     values = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     args = parser.parse_args(values)
 
@@ -30,6 +31,28 @@ def main():
         if delta > 2.5e-4:
             raise SystemExit(
                 "ERROR: neutral IK moves %s by %.9g m" % (name, delta))
+
+    if args.show_bones:
+        material = bpy.data.materials.new("alignment bones")
+        material.diffuse_color = (1.0, 0.12, 0.02, 1.0)
+        names = [
+            bone.name for bone in armature.data.bones
+            if bone.name.startswith(("b_r_", "b_l_"))]
+        for name in names:
+            bone = armature.data.bones[name]
+            curve = bpy.data.curves.new("alignment:" + name, 'CURVE')
+            curve.dimensions = '3D'
+            curve.bevel_depth = 0.006
+            curve.bevel_resolution = 2
+            curve.materials.append(material)
+            spline = curve.splines.new('POLY')
+            spline.points.add(1)
+            head = armature.matrix_world @ bone.head_local
+            tail = armature.matrix_world @ bone.tail_local
+            spline.points[0].co = (*head, 1.0)
+            spline.points[1].co = (*tail, 1.0)
+            obj = bpy.data.objects.new("alignment:" + name, curve)
+            bpy.context.scene.collection.objects.link(obj)
 
     camera_data = bpy.data.cameras.new("validation_camera")
     camera = bpy.data.objects.new("validation_camera", camera_data)

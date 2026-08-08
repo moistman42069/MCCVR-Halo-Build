@@ -89,10 +89,16 @@ def parse_render_model(path, mesh_indices=(3, 50, 97, 98)):
                 flags = int(_value(element, "compression flags"))
                 first = _floats(_value(element, "position bounds 0"), 3)
                 second = _floats(_value(element, "position bounds 1"), 3)
+                # H4's field is real_bounds position_bounds[3]. The XML tag
+                # dumper exposes its six sequential floats as two point-3d
+                # fields; they are not opposing XYZ corner vectors.
+                packed = first + second
+                bounds = tuple((packed[axis * 2], packed[axis * 2 + 1])
+                               for axis in range(3))
                 compression = {
                     "flags": flags,
-                    "position_min": tuple(min(a, b) for a, b in zip(first, second)),
-                    "position_max": tuple(max(a, b) for a, b in zip(first, second)),
+                    "position_min": tuple(pair[0] for pair in bounds),
+                    "position_max": tuple(pair[1] for pair in bounds),
                 }
             elif current_mesh in wanted and parent == "raw vertices":
                 local_nodes = [int(value) for value in _values(
