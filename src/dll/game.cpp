@@ -29123,15 +29123,9 @@ namespace
         uint32_t user, uintptr_t observer);
     using Halo4WrapperFn = void(__fastcall*)(
         uintptr_t element, uintptr_t view, uint32_t window);
-    // E-H4-21: H4EK's first-person animation producer receives the output user
-    // and weapon slot in ecx/edx.  It rebuilds that slot's orientation bank
-    // before returning, which is the only safe point to move it for this draw.
-    using Halo4FirstPersonAnimationFn = void(__fastcall*)(
-        uint32_t user, uint32_t weaponSlot, bool enabled);
 
     Halo4SetupFn g_halo4OrigSetup = nullptr;
     Halo4WrapperFn g_halo4OrigWrapper = nullptr;
-    Halo4FirstPersonAnimationFn g_halo4OrigFirstPersonAnimation = nullptr;
     std::atomic<float> g_halo4RenderHalfFovX[2]{};
     std::atomic<float> g_halo4RenderHalfFovY[2]{};
     std::atomic<uint64_t> g_halo4RenderFovSerial[2]{};
@@ -29163,9 +29157,6 @@ namespace
         HMODULE moduleReference = nullptr;
         void* setupTarget = nullptr;
         void* wrapperTarget = nullptr;
-        // Optional.  The camera core stays live if the version-specific hands
-        // producer cannot be proven or MinHook rejects this hook.
-        void* fpAnimationTarget = nullptr;
         uintptr_t elementAddress = 0;
         uintptr_t setupReturnAddress = 0;
         uintptr_t wrapperReturnAddress = 0;
@@ -29237,7 +29228,7 @@ namespace
         std::atomic<float> gameYawReference{0.0f};
         std::atomic<uint64_t> vrTurns{0};
 
-        // --- C-H4-12 first-person hands --------------------------------
+        // --- C-H4-11 first-person hands --------------------------------
         // The node format is PROVEN from live engine values before a byte is
         // written; `nodeFormatProven` is what arms the write.
         std::atomic<bool> nodeFormatProven{false};
@@ -29305,7 +29296,7 @@ namespace
             VR_IsStereoEnabled();
     }
 
-    // ---- C-H4-12: first-person hands -----------------------------------
+    // ---- C-H4-11: first-person hands -----------------------------------
     // Resolved once per install from the signature-verified anchor, never a
     // bare address.
     uint32_t* g_halo4EngineTlsIndex = nullptr;
@@ -29401,21 +29392,19 @@ namespace
         return out.weapons > 0;
     }
 
-    // C-H4-12. Put Halo 4's own first-person weapon assembly on the controller,
-    // immediately after Halo 4 has reconstructed this exact weapon's node bank.
+    // C-H4-11. Put Halo 4's own first-person weapon assembly on the controller.
     //
     // Order of operations is deliberate and is what makes this safe to ship on
     // an unproven layout: READ the engine's stock node first, prove it really
     // is {quaternion, translation, scale}, publish what was read, and only then
     // write. A build that cannot prove the format places nothing and says so -
     // it never writes a guess into an engine bone array.
-    void Halo4PlaceFirstPersonHands(int user, int weapon)
+    void Halo4PlaceFirstPersonHands()
     {
-        if (!g_config.halo4_hands || user < 0 || weapon < 0 ||
-            weapon >= static_cast<int>(kHalo4FirstPersonMaxWeapons))
+        if (!g_config.halo4_hands)
             return;
         Halo4FirstPersonAccess access;
-        if (!Halo4ResolveFirstPerson(user, access))
+        if (!Halo4ResolveFirstPerson(0, access))
         {
             g_halo4Camera.handsBlockedFrames.fetch_add(
                 1, std::memory_order_relaxed);
@@ -29449,153 +29438,112 @@ namespace
         placement.mirrored = g_config.halo4_hands_mirrored;
 
         bool placedAny = false;
-        if (!access.nodes[weapon] || access.nodeCount[weapon] <= 0)
+        for (int weapon = 0; weapon < static_cast<int>(
+                 kHalo4FirstPersonMaxWeapons); ++weapon)
         {
-            g_halo4Camera.handsBlockedFrames.fetch_add(
-                1, std::memory_order_relaxed);
-            return;
-        }
-        // The root is node 0 of the live bank; the rest of the assembly hangs
-        // off it, so this moves the whole rig.
-        unsigned char* node = access.nodes[weapon] +
-            static_cast<size_t>(kHalo4FirstPersonRootNode) *
-                kHalo4FirstPersonNodeStride;
+            if (!access.nodes[weapon] || access.nodeCount[weapon] <= 0)
+                continue;
+            // The root is node 0 of the live bank; the rest of the assembly
+            // hangs off it, so this moves the whole rig.
+            unsigned char* node = access.nodes[weapon] +
+                static_cast<size_t>(kHalo4FirstPersonRootNode) *
+                    kHalo4FirstPersonNodeStride;
 
-        Halo4FirstPersonNode stock{};
-        if (!Halo4SafeRead(node, &stock, sizeof(stock)))
-        {
-            g_halo4Camera.handsBlockedFrames.fetch_add(
-                1, std::memory_order_relaxed);
-            return;
-        }
+            Halo4FirstPersonNode stock{};
+            if (!Halo4SafeRead(node, &stock, sizeof(stock)))
+                continue;
 
-        // Publish what the ENGINE holds, every time, before deciding anything.
-        // A clean log that only ever showed our own values would prove nothing
-        // (clean-diagnostic-means-wrong-mechanism).
-        const float quaternionLength = sqrtf(
-            stock.rotation[0] * stock.rotation[0] +
-            stock.rotation[1] * stock.rotation[1] +
-            stock.rotation[2] * stock.rotation[2] +
-            stock.rotation[3] * stock.rotation[3]);
-        g_halo4Camera.stockNodeQuaternionLength.store(
-            quaternionLength, std::memory_order_relaxed);
-        g_halo4Camera.stockNodeScale.store(
-            stock.scale, std::memory_order_relaxed);
-        for (int axis = 0; axis < 3; ++axis)
-        {
-            g_halo4Camera.stockNodeTranslation[axis].store(
-                stock.translation[axis], std::memory_order_relaxed);
-        }
-        g_halo4Camera.lastRootNode.store(
-            access.nodeCount[weapon], std::memory_order_relaxed);
+            // Publish what the ENGINE holds, every time, before deciding
+            // anything. A clean log that only ever showed our own values would
+            // prove nothing (clean-diagnostic-means-wrong-mechanism).
+            const float quaternionLength = sqrtf(
+                stock.rotation[0] * stock.rotation[0] +
+                stock.rotation[1] * stock.rotation[1] +
+                stock.rotation[2] * stock.rotation[2] +
+                stock.rotation[3] * stock.rotation[3]);
+            g_halo4Camera.stockNodeQuaternionLength.store(
+                quaternionLength, std::memory_order_relaxed);
+            g_halo4Camera.stockNodeScale.store(
+                stock.scale, std::memory_order_relaxed);
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                g_halo4Camera.stockNodeTranslation[axis].store(
+                    stock.translation[axis], std::memory_order_relaxed);
+            }
+            g_halo4Camera.lastRootNode.store(
+                access.nodeCount[weapon], std::memory_order_relaxed);
 
-        if (!Halo4FirstPersonNodeLooksValid(stock))
-        {
-            // The 0x20 stride is proven; this shape is not. Refuse loudly and
-            // permanently for this generation rather than writing a transform
-            // the engine may read as something else entirely.
-            g_halo4Camera.nodeFormatRejected.store(
+            if (!Halo4FirstPersonNodeLooksValid(stock))
+            {
+                // The 0x20 stride is proven; this shape is not. Refuse loudly
+                // and permanently for this generation rather than writing a
+                // transform the engine may read as something else entirely.
+                g_halo4Camera.nodeFormatRejected.store(
+                    true, std::memory_order_release);
+                g_halo4Camera.handsBlockedFrames.fetch_add(
+                    1, std::memory_order_relaxed);
+                return;
+            }
+            g_halo4Camera.nodeFormatProven.store(
                 true, std::memory_order_release);
-            g_halo4Camera.handsBlockedFrames.fetch_add(
-                1, std::memory_order_relaxed);
-            return;
-        }
-        g_halo4Camera.nodeFormatProven.store(
-            true, std::memory_order_release);
 
-        // The rigid transform the whole assembly gets. `placed` carries the
-        // controller's rotation and the offset in engine units; applying it to
-        // EVERY node moves the gun and arms as one body, so nothing here
-        // depends on which node is the root.
-        Halo4FirstPersonNode placed{};
-        if (!Halo4BuildHandNode(placement, stock, placed))
-        {
-            g_halo4Camera.handsBlockedFrames.fetch_add(
-                1, std::memory_order_relaxed);
-            return;
-        }
-
-        const int count = access.nodeCount[weapon];
-        int written = 0;
-        for (int index = 0; index < count; ++index)
-        {
-            unsigned char* target = access.nodes[weapon] +
-                static_cast<size_t>(index) * kHalo4FirstPersonNodeStride;
-            Halo4FirstPersonNode current{};
-            if (!Halo4SafeRead(target, &current, sizeof(current)))
+            // The rigid transform the whole assembly gets. `placed` carries the
+            // controller's rotation and the offset in engine units; applying it
+            // to EVERY node moves the gun and arms as one body, so nothing here
+            // depends on which node is the root.
+            Halo4FirstPersonNode placed{};
+            if (!Halo4BuildHandNode(placement, stock, placed))
                 continue;
-            Halo4FirstPersonNode moved{};
-            if (!Halo4TransformAssemblyNode(
-                    current, placed.rotation, placed.translation, moved))
-            {
-                continue;
-            }
-            if (Halo4SafeWrite(target, &moved, sizeof(moved)))
-                ++written;
-        }
-        if (written == 0)
-        {
-            g_halo4Camera.handsBlockedFrames.fetch_add(
-                1, std::memory_order_relaxed);
-            return;
-        }
 
-        // Read the root straight back. This reports what the ENGINE holds after
-        // the write, not that we issued one - the only confirmation worth
-        // logging.
-        Halo4FirstPersonNode readback{};
-        if (Halo4SafeRead(node, &readback, sizeof(readback)))
-        {
-            float delta = 0.0f;
-            for (int axis = 0; axis < 3; ++axis)
+            const int count = access.nodeCount[weapon];
+            int written = 0;
+            for (int index = 0; index < count; ++index)
             {
-                const float d =
-                    readback.translation[axis] - stock.translation[axis];
-                delta += d * d;
+                unsigned char* target = access.nodes[weapon] +
+                    static_cast<size_t>(index) * kHalo4FirstPersonNodeStride;
+                Halo4FirstPersonNode current{};
+                if (!Halo4SafeRead(target, &current, sizeof(current)))
+                    continue;
+                Halo4FirstPersonNode moved{};
+                if (!Halo4TransformAssemblyNode(
+                        current, placed.rotation, placed.translation, moved))
+                {
+                    continue;
+                }
+                if (Halo4SafeWrite(target, &moved, sizeof(moved)))
+                    ++written;
             }
-            g_halo4Camera.lastWriteSurvived.store(
-                sqrtf(delta) > 1.0e-4f, std::memory_order_relaxed);
-            for (int axis = 0; axis < 3; ++axis)
+            if (written == 0)
+                continue;
+
+            // Read the root straight back. This reports what the ENGINE holds
+            // after the write, not that we issued one - the only form of
+            // confirmation worth logging.
+            Halo4FirstPersonNode readback{};
+            if (Halo4SafeRead(node, &readback, sizeof(readback)))
             {
-                g_halo4Camera.lastHandTranslation[axis].store(
-                    readback.translation[axis], std::memory_order_relaxed);
+                float delta = 0.0f;
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    const float d =
+                        readback.translation[axis] - stock.translation[axis];
+                    delta += d * d;
+                }
+                g_halo4Camera.lastWriteSurvived.store(
+                    sqrtf(delta) > 1.0e-4f, std::memory_order_relaxed);
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    g_halo4Camera.lastHandTranslation[axis].store(
+                        readback.translation[axis], std::memory_order_relaxed);
+                }
             }
+            g_halo4Camera.lastNodesWritten.store(
+                written, std::memory_order_relaxed);
+            placedAny = true;
         }
-        g_halo4Camera.lastNodesWritten.store(
-            written, std::memory_order_relaxed);
-        placedAny = true;
         (placedAny ? g_halo4Camera.handsPlacedFrames
                    : g_halo4Camera.handsBlockedFrames)
             .fetch_add(1, std::memory_order_relaxed);
-    }
-
-    // This detour intentionally runs the original first.  E-H4-21 proves that
-    // the original reconstructs the node transforms, so applying our controller
-    // transform before it (C-H4-11b) only modifies an intermediate mirror.
-    __declspec(noinline) void __fastcall Halo4FirstPersonAnimationDetour(
-        uint32_t user, uint32_t weaponSlot, bool enabled)
-    {
-        g_halo4Camera.activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
-        __try
-        {
-            Halo4FirstPersonAnimationFn original =
-                g_halo4OrigFirstPersonAnimation;
-            if (original)
-                original(user, weaponSlot, enabled);
-            if (!g_halo4Camera.teardownRequested.load(
-                    std::memory_order_acquire) &&
-                user < kHalo4FirstPersonMaxUsers &&
-                weaponSlot < kHalo4FirstPersonMaxWeapons)
-            {
-                Halo4PlaceFirstPersonHands(
-                    static_cast<int>(user), static_cast<int>(weaponSlot));
-            }
-        }
-        __finally
-        {
-            g_halo4Camera.activeCallbacks.fetch_sub(
-                1, std::memory_order_acq_rel);
-        }
     }
 
     // C-H4-10. Motion aim on top of that: the hand steers, so it additionally
@@ -29822,7 +29770,7 @@ namespace
             false, std::memory_order_release);
         g_halo4Camera.gameYawReference.store(0.0f, std::memory_order_relaxed);
         g_halo4Camera.vrTurns.store(0, std::memory_order_relaxed);
-        // C-H4-12: the node-format proof is per module generation, for the
+        // C-H4-11: the node-format proof is per module generation, for the
         // same reason the FOV calibration is - a different level or model may
         // present a different first-person assembly, and one probe frame is a
         // cheap price for never writing on a stale proof.
@@ -30622,8 +30570,6 @@ namespace
             MH_DisableHook(g_halo4Camera.setupTarget);
         if (g_halo4Camera.wrapperTarget)
             MH_DisableHook(g_halo4Camera.wrapperTarget);
-        if (g_halo4Camera.fpAnimationTarget)
-            MH_DisableHook(g_halo4Camera.fpAnimationTarget);
         // Both detours must have returned before a trampoline is freed or the
         // module reference is released.
         if (g_halo4Camera.activeCallbacks.load(std::memory_order_acquire) != 0)
@@ -30632,8 +30578,6 @@ namespace
             MH_RemoveHook(g_halo4Camera.setupTarget);
         if (g_halo4Camera.wrapperTarget)
             MH_RemoveHook(g_halo4Camera.wrapperTarget);
-        if (g_halo4Camera.fpAnimationTarget)
-            MH_RemoveHook(g_halo4Camera.fpAnimationTarget);
         if (g_halo4Camera.moduleReference)
             FreeLibrary(g_halo4Camera.moduleReference);
         const uint32_t generation =
@@ -30641,10 +30585,8 @@ namespace
         g_halo4Camera.moduleReference = nullptr;
         g_halo4Camera.setupTarget = nullptr;
         g_halo4Camera.wrapperTarget = nullptr;
-        g_halo4Camera.fpAnimationTarget = nullptr;
         g_halo4OrigSetup = nullptr;
         g_halo4OrigWrapper = nullptr;
-        g_halo4OrigFirstPersonAnimation = nullptr;
         g_halo4Camera.base = 0;
         g_halo4Camera.size = 0;
         g_halo4Camera.elementAddress = 0;
@@ -30720,7 +30662,7 @@ namespace
             }
             if (anchor.rva == kHalo4PerWindowLoopRva)
                 loopHit = hit;
-            // C-H4-12: the engine TLS index, taken from the accessor's own rip
+            // C-H4-11: the engine TLS index, taken from the accessor's own rip
             // decode rather than shipped as an address. If that decode did not
             // land where it was pinned, the pointer stays null and the hands
             // feature simply never arms.
@@ -30859,56 +30801,6 @@ namespace
             "substitution happens at the observer result, before setup",
             generation, kHalo4SetupRva, kHalo4WrapperRva,
             kHalo4PerWindowLoopRva);
-
-        // C-H4-12: The camera core is already live.  This additional hook is
-        // therefore a fail-open hands feature: every proof or MinHook failure
-        // below leaves Halo 4's camera, stereo and stock weapon path intact.
-        const uintptr_t fpAnimationHit = sig::Find(
-            base, size, kHalo4FpAnimationProducerPattern);
-        const bool fpAnimationUnique = fpAnimationHit && !sig::Find(
-            fpAnimationHit + 1, base + size - fpAnimationHit - 1,
-            kHalo4FpAnimationProducerPattern);
-        const uintptr_t fpAnimationTargetRva = fpAnimationHit >= base +
-            kHalo4FpAnimationProducerSignatureOffset
-            ? fpAnimationHit - base - kHalo4FpAnimationProducerSignatureOffset
-            : 0;
-        if (!fpAnimationUnique || fpAnimationTargetRva !=
-                kHalo4FpAnimationProducerRva)
-        {
-            LOG("Halo 4 C-H4-12 hands: first-person animation producer is %s "
-                "(RVA 0x%zX, pinned 0x%X); stock hands remain and camera core "
-                "stays armed",
-                fpAnimationHit ? (fpAnimationUnique ? "moved" : "ambiguous") :
-                    "unavailable", fpAnimationTargetRva,
-                kHalo4FpAnimationProducerRva);
-            return true;
-        }
-        void* fpAnimationTarget = reinterpret_cast<void*>(
-            base + kHalo4FpAnimationProducerRva);
-        Halo4FirstPersonAnimationFn originalFpAnimation = nullptr;
-        if (MH_CreateHook(fpAnimationTarget,
-                          reinterpret_cast<void*>(&Halo4FirstPersonAnimationDetour),
-                          reinterpret_cast<void**>(&originalFpAnimation)) != MH_OK)
-        {
-            LOG("Halo 4 C-H4-12 hands: MinHook rejected the optional animation "
-                "producer; stock hands remain and camera core stays armed");
-            return true;
-        }
-        g_halo4OrigFirstPersonAnimation = originalFpAnimation;
-        g_halo4Camera.fpAnimationTarget = fpAnimationTarget;
-        if (MH_EnableHook(fpAnimationTarget) != MH_OK)
-        {
-            MH_RemoveHook(fpAnimationTarget);
-            g_halo4Camera.fpAnimationTarget = nullptr;
-            g_halo4OrigFirstPersonAnimation = nullptr;
-            LOG("Halo 4 C-H4-12 hands: MinHook could not enable the optional "
-                "animation producer; stock hands remain and camera core stays "
-                "armed");
-            return true;
-        }
-        LOG("Halo 4 C-H4-12 hands: first-person animation producer 0x%X is "
-            "hooked; controller transform follows Halo 4's final node rebuild",
-            kHalo4FpAnimationProducerRva);
         return true;
     }
 
@@ -31142,7 +31034,7 @@ namespace
             static_cast<unsigned long long>(turns),
             g_config.turn_smooth ? "smooth" : "snap", "turn");
 
-        // C-H4-12's own line. It reports what the ENGINE held before we wrote,
+        // C-H4-11's own line. It reports what the ENGINE held before we wrote,
         // never just that we wrote: a quaternion length near 1 and a sane scale
         // are the proof that the 0x20-byte node really is
         // {rotation, translation, scale}. If those look wrong, the placement
@@ -31153,12 +31045,11 @@ namespace
         const uint64_t handsBlocked =
             g_halo4Camera.handsBlockedFrames.exchange(
                 0, std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-12 hands: producer %s; %s; %llu placed / %llu refused frames in "
+        LOG("Halo 4 C-H4-11b hands: %s; %llu placed / %llu refused frames in "
             "2s, %d weapon slot(s), %d nodes, %d transformed, write survived "
             "readback: %s; engine's stock ROOT node: "
             "|quat| %.4f scale %.3f translation %.3f/%.3f/%.3f; after the "
             "write it holds %.3f/%.3f/%.3f (world scale %.2f)",
-            g_halo4Camera.fpAnimationTarget ? "hooked" : "UNAVAILABLE - stock",
             g_halo4Camera.nodeFormatRejected.load(std::memory_order_acquire)
                 ? "REFUSED - the 0x20 node is NOT {quat,translation,scale}, "
                   "nothing was written"
