@@ -1269,6 +1269,103 @@ cannot tell the next title that its camera hook is already running.
   reports the middle of the view rather than where the gun points, so expect two
   marks until a Halo 4 crosshair hider earns its own evidence.
 
+### E-H4-11 — the Halo 4 level-re-entry crash, root-caused 2026-08-08
+
+**Symptom.** Exit a Halo 4 level to the menu, then load another Halo 4 level:
+the loading screen never finishes and MCC dies. Reported by the user and
+reproduced in **two consecutive sessions on two different builds** (C-H4-9
+`0e450d5` and C-H4-10 `140e15d`). Evidence preserved at
+`out/test-runs/140e15d-halo4-c10-crash-on-relentry-steam-psvr2-20260808-0819`
+(both logs plus the WER report).
+
+**WER, identical in both crashes, same bucket `f4cde9f6adbfed8cf2ea8484b541ca79`:**
+
+    Fault Module      halo4.dll 1.3528.0.0, timestamp 68a0e7bf  (our pinned image)
+    Exception Code    c0000005
+    Exception Offset  0x3b7ddd
+
+**The faulting instruction, disassembled from the pinned image:**
+
+    0x3B7DA5  imul rbx, r14, 0x5F48              ; rbx = index * 0x5F48
+    0x3B7DAC  mov  rsi, [rax + r9*8]             ; rsi = this thread's TLS block (gs:[0x58])
+    0x3B7DB9  add  rbx, [rcx + rsi]              ; rbx += *(TLS + 0x6A0)
+    0x3B7DDD  mov  eax, [rbx + 4]                ; <-- FAULTS
+
+The minidump records the access violation as a **READ of address
+`0x0000000000000004`**, so `rbx` was exactly 0: `*(TLS + 0x6A0)` - the engine's
+per-thread globals block - is **NULL** on that thread. The surrounding code
+calls `object_get`-shaped `0x5DA400` with a type mask and stores a handle at
+`[rbx+4]`, i.e. this is Halo 4's own player/unit bookkeeping running on a thread
+with no game-thread globals.
+
+**Our code is not in it.** Walking the minidump's faulting thread (id 37052,
+9,624-byte stack) gives 73 `halo4.dll` frames, 54 `MCC-Win64-Shipping.exe`, the
+usual ntdll/KERNELBASE exception machinery - and **zero `halo3xr.dll`
+addresses anywhere on that stack**. At the moment of the crash we additionally
+had:
+
+- **no hooks in halo4.dll.** `Halo 4 camera core removed (generation 3)` at
+  `08:29:56.806`, 26 s before the fault: both detours disabled AND removed, the
+  module reference freed.
+- **nothing installed for the new load.** The level-load gate held from
+  `08:30:22.735` to the end, reporting `frozen seen=1, still run=304, change
+  run=0` - the level's player-view fingerprint never ticked even once, so the
+  gate correctly refused to touch the module and the level never started
+  rendering. The `STALL: the game has not presented for 1000ms` line at
+  `08:30:24.491` is the same fact from the display side.
+- **no lasting refcount pin.** `Halo4ModulePin` is a function-local RAII object
+  released on every exit path, and the camera core's `FreeLibrary` runs in
+  `RemoveHalo4CameraCore` before it clears its state. Verified by reading both.
+
+**The sharpest correlation in the logs.** The crash tracks whether the Halo 4
+module generation ADVANCES between entries:
+
+| Session | Entry | Generation | Result |
+| --- | --- | --- | --- |
+| C-H4-9 | Halo 4 #1 | 1 | played fine |
+| C-H4-9 | Halo 4 #2, straight back from the menu | **1, unchanged** | **crash** |
+| C-H4-10 | Halo 4 #1 | 1 | played fine |
+| C-H4-10 | ODST, then Halo 4 #2 | 3, advanced | played fine |
+| C-H4-10 | Halo 4 #3, straight back from the menu | **3, unchanged** | **crash** |
+
+Halo 4 -> another title -> Halo 4 reloads the module and works. Halo 4 -> menu
+-> Halo 4 reuses the same module instance and dies. That is consistent with the
+NULL per-thread globals the fault shows: the engine tears its thread-local game
+state down on exit and the second entry on the same module instance re-enters
+without it.
+
+**What is NOT yet proven.** That the fault also occurs with the mod absent. The
+decisive test is a no-mod control run of the same exit/re-enter sequence, and it
+is the one thing this evidence cannot supply. Everything above establishes that
+no frame of ours is executing, that we hold no hooks and no pin at fault time,
+and that we never touched the module during the dead load - not that the mod is
+causally irrelevant.
+
+### E-H4-12 — the first-person "weird layer": Halo 4 owns a separate FP FOV
+
+Recorded because it is the lead for the hands/gun work and it is already
+evidenced, not theorised. Two facts from the kit census above:
+
+- Halo 4 retains `first_person_camera` / `first_person_skeleton` /
+  `first_person_models` / `first_person_fov` / `first_person_hide_*` symbols.
+- Halo 4 exposes a **purpose-built first-person FOV pair no earlier title had**:
+  `render_first_person_fov_scale` and `enable_first_person_fov`.
+
+C-H4-8 widened the WORLD raster cover from Halo 4's stock 50.46/41.14 deg to the
+runtime's own 61.75/53.31 deg. Nothing widened the first-person overlay to
+match, and this document already warned about exactly that under C-H4-8's open
+items: *"Halo 3 additionally matches its first-person gun/HUD overlay camera to
+the widened world tangents, or the weapon magnifies."* A first-person layer
+drawn at the stock FOV inside a world drawn at the headset's FOV is precisely a
+gun and hands sitting in their own wrongly-scaled space.
+
+The write path already exists and is proven: `Game_ApplyDrawDistance` resolves a
+Halo 4 debug global **by name** and writes it, gated behind the level-load gate
+so it never touches a loading module. The scale to write is derivable from
+values the camera core already measures per frame - the stock half-angles and
+the solved cover half-angles are both in the C-H4-9/C-H4-10 telemetry - so this
+needs no new signature and no new address.
+
 ### Forward milestone ladder — one visible claim per candidate
 
 1. **C-H4-7:** stock-projection/exact-serial stereo geometry only.
