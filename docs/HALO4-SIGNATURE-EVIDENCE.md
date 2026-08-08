@@ -1868,12 +1868,42 @@ proves the structure our buffer sits inside is LARGER than what
 projection/marker utility (HUD waypoints, hit indicators) that happens to read
 the same camera slot, not necessarily the weapon mesh's own render path.
 
-**Explicitly not concluded:** whether ANY of the remaining five references
-(`0x3724CF`, `0x372FE7`, `0x373132`, `0x37699B`, `0x377C24`) is the actual
-mesh/vertex path. That is the next thing to check, in the same way - read the
-function from its real entry (found by scanning back to the nearest `CC CC`
-padding, not from the raw reference address, which desynchronizes a linear
-disassembler), and trace what it does with the pointer.
+**All six references individually checked.** Two (`0x37699B`, `0x377C24`)
+are FALSE POSITIVES of the brute-force per-byte scan: their actual encoded
+instructions (`mov r10d, [rip+0xB0EB62]` and `mov qword [rip+0xC3593D], r8`
+respectively) decode to a completely different target when read from their
+real instruction boundary - the scan matched a coincidental 4-byte window
+inside a neighbouring instruction's encoding, not a real operand. Scanning
+every byte offset for a disp32-shaped match will occasionally do this over a
+~12 MB `.text` section; always re-verify a hit by decoding its OWN instruction,
+not just trusting the arithmetic that found it.
+
+**The remaining four (`0x372093`, `0x3724CF`, `0x372FE7`, `0x373132`) are real
+and share one exact shape**, repeated at each site:
+
+    test  r8b/r9b, r8b/r9b
+    je    SKIP
+    lea   rXX, [OUR_BUFFER]              ; flag set: use the fresh FP camera
+    jmp   CONTINUE
+    SKIP:
+    movsxd rax, [rip+<global counter>]
+    test  eax, eax
+    js    CONTINUE                        ; (fallback stays unset/default)
+    lea   rXX, [rip+<array base>]
+    mov   rXX, [rXX + rax*8]              ; flag clear: an array-indexed CACHED view
+    CONTINUE:
+    ... rXX+0x1D4, rXX+0x24C used as inputs to a SHARED helper, call 0x11D050
+
+Every site picks between our freshly-rebuilt camera and a cached view pulled
+from a global array by index, then feeds whichever one through the same
+utility (`0x11D050`) using offsets `+0x1D4` and `+0x24C` - both **still past
+our 128-byte block**, confirming (again, independently) that the structure
+our buffer sits inside is larger than what `0x34EC44` writes, and that
+`0x11D050` is the next function to read, not the mesh renderer itself.
+
+**Not concluded:** whether `0x11D050` (or something downstream of it) reaches
+the vertex/skin pipeline. That is the next link in the chain, traced the same
+way - real entry point, not the raw reference address.
 
 **Do not hook `0x34EC44` until this is closed.** A camera-only override is
 safe once the write targets are confirmed; writing before that risks either
