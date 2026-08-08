@@ -154,8 +154,8 @@ datapoints are in `docs/HALO4-SIGNATURE-EVIDENCE.md` under "Candidate status".
 ### Installed forward ledger — NOT accepted; C-H4-1 remains the rollback pointer
 
 The installed files can be newer than the accepted pointer. That is the case
-now: C-H4-7 is installed in both editions for a geometry-only headset test, but
-**none of C-H4-2 through C-H4-7 advances C-H4-1**.
+now: C-H4-8 is installed in both editions for a head-tracking/6DOF/FOV headset
+test, but **none of C-H4-2 through C-H4-8 advances C-H4-1**.
 
 | Candidate | Result / status |
 | --- | --- |
@@ -164,17 +164,46 @@ now: C-H4-7 is installed in both editions for a geometry-only headset test, but
 | C-H4-4 `68daa27` | **FAILED:** captured the wrong deferred target; unlit scene without lighting/shadows/post/HUD. |
 | C-H4-5 `89b89ef` | **FAILED / user rejected:** lit distinct eyes and sustained `layers=1`, but malformed 3D/FOV, no head tracking/6DOF/HUD. |
 | C-H4-6 `4fc3c84` | **FAILED:** zero completed pairs, visible stall/title bounce, wrong FOV representation, and wrong outer-function return ABI. Behavior reverted by `7d58a68`. |
-| C-H4-7 `dbf1382` | **INSTALLED, HEADSET-PENDING:** stock-projection exact-serial stereo geometry only. Head tracking, 6DOF, and HUD are intentionally absent until later milestones. |
+| C-H4-7 `dbf1382` | **PASSED its own claim, experience REJECTED (2026-08-08):** 226-243 pairs/2s, `geometry TAKING`, zero drops, distinct eye pixels, 120 fps. The user rejected it for the two things it deliberately excluded - no 6DOF, and an FOV that did not fill the headset. It also exposed a NEW defect: Halo 4's stock cover (50.46/41.14 deg) does not contain PSVR2's frustum (61.5/53.0), so the whole slice was submitted at the wrong FOV (`M2 WARNING`). Evidence preserved at `out/test-runs/dbf1382-halo4-c7-stock-geometry-20260808-0553`. |
+| C-H4-8 `6cf0b76` | **INSTALLED, HEADSET-PENDING:** head tracking, 6DOF and headset-agnostic native FOV coverage. |
 
-| C-H4-7 installed identity | Value |
+| C-H4-8 installed identity | Value |
 | --- | --- |
-| Source | `dbf1382219907c514dcd80650e43d6829821c8b3` |
-| Package | `out/candidates/dbf1382-halo4-c7-stock-geometry-20260807-173743014Z` |
-| `halo3xr.dll` SHA-256 | `7A7E1448BC38405943C5F20F3C7E4E6340B01AE58B54A6C0C0623FBADD2C0C0E` |
-| `halo3xr_launcher.exe` SHA-256 | `81BD9A7BECEA92EDA586D1A82A2D570F7728846CEDCF8BB25849EA0E50F6C021` |
-| Installed editions | Steam and Microsoft Store; package and both installed DLL/launcher hashes independently matched |
-| Preserved failed C-H4-6 installs | `out/deploy-backups/a6488b4-steam-before-dbf1382-20260807-173743858Z`, `...-store-before-dbf1382-20260807-173743858Z` |
-| Acceptance | **Not accepted.** Test Halo 4 geometry at 90 Hz first, then run the required Halo 3 regression before this pointer can move. |
+| Source | `6cf0b76f027369d115d4df67c01e6218921663d4` (branch `feature/halo4-bringup`) |
+| Behavior commit | `55e890d9123161828712a5d3d8e60f2cb14d086f`; `6cf0b76` is a packaging-label fix only |
+| Package | `out/candidates/6cf0b76-halo4-c8-headtracking-fov-20260808-114408358Z` |
+| `halo3xr.dll` SHA-256 | `F4164EB2B3DF41459CD1839101BFA72768D4A0EEA263D5AB36B0A47E817AE660` |
+| `halo3xr_launcher.exe` SHA-256 | `B578160109BDE9A94AF12099A5E6A7509CB6C8513265749A2F0BA9B006F141A6` |
+| Installed editions | Steam and Microsoft Store; package and both installed DLL/launcher hashes independently matched after install |
+| Preserved previous installs | `out/deploy-backups/53faf48-steam-before-6cf0b76-20260808-114409182Z`, `...-store-before-6cf0b76-20260808-114409182Z` |
+| Offline gates | Clean Release x64 build, `core_tests`, Reach consistency gate - all passing |
+| Acceptance | **Not accepted.** C-H4-1 remains the rollback pointer. |
+
+**What C-H4-8 must show in the headset.** Two independent claims, each on its own
+log line so either can be accepted or rejected alone:
+
+1. **You are inside the world.** Looking around moves the view and the world
+   stays put; leaning moves the camera. Log: `Halo 4 C-H4-8 head tracking:`
+   tracked frames > 0, `reference captured`, yaw/pitch deltas that track the
+   head.
+2. **The image fills the headset.** Log: `Halo 4 C-H4-8 FOV cover:`
+   `calibration learned`, widened eyes > 0, and **`contains headset frustum:
+   YES`**. The `M2 WARNING` about the cover not containing the native frustum
+   must be gone, replaced by `M2: submitting native per-eye FOV`.
+
+Geometry must stay as good as C-H4-7's: completed pairs > 0, `geometry TAKING`,
+exact-zero camera readback error, center `0/0`, zero drops and zero uncaptured
+eyes. Test at 90 Hz first so the separately open 120 Hz pacing tail cannot
+confound the result.
+
+**Watch for, and report if seen:** ghosting, smearing or trailing behind moving
+objects. Halo 4's per-eye setup gives the engine's own previous-frame history an
+inter-eye delta, and Halo 4's motion-blur variables are kind-unproven for this
+title so nothing was bound blind. If it appears, turn motion blur off in MCC's
+own Graphics > Screen Effects menu; that isolates it without a code change.
+
+**A Halo 3 regression is owed before this pointer can move.** `vr.cpp`'s prepare
+ordering and the `Game_IsStereoGeometryOnlyBringup` predicate are shared code.
 
 ## SUPERSEDED AS BASELINE, STILL THE PUBLISHED RELEASE: MCC VR Alpha 0.3.3 - 2026-08-06
 
