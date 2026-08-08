@@ -830,6 +830,14 @@ struct Halo4HeadPoseInput
     // only the engine's HEADING and gives the headset pitch and roll outright,
     // which is what every other title does.
     bool headOwnsPitch = false;
+    // C-H4-10. False composes yaw around the engine's LIVE heading, which is
+    // right while the engine's own stick still turns the player. True composes
+    // it around `gameYawReference` instead, which is required the moment a
+    // closed aim loop is steering that heading toward the same reference -
+    // otherwise the head's yaw is applied twice. Halo 3 has only ever done the
+    // latter (g_gameYawRef).
+    bool headOwnsYaw = false;
+    float gameYawReference = 0.0f;
 };
 
 // Halo 3's ApplyHeadLook composition (game.cpp, the accepted first-person
@@ -932,8 +940,13 @@ inline bool Halo4ApplyHeadPose(
     // return it to level.
     if (input.headOwnsPitch)
     {
-        const float engineYaw =
-            std::atan2(camera.forward[1], camera.forward[0]);
+        // C-H4-10: the reference heading once the aim loop owns the engine's,
+        // the engine's live heading until then. Both are the same quantity -
+        // which way the player's body faces - read from the only source that
+        // is authoritative at that stage.
+        const float engineYaw = input.headOwnsYaw
+            ? input.gameYawReference
+            : std::atan2(camera.forward[1], camera.forward[0]);
         if (!std::isfinite(engineYaw))
             return false;
         // Same +-1.5 rad clamp Halo 3 applies, so the basis can never

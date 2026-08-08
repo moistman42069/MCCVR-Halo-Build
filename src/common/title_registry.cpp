@@ -54,10 +54,20 @@ namespace
 #else
     constexpr uint32_t kReachAdmissionCapabilities = TitleCapability_None;
 #endif
-    // Halo 4 bring-up C-H4-1: shared virtual-controller transport only, the
-    // same staging shape ODST and Reach used. Halo 4 advertises no runtime
-    // capability yet, so it installs no hook and owns no camera; it plays
-    // stock with the VR controllers acting as a gamepad.
+    // Halo 4 camera + motion core. C-H4-7/8/9 earned stereo, head tracking,
+    // 6DOF and headset-owned pitch in the headset; C-H4-10 adds the closed-loop
+    // controller aim, VR turn and haptics the other titles already have, on the
+    // same shared code paths. Halo 4's CUI arrives inside the captured scene
+    // target rather than through a HUD redirect, so TitleCapability_Hud stays
+    // out: nothing title-specific is installed for it. ArmIk and
+    // CutsceneTheater remain withheld - neither has Halo 4 evidence yet.
+    constexpr uint32_t kHalo4Capabilities =
+        TitleCapability_Stereo |
+        TitleCapability_ControllerAim |
+        TitleCapability_RuntimeModes |
+        TitleCapability_RoomScale |
+        TitleCapability_ControllerInput |
+        TitleCapability_Haptics;
     constexpr uint32_t kHalo4AdmissionCapabilities =
         TitleCapability_ControllerInput;
 
@@ -69,7 +79,7 @@ namespace
         { GameTitle::HaloReach, L"haloreach.dll", "Halo: Reach", true,
           kReachCapabilities, kReachAdmissionCapabilities },
         { GameTitle::Halo4, L"halo4.dll", "Halo 4", false,
-          TitleCapability_None, kHalo4AdmissionCapabilities },
+          kHalo4Capabilities, kHalo4AdmissionCapabilities },
         { GameTitle::HaloCE, L"halo1.dll", "Halo: CE Anniversary", false,
           TitleCapability_None, TitleCapability_None },
         { GameTitle::Halo2, L"halo2.dll", "Halo 2 Anniversary", false,

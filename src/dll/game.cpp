@@ -29130,12 +29130,17 @@ namespace
     std::atomic<float> g_halo4RenderHalfFovY[2]{};
     std::atomic<uint64_t> g_halo4RenderFovSerial[2]{};
 
-    // Deliberately narrow. This candidate proves stereo and nothing else;
-    // ControllerInput is carried forward because C-H4-1 accepted it. Aim, HUD,
-    // haptics, room-scale locomotion and the cutscene theatre stay unpublished
-    // until each has its own Halo 4 evidence and its own headset result.
+    // C-H4-10. Stereo and ControllerInput are carried forward from the accepted
+    // C-H4-1/C-H4-7/C-H4-9 line. ControllerAim, Haptics, RuntimeModes and
+    // RoomScale join them now that Halo 4 publishes the three things the shared
+    // paths need from a title: a runtime mode, a yaw reference pair, and the
+    // engine's own aim direction. HUD stays out because Halo 4 needs no HUD
+    // redirect - its CUI is inside the captured scene target. ArmIk and
+    // CutsceneTheater stay out because neither has Halo 4 evidence.
     constexpr uint32_t kHalo4RuntimeCapabilities =
-        TitleCapability_Stereo | TitleCapability_ControllerInput;
+        TitleCapability_Stereo | TitleCapability_ControllerInput |
+        TitleCapability_ControllerAim | TitleCapability_Haptics |
+        TitleCapability_RuntimeModes | TitleCapability_RoomScale;
 
     struct Halo4CameraCore
     {
@@ -29210,6 +29215,18 @@ namespace
         std::atomic<bool> enginePitchValid{false};
         std::atomic<float> enginePitch{0.0f};
         std::atomic<uint64_t> enginePitchSerial{0};
+        // C-H4-10. The engine's own aim direction, published whole from the
+        // same observer read as the pitch above so the input thread can never
+        // combine a yaw from one frame with a pitch from the next. This IS the
+        // ray Halo 4 spawns first-person shots along, so it is the feedback the
+        // closed loop closes on.
+        std::atomic<float> engineAimForward[3]{};
+        // Halo 4's own game-yaw reference, the direct analogue of Halo 3's
+        // g_gameYawRef. Captured from the engine's heading at each recentre and
+        // moved only by the VR turn stick thereafter.
+        std::atomic<bool> gameYawReferenceValid{false};
+        std::atomic<float> gameYawReference{0.0f};
+        std::atomic<uint64_t> vrTurns{0};
         std::atomic<float> lastPitchError{0.0f};
         std::atomic<float> lastPitchCommand{0.0f};
         std::atomic<float> lastPitchTarget{0.0f};
@@ -29261,6 +29278,95 @@ namespace
             !g_halo4Camera.sceneTargetMissing.load(std::memory_order_acquire) &&
             g_enabled.load(std::memory_order_acquire) &&
             VR_IsStereoEnabled();
+    }
+
+    // C-H4-10. Motion aim on top of that: the hand steers, so it additionally
+    // needs VR aim itself (Insert) and a captured heading reference. Turning
+    // VR aim off drops cleanly back to C-H4-9 - stick yaw, headset pitch.
+    bool Halo4ControllerAimActive()
+    {
+        return Halo4LookPitchOwned() &&
+            g_vrAim.load(std::memory_order_acquire) &&
+            g_halo4Camera.gameYawReferenceValid.load(
+                std::memory_order_acquire);
+    }
+
+    // C-H4-10: Halo 4's ApplyVrTurn. Rotating the yaw reference turns the
+    // head-locked view instantly, and the hand-steered aim follows because its
+    // target is expressed against that same reference - the exact relationship
+    // Halo 3 relies on. Halo 4 needs its own copy rather than sharing Halo 3's
+    // because its reference lives in the per-level camera core, but the snap
+    // latch, the smooth rate and the config keys are all shared.
+    void Halo4ApplyVrTurn(const VrPadState& pad)
+    {
+        if (!Halo4ControllerAimActive() || !pad.valid)
+            return;
+        // Same sub-frame timebase reasoning as Halo 3's ApplyVrTurn: this runs
+        // several times per frame, and GetTickCount's ~15.6 ms granularity
+        // turned smooth turn into a visible ~5 Hz stutter there.
+        static LARGE_INTEGER freq{}, last{};
+        if (freq.QuadPart == 0)
+            QueryPerformanceFrequency(&freq);
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        float dt = last.QuadPart == 0
+            ? 0.0f
+            : (float)(now.QuadPart - last.QuadPart) / (float)freq.QuadPart;
+        last = now;
+        if (dt > 0.1f) dt = 0.1f;
+
+        const float x = pad.turnX; // stick right = turn right = yaw decreases
+        static bool snapLatched = false;
+        float reference =
+            g_halo4Camera.gameYawReference.load(std::memory_order_relaxed);
+        if (g_config.turn_smooth)
+        {
+            Halo3ConsumeSnapTurn(false, x, snapLatched);
+            if (fabsf(x) > 0.15f)
+            {
+                reference = WrapPi(reference -
+                    x * (g_config.turn_smooth_deg_s / 57.2958f) * dt);
+                g_halo4Camera.gameYawReference.store(
+                    reference, std::memory_order_relaxed);
+                g_halo4Camera.vrTurns.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        else if (Halo3ConsumeSnapTurn(true, x, snapLatched))
+        {
+            reference = WrapPi(reference -
+                (x > 0 ? 1.0f : -1.0f) * g_config.turn_snap_deg / 57.2958f);
+            g_halo4Camera.gameYawReference.store(
+                reference, std::memory_order_relaxed);
+            g_halo4Camera.vrTurns.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    // The yaw reference pair and the engine's own aim direction, read together
+    // so the aim loop cannot mix generations. Mirrors ReachReadYawReferencePair
+    // / ReachReadAimFeedback.
+    bool Halo4ReadAimReferences(
+        float& gameYaw, float& headYaw, float aimForward[3])
+    {
+        if (!g_halo4Camera.gameYawReferenceValid.load(
+                std::memory_order_acquire) ||
+            !g_halo4Camera.headReferenceValid.load(std::memory_order_acquire) ||
+            !g_halo4Camera.enginePitchValid.load(std::memory_order_acquire))
+        {
+            return false;
+        }
+        gameYaw = g_halo4Camera.gameYawReference.load(std::memory_order_relaxed);
+        headYaw = g_halo4Camera.headYawReference.load(std::memory_order_relaxed);
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            aimForward[axis] =
+                g_halo4Camera.engineAimForward[axis].load(
+                    std::memory_order_relaxed);
+        }
+        const float lengthSquared = aimForward[0] * aimForward[0] +
+            aimForward[1] * aimForward[1] + aimForward[2] * aimForward[2];
+        return std::isfinite(gameYaw) && std::isfinite(headYaw) &&
+            std::isfinite(lengthSquared) &&
+            fabsf(lengthSquared - 1.0f) < 0.05f;
     }
 
     // Why a frame rendered stock before ownership or was dropped after a
@@ -29385,6 +29491,24 @@ namespace
         g_halo4Camera.enginePitchValid.store(false, std::memory_order_release);
         g_halo4Camera.enginePitch.store(0.0f, std::memory_order_relaxed);
         g_halo4Camera.enginePitchSerial.store(0, std::memory_order_release);
+        g_halo4Camera.engineAimForward[0].store(
+            1.0f, std::memory_order_relaxed);
+        g_halo4Camera.engineAimForward[1].store(
+            0.0f, std::memory_order_relaxed);
+        g_halo4Camera.engineAimForward[2].store(
+            0.0f, std::memory_order_relaxed);
+        // C-H4-10: the yaw reference goes with it. Carrying a heading chosen
+        // during the previous level across a load is exactly the fault
+        // Halo4ResetTelemetry already avoids for the head reference.
+        g_halo4Camera.gameYawReferenceValid.store(
+            false, std::memory_order_release);
+        g_halo4Camera.gameYawReference.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.vrTurns.store(0, std::memory_order_relaxed);
+        // The shared aim-liveness flag Halo 4's transaction now sets. Bound it
+        // to this core's lifetime: MCC keeps every title's module loaded, so a
+        // flag left true by Halo 4 would otherwise tell the shared loop that
+        // the NEXT title's camera hook is already running.
+        g_aimSeen.store(false, std::memory_order_release);
         g_halo4Camera.lastPitchError.store(0.0f, std::memory_order_relaxed);
         g_halo4Camera.lastPitchCommand.store(0.0f, std::memory_order_relaxed);
         g_halo4Camera.lastPitchTarget.store(0.0f, std::memory_order_relaxed);
@@ -29526,10 +29650,25 @@ namespace
             const float z = stock.forward[2] < -1.0f
                 ? -1.0f : (stock.forward[2] > 1.0f ? 1.0f : stock.forward[2]);
             g_halo4Camera.enginePitch.store(asinf(z), std::memory_order_relaxed);
+            // C-H4-10 publishes the whole direction from this one read, so the
+            // aim loop can never pair a yaw from one frame with a pitch from
+            // the next - the incoherence Reach's own feedback publication was
+            // rebuilt to remove. The release on the serial below publishes all
+            // four values together.
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                g_halo4Camera.engineAimForward[axis].store(
+                    stock.forward[axis], std::memory_order_relaxed);
+            }
             g_halo4Camera.enginePitchValid.store(
                 true, std::memory_order_release);
             g_halo4Camera.enginePitchSerial.fetch_add(
                 1, std::memory_order_release);
+            // The shared aim loop's "camera hook not running" gate. Reach sets
+            // it from its own camera publication for the same reason: an owned
+            // Halo 4 render frame IS the proof that a level is running and the
+            // camera is live.
+            g_aimSeen.store(true, std::memory_order_release);
         }
 
         // C-H4-8: put the player inside. The headset's orientation and its
@@ -29572,6 +29711,16 @@ namespace
                  !g_halo4Camera.headReferenceValid.load(
                      std::memory_order_acquire)))
             {
+                // C-H4-10: a recenter aligns the player's physical facing to
+                // the heading the ENGINE is currently looking along, then the
+                // VR turn stick owns that heading from here. Same pairing Halo
+                // 3 captures in ApplyHeadLook (g_gameYawRef / g_headYawRef);
+                // capturing them together is what makes the recenter seamless.
+                g_halo4Camera.gameYawReference.store(
+                    atan2f(stock.forward[1], stock.forward[0]),
+                    std::memory_order_relaxed);
+                g_halo4Camera.gameYawReferenceValid.store(
+                    true, std::memory_order_release);
                 g_halo4Camera.headYawReference.store(
                     head.yaw, std::memory_order_relaxed);
                 for (int axis = 0; axis < 3; ++axis)
@@ -29619,6 +29768,18 @@ namespace
                 // pitch - and F2 turns the whole behaviour off together,
                 // returning exactly C-H4-8's additive head pose.
                 headInput.headOwnsPitch = Halo4LookPitchOwned();
+                // C-H4-10: once the aim loop is steering the engine's heading
+                // toward this same reference, the view MUST stop reading the
+                // engine's live heading. Reading it would double the head's
+                // yaw - the loop drives engineYaw to (reference + headDelta),
+                // and the view would then add headDelta to that again. Halo 3
+                // has always composed from the reference for this reason.
+                headInput.headOwnsYaw = Halo4ControllerAimActive() &&
+                    g_halo4Camera.gameYawReferenceValid.load(
+                        std::memory_order_acquire);
+                headInput.gameYawReference =
+                    g_halo4Camera.gameYawReference.load(
+                        std::memory_order_relaxed);
 
                 const Halo4CameraBasis beforeHead = stock;
                 if (Halo4ApplyHeadPose(stock, headInput))
@@ -30375,20 +30536,23 @@ namespace
                 kReachRenderSafetyIntervalMs)
         {
             g_halo4Camera.armed.store(true, std::memory_order_release);
-            LOG("Halo 4 camera core armed: C-H4-9 headset-owned look pitch on "
-                "C-H4-8's head tracking, 6DOF and native headset-FOV "
-                "coverage. The engine keeps only its HEADING; the headset owns "
-                "pitch and roll outright, as in Halo 3, so a level head is a "
-                "level horizon whatever the engine's camera does. The look "
-                "stick's vertical axis no longer reaches the game - a closed "
-                "loop steers the engine's own pitch onto the head instead, so "
-                "shots follow the view. The horizontal axis stays with the "
-                "engine: Halo 4 has no VR turn or aim loop yet, so it must "
-                "keep turning body, aim and view together. F2 returns every "
-                "part of this to C-H4-8. A failed claimed pair drops one frame "
-                "then retries; a refused head pose, FOV solve or pitch loop "
-                "degrades only itself. HUD/CUI, VR turn, controller aim and "
-                "hands are not in this candidate");
+            LOG("Halo 4 camera core armed: C-H4-10 motion aim, VR turn and "
+                "rumble on C-H4-9's headset-owned look, C-H4-8's 6DOF and "
+                "native headset-FOV coverage. The hand steers Halo 4's own aim "
+                "through the shared closed loop the other three titles use, "
+                "closing on the observer camera - the ray Halo 4 spawns "
+                "first-person shots along. The stick becomes the VR turn "
+                "(snap or smooth, per config) and moves Halo 4's own yaw "
+                "reference, which the view now composes from: reading the "
+                "engine's live heading while the loop steers it would apply "
+                "the head's yaw twice. Halo 4 also publishes a Gameplay "
+                "runtime mode for the first time, which is what the shared "
+                "paths gate rumble and head-relative movement on. Insert "
+                "returns aim to C-H4-9's stick yaw + headset pitch; F2 returns "
+                "everything to C-H4-8. Halo 4 needs no HUD redirect - its CUI "
+                "is inside the captured scene target - so the floating reticle "
+                "is the shared procedural one. Arm IK, hands and the cutscene "
+                "theatre are not in this candidate");
         }
         PublishHalo4Lifecycle();
     }
@@ -30510,12 +30674,15 @@ namespace
         const uint64_t pitchStalls =
             g_halo4Camera.pitchServoStalls.exchange(
                 0, std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-9 look pitch: %s; engine pitch %.1f deg vs head "
+        LOG("Halo 4 C-H4-10 look/aim: %s; engine pitch %.1f deg vs head "
             "%.1f deg (error %.2f deg), stick %+.2f, learned direction %+.0f, "
-            "min step %.3f deg; %llu commanded / %llu parked polls, %llu "
+            "min step %.3f deg; %llu commanded / %llu parked frames, %llu "
             "stale-publication stalls in 2s",
-            Halo4LookPitchOwned() ? "the headset owns the vertical axis"
-                                  : "stock stick pitch (not owned)",
+            Halo4ControllerAimActive()
+                ? "MOTION AIM: the hand steers, the stick turns"
+                : (Halo4LookPitchOwned()
+                       ? "headset pitch only (VR aim off - press Insert)"
+                       : "stock stick pitch (not owned)"),
             g_halo4Camera.enginePitch.load(std::memory_order_relaxed) *
                 57.2958f,
             g_halo4Camera.lastPitchTarget.load(std::memory_order_relaxed) *
@@ -30529,6 +30696,31 @@ namespace
             static_cast<unsigned long long>(pitchCommanded),
             static_cast<unsigned long long>(pitchParked),
             static_cast<unsigned long long>(pitchStalls));
+
+        // C-H4-10's own line. The three shared systems Halo 4 had never been
+        // wired into report what the SHARED code decided, not what we asked
+        // for: a capability mask that is missing a bit, or a runtime mode that
+        // is not Gameplay, silently disables rumble and head-relative movement
+        // - which is exactly how Reach lost its rumble for weeks.
+        const uint64_t turns =
+            g_halo4Camera.vrTurns.exchange(0, std::memory_order_relaxed);
+        LOG("Halo 4 C-H4-10 shared systems: runtime mode %d, aim %s, "
+            "haptics %s, room scale %s, locomotion %s; yaw reference %s at "
+            "%.1f deg, %llu VR turn steps in 2s (%s %s)",
+            static_cast<int>(TitleAdapter_GetRuntimeMode()),
+            Game_HasTitleCapability(TitleCapability_ControllerAim)
+                ? "GRANTED" : "denied",
+            Game_HasTitleCapability(TitleCapability_Haptics)
+                ? "GRANTED" : "denied",
+            Game_HasTitleCapability(TitleCapability_RoomScale)
+                ? "GRANTED" : "denied",
+            Game_MoveStickIsLocomotion() ? "head-relative" : "raw stick",
+            g_halo4Camera.gameYawReferenceValid.load(std::memory_order_acquire)
+                ? "captured" : "NOT captured",
+            g_halo4Camera.gameYawReference.load(std::memory_order_relaxed) *
+                57.2958f,
+            static_cast<unsigned long long>(turns),
+            g_config.turn_smooth ? "smooth" : "snap", "turn");
 
         const uint64_t widened =
             g_halo4Camera.fovWidenedFrames.exchange(
@@ -31352,6 +31544,15 @@ bool Game_Halo4OwnsLookPitch()
 #endif
 }
 
+void Game_Halo4UpdateVrTurn(const VrPadState& pad)
+{
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    Halo4ApplyVrTurn(pad);
+#else
+    (void)pad;
+#endif
+}
+
 // C-H4-9. Halo 4's answer to "the HMD owns pitch", reached the way AGENTS.md
 // permits: a different implementation for the same player experience, because
 // this engine's look ownership sits at a different rung than Halo 3's.
@@ -31375,6 +31576,7 @@ bool Game_ComputeHalo4PitchStick(float& outRy)
     static Halo4PitchServo servo;
     static uint64_t lastSerial = 0;
     static uint64_t lastSerialChangeMs = 0;
+    static float heldCommand = 0.0f;
     static std::atomic<int> lastBlock{-1};
     auto blocked = [](int reason, const char* what) {
         if (lastBlock.exchange(reason) != reason)
@@ -31387,6 +31589,7 @@ bool Game_ComputeHalo4PitchStick(float& outRy)
         Halo4ResetPitchServo(servo);
         lastSerial = 0;
         lastSerialChangeMs = 0;
+        heldCommand = 0.0f;
         return false;
     }
     if (!g_halo4Camera.enginePitchValid.load(std::memory_order_acquire))
@@ -31400,28 +31603,48 @@ bool Game_ComputeHalo4PitchStick(float& outRy)
     const uint64_t serial =
         g_halo4Camera.enginePitchSerial.load(std::memory_order_acquire);
     const uint64_t now = GetTickCount64();
+    bool freshFrame = false;
     if (serial != lastSerial)
     {
         lastSerial = serial;
         lastSerialChangeMs = now;
+        freshFrame = true;
     }
     else if (!lastSerialChangeMs || now - lastSerialChangeMs > 250)
     {
         Halo4ResetPitchServo(servo);
+        heldCommand = 0.0f;
         g_halo4Camera.pitchServoStalls.fetch_add(1, std::memory_order_relaxed);
         return blocked(2, "no owned Halo 4 frame in the last 250 ms");
+    }
+
+    // E-H4-9, measured in the C-H4-9 headset run: MCC polls XInput about SIX
+    // times per rendered frame (1354 commanded + 96 parked polls in 2 s against
+    // a 120 Hz publication). Stepping the loop per poll fed AimServoObserve
+    // five zero-steps and one whole-frame step, and its deliberate
+    // rise-immediately/decay-slowly rule latched that lump: `min step` sat at
+    // 2.758 deg, which widened the rest band to 1.65/4.14 deg and left the gun
+    // parked up to ~1.7 deg off the view. Step once per NEW publication and
+    // hold the command across the polls that share a frame, so one observation
+    // corresponds to one issued command exactly as the shared servo assumes.
+    if (!freshFrame)
+    {
+        outRy = heldCommand;
+        return true;
     }
 
     float q[4], p[3];
     if (!VR_GetHeadPose(q, p))
     {
         Halo4ResetPitchServo(servo);
+        heldCommand = 0.0f;
         return blocked(3, "headset not tracked");
     }
     Halo4HeadOrientation head{};
     if (!Halo4DecodeHeadOrientation(q, head))
     {
         Halo4ResetPitchServo(servo);
+        heldCommand = 0.0f;
         return blocked(4, "head orientation could not be decoded");
     }
     lastBlock.store(0, std::memory_order_relaxed);
@@ -31436,6 +31659,7 @@ bool Game_ComputeHalo4PitchStick(float& outRy)
         g_halo4Camera.enginePitch.load(std::memory_order_relaxed);
     outRy = Halo4PitchServoStep(
         servo, enginePitch, target, kHalo4PitchServoGain);
+    heldCommand = outRy;
 
     g_halo4Camera.lastPitchTarget.store(target, std::memory_order_relaxed);
     g_halo4Camera.lastPitchError.store(
@@ -32185,14 +32409,29 @@ void Game_AutoVrTick()
                 if (!VR_IsStereoEnabled())
                     VR_ToggleStereo();
                 LOG("Halo 4 C-H4-9 immersive VR ON: stereo geometry, head "
-                    "tracking, 6DOF and headset-owned look pitch are live; "
-                    "HUD/CUI remains pending");
+                    "tracking, 6DOF and headset-owned look pitch are live. "
+                    "Halo 4's CUI arrives inside the captured scene target, so "
+                    "it needs no separate HUD redirect (user-confirmed "
+                    "2026-08-08); controller aim and hands remain pending");
             }
             const uint32_t halo4Generation =
                 TitleAdapter_GetGeneration(GameTitle::Halo4);
             if (halo4Generation)
+            {
                 TitleAdapter_PublishHeartbeat(
                     GameTitle::Halo4, halo4Generation, GetTickCount64());
+                // C-H4-10. Nothing published a runtime mode for Halo 4 before
+                // this, and two shared features are gated on it, which is
+                // exactly how Reach lost its rumble: ApplyControllerHaptics
+                // requires Gameplay/Vehicle/Turret, and
+                // Game_MoveStickIsLocomotion decides there whether the left
+                // stick walks head-relative. An armed Halo 4 core with stereo
+                // live is this title's gameplay proof; the disarmed branch
+                // below stops the heartbeat, which expires ownership and drops
+                // the arm-gated capabilities with it.
+                TitleAdapter_PublishMode(
+                    GameTitle::Halo4, halo4Generation, RuntimeMode::Gameplay);
+            }
         }
         else if (g_enabled.load(std::memory_order_relaxed) ||
                  VR_IsStereoEnabled())
@@ -32903,6 +33142,24 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     const float cp = asinf(Clamp(ty, -1.0f, 1.0f));
     float gameYawReference = 0.0f;
     float headYawReference = 0.0f;
+    float halo4AimForward[3]{};
+    bool halo4Aim = false;
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    // C-H4-10. Halo 4 keeps its references inside its per-level camera core
+    // rather than in the shared globals, for the same reason Reach does: the
+    // core is installed and removed per level, so a shared reference would
+    // survive a load it should not.
+    if (TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
+    {
+        if (!Halo4ReadAimReferences(
+                gameYawReference, headYawReference, halo4AimForward))
+        {
+            return blocked(8, "Halo 4 yaw/aim reference snapshot invalid");
+        }
+        halo4Aim = true;
+    }
+    else
+#endif
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     if (TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
     {
@@ -32922,8 +33179,14 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         gameYawReference +
         g_yawSign.load() * WrapPi(cy - headYawReference);
     float desiredPitch = Clamp(g_pitchSign.load() * cp, -1.45f, 1.45f);
+    // C-H4-10: every block from here to the servo reads HALO 3 vehicle state
+    // (roll-stable follow, occupied seat flags, turret seats). MCC keeps every
+    // title's module loaded and reloads them all on each menu return, so that
+    // state is not guaranteed to be clean just because Halo 4 is the active
+    // title - and a stale seat would silently re-origin Halo 4's aim. Halo 4
+    // has no vehicle work at all yet, so it takes the plain on-foot path.
     float hullYaw = 0.0f, hullPitch = 0.0f, followedAim[9];
-    if (Halo3ReadRollStableFollow(hullYaw, hullPitch) &&
+    if (!halo4Aim && Halo3ReadRollStableFollow(hullYaw, hullPitch) &&
         Halo3ComposeRollStableFollowBasis(
             hullYaw, hullPitch, gameYawReference,
             g_yawSign.load() * WrapPi(cy - headYawReference),
@@ -32962,7 +33225,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // seat with no trim - the correction is exactly zero. Gated to a seat whose
     // own loaded tag sets `allows weapons`, because a driver's or mounted
     // gunner's shots leave a vehicle barrel rather than the occupant's eye.
-    if (Halo3SeatFiresPersonalWeapon(Halo3OccupiedSeatFlags()) && tl > 1e-3f &&
+    if (!halo4Aim &&
+        Halo3SeatFiresPersonalWeapon(Halo3OccupiedSeatFlags()) && tl > 1e-3f &&
         g_camValid.load(std::memory_order_acquire) &&
         g_baseCamValid.load(std::memory_order_acquire))
     {
@@ -32993,6 +33257,14 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
 
     float aimForward[3] = {
         g_aimFwdX.load(), g_aimFwdY.load(), g_aimFwdZ.load()};
+    if (halo4Aim)
+    {
+        // Halo 4's feedback is the observer camera the stereo transaction
+        // reads, published whole with the yaw reference above. That IS the ray
+        // Halo 4 spawns first-person shots along, so closing the loop on it
+        // puts the shots on the hand ray.
+        memcpy(aimForward, halo4AimForward, sizeof(aimForward));
+    }
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     if (ReachControllerAimActive() && ReachVehicleFpActive())
     {
@@ -33018,8 +33290,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     const float errPitch = desiredPitch - aimPitch;
 
     // A turret's gun is a rate-capped machine, not the occupant's weapon.
-    // Both corrections below are scoped to exactly this seat.
-    const bool turretSeat = OccupiedTurretSeat();
+    // Both corrections below are scoped to exactly this seat. Halo 4 is
+    // on-foot only at this stage, and its seat state would be another title's.
+    const bool turretSeat = !halo4Aim && OccupiedTurretSeat();
 
     // A passenger's weapon is bounded to a cone around the VEHICLE, not the
     // world: the ODST/Halo 3 warthog rider seat authors yaw -90..+90 and pitch
@@ -33039,14 +33312,15 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         const float errorMagnitude =
             sqrtf(errYaw * errYaw + errPitch * errPitch);
         const uint64_t nowMs = GetTickCount64();
-        const bool seated = Halo3VehicleFpActive()
+        const bool seated = !halo4Aim &&
+            (Halo3VehicleFpActive()
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
-            || OdstVehicleFpActive()
+             || OdstVehicleFpActive()
 #endif
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
-            || ReachVehicleFpActive()
+             || ReachVehicleFpActive()
 #endif
-            ;
+            );
         // ~7 degrees is far beyond the loop's ordinary lag, and a shrinking
         // error means it is still converging, so neither counts as clamped.
         constexpr float kAimStallRadians = 0.12f;
@@ -33062,7 +33336,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         // the honest half of that - the crosshair stops leading the gun. Every
         // other seat, title and on-foot case keeps the original 250 ms.
         const uint64_t stallMs =
-            Halo3SeatFiresPersonalWeapon(Halo3OccupiedSeatFlags()) ? 0u : 250u;
+            (!halo4Aim &&
+             Halo3SeatFiresPersonalWeapon(Halo3OccupiedSeatFlags())) ? 0u : 250u;
         if (!seated || errorMagnitude < kAimStallRadians ||
             errorMagnitude < previousErrorMagnitude - kAimConvergingRadians)
             stalledSinceMs = 0;
@@ -33324,6 +33599,41 @@ void Game_MapMoveStick(float& mx, float& my)
         my = ny;
         return;
     }
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    // C-H4-10. Halo 4 needs its own branch before the Halo 3 rotation below,
+    // because that rotation reads g_gameYawRef/g_headYawRef/g_aimFwd - Halo 3's
+    // globals, which hold nothing meaningful during a Halo 4 level. Publishing
+    // ControllerAim for Halo 4 without this would have rotated every move by a
+    // stale angle. Same construction, Halo 4's own references.
+    if (TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
+    {
+        if (!Halo4ControllerAimActive())
+            return;
+        float gameYawReference = 0.0f;
+        float headYawReference = 0.0f;
+        float aimForward[3]{};
+        if (!Halo4ReadAimReferences(
+                gameYawReference, headYawReference, aimForward))
+            return;
+        float q[4], p[3];
+        if (!VR_GetHeadPose(q, p))
+            return;
+        const float x = q[0], y = q[1], z = q[2], w = q[3];
+        const float fx = -2.0f * (w * y + x * z);
+        const float fz = -(1.0f - 2.0f * (x * x + y * y));
+        const float hy = atan2f(fx, -fz);
+        const float gaze = gameYawReference +
+            g_yawSign.load() * WrapPi(hy - headYawReference);
+        const float aimYaw = atan2f(aimForward[1], aimForward[0]);
+        const float delta = WrapPi(gaze - aimYaw);
+        const float c = cosf(delta), s = sinf(delta);
+        const float nx = mx * c - my * s;
+        const float ny = mx * s + my * c;
+        mx = nx;
+        my = ny;
+        return;
+    }
+#endif
     if (!Game_HasTitleCapability(TitleCapability_ControllerAim))
         return;
     // C9: in a first-person vehicle seat the left stick is not locomotion —

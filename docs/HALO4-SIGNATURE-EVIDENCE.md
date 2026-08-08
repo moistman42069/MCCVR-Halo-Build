@@ -1040,9 +1040,13 @@ tracking rather than stereo.
    now. If it does, it earns its own evidence-backed candidate.
 2. **First-person weapon scale.** Halo 3 additionally matches its first-person
    gun/HUD overlay camera to the widened world tangents, or the weapon
-   magnifies. Halo 4 draws no first-person weapon or HUD in this candidate, so
-   there is nothing to match yet - but if the weapon model appears at the wrong
-   scale once it is drawn, this is the first place to look.
+   magnifies. **This paragraph originally claimed Halo 4 draws no HUD; that was
+   an assumption carried forward from C-H4-5's failure notes and the user
+   REFUTED it in the headset on 2026-08-08 ("i can see the hud").** Halo 4's
+   CUI arrives inside the captured scene target, so no separate HUD capture or
+   redirect is needed the way Halo 3, ODST and Reach each needed one. If the
+   first-person weapon appears at the wrong scale against the widened world
+   tangents, this is still the first place to look.
 
 **Unproven and carried forward:** one Halo 4 world unit in metres has no
 title-native derivation. Halo 4 inherits Halo 3's shared `g_worldScale` default
@@ -1197,6 +1201,68 @@ threshold). Cinematic ownership is its own rung.
   pinned means the engine refused to be steered — a different fault, and it must
   not be reported as head tracking.
 
+### C-H4-10 — motion aim, VR turn and rumble (OFFLINE-PASS 2026-08-08; headset-PENDING)
+
+**Two premises the headset corrected first.** The user reported *"i can see the
+hud"*, refuting the assumption carried from C-H4-5 that Halo 4 draws no HUD -
+its CUI arrives inside the captured scene target, so Halo 4 needs **no HUD
+redirect at all**, unlike Halo 3, ODST and Reach which each needed one. And
+C-H4-9's shot line missed, which is what this candidate replaces.
+
+**The three shared systems Halo 4 had never been wired into.** Halo 4's registry
+row advertised `TitleCapability_None` and nothing ever published a `RuntimeMode`
+for it. That silently disabled more than aim: `ApplyControllerHaptics` requires
+`Gameplay`/`Vehicle`/`Turret`, and `Game_MoveStickIsLocomotion` decides on the
+same mode whether the left stick walks head-relative. This is the identical
+fault that cost Reach its rumble until `PublishReachLifecycle` existed.
+
+Halo 4 now publishes `Stereo | ControllerInput | ControllerAim | Haptics |
+RuntimeModes | RoomScale`, plus `RuntimeMode::Gameplay` while its core is armed.
+`Hud` stays out deliberately - there is no Halo 4 HUD redirect to gate, so
+granting it would advertise a path that does not exist. `ArmIk` stays out
+because granting it to Reach before its arm solve was proven attached the left
+hand to the player's face. `CutsceneTheater` stays out for want of evidence.
+
+**Aim closes on the observer camera.** `Halo4ReadAimReferences` publishes the
+yaw reference pair and the engine's whole forward vector from one observer read,
+so the input thread can never pair a yaw from one frame with a pitch from the
+next - the incoherence Reach's own feedback publication was rebuilt to remove.
+That forward IS the ray Halo 4 spawns first-person shots along, so the shared
+loop steering it puts the shots on the hand ray.
+
+**Yaw ownership is not optional once the loop runs.** `Halo4ApplyVrTurn` moves
+Halo 4's own `gameYawReference` (snap or smooth, from the shared config keys),
+and the view now composes from that reference rather than from the engine's live
+heading. Reading the live heading while the loop steers it toward the same
+reference applies the head's yaw **twice**; `core_tests` pins both the correct
+result and the doubled one so the hazard cannot be reintroduced silently.
+
+**E-H4-9 fixed.** The pitch-only fallback (VR aim off) now steps once per new
+publication serial and holds its command across the polls that share a frame,
+so one observation corresponds to one issued command as the shared servo
+assumes.
+
+**Halo 3 state is fenced off.** MCC keeps every title's module loaded and
+reloads them all on each menu return, so the shared aim loop's roll-stable
+follow, occupied-seat re-origin, turret handling and stall timer are all
+explicitly skipped for Halo 4 - it has no vehicle work, and that state would be
+another title's. `g_aimSeen` is likewise cleared with the Halo 4 core so it
+cannot tell the next title that its camera hook is already running.
+
+**Two things to watch, stated rather than hidden.**
+
+- **Halo 4 has no native-pause detection**, so its runtime mode stays `Gameplay`
+  in a pause menu and the left stick keeps the locomotion mapping there. The
+  rotation is `(gaze - aim)`, which converges to zero while the loop is
+  tracking, so this should be near-identity - but GitHub #9 was exactly this
+  class of bug in Halo 3's menus.
+- **The floating reticle is the shared PROCEDURAL one.**
+  `Game_TitleCapturesAuthoredCrosshair()` is false for Halo 4 by construction,
+  so it takes the fail-open procedural path the ODST camera core established.
+  Halo 4's own centred reticle keeps drawing inside the captured scene, and it
+  reports the middle of the view rather than where the gun points, so expect two
+  marks until a Halo 4 crosshair hider earns its own evidence.
+
 ### Forward milestone ladder — one visible claim per candidate
 
 1. **C-H4-7:** stock-projection/exact-serial stereo geometry only.
@@ -1211,12 +1277,18 @@ threshold). Cinematic ownership is its own rung.
    the stick's vertical axis is held, and a closed loop keeps the engine's own
    pitch (and so the shot line) under the head. Yaw ownership deliberately
    stays with the engine until there is a VR turn and an aim loop to replace it.
-4. **C-H4-10:** CUI HUD presence only, on its own H4EK-proven draw boundary.
-5. **C-H4-11:** turn/look ownership and configuration parity only — the yaw
-   half of C-H4-9, once `ApplyVrTurn`'s Halo 4 equivalent exists.
-6. **C-H4-12:** controller aim and reticle only.
-7. **C-H4-13:** first-person weapons/hands only. Lifecycle, vehicles, and
-   further features remain separate candidates after that.
+4. **C-H4-10:** motion aim, VR turn and rumble - the yaw half of look
+   ownership, the shared closed aim loop, and the three capabilities Halo 4 had
+   never published. **The old rung 4 (CUI HUD presence) is CANCELLED**: the user
+   confirmed in the headset that Halo 4's HUD already arrives inside the
+   captured scene target, so there is nothing to bring up.
+5. **C-H4-11:** first-person hands and weapon placement. **Needs its own H4EK
+   evidence pass before any code** - Halo 4 has no first-person palette or
+   model-placement evidence at all, and Reach's passenger hands are still
+   unsolved after several candidates, so this is discovery first.
+6. **C-H4-12:** a Halo 4 crosshair hider, if the doubled reticle proves
+   distracting; and arm IK once the hands exist.
+7. Lifecycle, cinematics and vehicles remain separate candidates after that.
 
 Every rung requires H4EK evidence, offline gates, a unique commit and artifact
 hash installed to both editions, a log naming edition/runtime/headset, an

@@ -191,6 +191,9 @@ bool Game_VrOwnsLookStick();
 // Halo 4 keeps the horizontal axis on the engine (it has no VR turn or aim loop
 // yet), so this is deliberately narrower than Game_VrOwnsLookStick.
 bool Game_Halo4OwnsLookPitch();
+// Advances Halo 4's own VR turn (snap or smooth, per config) from one shared
+// pad sample. Inert unless Halo 4's motion aim is active.
+void Game_Halo4UpdateVrTurn(const VrPadState& pad);
 // The closed-loop right-stick Y that keeps Halo 4's own look pitch - and so its
 // shot line - under the headset. Returns false when the loop has nothing to
 // command; the caller must still hold the axis at zero.

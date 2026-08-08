@@ -6505,6 +6505,71 @@ int main()
                   fabsf(asinf(extremeCamera.forward[2])) <= 1.5f + 1.0e-3f,
             "An extreme head pitch plus trim clamps at 1.5 rad instead of "
             "degenerating the basis at the pole");
+
+        // ---- C-H4-10: yaw ownership ----------------------------------------
+        //
+        // The doubling hazard, pinned. Once the aim loop steers the engine's
+        // heading toward the reference, a view that still reads the engine's
+        // LIVE heading applies the head's yaw twice.
+        {
+            const float reference = 0.7f;
+            const float headYaw = 0.4f;   // 23 deg of head turn
+            Halo4HeadPoseInput owned{};
+            // OpenXR yaw is about +Y and Halo4DecodeHeadOrientation reports
+            // atan2(hfx, -hfz), which negates it - so a +headYaw decoded yaw
+            // comes from a -headYaw quaternion. The C-H4-8 yaw test above
+            // pins the same relationship from the other side.
+            const float half = -0.5f * headYaw;
+            owned.quaternion[1] = sinf(half);
+            owned.quaternion[3] = cosf(half);
+            owned.yawSign = 1.0f;
+            owned.positional = false;
+            owned.headOwnsPitch = true;
+            owned.headOwnsYaw = true;
+            owned.gameYawReference = reference;
+
+            // The engine has already been steered to (reference + headYaw),
+            // which is what a converged loop leaves behind.
+            Halo4CameraBasis steered = mono;
+            Halo4ComposeHeadOwnedBasis(
+                reference + headYaw, 0.0f, 0.0f, steered.forward, steered.up);
+            Halo4CameraBasis viewed = steered;
+            Check(Halo4ApplyHeadPose(viewed, owned),
+                "The yaw-owned path accepts a converged engine heading");
+            Check(fabsf(Halo4WrapPi(
+                      atan2f(viewed.forward[1], viewed.forward[0]) -
+                      (reference + headYaw))) < 1.0e-3f,
+                "C-H4-10: the view composes from the REFERENCE, so a converged "
+                "aim loop leaves the view exactly where the head points");
+
+            // The same input against the live-heading path is the bug: it
+            // lands at reference + 2 * headYaw.
+            Halo4HeadPoseInput live = owned;
+            live.headOwnsYaw = false;
+            Halo4CameraBasis doubled = steered;
+            Check(Halo4ApplyHeadPose(doubled, live) &&
+                      fabsf(Halo4WrapPi(
+                          atan2f(doubled.forward[1], doubled.forward[0]) -
+                          (reference + 2.0f * headYaw))) < 1.0e-3f,
+                "Reading the engine's live heading instead would double the "
+                "head's yaw - the exact reason yaw ownership is not optional "
+                "once the aim loop runs");
+
+            // And with no turn and a level head, the reference IS the view.
+            Halo4HeadPoseInput still{};
+            still.quaternion[3] = 1.0f;
+            still.positional = false;
+            still.headOwnsPitch = true;
+            still.headOwnsYaw = true;
+            still.gameYawReference = reference;
+            Halo4CameraBasis parked = mono;
+            Check(Halo4ApplyHeadPose(parked, still) &&
+                      fabsf(Halo4WrapPi(
+                          atan2f(parked.forward[1], parked.forward[0]) -
+                          reference)) < 1.0e-3f,
+                "A level head at the reference looks exactly along it, "
+                "whatever the engine's own camera was doing");
+        }
     }
 
     // C-H4-9: the closed loop that keeps Halo 4's own look pitch - and so its
@@ -6571,8 +6636,28 @@ int main()
     Check(halo4Row && halo4Row->admissionCapabilities ==
               TitleCapability_ControllerInput,
         "Halo 4 admits shared controller input and nothing else");
-    Check(halo4Row && halo4Row->capabilities == TitleCapability_None,
-        "Halo 4 advertises no runtime capability at the controller-only stage");
+    // C-H4-10: Halo 4 now advertises the shared motion set its own evidence
+    // supports. Each exclusion below is a deliberate withholding, not an
+    // oversight, and each cost a title a real defect when it was granted early.
+    Check(halo4Row &&
+              (halo4Row->capabilities &
+               (TitleCapability_Stereo | TitleCapability_ControllerAim |
+                TitleCapability_Haptics | TitleCapability_RuntimeModes |
+                TitleCapability_RoomScale | TitleCapability_ControllerInput)) ==
+                  (TitleCapability_Stereo | TitleCapability_ControllerAim |
+                   TitleCapability_Haptics | TitleCapability_RuntimeModes |
+                   TitleCapability_RoomScale |
+                   TitleCapability_ControllerInput),
+        "Halo 4 advertises stereo, controller aim, haptics, runtime modes, "
+        "room scale and controller input");
+    Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
+        "Halo 4 withholds ArmIk: granting it to Reach before its arm solve was "
+        "proven attached the left hand to the player's face");
+    Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
+        "Halo 4 withholds Hud: its CUI arrives inside the captured scene "
+        "target, so no title-specific HUD redirect is installed to gate");
+    Check(halo4Row && !(halo4Row->capabilities & TitleCapability_CutsceneTheater),
+        "Halo 4 withholds CutsceneTheater: it has no cinematic evidence yet");
     Check(TitleRegistry_AllowsSharedControllerInput(
               GameTitle::Halo4, false, false, false, true),
         "Explicit Halo 4 receives the virtual pad through its own admission");

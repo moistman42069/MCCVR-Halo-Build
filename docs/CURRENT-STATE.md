@@ -185,6 +185,23 @@ The superseded C-H4-8 bytes were source
 `out/candidates/6cf0b76-halo4-c8-headtracking-fov-20260808-114408358Z`. Its run
 is the reference log for everything C-H4-9 must not regress.
 
+**C-H4-10 is the installed candidate: motion aim, VR turn and rumble.** The
+headset run above also corrected a premise this project had carried since
+C-H4-5: **Halo 4 already draws its HUD** ("i can see the hud"), because its CUI
+arrives inside the captured scene target. Halo 4 therefore needs no HUD
+redirect, unlike the other three titles, and that ladder rung is cancelled
+rather than deferred.
+
+What C-H4-10 must show: `Halo 4 C-H4-10 shared systems:` with aim, haptics and
+room scale all `GRANTED`, `locomotion head-relative`, `yaw reference captured`,
+and a non-zero VR turn count when you use the stick; and `Halo 4 C-H4-10
+look/aim: MOTION AIM: the hand steers, the stick turns`. In the headset: point
+your hand and shoot there, turn with the stick, feel rumble, and walk where you
+look. Expect **two reticles** - Halo 4's own centred one keeps drawing and now
+reports the middle of your view rather than the gun; the floating procedural one
+on the controller ray is the truthful one. Insert drops back to C-H4-9's stick
+yaw + headset pitch; F2 drops back to C-H4-8.
+
 **C-H4-9 RESULT, 2026-08-08 (Steam, SteamVR/OpenXR 2.17.6, PSVR2, 120 Hz).**
 The user's words: *"shots don't follow my view but that doesn't matter, 6dof is
 working and it looks and runs great."* Evidence preserved at

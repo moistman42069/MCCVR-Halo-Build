@@ -116,6 +116,9 @@ namespace
         // the only case where their buttons are withheld — a lone right grip is
         // never touched, so it keeps dismounting the vehicle.
         Game_Halo3UpdateVehicleWheel(pad);
+        // C-H4-10: Halo 4's VR turn advances from this same shared pad sample,
+        // before the right-stick block below decides who writes the axes.
+        Game_Halo4UpdateVrTurn(pad);
         const bool wheelGesture = Game_Halo3VehicleSwallowsGrips();
 
         MenuChordResult pauseChord{};
