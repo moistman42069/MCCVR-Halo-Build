@@ -29183,11 +29183,47 @@ namespace
         std::atomic<uint32_t> consecutiveUncaptured{0};
         std::atomic<bool> sceneTargetMissing{false};
         std::atomic<uint32_t> lastRejection{0};
+
+        // --- C-H4-8 head pose ------------------------------------------
+        // Halo 4's own recenter reference, deliberately not shared with Halo
+        // 3's g_headYawRef/g_headPosRef: the Halo 4 core is installed and
+        // removed per level, so its reference has to be re-captured on each
+        // install rather than inherited from another title's session.
+        std::atomic<bool> headReferenceValid{false};
+        std::atomic<float> headYawReference{0.0f};
+        std::atomic<float> headPositionReference[3]{};
+        std::atomic<uint64_t> headTrackedFrames{0};
+        std::atomic<float> lastHeadYawDelta{0.0f};
+        std::atomic<float> lastHeadPitchDelta{0.0f};
+        std::atomic<float> lastLeanMagnitude{0.0f};
+
+        // --- C-H4-8 native FOV coverage --------------------------------
+        // Learned from the engine's own finished projection, never assumed.
+        std::atomic<float> fovGain{0.3925f};
+        std::atomic<float> fovRatio{0.0f};
+        std::atomic<bool> fovLearned{false};
+        std::atomic<uint64_t> fovWidenedFrames{0};
+        std::atomic<uint64_t> fovStockFovFrames{0};
+        std::atomic<float> lastRequestedHalfX{0.0f};
+        std::atomic<float> lastRequestedHalfY{0.0f};
+        std::atomic<bool> lastCoverContained{false};
+        // The raw pair that measures retail's converter scale K live.
+        std::atomic<float> lastObserverVerticalFov{0.0f};
+        std::atomic<float> lastElementVerticalFov{0.0f};
+        std::atomic<float> lastConverterScale{0.0f};
     } g_halo4Camera;
 
     // ~1 second at 120 Hz, two eyes per frame. Long enough that a few frames
     // of start-up discovery are never mistaken for a failure.
     constexpr uint32_t kHalo4UncapturedEyeLimit = 240;
+
+    // C-H4-8: 1% of headroom on the solved cover. Float rounding through
+    // atan/tan and the engine's own projection build can leave the cover a hair
+    // under the native frustum, and being one ulp short trips vr.cpp's
+    // whole-slice fallback - the exact failure this candidate exists to remove.
+    // The cost is ~1% of raster area; the alternative is an intermittent,
+    // frame-dependent geometry fault.
+    constexpr float kHalo4CoverMargin = 1.01f;
 
     // Why a frame rendered stock before ownership or was dropped after a
     // claimed eye transaction began. Reported by the worker only.
@@ -29284,6 +29320,41 @@ namespace
         g_halo4Camera.lastRejection.store(0, std::memory_order_relaxed);
         g_halo4RenderFovSerial[0].store(0, std::memory_order_release);
         g_halo4RenderFovSerial[1].store(0, std::memory_order_release);
+
+        // C-H4-8. The recenter reference is deliberately dropped here: the
+        // camera core is installed and removed per level, and carrying a stale
+        // reference across a load would spawn the player facing a direction
+        // chosen during the previous level. The next tracked frame re-captures
+        // it against the level's own camera.
+        g_halo4Camera.headReferenceValid.store(false, std::memory_order_release);
+        g_halo4Camera.headYawReference.store(0.0f, std::memory_order_relaxed);
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            g_halo4Camera.headPositionReference[axis].store(
+                0.0f, std::memory_order_relaxed);
+        }
+        g_halo4Camera.headTrackedFrames.store(0, std::memory_order_relaxed);
+        g_halo4Camera.lastHeadYawDelta.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastHeadPitchDelta.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastLeanMagnitude.store(0.0f, std::memory_order_relaxed);
+
+        // The FOV calibration is re-learned per generation for the same reason:
+        // a different level or window layout may build its projection
+        // differently, and one stock frame is a cheap price for never widening
+        // on a stale mapping.
+        g_halo4Camera.fovGain.store(0.3925f, std::memory_order_relaxed);
+        g_halo4Camera.fovRatio.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.fovLearned.store(false, std::memory_order_release);
+        g_halo4Camera.fovWidenedFrames.store(0, std::memory_order_relaxed);
+        g_halo4Camera.fovStockFovFrames.store(0, std::memory_order_relaxed);
+        g_halo4Camera.lastRequestedHalfX.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastRequestedHalfY.store(0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastCoverContained.store(false, std::memory_order_relaxed);
+        g_halo4Camera.lastObserverVerticalFov.store(
+            0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastElementVerticalFov.store(
+            0.0f, std::memory_order_relaxed);
+        g_halo4Camera.lastConverterScale.store(0.0f, std::memory_order_relaxed);
     }
 
     int Halo4RestoreMonoCamera(
@@ -29390,7 +29461,123 @@ namespace
             return Halo4StereoResult::NotStarted;
         }
 
+        // C-H4-8: put the player inside. The headset's orientation and its
+        // room-space movement are applied to the MONO camera here, before the
+        // eyes split off it, so both eyes inherit one consistent head pose and
+        // the IPD baseline (forward x up, halo4_render_logic.h) rotates with
+        // the head instead of staying welded to the engine's heading.
+        //
+        // This is a DELTA on top of Halo 4's own camera, not Halo 3's outright
+        // replacement of forward/up. Halo 3 can replace the basis because it
+        // also owns the turn stick; Halo 4's turn/look ownership is a separate
+        // milestone, and replacing the basis without it would leave the player
+        // unable to turn at all. Applying the headset on top keeps the accepted
+        // C-H4-1 gamepad behaviour intact.
+        //
+        // Failure is feature-local per AGENTS.md: no head pose this frame means
+        // the eyes still render from the engine's camera. It never drops a pair.
         const float worldScale = g_worldScale.load(std::memory_order_acquire);
+        bool headTracked = false;
+        if (snapshot.headPoseValid)
+        {
+            Halo4HeadPoseInput headInput{};
+            memcpy(headInput.quaternion, snapshot.headOrientation,
+                   sizeof(headInput.quaternion));
+            memcpy(headInput.position, snapshot.headPosition,
+                   sizeof(headInput.position));
+
+            // Decode BEFORE consuming either request. Sampling the flags first
+            // would silently swallow a recenter the player asked for on a frame
+            // whose pose could not be decoded.
+            Halo4HeadOrientation head{};
+            const bool decoded =
+                Halo4DecodeHeadOrientation(snapshot.headOrientation, head);
+            const bool manualRecenter =
+                decoded && g_needRecenter.exchange(false);
+            const bool positionOnlyRecenter =
+                decoded && g_needPosRecenter.exchange(false);
+            if (decoded &&
+                (manualRecenter ||
+                 !g_halo4Camera.headReferenceValid.load(
+                     std::memory_order_acquire)))
+            {
+                g_halo4Camera.headYawReference.store(
+                    head.yaw, std::memory_order_relaxed);
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    g_halo4Camera.headPositionReference[axis].store(
+                        snapshot.headPosition[axis], std::memory_order_relaxed);
+                }
+                g_halo4Camera.headReferenceValid.store(
+                    true, std::memory_order_release);
+            }
+            else if (decoded && positionOnlyRecenter)
+            {
+                // Enabling leaning captures the neutral head position only, so
+                // the yaw baseline is untouched and the view does not snap.
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    g_halo4Camera.headPositionReference[axis].store(
+                        snapshot.headPosition[axis], std::memory_order_relaxed);
+                }
+            }
+
+            if (decoded &&
+                g_halo4Camera.headReferenceValid.load(std::memory_order_acquire))
+            {
+                headInput.headYawReference =
+                    g_halo4Camera.headYawReference.load(
+                        std::memory_order_relaxed);
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    headInput.headPositionReference[axis] =
+                        g_halo4Camera.headPositionReference[axis].load(
+                            std::memory_order_relaxed);
+                }
+                headInput.yawSign = g_yawSign.load(std::memory_order_relaxed);
+                headInput.pitchSign =
+                    g_pitchSign.load(std::memory_order_relaxed);
+                headInput.pitchTrim =
+                    g_pitchTrim.load(std::memory_order_relaxed);
+                headInput.worldScale = worldScale;
+                headInput.positional =
+                    g_positional.load(std::memory_order_relaxed);
+
+                const Halo4CameraBasis beforeHead = stock;
+                if (Halo4ApplyHeadPose(stock, headInput))
+                {
+                    headTracked = true;
+                    g_halo4Camera.headTrackedFrames.fetch_add(
+                        1, std::memory_order_relaxed);
+                    g_halo4Camera.lastHeadYawDelta.store(
+                        Halo4WrapPi(
+                            headInput.yawSign *
+                            Halo4WrapPi(
+                                head.yaw - headInput.headYawReference)),
+                        std::memory_order_relaxed);
+                    g_halo4Camera.lastHeadPitchDelta.store(
+                        headInput.pitchSign * head.pitch + headInput.pitchTrim,
+                        std::memory_order_relaxed);
+                    float lean = 0.0f;
+                    for (int axis = 0; axis < 3; ++axis)
+                    {
+                        const float d =
+                            stock.position[axis] - beforeHead.position[axis];
+                        lean += d * d;
+                    }
+                    g_halo4Camera.lastLeanMagnitude.store(
+                        sqrtf(lean), std::memory_order_relaxed);
+                }
+                else
+                {
+                    // Restore the engine's camera exactly. A refused head
+                    // transform must not leave a half-rotated basis behind.
+                    stock = beforeHead;
+                }
+            }
+        }
+        (void)headTracked;
+
         Halo4CameraBasis eyeCameras[2]{};
         for (int eye = 0; eye < 2; ++eye)
         {
@@ -29403,6 +29590,35 @@ namespace
                     Halo4StereoRejection::EyeBuildFailed, false);
                 return Halo4StereoResult::NotStarted;
             }
+        }
+
+        // C-H4-8: solve each eye's raster cover from the runtime's own reported
+        // frustum. Nothing here names a headset. Halo 4's stock cover is
+        // narrower than several headsets (measured PSVR2: stock 50.46/41.14 deg
+        // against a native 61.5/53.0), and when the cover does not CONTAIN the
+        // native frustum vr.cpp cannot crop to it and submits the whole slice
+        // at the wrong FOV - the "M2 WARNING" in the C-H4-7 log.
+        //
+        // The calibration is measured from the engine's own finished
+        // projection, so the first stereo frame of a generation renders at
+        // Halo 4's stock FOV and teaches us the mapping; every later frame
+        // widens. A runtime that reports no per-eye FOV simply never widens.
+        Halo4FovCalibration calibration{};
+        calibration.gain = g_halo4Camera.fovGain.load(std::memory_order_relaxed);
+        calibration.ratio =
+            g_halo4Camera.fovRatio.load(std::memory_order_relaxed);
+        calibration.learned =
+            g_halo4Camera.fovLearned.load(std::memory_order_acquire);
+        float verticalFovWrite[2]{};
+        float expectedHalfY[2]{};
+        bool widenFov[2] = {false, false};
+        for (int eye = 0; eye < 2; ++eye)
+        {
+            widenFov[eye] = snapshot.eyes[eye].fovValid &&
+                Halo4SolveCoverVerticalFov(
+                    snapshot.eyes[eye].fov, calibration,
+                    kHalo4CoverMargin, verticalFovWrite[eye],
+                    expectedHalfY[eye]);
         }
 
         float halfFovX[2]{};
@@ -29428,8 +29644,8 @@ namespace
                 const int eye = pass == 0 ? firstEye : 1 - firstEye;
                 unsigned char eyeObserver[kHalo4ObserverSnapshotBytes];
                 memcpy(eyeObserver, savedObserver, sizeof(eyeObserver));
-                // C-H4-7 changes only pose/basis. In particular +0x78/+0x7C
-                // remain bit-identical full-vFOV/FOV-ratio inputs.
+                // C-H4-8 substitutes pose/basis, and (once the calibration
+                // is learned) the vertical FOV input. +0x7C stays stock.
                 memcpy(eyeObserver + kHalo4ObserverPositionOffset,
                        eyeCameras[eye].position,
                        sizeof(eyeCameras[eye].position));
@@ -29438,6 +29654,17 @@ namespace
                        sizeof(eyeCameras[eye].forward));
                 memcpy(eyeObserver + kHalo4ObserverUpOffset,
                        eyeCameras[eye].up, sizeof(eyeCameras[eye].up));
+                // C-H4-8 widens the vertical FOV input so the raster covers the
+                // headset's own frustum. +0x7C (the FOV ratio) stays stock:
+                // retail converter 0x38F094-0x38F0AC scales both fields by one
+                // shared factor, so the vertical write is the whole handle and
+                // touching the ratio as well would double-apply.
+                if (widenFov[eye])
+                {
+                    memcpy(eyeObserver + kHalo4ObserverVerticalFovOffset,
+                           &verticalFovWrite[eye],
+                           sizeof(verticalFovWrite[eye]));
+                }
                 if (!Halo4SafeWrite(reinterpret_cast<void*>(args.observer),
                                     eyeObserver, sizeof(eyeObserver)))
                 {
@@ -29525,6 +29752,63 @@ namespace
                 lastCenterY = centerY;
                 g_halo4Camera.projectionReadbacks.fetch_add(
                     1, std::memory_order_relaxed);
+
+                // C-H4-8: learn from what the engine ACTUALLY built, whether or
+                // not we widened. This is what makes the cover self-correcting
+                // instead of resting on an assumed field meaning: if the engine
+                // answers a write differently than expected, the next frame's
+                // solve already uses the corrected gain and ratio.
+                const float writtenVerticalFov = widenFov[eye]
+                    ? verticalFovWrite[eye]
+                    : stock.verticalFov;
+                // Measure retail's converter scale from the engine's own two
+                // values, rather than trusting the 0.785 constant read out of
+                // the image.
+                float elementVerticalFov = 0.0f;
+                if (Halo4SafeRead(
+                        reinterpret_cast<const void*>(
+                            element + kHalo4ElementVerticalFovOffset),
+                        &elementVerticalFov, sizeof(elementVerticalFov)) &&
+                    isfinite(elementVerticalFov) && writtenVerticalFov > 1.0e-4f)
+                {
+                    g_halo4Camera.lastObserverVerticalFov.store(
+                        writtenVerticalFov, std::memory_order_relaxed);
+                    g_halo4Camera.lastElementVerticalFov.store(
+                        elementVerticalFov, std::memory_order_relaxed);
+                    g_halo4Camera.lastConverterScale.store(
+                        elementVerticalFov / writtenVerticalFov,
+                        std::memory_order_relaxed);
+                }
+                if (Halo4LearnFovCalibration(
+                        writtenVerticalFov, halfFovX[eye], halfFovY[eye],
+                        calibration))
+                {
+                    g_halo4Camera.fovGain.store(
+                        calibration.gain, std::memory_order_relaxed);
+                    g_halo4Camera.fovRatio.store(
+                        calibration.ratio, std::memory_order_relaxed);
+                    g_halo4Camera.fovLearned.store(
+                        true, std::memory_order_release);
+                }
+                if (snapshot.eyes[eye].fovValid)
+                {
+                    const bool contained = Halo4CoverContainsFov(
+                        halfFovX[eye], halfFovY[eye], snapshot.eyes[eye].fov);
+                    g_halo4Camera.lastCoverContained.store(
+                        contained, std::memory_order_relaxed);
+                }
+                if (widenFov[eye])
+                {
+                    g_halo4Camera.fovWidenedFrames.fetch_add(
+                        1, std::memory_order_relaxed);
+                    g_halo4Camera.lastRequestedHalfY.store(
+                        expectedHalfY[eye], std::memory_order_relaxed);
+                }
+                else
+                {
+                    g_halo4Camera.fovStockFovFrames.fetch_add(
+                        1, std::memory_order_relaxed);
+                }
 
                 g_halo4OrigWrapper(element, view, window);
                 if (!VR_CaptureHalo4RenderedEye(
@@ -30012,12 +30296,15 @@ namespace
                 kReachRenderSafetyIntervalMs)
         {
             g_halo4Camera.armed.store(true, std::memory_order_release);
-            LOG("Halo 4 camera core armed: C-H4-7 stock-projection stereo "
-                "geometry uses the sustained setup+wrapper scope; only eye "
-                "position/forward/up change, stock FOV inputs remain byte-"
-                "identical, and a failed claimed pair drops one frame then "
-                "retries; head tracking, 6DOF, and HUD are not in this "
-                "candidate");
+            LOG("Halo 4 camera core armed: C-H4-8 head tracking, 6DOF and "
+                "native headset-FOV coverage on the sustained setup+wrapper "
+                "scope. The HMD's orientation and room-space translation are "
+                "applied to the mono camera before the eyes split, and the "
+                "raster cover is solved from the runtime's own reported "
+                "per-eye frustum - no headset is named in the code. A failed "
+                "claimed pair drops one frame then retries; a refused head "
+                "pose or FOV solve degrades only itself. HUD/CUI, turn/look "
+                "ownership, aim and hands are not in this candidate");
         }
         PublishHalo4Lifecycle();
     }
@@ -30074,10 +30361,10 @@ namespace
             0, std::memory_order_relaxed);
         if (reason >= sizeof(kRejectionNames) / sizeof(kRejectionNames[0]))
             reason = 0;
-        LOG("Halo 4 C-H4-7: %llu completed pairs, %llu stock windows, %llu "
+        LOG("Halo 4 C-H4-8: %llu completed pairs, %llu stock windows, %llu "
             "dropped frames, %llu/%llu camera/projection readbacks, %llu "
             "uncaptured eyes in 2s; geometry %s; last readback max error "
-            "pos %.6f fwd %.6f up %.6f; last stock projection half "
+            "pos %.6f fwd %.6f up %.6f; last projection half "
             "%.2f/%.2f deg center %.6f/%.6f; last rejection: %s; armed=%d",
             static_cast<unsigned long long>(stereo),
             static_cast<unsigned long long>(stock),
@@ -30097,6 +30384,66 @@ namespace
                 std::memory_order_relaxed),
             kRejectionNames[reason],
             g_halo4Camera.armed.load(std::memory_order_acquire) ? 1 : 0);
+
+        // The two C-H4-8 behaviours report on their own lines so one headset
+        // session can accept or reject each independently. A pair count alone
+        // proved nothing in C-H4-6; these report what the ENGINE held.
+        const uint64_t headFrames =
+            g_halo4Camera.headTrackedFrames.exchange(
+                0, std::memory_order_relaxed);
+        LOG("Halo 4 C-H4-8 head tracking: %llu tracked frames in 2s, "
+            "reference %s; last yaw delta %.1f deg, pitch delta %.1f deg, "
+            "lean %.3f world units (6DOF %s, world scale %.2f units/m)",
+            static_cast<unsigned long long>(headFrames),
+            g_halo4Camera.headReferenceValid.load(std::memory_order_acquire)
+                ? "captured"
+                : "NOT captured",
+            g_halo4Camera.lastHeadYawDelta.load(std::memory_order_relaxed) *
+                57.2958f,
+            g_halo4Camera.lastHeadPitchDelta.load(std::memory_order_relaxed) *
+                57.2958f,
+            g_halo4Camera.lastLeanMagnitude.load(std::memory_order_relaxed),
+            g_positional.load(std::memory_order_relaxed) ? "ON" : "OFF",
+            g_worldScale.load(std::memory_order_relaxed));
+
+        const uint64_t widened =
+            g_halo4Camera.fovWidenedFrames.exchange(
+                0, std::memory_order_relaxed);
+        const uint64_t stockFov =
+            g_halo4Camera.fovStockFovFrames.exchange(
+                0, std::memory_order_relaxed);
+        LOG("Halo 4 C-H4-8 FOV cover: %llu widened eyes, %llu stock-FOV eyes "
+            "in 2s; calibration %s (gain %.4f, ratio %.4f); requested half-Y "
+            "%.2f deg, engine built %.2f/%.2f deg; contains headset frustum: "
+            "%s",
+            static_cast<unsigned long long>(widened),
+            static_cast<unsigned long long>(stockFov),
+            g_halo4Camera.fovLearned.load(std::memory_order_acquire)
+                ? "learned"
+                : "NOT learned",
+            g_halo4Camera.fovGain.load(std::memory_order_relaxed),
+            g_halo4Camera.fovRatio.load(std::memory_order_relaxed),
+            g_halo4Camera.lastRequestedHalfY.load(std::memory_order_relaxed) *
+                57.2958f,
+            g_halo4Camera.lastHalfFovX.load(std::memory_order_relaxed) *
+                57.2958f,
+            g_halo4Camera.lastHalfFovY.load(std::memory_order_relaxed) *
+                57.2958f,
+            g_halo4Camera.lastCoverContained.load(std::memory_order_relaxed)
+                ? "YES"
+                : "NO");
+        // Retail's converter multiplies both observer FOV fields by a scale
+        // chosen at halo4.dll 0x38F01A-0x38F05E: 0.785, or 0.168214291 only
+        // when the engine's FOV global is exactly zero. Logging the live pair
+        // makes any future branch flip visible instead of silent.
+        LOG("Halo 4 C-H4-8 FOV converter: observer +0x78 %.5f rad -> element "
+            "+0x28 %.5f rad, measured scale K %.5f (static candidates 0.78500 "
+            "/ 0.16821)",
+            g_halo4Camera.lastObserverVerticalFov.load(
+                std::memory_order_relaxed),
+            g_halo4Camera.lastElementVerticalFov.load(
+                std::memory_order_relaxed),
+            g_halo4Camera.lastConverterScale.load(std::memory_order_relaxed));
     }
 #endif
 
@@ -30712,11 +31059,13 @@ bool Game_IsHooked() { return g_hooked; }
 bool Game_IsHeadTracking() { return g_enabled.load(); }
 bool Game_IsStereoGeometryOnlyBringup()
 {
-#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
-    return TitleAdapter_GetActiveTitle() == GameTitle::Halo4;
-#else
+    // C-H4-8 ended the geometry-only phase: Halo 4 now applies the HMD's
+    // orientation and its room-space translation like every other title, so no
+    // title is stereo-geometry-only any more. The predicate is kept rather than
+    // deleted because three call sites read it and a dormant false costs
+    // nothing at runtime; deleting live-looking code mid-candidate is exactly
+    // what AGENTS.md forbids.
     return false;
-#endif
 }
 bool Game_IsHeadTrackingApplied()
 {
@@ -31584,7 +31933,7 @@ void Game_AutoVrTick()
     {
         // Halo 4 owns stereo presentation exactly while its camera core is
         // armed. g_enabled is also the shared presentation gate used by the
-        // wrapper detour; C-H4-7 does not yet apply HMD head pose or 6DOF. The
+        // wrapper detour; C-H4-8 applies the HMD head pose and 6DOF. The
         // heartbeat is the shared resolver's liveness signal: without it Halo 4
         // never qualifies as runtime owner and its Stereo capability is denied.
         const bool halo4StereoUsable =
@@ -31599,8 +31948,8 @@ void Game_AutoVrTick()
                 Game_ForcePositional();
                 if (!VR_IsStereoEnabled())
                     VR_ToggleStereo();
-                LOG("Halo 4 C-H4-7 stereo geometry ON; head tracking, 6DOF, "
-                    "and HUD remain intentionally pending");
+                LOG("Halo 4 C-H4-8 immersive VR ON: stereo geometry, head "
+                    "tracking and 6DOF are live; HUD/CUI remains pending");
             }
             const uint32_t halo4Generation =
                 TitleAdapter_GetGeneration(GameTitle::Halo4);
@@ -31943,14 +32292,6 @@ void Game_TogglePositional()
 
 void Game_ForcePositional()
 {
-#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
-    if (Game_IsStereoGeometryOnlyBringup())
-    {
-        LOG("Halo 4 C-H4-7 immersive stereo flag ON; positional state and "
-            "HMD translation/6DOF are intentionally unchanged");
-        return;
-    }
-#endif
     g_positional = true;
     g_needPosRecenter = true;
     LOG("positional 6DOF forced ON for stereo VR");

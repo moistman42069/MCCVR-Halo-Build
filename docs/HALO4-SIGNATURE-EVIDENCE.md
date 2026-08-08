@@ -870,14 +870,208 @@ H4 raster is allowed here and belongs to the later coverage milestone. The
 world following physical head motion, absent 6DOF, and absent HUD are expected
 in C-H4-7 and cannot be used to accept or reject its geometry claim.
 
+### C-H4-7 — RESULT: stereo geometry PASSED (headset-run 2026-08-08)
+
+The user ran the installed `dbf1382` bytes on Steam / SteamVR-OpenXR 2.17.6 /
+PSVR2 at 120 Hz; the Halo 4 window ran `05:51:26`-`05:53:08`. Preserved at
+`out/test-runs/dbf1382-halo4-c7-stock-geometry-20260808-0553`.
+
+**The geometry claim passed on its own terms.** Steady two-second telemetry read
+226-243 completed pairs, `geometry TAKING`, `0 dropped frames`, `0 uncaptured
+eyes`, exact-zero camera readback error (`pos 0.000000 fwd 0.000000 up
+0.000000`), `center 0.000000/0.000000`, and `Halo 4 ... XR publish` 240-244
+pairs submitted with zero recoverable drops, at `fps 120 (stereo on)`. Two
+genuinely distinct eye images were measured: `M2 VALIDATION: distinct eye pixels
+mean RGB delta=3.925, changed samples=27.1%`.
+
+**The user rejected the experience, for the two reasons the candidate itself
+declared out of scope:** "6dof is not working so idk if the stereo 3d is
+implemented correctly", and a request for "proper fov like the other halos".
+The log confirms both were absent by construction, not broken:
+`Halo 4 C-H4-7 stereo geometry ON; head tracking, 6DOF, and HUD remain
+intentionally pending`.
+
+**One NEW defect the run exposed, which C-H4-7 did not predict.** The FOV was
+not merely stock, it was geometrically wrong at the compositor:
+
+```
+[05:50:49.205] M2: eye 0 pose(...) fov L-61.5 R43.4 U53.0 D-53.0 deg
+[05:51:33.755] M2 WARNING: the symmetric raster cover does not contain the
+               headset's native per-eye frustum, so the whole slice is
+               submitted at the cover FOV. Compositors that ignore a custom
+               layer FOV (ALVR) will show a doubled image.
+               last stock projection half 50.46/41.14 deg
+```
+
+Halo 4's stock cover (50.46/41.14 deg) does not contain PSVR2's frustum
+(61.5/53.0 deg) on either axis, so the native-FOV crop in `vr.cpp` could not run
+and the whole slice was submitted at the wrong FOV. Preserved logs show the
+working titles on the SAME headset reaching `cover 61.5/53.0 deg` - an exact
+match - because they drive the engine FOV to the runtime's own. That is the gap
+C-H4-8 closes.
+
+### E-H4-8: the observer FOV path, measured end to end (PROVEN 2026-08-08)
+
+Disassembled from the pinned retail image (SHA-256 `7C53E7D5...`), and
+corroborated against live logged values.
+
+| Retail fact | Value |
+| --- | --- |
+| Converter | `0x38F014`-`0x38F175`; the copy map at `0x38F074` is inside it |
+| Pose copy | position/forward/up copied verbatim, **no scale, no axis permutation** (`0x38F066`-`0x38F091`) |
+| FOV scale | **both** FOV fields multiplied by one shared factor (`0x38F0A8`/`0x38F0AC`), stored at `0x38F13E`/`0x38F143` |
+| Scale constant | literal float `0.785` at RVA `0xD9560C`; alternative `0.168214291` at `0xD9543C` |
+| Scale selector | branch at `0x38F01A`-`0x38F05E` on a global at RVA `0x4969640` (deg->rad, fallback 78.000 deg) compared against `0.0` |
+| Net mapping | `element[+0x28] = observer[+0x78] * K`, and the builder treats `element[+0x28]` as a FULL vertical FOV, so `builtHalfY = observer[+0x78] * K / 2` |
+| Basis | right-handed, `right = forward x up`, Z-up; projection builder `0x38F658` writes `(right, up, -forward)` |
+
+**The mapping is confirmed live to five figures on two independent values.** The
+C-H4-6 log records the engine camera as `tan(1.8295 1.5385)` (those are the raw
+observer `+0x78`/`+0x7C` bytes, despite the misleading `tan` label) and the
+element as `1.4361/1.2077`. `1.8295 * 0.785 = 1.43616` and
+`1.5385 * 0.785 = 1.20772`. Independently, C-H4-7 measured the built half-Y as
+`41.14 deg = 0.71805 rad`, and `0.71805 / 1.8295 = 0.39249 = 0.785 / 2`.
+
+**Two things this makes explicit, and one it does not.**
+
+- C-H4-6's `1.8418/1.3290` write was OpenXR half-angle **tangents** placed in
+  fields holding a full vertical FOV in radians and an unresolved ratio. Even
+  with the right representation it would have landed at `0.785x` its intended
+  value. Both errors are now accounted for.
+- The `+0x7C` "FOV ratio" field remains **UNRESOLVED**. Its stock `1.5385` does
+  not reconcile with the raster aspect `2912/2100 = 1.3867` nor with
+  `tan(50.46 deg) = 1.2110`, and retail scales it by the same `K` that a
+  dimensionless ratio would not need. **C-H4-8 therefore does not write it.**
+- `K` is selected at runtime by a global with no static initializer, so it is
+  **not safe to hardcode**. C-H4-8 measures it instead, and is the first build
+  to log the raw `observer +0x78 -> element +0x28` pair.
+
+### C-H4-8 — head tracking, 6DOF and native headset-FOV coverage (OFFLINE-PASS 2026-08-08; headset-PENDING)
+
+**Two player-visible claims, reported on separate log lines so either can be
+accepted or rejected alone:**
+
+1. **You are inside the world.** The headset's orientation and its room-space
+   translation drive Halo 4's camera, so looking and leaning move the view while
+   the world stays put.
+2. **The image fills the headset correctly, on any headset.** The raster cover
+   is solved from whatever per-eye frustum the OpenXR runtime reports, so the
+   native-FOV crop can run instead of submitting the whole slice.
+
+**Built on C-H4-7's proven boundary, which is unchanged.** Same setup+wrapper
+scope, same exact-serial pairing, same `__finally` mono restore, same
+last-target capture, same publication gates.
+
+**Design decision: the head pose is a DELTA, not a replacement.** Halo 3's
+`ApplyHeadLook` overwrites forward/up outright, which it can do because
+`ApplyVrTurn` also owns the turn stick and feeds `g_gameYawRef`. Halo 4
+turn/look ownership is a separate later rung, so replacing the basis would leave
+the player unable to turn at all and would discard the accepted C-H4-1 gamepad
+behaviour. C-H4-8 instead composes the headset on top of Halo 4's own camera:
+yaw about world up relative to a recentre reference, then pitch about the
+resulting right axis, then roll about the resulting forward. Pitch and roll need
+no reference because a level head is zero. `AGENTS.md` permits a different
+implementation reaching the same player experience; this is recorded as that
+difference.
+
+**Defect inherited from C-H4-6 and deliberately not repeated.** C-H4-6 honoured
+Halo 3's `g_writeUp` (F7) toggle and rewrote `forward` while leaving `up` at the
+engine's value. `Halo4ValidateCameraBasis` rejects `|forward . up| >= 0.05`, so
+every frame past ~2.87 degrees of head pitch would have failed validation. Halo
+3 has no such validator and never showed the fault. C-H4-8 rotates forward and
+up together at every step, so orthonormality holds by construction and
+`g_writeUp` is intentionally not consulted.
+
+**The FOV cover is measured, not assumed.** The first Halo 4 stereo frame of a
+generation renders at the engine's own stock FOV and reads back the finished
+projection; that teaches both the gain (`builtHalfY / writtenVerticalFov`) and
+the ratio (`tan(builtHalfX) / tan(builtHalfY)`). Every later frame solves
+`targetTanY = max(requiredTanY, requiredTanX / ratio)` - the same construction
+Reach's proven `SelectReachSymmetricFovCover` uses - applies a 1% margin, and
+writes only `observer +0x78`. Because the published half-angles are always the
+ones **decoded from the projection the engine actually built**, a wrong write
+can never be reported as correct geometry; it shows up as
+`contains headset frustum: NO`.
+
+**Failure isolation, per AGENTS.md.** A refused head pose leaves the engine's
+own camera and still renders the pair. An unavailable per-eye FOV, or an
+unlearned calibration, renders at stock FOV. Neither disarms the core, ends the
+session, or drops a frame.
+
+**Lifecycle.** The recentre reference and the FOV calibration are both dropped
+in `Halo4ResetTelemetry`, so a level load never inherits a heading chosen during
+the previous level nor a mapping learned from a different window layout.
+
+**What is NOT in this candidate:** HUD/CUI, turn/look ownership and
+configuration parity, controller aim and reticle, first-person weapons and
+hands, vehicles.
+
+**Defect found and fixed during review: the head pose was one frame stale.**
+`PublishHalo4RenderSnapshot` was originally placed ABOVE `CaptureHeadPose` in
+`vr.cpp`'s prepare block. `CaptureHeadPose` is the only writer of the pose that
+snapshot carries, so Halo 4 would have received the PREVIOUS frame's head while
+its eye offsets, its solved FOV and the layer pose submitted later all described
+the current frame - a full 8.33 ms of extra head latency at 120 Hz plus a
+render/layer pose mismatch the compositor reprojects against, which reads as the
+world swimming when you turn and is invisible in a clean log. Reach's publish
+sits below `CaptureHeadPose` for exactly this reason. The Halo 4 publish was
+moved below it, and deliberately NOT gated on `upcomingHeadValid` the way Reach
+is: for Halo 4 the head pose is optional, so a tracking dropout costs head
+tracking rather than stereo.
+
+**Known risks to watch in the headset, neither of them mitigated in code.**
+
+1. **Cross-eye history contamination (motion blur).** The transaction calls the
+   engine's own `setup` twice per game frame, and H4EK
+   (`out/h4ek-evidence/camera/camera-producer-chain.md:122-130`) proves setup
+   saves current->previous constant bank and computes a bank-position delta. With
+   two setups per frame the "previous" bank for the second eye is the first
+   eye's, so that delta becomes the IPD. This is the same family as the Reach
+   temporal-AA cross-eye desync. It is NOT mitigated here on purpose:
+   `out/h4ek-evidence/debugvars/triage.md` records `motion_blur_scale` /
+   `motion_blur_max` as present in Halo 4 but with **kind unproven for this
+   title**, and Reach proved that zeroing that exact pair naively creates 0/0
+   NaNs in `apply_distortions`. Binding them without Halo 4 evidence is
+   precisely what `AGENTS.md` forbids. Halo 4 exposes its own
+   `motion_blur on/off` command in MCC's Graphics > Screen Effects menu, so the
+   zero-risk check is to turn motion blur off there if ghosting or smearing
+   appears. C-H4-7 already ran two setups per frame and no ghosting was
+   reported, but head motion enlarges the per-eye delta, so this may surface
+   now. If it does, it earns its own evidence-backed candidate.
+2. **First-person weapon scale.** Halo 3 additionally matches its first-person
+   gun/HUD overlay camera to the widened world tangents, or the weapon
+   magnifies. Halo 4 draws no first-person weapon or HUD in this candidate, so
+   there is nothing to match yet - but if the weapon model appears at the wrong
+   scale once it is drawn, this is the first place to look.
+
+**Unproven and carried forward:** one Halo 4 world unit in metres has no
+title-native derivation. Halo 4 inherits Halo 3's shared `g_worldScale` default
+of `0.33` game units per metre, adjustable live with PageUp/PageDown. Reach and
+ODST each carry an independently derived `1/3.048 = 0.32808`; if Halo 4 shares
+Blam's ten-foot world unit, `0.33` over-scales head motion and IPD by 0.58%.
+
+**What the log must show for a pass.** Beside C-H4-7's existing geometry line:
+
+- `Halo 4 C-H4-8 head tracking:` tracked frames > 0, `reference captured`, and
+  yaw/pitch deltas that move as the head moves.
+- `Halo 4 C-H4-8 FOV cover:` `calibration learned`, widened eyes > 0, and
+  **`contains headset frustum: YES`**.
+- `Halo 4 C-H4-8 FOV converter:` the raw `observer +0x78 -> element +0x28` pair
+  and measured `K`. This settles E-H4-8's one open value.
+- The `M2 WARNING` about the cover not containing the native frustum must be
+  **absent**, replaced by `M2: submitting native per-eye FOV; ... cover
+  61.5/53.0 deg` on this headset.
+
 ### Forward milestone ladder — one visible claim per candidate
 
 1. **C-H4-7:** stock-projection/exact-serial stereo geometry only.
-2. **C-H4-8:** head rotation and 6DOF/recenter only, on the accepted wrapper
-   transaction, with C-H4-7 projection bytes and publication unchanged.
-3. **C-H4-9:** native headset-FOV/off-axis coverage only, after the converter
-   scale and `+0x2C` consumers are proved and the compositor can carry exact
-   four-edge geometry.
+2. **C-H4-8:** head rotation, 6DOF/recenter, AND native headset-FOV coverage,
+   on the accepted wrapper transaction. Rungs 2 and 3 were merged after the
+   C-H4-7 headset run showed they are one player-visible defect ("put me inside
+   with proper fov"), and after E-H4-8 proved the converter scale that rung 3
+   was waiting on. `+0x2C` remains unresolved and unwritten; exact four-edge
+   off-axis geometry remains future work and is unnecessary while a solved
+   symmetric cover contains the frustum.
 4. **C-H4-10:** CUI HUD presence only, on its own H4EK-proven draw boundary.
 5. **C-H4-11:** turn/look ownership and configuration parity only.
 6. **C-H4-12:** controller aim and reticle only.

@@ -6989,7 +6989,16 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             {
                 return false;
             }
+            // Optional by design: a runtime that cannot report this eye's FOV
+            // costs C-H4-8 only its native-cover widening, and the camera core
+            // renders at Halo 4's stock FOV instead of dropping the frame.
+            next.eyes[eye].fovValid =
+                VR_GetEyeFov(eye, next.eyes[eye].fov);
         }
+        // Same frame as the eye offsets above. Head tracking degrades to the
+        // engine's own camera if this is unavailable; it never fails the pair.
+        next.headPoseValid = VR_GetHeadPose(
+            next.headOrientation, next.headPosition);
 
         const uint32_t current =
             g_halo4RenderSnapshotIndex.load(std::memory_order_seq_cst);
@@ -7549,15 +7558,27 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         g_preparedViewSerialPublished.store(
             upcomingViewsValid ? g_preparedFrame.serial : 0,
             std::memory_order_release);
+        const bool upcomingHeadValid =
+            CaptureHeadPose(frameState.predictedDisplayTime);
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        // MUST stay below CaptureHeadPose. That call is the only writer of the
+        // head pose this snapshot carries, so publishing above it would hand
+        // Halo 4 the PREVIOUS frame's head while its eye offsets, its FOV and
+        // the layer pose submitted later all describe THIS frame - a full frame
+        // of head latency plus a render/layer pose mismatch the compositor
+        // reprojects against, which reads as the world swimming when you turn.
+        // Reach's publish sits below it for the same reason.
+        //
+        // Deliberately NOT gated on upcomingHeadValid, unlike Reach: for Halo 4
+        // the head pose is optional. Without it the snapshot simply carries
+        // headPoseValid=false and the eyes still render from the engine's own
+        // camera, so a tracking dropout costs head tracking and not stereo.
         if (upcomingViewsValid &&
             TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
         {
             PublishHalo4RenderSnapshot(g_preparedFrame.serial);
         }
 #endif
-        const bool upcomingHeadValid =
-            CaptureHeadPose(frameState.predictedDisplayTime);
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
         if (upcomingViewsValid && upcomingHeadValid)
             PublishReachRenderSnapshot(
@@ -7656,7 +7677,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         projectionViews.clear();
         layers.clear();
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
-        // Count a headset-visible C-H4-7 pair only after the frame that queues
+        // Count a headset-visible C-H4-8 pair only after the frame that queues
         // its projection layer is accepted by xrEndFrame.
         bool halo4ProjectionQueued = false;
 #endif
@@ -9453,7 +9474,7 @@ void VR_FramePacingWorkerPoll()
         if (submitted || dropped ||
             TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
         {
-            LOG("Halo 4 C-H4-7 XR publish: %llu pairs submitted, %llu "
+            LOG("Halo 4 C-H4-8 XR publish: %llu pairs submitted, %llu "
                 "recoverable frame drops in 2s; last drop: %s (recoverable "
                 "drops keep the core/session armed)",
                 static_cast<unsigned long long>(submitted),

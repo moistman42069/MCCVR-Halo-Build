@@ -6176,6 +6176,245 @@ int main()
                          sizeof(float)) == 0,
             "C-H4-7 changes only position/forward/up and preserves every FOV "
             "input byte");
+
+        // C-H4-8 additionally writes the vertical FOV. The FOV RATIO at +0x7C
+        // must still survive: retail's converter scales both fields by one
+        // shared factor (halo4.dll 0x38F0A8/0x38F0AC), so writing both would
+        // double-apply, and the field's true meaning is still unresolved.
+        const float widerVerticalFov = 2.2f;
+        memcpy(eyeObserver + kHalo4ObserverVerticalFovOffset, &widerVerticalFov,
+               sizeof(widerVerticalFov));
+        Check(memcmp(eyeObserver + kHalo4ObserverFovRatioOffset,
+                     stockObserver + kHalo4ObserverFovRatioOffset,
+                     sizeof(float)) == 0,
+            "C-H4-8 widens the vertical FOV input and still leaves the FOV "
+            "ratio at +0x7C bit-identical");
+    }
+
+    // C-H4-8: the native headset-FOV cover. Nothing here may be
+    // headset-specific - every number is derived from a supplied XrFovf.
+    {
+        // The user's PSVR2 as SteamVR/OpenXR reports it: asymmetric on X.
+        const float psvr2[4] = {-1.07338f, 0.75747f, 0.92502f, -0.92502f};
+        float tangentX = 0.0f;
+        float tangentY = 0.0f;
+        Check(Halo4RequiredCoverTangents(psvr2, tangentX, tangentY) &&
+                  fabsf(tangentX - tanf(1.07338f)) < 1.0e-4f &&
+                  fabsf(tangentY - tanf(0.92502f)) < 1.0e-4f,
+            "The required cover takes the WIDER side of an asymmetric frustum, "
+            "so a canted-panel headset is fully covered");
+
+        const float badFov[4] = {0.1f, 0.75747f, 0.92502f, -0.92502f};
+        Check(!Halo4RequiredCoverTangents(badFov, tangentX, tangentY),
+            "A frustum with a non-negative left angle is refused rather than "
+            "silently producing a cover");
+
+        // Halo 4's measured stock cover does NOT contain that frustum - this is
+        // exactly the C-H4-7 headset fault, reproduced offline.
+        Check(!Halo4CoverContainsFov(0.88072f, 0.71805f, psvr2),
+            "Halo 4's stock 50.46/41.14 deg cover fails to contain the PSVR2 "
+            "frustum, which is why the whole slice was submitted at the wrong "
+            "FOV");
+
+        // Learn the mapping from the engine's own measured response. The retail
+        // converter scales observer +0x78 by 0.785 and the builder halves it,
+        // so writing 1.8295 must build a 0.71805 rad half-Y.
+        Halo4FovCalibration calibration{};
+        Check(!calibration.learned,
+            "The FOV calibration starts unlearned, so the first Halo 4 stereo "
+            "frame of a generation renders at the engine's own stock FOV");
+        float solved = 0.0f;
+        float expectedHalfY = 0.0f;
+        Check(!Halo4SolveCoverVerticalFov(
+                  psvr2, calibration, 1.01f, solved, expectedHalfY),
+            "No cover may be solved before the engine's response has been "
+            "measured");
+
+        Check(Halo4LearnFovCalibration(1.8295f, 0.88072f, 0.71805f, calibration) &&
+                  calibration.learned &&
+                  fabsf(calibration.gain - 0.3925f) < 1.0e-3f,
+            "The learned gain reproduces retail's proven 0.785/2 mapping from "
+            "the engine's own finished projection");
+
+        Check(Halo4SolveCoverVerticalFov(
+                  psvr2, calibration, 1.01f, solved, expectedHalfY),
+            "A learned calibration solves the vertical FOV write");
+        // The solved write, put back through the engine's proven mapping,
+        // must produce a cover that contains the frustum on all four edges.
+        const float rebuiltHalfY = solved * 0.785f / 2.0f;
+        const float rebuiltHalfX =
+            atanf(tanf(rebuiltHalfY) * calibration.ratio);
+        Check(Halo4CoverContainsFov(rebuiltHalfX, rebuiltHalfY, psvr2),
+            "The solved cover, replayed through retail's own 0.785 mapping, "
+            "contains the headset frustum - the containment vr.cpp requires "
+            "before it can crop to native FOV");
+
+        // Headset-agnostic: a different, wider, symmetric headset must also be
+        // covered without touching any constant.
+        const float wideFov[4] = {-1.3f, 1.3f, 1.2f, -1.2f};
+        float wideSolved = 0.0f;
+        float wideExpected = 0.0f;
+        Check(Halo4SolveCoverVerticalFov(
+                  wideFov, calibration, 1.01f, wideSolved, wideExpected) &&
+                  wideSolved > solved,
+            "A wider headset solves a wider cover from the same calibration, "
+            "with no headset named anywhere in the code");
+        const float wideHalfY = wideSolved * 0.785f / 2.0f;
+        Check(Halo4CoverContainsFov(
+                  atanf(tanf(wideHalfY) * calibration.ratio), wideHalfY,
+                  wideFov),
+            "The wider headset's solved cover also contains its own frustum");
+
+        // A flipped engine scale branch must not distort the world: the gain is
+        // re-learned from the readback rather than assumed.
+        Halo4FovCalibration flipped{};
+        Check(Halo4LearnFovCalibration(1.8295f, 0.30f, 0.1538f, flipped) &&
+                  fabsf(flipped.gain - 0.0841f) < 1.0e-3f,
+            "A changed engine FOV scale is absorbed by re-learning the gain, "
+            "instead of silently rendering the wrong field of view");
+
+        // End-to-end lock on the exact retail numbers, derived independently
+        // from halo4.dll and the preserved logs: the engine's stock pair is
+        // observer +0x78 = 1.8295 rad -> element +0x28 = 1.4361 rad (K = 0.785)
+        // -> built half 50.46/41.14 deg, and the projection builder halves
+        // element +0x28 before tan (0x38F4F7-0x38F501). Feeding the PSVR2
+        // frustum through that chain must ask the engine for 2.3701 rad and
+        // build 61.74/53.30 deg, covering the native 61.5/53.0 on both axes.
+        Halo4FovCalibration retail{};
+        Check(Halo4LearnFovCalibration(1.8295f, 0.88072f, 0.71805f, retail),
+            "The retail stock pair teaches the calibration");
+        float retailWrite = 0.0f;
+        float retailHalfY = 0.0f;
+        Check(Halo4SolveCoverVerticalFov(
+                  psvr2, retail, 1.01f, retailWrite, retailHalfY),
+            "The retail calibration solves a PSVR2 cover");
+        Check(fabsf(retailWrite - 2.3702f) < 5.0e-3f,
+            "The solved observer +0x78 write matches the independently derived "
+            "2.3702 rad for this headset and this engine mapping");
+        const float builtHalfY = retailWrite * 0.785f / 2.0f;
+        const float builtHalfX = atanf(tanf(builtHalfY) * retail.ratio);
+        Check(fabsf(builtHalfY * 57.2958f - 53.30f) < 0.05f &&
+                  fabsf(builtHalfX * 57.2958f - 61.74f) < 0.10f,
+            "Replayed through retail's own 0.785 scale and half-then-tan "
+            "builder, the write produces 61.74/53.30 deg");
+        Check(builtHalfX > 1.07338f && builtHalfY > 0.92502f,
+            "Both built half-angles exceed PSVR2's native 61.5/53.0 deg, so "
+            "the containment test vr.cpp applies can finally pass");
+    }
+
+    // C-H4-8: head pose and 6DOF on Halo 4's PROVEN right-handed Z-up basis.
+    {
+        Halo4CameraBasis mono{};
+        mono.position[0] = 48.73f;
+        mono.position[1] = -4.92f;
+        mono.position[2] = 25.23f;
+        // The live C-H4-6 engine dump, which proves the basis this math assumes.
+        mono.forward[0] = 0.222f;
+        mono.forward[1] = -0.975f;
+        mono.forward[2] = 0.0f;
+        mono.up[0] = 0.0f;
+        mono.up[1] = 0.0f;
+        mono.up[2] = 1.0f;
+        mono.verticalFov = 1.8295f;
+        mono.fovRatio = 1.5385f;
+        // Normalise forward exactly so the basis passes validation.
+        const float forwardLength = sqrtf(
+            mono.forward[0] * mono.forward[0] +
+            mono.forward[1] * mono.forward[1]);
+        mono.forward[0] /= forwardLength;
+        mono.forward[1] /= forwardLength;
+        Check(Halo4ValidateCameraBasis(mono),
+            "The live Halo 4 engine camera basis is a valid orthonormal Z-up "
+            "basis");
+
+        Halo4HeadPoseInput level{};
+        level.quaternion[3] = 1.0f;
+        level.positional = false;
+        Halo4CameraBasis unchanged = mono;
+        Check(Halo4ApplyHeadPose(unchanged, level) &&
+                  fabsf(unchanged.forward[0] - mono.forward[0]) < 1.0e-4f &&
+                  fabsf(unchanged.forward[1] - mono.forward[1]) < 1.0e-4f &&
+                  fabsf(unchanged.forward[2] - mono.forward[2]) < 1.0e-4f,
+            "A level head at the recenter reference leaves Halo 4's own camera "
+            "exactly where the engine aimed it, so the gamepad still aims");
+
+        // Yaw the head 30 degrees. The camera must yaw with it and stay level.
+        Halo4HeadPoseInput yawed{};
+        const float halfYaw = 0.5f * 0.5235988f; // 30 deg
+        yawed.quaternion[1] = sinf(halfYaw); // OpenXR yaw is about +Y
+        yawed.quaternion[3] = cosf(halfYaw);
+        yawed.positional = false;
+        yawed.yawSign = 1.0f;
+        Halo4CameraBasis turned = mono;
+        const float baseYaw = atan2f(mono.forward[1], mono.forward[0]);
+        Check(Halo4ApplyHeadPose(turned, yawed),
+            "A yawed head produces a valid Halo 4 camera basis");
+        const float turnedYaw = atan2f(turned.forward[1], turned.forward[0]);
+        Check(fabsf(Halo4WrapPi(turnedYaw - baseYaw) - (-0.5235988f)) < 1.0e-3f,
+            "Turning your head yaws Halo 4's camera by the same angle about "
+            "world up, which is what makes the world stay put");
+        Check(fabsf(turned.up[2] - 1.0f) < 1.0e-3f,
+            "A pure yaw introduces no roll or pitch");
+        Check(Halo4ValidateCameraBasis(turned),
+            "The yawed basis stays orthonormal, so the IPD split remains exact");
+
+        // Pitch is absolute and needs no reference: it composes onto the
+        // engine's own pitch. This is the case that broke C-H4-6, because it
+        // left `up` at the engine's value and failed the orthogonality band.
+        Halo4HeadPoseInput pitched{};
+        const float halfPitch = 0.5f * 0.5235988f;
+        pitched.quaternion[0] = sinf(halfPitch); // about +X
+        pitched.quaternion[3] = cosf(halfPitch);
+        pitched.positional = false;
+        Halo4CameraBasis looked = mono;
+        Check(Halo4ApplyHeadPose(looked, pitched) &&
+                  Halo4ValidateCameraBasis(looked),
+            "A pitched head keeps forward and up orthonormal - the C-H4-6 "
+            "defect that rejected every frame past 2.87 degrees of pitch");
+        Check(looked.forward[2] > 0.4f && looked.forward[2] < 0.6f,
+            "Looking up pitches Halo 4's camera up, in its Z-up basis");
+
+        // 6DOF: stepping right in room space must move the camera along the
+        // camera's own right axis, which for Halo is forward x up.
+        Halo4HeadPoseInput leaned{};
+        leaned.quaternion[3] = 1.0f;
+        leaned.position[0] = 1.0f; // one metre to the right
+        leaned.positional = true;
+        leaned.worldScale = 0.33f;
+        Halo4CameraBasis moved = mono;
+        Check(Halo4ApplyHeadPose(moved, leaned),
+            "A leaning head produces a valid Halo 4 camera");
+        const float right[3] = {
+            mono.forward[1] * mono.up[2] - mono.forward[2] * mono.up[1],
+            mono.forward[2] * mono.up[0] - mono.forward[0] * mono.up[2],
+            mono.forward[0] * mono.up[1] - mono.forward[1] * mono.up[0]};
+        float alongRight = 0.0f;
+        for (int axis = 0; axis < 3; ++axis)
+            alongRight += (moved.position[axis] - mono.position[axis]) * right[axis];
+        Check(fabsf(alongRight - 0.33f) < 1.0e-3f,
+            "One metre of physical lean moves Halo 4's camera one metre along "
+            "its own right axis, scaled by world_scale");
+
+        // The clamp is in world units and applies after the scale.
+        Halo4HeadPoseInput absurd{};
+        absurd.quaternion[3] = 1.0f;
+        absurd.position[1] = 100.0f;
+        absurd.positional = true;
+        absurd.worldScale = 0.33f;
+        Halo4CameraBasis clamped = mono;
+        Check(Halo4ApplyHeadPose(clamped, absurd) &&
+                  fabsf(clamped.position[2] - (mono.position[2] + 1.5f)) < 1.0e-4f,
+            "An absurd tracked translation is clamped to 1.5 world units "
+            "instead of throwing the camera out of the level");
+
+        // Failure is feature-local: a broken pose must leave the basis alone.
+        Halo4HeadPoseInput broken{};
+        broken.quaternion[0] = std::numeric_limits<float>::quiet_NaN();
+        broken.quaternion[3] = 1.0f;
+        Halo4CameraBasis untouched = mono;
+        Check(!Halo4ApplyHeadPose(untouched, broken),
+            "A non-finite head pose is refused, so the eyes fall back to the "
+            "engine's own camera instead of rendering garbage");
     }
     Check(halo4Row && halo4Row->admissionCapabilities ==
               TitleCapability_ControllerInput,

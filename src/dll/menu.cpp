@@ -567,11 +567,9 @@ namespace
         const bool headTrackingApplied = Game_IsHeadTrackingApplied();
         ImGui::BeginDisabled(
             !Game_CanToggleImmersiveView() || geometryOnly);
-        if (ImGui::Button(geometryOnly
-                ? "Head tracking pending (C-H4-8)"
-                : (headTrackingApplied
-                    ? "Turn head tracking OFF (F2)"
-                    : "Turn head tracking ON (F2)")))
+        if (ImGui::Button(headTrackingApplied
+                ? "Turn head tracking OFF (F2)"
+                : "Turn head tracking ON (F2)"))
         {
             Game_ToggleHeadTracking();
         }
@@ -584,8 +582,7 @@ namespace
         }
         ImGui::EndDisabled();
         ImGui::Text("Head tracking: %s   |   Stereo rendering: %s   |   View: %s",
-                    geometryOnly ? "NOT IN C-H4-7"
-                                 : (headTrackingApplied ? "ON" : "OFF"),
+                    headTrackingApplied ? "ON" : "OFF",
                     VR_IsStereoEnabled() ? "ON" : "OFF",
                     VR_IsPausePresentation() ? "head-locked 2D" : "immersive 3D");
         ImGui::Separator();

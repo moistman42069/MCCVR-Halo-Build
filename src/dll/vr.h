@@ -27,12 +27,22 @@ struct Halo4VrEyeSnapshot
 {
     float position[3]{};
     float orientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    // This eye's native frustum as the runtime reports it, left/right/up/down
+    // in radians. C-H4-8 derives the raster cover from these, so nothing about
+    // the FOV is headset-specific.
+    float fov[4]{};
+    bool fovValid = false;
 };
 
 struct Halo4VrRenderSnapshot
 {
     uint64_t preparedSerial = 0;
     Halo4VrEyeSnapshot eyes[2]{};
+    // The stereo midpoint's own pose, sampled in the same OpenXR frame as the
+    // eye offsets above so head tracking and the IPD split can never disagree.
+    float headOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    float headPosition[3]{};
+    bool headPoseValid = false;
 };
 #endif
 

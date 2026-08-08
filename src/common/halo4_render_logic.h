@@ -194,6 +194,12 @@ inline constexpr uint32_t kHalo4ObserverSnapshotBytes = 0x80;
 inline constexpr uint32_t kHalo4ElementPositionOffset = 0x00;
 inline constexpr uint32_t kHalo4ElementForwardOffset = 0x0C;
 inline constexpr uint32_t kHalo4ElementUpOffset = 0x18;
+// Where the converter lands the two FOV fields (0x38F13E/0x38F143). Reading
+// them back beside the observer values we wrote measures retail's converter
+// scale K = element[+0x28] / observer[+0x78] on the running engine, so the
+// solve never depends on a constant read out of the image.
+inline constexpr uint32_t kHalo4ElementVerticalFovOffset = 0x28;
+inline constexpr uint32_t kHalo4ElementFovRatioOffset = 0x2C;
 inline constexpr uint32_t kHalo4RasterProjectionOffset = 0x88;
 inline constexpr uint32_t kHalo4ProjectionMatrixOffset = 0x78;
 inline constexpr uint32_t kHalo4ElementProjectionMatrixOffset =
@@ -561,4 +567,396 @@ inline bool Halo4DecodeSymmetricProjectionHalfFovs(
     halfY = std::atan(1.0f / scaleY);
     return std::isfinite(halfX) && std::isfinite(halfY) && halfX > 0.0f &&
         halfX < 1.5707f && halfY > 0.0f && halfY < 1.5707f;
+}
+
+// ===========================================================================
+// C-H4-8: head pose, 6DOF, and native headset-FOV coverage.
+//
+// Everything below is pure math over plain floats: no engine, no Windows, no
+// allocation. core_tests exercises each function directly, so the hot detour
+// contains nothing that cannot be reproduced offline.
+// ===========================================================================
+
+inline float Halo4WrapPi(float angle) noexcept
+{
+    while (angle > 3.14159265f)
+        angle -= 6.28318531f;
+    while (angle < -3.14159265f)
+        angle += 6.28318531f;
+    return angle;
+}
+
+// --- Native headset FOV coverage -------------------------------------------
+//
+// The compositor crops the submitted image to the headset's own per-eye
+// frustum (vr.cpp's native-FOV path), but it can only do that when the raster
+// the game produced CONTAINS that frustum. Halo 4's stock cover is narrower
+// than several headsets - measured on PSVR2, stock 50.46/41.14 deg against a
+// native 61.5/53.0 deg - so the containment test fails and the whole slice is
+// submitted at the cover FOV instead, which is geometrically wrong.
+//
+// Nothing here is headset-specific: the required cover is derived from
+// whatever XrFovf the runtime reports for this eye, exactly as Halo 3 does at
+// game.cpp's immersiveTangentX/Y.
+
+// The symmetric cover that contains one asymmetric native frustum.
+// fov is left/right/up/down in radians, OpenXR sign convention.
+inline bool Halo4RequiredCoverTangents(
+    const float fov[4], float& tangentX, float& tangentY) noexcept
+{
+    if (!fov)
+        return false;
+    for (int i = 0; i < 4; ++i)
+        if (!std::isfinite(fov[i]))
+            return false;
+    if (!(fov[0] < 0.0f && fov[1] > 0.0f && fov[2] > 0.0f && fov[3] < 0.0f))
+        return false;
+    const float halfX = -fov[0] > fov[1] ? -fov[0] : fov[1];
+    const float halfY = fov[2] > -fov[3] ? fov[2] : -fov[3];
+    constexpr float kMaximumHalfAngle = 1.5533f; // ~89 degrees
+    if (halfX <= 0.0f || halfX >= kMaximumHalfAngle || halfY <= 0.0f ||
+        halfY >= kMaximumHalfAngle)
+    {
+        return false;
+    }
+    tangentX = std::tan(halfX);
+    tangentY = std::tan(halfY);
+    return std::isfinite(tangentX) && std::isfinite(tangentY) &&
+        tangentX > 0.0f && tangentY > 0.0f;
+}
+
+// Does a symmetric cover contain the native frustum on all four edges? This is
+// the same test vr.cpp applies before it crops, reproduced here so the camera
+// core can refuse to publish a cover it already knows will be rejected.
+inline bool Halo4CoverContainsFov(
+    float coverHalfX, float coverHalfY, const float fov[4]) noexcept
+{
+    float requiredX = 0.0f;
+    float requiredY = 0.0f;
+    if (!Halo4RequiredCoverTangents(fov, requiredX, requiredY))
+        return false;
+    if (!std::isfinite(coverHalfX) || !std::isfinite(coverHalfY) ||
+        coverHalfX <= 0.0f || coverHalfY <= 0.0f || coverHalfX >= 1.5707f ||
+        coverHalfY >= 1.5707f)
+    {
+        return false;
+    }
+    return std::tan(coverHalfX) >= requiredX && std::tan(coverHalfY) >= requiredY;
+}
+
+// What the camera core has learned about how Halo 4 answers an observer FOV
+// write. Both quantities are MEASURED from the engine's own finished
+// projection rather than assumed:
+//
+//   gain  = builtHalfY / writtenVerticalFov
+//           Retail converter 0x38F094-0x38F0AC copies observer +0x78 to
+//           element +0x28 multiplied by a scale, and the projection builder
+//           treats element +0x28 as a FULL vertical FOV, so
+//           builtHalfY = observer[+0x78] * scale / 2.
+//           The scale is the literal float 0.785 (halo4.dll RVA 0xD9560C),
+//           confirmed live to five figures on two independent values:
+//           1.8295 * 0.785 = 1.43616 against a logged element 1.4361, and
+//           1.5385 * 0.785 = 1.20772 against 1.2077. That makes the expected
+//           gain 0.785/2 = 0.3925, which the C-H4-7 readback corroborates
+//           (0.71805 / 1.8295 = 0.39249).
+//
+//           It is LEARNED rather than hardcoded because 0x38F01A-0x38F05E
+//           selects that scale through a branch: a global at RVA 0x4969640
+//           (converted degrees->radians, fallback 78.000 deg) compared against
+//           zero picks either 0.785 or 0.168214291. If that branch ever flips,
+//           a hardcoded constant would silently distort the world by 4.7x,
+//           while a learned gain corrects itself on the next frame.
+//   ratio = tan(builtHalfX) / tan(builtHalfY)
+//           Halo 4 derives the horizontal extent itself, so the vertical write
+//           is the only handle we have on both axes.
+struct Halo4FovCalibration
+{
+    // 0.785/2, the proven retail mapping. Never actually consumed: solving
+    // requires `learned`, which only a real readback can set. It exists so the
+    // struct has a meaningful value rather than a misleading zero.
+    float gain = 0.3925f;
+    float ratio = 0.0f;  // 0 until the first projection has been read back
+    bool learned = false;
+};
+
+// Fold one measured projection into the calibration.
+inline bool Halo4LearnFovCalibration(
+    float writtenVerticalFov, float builtHalfX, float builtHalfY,
+    Halo4FovCalibration& calibration) noexcept
+{
+    if (!std::isfinite(writtenVerticalFov) || !std::isfinite(builtHalfX) ||
+        !std::isfinite(builtHalfY) || writtenVerticalFov <= 1.0e-4f ||
+        builtHalfX <= 1.0e-4f || builtHalfY <= 1.0e-4f ||
+        builtHalfX >= 1.5707f || builtHalfY >= 1.5707f)
+    {
+        return false;
+    }
+    const float gain = builtHalfY / writtenVerticalFov;
+    const float tangentX = std::tan(builtHalfX);
+    const float tangentY = std::tan(builtHalfY);
+    if (!std::isfinite(gain) || gain <= 1.0e-3f || gain >= 10.0f ||
+        !std::isfinite(tangentX) || !std::isfinite(tangentY) ||
+        tangentY <= 1.0e-4f)
+    {
+        return false;
+    }
+    const float ratio = tangentX / tangentY;
+    if (!std::isfinite(ratio) || ratio <= 1.0e-3f || ratio >= 100.0f)
+        return false;
+    calibration.gain = gain;
+    calibration.ratio = ratio;
+    calibration.learned = true;
+    return true;
+}
+
+// Solve the observer +0x78 write that makes the built cover contain this eye's
+// native frustum. Because Halo 4 owns the horizontal extent, the vertical write
+// must also absorb any horizontal shortfall - hence the max() against
+// requiredTangentX / ratio. The margin keeps float rounding from leaving the
+// cover a hair short, which would trip vr.cpp's containment fallback.
+inline bool Halo4SolveCoverVerticalFov(
+    const float fov[4], const Halo4FovCalibration& calibration, float margin,
+    float& verticalFovWrite, float& expectedHalfY) noexcept
+{
+    float requiredX = 0.0f;
+    float requiredY = 0.0f;
+    if (!Halo4RequiredCoverTangents(fov, requiredX, requiredY))
+        return false;
+    if (!calibration.learned || !std::isfinite(calibration.gain) ||
+        !std::isfinite(calibration.ratio) || calibration.gain <= 1.0e-3f ||
+        calibration.ratio <= 1.0e-3f || !std::isfinite(margin) ||
+        margin < 1.0f || margin > 1.5f)
+    {
+        return false;
+    }
+    float targetTangentY = requiredY;
+    const float tangentYForX = requiredX / calibration.ratio;
+    if (tangentYForX > targetTangentY)
+        targetTangentY = tangentYForX;
+    targetTangentY *= margin;
+    if (!std::isfinite(targetTangentY) || targetTangentY <= 0.0f)
+        return false;
+    expectedHalfY = std::atan(targetTangentY);
+    if (!std::isfinite(expectedHalfY) || expectedHalfY <= 0.0f ||
+        expectedHalfY >= 1.5533f)
+    {
+        return false;
+    }
+    verticalFovWrite = expectedHalfY / calibration.gain;
+    // Refuse a write the engine could not plausibly have produced. A full
+    // vertical FOV at or past 180 degrees is not a camera.
+    return std::isfinite(verticalFovWrite) && verticalFovWrite > 1.0e-3f &&
+        verticalFovWrite < 3.14159265f;
+}
+
+// --- Head pose and 6DOF -----------------------------------------------------
+//
+// Halo 4 keeps its own look direction here, unlike Halo 3's ApplyHeadLook which
+// REPLACES forward/up outright. Halo 3 can do that because it also owns the
+// turn stick (ApplyVrTurn feeds g_gameYawRef); Halo 4's turn/look ownership is
+// a separate later milestone, so replacing the basis would leave the player
+// unable to turn at all. Applying the headset as a DELTA on top of the engine's
+// camera keeps the accepted C-H4-1 gamepad behaviour working and still gives
+// real head tracking: the world stays fixed while you look around it.
+//
+// The result is the same player experience by AGENTS.md's definition of parity,
+// reached a different way, which that document explicitly permits.
+
+// The room-space head quantities Halo 3's ApplyHeadLook derives, extracted so
+// both the yaw/pitch/roll delta and the 6DOF decomposition can share them.
+struct Halo4HeadOrientation
+{
+    float forward[3]{};  // room-space head forward (OpenXR axes)
+    float yaw = 0.0f;
+    float pitch = 0.0f;
+    float roll = 0.0f;
+};
+
+// Identical decomposition to Halo 3's ApplyHeadLook (game.cpp), including the
+// horizon-referenced roll that keeps the world fixed when you tilt your head.
+inline bool Halo4DecodeHeadOrientation(
+    const float quaternion[4], Halo4HeadOrientation& out) noexcept
+{
+    float q[4];
+    if (!Halo4NormalizeQuaternion(quaternion, q))
+        return false;
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    const float hfx = -2.0f * (w * y + x * z);
+    const float hfy = 2.0f * (w * x - y * z);
+    const float hfz = -(1.0f - 2.0f * (x * x + y * y));
+    out.forward[0] = hfx;
+    out.forward[1] = hfy;
+    out.forward[2] = hfz;
+    out.yaw = std::atan2(hfx, -hfz);
+    const float clampedPitch = hfy < -1.0f ? -1.0f : (hfy > 1.0f ? 1.0f : hfy);
+    out.pitch = std::asin(clampedPitch);
+
+    const float hux = 2.0f * (x * y - w * z);
+    const float huy = 1.0f - 2.0f * (x * x + z * z);
+    const float huz = 2.0f * (y * z + w * x);
+    float hrx = -hfz;
+    float hrz = hfx;
+    float hrLength = std::sqrt(hrx * hrx + hrz * hrz);
+    if (hrLength < 1.0e-4f)
+        hrLength = 1.0e-4f;
+    hrx /= hrLength;
+    hrz /= hrLength;
+    const float hnux = -hfy * hrz;
+    const float hnuy = hrLength;
+    const float hnuz = hfy * hrx;
+    out.roll = std::atan2(
+        hux * hrx + huz * hrz, hux * hnux + huy * hnuy + huz * hnuz);
+    return std::isfinite(out.yaw) && std::isfinite(out.pitch) &&
+        std::isfinite(out.roll);
+}
+
+// Everything the head transform consumes, so the detour passes state instead of
+// reading globals inside the math and core_tests can drive it directly.
+struct Halo4HeadPoseInput
+{
+    float quaternion[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    float position[3]{};        // room space, meters
+    float headYawReference = 0.0f;
+    float headPositionReference[3]{};
+    float yawSign = -1.0f;
+    float pitchSign = 1.0f;
+    float pitchTrim = 0.0f;     // radians
+    float worldScale = 0.33f;   // game units per meter
+    bool positional = true;     // 6DOF on
+};
+
+// Rotate the engine's mono camera by the headset's orientation and displace it
+// by the headset's room-space movement.
+//
+// Basis, PROVEN for Halo 4 rather than inherited from Halo 3: the retail
+// projection builder at 0x38F658 computes right = forward x up from element
+// +0x0C/+0x18, normalises it, and writes (right, up, -forward) as an
+// orthonormal view basis, so Halo 4 is right-handed with right = forward x up.
+// The live C-H4-6 camera dump reads up(-0.000 0.000 1.000), i.e. Z-up, and its
+// recentre logged -77.2 deg against fwd(0.222 -0.975 0.000), which is exactly
+// atan2(fwd.y, fwd.x) - the Blam yaw convention this function assumes.
+//
+// Both forward AND up are rotated at every step, deliberately. C-H4-6 honoured
+// Halo 3's g_writeUp (F7) toggle and left `up` at the engine's value while
+// replacing `forward`; because Halo4ValidateCameraBasis rejects a basis whose
+// |forward . up| reaches 0.05, that made every frame past ~2.87 degrees of head
+// pitch fail validation. Halo 3 has no such validator and so never showed the
+// fault. Rotating the pair together keeps the basis orthonormal by
+// construction, so g_writeUp is intentionally not consulted here.
+inline bool Halo4ApplyHeadPose(
+    Halo4CameraBasis& camera, const Halo4HeadPoseInput& input) noexcept
+{
+    if (!Halo4ValidateCameraBasis(camera))
+        return false;
+    Halo4HeadOrientation head{};
+    if (!Halo4DecodeHeadOrientation(input.quaternion, head))
+        return false;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        if (!std::isfinite(input.position[axis]) ||
+            !std::isfinite(input.headPositionReference[axis]))
+        {
+            return false;
+        }
+    }
+    if (!std::isfinite(input.headYawReference) ||
+        !std::isfinite(input.yawSign) || !std::isfinite(input.pitchSign) ||
+        !std::isfinite(input.pitchTrim) || !std::isfinite(input.worldScale) ||
+        input.worldScale <= 0.0f)
+    {
+        return false;
+    }
+
+    // Yaw is measured from the recenter reference so your physical facing maps
+    // to the engine's own heading. Pitch and roll need no reference: a level
+    // head is zero, which leaves the engine's own pitch untouched.
+    const float deltaYaw =
+        input.yawSign * Halo4WrapPi(head.yaw - input.headYawReference);
+    const float deltaPitch = input.pitchSign * head.pitch + input.pitchTrim;
+    const float deltaRoll = head.roll;
+    if (!std::isfinite(deltaYaw) || !std::isfinite(deltaPitch) ||
+        !std::isfinite(deltaRoll))
+    {
+        return false;
+    }
+
+    // Yaw about world up, then pitch about the resulting right, then roll about
+    // the resulting forward - the standard intrinsic head composition, applied
+    // on top of whatever the engine is already looking at.
+    constexpr float kWorldUp[3] = {0.0f, 0.0f, 1.0f};
+    Halo4RotateAboutAxis(
+        camera.forward, kWorldUp, std::cos(deltaYaw), std::sin(deltaYaw));
+    Halo4RotateAboutAxis(
+        camera.up, kWorldUp, std::cos(deltaYaw), std::sin(deltaYaw));
+
+    float right[3] = {
+        camera.forward[1] * camera.up[2] - camera.forward[2] * camera.up[1],
+        camera.forward[2] * camera.up[0] - camera.forward[0] * camera.up[2],
+        camera.forward[0] * camera.up[1] - camera.forward[1] * camera.up[0]};
+    float rightLength = std::sqrt(
+        right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+    if (!std::isfinite(rightLength) || rightLength < 1.0e-4f)
+        return false;
+    for (int axis = 0; axis < 3; ++axis)
+        right[axis] /= rightLength;
+    Halo4RotateAboutAxis(
+        camera.forward, right, std::cos(deltaPitch), std::sin(deltaPitch));
+    Halo4RotateAboutAxis(
+        camera.up, right, std::cos(deltaPitch), std::sin(deltaPitch));
+
+    float forwardAxis[3] = {
+        camera.forward[0], camera.forward[1], camera.forward[2]};
+    float forwardLength = std::sqrt(
+        forwardAxis[0] * forwardAxis[0] + forwardAxis[1] * forwardAxis[1] +
+        forwardAxis[2] * forwardAxis[2]);
+    if (!std::isfinite(forwardLength) || forwardLength < 1.0e-4f)
+        return false;
+    for (int axis = 0; axis < 3; ++axis)
+        forwardAxis[axis] /= forwardLength;
+    Halo4RotateAboutAxis(
+        camera.up, forwardAxis, std::cos(deltaRoll), std::sin(deltaRoll));
+
+    if (!Halo4ValidateCameraBasis(camera))
+        return false;
+
+    if (!input.positional)
+        return true;
+
+    // Leaning. Decompose the room-space move in the head's own horizontal frame
+    // and re-apply it in the game's frame, so it stays correct as you turn.
+    // Same construction and the same +-1.5 world-unit clamp Halo 3 ships.
+    const float dx = input.position[0] - input.headPositionReference[0];
+    const float dy = input.position[1] - input.headPositionReference[1];
+    const float dz = input.position[2] - input.headPositionReference[2];
+    float horizontalLength = std::sqrt(
+        head.forward[0] * head.forward[0] + head.forward[2] * head.forward[2]);
+    if (horizontalLength < 1.0e-4f)
+        horizontalLength = 1.0e-4f;
+    const float headForwardX = head.forward[0] / horizontalLength;
+    const float headForwardZ = head.forward[2] / horizontalLength;
+    const float forwardComponent = dx * headForwardX + dz * headForwardZ;
+    const float rightComponent = dx * (-headForwardZ) + dz * headForwardX;
+
+    // The final camera heading after the rotation above. Halo's horizontal
+    // right is (sin yaw, -cos yaw, 0), which is why the lateral term is
+    // subtracted on Y - the exact mapping Halo 3's accepted 6DOF uses.
+    const float gameYaw = std::atan2(camera.forward[1], camera.forward[0]);
+    const float cosYaw = std::cos(gameYaw);
+    const float sinYaw = std::sin(gameYaw);
+    const float scale = input.worldScale;
+    float offset[3] = {
+        (cosYaw * forwardComponent + sinYaw * rightComponent) * scale,
+        (sinYaw * forwardComponent - cosYaw * rightComponent) * scale,
+        dy * scale};
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        if (!std::isfinite(offset[axis]))
+            return false;
+        if (offset[axis] > 1.5f)
+            offset[axis] = 1.5f;
+        if (offset[axis] < -1.5f)
+            offset[axis] = -1.5f;
+        camera.position[axis] += offset[axis];
+    }
+    return Halo4ValidateCameraBasis(camera);
 }
