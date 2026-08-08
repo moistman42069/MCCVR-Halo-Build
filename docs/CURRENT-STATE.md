@@ -168,9 +168,33 @@ now: C-H4-9 is installed in both editions for a look-pitch headset test, but
 | C-H4-8 `6cf0b76` | **PASSED both of its own log claims, experience REJECTED (2026-08-08):** `geometry TAKING`, 137 pairs/2s, `138 tracked frames`, `reference captured`, `lean 0.006 world units (6DOF ON)`, `276 widened eyes`, `calibration learned`, engine built `61.75/53.31 deg`, `contains headset frustum: YES` - the `M2 WARNING` is gone. Stereo, head tracking, 6DOF and native FOV all work. Rejected for one thing it did not cover: the look stick's vertical axis pitches the engine's camera and C-H4-8 adds head pitch ON TOP of it, so the stick tilts the world away from the player's real horizon. |
 | C-H4-9 `0e450d5` | **PITCH CLAIM PASSED, shot line MISSED (2026-08-08):** "6dof is working and it looks and runs great" - the stick no longer tilts the world, and the log confirms `head pitch ... (ABSOLUTE, headset owns pitch)`, 242 tracked frames/2s, `lean ... = +0.024/+0.010/-0.006 xyz`. The loop's third part missed: "shots don't follow my view", explicitly deprioritised by the user. Cause measured, not guessed - see below. |
 
-| C-H4-10 `140e15d` | **INSTALLED, HEADSET-PENDING:** motion aim, VR turn and rumble. |
+| C-H4-10 `140e15d` | **RAN 2026-08-08, no fault reported.** Log: `aim GRANTED, haptics GRANTED, room scale GRANTED, locomotion head-relative`, `MOTION AIM: the hand steers, the stick turns`. Not explicitly accepted. |
+| C-H4-11 `28a20a7` | **INSTALLED, HEADSET-PENDING:** Halo 4's own first-person gun and arms placed on the controller, with the node format proven from live engine values before anything is written. |
 
-| C-H4-10 installed identity | Value |
+| C-H4-11 installed identity | Value |
+| --- | --- |
+| Source | `28a20a7018bb9858772cb3dc8f84333fb25c2468` (branch `feature/halo4-bringup`) |
+| Package | `out/candidates/28a20a7-halo4-c11-first-person-hands-20260808-161616964Z` |
+| `halo3xr.dll` SHA-256 | `FE9C1AAE44ADB9ECBA33B4F378C954D6ED5DBFF73548B6058D579BAA6876729A` |
+| `halo3xr_launcher.exe` SHA-256 | `5625F9A5782741B705C57F4C9C7628B8135FCE270C9CE815E427125AED5F9444` |
+| Installed editions | Steam and Microsoft Store; package and both installed hashes independently matched |
+| Preserved previous installs | `out/deploy-backups/765d3d7-steam-before-28a20a7-20260808-161617878Z`, `...-store-...` |
+| Offline gates | Release x64 build, `core_tests`, Reach consistency gate - all passing |
+| Acceptance | **Not accepted.** C-H4-1 remains the rollback pointer. |
+
+**What C-H4-11 must show.** `Halo 4 C-H4-11 hands:` should read `node format
+PROVEN from live values, placing`, with placed frames climbing, a weapon slot
+count of 1 or 2, a root node index, and an engine stock node whose `|quat|` is
+about 1.000 with a sane scale. In the headset the gun and arms follow your
+controller instead of your head; `halo4_hands = 0` returns them to stock and
+the three `halo4_hand_*_m` trims nudge the placement.
+
+**If it reads `REFUSED`,** the 0x20-byte node is not `{rotation, translation,
+scale}` and NOTHING was written - the reported `|quat|`, scale and translation
+are then the evidence for what it actually is, and that is the next step rather
+than a failure to work around.
+
+| C-H4-10 identity (superseded) | Value |
 | --- | --- |
 | Source | `140e15dcdba983b02bc99444f707f1ef61492c56` (branch `feature/halo4-bringup`) |
 | Behavior commit | `8395c97`; `8915840` and `140e15d` are manifest/installer fixes only |
