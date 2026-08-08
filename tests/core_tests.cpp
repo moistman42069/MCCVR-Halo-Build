@@ -5841,8 +5841,11 @@ int main()
     }
 
     // ---- C-H4-3: the camera anchors and the per-eye camera math ----
-    Check(kHalo4CameraAnchorCount == 4,
-        "C-H4-3 pins exactly the four E-H4-6 camera anchors");
+    // C-H4-11 adds the first-person node accessor, which is anchored only
+    // to prove the engine TLS index global - it is never hooked.
+    Check(kHalo4CameraAnchorCount == 5,
+        "The four E-H4-6 camera anchors plus C-H4-11's first-person "
+        "accessor");
     for (const Halo4RetailAnchor& anchor : kHalo4CameraAnchors)
     {
         size_t tokenBytes = 0;
@@ -5901,8 +5904,13 @@ int main()
               kHalo4ActiveViewRva,
         "The loop and setup anchors derive the SAME stack element, and the "
         "wrapper anchor derives the active-view global");
-    Check(kHalo4CameraAnchorRipTargets == 3,
-        "Exactly three Halo 4 camera anchors carry rip decodes");
+    Check(kHalo4CameraAnchorRipTargets == 4,
+        "Four Halo 4 anchors carry rip decodes: three camera targets plus "
+        "the engine TLS index the first-person blocks are reached through");
+    Check(kHalo4CameraAnchors[kHalo4CameraAnchorFirstPerson].ripTargetRva ==
+              kHalo4EngineTlsIndexRva,
+        "The first-person anchor derives the engine TLS index global, which "
+        "is what keeps that address out of the shipped constants");
     Check(Halo4CameraLoopTargetsAgree(kHalo4SetupRva, kHalo4WrapperRva) &&
           !Halo4CameraLoopTargetsAgree(kHalo4SetupRva, kHalo4SetupRva) &&
           !Halo4CameraLoopTargetsAgree(0, kHalo4WrapperRva),
@@ -6570,6 +6578,113 @@ int main()
                 "A level head at the reference looks exactly along it, "
                 "whatever the engine's own camera was doing");
         }
+    }
+
+    // ---- C-H4-11: first-person hands ----------------------------------
+    {
+        // The dimensions must reproduce the kit's own allocations, or the
+        // layout being written into is not the one E-H4-15/16 proved.
+        Check(kHalo4FirstPersonOrientationStride * kHalo4FirstPersonMaxWeapons *
+                  kHalo4FirstPersonMaxUsers == 0xF000u,
+            "The orientation dimensions reproduce H4EK's 0xF000 allocation");
+        Check(kHalo4FirstPersonWeaponsUserStride * kHalo4FirstPersonMaxUsers ==
+                  0x17D20u,
+            "The fp-weapons dimensions reproduce H4EK's 0x17D20 allocation");
+        Check(kHalo4FirstPersonMaxNodes == 120,
+            "A first-person node bank holds 120 transforms of 0x20 bytes");
+
+        Halo4FirstPersonNode stock{};
+        stock.rotation[3] = 1.0f;
+        stock.translation[0] = 0.2f;
+        stock.scale = 1.0f;
+        Check(Halo4FirstPersonNodeLooksValid(stock),
+            "A unit quaternion with a sane scale reads as a valid node");
+
+        // The whole point of the live probe: shapes that are NOT
+        // {quat,translation,scale} must be refused, not written over.
+        Halo4FirstPersonNode notANode = stock;
+        notANode.rotation[3] = 37.0f; // a matrix row, or a float that is not a quaternion
+        Check(!Halo4FirstPersonNodeLooksValid(notANode),
+            "A non-unit rotation is refused, so a wrong layout can never be "
+            "written into an engine bone array");
+        Halo4FirstPersonNode absurd = stock;
+        absurd.translation[1] = 5000.0f;
+        Check(!Halo4FirstPersonNodeLooksValid(absurd),
+            "A translation far outside the first-person envelope is refused");
+        Halo4FirstPersonNode broken = stock;
+        broken.scale = std::numeric_limits<float>::quiet_NaN();
+        Check(!Halo4FirstPersonNodeLooksValid(broken),
+            "A non-finite field is refused");
+
+        // Placement: a controller held 30 cm forward of the head must put the
+        // node 30 cm forward in the engine's frame, scaled to world units.
+        Halo4HandPlacementInput input{};
+        input.controllerOffset[2] = -0.30f; // OpenXR forward is -Z
+        input.controllerOrientation[3] = 1.0f;
+        input.worldScale = 0.33f;
+        Halo4FirstPersonNode placed{};
+        Check(Halo4BuildHandNode(input, stock, placed),
+            "A tracked controller produces a valid first-person node");
+        Check(fabsf(placed.translation[0] - 0.30f * 0.33f) < 1.0e-5f,
+            "Reaching forward moves the gun forward along Blam's +X, scaled by "
+            "world_scale");
+        Check(fabsf(placed.translation[1]) < 1.0e-5f &&
+                  fabsf(placed.translation[2]) < 1.0e-5f,
+            "A purely forward reach introduces no lateral or vertical shift");
+        Check(fabsf(placed.scale - stock.scale) < 1.0e-6f,
+            "The engine's own node scale is preserved, never invented");
+
+        // Right and up map onto Blam's -Y (left is +Y) and +Z.
+        Halo4HandPlacementInput right{};
+        right.controllerOffset[0] = 0.25f; // OpenXR +X is right
+        right.controllerOrientation[3] = 1.0f;
+        right.worldScale = 1.0f;
+        Halo4FirstPersonNode placedRight{};
+        Check(Halo4BuildHandNode(right, stock, placedRight) &&
+                  fabsf(placedRight.translation[1] + 0.25f) < 1.0e-5f,
+            "Moving your hand right moves the gun along Blam's -Y");
+        Halo4HandPlacementInput up{};
+        up.controllerOffset[1] = 0.25f;
+        up.controllerOrientation[3] = 1.0f;
+        up.worldScale = 1.0f;
+        Halo4FirstPersonNode placedUp{};
+        Check(Halo4BuildHandNode(up, stock, placedUp) &&
+                  fabsf(placedUp.translation[2] - 0.25f) < 1.0e-5f,
+            "Raising your hand raises the gun along Blam's +Z");
+
+        // Mirroring is a left-handed reflection across the forward axis.
+        Halo4HandPlacementInput mirrored = right;
+        mirrored.mirrored = true;
+        Halo4FirstPersonNode placedMirror{};
+        Check(Halo4BuildHandNode(mirrored, stock, placedMirror) &&
+                  fabsf(placedMirror.translation[1] - 0.25f) < 1.0e-5f,
+            "Left-handed mirrors the lateral placement");
+
+        // Trims are applied in the controller's frame, before scaling.
+        Halo4HandPlacementInput trimmed{};
+        trimmed.controllerOrientation[3] = 1.0f;
+        trimmed.worldScale = 1.0f;
+        trimmed.forwardTrim = 0.1f;
+        Halo4FirstPersonNode placedTrim{};
+        Check(Halo4BuildHandNode(trimmed, stock, placedTrim) &&
+                  fabsf(placedTrim.translation[0] - 0.1f) < 1.0e-5f,
+            "The forward trim moves the gun even with the controller at the "
+            "head, so the config can tune an authored placement");
+
+        // The output quaternion must stay unit-length, or the engine gets a
+        // bone it cannot use.
+        const float length = sqrtf(
+            placed.rotation[0] * placed.rotation[0] +
+            placed.rotation[1] * placed.rotation[1] +
+            placed.rotation[2] * placed.rotation[2] +
+            placed.rotation[3] * placed.rotation[3]);
+        Check(fabsf(length - 1.0f) < 1.0e-4f,
+            "The placed rotation is renormalised before it reaches the engine");
+
+        // Refusal is total: a bad stock node yields no write at all.
+        Halo4FirstPersonNode fromBad{};
+        Check(!Halo4BuildHandNode(input, notANode, fromBad),
+            "A stock node that failed the format proof produces no placement");
     }
 
     // C-H4-9: the closed loop that keeps Halo 4's own look pitch - and so its

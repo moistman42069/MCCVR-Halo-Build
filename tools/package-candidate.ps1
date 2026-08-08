@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c10-motion-aim-turn-rumble',
+        'halo4-c11-first-person-hands',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-10'
+            id = 'C-H4-11'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'motion-aim-vr-turn-rumble-on-headset-owned-look'
+            behavior = 'first-person-hands-on-controller-with-live-format-proof'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -194,7 +194,7 @@ try {
             # Halo 4's CUI arrives inside the captured scene target, so it is
             # visible without any HUD redirect. User-confirmed 2026-08-08.
             hud = 'native-inside-captured-scene-no-redirect'
-            first_person_hands = $false
+            first_person_hands = $true
             arm_ik = $false
             failure_policy =
                 'pre-claim-stock-post-claim-frame-drop-core-remains-armed'

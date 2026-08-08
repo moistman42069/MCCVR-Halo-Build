@@ -338,6 +338,15 @@ static void Clamp()
         std::clamp(g_config.vehicle_wheel_max_deg, 30.0f, 180.0f);
     g_config.vehicle_wheel_deadzone_deg =
         std::clamp(g_config.vehicle_wheel_deadzone_deg, 0.0f, 30.0f);
+    // Hand trims are deliberately small: they nudge an authored placement, not
+    // relocate the weapon across the room. A wild value here would put the gun
+    // outside the first-person node envelope the engine validates against.
+    g_config.halo4_hand_forward_m =
+        std::clamp(g_config.halo4_hand_forward_m, -0.50f, 0.50f);
+    g_config.halo4_hand_vertical_m =
+        std::clamp(g_config.halo4_hand_vertical_m, -0.50f, 0.50f);
+    g_config.halo4_hand_lateral_m =
+        std::clamp(g_config.halo4_hand_lateral_m, -0.50f, 0.50f);
     g_config.crosshair_distance_m = std::clamp(g_config.crosshair_distance_m, 2.0f, 50.0f);
     g_config.crosshair_size_deg = std::clamp(g_config.crosshair_size_deg, 0.3f, 20.0f);
     // 0 stays 0 (hold one image); every other value is clamped into the range
@@ -577,6 +586,16 @@ void ConfigLoad(const wchar_t* path)
             g_config.vehicle_wheel_max_deg = (float)atof(val);
         else if (!strcmp(key, "vehicle_wheel_deadzone_deg"))
             g_config.vehicle_wheel_deadzone_deg = (float)atof(val);
+        else if (!strcmp(key, "halo4_hands"))
+            g_config.halo4_hands = atoi(val) != 0;
+        else if (!strcmp(key, "halo4_hand_forward_m"))
+            g_config.halo4_hand_forward_m = (float)atof(val);
+        else if (!strcmp(key, "halo4_hand_vertical_m"))
+            g_config.halo4_hand_vertical_m = (float)atof(val);
+        else if (!strcmp(key, "halo4_hand_lateral_m"))
+            g_config.halo4_hand_lateral_m = (float)atof(val);
+        else if (!strcmp(key, "halo4_hands_mirrored"))
+            g_config.halo4_hands_mirrored = atoi(val) != 0;
         else if (!strcmp(key, "crosshair"))
             g_config.crosshair = atoi(val) != 0;
         else if (!strcmp(key, "crosshair_distance_m"))
@@ -935,6 +954,21 @@ void ConfigSave()
     fprintf(f, "#  RETICLE & AIMING\n");
     fprintf(f, "#  Portable aiming preferences; title adapters supply engine offsets.\n");
     fprintf(f, "# -------------------------------------------------------------------\n\n");
+    fprintf(f, "# Halo 4 first-person hands: put the engine's own gun and arms on your\n");
+    fprintf(f, "# controller instead of on your head. Off returns Halo 4 to its stock\n");
+    fprintf(f, "# head-mounted weapon. (default %d)\n", d.halo4_hands);
+    fprintf(f, "halo4_hands = %d\n\n", g_config.halo4_hands);
+    fprintf(f, "# Nudge where the gun sits, in metres, in your controller's own frame.\n");
+    fprintf(f, "# forward pushes it away from you, vertical raises it, lateral moves it\n");
+    fprintf(f, "# toward your right hand. (defaults %.2f/%.2f/%.2f, range -0.50 to 0.50)\n",
+            d.halo4_hand_forward_m, d.halo4_hand_vertical_m,
+            d.halo4_hand_lateral_m);
+    fprintf(f, "halo4_hand_forward_m = %.2f\n", g_config.halo4_hand_forward_m);
+    fprintf(f, "halo4_hand_vertical_m = %.2f\n", g_config.halo4_hand_vertical_m);
+    fprintf(f, "halo4_hand_lateral_m = %.2f\n\n", g_config.halo4_hand_lateral_m);
+    fprintf(f, "# Left-handed: mirror the Halo 4 hand placement. (default %d)\n",
+            d.halo4_hands_mirrored);
+    fprintf(f, "halo4_hands_mirrored = %d\n\n", g_config.halo4_hands_mirrored);
     fprintf(f, "# Floating VR-crosshair smoothing only; bullets stay raw.\n");
     fprintf(f, "# (default %.2f, range 0 to 0.95)\n", d.aim_stabilization);
     fprintf(f, "aim_stabilization = %.2f\n\n", g_config.aim_stabilization);

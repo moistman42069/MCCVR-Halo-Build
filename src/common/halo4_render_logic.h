@@ -215,10 +215,68 @@ inline constexpr uint32_t kHalo4ViewModeOffset = 0x394;
 inline constexpr uint32_t kHalo4ViewOutputUserOffset = 0x39C;
 inline constexpr uint32_t kHalo4ViewFirstWindowFlagOffset = 0x389;
 
+// ===========================================================================
+// E-H4-15/E-H4-16: the first-person weapons and orientations globals.
+//
+// Kit-explained (H4EK halo4_tag_test.exe: the "fp weapons"/"fp orientations"
+// named allocations at 0x931A90 and the bounds-checked accessor at 0x928290)
+// and retail-verified (halo4.dll 0x3C647C allocates the same 0x17D20/0xF000
+// for the same 4 users; 0x3B5360 indexes them). Full derivation in
+// docs/HALO4-SIGNATURE-EVIDENCE.md.
+//
+// This is also the block the E-H4-11 level-re-entry crash dereferences while
+// it is NULL, so every constant here is consumed behind a proof, never
+// assumed to be reachable.
+// ===========================================================================
+
+// The engine's TLS slot index lives in this global; the per-thread block is
+// gs:[0x58][index]. Two independent retail derivations agree on the RVA (the
+// allocator at 0x3C64D9 and the accessor at 0x3B536A), and the anchor below
+// re-proves it from a signature rather than shipping the bare address.
+inline constexpr uint32_t kHalo4EngineTlsIndexRva = 0x1057218;
+// Offsets of the two block pointers inside that per-thread block.
+inline constexpr uint32_t kHalo4TlsFirstPersonWeaponsOffset = 0x6A0;
+inline constexpr uint32_t kHalo4TlsFirstPersonOrientationsOffset = 0x678;
+// fp weapons: 0x17D20 total / 4 users.
+inline constexpr uint32_t kHalo4FirstPersonWeaponsUserStride = 0x5F48;
+// Two weapon sub-records per user (k_first_person_max_weapons = 2, proven by
+// the kit accessor's own `cmp ebx,1 / jbe` bound assert).
+inline constexpr uint32_t kHalo4FirstPersonWeaponStride = 0x2EC8;
+inline constexpr uint32_t kHalo4FirstPersonMaxWeapons = 2;
+inline constexpr uint32_t kHalo4FirstPersonMaxUsers = 4;
+// Per-weapon fields, all relative to the weapon sub-record.
+inline constexpr uint32_t kHalo4FirstPersonWeaponRootNodeOffset = 0x15D4;
+// Per-user record fields.
+inline constexpr uint32_t kHalo4FirstPersonRecordFlagsOffset = 0x00;
+inline constexpr uint32_t kHalo4FirstPersonRecordUnitOffset = 0x04;
+// Retail gates the whole path on `shr eax,1 / test al,1`, i.e. bit 1.
+inline constexpr uint32_t kHalo4FirstPersonRecordActiveFlag = 0x2;
+// fp orientations: 0xF000 total = 0x1E00 x 2 weapons x 4 users, indexed
+// (weapon_slot + user * 2).
+inline constexpr uint32_t kHalo4FirstPersonOrientationStride = 0x1E00;
+inline constexpr uint32_t kHalo4FirstPersonNodeArrayOffset = 0xF00;
+inline constexpr uint32_t kHalo4FirstPersonNodeStride = 0x20;
+// (0x1E00 - 0xF00) / 0x20 = 120, which also bounds
+// MAXIMUM_NODES_PER_FIRST_PERSON_MODEL.
+inline constexpr uint32_t kHalo4FirstPersonMaxNodes =
+    (kHalo4FirstPersonOrientationStride -
+     kHalo4FirstPersonNodeArrayOffset) / kHalo4FirstPersonNodeStride;
+
+static_assert(kHalo4FirstPersonOrientationStride *
+                  kHalo4FirstPersonMaxWeapons * kHalo4FirstPersonMaxUsers ==
+              0xF000,
+    "orientation dimensions must reproduce the kit's 0xF000 allocation");
+static_assert(kHalo4FirstPersonWeaponStride * kHalo4FirstPersonMaxWeapons <
+                  kHalo4FirstPersonWeaponsUserStride,
+    "two weapon sub-records must fit inside one per-user record");
+static_assert(kHalo4FirstPersonMaxNodes == 120,
+    "the node bank is 120 transforms of 0x20 bytes");
+
 inline constexpr size_t kHalo4CameraAnchorLoop = 0;
 inline constexpr size_t kHalo4CameraAnchorSetup = 1;
 inline constexpr size_t kHalo4CameraAnchorWrapper = 2;
 inline constexpr size_t kHalo4CameraAnchorConverter = 3;
+inline constexpr size_t kHalo4CameraAnchorFirstPerson = 4;
 
 // Reuses Halo4RetailAnchor so the cold observation's proven matcher validates
 // this table with no new scanning code.
@@ -251,6 +309,18 @@ inline constexpr Halo4RetailAnchor kHalo4CameraAnchors[] = {
       "F2 0F 10 42 34 F2 0F 11 43 18 8B 42 3C 89 43 20 "
       "F3 0F 10 42 78 F3 0F 11 43 28 F3 0F 10 72 7C F3 0F 11 73 2C",
       kHalo4ConverterCopyRva, 0, 0 },
+    // E-H4-16's first-person node accessor. It is anchored ONLY to prove the
+    // engine TLS index global: its rip displacement must decode to
+    // kHalo4EngineTlsIndexRva, which is the one address the hands path cannot
+    // reach the blocks without. Nothing here is hooked. The pattern runs to the
+    // `imul rbx, r8, 0x5F48` so the fp-weapons per-user stride this file pins
+    // is part of the matched bytes rather than a separate belief, and the whole
+    // 48-byte string was measured to match EXACTLY ONCE over the pinned image.
+    { "first-person-node-accessor",
+      "48 89 5C 24 08 57 48 83 EC 40 44 8B 05 ?? ?? ?? ?? "
+      "65 48 8B 04 25 58 00 00 00 0F 29 74 24 30 0F 28 F2 "
+      "4E 8B 0C C0 4C 63 C1 49 69 D8 48 5F 00 00",
+      0x3B5360, 0x0D, kHalo4EngineTlsIndexRva },
 };
 
 inline constexpr size_t kHalo4CameraAnchorCount =
@@ -1048,6 +1118,137 @@ inline bool Halo4ApplyHeadLean(
         camera.position[axis] += offset[axis];
     }
     return Halo4ValidateCameraBasis(camera);
+}
+
+// ===========================================================================
+// C-H4-11: first-person hands and weapon placement.
+//
+// A first-person node is 0x20 bytes (retail `shl r8, 5` at 0x3B53C7). That is
+// the size of Blam's usual rotation-quaternion + translation + scale node, but
+// SIZE IS NOT PROOF OF LAYOUT - so nothing is written until the engine's own
+// live values have been read back and shown to satisfy that shape. This is the
+// same discipline C-H4-8's FOV calibration used: learn the mapping from the
+// engine, never assume it.
+// ===========================================================================
+
+struct Halo4FirstPersonNode
+{
+    float rotation[4]{0.0f, 0.0f, 0.0f, 1.0f}; // x, y, z, w
+    float translation[3]{};
+    float scale = 1.0f;
+};
+
+static_assert(sizeof(Halo4FirstPersonNode) == 0x20,
+    "a first-person node must be exactly the engine's 0x20-byte stride");
+
+// Does a block of engine bytes actually look like {quaternion, translation,
+// scale}? Every field finite, the quaternion unit-length, the scale positive
+// and sane, and the translation inside a plausible first-person envelope
+// (these are camera-relative world units, so a weapon node sits within a
+// metre or two of the eye, never hundreds).
+inline bool Halo4FirstPersonNodeLooksValid(
+    const Halo4FirstPersonNode& node) noexcept
+{
+    for (int i = 0; i < 4; ++i)
+        if (!std::isfinite(node.rotation[i]))
+            return false;
+    for (int i = 0; i < 3; ++i)
+        if (!std::isfinite(node.translation[i]))
+            return false;
+    if (!std::isfinite(node.scale))
+        return false;
+    const float quaternionLengthSquared =
+        node.rotation[0] * node.rotation[0] +
+        node.rotation[1] * node.rotation[1] +
+        node.rotation[2] * node.rotation[2] +
+        node.rotation[3] * node.rotation[3];
+    if (std::fabs(quaternionLengthSquared - 1.0f) > 0.05f)
+        return false;
+    if (node.scale <= 1.0e-3f || node.scale > 100.0f)
+        return false;
+    const float translationLengthSquared =
+        node.translation[0] * node.translation[0] +
+        node.translation[1] * node.translation[1] +
+        node.translation[2] * node.translation[2];
+    return std::isfinite(translationLengthSquared) &&
+        translationLengthSquared < 100.0f * 100.0f;
+}
+
+// Everything the placement consumes, so the detour passes state instead of
+// reading globals inside the math and core_tests can drive it directly.
+struct Halo4HandPlacementInput
+{
+    // Controller pose relative to the headset, in OpenXR room axes
+    // (+X right, +Y up, -Z forward), metres.
+    float controllerOffset[3]{};
+    float controllerOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    float worldScale = 0.33f;    // game units per metre
+    float forwardTrim = 0.0f;    // config, metres
+    float verticalTrim = 0.0f;
+    float lateralTrim = 0.0f;
+    bool mirrored = false;       // left-handed
+};
+
+// Map the controller's offset-from-head into the engine's first-person node
+// space and build the node the weapon root should carry.
+//
+// The node space is CAMERA-RELATIVE (docs/RE-notes.md records the same for
+// Halo 3: "first-person bones are camera-space positions in world units"), so
+// the controller's room-space offset from the head converts directly once the
+// axes are mapped and the metres scaled. Blam is right-handed Z-up with
+// forward = +X, left = +Y, up = +Z; OpenXR is right-handed Y-up with
+// forward = -Z, right = +X, up = +Y. Hence:
+//
+//     blam.x (forward) = -openxr.z
+//     blam.y (left)    = -openxr.x
+//     blam.z (up)      =  openxr.y
+//
+// The same permutation carries the quaternion's vector part, with the scalar
+// untouched; a handedness-preserving axis permutation is an ordinary basis
+// change, not a conjugation.
+inline bool Halo4BuildHandNode(
+    const Halo4HandPlacementInput& input, const Halo4FirstPersonNode& stock,
+    Halo4FirstPersonNode& out) noexcept
+{
+    if (!Halo4FirstPersonNodeLooksValid(stock))
+        return false;
+    for (int i = 0; i < 3; ++i)
+        if (!std::isfinite(input.controllerOffset[i]))
+            return false;
+    float q[4];
+    if (!Halo4NormalizeQuaternion(input.controllerOrientation, q))
+        return false;
+    if (!std::isfinite(input.worldScale) || input.worldScale <= 0.0f ||
+        !std::isfinite(input.forwardTrim) ||
+        !std::isfinite(input.verticalTrim) ||
+        !std::isfinite(input.lateralTrim))
+    {
+        return false;
+    }
+
+    const float lateralSign = input.mirrored ? -1.0f : 1.0f;
+    const float forward = -input.controllerOffset[2] + input.forwardTrim;
+    const float left =
+        (-input.controllerOffset[0] + input.lateralTrim) * lateralSign;
+    const float up = input.controllerOffset[1] + input.verticalTrim;
+
+    out = stock; // keep the engine's own scale
+    out.translation[0] = forward * input.worldScale;
+    out.translation[1] = left * input.worldScale;
+    out.translation[2] = up * input.worldScale;
+    out.rotation[0] = -q[2];
+    out.rotation[1] = -q[0] * lateralSign;
+    out.rotation[2] = q[1];
+    out.rotation[3] = q[3];
+
+    // Renormalise: the permutation is exact, but the source quaternion came
+    // from a runtime and float drift must never reach an engine bone.
+    float normalised[4];
+    if (!Halo4NormalizeQuaternion(out.rotation, normalised))
+        return false;
+    for (int i = 0; i < 4; ++i)
+        out.rotation[i] = normalised[i];
+    return Halo4FirstPersonNodeLooksValid(out);
 }
 
 // --- C-H4-9: keeping Halo 4's OWN look pitch under the headset ---------------
