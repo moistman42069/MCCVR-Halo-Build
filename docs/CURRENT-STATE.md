@@ -166,7 +166,7 @@ now: C-H4-9 is installed in both editions for a look-pitch headset test, but
 | C-H4-6 `4fc3c84` | **FAILED:** zero completed pairs, visible stall/title bounce, wrong FOV representation, and wrong outer-function return ABI. Behavior reverted by `7d58a68`. |
 | C-H4-7 `dbf1382` | **PASSED its own claim, experience REJECTED (2026-08-08):** 226-243 pairs/2s, `geometry TAKING`, zero drops, distinct eye pixels, 120 fps. The user rejected it for the two things it deliberately excluded - no 6DOF, and an FOV that did not fill the headset. It also exposed a NEW defect: Halo 4's stock cover (50.46/41.14 deg) does not contain PSVR2's frustum (61.5/53.0), so the whole slice was submitted at the wrong FOV (`M2 WARNING`). Evidence preserved at `out/test-runs/dbf1382-halo4-c7-stock-geometry-20260808-0553`. |
 | C-H4-8 `6cf0b76` | **PASSED both of its own log claims, experience REJECTED (2026-08-08):** `geometry TAKING`, 137 pairs/2s, `138 tracked frames`, `reference captured`, `lean 0.006 world units (6DOF ON)`, `276 widened eyes`, `calibration learned`, engine built `61.75/53.31 deg`, `contains headset frustum: YES` - the `M2 WARNING` is gone. Stereo, head tracking, 6DOF and native FOV all work. Rejected for one thing it did not cover: the look stick's vertical axis pitches the engine's camera and C-H4-8 adds head pitch ON TOP of it, so the stick tilts the world away from the player's real horizon. |
-| C-H4-9 `0e450d5` | **INSTALLED, HEADSET-PENDING:** the headset owns look pitch. |
+| C-H4-9 `0e450d5` | **PITCH CLAIM PASSED, shot line MISSED (2026-08-08):** "6dof is working and it looks and runs great" - the stick no longer tilts the world, and the log confirms `head pitch ... (ABSOLUTE, headset owns pitch)`, 242 tracked frames/2s, `lean ... = +0.024/+0.010/-0.006 xyz`. The loop's third part missed: "shots don't follow my view", explicitly deprioritised by the user. Cause measured, not guessed - see below. |
 
 | C-H4-9 installed identity | Value |
 | --- | --- |
@@ -185,7 +185,37 @@ The superseded C-H4-8 bytes were source
 `out/candidates/6cf0b76-halo4-c8-headtracking-fov-20260808-114408358Z`. Its run
 is the reference log for everything C-H4-9 must not regress.
 
-**What C-H4-9 must show in the headset.** One claim, on its own log line:
+**C-H4-9 RESULT, 2026-08-08 (Steam, SteamVR/OpenXR 2.17.6, PSVR2, 120 Hz).**
+The user's words: *"shots don't follow my view but that doesn't matter, 6dof is
+working and it looks and runs great."* Evidence preserved at
+`out/test-runs/0e450d5-halo4-c9-look-pitch-steam-psvr2-20260808-0741`
+(log SHA-256 `688B06CE1CA05552763FAFEE5669BE4DF4235C9FA526898EC97C5DC15B27862A`).
+
+- **The pitch/orientation claim PASSED.** `head pitch ... (ABSOLUTE, headset
+  owns pitch)`, 242 tracked frames per 2 s, `lean 0.027 world units =
+  +0.020/+0.017/-0.006 xyz` - 6DOF confirmed moving on all three axes
+  separately, which the old magnitude-only line could not show. The stick no
+  longer tilts the world.
+- **The shot-line half MISSED**, and the log names the mechanism. The loop runs
+  and does converge - it learned `direction +1`, and mean |error| over the 64
+  reported windows is 1.79 deg - but `min step` latches at **2.758 deg** for 39
+  of those 64 windows, which sets the rest band to enter 1.65 deg / exit 4.14
+  deg. The gun therefore parks up to ~1.7 deg off the view and does not
+  re-engage until 4.1 deg; at 20 m that is 0.6-1.4 m of miss, with no crosshair
+  drawn to make it visible. Two windows exceeded 8 deg (max 20.8).
+- **Why `min step` is wrong, measured rather than theorised.** The window shows
+  1354 commanded + 96 parked polls in 2 s = ~725 XInput polls per second against
+  a 120 Hz publication, so MCC polls the pad about six times per rendered frame
+  while the engine pitch is republished once. `AimServoObserve` therefore sees
+  five zero-steps and one whole-frame step instead of one per-poll step, and its
+  deliberate rise-immediately/decay-slowly rule latches the lump. The observer
+  must be driven by the publication serial, not by the poll.
+
+The shot line is deferred by explicit user choice, not closed. It belongs with
+controller aim (C-H4-12), where the reticle makes the error visible; fixing the
+sampling without a crosshair would be tuning a number nobody can see.
+
+**What C-H4-9 had to show in the headset.** One claim, on its own log line:
 
 1. **Your head owns up and down.** Standing with your head level, the horizon is
    level, whatever the look stick has been doing. Pushing the stick up or down

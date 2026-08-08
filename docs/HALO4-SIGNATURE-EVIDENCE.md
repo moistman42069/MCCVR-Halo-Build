@@ -1062,12 +1062,44 @@ Blam's ten-foot world unit, `0.33` over-scales head motion and IPD by 0.58%.
   **absent**, replaced by `M2: submitting native per-eye FOV; ... cover
   61.5/53.0 deg` on this headset.
 
-### C-H4-9 — the headset owns Halo 4's look pitch (OFFLINE-PASS 2026-08-08; headset-PENDING)
+### C-H4-9 — the headset owns Halo 4's look pitch (PITCH PASSED, shot line MISSED 2026-08-08)
 
 Source `0e450d504ef2f37971281fc756f67ae55676e498`, `halo3xr.dll` SHA-256
 `33FC9E41612D8AC1A92F4CC1A92E26DFA9BB5B3E4AB5DAA67F33F5C5A31D3579`, package
 `out/candidates/0e450d5-halo4-c9-headset-owns-pitch-20260808-121246432Z`,
 installed and hash-verified in both editions.
+
+**Result: Steam, SteamVR/OpenXR 2.17.6, PSVR2, 120 Hz.** *"shots don't follow my
+view but that doesn't matter, 6dof is working and it looks and runs great."*
+Evidence preserved at
+`out/test-runs/0e450d5-halo4-c9-look-pitch-steam-psvr2-20260808-0741`, log
+SHA-256 `688B06CE1CA05552763FAFEE5669BE4DF4235C9FA526898EC97C5DC15B27862A`.
+
+Parts 1 and 2 PASSED: `head pitch ... (ABSOLUTE, headset owns pitch)`, 242
+tracked frames per 2 s, `lean 0.027 world units = +0.020/+0.017/-0.006 xyz`.
+
+**Part 3 (the closed loop) MISSED, with the mechanism measured.** The loop is
+alive and converging - `learned direction +1`, mean |error| 1.79 deg across 64
+reported windows - but `min step` latches at **2.758 deg** in 39 of them, which
+sets the rest band to enter 1.65 deg / exit 4.14 deg. The gun parks up to ~1.7
+deg off the view and re-engages only past 4.1 deg; at 20 m that is 0.6-1.4 m,
+invisible without a crosshair. Max window error 20.8 deg.
+
+**E-H4-9: the sampling rate mismatch, from the log's own counters.** One window
+reports `1354 commanded / 96 parked polls` in 2 s = **~725 XInput polls per
+second against a 120 Hz publication**, i.e. MCC polls the pad about six times
+per rendered frame while `Halo4StereoTransaction` republishes the engine pitch
+once. `AimServoObserve` consequently sees five zero-steps and one whole-frame
+step where it expects one step per command, and its deliberate
+rise-immediately/decay-slowly rule (`step > minStep ? step : minStep*0.99 +
+step*0.01`) latches that lump and holds it. **The fix is to drive the observer
+from the publication serial rather than from the poll** - observe once per new
+serial, and hold the previous command across the polls that share one frame.
+The same hazard applies to any future Halo 4 loop actuated through XInput.
+
+Deferred by explicit user choice to C-H4-12, where a drawn reticle makes the
+residual error visible; correcting the sampling with nothing on screen to
+measure against would be tuning a number nobody can see.
 
 **C-H4-8 PASSED both of its own log claims and was rejected on one experience
 defect.** Its preserved run reads `geometry TAKING`, 137 completed pairs/2s,
