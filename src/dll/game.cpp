@@ -29637,7 +29637,9 @@ namespace
     // unrelated bones - letting them write the probe made the measured arm
     // links an average of the real arms and a weapon, which reads as
     // "bone lengths that change every window" and is deeply misleading.
-    Halo4VrikStage Halo4ClassifyStormArms(const BoneMatrix* nodes, bool publish)
+    Halo4VrikStage Halo4ClassifyStormArms(const BoneMatrix* nodes,
+                                          const BoneMatrix& vrRoot,
+                                          bool publish)
     {
         const int indices[] = {
             kHalo4RightShoulderNode,kHalo4RightElbowNode,kHalo4RightHandNode,
@@ -29722,10 +29724,18 @@ namespace
         }
         if (!Halo4StormLinkLengthsMatch(ru,rl,lu,ll))
             return Halo4VrikStage::LinkFailed;
-        if (!Halo4StormSideOrderMatches(
-                nodes[kHalo4RightShoulderNode].translation[1],
-                nodes[kHalo4LeftShoulderNode].translation[1]))
-            return Halo4VrikStage::SideFailed;
+        // Side ordering against the VR camera's own LEFT axis. Comparing a raw
+        // world component would follow the player's heading and pass for only
+        // about half of all facings.
+        float separation[3];
+        for (int i=0;i<3;++i)
+            separation[i]=nodes[kHalo4LeftShoulderNode].translation[i]-
+                          nodes[kHalo4RightShoulderNode].translation[i];
+        const float towardLeft=
+            vrRoot.rotation[3]*separation[0]+
+            vrRoot.rotation[4]*separation[1]+
+            vrRoot.rotation[5]*separation[2];
+        if (!(towardLeft>0.0f)) return Halo4VrikStage::SideFailed;
         return Halo4VrikStage::Solved;
     }
 
@@ -29846,17 +29856,48 @@ namespace
     }
 
     bool Halo4SolveArm(BoneMatrix* nodes, bool left, const BoneMatrix& desired,
-                       BoneMatrix* outHandDelta)
+                       const BoneMatrix& vrRoot, BoneMatrix* outHandDelta)
     {
         const int shoulder=left?kHalo4LeftShoulderNode:kHalo4RightShoulderNode;
         const int elbow=left?kHalo4LeftElbowNode:kHalo4RightElbowNode;
         const int hand=left?kHalo4LeftHandNode:kHalo4RightHandNode;
         const float upper=Halo4VrikDistance(nodes[shoulder],nodes[elbow]);
         const float lower=Halo4VrikDistance(nodes[elbow],nodes[hand]);
-        const float* pole=left?kHalo4LeftPoleDirection:kHalo4RightPoleDirection;
+        // The authored v4 poles are directions in the MODEL's frame. The solve
+        // runs in world space, so they have to be carried there by the VR
+        // camera basis - an unrotated pole would swing the elbows as the player
+        // turned.
+        const float* authoredPole=
+            left?kHalo4LeftPoleDirection:kHalo4RightPoleDirection;
+        float pole[3];
+        for (int r=0;r<3;++r)
+            pole[r]=vrRoot.rotation[r]*authoredPole[0]+
+                    vrRoot.rotation[3+r]*authoredPole[1]+
+                    vrRoot.rotation[6+r]*authoredPole[2];
+        // FULL EXTENSION, exactly as the accepted Halo 3 solve does it: when
+        // the controller is past the arm's natural reach the two-bone solver
+        // clamps to a straight chain that stops SHORT, and the hand visibly
+        // detaches from the forearm. Stretch both links so the arm always
+        // reaches, capped so it never goes rubbery.
+        float solveUpper=upper,solveLower=lower;
+        {
+            const float reach=upper+lower;
+            const float span=sqrtf(
+                (desired.translation[0]-nodes[shoulder].translation[0])*
+                (desired.translation[0]-nodes[shoulder].translation[0])+
+                (desired.translation[1]-nodes[shoulder].translation[1])*
+                (desired.translation[1]-nodes[shoulder].translation[1])+
+                (desired.translation[2]-nodes[shoulder].translation[2])*
+                (desired.translation[2]-nodes[shoulder].translation[2]));
+            if (reach>1.0e-4f && span>reach)
+            {
+                const float stretch=fminf(span/reach,1.8f);
+                solveUpper*=stretch; solveLower*=stretch;
+            }
+        }
         float solvedElbow[3];
         if (!IK_SolveTwoBone(nodes[shoulder].translation,desired.translation,
-                             upper,lower,pole,solvedElbow)) return false;
+                             solveUpper,solveLower,pole,solvedElbow)) return false;
         float oldUpper[3],newUpper[3];
         for(int i=0;i<3;++i){oldUpper[i]=nodes[elbow].translation[i]-nodes[shoulder].translation[i];
                              newUpper[i]=solvedElbow[i]-nodes[shoulder].translation[i];}
@@ -29912,30 +29953,26 @@ namespace
                 sizeof(BoneMatrix)*kHalo4FirstPersonBankTransforms))
             return Halo4VrikStage::CopyFailed;
 
-        // E-H4-21d: this bank is WORLD-ABSOLUTE. The filler builds every entry
-        // as `root o object_node_matrix`, and root's translation is the
-        // first-person camera's own world position, so a node translation is
-        // the player's world coordinate plus a small local offset.
+        // THE WHOLE SOLVE RUNS IN WORLD SPACE, exactly as the accepted Halo 3
+        // one does. This bank is already world-absolute, and the only thing
+        // needed to place a head-relative controller in it is the VR camera.
         //
-        // Every authored quantity below - the bind link envelope, the side
-        // ordering, the v4 poles, and the head-relative hand target - is
-        // expressed in the MODEL's frame. Recover that frame from the model
-        // root once, solve entirely inside it, and put the result back. Node 0
-        // is `b_pedestal`, the H4EK tag's parentless root at the model origin,
-        // so this composes to exactly the frame the authoring was done in.
-        const BoneMatrix anchor=solved[kHalo4FirstPersonRootNode];
-        BoneMatrix inverseAnchor{};
-        if (!InvertBoneMatrix(anchor,inverseAnchor))
+        // C-H4-17 instead lifted the bank into node 0's frame first. That was
+        // wrong twice over: for the body fill node 0 is the PLAYER BIPED's
+        // frame - origin at the biped, upright, heading-only - while every
+        // authored quantity here (the controller offset, the v4 poles, the
+        // attachment offsets) is expressed about the CAMERA. Solving in one
+        // frame and composing back in the other rotates the whole assembly by
+        // the mismatch between them, which is why the gun's orientation was
+        // wrong and why leaning forward and back moved nothing.
+        //
+        // There is no lift and no put-back now. World in, world out.
+        BoneMatrix vrRoot{};
+        if (!Halo4LoadCenterRoot(1.0f,vrRoot))
             return Halo4VrikStage::AnchorFailed;
-        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
-        {
-            BoneMatrix local{};
-            if (!ComposeBoneMatrices(inverseAnchor,solved[i],local))
-                return Halo4VrikStage::AnchorFailed;
-            solved[i]=local;
-        }
 
-        const Halo4VrikStage classified=Halo4ClassifyStormArms(solved,bodyFill);
+        const Halo4VrikStage classified=
+            Halo4ClassifyStormArms(solved,vrRoot,bodyFill);
         if (classified!=Halo4VrikStage::Solved) return classified;
 
         // Kept before the solve so the weapon records can be carried by the
@@ -29945,17 +29982,24 @@ namespace
         float headQuaternion[4],headPosition[3];
         if (!VR_GetHeadPose(headQuaternion,headPosition))
             return Halo4VrikStage::HeadPoseFailed;
-        BoneMatrix rightTarget{},leftTarget{};
+        // Halo4BuildTrackedHandTarget produces the hand about the CAMERA, in
+        // Blam forward/left/up. Carrying it through the VR camera root turns it
+        // into the world pose the world-space solve needs, and it is the same
+        // root the eyes are rendered from, so what the player reaches for is
+        // where the hand lands.
+        BoneMatrix rightLocal{},leftLocal{},rightTarget{},leftTarget{};
         if (!Halo4BuildTrackedHandTarget(false,headQuaternion,headPosition,
-                                         solved[kHalo4RightHandNode],rightTarget))
+                                         solved[kHalo4RightHandNode],rightLocal) ||
+            !ComposeBoneMatrices(vrRoot,rightLocal,rightTarget))
             return Halo4VrikStage::RightPoseFailed;
         if (!Halo4BuildTrackedHandTarget(true,headQuaternion,headPosition,
-                                         solved[kHalo4LeftHandNode],leftTarget))
+                                         solved[kHalo4LeftHandNode],leftLocal) ||
+            !ComposeBoneMatrices(vrRoot,leftLocal,leftTarget))
             return Halo4VrikStage::LeftPoseFailed;
         BoneMatrix rightHandDelta{};
-        if (!Halo4SolveArm(solved,false,rightTarget,&rightHandDelta))
+        if (!Halo4SolveArm(solved,false,rightTarget,vrRoot,&rightHandDelta))
             return Halo4VrikStage::RightIkFailed;
-        if (!Halo4SolveArm(solved,true,leftTarget,nullptr))
+        if (!Halo4SolveArm(solved,true,leftTarget,vrRoot,nullptr))
             return Halo4VrikStage::LeftIkFailed;
 
         // C-H4-14 also composed nodes 80..argument7 here, believing they were
@@ -29965,36 +30009,14 @@ namespace
         // manufactured NaNs. Halo 4's weapon is a SEPARATE record, and it is
         // carried below instead.
 
-        // Back out to world - but rooted on the VR CAMERA, not on the frame the
-        // engine handed us. Composing back with `anchor` would put the assembly
-        // straight back on Halo 4's own first-person root, which carries no
-        // 6DOF: the hands and gun would rotate with the head and never
-        // translate when the player leans. This is the same centerRoot fix
-        // Halo 3, ODST and Reach each needed.
-        //
-        // It must also happen BEFORE any scale collapse: ComposeBoneMatrices
-        // refuses a matrix whose scale is under 0.001, and floating hands
-        // deliberately drives arm scales to 0.0001.
-        BoneMatrix outputRoot{};
-        if (!Halo4LoadCenterRoot(anchor.scale,outputRoot))
-            return Halo4VrikStage::AnchorFailed;
-        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
-        {
-            BoneMatrix world{};
-            if (!ComposeBoneMatrices(outputRoot,solved[i],world))
-                return Halo4VrikStage::AnchorFailed;
-            solved[i]=world;
-        }
-
         // Publish the right hand's motion as a WORLD-space rigid transform, so
         // the separate weapon records can be carried by exactly the motion the
-        // hand holding them just made. Both banks are built against the same
-        // camera root, so one world delta is valid for both. Published only
-        // once the palette above is fully built, so the gun can never be moved
-        // by a solve the arms did not actually receive.
-        BoneMatrix worldStock{},inverseWorldStock{},weaponDelta{};
-        if (ComposeBoneMatrices(anchor,stockRightHand,worldStock) &&
-            InvertBoneMatrix(worldStock,inverseWorldStock) &&
+        // hand holding them just made. Both banks are world-absolute, so one
+        // world delta is valid for both. Published only once the palette above
+        // is fully built, so the gun can never be moved by a solve the arms did
+        // not actually receive.
+        BoneMatrix inverseWorldStock{},weaponDelta{};
+        if (InvertBoneMatrix(stockRightHand,inverseWorldStock) &&
             ComposeBoneMatrices(solved[kHalo4RightHandNode],inverseWorldStock,
                                 weaponDelta))
         {

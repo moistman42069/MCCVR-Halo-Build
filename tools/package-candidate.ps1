@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c17-center-vr-root',
+        'halo4-c18-world-space-solve',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-17'
+            id = 'C-H4-18'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'first-person-palette-rooted-on-the-center-vr-camera-so-hands-and-gun-translate-in-6dof'
+            behavior = 'halo3-style-world-space-arm-solve-against-the-center-vr-camera-with-authored-poles-carried-into-world-and-full-extension-stretch'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
