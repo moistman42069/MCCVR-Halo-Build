@@ -1366,6 +1366,64 @@ values the camera core already measures per frame - the stock half-angles and
 the solved cover half-angles are both in the C-H4-9/C-H4-10 telemetry - so this
 needs no new signature and no new address.
 
+### E-H4-13 — Halo 4's first-person camera/FOV builder, LOCATED 2026-08-08
+
+**This is the "weird layer" the gun and hands live in.** Halo 3's accepted fix
+(game.cpp `FpCameraRebuildHook`, the 2026-07-18 "flat-gun fix") describes the
+construct exactly: the engine renders the first-person layer - gun, arms, HUD -
+through the view's **second camera pair**, rebuilt immediately before each
+first-person draw pass, and that rebuild *"forces the tangents to a fixed
+viewmodel FOV (publishing `render_first_person_fov_scale`)"*. Without the fix
+the layer is drawn identically in both eyes: **a flat mono layer at the wrong
+FOV over a stereo world**. Halo 4 has the same construct, and it is now located.
+
+**Chain, derived offline from the pinned image, no running game needed:**
+
+1. `render_first_person_fov_scale` is a debug-var record at **.data RVA
+   `0xE81210`**, type `6` (float), whose value slot is **RVA `0xE84678`**.
+   Resolvable at runtime by the proven `FindDebugVarFloat` name path - no
+   hardcoded address needs to ship. (`enable_first_person_squish` sits directly
+   beside it at `0xE8467C`, and `kHalo4ViewStackTopRva` `0xE84634` is in the
+   same render-globals block, which corroborates the neighbourhood.)
+2. That slot has **exactly three** code references in `.text`, all inside one
+   function:
+
+       0x34ED15  movss [rip+0xB3595B], xmm0   ; WRITE  -> 0xE84678
+       0x34ED1D  call 0x34F1A8                ; returns a factor in xmm0
+       0x34ED22  movss xmm5, [rip+0xB3594E]   ; READ   <- 0xE84678
+       0x34ED2A  mulss xmm5, xmm0
+       0x34ED2E  movss [rip+0xB35942], xmm5   ; WRITE  -> 0xE84678
+
+   The value it publishes is `constant / clamp(...)` scaled by `0x34F1A8`'s
+   return - i.e. the function *computes and owns* the first-person FOV, which is
+   precisely the role Halo 3's rebuild plays.
+3. Immediately after, `0x34ED36`-`0x34ED6A` sign-extends two words, subtracts
+   them and divides - building an aspect ratio from a viewport rect, the rest of
+   a first-person camera/projection build.
+4. **Function entry: RVA `0x34EC44`** (`mov rax,rsp; mov [rax+8],rbx; ... push
+   rdi; push r14; push r15; sub rsp,0x40`, preceded by `int3` padding at
+   `0x34EC42`).
+5. **Nine call sites**, all in the render driver region: `0x34F0EE`, `0x360C19`,
+   `0x360DAB`, `0x3704EF`, `0x37058F`, `0x376ACE`, `0x376B22`, `0x377D41`,
+   `0x377D87`. Halo 3's homolog has six, in the same shape - one per
+   first-person draw pass.
+
+**Signature caveat, recorded before it wastes a candidate.** The 24-byte
+prologue at `0x34EC44` occurs **17 times** in the image - it is a stock MSVC
+prologue. Any AOB for this function must extend into its distinctive body (the
+`render_first_person_fov_scale` rip-relative stores are the natural
+discriminator) and be measured to match exactly once, exactly as the E-H4-4 and
+E-H4-6 tables were.
+
+**Still to derive before the hands candidate can be written:** where this
+function deposits the first-person camera and its derived/projection block
+(Halo 3: `{view+0x08, view+0x1E8}`), and the shader-constant uploader it feeds
+(Halo 3: `0x2770F0`). Both are inside `0x34EC44`'s body and its callees; neither
+may be guessed. Halo 3's fix is then a direct port: after the engine's own
+rebuild, overwrite the pair with the CURRENT EYE's world camera and derived
+block and re-run the uploader, so the gun and hands render in true world
+perspective with real stereo disparity instead of a crushed mono slab.
+
 ### Forward milestone ladder — one visible claim per candidate
 
 1. **C-H4-7:** stock-projection/exact-serial stereo geometry only.
