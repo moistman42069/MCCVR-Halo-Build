@@ -6682,6 +6682,35 @@ int main()
         Check(!Halo4StormLinkLengthsMatch(0.2100f, 0.2300f, 0.0800f, 0.2000f),
             "Mismatched left/right upper arms are still refused");
 
+        // C-H4-28: the official H4EK meshes contain 82 upper/forearm
+        // cross-weighted vertices per side and 222 right / 235 left
+        // forearm/hand cross-weighted vertices. An over-reach must therefore
+        // extend both links proportionally; assigning all excess translation
+        // to the hand subtree creates the reported torn, badly weighted mesh.
+        Halo4ArmReachPlan naturalReach{};
+        Check(Halo4PlanArmReach(0.20f, 0.30f, 0.45f, naturalReach) &&
+                  fabsf(naturalReach.stretch - 1.0f) < 1.0e-6f &&
+                  fabsf(naturalReach.upperExtension) < 1.0e-6f &&
+                  fabsf(naturalReach.lowerExtension) < 1.0e-6f,
+            "Halo 4 leaves an in-reach authored arm at its stock link lengths");
+        Halo4ArmReachPlan extendedReach{};
+        Check(Halo4PlanArmReach(0.20f, 0.30f, 0.75f, extendedReach) &&
+                  fabsf(extendedReach.stretch - 1.5f) < 1.0e-6f &&
+                  fabsf(extendedReach.upperLength - 0.30f) < 1.0e-6f &&
+                  fabsf(extendedReach.lowerLength - 0.45f) < 1.0e-6f &&
+                  fabsf(extendedReach.upperExtension - 0.10f) < 1.0e-6f &&
+                  fabsf(extendedReach.lowerExtension - 0.15f) < 1.0e-6f,
+            "Halo 4 distributes tracked over-reach across both weighted arm links");
+        Halo4ArmReachPlan boundedReach{};
+        Check(Halo4PlanArmReach(0.20f, 0.30f, 2.0f, boundedReach) &&
+                  fabsf(boundedReach.stretch - 1.8f) < 1.0e-6f,
+            "Halo 4 retains the finite 1.8x arm-stretch safety bound");
+        Halo4ArmReachPlan invalidReach{};
+        Check(!Halo4PlanArmReach(0.0f, 0.30f, 0.4f, invalidReach) &&
+                  !Halo4PlanArmReach(0.20f, 0.30f,
+                      std::numeric_limits<float>::quiet_NaN(), invalidReach),
+            "Halo 4 refuses invalid arm-link or tracked-span inputs");
+
         // The 28 helper/fixup/armour bones between the joints. The shared
         // solver writes only the shoulder, the elbow and the hand mask, so
         // these are carried separately; if the band tables ever drift out of

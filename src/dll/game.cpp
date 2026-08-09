@@ -30133,6 +30133,20 @@ namespace
         return true;
     }
 
+    bool Halo4BuildTranslationDelta(const float from[3], const float to[3],
+                                    BoneMatrix& delta)
+    {
+        delta=BoneMatrix{};
+        delta.scale=1.0f;
+        delta.rotation[0]=delta.rotation[4]=delta.rotation[8]=1.0f;
+        for (int axis=0;axis<3;++axis)
+        {
+            delta.translation[axis]=to[axis]-from[axis];
+            if (!isfinite(delta.translation[axis])) return false;
+        }
+        return true;
+    }
+
     // Title-native two-bone application over the actual Storm subtrees.  The
     // generic analytic elbow point is merely geometry; all axes, poles,
     // attachment orientation and every carried node belong to Halo 4 evidence.
@@ -30153,20 +30167,16 @@ namespace
             pole[row]=bodyRoot.rotation[row]*authoredPole[0]+
                       bodyRoot.rotation[3+row]*authoredPole[1]+
                       bodyRoot.rotation[6+row]*authoredPole[2];
-        float solveUpper=upper,solveLower=lower;
         const float dx=desired.translation[0]-nodes[shoulder].translation[0];
         const float dy=desired.translation[1]-nodes[shoulder].translation[1];
         const float dz=desired.translation[2]-nodes[shoulder].translation[2];
         const float span=sqrtf(dx*dx+dy*dy+dz*dz);
-        if (upper+lower>1.0e-4f && span>upper+lower)
-        {
-            const float stretch=fminf(span/(upper+lower),1.8f);
-            solveUpper*=stretch;
-            solveLower*=stretch;
-        }
+        Halo4ArmReachPlan reach{};
+        if (!Halo4PlanArmReach(upper,lower,span,reach)) return false;
         float solvedElbow[3];
         if (!IK_SolveTwoBone(nodes[shoulder].translation,desired.translation,
-                             solveUpper,solveLower,pole,solvedElbow)) return false;
+                             reach.upperLength,reach.lowerLength,pole,solvedElbow))
+            return false;
         float oldUpper[3],newUpper[3];
         for (int i=0;i<3;++i)
         {
@@ -30180,6 +30190,23 @@ namespace
                                             shoulderDelta)
                  : !Halo4ApplySubtreeDelta(nodes,kHalo4RightShoulderSubtree,
                                             shoulderDelta)) return false;
+
+        // A direction delta is deliberately rigid: it cannot change the
+        // shoulder-to-elbow distance.  The old path stopped here and later
+        // teleported only the hand subtree, concentrating BOTH links' planned
+        // extension across the H4EK tag's 222/235 forearm-hand blended
+        // vertices.  Move the complete elbow subtree to the analytic elbow
+        // endpoint first.  The final hand delta below then contributes only
+        // the lower link's proportional extension, so Halo 4's authored
+        // weights interpolate both segments instead of opening one seam.
+        BoneMatrix upperStretchDelta{};
+        if (!Halo4BuildTranslationDelta(
+                nodes[elbow].translation,solvedElbow,upperStretchDelta) ||
+            (left ? !Halo4ApplySubtreeDelta(
+                        nodes,kHalo4LeftElbowSubtree,upperStretchDelta)
+                  : !Halo4ApplySubtreeDelta(
+                        nodes,kHalo4RightElbowSubtree,upperStretchDelta)))
+            return false;
         float oldLower[3],newLower[3];
         for (int i=0;i<3;++i)
         {

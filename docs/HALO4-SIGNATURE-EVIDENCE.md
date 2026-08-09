@@ -2888,3 +2888,55 @@ record's stock matrices and leaves the camera/OpenXR transaction armed.
 
 C-H4-27 is an offline candidate only until the user confirms it in the
 headset. It does not advance `docs/CURRENT-STATE.md`.
+
+## E-H4-21f / C-H4-28 - preserve Storm's authored cross-weight deformation
+
+The user's last headset result also reported a badly torn/deformed arm mesh
+that looked like incorrect weight painting. Controller/root ownership alone
+does not prove deformation, so C-H4-28 treats this as a separate palette
+contract and rechecks it against the official Halo 4 tools geometry.
+
+**The source indices are correct; the mesh node map does not invalidate them.**
+H4EK `model_skinning` at `halo4_tag_test.exe+0x793D80` first constructs one
+base skin matrix per render-model node. Its loop at `0x793EF0..0x793F4D` walks
+the render-model node count and reads input matrices with a `0x34` stride.
+Only afterward, in the per-region loop at `0x794159..0x7941F8`, does it read
+each selected mesh's byte node map and use that byte as the base-matrix index.
+The official Storm indices 4/16/29 and 5/8/37 are therefore the right input
+slots. No runtime mapping guess was added.
+
+**The official skin weights cross both IK joints.** Re-running
+`tools/halo4_fp_tag.py` over H4EK's exported
+`storm_fp.render_model.xml` (SHA-256
+`047501A9C6811097FC8E6ABBB591EC5BC4610EE441976CAAFED9EEFF6F13591F`)
+and resolving every positive vertex influence through its per-mesh node map
+gives 10,442 vertices across the visible Chief meshes 3, 50, 97 and 98. The
+authored blends include:
+
+- 82 right and 82 left vertices weighted across the upper-arm/forearm
+  subtree boundary;
+- 222 right and 235 left vertices weighted across the forearm/hand subtree
+  boundary.
+
+This proves why the old over-reach application looked like bad weights. It
+asked the analytic solve for proportionally stretched upper and lower lengths,
+but `Halo4BuildDirectionDelta` normalizes both direction vectors and therefore
+applies rotation only. The elbow stayed at the natural upper-arm distance.
+The final hand delta then placed the hand on the controller, concentrating the
+extension planned for *both* links across the forearm/hand blend alone.
+
+**C-H4-28 changes only extended poses.** `Halo4PlanArmReach` retains the
+existing finite 1.8x safety limit and divides extension between upper and lower
+links in their live authored-length ratio. After the shoulder subtree rotates,
+the complete tag-proven elbow subtree is translated onto the analytic elbow
+endpoint. The elbow subtree is then rotated and the complete hand subtree is
+placed on the controller. All helper, fixup, twist, armour and finger nodes
+remain in their official descendant sets. In-reach poses have zero extension
+and retain C-H4-27's transforms byte-for-byte apart from float roundoff. No
+vertex weight, inverse bind, tag, or game file is modified.
+
+Core tests pin the zero-extension path, a 1.5x proportional extension
+(0.20/0.30 links become 0.30/0.45, not 0.20/0.55), the existing 1.8x safety
+bound, and non-finite refusal. Any failed plan or matrix composition passes the
+stock body palette and leaves the Halo 4 camera/OpenXR core armed. C-H4-28 is
+headset-pending and does not advance `docs/CURRENT-STATE.md`.

@@ -312,6 +312,49 @@ inline constexpr float kHalo4RightAttachmentMetres[3] =
     {-0.000000045f, 0.059896708f, -0.000000089f};
 inline constexpr float kHalo4LeftAttachmentMetres[3] =
     {-0.000000007f, 0.059896648f, -0.000000045f};
+
+// H4EK's visible Storm meshes are genuinely blended across both arm joints:
+// the official tag has 82 upper/forearm cross-weighted vertices per side and
+// 222 right / 235 left forearm/hand cross-weighted vertices.  When a tracked
+// hand is outside the animated chain's natural reach, assigning the whole
+// excess to the hand transform makes those authored blends look like broken
+// weight painting.  Split extension between the two links in their authored
+// length ratio.  The runtime then moves the complete elbow and hand subtrees
+// to the two planned endpoints; no vertex weights or inverse binds are changed.
+struct Halo4ArmReachPlan
+{
+    float stretch = 1.0f;
+    float upperLength = 0.0f;
+    float lowerLength = 0.0f;
+    float upperExtension = 0.0f;
+    float lowerExtension = 0.0f;
+};
+
+inline bool Halo4PlanArmReach(float upperLength, float lowerLength,
+    float shoulderToTarget, Halo4ArmReachPlan& out) noexcept
+{
+    if (!std::isfinite(upperLength) || !std::isfinite(lowerLength) ||
+        !std::isfinite(shoulderToTarget) || upperLength <= 1.0e-5f ||
+        lowerLength <= 1.0e-5f || shoulderToTarget < 0.0f)
+        return false;
+    const float naturalReach = upperLength + lowerLength;
+    if (!std::isfinite(naturalReach) || naturalReach <= 1.0e-4f)
+        return false;
+    const float requested = shoulderToTarget > naturalReach
+        ? shoulderToTarget / naturalReach : 1.0f;
+    // Retain the existing 1.8 safety bound. Typical tracked poses are below
+    // it; the bound prevents a corrupt stage-space position from producing an
+    // unbounded skin transform in the final-palette hook.
+    const float stretch = requested < 1.8f ? requested : 1.8f;
+    out.stretch = stretch;
+    out.upperLength = upperLength * stretch;
+    out.lowerLength = lowerLength * stretch;
+    out.upperExtension = out.upperLength - upperLength;
+    out.lowerExtension = out.lowerLength - lowerLength;
+    return std::isfinite(out.upperLength) && std::isfinite(out.lowerLength) &&
+        std::isfinite(out.upperExtension) &&
+        std::isfinite(out.lowerExtension);
+}
 // A Blam skeleton's root is node 0; the assembly hangs off it, so writing it
 // moves the whole gun-and-arms rig rather than one part of it.
 inline constexpr uint32_t kHalo4FirstPersonRootNode = 0;

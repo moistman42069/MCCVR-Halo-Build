@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c27-controller-owned-final-rig',
+        'halo4-c28-weight-safe-controller-rig',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-27'
+            id = 'C-H4-28'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'h4ek-proven-active-eye-root-is-removed-body-is-rebuilt-on-stable-game-yaw-and-both-arms-plus-the-two-preceding-weapon-records-are-driven-only-by-the-exact-prepared-controller-snapshot'
+            behavior = 'c-h4-27-controller-only-ownership-plus-h4ek-weight-safe-proportional-extension-of-the-complete-storm-elbow-and-hand-subtrees'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -276,7 +276,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-27 is an unaccepted headset candidate. H4EK proves the active-view root, 120-matrix record bank, 1/1/0 weapon-weapon-body fill order, and Storm hierarchy. The final rig cancels each active eye root, rebuilds the body on Halo 4s stable gameplay yaw, and derives both hands and the weapon carry only from the exact prepared controller snapshot. C-H4-1 remains the accepted rollback pointer until explicit headset acceptance.'
+        note = 'C-H4-28 is an unaccepted headset candidate. It retains C-H4-27 controller-only ownership. Official H4EK Storm geometry proves 82 upper/forearm cross-weighted vertices per side and 222 right / 235 left forearm/hand cross-weighted vertices; over-reach is now distributed across the complete elbow and hand subtrees instead of concentrating both links extension at the hand seam. C-H4-1 remains the accepted rollback pointer until explicit headset acceptance.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'
