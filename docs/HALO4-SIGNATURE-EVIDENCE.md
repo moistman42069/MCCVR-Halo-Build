@@ -2811,3 +2811,80 @@ original matrix pointer for that palette, the hook is optional and fail-open,
 and neither the camera core nor the OpenXR session is ever disarmed. C-H4-15 is
 an unaccepted headset candidate; this evidence does not advance the
 accepted-build pointer.
+
+## E-H4-21e / C-H4-27 - H4EK-native root ownership and controller-only final rig
+
+**Discovery source is the official Halo 4 Editing Kit, not stripped retail.**
+The pinned `halo4_tag_test.exe` is SHA-256
+`B7468DB9FD160B035C329540EE0B0D47BCF609E1BA6E85AE4F204B70661113A6`.
+Its first-person producer is the function `0x92A1F0..0x92B461`. At
+`0x92A320` it gets the active render view, `0x8740D0` converts that view's
+camera at `+0x14C/+0x158/+0x164` into a 0x34-byte scale/basis/translation
+matrix, and `0x1EAFA0` is the kit matrix composer. The three calls to the bank
+filler `0x929E60` are, in execution order:
+
+- `0x92A5FB`, fill flag 1;
+- `0x92A727`, fill flag 1;
+- `0x92ABCF`, fill flag 0.
+
+The filler stores the flag at record `+0x08`, owns a fixed 120-transform bank
+at `+0xB0`, and composes each source node through the active-view root. The
+official H4EK `storm_fp.render_model` tag independently proves that node 0 is
+the parentless `b_pedestal`, that the body has 80 nodes, and that the arm
+chains and subtrees used by the runtime are the Storm chains documented in
+E-H4-21b.
+
+**Retail is verification only.** The pinned Steam retail module is SHA-256
+`7C53E7D5BC9848545A1B70E2768242479336FBA1B7630D7AB955F7FD0C34FA84`.
+Its homologous producer is `0x3B1B4C..0x3B2925`: `0x3B1C05..0x3B1C28`
+selects the active camera and calls camera-to-matrix `0x3417E0`; the matching
+filler is `0x3B9564`; its calls at `0x3B1E15`, `0x3B1F1D`, and `0x3B23AD`
+have the same 1, 1, 0 flag order. H4EK final skinning call `0x8B24EA` is the
+semantic homolog of retail `0x36F3C4`, the already pinned optional hook. This
+confirms both the hook and the producer/root contract without deriving any
+Halo 4 binding from another title.
+
+**The rejected ownership was wrong in two independently checkable ways.**
+
+1. C-H4-25 multiplied the raw controller orientation by the pre-HMD engine
+   camera basis. C-H4-10 already steers that engine camera toward the same
+   controller ray. Controller yaw was therefore applied once by Halo 4 and a
+   second time by the rig. The current HMD is not needed to fix that; it must
+   not be an input at all.
+2. The two weapon records execute before the body record, yet the old carry
+   cached a world-space delta only after the body solve. A weapon necessarily
+   consumed the previous body/eye delta. Algebraically, applying
+   `desired * inverse(previousEyeRoot * handLocal)` to
+   `currentEyeRoot * weaponLocal` leaves
+   `inverse(previousEyeRoot) * currentEyeRoot` in the result. That is a direct
+   head/eye dependency and matches the reported inverse head-follow. C-H4-26
+   retained this defect and was reverted before packaging or deployment.
+
+**C-H4-27 uses Halo 3's ownership strategy, not Halo 3 title math.** Halo 4's
+own active-eye root is published from the camera the setup readback has already
+verified and removed from the whole 80-node absolute body bank. The local bank
+is rebuilt on a stable root made from Halo 4's pre-HMD gameplay origin and its
+own `gameYawReference`. Controller orientation is decoded with Halo 4's proven
+OpenXR-to-Z-up camera decomposition and composed with the H4EK-authored hand
+rotation. Controller position is the stage-space controller displacement from
+the recentered tracking origin, rotated by the Halo 4 recenter/game-yaw pair.
+No current head pose and no live aim-camera basis enter either hand target.
+
+The current prepared-frame right/two-hand aim and left-controller poses are
+copied into Halo 4's existing immutable render snapshot. Palette hooks read
+that snapshot without locks. The body solve caches only the stock right hand
+in active-root-local space. Each earlier weapon record combines that local
+relation with its own current active-eye root and the current controller
+target, so the root cancels within the same eye rather than crossing an eye or
+frame boundary.
+
+Core tests pin the ownership invariants: neutral reach maps to Halo 4 +X,
+snap turn rotates position and orientation together, a 30-degree controller
+yaw remains 30 degrees rather than doubling to 60, changing controller
+orientation does not orbit its tracked position, the recenter pair removes
+physical room facing, and trims use the controller's own axes. Any missing
+root, stale body relation, invalid controller pose, or failed IK passes that
+record's stock matrices and leaves the camera/OpenXR transaction armed.
+
+C-H4-27 is an offline candidate only until the user confirms it in the
+headset. It does not advance `docs/CURRENT-STATE.md`.

@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c25-controller-owned-hands',
+        'halo4-c27-controller-owned-final-rig',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-23'
+            id = 'C-H4-27'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'arms-solved-by-the-shared-ReconstructVisiblePaletteSource-solver-through-FpExplicitPoseTargets-exactly-as-ODST-and-Reach-do-with-the-64-79-hand-tail-carried-by-the-same-rigid-hand-delta'
+            behavior = 'h4ek-proven-active-eye-root-is-removed-body-is-rebuilt-on-stable-game-yaw-and-both-arms-plus-the-two-preceding-weapon-records-are-driven-only-by-the-exact-prepared-controller-snapshot'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true

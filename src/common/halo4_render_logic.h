@@ -1507,6 +1507,131 @@ inline bool Halo4BuildHandNode(
     return Halo4FirstPersonNodeLooksValid(out);
 }
 
+// Controller ownership for Halo 4's final, world-absolute skinning bank.
+//
+// This deliberately does not accept the live engine camera or the current HMD
+// pose. Halo 4's motion-aim loop already steers the engine camera toward the
+// controller, while the render camera separately receives the HMD pose. Using
+// either one as a parent here applies tracked rotation twice. The only camera
+// state this conversion needs is the stable gameplay origin captured before
+// HMD composition; orientation comes from the recenter pair and controller.
+struct Halo4ControllerWorldPoseInput
+{
+    float controllerOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    float controllerPosition[3]{};       // OpenXR stage space, metres
+    float trackingOriginPosition[3]{};   // HMD position captured at recenter
+    float bodyOrigin[3]{};               // Halo 4 world space, pre-HMD
+    float headYawReference = 0.0f;
+    float gameYawReference = 0.0f;
+    float yawSign = -1.0f;
+    float pitchSign = 1.0f;
+    float worldScale = 0.33f;
+    float forwardTrim = 0.0f;            // controller-local metres
+    float verticalTrim = 0.0f;
+    float lateralTrim = 0.0f;            // positive = controller right
+    bool mirrored = false;
+};
+
+struct Halo4ControllerWorldPose
+{
+    float basis[9]{};       // Blam columns: forward, left, up
+    float position[3]{};    // Halo 4 world space
+};
+
+inline bool Halo4BuildControllerWorldPose(
+    const Halo4ControllerWorldPoseInput& input,
+    Halo4ControllerWorldPose& out) noexcept
+{
+    Halo4HeadOrientation controller{};
+    if (!Halo4DecodeHeadOrientation(
+            input.controllerOrientation, controller))
+        return false;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        if (!std::isfinite(input.controllerPosition[axis]) ||
+            !std::isfinite(input.trackingOriginPosition[axis]) ||
+            !std::isfinite(input.bodyOrigin[axis]))
+            return false;
+    }
+    if (!std::isfinite(input.headYawReference) ||
+        !std::isfinite(input.gameYawReference) ||
+        !std::isfinite(input.yawSign) ||
+        !std::isfinite(input.pitchSign) ||
+        !std::isfinite(input.worldScale) || input.worldScale <= 0.0f ||
+        !std::isfinite(input.forwardTrim) ||
+        !std::isfinite(input.verticalTrim) ||
+        !std::isfinite(input.lateralTrim))
+        return false;
+
+    float trackedYaw = input.yawSign * Halo4WrapPi(
+        controller.yaw - input.headYawReference);
+    float trackedPitch = input.pitchSign * controller.pitch;
+    float trackedRoll = controller.roll;
+    if (input.mirrored)
+    {
+        // Reflection about the controller's forward/up plane expressed as a
+        // proper rotation: lateral position, yaw and roll change sign while
+        // pitch remains unchanged.
+        trackedYaw = -trackedYaw;
+        trackedRoll = -trackedRoll;
+    }
+    trackedPitch = trackedPitch < -1.5f
+        ? -1.5f : (trackedPitch > 1.5f ? 1.5f : trackedPitch);
+    const float worldYaw = input.gameYawReference + trackedYaw;
+    if (!std::isfinite(trackedYaw) || !std::isfinite(trackedPitch) ||
+        !std::isfinite(trackedRoll) || !std::isfinite(worldYaw))
+        return false;
+    float forward[3], up[3];
+    Halo4ComposeHeadOwnedBasis(
+        worldYaw, trackedPitch, trackedRoll, forward, up);
+    const float left[3] = {
+        up[1] * forward[2] - up[2] * forward[1],
+        up[2] * forward[0] - up[0] * forward[2],
+        up[0] * forward[1] - up[1] * forward[0]};
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        out.basis[axis] = forward[axis];
+        out.basis[3 + axis] = left[axis];
+        out.basis[6 + axis] = up[axis];
+    }
+
+    const float dx =
+        input.controllerPosition[0] - input.trackingOriginPosition[0];
+    const float dy =
+        input.controllerPosition[1] - input.trackingOriginPosition[1];
+    const float dz =
+        input.controllerPosition[2] - input.trackingOriginPosition[2];
+    const float sh = std::sin(input.headYawReference);
+    const float ch = std::cos(input.headYawReference);
+    float roomForward = dx * sh - dz * ch;
+    float roomRight = dx * ch + dz * sh;
+    if (input.mirrored)
+        roomRight = -roomRight;
+
+    // Physical displacement is rotated only by the stable recenter/body yaw.
+    // Trims are controller-local as promised by halomccvr.cfg, so they use the
+    // controller's finished world basis rather than the body basis.
+    const float cg = std::cos(input.gameYawReference);
+    const float sg = std::sin(input.gameYawReference);
+    const float scale = input.worldScale;
+    const float bodyOffset[3] = {
+        (cg * roomForward + sg * roomRight) * scale,
+        (sg * roomForward - cg * roomRight) * scale,
+        dy * scale};
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        const float trim =
+            forward[axis] * input.forwardTrim -
+            left[axis] * input.lateralTrim +
+            up[axis] * input.verticalTrim;
+        out.position[axis] =
+            input.bodyOrigin[axis] + bodyOffset[axis] + trim * scale;
+        if (!std::isfinite(out.position[axis]))
+            return false;
+    }
+    return true;
+}
+
 // --- C-H4-9: keeping Halo 4's OWN look pitch under the headset ---------------
 //
 // Taking pitch off the stick fixes the view, and on its own would break the

@@ -6974,7 +6974,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 #endif
 
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
-    bool PublishHalo4RenderSnapshot(uint64_t preparedSerial) noexcept
+    bool PublishHalo4RenderSnapshot(
+        uint64_t preparedSerial, bool padFresh) noexcept
     {
         if (!preparedSerial || g_views.size() != 2)
             return false;
@@ -6999,6 +7000,41 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // engine's own camera if this is unavailable; it never fails the pair.
         next.headPoseValid = VR_GetHeadPose(
             next.headOrientation, next.headPosition);
+        // The publisher owns the OpenXR action values for this prepared frame.
+        // Copy them here exactly as Reach does, so Halo 4's palette hook never
+        // enters the tracking critical section and cannot mix controller poses
+        // from two prepared serials.
+        const bool rightPoseFresh = padFresh && g_rightAimPoseValid;
+        const bool leftPoseFresh = padFresh && g_leftAimPoseValid;
+        const AimPoseResult aim = ComputeAimPose(CurrentAimPoseInputs(
+            rightPoseFresh, g_rightAimPose,
+            leftPoseFresh, g_leftAimPose));
+        next.rightAimValid = aim.valid;
+        if (aim.valid)
+        {
+            next.rightAimOrientation[0] = aim.pose.orientation.x;
+            next.rightAimOrientation[1] = aim.pose.orientation.y;
+            next.rightAimOrientation[2] = aim.pose.orientation.z;
+            next.rightAimOrientation[3] = aim.pose.orientation.w;
+            next.rightAimPosition[0] = aim.pose.position.x;
+            next.rightAimPosition[1] = aim.pose.position.y;
+            next.rightAimPosition[2] = aim.pose.position.z;
+        }
+        next.leftControllerValid = leftPoseFresh;
+        if (leftPoseFresh)
+        {
+            next.leftControllerOrientation[0] =
+                g_leftAimPose.orientation.x;
+            next.leftControllerOrientation[1] =
+                g_leftAimPose.orientation.y;
+            next.leftControllerOrientation[2] =
+                g_leftAimPose.orientation.z;
+            next.leftControllerOrientation[3] =
+                g_leftAimPose.orientation.w;
+            next.leftControllerPosition[0] = g_leftAimPose.position.x;
+            next.leftControllerPosition[1] = g_leftAimPose.position.y;
+            next.leftControllerPosition[2] = g_leftAimPose.position.z;
+        }
 
         const uint32_t current =
             g_halo4RenderSnapshotIndex.load(std::memory_order_seq_cst);
@@ -7576,7 +7612,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if (upcomingViewsValid &&
             TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
         {
-            PublishHalo4RenderSnapshot(g_preparedFrame.serial);
+            PublishHalo4RenderSnapshot(
+                g_preparedFrame.serial, upcomingPadFresh);
         }
 #endif
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE

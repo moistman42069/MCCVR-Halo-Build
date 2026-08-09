@@ -43,6 +43,14 @@ struct Halo4VrRenderSnapshot
     float headOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float headPosition[3]{};
     bool headPoseValid = false;
+    // Exact-frame controller poses. The final-palette hook consumes these
+    // lock-free while the matching Halo 4 eye transaction is active.
+    bool rightAimValid = false;
+    float rightAimOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    float rightAimPosition[3]{};
+    bool leftControllerValid = false;
+    float leftControllerOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    float leftControllerPosition[3]{};
 };
 #endif
 

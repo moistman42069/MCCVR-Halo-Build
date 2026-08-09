@@ -29495,6 +29495,13 @@ namespace
     // The body/aim frame before Halo 4's HMD pose is composed onto the camera.
     // Controller ownership uses this frame, never the post-HMD camera frame.
     Halo4CenterRoot g_halo4ControllerRoot;
+    // Exact active-eye render roots. H4EK's first_person_weapons producer reads
+    // the current render view and composes every 0x34-byte node through this
+    // root. The final-palette hook removes the matching eye root before it
+    // gives the rig to the controller-owned body frame.
+    Halo4CenterRoot g_halo4EyeRoot[2];
+    thread_local Halo4VrRenderSnapshot g_halo4RigTracking{};
+    thread_local bool g_halo4RigTrackingActive=false;
 
     void Halo4PublishCenterRoot(const Halo4CameraBasis& center)
     {
@@ -29533,6 +29540,26 @@ namespace
             g_halo4ControllerRoot.value[i].store(
                 packed[i],std::memory_order_relaxed);
         g_halo4ControllerRoot.sequence.fetch_add(1,std::memory_order_release);
+    }
+
+    void Halo4PublishEyeRoot(int eye, const Halo4CameraBasis& camera)
+    {
+        if (eye<0 || eye>1) return;
+        const float left[3] = {
+            camera.up[1]*camera.forward[2]-camera.up[2]*camera.forward[1],
+            camera.up[2]*camera.forward[0]-camera.up[0]*camera.forward[2],
+            camera.up[0]*camera.forward[1]-camera.up[1]*camera.forward[0]};
+        const float packed[12] = {
+            camera.position[0],camera.position[1],camera.position[2],
+            camera.forward[0],camera.forward[1],camera.forward[2],
+            left[0],left[1],left[2],camera.up[0],camera.up[1],camera.up[2]};
+        for (float component : packed)
+            if (!isfinite(component)) return;
+        Halo4CenterRoot& destination=g_halo4EyeRoot[eye];
+        destination.sequence.fetch_add(1,std::memory_order_acq_rel);
+        for (int i=0;i<12;++i)
+            destination.value[i].store(packed[i],std::memory_order_relaxed);
+        destination.sequence.fetch_add(1,std::memory_order_release);
     }
 
     // Blam column order is forward / left / up, matching BoneMatrix::rotation.
@@ -29592,9 +29619,41 @@ namespace
         return false;
     }
 
-    AtomicBoneMatrix g_halo4WeaponDelta;
-    std::atomic<uint64_t> g_halo4WeaponDeltaSerial{0};
-    std::atomic<uint64_t> g_halo4WeaponDeltaPublishedAt{0};
+    bool Halo4LoadActiveEyeRoot(float scale, BoneMatrix& root)
+    {
+        const int eye=g_stereoEye.load(std::memory_order_acquire);
+        if (eye<0 || eye>1) return false;
+        const Halo4CenterRoot& source=g_halo4EyeRoot[eye];
+        for (int attempt=0;attempt<4;++attempt)
+        {
+            const uint32_t before=source.sequence.load(std::memory_order_acquire);
+            if (!before || (before&1)) continue;
+            float packed[12];
+            for (int i=0;i<12;++i)
+                packed[i]=source.value[i].load(std::memory_order_relaxed);
+            const uint32_t after=source.sequence.load(std::memory_order_acquire);
+            if (before!=after || (after&1)) continue;
+            root=BoneMatrix{};
+            root.scale=isfinite(scale)&&fabsf(scale)>0.001f ? scale : 1.0f;
+            for (int i=0;i<3;++i)
+            {
+                root.translation[i]=packed[i];
+                root.rotation[i]=packed[3+i];
+                root.rotation[3+i]=packed[6+i];
+                root.rotation[6+i]=packed[9+i];
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // The weapon records precede the body record in H4EK's producer. Cache the
+    // most recent successful BODY hand in root-local space, never a world
+    // delta carrying the previous eye/head root. Each weapon uses its own eye
+    // root and current controller pose to build the world delta it needs.
+    AtomicBoneMatrix g_halo4StockRightHandLocal;
+    std::atomic<uint64_t> g_halo4StockRightHandLocalSerial{0};
+    std::atomic<uint64_t> g_halo4StockRightHandLocalPublishedAt{0};
     // Three records reach the first-person site per eye, two eyes per frame.
     // Twelve is a couple of frames' worth, so a delta survives normal record
     // ordering but expires as soon as the arms stop solving.
@@ -29866,61 +29925,99 @@ namespace
         return true;
     }
 
-    // Build a controller-owned target in the pre-HMD body frame.  This is the
-    // Halo 3 strategy expressed with Halo 4's own camera evidence: controller
-    // displacement starts at the recentered tracking origin and is mapped by
-    // the game body/aim root, never by the headset's current pose.  Applying
-    // Head^-1 here was only valid when the renderer's root used the same pose
-    // convention; Halo 4's post-head camera does not, producing the reported
-    // inverted head-follow.
-    bool Halo4BuildControllerHandTarget(bool left, const BoneMatrix& stock,
-                                        BoneMatrix& target)
+    bool Halo4BuildControllerBodyRoot(BoneMatrix& root)
     {
-        float cq[4],cp[3];
-        if (left ? !VR_GetLeftControllerPose(cq,cp) : !VR_GetAimPose(cq,cp))
+        if (!g_halo4Camera.headReferenceValid.load(std::memory_order_acquire) ||
+            !g_halo4Camera.gameYawReferenceValid.load(
+                std::memory_order_acquire))
             return false;
-        if (!g_halo4Camera.headReferenceValid.load(std::memory_order_acquire))
-            return false;
-        float roomDelta[3];
+        BoneMatrix preHmd{};
+        if (!Halo4LoadControllerRoot(1.0f,preHmd)) return false;
+        const float gameYaw=g_halo4Camera.gameYawReference.load(
+            std::memory_order_relaxed);
+        float forward[3],up[3];
+        Halo4ComposeHeadOwnedBasis(gameYaw,0.0f,0.0f,forward,up);
+        const float left[3]={
+            up[1]*forward[2]-up[2]*forward[1],
+            up[2]*forward[0]-up[0]*forward[2],
+            up[0]*forward[1]-up[1]*forward[0]};
+        root=BoneMatrix{};
+        root.scale=1.0f;
         for (int axis=0;axis<3;++axis)
         {
-            const float reference=g_halo4Camera.headPositionReference[axis].load(
-                std::memory_order_relaxed);
-            roomDelta[axis]=cp[axis]-reference;
-            if (!isfinite(roomDelta[axis])) return false;
+            root.translation[axis]=preHmd.translation[axis];
+            root.rotation[axis]=forward[axis];
+            root.rotation[3+axis]=left[axis];
+            root.rotation[6+axis]=up[axis];
         }
+        return NormalizedBasis(root,root.rotation);
+    }
 
-        Halo4HandPlacementInput placement{};
-        memcpy(placement.controllerOffset,roomDelta,sizeof(roomDelta));
-        memcpy(placement.controllerOrientation,cq,sizeof(cq));
-        placement.worldScale=g_worldScale.load(std::memory_order_relaxed);
-        placement.forwardTrim=g_config.halo4_hand_forward_m;
-        placement.verticalTrim=g_config.halo4_hand_vertical_m;
-        placement.lateralTrim=g_config.halo4_hand_lateral_m;
-        placement.mirrored=g_config.halo4_hands_mirrored;
-        Halo4FirstPersonNode identity{},placed{};
-        identity.rotation[3]=1.0f;
-        identity.scale=1.0f;
-        if (!Halo4BuildHandNode(placement,identity,placed)) return false;
+    // Build the hand directly in Halo 4 world space from the exact prepared
+    // controller sample. Current HMD pose and live aim-camera orientation are
+    // intentionally absent; the former owns only the view and the latter has
+    // already been steered toward this same controller by C-H4-10.
+    bool Halo4BuildControllerHandTarget(bool left, const BoneMatrix& stock,
+                                        const BoneMatrix& bodyRoot,
+                                        BoneMatrix& target)
+    {
+        if (!g_halo4RigTrackingActive ||
+            (left ? !g_halo4RigTracking.leftControllerValid
+                  : !g_halo4RigTracking.rightAimValid))
+            return false;
+        const float* cq=left
+            ? g_halo4RigTracking.leftControllerOrientation
+            : g_halo4RigTracking.rightAimOrientation;
+        const float* cp=left
+            ? g_halo4RigTracking.leftControllerPosition
+            : g_halo4RigTracking.rightAimPosition;
+
+        Halo4ControllerWorldPoseInput input{};
+        memcpy(input.controllerOrientation,cq,
+               sizeof(input.controllerOrientation));
+        memcpy(input.controllerPosition,cp,sizeof(input.controllerPosition));
+        memcpy(input.bodyOrigin,bodyRoot.translation,sizeof(input.bodyOrigin));
+        for (int axis=0;axis<3;++axis)
+            input.trackingOriginPosition[axis]=
+                g_halo4Camera.headPositionReference[axis].load(
+                    std::memory_order_relaxed);
+        input.headYawReference=g_halo4Camera.headYawReference.load(
+            std::memory_order_relaxed);
+        input.gameYawReference=g_halo4Camera.gameYawReference.load(
+            std::memory_order_relaxed);
+        input.yawSign=g_yawSign.load(std::memory_order_relaxed);
+        input.pitchSign=g_pitchSign.load(std::memory_order_relaxed);
+        input.worldScale=g_worldScale.load(std::memory_order_relaxed);
+        input.forwardTrim=g_config.halo4_hand_forward_m;
+        input.verticalTrim=g_config.halo4_hand_vertical_m;
+        input.lateralTrim=g_config.halo4_hand_lateral_m;
+        input.mirrored=g_config.halo4_hands_mirrored;
+        Halo4ControllerWorldPose controller{};
+        if (!Halo4BuildControllerWorldPose(input,controller)) return false;
 
         const float authoredRight[4] =
             {-0.583606601f,0.000000213f,-0.698711872f,0.413769424f};
         const float authoredLeft[4] =
             {-0.265249819f,0.000000008f,-0.317565471f,0.910381734f};
-        float calibrated[4];
-        Halo4MultiplyQuaternion(placed.rotation,
-            left?authoredLeft:authoredRight,calibrated);
+        float authoredBasis[9];
+        if (!Halo4QuaternionToBoneBasis(
+                left?authoredLeft:authoredRight,authoredBasis))
+            return false;
         target=stock;
-        if (!Halo4QuaternionToBoneBasis(calibrated,target.rotation)) return false;
-        memcpy(target.translation,placed.translation,sizeof(target.translation));
-        const float* attachment =
+        MultiplyBases(controller.basis,authoredBasis,target.rotation);
+        memcpy(target.translation,controller.position,
+               sizeof(target.translation));
+        const float* attachment=
             left?kHalo4LeftAttachmentMetres:kHalo4RightAttachmentMetres;
-        float attachmentWorld[3];
-        Halo4RotateVectorByQuaternion(calibrated,attachment,attachmentWorld);
-        for (int i=0;i<3;++i)
-            target.translation[i] += attachmentWorld[i]*placement.worldScale;
-        return isfinite(target.translation[0]) && isfinite(target.translation[1]) &&
-               isfinite(target.translation[2]);
+        for (int row=0;row<3;++row)
+        {
+            float offset=0.0f;
+            for (int column=0;column<3;++column)
+                offset+=target.rotation[column*3+row]*attachment[column];
+            target.translation[row]+=offset*input.worldScale;
+            if (!isfinite(target.translation[row])) return false;
+        }
+        return NormalizedBasis(target,target.rotation);
     }
 
 
@@ -30041,6 +30138,7 @@ namespace
     // attachment orientation and every carried node belong to Halo 4 evidence.
     bool Halo4SolveStormArm(BoneMatrix* nodes, bool left,
                             const BoneMatrix& desired,
+                            const BoneMatrix& bodyRoot,
                             BoneMatrix* outHandDelta)
     {
         const int shoulder=left?kHalo4LeftShoulderNode:kHalo4RightShoulderNode;
@@ -30048,7 +30146,13 @@ namespace
         const int hand=left?kHalo4LeftHandNode:kHalo4RightHandNode;
         const float upper=Halo4VrikDistance(nodes[shoulder],nodes[elbow]);
         const float lower=Halo4VrikDistance(nodes[elbow],nodes[hand]);
-        const float* pole=left?kHalo4LeftPoleDirection:kHalo4RightPoleDirection;
+        const float* authoredPole=
+            left?kHalo4LeftPoleDirection:kHalo4RightPoleDirection;
+        float pole[3];
+        for (int row=0;row<3;++row)
+            pole[row]=bodyRoot.rotation[row]*authoredPole[0]+
+                      bodyRoot.rotation[3+row]*authoredPole[1]+
+                      bodyRoot.rotation[6+row]*authoredPole[2];
         float solveUpper=upper,solveLower=lower;
         const float dx=desired.translation[0]-nodes[shoulder].translation[0];
         const float dy=desired.translation[1]-nodes[shoulder].translation[1];
@@ -30109,19 +30213,19 @@ namespace
                 sizeof(BoneMatrix)*kHalo4FirstPersonBankTransforms))
             return Halo4VrikStage::CopyFailed;
 
-        // H4's bank is world-absolute.  Work in the centre-camera frame: that
-        // is the frame in which the Storm pole vectors and the controller
-        // offsets are authored, and using the centre root makes both eyes see
-        // the exact same articulated pose.
-        BoneMatrix cameraRoot{},inverseCameraRoot{},controllerRoot{};
-        if (!Halo4LoadCenterRoot(1.0f,cameraRoot) ||
-            !InvertBoneMatrix(cameraRoot,inverseCameraRoot) ||
-            !Halo4LoadControllerRoot(1.0f,controllerRoot))
+        // H4EK proves that this bank is eye-root o local-node. Remove the
+        // EXACT active-eye root and rebuild the complete Storm body on the
+        // stable, yaw-only gameplay root. This is the ownership boundary:
+        // HMD/eye transforms are cancelled, not inherited by the arms.
+        BoneMatrix eyeRoot{},inverseEyeRoot{},bodyRoot{};
+        if (!Halo4LoadActiveEyeRoot(1.0f,eyeRoot) ||
+            !InvertBoneMatrix(eyeRoot,inverseEyeRoot) ||
+            !Halo4BuildControllerBodyRoot(bodyRoot))
             return Halo4VrikStage::AnchorFailed;
         for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
         {
             BoneMatrix local{};
-            if (!ComposeBoneMatrices(inverseCameraRoot,solved[i],local))
+            if (!ComposeBoneMatrices(inverseEyeRoot,solved[i],local))
                 return Halo4VrikStage::AnchorFailed;
             solved[i]=local;
         }
@@ -30137,27 +30241,30 @@ namespace
             if (classified!=Halo4VrikStage::Solved) return classified;
         }
 
-        const BoneMatrix stockRightHand=solved[kHalo4RightHandNode];
+        const BoneMatrix stockRightLocal=solved[kHalo4RightHandNode];
+        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
+        {
+            BoneMatrix world{};
+            if (!ComposeBoneMatrices(bodyRoot,solved[i],world))
+                return Halo4VrikStage::AnchorFailed;
+            solved[i]=world;
+        }
 
-        // Targets are built in the body/aim frame, then expressed back in the
-        // post-HMD camera-local frame only for this palette.  This conversion
-        // is frame bookkeeping, not a head-relative controller transform.
-        BoneMatrix rightBody{},leftBody{},rightWorld{},leftWorld{};
+        // Both targets are already absolute Halo 4 world poses. Their only
+        // tracking inputs are the controllers from this prepared serial.
         BoneMatrix rightTarget{},leftTarget{};
-        if (!Halo4BuildControllerHandTarget(false,
-                                            solved[kHalo4RightHandNode],rightBody) ||
-            !ComposeBoneMatrices(controllerRoot,rightBody,rightWorld) ||
-            !ComposeBoneMatrices(inverseCameraRoot,rightWorld,rightTarget))
+        if (!Halo4BuildControllerHandTarget(
+                false,solved[kHalo4RightHandNode],bodyRoot,rightTarget))
             return Halo4VrikStage::RightPoseFailed;
         const bool leftTargetValid=
-            Halo4BuildControllerHandTarget(true,solved[kHalo4LeftHandNode],leftBody) &&
-            ComposeBoneMatrices(controllerRoot,leftBody,leftWorld) &&
-            ComposeBoneMatrices(inverseCameraRoot,leftWorld,leftTarget);
+            Halo4BuildControllerHandTarget(
+                true,solved[kHalo4LeftHandNode],bodyRoot,leftTarget);
         if (!leftTargetValid)
             g_halo4Camera.vrikStageRefusals[static_cast<size_t>(
                 Halo4VrikStage::LeftPoseFailed)].fetch_add(
                     1,std::memory_order_relaxed);
-        if (!Halo4SolveStormArm(solved,false,rightTarget,nullptr))
+        if (!Halo4SolveStormArm(
+                solved,false,rightTarget,bodyRoot,nullptr))
             return Halo4VrikStage::RightIkFailed;
         if (leftTargetValid)
         {
@@ -30167,7 +30274,8 @@ namespace
             // a partly transformed support arm.
             BoneMatrix beforeLeft[kHalo4StormFpBodyNodeCount];
             memcpy(beforeLeft,solved,sizeof(beforeLeft));
-            if (!Halo4SolveStormArm(solved,true,leftTarget,nullptr))
+            if (!Halo4SolveStormArm(
+                    solved,true,leftTarget,bodyRoot,nullptr))
             {
                 memcpy(solved,beforeLeft,sizeof(beforeLeft));
                 g_halo4Camera.vrikStageRefusals[static_cast<size_t>(
@@ -30176,28 +30284,16 @@ namespace
             }
         }
 
-        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
-        {
-            BoneMatrix world{};
-            if (!ComposeBoneMatrices(cameraRoot,solved[i],world))
-                return Halo4VrikStage::AnchorFailed;
-            solved[i]=world;
-        }
-
-        // The native solve produced the hand delta in camera space.  Convert
-        // the stock and solved hand to the same world frame before publishing
-        // the transform for Halo 4's separate weapon records.
-        BoneMatrix worldStock{},inverseWorldStock{},weaponDelta{};
-        if (!ComposeBoneMatrices(cameraRoot,stockRightHand,worldStock) ||
-            !InvertBoneMatrix(worldStock,inverseWorldStock) ||
-            !ComposeBoneMatrices(solved[kHalo4RightHandNode],inverseWorldStock,
-                                 weaponDelta))
-            return Halo4VrikStage::RightIkFailed;
-        StoreAtomicBoneMatrix(g_halo4WeaponDelta,weaponDelta);
-        g_halo4WeaponDeltaPublishedAt.store(
+        // H4EK's two weapon fills occur BEFORE this body fill, so publish only
+        // the root-local stock-hand relation. A later weapon combines it with
+        // ITS current eye root and ITS current controller target; no previous
+        // eye/head transform can leak through the one-record delay.
+        StoreAtomicBoneMatrix(g_halo4StockRightHandLocal,stockRightLocal);
+        g_halo4StockRightHandLocalPublishedAt.store(
             g_halo4Camera.vrikExactReturnHits.load(std::memory_order_relaxed),
             std::memory_order_release);
-        g_halo4WeaponDeltaSerial.fetch_add(1,std::memory_order_acq_rel);
+        g_halo4StockRightHandLocalSerial.fetch_add(
+            1,std::memory_order_acq_rel);
 
         // FLOATING HANDS: a presentation filter over the finished palette, and
         // deliberately the LAST thing that touches it - nothing composes after
@@ -30218,20 +30314,16 @@ namespace
         return Halo4VrikStage::Solved;
     }
 
-    // The weapon records are the other two of the three the first-person path
-    // submits per eye. They are filled from a different source bank against the
-    // same camera root, so they are already in the world frame the delta above
-    // is expressed in - no anchor recovery is needed or possible here (their
-    // node 0 is not storm_fp's root).
-    //
-    // These records are NOT identified from the engine; they are simply "not
-    // the arms". That is deliberate: Halo 4 has no dual wield, every other
-    // first-person record hangs off the weapon the right hand is holding, and
-    // the alternative is leaving the gun welded to the player's face.
+    // The two weapon records precede the body record. Build their delta from
+    // the current prepared controller, the latest successful root-local body
+    // hand, and THIS record's exact active-eye root. The prior design cached a
+    // world delta, which necessarily cached the previous eye/head root too and
+    // produced the reported inverse head-follow when applied to the next eye.
     bool Halo4CarryWeaponRecord(const BoneMatrix* source, BoneMatrix* moved)
     {
         if (!source||!moved) return false;
-        if (!g_halo4WeaponDeltaSerial.load(std::memory_order_acquire))
+        if (!g_halo4StockRightHandLocalSerial.load(
+                std::memory_order_acquire))
             return false;
         // The producer fills both weapon records before the body one, so the
         // freshest delta a weapon can see is one record-order old. Anything
@@ -30240,12 +30332,26 @@ namespace
         // gun around by a frozen transform is worse than leaving it stock.
         const uint64_t hits=g_halo4Camera.vrikExactReturnHits.load(
             std::memory_order_relaxed);
-        const uint64_t publishedAt=g_halo4WeaponDeltaPublishedAt.load(
+        const uint64_t publishedAt=
+            g_halo4StockRightHandLocalPublishedAt.load(
             std::memory_order_acquire);
         if (hits<publishedAt || hits-publishedAt>kHalo4WeaponDeltaMaxRecordAge)
             return false;
-        BoneMatrix delta{};
-        if (!LoadAtomicBoneMatrix(g_halo4WeaponDelta,delta)) return false;
+        BoneMatrix stockHandLocal{},inverseStockHandLocal{};
+        BoneMatrix eyeRoot{},inverseEyeRoot{},bodyRoot{},desired{};
+        BoneMatrix rootlessHand{},delta{};
+        if (!LoadAtomicBoneMatrix(
+                g_halo4StockRightHandLocal,stockHandLocal) ||
+            !InvertBoneMatrix(stockHandLocal,inverseStockHandLocal) ||
+            !Halo4LoadActiveEyeRoot(1.0f,eyeRoot) ||
+            !InvertBoneMatrix(eyeRoot,inverseEyeRoot) ||
+            !Halo4BuildControllerBodyRoot(bodyRoot) ||
+            !Halo4BuildControllerHandTarget(
+                false,stockHandLocal,bodyRoot,desired) ||
+            !ComposeBoneMatrices(
+                desired,inverseStockHandLocal,rootlessHand) ||
+            !ComposeBoneMatrices(rootlessHand,inverseEyeRoot,delta))
+            return false;
         if (!Halo4SafeRead(source,moved,
                 sizeof(BoneMatrix)*kHalo4FirstPersonBankTransforms))
             return false;
@@ -30704,7 +30810,13 @@ namespace
             0,std::memory_order_relaxed);
         g_halo4Camera.vrikArmBandBonesSkipped.store(
             0,std::memory_order_relaxed);
-        g_halo4WeaponDeltaSerial.store(0,std::memory_order_release);
+        g_halo4StockRightHandLocalSerial.store(0,std::memory_order_release);
+        g_halo4StockRightHandLocalPublishedAt.store(
+            0,std::memory_order_relaxed);
+        g_halo4CenterRoot.sequence.store(0,std::memory_order_release);
+        g_halo4ControllerRoot.sequence.store(0,std::memory_order_release);
+        g_halo4EyeRoot[0].sequence.store(0,std::memory_order_release);
+        g_halo4EyeRoot[1].sequence.store(0,std::memory_order_release);
         g_halo4Camera.vrikLinkMeasurements.store(0,std::memory_order_relaxed);
         g_halo4Camera.vrikClassifyAttempts.store(0,std::memory_order_relaxed);
         g_halo4Camera.vrikProbeScale.store(0.0f,std::memory_order_relaxed);
@@ -31218,6 +31330,12 @@ namespace
 
         Halo4InvalidatePublishedFrame();
         frameStarted = true;
+        // The model-skinning detour runs synchronously inside the two wrapper
+        // calls below. Publish this exact prepared-serial tracking sample only
+        // for that scope; no palette hook takes the tracking lock or re-reads a
+        // controller between the two eyes.
+        g_halo4RigTracking=snapshot;
+        g_halo4RigTrackingActive=true;
         __try
         {
             const int firstEye = g_config.right_eye_first ? 1 : 0;
@@ -31396,6 +31514,7 @@ namespace
                 // telemetry mirror. Do not write it again here: the visible
                 // weapon remains stock until the real animation producer is
                 // identified and independently verified.
+                Halo4PublishEyeRoot(eye,eyeCameras[eye]);
                 g_halo4OrigWrapper(element, view, window);
                 if (!VR_CaptureHalo4RenderedEye(
                         eye, snapshot.preparedSerial))
@@ -31408,6 +31527,7 @@ namespace
         }
         __finally
         {
+            g_halo4RigTrackingActive=false;
             if (eyeActive)
                 VR_EndRasterEye();
             g_stereoEye = -1;

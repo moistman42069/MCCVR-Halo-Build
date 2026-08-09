@@ -6828,6 +6828,98 @@ int main()
         Check(!Halo4BuildHandNode(input, notANode, fromBad),
             "A stock node that failed the format proof produces no placement");
 
+        // Final-palette ownership is a world pose built from the controller
+        // and the stable recenter/body pair. Neither the current HMD pose nor
+        // Halo 4's live aim-camera basis is an input.
+        Halo4ControllerWorldPoseInput controllerWorld{};
+        controllerWorld.controllerOrientation[3] = 1.0f;
+        controllerWorld.controllerPosition[2] = -0.30f;
+        controllerWorld.bodyOrigin[0] = 10.0f;
+        controllerWorld.bodyOrigin[1] = 20.0f;
+        controllerWorld.bodyOrigin[2] = 30.0f;
+        controllerWorld.worldScale = 0.33f;
+        Halo4ControllerWorldPose neutralWorld{};
+        Check(Halo4BuildControllerWorldPose(
+                  controllerWorld, neutralWorld),
+            "Halo 4 builds a controller world pose without a head-camera parent");
+        Check(fabsf(neutralWorld.position[0] - 10.099f) < 1.0e-5f &&
+                  fabsf(neutralWorld.position[1] - 20.0f) < 1.0e-5f &&
+                  fabsf(neutralWorld.position[2] - 30.0f) < 1.0e-5f,
+            "A neutral forward reach is anchored to the stable pre-HMD body origin");
+        Check(fabsf(neutralWorld.basis[0] - 1.0f) < 1.0e-5f &&
+                  fabsf(neutralWorld.basis[4] - 1.0f) < 1.0e-5f &&
+                  fabsf(neutralWorld.basis[8] - 1.0f) < 1.0e-5f,
+            "A neutral controller produces Halo 4's native forward-left-up basis");
+
+        // A VR turn rotates position and orientation together about the same
+        // body anchor. It does not need the engine camera that motion aim is
+        // simultaneously steering toward the hand.
+        Halo4ControllerWorldPoseInput snapTurn = controllerWorld;
+        snapTurn.gameYawReference = 1.57079632679f;
+        Halo4ControllerWorldPose turnedWorld{};
+        Check(Halo4BuildControllerWorldPose(snapTurn, turnedWorld),
+            "A Halo 4 VR turn produces a valid controller world pose");
+        Check(fabsf(turnedWorld.position[0] - 10.0f) < 1.0e-5f &&
+                  fabsf(turnedWorld.position[1] - 20.099f) < 1.0e-5f &&
+                  fabsf(turnedWorld.basis[0]) < 1.0e-5f &&
+                  fabsf(turnedWorld.basis[1] - 1.0f) < 1.0e-5f,
+            "Snap turn rotates the hand and its reach once in the game frame");
+
+        // A 30-degree controller yaw must appear exactly once. The rejected
+        // C-H4-25/C-H4-26 construction also multiplied by Halo 4's live aim
+        // camera, which that same controller had already turned by 30 degrees,
+        // and therefore emitted roughly 60 degrees.
+        constexpr float controllerYaw = 0.52359877559f;
+        Halo4ControllerWorldPoseInput aimed = controllerWorld;
+        aimed.yawSign = 1.0f;
+        aimed.controllerOrientation[1] = -sinf(controllerYaw * 0.5f);
+        aimed.controllerOrientation[3] = cosf(controllerYaw * 0.5f);
+        Halo4ControllerWorldPose aimedWorld{};
+        Check(Halo4BuildControllerWorldPose(aimed, aimedWorld),
+            "A yawed controller produces a valid Halo 4 world basis");
+        Check(fabsf(aimedWorld.basis[0] - cosf(controllerYaw)) < 1.0e-5f &&
+                  fabsf(aimedWorld.basis[1] - sinf(controllerYaw)) < 1.0e-5f,
+            "Controller yaw is applied once, never again through the aim camera");
+        Check(fabsf(aimedWorld.position[0] - neutralWorld.position[0]) < 1.0e-5f &&
+                  fabsf(aimedWorld.position[1] - neutralWorld.position[1]) < 1.0e-5f,
+            "Turning the controller does not orbit its tracked position around the head");
+
+        // Recenter removes the physical facing from both orientation and
+        // position. The controller remains 30 cm forward when neutral facing
+        // happens to be 30 degrees around the room.
+        Halo4ControllerWorldPoseInput recentered = controllerWorld;
+        recentered.headYawReference = controllerYaw;
+        recentered.controllerOrientation[1] = -sinf(controllerYaw * 0.5f);
+        recentered.controllerOrientation[3] = cosf(controllerYaw * 0.5f);
+        recentered.controllerPosition[0] = 0.30f * sinf(controllerYaw);
+        recentered.controllerPosition[2] = -0.30f * cosf(controllerYaw);
+        Halo4ControllerWorldPose recenteredWorld{};
+        Check(Halo4BuildControllerWorldPose(recentered, recenteredWorld) &&
+                  fabsf(recenteredWorld.position[0] - 10.099f) < 1.0e-5f &&
+                  fabsf(recenteredWorld.position[1] - 20.0f) < 1.0e-5f &&
+                  fabsf(recenteredWorld.basis[0] - 1.0f) < 1.0e-5f &&
+                  fabsf(recenteredWorld.basis[1]) < 1.0e-5f,
+            "The recenter pair removes room facing without consulting current head pose");
+
+        Halo4ControllerWorldPoseInput controllerTrim = aimed;
+        controllerTrim.controllerPosition[2] = 0.0f;
+        controllerTrim.forwardTrim = 0.10f;
+        Halo4ControllerWorldPose trimmedWorld{};
+        Check(Halo4BuildControllerWorldPose(controllerTrim, trimmedWorld) &&
+                  fabsf(trimmedWorld.position[0] -
+                      (10.0f + 0.10f * 0.33f * cosf(controllerYaw))) < 1.0e-5f &&
+                  fabsf(trimmedWorld.position[1] -
+                      (20.0f + 0.10f * 0.33f * sinf(controllerYaw))) < 1.0e-5f,
+            "Halo 4 hand trims are applied in the controller's own frame");
+
+        Halo4ControllerWorldPoseInput badControllerWorld = controllerWorld;
+        badControllerWorld.gameYawReference =
+            std::numeric_limits<float>::quiet_NaN();
+        Halo4ControllerWorldPose refusedWorld{};
+        Check(!Halo4BuildControllerWorldPose(
+                  badControllerWorld, refusedWorld),
+            "A non-finite controller reference fails closed for the rig only");
+
         // The rigid assembly transform: applying one rotation+translation to
         // every node must move the whole rig without depending on which node
         // is the root, and must PRESERVE the shape between nodes.
