@@ -276,7 +276,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-13 headset-failed disable point. Its optional final-palette hook installed and fired, but an incorrect comparison between a per-render-model skinning output count and the 85-node composed animation record refused every live palette: 0 solved and about 5800 refused per two seconds. The VRIK hook is inert; stock hands and the accepted camera core remain. This source is a handoff/revert point and must not be packaged as a new candidate.'
+        note = 'C-H4-27 is an unaccepted headset candidate. H4EK proves the active-view root, 120-matrix record bank, 1/1/0 weapon-weapon-body fill order, and Storm hierarchy. The final rig cancels each active eye root, rebuilds the body on Halo 4s stable gameplay yaw, and derives both hands and the weapon carry only from the exact prepared controller snapshot. C-H4-1 remains the accepted rollback pointer until explicit headset acceptance.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'
