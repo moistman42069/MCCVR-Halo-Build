@@ -30041,6 +30041,7 @@ namespace
     // attachment orientation and every carried node belong to Halo 4 evidence.
     bool Halo4SolveStormArm(BoneMatrix* nodes, bool left,
                             const BoneMatrix& desired,
+                            const BoneMatrix& controllerRoot,
                             BoneMatrix* outHandDelta)
     {
         const int shoulder=left?kHalo4LeftShoulderNode:kHalo4RightShoulderNode;
@@ -30048,7 +30049,13 @@ namespace
         const int hand=left?kHalo4LeftHandNode:kHalo4RightHandNode;
         const float upper=Halo4VrikDistance(nodes[shoulder],nodes[elbow]);
         const float lower=Halo4VrikDistance(nodes[elbow],nodes[hand]);
-        const float* pole=left?kHalo4LeftPoleDirection:kHalo4RightPoleDirection;
+        const float* authoredPole=
+            left?kHalo4LeftPoleDirection:kHalo4RightPoleDirection;
+        float pole[3];
+        for (int row=0;row<3;++row)
+            pole[row]=controllerRoot.rotation[row]*authoredPole[0]+
+                      controllerRoot.rotation[3+row]*authoredPole[1]+
+                      controllerRoot.rotation[6+row]*authoredPole[2];
         float solveUpper=upper,solveLower=lower;
         const float dx=desired.translation[0]-nodes[shoulder].translation[0];
         const float dy=desired.translation[1]-nodes[shoulder].translation[1];
@@ -30113,51 +30120,38 @@ namespace
         // is the frame in which the Storm pole vectors and the controller
         // offsets are authored, and using the centre root makes both eyes see
         // the exact same articulated pose.
-        BoneMatrix cameraRoot{},inverseCameraRoot{},controllerRoot{};
-        if (!Halo4LoadCenterRoot(1.0f,cameraRoot) ||
-            !InvertBoneMatrix(cameraRoot,inverseCameraRoot) ||
-            !Halo4LoadControllerRoot(1.0f,controllerRoot))
+        BoneMatrix controllerRoot{};
+        if (!Halo4LoadControllerRoot(1.0f,controllerRoot))
             return Halo4VrikStage::AnchorFailed;
-        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
-        {
-            BoneMatrix local{};
-            if (!ComposeBoneMatrices(inverseCameraRoot,solved[i],local))
-                return Halo4VrikStage::AnchorFailed;
-            solved[i]=local;
-        }
 
-        // Classification runs on those camera-relative records: the authored
-        // Storm bind geometry that identifies the arms record is expressed in
-        // the model's own frame, which is what C-H4-14's admission gate
-        // measures against.
-        {
-            const BoneMatrix identityRoot{1.0f,{1,0,0, 0,1,0, 0,0,1},{0,0,0}};
-            const Halo4VrikStage classified=
-                Halo4ClassifyStormArms(solved,identityRoot,bodyFill);
-            if (classified!=Halo4VrikStage::Solved) return classified;
-        }
+        // E-H4-21d proves this bank is already world-absolute. Keep it there.
+        // The controller target below is built in that same world frame, so no
+        // HMD camera, inverse-head transform, lift or compose-back participates
+        // in the rig.
+        const Halo4VrikStage classified=
+            Halo4ClassifyStormArms(solved,controllerRoot,bodyFill);
+        if (classified!=Halo4VrikStage::Solved) return classified;
 
-        const BoneMatrix stockRightHand=solved[kHalo4RightHandNode];
+        const BoneMatrix stockRightWorld=solved[kHalo4RightHandNode];
 
-        // Targets are built in the body/aim frame, then expressed back in the
-        // post-HMD camera-local frame only for this palette.  This conversion
-        // is frame bookkeeping, not a head-relative controller transform.
-        BoneMatrix rightBody{},leftBody{},rightWorld{},leftWorld{};
+        // Halo 3's strategy: build a controller pose from the recentered room
+        // origin and the pre-HMD game/body root, then put the gripping hand at
+        // that absolute pose. Halo 4 supplies its own axes and authored offsets.
+        BoneMatrix rightBody{},leftBody{};
         BoneMatrix rightTarget{},leftTarget{};
         if (!Halo4BuildControllerHandTarget(false,
                                             solved[kHalo4RightHandNode],rightBody) ||
-            !ComposeBoneMatrices(controllerRoot,rightBody,rightWorld) ||
-            !ComposeBoneMatrices(inverseCameraRoot,rightWorld,rightTarget))
+            !ComposeBoneMatrices(controllerRoot,rightBody,rightTarget))
             return Halo4VrikStage::RightPoseFailed;
         const bool leftTargetValid=
             Halo4BuildControllerHandTarget(true,solved[kHalo4LeftHandNode],leftBody) &&
-            ComposeBoneMatrices(controllerRoot,leftBody,leftWorld) &&
-            ComposeBoneMatrices(inverseCameraRoot,leftWorld,leftTarget);
+            ComposeBoneMatrices(controllerRoot,leftBody,leftTarget);
         if (!leftTargetValid)
             g_halo4Camera.vrikStageRefusals[static_cast<size_t>(
                 Halo4VrikStage::LeftPoseFailed)].fetch_add(
                     1,std::memory_order_relaxed);
-        if (!Halo4SolveStormArm(solved,false,rightTarget,nullptr))
+        if (!Halo4SolveStormArm(
+                solved,false,rightTarget,controllerRoot,nullptr))
             return Halo4VrikStage::RightIkFailed;
         if (leftTargetValid)
         {
@@ -30167,7 +30161,8 @@ namespace
             // a partly transformed support arm.
             BoneMatrix beforeLeft[kHalo4StormFpBodyNodeCount];
             memcpy(beforeLeft,solved,sizeof(beforeLeft));
-            if (!Halo4SolveStormArm(solved,true,leftTarget,nullptr))
+            if (!Halo4SolveStormArm(
+                    solved,true,leftTarget,controllerRoot,nullptr))
             {
                 memcpy(solved,beforeLeft,sizeof(beforeLeft));
                 g_halo4Camera.vrikStageRefusals[static_cast<size_t>(
@@ -30176,20 +30171,10 @@ namespace
             }
         }
 
-        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
-        {
-            BoneMatrix world{};
-            if (!ComposeBoneMatrices(cameraRoot,solved[i],world))
-                return Halo4VrikStage::AnchorFailed;
-            solved[i]=world;
-        }
-
-        // The native solve produced the hand delta in camera space.  Convert
-        // the stock and solved hand to the same world frame before publishing
-        // the transform for Halo 4's separate weapon records.
-        BoneMatrix worldStock{},inverseWorldStock{},weaponDelta{};
-        if (!ComposeBoneMatrices(cameraRoot,stockRightHand,worldStock) ||
-            !InvertBoneMatrix(worldStock,inverseWorldStock) ||
+        // The body and weapon inputs are both world-absolute. Carry the weapon
+        // by the exact world delta just applied to the gripping hand.
+        BoneMatrix inverseWorldStock{},weaponDelta{};
+        if (!InvertBoneMatrix(stockRightWorld,inverseWorldStock) ||
             !ComposeBoneMatrices(solved[kHalo4RightHandNode],inverseWorldStock,
                                  weaponDelta))
             return Halo4VrikStage::RightIkFailed;
