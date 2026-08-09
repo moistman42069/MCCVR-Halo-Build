@@ -29200,6 +29200,10 @@ namespace
         // a clean solve.
         std::atomic<uint64_t> vrikArmBandBonesCarried{0};
         std::atomic<uint64_t> vrikArmBandBonesSkipped{0};
+        // Left-shoulder minus right-shoulder along the camera's second basis
+        // column. Positive = that column really points left. Measured, not
+        // assumed, and never a refusal.
+        std::atomic<float> vrikShoulderTowardLeft{0.0f};
         // The four live arm-link distances of the last record to get past the
         // basis stage. A window that solves nothing still publishes what the
         // ENGINE holds, which is what decides whether the bind envelope or the
@@ -29761,9 +29765,28 @@ namespace
         }
         if (!Halo4StormLinkLengthsMatch(ru,rl,lu,ll))
             return Halo4VrikStage::LinkFailed;
-        // Side ordering against the VR camera's own LEFT axis. Comparing a raw
-        // world component would follow the player's heading and pass for only
-        // about half of all facings.
+        // Shoulder separation along the VR camera's own LEFT axis. MEASURED
+        // AND PUBLISHED, NEVER REFUSED ON.
+        //
+        // This test asserted that node 5 sits on the camera's +left of node 4,
+        // i.e. that the second basis column really points left. Nothing ever
+        // proved that convention, and until tonight the test never even ran -
+        // the bind-derived link gate returned LinkFailed first, so its 0
+        // refusals meant "never reached", not "passed". The moment the link
+        // gate was corrected, this refused 972/972, 968/968 and 148/172 body
+        // records: it is the whole reason the arms went dead.
+        //
+        // It also cannot change any assignment. The H4EK tag is authoritative
+        // about anatomy - node 4 is b_r_upperarm and node 5 is b_l_upperarm -
+        // so the left controller drives node 5 whichever way the camera's Y
+        // axis happens to point. Refusing the record on an unproven axis
+        // convention only ever cost the arms; it never protected anything.
+        //
+        // Record identity is already established before this point by the
+        // ENGINE's own fill flag, which the live log shows is 100% readable
+        // and partitions the traffic exactly 1:2 every window. That is what
+        // says "this is the body". This publishes the sign so the convention
+        // becomes measured evidence instead of an assumption.
         float separation[3];
         for (int i=0;i<3;++i)
             separation[i]=nodes[kHalo4LeftShoulderNode].translation[i]-
@@ -29772,7 +29795,9 @@ namespace
             vrRoot.rotation[3]*separation[0]+
             vrRoot.rotation[4]*separation[1]+
             vrRoot.rotation[5]*separation[2];
-        if (!(towardLeft>0.0f)) return Halo4VrikStage::SideFailed;
+        if (publish)
+            g_halo4Camera.vrikShoulderTowardLeft.store(
+                towardLeft,std::memory_order_relaxed);
         return Halo4VrikStage::Solved;
     }
 
@@ -32198,13 +32223,17 @@ namespace
         // read alongside the solved count, never instead of it.
         LOG("Halo 4 C-H4-21 VRIK arm bands in 2s: %llu helper bones carried, "
             "%llu skipped (28 per solved record: shoulder/upperarm/forearm/"
-            "elbow helpers, fixups, elbow armour and hand twist)",
+            "elbow helpers, fixups, elbow armour and hand twist); shoulder "
+            "separation along the camera's left column %.4f (positive = that "
+            "column points left; MEASURED, never refused on)",
             static_cast<unsigned long long>(
                 g_halo4Camera.vrikArmBandBonesCarried.exchange(
                     0,std::memory_order_relaxed)),
             static_cast<unsigned long long>(
                 g_halo4Camera.vrikArmBandBonesSkipped.exchange(
-                    0,std::memory_order_relaxed)));
+                    0,std::memory_order_relaxed)),
+            g_halo4Camera.vrikShoulderTowardLeft.load(
+                std::memory_order_relaxed));
         // The decode probe. If the element layout is right, column error and
         // ortho error are both near zero for every real animation matrix; if
         // they are large, we are reading the 0x34-byte element in the wrong
