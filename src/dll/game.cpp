@@ -29923,6 +29923,126 @@ namespace
         return true;
     }
 
+    // Halo 4's final palette is a different consumer from Halo 3/ODST/Reach.
+    // Keep the cross-title strategy (articulate the body first; carry the
+    // separate weapon by the gripping hand), but solve this title's authored
+    // Storm hierarchy directly.  Applying each joint delta to its complete
+    // tag-proven subtree moves the helper, armour and finger nodes together;
+    // there is no 64-bit-mask tail or post-solve helper-band repair involved.
+    bool Halo4BuildDirectionDelta(const float from[3], const float to[3],
+                                  const float pivot[3], BoneMatrix& delta)
+    {
+        float a[3]={from[0],from[1],from[2]};
+        float b[3]={to[0],to[1],to[2]};
+        auto normalize=[](float v[3]) {
+            const float length=sqrtf(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
+            if (!isfinite(length) || length<1.0e-5f) return false;
+            for (int i=0;i<3;++i) v[i]/=length;
+            return true;
+        };
+        if (!normalize(a) || !normalize(b)) return false;
+        const float cross[3]={a[1]*b[2]-a[2]*b[1],
+                              a[2]*b[0]-a[0]*b[2],
+                              a[0]*b[1]-a[1]*b[0]};
+        float dot=Clamp(a[0]*b[0]+a[1]*b[1]+a[2]*b[2],-1.0f,1.0f);
+        float quaternion[4]={cross[0],cross[1],cross[2],1.0f+dot};
+        if (1.0f+dot<1.0e-4f)
+        {
+            const float axis[3]={fabsf(a[0])<0.8f?1.0f:0.0f,
+                                 fabsf(a[0])<0.8f?0.0f:1.0f,0.0f};
+            quaternion[0]=a[1]*axis[2]-a[2]*axis[1];
+            quaternion[1]=a[2]*axis[0]-a[0]*axis[2];
+            quaternion[2]=a[0]*axis[1]-a[1]*axis[0];
+            quaternion[3]=0.0f;
+        }
+        delta=BoneMatrix{};
+        delta.scale=1.0f;
+        if (!Halo4QuaternionToBoneBasis(quaternion,delta.rotation)) return false;
+        for (int row=0;row<3;++row)
+        {
+            float rotated=0.0f;
+            for (int column=0;column<3;++column)
+                rotated+=delta.rotation[column*3+row]*pivot[column];
+            delta.translation[row]=pivot[row]-rotated;
+        }
+        return true;
+    }
+
+    template<size_t N>
+    bool Halo4ApplySubtreeDelta(BoneMatrix* nodes, const int (&indices)[N],
+                                const BoneMatrix& delta)
+    {
+        for (int index : indices)
+        {
+            BoneMatrix moved{};
+            if (!ComposeBoneMatrices(delta,nodes[index],moved)) return false;
+            nodes[index]=moved;
+        }
+        return true;
+    }
+
+    // Title-native two-bone application over the actual Storm subtrees.  The
+    // generic analytic elbow point is merely geometry; all axes, poles,
+    // attachment orientation and every carried node belong to Halo 4 evidence.
+    bool Halo4SolveStormArm(BoneMatrix* nodes, bool left,
+                            const BoneMatrix& desired,
+                            BoneMatrix* outHandDelta)
+    {
+        const int shoulder=left?kHalo4LeftShoulderNode:kHalo4RightShoulderNode;
+        const int elbow=left?kHalo4LeftElbowNode:kHalo4RightElbowNode;
+        const int hand=left?kHalo4LeftHandNode:kHalo4RightHandNode;
+        const float upper=Halo4VrikDistance(nodes[shoulder],nodes[elbow]);
+        const float lower=Halo4VrikDistance(nodes[elbow],nodes[hand]);
+        const float* pole=left?kHalo4LeftPoleDirection:kHalo4RightPoleDirection;
+        float solveUpper=upper,solveLower=lower;
+        const float dx=desired.translation[0]-nodes[shoulder].translation[0];
+        const float dy=desired.translation[1]-nodes[shoulder].translation[1];
+        const float dz=desired.translation[2]-nodes[shoulder].translation[2];
+        const float span=sqrtf(dx*dx+dy*dy+dz*dz);
+        if (upper+lower>1.0e-4f && span>upper+lower)
+        {
+            const float stretch=fminf(span/(upper+lower),1.8f);
+            solveUpper*=stretch;
+            solveLower*=stretch;
+        }
+        float solvedElbow[3];
+        if (!IK_SolveTwoBone(nodes[shoulder].translation,desired.translation,
+                             solveUpper,solveLower,pole,solvedElbow)) return false;
+        float oldUpper[3],newUpper[3];
+        for (int i=0;i<3;++i)
+        {
+            oldUpper[i]=nodes[elbow].translation[i]-nodes[shoulder].translation[i];
+            newUpper[i]=solvedElbow[i]-nodes[shoulder].translation[i];
+        }
+        BoneMatrix shoulderDelta{};
+        if (!Halo4BuildDirectionDelta(oldUpper,newUpper,nodes[shoulder].translation,
+                                      shoulderDelta)) return false;
+        if (left ? !Halo4ApplySubtreeDelta(nodes,kHalo4LeftShoulderSubtree,
+                                            shoulderDelta)
+                 : !Halo4ApplySubtreeDelta(nodes,kHalo4RightShoulderSubtree,
+                                            shoulderDelta)) return false;
+        float oldLower[3],newLower[3];
+        for (int i=0;i<3;++i)
+        {
+            oldLower[i]=nodes[hand].translation[i]-nodes[elbow].translation[i];
+            newLower[i]=desired.translation[i]-nodes[elbow].translation[i];
+        }
+        BoneMatrix elbowDelta{};
+        if (!Halo4BuildDirectionDelta(oldLower,newLower,nodes[elbow].translation,
+                                      elbowDelta)) return false;
+        if (left ? !Halo4ApplySubtreeDelta(nodes,kHalo4LeftElbowSubtree,elbowDelta)
+                 : !Halo4ApplySubtreeDelta(nodes,kHalo4RightElbowSubtree,elbowDelta))
+            return false;
+        BoneMatrix inverseHand{},handDelta{};
+        if (!InvertBoneMatrix(nodes[hand],inverseHand) ||
+            !ComposeBoneMatrices(desired,inverseHand,handDelta) ||
+            (left ? !Halo4ApplySubtreeDelta(nodes,kHalo4LeftHandSubtree,handDelta)
+                  : !Halo4ApplySubtreeDelta(nodes,kHalo4RightHandSubtree,handDelta)))
+            return false;
+        if (outHandDelta) *outHandDelta=handDelta;
+        return true;
+    }
+
     Halo4VrikStage Halo4BuildVrikPalette(const BoneMatrix* source,
                                          BoneMatrix* solved, bool bodyFill)
     {
@@ -29934,87 +30054,21 @@ namespace
                 sizeof(BoneMatrix)*kHalo4FirstPersonBankTransforms))
             return Halo4VrikStage::CopyFailed;
 
-        // THE SHARED SOLVER OWNS THE SOLVE (C-H4-21).
-        //
-        // C-H4-15..20 were six candidates all arguing about which space to
-        // solve in - model frame, world frame, camera frame, lift by node 0,
-        // lift by the camera root - because this function reimplemented, from
-        // scratch, work that ReconstructVisiblePaletteSource already does
-        // correctly and that ODST and Reach both simply CALL. That is the
-        // whole reason those two ports were not a struggle:
-        //
-        //   docs/ODST-WEAPON-IK-EVIDENCE.md: "Its palette hook calls the
-        //   existing Halo 3 ReconstructVisiblePaletteSource path", and "the
-        //   right and left shoulder/elbow/wrist chains use THE SHARED ANALYTIC
-        //   IK SOLVER".
-        //
-        // Halo 4 cannot copy their HOOK SITE - the shared palette consumer
-        // that Halo 3 (0x2C561C), ODST (0x2EDD10) and Reach (0x2B4EB0) all
-        // share does not exist in halo4.dll. Its distinctive 9-byte core
-        // (49 8B F0 0F B7 C9 4C 8B F2) scans exactly once in each of those
-        // three modules and ZERO times in halo4.dll's 17.8 MB: 343 rewrote the
-        // path into model_skinning.cpp's 8-argument function. So the boundary
-        // stays where E-H4-21b proved it.
-        //
-        // But the SOLVER is portable, and it is already parameterized for
-        // exactly this: FpExplicitPoseTargets exists so a title adapter can
-        // supply its own centre root and wrist targets instead of reading the
-        // Halo 3 camera atomics. Reach drives it through that door. Halo 4 now
-        // does too - so Halo 4 inherits, for free and identically, every fix
-        // those titles' headset sessions paid for:
-        //
-        //   - the CENTER-ROOT WORLD SOLVE, which is the actual cure for the
-        //     arms splitting between the eyes;
-        //   - shoulder levelling, so the shoulders stop swinging into the face
-        //     when the player looks down;
-        //   - the 75/25 out-and-down elbow pole bias;
-        //   - shoulder drop/back trims and the arm-failure diagnostics.
-        //
-        // NOT inherited: the per-eye stereo palette cache. It only engages
-        // when a title arms g_fpStereoSolveScope, which Halo 4's eye loop does
-        // not do, so Halo 4 re-solves per record. That is correct rather than
-        // merely acceptable - every input to the solve here comes from the
-        // CENTRE camera and the controller, so both eyes solve identically
-        // anyway and there is no per-eye divergence for the cache to prevent.
-        //
-        // THE ONE FRAME RULE THIS CODE MUST OBEY, stated exactly:
-        //
-        //   the shared solver's `unmodified` input records are relative to
-        //   `centerRoot`, and its output records are relative to `root`.
-        //
-        // Read applyArm: it takes a bone to world with ComposeBoneMatrices(
-        // armRoot, unmod[i], boneW) - armRoot IS centerRoot - and returns it
-        // with ComposeBoneMatrices(invRoot, newW, scratch[i]). Halo 3, ODST
-        // and Reach all satisfy that because the engine hands them RECORDS and
-        // the render root separately.
-        //
-        // HALO 4 DOES NOT. E-H4-21b measured this hook's third argument: "its
-        // input elements are 0x34-byte ABSOLUTE BoneMatrix records" - the two
-        // bank fills have already composed the camera root into every bone.
-        // Handing those absolute bones straight to the solver as `unmodified`
-        // would make it compose the camera root onto bones that already carry
-        // it: the headset pose applied TWICE. That is precisely the
-        // double-head-parent fault, and docs/archive/TEST-CHECKPOINT-2026-07-18.md
-        // lists it under "Failed approaches that must not be repeated":
-        //
-        //   "Do not apply Controller * Head^-1. It produces conjugation and the
-        //    observed inverse/double head rotation."
-        //
-        // So the bank is LIFTED into camera-relative records before the call
-        // and composed back with the SAME root after it. That satisfies the
-        // solver's contract exactly, and it keeps armRoot equal to the camera -
-        // which the elbow pole bias and shoulder levelling both need, since
-        // "out" and "down" are camera-relative directions. Passing identity
-        // instead would have solved in the right space but swung the elbows
-        // with world axes as the player turned.
+        // H4's bank is world-absolute.  Work in the centre-camera frame: that
+        // is the frame in which the Storm pole vectors and the controller
+        // offsets are authored, and using the centre root makes both eyes see
+        // the exact same articulated pose.
         BoneMatrix cameraRoot{},inverseCameraRoot{};
         if (!Halo4LoadCenterRoot(1.0f,cameraRoot) ||
             !InvertBoneMatrix(cameraRoot,inverseCameraRoot))
             return Halo4VrikStage::AnchorFailed;
-        BoneMatrix local[kHalo4StormFpBodyNodeCount]{};
         for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
-            if (!ComposeBoneMatrices(inverseCameraRoot,solved[i],local[i]))
+        {
+            BoneMatrix local{};
+            if (!ComposeBoneMatrices(inverseCameraRoot,solved[i],local))
                 return Halo4VrikStage::AnchorFailed;
+            solved[i]=local;
+        }
 
         // Classification runs on those camera-relative records: the authored
         // Storm bind geometry that identifies the arms record is expressed in
@@ -30023,213 +30077,67 @@ namespace
         {
             const BoneMatrix identityRoot{1.0f,{1,0,0, 0,1,0, 0,0,1},{0,0,0}};
             const Halo4VrikStage classified=
-                Halo4ClassifyStormArms(local,identityRoot,bodyFill);
+                Halo4ClassifyStormArms(solved,identityRoot,bodyFill);
             if (classified!=Halo4VrikStage::Solved) return classified;
         }
 
-        // Captured in ABSOLUTE space, before the solve, so the weapon delta,
-        // the hand-tail carry and the arm-band carry below are all built from
-        // world-to-world pairs.
-        const BoneMatrix stockRightWorld=solved[kHalo4RightHandNode];
-        const BoneMatrix stockLeftWorld=solved[kHalo4LeftHandNode];
-        const BoneMatrix stockRightShoulderWorld=
-            solved[kHalo4RightShoulderNode];
-        const BoneMatrix stockRightElbowWorld=solved[kHalo4RightElbowNode];
-        const BoneMatrix stockLeftShoulderWorld=
-            solved[kHalo4LeftShoulderNode];
-        const BoneMatrix stockLeftElbowWorld=solved[kHalo4LeftElbowNode];
+        const BoneMatrix stockRightHand=solved[kHalo4RightHandNode];
 
         float headQuaternion[4],headPosition[3];
         if (!VR_GetHeadPose(headQuaternion,headPosition))
             return Halo4VrikStage::HeadPoseFailed;
-        // Halo4BuildTrackedHandTarget produces the hand about the CAMERA, in
-        // Blam forward/left/up, carrying the authored v4 attachment offsets.
-        // Composing through cameraRoot turns it into the absolute world pose
-        // FpExplicitPoseTargets is defined to take - applyArm compares the
-        // target against a WORLD shoulder/elbow/wrist. Built from the CENTRE
-        // camera, so neither eye can re-read tracking and the two eyes cannot
-        // solve different arms.
-        BoneMatrix rightLocal{},leftLocal{},rightTarget{},leftTarget{};
+        BoneMatrix rightTarget{},leftTarget{};
         if (!Halo4BuildTrackedHandTarget(false,headQuaternion,headPosition,
-                                         local[kHalo4RightHandNode],rightLocal) ||
-            !ComposeBoneMatrices(cameraRoot,rightLocal,rightTarget))
+                                         solved[kHalo4RightHandNode],rightTarget))
             return Halo4VrikStage::RightPoseFailed;
-        // THE LEFT ARM IS OPTIONAL, AND MUST NOT BE ABLE TO KILL THE RIGHT.
-        //
-        // This was fatal, which is a fault of exactly the same shape as the
-        // SideFailed one: a gate that had never run, sitting in front of the
-        // whole feature. VR_GetLeftControllerPose fails whenever the left
-        // controller sleeps, drops tracking, or is simply set down - and that
-        // refused the entire record, so BOTH arms went stock over the left
-        // controller alone.
-        //
-        // The shared solver already treats the left arm as optional: its left
-        // block sits inside `if (handApplied)`, a left failure only publishes
-        // a diagnostic, and it still returns the solved palette. Halo 3 relies
-        // on that every time the left controller is down. So an unavailable
-        // left target is now reported to the solver as "no left target"
-        // instead of refusing the record.
         const bool leftTargetValid=
             Halo4BuildTrackedHandTarget(true,headQuaternion,headPosition,
-                                        local[kHalo4LeftHandNode],leftLocal) &&
-            ComposeBoneMatrices(cameraRoot,leftLocal,leftTarget);
+                                        solved[kHalo4LeftHandNode],leftTarget);
         if (!leftTargetValid)
             g_halo4Camera.vrikStageRefusals[static_cast<size_t>(
                 Halo4VrikStage::LeftPoseFailed)].fetch_add(
                     1,std::memory_order_relaxed);
-
-        // Halo 4's own node indices and descendant masks, straight from the
-        // H4EK storm_fp tag (docs/HALO4-VRIK-AUTHORING.md): right 4->16->29,
-        // left 5->8->37. This is the ONLY title-specific data the shared
-        // solver needs - exactly the shape of ODST's adapter.
-        FpInterpolationContext fp{};
-        fp.source=source;
-        fp.count=kHalo4StormFpBodyNodeCount;
-        fp.player=0;
-        fp.slot=0;
-        fp.wrist=kHalo4RightHandNode;
-        fp.elbow=kHalo4RightElbowNode;
-        fp.shoulder=kHalo4RightShoulderNode;
-        fp.wristDescendants=Halo4SubtreeMask(kHalo4RightHandSubtree);
-        fp.cameraControl=-1;
-        // Halo 4 has no dual wield and no appended held-object boundary in
-        // this record - the weapon is a SEPARATE record, carried by the
-        // published delta below.
-        fp.heldObjectStart=-1;
-        fp.lWrist=kHalo4LeftHandNode;
-        fp.lElbow=kHalo4LeftElbowNode;
-        fp.lShoulder=kHalo4LeftShoulderNode;
-        fp.lWristDescendants=Halo4SubtreeMask(kHalo4LeftHandSubtree);
-        fp.valid=true;
-
-        FpExplicitPoseTargets targets{};
-        targets.centerRoot=cameraRoot;
-        targets.centerRootValid=true;
-        targets.rightWrist=rightTarget;
-        targets.rightWristValid=true;
-        targets.leftWrist=leftTarget;
-        targets.leftWristValid=leftTargetValid;
-        targets.rightScale=1.0f;
-        targets.leftScale=1.0f;
-
-        // ONE root, handed in once, and the solver applies it in BOTH
-        // directions itself: it takes `local` to world with centerRoot and
-        // returns records with root^-1, and both are cameraRoot. A second
-        // application is therefore arithmetically impossible - not merely
-        // unlikely - which is the property C-H4-19 was reaching for the hard
-        // way. `local` is camera-relative, which is exactly what the solver
-        // defines `unmodified` to be.
-        const BoneMatrix* replacement=nullptr;
-        if (!ReconstructVisiblePaletteSource(
-                0,fp,cameraRoot,source,replacement,&targets,local) ||
-            !replacement)
+        if (!Halo4SolveStormArm(solved,false,rightTarget,nullptr))
             return Halo4VrikStage::RightIkFailed;
-
-        // Back to the ABSOLUTE space the engine's consumer reads, with the
-        // same root. Bones the solver left alone round-trip to their exact
-        // original values (invRoot then root cancel), so anything outside the
-        // two arms is bit-for-bit the pose Halo 4 authored.
-        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
-            if (!ComposeBoneMatrices(cameraRoot,replacement[i],solved[i]))
-                return Halo4VrikStage::AnchorFailed;
-
-        // Carry the 16 hand bones at indices 64-79 that the solver's 64-bit
-        // descendant mask cannot address (see Halo4SubtreeMask). Each side's
-        // rigid hand delta is recovered from what the solve actually did to
-        // that hand - solved/stock - so the tail moves by exactly the same
-        // transform as the in-mask bones and the subtree stays rigid.
-        // Both operands are ABSOLUTE here - stockRightWorld/stockLeftWorld were
-        // captured from the bank before the lift, and solved[] is back in
-        // absolute space - so each delta is a pure world-to-world rigid motion.
-        BoneMatrix inverseStockRight{},inverseStockLeft{};
-        BoneMatrix rightHandDelta{},leftHandDelta{};
-        if (!InvertBoneMatrix(stockRightWorld,inverseStockRight) ||
-            !ComposeBoneMatrices(solved[kHalo4RightHandNode],inverseStockRight,
-                                 rightHandDelta) ||
-            !Halo4CarryHandTail(solved,kHalo4RightHandSubtree,rightHandDelta))
-            return Halo4VrikStage::RightIkFailed;
-        // Non-fatal for the same reason: when the left target was unavailable
-        // the solver left that arm game-animated, so its delta is identity and
-        // there is nothing to carry. Refusing here would throw away a
-        // perfectly good right arm.
-        if (!InvertBoneMatrix(stockLeftWorld,inverseStockLeft) ||
-            !ComposeBoneMatrices(solved[kHalo4LeftHandNode],inverseStockLeft,
-                                 leftHandDelta) ||
-            !Halo4CarryHandTail(solved,kHalo4LeftHandSubtree,leftHandDelta))
-            g_halo4Camera.vrikStageRefusals[static_cast<size_t>(
-                Halo4VrikStage::LeftIkFailed)].fetch_add(
-                    1,std::memory_order_relaxed);
-
-        // Carry the 28 helper/fixup/armour bones between the joints (see the
-        // band tables). Each rides the joint above it by that joint's own
-        // rigid motion, recovered from solved/stock exactly like the hand
-        // tail. Because applyArm bakes shoulder levelling and the
-        // shoulder_drop / shoulder_back_m trims into the world shoulder it
-        // builds, this delta carries those too - the bands cannot drift away
-        // from a trimmed shoulder.
-        //
-        // Deliberately FAIL-SOFT, per bone: a whole-record refusal here would
-        // revert to stock hands, which is strictly worse than one stale
-        // pauldron. Anything skipped is counted so the log can say so rather
-        // than reporting a clean solve over a torn arm.
+        if (leftTargetValid)
         {
-            auto carryBand=[&](const int* band,size_t count,int joint,
-                               const BoneMatrix& stockJoint)
+            // A left solve can fail after a shoulder delta has been applied.
+            // Its failure is feature-local: preserve the already-solved right
+            // arm and restore Halo 4's untouched left arm rather than emitting
+            // a partly transformed support arm.
+            BoneMatrix beforeLeft[kHalo4StormFpBodyNodeCount];
+            memcpy(beforeLeft,solved,sizeof(beforeLeft));
+            if (!Halo4SolveStormArm(solved,true,leftTarget,nullptr))
             {
-                BoneMatrix inverseStock{},delta{};
-                if (!InvertBoneMatrix(stockJoint,inverseStock) ||
-                    !ComposeBoneMatrices(solved[joint],inverseStock,delta))
-                {
-                    g_halo4Camera.vrikArmBandBonesSkipped.fetch_add(
-                        static_cast<uint64_t>(count),
-                        std::memory_order_relaxed);
-                    return;
-                }
-                for (size_t k=0;k<count;++k)
-                {
-                    BoneMatrix carried{};
-                    if (ComposeBoneMatrices(delta,solved[band[k]],carried))
-                    {
-                        solved[band[k]]=carried;
-                        g_halo4Camera.vrikArmBandBonesCarried.fetch_add(
-                            1,std::memory_order_relaxed);
-                    }
-                    else
-                        g_halo4Camera.vrikArmBandBonesSkipped.fetch_add(
-                            1,std::memory_order_relaxed);
-                }
-            };
-            carryBand(kHalo4RightUpperArmBand,
-                      std::size(kHalo4RightUpperArmBand),
-                      kHalo4RightShoulderNode,stockRightShoulderWorld);
-            carryBand(kHalo4RightForearmBand,
-                      std::size(kHalo4RightForearmBand),
-                      kHalo4RightElbowNode,stockRightElbowWorld);
-            carryBand(kHalo4LeftUpperArmBand,
-                      std::size(kHalo4LeftUpperArmBand),
-                      kHalo4LeftShoulderNode,stockLeftShoulderWorld);
-            carryBand(kHalo4LeftForearmBand,
-                      std::size(kHalo4LeftForearmBand),
-                      kHalo4LeftElbowNode,stockLeftElbowWorld);
+                memcpy(solved,beforeLeft,sizeof(beforeLeft));
+                g_halo4Camera.vrikStageRefusals[static_cast<size_t>(
+                    Halo4VrikStage::LeftIkFailed)].fetch_add(
+                        1,std::memory_order_relaxed);
+            }
         }
 
-        // Publish the right hand's motion as a WORLD-space rigid transform, so
-        // the separate weapon records can be carried by exactly the motion the
-        // hand holding them just made. Both banks share the camera root, so one
-        // world delta is valid for both. Published only once the palette above
-        // is fully built, so the gun can never be moved by a solve the arms did
-        // not actually receive.
-        // stockRightWorld and solved[] are both absolute here, so the delta
-        // recovered above is exactly the transform the gun needs.
+        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
         {
-            const BoneMatrix& weaponDelta=rightHandDelta;
-            StoreAtomicBoneMatrix(g_halo4WeaponDelta,weaponDelta);
-            g_halo4WeaponDeltaPublishedAt.store(
-                g_halo4Camera.vrikExactReturnHits.load(
-                    std::memory_order_relaxed),
-                std::memory_order_release);
-            g_halo4WeaponDeltaSerial.fetch_add(1,std::memory_order_acq_rel);
+            BoneMatrix world{};
+            if (!ComposeBoneMatrices(cameraRoot,solved[i],world))
+                return Halo4VrikStage::AnchorFailed;
+            solved[i]=world;
         }
+
+        // The native solve produced the hand delta in camera space.  Convert
+        // the stock and solved hand to the same world frame before publishing
+        // the transform for Halo 4's separate weapon records.
+        BoneMatrix worldStock{},inverseWorldStock{},weaponDelta{};
+        if (!ComposeBoneMatrices(cameraRoot,stockRightHand,worldStock) ||
+            !InvertBoneMatrix(worldStock,inverseWorldStock) ||
+            !ComposeBoneMatrices(solved[kHalo4RightHandNode],inverseWorldStock,
+                                 weaponDelta))
+            return Halo4VrikStage::RightIkFailed;
+        StoreAtomicBoneMatrix(g_halo4WeaponDelta,weaponDelta);
+        g_halo4WeaponDeltaPublishedAt.store(
+            g_halo4Camera.vrikExactReturnHits.load(std::memory_order_relaxed),
+            std::memory_order_release);
+        g_halo4WeaponDeltaSerial.fetch_add(1,std::memory_order_acq_rel);
 
         // FLOATING HANDS: a presentation filter over the finished palette, and
         // deliberately the LAST thing that touches it - nothing composes after
@@ -32244,19 +32152,10 @@ namespace
                 g_halo4Camera.vrikUnreadableFillRecords.exchange(
                     0,std::memory_order_relaxed)));
         // The 28 helper/fixup/armour bones the shared solver does not reach.
-        // A solved arm with zero carried bands is a TORN arm, so this must be
-        // read alongside the solved count, never instead of it.
-        LOG("Halo 4 C-H4-21 VRIK arm bands in 2s: %llu helper bones carried, "
-            "%llu skipped (28 per solved record: shoulder/upperarm/forearm/"
-            "elbow helpers, fixups, elbow armour and hand twist); shoulder "
-            "separation along the camera's left column %.4f (positive = that "
-            "column points left; MEASURED, never refused on)",
-            static_cast<unsigned long long>(
-                g_halo4Camera.vrikArmBandBonesCarried.exchange(
-                    0,std::memory_order_relaxed)),
-            static_cast<unsigned long long>(
-                g_halo4Camera.vrikArmBandBonesSkipped.exchange(
-                    0,std::memory_order_relaxed)),
+        LOG("Halo 4 VRIK topology: native Storm shoulder/elbow/hand subtree "
+            "solve; separate weapon records follow the solved right hand; "
+            "shoulder separation along the camera's left column %.4f "
+            "(measured, never refused on)",
             g_halo4Camera.vrikShoulderTowardLeft.load(
                 std::memory_order_relaxed));
         // The decode probe. If the element layout is right, column error and
@@ -32278,7 +32177,8 @@ namespace
         // What the ENGINE holds, next to what the H4EK tag says it should.
         LOG("Halo 4 C-H4-14 VRIK live arm links: R %.4f/%.4f L %.4f/%.4f from "
             "%llu measured records; H4EK storm_fp bind is %.4f upper / %.4f "
-            "forearm, admitted upper (0.075,0.110) forearm (0.095,0.140)",
+            "forearm; current body sanity range upper (0.050,0.350) "
+            "forearm (0.050,0.500)",
             g_halo4Camera.vrikLastRightUpper.load(std::memory_order_relaxed),
             g_halo4Camera.vrikLastRightLower.load(std::memory_order_relaxed),
             g_halo4Camera.vrikLastLeftUpper.load(std::memory_order_relaxed),
