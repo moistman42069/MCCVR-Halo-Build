@@ -29492,6 +29492,9 @@ namespace
         std::atomic<float> value[12]{};   // position, forward, left, up
     };
     Halo4CenterRoot g_halo4CenterRoot;
+    // The body/aim frame before Halo 4's HMD pose is composed onto the camera.
+    // Controller ownership uses this frame, never the post-HMD camera frame.
+    Halo4CenterRoot g_halo4ControllerRoot;
 
     void Halo4PublishCenterRoot(const Halo4CameraBasis& center)
     {
@@ -29511,6 +29514,25 @@ namespace
             g_halo4CenterRoot.value[i].store(
                 packed[i],std::memory_order_relaxed);
         g_halo4CenterRoot.sequence.fetch_add(1,std::memory_order_release);
+    }
+
+    void Halo4PublishControllerRoot(const Halo4CameraBasis& center)
+    {
+        const float left[3] = {
+            center.up[1]*center.forward[2]-center.up[2]*center.forward[1],
+            center.up[2]*center.forward[0]-center.up[0]*center.forward[2],
+            center.up[0]*center.forward[1]-center.up[1]*center.forward[0]};
+        const float packed[12] = {
+            center.position[0],center.position[1],center.position[2],
+            center.forward[0],center.forward[1],center.forward[2],
+            left[0],left[1],left[2],center.up[0],center.up[1],center.up[2]};
+        for (float component : packed)
+            if (!isfinite(component)) return;
+        g_halo4ControllerRoot.sequence.fetch_add(1,std::memory_order_acq_rel);
+        for (int i=0;i<12;++i)
+            g_halo4ControllerRoot.value[i].store(
+                packed[i],std::memory_order_relaxed);
+        g_halo4ControllerRoot.sequence.fetch_add(1,std::memory_order_release);
     }
 
     // Blam column order is forward / left / up, matching BoneMatrix::rotation.
@@ -29536,6 +29558,34 @@ namespace
                 root.rotation[i]=packed[3+i];      // forward
                 root.rotation[3+i]=packed[6+i];    // left
                 root.rotation[6+i]=packed[9+i];    // up
+            }
+            return true;
+        }
+        return false;
+    }
+
+    bool Halo4LoadControllerRoot(float scale, BoneMatrix& root)
+    {
+        for (int attempt=0;attempt<4;++attempt)
+        {
+            const uint32_t before=g_halo4ControllerRoot.sequence.load(
+                std::memory_order_acquire);
+            if (!before || (before&1)) continue;
+            float packed[12];
+            for (int i=0;i<12;++i)
+                packed[i]=g_halo4ControllerRoot.value[i].load(
+                    std::memory_order_relaxed);
+            const uint32_t after=g_halo4ControllerRoot.sequence.load(
+                std::memory_order_acquire);
+            if (before!=after || (after&1)) continue;
+            root=BoneMatrix{};
+            root.scale=isfinite(scale)&&fabsf(scale)>0.001f ? scale : 1.0f;
+            for (int i=0;i<3;++i)
+            {
+                root.translation[i]=packed[i];
+                root.rotation[i]=packed[3+i];
+                root.rotation[3+i]=packed[6+i];
+                root.rotation[6+i]=packed[9+i];
             }
             return true;
         }
@@ -29816,28 +29866,33 @@ namespace
         return true;
     }
 
-    // The head pose is passed in rather than re-read per hand: two reads can
-    // straddle a pose update and skew the hands relative to each other.
-    bool Halo4BuildTrackedHandTarget(bool left, const float hq[4],
-                                     const float hp[3], const BoneMatrix& stock,
-                                     BoneMatrix& target)
+    // Build a controller-owned target in the pre-HMD body frame.  This is the
+    // Halo 3 strategy expressed with Halo 4's own camera evidence: controller
+    // displacement starts at the recentered tracking origin and is mapped by
+    // the game body/aim root, never by the headset's current pose.  Applying
+    // Head^-1 here was only valid when the renderer's root used the same pose
+    // convention; Halo 4's post-head camera does not, producing the reported
+    // inverted head-follow.
+    bool Halo4BuildControllerHandTarget(bool left, const BoneMatrix& stock,
+                                        BoneMatrix& target)
     {
         float cq[4],cp[3];
         if (left ? !VR_GetLeftControllerPose(cq,cp) : !VR_GetAimPose(cq,cp))
             return false;
-        float unitHead[4];
-        if (!Halo4NormalizeQuaternion(hq,unitHead)) return false;
-        const float inverseHead[4] =
-            {-unitHead[0],-unitHead[1],-unitHead[2],unitHead[3]};
-        float relativeQ[4];
-        Halo4MultiplyQuaternion(inverseHead,cq,relativeQ);
-        float roomDelta[3] = {cp[0]-hp[0],cp[1]-hp[1],cp[2]-hp[2]};
-        float relativeP[3];
-        Halo4RotateVectorByQuaternion(inverseHead,roomDelta,relativeP);
+        if (!g_halo4Camera.headReferenceValid.load(std::memory_order_acquire))
+            return false;
+        float roomDelta[3];
+        for (int axis=0;axis<3;++axis)
+        {
+            const float reference=g_halo4Camera.headPositionReference[axis].load(
+                std::memory_order_relaxed);
+            roomDelta[axis]=cp[axis]-reference;
+            if (!isfinite(roomDelta[axis])) return false;
+        }
 
         Halo4HandPlacementInput placement{};
-        memcpy(placement.controllerOffset,relativeP,sizeof(relativeP));
-        memcpy(placement.controllerOrientation,relativeQ,sizeof(relativeQ));
+        memcpy(placement.controllerOffset,roomDelta,sizeof(roomDelta));
+        memcpy(placement.controllerOrientation,cq,sizeof(cq));
         placement.worldScale=g_worldScale.load(std::memory_order_relaxed);
         placement.forwardTrim=g_config.halo4_hand_forward_m;
         placement.verticalTrim=g_config.halo4_hand_vertical_m;
@@ -30058,9 +30113,10 @@ namespace
         // is the frame in which the Storm pole vectors and the controller
         // offsets are authored, and using the centre root makes both eyes see
         // the exact same articulated pose.
-        BoneMatrix cameraRoot{},inverseCameraRoot{};
+        BoneMatrix cameraRoot{},inverseCameraRoot{},controllerRoot{};
         if (!Halo4LoadCenterRoot(1.0f,cameraRoot) ||
-            !InvertBoneMatrix(cameraRoot,inverseCameraRoot))
+            !InvertBoneMatrix(cameraRoot,inverseCameraRoot) ||
+            !Halo4LoadControllerRoot(1.0f,controllerRoot))
             return Halo4VrikStage::AnchorFailed;
         for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
         {
@@ -30083,16 +30139,20 @@ namespace
 
         const BoneMatrix stockRightHand=solved[kHalo4RightHandNode];
 
-        float headQuaternion[4],headPosition[3];
-        if (!VR_GetHeadPose(headQuaternion,headPosition))
-            return Halo4VrikStage::HeadPoseFailed;
+        // Targets are built in the body/aim frame, then expressed back in the
+        // post-HMD camera-local frame only for this palette.  This conversion
+        // is frame bookkeeping, not a head-relative controller transform.
+        BoneMatrix rightBody{},leftBody{},rightWorld{},leftWorld{};
         BoneMatrix rightTarget{},leftTarget{};
-        if (!Halo4BuildTrackedHandTarget(false,headQuaternion,headPosition,
-                                         solved[kHalo4RightHandNode],rightTarget))
+        if (!Halo4BuildControllerHandTarget(false,
+                                            solved[kHalo4RightHandNode],rightBody) ||
+            !ComposeBoneMatrices(controllerRoot,rightBody,rightWorld) ||
+            !ComposeBoneMatrices(inverseCameraRoot,rightWorld,rightTarget))
             return Halo4VrikStage::RightPoseFailed;
         const bool leftTargetValid=
-            Halo4BuildTrackedHandTarget(true,headQuaternion,headPosition,
-                                        solved[kHalo4LeftHandNode],leftTarget);
+            Halo4BuildControllerHandTarget(true,solved[kHalo4LeftHandNode],leftBody) &&
+            ComposeBoneMatrices(controllerRoot,leftBody,leftWorld) &&
+            ComposeBoneMatrices(inverseCameraRoot,leftWorld,leftTarget);
         if (!leftTargetValid)
             g_halo4Camera.vrikStageRefusals[static_cast<size_t>(
                 Halo4VrikStage::LeftPoseFailed)].fetch_add(
@@ -30882,6 +30942,10 @@ namespace
             Halo4NoteRejection(Halo4StereoRejection::CameraInvalid, false);
             return Halo4StereoResult::NotStarted;
         }
+        // Retain the game body/aim camera before HMD composition.  Hands are
+        // controller-owned in this frame; `stock` below becomes the HMD-owned
+        // render camera and must not be reused for their placement.
+        const Halo4CameraBasis controllerRoot = stock;
 
         // C-H4-9: publish the ENGINE's own look pitch, taken before any of our
         // head transform touches it. This observer forward is the ray Halo
@@ -31107,6 +31171,8 @@ namespace
         // which is read back AFTER ApplyHeadLook.
         if (Halo4ValidateCameraBasis(stock))
             Halo4PublishCenterRoot(stock);
+        if (Halo4ValidateCameraBasis(controllerRoot))
+            Halo4PublishControllerRoot(controllerRoot);
 
         // C-H4-8: solve each eye's raster cover from the runtime's own reported
         // frustum. Nothing here names a headset. Halo 4's stock cover is
