@@ -30054,10 +30054,29 @@ namespace
                                          local[kHalo4RightHandNode],rightLocal) ||
             !ComposeBoneMatrices(cameraRoot,rightLocal,rightTarget))
             return Halo4VrikStage::RightPoseFailed;
-        if (!Halo4BuildTrackedHandTarget(true,headQuaternion,headPosition,
-                                         local[kHalo4LeftHandNode],leftLocal) ||
-            !ComposeBoneMatrices(cameraRoot,leftLocal,leftTarget))
-            return Halo4VrikStage::LeftPoseFailed;
+        // THE LEFT ARM IS OPTIONAL, AND MUST NOT BE ABLE TO KILL THE RIGHT.
+        //
+        // This was fatal, which is a fault of exactly the same shape as the
+        // SideFailed one: a gate that had never run, sitting in front of the
+        // whole feature. VR_GetLeftControllerPose fails whenever the left
+        // controller sleeps, drops tracking, or is simply set down - and that
+        // refused the entire record, so BOTH arms went stock over the left
+        // controller alone.
+        //
+        // The shared solver already treats the left arm as optional: its left
+        // block sits inside `if (handApplied)`, a left failure only publishes
+        // a diagnostic, and it still returns the solved palette. Halo 3 relies
+        // on that every time the left controller is down. So an unavailable
+        // left target is now reported to the solver as "no left target"
+        // instead of refusing the record.
+        const bool leftTargetValid=
+            Halo4BuildTrackedHandTarget(true,headQuaternion,headPosition,
+                                        local[kHalo4LeftHandNode],leftLocal) &&
+            ComposeBoneMatrices(cameraRoot,leftLocal,leftTarget);
+        if (!leftTargetValid)
+            g_halo4Camera.vrikStageRefusals[static_cast<size_t>(
+                Halo4VrikStage::LeftPoseFailed)].fetch_add(
+                    1,std::memory_order_relaxed);
 
         // Halo 4's own node indices and descendant masks, straight from the
         // H4EK storm_fp tag (docs/HALO4-VRIK-AUTHORING.md): right 4->16->29,
@@ -30089,7 +30108,7 @@ namespace
         targets.rightWrist=rightTarget;
         targets.rightWristValid=true;
         targets.leftWrist=leftTarget;
-        targets.leftWristValid=true;
+        targets.leftWristValid=leftTargetValid;
         targets.rightScale=1.0f;
         targets.leftScale=1.0f;
 
@@ -30129,11 +30148,17 @@ namespace
                                  rightHandDelta) ||
             !Halo4CarryHandTail(solved,kHalo4RightHandSubtree,rightHandDelta))
             return Halo4VrikStage::RightIkFailed;
+        // Non-fatal for the same reason: when the left target was unavailable
+        // the solver left that arm game-animated, so its delta is identity and
+        // there is nothing to carry. Refusing here would throw away a
+        // perfectly good right arm.
         if (!InvertBoneMatrix(stockLeftWorld,inverseStockLeft) ||
             !ComposeBoneMatrices(solved[kHalo4LeftHandNode],inverseStockLeft,
                                  leftHandDelta) ||
             !Halo4CarryHandTail(solved,kHalo4LeftHandSubtree,leftHandDelta))
-            return Halo4VrikStage::LeftIkFailed;
+            g_halo4Camera.vrikStageRefusals[static_cast<size_t>(
+                Halo4VrikStage::LeftIkFailed)].fetch_add(
+                    1,std::memory_order_relaxed);
 
         // Carry the 28 helper/fixup/armour bones between the joints (see the
         // band tables). Each rides the joint above it by that joint's own

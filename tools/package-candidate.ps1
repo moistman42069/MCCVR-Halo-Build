@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c22-arms-live',
+        'halo4-c23-arms-live',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,7 +181,7 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-22'
+            id = 'C-H4-23'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
             behavior = 'arms-solved-by-the-shared-ReconstructVisiblePaletteSource-solver-through-FpExplicitPoseTargets-exactly-as-ODST-and-Reach-do-with-the-64-79-hand-tail-carried-by-the-same-rigid-hand-delta'
             head_tracking = $true
