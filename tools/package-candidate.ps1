@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c39-free-left-anatomical-heading',
+        'halo4-c40-free-left-parity-wrist',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-39'
+            id = 'C-H4-40'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'free-left-only-live-halo4-middle-thumb-anatomical-heading-under-the-raw-left-controller-with-fingers-forward-thumb-outward-palm-down-back-up-while-the-headset-accepted-c38-two-hand-support-target-remains-byte-identical'
+            behavior = 'free-left-only-direct-authored-wrist-on-the-h3-odst-reach-mirrored-left-controller-mount-while-the-headset-accepted-c38-two-hand-support-target-remains-byte-identical'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -200,17 +200,17 @@ try {
             weapon_follows_hand = $true
             controller_facing_orientation = $true
             orientation_source =
-                'free-live-h4ek-middle-thumb-anatomy-under-raw-left-controller-support-exact-c38-frozen-right-aim'
+                'free-direct-controller-times-shared-mirrored-left-mount-support-exact-c38-frozen-right-aim'
             left_presentation_trim =
-                'none-free-anatomical-raw-left-controller-support-exact-c38-shared-prepared-right-aim'
+                'free-minus-yaw-plus-pitch-minus-roll-matching-h3-odst-reach-support-exact-c38-shared-prepared-right-aim'
             free_left_palm =
-                'live-storm-b_l_middle1-and-b_l_thumb1-frame-fingers-forward-thumb-outward-palm-down-back-up'
+                'authored-halo4-wrist-seated-directly-on-the-h3-odst-reach-left-controller-mount'
             two_hand_left_pose =
                 'byte-identical-c38-right-aim-shared-rotational-parent-with-live-left-wrist-relation-left-translation-unchanged'
             failure_policy =
                 'pre-claim-stock-post-claim-frame-drop-core-remains-armed'
             vrik_failure_policy =
-                'base-rigid-or-state-parent-invalid-input-leaves-that-palette-stock-while-optional-free-anatomy-invalid-input-keeps-the-exact-c38-free-target-and-continues-right-hand-held-model-and-camera-core'
+                'base-rigid-or-state-parent-invalid-input-leaves-that-palette-stock-while-optional-free-parity-mount-invalid-input-keeps-the-c38-free-target-and-continues-right-hand-held-model-and-camera-core'
         }
         # Reach support is permanent, while player-visible optional features
         # fail open independently and never disarm the working camera core.
@@ -285,7 +285,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-39 is an unaccepted headset candidate responding to the exact C-H4-38 Steam/SteamVR OpenXR Oculus 120 Hz run from source 2a0ca3d4dca5285515522eef8ca4c843c5250ccf and DLL 91D4BD20AABCCEB153D8D76C7D3E85BC0808E7728842FFE1538F704C307EA204. That run committed 56,912 free and 7,600 exact-support palettes with zero fallback/refusal. The user judged the two-hand grip perfect and rejected only the placement of the back of the free left hand. C-H4-39 preserves the C-H4-38 support target byte-for-byte and changes only free orientation: live direct-child b_l_middle1/b_l_thumb1 rays form a proper anatomical frame mapping fingers to raw-controller forward, thumb outward, palm down and back of hand up. Right hand, held gun, every position/scale, record routing, no-IK policy and camera process are unchanged. Invalid optional anatomy retains the exact C-H4-38 free target and continues right/gun. C-H4-1 remains the accepted rollback pointer until explicit headset acceptance.'
+        note = 'C-H4-40 is an unaccepted headset candidate responding to the exact C-H4-39 Steam/SteamVR OpenXR Oculus 120 Hz run from source 5b72fc4350837ed7bb5c2fb2d068376a9d5ea0cc and DLL 7E6D36EA4F4B9BE74894D4755F2A9903BA56ED56EBD6DE78DA9BCD8E01D57D3A. That run committed 56,584 anatomical-free palettes with zero support/fallback/refusal, and the user rejected its finger-to-aim mapping while supplying the H3/ODST/Reach controller-grip pose as reference. C-H4-40 preserves the headset-accepted C-H4-38 support target byte-for-byte and changes only free rotation: it seats the authored Halo 4 wrist directly on the same controller-times-mirrored-trim mount used by H3, ODST and Reach, with no eye-local wrist factor and no anatomical finger-to-aim mapping. Right hand, held gun, every position/scale, record routing, no-IK policy and camera process are unchanged. Invalid optional free mount retains the C-H4-38 free target and continues right/gun. C-H4-1 remains the accepted rollback pointer until explicit headset acceptance.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

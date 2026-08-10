@@ -7592,6 +7592,43 @@ int main()
         Check(Halo4BuildFloatingControllerRerootTarget(
                   selectedFreeCarrier,eye0,stockEye0,freeStateReroot),
             "The C-H4-38 free hand reroots from the raw left-controller parent");
+        Halo4FloatingTransform parityFreeTarget{},expectedParityCarrier{};
+        Check(Halo4BuildFloatingFreeLeftParityTarget(
+                  selectedFreeCarrier,carrierYawDeg,carrierPitchDeg,
+                  carrierRollDeg,freeStateReroot,parityFreeTarget) &&
+              Halo4BuildFloatingControllerCarrier(
+                  selectedFreeCarrier.rotation,
+                  selectedFreeCarrier.translation,true,
+                  carrierYawDeg,carrierPitchDeg,carrierRollDeg,
+                  expectedParityCarrier),
+            "C-H4-40 builds the free wrist with the shared H3/ODST/Reach left-controller mount");
+        bool parityFreeRotationMatches=true;
+        for (int i=0;i<9;++i)
+            parityFreeRotationMatches=parityFreeRotationMatches &&
+                fabsf(parityFreeTarget.rotation[i]-
+                       expectedParityCarrier.rotation[i])<1.0e-6f;
+        Check(parityFreeRotationMatches,
+            "The free wrist equals controller times mirrored trim directly, without a camera-local wrist or finger-to-aim mapping");
+        Check(parityFreeTarget.translation[0]==freeStateReroot.translation[0] &&
+                  parityFreeTarget.translation[1]==freeStateReroot.translation[1] &&
+                  parityFreeTarget.translation[2]==freeStateReroot.translation[2] &&
+                  parityFreeTarget.scale==freeStateReroot.scale,
+            "The C-H4-40 parity mount preserves C-H4-38 free-hand placement and stock scale exactly");
+        bool parityDoesNotRetainEyeWrist=false;
+        for (int i=0;i<9;++i)
+            parityDoesNotRetainEyeWrist=parityDoesNotRetainEyeWrist ||
+                fabsf(parityFreeTarget.rotation[i]-
+                       freeStateReroot.rotation[i])>1.0e-3f;
+        Check(parityDoesNotRetainEyeWrist,
+            "The noncommuting fixture proves C-H4-40 removed the rejected live camera-local wrist relation");
+        Halo4FloatingTransform untouchedParity{};
+        untouchedParity.translation[0]=44.0f;
+        Check(!Halo4BuildFloatingFreeLeftParityTarget(
+                  selectedFreeCarrier,
+                  std::numeric_limits<float>::quiet_NaN(),carrierPitchDeg,
+                  carrierRollDeg,freeStateReroot,untouchedParity) &&
+                  untouchedParity.translation[0]==44.0f,
+            "Invalid optional C-H4-40 mount input publishes nothing over the C-H4-38 fallback");
         Halo4FloatingTransform supportLocalWrist{};
         supportLocalWrist.translation[0]=-0.16f;
         supportLocalWrist.translation[1]=0.29f;
@@ -7766,6 +7803,8 @@ int main()
             fingerForward[2]*thumbOutward[0]-fingerForward[0]*thumbOutward[2],
             fingerForward[0]*thumbOutward[1]-fingerForward[1]*thumbOutward[0]};
         Halo4FloatingTransform freeAnatomicalTarget{};
+        Check(!kEnableHalo4C39FreeAnatomy,
+            "The headset-rejected C-H4-39 finger-to-aim experiment remains disabled");
         Check(Halo4BuildFloatingFreeLeftAnatomicalTarget(
                   selectedFreeCarrier,stockEye0,stockThumbBase,stockMiddleBase,
                   freePalmTarget,freeAnatomicalTarget),
@@ -8017,7 +8056,7 @@ int main()
         "Halo 4 advertises stereo, controller aim, haptics, runtime modes, "
         "room scale and controller input");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
-        "Halo 4 withholds ArmIk: C-H4-39 has one rigid no-IK floating-hands "
+        "Halo 4 withholds ArmIk: C-H4-40 has one rigid no-IK floating-hands "
         "transaction on the proven first-person return site");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
         "Halo 4 withholds Hud: its CUI arrives inside the captured scene "

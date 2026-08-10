@@ -3627,3 +3627,32 @@ aim-forward ray, whereas the reference seats the authored wrist frame on the
 controller and lets the title's finger geometry wrap around the grip. This run
 does not retest or revoke the separately accepted C-H4-38 support pose.
 C-H4-39 is disabled in production and retained only as dormant tested evidence.
+
+## E-H4-29 / C-H4-40 - H3/ODST/Reach free wrist mount
+
+The user's reference resolves the free-hand contract visually: the authored
+hand wraps the controller grip, with the wrist below the controller, the back
+of the hand outward, and the thumb on the outside. H3/ODST `DesiredWristWorld`
+and Reach `ReachBuildPreparedControllerTarget` implement that presentation by
+making the left wrist target equal the controller basis postmultiplied by the
+shared mirrored `(-gun_yaw,+gun_pitch,-gun_roll)` mount. They do not align a
+finger ray to controller aim-forward, and they do not retain an eye-local wrist
+basis in the final left-wrist target.
+
+C-H4-40 applies exactly that established player-facing contract to Halo 4 free
+mode. It copies the already-frozen raw left-controller carrier, applies the same
+mirrored mount once, and publishes that rotation directly as the desired wrist.
+The C-H4-38 physical target translation and live stock wrist scale remain
+unchanged. The headset-accepted two-hand branch bypasses this helper entirely
+and remains byte-for-byte C-H4-38. The C-H4-37 thumb flip and C-H4-39
+finger-to-aim anatomical mapping remain dormant evidence and are not stacked on
+the parity wrist target.
+
+Invalid optional free-mount input publishes no partial result and retains the
+C-H4-38 free reroot while right hand, held gun, and camera/OpenXR continue.
+Telemetry separately counts parity-wrist free commits, exact C-H4-38 support
+commits, and free fallback. Tests use noncommuting controller/eye/wrist bases to
+prove the free rotation is exactly controller times the mirrored mount, contains
+no eye-local wrist factor, preserves translation/scale, fails write-last, and
+does not touch the exact accepted support path. C-H4-40 is headset-pending;
+C-H4-1 remains the accepted rollback pointer.

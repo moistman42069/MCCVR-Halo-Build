@@ -632,10 +632,10 @@ inline bool Halo4BuildFloatingEyeLocalWrist(
 }
 
 // The immutable physical carrier introduced by C-H4-36 before a current-eye
-// Storm wrist is available. The legacy left=true branch retains that candidate's
-// tested mirrored trim for forensic coverage. C-H4-38 production passes
-// left=false for both prepared carriers: right aim already contains gun angles,
-// while the independent left hand now begins from its raw controller basis.
+// Storm wrist is available. The left=true branch is the exact H3/ODST/Reach
+// mirrored presentation mount. C-H4-40 uses it only for the independent hand;
+// right aim already contains the gun angles and accepted C-H4-38 support keeps
+// its frozen right-aim parent.
 inline bool Halo4BuildFloatingControllerCarrier(
     const float controllerBasis[9], const float physicalTarget[3], bool left,
     float gunYawDeg, float gunPitchDeg, float gunRollDeg,
@@ -713,6 +713,34 @@ inline bool Halo4BuildFloatingLeftCarrierForState(
     }
     if (!Halo4FloatingTransformValid(result)) return false;
     selectedLeftCarrier = result;
+    return true;
+}
+
+// C-H4-40 matches the H3/ODST/Reach free-hand contract shown by the headset
+// reference: seat the authored wrist basis directly on the tracked controller
+// with the shared mirrored presentation trim. Do not map a finger bone onto the
+// aim ray and do not retain Halo 4's camera-local wrist basis. Placement and
+// stock wrist scale come from the already-proven C-H4-38 target. Publish last.
+inline bool Halo4BuildFloatingFreeLeftParityTarget(
+    const Halo4FloatingTransform& rawLeftControllerCarrier,
+    float gunYawDeg, float gunPitchDeg, float gunRollDeg,
+    const Halo4FloatingTransform& placementTemplate,
+    Halo4FloatingTransform& desiredWorldWrist) noexcept
+{
+    if (!Halo4FloatingTransformValid(rawLeftControllerCarrier) ||
+        !Halo4FloatingTransformValid(placementTemplate))
+        return false;
+    Halo4FloatingTransform mountedCarrier{};
+    if (!Halo4BuildFloatingControllerCarrier(
+            rawLeftControllerCarrier.rotation,
+            rawLeftControllerCarrier.translation,true,
+            gunYawDeg,gunPitchDeg,gunRollDeg,mountedCarrier))
+        return false;
+    Halo4FloatingTransform result=placementTemplate;
+    std::memcpy(
+        result.rotation,mountedCarrier.rotation,sizeof(result.rotation));
+    if (!Halo4FloatingTransformValid(result)) return false;
+    desiredWorldWrist=result;
     return true;
 }
 
