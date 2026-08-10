@@ -3,18 +3,20 @@
 > **Superseded on 2026-08-10.** Everything below is historical evidence, not
 > current implementation guidance. The user rejected the C-H4-14..33 hand/IK
 > line in full. C-H4-34 was also headset-rejected after its log proved it
-> committed nothing and routed the three final records backwards. The active
-> C-H4-35 headset result proved the current-eye
-> `storm_fp(80) -> held model -> native body(120)` routing and finally produced
-> floating hands/gun, but its copied Blender hand-control rotations visibly
-> broke the gun and left-hand orientation. C-H4-36 replaced those rotations
-> with the live same-eye wrist relation; its Steam headset result explicitly
-> judged the left pose perfect for two-hand support but found the free left palm
-> upside down. The active headset-pending restart is E-H4-26 / C-H4-37: it
-> preserves the C-H4-36 support pose and changes only the free left wrist by a
-> 180-degree rotation about its live direct-child thumb-base ray, keeping the
-> thumb outward without coupling the wrist to articulated thumb curl. Read
-> `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24 through E-H4-26 and
+> committed nothing and routed the three final records backwards. C-H4-35
+> established the current-eye
+> `storm_fp(80) -> held model -> native body(120)` routing. C-H4-36 removed the
+> invalid Blender control rotations, and C-H4-37 added a prepared-frame free vs
+> support split. Its exact Steam run committed 50,984 free and 15,064 support
+> palettes with zero fallback/refusal, proving that the flips work, but the user
+> rejected left-hand rotation in both states, especially two-hand. The active
+> headset-pending restart is E-H4-27 / C-H4-38: support shares the frozen
+> right-aim rotational parent with the gun while preserving Halo 4's live grip
+> orientation;
+> free drops the borrowed mirrored gun-angle trim, uses the raw left controller,
+> and retains C-H4-37's working palm-down/thumb-outward flip. Positions,
+> right/gun carry, routing, no-IK, and camera remain unchanged. Read
+> `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24 through E-H4-27 and
 > `docs/CURRENT-STATE.md` before
 > acting; none of this handoff's current-state or implementation instructions
 > remain active.

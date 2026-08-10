@@ -7446,7 +7446,7 @@ int main()
         Check(Halo4BuildFloatingControllerCarrier(
                   targetWorld.rotation,physicalTarget,true,
                   carrierYawDeg,carrierPitchDeg,carrierRollDeg,leftCarrier),
-            "The production Halo 4 left carrier accepts the shared mirrored presentation trim");
+            "The dormant C-H4-36 left-carrier branch retains its mirrored presentation-trim algebra");
         constexpr float testDegreesToRadians=0.01745329252f;
         const float leftYaw=-carrierYawDeg*testDegreesToRadians;
         const float leftPitch=carrierPitchDeg*testDegreesToRadians;
@@ -7483,6 +7483,69 @@ int main()
                     expectedLeftCarrier.rotation[i])<1.0e-5f;
         Check(leftCarrierMatches,
             "The left carrier postmultiplies exactly (-yaw, +pitch, -roll), matching Halo 3, ODST and Reach");
+
+        // C-H4-38 replaces that unaccepted Halo 4 left mount with one
+        // prepared-frame parent policy. Free uses the raw left controller;
+        // support copies only the frozen right-aim rotation while retaining
+        // the already-working left physical position and scale.
+        const float leftPhysicalTarget[3]={
+            physicalTarget[0]+0.37f,physicalTarget[1]-0.21f,
+            physicalTarget[2]+0.12f};
+        Halo4FloatingTransform rawLeftStateCarrier{};
+        Check(Halo4BuildFloatingControllerCarrier(
+                  eye1.rotation,leftPhysicalTarget,false,
+                  carrierYawDeg,carrierPitchDeg,carrierRollDeg,
+                  rawLeftStateCarrier),
+            "The C-H4-38 free-left carrier accepts the raw prepared controller with no borrowed gun trim");
+        bool rawLeftUntrimmed=true;
+        for (int i=0;i<9;++i)
+            rawLeftUntrimmed=rawLeftUntrimmed &&
+                fabsf(rawLeftStateCarrier.rotation[i]-eye1.rotation[i])<1.0e-6f;
+        Check(rawLeftUntrimmed,
+            "Nonzero universal gun angles do not cant the independent Halo 4 hand");
+
+        Halo4FloatingTransform selectedFreeCarrier{};
+        Halo4FloatingTransform selectedSupportCarrier{};
+        Check(Halo4BuildFloatingLeftCarrierForState(
+                  false,rawLeftStateCarrier,controllerCarrier,
+                  selectedFreeCarrier) &&
+              memcmp(&selectedFreeCarrier,&rawLeftStateCarrier,
+                     sizeof(selectedFreeCarrier))==0,
+            "Free mode preserves the raw left-controller carrier byte-for-byte");
+        Check(Halo4BuildFloatingLeftCarrierForState(
+                  true,rawLeftStateCarrier,controllerCarrier,
+                  selectedSupportCarrier),
+            "Support mode accepts the exact frozen right-aim carrier");
+        bool supportUsesRightAim=true;
+        for (int i=0;i<9;++i)
+            supportUsesRightAim=supportUsesRightAim &&
+                fabsf(selectedSupportCarrier.rotation[i]-
+                       controllerCarrier.rotation[i])<1.0e-6f;
+        Check(supportUsesRightAim &&
+                  selectedSupportCarrier.translation[0]==
+                      rawLeftStateCarrier.translation[0] &&
+                  selectedSupportCarrier.translation[1]==
+                      rawLeftStateCarrier.translation[1] &&
+                  selectedSupportCarrier.translation[2]==
+                      rawLeftStateCarrier.translation[2] &&
+                  selectedSupportCarrier.scale==rawLeftStateCarrier.scale,
+            "Support copies only the gun parent rotation and cannot move the left hand");
+        Halo4FloatingTransform invalidStateRight=controllerCarrier;
+        invalidStateRight.rotation[0]=
+            std::numeric_limits<float>::quiet_NaN();
+        Halo4FloatingTransform untouchedStateCarrier{};
+        untouchedStateCarrier.translation[0]=123.0f;
+        Check(!Halo4BuildFloatingLeftCarrierForState(
+                  true,rawLeftStateCarrier,invalidStateRight,
+                  untouchedStateCarrier) &&
+                  untouchedStateCarrier.translation[0]==123.0f,
+            "An invalid support parent publishes no partial left carrier");
+        Check(Halo4BuildFloatingLeftCarrierForState(
+                  false,rawLeftStateCarrier,invalidStateRight,
+                  untouchedStateCarrier) &&
+                  memcmp(&untouchedStateCarrier,&rawLeftStateCarrier,
+                         sizeof(untouchedStateCarrier))==0,
+            "Free mode has no dependency on an unused support orientation");
 
         Halo4FloatingTransform rerooted0{},rerooted1{};
         Check(Halo4BuildFloatingControllerRerootTarget(
@@ -7525,6 +7588,50 @@ int main()
         Check(rerootDeltaMatches,
             "The wrist delta cancels to controller times inverse current-eye orientation");
 
+        Halo4FloatingTransform freeStateReroot{};
+        Check(Halo4BuildFloatingControllerRerootTarget(
+                  selectedFreeCarrier,eye0,stockEye0,freeStateReroot),
+            "The C-H4-38 free hand reroots from the raw left-controller parent");
+        Halo4FloatingTransform supportLocalWrist{};
+        supportLocalWrist.translation[0]=-0.16f;
+        supportLocalWrist.translation[1]=0.29f;
+        supportLocalWrist.translation[2]=-0.05f;
+        supportLocalWrist.scale=0.92f;
+        const float supportLocalRoll=-0.31f;
+        supportLocalWrist.rotation[0]=cosf(supportLocalRoll);
+        supportLocalWrist.rotation[1]=sinf(supportLocalRoll);
+        supportLocalWrist.rotation[3]=-sinf(supportLocalRoll);
+        supportLocalWrist.rotation[4]=cosf(supportLocalRoll);
+        Halo4FloatingTransform stockSupportLeft{},supportStateReroot{};
+        Halo4FloatingTransform supportLeftDelta{};
+        Check(Halo4ComposeFloatingTransforms(
+                  eye0,supportLocalWrist,stockSupportLeft) &&
+              Halo4BuildFloatingControllerRerootTarget(
+                  selectedSupportCarrier,eye0,stockSupportLeft,
+                  supportStateReroot) &&
+              Halo4BuildFloatingWorldDelta(
+                  supportStateReroot,stockSupportLeft,supportLeftDelta),
+            "The support hand consumes its own live wrist relation under the shared right-aim parent");
+        bool supportDeltaMatchesGun=true;
+        for (int i=0;i<9;++i)
+            supportDeltaMatchesGun=supportDeltaMatchesGun &&
+                fabsf(supportLeftDelta.rotation[i]-
+                       rerootDelta.rotation[i])<1.0e-5f;
+        Check(supportDeltaMatchesGun,
+            "Right wrist, held gun, and support hand receive one identical rotational parent change");
+        Halo4FloatingTransform expectedSupportOrientation{};
+        Check(Halo4ComposeFloatingTransforms(
+                  controllerCarrier,supportLocalWrist,
+                  expectedSupportOrientation),
+            "The support reference composes right aim with the live Halo 4 left-wrist relation");
+        bool supportRelationPreserved=true;
+        for (int i=0;i<9;++i)
+            supportRelationPreserved=supportRelationPreserved &&
+                fabsf(supportStateReroot.rotation[i]-
+                       expectedSupportOrientation.rotation[i])<1.0e-5f;
+        Check(supportRelationPreserved,
+            "Two-hand orientation preserves Halo 4's authored support relation instead of physical controller twist");
+
         // A held model has its own eye-local authored orientation, independent
         // of the Storm wrist bone axes.  The same delta must carry that exact
         // relation onto the controller frame.
@@ -7560,7 +7667,7 @@ int main()
         Check(Halo4BuildFloatingControllerCarrier(
                   identityBasis,identityPosition,true,0.0f,0.0f,0.0f,
                   identityTarget),
-            "The production left carrier accepts a neutral controller and zero presentation trim");
+            "The dormant C-H4-36 left-carrier branch accepts a neutral controller and zero trim");
         Halo4FloatingTransform identityReroot{};
         Check(Halo4BuildFloatingControllerRerootTarget(
                   identityTarget,identityEye,identityWrist,identityReroot),
@@ -7595,12 +7702,13 @@ int main()
             "The official direct-child thumb base can be represented in the live Storm wrist frame");
         Halo4FloatingTransform freePalmTarget{};
         Check(Halo4BuildFloatingLeftPresentationTarget(
-                  false,stockEye0,stockThumbBase,rerooted0,freePalmTarget),
+                  false,stockEye0,stockThumbBase,freeStateReroot,
+                  freePalmTarget),
             "The production free-left policy accepts a live non-axis-aligned thumb ray");
-        Check(freePalmTarget.translation[0]==rerooted0.translation[0] &&
-                  freePalmTarget.translation[1]==rerooted0.translation[1] &&
-                  freePalmTarget.translation[2]==rerooted0.translation[2] &&
-                  freePalmTarget.scale==rerooted0.scale,
+        Check(freePalmTarget.translation[0]==freeStateReroot.translation[0] &&
+                  freePalmTarget.translation[1]==freeStateReroot.translation[1] &&
+                  freePalmTarget.translation[2]==freeStateReroot.translation[2] &&
+                  freePalmTarget.scale==freeStateReroot.scale,
             "The free-palm correction changes orientation only");
         const auto rotateDirection=[](const float basis[9],
                                       const float local[3],float world[3])
@@ -7613,7 +7721,7 @@ int main()
             }
         };
         float thumbBefore[3]{},thumbAfter[3]{};
-        rotateDirection(rerooted0.rotation,thumbAxis,thumbBefore);
+        rotateDirection(freeStateReroot.rotation,thumbAxis,thumbBefore);
         rotateDirection(freePalmTarget.rotation,thumbAxis,thumbAfter);
         Check(fabsf(thumbBefore[0]-thumbAfter[0])<1.0e-5f &&
                   fabsf(thumbBefore[1]-thumbAfter[1])<1.0e-5f &&
@@ -7636,7 +7744,7 @@ int main()
             palmNormal[2]*palmNormal[2]);
         for (float& value : palmNormal) value/=palmLength;
         float palmBefore[3]{},palmAfter[3]{};
-        rotateDirection(rerooted0.rotation,palmNormal,palmBefore);
+        rotateDirection(freeStateReroot.rotation,palmNormal,palmBefore);
         rotateDirection(freePalmTarget.rotation,palmNormal,palmAfter);
         Check(fabsf(palmBefore[0]+palmAfter[0])<1.0e-5f &&
                   fabsf(palmBefore[1]+palmAfter[1])<1.0e-5f &&
@@ -7655,18 +7763,17 @@ int main()
                 freeBasis[4]*freeBasis[2]);
         Check(fabsf(freeDeterminant-1.0f)<1.0e-4f,
             "The palm flip is a 180-degree rotation, never a mesh-reflecting mirror");
-
         Halo4FloatingTransform baseThumbDelta{},freeThumbDelta{};
         Halo4FloatingTransform baseMovedThumb{},freeMovedThumb{};
         Check(Halo4BuildFloatingWorldDelta(
-                  rerooted0,stockEye0,baseThumbDelta) &&
+                  freeStateReroot,stockEye0,baseThumbDelta) &&
               Halo4BuildFloatingWorldDelta(
                   freePalmTarget,stockEye0,freeThumbDelta) &&
               Halo4ComposeFloatingTransforms(
                   baseThumbDelta,stockThumbBase,baseMovedThumb) &&
               Halo4ComposeFloatingTransforms(
                   freeThumbDelta,stockThumbBase,freeMovedThumb),
-            "Both C-H4-36 and free-palm rigid subtree deltas carry the official thumb-base node");
+            "Both the C-H4-38 raw free parent and its palm-flipped delta carry the official thumb-base node");
         Check(fabsf(baseMovedThumb.translation[0]-
                     freeMovedThumb.translation[0])<1.0e-5f &&
                   fabsf(baseMovedThumb.translation[1]-
@@ -7681,23 +7788,25 @@ int main()
         Halo4FloatingTransform supportTarget{};
         supportTarget.translation[0]=99.0f;
         Check(Halo4BuildFloatingLeftPresentationTarget(
-                  true,stockEye0,invalidThumb,rerooted0,supportTarget) &&
-                  memcmp(&supportTarget,&rerooted0,sizeof(supportTarget))==0,
-            "The exact prepared-frame two-hand state preserves C-H4-36's support pose byte-for-byte and ignores the free-palm dependency");
+                  true,stockSupportLeft,invalidThumb,supportStateReroot,
+                  supportTarget) &&
+                  memcmp(&supportTarget,&supportStateReroot,
+                         sizeof(supportTarget))==0,
+            "The exact prepared-frame two-hand state preserves the C-H4-38 shared-right-aim-rotation target byte-for-byte and ignores the free-palm dependency");
         Halo4FloatingTransform zeroThumb=stockEye0;
         Halo4FloatingTransform untouchedPalm{};
         untouchedPalm.translation[0]=88.0f;
         Check(!Halo4BuildFloatingLeftPresentationTarget(
-                  false,stockEye0,zeroThumb,rerooted0,untouchedPalm) &&
+                  false,stockEye0,zeroThumb,freeStateReroot,untouchedPalm) &&
                   untouchedPalm.translation[0]==88.0f,
             "A zero free-thumb ray refuses without publishing a partial correction");
         Halo4FloatingTransform untouchedNonfinitePalm{};
         untouchedNonfinitePalm.translation[0]=77.0f;
         Check(!Halo4BuildFloatingLeftPresentationTarget(
-                  false,stockEye0,invalidThumb,rerooted0,
+                  false,stockEye0,invalidThumb,freeStateReroot,
                   untouchedNonfinitePalm) &&
                   untouchedNonfinitePalm.translation[0]==77.0f,
-            "A non-finite free-thumb ray leaves the proven C-H4-36 target available for feature-local fallback");
+            "A non-finite free-thumb ray leaves the C-H4-38 raw-controller target available for feature-local fallback");
 
         Halo4FloatingTransform invalidEye=eye0;
         invalidEye.rotation[0]=std::numeric_limits<float>::quiet_NaN();
@@ -7801,7 +7910,7 @@ int main()
         "Halo 4 advertises stereo, controller aim, haptics, runtime modes, "
         "room scale and controller input");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
-        "Halo 4 withholds ArmIk: C-H4-37 has one rigid no-IK floating-hands "
+        "Halo 4 withholds ArmIk: C-H4-38 has one rigid no-IK floating-hands "
         "transaction on the proven first-person return site");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
         "Halo 4 withholds Hud: its CUI arrives inside the captured scene "

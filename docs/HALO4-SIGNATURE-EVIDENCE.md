@@ -3457,7 +3457,7 @@ delta test applies both the C-H4-36 and free-palm motions to node 46 and proves
 its final origin is identical. A separate exact-state test feeds an invalid
 thumb transform while two-hand aim is active and verifies the C-H4-36 support
 target is copied byte-for-byte. Zero or non-finite free-thumb rays publish no
-partial result. At runtime that optional failure keeps the proven C-H4-36 left
+partial result. At runtime that optional failure keeps the C-H4-36 left
 orientation and continues both hand carries plus the held gun; it never rejects
 the whole palette or disarms the Halo 4 camera/OpenXR session. Worker telemetry
 separately counts committed free-palm applications, exact two-hand support
@@ -3465,5 +3465,96 @@ pass-throughs, and C-H4-36 fallbacks, so the candidate's only state split is
 auditable without logging in the palette hook.
 
 C-H4-37's Release build, full core test suite, and Reach consistency gate pass
-offline on 2026-08-10. It remains headset-pending. C-H4-1 remains the accepted
-rollback pointer in `docs/CURRENT-STATE.md`.
+offline on 2026-08-10. It was then headset-tested on Steam from exact source
+`069012696fdbde5b8351064b90dd7a5878d7feca`, installed DLL SHA-256
+`2A25AEAB570E384B79FBEF9F11D6F5712A4526588683F16AE5258C0E165BE015`.
+The run log has SHA-256
+`E140A826058A7344E13E52029A0F73545F2714AAB47535F2CF60C3DD49F8D082`
+and identifies Steam, SteamVR/OpenXR 2.17.6, headset
+`SteamVR/OpenXR : oculus`, and 120 Hz. Across forty two-second telemetry
+windows it committed 66,048 Storm palettes and 66,048 adjacent held records
+with zero refusals: 50,984 free-palm applications, 15,064 exact-support
+pass-throughs, and zero C-H4-36 fallbacks. Four explicit two-hand engagement
+events and full windows in each mode prove that both state branches ran. The
+user reported that the flips work but the hand rotation is off in both states,
+especially two-hand. That accepts the state selection and palm reversal only;
+it rejects the shared left orientation and supersedes the earlier provisional
+description of the C-H4-36 support pose as perfect. The Store installation
+independently matched the same DLL hash, but its log remained an older August 6
+run, so this result is Steam-only. C-H4-37 remains unaccepted and does not advance
+`docs/CURRENT-STATE.md`.
+
+## E-H4-27 / C-H4-38 - state-specific left orientation ownership
+
+The C-H4-37 log rules out missing/wrong branch selection, optional-flip
+fallback, floating-palette refusal, record order, and absence of adjacent
+held-record commitment in this observed run. It does not establish a new
+visual right-hand/gun result. The rejected left orientations share the C-H4-36
+carrier. For eye-local left wrist relation `L_left`, C-H4-37 used
+
+`free = (C_left * M_mirrored) * L_left * R_pi`
+
+and
+
+`support = (C_left * M_mirrored) * L_left`,
+
+while the right wrist and held gun use the separately prepared right aim
+`C_rightAim`. In the tested configuration, universal gun pitch is -11 degrees
+and roll is +9 degrees. The left mirrored mount therefore contributes -11
+degrees pitch and -9 degrees roll, while the right aim already contains the
+gun correction once with +9 degrees roll. Support starts with opposite -9/+9
+roll parameters--an 18-degree disagreement at the configured-parameter level
+before any independent physical left-controller twist. Because pitch and roll
+do not commute, this is not claimed as one exact pure 18-degree world rotation.
+Two-hand aim changes `C_rightAim` to the prepared hand-to-hand line without
+changing the old left parent. This directly matches the user's stronger
+two-hand rejection. An independent empty hand also has no Halo-4-specific
+reason to inherit the gun's angular presentation mount.
+
+C-H4-38 is one state-specific rotational-parent policy replacement. It
+preserves the exact prepared-frame `twoHandAimActive` ownership, every C-H4-37
+position, and the already-working free-palm flip, but selects the parent that
+owns each state before the current-eye wrist relation is applied:
+
+- In support, the left carrier retains its physical left-hand translation and
+  scale but copies only the frozen pre-reroot `rightTargetWorld.rotation`. The
+  current-eye reroot then produces `left = C_rightAim * L_left`, while the right
+  wrist is `C_rightAim * L_right` and the held model is
+  `C_rightAim * G_local`. Their common rotational parent cancels from every
+  relative orientation, preserving Halo 4's live same-frame weapon-specific
+  support orientation instead of adding physical controller twist. Copying the
+  final desired right-wrist rotation would apply `L_right` twice and is
+  forbidden.
+- In free mode, the carrier is the raw prepared left-controller basis; the
+  universal gun angles are not applied to an empty hand. The current-eye live
+  left-wrist relation is retained, then C-H4-37's live thumb-axis pi rotation is
+  applied exactly as before. This removes the unaccepted -11-degree pitch and
+  -9-degree roll presentation mount without changing the state bit, palm side,
+  thumb-outward invariant, translation, or scale.
+
+This candidate deliberately does not add a second canonical/anatomical mount.
+H4EK node 43 `b_l_middle1`, node 46 `b_l_thumb1`, and the `left_hand` marker do
+provide a title-native basis for a separately testable free-heading candidate
+if the headset still rejects free rotation after the borrowed gun trim is gone.
+Stacking that independent mapping here would make the next headset result
+unable to isolate the rotational-parent correction.
+
+Right hand, right rigid delta, held-model carry, record identities/order and
+current-eye lifetime, visibility mask, no-IK policy, camera, aim, and stereo
+lifecycle are unchanged. Carrier selection publishes write-last. Invalid base
+orientation input leaves that palette stock through the existing feature-local
+refusal. Invalid optional free-thumb input retains the raw-controller C-H4-38
+target and continues the right hand and held gun; neither failure can disarm
+the camera/OpenXR session. Worker telemetry separately counts committed raw-
+controller free-palm targets, shared-right-aim rotational-parent support
+targets, and optional free-palm fallbacks.
+
+Tests use deliberately noncommuting eye, controller, wrist, and held-model
+bases. They prove free selection is byte-identical to the raw controller even
+with nonzero universal gun angles; support copies only right-aim rotation while
+retaining left translation/scale; right, gun, and support-left receive the same
+rotational parent change; and the live authored support orientation survives.
+The existing H4EK thumb-base tests now exercise the free-palm flip under the raw
+carrier. Invalid support input publishes no partial carrier, while free mode
+has no dependency on an unused invalid support orientation. C-H4-38 remains an
+unaccepted headset candidate; C-H4-1 remains the accepted rollback pointer.

@@ -29193,12 +29193,12 @@ namespace
         // The exact Storm hands record and immediately following held record.
         std::atomic<uint64_t> vrikWeaponRecordsCarried{0};
         std::atomic<uint64_t> vrikWeaponRecordsRefused{0};
-        // C-H4-37's committed free/support state split and optional fallback.
-        // The proven C-H4-36 left target remains in use after a correction
-        // failure and right/gun carry continues.
+        // C-H4-38's committed free/support rotational-parent split and the
+        // retained C-H4-37 optional palm-flip fallback. Right/gun carry
+        // continues if only that optional free-hand correction fails.
         std::atomic<uint64_t> vrikFreeLeftPalmFallbacks{0};
         std::atomic<uint64_t> vrikFreeLeftPalmApplications{0};
-        std::atomic<uint64_t> vrikTwoHandLeftPassThroughs{0};
+        std::atomic<uint64_t> vrikTwoHandLeftAimRotationParents{0};
         // The producer flag is not an anatomy classifier. C-H4-34's headset
         // log proved flag 1 contains both the 80-node storm_fp hands and the
         // held gun, while flag 0 is the separate 120-node native body/legs.
@@ -31029,8 +31029,11 @@ namespace
                     attachment[column];
             targetPosition[row]+=offset*input.worldScale;
         }
+        // C-H4-38 starts both carriers from their prepared raw bases. The
+        // left hand no longer inherits the gun's mirrored presentation trim;
+        // its exact state-specific rotational parent is selected once below.
         return Halo4BuildFloatingControllerCarrier(
-            controller.basis,targetPosition,left,
+            controller.basis,targetPosition,false,
             frame.gunYawDeg,frame.gunPitchDeg,frame.gunRollDeg,target);
     }
 
@@ -31070,6 +31073,18 @@ namespace
         g_halo4FloatingPair.leftTargetValid=frameValid &&
             Halo4BuildFloatingWorldTarget(
                 true,targetFrame,g_halo4FloatingPair.leftTargetWorld);
+        if (g_halo4FloatingPair.rightTargetValid &&
+            g_halo4FloatingPair.leftTargetValid)
+        {
+            Halo4FloatingTransform selectedLeft{};
+            g_halo4FloatingPair.leftTargetValid=
+                Halo4BuildFloatingLeftCarrierForState(
+                    g_halo4FloatingPair.twoHandAimActive,
+                    g_halo4FloatingPair.leftTargetWorld,
+                    g_halo4FloatingPair.rightTargetWorld,selectedLeft);
+            if (g_halo4FloatingPair.leftTargetValid)
+                g_halo4FloatingPair.leftTargetWorld=selectedLeft;
+        }
         g_halo4FloatingPair.targetsValid=
             g_halo4FloatingPair.rightTargetValid &&
             g_halo4FloatingPair.leftTargetValid;
@@ -31219,22 +31234,23 @@ namespace
         const bool thumbValid=Halo4ToFloatingTransform(
             solved[kHalo4LeftThumbBaseNode],stockLeftThumbBase);
         bool freePalmApplied=false;
-        bool supportPosePassedThrough=false;
+        bool supportAimRotationParentApplied=false;
         bool freePalmFallback=false;
         if ((!g_halo4FloatingPair.twoHandAimActive && !thumbValid) ||
             !Halo4BuildFloatingLeftPresentationTarget(
                 g_halo4FloatingPair.twoHandAimActive,stockLeft,
                 stockLeftThumbBase,desiredLeft,presentedLeft))
         {
-            // This correction is optional. Keep the known C-H4-36 target and
-            // allow both hands plus the held gun to commit normally.
+            // The C-H4-37 flip remains optional. Keep C-H4-38's selected base
+            // target and allow both hands plus the held gun to commit.
             freePalmFallback=true;
         }
         else
         {
             desiredLeft=presentedLeft;
             freePalmApplied=!g_halo4FloatingPair.twoHandAimActive;
-            supportPosePassedThrough=g_halo4FloatingPair.twoHandAimActive;
+            supportAimRotationParentApplied=
+                g_halo4FloatingPair.twoHandAimActive;
         }
         const float rightDistance=
             Halo4FloatingDistance(stockRight,desiredRight);
@@ -31301,8 +31317,8 @@ namespace
         if (freePalmApplied)
             g_halo4Camera.vrikFreeLeftPalmApplications.fetch_add(
                 1,std::memory_order_relaxed);
-        else if (supportPosePassedThrough)
-            g_halo4Camera.vrikTwoHandLeftPassThroughs.fetch_add(
+        else if (supportAimRotationParentApplied)
+            g_halo4Camera.vrikTwoHandLeftAimRotationParents.fetch_add(
                 1,std::memory_order_relaxed);
         else if (freePalmFallback)
             g_halo4Camera.vrikFreeLeftPalmFallbacks.fetch_add(
@@ -31848,7 +31864,7 @@ namespace
             0,std::memory_order_relaxed);
         g_halo4Camera.vrikFreeLeftPalmApplications.store(
             0,std::memory_order_relaxed);
-        g_halo4Camera.vrikTwoHandLeftPassThroughs.store(
+        g_halo4Camera.vrikTwoHandLeftAimRotationParents.store(
             0,std::memory_order_relaxed);
         g_halo4Camera.vrikBodyFillRecords.store(0,std::memory_order_relaxed);
         g_halo4Camera.vrikWeaponFillRecords.store(0,std::memory_order_relaxed);
@@ -32908,7 +32924,7 @@ namespace
             g_halo4Camera.floatingHandsEpoch.store(
                 epoch,std::memory_order_release);
         }
-        LOG("Halo 4 C-H4-37 free-palm floating hands: final palette 0x%X hooked; only "
+        LOG("Halo 4 C-H4-38 state-parented floating hands: final palette 0x%X hooked; only "
             "return 0x%X is admitted; %d bank transforms are privately copied "
             "and argument 7 is never treated as a node count; H4EK/retail "
             "render-model checksum/nodes.count is read exactly; epoch %u has "
@@ -33214,7 +33230,7 @@ namespace
                     "stock viewmodel FOV and everything else is unaffected");
             }
         }
-        // C-H4-37 retains C-H4-35's optional, fail-open record ownership. It
+        // C-H4-38 retains C-H4-35's optional, fail-open record ownership. It
         // owns only the live
         // Storm80 -> held -> native-body record sequence; any miss leaves that
         // exact feature stock while the working camera/session stays armed.
@@ -33273,8 +33289,8 @@ namespace
                 kReachRenderSafetyIntervalMs)
         {
             g_halo4Camera.armed.store(true, std::memory_order_release);
-            LOG("Halo 4 camera core armed: C-H4-37 current-eye controller-rerooted "
-                "Storm hands, free-left palm-down presentation, exact two-hand support pose, and "
+            LOG("Halo 4 camera core armed: C-H4-38 current-eye controller-rerooted "
+                "Storm hands, raw-controller free-left palm-down presentation, shared-right-aim rotational-parent support pose, and "
                 "same-frame held-model carry (no arm IK) on C-H4-10 motion aim, VR "
                 "turn and rumble on C-H4-9's headset-owned look, C-H4-8's 6DOF and "
                 "native headset-FOV coverage. The hand steers Halo 4's own aim "
@@ -33488,19 +33504,19 @@ namespace
         const uint64_t freeLeftPalmApplications=
             g_halo4Camera.vrikFreeLeftPalmApplications.exchange(
                 0,std::memory_order_relaxed);
-        const uint64_t twoHandLeftPassThroughs=
-            g_halo4Camera.vrikTwoHandLeftPassThroughs.exchange(
+        const uint64_t twoHandLeftAimRotationParents=
+            g_halo4Camera.vrikTwoHandLeftAimRotationParents.exchange(
                 0,std::memory_order_relaxed);
         const uint64_t stormCandidates=
             g_halo4Camera.vrikStormRecordCandidates.exchange(
                 0,std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-37 free-palm floating hands: palette %s, halo4_hands=%d; "
+        LOG("Halo 4 C-H4-38 state-parented floating hands: palette %s, halo4_hands=%d; "
             "%llu Storm hand palettes committed / %llu refused, %llu held records committed / %llu "
             "refused, %llu exact first-person calls "
             "in 2s; no IK, forced floaty mask, world scale %.3f, current stock-"
             "to-controller right-wrist distance %.4f; current-eye same-frame "
-            "Storm candidates %llu; left modes: free-palm %llu / exact-support "
-            "%llu / C-H4-36 fallback %llu",
+            "Storm candidates %llu; left modes: raw-controller free-palm %llu / shared-right-aim rotational-parent support "
+            "%llu / optional free-palm fallback %llu",
             g_halo4Camera.modelSkinningTarget?"hooked":"UNAVAILABLE - stock",
             g_config.halo4_hands?1:0,
             static_cast<unsigned long long>(solved),
@@ -33512,9 +33528,9 @@ namespace
             g_halo4Camera.vrikTargetMiss.load(std::memory_order_relaxed),
             static_cast<unsigned long long>(stormCandidates),
             static_cast<unsigned long long>(freeLeftPalmApplications),
-            static_cast<unsigned long long>(twoHandLeftPassThroughs),
+            static_cast<unsigned long long>(twoHandLeftAimRotationParents),
             static_cast<unsigned long long>(freeLeftPalmFallbacks));
-        LOG("Halo 4 C-H4-37 floating-hand refusals in 2s: count=%llu copy=%llu basis=%llu "
+        LOG("Halo 4 C-H4-38 floating-hand refusals in 2s: count=%llu copy=%llu basis=%llu "
             "range=%llu eye/root=%llu link=%llu side=%llu right-pose=%llu left-pose=%llu "
             "right-rigid=%llu left-rigid=%llu; %llu stock/non-owned palettes",
             static_cast<unsigned long long>(
@@ -33552,7 +33568,7 @@ namespace
             static_cast<unsigned long long>(stockPalettes));
         // The producer flag partitions the sequence but does not identify
         // anatomy: flag 1 contains both Storm hands and the held model.
-        LOG("Halo 4 C-H4-37 record sequence in 2s: %llu flag0 native-body / %llu "
+        LOG("Halo 4 C-H4-38 record sequence in 2s: %llu flag0 native-body / %llu "
             "flag1 first-person-loop / "
             "%llu unexpected / %llu header unreadable; nodes.count resolver "
             "%llu failures; last flag0 nodes %d checksum 0x%08X, last flag1 "
@@ -33609,7 +33625,7 @@ namespace
             }
             if (!written)
                 snprintf(counts,sizeof(counts),"none");
-            LOG("Halo 4 C-H4-37 argument-7 histogram in 2s: %s (%llu past "
+            LOG("Halo 4 C-H4-38 argument-7 histogram in 2s: %s (%llu past "
                 "%d slots)",counts,
                 static_cast<unsigned long long>(
                     g_halo4Camera.vrikCountOverflow.exchange(
@@ -35303,14 +35319,15 @@ void Game_AutoVrTick()
                 Game_ForcePositional();
                 if (!VR_IsStereoEnabled())
                     VR_ToggleStereo();
-                LOG("Halo 4 C-H4-37 immersive VR ON: stereo geometry, head "
+                LOG("Halo 4 C-H4-38 immersive VR ON: stereo geometry, head "
                     "tracking, 6DOF and headset-owned look pitch are live. "
                     "Halo 4's CUI arrives inside the captured scene target, so "
                     "it needs no separate HUD redirect (user-confirmed "
                     "2026-08-08); controller aim is live and the optional "
-                    "current-eye floating-hand/gun transaction is no-IK; the free "
-                    "left palm turns down around its direct-child thumb-base "
-                    "axis while the exact two-hand support pose stays unchanged");
+                    "current-eye floating-hand/gun transaction is no-IK; the "
+                    "free palm keeps C-H4-37's thumb-axis flip under the "
+                    "raw left-controller parent, and "
+                    "two-hand support shares the gun's frozen right-aim parent");
             }
             const uint32_t halo4Generation =
                 TitleAdapter_GetGeneration(GameTitle::Halo4);

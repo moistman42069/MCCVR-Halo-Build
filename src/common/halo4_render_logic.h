@@ -487,7 +487,7 @@ inline constexpr bool Halo4FloatingRelationPairIsCurrent(
             firstGeneration, firstPreparedSerial);
 }
 
-// Floating transform algebra is kept title-side and unit tested. C-H4-35..37
+// Floating transform algebra is kept title-side and unit tested. C-H4-35..38
 // use the direct current-eye delta for consecutive Storm/held records.
 // The older eye-local relation helpers remain below as dormant C-H4-34 history;
 // no active Halo 4 path publishes or consumes a prior-pair relation.
@@ -624,12 +624,11 @@ inline bool Halo4BuildFloatingEyeLocalWrist(
         Halo4ComposeFloatingTransforms(inverseEye, stockWorld, stockLocal);
 }
 
-// The immutable physical carrier used by C-H4-36 before a current-eye Storm
-// wrist is available. The right aim pose already contains gun yaw/pitch/roll,
-// so it is copied exactly. The raw left controller receives the same mirrored
-// local presentation trim as Halo 3, ODST and Reach, exactly once. Keeping this
-// final orientation choice in the tested title-side seam prevents a Blender
-// hand-control basis from being reintroduced upstream of the live reroot.
+// The immutable physical carrier introduced by C-H4-36 before a current-eye
+// Storm wrist is available. The legacy left=true branch retains that candidate's
+// tested mirrored trim for forensic coverage. C-H4-38 production passes
+// left=false for both prepared carriers: right aim already contains gun angles,
+// while the independent left hand now begins from its raw controller basis.
 inline bool Halo4BuildFloatingControllerCarrier(
     const float controllerBasis[9], const float physicalTarget[3], bool left,
     float gunYawDeg, float gunPitchDeg, float gunRollDeg,
@@ -675,6 +674,38 @@ inline bool Halo4BuildFloatingControllerCarrier(
         if (!Halo4FloatingTransformValid(result)) return false;
     }
     carrier = result;
+    return true;
+}
+
+// C-H4-38 replaces only the left hand's rotational parent.  An independent
+// hand belongs to the raw left controller; universal gun angles are not a
+// second empty-hand mount.  Once the exact prepared right aim uses its
+// two-hand solve, the support hand instead shares that frozen right-aim parent.
+// The later current-eye reroot then gives
+//
+//     right = rightAim * liveRightWrist
+//     left  = rightAim * liveLeftWrist
+//     gun   = rightAim * liveHeldModel
+//
+// in support mode, preserving Halo 4's same-frame authored relative orientation.
+// Only rotation is selected here: the already-working left physical position
+// and scale remain byte-identical. Publish write-last on invalid input.
+inline bool Halo4BuildFloatingLeftCarrierForState(
+    bool twoHandAimActive,
+    const Halo4FloatingTransform& rawLeftControllerCarrier,
+    const Halo4FloatingTransform& rightAimCarrier,
+    Halo4FloatingTransform& selectedLeftCarrier) noexcept
+{
+    if (!Halo4FloatingTransformValid(rawLeftControllerCarrier)) return false;
+    Halo4FloatingTransform result = rawLeftControllerCarrier;
+    if (twoHandAimActive)
+    {
+        if (!Halo4FloatingTransformValid(rightAimCarrier)) return false;
+        std::memcpy(
+            result.rotation, rightAimCarrier.rotation, sizeof(result.rotation));
+    }
+    if (!Halo4FloatingTransformValid(result)) return false;
+    selectedLeftCarrier = result;
     return true;
 }
 
@@ -734,15 +765,16 @@ inline bool Halo4BuildFloatingControllerRerootTarget(
     return true;
 }
 
-// C-H4-37 changes only the free left-hand presentation. The C-H4-36 support
-// grip is copied exactly whenever the right aim actually used its same-frame
-// two-hand solve. Otherwise rotate the final wrist by pi around the live
+// C-H4-37 changes only the free left-hand presentation. C-H4-38 may select a
+// different rotational parent before this helper, but the selected support
+// target is still copied exactly whenever the right aim actually used its
+// same-frame two-hand solve. Otherwise rotate the final wrist by pi around the live
 // wrist-to-thumb-base axis. For unit axis a, R(pi)=2*a*a^T-I: R*a=a while every
 // vector perpendicular to a is negated. The palm therefore turns over without
 // swapping its stable thumb-base side inward. Translation and scale remain
 // untouched.
 // Publish write-last so an invalid optional thumb ray retains the caller's
-// proven C-H4-36 target instead of disturbing either hand/gun transaction.
+// selected base target instead of disturbing either hand/gun transaction.
 inline bool Halo4BuildFloatingLeftPresentationTarget(
     bool twoHandAimActive,
     const Halo4FloatingTransform& stockWorldWrist,
