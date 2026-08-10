@@ -310,18 +310,81 @@ inline constexpr char kHalo4ModelSkinningTagLookupReloadPattern[] =
     "48 8B 15 ?? ?? ?? ?? 4C 8D 05 ?? ?? ?? ?? 4C 8B E0 "
     "41 F6 44 B6 04 04 4C 8D 8D 80 00 00 00";
 
-// storm_fp.render_model, H4EK 1.890.0.0.  The body owns nodes 0..79; the
-// composed first-person record observed in retail has five appended weapon
-// nodes.  These indices and parent relationships are tag facts, not copied
-// from another Halo title.
+// storm_fp.render_model, H4EK 1.890.0.0. These indices and parent
+// relationships are tag facts, not copied from another Halo title. The
+// official tag's immutable runtime-import checksum is recorded for live
+// telemetry; C-H4-35 does not hard-gate on it until retail has reported it.
+// The headset-proven first-person order identifies Storm from the first
+// flag-1 record's exact 80-node input count, then carries the immediately
+// following flag-1 held model before flag 0 closes the sequence.
 inline constexpr int kHalo4StormFpBodyNodeCount = 80;
 inline constexpr int kHalo4StormFpComposedNodeCount = 85;
+inline constexpr uint32_t kHalo4StormFpRuntimeImportChecksum = 0x150D0000u;
 inline constexpr int kHalo4RightShoulderNode = 4;
 inline constexpr int kHalo4RightElbowNode = 16;
 inline constexpr int kHalo4RightHandNode = 29;
 inline constexpr int kHalo4LeftShoulderNode = 5;
 inline constexpr int kHalo4LeftElbowNode = 8;
 inline constexpr int kHalo4LeftHandNode = 37;
+
+enum class Halo4FloatingRecordPhase : uint8_t
+{
+    AwaitStormHands = 0,
+    AwaitHeldModel,
+    AwaitSequenceBoundary,
+};
+
+enum class Halo4FloatingRecordAction : uint8_t
+{
+    Stock = 0,
+    BuildStormHands,
+    CarryHeldModel,
+};
+
+struct Halo4FloatingRecordDecision
+{
+    Halo4FloatingRecordAction action = Halo4FloatingRecordAction::Stock;
+    Halo4FloatingRecordPhase next =
+        Halo4FloatingRecordPhase::AwaitSequenceBoundary;
+};
+
+// C-H4-35: the live final consumer walks one exact per-eye sequence:
+// flag 1 / 80-node storm_fp, flag 1 / held model, flag 0 / native body.
+// The state machine is important. A failed first record cannot let an
+// unrelated 80-node held model masquerade as a second hands transaction, and
+// a held delta can be consumed only by the immediately following record.
+inline constexpr Halo4FloatingRecordDecision Halo4SelectFloatingRecord(
+    Halo4FloatingRecordPhase phase, int32_t fillFlag,
+    int32_t renderModelNodeCount) noexcept
+{
+    if (fillFlag == 0)
+    {
+        return {Halo4FloatingRecordAction::Stock,
+                Halo4FloatingRecordPhase::AwaitStormHands};
+    }
+    if (fillFlag != 1)
+    {
+        return {Halo4FloatingRecordAction::Stock,
+                Halo4FloatingRecordPhase::AwaitSequenceBoundary};
+    }
+    if (phase == Halo4FloatingRecordPhase::AwaitStormHands)
+    {
+        return renderModelNodeCount == kHalo4StormFpBodyNodeCount
+            ? Halo4FloatingRecordDecision{
+                  Halo4FloatingRecordAction::BuildStormHands,
+                  Halo4FloatingRecordPhase::AwaitHeldModel}
+            : Halo4FloatingRecordDecision{
+                  Halo4FloatingRecordAction::Stock,
+                  Halo4FloatingRecordPhase::AwaitSequenceBoundary};
+    }
+    if (phase == Halo4FloatingRecordPhase::AwaitHeldModel)
+    {
+        return {Halo4FloatingRecordAction::CarryHeldModel,
+                Halo4FloatingRecordPhase::AwaitSequenceBoundary};
+    }
+    return {Halo4FloatingRecordAction::Stock,
+            Halo4FloatingRecordPhase::AwaitSequenceBoundary};
+}
 
 // Exact storm_fp descendant sets mechanically extracted from the official
 // H4EK render-model parent table.  Keep these in the title logic rather than in
@@ -418,11 +481,10 @@ inline constexpr bool Halo4FloatingRelationPairIsCurrent(
             firstGeneration, firstPreparedSerial);
 }
 
-// Critical C-H4-34 algebra is kept title-side and unit tested.  The final H4
-// BODY record observed at the proven consumer is world-rooted.  Cache only its
-// eye-local stock-wrist relation, then rebuild that stock wrist through each
-// current eye before deriving the gun's world delta.  A world transform from a
-// prior eye is never cached or replayed.
+// Floating transform algebra is kept title-side and unit tested. C-H4-35 uses
+// the direct current-eye delta for the consecutive Storm and held records.
+// The older eye-local relation helpers remain below as dormant C-H4-34 history;
+// no active Halo 4 path publishes or consumes a prior-pair relation.
 struct Halo4FloatingTransform
 {
     float scale = 1.0f;
@@ -949,12 +1011,24 @@ enum class Halo4VrikStage : uint8_t
 // bounded by the structure itself and needs no count predicate at all.
 inline constexpr int32_t kHalo4FirstPersonBankTransforms =
     static_cast<int32_t>(kHalo4FirstPersonMaxNodes);
+inline constexpr uintptr_t kHalo4FirstPersonSkinningRecordStride = 0x1910u;
+
+inline constexpr uintptr_t Halo4ExpectedHeldRecordSource(
+    uintptr_t stormSource) noexcept
+{
+    constexpr uintptr_t maxAddress=~uintptr_t{0};
+    return stormSource &&
+           stormSource<=maxAddress-kHalo4FirstPersonSkinningRecordStride
+        ? stormSource+kHalo4FirstPersonSkinningRecordStride
+        : 0;
+}
 
 // The 0x1910-byte record's own header. `+0x08` is written by the bank filler
 // (`halo4.dll+0x3B95B8 mov [rbx+8],r8d`) from its third argument: the two
-// weapon fills at `+0x3B1E15` / `+0x3B1F1D` pass 1, and the body fill at
-// `+0x3B23AD` passes 0. It is a free discriminator, so it is LOGGED - the
-// authored bind geometry is what actually identifies the arms.
+// first-person-loop fills at `+0x3B1E15` / `+0x3B1F1D` pass 1 (the live
+// sequence is storm_fp hands, then held model), and the native body/legs fill
+// at `+0x3B23AD` passes 0. It partitions an ordered sequence; it does not by
+// itself identify the arms.
 inline constexpr uint32_t kHalo4FirstPersonRecordBankOffset = 0xB0;
 inline constexpr uint32_t kHalo4FirstPersonRecordFillFlagOffset = 0x08;
 inline constexpr int32_t kHalo4FirstPersonBodyFillFlag = 0;
@@ -969,21 +1043,18 @@ inline constexpr int32_t kHalo4FirstPersonWeaponFillFlag = 1;
 inline constexpr float kHalo4StormUpperArmBind = 0.0915251f;
 inline constexpr float kHalo4StormForearmBind = 0.116662f;
 
-// CALIBRATED FROM THE LIVE ENGINE, NOT FROM THE TAG BIND POSE.
+// A PERMISSIVE STRUCTURAL SANITY CHECK, NOT THE RECORD-IDENTITY GATE.
 //
 // C-H4-14 derived this window from the H4EK storm_fp bind (0.0915 upper /
 // 0.1167 forearm) and admitted +-20% around it. The 2026-08-08 17:56 headset
-// log measured what the engine actually holds for the body-fill record:
+// log measured the flag-0 record that the old path incorrectly called Storm:
 //
 //   window A: R 0.2113 / 0.2341   L 0.2135 / 0.3144   (1942 records)
 //   window B: R 0.2100 / 0.2209   L 0.2027 / 0.3192   ( 512 records)
 //
-// Every one of those is outside the bind-derived window, so the gate refused
-// 100% of real body records - 1942 link refusals against 1942 body fills, an
-// exact match - while a weapon record slipped through it. The live bank is
-// simply not in the tag's units: the ratio to bind is not even constant
-// (2.01x to 2.69x across the four links), so it is not a pure scale and must
-// not be "corrected" by a guessed factor.
+// C-H4-34's live `nodes.count` telemetry and H4EK producer proof later showed
+// that this was the separate 120-node native body/legs model, not the 80-node
+// storm_fp graph. These values therefore are not Storm calibration evidence.
 //
 // What the measurements DO establish, and what this gate now uses:
 //   - the two UPPER arms agree to within 3.5% across every sample, which is
@@ -997,11 +1068,10 @@ inline constexpr float kHalo4StormForearmBind = 0.116662f;
 //     dependence - it is evidence that something in this pipeline is wrong, and
 //     it was written off for six candidates because of this sentence.
 //
-// The absolute range deliberately spans BOTH regimes - the tag bind and the
-// measured live geometry - because the record's identity is now established
-// by the engine's own fill flag before this is ever called (see the body-fill
-// gate in Halo4ModelSkinningDetour). This is a sanity check on the geometry,
-// not the thing that decides which record the arms are.
+// The broad absolute range is retained only as a finite/plausibility sanity
+// check. C-H4-35 identifies Storm before this call from the proven per-eye
+// order, flag 1, exact 80-node render model, and source adjacency; neither this
+// envelope nor the fill flag alone decides which record owns the arms.
 inline constexpr bool Halo4StormLinkLengthsMatch(
     float rightUpper, float rightLower,
     float leftUpper, float leftLower) noexcept

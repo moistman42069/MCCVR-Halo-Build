@@ -2,10 +2,13 @@
 
 > **Superseded on 2026-08-10.** Everything below is historical evidence, not
 > current implementation guidance. The user rejected the C-H4-14..33 hand/IK
-> line in full. The active headset-pending restart is E-H4-23 / C-H4-34: rigid
-> floating hands, no IK, no argument-7 admission, exact render-model
-> `nodes.count`, and one all-or-stock hand/gun palette transaction. Read
-> `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-23 and `docs/CURRENT-STATE.md` before
+> line in full. C-H4-34 was also headset-rejected after its log proved it
+> committed nothing and routed the three final records backwards. The active
+> headset-pending restart is E-H4-24 / C-H4-35: current-eye
+> `storm_fp(80) -> held model -> native body(120)`, rigid floating hands and
+> gun, no IK, no argument-7 admission, no previous-pair cache, and all-or-stock
+> palette commits. Read `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24 and
+> `docs/CURRENT-STATE.md` before
 > acting; none of this handoff's current-state or implementation instructions
 > remain active.
 

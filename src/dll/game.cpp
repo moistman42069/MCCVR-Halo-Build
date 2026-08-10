@@ -29142,7 +29142,7 @@ namespace
     // paths need from a title: a runtime mode, a yaw reference pair, and the
     // engine's own aim direction. HUD stays out because Halo 4 needs no HUD
     // redirect - its CUI is inside the captured scene target. ArmIk and
-    // CutsceneTheater stay out because neither has Halo 4 evidence.  C-H4-34
+    // CutsceneTheater stay out because neither has Halo 4 evidence. C-H4-35
     // deliberately uses rigid floating hands only, so advertising ArmIk here
     // would grant a capability Halo 4 does not implement.
     constexpr uint32_t kHalo4RuntimeCapabilities =
@@ -29190,23 +29190,27 @@ namespace
         std::atomic<uint64_t> vrikStageRefusals[
             static_cast<size_t>(Halo4VrikStage::Count)]{};
         std::atomic<uint64_t> vrikExactReturnHits{0};
-        // Weapon records moved by the right hand's world delta.
+        // The exact Storm hands record and immediately following held record.
         std::atomic<uint64_t> vrikWeaponRecordsCarried{0};
         std::atomic<uint64_t> vrikWeaponRecordsRefused{0};
-        // The record header's own fill flag, per record: 0 = the body/arms
-        // fill, 1 = a weapon fill. C-H4-21 GATES ON THIS - it is what decides
-        // whether a record is offered to the arm solve or to the weapon carry,
-        // after the 17:56 log proved geometry alone put the arm IK on the gun.
+        // The producer flag is not an anatomy classifier. C-H4-34's headset
+        // log proved flag 1 contains both the 80-node storm_fp hands and the
+        // held gun, while flag 0 is the separate 120-node native body/legs.
         std::atomic<uint64_t> vrikBodyFillRecords{0};
         std::atomic<uint64_t> vrikWeaponFillRecords{0};
         std::atomic<uint64_t> vrikUnexpectedFillRecords{0};
         std::atomic<uint64_t> vrikUnreadableFillRecords{0};
-        // C-H4-34 resolves the render model's exact input nodes.count from the
+        // C-H4-35 resolves the render model's exact input nodes.count from the
         // same tag data model_skinning consumes. A resolver failure is not an
         // ordinary non-owned palette and must remain visible in the log.
         std::atomic<uint64_t> vrikNodeCountResolveFailures{0};
         std::atomic<int32_t> vrikLastBodyNodeCount{-1};
         std::atomic<int32_t> vrikLastWeaponNodeCount{-1};
+        std::atomic<uint64_t> vrikStormRecordCandidates{0};
+        std::atomic<uint32_t> vrikLastStormChecksum{0};
+        std::atomic<uint32_t> vrikLastHeldChecksum{0};
+        std::atomic<uint32_t> vrikLastBodyChecksum{0};
+        std::atomic<int32_t> vrikLastHeldNodeCount{-1};
         // The helper/fixup/armour bones between the joints, which the shared
         // solver does not reach. Counted so a torn arm cannot be reported as
         // a clean solve.
@@ -29678,7 +29682,9 @@ namespace
         return false;
     }
 
-    // The weapon records precede the body record in H4EK's producer. Cache the
+    // Dormant C-H4-29..34 relation state retained for forensic history. The
+    // active C-H4-35 path below neither reads nor publishes it.
+    // The weapon records precede the body record in the rejected model. Cache the
     // most recent successful BODY hand in root-local space, never a world
     // delta carrying the previous eye/head root. Each weapon uses its own eye
     // root and current controller pose to build the world delta it needs.
@@ -29700,17 +29706,20 @@ namespace
     uintptr_t g_halo4RenderModelTagIndexPointerSlot=0;
     uintptr_t g_halo4RenderModelGroupBaseTable=0;
 
-    // C-H4-34 keeps two separate stages of state. BODY records collect an
-    // untouched eye-local stock-wrist relation for the NEXT stereo pair. The
-    // outer pair scope freezes one relation per eye plus both physical targets
-    // before either eye renders. A body call can therefore never change what
-    // the second eye's earlier weapon records consume.
+    // C-H4-35 follows Halo 4's live per-eye producer order, not the rejected
+    // previous-pair prediction. The exact 80-node Storm record builds both
+    // hands and stages its actual world delta. The immediately following
+    // flag-1 held model consumes that same-eye, same-source-frame delta once.
     struct Halo4FloatingRelation
     {
         bool valid = false;
         uint32_t epoch = 0;
         uint32_t generation = 0;
         uint64_t preparedSerial = 0;
+        Halo4FloatingTransform rightHandDeltaWorld{};
+        uintptr_t expectedHeldSource = 0;
+        // Preserved only for the dormant C-H4-34 path. The active C-H4-35
+        // transaction never reads or publishes a previous-pair relation.
         Halo4FloatingTransform stockRightHandLocal{};
     };
     struct Halo4FloatingPair
@@ -29725,11 +29734,17 @@ namespace
         float worldScale = 0.0f;
         Halo4FloatingTransform rightTargetWorld{};
         Halo4FloatingTransform leftTargetWorld{};
+        Halo4FloatingRecordPhase eyePhase[2]{
+            Halo4FloatingRecordPhase::AwaitStormHands,
+            Halo4FloatingRecordPhase::AwaitStormHands};
+        // Dormant C-H4-34 frozen previous-pair state; deliberately never read
+        // by the active same-eye transaction.
         Halo4FloatingRelation eyeRelation[2]{};
-        // BODY records stage here. Halo4EndFloatingPair publishes neither or
-        // both, so a later pair can never combine different animation pairs.
+        // Current-eye Storm motion. It is cleared at eye entry, consumed by
+        // the next held record, and never survives the pair.
         Halo4FloatingRelation nextEyeRelation[2]{};
     };
+    // Retained dormant for history. C-H4-35 has no previous-pair fallback.
     thread_local Halo4FloatingRelation g_halo4FloatingLatest[2]{};
     thread_local Halo4FloatingPair g_halo4FloatingPair{};
 
@@ -29805,9 +29820,10 @@ namespace
         g_halo4Camera.vrikCountOverflow.fetch_add(1,std::memory_order_relaxed);
     }
 
-    // The producer-authored 0x1910 record flag is an exact role gate: 0 body,
-    // 1 weapon. Unknown or unreadable values are counted separately and never
-    // enter either transform path.
+    // The producer-authored 0x1910 record flag partitions the ordered loop:
+    // flag 1 covers both storm_fp hands and the held model, then flag 0 closes
+    // the sequence with the native body/legs model. It is not anatomy by
+    // itself. Unknown or unreadable values never enter either transform path.
     int32_t Halo4RecordFillFlag(const BoneMatrix* input)
     {
         if (!input)
@@ -29951,11 +29967,11 @@ namespace
         // axis happens to point. Refusing the record on an unproven axis
         // convention only ever cost the arms; it never protected anything.
         //
-        // Record identity is already established before this point by the
-        // ENGINE's own fill flag, which the live log shows is 100% readable
-        // and partitions the traffic exactly 1:2 every window. That is what
-        // says "this is the body". This publishes the sign so the convention
-        // becomes measured evidence instead of an assumption.
+        // C-H4-35 establishes record identity before this point from the
+        // engine's ordered flag-1/80 Storm slot. The fill flag alone only
+        // partitions first-person-loop records from native body/legs and
+        // cannot distinguish Storm hands from the held model. This publishes
+        // the sign so the convention remains measured evidence.
         float separation[3];
         for (int i=0;i<3;++i)
             separation[i]=nodes[kHalo4LeftShoulderNode].translation[i]-
@@ -30500,6 +30516,9 @@ namespace
         return true;
     }
 
+    // Dormant rejected C-H4-13..33 implementation retained per the candidate
+    // rollback contract. No active detour calls this function; C-H4-35 starts
+    // at Halo4BuildFloatingHandsPalette below.
     Halo4VrikStage Halo4BuildVrikPalette(const BoneMatrix* source,
                                          BoneMatrix* solved, bool bodyFill)
     {
@@ -31025,36 +31044,25 @@ namespace
             g_halo4FloatingPair.rightTargetValid &&
             g_halo4FloatingPair.leftTargetValid;
 
-        const Halo4FloatingRelation& latest0=g_halo4FloatingLatest[0];
-        const Halo4FloatingRelation& latest1=g_halo4FloatingLatest[1];
-        if (Halo4FloatingRelationPairIsCurrent(
-                g_halo4FloatingPair.epoch,
-                g_halo4FloatingPair.generation,
-                g_halo4FloatingPair.preparedSerial,
-                latest0.valid,latest0.epoch,latest0.generation,
-                latest0.preparedSerial,
-                latest1.valid,latest1.epoch,latest1.generation,
-                latest1.preparedSerial))
-        {
-            g_halo4FloatingPair.eyeRelation[0]=latest0;
-            g_halo4FloatingPair.eyeRelation[1]=latest1;
-        }
+        // No previous pair is imported. Both current-eye motions begin empty
+        // and can be minted only by this pair's exact Storm record.
+        g_halo4FloatingPair.nextEyeRelation[0]=Halo4FloatingRelation{};
+        g_halo4FloatingPair.nextEyeRelation[1]=Halo4FloatingRelation{};
+    }
+
+    void Halo4BeginFloatingEye(int eye)
+    {
+        if (eye<0 || eye>1 || !Halo4FloatingPairMatchesCurrent()) return;
+        g_halo4FloatingPair.eyePhase[eye]=
+            Halo4FloatingRecordPhase::AwaitStormHands;
+        g_halo4FloatingPair.nextEyeRelation[eye]=Halo4FloatingRelation{};
     }
 
     void Halo4EndFloatingPair()
     {
-        // Publish the next relation as one stereo animation transaction. A
-        // BODY refusal, exception, missing eye, or generation change publishes
-        // neither eye and leaves no mixed-age relation pair behind.
-        if (Halo4FloatingPairMatchesCurrent() &&
-            g_halo4FloatingPair.nextEyeRelation[0].valid &&
-            g_halo4FloatingPair.nextEyeRelation[1].valid)
-        {
-            g_halo4FloatingLatest[0]=
-                g_halo4FloatingPair.nextEyeRelation[0];
-            g_halo4FloatingLatest[1]=
-                g_halo4FloatingPair.nextEyeRelation[1];
-        }
+        // Same-eye motions are one-shot and never publish beyond this pair.
+        g_halo4FloatingPair.nextEyeRelation[0]=Halo4FloatingRelation{};
+        g_halo4FloatingPair.nextEyeRelation[1]=Halo4FloatingRelation{};
         g_halo4FloatingPair.active=false;
     }
 
@@ -31062,7 +31070,8 @@ namespace
     bool Halo4CarryFloatingSubtree(
         BoneMatrix* nodes, int wrist, const int (&subtree)[N],
         const Halo4FloatingTransform& frozenTarget,
-        Halo4FloatingTransform& desiredWorld)
+        Halo4FloatingTransform& desiredWorld,
+        Halo4FloatingTransform& appliedDeltaWorld)
     {
         Halo4FloatingTransform stockWorld{},deltaWorld{};
         BoneMatrix delta{};
@@ -31075,15 +31084,22 @@ namespace
             !Halo4ToBoneMatrix(deltaWorld,delta) ||
             !Halo4ApplySubtreeDelta(nodes,subtree,delta))
             return false;
+        appliedDeltaWorld=deltaWorld;
         Halo4FloatingTransform verified{};
         return Halo4ToFloatingTransform(nodes[wrist],verified) &&
             Halo4FloatingDistance(verified,desiredWorld)<0.01f;
     }
 
-    bool Halo4ResolveRenderModelNodeCount(
-        uint16_t renderModelIndex, int& nodeCount)
+    struct Halo4RenderModelIdentity
     {
-        nodeCount=0;
+        uint32_t runtimeImportChecksum = 0;
+        int nodeCount = 0;
+    };
+
+    bool Halo4ResolveRenderModelIdentity(
+        uint16_t renderModelIndex, Halo4RenderModelIdentity& identity)
+    {
+        identity=Halo4RenderModelIdentity{};
         if (!g_halo4RenderModelTagIndexPointerSlot ||
             !g_halo4RenderModelGroupBaseTable)
             return false;
@@ -31109,23 +31125,30 @@ namespace
                     static_cast<uintptr_t>(page)*8u),
                 &biasedBase,sizeof(biasedBase)) || !biasedBase)
             return false;
-        const uintptr_t countAddress=biasedBase+
-            static_cast<uintptr_t>(packed)*4u+0x30u;
-        if (countAddress<biasedBase) return false;
+        const uintptr_t descriptorAddress=biasedBase+
+            static_cast<uintptr_t>(packed)*4u;
+        if (descriptorAddress<biasedBase || descriptorAddress>
+            (std::numeric_limits<uintptr_t>::max)()-0x30u)
+            return false;
+        uint32_t checksum=0;
         int32_t count=0;
         if (!Halo4SafeRead(
-                reinterpret_cast<const void*>(countAddress),
+                reinterpret_cast<const void*>(descriptorAddress+0x08u),
+                &checksum,sizeof(checksum)) ||
+            !Halo4SafeRead(
+                reinterpret_cast<const void*>(descriptorAddress+0x30u),
                 &count,sizeof(count)) || count<=0 ||
             count>kHalo4FirstPersonBankTransforms)
             return false;
-        nodeCount=count;
+        identity.runtimeImportChecksum=checksum;
+        identity.nodeCount=count;
         return true;
     }
 
-    // One active no-IK body transaction. The live final BODY bank is already
-    // world-rooted, so the frozen physical targets are applied directly. Only
-    // the untouched stock wrist is converted through inverse(currentEyeRoot),
-    // and only for the next pair's gun reconstruction.
+    // One active no-IK Storm-hands transaction. The first flag-1 record is the
+    // exact 80-node storm_fp graph and is world-rooted by the current eye. Its
+    // direct world delta is staged only after both hands and the final mask
+    // validate, then consumed by the immediately following held model.
     Halo4VrikStage Halo4BuildFloatingHandsPalette(
         const BoneMatrix* source, BoneMatrix* solved, int nodeCount)
     {
@@ -31152,26 +31175,9 @@ namespace
             !Halo4ToFloatingTransform(
                 solved[kHalo4LeftHandNode],stockLeft))
             return Halo4VrikStage::AnchorFailed;
-
-        // The gun for this pair already consumed the frozen prior relation.
-        // Measure that prediction against the current untouched BODY wrist so
-        // a reload/recoil mismatch is evidence in the headset log, not theory.
-        if (g_halo4FloatingPair.eyeRelation[eye].valid)
-        {
-            Halo4FloatingTransform predictedStock{};
-            if (Halo4ComposeFloatingTransforms(
-                    eyeRoot,
-                    g_halo4FloatingPair.eyeRelation[eye].stockRightHandLocal,
-                    predictedStock))
-            {
-                Halo4RecordFloatingMaximum(
-                    g_halo4Camera.vrikWeaponPredictionTranslation,
-                    Halo4FloatingDistance(predictedStock,stockRight));
-                Halo4RecordFloatingMaximum(
-                    g_halo4Camera.vrikWeaponPredictionAngle,
-                    Halo4FloatingRotationError(predictedStock,stockRight));
-            }
-        }
+        const Halo4VrikStage stormStage=
+            Halo4ClassifyStormArms(solved,eyeRootMatrix,true);
+        if (stormStage!=Halo4VrikStage::Solved) return stormStage;
 
         Halo4FloatingTransform desiredRight=
             g_halo4FloatingPair.rightTargetWorld;
@@ -31188,17 +31194,16 @@ namespace
             !Halo4FloatingWristDeltaPlausible(leftDistance,worldScale))
             return Halo4VrikStage::RangeFailed;
 
-        Halo4FloatingTransform stockRightLocal{};
-        if (!Halo4BuildFloatingEyeLocalWrist(
-                eyeRoot,stockRight,stockRightLocal))
-            return Halo4VrikStage::AnchorFailed;
+        Halo4FloatingTransform rightDeltaWorld{},leftDeltaWorld{};
         if (!Halo4CarryFloatingSubtree(
                 solved,kHalo4RightHandNode,kHalo4RightHandSubtree,
-                g_halo4FloatingPair.rightTargetWorld,desiredRight))
+                g_halo4FloatingPair.rightTargetWorld,desiredRight,
+                rightDeltaWorld))
             return Halo4VrikStage::RightIkFailed;
         if (!Halo4CarryFloatingSubtree(
                 solved,kHalo4LeftHandNode,kHalo4LeftHandSubtree,
-                g_halo4FloatingPair.leftTargetWorld,desiredLeft))
+                g_halo4FloatingPair.leftTargetWorld,desiredLeft,
+                leftDeltaWorld))
             return Halo4VrikStage::LeftIkFailed;
 
         // Visibility is last. Cross-weighted shoulder/forearm helpers collapse
@@ -31236,54 +31241,53 @@ namespace
 
         g_halo4Camera.vrikTargetMiss.store(
             rightDistance,std::memory_order_relaxed);
+        const uintptr_t sourceAddress=reinterpret_cast<uintptr_t>(source);
+        const uintptr_t heldSource=
+            Halo4ExpectedHeldRecordSource(sourceAddress);
+        if (!heldSource)
+            return Halo4VrikStage::RangeFailed;
         Halo4FloatingRelation& staged=
             g_halo4FloatingPair.nextEyeRelation[eye];
         staged.valid=true;
         staged.epoch=g_halo4FloatingPair.epoch;
         staged.generation=g_halo4FloatingPair.generation;
         staged.preparedSerial=g_halo4FloatingPair.preparedSerial;
-        staged.stockRightHandLocal=stockRightLocal;
+        staged.rightHandDeltaWorld=rightDeltaWorld;
+        staged.expectedHeldSource=heldSource;
         return Halo4VrikStage::Solved;
     }
 
-    // Weapon records are world-rooted. Rebuild this eye's stock wrist from the
-    // pair-frozen eye-local relation, derive a fresh world delta to the same
-    // frozen target, and commit only after every exact render-model node moves.
+    // The held record is world-rooted by the same current-eye root as the Storm
+    // record immediately before it. Consume that exact same-frame hand delta
+    // once and commit only after every resolved held-model node moves.
     bool Halo4CarryFloatingWeaponRecord(
         const BoneMatrix* source, BoneMatrix* moved, int nodeCount)
     {
         if (!source || !moved || nodeCount<=0 ||
             nodeCount>kHalo4FirstPersonBankTransforms ||
-            !Halo4FloatingPairMatchesCurrent() ||
-            !g_halo4FloatingPair.targetsValid ||
-            // A one-eye relation would move the gun in only one view. Freeze
-            // the stereo relation as one admission decision: until both BODY
-            // eyes have published, both weapon eyes remain stock.
-            !g_halo4FloatingPair.eyeRelation[0].valid ||
-            !g_halo4FloatingPair.eyeRelation[1].valid)
+            !Halo4FloatingPairMatchesCurrent())
             return false;
         const int eye=g_stereoEye.load(std::memory_order_acquire);
-        if (eye<0 || eye>1 ||
-            !g_halo4FloatingPair.eyeRelation[eye].valid)
+        if (eye<0 || eye>1) return false;
+        Halo4FloatingRelation& current=
+            g_halo4FloatingPair.nextEyeRelation[eye];
+        if (!current.valid ||
+            current.epoch!=g_halo4FloatingPair.epoch ||
+            current.generation!=g_halo4FloatingPair.generation ||
+            current.preparedSerial!=g_halo4FloatingPair.preparedSerial)
             return false;
+        if (current.expectedHeldSource!=reinterpret_cast<uintptr_t>(source))
+        {
+            current=Halo4FloatingRelation{};
+            return false;
+        }
 
-        BoneMatrix eyeRootMatrix{},deltaMatrix{};
-        Halo4FloatingTransform eyeRoot{},stockWorld{},desiredWorld{},deltaWorld{};
-        if (!Halo4LoadActiveEyeRoot(1.0f,eyeRootMatrix) ||
-            !Halo4ToFloatingTransform(eyeRootMatrix,eyeRoot) ||
-            !Halo4ComposeFloatingTransforms(
-                eyeRoot,
-                g_halo4FloatingPair.eyeRelation[eye].stockRightHandLocal,
-                stockWorld))
-            return false;
-        desiredWorld=g_halo4FloatingPair.rightTargetWorld;
-        desiredWorld.scale=stockWorld.scale;
-        if (!Halo4FloatingWristDeltaPlausible(
-                Halo4FloatingDistance(stockWorld,desiredWorld),
-                g_halo4FloatingPair.worldScale) ||
-            !Halo4BuildFloatingWorldDelta(
-                desiredWorld,stockWorld,deltaWorld) ||
-            !Halo4ToBoneMatrix(deltaWorld,deltaMatrix) ||
+        // One-shot even on failure: no later record may inherit a delta meant
+        // for this exact held model.
+        const Halo4FloatingTransform deltaWorld=current.rightHandDeltaWorld;
+        current=Halo4FloatingRelation{};
+        BoneMatrix deltaMatrix{};
+        if (!Halo4ToBoneMatrix(deltaWorld,deltaMatrix) ||
             !Halo4SafeRead(source,moved,
                 sizeof(BoneMatrix)*kHalo4FirstPersonBankTransforms))
             return false;
@@ -31332,68 +31336,57 @@ namespace
                 Halo4RecordSkinningCount(totalNodeMatrixCount);
                 const int32_t fillFlag=
                     Halo4RecordFillFlag(inputObjectNodeMatrices);
-                const bool bodyFill=
-                    fillFlag==kHalo4FirstPersonBodyFillFlag;
-                int renderModelNodeCount=0;
-                const bool nodeCountValid=Halo4ResolveRenderModelNodeCount(
-                    renderModelIndex,renderModelNodeCount);
-                if (!nodeCountValid)
+                Halo4RenderModelIdentity identity{};
+                const bool identityValid=Halo4ResolveRenderModelIdentity(
+                    renderModelIndex,identity);
+                if (!identityValid)
                     g_halo4Camera.vrikNodeCountResolveFailures.fetch_add(
                         1,std::memory_order_relaxed);
-                else if (bodyFill)
+                else if (fillFlag==kHalo4FirstPersonBodyFillFlag)
+                {
                     g_halo4Camera.vrikLastBodyNodeCount.store(
-                        renderModelNodeCount,std::memory_order_relaxed);
+                        identity.nodeCount,std::memory_order_relaxed);
+                    g_halo4Camera.vrikLastBodyChecksum.store(
+                        identity.runtimeImportChecksum,
+                        std::memory_order_relaxed);
+                }
                 else if (fillFlag==kHalo4FirstPersonWeaponFillFlag)
                     g_halo4Camera.vrikLastWeaponNodeCount.store(
-                        renderModelNodeCount,std::memory_order_relaxed);
-                // THE ENGINE ALREADY TELLS US WHICH RECORD IS THE BODY, AND
-                // C-H4-14..20 IGNORED IT.
-                //
-                // The 2026-08-08 17:56 headset log proves what that cost. In
-                // one 2s window: 5826 first-person calls = 1942 body fills +
-                // 3884 weapon fills, and the outcome was
-                //   solved=1942, link-refused=1942, anchor-refused=1942.
-                // The published measurement for those 1942 BODY records was
-                // "live arm links R 0.2113/0.2341 L 0.2135/0.3144" against an
-                // admitted window of upper (0.075,0.110) - so every single
-                // body record was refused at the link gate, and the 1942 that
-                // solved were a WEAPON record whose unrelated bone spacing
-                // happened to land inside that narrow window.
-                //
-                // The arm IK was being applied to the gun, and the real arms
-                // were left stock. That is the whole "gun stays on the face /
-                // hands do nothing" symptom, and no amount of re-deriving the
-                // solve frame could ever have fixed it.
-                //
-                // So the record is selected by the ENGINE's own fill flag,
-                // which the same log shows is 100% readable ("0 header
-                // unreadable") and partitions the traffic exactly 1:2 every
-                // window. A weapon record is never offered to the arm
-                // classifier again - it goes straight to the carry path.
-                //
-                // An UNREADABLE header (fillFlag < 0) is neither solved nor
-                // carried: it passes through stock. Under the old code
-                // "not the body" also meant "not carried", so routing it to
-                // the weapon branch here would invert that safety property and
-                // drag the entire first-person body by a transform meant for
-                // the gun - the one outcome Halo4RecordFillFlag's contract
-                // says must never happen. The live log records zero unreadable
-                // headers, so this costs nothing and forecloses the worst case.
-                if (fillFlag<0 || !nodeCountValid ||
-                    (fillFlag!=kHalo4FirstPersonBodyFillFlag &&
-                     fillFlag!=kHalo4FirstPersonWeaponFillFlag))
+                        identity.nodeCount,std::memory_order_relaxed);
+
+                const int eye=g_stereoEye.load(std::memory_order_acquire);
+                const bool sequenceCurrent=identityValid && eye>=0 && eye<2 &&
+                    Halo4FloatingPairMatchesCurrent();
+                Halo4FloatingRecordDecision decision{};
+                if (sequenceCurrent)
                 {
-                    g_halo4Camera.vrikStockPalettes.fetch_add(
-                        1,std::memory_order_relaxed);
+                    Halo4FloatingRecordPhase& phase=
+                        g_halo4FloatingPair.eyePhase[eye];
+                    decision=Halo4SelectFloatingRecord(
+                        phase,fillFlag,identity.nodeCount);
+                    phase=decision.next;
                 }
-                else if (bodyFill)
+                else if (eye>=0 && eye<2 && g_halo4FloatingPair.active)
                 {
-                    // C-H4-34 is the only active hand implementation: two
-                    // rigid wrists plus the final floating visibility mask.
-                    // The dormant IK/world-motion path above is never entered.
+                    g_halo4FloatingPair.eyePhase[eye]=
+                        fillFlag==kHalo4FirstPersonBodyFillFlag
+                            ? Halo4FloatingRecordPhase::AwaitStormHands
+                            : Halo4FloatingRecordPhase::AwaitSequenceBoundary;
+                    g_halo4FloatingPair.nextEyeRelation[eye]=
+                        Halo4FloatingRelation{};
+                }
+
+                if (decision.action==
+                    Halo4FloatingRecordAction::BuildStormHands)
+                {
+                    g_halo4Camera.vrikStormRecordCandidates.fetch_add(
+                        1,std::memory_order_relaxed);
+                    g_halo4Camera.vrikLastStormChecksum.store(
+                        identity.runtimeImportChecksum,
+                        std::memory_order_relaxed);
                     const Halo4VrikStage stage=Halo4BuildFloatingHandsPalette(
                         inputObjectNodeMatrices,g_halo4VrikScratch,
-                        renderModelNodeCount);
+                        identity.nodeCount);
                     if (stage==Halo4VrikStage::Solved)
                     {
                         selected=g_halo4VrikScratch;
@@ -31402,6 +31395,10 @@ namespace
                     }
                     else
                     {
+                        g_halo4FloatingPair.eyePhase[eye]=
+                            Halo4FloatingRecordPhase::AwaitSequenceBoundary;
+                        g_halo4FloatingPair.nextEyeRelation[eye]=
+                            Halo4FloatingRelation{};
                         g_halo4Camera.vrikStageRefusals[
                             static_cast<size_t>(stage)].fetch_add(
                                 1,std::memory_order_relaxed);
@@ -31409,20 +31406,41 @@ namespace
                             1,std::memory_order_relaxed);
                     }
                 }
-                // Every non-body record is a weapon record.  Its delta is
-                // rebuilt from the current eye and current prepared controller
-                // target, never replayed from a previous eye.
-                else if (Halo4CarryFloatingWeaponRecord(
-                             inputObjectNodeMatrices,g_halo4VrikScratch,
-                             renderModelNodeCount))
+                else if (decision.action==
+                         Halo4FloatingRecordAction::CarryHeldModel)
                 {
-                    selected=g_halo4VrikScratch;
-                    g_halo4Camera.vrikWeaponRecordsCarried.fetch_add(
-                        1,std::memory_order_relaxed);
+                    g_halo4Camera.vrikLastHeldChecksum.store(
+                        identity.runtimeImportChecksum,
+                        std::memory_order_relaxed);
+                    g_halo4Camera.vrikLastHeldNodeCount.store(
+                        identity.nodeCount,std::memory_order_relaxed);
+                    if (Halo4CarryFloatingWeaponRecord(
+                            inputObjectNodeMatrices,g_halo4VrikScratch,
+                            identity.nodeCount))
+                    {
+                        selected=g_halo4VrikScratch;
+                        g_halo4Camera.vrikWeaponRecordsCarried.fetch_add(
+                            1,std::memory_order_relaxed);
+                    }
+                    else
+                    {
+                        g_halo4Camera.vrikWeaponRecordsRefused.fetch_add(
+                            1,std::memory_order_relaxed);
+                    }
                 }
                 else
                 {
-                    g_halo4Camera.vrikWeaponRecordsRefused.fetch_add(
+                    // Flag 0 is the independently submitted 120-node native
+                    // body/legs model. It closes the sequence and remains
+                    // byte-for-byte stock. Unreadable, unresolved, unexpected,
+                    // or out-of-order records also stay stock.
+                    if (eye>=0 && eye<2 &&
+                        fillFlag==kHalo4FirstPersonBodyFillFlag)
+                    {
+                        g_halo4FloatingPair.nextEyeRelation[eye]=
+                            Halo4FloatingRelation{};
+                    }
+                    g_halo4Camera.vrikStockPalettes.fetch_add(
                         1,std::memory_order_relaxed);
                 }
             }
@@ -31776,6 +31794,12 @@ namespace
         g_halo4Camera.vrikLastBodyNodeCount.store(-1,std::memory_order_relaxed);
         g_halo4Camera.vrikLastWeaponNodeCount.store(
             -1,std::memory_order_relaxed);
+        g_halo4Camera.vrikStormRecordCandidates.store(
+            0,std::memory_order_relaxed);
+        g_halo4Camera.vrikLastStormChecksum.store(0,std::memory_order_relaxed);
+        g_halo4Camera.vrikLastHeldChecksum.store(0,std::memory_order_relaxed);
+        g_halo4Camera.vrikLastBodyChecksum.store(0,std::memory_order_relaxed);
+        g_halo4Camera.vrikLastHeldNodeCount.store(-1,std::memory_order_relaxed);
         g_halo4Camera.vrikArmBandBonesCarried.store(
             0,std::memory_order_relaxed);
         g_halo4Camera.vrikArmBandBonesSkipped.store(
@@ -32134,7 +32158,7 @@ namespace
                     g_halo4Camera.headPositionReference[axis].store(
                         snapshot.headPosition[axis], std::memory_order_relaxed);
                 }
-                // C-H4-34 keeps Halo 4's reference pair private. C-H4-33's
+                // C-H4-35 keeps Halo 4's reference pair private. C-H4-33's
                 // writes into the Halo 3/ODST/Reach globals existed only for
                 // the rejected shared-hand experiment and are deliberately
                 // inactive; target freezing reads the private pair above.
@@ -32330,8 +32354,9 @@ namespace
         g_halo4RigTrackingActive=true;
         __try
         {
-            // Freeze both physical wrist targets and one previous-body local
-            // relation per eye before either eye can reach model_skinning.
+            // Freeze both physical wrist targets before either eye can reach
+            // model_skinning. Hand-to-held motion is captured and consumed
+            // inside each eye's current ordered record sequence.
             Halo4BeginFloatingPair();
             const int firstEye = g_config.right_eye_first ? 1 : 0;
             for (int pass = 0; pass < 2; ++pass)
@@ -32505,11 +32530,12 @@ namespace
                         1, std::memory_order_relaxed);
                 }
 
-                // C-H4-11b proved that this write reaches only an animation
-                // telemetry mirror. Do not write it again here: the visible
-                // weapon remains stock until the real animation producer is
-                // identified and independently verified.
+                // C-H4-11b proved the old animation-mirror write was not a
+                // visible consumer, so it remains absent. Publish this eye root
+                // before the wrapper; C-H4-35 owns the visible hands and held
+                // model later at their exact final-palette callbacks.
                 Halo4PublishEyeRoot(eye,eyeCameras[eye]);
+                Halo4BeginFloatingEye(eye);
                 g_halo4OrigWrapper(element, view, window);
                 if (!VR_CaptureHalo4RenderedEye(
                         eye, snapshot.preparedSerial))
@@ -32815,12 +32841,12 @@ namespace
             g_halo4Camera.floatingHandsEpoch.store(
                 epoch,std::memory_order_release);
         }
-        LOG("Halo 4 C-H4-34 floating hands: final palette 0x%X hooked; only "
+        LOG("Halo 4 C-H4-35 Reach-style floating hands: final palette 0x%X hooked; only "
             "return 0x%X is admitted; %d bank transforms are privately copied "
             "and argument 7 is never treated as a node count; H4EK/retail "
-            "render-model nodes.count is resolved exactly; epoch %u has one "
-            "no-IK path owning both rigid wrists, pair-frozen per-eye gun "
-            "relations, and the forced wrist-co-located visibility mask",
+            "render-model checksum/nodes.count is read exactly; epoch %u has "
+            "one no-IK path: current-eye Storm80 hands, immediately following "
+            "held model, then untouched flag-0 native body",
             kHalo4ModelSkinningRva,kHalo4FirstPersonSkinningReturnRva,
             kHalo4FirstPersonBankTransforms,epoch);
         return true;
@@ -33121,13 +33147,10 @@ namespace
                     "stock viewmodel FOV and everything else is unaffected");
             }
         }
-        // C-H4-34 HEADSET REJECTED (2026-08-10): the live BODY render model
-        // reports 120 nodes, while that candidate required the 80-node Storm
-        // hand-prefix count. Every BODY transaction refused and no gun
-        // relation could publish. Keep the optional feature disabled at this
-        // rollback boundary; the working camera/session remains fully armed.
-        LOG("Halo 4 C-H4-34 floating hands disabled after headset rejection; "
-            "stock hands/gun remain while the camera core stays armed");
+        // C-H4-35 is optional and fail-open. It owns only the live
+        // Storm80 -> held -> native-body record sequence; any miss leaves that
+        // exact feature stock while the working camera/session stays armed.
+        InstallHalo4Vrik(base,size);
         PublishHalo4Lifecycle();
         LOG("Halo 4 camera core installed (generation %u): setup 0x%X and the "
             "render wrapper 0x%X are hooked at their pinned RVAs, both proven "
@@ -33182,8 +33205,8 @@ namespace
                 kReachRenderSafetyIntervalMs)
         {
             g_halo4Camera.armed.store(true, std::memory_order_release);
-            LOG("Halo 4 camera core armed: C-H4-34 rigid floating hands and "
-                "pair-frozen gun carry (no arm IK) on C-H4-10 motion aim, VR "
+            LOG("Halo 4 camera core armed: C-H4-35 current-eye Storm hands and "
+                "same-frame held-model carry (no arm IK) on C-H4-10 motion aim, VR "
                 "turn and rumble on C-H4-9's headset-owned look, C-H4-8's 6DOF and "
                 "native headset-FOV coverage. The hand steers Halo 4's own aim "
                 "through the shared closed loop the other three titles use, "
@@ -33390,12 +33413,15 @@ namespace
         const uint64_t weaponRefused=
             g_halo4Camera.vrikWeaponRecordsRefused.exchange(
                 0,std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-34 floating hands: palette %s, halo4_hands=%d; %llu body palettes "
-            "committed / %llu refused, %llu weapon records committed / %llu "
+        const uint64_t stormCandidates=
+            g_halo4Camera.vrikStormRecordCandidates.exchange(
+                0,std::memory_order_relaxed);
+        LOG("Halo 4 C-H4-35 Reach-style floating hands: palette %s, halo4_hands=%d; "
+            "%llu Storm hand palettes committed / %llu refused, %llu held records committed / %llu "
             "refused, %llu exact first-person calls "
             "in 2s; no IK, forced floaty mask, world scale %.3f, current stock-"
-            "to-controller right-wrist distance %.4f; prior-pair gun prediction "
-            "peak %.4f world / %.2f deg",
+            "to-controller right-wrist distance %.4f; current-eye same-frame "
+            "Storm candidates %llu",
             g_halo4Camera.modelSkinningTarget?"hooked":"UNAVAILABLE - stock",
             g_config.halo4_hands?1:0,
             static_cast<unsigned long long>(solved),
@@ -33405,12 +33431,9 @@ namespace
             static_cast<unsigned long long>(exactHits),
             g_worldScale.load(std::memory_order_relaxed),
             g_halo4Camera.vrikTargetMiss.load(std::memory_order_relaxed),
-            g_halo4Camera.vrikWeaponPredictionTranslation.exchange(
-                0.0f,std::memory_order_relaxed),
-            g_halo4Camera.vrikWeaponPredictionAngle.exchange(
-                0.0f,std::memory_order_relaxed)*57.2958f);
-        LOG("Halo 4 C-H4-34 floating-hand refusals in 2s: count=%llu copy=%llu basis=%llu "
-            "range=%llu eye/root=%llu right-pose=%llu left-pose=%llu "
+            static_cast<unsigned long long>(stormCandidates));
+        LOG("Halo 4 C-H4-35 floating-hand refusals in 2s: count=%llu copy=%llu basis=%llu "
+            "range=%llu eye/root=%llu link=%llu side=%llu right-pose=%llu left-pose=%llu "
             "right-rigid=%llu left-rigid=%llu; %llu stock/non-owned palettes",
             static_cast<unsigned long long>(
                 stageRefusals[static_cast<size_t>(
@@ -33428,6 +33451,12 @@ namespace
                     Halo4VrikStage::AnchorFailed)]),
             static_cast<unsigned long long>(
                 stageRefusals[static_cast<size_t>(
+                    Halo4VrikStage::LinkFailed)]),
+            static_cast<unsigned long long>(
+                stageRefusals[static_cast<size_t>(
+                    Halo4VrikStage::SideFailed)]),
+            static_cast<unsigned long long>(
+                stageRefusals[static_cast<size_t>(
                     Halo4VrikStage::RightPoseFailed)]),
             static_cast<unsigned long long>(
                 stageRefusals[static_cast<size_t>(
@@ -33439,12 +33468,14 @@ namespace
                 stageRefusals[static_cast<size_t>(
                     Halo4VrikStage::LeftIkFailed)]),
             static_cast<unsigned long long>(stockPalettes));
-        // Exact producer roles straight out of the record header.
-        LOG("Halo 4 C-H4-34 record fills in 2s: %llu body / %llu weapon / "
+        // The producer flag partitions the sequence but does not identify
+        // anatomy: flag 1 contains both Storm hands and the held model.
+        LOG("Halo 4 C-H4-35 record sequence in 2s: %llu flag0 native-body / %llu "
+            "flag1 first-person-loop / "
             "%llu unexpected / %llu header unreadable; nodes.count resolver "
-            "%llu failures, last body %d / weapon %d; only the body receives "
-            "the two rigid hands and only weapon fills receive the current-eye "
-            "gun carry",
+            "%llu failures; last flag0 nodes %d checksum 0x%08X, last flag1 "
+            "nodes %d, Storm checksum 0x%08X (H4EK 0x%08X telemetry-only), "
+            "held nodes %d checksum 0x%08X",
             static_cast<unsigned long long>(
                 g_halo4Camera.vrikBodyFillRecords.exchange(
                     0,std::memory_order_relaxed)),
@@ -33462,7 +33493,16 @@ namespace
                     0,std::memory_order_relaxed)),
             g_halo4Camera.vrikLastBodyNodeCount.load(
                 std::memory_order_relaxed),
+            g_halo4Camera.vrikLastBodyChecksum.load(
+                std::memory_order_relaxed),
             g_halo4Camera.vrikLastWeaponNodeCount.load(
+                std::memory_order_relaxed),
+            g_halo4Camera.vrikLastStormChecksum.load(
+                std::memory_order_relaxed),
+            kHalo4StormFpRuntimeImportChecksum,
+            g_halo4Camera.vrikLastHeldNodeCount.load(
+                std::memory_order_relaxed),
+            g_halo4Camera.vrikLastHeldChecksum.load(
                 std::memory_order_relaxed));
         // Which per-render-model counts actually arrive. This is the fact
         // C-H4-13 assumed instead of measuring.
@@ -33487,7 +33527,7 @@ namespace
             }
             if (!written)
                 snprintf(counts,sizeof(counts),"none");
-            LOG("Halo 4 C-H4-34 argument-7 histogram in 2s: %s (%llu past "
+            LOG("Halo 4 C-H4-35 argument-7 histogram in 2s: %s (%llu past "
                 "%d slots)",counts,
                 static_cast<unsigned long long>(
                     g_halo4Camera.vrikCountOverflow.exchange(
@@ -35181,12 +35221,12 @@ void Game_AutoVrTick()
                 Game_ForcePositional();
                 if (!VR_IsStereoEnabled())
                     VR_ToggleStereo();
-                LOG("Halo 4 C-H4-34 immersive VR ON: stereo geometry, head "
+                LOG("Halo 4 C-H4-35 immersive VR ON: stereo geometry, head "
                     "tracking, 6DOF and headset-owned look pitch are live. "
                     "Halo 4's CUI arrives inside the captured scene target, so "
                     "it needs no separate HUD redirect (user-confirmed "
                     "2026-08-08); controller aim is live and the optional "
-                    "rigid floating-hand/gun transaction is no-IK");
+                    "Reach-style current-eye floating-hand/gun transaction is no-IK");
             }
             const uint32_t halo4Generation =
                 TitleAdapter_GetGeneration(GameTitle::Halo4);

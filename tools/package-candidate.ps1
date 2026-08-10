@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c34-rigid-floating-hands',
+        'halo4-c35-reach-style-hands-gun',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-34'
+            id = 'C-H4-35'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'one-no-ik-floating-hands-transaction-freezes-world-controller-wrists-once-per-stereo-pair-applies-direct-world-rigid-deltas-to-both-h4ek-hand-subtrees-collapses-cross-weighted-arm-influences-at-the-solved-wrists-atomically-publishes-only-complete-per-eye-local-stock-wrist-relation-pairs-and-rebuilds-each-gun-delta-through-the-current-eye-over-the-exact-resolved-render-model-node-count-with-all-or-stock-commit-and-prior-pair-animation-error-telemetry'
+            behavior = 'reach-style-no-ik-current-eye-sequence-identifies-the-first-flag1-80-node-storm-hands-record-applies-rigid-controller-deltas-and-wrist-colocated-visibility-then-carries-the-exact-adjacent-flag1-held-model-with-the-same-world-delta-once-while-leaving-the-flag0-120-node-native-body-entirely-stock-with-no-prior-pair-cache-or-alternate-hand-algorithm'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -276,7 +276,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-28 is an unaccepted headset candidate. It retains C-H4-27 controller-only ownership. Official H4EK Storm geometry proves 82 upper/forearm cross-weighted vertices per side and 222 right / 235 left forearm/hand cross-weighted vertices; over-reach is now distributed across the complete elbow and hand subtrees instead of concentrating both links extension at the hand seam. C-H4-1 remains the accepted rollback pointer until explicit headset acceptance.'
+        note = 'C-H4-35 is an unaccepted headset candidate. C-H4-34 was headset-rejected after its log proved that it routed the native 120-node body as hands and never committed. C-H4-35 follows the measured/H4EK order storm_fp hands -> held model -> native body, shares one current-eye rigid delta between hands and gun, has no IK or prior-pair fallback, and preserves the working Halo 4 camera process. C-H4-1 remains the accepted rollback pointer until explicit headset acceptance.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

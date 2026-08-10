@@ -3223,3 +3223,66 @@ staged either eye relation, so every weapon correctly stayed stock. Camera
 ownership remained healthy (241 stereo pairs, zero drops in a representative
 window). C-H4-34 is rejected, is disabled before the next candidate, and does
 not advance the accepted-build pointer.
+
+## E-H4-24 / C-H4-35 - Reach-style current-eye hands and held model
+
+The C-H4-34 failure exposed a deeper routing error than its impossible count
+gate. The preserved run is
+`out/test-runs/3260124-halo4-c34-face-stuck-steam-20260810-071002/halo3xr.log`
+(SHA-256
+`F089AF99696C489F386CA8C70F3885B94374F65AF8D988E96AF565C408085702`).
+Its steady windows end with `last body 120 / weapon 5`; one exchange-boundary
+window has one extra 96-bin/flag-1 call and ends `last weapon 80`. The final
+consumer walks records forward (`0x36F5DA add rsi,0x1910`). Together these pin
+the live order as flag 1 / 80 nodes, flag 1 / 5 nodes for this held model, then
+flag 0 / 120 nodes. Argument 7's simultaneous 96/5/33 histogram remains only
+an output-palette measurement and is not used for admission.
+
+H4EK explains those three records rather than merely correlating them. The
+producer allocates 0x1910-byte records monotonically and calls the filler at
+`0x92A5FB` (flag 1), `0x92A727` (flag 1), then `0x92ABCF` (flag 0). The first
+path resolves the player representation's **first person hands model**; the
+official globals reference
+`objects\characters\storm_fp\storm_fp`. The second resolves the weapon tag's
+own **first person model**. The third resolves the independently submitted
+**first person body model**, `storm_masterchief`; its own diagnostic says that
+node mismatches prevent *legs* from rendering. Retail preserves the calls at
+`0x3B1E15`, `0x3B1F1D`, and `0x3B23AD`. The two flag-1 fills receive the same
+active-view camera root; flag 0 uses the separate NULL/identity-root path
+already recorded in E-H4-22.
+
+The retained official export
+`out/h4-tags/storm_fp.render_model.xml` identifies Storm with runtime-import
+checksum `353173504` / `0x150D0000` and exactly 80 nodes. The live retail
+checksum has not yet been logged, so C-H4-35 records descriptor `+0x08` but
+does not hard-gate on it. First-candidate admission uses only facts already
+measured live: exact FP return, current-eye ordered phase, fill flag 1, exact
+consumer `nodes.count == 80`, and the existing finite/Storm arm-relationship
+validation. This avoids both unsafe count-only generalisation and another
+checksum-probe-only headset sitting.
+
+For each eye, C-H4-35 freezes both controller targets before rendering, clears
+all transient carry state at eye entry, and processes one repeatable sequence:
+
+1. The first flag-1/80 Storm graph is privately copied. With stock right wrist
+   `S_e` and frozen controller target `T`, it computes
+   `D_e = T * inverse(S_e)`, rigidly carries both proven hand subtrees, applies
+   the wrist-co-located visibility mask last, validates all 80 outputs, and only
+   then stages `D_e`.
+2. The immediately adjacent record must have the exact source address
+   `stormSource + 0x1910`, the same eye/epoch/generation/prepared serial, and
+   flag 1. It consumes `D_e` once and applies it atomically to every exact
+   resolved held-model node. Hands and gun therefore use the same current
+   animation/world sample; there is no eye-root reconstruction, N-1 prediction,
+   or previous-pair cache.
+3. Flag 0 closes/resets the sequence and its 120-node native body/legs record is
+   submitted byte-for-byte stock. Storm's 80-node indices and mask never touch
+   that different skeleton.
+
+This is Reach's accepted player-facing ownership shape implemented through
+Halo 4's own producer: exact current source/consumer pairing, one rigid hand
+motion carrying the held object, then visibility last. It has no IK and no
+alternate hand-placement algorithm. Any order, identity, matrix, target, or
+adjacency failure submits stock for that exact palette, clears the one-shot
+motion, and leaves stereo/OpenXR armed. C-H4-35 is headset-pending and does not
+advance `docs/CURRENT-STATE.md`.

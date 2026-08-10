@@ -6665,17 +6665,14 @@ int main()
                   kHalo4StormUpperArmBind, kHalo4StormForearmBind),
             "A NaN link length is refused by the comparisons themselves");
 
-        // THE REGRESSION THIS SUITE EXISTS TO PREVENT.
-        //
-        // The bind-derived envelope refused 100% of real body records in the
-        // headset - the 2026-08-08 17:56 log recorded 1942 link refusals
-        // against exactly 1942 body fills, while a weapon record passed it and
-        // received the arm solve instead. These are the engine's own measured
-        // arm links from that session; the gate must admit them.
+        // This helper is deliberately only a broad sanity envelope. These
+        // values came from the old path's misrouted flag-0/120 native body,
+        // not storm_fp; admitting them proves the helper is not being reused
+        // as C-H4-35's record-identity predicate.
         Check(Halo4StormLinkLengthsMatch(0.2113f, 0.2341f, 0.2135f, 0.3144f),
-            "The live Halo 4 arm links measured in the headset are admitted (window A)");
+            "The broad link sanity envelope remains non-identifying (window A)");
         Check(Halo4StormLinkLengthsMatch(0.2100f, 0.2209f, 0.2027f, 0.3192f),
-            "The live Halo 4 arm links measured in the headset are admitted (window B)");
+            "The broad link sanity envelope remains non-identifying (window B)");
         // Mirror symmetry on the upper arm is the discriminator that survives
         // the widened absolute range: a real pair of arms agreed to within
         // 3.5% in every sample, and an unrelated rig will not.
@@ -7140,8 +7137,49 @@ int main()
         Check(!Halo4TransformAssemblyNode(notANode, yaw, shift, fromBadNode),
             "A node that fails the format check is left alone");
 
-        // C-H4-34: floating hands are a tested final-palette ownership map,
-        // not a scale-everything guess inside the render detour.
+        // C-H4-35: pin the live per-eye record ownership that C-H4-34 routed
+        // backwards. Argument 7 is deliberately absent from this decision.
+        Halo4FloatingRecordPhase recordPhase=
+            Halo4FloatingRecordPhase::AwaitStormHands;
+        auto recordDecision=Halo4SelectFloatingRecord(recordPhase,1,80);
+        Check(recordDecision.action==
+                  Halo4FloatingRecordAction::BuildStormHands &&
+              recordDecision.next==
+                  Halo4FloatingRecordPhase::AwaitHeldModel,
+            "The first flag-1/80 record owns the exact Storm hands transaction");
+        recordPhase=recordDecision.next;
+        recordDecision=Halo4SelectFloatingRecord(recordPhase,1,5);
+        Check(recordDecision.action==
+                  Halo4FloatingRecordAction::CarryHeldModel &&
+              recordDecision.next==
+                  Halo4FloatingRecordPhase::AwaitSequenceBoundary,
+            "The immediately following flag-1 record consumes the same-eye hand delta as the held model");
+        recordPhase=recordDecision.next;
+        recordDecision=Halo4SelectFloatingRecord(recordPhase,0,120);
+        Check(recordDecision.action==Halo4FloatingRecordAction::Stock &&
+              recordDecision.next==
+                  Halo4FloatingRecordPhase::AwaitStormHands,
+            "The flag-0/120 native body stays stock and closes the record sequence");
+        Check(Halo4SelectFloatingRecord(
+                  Halo4FloatingRecordPhase::AwaitStormHands,1,5).action==
+                  Halo4FloatingRecordAction::Stock &&
+              Halo4SelectFloatingRecord(
+                  Halo4FloatingRecordPhase::AwaitSequenceBoundary,1,80).action==
+                  Halo4FloatingRecordAction::Stock &&
+              Halo4SelectFloatingRecord(
+                  Halo4FloatingRecordPhase::AwaitStormHands,-1,80).action==
+                  Halo4FloatingRecordAction::Stock,
+            "A reversed, late, unreadable, or count-mismatched record can never inherit Storm ownership");
+        Check(kHalo4StormFpRuntimeImportChecksum==0x150D0000u &&
+              kHalo4FirstPersonSkinningRecordStride==0x1910u,
+            "The official Storm checksum is telemetry and exact record adjacency is the held-object ownership key");
+        Check(Halo4ExpectedHeldRecordSource(0x100000u)==0x101910u &&
+              Halo4ExpectedHeldRecordSource(0)==0 &&
+              Halo4ExpectedHeldRecordSource(~uintptr_t{0})==0,
+            "Held-model ownership requires exact forward 0x1910 adjacency and refuses null or overflowing sources");
+
+        // Floating hands are a tested final-palette ownership map, not a
+        // scale-everything guess inside the render detour.
         int rightHands = 0;
         int leftHands = 0;
         int collapseRight = 0;
@@ -7204,6 +7242,8 @@ int main()
             "Every H4EK arm descendant is either kept as a hand or co-located "
             "with the matching wrist; no ribbon influence is left behind");
 
+        // Dormant C-H4-34 helpers remain pinned so history cannot silently
+        // change, but C-H4-35 never calls this previous-pair cache path.
         Check(Halo4FloatingHandCacheIsCurrent(7,100,7,100) &&
                   Halo4FloatingHandCacheIsCurrent(7,100,7,99),
             "The gun accepts only this pair's or the immediately prior body's "
@@ -7226,7 +7266,7 @@ int main()
             "Stereo gun admission accepts only a complete, same-serial, "
             "same-epoch relation pair");
 
-        // The exact final-hook invariant: BODY wrists are world-rooted. Cache
+        // Dormant C-H4-34 invariant: BODY wrists are world-rooted. Cache
         // inverse(eye)*stock, reconstruct through each eye, and derive both
         // body and gun deltas against one shared physical target.
         Halo4FloatingTransform eye0{}, eye1{}, localWrist{}, targetWorld{};
@@ -7344,8 +7384,31 @@ int main()
         };
         Check(landsOnTarget(eye0,stockEye0,cached0) &&
                   landsOnTarget(eye1,stockEye1,cached1),
-            "Direct BODY and reconstructed-gun deltas land both eyes on the "
-            "same frozen world target");
+            "The dormant C-H4-34 direct BODY and reconstructed-gun algebra remains internally exact");
+        Halo4FloatingTransform heldLocal{},heldWorld{},sameFrameDelta{};
+        Halo4FloatingTransform movedHeld{},expectedHeld{};
+        heldLocal.translation[0]=0.21f;
+        heldLocal.translation[1]=-0.04f;
+        heldLocal.translation[2]=0.07f;
+        Check(Halo4ComposeFloatingTransforms(
+                  stockEye0,heldLocal,heldWorld) &&
+              Halo4BuildFloatingWorldDelta(
+                  targetWorld,stockEye0,sameFrameDelta) &&
+              Halo4ComposeFloatingTransforms(
+                  sameFrameDelta,heldWorld,movedHeld) &&
+              Halo4ComposeFloatingTransforms(
+                  targetWorld,heldLocal,expectedHeld),
+            "The current Storm wrist delta composes over the immediately adjacent held graph");
+        bool heldMatches=true;
+        for (int i=0;i<9;++i)
+            heldMatches=heldMatches &&
+                fabsf(movedHeld.rotation[i]-expectedHeld.rotation[i])<1.0e-5f;
+        for (int i=0;i<3;++i)
+            heldMatches=heldMatches &&
+                fabsf(movedHeld.translation[i]-expectedHeld.translation[i])<
+                    1.0e-5f;
+        Check(heldMatches,
+            "Hands and gun share one same-eye rigid motion and preserve the authored grip relation");
         Check(Halo4FloatingWristDeltaPlausible(0.7f,0.33f) &&
                   !Halo4FloatingWristDeltaPlausible(300.0f,0.33f) &&
                   !Halo4FloatingWristDeltaPlausible(
@@ -7440,7 +7503,7 @@ int main()
         "Halo 4 advertises stereo, controller aim, haptics, runtime modes, "
         "room scale and controller input");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
-        "Halo 4 withholds ArmIk: C-H4-34 has one rigid no-IK floating-hands "
+        "Halo 4 withholds ArmIk: C-H4-35 has one rigid no-IK floating-hands "
         "transaction on the proven first-person return site");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
         "Halo 4 withholds Hud: its CUI arrives inside the captured scene "
