@@ -3671,3 +3671,30 @@ toward the player, while the supplied reference exposes the back of the glove.
 Thus routing and branch selection are healthy; the unflipped parity wrist is
 the rejected behavior. C-H4-40 is disabled as a standalone production result.
 This run does not retest or revoke the accepted C-H4-38 support pose.
+
+## E-H4-30 / C-H4-41 - back-facing controller grip
+
+The two supplied screenshots isolate both required parts of the free pose. The
+first reference shows the back of the glove toward the player with the thumb on
+the outside. The C-H4-40 result shows the same controller-relative seating with
+the palm toward the player. Therefore neither another guessed mount nor another
+anatomical basis is required: the missing operation is the already headset-
+confirmed C-H4-37 turnover around Halo 4's live direct-child `b_l_thumb1` ray.
+
+C-H4-41 composes exactly those two tested operations in free mode. It first
+builds C-H4-40's direct H3/ODST/Reach-style controller wrist mount, then applies
+C-H4-37's determinant-+1 pi rotation around the live wrist-local thumb-base ray.
+The second operation preserves the thumb direction exactly while reversing the
+palm-plane normal, so the back of the glove faces the player as in the supplied
+reference. Translation and scale remain C-H4-38's. C-H4-39's finger-to-aim
+mapping and standalone C-H4-40 remain disabled.
+
+The user-accepted two-hand branch bypasses the new composition entirely and
+remains byte-for-byte C-H4-38. Invalid optional thumb/mount input falls back to
+the exact C-H4-38 free policy and cannot disturb right hand, held gun, or the
+camera/OpenXR session. Telemetry separately counts committed back-facing grip
+targets, exact C-H4-38 support targets, and fallback. Tests prove the integrated
+helper equals parity-mount then thumb-turnover, preserves the live thumb ray,
+negates the palm normal, preserves placement/scale, publishes write-last on
+invalid input, and leaves support independent. C-H4-41 is headset-pending;
+C-H4-1 remains the accepted rollback pointer.

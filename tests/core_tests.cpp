@@ -7737,6 +7737,23 @@ int main()
         Check(Halo4ComposeFloatingTransforms(
                   stockEye0,thumbLocal,stockThumbBase),
             "The official direct-child thumb base can be represented in the live Storm wrist frame");
+        Halo4FloatingTransform freeGripTarget{},expectedFreeGrip{};
+        Check(Halo4BuildFloatingFreeLeftGripTarget(
+                  selectedFreeCarrier,carrierYawDeg,carrierPitchDeg,
+                  carrierRollDeg,stockEye0,stockThumbBase,
+                  freeStateReroot,freeGripTarget) &&
+              Halo4BuildFloatingLeftPresentationTarget(
+                  false,stockEye0,stockThumbBase,parityFreeTarget,
+                  expectedFreeGrip),
+            "C-H4-41 composes the parity controller grip with the proven live-thumb turnover");
+        Check(memcmp(&freeGripTarget,&expectedFreeGrip,
+                     sizeof(freeGripTarget))==0,
+            "The production free grip is exactly the C-H4-40 heading followed by the C-H4-37 back-facing turnover");
+        Check(freeGripTarget.translation[0]==freeStateReroot.translation[0] &&
+                  freeGripTarget.translation[1]==freeStateReroot.translation[1] &&
+                  freeGripTarget.translation[2]==freeStateReroot.translation[2] &&
+                  freeGripTarget.scale==freeStateReroot.scale,
+            "C-H4-41 changes only free-hand orientation and preserves the accepted placement");
         Halo4FloatingTransform freePalmTarget{};
         Check(Halo4BuildFloatingLeftPresentationTarget(
                   false,stockEye0,stockThumbBase,freeStateReroot,
@@ -7764,6 +7781,13 @@ int main()
                   fabsf(thumbBefore[1]-thumbAfter[1])<1.0e-5f &&
                   fabsf(thumbBefore[2]-thumbAfter[2])<1.0e-5f,
             "Turning the free palm preserves the stable thumb-base outward direction exactly");
+        float parityThumb[3]{},gripThumb[3]{};
+        rotateDirection(parityFreeTarget.rotation,thumbAxis,parityThumb);
+        rotateDirection(freeGripTarget.rotation,thumbAxis,gripThumb);
+        Check(fabsf(parityThumb[0]-gripThumb[0])<1.0e-5f &&
+                  fabsf(parityThumb[1]-gripThumb[1])<1.0e-5f &&
+                  fabsf(parityThumb[2]-gripThumb[2])<1.0e-5f,
+            "The corrected grip turns the glove without swapping the reference thumb inward");
 
         // H4EK node 43 b_l_middle1 is another direct child of b_l_hand.
         // Its exact authored ray and the thumb-base ray define the title's
@@ -7847,6 +7871,13 @@ int main()
             palmNormal[0]*palmNormal[0]+palmNormal[1]*palmNormal[1]+
             palmNormal[2]*palmNormal[2]);
         for (float& value : palmNormal) value/=palmLength;
+        float parityPalm[3]{},gripPalm[3]{};
+        rotateDirection(parityFreeTarget.rotation,palmNormal,parityPalm);
+        rotateDirection(freeGripTarget.rotation,palmNormal,gripPalm);
+        Check(fabsf(parityPalm[0]+gripPalm[0])<1.0e-5f &&
+                  fabsf(parityPalm[1]+gripPalm[1])<1.0e-5f &&
+                  fabsf(parityPalm[2]+gripPalm[2])<1.0e-5f,
+            "C-H4-41 reverses C-H4-40's player-facing palm so the back of the glove faces the player");
         float anatomicalPalmNormal[3]{};
         rotateDirection(
             freeAnatomicalTarget.rotation,palmNormal,anatomicalPalmNormal);
@@ -7924,6 +7955,13 @@ int main()
         Halo4FloatingTransform invalidThumb=stockThumbBase;
         invalidThumb.translation[0]=
             std::numeric_limits<float>::quiet_NaN();
+        Halo4FloatingTransform untouchedGrip{};
+        untouchedGrip.translation[0]=33.0f;
+        Check(!Halo4BuildFloatingFreeLeftGripTarget(
+                  selectedFreeCarrier,carrierYawDeg,carrierPitchDeg,
+                  carrierRollDeg,stockEye0,invalidThumb,freeStateReroot,
+                  untouchedGrip) && untouchedGrip.translation[0]==33.0f,
+            "Invalid optional C-H4-41 thumb input publishes nothing over the C-H4-38 fallback");
         Halo4FloatingTransform supportTarget{};
         supportTarget.translation[0]=99.0f;
         Check(Halo4BuildFloatingLeftPresentationTarget(
@@ -8056,7 +8094,7 @@ int main()
         "Halo 4 advertises stereo, controller aim, haptics, runtime modes, "
         "room scale and controller input");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
-        "Halo 4 withholds ArmIk: C-H4-40 has one rigid no-IK floating-hands "
+        "Halo 4 withholds ArmIk: C-H4-41 has one rigid no-IK floating-hands "
         "transaction on the proven first-person return site");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
         "Halo 4 withholds Hud: its CUI arrives inside the captured scene "

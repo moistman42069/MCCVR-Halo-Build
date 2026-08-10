@@ -17,11 +17,14 @@
 > the middle-finger ray onto controller aim-forward; its exact Steam run selected
 > that branch 56,584 times with zero fallback/refusal, and the user's screenshot
 > rejected it while supplying the H3/ODST/Reach controller-grip pose as reference.
-> The active headset-pending restart is E-H4-29 / C-H4-40: support remains
-> byte-for-byte C-H4-38, while free mode directly seats the authored Halo 4 wrist
-> on the same mirrored left-controller mount used by H3, ODST and Reach. Positions,
+> C-H4-40 seated that wrist directly but exposed the palm toward the player;
+> its exact run selected the bad branch 58,488 times with zero fallback/refusal.
+> The active headset-pending restart is E-H4-30 / C-H4-41: support remains
+> byte-for-byte C-H4-38, while free mode composes the controller-grip heading
+> with C-H4-37's proven live-thumb turnover so the back faces the player and the
+> thumb remains outward. Positions,
 > right/gun carry, routing, no-IK, and camera remain unchanged. Read
-> `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24 through E-H4-29 and
+> `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24 through E-H4-30 and
 > `docs/CURRENT-STATE.md` before
 > acting; none of this handoff's current-state or implementation instructions
 > remain active.

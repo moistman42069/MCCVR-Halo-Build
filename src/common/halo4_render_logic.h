@@ -886,6 +886,32 @@ inline bool Halo4BuildFloatingLeftPresentationTarget(
     return true;
 }
 
+// C-H4-41 composes the two headset-observed halves of the requested reference.
+// C-H4-40 supplies the controller-relative wrist heading, then C-H4-37's proven
+// pi rotation around the live Halo 4 thumb-base ray turns the palm away from the
+// player without swapping the thumb inward. This is free mode only; accepted
+// C-H4-38 support never calls it. Both helpers publish write-last, and so does
+// this composition.
+inline bool Halo4BuildFloatingFreeLeftGripTarget(
+    const Halo4FloatingTransform& rawLeftControllerCarrier,
+    float gunYawDeg, float gunPitchDeg, float gunRollDeg,
+    const Halo4FloatingTransform& stockWorldWrist,
+    const Halo4FloatingTransform& stockWorldThumbBase,
+    const Halo4FloatingTransform& placementTemplate,
+    Halo4FloatingTransform& desiredWorldWrist) noexcept
+{
+    Halo4FloatingTransform parityTarget{},flippedTarget{};
+    if (!Halo4BuildFloatingFreeLeftParityTarget(
+            rawLeftControllerCarrier,gunYawDeg,gunPitchDeg,gunRollDeg,
+            placementTemplate,parityTarget) ||
+        !Halo4BuildFloatingLeftPresentationTarget(
+            false,stockWorldWrist,stockWorldThumbBase,parityTarget,
+            flippedTarget))
+        return false;
+    desiredWorldWrist=flippedTarget;
+    return true;
+}
+
 // C-H4-39 changes only the free left-hand orientation. Direct-child
 // b_l_middle1 and b_l_thumb1 origins provide stable live wrist-local rays.
 // Gram-Schmidt builds the proper anatomy frame
