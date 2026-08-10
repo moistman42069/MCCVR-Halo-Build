@@ -3711,3 +3711,28 @@ said the first free-flip result was closest. The live log was still open by MCC,
 so its final hash and totals are intentionally deferred rather than guessed.
 C-H4-41 is disabled; its branch/routing worked, but its composed orientation is
 rejected. The accepted C-H4-38 support pose was not exercised in this capture.
+
+## E-H4-31 / C-H4-42 - restore the closest free pose
+
+The user's correction is more authoritative than another screenshot-derived
+axis hypothesis: the first free-flip result was closest. That result is the
+C-H4-37 free policy--mirrored `(-gun_yaw,+gun_pitch,-gun_roll)` left-controller
+carrier, current-eye live wrist reroot, then the determinant-+1 pi turnover
+around the live `b_l_thumb1` ray. The later C-H4-38 support policy was explicitly
+judged perfect. C-H4-42 combines exactly those already-exercised state policies
+and adds no orientation transform:
+
+- free is byte/algebra-equivalent to C-H4-37's mirrored carrier, live reroot,
+  and thumb-axis turnover;
+- support is byte-identical to C-H4-38's frozen right-aim rotational parent and
+  bypasses every free-presentation dependency.
+
+C-H4-39 finger-to-aim, standalone C-H4-40 parity wrist, and C-H4-41 composed
+grip remain disabled. All positions/scales, right hand, held gun, record order
+and lifetime, no-IK policy, camera, aim, and stereo remain unchanged. Invalid
+optional free-thumb input keeps the valid mirrored-carrier reroot and continues
+right/gun/core. Telemetry counts exact C-H4-37 free commits, exact C-H4-38
+support commits, and optional free fallback. Tests pin the restored free carrier
+against the production mirrored-mount helper, support by full-transform byte
+comparison, the original live-thumb turnover, and all three rejected experiment
+flags off. C-H4-42 is headset-pending; C-H4-1 remains the accepted pointer.

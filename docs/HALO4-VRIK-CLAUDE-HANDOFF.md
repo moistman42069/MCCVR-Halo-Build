@@ -19,12 +19,14 @@
 > rejected it while supplying the H3/ODST/Reach controller-grip pose as reference.
 > C-H4-40 seated that wrist directly but exposed the palm toward the player;
 > its exact run selected the bad branch 58,488 times with zero fallback/refusal.
-> The active headset-pending restart is E-H4-30 / C-H4-41: support remains
-> byte-for-byte C-H4-38, while free mode composes the controller-grip heading
-> with C-H4-37's proven live-thumb turnover so the back faces the player and the
-> thumb remains outward. Positions,
+> C-H4-41 composed both transforms, but a 90 Hz PSVR2 run selected it over
+> 105,648 times with zero fallback/refusal and three supplied views showed it
+> substantially farther from the desired pose. The user explicitly said the
+> first free flip was closest. The active headset-pending restart is E-H4-31 /
+> C-H4-42: free is restored exactly to C-H4-37, support remains byte-for-byte
+> the user-accepted C-H4-38, and C-H4-39..41 remain disabled. Positions,
 > right/gun carry, routing, no-IK, and camera remain unchanged. Read
-> `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24 through E-H4-30 and
+> `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24 through E-H4-31 and
 > `docs/CURRENT-STATE.md` before
 > acting; none of this handoff's current-state or implementation instructions
 > remain active.

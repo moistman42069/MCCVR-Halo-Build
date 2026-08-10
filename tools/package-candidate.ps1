@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c41-back-facing-free-grip',
+        'halo4-c42-restored-closest-free',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-41'
+            id = 'C-H4-42'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'free-left-only-h3-odst-reach-controller-grip-heading-followed-by-the-proven-live-halo4-thumb-axis-turnover-so-the-back-faces-the-player-and-thumb-stays-outward-while-c38-support-remains-byte-identical'
+            behavior = 'exact-c37-free-left-mirrored-controller-carrier-live-current-eye-wrist-reroot-and-thumb-axis-turnover-combined-only-by-state-with-byte-identical-user-accepted-c38-support'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -200,17 +200,17 @@ try {
             weapon_follows_hand = $true
             controller_facing_orientation = $true
             orientation_source =
-                'free-controller-times-shared-mirrored-left-mount-then-live-thumb-axis-pi-turnover-support-exact-c38-frozen-right-aim'
+                'free-exact-c37-mirrored-carrier-live-wrist-reroot-thumb-turnover-support-exact-c38-frozen-right-aim'
             left_presentation_trim =
                 'free-minus-yaw-plus-pitch-minus-roll-matching-h3-odst-reach-support-exact-c38-shared-prepared-right-aim'
             free_left_palm =
-                'back-facing-controller-grip-with-live-b_l_thumb1-direction-preserved'
+                'exact-c37-live-b_l_thumb1-pi-turnover-restored-with-no-c39-c40-c41-layer'
             two_hand_left_pose =
                 'byte-identical-c38-right-aim-shared-rotational-parent-with-live-left-wrist-relation-left-translation-unchanged'
             failure_policy =
                 'pre-claim-stock-post-claim-frame-drop-core-remains-armed'
             vrik_failure_policy =
-                'base-rigid-or-state-parent-invalid-input-leaves-that-palette-stock-while-optional-free-grip-or-thumb-invalid-input-keeps-the-exact-c38-free-policy-and-continues-right-hand-held-model-and-camera-core'
+                'base-rigid-or-state-parent-invalid-input-leaves-that-palette-stock-while-optional-free-thumb-invalid-input-keeps-the-valid-c37-mirrored-carrier-reroot-and-continues-right-hand-held-model-and-camera-core'
         }
         # Reach support is permanent, while player-visible optional features
         # fail open independently and never disarm the working camera core.
@@ -285,7 +285,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-41 is an unaccepted headset candidate responding to the exact C-H4-40 Steam/SteamVR OpenXR Oculus 120 Hz run from source 3024cca4166eb7bc608cd2d5bb4f1752a53e215b and DLL 2C6CCA97438A81FA2A41056843939AB150E8D2D015AB9E68BF34A142D3B08686. That run committed 58,488 parity-wrist free palettes with zero support/fallback/refusal. The user screenshot shows its palm toward the player, opposite the supplied back-of-glove reference. C-H4-41 preserves the headset-accepted C-H4-38 support target byte-for-byte and changes only free rotation: it composes C-H4-40''s controller-grip heading with C-H4-37''s proven pi turnover around the live b_l_thumb1 ray, reversing the palm normal while preserving thumb-outward direction. Right hand, held gun, every position/scale, record routing, no-IK policy and camera process are unchanged. Invalid optional grip/thumb input retains the exact C-H4-38 free policy and continues right/gun. C-H4-1 remains the accepted rollback pointer until explicit headset acceptance.'
+        note = 'C-H4-42 is an unaccepted headset candidate responding to the live C-H4-41 Steam/SteamVR OpenXR PSVR2 90 Hz run from source 794829ed5b050c3c52ad5922ca0b9546a00a9118 and DLL D8C71A7A361859A2AF599B34E79C0C47776F2205CA56BFF7BA4FEFE90AAFC823. At audit time it had committed 105,648 C-H4-41 free palettes with zero support/fallback/refusal, and the user supplied three views showing it substantially farther from the desired pose while explicitly saying the first flip was closest. C-H4-42 stops guessing: free is restored exactly to C-H4-37''s mirrored controller carrier, live current-eye wrist reroot and thumb-axis turnover; support remains byte-identical to the user-accepted C-H4-38 right-aim parent. C-H4-39, C-H4-40 and C-H4-41 stay disabled. Right hand, held gun, every position/scale, record routing, no-IK policy and camera process are unchanged. Invalid optional free-thumb input retains the valid mirrored-carrier reroot and continues right/gun. C-H4-1 remains the accepted rollback pointer until explicit headset acceptance.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

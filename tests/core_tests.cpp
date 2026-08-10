@@ -7516,6 +7516,27 @@ int main()
                   true,rawLeftStateCarrier,controllerCarrier,
                   selectedSupportCarrier),
             "Support mode accepts the exact frozen right-aim carrier");
+        Halo4FloatingTransform closestFreeCarrier{},closestSupportCarrier{};
+        Halo4FloatingTransform expectedClosestFreeCarrier{};
+        Check(Halo4BuildFloatingClosestLeftCarrierForState(
+                  false,rawLeftStateCarrier,controllerCarrier,
+                  carrierYawDeg,carrierPitchDeg,carrierRollDeg,
+                  closestFreeCarrier) &&
+              Halo4BuildFloatingControllerCarrier(
+                  rawLeftStateCarrier.rotation,
+                  rawLeftStateCarrier.translation,true,
+                  carrierYawDeg,carrierPitchDeg,carrierRollDeg,
+                  expectedClosestFreeCarrier) &&
+              memcmp(&closestFreeCarrier,&expectedClosestFreeCarrier,
+                     sizeof(closestFreeCarrier))==0,
+            "C-H4-42 free mode restores C-H4-37's mirrored left-controller carrier exactly");
+        Check(Halo4BuildFloatingClosestLeftCarrierForState(
+                  true,rawLeftStateCarrier,controllerCarrier,
+                  carrierYawDeg,carrierPitchDeg,carrierRollDeg,
+                  closestSupportCarrier) &&
+              memcmp(&closestSupportCarrier,&selectedSupportCarrier,
+                     sizeof(closestSupportCarrier))==0,
+            "C-H4-42 support remains byte-identical to the accepted C-H4-38 right-aim parent");
         bool supportUsesRightAim=true;
         for (int i=0;i<9;++i)
             supportUsesRightAim=supportUsesRightAim &&
@@ -7592,6 +7613,10 @@ int main()
         Check(Halo4BuildFloatingControllerRerootTarget(
                   selectedFreeCarrier,eye0,stockEye0,freeStateReroot),
             "The C-H4-38 free hand reroots from the raw left-controller parent");
+        Halo4FloatingTransform closestFreeReroot{};
+        Check(Halo4BuildFloatingControllerRerootTarget(
+                  closestFreeCarrier,eye0,stockEye0,closestFreeReroot),
+            "C-H4-42 restores the exact C-H4-37 mirrored-carrier current-eye reroot");
         Halo4FloatingTransform parityFreeTarget{},expectedParityCarrier{};
         Check(Halo4BuildFloatingFreeLeftParityTarget(
                   selectedFreeCarrier,carrierYawDeg,carrierPitchDeg,
@@ -7754,6 +7779,15 @@ int main()
                   freeGripTarget.translation[2]==freeStateReroot.translation[2] &&
                   freeGripTarget.scale==freeStateReroot.scale,
             "C-H4-41 changes only free-hand orientation and preserves the accepted placement");
+        Halo4FloatingTransform restoredClosestFree{};
+        Check(Halo4BuildFloatingLeftPresentationTarget(
+                  false,stockEye0,stockThumbBase,closestFreeReroot,
+                  restoredClosestFree),
+            "C-H4-42 completes the restored C-H4-37 free pose with its original live-thumb turnover");
+        Check(!kEnableHalo4C39FreeAnatomy &&
+                  !kEnableHalo4C40UnflippedParity &&
+                  !kEnableHalo4C41BackFacingGrip,
+            "The restored free target contains no C-H4-39, C-H4-40, or C-H4-41 orientation layer");
         Halo4FloatingTransform freePalmTarget{};
         Check(Halo4BuildFloatingLeftPresentationTarget(
                   false,stockEye0,stockThumbBase,freeStateReroot,
@@ -8094,7 +8128,7 @@ int main()
         "Halo 4 advertises stereo, controller aim, haptics, runtime modes, "
         "room scale and controller input");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
-        "Halo 4 withholds ArmIk: C-H4-41 has one rigid no-IK floating-hands "
+        "Halo 4 withholds ArmIk: C-H4-42 has one rigid no-IK floating-hands "
         "transaction on the proven first-person return site");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
         "Halo 4 withholds Hud: its CUI arrives inside the captured scene "

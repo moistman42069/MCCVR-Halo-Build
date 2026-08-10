@@ -29193,11 +29193,11 @@ namespace
         // The exact Storm hands record and immediately following held record.
         std::atomic<uint64_t> vrikWeaponRecordsCarried{0};
         std::atomic<uint64_t> vrikWeaponRecordsRefused{0};
-        // C-H4-41 preserves C-H4-38's support parent exactly and changes only
-        // free orientation. Optional grip-mount failure keeps the C-H4-38 free
-        // target while right/gun carry continues.
-        std::atomic<uint64_t> vrikFreeLeftGripFallbacks{0};
-        std::atomic<uint64_t> vrikFreeLeftGripApplications{0};
+        // C-H4-42 restores C-H4-37's closest free pose while preserving the
+        // accepted C-H4-38 support parent exactly. Optional free-thumb failure
+        // keeps the mounted reroot while right/gun carry continues.
+        std::atomic<uint64_t> vrikClosestFreeFallbacks{0};
+        std::atomic<uint64_t> vrikClosestFreeApplications{0};
         std::atomic<uint64_t> vrikTwoHandLeftAimRotationParents{0};
         // The producer flag is not an anatomy classifier. C-H4-34's headset
         // log proved flag 1 contains both the 80-node storm_fp hands and the
@@ -31084,10 +31084,12 @@ namespace
         {
             Halo4FloatingTransform selectedLeft{};
             g_halo4FloatingPair.leftTargetValid=
-                Halo4BuildFloatingLeftCarrierForState(
+                Halo4BuildFloatingClosestLeftCarrierForState(
                     g_halo4FloatingPair.twoHandAimActive,
                     g_halo4FloatingPair.leftTargetWorld,
-                    g_halo4FloatingPair.rightTargetWorld,selectedLeft);
+                    g_halo4FloatingPair.rightTargetWorld,
+                    targetFrame.gunYawDeg,targetFrame.gunPitchDeg,
+                    targetFrame.gunRollDeg,selectedLeft);
             if (g_halo4FloatingPair.leftTargetValid)
                 g_halo4FloatingPair.leftTargetWorld=selectedLeft;
         }
@@ -31236,9 +31238,9 @@ namespace
                 g_halo4FloatingPair.leftTargetWorld,eyeRoot,stockLeft,
                 desiredLeft))
             return Halo4VrikStage::LeftPoseFailed;
-        bool freeGripApplied=false;
+        bool closestFreeApplied=false;
         bool supportAimRotationParentApplied=false;
-        bool freeGripFallback=false;
+        bool closestFreeFallback=false;
         if (g_halo4FloatingPair.twoHandAimActive)
         {
             // The user judged this exact C-H4-38 support grip perfect. Do not
@@ -31247,33 +31249,22 @@ namespace
         }
         else
         {
-            Halo4FloatingTransform stockLeftThumbBase{},gripLeft{};
+            Halo4FloatingTransform stockLeftThumbBase{},presentedLeft{};
             const bool thumbValid=Halo4ToFloatingTransform(
                 solved[kHalo4LeftThumbBaseNode],stockLeftThumbBase);
-            if (kEnableHalo4C41BackFacingGrip && thumbValid &&
-                Halo4BuildFloatingFreeLeftGripTarget(
-                    g_halo4FloatingPair.leftTargetWorld,
-                    g_halo4FloatingPair.gunYawDeg,
-                    g_halo4FloatingPair.gunPitchDeg,
-                    g_halo4FloatingPair.gunRollDeg,
-                    stockLeft,stockLeftThumbBase,desiredLeft,gripLeft))
+            if (thumbValid &&
+                Halo4BuildFloatingLeftPresentationTarget(
+                    false,stockLeft,stockLeftThumbBase,desiredLeft,
+                    presentedLeft))
             {
-                desiredLeft=gripLeft;
-                freeGripApplied=true;
+                desiredLeft=presentedLeft;
+                closestFreeApplied=true;
             }
             else
             {
-                // Reproduce C-H4-38's feature-local free fallback: retain its
-                // thumb-axis presentation when the optional thumb input is
-                // valid, otherwise keep the raw reroot exactly as C-H4-38 did.
-                Halo4FloatingTransform c38Presented{};
-                if (thumbValid &&
-                    Halo4BuildFloatingLeftPresentationTarget(
-                        false,stockLeft,stockLeftThumbBase,desiredLeft,
-                        c38Presented))
-                    desiredLeft=c38Presented;
+                // Keep the already-valid C-H4-37 mirrored-carrier reroot.
                 // Support/right/gun remain fully independent.
-                freeGripFallback=true;
+                closestFreeFallback=true;
             }
         }
         const float rightDistance=
@@ -31338,14 +31329,14 @@ namespace
         // Count only palettes that reached the final commit boundary. This
         // makes the logged state split directly comparable with committed
         // Storm palettes instead of counting attempts later refused elsewhere.
-        if (freeGripApplied)
-            g_halo4Camera.vrikFreeLeftGripApplications.fetch_add(
+        if (closestFreeApplied)
+            g_halo4Camera.vrikClosestFreeApplications.fetch_add(
                 1,std::memory_order_relaxed);
         else if (supportAimRotationParentApplied)
             g_halo4Camera.vrikTwoHandLeftAimRotationParents.fetch_add(
                 1,std::memory_order_relaxed);
-        else if (freeGripFallback)
-            g_halo4Camera.vrikFreeLeftGripFallbacks.fetch_add(
+        else if (closestFreeFallback)
+            g_halo4Camera.vrikClosestFreeFallbacks.fetch_add(
                 1,std::memory_order_relaxed);
         Halo4FloatingRelation& staged=
             g_halo4FloatingPair.nextEyeRelation[eye];
@@ -31884,9 +31875,9 @@ namespace
             0,std::memory_order_relaxed);
         g_halo4Camera.vrikWeaponRecordsRefused.store(
             0,std::memory_order_relaxed);
-        g_halo4Camera.vrikFreeLeftGripFallbacks.store(
+        g_halo4Camera.vrikClosestFreeFallbacks.store(
             0,std::memory_order_relaxed);
-        g_halo4Camera.vrikFreeLeftGripApplications.store(
+        g_halo4Camera.vrikClosestFreeApplications.store(
             0,std::memory_order_relaxed);
         g_halo4Camera.vrikTwoHandLeftAimRotationParents.store(
             0,std::memory_order_relaxed);
@@ -32948,7 +32939,7 @@ namespace
             g_halo4Camera.floatingHandsEpoch.store(
                 epoch,std::memory_order_release);
         }
-        LOG("Halo 4 C-H4-41 back-facing controller-grip free hand: final palette 0x%X hooked; only "
+        LOG("Halo 4 C-H4-42 restored-closest free hand: final palette 0x%X hooked; only "
             "return 0x%X is admitted; %d bank transforms are privately copied "
             "and argument 7 is never treated as a node count; H4EK/retail "
             "render-model checksum/nodes.count is read exactly; epoch %u has "
@@ -33313,8 +33304,8 @@ namespace
                 kReachRenderSafetyIntervalMs)
         {
             g_halo4Camera.armed.store(true, std::memory_order_release);
-            LOG("Halo 4 camera core armed: C-H4-41 current-eye controller-rerooted "
-                "Storm hands, back-facing H3/ODST/Reach grip free-left mount, exact C-H4-38 shared-right-aim support pose, and "
+            LOG("Halo 4 camera core armed: C-H4-42 current-eye controller-rerooted "
+                "Storm hands, exact C-H4-37 free-left pose, exact C-H4-38 shared-right-aim support pose, and "
                 "same-frame held-model carry (no arm IK) on C-H4-10 motion aim, VR "
                 "turn and rumble on C-H4-9's headset-owned look, C-H4-8's 6DOF and "
                 "native headset-FOV coverage. The hand steers Halo 4's own aim "
@@ -33522,11 +33513,11 @@ namespace
         const uint64_t weaponRefused=
             g_halo4Camera.vrikWeaponRecordsRefused.exchange(
                 0,std::memory_order_relaxed);
-        const uint64_t freeLeftGripFallbacks=
-            g_halo4Camera.vrikFreeLeftGripFallbacks.exchange(
+        const uint64_t closestFreeFallbacks=
+            g_halo4Camera.vrikClosestFreeFallbacks.exchange(
                 0,std::memory_order_relaxed);
-        const uint64_t freeLeftGripApplications=
-            g_halo4Camera.vrikFreeLeftGripApplications.exchange(
+        const uint64_t closestFreeApplications=
+            g_halo4Camera.vrikClosestFreeApplications.exchange(
                 0,std::memory_order_relaxed);
         const uint64_t twoHandLeftAimRotationParents=
             g_halo4Camera.vrikTwoHandLeftAimRotationParents.exchange(
@@ -33534,12 +33525,12 @@ namespace
         const uint64_t stormCandidates=
             g_halo4Camera.vrikStormRecordCandidates.exchange(
                 0,std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-41 back-facing controller-grip free hand: palette %s, halo4_hands=%d; "
+        LOG("Halo 4 C-H4-42 restored-closest free hand: palette %s, halo4_hands=%d; "
             "%llu Storm hand palettes committed / %llu refused, %llu held records committed / %llu "
             "refused, %llu exact first-person calls "
             "in 2s; no IK, forced floaty mask, world scale %.3f, current stock-"
             "to-controller right-wrist distance %.4f; current-eye same-frame "
-            "Storm candidates %llu; left modes: back-facing grip free %llu / C-H4-38 exact-support "
+            "Storm candidates %llu; left modes: exact C-H4-37 free %llu / exact C-H4-38 support "
             "%llu / C-H4-38 free fallback %llu",
             g_halo4Camera.modelSkinningTarget?"hooked":"UNAVAILABLE - stock",
             g_config.halo4_hands?1:0,
@@ -33551,10 +33542,10 @@ namespace
             g_worldScale.load(std::memory_order_relaxed),
             g_halo4Camera.vrikTargetMiss.load(std::memory_order_relaxed),
             static_cast<unsigned long long>(stormCandidates),
-            static_cast<unsigned long long>(freeLeftGripApplications),
+            static_cast<unsigned long long>(closestFreeApplications),
             static_cast<unsigned long long>(twoHandLeftAimRotationParents),
-            static_cast<unsigned long long>(freeLeftGripFallbacks));
-        LOG("Halo 4 C-H4-41 floating-hand refusals in 2s: count=%llu copy=%llu basis=%llu "
+            static_cast<unsigned long long>(closestFreeFallbacks));
+        LOG("Halo 4 C-H4-42 floating-hand refusals in 2s: count=%llu copy=%llu basis=%llu "
             "range=%llu eye/root=%llu link=%llu side=%llu right-pose=%llu left-pose=%llu "
             "right-rigid=%llu left-rigid=%llu; %llu stock/non-owned palettes",
             static_cast<unsigned long long>(
@@ -33592,7 +33583,7 @@ namespace
             static_cast<unsigned long long>(stockPalettes));
         // The producer flag partitions the sequence but does not identify
         // anatomy: flag 1 contains both Storm hands and the held model.
-        LOG("Halo 4 C-H4-41 record sequence in 2s: %llu flag0 native-body / %llu "
+        LOG("Halo 4 C-H4-42 record sequence in 2s: %llu flag0 native-body / %llu "
             "flag1 first-person-loop / "
             "%llu unexpected / %llu header unreadable; nodes.count resolver "
             "%llu failures; last flag0 nodes %d checksum 0x%08X, last flag1 "
@@ -33649,7 +33640,7 @@ namespace
             }
             if (!written)
                 snprintf(counts,sizeof(counts),"none");
-            LOG("Halo 4 C-H4-41 argument-7 histogram in 2s: %s (%llu past "
+            LOG("Halo 4 C-H4-42 argument-7 histogram in 2s: %s (%llu past "
                 "%d slots)",counts,
                 static_cast<unsigned long long>(
                     g_halo4Camera.vrikCountOverflow.exchange(
@@ -35343,14 +35334,14 @@ void Game_AutoVrTick()
                 Game_ForcePositional();
                 if (!VR_IsStereoEnabled())
                     VR_ToggleStereo();
-                LOG("Halo 4 C-H4-41 immersive VR ON: stereo geometry, head "
+                LOG("Halo 4 C-H4-42 immersive VR ON: stereo geometry, head "
                     "tracking, 6DOF and headset-owned look pitch are live. "
                     "Halo 4's CUI arrives inside the captured scene target, so "
                     "it needs no separate HUD redirect (user-confirmed "
                     "2026-08-08); controller aim is live and the optional "
                     "current-eye floating-hand/gun transaction is no-IK; the "
-                    "free hand seats Halo 4's authored wrist on the controller "
-                    "grip and turns the back outward around the live thumb ray, while support preserves the "
+                    "free hand restores the closest C-H4-37 mirrored-carrier "
+                    "thumb-turnover pose, while support preserves the "
                     "exact accepted C-H4-38 frozen right-aim parent");
             }
             const uint32_t halo4Generation =

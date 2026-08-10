@@ -716,6 +716,31 @@ inline bool Halo4BuildFloatingLeftCarrierForState(
     return true;
 }
 
+// C-H4-42 restores the closest headset result without another invented mount:
+// free mode is exactly C-H4-37's mirrored controller carrier, while support is
+// exactly C-H4-38's frozen right-aim rotational parent. Translation and scale
+// stay on the physical left target in both states. Publish write-last.
+inline bool Halo4BuildFloatingClosestLeftCarrierForState(
+    bool twoHandAimActive,
+    const Halo4FloatingTransform& rawLeftControllerCarrier,
+    const Halo4FloatingTransform& rightAimCarrier,
+    float gunYawDeg, float gunPitchDeg, float gunRollDeg,
+    Halo4FloatingTransform& selectedLeftCarrier) noexcept
+{
+    if (twoHandAimActive)
+        return Halo4BuildFloatingLeftCarrierForState(
+            true,rawLeftControllerCarrier,rightAimCarrier,
+            selectedLeftCarrier);
+    Halo4FloatingTransform result{};
+    if (!Halo4BuildFloatingControllerCarrier(
+            rawLeftControllerCarrier.rotation,
+            rawLeftControllerCarrier.translation,true,
+            gunYawDeg,gunPitchDeg,gunRollDeg,result))
+        return false;
+    selectedLeftCarrier=result;
+    return true;
+}
+
 // C-H4-40 matches the H3/ODST/Reach free-hand contract shown by the headset
 // reference: seat the authored wrist basis directly on the tracked controller
 // with the shared mirrored presentation trim. Do not map a finger bone onto the
