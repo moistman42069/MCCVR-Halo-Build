@@ -30906,6 +30906,9 @@ namespace
         Halo4ControllerWorldPoseInput common{};
         float rightForwardTrim=0.0f;
         float leftForwardTrim=0.0f;
+        float gunYawDeg=0.0f;
+        float gunPitchDeg=0.0f;
+        float gunRollDeg=0.0f;
     };
 
     bool Halo4FreezeFloatingTargetFrame(Halo4FloatingTargetFrame& frame)
@@ -30941,6 +30944,9 @@ namespace
             Clamp(g_config.gun_forward_m,-0.3f,0.5f);
         frame.leftForwardTrim=g_config.halo4_hand_forward_m+
             Clamp(g_config.left_hand_forward_m,-0.15f,0.30f);
+        frame.gunYawDeg=g_config.gun_yaw_deg;
+        frame.gunPitchDeg=g_config.gun_pitch_deg;
+        frame.gunRollDeg=g_config.gun_roll_deg;
         for (float value : frame.common.trackingOriginPosition)
             if (!isfinite(value)) return false;
         for (float value : frame.common.bodyOrigin)
@@ -30954,14 +30960,17 @@ namespace
             isfinite(frame.common.verticalTrim) &&
             isfinite(frame.common.lateralTrim) &&
             isfinite(frame.rightForwardTrim) &&
-            isfinite(frame.leftForwardTrim);
+            isfinite(frame.leftForwardTrim) &&
+            isfinite(frame.gunYawDeg) &&
+            isfinite(frame.gunPitchDeg) &&
+            isfinite(frame.gunRollDeg);
     }
 
-    // Build one physical target from the immutable prepared snapshot. The
-    // target is world-rooted because that is what the live final BODY boundary
-    // actually contains (slot 0 is ~400 world units with a camera-like basis).
-    // It is frozen once before either eye, never rebuilt from mutable reference
-    // atomics in the palette hook.
+    // Build one physical controller carrier from the immutable prepared
+    // snapshot. Its position is frozen once before either eye and is never
+    // rebuilt from mutable reference atomics in the palette hook. C-H4-36 adds
+    // each current eye's live authored wrist relation only after the exact
+    // Storm record arrives.
     bool Halo4BuildFloatingWorldTarget(
         bool left, const Halo4FloatingTargetFrame& frame,
         Halo4FloatingTransform& target)
@@ -30983,29 +30992,37 @@ namespace
 
         Halo4ControllerWorldPose controller{};
         if (!Halo4BuildControllerWorldPose(input,controller)) return false;
-        const float authoredRight[4] =
+        // These are Blender hand-control bases, not Halo wrist rotations.  The
+        // exported attachment positions are expressed in those control-local
+        // axes, so retain the bases only to preserve C-H4-35's working physical
+        // placement.  C-H4-36 never uses them as the visible wrist orientation.
+        const float attachmentParentRight[4] =
             {-0.583606601f,0.000000213f,-0.698711872f,0.413769424f};
-        const float authoredLeft[4] =
+        const float attachmentParentLeft[4] =
             {-0.265249819f,0.000000008f,-0.317565471f,0.910381734f};
-        float authoredBasis[9];
+        float attachmentParentBasis[9],attachmentWorldBasis[9];
         if (!Halo4QuaternionToBoneBasis(
-                left?authoredLeft:authoredRight,authoredBasis))
+                left?attachmentParentLeft:attachmentParentRight,
+                attachmentParentBasis))
             return false;
+        MultiplyBases(
+            controller.basis,attachmentParentBasis,attachmentWorldBasis);
 
-        target=Halo4FloatingTransform{};
-        MultiplyBases(controller.basis,authoredBasis,target.rotation);
-        memcpy(target.translation,controller.position,
-               sizeof(target.translation));
+        float targetPosition[3];
+        memcpy(targetPosition,controller.position,sizeof(targetPosition));
         const float* attachment=
             left?kHalo4LeftAttachmentMetres:kHalo4RightAttachmentMetres;
         for (int row=0;row<3;++row)
         {
             float offset=0.0f;
             for (int column=0;column<3;++column)
-                offset+=target.rotation[column*3+row]*attachment[column];
-            target.translation[row]+=offset*input.worldScale;
+                offset+=attachmentWorldBasis[column*3+row]*
+                    attachment[column];
+            targetPosition[row]+=offset*input.worldScale;
         }
-        return Halo4FloatingTransformValid(target);
+        return Halo4BuildFloatingControllerCarrier(
+            controller.basis,targetPosition,left,
+            frame.gunYawDeg,frame.gunPitchDeg,frame.gunRollDeg,target);
     }
 
     bool Halo4FloatingPairMatchesCurrent()
@@ -31069,16 +31086,13 @@ namespace
     template<size_t N>
     bool Halo4CarryFloatingSubtree(
         BoneMatrix* nodes, int wrist, const int (&subtree)[N],
-        const Halo4FloatingTransform& frozenTarget,
-        Halo4FloatingTransform& desiredWorld,
+        const Halo4FloatingTransform& desiredWorld,
         Halo4FloatingTransform& appliedDeltaWorld)
     {
         Halo4FloatingTransform stockWorld{},deltaWorld{};
         BoneMatrix delta{};
         if (!nodes || !Halo4ToFloatingTransform(nodes[wrist],stockWorld))
             return false;
-        desiredWorld=frozenTarget;
-        desiredWorld.scale=stockWorld.scale;
         if (!Halo4BuildFloatingWorldDelta(
                 desiredWorld,stockWorld,deltaWorld) ||
             !Halo4ToBoneMatrix(deltaWorld,delta) ||
@@ -31179,12 +31193,15 @@ namespace
             Halo4ClassifyStormArms(solved,eyeRootMatrix,true);
         if (stormStage!=Halo4VrikStage::Solved) return stormStage;
 
-        Halo4FloatingTransform desiredRight=
-            g_halo4FloatingPair.rightTargetWorld;
-        Halo4FloatingTransform desiredLeft=
-            g_halo4FloatingPair.leftTargetWorld;
-        desiredRight.scale=stockRight.scale;
-        desiredLeft.scale=stockLeft.scale;
+        Halo4FloatingTransform desiredRight{},desiredLeft{};
+        if (!Halo4BuildFloatingControllerRerootTarget(
+                g_halo4FloatingPair.rightTargetWorld,eyeRoot,stockRight,
+                desiredRight))
+            return Halo4VrikStage::RightPoseFailed;
+        if (!Halo4BuildFloatingControllerRerootTarget(
+                g_halo4FloatingPair.leftTargetWorld,eyeRoot,stockLeft,
+                desiredLeft))
+            return Halo4VrikStage::LeftPoseFailed;
         const float rightDistance=
             Halo4FloatingDistance(stockRight,desiredRight);
         const float leftDistance=
@@ -31197,13 +31214,11 @@ namespace
         Halo4FloatingTransform rightDeltaWorld{},leftDeltaWorld{};
         if (!Halo4CarryFloatingSubtree(
                 solved,kHalo4RightHandNode,kHalo4RightHandSubtree,
-                g_halo4FloatingPair.rightTargetWorld,desiredRight,
-                rightDeltaWorld))
+                desiredRight,rightDeltaWorld))
             return Halo4VrikStage::RightIkFailed;
         if (!Halo4CarryFloatingSubtree(
                 solved,kHalo4LeftHandNode,kHalo4LeftHandSubtree,
-                g_halo4FloatingPair.leftTargetWorld,desiredLeft,
-                leftDeltaWorld))
+                desiredLeft,leftDeltaWorld))
             return Halo4VrikStage::LeftIkFailed;
 
         // Visibility is last. Cross-weighted shoulder/forearm helpers collapse
@@ -32841,7 +32856,7 @@ namespace
             g_halo4Camera.floatingHandsEpoch.store(
                 epoch,std::memory_order_release);
         }
-        LOG("Halo 4 C-H4-35 Reach-style floating hands: final palette 0x%X hooked; only "
+        LOG("Halo 4 C-H4-36 controller-facing floating hands: final palette 0x%X hooked; only "
             "return 0x%X is admitted; %d bank transforms are privately copied "
             "and argument 7 is never treated as a node count; H4EK/retail "
             "render-model checksum/nodes.count is read exactly; epoch %u has "
@@ -33147,7 +33162,8 @@ namespace
                     "stock viewmodel FOV and everything else is unaffected");
             }
         }
-        // C-H4-35 is optional and fail-open. It owns only the live
+        // C-H4-36 retains C-H4-35's optional, fail-open record ownership. It
+        // owns only the live
         // Storm80 -> held -> native-body record sequence; any miss leaves that
         // exact feature stock while the working camera/session stays armed.
         InstallHalo4Vrik(base,size);
@@ -33205,8 +33221,8 @@ namespace
                 kReachRenderSafetyIntervalMs)
         {
             g_halo4Camera.armed.store(true, std::memory_order_release);
-            LOG("Halo 4 camera core armed: C-H4-35 current-eye Storm hands and "
-                "same-frame held-model carry (no arm IK) on C-H4-10 motion aim, VR "
+            LOG("Halo 4 camera core armed: C-H4-36 current-eye controller-rerooted "
+                "Storm hands and same-frame held-model carry (no arm IK) on C-H4-10 motion aim, VR "
                 "turn and rumble on C-H4-9's headset-owned look, C-H4-8's 6DOF and "
                 "native headset-FOV coverage. The hand steers Halo 4's own aim "
                 "through the shared closed loop the other three titles use, "
@@ -33416,7 +33432,7 @@ namespace
         const uint64_t stormCandidates=
             g_halo4Camera.vrikStormRecordCandidates.exchange(
                 0,std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-35 Reach-style floating hands: palette %s, halo4_hands=%d; "
+        LOG("Halo 4 C-H4-36 controller-facing floating hands: palette %s, halo4_hands=%d; "
             "%llu Storm hand palettes committed / %llu refused, %llu held records committed / %llu "
             "refused, %llu exact first-person calls "
             "in 2s; no IK, forced floaty mask, world scale %.3f, current stock-"
@@ -33432,7 +33448,7 @@ namespace
             g_worldScale.load(std::memory_order_relaxed),
             g_halo4Camera.vrikTargetMiss.load(std::memory_order_relaxed),
             static_cast<unsigned long long>(stormCandidates));
-        LOG("Halo 4 C-H4-35 floating-hand refusals in 2s: count=%llu copy=%llu basis=%llu "
+        LOG("Halo 4 C-H4-36 floating-hand refusals in 2s: count=%llu copy=%llu basis=%llu "
             "range=%llu eye/root=%llu link=%llu side=%llu right-pose=%llu left-pose=%llu "
             "right-rigid=%llu left-rigid=%llu; %llu stock/non-owned palettes",
             static_cast<unsigned long long>(
@@ -33470,7 +33486,7 @@ namespace
             static_cast<unsigned long long>(stockPalettes));
         // The producer flag partitions the sequence but does not identify
         // anatomy: flag 1 contains both Storm hands and the held model.
-        LOG("Halo 4 C-H4-35 record sequence in 2s: %llu flag0 native-body / %llu "
+        LOG("Halo 4 C-H4-36 record sequence in 2s: %llu flag0 native-body / %llu "
             "flag1 first-person-loop / "
             "%llu unexpected / %llu header unreadable; nodes.count resolver "
             "%llu failures; last flag0 nodes %d checksum 0x%08X, last flag1 "
@@ -33527,7 +33543,7 @@ namespace
             }
             if (!written)
                 snprintf(counts,sizeof(counts),"none");
-            LOG("Halo 4 C-H4-35 argument-7 histogram in 2s: %s (%llu past "
+            LOG("Halo 4 C-H4-36 argument-7 histogram in 2s: %s (%llu past "
                 "%d slots)",counts,
                 static_cast<unsigned long long>(
                     g_halo4Camera.vrikCountOverflow.exchange(
@@ -35221,7 +35237,7 @@ void Game_AutoVrTick()
                 Game_ForcePositional();
                 if (!VR_IsStereoEnabled())
                     VR_ToggleStereo();
-                LOG("Halo 4 C-H4-35 immersive VR ON: stereo geometry, head "
+                LOG("Halo 4 C-H4-36 immersive VR ON: stereo geometry, head "
                     "tracking, 6DOF and headset-owned look pitch are live. "
                     "Halo 4's CUI arrives inside the captured scene target, so "
                     "it needs no separate HUD redirect (user-confirmed "

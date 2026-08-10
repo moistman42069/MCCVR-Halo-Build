@@ -7282,7 +7282,13 @@ int main()
         eye0.rotation[5] = se;
         eye0.rotation[7] = -se;
         eye0.rotation[8] = ce;
-        memcpy(eye1.rotation,eye0.rotation,sizeof(eye0.rotation));
+        const float eye1Pitch = -0.23f;
+        const float ce1 = cosf(eye1Pitch);
+        const float se1 = sinf(eye1Pitch);
+        eye1.rotation[4] = ce1;
+        eye1.rotation[5] = se1;
+        eye1.rotation[7] = -se1;
+        eye1.rotation[8] = ce1;
         localWrist.translation[0] = 0.45f;
         localWrist.translation[1] = -0.18f;
         localWrist.translation[2] = 0.08f;
@@ -7409,6 +7415,169 @@ int main()
                     1.0e-5f;
         Check(heldMatches,
             "Hands and gun share one same-eye rigid motion and preserve the authored grip relation");
+
+        // C-H4-36: replace only the current eye's orientation parent.  The
+        // live eye-local wrist relation is the title's own authored mount; a
+        // Blender bind/control quaternion is not.  Pitch(E), yaw(L), and
+        // pitch(C) deliberately do not all commute.
+        const float physicalTarget[3] = {
+            targetWorld.translation[0],targetWorld.translation[1],
+            targetWorld.translation[2]};
+        Halo4FloatingTransform controllerCarrier{};
+        Check(Halo4BuildFloatingControllerCarrier(
+                  targetWorld.rotation,physicalTarget,false,
+                  31.0f,-17.0f,23.0f,controllerCarrier),
+            "The production Halo 4 right carrier accepts a calibrated aim basis");
+        bool rightCarrierUnchanged=true;
+        for (int i=0;i<9;++i)
+            rightCarrierUnchanged=rightCarrierUnchanged &&
+                fabsf(controllerCarrier.rotation[i]-targetWorld.rotation[i])<
+                    1.0e-6f;
+        Check(rightCarrierUnchanged,
+            "The right carrier is exactly the aim basis: gun angles are never applied twice and no Blender seed survives");
+
+        constexpr float carrierYawDeg=31.0f;
+        constexpr float carrierPitchDeg=-17.0f;
+        constexpr float carrierRollDeg=23.0f;
+        Halo4FloatingTransform leftCarrier{};
+        Check(Halo4BuildFloatingControllerCarrier(
+                  targetWorld.rotation,physicalTarget,true,
+                  carrierYawDeg,carrierPitchDeg,carrierRollDeg,leftCarrier),
+            "The production Halo 4 left carrier accepts the shared mirrored presentation trim");
+        constexpr float testDegreesToRadians=0.01745329252f;
+        const float leftYaw=-carrierYawDeg*testDegreesToRadians;
+        const float leftPitch=carrierPitchDeg*testDegreesToRadians;
+        const float leftRoll=-carrierRollDeg*testDegreesToRadians;
+        const float lcp=cosf(leftPitch),lsp=sinf(leftPitch);
+        const float lcy=cosf(leftYaw),lsy=sinf(leftYaw);
+        const float lcr=cosf(leftRoll),lsr=sinf(leftRoll);
+        const float leftForward[3]={lcp*lcy,lcp*lsy,lsp};
+        const float leftUp[3]={
+            (-lsp*lcy)*lcr+lsy*lsr,
+            (-lsp*lsy)*lcr-lcy*lsr,lcp*lcr};
+        Halo4FloatingTransform expectedLeftMount{};
+        memcpy(expectedLeftMount.rotation,leftForward,sizeof(leftForward));
+        expectedLeftMount.rotation[3]=
+            leftUp[1]*leftForward[2]-leftUp[2]*leftForward[1];
+        expectedLeftMount.rotation[4]=
+            leftUp[2]*leftForward[0]-leftUp[0]*leftForward[2];
+        expectedLeftMount.rotation[5]=
+            leftUp[0]*leftForward[1]-leftUp[1]*leftForward[0];
+        memcpy(expectedLeftMount.rotation+6,leftUp,sizeof(leftUp));
+        Halo4FloatingTransform rawController{};
+        memcpy(rawController.rotation,targetWorld.rotation,
+               sizeof(rawController.rotation));
+        memcpy(rawController.translation,physicalTarget,
+               sizeof(rawController.translation));
+        Halo4FloatingTransform expectedLeftCarrier{};
+        Check(Halo4ComposeFloatingTransforms(
+                  rawController,expectedLeftMount,expectedLeftCarrier),
+            "The independent left-trim reference is a proper noncommuting basis");
+        bool leftCarrierMatches=true;
+        for (int i=0;i<9;++i)
+            leftCarrierMatches=leftCarrierMatches &&
+                fabsf(leftCarrier.rotation[i]-
+                    expectedLeftCarrier.rotation[i])<1.0e-5f;
+        Check(leftCarrierMatches,
+            "The left carrier postmultiplies exactly (-yaw, +pitch, -roll), matching Halo 3, ODST and Reach");
+
+        Halo4FloatingTransform rerooted0{},rerooted1{};
+        Check(Halo4BuildFloatingControllerRerootTarget(
+                  controllerCarrier,eye0,stockEye0,rerooted0) &&
+              Halo4BuildFloatingControllerRerootTarget(
+                  controllerCarrier,eye1,stockEye1,rerooted1),
+            "Each current eye builds a controller-facing Halo 4 wrist from its live stock relation");
+        Halo4FloatingTransform expectedReroot{};
+        Check(Halo4ComposeFloatingTransforms(
+                  controllerCarrier,localWrist,expectedReroot),
+            "The controller-times-live-wrist reference is valid");
+        bool rerootRotationMatches=true;
+        for (int i=0;i<9;++i)
+            rerootRotationMatches=rerootRotationMatches &&
+                fabsf(rerooted0.rotation[i]-expectedReroot.rotation[i])<
+                    1.0e-5f &&
+                fabsf(rerooted1.rotation[i]-expectedReroot.rotation[i])<
+                    1.0e-5f;
+        Check(rerootRotationMatches,
+            "The final wrist faces as controller times the live authored wrist, with no fixed seed rotation");
+        Check(rerooted0.translation[0]==controllerCarrier.translation[0] &&
+                  rerooted0.translation[1]==controllerCarrier.translation[1] &&
+                  rerooted0.translation[2]==controllerCarrier.translation[2] &&
+                  fabsf(rerooted0.scale-stockEye0.scale)<1.0e-6f,
+            "Orientation rerooting preserves C-H4-35's physical target position and the stock wrist scale");
+
+        Halo4FloatingTransform inverseEye0{},expectedRerootDelta{};
+        Halo4FloatingTransform rerootDelta{};
+        Check(Halo4InvertFloatingTransform(eye0,inverseEye0) &&
+              Halo4ComposeFloatingTransforms(
+                  controllerCarrier,inverseEye0,expectedRerootDelta) &&
+              Halo4BuildFloatingWorldDelta(
+                  rerooted0,stockEye0,rerootDelta),
+            "The final target produces one valid current-eye controller delta");
+        bool rerootDeltaMatches=true;
+        for (int i=0;i<9;++i)
+            rerootDeltaMatches=rerootDeltaMatches &&
+                fabsf(rerootDelta.rotation[i]-
+                    expectedRerootDelta.rotation[i])<1.0e-5f;
+        Check(rerootDeltaMatches,
+            "The wrist delta cancels to controller times inverse current-eye orientation");
+
+        // A held model has its own eye-local authored orientation, independent
+        // of the Storm wrist bone axes.  The same delta must carry that exact
+        // relation onto the controller frame.
+        Halo4FloatingTransform heldEyeLocal{};
+        const float heldRoll=-0.27f;
+        heldEyeLocal.rotation[3]=0.0f;
+        heldEyeLocal.rotation[4]=cosf(heldRoll);
+        heldEyeLocal.rotation[5]=sinf(heldRoll);
+        heldEyeLocal.rotation[6]=0.0f;
+        heldEyeLocal.rotation[7]=-sinf(heldRoll);
+        heldEyeLocal.rotation[8]=cosf(heldRoll);
+        Halo4FloatingTransform heldFromEye{},movedFromEye{};
+        Halo4FloatingTransform expectedFromController{};
+        Check(Halo4ComposeFloatingTransforms(
+                  eye0,heldEyeLocal,heldFromEye) &&
+              Halo4ComposeFloatingTransforms(
+                  rerootDelta,heldFromEye,movedFromEye) &&
+              Halo4ComposeFloatingTransforms(
+                  controllerCarrier,heldEyeLocal,expectedFromController),
+            "The adjacent held graph composes through the production orientation reroot");
+        bool heldFacesController=true;
+        for (int i=0;i<9;++i)
+            heldFacesController=heldFacesController &&
+                fabsf(movedFromEye.rotation[i]-
+                    expectedFromController.rotation[i])<1.0e-5f;
+        Check(heldFacesController,
+            "The Halo 4 gun keeps its authored orientation while its eye-facing orientation parent becomes the aim controller");
+
+        const float identityBasis[9]={
+            1.0f,0.0f,0.0f, 0.0f,1.0f,0.0f, 0.0f,0.0f,1.0f};
+        const float identityPosition[3]={0.0f,0.0f,0.0f};
+        Halo4FloatingTransform identityTarget{},identityEye{},identityWrist{};
+        Check(Halo4BuildFloatingControllerCarrier(
+                  identityBasis,identityPosition,true,0.0f,0.0f,0.0f,
+                  identityTarget),
+            "The production left carrier accepts a neutral controller and zero presentation trim");
+        Halo4FloatingTransform identityReroot{};
+        Check(Halo4BuildFloatingControllerRerootTarget(
+                  identityTarget,identityEye,identityWrist,identityReroot),
+            "A neutral left-hand relation produces a valid neutral target");
+        bool neutralReroot=true;
+        for (int i=0;i<9;++i)
+            neutralReroot=neutralReroot &&
+                fabsf(identityReroot.rotation[i]-identityTarget.rotation[i])<
+                    1.0e-6f;
+        Check(neutralReroot,
+            "No 49-degree Blender left-hand seed survives in the final neutral orientation");
+
+        Halo4FloatingTransform invalidEye=eye0;
+        invalidEye.rotation[0]=std::numeric_limits<float>::quiet_NaN();
+        Halo4FloatingTransform untouchedReroot{};
+        untouchedReroot.translation[0]=77.0f;
+        Check(!Halo4BuildFloatingControllerRerootTarget(
+                  controllerCarrier,invalidEye,stockEye0,untouchedReroot) &&
+              untouchedReroot.translation[0]==77.0f,
+            "A non-finite current-eye relation refuses without publishing a partial target");
         Check(Halo4FloatingWristDeltaPlausible(0.7f,0.33f) &&
                   !Halo4FloatingWristDeltaPlausible(300.0f,0.33f) &&
                   !Halo4FloatingWristDeltaPlausible(
@@ -7503,7 +7672,7 @@ int main()
         "Halo 4 advertises stereo, controller aim, haptics, runtime modes, "
         "room scale and controller input");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
-        "Halo 4 withholds ArmIk: C-H4-35 has one rigid no-IK floating-hands "
+        "Halo 4 withholds ArmIk: C-H4-36 has one rigid no-IK floating-hands "
         "transaction on the proven first-person return site");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
         "Halo 4 withholds Hud: its CUI arrives inside the captured scene "

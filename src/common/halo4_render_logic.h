@@ -313,7 +313,9 @@ inline constexpr char kHalo4ModelSkinningTagLookupReloadPattern[] =
 // storm_fp.render_model, H4EK 1.890.0.0. These indices and parent
 // relationships are tag facts, not copied from another Halo title. The
 // official tag's immutable runtime-import checksum is recorded for live
-// telemetry; C-H4-35 does not hard-gate on it until retail has reported it.
+// telemetry. C-H4-35 reported the exact 0x150D0000 match; admission remains
+// tied to the proven ordered source/consumer identity instead of trusting a
+// checksum alone.
 // The headset-proven first-person order identifies Storm from the first
 // flag-1 record's exact 80-node input count, then carries the immediately
 // following flag-1 held model before flag 0 closes the sequence.
@@ -481,8 +483,8 @@ inline constexpr bool Halo4FloatingRelationPairIsCurrent(
             firstGeneration, firstPreparedSerial);
 }
 
-// Floating transform algebra is kept title-side and unit tested. C-H4-35 uses
-// the direct current-eye delta for the consecutive Storm and held records.
+// Floating transform algebra is kept title-side and unit tested. C-H4-35 and
+// C-H4-36 use the direct current-eye delta for consecutive Storm/held records.
 // The older eye-local relation helpers remain below as dormant C-H4-34 history;
 // no active Halo 4 path publishes or consumes a prior-pair relation.
 struct Halo4FloatingTransform
@@ -616,6 +618,116 @@ inline bool Halo4BuildFloatingEyeLocalWrist(
     Halo4FloatingTransform inverseEye{};
     return Halo4InvertFloatingTransform(eyeRoot, inverseEye) &&
         Halo4ComposeFloatingTransforms(inverseEye, stockWorld, stockLocal);
+}
+
+// The immutable physical carrier used by C-H4-36 before a current-eye Storm
+// wrist is available. The right aim pose already contains gun yaw/pitch/roll,
+// so it is copied exactly. The raw left controller receives the same mirrored
+// local presentation trim as Halo 3, ODST and Reach, exactly once. Keeping this
+// final orientation choice in the tested title-side seam prevents a Blender
+// hand-control basis from being reintroduced upstream of the live reroot.
+inline bool Halo4BuildFloatingControllerCarrier(
+    const float controllerBasis[9], const float physicalTarget[3], bool left,
+    float gunYawDeg, float gunPitchDeg, float gunRollDeg,
+    Halo4FloatingTransform& carrier) noexcept
+{
+    Halo4FloatingTransform result{};
+    std::memcpy(result.rotation, controllerBasis, sizeof(result.rotation));
+    std::memcpy(
+        result.translation, physicalTarget, sizeof(result.translation));
+    if (!Halo4FloatingTransformValid(result)) return false;
+
+    if (left)
+    {
+        if (!std::isfinite(gunYawDeg) || !std::isfinite(gunPitchDeg) ||
+            !std::isfinite(gunRollDeg))
+            return false;
+        constexpr float kDegreesToRadians = 0.01745329252f;
+        const float yaw = -gunYawDeg * kDegreesToRadians;
+        const float pitch = gunPitchDeg * kDegreesToRadians;
+        const float roll = -gunRollDeg * kDegreesToRadians;
+        const float cp = std::cos(pitch), sp = std::sin(pitch);
+        const float cy = std::cos(yaw), sy = std::sin(yaw);
+        const float cr = std::cos(roll), sr = std::sin(roll);
+        const float forward[3] = {cp * cy, cp * sy, sp};
+        const float up[3] = {
+            (-sp * cy) * cr + sy * sr,
+            (-sp * sy) * cr - cy * sr,
+            cp * cr};
+        const float local[9] = {
+            forward[0], forward[1], forward[2],
+            up[1] * forward[2] - up[2] * forward[1],
+            up[2] * forward[0] - up[0] * forward[2],
+            up[0] * forward[1] - up[1] * forward[0],
+            up[0], up[1], up[2]};
+        float mounted[9]{};
+        for (int column = 0; column < 3; ++column)
+            for (int row = 0; row < 3; ++row)
+                for (int inner = 0; inner < 3; ++inner)
+                    mounted[column * 3 + row] +=
+                        controllerBasis[inner * 3 + row] *
+                        local[column * 3 + inner];
+        std::memcpy(result.rotation, mounted, sizeof(result.rotation));
+        if (!Halo4FloatingTransformValid(result)) return false;
+    }
+    carrier = result;
+    return true;
+}
+
+// C-H4-36 orientation ownership at Halo 4's final current-eye records.
+//
+// Both the Storm wrist and the immediately adjacent held model are rooted by
+// the same current-eye transform.  Preserve the live authored wrist relation
+// L = inverse(eye) * stockWrist, but replace that eye-facing parent with the
+// controller-facing parent:
+//
+//     desiredWrist.rotation = controller.rotation * L.rotation
+//
+// Consequently the rigid wrist delta reduces rotationally to
+// controller * inverse(eye), so the held model keeps its exact authored pose
+// while facing with the controller.  Translation deliberately stays at the
+// already-frozen physical target; composing the full L transform would add
+// the stock viewmodel's camera-relative wrist offset and move the working
+// C-H4-35 placement.
+inline bool Halo4BuildFloatingControllerRerootTarget(
+    const Halo4FloatingTransform& controllerTarget,
+    const Halo4FloatingTransform& eyeRoot,
+    const Halo4FloatingTransform& stockWorldWrist,
+    Halo4FloatingTransform& desiredWorldWrist) noexcept
+{
+    float controllerBasis[9], eyeBasis[9], stockBasis[9];
+    if (!Halo4FloatingTransformValid(controllerTarget) ||
+        !Halo4FloatingTransformValid(eyeRoot) ||
+        !Halo4FloatingTransformValid(stockWorldWrist) ||
+        !Halo4NormalizeFloatingBasis(
+            controllerTarget.rotation, controllerBasis) ||
+        !Halo4NormalizeFloatingBasis(eyeRoot.rotation, eyeBasis) ||
+        !Halo4NormalizeFloatingBasis(
+            stockWorldWrist.rotation, stockBasis))
+        return false;
+
+    float eyeLocalWrist[9]{};
+    for (int column = 0; column < 3; ++column)
+        for (int row = 0; row < 3; ++row)
+            for (int inner = 0; inner < 3; ++inner)
+                eyeLocalWrist[column * 3 + row] +=
+                    eyeBasis[row * 3 + inner] *
+                    stockBasis[column * 3 + inner];
+
+    Halo4FloatingTransform result = controllerTarget;
+    result.scale = stockWorldWrist.scale;
+    for (int column = 0; column < 3; ++column)
+        for (int row = 0; row < 3; ++row)
+        {
+            float value = 0.0f;
+            for (int inner = 0; inner < 3; ++inner)
+                value += controllerBasis[inner * 3 + row] *
+                    eyeLocalWrist[column * 3 + inner];
+            result.rotation[column * 3 + row] = value;
+        }
+    if (!Halo4FloatingTransformValid(result)) return false;
+    desiredWorldWrist = result;
+    return true;
 }
 
 inline bool Halo4BuildFloatingWorldDelta(

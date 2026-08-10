@@ -3253,9 +3253,9 @@ already recorded in E-H4-22.
 
 The retained official export
 `out/h4-tags/storm_fp.render_model.xml` identifies Storm with runtime-import
-checksum `353173504` / `0x150D0000` and exactly 80 nodes. The live retail
-checksum has not yet been logged, so C-H4-35 records descriptor `+0x08` but
-does not hard-gate on it. First-candidate admission uses only facts already
+checksum `353173504` / `0x150D0000` and exactly 80 nodes. C-H4-35's live retail
+run reported the exact same `0x150D0000` checksum. Admission still does not
+hard-gate on that value alone. First-candidate admission uses facts already
 measured live: exact FP return, current-eye ordered phase, fill flag 1, exact
 consumer `nodes.count == 80`, and the existing finite/Storm arm-relationship
 validation. This avoids both unsafe count-only generalisation and another
@@ -3284,5 +3284,102 @@ Halo 4's own producer: exact current source/consumer pairing, one rigid hand
 motion carrying the held object, then visibility last. It has no IK and no
 alternate hand-placement algorithm. Any order, identity, matrix, target, or
 adjacency failure submits stock for that exact palette, clears the one-shot
-motion, and leaves stereo/OpenXR armed. C-H4-35 is headset-pending and does not
-advance `docs/CURRENT-STATE.md`.
+motion, and leaves stereo/OpenXR armed.
+
+The first C-H4-35 headset result is partial, not an acceptance. The user ran
+source `7d30de07d09c5b4a8364153a985bf6bd63d05084`, DLL SHA-256
+`5EF3C9A9C67F754D22FD894935212039F1ABB907AD4A5767F885FD8C0835EC56`,
+and reported that Halo 4 finally had floating hands and gun, but that the gun
+and left-hand orientations were completely wrong. The corresponding Steam log
+at the time of diagnosis has SHA-256
+`39F562F4A685BC397CB2A559AC6B6962BA1A547E0B925245467238E8677AE9E1`.
+It identifies Steam, SteamVR/OpenXR 2.17.6, headset
+`SteamVR/OpenXR : oculus`, and 120 Hz. Steady two-second windows commit roughly
+1,900 Storm palettes and the same number of immediately adjacent held records,
+with zero refusals; the record telemetry is the exact 80-node / `0x150D0000`
+Storm graph, a five-node held model in the sampled weapon, and the stock
+120-node native body. Camera windows remain healthy. This proves C-H4-35's
+record routing and commit counts; combined with the user's visible floating
+hands/gun result and the source path below, it localizes the reported failure
+to target orientation rather than record admission. C-H4-35 remains unaccepted
+and does not advance `docs/CURRENT-STATE.md`.
+
+## E-H4-25 / C-H4-36 - live controller-facing orientation reroot
+
+The Halo 3 behavior being matched is one live rigid hand motion that makes the
+tracked controller the facing parent while preserving the title's authored
+hand/weapon relationship. ODST shares that path. Reach independently begins
+from the same controller basis, derives its right-hand barrel correction from
+the live authored wrist, and carries the held object with the same motion. None
+of the three uses a fixed Blender control-bone world rotation as a controller
+mount.
+
+C-H4-35 did exactly that last, invalid operation after its already-tested Halo
+4 controller conversion. `Halo4BuildFloatingWorldTarget` postmultiplied the
+right and left controller bases by quaternions
+`(-0.583606601, 0.000000213, -0.698711872, 0.413769424)` and
+`(-0.265249819, 0.000000008, -0.317565471, 0.910381734)`. They add
+approximately 131.1 degrees on the right and 48.9 degrees on the left before
+the wrist delta is applied; the same wrong right delta necessarily rotates the
+entire adjacent held model.
+
+Those constants are not Halo wrist-to-controller evidence. They are exactly
+the `hand_target_rotation_xyzw` values in
+`out/halo4-vrik-kit/halo4_vrik_points.v4-authored.json`. The authoring builder
+creates Blender edit bones by placing each head at the decoded node position
+and each tail at a selected child position
+(`tools/build_halo4_vrik_scene.py:115-163`); it does not assign the Halo node
+rotation to that edit bone. It then seeds each hand control from the resulting
+Blender pose-bone matrix (`:279-296`). The v4 authoring record states that both
+hands and shoulders were restored to those seed matrices and only the two pole
+controls were moved (`docs/HALO4-VRIK-AUTHORING.md:58-64`). The copied
+quaternions therefore contain Blender's control-bone axis/roll convention, not
+a headset-proven Blam wrist or OpenXR aim calibration. Their attachment-local
+positions remain valid exported position data; their rotations do not become
+runtime wrist bases.
+
+Halo 4's own measured record structure provides the title-native correction
+without a guessed constant. For current eye root `E`, live Storm wrist
+`S = E * L`, and adjacent held model `G = E * G_local`, C-H4-36 builds only the
+desired wrist rotation as
+
+`T.rotation = C.rotation * (inverse(E.rotation) * S.rotation)`.
+
+`T.translation` remains C-H4-35's already-working frozen physical target, so
+this candidate does not reintroduce the stock camera-relative wrist offset or
+change placement. The full held result remains
+`movedG = T * (inverse(S) * G)`, preserving the exact live gun-to-wrist
+transform. Rotation separately reduces to
+`D.rotation = C.rotation * inverse(E.rotation)`, so with
+`G.rotation = E.rotation * G_local.rotation`, the carried gun orientation is
+`C.rotation * G_local.rotation`. The current authored/animated gun orientation
+is therefore preserved while its old eye-facing orientation parent becomes the
+aim controller; no full-transform `D = C * inverse(E)` claim is made because
+translation intentionally remains at the physical wrist target. The left hand
+uses the same live orientation relation with its own controller. As in Halo 3,
+ODST, and Reach, the right aim snapshot already contains the universal gun
+angular calibration and is not trimmed twice; the raw left controller receives
+the shared mirrored presentation trim `(-gun_yaw, +gun_pitch, -gun_roll)` once.
+Those three angles are frozen and finite-validated in the same immutable target
+frame as both controller carriers.
+
+This is one carrier-orientation policy replacement: the fixed Blender bases are
+removed from both visible wrists, the already-calibrated right aim is retained,
+and the raw left controller receives the established cross-title presentation
+mount before both sides consume their live Halo 4 wrist relation. Only
+orientation ownership changes. C-H4-35's exact record order, current-eye
+lifetime, physical target translation, Storm/held/native-body identities,
+visibility mask, rigid gun carry, no-IK policy, and camera/stereo lifecycle are
+unchanged. A non-finite or non-invertible eye/wrist/target leaves that palette
+stock through the existing feature-local refusal path and never disarms the
+Halo 4 camera or OpenXR session. The production carrier-orientation seam is
+unit tested directly: nonzero gun angles leave the already-calibrated right aim
+basis unchanged, while the left basis postmultiplies exactly
+`(-yaw, +pitch, -roll)` in noncommuting input. Further tests use distinct eye
+orientations plus noncommuting controller, wrist and held-model bases, prove
+`D.rotation = C.rotation * inverse(E.rotation)`, prove the held model retains its
+controller-relative authored orientation, pin neutral identity with no
+surviving fixed left seed, preserve target translation, and verify fail-open
+helper publication. The production failure path submits the original palette
+when either tested helper refuses. C-H4-36 is headset-pending and does not advance
+`docs/CURRENT-STATE.md`.

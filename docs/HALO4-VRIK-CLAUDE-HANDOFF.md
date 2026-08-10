@@ -4,10 +4,14 @@
 > current implementation guidance. The user rejected the C-H4-14..33 hand/IK
 > line in full. C-H4-34 was also headset-rejected after its log proved it
 > committed nothing and routed the three final records backwards. The active
-> headset-pending restart is E-H4-24 / C-H4-35: current-eye
-> `storm_fp(80) -> held model -> native body(120)`, rigid floating hands and
-> gun, no IK, no argument-7 admission, no previous-pair cache, and all-or-stock
-> palette commits. Read `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24 and
+> C-H4-35 headset result proved the current-eye
+> `storm_fp(80) -> held model -> native body(120)` routing and finally produced
+> floating hands/gun, but its copied Blender hand-control rotations visibly
+> broke the gun and left-hand orientation. The active headset-pending restart
+> is E-H4-25 / C-H4-36: the same rigid no-IK record flow, with live same-eye
+> wrist/held orientation rerooted onto each controller and no fixed Blender
+> seed used as a wrist basis. Read `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24
+> and E-H4-25 and
 > `docs/CURRENT-STATE.md` before
 > acting; none of this handoff's current-state or implementation instructions
 > remain active.
