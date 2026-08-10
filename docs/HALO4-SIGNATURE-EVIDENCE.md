@@ -3698,3 +3698,16 @@ helper equals parity-mount then thumb-turnover, preserves the live thumb ray,
 negates the palm normal, preserves placement/scale, publishes write-last on
 invalid input, and leaves support independent. C-H4-41 is headset-pending;
 C-H4-1 remains the accepted rollback pointer.
+
+C-H4-41 was then exercised on Steam from exact source
+`794829ed5b050c3c52ad5922ca0b9546a00a9118`, installed DLL SHA-256
+`D8C71A7A361859A2AF599B34E79C0C47776F2205CA56BFF7BA4FEFE90AAFC823`,
+with SteamVR/OpenXR 2.17.6, headset `SteamVR/OpenXR : playstation_vr2`, and
+90 Hz. During the live audit, 168 telemetry windows had already committed
+105,648 back-facing-grip free palettes and the same number of adjacent held
+records with zero refusal, support, or fallback. The user supplied three
+controller angles showing the result remains substantially wrong and explicitly
+said the first free-flip result was closest. The live log was still open by MCC,
+so its final hash and totals are intentionally deferred rather than guessed.
+C-H4-41 is disabled; its branch/routing worked, but its composed orientation is
+rejected. The accepted C-H4-38 support pose was not exercised in this capture.

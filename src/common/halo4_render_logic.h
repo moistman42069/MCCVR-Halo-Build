@@ -892,6 +892,10 @@ inline bool Halo4BuildFloatingLeftPresentationTarget(
 // player without swapping the thumb inward. This is free mode only; accepted
 // C-H4-38 support never calls it. Both helpers publish write-last, and so does
 // this composition.
+// Headset-rejected C-H4-41 experiment. The user's three-angle PSVR2 capture
+// shows this composition is substantially farther from the closest C-H4-37
+// free pose. Retain it for evidence, but do not select it in production.
+inline constexpr bool kEnableHalo4C41BackFacingGrip = false;
 inline bool Halo4BuildFloatingFreeLeftGripTarget(
     const Halo4FloatingTransform& rawLeftControllerCarrier,
     float gunYawDeg, float gunPitchDeg, float gunRollDeg,

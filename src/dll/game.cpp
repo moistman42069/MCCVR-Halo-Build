@@ -31250,7 +31250,7 @@ namespace
             Halo4FloatingTransform stockLeftThumbBase{},gripLeft{};
             const bool thumbValid=Halo4ToFloatingTransform(
                 solved[kHalo4LeftThumbBaseNode],stockLeftThumbBase);
-            if (thumbValid &&
+            if (kEnableHalo4C41BackFacingGrip && thumbValid &&
                 Halo4BuildFloatingFreeLeftGripTarget(
                     g_halo4FloatingPair.leftTargetWorld,
                     g_halo4FloatingPair.gunYawDeg,
