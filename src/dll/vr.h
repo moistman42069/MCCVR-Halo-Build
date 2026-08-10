@@ -218,9 +218,9 @@ bool VR_ShouldCaptureAuthoredReticleThisFrame();
 // be kept off the eye - including when the user asks for no crosshair at all.
 bool VR_BeginAuthoredReticleRedirect();
 void VR_EndAuthoredReticleCapture();
-// Reach prepares every allocation and swapchain/RTV object on its cold title
-// worker before installing the mandatory HREK hook. The prepared begin/end
-// pair then performs only the accepted render-state redirect in the hot hook.
+// Reach and Halo 4 prepare every allocation and swapchain/RTV object on their
+// cold title worker before installing a CUI/CHUD hook. The prepared begin/end
+// pair performs only render-state redirection in the hot hook.
 enum class AuthoredReticlePreparationResult : uint8_t
 {
     NotReady,
@@ -229,12 +229,19 @@ enum class AuthoredReticlePreparationResult : uint8_t
 };
 bool VR_CanPrepareAuthoredReticleResources();
 AuthoredReticlePreparationResult VR_PrepareAuthoredReticleResources();
-// Reach can issue more than one qualifying outer render in a prepared frame.
+// A title can issue more than one qualifying outer render in a prepared frame.
 // Invalidate the prior attempt before each newly admitted stereo transaction so
 // an authored no-crosshair state cannot inherit an earlier attempt's texture.
-void VR_InvalidatePreparedReachAuthoredReticleCapture();
+void VR_InvalidatePreparedAuthoredReticleCapture();
 bool VR_BeginPreparedAuthoredReticleCapture();
 bool VR_EndPreparedAuthoredReticleCapture();
+// Halo 4 must still execute the opposite-eye CUI reticle subtree while keeping
+// its pixels out of both the eye and the selected-eye authored capture. These
+// prepared calls bind a private discard target and restore the full D3D state;
+// they never mark authored art ready for publication.
+bool VR_PrepareAuthoredReticleSuppressionResources();
+bool VR_BeginPreparedAuthoredReticleSuppression();
+bool VR_EndPreparedAuthoredReticleSuppression();
 // M3: the game layer sets this when the crosshair is over an enemy (engine
 // target-lock). While true, the floating reticle repaints red like the OG HUD.
 void VR_SetReticleEnemy(bool enemy);

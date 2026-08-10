@@ -60,8 +60,8 @@ try {
     $acceptedSources = [ordered]@{
         'cumulative Halo 3/ODST/Reach' =
             'a5524d3fe58e4ed5507c27429ccca52a3d4fdf7d'
-        'accepted Halo 4 C-H4-1' =
-            '954359b7f786b78c76824b662ead3c1fc8cd7917'
+        'accepted Halo 4 C-H4-43' =
+            'dd9946595511d65c9859b536e2727201c107da45'
     }
     foreach ($acceptedLine in $acceptedSources.GetEnumerator()) {
         & git -C $repoRoot merge-base --is-ancestor `
@@ -84,7 +84,7 @@ try {
     }
     if ($cache -notmatch
             '(?m)^HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA:BOOL=ON\r?$') {
-        throw 'Refusing to package C-H4-7: the Halo 4 camera core is not ON.'
+        throw 'Refusing to package C-H4-43i: the Halo 4 camera core is not ON.'
     }
 
     # Incremental. A clean rebuild was recompiling the whole tree for every
@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c43-cross-title-left-hand-marker',
+        'halo4-c43i-authored-cui-reticle',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -176,14 +176,14 @@ try {
             changes_config = $false
         }
         accepted_halo4_identity = [ordered]@{
-            candidate = 'C-H4-1'
+            candidate = 'C-H4-43'
             source_commit =
-                '954359b7f786b78c76824b662ead3c1fc8cd7917'
+                'dd9946595511d65c9859b536e2727201c107da45'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-43'
+            id = 'C-H4-43i'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'free-left-aligns-the-official-halo4-left_hand-marker-to-the-direct-h3-odst-reach-controller-mounted-left_hand-frame-by-solving-wrist-times-marker-equals-controller-while-c38-support-remains-byte-identical'
+            behavior = 'h4ek-proven-main-gameplay-cui-reticle-subtree-captured-onto-the-existing-gun-ray-quad-with-opposite-eye-discard-and-native-face-copy-suppressed'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -191,9 +191,15 @@ try {
             controller_aim = $true
             haptics = $true
             head_relative_locomotion = $true
-            # Halo 4's CUI arrives inside the captured scene target, so it is
-            # visible without any HUD redirect. User-confirmed 2026-08-08.
-            hud = 'native-inside-captured-scene-no-redirect'
+            # The rest of Halo 4's CUI remains native in the captured scene.
+            # Only the H4EK-proven reticle subtree is optionally redirected.
+            hud = 'native-inside-captured-scene-reticle-subtree-redirected'
+            authored_crosshair = $true
+            native_face_crosshair_suppressed = $true
+            reticle_capture_boundary =
+                'gameplay-cui-scope-plus-command-dispatcher-type-0x28-0x29-reticule-offset-subtree'
+            reticle_failure_policy =
+                'stock-or-procedural-feature-fallback-camera-hands-stereo-and-openxr-remain-armed'
             first_person_hands = $true
             arm_ik = $false
             floating_hands = $true
@@ -285,7 +291,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-43 is an unaccepted headset candidate responding to the user''s explicit direction to use the accepted Halo 3, ODST and Reach left-hand orientation instead of treating any rejected Halo 4 pose as a baseline. Official Reach tags place left_hand at identity on l_hand, matching the direct controller-mounted runtime wrist target shared by the three accepted titles. Official H4EK Storm tags place left_hand on identity child b_l_hand_marker_offset but give the marker local quaternion (-0.706223,0.701140,-0.0353406,0.0916652). C-H4-43 therefore solves Halo4Wrist*Halo4Marker=AcceptedTitleControllerMount for free mode instead of equating incompatible wrist bone axes. Support remains byte-identical to user-accepted C-H4-38. C-H4-39 through C-H4-42 remain disabled. Right hand, held gun, every position/scale, routing, no-IK policy and camera are unchanged. Invalid optional marker parity retains the C-H4-38 free reroot and continues right/gun. C-H4-1 remains the accepted rollback pointer until explicit headset acceptance.'
+        note = 'C-H4-43i is an unaccepted headset candidate built directly on accepted C-H4-43. Official H4EK proves ReticuleOffsetContainerWidget emits the unique type-0x28/type-0x29 CUI command bracket around reticle and hit-indicator art while ammo remains outside. The pinned Steam and Store retail gameplay-CUI front end, exact full-size caller edge, dispatcher and sole dispatcher caller each match once, and both rel32 edges decode to their pinned targets. The second hook excludes the in-wrapper 216x96 auxiliary texture pass and later menus. The configured first eye captures authored pixels for the existing gun-ray quad; the opposite eye, skipped cadence frames, and crosshair=0 execute the complete original subtree into a separately prepared discard target, hiding the native face copy without mutating its persistent visibility. kill_reticle=0 intentionally keeps stock native art. Blank/low-ink bootstrap keeps the procedural gun-ray fallback. Any optional resource, proof, hook, or runtime redirect failure stays feature-local and never disarms the accepted C-H4-43 camera, hands, stereo path, or OpenXR. C-H4-43 remains the accepted rollback pointer until explicit headset acceptance.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

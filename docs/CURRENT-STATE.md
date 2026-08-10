@@ -29,6 +29,41 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
+## CURRENT HALO 4 TEST CANDIDATE: C-H4-43i - 2026-08-10
+
+**Headset pending; this does not advance the accepted pointer below.** Built on
+accepted C-H4-43, C-H4-43i replaces the shared procedural weapon-ray crosshair
+pixels with Halo 4's own authored CUI reticle and keeps the original
+face-centred copy out of both stereo eyes. The existing gun-ray quad placement,
+distance, angular size, stabilisation and aim source are unchanged.
+
+This is a Halo 4-native implementation, not a copied CHUD hook. Official H4EK
+proves that `ReticuleOffsetContainerWidget` emits command `0x28` (12-byte
+payload), all reticle/hit-indicator descendants, then command `0x29`. The
+per-command renderer is the real draw boundary. Pinned retail `halo4.dll`
+matches that dispatcher uniquely at RVA `0x3F0EA4`; its sole caller edge is
+independently pinned at RVA `0x3F4B6B` and decodes back to the dispatcher.
+The same dispatcher also services auxiliary textures and menus, so a second
+unique hook at the CUI front end (`0x3ACD60`) admits commands only from the
+full-size gameplay call whose pinned edge starts at `0x375C51` and returns at
+`0x375C6E`. The in-wrapper 216x96 auxiliary call and later overlay/menu calls
+remain stock.
+
+The configured first eye captures that subtree into the existing authored-art
+target. The other eye, cadence-skipped capture frames, and `crosshair=0` run the
+same unmodified engine commands into a separately cold-prepared discard target,
+so the native reticle never remains on the player's face and the selected-eye
+art is never double-blended. `kill_reticle=0` deliberately keeps Halo 4's stock
+native reticle. Until captured pixels pass the existing coverage/known-good
+guard, the gun-ray quad keeps its procedural fallback. The optional two-hook
+transaction's
+StockFallback/CleanupRequired/Installed states never disarm the C-H4-43 camera,
+hands, stereo path, or OpenXR session.
+
+Offline evidence is recorded in `docs/HALO4-CUI-EVIDENCE.md` and E-H4-33 in
+`docs/HALO4-SIGNATURE-EVIDENCE.md`. Acceptance still requires a Halo 4 headset
+result and a Halo 3 regression result.
+
 ## CURRENT ACCEPTED HALO 4 POINTER: C-H4-43 - 2026-08-10
 
 **Use C-H4-43 as the Halo 4 development and rollback baseline.** The user

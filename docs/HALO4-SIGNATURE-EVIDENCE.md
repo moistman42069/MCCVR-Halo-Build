@@ -3787,3 +3787,83 @@ installed Steam and Store DLL SHA-256 is
 `2E5E3C7707A07906DB5DB509587E762C9001EAFA08930191B098C8305D0B0EBC`.
 C-H4-43 supersedes C-H4-1 as the accepted Halo 4 pointer; it does not turn the
 earlier rejected orientation candidates into evidence or acceptance.
+
+## E-H4-33 / C-H4-43i - authored CUI reticle capture and native-copy suppression
+
+Halo 4 has no Halo 3/ODST class-2 CHUD crosshair predicate, and no Reach CHUD
+descriptor is applicable. Official H4EK instead identifies
+`ReticuleOffsetContainerWidget` as the exact reticle subtree owner. Its render
+command override emits type `0x28` with a 12-byte payload, traverses its
+children, then emits header-only type `0x29`. Canonical assault-rifle and magnum
+CUI exports put `reticule_art_container` and `hit_indicator_art` under that
+offset container while ammo remains outside it. The widget override only
+serialises commands; it does not draw and is therefore not a capture hook.
+
+H4EK source identity `cui_render_renderer.cpp:274` names the four-argument
+per-command executor. Type `0x28` pushes the reticle transform, descendant
+commands submit the CUI draws, and type `0x29` pops it. The retail homolog is
+uniquely matched at `halo4.dll+0x3F0EA4` by:
+
+```text
+48 8B C4 55 56 57 41 56 41 57 48 8D A8 B8 FC FF FF 48 81 EC 50 04 00 00
+```
+
+Its sole direct caller is independently matched at `+0x3F4B6B` by:
+
+```text
+49 8B 8F 10 04 00 00 4D 8D 8F 20 04 00 00 49 8B D6 E8 ?? ?? ?? ??
+```
+
+The call at `+17` (rel32 at `+18`, next instruction `+22`) decodes exactly to
+`0x3F0EA4`. Both signatures match once in the pinned Steam and Store images;
+the editions remain byte-identical outside Authenticode as recorded in
+`MCC-EDITIONS-EVIDENCE.md`.
+
+That global dispatcher is not enough to identify the gameplay HUD pass. H4EK
+shows two synchronous `user_interface_render` calls inside the accepted
+per-window wrapper: an auxiliary render-to-texture pass with fixed 216x96
+bounds (H4EK `0x8B5D6C`, retail `0x3790E9`) and the full player-view CUI pass
+(H4EK `0x8B72F3`, retail `0x375C69`). Later menu/overlay UI reaches the same
+front end outside the wrapper. The exact retail CUI front end is uniquely
+matched at `+0x3ACD60` by:
+
+```text
+48 8B C4 55 53 56 57 41 56 41 57 48 8D 68 B1 48 81 EC A8 00 00 00 0F 29 78 B8 44 0F 29 40 A8
+```
+
+The full-size gameplay caller is independently and uniquely matched at
+`+0x375C51` by:
+
+```text
+8B 8E 8C 03 00 00 4C 8D 45 A0 45 33 C9 44 88 6C 24 28 33 D2 89 7C 24 20 E8 ?? ?? ?? ?? 83 FB 03
+```
+
+Its call opcode at `+24` (rel32 `+25`, next `+29`) decodes to `0x3ACD60`; the
+exact return is `0x375C6E`. H4EK and retail prove the front-end ABI as
+`void __fastcall(uint32, uint32, const void*, const void*, uint32, bool)`.
+C-H4-43i installs the front-end scope and dispatcher hooks atomically, then
+admits command markers only while the exact gameplay return edge is active
+inside the owned eye wrapper. The 216x96 auxiliary pass and post-loop
+menu/overlay calls therefore remain stock even if they emit the same command
+type.
+
+C-H4-43i calls every original command. After a successful outer `0x28` push it
+redirects the configured first eye to the prepared authored target; the other
+eye and non-sample frames use a distinct prepared discard target. At the
+matching `0x29`, the original pop and full D3D render-state restore complete on
+the same render thread. A fixed nonzero capture key is intentional: H4EK proves
+the payload value is a renderer transform ID, not a stable weapon identity, and
+Halo 4 uses the bounded animation cadence plus pixel coverage/known-good hold.
+With animation configured to zero it retains one slow 30-frame sample so a
+weapon swap can still replace the fixed-key held art.
+The neutral initial capture scale is title-specific `1x`; Reach's calibrated
+`2x` crop is not copied.
+
+No persistent CUI visibility bit is changed: `hud_show_crosshair` is proven to
+toggle category bit 3, but could prevent the source subtree from being emitted.
+The draw redirect itself hides the native face copy without mutating authored
+state. Missing resources, malformed commands, signature ambiguity, hook
+failure, or unmatched scope state fails open for this feature only. The
+procedural gun-ray fallback remains until valid authored pixels are held, and
+camera/hands/stereo/OpenXR remain armed. This is offline proof and implementation
+only; the C-H4-43i headset result is pending and C-H4-43 remains accepted.

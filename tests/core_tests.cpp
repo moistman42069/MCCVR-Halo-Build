@@ -26,6 +26,7 @@
 #include "sigscan.h"
 #include "odst_vehicle_logic.h"
 #include "halo4_adapter.h"
+#include "halo4_cui_reticle_logic.h"
 #include "halo4_render_logic.h"
 #include "reach_adapter.h"
 #include "reach_chud_logic.h"
@@ -617,6 +618,29 @@ int main()
             }
         }
         Check(published == 20, "every animated sample publishes");
+
+        // Halo 4 has no proven stable weapon-art identity, so animation=0
+        // holds the fixed key between slow probes rather than freezing it for
+        // the rest of the level. Every 30-frame sample must still publish.
+        AuthoredReticleRefreshState halo4Held{};
+        lastSample = 0;
+        published = 0;
+        for (uint64_t serial = 1; serial <= 120; ++serial)
+        {
+            if (!ShouldSampleAuthoredCapture(30, lastSample, serial))
+                continue;
+            lastSample = serial;
+            if (ShouldUploadAuthoredReticle(
+                    AuthoredReticleRefreshPolicy::BoundedAnimation,
+                    true, true, 1, 0, 0, serial, 4, halo4Held))
+            {
+                MarkAuthoredReticleUploaded(
+                    halo4Held, 1, 0, 0, serial);
+                ++published;
+            }
+        }
+        Check(published == 4,
+              "Halo 4 held art republishes on each slow fixed-key probe");
     }
     {
         constexpr std::array<uint8_t, 6> repeatedPattern{
@@ -5993,6 +6017,197 @@ int main()
             "A remapped halo4.dll refuses the Halo 4 camera hook");
     }
 
+    // Halo 4's authored reticle is an optional CUI feature.  Its independent
+    // proof fails closed, while every runtime miss fails open to stock without
+    // affecting camera ownership or OpenXR.
+    Check(kHalo4CuiReticleDispatcherRva == 0x003F0EA4 &&
+              kHalo4CuiReticleDispatcherEntryBytes.size() == 24 &&
+              std::strcmp(kHalo4CuiReticleDispatcherEntryAob,
+                  "48 8B C4 55 56 57 41 56 41 57 48 8D A8 B8 FC FF FF "
+                  "48 81 EC 50 04 00 00") == 0,
+        "The Halo 4 CUI dispatcher is pinned by its unique 24-byte entry");
+    Check(kHalo4CuiReticleCallerRva == 0x003F4B6B &&
+              kHalo4CuiReticleCallerFixedBytes.size() == 18 &&
+              std::strcmp(kHalo4CuiReticleCallerAob,
+                  "49 8B 8F 10 04 00 00 4D 8D 8F 20 04 00 00 49 8B D6 "
+                  "E8 ?? ?? ?? ??") == 0 &&
+              kHalo4CuiReticleCallerCallOpcodeOffset == 17 &&
+              kHalo4CuiReticleCallerCallDisplacementOffset == 18 &&
+              kHalo4CuiReticleCallerCallNextOffset == 22,
+        "The Halo 4 CUI caller edge pins its context and rel32 geometry");
+    Check(kHalo4CuiGameplayRenderRva == 0x003ACD60 &&
+              kHalo4CuiGameplayRenderEntryBytes.size() == 31 &&
+              std::strcmp(kHalo4CuiGameplayRenderEntryAob,
+                  "48 8B C4 55 53 56 57 41 56 41 57 48 8D 68 B1 48 81 "
+                  "EC A8 00 00 00 0F 29 78 B8 44 0F 29 40 A8") == 0,
+        "Halo 4's CUI front end is pinned independently of its dispatcher");
+    Check(kHalo4CuiGameplayCallerRva == 0x00375C51 &&
+              std::strcmp(kHalo4CuiGameplayCallerAob,
+                  "8B 8E 8C 03 00 00 4C 8D 45 A0 45 33 C9 44 88 6C 24 28 "
+                  "33 D2 89 7C 24 20 E8 ?? ?? ?? ?? 83 FB 03") == 0 &&
+              kHalo4CuiGameplayCallerCallOpcodeOffset == 24 &&
+              kHalo4CuiGameplayCallerCallDisplacementOffset == 25 &&
+              kHalo4CuiGameplayCallerCallNextOffset == 29 &&
+              kHalo4CuiGameplayCallerReturnRva == 0x00375C6E &&
+              Halo4CuiGameplayCallerTargetsRender(
+                  kHalo4CuiGameplayRenderRva) &&
+              !Halo4CuiGameplayCallerTargetsRender(
+                  kHalo4CuiReticleDispatcherRva),
+        "Only the exact full-size gameplay CUI call can open reticle ownership");
+    Check(kHalo4CuiCommandBegin == 0x28 && kHalo4CuiCommandEnd == 0x29 &&
+              kHalo4CuiCommandBeginPayloadSize == 0x0C &&
+              Halo4CuiReticleCallerTargetsDispatcher(
+                  kHalo4CuiReticleDispatcherRva) &&
+              !Halo4CuiReticleCallerTargetsDispatcher(
+                  kHalo4CuiReticleCallerRva),
+        "The Halo 4 CUI command pair and decoded dispatcher edge stay pinned");
+
+    Halo4CuiReticleInstallProof halo4CuiInstall{};
+    halo4CuiInstall.resourcesPrepared = true;
+    halo4CuiInstall.anchorsMatchedOnce = kHalo4CuiReticleAnchorCount;
+    halo4CuiInstall.anchorsAtPinnedRva = kHalo4CuiReticleAnchorCount;
+    halo4CuiInstall.callerDecodesDispatcher = true;
+    halo4CuiInstall.gameplayCallerDecodesRender = true;
+    halo4CuiInstall.executableRange = true;
+    halo4CuiInstall.mappingStable = true;
+    Check(Halo4CuiReticleInstallComplete(halo4CuiInstall),
+        "Complete resources, signatures, edge decode, and mapping admit the "
+        "optional Halo 4 CUI reticle transaction");
+    {
+        Halo4CuiReticleInstallProof broken = halo4CuiInstall;
+        broken.resourcesPrepared = false;
+        Check(!Halo4CuiReticleInstallComplete(broken),
+            "Halo 4 CUI capture stays stock without prepared resources");
+        broken = halo4CuiInstall;
+        broken.anchorsMatchedOnce -= 1;
+        Check(!Halo4CuiReticleInstallComplete(broken),
+            "A missing or duplicated Halo 4 CUI signature refuses both hooks");
+        broken = halo4CuiInstall;
+        broken.anchorsAtPinnedRva -= 1;
+        Check(!Halo4CuiReticleInstallComplete(broken),
+            "A moved Halo 4 CUI signature refuses both hooks");
+        broken = halo4CuiInstall;
+        broken.callerDecodesDispatcher = false;
+        Check(!Halo4CuiReticleInstallComplete(broken),
+            "A Halo 4 CUI caller that misses the dispatcher refuses the hook");
+        broken = halo4CuiInstall;
+        broken.gameplayCallerDecodesRender = false;
+        Check(!Halo4CuiReticleInstallComplete(broken),
+            "A Halo 4 gameplay caller that misses the CUI front end refuses "
+            "both optional hooks");
+        broken = halo4CuiInstall;
+        broken.executableRange = false;
+        Check(!Halo4CuiReticleInstallComplete(broken),
+            "A Halo 4 CUI site outside executable image memory refuses the hook");
+        broken = halo4CuiInstall;
+        broken.mappingStable = false;
+        Check(!Halo4CuiReticleInstallComplete(broken),
+            "A remapped halo4.dll refuses only the CUI reticle transaction");
+    }
+
+    const auto cuiInstalled = Halo4CuiReticleLifecycleFor(
+        Halo4CuiReticleOptionalInstallState::Installed, halo4CuiInstall);
+    Check(cuiInstalled.authoredCaptureLive && !cuiInstalled.cleanupFeature,
+        "Authored Halo 4 CUI capture becomes live after a complete install");
+    {
+        Halo4CuiReticleInstallProof incomplete = halo4CuiInstall;
+        incomplete.mappingStable = false;
+        Check(!Halo4CuiReticleLifecycleFor(
+                   Halo4CuiReticleOptionalInstallState::Installed, incomplete)
+                   .authoredCaptureLive &&
+                  !Halo4CuiReticleLifecycleFor(
+                      Halo4CuiReticleOptionalInstallState::StockFallback,
+                      halo4CuiInstall)
+                       .authoredCaptureLive &&
+                  !Halo4CuiReticleLifecycleFor(
+                      Halo4CuiReticleOptionalInstallState::CleanupRequired,
+                      halo4CuiInstall)
+                       .authoredCaptureLive,
+            "Authored Halo 4 CUI capture is never live before complete optional "
+            "installation");
+    }
+    Check(Halo4CuiReticleLifecycleFor(
+              Halo4CuiReticleOptionalInstallState::CleanupRequired,
+              halo4CuiInstall)
+              .cleanupFeature &&
+              !Halo4CuiReticleLifecycleFor(
+                  Halo4CuiReticleOptionalInstallState::StockFallback,
+                  halo4CuiInstall)
+                   .cleanupFeature,
+        "A partial Halo 4 CUI install requests feature-local cleanup only");
+    for (const Halo4CuiReticleOptionalInstallState state : {
+             Halo4CuiReticleOptionalInstallState::StockFallback,
+             Halo4CuiReticleOptionalInstallState::CleanupRequired,
+             Halo4CuiReticleOptionalInstallState::Installed})
+    {
+        const auto lifecycle =
+            Halo4CuiReticleLifecycleFor(state, halo4CuiInstall);
+        Check(!lifecycle.disarmCameraCore && !lifecycle.endOpenXrSession,
+            "No optional Halo 4 CUI install state disarms camera or OpenXR");
+    }
+    Check(Halo4CuiReticleNeedsProceduralBootstrap(
+              true, false, true, true) &&
+              !Halo4CuiReticleNeedsProceduralBootstrap(
+                  true, true, true, true) &&
+              !Halo4CuiReticleNeedsProceduralBootstrap(
+                  false, false, true, true) &&
+              !Halo4CuiReticleNeedsProceduralBootstrap(
+                  true, false, true, false) &&
+              !Halo4CuiReticleNeedsProceduralBootstrap(
+                  true, false, false, true),
+        "Halo 4 keeps procedural gun-ray pixels only while a live authored "
+        "hook is waiting for its first validated image");
+
+    using CuiAction = Halo4CuiReticleAction;
+    Check(Halo4DecideCuiReticleAction(
+              false, true, true, kHalo4CuiCommandBegin,
+              true, true, 0, false) == CuiAction::DrawStock,
+        "Halo 4 CUI work outside VR ownership remains stock");
+    Check(Halo4DecideCuiReticleAction(
+              true, false, true, kHalo4CuiCommandBegin,
+              true, true, 0, false) == CuiAction::DrawStock,
+        "An uninstalled Halo 4 CUI capture path remains stock");
+    Check(Halo4DecideCuiReticleAction(
+              true, true, true, kHalo4CuiCommandEnd,
+              true, true, 0, false) == CuiAction::DrawStock &&
+              Halo4DecideCuiReticleAction(
+                  true, true, true, 0x2A,
+                  true, true, 0, false) == CuiAction::DrawStock,
+        "Only Halo 4's CUI begin command can enter authored capture");
+    Check(Halo4DecideCuiReticleAction(
+              true, true, false, kHalo4CuiCommandBegin,
+              true, true, 0, false) == CuiAction::DrawStock,
+        "An unreadable Halo 4 CUI command fails open to stock");
+    Check(Halo4DecideCuiReticleAction(
+              true, true, true, kHalo4CuiCommandBegin,
+              true, true, -1, false) == CuiAction::DrawStock &&
+              Halo4DecideCuiReticleAction(
+                  true, true, true, kHalo4CuiCommandBegin,
+                  true, true, 2, false) == CuiAction::DrawStock,
+        "An invalid Halo 4 stereo eye fails open to stock");
+    Check(Halo4DecideCuiReticleAction(
+              true, true, true, kHalo4CuiCommandBegin,
+              false, true, 0, false) == CuiAction::SuppressNative,
+        "crosshair=0 suppresses Halo 4's native CUI reticle");
+    Check(Halo4DecideCuiReticleAction(
+              true, true, true, kHalo4CuiCommandBegin,
+              true, false, 0, false) == CuiAction::DrawStock,
+        "kill_reticle=0 preserves Halo 4's native CUI reticle");
+    Check(Halo4DecideCuiReticleAction(
+              true, true, true, kHalo4CuiCommandBegin,
+              true, true, 0, false) == CuiAction::CaptureAuthored &&
+              Halo4DecideCuiReticleAction(
+                  true, true, true, kHalo4CuiCommandBegin,
+                  true, true, 1, false) == CuiAction::SuppressNative &&
+              Halo4DecideCuiReticleAction(
+                  true, true, true, kHalo4CuiCommandBegin,
+                  true, true, 1, true) == CuiAction::CaptureAuthored &&
+              Halo4DecideCuiReticleAction(
+                  true, true, true, kHalo4CuiCommandBegin,
+                  true, true, 0, true) == CuiAction::SuppressNative,
+        "The configured first Halo 4 eye captures authored art and the "
+        "opposite eye suppresses native art");
+
     // Generic cover math remains available for a later FOV milestone, but it
     // is not an observer-field layout claim: +0x78/+0x7C are full-vFOV and a
     // reference-FOV ratio, not tangents.
@@ -8174,7 +8389,8 @@ int main()
         "transaction on the proven first-person return site");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
         "Halo 4 withholds Hud: its CUI arrives inside the captured scene "
-        "target, so no title-specific HUD redirect is installed to gate");
+        "target; the optional reticle-subtree redirect does not advertise or "
+        "gate a general HUD capability");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_CutsceneTheater),
         "Halo 4 withholds CutsceneTheater: it has no cinematic evidence yet");
     Check(TitleRegistry_AllowsSharedControllerInput(

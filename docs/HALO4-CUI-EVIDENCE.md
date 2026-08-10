@@ -1,10 +1,11 @@
 # Halo 4 CUI evidence
 
-Status: **fresh research track, measured facts only, no draw-path evidence
-yet.** Halo 4 has no CHUD; its HUD is the CUI system. This file is where CUI
-findings are recorded before any HUD/crosshair candidate exists. Identity
-pins live in `docs/HALO4-EVIDENCE-MANIFEST.json`; camera/render signature
-proofs live in `docs/HALO4-SIGNATURE-EVIDENCE.md`.
+Status: **the C-H4-43i authored-reticle producer, playback boundary, main
+gameplay-pass ownership scope, and pinned-retail bindings are proven
+offline; the headset result is pending.** Halo 4 has no CHUD; its HUD is the
+CUI system. Identity pins live in `docs/HALO4-EVIDENCE-MANIFEST.json`;
+camera/render signature proofs live in `docs/HALO4-SIGNATURE-EVIDENCE.md`.
+Nothing in this file promotes C-H4-43i to an accepted headset result.
 
 ## Measured facts (2026-08-06, from the pinned H4EK)
 
@@ -37,7 +38,8 @@ as Megalo/navpoint/debug-var leftovers until proven otherwise.
   `weapons`.
 - `tags\ui\hud\reticles\` holds exactly 5 bitmaps: `ar_corner`, `dmr_cross`,
   `magnum_circle`, `magnum_quarter_circle`, `forge_reticles`. These are raw
-  reticle art; what composes them on screen is not yet evidenced.
+  reticle art. The tag census alone did not reveal their draw boundary; the
+  C-H4-43i H4EK command proof below now does.
 - `tags\ui\cui\` is the CUI screen tree: `alert`, `common`, `in_game`,
   `lobbies`, `postgame`, `sounds`, `start_menu`, `strings`.
 - `tags\ui\hud_globals.user_interface_hud_globals_definition` is the single
@@ -187,36 +189,352 @@ reticle surface, quoted from the export's `type` fields:
    reticle from spread data by the same design, so **any future centre-crop
    capture of the Halo 4 reticle should be expected to fail the same way**,
    and must be designed against that from the start rather than discovering
-   it in a headset. This is positive support for the plan of record:
-   procedural VR reticle first, capture only if later proven.
+   it in a headset. C-H4-43i therefore starts at a neutral 1x capture mapping,
+   retains the procedural reticle until nonblank authored pixels are proven,
+   and uses the shared coverage hold. Those mitigations are not a substitute
+   for the pending Halo 4 headset test.
 2. **`reticule_offset_container` means the reticle is authored to be
    offsettable**, which is the natural attachment point if a captured or
    native reticle ever has to ride a controller ray instead of screen centre.
-   What drives that offset is not yet measured.
+   The H4EK proof below resolves what drives it: the widget serialises paired
+   CUI commands that push and pop a renderer transform around its child
+   command stream. It does not itself issue GPU draws.
 
 `base_hud.cui_screen` (507 KB) and `mc_hud.cui_screen` (1.3 MB) also parse
-after repair; their internals and the draw-order question below are the next
-CUI steps.
+after repair. Their broader HUD-layout internals remain separate work; the
+authored-reticle draw-order question is resolved below.
 
-## Research plan (not findings)
+## C-H4-43i authored-reticle boundary (offline proof, 2026-08-10)
 
-Ordered, per the approved bring-up plan; each step produces exports or
-measurements that get recorded above as facts:
+This section records static reverse-engineering proof and the feature-local
+software contract. Discovery came only from the official H4EK executables and
+canonical tags. The pinned stripped retail module was used only to match and
+verify the already-understood H4EK functions.
 
-1. Export the 1 `user_interface_hud_globals_definition`, 9
-   `cui_static_data`, and 2 `cui_logic` tags via `tool.exe`
-   export-tag-to-xml.
-2. Census the 409 `cui_screen` names for reticle/crosshair/in-game-HUD
-   candidates (the `tags\ui\cui\in_game` subtree first).
-3. Recover the CUI tag schemas via ManagedBlam/Corinth reflection.
-4. Settle what the `chud_debug_crosshair` debug var actually gates in this
-   engine (candidate cheapest suppression anchor — currently unproven).
-5. Draw-order call-graph from `cui_render_view.cpp` symbols: is CUI drawn
-   per-eye inside the player view, or as a separate compositing pass? That
-   answer decides capture-vs-suppress+procedural-reticle, and it must be in
-   the ledger before any HUD candidate.
+### Official H4EK producer and command format
 
-The M3 plan of record: procedural VR reticle first (ODST precedent — a
-sanctioned, stated difference, not a silent fallback); CUI capture research
-runs in parallel and only ever replaces the procedural reticle from proven
-evidence.
+`ReticuleOffsetContainerWidget` is a derived CUI container, not a CHUD widget.
+In `halo4_tag_test.exe`, its RTTI type descriptor is at RVA `0x2686BC0`, its
+complete-object locator is at `0x1FDEF58`, and its 28-slot vtable is at
+`0x1C3E738`. The RTTI hierarchy is:
+
+`ReticuleOffsetContainerWidget -> c_cui_container_widget -> c_cui_widget ->
+c_cui_object_component -> c_cui_component`.
+
+Only the destructor, slot 16 (`0xADDDB0`), and slot 27 (`0xADE020`) differ
+from the base container. The independently matched slot-27 identities are:
+
+| Official H4EK program | Vtable RVA | Slot-27 RVA |
+| --- | ---: | ---: |
+| `halo4_tag_test.exe` | `0x1C3E738` | `0xADE020` |
+| `halo4_tag_play.exe` | `0x186FB78` | `0x8AD6E4` |
+| `halo4_sapien_play.exe` | `0x1ADFF50` | `0xC160FC` |
+
+The exact slot-27 ABI is:
+
+```cpp
+using ReticuleOffsetSlot27 = void(__fastcall*)(
+    ReticuleOffsetContainerWidget* self,
+    c_cui_render_context* context);
+```
+
+The tag-test body `0xADE020..0xADE0A5` does the following, in order:
+
+1. Reads the reticle-transform ID from `[self+0x1E8]`.
+2. If byte `[self+0x1EC]` is set, builds `float2 {0.0f,
+   [self+0x1F0]}`; otherwise it passes no optional vector.
+3. Calls `0x9B6800(context, id, optionalFloat2)`.
+4. Calls virtual slot 26 (`[vtable+0xD0]`) to serialise the child subtree.
+5. Calls `0x9B6390(context)`.
+
+`0x9B6800` allocates command type `0x28` with a `0x0C`-byte payload. Payload
+offset `+0` is the 32-bit transform ID and payload offset `+4` is the
+eight-byte float pair. `0x9B6390` emits type `0x29` with no payload. The CUI
+command header is exactly four bytes:
+
+```cpp
+struct cui_command_header {
+    int16_t type;
+    uint16_t payload_size;
+};
+```
+
+The payload starts at header `+4`. In the official tag-test image,
+`0x9B6800` has exactly one direct call, at slot 27's `0xADE072`, and
+`0x9B6390` has exactly one, at `0xADE089`. The canonical assault-rifle and
+magnum exports place `reticule_art_container` and `hit_indicator_art` below
+this offset container while ammo art is outside it. Thus `0x28` and `0x29`
+are a unique paired boundary around authored reticle descendants.
+
+This slot is only a command-buffer producer. It performs no GPU draw and is
+therefore deliberately not the runtime capture hook.
+
+### Actual command playback boundary and ABI
+
+The H4EK per-command executor is tag-test RVA `0x9C4690` (tag-play homolog
+`0x87E54C`). Its retained source identity is
+`c:\mcc\release\h4\shared\engine\source\blofeld\interface\cui\cui_render_renderer.cpp`,
+beginning at source line 274. Retained asserts name `m_view`, `header`,
+`(numOpenRenderSections)`, and `command->execute_func`.
+
+Its exact machine ABI is:
+
+```cpp
+bool __fastcall execute_cui_render_command(
+    void* renderer,
+    const void* command_header,
+    void* open_render_sections,
+    void* render_context);
+```
+
+All four Microsoft x64 arguments must be preserved. The tag-test prologue
+moves `r9 -> rsi`, `r8 -> rdi`, `rdx -> rbx`, and `rcx -> r15`; the semantic
+return is the byte in `AL`.
+
+- Type `0x28` reaches `0x9C47B8`, reads the ID and float pair, calls
+  `0x9BC7B0` to compute the transform, then `0x9BE760` to push/apply it.
+  Apply increments the renderer transform-stack count at `renderer+0x870`
+  and copies a `0x34`-byte entry.
+- Type `0x29` reaches `0x9C47AE` and calls `0x9BDE40` to pop the transform
+  stack.
+- The sole outer playback call to the executor is at tag-test `0x9C3F3F`.
+  After each call, the playback loop advances by
+  `sizeof(cui_command_header) + payload_size`, following buffer pages as
+  required.
+
+The important ordering fact is that `0x28`, every descendant command, and
+`0x29` are separate executor invocations while renderer state persists. The
+safe redirect order is consequently:
+
+1. Run the original `0x28` exactly once so Halo 4 pushes its state.
+2. Redirect the immediate D3D11 context's render target for later descendant
+   command invocations.
+3. Run every descendant command exactly once while that redirect is active.
+4. Run the original matching `0x29` exactly once so Halo 4 pops its state.
+5. Restore the saved render targets, DSV, viewports, and scissors.
+
+The markers themselves do not draw. Their interval brackets synchronous CPU
+submission of the descendant D3D11 draws, not asynchronous GPU completion.
+Render-target binding at submission time is what routes the pixels; waiting
+for GPU completion before restoring bindings is neither required nor correct.
+
+### `user_interface_render` ABI and the exact gameplay scope
+
+The official H4EK function at `0x91DD70` and retail homolog at `0x3ACD60`
+have this proven detour contract:
+
+```cpp
+void __fastcall user_interface_render(
+    uint32_t window_index,
+    uint32_t render_buffer_channel,
+    const void* viewport_bounds,
+    const void* optional_profile_value,
+    uint32_t render_mode,
+    bool flag);
+```
+
+The first two arguments are consumed as 32-bit values; `r8` and `r9` are
+64-bit pointers; argument 5 is read as a dword from entry `[rsp+0x28]`; and
+argument 6 is read as a byte from entry `[rsp+0x30]`. Observed callers ignore
+`RAX` and the epilogue establishes no semantic return, so the callable return
+type is `void`. `window_index` is range-checked and selects a per-window
+record. H4EK asserts that `viewport_bounds` is non-null. The fourth argument
+optionally carries a 16-byte profiler/event value. `render_mode` and `flag`
+are conservative names; their finer semantics are not needed by the hook and
+are not claimed.
+
+There are two in-wrapper calls, and they must not be conflated:
+
+| Pass | Official H4EK call | Pinned retail call | Bounds / role |
+| --- | ---: | ---: | --- |
+| Auxiliary | `0x8B5D6C -> 0x91DD70` | `0x3790E9 -> 0x3ACD60` | Hard-coded `216x96`, H4EK channel 1 |
+| Main gameplay HUD | `0x8B72F3 -> 0x91DD70` | `0x375C69 -> 0x3ACD60` | Full player-view bounds, H4EK channel 2 |
+
+H4EK `0x93EDD0` indexes distinct CUI render buffers by
+`window_index * 0x1038 + channel * 0x4A0`. Retail caller marshaling is not
+numerically identical to H4EK, so a copied channel value is not a safe retail
+gate. The candidate instead admits only the exact main-call return address,
+retail RVA `0x375C6E`. The auxiliary return (`0x3790EE`) and later
+menu/overlay callers never open the reticle phase.
+
+The main playback is synchronously inside the accepted wrapper:
+
+- H4EK: `0x1F7C00 -> 0x8B63C0 -> 0x91DD70 -> 0x9439D0 -> 0x93EDD0 ->
+  0x9C1280` and the command playback/executor below it.
+- Retail: wrapper `0x1222F4`, call `0x12251E -> 0x3751D0`, then
+  `0x375C69 -> 0x3ACD60 -> 0x3BAED4 -> 0x3F7A7C -> 0x3F3808`, whose
+  executor call is `0x3F4B7C -> 0x3F0EA4`.
+
+Each direct call returns through this chain before `user_interface_render`
+and then the wrapper return. Therefore the main CUI playback occurs once per
+wrapper invocation, and C-H4-43i's two wrapper replays execute it once for
+each VR eye. A separate post-eye menu/overlay bracket still exists, but it is
+outside this exact return-address phase and remains stock.
+
+### Pinned retail homolog and unique anchors
+
+The retail image is pinned by SHA-256:
+
+`7C53E7D5BC9848545A1B70E2768242479336FBA1B7630D7AB955F7FD0C34FA84`.
+
+The retail `ReticuleOffsetContainerWidget` vtable is at RVA `0xD6C2D0` and
+its H4EK-understood slot-27 homolog is `0x4181B4`. That independently confirms
+the producer mapping, but the producer remains unhooked.
+
+The actual executor is retail RVA `0x003F0EA4`. This 24-byte entry signature
+matches exactly once in the pinned module and at that RVA:
+
+```text
+48 8B C4 55 56 57 41 56 41 57 48 8D A8 B8 FC FF FF 48 81 EC 50 04 00 00
+```
+
+Its sole playback caller anchor is retail RVA `0x003F4B6B`, also unique:
+
+```text
+49 8B 8F 10 04 00 00 4D 8D 8F 20 04 00 00 49 8B D6 E8 ?? ?? ?? ??
+```
+
+The call opcode is anchor `+17` (`0x3F4B7C`), its displacement is at `+18`,
+and the next instruction is anchor `+22` (`0x3F4B81`). The pinned rel32 is
+`-0x3CDD` (`23 C3 FF FF`), which decodes exactly to `0x3F0EA4`. Retail type
+`0x28` reaches `0x3F1EA7`, compute `0x3F21CC`, and apply `0x3F3338`; type
+`0x29` performs the homologous pop inline at `0x3F0FEE`.
+
+The main gameplay-scope function is retail RVA `0x003ACD60`. Its 31-byte
+entry signature matches exactly once and at that RVA:
+
+```text
+48 8B C4 55 53 56 57 41 56 41 57 48 8D 68 B1 48 81 EC A8 00 00 00 0F 29 78 B8 44 0F 29 40 A8
+```
+
+The unique main caller anchor begins at retail RVA `0x00375C51`:
+
+```text
+8B 8E 8C 03 00 00 4C 8D 45 A0 45 33 C9 44 88 6C 24 28 33 D2 89 7C 24 20 E8 ?? ?? ?? ?? 83 FB 03
+```
+
+Its call opcode is anchor `+24` (`0x375C69`), displacement is at `+25`, and
+the next instruction/return address is anchor `+29` (`0x375C6E`). Decoding
+that rel32 must produce exactly `0x3ACD60`.
+
+Installation requires all four signatures to match exactly once at their
+pinned RVAs, both rel32 call edges to decode to their proven targets, all four
+addresses to lie in executable committed image memory, the module mapping to
+remain stable, and the capture plus private-discard resources to be prepared
+on the cold path. Zero, multiple, moved, or edge-mismatched anchors refuse
+only this optional reticle feature.
+
+### Why neither slot 27 nor `hud_show_crosshair` is hooked
+
+Slot 27 only serialises commands before playback. Redirecting a render target
+there cannot bracket descendant GPU submissions, and suppressing it would
+also skip Halo 4's own command/state construction. The executor is the first
+proven point where the paired markers surround the actual descendant draw
+submission, so it is the hook boundary.
+
+`hud_show_crosshair` is also not a draw boundary. In H4EK, its name is at RVA
+`0x198AF80`; registration at `0x2B8CD9` selects callback `0x95A320`.
+`0x95A320` converts the bool, selects category 3, and tail-jumps to common
+setter `0x95A270`. That setter sets or clears bit 3 of
+`[UI-manager+0x2A38]` and notifies the UI through a virtual call. It is a
+persistent global/category visibility mutation, not a per-eye transaction.
+Turning it off can remove the source subtree before capture; leaving it on
+without a redirect leaves the face-centred copy. C-H4-43i therefore does not
+hook or mutate it. The old `chud_debug_crosshair` research item is retired:
+Halo 4 has no CHUD and it is not this CUI boundary.
+
+## C-H4-43i feature-local runtime contract
+
+The two optional hooks install and remove as one feature transaction. A TLS
+scope is opened around each accepted eye's wrapper replay, but the executor
+admits markers only while the exact main `user_interface_render` call is
+active. Ownership is checked against the current thread, renderer, generation,
+prepared-frame serial, eye, exact main caller, active title, armed Halo 4
+camera, and live stereo state. Nested `0x28` markers increment depth; only the
+matching outer `0x29` closes the redirect.
+
+Every original CUI command is called exactly once. The original outer `0x28`
+runs before redirect; the original outer `0x29` runs before restoration. The
+main-call `finally` and the eye-wrapper `finally` both force-close an unmatched
+redirect, restore all saved D3D bindings on the same render thread, and
+invalidate a partial authored capture rather than publishing it.
+
+The configuration behavior is:
+
+| `crosshair` | `kill_reticle` | Main-pass behavior |
+| ---: | ---: | --- |
+| `0` | either | Execute the reticle subtree into the private discard target for both eyes; submit no gun-ray quad. |
+| `1` | `0` | Leave Halo 4's native face-centred reticle stock; do not submit held Halo 4 authored art on the gun ray. |
+| `1` | `1` | Capture the configured first eye on a sample frame; execute the opposite eye into private discard; execute the selected eye into discard on cadence-skipped frames; submit validated authored art on the gun ray. |
+
+The configured first eye is eye 1 when `right_eye_first=1`, otherwise eye 0.
+Only that eye can publish. The opposite eye uses a different discard target,
+so it cannot alpha-accumulate a second copy into the same capture serial and
+cannot leave a second native face copy behind.
+
+Until a nonblank authored image has passed validation and reached the reticle
+swapchain, Halo 4 deliberately keeps the procedural gun-ray pixels as a
+bootstrap. Before a redirect begins, an unreadable or unrelated command and
+an unowned phase stay stock. Unavailable resources, redirect failure,
+signature mismatch, hook failure, or partial cleanup also retain the
+feature-local stock/procedural fallback and are logged. If a command stream
+becomes malformed after redirect begins, the enclosing `finally` restores
+state and invalidates the partial art; it does not replay the subtree or drop
+the stereo frame. The optional lifecycle states are `StockFallback`,
+`CleanupRequired`, and `Installed`. None disarms the camera or hands or ends
+the OpenXR session. Hot callbacks do no allocation, signature scan, file I/O,
+or logging.
+
+### Fixed identity, cadence, and coverage caveat
+
+The `0x28` payload ID is a renderer transform ID, not a proven weapon or art
+identity. C-H4-43i therefore publishes the fixed nonzero key `1`; zero cannot
+admit an authored upload. Halo 4 uses the shared `BoundedAnimation` policy.
+The default `crosshair_animation_frames=6` samples and publishes at most every
+six prepared frames; nonzero configuration is clamped to `6..60`. A configured
+zero disables the normal animation cadence but deliberately re-samples every
+30 frames so a weapon swap can eventually replace held art. Before any valid
+authored art is held, bootstrap sampling is not skipped.
+
+Halo 4 starts with a neutral 1x capture viewport. Halo 3/ODST's 4x and Reach's
+2x mappings are title-specific and are not copied. The asynchronous alpha
+coverage guard never publishes a blank capture. For the same identity it also
+requires at least half the held ink, with an escape after 24 consecutive
+qualifying nonblank reductions. Because Halo 4 deliberately uses one fixed
+identity, a legitimate high-ink to low-ink weapon change looks like a thinning
+of the same reticle and can be held for roughly 24 samples: about 144 prepared
+frames at the default cadence or 720 with animation disabled. This is a
+bounded mitigation, not proof that the player-facing cadence or crop is right.
+
+## Validation status and required headset result
+
+The C-H4-43i candidate builds, its automated tests pass, and the repository
+gate passes with the gameplay-only phase described above. Those are software
+checks, not runtime acceptance. The static proof establishes the producer,
+command meanings, exact ABIs, synchronous draw-submission interval, per-eye
+main-pass scope, retail signatures, and fail-open ownership contract. It does
+**not** establish that a real gameplay run emits every desired reticle state
+inside the measured container, that its pixels fit the neutral 1x viewport,
+or that the result is comfortable and correct in a headset.
+
+C-H4-43i remains pending until one target-title headset run identifies MCC
+edition, OpenXR runtime, and headset and verifies at least:
+
+- the authored weapon reticle follows the controller/gun ray and no
+  face-centred copy remains in either eye;
+- `crosshair=0`, `crosshair=1/kill_reticle=0`, and
+  `crosshair=1/kill_reticle=1` match the table above;
+- fire kick, target/hit colour, spread/bloom, and damage do not blank or
+  replace good art;
+- a high-ink to low-ink weapon swap converges acceptably under the fixed-key
+  coverage hold;
+- scoped/zoomed weapons either retain their correct native scope behavior or
+  expose a clearly logged, feature-local limitation;
+- telemetry reports one admitted main CUI pass per rendered eye, completed
+  capture/discard brackets, and no unexplained forced restores or redirect
+  failures.
+
+Because C-H4-43i also exercises shared authored-reticle resources and
+compositor policy, the candidate additionally requires a Halo 3 headset
+regression result before acceptance. Until those explicit results exist, the
+accepted-build pointer in `docs/CURRENT-STATE.md` remains authoritative.

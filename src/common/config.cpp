@@ -983,10 +983,11 @@ void ConfigSave()
     fprintf(f, "# (default %.2f, range 0.3 to 20)\n", d.crosshair_size_deg);
     fprintf(f, "crosshair_size_deg = %.2f\n\n", g_config.crosshair_size_deg);
     fprintf(f, "# How often the VR crosshair re-reads the game's own crosshair art,\n");
-    fprintf(f, "# in frames. This is what makes Halo 3's crosshair animate: the kick\n");
+    fprintf(f, "# in frames. This makes Halo 3/Halo 4 authored crosshairs animate:\n");
     fprintf(f, "# when you shoot, and the red/green target colors. Lower is more\n");
-    fprintf(f, "# responsive, higher is cheaper. 0 freezes it and costs the least.\n");
-    fprintf(f, "# Halo 3 only. (default %d, 0 or 6 to 60)\n",
+    fprintf(f, "# responsive, higher is cheaper. 0 holds animation; Halo 4 still\n");
+    fprintf(f, "# checks slowly for a weapon-art change.\n");
+    fprintf(f, "# Halo 3 and Halo 4. (default %d, 0 or 6 to 60)\n",
              d.crosshair_animation_frames);
     fprintf(f, "crosshair_animation_frames = %d\n\n",
              g_config.crosshair_animation_frames);

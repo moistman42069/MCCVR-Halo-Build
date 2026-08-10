@@ -39,6 +39,7 @@
 #include "../common/cutscene_theater_logic.h"
 #include "../common/frame_pacing_logic.h"
 #include "../common/halo4_render_logic.h"
+#include "../common/halo4_cui_reticle_logic.h"
 #include "../common/input_logic.h"
 #include "../common/reach_vehicle_logic.h"
 #include "../common/scope_logic.h"
@@ -177,6 +178,13 @@ namespace
     // artwork is uploaded to the existing controller-ray OpenXR quad.
     ID3D11Texture2D* g_authoredReticleTexture = nullptr;
     ID3D11RenderTargetView* g_authoredReticleRtv = nullptr;
+    // Halo 4's CUI reticle is bracketed around a subtree rather than guarded by
+    // a visibility predicate. The non-capture eye therefore executes the full
+    // subtree against this prepared throwaway target. It must not share the
+    // authored target: drawing the second eye there would double-blend or
+    // replace the pixels selected for the gun-ray quad.
+    ID3D11Texture2D* g_authoredReticleDiscardTexture = nullptr;
+    ID3D11RenderTargetView* g_authoredReticleDiscardRtv = nullptr;
     // GitHub #70. Two candidates guarded the capture's IDENTITY and its PIECE
     // COUNT, and the runtime log proved both inert: across a whole combat
     // session the key never left 8E28E5B60B57DCA3 and the count never left
@@ -244,6 +252,7 @@ namespace
         D3D11_RECT scissors[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]{};
         UINT scissorCount = 0;
         bool active = false;
+        bool publishesAuthored = false;
     };
     ReticleCaptureState g_reticleCaptureState{};
 
@@ -5217,6 +5226,46 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         return true;
     }
 
+    bool EnsureAuthoredReticleDiscardTexture()
+    {
+        if (g_authoredReticleDiscardTexture &&
+            g_authoredReticleDiscardRtv)
+            return true;
+        if (!g_device)
+            return false;
+
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = kReticleSize;
+        desc.Height = kReticleSize;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+        if (FAILED(g_device->CreateTexture2D(
+                &desc, nullptr, &g_authoredReticleDiscardTexture)) ||
+            FAILED(g_device->CreateRenderTargetView(
+                g_authoredReticleDiscardTexture, nullptr,
+                &g_authoredReticleDiscardRtv)))
+        {
+            if (g_authoredReticleDiscardRtv)
+            {
+                g_authoredReticleDiscardRtv->Release();
+                g_authoredReticleDiscardRtv = nullptr;
+            }
+            if (g_authoredReticleDiscardTexture)
+            {
+                g_authoredReticleDiscardTexture->Release();
+                g_authoredReticleDiscardTexture = nullptr;
+            }
+            return false;
+        }
+        LOG("M3: authored crosshair suppression target ready (%ux%u)",
+            kReticleSize, kReticleSize);
+        return true;
+    }
+
     // How much crosshair ink does the capture hold? Returns the summed alpha
     // of the downsampled capture. Once a valid image is held, the readback is
     // enqueued then polled on later frames: this returns the explicit pending
@@ -5305,10 +5354,22 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 return false;
             }
         }
+        const GameTitle reticleTitle = TitleAdapter_GetActiveTitle();
+        const bool titleHasAuthoredCapture =
+            Game_TitleCapturesAuthoredCrosshair();
+        // A live optional Halo 4 capture hook is not proof that valid authored
+        // pixels have reached this swapchain. On its bootstrap frame we must
+        // paint the procedural gun-ray reticle before a deferred or rejected
+        // upload can leave the newly-created swapchain as undefined pixels.
+        const bool halo4ProceduralBootstrap =
+            reticleTitle == GameTitle::Halo4 &&
+            Halo4CuiReticleNeedsProceduralBootstrap(
+                titleHasAuthoredCapture, g_reticleContainsAuthored,
+                g_config.crosshair, g_config.kill_reticle);
         const bool authoredThisFrame =
             g_authoredReticleReady &&
             g_authoredReticleSerial == g_preparedFrame.serial;
-        if (authoredThisFrame)
+        if (authoredThisFrame && !halo4ProceduralBootstrap)
             return true;
 
         // Halo can omit the authored widget in some of the repeated FP passes
@@ -5342,9 +5403,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // and similar, which made the old grace window expire and wipe the art
         // mid-fight. Holding the last art is both correct and free; a genuine
         // change (weapon swap, zoom, colour) re-uploads through the key path.
-        const bool titleCapturesAuthoredArt =
-            Game_TitleCapturesAuthoredCrosshair();
-        if (g_reticleContainsAuthored && titleCapturesAuthoredArt)
+        if (g_reticleContainsAuthored && titleHasAuthoredCapture)
             return true;
 
         // Halo can stop drawing its authored widget during death and other
@@ -5366,10 +5425,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // authored art lives in, wiping that art out on every repaint. That is
         // what showed the old crosshair, made the two alternate, and cost a
         // swapchain repaint per frame.
-        const bool titleHasAuthoredCapture =
-            Game_TitleCapturesAuthoredCrosshair();
         const float kProceduralOpacity =
-            titleHasAuthoredCapture ? 0.0f : 1.0f;
+            titleHasAuthoredCapture && !halo4ProceduralBootstrap ? 0.0f : 1.0f;
         const bool enemy = g_reticleEnemy.load(std::memory_order_relaxed);
         const float wantR = enemy ? 1.0f : g_config.reticle_r;
         const float wantG = enemy ? 0.18f : g_config.reticle_g;
@@ -5473,21 +5530,30 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                  kAuthoredReticleMaxConsecutiveHolds;
             const bool hasArt =
                 hasAnyArt && (ink >= required || staleEnoughToAccept);
-            if (!hasArt && g_authoredReticleGoodValid)
+            const bool halo4BootstrapNeedsMeasuredArt =
+                TitleAdapter_GetActiveTitle() == GameTitle::Halo4 &&
+                !g_authoredReticleGoodValid;
+            if (!hasArt &&
+                (g_authoredReticleGoodValid ||
+                 halo4BootstrapNeedsMeasuredArt))
             {
-                // Hold. This is NOT a failure: the crosshair has bloomed out
-                // of the crop, so the one the player is aiming with stays on
-                // the quad untouched. The caller must not treat it as a lost
-                // upload and repaint the chain.
+                // Halo 4 also holds before the first known-good capture. A
+                // blank or below-threshold bootstrap sample is not authored
+                // art and must never replace its procedural fallback with an
+                // invisible but "authored" image. The previously shipped
+                // titles retain their accepted bootstrap behavior; once any
+                // title has good art, this remains the shared bloom guard.
+                // This is not a transport failure, so leave the currently
+                // released swapchain image untouched.
                 ++g_authoredReticleConsecutiveHolds;
                 ++g_authoredReticleBlankHeld;
                 g_authoredReticleHeldBlank = true;
                 return false;
             }
-            // Publish: the capture is good, or nothing good has ever been
-            // measured, or the reduction has persisted long enough to be a
-            // real change rather than a bloom. Mip 0 only: the capture carries
-            // a mip chain for the check and the swapchain image does not.
+            // Publish: the capture is measured good, or its non-empty
+            // reduction has persisted long enough to be a real change rather
+            // than a bloom. Mip 0 only: the capture carries a mip chain for
+            // the check and the swapchain image does not.
             g_context->CopySubresourceRegion(
                 g_authoredReticleGoodTexture, 0, 0, 0, 0,
                 g_authoredReticleTexture, 0, nullptr);
@@ -8410,21 +8476,21 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 g_config.crosshair_animation_frames) != 0;
                         const AuthoredReticleRefreshPolicy refreshPolicy =
                             reticleTitle == GameTitle::HaloReach ||
+                            reticleTitle == GameTitle::Halo4 ||
                             halo3AnimatesReticle
                                 ? AuthoredReticleRefreshPolicy::BoundedAnimation
                                 : reticleTitle == GameTitle::Halo3ODST
                                     ? AuthoredReticleRefreshPolicy::IdentityImmediate
                                     : AuthoredReticleRefreshPolicy::IdentityAndColorState;
-                        // Halo 3's authored crosshair animates - it kicks on
-                        // fire and turns red/green on a target - and none of
-                        // that changes WHICH widgets drew, so the identity key
-                        // froze one snapshot. It now publishes on the same
-                        // bounded cadence as Reach, and the capture that feeds
-                        // it is throttled to exactly the frames that publish,
-                        // so the animation is paid for out of the offscreen
-                        // widget draw the title was already doing every frame.
-                        // crosshair_animation_frames = 0 restores the held
-                        // identity/colour-edge behavior.
+                        // Halo 3 and Halo 4's authored crosshairs animate - they
+                        // kick on fire and carry target/hit colour state - and
+                        // none of that necessarily changes WHICH pieces drew.
+                        // Sampling and publishing on the same bounded cadence
+                        // keeps the animation live without paying the blocking
+                        // swapchain upload every frame.
+                        // With crosshair_animation_frames=0, Halo 4 keeps a
+                        // slow 30-frame sample so a fixed-key weapon swap can
+                        // replace held art; it does not animate every 6 frames.
                         // ODST's proven identity key also folds its native
                         // alternate-path state, so it publishes only when that
                         // key changes and has no steady blocking upload. Reach
@@ -8499,7 +8565,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         // in a headset session, and a stale-crosshair report is
                         // only actionable next to the coverage the guard saw.
                         if (reachTitle || reticleTitle == GameTitle::Halo3 ||
-                            reticleTitle == GameTitle::Halo3ODST)
+                            reticleTitle == GameTitle::Halo3ODST ||
+                            reticleTitle == GameTitle::Halo4)
                         {
                             if (authoredArtAlreadyPublished)
                                 ++s_uploadsSkipped;
@@ -8520,7 +8587,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 LOG("%s reticle upload: %llu uploaded, %llu "
                                     "skipped in the last window (key %llX, "
                                     "pieces %u, held %u, art %u, blankHeld %u)",
-                                    reachTitle ? "Reach" : "Halo 3",
+                                    reachTitle ? "Reach" :
+                                        reticleTitle == GameTitle::Halo4
+                                            ? "Halo 4" :
+                                        reticleTitle == GameTitle::Halo3ODST
+                                            ? "ODST" : "Halo 3",
                                     static_cast<unsigned long long>(
                                         s_uploadsDone),
                                     static_cast<unsigned long long>(
@@ -8664,10 +8735,21 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         const bool reticleChainAdmitted =
                             reticleUploadAdmitted &&
                             AuthoredReticleLayerHasContent(
-                                titleCapturesArt,
+                                titleCapturesArt &&
+                                    !(reticleTitle == GameTitle::Halo4 &&
+                                      Halo4CuiReticleNeedsProceduralBootstrap(
+                                          titleCapturesArt,
+                                          g_reticleContainsAuthored,
+                                          g_config.crosshair,
+                                          g_config.kill_reticle)),
                                 g_reticleContainsAuthored);
                         const bool reticleQuadSubmitted =
                             reticleOwnerAdmitted && g_config.crosshair &&
+                            // Halo 4 uses kill_reticle=0 as an explicit request
+                            // for the stock face-centred CUI reticle. Never add
+                            // a held authored gun-ray quad on top of it.
+                            (reticleTitle != GameTitle::Halo4 ||
+                             g_config.kill_reticle) &&
                             haveAim && reticleChainAdmitted && !theaterPresentation;
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
                         // The 2026-07-27 objective blackout is proven NOT to be
@@ -10750,16 +10832,17 @@ AuthoredReticlePreparationResult VR_PrepareAuthoredReticleResources()
         : AuthoredReticlePreparationResult::Failed;
 }
 
-void VR_InvalidatePreparedReachAuthoredReticleCapture()
+void VR_InvalidatePreparedAuthoredReticleCapture()
 {
-    // Reach calls this only on the render thread before opening a new admitted
-    // eye transaction. Halo 3/ODST retain their accepted serial lifecycle.
+    // Called only on the render thread before opening a new admitted title
+    // transaction. Halo 3/ODST retain their accepted serial lifecycle.
     g_authoredReticleReady = false;
     g_authoredReticleSerial = 0;
 }
 
 static bool BeginAuthoredReticleCaptureInternal(
-    bool requirePreparedResources, bool requireCrosshairEnabled)
+    bool requirePreparedResources, bool requireCrosshairEnabled,
+    bool publishAuthored)
 {
     // `crosshair=0` means "do not show a VR crosshair". For Halo 3/ODST,
     // refusing here is the whole implementation: they hide their native
@@ -10777,6 +10860,8 @@ static bool BeginAuthoredReticleCaptureInternal(
     // which still requires g_config.crosshair before uploading or submitting
     // the quad. So `crosshair=0` in Reach now means exactly what it says:
     // no crosshair anywhere, flat or VR.
+    // Halo 4 follows the same prepared-only rule at its CUI subtree boundary;
+    // its non-capture paths bind the distinct discard target below.
     if (!g_context ||
         (requireCrosshairEnabled && !g_config.crosshair) ||
         !g_stereoEnabled.load(std::memory_order_relaxed) ||
@@ -10785,9 +10870,16 @@ static bool BeginAuthoredReticleCaptureInternal(
 
     if (requirePreparedResources)
     {
-        if (g_reticleChain == XR_NULL_HANDLE || g_reticleImages.empty() ||
+        // A latched chain failure belongs only to this optional feature. Both
+        // prepared Halo 4 paths must refuse before redirecting the CUI target,
+        // allowing the unmodified native reticle to draw while stereo stays
+        // armed.
+        if (g_reticleChainFailed.load(std::memory_order_acquire) ||
+            g_reticleChain == XR_NULL_HANDLE || g_reticleImages.empty() ||
             g_reticleRtvs.size() != g_reticleImages.size() ||
-            !g_authoredReticleTexture || !g_authoredReticleRtv)
+            !g_authoredReticleTexture || !g_authoredReticleRtv ||
+            (!publishAuthored && (!g_authoredReticleDiscardTexture ||
+                                  !g_authoredReticleDiscardRtv)))
         {
             return false;
         }
@@ -10804,8 +10896,13 @@ static bool BeginAuthoredReticleCaptureInternal(
             return false;
     }
 
+    ID3D11RenderTargetView* const redirectRtv = publishAuthored
+        ? g_authoredReticleRtv : g_authoredReticleDiscardRtv;
+    if (!redirectRtv)
+        return false;
+
     const uint64_t serial = g_preparedFrame.serial;
-    if (g_authoredReticleSerial != serial)
+    if (publishAuthored && g_authoredReticleSerial != serial)
     {
         const float clear[4] = {0, 0, 0, 0};
         g_context->ClearRenderTargetView(g_authoredReticleRtv, clear);
@@ -10841,11 +10938,15 @@ static bool BeginAuthoredReticleCaptureInternal(
     // The outer quad retains the universal crosshair_size_deg and distance
     // sliders. Halo 3 and ODST share 4x internal authored-art occupancy so the
     // same slider values produce matching apparent size. Reach retains its
-    // independently calibrated 2x occupancy; scope zoom remains separate.
+    // independently calibrated 2x occupancy. Halo 4 starts at its neutral 1x
+    // mapping until the headset supplies title-specific
+    // calibration; borrowing Reach's crop here would repeat that title's
+    // spread-petal failure. Scope zoom remains separate.
     const GameTitle captureTitle = TitleAdapter_GetActiveTitle();
     const float authoredCaptureScale =
         captureTitle == GameTitle::Halo3 ||
-        captureTitle == GameTitle::Halo3ODST ? 4.0f : 2.0f;
+        captureTitle == GameTitle::Halo3ODST ? 4.0f :
+        captureTitle == GameTitle::HaloReach ? 2.0f : 1.0f;
     captureViewport.Width *= authoredCaptureScale;
     captureViewport.Height *= authoredCaptureScale;
     captureViewport.TopLeftX =
@@ -10855,9 +10956,10 @@ static bool BeginAuthoredReticleCaptureInternal(
     const D3D11_RECT captureScissor{
         0, 0, static_cast<LONG>(kReticleSize),
         static_cast<LONG>(kReticleSize)};
-    g_context->OMSetRenderTargets(1, &g_authoredReticleRtv, nullptr);
+    g_context->OMSetRenderTargets(1, &redirectRtv, nullptr);
     g_context->RSSetViewports(1, &captureViewport);
     g_context->RSSetScissorRects(1, &captureScissor);
+    saved.publishesAuthored = publishAuthored;
     saved.active = true;
     return true;
 }
@@ -10874,10 +10976,9 @@ bool VR_ShouldCaptureAuthoredReticleThisFrame()
         return false;
 
     // ODST's captured quad is static between weapon and state changes, so it
-    // samples only often enough to notice one. Halo 3's authored crosshair
-    // animates, so it samples at the cadence the user asked for - which is
-    // also the cadence at which the art can be published, so a faster sample
-    // would only spend capture work the publish floor discards.
+    // samples only often enough to notice one. Halo 3 and Halo 4's authored
+    // crosshairs animate, so they sample at the cadence the user asked for -
+    // also the cadence at which art can publish, avoiding discarded work.
     constexpr uint64_t kOdstCaptureSampleGapFrames = 30;
     uint64_t gapFrames = 0;
     switch (TitleAdapter_GetActiveTitle())
@@ -10887,6 +10988,14 @@ bool VR_ShouldCaptureAuthoredReticleThisFrame()
             g_config.crosshair_animation_frames);
         // Holding one image still needs a slow re-sample so a weapon swap is
         // eventually noticed; it just never animates between those.
+        if (gapFrames == 0)
+            gapFrames = kOdstCaptureSampleGapFrames;
+        break;
+    case GameTitle::Halo4:
+        gapFrames = ResolveAuthoredAnimationGapFrames(
+            g_config.crosshair_animation_frames);
+        // H4EK's transform ID is not proven art identity. With animation off,
+        // retain only a slow sample so a weapon swap can still replace art.
         if (gapFrames == 0)
             gapFrames = kOdstCaptureSampleGapFrames;
         break;
@@ -10917,7 +11026,7 @@ bool VR_ShouldCaptureAuthoredReticleThisFrame()
 
 bool VR_BeginAuthoredReticleCapture()
 {
-    return BeginAuthoredReticleCaptureInternal(false, true);
+    return BeginAuthoredReticleCaptureInternal(false, true, true);
 }
 
 // Reach's hide-the-widget entry: lazily creates whatever is missing (so a
@@ -10926,15 +11035,16 @@ bool VR_BeginAuthoredReticleCapture()
 // is what lets Reach's flat crosshair through.
 bool VR_BeginAuthoredReticleRedirect()
 {
-    return BeginAuthoredReticleCaptureInternal(false, false);
+    return BeginAuthoredReticleCaptureInternal(false, false, true);
 }
 
 bool VR_BeginPreparedAuthoredReticleCapture()
 {
-    return BeginAuthoredReticleCaptureInternal(true, false);
+    return BeginAuthoredReticleCaptureInternal(true, false, true);
 }
 
-static bool EndAuthoredReticleCaptureInternal(bool allowFirstCaptureLog)
+static bool EndAuthoredReticleCaptureInternal(
+    bool allowFirstCaptureLog, bool expectAuthored)
 {
     auto& saved = g_reticleCaptureState;
     if (!saved.active || !g_context)
@@ -10959,25 +11069,55 @@ static bool EndAuthoredReticleCaptureInternal(bool allowFirstCaptureLog)
     }
     saved.viewportCount = 0;
     saved.scissorCount = 0;
+    const bool modeMatches = saved.publishesAuthored == expectAuthored;
+    const bool publishedAuthored = saved.publishesAuthored;
     saved.active = false;
-    g_authoredReticleReady = true;
+    saved.publishesAuthored = false;
+    if (publishedAuthored)
+        g_authoredReticleReady = true;
     static bool logged = false;
     if (allowFirstCaptureLog && !logged)
     {
         LOG("M3: Halo authored per-weapon crosshair redirected to VR aim quad");
         logged = true;
     }
-    return true;
+    return modeMatches;
 }
 
 void VR_EndAuthoredReticleCapture()
 {
-    (void)EndAuthoredReticleCaptureInternal(true);
+    (void)EndAuthoredReticleCaptureInternal(true, true);
 }
 
 bool VR_EndPreparedAuthoredReticleCapture()
 {
-    return EndAuthoredReticleCaptureInternal(false);
+    return EndAuthoredReticleCaptureInternal(false, true);
+}
+
+bool VR_PrepareAuthoredReticleSuppressionResources()
+{
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+    ReachExclusiveResourceLock lock(g_reachDisplayResourceLock);
+#endif
+    // This entry is Halo 4's final cold install gate. Unlike the legacy lazy
+    // title paths, its optional hook must not arm without the coverage probe:
+    // otherwise a first blank capture could be indistinguishable from valid
+    // authored art and replace the visible procedural fallback. Failure here
+    // leaves Halo 4's native CUI reticle wholly stock.
+    return !g_reticleChainFailed.load(std::memory_order_acquire) &&
+        VR_CanPrepareAuthoredReticleResources() && g_device && g_context &&
+        g_authoredReticleProbeUsable && g_authoredReticleGoodTexture &&
+        EnsureAuthoredReticleDiscardTexture();
+}
+
+bool VR_BeginPreparedAuthoredReticleSuppression()
+{
+    return BeginAuthoredReticleCaptureInternal(true, false, false);
+}
+
+bool VR_EndPreparedAuthoredReticleSuppression()
+{
+    return EndAuthoredReticleCaptureInternal(false, false);
 }
 
 void VR_SetReticleEnemy(bool enemy)
