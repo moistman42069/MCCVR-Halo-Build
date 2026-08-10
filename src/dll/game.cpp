@@ -30244,6 +30244,80 @@ namespace
         return true;
     }
 
+    // C-H4-32: the controller pose the hands are measured RELATIVE to.
+    //
+    // Every candidate so far computed an ABSOLUTE hand position and needed the
+    // bank's geometry to mean what the tag says. It does not. In one window the
+    // same record reports the shoulders 0.39x their authored separation, the
+    // hand 0.74x its authored distance from the root, and the upper arm 2.1x
+    // its authored length. No scale, no unit convention and no node reordering
+    // makes those one skeleton - that was checked exhaustively against the tag -
+    // so an absolute target can only ever be luck.
+    //
+    // The way out is to stop needing the geometry at all. Halo 4 already draws
+    // the hand in exactly the right place; take THAT as the origin and add only
+    // what the player's hand has done since a reference pose. At the reference
+    // the hands are byte-identical to stock, which cannot look wrong, and every
+    // departure from it is a measured controller movement.
+    struct Halo4HandReference
+    {
+        std::atomic<bool> valid{false};
+        std::atomic<float> position[3]{};
+        std::atomic<float> orientation[4]{};
+    };
+    Halo4HandReference g_halo4HandReference[2];   // 0 = right, 1 = left
+
+    void Halo4ResetHandReferences()
+    {
+        for (Halo4HandReference& reference : g_halo4HandReference)
+            reference.valid.store(false,std::memory_order_release);
+    }
+
+    // Capture on first use and hold until teardown or a recentre. Returns the
+    // controller's movement since the reference, in OpenXR metres and radians.
+    bool Halo4ControllerDelta(bool left, const float position[3],
+                              const float orientation[4],
+                              float outOffset[3], float outRotation[4])
+    {
+        Halo4HandReference& reference=g_halo4HandReference[left?1:0];
+        if (!reference.valid.load(std::memory_order_acquire))
+        {
+            for (int i=0;i<3;++i)
+                reference.position[i].store(
+                    position[i],std::memory_order_relaxed);
+            for (int i=0;i<4;++i)
+                reference.orientation[i].store(
+                    orientation[i],std::memory_order_relaxed);
+            reference.valid.store(true,std::memory_order_release);
+        }
+        float referencePosition[3],referenceOrientation[4];
+        for (int i=0;i<3;++i)
+            referencePosition[i]=
+                reference.position[i].load(std::memory_order_relaxed);
+        for (int i=0;i<4;++i)
+            referenceOrientation[i]=
+                reference.orientation[i].load(std::memory_order_relaxed);
+        for (int i=0;i<3;++i)
+        {
+            outOffset[i]=position[i]-referencePosition[i];
+            if (!isfinite(outOffset[i])) return false;
+        }
+        // current * conjugate(reference): the rotation the wrist has made.
+        const float c[4]={-referenceOrientation[0],-referenceOrientation[1],
+                          -referenceOrientation[2], referenceOrientation[3]};
+        outRotation[0]=orientation[3]*c[0]+orientation[0]*c[3]+
+                       orientation[1]*c[2]-orientation[2]*c[1];
+        outRotation[1]=orientation[3]*c[1]-orientation[0]*c[2]+
+                       orientation[1]*c[3]+orientation[2]*c[0];
+        outRotation[2]=orientation[3]*c[2]+orientation[0]*c[1]-
+                       orientation[1]*c[0]+orientation[2]*c[3];
+        outRotation[3]=orientation[3]*c[3]-orientation[0]*c[0]-
+                       orientation[1]*c[1]-orientation[2]*c[2];
+        for (int i=0;i<4;++i)
+            if (!isfinite(outRotation[i])) return false;
+        return true;
+    }
+
     // C-H4-30: move one hand onto its controller with a single rigid delta.
     //
     // This is the whole hand path now. `D = desired o inverse(stockWrist)`
@@ -30394,8 +30468,7 @@ namespace
         // The record's own root node is the anchor it actually has. Slot 0 is
         // b_pedestal, the node the whole assembly hangs off, and working
         // relative to it also cancels the NULL-versus-translation branch above.
-        BoneMatrix pedestal{},inversePedestal{};
-        pedestal=solved[kHalo4FirstPersonRootNode];
+        const BoneMatrix pedestal=solved[kHalo4FirstPersonRootNode];
         if (bodyFill)
         {
             // Published BEFORE the record can be refused on it, so a window
@@ -30433,26 +30506,25 @@ namespace
             g_halo4Camera.vrikPedestalTilt.store(
                 tilt,std::memory_order_relaxed);
         }
-        if (!InvertBoneMatrix(pedestal,inversePedestal))
-            return Halo4VrikStage::AnchorFailed;
-        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
-        {
-            BoneMatrix local{};
-            if (!ComposeBoneMatrices(inversePedestal,solved[i],local))
-                return Halo4VrikStage::AnchorFailed;
-            solved[i]=local;
-        }
-
-        // Classification runs on those model-relative records: the authored
-        // Storm bind geometry that identifies the arms record is expressed in
-        // the model's own frame, which is what C-H4-14's admission gate
-        // measures against.
-        {
-            const BoneMatrix identityRoot{1.0f,{1,0,0, 0,1,0, 0,0,1},{0,0,0}};
-            const Halo4VrikStage classified=
-                Halo4ClassifyStormArms(solved,identityRoot,bodyFill);
-            if (classified!=Halo4VrikStage::Solved) return classified;
-        }
+        // NO LIFT. C-H4-32 does it the way Reach does it, which needs no model
+        // frame at all: Reach builds an ABSOLUTE WORLD wrist pose from the
+        // pre-head gameplay base plus the player's room movement
+        // (ReachBuildPreparedControllerTarget: "position = gameplayBase +
+        // offset + standoff"), and hands that straight to the palette. Halo 4's
+        // bank is world-absolute too, so the target drops in with no conversion
+        // whatsoever - no pedestal lift, no compose-back, no rig scale, and no
+        // dependence on the bank's internal geometry meaning what the tag says.
+        //
+        // That last part is why every previous attempt failed. This record
+        // reports its shoulders 0.39x their authored separation, its hand 0.74x
+        // its authored distance from the root and its upper arm 2.1x its
+        // authored length, all in one window. Nothing reconciles those, so any
+        // method that had to interpret that geometry was doomed. A rigid hand
+        // placement never reads it.
+        //
+        // Classification is skipped for the same reason: it measures those same
+        // distances. The record is already identified by the engine's own fill
+        // flag, which is the gate that actually works.
 
         // E-H4-23, verified from BOTH ends of the pipeline: bank slot index is
         // the render-model node index, 1:1. The filler increments its
@@ -30483,45 +30555,36 @@ namespace
         // mask receives its own left-controller wrist delta ... and every
         // non-hand/non-held Reach FP node is collapsed").
         //
-        // THE SCALE IS MEASURED ON THE BONE WE ACTUALLY USE.
-        //
-        // The rig does not sit at the authored bind size: the same window that
-        // reports the right upper arm at 2.1x its authored length reports the
-        // shoulder 0.316 from the root against an authored 0.0711. Whatever
-        // produces that, a hand target computed in player world units lands at
-        // a fraction of where Halo 4 is actually drawing the hand.
-        //
-        // Earlier candidates took the factor from the upper-arm link, which is
-        // an arm-IK quantity this candidate no longer trusts and no longer even
-        // uses. Take it from the hand instead - root-to-hand distance against
-        // the same distance in the authored kit - because the hand is the ONE
-        // bone this whole path moves. Measured every record, bounded, and it
-        // falls back to 1.0 rather than to a guess.
-        const float bindRootToHand=0.259854f;   // kit: (0.050348,-0.229220,-0.111566)
-        const float liveRootToHand=Halo4VrikDistance(
-            solved[kHalo4FirstPersonRootNode],solved[kHalo4RightHandNode]);
-        const float rigScale=Halo4MeasureRigScale(
-            liveRootToHand,bindRootToHand,1.0f);
+        // NO RIG SCALE. There is nothing left to scale: the target is an
+        // absolute world pose and the hand is moved onto it rigidly.
         if (bodyFill)
         {
-            g_halo4Camera.vrikRigScale.store(
-                rigScale,std::memory_order_relaxed);
+            g_halo4Camera.vrikRigScale.store(1.0f,std::memory_order_relaxed);
             g_halo4Camera.vrikShoulderSpan.store(
                 Halo4VrikDistance(solved[kHalo4RightShoulderNode],
                                   solved[kHalo4LeftShoulderNode]),
                 std::memory_order_relaxed);
         }
 
-        // Targets are built in this same model frame from the live head pose.
-        // The frame is the render camera's, so the controller only has to be
-        // expressed as the headset sees it.
+        // Reach's own construction, via the port written for C-H4-27 and left
+        // intact: the pre-HMD gameplay camera supplies the body origin, the
+        // controller supplies room displacement scaled by world units per
+        // metre, and neither the live HMD pose nor the aim camera is allowed in
+        // - Halo 4's motion aim has already steered the engine camera toward
+        // this same controller, so either would apply the tracked rotation
+        // twice. Being built from the pre-HMD camera also makes the target
+        // identical in both eyes, which is what gives the hands real stereo
+        // depth instead of a flat layer.
+        BoneMatrix bodyRoot{};
+        if (!Halo4BuildControllerBodyRoot(bodyRoot))
+            return Halo4VrikStage::AnchorFailed;
         BoneMatrix rightTarget{},leftTarget{};
-        if (!Halo4BuildModelHandTarget(
-                false,solved[kHalo4RightHandNode],rigScale,rightTarget))
+        if (!Halo4BuildControllerHandTarget(
+                false,solved[kHalo4RightHandNode],bodyRoot,rightTarget))
             return Halo4VrikStage::RightPoseFailed;
         const bool leftTargetValid=
-            Halo4BuildModelHandTarget(
-                true,solved[kHalo4LeftHandNode],rigScale,leftTarget);
+            Halo4BuildControllerHandTarget(
+                true,solved[kHalo4LeftHandNode],bodyRoot,leftTarget);
         if (!leftTargetValid)
             g_halo4Camera.vrikStageRefusals[static_cast<size_t>(
                 Halo4VrikStage::LeftPoseFailed)].fetch_add(
@@ -30539,19 +30602,10 @@ namespace
                 Halo4VrikStage::LeftIkFailed)].fetch_add(
                     1,std::memory_order_relaxed);
 
-        // Back onto the record's own root, so what leaves this function is in
-        // precisely the space Halo 4 handed us.
-        for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
-        {
-            BoneMatrix restored{};
-            if (!ComposeBoneMatrices(pedestal,solved[i],restored))
-                return Halo4VrikStage::AnchorFailed;
-            solved[i]=restored;
-        }
+        // No compose-back: nothing was ever lifted out. The palette leaves this
+        // function in exactly the world space Halo 4 handed it over in.
 
-        // The rigid motion the right hand just made, measured in the record's
-        // own frame - both operands are bank-frame, so the pedestal divides out
-        // instead of having to be conjugated back in.
+        // The rigid motion the right hand just made, in that same world space.
         BoneMatrix inverseStockRight{},handMotion{};
         bool motionValid=
             InvertBoneMatrix(stockRightBank,inverseStockRight) &&
@@ -30582,35 +30636,20 @@ namespace
                 1,std::memory_order_acq_rel);
         }
 
-        // STEREO. The bank is rooted on THIS EYE's camera, so a rig with the
-        // same node values in both eyes renders at identical screen coordinates
-        // in both eyes - zero disparity, a flat layer welded to the face. That
-        // is the C-H4-11 symptom, and it is a property of the space rather than
-        // of the bones: the eye camera in the root and the eye camera in the
-        // view cancel exactly.
+        // STEREO comes for free now, and the correction that used to live here
+        // would actively break it.
         //
-        // Halo 3, ODST and Reach all solve ONE pose per stereo pair and let the
-        // eye in only at the end. Here that is a single translation of the
-        // finished rig by this eye's displacement from the centre camera, which
-        // lands both eyes' rigs on one shared world pose.
+        // The hand target is an absolute world pose built from the PRE-HMD
+        // gameplay camera, so it is identical in both eyes by construction. The
+        // hand therefore lands on one shared world pose and the two eyes see it
+        // from their own viewpoints - real depth, which is exactly how Reach
+        // gets it (one pose per stereo pair, frozen, with the eye entering only
+        // at the final record conversion Halo 4 does not need).
         //
-        // Taken in WORLD units straight from the two roots this transaction
-        // already publishes. The earlier version converted an OpenXR metre
-        // offset through the head orientation, which is the right answer only
-        // for a model-space bank - the frame this candidate has now measured as
-        // world.
-        {
-            const int eye=g_stereoEye.load(std::memory_order_acquire);
-            if (eye<0||eye>1) return Halo4VrikStage::AnchorFailed;
-            BoneMatrix eyeRoot{},centerRoot{};
-            if (!Halo4LoadActiveEyeRoot(1.0f,eyeRoot) ||
-                !Halo4LoadCenterRoot(1.0f,centerRoot))
-                return Halo4VrikStage::AnchorFailed;
-            for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
-                for (int axis=0;axis<3;++axis)
-                    solved[i].translation[axis]-=
-                        eyeRoot.translation[axis]-centerRoot.translation[axis];
-        }
+        // Subtracting a per-eye offset on top of that would move the hand OFF
+        // the target it was just placed on, by half an IPD in each eye. The
+        // nodes that do still carry this eye's root are the collapsed ones, and
+        // they are invisible.
 
         // FLOATING HANDS: a presentation filter over the finished palette, and
         // deliberately the LAST thing that touches it - nothing composes after
@@ -30702,7 +30741,15 @@ namespace
         {
             if (!g_halo4Camera.teardownRequested.load(std::memory_order_acquire) &&
                 g_halo4Camera.armed.load(std::memory_order_acquire) &&
-                g_config.halo4_hands && g_config.arm_ik &&
+                // C-H4-32: `arm_ik` is NO LONGER A GATE. There is no arm IK in
+                // this path any more - the hands are placed rigidly - so
+                // requiring an arm-IK switch to be on before VR hands appear is
+                // backwards. It also silently cost a whole headset session: the
+                // 05:16 log shows the rig running normally at arm_ik=1, then
+                // the setting going to 0 and every window afterwards reading
+                // `0 solved / 0 first-person calls`, with the hook doing
+                // nothing at all while the build looked installed and armed.
+                g_config.halo4_hands &&
                 reinterpret_cast<uintptr_t>(_ReturnAddress())==
                     g_halo4Camera.base+kHalo4FirstPersonSkinningReturnRva)
             {
