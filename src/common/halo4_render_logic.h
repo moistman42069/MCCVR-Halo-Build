@@ -706,9 +706,14 @@ inline constexpr float kHalo4StormForearmBind = 0.116662f;
 // What the measurements DO establish, and what this gate now uses:
 //   - the two UPPER arms agree to within 3.5% across every sample, which is
 //     the mirror symmetry only a real pair of arms produces;
-//   - the FOREARM distance is pose-dependent (0.22 to 0.32) because nodes
-//     16->29 and 8->37 are not direct parent-child links, so it can only ever
-//     be a loose sanity bound.
+//   - the FOREARM distance varies from 0.22 to 0.32 across samples, and this
+//     comment used to explain that away by claiming nodes 16->29 and 8->37 are
+//     not direct parent-child links. THAT CLAIM IS FALSE. The tag is explicit:
+//     b_r_hand's parent IS b_r_forearm and b_l_hand's parent IS b_l_forearm,
+//     both at exactly 0.116662. A direct parent-child link is rigid under any
+//     rotation-only animation, so a varying measurement there is not pose
+//     dependence - it is evidence that something in this pipeline is wrong, and
+//     it was written off for six candidates because of this sentence.
 //
 // The absolute range deliberately spans BOTH regimes - the tag bind and the
 // measured live geometry - because the record's identity is now established

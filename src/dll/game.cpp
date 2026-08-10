@@ -30454,6 +30454,15 @@ namespace
             if (classified!=Halo4VrikStage::Solved) return classified;
         }
 
+        // E-H4-23, verified from BOTH ends of the pipeline: bank slot index is
+        // the render-model node index, 1:1. The filler increments its
+        // destination on the skip path (0x3B96D5 -> 0x3B9720) and the body fill
+        // takes the no-map path entirely; the consumer's own loop walks i and
+        // reads `bank + i*0x34` beside `nodeTag + i*0x70` (0x33D9BA-0x33D9DA).
+        // Node 29 is b_r_hand and node 37 is b_l_hand - the same nodes the
+        // authored Blender kit places `vrik:right_hand` and `vrik:left_hand` on,
+        // agreeing to seven decimals. The indices were never the problem.
+        //
         // C-H4-30: NO ARM IK. Reach's shipping presentation, which the user
         // asked for by name after C-H4-29 tore the mesh.
         //
@@ -30474,10 +30483,25 @@ namespace
         // mask receives its own left-controller wrist delta ... and every
         // non-hand/non-held Reach FP node is collapsed").
         //
-        // No rig scale either. It was derived from the arm links this candidate
-        // no longer trusts; the bank is camera-rooted world space, so the hand
-        // travels at the world scale and nothing else.
-        const float rigScale=1.0f;
+        // THE SCALE IS MEASURED ON THE BONE WE ACTUALLY USE.
+        //
+        // The rig does not sit at the authored bind size: the same window that
+        // reports the right upper arm at 2.1x its authored length reports the
+        // shoulder 0.316 from the root against an authored 0.0711. Whatever
+        // produces that, a hand target computed in player world units lands at
+        // a fraction of where Halo 4 is actually drawing the hand.
+        //
+        // Earlier candidates took the factor from the upper-arm link, which is
+        // an arm-IK quantity this candidate no longer trusts and no longer even
+        // uses. Take it from the hand instead - root-to-hand distance against
+        // the same distance in the authored kit - because the hand is the ONE
+        // bone this whole path moves. Measured every record, bounded, and it
+        // falls back to 1.0 rather than to a guess.
+        const float bindRootToHand=0.259854f;   // kit: (0.050348,-0.229220,-0.111566)
+        const float liveRootToHand=Halo4VrikDistance(
+            solved[kHalo4FirstPersonRootNode],solved[kHalo4RightHandNode]);
+        const float rigScale=Halo4MeasureRigScale(
+            liveRootToHand,bindRootToHand,1.0f);
         if (bodyFill)
         {
             g_halo4Camera.vrikRigScale.store(
@@ -30533,19 +30557,15 @@ namespace
             InvertBoneMatrix(stockRightBank,inverseStockRight) &&
             ComposeBoneMatrices(
                 solved[kHalo4RightHandNode],inverseStockRight,handMotion);
-        if (motionValid)
-        {
-            // The weapon bank is world-rooted (E-H4-22) while this bank is
-            // rig-scaled, so the motion's translation has to leave in world
-            // units or the gun travels rigScale times as far as the hand. The
-            // rotation is unitless and must not be touched.
-            for (int axis=0;axis<3;++axis)
-            {
-                handMotion.translation[axis]/=rigScale;
-                if (!isfinite(handMotion.translation[axis]))
-                    motionValid=false;
-            }
-        }
+        // E-H4-23: BOTH banks are world space, so this motion needs no
+        // conversion at all. C-H4-29's log settled it - the body record's own
+        // root node reports a tilt from identity of 0.93-1.66 and a translation
+        // near 400 world units, which is a camera basis and a world position.
+        // The camera therefore reaches the body record too, just upstream of
+        // the fill site the disassembly covered, and E-H4-22's "the body bank
+        // is model space" conclusion is WRONG even though its reading of the
+        // filler was right. The rig scale division that belonged with that
+        // conclusion is gone with it.
 
         // H4EK's two weapon fills occur BEFORE this body fill, so publish the
         // hand motion and let each weapon record combine it with ITS OWN eye
@@ -30562,41 +30582,34 @@ namespace
                 1,std::memory_order_acq_rel);
         }
 
-        // STEREO. The body bank is camera-relative, so a rig that is identical
-        // in both eyes is drawn at identical screen coordinates in both eyes -
-        // zero disparity, a flat layer welded to the face. That is the C-H4-11
-        // symptom, and it is a property of the space, not of the bones.
+        // STEREO. The bank is rooted on THIS EYE's camera, so a rig with the
+        // same node values in both eyes renders at identical screen coordinates
+        // in both eyes - zero disparity, a flat layer welded to the face. That
+        // is the C-H4-11 symptom, and it is a property of the space rather than
+        // of the bones: the eye camera in the root and the eye camera in the
+        // view cancel exactly.
         //
         // Halo 3, ODST and Reach all solve ONE pose per stereo pair and let the
-        // eye enter only at the end. The same rule here is a single translation:
-        // move the finished rig back by this eye's offset, so composing it with
-        // this eye's camera lands it at one shared world pose and the two eyes
-        // genuinely see it from different viewpoints.
+        // eye in only at the end. Here that is a single translation of the
+        // finished rig by this eye's displacement from the centre camera, which
+        // lands both eyes' rigs on one shared world pose.
+        //
+        // Taken in WORLD units straight from the two roots this transaction
+        // already publishes. The earlier version converted an OpenXR metre
+        // offset through the head orientation, which is the right answer only
+        // for a model-space bank - the frame this candidate has now measured as
+        // world.
         {
             const int eye=g_stereoEye.load(std::memory_order_acquire);
             if (eye<0||eye>1) return Halo4VrikStage::AnchorFailed;
-            const float offsetMetres[3]={
-                g_halo4RigTracking.eyes[eye].position[0]-
-                    g_halo4RigTracking.headPosition[0],
-                g_halo4RigTracking.eyes[eye].position[1]-
-                    g_halo4RigTracking.headPosition[1],
-                g_halo4RigTracking.eyes[eye].position[2]-
-                    g_halo4RigTracking.headPosition[2]};
-            float offset[3];
-            if (!Halo4HeadLocalToBlam(
-                    g_halo4RigTracking.headOrientation,offsetMetres,offset))
+            BoneMatrix eyeRoot{},centerRoot{};
+            if (!Halo4LoadActiveEyeRoot(1.0f,eyeRoot) ||
+                !Halo4LoadCenterRoot(1.0f,centerRoot))
                 return Halo4VrikStage::AnchorFailed;
-            const float scale=
-                g_worldScale.load(std::memory_order_relaxed)*rigScale;
-            for (int axis=0;axis<3;++axis)
-            {
-                offset[axis]*=scale;
-                if (!isfinite(offset[axis]))
-                    return Halo4VrikStage::AnchorFailed;
-            }
             for (int i=0;i<kHalo4StormFpBodyNodeCount;++i)
                 for (int axis=0;axis<3;++axis)
-                    solved[i].translation[axis]-=offset[axis];
+                    solved[i].translation[axis]-=
+                        eyeRoot.translation[axis]-centerRoot.translation[axis];
         }
 
         // FLOATING HANDS: a presentation filter over the finished palette, and
@@ -30651,14 +30664,16 @@ namespace
             g_halo4RightHandMotionPublishedAt.load(std::memory_order_acquire);
         if (hits<publishedAt || hits-publishedAt>kHalo4WeaponDeltaMaxRecordAge)
             return false;
-        BoneMatrix handMotion{},eyeRoot{},inverseEyeRoot{};
-        BoneMatrix conjugated{},delta{};
-        if (!LoadAtomicBoneMatrix(g_halo4RightHandMotion,handMotion) ||
-            !Halo4LoadActiveEyeRoot(1.0f,eyeRoot) ||
-            !InvertBoneMatrix(eyeRoot,inverseEyeRoot) ||
-            !ComposeBoneMatrices(eyeRoot,handMotion,conjugated) ||
-            !ComposeBoneMatrices(conjugated,inverseEyeRoot,delta))
+        // E-H4-23: the body bank is world space too, so the hand's motion is
+        // ALREADY the motion the world sees and is applied to the weapon
+        // directly. Conjugating it by the eye camera - which is what shipped
+        // while the body record was believed to be model space - rotates the
+        // gun's travel by the camera one extra time, which puts it somewhere
+        // that swings with the head instead of staying in the hand.
+        BoneMatrix handMotion{},delta{};
+        if (!LoadAtomicBoneMatrix(g_halo4RightHandMotion,handMotion))
             return false;
+        delta=handMotion;
         if (!Halo4SafeRead(source,moved,
                 sizeof(BoneMatrix)*kHalo4FirstPersonBankTransforms))
             return false;
