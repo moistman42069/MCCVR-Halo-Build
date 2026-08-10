@@ -2940,3 +2940,106 @@ Core tests pin the zero-extension path, a 1.5x proportional extension
 bound, and non-finite refusal. Any failed plan or matrix composition passes the
 stock body palette and leaves the Halo 4 camera/OpenXR core armed. C-H4-28 is
 headset-pending and does not advance `docs/CURRENT-STATE.md`.
+
+## E-H4-22 - the two first-person banks are in DIFFERENT spaces (C-H4-29)
+
+Disassembled offline from the pinned Steam `halo4.dll`
+(SHA-256 `7C53E7D5BC9848545A1B70E2768242479336FBA1B7630D7AB955F7FD0C34FA84`)
+with `capstone`. Every claim below is a byte read, not an inference from H4EK.
+
+Every candidate from C-H4-15 onward asked "what space is the first-person bank
+in" and applied one answer to every record. **The answer differs per record**,
+which is why re-deriving the frame could never converge.
+
+The producer `0x3B1B4C` calls the bank filler `0x3B9564` exactly three times.
+
+**The two WEAPON fills carry the render camera.**
+
+```
+003B1C05  movsxd rax,[rip+0xAD2A28]              ; camera selector
+003B1C17  mov    rcx,[rcx+rax*8+0x10BEE08]       ; viewStack[top]
+003B1C24  lea    rdx,[rbp-0x48]
+003B1C28  call   0x3417E0                        ; camera -> BoneMatrix
+003B1E11  lea    r9,[rbp-0x48]  -> 003B1E15 call 0x3B9564   ; fill flag 1
+003B1F08  lea    r9,[rbp-0x48]  -> 003B1F1D call 0x3B9564   ; fill flag 1
+```
+
+`0x3417E0` writes scale `1.0` at `[rdx]`, the camera forward from `[rcx+0x158]`,
+the up from `[rcx+0x164]`, the left column as their cross product, and the
+camera position from `[rcx+0x14C]`. So a weapon bank is `eyeCamera o local` -
+**world space, rooted on the eye camera this transaction substituted.**
+
+**The BODY fill carries no camera at all.**
+
+```
+003B1B7E  xor    edi,edi                         ; rdi = 0, never rewritten
+003B2174  mov    [rsp+0x70],rdi                  ; root = NULL
+003B2184  je     0x3B2327                        ; -> call with root still NULL
+003B21A2  ja     0x3B2327                        ; -> call with root still NULL
+003B22BC  ja     0x3B2327                        ; -> call with root still NULL
+003B2339  mov    r9,[rsp+0x70]
+003B23AD  call   0x3B9564                        ; fill flag 0
+```
+
+Only one gated branch supplies a matrix, and it builds an exact identity basis:
+
+```
+003B22FE  movups [rbp-0x48], {1,1,0,0}   ; scale=1, rotation[0..2] = 1,0,0
+003B2323  movups [rbp-0x38], {0,1,0,0}   ; rotation[3..6] = 0,1,0,0
+003B22D9  and    [rbp-0x28], edi         ; rotation[7] = 0
+003B231E  movss  [rbp-0x24], 1.0         ; rotation[8] = 1
+003B2312  movsd  [rbp-0x20], ...         ; translation = unit vector * scalar
+003B2302  mov    [rsp+0x70], rax         ; root = &that matrix
+```
+
+**So the body (arms and hands) bank is the model's own frame in both branches,
+and the weapon banks are world space.** C-H4-27's "the bank is eye-root o
+local-node" is true only of the weapon records.
+
+### What that cost
+
+C-H4-27/28 removed `inverse(activeEyeCamera)` from the BODY record, multiplying
+an entire inverse camera transform into all 80 arm bones before solving them.
+The shipped 2026-08-10 log measured the result without anyone reading it that
+way: shoulder separation is a fixed `+Y` offset of `0.1409` in the model's own
+frame, and it was logged at `0.0000-0.0417`, wandering with head orientation.
+The solver reported `1944 solved / 0 refused` every window with decode errors of
+`0.0000` throughout, because the classifier's basis and orthogonality probes are
+computed on a matrix `ComposeBoneMatrices` has already re-orthonormalised and
+are structurally incapable of reporting a frame error.
+
+### Two facts that bound the fix
+
+- Bank slot index equals render-model node index 1:1. The filler increments its
+  destination index on the `nodeMap[i] == -1` skip path as well
+  (`003B96D5` -> `003B9720`), and the body fill takes the no-map path entirely
+  (its node-map argument is the same zeroed `rdi`). Slots past the model's node
+  count are never written and hold stale bytes.
+- Slot 0 is `b_pedestal`, whose tag bind translation is `(0,0,0)` and whose bind
+  rotation is exact identity, and the whole assembly hangs off it. Anchoring on
+  slot 0 therefore also cancels the NULL-versus-translation branch above,
+  because a pure translation divides out of `inverse(bank[0]) o bank[i]`.
+
+### Still open, and deliberately measured rather than assumed
+
+The bank does not measure in the tag's units: the right upper arm, a rigid
+parent-child bone whose authored bind is `0.0915251`, is reported at
+`0.2100-0.2137` in every shipped window, and the two arms agree to 0.05%. The
+cause is unexplained. C-H4-29 does not guess at it - it measures the ratio live
+and scales the tracked hand offsets by it, so the reach envelope matches the rig
+actually being driven, and it publishes the ratio every two seconds.
+
+`docs/HALO4-VRIK-AUTHORING.md` and the E-H4-19/E-H4-20 entries above are also
+corrected by this pass: `0x34EC44` copies `0x88` bytes, not `0x80`, its block is
+element-camera-shaped (`pos@0x00, fwd@0x0C, up@0x18, vfov@0x28, ratio@0x2C`) and
+not `s_observer_result`-shaped, and its consumer chain terminates in
+`0x38F658` -> `viewStack[top]+0x1D4` -> uploader `0x3737F4`. The camera it
+publishes is the one this transaction already substitutes, so Halo 4's
+first-person layer is NOT drawn through an unowned mono camera. What it does
+change is the first-person FOV, and that remains open: `0x34EC44` multiplies
+`0x10BEE80+0x28` by a scale built from the stock ratio field at `+0x2C`, gated
+on the named debug variables `enable_first_person_squish` (`0xE8467C`) and
+`render_first_person_fov_scale` (`0xE84678`). C-H4-8 widens the world FOV but
+not that ratio, so the first-person layer is expected to remain magnified
+relative to the world after C-H4-29. That is the next candidate, not this one,
+and it has a no-hook lever by name.

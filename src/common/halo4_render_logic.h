@@ -359,6 +359,259 @@ inline bool Halo4PlanArmReach(float upperLength, float lowerLength,
 // moves the whole gun-and-arms rig rather than one part of it.
 inline constexpr uint32_t kHalo4FirstPersonRootNode = 0;
 
+// --- C-H4-29: the two first-person banks do NOT share a space (E-H4-22) ------
+//
+// Every candidate from C-H4-15 on assumed one answer to "what space is the
+// first-person bank in" and applied it to every record.  Disassembly of the
+// producer `halo4.dll+0x3B1B4C` proves the answer differs per record, which is
+// why re-deriving the frame could never converge:
+//
+//   weapon fills  0x3B1E15 / 0x3B1F1D   `lea r9,[rbp-0x48]`
+//       [rbp-0x48] is built at 0x3B1C28 by 0x3417E0 from viewStack[top]+0x14C -
+//       the render camera.  So a weapon bank is  eyeCamera o local  = WORLD.
+//
+//   body fill     0x3B23AD              `mov r9,[rsp+0x70]`
+//       [rsp+0x70] is set to rdi at 0x3B2174, and rdi is zeroed at 0x3B1B7E and
+//       never rewritten - so the root is NULL and the filler copies the
+//       animation's object node matrices verbatim.  Three branches (0x3B2184,
+//       0x3B21A2, 0x3B22BC) jump straight to the call with it still NULL.  Only
+//       when a gated offset survives `comiss 0.0001` does 0x3B2302 point it at a
+//       locally built matrix whose basis is written as EXACT IDENTITY
+//       (0x3B22FE {1,1,0,0} -> scale + rotation[0..2], 0x3B2323 {0,1,0,0} ->
+//       rotation[3..6], 0x3B22D9 rotation[7]=0, 0x3B231E rotation[8]=1) and
+//       whose translation is a unit vector times a scalar.
+//
+// So the body bank carries NO camera rotation and NO camera position in either
+// branch.  C-H4-27/28 removed `inverse(activeEyeCamera)` from it anyway, which
+// multiplies an entire inverse camera transform into all 80 arm bones before
+// solving - the mispositioned, warped, non-tracking rig the headset reports.
+// The measured signature of that error is already in the shipped log: shoulder
+// separation, which is a fixed +Y offset in the model's own frame, is reported
+// as 0.0000-0.0417 world units and wanders with head orientation instead of
+// holding the tag's 0.1409.
+//
+// The body record's own root node is therefore the only anchor it has, and it
+// is a real one: slot 0 is b_pedestal (bind translation 0, bind rotation
+// identity) and the whole assembly hangs off it.  Working relative to slot 0
+// also makes the solve independent of the NULL-versus-offset branch above,
+// because a pure translation cancels in `inverse(bank[0]) o bank[i]`.
+
+// Defined below with the rest of the pose helpers; declared here because the
+// model-frame hand builder is grouped with the evidence that motivates it.
+inline bool Halo4NormalizeQuaternion(
+    const float input[4], float output[4]) noexcept;
+
+// Blam model axes from an OpenXR head-relative offset.  Halo is Z-up with
+// columns forward/left/up; OpenXR is Y-up, -Z forward:
+//     blam.x (forward) = -openxr.z
+//     blam.y (left)    = -openxr.x
+//     blam.z (up)      =  openxr.y
+// A handedness-preserving axis permutation, identical to the one documented for
+// Halo4BuildHandNode below.
+inline void Halo4PermuteOpenXrToBlam(const float in[3], float out[3]) noexcept
+{
+    out[0] = -in[2];
+    out[1] = -in[0];
+    out[2] = in[1];
+}
+
+// The first-person bank does not measure in the tag's units: every shipped log
+// window reports the right upper arm at 0.2100-0.2137 against an authored bind
+// of 0.0915251, and the two arms agree to 0.05%.  Whatever produces that
+// factor, a hand target built in player world units can never reach a rig
+// carrying it, so the target is scaled by what the bank actually holds rather
+// than by an assumption about why.  Bounded, so a corrupt bank cannot produce
+// an unbounded reach.
+inline constexpr float kHalo4RigScaleMin = 0.25f;
+inline constexpr float kHalo4RigScaleMax = 8.0f;
+
+inline float Halo4MeasureRigScale(float liveUpperArm, float bindUpperArm,
+                                  float fallback = 1.0f) noexcept
+{
+    if (!std::isfinite(liveUpperArm) || !std::isfinite(bindUpperArm) ||
+        bindUpperArm <= 1.0e-5f || liveUpperArm <= 1.0e-5f)
+        return fallback;
+    const float scale = liveUpperArm / bindUpperArm;
+    if (!std::isfinite(scale)) return fallback;
+    if (scale < kHalo4RigScaleMin) return kHalo4RigScaleMin;
+    if (scale > kHalo4RigScaleMax) return kHalo4RigScaleMax;
+    return scale;
+}
+
+// Rotate an OpenXR world-space displacement into the first-person model's
+// frame: undo the head's rotation, then permute the axes. Shared by the hand
+// builder and by the per-eye stereo offset so the two can never disagree about
+// which way the model frame points.
+inline bool Halo4HeadLocalToBlam(const float headQuaternion[4],
+                                 const float worldDelta[3],
+                                 float outBlam[3]) noexcept
+{
+    float head[4];
+    if (!Halo4NormalizeQuaternion(headQuaternion, head)) return false;
+    for (int axis = 0; axis < 3; ++axis)
+        if (!std::isfinite(worldDelta[axis])) return false;
+    // Columns of R(head); dotting with them applies the transpose, which is the
+    // inverse rotation for an orthonormal basis.
+    const float hx[3] = {
+        1 - 2 * (head[1] * head[1] + head[2] * head[2]),
+        2 * (head[0] * head[1] + head[2] * head[3]),
+        2 * (head[0] * head[2] - head[1] * head[3])};
+    const float hy[3] = {
+        2 * (head[0] * head[1] - head[2] * head[3]),
+        1 - 2 * (head[0] * head[0] + head[2] * head[2]),
+        2 * (head[1] * head[2] + head[0] * head[3])};
+    const float hz[3] = {
+        2 * (head[0] * head[2] + head[1] * head[3]),
+        2 * (head[1] * head[2] - head[0] * head[3]),
+        1 - 2 * (head[0] * head[0] + head[1] * head[1])};
+    const float local[3] = {
+        worldDelta[0] * hx[0] + worldDelta[1] * hx[1] + worldDelta[2] * hx[2],
+        worldDelta[0] * hy[0] + worldDelta[1] * hy[1] + worldDelta[2] * hy[2],
+        worldDelta[0] * hz[0] + worldDelta[1] * hz[1] + worldDelta[2] * hz[2]};
+    Halo4PermuteOpenXrToBlam(local, outBlam);
+    for (int axis = 0; axis < 3; ++axis)
+        if (!std::isfinite(outBlam[axis])) return false;
+    return true;
+}
+
+// A hand pose expressed in the first-person model's own frame.
+//
+// The body bank has no camera in it, so - unlike the world-space weapon path -
+// the hand must be placed relative to the LIVE head pose, not relative to a
+// recenter reference and a gameplay yaw.  Halo 4's model frame IS the render
+// camera's frame, so "controller as seen from the headset" converts directly.
+// This is also why the same conversion must not be reused for the weapon
+// records: those already carry the eye camera and would double-apply it.
+struct Halo4ModelHandInput
+{
+    float controllerOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    float controllerPosition[3]{};       // OpenXR local space, metres
+    float headOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    float headPosition[3]{};             // same space and frame as above
+    float worldScale = 0.33f;            // Halo units per metre
+    float rigScale = 1.0f;               // measured bank units per Halo unit
+    float forwardTrim = 0.0f;            // controller-local metres
+    float verticalTrim = 0.0f;
+    float lateralTrim = 0.0f;
+    float attachmentMetres[3]{};         // authored, controller-local
+    bool mirrored = false;
+};
+
+struct Halo4ModelHandPose
+{
+    float basis[9]{};      // Blam columns: forward, left, up
+    float position[3]{};   // first-person model frame
+};
+
+// Quaternion (x,y,z,w) -> Blam column-major basis. Shared by the hand builder
+// and its tests so a convention change cannot diverge between them.
+inline bool Halo4QuaternionToBlamBasis(const float qIn[4], float out[9]) noexcept
+{
+    float q[4];
+    if (!Halo4NormalizeQuaternion(qIn, q)) return false;
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    const float row[9] = {
+        1 - 2 * (y * y + z * z), 2 * (x * y - z * w),     2 * (x * z + y * w),
+        2 * (x * y + z * w),     1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+        2 * (x * z - y * w),     2 * (y * z + x * w),     1 - 2 * (x * x + y * y)};
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c)
+            out[c * 3 + r] = row[r * 3 + c];
+    for (int i = 0; i < 9; ++i)
+        if (!std::isfinite(out[i])) return false;
+    return true;
+}
+
+inline bool Halo4BuildModelHandPose(const Halo4ModelHandInput& input,
+                                    Halo4ModelHandPose& out) noexcept
+{
+    float head[4], controller[4];
+    if (!Halo4NormalizeQuaternion(input.headOrientation, head) ||
+        !Halo4NormalizeQuaternion(input.controllerOrientation, controller))
+        return false;
+    for (int axis = 0; axis < 3; ++axis)
+        if (!std::isfinite(input.controllerPosition[axis]) ||
+            !std::isfinite(input.headPosition[axis]) ||
+            !std::isfinite(input.attachmentMetres[axis]))
+            return false;
+    if (!std::isfinite(input.worldScale) || input.worldScale <= 0.0f ||
+        !std::isfinite(input.rigScale) || input.rigScale <= 0.0f ||
+        !std::isfinite(input.forwardTrim) ||
+        !std::isfinite(input.verticalTrim) ||
+        !std::isfinite(input.lateralTrim))
+        return false;
+
+    // Controller as seen from the headset: conjugate(head) * controller.
+    const float ch[4] = {-head[0], -head[1], -head[2], head[3]};
+    const float relative[4] = {
+        ch[3] * controller[0] + ch[0] * controller[3] +
+            ch[1] * controller[2] - ch[2] * controller[1],
+        ch[3] * controller[1] - ch[0] * controller[2] +
+            ch[1] * controller[3] + ch[2] * controller[0],
+        ch[3] * controller[2] + ch[0] * controller[1] -
+            ch[1] * controller[0] + ch[2] * controller[3],
+        ch[3] * controller[3] - ch[0] * controller[0] -
+            ch[1] * controller[1] - ch[2] * controller[2]};
+
+    // Displacement, rotated into the model frame by the same head pose.
+    const float d[3] = {
+        input.controllerPosition[0] - input.headPosition[0],
+        input.controllerPosition[1] - input.headPosition[1],
+        input.controllerPosition[2] - input.headPosition[2]};
+    float offset[3];
+    if (!Halo4HeadLocalToBlam(head, d, offset)) return false;
+
+    // The orientation needs the SAME axis change as the offset. A rotation
+    // matrix built straight from the OpenXR quaternion would leave the hand's
+    // basis in OpenXR axes while its position was already in Blam ones - the
+    // two would disagree about which way the hand points. As documented for
+    // Halo4BuildHandNode, the permutation carries the quaternion's vector part
+    // with the scalar untouched, because a handedness-preserving axis
+    // permutation is an ordinary basis change and not a conjugation.
+    float relativeBlam[4];
+    Halo4PermuteOpenXrToBlam(relative, relativeBlam);
+    relativeBlam[3] = relative[3];
+    float relativeBasis[9];
+    if (!Halo4QuaternionToBlamBasis(relativeBlam, relativeBasis)) return false;
+    if (input.mirrored)
+    {
+        // A sagittal reflection conjugated into a proper rotation: M R M with
+        // M = diag(1,-1,1) negates exactly the entries with one index equal to
+        // 1, which in this column-major basis are 1, 3, 5 and 7. Negating the
+        // whole left column instead would flip the determinant to -1 and render
+        // the hand inside out, and nothing downstream checks determinants -
+        // NormalizedBasis tests lengths and orthogonality only.
+        offset[1] = -offset[1];
+        relativeBasis[1] = -relativeBasis[1];
+        relativeBasis[3] = -relativeBasis[3];
+        relativeBasis[5] = -relativeBasis[5];
+        relativeBasis[7] = -relativeBasis[7];
+    }
+    for (int i = 0; i < 9; ++i)
+    {
+        out.basis[i] = relativeBasis[i];
+        if (!std::isfinite(out.basis[i])) return false;
+    }
+
+    // Trims are controller-local, exactly as halomccvr.cfg documents them, so
+    // they ride the controller's own basis. The authored wrist attachment does
+    // NOT belong here: it is expressed in the wrist's frame, so it is applied
+    // by the caller after the authored wrist rotation is composed on, which is
+    // where the accepted world-space path applied it too.
+    const float lateral = input.mirrored ? -input.lateralTrim : input.lateralTrim;
+    const float scale = input.worldScale * input.rigScale;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        const float trim =
+            out.basis[axis] * input.forwardTrim -
+            out.basis[3 + axis] * lateral +
+            out.basis[6 + axis] * input.verticalTrim;
+        out.position[axis] = (offset[axis] + trim) * scale;
+        if (!std::isfinite(out.position[axis])) return false;
+    }
+    return true;
+}
+
 // --- C-H4-14: one counter per refusal stage ---------------------------------
 //
 // C-H4-13 shipped a single combined refusal bucket. Its headset log therefore

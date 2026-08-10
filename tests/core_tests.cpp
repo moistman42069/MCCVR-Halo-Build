@@ -6949,6 +6949,164 @@ int main()
                   badControllerWorld, refusedWorld),
             "A non-finite controller reference fails closed for the rig only");
 
+        // --- C-H4-29: the model-frame hand, for the bank that has no camera --
+        //
+        // E-H4-22: the body fill's root is NULL (or a pure translation), so the
+        // arms bank is the model's own frame and the hand must be expressed as
+        // the headset sees the controller. The invariants below are the ones
+        // that distinguish that conversion from the world-space one above.
+        Check(fabsf(Halo4MeasureRigScale(0.2113f, 0.0915251f) - 2.3086f) < 1.0e-3f,
+            "The rig scale is measured from the bank against the authored bind");
+        Check(Halo4MeasureRigScale(0.0f, 0.0915251f, 1.0f) == 1.0f &&
+                  Halo4MeasureRigScale(
+                      std::numeric_limits<float>::quiet_NaN(),
+                      0.0915251f, 1.0f) == 1.0f,
+            "An unmeasurable arm falls back rather than scaling by garbage");
+        Check(Halo4MeasureRigScale(1000.0f, 0.0915251f) == kHalo4RigScaleMax &&
+                  Halo4MeasureRigScale(1.0e-4f, 10.0f) == kHalo4RigScaleMin,
+            "A corrupt bank cannot produce an unbounded tracked reach");
+
+        Halo4ModelHandInput modelHand{};
+        modelHand.controllerOrientation[3] = 1.0f;
+        modelHand.headOrientation[3] = 1.0f;
+        modelHand.controllerPosition[2] = -0.30f;   // 30 cm in front
+        modelHand.worldScale = 0.33f;
+        modelHand.rigScale = 2.0f;
+        Halo4ModelHandPose neutralModel{};
+        Check(Halo4BuildModelHandPose(modelHand, neutralModel),
+            "Halo 4 builds a model-frame hand from the live head and controller");
+        Check(fabsf(neutralModel.position[0] - 0.30f * 0.33f * 2.0f) < 1.0e-5f &&
+                  fabsf(neutralModel.position[1]) < 1.0e-5f &&
+                  fabsf(neutralModel.position[2]) < 1.0e-5f,
+            "A hand held in front of the headset lands ahead of the model origin");
+        Check(fabsf(neutralModel.basis[0] - 1.0f) < 1.0e-5f &&
+                  fabsf(neutralModel.basis[4] - 1.0f) < 1.0e-5f &&
+                  fabsf(neutralModel.basis[8] - 1.0f) < 1.0e-5f,
+            "A neutral controller produces Halo 4's native forward-left-up basis");
+
+        // The measured reach scales with the rig, which is the whole reason the
+        // factor is read from the bank: the same physical reach must drive a
+        // 2.3x rig 2.3x as far or the hand can never catch up with it.
+        Halo4ModelHandInput unscaled = modelHand;
+        unscaled.rigScale = 1.0f;
+        Halo4ModelHandPose unscaledModel{};
+        Check(Halo4BuildModelHandPose(unscaled, unscaledModel) &&
+                  fabsf(neutralModel.position[0] -
+                        2.0f * unscaledModel.position[0]) < 1.0e-5f,
+            "Tracked reach is expressed in the units the bank actually uses");
+
+        // THE INVARIANT THAT DEFINES THIS FRAME. Turning your whole body -
+        // head and controller together - moves nothing in the model's frame,
+        // because that frame is the camera's. No recenter reference and no
+        // gameplay yaw is consulted to achieve it, which is precisely why the
+        // world-space conversion above is the wrong one for this bank.
+        const float bodyYaw = 0.7f;
+        const float sy = sinf(bodyYaw * 0.5f), cy = cosf(bodyYaw * 0.5f);
+        Halo4ModelHandInput turnedBody = modelHand;
+        turnedBody.headOrientation[0] = 0.0f;
+        turnedBody.headOrientation[1] = sy;      // yaw about OpenXR +Y
+        turnedBody.headOrientation[2] = 0.0f;
+        turnedBody.headOrientation[3] = cy;
+        turnedBody.controllerOrientation[1] = sy;
+        turnedBody.controllerOrientation[3] = cy;
+        // The controller stays 30 cm in front of the head after the turn.
+        turnedBody.controllerPosition[0] = -0.30f * sinf(bodyYaw);
+        turnedBody.controllerPosition[2] = -0.30f * cosf(bodyYaw);
+        Halo4ModelHandPose turnedModel{};
+        Check(Halo4BuildModelHandPose(turnedBody, turnedModel),
+            "A turned player still produces a valid model-frame hand");
+        for (int i = 0; i < 3; ++i)
+            Check(fabsf(turnedModel.position[i] - neutralModel.position[i]) <
+                      1.0e-4f,
+                "Turning head and hand together does not move the hand in the "
+                "model frame");
+        Check(fabsf(turnedModel.basis[0] - 1.0f) < 1.0e-4f &&
+                  fabsf(turnedModel.basis[1]) < 1.0e-4f,
+            "Turning head and hand together does not rotate the hand either");
+
+        // Moving the head alone must move the hand in the model frame, or the
+        // arms would be welded to the face - the C-H4-11 symptom.
+        Halo4ModelHandInput leanedHead = modelHand;
+        leanedHead.headPosition[0] = 0.10f;   // lean 10 cm right
+        Halo4ModelHandPose leanedModel{};
+        Check(Halo4BuildModelHandPose(leanedHead, leanedModel) &&
+                  fabsf(leanedModel.position[1] -
+                        (neutralModel.position[1] +
+                         0.10f * 0.33f * 2.0f)) < 1.0e-5f,
+            "Leaning the head alone moves the hand within the model frame");
+
+        // Controller yaw appears exactly once, with no camera to double it,
+        // and in Halo's axes rather than OpenXR's. A left turn of the wrist is
+        // a positive rotation about OpenXR +Y and must swing Blam's forward
+        // column toward Blam +Y, which is left.
+        Halo4ModelHandInput yawedHand = modelHand;
+        yawedHand.controllerOrientation[1] = sinf(controllerYaw * 0.5f);
+        yawedHand.controllerOrientation[3] = cosf(controllerYaw * 0.5f);
+        Halo4ModelHandPose yawedModel{};
+        Check(Halo4BuildModelHandPose(yawedHand, yawedModel) &&
+                  fabsf(yawedModel.basis[0] - cosf(controllerYaw)) < 1.0e-4f &&
+                  fabsf(yawedModel.basis[1] - sinf(controllerYaw)) < 1.0e-4f,
+            "Controller yaw reaches the model-frame hand exactly once");
+
+        Halo4ModelHandInput mirroredHand = modelHand;
+        mirroredHand.controllerPosition[0] = 0.20f;
+        mirroredHand.controllerOrientation[1] = sinf(controllerYaw * 0.5f);
+        mirroredHand.controllerOrientation[3] = cosf(controllerYaw * 0.5f);
+        mirroredHand.mirrored = true;
+        Halo4ModelHandInput handedHand = mirroredHand;
+        handedHand.mirrored = false;
+        Halo4ModelHandPose mirroredModel{}, handedModel{};
+        Check(Halo4BuildModelHandPose(mirroredHand, mirroredModel) &&
+                  Halo4BuildModelHandPose(handedHand, handedModel) &&
+                  fabsf(mirroredModel.position[1] +
+                        handedModel.position[1]) < 1.0e-5f,
+            "Left-handed mirroring reflects the hand across the model's midline");
+        // A reflection is not a rotation. Negating one basis column would send
+        // the determinant to -1 and render the hand inside out, and nothing
+        // downstream would catch it: NormalizedBasis checks column lengths and
+        // orthogonality, and InvertBoneMatrix transposes, which a reflection
+        // survives.
+        {
+            const float* m = mirroredModel.basis;
+            const float determinant =
+                m[0] * (m[4] * m[8] - m[5] * m[7]) -
+                m[3] * (m[1] * m[8] - m[2] * m[7]) +
+                m[6] * (m[1] * m[5] - m[2] * m[4]);
+            Check(fabsf(determinant - 1.0f) < 1.0e-4f,
+                "Mirrored hands stay a proper rotation, never an inside-out "
+                "reflection");
+        }
+
+        // The per-eye stereo offset and the hand share one frame conversion, so
+        // a change to either cannot silently desynchronise them. With a neutral
+        // head the conversion is the bare axis permutation.
+        {
+            const float identityHead[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            const float delta[3] = {0.032f, 0.0f, 0.0f};  // half an IPD, right
+            float blam[3] = {};
+            Check(Halo4HeadLocalToBlam(identityHead, delta, blam) &&
+                      fabsf(blam[0]) < 1.0e-6f &&
+                      fabsf(blam[1] + 0.032f) < 1.0e-6f &&
+                      fabsf(blam[2]) < 1.0e-6f,
+                "A right-eye offset becomes a negative-left offset in Halo's "
+                "axes");
+            // Turning the head must carry the offset with it: the right eye is
+            // still to the model's right whichever way the player faces.
+            const float quarter = 0.5f * 1.5707963f;
+            const float turned[4] = {0.0f, sinf(quarter), 0.0f, cosf(quarter)};
+            const float worldDelta[3] = {0.0f, 0.0f, -0.032f};
+            float turnedBlam[3] = {};
+            Check(Halo4HeadLocalToBlam(turned, worldDelta, turnedBlam) &&
+                      fabsf(turnedBlam[1] + 0.032f) < 1.0e-5f,
+                "The eye offset is expressed in the model frame, not the room");
+        }
+
+        Halo4ModelHandInput badModelHand = modelHand;
+        badModelHand.headPosition[1] = std::numeric_limits<float>::quiet_NaN();
+        Halo4ModelHandPose refusedModel{};
+        Check(!Halo4BuildModelHandPose(badModelHand, refusedModel),
+            "A non-finite head pose refuses the hand instead of guessing one");
+
         // The rigid assembly transform: applying one rotation+translation to
         // every node must move the whole rig without depending on which node
         // is the root, and must PRESERVE the shape between nodes.
