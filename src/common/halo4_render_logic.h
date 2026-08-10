@@ -720,6 +720,9 @@ inline bool Halo4BuildFloatingLeftCarrierForState(
 // free mode is exactly C-H4-37's mirrored controller carrier, while support is
 // exactly C-H4-38's frozen right-aim rotational parent. Translation and scale
 // stay on the physical left target in both states. Publish write-last.
+// Retired before deployment: the user clarified that "closest" was still
+// wrong and none of the prior wrist guesses is an acceptable final frame.
+inline constexpr bool kEnableHalo4C42RestoredClosest = false;
 inline bool Halo4BuildFloatingClosestLeftCarrierForState(
     bool twoHandAimActive,
     const Halo4FloatingTransform& rawLeftControllerCarrier,

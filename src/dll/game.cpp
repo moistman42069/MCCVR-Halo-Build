@@ -31084,12 +31084,17 @@ namespace
         {
             Halo4FloatingTransform selectedLeft{};
             g_halo4FloatingPair.leftTargetValid=
-                Halo4BuildFloatingClosestLeftCarrierForState(
+                kEnableHalo4C42RestoredClosest
+                ? Halo4BuildFloatingClosestLeftCarrierForState(
                     g_halo4FloatingPair.twoHandAimActive,
                     g_halo4FloatingPair.leftTargetWorld,
                     g_halo4FloatingPair.rightTargetWorld,
                     targetFrame.gunYawDeg,targetFrame.gunPitchDeg,
-                    targetFrame.gunRollDeg,selectedLeft);
+                    targetFrame.gunRollDeg,selectedLeft)
+                : Halo4BuildFloatingLeftCarrierForState(
+                    g_halo4FloatingPair.twoHandAimActive,
+                    g_halo4FloatingPair.leftTargetWorld,
+                    g_halo4FloatingPair.rightTargetWorld,selectedLeft);
             if (g_halo4FloatingPair.leftTargetValid)
                 g_halo4FloatingPair.leftTargetWorld=selectedLeft;
         }

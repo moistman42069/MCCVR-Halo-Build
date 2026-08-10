@@ -3736,3 +3736,8 @@ support commits, and optional free fallback. Tests pin the restored free carrier
 against the production mirrored-mount helper, support by full-transform byte
 comparison, the original live-thumb turnover, and all three rejected experiment
 flags off. C-H4-42 is headset-pending; C-H4-1 remains the accepted pointer.
+
+Before deployment, the user clarified that "closest" did not mean correct and
+that none of the previous free poses is an acceptable baseline. C-H4-42 is
+therefore disabled without a headset run. Its package was never installed and
+it must not be treated as evidence for or against a visible transform.
