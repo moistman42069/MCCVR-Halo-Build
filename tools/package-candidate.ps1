@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c29-model-frame-rig',
+        'halo4-c30-floaty-hands-no-ik',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,7 +181,7 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-29'
+            id = 'C-H4-30'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
             behavior = 'e-h4-22-body-fill-root-is-null-so-the-storm-arms-are-solved-in-the-records-own-pedestal-anchored-model-frame-from-the-live-head-pose-with-a-measured-rig-scale-a-per-eye-stereo-offset-and-the-gun-carried-by-the-hand-motion-conjugated-into-the-weapon-world-frame'
             head_tracking = $true

@@ -29221,6 +29221,12 @@ namespace
         // C-H4-29: what the bank measures against the authored bind, and what
         // the record's own root node holds. Both are read-only measurements of
         // facts every previous candidate assumed.
+        // C-H4-30: Halo 4's own first-person FOV squish, resolved by name and
+        // turned off while VR owns the camera. Touched only on the install and
+        // teardown paths, never from a render hook.
+        uint8_t* fpSquishSlot{nullptr};
+        uint8_t fpSquishStock{0};
+        bool fpSquishApplied{false};
         std::atomic<float> vrikRigScale{0.0f};
         std::atomic<float> vrikPedestalTranslation{0.0f};
         std::atomic<float> vrikPedestalScale{0.0f};
@@ -30238,9 +30244,33 @@ namespace
         return true;
     }
 
+    // C-H4-30: move one hand onto its controller with a single rigid delta.
+    //
+    // This is the whole hand path now. `D = desired o inverse(stockWrist)`
+    // applied to every node of that hand's authored subtree - the same rigid
+    // wrist carry Halo 3 has shipped since 2026-07, and the reason it cannot
+    // tear a mesh: every vertex of the hand keeps its exact relationship to
+    // every other one, whatever the surrounding skeleton is doing.
+    template<size_t N>
+    bool Halo4CarryHandRigid(BoneMatrix* nodes, int handNode,
+                             const int (&subtree)[N],
+                             const BoneMatrix& desired)
+    {
+        BoneMatrix inverseHand{},delta{};
+        if (!InvertBoneMatrix(nodes[handNode],inverseHand) ||
+            !ComposeBoneMatrices(desired,inverseHand,delta))
+            return false;
+        return Halo4ApplySubtreeDelta(nodes,subtree,delta);
+    }
+
     // Title-native two-bone application over the actual Storm subtrees.  The
     // generic analytic elbow point is merely geometry; all axes, poles,
     // attachment orientation and every carried node belong to Halo 4 evidence.
+    //
+    // DORMANT SINCE C-H4-30 - no caller. Retained rather than deleted because
+    // AGENTS.md requires reverting a behavior to disable it, not remove it, and
+    // because the arm IK is only untrustworthy while the shoulder and elbow
+    // node identities are unproven.
     bool Halo4SolveStormArm(BoneMatrix* nodes, bool left,
                             const BoneMatrix& desired,
                             const BoneMatrix& bodyRoot,
@@ -30424,23 +30454,34 @@ namespace
             if (classified!=Halo4VrikStage::Solved) return classified;
         }
 
-        // The bank does not measure in the tag's units - every shipped window
-        // reports the upper arm at ~2.3x the authored bind, with the two arms
-        // agreeing to 0.05%. Scale the tracked hand offsets by what the rig
-        // actually holds, so the reach envelope matches the arms being driven.
-        const float liveUpper=Halo4VrikDistance(
-            solved[kHalo4RightShoulderNode],solved[kHalo4RightElbowNode]);
-        const float rigScale=Halo4MeasureRigScale(
-            liveUpper,kHalo4StormUpperArmBind,1.0f);
+        // C-H4-30: NO ARM IK. Reach's shipping presentation, which the user
+        // asked for by name after C-H4-29 tore the mesh.
+        //
+        // The arm IK is gone from this path entirely. Everything that shredded
+        // the Storm mesh lived in it: the two-bone solve rotated shoulder and
+        // elbow SUBTREES, so any error in which node is a shoulder, which is an
+        // elbow, or how long the links are came out as a distorted skin. Those
+        // node identities are not trustworthy - the same log window measures the
+        // upper arm at 2.1x its authored bind while the two shoulders sit 0.0552
+        // apart against an authored 0.1409, and no skeleton is both.
+        //
+        // A rigid transform cannot distort a mesh. Each hand subtree is moved by
+        // ONE rigid delta onto its controller and every other body node is
+        // collapsed, so a wrong node can only be invisible or in the wrong
+        // place, never sheared. That is exactly what Reach ships
+        // (BUILDING.md: "its verified right hand plus appended held-object
+        // range remain right-controller-owned; the verified left-hand source
+        // mask receives its own left-controller wrist delta ... and every
+        // non-hand/non-held Reach FP node is collapsed").
+        //
+        // No rig scale either. It was derived from the arm links this candidate
+        // no longer trusts; the bank is camera-rooted world space, so the hand
+        // travels at the world scale and nothing else.
+        const float rigScale=1.0f;
         if (bodyFill)
         {
             g_halo4Camera.vrikRigScale.store(
                 rigScale,std::memory_order_relaxed);
-            // The FULL shoulder-to-shoulder distance, not the single axis the
-            // old line projected onto. The tag makes this a pure +Y offset of
-            // 0.1409, so in the model's own frame it is a constant; the shipped
-            // log reported the projection wandering between 0.0000 and 0.0417,
-            // which is what a wrongly-removed camera root looks like.
             g_halo4Camera.vrikShoulderSpan.store(
                 Halo4VrikDistance(solved[kHalo4RightShoulderNode],
                                   solved[kHalo4LeftShoulderNode]),
@@ -30448,9 +30489,8 @@ namespace
         }
 
         // Targets are built in this same model frame from the live head pose.
-        // A recenter reference and a gameplay yaw would be wrong here: the
-        // model frame IS the render camera's frame, so the controller only has
-        // to be expressed as the headset sees it.
+        // The frame is the render camera's, so the controller only has to be
+        // expressed as the headset sees it.
         BoneMatrix rightTarget{},leftTarget{};
         if (!Halo4BuildModelHandTarget(
                 false,solved[kHalo4RightHandNode],rigScale,rightTarget))
@@ -30462,29 +30502,18 @@ namespace
             g_halo4Camera.vrikStageRefusals[static_cast<size_t>(
                 Halo4VrikStage::LeftPoseFailed)].fetch_add(
                     1,std::memory_order_relaxed);
-        // The authored poles are expressed in the model's own frame, which is
-        // exactly the frame the solve now runs in, so they are used directly.
-        const BoneMatrix modelFrame{1.0f,{1,0,0, 0,1,0, 0,0,1},{0,0,0}};
-        if (!Halo4SolveStormArm(
-                solved,false,rightTarget,modelFrame,nullptr))
+
+        // One rigid delta per hand, over that hand's own subtree. Same shape as
+        // the accepted Halo 3 wrist carry: D = desired o inverse(stockWrist).
+        if (!Halo4CarryHandRigid(
+                solved,kHalo4RightHandNode,kHalo4RightHandSubtree,rightTarget))
             return Halo4VrikStage::RightIkFailed;
-        if (leftTargetValid)
-        {
-            // A left solve can fail after a shoulder delta has been applied.
-            // Its failure is feature-local: preserve the already-solved right
-            // arm and restore Halo 4's untouched left arm rather than emitting
-            // a partly transformed support arm.
-            BoneMatrix beforeLeft[kHalo4StormFpBodyNodeCount];
-            memcpy(beforeLeft,solved,sizeof(beforeLeft));
-            if (!Halo4SolveStormArm(
-                    solved,true,leftTarget,modelFrame,nullptr))
-            {
-                memcpy(solved,beforeLeft,sizeof(beforeLeft));
-                g_halo4Camera.vrikStageRefusals[static_cast<size_t>(
-                    Halo4VrikStage::LeftIkFailed)].fetch_add(
-                        1,std::memory_order_relaxed);
-            }
-        }
+        if (leftTargetValid &&
+            !Halo4CarryHandRigid(
+                solved,kHalo4LeftHandNode,kHalo4LeftHandSubtree,leftTarget))
+            g_halo4Camera.vrikStageRefusals[static_cast<size_t>(
+                Halo4VrikStage::LeftIkFailed)].fetch_add(
+                    1,std::memory_order_relaxed);
 
         // Back onto the record's own root, so what leaves this function is in
         // precisely the space Halo 4 handed us.
@@ -30577,15 +30606,21 @@ namespace
         // the joint origin, an invisible speck with no crash risk. Only the arm
         // bones outside either hand subtree collapse, which is what keeps every
         // finger and hand-armour transform intact.
-        if (g_config.floating_hands)
-        {
-            for(int index:kHalo4RightShoulderSubtree)
-                if(!Halo4SubtreeContains(kHalo4RightHandSubtree,index))
-                    solved[index].scale=0.0001f;
-            for(int index:kHalo4LeftShoulderSubtree)
-                if(!Halo4SubtreeContains(kHalo4LeftHandSubtree,index))
-                    solved[index].scale=0.0001f;
-        }
+        // C-H4-30 FORCES the collapse, exactly as Reach does, instead of
+        // honouring `floating_hands`. Without an arm solve the arms would
+        // otherwise hang in Halo 4's stock animated pose while the hands sat on
+        // the controllers - a torn-looking rig for a different reason. Reach has
+        // the same title-specific difference for the same reason and it is
+        // recorded in BUILDING.md; when the arm node identities are proven, the
+        // universal setting comes back.
+        //
+        // EVERY body node that is not part of a hand collapses, not just the
+        // arm bands: the collapse is what guarantees a wrong node identity can
+        // only ever be invisible rather than stretched across the screen.
+        for (int index=0;index<kHalo4StormFpBodyNodeCount;++index)
+            if (!Halo4SubtreeContains(kHalo4RightHandSubtree,index) &&
+                !Halo4SubtreeContains(kHalo4LeftHandSubtree,index))
+                solved[index].scale=0.0001f;
         return Halo4VrikStage::Solved;
     }
 
@@ -32081,6 +32116,20 @@ namespace
             MH_RemoveHook(g_halo4Camera.wrapperTarget);
         if (g_halo4Camera.modelSkinningTarget)
             MH_RemoveHook(g_halo4Camera.modelSkinningTarget);
+        // Put Halo 4's own first-person FOV squish back exactly as it was, and
+        // only if we were the one who changed it. Done after the hooks are
+        // quiescent and before the module reference is released, so the write
+        // cannot land in an unloaded image.
+        if (g_halo4Camera.fpSquishApplied && g_halo4Camera.fpSquishSlot)
+        {
+            *g_halo4Camera.fpSquishSlot=g_halo4Camera.fpSquishStock;
+            LOG("Halo 4 C-H4-30 first-person FOV: enable_first_person_squish "
+                "restored to its stock %u on teardown",
+                static_cast<unsigned>(g_halo4Camera.fpSquishStock));
+        }
+        g_halo4Camera.fpSquishApplied=false;
+        g_halo4Camera.fpSquishSlot=nullptr;
+        g_halo4Camera.fpSquishStock=0;
         if (g_halo4Camera.moduleReference)
             FreeLibrary(g_halo4Camera.moduleReference);
         const uint32_t generation =
@@ -32299,6 +32348,46 @@ namespace
         }
 
         g_halo4Camera.installed.store(true, std::memory_order_release);
+        // C-H4-30: turn off Halo 4's first-person FOV squish.
+        //
+        // E-H4-22: the first-person camera rebuild 0x34EC44 multiplies the FP
+        // layer's vertical FOV by a scale built from the STOCK viewmodel ratio,
+        // gated on the boolean debug global `enable_first_person_squish`
+        // (retail default 1). C-H4-8 widens the world FOV to cover the headset
+        // but deliberately leaves that ratio alone, so the gun and hands are
+        // drawn through a narrower FOV than the world they sit in - they read as
+        // magnified, at the wrong depth, and on their own layer. That is a flat
+        // -screen viewmodel trick with no meaning in a headset.
+        //
+        // Resolved BY NAME through the same proven debug-var path Reach's rain
+        // and motion-blur controls use - no hook, no signature, no address. The
+        // type is required to be 5 (boolean) and the slot proved committed,
+        // writable and non-executable before anything is written, and the stock
+        // byte is kept so teardown puts it back.
+        {
+            auto* const squish=static_cast<uint8_t*>(
+                FindDebugVarSlot(base,size,"enable_first_person_squish",5));
+            uint8_t stock=0;
+            if (squish && SafeReadByte(squish,&stock))
+            {
+                g_halo4Camera.fpSquishSlot=squish;
+                g_halo4Camera.fpSquishStock=stock;
+                *squish=0;
+                g_halo4Camera.fpSquishApplied=true;
+                LOG("Halo 4 C-H4-30 first-person FOV: enable_first_person_squish "
+                    "resolved by name and set 0 (stock %u); the gun and hands "
+                    "now use the same widened FOV as the world instead of the "
+                    "flat-screen viewmodel ratio",
+                    static_cast<unsigned>(stock));
+            }
+            else
+            {
+                LOG("Halo 4 C-H4-30 first-person FOV: "
+                    "enable_first_person_squish did not resolve as a boolean "
+                    "debug global; the first-person layer stays at Halo 4's "
+                    "stock viewmodel FOV and everything else is unaffected");
+            }
+        }
         // Optional and fail-open: a missing palette proof leaves the already
         // working camera/session fully armed with stock hands.
         InstallHalo4Vrik(base,size);
