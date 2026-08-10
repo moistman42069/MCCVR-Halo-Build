@@ -3381,5 +3381,89 @@ orientations plus noncommuting controller, wrist and held-model bases, prove
 controller-relative authored orientation, pin neutral identity with no
 surviving fixed left seed, preserve target translation, and verify fail-open
 helper publication. The production failure path submits the original palette
-when either tested helper refuses. C-H4-36 is headset-pending and does not advance
-`docs/CURRENT-STATE.md`.
+when either tested helper refuses.
+
+C-H4-36 was headset-tested on Steam from exact source
+`4aa7e2609fd90d83b49c1eeb6e812466d8ae8de1`, installed DLL SHA-256
+`D295A2548E8631E61D5ADF5A736522A85DCBD85806C313B47C2E7718B6942B34`.
+The resulting log has SHA-256
+`327F19A1CFD75C899CFA9E5836F5BF9C4080C6BF4F66AFEA8AFA6174888249E5`
+and identifies Steam, SteamVR/OpenXR 2.17.6, headset
+`SteamVR/OpenXR : oculus`, and 120 Hz. It retained roughly 1,930 matching
+Storm/held commits per two seconds with zero refusals. The user explicitly
+reported that the left orientation was correct for the two-hand support grip,
+but that the same orientation left the independent/free hand upside down. That
+is a partial result, not acceptance of the overall candidate; the user made no
+new right-hand/gun determination in that report. C-H4-36 remains unaccepted and
+does not advance `docs/CURRENT-STATE.md`.
+
+## E-H4-26 / C-H4-37 - free left palm down, support grip unchanged
+
+This is a user-requested Halo-4-local state-specific presentation: an active
+support hand remains in its working gun grip, while an independent hand
+presents palm-down with its thumb still pointing outward. Halo 3's shared path
+does not expose a corresponding free/support wrist branch, so no such behavior
+is attributed to it. The cross-title reference remains C-H4-36's already-built
+controller ownership and mirrored left presentation trim. C-H4-37 changes only
+the additional free-left orientation policy. The C-H4-36 right hand,
+held-model carry, physical positions, current-eye reroot, visibility mask,
+record identities/order/lifetime, no-IK policy, camera, aim, and stereo
+lifecycle are unchanged. The C-H4-36 pose the user judged perfect for two-hand
+support is also unchanged.
+
+The state comes from the exact immutable prepared sample, not from a later
+palette-hook read of an asynchronous latch. `PublishHalo4RenderSnapshot`
+already computes the right aim once for that prepared serial. Its
+`AimPoseResult::twoHandActive` is true only when the accepted support-line solve
+actually produced that published right aim. C-H4-37 publishes that bit beside
+the right aim and left controller in `Halo4VrRenderSnapshot`, then freezes it
+once into the stereo pair. This deliberately does not use
+`VR_IsTwoHandAiming()` or `g_twoHandLatched`: either can describe a different
+sample, and the logical latch can remain set while an invalid support line
+falls back to one-handed aim.
+
+The free-hand correction comes from Halo 4's own live Storm graph. Official
+H4EK `storm_fp.render_model.xml` identifies node 37 as `b_l_hand` and node 46
+`b_l_thumb1` as its direct child, with authored hand-local translation
+`(0.0112261, -0.00861943, -0.01287)`. That direct-child origin supplies the
+stable thumb-outward base ray: thumb1 rotation, thumb2, and thumb3 articulation
+cannot move it around the wrist and therefore cannot wobble the entire free
+hand. Node 43 `b_l_middle1` is another direct child, with authored translation
+`(-0.00297, -0.03872, -0.00605)`; those two rays define a title-native palm
+plane. Both nodes are already inside the exact H4EK-derived left-hand subtree.
+For stock world wrist `S` and live thumb1 origin `P`, C-H4-37 forms the
+normalized wrist-local thumb-base ray
+
+`a = normalize(transpose(S.rotation) * (P - S.translation))`
+
+and postmultiplies only the final free-left desired wrist rotation by
+
+`R_pi = 2 * a * transpose(a) - I`.
+
+This is a proper 180-degree rotation: `R_pi * a = a`, while every palm vector
+orthogonal to `a` maps to its negative. The thumb-base origin/ray is therefore
+invariant and the palm-plane normal reverses. No claim is made that node 46 is a
+literal mesh fingertip or that distal thumb mesh orientation is frozen. A
+guessed controller-axis roll is not used; the official direct-child thumb ray
+is visibly non-axis-aligned, and the live current-eye Storm pose proves the
+axis used by the rendered hand. Target translation and scale do not change.
+
+The production helper is tested with noncommuting wrist and desired bases plus
+the exact non-axis-aligned H4EK thumb1 and middle1 direct-child translations.
+Tests pin H4EK node 46 inside the left subtree, prove the thumb-base direction
+is unchanged, prove the authored palm-plane normal is negated, require
+determinant +1, and require translation/scale equality. An end-to-end rigid
+delta test applies both the C-H4-36 and free-palm motions to node 46 and proves
+its final origin is identical. A separate exact-state test feeds an invalid
+thumb transform while two-hand aim is active and verifies the C-H4-36 support
+target is copied byte-for-byte. Zero or non-finite free-thumb rays publish no
+partial result. At runtime that optional failure keeps the proven C-H4-36 left
+orientation and continues both hand carries plus the held gun; it never rejects
+the whole palette or disarms the Halo 4 camera/OpenXR session. Worker telemetry
+separately counts committed free-palm applications, exact two-hand support
+pass-throughs, and C-H4-36 fallbacks, so the candidate's only state split is
+auditable without logging in the palette hook.
+
+C-H4-37's Release build, full core test suite, and Reach consistency gate pass
+offline on 2026-08-10. It remains headset-pending. C-H4-1 remains the accepted
+rollback pointer in `docs/CURRENT-STATE.md`.

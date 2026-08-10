@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c36-controller-facing-hands-gun',
+        'halo4-c37-free-left-palm-down',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-36'
+            id = 'C-H4-37'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'c35-proven-no-ik-current-eye-storm-hands-held-model-native-body-routing-retained-while-both-live-storm-wrist-orientations-and-the-one-adjacent-right-held-model-orientation-are-rigidly-rerooted-from-the-current-eye-basis-onto-the-corresponding-controller-basis-with-authored-wrist-relative-orientation-and-c35-physical-target-translation-preserved-and-no-fixed-blender-hand-control-rotation'
+            behavior = 'c36-controller-facing-hands-and-gun-retained-byte-for-byte-for-right-gun-positioning-and-active-two-hand-left-support-while-only-the-free-left-wrist-postmultiplies-a-pi-rotation-about-the-live-h4ek-wrist-to-direct-child-thumb1-ray-so-the-palm-normal-reverses-and-the-stable-thumb-base-direction-remains-outward'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -203,10 +203,14 @@ try {
                 'live-current-eye-storm-wrist-relation-no-fixed-blender-seed'
             left_presentation_trim =
                 'shared-mirrored-gun-angle-trim-applied-once'
+            free_left_palm =
+                'pi-about-live-storm-wrist-to-direct-child-b_l_thumb1-axis'
+            two_hand_left_pose =
+                'c36-byte-identical-when-exact-prepared-aim-used-two-hand-solve'
             failure_policy =
                 'pre-claim-stock-post-claim-frame-drop-core-remains-armed'
             vrik_failure_policy =
-                'one-rigid-algorithm-only-invalid-input-commits-no-alternate-hand-palette-camera-core-remains-armed'
+                'base-rigid-invalid-input-leaves-that-palette-stock-while-optional-free-palm-invalid-input-keeps-the-c36-left-target-and-continues-right-hand-held-model-and-camera-core'
         }
         # Reach support is permanent, while player-visible optional features
         # fail open independently and never disarm the working camera core.
@@ -281,7 +285,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-36 is an unaccepted headset candidate built on C-H4-35. The user confirmed that C-H4-35 produced floating hands and gun, and its Steam log proved exact storm_fp hands -> held model -> native body routing with zero refusals, but rejected both hand and gun orientation. C-H4-36 changes only orientation ownership: it replaces the false Blender hand-control seed rotations with the live same-eye authored wrist relation rerooted onto each controller, adds the established left-only mirrored presentation trim, and preserves C-H4-35 target translation, record order, rigid gun carry, no-IK policy, and camera process. C-H4-1 remains the accepted rollback pointer until explicit headset acceptance.'
+        note = 'C-H4-37 is an unaccepted headset candidate built on the partially successful C-H4-36. In Steam/SteamVR OpenXR on an Oculus headset at 120 Hz, the user explicitly judged C-H4-36 left-hand orientation perfect for the two-hand support grip but rejected the free left hand as upside down. C-H4-37 preserves that exact prepared-frame support pose, the C-H4-36 right hand/gun, every target translation, record routing, rigid held carry, no-IK policy and camera process. Only while the published right aim did not use the two-hand solve, it turns the left palm by 180 degrees around the live H4EK b_l_hand-to-direct-child-b_l_thumb1 ray; that reverses the authored palm-plane normal while preserving the stable thumb-base direction. Invalid optional thumb input retains C-H4-36 left orientation and does not disturb right/gun or camera ownership. Worker telemetry separately reports committed free-palm, exact-support and fallback modes. C-H4-1 remains the accepted rollback pointer until explicit headset acceptance.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

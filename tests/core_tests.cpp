@@ -7211,6 +7211,9 @@ int main()
                   Halo4FloatingNodeRole::RightHand &&
               Halo4ClassifyFloatingNode(kHalo4LeftHandNode) ==
                   Halo4FloatingNodeRole::LeftHand &&
+              kHalo4LeftThumbBaseNode == 46 &&
+              Halo4StormNodeInSet(
+                  kHalo4LeftHandSubtree,kHalo4LeftThumbBaseNode) &&
               Halo4ClassifyFloatingNode(kHalo4RightElbowNode) ==
                   Halo4FloatingNodeRole::CollapseAtRightWrist &&
               Halo4ClassifyFloatingNode(kHalo4LeftElbowNode) ==
@@ -7570,6 +7573,132 @@ int main()
         Check(neutralReroot,
             "No 49-degree Blender left-hand seed survives in the final neutral orientation");
 
+        // C-H4-37: the free palm turns over around Halo 4's live thumb ray,
+        // never around a guessed controller axis. H4EK node 46 b_l_thumb1 is
+        // a direct child of the wrist; its exact authored translation supplies
+        // a stable non-axis-aligned thumb-outward ray that cannot wobble with
+        // thumb2/thumb3 curl.
+        const float thumbBaseOffset[3]={
+            0.0112261f,-0.00861943f,-0.01287f};
+        float thumbAxis[3]={
+            thumbBaseOffset[0],thumbBaseOffset[1],thumbBaseOffset[2]};
+        float thumbAxisLength=sqrtf(
+            thumbAxis[0]*thumbAxis[0]+thumbAxis[1]*thumbAxis[1]+
+            thumbAxis[2]*thumbAxis[2]);
+        for (float& value : thumbAxis) value/=thumbAxisLength;
+        Halo4FloatingTransform thumbLocal{};
+        for (int axis=0;axis<3;++axis)
+            thumbLocal.translation[axis]=thumbBaseOffset[axis];
+        Halo4FloatingTransform stockThumbBase{};
+        Check(Halo4ComposeFloatingTransforms(
+                  stockEye0,thumbLocal,stockThumbBase),
+            "The official direct-child thumb base can be represented in the live Storm wrist frame");
+        Halo4FloatingTransform freePalmTarget{};
+        Check(Halo4BuildFloatingLeftPresentationTarget(
+                  false,stockEye0,stockThumbBase,rerooted0,freePalmTarget),
+            "The production free-left policy accepts a live non-axis-aligned thumb ray");
+        Check(freePalmTarget.translation[0]==rerooted0.translation[0] &&
+                  freePalmTarget.translation[1]==rerooted0.translation[1] &&
+                  freePalmTarget.translation[2]==rerooted0.translation[2] &&
+                  freePalmTarget.scale==rerooted0.scale,
+            "The free-palm correction changes orientation only");
+        const auto rotateDirection=[](const float basis[9],
+                                      const float local[3],float world[3])
+        {
+            for (int row=0;row<3;++row)
+            {
+                world[row]=0.0f;
+                for (int column=0;column<3;++column)
+                    world[row]+=basis[column*3+row]*local[column];
+            }
+        };
+        float thumbBefore[3]{},thumbAfter[3]{};
+        rotateDirection(rerooted0.rotation,thumbAxis,thumbBefore);
+        rotateDirection(freePalmTarget.rotation,thumbAxis,thumbAfter);
+        Check(fabsf(thumbBefore[0]-thumbAfter[0])<1.0e-5f &&
+                  fabsf(thumbBefore[1]-thumbAfter[1])<1.0e-5f &&
+                  fabsf(thumbBefore[2]-thumbAfter[2])<1.0e-5f,
+            "Turning the free palm preserves the stable thumb-base outward direction exactly");
+
+        // H4EK node 43 b_l_middle1 is another direct child of b_l_hand.
+        // Its exact authored ray and the thumb-base ray define the title's
+        // stable palm plane rather than an arbitrary algebra-only vector.
+        const float middleBaseOffset[3]={-0.00297f,-0.03872f,-0.00605f};
+        float palmNormal[3]={
+            thumbAxis[1]*middleBaseOffset[2]-
+                thumbAxis[2]*middleBaseOffset[1],
+            thumbAxis[2]*middleBaseOffset[0]-
+                thumbAxis[0]*middleBaseOffset[2],
+            thumbAxis[0]*middleBaseOffset[1]-
+                thumbAxis[1]*middleBaseOffset[0]};
+        const float palmLength=sqrtf(
+            palmNormal[0]*palmNormal[0]+palmNormal[1]*palmNormal[1]+
+            palmNormal[2]*palmNormal[2]);
+        for (float& value : palmNormal) value/=palmLength;
+        float palmBefore[3]{},palmAfter[3]{};
+        rotateDirection(rerooted0.rotation,palmNormal,palmBefore);
+        rotateDirection(freePalmTarget.rotation,palmNormal,palmAfter);
+        Check(fabsf(palmBefore[0]+palmAfter[0])<1.0e-5f &&
+                  fabsf(palmBefore[1]+palmAfter[1])<1.0e-5f &&
+                  fabsf(palmBefore[2]+palmAfter[2])<1.0e-5f,
+            "The same pi rotation reverses a palm normal perpendicular to the thumb");
+        float freeBasis[9]{};
+        Check(Halo4NormalizeFloatingBasis(
+                  freePalmTarget.rotation,freeBasis),
+            "The free-palm result remains a proper finite rotation");
+        const float freeDeterminant=
+            freeBasis[0]*(freeBasis[4]*freeBasis[8]-
+                freeBasis[7]*freeBasis[5])-
+            freeBasis[3]*(freeBasis[1]*freeBasis[8]-
+                freeBasis[7]*freeBasis[2])+
+            freeBasis[6]*(freeBasis[1]*freeBasis[5]-
+                freeBasis[4]*freeBasis[2]);
+        Check(fabsf(freeDeterminant-1.0f)<1.0e-4f,
+            "The palm flip is a 180-degree rotation, never a mesh-reflecting mirror");
+
+        Halo4FloatingTransform baseThumbDelta{},freeThumbDelta{};
+        Halo4FloatingTransform baseMovedThumb{},freeMovedThumb{};
+        Check(Halo4BuildFloatingWorldDelta(
+                  rerooted0,stockEye0,baseThumbDelta) &&
+              Halo4BuildFloatingWorldDelta(
+                  freePalmTarget,stockEye0,freeThumbDelta) &&
+              Halo4ComposeFloatingTransforms(
+                  baseThumbDelta,stockThumbBase,baseMovedThumb) &&
+              Halo4ComposeFloatingTransforms(
+                  freeThumbDelta,stockThumbBase,freeMovedThumb),
+            "Both C-H4-36 and free-palm rigid subtree deltas carry the official thumb-base node");
+        Check(fabsf(baseMovedThumb.translation[0]-
+                    freeMovedThumb.translation[0])<1.0e-5f &&
+                  fabsf(baseMovedThumb.translation[1]-
+                    freeMovedThumb.translation[1])<1.0e-5f &&
+                  fabsf(baseMovedThumb.translation[2]-
+                    freeMovedThumb.translation[2])<1.0e-5f,
+            "The end-to-end free-palm subtree carry leaves the thumb-base origin exactly where C-H4-36 placed it");
+
+        Halo4FloatingTransform invalidThumb=stockThumbBase;
+        invalidThumb.translation[0]=
+            std::numeric_limits<float>::quiet_NaN();
+        Halo4FloatingTransform supportTarget{};
+        supportTarget.translation[0]=99.0f;
+        Check(Halo4BuildFloatingLeftPresentationTarget(
+                  true,stockEye0,invalidThumb,rerooted0,supportTarget) &&
+                  memcmp(&supportTarget,&rerooted0,sizeof(supportTarget))==0,
+            "The exact prepared-frame two-hand state preserves C-H4-36's support pose byte-for-byte and ignores the free-palm dependency");
+        Halo4FloatingTransform zeroThumb=stockEye0;
+        Halo4FloatingTransform untouchedPalm{};
+        untouchedPalm.translation[0]=88.0f;
+        Check(!Halo4BuildFloatingLeftPresentationTarget(
+                  false,stockEye0,zeroThumb,rerooted0,untouchedPalm) &&
+                  untouchedPalm.translation[0]==88.0f,
+            "A zero free-thumb ray refuses without publishing a partial correction");
+        Halo4FloatingTransform untouchedNonfinitePalm{};
+        untouchedNonfinitePalm.translation[0]=77.0f;
+        Check(!Halo4BuildFloatingLeftPresentationTarget(
+                  false,stockEye0,invalidThumb,rerooted0,
+                  untouchedNonfinitePalm) &&
+                  untouchedNonfinitePalm.translation[0]==77.0f,
+            "A non-finite free-thumb ray leaves the proven C-H4-36 target available for feature-local fallback");
+
         Halo4FloatingTransform invalidEye=eye0;
         invalidEye.rotation[0]=std::numeric_limits<float>::quiet_NaN();
         Halo4FloatingTransform untouchedReroot{};
@@ -7672,7 +7801,7 @@ int main()
         "Halo 4 advertises stereo, controller aim, haptics, runtime modes, "
         "room scale and controller input");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
-        "Halo 4 withholds ArmIk: C-H4-36 has one rigid no-IK floating-hands "
+        "Halo 4 withholds ArmIk: C-H4-37 has one rigid no-IK floating-hands "
         "transaction on the proven first-person return site");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
         "Halo 4 withholds Hud: its CUI arrives inside the captured scene "

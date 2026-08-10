@@ -7,11 +7,14 @@
 > C-H4-35 headset result proved the current-eye
 > `storm_fp(80) -> held model -> native body(120)` routing and finally produced
 > floating hands/gun, but its copied Blender hand-control rotations visibly
-> broke the gun and left-hand orientation. The active headset-pending restart
-> is E-H4-25 / C-H4-36: the same rigid no-IK record flow, with live same-eye
-> wrist/held orientation rerooted onto each controller and no fixed Blender
-> seed used as a wrist basis. Read `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24
-> and E-H4-25 and
+> broke the gun and left-hand orientation. C-H4-36 replaced those rotations
+> with the live same-eye wrist relation; its Steam headset result explicitly
+> judged the left pose perfect for two-hand support but found the free left palm
+> upside down. The active headset-pending restart is E-H4-26 / C-H4-37: it
+> preserves the C-H4-36 support pose and changes only the free left wrist by a
+> 180-degree rotation about its live direct-child thumb-base ray, keeping the
+> thumb outward without coupling the wrist to articulated thumb curl. Read
+> `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24 through E-H4-26 and
 > `docs/CURRENT-STATE.md` before
 > acting; none of this handoff's current-state or implementation instructions
 > remain active.

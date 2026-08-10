@@ -328,6 +328,10 @@ inline constexpr int kHalo4RightHandNode = 29;
 inline constexpr int kHalo4LeftShoulderNode = 5;
 inline constexpr int kHalo4LeftElbowNode = 8;
 inline constexpr int kHalo4LeftHandNode = 37;
+// Official H4EK storm_fp b_l_thumb1, a direct child of b_l_hand. Its live
+// wrist-relative origin supplies a stable title-native outward axis without
+// coupling the whole wrist to articulated thumb2/thumb3 curl.
+inline constexpr int kHalo4LeftThumbBaseNode = 46;
 
 enum class Halo4FloatingRecordPhase : uint8_t
 {
@@ -483,8 +487,8 @@ inline constexpr bool Halo4FloatingRelationPairIsCurrent(
             firstGeneration, firstPreparedSerial);
 }
 
-// Floating transform algebra is kept title-side and unit tested. C-H4-35 and
-// C-H4-36 use the direct current-eye delta for consecutive Storm/held records.
+// Floating transform algebra is kept title-side and unit tested. C-H4-35..37
+// use the direct current-eye delta for consecutive Storm/held records.
 // The older eye-local relation helpers remain below as dormant C-H4-34 history;
 // no active Halo 4 path publishes or consumes a prior-pair relation.
 struct Halo4FloatingTransform
@@ -723,6 +727,87 @@ inline bool Halo4BuildFloatingControllerRerootTarget(
             for (int inner = 0; inner < 3; ++inner)
                 value += controllerBasis[inner * 3 + row] *
                     eyeLocalWrist[column * 3 + inner];
+            result.rotation[column * 3 + row] = value;
+        }
+    if (!Halo4FloatingTransformValid(result)) return false;
+    desiredWorldWrist = result;
+    return true;
+}
+
+// C-H4-37 changes only the free left-hand presentation. The C-H4-36 support
+// grip is copied exactly whenever the right aim actually used its same-frame
+// two-hand solve. Otherwise rotate the final wrist by pi around the live
+// wrist-to-thumb-base axis. For unit axis a, R(pi)=2*a*a^T-I: R*a=a while every
+// vector perpendicular to a is negated. The palm therefore turns over without
+// swapping its stable thumb-base side inward. Translation and scale remain
+// untouched.
+// Publish write-last so an invalid optional thumb ray retains the caller's
+// proven C-H4-36 target instead of disturbing either hand/gun transaction.
+inline bool Halo4BuildFloatingLeftPresentationTarget(
+    bool twoHandAimActive,
+    const Halo4FloatingTransform& stockWorldWrist,
+    const Halo4FloatingTransform& stockWorldThumbBase,
+    const Halo4FloatingTransform& controllerRerootedWrist,
+    Halo4FloatingTransform& desiredWorldWrist) noexcept
+{
+    if (!Halo4FloatingTransformValid(controllerRerootedWrist)) return false;
+    if (twoHandAimActive)
+    {
+        desiredWorldWrist = controllerRerootedWrist;
+        return true;
+    }
+
+    float wristBasis[9], desiredBasis[9];
+    if (!Halo4FloatingTransformValid(stockWorldWrist) ||
+        !Halo4FloatingTransformValid(stockWorldThumbBase) ||
+        !Halo4NormalizeFloatingBasis(stockWorldWrist.rotation, wristBasis) ||
+        !Halo4NormalizeFloatingBasis(
+            controllerRerootedWrist.rotation, desiredBasis))
+        return false;
+
+    float thumbWorld[3]{};
+    float thumbLengthSquared = 0.0f;
+    for (int row = 0; row < 3; ++row)
+    {
+        thumbWorld[row] = stockWorldThumbBase.translation[row] -
+            stockWorldWrist.translation[row];
+        if (!std::isfinite(thumbWorld[row])) return false;
+        thumbLengthSquared += thumbWorld[row] * thumbWorld[row];
+    }
+    if (!std::isfinite(thumbLengthSquared) || thumbLengthSquared < 1.0e-8f)
+        return false;
+    const float inverseThumbLength = 1.0f / std::sqrt(thumbLengthSquared);
+    for (float& value : thumbWorld) value *= inverseThumbLength;
+
+    float thumbLocal[3]{};
+    float localLengthSquared = 0.0f;
+    for (int column = 0; column < 3; ++column)
+    {
+        for (int row = 0; row < 3; ++row)
+            thumbLocal[column] +=
+                wristBasis[column * 3 + row] * thumbWorld[row];
+        localLengthSquared += thumbLocal[column] * thumbLocal[column];
+    }
+    if (!std::isfinite(localLengthSquared) || localLengthSquared < 1.0e-8f)
+        return false;
+    const float inverseLocalLength = 1.0f / std::sqrt(localLengthSquared);
+    for (float& value : thumbLocal) value *= inverseLocalLength;
+
+    float palmFlip[9]{};
+    for (int column = 0; column < 3; ++column)
+        for (int row = 0; row < 3; ++row)
+            palmFlip[column * 3 + row] =
+                2.0f * thumbLocal[row] * thumbLocal[column] -
+                (row == column ? 1.0f : 0.0f);
+
+    Halo4FloatingTransform result = controllerRerootedWrist;
+    for (int column = 0; column < 3; ++column)
+        for (int row = 0; row < 3; ++row)
+        {
+            float value = 0.0f;
+            for (int inner = 0; inner < 3; ++inner)
+                value += desiredBasis[inner * 3 + row] *
+                    palmFlip[column * 3 + inner];
             result.rotation[column * 3 + row] = value;
         }
     if (!Halo4FloatingTransformValid(result)) return false;

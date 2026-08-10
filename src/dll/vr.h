@@ -48,6 +48,10 @@ struct Halo4VrRenderSnapshot
     bool rightAimValid = false;
     float rightAimOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float rightAimPosition[3]{};
+    // True only when this exact prepared frame's published right-aim pose used
+    // the accepted two-hand support solve. Consumers must not resample the
+    // asynchronous global latch after publication.
+    bool twoHandAimActive = false;
     bool leftControllerValid = false;
     float leftControllerOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float leftControllerPosition[3]{};
