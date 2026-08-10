@@ -9,14 +9,16 @@
 > invalid Blender control rotations, and C-H4-37 added a prepared-frame free vs
 > support split. Its exact Steam run committed 50,984 free and 15,064 support
 > palettes with zero fallback/refusal, proving that the flips work, but the user
-> rejected left-hand rotation in both states, especially two-hand. The active
-> headset-pending restart is E-H4-27 / C-H4-38: support shares the frozen
-> right-aim rotational parent with the gun while preserving Halo 4's live grip
-> orientation;
-> free drops the borrowed mirrored gun-angle trim, uses the raw left controller,
-> and retains C-H4-37's working palm-down/thumb-outward flip. Positions,
+> rejected left-hand rotation in both states, especially two-hand. C-H4-38 then
+> made support share the frozen right-aim rotational parent with the gun; its
+> exact Steam run committed 7,600 support and 56,912 free targets with zero
+> refusal/fallback, and the user judged the two-hand grip perfect while rejecting
+> only the placement of the free hand's back. The active headset-pending restart
+> is E-H4-28 / C-H4-39: support remains byte-for-byte C-H4-38, while free mode
+> maps live H4EK middle/thumb anatomy onto the raw left controller so fingers
+> face forward, thumb outward, palm down and the back of the hand up. Positions,
 > right/gun carry, routing, no-IK, and camera remain unchanged. Read
-> `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24 through E-H4-27 and
+> `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24 through E-H4-28 and
 > `docs/CURRENT-STATE.md` before
 > acting; none of this handoff's current-state or implementation instructions
 > remain active.

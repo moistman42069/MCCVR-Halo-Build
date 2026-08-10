@@ -328,6 +328,9 @@ inline constexpr int kHalo4RightHandNode = 29;
 inline constexpr int kHalo4LeftShoulderNode = 5;
 inline constexpr int kHalo4LeftElbowNode = 8;
 inline constexpr int kHalo4LeftHandNode = 37;
+// Official H4EK storm_fp b_l_middle1, a direct child of b_l_hand. Its live
+// wrist-relative origin supplies the free hand's stable finger-forward ray.
+inline constexpr int kHalo4LeftMiddleBaseNode = 43;
 // Official H4EK storm_fp b_l_thumb1, a direct child of b_l_hand. Its live
 // wrist-relative origin supplies a stable title-native outward axis without
 // coupling the whole wrist to articulated thumb2/thumb3 curl.
@@ -840,6 +843,110 @@ inline bool Halo4BuildFloatingLeftPresentationTarget(
             for (int inner = 0; inner < 3; ++inner)
                 value += desiredBasis[inner * 3 + row] *
                     palmFlip[column * 3 + inner];
+            result.rotation[column * 3 + row] = value;
+        }
+    if (!Halo4FloatingTransformValid(result)) return false;
+    desiredWorldWrist = result;
+    return true;
+}
+
+// C-H4-39 changes only the free left-hand orientation. Direct-child
+// b_l_middle1 and b_l_thumb1 origins provide stable live wrist-local rays.
+// Gram-Schmidt builds the proper anatomy frame
+// A=[fingerForward, thumbOutward, palmUp], then
+//
+//     desired.rotation = rawLeftController.rotation * transpose(A).
+//
+// Fingers therefore face controller-forward, the orthogonal thumb component
+// faces controller-left/outward, and cross(thumb,middle) faces
+// controller-down. Translation and scale come from C-H4-38's free target.
+// Publish write-last so invalid optional anatomy retains that exact target.
+inline bool Halo4BuildFloatingFreeLeftAnatomicalTarget(
+    const Halo4FloatingTransform& rawLeftControllerCarrier,
+    const Halo4FloatingTransform& stockWorldWrist,
+    const Halo4FloatingTransform& stockWorldThumbBase,
+    const Halo4FloatingTransform& stockWorldMiddleBase,
+    const Halo4FloatingTransform& placementTemplate,
+    Halo4FloatingTransform& desiredWorldWrist) noexcept
+{
+    float parentBasis[9], wristBasis[9];
+    if (!Halo4FloatingTransformValid(rawLeftControllerCarrier) ||
+        !Halo4FloatingTransformValid(stockWorldWrist) ||
+        !Halo4FloatingTransformValid(stockWorldThumbBase) ||
+        !Halo4FloatingTransformValid(stockWorldMiddleBase) ||
+        !Halo4FloatingTransformValid(placementTemplate) ||
+        !Halo4NormalizeFloatingBasis(
+            rawLeftControllerCarrier.rotation, parentBasis) ||
+        !Halo4NormalizeFloatingBasis(stockWorldWrist.rotation, wristBasis))
+        return false;
+
+    float thumbLocal[3]{}, middleLocal[3]{};
+    for (int row = 0; row < 3; ++row)
+    {
+        const float thumbWorld = stockWorldThumbBase.translation[row] -
+            stockWorldWrist.translation[row];
+        const float middleWorld = stockWorldMiddleBase.translation[row] -
+            stockWorldWrist.translation[row];
+        if (!std::isfinite(thumbWorld) || !std::isfinite(middleWorld))
+            return false;
+        for (int column = 0; column < 3; ++column)
+        {
+            thumbLocal[column] +=
+                wristBasis[column * 3 + row] * thumbWorld;
+            middleLocal[column] +=
+                wristBasis[column * 3 + row] * middleWorld;
+        }
+    }
+
+    const auto normalizeVector = [](float value[3]) noexcept
+    {
+        float lengthSquared = 0.0f;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            if (!std::isfinite(value[axis])) return false;
+            lengthSquared += value[axis] * value[axis];
+        }
+        if (!std::isfinite(lengthSquared) || lengthSquared < 1.0e-8f)
+            return false;
+        const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+        for (int axis = 0; axis < 3; ++axis)
+            value[axis] *= inverseLength;
+        return true;
+    };
+    if (!normalizeVector(middleLocal) || !normalizeVector(thumbLocal))
+        return false;
+
+    float thumbAlongFinger = 0.0f;
+    for (int axis = 0; axis < 3; ++axis)
+        thumbAlongFinger += thumbLocal[axis] * middleLocal[axis];
+    float thumbOutward[3]{};
+    for (int axis = 0; axis < 3; ++axis)
+        thumbOutward[axis] =
+            thumbLocal[axis] - thumbAlongFinger * middleLocal[axis];
+    if (!normalizeVector(thumbOutward)) return false;
+
+    const float palmUp[3] = {
+        middleLocal[1] * thumbOutward[2] -
+            middleLocal[2] * thumbOutward[1],
+        middleLocal[2] * thumbOutward[0] -
+            middleLocal[0] * thumbOutward[2],
+        middleLocal[0] * thumbOutward[1] -
+            middleLocal[1] * thumbOutward[0]};
+    float anatomy[9] = {
+        middleLocal[0],middleLocal[1],middleLocal[2],
+        thumbOutward[0],thumbOutward[1],thumbOutward[2],
+        palmUp[0],palmUp[1],palmUp[2]};
+    float normalizedAnatomy[9];
+    if (!Halo4NormalizeFloatingBasis(anatomy, normalizedAnatomy)) return false;
+
+    Halo4FloatingTransform result = placementTemplate;
+    for (int column = 0; column < 3; ++column)
+        for (int row = 0; row < 3; ++row)
+        {
+            float value = 0.0f;
+            for (int inner = 0; inner < 3; ++inner)
+                value += parentBasis[inner * 3 + row] *
+                    normalizedAnatomy[inner * 3 + column];
             result.rotation[column * 3 + row] = value;
         }
     if (!Halo4FloatingTransformValid(result)) return false;

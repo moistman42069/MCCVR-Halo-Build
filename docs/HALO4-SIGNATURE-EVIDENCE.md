@@ -3558,3 +3558,55 @@ The existing H4EK thumb-base tests now exercise the free-palm flip under the raw
 carrier. Invalid support input publishes no partial carrier, while free mode
 has no dependency on an unused invalid support orientation. C-H4-38 remains an
 unaccepted headset candidate; C-H4-1 remains the accepted rollback pointer.
+
+C-H4-38 was headset-tested on Steam from exact source
+`2a0ca3d4dca5285515522eef8ca4c843c5250ccf`, installed DLL SHA-256
+`91D4BD20AABCCEB153D8D76C7D3E85BC0808E7728842FFE1538F704C307EA204`.
+The run log has SHA-256
+`69DDDE56D0F906EE3461F14A948197A983BB379B5509771503ECA379AAB36082`
+and identifies Steam, SteamVR/OpenXR 2.17.6, headset
+`SteamVR/OpenXR : oculus`, and 120 Hz. Across 38 two-second telemetry windows
+it committed 64,512 Storm palettes and 64,512 adjacent held records with zero
+refusals: 56,912 raw-controller free targets, 7,600 exact support targets, and
+zero fallback. One explicit two-hand engagement event plus support telemetry
+proves the accepted state was exercised. The user reported that the two-hand
+grip is perfect, but that the back of the free left hand is not in the right
+place. This explicitly accepts C-H4-38's support orientation and rejects only
+its free-hand heading. It is not a new right-hand/gun result. No Store C-H4-38
+run was observed, so the result is Steam-only. C-H4-38 is partially successful
+but remains unaccepted.
+
+## E-H4-28 / C-H4-39 - free left anatomical heading
+
+Halo 3's player-facing behavior being matched is an independently tracked left
+hand with fingers following controller-forward, thumb outward, and palm down.
+C-H4-39 is a Halo-4-native implementation of only that free-hand presentation.
+The headset-accepted C-H4-38 support target is copied unchanged; right hand,
+held gun, every translation and scale, record ownership/order, no-IK policy,
+camera, aim, and stereo are unchanged.
+
+H4EK pins Storm wrist node 37 `b_l_hand` and its direct children node 43
+`b_l_middle1` and node 46 `b_l_thumb1`. Their default wrist-local translations
+are respectively `(-0.00297,-0.03872,-0.00605)` and
+`(0.0112261,-0.00861943,-0.01287)`. Production derives the corresponding live
+rays from the exact current Storm palette rather than hard-coding those values.
+For normalized live wrist-local middle ray `f` and thumb ray `t`, it computes
+`o=normalize(t-dot(t,f)f)`, `u=cross(f,o)`, and anatomy basis `A=[f o u]`.
+The free wrist rotation becomes `rawLeftController * transpose(A)`. Therefore
+`f` maps to controller-forward, the retained-sign thumb component `o` maps to
+controller-left/outward, and `cross(thumb,middle)` maps to controller-down:
+the palm faces down and the back of the hand faces up. This is a proper
+determinant-+1 rotation and changes neither target translation nor scale.
+
+Invalid optional middle/thumb anatomy publishes no partial target and retains
+the exact C-H4-38 free result (its live-thumb pi flip when available, otherwise
+the raw reroot). That fallback does not reject the right hand or held model and
+cannot disarm the camera/OpenXR session. Support bypasses anatomy entirely and
+remains byte-for-byte C-H4-38. Worker telemetry counts committed anatomical
+free targets, exact C-H4-38 support targets, and C-H4-38 free fallbacks.
+
+Offline tests use noncommuting bases and the official direct-child offsets.
+They pin middle/thumb mapping, palm-down/back-up sign, determinant +1,
+translation/scale equality, end-to-end subtree carry, write-last failure for
+collinear/non-finite anatomy, and exact support independence. C-H4-39 remains
+headset-pending; C-H4-1 remains the accepted rollback pointer.

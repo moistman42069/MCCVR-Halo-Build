@@ -7732,6 +7732,71 @@ int main()
         // Its exact authored ray and the thumb-base ray define the title's
         // stable palm plane rather than an arbitrary algebra-only vector.
         const float middleBaseOffset[3]={-0.00297f,-0.03872f,-0.00605f};
+        Halo4FloatingTransform middleLocal{};
+        for (int axis=0;axis<3;++axis)
+            middleLocal.translation[axis]=middleBaseOffset[axis];
+        Halo4FloatingTransform stockMiddleBase{};
+        Check(Halo4ComposeFloatingTransforms(
+                  stockEye0,middleLocal,stockMiddleBase),
+            "The official direct-child middle base can be represented in the live Storm wrist frame");
+
+        // C-H4-39 replaces only the rejected free-hand heading. The live
+        // direct-child middle and thumb rays form an anatomical basis whose
+        // transpose maps fingers to controller-forward, thumb outward to
+        // controller-left, and the back of the hand to controller-up.
+        float fingerForward[3]={
+            middleBaseOffset[0],middleBaseOffset[1],middleBaseOffset[2]};
+        float fingerLength=sqrtf(
+            fingerForward[0]*fingerForward[0]+fingerForward[1]*fingerForward[1]+
+            fingerForward[2]*fingerForward[2]);
+        for (float& value : fingerForward) value/=fingerLength;
+        float thumbAlongFinger=0.0f;
+        for (int axis=0;axis<3;++axis)
+            thumbAlongFinger+=thumbAxis[axis]*fingerForward[axis];
+        float thumbOutward[3]={
+            thumbAxis[0]-thumbAlongFinger*fingerForward[0],
+            thumbAxis[1]-thumbAlongFinger*fingerForward[1],
+            thumbAxis[2]-thumbAlongFinger*fingerForward[2]};
+        float outwardLength=sqrtf(
+            thumbOutward[0]*thumbOutward[0]+thumbOutward[1]*thumbOutward[1]+
+            thumbOutward[2]*thumbOutward[2]);
+        for (float& value : thumbOutward) value/=outwardLength;
+        const float anatomyUp[3]={
+            fingerForward[1]*thumbOutward[2]-fingerForward[2]*thumbOutward[1],
+            fingerForward[2]*thumbOutward[0]-fingerForward[0]*thumbOutward[2],
+            fingerForward[0]*thumbOutward[1]-fingerForward[1]*thumbOutward[0]};
+        Halo4FloatingTransform freeAnatomicalTarget{};
+        Check(Halo4BuildFloatingFreeLeftAnatomicalTarget(
+                  selectedFreeCarrier,stockEye0,stockThumbBase,stockMiddleBase,
+                  freePalmTarget,freeAnatomicalTarget),
+            "C-H4-39 builds the free wrist from Halo 4's live middle/thumb anatomy");
+        Check(freeAnatomicalTarget.translation[0]==freePalmTarget.translation[0] &&
+                  freeAnatomicalTarget.translation[1]==freePalmTarget.translation[1] &&
+                  freeAnatomicalTarget.translation[2]==freePalmTarget.translation[2] &&
+                  freeAnatomicalTarget.scale==freePalmTarget.scale,
+            "The C-H4-39 anatomical correction changes free-hand orientation only");
+        float mappedFinger[3]{},mappedOutward[3]{},mappedUp[3]{};
+        rotateDirection(freeAnatomicalTarget.rotation,fingerForward,mappedFinger);
+        rotateDirection(freeAnatomicalTarget.rotation,thumbOutward,mappedOutward);
+        rotateDirection(freeAnatomicalTarget.rotation,anatomyUp,mappedUp);
+        bool anatomyMapsToController=true;
+        for (int row=0;row<3;++row)
+            anatomyMapsToController=anatomyMapsToController &&
+                fabsf(mappedFinger[row]-selectedFreeCarrier.rotation[row])<1.0e-5f &&
+                fabsf(mappedOutward[row]-selectedFreeCarrier.rotation[3+row])<1.0e-5f &&
+                fabsf(mappedUp[row]-selectedFreeCarrier.rotation[6+row])<1.0e-5f;
+        Check(anatomyMapsToController,
+            "Free fingers face controller-forward, thumb faces outward, and the back of the hand faces up");
+        float anatomyBasis[9]{};
+        Check(Halo4NormalizeFloatingBasis(
+                  freeAnatomicalTarget.rotation,anatomyBasis),
+            "The free anatomical target remains a finite proper basis");
+        const float anatomyDeterminant=
+            anatomyBasis[0]*(anatomyBasis[4]*anatomyBasis[8]-anatomyBasis[7]*anatomyBasis[5])-
+            anatomyBasis[3]*(anatomyBasis[1]*anatomyBasis[8]-anatomyBasis[7]*anatomyBasis[2])+
+            anatomyBasis[6]*(anatomyBasis[1]*anatomyBasis[5]-anatomyBasis[4]*anatomyBasis[2]);
+        Check(fabsf(anatomyDeterminant-1.0f)<1.0e-4f,
+            "The free anatomical mount is a rotation, never a reflected hand");
         float palmNormal[3]={
             thumbAxis[1]*middleBaseOffset[2]-
                 thumbAxis[2]*middleBaseOffset[1],
@@ -7743,6 +7808,13 @@ int main()
             palmNormal[0]*palmNormal[0]+palmNormal[1]*palmNormal[1]+
             palmNormal[2]*palmNormal[2]);
         for (float& value : palmNormal) value/=palmLength;
+        float anatomicalPalmNormal[3]{};
+        rotateDirection(
+            freeAnatomicalTarget.rotation,palmNormal,anatomicalPalmNormal);
+        Check(fabsf(anatomicalPalmNormal[0]+selectedFreeCarrier.rotation[6])<1.0e-5f &&
+                  fabsf(anatomicalPalmNormal[1]+selectedFreeCarrier.rotation[7])<1.0e-5f &&
+                  fabsf(anatomicalPalmNormal[2]+selectedFreeCarrier.rotation[8])<1.0e-5f,
+            "The palm normal faces controller-down, placing the back of the free hand upward");
         float palmBefore[3]{},palmAfter[3]{};
         rotateDirection(freeStateReroot.rotation,palmNormal,palmBefore);
         rotateDirection(freePalmTarget.rotation,palmNormal,palmAfter);
@@ -7782,6 +7854,34 @@ int main()
                     freeMovedThumb.translation[2])<1.0e-5f,
             "The end-to-end free-palm subtree carry leaves the thumb-base origin exactly where C-H4-36 placed it");
 
+        Halo4FloatingTransform anatomyDelta{},movedMiddle{};
+        Check(Halo4BuildFloatingWorldDelta(
+                  freeAnatomicalTarget,stockEye0,anatomyDelta) &&
+              Halo4ComposeFloatingTransforms(
+                  anatomyDelta,stockMiddleBase,movedMiddle),
+            "The C-H4-39 production delta carries the middle-base node with the anatomical wrist");
+        float carriedMiddleRay[3]={
+            movedMiddle.translation[0]-freeAnatomicalTarget.translation[0],
+            movedMiddle.translation[1]-freeAnatomicalTarget.translation[1],
+            movedMiddle.translation[2]-freeAnatomicalTarget.translation[2]};
+        const float carriedMiddleLength=sqrtf(
+            carriedMiddleRay[0]*carriedMiddleRay[0]+
+            carriedMiddleRay[1]*carriedMiddleRay[1]+
+            carriedMiddleRay[2]*carriedMiddleRay[2]);
+        for (float& value : carriedMiddleRay) value/=carriedMiddleLength;
+        Check(fabsf(carriedMiddleRay[0]-selectedFreeCarrier.rotation[0])<1.0e-5f &&
+                  fabsf(carriedMiddleRay[1]-selectedFreeCarrier.rotation[1])<1.0e-5f &&
+                  fabsf(carriedMiddleRay[2]-selectedFreeCarrier.rotation[2])<1.0e-5f,
+            "End-to-end subtree carry leaves the free fingers facing controller-forward");
+
+        Halo4FloatingTransform untouchedAnatomy{};
+        untouchedAnatomy.translation[0]=66.0f;
+        Check(!Halo4BuildFloatingFreeLeftAnatomicalTarget(
+                  selectedFreeCarrier,stockEye0,stockThumbBase,stockThumbBase,
+                  freePalmTarget,untouchedAnatomy) &&
+                  untouchedAnatomy.translation[0]==66.0f,
+            "Collinear free anatomy refuses write-last and leaves C-H4-38 available as fallback");
+
         Halo4FloatingTransform invalidThumb=stockThumbBase;
         invalidThumb.translation[0]=
             std::numeric_limits<float>::quiet_NaN();
@@ -7793,6 +7893,13 @@ int main()
                   memcmp(&supportTarget,&supportStateReroot,
                          sizeof(supportTarget))==0,
             "The exact prepared-frame two-hand state preserves the C-H4-38 shared-right-aim-rotation target byte-for-byte and ignores the free-palm dependency");
+        Halo4FloatingTransform untouchedInvalidAnatomy{};
+        untouchedInvalidAnatomy.translation[0]=55.0f;
+        Check(!Halo4BuildFloatingFreeLeftAnatomicalTarget(
+                  selectedFreeCarrier,stockEye0,invalidThumb,stockMiddleBase,
+                  freePalmTarget,untouchedInvalidAnatomy) &&
+                  untouchedInvalidAnatomy.translation[0]==55.0f,
+            "Non-finite optional anatomy cannot publish over the exact C-H4-38 fallback target");
         Halo4FloatingTransform zeroThumb=stockEye0;
         Halo4FloatingTransform untouchedPalm{};
         untouchedPalm.translation[0]=88.0f;
@@ -7910,7 +8017,7 @@ int main()
         "Halo 4 advertises stereo, controller aim, haptics, runtime modes, "
         "room scale and controller input");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
-        "Halo 4 withholds ArmIk: C-H4-38 has one rigid no-IK floating-hands "
+        "Halo 4 withholds ArmIk: C-H4-39 has one rigid no-IK floating-hands "
         "transaction on the proven first-person return site");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
         "Halo 4 withholds Hud: its CUI arrives inside the captured scene "
