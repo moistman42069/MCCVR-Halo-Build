@@ -7139,6 +7139,227 @@ int main()
         Halo4FirstPersonNode fromBadNode{};
         Check(!Halo4TransformAssemblyNode(notANode, yaw, shift, fromBadNode),
             "A node that fails the format check is left alone");
+
+        // C-H4-34: floating hands are a tested final-palette ownership map,
+        // not a scale-everything guess inside the render detour.
+        int rightHands = 0;
+        int leftHands = 0;
+        int collapseRight = 0;
+        int collapseLeft = 0;
+        int hidden = 0;
+        for (int node = 0; node < kHalo4StormFpBodyNodeCount; ++node)
+        {
+            switch (Halo4ClassifyFloatingNode(node))
+            {
+            case Halo4FloatingNodeRole::RightHand: ++rightHands; break;
+            case Halo4FloatingNodeRole::LeftHand: ++leftHands; break;
+            case Halo4FloatingNodeRole::CollapseAtRightWrist:
+                ++collapseRight;
+                break;
+            case Halo4FloatingNodeRole::CollapseAtLeftWrist:
+                ++collapseLeft;
+                break;
+            case Halo4FloatingNodeRole::Hidden: ++hidden; break;
+            case Halo4FloatingNodeRole::OutsideBody:
+                Check(false, "Every Storm body node has a floating-hands role");
+                break;
+            }
+        }
+        Check(rightHands == 23 && leftHands == 20 &&
+                  collapseRight == 16 && collapseLeft == 16 && hidden == 5,
+            "The H4EK Storm mask keeps 43 hand nodes, wrist-collapses 32 arm "
+            "influences, and hides the five unrelated body nodes");
+        Check(Halo4ClassifyFloatingNode(kHalo4RightHandNode) ==
+                  Halo4FloatingNodeRole::RightHand &&
+              Halo4ClassifyFloatingNode(kHalo4LeftHandNode) ==
+                  Halo4FloatingNodeRole::LeftHand &&
+              Halo4ClassifyFloatingNode(kHalo4RightElbowNode) ==
+                  Halo4FloatingNodeRole::CollapseAtRightWrist &&
+              Halo4ClassifyFloatingNode(kHalo4LeftElbowNode) ==
+                  Halo4FloatingNodeRole::CollapseAtLeftWrist,
+            "Both wrists stay visible while each cross-weighted forearm "
+            "collapses at its own solved wrist");
+        Check(Halo4ClassifyFloatingNode(-1) ==
+                  Halo4FloatingNodeRole::OutsideBody &&
+              Halo4ClassifyFloatingNode(kHalo4StormFpBodyNodeCount) ==
+                  Halo4FloatingNodeRole::OutsideBody,
+            "The floating-hands map never claims a node outside storm_fp");
+        bool rightClosureExact = true;
+        for (int node : kHalo4RightShoulderSubtree)
+        {
+            const auto role = Halo4ClassifyFloatingNode(node);
+            rightClosureExact = rightClosureExact &&
+                (role == Halo4FloatingNodeRole::RightHand ||
+                 role == Halo4FloatingNodeRole::CollapseAtRightWrist);
+        }
+        bool leftClosureExact = true;
+        for (int node : kHalo4LeftShoulderSubtree)
+        {
+            const auto role = Halo4ClassifyFloatingNode(node);
+            leftClosureExact = leftClosureExact &&
+                (role == Halo4FloatingNodeRole::LeftHand ||
+                 role == Halo4FloatingNodeRole::CollapseAtLeftWrist);
+        }
+        Check(rightClosureExact && leftClosureExact,
+            "Every H4EK arm descendant is either kept as a hand or co-located "
+            "with the matching wrist; no ribbon influence is left behind");
+
+        Check(Halo4FloatingHandCacheIsCurrent(7,100,7,100) &&
+                  Halo4FloatingHandCacheIsCurrent(7,100,7,99),
+            "The gun accepts only this pair's or the immediately prior body's "
+            "untouched local wrist relation");
+        Check(!Halo4FloatingHandCacheIsCurrent(7,100,7,98) &&
+                  !Halo4FloatingHandCacheIsCurrent(7,100,7,101) &&
+                  !Halo4FloatingHandCacheIsCurrent(7,100,8,100) &&
+                  !Halo4FloatingHandCacheIsCurrent(0,100,0,100) &&
+                  !Halo4FloatingHandCacheIsCurrent(7,0,7,0),
+            "A stale, future, cross-generation, or unkeyed body relation can "
+            "never move a Halo 4 weapon record");
+        Check(Halo4FloatingRelationPairIsCurrent(
+                  3,7,100,true,3,7,99,true,3,7,99) &&
+              !Halo4FloatingRelationPairIsCurrent(
+                  3,7,100,true,3,7,99,false,3,7,99) &&
+              !Halo4FloatingRelationPairIsCurrent(
+                  3,7,100,true,3,7,99,true,3,7,98) &&
+              !Halo4FloatingRelationPairIsCurrent(
+                  3,7,100,true,3,7,99,true,4,7,99),
+            "Stereo gun admission accepts only a complete, same-serial, "
+            "same-epoch relation pair");
+
+        // The exact final-hook invariant: BODY wrists are world-rooted. Cache
+        // inverse(eye)*stock, reconstruct through each eye, and derive both
+        // body and gun deltas against one shared physical target.
+        Halo4FloatingTransform eye0{}, eye1{}, localWrist{}, targetWorld{};
+        eye0.translation[0] = -0.032f;
+        eye1.translation[0] = 0.032f;
+        // A non-yaw camera root does not commute with the wrist yaw.
+        // Keeping both eyes at identity here would let an order/transpose bug
+        // hide behind yaw-only algebra.
+        const float eyePitch = 0.42f;
+        const float ce = cosf(eyePitch);
+        const float se = sinf(eyePitch);
+        eye0.rotation[4] = ce;
+        eye0.rotation[5] = se;
+        eye0.rotation[7] = -se;
+        eye0.rotation[8] = ce;
+        memcpy(eye1.rotation,eye0.rotation,sizeof(eye0.rotation));
+        localWrist.translation[0] = 0.45f;
+        localWrist.translation[1] = -0.18f;
+        localWrist.translation[2] = 0.08f;
+        localWrist.scale = 1.25f;
+        const float relationYaw = 0.35f;
+        localWrist.rotation[0] = cosf(relationYaw);
+        localWrist.rotation[1] = sinf(relationYaw);
+        localWrist.rotation[3] = -sinf(relationYaw);
+        localWrist.rotation[4] = cosf(relationYaw);
+        targetWorld.translation[0] = 4.25f;
+        targetWorld.translation[1] = -1.50f;
+        targetWorld.translation[2] = 2.10f;
+        targetWorld.scale = localWrist.scale;
+        const float targetPitch = -0.6f;
+        const float ct = cosf(targetPitch);
+        const float st = sinf(targetPitch);
+        targetWorld.rotation[0] = ct;
+        targetWorld.rotation[2] = -st;
+        targetWorld.rotation[6] = st;
+        targetWorld.rotation[8] = ct;
+
+        Halo4FloatingTransform stockEye0{}, stockEye1{};
+        Check(Halo4ComposeFloatingTransforms(
+                  eye0, localWrist, stockEye0) &&
+              Halo4ComposeFloatingTransforms(
+                  eye1, localWrist, stockEye1),
+            "Each stock BODY wrist is currentEye times one eye-local relation");
+        Check(fabsf(stockEye0.translation[0] - (-0.032f + 0.45f)) <
+                  1.0e-5f &&
+              fabsf(stockEye1.translation[0] - (0.032f + 0.45f)) <
+                  1.0e-5f &&
+              fabsf(stockEye0.translation[1] -
+                    (ce * -0.18f - se * 0.08f)) < 1.0e-5f &&
+              fabsf(stockEye0.translation[2] -
+                    (se * -0.18f + ce * 0.08f)) < 1.0e-5f &&
+              fabsf(stockEye0.rotation[0] - cosf(relationYaw)) < 1.0e-5f &&
+              fabsf(stockEye0.rotation[1] -
+                    ce * sinf(relationYaw)) < 1.0e-5f &&
+              fabsf(stockEye0.rotation[2] -
+                    se * sinf(relationYaw)) < 1.0e-5f &&
+              fabsf(stockEye0.rotation[7] + se) < 1.0e-5f &&
+              fabsf(stockEye0.scale - 1.25f) < 1.0e-5f,
+            "The eye-times-wrist result matches the manually expanded "
+            "noncommuting column-basis transform and non-unit scale");
+        Halo4FloatingTransform cached0{}, cached1{};
+        Check(Halo4BuildFloatingEyeLocalWrist(
+                  eye0, stockEye0, cached0) &&
+              Halo4BuildFloatingEyeLocalWrist(
+                  eye1, stockEye1, cached1),
+            "The body transaction strips only the current eye from stock");
+        for (int i = 0; i < 9; ++i)
+            Check(fabsf(cached0.rotation[i] - cached1.rotation[i]) < 1.0e-5f &&
+                      fabsf(cached0.rotation[i] - localWrist.rotation[i]) <
+                          1.0e-5f,
+                "Both eyes cache the same stock-wrist orientation relation");
+        for (int i = 0; i < 3; ++i)
+            Check(fabsf(cached0.translation[i] - cached1.translation[i]) <
+                      1.0e-5f &&
+                      fabsf(cached0.translation[i] -
+                            localWrist.translation[i]) < 1.0e-5f,
+                "Both eyes cache the same stock-wrist position relation");
+        Check(fabsf(cached0.scale-localWrist.scale)<1.0e-5f &&
+                  fabsf(cached1.scale-localWrist.scale)<1.0e-5f,
+            "Eye-local reconstruction preserves the authored wrist scale");
+
+        const auto landsOnTarget = [&](const Halo4FloatingTransform& eyeRoot,
+                                       const Halo4FloatingTransform& stock,
+                                       const Halo4FloatingTransform& cached)
+        {
+            Halo4FloatingTransform bodyDelta{}, bodyResult{};
+            Halo4FloatingTransform rebuiltStock{}, gunDelta{}, gunResult{};
+            return Halo4BuildFloatingWorldDelta(
+                       targetWorld, stock, bodyDelta) &&
+                Halo4ComposeFloatingTransforms(
+                       bodyDelta, stock, bodyResult) &&
+                Halo4ComposeFloatingTransforms(
+                       eyeRoot, cached, rebuiltStock) &&
+                Halo4BuildFloatingWorldDelta(
+                       targetWorld, rebuiltStock, gunDelta) &&
+                Halo4ComposeFloatingTransforms(
+                       gunDelta, rebuiltStock, gunResult) &&
+                [&]()
+                {
+                    for (int i = 0; i < 9; ++i)
+                        if (fabsf(bodyResult.rotation[i] -
+                                  targetWorld.rotation[i]) >= 1.0e-5f ||
+                            fabsf(gunResult.rotation[i] -
+                                  targetWorld.rotation[i]) >= 1.0e-5f)
+                            return false;
+                    for (int i = 0; i < 3; ++i)
+                        if (fabsf(bodyResult.translation[i] -
+                                  targetWorld.translation[i]) >= 1.0e-5f ||
+                            fabsf(gunResult.translation[i] -
+                                  targetWorld.translation[i]) >= 1.0e-5f)
+                            return false;
+                    return fabsf(bodyResult.scale-targetWorld.scale)<1.0e-5f &&
+                        fabsf(gunResult.scale-targetWorld.scale)<1.0e-5f;
+                }();
+        };
+        Check(landsOnTarget(eye0,stockEye0,cached0) &&
+                  landsOnTarget(eye1,stockEye1,cached1),
+            "Direct BODY and reconstructed-gun deltas land both eyes on the "
+            "same frozen world target");
+        Check(Halo4FloatingWristDeltaPlausible(0.7f,0.33f) &&
+                  !Halo4FloatingWristDeltaPlausible(300.0f,0.33f) &&
+                  !Halo4FloatingWristDeltaPlausible(
+                      std::numeric_limits<float>::quiet_NaN(),0.33f),
+            "The hand transaction admits physical movement but refuses the "
+            "hundreds-of-units frame mix measured in the rejected line");
+        Halo4FloatingTransform collapsedTransform{};
+        collapsedTransform.scale=0.0001f;
+        Halo4FloatingTransform composedCollapsed{};
+        Check(Halo4FloatingTransformValid(collapsedTransform) &&
+                  !Halo4ComposeFloatingTransforms(
+                      collapsedTransform,eye0,composedCollapsed),
+            "A final hidden wrist copy remains finite but can never re-enter "
+            "the composable rigid-transform path");
     }
 
     // C-H4-9: the closed loop that keeps Halo 4's own look pitch - and so its
@@ -7218,9 +7439,9 @@ int main()
                    TitleCapability_ControllerInput),
         "Halo 4 advertises stereo, controller aim, haptics, runtime modes, "
         "room scale and controller input");
-    Check(halo4Row && (halo4Row->capabilities & TitleCapability_ArmIk),
-        "Halo 4 advertises ArmIk: C-H4-14 installs the final-palette solve on "
-        "the proven first-person return site");
+    Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
+        "Halo 4 withholds ArmIk: C-H4-34 has one rigid no-IK floating-hands "
+        "transaction on the proven first-person return site");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
         "Halo 4 withholds Hud: its CUI arrives inside the captured scene "
         "target, so no title-specific HUD redirect is installed to gate");

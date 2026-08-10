@@ -288,6 +288,28 @@ inline constexpr char kHalo4ModelSkinningPattern[] =
     "B8 30 31 00 00 E8 ?? ?? ?? ?? 48 2B E0 48 8D AC 24 A0 00 00 00 "
     "48 83 E5 80";
 
+// H4EK `model_skinning` gets the render-model tag and loops exactly
+// `render_model.nodes.count`.  The pinned retail homolog inlines that lookup.
+// These two unique windows prove the exact input-node boundary independently
+// of argument 7, which is a GPU skinning-palette size and must never be reused
+// as an input-node count.
+inline constexpr uint32_t kHalo4ModelSkinningTagLookupRva = 0x33D8FD;
+inline constexpr uint32_t kHalo4ModelSkinningNodeCountRva = 0x33D984;
+inline constexpr uint32_t kHalo4ModelSkinningTagLookupReloadRva = 0x33D955;
+inline constexpr uint32_t kHalo4RenderModelTagIndexPointerRva = 0x107C0B0;
+inline constexpr uint32_t kHalo4RenderModelGroupBaseTableRva = 0x496A180;
+inline constexpr char kHalo4ModelSkinningTagLookupPattern[] =
+    "44 0F B7 FA 4C 8D 05 ?? ?? ?? ?? 48 8B 15 ?? ?? ?? ?? 33 DB "
+    "4C 89 4D 00 48 89 7D 08 42 8B 74 FA 04 8B C6 48 89 75 10 "
+    "48 C1 E8 1C 4D 8B 34 C0";
+inline constexpr char kHalo4ModelSkinningNodeCountPattern[] =
+    "46 8B 6C FA 04 44 8B FB 41 8B C5 48 C1 E8 1C 49 8B 14 C0 "
+    "42 8B 4C AA 34 46 8B 54 AA 30 8B C1 48 C1 E8 1C 49 8B 04 C0 "
+    "4C 8D 04 88 45 85 D2";
+inline constexpr char kHalo4ModelSkinningTagLookupReloadPattern[] =
+    "48 8B 15 ?? ?? ?? ?? 4C 8D 05 ?? ?? ?? ?? 4C 8B E0 "
+    "41 F6 44 B6 04 04 4C 8D 8D 80 00 00 00";
+
 // storm_fp.render_model, H4EK 1.890.0.0.  The body owns nodes 0..79; the
 // composed first-person record observed in retail has five appended weapon
 // nodes.  These indices and parent relationships are tag facts, not copied
@@ -300,6 +322,265 @@ inline constexpr int kHalo4RightHandNode = 29;
 inline constexpr int kHalo4LeftShoulderNode = 5;
 inline constexpr int kHalo4LeftElbowNode = 8;
 inline constexpr int kHalo4LeftHandNode = 37;
+
+// Exact storm_fp descendant sets mechanically extracted from the official
+// H4EK render-model parent table.  Keep these in the title logic rather than in
+// the render detour so the floating-hands ownership boundary is unit-testable.
+inline constexpr int kHalo4RightShoulderSubtree[] = {
+    4,11,12,14,15,16,17,18,22,26,27,29,30,31,34,36,38,40,41,42,
+    44,45,49,50,52,53,55,56,58,63,65,66,67,68,71,72,76,77,78};
+inline constexpr int kHalo4RightElbowSubtree[] = {
+    16,22,26,27,29,30,31,34,36,38,40,41,42,44,45,49,50,52,53,
+    55,56,58,63,65,66,67,68,71,72,76,77,78};
+inline constexpr int kHalo4RightHandSubtree[] = {
+    29,40,41,42,44,45,49,50,52,53,55,56,58,63,65,66,67,68,71,
+    72,76,77,78};
+inline constexpr int kHalo4LeftShoulderSubtree[] = {
+    5,7,8,9,10,13,19,20,21,23,24,25,28,32,33,35,37,39,43,46,47,
+    48,51,54,57,59,60,61,62,64,69,70,73,74,75,79};
+inline constexpr int kHalo4LeftElbowSubtree[] = {
+    8,21,23,24,25,28,32,33,35,37,39,43,46,47,48,51,54,57,59,60,
+    61,62,64,69,70,73,74,75,79};
+inline constexpr int kHalo4LeftHandSubtree[] = {
+    37,39,43,46,47,48,51,54,57,59,60,61,62,64,69,70,73,74,75,79};
+
+template <size_t N>
+inline constexpr bool Halo4StormNodeInSet(
+    const int (&nodes)[N], int node) noexcept
+{
+    for (int candidate : nodes)
+        if (candidate == node)
+            return true;
+    return false;
+}
+
+enum class Halo4FloatingNodeRole : uint8_t
+{
+    OutsideBody,
+    Hidden,
+    CollapseAtRightWrist,
+    CollapseAtLeftWrist,
+    RightHand,
+    LeftHand,
+};
+
+// Visibility is the final step, after both rigid hand carries.  Arm/helper
+// influences which share vertices with a hand collapse at that solved wrist;
+// leaving them at their authored pivots is the black-ribbon failure already
+// proven and fixed in Reach.
+inline constexpr Halo4FloatingNodeRole Halo4ClassifyFloatingNode(
+    int node) noexcept
+{
+    if (node < 0 || node >= kHalo4StormFpBodyNodeCount)
+        return Halo4FloatingNodeRole::OutsideBody;
+    if (Halo4StormNodeInSet(kHalo4RightHandSubtree, node))
+        return Halo4FloatingNodeRole::RightHand;
+    if (Halo4StormNodeInSet(kHalo4LeftHandSubtree, node))
+        return Halo4FloatingNodeRole::LeftHand;
+    if (Halo4StormNodeInSet(kHalo4RightShoulderSubtree, node))
+        return Halo4FloatingNodeRole::CollapseAtRightWrist;
+    if (Halo4StormNodeInSet(kHalo4LeftShoulderSubtree, node))
+        return Halo4FloatingNodeRole::CollapseAtLeftWrist;
+    return Halo4FloatingNodeRole::Hidden;
+}
+
+// The weapon records are consumed before the body record that supplies the
+// untouched right-wrist relation.  A root-local relation from this prepared
+// serial or the immediately preceding one is admissible; anything older is a
+// stale animation transaction, never an alternate placement path.
+inline constexpr bool Halo4FloatingHandCacheIsCurrent(
+    uint32_t generation, uint64_t preparedSerial,
+    uint32_t cachedGeneration, uint64_t cachedPreparedSerial) noexcept
+{
+    if (!generation || !preparedSerial || generation != cachedGeneration ||
+        !cachedPreparedSerial || cachedPreparedSerial > preparedSerial)
+        return false;
+    return cachedPreparedSerial == preparedSerial ||
+        preparedSerial - cachedPreparedSerial == 1;
+}
+
+// Stereo admission is one cache transaction. Both relations must have been
+// published together with identical metadata; accepting two independently
+// fresh entries can still combine different reload/recoil animation pairs.
+inline constexpr bool Halo4FloatingRelationPairIsCurrent(
+    uint32_t epoch, uint32_t generation, uint64_t preparedSerial,
+    bool firstValid, uint32_t firstEpoch, uint32_t firstGeneration,
+    uint64_t firstPreparedSerial,
+    bool secondValid, uint32_t secondEpoch, uint32_t secondGeneration,
+    uint64_t secondPreparedSerial) noexcept
+{
+    return epoch && firstValid && secondValid &&
+        firstEpoch == epoch && secondEpoch == epoch &&
+        firstGeneration == secondGeneration &&
+        firstPreparedSerial == secondPreparedSerial &&
+        Halo4FloatingHandCacheIsCurrent(
+            generation, preparedSerial,
+            firstGeneration, firstPreparedSerial);
+}
+
+// Critical C-H4-34 algebra is kept title-side and unit tested.  The final H4
+// BODY record observed at the proven consumer is world-rooted.  Cache only its
+// eye-local stock-wrist relation, then rebuild that stock wrist through each
+// current eye before deriving the gun's world delta.  A world transform from a
+// prior eye is never cached or replayed.
+struct Halo4FloatingTransform
+{
+    float scale = 1.0f;
+    float rotation[9]{1.0f,0.0f,0.0f, 0.0f,1.0f,0.0f, 0.0f,0.0f,1.0f};
+    float translation[3]{};
+};
+
+inline bool Halo4NormalizeFloatingBasis(
+    const float input[9], float output[9]) noexcept
+{
+    for (int column = 0; column < 3; ++column)
+    {
+        float lengthSquared = 0.0f;
+        for (int row = 0; row < 3; ++row)
+        {
+            const float value = input[column * 3 + row];
+            if (!std::isfinite(value)) return false;
+            lengthSquared += value * value;
+        }
+        if (!std::isfinite(lengthSquared) || lengthSquared < 1.0e-8f)
+            return false;
+        const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+        for (int row = 0; row < 3; ++row)
+            output[column * 3 + row] =
+                input[column * 3 + row] * inverseLength;
+    }
+    for (int first = 0; first < 3; ++first)
+        for (int second = first + 1; second < 3; ++second)
+        {
+            float dot = 0.0f;
+            for (int row = 0; row < 3; ++row)
+                dot += output[first * 3 + row] *
+                    output[second * 3 + row];
+            if (!std::isfinite(dot) || std::fabs(dot) > 0.02f)
+                return false;
+        }
+    const float determinant =
+        output[0] * (output[4] * output[8] - output[7] * output[5]) -
+        output[3] * (output[1] * output[8] - output[7] * output[2]) +
+        output[6] * (output[1] * output[5] - output[4] * output[2]);
+    return std::isfinite(determinant) && determinant > 0.9f;
+}
+
+inline bool Halo4FloatingTransformValid(
+    const Halo4FloatingTransform& transform) noexcept
+{
+    if (!std::isfinite(transform.scale) ||
+        std::fabs(transform.scale) < 1.0e-6f)
+        return false;
+    for (float value : transform.translation)
+        if (!std::isfinite(value)) return false;
+    float normalized[9];
+    return Halo4NormalizeFloatingBasis(transform.rotation, normalized);
+}
+
+inline bool Halo4ComposeFloatingTransforms(
+    const Halo4FloatingTransform& left,
+    const Halo4FloatingTransform& right,
+    Halo4FloatingTransform& output) noexcept
+{
+    float leftBasis[9], rightBasis[9];
+    if (std::fabs(left.scale) < 0.001f ||
+        std::fabs(right.scale) < 0.001f ||
+        !Halo4FloatingTransformValid(left) ||
+        !Halo4FloatingTransformValid(right) ||
+        !Halo4NormalizeFloatingBasis(left.rotation, leftBasis) ||
+        !Halo4NormalizeFloatingBasis(right.rotation, rightBasis))
+        return false;
+    Halo4FloatingTransform result{};
+    result.scale = left.scale * right.scale;
+    if (!std::isfinite(result.scale) ||
+        std::fabs(result.scale) < 0.001f)
+        return false;
+    for (int column = 0; column < 3; ++column)
+        for (int row = 0; row < 3; ++row)
+        {
+            float value = 0.0f;
+            for (int inner = 0; inner < 3; ++inner)
+                value += leftBasis[inner * 3 + row] *
+                    rightBasis[column * 3 + inner];
+            result.rotation[column * 3 + row] = value;
+        }
+    for (int row = 0; row < 3; ++row)
+    {
+        float rotated = 0.0f;
+        for (int column = 0; column < 3; ++column)
+            rotated += leftBasis[column * 3 + row] *
+                right.translation[column];
+        result.translation[row] =
+            left.translation[row] + left.scale * rotated;
+    }
+    if (!Halo4FloatingTransformValid(result)) return false;
+    output = result;
+    return true;
+}
+
+inline bool Halo4InvertFloatingTransform(
+    const Halo4FloatingTransform& input,
+    Halo4FloatingTransform& output) noexcept
+{
+    float basis[9];
+    if (std::fabs(input.scale) < 0.001f ||
+        !Halo4FloatingTransformValid(input) ||
+        !Halo4NormalizeFloatingBasis(input.rotation, basis))
+        return false;
+    Halo4FloatingTransform result{};
+    result.scale = 1.0f / input.scale;
+    for (int column = 0; column < 3; ++column)
+        for (int row = 0; row < 3; ++row)
+            result.rotation[column * 3 + row] = basis[row * 3 + column];
+    for (int row = 0; row < 3; ++row)
+    {
+        float rotated = 0.0f;
+        for (int column = 0; column < 3; ++column)
+            rotated += result.rotation[column * 3 + row] *
+                input.translation[column];
+        result.translation[row] = -result.scale * rotated;
+    }
+    if (!Halo4FloatingTransformValid(result)) return false;
+    output = result;
+    return true;
+}
+
+inline bool Halo4BuildFloatingEyeLocalWrist(
+    const Halo4FloatingTransform& eyeRoot,
+    const Halo4FloatingTransform& stockWorld,
+    Halo4FloatingTransform& stockLocal) noexcept
+{
+    Halo4FloatingTransform inverseEye{};
+    return Halo4InvertFloatingTransform(eyeRoot, inverseEye) &&
+        Halo4ComposeFloatingTransforms(inverseEye, stockWorld, stockLocal);
+}
+
+inline bool Halo4BuildFloatingWorldDelta(
+    const Halo4FloatingTransform& desiredWorld,
+    const Halo4FloatingTransform& stockWorld,
+    Halo4FloatingTransform& deltaWorld) noexcept
+{
+    Halo4FloatingTransform inverseStock{};
+    return Halo4InvertFloatingTransform(stockWorld, inverseStock) &&
+        Halo4ComposeFloatingTransforms(
+            desiredWorld, inverseStock, deltaWorld);
+}
+
+// A tracked wrist is normally a fraction of one Halo world unit from the
+// stock first-person wrist. Ten physical metres (with a two-world-unit floor)
+// is intentionally far outside normal play, but still rejects the hundreds-of-
+// units frame mix measured in the failed Halo 4 line before it reaches skinning.
+inline bool Halo4FloatingWristDeltaPlausible(
+    float distance, float worldScale) noexcept
+{
+    if (!std::isfinite(distance) || distance < 0.0f ||
+        !std::isfinite(worldScale) || worldScale <= 0.0f)
+        return false;
+    const float maximum = worldScale * 10.0f > 2.0f
+        ? worldScale * 10.0f : 2.0f;
+    return distance <= maximum;
+}
 
 // Authored v4 pole directions and controller-local attachment positions.
 // Positions are metres and are intentionally independent of Blender empty
@@ -677,6 +958,7 @@ inline constexpr int32_t kHalo4FirstPersonBankTransforms =
 inline constexpr uint32_t kHalo4FirstPersonRecordBankOffset = 0xB0;
 inline constexpr uint32_t kHalo4FirstPersonRecordFillFlagOffset = 0x08;
 inline constexpr int32_t kHalo4FirstPersonBodyFillFlag = 0;
+inline constexpr int32_t kHalo4FirstPersonWeaponFillFlag = 1;
 
 // H4EK storm_fp.render_model bind lengths in world units: upper arms 0.0915251,
 // forearms 0.116662. Animation rotates a link but cannot change its length, so

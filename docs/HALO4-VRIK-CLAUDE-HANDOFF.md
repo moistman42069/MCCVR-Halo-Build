@@ -1,5 +1,14 @@
 # Halo 4 VRIK handoff — updated 2026-08-08 for C-H4-14
 
+> **Superseded on 2026-08-10.** Everything below is historical evidence, not
+> current implementation guidance. The user rejected the C-H4-14..33 hand/IK
+> line in full. The active headset-pending restart is E-H4-23 / C-H4-34: rigid
+> floating hands, no IK, no argument-7 admission, exact render-model
+> `nodes.count`, and one all-or-stock hand/gun palette transaction. Read
+> `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-23 and `docs/CURRENT-STATE.md` before
+> acting; none of this handoff's current-state or implementation instructions
+> remain active.
+
 ## Read this first
 
 Read `AGENTS.md`, `CLAUDE.md`, `docs/CURRENT-STATE.md`, and the bottom of

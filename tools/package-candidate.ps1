@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-33'
+            id = 'C-H4-34'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'e-h4-22-body-fill-root-is-null-so-the-storm-arms-are-solved-in-the-records-own-pedestal-anchored-model-frame-from-the-live-head-pose-with-a-measured-rig-scale-a-per-eye-stereo-offset-and-the-gun-carried-by-the-hand-motion-conjugated-into-the-weapon-world-frame'
+            behavior = 'one-no-ik-floating-hands-transaction-freezes-world-controller-wrists-once-per-stereo-pair-applies-direct-world-rigid-deltas-to-both-h4ek-hand-subtrees-collapses-cross-weighted-arm-influences-at-the-solved-wrists-atomically-publishes-only-complete-per-eye-local-stock-wrist-relation-pairs-and-rebuilds-each-gun-delta-through-the-current-eye-over-the-exact-resolved-render-model-node-count-with-all-or-stock-commit-and-prior-pair-animation-error-telemetry'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -195,13 +195,13 @@ try {
             # visible without any HUD redirect. User-confirmed 2026-08-08.
             hud = 'native-inside-captured-scene-no-redirect'
             first_person_hands = $true
-            arm_ik = $true
+            arm_ik = $false
             floating_hands = $true
             weapon_follows_hand = $true
             failure_policy =
                 'pre-claim-stock-post-claim-frame-drop-core-remains-armed'
             vrik_failure_policy =
-                'per-stage-counted-refusal-passes-the-engines-own-matrices-camera-core-remains-armed'
+                'one-rigid-algorithm-only-invalid-input-commits-no-alternate-hand-palette-camera-core-remains-armed'
         }
         # Reach support is permanent, while player-visible optional features
         # fail open independently and never disarm the working camera core.

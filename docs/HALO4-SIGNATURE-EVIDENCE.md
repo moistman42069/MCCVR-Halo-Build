@@ -3043,3 +3043,168 @@ on the named debug variables `enable_first_person_squish` (`0xE8467C`) and
 not that ratio, so the first-person layer is expected to remain magnified
 relative to the world after C-H4-29. That is the next candidate, not this one,
 and it has a no-hook lever by name.
+
+## E-H4-23 / C-H4-34 - no-IK floating-hands restart
+
+**User rejection of the implementation line, 2026-08-10:** the last preserved
+live run is C-H4-31 (`d73155a`, Steam, VirtualDesktopXR 1.0.10, Meta Quest 3,
+120 Hz; DLL SHA-256
+`8F3BD954E8AE40A2FD667C6735C135B64FB8334C82DBF9763FF2E29D6FC16098`).
+The user reported that floating hands had never worked and everything
+about the hands and gun was broken, then rejected the C-H4-30..33 architecture
+instead of requesting another repair on top. C-H4-32 and C-H4-33 were packaged
+after that run but have no later live log and are not described as headset
+results. The restart instruction is explicit: retain the working Halo 4
+camera/stereo/aim process, keep floating hands, remove IK from Halo 4, and do
+not add an alternate hand algorithm. None of C-H4-30..33 advances
+`docs/CURRENT-STATE.md`.
+
+The restart keeps only boundaries already proven for Halo 4:
+
+- the immutable, exact-prepared-serial OpenXR head/right-aim/left-controller
+  snapshot published before either eye;
+- the current-eye camera root published after the setup readback has verified
+  that exact eye;
+- the unique final `model_skinning` consumer at retail `0x33D8B8` and exact
+  first-person return `0x36F3C9`;
+- the engine-written record flag at header `+0x08`, measured in retail as one
+  body fill (`0`) and two weapon fills (`1`) per eye;
+- the official H4EK `storm_fp.render_model` body count, wrist indices and exact
+  descendant sets.
+
+### Exact input-node boundary
+
+The final consumer must know how many matrices each weapon record actually
+owns; transforming until stale fixed-bank storage stops looking like a matrix
+can submit a moved prefix plus a stock suffix. This count is not argument 7.
+
+The official H4EK `halo4_tag_test.exe` `model_skinning` first calls
+`tag_get('mode', render_model_index)` at `0x793EAF..0x793EB6`, takes
+`render_model+0x30` at `0x793EC2`, and uses that field as the exact node-loop
+count at `0x793ECC` / `0x793F41`. The pinned retail homolog inlines the lookup:
+
+```
+33D8FD  movzx r15d,dx
+33D901  lea   r8,[rip+...]             -> base+0x496A180
+33D908  mov   rdx,[rip+...]            -> *(base+0x107C0B0)
+33D919  mov   esi,[rdx+r15*8+4]        ; packed render-model handle
+33D924  shr   rax,28
+33D928  mov   r14,[r8+rax*8]           ; biased group base
+...
+33D984  mov   r13d,[rdx+r15*8+4]
+33D98F  shr   rax,28
+33D993  mov   rdx,[r8+rax*8]
+33D99C  mov   r10d,[rdx+r13*4+0x30]    ; render_model.nodes.count
+```
+
+The implementation reproduces the exact zero-extended formula and requires
+`1..120`:
+
+```
+indexBase = *(base + 0x107C0B0)
+packed    = *(uint32_t *)(indexBase + renderModelIndex*8 + 4)
+biased    = *(base + 0x496A180 + (packed >> 28)*8)
+count     = *(int32_t *)(biased + uint64_t(packed)*4 + 0x30)
+```
+
+The exact masked windows shipped by C-H4-34 are:
+
+| RVA | Masked AOB | Steam | Store |
+| --- | --- | ---: | ---: |
+| `0x33D8FD` | `44 0F B7 FA 4C 8D 05 ?? ?? ?? ?? 48 8B 15 ?? ?? ?? ?? 33 DB 4C 89 4D 00 48 89 7D 08 42 8B 74 FA 04 8B C6 48 89 75 10 48 C1 E8 1C 4D 8B 34 C0` | 1 | 1 |
+| `0x33D955` | `48 8B 15 ?? ?? ?? ?? 4C 8D 05 ?? ?? ?? ?? 4C 8B E0 41 F6 44 B6 04 04 4C 8D 8D 80 00 00 00` | 1 | 1 |
+| `0x33D984` | `46 8B 6C FA 04 44 8B FB 41 8B C5 48 C1 E8 1C 49 8B 14 C0 42 8B 4C AA 34 46 8B 54 AA 30 8B C1 48 C1 E8 1C 49 8B 04 C0 4C 8D 04 88 45 85 D2` | 1 | 1 |
+
+Each matches exactly once at the same raw offset in both installed modules.
+Both RIP-relative copies must independently resolve the same two pinned
+globals. Failure blocks only floating hands/gun and leaves the camera armed.
+BODY additionally requires this exact count to equal the official
+`storm_fp` count 80. A weapon privately copies the fixed bank, transforms
+exactly `nodes.count`, and submits it only if every one succeeds.
+
+### One active no-IK transaction
+
+The old algorithm remains dormant as required by `AGENTS.md`; the detour no
+longer calls it. The preserved C-H4-31 live log is decisive about the final
+hook boundary: BODY slot 0 repeatedly arrives around 394 world units with a
+camera-like basis (for example tilt `0.9935`). E-H4-22's disassembly remains
+correct that the BODY filler receives no extra camera root, but its conclusion
+that the matrices reaching this later hook are model-local was disproved by the
+live value already present upstream. C-H4-34 therefore never mixes a localized
+target with a world stock wrist.
+
+Before either eye, the outer stereo scope freezes both absolute world wrist
+targets from one immutable prepared snapshot and one common capture of Halo
+4's private reference pair, pre-HMD gameplay origin, world scale, signs,
+comfort standoff, H4 trims, and H4EK-authored wrist attachments. C-H4-33's
+writes into the other titles' shared reference globals are disabled. Both
+plausibility checks consume that same frozen world scale.
+
+For BODY eye `e`, with world stock wrist `S_e` and the pair-frozen physical
+target `T`:
+
+```
+D_body,e = T * inverse(S_e)
+```
+
+That one rigid delta moves every node in the exact H4EK hand subtree. Both
+right and left targets and carries must succeed before the private 80-node body
+palette is submitted. There is no shoulder/elbow solve, no IK, and no IK
+fallback. A deliberately generous ten-metre physical plausibility bound rejects
+the hundreds-of-units frame mix measured in the failed line.
+
+Visibility is last. The 23-node right and 20-node left hand sets remain. The 16
+hidden right-arm and 16 hidden left-arm influences become `0.0001`-scale copies
+of their solved same-side wrist; only the five unrelated body nodes scale at
+their own positions. This is the accepted Reach wrist-co-location mechanism,
+not C-H4-30..33's in-place cross-weight collapse. It directly addresses the
+official H4EK measurement of 222 right and 235 left vertices crossing the
+forearm/hand boundary.
+
+Halo 4 consumes both weapon records before the BODY record. BODY therefore
+publishes only an untouched eye-local relation for the *next* pair:
+
+```
+L_e = inverse(EyeRoot_e) * S_e
+```
+
+There is one relation per eye. At pair entry, both relations and both targets
+freeze before eye 0 or eye 1 can render. BODY calls stage into the active pair;
+the outer `finally` publishes neither relation or both same-serial relations,
+so a partial pair cannot combine different reload/recoil animation samples on
+the next frame. A published pair is admitted only for the same
+generation/install epoch and the same or immediately preceding prepared
+serial. Weapon eye `e` reconstructs and moves in world space:
+
+```
+S_hat,e = EyeRoot_e * L_e
+D_gun,e = T * inverse(S_hat,e)
+```
+
+No prior eye's world transform is cached or replayed. Weapon admission requires
+both current controller targets and both pair-frozen eye relations before
+either eye can move, so invalid left-hand input or a missing BODY eye cannot
+emit a moved gun beside a refused/stock body or split the gun between eyes.
+
+The producer's proven order means weapon calls for pair `N` occur before BODY
+can publish `L_N`; the gun therefore uses the most recent complete relation
+pair (normally `N-1`). This is the one primary algorithm, not a fallback, and
+it is stereo coherent, but reload/recoil can still make it one animation sample
+old. C-H4-34 measures that exact uncertainty when BODY later arrives and logs
+the two-second peak between reconstructed `S_hat_N` and actual `S_N` in world
+units and degrees. Eliminating a measured nontrivial error would require a
+separately proven current-BODY capture upstream of the weapon consumers; it is
+not guessed into this restart.
+
+Core tests pin the full visibility partition (23 right hand, 20 left hand, 16
+right wrist-collapse, 16 left wrist-collapse, five hidden), verify that every
+official shoulder descendant belongs to its matching hand/closure, reject
+stale/future/cross-generation/unkeyed relations, and exercise the exact matrix
+invariant `S_e = EyeRoot_e * L_e`: direct BODY and reconstructed weapon deltas
+for both eyes must land on the same frozen `T`. Halo 4 no longer advertises
+`TitleCapability_ArmIk` in either the static registry or live lifecycle.
+
+Failure remains isolated to the exact palette as required by the project
+contract: invalid input submits no alternative VR hand algorithm and never
+disarms the camera or OpenXR session.  C-H4-34 is headset-pending and does not
+advance the accepted-build pointer.
