@@ -331,6 +331,10 @@ inline constexpr int kHalo4LeftHandNode = 37;
 // Official H4EK storm_fp b_l_middle1, a direct child of b_l_hand. Its live
 // wrist-relative origin supplies the free hand's stable finger-forward ray.
 inline constexpr int kHalo4LeftMiddleBaseNode = 43;
+// Headset-rejected C-H4-39 experiment. Keep its testable implementation for
+// evidence, but never select it in production: mapping the middle ray onto the
+// controller aim ray did not reproduce the H3/ODST/Reach grip reference.
+inline constexpr bool kEnableHalo4C39FreeAnatomy = false;
 // Official H4EK storm_fp b_l_thumb1, a direct child of b_l_hand. Its live
 // wrist-relative origin supplies a stable title-native outward axis without
 // coupling the whole wrist to articulated thumb2/thumb3 curl.

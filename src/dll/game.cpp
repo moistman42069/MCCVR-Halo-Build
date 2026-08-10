@@ -31253,7 +31253,8 @@ namespace
             if (!g_halo4FloatingPair.twoHandAimActive)
             {
                 Halo4FloatingTransform stockLeftMiddleBase{},anatomicalLeft{};
-                if (Halo4ToFloatingTransform(
+                if (kEnableHalo4C39FreeAnatomy &&
+                    Halo4ToFloatingTransform(
                         solved[kHalo4LeftMiddleBaseNode],
                         stockLeftMiddleBase) &&
                     Halo4BuildFloatingFreeLeftAnatomicalTarget(

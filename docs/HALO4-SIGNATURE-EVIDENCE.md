@@ -3608,5 +3608,22 @@ free targets, exact C-H4-38 support targets, and C-H4-38 free fallbacks.
 Offline tests use noncommuting bases and the official direct-child offsets.
 They pin middle/thumb mapping, palm-down/back-up sign, determinant +1,
 translation/scale equality, end-to-end subtree carry, write-last failure for
-collinear/non-finite anatomy, and exact support independence. C-H4-39 remains
-headset-pending; C-H4-1 remains the accepted rollback pointer.
+collinear/non-finite anatomy, and exact support independence. At package time
+C-H4-39 was headset-pending; C-H4-1 remained the accepted rollback pointer.
+
+C-H4-39 was headset-tested on Steam from exact source
+`5b72fc4350837ed7bb5c2fb2d068376a9d5ea0cc`, installed DLL SHA-256
+`7E6D36EA4F4B9BE74894D4755F2A9903BA56ED56EBD6DE78DA9BCD8E01D57D3A`.
+The log SHA-256 is
+`476CC1E85D564569D87CDD554D4DA11D8DBBDE05E594F573AA8481355E7AB06E`
+and identifies Steam, SteamVR/OpenXR 2.17.6, headset
+`SteamVR/OpenXR : oculus`, and 120 Hz. Thirty-seven telemetry windows committed
+56,584 Storm palettes and 56,584 adjacent held records with zero refusal: all
+56,584 selected the anatomical-free branch, with zero support and zero
+fallback. The user's screenshot rejects that free pose and supplies the
+H3/ODST/Reach controller-grip pose as the reference. The concrete error is the
+C-H4-39 policy itself: it maps Halo 4's middle-finger ray onto the controller's
+aim-forward ray, whereas the reference seats the authored wrist frame on the
+controller and lets the title's finger geometry wrap around the grip. This run
+does not retest or revoke the separately accepted C-H4-38 support pose.
+C-H4-39 is disabled in production and retained only as dormant tested evidence.
