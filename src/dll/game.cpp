@@ -33121,9 +33121,13 @@ namespace
                     "stock viewmodel FOV and everything else is unaffected");
             }
         }
-        // Optional and fail-open: a missing palette proof leaves the already
-        // working camera/session fully armed with stock hands.
-        InstallHalo4Vrik(base,size);
+        // C-H4-34 HEADSET REJECTED (2026-08-10): the live BODY render model
+        // reports 120 nodes, while that candidate required the 80-node Storm
+        // hand-prefix count. Every BODY transaction refused and no gun
+        // relation could publish. Keep the optional feature disabled at this
+        // rollback boundary; the working camera/session remains fully armed.
+        LOG("Halo 4 C-H4-34 floating hands disabled after headset rejection; "
+            "stock hands/gun remain while the camera core stays armed");
         PublishHalo4Lifecycle();
         LOG("Halo 4 camera core installed (generation %u): setup 0x%X and the "
             "render wrapper 0x%X are hooked at their pinned RVAs, both proven "

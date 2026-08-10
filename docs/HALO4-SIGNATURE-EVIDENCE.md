@@ -3206,5 +3206,20 @@ for both eyes must land on the same frozen `T`. Halo 4 no longer advertises
 
 Failure remains isolated to the exact palette as required by the project
 contract: invalid input submits no alternative VR hand algorithm and never
-disarms the camera or OpenXR session.  C-H4-34 is headset-pending and does not
-advance the accepted-build pointer.
+disarms the camera or OpenXR session.
+
+**HEADSET RESULT - FAILED/INERT, 2026-08-10.** Source `3260124`, DLL SHA-256
+`5EEED095B0BCDA7B2931B4DEED3BF3F50EDA44B620F09DD891E71D55F1540D0D`,
+Steam, SteamVR/OpenXR 2.17.6, headset reported as
+`SteamVR/OpenXR : oculus`, 120 Hz. The user reported that the gun remained
+stuck to the face. The log proves why without a placement theory: every active
+window has exact 1:2 BODY/weapon routing, zero unreadable or unexpected flags,
+and zero `nodes.count` resolver failures, but **zero commits**. For example,
+`1942 body / 3884 weapon / 5826 exact` is paired with 1942 BODY `count`
+refusals and zero refusals in every other BODY stage. The resolved live BODY
+render model has 120 nodes, while C-H4-34 incorrectly required the H4EK
+80-node Storm transform prefix as the render-model admission count. BODY never
+staged either eye relation, so every weapon correctly stayed stock. Camera
+ownership remained healthy (241 stereo pairs, zero drops in a representative
+window). C-H4-34 is rejected, is disabled before the next candidate, and does
+not advance the accepted-build pointer.
