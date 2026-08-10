@@ -3654,5 +3654,20 @@ Telemetry separately counts parity-wrist free commits, exact C-H4-38 support
 commits, and free fallback. Tests use noncommuting controller/eye/wrist bases to
 prove the free rotation is exactly controller times the mirrored mount, contains
 no eye-local wrist factor, preserves translation/scale, fails write-last, and
-does not touch the exact accepted support path. C-H4-40 is headset-pending;
-C-H4-1 remains the accepted rollback pointer.
+does not touch the exact accepted support path. At package time C-H4-40 was
+headset-pending; C-H4-1 remained the accepted rollback pointer.
+
+C-H4-40 was headset-tested on Steam from exact source
+`3024cca4166eb7bc608cd2d5bb4f1752a53e215b`, installed DLL SHA-256
+`2C6CCA97438A81FA2A41056843939AB150E8D2D015AB9E68BF34A142D3B08686`.
+The log SHA-256 is
+`C4EC08E56D02691F4F12200294BD394895E1522CBBFB615E6FDEB272A8DD1D42`
+and identifies Steam, SteamVR/OpenXR 2.17.6, headset
+`SteamVR/OpenXR : oculus`, and 120 Hz. Thirty-six telemetry windows committed
+58,488 Storm palettes and 58,488 adjacent held records with zero refusal: every
+palette selected parity-wrist free, with zero support and zero fallback. The
+user's screenshot shows the concrete visual failure: C-H4-40 exposes the palm
+toward the player, while the supplied reference exposes the back of the glove.
+Thus routing and branch selection are healthy; the unflipped parity wrist is
+the rejected behavior. C-H4-40 is disabled as a standalone production result.
+This run does not retest or revoke the accepted C-H4-38 support pose.

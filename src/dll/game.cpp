@@ -31248,7 +31248,8 @@ namespace
         else
         {
             Halo4FloatingTransform parityLeft{};
-            if (Halo4BuildFloatingFreeLeftParityTarget(
+            if (kEnableHalo4C40UnflippedParity &&
+                Halo4BuildFloatingFreeLeftParityTarget(
                     g_halo4FloatingPair.leftTargetWorld,
                     g_halo4FloatingPair.gunYawDeg,
                     g_halo4FloatingPair.gunPitchDeg,

@@ -721,6 +721,10 @@ inline bool Halo4BuildFloatingLeftCarrierForState(
 // with the shared mirrored presentation trim. Do not map a finger bone onto the
 // aim ray and do not retain Halo 4's camera-local wrist basis. Placement and
 // stock wrist scale come from the already-proven C-H4-38 target. Publish last.
+// Headset result: this unflipped mount exposes Halo 4's palm toward the player,
+// opposite the supplied back-of-glove reference. Keep the helper for C-H4-41's
+// corrected composition, but never publish the C-H4-40 result by itself.
+inline constexpr bool kEnableHalo4C40UnflippedParity = false;
 inline bool Halo4BuildFloatingFreeLeftParityTarget(
     const Halo4FloatingTransform& rawLeftControllerCarrier,
     float gunYawDeg, float gunPitchDeg, float gunRollDeg,
