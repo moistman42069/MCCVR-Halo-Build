@@ -1,6 +1,6 @@
 # Current state
 
-Authoritative as of 2026-08-07. This file is the only active accepted-build
+Authoritative as of 2026-08-10. This file is the only active accepted-build
 pointer. Detailed pre-cleanup experiments remain available in Git history; they
 are evidence, not instructions.
 
@@ -28,6 +28,31 @@ are evidence, not instructions.
 > - were false when read, and each cost hours because they were believed
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
+
+## CURRENT ACCEPTED HALO 4 POINTER: C-H4-43 - 2026-08-10
+
+**Use C-H4-43 as the Halo 4 development and rollback baseline.** The user
+headset-tested the installed candidate after the cross-title `left_hand`
+marker correction and concluded: "ok its finnaly at a good state i will
+continue building the rest of the mod on a new chat." This supersedes C-H4-1
+as the accepted Halo 4 pointer. It does not publish a new public release or
+replace the general `f4c641f` baseline for the already-shipped titles.
+
+| Identity | Value |
+| --- | --- |
+| Accepted source | `dd9946595511d65c9859b536e2727201c107da45` (branch `feature/halo4-bringup`) |
+| Candidate | C-H4-43, `out/candidates/dd99465-halo4-c43-cross-title-left-hand-marker-20260810-211855882Z` |
+| `halo3xr.dll` SHA-256 | `2E5E3C7707A07906DB5DB509587E762C9001EAFA08930191B098C8305D0B0EBC` |
+| `halo3xr_launcher.exe` SHA-256 | `28919AF90CCEB4C8D8ED7557988A90FB37A7C1DBD0E4A136F14D17DAEEB41C71` |
+| Installed editions | Steam and Microsoft Store; both DLL hashes independently matched |
+| Offline gates | Release build, `core_tests`, and Reach consistency check passed |
+| Headset result | **Accepted as a good continuation state.** Two-hand grip retains the explicitly accepted C-H4-38 pose; free left hand uses the official Halo 4 `left_hand` marker aligned to the H3/ODST/Reach controller-mounted frame. |
+
+Right hand, held-gun carry, all hand positions/scales, current-eye routing,
+no-IK policy, camera, aim, and stereo are the C-H4-43 baseline. C-H4-39 through
+C-H4-42 are rejected or disabled experiments and must not be resurrected as
+starting points. Detailed derivation is E-H4-32 in
+`docs/HALO4-SIGNATURE-EVIDENCE.md`.
 
 ## CURRENT BASELINE: `f4c641f` - 2026-08-06
 
@@ -105,7 +130,7 @@ remaining cost is the scene being rendered twice at `resolution_scale`.
 - None of the three commits was individually confirmed in a headset. The user
   ran the bytes and reported no regression; that is not per-item acceptance.
 
-## ACCEPTED, HALO 4 BRING-UP LINE: C-H4-1 adapter identity + controller input - 2026-08-06
+## PREVIOUSLY ACCEPTED HALO 4 BRING-UP LINE: C-H4-1 adapter identity + controller input - 2026-08-06
 
 **This does not move the baseline.** `f4c641f` above remains the development
 baseline and 0.3.3 remains the published release. This is the first Halo 4
@@ -151,11 +176,12 @@ the *negative* result, that arming the registry row was inert.
 Per-candidate evidence, the full log citation and the cross-title regression
 datapoints are in `docs/HALO4-SIGNATURE-EVIDENCE.md` under "Candidate status".
 
-### Installed forward ledger — NOT accepted; C-H4-1 remains the rollback pointer
+### Historical C-H4-1 forward ledger — superseded by accepted C-H4-43
 
-The installed files can be newer than the accepted pointer. That is the case
-now: C-H4-9 is installed in both editions for a look-pitch headset test, but
-**none of C-H4-2 through C-H4-9 advances C-H4-1**.
+At that point the installed files were newer than the accepted pointer:
+C-H4-9 was installed in both editions for a look-pitch headset test, but none
+of C-H4-2 through C-H4-9 advanced C-H4-1. This ledger is retained as history;
+C-H4-43 is now the current accepted Halo 4 pointer.
 
 | Candidate | Result / status |
 | --- | --- |

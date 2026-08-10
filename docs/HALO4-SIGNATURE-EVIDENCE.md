@@ -1,7 +1,8 @@
 # Halo 4 signature evidence
 
-Status: **C-H4-3, C-H4-4, C-H4-5, and C-H4-6 headset-FAILED; C-H4-1 remains
-the only accepted Halo 4 line.** C-H4-6 widened the eye scope to
+Status: **C-H4-43 is the current user-accepted Halo 4 continuation baseline.**
+C-H4-1 was the previous accepted line; intervening failures and superseded
+candidates remain recorded below as evidence. C-H4-6 widened the eye scope to
 `main_render_game`; its exact run completed zero pairs, stalled the visible
 game, exposed a `void` detour on a return value the caller consumes from `AL`,
 and exposed an invalid FOV diagnostic built on misidentified fields. Commit
@@ -3776,5 +3777,13 @@ exact C-H4-38 support commits, and fallback. Tests pin the official Halo 4
 marker basis, compose the production result back through `M`, and require the
 world marker to equal the noncommuting Reach-style controller target on all
 nine basis elements. They also pin placement/scale equality and write-last
-failure. C-H4-39 through C-H4-42 remain disabled. C-H4-43 is headset-pending;
-C-H4-1 remains the accepted pointer.
+failure. C-H4-39 through C-H4-42 remain disabled.
+
+The user then headset-tested the installed C-H4-43 candidate and concluded:
+"ok its finnaly at a good state i will continue building the rest of the mod
+on a new chat." That explicitly accepts C-H4-43 as the continuation baseline.
+The accepted source is `dd9946595511d65c9859b536e2727201c107da45` and the
+installed Steam and Store DLL SHA-256 is
+`2E5E3C7707A07906DB5DB509587E762C9001EAFA08930191B098C8305D0B0EBC`.
+C-H4-43 supersedes C-H4-1 as the accepted Halo 4 pointer; it does not turn the
+earlier rejected orientation candidates into evidence or acceptance.

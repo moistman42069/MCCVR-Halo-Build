@@ -33,6 +33,8 @@
 > `docs/CURRENT-STATE.md` before
 > acting; none of this handoff's current-state or implementation instructions
 > remain active.
+> The user headset-tested C-H4-43 and accepted it as a "good state" for
+> continued development. C-H4-43 is now the authoritative Halo 4 baseline.
 
 ## Read this first
 
