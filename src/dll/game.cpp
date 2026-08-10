@@ -29232,6 +29232,7 @@ namespace
         std::atomic<float> vrikPedestalScale{0.0f};
         std::atomic<float> vrikPedestalTilt{0.0f};
         std::atomic<float> vrikShoulderSpan{0.0f};
+        std::atomic<float> vrikTargetMiss{0.0f};
         std::atomic<float> vrikLastRightUpper{0.0f};
         std::atomic<float> vrikLastRightLower{0.0f};
         std::atomic<float> vrikLastLeftUpper{0.0f};
@@ -30089,8 +30090,44 @@ namespace
         input.verticalTrim=g_config.halo4_hand_vertical_m;
         input.lateralTrim=g_config.halo4_hand_lateral_m;
         input.mirrored=g_config.halo4_hands_mirrored;
+        // C-H4-33: BUILT BY THE SHARED CODE, exactly as Halo 3 and Reach build
+        // theirs. Halo 4 had its own private decomposition and its own private
+        // yaw/position reference pair; both are now the shared ones, so the
+        // hands go through `BuildTrackedGameBasisFromFrame` - the same function
+        // ControllerWorldPoseEx (Halo 3) and ReachBuildPreparedControllerTarget
+        // (Reach) call - and the same room-displacement expression underneath.
+        // Halo 4 should never have had a bespoke copy of this.
         Halo4ControllerWorldPose controller{};
-        if (!Halo4BuildControllerWorldPose(input,controller)) return false;
+        {
+            float basis[9];
+            BuildTrackedGameBasisFromFrame(cq,false,false,0.0f,0.0f,basis);
+            const float dx=cp[0]-g_headPosRef[0];
+            const float dy=cp[1]-g_headPosRef[1];
+            const float dz=cp[2]-g_headPosRef[2];
+            const float sh=sinf(g_headYawRef),ch=cosf(g_headYawRef);
+            const float roomForward=dx*sh-dz*ch;
+            const float roomRight=dx*ch+dz*sh;
+            const float cg=cosf(g_gameYawRef),sg=sinf(g_gameYawRef);
+            const float s=g_worldScale.load(std::memory_order_relaxed);
+            const float off[3]={
+                (cg*roomForward+sg*roomRight)*s,
+                (sg*roomForward-cg*roomRight)*s,
+                dy*s};
+            // Halo 3's standoff, along the controller's own forward column.
+            const float standoff=(left
+                ? Clamp(g_config.left_hand_forward_m,-0.15f,0.30f)
+                : Clamp(g_config.gun_forward_m,-0.3f,0.5f))*s;
+            memcpy(controller.basis,basis,sizeof(basis));
+            for (int axis=0;axis<3;++axis)
+            {
+                controller.position[axis]=
+                    bodyRoot.translation[axis]+off[axis]+basis[axis]*standoff;
+                if (!isfinite(controller.position[axis])) return false;
+            }
+            for (int i=0;i<9;++i)
+                if (!isfinite(controller.basis[i])) return false;
+        }
+        (void)input;
 
         const float authoredRight[4] =
             {-0.583606601f,0.000000213f,-0.698711872f,0.413769424f};
@@ -30590,6 +30627,20 @@ namespace
                 Halo4VrikStage::LeftPoseFailed)].fetch_add(
                     1,std::memory_order_relaxed);
 
+        // THE ONE NUMBER THAT SAYS WHETHER THE PLACEMENT IS SANE, and which no
+        // previous candidate ever measured: how far the target we computed is
+        // from where Halo 4 is actually drawing the hand right now.
+        //
+        // A hand's worth of movement is a few tenths of a world unit. If this
+        // reads in that range the target is in the right space and only needs
+        // trimming. If it reads in the hundreds, the target is in a different
+        // space entirely and no amount of tuning will help. Every failed
+        // candidate so far could have been classified in one glance by this.
+        if (bodyFill)
+            g_halo4Camera.vrikTargetMiss.store(
+                Halo4VrikDistance(solved[kHalo4RightHandNode],rightTarget),
+                std::memory_order_relaxed);
+
         // One rigid delta per hand, over that hand's own subtree. Same shape as
         // the accepted Halo 3 wrist carry: D = desired o inverse(stockWrist).
         if (!Halo4CarryHandRigid(
@@ -31047,6 +31098,7 @@ namespace
                     x * (g_config.turn_smooth_deg_s / 57.2958f) * dt);
                 g_halo4Camera.gameYawReference.store(
                     reference, std::memory_order_relaxed);
+                g_gameYawRef = reference;   // C-H4-33: shared pair stays in step
                 g_halo4Camera.vrTurns.fetch_add(1, std::memory_order_relaxed);
             }
         }
@@ -31056,6 +31108,7 @@ namespace
                 (x > 0 ? 1.0f : -1.0f) * g_config.turn_snap_deg / 57.2958f);
             g_halo4Camera.gameYawReference.store(
                 reference, std::memory_order_relaxed);
+            g_gameYawRef = reference;   // C-H4-33: shared pair stays in step
             g_halo4Camera.vrTurns.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -31528,6 +31581,16 @@ namespace
                     g_halo4Camera.headPositionReference[axis].store(
                         snapshot.headPosition[axis], std::memory_order_relaxed);
                 }
+                // C-H4-33: keep the SHARED reference triplet in step, because
+                // the hands are now built by the same shared code Halo 3, ODST
+                // and Reach all use. Halo 4 having its own private copy of this
+                // pair is the divergence that made its hands a bespoke problem
+                // in the first place; only one title owns the camera at a time,
+                // so writing the shared pair here cannot disturb another.
+                g_gameYawRef = atan2f(stock.forward[1], stock.forward[0]);
+                g_headYawRef = head.yaw;
+                for (int axis = 0; axis < 3; ++axis)
+                    g_headPosRef[axis] = snapshot.headPosition[axis];
                 g_halo4Camera.headReferenceValid.store(
                     true, std::memory_order_release);
             }
@@ -32741,6 +32804,12 @@ namespace
             // to the measurement is the whole point of the line.
             const float rigScale=
                 g_halo4Camera.vrikRigScale.load(std::memory_order_relaxed);
+            LOG("Halo 4 C-H4-32 VRIK placement: the computed right-hand target "
+                "is %.4f world units from where Halo 4 is drawing that hand. "
+                "A few tenths means the target is in the right space and only "
+                "needs trimming; hundreds means it is in the wrong space "
+                "entirely and no trim can reach it",
+                g_halo4Camera.vrikTargetMiss.load(std::memory_order_relaxed));
             LOG("Halo 4 C-H4-29 VRIK model frame: pedestal translation %.4f "
                 "scale %.4f, pedestal tilt from identity %.4f (near 0 means "
                 "this record carries no camera, as the body fill's NULL root "
