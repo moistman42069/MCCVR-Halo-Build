@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c42-restored-closest-free',
+        'halo4-c43-cross-title-left-hand-marker',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 '954359b7f786b78c76824b662ead3c1fc8cd7917'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-42'
+            id = 'C-H4-43'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'exact-c37-free-left-mirrored-controller-carrier-live-current-eye-wrist-reroot-and-thumb-axis-turnover-combined-only-by-state-with-byte-identical-user-accepted-c38-support'
+            behavior = 'free-left-aligns-the-official-halo4-left_hand-marker-to-the-direct-h3-odst-reach-controller-mounted-left_hand-frame-by-solving-wrist-times-marker-equals-controller-while-c38-support-remains-byte-identical'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -200,17 +200,17 @@ try {
             weapon_follows_hand = $true
             controller_facing_orientation = $true
             orientation_source =
-                'free-exact-c37-mirrored-carrier-live-wrist-reroot-thumb-turnover-support-exact-c38-frozen-right-aim'
+                'free-official-halo4-left_hand-marker-inverse-under-h3-odst-reach-mounted-controller-support-exact-c38-frozen-right-aim'
             left_presentation_trim =
                 'free-minus-yaw-plus-pitch-minus-roll-matching-h3-odst-reach-support-exact-c38-shared-prepared-right-aim'
             free_left_palm =
-                'exact-c37-live-b_l_thumb1-pi-turnover-restored-with-no-c39-c40-c41-layer'
+                'official-left_hand-marker-frame-parity-no-c39-c40-c41-c42-layer'
             two_hand_left_pose =
                 'byte-identical-c38-right-aim-shared-rotational-parent-with-live-left-wrist-relation-left-translation-unchanged'
             failure_policy =
                 'pre-claim-stock-post-claim-frame-drop-core-remains-armed'
             vrik_failure_policy =
-                'base-rigid-or-state-parent-invalid-input-leaves-that-palette-stock-while-optional-free-thumb-invalid-input-keeps-the-valid-c37-mirrored-carrier-reroot-and-continues-right-hand-held-model-and-camera-core'
+                'base-rigid-or-state-parent-invalid-input-leaves-that-palette-stock-while-optional-marker-parity-invalid-input-keeps-the-valid-c38-free-reroot-and-continues-right-hand-held-model-and-camera-core'
         }
         # Reach support is permanent, while player-visible optional features
         # fail open independently and never disarm the working camera core.
@@ -285,7 +285,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-42 is an unaccepted headset candidate responding to the live C-H4-41 Steam/SteamVR OpenXR PSVR2 90 Hz run from source 794829ed5b050c3c52ad5922ca0b9546a00a9118 and DLL D8C71A7A361859A2AF599B34E79C0C47776F2205CA56BFF7BA4FEFE90AAFC823. At audit time it had committed 105,648 C-H4-41 free palettes with zero support/fallback/refusal, and the user supplied three views showing it substantially farther from the desired pose while explicitly saying the first flip was closest. C-H4-42 stops guessing: free is restored exactly to C-H4-37''s mirrored controller carrier, live current-eye wrist reroot and thumb-axis turnover; support remains byte-identical to the user-accepted C-H4-38 right-aim parent. C-H4-39, C-H4-40 and C-H4-41 stay disabled. Right hand, held gun, every position/scale, record routing, no-IK policy and camera process are unchanged. Invalid optional free-thumb input retains the valid mirrored-carrier reroot and continues right/gun. C-H4-1 remains the accepted rollback pointer until explicit headset acceptance.'
+        note = 'C-H4-43 is an unaccepted headset candidate responding to the user''s explicit direction to use the accepted Halo 3, ODST and Reach left-hand orientation instead of treating any rejected Halo 4 pose as a baseline. Official Reach tags place left_hand at identity on l_hand, matching the direct controller-mounted runtime wrist target shared by the three accepted titles. Official H4EK Storm tags place left_hand on identity child b_l_hand_marker_offset but give the marker local quaternion (-0.706223,0.701140,-0.0353406,0.0916652). C-H4-43 therefore solves Halo4Wrist*Halo4Marker=AcceptedTitleControllerMount for free mode instead of equating incompatible wrist bone axes. Support remains byte-identical to user-accepted C-H4-38. C-H4-39 through C-H4-42 remain disabled. Right hand, held gun, every position/scale, routing, no-IK policy and camera are unchanged. Invalid optional marker parity retains the C-H4-38 free reroot and continues right/gun. C-H4-1 remains the accepted rollback pointer until explicit headset acceptance.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

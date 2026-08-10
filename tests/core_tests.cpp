@@ -7646,6 +7646,48 @@ int main()
                        freeStateReroot.rotation[i])>1.0e-3f;
         Check(parityDoesNotRetainEyeWrist,
             "The noncommuting fixture proves C-H4-40 removed the rejected live camera-local wrist relation");
+        // C-H4-43 uses the named cross-title attachment frame, not wrist-bone
+        // axis equality. Reach's official left_hand marker is identity on its
+        // wrist. This is Halo 4's official left_hand marker quaternion on
+        // identity child b_l_hand_marker_offset, converted to a Blam basis.
+        const float halo4LeftHandMarkerBasis[9]={
+            0.0143071814f,-0.996801702f,-0.0786236117f,
+            -0.983843685f,-0.0000000752f,-0.179029617f,
+            0.178457021f,0.0799147531f,-0.980697060f};
+        Halo4FloatingTransform markerParityTarget{};
+        Check(Halo4BuildFloatingFreeLeftMarkerParityTarget(
+                  expectedParityCarrier,halo4LeftHandMarkerBasis,
+                  freeStateReroot,markerParityTarget),
+            "C-H4-43 solves Halo 4's wrist from its official left_hand marker and the Reach-style controller mount");
+        Halo4FloatingTransform markerLocal{},movedMarker{};
+        memcpy(markerLocal.rotation,halo4LeftHandMarkerBasis,
+               sizeof(markerLocal.rotation));
+        Check(Halo4ComposeFloatingTransforms(
+                  markerParityTarget,markerLocal,movedMarker),
+            "The solved Halo 4 wrist carries its named left_hand marker into world space");
+        bool markerMatchesOtherTitles=true;
+        for (int i=0;i<9;++i)
+            markerMatchesOtherTitles=markerMatchesOtherTitles &&
+                fabsf(movedMarker.rotation[i]-
+                       expectedParityCarrier.rotation[i])<1.0e-5f;
+        Check(markerMatchesOtherTitles,
+            "Halo 4's left_hand marker—not its incompatible wrist bone axes—equals the H3/ODST/Reach controller target");
+        Check(markerParityTarget.translation[0]==freeStateReroot.translation[0] &&
+                  markerParityTarget.translation[1]==freeStateReroot.translation[1] &&
+                  markerParityTarget.translation[2]==freeStateReroot.translation[2] &&
+                  markerParityTarget.scale==freeStateReroot.scale,
+            "Cross-title marker parity changes free-hand orientation only");
+        float invalidMarkerBasis[9];
+        memcpy(invalidMarkerBasis,halo4LeftHandMarkerBasis,
+               sizeof(invalidMarkerBasis));
+        invalidMarkerBasis[0]=std::numeric_limits<float>::quiet_NaN();
+        Halo4FloatingTransform untouchedMarkerParity{};
+        untouchedMarkerParity.translation[0]=22.0f;
+        Check(!Halo4BuildFloatingFreeLeftMarkerParityTarget(
+                  expectedParityCarrier,invalidMarkerBasis,freeStateReroot,
+                  untouchedMarkerParity) &&
+                  untouchedMarkerParity.translation[0]==22.0f,
+            "Invalid optional marker calibration publishes nothing over the C-H4-38 fallback");
         Halo4FloatingTransform untouchedParity{};
         untouchedParity.translation[0]=44.0f;
         Check(!Halo4BuildFloatingFreeLeftParityTarget(
@@ -8128,7 +8170,7 @@ int main()
         "Halo 4 advertises stereo, controller aim, haptics, runtime modes, "
         "room scale and controller input");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
-        "Halo 4 withholds ArmIk: C-H4-42 has one rigid no-IK floating-hands "
+        "Halo 4 withholds ArmIk: C-H4-43 has one rigid no-IK floating-hands "
         "transaction on the proven first-person return site");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
         "Halo 4 withholds Hud: its CUI arrives inside the captured scene "

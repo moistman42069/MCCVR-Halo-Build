@@ -744,6 +744,44 @@ inline bool Halo4BuildFloatingClosestLeftCarrierForState(
     return true;
 }
 
+// C-H4-43 transfers the frame the other titles actually target. Reach's
+// official `left_hand` marker is identity on l_hand, matching the direct wrist
+// target used by H3/ODST/Reach. Halo 4's official `left_hand` marker is rotated
+// relative to b_l_hand. Solve wrist * markerLocal = controllerMount, hence
+// wrist = controllerMount * inverse(markerLocal). This aligns the named hand
+// attachment frame instead of pretending different games' wrist bone axes are
+// interchangeable. Placement and stock scale are preserved. Publish last.
+inline bool Halo4BuildFloatingFreeLeftMarkerParityTarget(
+    const Halo4FloatingTransform& controllerMountedCarrier,
+    const float halo4LeftHandMarkerLocalBasis[9],
+    const Halo4FloatingTransform& placementTemplate,
+    Halo4FloatingTransform& desiredWorldWrist) noexcept
+{
+    if (!halo4LeftHandMarkerLocalBasis ||
+        !Halo4FloatingTransformValid(controllerMountedCarrier) ||
+        !Halo4FloatingTransformValid(placementTemplate))
+        return false;
+    float carrierBasis[9],markerBasis[9];
+    if (!Halo4NormalizeFloatingBasis(
+            controllerMountedCarrier.rotation,carrierBasis) ||
+        !Halo4NormalizeFloatingBasis(
+            halo4LeftHandMarkerLocalBasis,markerBasis))
+        return false;
+    Halo4FloatingTransform result=placementTemplate;
+    for (int column=0;column<3;++column)
+        for (int row=0;row<3;++row)
+        {
+            float value=0.0f;
+            for (int inner=0;inner<3;++inner)
+                value+=carrierBasis[inner*3+row]*
+                    markerBasis[inner*3+column];
+            result.rotation[column*3+row]=value;
+        }
+    if (!Halo4FloatingTransformValid(result)) return false;
+    desiredWorldWrist=result;
+    return true;
+}
+
 // C-H4-40 matches the H3/ODST/Reach free-hand contract shown by the headset
 // reference: seat the authored wrist basis directly on the tracked controller
 // with the shared mirrored presentation trim. Do not map a finger bone onto the

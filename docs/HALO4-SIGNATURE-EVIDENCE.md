@@ -3741,3 +3741,40 @@ Before deployment, the user clarified that "closest" did not mean correct and
 that none of the previous free poses is an acceptable baseline. C-H4-42 is
 therefore disabled without a headset run. Its package was never installed and
 it must not be treated as evidence for or against a visible transform.
+
+## E-H4-32 / C-H4-43 - cross-title `left_hand` marker parity
+
+The user explicitly directed comparison with Halo 3, ODST, and Reach, whose
+independent left-hand orientation is already accepted. Prior candidates copied
+their controller wrist target while assuming Halo 4's wrist bone axes describe
+the same semantic frame. Official tags disprove that assumption.
+
+Reach's official `spartan-fp` render model places marker `left_hand` directly on
+node 14 `l_hand` at zero translation and identity rotation. This matches the
+accepted runtime path: `ReachBuildPreparedControllerTarget` constructs the raw
+left-controller basis with the shared mirrored mount and publishes it directly
+as the wrist target. Halo 3 and ODST share the corresponding direct
+`DesiredWristWorld` controller target. Halo 4's official Storm model instead
+places marker `left_hand` on identity child node 54
+`b_l_hand_marker_offset`, but gives the marker local quaternion
+`(-0.706223,0.701140,-0.0353406,0.0916652)`. Halo 4's named hand frame is
+therefore not its wrist bone basis.
+
+C-H4-43 aligns the semantic marker frames. For the accepted-title mounted
+left-controller frame `C` and Halo 4 marker-local basis `M`, it solves
+`W*M=C`, hence `W=C*inverse(M)`, and publishes `W` as the free Halo 4 wrist.
+This is derived from the actual cross-title attachment frames rather than
+screenshots, Blender controls, anatomical guesses, or raw wrist-axis equality.
+Target translation and stock scale remain unchanged. Two-hand support bypasses
+it and stays byte-identical to the accepted C-H4-38 right-aim parent. Right
+hand/gun, record routing/lifetime, no-IK policy, camera, aim, and stereo remain
+unchanged.
+
+Invalid optional marker or carrier input retains the valid C-H4-38 free reroot
+and cannot affect right/gun/core. Telemetry counts marker-parity free commits,
+exact C-H4-38 support commits, and fallback. Tests pin the official Halo 4
+marker basis, compose the production result back through `M`, and require the
+world marker to equal the noncommuting Reach-style controller target on all
+nine basis elements. They also pin placement/scale equality and write-last
+failure. C-H4-39 through C-H4-42 remain disabled. C-H4-43 is headset-pending;
+C-H4-1 remains the accepted pointer.

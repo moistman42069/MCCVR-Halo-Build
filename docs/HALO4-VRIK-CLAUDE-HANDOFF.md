@@ -21,12 +21,15 @@
 > its exact run selected the bad branch 58,488 times with zero fallback/refusal.
 > C-H4-41 composed both transforms, but a 90 Hz PSVR2 run selected it over
 > 105,648 times with zero fallback/refusal and three supplied views showed it
-> substantially farther from the desired pose. The user explicitly said the
-> first free flip was closest. The active headset-pending restart is E-H4-31 /
-> C-H4-42: free is restored exactly to C-H4-37, support remains byte-for-byte
-> the user-accepted C-H4-38, and C-H4-39..41 remain disabled. Positions,
+> substantially farther from the desired pose. The user then rejected every
+> previous pose as a valid baseline and explicitly directed comparison with
+> Halo 3, ODST and Reach. Official tags expose the missing semantic conversion:
+> those titles target an identity `left_hand` marker on the wrist, while Halo
+> 4's `left_hand` marker has a nonidentity local rotation. The active restart is
+> E-H4-32 / C-H4-43: free solves wrist*H4Marker=accepted-title controller mount;
+> support remains byte-for-byte C-H4-38 and C-H4-39..42 remain disabled. Positions,
 > right/gun carry, routing, no-IK, and camera remain unchanged. Read
-> `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24 through E-H4-31 and
+> `docs/HALO4-SIGNATURE-EVIDENCE.md` E-H4-24 through E-H4-32 and
 > `docs/CURRENT-STATE.md` before
 > acting; none of this handoff's current-state or implementation instructions
 > remain active.
