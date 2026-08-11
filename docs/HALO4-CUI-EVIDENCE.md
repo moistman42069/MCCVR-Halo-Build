@@ -644,6 +644,30 @@ captured the reticle. The exact C-H4-43 procedural weapon-ray path is restored;
 the replay hooks remain dormant for evidence. The failing log SHA-256 is
 `FD39BE0C397AEF125C6A3CBCB2BF37B87548D2FFC2CC536022862AB8BF695FC1`.
 
+### C-H4-45 exact capture-target ownership correction
+
+The 43q failure has a concrete routing cause in the existing shared D3D11 hook.
+Halo 4's replay rebinds the learned scene-color RTV after the private authored
+capture begins. `OMSetRenderTargetsHook` passes every bind through
+`VR_RedirectRenderTargets`; its normal per-eye rule consequently replaced that
+exact scene bind with the current eye RTV. The face crosshair was drawn into the
+eye while the private 512x512 texture stayed blank. This matches both headset
+observations without introducing another placement theory: `art 0`/zero uploads
+and a visible crosshair at face depth.
+
+C-H4-45 gives the already-active authored capture first claim on only an exact
+`g_sceneColorRtv` rebind. It substitutes the existing authored capture RTV (or
+the existing discard RTV for a nonpublishing pass) and returns before ordinary
+eye routing. All unrelated render targets and all binds outside the bounded
+capture keep their prior behavior. A two-second counter reports the exact
+capture-time OM reroutes.
+
+This changes no crosshair coordinates and adds no placement path. Halo 4's
+face-stuck CUI crosshair supplies the pixels; the existing `reticleQuad` supplies
+the already-correct weapon-ray pose where bullets land; the normal CUI pass hides
+the native type-`0x28` copy. The C-H4-44 HUD basis feature remains dormant so
+this candidate tests one player-visible behavior.
+
 ### C-H4-44 Ghidra replay verification and native HUD layout
 
 Before the 43q headset test, Ghidra 12.1.2 targeted the official

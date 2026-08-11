@@ -29,6 +29,28 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
+## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-45 - 2026-08-11
+
+**Headset test required; this does not advance the accepted C-H4-43 pointer.**
+C-H4-45 makes one crosshair-routing correction. While the bounded Halo 4 CUI
+art capture is active, an exact engine rebind of the learned scene render target
+is routed back to the private authored-crosshair texture before the normal
+per-eye redirect can claim it. This addresses C-H4-43q's measured `0 uploaded`,
+`art 0`, and face-depth native copy: the capture target can no longer be stolen
+by the eye path during the replay.
+
+The face-stuck Halo 4 CUI crosshair supplies only its artwork. The existing
+OpenXR VR crosshair quad remains completely unchanged and is still the sole
+owner of the position where the weapon ray—and therefore bullets—lands. There
+is no Halo 4 coordinate calculation, reprojection, new quad, distance change,
+or placement change. The normal pass hides only the native flat type-`0x28`
+copy after the authored pixels are captured. Runtime telemetry reports exact
+capture-time render-target reroutes so this ownership can be verified directly.
+
+The C-H4-44 HUD basis writer remains dormant. Halo 4 HUD height, scale, aspect,
+and curvature therefore stay stock in this isolated crosshair candidate and
+will be retested independently after the crosshair is headset-confirmed.
+
 ## REJECTED HALO 4 TEST CANDIDATE: C-H4-44 - 2026-08-11
 
 **Headset rejected; this never advanced the accepted pointer below.** The

@@ -255,6 +255,7 @@ namespace
         bool publishesAuthored = false;
     };
     ReticleCaptureState g_reticleCaptureState{};
+    std::atomic<uint64_t> g_authoredReticleOmReroutes{0};
 
     // The CHUD steal-and-requad machinery (capture texture, shader
     // classifier, hand-HUD swapchain) was removed 2026-07-18: it removed the
@@ -10487,6 +10488,33 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
     if ((!scope && !nativeHud && (eye < 0 || eye > 1)) || !input || !output ||
         !g_gameSwapchain)
         return false;
+
+    // Halo 4 rebinds the learned scene target inside CUI playback. While the
+    // face-crosshair art is being captured, route that exact bind to the
+    // authored texture instead of the eye. This is the only ownership change:
+    // the existing VR crosshair still owns all placement.
+    if (g_reticleCaptureState.active &&
+        TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
+    {
+        ID3D11RenderTargetView* const captureTarget =
+            g_reticleCaptureState.publishesAuthored
+                ? g_authoredReticleRtv : g_authoredReticleDiscardRtv;
+        bool captureChanged = false;
+        for (UINT i = 0; i < count; ++i)
+        {
+            output[i] = input[i];
+            if (AuthoredReticleCaptureOwnsSceneBind(
+                    true, input[i] && input[i] == g_sceneColorRtv,
+                    captureTarget != nullptr))
+            {
+                output[i] = captureTarget;
+                captureChanged = true;
+            }
+        }
+        if (captureChanged)
+            g_authoredReticleOmReroutes.fetch_add(1, std::memory_order_relaxed);
+        return captureChanged;
+    }
     int targetEye = eye;
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
     if (nativeHud)
@@ -10661,6 +10689,11 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
         }
     }
     return changed;
+}
+
+uint64_t VR_TakeAuthoredReticleOmReroutes()
+{
+    return g_authoredReticleOmReroutes.exchange(0, std::memory_order_relaxed);
 }
 
 bool VR_GetHeadPose(float outQuat[4], float outPos[3])

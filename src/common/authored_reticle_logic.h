@@ -199,6 +199,15 @@ inline bool AuthoredReticleLayerHasContent(
     return !titleCapturesAuthoredArt || authoredArtHeld;
 }
 
+// A title renderer can rebind scene colour after a private authored capture
+// starts. That exact bind must stay inside the capture instead of returning to
+// the normal eye target.
+inline bool AuthoredReticleCaptureOwnsSceneBind(
+    bool captureActive, bool sceneTargetMatches, bool privateTargetReady)
+{
+    return captureActive && sceneTargetMatches && privateTargetReady;
+}
+
 // Offscreen CHUD capture cadence.
 //
 // Capturing is not free: every class-2 widget piece redirects the render

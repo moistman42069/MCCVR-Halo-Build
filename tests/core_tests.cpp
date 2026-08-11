@@ -565,6 +565,11 @@ int main()
                   AuthoredReticleLayerHasContent(true, true) &&
                   AuthoredReticleLayerHasContent(false, false),
               "held authored layer gate");
+        Check(AuthoredReticleCaptureOwnsSceneBind(true, true, true) &&
+                  !AuthoredReticleCaptureOwnsSceneBind(false, true, true) &&
+                  !AuthoredReticleCaptureOwnsSceneBind(true, false, true) &&
+                  !AuthoredReticleCaptureOwnsSceneBind(true, true, false),
+              "authored capture owns only the exact active scene bind");
         Check(!ShouldUploadAuthoredReticle(
                   AuthoredReticleRefreshPolicy::IdentityAndColorState,
                   true, true, 9, 2, 0, 400, 2, state) &&

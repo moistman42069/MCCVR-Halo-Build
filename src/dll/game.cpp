@@ -34501,10 +34501,9 @@ namespace
         // Storm80 -> held -> native-body record sequence; any miss leaves that
         // exact feature stock while the working camera/session stays armed.
         InstallHalo4Vrik(base,size);
-        // C-H4-43q is headset-rejected: its replay produced no authored upload
-        // and drew the native CUI crosshair at face depth. Keep the optional
-        // hook implementation dormant and retain C-H4-43's procedural VR
-        // crosshair transaction.
+        // C-H4-45 captures only the face-stuck CUI artwork. The existing VR
+        // quad remains the sole owner of the crosshair position.
+        (void)InstallHalo4CuiReticle(base, size, generation);
         PublishHalo4Lifecycle();
         LOG("Halo 4 camera core installed (generation %u): setup 0x%X and the "
             "render wrapper 0x%X are hooked at their pinned RVAs, both proven "
@@ -34543,7 +34542,10 @@ namespace
         }
         if (installed && g_halo4Camera.cuiReticleCleanupRequired)
             (void)CleanupHalo4CuiReticleFeature();
-        // C-H4-43q retry remains dormant after headset rejection.
+        else if (installed && levelRunning &&
+                 !g_halo4Camera.cuiReticleInstalled.load(
+                     std::memory_order_acquire))
+            (void)InstallHalo4CuiReticle(base, size, generation);
         if (g_vrRuntimeFailureLatched.load(std::memory_order_acquire))
         {
             g_halo4Camera.armed.store(false, std::memory_order_release);
@@ -34562,7 +34564,7 @@ namespace
                 kReachRenderSafetyIntervalMs)
         {
             g_halo4Camera.armed.store(true, std::memory_order_release);
-            LOG("Halo 4 camera core armed: C-H4-43r rollback, current-eye controller-rerooted "
+            LOG("Halo 4 camera core armed: C-H4-45 face CUI art on the unchanged VR crosshair, current-eye controller-rerooted "
                 "Storm hands, H3/ODST/Reach left_hand-marker parity free pose, exact C-H4-38 shared-right-aim support pose, and "
                 "same-frame held-model carry (no arm IK) on C-H4-10 motion aim, VR "
                 "turn and rumble on C-H4-9's headset-owned look, C-H4-8's 6DOF and "
@@ -34683,12 +34685,14 @@ namespace
         const uint64_t cuiForced =
             g_halo4Camera.cuiReticleForcedCleanup.exchange(
                 0, std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-43q authored CUI reticle: hook=%s, %llu main gameplay CUI "
+        const uint64_t authoredOmReroutes =
+            VR_TakeAuthoredReticleOmReroutes();
+        LOG("Halo 4 C-H4-45 authored CUI reticle: hook=%s, %llu main gameplay CUI "
             "passes, %llu begin markers, "
             "%llu completed actions (%llu authored captures / %llu native hides), %llu "
-            "write failures, %llu forced restores in 2s; last base %.3f/%.3f "
+            "write failures, %llu forced restores, %llu exact capture OM reroutes in 2s; last base %.3f/%.3f "
             "+ aim %.3f/%.3f, scale %.4f -> %.4f; camera "
-            "and OpenXR remain independently armed",
+            "and OpenXR remain independently armed; the existing VR quad alone owns placement",
             Halo4CuiReticleTransformLive() ? "LIVE" : "stock fallback",
             static_cast<unsigned long long>(cuiGameplayPasses),
             static_cast<unsigned long long>(cuiBegins),
@@ -34697,6 +34701,7 @@ namespace
             static_cast<unsigned long long>(cuiSuppressions),
             static_cast<unsigned long long>(cuiFailures),
             static_cast<unsigned long long>(cuiForced),
+            static_cast<unsigned long long>(authoredOmReroutes),
             g_halo4Camera.cuiReticleBaseX.load(std::memory_order_relaxed),
             g_halo4Camera.cuiReticleBaseY.load(std::memory_order_relaxed),
             g_halo4Camera.cuiReticleAimX.load(std::memory_order_relaxed),

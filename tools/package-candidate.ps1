@@ -84,7 +84,7 @@ try {
     }
     if ($cache -notmatch
             '(?m)^HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA:BOOL=ON\r?$') {
-        throw 'Refusing to package C-H4-43r: the Halo 4 camera core is not ON.'
+        throw 'Refusing to package C-H4-45: the Halo 4 camera core is not ON.'
     }
 
     # Incremental. A clean rebuild was recompiling the whole tree for every
@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c43r-rejected-feature-rollback',
+        'halo4-c45-face-art-on-existing-vr-crosshair',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 'dd9946595511d65c9859b536e2727201c107da45'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-43r'
+            id = 'C-H4-45'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'rollback-to-accepted-c-h4-43-procedural-weapon-ray-crosshair-with-rejected-cui-replay-and-hud-basis-writes-dormant'
+            behavior = 'face-stuck-halo4-cui-art-captured-into-existing-correctly-positioned-vr-crosshair-texture-with-native-copy-hidden'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -198,10 +198,10 @@ try {
             hud_controls = @()
             hud_failure_policy =
                 'stock-halo4-cui-layout'
-            authored_crosshair = $false
-            native_face_crosshair_suppressed = $false
+            authored_crosshair = $true
+            native_face_crosshair_suppressed = $true
             reticle_capture_boundary =
-                'none-rejected-cui-hooks-dormant'
+                'bounded-capture-eye-full-gameplay-cui-replay-held-from-first-command-through-frontend-return'
             reticle_failure_policy =
                 'stock-or-procedural-feature-fallback-camera-hands-stereo-and-openxr-remain-armed'
             first_person_hands = $true
@@ -295,7 +295,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-43r is the required rollback after the C-H4-43q/C-H4-44 headset rejection. The failing Steam/SteamVR/PSVR2 run produced zero authored uploads and art 0 with roughly 180 blank holds per interval, while the player saw the CUI crosshair at face depth instead of bullet impact. Both optional behaviors are disabled without deleting their evidence-backed code: no Halo 4 CUI hooks install, no HUD basis is scanned or written, and Halo 4 advertises no HUD capability. Player-visible behavior returns to accepted C-H4-43: the shared procedural weapon-ray reticle plus stock Halo 4 CUI layout. Camera, hands, stereo, aim, haptics and OpenXR remain unchanged.'
+        note = 'C-H4-45 changes one routing priority. While Halo 4 authored-reticle capture is active, an exact rebind of the learned scene RTV is kept on the private authored capture target before normal per-eye redirection can claim it. The face-stuck CUI crosshair therefore supplies only pixels; the unchanged existing OpenXR reticle quad remains the sole position owner at the weapon ray, and the native type-0x28 copy is hidden. There is no coordinate calculation, reprojection, new quad, or HUD-layout change. C-H4-44 HUD controls remain dormant and stock. Any optional reticle failure preserves the procedural or stock fallback without disarming camera, hands, stereo, or OpenXR.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

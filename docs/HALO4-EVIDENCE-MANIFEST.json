@@ -1,8 +1,8 @@
 {
   "schema_version": 3,
-  "status": "C_H4_43Q_AND_C_H4_44_HEADSET_REJECTED_C_H4_43_ACCEPTED",
+  "status": "C_H4_45_HEADSET_PENDING_C_H4_43_ACCEPTED",
   "hook_eligible": true,
-  "hook_eligibility_scope": "Only accepted C-H4-43 camera/aim/floating-hands behavior remains admitted. C-H4-43q authored-CUI replay and C-H4-44 HUD-basis writes are headset-rejected and dormant.",
+  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands behavior plus unaccepted C-H4-45 authored-CUI art capture. C-H4-44 HUD-basis writes remain headset-rejected and dormant.",
   "accepted_halo4_pointer": {
     "candidate": "C-H4-43",
     "source_commit": "dd9946595511d65c9859b536e2727201c107da45",
@@ -130,6 +130,25 @@
       "log_sha256": "FD39BE0C397AEF125C6A3CBCB2BF37B87548D2FFC2CC536022862AB8BF695FC1"
     }
   },
+  "c_h4_45_exact_capture_target_ownership": {
+    "status": "OFFLINE_PASS_HEADSET_PENDING",
+    "accepted_parent": "C-H4-43",
+    "rejected_predecessor": "C-H4-43q",
+    "measured_failure": "C-H4-43q reported zero authored uploads, art 0, and about 179-180 blank holds per interval while the native face-depth CUI crosshair remained visible",
+    "root_cause": "during active authored capture Halo 4 rebound the learned scene-color RTV; the shared OMSetRenderTargets per-eye redirect replaced that bind with the current eye RTV, leaving the private capture blank and drawing the CUI replay into the eye",
+    "single_change": "active authored capture takes priority for only exact learned scene-color RTV binds, routing them to the existing authored or discard target before normal per-eye redirection",
+    "presentation": "face-stuck Halo 4 CUI supplies artwork; unchanged existing OpenXR reticleQuad alone supplies the weapon-ray position where bullets land; native type-0x28 eye copy is hidden",
+    "excluded_changes": [
+      "no CUI coordinate calculation",
+      "no reprojection",
+      "no new reticle quad",
+      "no distance, stabilization, angular-size, or weapon-ray placement change",
+      "C-H4-44 HUD layout remains dormant"
+    ],
+    "runtime_probe": "two-second exact capture OM reroute count",
+    "failure_isolation": "capture or hook failure preserves stock/procedural reticle fallback without disarming camera, hands, stereo, or OpenXR",
+    "headset_result": "PENDING"
+  },
   "c_h4_44_native_hud_layout": {
     "status": "HEADSET_REJECTED_COMBINED_CANDIDATE_HUD_WRITES_DORMANT",
     "accepted_parent": "C-H4-43",
@@ -166,7 +185,7 @@
       "teardown": "restore the authored basis before clearing publication when the address remains proven",
       "failure_isolation": "zero, multiple, changed, non-finite, or unwritable basis leaves only HUD layout stock; camera, hands, reticle, stereo and OpenXR stay armed"
     },
-    "headset_result": "PENDING"
+    "headset_result": "REJECTED AS COMBINED CANDIDATE; HUD WRITES DORMANT PENDING AN INDEPENDENT TEST"
   },
   "retail_resolution_method": {
     "status": "PROVEN_H4_SPECIFIC_CHAIN",
