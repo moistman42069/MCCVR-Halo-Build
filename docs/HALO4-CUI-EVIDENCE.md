@@ -1,11 +1,11 @@
 # Halo 4 CUI evidence
 
-Status: **the C-H4-43i/C-H4-43j render-target design and C-H4-43k/43l native
-transform candidates are headset-rejected; C-H4-43m corrects 43l's measured
-vertical sign and derives native scale from the shared angular-size knob.** Halo 4 has no CHUD; its HUD is the
+Status: **the C-H4-43i/C-H4-43j render-target design and C-H4-43k through 43n
+native-transform candidates are headset-rejected; C-H4-43o projects Halo 4's
+native reticle to the exact prepared VR-reticle point.** Halo 4 has no CHUD; its HUD is the
 CUI system. Identity pins live in `docs/HALO4-EVIDENCE-MANIFEST.json`;
 camera/render signature proofs live in `docs/HALO4-SIGNATURE-EVIDENCE.md`.
-Nothing in this file promotes C-H4-43i through 43m to an accepted headset result.
+Nothing in this file promotes C-H4-43i through 43o to an accepted headset result.
 
 The 2026-08-11 Steam/SteamVR/PSVR2 run loaded the correct `3baabc7` bytes but
 logged `prepared capture/discard resources unavailable`, followed by zero main
@@ -602,6 +602,38 @@ C-H4-43m changes no shared compositor code and no Halo 3/ODST/Reach path; their
 reticle implementation and lifecycle remain byte-for-byte untouched. Until the
 explicit Halo 4 headset result exists, the accepted-build pointer in
 `docs/CURRENT-STATE.md` remains authoritative.
+
+### C-H4-43n rejection and C-H4-43o exact-target correction
+
+C-H4-43n corrected the 43m raster mismatch by reading the exact bounds passed
+to the admitted gameplay `user_interface_render` call. Its 2026-08-11 live run
+was Steam / SteamVR/OpenXR 2.17.7 / PlayStation VR2 / 90 Hz at 3786x2730. The
+hook stayed live, measured viewport half `1893.0/1365.0`, completed hundreds to
+thousands of changing reticle-matrix writes in every two-second window, and
+reported zero write failures and zero forced restores. This proves the optional
+hook, CUI scope, matrix write, timing, and gameplay viewport were functioning.
+The headset result still rejected placement: the native crosshair was offset
+from bullet impact. Commit `2d529e76f1d99e6c1e782e173732e29847dc8b33` was
+therefore reverted independently by `aecc08d` before the replacement.
+
+The rejected construction used Halo 4's closed-loop engine aim direction plus
+a separately measured center-to-target range, rooted at the post-head-pose
+render camera. It could follow the gun without naming the exact point used by
+the established VR sight. C-H4-43o instead consumes the immutable prepared
+frame's controller/two-hand aim position and quaternion—the same output of
+`ComputeAimPose` used by the VR reticle—and constructs
+`aimPosition + aimForward * crosshair_distance_m`. It subtracts the matching
+prepared head position, applies inverse head orientation because the Halo 4
+center camera already contains that rotation, maps the resulting head-local
+OpenXR vector through the post-head-pose Halo 4 basis, and multiplies by the
+live world scale. Both eyes then project this one finite world point through
+their finished eye cameras/FOV and the exact live gameplay viewport.
+
+The H4EK-proven type-`0x28` matrix boundary, positive composed-matrix Y result,
+and official `81.92`-unit angular-size mapping are unchanged. Invalid prepared
+tracking, quaternion, bounds, projection, or matrix state fails open for the
+reticle only. C-H4-43o changes no shared compositor or other title path and is
+an offline-passing headset candidate, not an accepted result.
 
 ## C-H4-43j correction after the 43i headset rejection
 

@@ -177,19 +177,48 @@ struct Halo4CuiAimOffset
     bool valid = false;
 };
 
-// The projected aim is normalized device space. Halo 4's pushed CUI
-// transform is not: the headset log measured the stock centre at
-// (-halfWidth,+halfHeight). Convert through that live transform rather than
-// copying a resolution, aspect ratio, or scale from another title.
+struct Halo4CuiViewportHalfExtents
+{
+    float width = 0.0f;
+    float height = 0.0f;
+    bool valid = false;
+};
+
+inline Halo4CuiViewportHalfExtents Halo4MeasureCuiViewportHalfExtents(
+    const int16_t bounds[4]) noexcept
+{
+    Halo4CuiViewportHalfExtents result{};
+    if (!bounds)
+        return result;
+    const int32_t firstSpan = std::abs(
+        static_cast<int32_t>(bounds[2]) - static_cast<int32_t>(bounds[0]));
+    const int32_t secondSpan = std::abs(
+        static_cast<int32_t>(bounds[3]) - static_cast<int32_t>(bounds[1]));
+    const int32_t width = firstSpan > secondSpan ? firstSpan : secondSpan;
+    const int32_t height = firstSpan > secondSpan ? secondSpan : firstSpan;
+    if (width < 2 || height < 2 || width > 32767 || height > 32767)
+        return result;
+    result.width = static_cast<float>(width) * 0.5f;
+    result.height = static_cast<float>(height) * 0.5f;
+    result.valid = std::isfinite(result.width) &&
+        std::isfinite(result.height);
+    return result;
+}
+
+// The projected aim is normalized device space. Convert it through the exact
+// gameplay viewport supplied to user_interface_render; the native transform's
+// separate 16:9 authored centre is not the world projection extent.
 inline Halo4CuiAimOffset Halo4MapAimToCuiTranslation(
-    const Halo4CuiAimOffset& normalizedAim, float baseX, float baseY,
+    const Halo4CuiAimOffset& normalizedAim, float viewportHalfWidth,
+    float viewportHalfHeight,
     bool hide) noexcept
 {
     Halo4CuiAimOffset result{};
-    if (!std::isfinite(baseX) || !std::isfinite(baseY))
+    if (!std::isfinite(viewportHalfWidth) ||
+        !std::isfinite(viewportHalfHeight))
         return result;
-    const float halfWidth = std::fabs(baseX);
-    const float halfHeight = std::fabs(baseY);
+    const float halfWidth = std::fabs(viewportHalfWidth);
+    const float halfHeight = std::fabs(viewportHalfHeight);
     if (halfWidth < 1.0f || halfHeight < 1.0f ||
         halfWidth > 32768.0f || halfHeight > 32768.0f)
         return result;
@@ -211,6 +240,107 @@ inline Halo4CuiAimOffset Halo4MapAimToCuiTranslation(
     result.y = normalizedAim.y * halfHeight;
     result.valid = std::isfinite(result.x) && std::isfinite(result.y);
     return result;
+}
+
+// Build the exact finite point named by the prepared VR aim pose. This is the
+// same controller/two-hand pose and crosshair_distance_m contract used by the
+// established OpenXR reticle. Room axes are +X right, +Y up and -Z forward;
+// map that head-relative vector into Halo 4's post-head-pose centre camera.
+inline bool Halo4BuildVrReticleTarget(
+    const float centerPosition[3], const float centerForward[3],
+    const float centerUp[3], const float headOrientation[4],
+    const float headPosition[3],
+    const float aimPosition[3], const float aimOrientation[4],
+    float distanceMeters, float worldScale, float outTarget[3]) noexcept
+{
+    if (!centerPosition || !centerForward || !centerUp || !headOrientation ||
+        !headPosition || !aimPosition || !aimOrientation || !outTarget ||
+        !std::isfinite(distanceMeters) || distanceMeters < 2.0f ||
+        distanceMeters > 50.0f || !std::isfinite(worldScale) ||
+        worldScale <= 0.0f || worldScale > 1000.0f)
+    {
+        return false;
+    }
+    float qLengthSquared = 0.0f;
+    float headLengthSquared = 0.0f;
+    for (int axis = 0; axis < 4; ++axis)
+    {
+        if (!std::isfinite(aimOrientation[axis]) ||
+            !std::isfinite(headOrientation[axis]))
+            return false;
+        qLengthSquared += aimOrientation[axis] * aimOrientation[axis];
+        headLengthSquared += headOrientation[axis] * headOrientation[axis];
+    }
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        if (!std::isfinite(centerPosition[axis]) ||
+            !std::isfinite(centerForward[axis]) ||
+            !std::isfinite(centerUp[axis]) ||
+            !std::isfinite(headPosition[axis]) ||
+            !std::isfinite(aimPosition[axis]))
+        {
+            return false;
+        }
+    }
+    if (!std::isfinite(qLengthSquared) || qLengthSquared <= 1.0e-8f ||
+        !std::isfinite(headLengthSquared) || headLengthSquared <= 1.0e-8f)
+        return false;
+
+    const float inverseQ = 1.0f / std::sqrt(qLengthSquared);
+    const float qx = aimOrientation[0] * inverseQ;
+    const float qy = aimOrientation[1] * inverseQ;
+    const float qz = aimOrientation[2] * inverseQ;
+    const float qw = aimOrientation[3] * inverseQ;
+    const float aimForward[3] = {
+        -2.0f * (qx * qz + qw * qy),
+        2.0f * (qw * qx - qy * qz),
+        -(1.0f - 2.0f * (qx * qx + qy * qy))};
+    const float roomTarget[3] = {
+        aimPosition[0] + aimForward[0] * distanceMeters,
+        aimPosition[1] + aimForward[1] * distanceMeters,
+        aimPosition[2] + aimForward[2] * distanceMeters};
+    const float roomDelta[3] = {
+        roomTarget[0] - headPosition[0],
+        roomTarget[1] - headPosition[1],
+        roomTarget[2] - headPosition[2]};
+    // The centre camera already contains this frame's head orientation. Undo
+    // that orientation once so composing the head-local vector through the
+    // centre basis maps stage space into Halo world space without double-head
+    // rotation. This is the same inverse-head operation used by Halo 4's hand
+    // placement path.
+    const float inverseHead = 1.0f / std::sqrt(headLengthSquared);
+    const float hx = headOrientation[0] * inverseHead;
+    const float hy = headOrientation[1] * inverseHead;
+    const float hz = headOrientation[2] * inverseHead;
+    const float hw = headOrientation[3] * inverseHead;
+    const float headLocal[3] = {
+        (1.0f - 2.0f * (hy * hy + hz * hz)) * roomDelta[0] +
+            2.0f * (hx * hy + hz * hw) * roomDelta[1] +
+            2.0f * (hx * hz - hy * hw) * roomDelta[2],
+        2.0f * (hx * hy - hz * hw) * roomDelta[0] +
+            (1.0f - 2.0f * (hx * hx + hz * hz)) * roomDelta[1] +
+            2.0f * (hy * hz + hx * hw) * roomDelta[2],
+        2.0f * (hx * hz + hy * hw) * roomDelta[0] +
+            2.0f * (hy * hz - hx * hw) * roomDelta[1] +
+            (1.0f - 2.0f * (hx * hx + hy * hy)) * roomDelta[2]};
+    const float centerRight[3] = {
+        centerForward[1] * centerUp[2] - centerForward[2] * centerUp[1],
+        centerForward[2] * centerUp[0] - centerForward[0] * centerUp[2],
+        centerForward[0] * centerUp[1] - centerForward[1] * centerUp[0]};
+    float targetLengthSquared = 0.0f;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        outTarget[axis] = centerPosition[axis] +
+            (centerRight[axis] * headLocal[0] +
+             centerUp[axis] * headLocal[1] -
+             centerForward[axis] * headLocal[2]) * worldScale;
+        if (!std::isfinite(outTarget[axis]))
+            return false;
+        const float delta = outTarget[axis] - centerPosition[axis];
+        targetLengthSquared += delta * delta;
+    }
+    return std::isfinite(targetLengthSquared) &&
+        targetLengthSquared > 1.0e-8f;
 }
 
 inline bool Halo4MapAngularSizeToCuiScale(
@@ -279,37 +409,22 @@ inline Halo4CuiAimOffset Halo4ProjectAimToCuiOffset(
     return result;
 }
 
-// Build the ray from this rendered eye to the same finite point the shared VR
-// reticle occupies. The engine aim vector is the centre-camera line through
-// that point; reconstructing the point and subtracting each eye position keeps
-// the native CUI art at the configured stereo depth instead of at infinity.
+// Build the ray from this rendered eye to the target constructed once from the
+// prepared VR pose. Subtracting each eye position keeps the native CUI art at
+// that exact finite stereo point.
 inline bool Halo4BuildReticleEyeRay(
-    const float centerPosition[3], const float eyePosition[3],
-    const float engineAimForward[3], float targetRange,
+    const float targetPosition[3], const float eyePosition[3],
     float outEyeRay[3]) noexcept
 {
-    if (!centerPosition || !eyePosition || !engineAimForward || !outEyeRay ||
-        !std::isfinite(targetRange) || targetRange <= 0.01f ||
-        targetRange > 100000.0f)
+    if (!targetPosition || !eyePosition || !outEyeRay)
         return false;
-    float lengthSquared = 0.0f;
-    for (int i = 0; i < 3; ++i)
-    {
-        if (!std::isfinite(centerPosition[i]) ||
-            !std::isfinite(eyePosition[i]) ||
-            !std::isfinite(engineAimForward[i]))
-            return false;
-        lengthSquared += engineAimForward[i] * engineAimForward[i];
-    }
-    if (!std::isfinite(lengthSquared) || lengthSquared <= 1.0e-8f)
-        return false;
-    const float inverseLength = 1.0f / std::sqrt(lengthSquared);
     float eyeLengthSquared = 0.0f;
     for (int i = 0; i < 3; ++i)
     {
-        const float target = centerPosition[i] +
-            engineAimForward[i] * inverseLength * targetRange;
-        outEyeRay[i] = target - eyePosition[i];
+        if (!std::isfinite(targetPosition[i]) ||
+            !std::isfinite(eyePosition[i]))
+            return false;
+        outEyeRay[i] = targetPosition[i] - eyePosition[i];
         eyeLengthSquared += outEyeRay[i] * outEyeRay[i];
     }
     return std::isfinite(eyeLengthSquared) && eyeLengthSquared > 1.0e-8f;

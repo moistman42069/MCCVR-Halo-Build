@@ -1,12 +1,12 @@
 {
   "schema_version": 3,
-  "status": "C_H4_43M_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
+  "status": "C_H4_43O_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
   "hook_eligible": true,
-  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43m admits the optional gameplay-CUI front end and command dispatcher only after all four signatures and both rel32 edges match their pinned retail locations. It calls every original command, converts normalized per-eye aim through the live CUI half extents, maps positive matrix Y to headset-up from the 43l result, and derives uniform scale from live eye FOV/CUI half-height plus the official 81.92-unit H4EK authored height. No render target, bitmap, colour, alpha, visibility bit, auxiliary/menu CUI, generic HUD transform, shared compositor path, copied resolution, or copied cross-title address is changed.",
+  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43o retains the H4EK/retail-proven optional gameplay-CUI front end and command dispatcher, then projects the immutable prepared-frame VR-reticle point through each finished eye and the exact live gameplay viewport. Positive matrix Y and the 81.92-unit angular-size mapping remain headset/H4EK-proven. No render target, bitmap, colour, alpha, visibility bit, auxiliary/menu CUI, generic HUD transform, shared compositor path, copied resolution, or copied cross-title address is changed.",
   "accepted_halo4_pointer": {
     "candidate": "C-H4-43",
     "source_commit": "dd9946595511d65c9859b536e2727201c107da45",
-    "note": "C-H4-43m is a forward candidate after rejected C-H4-43i/43j/43k/43l and does not advance acceptance without an explicit headset result"
+    "note": "C-H4-43o is a forward candidate after rejected C-H4-43i through 43n and does not advance acceptance without an explicit headset result"
   },
   "development_baseline": {
     "source_commit": "f4c641f7b1b707991f2bda71ba485090a16f1e9a",
@@ -74,7 +74,7 @@
     "headset_result": "PENDING"
   },
   "c_h4_43m_native_cui_reticle": {
-    "status": "OFFLINE_PASS_HEADSET_PENDING",
+    "status": "HEADSET_REJECTED_WRONG_GAMEPLAY_PROJECTION_EXTENTS",
     "accepted_parent": "C-H4-43",
     "rejected_predecessor": "C-H4-43l moved the correct native reticle and retained the HUD/animation/target colours, but headset testing proved vertical movement inverted and native size excessive",
     "runtime_evidence": {
@@ -96,6 +96,29 @@
     "size_mapping": "uniformScale = (2 * abs(liveCuiHalfHeight) * tan(crosshair_size_deg/2) / tan(liveEyeHalfFovY)) / 81.92",
     "write_scope": "one H4EK-proven type-0x28 reticle-only real_matrix4x3; original uniform scale and X/Y translation are the only changed fields",
     "cross_title_scope": "no shared compositor, Halo 3, ODST, or Reach code changed",
+    "headset_result": "REJECTED"
+  },
+  "c_h4_43n_native_cui_reticle": {
+    "status": "HEADSET_REJECTED_OFFSET_FROM_BULLET_IMPACT_REVERTED",
+    "source_commit": "2d529e76f1d99e6c1e782e173732e29847dc8b33",
+    "behavior_revert_commit": "aecc08d",
+    "runtime": "Steam / SteamVR OpenXR 2.17.7 / PlayStation VR2 / 90 Hz",
+    "gameplay_viewport": "3786x2730; measured half extents 1893.0/1365.0",
+    "runtime_proof": "optional hooks live; changing offsets; hundreds to thousands of completed writes per two-second window; zero write failures and zero forced restores",
+    "dll_sha256": "1A662631165E70ED78736DCF8F802516CB85AEA3E9FBDC28A1926705F9AFBEF7",
+    "log_sha256": "6F6FB1B3EFBAA26A459143BEA1EB0DA79790DF22E0C0177F63FB74A710240FE8",
+    "headset_result": "native CUI reticle tracked but did not coincide with bullet impact"
+  },
+  "c_h4_43o_native_cui_reticle": {
+    "status": "OFFLINE_PASS_HEADSET_PENDING",
+    "accepted_parent": "C-H4-43",
+    "rejected_predecessor": "C-H4-43n proved the live gameplay viewport and healthy matrix writes but reconstructed a finite point from the closed-loop engine direction instead of using the exact prepared VR-reticle point",
+    "target_construction": "prepared controller/two-hand position plus its quaternion-rotated local -Z times crosshair_distance_m; subtract matching prepared head position; inverse-rotate by matching head orientation; map through post-head-pose Halo 4 center basis and live world scale",
+    "projection": "one immutable finite world target projected independently through both finished eye camera/FOV pairs and converted through the exact live gameplay viewport half extents",
+    "write_scope": "one H4EK-proven type-0x28 reticle-only real_matrix4x3; uniform scale and X/Y translation only",
+    "failure_isolation": "invalid tracking, quaternion, projection, viewport, matrix, or optional hook retains stock/procedural reticle while camera, hands, stereo, and OpenXR remain armed",
+    "cross_title_scope": "no shared compositor, Halo 3, ODST, or Reach code changed",
+    "offline_validation": "Release build passed; core tests passed; Reach consistency gate passed",
     "headset_result": "PENDING"
   },
   "retail_resolution_method": {

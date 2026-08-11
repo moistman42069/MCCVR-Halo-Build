@@ -1,6 +1,6 @@
 # Current state
 
-Authoritative as of 2026-08-10. This file is the only active accepted-build
+Authoritative as of 2026-08-11. This file is the only active accepted-build
 pointer. Detailed pre-cleanup experiments remain available in Git history; they
 are evidence, not instructions.
 
@@ -28,6 +28,46 @@ are evidence, not instructions.
 > - were false when read, and each cost hours because they were believed
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
+
+## CURRENT HALO 4 TEST CANDIDATE: C-H4-43o - 2026-08-11
+
+**Offline pass; headset acceptance pending. The accepted pointer remains
+C-H4-43.** C-H4-43o replaces the rejected 43n point construction without
+changing the H4EK-proven native-reticle hook. Rather than rebuild a target from
+Halo 4's asynchronously steered engine direction and a scalar range, it uses
+the immutable prepared-frame controller/two-hand pose and
+`crosshair_distance_m` to construct the exact finite VR-reticle point. It
+removes the head rotation already present in the center camera once, maps that
+one point into Halo 4 world space, and projects both eyes to it through their
+finished camera/FOV and the exact 3786x2730 live gameplay viewport.
+
+Only the type-`0x28` reticle `real_matrix4x3` translation and uniform scale are
+changed. Halo 4's native animation, bloom, hit state, and target colours remain;
+the rest of the HUD, shared compositor, and Halo 3/ODST/Reach paths are
+unchanged. Invalid tracking, projection, viewport, matrix, or optional-hook
+state leaves the reticle stock/procedural for that feature only and never
+disarms camera, hands, stereo, or OpenXR. Release build, core tests, and the
+Reach consistency gate pass; this is not accepted until the headset confirms
+the native CUI crosshair and bullet impact coincide.
+
+## REJECTED HALO 4 TEST CANDIDATE: C-H4-43n - 2026-08-11
+
+**Headset rejected; reverted by `aecc08d`; this never advanced the accepted
+pointer below.** The correct `2d529e7` Steam / SteamVR/OpenXR 2.17.7 / PSVR2 /
+90 Hz run proved the exact 3786x2730 gameplay viewport was read and the optional
+native transform was healthy: periodic windows recorded hundreds to thousands
+of completed writes, viewport half `1893.0/1365.0`, changing X/Y offsets, and
+zero write failures or forced restores. The user nevertheless observed that
+the native CUI crosshair did not coincide with bullet impact.
+
+43n projected Halo 4's steered engine direction to a reconstructed finite
+point. That direction is a closed-loop result and the reconstruction also
+started at the post-head-pose render camera; neither is the exact prepared VR
+reticle point that drives the player-facing sight contract. 43o replaces only
+that point construction. The 43n DLL SHA-256 is
+`1A662631165E70ED78736DCF8F802516CB85AEA3E9FBDC28A1926705F9AFBEF7`; its live
+log SHA-256 is
+`6F6FB1B3EFBAA26A459143BEA1EB0DA79790DF22E0C0177F63FB74A710240FE8`.
 
 ## REJECTED HALO 4 TEST CANDIDATE: C-H4-43m - 2026-08-11
 
