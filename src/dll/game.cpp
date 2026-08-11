@@ -34054,10 +34054,10 @@ namespace
         // Storm80 -> held -> native-body record sequence; any miss leaves that
         // exact feature stock while the working camera/session stays armed.
         InstallHalo4Vrik(base,size);
-        // C-H4-43m keeps the 43l position path but applies the headset-proven
-        // CUI Y sign and derives uniform scale from the live per-eye FOV plus
-        // Halo 4's official 81.92-unit nominal reticle height.
-        (void)InstallHalo4CuiReticle(base, size, generation);
+        // C-H4-43m is headset-rejected: the native reticle follows the gun but
+        // its transform does not coincide with the engine shot point. Keep the
+        // optional transaction dormant until the gameplay-viewport mapping is
+        // corrected without touching the accepted camera/session core.
         PublishHalo4Lifecycle();
         LOG("Halo 4 camera core installed (generation %u): setup 0x%X and the "
             "render wrapper 0x%X are hooked at their pinned RVAs, both proven "
@@ -34096,10 +34096,7 @@ namespace
         }
         if (installed && g_halo4Camera.cuiReticleCleanupRequired)
             (void)CleanupHalo4CuiReticleFeature();
-        else if (installed && levelRunning &&
-                 !g_halo4Camera.cuiReticleInstalled.load(
-                     std::memory_order_acquire))
-            (void)InstallHalo4CuiReticle(base, size, generation);
+        // C-H4-43m retry remains dormant with its initial install above.
         if (g_vrRuntimeFailureLatched.load(std::memory_order_acquire))
         {
             g_halo4Camera.armed.store(false, std::memory_order_release);

@@ -29,10 +29,21 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
-## CURRENT HALO 4 TEST CANDIDATE: C-H4-43m - 2026-08-11
+## REJECTED HALO 4 TEST CANDIDATE: C-H4-43m - 2026-08-11
 
-**Headset pending; this does not advance the accepted pointer below.** The
-43l headset result proved the native CUI reticle follows the gun and retains
+**Headset rejected; this never advanced the accepted pointer below.** The
+correct `d0ed613` Steam/SteamVR/PSVR2 90 Hz run retained the full HUD, corrected
+the native reticle's vertical direction and size, and made the reticle follow
+the gun. It did not place that reticle exactly on the engine shot point. Runtime
+evidence identifies the coordinate mismatch: the 3786x2730 gameplay raster has
+a 1365-pixel vertical half-extent, while 43m converted projected Y through the
+reticle matrix's 16:9 layout centre of 1064.517. The optional hook is now
+dormant. Its replacement must convert NDC through the exact live gameplay
+viewport supplied to Halo 4's CUI renderer, not infer projection extents from
+the reticle's authored centre.
+
+This candidate followed the 43l headset result, which proved the native CUI
+reticle follows the gun and retains
 the full HUD plus Halo 4's animation and target colours, but also proved its
 vertical axis was inverted and its native size was too large. 43m changes only
 that Halo 4 reticle-only `real_matrix4x3`: camera-up now maps to positive live
