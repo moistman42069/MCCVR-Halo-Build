@@ -34501,10 +34501,10 @@ namespace
         // Storm80 -> held -> native-body record sequence; any miss leaves that
         // exact feature stock while the working camera/session stays armed.
         InstallHalo4Vrik(base,size);
-        // C-H4-43q matches the other three titles: capture Halo 4's authored
-        // centre pixels, hide its native flat copy, and let the existing exact
-        // OpenXR reticle quad own placement.
-        (void)InstallHalo4CuiReticle(base, size, generation);
+        // C-H4-43q is headset-rejected: its replay produced no authored upload
+        // and drew the native CUI crosshair at face depth. Keep the optional
+        // hook implementation dormant and retain C-H4-43's procedural VR
+        // crosshair transaction.
         PublishHalo4Lifecycle();
         LOG("Halo 4 camera core installed (generation %u): setup 0x%X and the "
             "render wrapper 0x%X are hooked at their pinned RVAs, both proven "
@@ -34543,10 +34543,7 @@ namespace
         }
         if (installed && g_halo4Camera.cuiReticleCleanupRequired)
             (void)CleanupHalo4CuiReticleFeature();
-        else if (installed && levelRunning &&
-                 !g_halo4Camera.cuiReticleInstalled.load(
-                     std::memory_order_acquire))
-            (void)InstallHalo4CuiReticle(base, size, generation);
+        // C-H4-43q retry remains dormant after headset rejection.
         if (g_vrRuntimeFailureLatched.load(std::memory_order_acquire))
         {
             g_halo4Camera.armed.store(false, std::memory_order_release);
@@ -34565,7 +34562,7 @@ namespace
                 kReachRenderSafetyIntervalMs)
         {
             g_halo4Camera.armed.store(true, std::memory_order_release);
-            LOG("Halo 4 camera core armed: C-H4-43q current-eye controller-rerooted "
+            LOG("Halo 4 camera core armed: C-H4-43r rollback, current-eye controller-rerooted "
                 "Storm hands, H3/ODST/Reach left_hand-marker parity free pose, exact C-H4-38 shared-right-aim support pose, and "
                 "same-frame held-model carry (no arm IK) on C-H4-10 motion aim, VR "
                 "turn and rumble on C-H4-9's headset-owned look, C-H4-8's 6DOF and "
@@ -34580,12 +34577,9 @@ namespace
                 "runtime mode for the first time, which is what the shared "
                 "paths gate rumble and head-relative movement on. Insert "
                 "returns aim to C-H4-9's stick yaw + headset pitch; F2 returns "
-                "everything to C-H4-8. The optional H4EK-proven CUI path "
-                "captures Halo 4's own animated/target-coloured centre pixels, "
-                "hides the flat native copy, and presents that art on the same "
-                "already-correct OpenXR reticle quad as Halo 3/ODST/Reach. No "
-                "second reticle position is calculated. Until valid art is "
-                "held, the procedural/native fallback remains usable. A floating-hand transaction "
+                "everything to C-H4-8. Rejected CUI replay and HUD-basis writes "
+                "are dormant; the crosshair is C-H4-43's shared procedural "
+                "weapon-ray quad. A floating-hand transaction "
                 "refusal submits no alternate hand algorithm and never "
                 "disarms stereo or OpenXR");
         }

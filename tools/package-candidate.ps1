@@ -84,7 +84,7 @@ try {
     }
     if ($cache -notmatch
             '(?m)^HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA:BOOL=ON\r?$') {
-        throw 'Refusing to package C-H4-44: the Halo 4 camera core is not ON.'
+        throw 'Refusing to package C-H4-43r: the Halo 4 camera core is not ON.'
     }
 
     # Incremental. A clean rebuild was recompiling the whole tree for every
@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c44-authored-reticle-and-native-hud-layout',
+        'halo4-c43r-rejected-feature-rollback',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 'dd9946595511d65c9859b536e2727201c107da45'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-44'
+            id = 'C-H4-43r'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'halo4-authored-cui-centre-pixels-on-existing-openxr-reticle-quad-plus-h4ek-native-hud-layout-controls'
+            behavior = 'rollback-to-accepted-c-h4-43-procedural-weapon-ray-crosshair-with-rejected-cui-replay-and-hud-basis-writes-dormant'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -191,23 +191,17 @@ try {
             controller_aim = $true
             haptics = $true
             head_relative_locomotion = $true
-            # The reticle art uses the existing quad. The rest of the HUD stays
-            # native and is transformed through H4's own hud_globals basis.
-            hud = 'native-inside-captured-scene-with-h4ek-screen-transform-basis-controls'
+            # Exact accepted C-H4-43 player-visible behavior.
+            hud = 'native-inside-captured-scene-no-redirect'
             hud_layout =
-                'exact-one-match-ui-hud_globals-3x3-screen-transform-basis'
-            hud_controls = @(
-                'hud_size',
-                'hud_aspect',
-                'hud_curvature',
-                'hud_vertical_offset'
-            )
+                'dormant-after-c-h4-44-headset-rejection'
+            hud_controls = @()
             hud_failure_policy =
-                'zero-multiple-invalid-or-write-failure-keeps-only-hud-layout-stock'
-            authored_crosshair = $true
-            native_face_crosshair_suppressed = $true
+                'stock-halo4-cui-layout'
+            authored_crosshair = $false
+            native_face_crosshair_suppressed = $false
             reticle_capture_boundary =
-                'bounded-capture-eye-full-gameplay-cui-replay-held-from-first-command-through-frontend-return'
+                'none-rejected-cui-hooks-dormant'
             reticle_failure_policy =
                 'stock-or-procedural-feature-fallback-camera-hands-stereo-and-openxr-remain-armed'
             first_person_hands = $true
@@ -301,7 +295,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-44 is an unaccepted headset candidate built on C-H4-43q and accepted C-H4-43. The crosshair path remains the three-title architecture: authored CUI centre pixels are captured, native flat type-0x28 copies are hidden, and the unchanged existing OpenXR reticle quad is the sole placement owner; no second position is calculated. Ghidra 12.1.2 decompilation of official H4EK user_interface_render confirmed the first call promotes the pending command buffer and the second renders the retained active buffer. Halo 4 HUD size, aspect, curvature, and vertical offset now use the sole official ui\\hud_globals 3x3 screen-transform basis, located by its exact authored payload and immutable damage/contrast neighbors. Zero, multiple, invalid, or unwritable matches leave only HUD layout stock. Camera, hands, stereo, reticle fallback, and OpenXR remain independent. C-H4-43 remains the accepted rollback pointer until explicit headset acceptance.'
+        note = 'C-H4-43r is the required rollback after the C-H4-43q/C-H4-44 headset rejection. The failing Steam/SteamVR/PSVR2 run produced zero authored uploads and art 0 with roughly 180 blank holds per interval, while the player saw the CUI crosshair at face depth instead of bullet impact. Both optional behaviors are disabled without deleting their evidence-backed code: no Halo 4 CUI hooks install, no HUD basis is scanned or written, and Halo 4 advertises no HUD capability. Player-visible behavior returns to accepted C-H4-43: the shared procedural weapon-ray reticle plus stock Halo 4 CUI layout. Camera, hands, stereo, aim, haptics and OpenXR remain unchanged.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

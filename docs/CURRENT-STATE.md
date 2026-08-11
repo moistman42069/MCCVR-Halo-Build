@@ -68,9 +68,19 @@ active buffer. The capture replay therefore replays authored pixels and does
 not create a second crosshair position. Ghidra also reconfirmed the reticle
 transform stack at renderer `+0x870`, entries `+0x878`, stride `0x34`.
 
-## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-43q - 2026-08-11
+## REJECTED HALO 4 TEST CANDIDATE: C-H4-43q - 2026-08-11
 
-**Headset result pending; this does not advance the accepted pointer below.**
+**Headset rejected; this never advanced the accepted pointer below.** C-H4-44
+carried this crosshair path unchanged, and the failure was present for roughly
+16 seconds before the separate HUD basis was found or written. The replay
+reported hundreds of nominal captures but every upload interval remained
+`0 uploaded`, `art 0`, with about `179-180 blankHeld`; the player saw the CUI
+crosshair at face depth and nowhere near bullet impact. This proves the replay
+did not place authored pixels on the hidden VR crosshair. The optional hooks
+are dormant again and C-H4-43's procedural weapon-ray crosshair is restored.
+The failing Steam/SteamVR 2.17.7/PSVR2 90 Hz log SHA-256 is
+`FD39BE0C397AEF125C6A3CBCB2BF37B87548D2FFC2CC536022862AB8BF695FC1`.
+
 This returns to the presentation architecture already used by Halo 3, ODST,
 and Reach: Halo 4's authored CUI centre pixels are captured into the existing
 reticle texture, its flat native type-`0x28` copy is moved offscreen, and the

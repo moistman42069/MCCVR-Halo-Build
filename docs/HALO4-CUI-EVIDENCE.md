@@ -1,7 +1,7 @@
 # Halo 4 CUI evidence
 
-Status: **C-H4-43i through C-H4-43p and combined candidate C-H4-44 are
-headset-rejected. C-H4-43q remains unaccepted pending its separate disposition.**
+Status: **C-H4-43i through C-H4-43q and combined candidate C-H4-44 are
+headset-rejected. Their optional implementations remain dormant.**
 Halo 4 has no CHUD; its HUD is the
 CUI system. Identity pins live in `docs/HALO4-EVIDENCE-MANIFEST.json`;
 camera/render signature proofs live in `docs/HALO4-SIGNATURE-EVIDENCE.md`.
@@ -635,7 +635,14 @@ The shared compositor is not given a new position and is not modified. Halo 4
 only reports that it now captures authored art, allowing the existing upload,
 coverage guard, procedural bootstrap, angular-size, distance, stabilization,
 and quad placement paths to operate exactly as they do for the other titles.
-C-H4-43 remains the accepted pointer pending a headset result.
+C-H4-43q was then headset-rejected in the combined C-H4-44 run. Before the
+separate HUD locator completed, the replay already produced only blank samples;
+the complete run stayed at `0 uploaded`, `art 0`, and about `179-180 blankHeld`
+per interval while the player saw the CUI crosshair at face depth rather than
+at bullet impact. This disproves the claim that the centred 512x512 redirect
+captured the reticle. The exact C-H4-43 procedural weapon-ray path is restored;
+the replay hooks remain dormant for evidence. The failing log SHA-256 is
+`FD39BE0C397AEF125C6A3CBCB2BF37B87548D2FFC2CC536022862AB8BF695FC1`.
 
 ### C-H4-44 Ghidra replay verification and native HUD layout
 

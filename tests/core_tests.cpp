@@ -8535,8 +8535,8 @@ int main()
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
         "Halo 4 withholds ArmIk: C-H4-43 has one rigid no-IK floating-hands "
         "transaction on the proven first-person return site");
-    Check(halo4Row && (halo4Row->capabilities & TitleCapability_Hud),
-        "Halo 4 grants Hud through its exact H4EK ui\\hud_globals basis");
+    Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
+        "Halo 4 withholds Hud while C-H4-44's rejected basis writer is dormant");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_CutsceneTheater),
         "Halo 4 withholds CutsceneTheater: it has no cinematic evidence yet");
     Check(TitleRegistry_AllowsSharedControllerInput(
