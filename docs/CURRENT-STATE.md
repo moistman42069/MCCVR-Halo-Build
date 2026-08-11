@@ -29,24 +29,6 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
-## CURRENT HALO 4 TEST CANDIDATE: C-H4-43n - 2026-08-11
-
-**Headset pending; this does not advance the accepted pointer below.** The
-43m headset run proved the full HUD, native animation/target colour, corrected
-vertical direction, intended size, and gun-following motion, but rejected its
-shot registration. The cause is measured rather than tuned: the scene projects
-through the 3786x2730 gameplay raster, while 43m incorrectly treated the
-reticle matrix's separate 16:9 authored centre (`-1893/1064.517`) as the NDC
-projection half-extent. This underscaled vertical displacement.
-
-H4EK proves the exact full-size `user_interface_render` call receives a live
-`s_short_rectangle2d` gameplay viewport. 43n reads that guarded rectangle in
-the already-pinned main CUI scope and maps each eye's engine shot projection
-through its exact half-width and half-height. The headset-proven Y sign and 43m
-size calculation are unchanged. No other HUD transform, draw command, shared
-compositor code, or other title changes; unreadable or malformed viewport data
-leaves only the optional reticle feature stock/procedural.
-
 ## REJECTED HALO 4 TEST CANDIDATE: C-H4-43m - 2026-08-11
 
 **Headset rejected; this never advanced the accepted pointer below.** The

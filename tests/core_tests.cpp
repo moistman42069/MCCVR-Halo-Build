@@ -6245,7 +6245,7 @@ int main()
                   fabsf(upPixels.x) < 1.0e-4f &&
                    fabsf(upPixels.y - 1080.0f) < 1.0e-4f,
             "Halo 4 converts normalized gun-ray projection through the live "
-            "pixel-space gameplay viewport half extents");
+            "pixel-space CUI half extents");
         Check(hidden.valid && fabsf(hidden.x - 7680.0f) < 1.0e-4f &&
                   fabsf(hidden.y) < 1.0e-4f,
             "crosshair=0 moves Halo 4's native reticle fully offscreen in its "
@@ -6255,29 +6255,6 @@ int main()
                   !Halo4MapAimToCuiTranslation(
                       right, -1920.0f, NAN, false).valid,
             "Invalid Halo 4 CUI extents fail open without a transform write");
-
-        const int16_t gameplayBounds[4] = {0, 0, 3786, 2730};
-        const Halo4CuiViewportHalfExtents gameplayExtents =
-            Halo4MeasureCuiViewportHalfExtents(gameplayBounds);
-        const int16_t namedOtherOrder[4] = {0, 0, 2730, 3786};
-        const Halo4CuiViewportHalfExtents otherOrderExtents =
-            Halo4MeasureCuiViewportHalfExtents(namedOtherOrder);
-        const Halo4CuiAimOffset exactRasterUp =
-            Halo4MapAimToCuiTranslation(
-                upOffset, gameplayExtents.width, gameplayExtents.height, false);
-        Check(gameplayExtents.valid && otherOrderExtents.valid &&
-                  fabsf(gameplayExtents.width - 1893.0f) < 1.0e-5f &&
-                  fabsf(gameplayExtents.height - 1365.0f) < 1.0e-5f &&
-                  fabsf(otherOrderExtents.width - 1893.0f) < 1.0e-5f &&
-                  fabsf(otherOrderExtents.height - 1365.0f) < 1.0e-5f &&
-                  exactRasterUp.valid &&
-                  fabsf(exactRasterUp.y - 1365.0f) < 1.0e-5f,
-            "Halo 4 maps the shot projection through the exact live 3786x2730 "
-            "gameplay raster, not the authored 16:9 centre 1064.517");
-        const int16_t invalidBounds[4] = {0, 0, 3786, 0};
-        Check(!Halo4MeasureCuiViewportHalfExtents(invalidBounds).valid,
-            "A malformed Halo 4 gameplay viewport fails the optional reticle "
-            "feature open");
 
         float angularScale = 0.0f;
         Check(Halo4MapAngularSizeToCuiScale(
