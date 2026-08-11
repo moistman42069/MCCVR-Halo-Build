@@ -29,6 +29,22 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
+## CURRENT HALO 4 TEST CANDIDATE: C-H4-43m - 2026-08-11
+
+**Headset pending; this does not advance the accepted pointer below.** The
+43l headset result proved the native CUI reticle follows the gun and retains
+the full HUD plus Halo 4's animation and target colours, but also proved its
+vertical axis was inverted and its native size was too large. 43m changes only
+that Halo 4 reticle-only `real_matrix4x3`: camera-up now maps to positive live
+CUI translation Y, as the headset measured, and the uniform scale is derived
+from `crosshair_size_deg`, the current eye's vertical FOV, the live CUI
+half-height, and the official H4EK widescreen reticle height of `81.92` units.
+No fixed pixel resolution, cross-title engine offset, render target, bitmap,
+colour state, or other HUD transform is copied or changed. The entire HUD stays
+native, the native face reticle is the same object moved onto the gun ray, and
+the procedural fallback is suppressed only after both current eyes prove a
+successful move-and-scale write.
+
 ## REJECTED HALO 4 TEST CANDIDATE: C-H4-43l - 2026-08-11
 
 **Headset rejected; this never advanced the accepted pointer below.** The

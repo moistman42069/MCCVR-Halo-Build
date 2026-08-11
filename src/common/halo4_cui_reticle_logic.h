@@ -155,14 +155,20 @@ constexpr Halo4CuiReticleAction Halo4DecideCuiReticleAction(
 }
 
 // Retail's type-0x28 handler pushes one 0x34-byte real_matrix4x3 entry. The
-// reticle-only translation is the final float3 at +0x28. Moving that entry
-// preserves Halo 4's own bitmap animation, spread, hit marker, and target
-// colour while leaving every draw command and every other HUD transform stock.
+// uniform scale is float zero and reticle-only translation is the final float3
+// at +0x28. Adjusting only those fields preserves Halo 4's bitmap animation,
+// spread, hit marker, and target colour while leaving every draw command and
+// every other HUD transform stock.
 inline constexpr uint32_t kHalo4CuiTransformStackCountOffset = 0x870;
 inline constexpr uint32_t kHalo4CuiTransformStackEntriesOffset = 0x878;
 inline constexpr uint32_t kHalo4CuiTransformStride = 0x34;
 inline constexpr uint32_t kHalo4CuiTransformTranslationOffset = 0x28;
 inline constexpr uint32_t kHalo4CuiTransformStackMaximum = 0x60;
+// Both canonical H4EK weapon CUI exports carry this nominal authored reticle
+// height in their widescreen overlay. It is a Halo 4 content measurement, not
+// a copied CHUD/capture calibration. Mapping that height through the live CUI
+// half-height and eye FOV gives crosshair_size_deg its usual angular meaning.
+inline constexpr float kHalo4CuiNominalReticleHeight = 81.92f;
 
 struct Halo4CuiAimOffset
 {
@@ -207,6 +213,31 @@ inline Halo4CuiAimOffset Halo4MapAimToCuiTranslation(
     return result;
 }
 
+inline bool Halo4MapAngularSizeToCuiScale(
+    float baseY, float halfFovY, float sizeDegrees,
+    float& outScale) noexcept
+{
+    outScale = 0.0f;
+    if (!std::isfinite(baseY) || !std::isfinite(halfFovY) ||
+        !std::isfinite(sizeDegrees))
+        return false;
+    const float halfHeight = std::fabs(baseY);
+    if (halfHeight < 1.0f || halfHeight > 32768.0f ||
+        halfFovY <= 0.01f || halfFovY >= 1.56f ||
+        sizeDegrees < 0.3f || sizeDegrees > 20.0f)
+        return false;
+
+    const float halfAngle = sizeDegrees * 0.5f * 0.01745329251994329577f;
+    const float tanHalfFov = std::tan(halfFovY);
+    const float nominalPixelHeight =
+        2.0f * halfHeight * std::tan(halfAngle) / tanHalfFov;
+    const float scale = nominalPixelHeight / kHalo4CuiNominalReticleHeight;
+    if (!std::isfinite(scale) || scale < 0.001f || scale > 128.0f)
+        return false;
+    outScale = scale;
+    return true;
+}
+
 inline Halo4CuiAimOffset Halo4ProjectAimToCuiOffset(
     const float cameraForward[3], const float cameraUp[3],
     const float aimForward[3], float halfFovX, float halfFovY) noexcept
@@ -238,9 +269,11 @@ inline Halo4CuiAimOffset Halo4ProjectAimToCuiOffset(
 
     result.x = (aimForward[0] * right[0] + aimForward[1] * right[1] +
                 aimForward[2] * right[2]) / (forward * tanX);
-    // CUI's local Y axis points down while camera up points up.
-    result.y = -(aimForward[0] * cameraUp[0] + aimForward[1] * cameraUp[1] +
-                 aimForward[2] * cameraUp[2]) / (forward * tanY);
+    // The 43l headset result proved that the pushed reticle transform consumes
+    // positive translation Y as camera-up. The earlier static assumption that
+    // this composed matrix still used raster-down Y inverted gun movement.
+    result.y = (aimForward[0] * cameraUp[0] + aimForward[1] * cameraUp[1] +
+                aimForward[2] * cameraUp[2]) / (forward * tanY);
     result.valid = std::isfinite(result.x) && std::isfinite(result.y) &&
         std::fabs(result.x) <= 8.0f && std::fabs(result.y) <= 8.0f;
     return result;

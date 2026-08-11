@@ -1,12 +1,12 @@
 {
   "schema_version": 3,
-  "status": "C_H4_43L_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
+  "status": "C_H4_43M_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
   "hook_eligible": true,
-  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43l admits the optional gameplay-CUI front end and command dispatcher only after all four signatures and both rel32 edges match their pinned retail locations. It calls every original command and converts the normalized per-eye aim projection through the live pixel-space half extents in the newly pushed type-0x28 reticle matrix translation. No render target, bitmap, colour, alpha, visibility bit, auxiliary/menu CUI, generic HUD transform, CHUD binding, copied resolution, or copied cross-title address is changed.",
+  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43m admits the optional gameplay-CUI front end and command dispatcher only after all four signatures and both rel32 edges match their pinned retail locations. It calls every original command, converts normalized per-eye aim through the live CUI half extents, maps positive matrix Y to headset-up from the 43l result, and derives uniform scale from live eye FOV/CUI half-height plus the official 81.92-unit H4EK authored height. No render target, bitmap, colour, alpha, visibility bit, auxiliary/menu CUI, generic HUD transform, shared compositor path, copied resolution, or copied cross-title address is changed.",
   "accepted_halo4_pointer": {
     "candidate": "C-H4-43",
     "source_commit": "dd9946595511d65c9859b536e2727201c107da45",
-    "note": "C-H4-43l is a forward candidate after rejected C-H4-43i/43j/43k and does not advance acceptance without an explicit headset result"
+    "note": "C-H4-43m is a forward candidate after rejected C-H4-43i/43j/43k/43l and does not advance acceptance without an explicit headset result"
   },
   "development_baseline": {
     "source_commit": "f4c641f7b1b707991f2bda71ba485090a16f1e9a",
@@ -71,6 +71,31 @@
       "capture_scale": "Halo 4-specific neutral 1x; no Reach 2x occupancy copied",
       "failure_isolation": "StockFallback, CleanupRequired, and Installed never disarm camera, hands, stereo, or OpenXR"
     },
+    "headset_result": "PENDING"
+  },
+  "c_h4_43m_native_cui_reticle": {
+    "status": "OFFLINE_PASS_HEADSET_PENDING",
+    "accepted_parent": "C-H4-43",
+    "rejected_predecessor": "C-H4-43l moved the correct native reticle and retained the HUD/animation/target colours, but headset testing proved vertical movement inverted and native size excessive",
+    "runtime_evidence": {
+      "edition": "Steam",
+      "runtime": "SteamVR/OpenXR 2.17.7",
+      "headset": "PlayStation VR2 at 90 Hz",
+      "source_commit": "20fc0862007dae47f942b6036ac4546ac3c17f26",
+      "matrix_center": "-1893.000 / 1064.517 CUI pixels",
+      "axis_result": "positive composed reticle-matrix translation Y is headset/camera up"
+    },
+    "h4ek_size_evidence": {
+      "exports": [
+        "ui\\hud\\weapons\\human\\ar\\assault_rifle.cui_screen",
+        "ui\\hud\\weapons\\human\\pistol\\magnum.cui_screen"
+      ],
+      "widescreen_nominal_reticle_height_cui_units": 81.92,
+      "source": "official H4EK tool.exe export-tag-to-xml; out/h4ek-evidence/cui-reticle-size"
+    },
+    "size_mapping": "uniformScale = (2 * abs(liveCuiHalfHeight) * tan(crosshair_size_deg/2) / tan(liveEyeHalfFovY)) / 81.92",
+    "write_scope": "one H4EK-proven type-0x28 reticle-only real_matrix4x3; original uniform scale and X/Y translation are the only changed fields",
+    "cross_title_scope": "no shared compositor, Halo 3, ODST, or Reach code changed",
     "headset_result": "PENDING"
   },
   "retail_resolution_method": {

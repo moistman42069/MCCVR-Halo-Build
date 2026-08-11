@@ -84,7 +84,7 @@ try {
     }
     if ($cache -notmatch
             '(?m)^HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA:BOOL=ON\r?$') {
-        throw 'Refusing to package C-H4-43l: the Halo 4 camera core is not ON.'
+        throw 'Refusing to package C-H4-43m: the Halo 4 camera core is not ON.'
     }
 
     # Incremental. A clean rebuild was recompiling the whole tree for every
@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c43l-native-cui-reticle-pixel-transform',
+        'halo4-c43m-native-cui-reticle-angular-transform',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 'dd9946595511d65c9859b536e2727201c107da45'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-43l'
+            id = 'C-H4-43m'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'h4ek-proven-native-cui-reticle-transform-scaled-by-live-pixel-half-extents-per-eye-onto-controller-aim-ray-with-all-hud-draw-targets-stock'
+            behavior = 'h4ek-proven-native-cui-reticle-transform-with-headset-proven-up-axis-and-angular-size-from-live-eye-fov-cui-half-height-and-official-81p92-unit-authored-height'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -192,12 +192,12 @@ try {
             haptics = $true
             head_relative_locomotion = $true
             # The rest of Halo 4's CUI remains native in the captured scene.
-            # Only the H4EK-proven reticle transform is optionally translated.
-            hud = 'entirely-native-inside-captured-scene-only-reticle-matrix-translated'
+            # Only the H4EK-proven reticle transform is translated and scaled.
+            hud = 'entirely-native-inside-captured-scene-only-reticle-matrix-translated-and-uniformly-scaled'
             authored_crosshair = $true
             native_face_crosshair_suppressed = $true
             reticle_capture_boundary =
-                'none-native-type-0x28-reticule-offset-matrix-translation-only'
+                'none-native-type-0x28-reticule-offset-matrix-translation-and-uniform-scale-only'
             reticle_failure_policy =
                 'stock-or-procedural-feature-fallback-camera-hands-stereo-and-openxr-remain-armed'
             first_person_hands = $true
@@ -291,7 +291,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-43l is an unaccepted headset candidate built on accepted C-H4-43 after the headset rejected 43k because normalized gun-ray offsets were written directly into a measured pixel-space CUI transform. Official H4EK and pinned retail uniquely prove the full-size gameplay CUI scope, type-0x28 ReticuleOffsetContainer command, dispatcher, caller edges, 0x34 transform-stack entry and translation at +0x28. C-H4-43l calls every original command and scales each normalized per-eye projection by the live absolute X/Y half extents already present in that native reticle matrix. It copies no resolution or cross-title scale and never redirects a render target or replaces native pixels, so the complete HUD and native animation, spread, hit marker, and red/green target colour remain Halo 4''s own. The compositor omits its procedural quad while the transform hook is live. Any optional failure remains feature-local and never disarms the accepted camera, hands, stereo path, or OpenXR. C-H4-43 remains the accepted rollback pointer until explicit headset acceptance.'
+        note = 'C-H4-43m is an unaccepted headset candidate built on accepted C-H4-43 after 43l proved the native Halo 4 reticle follows the gun with its HUD/animation/target colour intact, but exposed inverted vertical motion and excessive native size. Official H4EK and pinned retail uniquely prove the full-size gameplay CUI scope, type-0x28 ReticuleOffsetContainer command, dispatcher, caller edges, and 0x34 real_matrix4x3 layout. The 43l headset result proves positive composed-matrix Y is headset-up. Official H4EK assault-rifle and magnum widescreen exports both measure an 81.92-unit nominal reticle height. C-H4-43m maps the configured angular height through each live eye FOV and CUI half-height into the matrix uniform scale, while retaining the live half-extent X/Y gun-ray translation. It changes no render target, bitmap, colour state, other HUD transform, shared compositor code, or other title. Any optional failure remains feature-local and never disarms the accepted camera, hands, stereo path, or OpenXR. C-H4-43 remains the accepted rollback pointer until explicit headset acceptance.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

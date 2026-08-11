@@ -954,6 +954,8 @@ namespace
     // shifting every basis read by one float and making weapon pieces diverge.
     struct BoneMatrix { float scale; float rotation[9]; float translation[3]; };
     static_assert(sizeof(BoneMatrix) == 0x34);
+    static_assert(offsetof(BoneMatrix, translation) ==
+        kHalo4CuiTransformTranslationOffset);
 
     using FpInterpolateFn = bool(__fastcall*)(int view, int id, int slot,
                                               BoneMatrix** outBones, int* outCount);
@@ -29151,7 +29153,7 @@ namespace
     // RoomScale join them now that Halo 4 publishes the three things the shared
     // paths need from a title: a runtime mode, a yaw reference pair, and the
     // engine's own aim direction. HUD stays out because Halo 4's general CUI
-    // remains inside the captured scene target; C-H4-43l's optional native
+    // remains inside the captured scene target; C-H4-43m's optional native
     // reticle translation is not a general HUD capability. ArmIk and
     // CutsceneTheater stay out because neither has Halo 4 evidence. C-H4-35
     // deliberately uses rigid floating hands only, so advertising ArmIk here
@@ -29188,7 +29190,7 @@ namespace
         void* setupTarget = nullptr;
         void* wrapperTarget = nullptr;
         void* modelSkinningTarget = nullptr;
-        // C-H4-43l is an optional feature transaction. The gameplay-CUI scope
+        // C-H4-43m is an optional feature transaction. The gameplay-CUI scope
         // and command dispatcher hooks install/remove together; either can
         // fail without changing camera ownership.
         void* cuiReticleTarget = nullptr;
@@ -29320,6 +29322,8 @@ namespace
         std::atomic<float> cuiReticleBaseY{0.0f};
         std::atomic<float> cuiReticleAimX{0.0f};
         std::atomic<float> cuiReticleAimY{0.0f};
+        std::atomic<float> cuiReticleStockScale{0.0f};
+        std::atomic<float> cuiReticleWrittenScale{0.0f};
         // Current prepared serial for which each eye completed at least one
         // reticle-only matrix write. The compositor suppresses its procedural
         // fallback only after both rendered eyes prove this exact-frame move.
@@ -31918,6 +31922,7 @@ namespace
         bool aimOffsetValid = false;
         float aimOffsetX = 0.0f;
         float aimOffsetY = 0.0f;
+        float halfFovY = 0.0f;
     };
     thread_local Halo4CuiReticleEyeScope g_halo4CuiReticleEyeScope;
     // The dispatcher normally runs synchronously beneath the hooked CUI front
@@ -32028,7 +32033,8 @@ namespace
     }
 
     void Halo4BeginCuiReticleEye(
-        int eye, uint64_t preparedSerial, const Halo4CuiAimOffset& aimOffset)
+        int eye, uint64_t preparedSerial, const Halo4CuiAimOffset& aimOffset,
+        float halfFovY)
     {
         Halo4FinishCuiReticleEye();
         Halo4CuiReticleEyeScope& scope = g_halo4CuiReticleEyeScope;
@@ -32040,6 +32046,7 @@ namespace
         scope.aimOffsetValid = aimOffset.valid;
         scope.aimOffsetX = aimOffset.x;
         scope.aimOffsetY = aimOffset.y;
+        scope.halfFovY = halfFovY;
         if (eye >= 0 && eye <= 1)
             g_halo4Camera.cuiReticleEyeSerial[eye].store(
                 0, std::memory_order_release);
@@ -32149,9 +32156,9 @@ namespace
             g_config.right_eye_first);
 
         // Every command always runs. Type 0x28 pushes the reticle-only 0x34
-        // transform. Change only that new entry's translation: the native CUI
-        // bitmaps, colour/animation state, hit marker, and every other HUD
-        // command remain Halo 4's own unmodified work.
+        // transform. Change only that new entry's uniform scale and X/Y
+        // translation: the native CUI bitmaps, colour/animation state, hit
+        // marker, and every other HUD command remain Halo 4's own work.
         const bool result = original(
             renderer, command, openRenderSections, renderContext);
         if (!result || action == Halo4CuiReticleAction::DrawStock)
@@ -32171,25 +32178,36 @@ namespace
             return result;
         }
 
-        float translation[3]{};
         uint8_t* const entry = static_cast<uint8_t*>(renderer) +
             kHalo4CuiTransformStackEntriesOffset +
             static_cast<size_t>(count - 1) * kHalo4CuiTransformStride;
-        float* const translationAddress = reinterpret_cast<float*>(
-            entry + kHalo4CuiTransformTranslationOffset);
-        if (!Halo4SafeRead(
-                translationAddress, translation, sizeof(translation)) ||
-            !std::isfinite(translation[0]) ||
-            !std::isfinite(translation[1]) ||
-            !std::isfinite(translation[2]))
+        BoneMatrix transform{};
+        if (!Halo4SafeRead(entry, &transform, sizeof(transform)))
+        {
+            g_halo4Camera.cuiReticleRedirectFailures.fetch_add(
+                1, std::memory_order_relaxed);
+            return result;
+        }
+        const float* const values = reinterpret_cast<const float*>(&transform);
+        for (size_t value = 0; value < sizeof(transform) / sizeof(float); ++value)
+        {
+            if (!std::isfinite(values[value]))
+            {
+                g_halo4Camera.cuiReticleRedirectFailures.fetch_add(
+                    1, std::memory_order_relaxed);
+                return result;
+            }
+        }
+        if (transform.scale < 0.001f || transform.scale > 128.0f)
         {
             g_halo4Camera.cuiReticleRedirectFailures.fetch_add(
                 1, std::memory_order_relaxed);
             return result;
         }
 
-        const float baseX = translation[0];
-        const float baseY = translation[1];
+        const float stockScale = transform.scale;
+        const float baseX = transform.translation[0];
+        const float baseY = transform.translation[1];
         const bool hiding = action == Halo4CuiReticleAction::HideNative;
         const Halo4CuiAimOffset normalizedAim{
             scope.aimOffsetX, scope.aimOffsetY, scope.aimOffsetValid};
@@ -32201,10 +32219,19 @@ namespace
                 1, std::memory_order_relaxed);
             return result;
         }
-        translation[0] += cuiDelta.x;
-        translation[1] += cuiDelta.y;
-        if (!Halo4SafeWrite(
-                translationAddress, translation, sizeof(translation)))
+        float writtenScale = stockScale;
+        if (!hiding && !Halo4MapAngularSizeToCuiScale(
+                baseY, scope.halfFovY, g_config.crosshair_size_deg,
+                writtenScale))
+        {
+            g_halo4Camera.cuiReticleRedirectFailures.fetch_add(
+                1, std::memory_order_relaxed);
+            return result;
+        }
+        transform.scale = writtenScale;
+        transform.translation[0] += cuiDelta.x;
+        transform.translation[1] += cuiDelta.y;
+        if (!Halo4SafeWrite(entry, &transform, sizeof(transform)))
         {
             g_halo4Camera.cuiReticleRedirectFailures.fetch_add(
                 1, std::memory_order_relaxed);
@@ -32218,6 +32245,10 @@ namespace
             cuiDelta.x, std::memory_order_relaxed);
         g_halo4Camera.cuiReticleAimY.store(
             cuiDelta.y, std::memory_order_relaxed);
+        g_halo4Camera.cuiReticleStockScale.store(
+            stockScale, std::memory_order_relaxed);
+        g_halo4Camera.cuiReticleWrittenScale.store(
+            writtenScale, std::memory_order_relaxed);
         (hiding ? g_halo4Camera.cuiReticleSuppressions
                 : g_halo4Camera.cuiReticleCaptures)
             .fetch_add(1, std::memory_order_relaxed);
@@ -33096,7 +33127,8 @@ namespace
                           halfFovX[eye], halfFovY[eye])
                     : Halo4CuiAimOffset{};
                 Halo4BeginCuiReticleEye(
-                    eye, snapshot.preparedSerial, reticleAimOffset);
+                    eye, snapshot.preparedSerial, reticleAimOffset,
+                    halfFovY[eye]);
                 __try
                 {
                     g_halo4OrigWrapper(element, view, window);
@@ -33475,7 +33507,7 @@ namespace
         if (!dispatcherClean || !gameplayClean)
         {
             g_halo4Camera.cuiReticleCleanupRequired = true;
-            LOG("Halo 4 C-H4-43l CUI reticle: optional two-hook cleanup "
+            LOG("Halo 4 C-H4-43m CUI reticle: optional two-hook cleanup "
                 "needs retry (dispatcher=%d gameplay=%d); retaining targets, "
                 "trampolines, and halo4.dll pin while camera/OpenXR stay "
                 "independent",
@@ -33488,7 +33520,7 @@ namespace
         g_halo4OrigCuiRenderCommand = nullptr;
         g_halo4OrigCuiGameplayRender = nullptr;
         g_halo4Camera.cuiReticleCleanupRequired = false;
-        LOG("Halo 4 C-H4-43l CUI reticle: optional two-hook cleanup complete; "
+        LOG("Halo 4 C-H4-43m CUI reticle: optional two-hook cleanup complete; "
             "camera core and OpenXR remained armed");
         return true;
     }
@@ -33596,7 +33628,7 @@ namespace
         if (!Halo4CuiReticleInstallComplete(proof))
         {
             g_halo4Camera.cuiReticleRejectedGeneration = generation;
-            LOG("Halo 4 C-H4-43l CUI reticle REFUSED: transform=%d "
+            LOG("Halo 4 C-H4-43m CUI reticle REFUSED: transform=%d "
                 "anchorsOnce=%u/%u anchorsPinned=%u/%u edges=%d/%d range=%d "
                 "mapping=%d; reticles stay on the stock/procedural fallback "
                 "and camera core stays armed",
@@ -33618,7 +33650,7 @@ namespace
         if (gameplayCreated != MH_OK)
         {
             g_halo4Camera.cuiReticleRejectedGeneration = generation;
-            LOG("Halo 4 C-H4-43l CUI reticle: optional gameplay-scope hook "
+            LOG("Halo 4 C-H4-43m CUI reticle: optional gameplay-scope hook "
                 "creation failed (%d); native/procedural reticles stay stock "
                 "and camera core stays armed",
                 static_cast<int>(gameplayCreated));
@@ -33637,7 +33669,7 @@ namespace
         {
             g_halo4Camera.cuiReticleRejectedGeneration = generation;
             const bool cleaned = CleanupHalo4CuiReticleFeature();
-            LOG("Halo 4 C-H4-43l CUI reticle: optional dispatcher hook "
+            LOG("Halo 4 C-H4-43m CUI reticle: optional dispatcher hook "
                 "creation failed (%d); %s stock fallback retained and camera "
                 "core stays armed", static_cast<int>(dispatcherCreated),
                 cleaned ? "clean" : "cleanup-pending");
@@ -33661,7 +33693,7 @@ namespace
         {
             g_halo4Camera.cuiReticleRejectedGeneration = generation;
             const bool cleaned = CleanupHalo4CuiReticleFeature();
-            LOG("Halo 4 C-H4-43l CUI reticle: atomic optional hook enable "
+            LOG("Halo 4 C-H4-43m CUI reticle: atomic optional hook enable "
                 "failed (%d/%d/%d); %s stock fallback retained and camera "
                 "core stays armed", static_cast<int>(dispatcherQueued),
                 static_cast<int>(gameplayQueued), static_cast<int>(applied),
@@ -33673,11 +33705,12 @@ namespace
 
         g_halo4Camera.cuiReticleInstalled.store(
             true, std::memory_order_release);
-        LOG("Halo 4 C-H4-43l native CUI reticle transform installed: gameplay scope "
+        LOG("Halo 4 C-H4-43m native CUI reticle transform installed: gameplay scope "
             "+0x%X (exact caller return +0x%X) and dispatcher +0x%X (sole "
             "caller edge +0x%X) matched uniquely; auxiliary/menu CUI stays "
             "stock; gameplay type 0x28 moves only its pushed reticle matrix "
-            "onto the per-eye gun ray without touching HUD draw targets",
+            "onto the per-eye gun ray, maps CUI Y to headset-up, and derives "
+            "uniform scale from crosshair_size_deg without touching HUD draw targets",
             kHalo4CuiGameplayRenderRva,
             kHalo4CuiGameplayCallerReturnRva,
             kHalo4CuiReticleDispatcherRva, kHalo4CuiReticleCallerRva);
@@ -33725,7 +33758,7 @@ namespace
         if (!dispatcherClean || !gameplayClean)
         {
             if (!g_halo4Camera.cuiReticleCleanupRequired)
-                LOG("Halo 4 C-H4-43l teardown: optional CUI two-hook removal "
+                LOG("Halo 4 C-H4-43m teardown: optional CUI two-hook removal "
                     "needs retry (dispatcher=%d gameplay=%d); retaining both "
                     "targets/trampolines and halo4.dll pin until cleanup "
                     "proves complete",
@@ -34021,10 +34054,10 @@ namespace
         // Storm80 -> held -> native-body record sequence; any miss leaves that
         // exact feature stock while the working camera/session stays armed.
         InstallHalo4Vrik(base,size);
-        // C-H4-43l is headset-rejected: its CUI Y mapping was inverted and it
-        // left Halo 4's native reticle much larger than the shared VR reticle.
-        // Keep the proven optional transaction dormant until its replacement
-        // corrects both parts of the title-local matrix mapping.
+        // C-H4-43m keeps the 43l position path but applies the headset-proven
+        // CUI Y sign and derives uniform scale from the live per-eye FOV plus
+        // Halo 4's official 81.92-unit nominal reticle height.
+        (void)InstallHalo4CuiReticle(base, size, generation);
         PublishHalo4Lifecycle();
         LOG("Halo 4 camera core installed (generation %u): setup 0x%X and the "
             "render wrapper 0x%X are hooked at their pinned RVAs, both proven "
@@ -34063,7 +34096,10 @@ namespace
         }
         if (installed && g_halo4Camera.cuiReticleCleanupRequired)
             (void)CleanupHalo4CuiReticleFeature();
-        // C-H4-43l retry remains dormant with its initial install above.
+        else if (installed && levelRunning &&
+                 !g_halo4Camera.cuiReticleInstalled.load(
+                     std::memory_order_acquire))
+            (void)InstallHalo4CuiReticle(base, size, generation);
         if (g_vrRuntimeFailureLatched.load(std::memory_order_acquire))
         {
             g_halo4Camera.armed.store(false, std::memory_order_release);
@@ -34082,7 +34118,7 @@ namespace
                 kReachRenderSafetyIntervalMs)
         {
             g_halo4Camera.armed.store(true, std::memory_order_release);
-            LOG("Halo 4 camera core armed: C-H4-43l current-eye controller-rerooted "
+            LOG("Halo 4 camera core armed: C-H4-43m current-eye controller-rerooted "
                 "Storm hands, H3/ODST/Reach left_hand-marker parity free pose, exact C-H4-38 shared-right-aim support pose, and "
                 "same-frame held-model carry (no arm IK) on C-H4-10 motion aim, VR "
                 "turn and rumble on C-H4-9's headset-owned look, C-H4-8's 6DOF and "
@@ -34206,11 +34242,11 @@ namespace
         const uint64_t cuiForced =
             g_halo4Camera.cuiReticleForcedCleanup.exchange(
                 0, std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-43l native CUI reticle: hook=%s, %llu main gameplay CUI "
+        LOG("Halo 4 C-H4-43m native CUI reticle: hook=%s, %llu main gameplay CUI "
             "passes, %llu begin markers, "
             "%llu completed matrix writes (%llu moved / %llu hidden), %llu "
             "write failures, %llu forced restores in 2s; last base %.3f/%.3f "
-            "+ aim %.3f/%.3f; camera "
+            "+ aim %.3f/%.3f, scale %.4f -> %.4f; camera "
             "and OpenXR remain independently armed",
             Halo4CuiReticleTransformLive() ? "LIVE" : "stock fallback",
             static_cast<unsigned long long>(cuiGameplayPasses),
@@ -34223,7 +34259,9 @@ namespace
             g_halo4Camera.cuiReticleBaseX.load(std::memory_order_relaxed),
             g_halo4Camera.cuiReticleBaseY.load(std::memory_order_relaxed),
             g_halo4Camera.cuiReticleAimX.load(std::memory_order_relaxed),
-            g_halo4Camera.cuiReticleAimY.load(std::memory_order_relaxed));
+            g_halo4Camera.cuiReticleAimY.load(std::memory_order_relaxed),
+            g_halo4Camera.cuiReticleStockScale.load(std::memory_order_relaxed),
+            g_halo4Camera.cuiReticleWrittenScale.load(std::memory_order_relaxed));
 
         // The two C-H4-8 behaviours report on their own lines so one headset
         // session can accept or reject each independently. A pair count alone

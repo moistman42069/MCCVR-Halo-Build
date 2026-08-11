@@ -1,11 +1,11 @@
 # Halo 4 CUI evidence
 
-Status: **the C-H4-43i/C-H4-43j render-target design and C-H4-43k's unscaled
-native transform are headset-rejected; C-H4-43l applies the proven per-eye
-projection in Halo 4's measured pixel-space CUI units and is headset-pending.** Halo 4 has no CHUD; its HUD is the
+Status: **the C-H4-43i/C-H4-43j render-target design and C-H4-43k/43l native
+transform candidates are headset-rejected; C-H4-43m corrects 43l's measured
+vertical sign and derives native scale from the shared angular-size knob.** Halo 4 has no CHUD; its HUD is the
 CUI system. Identity pins live in `docs/HALO4-EVIDENCE-MANIFEST.json`;
 camera/render signature proofs live in `docs/HALO4-SIGNATURE-EVIDENCE.md`.
-Nothing in this file promotes C-H4-43i, 43j, 43k, or 43l to an accepted headset result.
+Nothing in this file promotes C-H4-43i through 43m to an accepted headset result.
 
 The 2026-08-11 Steam/SteamVR/PSVR2 run loaded the correct `3baabc7` bytes but
 logged `prepared capture/discard resources unavailable`, followed by zero main
@@ -533,7 +533,7 @@ runtime result disproves the static assumption that the marker interval is a
 GPU draw-submission boundary. The render-target redirect is dormant; the
 following list is retained as the acceptance contract for a replacement:
 
-### C-H4-43k rejection and C-H4-43l native-transform correction
+### C-H4-43k/43l rejection and C-H4-43m native-transform correction
 
 C-H4-43k did not redirect or capture any CUI draw. H4EK `0x9BE760` and its
 retail homolog prove that a successful type-`0x28` command increments the
@@ -555,11 +555,34 @@ measured pixel-space centre `-1893.000/1064.517`, so the movement was sub-pixel.
 in the exact same reticle transform. NDC `+1` therefore moves one measured half
 width, and NDC `-1` one measured half height, independent of resolution and
 aspect ratio.
-Both eyes move their native reticle independently. When live, the compositor
-does not create or submit the procedural reticle quad. Thus Halo 4's existing
-animation, spread, hit marker, and red/green target state remain native while
-the face-centred copy is the same object moved onto the gun ray. This is a new
-headset candidate, not an accepted result; C-H4-43 remains the rollback pointer.
+The correct `20fc086` 43l Steam/SteamVR/PSVR2 run then proved the architecture
+in the headset: the whole HUD remained, and the native animated/target-coloured
+reticle moved with the gun. It also rejected the final mapping because vertical
+movement was inverted and the reticle was much too large. The `+0x28` composed
+translation therefore consumes positive Y as headset/camera up; the prior
+"raster Y points down" inference was wrong at this already-composed matrix.
+
+For size, the official H4EK `tool.exe` exports of canonical assault-rifle and
+magnum `cui_screen` tags both measure `_auto_prop_height = 81.92` in the
+widescreen reticle overlay (`out/h4ek-evidence/cui-reticle-size/`). 43m treats
+that title-authored height as the nominal reticle span. For each eye it derives
+the desired pixel height without a copied resolution or guessed multiplier:
+
+`pixels = 2 * abs(liveCuiHalfHeight) * tan(crosshair_size_deg/2) / tan(eyeHalfFovY)`
+
+and writes `real_matrix4x3.scale = pixels / 81.92`. The matrix layout itself is
+already H4EK/retail-proven: uniform scale is float zero and translation begins
+at `+0x28`. One guarded `0x34`-byte write returns the untouched nine-float
+basis with only uniform scale and X/Y translation changed. Invalid FOV,
+configuration, scale, matrix, or memory leaves that reticle draw stock and the
+procedural fallback eligible; no camera/session ownership changes.
+
+Both eyes move and size their native reticle independently. When both current
+eyes prove the matrix write, the compositor does not submit the procedural
+reticle quad. Thus Halo 4's existing animation, spread, hit marker, and
+red/green target state remain native while the face-centred copy is the same
+object moved onto the gun ray. This is a new headset candidate, not an accepted
+result; C-H4-43 remains the rollback pointer.
 
 - the authored weapon reticle follows the controller/gun ray and no
   face-centred copy remains in either eye;
@@ -571,14 +594,14 @@ headset candidate, not an accepted result; C-H4-43 remains the rollback pointer.
   coverage hold;
 - scoped/zoomed weapons either retain their correct native scope behavior or
   expose a clearly logged, feature-local limitation;
-- telemetry reports one admitted main CUI pass per rendered eye, completed
-  capture/discard brackets, and no unexplained forced restores or redirect
-  failures.
+- telemetry reports admitted main CUI passes, completed matrix writes, no
+  write failures, an aim Y sign matching gun movement, and a finite stock to
+  configured scale change.
 
-Because this feature also exercises shared authored-reticle resources and
-compositor policy, the candidate additionally requires a Halo 3 headset
-regression result before acceptance. Until those explicit results exist, the
-accepted-build pointer in `docs/CURRENT-STATE.md` remains authoritative.
+C-H4-43m changes no shared compositor code and no Halo 3/ODST/Reach path; their
+reticle implementation and lifecycle remain byte-for-byte untouched. Until the
+explicit Halo 4 headset result exists, the accepted-build pointer in
+`docs/CURRENT-STATE.md` remains authoritative.
 
 ## C-H4-43j correction after the 43i headset rejection
 

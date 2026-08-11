@@ -6227,8 +6227,8 @@ int main()
         const Halo4CuiAimOffset upOffset = Halo4ProjectAimToCuiOffset(
             forward, up, upAim, 0.78539816f, 0.78539816f);
         Check(upOffset.valid && fabsf(upOffset.x) < 1.0e-5f &&
-                  fabsf(upOffset.y + 1.0f) < 1.0e-5f,
-            "Camera-up maps to CUI-up despite CUI's downward local Y axis");
+                  fabsf(upOffset.y - 1.0f) < 1.0e-5f,
+            "Camera-up maps to positive Halo 4 reticle-matrix translation Y");
         const float behind[3] = {0.0f, -1.0f, 0.0f};
         Check(!Halo4ProjectAimToCuiOffset(
                    forward, up, behind, 0.78539816f, 0.78539816f).valid,
@@ -6243,7 +6243,7 @@ int main()
         Check(rightPixels.valid && fabsf(rightPixels.x - 1920.0f) < 1.0e-4f &&
                   fabsf(rightPixels.y) < 1.0e-4f && upPixels.valid &&
                   fabsf(upPixels.x) < 1.0e-4f &&
-                  fabsf(upPixels.y + 1080.0f) < 1.0e-4f,
+                   fabsf(upPixels.y - 1080.0f) < 1.0e-4f,
             "Halo 4 converts normalized gun-ray projection through the live "
             "pixel-space CUI half extents");
         Check(hidden.valid && fabsf(hidden.x - 7680.0f) < 1.0e-4f &&
@@ -6255,6 +6255,25 @@ int main()
                   !Halo4MapAimToCuiTranslation(
                       right, -1920.0f, NAN, false).valid,
             "Invalid Halo 4 CUI extents fail open without a transform write");
+
+        float angularScale = 0.0f;
+        Check(Halo4MapAngularSizeToCuiScale(
+                  1080.0f, 0.78539816f, 7.2f, angularScale),
+            "Halo 4 maps the shared crosshair angular-size knob into its "
+            "title-native CUI scale");
+        const float reconstructedRadians = 2.0f * atanf(
+            (kHalo4CuiNominalReticleHeight * angularScale * 0.5f / 1080.0f) *
+            tanf(0.78539816f));
+        Check(fabsf(reconstructedRadians - 7.2f * 0.01745329252f) < 1.0e-5f,
+            "Halo 4's nominal authored reticle height subtends exactly the "
+            "configured angle");
+        Check(!Halo4MapAngularSizeToCuiScale(
+                  0.0f, 0.78539816f, 7.2f, angularScale) &&
+                  !Halo4MapAngularSizeToCuiScale(
+                      1080.0f, 0.0f, 7.2f, angularScale) &&
+                  !Halo4MapAngularSizeToCuiScale(
+                      1080.0f, 0.78539816f, NAN, angularScale),
+            "Invalid Halo 4 size inputs fail feature-locally");
 
         const float centerPosition[3] = {0.0f, 0.0f, 0.0f};
         const float leftEyePosition[3] = {-0.032f, 0.0f, 0.0f};
