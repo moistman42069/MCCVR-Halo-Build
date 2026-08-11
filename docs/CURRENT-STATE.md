@@ -29,10 +29,21 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
-## CURRENT HALO 4 TEST CANDIDATE: C-H4-43k - 2026-08-11
+## REJECTED HALO 4 TEST CANDIDATE: C-H4-43k - 2026-08-11
 
-**Headset pending; this does not advance the accepted pointer below.** This
-candidate replaces the rejected render-target capture with Halo 4's native
+**Headset rejected; this never advanced the accepted pointer below.** The
+correct `e74be7d` Steam/SteamVR/PSVR2 90 Hz run installed both hooks and wrote
+the changing per-eye gun-ray projection on every admitted type-`0x28` command,
+but the native crosshair remained face-centred and did not replace the VR
+crosshair. Runtime telemetry explains the failure without guesswork: Halo 4's
+base CUI translation was pixel-space (`-1893.000 / 1064.517`) while 43k added
+normalized projection values such as `0.092 / -0.072` directly, yielding only
+sub-pixel motion. The transform hook is now dormant. A replacement must convert
+the normalized per-eye projection through the actual gameplay CUI viewport
+dimensions before writing the reticle-only transform, and must retain the full
+HUD plus the stock procedural fallback on any feature-local failure.
+
+The attempted candidate replaced the rejected render-target capture with Halo 4's native
 reticle transform. The exact gameplay CUI scope and type-`0x28` command remain
 the H4EK/retail-proven reticle boundary, but every original command and render
 target now stays stock. After Halo 4 pushes the reticle container's private
