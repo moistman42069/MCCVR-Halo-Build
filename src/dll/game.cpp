@@ -33997,7 +33997,15 @@ namespace
         // Storm80 -> held -> native-body record sequence; any miss leaves that
         // exact feature stock while the working camera/session stays armed.
         InstallHalo4Vrik(base,size);
-        (void)InstallHalo4CuiReticle(base, size, generation);
+        // C-H4-43j is headset-rejected.  The 0x28/0x29 interval is a logical
+        // CUI subtree, but retail batches the actual HUD draws outside that
+        // interval.  Redirecting it therefore hides HUD pixels while the
+        // private reticle target remains blank.  Keep the evidence-backed
+        // hooks dormant until a command-local reticle transform replacement
+        // is installed; the accepted procedural/native fallback stays live.
+        LOG("Halo 4 C-H4-43j CUI reticle disabled after headset rejection: "
+            "shared batched HUD draws make render-target redirection unsafe; "
+            "C-H4-43 fallback retained");
         PublishHalo4Lifecycle();
         LOG("Halo 4 camera core installed (generation %u): setup 0x%X and the "
             "render wrapper 0x%X are hooked at their pinned RVAs, both proven "

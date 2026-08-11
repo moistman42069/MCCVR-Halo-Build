@@ -29,9 +29,20 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
-## CURRENT HALO 4 TEST CANDIDATE: C-H4-43j - 2026-08-11
+## REJECTED HALO 4 TEST CANDIDATE: C-H4-43j - 2026-08-11
 
-**Headset pending; this does not advance the accepted pointer below.** This is
+**Headset rejected; this never advanced the accepted pointer below.** The
+correct `191c4ae` Steam/SteamVR/PSVR2 90 Hz run installed both optional hooks
+and admitted the main gameplay CUI pass. Runtime telemetry measured three
+independent `0x28`/`0x29` scopes per eye, 543 authored redirects and 543 discard
+redirects per reporting interval, with no begin/end or forced-restore failure.
+Nevertheless every capture was blank (`heldArt=0`, `art=0`, zero uploads), the
+procedural VR reticle remained, and HUD pixels disappeared from the eye target.
+This disproves the claimed GPU draw-submission boundary: retail batches shared
+CUI/HUD draws outside the logical reticle command interval. Render-target
+redirection at this boundary is unsafe and is now dormant.
+
+The attempted design was
 the same H4EK-proven authored CUI subtree and gun-ray quad placement as 43i,
 with the runtime install failure corrected. Capture and suppression use private
 D3D targets and no longer require render-target views for all OpenXR crosshair

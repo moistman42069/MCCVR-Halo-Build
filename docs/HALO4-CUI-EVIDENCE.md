@@ -526,8 +526,12 @@ main-pass scope, retail signatures, and fail-open ownership contract. It does
 inside the measured container, that its pixels fit the neutral 1x viewport,
 or that the result is comfortable and correct in a headset.
 
-C-H4-43j remains pending until one target-title headset run identifies MCC
-edition, OpenXR runtime, and headset and verifies at least:
+C-H4-43j was rejected by the Steam/SteamVR/PSVR2 90 Hz headset run. The hooks
+were live and balanced, but three independent marker scopes per eye redirected
+shared HUD pixels while every private reticle capture remained blank. This
+runtime result disproves the static assumption that the marker interval is a
+GPU draw-submission boundary. The render-target redirect is dormant; the
+following list is retained as the acceptance contract for a replacement:
 
 - the authored weapon reticle follows the controller/gun ray and no
   face-centred copy remains in either eye;
