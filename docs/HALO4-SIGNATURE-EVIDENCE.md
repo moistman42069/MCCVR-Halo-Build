@@ -3866,4 +3866,28 @@ state. Missing resources, malformed commands, signature ambiguity, hook
 failure, or unmatched scope state fails open for this feature only. The
 procedural gun-ray fallback remains until valid authored pixels are held, and
 camera/hands/stereo/OpenXR remain armed. This is offline proof and implementation
-only; the C-H4-43i headset result is pending and C-H4-43 remains accepted.
+only. The 2026-08-11 headset run rejected C-H4-43i before either hook installed:
+its eager validation of every OpenXR reticle image RTV failed after swapchain
+creation, and the feature permanently rejected that generation. Telemetry was
+zero passes, markers, captures, redirects, and uploads. C-H4-43 remains
+accepted.
+
+## E-H4-34 / C-H4-43j - remove the false eager-XR-view install dependency
+
+The E-H4-33 capture boundary renders only into two private D3D targets: the
+authored texture for the selected capture eye and the discard texture for the
+opposite/skipped eye. It does not consume an OpenXR swapchain image RTV. That
+view is needed only later, after `xrAcquireSwapchainImage` returns one exact
+upload index. C-H4-43i's demand that all swapchain image RTVs exist before hook
+installation was therefore not evidence-backed and contradicted the lazy
+per-acquired-image upload shape used by Halo 3 and ODST.
+
+C-H4-43j removes that dependency from cold preparation and from prepared
+capture admission. Private capture/discard/coverage resources remain mandatory
+before the optional hooks install, so the hot CUI boundary still performs no
+allocation. A cold resource miss keeps stock behavior for that poll and is
+retried; it no longer sets the generation's permanent static-proof rejection.
+Unique/pinned signatures, both rel32 decodes, executable range, stable mapping,
+hook creation, and atomic two-hook enable remain mandatory and still reject
+only this optional feature when they fail. The native CUI pixels are captured
+without recoloring, preserving Halo 4's own target and hit colour states.

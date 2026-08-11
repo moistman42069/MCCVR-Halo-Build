@@ -1,11 +1,11 @@
 # Halo 4 CUI evidence
 
-Status: **the C-H4-43i authored-reticle producer, playback boundary, main
+Status: **the C-H4-43i/C-H4-43j authored-reticle producer, playback boundary, main
 gameplay-pass ownership scope, and pinned-retail bindings are proven
-offline; the runtime candidate was rejected before its hooks installed.** Halo 4 has no CHUD; its HUD is the
+offline; 43i was rejected before its hooks installed and 43j is pending.** Halo 4 has no CHUD; its HUD is the
 CUI system. Identity pins live in `docs/HALO4-EVIDENCE-MANIFEST.json`;
 camera/render signature proofs live in `docs/HALO4-SIGNATURE-EVIDENCE.md`.
-Nothing in this file promotes C-H4-43i to an accepted headset result.
+Nothing in this file promotes C-H4-43i or C-H4-43j to an accepted headset result.
 
 The 2026-08-11 Steam/SteamVR/PSVR2 run loaded the correct `3baabc7` bytes but
 logged `prepared capture/discard resources unavailable`, followed by zero main
@@ -526,7 +526,7 @@ main-pass scope, retail signatures, and fail-open ownership contract. It does
 inside the measured container, that its pixels fit the neutral 1x viewport,
 or that the result is comfortable and correct in a headset.
 
-C-H4-43i remains pending until one target-title headset run identifies MCC
+C-H4-43j remains pending until one target-title headset run identifies MCC
 edition, OpenXR runtime, and headset and verifies at least:
 
 - the authored weapon reticle follows the controller/gun ray and no
@@ -543,7 +543,24 @@ edition, OpenXR runtime, and headset and verifies at least:
   capture/discard brackets, and no unexplained forced restores or redirect
   failures.
 
-Because C-H4-43i also exercises shared authored-reticle resources and
+Because this feature also exercises shared authored-reticle resources and
 compositor policy, the candidate additionally requires a Halo 3 headset
 regression result before acceptance. Until those explicit results exist, the
 accepted-build pointer in `docs/CURRENT-STATE.md` remains authoritative.
+
+## C-H4-43j correction after the 43i headset rejection
+
+C-H4-43i required all OpenXR crosshair swapchain images to have D3D render
+target views before installing either CUI hook. That was unnecessary: the CUI
+capture and suppression paths bind only their private authored/discard targets.
+An XR image view is consumed later, after upload acquires one exact image. The
+Steam runtime refused at least one eager view and 43i then permanently rejected
+the whole title generation, producing zero hook traffic.
+
+C-H4-43j removes only that false dependency and retains the accepted
+Halo 3/ODST lazy-view shape. A resource-preparation miss is transient state,
+not signature failure: the optional feature stays stock and retries at a
+bounded 500 ms worker cadence. Static signature, edge, executable-range, mapping, hook-creation and
+hook-enable failures still reject the generation. The HUD pixels themselves
+remain unmodified, so Halo 4's native target/friendly colour state is captured
+with the reticle rather than recreated procedurally.

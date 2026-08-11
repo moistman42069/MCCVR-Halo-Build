@@ -5138,12 +5138,25 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         rtvDesc.Format = desc.Format;
         rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
         rtvDesc.Texture2D.MipSlice = 0;
-        if (FAILED(g_device->CreateTexture2D(&desc, nullptr,
-                                             &g_authoredReticleTexture)) ||
-            FAILED(g_device->CreateRenderTargetView(g_authoredReticleTexture,
-                                                     &rtvDesc,
-                                                     &g_authoredReticleRtv)))
+        const HRESULT textureResult = g_device->CreateTexture2D(
+            &desc, nullptr, &g_authoredReticleTexture);
+        const HRESULT rtvResult = SUCCEEDED(textureResult)
+            ? g_device->CreateRenderTargetView(
+                g_authoredReticleTexture, &rtvDesc,
+                &g_authoredReticleRtv)
+            : E_FAIL;
+        if (FAILED(textureResult) || FAILED(rtvResult))
         {
+            static std::atomic<bool> loggedCreationFailure{false};
+            if (!loggedCreationFailure.exchange(
+                    true, std::memory_order_relaxed))
+            {
+                LOG("M3: authored crosshair capture target creation failed "
+                    "(texture=0x%08X rtv=0x%08X); optional title capture "
+                    "will retry without affecting stereo",
+                    static_cast<unsigned>(textureResult),
+                    static_cast<unsigned>(rtvResult));
+            }
             if (g_authoredReticleRtv)
             {
                 g_authoredReticleRtv->Release();
@@ -10821,12 +10834,13 @@ AuthoredReticlePreparationResult VR_PrepareAuthoredReticleResources()
     {
         return AuthoredReticlePreparationResult::Failed;
     }
-    for (uint32_t index = 0;
-         index < static_cast<uint32_t>(g_reticleImages.size()); ++index)
-    {
-        if (!GetRtv(g_reticleImages, g_reticleRtvs, index))
-            return AuthoredReticlePreparationResult::Failed;
-    }
+    // Capture and suppression render only into their private D3D targets.
+    // The OpenXR swapchain RTV is needed later, after acquire identifies the
+    // one image being uploaded. C-H4-43i eagerly created every image RTV here;
+    // one refusal prevented both CUI hooks from installing for the whole level
+    // even though this capture transaction never uses those views. Match the
+    // accepted Halo 3/ODST lazy upload path and validate only the resources the
+    // hot redirect actually consumes.
     return EnsureAuthoredReticleTexture()
         ? AuthoredReticlePreparationResult::Ready
         : AuthoredReticlePreparationResult::Failed;
@@ -10883,9 +10897,8 @@ static bool BeginAuthoredReticleCaptureInternal(
         {
             return false;
         }
-        for (ID3D11RenderTargetView* rtv : g_reticleRtvs)
-            if (!rtv)
-                return false;
+        // XR image views are intentionally lazy. Only UploadAuthoredReticle,
+        // after xrAcquireSwapchainImage chooses an index, needs one.
     }
     else
     {

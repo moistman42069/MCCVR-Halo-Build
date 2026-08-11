@@ -84,7 +84,7 @@ try {
     }
     if ($cache -notmatch
             '(?m)^HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA:BOOL=ON\r?$') {
-        throw 'Refusing to package C-H4-43i: the Halo 4 camera core is not ON.'
+        throw 'Refusing to package C-H4-43j: the Halo 4 camera core is not ON.'
     }
 
     # Incremental. A clean rebuild was recompiling the whole tree for every
@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c43i-authored-cui-reticle',
+        'halo4-c43j-retrying-authored-cui-reticle',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,7 +181,7 @@ try {
                 'dd9946595511d65c9859b536e2727201c107da45'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-43i'
+            id = 'C-H4-43j'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
             behavior = 'h4ek-proven-main-gameplay-cui-reticle-subtree-captured-onto-the-existing-gun-ray-quad-with-opposite-eye-discard-and-native-face-copy-suppressed'
             head_tracking = $true
@@ -291,7 +291,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-43i is an unaccepted headset candidate built directly on accepted C-H4-43. Official H4EK proves ReticuleOffsetContainerWidget emits the unique type-0x28/type-0x29 CUI command bracket around reticle and hit-indicator art while ammo remains outside. The pinned Steam and Store retail gameplay-CUI front end, exact full-size caller edge, dispatcher and sole dispatcher caller each match once, and both rel32 edges decode to their pinned targets. The second hook excludes the in-wrapper 216x96 auxiliary texture pass and later menus. The configured first eye captures authored pixels for the existing gun-ray quad; the opposite eye, skipped cadence frames, and crosshair=0 execute the complete original subtree into a separately prepared discard target, hiding the native face copy without mutating its persistent visibility. kill_reticle=0 intentionally keeps stock native art. Blank/low-ink bootstrap keeps the procedural gun-ray fallback. Any optional resource, proof, hook, or runtime redirect failure stays feature-local and never disarms the accepted C-H4-43 camera, hands, stereo path, or OpenXR. C-H4-43 remains the accepted rollback pointer until explicit headset acceptance.'
+        note = 'C-H4-43j is an unaccepted headset candidate built directly on accepted C-H4-43 after the headset-rejected C-H4-43i install gate. Official H4EK proves ReticuleOffsetContainerWidget emits the unique type-0x28/type-0x29 CUI command bracket around reticle and hit-indicator art while ammo remains outside. The pinned Steam and Store retail gameplay-CUI front end, exact full-size caller edge, dispatcher and sole dispatcher caller each match once, and both rel32 edges decode to their pinned targets. C-H4-43j removes 43i''s unnecessary eager creation of every OpenXR reticle image RTV: capture and discard use private targets, while the acquired XR image view remains lazy like Halo 3 and ODST. A transient cold-resource miss stays stock for that poll and retries instead of permanently rejecting the title generation. The configured first eye captures the native colored pixels for the existing gun-ray quad; the opposite eye, skipped cadence frames, and crosshair=0 execute the complete original subtree into a discard target, hiding the native face copy without mutating its state. Any optional failure remains feature-local and never disarms the accepted C-H4-43 camera, hands, stereo path, or OpenXR. C-H4-43 remains the accepted rollback pointer until explicit headset acceptance.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

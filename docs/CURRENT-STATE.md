@@ -29,6 +29,24 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
+## CURRENT HALO 4 TEST CANDIDATE: C-H4-43j - 2026-08-11
+
+**Headset pending; this does not advance the accepted pointer below.** This is
+the same H4EK-proven authored CUI subtree and gun-ray quad placement as 43i,
+with the runtime install failure corrected. Capture and suppression use private
+D3D targets and no longer require render-target views for all OpenXR crosshair
+swapchain images before either hook can install. The one acquired XR image view
+remains lazy, matching the accepted Halo 3/ODST upload path.
+
+A cold resource miss now leaves the reticle stock for that worker poll and
+retries. It does not permanently reject the Halo 4 generation. Once installed,
+the configured first eye captures Halo 4's native reticle and hit-indicator
+pixels—including their authored friendly/enemy colour—onto the existing
+controller/gun-ray quad. The other eye and cadence-skipped frames execute the
+whole original subtree into a discard target, removing the face-centred copy.
+`crosshair=0` hides both; `kill_reticle=0` intentionally restores the native
+face reticle. Every failure remains local to this optional feature.
+
 ## REJECTED HALO 4 TEST CANDIDATE: C-H4-43i - 2026-08-11
 
 **Headset rejected; this never advanced the accepted pointer below.** The
