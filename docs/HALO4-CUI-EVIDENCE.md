@@ -668,6 +668,29 @@ the already-correct weapon-ray pose where bullets land; the normal CUI pass hide
 the native type-`0x28` copy. The C-H4-44 HUD basis feature remains dormant so
 this candidate tests one player-visible behavior.
 
+### C-H4-46 shared authored-reticle rework
+
+C-H4-46 removes every rejected native-positioning input from the active Halo 4
+reticle transaction. `Halo4BeginCuiReticleEye` now receives only the owned eye
+and prepared-frame serial. The command detour has no aim coordinate, projection,
+FOV, target point, or CUI-position mapping available to it. After the proven
+type-`0x28` command pushes the reticle-only native transform, the detour can only
+leave it stock or move that duplicate fully offscreen in the transform's own
+finite coordinate range.
+
+The artwork path is the existing shared path, not a Halo 4 compositor:
+
+1. bounded Halo 4 playback draws native centre art into
+   `g_authoredReticleTexture`;
+2. shared `UploadAuthoredReticle` copies it into `g_reticleChain`;
+3. the unchanged shared `reticleQuad` uses the existing weapon-ray pose;
+4. the normal Halo 4 CUI pass hides the native flat copy.
+
+The title-specific renderer still requires exact capture-target ownership when
+it rebinds scene colour during playback. That changes only where source pixels
+are written. It cannot change the shared quad's pose. HUD layout remains a
+separate dormant feature.
+
 ### C-H4-44 Ghidra replay verification and native HUD layout
 
 Before the 43q headset test, Ghidra 12.1.2 targeted the official

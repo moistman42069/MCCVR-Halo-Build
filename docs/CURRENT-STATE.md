@@ -29,6 +29,28 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
+## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-46 - 2026-08-11
+
+**Headset test required; this does not advance the accepted C-H4-43 pointer.**
+C-H4-46 reworks Halo 4 onto the same player-visible authored-reticle path as
+Halo 3, ODST, and Reach: native crosshair pixels enter the shared authored
+texture, upload through the shared `g_reticleChain`, and appear on the unchanged
+weapon-ray `reticleQuad`. The native face-locked type-`0x28` copy is moved
+offscreen. CUI supplies artwork and the duplicate-hide boundary only.
+
+The active Halo 4 transaction no longer receives, stores, computes, or maps a
+CUI aim coordinate. Its action set has no native reposition operation. The only
+CUI transform write is a bounded offscreen hide derived from the native
+transform's own finite half-width; the shared OpenXR quad remains the sole owner
+of position, distance, stabilization, and angular size. This makes the already
+accepted bullet-ray crosshair position independent of Halo 4's CUI layout.
+
+Halo 4's renderer rebinds the scene target during its retained CUI replay, so an
+active private authored capture keeps exact scene-target binds on that texture
+before normal per-eye routing. This is a source-capture requirement, not a
+second placement path. The C-H4-44 HUD basis writer remains dormant so this
+candidate tests only crosshair replacement.
+
 ## REJECTED HALO 4 TEST CANDIDATE: C-H4-45 - 2026-08-11
 
 **Rejected for rework before headset testing; this never advanced the accepted

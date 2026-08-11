@@ -6302,6 +6302,8 @@ int main()
             Halo4MapAimToCuiTranslation(upOffset, -1920.0f, 1080.0f, false);
         const Halo4CuiAimOffset hidden =
             Halo4MapAimToCuiTranslation(center, -1920.0f, 1080.0f, true);
+        const Halo4CuiAimOffset directHidden =
+            Halo4BuildHiddenCuiTranslation(-1920.0f, 1080.0f);
         Check(rightPixels.valid && fabsf(rightPixels.x - 1920.0f) < 1.0e-4f &&
                   fabsf(rightPixels.y) < 1.0e-4f && upPixels.valid &&
                   fabsf(upPixels.x) < 1.0e-4f &&
@@ -6312,6 +6314,11 @@ int main()
                   fabsf(hidden.y) < 1.0e-4f,
             "crosshair=0 moves Halo 4's native reticle fully offscreen in its "
             "own CUI coordinate system");
+        Check(directHidden.valid &&
+                  fabsf(directHidden.x - 7680.0f) < 1.0e-4f &&
+                  fabsf(directHidden.y) < 1.0e-4f &&
+                  !Halo4BuildHiddenCuiTranslation(NAN, 1080.0f).valid,
+            "Halo 4 native-copy hiding is independent of every aim coordinate");
         Check(!Halo4MapAimToCuiTranslation(
                    right, 0.0f, 1080.0f, false).valid &&
                   !Halo4MapAimToCuiTranslation(

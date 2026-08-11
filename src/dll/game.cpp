@@ -32325,10 +32325,6 @@ namespace
         uint32_t depth = 0;
         uint64_t preparedSerial = 0;
         void* renderer = nullptr;
-        bool aimOffsetValid = false;
-        float aimOffsetX = 0.0f;
-        float aimOffsetY = 0.0f;
-        float halfFovY = 0.0f;
     };
     thread_local Halo4CuiReticleEyeScope g_halo4CuiReticleEyeScope;
     // The dispatcher normally runs synchronously beneath the hooked CUI front
@@ -32438,9 +32434,7 @@ namespace
         g_halo4CuiReticleEyeScope = Halo4CuiReticleEyeScope{};
     }
 
-    void Halo4BeginCuiReticleEye(
-        int eye, uint64_t preparedSerial, const Halo4CuiAimOffset& aimOffset,
-        float halfFovY)
+    void Halo4BeginCuiReticleEye(int eye, uint64_t preparedSerial)
     {
         Halo4FinishCuiReticleEye();
         Halo4CuiReticleEyeScope& scope = g_halo4CuiReticleEyeScope;
@@ -32449,10 +32443,6 @@ namespace
         scope.preparedSerial = preparedSerial;
         scope.generation =
             g_halo4Camera.generation.load(std::memory_order_acquire);
-        scope.aimOffsetValid = aimOffset.valid;
-        scope.aimOffsetX = aimOffset.x;
-        scope.aimOffsetY = aimOffset.y;
-        scope.halfFovY = halfFovY;
         if (eye >= 0 && eye <= 1)
             g_halo4Camera.cuiReticleEyeSerial[eye].store(
                 0, std::memory_order_release);
@@ -32671,11 +32661,11 @@ namespace
         const float stockScale = transform.scale;
         const float baseX = transform.translation[0];
         const float baseY = transform.translation[1];
-        const bool hiding = action == Halo4CuiReticleAction::HideNative;
-        const Halo4CuiAimOffset normalizedAim{
-            scope.aimOffsetX, scope.aimOffsetY, scope.aimOffsetValid};
-        const Halo4CuiAimOffset cuiDelta = Halo4MapAimToCuiTranslation(
-            normalizedAim, baseX, baseY, hiding);
+        // This path never receives or computes an aim coordinate. It only
+        // removes the duplicate flat copy; the shared reticleQuad owns the
+        // exact bullet-ray position for all four titles.
+        const Halo4CuiAimOffset cuiDelta =
+            Halo4BuildHiddenCuiTranslation(baseX, baseY);
         if (!cuiDelta.valid)
         {
             g_halo4Camera.cuiReticleRedirectFailures.fetch_add(
@@ -32703,9 +32693,8 @@ namespace
             stockScale, std::memory_order_relaxed);
         g_halo4Camera.cuiReticleWrittenScale.store(
             writtenScale, std::memory_order_relaxed);
-        (hiding ? g_halo4Camera.cuiReticleSuppressions
-                : g_halo4Camera.cuiReticleCaptures)
-            .fetch_add(1, std::memory_order_relaxed);
+        g_halo4Camera.cuiReticleSuppressions.fetch_add(
+            1, std::memory_order_relaxed);
         g_halo4Camera.cuiReticleCompleted.fetch_add(
             1, std::memory_order_relaxed);
         g_halo4Camera.cuiReticleEyeSerial[scope.eye].store(
@@ -33538,11 +33527,9 @@ namespace
                 Halo4PublishEyeRoot(eye,eyeCameras[eye]);
                 Halo4BeginFloatingEye(eye);
                 // Placement is owned entirely by the existing OpenXR reticle
-                // quad. No CUI screen coordinate or game-space target is built.
-                const Halo4CuiAimOffset reticleAimOffset{};
-                Halo4BeginCuiReticleEye(
-                    eye, snapshot.preparedSerial, reticleAimOffset,
-                    halfFovY[eye]);
+                // quad. No CUI screen coordinate or game-space target enters
+                // the authored-art transaction.
+                Halo4BeginCuiReticleEye(eye, snapshot.preparedSerial);
                 __try
                 {
                     g_halo4OrigWrapper(element, view, window);
@@ -34501,8 +34488,9 @@ namespace
         // Storm80 -> held -> native-body record sequence; any miss leaves that
         // exact feature stock while the working camera/session stays armed.
         InstallHalo4Vrik(base,size);
-        // C-H4-45 is rejected for rework. Keep its optional capture hooks
-        // dormant while preserving the accepted procedural VR crosshair.
+        // C-H4-46: Halo 4 supplies authored pixels to the same shared VR
+        // reticle chain as Halo 3/ODST/Reach. CUI never owns placement.
+        (void)InstallHalo4CuiReticle(base, size, generation);
         PublishHalo4Lifecycle();
         LOG("Halo 4 camera core installed (generation %u): setup 0x%X and the "
             "render wrapper 0x%X are hooked at their pinned RVAs, both proven "
@@ -34541,7 +34529,10 @@ namespace
         }
         if (installed && g_halo4Camera.cuiReticleCleanupRequired)
             (void)CleanupHalo4CuiReticleFeature();
-        // C-H4-45 retry remains dormant while the path is reworked.
+        else if (installed && levelRunning &&
+                 !g_halo4Camera.cuiReticleInstalled.load(
+                     std::memory_order_acquire))
+            (void)InstallHalo4CuiReticle(base, size, generation);
         if (g_vrRuntimeFailureLatched.load(std::memory_order_acquire))
         {
             g_halo4Camera.armed.store(false, std::memory_order_release);
@@ -34560,7 +34551,7 @@ namespace
                 kReachRenderSafetyIntervalMs)
         {
             g_halo4Camera.armed.store(true, std::memory_order_release);
-            LOG("Halo 4 camera core armed: C-H4-45 rollback, current-eye controller-rerooted "
+            LOG("Halo 4 camera core armed: C-H4-46 native art on the shared bullet-ray VR crosshair, current-eye controller-rerooted "
                 "Storm hands, H3/ODST/Reach left_hand-marker parity free pose, exact C-H4-38 shared-right-aim support pose, and "
                 "same-frame held-model carry (no arm IK) on C-H4-10 motion aim, VR "
                 "turn and rumble on C-H4-9's headset-owned look, C-H4-8's 6DOF and "
@@ -34683,11 +34674,11 @@ namespace
                 0, std::memory_order_relaxed);
         const uint64_t authoredOmReroutes =
             VR_TakeAuthoredReticleOmReroutes();
-        LOG("Halo 4 C-H4-45 authored CUI reticle: hook=%s, %llu main gameplay CUI "
+        LOG("Halo 4 C-H4-46 shared authored-reticle path: hook=%s, %llu main gameplay CUI "
             "passes, %llu begin markers, "
             "%llu completed actions (%llu authored captures / %llu native hides), %llu "
-            "write failures, %llu forced restores, %llu exact capture OM reroutes in 2s; last base %.3f/%.3f "
-            "+ aim %.3f/%.3f, scale %.4f -> %.4f; camera "
+            "write failures, %llu forced restores, %llu exact capture OM reroutes in 2s; last native base %.3f/%.3f "
+            "+ offscreen hide %.3f/%.3f, scale %.4f -> %.4f; camera "
             "and OpenXR remain independently armed; the existing VR quad alone owns placement",
             Halo4CuiReticleTransformLive() ? "LIVE" : "stock fallback",
             static_cast<unsigned long long>(cuiGameplayPasses),

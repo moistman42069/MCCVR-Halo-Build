@@ -1,8 +1,8 @@
 {
   "schema_version": 3,
-  "status": "C_H4_45_REJECTED_FOR_REWORK_C_H4_43_ACCEPTED",
+  "status": "C_H4_46_HEADSET_PENDING_C_H4_43_ACCEPTED",
   "hook_eligible": true,
-  "hook_eligibility_scope": "Only accepted C-H4-43 camera/aim/floating-hands behavior is active. C-H4-45 authored-CUI capture is rejected for rework and dormant; C-H4-44 HUD-basis writes remain dormant.",
+  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands behavior plus unaccepted C-H4-46 shared authored-reticle replacement. C-H4-44 HUD-basis writes remain dormant.",
   "accepted_halo4_pointer": {
     "candidate": "C-H4-43",
     "source_commit": "dd9946595511d65c9859b536e2727201c107da45",
@@ -148,6 +148,30 @@
     "runtime_probe": "two-second exact capture OM reroute count",
     "failure_isolation": "capture or hook failure preserves stock/procedural reticle fallback without disarming camera, hands, stereo, or OpenXR",
     "headset_result": "NOT TESTED; USER REQUIRED ACTIVE-PATH REWORK"
+  },
+  "c_h4_46_shared_authored_reticle_rework": {
+    "status": "OFFLINE_PASS_HEADSET_PENDING",
+    "accepted_parent": "C-H4-43",
+    "rejected_predecessor": "C-H4-45",
+    "player_visible_contract": "same as Halo 3, ODST, and Reach: native crosshair artwork replaces artwork on the existing bullet-ray VR crosshair and the native face-locked copy is hidden",
+    "shared_path": [
+      "g_authoredReticleTexture",
+      "UploadAuthoredReticle",
+      "g_reticleChain",
+      "unchanged weapon-ray reticleQuad"
+    ],
+    "halo4_source_boundary": "bounded retained gameplay CUI playback into the private authored texture; exact scene-target rebinds remain private while capture is active",
+    "native_suppression": "type-0x28 native transform is moved fully offscreen in its own finite coordinate range",
+    "active_position_inputs": "none; Halo4BeginCuiReticleEye receives only eye and prepared serial",
+    "excluded_actions": [
+      "no CUI aim coordinate",
+      "no native crosshair reposition",
+      "no reprojection",
+      "no new reticle quad",
+      "no HUD layout change"
+    ],
+    "failure_isolation": "optional capture or hide failure preserves accepted procedural or stock fallback without disarming camera, hands, stereo, or OpenXR",
+    "headset_result": "PENDING"
   },
   "c_h4_44_native_hud_layout": {
     "status": "HEADSET_REJECTED_COMBINED_CANDIDATE_HUD_WRITES_DORMANT",

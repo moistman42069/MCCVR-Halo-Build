@@ -178,6 +178,26 @@ struct Halo4CuiAimOffset
     bool valid = false;
 };
 
+// Halo 4 parity with Halo 3/ODST/Reach never positions authored art in CUI.
+// The CUI transform is used only to remove the duplicate flat copy. Placement
+// belongs exclusively to the shared OpenXR weapon-ray quad.
+inline Halo4CuiAimOffset Halo4BuildHiddenCuiTranslation(
+    float baseX, float baseY) noexcept
+{
+    Halo4CuiAimOffset result{};
+    if (!std::isfinite(baseX) || !std::isfinite(baseY))
+        return result;
+    const float halfWidth = std::fabs(baseX);
+    const float halfHeight = std::fabs(baseY);
+    if (halfWidth < 1.0f || halfHeight < 1.0f ||
+        halfWidth > 32768.0f || halfHeight > 32768.0f)
+        return result;
+    result.x = halfWidth * 4.0f;
+    result.y = 0.0f;
+    result.valid = std::isfinite(result.x);
+    return result;
+}
+
 // The projected aim is normalized device space. Halo 4's pushed CUI
 // transform is not: the headset log measured the stock centre at
 // (-halfWidth,+halfHeight). Convert through that live transform rather than
@@ -196,14 +216,7 @@ inline Halo4CuiAimOffset Halo4MapAimToCuiTranslation(
         return result;
 
     if (hide)
-    {
-        // Four half-widths moves the reticle completely past either edge in
-        // the same coordinate system the engine supplied.
-        result.x = halfWidth * 4.0f;
-        result.y = 0.0f;
-        result.valid = std::isfinite(result.x);
-        return result;
-    }
+        return Halo4BuildHiddenCuiTranslation(baseX, baseY);
     if (!normalizedAim.valid || !std::isfinite(normalizedAim.x) ||
         !std::isfinite(normalizedAim.y))
         return result;
