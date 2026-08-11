@@ -6233,6 +6233,51 @@ int main()
         Check(!Halo4ProjectAimToCuiOffset(
                    forward, up, behind, 0.78539816f, 0.78539816f).valid,
             "A behind-camera Halo 4 gun ray never writes a reticle matrix");
+
+        const Halo4CuiAimOffset rightPixels =
+            Halo4MapAimToCuiTranslation(right, -1920.0f, 1080.0f, false);
+        const Halo4CuiAimOffset upPixels =
+            Halo4MapAimToCuiTranslation(upOffset, -1920.0f, 1080.0f, false);
+        const Halo4CuiAimOffset hidden =
+            Halo4MapAimToCuiTranslation(center, -1920.0f, 1080.0f, true);
+        Check(rightPixels.valid && fabsf(rightPixels.x - 1920.0f) < 1.0e-4f &&
+                  fabsf(rightPixels.y) < 1.0e-4f && upPixels.valid &&
+                  fabsf(upPixels.x) < 1.0e-4f &&
+                  fabsf(upPixels.y + 1080.0f) < 1.0e-4f,
+            "Halo 4 converts normalized gun-ray projection through the live "
+            "pixel-space CUI half extents");
+        Check(hidden.valid && fabsf(hidden.x - 7680.0f) < 1.0e-4f &&
+                  fabsf(hidden.y) < 1.0e-4f,
+            "crosshair=0 moves Halo 4's native reticle fully offscreen in its "
+            "own CUI coordinate system");
+        Check(!Halo4MapAimToCuiTranslation(
+                   right, 0.0f, 1080.0f, false).valid &&
+                  !Halo4MapAimToCuiTranslation(
+                      right, -1920.0f, NAN, false).valid,
+            "Invalid Halo 4 CUI extents fail open without a transform write");
+
+        const float centerPosition[3] = {0.0f, 0.0f, 0.0f};
+        const float leftEyePosition[3] = {-0.032f, 0.0f, 0.0f};
+        const float engineForward[3] = {0.0f, 2.0f, 0.0f};
+        float leftEyeRay[3]{};
+        Check(Halo4BuildReticleEyeRay(
+                  centerPosition, leftEyePosition, engineForward, 2.0f,
+                  leftEyeRay) &&
+                  fabsf(leftEyeRay[0] - 0.032f) < 1.0e-6f &&
+                  fabsf(leftEyeRay[1] - 2.0f) < 1.0e-6f &&
+                  fabsf(leftEyeRay[2]) < 1.0e-6f,
+            "Halo 4 projects each eye to one finite gun-ray target so the "
+            "native CUI reticle retains the VR crosshair's stereo depth");
+        Check(!Halo4BuildReticleEyeRay(
+                  centerPosition, leftEyePosition, engineForward, 0.0f,
+                  leftEyeRay),
+            "An invalid Halo 4 reticle range cannot write an eye projection");
+        Check(Halo4CuiReticlePairPositionsNative(77, 77, 77, 77) &&
+                  !Halo4CuiReticlePairPositionsNative(0, 77, 77, 77) &&
+                  !Halo4CuiReticlePairPositionsNative(76, 77, 77, 77) &&
+                  !Halo4CuiReticlePairPositionsNative(77, 77, 78, 78),
+            "The procedural VR fallback is suppressed only after both Halo 4 "
+            "eyes moved native reticle art for the exact rendered serial");
     }
 
     // Generic cover math remains available for a later FOV milestone, but it

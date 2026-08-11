@@ -1,11 +1,11 @@
 # Halo 4 CUI evidence
 
-Status: **the C-H4-43i/C-H4-43j render-target design is headset-rejected;
-C-H4-43k keeps the proven gameplay phase and reticle command but moves only the
-native reticle matrix and is headset-pending.** Halo 4 has no CHUD; its HUD is the
+Status: **the C-H4-43i/C-H4-43j render-target design and C-H4-43k's unscaled
+native transform are headset-rejected; C-H4-43l applies the proven per-eye
+projection in Halo 4's measured pixel-space CUI units and is headset-pending.** Halo 4 has no CHUD; its HUD is the
 CUI system. Identity pins live in `docs/HALO4-EVIDENCE-MANIFEST.json`;
 camera/render signature proofs live in `docs/HALO4-SIGNATURE-EVIDENCE.md`.
-Nothing in this file promotes C-H4-43i, 43j, or 43k to an accepted headset result.
+Nothing in this file promotes C-H4-43i, 43j, 43k, or 43l to an accepted headset result.
 
 The 2026-08-11 Steam/SteamVR/PSVR2 run loaded the correct `3baabc7` bytes but
 logged `prepared capture/discard resources unavailable`, followed by zero main
@@ -533,9 +533,9 @@ runtime result disproves the static assumption that the marker interval is a
 GPU draw-submission boundary. The render-target redirect is dormant; the
 following list is retained as the acceptance contract for a replacement:
 
-### C-H4-43k native-transform replacement
+### C-H4-43k rejection and C-H4-43l native-transform correction
 
-C-H4-43k does not redirect or capture any CUI draw. H4EK `0x9BE760` and its
+C-H4-43k did not redirect or capture any CUI draw. H4EK `0x9BE760` and its
 retail homolog prove that a successful type-`0x28` command increments the
 renderer stack count at `+0x870` and composes one `0x34`-byte
 `real_matrix4x3` entry beginning at `+0x878`; the entry's final float3
@@ -546,8 +546,15 @@ an RTV, DSV, viewport, scissor, bitmap, colour, alpha, visibility bit, or CUI
 command. The exact gameplay-front-end scope still excludes the 216x96 auxiliary
 pass and later menus.
 
-The desired translation is derived for each eye from the engine's own steered
-aim direction and the finished eye camera/FOV read back before the wrapper.
+The desired normalized projection is derived for each eye from the engine's own
+steered aim direction and the finished eye camera/FOV read back before the
+wrapper. The 43k headset log measured changing offsets but a fixed native
+reticle: values such as `0.092/-0.072` were added directly to the matrix's
+measured pixel-space centre `-1893.000/1064.517`, so the movement was sub-pixel.
+43l maps normalized X/Y through `abs(baseX)/abs(baseY)`, the live half extents
+in the exact same reticle transform. NDC `+1` therefore moves one measured half
+width, and NDC `-1` one measured half height, independent of resolution and
+aspect ratio.
 Both eyes move their native reticle independently. When live, the compositor
 does not create or submit the procedural reticle quad. Thus Halo 4's existing
 animation, spread, hit marker, and red/green target state remain native while

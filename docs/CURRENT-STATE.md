@@ -29,6 +29,23 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
+## CURRENT HALO 4 TEST CANDIDATE: C-H4-43l - 2026-08-11
+
+**Headset pending; this does not advance the accepted pointer below.** This is
+the mathematical correction to rejected 43k. The fresh Steam/SteamVR/PSVR2 log
+proved Halo 4's native reticle centre is a pixel-space CUI transform
+(`-1893.000 / 1064.517`), while 43k incorrectly added normalized projection
+values directly. 43l converts each eye's normalized gun-ray projection through
+the live absolute X/Y half extents already present in that reticle-only matrix.
+It therefore copies no resolution, aspect, scale, offset, or CHUD behavior from
+another title. Every original CUI command and render target remains stock, so
+the full HUD and Halo 4's native animation, spread, hit marker, and friendly/
+enemy colour state remain intact. While the optional transform hooks are live,
+the compositor omits its procedural quad; `crosshair=0` moves the same native
+reticle four live half-widths offscreen, and `kill_reticle=0` remains the stock
+face-centred escape hatch. Any invalid matrix or optional hook failure is local
+to the crosshair and never disarms camera, hands, stereo, or OpenXR.
+
 ## REJECTED HALO 4 TEST CANDIDATE: C-H4-43k - 2026-08-11
 
 **Headset rejected; this never advanced the accepted pointer below.** The

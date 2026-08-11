@@ -1,12 +1,12 @@
 {
   "schema_version": 3,
-  "status": "C_H4_43K_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
+  "status": "C_H4_43L_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
   "hook_eligible": true,
-  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43k admits the optional gameplay-CUI front end and command dispatcher only after all four signatures and both rel32 edges match their pinned retail locations. It calls every original command and changes only the newly pushed type-0x28 reticle matrix translation. No render target, bitmap, colour, alpha, visibility bit, auxiliary/menu CUI, generic HUD transform, CHUD binding, or copied cross-title address is changed.",
+  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43l admits the optional gameplay-CUI front end and command dispatcher only after all four signatures and both rel32 edges match their pinned retail locations. It calls every original command and converts the normalized per-eye aim projection through the live pixel-space half extents in the newly pushed type-0x28 reticle matrix translation. No render target, bitmap, colour, alpha, visibility bit, auxiliary/menu CUI, generic HUD transform, CHUD binding, copied resolution, or copied cross-title address is changed.",
   "accepted_halo4_pointer": {
     "candidate": "C-H4-43",
     "source_commit": "dd9946595511d65c9859b536e2727201c107da45",
-    "note": "C-H4-43k is a forward candidate after rejected C-H4-43i/43j and does not advance acceptance without an explicit headset result"
+    "note": "C-H4-43l is a forward candidate after rejected C-H4-43i/43j/43k and does not advance acceptance without an explicit headset result"
   },
   "development_baseline": {
     "source_commit": "f4c641f7b1b707991f2bda71ba485090a16f1e9a",

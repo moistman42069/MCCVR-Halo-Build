@@ -171,6 +171,42 @@ struct Halo4CuiAimOffset
     bool valid = false;
 };
 
+// The projected aim is normalized device space. Halo 4's pushed CUI
+// transform is not: the headset log measured the stock centre at
+// (-halfWidth,+halfHeight). Convert through that live transform rather than
+// copying a resolution, aspect ratio, or scale from another title.
+inline Halo4CuiAimOffset Halo4MapAimToCuiTranslation(
+    const Halo4CuiAimOffset& normalizedAim, float baseX, float baseY,
+    bool hide) noexcept
+{
+    Halo4CuiAimOffset result{};
+    if (!std::isfinite(baseX) || !std::isfinite(baseY))
+        return result;
+    const float halfWidth = std::fabs(baseX);
+    const float halfHeight = std::fabs(baseY);
+    if (halfWidth < 1.0f || halfHeight < 1.0f ||
+        halfWidth > 32768.0f || halfHeight > 32768.0f)
+        return result;
+
+    if (hide)
+    {
+        // Four half-widths moves the reticle completely past either edge in
+        // the same coordinate system the engine supplied.
+        result.x = halfWidth * 4.0f;
+        result.y = 0.0f;
+        result.valid = std::isfinite(result.x);
+        return result;
+    }
+    if (!normalizedAim.valid || !std::isfinite(normalizedAim.x) ||
+        !std::isfinite(normalizedAim.y))
+        return result;
+
+    result.x = normalizedAim.x * halfWidth;
+    result.y = normalizedAim.y * halfHeight;
+    result.valid = std::isfinite(result.x) && std::isfinite(result.y);
+    return result;
+}
+
 inline Halo4CuiAimOffset Halo4ProjectAimToCuiOffset(
     const float cameraForward[3], const float cameraUp[3],
     const float aimForward[3], float halfFovX, float halfFovY) noexcept
@@ -208,6 +244,51 @@ inline Halo4CuiAimOffset Halo4ProjectAimToCuiOffset(
     result.valid = std::isfinite(result.x) && std::isfinite(result.y) &&
         std::fabs(result.x) <= 8.0f && std::fabs(result.y) <= 8.0f;
     return result;
+}
+
+// Build the ray from this rendered eye to the same finite point the shared VR
+// reticle occupies. The engine aim vector is the centre-camera line through
+// that point; reconstructing the point and subtracting each eye position keeps
+// the native CUI art at the configured stereo depth instead of at infinity.
+inline bool Halo4BuildReticleEyeRay(
+    const float centerPosition[3], const float eyePosition[3],
+    const float engineAimForward[3], float targetRange,
+    float outEyeRay[3]) noexcept
+{
+    if (!centerPosition || !eyePosition || !engineAimForward || !outEyeRay ||
+        !std::isfinite(targetRange) || targetRange <= 0.01f ||
+        targetRange > 100000.0f)
+        return false;
+    float lengthSquared = 0.0f;
+    for (int i = 0; i < 3; ++i)
+    {
+        if (!std::isfinite(centerPosition[i]) ||
+            !std::isfinite(eyePosition[i]) ||
+            !std::isfinite(engineAimForward[i]))
+            return false;
+        lengthSquared += engineAimForward[i] * engineAimForward[i];
+    }
+    if (!std::isfinite(lengthSquared) || lengthSquared <= 1.0e-8f)
+        return false;
+    const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+    float eyeLengthSquared = 0.0f;
+    for (int i = 0; i < 3; ++i)
+    {
+        const float target = centerPosition[i] +
+            engineAimForward[i] * inverseLength * targetRange;
+        outEyeRay[i] = target - eyePosition[i];
+        eyeLengthSquared += outEyeRay[i] * outEyeRay[i];
+    }
+    return std::isfinite(eyeLengthSquared) && eyeLengthSquared > 1.0e-8f;
+}
+
+constexpr bool Halo4CuiReticlePairPositionsNative(
+    uint64_t leftWriteSerial, uint64_t rightWriteSerial,
+    uint64_t leftRenderedSerial, uint64_t rightRenderedSerial) noexcept
+{
+    return leftWriteSerial != 0 && leftWriteSerial == rightWriteSerial &&
+        leftWriteSerial == leftRenderedSerial &&
+        leftWriteSerial == rightRenderedSerial;
 }
 
 // Enabling the dispatcher hook is not proof that a non-blank authored image
