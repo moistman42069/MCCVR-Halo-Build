@@ -1,12 +1,12 @@
 {
   "schema_version": 3,
-  "status": "C_H4_43M_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
+  "status": "C_H4_43Q_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
   "hook_eligible": true,
-  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43m admits the optional gameplay-CUI front end and command dispatcher only after all four signatures and both rel32 edges match their pinned retail locations. It calls every original command, converts normalized per-eye aim through the live CUI half extents, maps positive matrix Y to headset-up from the 43l result, and derives uniform scale from live eye FOV/CUI half-height plus the official 81.92-unit H4EK authored height. No render target, bitmap, colour, alpha, visibility bit, auxiliary/menu CUI, generic HUD transform, shared compositor path, copied resolution, or copied cross-title address is changed.",
+  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43q admits the optional gameplay-CUI front end and command dispatcher only after all four signatures, both rel32 edges, and private authored-reticle resources are proven. A bounded capture-eye replay holds the centred authored target from the first CUI command through the exact gameplay front-end return, crossing 43j's proven batching boundary. The normal eye pass calls every original command and moves only type-0x28 native flat-reticle matrices offscreen. Captured pixels use the existing Halo 3/ODST/Reach OpenXR reticle upload and quad placement unchanged. No CUI aim coordinate, shot point, game-space target, eye projection, bitmap recreation, auxiliary/menu CUI, generic HUD transform, copied resolution, or copied cross-title address is introduced.",
   "accepted_halo4_pointer": {
     "candidate": "C-H4-43",
     "source_commit": "dd9946595511d65c9859b536e2727201c107da45",
-    "note": "C-H4-43m is a forward candidate after rejected C-H4-43i/43j/43k/43l and does not advance acceptance without an explicit headset result"
+    "note": "C-H4-43q is a forward candidate after rejected C-H4-43i through C-H4-43p and does not advance acceptance without an explicit headset result"
   },
   "development_baseline": {
     "source_commit": "f4c641f7b1b707991f2bda71ba485090a16f1e9a",
@@ -74,7 +74,7 @@
     "headset_result": "PENDING"
   },
   "c_h4_43m_native_cui_reticle": {
-    "status": "OFFLINE_PASS_HEADSET_PENDING",
+    "status": "HEADSET_REJECTED_WRONG_PRESENTATION_ARCHITECTURE",
     "accepted_parent": "C-H4-43",
     "rejected_predecessor": "C-H4-43l moved the correct native reticle and retained the HUD/animation/target colours, but headset testing proved vertical movement inverted and native size excessive",
     "runtime_evidence": {
@@ -96,6 +96,32 @@
     "size_mapping": "uniformScale = (2 * abs(liveCuiHalfHeight) * tan(crosshair_size_deg/2) / tan(liveEyeHalfFovY)) / 81.92",
     "write_scope": "one H4EK-proven type-0x28 reticle-only real_matrix4x3; original uniform scale and X/Y translation are the only changed fields",
     "cross_title_scope": "no shared compositor, Halo 3, ODST, or Reach code changed",
+    "headset_result": "REJECTED: native matrix placement did not coincide with the already-correct hidden VR crosshair"
+  },
+  "c_h4_43p_reprojected_hidden_point": {
+    "status": "HEADSET_REJECTED_WRONG_PRESENTATION_ARCHITECTURE",
+    "accepted_parent": "C-H4-43",
+    "source_commit": "2f2b072c81cded4ba88393158015dc7d739ae1ae",
+    "revert_commit": "abcc190",
+    "runtime_evidence": {
+      "edition": "Steam",
+      "runtime": "SteamVR/OpenXR 2.17.7",
+      "headset": "PlayStation VR2 at 90 Hz",
+      "matrix_actions_per_two_seconds": "226-1086",
+      "viewport_half_extents": "1893/1365",
+      "log_sha256": "01AE02D7F17ACA9502A8BC3DBDF547289682FE9EEE4B6BBB88E370506D8BEEA9"
+    },
+    "headset_result": "REJECTED: sharing and reprojecting the hidden quad 3D point was still not the requested working three-title presentation path"
+  },
+  "c_h4_43q_authored_pixels_on_existing_quad": {
+    "status": "OFFLINE_PASS_HEADSET_PENDING",
+    "accepted_parent": "C-H4-43",
+    "presentation": "capture Halo 4 authored CUI centre pixels into the existing authored-reticle texture, hide native flat type-0x28 copies, and present the pixels on the unchanged existing OpenXR reticle quad",
+    "capture_boundary": "bounded configured capture-eye replay; private centred target begins before the first CUI command and remains bound through the exact full-size gameplay user_interface_render return",
+    "batching_reason": "43j proved descendant draws can be emitted past the logical type-0x29 end marker, so the target cannot be restored at that marker",
+    "placement": "no Halo 4 position calculation; existing shared reticleQuad pose, distance, stabilization, and angular-size path is the sole placement owner",
+    "native_suppression": "normal eye pass calls every original CUI command and moves only each type-0x28 reticle matrix offscreen",
+    "failure_isolation": "resource, hook, capture, matrix, or upload failure retains stock/procedural feature fallback without disarming camera, hands, stereo, or OpenXR",
     "headset_result": "PENDING"
   },
   "retail_resolution_method": {

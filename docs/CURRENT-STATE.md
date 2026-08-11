@@ -1,6 +1,6 @@
 # Current state
 
-Authoritative as of 2026-08-10. This file is the only active accepted-build
+Authoritative as of 2026-08-11. This file is the only active accepted-build
 pointer. Detailed pre-cleanup experiments remain available in Git history; they
 are evidence, not instructions.
 
@@ -28,6 +28,37 @@ are evidence, not instructions.
 > - were false when read, and each cost hours because they were believed
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
+
+## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-43q - 2026-08-11
+
+**Headset result pending; this does not advance the accepted pointer below.**
+This returns to the presentation architecture already used by Halo 3, ODST,
+and Reach: Halo 4's authored CUI centre pixels are captured into the existing
+reticle texture, its flat native type-`0x28` copy is moved offscreen, and the
+already-correct OpenXR reticle quad presents the authored pixels. No CUI aim
+coordinate, shot point, game-space target, eye projection, or duplicate reticle
+transform is calculated.
+
+C-H4-43j proved that Halo 4 batches CUI draws past the logical reticle end
+marker. On bounded capture frames, 43q therefore replays the exact full-size
+gameplay CUI command stream into the centred private 512x512 capture and holds
+that target until `user_interface_render` returns. The normal eye pass then
+draws every HUD command stock while moving only the reticle matrices offscreen.
+Until nonblank authored art is held, the existing procedural/native fallback
+remains available. All capture/hook failures remain feature-local. C-H4-43 is
+still the accepted rollback pointer.
+
+## REJECTED HALO 4 TEST CANDIDATE: C-H4-43p - 2026-08-11
+
+**Headset rejected; this never advanced the accepted pointer below.** The
+correct `2f2b072` Steam/SteamVR/PSVR2 90 Hz run installed the hooks and wrote
+the CUI matrices continuously, but the visible result was still wrong. The log
+measured 226-1086 actions per two seconds with the exact live viewport and
+normally zero failures; this rejects the design, not the hook. 43p still
+projected the hidden quad's 3D point back into Halo 4 CUI coordinates. That is
+not what the three accepted title paths do. The log SHA-256 is
+`01AE02D7F17ACA9502A8BC3DBDF547289682FE9EEE4B6BBB88E370506D8BEEA9`.
+The candidate is reverted by `abcc190`.
 
 ## REJECTED HALO 4 TEST CANDIDATE: C-H4-43m - 2026-08-11
 

@@ -128,7 +128,6 @@ enum class Halo4CuiReticleAction : uint8_t
 {
     DrawStock,
     HideNative,
-    MoveNative,
 };
 
 // This decision is intentionally fail-open.  Unowned, uninstalled, malformed,
@@ -150,8 +149,10 @@ constexpr Halo4CuiReticleAction Halo4DecideCuiReticleAction(
     if (!killNativeReticle)
         return Halo4CuiReticleAction::DrawStock;
 
+    // Match Halo 3/ODST/Reach: authored pixels are presented by the existing
+    // OpenXR reticle quad, so the native flat copy is hidden.
     (void)rightEyeFirst;
-    return Halo4CuiReticleAction::MoveNative;
+    return Halo4CuiReticleAction::HideNative;
 }
 
 // Retail's type-0x28 handler pushes one 0x34-byte real_matrix4x3 entry. The

@@ -84,7 +84,7 @@ try {
     }
     if ($cache -notmatch
             '(?m)^HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA:BOOL=ON\r?$') {
-        throw 'Refusing to package C-H4-43m: the Halo 4 camera core is not ON.'
+        throw 'Refusing to package C-H4-43q: the Halo 4 camera core is not ON.'
     }
 
     # Incremental. A clean rebuild was recompiling the whole tree for every
@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c43m-native-cui-reticle-angular-transform',
+        'halo4-c43q-authored-cui-on-existing-vr-quad',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 'dd9946595511d65c9859b536e2727201c107da45'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-43m'
+            id = 'C-H4-43q'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'h4ek-proven-native-cui-reticle-transform-with-headset-proven-up-axis-and-angular-size-from-live-eye-fov-cui-half-height-and-official-81p92-unit-authored-height'
+            behavior = 'halo4-authored-cui-centre-pixels-on-unchanged-existing-openxr-reticle-quad-with-native-flat-copy-hidden'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -192,12 +192,12 @@ try {
             haptics = $true
             head_relative_locomotion = $true
             # The rest of Halo 4's CUI remains native in the captured scene.
-            # Only the H4EK-proven reticle transform is translated and scaled.
-            hud = 'entirely-native-inside-captured-scene-only-reticle-matrix-translated-and-uniformly-scaled'
+            # Only centre art is sampled; the existing quad owns placement.
+            hud = 'native-inside-captured-scene-authored-centre-art-sampled-to-existing-reticle-quad'
             authored_crosshair = $true
             native_face_crosshair_suppressed = $true
             reticle_capture_boundary =
-                'none-native-type-0x28-reticule-offset-matrix-translation-and-uniform-scale-only'
+                'bounded-capture-eye-full-gameplay-cui-replay-held-from-first-command-through-frontend-return'
             reticle_failure_policy =
                 'stock-or-procedural-feature-fallback-camera-hands-stereo-and-openxr-remain-armed'
             first_person_hands = $true
@@ -291,7 +291,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-43m is an unaccepted headset candidate built on accepted C-H4-43 after 43l proved the native Halo 4 reticle follows the gun with its HUD/animation/target colour intact, but exposed inverted vertical motion and excessive native size. Official H4EK and pinned retail uniquely prove the full-size gameplay CUI scope, type-0x28 ReticuleOffsetContainer command, dispatcher, caller edges, and 0x34 real_matrix4x3 layout. The 43l headset result proves positive composed-matrix Y is headset-up. Official H4EK assault-rifle and magnum widescreen exports both measure an 81.92-unit nominal reticle height. C-H4-43m maps the configured angular height through each live eye FOV and CUI half-height into the matrix uniform scale, while retaining the live half-extent X/Y gun-ray translation. It changes no render target, bitmap, colour state, other HUD transform, shared compositor code, or other title. Any optional failure remains feature-local and never disarms the accepted camera, hands, stereo path, or OpenXR. C-H4-43 remains the accepted rollback pointer until explicit headset acceptance.'
+        note = 'C-H4-43q is an unaccepted headset candidate built on accepted C-H4-43 after 43n through 43p proved that moving native CUI with any separately calculated screen coordinate is the wrong architecture. It matches Halo 3, ODST and Reach: Halo 4 authored CUI centre pixels are captured into the existing authored-reticle texture, the native flat type-0x28 copies are hidden, and the unchanged existing OpenXR reticle quad is the sole placement owner. Because 43j proved Halo 4 batches draws past the logical type-0x29 marker, a bounded configured-eye capture replay binds the centred private target before the first command and holds it through the exact full-size gameplay front-end return. The subsequent normal eye pass calls every original command and moves only reticle matrices offscreen. No CUI aim coordinate, shot point, game-space target, eye projection, or replacement quad pose is calculated. Any optional failure remains feature-local and never disarms the accepted camera, hands, stereo path, or OpenXR. C-H4-43 remains the accepted rollback pointer until explicit headset acceptance.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

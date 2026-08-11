@@ -6195,18 +6195,18 @@ int main()
         "kill_reticle=0 preserves Halo 4's native CUI reticle");
     Check(Halo4DecideCuiReticleAction(
               true, true, true, kHalo4CuiCommandBegin,
-              true, true, 0, false) == CuiAction::MoveNative &&
+              true, true, 0, false) == CuiAction::HideNative &&
               Halo4DecideCuiReticleAction(
                   true, true, true, kHalo4CuiCommandBegin,
-                  true, true, 1, false) == CuiAction::MoveNative &&
+                  true, true, 1, false) == CuiAction::HideNative &&
               Halo4DecideCuiReticleAction(
                   true, true, true, kHalo4CuiCommandBegin,
-                  true, true, 1, true) == CuiAction::MoveNative &&
+                  true, true, 1, true) == CuiAction::HideNative &&
               Halo4DecideCuiReticleAction(
                   true, true, true, kHalo4CuiCommandBegin,
-                  true, true, 0, true) == CuiAction::MoveNative,
-        "Both Halo 4 eyes move their own native reticle; eye order cannot "
-        "create a face-centred duplicate");
+                  true, true, 0, true) == CuiAction::HideNative,
+        "Both Halo 4 eyes hide the native flat copy while authored pixels ride "
+        "the exact OpenXR reticle quad; eye order cannot create a duplicate");
 
     {
         const float forward[3] = {0.0f, 1.0f, 0.0f};

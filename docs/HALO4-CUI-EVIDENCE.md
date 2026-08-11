@@ -1,11 +1,11 @@
 # Halo 4 CUI evidence
 
-Status: **the C-H4-43i/C-H4-43j render-target design and C-H4-43k/43l native
-transform candidates are headset-rejected; C-H4-43m corrects 43l's measured
-vertical sign and derives native scale from the shared angular-size knob.** Halo 4 has no CHUD; its HUD is the
+Status: **C-H4-43i through C-H4-43p are headset-rejected. C-H4-43q returns to
+the Halo 3/ODST/Reach presentation architecture: captured authored pixels on
+the already-correct OpenXR reticle quad, with the flat native copy hidden.** Halo 4 has no CHUD; its HUD is the
 CUI system. Identity pins live in `docs/HALO4-EVIDENCE-MANIFEST.json`;
 camera/render signature proofs live in `docs/HALO4-SIGNATURE-EVIDENCE.md`.
-Nothing in this file promotes C-H4-43i through 43m to an accepted headset result.
+Nothing in this file promotes C-H4-43i through 43q to an accepted headset result.
 
 The 2026-08-11 Steam/SteamVR/PSVR2 run loaded the correct `3baabc7` bytes but
 logged `prepared capture/discard resources unavailable`, followed by zero main
@@ -602,6 +602,40 @@ C-H4-43m changes no shared compositor code and no Halo 3/ODST/Reach path; their
 reticle implementation and lifecycle remain byte-for-byte untouched. Until the
 explicit Halo 4 headset result exists, the accepted-build pointer in
 `docs/CURRENT-STATE.md` remains authoritative.
+
+### C-H4-43n through 43p rejection and C-H4-43q presentation correction
+
+C-H4-43n corrected the live viewport mapping; C-H4-43o reconstructed a finite
+controller/head/Halo-camera target; C-H4-43p shared the hidden quad's final
+LOCAL-space 3D point and reprojected it into each Halo 4 eye. All three were
+headset-rejected. The `2f2b072` 43p Steam/SteamVR/PSVR2 90 Hz log proved the
+hooks and matrix writes live, but the result was still not the already-correct
+hidden VR crosshair. Reprojecting any point into CUI remains a second placement
+implementation and is now rejected as an architecture.
+
+The accepted Halo 3, ODST, and Reach architecture does not move native HUD art
+to an independently calculated 2D coordinate. It captures the game's authored
+crosshair pixels into `g_authoredReticleTexture`, suppresses the flat native
+copy, uploads those pixels to `g_reticleChain`, and lets `reticleQuad` own the
+one working controller-ray pose. C-H4-43q does exactly that for Halo 4.
+
+The 43j headset result remains important: redirecting only from type `0x28` to
+the matching `0x29` produced blank art and removed shared HUD pixels because
+Halo 4 batches actual draws past that logical interval. 43q replays the bounded
+capture-eye gameplay CUI pass. Its dispatcher binds the centred private capture
+before the first command and keeps it bound until the exact gameplay front end
+returns, crossing the proven batching boundary. The capture viewport is the
+existing title-neutral 512x512 centred crop: outer HUD falls outside it while
+the authored reticle and hit art remain at its centre. The subsequent normal
+eye pass runs every original command and changes only each type-`0x28` reticle
+translation enough to hide the flat copy. `kill_reticle=0` remains the stock
+face-centred escape hatch.
+
+The shared compositor is not given a new position and is not modified. Halo 4
+only reports that it now captures authored art, allowing the existing upload,
+coverage guard, procedural bootstrap, angular-size, distance, stabilization,
+and quad placement paths to operate exactly as they do for the other titles.
+C-H4-43 remains the accepted pointer pending a headset result.
 
 ## C-H4-43j correction after the 43i headset rejection
 
