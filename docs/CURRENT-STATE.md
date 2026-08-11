@@ -29,9 +29,17 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
-## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-44 - 2026-08-11
+## REJECTED HALO 4 TEST CANDIDATE: C-H4-44 - 2026-08-11
 
-**Headset result pending; this does not advance the accepted pointer below.**
+**Headset rejected; this never advanced the accepted pointer below.** The
+Steam/SteamVR 2.17.7/PSVR2 90 Hz run put the visible crosshair back at face
+depth and nowhere near the bullet impact. The HUD-basis writer matched exactly
+once and applied the configured values, but this combined candidate carried
+the still-unaccepted C-H4-43q crosshair. C-H4-44 is therefore rejected as a
+combined player-visible candidate and its HUD writes are dormant until tested
+independently from that crosshair path. The preserved failing log SHA-256 is
+`FD39BE0C397AEF125C6A3CBCB2BF37B87548D2FFC2CC536022862AB8BF695FC1`.
+
 C-H4-44 carries C-H4-43q's authored-reticle presentation forward unchanged and
 adds Halo 4-native HUD layout controls. `hud_size`, `hud_aspect`,
 `hud_curvature`, and `hud_vertical_offset` now transform the sole official

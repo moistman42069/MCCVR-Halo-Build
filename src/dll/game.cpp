@@ -29153,15 +29153,15 @@ namespace
     // C-H4-1/C-H4-7/C-H4-9 line. ControllerAim, Haptics, RuntimeModes and
     // RoomScale join them now that Halo 4 publishes the three things the shared
     // paths need from a title: a runtime mode, a yaw reference pair, and the
-    // engine's own aim direction. C-H4-44 adds HUD only through Halo 4's
-    // official ui\hud_globals screen-transform basis. ArmIk and
-    // CutsceneTheater stay out because neither has Halo 4 evidence. C-H4-35
+    // engine's own aim direction. C-H4-44's HUD-basis writer is headset-
+    // rejected and remains dormant. ArmIk and CutsceneTheater stay out because
+    // neither has Halo 4 evidence. C-H4-35
     // deliberately uses rigid floating hands only, so advertising ArmIk here
     // would grant a capability Halo 4 does not implement.
     constexpr uint32_t kHalo4RuntimeCapabilities =
         TitleCapability_Stereo | TitleCapability_ControllerInput |
         TitleCapability_ControllerAim | TitleCapability_Haptics |
-        TitleCapability_Hud | TitleCapability_RuntimeModes |
+        TitleCapability_RuntimeModes |
         TitleCapability_RoomScale;
 
     // C-H4-14. Argument 7 of the final-palette call is a per-render-model
@@ -35180,10 +35180,9 @@ namespace
                         halo4GateBase, halo4GateSize, halo4Generation,
                         halo4Active && halo4GateSampled,
                         activeLevelRunning);
-                    Halo4HudLayoutColdPoll(
-                        halo4Generation,
-                        halo4Active && halo4GateSampled,
-                        activeLevelRunning);
+                    // C-H4-44 is headset-rejected. Keep its evidence-backed
+                    // implementation dormant until it is isolated from the
+                    // rejected crosshair candidate and tested independently.
                     Halo4CameraLogTick();
                 }
 #endif
@@ -36686,7 +36685,7 @@ void Game_AutoVrTick()
                 // the arm-gated capabilities with it.
                 TitleAdapter_PublishMode(
                     GameTitle::Halo4, halo4Generation, RuntimeMode::Gameplay);
-                Halo4HudLayoutApply(halo4Generation);
+                // C-H4-44 HUD-basis writes are disabled after headset rejection.
             }
         }
         else if (g_enabled.load(std::memory_order_relaxed) ||

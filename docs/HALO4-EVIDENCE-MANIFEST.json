@@ -1,12 +1,12 @@
 {
   "schema_version": 3,
-  "status": "C_H4_44_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
+  "status": "C_H4_44_HEADSET_REJECTED_C_H4_43_ACCEPTED",
   "hook_eligible": true,
   "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-44 carries C-H4-43q's optional authored-CUI replay and unchanged existing OpenXR reticle-quad placement, then adds a separate data-only HUD-layout feature. That feature requires exactly one official H4EK ui\\hud_globals 3x3 screen-transform basis plus immutable neighboring fields; it installs no HUD hook. No CUI aim coordinate, shot point, game-space target, eye projection, bitmap recreation, copied CHUD layout, copied resolution-class record, or copied cross-title address is introduced.",
   "accepted_halo4_pointer": {
     "candidate": "C-H4-43",
     "source_commit": "dd9946595511d65c9859b536e2727201c107da45",
-    "note": "C-H4-44 is a forward candidate carrying C-H4-43q after rejected C-H4-43i through C-H4-43p and does not advance acceptance without an explicit headset result"
+    "note": "C-H4-44 was headset-rejected and does not advance acceptance; C-H4-43 remains the accepted pointer"
   },
   "development_baseline": {
     "source_commit": "f4c641f7b1b707991f2bda71ba485090a16f1e9a",
@@ -125,9 +125,9 @@
     "headset_result": "PENDING"
   },
   "c_h4_44_native_hud_layout": {
-    "status": "OFFLINE_PASS_HEADSET_PENDING",
+    "status": "HEADSET_REJECTED_COMBINED_CANDIDATE_HUD_WRITES_DORMANT",
     "accepted_parent": "C-H4-43",
-    "crosshair_parent": "C-H4-43q carried forward unchanged",
+    "crosshair_parent": "C-H4-43q carried forward unchanged and failed in the same headset run",
     "ghidra_replay_verification": {
       "tool": "Ghidra 12.1.2 with JDK 21.0.11",
       "h4ek_sha256": "B7468DB9FD160B035C329540EE0B0D47BCF609E1BA6E85AE4F204B70661113A6",

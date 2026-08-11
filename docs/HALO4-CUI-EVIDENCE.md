@@ -1,9 +1,8 @@
 # Halo 4 CUI evidence
 
-Status: **C-H4-43i through C-H4-43p are headset-rejected. C-H4-44 carries
-C-H4-43q's return to
-the Halo 3/ODST/Reach presentation architecture: captured authored pixels on
-the already-correct OpenXR reticle quad, with the flat native copy hidden.** Halo 4 has no CHUD; its HUD is the
+Status: **C-H4-43i through C-H4-43p and combined candidate C-H4-44 are
+headset-rejected. C-H4-43q remains unaccepted pending its separate disposition.**
+Halo 4 has no CHUD; its HUD is the
 CUI system. Identity pins live in `docs/HALO4-EVIDENCE-MANIFEST.json`;
 camera/render signature proofs live in `docs/HALO4-SIGNATURE-EVIDENCE.md`.
 Nothing in this file promotes C-H4-43i through C-H4-44 to an accepted headset result.
