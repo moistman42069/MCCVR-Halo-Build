@@ -1,12 +1,12 @@
 {
   "schema_version": 3,
-  "status": "C_H4_43J_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
+  "status": "C_H4_43K_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
   "hook_eligible": true,
-  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43j additionally admits an optional two-hook CUI transaction: the full-size gameplay front end at retail RVA 0x3ACD60 with its exact caller edge at 0x375C51/return 0x375C6E, plus the per-command dispatcher at 0x3F0EA4 with its sole caller edge at 0x3F4B6B. All four signatures must match uniquely at pinned RVAs, both rel32 edges must decode, every site must be executable, the mapping must remain stable, and private capture/discard/coverage resources must be cold-prepared. OpenXR image RTVs remain lazy until an exact image is acquired for upload. A resource miss retries; static proof or hook failure rejects only this optional feature. No auxiliary/menu CUI redirect, generic HUD redirect, CHUD binding, persistent crosshair visibility mutation, or copied cross-title address is admitted.",
+  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43k admits the optional gameplay-CUI front end and command dispatcher only after all four signatures and both rel32 edges match their pinned retail locations. It calls every original command and changes only the newly pushed type-0x28 reticle matrix translation. No render target, bitmap, colour, alpha, visibility bit, auxiliary/menu CUI, generic HUD transform, CHUD binding, or copied cross-title address is changed.",
   "accepted_halo4_pointer": {
     "candidate": "C-H4-43",
     "source_commit": "dd9946595511d65c9859b536e2727201c107da45",
-    "note": "C-H4-43j is a forward candidate after rejected C-H4-43i and does not advance acceptance without an explicit headset result"
+    "note": "C-H4-43k is a forward candidate after rejected C-H4-43i/43j and does not advance acceptance without an explicit headset result"
   },
   "development_baseline": {
     "source_commit": "f4c641f7b1b707991f2bda71ba485090a16f1e9a",
@@ -29,7 +29,7 @@
     "retail_module_role": "match and verify targets already explained by H4EK; never a source to invent a binding"
   },
   "c_h4_43j_authored_cui_reticle": {
-    "status": "OFFLINE_IMPLEMENTED_HEADSET_PENDING",
+    "status": "HEADSET_REJECTED_SHARED_HUD_BATCH_REDIRECTED_WHILE_CAPTURE_BLANK",
     "accepted_parent": "C-H4-43",
     "h4ek_discovery": {
       "widget": "ReticuleOffsetContainerWidget",

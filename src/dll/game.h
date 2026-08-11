@@ -53,6 +53,10 @@ uint64_t Game_GetReachAuthoredCrosshairKey();
 // so the captured widget is the crosshair and the procedural reticle must stay
 // invisible. False means the procedural reticle IS the crosshair.
 bool Game_TitleCapturesAuthoredCrosshair();
+// True when Halo 4's native animated/coloured CUI reticle is moved onto the
+// controller ray inside each eye. The compositor must then omit its procedural
+// crosshair quad; the game reticle itself is the only visible crosshair.
+bool Game_TitlePositionsNativeCrosshair();
 uint64_t Game_GetAuthoredCrosshairKey();
 // How many class-2 widget pieces reached the capture surface this frame.
 // 0 means the active title supplies no count, which leaves the capture

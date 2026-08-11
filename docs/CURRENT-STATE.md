@@ -29,6 +29,21 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
+## CURRENT HALO 4 TEST CANDIDATE: C-H4-43k - 2026-08-11
+
+**Headset pending; this does not advance the accepted pointer below.** This
+candidate replaces the rejected render-target capture with Halo 4's native
+reticle transform. The exact gameplay CUI scope and type-`0x28` command remain
+the H4EK/retail-proven reticle boundary, but every original command and render
+target now stays stock. After Halo 4 pushes the reticle container's private
+`0x34` matrix, 43k changes only its final translation (`+0x28`) to the current
+per-eye projection of the engine/controller aim ray. The native bitmap,
+animation, spread, hit marker, and friendly/enemy colour state therefore remain
+Halo 4's own output. The compositor omits its procedural VR quad while this
+optional transform hook is live. `crosshair=0` moves the native reticle safely
+offscreen; `kill_reticle=0` deliberately leaves it face-centred and stock.
+Every other HUD command and pixel remains untouched.
+
 ## REJECTED HALO 4 TEST CANDIDATE: C-H4-43j - 2026-08-11
 
 **Headset rejected; this never advanced the accepted pointer below.** The

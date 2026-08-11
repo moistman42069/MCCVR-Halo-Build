@@ -1,11 +1,11 @@
 # Halo 4 CUI evidence
 
-Status: **the C-H4-43i/C-H4-43j authored-reticle producer, playback boundary, main
-gameplay-pass ownership scope, and pinned-retail bindings are proven
-offline; 43i was rejected before its hooks installed and 43j is pending.** Halo 4 has no CHUD; its HUD is the
+Status: **the C-H4-43i/C-H4-43j render-target design is headset-rejected;
+C-H4-43k keeps the proven gameplay phase and reticle command but moves only the
+native reticle matrix and is headset-pending.** Halo 4 has no CHUD; its HUD is the
 CUI system. Identity pins live in `docs/HALO4-EVIDENCE-MANIFEST.json`;
 camera/render signature proofs live in `docs/HALO4-SIGNATURE-EVIDENCE.md`.
-Nothing in this file promotes C-H4-43i or C-H4-43j to an accepted headset result.
+Nothing in this file promotes C-H4-43i, 43j, or 43k to an accepted headset result.
 
 The 2026-08-11 Steam/SteamVR/PSVR2 run loaded the correct `3baabc7` bytes but
 logged `prepared capture/discard resources unavailable`, followed by zero main
@@ -532,6 +532,27 @@ shared HUD pixels while every private reticle capture remained blank. This
 runtime result disproves the static assumption that the marker interval is a
 GPU draw-submission boundary. The render-target redirect is dormant; the
 following list is retained as the acceptance contract for a replacement:
+
+### C-H4-43k native-transform replacement
+
+C-H4-43k does not redirect or capture any CUI draw. H4EK `0x9BE760` and its
+retail homolog prove that a successful type-`0x28` command increments the
+renderer stack count at `+0x870` and composes one `0x34`-byte
+`real_matrix4x3` entry beginning at `+0x878`; the entry's final float3
+translation begins at `+0x28`. The matching type `0x29` restores the prior
+entry. The optional dispatcher hook therefore calls the original type `0x28`
+first and changes only X/Y in that newly pushed translation. It never changes
+an RTV, DSV, viewport, scissor, bitmap, colour, alpha, visibility bit, or CUI
+command. The exact gameplay-front-end scope still excludes the 216x96 auxiliary
+pass and later menus.
+
+The desired translation is derived for each eye from the engine's own steered
+aim direction and the finished eye camera/FOV read back before the wrapper.
+Both eyes move their native reticle independently. When live, the compositor
+does not create or submit the procedural reticle quad. Thus Halo 4's existing
+animation, spread, hit marker, and red/green target state remain native while
+the face-centred copy is the same object moved onto the gun ray. This is a new
+headset candidate, not an accepted result; C-H4-43 remains the rollback pointer.
 
 - the authored weapon reticle follows the controller/gun ray and no
   face-centred copy remains in either eye;

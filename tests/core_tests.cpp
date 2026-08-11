@@ -6017,7 +6017,7 @@ int main()
             "A remapped halo4.dll refuses the Halo 4 camera hook");
     }
 
-    // Halo 4's authored reticle is an optional CUI feature.  Its independent
+    // Halo 4's native reticle transform is an optional CUI feature. Its independent
     // proof fails closed, while every runtime miss fails open to stock without
     // affecting camera ownership or OpenXR.
     Check(kHalo4CuiReticleDispatcherRva == 0x003F0EA4 &&
@@ -6063,7 +6063,7 @@ int main()
         "The Halo 4 CUI command pair and decoded dispatcher edge stay pinned");
 
     Halo4CuiReticleInstallProof halo4CuiInstall{};
-    halo4CuiInstall.resourcesPrepared = true;
+    halo4CuiInstall.transformLayoutProven = true;
     halo4CuiInstall.anchorsMatchedOnce = kHalo4CuiReticleAnchorCount;
     halo4CuiInstall.anchorsAtPinnedRva = kHalo4CuiReticleAnchorCount;
     halo4CuiInstall.callerDecodesDispatcher = true;
@@ -6071,13 +6071,13 @@ int main()
     halo4CuiInstall.executableRange = true;
     halo4CuiInstall.mappingStable = true;
     Check(Halo4CuiReticleInstallComplete(halo4CuiInstall),
-        "Complete resources, signatures, edge decode, and mapping admit the "
+        "Complete transform, signatures, edge decode, and mapping admit the "
         "optional Halo 4 CUI reticle transaction");
     {
         Halo4CuiReticleInstallProof broken = halo4CuiInstall;
-        broken.resourcesPrepared = false;
+        broken.transformLayoutProven = false;
         Check(!Halo4CuiReticleInstallComplete(broken),
-            "Halo 4 CUI capture stays stock without prepared resources");
+            "Halo 4 CUI movement stays stock without the proven stack layout");
         broken = halo4CuiInstall;
         broken.anchorsMatchedOnce -= 1;
         Check(!Halo4CuiReticleInstallComplete(broken),
@@ -6107,23 +6107,23 @@ int main()
 
     const auto cuiInstalled = Halo4CuiReticleLifecycleFor(
         Halo4CuiReticleOptionalInstallState::Installed, halo4CuiInstall);
-    Check(cuiInstalled.authoredCaptureLive && !cuiInstalled.cleanupFeature,
-        "Authored Halo 4 CUI capture becomes live after a complete install");
+    Check(cuiInstalled.nativeTransformLive && !cuiInstalled.cleanupFeature,
+        "Native Halo 4 CUI movement becomes live after a complete install");
     {
         Halo4CuiReticleInstallProof incomplete = halo4CuiInstall;
         incomplete.mappingStable = false;
         Check(!Halo4CuiReticleLifecycleFor(
                    Halo4CuiReticleOptionalInstallState::Installed, incomplete)
-                   .authoredCaptureLive &&
+                   .nativeTransformLive &&
                   !Halo4CuiReticleLifecycleFor(
                       Halo4CuiReticleOptionalInstallState::StockFallback,
                       halo4CuiInstall)
-                       .authoredCaptureLive &&
+                       .nativeTransformLive &&
                   !Halo4CuiReticleLifecycleFor(
                       Halo4CuiReticleOptionalInstallState::CleanupRequired,
                       halo4CuiInstall)
-                       .authoredCaptureLive,
-            "Authored Halo 4 CUI capture is never live before complete optional "
+                       .nativeTransformLive,
+            "Native Halo 4 CUI movement is never live before complete optional "
             "installation");
     }
     Check(Halo4CuiReticleLifecycleFor(
@@ -6166,14 +6166,14 @@ int main()
     Check(Halo4DecideCuiReticleAction(
               true, false, true, kHalo4CuiCommandBegin,
               true, true, 0, false) == CuiAction::DrawStock,
-        "An uninstalled Halo 4 CUI capture path remains stock");
+        "An uninstalled Halo 4 CUI transform path remains stock");
     Check(Halo4DecideCuiReticleAction(
               true, true, true, kHalo4CuiCommandEnd,
               true, true, 0, false) == CuiAction::DrawStock &&
               Halo4DecideCuiReticleAction(
                   true, true, true, 0x2A,
                   true, true, 0, false) == CuiAction::DrawStock,
-        "Only Halo 4's CUI begin command can enter authored capture");
+        "Only Halo 4's CUI begin command can move the reticle transform");
     Check(Halo4DecideCuiReticleAction(
               true, true, false, kHalo4CuiCommandBegin,
               true, true, 0, false) == CuiAction::DrawStock,
@@ -6187,7 +6187,7 @@ int main()
         "An invalid Halo 4 stereo eye fails open to stock");
     Check(Halo4DecideCuiReticleAction(
               true, true, true, kHalo4CuiCommandBegin,
-              false, true, 0, false) == CuiAction::SuppressNative,
+              false, true, 0, false) == CuiAction::HideNative,
         "crosshair=0 suppresses Halo 4's native CUI reticle");
     Check(Halo4DecideCuiReticleAction(
               true, true, true, kHalo4CuiCommandBegin,
@@ -6195,18 +6195,45 @@ int main()
         "kill_reticle=0 preserves Halo 4's native CUI reticle");
     Check(Halo4DecideCuiReticleAction(
               true, true, true, kHalo4CuiCommandBegin,
-              true, true, 0, false) == CuiAction::CaptureAuthored &&
+              true, true, 0, false) == CuiAction::MoveNative &&
               Halo4DecideCuiReticleAction(
                   true, true, true, kHalo4CuiCommandBegin,
-                  true, true, 1, false) == CuiAction::SuppressNative &&
+                  true, true, 1, false) == CuiAction::MoveNative &&
               Halo4DecideCuiReticleAction(
                   true, true, true, kHalo4CuiCommandBegin,
-                  true, true, 1, true) == CuiAction::CaptureAuthored &&
+                  true, true, 1, true) == CuiAction::MoveNative &&
               Halo4DecideCuiReticleAction(
                   true, true, true, kHalo4CuiCommandBegin,
-                  true, true, 0, true) == CuiAction::SuppressNative,
-        "The configured first Halo 4 eye captures authored art and the "
-        "opposite eye suppresses native art");
+                  true, true, 0, true) == CuiAction::MoveNative,
+        "Both Halo 4 eyes move their own native reticle; eye order cannot "
+        "create a face-centred duplicate");
+
+    {
+        const float forward[3] = {0.0f, 1.0f, 0.0f};
+        const float up[3] = {0.0f, 0.0f, 1.0f};
+        const float centerAim[3] = {0.0f, 1.0f, 0.0f};
+        const Halo4CuiAimOffset center = Halo4ProjectAimToCuiOffset(
+            forward, up, centerAim, 0.78539816f, 0.78539816f);
+        Check(center.valid && fabsf(center.x) < 1.0e-6f &&
+                  fabsf(center.y) < 1.0e-6f,
+            "A camera-forward Halo 4 gun ray leaves the native reticle centred");
+        const float rightAim[3] = {0.70710678f, 0.70710678f, 0.0f};
+        const Halo4CuiAimOffset right = Halo4ProjectAimToCuiOffset(
+            forward, up, rightAim, 0.78539816f, 0.78539816f);
+        Check(right.valid && fabsf(right.x - 1.0f) < 1.0e-5f &&
+                  fabsf(right.y) < 1.0e-5f,
+            "The native Halo 4 reticle projection reaches the right frustum edge");
+        const float upAim[3] = {0.0f, 0.70710678f, 0.70710678f};
+        const Halo4CuiAimOffset upOffset = Halo4ProjectAimToCuiOffset(
+            forward, up, upAim, 0.78539816f, 0.78539816f);
+        Check(upOffset.valid && fabsf(upOffset.x) < 1.0e-5f &&
+                  fabsf(upOffset.y + 1.0f) < 1.0e-5f,
+            "Camera-up maps to CUI-up despite CUI's downward local Y axis");
+        const float behind[3] = {0.0f, -1.0f, 0.0f};
+        Check(!Halo4ProjectAimToCuiOffset(
+                   forward, up, behind, 0.78539816f, 0.78539816f).valid,
+            "A behind-camera Halo 4 gun ray never writes a reticle matrix");
+    }
 
     // Generic cover math remains available for a later FOV milestone, but it
     // is not an observer-field layout claim: +0x78/+0x7C are full-vFOV and a

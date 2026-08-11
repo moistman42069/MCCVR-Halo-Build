@@ -8446,8 +8446,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             Game_HasTitleCapability(
                                 TitleCapability_ControllerAim) ||
                             Game_OwnsReachAuthoredReticle();
+                        const bool titlePositionsNativeReticle =
+                            Game_TitlePositionsNativeCrosshair();
                         const bool reticleUploadAdmitted =
-                            reticleTitleAdmitted &&
+                            reticleTitleAdmitted && !titlePositionsNativeReticle &&
                             g_config.crosshair && haveAim &&
                             EnsureReticleChain();
                         // Reach uploads its captured widget art exactly like
@@ -8757,7 +8759,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                           g_config.kill_reticle)),
                                 g_reticleContainsAuthored);
                         const bool reticleQuadSubmitted =
-                            reticleOwnerAdmitted && g_config.crosshair &&
+                            reticleOwnerAdmitted &&
+                            !titlePositionsNativeReticle &&
+                            g_config.crosshair &&
                             // Halo 4 uses kill_reticle=0 as an explicit request
                             // for the stock face-centred CUI reticle. Never add
                             // a held authored gun-ray quad on top of it.

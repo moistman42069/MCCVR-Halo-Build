@@ -84,7 +84,7 @@ try {
     }
     if ($cache -notmatch
             '(?m)^HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA:BOOL=ON\r?$') {
-        throw 'Refusing to package C-H4-43j: the Halo 4 camera core is not ON.'
+        throw 'Refusing to package C-H4-43k: the Halo 4 camera core is not ON.'
     }
 
     # Incremental. A clean rebuild was recompiling the whole tree for every
@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c43j-retrying-authored-cui-reticle',
+        'halo4-c43k-native-cui-reticle-transform',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 'dd9946595511d65c9859b536e2727201c107da45'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-43j'
+            id = 'C-H4-43k'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'h4ek-proven-main-gameplay-cui-reticle-subtree-captured-onto-the-existing-gun-ray-quad-with-opposite-eye-discard-and-native-face-copy-suppressed'
+            behavior = 'h4ek-proven-native-cui-reticle-transform-moved-per-eye-onto-the-controller-aim-ray-with-all-hud-draw-targets-stock'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -193,11 +193,11 @@ try {
             head_relative_locomotion = $true
             # The rest of Halo 4's CUI remains native in the captured scene.
             # Only the H4EK-proven reticle subtree is optionally redirected.
-            hud = 'native-inside-captured-scene-reticle-subtree-redirected'
+            hud = 'entirely-native-inside-captured-scene-only-reticle-matrix-translated'
             authored_crosshair = $true
             native_face_crosshair_suppressed = $true
             reticle_capture_boundary =
-                'gameplay-cui-scope-plus-command-dispatcher-type-0x28-0x29-reticule-offset-subtree'
+                'none-native-type-0x28-reticule-offset-matrix-translation-only'
             reticle_failure_policy =
                 'stock-or-procedural-feature-fallback-camera-hands-stereo-and-openxr-remain-armed'
             first_person_hands = $true
@@ -291,7 +291,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-43j is an unaccepted headset candidate built directly on accepted C-H4-43 after the headset-rejected C-H4-43i install gate. Official H4EK proves ReticuleOffsetContainerWidget emits the unique type-0x28/type-0x29 CUI command bracket around reticle and hit-indicator art while ammo remains outside. The pinned Steam and Store retail gameplay-CUI front end, exact full-size caller edge, dispatcher and sole dispatcher caller each match once, and both rel32 edges decode to their pinned targets. C-H4-43j removes 43i''s unnecessary eager creation of every OpenXR reticle image RTV: capture and discard use private targets, while the acquired XR image view remains lazy like Halo 3 and ODST. A transient cold-resource miss stays stock for that poll and retries instead of permanently rejecting the title generation. The configured first eye captures the native colored pixels for the existing gun-ray quad; the opposite eye, skipped cadence frames, and crosshair=0 execute the complete original subtree into a discard target, hiding the native face copy without mutating its state. Any optional failure remains feature-local and never disarms the accepted C-H4-43 camera, hands, stereo path, or OpenXR. C-H4-43 remains the accepted rollback pointer until explicit headset acceptance.'
+        note = 'C-H4-43k is an unaccepted headset candidate built on accepted C-H4-43 after headset rejection of 43j proved that render-target redirection swallowed shared HUD pixels while producing blank reticle captures. Official H4EK and pinned retail still uniquely prove the full-size gameplay CUI scope, type-0x28 ReticuleOffsetContainer command, dispatcher, caller edges, 0x34 transform-stack entry and translation at +0x28. C-H4-43k calls every original command and changes only that newly pushed native reticle translation per eye to follow Halo 4''s engine/controller aim ray. It never redirects a render target or replaces native pixels, so the complete HUD and native animation, spread, hit marker, and red/green target colour remain Halo 4''s own. The compositor omits its procedural quad while the transform hook is live. Any optional failure remains feature-local and never disarms the accepted camera, hands, stereo path, or OpenXR. C-H4-43 remains the accepted rollback pointer until explicit headset acceptance.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

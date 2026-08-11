@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -72,7 +73,7 @@ constexpr bool Halo4CuiGameplayCallerTargetsRender(
 // leaves only this feature on the stock path.
 struct Halo4CuiReticleInstallProof
 {
-    bool resourcesPrepared = false;
+    bool transformLayoutProven = false;
     uint32_t anchorsMatchedOnce = 0;
     uint32_t anchorsAtPinnedRva = 0;
     bool callerDecodesDispatcher = false;
@@ -84,7 +85,7 @@ struct Halo4CuiReticleInstallProof
 constexpr bool Halo4CuiReticleInstallComplete(
     const Halo4CuiReticleInstallProof& proof) noexcept
 {
-    return proof.resourcesPrepared &&
+    return proof.transformLayoutProven &&
         proof.anchorsMatchedOnce == kHalo4CuiReticleAnchorCount &&
         proof.anchorsAtPinnedRva == kHalo4CuiReticleAnchorCount &&
         proof.callerDecodesDispatcher && proof.gameplayCallerDecodesRender &&
@@ -101,7 +102,7 @@ enum class Halo4CuiReticleOptionalInstallState : uint8_t
 
 struct Halo4CuiReticleLifecycleAction
 {
-    bool authoredCaptureLive = false;
+    bool nativeTransformLive = false;
     bool cleanupFeature = false;
     bool disarmCameraCore = false;
     bool endOpenXrSession = false;
@@ -126,33 +127,87 @@ constexpr Halo4CuiReticleLifecycleAction Halo4CuiReticleLifecycleFor(
 enum class Halo4CuiReticleAction : uint8_t
 {
     DrawStock,
-    SuppressNative,
-    CaptureAuthored,
+    HideNative,
+    MoveNative,
 };
 
 // This decision is intentionally fail-open.  Unowned, uninstalled, malformed,
 // or unrelated CUI work remains stock; unlike the old Reach transaction, an
 // optional reticle miss never rejects the stereo frame.
 constexpr Halo4CuiReticleAction Halo4DecideCuiReticleAction(
-    bool ownsStereoTransaction, bool authoredCaptureLive,
+    bool ownsStereoTransaction, bool nativeTransformLive,
     bool commandReadable, uint32_t command, bool crosshairEnabled,
     bool killNativeReticle, int stereoEye, bool rightEyeFirst) noexcept
 {
-    if (!ownsStereoTransaction || !authoredCaptureLive || !commandReadable ||
+    if (!ownsStereoTransaction || !nativeTransformLive || !commandReadable ||
         command != kHalo4CuiCommandBegin || stereoEye < 0 || stereoEye > 1)
     {
         return Halo4CuiReticleAction::DrawStock;
     }
 
     if (!crosshairEnabled)
-        return Halo4CuiReticleAction::SuppressNative;
+        return Halo4CuiReticleAction::HideNative;
     if (!killNativeReticle)
         return Halo4CuiReticleAction::DrawStock;
 
-    const int captureEye = rightEyeFirst ? 1 : 0;
-    return stereoEye == captureEye
-        ? Halo4CuiReticleAction::CaptureAuthored
-        : Halo4CuiReticleAction::SuppressNative;
+    (void)rightEyeFirst;
+    return Halo4CuiReticleAction::MoveNative;
+}
+
+// Retail's type-0x28 handler pushes one 0x34-byte real_matrix4x3 entry. The
+// reticle-only translation is the final float3 at +0x28. Moving that entry
+// preserves Halo 4's own bitmap animation, spread, hit marker, and target
+// colour while leaving every draw command and every other HUD transform stock.
+inline constexpr uint32_t kHalo4CuiTransformStackCountOffset = 0x870;
+inline constexpr uint32_t kHalo4CuiTransformStackEntriesOffset = 0x878;
+inline constexpr uint32_t kHalo4CuiTransformStride = 0x34;
+inline constexpr uint32_t kHalo4CuiTransformTranslationOffset = 0x28;
+inline constexpr uint32_t kHalo4CuiTransformStackMaximum = 0x60;
+
+struct Halo4CuiAimOffset
+{
+    float x = 0.0f;
+    float y = 0.0f;
+    bool valid = false;
+};
+
+inline Halo4CuiAimOffset Halo4ProjectAimToCuiOffset(
+    const float cameraForward[3], const float cameraUp[3],
+    const float aimForward[3], float halfFovX, float halfFovY) noexcept
+{
+    Halo4CuiAimOffset result{};
+    if (!cameraForward || !cameraUp || !aimForward ||
+        !std::isfinite(halfFovX) || !std::isfinite(halfFovY) ||
+        halfFovX <= 0.01f || halfFovX >= 1.56f ||
+        halfFovY <= 0.01f || halfFovY >= 1.56f)
+        return result;
+    for (int i = 0; i < 3; ++i)
+        if (!std::isfinite(cameraForward[i]) || !std::isfinite(cameraUp[i]) ||
+            !std::isfinite(aimForward[i]))
+            return result;
+
+    const float right[3] = {
+        cameraForward[1] * cameraUp[2] - cameraForward[2] * cameraUp[1],
+        cameraForward[2] * cameraUp[0] - cameraForward[0] * cameraUp[2],
+        cameraForward[0] * cameraUp[1] - cameraForward[1] * cameraUp[0]};
+    const float forward = aimForward[0] * cameraForward[0] +
+        aimForward[1] * cameraForward[1] +
+        aimForward[2] * cameraForward[2];
+    const float tanX = std::tan(halfFovX);
+    const float tanY = std::tan(halfFovY);
+    if (!std::isfinite(forward) || forward <= 0.01f ||
+        !std::isfinite(tanX) || !std::isfinite(tanY) ||
+        tanX <= 0.0f || tanY <= 0.0f)
+        return result;
+
+    result.x = (aimForward[0] * right[0] + aimForward[1] * right[1] +
+                aimForward[2] * right[2]) / (forward * tanX);
+    // CUI's local Y axis points down while camera up points up.
+    result.y = -(aimForward[0] * cameraUp[0] + aimForward[1] * cameraUp[1] +
+                 aimForward[2] * cameraUp[2]) / (forward * tanY);
+    result.valid = std::isfinite(result.x) && std::isfinite(result.y) &&
+        std::fabs(result.x) <= 8.0f && std::fabs(result.y) <= 8.0f;
+    return result;
 }
 
 // Enabling the dispatcher hook is not proof that a non-blank authored image
