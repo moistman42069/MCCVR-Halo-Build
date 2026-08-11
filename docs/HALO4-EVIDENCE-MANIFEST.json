@@ -1,12 +1,12 @@
 {
   "schema_version": 3,
-  "status": "C_H4_43P_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
+  "status": "C_H4_43M_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
   "hook_eligible": true,
-  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43p admits the optional gameplay-CUI front end and command dispatcher only after all four signatures and both rel32 edges match their pinned retail locations. It calls every original command and moves the native CUI reticle to the per-eye projection of the exact final LOCAL-space point shared with the hidden Halo 3-style OpenXR reticle. It maps through the finished symmetric raster cover and exact live CUI viewport, maps positive matrix Y to headset-up from the 43l result, and retains the official H4EK-backed angular size. No render target, bitmap, colour, alpha, visibility bit, auxiliary/menu CUI, generic HUD transform, Halo-world reconstruction, copied resolution, or copied cross-title address is changed.",
+  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43m admits the optional gameplay-CUI front end and command dispatcher only after all four signatures and both rel32 edges match their pinned retail locations. It calls every original command, converts normalized per-eye aim through the live CUI half extents, maps positive matrix Y to headset-up from the 43l result, and derives uniform scale from live eye FOV/CUI half-height plus the official 81.92-unit H4EK authored height. No render target, bitmap, colour, alpha, visibility bit, auxiliary/menu CUI, generic HUD transform, shared compositor path, copied resolution, or copied cross-title address is changed.",
   "accepted_halo4_pointer": {
     "candidate": "C-H4-43",
     "source_commit": "dd9946595511d65c9859b536e2727201c107da45",
-    "note": "C-H4-43p is a forward candidate after rejected C-H4-43i through C-H4-43o and does not advance acceptance without an explicit headset result"
+    "note": "C-H4-43m is a forward candidate after rejected C-H4-43i/43j/43k/43l and does not advance acceptance without an explicit headset result"
   },
   "development_baseline": {
     "source_commit": "f4c641f7b1b707991f2bda71ba485090a16f1e9a",
@@ -74,7 +74,7 @@
     "headset_result": "PENDING"
   },
   "c_h4_43m_native_cui_reticle": {
-    "status": "HEADSET_REJECTED_WRONG_SOURCE_POINT",
+    "status": "OFFLINE_PASS_HEADSET_PENDING",
     "accepted_parent": "C-H4-43",
     "rejected_predecessor": "C-H4-43l moved the correct native reticle and retained the HUD/animation/target colours, but headset testing proved vertical movement inverted and native size excessive",
     "runtime_evidence": {
@@ -96,39 +96,6 @@
     "size_mapping": "uniformScale = (2 * abs(liveCuiHalfHeight) * tan(crosshair_size_deg/2) / tan(liveEyeHalfFovY)) / 81.92",
     "write_scope": "one H4EK-proven type-0x28 reticle-only real_matrix4x3; original uniform scale and X/Y translation are the only changed fields",
     "cross_title_scope": "no shared compositor, Halo 3, ODST, or Reach code changed",
-    "headset_result": "REJECTED: corrected direction and size but did not coincide with bullet impact"
-  },
-  "c_h4_43n_live_viewport_reticle": {
-    "status": "HEADSET_REJECTED_WRONG_SOURCE_POINT",
-    "accepted_parent": "C-H4-43",
-    "change": "map normalized placement through exact 1893x1365 live gameplay viewport half extents",
-    "headset_result": "REJECTED: hook and viewport were correct but CUI still missed bullet impact"
-  },
-  "c_h4_43o_reconstructed_target_reticle": {
-    "status": "HEADSET_REJECTED_RECONSTRUCTED_POINT_MISALIGNED",
-    "accepted_parent": "C-H4-43",
-    "source_commit": "29cf517a433d4cd15299e959b23f703535d15e01",
-    "runtime_evidence": {
-      "edition": "Steam",
-      "runtime": "SteamVR/OpenXR 2.17.7",
-      "headset": "PlayStation VR2 at 90 Hz",
-      "completed_writes_per_two_seconds": "732-1095",
-      "write_failures": 0,
-      "forced_restores": 0,
-      "viewport_half_extents": "1893/1365",
-      "log_sha256": "3A7848111C5D2B5AB598B59A1BE76ECACA5F5A4280A403F45D55CE9283E33A33"
-    },
-    "headset_result": "REJECTED: controller/head/Halo-camera/world-scale reconstruction did not match the hidden VR reticle or bullet impact"
-  },
-  "c_h4_43p_exact_hidden_vr_reticle": {
-    "status": "OFFLINE_PASS_HEADSET_PENDING",
-    "accepted_parent": "C-H4-43",
-    "source_point": "the exact final XrVector3f LOCAL-space center used by the hidden Halo 3-style OpenXR reticle quad",
-    "projection": "subtract exact xrLocateViews eye position, inverse-rotate by exact eye orientation, project through finished symmetric raster-cover FOV, then map through exact live gameplay CUI viewport",
-    "excluded_reconstructions": "no engine shot point, Halo camera basis, world scale, controller-to-world conversion, or inferred target range",
-    "write_scope": "one H4EK-proven type-0x28 reticle-only real_matrix4x3; original uniform scale and X/Y translation are the only changed fields",
-    "failure_isolation": "invalid pose, viewport, projection, matrix, signature, or hook retains stock/procedural reticle without disarming camera, hands, stereo, or OpenXR",
-    "cross_title_scope": "shared reticle state skips a duplicate smoothing pass only for the exact Halo 4 prepared serial; Halo 3 headset regression required after Halo 4 passes",
     "headset_result": "PENDING"
   },
   "retail_resolution_method": {

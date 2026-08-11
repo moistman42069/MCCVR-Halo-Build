@@ -177,47 +177,19 @@ struct Halo4CuiAimOffset
     bool valid = false;
 };
 
-struct Halo4CuiViewportHalfExtents
-{
-    float width = 0.0f;
-    float height = 0.0f;
-    bool valid = false;
-};
-
-inline Halo4CuiViewportHalfExtents Halo4MeasureCuiViewportHalfExtents(
-    const int16_t bounds[4]) noexcept
-{
-    Halo4CuiViewportHalfExtents result{};
-    if (!bounds)
-        return result;
-    const int32_t firstSpan = std::abs(
-        static_cast<int32_t>(bounds[2]) - static_cast<int32_t>(bounds[0]));
-    const int32_t secondSpan = std::abs(
-        static_cast<int32_t>(bounds[3]) - static_cast<int32_t>(bounds[1]));
-    const int32_t width = firstSpan > secondSpan ? firstSpan : secondSpan;
-    const int32_t height = firstSpan > secondSpan ? secondSpan : firstSpan;
-    if (width < 2 || height < 2 || width > 32767 || height > 32767)
-        return result;
-    result.width = static_cast<float>(width) * 0.5f;
-    result.height = static_cast<float>(height) * 0.5f;
-    result.valid = std::isfinite(result.width) &&
-        std::isfinite(result.height);
-    return result;
-}
-
-// Convert the hidden VR reticle's normalized cover coordinate through the
-// exact gameplay viewport supplied to user_interface_render.
+// The projected aim is normalized device space. Halo 4's pushed CUI
+// transform is not: the headset log measured the stock centre at
+// (-halfWidth,+halfHeight). Convert through that live transform rather than
+// copying a resolution, aspect ratio, or scale from another title.
 inline Halo4CuiAimOffset Halo4MapAimToCuiTranslation(
-    const Halo4CuiAimOffset& normalizedAim, float viewportHalfWidth,
-    float viewportHalfHeight,
+    const Halo4CuiAimOffset& normalizedAim, float baseX, float baseY,
     bool hide) noexcept
 {
     Halo4CuiAimOffset result{};
-    if (!std::isfinite(viewportHalfWidth) ||
-        !std::isfinite(viewportHalfHeight))
+    if (!std::isfinite(baseX) || !std::isfinite(baseY))
         return result;
-    const float halfWidth = std::fabs(viewportHalfWidth);
-    const float halfHeight = std::fabs(viewportHalfHeight);
+    const float halfWidth = std::fabs(baseX);
+    const float halfHeight = std::fabs(baseY);
     if (halfWidth < 1.0f || halfHeight < 1.0f ||
         halfWidth > 32768.0f || halfHeight > 32768.0f)
         return result;
@@ -238,83 +210,6 @@ inline Halo4CuiAimOffset Halo4MapAimToCuiTranslation(
     result.x = normalizedAim.x * halfWidth;
     result.y = normalizedAim.y * halfHeight;
     result.valid = std::isfinite(result.x) && std::isfinite(result.y);
-    return result;
-}
-
-// Project the exact centre of Halo 3's hidden OpenXR reticle quad into one
-// Halo 4 eye's symmetric raster cover. Both the reticle and eye poses are the
-// immutable xrLocateViews-frame LOCAL-space values; no Halo camera, shot ray,
-// world scale, or reconstructed target participates.
-inline Halo4CuiAimOffset Halo4ProjectHiddenVrReticleToEye(
-    const float reticlePoint[3], const float eyePosition[3],
-    const float eyeOrientation[4], float halfFovX, float halfFovY) noexcept
-{
-    Halo4CuiAimOffset result{};
-    if (!reticlePoint || !eyePosition || !eyeOrientation ||
-        !std::isfinite(halfFovX) || !std::isfinite(halfFovY) ||
-        halfFovX <= 0.01f || halfFovX >= 1.56f ||
-        halfFovY <= 0.01f || halfFovY >= 1.56f)
-    {
-        return result;
-    }
-
-    float eyeLengthSquared = 0.0f;
-    for (int axis = 0; axis < 4; ++axis)
-    {
-        if (!std::isfinite(eyeOrientation[axis]))
-        {
-            return result;
-        }
-        eyeLengthSquared += eyeOrientation[axis] * eyeOrientation[axis];
-    }
-    for (int axis = 0; axis < 3; ++axis)
-    {
-        if (!std::isfinite(reticlePoint[axis]) ||
-            !std::isfinite(eyePosition[axis]))
-        {
-            return result;
-        }
-    }
-    if (!std::isfinite(eyeLengthSquared) || eyeLengthSquared <= 1.0e-8f)
-    {
-        return result;
-    }
-
-    const float eyeDelta[3] = {
-        reticlePoint[0] - eyePosition[0],
-        reticlePoint[1] - eyePosition[1],
-        reticlePoint[2] - eyePosition[2]};
-
-    // Rotate LOCAL-space delta by inverse eye orientation. These terms are the
-    // transpose of the normalized eye rotation matrix.
-    const float eyeInverse = 1.0f / std::sqrt(eyeLengthSquared);
-    const float ex = eyeOrientation[0] * eyeInverse;
-    const float ey = eyeOrientation[1] * eyeInverse;
-    const float ez = eyeOrientation[2] * eyeInverse;
-    const float ew = eyeOrientation[3] * eyeInverse;
-    const float eyeLocal[3] = {
-        (1.0f - 2.0f * (ey * ey + ez * ez)) * eyeDelta[0] +
-            2.0f * (ex * ey + ez * ew) * eyeDelta[1] +
-            2.0f * (ex * ez - ey * ew) * eyeDelta[2],
-        2.0f * (ex * ey - ez * ew) * eyeDelta[0] +
-            (1.0f - 2.0f * (ex * ex + ez * ez)) * eyeDelta[1] +
-            2.0f * (ey * ez + ex * ew) * eyeDelta[2],
-        2.0f * (ex * ez + ey * ew) * eyeDelta[0] +
-            2.0f * (ey * ez - ex * ew) * eyeDelta[1] +
-            (1.0f - 2.0f * (ex * ex + ey * ey)) * eyeDelta[2]};
-    const float forward = -eyeLocal[2];
-    const float tanX = std::tan(halfFovX);
-    const float tanY = std::tan(halfFovY);
-    if (!std::isfinite(forward) || forward <= 0.01f ||
-        !std::isfinite(tanX) || !std::isfinite(tanY) ||
-        tanX <= 0.0f || tanY <= 0.0f)
-    {
-        return result;
-    }
-    result.x = eyeLocal[0] / (forward * tanX);
-    result.y = eyeLocal[1] / (forward * tanY);
-    result.valid = std::isfinite(result.x) && std::isfinite(result.y) &&
-        std::fabs(result.x) <= 8.0f && std::fabs(result.y) <= 8.0f;
     return result;
 }
 

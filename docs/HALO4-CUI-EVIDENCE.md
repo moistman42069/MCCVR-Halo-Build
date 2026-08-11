@@ -1,11 +1,11 @@
 # Halo 4 CUI evidence
 
-Status: **C-H4-43i through C-H4-43o are headset-rejected. C-H4-43p directly
-projects the existing hidden Halo 3-style OpenXR reticle into Halo 4's native
-CUI reticle matrix; its headset result is pending.** Halo 4 has no CHUD; its HUD is the
+Status: **the C-H4-43i/C-H4-43j render-target design and C-H4-43k/43l native
+transform candidates are headset-rejected; C-H4-43m corrects 43l's measured
+vertical sign and derives native scale from the shared angular-size knob.** Halo 4 has no CHUD; its HUD is the
 CUI system. Identity pins live in `docs/HALO4-EVIDENCE-MANIFEST.json`;
 camera/render signature proofs live in `docs/HALO4-SIGNATURE-EVIDENCE.md`.
-Nothing in this file promotes C-H4-43i through 43p to an accepted headset result.
+Nothing in this file promotes C-H4-43i through 43m to an accepted headset result.
 
 The 2026-08-11 Steam/SteamVR/PSVR2 run loaded the correct `3baabc7` bytes but
 logged `prepared capture/discard resources unavailable`, followed by zero main
@@ -602,41 +602,6 @@ C-H4-43m changes no shared compositor code and no Halo 3/ODST/Reach path; their
 reticle implementation and lifecycle remain byte-for-byte untouched. Until the
 explicit Halo 4 headset result exists, the accepted-build pointer in
 `docs/CURRENT-STATE.md` remains authoritative.
-
-### C-H4-43n/43o rejection and C-H4-43p direct hidden-reticle placement
-
-C-H4-43n used the exact live gameplay viewport half extents measured from the
-four bounds passed to `user_interface_render`: 1893 by 1365 for the observed
-3786x2730 raster. The hook ran and the bounds were correct, but projecting the
-engine/controller aim still did not put the CUI reticle on bullet impact.
-
-C-H4-43o attempted to repair that source by reconstructing a finite target from
-the prepared controller pose, head pose, Halo camera basis, and world scale.
-The `29cf517` Steam/SteamVR/PSVR2 90 Hz run measured 732-1095 completed writes
-per two seconds, no failures/restores, and the exact 1893/1365 viewport. Its CUI
-reticle still missed the already-correct hidden VR reticle and bullet impact.
-That runtime result rejects the reconstruction, not the CUI hook or viewport.
-
-C-H4-43p uses the hidden OpenXR reticle as the source of truth. Before Halo 4
-renders, the prepared snapshot advances the same `SmoothTrackedPose` state used
-by the Halo 3 reticle quad and records that LOCAL-space origin/orientation. It
-also records both exact `xrLocateViews` LOCAL-space eye poses. For each eye, the
-native reticle destination is the projection of:
-
-`hiddenPoint = stabilizedAimPosition + rotate(stabilizedAimOrientation, -Z) * crosshair_distance_m`
-
-through that eye pose and the engine's finished symmetric raster-cover FOV,
-then through the exact live gameplay viewport. This active path contains no
-Halo-world transform, engine aim feedback, inferred range, or shot-target
-reconstruction. It is the screen coordinate of the existing hidden VR reticle.
-The shared compositor skips a second smoothing step for the exact Halo 4
-prepared serial, so procedural fallback and native CUI consume one pose rather
-than two near-matching filters.
-
-The Halo 4 feature remains optional and fail-open. C-H4-43 remains the accepted
-pointer until explicit headset acceptance. Since the smoothing state lives in
-shared reticle code, a successful Halo 4 result must be followed by a Halo 3
-headset regression before this candidate can be accepted.
 
 ## C-H4-43j correction after the 43i headset rejection
 

@@ -27,11 +27,6 @@ struct Halo4VrEyeSnapshot
 {
     float position[3]{};
     float orientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
-    // Exact xrLocateViews pose in LOCAL space. The hidden Halo 3-style reticle
-    // quad and these eyes share this coordinate system, so Halo 4 can project
-    // its centre without passing through a game-world reconstruction.
-    float localSpacePosition[3]{};
-    float localSpaceOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     // This eye's native frustum as the runtime reports it, left/right/up/down
     // in radians. C-H4-8 derives the raster cover from these, so nothing about
     // the FOV is headset-specific.
@@ -53,11 +48,6 @@ struct Halo4VrRenderSnapshot
     bool rightAimValid = false;
     float rightAimOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float rightAimPosition[3]{};
-    // The exact final LOCAL-space centre of Halo 3's hidden VR reticle quad in
-    // this prepared frame. Both the procedural fallback and Halo 4's native
-    // CUI consume these same three floats.
-    bool reticlePointValid = false;
-    float reticlePoint[3]{};
     // True only when this exact prepared frame's published right-aim pose used
     // the accepted two-hand support solve. Consumers must not resample the
     // asynchronous global latch after publication.

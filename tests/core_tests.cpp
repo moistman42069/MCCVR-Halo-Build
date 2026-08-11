@@ -6244,7 +6244,7 @@ int main()
                   fabsf(rightPixels.y) < 1.0e-4f && upPixels.valid &&
                   fabsf(upPixels.x) < 1.0e-4f &&
                    fabsf(upPixels.y - 1080.0f) < 1.0e-4f,
-            "Halo 4 converts the hidden VR-reticle projection through the live "
+            "Halo 4 converts normalized gun-ray projection through the live "
             "pixel-space CUI half extents");
         Check(hidden.valid && fabsf(hidden.x - 7680.0f) < 1.0e-4f &&
                   fabsf(hidden.y) < 1.0e-4f,
@@ -6255,17 +6255,6 @@ int main()
                   !Halo4MapAimToCuiTranslation(
                       right, -1920.0f, NAN, false).valid,
             "Invalid Halo 4 CUI extents fail open without a transform write");
-
-        const int16_t gameplayBounds[4] = {0, 0, 3786, 2730};
-        const Halo4CuiViewportHalfExtents gameplayExtents =
-            Halo4MeasureCuiViewportHalfExtents(gameplayBounds);
-        Check(gameplayExtents.valid &&
-                  fabsf(gameplayExtents.width - 1893.0f) < 1.0e-5f &&
-                  fabsf(gameplayExtents.height - 1365.0f) < 1.0e-5f,
-            "Halo 4 reads the exact live gameplay viewport extents");
-        const int16_t invalidBounds[4] = {0, 0, 3786, 0};
-        Check(!Halo4MeasureCuiViewportHalfExtents(invalidBounds).valid,
-            "A malformed gameplay viewport leaves the CUI reticle stock");
 
         float angularScale = 0.0f;
         Check(Halo4MapAngularSizeToCuiScale(
@@ -6286,34 +6275,22 @@ int main()
                       1080.0f, 0.78539816f, NAN, angularScale),
             "Invalid Halo 4 size inputs fail feature-locally");
 
-        const float reticlePoint[3] = {1.0f, 0.0f, -2.0f};
-        const float identityOrientation[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        const float centerPosition[3] = {0.0f, 0.0f, 0.0f};
         const float leftEyePosition[3] = {-0.032f, 0.0f, 0.0f};
-        const Halo4CuiAimOffset hiddenVrPoint =
-            Halo4ProjectHiddenVrReticleToEye(
-                reticlePoint, leftEyePosition, identityOrientation,
-                0.78539816f, 0.78539816f);
-        Check(hiddenVrPoint.valid &&
-                  fabsf(hiddenVrPoint.x - 0.516f) < 1.0e-5f &&
-                  fabsf(hiddenVrPoint.y) < 1.0e-5f,
-            "Halo 4 projects the exact hidden VR-reticle centre from LOCAL "
-            "space directly into each eye's raster cover");
-        const float halfSqrt = 0.70710678118f;
-        const float turnedPose[4] = {0.0f, halfSqrt, 0.0f, halfSqrt};
-        const float zeroPosition[3] = {0.0f, 0.0f, 0.0f};
-        const float turnedPoint[3] = {-2.0f, 0.0f, 0.0f};
-        const Halo4CuiAimOffset turnedTogether =
-            Halo4ProjectHiddenVrReticleToEye(
-                turnedPoint, zeroPosition, turnedPose, 0.78539816f,
-                0.78539816f);
-        Check(turnedTogether.valid && fabsf(turnedTogether.x) < 1.0e-5f &&
-                  fabsf(turnedTogether.y) < 1.0e-5f,
-            "Matching OpenXR eye and reticle rotations cancel exactly without "
-            "a Halo camera-space reconstruction");
-        Check(!Halo4ProjectHiddenVrReticleToEye(
-                   reticlePoint, leftEyePosition, identityOrientation,
-                   0.0f, 0.78539816f).valid,
-            "Invalid hidden-reticle geometry leaves Halo 4's CUI transform stock");
+        const float engineForward[3] = {0.0f, 2.0f, 0.0f};
+        float leftEyeRay[3]{};
+        Check(Halo4BuildReticleEyeRay(
+                  centerPosition, leftEyePosition, engineForward, 2.0f,
+                  leftEyeRay) &&
+                  fabsf(leftEyeRay[0] - 0.032f) < 1.0e-6f &&
+                  fabsf(leftEyeRay[1] - 2.0f) < 1.0e-6f &&
+                  fabsf(leftEyeRay[2]) < 1.0e-6f,
+            "Halo 4 projects each eye to one finite gun-ray target so the "
+            "native CUI reticle retains the VR crosshair's stereo depth");
+        Check(!Halo4BuildReticleEyeRay(
+                  centerPosition, leftEyePosition, engineForward, 0.0f,
+                  leftEyeRay),
+            "An invalid Halo 4 reticle range cannot write an eye projection");
         Check(Halo4CuiReticlePairPositionsNative(77, 77, 77, 77) &&
                   !Halo4CuiReticlePairPositionsNative(0, 77, 77, 77) &&
                   !Halo4CuiReticlePairPositionsNative(76, 77, 77, 77) &&

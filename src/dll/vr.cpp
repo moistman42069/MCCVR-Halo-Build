@@ -1232,8 +1232,6 @@ namespace
     std::atomic<uint32_t> g_halo4RenderSnapshotStates[2]{};
     std::atomic<uint32_t> g_halo4RenderSnapshotIndex{
         kHalo4RenderSnapshotInvalid};
-    uint64_t g_halo4ReticleAimSerial = 0;
-    XrVector3f g_halo4ReticlePoint{};
     static_assert(std::atomic<uint32_t>::is_always_lock_free);
     static_assert(std::is_trivially_copyable_v<Halo4VrRenderSnapshot>);
 #endif
@@ -7076,20 +7074,6 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             // renders at Halo 4's stock FOV instead of dropping the frame.
             next.eyes[eye].fovValid =
                 VR_GetEyeFov(eye, next.eyes[eye].fov);
-            next.eyes[eye].localSpacePosition[0] =
-                g_views[eye].pose.position.x;
-            next.eyes[eye].localSpacePosition[1] =
-                g_views[eye].pose.position.y;
-            next.eyes[eye].localSpacePosition[2] =
-                g_views[eye].pose.position.z;
-            next.eyes[eye].localSpaceOrientation[0] =
-                g_views[eye].pose.orientation.x;
-            next.eyes[eye].localSpaceOrientation[1] =
-                g_views[eye].pose.orientation.y;
-            next.eyes[eye].localSpaceOrientation[2] =
-                g_views[eye].pose.orientation.z;
-            next.eyes[eye].localSpaceOrientation[3] =
-                g_views[eye].pose.orientation.w;
         }
         // Same frame as the eye offsets above. Head tracking degrades to the
         // engine's own camera if this is unavailable; it never fails the pair.
@@ -7115,44 +7099,6 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             next.rightAimPosition[0] = aim.pose.position.x;
             next.rightAimPosition[1] = aim.pose.position.y;
             next.rightAimPosition[2] = aim.pose.position.z;
-
-            // Halo 3's visible reticle starts from this same aim pose and
-            // applies aim_stabilization before placing its OpenXR quad. Advance
-            // that exact filter here, before Halo 4 renders, so the native CUI
-            // receives the hidden quad's prepared-frame pose rather than a
-            // separately reconstructed target.
-            const float smoothing =
-                std::clamp(g_config.aim_stabilization, 0.0f, 0.95f);
-            g_reticleAimPose = g_reticleAimPoseValid && smoothing > 0.0f
-                ? SmoothTrackedPose(aim.pose, g_reticleAimPose, smoothing)
-                : aim.pose;
-            g_reticleAimPoseValid = NormalizeTrackedPose(g_reticleAimPose);
-            if (g_reticleAimPoseValid)
-            {
-                const XrVector3f aimRay = Rotate(
-                    g_reticleAimPose.orientation, {0.0f, 0.0f, -1.0f});
-                const float distance = g_config.crosshair_distance_m;
-                g_halo4ReticlePoint = {
-                    g_reticleAimPose.position.x + aimRay.x * distance,
-                    g_reticleAimPose.position.y + aimRay.y * distance,
-                    g_reticleAimPose.position.z + aimRay.z * distance};
-                next.reticlePointValid =
-                    std::isfinite(g_halo4ReticlePoint.x) &&
-                    std::isfinite(g_halo4ReticlePoint.y) &&
-                    std::isfinite(g_halo4ReticlePoint.z);
-                if (next.reticlePointValid)
-                {
-                    g_halo4ReticleAimSerial = preparedSerial;
-                    next.reticlePoint[0] = g_halo4ReticlePoint.x;
-                    next.reticlePoint[1] = g_halo4ReticlePoint.y;
-                    next.reticlePoint[2] = g_halo4ReticlePoint.z;
-                }
-            }
-        }
-        else
-        {
-            g_reticleAimPoseValid = false;
-            g_halo4ReticleAimSerial = 0;
         }
         next.leftControllerValid = leftPoseFresh;
         if (leftPoseFresh)
@@ -8873,19 +8819,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         {
                             XrPosef rawAim{{aimQ[0],aimQ[1],aimQ[2],aimQ[3]},
                                            {aimP[0],aimP[1],aimP[2]}};
-                            const bool halo4PreparedPose = halo4Title &&
-                                g_reticleAimPoseValid &&
-                                g_halo4ReticleAimSerial == g_preparedFrame.serial;
                             const float smoothing =
                                 std::clamp(g_config.aim_stabilization, 0.0f, 0.95f);
-                            if (!halo4PreparedPose)
-                            {
-                                g_reticleAimPose =
-                                    g_reticleAimPoseValid && smoothing > 0.0f
-                                    ? SmoothTrackedPose(
-                                          rawAim, g_reticleAimPose, smoothing)
-                                    : rawAim;
-                            }
+                            g_reticleAimPose = g_reticleAimPoseValid && smoothing > 0.0f
+                                ? SmoothTrackedPose(rawAim, g_reticleAimPose, smoothing)
+                                : rawAim;
                             g_reticleAimPoseValid = true;
                             PublishPresentedReticleAimPose(&g_reticleAimPose);
                             const XrVector3f aimRay = Rotate(
@@ -8998,12 +8936,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     reachCenter.position[1],
                                     reachCenter.position[2]};
                             }
-                            reticleQuad.pose.position = halo4PreparedPose
-                                ? g_halo4ReticlePoint
-                                : XrVector3f{
-                                      reticleOrigin.x + aimDir[0] * dist,
-                                      reticleOrigin.y + aimDir[1] * dist,
-                                      reticleOrigin.z + aimDir[2] * dist};
+                            reticleQuad.pose.position = {
+                                reticleOrigin.x + aimDir[0] * dist,
+                                reticleOrigin.y + aimDir[1] * dist,
+                                reticleOrigin.z + aimDir[2] * dist};
                             const float w = 2.0f * dist *
                                 tanf(g_config.crosshair_size_deg * 0.5f * 0.0174533f);
                             reticleQuad.size = {w, w};
@@ -9014,8 +8950,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         {
                             // Never blend from a stale pose after tracking or
                             // the crosshair is restored.
-                            if (!halo4Title)
-                                g_reticleAimPoseValid = false;
+                            g_reticleAimPoseValid = false;
                             PublishPresentedReticleAimPose(nullptr);
                         }
 
@@ -9946,9 +9881,6 @@ void VR_ToggleStereo()
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
     g_halo4EyeSerial[0].store(0, std::memory_order_release);
     g_halo4EyeSerial[1].store(0, std::memory_order_release);
-    g_halo4ReticleAimSerial = 0;
-    g_halo4ReticlePoint = {};
-    g_reticleAimPoseValid = false;
 #endif
     Game_SetStereoEye(on ? 0 : -1);
     LOG("M2 alternate-eye stereo %s%s", on ? "ON" : "OFF",
