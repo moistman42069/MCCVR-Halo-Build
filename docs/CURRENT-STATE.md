@@ -1,6 +1,6 @@
 # Current state
 
-Authoritative as of 2026-08-10. This file is the only active accepted-build
+Authoritative as of 2026-08-11. This file is the only active accepted-build
 pointer. Detailed pre-cleanup experiments remain available in Git history; they
 are evidence, not instructions.
 
@@ -28,6 +28,39 @@ are evidence, not instructions.
 > - were false when read, and each cost hours because they were believed
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
+
+## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-43p - 2026-08-11
+
+**Headset result pending; this does not advance the accepted pointer below.**
+The placement rule is deliberately literal: Halo 4's native CUI reticle is
+moved to the exact per-eye screen coordinate occupied by the existing hidden
+Halo 3-style OpenXR reticle. The same stabilized LOCAL-space aim pose, configured
+reticle distance, exact `xrLocateViews` eye poses, finished symmetric raster
+cover, and live 3786x2730 gameplay CUI viewport participate. No engine shot
+point, game-space camera transform, controller-to-world conversion, or inferred
+target range participates.
+
+The type-`0x28` H4EK-proven reticle-only matrix remains the only Halo 4 CUI
+write. Size, native animation, spread, hit marker, and target colours retain the
+43m contract. Any invalid pose, viewport, projection, matrix, or hook leaves the
+feature stock/procedural without disarming camera, hands, stereo, or OpenXR.
+C-H4-43 remains the accepted rollback pointer. Because this reuses the shared
+Halo 3 reticle smoothing state, acceptance requires the Halo 4 headset result
+and then a Halo 3 regression result.
+
+## REJECTED HALO 4 TEST CANDIDATES: C-H4-43n / C-H4-43o - 2026-08-11
+
+**Headset rejected; neither advanced the accepted pointer below.** C-H4-43n
+corrected the live gameplay viewport to its measured 1893x1365 half extents but
+still projected the wrong source point. C-H4-43o then reconstructed a finite
+target from the prepared controller pose, head pose, Halo camera basis, and
+world scale. Its `29cf517` Steam/SteamVR/PSVR2 90 Hz run proved the optional
+hooks healthy (732-1095 completed writes per two seconds, zero failures, exact
+1893/1365 viewport), but the CUI reticle still missed bullet impact. The
+preserved log SHA-256 is
+`3A7848111C5D2B5AB598B59A1BE76ECACA5F5A4280A403F45D55CE9283E33A33`.
+Both reconstructions are reverted. C-H4-43p replaces them with direct projection
+of the already-correct hidden VR reticle itself.
 
 ## REJECTED HALO 4 TEST CANDIDATE: C-H4-43m - 2026-08-11
 
