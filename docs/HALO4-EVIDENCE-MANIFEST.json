@@ -1,12 +1,12 @@
 {
   "schema_version": 3,
-  "status": "C_H4_43M_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
+  "status": "C_H4_43N_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
   "hook_eligible": true,
-  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43m admits the optional gameplay-CUI front end and command dispatcher only after all four signatures and both rel32 edges match their pinned retail locations. It calls every original command, converts normalized per-eye aim through the live CUI half extents, maps positive matrix Y to headset-up from the 43l result, and derives uniform scale from live eye FOV/CUI half-height plus the official 81.92-unit H4EK authored height. No render target, bitmap, colour, alpha, visibility bit, auxiliary/menu CUI, generic HUD transform, shared compositor path, copied resolution, or copied cross-title address is changed.",
+  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43n admits the optional gameplay-CUI front end and command dispatcher only after all four signatures and both rel32 edges match their pinned retail locations. It calls every original command, maps normalized per-eye engine-shot projection through the exact live s_short_rectangle2d gameplay viewport, preserves the headset-proven positive matrix Y and 43m apparent size, and changes only the reticle matrix. No render target, bitmap, colour, alpha, visibility bit, auxiliary/menu CUI, generic HUD transform, shared compositor path, copied resolution, or copied cross-title address is changed.",
   "accepted_halo4_pointer": {
     "candidate": "C-H4-43",
     "source_commit": "dd9946595511d65c9859b536e2727201c107da45",
-    "note": "C-H4-43m is a forward candidate after rejected C-H4-43i/43j/43k/43l and does not advance acceptance without an explicit headset result"
+    "note": "C-H4-43n is a forward candidate after rejected C-H4-43i/43j/43k/43l/43m and does not advance acceptance without an explicit headset result"
   },
   "development_baseline": {
     "source_commit": "f4c641f7b1b707991f2bda71ba485090a16f1e9a",
@@ -74,16 +74,18 @@
     "headset_result": "PENDING"
   },
   "c_h4_43m_native_cui_reticle": {
-    "status": "OFFLINE_PASS_HEADSET_PENDING",
+    "status": "HEADSET_REJECTED_RETICLE_FOLLOWS_GUN_BUT_MISREGISTERED_TO_SHOTS",
     "accepted_parent": "C-H4-43",
     "rejected_predecessor": "C-H4-43l moved the correct native reticle and retained the HUD/animation/target colours, but headset testing proved vertical movement inverted and native size excessive",
     "runtime_evidence": {
       "edition": "Steam",
       "runtime": "SteamVR/OpenXR 2.17.7",
       "headset": "PlayStation VR2 at 90 Hz",
-      "source_commit": "20fc0862007dae47f942b6036ac4546ac3c17f26",
+      "source_commit": "d0ed6139994fbaae884bfbb7ae069f819ce0f869",
       "matrix_center": "-1893.000 / 1064.517 CUI pixels",
-      "axis_result": "positive composed reticle-matrix translation Y is headset/camera up"
+      "gameplay_raster": "3786x2730; projection half extents 1893x1365",
+      "axis_result": "positive composed reticle-matrix translation Y is headset/camera up",
+      "position_result": "native art follows the gun but does not coincide with engine shot impacts because 43m used authored 16:9 centre Y 1064.517 as the projection half-height instead of the live gameplay viewport half-height"
     },
     "h4ek_size_evidence": {
       "exports": [
@@ -95,6 +97,18 @@
     },
     "size_mapping": "uniformScale = (2 * abs(liveCuiHalfHeight) * tan(crosshair_size_deg/2) / tan(liveEyeHalfFovY)) / 81.92",
     "write_scope": "one H4EK-proven type-0x28 reticle-only real_matrix4x3; original uniform scale and X/Y translation are the only changed fields",
+    "cross_title_scope": "no shared compositor, Halo 3, ODST, or Reach code changed",
+    "headset_result": "REJECTED_POSITION_REGISTRATION_ONLY"
+  },
+  "c_h4_43n_native_cui_shot_registration": {
+    "status": "OFFLINE_PASS_HEADSET_PENDING",
+    "accepted_parent": "C-H4-43",
+    "rejected_predecessor": "C-H4-43m retained the full HUD and correct native reticle behavior, direction, size, and gun following, but did not coincide with shot impacts",
+    "h4ek_viewport_evidence": "user_interface_render argument 3 is s_short_rectangle2d const* viewportBounds; exact main gameplay caller supplies the current player-view rectangle",
+    "position_mapping": "translationDelta = perEyeEngineShotNdc * halfExtent(exactLiveGameplayViewport); authored reticle centre is not used as a projection extent",
+    "size_mapping": "unchanged from C-H4-43m so the headset-confirmed apparent size is preserved",
+    "write_scope": "one H4EK-proven type-0x28 reticle-only real_matrix4x3; only uniform scale and X/Y translation change",
+    "failure_isolation": "unreadable or malformed viewport leaves the optional reticle draw stock and procedural fallback eligible; camera, hands, stereo, and OpenXR remain armed",
     "cross_title_scope": "no shared compositor, Halo 3, ODST, or Reach code changed",
     "headset_result": "PENDING"
   },

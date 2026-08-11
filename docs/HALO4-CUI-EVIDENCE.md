@@ -1,11 +1,12 @@
 # Halo 4 CUI evidence
 
-Status: **the C-H4-43i/C-H4-43j render-target design and C-H4-43k/43l native
-transform candidates are headset-rejected; C-H4-43m corrects 43l's measured
-vertical sign and derives native scale from the shared angular-size knob.** Halo 4 has no CHUD; its HUD is the
+Status: **the C-H4-43i/C-H4-43j render-target design and C-H4-43k/43l/43m native
+transform candidates are headset-rejected; C-H4-43n registers the proven
+gun-following native art to the engine shot projection through the live gameplay
+viewport.** Halo 4 has no CHUD; its HUD is the
 CUI system. Identity pins live in `docs/HALO4-EVIDENCE-MANIFEST.json`;
 camera/render signature proofs live in `docs/HALO4-SIGNATURE-EVIDENCE.md`.
-Nothing in this file promotes C-H4-43i through 43m to an accepted headset result.
+Nothing in this file promotes C-H4-43i through 43n to an accepted headset result.
 
 The 2026-08-11 Steam/SteamVR/PSVR2 run loaded the correct `3baabc7` bytes but
 logged `prepared capture/discard resources unavailable`, followed by zero main
@@ -584,6 +585,28 @@ red/green target state remain native while the face-centred copy is the same
 object moved onto the gun ray. This is a new headset candidate, not an accepted
 result; C-H4-43 remains the rollback pointer.
 
+### C-H4-43m rejection and C-H4-43n shot registration
+
+The correct `d0ed613` Steam/SteamVR/PSVR2 90 Hz run proved 43m's reticle
+direction, native size, full-HUD isolation, animation/target colour, and
+gun-following motion. The reticle nevertheless did not coincide with shot
+impacts. The runtime geometry identifies the error: the scene raster and D3D
+viewport were 3786x2730, hence projection half extents 1893x1365, while the
+reticle matrix carried the authored 16:9 centre `-1893/1064.517`. 43m used the
+latter Y magnitude to convert NDC and therefore applied only 78 percent of the
+required vertical shot displacement.
+
+H4EK proves argument 3 of `user_interface_render` is
+`s_short_rectangle2d const* viewportBounds`. The uniquely pinned retail main
+gameplay call passes the current player-view rectangle; the 216x96 auxiliary
+and later menu calls remain excluded by the exact caller-return gate. 43n reads
+the four shorts before the original main call, validates both coordinate-pair
+spans, and stores half of the landscape width/height in the existing per-eye
+TLS. The type-`0x28` reticle transform then converts projected X/Y through those
+exact live extents. Invalid bounds fail open and cannot suppress the procedural
+fallback. 43m's headset-proven positive-Y direction and its accepted apparent
+size are deliberately unchanged; only shot registration changes.
+
 - the authored weapon reticle follows the controller/gun ray and no
   face-centred copy remains in either eye;
 - `crosshair=0`, `crosshair=1/kill_reticle=0`, and
@@ -598,7 +621,7 @@ result; C-H4-43 remains the rollback pointer.
   write failures, an aim Y sign matching gun movement, and a finite stock to
   configured scale change.
 
-C-H4-43m changes no shared compositor code and no Halo 3/ODST/Reach path; their
+C-H4-43n changes no shared compositor code and no Halo 3/ODST/Reach path; their
 reticle implementation and lifecycle remain byte-for-byte untouched. Until the
 explicit Halo 4 headset result exists, the accepted-build pointer in
 `docs/CURRENT-STATE.md` remains authoritative.

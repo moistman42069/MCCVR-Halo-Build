@@ -177,19 +177,54 @@ struct Halo4CuiAimOffset
     bool valid = false;
 };
 
-// The projected aim is normalized device space. Halo 4's pushed CUI
-// transform is not: the headset log measured the stock centre at
-// (-halfWidth,+halfHeight). Convert through that live transform rather than
-// copying a resolution, aspect ratio, or scale from another title.
+struct Halo4CuiViewportHalfExtents
+{
+    float width = 0.0f;
+    float height = 0.0f;
+    bool valid = false;
+};
+
+// H4EK proves user_interface_render's third argument is an
+// s_short_rectangle2d pointer. The two coordinate-pair spans are the live
+// gameplay raster dimensions. The retail VR transaction is landscape; using
+// max/min makes the calculation independent of whether a symbol printer names
+// the stored pairs x/y or top/left while preserving the exact measured spans.
+inline Halo4CuiViewportHalfExtents Halo4MeasureCuiViewportHalfExtents(
+    const int16_t bounds[4]) noexcept
+{
+    Halo4CuiViewportHalfExtents result{};
+    if (!bounds)
+        return result;
+    const int32_t firstSpan = std::abs(
+        static_cast<int32_t>(bounds[2]) - static_cast<int32_t>(bounds[0]));
+    const int32_t secondSpan = std::abs(
+        static_cast<int32_t>(bounds[3]) - static_cast<int32_t>(bounds[1]));
+    const int32_t width = firstSpan > secondSpan ? firstSpan : secondSpan;
+    const int32_t height = firstSpan > secondSpan ? secondSpan : firstSpan;
+    if (width < 2 || height < 2 || width > 32767 || height > 32767)
+        return result;
+    result.width = static_cast<float>(width) * 0.5f;
+    result.height = static_cast<float>(height) * 0.5f;
+    result.valid = std::isfinite(result.width) &&
+        std::isfinite(result.height);
+    return result;
+}
+
+// The projected aim is normalized device space. Halo 4's pushed CUI transform
+// consumes pixels, so convert through the exact gameplay viewport supplied to
+// user_interface_render. The reticle matrix's authored 16:9 centre is not the
+// projection extent when the headset raster is taller than 16:9.
 inline Halo4CuiAimOffset Halo4MapAimToCuiTranslation(
-    const Halo4CuiAimOffset& normalizedAim, float baseX, float baseY,
+    const Halo4CuiAimOffset& normalizedAim, float viewportHalfWidth,
+    float viewportHalfHeight,
     bool hide) noexcept
 {
     Halo4CuiAimOffset result{};
-    if (!std::isfinite(baseX) || !std::isfinite(baseY))
+    if (!std::isfinite(viewportHalfWidth) ||
+        !std::isfinite(viewportHalfHeight))
         return result;
-    const float halfWidth = std::fabs(baseX);
-    const float halfHeight = std::fabs(baseY);
+    const float halfWidth = std::fabs(viewportHalfWidth);
+    const float halfHeight = std::fabs(viewportHalfHeight);
     if (halfWidth < 1.0f || halfHeight < 1.0f ||
         halfWidth > 32768.0f || halfHeight > 32768.0f)
         return result;
