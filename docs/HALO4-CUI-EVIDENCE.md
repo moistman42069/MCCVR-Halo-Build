@@ -2,10 +2,19 @@
 
 Status: **the C-H4-43i authored-reticle producer, playback boundary, main
 gameplay-pass ownership scope, and pinned-retail bindings are proven
-offline; the headset result is pending.** Halo 4 has no CHUD; its HUD is the
+offline; the runtime candidate was rejected before its hooks installed.** Halo 4 has no CHUD; its HUD is the
 CUI system. Identity pins live in `docs/HALO4-EVIDENCE-MANIFEST.json`;
 camera/render signature proofs live in `docs/HALO4-SIGNATURE-EVIDENCE.md`.
 Nothing in this file promotes C-H4-43i to an accepted headset result.
+
+The 2026-08-11 Steam/SteamVR/PSVR2 run loaded the correct `3baabc7` bytes but
+logged `prepared capture/discard resources unavailable`, followed by zero main
+gameplay CUI passes, zero begin markers, zero completed redirects and zero
+uploads. The crosshair swapchain had been created immediately beforehand. The
+candidate's eager validation of every XR swapchain RTV therefore prevented the
+optional hooks from installing and produced exactly the unchanged view the
+user reported. This is a runtime rejection of 43i's install gate, not negative
+evidence against the pinned CUI boundary.
 
 ## Measured facts (2026-08-06, from the pinned H4EK)
 

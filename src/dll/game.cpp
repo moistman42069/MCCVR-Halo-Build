@@ -33428,6 +33428,13 @@ namespace
     Halo4CuiReticleOptionalInstallState InstallHalo4CuiReticle(
         uintptr_t base, size_t size, uint32_t generation)
     {
+        // C-H4-43i was headset-rejected after its eager OpenXR RTV validation
+        // failed before either optional hook could install. Keep its proven
+        // bindings dormant until the replacement candidate fixes that gate.
+        constexpr bool kHalo4CuiReticleCandidateEnabled = false;
+        if (!kHalo4CuiReticleCandidateEnabled)
+            return Halo4CuiReticleOptionalInstallState::StockFallback;
+
         if (g_halo4Camera.cuiReticleInstalled.load(
                 std::memory_order_acquire))
         {

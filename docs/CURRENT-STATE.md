@@ -29,13 +29,16 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
-## CURRENT HALO 4 TEST CANDIDATE: C-H4-43i - 2026-08-10
+## REJECTED HALO 4 TEST CANDIDATE: C-H4-43i - 2026-08-11
 
-**Headset pending; this does not advance the accepted pointer below.** Built on
-accepted C-H4-43, C-H4-43i replaces the shared procedural weapon-ray crosshair
-pixels with Halo 4's own authored CUI reticle and keeps the original
-face-centred copy out of both stereo eyes. The existing gun-ray quad placement,
-distance, angular size, stabilisation and aim source are unchanged.
+**Headset rejected; this never advanced the accepted pointer below.** The
+installed Steam run was the correct `3baabc7` build on SteamVR/OpenXR 2.17.7
+with PSVR2 at 90 Hz, but the optional CUI transaction never installed. Its
+runtime telemetry reported zero main CUI passes, zero begin markers, zero
+captures and zero uploads. The log identified the exact refusal as unavailable
+prepared capture/discard resources immediately after the crosshair swapchain
+was created. The player therefore saw the unchanged C-H4-43 procedural
+weapon-ray reticle plus native face-centred reticle.
 
 This is a Halo 4-native implementation, not a copied CHUD hook. Official H4EK
 proves that `ReticuleOffsetContainerWidget` emits command `0x28` (12-byte
@@ -60,9 +63,10 @@ transaction's
 StockFallback/CleanupRequired/Installed states never disarm the C-H4-43 camera,
 hands, stereo path, or OpenXR session.
 
-Offline evidence is recorded in `docs/HALO4-CUI-EVIDENCE.md` and E-H4-33 in
-`docs/HALO4-SIGNATURE-EVIDENCE.md`. Acceptance still requires a Halo 4 headset
-result and a Halo 3 regression result.
+The proven CUI bindings remain dormant rather than deleted. C-H4-43 remains the
+accepted rollback pointer. A replacement must remove the unnecessary eager XR
+RTV gate, retry transient cold preparation instead of rejecting the whole title
+generation, and still preserve feature-local stock fallback.
 
 ## CURRENT ACCEPTED HALO 4 POINTER: C-H4-43 - 2026-08-10
 
