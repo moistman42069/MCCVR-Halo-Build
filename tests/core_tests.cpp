@@ -6244,7 +6244,7 @@ int main()
                   fabsf(rightPixels.y) < 1.0e-4f && upPixels.valid &&
                   fabsf(upPixels.x) < 1.0e-4f &&
                    fabsf(upPixels.y - 1080.0f) < 1.0e-4f,
-            "Halo 4 converts normalized VR-reticle projection through the live "
+            "Halo 4 converts normalized gun-ray projection through the live "
             "pixel-space CUI half extents");
         Check(hidden.valid && fabsf(hidden.x - 7680.0f) < 1.0e-4f &&
                   fabsf(hidden.y) < 1.0e-4f,
@@ -6255,23 +6255,6 @@ int main()
                   !Halo4MapAimToCuiTranslation(
                       right, -1920.0f, NAN, false).valid,
             "Invalid Halo 4 CUI extents fail open without a transform write");
-
-        const int16_t gameplayBounds[4] = {0, 0, 3786, 2730};
-        const Halo4CuiViewportHalfExtents gameplayExtents =
-            Halo4MeasureCuiViewportHalfExtents(gameplayBounds);
-        const int16_t namedOtherOrder[4] = {0, 0, 2730, 3786};
-        const Halo4CuiViewportHalfExtents otherOrderExtents =
-            Halo4MeasureCuiViewportHalfExtents(namedOtherOrder);
-        Check(gameplayExtents.valid && otherOrderExtents.valid &&
-                  fabsf(gameplayExtents.width - 1893.0f) < 1.0e-5f &&
-                  fabsf(gameplayExtents.height - 1365.0f) < 1.0e-5f &&
-                  fabsf(otherOrderExtents.width - 1893.0f) < 1.0e-5f &&
-                  fabsf(otherOrderExtents.height - 1365.0f) < 1.0e-5f,
-            "Halo 4 reads the exact live gameplay viewport extents");
-        const int16_t invalidBounds[4] = {0, 0, 3786, 0};
-        Check(!Halo4MeasureCuiViewportHalfExtents(invalidBounds).valid,
-            "A malformed Halo 4 gameplay viewport fails the optional reticle "
-            "feature open");
 
         float angularScale = 0.0f;
         Check(Halo4MapAngularSizeToCuiScale(
@@ -6294,46 +6277,20 @@ int main()
 
         const float centerPosition[3] = {0.0f, 0.0f, 0.0f};
         const float leftEyePosition[3] = {-0.032f, 0.0f, 0.0f};
-        const float headPosition[3] = {0.0f, 0.0f, 0.0f};
-        const float aimPosition[3] = {1.0f, 0.0f, 0.0f};
-        const float aimOrientation[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-        float targetPosition[3]{};
+        const float engineForward[3] = {0.0f, 2.0f, 0.0f};
         float leftEyeRay[3]{};
-        Check(Halo4BuildVrReticleTarget(
-                  centerPosition, forward, up, aimOrientation, headPosition,
-                  aimPosition, aimOrientation, 2.0f, 1.0f,
-                  targetPosition) &&
-                  fabsf(targetPosition[0] - 1.0f) < 1.0e-6f &&
-                  fabsf(targetPosition[1] - 2.0f) < 1.0e-6f &&
-                  fabsf(targetPosition[2]) < 1.0e-6f &&
-                  Halo4BuildReticleEyeRay(
-                      targetPosition, leftEyePosition, leftEyeRay) &&
-                  fabsf(leftEyeRay[0] - 1.032f) < 1.0e-6f &&
+        Check(Halo4BuildReticleEyeRay(
+                  centerPosition, leftEyePosition, engineForward, 2.0f,
+                  leftEyeRay) &&
+                  fabsf(leftEyeRay[0] - 0.032f) < 1.0e-6f &&
                   fabsf(leftEyeRay[1] - 2.0f) < 1.0e-6f &&
                   fabsf(leftEyeRay[2]) < 1.0e-6f,
-            "Halo 4 maps the prepared VR-reticle point into game space once "
-            "and projects both eyes to that exact finite target");
-        Check(!Halo4BuildVrReticleTarget(
-                  centerPosition, forward, up, aimOrientation, headPosition,
-                  aimPosition, aimOrientation, 0.0f, 1.0f,
-                  targetPosition) &&
-                  !Halo4BuildReticleEyeRay(
-                      targetPosition, targetPosition, leftEyeRay),
-            "Invalid or degenerate VR-reticle geometry cannot write an eye "
-            "projection");
-        const float halfSqrt = 0.70710678118f;
-        const float turnedHead[4] = {0.0f, halfSqrt, 0.0f, halfSqrt};
-        const float turnedCenterForward[3] = {0.0f, -1.0f, 0.0f};
-        const float turnedAimPosition[3] = {0.0f, 0.0f, 0.0f};
-        Check(Halo4BuildVrReticleTarget(
-                  centerPosition, turnedCenterForward, up, turnedHead,
-                  headPosition, turnedAimPosition, turnedHead, 2.0f, 1.0f,
-                  targetPosition) &&
-                  fabsf(targetPosition[0]) < 1.0e-5f &&
-                  fabsf(targetPosition[1] + 2.0f) < 1.0e-5f &&
-                  fabsf(targetPosition[2]) < 1.0e-5f,
-            "Halo 4 removes head rotation before mapping the VR-reticle point "
-            "through the already head-rotated camera");
+            "Halo 4 projects each eye to one finite gun-ray target so the "
+            "native CUI reticle retains the VR crosshair's stereo depth");
+        Check(!Halo4BuildReticleEyeRay(
+                  centerPosition, leftEyePosition, engineForward, 0.0f,
+                  leftEyeRay),
+            "An invalid Halo 4 reticle range cannot write an eye projection");
         Check(Halo4CuiReticlePairPositionsNative(77, 77, 77, 77) &&
                   !Halo4CuiReticlePairPositionsNative(0, 77, 77, 77) &&
                   !Halo4CuiReticlePairPositionsNative(76, 77, 77, 77) &&
