@@ -132,7 +132,7 @@ if ([int]$manifest.schema_version -ne 8 -or
         # Producer and installer advance together. This prevents a package for
         # the new source from silently carrying the preceding Halo 4 candidate's
         # behavior block, which happened repeatedly during bring-up.
-        [string]$manifest.halo4_candidate.id -cne 'C-H4-43q' -or
+        [string]$manifest.halo4_candidate.id -cne 'C-H4-44' -or
         [string]$manifest.halo4_candidate.status -cne
             'OFFLINE_PASS_HEADSET_PENDING' -or
         [string]$manifest.halo4_candidate.behavior -notmatch '\S' -or
@@ -144,6 +144,11 @@ if ([int]$manifest.schema_version -ne 8 -or
             'bounded-capture-eye-full-gameplay-cui-replay-held-from-first-command-through-frontend-return' -or
         [string]$manifest.halo4_candidate.reticle_failure_policy -cne
             'stock-or-procedural-feature-fallback-camera-hands-stereo-and-openxr-remain-armed' -or
+        [string]$manifest.halo4_candidate.hud_layout -cne
+            'exact-one-match-ui-hud_globals-3x3-screen-transform-basis' -or
+        [string]$manifest.halo4_candidate.hud_failure_policy -cne
+            'zero-multiple-invalid-or-write-failure-keeps-only-hud-layout-stock' -or
+        @($manifest.halo4_candidate.hud_controls).Count -ne 4 -or
         $manifest.deployment_policy.automatic_after_package -ne $true -or
         [string]$manifest.deployment_policy.installer -cne
             'tools/install-candidate.ps1' -or

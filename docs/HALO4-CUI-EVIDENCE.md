@@ -1,11 +1,12 @@
 # Halo 4 CUI evidence
 
-Status: **C-H4-43i through C-H4-43p are headset-rejected. C-H4-43q returns to
+Status: **C-H4-43i through C-H4-43p are headset-rejected. C-H4-44 carries
+C-H4-43q's return to
 the Halo 3/ODST/Reach presentation architecture: captured authored pixels on
 the already-correct OpenXR reticle quad, with the flat native copy hidden.** Halo 4 has no CHUD; its HUD is the
 CUI system. Identity pins live in `docs/HALO4-EVIDENCE-MANIFEST.json`;
 camera/render signature proofs live in `docs/HALO4-SIGNATURE-EVIDENCE.md`.
-Nothing in this file promotes C-H4-43i through 43q to an accepted headset result.
+Nothing in this file promotes C-H4-43i through C-H4-44 to an accepted headset result.
 
 The 2026-08-11 Steam/SteamVR/PSVR2 run loaded the correct `3baabc7` bytes but
 logged `prepared capture/discard resources unavailable`, followed by zero main
@@ -636,6 +637,48 @@ only reports that it now captures authored art, allowing the existing upload,
 coverage guard, procedural bootstrap, angular-size, distance, stabilization,
 and quad placement paths to operate exactly as they do for the other titles.
 C-H4-43 remains the accepted pointer pending a headset result.
+
+### C-H4-44 Ghidra replay verification and native HUD layout
+
+Before the 43q headset test, Ghidra 12.1.2 targeted the official
+`halo4_tag_test.exe` (SHA-256
+`B7468DB9FD160B035C329540EE0B0D47BCF609E1BA6E85AE4F204B70661113A6`).
+The decompile independently reconfirmed the relevant state transitions:
+
+- `user_interface_render` at H4EK RVA `0x91DD70` reaches `0x9439D0`, then
+  render-buffer selector `0x93EDD0`.
+- `0x93EDD0` indexes `window * 0x1038 + channel * 0x4A0`, atomically removes
+  the pending buffer at `+0x490`, promotes it to active `+0x498`, and calls
+  playback `0x9C1280` from the retained active buffer. If no new pending buffer
+  exists, the retained active buffer remains and is drawn again. Thus 43q's
+  capture call followed by its normal call replays the same authored command
+  buffer; it does not advance UI logic or construct another reticle position.
+- Reticle transform helper `0x9BE760` increments the renderer stack count at
+  `+0x870` and copies one `0x34`-byte transform into entries beginning at
+  `+0x878`. This independently agrees with the retail stack shape used only to
+  hide the native flat type-`0x28` copy.
+
+C-H4-44 then adds the requested HUD configuration through a separate data
+feature. Official H4EK has one `user_interface_hud_globals_definition`, whose
+`screen transform basis` is nine contiguous `real point 2d` values at offset
+`0xFD6` in
+`tags\ui\hud_globals.user_interface_hud_globals_definition`. The exact bytes
+are bracketed by the documented damage-mesh values (`35`, `0.6`, `3`, `0.04`,
+`1`) and the reticle-spread/high-contrast fields (`1`, flags `0`, `0.05`,
+`0.41`, `0.5`, `0.75`, `1.25`). The tag reference between them is wildcarded
+because it relocates; every semantic float and flag is exact.
+
+The cold locator requires exactly one complete H4EK payload in committed
+private or mapped memory and makes at most three attempts per level. It never
+runs in a render or CUI hook. The Present-side writer runs only on a config/FOV
+change plus a one-second integrity check. It maps the shared controls onto Halo
+4's own construct: `hud_size` and `hud_aspect` scale the basis,
+`hud_vertical_offset` translates its 720-unit virtual screen, and
+`hud_curvature` interpolates from identity at `0`, through the authored H4 warp
+at `0.5`, to twice the authored bow at `1`. Exit restores the authored basis.
+Any zero/multiple match, changed immutable neighbor, non-finite value, or write
+failure disables only HUD layout and logs `H4HUD`; camera, hands, authored
+reticle, stereo, and OpenXR remain independent.
 
 ## C-H4-43j correction after the 43i headset rejection
 

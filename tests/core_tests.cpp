@@ -27,6 +27,7 @@
 #include "odst_vehicle_logic.h"
 #include "halo4_adapter.h"
 #include "halo4_cui_reticle_logic.h"
+#include "halo4_hud_logic.h"
 #include "halo4_render_logic.h"
 #include "reach_adapter.h"
 #include "reach_chud_logic.h"
@@ -6062,6 +6063,62 @@ int main()
                   kHalo4CuiReticleCallerRva),
         "The Halo 4 CUI command pair and decoded dispatcher edge stay pinned");
 
+    {
+        std::array<uint8_t, 20 + kHalo4HudAnchorSpanFromBasis> tagBytes{};
+        uint8_t* const basisBytes = tagBytes.data() + 20;
+        std::memcpy(
+            basisBytes + kHalo4HudDamagePrefixFromBasis,
+            kHalo4HudDamagePrefix.data(), sizeof(kHalo4HudDamagePrefix));
+        std::memcpy(
+            basisBytes, kHalo4HudAuthoredBasis.data(), kHalo4HudBasisBytes);
+        std::memcpy(
+            basisBytes + kHalo4HudSpreadFromBasis,
+            &kHalo4HudDamagePrefix.back(), sizeof(float));
+        std::memset(
+            basisBytes + kHalo4HudSpreadFromBasis + sizeof(float),
+            0xA5, 16); // relocated tag reference is deliberately wildcarded
+        const uint32_t zeroFlags = 0;
+        std::memcpy(
+            basisBytes + kHalo4HudFlagsFromBasis,
+            &zeroFlags, sizeof(zeroFlags));
+        std::memcpy(
+            basisBytes + kHalo4HudContrastFromBasis,
+            kHalo4HudContrastTail.data(), sizeof(kHalo4HudContrastTail));
+        Check(Halo4HudAuthoredBasisMatches(basisBytes) &&
+                  Halo4HudImmutableSurroundMatches(basisBytes),
+            "Halo 4 HUD locator accepts the official basis and neighbors");
+        basisBytes[kHalo4HudContrastFromBasis] ^= 1;
+        Check(!Halo4HudImmutableSurroundMatches(basisBytes),
+            "Halo 4 HUD locator rejects a changed immutable contrast tail");
+        basisBytes[kHalo4HudContrastFromBasis] ^= 1;
+
+        std::array<Halo4HudBasisPoint, 9> flat{};
+        std::array<Halo4HudBasisPoint, 9> authored{};
+        std::array<Halo4HudBasisPoint, 9> curved{};
+        Check(Halo4ComputeHudBasis(
+                  1.0f, 1.0f, 0.0f, 0.0f, flat.data()) &&
+                  std::memcmp(flat.data(), kHalo4HudFlatBasis.data(),
+                      sizeof(flat)) == 0,
+            "Halo 4 hud_curvature=0 produces the identity grid");
+        Check(Halo4ComputeHudBasis(
+                  1.0f, 1.0f, 0.5f, 0.0f, authored.data()) &&
+                  std::fabs(authored[1].x - (-0.98f)) < 0.0001f &&
+                  std::fabs(authored[3].y - (-0.92f)) < 0.0001f &&
+                  std::fabs(authored[7].x - 0.98f) < 0.0001f,
+            "Halo 4 hud_curvature=0.5 retains the authored basis");
+        Check(Halo4ComputeHudBasis(
+                  0.5f, 0.25f, 1.0f, 36.0f, curved.data()) &&
+                  std::fabs(curved[1].x - (-0.48f)) < 0.0001f &&
+                  std::fabs(curved[3].y - (-0.31f)) < 0.0001f &&
+                  std::fabs(curved[4].y - (-0.10f)) < 0.0001f,
+            "Halo 4 HUD basis combines size, curvature, and positive-up height");
+        Check(!Halo4ComputeHudBasis(
+                  0.1f, 1.0f, 0.5f, 0.0f, authored.data()) &&
+                  !Halo4ComputeHudBasis(
+                      1.0f, 1.0f, 1.1f, 0.0f, authored.data()),
+            "Halo 4 HUD layout rejects out-of-range config values");
+    }
+
     Halo4CuiReticleInstallProof halo4CuiInstall{};
     halo4CuiInstall.transformLayoutProven = true;
     halo4CuiInstall.anchorsMatchedOnce = kHalo4CuiReticleAnchorCount;
@@ -8478,10 +8535,8 @@ int main()
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_ArmIk),
         "Halo 4 withholds ArmIk: C-H4-43 has one rigid no-IK floating-hands "
         "transaction on the proven first-person return site");
-    Check(halo4Row && !(halo4Row->capabilities & TitleCapability_Hud),
-        "Halo 4 withholds Hud: its CUI arrives inside the captured scene "
-        "target; the optional reticle-subtree redirect does not advertise or "
-        "gate a general HUD capability");
+    Check(halo4Row && (halo4Row->capabilities & TitleCapability_Hud),
+        "Halo 4 grants Hud through its exact H4EK ui\\hud_globals basis");
     Check(halo4Row && !(halo4Row->capabilities & TitleCapability_CutsceneTheater),
         "Halo 4 withholds CutsceneTheater: it has no cinematic evidence yet");
     Check(TitleRegistry_AllowsSharedControllerInput(

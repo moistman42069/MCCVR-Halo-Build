@@ -1345,24 +1345,24 @@ void ConfigSave()
     fprintf(f, "aa_mode = %d\n\n", g_config.aa_mode);
     fprintf(f, "# HUD size: fraction of the view the HUD lays out into. Smaller pulls\n");
     fprintf(f, "# shields/radar/ammo toward the center so both VR eyes see them.\n");
-    fprintf(f, "# One value for every game: Halo 3, ODST and Reach each write it into\n");
+    fprintf(f, "# One value for every game: Halo 3, ODST, Reach and Halo 4 write it into\n");
     fprintf(f, "# their own HUD layout data, so the same number looks the same in all.\n");
     fprintf(f, "# (default %.2f = calibrated stock layout, range 0.30 to 1.00)\n", d.hud_size);
     fprintf(f, "hud_size = %.2f\n\n", g_config.hud_size);
     fprintf(f, "# HUD width/aspect trim after automatic headset correction.\n");
     fprintf(f, "# 1 = automatic, lower = narrower, higher = wider.\n");
-    fprintf(f, "# Applies to Halo 3, ODST and Reach.\n");
+    fprintf(f, "# Applies to Halo 3, ODST, Reach and Halo 4.\n");
     fprintf(f, "# (default %.2f, range %.2f to %.2f)\n",
             d.hud_aspect, kHudAspectMin, kHudAspectMax);
     fprintf(f, "hud_aspect = %.2f\n\n", g_config.hud_aspect);
-    fprintf(f, "# HUD curvature: 0 = flat (+0.30), 1 = fully curved (-0.30).\n");
+    fprintf(f, "# HUD curvature: 0 = flat, 1 = fully curved.\n");
     fprintf(f, "# 0.50 keeps the active game's authored curvature.\n");
-    fprintf(f, "# Halo 3 and ODST only. This does not work in Halo: Reach yet.\n");
+    fprintf(f, "# Applies to Halo 3, ODST and Halo 4; not Halo: Reach yet.\n");
     fprintf(f, "# (default %.2f, range %.2f to %.2f)\n",
             d.hud_curvature, kHudCurvatureMin, kHudCurvatureMax);
     fprintf(f, "hud_curvature = %.2f\n\n", g_config.hud_curvature);
     fprintf(f, "# HUD height in virtual-screen pixels. Positive = higher, negative = lower.\n");
-    fprintf(f, "# Halo 3 and ODST only; Reach's HUD anchor function is not located yet.\n");
+    fprintf(f, "# Halo 3, ODST, and Halo 4; Reach's HUD anchor function is not located yet.\n");
     fprintf(f, "# (default %+.0f, range %+.0f to %+.0f)\n",
              d.hud_vertical_offset, kHudHeightMin, kHudHeightMax);
     fprintf(f, "hud_vertical_offset = %+.0f\n\n", g_config.hud_vertical_offset);

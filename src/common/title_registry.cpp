@@ -57,14 +57,15 @@ namespace
     // Halo 4 camera + motion core. C-H4-7/8/9 earned stereo, head tracking,
     // 6DOF and headset-owned pitch in the headset; C-H4-10 adds the closed-loop
     // controller aim, VR turn and haptics the other titles already have, on the
-    // same shared code paths. Halo 4's CUI arrives inside the captured scene
-    // target rather than through a HUD redirect, so TitleCapability_Hud stays
-    // out: nothing title-specific is installed for it. C-H4-34 replaces the
+    // same shared code paths. C-H4-44 locates Halo 4's own ui\hud_globals
+    // screen-transform basis and gives its native CUI the shared HUD controls.
+    // C-H4-34 replaces the
     // rejected arm solve with rigid floating hands, so ArmIk is deliberately
     // absent. CutsceneTheater remains withheld: it has no Halo 4 evidence.
     constexpr uint32_t kHalo4Capabilities =
         TitleCapability_Stereo |
         TitleCapability_ControllerAim |
+        TitleCapability_Hud |
         TitleCapability_RuntimeModes |
         TitleCapability_RoomScale |
         TitleCapability_ControllerInput |

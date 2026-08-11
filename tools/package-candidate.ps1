@@ -84,7 +84,7 @@ try {
     }
     if ($cache -notmatch
             '(?m)^HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA:BOOL=ON\r?$') {
-        throw 'Refusing to package C-H4-43q: the Halo 4 camera core is not ON.'
+        throw 'Refusing to package C-H4-44: the Halo 4 camera core is not ON.'
     }
 
     # Incremental. A clean rebuild was recompiling the whole tree for every
@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c43q-authored-cui-on-existing-vr-quad',
+        'halo4-c44-authored-reticle-and-native-hud-layout',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 'dd9946595511d65c9859b536e2727201c107da45'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-43q'
+            id = 'C-H4-44'
             status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'halo4-authored-cui-centre-pixels-on-unchanged-existing-openxr-reticle-quad-with-native-flat-copy-hidden'
+            behavior = 'halo4-authored-cui-centre-pixels-on-existing-openxr-reticle-quad-plus-h4ek-native-hud-layout-controls'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -191,9 +191,19 @@ try {
             controller_aim = $true
             haptics = $true
             head_relative_locomotion = $true
-            # The rest of Halo 4's CUI remains native in the captured scene.
-            # Only centre art is sampled; the existing quad owns placement.
-            hud = 'native-inside-captured-scene-authored-centre-art-sampled-to-existing-reticle-quad'
+            # The reticle art uses the existing quad. The rest of the HUD stays
+            # native and is transformed through H4's own hud_globals basis.
+            hud = 'native-inside-captured-scene-with-h4ek-screen-transform-basis-controls'
+            hud_layout =
+                'exact-one-match-ui-hud_globals-3x3-screen-transform-basis'
+            hud_controls = @(
+                'hud_size',
+                'hud_aspect',
+                'hud_curvature',
+                'hud_vertical_offset'
+            )
+            hud_failure_policy =
+                'zero-multiple-invalid-or-write-failure-keeps-only-hud-layout-stock'
             authored_crosshair = $true
             native_face_crosshair_suppressed = $true
             reticle_capture_boundary =
@@ -291,7 +301,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-43q is an unaccepted headset candidate built on accepted C-H4-43 after 43n through 43p proved that moving native CUI with any separately calculated screen coordinate is the wrong architecture. It matches Halo 3, ODST and Reach: Halo 4 authored CUI centre pixels are captured into the existing authored-reticle texture, the native flat type-0x28 copies are hidden, and the unchanged existing OpenXR reticle quad is the sole placement owner. Because 43j proved Halo 4 batches draws past the logical type-0x29 marker, a bounded configured-eye capture replay binds the centred private target before the first command and holds it through the exact full-size gameplay front-end return. The subsequent normal eye pass calls every original command and moves only reticle matrices offscreen. No CUI aim coordinate, shot point, game-space target, eye projection, or replacement quad pose is calculated. Any optional failure remains feature-local and never disarms the accepted camera, hands, stereo path, or OpenXR. C-H4-43 remains the accepted rollback pointer until explicit headset acceptance.'
+        note = 'C-H4-44 is an unaccepted headset candidate built on C-H4-43q and accepted C-H4-43. The crosshair path remains the three-title architecture: authored CUI centre pixels are captured, native flat type-0x28 copies are hidden, and the unchanged existing OpenXR reticle quad is the sole placement owner; no second position is calculated. Ghidra 12.1.2 decompilation of official H4EK user_interface_render confirmed the first call promotes the pending command buffer and the second renders the retained active buffer. Halo 4 HUD size, aspect, curvature, and vertical offset now use the sole official ui\\hud_globals 3x3 screen-transform basis, located by its exact authored payload and immutable damage/contrast neighbors. Zero, multiple, invalid, or unwritable matches leave only HUD layout stock. Camera, hands, stereo, reticle fallback, and OpenXR remain independent. C-H4-43 remains the accepted rollback pointer until explicit headset acceptance.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'

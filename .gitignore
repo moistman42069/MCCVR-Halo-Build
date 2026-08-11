@@ -27,6 +27,7 @@ cmake_install.cmake
 # Local-only files
 *.log
 local/
+/outside-tools/
 camscan_*.bin
 pause_scan/
 recovery-*/

@@ -29,6 +29,37 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
+## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-44 - 2026-08-11
+
+**Headset result pending; this does not advance the accepted pointer below.**
+C-H4-44 carries C-H4-43q's authored-reticle presentation forward unchanged and
+adds Halo 4-native HUD layout controls. `hud_size`, `hud_aspect`,
+`hud_curvature`, and `hud_vertical_offset` now transform the sole official
+H4EK `ui\hud_globals` 3x3 `screen transform basis`. The exact 72-byte authored
+basis is located together with its immutable damage-mesh and high-contrast
+neighbors; zero or multiple matches, a changed payload, or a failed write keeps
+only Halo 4 HUD layout stock. The camera, hands, reticle fallback, stereo, and
+OpenXR stay armed.
+
+The official H4EK tag contains exactly one HUD-globals definition. Its basis is
+contiguous at tag-file offset `0xFD6`: `(-1,-1) (-0.98,0) (-1,1)`,
+`(0,-0.92) (0,0) (0,0.92)`, `(1,-1) (0.98,0) (1,1)`. Curvature `0` produces
+the identity grid, `0.5` retains Halo 4's authored warp, and `1` doubles that
+title-native bow. Size/aspect apply to the output basis and positive vertical
+offset moves the complete HUD upward in Halo 4's 720-unit virtual screen.
+Writes occur only on a config/FOV change plus a one-second integrity check; the
+whole-memory locate is cold, capped at three attempts per level, and never runs
+in a CUI/render hook.
+
+Ghidra 12.1.2 targeted decompilation of the official H4EK executable also
+double-checked 43q before this combined test: `user_interface_render`
+(`0x91DD70`) reaches `0x9439D0 -> 0x93EDD0`; `0x93EDD0` atomically promotes the
+pending render buffer at `+0x490`, retains it at `+0x498`, and calls playback
+`0x9C1280`. With no new pending buffer, the second call renders that same retained
+active buffer. The capture replay therefore replays authored pixels and does
+not create a second crosshair position. Ghidra also reconfirmed the reticle
+transform stack at renderer `+0x870`, entries `+0x878`, stride `0x34`.
+
 ## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-43q - 2026-08-11
 
 **Headset result pending; this does not advance the accepted pointer below.**

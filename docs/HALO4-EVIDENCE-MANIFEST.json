@@ -1,12 +1,12 @@
 {
   "schema_version": 3,
-  "status": "C_H4_43Q_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
+  "status": "C_H4_44_OFFLINE_PASS_HEADSET_PENDING_C_H4_43_ACCEPTED",
   "hook_eligible": true,
-  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-43q admits the optional gameplay-CUI front end and command dispatcher only after all four signatures, both rel32 edges, and private authored-reticle resources are proven. A bounded capture-eye replay holds the centred authored target from the first CUI command through the exact gameplay front-end return, crossing 43j's proven batching boundary. The normal eye pass calls every original command and moves only type-0x28 native flat-reticle matrices offscreen. Captured pixels use the existing Halo 3/ODST/Reach OpenXR reticle upload and quad placement unchanged. No CUI aim coordinate, shot point, game-space target, eye projection, bitmap recreation, auxiliary/menu CUI, generic HUD transform, copied resolution, or copied cross-title address is introduced.",
+  "hook_eligibility_scope": "Accepted C-H4-43 camera/aim/floating-hands hooks remain admitted. C-H4-44 carries C-H4-43q's optional authored-CUI replay and unchanged existing OpenXR reticle-quad placement, then adds a separate data-only HUD-layout feature. That feature requires exactly one official H4EK ui\\hud_globals 3x3 screen-transform basis plus immutable neighboring fields; it installs no HUD hook. No CUI aim coordinate, shot point, game-space target, eye projection, bitmap recreation, copied CHUD layout, copied resolution-class record, or copied cross-title address is introduced.",
   "accepted_halo4_pointer": {
     "candidate": "C-H4-43",
     "source_commit": "dd9946595511d65c9859b536e2727201c107da45",
-    "note": "C-H4-43q is a forward candidate after rejected C-H4-43i through C-H4-43p and does not advance acceptance without an explicit headset result"
+    "note": "C-H4-44 is a forward candidate carrying C-H4-43q after rejected C-H4-43i through C-H4-43p and does not advance acceptance without an explicit headset result"
   },
   "development_baseline": {
     "source_commit": "f4c641f7b1b707991f2bda71ba485090a16f1e9a",
@@ -122,6 +122,44 @@
     "placement": "no Halo 4 position calculation; existing shared reticleQuad pose, distance, stabilization, and angular-size path is the sole placement owner",
     "native_suppression": "normal eye pass calls every original CUI command and moves only each type-0x28 reticle matrix offscreen",
     "failure_isolation": "resource, hook, capture, matrix, or upload failure retains stock/procedural feature fallback without disarming camera, hands, stereo, or OpenXR",
+    "headset_result": "PENDING"
+  },
+  "c_h4_44_native_hud_layout": {
+    "status": "OFFLINE_PASS_HEADSET_PENDING",
+    "accepted_parent": "C-H4-43",
+    "crosshair_parent": "C-H4-43q carried forward unchanged",
+    "ghidra_replay_verification": {
+      "tool": "Ghidra 12.1.2 with JDK 21.0.11",
+      "h4ek_sha256": "B7468DB9FD160B035C329540EE0B0D47BCF609E1BA6E85AE4F204B70661113A6",
+      "user_interface_render_rva": "0x0091DD70",
+      "render_buffer_selector_rva": "0x0093EDD0",
+      "playback_rva": "0x009C1280",
+      "pending_active_contract": "pending +0x490 is atomically promoted once to retained active +0x498; a second call with no new pending buffer renders the same active command buffer",
+      "reticle_transform_stack": "H4EK 0x009BE760 uses count +0x870, entries +0x878, stride 0x34"
+    },
+    "h4ek_hud_layout": {
+      "tag": "ui\\hud_globals.user_interface_hud_globals_definition",
+      "definition_count": 1,
+      "field": "screen transform basis",
+      "tag_file_offset": "0xFD6",
+      "payload": "nine contiguous real point 2d values / 72 bytes",
+      "authored_points": "(-1,-1) (-0.98,0) (-1,1) / (0,-0.92) (0,0) (0,0.92) / (1,-1) (0.98,0) (1,1)",
+      "immutable_prefix": "35, 0.6, 3, 0.04, 1 damage-mesh fields",
+      "immutable_suffix": "reticle spread 1, flags 0, contrast 0.05/0.41/0.5/0.75/1.25; relocating tag reference wildcarded"
+    },
+    "runtime_contract": {
+      "locate": "cold scan, committed private or mapped readable memory, exactly one complete payload, at most three attempts per level",
+      "controls": [
+        "hud_size",
+        "hud_aspect",
+        "hud_curvature",
+        "hud_vertical_offset"
+      ],
+      "curvature_mapping": "0 identity grid, 0.5 authored H4 warp, 1 twice authored bow",
+      "write_cadence": "config or FOV change plus one-second integrity check; never in a render/CUI hook",
+      "teardown": "restore the authored basis before clearing publication when the address remains proven",
+      "failure_isolation": "zero, multiple, changed, non-finite, or unwritable basis leaves only HUD layout stock; camera, hands, reticle, stereo and OpenXR stay armed"
+    },
     "headset_result": "PENDING"
   },
   "retail_resolution_method": {

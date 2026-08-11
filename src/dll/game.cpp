@@ -35,6 +35,7 @@
 #include "../common/input_logic.h"
 #include "../common/halo4_render_logic.h"
 #include "../common/halo4_cui_reticle_logic.h"
+#include "../common/halo4_hud_logic.h"
 #include "../common/level_load_gate_logic.h"
 #include "halo4_adapter.h"
 #include "halo4_cold_observation.h"
@@ -29152,16 +29153,16 @@ namespace
     // C-H4-1/C-H4-7/C-H4-9 line. ControllerAim, Haptics, RuntimeModes and
     // RoomScale join them now that Halo 4 publishes the three things the shared
     // paths need from a title: a runtime mode, a yaw reference pair, and the
-    // engine's own aim direction. HUD stays out because Halo 4's general CUI
-    // remains inside the captured scene target; C-H4-43q's optional authored
-    // reticle capture is not a general HUD capability. ArmIk and
+    // engine's own aim direction. C-H4-44 adds HUD only through Halo 4's
+    // official ui\hud_globals screen-transform basis. ArmIk and
     // CutsceneTheater stay out because neither has Halo 4 evidence. C-H4-35
     // deliberately uses rigid floating hands only, so advertising ArmIk here
     // would grant a capability Halo 4 does not implement.
     constexpr uint32_t kHalo4RuntimeCapabilities =
         TitleCapability_Stereo | TitleCapability_ControllerInput |
         TitleCapability_ControllerAim | TitleCapability_Haptics |
-        TitleCapability_RuntimeModes | TitleCapability_RoomScale;
+        TitleCapability_Hud | TitleCapability_RuntimeModes |
+        TitleCapability_RoomScale;
 
     // C-H4-14. Argument 7 of the final-palette call is a per-render-model
     // count, and the first-person assembly submits about a dozen records per
@@ -31900,6 +31901,408 @@ namespace
         __try { memcpy(destination, source, bytes); }
         __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
         return 1;
+    }
+
+    // ---- C-H4-44: native CUI HUD layout --------------------------------
+    // H4EK's one ui\hud_globals tag owns a 3x3 screen-transform basis. This is
+    // a separate fail-open feature from the camera and authored reticle hooks:
+    // an absent or ambiguous payload leaves only HUD layout stock.
+    struct Halo4HudLayoutRuntime
+    {
+        std::atomic<uintptr_t> basis{0};
+        std::atomic<uint32_t> generation{0};
+        std::atomic<int> matchCount{-1}; // -1 idle, -2 scanning, 1 proven
+        std::atomic<bool> scanInFlight{false};
+        std::atomic<uint32_t> scanAttempts{0};
+        std::atomic<uint64_t> lastAttemptMs{0};
+        std::atomic<uint64_t> lastVerifyMs{0};
+        std::atomic<uint32_t> appliedHorizontalBits{0};
+        std::atomic<uint32_t> appliedVerticalBits{0};
+        std::atomic<uint32_t> appliedCurvatureBits{0};
+        std::atomic<uint32_t> appliedOffsetBits{0};
+        uintptr_t rememberedBasis = 0;
+        std::array<Halo4HudBasisPoint, 9> rememberedWritten{};
+        bool rememberedWrittenValid = false;
+    } g_halo4HudLayout;
+    SRWLOCK g_halo4HudLayoutLock = SRWLOCK_INIT;
+
+    bool Halo4HudLayoutContextMatches(uint32_t generation)
+    {
+        return generation != 0 &&
+            TitleAdapter_GetActiveTitle() == GameTitle::Halo4 &&
+            TitleAdapter_GetGeneration(GameTitle::Halo4) == generation &&
+            g_halo4Camera.installed.load(std::memory_order_acquire) &&
+            !g_halo4Camera.teardownRequested.load(std::memory_order_acquire);
+    }
+
+    bool Halo4HudReadAnchor(
+        uintptr_t basisAddress,
+        std::array<uint8_t, 20 + kHalo4HudAnchorSpanFromBasis>& out)
+    {
+        if (!basisAddress || basisAddress < 20)
+            return false;
+        return Halo4SafeRead(
+                   reinterpret_cast<const void*>(basisAddress - 20),
+                   out.data(), out.size()) != 0;
+    }
+
+    bool Halo4HudAnchorValidAt(uintptr_t basisAddress, bool allowRemembered)
+    {
+        std::array<uint8_t, 20 + kHalo4HudAnchorSpanFromBasis> bytes{};
+        if (!Halo4HudReadAnchor(basisAddress, bytes))
+            return false;
+        const uint8_t* const basis = bytes.data() + 20;
+        if (!Halo4HudImmutableSurroundMatches(basis))
+            return false;
+        if (Halo4HudAuthoredBasisMatches(basis))
+            return true;
+        return allowRemembered && g_halo4HudLayout.rememberedWrittenValid &&
+            g_halo4HudLayout.rememberedBasis == basisAddress &&
+            std::memcmp(
+                basis, g_halo4HudLayout.rememberedWritten.data(),
+                kHalo4HudBasisBytes) == 0;
+    }
+
+    int Halo4HudScanRegion(
+        uintptr_t regionBase, size_t length, uintptr_t* output, int maxOutput)
+    {
+        if (!regionBase || !output || maxOutput <= 0 ||
+            length < 20 + kHalo4HudAnchorSpanFromBasis)
+            return 0;
+        int found = 0;
+        const auto* const bytes =
+            reinterpret_cast<const uint8_t*>(regionBase);
+        __try
+        {
+            uint64_t prefix = 0;
+            std::memcpy(
+                &prefix, kHalo4HudDamagePrefix.data(), sizeof(prefix));
+            const size_t maximum =
+                length - (20 + kHalo4HudAnchorSpanFromBasis);
+            for (size_t offset = 0;
+                 offset <= maximum && found < maxOutput; ++offset)
+            {
+                if (*reinterpret_cast<const uint64_t*>(bytes + offset) != prefix)
+                    continue;
+                const uint8_t* const basis = bytes + offset + 20;
+                if (!Halo4HudAuthoredBasisMatches(basis) ||
+                    !Halo4HudImmutableSurroundMatches(basis))
+                    continue;
+                output[found++] = regionBase + offset + 20;
+                offset += 20 + kHalo4HudAnchorSpanFromBasis - 1;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return found; }
+        return found;
+    }
+
+    DWORD WINAPI Halo4HudScanThread(LPVOID parameter)
+    {
+        const uint32_t generation = static_cast<uint32_t>(
+            reinterpret_cast<uintptr_t>(parameter));
+        const uint64_t started = GetTickCount64();
+        uintptr_t accepted[2]{};
+        int rawHits = 0;
+        bool cancelled = false;
+
+        SYSTEM_INFO systemInfo{};
+        GetSystemInfo(&systemInfo);
+        uintptr_t address = reinterpret_cast<uintptr_t>(
+            systemInfo.lpMinimumApplicationAddress);
+        const uintptr_t maximumAddress = reinterpret_cast<uintptr_t>(
+            systemInfo.lpMaximumApplicationAddress);
+        MEMORY_BASIC_INFORMATION memory{};
+        while (address < maximumAddress && rawHits < 2 &&
+               VirtualQuery(reinterpret_cast<void*>(address), &memory,
+                            sizeof(memory)) == sizeof(memory))
+        {
+            if (!Halo4HudLayoutContextMatches(generation))
+            {
+                cancelled = true;
+                break;
+            }
+            const uintptr_t region =
+                reinterpret_cast<uintptr_t>(memory.BaseAddress);
+            const uintptr_t next = region + memory.RegionSize;
+            const DWORD baseProtect = memory.Protect & 0xFFu;
+            const bool readable =
+                baseProtect == PAGE_READONLY ||
+                baseProtect == PAGE_READWRITE ||
+                baseProtect == PAGE_WRITECOPY ||
+                baseProtect == PAGE_EXECUTE_READ ||
+                baseProtect == PAGE_EXECUTE_READWRITE ||
+                baseProtect == PAGE_EXECUTE_WRITECOPY;
+            const bool candidate = memory.State == MEM_COMMIT &&
+                !(memory.Protect & PAGE_GUARD) && readable &&
+                (memory.Type == MEM_PRIVATE || memory.Type == MEM_MAPPED);
+            if (candidate)
+            {
+                uintptr_t hits[2]{};
+                const int count = Halo4HudScanRegion(
+                    region, memory.RegionSize, hits, 2 - rawHits);
+                for (int i = 0; i < count && rawHits < 2; ++i)
+                    accepted[rawHits++] = hits[i];
+            }
+            if (next <= address)
+                break;
+            address = next;
+        }
+
+        AcquireSRWLockExclusive(&g_halo4HudLayoutLock);
+        if (!cancelled && Halo4HudLayoutContextMatches(generation) &&
+            rawHits == 1 && Halo4HudAnchorValidAt(accepted[0], false))
+        {
+            g_halo4HudLayout.basis.store(
+                accepted[0], std::memory_order_relaxed);
+            g_halo4HudLayout.generation.store(
+                generation, std::memory_order_relaxed);
+            g_halo4HudLayout.matchCount.store(1, std::memory_order_release);
+            g_halo4HudLayout.rememberedBasis = accepted[0];
+            g_halo4HudLayout.rememberedWrittenValid = false;
+            LOG("H4HUD: official ui\\hud_globals screen-transform basis at %p "
+                "matched exactly once in %llu ms; hud_size, hud_aspect, "
+                "hud_curvature and hud_vertical_offset are live",
+                reinterpret_cast<void*>(accepted[0]),
+                static_cast<unsigned long long>(GetTickCount64() - started));
+        }
+        else if (!cancelled && Halo4HudLayoutContextMatches(generation))
+        {
+            g_halo4HudLayout.basis.store(0, std::memory_order_relaxed);
+            g_halo4HudLayout.generation.store(
+                generation, std::memory_order_relaxed);
+            g_halo4HudLayout.matchCount.store(0, std::memory_order_release);
+            LOG("H4HUD: expected exactly one official ui\\hud_globals "
+                "screen-transform basis, observed %d; Halo 4 HUD layout stays "
+                "stock while camera, reticle and OpenXR remain armed",
+                rawHits);
+        }
+        ReleaseSRWLockExclusive(&g_halo4HudLayoutLock);
+        g_halo4HudLayout.scanInFlight.store(false, std::memory_order_release);
+        return 0;
+    }
+
+    bool Halo4HudWriteBasis(
+        uintptr_t address, const Halo4HudBasisPoint* basis);
+
+    void Halo4HudLayoutReset()
+    {
+        AcquireSRWLockExclusive(&g_halo4HudLayoutLock);
+        const uintptr_t address =
+            g_halo4HudLayout.basis.load(std::memory_order_relaxed);
+        if (address && g_halo4HudLayout.rememberedWrittenValid &&
+            g_halo4HudLayout.rememberedBasis == address &&
+            Halo4HudAnchorValidAt(address, true))
+        {
+            if (Halo4HudWriteBasis(
+                    address, kHalo4HudAuthoredBasis.data()))
+                LOG("H4HUD: restored Halo 4's authored screen-transform basis "
+                    "on level/title exit");
+            else
+                LOG("H4HUD: authored-basis restore failed during exit; "
+                    "publication was still cleared before the next title");
+        }
+        g_halo4HudLayout.basis.store(0, std::memory_order_relaxed);
+        g_halo4HudLayout.generation.store(0, std::memory_order_relaxed);
+        g_halo4HudLayout.matchCount.store(-1, std::memory_order_release);
+        g_halo4HudLayout.lastAttemptMs.store(0, std::memory_order_relaxed);
+        g_halo4HudLayout.scanAttempts.store(0, std::memory_order_relaxed);
+        g_halo4HudLayout.lastVerifyMs.store(0, std::memory_order_relaxed);
+        g_halo4HudLayout.appliedHorizontalBits.store(
+            0, std::memory_order_relaxed);
+        g_halo4HudLayout.appliedVerticalBits.store(
+            0, std::memory_order_relaxed);
+        g_halo4HudLayout.appliedCurvatureBits.store(
+            0, std::memory_order_relaxed);
+        g_halo4HudLayout.appliedOffsetBits.store(
+            0, std::memory_order_relaxed);
+        g_halo4HudLayout.rememberedBasis = 0;
+        g_halo4HudLayout.rememberedWrittenValid = false;
+        ReleaseSRWLockExclusive(&g_halo4HudLayoutLock);
+    }
+
+    void Halo4HudLayoutColdPoll(
+        uint32_t generation, bool soleHalo4Title, bool levelRunning)
+    {
+        if (!soleHalo4Title || !levelRunning ||
+            !Halo4HudLayoutContextMatches(generation))
+        {
+            if (g_halo4HudLayout.basis.load(std::memory_order_acquire) != 0 ||
+                g_halo4HudLayout.generation.load(
+                    std::memory_order_acquire) != 0)
+                Halo4HudLayoutReset();
+            return;
+        }
+        if (g_halo4HudLayout.basis.load(std::memory_order_acquire) != 0 &&
+            g_halo4HudLayout.generation.load(
+                std::memory_order_acquire) == generation)
+            return;
+        if (g_halo4HudLayout.scanInFlight.load(std::memory_order_acquire))
+            return;
+        if (g_halo4HudLayout.scanAttempts.load(
+                std::memory_order_relaxed) >= 3)
+            return;
+
+        const uint64_t now = GetTickCount64();
+        const uint64_t last = g_halo4HudLayout.lastAttemptMs.load(
+            std::memory_order_relaxed);
+        if (last && now - last < 2000)
+            return;
+        g_halo4HudLayout.lastAttemptMs.store(now, std::memory_order_relaxed);
+
+        if (g_halo4HudLayout.scanInFlight.exchange(
+                true, std::memory_order_acq_rel))
+            return;
+        g_halo4HudLayout.scanAttempts.fetch_add(
+            1, std::memory_order_relaxed);
+        g_halo4HudLayout.matchCount.store(-2, std::memory_order_release);
+        HANDLE thread = CreateThread(
+            nullptr, 0, Halo4HudScanThread,
+            reinterpret_cast<LPVOID>(static_cast<uintptr_t>(generation)),
+            0, nullptr);
+        if (thread)
+        {
+            CloseHandle(thread);
+            LOG("H4HUD: scanning for the official H4EK screen-transform basis");
+        }
+        else
+        {
+            g_halo4HudLayout.matchCount.store(-1, std::memory_order_release);
+            g_halo4HudLayout.scanInFlight.store(
+                false, std::memory_order_release);
+            LOG("H4HUD: scan thread creation failed; only HUD layout stays stock");
+        }
+    }
+
+    bool Halo4HudWriteBasis(
+        uintptr_t address, const Halo4HudBasisPoint* basis)
+    {
+        MEMORY_BASIC_INFORMATION memory{};
+        if (VirtualQuery(reinterpret_cast<void*>(address), &memory,
+                         sizeof(memory)) != sizeof(memory))
+            return false;
+        // A writable mapped view may still be file-backed. Force copy-on-write
+        // before the first store so no H4 map/tag file can ever be modified.
+        if (memory.Type != MEM_MAPPED && Halo4SafeWrite(
+                reinterpret_cast<void*>(address), basis,
+                kHalo4HudBasisBytes))
+            return true;
+        const DWORD wanted = memory.Type == MEM_MAPPED
+            ? PAGE_WRITECOPY : PAGE_READWRITE;
+        DWORD previous = 0;
+        if (!VirtualProtect(
+                reinterpret_cast<void*>(address), kHalo4HudBasisBytes,
+                wanted, &previous))
+            return false;
+        const bool wrote = Halo4SafeWrite(
+            reinterpret_cast<void*>(address), basis,
+            kHalo4HudBasisBytes) != 0;
+        DWORD restored = 0;
+        VirtualProtect(
+            reinterpret_cast<void*>(address), kHalo4HudBasisBytes,
+            previous, &restored);
+        return wrote;
+    }
+
+    void Halo4HudLayoutApply(uint32_t generation)
+    {
+        const uintptr_t address =
+            g_halo4HudLayout.basis.load(std::memory_order_acquire);
+        if (!address ||
+            g_halo4HudLayout.generation.load(
+                std::memory_order_acquire) != generation ||
+            !Halo4HudLayoutContextMatches(generation))
+            return;
+
+        float horizontal = 0.0f, vertical = 0.0f;
+        ComputeHudSafeFramePair(
+            g_config.hud_size, g_config.hud_aspect,
+            horizontal, vertical);
+        std::array<Halo4HudBasisPoint, 9> wanted{};
+        if (!Halo4ComputeHudBasis(
+                horizontal, vertical, g_config.hud_curvature,
+                g_config.hud_vertical_offset, wanted.data()))
+            return;
+
+        uint32_t horizontalBits = 0, verticalBits = 0;
+        uint32_t curvatureBits = 0, offsetBits = 0;
+        std::memcpy(&horizontalBits, &horizontal, sizeof(horizontalBits));
+        std::memcpy(&verticalBits, &vertical, sizeof(verticalBits));
+        std::memcpy(
+            &curvatureBits, &g_config.hud_curvature,
+            sizeof(curvatureBits));
+        std::memcpy(
+            &offsetBits, &g_config.hud_vertical_offset,
+            sizeof(offsetBits));
+        const uint64_t now = GetTickCount64();
+        const bool configUnchanged =
+            g_halo4HudLayout.appliedHorizontalBits.load(
+                std::memory_order_relaxed) == horizontalBits &&
+            g_halo4HudLayout.appliedVerticalBits.load(
+                std::memory_order_relaxed) == verticalBits &&
+            g_halo4HudLayout.appliedCurvatureBits.load(
+                std::memory_order_relaxed) == curvatureBits &&
+            g_halo4HudLayout.appliedOffsetBits.load(
+                std::memory_order_relaxed) == offsetBits;
+        if (configUnchanged &&
+            now - g_halo4HudLayout.lastVerifyMs.load(
+                std::memory_order_relaxed) < 1000)
+            return;
+
+        AcquireSRWLockExclusive(&g_halo4HudLayoutLock);
+        const bool contextStillValid =
+            address == g_halo4HudLayout.basis.load(
+                std::memory_order_relaxed) &&
+            Halo4HudLayoutContextMatches(generation);
+        std::array<uint8_t, 20 + kHalo4HudAnchorSpanFromBasis> bytes{};
+        const bool read = contextStillValid && Halo4HudReadAnchor(address, bytes);
+        const uint8_t* const current = bytes.data() + 20;
+        const bool immutable = read && Halo4HudImmutableSurroundMatches(current);
+        const bool currentKnown = immutable &&
+            (Halo4HudAuthoredBasisMatches(current) ||
+             (g_halo4HudLayout.rememberedWrittenValid &&
+              g_halo4HudLayout.rememberedBasis == address &&
+              std::memcmp(
+                  current, g_halo4HudLayout.rememberedWritten.data(),
+                  kHalo4HudBasisBytes) == 0));
+        if (!currentKnown)
+        {
+            g_halo4HudLayout.basis.store(0, std::memory_order_release);
+            g_halo4HudLayout.matchCount.store(-1, std::memory_order_release);
+            ReleaseSRWLockExclusive(&g_halo4HudLayoutLock);
+            LOG("H4HUD: proven basis changed or became unreadable; HUD layout "
+                "returned to stock and will reacquire without affecting VR");
+            return;
+        }
+        if (std::memcmp(current, wanted.data(), kHalo4HudBasisBytes) != 0)
+        {
+            if (!Halo4HudWriteBasis(address, wanted.data()))
+            {
+                g_halo4HudLayout.basis.store(0, std::memory_order_release);
+                g_halo4HudLayout.matchCount.store(-1, std::memory_order_release);
+                ReleaseSRWLockExclusive(&g_halo4HudLayoutLock);
+                LOG("H4HUD: basis write failed; HUD layout stays stock and "
+                    "camera, reticle and OpenXR remain armed");
+                return;
+            }
+            g_halo4HudLayout.rememberedBasis = address;
+            g_halo4HudLayout.rememberedWritten = wanted;
+            g_halo4HudLayout.rememberedWrittenValid = true;
+            LOG("H4HUD: applied size %.3f (basis %.3f/%.3f), aspect %.3f, "
+                "curvature %.3f, vertical %.1f px",
+                g_config.hud_size, horizontal, vertical,
+                g_config.hud_aspect, g_config.hud_curvature,
+                g_config.hud_vertical_offset);
+        }
+        g_halo4HudLayout.appliedHorizontalBits.store(
+            horizontalBits, std::memory_order_relaxed);
+        g_halo4HudLayout.appliedVerticalBits.store(
+            verticalBits, std::memory_order_relaxed);
+        g_halo4HudLayout.appliedCurvatureBits.store(
+            curvatureBits, std::memory_order_relaxed);
+        g_halo4HudLayout.appliedOffsetBits.store(
+            offsetBits, std::memory_order_relaxed);
+        g_halo4HudLayout.lastVerifyMs.store(now, std::memory_order_relaxed);
+        ReleaseSRWLockExclusive(&g_halo4HudLayoutLock);
     }
 
     struct Halo4CuiCommandHeader
@@ -34777,6 +35180,10 @@ namespace
                         halo4GateBase, halo4GateSize, halo4Generation,
                         halo4Active && halo4GateSampled,
                         activeLevelRunning);
+                    Halo4HudLayoutColdPoll(
+                        halo4Generation,
+                        halo4Active && halo4GateSampled,
+                        activeLevelRunning);
                     Halo4CameraLogTick();
                 }
 #endif
@@ -36279,6 +36686,7 @@ void Game_AutoVrTick()
                 // the arm-gated capabilities with it.
                 TitleAdapter_PublishMode(
                     GameTitle::Halo4, halo4Generation, RuntimeMode::Gameplay);
+                Halo4HudLayoutApply(halo4Generation);
             }
         }
         else if (g_enabled.load(std::memory_order_relaxed) ||
