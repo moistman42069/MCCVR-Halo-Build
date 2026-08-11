@@ -34501,9 +34501,8 @@ namespace
         // Storm80 -> held -> native-body record sequence; any miss leaves that
         // exact feature stock while the working camera/session stays armed.
         InstallHalo4Vrik(base,size);
-        // C-H4-45 captures only the face-stuck CUI artwork. The existing VR
-        // quad remains the sole owner of the crosshair position.
-        (void)InstallHalo4CuiReticle(base, size, generation);
+        // C-H4-45 is rejected for rework. Keep its optional capture hooks
+        // dormant while preserving the accepted procedural VR crosshair.
         PublishHalo4Lifecycle();
         LOG("Halo 4 camera core installed (generation %u): setup 0x%X and the "
             "render wrapper 0x%X are hooked at their pinned RVAs, both proven "
@@ -34542,10 +34541,7 @@ namespace
         }
         if (installed && g_halo4Camera.cuiReticleCleanupRequired)
             (void)CleanupHalo4CuiReticleFeature();
-        else if (installed && levelRunning &&
-                 !g_halo4Camera.cuiReticleInstalled.load(
-                     std::memory_order_acquire))
-            (void)InstallHalo4CuiReticle(base, size, generation);
+        // C-H4-45 retry remains dormant while the path is reworked.
         if (g_vrRuntimeFailureLatched.load(std::memory_order_acquire))
         {
             g_halo4Camera.armed.store(false, std::memory_order_release);
@@ -34564,7 +34560,7 @@ namespace
                 kReachRenderSafetyIntervalMs)
         {
             g_halo4Camera.armed.store(true, std::memory_order_release);
-            LOG("Halo 4 camera core armed: C-H4-45 face CUI art on the unchanged VR crosshair, current-eye controller-rerooted "
+            LOG("Halo 4 camera core armed: C-H4-45 rollback, current-eye controller-rerooted "
                 "Storm hands, H3/ODST/Reach left_hand-marker parity free pose, exact C-H4-38 shared-right-aim support pose, and "
                 "same-frame held-model carry (no arm IK) on C-H4-10 motion aim, VR "
                 "turn and rumble on C-H4-9's headset-owned look, C-H4-8's 6DOF and "

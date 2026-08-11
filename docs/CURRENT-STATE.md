@@ -29,9 +29,12 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
-## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-45 - 2026-08-11
+## REJECTED HALO 4 TEST CANDIDATE: C-H4-45 - 2026-08-11
 
-**Headset test required; this does not advance the accepted C-H4-43 pointer.**
+**Rejected for rework before headset testing; this never advanced the accepted
+C-H4-43 pointer.** The user required the active Halo 4 path to contain only the
+same authored-art replacement behavior as Halo 3, ODST, and Reach, with no
+remaining rejected native-positioning machinery in that active transaction.
 C-H4-45 makes one crosshair-routing correction. While the bounded Halo 4 CUI
 art capture is active, an exact engine rebind of the learned scene render target
 is routed back to the private authored-crosshair texture before the normal
