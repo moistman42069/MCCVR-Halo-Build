@@ -34021,10 +34021,10 @@ namespace
         // Storm80 -> held -> native-body record sequence; any miss leaves that
         // exact feature stock while the working camera/session stays armed.
         InstallHalo4Vrik(base,size);
-        // C-H4-43l retains every stock CUI draw and converts the normalized
-        // per-eye gun-ray projection through Halo 4's own live pixel-space
-        // reticle transform before changing that reticle-only translation.
-        (void)InstallHalo4CuiReticle(base, size, generation);
+        // C-H4-43l is headset-rejected: its CUI Y mapping was inverted and it
+        // left Halo 4's native reticle much larger than the shared VR reticle.
+        // Keep the proven optional transaction dormant until its replacement
+        // corrects both parts of the title-local matrix mapping.
         PublishHalo4Lifecycle();
         LOG("Halo 4 camera core installed (generation %u): setup 0x%X and the "
             "render wrapper 0x%X are hooked at their pinned RVAs, both proven "
@@ -34063,10 +34063,7 @@ namespace
         }
         if (installed && g_halo4Camera.cuiReticleCleanupRequired)
             (void)CleanupHalo4CuiReticleFeature();
-        else if (installed && levelRunning &&
-                 !g_halo4Camera.cuiReticleInstalled.load(
-                     std::memory_order_acquire))
-            (void)InstallHalo4CuiReticle(base, size, generation);
+        // C-H4-43l retry remains dormant with its initial install above.
         if (g_vrRuntimeFailureLatched.load(std::memory_order_acquire))
         {
             g_halo4Camera.armed.store(false, std::memory_order_release);

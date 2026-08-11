@@ -29,9 +29,19 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
-## CURRENT HALO 4 TEST CANDIDATE: C-H4-43l - 2026-08-11
+## REJECTED HALO 4 TEST CANDIDATE: C-H4-43l - 2026-08-11
 
-**Headset pending; this does not advance the accepted pointer below.** This is
+**Headset rejected; this never advanced the accepted pointer below.** The
+correct `20fc086` Steam/SteamVR/PSVR2 90 Hz run retained the entire HUD and
+moved Halo 4's own animated/target-coloured reticle with the gun. It also
+proved two remaining transform faults: vertical movement was inverted and the
+native CUI art was much larger than the Halo 3/ODST/Reach VR reticle. The
+optional hook is now dormant. A replacement must reverse only the title-local
+CUI Y mapping and derive native uniform scale from the shared
+`crosshair_size_deg` angular-size contract without changing any other HUD draw
+or any other title.
+
+This was
 the mathematical correction to rejected 43k. The fresh Steam/SteamVR/PSVR2 log
 proved Halo 4's native reticle centre is a pixel-space CUI transform
 (`-1893.000 / 1064.517`), while 43k incorrectly added normalized projection
