@@ -749,3 +749,71 @@ bounded 500 ms worker cadence. Static signature, edge, executable-range, mapping
 hook-enable failures still reject the generation. The HUD pixels themselves
 remain unmodified, so Halo 4's native target/friendly colour state is captured
 with the reticle rather than recreated procedurally.
+
+## E-H4-34 C-H4-47 regression and C-H4-48 correction (2026-08-13)
+
+C-H4-46 was headset-rejected: "some random asset" on the VR crosshair instead
+of Halo 4's own reticle. C-H4-47 attempted a fix by (a) deriving the capture's
+source extent from the game's full backbuffer raster instead of the live
+viewport at capture entry, and (b) installing a process-wide `RSSetViewports`/
+`RSSetScissorRects` detour that forced that framing for the whole duration a
+capture was open. Headset result: `art 0` on every window (a totally blank
+capture, worse than C-H4-46's real-but-miscropped content) and the real,
+on-screen HUD broke. Reverted by `87225c5` without further diagnosis, per
+`AGENTS.md`'s revert-before-continuing rule.
+
+**What the earlier E-H4-33 entry established, re-read in full for this
+correction:** the accepted redirect design (43q/45/46) saves and restores
+whatever viewport the engine already has at capture entry - it never sets a
+new one during the capture. The 43i/43j ABI section proves Halo 4's main CUI
+playback is a single synchronous `user_interface_render` call whose descendant
+commands submit through a shared renderer/context; nothing in that section
+implies the viewport is fixed for the call's duration.
+
+**The mechanism, from C-H4-46's own preserved run.** `9 exact capture OM
+reroutes in 2s` against `3 authored captures` - Halo 4 rebinds its learned
+scene-color target 3 times inside every captured replay. That run's
+`SCENEPROBE` lines record the SAME learned RTV bound with a `947x683` viewport
+at one point and a full-raster viewport at another point in the same stream.
+The existing redirect (C-H4-45/46) follows every one of those 3 rebinds to the
+private capture target but never touches the viewport, so each of the 3
+rebinds draws into the SAME 512x512 texture using WHATEVER viewport the
+engine's own preceding pass happened to leave set - three different,
+uncorrelated scales composited on top of each other. This is not a wrong crop;
+it is a smear of (at least) 3 unrelated passes, which is exactly what "some
+random asset" describes, and it is consistent with the result varying between
+runs (SCENEPROBE's exact viewport sequence is timing-dependent).
+
+**Why C-H4-47 went to `art 0` instead of fixing this.** Two independent risky
+changes at once, neither individually verified: (1) the derived viewport was
+roughly 10x larger than anything already proven to work in this file (C-H4-46
+used the live viewport at entry, order-of-magnitude comparable to the capture
+texture; C-H4-47 used the full `4834x3486` backbuffer), and (2) the global
+detour reasserted that oversized viewport for every `RSSetViewports`/
+`RSSetScissorRects` call system-wide while any capture was open, gated only by
+one relaxed-atomic flag with no verification it could never observe a call
+from the real (non-capture) HUD pass. Root cause between these two is not
+separately established - reverting both together was the correct response
+once the combined result was known bad, per the project's revert-before-
+continuing rule, not a claim about which one specifically caused which symptom.
+
+**C-H4-48's correction targets only the proven mechanism above.** The ONE
+viewport/scissor the capture opens with - same magnitude C-H4-46 already used
+and headset-proved captures real content (`art 4345`) - is saved once
+(`ReticleCaptureState::captureViewport`/`captureScissor`) and re-applied at
+each Halo-4 scene-target rebind, from inside the existing
+`VR_RedirectRenderTargets` Halo-4 branch, immediately after the OM rewrite
+already happening there. No new D3D11 hooks are installed. No capture
+magnitude changed. The reassert is gated by `g_reticleCaptureState.active`,
+which is Halo-4-specific and already scoped to bracket exactly one capture
+call - the same scope the existing OM-redirect already relies on, so this adds
+no new lifecycle surface.
+
+**This is not proven correct.** It assumes the engine's own `RSSetViewports`
+for each rebind precedes that rebind's `OMSetRenderTargets` call (so that
+reasserting synchronously inside our OM hook, which fires after the engine's
+`OMSetRenderTargets`, comes after the engine's viewport call too and therefore
+wins). This ordering is not independently confirmed by disassembly. New
+telemetry (`framing reasserts` alongside the existing `exact capture OM
+reroutes`) makes a silent reassert failure visible in the next log even if the
+result is still wrong.

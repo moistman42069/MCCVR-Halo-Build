@@ -29,6 +29,91 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
+## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-48 - 2026-08-13
+
+**Headset test required; this does not advance the accepted C-H4-43 pointer.**
+This is NOT a confirmed fix. It is one narrow, evidence-backed correction after
+a same-day regression: `C-H4-47` (below) was installed, headset-rejected for
+producing zero crosshair content AND breaking the real, on-screen HUD, and was
+reverted (`87225c5`) before this candidate was written. Static analysis has
+produced a plausible-sounding wrong answer on this exact spot at least three
+times now (`43j`, `43q`, `47`); the actual result is decided by the headset,
+not by this write-up.
+
+**What C-H4-47 got wrong, established from its own preserved log** (Steam,
+`06:41:34`-`06:42:36`, source `9a9f47e`): `Halo 4 reticle upload: 0 uploaded ...
+art 0, blankHeld 180` on every window - the capture held nothing. C-H4-47 had
+changed two things at once: it switched the capture's source extent from the
+live viewport at capture entry to the full backbuffer raster (`4834x3486` that
+session, about 10x larger than the viewport C-H4-46 actually used), and it
+installed a process-wide `RSSetViewports`/`RSSetScissorRects` detour gated only
+by a single global flag. Changing both at once made the specific failure
+unattributable, and independently the far larger, deeply offscreen viewport
+this produced is unlike anything already proven to work in this codebase.
+
+**What was actually wrong, from a full read of `HALO4-CUI-EVIDENCE.md`.** The
+executor/gameplay-scope ABI section states the accepted redirect design saves
+and restores whatever viewport the engine already has - it never sets a new
+one. Halo 4 rebinds its learned scene-color target up to 3 times inside one
+captured replay (measured on C-H4-46's own log: `9 exact capture OM reroutes in
+2s` against `3 authored captures`). The C-H4-46 preserved run's own
+`SCENEPROBE` lines show that same learned RTV bound with a `947x683` viewport
+at one point in the stream and a full-raster viewport at another. Left alone,
+those 3 rebinds draw at 3 different, uncorrelated scales into the same 512x512
+private texture - not a wrong crop, a composite of unrelated passes stacked on
+top of each other. That is what the user's "some random asset" report was.
+
+**The fix is deliberately the minimum that addresses this specific mechanism.**
+The one viewport/scissor the capture opened with - same magnitude C-H4-46
+already used and headset-proved captures real content (`art 4345`), unchanged
+- is saved once and re-applied at each Halo-4 scene-target rebind, from inside
+the existing `VR_RedirectRenderTargets` Halo-4 branch, immediately after our
+own render-target rewrite (which runs after the engine's own preceding
+viewport call for that same rebind). No new D3D11 hooks. No capture-magnitude
+change. No process-wide state; the existing `g_reticleCaptureState.active`
+scope (Halo-4-only, bracketing one capture) is the only gate.
+
+**What the log must show.** `Halo 4 C-H4-48 shared authored-reticle path:`
+with `exact capture OM reroutes` and `framing reasserts` equal (a mismatch
+means the reassert is silently not firing on some rebinds), and - the actual
+test - `Halo 4 reticle upload:` with `art` nonzero, matching or exceeding
+C-H4-46's `~4345`. In the headset: does the floating VR crosshair show Halo
+4's own reticle art, not a corner of the HUD or a smear of several UI panels.
+
+## REJECTED HALO 4 TEST CANDIDATE: C-H4-47 - 2026-08-13
+
+**Headset rejected; this never advanced the accepted C-H4-43 pointer.** Steam,
+source `9a9f47e`, session `06:41:34`-`06:42:36`. The user's report: the
+floating VR crosshair showed the placeholder/procedural reticle instead of
+authored art, and the real, on-screen Halo 4 HUD disappeared. The preserved
+log confirms both mechanically: `Halo 4 reticle upload: 0 uploaded ... art 0,
+blankHeld 180` on every 2-second window from the moment captures began, so
+zero authored content ever reached the swapchain, and the placeholder shown is
+the existing procedural bootstrap fallback that is deliberately shown while no
+valid authored art is held.
+
+C-H4-47 made two changes at once: it derived the capture's source extent from
+the game's backbuffer raster (`4834x3486` that session) instead of the live
+viewport at capture entry, and it installed a process-wide `RSSetViewports`/
+`RSSetScissorRects` detour that forced that framing for the whole duration a
+capture was open, gated only by a single relaxed-atomic flag. The resulting
+viewport was roughly 10x larger than anything already proven in this codebase
+and deeply negative-offset. Root cause is not established with certainty - the
+combination of an extreme viewport and a broad, weakly-scoped override is
+sufficient explanation for both symptoms without needing a more specific one -
+and no further diagnosis was attempted before reverting, per `AGENTS.md`:
+revert a failed experiment before starting the next one. Reverted by `87225c5`.
+C-H4-48 above is the replacement: it targets the same underlying mechanism
+Ghidra/H4EK evidence actually supports, with neither of C-H4-47's two risky
+changes.
+
+| C-H4-47 identity | Value |
+| --- | --- |
+| Source | `ae3393bb8188f78962e8e5f95428dc9d7f9cb7bb` |
+| Installed candidate | `out/candidates/9a9f47e-halo4-c47-authored-capture-owns-framing-20260813-083838908Z` |
+| `halo3xr.dll` SHA-256 | `DBD95EBEC1B2C5860AA7039437D8ABA1C33C2E697F6C38125A249C707E7E84CA` |
+| Preserved failing log | Steam `Halo_MCC_VR/halo3xr.log`, session `06:41:34`-`06:42:36`, source `9a9f47e` |
+
 ## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-46 - 2026-08-11
 
 **Headset test required; this does not advance the accepted C-H4-43 pointer.**
