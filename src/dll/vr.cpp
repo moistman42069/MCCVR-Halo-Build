@@ -11018,7 +11018,27 @@ static bool BeginAuthoredReticleCaptureInternal(
     g_context->RSGetScissorRects(&saved.scissorCount, saved.scissors);
 
     D3D11_VIEWPORT captureViewport{};
-    if (saved.viewportCount)
+    const GameTitle captureTitle = TitleAdapter_GetActiveTitle();
+    // Halo 3/ODST/Reach hook a widget-scoped draw, so the viewport already
+    // live when their capture begins IS that widget's own viewport - it is a
+    // meaningful, consistent quantity. Halo 4 has no such narrow hook (its
+    // whole CUI stream replays through here), so the live viewport at capture
+    // entry is only ever whatever the PRECEDING unrelated pass left bound -
+    // measured this session ranging from the full 4834x3486 raster down to a
+    // 1209x872 slice depending on exact timing, non-deterministic capture to
+    // capture. The reticle container's OWN measured transform base
+    // (-halfRasterWidth/+halfRasterHeight, proven across two separate
+    // sessions at two different raster sizes) is positioned directly in
+    // raster-pixel space, so a fixed region centred on the raster is a
+    // meaningful, timing-independent source for Halo 4 alone.
+    if (captureTitle == GameTitle::Halo4)
+    {
+        captureViewport.Width = static_cast<float>(kReticleSize) * 4.0f;
+        captureViewport.Height = static_cast<float>(kReticleSize) * 4.0f;
+        captureViewport.MinDepth = 0.0f;
+        captureViewport.MaxDepth = 1.0f;
+    }
+    else if (saved.viewportCount)
         captureViewport = saved.viewports[0];
     else
     {
@@ -11032,17 +11052,24 @@ static bool BeginAuthoredReticleCaptureInternal(
     // The outer quad retains the universal crosshair_size_deg and distance
     // sliders. Halo 3 and ODST share 4x internal authored-art occupancy so the
     // same slider values produce matching apparent size. Reach retains its
-    // independently calibrated 2x occupancy. Halo 4 starts at its neutral 1x
-    // mapping until the headset supplies title-specific
-    // calibration; borrowing Reach's crop here would repeat that title's
-    // spread-petal failure. Scope zoom remains separate.
-    const GameTitle captureTitle = TitleAdapter_GetActiveTitle();
+    // independently calibrated 2x occupancy. Halo 4 now uses that SAME proven
+    // 4x ratio, baked directly into the fixed region above rather than
+    // applied as a further multiplier, because C-H4-47 measured that
+    // shrinking the WHOLE raster (~9.4x this session) into the capture
+    // produced a totally blank result - consistent with a thin/hollow
+    // reticle outline falling below rasterizer coverage at that extreme a
+    // minification. Scope zoom remains separate.
     const float authoredCaptureScale =
         captureTitle == GameTitle::Halo3 ||
         captureTitle == GameTitle::Halo3ODST ? 4.0f :
-        captureTitle == GameTitle::HaloReach ? 2.0f : 1.0f;
+        captureTitle == GameTitle::HaloReach ? 2.0f :
+        captureTitle == GameTitle::Halo4 ? 1.0f : 1.0f;
     captureViewport.Width *= authoredCaptureScale;
     captureViewport.Height *= authoredCaptureScale;
+    // This symmetric centring is what maps the SOURCE's own centre - where any
+    // FPS crosshair sits in its own normal full-screen render, independent of
+    // whatever viewport is used to display it - to the capture texture's
+    // centre, regardless of the chosen source width/height.
     captureViewport.TopLeftX =
         (static_cast<float>(kReticleSize) - captureViewport.Width) * 0.5f;
     captureViewport.TopLeftY =
