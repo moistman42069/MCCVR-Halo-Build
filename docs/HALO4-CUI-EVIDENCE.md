@@ -749,3 +749,64 @@ bounded 500 ms worker cadence. Static signature, edge, executable-range, mapping
 hook-enable failures still reject the generation. The HUD pixels themselves
 remain unmodified, so Halo 4's native target/friendly colour state is captured
 with the reticle rather than recreated procedurally.
+
+## E-H4-33 The capture framing, not the capture, decided the picture (C-H4-47)
+
+C-H4-46 was headset-rejected for showing a non-reticle image on the VR
+crosshair. Every counter that candidate reports was nominal, so the evidence
+that matters is what the run measured about geometry rather than about success.
+
+Source: the preserved Steam run of `917e57f`, `17:40:37`-`17:43:59`.
+
+1. **The capture worked.** `3 authored captures` and `0 write failures` per two
+   seconds, and `Halo 4 reticle upload: 3 uploaded, 0 skipped ... art 4345,
+   blankHeld 0` throughout. Non-blank pixels were captured, uploaded and shown.
+   `art` held between `3731` and `4492` across the whole session - a stable,
+   substantial image, not an intermittent or empty one.
+2. **The engine rebinds inside the captured replay.** `9 exact capture OM
+   reroutes in 2s` against `3 authored captures` is three scene-target rebinds
+   per captured CUI replay. This is the behaviour C-H4-45 was written to catch
+   and it is confirmed live.
+3. **Those rebinds carry the engine's framing.** The same run's `SCENEPROBE`
+   lines record the viewport bound with each target. The learned scene-colour
+   RTV - `3786x2730 fmt=28 viewfmt=28`, the one the reroute matches - was bound
+   with `viewport 947x683 at (0,0)`; its neighbours in the same eye were bound
+   with `viewport 3786x2730 at (0,0)`. None is the centred, negative-origin
+   window a 512-square capture needs, and `VR_RedirectRenderTargets` substituted
+   only the target pointer.
+
+The private crosshair texture is 512 square (`XR swapchain 'crosshair' created:
+512x512`) while the eye raster is 3786x2730, so the viewport is the sole
+selector of which pixels reach it. A `3786x2730 at (0,0)` viewport on a
+512-square target keeps the raster's top-left corner. That is the "random
+asset": a corner of Halo 4's HUD, captured and presented exactly as designed.
+
+**Halo 4's CUI is authored in the eye raster.** The reticle transform base this
+build reports every window, `-1893.000/1064.517`, is exactly `-3786/2` and the
+16:9 half-height of a 3786-wide image (`2129.034/2`). The raster is therefore
+the correct source extent for the framing, and the viewport that happens to be
+bound when the CUI dispatcher is first entered is not. At the neutral 1x
+magnification the centred window is `3786x2730 at (-1637,-1109)`, keeping the
+middle 512 raster pixels; Halo 4's nominal `81.92`-unit reticle in its 720-unit
+virtual screen is `81.92/720 * 2129.034 = 242` of those pixels.
+
+**What this proves about the fix.** Re-applying the framing at the rerouted bind
+is necessary but not sufficient, because a renderer may set its viewport after
+binding its target rather than before, and nothing in this evidence establishes
+which order Halo 4 uses. C-H4-47 therefore does not depend on that order: while
+an authored capture is open, the capture owns `RSSetViewports` and
+`RSSetScissorRects` outright. This is a claim about our own state, which we can
+guarantee, instead of a claim about the engine's call order, which this evidence
+does not settle.
+
+`ID3D11DeviceContext` vtable slots are confirmed against the three this project
+already takes - `DrawIndexed` 12, `OMSetRenderTargets` 33, `CopyResource` 47 -
+which fixes `RSSetViewports` at 44 and `RSSetScissorRects` at 45.
+
+**Also corrected, and NOT claimed as the cause:** a rerouted bind previously
+paired the 512-square private target with the engine's full-size scene depth
+buffer. D3D11 requires one size across the output-merger stage. The capture
+still produced art, so this combination was evidently tolerated on this run
+rather than dropping the bind; it is removed because the three accepted title
+captures already draw authored art with no depth bound, not because it is known
+to have contributed.

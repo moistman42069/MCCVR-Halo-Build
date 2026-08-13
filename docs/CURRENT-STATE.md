@@ -29,9 +29,85 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
-## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-46 - 2026-08-11
+## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-47 - 2026-08-13
 
 **Headset test required; this does not advance the accepted C-H4-43 pointer.**
+C-H4-47 keeps every part of C-H4-46's design and fixes the one thing that made
+it show the wrong picture. The user's report on the installed C-H4-46 build was
+that the VR crosshair carries "some random asset" instead of Halo 4's own CUI
+reticle.
+
+**This was diagnosed from C-H4-46's own preserved run, not theorised.** That log
+(`17:40:37`-`17:43:59`, Steam, source `917e57f`) shows the capture succeeding on
+every counter it has: `3 authored captures` per two seconds, `0 write failures`,
+`0 forced restores`, and `Halo 4 reticle upload: 3 uploaded, 0 skipped ... art
+4345, blankHeld 0`. Non-blank art was captured, uploaded and shown every window.
+So the fault was never admission, redirection or upload - it was *which pixels*
+the capture contained.
+
+The 512-square crosshair texture is far smaller than Halo 4's 3786x2730 eye
+raster, so the viewport in force at each draw is the only thing deciding what
+lands in it. C-H4-46 computed a centred viewport once, at capture entry, and
+then handed the target back to the engine: its `9 exact capture OM reroutes in
+2s` are Halo 4 rebinding the scene target three times inside every captured CUI
+replay, and each of those rebinds carries the engine's own full-raster viewport.
+The same run's `SCENEPROBE` lines show what those binds look like - the learned
+scene-colour RTV (`3786x2730 fmt=28`) was bound with a `947x683 at (0,0)`
+viewport, and its neighbours with `3786x2730 at (0,0)` - never the centred
+negative-origin window the capture asked for. A full-raster viewport on a
+512-square texture keeps the raster's top-left corner, so the capture held a
+corner of Halo 4's HUD while every counter stayed nominal.
+
+C-H4-47 makes the capture framing authoritative instead of advisory:
+
+- While an authored capture is open, that capture owns the rasterizer framing.
+  Two new `ID3D11DeviceContext` detours (`RSSetViewports` slot 44,
+  `RSSetScissorRects` slot 45, immediately after the slot-33/47 entries this
+  project already takes) replace the engine's framing with the capture's for the
+  duration. Re-applying at the rebind alone could not win a race against a
+  viewport set *after* the bind; this removes the race rather than reordering it.
+- Halo 4's framing is derived from its own authoring raster rather than from
+  whichever viewport the scene render left bound at CUI entry. Its runtime-
+  measured reticle transform base, `-1893.000/1064.517`, is exactly minus half
+  the 3786-wide raster and the 16:9 half-height of that width, so the raster is
+  the space its CUI is authored in. The magnification stays at Halo 4's neutral
+  1x, which centres the middle 512 raster pixels: Halo 4's nominal `81.92`-unit
+  reticle in its 720-unit virtual screen is about 242 of those pixels, just under
+  half the texture.
+- A rerouted bind now binds no depth. The engine pairs its scene depth buffer
+  with that bind and D3D11 requires one size across the whole output-merger
+  stage; the three accepted title captures already draw their authored art with
+  no depth bound, so this puts Halo 4 on the same footing.
+- Degenerate framing is refused and leaves the title's reticle stock for that
+  frame, releasing the references the capture had already taken.
+
+Nothing about placement changes. The shared OpenXR weapon-ray quad remains the
+sole owner of position, distance, stabilization and angular size, so the
+accepted bullet-ray crosshair tracking and `crosshair`, `crosshair_distance_m`,
+`crosshair_size_deg` and `crosshair_animation_frames` all behave exactly as they
+already do. The three accepted titles keep the exact live-viewport framing they
+were calibrated on and never raise framing ownership, and the new detours are
+deliberately outside the hook set that gates Present, the per-eye redirect and
+every camera core: if they fail to install, only the crosshair capture degrades
+and the log says so.
+
+**What the log must show.** `Halo 4 C-H4-47 shared authored-reticle path:` with
+`framing hooks LIVE`, a non-zero count of engine framing calls overridden, and
+`capture framing 3786x2730 at (-1637,-1109) in the 512-square crosshair
+texture`. In the headset the floating VR crosshair should carry Halo 4's own
+reticle art - including its spread and target colour - at the same position it
+already occupies.
+
+## REJECTED HALO 4 TEST CANDIDATE: C-H4-46 - 2026-08-11
+
+**Headset rejected; this never advanced the accepted C-H4-43 pointer.** The user
+ran the installed `917e57f` build and reported the VR crosshair carrying "some
+random asset" rather than Halo 4's CUI reticle. Its architecture is correct and
+is carried forward unchanged by C-H4-47 above; only its capture framing was
+wrong, and the derivation is in that section. The preserved failing log is the
+Steam `17:40:37` run, source `917e57f`, whose crosshair counters are all
+nominal - the exact shape of "clean diagnostic = wrong mechanism".
+
 C-H4-46 reworks Halo 4 onto the same player-visible authored-reticle path as
 Halo 3, ODST, and Reach: native crosshair pixels enter the shared authored
 texture, upload through the shared `g_reticleChain`, and appear on the unchanged

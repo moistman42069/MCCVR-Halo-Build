@@ -253,9 +253,26 @@ namespace
         UINT scissorCount = 0;
         bool active = false;
         bool publishesAuthored = false;
+        // The framing this capture requires. Retained so a title that rebinds
+        // its scene target mid-capture can have it re-applied on that bind
+        // instead of inheriting the engine's own viewport.
+        D3D11_VIEWPORT captureViewport{};
+        D3D11_RECT captureScissor{};
+        bool framingValid = false;
+        bool framingOwnsRebinds = false;
     };
     ReticleCaptureState g_reticleCaptureState{};
     std::atomic<uint64_t> g_authoredReticleOmReroutes{0};
+    std::atomic<uint64_t> g_authoredReticleFramingReasserts{0};
+    // The one relaxed load every RSSetViewports/RSSetScissorRects call in the
+    // process pays. Only a capture that owns its framing raises it.
+    std::atomic<bool> g_authoredCaptureOwnsRasterFraming{false};
+    std::atomic<bool> g_authoredCaptureFramingHooksInstalled{false};
+    std::atomic<uint64_t> g_authoredReticleFramingOverrides{0};
+    std::atomic<float> g_authoredReticleFramingWidth{0.0f};
+    std::atomic<float> g_authoredReticleFramingHeight{0.0f};
+    std::atomic<float> g_authoredReticleFramingLeft{0.0f};
+    std::atomic<float> g_authoredReticleFramingTop{0.0f};
 
     // The CHUD steal-and-requad machinery (capture texture, shader
     // classifier, hand-HUD swapchain) was removed 2026-07-18: it removed the
@@ -10469,8 +10486,11 @@ static void ProbeFsrTargets(ID3D11DeviceContext* context, UINT count,
 
 bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
                               ID3D11RenderTargetView* const* input,
-                              ID3D11RenderTargetView** output)
+                              ID3D11RenderTargetView** output,
+                              bool* outDropDepthStencil)
 {
+    if (outDropDepthStencil)
+        *outDropDepthStencil = false;
     ProbeFsrTargets(context, count, input);
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
     auto& hudRoute = g_nativeHudEyeRoute;
@@ -10512,7 +10532,28 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
             }
         }
         if (captureChanged)
+        {
+            if (outDropDepthStencil)
+                *outDropDepthStencil = true;
             g_authoredReticleOmReroutes.fetch_add(1, std::memory_order_relaxed);
+            // This rebind carries the ENGINE's viewport, sized for the full eye
+            // raster rather than for the small private capture. Leaving it in
+            // force reframes every draw that follows onto a corner of the
+            // capture instead of the centred authored reticle, which is exactly
+            // what a nominal-looking capture with non-reticle pixels means.
+            // Re-apply the framing this capture was opened with. Immediate
+            // context only: the retained framing describes its state alone.
+            if (g_reticleCaptureState.framingOwnsRebinds &&
+                g_reticleCaptureState.framingValid && context == g_context)
+            {
+                context->RSSetViewports(
+                    1, &g_reticleCaptureState.captureViewport);
+                context->RSSetScissorRects(
+                    1, &g_reticleCaptureState.captureScissor);
+                g_authoredReticleFramingReasserts.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+        }
         return captureChanged;
     }
     int targetEye = eye;
@@ -10694,6 +10735,70 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
 uint64_t VR_TakeAuthoredReticleOmReroutes()
 {
     return g_authoredReticleOmReroutes.exchange(0, std::memory_order_relaxed);
+}
+
+uint64_t VR_TakeAuthoredReticleFramingReasserts()
+{
+    return g_authoredReticleFramingReasserts.exchange(
+        0, std::memory_order_relaxed);
+}
+
+uint64_t VR_TakeAuthoredReticleFramingOverrides()
+{
+    return g_authoredReticleFramingOverrides.exchange(
+        0, std::memory_order_relaxed);
+}
+
+void VR_SetAuthoredCaptureFramingHooksInstalled(bool installed)
+{
+    g_authoredCaptureFramingHooksInstalled.store(
+        installed, std::memory_order_release);
+}
+
+bool VR_AuthoredCaptureFramingHooksInstalled()
+{
+    return g_authoredCaptureFramingHooksInstalled.load(
+        std::memory_order_acquire);
+}
+
+bool VR_AuthoredCaptureOwnsRasterFraming(ID3D11DeviceContext* context,
+                                         D3D11_VIEWPORT* outViewport,
+                                         D3D11_RECT* outScissor)
+{
+    // Cold path for every title that is not mid-capture: one relaxed load.
+    if (!g_authoredCaptureOwnsRasterFraming.load(std::memory_order_relaxed))
+        return false;
+    // The retained framing describes the immediate context's state only, and
+    // the flag above is raised and cleared on that same render thread, so the
+    // plain reads below are not racing a deferred context.
+    if (context != g_context)
+        return false;
+    const auto& saved = g_reticleCaptureState;
+    if (!saved.active || !saved.framingValid || !saved.framingOwnsRebinds)
+        return false;
+    if (outViewport)
+        *outViewport = saved.captureViewport;
+    if (outScissor)
+        *outScissor = saved.captureScissor;
+    g_authoredReticleFramingOverrides.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+// Reports the framing the last opened capture actually applied, so a log can
+// show the centred window instead of only asserting that one was requested.
+void VR_GetAuthoredReticleFraming(float outFraming[5])
+{
+    if (!outFraming)
+        return;
+    outFraming[0] = g_authoredReticleFramingWidth.load(
+        std::memory_order_relaxed);
+    outFraming[1] = g_authoredReticleFramingHeight.load(
+        std::memory_order_relaxed);
+    outFraming[2] = g_authoredReticleFramingLeft.load(
+        std::memory_order_relaxed);
+    outFraming[3] = g_authoredReticleFramingTop.load(
+        std::memory_order_relaxed);
+    outFraming[4] = static_cast<float>(kReticleSize);
 }
 
 bool VR_GetHeadPose(float outQuat[4], float outPos[3])
@@ -10975,16 +11080,17 @@ static bool BeginAuthoredReticleCaptureInternal(
 
     D3D11_VIEWPORT captureViewport{};
     if (saved.viewportCount)
+    {
+        // Keep the live depth range for the three accepted titles: only the
+        // framing changes below, so their calibrated capture stays identical.
         captureViewport = saved.viewports[0];
+    }
     else
     {
-        captureViewport.Width =
-            static_cast<float>(g_gameBackbufferDesc.Width);
-        captureViewport.Height =
-            static_cast<float>(g_gameBackbufferDesc.Height);
         captureViewport.MinDepth = 0.0f;
         captureViewport.MaxDepth = 1.0f;
     }
+
     // The outer quad retains the universal crosshair_size_deg and distance
     // sliders. Halo 3 and ODST share 4x internal authored-art occupancy so the
     // same slider values produce matching apparent size. Reach retains its
@@ -10997,20 +11103,78 @@ static bool BeginAuthoredReticleCaptureInternal(
         captureTitle == GameTitle::Halo3 ||
         captureTitle == GameTitle::Halo3ODST ? 4.0f :
         captureTitle == GameTitle::HaloReach ? 2.0f : 1.0f;
-    captureViewport.Width *= authoredCaptureScale;
-    captureViewport.Height *= authoredCaptureScale;
-    captureViewport.TopLeftX =
-        (static_cast<float>(kReticleSize) - captureViewport.Width) * 0.5f;
-    captureViewport.TopLeftY =
-        (static_cast<float>(kReticleSize) - captureViewport.Height) * 0.5f;
+
+    // Halo 4 is the only title whose renderer rebinds its scene target inside
+    // the captured CUI replay, and it authors that CUI in the full eye raster
+    // (its measured reticle transform base is exactly -rasterWidth/2). Its
+    // framing therefore comes from the raster, not from whichever viewport the
+    // scene render happened to leave bound at CUI entry, and it is re-applied
+    // on every rerouted rebind below. The three accepted titles keep the exact
+    // live-viewport framing they were calibrated on.
+    const bool titleAuthorsInFullRaster = captureTitle == GameTitle::Halo4;
+    const bool rasterKnown = g_gameBackbufferDesc.Width > 0 &&
+        g_gameBackbufferDesc.Height > 0;
+    const bool useTitleRaster = AuthoredCaptureSourceIsTitleRaster(
+        titleAuthorsInFullRaster, rasterKnown, saved.viewportCount != 0);
+    const float sourceWidth = useTitleRaster
+        ? static_cast<float>(g_gameBackbufferDesc.Width)
+        : captureViewport.Width;
+    const float sourceHeight = useTitleRaster
+        ? static_cast<float>(g_gameBackbufferDesc.Height)
+        : captureViewport.Height;
+
+    const AuthoredCaptureFraming framing = BuildAuthoredCaptureFraming(
+        sourceWidth, sourceHeight, authoredCaptureScale,
+        static_cast<float>(kReticleSize));
+    if (!framing.valid)
+    {
+        // Refusing leaves the title's own reticle stock for this frame, which
+        // is the correct fail-open result. OMGetRenderTargets above took a
+        // reference on every bound view and only the End path releases them,
+        // so this refusal has to release them itself.
+        for (auto*& rtv : saved.rtvs)
+        {
+            if (rtv) rtv->Release();
+            rtv = nullptr;
+        }
+        if (saved.dsv)
+        {
+            saved.dsv->Release();
+            saved.dsv = nullptr;
+        }
+        saved.viewportCount = 0;
+        saved.scissorCount = 0;
+        return false;
+    }
+    captureViewport.Width = framing.width;
+    captureViewport.Height = framing.height;
+    captureViewport.TopLeftX = framing.topLeftX;
+    captureViewport.TopLeftY = framing.topLeftY;
+
     const D3D11_RECT captureScissor{
         0, 0, static_cast<LONG>(kReticleSize),
         static_cast<LONG>(kReticleSize)};
     g_context->OMSetRenderTargets(1, &redirectRtv, nullptr);
     g_context->RSSetViewports(1, &captureViewport);
     g_context->RSSetScissorRects(1, &captureScissor);
+    saved.captureViewport = captureViewport;
+    saved.captureScissor = captureScissor;
+    saved.framingValid = true;
+    saved.framingOwnsRebinds = titleAuthorsInFullRaster;
     saved.publishesAuthored = publishAuthored;
     saved.active = true;
+    // Raised last: every field the override reads is already written, and the
+    // capture's own framing calls above deliberately go through unmodified.
+    g_authoredCaptureOwnsRasterFraming.store(
+        titleAuthorsInFullRaster, std::memory_order_relaxed);
+    g_authoredReticleFramingWidth.store(
+        framing.width, std::memory_order_relaxed);
+    g_authoredReticleFramingHeight.store(
+        framing.height, std::memory_order_relaxed);
+    g_authoredReticleFramingLeft.store(
+        framing.topLeftX, std::memory_order_relaxed);
+    g_authoredReticleFramingTop.store(
+        framing.topLeftY, std::memory_order_relaxed);
     return true;
 }
 
@@ -11100,6 +11264,10 @@ static bool EndAuthoredReticleCaptureInternal(
     if (!saved.active || !g_context)
         return false;
 
+    // Release framing ownership BEFORE restoring, or the override below would
+    // replace the engine's own viewport with the capture's and leave the whole
+    // rest of the eye render drawn through a 512-square window.
+    g_authoredCaptureOwnsRasterFraming.store(false, std::memory_order_relaxed);
     g_context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT,
                                   saved.rtvs, saved.dsv);
     if (saved.viewportCount)
@@ -11119,6 +11287,8 @@ static bool EndAuthoredReticleCaptureInternal(
     }
     saved.viewportCount = 0;
     saved.scissorCount = 0;
+    saved.framingValid = false;
+    saved.framingOwnsRebinds = false;
     const bool modeMatches = saved.publishesAuthored == expectAuthored;
     const bool publishedAuthored = saved.publishesAuthored;
     saved.active = false;
