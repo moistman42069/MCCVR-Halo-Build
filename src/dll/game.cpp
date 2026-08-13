@@ -36,6 +36,7 @@
 #include "../common/halo4_render_logic.h"
 #include "../common/halo4_cui_reticle_logic.h"
 #include "../common/halo4_hud_logic.h"
+#include "../common/halo4_parity_trace_logic.h"
 #include "../common/level_load_gate_logic.h"
 #include "halo4_adapter.h"
 #include "halo4_cold_observation.h"
@@ -29172,6 +29173,11 @@ namespace
     constexpr int kHalo4VrikCountSlots = 16;
     constexpr int32_t kHalo4VrikCountSlotEmpty = -1;
 
+    // C-H4-D1 is a log-only diagnostic candidate. It is intentionally baked
+    // into this one candidate so the user's existing configuration does not
+    // need to be edited and packaging still leaves halomccvr.cfg untouched.
+    constexpr bool kEnableHalo4ParityTrace = true;
+
     struct Halo4CameraCore
     {
         std::atomic<bool> installed{false};
@@ -29319,6 +29325,38 @@ namespace
         std::atomic<uint64_t> cuiReticleRedirectFailures{0};
         std::atomic<uint64_t> cuiReticleCompleted{0};
         std::atomic<uint64_t> cuiReticleForcedCleanup{0};
+        // C-H4-D1: the dispatcher is already an evidence-backed optional hook.
+        // Count its complete gameplay stream and retain every distinct 0x28
+        // transform identity in bounded atomics. No file I/O, allocation,
+        // locks, COM, or signature work occurs in the callback.
+        std::atomic<uint64_t> parityCuiCommands[
+            kHalo4ParityCommandBucketCount]{};
+        std::atomic<uint64_t> parityCuiCommandsOutOfRange{0};
+        std::atomic<uint64_t> parityCuiUnreadableHeaders{0};
+        std::atomic<uint64_t> parityCuiTotalCommands{0};
+        std::atomic<int32_t> parityTransformId[
+            kHalo4ParityTransformSlotCount]{};
+        std::atomic<uint64_t> parityTransformHits[
+            kHalo4ParityTransformSlotCount]{};
+        std::atomic<uint64_t> parityTransformReplayHits[
+            kHalo4ParityTransformSlotCount]{};
+        std::atomic<uint64_t> parityTransformNormalHits[
+            kHalo4ParityTransformSlotCount]{};
+        std::atomic<uint32_t> parityTransformPayload[
+            kHalo4ParityTransformSlotCount]{};
+        std::atomic<uint32_t> parityTransformStackCount[
+            kHalo4ParityTransformSlotCount]{};
+        std::atomic<float> parityTransformScale[
+            kHalo4ParityTransformSlotCount]{};
+        std::atomic<float> parityTransformX[
+            kHalo4ParityTransformSlotCount]{};
+        std::atomic<float> parityTransformY[
+            kHalo4ParityTransformSlotCount]{};
+        std::atomic<uint64_t> parityTransformOverflow{0};
+        std::atomic<uint32_t> parityLastWindow{0};
+        std::atomic<uint32_t> parityLastChannel{0};
+        std::atomic<uint32_t> parityLastRenderMode{0};
+        std::atomic<uint32_t> parityLastFlag{0};
         std::atomic<float> cuiReticleBaseX{0.0f};
         std::atomic<float> cuiReticleBaseY{0.0f};
         std::atomic<float> cuiReticleAimX{0.0f};
@@ -32448,6 +32486,88 @@ namespace
                 0, std::memory_order_release);
     }
 
+    void Halo4ParityRecordCommand(
+        bool headerReadable, const Halo4CuiCommandHeader& header)
+    {
+        if constexpr (!kEnableHalo4ParityTrace)
+            return;
+        if (!g_halo4CuiReticleEyeScope.gameplayPassActive)
+            return;
+        g_halo4Camera.parityCuiTotalCommands.fetch_add(
+            1, std::memory_order_relaxed);
+        if (!headerReadable)
+        {
+            g_halo4Camera.parityCuiUnreadableHeaders.fetch_add(
+                1, std::memory_order_relaxed);
+            return;
+        }
+        if (Halo4ParityCommandFitsBucket(header.command))
+            g_halo4Camera.parityCuiCommands[
+                Halo4ParityCommandBucket(header.command)].fetch_add(
+                    1, std::memory_order_relaxed);
+        else
+            g_halo4Camera.parityCuiCommandsOutOfRange.fetch_add(
+                1, std::memory_order_relaxed);
+    }
+
+    void Halo4ParityRecordTransform(
+        int32_t transformId, uint32_t payloadSize, uint32_t stackCount,
+        const BoneMatrix& transform, bool replay)
+    {
+        if constexpr (!kEnableHalo4ParityTrace)
+            return;
+        if (transformId == kHalo4ParityEmptyTransformId)
+        {
+            g_halo4Camera.parityTransformOverflow.fetch_add(
+                1, std::memory_order_relaxed);
+            return;
+        }
+        int slot = -1;
+        for (size_t i = 0; i < kHalo4ParityTransformSlotCount; ++i)
+        {
+            int32_t seen = g_halo4Camera.parityTransformId[i].load(
+                std::memory_order_acquire);
+            if (seen == transformId)
+            {
+                slot = static_cast<int>(i);
+                break;
+            }
+            if (seen == kHalo4ParityEmptyTransformId)
+            {
+                int32_t expected = kHalo4ParityEmptyTransformId;
+                if (g_halo4Camera.parityTransformId[i].compare_exchange_strong(
+                        expected, transformId, std::memory_order_acq_rel,
+                        std::memory_order_acquire) || expected == transformId)
+                {
+                    slot = static_cast<int>(i);
+                    break;
+                }
+            }
+        }
+        if (slot < 0)
+        {
+            g_halo4Camera.parityTransformOverflow.fetch_add(
+                1, std::memory_order_relaxed);
+            return;
+        }
+        const size_t index = static_cast<size_t>(slot);
+        g_halo4Camera.parityTransformPayload[index].store(
+            payloadSize, std::memory_order_relaxed);
+        g_halo4Camera.parityTransformStackCount[index].store(
+            stackCount, std::memory_order_relaxed);
+        g_halo4Camera.parityTransformScale[index].store(
+            transform.scale, std::memory_order_relaxed);
+        g_halo4Camera.parityTransformX[index].store(
+            transform.translation[0], std::memory_order_relaxed);
+        g_halo4Camera.parityTransformY[index].store(
+            transform.translation[1], std::memory_order_relaxed);
+        g_halo4Camera.parityTransformHits[index].fetch_add(
+            1, std::memory_order_relaxed);
+        (replay ? g_halo4Camera.parityTransformReplayHits[index]
+                : g_halo4Camera.parityTransformNormalHits[index])
+            .fetch_add(1, std::memory_order_relaxed);
+    }
+
     void Halo4CuiGameplayRenderBody(
         uintptr_t caller, uint32_t windowIndex, uint32_t renderBufferChannel,
         const void* viewportBounds, const void* optionalProfileValue,
@@ -32473,6 +32593,17 @@ namespace
         }
 
         scope.gameplayPassActive = true;
+        if constexpr (kEnableHalo4ParityTrace)
+        {
+            g_halo4Camera.parityLastWindow.store(
+                windowIndex, std::memory_order_relaxed);
+            g_halo4Camera.parityLastChannel.store(
+                renderBufferChannel, std::memory_order_relaxed);
+            g_halo4Camera.parityLastRenderMode.store(
+                renderMode, std::memory_order_relaxed);
+            g_halo4Camera.parityLastFlag.store(
+                flag ? 1u : 0u, std::memory_order_relaxed);
+        }
         g_halo4Camera.cuiGameplayPasses.fetch_add(
             1, std::memory_order_relaxed);
         __try
@@ -32564,6 +32695,7 @@ namespace
                 static_cast<const uint8_t*>(command) + sizeof(header),
                 &reticleTransformId, sizeof(reticleTransformId));
         Halo4CuiReticleEyeScope& scope = g_halo4CuiReticleEyeScope;
+        Halo4ParityRecordCommand(headerReadable, header);
 
         // Capture replay owns the whole CUI command stream, not the logical
         // reticle subtree. Start before its first command and retain the private
@@ -32588,8 +32720,30 @@ namespace
                         1, std::memory_order_relaxed);
                 }
             }
-            return original(
+            const bool result = original(
                 renderer, command, openRenderSections, renderContext);
+            if (result && beginPayloadReadable && renderer)
+            {
+                uint32_t count = 0;
+                if (Halo4SafeRead(
+                        static_cast<const uint8_t*>(renderer) +
+                            kHalo4CuiTransformStackCountOffset,
+                        &count, sizeof(count)) && count != 0 &&
+                    count <= kHalo4CuiTransformStackMaximum)
+                {
+                    const uint8_t* const entry =
+                        static_cast<const uint8_t*>(renderer) +
+                        kHalo4CuiTransformStackEntriesOffset +
+                        static_cast<size_t>(count - 1) *
+                            kHalo4CuiTransformStride;
+                    BoneMatrix transform{};
+                    if (Halo4SafeRead(entry, &transform, sizeof(transform)))
+                        Halo4ParityRecordTransform(
+                            reticleTransformId, header.payloadSize, count,
+                            transform, true);
+                }
+            }
+            return result;
         }
 
         // This dispatcher executes the entire CUI stream. All non-reticle
@@ -32661,6 +32815,8 @@ namespace
         const float stockScale = transform.scale;
         const float baseX = transform.translation[0];
         const float baseY = transform.translation[1];
+        Halo4ParityRecordTransform(
+            reticleTransformId, header.payloadSize, count, transform, false);
         // This path never receives or computes an aim coordinate. It only
         // removes the duplicate flat copy; the shared reticleQuad owns the
         // exact bullet-ray position for all four titles.
@@ -32842,6 +32998,41 @@ namespace
         g_halo4Camera.cuiReticleCompleted.store(0, std::memory_order_relaxed);
         g_halo4Camera.cuiReticleForcedCleanup.store(
             0, std::memory_order_relaxed);
+        for (auto& bucket : g_halo4Camera.parityCuiCommands)
+            bucket.store(0, std::memory_order_relaxed);
+        g_halo4Camera.parityCuiCommandsOutOfRange.store(
+            0, std::memory_order_relaxed);
+        g_halo4Camera.parityCuiUnreadableHeaders.store(
+            0, std::memory_order_relaxed);
+        g_halo4Camera.parityCuiTotalCommands.store(
+            0, std::memory_order_relaxed);
+        for (size_t slot = 0; slot < kHalo4ParityTransformSlotCount; ++slot)
+        {
+            g_halo4Camera.parityTransformHits[slot].store(
+                0, std::memory_order_relaxed);
+            g_halo4Camera.parityTransformReplayHits[slot].store(
+                0, std::memory_order_relaxed);
+            g_halo4Camera.parityTransformNormalHits[slot].store(
+                0, std::memory_order_relaxed);
+            g_halo4Camera.parityTransformPayload[slot].store(
+                0, std::memory_order_relaxed);
+            g_halo4Camera.parityTransformStackCount[slot].store(
+                0, std::memory_order_relaxed);
+            g_halo4Camera.parityTransformScale[slot].store(
+                0.0f, std::memory_order_relaxed);
+            g_halo4Camera.parityTransformX[slot].store(
+                0.0f, std::memory_order_relaxed);
+            g_halo4Camera.parityTransformY[slot].store(
+                0.0f, std::memory_order_relaxed);
+            g_halo4Camera.parityTransformId[slot].store(
+                kHalo4ParityEmptyTransformId, std::memory_order_release);
+        }
+        g_halo4Camera.parityTransformOverflow.store(
+            0, std::memory_order_relaxed);
+        g_halo4Camera.parityLastWindow.store(0, std::memory_order_relaxed);
+        g_halo4Camera.parityLastChannel.store(0, std::memory_order_relaxed);
+        g_halo4Camera.parityLastRenderMode.store(0, std::memory_order_relaxed);
+        g_halo4Camera.parityLastFlag.store(0, std::memory_order_relaxed);
         for (auto& serial : g_halo4Camera.cuiReticleEyeSerial)
             serial.store(0, std::memory_order_relaxed);
         g_halo4Camera.consecutiveUncaptured.store(
@@ -34700,6 +34891,103 @@ namespace
             g_halo4Camera.cuiReticleStockScale.load(std::memory_order_relaxed),
             g_halo4Camera.cuiReticleWrittenScale.load(std::memory_order_relaxed));
 
+        if constexpr (kEnableHalo4ParityTrace)
+        {
+            char commands[1536]{};
+            size_t written = 0;
+            uint32_t distinctCommands = 0;
+            for (size_t command = 0;
+                 command < kHalo4ParityCommandBucketCount; ++command)
+            {
+                const uint64_t hits =
+                    g_halo4Camera.parityCuiCommands[command].exchange(
+                        0, std::memory_order_relaxed);
+                if (!hits)
+                    continue;
+                ++distinctCommands;
+                const size_t room = sizeof(commands) - written;
+                const int step = snprintf(
+                    commands + written, room, "%s%02zXx%llu",
+                    written ? " " : "", command,
+                    static_cast<unsigned long long>(hits));
+                if (step <= 0 || static_cast<size_t>(step) >= room)
+                    break;
+                written += static_cast<size_t>(step);
+            }
+            if (!written)
+                snprintf(commands, sizeof(commands), "none");
+            const uint64_t totalCommands =
+                g_halo4Camera.parityCuiTotalCommands.exchange(
+                    0, std::memory_order_relaxed);
+            const uint64_t unreadable =
+                g_halo4Camera.parityCuiUnreadableHeaders.exchange(
+                    0, std::memory_order_relaxed);
+            const uint64_t outOfRange =
+                g_halo4Camera.parityCuiCommandsOutOfRange.exchange(
+                    0, std::memory_order_relaxed);
+            LOG("H4DIAG CUI COMMANDS: %llu total, %u distinct byte-range types, "
+                "%llu unreadable, %llu outside 00-FF in 2s; ABI window=%u "
+                "channel=%u mode=%u flag=%u; histogram %s",
+                static_cast<unsigned long long>(totalCommands),
+                distinctCommands,
+                static_cast<unsigned long long>(unreadable),
+                static_cast<unsigned long long>(outOfRange),
+                g_halo4Camera.parityLastWindow.load(std::memory_order_relaxed),
+                g_halo4Camera.parityLastChannel.load(std::memory_order_relaxed),
+                g_halo4Camera.parityLastRenderMode.load(
+                    std::memory_order_relaxed),
+                g_halo4Camera.parityLastFlag.load(std::memory_order_relaxed),
+                commands);
+
+            uint32_t liveTransformIds = 0;
+            for (size_t slot = 0; slot < kHalo4ParityTransformSlotCount; ++slot)
+            {
+                const int32_t transformId =
+                    g_halo4Camera.parityTransformId[slot].load(
+                        std::memory_order_acquire);
+                if (transformId == kHalo4ParityEmptyTransformId)
+                    continue;
+                ++liveTransformIds;
+                const uint64_t hits =
+                    g_halo4Camera.parityTransformHits[slot].exchange(
+                        0, std::memory_order_relaxed);
+                const uint64_t replayHits =
+                    g_halo4Camera.parityTransformReplayHits[slot].exchange(
+                        0, std::memory_order_relaxed);
+                const uint64_t normalHits =
+                    g_halo4Camera.parityTransformNormalHits[slot].exchange(
+                        0, std::memory_order_relaxed);
+                if (!hits)
+                    continue;
+                LOG("H4DIAG CUI TRANSFORM: slot=%zu id=%d/0x%08X hits=%llu "
+                    "replay=%llu normal=%llu payload=0x%X stack=%u last "
+                    "scale=%.6f xy=%+.3f/%+.3f",
+                    slot, transformId, static_cast<uint32_t>(transformId),
+                    static_cast<unsigned long long>(hits),
+                    static_cast<unsigned long long>(replayHits),
+                    static_cast<unsigned long long>(normalHits),
+                    g_halo4Camera.parityTransformPayload[slot].load(
+                        std::memory_order_relaxed),
+                    g_halo4Camera.parityTransformStackCount[slot].load(
+                        std::memory_order_relaxed),
+                    g_halo4Camera.parityTransformScale[slot].load(
+                        std::memory_order_relaxed),
+                    g_halo4Camera.parityTransformX[slot].load(
+                        std::memory_order_relaxed),
+                    g_halo4Camera.parityTransformY[slot].load(
+                        std::memory_order_relaxed));
+            }
+            const uint64_t transformOverflow =
+                g_halo4Camera.parityTransformOverflow.exchange(
+                    0, std::memory_order_relaxed);
+            LOG("H4DIAG CUI IDENTITY COVERAGE: %u/%zu distinct type-28 "
+                "transform IDs retained, %llu observations overflowed; zero "
+                "overflow is required before using this trace as a complete "
+                "reticle census",
+                liveTransformIds, kHalo4ParityTransformSlotCount,
+                static_cast<unsigned long long>(transformOverflow));
+        }
+
         // The two C-H4-8 behaviours report on their own lines so one headset
         // session can accept or reject each independently. A pair count alone
         // proved nothing in C-H4-6; these report what the ENGINE held.
@@ -34982,6 +35270,26 @@ namespace
             g_halo4Camera.lastElementVerticalFov.load(
                 std::memory_order_relaxed),
             g_halo4Camera.lastConverterScale.load(std::memory_order_relaxed));
+        if constexpr (kEnableHalo4ParityTrace)
+        {
+            LOG("H4DIAG PARITY COVERAGE: generation=%u camera=%s fov=%s "
+                "head6dof=%s aim=%s gameplayCUI=%s authoredCapture=%s "
+                "stormHands=%s heldWeapon=%s; NOT OBSERVABLE FROM CURRENT "
+                "PROVEN HOOKS: vehicle seat/camera/projectile ownership, "
+                "cutscene/theater state, native HUD-layout consumer. Those "
+                "three remain stock and require H4EK-first bindings; this "
+                "diagnostic does not guess them",
+                g_halo4Camera.generation.load(std::memory_order_acquire),
+                stereo ? "OBSERVED" : "not seen in this 2s window",
+                widened ? "OBSERVED" : "not seen in this 2s window",
+                headFrames ? "OBSERVED" : "not seen in this 2s window",
+                (pitchCommanded || pitchParked) ? "OBSERVED"
+                                                 : "not seen in this 2s window",
+                cuiGameplayPasses ? "OBSERVED" : "not seen in this 2s window",
+                cuiCaptures ? "OBSERVED" : "not seen in this 2s window",
+                solved ? "OBSERVED" : "not seen in this 2s window",
+                weaponCarried ? "OBSERVED" : "not seen in this 2s window");
+        }
     }
 #endif
 

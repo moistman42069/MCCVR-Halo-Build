@@ -28,6 +28,7 @@
 #include "halo4_adapter.h"
 #include "halo4_cui_reticle_logic.h"
 #include "halo4_hud_logic.h"
+#include "halo4_parity_trace_logic.h"
 #include "halo4_render_logic.h"
 #include "reach_adapter.h"
 #include "reach_chud_logic.h"
@@ -5741,6 +5742,28 @@ int main()
         "Camera-only ownership cannot leak controller input into Reach");
     const Halo4EvidenceIdentity& halo4Identity =
         Halo4Adapter_GetEvidenceIdentity();
+    Check(Halo4ParityCommandFitsBucket(0x00) &&
+              Halo4ParityCommandFitsBucket(0x28) &&
+              Halo4ParityCommandFitsBucket(0xFF) &&
+              !Halo4ParityCommandFitsBucket(-1) &&
+              !Halo4ParityCommandFitsBucket(0x100) &&
+              Halo4ParityCommandBucket(0x28) == 0x28,
+        "The Halo 4 parity trace bins only complete byte-range CUI command IDs");
+    {
+        int32_t ids[kHalo4ParityTransformSlotCount]{};
+        for (int32_t& id : ids)
+            id = kHalo4ParityEmptyTransformId;
+        ids[0] = 17;
+        ids[1] = 42;
+        Check(Halo4ParityFindTransformSlot(ids, 42) == 1 &&
+                  Halo4ParityFindTransformSlot(ids, 99) == 2,
+            "The Halo 4 parity trace reuses an exact transform ID and admits a new ID only into an empty bounded slot");
+        for (size_t i = 0; i < kHalo4ParityTransformSlotCount; ++i)
+            ids[i] = static_cast<int32_t>(i);
+        Check(Halo4ParityFindTransformSlot(ids, 7) == 7 &&
+                  Halo4ParityFindTransformSlot(ids, 99) == -1,
+            "The Halo 4 parity trace reports full-table overflow without merging identities");
+    }
     const TitleDescriptor* halo4Row = TitleRegistry_Find(GameTitle::Halo4);
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
     Check(Halo4Adapter_GetStage() ==
