@@ -29,6 +29,55 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
+## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-49 - 2026-08-13
+
+**Headset test required; this does not advance the accepted C-H4-43 pointer.**
+C-H4-48's own fresh log (source `88231fa`, session `08:00`-`08:03`) confirmed
+its consistency fix works exactly as designed - `framing reasserts` equals
+`exact capture OM reroutes` in every window - and captured substantial,
+non-blank content every time (`art` ~4500-5000, exceeding C-H4-46's ~4345).
+The user still reported a random asset and the HUD gone again.
+
+**What C-H4-48 still had wrong.** The one viewport it locks in and reasserts
+is "whatever is live when the capture happens to start" - meaningful for
+Halo 3/ODST/Reach, which hook a widget-scoped draw, but Halo 4 has no such
+hook: its whole CUI stream replays through this boundary, so that live
+viewport is arbitrary leftover state from whatever ran immediately before.
+This session's own `SCENEPROBE` lines show the SAME learned scene-color target
+bound with viewports ranging from the full `4834x3486` raster down to a
+`1209x872` quarter slice at different points, depending on exact frame timing
+- meaning even C-H4-48's per-rebind consistency could still lock onto a
+different, arbitrary base from one capture attempt to the next.
+
+**Cross-checked against the official H4EK tag**, not just Ghidra:
+`out/h4ek-evidence/cui-reticle-size/assault_rifle.xml` shows the exact widget
+that emits the manipulated command, `reticule_offset_container`, parented to
+`reticule_container_template` - a separate ROOT-LEVEL tree from `weapon_logic`
+(the HUD's own 720-virtual-unit hierarchy). That is consistent with the
+measured transform base (`-halfRasterWidth/+halfRasterHeight`, confirmed
+identical in shape across two sessions at two different raster sizes) being
+expressed directly in raster pixels rather than virtual HUD units.
+
+**The fix:** replace "whatever's live" with a fixed region centred on the
+raster, sized at the same ~4x ratio already proven to capture real content for
+Halo 3/ODST, rather than deriving it from a live viewport at all. The existing
+symmetric centring formula maps a source's own centre - where any FPS
+crosshair renders in a normal full-screen view, independent of whatever
+viewport later displays it - to the capture texture's centre regardless of
+source size, so this does not depend on knowing the reticle's exact pixel
+position. C-H4-47's blank result at ~9.4x (this session's full-raster ratio)
+is why 4x was chosen over the whole raster: a thin/hollow reticle outline is a
+plausible casualty of that much additional minification.
+
+**Not verified.** This explains why C-H4-48 could still look wrong; it does
+not prove 4x-centered is the reticle's actual apparent size, only that it
+matches a ratio already proven elsewhere in this codebase. What the log must
+show: `Halo 4 C-H4-48 shared authored-reticle path` (log line name unchanged)
+with `art` nonzero and the same shape it already has; the actual test is
+whether the floating VR crosshair shows a recognisable Halo 4 reticle, not a
+corner or blob of other HUD content, and whether the rest of the HUD stays
+visible throughout, not just in most 2-second windows.
+
 ## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-48 - 2026-08-13
 
 **Headset test required; this does not advance the accepted C-H4-43 pointer.**
