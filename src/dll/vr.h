@@ -191,32 +191,10 @@ float VR_GetScopeZoom();
 // radial blur uses a single per-frame sun position, streaking the other eye).
 // The context is the one the game is binding on, so the neutralizing clear
 // lands in the right command order.
-// `outDropDepthStencil` is set when the redirect substituted a small private
-// authored-crosshair target for a full-size scene target. The engine's own
-// depth-stencil view is sized for that scene target, and D3D11 requires every
-// bound view to share one size, so the caller must bind no depth for that call.
-// The three accepted title captures already draw their authored art with no
-// depth bound, so this keeps Halo 4's rebinds on the same footing.
 bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
                               ID3D11RenderTargetView* const* input,
-                              ID3D11RenderTargetView** output,
-                              bool* outDropDepthStencil);
+                              ID3D11RenderTargetView** output);
 uint64_t VR_TakeAuthoredReticleOmReroutes();
-uint64_t VR_TakeAuthoredReticleFramingReasserts();
-uint64_t VR_TakeAuthoredReticleFramingOverrides();
-
-// True while an open authored-crosshair capture owns the rasterizer framing, in
-// which case the requested outputs are filled with the framing that capture
-// requires. Either output may be null. The fast path is one relaxed atomic load,
-// because this is consulted from the game's own RSSetViewports/RSSetScissorRects
-// calls in every title.
-bool VR_AuthoredCaptureOwnsRasterFraming(ID3D11DeviceContext* context,
-                                         D3D11_VIEWPORT* outViewport,
-                                         D3D11_RECT* outScissor);
-void VR_SetAuthoredCaptureFramingHooksInstalled(bool installed);
-bool VR_AuthoredCaptureFramingHooksInstalled();
-// {width, height, topLeftX, topLeftY, square size of the crosshair texture}.
-void VR_GetAuthoredReticleFraming(float outFraming[5]);
 
 // Latest head pose in the VR "local" space (captured each frame). Orientation
 // is a quaternion (x,y,z,w), position is meters (x,y,z). Returns false until a

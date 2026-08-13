@@ -570,40 +570,6 @@ int main()
                   !AuthoredReticleCaptureOwnsSceneBind(true, false, true) &&
                   !AuthoredReticleCaptureOwnsSceneBind(true, true, false),
               "authored capture owns only the exact active scene bind");
-        {
-            // C-H4-47. The capture framing has to centre the title's own
-            // raster inside the small private crosshair texture, and it has to
-            // be reproducible from stable inputs so a mid-capture scene rebind
-            // can have it re-applied instead of inheriting the engine's
-            // full-raster viewport.
-            const AuthoredCaptureFraming halo4 =
-                BuildAuthoredCaptureFraming(3786.0f, 2730.0f, 1.0f, 512.0f);
-            Check(halo4.valid && halo4.width == 3786.0f &&
-                      halo4.height == 2730.0f &&
-                      halo4.topLeftX == (512.0f - 3786.0f) * 0.5f &&
-                      halo4.topLeftY == (512.0f - 2730.0f) * 0.5f,
-                  "Halo 4 capture keeps the raster centre at the texture centre");
-            const AuthoredCaptureFraming halo3 =
-                BuildAuthoredCaptureFraming(3786.0f, 2730.0f, 4.0f, 512.0f);
-            Check(halo3.valid && halo3.width == 3786.0f * 4.0f &&
-                      halo3.topLeftX == (512.0f - 3786.0f * 4.0f) * 0.5f,
-                  "the accepted 4x magnification stays centred");
-            Check(!BuildAuthoredCaptureFraming(0.0f, 2730.0f, 1.0f, 512.0f).valid &&
-                      !BuildAuthoredCaptureFraming(
-                           3786.0f, 2730.0f, 0.0f, 512.0f).valid &&
-                      !BuildAuthoredCaptureFraming(
-                           3786.0f, 2730.0f, 1.0f, 0.0f).valid,
-                  "degenerate capture framing is refused rather than drawn");
-            // Halo 4 authors its CUI in the raster, so it never depends on the
-            // viewport the scene render left bound. The accepted titles keep
-            // that live viewport whenever one exists.
-            Check(AuthoredCaptureSourceIsTitleRaster(true, true, true) &&
-                      AuthoredCaptureSourceIsTitleRaster(true, true, false) &&
-                      !AuthoredCaptureSourceIsTitleRaster(false, true, true) &&
-                      AuthoredCaptureSourceIsTitleRaster(false, true, false) &&
-                      !AuthoredCaptureSourceIsTitleRaster(true, false, true),
-                  "only a raster-authored title overrides the live viewport");
-        }
         Check(!ShouldUploadAuthoredReticle(
                   AuthoredReticleRefreshPolicy::IdentityAndColorState,
                   true, true, 9, 2, 0, 400, 2, state) &&

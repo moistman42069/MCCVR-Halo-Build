@@ -31,10 +31,6 @@ typedef HRESULT(STDMETHODCALLTYPE* Present1Fn)(IDXGISwapChain1*, UINT, UINT, con
 typedef HRESULT(STDMETHODCALLTYPE* ResizeBuffersFn)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
 typedef void(STDMETHODCALLTYPE* OMSetRenderTargetsFn)(ID3D11DeviceContext*, UINT,
     ID3D11RenderTargetView* const*, ID3D11DepthStencilView*);
-typedef void(STDMETHODCALLTYPE* RSSetViewportsFn)(ID3D11DeviceContext*, UINT,
-    const D3D11_VIEWPORT*);
-typedef void(STDMETHODCALLTYPE* RSSetScissorRectsFn)(ID3D11DeviceContext*, UINT,
-    const D3D11_RECT*);
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
 typedef void(STDMETHODCALLTYPE* DrawIndexedFn)(ID3D11DeviceContext*, UINT, UINT, INT);
 #endif
@@ -47,8 +43,6 @@ static PresentFn g_origPresent = nullptr;
 static Present1Fn g_origPresent1 = nullptr;
 static ResizeBuffersFn g_origResizeBuffers = nullptr;
 static OMSetRenderTargetsFn g_origOMSetRenderTargets = nullptr;
-static RSSetViewportsFn g_origRSSetViewports = nullptr;
-static RSSetScissorRectsFn g_origRSSetScissorRects = nullptr;
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
 static DrawIndexedFn g_origDrawIndexed = nullptr;
 // The July 26 HUD-discovery detour performed synchronous GPU readback and
@@ -591,57 +585,13 @@ static void STDMETHODCALLTYPE OMSetRenderTargetsHook(ID3D11DeviceContext* contex
     ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv)
 {
     ID3D11RenderTargetView* redirected[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
-    bool dropDepthStencil = false;
     if (count <= D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT &&
-        VR_RedirectRenderTargets(context, count, rtvs, redirected,
-                                 &dropDepthStencil))
+        VR_RedirectRenderTargets(context, count, rtvs, redirected))
     {
-        // A substituted private authored-crosshair target is far smaller than
-        // the scene depth buffer the engine paired with this bind, and D3D11
-        // requires one size across the whole OM stage. Bind no depth for that
-        // call rather than an invalid pair.
-        g_origOMSetRenderTargets(context, count, redirected,
-                                 dropDepthStencil ? nullptr : dsv);
+        g_origOMSetRenderTargets(context, count, redirected, dsv);
         return;
     }
     g_origOMSetRenderTargets(context, count, rtvs, dsv);
-}
-
-// While a title's private authored-crosshair capture is open, that capture owns
-// the rasterizer framing. The capture texture is a small square and the title
-// draws its reticle at full raster scale, so the viewport is the ONLY thing
-// deciding which pixels land in it: a full-raster viewport puts a corner of the
-// HUD in the texture instead of the centred reticle. Halo 4 rebinds its scene
-// target inside the captured CUI replay and sets its own viewport around that
-// bind, so re-applying the framing at the bind alone cannot win a race with a
-// viewport set afterwards. These two detours remove the race entirely.
-//
-// Cost when no capture is open - which is every frame of every other title, and
-// all but a few Halo 4 frames a second - is one relaxed atomic load and a
-// branch. That is deliberately far cheaper than the retired diagnostic detours
-// documented above, which read back GPU data and logged per call.
-static void STDMETHODCALLTYPE RSSetViewportsHook(ID3D11DeviceContext* context,
-    UINT count, const D3D11_VIEWPORT* viewports)
-{
-    D3D11_VIEWPORT owned{};
-    if (VR_AuthoredCaptureOwnsRasterFraming(context, &owned, nullptr))
-    {
-        g_origRSSetViewports(context, 1, &owned);
-        return;
-    }
-    g_origRSSetViewports(context, count, viewports);
-}
-
-static void STDMETHODCALLTYPE RSSetScissorRectsHook(ID3D11DeviceContext* context,
-    UINT count, const D3D11_RECT* rects)
-{
-    D3D11_RECT owned{};
-    if (VR_AuthoredCaptureOwnsRasterFraming(context, nullptr, &owned))
-    {
-        g_origRSSetScissorRects(context, 1, &owned);
-        return;
-    }
-    g_origRSSetScissorRects(context, count, rects);
 }
 
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
@@ -1174,28 +1124,6 @@ bool InstallD3D11Hooks()
               MH_CreateHook(vtbl[13], (void*)&ResizeBuffersHook, (void**)&g_origResizeBuffers) == MH_OK &&
               MH_CreateHook(contextVtbl[33], (void*)&OMSetRenderTargetsHook,
                             (void**)&g_origOMSetRenderTargets) == MH_OK;
-
-    // ID3D11DeviceContext::RSSetViewports is vtable slot 44 and
-    // RSSetScissorRects is 45, immediately after the slot-33/47 entries this
-    // file already takes. These are NOT part of `ok`: they guarantee the
-    // authored-crosshair capture framing only, so failing to take them must
-    // leave that one optional feature degraded rather than gate Present, the
-    // per-eye redirect, or any title camera core. The failure is loud because a
-    // silently unowned framing captures the wrong pixels and still looks
-    // nominal in every counter.
-    const bool rasterFramingHooksOk =
-        MH_CreateHook(contextVtbl[44], (void*)&RSSetViewportsHook,
-                      (void**)&g_origRSSetViewports) == MH_OK &&
-        MH_CreateHook(contextVtbl[45], (void*)&RSSetScissorRectsHook,
-                      (void**)&g_origRSSetScissorRects) == MH_OK;
-    VR_SetAuthoredCaptureFramingHooksInstalled(rasterFramingHooksOk);
-    if (!rasterFramingHooksOk)
-    {
-        LOG("warning: rasterizer framing hooks failed; an authored-crosshair "
-            "capture cannot own its viewport and the captured art may not be "
-            "the title's reticle. Stereo, the eye redirect and every camera "
-            "core are unaffected");
-    }
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
     ok = ok && MH_CreateHook(contextVtbl[47], (void*)&CopyResourceHook,
                              (void**)&g_origCopyResource) == MH_OK;
