@@ -29,6 +29,23 @@ are evidence, not instructions.
 > instead of checked. If a comment or doc says a title cannot do something,
 > verify it against the code before building on it.
 
+## INSTALLED HALO 4 DIAGNOSTIC: C-H4-D1 - 2026-08-13
+
+**Headset capture required; this does not advance the accepted C-H4-43 pointer
+or accept C-H4-49.** C-H4-D1 is a log-only census added to the already-proven
+Halo 4 gameplay-CUI dispatcher. It changes no selection, transform, redirect,
+draw, camera, hand, aim, HUD, or OpenXR decision. The hot callback performs
+only bounded reads and atomic updates; the existing worker emits the new
+`H4DIAG` lines.
+
+The diagnostic records the complete gameplay-CUI command histogram and every
+distinct type-`0x28` transform identity, separated into capture-replay and
+normal-pass observations with payload, stack depth, scale, and translation.
+It also publishes a parity coverage line for every currently implemented Halo
+4 VR subsystem and explicitly refuses to invent facts for vehicle ownership,
+cutscene/theater state, or the native HUD-layout consumer. The capture protocol
+and interpretation boundary are in `docs/HALO4-PARITY-DIAGNOSTIC.md`.
+
 ## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-49 - 2026-08-13
 
 **Headset test required; this does not advance the accepted C-H4-43 pointer.**

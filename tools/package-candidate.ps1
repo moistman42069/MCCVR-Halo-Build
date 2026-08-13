@@ -84,7 +84,7 @@ try {
     }
     if ($cache -notmatch
             '(?m)^HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA:BOOL=ON\r?$') {
-        throw 'Refusing to package C-H4-46: the Halo 4 camera core is not ON.'
+        throw 'Refusing to package C-H4-D1: the Halo 4 camera core is not ON.'
     }
 
     # Incremental. A clean rebuild was recompiling the whole tree for every
@@ -122,7 +122,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'halo4-c49-fixed-raster-centered-capture',
+        'halo4-d1-parity-diagnostic',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -181,9 +181,9 @@ try {
                 'dd9946595511d65c9859b536e2727201c107da45'
         }
         halo4_candidate = [ordered]@{
-            id = 'C-H4-46'
-            status = 'OFFLINE_PASS_HEADSET_PENDING'
-            behavior = 'halo4-native-crosshair-art-replaces-shared-bullet-ray-vr-crosshair-art-native-face-copy-hidden-no-cui-positioning'
+            id = 'C-H4-D1'
+            status = 'DIAGNOSTIC_HEADSET_CAPTURE_REQUIRED'
+            behavior = 'c-h4-49-player-visible-path-plus-log-only-bounded-gameplay-cui-command-and-transform-identity-census'
             head_tracking = $true
             six_dof = $true
             headset_owned_pitch = $true
@@ -204,6 +204,16 @@ try {
                 'bounded-capture-eye-full-gameplay-cui-replay-into-shared-authored-texture'
             reticle_failure_policy =
                 'stock-or-procedural-feature-fallback-camera-hands-stereo-and-openxr-remain-armed'
+            parity_diagnostic = [ordered]@{
+                player_visible_behavior_changed = $false
+                automatic_for_this_candidate = $true
+                command_bucket_count = 256
+                transform_identity_slots = 32
+                hot_path = 'bounded-reads-and-atomic-updates-only'
+                worker_output = 'halo3xr.log H4DIAG lines'
+                overflow_policy = 'explicit-incomplete-census-never-merge-identities'
+                protocol = 'docs/HALO4-PARITY-DIAGNOSTIC.md'
+            }
             first_person_hands = $true
             arm_ik = $false
             floating_hands = $true
@@ -295,7 +305,7 @@ try {
                 sha256 = $launcherHash
             }
         }
-        note = 'C-H4-46 implements the same player-visible authored-reticle path as Halo 3, ODST, and Reach. Halo 4 native crosshair pixels enter the shared authored texture, shared g_reticleChain, and unchanged weapon-ray reticleQuad. The native face-locked type-0x28 copy is moved offscreen. The active Halo 4 transaction receives and computes no CUI aim coordinate and has no native reposition action; CUI is only an artwork source and duplicate-hide boundary. Exact scene-target rebinds during capture remain owned by the private authored target. C-H4-44 HUD layout remains dormant and stock. Any optional reticle failure preserves the accepted procedural or stock fallback without disarming camera, hands, stereo, or OpenXR.'
+        note = 'C-H4-D1 keeps C-H4-49 player-visible behavior unchanged and adds a log-only bounded census at the existing H4EK-proven gameplay-CUI dispatcher. It records every byte-range command type and every distinct type-0x28 transform identity, split by replay/normal observations, using only hot-path reads and atomics. The worker emits H4DIAG summaries. Vehicle, cutscene/theater, and native HUD-layout semantics remain explicitly unbound and stock; the diagnostic does not guess them. This does not advance accepted C-H4-43 or accept C-H4-49.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'
