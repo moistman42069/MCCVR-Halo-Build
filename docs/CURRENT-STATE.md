@@ -46,6 +46,15 @@ It also publishes a parity coverage line for every currently implemented Halo
 cutscene/theater state, or the native HUD-layout consumer. The capture protocol
 and interpretation boundary are in `docs/HALO4-PARITY-DIAGNOSTIC.md`.
 
+| C-H4-D1 identity | Value |
+| --- | --- |
+| Source | `7da8f7cb37f26e4eca0dfbb32da2648246d27115` |
+| Candidate | `out/candidates/7da8f7c-halo4-d1-parity-diagnostic-20260813-172116394Z` |
+| `halo3xr.dll` SHA-256 | `838EA58A74EBEEEEB12B8B4BD260124D1190A734D3D9B7DC84A31D66E7484B63` |
+| Launcher SHA-256 | `A85E97F7872B6C85F4616BDC5D5926C1F166B56C1FF39D7681F07391964D4C9F` |
+| Offline result | Clean full Release build PASS; `halomccvr_core_tests` PASS; Reach consistency gate PASS |
+| Deployment | Correct D1 manifest validated; DLL independently hash-matched after automatic install to Steam and Microsoft Store; prior installs preserved under `out/deploy-backups` |
+
 ## UNACCEPTED HALO 4 TEST CANDIDATE: C-H4-49 - 2026-08-13
 
 **Headset test required; this does not advance the accepted C-H4-43 pointer.**
