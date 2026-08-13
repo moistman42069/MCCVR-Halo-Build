@@ -253,9 +253,23 @@ namespace
         UINT scissorCount = 0;
         bool active = false;
         bool publishesAuthored = false;
+        // The ONE viewport/scissor this capture was opened with. Halo 4 rebinds
+        // its scene target up to 3 times inside a single captured replay, and
+        // each rebind can carry whatever viewport the engine's OWN prior pass
+        // left behind (proven by SCENEPROBE: the same learned RTV was seen
+        // bound with BOTH a 947x683 and a full-raster viewport across
+        // different binds). Left alone, those 3 rebinds draw at 3 different,
+        // uncorrelated scales into the SAME 512x512 texture - not a wrong crop,
+        // a smeared composite of unrelated passes. Re-applying this ONE
+        // retained viewport at each Halo-4 rebind (see VR_RedirectRenderTargets)
+        // keeps every rebind consistent with the one this capture computed.
+        D3D11_VIEWPORT captureViewport{};
+        D3D11_RECT captureScissor{};
+        bool framingCaptured = false;
     };
     ReticleCaptureState g_reticleCaptureState{};
     std::atomic<uint64_t> g_authoredReticleOmReroutes{0};
+    std::atomic<uint64_t> g_authoredReticleFramingReasserts{0};
 
     // The CHUD steal-and-requad machinery (capture texture, shader
     // classifier, hand-HUD swapchain) was removed 2026-07-18: it removed the
@@ -10512,7 +10526,31 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
             }
         }
         if (captureChanged)
+        {
             g_authoredReticleOmReroutes.fetch_add(1, std::memory_order_relaxed);
+            // Halo 4 rebinds this exact scene target up to 3 times inside one
+            // captured replay (measured: "9 exact capture OM reroutes" against
+            // 3 captures). Each rebind can carry whatever viewport the engine's
+            // own preceding pass left set - SCENEPROBE measured the SAME
+            // learned RTV bound with a 947x683 viewport at one point and a
+            // full-raster viewport at another. Left alone, the 3 rebinds paint
+            // 3 differently-scaled passes into the same 512x512 texture, which
+            // is a smeared composite, not a wrong crop - this is the direct
+            // cause of the "some random asset" result. Putting the ONE viewport
+            // this capture opened with back here, immediately after our own OM
+            // rewrite and therefore after the engine's own preceding
+            // RSSetViewports for this same rebind, keeps every rebind
+            // consistent with the others instead of independently scaled.
+            if (g_reticleCaptureState.framingCaptured && context == g_context)
+            {
+                g_context->RSSetViewports(
+                    1, &g_reticleCaptureState.captureViewport);
+                g_context->RSSetScissorRects(
+                    1, &g_reticleCaptureState.captureScissor);
+                g_authoredReticleFramingReasserts.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+        }
         return captureChanged;
     }
     int targetEye = eye;
@@ -10694,6 +10732,12 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
 uint64_t VR_TakeAuthoredReticleOmReroutes()
 {
     return g_authoredReticleOmReroutes.exchange(0, std::memory_order_relaxed);
+}
+
+uint64_t VR_TakeAuthoredReticleFramingReasserts()
+{
+    return g_authoredReticleFramingReasserts.exchange(
+        0, std::memory_order_relaxed);
 }
 
 bool VR_GetHeadPose(float outQuat[4], float outPos[3])
@@ -11010,6 +11054,12 @@ static bool BeginAuthoredReticleCaptureInternal(
     g_context->RSSetViewports(1, &captureViewport);
     g_context->RSSetScissorRects(1, &captureScissor);
     saved.publishesAuthored = publishAuthored;
+    // Retained so a later Halo-4 scene-target rebind DURING this same capture
+    // (see VR_RedirectRenderTargets) can put the SAME viewport back instead of
+    // drawing with whatever the engine's own prior pass left bound.
+    saved.captureViewport = captureViewport;
+    saved.captureScissor = captureScissor;
+    saved.framingCaptured = true;
     saved.active = true;
     return true;
 }
@@ -11119,6 +11169,7 @@ static bool EndAuthoredReticleCaptureInternal(
     }
     saved.viewportCount = 0;
     saved.scissorCount = 0;
+    saved.framingCaptured = false;
     const bool modeMatches = saved.publishesAuthored == expectAuthored;
     const bool publishedAuthored = saved.publishesAuthored;
     saved.active = false;

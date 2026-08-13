@@ -195,6 +195,7 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
                               ID3D11RenderTargetView* const* input,
                               ID3D11RenderTargetView** output);
 uint64_t VR_TakeAuthoredReticleOmReroutes();
+uint64_t VR_TakeAuthoredReticleFramingReasserts();
 
 // Latest head pose in the VR "local" space (captured each frame). Orientation
 // is a quaternion (x,y,z,w), position is meters (x,y,z). Returns false until a

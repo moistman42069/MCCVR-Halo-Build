@@ -34674,10 +34674,13 @@ namespace
                 0, std::memory_order_relaxed);
         const uint64_t authoredOmReroutes =
             VR_TakeAuthoredReticleOmReroutes();
-        LOG("Halo 4 C-H4-46 shared authored-reticle path: hook=%s, %llu main gameplay CUI "
+        const uint64_t authoredFramingReasserts =
+            VR_TakeAuthoredReticleFramingReasserts();
+        LOG("Halo 4 C-H4-48 shared authored-reticle path: hook=%s, %llu main gameplay CUI "
             "passes, %llu begin markers, "
             "%llu completed actions (%llu authored captures / %llu native hides), %llu "
-            "write failures, %llu forced restores, %llu exact capture OM reroutes in 2s; last native base %.3f/%.3f "
+            "write failures, %llu forced restores, %llu exact capture OM reroutes "
+            "(%llu framing reasserts) in 2s; last native base %.3f/%.3f "
             "+ offscreen hide %.3f/%.3f, scale %.4f -> %.4f; camera "
             "and OpenXR remain independently armed; the existing VR quad alone owns placement",
             Halo4CuiReticleTransformLive() ? "LIVE" : "stock fallback",
@@ -34689,6 +34692,7 @@ namespace
             static_cast<unsigned long long>(cuiFailures),
             static_cast<unsigned long long>(cuiForced),
             static_cast<unsigned long long>(authoredOmReroutes),
+            static_cast<unsigned long long>(authoredFramingReasserts),
             g_halo4Camera.cuiReticleBaseX.load(std::memory_order_relaxed),
             g_halo4Camera.cuiReticleBaseY.load(std::memory_order_relaxed),
             g_halo4Camera.cuiReticleAimX.load(std::memory_order_relaxed),
