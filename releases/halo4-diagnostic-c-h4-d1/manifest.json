@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "kind": "diagnostic_pre_release",
+  "is_release": false,
+  "accepted": false,
+  "headset_tested": false,
+  "name": "MCC_VR_HALO4_DIAGNOSTIC_C-H4-D1",
+  "candidate": "C-H4-D1",
+  "supersedes": null,
+  "does_not_supersede": "MCC_VR_ALPHA_0.3.3",
+  "runtime_source_commit": "7da8f7cb37f26e4eca0dfbb32da2648246d27115",
+  "branch": "feature/halo4-bringup",
+  "base_release": "MCC_VR_ALPHA_0.3.3",
+  "candidate_package": "out/candidates/7da8f7c-halo4-d1-parity-diagnostic-20260813-172116394Z",
+  "accepted_halo4_pointer": {
+    "candidate": "C-H4-43",
+    "commit": "dd9946595511d65c9859b536e2727201c107da45",
+    "note": "Last headset-accepted Halo 4 state. This pre-release is newer and untested."
+  },
+  "build": {
+    "architecture": "x64",
+    "configuration": "Release",
+    "preset": "release"
+  },
+  "titles": [
+    "Halo 3",
+    "Halo 3: ODST",
+    "Halo: Reach",
+    "Halo 4"
+  ],
+  "halo4_status": {
+    "working": [
+      "stereo",
+      "head tracking",
+      "6DOF",
+      "native headset FOV",
+      "controller input",
+      "motion aim",
+      "smooth turn",
+      "haptics",
+      "floating hands with held weapon",
+      "engine-drawn HUD"
+    ],
+    "not_working": [
+      "VR crosshair",
+      "vehicles",
+      "cutscenes and theatre",
+      "level re-entry (can crash)"
+    ]
+  },
+  "diagnostic": {
+    "log_only": true,
+    "changes_behaviour": false,
+    "log_marker": "H4DIAG CUI IDENTITY COVERAGE",
+    "protocol": "docs/HALO4-PARITY-DIAGNOSTIC.md",
+    "ever_run": false
+  },
+  "published_artifacts": {
+    "zip": {
+      "name": "MCC_VR_HALO4_DIAGNOSTIC_C-H4-D1_7da8f7c.zip",
+      "sha256": "55DF55DCE867B35271943C50A438BC3F8F2F71CB3F7BCF1C655FC15090F0C81B",
+      "bytes": 1148639,
+      "contents": [
+        "halo3xr.dll",
+        "halo3xr_launcher.exe",
+        "halomccvr.cfg",
+        "LICENSE",
+        "MANUAL-README.txt",
+        "READ-THIS-FIRST-DIAGNOSTIC.txt"
+      ]
+    },
+    "halo3xr.dll": {
+      "sha256": "838EA58A74EBEEEEB12B8B4BD260124D1190A734D3D9B7DC84A31D66E7484B63"
+    },
+    "halo3xr_launcher.exe": {
+      "sha256": "A85E97F7872B6C85F4616BDC5D5926C1F166B56C1FF39D7681F07391964D4C9F"
+    }
+  },
+  "offline_gates": {
+    "release_build": "pass",
+    "core_tests": "pass",
+    "reach_consistency": "pass"
+  },
+  "documentation": {
+    "wrapup": "docs/HALO4-BRINGUP-WRAPUP.md",
+    "proof_ledger": "docs/HALO4-SIGNATURE-EVIDENCE.md",
+    "cui_evidence": "docs/HALO4-CUI-EVIDENCE.md",
+    "diagnostic_protocol": "docs/HALO4-PARITY-DIAGNOSTIC.md"
+  },
+  "note": "Diagnostic pre-release of an abandoned Halo 4 bring-up. Not a release, not accepted, never headset-tested. The project is open for anyone who wants to continue it."
+}
