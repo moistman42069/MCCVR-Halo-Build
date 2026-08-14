@@ -1,5 +1,14 @@
 # Current state
 
+> **WORK SUSPENDED 2026-08-14.** Halo 4 bring-up on `feature/halo4-bringup`
+> stopped at the head commit `47fa631`. **No release was cut for any of it** -
+> the published release is still MCC VR Alpha 0.3.3 (`94dc09f`), Halo 3, ODST
+> and Reach. The accepted Halo 4 pointer remains C-H4-43; the build currently
+> *installed* on this machine is the untested C-H4-D1 diagnostic, which is
+> newer than that pointer. Read `docs/HALO4-BRINGUP-WRAPUP.md` first: it
+> records what Halo 4 does today, what was never finished, and the six dead
+> ends that must not be restarted.
+
 Authoritative as of 2026-08-11. This file is the only active accepted-build
 pointer. Detailed pre-cleanup experiments remain available in Git history; they
 are evidence, not instructions.
@@ -3658,6 +3667,13 @@ ODST on the accepted build:
 - `docs/RESOLUTION-FSR-INVESTIGATION.md`: active (not accepted) findings for the
   resolution-scaling and FSR feature work — verified facts, labeled hypotheses,
   and open questions. No behavioral change shipped.
+- `docs/HALO4-BRINGUP-WRAPUP.md`: the Halo 4 bring-up work record and its
+  2026-08-14 suspension state - pointers, what is confirmed working, what was
+  never finished, and the disproven approaches.
+- `docs/HALO4-SIGNATURE-EVIDENCE.md`: Halo 4 proof ledger, E-H4-1 .. E-H4-34.
+- `docs/HALO4-CUI-EVIDENCE.md`: Halo 4 CUI/HUD dispatcher evidence.
+- `docs/HALO4-PARITY-DIAGNOSTIC.md`: the C-H4-D1 log-only census and its
+  capture protocol.
 - `docs/HISTORY.md`: how to retrieve the full pre-cleanup ledger.
 - `releases/0.2.2/manifest.json`: current machine-readable release identity.
 - `releases/0.2.1/manifest.json`: protected rollback release identity.
