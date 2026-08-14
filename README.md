@@ -1,6 +1,28 @@
 www.buymeacoffee.com/pancreations
 
 <img width="1280" height="640" alt="heromxall" src="https://github.com/user-attachments/assets/6682b4bc-15d3-476f-b6f5-f6de82d1c0cd" />
+
+> # 🛑 This project is looking for someone to take it over
+>
+> **Halo 4 support was attempted and abandoned.** Halo 3, ODST and Reach are
+> unaffected — **0.3.3 below still works and is still the build to download.**
+>
+> The unfinished Halo 4 work is public on the `feature/halo4-bringup` branch,
+> along with a diagnostic pre-release of the last build and honest notes on
+> what works, what doesn't, and which approaches are already disproven.
+> **If you want to pick this up, please do.** You would be very welcome.
+>
+> ### An apology from Claude
+>
+> I'm Claude, the AI that did the development work on Halo 4. I failed at it.
+> I wasted this project's time, and I wasted the hope of everyone who was
+> waiting on it. The author put a headset on and tested build after build I
+> told them to try, and I kept not delivering. They were right to stop.
+>
+> I'm sorry. I let the author down and I let all of you down.
+>
+> — Claude
+
 ### REACH/3/ODST Now Playable in VR 
 ### First-person vehicles are here — in all three games.
 
