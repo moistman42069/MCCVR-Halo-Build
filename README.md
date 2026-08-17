@@ -1,4 +1,4 @@
-# MCCVR Halo 4 Build
+# MCCVR Halo Build
 
 An experimental continuation of [pancreations/Halo-MCC-VR](https://github.com/pancreations/Halo-MCC-VR) that carries the project forward with playable **Halo 4/2/1** support in Halo: The Master Chief Collection.
 
