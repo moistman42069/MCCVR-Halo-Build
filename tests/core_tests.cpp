@@ -5224,9 +5224,15 @@ int main()
         Check(PauseToggleInputAllowed(true, false),
             "Halo 3 ownership admits the Y+B pause fallback");
         Check(PauseToggleInputAllowed(false, true),
-            "ODST or Reach ownership admits the Y+B pause fallback");
+            "ODST, Reach, or Halo 4 ownership admits the Y+B pause fallback");
         Check(!PauseToggleInputAllowed(false, false),
             "Y+B cannot inject Start without supported title ownership");
+        Check(TitleSpecificPauseToggleOwner(GameTitle::Unknown, true) &&
+                  TitleSpecificPauseToggleOwner(GameTitle::HaloReach, false) &&
+                  TitleSpecificPauseToggleOwner(GameTitle::Halo4, false) &&
+                  !TitleSpecificPauseToggleOwner(GameTitle::Halo3, false) &&
+                  !TitleSpecificPauseToggleOwner(GameTitle::Unknown, false),
+            "the title-specific Y+B admission includes Halo 4 without broadening unsupported ownership");
         Check(OdstMustClearForeignPause(true, true, false) &&
                   OdstMustClearForeignPause(true, false, true),
             "private ODST entry clears either pending or active foreign pause state");

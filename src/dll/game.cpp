@@ -36320,14 +36320,12 @@ bool Game_AllowsSharedControllerInput()
 }
 bool Game_AllowsPauseToggleInput()
 {
-    bool titleSpecificPauseOwner = false;
+    bool odstCameraOnly = false;
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
-    titleSpecificPauseOwner = OdstCameraOnlyContext();
+    odstCameraOnly = OdstCameraOnlyContext();
 #endif
-#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
-    titleSpecificPauseOwner = titleSpecificPauseOwner ||
-        TitleAdapter_GetActiveTitle() == GameTitle::HaloReach;
-#endif
+    const bool titleSpecificPauseOwner = TitleSpecificPauseToggleOwner(
+        TitleAdapter_GetActiveTitle(), odstCameraOnly);
     return PauseToggleInputAllowed(
         Game_AllowsSharedGameplayFeatures(), titleSpecificPauseOwner);
 }

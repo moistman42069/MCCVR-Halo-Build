@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include "runtime_types.h"
 
 struct MenuChordResult
 {
@@ -65,11 +66,21 @@ uint32_t NormalizeVirtualXInputSetStateResult(
 bool PausePresentationInputAllowed(bool sharedGameplayOwner);
 
 // The Y+B fallback may inject Start for either Halo 3's shared gameplay path or
-// a title-specific ODST/Reach owner. This is deliberately separate from
+// a title-specific ODST/Reach/Halo 4 owner. This is deliberately separate from
 // PausePresentationInputAllowed: ODST and Reach follow their proven native pause
 // flags instead of guessing presentation state from the controller edge.
 bool PauseToggleInputAllowed(
     bool sharedGameplayOwner, bool titleSpecificPauseOwner);
+
+// ODST's camera-only ownership may not publish an explicit active title, while
+// Reach and Halo 4 do. Keep that title admission in one testable helper so a
+// newly explicit title cannot silently lose the shared Y+B chord.
+inline constexpr bool TitleSpecificPauseToggleOwner(
+    GameTitle activeTitle, bool odstCameraOnly)
+{
+    return odstCameraOnly || activeTitle == GameTitle::HaloReach ||
+        activeTitle == GameTitle::Halo4;
+}
 
 // Reach's on-foot VR layout trades the physical left trigger and X button so
 // armour ability stays on the trigger and grenade moves to X. Vehicles must
