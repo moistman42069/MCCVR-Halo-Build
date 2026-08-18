@@ -5330,8 +5330,14 @@ namespace
         const float standoff = (left
             ? Clamp(g_config.left_hand_forward_m, -0.15f, 0.30f)
             : Clamp(g_config.gun_forward_m, -0.3f, 0.5f)) * s;
+        // K1: gun-stock offsets along the controller's own right (col 1) and
+        // up (col 2) axes, after the mount rotation. Visual only - the bullet
+        // ray stays on the controller, exactly like gun_forward_m.
+        const float rightOff = !left ? Clamp(g_config.gun_right_m, -0.3f, 0.3f) * s : 0.0f;
+        const float upOff = !left ? Clamp(g_config.gun_up_m, -0.3f, 0.3f) * s : 0.0f;
         for (int j = 0; j < 3; ++j)
-            pos[j] = cam[j] + off[j] + basis[j] * standoff;
+            pos[j] = cam[j] + off[j] + basis[j] * standoff +
+                     basis[3 + j] * rightOff + basis[6 + j] * upOff;
         scale = Clamp(g_config.gun_scale, 0.3f, 3.0f);
         for (int j = 0; j < 9; ++j) if (!isfinite(basis[j])) return false;
         for (int j = 0; j < 3; ++j) if (!isfinite(pos[j])) return false;
@@ -21656,12 +21662,16 @@ namespace
         const float standoff=(left
             ? Clamp(g_config.left_hand_forward_m,-0.15f,0.30f)
             : Clamp(g_config.gun_forward_m,-0.3f,0.5f))*scale;
+        // K1: gun-stock offsets along controller right (col 1) / up (col 2),
+        // post-mount-rotation. Visual only; the bullet ray never moves.
+        const float rightOff=!left ? Clamp(g_config.gun_right_m,-0.3f,0.3f)*scale : 0.0f;
+        const float upOff   =!left ? Clamp(g_config.gun_up_m,-0.3f,0.3f)*scale   : 0.0f;
         out={};
         out.scale=1.0f;
         memcpy(out.rotation,basis,sizeof(basis));
         for (int axis=0;axis<3;++axis)
             out.translation[axis]=gameplayBase[axis]+offset[axis]+
-                basis[axis]*standoff;
+                basis[axis]*standoff + basis[3+axis]*rightOff + basis[6+axis]*upOff;
         meshScale=left
             ? Clamp(g_config.left_hand_scale,0.3f,3.0f)
             : Clamp(g_config.gun_scale,0.3f,3.0f);
