@@ -188,7 +188,7 @@ same SSD. The stall lands within 74 ms of exactly 9.0 seconds on every run, whic
 looks like something timing out rather than something loading.
 
 Just wait. It clears on its own and the game runs normally afterwards. If you
-want to confirm what happened, `Halo_MCC_VR\halo3xr.log` records it as a `STALL`
+want to confirm what happened, `Halo_MCC_VR\HaloMCCVR.log` records it as a `STALL`
 line naming how long the game was gone.
 
 Frame rate on Game Pass is **not** worse than Steam — both settle at the same
@@ -214,10 +214,12 @@ needs any game file renamed.
      Browse**, then open the `Content` folder inside it (the one next to
      `MicrosoftGame.config`).
 3. Create a folder named exactly `Halo_MCC_VR` in that folder.
-4. Copy `halo3xr.dll`, `halo3xr_launcher.exe` and `halomccvr.cfg` into that
+4. Copy `HaloMCCVR.dll`, `HaloMCCVRLauncher.exe` and `halomccvr.cfg` into that
    folder.
+   When upgrading from an older build, remove the obsolete `halo3xr.dll` and
+   `halo3xr_launcher.exe`; do not keep using the old launcher.
 5. Make SteamVR the default OpenXR runtime and start SteamVR, then run
-   `halo3xr_launcher.exe`. On Steam, start Steam as well; the Microsoft Store
+   `HaloMCCVRLauncher.exe`. On Steam, start Steam as well; the Microsoft Store
    edition does not need Steam running for the game itself, but you must be
    signed in to the Xbox app.
 
@@ -228,8 +230,8 @@ seconds longer to appear than on Steam — that is expected.
 The final path must end in one of:
 
 ```text
-Halo The Master Chief Collection\Halo_MCC_VR\halo3xr_launcher.exe
-Halo- The Master Chief Collection\Content\Halo_MCC_VR\halo3xr_launcher.exe
+Halo The Master Chief Collection\Halo_MCC_VR\HaloMCCVRLauncher.exe
+Halo- The Master Chief Collection\Content\Halo_MCC_VR\HaloMCCVRLauncher.exe
 ```
 
 Do not place the files loose in the MCC root. To uninstall, close MCC and delete
@@ -237,7 +239,7 @@ only the dedicated `Halo_MCC_VR` folder.
 
 If you previously renamed `MCCWinStore-Win64-Shipping.exe` to the Steam name to
 force an older build to launch, rename it back. The launcher records the edition
-it detected in `halo3xr_launcher.log`.
+it detected in `HaloMCCVRLauncher.log`.
 
 ### Updating to 0.3.3 — replace your config
 

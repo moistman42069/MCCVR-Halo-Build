@@ -135,8 +135,8 @@ try {
         throw 'Candidate staging failed.'
     }
 
-    $dllPath = Join-Path $packageDir 'halo3xr.dll'
-    $launcherPath = Join-Path $packageDir 'halo3xr_launcher.exe'
+    $dllPath = Join-Path $packageDir 'HaloMCCVR.dll'
+    $launcherPath = Join-Path $packageDir 'HaloMCCVRLauncher.exe'
     foreach ($requiredPath in @(
             $dllPath,
             $launcherPath,
@@ -210,7 +210,7 @@ try {
                 command_bucket_count = 256
                 transform_identity_slots = 32
                 hot_path = 'bounded-reads-and-atomic-updates-only'
-                worker_output = 'halo3xr.log H4DIAG lines'
+                worker_output = 'HaloMCCVR.log H4DIAG lines'
                 overflow_policy = 'explicit-incomplete-census-never-merge-identities'
                 protocol = 'docs/HALO4-PARITY-DIAGNOSTIC.md'
             }
@@ -296,11 +296,11 @@ try {
         base_release = 'MCC_VR_ALPHA_0.3.3'
         development_baseline = 'f4c641f7b1b707991f2bda71ba485090a16f1e9a'
         files = [ordered]@{
-            'halo3xr.dll' = [ordered]@{
+            'HaloMCCVR.dll' = [ordered]@{
                 bytes = $dll.Length
                 sha256 = $dllHash
             }
-            'halo3xr_launcher.exe' = [ordered]@{
+            'HaloMCCVRLauncher.exe' = [ordered]@{
                 bytes = $launcher.Length
                 sha256 = $launcherHash
             }

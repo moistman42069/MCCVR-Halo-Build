@@ -147,7 +147,7 @@ if ([int]$manifest.schema_version -ne 8 -or
         [string]$manifest.halo4_candidate.parity_diagnostic.hot_path -cne
             'bounded-reads-and-atomic-updates-only' -or
         [string]$manifest.halo4_candidate.parity_diagnostic.worker_output -cne
-            'halo3xr.log H4DIAG lines' -or
+            'HaloMCCVR.log H4DIAG lines' -or
         [string]$manifest.halo4_candidate.parity_diagnostic.overflow_policy -cne
             'explicit-incomplete-census-never-merge-identities' -or
         [string]$manifest.halo4_candidate.failure_policy -cne
@@ -221,16 +221,16 @@ if ([int]$manifest.schema_version -ne 8 -or
     throw 'Candidate manifest identity or cumulative-title contract is invalid.'
 }
 
-$candidateDll = Join-Path $candidatePath 'halo3xr.dll'
-$candidateLauncher = Join-Path $candidatePath 'halo3xr_launcher.exe'
+$candidateDll = Join-Path $candidatePath 'HaloMCCVR.dll'
+$candidateLauncher = Join-Path $candidatePath 'HaloMCCVRLauncher.exe'
 $dllHash = Assert-FileIdentity `
-    $candidateDll $manifest.files.'halo3xr.dll' 'Candidate DLL'
+    $candidateDll $manifest.files.'HaloMCCVR.dll' 'Candidate DLL'
 $launcherHash = Assert-FileIdentity `
-    $candidateLauncher $manifest.files.'halo3xr_launcher.exe' 'Candidate launcher'
+    $candidateLauncher $manifest.files.'HaloMCCVRLauncher.exe' 'Candidate launcher'
 
 $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
     $_.ProcessName -in @(
-        'MCC-Win64-Shipping', 'MCCWinStore-Win64-Shipping', 'halo3xr_launcher')
+        'MCC-Win64-Shipping', 'MCCWinStore-Win64-Shipping', 'HaloMCCVRLauncher', 'halo3xr_launcher')
 })
 if ($running.Count -ne 0) {
     $owners = ($running | ForEach-Object {
@@ -295,10 +295,10 @@ foreach ($target in $targets) {
         continue
     }
 
-    $installedDll = Join-Path $gamePath 'halo3xr.dll'
-    $installedLauncher = Join-Path $gamePath 'halo3xr_launcher.exe'
+    $installedDll = Join-Path $gamePath 'HaloMCCVR.dll'
+    $installedLauncher = Join-Path $gamePath 'HaloMCCVRLauncher.exe'
     $configPath = Join-Path $gamePath 'halomccvr.cfg'
-    $logPath = Join-Path $gamePath 'halo3xr.log'
+    $logPath = Join-Path $gamePath 'HaloMCCVR.log'
     $hasExistingPair =
         (Test-Path -LiteralPath $gamePath -PathType Container) -and
         (Test-Path -LiteralPath $installedDll -PathType Leaf) -and
@@ -365,9 +365,9 @@ foreach ($target in $targets) {
 
     $configHashBefore = $null
     Copy-Item -LiteralPath $installedDll -Destination `
-        (Join-Path $backupDir 'halo3xr.dll')
+        (Join-Path $backupDir 'HaloMCCVR.dll')
     Copy-Item -LiteralPath $installedLauncher -Destination `
-        (Join-Path $backupDir 'halo3xr_launcher.exe')
+        (Join-Path $backupDir 'HaloMCCVRLauncher.exe')
     if (Test-Path -LiteralPath $configPath -PathType Leaf) {
         $configHashBefore = Get-Sha256 $configPath
         Copy-Item -LiteralPath $configPath -Destination `
@@ -375,18 +375,18 @@ foreach ($target in $targets) {
     }
     if (Test-Path -LiteralPath $logPath -PathType Leaf) {
         Copy-Item -LiteralPath $logPath -Destination `
-            (Join-Path $backupDir 'halo3xr.log')
+            (Join-Path $backupDir 'HaloMCCVR.log')
     }
 
-    if ((Get-Sha256 (Join-Path $backupDir 'halo3xr.dll')) -cne $priorDllHash -or
-            (Get-Sha256 (Join-Path $backupDir 'halo3xr_launcher.exe')) -cne
+    if ((Get-Sha256 (Join-Path $backupDir 'HaloMCCVR.dll')) -cne $priorDllHash -or
+            (Get-Sha256 (Join-Path $backupDir 'HaloMCCVRLauncher.exe')) -cne
                 $priorLauncherHash) {
         throw 'Deployment backup verification failed; automatic install made no changes.'
     }
 
-    $stagedDll = Join-Path $gamePath ("halo3xr.dll.$packageId.pending")
+    $stagedDll = Join-Path $gamePath ("HaloMCCVR.dll.$packageId.pending")
     $stagedLauncher = Join-Path $gamePath `
-        ("halo3xr_launcher.exe.$packageId.pending")
+        ("HaloMCCVRLauncher.exe.$packageId.pending")
     if ((Test-Path -LiteralPath $stagedDll) -or
             (Test-Path -LiteralPath $stagedLauncher)) {
         throw 'A candidate staging file already exists; refusing to overwrite it.'

@@ -15,7 +15,7 @@
 // Starts the MCC shipping executable directly — which is exactly what Steam's
 // official "Play without anti-cheat" option runs, and what the Microsoft Store
 // package's own "Halo: MCC Anti-Cheat Disabled (Mods and Limited Services)"
-// entry runs, so EAC is never started — and loads halo3xr.dll into it before
+// entry runs, so EAC is never started — and loads HaloMCCVR.dll into it before
 // the game's first instruction runs.
 //
 // Injection method: classic CreateRemoteThread + LoadLibraryW. The process is
@@ -288,7 +288,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     std::wstring dir(selfPath);
     dir.resize(dir.find_last_of(L'\\')); // folder containing the launcher, no trailing slash
 
-    g_logPath = dir + L"\\halo3xr_launcher.log";
+    g_logPath = dir + L"\\HaloMCCVRLauncher.log";
     // fresh log each launch
     {
         FILE* f = nullptr;
@@ -297,12 +297,12 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     }
     LauncherLog("launcher started; self dir = %ls", dir.c_str());
 
-    const std::wstring dllPath = dir + L"\\halo3xr.dll";
+    const std::wstring dllPath = dir + L"\\HaloMCCVR.dll";
     if (!FileExists(dllPath))
     {
-        ErrorBox(L"halo3xr.dll is missing from:\n" + dir +
-                 L"\n\nCopy halo3xr.dll from the package into this same folder,\n"
-                 L"next to halo3xr_launcher.exe.");
+        ErrorBox(L"HaloMCCVR.dll is missing from:\n" + dir +
+                 L"\n\nCopy HaloMCCVR.dll from the package into this same folder,\n"
+                 L"next to HaloMCCVRLauncher.exe.");
         return 1;
     }
 
@@ -505,7 +505,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         L"\"Halo: MCC Anti-Cheat Disabled (Mods and Limited Services)\"\n"
                         L"entry - and leave this window alone. The mod will attach to the\n"
                         L"game automatically as soon as it appears.\n\n"
-                        L"Details are in halo3xr_launcher.log.",
+                        L"Details are in HaloMCCVRLauncher.log.",
                         L"Halo MCC VR launcher", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
         }
 
@@ -521,7 +521,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             ErrorBox(L"The game never started, so the VR mod was not loaded.\n\n"
                      L"Start Halo: MCC once from the Xbox app to check it runs on its\n"
                      L"own, then try this launcher again.\n\n"
-                     L"Details are in halo3xr_launcher.log.");
+                     L"Details are in HaloMCCVRLauncher.log.");
             return 1;
         }
         LauncherLog("game process appeared, pid %lu", gamePid);
@@ -536,11 +536,12 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             Sleep(5);
         LauncherLog("game loader ready; injecting");
 
-        if (ModuleLoadedIn(gamePid, L"halo3xr.dll"))
+        if (ModuleLoadedIn(gamePid, L"HaloMCCVR.dll") ||
+            ModuleLoadedIn(gamePid, L"halo3xr.dll"))
         {
             if (coOwned)
                 CoUninitialize();
-            LauncherLog("halo3xr.dll is already loaded in pid %lu; refusing to inject twice",
+            LauncherLog("an MCCVR DLL is already loaded in pid %lu; refusing to inject twice",
                         gamePid);
             ErrorBox(L"The VR mod is already loaded into the running game.\n\n"
                      L"Close Halo: MCC completely, then run this launcher again.");
@@ -599,7 +600,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                   L"mode refused this launch.";
         ErrorBox(L"The game closed itself right after starting (exit code " +
                  std::to_wstring(code) + L").\n\n" + why +
-                 L"\n\nDetails are in halo3xr_launcher.log.");
+                 L"\n\nDetails are in HaloMCCVRLauncher.log.");
         return 1;
     }
     LauncherLog("game still running after %lus - launch looks good", watchMs / 1000);

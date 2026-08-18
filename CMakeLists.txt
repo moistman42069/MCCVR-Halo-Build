@@ -204,6 +204,7 @@ add_library(halo3xr SHARED
     src/dll/reach_adapter.cpp
     src/dll/halo4_adapter.cpp
     src/dll/halo4_cold_observation.cpp)
+set_target_properties(halo3xr PROPERTIES OUTPUT_NAME "HaloMCCVR")
 target_include_directories(halo3xr PRIVATE
     ${HALOMCCVR_GENERATED_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src/dll
@@ -233,6 +234,8 @@ if(HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE)
 endif()
 
 add_executable(halo3xr_launcher WIN32 src/launcher/launcher.cpp)
+set_target_properties(halo3xr_launcher PROPERTIES
+    OUTPUT_NAME "HaloMCCVRLauncher")
 target_compile_definitions(halo3xr_launcher PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 # IApplicationActivationManager: the Microsoft Store edition is a packaged app

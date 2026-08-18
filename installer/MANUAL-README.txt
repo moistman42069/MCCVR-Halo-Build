@@ -68,11 +68,15 @@ INSTALL
 
 3. Copy these three release files into it:
 
-   halo3xr.dll
-   halo3xr_launcher.exe
+   HaloMCCVR.dll
+   HaloMCCVRLauncher.exe
    halomccvr.cfg
 
-4. Make SteamVR the default OpenXR runtime, then run halo3xr_launcher.exe.
+4. Make SteamVR the default OpenXR runtime, then run HaloMCCVRLauncher.exe.
+
+If you are upgrading from an older build, remove the obsolete halo3xr.dll and
+halo3xr_launcher.exe after copying the new files. Do not run the old launcher;
+the new launcher refuses duplicate injection under either DLL name.
 
    Steam:            start Steam and SteamVR first.
    Microsoft Store:  start SteamVR, and be signed in to the Xbox app. Steam
@@ -84,13 +88,13 @@ INSTALL
 
 The final path must be one of:
 
-   Halo The Master Chief Collection\Halo_MCC_VR\halo3xr_launcher.exe
-   ...\Halo- The Master Chief Collection\Content\Halo_MCC_VR\halo3xr_launcher.exe
+   Halo The Master Chief Collection\Halo_MCC_VR\HaloMCCVRLauncher.exe
+   ...\Halo- The Master Chief Collection\Content\Halo_MCC_VR\HaloMCCVRLauncher.exe
 
 Do not put the files loose in the main MCC folder. Launch only through the
 included launcher and never use the mod in anti-cheat-enabled matchmaking.
 
-The launcher writes the edition it detected into halo3xr_launcher.log, so if it
+The launcher writes the edition it detected into HaloMCCVRLauncher.log, so if it
 ever picks the wrong one that line tells you.
 
 GAME PASS: THE 9-SECOND FREEZE ON THE FIRST LOADING SCREEN
@@ -106,7 +110,7 @@ launch, the Steam edition stalls zero times. Anti-cheat and encrypted game
 content were both tested and ruled out.
 
 Just wait. It clears by itself and the game runs normally afterwards.
-halo3xr.log records it as a STALL line naming how long the game was gone.
+HaloMCCVR.log records it as a STALL line naming how long the game was gone.
 
 Frame rate on Game Pass is NOT worse than Steam - both settle at the same
 ceiling. If yours feels halved, that is your VR runtime's motion smoothing /
@@ -116,8 +120,8 @@ Turn motion smoothing off, or lower resolution_scale.
 
 UPDATE - REPLACE YOUR CONFIG
 ----------------------------
-Close MCC completely, then replace ALL THREE files: halo3xr.dll,
-halo3xr_launcher.exe AND halomccvr.cfg.
+Close MCC completely, then replace ALL THREE files: HaloMCCVR.dll,
+HaloMCCVRLauncher.exe AND halomccvr.cfg.
 
 Replace the config. Do not keep your old one. This is different from previous
 updates, which told you to keep it.
