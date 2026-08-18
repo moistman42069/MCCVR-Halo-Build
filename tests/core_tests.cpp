@@ -7833,6 +7833,33 @@ int main()
         Check(heldMatches,
             "Hands and gun share one same-eye rigid motion and preserve the authored grip relation");
 
+        Halo4FloatingTransform rigidSupportTarget{};
+        Check(Halo4BuildFloatingRigidSupportTarget(
+                  targetWorld,stockEye0,heldWorld,rigidSupportTarget),
+            "Halo 4 two-hand support accepts the right-hand rigid world motion");
+        bool rigidSupportMatchesHeld=true;
+        for (int i=0;i<9;++i)
+            rigidSupportMatchesHeld=rigidSupportMatchesHeld &&
+                fabsf(rigidSupportTarget.rotation[i]-
+                      expectedHeld.rotation[i])<1.0e-5f;
+        for (int i=0;i<3;++i)
+            rigidSupportMatchesHeld=rigidSupportMatchesHeld &&
+                fabsf(rigidSupportTarget.translation[i]-
+                      expectedHeld.translation[i])<1.0e-5f;
+        Check(rigidSupportMatchesHeld &&
+                  fabsf(rigidSupportTarget.scale-expectedHeld.scale)<1.0e-5f,
+            "Halo 4 two-hand support preserves the authored hand-to-weapon relation instead of following left-controller translation");
+        Halo4FloatingTransform invalidRigidSupport=stockEye0;
+        invalidRigidSupport.translation[1]=
+            std::numeric_limits<float>::quiet_NaN();
+        Halo4FloatingTransform untouchedRigidSupport{};
+        untouchedRigidSupport.translation[0]=71.0f;
+        Check(!Halo4BuildFloatingRigidSupportTarget(
+                  targetWorld,invalidRigidSupport,heldWorld,
+                  untouchedRigidSupport) &&
+                  untouchedRigidSupport.translation[0]==71.0f,
+            "an invalid Halo 4 rigid support relation publishes no partial target");
+
         // C-H4-36: replace only the current eye's orientation parent.  The
         // live eye-local wrist relation is the title's own authored mount; a
         // Blender bind/control quaternion is not.  Pitch(E), yaw(L), and

@@ -31328,21 +31328,26 @@ namespace
                 g_halo4FloatingPair.rightTargetWorld,eyeRoot,stockRight,
                 desiredRight))
             return Halo4VrikStage::RightPoseFailed;
-        if (!Halo4BuildFloatingControllerRerootTarget(
-                g_halo4FloatingPair.leftTargetWorld,eyeRoot,stockLeft,
-                desiredLeft))
-            return Halo4VrikStage::LeftPoseFailed;
         bool markerParityApplied=false;
         bool supportAimRotationParentApplied=false;
         bool markerParityFallback=false;
         if (g_halo4FloatingPair.twoHandAimActive)
         {
-            // The user judged this exact C-H4-38 support grip perfect. Do not
-            // even inspect free-hand anatomy or presentation dependencies.
+            // Match Halo 3's accepted support lock. The left controller still
+            // owns the two-hand aim solve, but the visible hand takes the same
+            // rigid world delta as the right hand and held model so it cannot
+            // slide away from Halo 4's authored weapon grip.
+            if (!Halo4BuildFloatingRigidSupportTarget(
+                    desiredRight,stockRight,stockLeft,desiredLeft))
+                return Halo4VrikStage::LeftPoseFailed;
             supportAimRotationParentApplied=true;
         }
         else
         {
+            if (!Halo4BuildFloatingControllerRerootTarget(
+                    g_halo4FloatingPair.leftTargetWorld,eyeRoot,stockLeft,
+                    desiredLeft))
+                return Halo4VrikStage::LeftPoseFailed;
             // Reach's official left_hand marker is identity on its wrist.
             // Halo 4's marker is this H4EK quaternion on identity child node54.
             // Align the marker frames; never equate the wrist bone axes again.
@@ -35124,7 +35129,7 @@ namespace
             "refused, %llu exact first-person calls "
             "in 2s; no IK, forced floaty mask, world scale %.3f, current stock-"
             "to-controller right-wrist distance %.4f; current-eye same-frame "
-            "Storm candidates %llu; left modes: marker-parity free %llu / exact C-H4-38 support "
+            "Storm candidates %llu; left modes: marker-parity free %llu / rigid support lock "
             "%llu / C-H4-38 free fallback %llu",
             g_halo4Camera.modelSkinningTarget?"hooked":"UNAVAILABLE - stock",
             g_config.halo4_hands?1:0,

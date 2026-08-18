@@ -1097,6 +1097,26 @@ inline bool Halo4BuildFloatingWorldDelta(
             desiredWorld, inverseStock, deltaWorld);
 }
 
+// Two-hand presentation follows Halo 3's headset-confirmed ownership: the
+// tracked support controller steers the weapon ray, but the visible support
+// hand keeps the title-authored grip on the weapon. Apply the right wrist's
+// exact world delta to the stock left wrist, which is the same rigid motion
+// carried into the immediately following held-model record. This preserves the
+// authored right/left/gun relation and prevents the model hand from sliding as
+// the physical support controller moves within the barrel zone.
+inline bool Halo4BuildFloatingRigidSupportTarget(
+    const Halo4FloatingTransform& desiredRightWorld,
+    const Halo4FloatingTransform& stockRightWorld,
+    const Halo4FloatingTransform& stockLeftWorld,
+    Halo4FloatingTransform& desiredLeftWorld) noexcept
+{
+    Halo4FloatingTransform rightDeltaWorld{};
+    return Halo4BuildFloatingWorldDelta(
+               desiredRightWorld, stockRightWorld, rightDeltaWorld) &&
+        Halo4ComposeFloatingTransforms(
+               rightDeltaWorld, stockLeftWorld, desiredLeftWorld);
+}
+
 // A tracked wrist is normally a fraction of one Halo world unit from the
 // stock first-person wrist. Ten physical metres (with a two-world-unit floor)
 // is intentionally far outside normal play, but still rejects the hundreds-of-
