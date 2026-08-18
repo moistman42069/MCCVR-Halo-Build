@@ -297,6 +297,9 @@ struct ReachVrRenderSnapshot
     // The shared weapon aim after two-hand adjustment and controller-local
     // mount calibration. Position remains the raw right-controller position.
     bool rightAimValid = false;
+    // True only when this exact prepared frame used the support-hand weapon
+    // line. Reach's palette path must not resample the asynchronous global.
+    bool twoHandAimActive = false;
     float rightAimOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float rightAimPosition[3]{};
     // Raw tracked left-controller pose for title-specific support-hand work.

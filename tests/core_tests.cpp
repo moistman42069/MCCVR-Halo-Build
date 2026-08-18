@@ -43,6 +43,7 @@
 #include "title_registry.h"
 #include "title_runtime_state.h"
 #include "view_cache_logic.h"
+#include "two_hand_ik_logic.h"
 
 #include <authored_reticle_logic.h>
 
@@ -169,6 +170,15 @@ namespace
 
 int main()
 {
+    Check(!ShouldApplyArmIk(false, false),
+          "Arm IK remains off when disabled in config");
+    Check(!ShouldApplyArmIk(false, true),
+          "Two-hand state cannot enable disabled arm IK");
+    Check(ShouldApplyArmIk(true, false),
+          "Configured arm IK returns outside a two-hand grab");
+    Check(!ShouldApplyArmIk(true, true),
+          "Two-hand grab suppresses competing arm IK");
+
     {
         // sig::Find is memchr-anchored for speed (it is the dominant cost of
         // every hook install: ODST resolves four optional features, each

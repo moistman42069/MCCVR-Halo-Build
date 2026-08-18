@@ -7005,6 +7005,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             rightPoseFresh, g_rightAimPose,
             leftPoseFresh, g_leftAimPose));
         next.rightAimValid = aim.valid;
+        next.twoHandAimActive = aim.valid && aim.twoHandActive;
         if (aim.valid)
         {
             next.rightAimOrientation[0] = aim.pose.orientation.x;

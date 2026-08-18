@@ -43,6 +43,7 @@
 #include "../common/odst_bringup_logic.h"
 #include "../common/odst_vehicle_logic.h"
 #include "../common/scope_logic.h"
+#include "../common/two_hand_ik_logic.h"
 
 #ifndef HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
 #define HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP 0
@@ -1037,6 +1038,9 @@ namespace
         bool centerRootValid = false;
         bool rightWristValid = false;
         bool leftWristValid = false;
+        // Reach supplies this from the same immutable prepared-frame snapshot
+        // as both controller targets. H3/ODST use VR_IsTwoHandAiming() instead.
+        bool twoHandAimActive = false;
     };
     // One context per held-weapon slot: slot 0 is the primary (right-hand)
     // weapon, slot 1 is the dual-wield secondary (left-hand) weapon. The
@@ -4351,6 +4355,11 @@ namespace
             : g_fpUnmodifiedInterpolations[context.slot];
         const size_t paletteBytes = static_cast<size_t>(context.count) *
             sizeof(BoneMatrix);
+        const bool twoHandAimActive = explicitTargets
+            ? explicitTargets->twoHandAimActive
+            : VR_IsTwoHandAiming();
+        const bool armIkActive = ShouldApplyArmIk(
+            g_config.arm_ik, twoHandAimActive);
 
         auto cacheMatches = [&](const FpStereoPaletteCache& cache) {
             return cache.valid && cache.tag == tag &&
@@ -4364,7 +4373,7 @@ namespace
                 cache.lElbow == context.lElbow &&
                 cache.lShoulder == context.lShoulder &&
                 cache.lWristDescendants == context.lWristDescendants &&
-                cache.armIk == g_config.arm_ik &&
+                cache.armIk == armIkActive &&
                 memcmp(cache.original, unmodified, paletteBytes) == 0;
         };
         if (g_fpStereoSolveScope.armed)
@@ -4421,7 +4430,7 @@ namespace
                 cache.lElbow = context.lElbow;
                 cache.lShoulder = context.lShoulder;
                 cache.lWristDescendants = context.lWristDescendants;
-                cache.armIk = g_config.arm_ik;
+                cache.armIk = armIkActive;
                 cache.root = root;
                 memcpy(cache.original, unmodified, paletteBytes);
                 memcpy(cache.solved, solved, paletteBytes);
@@ -4561,7 +4570,7 @@ namespace
                context.lWrist>=0 && context.lWrist<context.count)
             : (context.shoulder>=0 && context.shoulder<context.count &&
                context.elbow>=0 && context.elbow<context.count);
-        if (g_config.arm_ik && carrierChainValid)
+        if (armIkActive && carrierChainValid)
         {
             const BoneMatrix* unmod=unmodified;
             memcpy(g_fpPaletteScratch,unmod,
@@ -4955,7 +4964,7 @@ namespace
         }
 
         // M = rootEye^-1 * T * rootCenter applied per record: the WORLD result
-        else if (g_config.arm_ik && !dual)
+        else if (armIkActive && !dual)
         {
             g_armFailurePublished.store("right-chain-indices",std::memory_order_relaxed);
             g_armFailureSide.store(1,std::memory_order_release);
@@ -24340,6 +24349,7 @@ namespace
                 tracking,true,candidate.gameplayBasePosition,
                 candidate.fpTargets.leftWrist,
                 candidate.fpTargets.leftScale);
+        candidate.fpTargets.twoHandAimActive=tracking.twoHandAimActive;
         candidate.renderAccess = &access;
         candidate.active = true;
         g_reachOwnerScope = candidate;
