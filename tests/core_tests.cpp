@@ -178,6 +178,9 @@ int main()
           "Configured arm IK returns outside a two-hand grab");
     Check(!ShouldApplyArmIk(true, true),
           "Two-hand grab suppresses competing arm IK");
+    Check(ReachShouldBindVisibleLeftHandToController(false) &&
+              !ReachShouldBindVisibleLeftHandToController(true),
+          "Reach binds the visible glove to the left controller only in free-hand mode and keeps the authored weapon grip during two-hand aim");
 
     {
         // sig::Find is memchr-anchored for speed (it is the dominant cost of

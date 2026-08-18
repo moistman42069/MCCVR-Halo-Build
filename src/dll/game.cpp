@@ -22180,12 +22180,17 @@ namespace
                     tag,fp,*root,source,replacement,&targets,
                     context.untouchedLive);
                 selectedSource=replacement;
-                const bool leftHandBound=reconstructed &&
-                    selectedSource==g_fpPaletteScratch &&
-                    ReachBindFloatingLeftHandToController(
+                bool leftHandBound=reconstructed &&
+                    selectedSource==g_fpPaletteScratch;
+                if (leftHandBound &&
+                    ReachShouldBindVisibleLeftHandToController(
+                        targets.twoHandAimActive))
+                {
+                    leftHandBound=ReachBindFloatingLeftHandToController(
                         *root,fp,
                         context.layout.leftControllerOwnedSourceBranch,
                         targets);
+                }
                 bool outputFinite=reconstructed && leftHandBound;
                 for (int i=0;outputFinite && i<fp.count;++i)
                     outputFinite=ReachBoneMatrixFinite(g_fpPaletteScratch[i]);

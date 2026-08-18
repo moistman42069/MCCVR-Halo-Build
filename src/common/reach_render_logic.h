@@ -706,6 +706,16 @@ inline constexpr uintptr_t kReachFpWeaponIkDisableEntryRva = 0x00B3AEB8;
 inline constexpr uintptr_t kReachFpWeaponIkDisableValueRva = 0x04E38B61;
 inline constexpr uint64_t kReachDebugBooleanType = 5;
 
+// In free-hand mode Reach's visible left glove follows the left controller.
+// During two-hand aim the controller instead steers the weapon ray; the model
+// hand must stay in Reach's authored support grip and therefore remain inside
+// the same rigid palette transform as the weapon.
+inline constexpr bool ReachShouldBindVisibleLeftHandToController(
+    bool twoHandAimActive) noexcept
+{
+    return !twoHandAimActive;
+}
+
 // Reach's screen colour/gamma publisher - the exact homologue of the Halo 3
 // (+0x278EE0) and ODST (+0x2A6308) function the headset already proved drives
 // game brightness. All three take (a0, a1, a2) in xmm0-2, shuffle them the same
