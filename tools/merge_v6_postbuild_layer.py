@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Merge the released V6 Halo 4 post-build layer into the two-hand DLL.
+"""Merge the released V6 Halo 4 post-build layer into a guarded base DLL.
 
 The public V6 source commit does not contain the five PE sections that were
 added to the released DLL after linking.  Rebuilding that source therefore
-drops accepted Halo 4 HUD, helmet, effect, muzzle, and pause behavior.  This
+drops accepted Halo 4 HUD, helmet, effect, muzzle, and pause behavior. This
 tool is intentionally narrow: it accepts only the exact released V6 donor and
-the exact headset-tested two-hand candidate, ports the donor sections, and
-retargets the small set of build-relative calls whose RVAs moved.
+one of the explicitly verified base layouts below, ports the donor sections,
+and retargets the small set of build-relative calls whose RVAs moved.
 """
 
 from __future__ import annotations
@@ -20,13 +20,34 @@ from pathlib import Path
 
 V6_SHA256 = "419f2ca425a41f3fe42a2f27cfd0ce55123f71c5ef34c1c45604018285efea82"
 TWO_HAND_SHA256 = "60e5d57ebea0b4c1f9112fd3ae8029467f0dfbd2053786122448475230e6db5c"
+RESTORED_TWO_HAND_SHA256 = (
+    "9ca9b6da6f4e1dfb9b3cf23dd84c9134f7bb23619bdc423b7f7a7b45ca0c7c22"
+)
+
+# The cumulative 60c9198 source build changes code and link layout after the
+# older d184 candidate. Its complete file hash is expected to change when the
+# embedded 40-character source commit changes, while its executable layout
+# must not. Therefore the new profile is guarded by both the exact raw .text
+# hash and every stock PE section's geometry. A mismatch refuses the merge.
+V6_TWO_HAND_CURRENT_TEXT_SHA256 = (
+    "1b9da51e2c6657e3dfb5a373a1403e5b65697c51018794ec87757bee4183cf23"
+)
+V6_TWO_HAND_CURRENT_SECTION_GEOMETRY = (
+    (b".text", 0x1586B0, 0x001000, 0x158800, 0x000400),
+    (b".rdata", 0x0B2720, 0x15A000, 0x0B2800, 0x158C00),
+    (b".data", 0x078A9C, 0x20D000, 0x068200, 0x20B400),
+    (b".pdata", 0x00DBA8, 0x286000, 0x00DC00, 0x273600),
+    (b".fptable", 0x000100, 0x294000, 0x000200, 0x281200),
+    (b".rsrc", 0x004B60, 0x295000, 0x004C00, 0x281400),
+    (b".reloc", 0x001054, 0x29A000, 0x001200, 0x286000),
+)
 
 CUSTOM_SECTION_NAMES = (b".h4fx", b".h4fd", b".h4hs", b".h4hp", b".h4pb")
 
 # Calls changed by the released V6 post-build layer.  Candidate RVAs differ
 # slightly because the two-hand source change moved a few compiled functions.
 # Each tuple is (call RVA, expected stock target RVA, V6 wrapper target RVA).
-BASE_CALL_PATCHES = (
+LEGACY_BASE_CALL_PATCHES = (
     (0x003D52, 0x005830, 0x29F013),
     (0x0057FD, 0x005830, 0x29F013),
     (0x00C6D1, 0x001A20, 0x29F000),
@@ -43,7 +64,7 @@ BASE_CALL_PATCHES = (
 # Direct calls made by the V6 layer back into the base DLL.  Only functions
 # whose link RVAs moved in the two-hand build are listed; logger and stable
 # helper calls retain their original targets.
-CUSTOM_CALL_PATCHES = (
+LEGACY_CUSTOM_CALL_PATCHES = (
     (0x29C004, 0x04CE90, 0x04CEA0),
     (0x29C12D, 0x037F90, 0x037FA0),
     (0x29E06E, 0x0C78F0, 0x0C78B0),
@@ -51,6 +72,35 @@ CUSTOM_CALL_PATCHES = (
     (0x29E410, 0x111270, 0x111220),
     (0x29E423, 0x1059D0, 0x105940),
     (0x29E436, 0x111270, 0x111220),
+    (0x2A0065, 0x02A8B0, 0x02A8C0),
+)
+
+# Layout recovered from the cumulative 60c9198 source build. Nine V6 wrapper
+# call sites are unchanged from d184; the two calls in the moved functions are
+# now 0x48ACE and 0x4FC78. Four internal destinations also moved. These values
+# are used only after the exact .text hash and section geometry above match.
+CURRENT_BASE_CALL_PATCHES = (
+    (0x003D52, 0x005830, 0x29F013),
+    (0x0057FD, 0x005830, 0x29F013),
+    (0x00C6D1, 0x001A20, 0x29F000),
+    (0x013AEA, 0x001A20, 0x2A0000),
+    (0x026105, 0x005830, 0x29F013),
+    (0x026191, 0x005830, 0x29F013),
+    (0x02E860, 0x111280, 0x29E40C),
+    (0x02EFAC, 0x005830, 0x29F026),
+    (0x02F034, 0x005830, 0x29F013),
+    (0x048ACE, 0x04CEF0, 0x29C000),
+    (0x04FC78, 0x001A20, 0x29C440),
+)
+
+CURRENT_CUSTOM_CALL_PATCHES = (
+    (0x29C004, 0x04CE90, 0x04CEF0),
+    (0x29C12D, 0x037F90, 0x037FA0),
+    (0x29E06E, 0x0C78F0, 0x0C7910),
+    (0x29E08C, 0x0C78F0, 0x0C7910),
+    (0x29E410, 0x111270, 0x111280),
+    (0x29E423, 0x1059D0, 0x1059A0),
+    (0x29E436, 0x111270, 0x111280),
     (0x2A0065, 0x02A8B0, 0x02A8C0),
 )
 
@@ -79,6 +129,34 @@ class PeLayout:
     size_of_headers: int
     image_base: int
     sections: tuple[Section, ...]
+
+
+@dataclass(frozen=True)
+class MergeProfile:
+    name: str
+    base_call_patches: tuple[tuple[int, int, int], ...]
+    custom_call_patches: tuple[tuple[int, int, int], ...]
+    exact_base_sha256: str | None = None
+    text_sha256: str | None = None
+    section_geometry: tuple[tuple[bytes, int, int, int, int], ...] | None = None
+    expected_output_sha256: str | None = None
+
+
+LEGACY_PROFILE = MergeProfile(
+    name="d184 headset-tested two-hand base",
+    exact_base_sha256=TWO_HAND_SHA256,
+    base_call_patches=LEGACY_BASE_CALL_PATCHES,
+    custom_call_patches=LEGACY_CUSTOM_CALL_PATCHES,
+    expected_output_sha256=RESTORED_TWO_HAND_SHA256,
+)
+
+CURRENT_PROFILE = MergeProfile(
+    name="60c9198 cumulative V6/two-hand code layout",
+    text_sha256=V6_TWO_HAND_CURRENT_TEXT_SHA256,
+    section_geometry=V6_TWO_HAND_CURRENT_SECTION_GEOMETRY,
+    base_call_patches=CURRENT_BASE_CALL_PATCHES,
+    custom_call_patches=CURRENT_CUSTOM_CALL_PATCHES,
+)
 
 
 def sha256(data: bytes) -> str:
@@ -189,16 +267,155 @@ def section_names(layout: PeLayout) -> tuple[bytes, ...]:
     return tuple(section.name for section in layout.sections)
 
 
-def merge(v6_path: Path, two_hand_path: Path, output_path: Path) -> None:
+def section_geometry(
+    layout: PeLayout,
+) -> tuple[tuple[bytes, int, int, int, int], ...]:
+    return tuple(
+        (
+            section.name,
+            section.virtual_size,
+            section.virtual_address,
+            section.raw_size,
+            section.raw_pointer,
+        )
+        for section in layout.sections
+    )
+
+
+def raw_section_sha256(data: bytes, layout: PeLayout, name: bytes) -> str:
+    section = next((section for section in layout.sections if section.name == name), None)
+    if section is None:
+        raise ValueError(f"missing {name.decode()} section")
+    raw = data[section.raw_pointer : section.raw_pointer + section.raw_size]
+    if len(raw) != section.raw_size:
+        raise ValueError(f"{name.decode()} section is truncated")
+    return sha256(raw)
+
+
+def select_profile(data: bytes, layout: PeLayout) -> MergeProfile:
+    complete_hash = sha256(data)
+    if complete_hash == LEGACY_PROFILE.exact_base_sha256:
+        return LEGACY_PROFILE
+    text_hash = raw_section_sha256(data, layout, b".text")
+    if (
+        text_hash == CURRENT_PROFILE.text_sha256
+        and section_geometry(layout) == CURRENT_PROFILE.section_geometry
+    ):
+        return CURRENT_PROFILE
+    raise ValueError(
+        "unrecognized base DLL: complete SHA-256 "
+        f"{complete_hash}, .text SHA-256 {text_hash}; no guarded layout matches"
+    )
+
+
+def verify_rel32(
+    image: bytes | bytearray,
+    layout: PeLayout,
+    call_rva: int,
+    expected_target_rva: int,
+) -> None:
+    offset = rva_to_offset(layout, call_rva)
+    if image[offset] != 0xE8:
+        raise ValueError(
+            f"RVA 0x{call_rva:X}: expected CALL rel32, found 0x{image[offset]:02X}"
+        )
+    displacement = struct.unpack_from("<i", image, offset + 1)[0]
+    actual_target = call_rva + 5 + displacement
+    if actual_target != expected_target_rva:
+        raise ValueError(
+            f"RVA 0x{call_rva:X}: expected target 0x{expected_target_rva:X}, "
+            f"found 0x{actual_target:X}"
+        )
+
+
+def verify_original_diff_scope(
+    original: bytes,
+    merged: bytes | bytearray,
+    base_layout: PeLayout,
+    profile: MergeProfile,
+) -> None:
+    allowed: set[int] = set()
+
+    def allow(offset: int, size: int) -> None:
+        allowed.update(range(offset, offset + size))
+
+    allow(base_layout.file_header_offset + 2, 2)  # NumberOfSections
+    allow(base_layout.optional_header_offset + 4, 4)  # SizeOfCode
+    allow(base_layout.optional_header_offset + 56, 4)  # SizeOfImage
+    allow(base_layout.optional_header_offset + 64, 4)  # CheckSum
+    allow(
+        base_layout.section_table_offset + base_layout.section_count * 40,
+        len(CUSTOM_SECTION_NAMES) * 40,
+    )
+    for call_rva, _, _ in profile.base_call_patches:
+        allow(rva_to_offset(base_layout, call_rva) + 1, 4)
+
+    unexpected = [
+        offset
+        for offset, (before, after) in enumerate(zip(original, merged))
+        if before != after and offset not in allowed
+    ]
+    if unexpected:
+        first = unexpected[0]
+        raise ValueError(
+            f"merge changed base byte 0x{first:X} outside the guarded headers/calls"
+        )
+
+
+def verify_custom_section_diff_scope(
+    donor: bytes,
+    donor_layout: PeLayout,
+    merged: bytes | bytearray,
+    merged_layout: PeLayout,
+    profile: MergeProfile,
+) -> None:
+    patched_displacements = {
+        byte_rva
+        for call_rva, _, _ in profile.custom_call_patches
+        for byte_rva in range(call_rva + 1, call_rva + 5)
+    }
+    donor_sections = {section.name: section for section in donor_layout.sections}
+    merged_sections = {section.name: section for section in merged_layout.sections}
+    for name in CUSTOM_SECTION_NAMES:
+        source = donor_sections[name]
+        target = merged_sections[name]
+        if (
+            source.virtual_size != target.virtual_size
+            or source.virtual_address != target.virtual_address
+            or source.raw_size != target.raw_size
+            or source.characteristics != target.characteristics
+        ):
+            raise ValueError(f"merged {name.decode()} geometry differs from donor")
+        source_raw = donor[source.raw_pointer : source.raw_pointer + source.raw_size]
+        target_raw = merged[target.raw_pointer : target.raw_pointer + target.raw_size]
+        for delta, (before, after) in enumerate(zip(source_raw, target_raw)):
+            rva = source.virtual_address + delta
+            if before != after and rva not in patched_displacements:
+                raise ValueError(
+                    f"merged {name.decode()} byte RVA 0x{rva:X} differs outside a redirect"
+                )
+
+
+def merge(
+    v6_path: Path,
+    two_hand_path: Path,
+    output_path: Path,
+    expected_base_sha256: str | None = None,
+) -> None:
     v6 = v6_path.read_bytes()
     two_hand = two_hand_path.read_bytes()
     if sha256(v6) != V6_SHA256:
         raise ValueError("V6 donor hash does not match the exact released V6 DLL")
-    if sha256(two_hand) != TWO_HAND_SHA256:
-        raise ValueError("two-hand base hash does not match the headset-tested candidate")
+    base_hash = sha256(two_hand)
+    if expected_base_sha256 is not None and base_hash != expected_base_sha256.lower():
+        raise ValueError(
+            f"base hash {base_hash} does not match --expected-base-sha256 "
+            f"{expected_base_sha256.lower()}"
+        )
 
     donor_layout = parse_pe(v6)
     base_layout = parse_pe(two_hand)
+    profile = select_profile(two_hand, base_layout)
     if section_names(base_layout) != (
         b".text",
         b".rdata",
@@ -277,36 +494,64 @@ def merge(v6_path: Path, two_hand_path: Path, output_path: Path) -> None:
     merged_layout = parse_pe(output)
     if section_names(merged_layout)[-5:] != CUSTOM_SECTION_NAMES:
         raise ValueError("merged section table validation failed")
-    for patch in BASE_CALL_PATCHES:
+    for patch in profile.base_call_patches:
         patch_rel32(output, merged_layout, *patch)
-    for patch in CUSTOM_CALL_PATCHES:
+    for patch in profile.custom_call_patches:
         patch_rel32(output, merged_layout, *patch)
 
     # Reparse and prove every redirected call resolves to its intended target.
     final_layout = parse_pe(output)
-    for call_rva, _, new_target in BASE_CALL_PATCHES + CUSTOM_CALL_PATCHES:
-        offset = rva_to_offset(final_layout, call_rva)
-        displacement = struct.unpack_from("<i", output, offset + 1)[0]
-        actual_target = call_rva + 5 + displacement
-        if actual_target != new_target:
-            raise ValueError(f"RVA 0x{call_rva:X}: rel32 verification failed")
+    for call_rva, _, new_target in (
+        profile.base_call_patches + profile.custom_call_patches
+    ):
+        verify_rel32(output, final_layout, call_rva, new_target)
+    verify_original_diff_scope(two_hand, output, base_layout, profile)
+    verify_custom_section_diff_scope(
+        v6, donor_layout, output, final_layout, profile
+    )
+
+    output_hash = sha256(output)
+    if (
+        profile.expected_output_sha256 is not None
+        and output_hash != profile.expected_output_sha256
+    ):
+        raise ValueError(
+            f"merged output hash {output_hash} does not match the proven "
+            f"{profile.expected_output_sha256}"
+        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(output)
+    print(f"profile {profile.name}")
+    print(f"base sha256 {base_hash}")
+    print(f"base .text sha256 {raw_section_sha256(two_hand, base_layout, b'.text')}")
+    print(
+        f"verified {len(profile.base_call_patches)} base redirects, "
+        f"{len(profile.custom_call_patches)} internal redirects, and donor diff scope"
+    )
     print(f"wrote {output_path}")
     print(f"size {len(output)} bytes")
-    print(f"sha256 {sha256(output)}")
+    print(f"sha256 {output_hash}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--v6", type=Path, required=True, help="exact released V6 DLL")
     parser.add_argument(
-        "--two-hand", type=Path, required=True, help="exact headset-tested two-hand DLL"
+        "--two-hand", type=Path, required=True, help="guarded unmerged base DLL"
     )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--expected-base-sha256",
+        help="optional complete base hash recorded by the candidate build",
+    )
     args = parser.parse_args()
-    merge(args.v6, args.two_hand, args.output)
+    merge(
+        args.v6,
+        args.two_hand,
+        args.output,
+        expected_base_sha256=args.expected_base_sha256,
+    )
 
 
 if __name__ == "__main__":
