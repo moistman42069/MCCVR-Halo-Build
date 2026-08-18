@@ -29239,11 +29239,13 @@ namespace
         std::atomic<uint64_t> vrikWeaponRecordsCarried{0};
         std::atomic<uint64_t> vrikWeaponRecordsRefused{0};
         // C-H4-43 aligns Halo 4's official left_hand marker to the same direct
-        // controller mount H3/ODST/Reach target. Optional marker failure keeps
-        // the C-H4-38 reroot while right/gun carry continues.
+        // controller mount H3/ODST/Reach target. C-H4-44 keeps the authored
+        // support grip inside the right-hand/weapon rigid transform. Optional
+        // marker failure keeps the C-H4-38 free reroot while right/gun carry
+        // continues.
         std::atomic<uint64_t> vrikMarkerParityFallbacks{0};
         std::atomic<uint64_t> vrikMarkerParityApplications{0};
-        std::atomic<uint64_t> vrikTwoHandLeftAimRotationParents{0};
+        std::atomic<uint64_t> vrikTwoHandRigidSupportLocks{0};
         // The producer flag is not an anatomy classifier. C-H4-34's headset
         // log proved flag 1 contains both the 80-node storm_fp hands and the
         // held gun, while flag 0 is the separate 120-node native body/legs.
@@ -31334,7 +31336,7 @@ namespace
                 desiredRight))
             return Halo4VrikStage::RightPoseFailed;
         bool markerParityApplied=false;
-        bool supportAimRotationParentApplied=false;
+        bool rigidSupportLockApplied=false;
         bool markerParityFallback=false;
         if (g_halo4FloatingPair.twoHandAimActive)
         {
@@ -31345,7 +31347,7 @@ namespace
             if (!Halo4BuildFloatingRigidSupportTarget(
                     desiredRight,stockRight,stockLeft,desiredLeft))
                 return Halo4VrikStage::LeftPoseFailed;
-            supportAimRotationParentApplied=true;
+            rigidSupportLockApplied=true;
         }
         else
         {
@@ -31446,8 +31448,8 @@ namespace
         if (markerParityApplied)
             g_halo4Camera.vrikMarkerParityApplications.fetch_add(
                 1,std::memory_order_relaxed);
-        else if (supportAimRotationParentApplied)
-            g_halo4Camera.vrikTwoHandLeftAimRotationParents.fetch_add(
+        else if (rigidSupportLockApplied)
+            g_halo4Camera.vrikTwoHandRigidSupportLocks.fetch_add(
                 1,std::memory_order_relaxed);
         else if (markerParityFallback)
             g_halo4Camera.vrikMarkerParityFallbacks.fetch_add(
@@ -32935,7 +32937,7 @@ namespace
             0,std::memory_order_relaxed);
         g_halo4Camera.vrikMarkerParityApplications.store(
             0,std::memory_order_relaxed);
-        g_halo4Camera.vrikTwoHandLeftAimRotationParents.store(
+        g_halo4Camera.vrikTwoHandRigidSupportLocks.store(
             0,std::memory_order_relaxed);
         g_halo4Camera.vrikBodyFillRecords.store(0,std::memory_order_relaxed);
         g_halo4Camera.vrikWeaponFillRecords.store(0,std::memory_order_relaxed);
@@ -34057,7 +34059,7 @@ namespace
             g_halo4Camera.floatingHandsEpoch.store(
                 epoch,std::memory_order_release);
         }
-        LOG("Halo 4 C-H4-43 cross-title marker-parity free hand: final palette 0x%X hooked; only "
+        LOG("Halo 4 C-H4-43/C-H4-44 marker-parity free / rigid two-hand support: final palette 0x%X hooked; only "
             "return 0x%X is admitted; %d bank transforms are privately copied "
             "and argument 7 is never treated as a node count; H4EK/retail "
             "render-model checksum/nodes.count is read exactly; epoch %u has "
@@ -35123,13 +35125,13 @@ namespace
         const uint64_t markerParityApplications=
             g_halo4Camera.vrikMarkerParityApplications.exchange(
                 0,std::memory_order_relaxed);
-        const uint64_t twoHandLeftAimRotationParents=
-            g_halo4Camera.vrikTwoHandLeftAimRotationParents.exchange(
+        const uint64_t twoHandRigidSupportLocks=
+            g_halo4Camera.vrikTwoHandRigidSupportLocks.exchange(
                 0,std::memory_order_relaxed);
         const uint64_t stormCandidates=
             g_halo4Camera.vrikStormRecordCandidates.exchange(
                 0,std::memory_order_relaxed);
-        LOG("Halo 4 C-H4-43 cross-title marker-parity free hand: palette %s, halo4_hands=%d; "
+        LOG("Halo 4 C-H4-43/C-H4-44 marker-parity free / rigid two-hand support: palette %s, halo4_hands=%d; "
             "%llu Storm hand palettes committed / %llu refused, %llu held records committed / %llu "
             "refused, %llu exact first-person calls "
             "in 2s; no IK, forced floaty mask, world scale %.3f, current stock-"
@@ -35147,9 +35149,9 @@ namespace
             g_halo4Camera.vrikTargetMiss.load(std::memory_order_relaxed),
             static_cast<unsigned long long>(stormCandidates),
             static_cast<unsigned long long>(markerParityApplications),
-            static_cast<unsigned long long>(twoHandLeftAimRotationParents),
+            static_cast<unsigned long long>(twoHandRigidSupportLocks),
             static_cast<unsigned long long>(markerParityFallbacks));
-        LOG("Halo 4 C-H4-43 floating-hand refusals in 2s: count=%llu copy=%llu basis=%llu "
+        LOG("Halo 4 C-H4-43/C-H4-44 floating-hand refusals in 2s: count=%llu copy=%llu basis=%llu "
             "range=%llu eye/root=%llu link=%llu side=%llu right-pose=%llu left-pose=%llu "
             "right-rigid=%llu left-rigid=%llu; %llu stock/non-owned palettes",
             static_cast<unsigned long long>(

@@ -3788,6 +3788,40 @@ installed Steam and Store DLL SHA-256 is
 C-H4-43 supersedes C-H4-1 as the accepted Halo 4 pointer; it does not turn the
 earlier rejected orientation candidates into evidence or acceptance.
 
+### E-H4-32b / C-H4-44 - rigid two-hand support lock
+
+The later V6/two-hand integration run corrected the earlier interpretation of
+the C-H4-38 support result. The submitted log has SHA-256
+`5E52DA33408920898D38DA4C5C3DC8F1D23AE1B6D1CD8FEC73A098E4FBABA5DB`
+and identifies source `d1842487240d5e8bd44ccb43628e10b707ae0325`. It records
+four two-hand engagement events, nonzero C-H4-38 support commits, matching
+Storm/held-model commit counts, and zero floating-hand refusals. The user then
+reported that the support hand was visibly sliding instead of remaining locked
+to the weapon.
+
+The runtime path explains that result without another guessed title offset.
+C-H4-38 copied the two-hand aim rotation into the visible left wrist while
+retaining the live left-controller translation. The adjacent held-model record
+instead received the right wrist's complete rigid world delta. Moving the
+support controller could therefore move the visible glove independently of the
+weapon even though the weapon ray and record routing were healthy.
+
+C-H4-44 keeps the existing controller-owned two-hand aim solve but changes only
+the presentation target. It computes the exact right-wrist world delta
+`desiredRight * inverse(stockRight)` and applies that same transform to the
+stock left wrist. The visible support hand and immediately following held model
+therefore share one rigid motion and preserve Halo 4's authored hand-to-weapon
+relation. Free-hand marker parity, the right-hand target, aim calculation,
+record identity/order, visibility masks, camera, stereo, and the V6 post-build
+layer are unchanged. Invalid or non-finite transforms refuse only this optional
+palette transaction and publish no partial target.
+
+Offline tests use noncommuting right, left, and held-model transforms to prove
+that the support target preserves the full authored relative transform, not
+only translation. They also pin write-last failure for invalid input. Source
+commit `ea1dd3ca15718149ce59a895b17fa3fd7f013240` is Windows-build and
+headset-pending; it does not supersede C-H4-43 until a headset result exists.
+
 ## E-H4-33 / C-H4-43i - authored CUI reticle capture and native-copy suppression
 
 Halo 4 has no Halo 3/ODST class-2 CHUD crosshair predicate, and no Reach CHUD
