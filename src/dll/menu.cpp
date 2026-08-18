@@ -1032,6 +1032,14 @@ namespace
         ImGui::TextDisabled("0/0/0 keeps the current automatic barrel alignment.");
         changed |= ImGui::SliderFloat("Gun forward offset (m)", &g_config.gun_forward_m, -0.3f, 0.5f, "%.2f");
         ImGui::TextDisabled("Slides gun/arms along your aim. Negative seats the gun back in your fist.");
+        changed |= ImGui::SliderFloat("Gun right offset (m)", &g_config.gun_right_m, -0.3f, 0.3f, "%.2f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Center##gnrx")) { g_config.gun_right_m = 0.0f; changed = true; }
+        changed |= ImGui::SliderFloat("Gun up offset (m)", &g_config.gun_up_m, -0.3f, 0.3f, "%.2f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Center##gnux")) { g_config.gun_up_m = 0.0f; changed = true; }
+        ImGui::TextDisabled("Move the gun sideways on its own local right/up axes (post-rotation).");
+        ImGui::TextDisabled("For gun-stock alignment. Visual only; your shots still come from the controller.");
         changed |= ImGui::SliderFloat("Muzzle height (m)", &g_config.muzzle_height_m, -0.3f, 0.3f, "%.2f");
         ImGui::TextDisabled("HALO REACH ONLY for now - Halo 3 and ODST support is coming soon.");
         ImGui::TextDisabled("Raises the muzzle flash / bullet spawn up the gun's own axis.");

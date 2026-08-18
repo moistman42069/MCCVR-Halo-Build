@@ -534,6 +534,14 @@ struct Config
     // positive moves it out of your face. Never touches aim.
     float gun_forward_m = -0.14f;
 
+    // Lateral mount offsets in METERS, along the controller's own right and
+    // up axes AFTER the mount rotation. 0 = gun hangs straight off the
+    // controller. These exist because a gun stock needs an arbitrary
+    // physical offset: rotation alone cannot reach a point not on the arc.
+    // Visual only, like all gun trims; the cursor/bullet ray never moves.
+    float gun_right_m = 0.0f;
+    float gun_up_m = 0.0f;
+
     // Raise the muzzle EFFECT origin — the flash and the point bullets appear
     // to leave — along the gun's own up axis, in meters. Reach only; Halo 3 and
     // ODST resolve their muzzle markers on the visible weapon already.

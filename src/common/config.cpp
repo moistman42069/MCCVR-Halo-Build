@@ -375,6 +375,8 @@ static void Clamp()
     g_config.gun_yaw_deg = std::clamp(g_config.gun_yaw_deg, -180.0f, 180.0f);
     g_config.gun_roll_deg = std::clamp(g_config.gun_roll_deg, -180.0f, 180.0f);
     g_config.gun_forward_m = std::clamp(g_config.gun_forward_m, -0.3f, 0.5f);
+    g_config.gun_right_m = std::clamp(g_config.gun_right_m, -0.3f, 0.3f);
+    g_config.gun_up_m = std::clamp(g_config.gun_up_m, -0.3f, 0.3f);
     g_config.muzzle_height_m = std::clamp(g_config.muzzle_height_m, -0.3f, 0.3f);
     g_config.scope_zoom = std::clamp(g_config.scope_zoom, 6.0f, 24.0f);
     g_config.scope_screen_width_m = std::clamp(g_config.scope_screen_width_m, 0.04f, 0.25f);
@@ -613,6 +615,10 @@ void ConfigLoad(const wchar_t* path)
             g_config.gun_roll_deg = (float)atof(val);
         else if (!strcmp(key, "gun_forward_m"))
             g_config.gun_forward_m = (float)atof(val);
+        else if (!strcmp(key, "gun_right_m"))
+            g_config.gun_right_m = (float)atof(val);
+        else if (!strcmp(key, "gun_up_m"))
+            g_config.gun_up_m = (float)atof(val);
         else if (!strcmp(key, "muzzle_height_m"))
             g_config.muzzle_height_m = (float)atof(val);
         else if (!strcmp(key, "scope_enabled"))
@@ -990,6 +996,10 @@ void ConfigSave()
     fprintf(f, "# Negative seats the gun back into your fist.\n");
     fprintf(f, "# (default %.2f, range -0.3 to 0.5)\n", d.gun_forward_m);
     fprintf(f, "gun_forward_m = %.2f\n\n", g_config.gun_forward_m);
+    fprintf(f, "# Sideways and vertical mount offsets on the controller, in meters.\n");
+    fprintf(f, "# (defaults 0.00 / 0.00, range -0.3 to 0.3)\n");
+    fprintf(f, "gun_right_m = %.2f\n", g_config.gun_right_m);
+    fprintf(f, "gun_up_m = %.2f\n\n", g_config.gun_up_m);
     fprintf(f, "# Raise the muzzle flash / bullet spawn point along the gun's\n");
     fprintf(f, "# own up axis, in meters. Reach only. Does NOT change where\n");
     fprintf(f, "# rounds land - only where they appear to come from.\n");
