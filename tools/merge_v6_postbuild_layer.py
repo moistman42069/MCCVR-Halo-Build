@@ -42,6 +42,23 @@ V6_TWO_HAND_CURRENT_SECTION_GEOMETRY = (
     (b".reloc", 0x001054, 0x29A000, 0x001200, 0x286000),
 )
 
+# The 950f0ba pause-retention and solved-arm two-hand changes move both code
+# and data relative to the accepted d145ece/60c9198 layout. This profile was
+# recovered from an x64 Release link made with MSVC 19.44.35228 and is guarded
+# independently so the earlier accepted layout remains valid and untouched.
+PAUSE_TWO_HAND_TEXT_SHA256 = (
+    "4eed9bb45fa63fcfbe186a4459c33da84ce844e2dc3e62c2b37056364627b69f"
+)
+PAUSE_TWO_HAND_SECTION_GEOMETRY = (
+    (b".text", 0x158DB0, 0x001000, 0x158E00, 0x000400),
+    (b".rdata", 0x0B2160, 0x15A000, 0x0B2200, 0x159200),
+    (b".data", 0x078ABC, 0x20D000, 0x068200, 0x20B400),
+    (b".pdata", 0x00DBE4, 0x286000, 0x00DC00, 0x273600),
+    (b".fptable", 0x000100, 0x294000, 0x000200, 0x281200),
+    (b".rsrc", 0x004B60, 0x295000, 0x004C00, 0x281400),
+    (b".reloc", 0x00105C, 0x29A000, 0x001200, 0x286000),
+)
+
 CUSTOM_SECTION_NAMES = (b".h4fx", b".h4fd", b".h4hs", b".h4hp", b".h4pb")
 
 # Calls changed by the released V6 post-build layer.  Candidate RVAs differ
@@ -104,6 +121,35 @@ CURRENT_CUSTOM_CALL_PATCHES = (
     (0x2A0065, 0x02A8B0, 0x02A8C0),
 )
 
+# Re-profiled from the exact 950f0ba MSVC link. Every base site was relocated
+# by matching its surrounding accepted instruction stream, then its unpatched
+# rel32 target was decoded and resolved to the named linker-map symbol. The
+# donor-side expected targets remain the released V6 instruction operands.
+PAUSE_TWO_HAND_BASE_CALL_PATCHES = (
+    (0x003C72, 0x005750, 0x29F013),  # ConfigSave
+    (0x00571D, 0x005750, 0x29F013),  # ConfigSave
+    (0x00C2E1, 0x0019D0, 0x29F000),  # Logf
+    (0x01350A, 0x0019D0, 0x2A0000),  # Logf
+    (0x025B25, 0x005750, 0x29F013),  # ConfigSave
+    (0x025BB1, 0x005750, 0x29F013),  # ConfigSave
+    (0x02DEB0, 0x111860, 0x29E40C),  # ImGui::TextDisabled
+    (0x02E5FC, 0x005750, 0x29F026),  # ConfigSave
+    (0x02E684, 0x005750, 0x29F013),  # ConfigSave
+    (0x04834E, 0x04C770, 0x29C000),  # Halo4SafeRead / SafeReadBytes
+    (0x04F4F8, 0x0019D0, 0x29C440),  # Logf
+)
+
+PAUSE_TWO_HAND_CUSTOM_CALL_PATCHES = (
+    (0x29C004, 0x04CE90, 0x04C770),  # Halo4SafeRead / SafeReadBytes
+    (0x29C12D, 0x037F90, 0x037CD0),  # ControllerWorldPoseEx
+    (0x29E06E, 0x0C78F0, 0x0C78D0),  # EnableHook
+    (0x29E08C, 0x0C78F0, 0x0C78D0),  # EnableHook
+    (0x29E410, 0x111270, 0x111860),  # ImGui::TextDisabled
+    (0x29E423, 0x1059D0, 0x105590),  # ImGui::ButtonBehavior
+    (0x29E436, 0x111270, 0x111860),  # ImGui::TextDisabled
+    (0x2A0065, 0x02A8B0, 0x02A6E0),  # ValidateStereoImagesOnce
+)
+
 
 @dataclass(frozen=True)
 class Section:
@@ -156,6 +202,14 @@ CURRENT_PROFILE = MergeProfile(
     section_geometry=V6_TWO_HAND_CURRENT_SECTION_GEOMETRY,
     base_call_patches=CURRENT_BASE_CALL_PATCHES,
     custom_call_patches=CURRENT_CUSTOM_CALL_PATCHES,
+)
+
+PAUSE_TWO_HAND_PROFILE = MergeProfile(
+    name="950f0ba pause-retain/solved-arm two-hand layout (MSVC 19.44)",
+    text_sha256=PAUSE_TWO_HAND_TEXT_SHA256,
+    section_geometry=PAUSE_TWO_HAND_SECTION_GEOMETRY,
+    base_call_patches=PAUSE_TWO_HAND_BASE_CALL_PATCHES,
+    custom_call_patches=PAUSE_TWO_HAND_CUSTOM_CALL_PATCHES,
 )
 
 
@@ -297,11 +351,10 @@ def select_profile(data: bytes, layout: PeLayout) -> MergeProfile:
     if complete_hash == LEGACY_PROFILE.exact_base_sha256:
         return LEGACY_PROFILE
     text_hash = raw_section_sha256(data, layout, b".text")
-    if (
-        text_hash == CURRENT_PROFILE.text_sha256
-        and section_geometry(layout) == CURRENT_PROFILE.section_geometry
-    ):
-        return CURRENT_PROFILE
+    geometry = section_geometry(layout)
+    for profile in (CURRENT_PROFILE, PAUSE_TWO_HAND_PROFILE):
+        if text_hash == profile.text_sha256 and geometry == profile.section_geometry:
+            return profile
     raise ValueError(
         "unrecognized base DLL: complete SHA-256 "
         f"{complete_hash}, .text SHA-256 {text_hash}; no guarded layout matches"
