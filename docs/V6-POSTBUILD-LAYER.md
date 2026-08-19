@@ -78,13 +78,23 @@ its `E8` opcode and original decoded target match exactly.
 | Donor call | Original target | New map symbol target |
 | ---: | ---: | --- |
 | `29C004` | `04CE90` | `04C770` `Halo4SafeRead`/`SafeReadBytes` |
-| `29C12D` | `037F90` | `037CD0` `ControllerWorldPoseEx` |
-| `29E06E` | `0C78F0` | `0C78D0` `EnableHook` |
-| `29E08C` | `0C78F0` | `0C78D0` `EnableHook` |
+| `29C12D` | `037F90` | `0377B0` `ComposeBoneMatrices` |
+| `29E06E` | `0C78F0` | `0C7F20` `MH_CreateHook` |
+| `29E08C` | `0C78F0` | `0C7F20` `MH_CreateHook` |
 | `29E410` | `111270` | `111860` `ImGui::TextDisabled` |
-| `29E423` | `1059D0` | `105590` `ImGui::ButtonBehavior` |
+| `29E423` | `1059D0` | `105F80` `ImGui::Checkbox` |
 | `29E436` | `111270` | `111860` `ImGui::TextDisabled` |
-| `2A0065` | `02A8B0` | `02A6E0` `ValidateStereoImagesOnce` |
+| `2A0065` | `02A8B0` | `02A2E0` `VR_RequestPausePresentation` |
+
+Five redirects in the first re-profile were ABI-incompatible despite resolving
+to valid executable functions: `ControllerWorldPoseEx` instead of the matrix
+solver, two `EnableHook` calls instead of three-argument `MH_CreateHook`,
+`ButtonBehavior` instead of `Checkbox`, and a large stereo-image validator
+instead of the one-argument pause-presentation setter. The corrected profile
+requires masked instruction signatures at every distinct custom-to-base
+destination. Only link-relative operands are wildcarded; entry opcodes,
+parameter moves, stack shape, and semantic landmarks must match before any PE
+section is copied or call displacement is written.
 
 Unlike `60c9198`, this layout also moves the previously stable `Logf` from
 `001A20` to `0019D0` and `ConfigSave` from `005830` to `005750`. A complete
@@ -100,6 +110,15 @@ The guarded new `.text` hash is
 `4eed9bb45fa63fcfbe186a4459c33da84ce844e2dc3e62c2b37056364627b69f`.
 All seven stock sections' virtual sizes, virtual addresses, raw sizes, and raw
 pointers are part of the profile rather than inferred during the merge.
+
+The alternate reconstructed hash
+`59091e6117ffdecdb9496364964662f24ec94b8a935da1c1dfc8df5607a726ad`
+is reproducible only by restoring the merged wrapper calls to the older
+`d145ece` `Logf`/`ConfigSave` RVAs (`001A20`/`005830`). Restoring those calls
+to the symbols in the actual current linker map (`0019D0`/`005750`) reproduces
+the raw linked DLL and the guarded `4eed9b...` hash byte-for-byte. Therefore
+`59091e...` is retained as audit evidence, not accepted as a buildable base
+profile.
 
 Example:
 

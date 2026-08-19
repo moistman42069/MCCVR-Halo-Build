@@ -141,21 +141,21 @@ PAUSE_TWO_HAND_BASE_CALL_PATCHES = (
 
 PAUSE_TWO_HAND_CUSTOM_CALL_PATCHES = (
     (0x29C004, 0x04CE90, 0x04C770),  # Halo4SafeRead / SafeReadBytes
-    (0x29C12D, 0x037F90, 0x037CD0),  # ControllerWorldPoseEx
+    (0x29C12D, 0x037F90, 0x0377B0),  # ComposeBoneMatrices
     (0x29C49B, 0x001A20, 0x0019D0),  # Logf
     (0x29C4A9, 0x001A20, 0x0019D0),  # Logf
     (0x29E020, 0x001A20, 0x0019D0),  # Logf
     (0x29E02E, 0x001A20, 0x0019D0),  # Logf
     (0x29E040, 0x001A20, 0x0019D0),  # Logf
-    (0x29E06E, 0x0C78F0, 0x0C78D0),  # EnableHook
-    (0x29E08C, 0x0C78F0, 0x0C78D0),  # EnableHook
+    (0x29E06E, 0x0C78F0, 0x0C7F20),  # MH_CreateHook
+    (0x29E08C, 0x0C78F0, 0x0C7F20),  # MH_CreateHook
     (0x29E0A1, 0x001A20, 0x0019D0),  # Logf
     (0x29E0AF, 0x001A20, 0x0019D0),  # Logf
     (0x29E16B, 0x001A20, 0x0019D0),  # Logf
     (0x29E1BF, 0x001A20, 0x0019D0),  # Logf
     (0x29E401, 0x001A20, 0x0019D0),  # Logf
     (0x29E410, 0x111270, 0x111860),  # ImGui::TextDisabled
-    (0x29E423, 0x1059D0, 0x105590),  # ImGui::ButtonBehavior
+    (0x29E423, 0x1059D0, 0x105F80),  # ImGui::Checkbox
     (0x29E436, 0x111270, 0x111860),  # ImGui::TextDisabled
     (0x29F017, 0x005830, 0x005750),  # ConfigSave
     (0x29F031, 0x005830, 0x005750),  # ConfigSave
@@ -166,11 +166,68 @@ PAUSE_TWO_HAND_CUSTOM_CALL_PATCHES = (
     (0x29F587, 0x001A20, 0x0019D0),  # Logf
     (0x29F5CA, 0x001A20, 0x0019D0),  # Logf
     (0x2A0004, 0x001A20, 0x0019D0),  # Logf
-    (0x2A0065, 0x02A8B0, 0x02A6E0),  # ValidateStereoImagesOnce
+    (0x2A0065, 0x02A8B0, 0x02A2E0),  # VR_RequestPausePresentation
     (0x2A0071, 0x001A20, 0x0019D0),  # Logf
     (0x2A025F, 0x001A20, 0x0019D0),  # Logf
     (0x2A0400, 0x001A20, 0x0019D0),  # Logf
     (0x2A040E, 0x001A20, 0x0019D0),  # Logf
+)
+
+# Exact instruction evidence for every distinct custom-section destination in
+# the 950f0ba/a10c741 code layout. ``??`` masks only link-relative operands;
+# opcodes, parameter moves, stack shape, and semantic instruction landmarks
+# remain mandatory. The complete .text hash and section geometry still guard
+# the surrounding image, but these signatures prevent an ABI-incompatible
+# nearby function from being accepted merely because its RVA is executable.
+PAUSE_TWO_HAND_TARGET_SIGNATURES = (
+    (
+        0x0019D0,
+        "Logf variadic entry",
+        "48 89 4C 24 08 48 89 54 24 10 4C 89 44 24 18 "
+        "4C 89 4C 24 20 48 83 EC 58",
+    ),
+    (
+        0x005750,
+        "ConfigSave large-frame entry",
+        "40 55 48 8D AC 24 00 D6 FF FF B8 00 2B 00 00 "
+        "E8 ?? ?? ?? ?? 48 2B E0",
+    ),
+    (
+        0x04C770,
+        "Halo4SafeRead/SafeReadBytes parameter bridge",
+        "48 83 EC 28 48 8B C2 48 8B D1 48 8B C8 "
+        "E8 ?? ?? ?? ?? 90 B8 01 00 00 00",
+    ),
+    (
+        0x0377B0,
+        "ComposeBoneMatrices matrix solver",
+        "48 8B C4 55 53 56 57 41 56 48 8D 68 88 "
+        "48 81 EC 50 01 00 00",
+    ),
+    (
+        0x0C7F20,
+        "MH_CreateHook three-argument entry",
+        "40 53 55 56 57 41 54 41 56 41 57 48 83 EC 60",
+    ),
+    (
+        0x111860,
+        "ImGui::TextDisabled variadic entry",
+        "48 89 4C 24 08 48 89 54 24 10 4C 89 44 24 18 "
+        "4C 89 4C 24 20 53 57 48 83 EC 38",
+    ),
+    (
+        0x105F80,
+        "ImGui::Checkbox bool-pointer entry",
+        "48 8B C4 48 89 48 08 55 53 56 57 41 54 41 56 41 57 "
+        "48 8D 68 A1 48 81 EC E0 00 00 00",
+    ),
+    (
+        0x02A2E0,
+        "VR_RequestPausePresentation bool setter",
+        "0F B6 C1 86 05 ?? ?? ?? ?? 3A C1 75 0C "
+        "0F B6 05 ?? ?? ?? ?? 90 3A C1 74 09 "
+        "0F B6 C1 87 05 ?? ?? ?? ?? C3",
+    ),
 )
 
 
@@ -208,6 +265,7 @@ class MergeProfile:
     exact_base_sha256: str | None = None
     text_sha256: str | None = None
     section_geometry: tuple[tuple[bytes, int, int, int, int], ...] | None = None
+    target_signatures: tuple[tuple[int, str, str], ...] = ()
     expected_output_sha256: str | None = None
 
 
@@ -233,6 +291,7 @@ PAUSE_TWO_HAND_PROFILE = MergeProfile(
     section_geometry=PAUSE_TWO_HAND_SECTION_GEOMETRY,
     base_call_patches=PAUSE_TWO_HAND_BASE_CALL_PATCHES,
     custom_call_patches=PAUSE_TWO_HAND_CUSTOM_CALL_PATCHES,
+    target_signatures=PAUSE_TWO_HAND_TARGET_SIGNATURES,
 )
 
 
@@ -404,6 +463,44 @@ def verify_rel32(
         )
 
 
+def verify_semantic_target_signatures(
+    image: bytes | bytearray,
+    layout: PeLayout,
+    profile: MergeProfile,
+) -> None:
+    if not profile.target_signatures:
+        return
+
+    signature_targets = {rva for rva, _, _ in profile.target_signatures}
+    redirect_targets = {target for _, _, target in profile.custom_call_patches}
+    if signature_targets != redirect_targets:
+        missing = sorted(redirect_targets - signature_targets)
+        extra = sorted(signature_targets - redirect_targets)
+        raise ValueError(
+            "semantic target-signature coverage mismatch: "
+            f"missing {[f'0x{rva:X}' for rva in missing]}, "
+            f"extra {[f'0x{rva:X}' for rva in extra]}"
+        )
+
+    for target_rva, label, encoded_pattern in profile.target_signatures:
+        pattern: list[int | None] = []
+        for token in encoded_pattern.split():
+            pattern.append(None if token == "??" else int(token, 16))
+        if not pattern:
+            raise ValueError(f"RVA 0x{target_rva:X} {label}: empty signature")
+        offset = rva_to_offset(layout, target_rva)
+        actual = image[offset : offset + len(pattern)]
+        if len(actual) != len(pattern):
+            raise ValueError(f"RVA 0x{target_rva:X} {label}: truncated signature")
+        for index, expected in enumerate(pattern):
+            if expected is not None and actual[index] != expected:
+                raise ValueError(
+                    f"RVA 0x{target_rva:X} {label}: semantic signature "
+                    f"mismatch at +0x{index:X}; expected 0x{expected:02X}, "
+                    f"found 0x{actual[index]:02X}"
+                )
+
+
 def verify_original_diff_scope(
     original: bytes,
     merged: bytes | bytearray,
@@ -492,6 +589,7 @@ def merge(
     donor_layout = parse_pe(v6)
     base_layout = parse_pe(two_hand)
     profile = select_profile(two_hand, base_layout)
+    verify_semantic_target_signatures(two_hand, base_layout, profile)
     if section_names(base_layout) != (
         b".text",
         b".rdata",
@@ -581,6 +679,7 @@ def merge(
         profile.base_call_patches + profile.custom_call_patches
     ):
         verify_rel32(output, final_layout, call_rva, new_target)
+    verify_semantic_target_signatures(output, final_layout, profile)
     verify_original_diff_scope(two_hand, output, base_layout, profile)
     verify_custom_section_diff_scope(
         v6, donor_layout, output, final_layout, profile
@@ -603,7 +702,9 @@ def merge(
     print(f"base .text sha256 {raw_section_sha256(two_hand, base_layout, b'.text')}")
     print(
         f"verified {len(profile.base_call_patches)} base redirects, "
-        f"{len(profile.custom_call_patches)} internal redirects, and donor diff scope"
+        f"{len(profile.custom_call_patches)} internal redirects, "
+        f"{len(profile.target_signatures)} semantic target signatures, "
+        "and donor diff scope"
     )
     print(f"wrote {output_path}")
     print(f"size {len(output)} bytes")
