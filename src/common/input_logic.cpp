@@ -132,3 +132,39 @@ bool PauseLevelRecovery::Update(bool pausePresentation, bool cameraStale,
     }
     return false;
 }
+
+void PauseResumeLivenessGate::Reset()
+{
+    m_sawPause = false;
+    m_resumeSinceMs = 0;
+}
+
+bool PauseResumeLivenessGate::HoldInstalledStereo(
+    uint64_t nowMs, bool pauseOwned, bool cameraFresh)
+{
+    if (pauseOwned)
+    {
+        m_sawPause = true;
+        m_resumeSinceMs = 0;
+        return true;
+    }
+    if (cameraFresh)
+    {
+        Reset();
+        return false;
+    }
+    if (m_sawPause)
+    {
+        m_sawPause = false;
+        m_resumeSinceMs = nowMs;
+    }
+    if (!m_resumeSinceMs || nowMs < m_resumeSinceMs)
+    {
+        m_resumeSinceMs = 0;
+        return false;
+    }
+    if (nowMs - m_resumeSinceMs <= kPauseResumeLivenessGraceMs)
+        return true;
+    m_resumeSinceMs = 0;
+    return false;
+}

@@ -11402,6 +11402,7 @@ namespace
         const bool singleUserPath = ownsPrimaryCamera &&
             OdstSingleUserTailIsValid(
                 reinterpret_cast<const void*>(g_odstCamera.gunCameraArray));
+        const bool pauseSuspended = VR_IsPausePresentationTarget();
         // Any active camera in our proven slot-0 view keeps the core alive and
         // receives Halo 3's camera ownership. Halo 3 publishes the pre-head-look
         // aim forward on EVERY live camera copy; it does not gate vehicle aim on
@@ -11415,9 +11416,10 @@ namespace
         // including vehicles, death, and cinematics. Do the same for ODST: a
         // blend-0 active camera still owns both head look and continuous aim.
         const bool transform = ownsActiveCamera &&
-            g_odstCamera.armed.load(std::memory_order_acquire) &&
-            !g_odstCamera.teardownRequested.load(std::memory_order_acquire) &&
-            g_enabled.load(std::memory_order_relaxed);
+            OdstPrivateCameraMutationAllowed(
+                g_odstCamera.armed.load(std::memory_order_acquire),
+                g_odstCamera.teardownRequested.load(std::memory_order_acquire),
+                g_enabled.load(std::memory_order_relaxed), pauseSuspended);
         float savedPosition[3]{}, savedForward[3]{}, savedUp[3]{};
         if (ownsActiveCamera)
         {
@@ -11538,14 +11540,14 @@ namespace
                 }
             }
         }
-        else if (ownsActiveCamera)
+        else if (ownsActiveCamera && !pauseSuspended)
         {
             g_camValid.store(false, std::memory_order_release);
             g_baseCamValid.store(false, std::memory_order_release);
         }
         else if (OdstCamCopyRequestsTeardown(
                      g_odstCamera.armed.load(std::memory_order_acquire),
-                     ownsPrimaryCamera, singleUserPath))
+                     ownsPrimaryCamera, singleUserPath, pauseSuspended))
         {
             // Our slot-0 view object no longer matches the single-user layout:
             // a genuine level unload/transition, not a mere non-FP camera. An
@@ -11569,7 +11571,8 @@ namespace
         {
             // Match Halo 3: every active camera copy is an aim/reticle timing
             // signal as well as a heartbeat, including the blend-0 vehicle.
-            if (g_odstCamera.armed.load(std::memory_order_acquire))
+            if (g_odstCamera.armed.load(std::memory_order_acquire) &&
+                !pauseSuspended)
                 VR_NotifyCameraTransform();
             const uint64_t cameraNowMs = GetTickCount64();
             g_odstLastCamCopyMs.store(
@@ -11595,10 +11598,11 @@ namespace
         g_odstCamera.activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
         ObserverCameraEffectFn original =
             g_odstCamera.originalObserverCameraEffect;
-        const bool suppress =
-            g_odstCamera.armed.load(std::memory_order_acquire) &&
-            !g_odstCamera.teardownRequested.load(std::memory_order_acquire) &&
-            g_enabled.load(std::memory_order_relaxed);
+        const bool suppress = OdstPrivateCameraMutationAllowed(
+            g_odstCamera.armed.load(std::memory_order_acquire),
+            g_odstCamera.teardownRequested.load(std::memory_order_acquire),
+            g_enabled.load(std::memory_order_relaxed),
+            VR_IsPausePresentationTarget());
         if (!suppress && original)
             original(userIndex);
         g_odstCamera.activeCallbacks.fetch_sub(1, std::memory_order_acq_rel);
@@ -11627,7 +11631,7 @@ namespace
         char* eyeView = static_cast<char*>(
             g_odstCamera.eyeView.load(std::memory_order_acquire));
         if (!view || !g_odstCamera.armed.load(std::memory_order_acquire) ||
-            !eyeView)
+            !eyeView || VR_IsPausePresentationTarget())
             return;
         const auto& layout = kOdstCameraProfile.layout;
         if (view != eyeView + layout.nestedFpBase)
@@ -11661,7 +11665,8 @@ namespace
         if (!original)
             return;
         void* eyeView = g_odstCamera.eyeView.load(std::memory_order_acquire);
-        if (view && g_odstCamera.armed.load(std::memory_order_acquire) && eyeView)
+        if (view && g_odstCamera.armed.load(std::memory_order_acquire) && eyeView &&
+            !VR_IsPausePresentationTarget())
         {
             const auto& layout = kOdstCameraProfile.layout;
             if (view != eyeView || !OdstSingleUserTailIsValid(view))
@@ -12251,6 +12256,14 @@ namespace
         // user toggled stereo off): pass through silently, no cutscene evidence.
         if (!view || !g_enabled.load(std::memory_order_relaxed) ||
             !VR_IsStereoEnabled())
+        {
+            original(view);
+            return;
+        }
+        // Pause owns a stable 2D compositor layer. Keep every detour installed,
+        // but run ODST's stock single-view render until the pause target clears;
+        // the first resumed gameplay frame can then return directly to stereo.
+        if (VR_IsPausePresentationTarget())
         {
             original(view);
             return;
@@ -35603,15 +35616,11 @@ namespace
             bool odstPaused = false;
             const bool odstPauseKnown = odstActive &&
                 ReadOdstEnginePaused(odstPaused);
-            if (odstHooked && odstPauseKnown && odstPaused &&
-                !g_odstCamera.teardownRequested.load(
-                    std::memory_order_acquire))
-            {
-                LOG("ODST pause boundary: native pause entered; removing "
-                    "private camera hooks before any Save & Quit teardown");
-                OdstRequestFallback(OdstFallbackReason::NativePause);
-            }
+            const bool odstPauseSuspendsCore =
+                OdstNativePauseSuspendsPrivateCore(
+                    odstPauseKnown, odstPaused);
             if (odstHooked && odstActive &&
+                !odstPauseSuspendsCore &&
                 !g_odstCamera.teardownRequested.load(std::memory_order_acquire))
             {
                 const uint64_t now = GetTickCount64();
@@ -35704,6 +35713,9 @@ namespace
                     }
                     else if (reason == OdstFallbackReason::NativePause)
                     {
+                        // Retained only for cleanup of an older/in-flight
+                        // request. New builds never request teardown for an
+                        // ordinary pause; the core is suspended in place.
                         odstPauseRearmGate.Block();
                         odstAttempted = true;
                         LOG("ODST camera rearm blocked until native pause exits "
@@ -36735,18 +36747,10 @@ void Game_AutoVrTick()
 
         if (nativePauseKnown && nativePaused)
         {
-            // The worker removes every registered ODST hook at this boundary.
-            // Disarm on the
-            // render thread immediately so no stereo transaction can begin
-            // while pause or Save & Quit advances title teardown.
-            g_odstCamera.armed.store(false, std::memory_order_release);
-            PublishOdstLifecycle();
-            g_enabled.store(false, std::memory_order_release);
-            g_autoVrOwned.store(false, std::memory_order_release);
-            g_autoVrUserVeto.store(false, std::memory_order_release);
-            if (VR_IsStereoEnabled())
-                VR_DetachGamePresentation();
-            odstFreshDebounce.Reset();
+            // Match Halo 3 and Reach: the compositor owns a head-locked 2D
+            // pause screen while the verified camera core remains installed,
+            // armed, and ready for the first resumed gameplay frame. Save &
+            // Quit still tears down through title-exit/level-loss evidence.
             return;
         }
 
@@ -37174,11 +37178,12 @@ void Game_AutoVrTick()
         titleRuntime.runtime.owner == GameTitle::Halo3;
     const bool pausePresentation = VR_IsPausePresentation();
     bool enginePaused = false;
+    bool enginePauseKnown = false;
     static bool previousEnginePaused = false;
     static bool enginePauseLogged = false;
     static uint64_t pauseMismatchSince = 0;
     static bool pauseMismatchValue = false;
-    if (ReadEnginePaused(enginePaused))
+    if ((enginePauseKnown = ReadEnginePaused(enginePaused)))
     {
         if (!enginePauseLogged || enginePaused != previousEnginePaused)
         {
@@ -37218,6 +37223,12 @@ void Game_AutoVrTick()
         VR_RequestPausePresentation(false);
         LOG("pause transition: restarted level is stable, restoring stereo 3D");
     }
+    static PauseResumeLivenessGate pauseResumeLiveness;
+    const bool pauseResumeHold = pauseResumeLiveness.HoldInstalledStereo(
+        now,
+        pausePresentation || VR_IsPausePresentationTarget() ||
+            (enginePauseKnown && enginePaused),
+        cameraFresh);
     static bool pauseExitClearRequested = false;
     if (pausePresentation &&
         !haloTitleActive)
@@ -37272,6 +37283,7 @@ void Game_AutoVrTick()
     // release Halo's retained scene target before another engine takes over.
     // Pause is exempt because its stable 2D presentation is already detached.
     if (!pausePresentation && !cameraFresh &&
+        (!haloTitleActive || !pauseResumeHold) &&
         (g_enabled.load() || VR_IsStereoEnabled() || g_autoVrOwned.load()))
     {
         g_enabled = false;

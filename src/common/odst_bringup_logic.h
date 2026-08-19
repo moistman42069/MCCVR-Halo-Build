@@ -164,6 +164,24 @@ inline bool OdstManualArmEligible(
         !teardownRequested;
 }
 
+// Ordinary native pause is a presentation suspension, not a title boundary.
+// Keep the verified hook core installed while the compositor shows its stable
+// head-locked screen. Title exit, level unload, and heartbeat loss retain
+// their independent teardown paths.
+inline bool OdstNativePauseSuspendsPrivateCore(
+    bool pauseKnown, bool nativePaused)
+{
+    return pauseKnown && nativePaused;
+}
+
+inline bool OdstPrivateCameraMutationAllowed(
+    bool armed, bool teardownRequested, bool headTracking,
+    bool pausePresentationTarget)
+{
+    return armed && !teardownRequested && headTracking &&
+        !pausePresentationTarget;
+}
+
 inline bool OdstVrOwnsLookStick(bool cameraOnlyContext, bool headTracking)
 {
     return cameraOnlyContext && headTracking;
@@ -226,9 +244,11 @@ inline bool OdstShouldStereoRedirect(
 // active third-person camera in a still-valid slot-0 object is NOT a teardown:
 // it renders stock and keeps the core armed for automatic 3D recovery.
 inline bool OdstCamCopyRequestsTeardown(
-    bool armed, bool ownsPrimarySlot, bool singleUserTailValid)
+    bool armed, bool ownsPrimarySlot, bool singleUserTailValid,
+    bool pausePresentationTarget)
 {
-    return armed && ownsPrimarySlot && !singleUserTailValid;
+    return armed && ownsPrimarySlot && !singleUserTailValid &&
+        !pausePresentationTarget;
 }
 
 inline bool OdstNestedSourceIsCompatible(

@@ -110,3 +110,22 @@ public:
 private:
     bool m_sawLoading = false;
 };
+
+// A long pause naturally makes the gameplay-camera heartbeat stale. When the
+// pause presentation releases, keep the already-installed stereo transaction
+// alive long enough for the first resumed camera copy to arrive. Without this
+// edge-specific grace, Present can detach stereo in the narrow gap between the
+// native pause flag clearing and Halo rendering gameplay again.
+constexpr uint64_t kPauseResumeLivenessGraceMs = 2000;
+
+class PauseResumeLivenessGate
+{
+public:
+    bool HoldInstalledStereo(
+        uint64_t nowMs, bool pauseOwned, bool cameraFresh);
+    void Reset();
+
+private:
+    bool m_sawPause = false;
+    uint64_t m_resumeSinceMs = 0;
+};

@@ -5207,14 +5207,23 @@ int main()
             "a broken single-user tail is never stereo-redirected");
         Check(!OdstShouldStereoRedirect(true, true, false, true),
             "a mismatched nested FP source is never stereo-redirected");
-        Check(OdstCamCopyRequestsTeardown(true, true, false),
+        Check(OdstCamCopyRequestsTeardown(true, true, false, false),
             "a broken slot-0 single-user tail tears down (level unload/transition)");
-        Check(!OdstCamCopyRequestsTeardown(true, true, true),
+        Check(!OdstCamCopyRequestsTeardown(true, true, true, false),
             "an active non-FP camera with a valid tail never tears down (3D recovers)");
-        Check(!OdstCamCopyRequestsTeardown(false, true, false),
+        Check(!OdstCamCopyRequestsTeardown(false, true, false, false),
             "camera-copy teardown requires the core to be armed");
-        Check(!OdstCamCopyRequestsTeardown(true, false, false),
+        Check(!OdstCamCopyRequestsTeardown(true, false, false, false),
             "camera-copy teardown only fires for our own primary slot");
+        Check(!OdstCamCopyRequestsTeardown(true, true, false, true),
+            "ODST native pause suspends a transient camera layout without tearing down the core");
+        Check(OdstNativePauseSuspendsPrivateCore(true, true) &&
+                  !OdstNativePauseSuspendsPrivateCore(true, false) &&
+                  !OdstNativePauseSuspendsPrivateCore(false, true),
+            "only a proven native ODST pause suspends the installed private core");
+        Check(OdstPrivateCameraMutationAllowed(true, false, true, false) &&
+                  !OdstPrivateCameraMutationAllowed(true, false, true, true),
+            "ODST keeps its hooks installed but stops gameplay-camera mutation while pause owns presentation");
         Check(PausePresentationInputAllowed(true),
             "proven Halo 3 gameplay may control pause presentation");
         Check(!PausePresentationInputAllowed(false),
@@ -9597,6 +9606,25 @@ int main()
     pauseRecovery.Update(true, true, false);
     Check(!pauseRecovery.Update(false, false, true),
         "Leaving pause resets an incomplete restart recovery");
+
+    PauseResumeLivenessGate pauseResume;
+    Check(pauseResume.HoldInstalledStereo(1000, true, false),
+        "an active pause retains the installed stereo transaction");
+    Check(pauseResume.HoldInstalledStereo(1100, false, false),
+        "pause exit retains stereo while waiting for its first camera copy");
+    Check(!pauseResume.HoldInstalledStereo(1200, false, true),
+        "the first fresh post-pause camera releases the liveness hold");
+    pauseResume.HoldInstalledStereo(2000, true, false);
+    Check(pauseResume.HoldInstalledStereo(2100, false, false) &&
+              pauseResume.HoldInstalledStereo(
+                  2100 + kPauseResumeLivenessGraceMs, false, false),
+        "the pause-resume hold spans the complete bounded grace interval");
+    Check(!pauseResume.HoldInstalledStereo(
+              2101 + kPauseResumeLivenessGraceMs, false, false),
+        "a camera that never resumes cannot retain stale stereo indefinitely");
+    PauseResumeLivenessGate noPauseResume;
+    Check(!noPauseResume.HoldInstalledStereo(3000, false, false),
+        "ordinary camera loss receives no pause-resume exception");
 
     const float rayOrigin[3] = { 0.0f, 0.0f, 0.0f };
     const float rayForward[3] = { 0.0f, 0.0f, -1.0f };
