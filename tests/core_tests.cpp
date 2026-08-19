@@ -175,9 +175,14 @@ int main()
     Check(!ShouldApplyArmIk(false, true),
           "Two-hand state cannot enable disabled arm IK");
     Check(ShouldApplyArmIk(true, false),
-          "Configured arm IK returns outside a two-hand grab");
-    Check(!ShouldApplyArmIk(true, true),
-          "Two-hand grab suppresses competing arm IK");
+          "Configured arm IK owns the free-hand arm chains");
+    Check(ShouldApplyArmIk(true, true),
+          "Two-hand grab keeps shoulder/elbow IK active instead of rigidly stretching the body");
+    Check(ResolveSupportHandPoseOwner(false) ==
+              SupportHandPoseOwner::LeftController &&
+          ResolveSupportHandPoseOwner(true) ==
+              SupportHandPoseOwner::WeaponCarrier,
+          "free hand follows its controller while two-hand presentation preserves the authored weapon grip");
     Check(ReachShouldBindVisibleLeftHandToController(false) &&
               !ReachShouldBindVisibleLeftHandToController(true),
           "Reach binds the visible glove to the left controller only in free-hand mode and keeps the authored weapon grip during two-hand aim");

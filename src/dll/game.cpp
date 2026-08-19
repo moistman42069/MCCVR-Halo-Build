@@ -1095,6 +1095,7 @@ namespace
         int lShoulder = -1;
         uint64_t lWristDescendants = 0;
         bool armIk = false;
+        bool twoHandAim = false;
         BoneMatrix root{};
         BoneMatrix original[kReachFpMaxSourceNodeCount]{};
         BoneMatrix solved[kReachFpMaxSourceNodeCount]{};
@@ -4374,6 +4375,7 @@ namespace
                 cache.lShoulder == context.lShoulder &&
                 cache.lWristDescendants == context.lWristDescendants &&
                 cache.armIk == armIkActive &&
+                cache.twoHandAim == twoHandAimActive &&
                 memcmp(cache.original, unmodified, paletteBytes) == 0;
         };
         if (g_fpStereoSolveScope.armed)
@@ -4431,6 +4433,7 @@ namespace
                 cache.lShoulder = context.lShoulder;
                 cache.lWristDescendants = context.lWristDescendants;
                 cache.armIk = armIkActive;
+                cache.twoHandAim = twoHandAimActive;
                 cache.root = root;
                 memcpy(cache.original, unmodified, paletteBytes);
                 memcpy(cache.solved, solved, paletteBytes);
@@ -4722,6 +4725,39 @@ namespace
                     g_armFailWhy=nullptr;
                     return true;
                 };
+                auto loadPrimaryLeftTarget = [&](BoneMatrix& desired,
+                                                  float& scale)->bool
+                {
+                    if (ResolveSupportHandPoseOwner(twoHandAimActive) ==
+                        SupportHandPoseOwner::LeftController)
+                        return loadLeftWristTarget(desired, scale);
+
+                    // The controller still owns the two-hand AIM line. For the
+                    // visible model, move the authored left wrist by the exact
+                    // same world delta that seats the right wrist/weapon on its
+                    // two-hand-adjusted target. The analytic left-arm solve then
+                    // reaches that locked grip with a planted shoulder/elbow,
+                    // instead of rigidly dragging the unsolved body across the
+                    // screen (the ODST shotgun/SMG smear in the headset video).
+                    BoneMatrix authoredRightWorld{}, inverseAuthoredRight{};
+                    BoneMatrix rightDeltaWorld{}, authoredLeftWorld{};
+                    scale = explicitTargets
+                        ? explicitTargets->leftScale
+                        : Clamp(g_config.left_hand_scale, 0.3f, 3.0f);
+                    return ComposeBoneMatrices(
+                               armRoot, unmod[context.wrist],
+                               authoredRightWorld) &&
+                        InvertBoneMatrix(
+                               authoredRightWorld, inverseAuthoredRight) &&
+                        ComposeBoneMatrices(
+                               desiredWristWorld, inverseAuthoredRight,
+                               rightDeltaWorld) &&
+                        ComposeBoneMatrices(
+                               armRoot, unmod[context.lWrist],
+                               authoredLeftWorld) &&
+                        ComposeBoneMatrices(
+                               rightDeltaWorld, authoredLeftWorld, desired);
+                };
                 // Primary keeps its right-hand path. A dual weapon is owned by
                 // the actual LEFT hand, which follows the left controller.
                 const bool handApplied=dual
@@ -4756,8 +4792,9 @@ namespace
                                 "controller (wrist %d, elbow %d, shoulder %d)",
                                 context.lWrist,context.lElbow,context.lShoulder);
                     }
-                    // Left SUPPORT arm (primary weapon only): same treatment
-                    // onto the left controller. During dual wield the left
+                    // Left SUPPORT arm (primary weapon only): free mode targets
+                    // the left controller; two-hand mode targets the authored
+                    // grip carried by the weapon. During dual wield the left
                     // hand holds slot 1's weapon instead, and slot 1's own
                     // mirror-side chain stays game-animated.
                     auto publishLeftFailure=[](const char* why){
@@ -4801,7 +4838,7 @@ namespace
                         context.lWrist>=0 && context.lWrist<context.count)
                     {
                         BoneMatrix desiredLeft{}; float leftScale=1.0f;
-                        if (loadLeftWristTarget(desiredLeft,leftScale))
+                        if (loadPrimaryLeftTarget(desiredLeft,leftScale))
                         {
                             static std::atomic<bool> loggedLeft{false};
                             if (applyArm(context.lShoulder,context.lElbow,context.lWrist,
@@ -4815,14 +4852,19 @@ namespace
                                 g_armFailureSide.store(0,std::memory_order_release);
                                 if (!explicitTargets &&
                                     !loggedLeft.exchange(true))
-                                    LOG("M3 VRIK: LEFT arm on the left controller "
+                                    LOG("M3 VRIK: LEFT arm %s "
                                         "(wrist %d, elbow %d, shoulder %d)",
+                                        twoHandAimActive
+                                            ? "solved to the rigid authored support grip"
+                                            : "on the left controller",
                                         context.lWrist,context.lElbow,context.lShoulder);
                             }
                             else publishLeftFailure(g_armFailWhy?g_armFailWhy:"apply-arm");
                         }
                         else if (!explicitTargets)
-                            publishLeftFailure("left-controller-pose");
+                            publishLeftFailure(twoHandAimActive
+                                ? "rigid-support-target"
+                                : "left-controller-pose");
                     }
                     else publishLeftFailure("left-chain-indices");
                     // Compare this eye's LEFT-arm solve inputs to the other
