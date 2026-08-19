@@ -15,9 +15,10 @@ correct while previously accepted Halo 4 V6 behavior regressed.
 
 `tools/merge_v6_postbuild_layer.py` is a guarded recovery tool. It accepts only
 the exact released V6 donor DLL and an explicitly verified base profile, copies
-the five sections, redirects the eleven V6 wrapper call sites, and remaps eight
-internal calls whose linker RVAs moved. The remapped functions were verified
-instruction-for-instruction after normalizing build-relative addresses.
+the five sections, redirects the eleven V6 wrapper call sites, and remaps every
+custom-section call whose linker RVA moved. The remapped functions were
+verified instruction-for-instruction after normalizing build-relative
+addresses.
 
 Three base profiles are retained:
 
@@ -69,10 +70,10 @@ call immediately before the same short-jump landmark as the accepted binary.
 Likewise, `04F4F8` is the wrapper-bearing log call; the adjacent ordinary
 branch call at `04F506` remains unchanged.
 
-The donor's eight instructions still decode to the original destinations in
-the third column below. Their replacements come directly from the same linker
-map. `patch_rel32` refuses the donor instruction unless both its `E8` opcode
-and original decoded target match exactly.
+The original eight-entry relocation set still decodes to the original
+destinations in the third column below. Their replacements come directly from
+the same linker map. `patch_rel32` refuses the donor instruction unless both
+its `E8` opcode and original decoded target match exactly.
 
 | Donor call | Original target | New map symbol target |
 | ---: | ---: | --- |
@@ -84,6 +85,16 @@ and original decoded target match exactly.
 | `29E423` | `1059D0` | `105590` `ImGui::ButtonBehavior` |
 | `29E436` | `111270` | `111860` `ImGui::TextDisabled` |
 | `2A0065` | `02A8B0` | `02A6E0` `ValidateStereoImagesOnce` |
+
+Unlike `60c9198`, this layout also moves the previously stable `Logf` from
+`001A20` to `0019D0` and `ConfigSave` from `005830` to `005750`. A complete
+instruction-boundary disassembly of all five custom sections found 21 direct
+calls to the old `Logf` RVA and two direct calls to the old `ConfigSave` RVA.
+Those 23 calls are part of this profile in addition to the original eight,
+giving 31 verified custom-to-base redirects. This exhaustive pass is required:
+leaving the old calls in place jumps into the middle of the newly linked
+functions and causes an immediate `FAST_FAIL_STACK_COOKIE_CHECK_FAILURE` during
+the first startup wrapper.
 
 The guarded new `.text` hash is
 `4eed9bb45fa63fcfbe186a4459c33da84ce844e2dc3e62c2b37056364627b69f`.
