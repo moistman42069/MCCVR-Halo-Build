@@ -36,9 +36,8 @@ The cumulative layout audit found nine unchanged base call RVAs, two base calls
 that moved by `0x50`, and four distinct internal destinations that moved. The
 tool refuses a different code hash or PE geometry; it never applies the old
 d184 table as a fallback. After merging, it verifies all 11 base redirects,
-every internal redirect declared by the selected profile, the complete custom-
-section geometry, and that only the allowed PE headers/call/data displacements
-differ from the base and donor.
+all 8 internal redirects, the complete custom-section geometry, and that only
+the allowed PE headers/call displacements differ from the base and donor.
 
 ## `950f0ba` relocation evidence
 
@@ -111,36 +110,6 @@ The guarded new `.text` hash is
 `4eed9bb45fa63fcfbe186a4459c33da84ce844e2dc3e62c2b37056364627b69f`.
 All seven stock sections' virtual sizes, virtual addresses, raw sizes, and raw
 pointers are part of the profile rather than inferred during the merge.
-
-### TLS-index relocation found by the first headset run
-
-The first `950f0ba`-layout candidate passed the call-target audit above but
-still crashed as Halo 4 gameplay activated. Its runtime log ended immediately
-after the V6 HUD/full-layout, affine-scale, muzzle, and effect-transform status
-lines. The candidate's own PE TLS directory and every ordinary compiled TLS
-access identify `AddressOfIndex` at RVA `0x284958`; the released V6 donor and
-the copied custom sections instead name RVA `0x284938`.
-
-Two direct RIP-relative loads escaped the original audit because they are data
-references rather than `CALL rel32` instructions:
-
-| Custom instruction | Donor target | Current PE `AddressOfIndex` |
-| ---: | ---: | ---: |
-| `29E2F7` (`44 8B 15 disp32`) | `284938` | `284958` |
-| `2A026D` (`44 8B 15 disp32`) | `284938` | `284958` |
-
-Both loads walk the process TLS array and then read the post-build HUD/pause
-state at offset `+0x318`. With the stale index address, the payload interprets
-unrelated linker data as a TLS slot and can dereference an invalid per-thread
-base at the exact activation boundary observed in the headset log.
-
-The merge profile now relocates both loads. It verifies their complete fixed
-opcode prefix and decoded donor target before writing, then proves their final
-target equals the base DLL's own PE TLS `AddressOfIndex`. The tool also refuses
-any future donor/base TLS-index mismatch unless the selected profile supplies a
-guarded relocation table. Custom-section diff validation admits only these two
-four-byte displacement fields in addition to the already-listed call
-displacements.
 
 The alternate reconstructed hash
 `59091e6117ffdecdb9496364964662f24ec94b8a935da1c1dfc8df5607a726ad`

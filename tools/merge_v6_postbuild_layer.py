@@ -173,21 +173,6 @@ PAUSE_TWO_HAND_CUSTOM_CALL_PATCHES = (
     (0x2A040E, 0x001A20, 0x0019D0),  # Logf
 )
 
-# The released post-build payload directly reads this DLL's MSVC TLS-index
-# global at two sites. Unlike an ordinary imported function or a stable config
-# global, AddressOfIndex is linker-owned and moved from RVA 0x284938 in the V6
-# donor to 0x284958 in the 950f0ba/a10c741 layout. Leaving either RIP-relative
-# load pointed at the donor RVA makes the HUD/pause payload index the process
-# TLS array with unrelated data as soon as Halo 4 gameplay activates.
-#
-# Each tuple is (instruction RVA, fixed opcode prefix, donor target RVA,
-# current target RVA). The displacement immediately follows the prefix and the
-# complete instruction is prefix + disp32.
-PAUSE_TWO_HAND_CUSTOM_TLS_INDEX_PATCHES = (
-    (0x29E2F7, b"\x44\x8B\x15", 0x284938, 0x284958),
-    (0x2A026D, b"\x44\x8B\x15", 0x284938, 0x284958),
-)
-
 # Exact instruction evidence for every distinct custom-section destination in
 # the 950f0ba/a10c741 code layout. ``??`` masks only link-relative operands;
 # opcodes, parameter moves, stack shape, and semantic instruction landmarks
@@ -281,7 +266,6 @@ class MergeProfile:
     text_sha256: str | None = None
     section_geometry: tuple[tuple[bytes, int, int, int, int], ...] | None = None
     target_signatures: tuple[tuple[int, str, str], ...] = ()
-    custom_tls_index_patches: tuple[tuple[int, bytes, int, int], ...] = ()
     expected_output_sha256: str | None = None
 
 
@@ -308,7 +292,6 @@ PAUSE_TWO_HAND_PROFILE = MergeProfile(
     base_call_patches=PAUSE_TWO_HAND_BASE_CALL_PATCHES,
     custom_call_patches=PAUSE_TWO_HAND_CUSTOM_CALL_PATCHES,
     target_signatures=PAUSE_TWO_HAND_TARGET_SIGNATURES,
-    custom_tls_index_patches=PAUSE_TWO_HAND_CUSTOM_TLS_INDEX_PATCHES,
 )
 
 
@@ -416,34 +399,6 @@ def patch_rel32(
     struct.pack_into("<i", image, offset + 1, new_displacement)
 
 
-def patch_rip_data32(
-    image: bytearray,
-    layout: PeLayout,
-    instruction_rva: int,
-    opcode_prefix: bytes,
-    expected_target_rva: int,
-    new_target_rva: int,
-) -> None:
-    offset = rva_to_offset(layout, instruction_rva)
-    if image[offset : offset + len(opcode_prefix)] != opcode_prefix:
-        actual = bytes(image[offset : offset + len(opcode_prefix)]).hex(" ")
-        raise ValueError(
-            f"RVA 0x{instruction_rva:X}: expected opcode prefix "
-            f"{opcode_prefix.hex(' ')}, found {actual}"
-        )
-    displacement_offset = offset + len(opcode_prefix)
-    instruction_size = len(opcode_prefix) + 4
-    old_displacement = struct.unpack_from("<i", image, displacement_offset)[0]
-    old_target = instruction_rva + instruction_size + old_displacement
-    if old_target != expected_target_rva:
-        raise ValueError(
-            f"RVA 0x{instruction_rva:X}: expected RIP target "
-            f"0x{expected_target_rva:X}, found 0x{old_target:X}"
-        )
-    new_displacement = new_target_rva - (instruction_rva + instruction_size)
-    struct.pack_into("<i", image, displacement_offset, new_displacement)
-
-
 def section_names(layout: PeLayout) -> tuple[bytes, ...]:
     return tuple(section.name for section in layout.sections)
 
@@ -505,88 +460,6 @@ def verify_rel32(
         raise ValueError(
             f"RVA 0x{call_rva:X}: expected target 0x{expected_target_rva:X}, "
             f"found 0x{actual_target:X}"
-        )
-
-
-def verify_rip_data32(
-    image: bytes | bytearray,
-    layout: PeLayout,
-    instruction_rva: int,
-    opcode_prefix: bytes,
-    expected_target_rva: int,
-) -> None:
-    offset = rva_to_offset(layout, instruction_rva)
-    if image[offset : offset + len(opcode_prefix)] != opcode_prefix:
-        actual = bytes(image[offset : offset + len(opcode_prefix)]).hex(" ")
-        raise ValueError(
-            f"RVA 0x{instruction_rva:X}: expected opcode prefix "
-            f"{opcode_prefix.hex(' ')}, found {actual}"
-        )
-    displacement_offset = offset + len(opcode_prefix)
-    instruction_size = len(opcode_prefix) + 4
-    displacement = struct.unpack_from("<i", image, displacement_offset)[0]
-    actual_target = instruction_rva + instruction_size + displacement
-    if actual_target != expected_target_rva:
-        raise ValueError(
-            f"RVA 0x{instruction_rva:X}: expected RIP target "
-            f"0x{expected_target_rva:X}, found 0x{actual_target:X}"
-        )
-
-
-def pe_tls_index_rva(image: bytes | bytearray, layout: PeLayout) -> int:
-    # PE32+ data directories start at optional-header +112. Directory 9 is
-    # IMAGE_DIRECTORY_ENTRY_TLS; IMAGE_TLS_DIRECTORY64.AddressOfIndex is the
-    # third qword in that directory and is stored as a VA.
-    tls_directory_rva = u32(
-        image, layout.optional_header_offset + 112 + 9 * 8
-    )
-    if tls_directory_rva == 0:
-        raise ValueError("PE image has no TLS directory")
-    tls_directory_offset = rva_to_offset(layout, tls_directory_rva)
-    index_va = u64(image, tls_directory_offset + 16)
-    if index_va < layout.image_base:
-        raise ValueError("PE TLS AddressOfIndex is below the image base")
-    return index_va - layout.image_base
-
-
-def verify_tls_index_relocation_profile(
-    donor: bytes,
-    donor_layout: PeLayout,
-    base: bytes,
-    base_layout: PeLayout,
-    profile: MergeProfile,
-) -> None:
-    donor_target = pe_tls_index_rva(donor, donor_layout)
-    base_target = pe_tls_index_rva(base, base_layout)
-    patches = profile.custom_tls_index_patches
-
-    if donor_target == base_target:
-        if patches:
-            raise ValueError(
-                "TLS-index relocation table is nonempty even though donor and "
-                "base AddressOfIndex RVAs match"
-            )
-        return
-
-    if not patches:
-        raise ValueError(
-            "donor/base TLS AddressOfIndex RVAs differ "
-            f"(0x{donor_target:X} -> 0x{base_target:X}) but the selected "
-            "profile has no guarded custom-section TLS relocations"
-        )
-
-    for instruction_rva, opcode_prefix, expected_target, new_target in patches:
-        if expected_target != donor_target or new_target != base_target:
-            raise ValueError(
-                f"RVA 0x{instruction_rva:X}: TLS relocation table does not "
-                "match the donor/base PE TLS directories"
-            )
-        verify_rip_data32(
-            donor,
-            donor_layout,
-            instruction_rva,
-            opcode_prefix,
-            expected_target,
         )
 
 
@@ -674,14 +547,6 @@ def verify_custom_section_diff_scope(
         for call_rva, _, _ in profile.custom_call_patches
         for byte_rva in range(call_rva + 1, call_rva + 5)
     }
-    patched_displacements.update(
-        byte_rva
-        for instruction_rva, opcode_prefix, _, _ in profile.custom_tls_index_patches
-        for byte_rva in range(
-            instruction_rva + len(opcode_prefix),
-            instruction_rva + len(opcode_prefix) + 4,
-        )
-    )
     donor_sections = {section.name: section for section in donor_layout.sections}
     merged_sections = {section.name: section for section in merged_layout.sections}
     for name in CUSTOM_SECTION_NAMES:
@@ -725,9 +590,6 @@ def merge(
     base_layout = parse_pe(two_hand)
     profile = select_profile(two_hand, base_layout)
     verify_semantic_target_signatures(two_hand, base_layout, profile)
-    verify_tls_index_relocation_profile(
-        v6, donor_layout, two_hand, base_layout, profile
-    )
     if section_names(base_layout) != (
         b".text",
         b".rdata",
@@ -810,8 +672,6 @@ def merge(
         patch_rel32(output, merged_layout, *patch)
     for patch in profile.custom_call_patches:
         patch_rel32(output, merged_layout, *patch)
-    for patch in profile.custom_tls_index_patches:
-        patch_rip_data32(output, merged_layout, *patch)
 
     # Reparse and prove every redirected call resolves to its intended target.
     final_layout = parse_pe(output)
@@ -819,16 +679,6 @@ def merge(
         profile.base_call_patches + profile.custom_call_patches
     ):
         verify_rel32(output, final_layout, call_rva, new_target)
-    for instruction_rva, opcode_prefix, _, new_target in (
-        profile.custom_tls_index_patches
-    ):
-        verify_rip_data32(
-            output,
-            final_layout,
-            instruction_rva,
-            opcode_prefix,
-            new_target,
-        )
     verify_semantic_target_signatures(output, final_layout, profile)
     verify_original_diff_scope(two_hand, output, base_layout, profile)
     verify_custom_section_diff_scope(
@@ -853,7 +703,6 @@ def merge(
     print(
         f"verified {len(profile.base_call_patches)} base redirects, "
         f"{len(profile.custom_call_patches)} internal redirects, "
-        f"{len(profile.custom_tls_index_patches)} TLS-index relocations, "
         f"{len(profile.target_signatures)} semantic target signatures, "
         "and donor diff scope"
     )
