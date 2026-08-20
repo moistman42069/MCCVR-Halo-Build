@@ -173,6 +173,16 @@ PAUSE_TWO_HAND_CUSTOM_CALL_PATCHES = (
     (0x2A040E, 0x001A20, 0x0019D0),  # Logf
 )
 
+# The effect-status Logf wrapper ends by restoring the caller's original
+# variadic arguments and tail-jumping to Logf. This is the sole direct external
+# JMP in the four executable V6 custom sections; the other 31 external direct
+# branches are CALLs enumerated above. Logf moved from 0x1A20 in the donor to
+# 0x19D0 in this layout, so entering at the stale RVA lands 0x50 bytes into the
+# current function instead of at its prologue.
+PAUSE_TWO_HAND_CUSTOM_JUMP_PATCHES = (
+    (0x29C4DD, 0x001A20, 0x0019D0),  # Logf tail dispatch
+)
+
 # The released post-build payload directly reads this DLL's MSVC TLS-index
 # global at two sites. Unlike an ordinary imported function or a stable config
 # global, AddressOfIndex is linker-owned and moved from RVA 0x284938 in the V6
@@ -281,6 +291,7 @@ class MergeProfile:
     text_sha256: str | None = None
     section_geometry: tuple[tuple[bytes, int, int, int, int], ...] | None = None
     target_signatures: tuple[tuple[int, str, str], ...] = ()
+    custom_jump_patches: tuple[tuple[int, int, int], ...] = ()
     custom_tls_index_patches: tuple[tuple[int, bytes, int, int], ...] = ()
     expected_output_sha256: str | None = None
 
@@ -308,6 +319,7 @@ PAUSE_TWO_HAND_PROFILE = MergeProfile(
     base_call_patches=PAUSE_TWO_HAND_BASE_CALL_PATCHES,
     custom_call_patches=PAUSE_TWO_HAND_CUSTOM_CALL_PATCHES,
     target_signatures=PAUSE_TWO_HAND_TARGET_SIGNATURES,
+    custom_jump_patches=PAUSE_TWO_HAND_CUSTOM_JUMP_PATCHES,
     custom_tls_index_patches=PAUSE_TWO_HAND_CUSTOM_TLS_INDEX_PATCHES,
 )
 
@@ -416,6 +428,29 @@ def patch_rel32(
     struct.pack_into("<i", image, offset + 1, new_displacement)
 
 
+def patch_jmp_rel32(
+    image: bytearray,
+    layout: PeLayout,
+    jump_rva: int,
+    expected_target_rva: int,
+    new_target_rva: int,
+) -> None:
+    offset = rva_to_offset(layout, jump_rva)
+    if image[offset] != 0xE9:
+        raise ValueError(
+            f"RVA 0x{jump_rva:X}: expected JMP rel32, found 0x{image[offset]:02X}"
+        )
+    old_displacement = struct.unpack_from("<i", image, offset + 1)[0]
+    old_target = jump_rva + 5 + old_displacement
+    if old_target != expected_target_rva:
+        raise ValueError(
+            f"RVA 0x{jump_rva:X}: expected target 0x{expected_target_rva:X}, "
+            f"found 0x{old_target:X}"
+        )
+    new_displacement = new_target_rva - (jump_rva + 5)
+    struct.pack_into("<i", image, offset + 1, new_displacement)
+
+
 def patch_rip_data32(
     image: bytearray,
     layout: PeLayout,
@@ -504,6 +539,26 @@ def verify_rel32(
     if actual_target != expected_target_rva:
         raise ValueError(
             f"RVA 0x{call_rva:X}: expected target 0x{expected_target_rva:X}, "
+            f"found 0x{actual_target:X}"
+        )
+
+
+def verify_jmp_rel32(
+    image: bytes | bytearray,
+    layout: PeLayout,
+    jump_rva: int,
+    expected_target_rva: int,
+) -> None:
+    offset = rva_to_offset(layout, jump_rva)
+    if image[offset] != 0xE9:
+        raise ValueError(
+            f"RVA 0x{jump_rva:X}: expected JMP rel32, found 0x{image[offset]:02X}"
+        )
+    displacement = struct.unpack_from("<i", image, offset + 1)[0]
+    actual_target = jump_rva + 5 + displacement
+    if actual_target != expected_target_rva:
+        raise ValueError(
+            f"RVA 0x{jump_rva:X}: expected target 0x{expected_target_rva:X}, "
             f"found 0x{actual_target:X}"
         )
 
@@ -599,7 +654,12 @@ def verify_semantic_target_signatures(
         return
 
     signature_targets = {rva for rva, _, _ in profile.target_signatures}
-    redirect_targets = {target for _, _, target in profile.custom_call_patches}
+    redirect_targets = {
+        target
+        for _, _, target in (
+            profile.custom_call_patches + profile.custom_jump_patches
+        )
+    }
     if signature_targets != redirect_targets:
         missing = sorted(redirect_targets - signature_targets)
         extra = sorted(signature_targets - redirect_targets)
@@ -674,6 +734,11 @@ def verify_custom_section_diff_scope(
         for call_rva, _, _ in profile.custom_call_patches
         for byte_rva in range(call_rva + 1, call_rva + 5)
     }
+    patched_displacements.update(
+        byte_rva
+        for jump_rva, _, _ in profile.custom_jump_patches
+        for byte_rva in range(jump_rva + 1, jump_rva + 5)
+    )
     patched_displacements.update(
         byte_rva
         for instruction_rva, opcode_prefix, _, _ in profile.custom_tls_index_patches
@@ -810,6 +875,8 @@ def merge(
         patch_rel32(output, merged_layout, *patch)
     for patch in profile.custom_call_patches:
         patch_rel32(output, merged_layout, *patch)
+    for patch in profile.custom_jump_patches:
+        patch_jmp_rel32(output, merged_layout, *patch)
     for patch in profile.custom_tls_index_patches:
         patch_rip_data32(output, merged_layout, *patch)
 
@@ -819,6 +886,8 @@ def merge(
         profile.base_call_patches + profile.custom_call_patches
     ):
         verify_rel32(output, final_layout, call_rva, new_target)
+    for jump_rva, _, new_target in profile.custom_jump_patches:
+        verify_jmp_rel32(output, final_layout, jump_rva, new_target)
     for instruction_rva, opcode_prefix, _, new_target in (
         profile.custom_tls_index_patches
     ):
@@ -852,7 +921,8 @@ def merge(
     print(f"base .text sha256 {raw_section_sha256(two_hand, base_layout, b'.text')}")
     print(
         f"verified {len(profile.base_call_patches)} base redirects, "
-        f"{len(profile.custom_call_patches)} internal redirects, "
+        f"{len(profile.custom_call_patches)} custom call relocations, "
+        f"{len(profile.custom_jump_patches)} external tail-jump relocation, "
         f"{len(profile.custom_tls_index_patches)} TLS-index relocations, "
         f"{len(profile.target_signatures)} semantic target signatures, "
         "and donor diff scope"

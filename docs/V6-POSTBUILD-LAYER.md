@@ -142,6 +142,30 @@ guarded relocation table. Custom-section diff validation admits only these two
 four-byte displacement fields in addition to the already-listed call
 displacements.
 
+### Effect-log tail-jump relocation found by the second headset run
+
+The next headset log passed the level-load gate and cold observation, then
+recorded the HUD full-layout, affine-scale, transient-muzzle, and V11
+effect-transform status messages at `20:16:19.522`. The process stopped before
+the next frame/status message. That boundary is the return path of the V11
+effect-status logging wrapper at `29C440`.
+
+The wrapper saves the original variadic arguments, emits its own ACTIVE or NOT
+INSTALLED status through `Logf`, restores the original arguments, and finishes
+with a tail `JMP rel32` at `29C4DD`. The donor jump targets the old `Logf` entry
+at `1A20`. In the `950f0ba` layout, `Logf` begins at `19D0`, so the stale jump
+enters the current function at `+0x50` without its prologue or stack frame.
+That exactly explains why the wrapper's status line is complete and the
+process terminates immediately afterward.
+
+A complete disassembly inventory of all four executable V6 custom sections
+contains 31 direct external calls and one direct external jump. The calls were
+already in the guarded relocation table; `29C4DD` is the sole tail jump. The
+profile now relocates it to `19D0`, validates the `E9` opcode and decoded donor
+target before writing, verifies the final target against the same semantic
+`Logf` signature as the calls, and admits only its four displacement bytes in
+custom-section diff validation.
+
 The alternate reconstructed hash
 `59091e6117ffdecdb9496364964662f24ec94b8a935da1c1dfc8df5607a726ad`
 is reproducible only by restoring the merged wrapper calls to the older
