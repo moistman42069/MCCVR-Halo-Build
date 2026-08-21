@@ -5391,9 +5391,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // upload can leave the newly-created swapchain as undefined pixels.
         const bool halo4ProceduralBootstrap =
             reticleTitle == GameTitle::Halo4 &&
-            Halo4CuiReticleNeedsProceduralBootstrap(
-                titleHasAuthoredCapture, g_reticleContainsAuthored,
-                g_config.crosshair, g_config.kill_reticle);
+            Halo4CuiReticleUsesProceduralFallback(
+                titleHasAuthoredCapture, g_config.crosshair,
+                g_config.kill_reticle);
         const bool authoredThisFrame =
             g_authoredReticleReady &&
             g_authoredReticleSerial == g_preparedFrame.serial;
@@ -8768,9 +8768,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             AuthoredReticleLayerHasContent(
                                 titleCapturesArt &&
                                     !(reticleTitle == GameTitle::Halo4 &&
-                                      Halo4CuiReticleNeedsProceduralBootstrap(
+                                      Halo4CuiReticleUsesProceduralFallback(
                                           titleCapturesArt,
-                                          g_reticleContainsAuthored,
                                           g_config.crosshair,
                                           g_config.kill_reticle)),
                                 g_reticleContainsAuthored);
@@ -11094,6 +11093,16 @@ static bool BeginAuthoredReticleCaptureInternal(
 
 bool VR_ShouldCaptureAuthoredReticleThisFrame()
 {
+    // C-H4-50: Halo 4's whole-CUI replay is not a proven authored-reticle
+    // boundary. In the 7a24814 Steam log it spent minutes at art=0, then one
+    // isolated opaque capture was promoted and held -- matching the reported
+    // black-square-after-zoom failure. The Game Pass log likewise starts with
+    // a long blank capture interval. Keep the already-proven procedural
+    // bullet-ray reticle for Halo 4 and leave these hooks responsible only for
+    // hiding the duplicate native flat copy. Halo 3/ODST/Reach are unchanged.
+    if (TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
+        return false;
+
     // Until valid art is held there is nothing to fall back on, so never skip.
     if (!g_reticleContainsAuthored)
         return true;

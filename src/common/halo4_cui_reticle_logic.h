@@ -349,3 +349,21 @@ constexpr bool Halo4CuiReticleNeedsProceduralBootstrap(
     return authoredCaptureLive && !authoredArtHeld && crosshairEnabled &&
         killNativeReticle;
 }
+
+// C-H4-50 fail-closed reticle policy. 7a24814 headset logs proved that the
+// whole-CUI replay can be blank for long stretches and can occasionally
+// produce unrelated opaque content that passes the generic alpha-only guard.
+// Once that false-positive image reaches the OpenXR quad, later blank captures
+// are correctly held -- which also means the bad image stays visible.
+//
+// Halo 4 already has a title-independent procedural bullet-ray reticle that is
+// known to stay correctly placed while the native flat type-0x28 copy is
+// suppressed. Until the authored H4 capture has a narrower, independently
+// proven widget boundary, keep that procedural art as the only H4 quad content.
+// The CUI hooks remain live for native-reticle suppression and diagnostics.
+constexpr bool Halo4CuiReticleUsesProceduralFallback(
+    bool authoredCaptureLive, bool crosshairEnabled,
+    bool killNativeReticle) noexcept
+{
+    return authoredCaptureLive && crosshairEnabled && killNativeReticle;
+}

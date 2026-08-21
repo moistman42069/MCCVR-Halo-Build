@@ -6275,6 +6275,16 @@ int main()
                   true, false, false, true),
         "Halo 4 keeps procedural gun-ray pixels only while a live authored "
         "hook is waiting for its first validated image");
+    Check(Halo4CuiReticleUsesProceduralFallback(
+              true, true, true) &&
+              !Halo4CuiReticleUsesProceduralFallback(
+                  false, true, true) &&
+              !Halo4CuiReticleUsesProceduralFallback(
+                  true, false, true) &&
+              !Halo4CuiReticleUsesProceduralFallback(
+                  true, true, false),
+        "Halo 4 fail-closes to the procedural bullet-ray reticle whenever "
+        "the authored hook is live and native-reticle suppression is enabled");
 
     using CuiAction = Halo4CuiReticleAction;
     Check(Halo4DecideCuiReticleAction(
