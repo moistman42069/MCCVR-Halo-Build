@@ -6,6 +6,7 @@
 namespace
 {
 bool retainOkay=true;unsigned retains{},releases{};
+bool networkSession{};
 BOOL WINAPI RetainModule(DWORD,LPCWSTR address,HMODULE* module)
 { if (!retainOkay) return FALSE;*module=reinterpret_cast<HMODULE>(const_cast<wchar_t*>(address));++retains;return TRUE; }
 BOOL WINAPI ReleaseModule(HMODULE) { ++releases;return TRUE; }
@@ -85,6 +86,7 @@ bool MovementException(void* data,bool hook)
 void Reset()
 {
     moduleBase=fixtureBase;generation=currentGeneration=7;active=true;retiring=false;
+    networkSession=false;
     ready=true;original=reinterpret_cast<void*>(&NativeControl);target=nullptr;retained=nullptr;enabled=false;
     movementOriginal=reinterpret_cast<void*>(&NativeMovement);movementTarget=nullptr;movementEnabled=false;
     pendingCleanup=PendingCleanup::None;pinFailureReported=false;
@@ -130,6 +132,7 @@ UnitControlPacket Packet()
 }
 }
 GameTitle TitleAdapter_GetActiveTitle() { return title; }
+bool HaloCENetworkInput_UsesNativeSimulation() noexcept { return networkSession; }
 uint32_t TitleAdapter_GetGeneration(GameTitle) { return currentGeneration; }
 bool HaloCEControls_GetLocomotionFrame(HaloCELocalPlayerState& state,RenderContext& context) noexcept
 {
@@ -196,6 +199,21 @@ int main()
     if (!VirtualProtect(entry,sizeof(endpoint),PAGE_EXECUTE_READWRITE,&protection)) return 2;
     std::memcpy(entry,endpoint,sizeof(endpoint));FlushInstructionCache(GetCurrentProcess(),entry,sizeof(endpoint));
     Reset();const auto packet=Packet();UnitControlPacket result{};bool aim{};
+    networkSession=true;
+    UnitControlBody(localPlayer.unit,&packet,17,moduleBase+0xad0d5b);
+    Check(consumedPointer==&packet&&consumed==packet&&consumedUpdate==17,
+        "network authority consumes original action packet without a fresh local pose override");
+    UnitControlBody(localPlayer.unit,&packet,-1,moduleBase+0xad14d3);
+    Check(consumedPointer==&packet&&consumed==packet,
+        "network client prediction consumes the same packet unchanged");
+    std::array<uint8_t,0xc0> networkMotion{};
+    const UnitMovementBasis networkBasis{{0,1,0},{0,0,1}};
+    std::memcpy(networkMotion.data(),&localPlayer.unit,sizeof(localPlayer.unit));
+    std::memcpy(networkMotion.data()+0x14,&networkBasis,sizeof(networkBasis));
+    MovementBody(networkMotion.data(),moduleBase+contract::unit_control::movement_consumer_return);
+    Check(Near(consumedMovement.forward,networkBasis.forward)&&Near(consumedMovement.aim,networkBasis.aim),
+        "network movement uses native replicated simulation basis, not a local camera replacement");
+    Reset();
     Check(BuildTrackedUnitControl(gameplay,packet,result,aim)&&aim,"valid body and controller packet");
     Check(Near(ReadUnitControl<Vec3>(result,0x1c),{0,1,0})&&
         Near(ReadUnitControl<Vec3>(result,0x34),{0,1,0})&&

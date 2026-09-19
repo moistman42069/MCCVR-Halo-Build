@@ -1,4 +1,30 @@
-# September 19 co-op diagnostic and CE menu candidate
+# September 19 CE multiplayer tracking follow-up
+
+Added CE multiplayer controller aim at the outgoing native player-action
+boundary, so clients and hosts receive the tracked direction used for grenade
+aiming. Corrected the campaign-only implementation gap without overriding remote
+players or changing grenade timing, ammunition, native action flags or protocol.
+
+On-foot movement is rebased for the transmitted aim bearing. Network prediction
+and authority now use native movement/body updates rather than later local-only
+camera/pose replacements. Vehicle input accounts for CE's native seat direction
+transform while retaining native driving throttle and seat limits. Local
+campaign behavior and the preceding pause/settings menu correction are retained.
+
+CE transmits one combined facing/aim/look direction, so the native network body
+follows controller aim; independent HMD view remains available. This is an
+experimental candidate: two-peer grenade travel, movement, vehicle aiming,
+latency and long-session behavior still need headset testing. The separate
+co-op firing crash's root cause remains unproven; the preceding fault diagnostics
+are included. No installation, game launch or publication was performed.
+
+Evidence and validation details: `CE-MULTIPLAYER-AUDIT-2026-09-19.md` in the
+matching source ZIP. Earlier notes below are historical; their grenade
+"unfinished" status is superseded by this implementation, not runtime acceptance.
+Release build, all 62 test suites, pinned native bindings/action/grenade/vehicle
+checks and the Reach consistency gate pass locally.
+
+# Previous co-op diagnostic and CE menu candidate
 
 ## Changes in this follow-up
 

@@ -1,5 +1,83 @@
 # CE multiplayer menu and grenade investigation
 
+## Follow-up implementation: E-CE-NETWORK-INPUT-1
+
+The user requests completing the multiplayer tracking change after diagnostic
+candidate ef4bf9a. This section supersedes the unfinished implementation status
+below, while retaining the investigation evidence and runtime limits.
+
+Target behavior matches Halo 3's controller-directed native aiming/throwing,
+with native actions reaching both client prediction and authoritative simulation.
+CE's ordinary network action has only one direction: remote/native body facing,
+aiming and looking follow the aiming controller together. Independent networked
+head/body facing is not represented by that protocol. Rendering still applies
+HMD tracking independently through the unmodified native camera angle records.
+
+An independent optional hook runs the native action builder A9A8A4 exactly once
+and then changes only its local output yaw/pitch and on-foot horizontal throttle.
+It admits the A997B8 input-loop call at A99888/return A9988D, requires the source
+to equal the verified local player's control+0x14+inputUser*0x58, and restricts
+the operation to connection types 1 (client) and 2 (server). Full player/unit,
+generation, camera/reference/renderer, input blocking and tracking guards are
+rechecked before publication. Other local input users and remote inputs are
+untouched. Campaign/local type 0 and playback type 3 retain their old paths.
+
+The output is changed BEFORE the loop copies/submits that same action. Retail
+B7CF44 copies all four 0x30-byte actions into the native queued frame at
+2C983D4 when 1B7B630 is nonzero; the other branch forwards the same pointer to
+C66948. See `out/coop-audit-20260919/ce-action-submit.txt`. No wire packet size,
+protocol, action flags, predicted assist, inventory, grenade selection or native
+timing changes. Negative atan2 yaw is wrapped into the native nonnegative
+angular domain. Native AD0304 consumes the resulting yaw/pitch unchanged.
+
+On foot, forward/left throttle is rotated by originalYaw-newYaw, preserving
+the world direction represented by the original action. This composes with the
+existing head-relative XInput mapping rather than applying HMD yaw twice.
+Vertical throttle and magnitude remain intact. The later local camera-basis
+movement override and fresh-pose unit packet override are bypassed in network
+sessions: native body interpolation, physics, prediction and authority consume
+the same transmitted input. Real latency and abrupt body-turn interpolation
+still require a two-peer movement test; this is not a full network emulator.
+
+Seated actions retain native drive throttle. B0584C is the native direction-only
+seat transform called by AD0304: on-foot or the appropriate seat flag is identity;
+the other branch builds an orthonormal frame from the native parent orientation.
+The adapter evaluates it on three private basis vectors, validates orthonormality
+and handedness, and inverse-transforms tracked world aim before encoding it.
+The native receiver then applies its seat transform exactly once. Parent, seat
+and perspective are rechecked. Native seat limits and driver/gunner forwarding
+remain native. The existing coherent vehicle/controller reticle presentation
+is retained; network simulation receives the direction through the outgoing
+action instead of the old local-only unit override.
+
+Hook evidence and exact unique signatures/operands are in
+`HALOCE-NETWORK-INPUT-CONTRACTS.json`, integrated into the evidence manifest and
+generated runtime checks. A9A8A4 is a leaf/tail-jump entry without its own x64
+unwind record; its exact bytes and unique input-loop call are verified instead.
+The other native functions retain their actual unwind verification where used.
+Installation/retirement are independent of the camera and campaign adapters;
+faulted original calls propagate once, and pending cleanup retains dependencies.
+
+Validation: production tests cover client/host/local/playback selection, exact
+local source identity, on-foot rebasing, seated inverse transform, byte
+preservation, malformed/stale/blocked inputs, seat transitions, native exceptions
+and partial installation/retirement. `test_ce_network_input_native.py` executes
+125 production-generated action cases through the real pinned action creator,
+250 client/server native queued-frame submissions and AD0304/on-foot seat
+conversion. Only the separate aim-assist encoder is modeled in that fixture.
+The existing native unit/grenade/vehicle tests cover the downstream native
+handoffs. No transport latency, complete simulation or headset result is claimed.
+Both graphics modes and both editions use the same CE module path.
+
+Final local checks: Release build and all 62 CTest suites pass; pinned CE
+loaded-image groups and an actual MinHook create/enable/disable/remove cycle
+over a private copy of A9A8A4 pass. Downstream fixtures pass 16 unit/grenade
+handoffs, 64 independent camera headings, 20 native movement cases and 40
+driver/gunner handoffs (80 packet writes). Reach consistency gate passes.
+
+The separate reported co-op firing crash remains unproven. This correction does
+not advance the accepted build pointer or certify all-title multiplayer stability.
+
 User clarified the invisible menu is pause/settings during a match, not the
 MCC lobby. Target experience matches Halo 3: present the native menu on the
 head-locked screen and return to stereo when gameplay resumes.

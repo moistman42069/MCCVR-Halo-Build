@@ -1,4 +1,30 @@
-## September 19 latest addition: CE multiplayer before packaging
+## September 19 requested follow-up: CE multiplayer tracking
+
+User explicitly requests fixing grenade/general multiplayer tracking and new
+build/source ZIPs. Prior diagnostic candidate ef4bf9a was delivered and remains
+unaccepted. Added independent CE outgoing action adapter at verified A9A8A4,
+admitting only local source identity at A9988D in connection modes 1/2. It
+serializes the primary controller direction before native client/host action
+submission. On-foot throttle is rebased between action bearings; seated input
+inverts the actual native seat direction transform and retains drive throttle.
+Network sessions bypass the later campaign-only unit/movement rewrites so
+native prediction and host consume the same action. Native body interpolation,
+grenade release, actions, assist, inventory and remote inputs remain native.
+CE's network protocol carries one shared facing/aim/look direction; the visible
+network body therefore follows aim instead of independent HMD facing. Native
+camera angle records remain untouched. Local campaign adapters are preserved.
+
+Release build and all 62 CTest suites pass. New production tests and 125
+production-generated native action cases pass; 250 native submissions/angle
+conversions pass. Pinned loaded-image contracts and actual MinHook prologue
+relocation pass, as do downstream native grenade/vehicle checks and Reach gate.
+Next: commit, package without -Install, verify build/source ZIPs, deliver and
+wait for the user's headset result. Both editions supported.
+No install, launch, publication or accepted-pointer change. Report this as a
+tracking candidate requiring two-peer headset testing, not as proof that the
+separate co-op firing crash root is fixed. See CE-MULTIPLAYER-AUDIT-2026-09-19.md.
+
+## Previous diagnostic candidate: CE multiplayer before packaging
 
 User clarified the invisible menu is PAUSE/SETTINGS DURING THE MATCH. Added
 explicit controller Menu/Start presentation retention using the already verified
