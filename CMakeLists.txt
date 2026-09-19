@@ -298,6 +298,7 @@ add_library(halo3xr SHARED
     src/dll/haloce_comfort.cpp
     src/dll/haloce_orientation.cpp
     src/dll/haloce_unit_control.cpp
+    src/dll/haloce_network_input.cpp
     src/dll/halo2_anniversary_stereo.cpp
     src/dll/halo4_adapter.cpp
     src/dll/halo4_cold_observation.cpp)
@@ -596,6 +597,10 @@ if(BUILD_TESTING)
     target_include_directories(halomccvr_ce_unit_control_runtime_tests PRIVATE src/common src/dll "${minhook_SOURCE_DIR}/include")
     target_compile_definitions(halomccvr_ce_unit_control_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_ce_unit_control_runtime_tests COMMAND halomccvr_ce_unit_control_runtime_tests)
+    add_executable(halomccvr_ce_network_input_tests tests/haloce_network_input_tests.cpp)
+    target_include_directories(halomccvr_ce_network_input_tests PRIVATE src/common src/dll "${minhook_SOURCE_DIR}/include")
+    target_compile_definitions(halomccvr_ce_network_input_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_ce_network_input_tests COMMAND halomccvr_ce_network_input_tests)
     add_executable(halomccvr_ce_first_person_runtime_tests tests/haloce_first_person_runtime_tests.cpp
         src/dll/haloce_native_bindings.cpp src/dll/ik.cpp)
     target_include_directories(halomccvr_ce_first_person_runtime_tests PRIVATE src/common src/dll)

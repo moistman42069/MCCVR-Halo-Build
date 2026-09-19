@@ -1409,6 +1409,32 @@ inline constexpr uint32_t muzzle_direct_query=0xb68284;
 inline constexpr uint32_t muzzle_target_validate=0xb698d0;
 inline constexpr uint32_t muzzle_marker_owner=0xb777b0;
 }
+namespace network_input {
+inline constexpr std::array<Entry,3> entries={{
+    {"action_build",0xa9a8a4,"48 8B 41 08 4C 8B C1 48 89 42 04 8B 01 89 02 8A 41 1C 88 42 18 8A 41 1D 88 42 19 0F B7 41 1E 66",false},
+    {"connection_read",0xaaf857,"0F BF 05 82 3E 07 02 85 C0 74 0D 83 F8 01 74 28 83 C0 FE 83 F8 01 77 0A",false},
+    {"seat_direction_transform",0xb0584c,"48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 48 8D 68 A1 48 81 EC 00 01 00 00 4C 8B 1D 8A 75",true},
+}};
+inline constexpr std::array<Witness,5> witnesses={{
+    {0xa9a8cf,"48 8B 41 10 48 89 42 0C 8B 41 18 89 42 14 0F B7 41 04 66 89 42 1E"},
+    {0xa9988d,"8B CB E8 6C 12 00 00 0F 10 07"},
+    {0xa99888,"E8 ?? ?? ?? ??"},
+    {0xa99877,"48 8B 05 F2 65 2F 02"},
+    {0xaaf857,"0F BF 05 82 3E 07 02"},
+}};
+inline constexpr std::array<Relative,3> relatives={{
+    {0xa99888,5,1,0xa9a8a4},
+    {0xa99877,7,3,0x2d8fe70},
+    {0xaaf857,7,3,0x2b236e0},
+}};
+inline constexpr std::array<Pointer,0> pointers={{
+}};
+inline constexpr uint32_t action_build=0xa9a8a4;
+inline constexpr uint32_t connection_read=0xaaf857;
+inline constexpr uint32_t seat_direction_transform=0xb0584c;
+inline constexpr uint32_t control_pointer=0x2d8fe70;
+inline constexpr uint32_t connection_type=0x2b236e0;
+}
 namespace player_state {
 inline constexpr std::array<Entry,13> entries={{
     {"state_datum_get",0xbbb8d0,"45 33 C0 4C 8B D1 83 FA FF 74 3D 44 8B CA 41 C1 F9 10 66 85 D2 78 31 66 3B 51 20 7D 2B 0F B7 49 22 0F BF C2 0F AF C1 49 63 4A 34 48 98 49 03 C2 48 03 C8 66 44 39 01 74 0F 66 45 85 C9 74 06 66 44 39 09 75 03 4C 8B C1 49 8B C0 C3",false},

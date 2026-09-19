@@ -468,7 +468,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'coop-diagnostic-ce-menu',
+        'ce-multiplayer-tracking',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -1296,7 +1296,10 @@ try {
         ce_multiplayer = [ordered]@{
             evidence = 'docs/CE-MULTIPLAYER-AUDIT-2026-09-19.md'
             menu = 'explicit-Menu-Start-request-retained-by-native-input-suppression-independent-of-simulation-pause'
-            grenade_tracking = 'unfinished-outgoing-action-and-client-prediction-gap-confirmed-no-speculative-network-patch'
+            grenade_tracking = 'local-controller-aim-in-native-outgoing-action-before-client-prediction-and-host-submission'
+            movement = 'on-foot-action-bearing-rebase; native-replicated-body-and-motion; no-later-local-only-pose-rewrites'
+            vehicle_aim = 'inverse-native-seat-direction-transform; native-drive-throttle-retained'
+            network_body = 'CE-protocol-shares-facing-aim-look; body-follows-controller; HMD-camera-independent'
             headset_accepted = $false
         }
         refinement_audit = [ordered]@{ evidence = 'docs/REFINEMENT-WORK-2026-09-18.md'; full_requested_scope_complete = $false; headset_accepted = $false }

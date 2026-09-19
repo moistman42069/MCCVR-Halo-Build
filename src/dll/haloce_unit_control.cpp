@@ -1,5 +1,6 @@
 #include "haloce_unit_control.h"
 #include "haloce_controls.h"
+#include "haloce_network_input.h"
 #include "haloce_stereo_core.h"
 #include "haloce_native_bindings.h"
 #include "hook_quiescence.h"
@@ -93,6 +94,10 @@ void UnitControlBody(uint32_t unit,const UnitControlPacket* source,int32_t clien
 {
     const auto native=reinterpret_cast<UnitControlFn>(original);
     if (!native) return;
+    // Network prediction and authority must consume the same outgoing action.
+    // Never replace a consumed network packet with a fresh local XR sample.
+    if (HaloCENetworkInput_UsesNativeSimulation())
+    { stock.fetch_add(1,std::memory_order_relaxed);native(unit,source,clientUpdate);return; }
     UnitControlPacket packet{},candidate{};
     HaloCELocalPlayerState state{},latest{};RenderContext context{},latestContext{};
     bool aim{};
@@ -172,6 +177,8 @@ void MovementBody(void* data,uintptr_t caller)
 {
     const auto native=reinterpret_cast<MovementFn>(movementOriginal);
     if (!native) return;
+    if (HaloCENetworkInput_UsesNativeSimulation())
+    { movementStock.fetch_add(1,std::memory_order_relaxed);native(data);return; }
     uint32_t unit{};UnitMovementBasis before{},candidate{};
     HaloCELocalPlayerState state{},latest{};RenderContext context{},latestContext{};
     if ((caller!=moduleBase+contract::unit_control::movement_consumer_return&&

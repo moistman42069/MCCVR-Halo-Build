@@ -201,6 +201,7 @@ int main(int argc,char** argv)
         const NativeContractSet featureSets[]{
             {contract::audio_listener::entries,contract::audio_listener::witnesses,contract::audio_listener::relatives,contract::audio_listener::pointers},
             {contract::unit_control::entries,contract::unit_control::witnesses,contract::unit_control::relatives,contract::unit_control::pointers},
+            {contract::network_input::entries,contract::network_input::witnesses,contract::network_input::relatives,contract::network_input::pointers},
             {contract::vehicle::entries,contract::vehicle::witnesses,contract::vehicle::relatives,contract::vehicle::pointers},
             {contract::camera_effect::entries,contract::camera_effect::witnesses,contract::camera_effect::relatives,contract::camera_effect::pointers},
             {contract::flare_guard::entries,contract::flare_guard::witnesses,contract::flare_guard::relatives,contract::flare_guard::pointers},
@@ -241,6 +242,18 @@ int main(int argc,char** argv)
                 "production optional-feature verifier accepts its pinned native group");
             if (failure) std::fprintf(stderr,"pinned feature failure: %s\n",failure);
         }
+        // A9A8A4 is a leaf/tail-jump without an unwind entry. Verify actual
+        // MinHook relocation of its pinned prologue in private mapped bytes;
+        // never execute native code or touch an installed module.
+        void* actionTarget=image.data()+contract::network_input::action_build;
+        void* actionTrampoline{};DWORD protection{},unused{};
+        check(VirtualProtect(actionTarget,64,PAGE_EXECUTE_READWRITE,&protection)!=0,
+            "private action entry gets temporary executable fixture protection");
+        check(MH_Initialize()==MH_OK&&MH_CreateHook(actionTarget,reinterpret_cast<void*>(&main),&actionTrampoline)==MH_OK&&
+            MH_EnableHook(actionTarget)==MH_OK,"pinned leaf action builder supports MinHook trampoline");
+        check(MH_DisableHook(actionTarget)==MH_OK&&MH_RemoveHook(actionTarget)==MH_OK&&MH_Uninitialize()==MH_OK,
+            "pinned action hook fixture retires exactly");
+        check(VirtualProtect(actionTarget,64,protection,&unused)!=0,"private action fixture protection restored");
     }
     return failures?1:0;
 }

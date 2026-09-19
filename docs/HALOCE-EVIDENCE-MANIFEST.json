@@ -5967,6 +5967,67 @@
       "function_entry": false,
       "evidence": "E-CE-MUZZLE-20260918",
       "runtime_group": "muzzle"
+    },
+    {
+      "name": "action_build",
+      "rva": "0xa9a8a4",
+      "signature": "48 8B 41 08 4C 8B C1 48 89 42 04 8B 01 89 02 8A 41 1C 88 42 18 8A 41 1D 88 42 19 0F B7 41 1E 66",
+      "function_entry": false,
+      "instruction_witnesses": [
+        {
+          "rva": "0xa9a8cf",
+          "signature": "48 8B 41 10 48 89 42 0C 8B 41 18 89 42 14 0F B7 41 04 66 89 42 1E"
+        },
+        {
+          "rva": "0xa9988d",
+          "signature": "8B CB E8 6C 12 00 00 0F 10 07"
+        }
+      ],
+      "relative_operands": [
+        {
+          "instruction_rva": "0xa99888",
+          "target_rva": "0xa9a8a4",
+          "instruction_bytes": 5,
+          "displacement_offset": 1,
+          "instruction_signature": "E8 ?? ?? ?? ??"
+        },
+        {
+          "instruction_rva": "0xa99877",
+          "target_rva": "0x2d8fe70",
+          "target_name": "control_pointer",
+          "instruction_bytes": 7,
+          "displacement_offset": 3,
+          "instruction_signature": "48 8B 05 F2 65 2F 02"
+        }
+      ],
+      "evidence": "E-CE-NETWORK-INPUT-1",
+      "runtime_group": "network_input"
+    },
+    {
+      "name": "connection_read",
+      "rva": "0xaaf857",
+      "signature": "0F BF 05 82 3E 07 02 85 C0 74 0D 83 F8 01 74 28 83 C0 FE 83 F8 01 77 0A",
+      "function_entry": false,
+      "relative_operands": [
+        {
+          "instruction_rva": "0xaaf857",
+          "target_rva": "0x2b236e0",
+          "target_name": "connection_type",
+          "instruction_bytes": 7,
+          "displacement_offset": 3,
+          "instruction_signature": "0F BF 05 82 3E 07 02"
+        }
+      ],
+      "evidence": "E-CE-NETWORK-INPUT-1",
+      "runtime_group": "network_input"
+    },
+    {
+      "name": "seat_direction_transform",
+      "rva": "0xb0584c",
+      "signature": "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 48 8D 68 A1 48 81 EC 00 01 00 00 4C 8B 1D 8A 75",
+      "function_entry": true,
+      "evidence": "E-CE-NETWORK-INPUT-1",
+      "runtime_group": "network_input"
     }
   ]
 }

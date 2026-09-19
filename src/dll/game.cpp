@@ -40,6 +40,7 @@
 #include <MinHook.h>
 #include "game.h"
 #include "native_fault_probe.h"
+#include "haloce_network_input.h"
 #include "haloce_stereo_core.h"
 #include "haloce_first_person.h"
 #include "haloce_contact.h"
@@ -41229,6 +41230,7 @@ namespace
                 (void)HaloCEHudLayout_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCEComfort_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCEOrientation_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
+                (void)HaloCENetworkInput_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCEUnitControl_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
             }
             if (!halo2Active)
