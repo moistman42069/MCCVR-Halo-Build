@@ -64,6 +64,34 @@ static bool ReadNativePaused(bool& paused) noexcept
     paused=value!=0;return true;
 }
 
+static bool ReadInputSuppressed(bool& suppressed) noexcept
+{
+    if (!StateCurrent()) return false;
+    const auto before=generation.load(std::memory_order_acquire);
+    bool candidate{};
+    __try
+    {
+        const uintptr_t mapping=*reinterpret_cast<const uintptr_t*>(moduleBase+0x2ea2d90);
+        if (!mapping) return false;
+        const uint32_t player=*reinterpret_cast<const uint32_t*>(mapping+0xb8);
+        if (player==UINT32_MAX||!(player>>16)) return false;
+        int input=-1;
+        for (int i=0;i<4;++i)
+            if (*reinterpret_cast<const uint32_t*>(mapping+4+i*4)==player)
+            { if (input!=-1) return false;input=i; }
+        if (input<0) return false;
+        // Same E-CE-FP3 predicates consumed by A9915C; no unit lookup and no
+        // stronger claim about why the native engine suppresses input.
+        candidate=*reinterpret_cast<const uint8_t*>(moduleBase+0x2d9b960+input*0xf8+0x59)!=0||
+            (*reinterpret_cast<const int32_t*>(moduleBase+0x1c34fc8)==0&&
+             *reinterpret_cast<const int32_t*>(moduleBase+0x1b85760)!=-1);
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
+    if (!StateCurrent()||before!=generation.load(std::memory_order_acquire)) return false;
+    suppressed=candidate;return true;
+}
+
 static bool ReadLocalPlayerState(HaloCELocalPlayerState& state) noexcept
 {
     if (!StateCurrent()) return false;
@@ -363,8 +391,12 @@ static bool ReadVehicleCameraOwnerBody(NativeVehicleCameraOwner& owner) noexcept
 }
 bool HaloCEControls_ReadVehicleCameraOwner(NativeVehicleCameraOwner& owner) noexcept
 { Callback callback;return ReadVehicleCameraOwnerBody(owner); }
-bool HaloCEControls_GetNativePaused(bool& paused) noexcept
-{ Callback callback;return ReadNativePaused(paused); }
+bool HaloCEControls_GetNativePaused(bool& paused,bool* suppressed,bool* inputKnown) noexcept
+{
+    Callback callback;
+    if (inputKnown) *inputKnown=suppressed&&ReadInputSuppressed(*suppressed);
+    return ReadNativePaused(paused);
+}
 bool HaloCEControls_OwnsLookStick() noexcept
 {
     Callback callback;

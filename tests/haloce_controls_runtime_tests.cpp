@@ -141,6 +141,28 @@ int main()
 
     HaloCELocalPlayerState player{};halo_ce::RenderContext frame{};
     bool nativePaused=true;
+    const auto readSuppression=[](bool& suppressed) {
+        bool paused{},known{};
+        HaloCEControls_GetNativePaused(paused,&suppressed,&known);
+        return known;
+    };
+    bool suppressed=true;
+    Check(readSuppression(suppressed)&&!suppressed,
+        "menu suppression reader resolves the complete local player identity");
+    Put(director+0x59,uint8_t(1));Put(control+0x170,UINT32_MAX);
+    Check(readSuppression(suppressed)&&suppressed,
+        "menu suppression survives unavailable controlled unit");
+    Put(director+0x59,uint8_t(0));Put(control+0x170,unitId);
+    Put(moduleBase+0x1b85760,int32_t(0));
+    Check(readSuppression(suppressed)&&suppressed,
+        "global native suppression path is also observed");
+    Put(moduleBase+0x1b85760,int32_t(-1));Put(mapping+4,playerId);
+    Check(!readSuppression(suppressed),
+        "ambiguous local input mapping is unknown, not resume");
+    Put(mapping+4,uint32_t(0));Put(moduleBase+0x2ea2d90,uintptr_t(1));
+    Check(!readSuppression(suppressed)&&suppressed&&!callbacks.load(),
+        "bad menu mapping isolates failure and preserves prior output");
+    Put(moduleBase+0x2ea2d90,mapping);
     Check(HaloCEControls_GetNativePaused(nativePaused)&&!nativePaused,
         "production pause reader uses the verified initialized native clock");
     Put(clock+2,uint8_t(1));Put(moduleBase+0x2ea2d90,uintptr_t(0));

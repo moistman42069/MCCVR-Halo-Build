@@ -1,4 +1,35 @@
-# September 19 cumulative vehicle-camera candidate
+# September 19 co-op diagnostic and CE menu candidate
+
+## Changes in this follow-up
+
+- Corrected H3's collision wrapper swallowing native exceptions as collision
+  misses. Native calls now retain their own exception behavior; failures in
+  the mod's extra contact query isolate only that optional feature.
+- Added observe-only hardware-fault evidence for every title in
+  `HaloMCCVR-native-faults.log`, plus H3 native firing completion counters.
+  Keep this file alongside `HaloMCCVR.log` when reporting the next failure.
+- CE controller Menu/Start can request the in-match pause/settings screen
+  while multiplayer simulation continues. Native input suppression retains
+  an explicitly requested menu; resuming input returns to stereo. Native
+  single-player pause handling remains supported.
+
+**Not resolved:** the reported co-op firing failure's root cause is still
+unproven. Both supplied logs continue through level retirement and contain no
+fault stack. This is a diagnostic candidate, not a confirmed co-op crash fix.
+CE multiplayer grenade tracking is also unfinished: its client update bypasses
+the existing campaign adapter, and a proper fix must change the outgoing action
+consistently with host simulation and local movement. No speculative network
+patch is included. Menu visibility still needs a headset test.
+
+Release build, all 61 test suites, pinned firing/contact/world bindings and
+Reach consistency checks are validated locally. No game launch, installation,
+publication or accepted-build pointer change. Both editions remain supported.
+Detailed evidence is in `COOP-FIRING-AUDIT-2026-09-19.md` and
+`CE-MULTIPLAYER-AUDIT-2026-09-19.md` in the matching source ZIP.
+
+All inherited additions and outstanding refinements below remain recorded.
+
+# Previous cumulative vehicle-camera additions
 
 ## First-person vehicles follow-up
 

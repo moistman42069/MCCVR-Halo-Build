@@ -47,6 +47,31 @@ struct NativePausePresentation
     }
 };
 
+// A local menu does not pause a network simulation. Only an explicit menu
+// presentation request can latch input suppression here: suppression by itself
+// also occurs in cinematics and is not evidence that a menu opened.
+struct RequestedMenuPresentation
+{
+    NativePausePresentation native;
+    uint64_t requestedAt{};
+    bool previousTarget{},sawSuppression{};
+    PauseRequest Observe(uint32_t generation,bool owned,bool clockKnown,bool paused,
+        bool inputKnown,bool suppressed,bool target,uint64_t now) noexcept
+    {
+        if (!owned||native.generation!=generation)
+        { *this={};native.generation=generation; }
+        if (target&&!previousTarget) { requestedAt=now;sawSuppression=false; }
+        if (!target) sawSuppression=false;
+        previousTarget=target;
+        if (owned&&target&&inputKnown&&suppressed) sawSuppression=true;
+        const bool waiting=target&&!sawSuppression&&now>=requestedAt&&now-requestedAt<500;
+        const bool requested=target&&(waiting||(inputKnown&&suppressed));
+        // Unknown input after a menu request cannot manufacture a resume.
+        const bool known=clockKnown&&(paused||!target||waiting||inputKnown);
+        return native.ObserveOwned(generation,owned,known,paused||requested,target,now);
+    }
+};
+
 // Recent CE eye ownership protects ordinary missed frames from flashing a
 // flat image. A completed pause transition explicitly needs the native screen
 // and must not wait for that gameplay ownership timeout.

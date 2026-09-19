@@ -1,3 +1,49 @@
+## September 19 latest addition: CE multiplayer before packaging
+
+User clarified the invisible menu is PAUSE/SETTINGS DURING THE MATCH. Added
+explicit controller Menu/Start presentation retention using the already verified
+native input-suppression predicates; running multiplayer clock no longer alone
+cancels that request. Suppression by itself never opens a menu. Unknown input,
+ownership loss, native SP pause, resume and failed-request grace are covered.
+Headset result and keyboard-only menu entry remain unverified.
+
+Grenade gap confirmed but NOT FIXED: network-client AD102C calls AFE098 from
+AD14D3, bypassing campaign-only AD0D5B admission. Merely admitting it would
+leave the outgoing action unchanged. A9A8A4 forms that action before B7CF44
+submission; its one yaw/pitch drives native facing/aim/look. A safe network
+correction must preserve movement and prediction/host agreement together.
+No guessed outgoing packet change shipped. Full evidence and unfinished status
+in CE-MULTIPLAYER-AUDIT-2026-09-19.md. Preserve this next-pass priority.
+
+Co-op firing investigation preserved: user confirms all optional settings off
+still fails, and firing in ANY direction fails (impact is not required).
+Implemented one proven defect correction: H3 collision wrapper no longer
+swallows native exceptions as misses; only added contact work fails open.
+Added process-wide observe-only hardware-fault evidence (separate write-through
+file + worker mirror) and H3 native firing counters. Root of reported failure
+still UNPROVEN; never label this a confirmed co-op fix. Release build + all 61
+CTest suites and Reach consistency gate pass. Pinned contact bindings all
+five later titles, world collision and all seven firing/muzzle binding verifiers
+pass. See COOP-FIRING-AUDIT-2026-09-19.md. CE menu follow-up is undergoing final
+build/test and packaging. Release notes/manifest explicitly retain unresolved
+firing root cause and multiplayer grenades. Deliver matching diagnostic build
+and source ZIPs without -Install, then wait for the user's runtime result.
+No publication, launch, installation or accepted-pointer change.
+
+## September 19 current priority: all-title co-op stability
+
+User reports firing-related co-op failures on two d088171 setups and requests
+an all-title audit of firing, ownership, checkpoint/vehicle lifetime, physical
+interactions and network simulation. Proceed through a verified build/source
+ZIP pair. Do not publish this follow-up, install it or launch MCC. Preserve
+existing features and accepted pointer; no claim of live co-op acceptance.
+Both new logs show Halo 3, Steam: VDXR 1.0.10 / Quest 3 / 72 Hz and SteamVR
+2.17.10 / Oculus family / 90 Hz. Preserved under out/coop-audit-20260919.
+Neither contains an exception address/stack; both continue through native
+level retirement. The earlier H2 Cairo/Outskirts log remains relevant but does
+not establish the same cause. Audit in progress, no fix attribution yet.
+Alpha 0.5.0 was published from d088171; main's later commits are documentation.
+
 ## September 18 latest request: missing first-person vehicles, then ZIPs
 
 User requests first-person vehicles in every title lacking them, using existing

@@ -262,6 +262,7 @@ add_library(halo3xr SHARED
     src/common/title_registry.cpp
     src/common/title_runtime_state.cpp
     src/dll/dllmain.cpp
+    src/dll/native_fault_probe.cpp
     src/dll/d3d11_hook.cpp
     src/dll/vr.cpp
     src/dll/weapon_accessory_renderer.cpp
@@ -627,6 +628,12 @@ if(BUILD_TESTING)
     add_test(NAME halomccvr_hud_extra_draws_tests COMMAND halomccvr_hud_extra_draws_tests)
 
     add_executable(halomccvr_halo3_independent_shots_tests tests/halo3_independent_shots_tests.cpp)
+    add_executable(halomccvr_halo3_collision_dispatch_tests tests/halo3_collision_dispatch_tests.cpp)
+    add_executable(halomccvr_native_fault_probe_tests tests/native_fault_probe_tests.cpp)
+    target_compile_definitions(halomccvr_halo3_collision_dispatch_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_definitions(halomccvr_native_fault_probe_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_halo3_collision_dispatch_tests COMMAND halomccvr_halo3_collision_dispatch_tests)
+    add_test(NAME halomccvr_native_fault_probe_tests COMMAND halomccvr_native_fault_probe_tests)
     target_include_directories(halomccvr_halo3_independent_shots_tests PRIVATE "${minhook_SOURCE_DIR}/include")
     target_compile_definitions(halomccvr_halo3_independent_shots_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_options(halomccvr_halo3_independent_shots_tests PRIVATE /MAP)

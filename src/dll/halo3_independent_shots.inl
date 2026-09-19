@@ -225,7 +225,21 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
         }
         // Never catch and replay a native firing exception. Ammo/effects and
         // projectile creation execute exactly once, even if that call faults.
-        if(feature.fireOriginal)result=feature.fireOriginal(weapon,barrel,data,index,predicted);
+        if(feature.fireOriginal)
+        {
+            feature.fireEntries.fetch_add(1,std::memory_order_relaxed);
+            if(data)feature.fireWithData.fetch_add(1,std::memory_order_relaxed);
+            if(predicted)feature.firePredicted.fetch_add(1,std::memory_order_relaxed);
+            __try
+            {
+                result=feature.fireOriginal(weapon,barrel,data,index,predicted);
+                feature.fireReturns.fetch_add(1,std::memory_order_relaxed);
+            }
+            __finally
+            {
+                if(AbnormalTermination())feature.fireUnwinds.fetch_add(1,std::memory_order_relaxed);
+            }
+        }
     }
     __finally
     {

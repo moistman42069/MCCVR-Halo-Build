@@ -17,7 +17,10 @@ bool HaloCEControls_Poll(uintptr_t base,size_t size,uint32_t generation,bool act
 bool HaloCEControls_GetLocalPlayerState(HaloCELocalPlayerState& state) noexcept;
 // Reads the verified native clock independently of player/unit/weapon state,
 // which can be unavailable while the pause menu or restart screen is visible.
-bool HaloCEControls_GetNativePaused(bool& paused) noexcept;
+// Optional input suppression is independent of unit/weapon lifetime and is
+// not by itself a menu-visible flag. Its validity is returned separately.
+bool HaloCEControls_GetNativePaused(bool& paused,bool* suppressed=nullptr,
+    bool* inputKnown=nullptr) noexcept;
 bool HaloCEControls_OwnsLookStick() noexcept;
 bool HaloCEControls_MapMoveStick(float x,float y,float& outputX,float& outputY) noexcept;
 // Coherent on-foot owner and native CENTER camera/HMD/reference data. This

@@ -468,7 +468,7 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'refinement-audit',
+        'coop-diagnostic-ce-menu',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
@@ -1283,6 +1283,20 @@ try {
             added_titles = @('Halo CE Classic/Anniversary', 'Halo 2 Classic/Anniversary', 'Halo 4')
             existing_toggle = 'vehicle_first_person'
             anchor = 'verified local seated head marker with universal trims'
+            headset_accepted = $false
+        }
+        coop_firing_audit = [ordered]@{
+            evidence = 'docs/COOP-FIRING-AUDIT-2026-09-19.md'
+            reported_crash_root_cause_proven = $false
+            confirmed_correction = 'H3-native-collision-exceptions-no-longer-swallowed-as-misses'
+            diagnostic_log = 'HaloMCCVR-native-faults.log'
+            all_feature_network_validation_complete = $false
+            headset_accepted = $false
+        }
+        ce_multiplayer = [ordered]@{
+            evidence = 'docs/CE-MULTIPLAYER-AUDIT-2026-09-19.md'
+            menu = 'explicit-Menu-Start-request-retained-by-native-input-suppression-independent-of-simulation-pause'
+            grenade_tracking = 'unfinished-outgoing-action-and-client-prediction-gap-confirmed-no-speculative-network-patch'
             headset_accepted = $false
         }
         refinement_audit = [ordered]@{ evidence = 'docs/REFINEMENT-WORK-2026-09-18.md'; full_requested_scope_complete = $false; headset_accepted = $false }

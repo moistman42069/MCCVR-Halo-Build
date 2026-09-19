@@ -84,6 +84,8 @@ bool InstallHalo3DualAim(uintptr_t base, size_t size, uint32_t generation)
     feature.base = base;
     feature.generation = generation;
     feature.installedAtMs = GetTickCount64();
+    feature.fireEntries=0;feature.fireReturns=0;feature.fireUnwinds=0;
+    feature.fireWithData=0;feature.firePredicted=0;
     feature.faulted.store(false);
     if (MH_CreateHook(reinterpret_cast<void*>(base + 0x3524B0),
             reinterpret_cast<void*>(&Halo3IndependentAimDetour),
@@ -127,6 +129,9 @@ void ReportHalo3DualAim()
 {
     const auto& feature = g_halo3Dual;
     if (!feature.fireTarget && !feature.aimTarget && !feature.queryTarget && !feature.cameraTarget) return;
+    LOG("Halo 3 native firing (all actors, cumulative): entered=%llu returned=%llu unwound=%llu withData=%llu predicted=%llu; counters are independent of optional aim settings",
+        feature.fireEntries.load(),feature.fireReturns.load(),feature.fireUnwinds.load(),
+        feature.fireWithData.load(),feature.firePredicted.load());
     LOG("Halo 3 dual aim: enabled=%d isolatedFault=%d primary/secondary=%llu/%llu refused=%llu",
         feature.enabled.load() ? 1 : 0, feature.faulted.load() ? 1 : 0,
         g_halo3Dual.rays[0].exchange(0), g_halo3Dual.rays[1].exchange(0),
