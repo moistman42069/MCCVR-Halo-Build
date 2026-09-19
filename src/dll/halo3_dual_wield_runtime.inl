@@ -22,6 +22,7 @@ struct Halo3DualRuntime
     std::atomic<uint32_t> callbacks{0};
     std::atomic<uint64_t> rays[2]{}, refused{0};
     std::atomic<uint64_t> nativeQueries{0},targetRestoresRefused{0};
+    std::atomic<uint64_t> fireEntries{0},fireReturns{0},fireUnwinds{0},fireWithData{0},firePredicted{0};
     DualWeaponAimPublication aim;
 } g_halo3Dual;
 thread_local uint32_t g_halo3FiringWeapon = UINT32_MAX;

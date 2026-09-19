@@ -7,6 +7,7 @@
 #include "d3d11_hook.h"
 #include "vr.h"
 #include "game.h"
+#include "native_fault_probe.h"
 
 #ifndef HALOMCCVR_BUILD_COMMIT
 #define HALOMCCVR_BUILD_COMMIT "unknown"
@@ -80,6 +81,8 @@ static DWORD WINAPI InitThread(LPVOID)
     wchar_t hostExe[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, hostExe, MAX_PATH);
     LOG("MCC edition: %s (%ls)", DetectMccEdition(hostExe), hostExe);
+    LOG("Native fault evidence: %s (HaloMCCVR-native-faults.log; observe only, exceptions retain native handling)",
+        NativeFaultProbe_Init(dir.c_str(),HALOMCCVR_BUILD_COMMIT)?"enabled":"unavailable");
     const std::wstring primaryConfig = dir + L"halomccvr.cfg";
     const std::wstring legacyConfig = dir + L"halo3xr.cfg";
     ConfigLoadMigrating(primaryConfig.c_str(), legacyConfig.c_str());

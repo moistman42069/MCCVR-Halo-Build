@@ -61,6 +61,7 @@ static struct
     std::atomic<bool> enabled{true},faulted{false};
     std::atomic<uint32_t> callbacks{0};
     std::atomic<uint64_t> rays[2]{},refused{0},nativeQueries{0},targetRestoresRefused{0};
+    std::atomic<uint64_t> fireEntries{0},fireReturns{0},fireUnwinds{0},fireWithData{0},firePredicted{0};
     DualWeaponAimPublication aim;
 } g_halo3Dual;
 static uintptr_t caller{};
@@ -262,6 +263,8 @@ static void Reset()
     g_halo3RuntimeGeneration=7;g_vrAim=g_enabled=true;g_halo3Dual.enabled=true;g_halo3Dual.faulted=false;
     queryFault=fireFault=omitCamera=changeGeneration=replaceStorage=changeNativeTarget=changeWeapons=nestedFire=false;
     queryCalls=fireCalls=cameraCalls=aimCalls=0;caller=0;
+    g_halo3Dual.fireEntries=0;g_halo3Dual.fireReturns=0;g_halo3Dual.fireUnwinds=0;
+    g_halo3Dual.fireWithData=0;g_halo3Dual.firePredicted=0;
     g_halo3NativeQueryContext={};g_halo3QueryCapture={};g_halo3IndependentShot={};
     std::memset(unitBytes,0,sizeof(unitBytes));std::memset(replacementBytes,0,sizeof(replacementBytes));
     *reinterpret_cast<uint32_t*>(unitBytes+0x2A4)=UINT32_MAX;
@@ -297,7 +300,12 @@ int main()
     Check(g_halo3Dual.callbacks==0&&!g_halo3IndependentShot.active,"callback scope balanced");
     Reset();nestedFire=true;(void)Shoot();Check(fireCalls==2,"simultaneous/nested roles each fire once");
     Reset();fireFault=true;Check(FaultingShot()&&fireCalls==1,"native firing failure never replayed");
+    Check(g_halo3Dual.fireEntries==1&&g_halo3Dual.fireReturns==0&&g_halo3Dual.fireUnwinds==1&&
+        g_halo3Dual.fireWithData==1&&g_halo3Dual.firePredicted==1,"native fault distinguished from completed shot without altering arguments");
     Check(g_halo3Dual.callbacks==0&&!g_halo3IndependentShot.active&&*reinterpret_cast<uint32_t*>(unitBytes+0x21C)==0x44440007,"exception restores own target and scopes");
+    Reset();g_config.independent_dual_aim=false;g_config.gun_barrel_aim=false;fireFault=true;queryCalls=0;
+    Check(FaultingShot()&&fireCalls==1&&queryCalls==0&&g_halo3Dual.fireUnwinds==1&&
+        g_halo3Dual.callbacks==0,"settings-off native failure remains visible with no extra targeting query");
     Reset();queryFault=true;(void)Shoot();
     Check(fireCalls==1,"optional query failure forwards stock firing once");
     Check(g_halo3Dual.faulted,"optional query failure isolates the feature");

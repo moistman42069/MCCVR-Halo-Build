@@ -39,6 +39,7 @@
 #include <vector>
 #include <MinHook.h>
 #include "game.h"
+#include "native_fault_probe.h"
 #include "haloce_stereo_core.h"
 #include "haloce_first_person.h"
 #include "haloce_contact.h"
@@ -4940,46 +4941,7 @@ namespace
         __finally { feature.queryActive.store(false,std::memory_order_release); }
     }
 
-    uint8_t LegacyCollisionSchedulerDetourBody(
-        LegacyWorldCollisionFeature& feature, uint64_t flags, int32_t mode,
-        const float* start, const float* desired, int32_t ignoredObjectA,
-        int32_t ignoredObjectB, int32_t ignoredObjectC, void* result)
-    {
-        LegacyCollisionTestVectorFn original=
-            reinterpret_cast<LegacyCollisionTestVectorFn>(feature.original);
-        if(!original) return 0;
-        const uint8_t nativeResult=original(
-            flags,mode,start,desired,ignoredObjectA,ignoredObjectB,
-            ignoredObjectC,result);
-        if(!g_legacyCollisionOwnedQuery)
-        {
-            feature.engineCalls.fetch_add(1,std::memory_order_relaxed);
-            LegacyWorldCollisionTick(feature);
-        }
-        return nativeResult;
-    }
-
-    __declspec(noinline) uint8_t __fastcall Halo3CollisionResolveDetour(
-        uint64_t flags,int32_t mode,const float* start,const float* desired,
-        int32_t ignoredObjectA,int32_t ignoredObjectB,
-        int32_t ignoredObjectC,void* result)
-    {
-        g_halo3WorldCollision.callbacks.fetch_add(
-            1,std::memory_order_acq_rel);
-        uint8_t nativeResult=0;
-        const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
-        __try {
-            if(!Halo3RedirectContactVector(caller,flags,mode,ignoredObjectA,
-                    ignoredObjectB,ignoredObjectC,result,nativeResult))
-                nativeResult=LegacyCollisionSchedulerDetourBody(
-                    g_halo3WorldCollision,flags,mode,start,desired,ignoredObjectA,
-                    ignoredObjectB,ignoredObjectC,result);
-        }
-        __except(EXCEPTION_EXECUTE_HANDLER) {}
-        g_halo3WorldCollision.callbacks.fetch_sub(
-            1,std::memory_order_acq_rel);
-        return nativeResult;
-    }
+#include "halo3_collision_dispatch.inl"
 
     __declspec(noinline) uint8_t __fastcall OdstCollisionResolveDetour(
         uint64_t flags,int32_t mode,const float* start,const float* desired,
@@ -40957,6 +40919,7 @@ namespace
         for (;;)
         {
             const uint64_t pollNow = GetTickCount64();
+            NativeFaultProbe_Poll();
             Roomscale_Report();
             if (pollNow >= nextAnatomicalReportMs)
             {
@@ -43057,8 +43020,9 @@ bool Game_HasAuthoritativePauseState()
     const GameTitle activeTitle = TitleAdapter_GetActiveTitle();
     if (activeTitle==GameTitle::HaloCE)
     {
-        bool paused{};
-        return HaloCEControls_GetNativePaused(paused);
+        // The simulation clock is not authoritative for a local multiplayer
+        // menu. Preserve the explicit Start/menu presentation request in CE.
+        return false;
     }
     const TitleAdapterRuntimeSnapshot runtime =
         RuntimeSnapshot(GetTickCount64());
@@ -43199,7 +43163,7 @@ void Game_AutoVrTick()
 #endif
     // CE owns its camera lifecycle. Keep the existing title branches intact.
     static bool wasCeContext=false;
-    static halo_ce::NativePausePresentation cePause;
+    static halo_ce::RequestedMenuPresentation cePause;
     if (TitleAdapter_GetActiveTitle()==GameTitle::HaloCE)
     {
         if (!wasCeContext)
@@ -43207,18 +43171,19 @@ void Game_AutoVrTick()
         wasCeContext=true;
         const bool ready=HaloCE_Armed()&&!g_autoVrUserVeto.load()&&
             !g_vrRuntimeFailureLatched.load();
-        bool cePaused{};
-        const bool cePauseKnown=ready&&HaloCEControls_GetNativePaused(cePaused);
-        const auto cePauseRequest=cePause.ObserveOwned(TitleAdapter_GetGeneration(GameTitle::HaloCE),
-            ready,cePauseKnown,cePaused,VR_IsPausePresentationTarget(),GetTickCount64());
+        bool cePaused{},ceSuppressed{},ceInputKnown{};
+        const bool cePauseKnown=ready&&HaloCEControls_GetNativePaused(cePaused,&ceSuppressed,&ceInputKnown);
+        const auto cePauseRequest=cePause.Observe(TitleAdapter_GetGeneration(GameTitle::HaloCE),
+            ready,cePauseKnown,cePaused,ceInputKnown,ceSuppressed,
+            VR_IsPausePresentationTarget(),GetTickCount64());
         if (cePauseRequest!=halo_ce::PauseRequest::None)
         {
             VR_RequestPausePresentation(cePauseRequest==halo_ce::PauseRequest::Enter);
             if (!ready)
                 LOG("CE pause presentation: camera/presentation ownership ended; clearing head-lock for MCC shell");
             else
-                LOG("CE pause presentation: native clock restored %s",
-                    cePaused?"head-locked 2D":"stereo 3D");
+                LOG("CE pause presentation: clock/input reconciliation restored %s",
+                    cePauseRequest==halo_ce::PauseRequest::Enter?"head-locked 2D":"stereo 3D");
         }
         if (ready)
         {

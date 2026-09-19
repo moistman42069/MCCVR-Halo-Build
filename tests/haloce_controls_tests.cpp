@@ -59,6 +59,29 @@ int main()
     CHECK(AllowStockScreen(true,false,false)); // ordinary shell
     CHECK(!AllowStockScreen(false,true,true)); // preserve other-title admission
 
+    RequestedMenuPresentation menu;
+    CHECK(menu.Observe(9,true,true,false,true,false,false,10)==PauseRequest::None);
+    // Multiplayer clock never pauses. Wait for native input suppression after
+    // the user's Start edge, then retain the menu for arbitrarily long periods.
+    CHECK(menu.Observe(9,true,true,false,true,false,true,20)==PauseRequest::None);
+    CHECK(menu.Observe(9,true,true,false,true,true,true,100)==PauseRequest::None);
+    CHECK(menu.Observe(9,true,true,false,true,true,true,5000)==PauseRequest::None);
+    CHECK(menu.Observe(9,true,true,false,false,false,true,5100)==PauseRequest::None);
+    CHECK(menu.Observe(9,true,true,false,true,false,true,5200)==PauseRequest::None);
+    CHECK(menu.Observe(9,true,true,false,true,false,true,5250)==PauseRequest::Exit);
+    CHECK(menu.Observe(9,true,true,false,true,false,false,5251)==PauseRequest::None);
+    // Cutscene/input suppression without a request must never open a menu.
+    CHECK(menu.Observe(9,true,true,false,true,true,false,5300)==PauseRequest::None);
+    CHECK(menu.Observe(9,true,true,false,true,true,false,6000)==PauseRequest::None);
+    // A Start request the engine did not accept times out instead of trapping
+    // the player in a flat screen. Native single-player pause still wins.
+    CHECK(menu.Observe(9,true,true,false,true,false,true,6100)==PauseRequest::None);
+    CHECK(menu.Observe(9,true,true,false,true,false,true,6600)==PauseRequest::None);
+    CHECK(menu.Observe(9,true,true,false,true,false,true,6650)==PauseRequest::Exit);
+    CHECK(menu.Observe(9,true,true,true,true,false,true,6700)==PauseRequest::None);
+    CHECK(menu.Observe(9,false,false,false,false,false,true,6800)==PauseRequest::Exit);
+    CHECK(menu.Observe(10,true,true,false,true,true,false,7000)==PauseRequest::None);
+
     ControlAdmission admitted{true,true,true,false,false,false,false,false};
     CHECK(OnFootControls(admitted));
     for (int index=0;index<8;++index)
