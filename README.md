@@ -236,13 +236,12 @@ Reload/holster gestures mirror for left-handed play and give a short vibration o
 ## Fresh installation
 
 1. Fully close MCC and extract the **Halo-MCC-VR.zip** somewhere temporary.
-2. Open MCC's installation root—the folder containing `MCC\Binaries\Win64`:
+2. Open MCC's installation folder:
    - Steam: Library > Halo: The Master Chief Collection > Manage > Browse local files.
    - Xbox app: MCC > Manage > Files > Browse, then open `Content` if needed.
 3. Create a folder named exactly `Halo_MCC_VR` in that root.
 4. Copy `HaloMCCVR.dll`, `HaloMCCVRLauncher.exe`, and `halomccvr.cfg` from the
-   extracted ZIP into `Halo_MCC_VR`. Do not put the Source ZIP there and
-   do not replace files in `MCC\Binaries\Win64`.
+   extracted ZIP into `Halo_MCC_VR`. Do not put the Source ZIP there.
 5. Start your headset connection and active OpenXR runtime. SteamVR is the
    recommended/tested route.
 6. With MCC closed, run `HaloMCCVRLauncher.exe` from `Halo_MCC_VR` and choose
