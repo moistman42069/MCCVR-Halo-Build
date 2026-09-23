@@ -1,5 +1,6 @@
 #include "../src/common/weapon_muzzle.h"
 #include "../src/common/halo2_render_logic.h"
+#include "../src/common/contact_melee_motion.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -17,7 +18,12 @@ struct Halo2VisibleConsumerContext
     bool valid=true;uint32_t user=0,unitObject=0x12340001,weaponObject=0x56780002,secondaryWeaponObject=0x789A0003;
     uint32_t muzzleGeneration=7;uint64_t muzzleSpace=3,muzzleSerial=11;
     int64_t muzzleTimeNs=1000000000;bool muzzleLeftHanded=false;
+    contact_melee::Frame contactFrames[2]{};
 };
+static unsigned reticlePublications{};
+static void VR_PublishWeaponReticleRay(GameTitle title,uint8_t slot,
+    const weapon_muzzle::Receipt&,const contact_melee::TrackingToWorld&) noexcept
+{Check(title==GameTitle::Halo2&&slot<2,"reticle publication retains title/slot");++reticlePublications;}
 #include "../src/dll/halo2_muzzle_publication.inl"
 int main()
 {
@@ -73,6 +79,7 @@ int main()
     Check(!publication.Read(read)&&publication.Publish(receipt)&&publication.Read(read)&&read.weapon==receipt.weapon,
         "bounded publication retains full weapon identity");
     Halo2VisibleConsumerContext context;
+    context.contactFrames[0].serial=context.contactFrames[1].serial=context.muzzleSerial;
     float matrices[kHalo2FirstPersonPaletteCapacity*kHalo2FirstPersonNodeFloats]{};
     Halo2FirstPersonTransform node{};
     node.scale=2;std::memcpy(node.rotation,roll,sizeof(roll));std::memcpy(node.translation,position,sizeof(position));
@@ -83,7 +90,9 @@ int main()
             Halo2WriteFirstPersonTransform(node,matrices+i*kHalo2FirstPersonNodeFloats);
         for(uint8_t slot=0;slot<2;++slot)
         {
+            const auto beforeReticle=reticlePublications;
             Halo2PublishMuzzlePalette(context,slot,authored.identity,matrices,authored.nodeCount);
+            Check(reticlePublications==beforeReticle+1,"each current hand publishes its reticle ray");
             const uint32_t weapon=slot?context.secondaryWeaponObject:context.weaponObject;
             Ray expected{};Check(Transform(authored,node.scale,node.rotation,node.translation,expected),"expected marker orientation");
             Check(g_halo2Muzzles.Read(GameTitle::Halo2,7,context.unitObject,weapon,3,1050,1050000000,

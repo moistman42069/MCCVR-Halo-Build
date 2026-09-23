@@ -5,15 +5,18 @@ import pathlib
 import re
 import struct
 import pefile
+import runpy
+import sys
 
 root = pathlib.Path(__file__).resolve().parents[1]
-source = (root / 'src/dll/gesture_melee_bindings.inl').read_text()
+source = (root / 'src/dll/gesture_binding_reader.inl').read_text()
 descriptors = re.findall(
     r'\{GameTitle::(\w+),([^\n]+),\s*0x([0-9A-F]+),0x([0-9A-F]+),\s*'
     r'"([0-9A-F? ]+)",\s*"([0-9A-F? ]+)"\}', source)
-assert len(descriptors) == 5
+assert len(descriptors) == 6
 inputs = root / 'out/deps/re-tools/inputs'
 pinned = {
+    'HaloCE': ('halo1.dll', '0A12DC561780F449D3F4D0DF10BB8D3BC7BE7840A5BEB2B236F672EB6CD42E6C', 0x2EA0610),
     'Halo2': ('halo2.dll', 'DE65B4F4FDBF3F0A5EAB7431FE530DA17DD815599182DFD6AE9B7E21CF171946', 0x15EB7A0),
     'Halo3': ('halo3.dll', 'B209D8454B12DC77E54CCD2C9924EC8D44B8619D21CF98E36FFAF601E67EFB63', 0x2229B54),
     'Halo4': ('halo4.dll', '7C53E7D5BC9848545A1B70E2768242479336FBA1B7630D7AB955F7FD0C34FA84', 0x2E959D4),
@@ -31,13 +34,14 @@ for title, fields, reader, load, reader_pattern, state_pattern in descriptors:
     filename, expected, state = pinned[title]
     raw = (inputs / filename).read_bytes()
     assert hashlib.sha256(raw).hexdigest().upper() == expected, filename
-    image = pefile.PE(data=raw).get_memory_mapped_image()
+    image = pefile.PE(data=raw, fast_load=True).get_memory_mapped_image()
     for rva, pattern in [(int(reader,16),reader_pattern),(int(load,16),state_pattern)]:
         expression = b''.join(b'.' if byte == '??' else re.escape(bytes([int(byte,16)])) for byte in pattern.split())
         matches = [m.start() for m in re.finditer(b'(?='+expression+b')',image,re.S)]
         assert matches == [rva], (filename,hex(rva),matches)
     load = int(load,16)
-    assert load+14+struct.unpack_from('<i',image,load+10)[0] == state
+    displacement,next_instruction = (6,10) if title == 'HaloCE' else (10,14)
+    assert load+next_instruction+struct.unpack_from('<i',image,load+displacement)[0] == state
     action,count,stride,remap,controller = [int(v,0) for v in fields.split(',')]
     assert action < count and state + stride*4 <= len(image)
     report.append({'title':title,'sha256':expected,'unique_patterns':2,'state_rva':hex(state),
@@ -52,7 +56,7 @@ kits = [
     ('halo4_tag_test.exe',0x24FE440,0xE44A,0x19B56E0,8,False),
 ]
 for filename, entry, glyph, table, pointer_size, halo2 in kits:
-    pe = pefile.PE(str(inputs / filename))
+    pe = pefile.PE(str(inputs / filename), fast_load=True)
     image = pe.get_memory_mapped_image()
     string = struct.unpack_from('<I' if pointer_size == 4 else '<Q',image,entry)[0] - pe.OPTIONAL_HEADER.ImageBase
     expected_text = 'button_melee_attack\0'.encode('utf-16-le')
@@ -61,5 +65,12 @@ for filename, entry, glyph, table, pointer_size, halo2 in kits:
     masks = [1,2,4,8,16,32,64,128] + ([256,512,4096,8192,16384,32768] if halo2 else [4096,8192,16384,32768,256,512])
     assert list(struct.unpack_from('<14I',image,table)) == masks, filename
 
+# CE's 33 ASCII action names and independent XI converter use a different
+# evidence shape from the later games' Unicode glyph entries. Run its own
+# hash-pinned kit/retail consumer proof rather than inventing a glyph entry.
+sys.path.insert(0, str(root / 'tools/re'))
+ce_proof = runpy.run_path(str(root / 'tools/re/verify_ce_controller_mapping.py'))
+ce_proof['main']()
+
 (root / 'out/gesture-melee-native-bindings.json').write_text(json.dumps(report,indent=2)+'\n')
-print('PASS: 5 title-specific melee identities, 10 unique native patterns, 5 state pointers, 5 kit XInput tables')
+print('PASS: 6 title-specific melee identities, 12 unique native patterns, 6 state pointers, 6 kit XInput tables')

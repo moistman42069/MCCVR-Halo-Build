@@ -57,6 +57,21 @@ void Halo3PublishMuzzlePalette(uint16_t tag,const FpInterpolationContext& contex
             }
         }
         (void)g_halo3Muzzles.Publish(GameTitle::Halo3,uint8_t(context.slot),palette);
+        // Same accepted XR-to-world mapping as the H3 visible carrier and
+        // reload receiver. Project only after this palette has committed.
+        if(g_baseCamValid.load()) {
+            contact_melee::TrackingToWorld transform{};
+            const float sh=sinf(g_headYawRef),ch=cosf(g_headYawRef);
+            const float cg=cosf(g_gameYawRef),sg=sinf(g_gameYawRef);
+            transform.unitsPerMetre=g_worldScale.load();
+            transform.axis[0]={cg*sh+sg*ch,sg*sh-cg*ch,0};
+            transform.axis[1]={0,0,1};
+            transform.axis[2]={-cg*ch+sg*sh,-sg*ch-cg*sh,0};
+            const auto reference=transform.World({g_headPosRef[0],g_headPosRef[1],g_headPosRef[2]});
+            transform.origin={g_baseCamX.load()-reference.x,g_baseCamY.load()-reference.y,
+                g_baseCamZ.load()-reference.z};
+            VR_PublishWeaponReticleRay(GameTitle::Halo3,uint8_t(context.slot),palette.barrels[0],transform);
+        }
     }
     __except(EXCEPTION_EXECUTE_HANDLER)
     { (void)g_halo3Muzzles.Publish(GameTitle::Halo3,uint8_t(context.slot),{}); }

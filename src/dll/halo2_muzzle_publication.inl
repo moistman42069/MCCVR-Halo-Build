@@ -27,4 +27,7 @@ void Halo2PublishMuzzlePalette(const Halo2VisibleConsumerContext& context,uint8_
         }
     }
     (void)g_halo2Muzzles.Publish(GameTitle::Halo2,slot,palette);
+    if(slot<2 && context.contactFrames[slot==0?1:0].serial==context.muzzleSerial)
+        VR_PublishWeaponReticleRay(GameTitle::Halo2,slot,palette.barrels[0],
+            context.contactFrames[slot==0?1:0].transform);
 }

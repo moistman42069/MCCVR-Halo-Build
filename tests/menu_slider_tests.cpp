@@ -61,6 +61,18 @@ int main()
     frame(x,y,false); frame(x,y,true); frame(x,y,false);
     check(fractional>0.4f && fractional<0.6f,"the original slider remains draggable between its arrows");
     check(ImGui::GetDrawData()->TotalVtxCount>0,"the complete slider controls produce renderable draw data");
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(10,10));
+    ImGui::SetNextWindowSize(ImVec2(360,400));
+    ImGui::Begin("Narrow settings pane",nullptr,ImGuiWindowFlags_NoSavedSettings);
+    const auto start=ImGui::GetCursorScreenPos();
+    ImGui::SetNextItemWidth(300);
+    vr_menu::SliderFloat("A long accessibility setting label that must wrap inside the settings pane",
+        &fractional,0.f,1.f,"%.2f");
+    check(ImGui::GetItemRectMax().x<=start.x+ImGui::GetContentRegionAvail().x+1,
+        "long slider label stays within the available pane width");
+    check(ImGui::GetItemRectSize().y>button*1.5f,"long slider label wraps below the controls");
+    ImGui::End();ImGui::Render();
     ImGui::DestroyContext();
     if(!failures) std::puts("VR menu slider input tests passed");
     return failures ? 1 : 0;

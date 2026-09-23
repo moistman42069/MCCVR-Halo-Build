@@ -11,6 +11,7 @@
 #include <MinHook.h>
 #include <atomic>
 #include <cstring>
+#include <intrin.h>
 
 namespace
 {
@@ -299,6 +300,7 @@ void MainBody()
 void __fastcall MainHook()
 {
     callbacks.fetch_add(1,std::memory_order_acq_rel);
+    HaloCE_CaptureClassicDlssDepth(reinterpret_cast<uintptr_t>(_ReturnAddress()));
     RenderContext owner{};ID3D11DeviceContext* context{};
     const bool hideHud=Current()&&NativeOwner(owner,context)&&owner.tracking.hud.hidden;
     if(hideHud) ++hud_visibility::depth;

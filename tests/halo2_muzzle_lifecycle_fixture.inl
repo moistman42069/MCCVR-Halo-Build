@@ -3,8 +3,8 @@ static int muzzleLifecycleFailure=0,muzzleScan=0;
 static uintptr_t muzzleFixtureBase=0;
 static bool MuzzleCountPatternMatches(uintptr_t base,size_t,const char*,uintptr_t& match,uint32_t& count)
 {
-    const uint32_t rvas[]{0x8D6570,0x8D11A0};
-    Check(muzzleScan<2,"only proven muzzle bindings scanned");
+    const uint32_t rvas[]{0x8D6570,0x8D11A0,0x8E8990,0x8E89E7};
+    Check(muzzleScan<4,"only proven muzzle/marker-owner bindings scanned");
     match=base+rvas[muzzleScan++];
     count=muzzleLifecycleFailure==1?0:muzzleLifecycleFailure==2?2:1;return true;
 }
@@ -57,7 +57,7 @@ static void MuzzleLifecycleTests()
     auto* bytes=static_cast<uint8_t*>(VirtualAlloc(nullptr,size,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE));
     Check(bytes!=nullptr,"bounded native muzzle image fixture");
     muzzleFixtureBase=reinterpret_cast<uintptr_t>(bytes);
-    for(const auto [call,target]:{std::pair{0x8E4BAA,0x8D6570},std::pair{0x8D657E,0x8D11A0}})
+    for(const auto [call,target]:{std::pair{0x8E4B94,0x8E8990},std::pair{0x8E4BAA,0x8D6570},std::pair{0x8D657E,0x8D11A0}})
     {bytes[call]=0xE8;const int32_t delta=target-call-5;std::memcpy(bytes+call+1,&delta,4);}
     g_halo2Dual.enabled=true;g_halo2Dual.generation=7;g_halo2Muzzle.target=nullptr;g_halo2Muzzle.original=nullptr;
     for(int failure=0;failure<=8;++failure)

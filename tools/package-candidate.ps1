@@ -6,9 +6,8 @@ param(
     # candidate.
     [switch]$Clean,
 
-    # Packaging is intentionally non-deploying by default. Pass -Install only
-    # for an explicitly requested local deployment after the ZIP has been
-    # reviewed; ordinary headset-test handoffs stop at the candidate package.
+    # Retained only to reject obsolete callers explicitly. The new complete
+    # ModFiles payload is installed by the bundled verified launcher.
     [switch]$Install
 )
 
@@ -18,10 +17,13 @@ param(
 # Reach's camera core is permanent while Halo 4 is still an explicitly
 # unaccepted bring-up line. Optional player-visible features fail open
 # independently. This stages one unaccepted local candidate under out/candidates
-# after a passing build and tests. It installs only when -Install is supplied,
-# never launches MCC, and never labels rebuilt bytes as an accepted release.
+# after a passing build and tests. It never installs or launches MCC, and never
+# labels rebuilt bytes as an accepted release.
 
 $ErrorActionPreference = 'Stop'
+if ($Install) {
+    throw 'This QoL package uses the complete ModFiles payload. Package without -Install; use the bundled verified installer for an explicitly requested installation.'
+}
 
 # Native build tools (cmake, ctest) write progress and deprecation notices to
 # stderr. Under ErrorActionPreference=Stop, PowerShell 5.1 turns any native
@@ -468,22 +470,23 @@ try {
 
     $createdUtc = [DateTime]::UtcNow
     $packageId = '{0}-{1}-{2}' -f $commit.Substring(0, 7),
-        'ce-multiplayer-tracking',
+        'qol-candidate',
         $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")
     $packageDir = Join-Path $candidateRoot $packageId
     if (Test-Path -LiteralPath $packageDir) {
         throw "Refusing to reuse candidate directory: $packageDir"
     }
+    $payloadDir = Join-Path $packageDir 'ModFiles'
 
     Invoke-Tool { & cmake --install $packageBuildDir --config Release `
-        --prefix $packageDir --component dist }
+        --prefix $payloadDir --component dist }
     if ($LASTEXITCODE -ne 0) {
         throw 'Candidate staging failed.'
     }
 
     $configGenerator = Join-Path $repoRoot `
         "$packageBuildDir\Release\halomccvr-config-defaults.exe"
-    $configPath = Join-Path $packageDir 'halomccvr.cfg'
+    $configPath = Join-Path $payloadDir 'halomccvr.cfg'
     if (-not (Test-Path -LiteralPath $configGenerator -PathType Leaf)) {
         throw "Default-config generator is missing: $configGenerator"
     }
@@ -492,14 +495,17 @@ try {
         throw 'Default config generation failed.'
     }
 
-    $dllPath = Join-Path $packageDir 'HaloMCCVR.dll'
-    $launcherPath = Join-Path $packageDir 'HaloMCCVRLauncher.exe'
+    $dllPath = Join-Path $payloadDir 'HaloMCCVR.dll'
+    $launcherPath = Join-Path $payloadDir 'HaloMCCVRLauncher.exe'
     foreach ($requiredPath in @(
             $dllPath,
             $launcherPath,
             $configPath,
-            (Join-Path $packageDir 'LICENSE'),
-            (Join-Path $packageDir 'MANUAL-README.txt'))) {
+            (Join-Path $payloadDir 'LICENSE'),
+            (Join-Path $payloadDir 'MANUAL-README.txt'),
+            (Join-Path $payloadDir 'nvngx_dlss.dll'),
+            (Join-Path $payloadDir 'licenses/NVIDIA-DLSS/LICENSE.txt'),
+            (Join-Path $payloadDir 'assets/fonts/Oxanium.ttf'))) {
         if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
             throw "Candidate package is missing: $requiredPath"
         }
@@ -515,7 +521,8 @@ try {
         (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
 
     $manifest = [ordered]@{
-        schema_version = 54
+        schema_version = 55
+        payload_directory = 'ModFiles'
         status = 'UNTESTED_LOCAL_CANDIDATE'
         accepted = $false
         package_id = $packageId
@@ -536,9 +543,10 @@ try {
         }
         deployment_policy = [ordered]@{
             automatic_after_package = $false
-            installer = 'tools/install-candidate.ps1'
+            installer = 'HaloMCCVRLauncher.exe'
             launches_mcc = $false
             changes_config = $false
+            interactive_installer_config_policy = 'retain-existing-and-append-missing-defaults-by-default; explicit-reset-available; backup-before-replacement'
         }
         accepted_halo4_identity = [ordered]@{
             candidate = 'C-H4-56'
@@ -1320,14 +1328,50 @@ try {
             headset_accepted = $false
         }
         current_notes = 'RELEASE-NOTES.md'
+        implementation_ledger = 'IMPLEMENTATION-STATUS.md'
+        launcher = [ordered]@{
+            automatic_install = $false
+            automatic_launch = $false
+            auto_detect_editions = @('Steam', 'Microsoft Store')
+            preserve_and_extend_config = $true
+            per_file_sha256_manifest = 'ModFiles/INSTALL-MANIFEST.sha256'
+            update_repository = 'moistman42069/MCCVR-Halo-Build'
+            update_policy = 'explicit-latest-public-release-with-asset-digest-and-safe-extraction'
+        }
         historical_metadata_notice = 'Older stage/profile IDs and feature results below describe inherited work and retain their original coverage limits. Current accepted baseline is Alpha 0.4.2 source 1a9766c. This unaccepted refinement audit candidate does not complete the full standing scope. Current changes and unresolved items are listed in RELEASE-NOTES.md. Earlier standing and deferred scope is preserved.'
         halo4_new_damage_blackout_report = 'deferred-unresolved-distinct-from-earlier-cryptum-shader-suppression'
-        note = 'Cumulative unaccepted refinement candidate above Alpha0.4.2 source1a9766c. Circular zoom in H2/H3/ODST/Reach/H4; CE separate lens unfinished. Default-off CE Anniversary flare workaround, textured manual reload/shortened tail, haptics/insertion, per-gun/hand alignment, H2/H3 independent dual aim, all-six barrel aiming, roomscale/vehicle/input/foliage/stability corrections. Complete status in RELEASE-NOTES.md. Full scope incomplete; package only; both editions; headset/co-op validation pending.'
+        note = 'Unaccepted major QoL candidate above Alpha0.4.2 source1a9766c. Current implementation and unresolved reports are enumerated in RELEASE-NOTES.md and IMPLEMENTATION-STATUS.md. New launcher/install/update payload; both editions; no game launch or installation during preparation. Older nested stage metadata is historical, not a claim of current headset acceptance or complete community-backlog resolution.'
 
     }
 
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/REFINEMENT-RELEASE-NOTES-2026-09-18.md') -Destination (Join-Path $packageDir 'RELEASE-NOTES.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/RELOAD-ACCESSORIES-RELEASE-NOTES-2026-09-16.md') -Destination (Join-Path $packageDir 'RELOAD-ACCESSORIES-NOTES.md')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-RELEASE-NOTES-2026-09-23.md') -Destination (Join-Path $packageDir 'RELEASE-NOTES.md')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-23.md') -Destination (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md')
+    Copy-Item -LiteralPath (Join-Path $packageDir 'RELEASE-NOTES.md') -Destination $payloadDir
+    Copy-Item -LiteralPath (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md') -Destination $payloadDir
+    Copy-Item -LiteralPath (Join-Path $payloadDir 'MANUAL-README.txt') -Destination (Join-Path $packageDir 'README.txt')
+    Copy-Item -LiteralPath $launcherPath -Destination (Join-Path $packageDir 'HaloMCCVRLauncher.exe')
+    [IO.File]::WriteAllLines((Join-Path $payloadDir 'BUILD-IDENTITY.txt'),
+        @("source_commit=$commit", 'build_kind=UNTESTED_LOCAL_CANDIDATE', 'release_tag='),
+        [Text.UTF8Encoding]::new($false))
+    # Hash the complete manual/install payload, including config, runtime,
+    # fonts, licenses and identity. The manifest itself is deliberately excluded.
+    $payloadPrefix = [IO.Path]::GetFullPath($payloadDir) + [IO.Path]::DirectorySeparatorChar
+    $installHashes = @()
+    foreach ($item in @(Get-ChildItem -LiteralPath $payloadDir -File -Recurse | Sort-Object FullName)) {
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not $item.FullName.StartsWith($payloadPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Unsafe candidate payload path: $($item.FullName)"
+        }
+        $relative = $item.FullName.Substring($payloadPrefix.Length).Replace('\','/')
+        $hash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
+        $installHashes += "$hash  $relative"
+        $manifest.files[$relative] = [ordered]@{bytes=$item.Length;sha256=$hash}
+    }
+    [IO.File]::WriteAllLines((Join-Path $payloadDir 'INSTALL-MANIFEST.sha256'),
+        $installHashes, [Text.UTF8Encoding]::new($false))
+    if ((Get-FileHash -LiteralPath (Join-Path $packageDir 'HaloMCCVRLauncher.exe') -Algorithm SHA256).Hash -cne $launcherHash) {
+        throw 'Root and manual-payload launchers differ.'
+    }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'
     $json = $manifest | ConvertTo-Json -Depth 6
@@ -1360,17 +1404,7 @@ try {
     Write-Host "Launcher: $launcherHash"
     Write-Host "Config:   $configHash"
 
-    if ($Install) {
-        & powershell -NoProfile -ExecutionPolicy Bypass -File `
-            (Join-Path $repoRoot 'tools\install-candidate.ps1') `
-            -CandidateDir $packageDir
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Candidate was packaged but the explicitly requested installation failed.'
-        }
-    }
-    else {
-        Write-Host 'Package-only mode: no MCC installation was performed.'
-    }
+    Write-Host 'Package-only mode: no MCC installation was performed.'
 }
 finally {
     Pop-Location

@@ -4,6 +4,13 @@
 
 #include "../common/halo3_vehicle_logic.h"
 #include "../common/runtime_types.h"
+#include "../common/vr_action_mapping.h"
+
+// Read-only, generation-tagged controller bindings. No game memory is touched
+// on the caller's thread. False means there is no verified current snapshot.
+bool Game_ReadVrActionBindings(vr_mapping::Transports& out, uint64_t nowMs,
+    unsigned controller = 0);
+uint32_t Game_VrActionTransport(vr_mapping::Action action, uint64_t nowMs);
 
 // Camera-thread admission, using each title's existing native on-foot evidence.
 bool Game_RoomscaleCameraAllowed(GameTitle title);

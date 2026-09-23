@@ -107,6 +107,7 @@ struct ClassicFrameScope
     int32_t tick{};
     uintptr_t window{},clock{};
     ClassicNativeSource sources[2];
+    dlss::CameraSample dlssCamera[2]{};
     halo_ce::Rectangle outputRectangle{};
     ClassicFailure failure{};
     void Fail(ClassicFailure reason) noexcept
@@ -119,6 +120,7 @@ struct ClassicPrimaryViewScope
     int eye{};
 };
 thread_local const ClassicPrimaryViewScope* classicPrimaryViewScope{};
+void ClassicCaptureDlssDepth(uintptr_t caller) noexcept;
 
 bool ClassicGetRenderContext(RenderContext& out) noexcept
 {
@@ -141,6 +143,32 @@ bool ClassicScopeCurrent(const ClassicFrameScope& scope) noexcept
         scope.epoch==ceRendererEpoch.load()&&scope.revision==referenceRevision.load()&&
         Read(bindings.base+0x2e9fd68,clock)&&clock==scope.clock&&
         Read(clock+0xc,tick)&&tick==scope.tick;
+}
+
+void ClassicCaptureDlssDepth(uintptr_t caller) noexcept
+{
+    const auto* primary=classicPrimaryViewScope;
+    auto* scope=classicFrameScope;
+    if(!dlssDepthRequested.load(std::memory_order_relaxed)||caller!=bindings.base+0xb3210b||
+        !primary||!scope||primary->frame!=scope||primary->eye!=scope->eye||!scope->capture||
+        !scope->prepared||scope->failed||!ClassicScopeCurrent(*scope)||scope->eye<0||scope->eye>1||
+        !scope->dlssCamera[scope->eye].valid||!hudTargetBindingsVerified.load(std::memory_order_acquire)) return;
+    uintptr_t config{},root{},context{};
+    CeHudTargetSnapshot target{};
+    ResourceRegistry::Record resource{};
+    if(!Read(bindings.base+0x2e3bdd8,config)||!config||!Read(config+0x318,root)||!root||
+        !Read(bindings.base+0x2ea2d30,context)||!context||
+        !HaloCEHudTarget_Read(bindings.base,reinterpret_cast<ID3D11DeviceContext*>(context),target)||
+        target.wrappers[4]!=root||!target.dsv||target.descriptor[0x44]||
+        !resources.Read(target.resources[4],target.resources[4],resource)) return;
+    const auto& camera=scope->pair.eyes[scope->eye].raster;
+    const auto& descriptor=resource.descriptor;
+    if(descriptor.Width!=UINT(camera.viewport.right-camera.viewport.left)||
+        descriptor.Height!=UINT(camera.viewport.bottom-camera.viewport.top)) return;
+    wantedDlssDepth.Publish({descriptor,scope->generation,context});
+    (void)cache.CaptureDepth(scope->key,scope->eye,reinterpret_cast<ID3D11DeviceContext*>(context),
+        reinterpret_cast<ID3D11Resource*>(resource.resource),descriptor,
+        scope->dlssCamera[scope->eye],scope->revision);
 }
 
 // BBCF30 receives the actual culling and drawing cameras, after fog clipping
@@ -171,7 +199,15 @@ void ClassicViewBody(int16_t player,const Camera* render,const void* renderFrust
             std::memcmp(&consumedRender,&expectedRender,sizeof(Camera))||
             std::memcmp(&consumedRaster,&expectedRaster,sizeof(Camera)))
             scope->Fail(ClassicFailure::Consumer);
-        else primary=true;
+        else {
+            primary=true;
+            if(dlssDepthRequested.load(std::memory_order_relaxed)) {
+                uint8_t projectionValid{};float projection[16]{};
+                const auto frustum=reinterpret_cast<uintptr_t>(rasterFrustum);
+                if(Read(frustum+0x140,projectionValid)&&projectionValid&&Read(frustum+0x144,projection))
+                    scope->dlssCamera[scope->eye]=halo_ce::DlssClassicCamera(consumedRaster,projection);
+            }
+        }
     }
     // The prepared frame also spans reflections and final output. Projection
     // changes require the narrower interval during which BBCF30 is actually
@@ -245,6 +281,8 @@ void ClassicWindowBody(Window* window,uintptr_t caller)
         scope->window=reinterpret_cast<uintptr_t>(window);
         FollowRoomscale(source.render,scope->pair.tracking,scope->reference,
             scope->scale,scope->positional,scope->revision);
+        ApplyPhysicalCrouchReference(scope->pair.tracking,scope->reference,scope->scale,scope->positional);
+        publishedReference.Publish({scope->reference,scope->revision});
         const auto stage=StageClassicViewPair(source,scope->pair.tracking,scope->reference,
             scope->epoch,scope->scale,scope->positional,scope->pair);
         classicPairStage.store(static_cast<uint32_t>(stage),std::memory_order_relaxed);

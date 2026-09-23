@@ -13,7 +13,8 @@ def main() -> None:
     source_path = args.source_root.resolve() / "src" / "dll" / "vr.cpp"
     source = source_path.read_text(encoding="utf-8-sig")
     output = ["// Generated from current shipping source; do not edit."]
-    for signature in ("bool CreateControllerActions()", "bool ReadLeftThumbrestTouched()",
+    for signature in ("uint32_t WeaponGestureBinding(GameTitle title,vr_mapping::Action action,uint64_t now)",
+                      "bool CreateControllerActions()", "bool ReadLeftThumbrestTouched()",
                       "void VR_GetPadState(VrPadState& out)"):
         body, line = extract_function(source, signature)
         output += [f'#line {line} "{source_path.as_posix()}"', body]

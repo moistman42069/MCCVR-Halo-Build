@@ -8,6 +8,8 @@
 #include <cmath>
 #include <algorithm>
 #include <commctrl.h>
+#include <shellapi.h>
+#include "installer.h"
 #include "../common/manual_vr_recovery.h"
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='amd64' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -343,13 +345,8 @@ static int ScaleEven(int base, float scale)
     return value;
 }
 
-int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
+static int LaunchInstalledMod(const std::wstring& dir)
 {
-    wchar_t selfPath[MAX_PATH];
-    GetModuleFileNameW(nullptr, selfPath, MAX_PATH);
-    std::wstring dir(selfPath);
-    dir.resize(dir.find_last_of(L'\\')); // folder containing the launcher, no trailing slash
-
     g_logPath = dir + L"\\HaloMCCVRLauncher.log";
     // fresh log each launch
     {
@@ -671,4 +668,72 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     LauncherLog("game still running after %lus - launch looks good", watchMs / 1000);
     CloseHandle(pi.hProcess);
     return 0;
+}
+
+int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
+{
+    wchar_t self[32768]{};
+    const auto length = GetModuleFileNameW(nullptr, self, static_cast<DWORD>(std::size(self)));
+    if (!length || length >= std::size(self)) return 1;
+    std::filesystem::path launcherDir = std::filesystem::path(self).parent_path();
+    int count = 0;
+    LPWSTR* args = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (args && count > 1 && !wcscmp(args[1], L"--apply-update"))
+    {
+        if (count != 6 || (wcscmp(args[4], L"0") && wcscmp(args[4], L"1")))
+        {
+            LocalFree(args);
+            ErrorBox(L"Invalid update request. Open the launcher and choose Check for updates.");
+            return 1;
+        }
+        const std::filesystem::path payload(args[2]), gameRoot(args[3]);
+        const bool retainConfig = args[4][0] == L'1';
+        wchar_t* end = nullptr;
+        const DWORD parentPid = wcstoul(args[5], &end, 10);
+        const bool validPid = parentPid && parentPid != GetCurrentProcessId() && end && !*end;
+        LocalFree(args); args = nullptr;
+        if (!validPid) { ErrorBox(L"Invalid update launcher process."); return 1; }
+        HANDLE parent = OpenProcess(SYNCHRONIZE, FALSE, parentPid);
+        if (parent)
+        {
+            const auto result = WaitForSingleObject(parent, 60000);
+            CloseHandle(parent);
+            if (result != WAIT_OBJECT_0) { ErrorBox(L"Close the previous VR launcher, then try the update again."); return 1; }
+        }
+        else if (GetLastError() != ERROR_INVALID_PARAMETER)
+        {
+            ErrorBox(L"Could not confirm that the previous launcher closed. Reopen the extracted package to update.");
+            return 1;
+        }
+        mcc_installer::GameInstall game;
+        if (!mcc_installer::ProbeInstall(gameRoot, game)) { ErrorBox(L"The MCC install folder could not be verified."); return 1; }
+        const auto installed = mcc_installer::InstallPayload(payload, game, retainConfig);
+        MessageBoxW(nullptr, installed.message.c_str(), L"Halo MCC VR update", MB_OK | (installed.success ? MB_ICONINFORMATION : MB_ICONERROR));
+        if (!installed.success) return 1;
+        // Reopen the newly installed launcher's menu. The separate Launch MCC
+        // button is still required; installing an update never starts MCC.
+        const auto updated = game.root / L"Halo_MCC_VR" / L"HaloMCCVRLauncher.exe";
+        std::wstring command = L"\"" + updated.wstring() + L"\"";
+        STARTUPINFOW startup{sizeof(startup)};
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW(updated.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, updated.parent_path().c_str(), &startup, &process))
+        {
+            ErrorBox(L"The update is installed. Open HaloMCCVRLauncher.exe in Halo_MCC_VR to launch MCC.");
+            return 1;
+        }
+        CloseHandle(process.hThread); CloseHandle(process.hProcess);
+        return 0;
+    }
+    if (args) LocalFree(args);
+    try
+    {
+        const auto selected = mcc_installer::ShowLauncherMenu(instance, launcherDir, showCommand);
+        return selected.empty() ? 0 : LaunchInstalledMod(selected);
+    }
+    catch (const std::exception& error)
+    {
+        const std::string detail(error.what());
+        ErrorBox(L"The launcher could not complete this operation.\n\n" + std::wstring(detail.begin(), detail.end()));
+        return 1;
+    }
 }

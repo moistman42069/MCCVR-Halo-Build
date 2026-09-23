@@ -1,5 +1,16 @@
 #pragma once
 #include <cstdint>
+#include "vr_action_mapping.h"
+
+struct ConfigVehicleModelTrim
+{
+    GameTitle title=GameTitle::None;
+    uint64_t identity{};
+    int16_t seat=-1;
+    float value[3]{};
+    bool set[3]{};
+};
+inline constexpr unsigned kVehicleModelTrimCapacity=128;
 
 // Every supported MCC title shares one halomccvr.cfg next to the DLL, as plain
 // "key = value" text. These are portable user preferences; title-specific
@@ -422,6 +433,8 @@ struct Config
 
     // M3 VR controller turning (right Sense stick).
     bool roomscale_movement = false; // physical horizontal steps drive native walking
+    bool physical_crouch = false;
+    float physical_crouch_depth_m = 0.22f;
     bool turn_smooth = true;           // false = snap turn, true = smooth turn
     bool vehicle_smooth_turn = false; // temporary smooth VR turning while seated
     float turn_snap_deg = 30.0f;       // degrees per snap
@@ -447,7 +460,23 @@ struct Config
     bool quest_thumbrest_dpad = false;
     bool disable_flashlight_input = false;
     // Match each campaign's MCC layout; same title order as gesture buttons.
-    int flashlight_button[6]{15,15,15,15,15,15};
+    int flashlight_button[6]{15,15,15,15,15,15}; // legacy migration / unverified-title fallback
+    vr_mapping::Overrides vr_bindings[6]{};
+    bool vr_action_mapping = true;
+    bool flashlight_suppress_on_two_hand = true;
+    // Optional temporal upscaler; ordinary eye resolve remains the default.
+    int upscaler = 0;
+    int dlss_mode = 1;
+    bool dlss_jitter = true;
+    int dlss_preset = 0;
+    bool dlss_debug_view = false;
+    bool vr_gameplay_subtitles = true;
+    float vr_gameplay_subtitle_scale = 1.f;
+    float vr_gameplay_subtitle_x = 0.f, vr_gameplay_subtitle_y = 0.f;
+    int vr_gameplay_subtitle_anchor = 0;
+    float vr_theatre_subtitle_scale = 1.f;
+    float vr_theatre_subtitle_x = 0.f, vr_theatre_subtitle_y = 0.f;
+    int vr_theatre_subtitle_anchor = 0;
 
     // Aim crosshair (stereo only): a small reticle floating where the weapon
     // actually shoots. Drawn as a compositor quad layer, so it costs no game
@@ -460,6 +489,11 @@ struct Config
     float vehicle_cam_forward_m = kVehicleCamForwardDefault;
     float vehicle_cam_up_m = kVehicleCamUpDefault;
     float vehicle_cam_right_m = kVehicleCamRightDefault;
+    // Per-game fallback values. Unset axes inherit the legacy global trim so
+    // existing cfg files retain their exact camera position until edited.
+    float vehicle_cam_game[6][3]{}; // title order; forward/up/right
+    bool vehicle_cam_game_set[6][3]{};
+    ConfigVehicleModelTrim vehicle_model_trims[kVehicleModelTrimCapacity]{};
     // Per-SEAT overrides of the three trims above. An entry only exists once the
     // user adjusts the F1 sliders while SITTING IN that seat (or writes the
     // config line by hand); every other seat keeps following the universal
@@ -665,6 +699,11 @@ struct Config
     // the barrel, so it rolls with the gun instead of staying world-vertical.
     // ~0.11 is the reported "four or five inches". Tune LIVE in the F1 menu.
     float muzzle_height_m = 0.0f;
+    // Independent title preferences. H2 Original/H4 retain the existing
+    // suppression by default; other titles need their own proven hide paths.
+    bool hide_muzzle_flash[6]{false,false,false,true,false,true};
+    // Per-game stock bloom. Verified optional suppression: H3, ODST, Reach.
+    bool bloom_enabled[6]{true,true,true,true,true,true};
 
     // Experimental gun-mounted VR zoom screen. R3 is isolated from Halo's
     // native zoom so the full VR gun/body remain visible; scope_zoom is the
@@ -824,6 +863,10 @@ struct Config
     bool manual_reload_shortened_animation = false;
     bool weapon_holsters = false;
     float weapon_pouch_down_m = 0.50f;
+    int weapon_pouch_location = 0; // 0 support-side front hip, 1 behind support shoulder
+    float weapon_pouch_offset_x_m = 0.0f;
+    float weapon_pouch_offset_y_m = 0.0f;
+    float weapon_pouch_offset_z_m = 0.0f;
     float weapon_body_zone_radius_m = 0.20f;
     float weapon_holster_radius_m = 0.20f;
     float weapon_insert_radius_m = 0.18f;
@@ -844,6 +887,24 @@ struct Config
     // exactly where you look down the gun. Auto-engages by hand pose; drops
     // when you lower the support hand. The right grip still cycles grenades.
     bool two_handed_aim = true;
+    // Optional virtual stock. Raw controllers, grip acquisition, muzzle
+    // position and per-weapon calibration remain independent.
+    bool virtual_stock = false;
+    float virtual_stock_strength = .95f;
+    float virtual_stock_rear_height_m = -.220f;
+    int virtual_stock_rear_reference = 0;
+    float virtual_stock_shoulder_back_m = .005f;
+    float virtual_stock_shoulder_side_m = .015f;
+    float virtual_stock_chest_height_m = -.320f;
+    float virtual_stock_chest_back_m = 0.f;
+    float virtual_stock_chest_side_m = .015f;
+    float virtual_stock_adaptive_top_height_m = -.180f;
+    float virtual_stock_adaptive_bottom_height_m = -.450f;
+    float virtual_stock_adaptive_top_half_width_m = .080f;
+    float virtual_stock_adaptive_bottom_half_width_m = .140f;
+    bool virtual_stock_proximity_release = true;
+    float virtual_stock_proximity_full_m = .270f;
+    float virtual_stock_proximity_release_m = .425f;
     // Two-hand engage style: true = toggle (click left grip on/off), false =
     // hold (engaged only while the left grip is held).
     bool two_hand_toggle = true;
@@ -994,26 +1055,57 @@ const char* Config_ActiveWeaponProfileName();
 // The trim a given SEAT actually uses: its own override when one has been
 // set, the universal trim otherwise. `slot` comes from ConfigSeatTrimSlot;
 // -1 (on foot, unknown vehicle, unauthored seat) reads the universal trim.
+inline float ConfigGameVehicleCam(const Config& c, GameTitle title, unsigned axis)
+{
+    const int index=static_cast<int>(title)-1;
+    if(axis>2)return 0.f;
+    if(index>=0&&index<6&&c.vehicle_cam_game_set[index][axis])
+        return c.vehicle_cam_game[index][axis];
+    return axis==0?c.vehicle_cam_forward_m:axis==1?c.vehicle_cam_up_m:c.vehicle_cam_right_m;
+}
+inline int ConfigVehicleModelTrimSlot(const Config& c,GameTitle title,uint64_t identity,int seat)
+{
+    if(!identity||seat<0||seat>31||title<GameTitle::Halo3||title>GameTitle::Halo2)return -1;
+    for(unsigned i=0;i<kVehicleModelTrimCapacity;++i)
+        if(c.vehicle_model_trims[i].identity==identity&&c.vehicle_model_trims[i].title==title&&
+            c.vehicle_model_trims[i].seat==seat)return static_cast<int>(i);
+    return -1;
+}
+inline int ConfigEnsureVehicleModelTrim(Config& c,GameTitle title,uint64_t identity,int seat)
+{
+    const int existing=ConfigVehicleModelTrimSlot(c,title,identity,seat);
+    if(existing>=0)return existing;
+    if(!identity||seat<0||seat>31||title<GameTitle::Halo3||title>GameTitle::Halo2)return -1;
+    for(unsigned i=0;i<kVehicleModelTrimCapacity;++i)if(!c.vehicle_model_trims[i].identity)
+    {c.vehicle_model_trims[i]={title,identity,static_cast<int16_t>(seat)};return static_cast<int>(i);}
+    return -1;
+}
+inline float ConfigVehicleModelCam(const Config& c,GameTitle title,uint64_t identity,int seat,unsigned axis)
+{
+    const int slot=ConfigVehicleModelTrimSlot(c,title,identity,seat);
+    if(axis<3&&slot>=0&&c.vehicle_model_trims[slot].set[axis])return c.vehicle_model_trims[slot].value[axis];
+    return ConfigGameVehicleCam(c,title,axis);
+}
 inline float ConfigSeatCamForward(const Config& c, int slot)
 {
     if (slot >= 0 && slot < kVehicleTrimSlots &&
         c.vehicle_cam_forward_set[slot])
         return c.vehicle_cam_forward_v[slot];
-    return c.vehicle_cam_forward_m;
+    return ConfigGameVehicleCam(c,GameTitle::Halo3,0);
 }
 
 inline float ConfigSeatCamUp(const Config& c, int slot)
 {
     if (slot >= 0 && slot < kVehicleTrimSlots && c.vehicle_cam_up_set[slot])
         return c.vehicle_cam_up_v[slot];
-    return c.vehicle_cam_up_m;
+    return ConfigGameVehicleCam(c,GameTitle::Halo3,1);
 }
 
 inline float ConfigSeatCamRight(const Config& c, int slot)
 {
     if (slot >= 0 && slot < kVehicleTrimSlots && c.vehicle_cam_right_set[slot])
         return c.vehicle_cam_right_v[slot];
-    return c.vehicle_cam_right_m;
+    return ConfigGameVehicleCam(c,GameTitle::Halo3,2);
 }
 
 // ODST's bank. `slot` comes from ConfigOdstSeatTrimSlot; an unset ODST seat
@@ -1024,7 +1116,7 @@ inline float ConfigOdstSeatCamForward(const Config& c, int slot)
     if (slot >= 0 && slot < kOdstVehicleTrimSlots &&
         c.odst_vehicle_cam_forward_set[slot])
         return c.odst_vehicle_cam_forward_v[slot];
-    return c.vehicle_cam_forward_m;
+    return ConfigGameVehicleCam(c,GameTitle::Halo3ODST,0);
 }
 
 inline float ConfigOdstSeatCamUp(const Config& c, int slot)
@@ -1032,7 +1124,7 @@ inline float ConfigOdstSeatCamUp(const Config& c, int slot)
     if (slot >= 0 && slot < kOdstVehicleTrimSlots &&
         c.odst_vehicle_cam_up_set[slot])
         return c.odst_vehicle_cam_up_v[slot];
-    return c.vehicle_cam_up_m;
+    return ConfigGameVehicleCam(c,GameTitle::Halo3ODST,1);
 }
 
 inline float ConfigOdstSeatCamRight(const Config& c, int slot)
@@ -1040,7 +1132,7 @@ inline float ConfigOdstSeatCamRight(const Config& c, int slot)
     if (slot >= 0 && slot < kOdstVehicleTrimSlots &&
         c.odst_vehicle_cam_right_set[slot])
         return c.odst_vehicle_cam_right_v[slot];
-    return c.vehicle_cam_right_m;
+    return ConfigGameVehicleCam(c,GameTitle::Halo3ODST,2);
 }
 
 // R-V25: the Blender lineup is the BASE of a Reach seat, so a slot that has an
@@ -1090,7 +1182,7 @@ inline float ConfigReachSeatCamForward(const Config& c, int slot)
         if (ConfigReachSeatAuthoredBase(slot, &authored, nullptr, nullptr))
             return authored;
     }
-    return c.vehicle_cam_forward_m;
+    return ConfigGameVehicleCam(c,GameTitle::HaloReach,0);
 }
 
 inline float ConfigReachSeatCamUp(const Config& c, int slot)
@@ -1104,7 +1196,7 @@ inline float ConfigReachSeatCamUp(const Config& c, int slot)
         if (ConfigReachSeatAuthoredBase(slot, nullptr, &authored, nullptr))
             return authored;
     }
-    return c.vehicle_cam_up_m;
+    return ConfigGameVehicleCam(c,GameTitle::HaloReach,1);
 }
 
 inline float ConfigReachSeatCamRight(const Config& c, int slot)
@@ -1118,7 +1210,7 @@ inline float ConfigReachSeatCamRight(const Config& c, int slot)
         if (ConfigReachSeatAuthoredBase(slot, nullptr, nullptr, &authored))
             return authored;
     }
-    return c.vehicle_cam_right_m;
+    return ConfigGameVehicleCam(c,GameTitle::HaloReach,2);
 }
 
 inline void ConfigReachSeatUseUniversalTrim(Config& c, int slot)

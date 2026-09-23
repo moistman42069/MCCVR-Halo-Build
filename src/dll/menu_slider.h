@@ -38,8 +38,15 @@ bool SliderWithArrows(const char* label, Value* value, Value minimum,
     const char* hidden=std::strstr(label,"##");
     if(!hidden || hidden!=label)
     {
-        ImGui::SameLine(0,gap);
+        // Long labels must not make the settings child horizontally scroll or
+        // disappear outside the headset panel. Short labels retain one row.
+        const float labelWidth=ImGui::CalcTextSize(label,hidden).x;
+        const float used=ImGui::GetItemRectMax().x-ImGui::GetWindowPos().x;
+        if(used+gap+labelWidth<=ImGui::GetWindowContentRegionMax().x)
+            ImGui::SameLine(0,gap);
+        ImGui::PushTextWrapPos(0.0f);
         ImGui::TextUnformatted(label,hidden);
+        ImGui::PopTextWrapPos();
     }
     ImGui::EndGroup();
     ImGui::PopID();

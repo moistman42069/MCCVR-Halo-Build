@@ -17790,32 +17790,34 @@ int main()
         head[0]=0.15f;
         follow.Update(7,144,true,true,body,head,reference,0,-1,wx,wy,scale,mx,my);
         follow.Update(7,155,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
-        Check(mx==0 && my==0, "manual locomotion cancels roomscale debt instead of walking after release");
+        Check(mx==0 && my==0, "manual locomotion pauses roomscale until native braking is quiet");
         head[0]+=0.1f;
         follow.Update(7,166,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
-        Check(mx>0 && std::fabs(my)<1e-5f, "physical right step produces head-relative right input");
+        Check(mx==0 && my==0, "new physical step also waits for the manual quiet window");
+        follow.Update(7,316,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
+        Check(mx>0 && my>0, "physical right step and retained forward debt both survive manual movement");
         const float before=reference[0];
         body[0]+=10*scale;
-        follow.Update(7,177,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
+        follow.Update(7,327,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
         Check(mx==0 && my==0 && reference[0]==before, "teleport rebases demand without consuming false travel");
         head[0]+=2;
-        follow.Update(7,188,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
+        follow.Update(7,338,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
         Check(mx==0 && my==0, "tracking jump cannot become a long unattended walk");
         head[0]+=0.1f;
-        follow.Update(8,199,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
+        follow.Update(8,349,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
         Check(mx==0 && my==0, "new title generation cancels pending movement");
         head[0]+=0.1f;
-        follow.Update(8,210,false,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
+        follow.Update(8,360,false,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
         Check(mx==0 && my==0 && !follow.seeded, "disabled roomscale leaves existing tracking reference alone");
-        follow.Update(8,221,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
+        follow.Update(8,371,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
         head[0]+=0.1f;
-        follow.Update(8,600,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
+        follow.Update(8,750,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
         Check(mx==0 && my==0, "stale camera resumes without replaying physical movement");
         reference[0]=head[0]; reference[2]=head[2];
-        follow.Update(8,611,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
+        follow.Update(8,761,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
         Check(mx==0 && my==0, "manual recenter cancels prior roomscale demand");
         head[0]=std::numeric_limits<float>::quiet_NaN();
-        Check(!follow.Update(8,622,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my) && mx==0 && my==0,
+        Check(!follow.Update(8,772,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my) && mx==0 && my==0,
             "nonfinite tracking cannot produce locomotion");
     }
     Check(!Config{}.roomscale_movement, "roomscale is opt-in for existing and new configurations");

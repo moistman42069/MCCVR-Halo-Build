@@ -20,10 +20,20 @@ inline bool RoomscaleGameplayEligible(GameTitle title, RuntimeMode mode) noexcep
 struct RoomscaleFollow
 {
     bool seeded=false, commanded=false, settling=false;
+    bool manualPaused=false;
     uint32_t generation=0;
     uint64_t time=0, lastCommand=0, lastMotion=0;
+    uint64_t manualQuietSince=0;
     float body[2]{}, expectedReference[2]{}, initialLean[2]{};
     float headForward[2]{}, worldForward[2]{}, error[2]{}, velocity[2]{};
+
+    void SuspendForManual(uint64_t now) noexcept
+    {
+        // Manual travel cannot be attributed to a prior physical-follow
+        // packet. Retain the tracked goal, but retire that movement receipt.
+        commanded=settling=false;velocity[0]=velocity[1]=0;
+        manualPaused=true;manualQuietSince=now;
+    }
 
     bool Update(uint32_t epoch,uint64_t now,bool enabled,bool manualMove,
         const float position[3],const float head[3],float reference[3],
@@ -32,23 +42,36 @@ struct RoomscaleFollow
         moveX=moveY=0;
         const float values[]{position[0],position[1],head[0],head[2],reference[0],
             reference[2],hx,hz,wx,wy,scale};
-        for (float v:values) if (!std::isfinite(v)) { seeded=false; commanded=settling=false; return false; }
+        for (float v:values) if (!std::isfinite(v)) { seeded=false; commanded=settling=manualPaused=false; return false; }
         const float hl=std::hypot(hx,hz),wl=std::hypot(wx,wy);
         if (!enabled || !epoch || !now || scale<=0 || hl<0.001f || wl<0.001f)
-        { seeded=false; commanded=settling=false; return false; }
+        { seeded=false; commanded=settling=manualPaused=false; return false; }
         hx/=hl; hz/=hl; wx/=wl; wy/=wl;
         const bool reset=!seeded || generation!=epoch || now<time || now-time>250 ||
             std::fabs(reference[0]-expectedReference[0])>0.0001f ||
             std::fabs(reference[2]-expectedReference[1])>0.0001f ||
             std::hypot(position[0]-body[0],position[1]-body[1])/scale>0.35f;
-        if (reset || manualMove)
+        if (reset)
         {
             initialLean[0]=head[0]-reference[0];
             initialLean[1]=head[2]-reference[2];
             commanded=settling=false; velocity[0]=velocity[1]=0;
             lastCommand=lastMotion=now; seeded=true;
+            manualPaused=false;
         }
-        else if (commanded || settling)
+        if (manualMove) SuspendForManual(now);
+        else if (manualPaused)
+        {
+            // A released stick may still be braking. Wait for observed native
+            // motion to remain quiet before creating a new follow receipt;
+            // continuing platform/camera movement extends this bounded wait.
+            if (std::hypot(position[0]-body[0],position[1]-body[1])/scale>0.0001f)
+                manualQuietSince=now;
+            if (now>=manualQuietSince&&now-manualQuietSince>=150)
+                manualPaused=false;
+        }
+        else if (!reset && (commanded || (settling && now>=lastCommand && now-lastCommand<=500 &&
+            now>=lastMotion && now-lastMotion<=150)))
         {
             const float dx=(position[0]-body[0])/scale;
             const float dy=(position[1]-body[1])/scale;
@@ -82,7 +105,7 @@ struct RoomscaleFollow
             initialLean[1]=head[2]-reference[2];
             error[0]=error[1]=0;velocity[0]=velocity[1]=0;settling=false;
         }
-        else if (!manualMove && (distance>0.015f ||
+        else if (!manualMove && !manualPaused && (distance>0.015f ||
             (settling && std::hypot(velocity[0],velocity[1])>.05f)))
         {
             // Position feedback follows promptly; measured native velocity

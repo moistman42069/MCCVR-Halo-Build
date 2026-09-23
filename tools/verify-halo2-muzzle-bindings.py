@@ -13,10 +13,10 @@ assert hashlib.sha256(raw).hexdigest().upper()=='DE65B4F4FDBF3F0A5EAB7431FE530DA
 pe=pefile.PE(data=raw);image=pe.get_memory_mapped_image()
 source=(root/'src/dll/halo2_muzzle_lifecycle.inl').read_text()
 bindings=re.findall(r'\{0x([0-9A-F]+),"([0-9A-F ]+)"\}',source)
-assert len(bindings)==2
+assert len(bindings)==4
 for rva,pattern in bindings:
     assert [m.start() for m in re.finditer(re.escape(bytes.fromhex(pattern)),image)]==[int(rva,16)]
-for call,target in [(0x8E4BAA,0x8D6570),(0x8D657E,0x8D11A0)]:
+for call,target in [(0x8E4B94,0x8E8990),(0x8E4BAA,0x8D6570),(0x8D657E,0x8D11A0)]:
     assert image[call]==0xE8 and call+5+struct.unpack_from('<i',image,call+1)[0]==target
 for begin,end in [(0x8D6570,0x8D6588),(0x8D11A0,0x8D14D2)]:
     assert [(e.struct.BeginAddress,e.struct.EndAddress) for e in pe.DIRECTORY_ENTRY_EXCEPTION
@@ -31,4 +31,4 @@ for address,pattern in {
 }.items():
     expected=bytes.fromhex(pattern)
     assert image[address:address+len(expected)]==expected,hex(address)
-print('PASS: pinned H2 muzzle identity, two unique bindings/unwind entries/edges and native marker consumers')
+print('PASS: pinned H2 muzzle identity, four unique marker/owner witnesses, three call edges, two hook unwind entries and native marker consumers')

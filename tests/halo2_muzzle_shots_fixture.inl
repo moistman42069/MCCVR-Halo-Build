@@ -2,6 +2,9 @@ static uint16_t muzzleCount=1;
 static unsigned markerCalls{},muzzleFires{};
 static bool expectMuzzle=true,muzzleNativeFault=false,muzzleNested=false,muzzlePreflightFault=false;
 static uint32_t markerObject=primary;
+static bool parentMarker=false;
+static uint32_t overrideMarker=UINT32_MAX;
+static float ExpectedMuzzleX(){return g_halo2MuzzleRequest.weapon==secondary?-2.0f:2.0f;}
 static uint16_t NativeMarkers(uint32_t object,uint32_t name,void* data,int16_t capacity)
 {
     ++markerCalls;
@@ -19,7 +22,7 @@ static void NativeMuzzleAim(uint32_t unit,float* position,float* direction,uint6
         if(muzzlePreflightFault)RaiseException(0xE0425555,0,0,nullptr);
         Check(unit==owner&&velocity&&!offset&&!project&&!use&&collision==1,
             "marker preflight uses private native velocity storage and obstruction clamp");
-        Check(position[0]==2&&position[1]==3&&position[2]==4&&direction[1]==1,
+        Check(position[0]==ExpectedMuzzleX()&&position[1]==3&&position[2]==4&&direction[1]==1,
             "preflight sees visible marker before any native origin restoration");
         auto* output=reinterpret_cast<float*>(velocity);
         output[0]=10;output[1]=20;output[2]=30;
@@ -29,7 +32,7 @@ static void NativeMuzzleAim(uint32_t unit,float* position,float* direction,uint6
     {
         Check(unit==owner&&velocity&&!offset&&!project&&!use&&collision==1,
             "muzzle passes native velocity and collision while disabling camera relocation");
-        Check(position[0]==2&&position[1]==2.5f&&position[2]==4&&direction[0]==0&&direction[1]==1,
+        Check(position[0]==ExpectedMuzzleX()&&position[1]==2.5f&&position[2]==4&&direction[0]==0&&direction[1]==1,
             "native clamp starts at actual authored muzzle and direction");
         position[1]=2.5f; // Native obstruction result must survive every later override.
     }
@@ -46,14 +49,14 @@ static void NativeMuzzleFire(uint32_t weapon,int16_t barrel,int32_t projectile,u
     Check(barrel==0&&projectile==-7&&predicted==0xFA,"muzzle preserves complete native fire ABI");
     alignas(float) uint8_t nativeMarker[0x70]{};
     caller=g_halo2Muzzle.base+0x8E4BAF;
-    markerObject=weapon;
-    Check(Halo2MuzzleMarkersDetour(weapon,0xF0000DB,nativeMarker,64)==muzzleCount,"native marker count unchanged");
+    markerObject=overrideMarker!=UINT32_MAX?overrideMarker:parentMarker?owner:weapon;
+    Check(Halo2MuzzleMarkersDetour(markerObject,0xF0000DB,nativeMarker,64)==muzzleCount,"native marker count unchanged");
     if(expectMuzzle)
     {
         const float* forward=reinterpret_cast<const float*>(nativeMarker+0x3C);
         const float* up=reinterpret_cast<const float*>(nativeMarker+0x54);
         const float* position=reinterpret_cast<const float*>(nativeMarker+0x60);
-        Check(forward[0]==0&&forward[1]==1&&up[2]==1&&position[0]==2&&position[1]==2.5f&&position[2]==4,
+        Check(forward[0]==0&&forward[1]==1&&up[2]==1&&position[0]==ExpectedMuzzleX()&&position[1]==2.5f&&position[2]==4,
             "native firing buffer receives visible muzzle position and orientation");
         for(unsigned i=0;i<0x3C;++i)Check(nativeMarker[i]==0x5A,"local marker and world scale retained");
         for(unsigned i=0x6C;i<0x70;++i)Check(nativeMarker[i]==0x5A,"native marker flags retained");
@@ -68,7 +71,7 @@ static void NativeMuzzleFire(uint32_t weapon,int16_t barrel,int32_t projectile,u
     caller=g_halo2Dual.base+0x7597BD;
     float cameraPoint[3]{},cameraForward[3]{};
     Check(Halo2IndependentCameraDetour(owner,cameraPoint,cameraForward)==0x12345678,"native assist camera return unchanged");
-    if(expectMuzzle)Check(cameraPoint[0]==2&&cameraPoint[1]==2.5f&&cameraPoint[2]==4&&cameraForward[1]==1,
+    if(expectMuzzle)Check(cameraPoint[0]==ExpectedMuzzleX()&&cameraPoint[1]==2.5f&&cameraPoint[2]==4&&cameraForward[1]==1,
         "downstream native assist uses clipped muzzle and exact barrel direction");
     if(muzzleNested&&weapon==primary)
     {
@@ -86,11 +89,12 @@ static void ResetMuzzle(bool dual=false)
     g_halo2Muzzle.enabled=true;g_halo2Muzzle.faulted=false;g_halo2MuzzleRequest={};
     g_halo2Dual.fireOriginal=NativeMuzzleFire;g_halo2Dual.aimOriginal=NativeMuzzleAim;
     markerCalls=muzzleFires=0;muzzleCount=1;expectMuzzle=true;muzzleNativeFault=muzzleNested=muzzlePreflightFault=false;
+    parentMarker=false;overrideMarker=UINT32_MAX;
     for(uint8_t slot=0;slot<2;++slot)
     {
         weapon_muzzle::Palette sample{};
         sample.barrels[0]={GameTitle::Halo2,7,owner,slot?secondary:primary,1,3,11,GetTickCount64(),
-            1000000000,slot,0,false,{{2,3,4},{0,1,0},{0,0,1}}};
+            1000000000,slot,0,false,{{slot?-2.0f:2.0f,3,4},{0,1,0},{0,0,1}}};
         Check(g_halo2Muzzles.Publish(GameTitle::Halo2,slot,sample),"fixture committed muzzle publication");
     }
     RecordHalo2IndependentQuery();
@@ -108,6 +112,13 @@ static void MuzzleTests()
     ResetMuzzle(true);muzzleNested=true;ShootMuzzle();
     Check(muzzleFires==2&&queryCalls==4&&*reinterpret_cast<uint32_t*>(unitBytes+0x1D4)==0x44440007,
         "dual and muzzle leases restore in reverse order across nested guns");
+    ResetMuzzle(true);parentMarker=true;ShootMuzzle(primary);ShootMuzzle(secondary);
+    Check(muzzleFires==2&&markerCalls==2&&queryCalls==4,
+        "native parent markers retain separate primary and secondary visible origins");
+    for(uint32_t foreign:{owner+0x10000u,secondary,0x11110004u}) {
+        ResetMuzzle();overrideMarker=foreign;expectMuzzle=false;ShootMuzzle();
+        Check(queryCalls==0&&muzzleFires==1,"foreign or other-weapon marker does not gain local ownership");
+    }
     for(int reason=0;reason<9;++reason)
     {
         ResetMuzzle();expectMuzzle=false;

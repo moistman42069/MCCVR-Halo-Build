@@ -28,9 +28,14 @@ bool ApplyHalo2MuzzleMarker(uint32_t object,uint16_t count,void* markers,int16_t
         !Game_Halo2ControllerAimActive() || !Halo2Observer6Dof_FinalPaletteArmed() ||
         !Halo2Observer6Dof_DirectWeaponAimArmed() ||
         feature.generation!=g_generation.load() || !request.lease || request.lease->active ||
-        request.barrel<0 || request.barrel>=2 || object!=request.weapon ||
+        request.barrel<0 || request.barrel>=2 ||
         count!=1 || capacity<1 || !markers)return false;
     const auto context=g_halo2IndependentQueryContext;
+    // H2EK 4A0F50 / retail 8E8990 selects the firing weapon OR its
+    // parent as the native marker owner. The firing scope still identifies
+    // the exact weapon/role; a parent marker must not force the secondary
+    // weapon back to its ordinary native origin. No other object is admitted.
+    if(object!=request.weapon && object!=context.unit)return false;
     uint32_t weapons[2]{};
     VrContactTrackingSnapshot tracking{};
     if(!Halo2ReadIndependentWeapons(context.unit,weapons,false) ||

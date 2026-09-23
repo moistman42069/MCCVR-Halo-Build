@@ -61,3 +61,47 @@ void D3D_SetForcedClientLie(bool on);
 // builds compile out both Present sampling and this dump; reason names the mode
 // a diagnostic rebuild fell out of.
 void CoopProbe_DumpRunUp(const char* reason);
+
+// This game start's render plan, decided once at startup exactly as the
+// launcher decided it: the size the game renders, the headset picture size
+// (native x resolution_scale) that the DLSS output must have, whether the
+// render was shrunk for DLSS, and whether nvngx_dlss.dll was found beside the
+// mod. Zero sizes before InstallD3D11Hooks.
+void D3D_GetRenderPlan(unsigned& renderW, unsigned& renderH,
+                       unsigned& outputW, unsigned& outputH,
+                       bool& dlss, bool& dlssRuntimePresent);
+
+// Live render-size change (no restart). Stores the new plan and, when the
+// desktop fit is active and the render size differs, queues the requested
+// backbuffer size so MCC's own resize path (its WM_SIZE handling ->
+// ResizeBuffers, which the fit already intercepts) re-sizes every render
+// target. Returns Requested when the caller must now send the game window a
+// message to the UI thread (menu.cpp posts kLiveResizeMsg for that),
+// Unchanged when nothing needs to happen (same size, a request already
+// pending, or the same size already failed), RestartNeeded when the fit is
+// off (no forced size exists, so only a restart can change the render).
+// Deferred means a title is loading: no published dimensions change. The UI
+// handler repeats that admission check before publishing and sending WM_SIZE.
+enum class D3DRenderPlanResult { Unchanged, Requested, RestartNeeded, Deferred };
+D3DRenderPlanResult D3D_RequestRenderPlan(
+    unsigned renderW, unsigned renderH, unsigned outputW, unsigned outputH,
+    bool dlss);
+// UI thread: recheck loading admission and publish the queued dimensions.
+// False means no notification or physical fit may be issued for this message.
+bool D3D_BeginLiveResize(unsigned& renderW, unsigned& renderH);
+void D3D_CancelQueuedLiveResize();
+// 0 idle, 1 a live resize is pending, 2 the last one completed, 3 the last
+// one failed (MCC never re-sized; the forced size was reverted to the real
+// backbuffer, reported in actualW/H).
+int D3D_LiveResizeState(unsigned& actualW, unsigned& actualH);
+HWND D3D_GameWindow();
+
+
+// DLSS texture mip bias (Programming Guide 3.5). While `bias` is non-zero,
+// every pixel-shader sampler the game binds on the calling thread is
+// replaced by a copy with that much added to its MipLODBias, so textures
+// are sampled for the headset picture rather than the smaller render. Set
+// at the start of an eye render, cleared (0) at its end, before the mod's
+// own passes. Render thread only.
+void D3D_SetEyeSamplerBias(float bias);
+void D3D_ReportSamplerCache(); // worker-only fallback diagnostics

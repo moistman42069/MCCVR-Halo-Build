@@ -1,4 +1,7 @@
 #include "haloce_stereo_core.h"
+#include "haloce_controls.h"
+#include "physical_crouch_camera.h"
+uint64_t VR_PhysicalCrouchEpoch() noexcept;
 #include "haloce_native_bindings.h"
 #include "haloce_hud_layout.h"
 #include "haloce_hud_target.h"
@@ -7,6 +10,8 @@
 #include "../common/haloce_surface_transfer.h"
 #include "../common/haloce_view_construction.h"
 #include "../common/haloce_classic_view_pair.h"
+#include "../common/haloce_dlss_logic.h"
+#include "../common/haloce_dlss_contract.h"
 #include "../common/log.h"
 #include "game.h"
 #include "title_adapter.h"
@@ -106,6 +111,9 @@ struct CompletedFrame { EyeCache::Key key; uint64_t referenceRevision{},captured
 Snapshot<CompletedFrame> completedFrame;
 struct Wanted { D3D11_TEXTURE2D_DESC descriptor{}; uint32_t generation{}; uintptr_t context{}; };
 Snapshot<Wanted> wanted,allocated;
+Snapshot<Wanted> wantedDlssDepth;
+std::atomic<bool> dlssDepthRequested{};
+std::atomic<bool> dlssCameraBindingsVerified{};
 Reference reference;
 struct ReferenceSample { Reference value; uint64_t revision{}; };
 Snapshot<ReferenceSample> publishedReference;
@@ -157,6 +165,7 @@ struct FrameScope
         uint64_t revision{};
         D3D11_TEXTURE2D_DESC descriptor{};
     } depth[2];
+    dlss::CameraSample dlssCameras[2]{};
 };
 thread_local FrameScope* frameScope{};
 thread_local bool anniversaryMaterialMasked{};
@@ -260,6 +269,19 @@ void FollowRoomscale(const Camera& source,const Tracking& tracking,Reference& fr
     reference=frozen;
     publishedReference.Publish({frozen,revision});
 }
+// A per-frame effective reference applies one vertical camera correction to
+// both eyes, controllers and native aim. The user's calibration stays intact.
+void ApplyPhysicalCrouchReference(const Tracking& tracking,Reference& frozen,
+    float scale,bool positional) noexcept
+{
+    if(!std::isfinite(scale)||scale<=0||scale>10||!Finite(tracking.headPosition)||
+       !Finite(frozen.position))return;
+    const float down=-std::clamp(tracking.headPosition.y-frozen.position.y,-4.f,4.f)*scale;
+    const float correction=HaloCEControls_PhysicalCrouchCorrection(tracking.generation,
+        VR_PhysicalCrouchEpoch(),down,positional&&!tracking.controllers.controlsPresentationBlocked);
+    if(std::isfinite(correction)&&correction>0&&correction<=std::max(0.f,down))
+        frozen.position.y-=correction/scale;
+}
 #include "haloce_classic_runtime.inl"
 void PublishAnniversaryGameplayContext(const SaberCamera& nativeCenter,
     const Tracking& tracking,const Reference& frozen,uint64_t revision,
@@ -359,6 +381,8 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
         construction.views.tracking=tracking; construction.views.reference=reference;
         construction.views.unitsPerMeter=Game_GetWorldScale();
         construction.views.positional=Game_IsPositionalTracking();
+        ApplyPhysicalCrouchReference(tracking,construction.views.reference,
+            construction.views.unitsPerMeter,construction.views.positional);
         construction.views.width=raster.descriptor.Width; construction.views.height=raster.descriptor.Height;
     }
     const auto nativeResult=ConstructViews(original,arg,list,force?1:secondary,settings,
@@ -374,7 +398,7 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
             reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,gen};
         if (!recenter.load(std::memory_order_acquire)&&
             revisionBeforeBuild==referenceRevision.load(std::memory_order_acquire))
-            publishedReference.Publish({reference,revisionBeforeBuild});
+            publishedReference.Publish({constructTrackedViews?construction.views.reference:reference,revisionBeforeBuild});
         Wanted raster{};
         const bool rasterReady=allocated.Read(raster)&&raster.generation==gen;
         const auto stage=constructTrackedViews?
@@ -397,7 +421,7 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
         {
             result.valid=true; built.fetch_add(1,std::memory_order_relaxed);
             PublishAnniversaryGameplayContext(constructTrackedViews?construction.views.stock[0]:
-                source.views[0].camera,tracking,reference,revisionBeforeBuild,
+                source.views[0].camera,tracking,constructTrackedViews?construction.views.reference:reference,revisionBeforeBuild,
                 constructTrackedViews?construction.views.unitsPerMeter:Game_GetWorldScale(),
                 constructTrackedViews?construction.views.positional:Game_IsPositionalTracking());
         }
@@ -566,6 +590,12 @@ void DepthMeshBody(uintptr_t a,uintptr_t b,uintptr_t c,int32_t eye,uintptr_t cal
     if (eye&&(receipt.resource==scope->depth[0].resource||receipt.view==scope->depth[0].view))
     { RejectDepth(*scope,4);return; }
     scope->depth[eye]=receipt;diagnostic.depthMask|=1u<<eye;
+    if(dlssDepthRequested.load(std::memory_order_relaxed)) {
+        wantedDlssDepth.Publish({receipt.descriptor,generation.load(),receipt.context});
+        (void)cache.CaptureDepth(scope->key,eye,reinterpret_cast<ID3D11DeviceContext*>(receipt.context),
+            reinterpret_cast<ID3D11Resource*>(receipt.resource),receipt.descriptor,scope->dlssCameras[eye],
+            scope->prepared.referenceRevision);
+    }
 }
 __declspec(noinline) void __fastcall DepthMeshHook(uintptr_t a,uintptr_t b,uintptr_t c,int32_t eye)
 {
@@ -574,6 +604,15 @@ __declspec(noinline) void __fastcall DepthMeshHook(uintptr_t a,uintptr_t b,uintp
 // The frame-entry list is preparation evidence only. Verify that the native
 // depth, scene and shading camera upload calls actually consume those same
 // primary records before lending their later GPU output. No native mutation.
+dlss::CameraSample ReadSaberDlssCamera(uintptr_t backend,const SaberCamera& camera) noexcept
+{
+    uintptr_t buffer{},data{};
+    float origin[4]{},projection[16]{};
+    if(!dlssCameraBindingsVerified.load(std::memory_order_acquire)||
+        !Read(backend+0xd8,buffer)||!buffer||!Read(buffer+8,data)||!data||
+        !Read(data+0x240,origin)||!Read(data+0x270,projection)) return {};
+    return halo_ce::DlssSaberCamera(camera,origin,projection);
+}
 void CameraUploadBody(uintptr_t arg,uintptr_t backend,const SaberCamera* camera,uintptr_t caller)
 {
     auto* scope=frameScope;
@@ -627,7 +666,11 @@ void CameraUploadBody(uintptr_t arg,uintptr_t backend,const SaberCamera* camera,
             {
                 scope->diagnostic.consumedCamera[eye]=address;
                 scope->primaryDrawEye=eye;scope->primaryDrawStage=stage;
-                if (stage==1) scope->diagnostic.consumedDepth|=1u<<eye;
+                if (stage==1) {
+                    scope->diagnostic.consumedDepth|=1u<<eye;
+                    if(dlssDepthRequested.load(std::memory_order_relaxed))
+                        scope->dlssCameras[eye]=ReadSaberDlssCamera(backend,after);
+                }
                 if (stage==2)
                 { scope->diagnostic.consumedScene|=1u<<eye; scope->lastSceneEye=eye; }
                 if (stage==3) scope->diagnostic.consumedShading|=1u<<eye;
@@ -948,6 +991,8 @@ bool Remove() noexcept
     RevokeCopiedWorkerList();
     gameplayBridgeVerified.store(false,std::memory_order_release);
     hudTargetBindingsVerified.store(false,std::memory_order_release);
+    dlssCameraBindingsVerified.store(false,std::memory_order_release);
+    wantedDlssDepth.Publish({});
     if (!ce_resolution::Remove()||!AnniversaryHud_Remove()||!Classic_Remove()) return false;
     // Keep copy protection installed until native reset/stock preparation has
     // retired every manufactured list. An inactive title may retain these
@@ -1010,6 +1055,12 @@ bool Install(uintptr_t base,size_t size,uint32_t gen) noexcept
     hudTargetBindingsVerified=VerifyNativeFeatureBindings(base,size,gen,hudTargetContracts,failure);
     if (!hudTargetBindingsVerified.load())
         LOG("CE HUD target stock fallback: %s; camera core retained",failure?failure:"target verification");
+    const NativeContractSet dlssContracts{dlss_contract::entries,dlss_contract::witnesses,
+        dlss_contract::relatives,dlss_contract::pointers};
+    dlssCameraBindingsVerified=VerifyNativeFeatureBindings(base,size,gen,dlssContracts,failure);
+    if(!dlssCameraBindingsVerified.load())
+        LOG("CE DLSS Anniversary constant reader unavailable: %s; ordinary eye rendering retained",
+            failure?failure:"constant verification");
     generation=gen; retiring=false;
     preparedLists[0].Publish({}); preparedLists[1].Publish({}); renderReady.Publish({});
     const uintptr_t addresses[Count]={bindings.prepare,bindings.pairBuilder,bindings.frame,
@@ -1177,6 +1228,10 @@ void HaloCE_PublishTracking(const halo_ce::Tracking& tracking,bool enabled) noex
     if (trackingSnapshot.Publish(tracking))
     { trackingAtMs.store(GetTickCount64(),std::memory_order_release); trackingEnabled.store(true,std::memory_order_release); }
 }
+void HaloCE_SetDlssRequested(bool enabled) noexcept
+{ dlssDepthRequested.store(enabled,std::memory_order_release); }
+void HaloCE_CaptureClassicDlssDepth(uintptr_t caller) noexcept
+{ ClassicCaptureDlssDepth(caller); }
 void HaloCE_PresentResources(ID3D11Device* device,ID3D11DeviceContext* context) noexcept
 {
     if (!device||!context) return;
@@ -1186,15 +1241,20 @@ void HaloCE_PresentResources(ID3D11Device* device,ID3D11DeviceContext* context) 
     if (!wanted.Read(next)||!next.generation||next.generation!=generation.load()||
         next.context!=reinterpret_cast<uintptr_t>(context)) return;
     Wanted previous{};
-    if (allocated.Read(previous)&&previous.generation==next.generation&&previous.context==next.context&&
-        std::memcmp(&previous.descriptor,&next.descriptor,sizeof(next.descriptor))==0) return;
-    if (cache.Prepare(device,context,next.descriptor,next.generation,++resourceEpoch))
-    {
-        allocated.Publish(next);
-        LOG("CE eye caches prepared: %ux%u format=%u generation=%u resource=%llu",
-            next.descriptor.Width,next.descriptor.Height,next.descriptor.Format,next.generation,resourceEpoch);
+    const bool same=allocated.Read(previous)&&previous.generation==next.generation&&previous.context==next.context&&
+        std::memcmp(&previous.descriptor,&next.descriptor,sizeof(next.descriptor))==0;
+    if(!same) {
+        if (cache.Prepare(device,context,next.descriptor,next.generation,++resourceEpoch)) {
+            allocated.Publish(next);
+            LOG("CE eye caches prepared: %ux%u format=%u generation=%u resource=%llu",
+                next.descriptor.Width,next.descriptor.Height,next.descriptor.Format,next.generation,resourceEpoch);
+        }
+        else allocated.Publish({}); // Prepare may have retired the old GPU banks.
     }
-    else allocated.Publish({}); // Prepare may have retired the old GPU banks.
+    Wanted depth{};
+    if(dlssDepthRequested.load(std::memory_order_acquire)&&wantedDlssDepth.Read(depth)&&
+        depth.generation==next.generation&&depth.context==next.context)
+        (void)cache.PrepareDepth(device,context,depth.descriptor,depth.generation);
 }
 bool HaloCE_AcquirePair(ID3D11DeviceContext* context,uint64_t currentSerial,uint64_t spaceEpoch,
     halo_ce::EyeCache::Completed& pair) noexcept

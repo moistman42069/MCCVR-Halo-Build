@@ -3,6 +3,7 @@
 #include <atomic>
 #include "../common/haloce_prepared_handoff.h"
 #include "../common/haloce_classic_view_pair.h"
+#include "../common/dlss_logic.h"
 
 namespace halo_ce
 {
@@ -29,6 +30,10 @@ public:
         ID3D11Texture2D* eyes[2]{}; // borrowed until ReleaseCompleted
         D3D11_TEXTURE2D_DESC descriptor{};
         uint64_t borrowId{};
+        ID3D11ShaderResourceView* depthViews[2]{}; // same borrow as color
+        D3D11_TEXTURE2D_DESC depthDescriptor{};
+        dlss::CameraSample depthCameras[2]{};
+        uint64_t depthHistoryEpoch{};
     };
     EyeCache() = default;
     ~EyeCache(); // owner must retire all callbacks/borrows before destruction
@@ -42,6 +47,12 @@ public:
     bool Begin(const ClassicViewPair& pair,Key& key) noexcept;
     bool Capture(Key key,int eye,ID3D11DeviceContext* context,
         ID3D11Resource* liveSource,const D3D11_TEXTURE2D_DESC& provenSource) noexcept;
+    // Independent optional depth banks: a miss never changes color admission.
+    bool PrepareDepth(ID3D11Device* device,ID3D11DeviceContext* context,
+        const D3D11_TEXTURE2D_DESC& provenDepth,uint32_t generation) noexcept;
+    bool CaptureDepth(Key key,int eye,ID3D11DeviceContext* context,
+        ID3D11Resource* liveSource,const D3D11_TEXTURE2D_DESC& provenDepth,
+        const dlss::CameraSample& camera,uint64_t historyEpoch) noexcept;
     // Optional late native HUD output: replace an already captured world pair
     // from its full-width, top/bottom packed surface before Finish. Refusal
     // retains that valid world pair. The adapter proves source lifetime/layout.
@@ -73,9 +84,17 @@ private:
     Cover completedCovers_[2]{};
     unsigned mask_{};
     bool complete_{};
+    ID3D11Texture2D* depth_[2]{},*completedDepth_[2]{};
+    ID3D11ShaderResourceView* depthViews_[2]{},*completedDepthViews_[2]{};
+    D3D11_TEXTURE2D_DESC depthSource_{},depthDescriptor_{};
+    dlss::CameraSample depthCameras_[2]{},completedDepthCameras_[2]{};
+    unsigned depthMask_{};
+    bool completedDepthValid_{};
+    uint64_t depthHistoryEpoch_{},completedDepthHistoryEpoch_{};
     bool Enter() noexcept;
     void Leave() noexcept;
     void ClearFrame() noexcept;
     void ReleaseResources() noexcept;
+    void ReleaseDepthResources() noexcept;
 };
 }

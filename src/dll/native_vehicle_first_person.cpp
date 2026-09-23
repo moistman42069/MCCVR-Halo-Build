@@ -24,7 +24,11 @@ struct Runtime
 {
     HMODULE module{};uintptr_t base{};uint32_t generation{};
     bool attempted{},ready{},enabled[2]{};
-    void* target[2]{};void* original[2]{};void* marker{};
+    void* target[2]{};void* original[2]{};void* marker{};void* markerInterpolated{};
+    std::atomic<uint64_t> trimIdentity{};
+    std::atomic_flag trimWriting=ATOMIC_FLAG_INIT;
+    std::atomic<uint32_t> trimVersion{},trimGeneration{};
+    std::atomic<int> trimSeat{-1};
     std::atomic<bool> requested{},faulted{};
     std::atomic<uint32_t> callbacks{};
     std::atomic<uint64_t> selected{},positioned{},missingMarker{},faults{};
@@ -49,14 +53,20 @@ bool Owner(unsigned i,uint32_t unit,NativeVehicleCameraOwner& owner) noexcept
 // translation at +96, independently witnessed by their own camera consumers.
 // Positive count is essential: the native missing-marker fallback also fills
 // a transform, but returns zero. It must not put the camera at the body origin.
-__declspec(noinline) bool Head(unsigned i,uint32_t unit,float position[3])
+__declspec(noinline) bool Head(unsigned i,const NativeVehicleCameraOwner& owner,float position[3])
 {
+    const uint32_t unit=owner.unit;
     alignas(16) uint8_t record[128]{};
     int16_t count=0;
     if (i==0) count=reinterpret_cast<int16_t(__fastcall*)(uint32_t,const char*,void*,int16_t)>(
         runtime[i].marker)(unit,"head",record,1);
-    else if (i==1) count=reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t)>(
-        runtime[i].marker)(unit,0x4000095,record,1);
+    else if (i==1) {
+        if(g_config.vehicle_cam_smoothing&&runtime[i].markerInterpolated)
+            count=reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t,uint8_t,uint8_t)>(
+                runtime[i].markerInterpolated)(unit,0x4000095,record,1,0,1);
+        else count=reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t)>(
+            runtime[i].marker)(unit,0x4000095,record,1);
+    }
     else count=reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t,uint8_t,uint8_t,uint8_t)>(
         runtime[i].marker)(unit,0x122,record,1,0,0,1);
     if (count!=1) return false;
@@ -72,7 +82,10 @@ __declspec(noinline) bool Head(unsigned i,uint32_t unit,float position[3])
     const float right[3]{forward[1]*up[2]-forward[2]*up[1],
         forward[2]*up[0]-forward[0]*up[2],forward[0]*up[1]-forward[1]*up[0]};
     const float scale=Game_GetWorldScale();
-    const float f=g_config.vehicle_cam_forward_m,u=g_config.vehicle_cam_up_m,h=g_config.vehicle_cam_right_m;
+    const auto title=kBindings[i].title;
+    const float f=ConfigVehicleModelCam(g_config,title,owner.vehicleIdentity,owner.seat,0),
+        u=ConfigVehicleModelCam(g_config,title,owner.vehicleIdentity,owner.seat,1),
+        h=ConfigVehicleModelCam(g_config,title,owner.vehicleIdentity,owner.seat,2);
     if (!std::isfinite(scale)||scale<=0||scale>100||!std::isfinite(f)||!std::isfinite(u)||
         !std::isfinite(h)||std::fabs(f)>5||std::fabs(u)>5||std::fabs(h)>5) return false;
     for (unsigned axis=0;axis<3;++axis)
@@ -98,7 +111,7 @@ template<unsigned I> bool SelectOwned(uint32_t unit,Mode<I>* mode) noexcept
     __try {
         NativeVehicleCameraOwner before{},after{};float point[3]{};
         if (!mode||*mode!=2||!Owner(I,unit,before)) return false;
-        if (!Head(I,unit,point)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return false;}
+        if (!Head(I,before,point)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return false;}
         return Owner(I,unit,after)&&before==after;
     } __except(EXCEPTION_EXECUTE_HANDLER) {
         Fault(I);return false;
@@ -111,10 +124,22 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
         if (!result||!Owner(I,unit,before)) return;
         reinterpret_cast<SelectorFn<I>>(runtime[I].original[Selector])(unit,&mode);
         if (mode!=2) return;
-        if (!Head(I,unit,point)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return;}
+        if (!Head(I,before,point)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return;}
         if (!Owner(I,unit,after)||before!=after) return;
         // After the full native evaluation, including any slave-turret marker.
         std::memcpy(static_cast<uint8_t*>(result)+4,point,12);
+        auto& r=runtime[I];
+        // Menu edits the last positively identified seat in this generation.
+        // Opening F1 pauses native ownership, so a time expiry would otherwise
+        // silently rebind a slider to the per-game base during a drag.
+        if(!r.trimWriting.test_and_set(std::memory_order_acquire)) {
+            r.trimVersion.fetch_add(1,std::memory_order_acq_rel);
+            r.trimIdentity.store(before.vehicleIdentity,std::memory_order_relaxed);
+            r.trimSeat.store(before.seat,std::memory_order_relaxed);
+            r.trimGeneration.store(before.generation,std::memory_order_relaxed);
+            r.trimVersion.fetch_add(1,std::memory_order_release);
+            r.trimWriting.clear(std::memory_order_release);
+        }
         runtime[I].positioned.fetch_add(1,std::memory_order_relaxed);
     } __except(EXCEPTION_EXECUTE_HANDLER) {
         Fault(I);
@@ -157,16 +182,22 @@ bool Retire(unsigned i)
         if (status!=MH_OK&&status!=MH_ERROR_DISABLED) return false;
         r.enabled[j]=false;
     }
-    const void* functions[]{hooks[i][0],hooks[i][1],reinterpret_cast<void*>(&Current),
-        reinterpret_cast<void*>(&Owner),reinterpret_cast<void*>(&Head),reinterpret_cast<void*>(&Fault)};
-    const void* originals[]{r.original[0],r.original[1],nullptr,nullptr,nullptr,nullptr};
-    if (!WaitForNativeDetourQuiescence(functions,originals,6,r.callbacks)) return false;
+    // Only these two entries can enter this feature from the engine. Their
+    // callback lease encloses Current/Owner/Head/Fault, including exception
+    // cleanup. Requiring unwind metadata for the leaf Fault helper made every
+    // retirement fail permanently in Release and retained the old title DLL.
+    // The ingress ranges still cover the window before callback acquisition;
+    // the count protects every nested helper and original until it returns.
+    const void* functions[]{hooks[i][0],hooks[i][1]};
+    const void* originals[]{r.original[0],r.original[1]};
+    if (!WaitForNativeDetourQuiescence(functions,originals,2,r.callbacks)) return false;
     for (unsigned j=0;j<2;++j) if (r.target[j]) {
         if (MH_RemoveHook(r.target[j])!=MH_OK) return false;
         r.target[j]=r.original[j]=nullptr;
     }
     if (r.module) FreeLibrary(r.module);
-    r.module=nullptr;r.base=0;r.generation=0;r.marker=nullptr;
+    r.module=nullptr;r.base=0;r.generation=0;r.marker=r.markerInterpolated=nullptr;
+    r.trimIdentity.store(0);r.trimGeneration.store(0);r.trimSeat.store(-1);
     r.attempted=r.ready=false;r.faulted.store(false,std::memory_order_release);return true;
 }
 bool Install(unsigned i,size_t size)
@@ -174,6 +205,9 @@ bool Install(unsigned i,size_t size)
     auto& r=runtime[i];
     for (const auto& binding:kBindings[i].entries) if (!Prove(r.base,size,binding)) return false;
     r.marker=reinterpret_cast<void*>(r.base+kBindings[i].markerRva);
+    // H2EK object marker argument 6 selects frame-interpolated object nodes.
+    // This exact retail entry is already independently cold-proved above.
+    if(i==1)r.markerInterpolated=reinterpret_cast<void*>(r.base+kBindings[i].entries[MarkerProof].rva);
     // Both detours are installed before admission. Partial installation stays
     // stock and is retired through the same quiescence path as a title change.
     for (unsigned j=0;j<2;++j) {
@@ -185,6 +219,23 @@ bool Install(unsigned i,size_t size)
     }
     return true;
 }
+}
+bool NativeVehicleFirstPerson_TrimTarget(GameTitle title,uint64_t& identity,int& seat) noexcept
+{
+    identity=0;seat=-1;
+    if(title!=TitleAdapter_GetActiveTitle())return false;
+    for(unsigned i=0;i<3;++i)if(kBindings[i].title==title)
+    {
+        auto& r=runtime[i];const auto before=r.trimVersion.load(std::memory_order_acquire);
+        if(before&1u)return false;
+        const auto candidate=r.trimIdentity.load(std::memory_order_relaxed);
+        const auto candidateSeat=r.trimSeat.load(std::memory_order_relaxed);
+        const auto generation=r.trimGeneration.load(std::memory_order_relaxed);
+        if(before!=r.trimVersion.load(std::memory_order_acquire)||!candidate||candidateSeat<0||candidateSeat>31||
+            !generation||generation!=TitleAdapter_GetGeneration(title))return false;
+        identity=candidate;seat=candidateSeat;return true;
+    }
+    return false;
 }
 void NativeVehicleFirstPerson_Poll()
 {

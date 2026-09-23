@@ -54,10 +54,11 @@ bool EyeCache::Enter() noexcept
     return use_.compare_exchange_strong(expected,1,std::memory_order_acquire);
 }
 void EyeCache::Leave() noexcept { use_.store(0,std::memory_order_release); }
-void EyeCache::ClearFrame() noexcept { key_={}; mask_=0; complete_=false; }
+void EyeCache::ClearFrame() noexcept { key_={}; mask_=0; depthMask_=0; complete_=false; }
 void EyeCache::ReleaseResources() noexcept
 {
     ClearFrame();
+    ReleaseDepthResources();
     completedKey_={}; completedTracking_={};
     for (auto*& eye:eyes_) { if (eye) eye->Release(); eye=nullptr; }
     for (auto*& eye:completedEyes_) { if (eye) eye->Release(); eye=nullptr; }
@@ -207,6 +208,13 @@ bool EyeCache::Finish(Key key) noexcept
             completedCovers_[eye]=covers_[eye];
         }
         completedKey_=key_;completedTracking_=tracking_;complete_=true;
+        completedDepthValid_=depthMask_==3;
+        completedDepthHistoryEpoch_=completedDepthValid_?depthHistoryEpoch_:0;
+        if(completedDepthValid_) for(int eye=0;eye<2;++eye) {
+            std::swap(depth_[eye],completedDepth_[eye]);
+            std::swap(depthViews_[eye],completedDepthViews_[eye]);
+            completedDepthCameras_[eye]=depthCameras_[eye];
+        }
     }
     else ClearFrame();
     Leave(); return valid;
@@ -226,6 +234,14 @@ bool EyeCache::AcquireCompleted(Key key,ID3D11DeviceContext* submissionContext,C
     const uint64_t borrow=++lastBorrowId_;
     out={completedKey_,completedTracking_,{completedCovers_[0],completedCovers_[1]},
         {completedEyes_[0],completedEyes_[1]},cache_,borrow};
+    if(completedDepthValid_) {
+        out.depthDescriptor=depthDescriptor_;
+        out.depthHistoryEpoch=completedDepthHistoryEpoch_;
+        for(int eye=0;eye<2;++eye) {
+            out.depthViews[eye]=completedDepthViews_[eye];
+            out.depthCameras[eye]=completedDepthCameras_[eye];
+        }
+    }
     use_.store(borrow,std::memory_order_release);
     return true;
 }
@@ -238,4 +254,5 @@ bool EyeCache::ReleaseCompleted(uint64_t borrowId) noexcept
     // The adapter bounds reuse by its generation, reference, epoch and age.
     Leave(); return true;
 }
+#include "haloce_eye_depth_cache.inl"
 }

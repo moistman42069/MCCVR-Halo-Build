@@ -17,10 +17,14 @@
 #include "d3d11_hook.h"
 #include "game.h"
 #include "vr.h"
+#include "../common/dlss_logic.h"
+#include "../common/dlss_sampler_logic.h"
+#include "../common/live_resize_logic.h"
 #include "haloce_stereo_core.h"
 #include "haloce_hud_layout.h"
 #include "title_reentry_probe.h"
 #include "title_adapter.h"
+#include "bloom_override.h"
 #if HALOMCCVR_HALO2_STEREO6DOF
 #include "halo2_stereo_core.h"
 #include "../common/halo2_hud_logic.h"
@@ -47,6 +51,23 @@ typedef HRESULT(STDMETHODCALLTYPE* ResizeBuffersFn)(IDXGISwapChain*, UINT, UINT,
 using CreateTexture2DFn = HRESULT(STDMETHODCALLTYPE*)(ID3D11Device*,
     const D3D11_TEXTURE2D_DESC*,const D3D11_SUBRESOURCE_DATA*,ID3D11Texture2D**);
 static CreateTexture2DFn g_origCreateTexture2D = nullptr;
+using CreateShaderResourceViewFn=HRESULT(STDMETHODCALLTYPE*)(ID3D11Device*,ID3D11Resource*,
+    const D3D11_SHADER_RESOURCE_VIEW_DESC*,ID3D11ShaderResourceView**);
+static CreateShaderResourceViewFn g_origCreateShaderResourceView{};
+static BloomSetResourcesFn g_origBloomSetResources{};
+static HRESULT STDMETHODCALLTYPE CreateShaderResourceViewHook(ID3D11Device* device,ID3D11Resource* resource,
+    const D3D11_SHADER_RESOURCE_VIEW_DESC* desc,ID3D11ShaderResourceView** view)
+{
+    const HRESULT hr=g_origCreateShaderResourceView(device,resource,desc,view);
+    if(SUCCEEDED(hr)&&view&&*view)Bloom_ObserveSrvCreated(device,*view);
+    return hr;
+}
+static void STDMETHODCALLTYPE BloomSetResourcesHook(ID3D11DeviceContext* context,UINT start,UINT count,
+    ID3D11ShaderResourceView* const* views)
+{
+    g_origBloomSetResources(context,start,count,views);
+    Bloom_ObserveResources(context,start,count,views);
+}
 static HRESULT STDMETHODCALLTYPE CreateTexture2DHook(ID3D11Device* device,
     const D3D11_TEXTURE2D_DESC* descriptor,const D3D11_SUBRESOURCE_DATA* data,
     ID3D11Texture2D** texture)
@@ -63,6 +84,11 @@ static HRESULT STDMETHODCALLTYPE CreateTexture2DHook(ID3D11Device* device,
 }
 typedef void(STDMETHODCALLTYPE* OMSetRenderTargetsFn)(ID3D11DeviceContext*, UINT,
     ID3D11RenderTargetView* const*, ID3D11DepthStencilView*);
+typedef void(STDMETHODCALLTYPE* PSSetSamplersFn)(ID3D11DeviceContext*, UINT, UINT,
+    ID3D11SamplerState* const*);
+static PSSetSamplersFn g_origPSSetSamplers = nullptr;
+using CreateSamplerStateFn=HRESULT(STDMETHODCALLTYPE*)(ID3D11Device*,const D3D11_SAMPLER_DESC*,ID3D11SamplerState**);
+static CreateSamplerStateFn g_origCreateSamplerState=nullptr;
 using RSSetViewportsFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, const D3D11_VIEWPORT*);
 using RSSetScissorRectsFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, const D3D11_RECT*);
 using ExecuteCommandListFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11CommandList*, BOOL);
@@ -317,7 +343,10 @@ static void STDMETHODCALLTYPE Halo2DrawIndexedCensusHook(
     Halo2HudDrawMutation mutation = BeginHalo2HudDraw(context);
     if(mutation.kind==Halo2HudDrawMutation::Kind::Hidden) return;
     VR_Halo4PrepareAuthoredReticleDraw(context);
-    g_origHalo2DrawIndexed(context, indexCount, startIndex, baseVertex);
+    {
+        BloomDrawScope bloom(context);
+        g_origHalo2DrawIndexed(context, indexCount, startIndex, baseVertex);
+    }
     EndHalo2HudDraw(context, mutation);
 }
 
@@ -330,7 +359,10 @@ static void STDMETHODCALLTYPE Halo2DrawCensusHook(
     Halo2HudDrawMutation mutation = BeginHalo2HudDraw(context);
     if(mutation.kind==Halo2HudDrawMutation::Kind::Hidden) return;
     VR_Halo4PrepareAuthoredReticleDraw(context);
-    g_origHalo2Draw(context, vertexCount, startVertex);
+    {
+        BloomDrawScope bloom(context);
+        g_origHalo2Draw(context, vertexCount, startVertex);
+    }
     EndHalo2HudDraw(context, mutation);
 }
 #endif
@@ -425,6 +457,7 @@ static void STDMETHODCALLTYPE PixelShaderSetHook(
     ID3D11DeviceContext* context, ID3D11PixelShader* shader,
     ID3D11ClassInstance* const* classInstances, UINT classInstanceCount)
 {
+    Bloom_ObserveShader(context,shader,classInstanceCount);
     const bool suppressMotionSuck =
         halo4_screen_effect_shader::ShouldSuppress(
             g_halo4ScreenEffectShaderPathAvailable.load(
@@ -471,6 +504,7 @@ static HRESULT STDMETHODCALLTYPE CreatePixelShaderHook(
         device, bytecode, bytecodeLength, linkage, shader);
     if (FAILED(result) || !shader || !*shader || !bytecode || !bytecodeLength)
         return result;
+    Bloom_ObserveShaderCreated(*shader,bytecode,bytecodeLength);
 
 #if HALOMCCVR_HALO2_STEREO6DOF
     const uint64_t hash =
@@ -520,6 +554,7 @@ static void STDMETHODCALLTYPE Halo4DrawIndexedFramingHook(
     INT baseVertex)
 {
     VR_Halo4PrepareAuthoredReticleDraw(context);
+    BloomDrawScope bloom(context);
     g_origHalo4DrawIndexed(context, indexCount, startIndex, baseVertex);
 }
 
@@ -527,6 +562,7 @@ static void STDMETHODCALLTYPE Halo4DrawFramingHook(
     ID3D11DeviceContext* context, UINT vertexCount, UINT startVertex)
 {
     VR_Halo4PrepareAuthoredReticleDraw(context);
+    BloomDrawScope bloom(context);
     g_origHalo4Draw(context, vertexCount, startVertex);
 }
 #endif
@@ -679,8 +715,8 @@ static CreateSwapChainForHwndFn g_origCreateSwapChainForHwnd = nullptr;
 static CreateSwapChainFn g_origCreateSwapChain = nullptr;
 static GetClientRectFn g_origGetClientRect = nullptr;
 static GetWindowRectFn g_origGetWindowRect = nullptr;
-static UINT g_forcedRenderW = 0;
-static UINT g_forcedRenderH = 0;
+static std::atomic<UINT> g_forcedRenderW{0};
+static std::atomic<UINT> g_forcedRenderH{0};
 static bool g_forcedMainSwapchain = false; // only force the game's own (first) swapchain
 static HWND g_gameHwnd = nullptr;          // captured at swapchain creation
 static bool g_fitActive = false;           // set once at startup: fit on AND its hooks installed
@@ -706,30 +742,302 @@ void D3D_SetForcedClientLie(bool on)
     g_lieClientToGame = on;
 }
 
+// --- Render plan (one game start's sizes) ----------------------------------
+// The game's render size and the headset picture size, decided once at startup
+// exactly as the launcher decided them (same config, same dlss::PlanRender):
+// the launcher's numbers arrive in the environment on Steam; the Store edition
+// starts without our environment and recomputes the identical values. With
+// DLSS selected and its library beside the mod, the render is smaller than the
+// picture and DLSS makes the picture at run time; otherwise both are the
+// resolution_scale size, byte-for-byte the pre-DLSS behaviour.
+static std::atomic<UINT> g_planRenderW{0};
+static std::atomic<UINT> g_planRenderH{0};
+static std::atomic<UINT> g_planOutputW{0};
+static std::atomic<UINT> g_planOutputH{0};
+static std::atomic<bool> g_planDlss{false};
+static bool g_planDlssRuntimePresent = false;
+
+static bool DlssRuntimeBesideMod()
+{
+    const wchar_t* dir = LogDirectory();
+    if (!dir || !*dir)
+        return false;
+    wchar_t path[MAX_PATH];
+    swprintf_s(path, L"%s", dir);
+    size_t length = wcslen(path);
+    while (length > 1 && (path[length - 1] == L'\\' || path[length - 1] == L'/'))
+        path[--length] = L'\0';
+    wcscat_s(path, L"\\nvngx_dlss.dll");
+    const DWORD attributes = GetFileAttributesW(path);
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+        (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+static void InitRenderPlan()
+{
+    g_planDlssRuntimePresent = DlssRuntimeBesideMod();
+    int nativeW = 0, nativeH = 0;
+    nativeW = kNativeRenderWidth; nativeH = kNativeRenderHeight;
+    const dlss::RenderPlan worldPlan = dlss::PlanRender(
+        nativeW, nativeH, g_config.resolution_scale,
+        g_config.upscaler, g_config.dlss_mode, g_planDlssRuntimePresent);
+    const dlss::RenderPlan plan = dlss::PlanPresentation(worldPlan, RuntimeMode::Shell);
+    g_planRenderW = (UINT)plan.renderW;
+    g_planRenderH = (UINT)plan.renderH;
+    g_planOutputW = (UINT)plan.outputW;
+    g_planOutputH = (UINT)plan.outputH;
+    g_planDlss = plan.dlss;
+    // The launcher's exact numbers win when present (they were computed from
+    // the same config by the same function; this only guards against a config
+    // edited between launch and injection).
+    wchar_t buf[32];
+    UINT envRenderW = 0, envRenderH = 0, envOutputW = 0, envOutputH = 0;
+    if (GetEnvironmentVariableW(L"HALO3XR_RENDER_W", buf, 32) > 0)
+        envRenderW = (UINT)_wtoi(buf);
+    if (GetEnvironmentVariableW(L"HALO3XR_RENDER_H", buf, 32) > 0)
+        envRenderH = (UINT)_wtoi(buf);
+    if (GetEnvironmentVariableW(L"HALO3XR_OUTPUT_W", buf, 32) > 0)
+        envOutputW = (UINT)_wtoi(buf);
+    if (GetEnvironmentVariableW(L"HALO3XR_OUTPUT_H", buf, 32) > 0)
+        envOutputH = (UINT)_wtoi(buf);
+    if (envRenderW && envRenderH)
+    {
+        g_planRenderW = envRenderW;
+        g_planRenderH = envRenderH;
+    }
+    if (envOutputW && envOutputH)
+    {
+        g_planOutputW = envOutputW;
+        g_planOutputH = envOutputH;
+    }
+    // Even an old launcher's reduced input is not a valid shell canvas.
+    // Preserve its configured output, but start render/metrics at that output.
+    g_planRenderW = g_planOutputW.load();
+    g_planRenderH = g_planOutputH.load();
+    g_planDlss = false;
+    LOG("render plan: game renders %ux%u, headset picture %ux%u (%s%s)",
+        g_planRenderW.load(), g_planRenderH.load(), g_planOutputW.load(), g_planOutputH.load(),
+        worldPlan.dlss ? "shell full-size; world DLSS " : "",
+        worldPlan.dlss ? dlss::QualityName(worldPlan.mode)
+        : (g_config.upscaler == dlss::kUpscalerDlss
+               ? "DLSS selected but nvngx_dlss.dll is not beside the mod; full-size render"
+               : "DLSS off"));
+}
+
+void D3D_GetRenderPlan(unsigned& renderW, unsigned& renderH,
+                       unsigned& outputW, unsigned& outputH,
+                       bool& dlss, bool& dlssRuntimePresent)
+{
+    renderW = g_planRenderW;
+    renderH = g_planRenderH;
+    outputW = g_planOutputW;
+    outputH = g_planOutputH;
+    dlss = g_planDlss;
+    dlssRuntimePresent = g_planDlssRuntimePresent;
+}
+
+// --- Live render resize -----------------------------------------------------
+// The user changes Resolution scale or the DLSS mode in F1; the menu re-plans
+// and calls D3D_RequestRenderPlan. With the fit active a plan is queued;
+// loading admission is checked both here and by the window consumer before
+// the forced size moves. The menu then sends the game window WM_SIZE on
+// the UI thread, which WndProcHook rewrites to the forced size exactly as it
+// does for a real window resize; MCC's resize code then re-sizes its
+// swapchain (ResizeBuffersHook pins the size) and its internal targets, and
+// the mod re-learns the backbuffer, eye caches and DLSS resources as it
+// already does on every resize. Fail-open: if no ResizeBuffers to the
+// requested size lands within kLiveResizeTimeoutMs, the forced size reverts
+// to the real backbuffer so every client/metrics lie stays consistent, and
+// the log and F1 say so.
+static UINT g_liveResizeRequestedW = 0;
+static UINT g_liveResizeRequestedH = 0;
+static UINT g_liveResizeFailedW = 0;
+static UINT g_liveResizeFailedH = 0;
+static ULONGLONG g_liveResizeRequestMs = 0;
+static dlss::LiveResizeDispatch g_liveResizeDispatch;
+static dlss::RenderPlan g_liveResizeCommittedBeforeDispatch;
+static UINT g_liveResizeActualW = 0;
+static UINT g_liveResizeActualH = 0;
+constexpr ULONGLONG kLiveResizeTimeoutMs = 4000;
+
+D3DRenderPlanResult D3D_RequestRenderPlan(
+    unsigned renderW, unsigned renderH, unsigned outputW, unsigned outputH,
+    bool dlss)
+{
+    if (!renderW || !renderH || !outputW || !outputH)
+        return D3DRenderPlanResult::Unchanged;
+    static bool loggedLoadingDeferral = false;
+    if (!dlss::CanDispatchLiveResize(TitleAdapter_GetRuntimeMode()))
+    {
+        if (!loggedLoadingDeferral)
+        {
+            LOG("live resize: deferred while the title is loading; current render dimensions remain in force");
+            loggedLoadingDeferral = true;
+        }
+        return D3DRenderPlanResult::Deferred;
+    }
+    loggedLoadingDeferral = false;
+    if (g_liveResizeDispatch.Pending())
+        return D3DRenderPlanResult::Unchanged;
+    // Do not publish a queued plan through window metrics. The UI consumer
+    // checks lifecycle admission again before making the new size visible.
+    if (g_fitActive && (renderW != g_forcedRenderW || renderH != g_forcedRenderH))
+    {
+        if (renderW == g_liveResizeFailedW && renderH == g_liveResizeFailedH)
+            return D3DRenderPlanResult::Unchanged;
+        dlss::RenderPlan request{};
+        request.renderW = static_cast<int>(renderW);
+        request.renderH = static_cast<int>(renderH);
+        request.outputW = static_cast<int>(outputW);
+        request.outputH = static_cast<int>(outputH);
+        request.dlss = dlss;
+        return g_liveResizeDispatch.Queue(request, TitleAdapter_GetRuntimeMode())
+            ? D3DRenderPlanResult::Requested : D3DRenderPlanResult::Deferred;
+    }
+    g_planOutputW = outputW;
+    g_planOutputH = outputH;
+    g_planDlss = dlss;
+    if (!g_fitActive)
+    {
+        // No forced size exists without the fit; the plan's render stays what
+        // the launcher started, and the output still follows the config.
+        static bool logged = false;
+        if (!logged && dlss && (renderW != g_planRenderW || renderH != g_planRenderH))
+        {
+            logged = true;
+            LOG("DLSS: cannot apply world input size without desktop-fit resize hooks; "
+                "enable Fit desktop window and restart. Keeping the full-size render.");
+        }
+        return D3DRenderPlanResult::RestartNeeded;
+    }
+    if (renderW == g_forcedRenderW && renderH == g_forcedRenderH)
+    {
+        g_planRenderW = renderW;
+        g_planRenderH = renderH;
+        return D3DRenderPlanResult::Unchanged;
+    }
+    return D3DRenderPlanResult::Unchanged;
+}
+
+bool D3D_BeginLiveResize(unsigned& renderW, unsigned& renderH)
+{
+    dlss::RenderPlan request{};
+    const RuntimeMode mode = TitleAdapter_GetRuntimeMode();
+    if (!g_liveResizeDispatch.Begin(mode, request))
+    {
+        if (mode == RuntimeMode::Loading)
+            LOG("live resize: queued request cancelled before dimension publication because the title entered loading");
+        return false;
+    }
+    renderW = static_cast<unsigned>(request.renderW);
+    renderH = static_cast<unsigned>(request.renderH);
+    const unsigned outputW = static_cast<unsigned>(request.outputW);
+    const unsigned outputH = static_cast<unsigned>(request.outputH);
+    const bool dlss = request.dlss;
+    g_liveResizeCommittedBeforeDispatch.renderW = static_cast<int>(g_forcedRenderW.load());
+    g_liveResizeCommittedBeforeDispatch.renderH = static_cast<int>(g_forcedRenderH.load());
+    g_liveResizeCommittedBeforeDispatch.outputW = static_cast<int>(g_planOutputW.load());
+    g_liveResizeCommittedBeforeDispatch.outputH = static_cast<int>(g_planOutputH.load());
+    g_liveResizeCommittedBeforeDispatch.dlss = g_planDlss.load();
+    g_planOutputW = outputW;
+    g_planOutputH = outputH;
+    g_planDlss = dlss;
+    LOG("live resize: asking MCC to render %ux%u instead of %ux%u "
+        "(headset picture %ux%u%s); waiting for its swapchain resize",
+        renderW, renderH, g_forcedRenderW.load(), g_forcedRenderH.load(), outputW, outputH,
+        dlss ? ", DLSS" : "");
+    g_liveResizeRequestedW = renderW;
+    g_liveResizeRequestedH = renderH;
+    g_liveResizeRequestMs = GetTickCount64();
+    g_forcedRenderW = renderW;
+    g_forcedRenderH = renderH;
+    g_planRenderW = renderW;
+    g_planRenderH = renderH;
+    g_liveResizeDispatch.Applied();
+    return true;
+}
+
+void D3D_CancelQueuedLiveResize()
+{
+    // The UI may reject the admitted request before sending WM_SIZE (missing
+    // window procedure, removed fit, or WORD-overflow dimensions). Begin has
+    // already published the requested plan, so restore the committed one now;
+    // waiting four seconds would expose dimensions the engine never received.
+    if (g_liveResizeDispatch.Phase() == 1)
+    {
+        g_liveResizeFailedW = g_liveResizeRequestedW;
+        g_liveResizeFailedH = g_liveResizeRequestedH;
+        const auto& previous = g_liveResizeCommittedBeforeDispatch;
+        g_forcedRenderW = g_planRenderW = previous.renderW;
+        g_forcedRenderH = g_planRenderH = previous.renderH;
+        g_planOutputW = previous.outputW;
+        g_planOutputH = previous.outputH;
+        g_planDlss = previous.dlss;
+        g_liveResizeDispatch.Failed();
+        LOG("live resize: window dispatch rejected; restored committed render %dx%d",
+            previous.renderW, previous.renderH);
+        return;
+    }
+    g_liveResizeDispatch.CancelQueued();
+}
+
+// Present-time check, only while a request is pending (one GetDesc a frame
+// for at most the timeout).
+static void CheckLiveResize(IDXGISwapChain* sc)
+{
+    if (g_liveResizeDispatch.Phase() != 1 || !sc)
+        return;
+    DXGI_SWAP_CHAIN_DESC d{};
+    if (FAILED(sc->GetDesc(&d)))
+        return;
+    g_liveResizeActualW = d.BufferDesc.Width;
+    g_liveResizeActualH = d.BufferDesc.Height;
+    if (d.BufferDesc.Width == g_liveResizeRequestedW &&
+        d.BufferDesc.Height == g_liveResizeRequestedH)
+    {
+        LOG("live resize: MCC now renders %ux%u", d.BufferDesc.Width,
+            d.BufferDesc.Height);
+        g_liveResizeDispatch.Complete();
+        return;
+    }
+    if (GetTickCount64() - g_liveResizeRequestMs < kLiveResizeTimeoutMs)
+        return;
+    LOG("live resize: MCC did not resize its swapchain to %ux%u within %llu ms "
+        "(still %ux%u); keeping the real size, a restart applies the new one",
+        g_liveResizeRequestedW, g_liveResizeRequestedH,
+        static_cast<unsigned long long>(kLiveResizeTimeoutMs),
+        d.BufferDesc.Width, d.BufferDesc.Height);
+    g_liveResizeFailedW = g_liveResizeRequestedW;
+    g_liveResizeFailedH = g_liveResizeRequestedH;
+    g_forcedRenderW = d.BufferDesc.Width;
+    g_forcedRenderH = d.BufferDesc.Height;
+    g_planRenderW = d.BufferDesc.Width;
+    g_planRenderH = d.BufferDesc.Height;
+    g_liveResizeDispatch.Failed();
+}
+
+int D3D_LiveResizeState(unsigned& actualW, unsigned& actualH)
+{
+    actualW = g_liveResizeActualW;
+    actualH = g_liveResizeActualH;
+    return g_liveResizeDispatch.Status();
+}
+
+HWND D3D_GameWindow()
+{
+    return g_gameHwnd;
+}
+
 static void InitForcedRenderSize()
 {
-    wchar_t buf[32];
-    if (GetEnvironmentVariableW(L"HALO3XR_RENDER_W", buf, 32) > 0)
-        g_forcedRenderW = (UINT)_wtoi(buf);
-    if (GetEnvironmentVariableW(L"HALO3XR_RENDER_H", buf, 32) > 0)
-        g_forcedRenderH = (UINT)_wtoi(buf);
-    if (g_forcedRenderW == 0 || g_forcedRenderH == 0)
-    {
-        // DLL run without the current launcher: replicate the launcher's
-        // ScaleEven so the two can never disagree. Config is loaded before this
-        // (dllmain InitThread order).
-        const float s = g_config.resolution_scale;
-        auto even = [](int base, float sc) -> UINT {
-            int v = (int)((float)base * sc + 0.5f);
-            if (v & 1) ++v;
-            return (UINT)v;
-        };
-        g_forcedRenderW = even(kNativeRenderWidth, s);
-        g_forcedRenderH = even(kNativeRenderHeight, s);
-    }
+    // The plan already folded in the launcher's exact numbers when present
+    // and otherwise replicated the launcher's arithmetic, so the two can never
+    // disagree. Config is loaded before this (dllmain InitThread order).
+    g_forcedRenderW = g_planRenderW.load();
+    g_forcedRenderH = g_planRenderH.load();
     LOG("fit_desktop_window ON: forcing MCC backbuffer to %ux%u (full headset "
         "render); the desktop window is shrunk to fit the monitor separately",
-        g_forcedRenderW, g_forcedRenderH);
+        g_forcedRenderW.load(), g_forcedRenderH.load());
 }
 
 // Game-executable image range, used to scope the client-rect lie and cursor
@@ -767,7 +1075,7 @@ static BOOL WINAPI GetClientRectHook(HWND hwnd, LPRECT rc)
             s_lastCaller = caller;
             LOG("fit: GetClientRect game-side +0x%llX -> forced %ux%u",
                 (unsigned long long)((const BYTE*)caller - g_exeBase),
-                g_forcedRenderW, g_forcedRenderH);
+                g_forcedRenderW.load(), g_forcedRenderH.load());
         }
     }
     return ok;
@@ -1121,7 +1429,7 @@ static HRESULT STDMETHODCALLTYPE CreateSwapChainForHwndHook(IDXGIFactory2* self,
         LOG("fit: CreateSwapChainForHwnd MCC requested %ux%u scaling=%d hwnd=%p "
             "-> forcing backbuffer %ux%u STRETCH",
             pDesc->Width, pDesc->Height, (int)pDesc->Scaling, (void*)hwnd,
-            g_forcedRenderW, g_forcedRenderH);
+            g_forcedRenderW.load(), g_forcedRenderH.load());
         desc.Width = g_forcedRenderW;
         desc.Height = g_forcedRenderH;
         desc.Scaling = DXGI_SCALING_STRETCH;
@@ -1146,7 +1454,7 @@ static HRESULT STDMETHODCALLTYPE CreateSwapChainHook(IDXGIFactory* self, IUnknow
         DXGI_SWAP_CHAIN_DESC desc = *pDesc;
         LOG("fit: CreateSwapChain(legacy) MCC requested %ux%u -> forcing %ux%u",
             pDesc->BufferDesc.Width, pDesc->BufferDesc.Height,
-            g_forcedRenderW, g_forcedRenderH);
+            g_forcedRenderW.load(), g_forcedRenderH.load());
         desc.BufferDesc.Width = g_forcedRenderW;
         desc.BufferDesc.Height = g_forcedRenderH;
         const HRESULT hr = g_origCreateSwapChain(self, device, &desc, ppSwapChain);
@@ -1181,9 +1489,45 @@ static HRESULT STDMETHODCALLTYPE CreateSwapChainHook(IDXGIFactory* self, IUnknow
 //     its hand quad, and its calibration retry loop cost ~30 fps.
 // OMSetRenderTargets makes the two eye renders land in separate textures.
 
+// --- DLSS texture mip bias (Programming Guide 3.5) ---------------------------
+// With DLSS the game rasterises at a fraction of the headset picture, so its
+// samplers pick texture mips for that small render and every surface arrives
+// blurred; DLSS then has only blur to reconstruct from. The guide requires a
+// negative mip bias of log2(render/output) - 1 while DLSS is on. The game
+// creates its sampler states once, so they cannot be re-created with the
+// bias; instead, while an eye is rasterised for DLSS, every pixel-shader
+// sampler the game binds is swapped for a twin with the bias added. Twins are
+// made once per distinct sampler (the game has a few dozen) and looked up in
+// a fixed direct-mapped table: the hook is one atomic load and a branch when
+// the bias is off, and a few pointer compares per bound sampler when it is on.
+// The game's sampler objects are held (AddRef) so a pointer can never be
+// recycled for a different sampler while its twin exists. Render thread only:
+// the bias is armed with the arming thread's id and other threads pass
+// through untouched.
+#include "dlss_sampler_cache.inl"
+
+void D3D_ReportSamplerCache()
+{
+    if constexpr (!dlss_sampler::kEnabled) return;
+    // Called by the existing game worker, never an eye/draw hook.
+    static uint64_t last=0,priorFailures=0;
+    const uint64_t now=GetTickCount64();
+    if(now>=last&&now-last<5000) return;
+    last=now;
+    const auto misses=g_samplerMisses.exchange(0,std::memory_order_relaxed);
+    const auto failures=g_samplerFailures.load(std::memory_order_relaxed);
+    if((misses||failures!=priorFailures)&&g_config.upscaler==dlss::kUpscalerDlss)
+        LOG("DLSS sampler cache: %llu prewarmed, %llu uncached binds, %llu factory/capacity failures; "
+            "uncached samplers retain native texture mips; eye rendering remains available",
+            static_cast<unsigned long long>(g_samplerTwinsMade.load()),
+            static_cast<unsigned long long>(misses),static_cast<unsigned long long>(failures));
+    priorFailures=failures;
+}
+
 static void STDMETHODCALLTYPE OMSetRenderTargetsHook(ID3D11DeviceContext* context, UINT count,
     ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv)
 {
+    Bloom_Invalidate(context,false);
     ID3D11RenderTargetView* redirected[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
     UINT ceCount{};
     ID3D11DepthStencilView* ceDepth{};
@@ -1194,7 +1538,7 @@ static void STDMETHODCALLTYPE OMSetRenderTargetsHook(ID3D11DeviceContext* contex
         return;
     }
     if (count <= D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT &&
-        VR_RedirectRenderTargets(context, count, rtvs, redirected))
+        VR_RedirectRenderTargets(context, count, rtvs, dsv, redirected))
     {
         g_origOMSetRenderTargets(context, count, redirected, dsv);
         // Publish only after the void D3D state mutation has completed, so the
@@ -1233,6 +1577,7 @@ static void STDMETHODCALLTYPE RSSetScissorRectsHook(ID3D11DeviceContext* context
 static void STDMETHODCALLTYPE ExecuteCommandListHook(ID3D11DeviceContext* context,
     ID3D11CommandList* commands, BOOL restoreState)
 {
+    Bloom_Invalidate(context);
     VR_CeInvalidateAuthoredReticleState(context);
     HaloCEHudLayout_InvalidateState(context);
     g_origExecuteCommandList(context,commands,restoreState);
@@ -1240,6 +1585,7 @@ static void STDMETHODCALLTYPE ExecuteCommandListHook(ID3D11DeviceContext* contex
 
 static void STDMETHODCALLTYPE ClearStateHook(ID3D11DeviceContext* context)
 {
+    Bloom_Invalidate(context);
     VR_CeInvalidateAuthoredReticleState(context);
     HaloCEHudLayout_InvalidateState(context);
     g_origClearState(context);
@@ -1251,6 +1597,7 @@ static void STDMETHODCALLTYPE ClearStateHook(ID3D11DeviceContext* context)
 static void STDMETHODCALLTYPE SwapDeviceContextStateHook(ID3D11DeviceContext1* context,
     ID3DDeviceContextState* state, ID3DDeviceContextState** previous)
 {
+    Bloom_Invalidate(context);
     VR_CeInvalidateAuthoredReticleState(context);
     HaloCEHudLayout_InvalidateState(context);
     g_origSwapDeviceContextState(context,state,previous);
@@ -1262,6 +1609,7 @@ static void STDMETHODCALLTYPE OMSetRenderTargetsAndUnorderedAccessViewsHook(
     UINT uavStartSlot, UINT uavCount,
     ID3D11UnorderedAccessView* const* uavs, const UINT* initialCounts)
 {
+    Bloom_Invalidate(context,false);
     // CE's verified native binder uses OMSetRenderTargets. An unexpected
     // UAV/target mutation invalidates just its current crosshair capture.
     VR_CeInvalidateAuthoredReticleState(context);
@@ -1273,6 +1621,7 @@ static void STDMETHODCALLTYPE OMSetRenderTargetsAndUnorderedAccessViewsHook(
     // Stage 3BH-equivalent tracker after the actual call.
     if (renderTargetCount != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
         VR_Halo4NoteBoundRenderTargets(context, renderTargetCount, rtvs);
+    VR_ObserveReachAlternateDepthBind(context, renderTargetCount, dsv);
 }
 
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
@@ -1678,6 +2027,7 @@ static HRESULT STDMETHODCALLTYPE PresentHook(IDXGISwapChain* sc, UINT syncInterv
         if constexpr (kEnableCoopPresentProbe)
             QueryPerformanceCounter(&hookStart);
         LogSwapchainConfigOnce(sc);
+        CheckLiveResize(sc);
         VR_BeforePresent(sc);
     }
     const UINT pacedSyncInterval = runVrFrame
@@ -1710,6 +2060,7 @@ static HRESULT STDMETHODCALLTYPE Present1Hook(IDXGISwapChain1* sc, UINT syncInte
         if constexpr (kEnableCoopPresentProbe)
             QueryPerformanceCounter(&hookStart);
         LogSwapchainConfigOnce(sc);
+        CheckLiveResize(sc);
         VR_BeforePresent(sc);
     }
     const UINT pacedSyncInterval = runVrFrame
@@ -1733,6 +2084,7 @@ static HRESULT STDMETHODCALLTYPE Present1Hook(IDXGISwapChain1* sc, UINT syncInte
 static HRESULT STDMETHODCALLTYPE ResizeBuffersHook(IDXGISwapChain* sc, UINT bufferCount, UINT width,
                                                    UINT height, DXGI_FORMAT format, UINT flags)
 {
+    Bloom_BeforeResize();
     // With the fit on, keep the backbuffer pinned to the full launched render
     // size so a later resize (e.g. triggered when we shrink the visible window to
     // fit the monitor) can't clamp the surface the headset captures back down.
@@ -1745,9 +2097,33 @@ static HRESULT STDMETHODCALLTYPE ResizeBuffersHook(IDXGISwapChain* sc, UINT buff
         fh = g_forcedRenderH;
     }
     LOG("game resized its swapchain to %ux%u (using %ux%u)", width, height, fw, fh);
-    VR_OnResizeBuffers(sc); // we must drop any references to the old backbuffer first
-    const HRESULT result =
-        g_origResizeBuffers(sc, bufferCount, fw, fh, format, flags);
+    const bool released = VR_OnResizeBuffers(sc);
+    const HRESULT result = released
+        ? g_origResizeBuffers(sc, bufferCount, fw, fh, format, flags)
+        : DXGI_ERROR_INVALID_CALL;
+    if (FAILED(result))
+    {
+        DXGI_SWAP_CHAIN_DESC actual{};
+        if (sc && SUCCEEDED(sc->GetDesc(&actual)))
+        {
+            // Revert the metrics at this edge, before another WM_SIZE can
+            // observe dimensions that DXGI rejected.
+            if (g_fitActive)
+            {
+                g_forcedRenderW = actual.BufferDesc.Width;
+                g_forcedRenderH = actual.BufferDesc.Height;
+            }
+            g_planRenderW = actual.BufferDesc.Width;
+            g_planRenderH = actual.BufferDesc.Height;
+            g_liveResizeActualW = actual.BufferDesc.Width;
+            g_liveResizeActualH = actual.BufferDesc.Height;
+            g_liveResizeFailedW = fw;
+            g_liveResizeFailedH = fh;
+            g_liveResizeDispatch.Failed();
+        }
+        LOG("swapchain resize rejected hr=0x%08X resources-released=%u; retaining actual size",
+            static_cast<unsigned>(result), released ? 1u : 0u);
+    }
     VR_AfterResizeBuffers(sc);
     return result;
 }
@@ -1759,6 +2135,7 @@ bool InstallD3D11Hooks()
     // GetClientRect hooks below; with it off, none of that exists and the render
     // path is byte-for-byte the previous behavior.
     const bool fit = g_config.fit_desktop_window;
+    InitRenderPlan();
     if (fit)
         InitForcedRenderSize();
 
@@ -1821,9 +2198,27 @@ bool InstallD3D11Hooks()
         (void*)&CreateTexture2DHook,(void**)&g_origCreateTexture2D);
     if (ceTextureStatus!=MH_OK)
         LOG("CE early texture metadata unavailable (%d); native creation/import observation remains",ceTextureStatus);
+    const MH_STATUS bloomSrv=MH_CreateHook(deviceVtbl[7],
+        (void*)&CreateShaderResourceViewHook,(void**)&g_origCreateShaderResourceView);
+    const MH_STATUS bloomResources=MH_CreateHook(contextVtbl[8],
+        (void*)&BloomSetResourcesHook,(void**)&g_origBloomSetResources);
+    bool bloomShaderStateCreated=false;
     // The SDK ID3D11DeviceContext slots are 44/45 (raster setters), 58
     // (command-list execution), and 110 (ClearState). Every observation path
     // is required only by optional CE layout; a partial set cannot gate VR.
+    // ID3D11Device slot 23: build immutable variants during resource creation.
+    // Optional failure keeps native samplers and the ordinary DLSS resolve.
+    if(dlss_sampler::kEnabled && MH_CreateHook(deviceVtbl[23],(void*)&CreateSamplerStateHook,
+        (void**)&g_origCreateSamplerState)!=MH_OK)
+    {g_origCreateSamplerState=nullptr;LOG("DLSS: sampler prewarm unavailable; native texture mips retained");}
+    // Slot 10 is PSSetSamplers: the DLSS texture mip bias. Optional: without
+    // it DLSS still runs, on textures sampled for the smaller render.
+    if (dlss_sampler::kEnabled && MH_CreateHook(contextVtbl[10], (void*)&PSSetSamplersHook,
+                      (void**)&g_origPSSetSamplers) != MH_OK)
+    {
+        g_origPSSetSamplers = nullptr;
+        LOG("DLSS: PSSetSamplers could not be hooked; the texture mip bias is unavailable");
+    }
     const MH_STATUS ceViewports=MH_CreateHook(contextVtbl[44],
         (void*)&RSSetViewportsHook,(void**)&g_origRSSetViewports);
     const MH_STATUS ceScissors=MH_CreateHook(contextVtbl[45],
@@ -1866,6 +2261,7 @@ bool InstallD3D11Hooks()
         (void**)&g_origPixelShaderSet);
     halo4HelmetShaderPathCreated =
         createPixelShader == MH_OK && halo4PixelShaderSet == MH_OK;
+    bloomShaderStateCreated=halo4HelmetShaderPathCreated;
     if (!halo4HelmetShaderPathCreated)
     {
         LOG("Halo 4 helmet shader path unavailable: CreatePS=%d PSSetShader=%d; "
@@ -1965,7 +2361,7 @@ bool InstallD3D11Hooks()
     }
 #endif
 
-    InstallExtraHudDrawHooks(contextVtbl);
+    const bool bloomExtraDrawsCreated=InstallExtraHudDrawHooks(contextVtbl);
 
     IDXGISwapChain1* sc1 = nullptr;
     if (SUCCEEDED(sc->QueryInterface(__uuidof(IDXGISwapChain1), (void**)&sc1)))
@@ -2122,6 +2518,19 @@ bool InstallD3D11Hooks()
         return false;
     }
     const bool enabled = MH_EnableHook(MH_ALL_HOOKS) == MH_OK;
+    bool bloomMainDrawsCreated=false;
+#if HALOMCCVR_HALO2_STEREO6DOF
+    bloomMainDrawsCreated=halo2ShaderPathCreated;
+#elif HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    bloomMainDrawsCreated=halo4ReticleDrawPathCreated;
+#endif
+    const bool bloomAvailable=enabled&&bloomMainDrawsCreated&&bloomExtraDrawsCreated&&
+        bloomSrv==MH_OK&&bloomResources==MH_OK&&
+        bloomShaderStateCreated&&ceCommands==MH_OK&&sharedClearState==MH_OK&&
+        sharedOmRtUav==MH_OK&&ceContextStateObserved;
+    Bloom_SetAvailable(bloomAvailable,g_origBloomSetResources);
+    LOG("Bloom consumer path %s: optional exact Reach/H3/ODST shaders, 64 MiB source+zero cache; default native bloom",
+        bloomAvailable?"available":"StockFallback (hook admission incomplete)");
     HaloCEHudLayout_SetObservationAvailable(enabled&&ceRasterObservationCreated);
 #if HALOMCCVR_HALO2_STEREO6DOF
     g_halo2ShaderHooksAvailable.store(

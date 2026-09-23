@@ -10,12 +10,17 @@
 #include "../common/halo2_contact_melee_logic.h"
 #include "../common/halo2_snap_turn_logic.h"
 #include "../common/halo2_vehicle_view.h"
+#include "../common/halo2_vehicle_identity.h"
 #include "contact_melee_queue.h"
 #include "hook_quiescence.h"
 #include "../common/minhook_lifecycle.h"
 #include "../common/manual_vr_recovery_logic.h"
 #include "halo2_observer_6dof.h"
 #include "native_vehicle_first_person.h"
+#include "physical_crouch_camera.h"
+#include "sigscan.h"
+#include "../common/physical_crouch_native_read.h"
+#include "../common/physical_crouch_additional_witnesses.h"
 
 #include <windows.h>
 
@@ -617,6 +622,7 @@ namespace
     Halo2SnapTurnState g_snapTurn{}; // observer thread only
     Halo2VehicleViewState g_vehicleView{}; // observer thread only
     std::atomic<bool> g_vehicleFrameVerified{false};
+    std::atomic<bool> g_vehicleIdentityVerified{false};
     std::atomic<uint64_t> g_vehicleViewApplied{0},g_vehicleViewRefused{0};
     bool ReadVehicleViewFrame(Halo2VehicleViewKey&,Halo2CameraBasis&) noexcept;
     std::atomic<uint64_t> g_snapTurns{0};
@@ -624,6 +630,8 @@ namespace
     std::atomic<uint32_t> g_ringVersion[kPublicationRing]{};
     Halo2ObserverPosePublication g_ring[kPublicationRing]{};
     std::atomic<unsigned> g_ringHead{0};
+
+    void Halo2ApplyPhysicalCrouchCamera(float* position,float physicalDown,bool allowed) noexcept;
 
     void PublishPose(
         uint32_t generation, uint64_t serial, const Halo2CameraBasis& stock,
@@ -997,6 +1005,10 @@ namespace
         head.positional = Game_IsPositionalTracking();
         head.worldScale = Game_GetWorldScale();
 
+        Halo2ApplyPhysicalCrouchCamera(stock.position,
+            -std::clamp(head.position[1]-head.referencePosition[1],
+                -kHalo2MaxHeadTranslationMeters,kHalo2MaxHeadTranslationMeters)*head.worldScale,
+            head.positional&&!vehicle&&turnOwnsStick);
         Halo2CameraBasis viewBase=stock,hull{};
         Halo2VehicleViewKey vehicleKey{};
         bool ownsVehicleReference=false;
@@ -1764,6 +1776,8 @@ namespace
         const auto* player=halo2_datum::Record(players,handle,kHalo2PlayerDatumStride,kHalo2MaximumPlayers);
         return player ? *reinterpret_cast<const uint32_t*>(player+kHalo2PlayerUnitIndexOffset) : UINT32_MAX;
     }
+
+#include "halo2_physical_crouch.inl"
 
     bool ReadVehicleViewFrame(Halo2VehicleViewKey& key,Halo2CameraBasis& hull) noexcept
     {
@@ -3655,60 +3669,7 @@ namespace
         }
     }
 
-    __declspec(noinline) void __fastcall Halo2ParticleRendererDetour(
-        uint32_t arg0, uint32_t currentUserFirstPerson, uint32_t arg2,
-        uint32_t arg3)
-    {
-        g_particleActiveCallbacks.fetch_add(1, std::memory_order_acq_rel);
-        __try
-        {
-            const auto original = reinterpret_cast<Halo2ParticleRendererFn>(
-                g_particleOriginal.load(std::memory_order_acquire));
-            bool suppress = false;
-            if (original && g_armed.load(std::memory_order_acquire) &&
-                g_levelLive.load(std::memory_order_acquire) &&
-                !g_teardownRequested.load(std::memory_order_acquire))
-            {
-                const uintptr_t base =
-                    g_moduleBase.load(std::memory_order_acquire);
-                if (base)
-                {
-                    uint8_t classicDisabled = 1;
-                    bool readable = false;
-                    __try
-                    {
-                        classicDisabled = *reinterpret_cast<
-                            const volatile uint8_t*>(
-                                base + kHalo2ClassicRenderDisabledByteRva);
-                        readable = true;
-                    }
-                    __except (EXCEPTION_EXECUTE_HANDLER)
-                    {
-                        g_particleReadFaults.fetch_add(
-                            1, std::memory_order_relaxed);
-                    }
-                    suppress = readable &&
-                        Halo2ShouldSuppressClassicFirstPersonParticle(
-                            classicDisabled,
-                            static_cast<uint8_t>(currentUserFirstPerson));
-                }
-            }
-
-            if (suppress)
-            {
-                g_particleSuppressed.fetch_add(1, std::memory_order_relaxed);
-                g_particleHitPending.store(true, std::memory_order_release);
-            }
-            else if (original)
-            {
-                original(arg0, currentUserFirstPerson, arg2, arg3);
-            }
-        }
-        __finally
-        {
-            g_particleActiveCallbacks.fetch_sub(1, std::memory_order_acq_rel);
-        }
-    }
+#include "halo2_particle_suppression.inl"
 
     bool IsReadableProtection(DWORD protect) noexcept
     {
@@ -3849,6 +3810,8 @@ namespace
         }
         return true;
     }
+
+#include "halo2_vehicle_identity.inl"
 
     bool DecodeRipRelative(
         uintptr_t match, uint32_t dispOffset, uint32_t nextOffset,
@@ -4075,6 +4038,7 @@ namespace
         LOG("Halo 2 Classic muzzle suppression Installed (Stage 3AK): "
             "particle renderer +0x%X is skipped only for nonzero current-user "
             "first-person calls while live renderer gate +0x%X is 0; "
+            "Hide muzzle flash setting controls this fallback; "
             "Anniversary and all stock/world callers remain stock",
             static_cast<unsigned>(kHalo2ParticleRendererRva),
             static_cast<unsigned>(kHalo2ClassicRenderDisabledByteRva));
@@ -4373,6 +4337,7 @@ namespace
             g_objectDatumAccessor.store(0, std::memory_order_release);
             g_vehicleSeatVerified.store(false, std::memory_order_release);
             g_vehicleFrameVerified.store(false,std::memory_order_release);
+            g_vehicleIdentityVerified.store(false,std::memory_order_release);
             g_vehicleSeatSample.store(0, std::memory_order_release);
         }
         if (g_reanchorTarget)
@@ -4552,6 +4517,7 @@ namespace
             observerResultArray, std::memory_order_release);
         g_moduleBase.store(base, std::memory_order_release);
         g_generation.store(generation, std::memory_order_release);
+        Halo2PreparePhysicalCrouchCamera(base,size);
         g_teardownRequested.store(false, std::memory_order_release);
         g_referenceValid.store(false, std::memory_order_release);
         g_recenterRequested.store(true, std::memory_order_release);
@@ -5151,6 +5117,10 @@ namespace
         const bool frameVerified=seatVerified&&CountPatternMatches(base,size,parentPattern,parentMatch,parentMatches)&&
             parentMatches==1&&parentMatch==base+0x6e4ad2;
         g_vehicleFrameVerified.store(frameVerified,std::memory_order_release);
+        const bool identityVerified=frameVerified&&VerifyHalo2VehicleIdentity(base,size);
+        g_vehicleIdentityVerified.store(identityVerified,std::memory_order_release);
+        LOG("Halo 2 persistent vehicle model identity: %s; unknown/ambiguous models retain per-game trims",
+            identityVerified?"native chain verified":"unavailable");
         LOG("Halo 2 vehicle view reference: %s (parent/seat matches=%u); native aim feedback retained separately",
             frameVerified?"verified":"stock fallback",parentMatches);
         LOG("Halo 2 vehicle controller steering: %s (native seat predicate matches=%u); "
@@ -5991,7 +5961,8 @@ bool Halo2Observer6Dof_ReadVehicleCameraOwner(NativeVehicleCameraOwner& owner) n
         if (!ReadVehicleViewFrame(key,hull)) return false;
         const auto* object=Halo2ObjectFromIndex(key.unit);
         if (!object||Halo2OwnedUnit()!=key.unit||!Halo2Observer6Dof_Armed()) return false;
-        owner={key.generation,key.unit,key.parent,key.seat,reinterpret_cast<uintptr_t>(object)};
+        owner={key.generation,key.unit,key.parent,key.seat,reinterpret_cast<uintptr_t>(object),
+            ReadHalo2VehicleIdentity(key.parent)};
         return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }

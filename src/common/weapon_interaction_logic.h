@@ -52,6 +52,8 @@ struct Settings
 {
     bool reload{}, holsters{}, leftHanded{};
     float pouchDown{0.50f}, zoneRadius{0.20f};
+    int pouchLocation{};
+    Vec pouchOffset{}; // body-local right, up, forward; right mirrors with handedness
     float holsterRadius{0.20f}, insertRadius{0.18f}, drawDistance{0.25f};
     bool holsterSlide{true}, holsterClick{};
     bool needleShake{};
@@ -93,6 +95,11 @@ struct Output
     uint32_t buttons{};
     uint64_t pulseUntil{};
 };
+// After a holster draw has completed the weapon grip stays consumed until
+// release, but that hold does not own the other hand. Only an active gesture
+// or a held magazine prevents acquiring the support grip.
+inline bool BlocksSupportGrab(const Output& output) noexcept
+{ return output.releaseTwoHand||output.consumeSupport; }
 
 inline bool Zones(const Sample& s,const Settings& c,Vec& pouch,Vec& holster) noexcept
 {
@@ -112,7 +119,11 @@ inline bool Zones(const Sample& s,const Settings& c,Vec& pouch,Vec& holster) noe
     else forward=forward*(1/std::sqrt(n));
     const Vec right{-forward.z,0,forward.x};
     const float side=c.leftHanded?-1.0f:1.0f;
-    pouch=s.head+right*(-side*0.25f)+forward*0.06f+Vec{0,-Setting(c.pouchDown,0.25f,0.85f,0.50f),0};
+    const bool shoulder=c.pouchLocation==1;
+    pouch=s.head+right*(-side*(shoulder?0.22f:0.25f))+forward*(shoulder?-0.13f:0.06f)+
+        Vec{0,shoulder?-0.20f:-Setting(c.pouchDown,0.25f,0.85f,0.50f),0};
+    pouch=pouch+right*(side*Setting(c.pouchOffset.x,-.40f,.40f,0))+
+        Vec{0,Setting(c.pouchOffset.y,-.40f,.40f,0),0}+forward*Setting(c.pouchOffset.z,-.40f,.40f,0);
     holster=c.holsterLocation==1
         ?s.head+right*(side*0.27f)+Vec{0,-Setting(c.pouchDown,0.25f,0.85f,0.50f),0}
         :s.head+right*(side*0.22f)+forward*(-0.13f)+Vec{0,-0.20f,0};
@@ -203,7 +214,9 @@ public:
             left_!=c.leftHanded||reload_!=c.reload||holsters_!=c.holsters||
             slide_!=c.holsterSlide||click_!=c.holsterClick||shake_!=c.needleShake||
             (c.reload&&weaponGraph_!=s.weaponGraph)||
-            reloadButton_!=c.reloadButton||swapButton_!=c.swapButton||location_!=c.holsterLocation;
+            reloadButton_!=c.reloadButton||swapButton_!=c.swapButton||location_!=c.holsterLocation||
+            pouchLocation_!=c.pouchLocation||pouchOffset_.x!=c.pouchOffset.x||
+            pouchOffset_.y!=c.pouchOffset.y||pouchOffset_.z!=c.pouchOffset.z;
         const bool gap=!last_||s.now<last_||s.now-last_>200;
         const bool ready=s.ready&&s.now&&s.space&&s.generation&&TitleIndex(s.title)>=0&&
             (c.reload||c.holsters)&&!s.dualWield&&
@@ -223,6 +236,7 @@ public:
         title_=s.title;generation_=s.generation;space_=s.space;left_=c.leftHanded;
         reload_=c.reload;holsters_=c.holsters;reloadButton_=c.reloadButton;
         swapButton_=c.swapButton;location_=c.holsterLocation;last_=s.now;
+        pouchLocation_=c.pouchLocation;pouchOffset_=c.pouchOffset;
         slide_=c.holsterSlide;click_=c.holsterClick;
         shake_=c.needleShake;weaponGraph_=s.weaponGraph;
         available_=ready&&poses;
@@ -372,7 +386,8 @@ private:
     GameTitle title_{GameTitle::None}; uint32_t generation_{};
     uint64_t space_{},last_{},started_{},cooldown_{},pulseUntil_{};
     uint32_t pulse_{},reloadButton_{},swapButton_{};
-    int phase_{},location_{};
+    int phase_{},location_{},pouchLocation_{};
+    Vec pouchOffset_{};
     bool left_{},reload_{},holsters_{},armedP_{},armedS_{},ownedP_{},ownedS_{},leftPouch_{},available_{};
     bool slide_{true},click_{};
     bool shake_{};

@@ -1,3 +1,54 @@
+## September 23 packaging cutoff
+
+Latest instruction is to finish active integration and package now, conserving
+credits. See ACTIVE-WORK-CHECKPOINT.md and QOL-IMPLEMENTATION-STATUS-2026-09-23.md
+for the final inventory. Preserve all unfinished requirements below for a future
+explicit resume. Do not reopen research while delivering this candidate.
+Physical crouch remains included; CE subtitle and CE per-vehicle identity work
+remain documented WIP. No runtime acceptance or installation is implied.
+
+## Historical September 23 community review and control requirements
+
+LATEST USER CORRECTION: finish ALL integrations already started, expressly
+including physical crouch, before packaging the build/source ZIPs. Do not
+disable started features as a shortcut. Only not-started work may be deferred.
+Also explicitly finish first-person vehicle fixes across all six games,
+including Halo 2 stutter, with saved per-game and per-vehicle camera offsets.
+Preserve all earlier scope and record remaining limitations accurately.
+
+Latest reinforcement: all-title parity includes subtitle controls. Implement
+supported gameplay/theatre feeds across all six titles, not just controls on
+the three contributor-supported games. Complete necessary work before ZIPs;
+do not treat a documented missing feature as its implementation.
+
+September 23 follow-up: preserve separate saved per-game muzzle-flash hide
+settings, particularly Halo 2 Original and Halo 4 when correct flash alignment
+is unproven. Existing first-person vehicles and per-weapon gun alignment must
+receive regression review alongside new features before the ZIP handoff.
+Dual wield in Halo 2 Original/Anniversary and Halo 3 must show two crosshairs,
+each following its corresponding weapon, including left-handed mode.
+Additional explicit requirements: physical-crouch toggle and adjustable depth;
+roomscale physical body following during stick locomotion without accumulated
+sliding; optional DLSS support across all six titles and both CE/H2 graphics
+modes. Unsupported ordinary-render fallback alone does not complete DLSS scope.
+
+The user requests a major QoL release covering the collected reports and proposed
+fixes. Preserve all existing requirements below and consult the consolidated
+QOL-IMPLEMENTATION-BACKLOG-2026-09-23.md, source/reproduction notes in
+COMMUNITY-REPORT-AUDIT-2026-09-23.md, and final review coverage in
+COMMUNITY-AUDIT-COVERAGE-2026-09-23.md. The audit is planning/evidence work, not
+runtime acceptance or a claim those fixes are implemented.
+
+Automatic controller detection must provide consistent semantic defaults across
+all games independently of MCC's mapping/layout system. Optional VR-menu remaps
+must be saved per game and allow explicit Unbound. Consolidate scattered melee/
+reload selectors into Mappings; reorganize settings as needed. Refine flashlight
+disable/gesture so two-handed interaction remains reliable, with a separate
+toggle if appropriate. Keep Godoy, UnsealedWings, martysl1, pancreations, Gab_dC
+and LivingFray contribution leads, including their limitations and dependencies.
+Ordinary dual-wield remains H2/H3 only as corrected below. No installation,
+launch, publication or accepted-pointer update was authorized by the audit.
+
 ## September 18 final graphical-adjustment instruction
 
 User requires graphical adjustment to be a toggle, then zoom/CE investigation/

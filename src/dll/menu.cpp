@@ -11,15 +11,18 @@
 #include "menu.h"
 #include "../common/flashlight_input.h"
 #include "native_menu_pointer.h"
+#include "native_vehicle_first_person.h"
 #include "menu_slider.h"
 #include "vr.h"
 #include "game.h"
 #include "title_adapter.h"
 #include "d3d_state.h"
 #include "d3d11_hook.h"
+#include "window_resize.h"
 #include "../common/log.h"
 #include "../common/config.h"
 #include "../common/weapon_interaction_logic.h"
+#include "../common/halo2_vehicle_identity.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
@@ -166,12 +169,15 @@ namespace
         Cat_Comfort,
         Cat_Theatre,
         Cat_Controls,
+        Cat_Mappings,
+        Cat_Reload,
         Cat_Vehicles,
         Cat_WeaponAim,
         Cat_Crosshair,
         Cat_BodyHands,
         Cat_Picture,
         Cat_Hud,
+        Cat_Subtitles,
         Cat_Desktop,
         Cat_Scope,
         Cat_Advanced,
@@ -192,12 +198,15 @@ namespace
         {"Comfort",       "The flat screen you see in menus, and how head motion feels."},
         {"3D Theatre",    "A room-fixed stereo screen used only when the game locks the cinematic camera."},
         {"Controls",      "Turning, gestures, and controller vibration."},
+        {"VR Mappings",   "Controller actions, saved independently for each game."},
+        {"Reload & Holsters", "Magazine handling, weapon storage, and gesture zones."},
         {"Vehicles",      "First-person driving: sit in the seat instead of floating behind the vehicle."},
         {"Weapon & Aim",  "Gun placement, per-title calibration, muzzle alignment, and two-handed aiming."},
         {"Crosshair",     "The floating reticle that shows where the weapon really shoots."},
         {"Body & Hands",  "Arms, shoulders, and how much of Chief you can see."},
         {"Picture",       "Render resolution, sharpening, anti-aliasing and brightness."},
-        {"HUD",           "Size and position of each supported title's native HUD; curvature availability is title-specific."},
+        {"HUD",           "Size and position of the active game's HUD."},
+        {"Subtitles",     "Localized dialogue in gameplay and 3D theatre."},
         {"Desktop",       "The window on your monitor, not the headset."},
         {"Scope",         "Experimental gun-mounted zoom screen."},
         {"Advanced",      "Tracking calibration, panel placement, and starting over."},
@@ -254,6 +263,15 @@ namespace
     // Private message we post to the game window so the fit runs on the window's
     // own (UI) thread, where touching window size/position is safe.
     constexpr UINT kFitGameWindowMsg = WM_APP + 0x37;
+    constexpr UINT kLiveResizeMsg = WM_APP + 0x38;
+    WindowResizeBatch g_liveResizeBatch;
+
+    float RenderAspect()
+    {
+        unsigned rw=0,rh=0,ow=0,oh=0;bool dlss=false,runtime=false;
+        D3D_GetRenderPlan(rw,rh,ow,oh,dlss,runtime);
+        return rw&&rh?float(rw)/float(rh):float(kNativeRenderWidth)/float(kNativeRenderHeight);
+    }
 
     // Fit the game window inside the primary monitor's work area, preserving the
     // render aspect (kNativeRenderWidth:kNativeRenderHeight, constant because
@@ -290,7 +308,7 @@ namespace
         const int workH = mi.rcWork.bottom - mi.rcWork.top;
         if (workW <= 0 || workH <= 0)
             return;
-        const float aspect = (float)kNativeRenderWidth / (float)kNativeRenderHeight;
+        const float aspect = RenderAspect();
         int w = workW;
         int h = (int)((float)w / aspect + 0.5f);
         if (h > workH)
@@ -317,7 +335,26 @@ namespace
 
     LRESULT CALLBACK WndProcHook(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     {
+        if(msg==WM_SIZE&&g_liveResizeBatch.SuppressesSize(hwnd)) return 0;
         if (NativeMenuPointer_Message(msg)) return 0;
+        if(msg==kLiveResizeMsg)
+        {
+            unsigned width=0,height=0;
+            if(!D3D_BeginLiveResize(width,height)) return 0;
+            if(!D3D_FitActive()||!width||!height||width>65535||height>65535||!g_origWndProc)
+            { D3D_CancelQueuedLiveResize();return 0; }
+            // Fit first, suppress intermediate WM_SIZE notifications, then
+            // deliver one admitted render-size change on the window thread.
+            g_liveResizeBatch.Apply(hwnd,[&]{FitGameWindow(hwnd);},[&]{
+                struct ClientSizeScope {
+                    ClientSizeScope(){D3D_SetForcedClientLie(true);}
+                    ~ClientSizeScope(){D3D_SetForcedClientLie(false);}
+                } clientSize;
+                CallWindowProcW(g_origWndProc,hwnd,WM_SIZE,SIZE_RESTORED,
+                    MAKELPARAM(static_cast<WORD>(width),static_cast<WORD>(height)));
+            });
+            return 0;
+        }
         // Fit request (posted from Menu_Init) -- run it here on the UI thread.
         if (msg == kFitGameWindowMsg)
         {
@@ -364,8 +401,7 @@ namespace
                         const int workH = mi.rcWork.bottom - mi.rcWork.top;
                         if (workW > 0 && workH > 0 && (pos->cx > workW || pos->cy > workH))
                         {
-                            const float aspect =
-                                (float)kNativeRenderWidth / (float)kNativeRenderHeight;
+                            const float aspect = RenderAspect();
                             int w = workW;
                             int h = (int)((float)w / aspect + 0.5f);
                             if (h > workH) { h = workH; w = (int)((float)h * aspect + 0.5f); }
@@ -515,6 +551,7 @@ namespace
         ImGui::SameLine();
 
         ImGui::BeginChild("##pane", ImVec2(0, -footerHeight), ImGuiChildFlags_Borders);
+        ImGui::PushTextWrapPos(0.0f);
         ImGui::TextColored(Rgb(kAccent), "%s", kCategories[g_activeCategory].label);
         ImGui::TextDisabled("%s", kCategories[g_activeCategory].blurb);
         ImGui::Separator();
@@ -540,6 +577,9 @@ namespace
         ImGui::Spacing();
         ImGui::PushTextWrapPos(0.0f);
         ImGui::TextUnformatted(kWelcomeMessage);
+        ImGui::Spacing();
+        ImGui::TextUnformatted("DLSS / NGX: This software contains source code provided by NVIDIA Corporation. "
+            "NVIDIA components are covered by the included NVIDIA license.");
         ImGui::PopTextWrapPos();
         ImGui::Spacing();
         ImGui::Separator();
@@ -727,7 +767,20 @@ namespace
         changed |= ImGui::Checkbox("Roomscale body movement", &g_config.roomscale_movement);
         ImGui::TextDisabled("Physical steps move your character while on foot. Walking follows your head.\n"
             "Controller aiming is preserved. Enable head tracking and positional tracking.\n"
-            "The movement stick takes priority. Recenter with F3 when needed.");
+            "The movement stick takes priority. Physical steps are retained and the body catches up once movement settles. "
+            "Recenter with F3 when needed.");
+        if(ImGui::Checkbox("Physical crouch",&g_config.physical_crouch))
+        {changed=true;VR_RecalibratePhysicalCrouch();}
+        if(g_config.physical_crouch)
+        {
+            float crouchCm=g_config.physical_crouch_depth_m*100.f;
+            if(vr_menu::SliderFloat("Crouch activation depth",&crouchCm,8.f,65.f,"%.0f cm"))
+            {g_config.physical_crouch_depth_m=crouchCm*.01f;changed=true;VR_RecalibratePhysicalCrouch();}
+            if(ImGui::Button("Calibrate crouch at my current height")) VR_RecalibratePhysicalCrouch();
+            ImGui::TextWrapped("Calibrate at your normal standing or seated height, then lower your head to crouch. "
+                "Smaller depths activate sooner. On foot only; button crouch remains separate. "
+                "Use MCC's hold-to-crouch setting; native toggle crouch is not overridden.");
+        }
         ImGui::Spacing();
         ImGui::Text("VR turning (right controller stick)");
         if (ImGui::RadioButton("Snap turn", !g_config.turn_smooth))
@@ -780,25 +833,6 @@ namespace
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Touch the physical left controller's thumb rest, then move the physical right stick.\n"
                               "These controls stay on the same physical hands in left-handed mode.");
-        changed |= ImGui::Checkbox("Disable flashlight input",&g_config.disable_flashlight_input);
-        if(ImGui::IsItemHovered())
-            ImGui::SetTooltip("Blocks support-grip button output by default during gameplay.\nGrip tracking and two-handed aiming still work; menus remain usable.");
-        if(g_config.disable_flashlight_input) {
-            static int flashlightTitle=0;
-            static GameTitle previousFlashlightTitle=GameTitle::None;
-            const auto active=TitleAdapter_GetActiveTitle();
-            const int index=weapon_interaction::TitleIndex(active);
-            if(active!=previousFlashlightTitle&&index>=0) flashlightTitle=index;
-            previousFlashlightTitle=active;
-            ImGui::Combo("Flashlight layout for",&flashlightTitle,weapon_interaction::kTitleNames,6);
-            const bool reachSwap=flashlightTitle==weapon_interaction::TitleIndex(GameTitle::HaloReach)&&
-                !(active==GameTitle::HaloReach&&Game_ReachPlayerIsInVehicle());
-            const char* controls[flashlight_input::kCount]{};
-            for(int n=0;n<flashlight_input::kCount;++n)
-                controls[n]=flashlight_input::Label(n,g_config.left_handed,reachSwap);
-            changed |= ImGui::Combo("Flashlight control (Quest)",&g_config.flashlight_button[flashlightTitle],controls,flashlight_input::kCount);
-            ImGui::TextDisabled("Support grip fixes the usual grip conflict. Select another control for custom MCC layouts.");
-        }
         ImGui::Spacing();
         float hapticPercent = g_config.haptic_intensity * 100.0f;
         if (vr_menu::SliderFloat("Controller vibration", &hapticPercent,
@@ -817,16 +851,68 @@ namespace
         ImGui::TextDisabled("L3+R3 recenters and toggles this menu; the right trigger clicks the VR pointer.");
         }
 
+        if(g_activeCategory==Cat_Mappings)
+        {
+            static int selectedTitle=0;
+            static GameTitle previousTitle=GameTitle::None;
+            const auto active=TitleAdapter_GetActiveTitle();
+            const int activeIndex=weapon_interaction::TitleIndex(active);
+            if(active!=previousTitle&&activeIndex>=0) selectedTitle=activeIndex;
+            previousTitle=active;
+            ImGui::Text("Detected left: %s",VR_ControllerProfileName(true));
+            ImGui::Text("Detected right: %s",VR_ControllerProfileName(false));
+            ImGui::Combo("Settings for",&selectedTitle,weapon_interaction::kTitleNames,6);
+            changed|=ImGui::Checkbox("Automatic VR action routing",&g_config.vr_action_mapping);
+            ImGui::TextWrapped("Automatic uses common VR defaults through the current MCC layout. Changes apply only to the selected game. "
+                "Unbound removes this action's VR button. MCC actions sharing a native button remain linked; "
+                "for example, Reload and Use share an action in Halo 3, ODST and Halo 4. Physical gestures remain separate.");
+            vr_mapping::Transports bindings{};
+            const bool haveBindings=activeIndex==selectedTitle&&Game_ReadVrActionBindings(bindings,GetTickCount64());
+            for(unsigned action=0;action<vr_mapping::Count;++action)
+            {
+                ImGui::PushID(static_cast<int>(action));
+                ImGui::TextUnformatted(vr_mapping::kNames[action]);
+                ImGui::SetNextItemWidth(-1);
+                changed|=ImGui::Combo("##source",&g_config.vr_bindings[selectedTitle][action],
+                    vr_mapping::kSourceNames,vr_mapping::SourceCount);
+                if(g_config.vr_bindings[selectedTitle][action]==vr_mapping::Automatic)
+                    ImGui::TextDisabled("Default: %s",vr_mapping::kSourceNames[vr_mapping::kDefaults[action]]);
+                if(haveBindings&&!bindings[action]) ImGui::TextDisabled("No native action binding available in this title.");
+                ImGui::PopID();
+            }
+            if(ImGui::Button("Reset this game's mappings"))
+            {g_config.vr_bindings[selectedTitle]={};changed=true;}
+            ImGui::Separator();
+            changed|=ImGui::Checkbox("Disable flashlight button",&g_config.disable_flashlight_input);
+            changed|=ImGui::Checkbox("Suppress flashlight while supporting a weapon",&g_config.flashlight_suppress_on_two_hand);
+            ImGui::TextWrapped("Flashlight suppression leaves grip tracking and two-hand aiming available. "
+                "MCC actions that share the same native button can still occur together.");
+
+        }
+
         if (g_activeCategory == Cat_Vehicles)
         {
         ImGui::Text("First-person vehicle camera");
         changed |= ImGui::Checkbox("Sit in the seat (first person)",
                                    &g_config.vehicle_first_person);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("All six games. CE, Halo 2 and Halo 4 use the seated character's head position.\n"
-                "Those three games use the universal position sliders; individual seat presets remain available in Halo 3, ODST and Reach.");
+                "Position settings have a separate base for each game. Identified vehicles also retain individual seat adjustments.");
         ImGui::TextDisabled(
             "OFF restores the stock behind-the-vehicle view instantly.");
         ImGui::Spacing();
+        static int vehicleGame=0;
+        static GameTitle previousVehicleTitle=GameTitle::None;
+        const auto activeVehicleTitle=TitleAdapter_GetActiveTitle();
+        if(previousVehicleTitle!=activeVehicleTitle)
+        {
+            const int activeIndex=weapon_interaction::TitleIndex(activeVehicleTitle);
+            if(activeIndex>=0)vehicleGame=activeIndex;
+            previousVehicleTitle=activeVehicleTitle;
+        }
+        ImGui::Combo("Game##vehicletrim",&vehicleGame,"Halo 3\0ODST\0Reach\0Halo 4\0Halo CE\0Halo 2\0");
+        const auto editVehicleTitle=static_cast<GameTitle>(vehicleGame+1);
+        static bool editVehicleBase=false;
+        ImGui::Checkbox("Edit this game's base position##vehicletrim",&editVehicleBase);
         // C19: the same three sliders always, bound to whichever SEAT is under
         // you — driver, passenger and gunner of the same vehicle are all
         // independent. Seated, they edit THAT seat's own trim (created on
@@ -840,8 +926,12 @@ namespace
         static int s_seatBind = -1;
         static VehicleTrimBank s_seatBank = VehicleTrimBank::Halo3;
         static int s_seatMissFrames = 0;
+        static GameTitle s_seatTitle=GameTitle::None;
+        if(s_seatTitle!=editVehicleTitle||editVehicleTitle!=activeVehicleTitle||editVehicleBase)
+        {s_seatBind=-1;s_seatMissFrames=0;s_seatTitle=editVehicleTitle;}
         VehicleTrimBank liveBank = VehicleTrimBank::Halo3;
-        const int liveSlot = Game_VehicleSeatTrimSlotEx(&liveBank);
+        const int liveSlot = editVehicleTitle==activeVehicleTitle&&!editVehicleBase?
+            Game_VehicleSeatTrimSlotEx(&liveBank):-1;
         if (liveSlot >= 0)
         {
             s_seatBind = liveSlot;
@@ -879,6 +969,16 @@ namespace
             trimRightSet = g_config.reach_vehicle_cam_right_set;
         }
         const bool perSeat = seatSlot >= 0 && seatSlot < seatSlotLimit;
+        uint64_t vehicleIdentity=0;int modelSeat=-1;
+        const bool modelTarget=!perSeat&&!editVehicleBase&&NativeVehicleFirstPerson_TrimTarget(
+            editVehicleTitle,vehicleIdentity,modelSeat);
+        const int modelTrim=ConfigVehicleModelTrimSlot(g_config,editVehicleTitle,vehicleIdentity,modelSeat);
+        bool modelCapacity=modelTrim>=0;
+        for(const auto& trim:g_config.vehicle_model_trims)modelCapacity|=!trim.identity;
+        auto setModelAxis=[&](unsigned axis,float value) {
+            const int slot=ConfigEnsureVehicleModelTrim(g_config,editVehicleTitle,vehicleIdentity,modelSeat);
+            if(slot>=0){g_config.vehicle_model_trims[slot].value[axis]=value;g_config.vehicle_model_trims[slot].set[axis]=true;}
+        };
         const bool reachSeat = perSeat && s_seatBank == VehicleTrimBank::Reach;
         // R-V25: every slider is Halo 3's slider. A Reach seat may legitimately
         // sit tens of metres from its marker (the authored Sabre eye is 42 m
@@ -904,13 +1004,22 @@ namespace
         if (perSeat)
             ImGui::Text("Adjusting: %s (this seat only)",
                         Game_VehicleSeatTrimName(seatSlot, s_seatBank));
+        else if(modelTarget) {
+            const char* vehicleName=editVehicleTitle==GameTitle::Halo2?halo2_vehicle_identity::Name(vehicleIdentity):nullptr;
+            ImGui::Text("Adjusting: %s, seat %d (%s)",vehicleName?vehicleName:"last identified vehicle",modelSeat,
+                weapon_interaction::kTitleNames[vehicleGame]);
+            ImGui::TextDisabled("Last identified seat; retained while F1 pauses the game.");
+        }
         else
-            ImGui::Text("Adjusting: every seat (universal trim)");
-        float seatFwd = ConfigSeatCamForward(g_config, seatSlot);
-        if (s_seatBank == VehicleTrimBank::Odst)
+            ImGui::Text("Adjusting: %s base position",weapon_interaction::kTitleNames[vehicleGame]);
+        float seatFwd = perSeat?ConfigSeatCamForward(g_config, seatSlot):ConfigGameVehicleCam(g_config,editVehicleTitle,0);
+        if(modelTarget)seatFwd=ConfigVehicleModelCam(g_config,editVehicleTitle,vehicleIdentity,modelSeat,0);
+        if (perSeat&&s_seatBank == VehicleTrimBank::Odst)
             seatFwd = ConfigOdstSeatCamForward(g_config, seatSlot);
-        else if (s_seatBank == VehicleTrimBank::Reach)
+        else if (perSeat&&s_seatBank == VehicleTrimBank::Reach)
             seatFwd = ConfigReachSeatCamForward(g_config, seatSlot);
+        if(modelTarget&&!modelCapacity)ImGui::TextDisabled("Vehicle preset storage is full. Reset an unused preset before adding another.");
+        ImGui::BeginDisabled(modelTarget&&!modelCapacity);
         if (vr_menu::SliderFloat("Seat forward (m)", &seatFwd,
                                forwardMin, forwardMax, "%.2f"))
         {
@@ -921,14 +1030,16 @@ namespace
                 trimForwardV[seatSlot] = seatFwd;
                 trimForwardSet[seatSlot] = true;
             }
+            else if(modelTarget)setModelAxis(0,seatFwd);
             else
-                g_config.vehicle_cam_forward_m = seatFwd;
+            {g_config.vehicle_cam_game[vehicleGame][0]=seatFwd;g_config.vehicle_cam_game_set[vehicleGame][0]=true;}
             changed = true;
         }
-        float seatUp = ConfigSeatCamUp(g_config, seatSlot);
-        if (s_seatBank == VehicleTrimBank::Odst)
+        float seatUp = perSeat?ConfigSeatCamUp(g_config, seatSlot):ConfigGameVehicleCam(g_config,editVehicleTitle,1);
+        if(modelTarget)seatUp=ConfigVehicleModelCam(g_config,editVehicleTitle,vehicleIdentity,modelSeat,1);
+        if (perSeat&&s_seatBank == VehicleTrimBank::Odst)
             seatUp = ConfigOdstSeatCamUp(g_config, seatSlot);
-        else if (s_seatBank == VehicleTrimBank::Reach)
+        else if (perSeat&&s_seatBank == VehicleTrimBank::Reach)
             seatUp = ConfigReachSeatCamUp(g_config, seatSlot);
         if (vr_menu::SliderFloat("Seat height (m)", &seatUp,
                                upMin, upMax, "%.2f"))
@@ -940,14 +1051,16 @@ namespace
                 trimUpV[seatSlot] = seatUp;
                 trimUpSet[seatSlot] = true;
             }
+            else if(modelTarget)setModelAxis(1,seatUp);
             else
-                g_config.vehicle_cam_up_m = seatUp;
+            {g_config.vehicle_cam_game[vehicleGame][1]=seatUp;g_config.vehicle_cam_game_set[vehicleGame][1]=true;}
             changed = true;
         }
-        float seatRight = ConfigSeatCamRight(g_config, seatSlot);
-        if (s_seatBank == VehicleTrimBank::Odst)
+        float seatRight = perSeat?ConfigSeatCamRight(g_config, seatSlot):ConfigGameVehicleCam(g_config,editVehicleTitle,2);
+        if(modelTarget)seatRight=ConfigVehicleModelCam(g_config,editVehicleTitle,vehicleIdentity,modelSeat,2);
+        if (perSeat&&s_seatBank == VehicleTrimBank::Odst)
             seatRight = ConfigOdstSeatCamRight(g_config, seatSlot);
-        else if (s_seatBank == VehicleTrimBank::Reach)
+        else if (perSeat&&s_seatBank == VehicleTrimBank::Reach)
             seatRight = ConfigReachSeatCamRight(g_config, seatSlot);
         if (vr_menu::SliderFloat("Seat left / right (m)", &seatRight,
                                rightMin, rightMax, "%.2f"))
@@ -959,16 +1072,20 @@ namespace
                 trimRightV[seatSlot] = seatRight;
                 trimRightSet[seatSlot] = true;
             }
+            else if(modelTarget)setModelAxis(2,seatRight);
             else
-                g_config.vehicle_cam_right_m = seatRight;
+            {g_config.vehicle_cam_game[vehicleGame][2]=seatRight;g_config.vehicle_cam_game_set[vehicleGame][2]=true;}
             changed = true;
         }
+        ImGui::EndDisabled();
+        if(modelTarget&&modelTrim>=0&&ImGui::SmallButton("Use this game's base for this seat##modeltrim"))
+        {g_config.vehicle_model_trims[modelTrim]={};changed=true;}
         if (perSeat && (trimForwardSet[seatSlot] || trimUpSet[seatSlot] ||
                         trimRightSet[seatSlot]))
         {
             if (ImGui::SmallButton(reachSeat
                     ? "Back to this seat's authored point##seattrim"
-                    : "Back to the universal trim##seattrim"))
+                    : "Back to this game's base##seattrim"))
             {
                 if (reachSeat)
                     ConfigReachSeatUseUniversalTrim(g_config, seatSlot);
@@ -981,26 +1098,25 @@ namespace
                 changed = true;
             }
         }
-        // The universal trim is shared by all three titles, so a bad value in
-        // it moves every seat that has no line of its own. One click puts it
-        // back to the shipped default instead of hunting for it on a slider.
-        if (!perSeat &&
-            (g_config.vehicle_cam_forward_m != kVehicleCamForwardDefault ||
-             g_config.vehicle_cam_up_m != kVehicleCamUpDefault ||
-             g_config.vehicle_cam_right_m != kVehicleCamRightDefault))
+        // Reset only the selected game's fallback; other titles and explicit
+        // per-seat values stay independent.
+        if (!perSeat && !modelTarget &&
+            (seatFwd != kVehicleCamForwardDefault ||
+             seatUp != kVehicleCamUpDefault || seatRight != kVehicleCamRightDefault))
         {
-            if (ImGui::SmallButton("Reset the universal trim##seattrim"))
+            if (ImGui::SmallButton("Reset this game's base##seattrim"))
             {
-                g_config.vehicle_cam_forward_m = kVehicleCamForwardDefault;
-                g_config.vehicle_cam_up_m = kVehicleCamUpDefault;
-                g_config.vehicle_cam_right_m = kVehicleCamRightDefault;
+                g_config.vehicle_cam_game[vehicleGame][0]=kVehicleCamForwardDefault;
+                g_config.vehicle_cam_game[vehicleGame][1]=kVehicleCamUpDefault;
+                g_config.vehicle_cam_game[vehicleGame][2]=kVehicleCamRightDefault;
+                for(bool& axis:g_config.vehicle_cam_game_set[vehicleGame])axis=true;
                 changed = true;
             }
         }
         ImGui::TextDisabled(
             "Sit in a seat and these sliders adjust that seat alone —\n"
             "a vehicle's driver, passengers and gunner each remember their\n"
-            "own. On foot they set the shared base every unadjusted seat\n"
+            "own. On foot they set this game's base every unadjusted seat\n"
             "follows. In Reach the base is your Blender-authored point for\n"
             "that seat and the slider travels the same distance either side\n"
             "of it that Halo 3 and ODST travel; vehicle and occupant motion\n"
@@ -1072,7 +1188,7 @@ namespace
             &g_config.vehicle_wheel_deadzone_deg, 0.0f, 30.0f, "%.0f");
         }
 
-        if (g_activeCategory == Cat_WeaponAim)
+        if (g_activeCategory == Cat_Reload)
         {
         ImGui::Text("Reload and holsters");
         changed |= ImGui::Checkbox("Manual Reload", &g_config.manual_reload);
@@ -1091,6 +1207,16 @@ namespace
                     "Weapons without a usable insertion keyframe keep their full reload.");
             changed |= vr_menu::SliderFloat("Magazine grab radius (m)",
                 &g_config.weapon_body_zone_radius_m,0.08f,0.40f,"%.2f");
+            changed|=ImGui::Combo("Reserve magazine location",&g_config.weapon_pouch_location,
+                "Support-side front hip\0Behind support shoulder\0");
+            if(ImGui::TreeNode("Reserve magazine position"))
+            {
+                changed|=vr_menu::SliderFloat("Reserve side offset (m)",&g_config.weapon_pouch_offset_x_m,-.40f,.40f,"%.3f");
+                changed|=vr_menu::SliderFloat("Reserve height offset (m)",&g_config.weapon_pouch_offset_y_m,-.40f,.40f,"%.3f");
+                changed|=vr_menu::SliderFloat("Reserve forward offset (m)",&g_config.weapon_pouch_offset_z_m,-.40f,.40f,"%.3f");
+                ImGui::TextWrapped("Offsets follow your body direction. Positive side moves toward the weapon hand; left-handed mode mirrors it.");
+                ImGui::TreePop();
+            }
             changed |= vr_menu::SliderFloat("Magazine insertion radius (m)",
                 &g_config.weapon_insert_radius_m,0.06f,0.30f,"%.2f");
             changed |= ImGui::Checkbox("Generic reload item for unknown weapons", &g_config.weapon_unknown_reload_visual);
@@ -1131,26 +1257,13 @@ namespace
         {
             changed |= vr_menu::SliderFloat("Pouch / hip depth below head (m)",
                 &g_config.weapon_pouch_down_m,0.25f,0.85f,"%.2f");
-            static int layoutTitle=0;
-            static GameTitle previousLayoutTitle=GameTitle::None;
-            const GameTitle active=TitleAdapter_GetActiveTitle();
-            const int activeIndex=weapon_interaction::TitleIndex(active);
-            if(active!=previousLayoutTitle&&activeIndex>=0) layoutTitle=activeIndex;
-            previousLayoutTitle=active;
-            ImGui::Combo("Controller layout for",&layoutTitle,weapon_interaction::kTitleNames,6);
-            if(g_config.manual_reload)
-                changed |= ImGui::Combo("MCC Reload button",&g_config.weapon_reload_button[layoutTitle],
-                    weapon_interaction::kButtonNames);
-            if(g_config.weapon_holsters)
-                changed |= ImGui::Combo("MCC Switch Weapon button",&g_config.weapon_switch_button[layoutTitle],
-                    weapon_interaction::kButtonNames);
-            ImGui::TextDisabled("Match these buttons to that game's MCC controller settings.\n"
-                "Defaults are X / Y. Saved per title, including both CE/H2 graphics modes.\n"
-                "Mirrors for left-handed play. On foot with one weapon in hand only.\n"
-                "A short vibration marks each grab and completed gesture.\n"
-                "Regular buttons remain available.");
+            ImGui::TextWrapped("Reload and switch gestures follow the current game's action bindings automatically. "
+                "Button choices are in VR Mappings. Release a claimed grip before starting another gesture.");
         }
-        ImGui::Separator();
+        }
+
+        if (g_activeCategory == Cat_WeaponAim)
+        {
         ImGui::Text("Hand-held weapon");
         if(ImGui::Checkbox("Per-gun alignment",&g_config.per_gun_alignment))
         { Config_RefreshWeaponProfile();changed=true; }
@@ -1210,9 +1323,20 @@ namespace
             "Classic/original graphics only; moves the visible gun and hands.\n"
             "Anniversary, the VR reticle, and bullet direction stay unchanged.");
         changed |= vr_menu::SliderFloat("Muzzle height (m)", &g_config.muzzle_height_m, -0.3f, 0.3f, "%.2f");
-        ImGui::TextDisabled("Reach: adjusts its secondary muzzle placement; H3/ODST marker effects follow the gun. H2 Classic muzzle suppression is automatic and does not read this slider.");
+        ImGui::TextDisabled("Reach: adjusts secondary muzzle placement; H3/ODST marker effects follow the gun. H2 Classic does not read this slider.");
         ImGui::TextDisabled("Raises supported muzzle/effect placement along the gun's own axis.");
         ImGui::TextDisabled("Where rounds LAND is unchanged. 0.11 is about four inches.");
+        const int flashTitle=weapon_interaction::TitleIndex(TitleAdapter_GetActiveTitle());
+        if(flashTitle==3||flashTitle==5)
+        {
+            ImGui::Text("Muzzle flashes: %s",weapon_interaction::kTitleNames[flashTitle]);
+            changed|=ImGui::Checkbox("Hide muzzle flashes in this game",&g_config.hide_muzzle_flash[flashTitle]);
+            ImGui::TextWrapped(flashTitle==5?
+                "Original graphics only. Hides the local first-person particle pass; "
+                "other first-person particles may also disappear. Anniversary stays unchanged.":
+                "Hides the existing first-person flash effect routes. Saved separately for Halo 4.");
+            ImGui::TextWrapped("Keep enabled if flashes do not align with your gun. Changing this does not change bullet aim.");
+        }
 
         ImGui::Spacing();
         ImGui::Separator();
@@ -1274,8 +1398,9 @@ namespace
             ImGui::TextDisabled("Extends the two-hand grab line and grip-click zone to your visible palm.");
             ImGui::Unindent();
         }
-        ImGui::TextDisabled("Put your left hand on the front of the gun, click/hold the LEFT GRIP.\n"
+        ImGui::TextDisabled("Put your support hand on the front of the gun, click/hold its GRIP.\n"
                             "Engages only when your hand is on the barrel line.");
+#include "virtual_stock_menu.inl"
         }
 
         if (g_activeCategory == Cat_Crosshair)
@@ -1337,7 +1462,8 @@ namespace
                                     "Turn it off if you feel any frame-rate cost.");
                 ImGui::Unindent();
             }
-            ImGui::TextDisabled("Uses the equipped weapon's authored crosshair and target colors.");
+            ImGui::TextWrapped("Single weapons use their authored crosshair where available. "
+                "Halo 2 and Halo 3 dual wield use two separate aim marks, one for each weapon.");
         }
         ImGui::TextDisabled("Crosshair smoothing is visual only; bullets keep the current controller ray.\n"
                             "Set it to 0%% for exact raw tracking.");
@@ -1486,7 +1612,7 @@ namespace
 
         if (g_activeCategory == Cat_Picture)
         {
-        ImGui::Text("Render resolution (next game launch)");
+        ImGui::Text("Headset picture resolution");
         changed |= vr_menu::SliderFloat("Resolution scale", &g_config.resolution_scale,
                                       kResolutionScaleMin, kResolutionScaleMax, "%.2fx");
         // Same even-rounding the launcher applies, so this is the exact render
@@ -1515,27 +1641,41 @@ namespace
                 changed = true;
             }
         }
-        unsigned activeWidth=0,activeHeight=0;
-        D3D_GetForcedRenderSize(activeWidth,activeHeight);
         const int nextWidth=scaleEven(kNativeRenderWidth,g_config.resolution_scale);
         const int nextHeight=scaleEven(kNativeRenderHeight,g_config.resolution_scale);
-        if(activeWidth && activeHeight)
-            ImGui::TextDisabled("Current session: %u x %u",activeWidth,activeHeight);
-        ImGui::TextDisabled("Next launch: %d x %d",nextWidth,nextHeight);
-        if(activeWidth && activeHeight &&
-            (activeWidth!=static_cast<unsigned>(nextWidth) ||
-             activeHeight!=static_cast<unsigned>(nextHeight)))
-            ImGui::TextColored(Rgb(kWarning),
-                "Resolution change saved. Exit MCC and launch the mod again to apply.");
-        ImGui::TextDisabled("The buttons are shortcuts; the slider takes any value in between,\n"
-                            "as does resolution_scale in halomccvr.cfg. Below 1.00x trades\n"
-                            "sharpness for frame rate; above it supersamples. Keith David is\n"
-                            "8K-class. Changing this requires a full game restart.");
+        ImGui::TextDisabled("Requested picture: %d x %d per eye",nextWidth,nextHeight);
+        VrDlssRenderPlan renderPlan{};
+        if(VR_GetDlssRenderPlan(renderPlan))
+        {
+            ImGui::TextDisabled("Current game render: %u x %u",renderPlan.liveRenderW,renderPlan.liveRenderH);
+            ImGui::TextDisabled("Planned game render: %u x %u | Output: %u x %u",
+                renderPlan.plannedRenderW,renderPlan.plannedRenderH,renderPlan.outputW,renderPlan.outputH);
+        }
+        unsigned actualW=0,actualH=0;
+        const int resizeState=D3D_LiveResizeState(actualW,actualH);
+        if(resizeState==1) ImGui::TextDisabled("Applying resolution after the current frame...");
+        else if(resizeState==3) ImGui::TextWrapped("Live resize could not complete. The previous render size was restored. Restart MCC to apply the saved preference.");
+        else if(!D3D_FitActive()) ImGui::TextWrapped("Restart MCC to change render size. Live resizing requires fitted desktop window mode.");
+        else ImGui::TextWrapped("Render size can update live; title loading defers the change. Lower values trade detail for speed; higher values supersample.");
         if (g_config.resolution_scale > kResolutionScaleHeavy)
             ImGui::TextColored(Rgb(kWarning),
                                "[!] Very heavy (~5K and up): can crash weaker GPUs. Test in\n"
                                "    short sessions and drop this if the game won't start.");
         ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Text("Optional temporal upscaling");
+        changed|=ImGui::Combo("Upscaler",&g_config.upscaler,"Off\0NVIDIA DLSS (experimental)\0");
+        if(g_config.upscaler)
+        {
+            changed|=ImGui::Combo("DLSS quality",&g_config.dlss_mode,"DLAA\0Quality\0Balanced\0Performance\0Ultra Performance\0");
+            changed|=ImGui::Combo("DLSS model",&g_config.dlss_preset,"Runtime default\0F\0J\0K\0L\0M\0");
+            changed|=ImGui::Checkbox("Temporal jitter",&g_config.dlss_jitter);
+            char status[512]{};VR_GetDlssStatus(status,sizeof(status));
+            ImGui::TextWrapped("%s",status);
+            ImGui::TextWrapped("Requires a compatible NVIDIA GPU. Camera-based motion can leave trails on moving objects. "
+                "Available across all six games, including both CE and Halo 2 graphics modes. "
+                "If a game's depth or camera data is unavailable, the ordinary full-resolution view is restored.");
+        }
         ImGui::Separator();
         ImGui::Text("Image quality (applies live, every title)");
         const char* upscaleItems[] = {"Linear (old)", "Sharp (strong bicubic)"};
@@ -1557,6 +1697,14 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("Scene");
+        const auto pictureTitle=TitleAdapter_GetActiveTitle();
+        const int bloomTitle=pictureTitle==GameTitle::Halo3?0:
+            pictureTitle==GameTitle::Halo3ODST?1:pictureTitle==GameTitle::HaloReach?2:-1;
+        if(bloomTitle>=0)
+        {
+            changed|=ImGui::Checkbox("Bloom in this game",&g_config.bloom_enabled[bloomTitle]);
+            ImGui::TextWrapped("Turn off to remove the game's bloom glow. This setting is saved separately for each game.");
+        }
         changed |= vr_menu::SliderFloat("Game brightness", &g_config.game_brightness, 0.5f, 2.0f, "%.2f");
         ImGui::TextDisabled("Brightens/darkens the whole game. 1.0 = the game's own brightness.\n"
                             "One setting for Halo 3, ODST and Reach - all three move together.");
@@ -1585,6 +1733,39 @@ namespace
                             "Off by default and the bigger clarity win of the two. This is the\n"
                             "game's own fog switch, so hazy levels see much further. Live.\n"
                             "A game with no proven switch is left alone and says so in the log.");
+        }
+
+        if(g_activeCategory==Cat_Subtitles)
+        {
+            const auto subtitleTitle=TitleAdapter_GetActiveTitle();
+            const bool gameplayFeed=subtitleTitle==GameTitle::Halo3 ||
+                subtitleTitle==GameTitle::Halo3ODST || subtitleTitle==GameTitle::HaloReach ||
+                subtitleTitle==GameTitle::Halo2 || subtitleTitle==GameTitle::Halo4;
+            if(gameplayFeed)
+            {
+            changed|=ImGui::Checkbox("Gameplay subtitles",&g_config.vr_gameplay_subtitles);
+            if(g_config.vr_gameplay_subtitles)
+            {
+                changed|=vr_menu::SliderFloat("Gameplay text scale",&g_config.vr_gameplay_subtitle_scale,.5f,2.5f,"%.2fx");
+                changed|=vr_menu::SliderFloat("Gameplay horizontal position",&g_config.vr_gameplay_subtitle_x,-1.f,1.f,"%.2f");
+                changed|=vr_menu::SliderFloat("Gameplay vertical position",&g_config.vr_gameplay_subtitle_y,-1.f,1.f,"%.2f");
+                changed|=ImGui::Combo("Gameplay anchor",&g_config.vr_gameplay_subtitle_anchor,"Follow head\0Stay in world\0");
+            }
+            }
+            else ImGui::TextWrapped("Gameplay subtitle placement is available in Halo 2, Halo 3, ODST, Reach and Halo 4.");
+            ImGui::Separator();
+            changed|=ImGui::Checkbox("Theatre subtitles",&g_config.cutscene_theater_subtitles);
+            if(g_config.cutscene_theater_subtitles && gameplayFeed)
+            {
+                changed|=vr_menu::SliderFloat("Theatre text scale",&g_config.vr_theatre_subtitle_scale,.5f,2.5f,"%.2fx");
+                changed|=vr_menu::SliderFloat("Theatre horizontal position",&g_config.vr_theatre_subtitle_x,-1.f,1.f,"%.2f");
+                changed|=vr_menu::SliderFloat("Theatre vertical position",&g_config.vr_theatre_subtitle_y,-1.f,1.f,"%.2f");
+                changed|=ImGui::Combo("Theatre anchor",&g_config.vr_theatre_subtitle_anchor,"Theatre screen\0Follow head\0");
+            }
+            else if(g_config.cutscene_theater_subtitles)
+                ImGui::TextWrapped("Halo CE keeps its existing subtitle view; native text placement is not yet available.");
+            ImGui::TextWrapped("Uses the game's localized dialogue. Native subtitle settings determine which lines the game supplies. "
+                "Unsupported native feeds retain the existing subtitle view.");
         }
 
         if (g_activeCategory == Cat_Desktop)
@@ -1695,6 +1876,7 @@ namespace
                             "game restart; everything else applies immediately.");
         }
 
+        ImGui::PopTextWrapPos();
         ImGui::EndChild(); // ##pane
 
         static bool dirty = false;
@@ -1711,6 +1893,16 @@ namespace
         ImGui::End();
     }
 } // namespace
+
+void Menu_PostLiveResize()
+{
+    const HWND window=D3D_GameWindow();
+    if(!window||!PostMessageW(window,kLiveResizeMsg,0,0))
+    {
+        D3D_CancelQueuedLiveResize();
+        LOG("live resize: window notification unavailable; current dimensions preserved");
+    }
+}
 
 bool Menu_Init(HWND gameWindow, ID3D11Device* device, ID3D11DeviceContext* context, DXGI_FORMAT rtFormat)
 {
@@ -1745,7 +1937,7 @@ bool Menu_Init(HWND gameWindow, ID3D11Device* device, ID3D11DeviceContext* conte
     ImGui::StyleColorsDark();
     ApplyTheme();                          // Master Chief green / visor orange
     ImGui::GetStyle().ScaleAllSizes(1.5f); // legible at panel distance in the headset
-    io.FontGlobalScale = 1.5f;
+    io.FontGlobalScale = 1.6f;
 
     if (!ImGui_ImplWin32_Init(gameWindow) || !ImGui_ImplDX11_Init(device, context))
     {

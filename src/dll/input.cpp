@@ -18,7 +18,9 @@
 #include "../common/flashlight_input.h"
 #include "../common/weapon_interaction_logic.h"
 #include "../common/odst_bringup_logic.h"
-#include "../common/scope_logic.h"
+#include "../common/scope_action_input.h"
+#include "../common/physical_crouch_input.h"
+#include "physical_crouch_camera.h"
 
 // M3 VR input. MCC reads gamepads through XInputGetState; hooking it lets the
 // mod present the Sense controllers as a gamepad the game already understands
@@ -46,7 +48,9 @@ namespace
     std::atomic<bool> g_overrideLogged{false};
     MenuChordDetector g_menuChord;
     MenuChordDetector g_pauseChord;
-    ScopeToggleDetector g_scopeToggle;
+    thread_local ScopeActionInput g_scopeInput;
+    thread_local PhysicalCrouchInput g_physicalCrouchInput;
+    thread_local vr_mapping::Mapper g_vrActionMapper;
     std::atomic<uint64_t> g_startPulseUntilMs{0};
 
     // E-H2-13: the last button masks fed to the game, newest at g_fedHead-1.
@@ -120,7 +124,14 @@ namespace
         VrPadState pad;
         VR_GetPadState(pad);
         if (!pad.valid)
-        { Roomscale_Input(false, 0, 0); return; }
+        {
+            g_vrActionMapper.ready=false;
+            g_scopeInput.Suspend();
+            g_physicalCrouchInput.Suspend(g_config.physical_crouch);
+            PhysicalCrouchCamera_Invalidate();
+            Roomscale_Input(false,0,0);
+            return;
+        }
 
         const bool sharedGameplayInput =
             Game_AllowsSharedGameplayFeatures();
@@ -138,148 +149,11 @@ namespace
         }
 
         static thread_local ExclusiveInputHolds physicalHolds;
+        static thread_local ExclusiveInputHolds vrMenuHolds;
+        const bool menuOpen=Menu_IsOpen();
+        vrMenuHolds.ApplyVr(pad,menuOpen,false);
         const bool pointerConfirm=pad.exclusiveInput&&!pad.thumbrestDpad&&!Menu_IsOpen();
         physicalHolds.ApplyPhysical(state->Gamepad,pad.exclusiveInput||Menu_IsOpen(),pointerConfirm);
-        if(pad.exclusiveInput&&!Menu_IsOpen())
-        {
-            Roomscale_Input(false,0,0);
-            (void)Game_GestureMeleeInput(GetTickCount64()); // drains a pending gesture pulse
-            g_pauseChord.Reset();
-            g_scopeToggle.Update(false,false,true);
-            g_startPulseUntilMs.store(0);
-            const WORD confirm=pointerConfirm&&
-                (pad.a||(state->Gamepad.wButtons&XINPUT_GAMEPAD_A))?XINPUT_GAMEPAD_A:0;
-            state->Gamepad={};
-            state->Gamepad.wButtons=confirm;
-            if(pad.thumbrestDpad)
-                state->Gamepad.wButtons=DpadDirectionButtons(pad.dpadX,pad.dpadY);
-            NoteFedButtons(state->Gamepad.wButtons);
-            return;
-        }
-
-        // The universal scope owns R3 while it is available. Passing that click
-        // into Halo enters native zoom state, which hides the normal VR gun and
-        // body even if we restore the eye FOV. Disabled/non-gameplay input still
-        // passes through unchanged.
-        const bool scopeAvailable = g_config.scope_enabled && Game_IsHeadTracking() &&
-            Game_HasScopeRenderer();
-        const ScopeToggleUpdate scope = g_scopeToggle.Update(
-            scopeAvailable, pad.clickR, chord.consumeClicks || Menu_IsOpen());
-        if (scope.changed && scopeAvailable)
-        {
-            VR_RequestScopeToggle();
-            LOG("universal scope: R3 release toggled body-safe scope state");
-        }
-        if (!scopeAvailable) VR_SetScopeActive(false);
-        if (Menu_IsOpen())
-        {
-            Roomscale_Input(false, 0, 0);
-            state->Gamepad = {};
-            return;
-        }
-
-        // C9 (Halo 3 ground driver seats only; inert everywhere else): read the
-        // virtual steering wheel from THIS poll's pad, before the buttons below
-        // are built. Both grips down together is the wheel's own gesture and is
-        // the only case where their buttons are withheld — a lone right grip is
-        // never touched, so it keeps dismounting the vehicle.
-        Game_Halo3UpdateVehicleWheel(pad);
-        // C-H4-10: Halo 4's VR turn advances from this same shared pad sample,
-        // before the right-stick block below decides who writes the axes.
-        Game_Halo4UpdateVrTurn(pad);
-        const bool wheelGesture = Game_Halo3VehicleSwallowsGrips();
-
-        // The physical pad's own Y/B count for the pause chord too, so a
-        // Steam Controller pauses the same way the VR controllers do.
-        const WORD physicalButtons = state->Gamepad.wButtons;
-        MenuChordResult pauseChord{};
-        if (g_config.y_b_start_chord && Game_AllowsPauseToggleInput())
-        {
-            pauseChord = g_pauseChord.Update(
-                GetTickCount64(),
-                pad.y || (physicalButtons & XINPUT_GAMEPAD_Y) != 0,
-                pad.b || (physicalButtons & XINPUT_GAMEPAD_B) != 0);
-            if (pauseChord.toggled)
-                Input_RequestPauseToggle();
-        }
-        else
-        {
-            g_pauseChord.Reset();
-        }
-
-        // Reach only: on foot, the left trigger and X trade places so grenade
-        // lands on X and armour ability lands on the trigger. While the local
-        // player is seated in ANY vehicle, restore Reach's native LT/X layout;
-        // that includes aircraft such as the Banshee as well as drivers,
-        // gunners, and passengers. Vehicle state is an optional title-native
-        // proof. If it is unavailable or stale, preserve the existing on-foot
-        // swap instead of changing controls or affecting the Reach VR core.
-        const bool reachActive =
-            TitleAdapter_GetActiveTitle() == GameTitle::HaloReach;
-        const bool swapLeftHandActions = ReachShouldSwapLeftHandActions(
-            reachActive, Game_ReachPlayerIsInVehicle());
-        // The trigger is analog and X is a click. Neither Reach action is
-        // pressure-sensitive, so cross them at the same 0.6 threshold the grips
-        // already use, and drive the trigger fully on from the click.
-        const bool xPressed = swapLeftHandActions ? pad.trigL > 0.6f : pad.x;
-        const float leftTrigger =
-            swapLeftHandActions ? (pad.x ? 1.0f : 0.0f) : pad.trigL;
-
-        WORD btn = state->Gamepad.wButtons;
-        if (pauseChord.consumeClicks)
-            btn &= ~(XINPUT_GAMEPAD_Y | XINPUT_GAMEPAD_B);
-        if (scopeAvailable)
-            btn &= ~XINPUT_GAMEPAD_RIGHT_THUMB;
-        if (pad.a) btn |= XINPUT_GAMEPAD_A;
-        if (pad.b && !pauseChord.consumeClicks) btn |= XINPUT_GAMEPAD_B;
-        if (xPressed) btn |= XINPUT_GAMEPAD_X;
-        if (pad.y && !pauseChord.consumeClicks) btn |= XINPUT_GAMEPAD_Y;
-        if (pad.clickL && !chord.consumeClicks) btn |= XINPUT_GAMEPAD_LEFT_THUMB;
-        if (pad.clickR && !chord.consumeClicks && !scopeAvailable)
-            btn |= XINPUT_GAMEPAD_RIGHT_THUMB;
-        static bool previousMenu = false;
-        const uint64_t inputNow = GetTickCount64();
-        const bool menuEdge = pad.menu && !previousMenu;
-        if (menuEdge)
-        {
-            if (Game_IsCameraOnlyBringup())
-            {
-                // OpenXR exposes the reserved Menu action as a short edge. ODST
-                // polls XInput on a different cadence and missed that edge in
-                // the headset test, so retain a normal Start press long enough
-                // to cross its polling boundary. This branch is private-ODST
-                // only; Halo 3 and normal OFF builds keep their existing path.
-                g_startPulseUntilMs.store(inputNow + 350);
-                LOG("ODST input: Menu/Start latched for native polling");
-            }
-            if (PausePresentationInputAllowed(sharedGameplayInput) &&
-                !Game_HasAuthoritativePauseState())
-                VR_RequestPausePresentation(!VR_IsPausePresentationTarget());
-        }
-        previousMenu = pad.menu;
-        if (pad.menu || inputNow < g_startPulseUntilMs.load())
-            btn |= XINPUT_GAMEPAD_START;
-        if (!wheelGesture)
-        {
-            if (pad.gripL > 0.6f && !pad.weaponConsumeSupport) btn |= XINPUT_GAMEPAD_LEFT_SHOULDER;
-            if (pad.gripR > 0.6f && !pad.weaponConsumePrimary) btn |= XINPUT_GAMEPAD_RIGHT_SHOULDER;
-        }
-        const bool weaponGesture=pad.weaponConsumeSupport||pad.weaponConsumePrimary||pad.weaponButtons;
-        const uint32_t gestureMelee=weaponGesture?0:Game_GestureMeleeInput(inputNow);
-        btn |= static_cast<WORD>(gestureMelee & 0xFFFF);
-        btn |= static_cast<WORD>(pad.weaponButtons & 0xFFFF);
-        state->Gamepad.wButtons = btn;
-        NoteFedButtons(btn);
-
-        const BYTE tl = (BYTE)(leftTrigger * 255.0f);
-        const BYTE tr = (BYTE)(pad.trigR * 255.0f);
-        if (tl > state->Gamepad.bLeftTrigger) state->Gamepad.bLeftTrigger = tl;
-        if (tr > state->Gamepad.bRightTrigger) state->Gamepad.bRightTrigger = tr;
-        if (gestureMelee & (1u<<16)) state->Gamepad.bLeftTrigger = 255;
-        if (gestureMelee & (1u<<17)) state->Gamepad.bRightTrigger = 255;
-        if (pad.weaponButtons & (1u<<16)) state->Gamepad.bLeftTrigger = 255;
-        if (pad.weaponButtons & (1u<<17)) state->Gamepad.bRightTrigger = 255;
-
         // UEVR-style D-pad gesture: hold the configured controller (F1 menu:
         // left by default) up next to your head and the left stick becomes the
         // D-pad (menu navigation, grenade switching); lower it and the stick
@@ -307,10 +181,211 @@ namespace
             }
         }
 
+
+        // The physical pad's own Y/B count for the pause chord too, so a
+        // Steam Controller pauses the same way the VR controllers do.
+        const WORD physicalButtons = state->Gamepad.wButtons;
+        MenuChordResult pauseChord{};
+        if (!menuOpen && !pad.exclusiveInput && g_config.y_b_start_chord && Game_AllowsPauseToggleInput())
+        {
+            pauseChord = g_pauseChord.Update(
+                GetTickCount64(),
+                pad.y || (physicalButtons & XINPUT_GAMEPAD_Y) != 0,
+                pad.b || (physicalButtons & XINPUT_GAMEPAD_B) != 0);
+            if (pauseChord.toggled)
+                Input_RequestPauseToggle();
+        }
+        else
+        {
+            g_pauseChord.Reset();
+        }
+
+        const auto currentTitle=TitleAdapter_GetActiveTitle();
+        const int mappingTitle=weapon_interaction::TitleIndex(currentTitle);
+        const auto inputMode=TitleAdapter_GetRuntimeMode();
+        const bool gameplayMode=(inputMode==RuntimeMode::Gameplay||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret)&&
+            !VR_IsPausePresentation()&&!VR_IsPausePresentationTarget()&&!VR_IsCutsceneTheaterActive();
+        const uint64_t mappingEpoch=(uint64_t(TitleAdapter_GetGeneration(currentTitle))<<32)|
+            (uint64_t(currentTitle)<<24)|pad.profileEpoch;
+        const bool scopeFeatureAvailable=g_config.scope_enabled&&Game_IsHeadTracking()&&Game_HasScopeRenderer();
+        const bool scopeAvailable=scopeFeatureAvailable&&gameplayMode;
+        const int zoomSource=mappingTitle>=0&&g_config.vr_action_mapping?
+            vr_mapping::Resolve(vr_mapping::Zoom,g_config.vr_bindings[mappingTitle][vr_mapping::Zoom]):vr_mapping::RightClick;
+        const uint32_t collectedSources=ScopeAndActionSources(pad,dpadMode);
+        // Changing D-pad gesture routes while the stick is held is cancellation,
+        // not the release edge that toggles a scope. Face/trigger bindings are
+        // unaffected by entering the optional head D-pad gesture.
+        const unsigned scopeRoute=zoomSource>=vr_mapping::DpadUp?
+            (pad.thumbrestDpad?2u:(dpadMode?1u:0u)):0u;
+        const ScopeToggleUpdate scope=g_scopeInput.Update(scopeFeatureAvailable,collectedSources,
+            zoomSource,mappingEpoch,scopeRoute,
+            scopeAvailable&&!menuOpen&&(!pad.exclusiveInput||pad.thumbrestDpad),
+            chord.consumeClicks||pauseChord.consumeClicks);
+        if(scope.changed&&scopeAvailable)
+        {
+            VR_RequestScopeToggle();
+            LOG("universal scope: mapped input release toggled body-safe scope state");
+        }
+        if(!scopeFeatureAvailable) VR_SetScopeActive(false);
+        if(menuOpen)
+        {
+            g_vrActionMapper.ready=false;
+            g_physicalCrouchInput.Suspend(g_config.physical_crouch);
+            PhysicalCrouchCamera_Invalidate();
+            Roomscale_Input(false,0,0);
+            state->Gamepad={};
+            return;
+        }
+
+        if(pad.exclusiveInput&&!Menu_IsOpen())
+        {
+            g_physicalCrouchInput.Suspend(g_config.physical_crouch);
+            PhysicalCrouchCamera_Invalidate();
+            Roomscale_Input(false,0,0);
+            (void)Game_GestureMeleeInput(GetTickCount64()); // drains a pending gesture pulse
+            g_pauseChord.Reset();
+            g_startPulseUntilMs.store(0);
+            const WORD confirm=pointerConfirm&&
+                (pad.a||(state->Gamepad.wButtons&XINPUT_GAMEPAD_A))?XINPUT_GAMEPAD_A:0;
+            state->Gamepad={};
+            state->Gamepad.wButtons=confirm;
+            if(pad.thumbrestDpad)
+            {
+                const auto title=TitleAdapter_GetActiveTitle();
+                const int index=weapon_interaction::TitleIndex(title);
+                if(g_config.vr_action_mapping&&index>=0&&
+                    gameplayMode)
+                {
+                    vr_mapping::Transports native{};
+                    const bool ready=Game_ReadVrActionBindings(native,GetTickCount64());
+                    if(scopeAvailable) native[vr_mapping::Zoom]=0;
+                    const uint32_t mapped=g_vrActionMapper.Apply(collectedSources,
+                        g_config.vr_bindings[index],native,
+                        (uint64_t(TitleAdapter_GetGeneration(title))<<32)|(uint64_t(title)<<24)|pad.profileEpoch,
+                        ready,g_config.disable_flashlight_input||
+                            (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive));
+                    state->Gamepad.wButtons=static_cast<WORD>(mapped);
+                    if(mapped&(1u<<16)) state->Gamepad.bLeftTrigger=255;
+                    if(mapped&(1u<<17)) state->Gamepad.bRightTrigger=255;
+                }
+                else
+                {
+                    g_vrActionMapper.ready=false;
+                    state->Gamepad.wButtons=DpadDirectionButtons(pad.dpadX,pad.dpadY);
+                }
+            }
+            else g_vrActionMapper.ready=false;
+            NoteFedButtons(state->Gamepad.wButtons);
+            return;
+        }
+
+        // C9 (Halo 3 ground driver seats only; inert everywhere else): read the
+        // virtual steering wheel from THIS poll's pad, before the buttons below
+        // are built. Both grips down together is the wheel's own gesture and is
+        // the only case where their buttons are withheld — a lone right grip is
+        // never touched, so it keeps dismounting the vehicle.
+        Game_Halo3UpdateVehicleWheel(pad);
+        // C-H4-10: Halo 4's VR turn advances from this same shared pad sample,
+        // before the right-stick block below decides who writes the axes.
+        Game_Halo4UpdateVrTurn(pad);
+        const bool wheelGesture = Game_Halo3VehicleSwallowsGrips();
+
+        // VR defaults are semantic and shared. Each verified native adapter
+        // reads the current MCC layout; Reach no longer trades LT and X.
+        const uint64_t inputNow=GetTickCount64();
+        vr_mapping::Transports nativeActions{};
+        const bool semanticMode=g_config.vr_action_mapping&&mappingTitle>=0&&gameplayMode;
+        const bool physicalCrouchEnabled=g_config.physical_crouch;
+        const bool nativeReady=(semanticMode||physicalCrouchEnabled)&&gameplayMode&&
+            Game_ReadVrActionBindings(nativeActions,inputNow);
+        const bool nativeMapping=semanticMode&&nativeReady;
+        float crouchHeadQuat[4]{},crouchHeadPos[3]{};
+        const bool crouchTracking=physicalCrouchEnabled&&inputMode==RuntimeMode::Gameplay&&
+            gameplayMode&&Game_IsHeadTracking()&&Game_IsPositionalTracking()&&
+            VR_IsStereoEnabled()&&VR_RoomscaleTrackingFresh()&&
+            VR_GetHeadPose(crouchHeadQuat,crouchHeadPos);
+        const uint32_t crouchButtons=g_physicalCrouchInput.Update(currentTitle,
+            TitleAdapter_GetGeneration(currentTitle),crouchHeadPos[1],VR_PhysicalCrouchEpoch(),inputNow,
+            physicalCrouchEnabled,crouchTracking&&nativeReady,g_config.physical_crouch_depth_m,
+            nativeActions[vr_mapping::Crouch]);
+        PhysicalCrouchCamera_Publish(currentTitle,TitleAdapter_GetGeneration(currentTitle),
+            VR_PhysicalCrouchEpoch(),inputNow,physicalCrouchEnabled&&crouchTracking&&nativeReady,crouchButtons!=0);
+        uint32_t actionSources=collectedSources;
+        if(pauseChord.consumeClicks) actionSources&=~(vr_mapping::Bit(vr_mapping::B)|vr_mapping::Bit(vr_mapping::Y));
+        if(chord.consumeClicks) actionSources&=~(vr_mapping::Bit(vr_mapping::LeftClick)|vr_mapping::Bit(vr_mapping::RightClick));
+        if(scopeAvailable) nativeActions[vr_mapping::Zoom]=0;
+        if(wheelGesture) actionSources&=~(vr_mapping::Bit(vr_mapping::PrimaryGrip)|vr_mapping::Bit(vr_mapping::SupportGrip));
+        const vr_mapping::Overrides emptyMappings{};
+        const uint32_t semanticButtons=g_vrActionMapper.Apply(actionSources,
+            mappingTitle>=0?g_config.vr_bindings[mappingTitle]:emptyMappings,nativeActions,
+            (uint64_t(TitleAdapter_GetGeneration(currentTitle))<<32)|(uint64_t(currentTitle)<<24)|pad.profileEpoch,
+            nativeMapping,g_config.disable_flashlight_input||
+                (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive));
+        const bool xPressed=pad.x;
+        const float leftTrigger=pad.trigL;
+
+        WORD btn = state->Gamepad.wButtons;
+        if (pauseChord.consumeClicks)
+            btn &= ~(XINPUT_GAMEPAD_Y | XINPUT_GAMEPAD_B);
+        if (scopeAvailable)
+            btn &= ~XINPUT_GAMEPAD_RIGHT_THUMB;
+        if (!semanticMode&&pad.a) btn |= XINPUT_GAMEPAD_A;
+        if (!semanticMode&&pad.b && !pauseChord.consumeClicks) btn |= XINPUT_GAMEPAD_B;
+        if (!semanticMode&&xPressed) btn |= XINPUT_GAMEPAD_X;
+        if (!semanticMode&&pad.y && !pauseChord.consumeClicks) btn |= XINPUT_GAMEPAD_Y;
+        if (!semanticMode&&pad.clickL && !chord.consumeClicks) btn |= XINPUT_GAMEPAD_LEFT_THUMB;
+        if (!semanticMode&&pad.clickR && !chord.consumeClicks && !scopeAvailable)
+            btn |= XINPUT_GAMEPAD_RIGHT_THUMB;
+        btn|=static_cast<WORD>(semanticButtons);
+        btn|=static_cast<WORD>(crouchButtons);
+        static bool previousMenu = false;
+        const bool menuEdge = pad.menu && !previousMenu;
+        if (menuEdge)
+        {
+            if (Game_IsCameraOnlyBringup())
+            {
+                // OpenXR exposes the reserved Menu action as a short edge. ODST
+                // polls XInput on a different cadence and missed that edge in
+                // the headset test, so retain a normal Start press long enough
+                // to cross its polling boundary. This branch is private-ODST
+                // only; Halo 3 and normal OFF builds keep their existing path.
+                g_startPulseUntilMs.store(inputNow + 350);
+                LOG("ODST input: Menu/Start latched for native polling");
+            }
+            if (PausePresentationInputAllowed(sharedGameplayInput) &&
+                !Game_HasAuthoritativePauseState())
+                VR_RequestPausePresentation(!VR_IsPausePresentationTarget());
+        }
+        previousMenu = pad.menu;
+        if (pad.menu || inputNow < g_startPulseUntilMs.load())
+            btn |= XINPUT_GAMEPAD_START;
+        if (!wheelGesture&&!semanticMode)
+        {
+            if (pad.gripL > 0.6f && !pad.weaponConsumeSupport) btn |= XINPUT_GAMEPAD_LEFT_SHOULDER;
+            if (pad.gripR > 0.6f && !pad.weaponConsumePrimary) btn |= XINPUT_GAMEPAD_RIGHT_SHOULDER;
+        }
+        const bool weaponGesture=pad.weaponConsumeSupport||pad.weaponConsumePrimary||pad.weaponButtons;
+        const uint32_t gestureMelee=weaponGesture?0:Game_GestureMeleeInput(inputNow);
+        btn |= static_cast<WORD>(gestureMelee & 0xFFFF);
+        btn |= static_cast<WORD>(pad.weaponButtons & 0xFFFF);
+        state->Gamepad.wButtons = btn;
+        NoteFedButtons(btn);
+
+        const BYTE tl = semanticMode?((semanticButtons&(1u<<16))?255:0):(BYTE)(leftTrigger*255.0f);
+        const BYTE tr = semanticMode?((semanticButtons&(1u<<17))?255:0):(BYTE)(pad.trigR*255.0f);
+        if (tl > state->Gamepad.bLeftTrigger) state->Gamepad.bLeftTrigger = tl;
+        if (tr > state->Gamepad.bRightTrigger) state->Gamepad.bRightTrigger = tr;
+        if (crouchButtons & (1u<<16)) state->Gamepad.bLeftTrigger = 255;
+        if (crouchButtons & (1u<<17)) state->Gamepad.bRightTrigger = 255;
+        if (gestureMelee & (1u<<16)) state->Gamepad.bLeftTrigger = 255;
+        if (gestureMelee & (1u<<17)) state->Gamepad.bRightTrigger = 255;
+        if (pad.weaponButtons & (1u<<16)) state->Gamepad.bLeftTrigger = 255;
+        if (pad.weaponButtons & (1u<<17)) state->Gamepad.bRightTrigger = 255;
+
         // The optional thumb-rest gesture uses the physical RIGHT stick. Its
         // axes were consumed at XR publication, including every title's turn
         // and scope consumers. Preserve head-gesture clicks and left movement.
-        if (pad.thumbrestDpad)
+        if (pad.thumbrestDpad&&!semanticMode)
         {
             btn |= DpadDirectionButtons(pad.dpadX, pad.dpadY);
             state->Gamepad.wButtons = btn;
@@ -328,10 +403,10 @@ namespace
 
         if (dpadMode)
         {
-            if (pad.moveY > 0.5f) btn |= XINPUT_GAMEPAD_DPAD_UP;
-            if (pad.moveY < -0.5f) btn |= XINPUT_GAMEPAD_DPAD_DOWN;
-            if (pad.moveX > 0.5f) btn |= XINPUT_GAMEPAD_DPAD_RIGHT;
-            if (pad.moveX < -0.5f) btn |= XINPUT_GAMEPAD_DPAD_LEFT;
+            if (!semanticMode&&pad.moveY > 0.5f) btn |= XINPUT_GAMEPAD_DPAD_UP;
+            if (!semanticMode&&pad.moveY < -0.5f) btn |= XINPUT_GAMEPAD_DPAD_DOWN;
+            if (!semanticMode&&pad.moveX > 0.5f) btn |= XINPUT_GAMEPAD_DPAD_RIGHT;
+            if (!semanticMode&&pad.moveX < -0.5f) btn |= XINPUT_GAMEPAD_DPAD_LEFT;
             // Left stick CLICK becomes the controller's left centre button
             // (Back/View) while the D-pad gesture is held. ODST puts its map
             // and objectives screen behind that button and VR players had no
@@ -513,7 +588,9 @@ namespace
                 const bool gameplay=index>=0&&Game_AllowsSharedGameplayFeatures()&&
                     !Menu_IsOpen()&&!VR_IsPausePresentation()&&!VR_IsPausePresentationTarget()&&
                     !VR_IsCutsceneTheaterActive();
-                filter.Apply(state->Gamepad,g_config.disable_flashlight_input,gameplay,
+                vr_mapping::Transports native{};
+                const bool semantic=g_config.vr_action_mapping&&Game_ReadVrActionBindings(native,GetTickCount64());
+                filter.Apply(state->Gamepad,g_config.disable_flashlight_input&&!semantic,gameplay,
                     static_cast<uint32_t>(title),index>=0?g_config.flashlight_button[index]:-1);
             }
         } flashlightFilter{state};
@@ -539,6 +616,10 @@ namespace
         // exists: hold the connection above and skip the merge when gated off.
         if (!Game_AllowsSharedControllerInput())
         {
+            g_vrActionMapper.ready=false;
+            g_scopeInput.Suspend();
+            g_physicalCrouchInput.Suspend(g_config.physical_crouch);
+            PhysicalCrouchCamera_Invalidate();
             Roomscale_Input(false, 0, 0);
             if constexpr (kEnableRetiredInputDiagnostics)
             {
@@ -573,6 +654,10 @@ namespace
         VR_GetPadState(pad);
         if (!pad.valid)
         {
+            g_vrActionMapper.ready=false;
+            g_scopeInput.Suspend();
+            g_physicalCrouchInput.Suspend(g_config.physical_crouch);
+            PhysicalCrouchCamera_Invalidate();
             Roomscale_Input(false, 0, 0);
             // No VR controllers: the physical pad still gets the Y+B pause
             // chord and the Start pulse it produces.

@@ -336,19 +336,25 @@ target_compile_definitions(halo3xr PRIVATE
     HALOMCCVR_BUILD_HALO2="${HALOMCCVR_BUILD_HALO2}")
 target_link_libraries(halo3xr PRIVATE
     openxr_loader minhook imgui_lib
-    d3d11 dxgi d3dcompiler)
+    d3d11 dxgi d3dcompiler gdi32)
+target_sources(halo3xr PRIVATE src/dll/native_subtitles.cpp)
+target_sources(halo3xr PRIVATE src/dll/physical_crouch_camera.cpp)
+target_sources(halo3xr PRIVATE src/dll/bloom_override.cpp)
 if(HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE)
     target_link_libraries(halo3xr PRIVATE bcrypt)
 endif()
 
-add_executable(halo3xr_launcher WIN32 src/launcher/launcher.cpp)
+include(cmake/Dlss.cmake)
+
+add_executable(halo3xr_launcher WIN32 src/launcher/launcher.cpp
+    src/launcher/installer.cpp src/launcher/menu.cpp src/launcher/updater.cpp)
 set_target_properties(halo3xr_launcher PROPERTIES
     OUTPUT_NAME "HaloMCCVRLauncher")
 target_compile_definitions(halo3xr_launcher PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 # IApplicationActivationManager: the Microsoft Store edition is a packaged app
 # and can only be started through packaged activation.
-target_link_libraries(halo3xr_launcher PRIVATE ole32)
+target_link_libraries(halo3xr_launcher PRIVATE ole32 bcrypt advapi32 winhttp crypt32 shell32 uxtheme)
 
 # Opt-in reverse-engineering helper; never shipped or built by the default
 # preset. Some diagnostic modes write to a running game process.
@@ -370,6 +376,39 @@ set_target_properties(reach_runtime_observer PROPERTIES
     OUTPUT_NAME "reach-runtime-observer")
 
 if(BUILD_TESTING)
+    add_executable(halomccvr_bloom_override_tests tests/bloom_override_tests.cpp src/dll/bloom_override.cpp src/common/config.cpp)
+    target_compile_definitions(halomccvr_bloom_override_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_bloom_override_tests PRIVATE d3d11)
+    add_test(NAME halomccvr_bloom_override_tests COMMAND halomccvr_bloom_override_tests)
+    add_executable(halomccvr_muzzle_suppression_tests tests/muzzle_suppression_tests.cpp)
+    target_compile_definitions(halomccvr_muzzle_suppression_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_muzzle_suppression_tests COMMAND halomccvr_muzzle_suppression_tests)
+    add_executable(halomccvr_physical_crouch_tests tests/physical_crouch_tests.cpp)
+    add_test(NAME halomccvr_physical_crouch_tests COMMAND halomccvr_physical_crouch_tests)
+    add_executable(halomccvr_physical_crouch_camera_tests tests/physical_crouch_camera_tests.cpp src/dll/physical_crouch_camera.cpp)
+    add_test(NAME halomccvr_physical_crouch_camera_tests COMMAND halomccvr_physical_crouch_camera_tests)
+    add_executable(halomccvr_dlss_sampler_tests tests/dlss_sampler_cache_tests.cpp)
+    target_compile_definitions(halomccvr_dlss_sampler_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_dlss_sampler_tests PRIVATE d3d11)
+    add_test(NAME halomccvr_dlss_sampler_tests COMMAND halomccvr_dlss_sampler_tests)
+    add_executable(halomccvr_gesture_binding_reader_tests tests/gesture_binding_reader_tests.cpp)
+    target_compile_definitions(halomccvr_gesture_binding_reader_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_gesture_binding_reader_tests COMMAND halomccvr_gesture_binding_reader_tests)
+    add_executable(halomccvr_updater_archive_tests tests/updater_archive_tests.cpp
+        src/launcher/installer.cpp src/launcher/updater.cpp)
+    target_compile_definitions(halomccvr_updater_archive_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_link_libraries(halomccvr_updater_archive_tests PRIVATE ole32 bcrypt advapi32 winhttp crypt32 shell32)
+    add_test(NAME halomccvr_updater_archive_tests COMMAND halomccvr_updater_archive_tests)
+    add_executable(halomccvr_installer_tests tests/installer_tests.cpp src/launcher/installer.cpp)
+    target_compile_definitions(halomccvr_installer_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_link_libraries(halomccvr_installer_tests PRIVATE bcrypt advapi32)
+    add_test(NAME halomccvr_installer_tests COMMAND halomccvr_installer_tests)
+    add_executable(halomccvr_vr_mapping_tests tests/vr_action_mapping_tests.cpp src/common/config.cpp src/common/log.cpp src/common/scope_logic.cpp)
+    target_compile_definitions(halomccvr_vr_mapping_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_vr_mapping_tests COMMAND halomccvr_vr_mapping_tests)
+    add_executable(halomccvr_halo4_pause_lifetime_tests tests/halo4_pause_lifetime_tests.cpp)
+    target_compile_definitions(halomccvr_halo4_pause_lifetime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_halo4_pause_lifetime_tests COMMAND halomccvr_halo4_pause_lifetime_tests)
     add_executable(halomccvr_reach_hud_height_tests tests/reach_hud_height_tests.cpp)
     target_compile_definitions(halomccvr_reach_hud_height_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_reach_hud_height_tests COMMAND halomccvr_reach_hud_height_tests)
@@ -426,6 +465,19 @@ if(BUILD_TESTING)
     # Exercise shipping XInput/OpenXR haptic functions with captured XR output.
     # This also checks the real title masks, ownership and short-pulse retention.
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+    add_executable(halomccvr_virtual_stock_tests tests/virtual_stock_tests.cpp)
+    target_include_directories(halomccvr_virtual_stock_tests PRIVATE src/common)
+    add_test(NAME halomccvr_virtual_stock_tests COMMAND halomccvr_virtual_stock_tests)
+    set(HALOMCCVR_STOCK_FIXTURE "${HALOMCCVR_GENERATED_DIR}/virtual_stock_fixture.inl")
+    add_custom_command(OUTPUT "${HALOMCCVR_STOCK_FIXTURE}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_virtual_stock_fixture.py"
+            --source-root "${CMAKE_CURRENT_SOURCE_DIR}" --output "${HALOMCCVR_STOCK_FIXTURE}"
+        DEPENDS tools/generate_virtual_stock_fixture.py tools/generate_haptics_runtime_fixture.py
+            src/dll/vr.cpp src/dll/virtual_stock_aim.inl VERBATIM)
+    add_executable(halomccvr_virtual_stock_aim_tests tests/virtual_stock_aim_tests.cpp "${HALOMCCVR_STOCK_FIXTURE}")
+    target_include_directories(halomccvr_virtual_stock_aim_tests PRIVATE
+        "${HALOMCCVR_GENERATED_DIR}" "${openxr_SOURCE_DIR}/include")
+    add_test(NAME halomccvr_virtual_stock_aim_tests COMMAND halomccvr_virtual_stock_aim_tests)
     set(HALOMCCVR_HAPTICS_FIXTURE "${HALOMCCVR_GENERATED_DIR}/haptics_runtime_functions.inl")
     add_custom_command(OUTPUT "${HALOMCCVR_HAPTICS_FIXTURE}"
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_haptics_runtime_fixture.py"
@@ -454,6 +506,9 @@ if(BUILD_TESTING)
     add_executable(halomccvr_odst_seat_lifetime_tests tests/odst_seat_lifetime_tests.cpp)
     target_compile_definitions(halomccvr_odst_seat_lifetime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_odst_seat_lifetime_tests COMMAND halomccvr_odst_seat_lifetime_tests)
+    add_executable(halomccvr_halo3_seat_lifetime_tests tests/halo3_seat_lifetime_tests.cpp)
+    target_compile_definitions(halomccvr_halo3_seat_lifetime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_halo3_seat_lifetime_tests COMMAND halomccvr_halo3_seat_lifetime_tests)
     add_executable(halomccvr_halo4_vehicle_input_tests tests/halo4_vehicle_input_tests.cpp)
     target_compile_definitions(halomccvr_halo4_vehicle_input_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_halo4_vehicle_input_tests COMMAND halomccvr_halo4_vehicle_input_tests)
@@ -577,7 +632,7 @@ if(BUILD_TESTING)
     target_include_directories(halomccvr_ce_controls_tests PRIVATE src)
     add_test(NAME halomccvr_ce_controls_tests COMMAND halomccvr_ce_controls_tests)
     add_executable(halomccvr_ce_controls_runtime_tests tests/haloce_controls_runtime_tests.cpp
-        src/dll/haloce_native_bindings.cpp)
+        src/dll/physical_crouch_camera.cpp src/dll/haloce_native_bindings.cpp)
     target_include_directories(halomccvr_ce_controls_runtime_tests PRIVATE src/common src/dll)
     target_compile_definitions(halomccvr_ce_controls_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_ce_controls_runtime_tests PRIVATE minhook)
@@ -702,3 +757,4 @@ install(FILES
     installer/THIRD-PARTY-LICENSES.txt
     DESTINATION .
     COMPONENT dist)
+install(DIRECTORY src/launcher/assets/ DESTINATION assets COMPONENT dist)

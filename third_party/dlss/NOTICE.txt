@@ -1,0 +1,21 @@
+NVIDIA DLSS / NGX
+
+This software contains source code provided by NVIDIA Corporation.
+The NVIDIA SDK and runtime remain subject to LICENSE.txt in this directory;
+the project's MIT license does not relicense NVIDIA components.
+
+Source: https://github.com/NVIDIA/DLSS
+Pinned revision: a291cc7d2cc642a51566f3dfd5376f635cd1b284 (SDK 310.7.0)
+Runtime: lib/Windows_x86_64/rel/nvngx_dlss.dll
+Version: 310.7.0.0
+Size: 58977904 bytes
+SHA-256: BE6E434A94CA32499515EB62CA0E6C274526055D568D0426E4C652DCDFB6EE6E
+Authenticode signature verified: NVIDIA Corporation.
+
+Only DLSS Super Resolution is integrated. DLSS Ray Reconstruction and Frame
+Generation runtimes are not used. NVIDIA-compatible hardware is required;
+unavailable or failed DLSS leaves the ordinary VR renderer available.
+
+Distribution must satisfy the attached license, including its distribution
+terms and supplement. Public commercial release notification and trademark
+approval requirements are not fulfilled merely by including this notice.

@@ -23,6 +23,13 @@ static std::array<uintptr_t,7> received{};
 static void Check(bool value,const char* message)
 {++checks;if(!value){std::fprintf(stderr,"HUD draw coverage: %s\n",message);std::exit(1);}}
 static bool ShouldHideExtraHudDraw(ID3D11DeviceContext*){return hud_visibility::Hidden();}
+static unsigned bloomScopes{},bloomActive{};
+// GPU replacement/restoration is covered by bloom_override_tests. This fixture
+// verifies every forwarded draw participates in the surrounding scope.
+struct BloomDrawScope {
+    explicit BloomDrawScope(ID3D11DeviceContext*) {++bloomScopes;++bloomActive;}
+    ~BloomDrawScope(){--bloomActive;}
+};
 static void STDMETHODCALLTYPE Indexed(ID3D11DeviceContext* c,UINT a,UINT b,UINT d,INT e,UINT f)
 {++calls;received={0,reinterpret_cast<uintptr_t>(c),a,b,d,uintptr_t(intptr_t(e)),f};}
 static void STDMETHODCALLTYPE Instanced(ID3D11DeviceContext* c,UINT a,UINT b,UINT d,UINT e)
@@ -71,7 +78,8 @@ int main()
     auto* context=reinterpret_cast<ID3D11DeviceContext*>(uintptr_t(0x12345678));
     auto* buffer=reinterpret_cast<ID3D11Buffer*>(uintptr_t(0x76543210));
     for(unsigned i=0;i<5;++i){
-        const unsigned before=calls;Invoke(i,context,buffer);
+        const unsigned before=calls,scopesBefore=bloomScopes;Invoke(i,context,buffer);
+        Check(bloomScopes==scopesBefore+1&&!bloomActive,"forwarded draw restores bloom scope");
         Check(calls==before+1&&received[0]==i&&received[1]==reinterpret_cast<uintptr_t>(context),"ordinary draw forwards exactly once");
         if(i==0)Check(received[2]==UINT_MAX&&received[3]==7&&received[4]==9&&received[5]==uintptr_t(intptr_t(-29))&&received[6]==31,"indexed instancing preserves all arguments including signed base vertex");
         if(i==1)Check(received[2]==UINT_MAX&&received[3]==7&&received[4]==9&&received[5]==31,"instancing preserves start vertex and instance");
@@ -79,6 +87,7 @@ int main()
         hud_visibility::depth=1;Invoke(i,context,buffer);
         ++hud_visibility::depth;Invoke(i,context,buffer);--hud_visibility::depth;Invoke(i,context,buffer);
         Check(calls==before+1,"nested gameplay HUD scopes omit GPU submission");
+        Check(bloomScopes==scopesBefore+1&&!bloomActive,"hidden draws do not enter bloom scope");
         hud_visibility::depth=0;Invoke(i,context,buffer);
         Check(calls==before+2,"later world/menu draw resumes forwarding");
     }

@@ -13,7 +13,7 @@ namespace {
 constexpr bool kEnableRoomscaleBodyFollow = true;
 std::atomic<uint64_t> inputAt{0}, commandAt{0}, command{0};
 std::atomic<bool> inputAllowed{false}, manualMove{false};
-std::atomic<uint32_t> inputEpoch{1}, commandEpoch{0}, commandGeneration{0};
+std::atomic<uint32_t> inputEpoch{1}, historyEpoch{1}, commandEpoch{0}, commandGeneration{0};
 std::atomic<int> commandTitle{0};
 std::atomic<uint32_t> version{0};
 std::atomic_flag publishing = ATOMIC_FLAG_INIT;
@@ -24,18 +24,29 @@ std::atomic<uint64_t> manualSamples{0}, demandSamples{0}, travelMm{0};
 
 void Roomscale_Input(bool allowed,float x,float y) noexcept
 {
+    const auto now=GetTickCount64();
+    const auto previousAt=inputAt.load(std::memory_order_acquire);
+    const bool expired=previousAt&&(now<previousAt||now-previousAt>100);
     allowed=kEnableRoomscaleBodyFollow && allowed && g_config.roomscale_movement && VR_RoomscaleTrackingFresh();
-    if (inputAllowed.exchange(allowed,std::memory_order_acq_rel)!=allowed)
+    const bool manual=!std::isfinite(x)||!std::isfinite(y)||x*x+y*y>0.02f;
+    const bool allowedChanged=inputAllowed.exchange(allowed,std::memory_order_acq_rel)!=allowed;
+    const bool manualChanged=manualMove.exchange(manual,std::memory_order_acq_rel)!=manual;
+    // Retire the command even when a short stick press/release occurs entirely
+    // between camera callbacks. That camera cannot observe the manual interval
+    // and must not replay a pre-stick body-follow packet after release.
+    if (allowedChanged || manualChanged || expired)
         inputEpoch.fetch_add(1,std::memory_order_acq_rel);
-    manualMove.store(!std::isfinite(x)||!std::isfinite(y)||x*x+y*y>0.02f,
-        std::memory_order_relaxed);
-    inputAt.store(GetTickCount64(),std::memory_order_release);
+    // Admission loss drops physical debt. Manual movement only retires the
+    // packet; the camera can retain the tracked step until native travel stops.
+    if (allowedChanged || expired) historyEpoch.fetch_add(1,std::memory_order_acq_rel);
+    inputAt.store(now,std::memory_order_release);
 }
 
 bool Roomscale_Move(float& x,float& y) noexcept
 {
     if (!g_config.roomscale_movement || !VR_RoomscaleTrackingFresh() || !std::isfinite(x) || !std::isfinite(y) ||
-        x*x+y*y>0.02f || !inputAllowed.load(std::memory_order_acquire)) return false;
+        x*x+y*y>0.02f || manualMove.load(std::memory_order_acquire) ||
+        !inputAllowed.load(std::memory_order_acquire)) return false;
     const auto now=GetTickCount64();
     const auto inputTime=inputAt.load(std::memory_order_acquire);
     if (!inputTime || now<inputTime || now-inputTime>100) return false;
@@ -69,11 +80,15 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
     // history when native camera callbacks migrate between threads.
     static RoomscaleFollow state;
     static GameTitle prior=GameTitle::None;
-    static uint32_t priorInputEpoch=0;
+    static uint32_t priorInputEpoch=0, priorHistoryEpoch=0;
     const auto epoch=inputEpoch.load(std::memory_order_acquire);
-    if (prior!=title || priorInputEpoch!=epoch)
-    { state={}; prior=title; priorInputEpoch=epoch; }
+    const auto history=historyEpoch.load(std::memory_order_acquire);
     const auto now=GetTickCount64(),at=inputAt.load(std::memory_order_acquire);
+    if (prior!=title || priorHistoryEpoch!=history)
+    { state={}; prior=title; priorHistoryEpoch=history; }
+    else if (priorInputEpoch!=epoch && state.seeded)
+        state.SuspendForManual(now);
+    priorInputEpoch=epoch;
     const auto generation=TitleAdapter_GetGeneration(title);
     const bool tracking = VR_RoomscaleTrackingFresh();
     const bool input = at && now>=at && now-at<=100 && inputAllowed.load(std::memory_order_acquire);
@@ -121,7 +136,7 @@ void Roomscale_Report() noexcept
     const bool enabled=g_config.roomscale_movement;
     if (enabled!=previous)
     {
-        LOG("Roomscale body movement %s: native walking, head-relative movement, controller aim preserved",
+        LOG("Roomscale body movement %s: native walking, head-relative movement; physical steps during VR-stick travel wait for native quiet before catch-up",
             enabled ? "ON" : "OFF");
         previous=enabled;
     }

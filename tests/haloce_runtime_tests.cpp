@@ -22,6 +22,8 @@ bool TitleAdapter_PublishHeartbeat(GameTitle,uint32_t,uint64_t) { return true; }
 float Game_GetWorldScale() { return 1.0f/3.048f; }
 bool Game_IsPositionalTracking() { return true; }
 bool Game_RoomscaleCameraAllowed(GameTitle) { return false; }
+uint64_t VR_PhysicalCrouchEpoch() noexcept { return 1; }
+float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
 bool HaloCEHud_HasCrosshairScope() noexcept { return naturalHudFrame; }
 void Roomscale_Camera(GameTitle,bool,const float*,const float*,const float*,const float*,float*,float) noexcept {}
 void Logf(const char*,...) { }

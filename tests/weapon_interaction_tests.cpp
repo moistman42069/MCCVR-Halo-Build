@@ -37,6 +37,30 @@ struct Rig
 
 int main()
 {
+    for(int title=1;title<=6;++title) for(bool left:{false,true}) for(int location:{0,1})
+    {
+        Rig rig(static_cast<GameTitle>(title),left);
+        rig.c.pouchLocation=location;
+        Check(Zones(rig.s,rig.c,rig.pouch,rig.holster),"reserve location supports both hands and all titles");
+        const Vec original=rig.pouch,originalHolster=rig.holster;
+        Check((left?original.x>0:original.x<0)&&(location?original.z>0:original.z<0),
+            "reserve starts at the support-side front hip or behind its shoulder");
+        rig.c.pouchOffset={.10f,.07f,-.08f};
+        Check(Zones(rig.s,rig.c,rig.pouch,rig.holster)&&Near(originalHolster,rig.holster,.0001f),
+            "reserve offsets never move the separate weapon holster");
+        Check(Near(rig.pouch,original+Vec{left?-.10f:.10f,.07f,.08f},.0001f),
+            "reserve XYZ offsets mirror side only, preserving height and forward convention");
+        rig.Step();rig.GrabMagazine();
+        Check(rig.Step().holdingMagazine,"adjusted reserve location can issue an ordinary magazine grab");
+        rig.c.pouchOffset.x+=.02f;
+        const auto changed=rig.Step();
+        Check(!changed.holdingMagazine&&!changed.reloadRequested&&changed.consumeSupport,
+            "moving the reserve cancels an existing grab and drains its held grip");
+        rig.c.pouchOffset={std::numeric_limits<float>::infinity(),
+            std::numeric_limits<float>::quiet_NaN(),-999.f};
+        Check(Zones(rig.s,rig.c,rig.pouch,rig.holster)&&Finite(rig.pouch),
+            "invalid reserve coordinates never escape finite bounded geometry");
+    }
     for(const auto& model:weapon_model::kModels) if(model.vertexCount)
         for(bool left:{false,true})
     {
@@ -372,6 +396,16 @@ int main()
         Check(r.Step().consumeSupport,"inactive XR action cannot fabricate grip release");
         r.s.ready=true;r.s.supportGrip=1;
         Check(r.Step().consumeSupport&&!r.InsertMagazine().buttons,"inactive-action recovery cannot resurrect magazine transaction");
+    }
+    {
+        Rig r;r.Step();
+        Check(BlocksSupportGrab(r.GrabHolster()),"active holster draw owns two-hand release");
+        Check(r.DrawHolster().swapRequested,"holster draw completes normally");
+        const auto held=r.Step();
+        Check(held.consumePrimary&&!BlocksSupportGrab(held),"completed draw can retain primary grip without blocking support hand");
+        r.s.primaryGrip=0;r.Step();
+        r.Step(200);r.Step(200);r.Step(200); // allow the completed draw's cooldown
+        Check(BlocksSupportGrab(r.GrabMagazine()),"held reload magazine still blocks support acquisition");
     }
     std::printf("Weapon interactions: %u checks, %u failures\n",checks,failures);
     return failures?1:0;

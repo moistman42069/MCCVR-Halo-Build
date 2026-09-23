@@ -1,3 +1,4 @@
+#include "../common/dlss_logic.h"
 #include "contact_melee_queue.h"
 #include "../common/reach_wind_replay.h"
 #include "native_reload_policy.h"
@@ -53,9 +54,16 @@
 #include "haloce_unit_control.h"
 #include "title_reentry_probe.h"
 #include "roomscale.h"
+#include "physical_crouch_camera.h"
+#include "../common/physical_crouch_native_read.h"
+#include "../common/physical_crouch_additional_witnesses.h"
+#include "../common/physical_crouch_cached_read.h"
+#include "../common/physical_crouch_cached_witnesses.h"
 #include "d3d11_hook.h"
 #include "sigscan.h"
 #include "vr.h"
+#include "native_subtitles.h"
+#include "bloom_override.h"
 #include "ik.h"
 #include "title_adapter.h"
 #include "../common/authored_reticle_logic.h"
@@ -139,30 +147,7 @@ extern "C"
 
 std::atomic<bool> g_halo4NativePauseAvailable{false};
 
-extern "C" void __fastcall Halo4EffectHideBridge(
-    void* descriptor, void* matrix)
-{
-    if (!g_halo4EffectsEnabled || !descriptor || !matrix)
-        return;
-    __try
-    {
-        const uint8_t flags =
-            *(static_cast<const uint8_t*>(descriptor) + 0x4A);
-        if (!Halo4EffectDescriptorIsLocalFirstPerson(flags))
-            return;
-        constexpr uint32_t kFiniteFar = 0x461C4000u;
-        auto* const destination = static_cast<uint8_t*>(matrix);
-        std::memcpy(destination + 0x28, &kFiniteFar, sizeof(kFiniteFar));
-        std::memcpy(destination + 0x2C, &kFiniteFar, sizeof(kFiniteFar));
-        std::memcpy(destination + 0x30, &kFiniteFar, sizeof(kFiniteFar));
-        InterlockedIncrement64(&g_halo4EffectsHidden);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        // A torn optional effect record leaves that effect stock. The camera
-        // and OpenXR session are owned by a separate transaction.
-    }
-}
+#include "halo4_effect_hide_bridge.inl"
 #endif
 // M1 head tracking. We hook the game's per-frame camera-update function and,
 // each frame, overwrite the authoritative camera's forward/up vectors with the
@@ -327,7 +312,7 @@ namespace
     std::atomic<bool> g_camValid{false};
 
     // MEASURED world-up (gravity axis) for shoulder leveling. We do NOT assume it
-    // — the earlier hardcoded (0,0,1) broke the arm. Instead we EMA the engine's
+    // â€” the earlier hardcoded (0,0,1) broke the arm. Instead we EMA the engine's
     // own camera-up each tick; over normal (mostly level) play that average
     // converges to true vertical regardless of the engine's axis convention.
     std::atomic<float> g_worldUp[3] = {{0},{0},{1}};
@@ -338,7 +323,7 @@ namespace
     // first-person bones are camera-space positions in world units, so only an
     // exact match projects the weapon at the controller's true screen position.
     // Weapon size is a MESH scale (config gun_scale, Home/End), never a
-    // frustum scale — 07-15 shipped both at once (2.0 frustum x 0.33 mesh) and
+    // frustum scale â€” 07-15 shipped both at once (2.0 frustum x 0.33 mesh) and
     // the gun shrank to ~1/6 size ("barely visible").
 
     // M3 VR aim: the game's own aim-driven camera forward, captured each frame
@@ -1120,7 +1105,7 @@ namespace
     std::atomic<uint64_t> g_fpLWristDescendants[2] = {{0},{0}};
     // (Weapon-node anchoring for the dual seat was tried and headset-DISPROVEN
     // 2026-07-19 23:3x: the weapon node's origin/axes are arbitrary per weapon
-    // — plasma rifle center, spiker backwards. The universal anchor is the
+    // â€” plasma rifle center, spiker backwards. The universal anchor is the
     // carrier hand bone, whose authored grip is correct for every weapon.)
 
     // The composer sees authored bones immediately before Halo applies its
@@ -1490,12 +1475,12 @@ namespace
 
     // GAME BRIGHTNESS (2026-07-19). 0x278EE0 was MISIDENTIFIED as the HUD-scale
     // transform. In the headset, multiplying its two float args changes the GAME
-    // BRIGHTNESS/gamma, not the HUD size — a0/a1 feed a screen color/gamma
+    // BRIGHTNESS/gamma, not the HUD size â€” a0/a1 feed a screen color/gamma
     // constant (slots 0x280000/0x2D0000), NOT a HUD geometry transform. The user
     // liked the effect and asked for it as its own control, so we keep the hook
     // but drive it from `game_brightness` (default 1.0 = untouched). This does
     // NOT resize the HUD; real HUD scaling needs a different mechanism (a
-    // captured VR panel — the deferred 2D HUD has no single geometry lever).
+    // captured VR panel â€” the deferred 2D HUD has no single geometry lever).
     // ODST and Reach publish the SAME control from the same three floats, so
     // the one slider now drives all three titles (2026-08-06). Proof, from the
     // pinned retail modules: halo3+0x278EE0, halo3odst+0x2A6308 and
@@ -1828,6 +1813,10 @@ namespace
     std::atomic<void*> g_eyeFpView{nullptr};
     alignas(16) unsigned char g_eyeCompactCamera[0x90];
     alignas(16) unsigned char g_eyeDerivedBlock[0x90];
+    // DLSS sub-pixel jitter added to this eye's world projection centre
+    // ([8]/[9], NDC units). The first-person rebuild hook applies the same
+    // offset to the FP pair so gun and HUD jitter with the world.
+    float g_eyeProjectionJitterNdc[2][2]{};
 
     // RECONSTRUCTION Phase 0 (2026-07-19): the engine's FP render driver
     // (0x2835D4; contains all six FP camera rebuild calls + the FP passes).
@@ -1862,17 +1851,17 @@ namespace
             VR_TraceEvent("fp-driver", (int)flag, g_stereoEye.load());
         // (The hud_zoom layout-factor poke that lived here is retired
         // 2026-07-19: [view+0x2B0]+0x174 never resized the visible HUD. HUD
-        // sizing is now the vr.cpp HUD panel — capture, erase, re-present.)
+        // sizing is now the vr.cpp HUD panel â€” capture, erase, re-present.)
         // RECONSTRUCTION Phase A (2026-07-19). Measured architecture: the
         // engine STAGES the FP camera once per frame outside the eye windows
         // (center pose, crushed depth) and its in-window driver runs (~2 per
-        // eye, this exact call) DRAW using that staged camera — hence the flat
+        // eye, this exact call) DRAW using that staged camera â€” hence the flat
         // zero-disparity gun. Fix: immediately before each in-window run,
         // stamp BOTH staged FP camera pairs ({view+0x158,view+0x1E8} and the
         // sub-view {+0x6C8+0x08,+0x6C8+0x1E8}) with THIS EYE's world camera +
         // full world projection; the driver's own apply/upload then pushes OUR
         // values to the GPU through the engine's own path. Per-frame weapon
-        // pose, per-eye camera — the standard VR renderer architecture. The
+        // pose, per-eye camera â€” the standard VR renderer architecture. The
         // out-of-window staging runs are left untouched (they also rebuild
         // packets/palette); their center camera is re-stamped here before any
         // in-window draw, same thread, so ordering is deterministic.
@@ -1880,7 +1869,7 @@ namespace
         if (eyeView && view)
         {
             // Stamp the DRIVER'S OWN view object (the earlier == eyeView gate
-            // silently never matched — different object; identity settled by
+            // silently never matched â€” different object; identity settled by
             // the one-shot below). Both FP pairs + the engine's own constant
             // upload, so recorded FP draws executing later in this eye window
             // bind this eye's camera.
@@ -1936,19 +1925,19 @@ namespace
             }
             static std::atomic<bool> logged{false};
             if (!logged.exchange(true))
-                LOG("M3: per-eye FP render active — eye camera stamped into both FP pairs "
+                LOG("M3: per-eye FP render active â€” eye camera stamped into both FP pairs "
                     "before the in-window driver (true stereo weapon)");
         }
         g_origFpDriver(view, flag);
     }
     // Motion blur (2026-07-19): Halo 3's multi-tap camera motion blur derives
     // its blur vector from a previous-frame camera. With two eye renders per
-    // frame, an eye's "previous" camera is the OTHER eye's — a constant fake
+    // frame, an eye's "previous" camera is the OTHER eye's â€” a constant fake
     // velocity that smears bright content into discrete repeated echoes even
     // with the head still (the long-standing "left-eye ghost", reopened by the
     // user 2026-07-18). The engine's live tuning globals are exposed through
     // its own debug-var table ({name_ptr, type, value_ptr} entries in .data);
-    // we resolve them BY NAME at runtime — no hardcoded RVAs — and force the
+    // we resolve them BY NAME at runtime â€” no hardcoded RVAs â€” and force the
     // blur scales/max to zero while the user has motion blur off (default:
     // off, the VR-comfort standard). The tag loader at ~0x28D3E0 rewrites
     // these globals when effect params load, so they are re-zeroed each frame.
@@ -2237,10 +2226,10 @@ namespace
 
     // VRIK stage: the engine's own switches for body-in-first-person, found in
     // the same debug-var table (resolved BY NAME, no RVAs):
-    //   director_disable_first_person — the camera director stops treating the
+    //   director_disable_first_person â€” the camera director stops treating the
     //     view as first person, which is the engine's condition for drawing
-    //     the player biped (running legs, crouch — game-animated).
-    //   render_first_person — master switch for the old viewmodel layer.
+    //     the player biped (running legs, crouch â€” game-animated).
+    //   render_first_person â€” master switch for the old viewmodel layer.
     // Applied per frame while the F1 "Show body" WIP toggle is on; original
     // dwords are captured on first apply and restored when toggled off.
     // Each lever: value slot + captured original + the value to force when the
@@ -3582,7 +3571,7 @@ namespace
     }
 
     // (Removed 2026-07-19: the old ResolveChudScale/ApplyChudScale patched the
-    // 1.0f immediates in 0x278EE0 — the headset proved those are the CHUD ALPHA,
+    // 1.0f immediates in 0x278EE0 â€” the headset proved those are the CHUD ALPHA,
     // not size. That function turned out to drive game BRIGHTNESS; it's now the
     // brightness hook, HudXformHook. HUD layout is instead controlled through
     // the verified chud_globals curvature fields above.)
@@ -4038,8 +4027,8 @@ namespace
     //   output[i] = output[parent[i]] * sourceRecord[i]       (0x232099)
     // - Writing `defaults` (03:27 build) moved ONLY the muzzle flash: the
     //   composed output feeds markers/effects, and nothing else.
-    // - The visible MESH recomposes from the 0x20-byte orientation bank — the
-    //   composers' `source` argument — with its own camera-derived root
+    // - The visible MESH recomposes from the 0x20-byte orientation bank â€” the
+    //   composers' `source` argument â€” with its own camera-derived root
     //   (that is how it stays head-glued in vanilla). Editing the bank root
     //   is the only lever that has ever moved the actual gun in a headset.
     // So replace the wrist ancestor's bank record (quaternion + translation)
@@ -4055,7 +4044,7 @@ namespace
     // ancestry chain BELOW the root (found by walking the tag node table's
     // parent words, never guessed). Rationale, from tonight's falsifications:
     // the renderer rebuilds the mesh from the bank's CHILD records under its
-    // own camera-derived root — record 0 is replaced by that root (why the
+    // own camera-derived root â€” record 0 is replaced by that root (why the
     // record-0 test moved only the camera feedback, never the mesh), children
     // are kept. The game-thread composition consumes the same record, so the
     // markers/flash inherit the pose with no separate camera_control edit.
@@ -4117,11 +4106,11 @@ namespace
             return mask;
         };
         const uint64_t descendants=subtreeOf(wristIndex);
-        // Left arm: l_hand global string id 0xA2 — LIVE-PROVEN (2026-07-19
+        // Left arm: l_hand global string id 0xA2 â€” LIVE-PROVEN (2026-07-19
         // skeleton dump: index 5 = id 0xA2, parent chain 5<-3<-1, subtree 16;
         // right mirror 6=0xA6<-4<-2, subtree 21 incl. the 5 gun bones 37-41).
         // Both offline derivations (0xA1, then 0x9E from the disk pointer
-        // table) were falsified live — trust only the runtime skeleton dump.
+        // table) were falsified live â€” trust only the runtime skeleton dump.
         constexpr uint32_t kLeftHandStringIndex=0xA2;
         int lWristIndex=-1;
         for(int i=0;i<count;++i)
@@ -4173,7 +4162,7 @@ namespace
         // recorded. Key it on the skeleton's identity instead: every weapon
         // SWITCH dumps its chain + skeleton, and a missing left wrist is
         // called out loudly. Rate-limited (dual-wield could alternate
-        // skeletons per frame). Log-only — behavior unchanged.
+        // skeletons per frame). Log-only â€” behavior unchanged.
         if constexpr (kEnableRetiredHalo3Diagnostics)
         {
         uint64_t skelKey=(uint64_t)count;
@@ -4189,15 +4178,15 @@ namespace
             loggedSkelKey.store(skelKey,std::memory_order_relaxed);
             lastSkelLogMs.store(skelNowMs,std::memory_order_relaxed);
             if (lWristIndex<0)
-                LOG("M3 VRIK PROBE: LEFT WRIST NOT FOUND on this skeleton — left "
+                LOG("M3 VRIK PROBE: LEFT WRIST NOT FOUND on this skeleton â€” left "
                     "arm stays game-animated (the 'hand stuck on gun' symptom)");
-            LOG("M3 VRIK: arm chains — R wrist %d/elbow %d/shoulder %d (subtree %d) | "
+            LOG("M3 VRIK: arm chains â€” R wrist %d/elbow %d/shoulder %d (subtree %d) | "
                 "L wrist %d/elbow %d/shoulder %d (subtree %d)",
                 wristIndex,elbowIndex,shoulderIndex,(int)__popcnt64(descendants),
                 lWristIndex,lElbowIndex,lShoulderIndex,(int)__popcnt64(lDescendants));
             // Full skeleton dump, per weapon: index=id/parent for every record.
             // This is the ground truth every offline id derivation failed to
-            // reproduce — keep it in every log.
+            // reproduce â€” keep it in every log.
             char line[512]; int pos=0; int from=0;
             for(int i=0;i<count;++i)
             {
@@ -4254,11 +4243,11 @@ namespace
 
         // The engine record is not composed with anymore: its content is the
         // per-tick camera bake (rest pose identity), and composing with it
-        // re-imports the head at whatever phase the animator sampled — the
+        // re-imports the head at whatever phase the animator sampled â€” the
         // dual-tracking / snap-turn fling. The record is replaced outright.
 
         // This target record's scale is deliberately NOT written: camera_control
-        // descends from this node, and changing it zooms the game camera —
+        // descends from this node, and changing it zooms the game camera â€”
         // the user's "scale control scales the entire world" report. The
         // engine's animated value is preserved; a mesh-only size lever is an
         // open follow-up (gun_scale currently has no effect on the mesh).
@@ -4266,12 +4255,12 @@ namespace
         //     if (bone.Parent == 0 || boneArray[bone.Parent].Parent == 0)
         //         outBoneTransforms[i].scale = 0.0f;   // hide the arms
         // The span from the camera-anchored body to the hand-anchored wrist
-        // CANNOT be posed away — the shipped Halo VR mod hides the geometry
+        // CANNOT be posed away â€” the shipped Halo VR mod hides the geometry
         // that spans it. Ours: apply the same parent-or-grandparent criterion
         // only outside the controller and camera root branches, i.e. to the
         // body/other-arm geometry stretching between the two
         // anchors. Our own branch (child) keeps its scale, and the branch
-        // camera_control descends from is never touched — a scale there zooms
+        // camera_control descends from is never touched â€” a scale there zooms
         // the game camera (the "scale moves the whole world" report).
         const int cc=selectedIndex;
         int camBranch=-1;
@@ -4317,7 +4306,7 @@ namespace
         // The renderer interpolates TWO sim snapshots of these records (the
         // engine's 60Hz-sim -> 120Hz-render path). Writing only the half being
         // composed leaves the other half head-glued and the visible gun lands
-        // midway between head and hand — the reported "weird in-between
+        // midway between head and hand â€” the reported "weird in-between
         // state". Write the sibling half too (banks at TLS+0x560, one 0x1000
         // bank per slot, two 0x800 halves of 64 records each).
         auto** tlsSlots=reinterpret_cast<void**>(__readgsqword(0x58));
@@ -4446,7 +4435,7 @@ namespace
             // whole composed assembly a fixed 0.3 world units (~1 m) to the
             // LEFT (camera space: +x forward, +y left, +z up). The visible gun
             // either moves or it does not, and that single bit tells us whether
-            // the mesh reads these matrices at all — which the disassembly
+            // the mesh reads these matrices at all â€” which the disassembly
             // cannot, because our edits provably reach both the effects anchor
             // and the mesh's own render packet.
             for(int i=0;i<count;++i) bones[i].translation[1]+=0.3f;
@@ -4537,7 +4526,7 @@ namespace
     // Written by the game thread (FpInterpolateHook), read by DesiredWristWorld.
     // Authored barrel-in-wrist direction per held-weapon slot: the primary
     // (slot 0) aligns to the right controller ray, the dual-wield secondary
-    // (slot 1) to the left. Each skeleton's own animated wrist is measured —
+    // (slot 1) to the left. Each skeleton's own animated wrist is measured â€”
     // the secondary's authored pose differs from the primary's.
     std::atomic<float> g_barrelInWrist[2][3];
     std::atomic<bool> g_barrelInWristValid[2]={{false},{false}};
@@ -5066,7 +5055,7 @@ namespace
                     static std::atomic<bool> loggedDual{false};
                     if (!loggedDual.exchange(true))
                         LOG("DUAL: slot 1 FP context captured (%d bones, wrist %d, "
-                            "camera_control %d) — left-hand weapon path live",
+                            "camera_control %d) â€” left-hand weapon path live",
                             count,wrist,cameraControl);
                 }
                 // Measure the authored barrel-in-wrist direction (row 0 of the
@@ -5094,7 +5083,7 @@ namespace
                         static std::atomic<bool> loggedBarrel{false};
                         if (slot==0 && !loggedBarrel.exchange(true))
                             LOG("M3 VRIK: authored barrel-in-wrist measured "
-                                "(%.3f, %.3f, %.3f) — expect ~(1,0,0)+cant if the "
+                                "(%.3f, %.3f, %.3f) â€” expect ~(1,0,0)+cant if the "
                                 "camera-forward invariant holds",b[0],b[1],b[2]);
                     }
                 }
@@ -5114,11 +5103,11 @@ namespace
     // (rotation AND position, all axes), and the same T is applied to every
     // bone, so the assembly stays exactly as authored/animated. No cached
     // wrist->camera_control relation, no synthesized bones, no sim-clock
-    // state — the layer the user correctly called a "mask" is gone. Barrel
+    // state â€” the layer the user correctly called a "mask" is gone. Barrel
     // mounting is a CONSTANT user trim (gun_pitch/yaw/roll + gun_forward_m),
     // not a per-frame estimate.
     // ONE shared definition of "where a wrist glued to its controller belongs
-    // in the world" — used by the visible palette, the arm IK, AND the
+    // in the world" â€” used by the visible palette, the arm IK, AND the
     // muzzle/marker path so the gun, flash, and hands can never diverge. The
     // right hand carries the weapon mount trim + forward standoff; the left
     // hand mirrors the yaw/roll trim and has no standoff.
@@ -5134,7 +5123,7 @@ namespace
         memcpy(mounted, basisC, sizeof(mounted));
         // AUTO BARREL ALIGNMENT (weapon hands only): swing the default hand by
         // the minimal world rotation that puts the measured authored barrel
-        // axis exactly on the controller ray (basis column 0) — the SAME ray
+        // axis exactly on the controller ray (basis column 0) â€” the SAME ray
         // the cursor and bullet steering use. The barrel therefore sits on the
         // cursor line by construction at zero trim. User calibration comes
         // afterward so pitch, yaw, and roll remain independent controls.
@@ -5383,7 +5372,7 @@ namespace
         // EYE, and the palette consumer's `root` is that eye's camera. Any
         // world position built from it (the planted shoulder, the solved
         // elbow) shifts by the eye offset, so the two eyes solved DIFFERENT
-        // arms — the user saw the bare left arm split between eyes. Build all
+        // arms â€” the user saw the bare left arm split between eyes. Build all
         // WORLD-space poses from the live CENTER camera instead; only the
         // final record conversion (invRoot) may use the eye root, which makes
         // the rendered world pose eye-independent and the stereo fuse.
@@ -5407,7 +5396,7 @@ namespace
         }
 
         // SHOULDER LEVELING (2026-07-19): the arm rest pose is composed from the
-        // camera frame, so its FULL pitch/roll rides the head — look down and the
+        // camera frame, so its FULL pitch/roll rides the head â€” look down and the
         // shoulder swings up into your face (user: "the shoulders follow my head,
         // they don't stay in place"). Build a torso frame with the camera's
         // HEADING only (yaw about world-up +Z; Blam is a Z-up engine, and the
@@ -5423,7 +5412,7 @@ namespace
             float cb[9];
             if (NormalizedBasis(centerRoot,cb))
             {
-                // MEASURED world-up (not assumed) — see g_worldUp / CamCopyHook.
+                // MEASURED world-up (not assumed) â€” see g_worldUp / CamCopyHook.
                 const float U[3]={
                     explicitTargets ? 0.0f : g_worldUp[0].load(),
                     explicitTargets ? 0.0f : g_worldUp[1].load(),
@@ -5454,7 +5443,7 @@ namespace
         const BoneMatrix& armRoot = torsoRoot;
 
         // VRIK ARM IK: keep the body exactly where the game posed it and bend
-        // ONLY the arms so each wrist reaches its controller — shoulders
+        // ONLY the arms so each wrist reaches its controller â€” shoulders
         // planted, elbows solved analytically (ik.cpp), hand + gun ride the
         // wrist rigidly. Right arm is required; the left arm applies when its
         // chain resolved and the left controller is tracked.
@@ -5534,7 +5523,7 @@ namespace
                     { pole[0]=0; pole[1]=0; pole[2]=-1; }
                     // Elbow pole bias: OUT (away from the torso, camera left/
                     // right column) and DOWN, 75/25 over the authored pole
-                    // (user: elbows "feel inward — I want them to stick
+                    // (user: elbows "feel inward â€” I want them to stick
                     // outward"). Root is the camera: cols fwd/left/up.
                     {
                         float rootB[9];
@@ -5558,7 +5547,7 @@ namespace
                     // chain that stops SHORT of the hand, so the hand visibly
                     // detaches from the forearm. Stretch both bones so the arm
                     // always reaches the wrist (skinning stretches the mesh with
-                    // it) — capped so it never looks rubbery. Right arm only
+                    // it) â€” capped so it never looks rubbery. Right arm only
                     // (the user's left is perfect and untouched here anyway).
                     float solveUpper=upperLen, solveLower=lowerLen;
                     {
@@ -5660,15 +5649,15 @@ namespace
                     };
                     if (dual)
                     {
-                        // HEADSET RESULTS: 22:51 build — the visible arm is
+                        // HEADSET RESULTS: 22:51 build â€” the visible arm is
                         // skinned to the lWrist/lElbow/lShoulder chain, not the
-                        // gun chain. 22:59 build — carrying that arm at its
+                        // gun chain. 22:59 build â€” carrying that arm at its
                         // AUTHORED offset from the gun put the hand ~1 m left:
                         // with the stock weapon-IK branch patched off, the
                         // secondary's animation never poses l_hand on the grip,
                         // so there is no authored grip relation to preserve.
                         // Target the visible hand at the LEFT CONTROLLER itself
-                        // — the identical, user-tuned support-hand treatment
+                        // â€” the identical, user-tuned support-hand treatment
                         // (palm correction + mirrored trim, F1 slider applies).
                         if (context.lShoulder>=0 && context.lShoulder<context.count &&
                             context.lElbow>=0 && context.lElbow<context.count &&
@@ -5758,8 +5747,8 @@ namespace
                     }
                     // Uniform size trim about the gripping hand (grip stays put).
                     // Each side scales its OWN wrist subtree. Before 2026-07-20
-                    // the mask here was always context.wristDescendants — the
-                    // RIGHT wrist's bones — even when the anchor switched to the
+                    // the mask here was always context.wristDescendants â€” the
+                    // RIGHT wrist's bones â€” even when the anchor switched to the
                     // left wrist, so no left-hand size value ever reached a bone
                     // ("the left arm is not scalable").
                     auto trimSubtree=[&](int anchorBone,uint64_t mask,
@@ -5817,7 +5806,7 @@ namespace
                     cacheSolvedPalette(g_fpPaletteScratch);
                     static std::atomic<bool> loggedIk{false};
                     if (!explicitTargets && !loggedIk.exchange(true))
-                        LOG("M3 VRIK: arm IK active — shoulder %d planted, elbow %d solved, "
+                        LOG("M3 VRIK: arm IK active â€” shoulder %d planted, elbow %d solved, "
                             "wrist %d + %lld subtree bones to controller",
                             context.shoulder,context.elbow,context.wrist,
                             (long long)__popcnt64(context.wristDescendants));
@@ -5854,7 +5843,7 @@ namespace
                 g_armFailurePublished.store("invert-root",std::memory_order_relaxed);
                 g_armFailureSide.store(1,std::memory_order_release);
             }
-            // IK could not solve this frame — fall through to rigid parent.
+            // IK could not solve this frame â€” fall through to rigid parent.
         }
 
         // M = rootEye^-1 * T * rootCenter applied per record: the WORLD result
@@ -5893,7 +5882,7 @@ namespace
         }
         // Left hand size in the rigid path. The loop above already scaled the
         // WHOLE assembly by meshScale, so only the remaining ratio is applied
-        // here — the left hand ends up at left_hand_scale either way, and the
+        // here â€” the left hand ends up at left_hand_scale either way, and the
         // slider behaves the same with arm IK on or off.
         {
             const float leftScale=explicitTargets
@@ -6144,8 +6133,8 @@ namespace
         // FLOATING HANDS (optional, OFF by default): a pure presentation filter
         // over the already-solved palette. The VRIK solve above still tracks the
         // hands to the controllers exactly as normal; here we only collapse the
-        // bones that are NOT part of either hand-or-gun subtree — the shoulders,
-        // elbows, and forearms — so their skinned geometry vanishes and only the
+        // bones that are NOT part of either hand-or-gun subtree â€” the shoulders,
+        // elbows, and forearms â€” so their skinned geometry vanishes and only the
         // hands and held guns remain. Scale is a PROVEN render input (the same
         // field the gun_scale trim resizes the visible mesh with), so shrinking a
         // bone's scale toward zero drives its vertices to the joint origin: an
@@ -6247,18 +6236,31 @@ namespace
         char* base = static_cast<char*>(view);
         memcpy(base + 0x08, g_eyeCompactCamera, sizeof(g_eyeCompactCamera));
         memcpy(base + 0x1E8, g_eyeDerivedBlock, sizeof(g_eyeDerivedBlock));
+        // The 0x90-byte derived copy above stops short of the projection's
+        // centre terms, which the engine just rebuilt for this FP pair. When
+        // DLSS jitters the world projection, shift these by the same amount so
+        // the gun/HUD layer samples the same sub-pixel phase; zero when off.
+        {
+            const int fpEye = g_stereoEye.load(std::memory_order_relaxed);
+            if (fpEye >= 0 && fpEye <= 1)
+            {
+                float* fpProjection = reinterpret_cast<float*>(base + 0x1E8 + 0x78);
+                fpProjection[8] += g_eyeProjectionJitterNdc[fpEye][0];
+                fpProjection[9] += g_eyeProjectionJitterNdc[fpEye][1];
+            }
+        }
         if (g_fpCameraUpload)
             g_fpCameraUpload(base + 0x08, base + 0x1E8);
         static std::atomic<bool> logged{false};
         if (!logged.exchange(true))
-            LOG("M3: per-eye FP camera active — gun/HUD now render in full world "
+            LOG("M3: per-eye FP camera active â€” gun/HUD now render in full world "
                 "projection (depth uncrushed)");
     }
 
     // (EnforceHudElements + ChudStateCopyHook REMOVED 2026-07-19 evening. They
     // force-wrote chud+0x144..0x14A every frame with an offset map the headset
     // DISPROVED (0x146 was a nav dot, not the crosshair; 0x32F97C copies only
-    // 0x144..0x147) — the stomping suppressed the whole HUD except the objective
+    // 0x144..0x147) â€” the stomping suppressed the whole HUD except the objective
     // text and the F1 element checkboxes did nothing. The CHUD struct is now
     // fully game-managed; the only element control is the class-gated
     // crosshair predicate in 0x2EDF24. Do not write into
@@ -6267,7 +6269,7 @@ namespace
     // DIAGNOSTIC (hud_probe): log the bytes in the CHUD struct that CHANGE, to
     // locate (a) the enemy target-lock state that turns the OG reticle red and
     // (b) the per-element visibility flags (health / motion sensor / ammo).
-    // Aim at an enemy, then away, then toggle HUD elements — the flipped
+    // Aim at an enemy, then away, then toggle HUD elements â€” the flipped
     // offsets appear in the log. Log-only; changes nothing. Called from
     // CamCopyHook where the CHUD pointer is already resolved.
     void ChudProbe()
@@ -6315,13 +6317,13 @@ namespace
     // Post-editing the composed output is retired: it is downstream of the
     // engine's own weapon-lag pass (0x2C484B), which rotates every bone except
     // camera_control and so overwrote the mesh while leaving the muzzle flash
-    // on our pose — exactly the reported split. `weapon_probe` still drives the
+    // on our pose â€” exactly the reported split. `weapon_probe` still drives the
     // old output path, and only that, as a diagnostic.
-    // THE MESH FIX — a call-site patch, not a detour (2026-07-15 ~04:00).
+    // THE MESH FIX â€” a call-site patch, not a detour (2026-07-15 ~04:00).
     // Proven chain, all read offline: the visible first-person mesh is built by
     // the object-node recomposer at halo3+0x341768 (single caller 0x3424DD),
     // which dequantizes the object's compressed animation and roots the chain
-    // with `call 0x3453DC` at +0x341A5B — a generic object-root getter with 56
+    // with `call 0x3453DC` at +0x341A5B â€” a generic object-root getter with 56
     // callers that fabricates {MakeTransformFromXZ(fwd@+0x5C, up@+0x68),
     // pos@+0x50} from the object datum. The FP arms/weapon objects sit exactly
     // at the camera every frame; that collocation IS the head-glue, and it is
@@ -6331,7 +6333,7 @@ namespace
     // InterlockedExchange, installed at DLL load before any level runs) to a
     // 12-byte trampoline that reaches FpRootShim. The shim calls the REAL
     // getter, and only if the returned root is camera-collocated replaces it
-    // with the controller's world pose — a write into a STACK buffer the
+    // with the controller's world pose â€” a write into a STACK buffer the
     // renderer consumes immediately. No engine function is detoured, none of
     // the other 55 callers are affected, and no simulation state is touched.
     // Failure mode if MCC updates: signature miss -> log + gun stays glued.
@@ -6344,7 +6346,7 @@ namespace
     // and rotates it via `call 0x120DF8` at halo3+0x2C485B with a camera-
     // pitch/turn matrix. That is the exact flash-vs-mesh partition observed in
     // every headset test tonight. Detouring 0x120DF8 crashes on level load
-    // (proven, banned); patching THIS ONE CALL SITE affects no other caller —
+    // (proven, banned); patching THIS ONE CALL SITE affects no other caller â€”
     // the same aligned-disp32 technique that survived a full session at
     // 0x341A5B. The shim skips the rotation only for bone addresses inside an
     // assembly we re-rooted this frame (thread_local ranges, same thread that
@@ -6353,14 +6355,14 @@ namespace
     SwayApplyFn g_realSwayApply = nullptr;
 
     // CRASH LESSON (both fatal errors tonight, same root cause): halo3.dll is
-    // LTCG-optimized — the sway loop keeps its counter (r9d), bone pointer
+    // LTCG-optimized â€” the sway loop keeps its counter (r9d), bone pointer
     // (r8) and count (r10d) LIVE IN VOLATILE REGISTERS across `call 0x120DF8`,
     // because the compiler knows that function never touches them. ANY
     // compiled C/C++ interposition (a MinHook detour or a C++ shim) clobbers
     // those registers and corrupts the caller -> wild writes -> fatal error on
     // level load. Interposing engine-internal calls therefore requires a
     // hand-assembled shim restricted to registers the caller provably treats
-    // as dead — here, only RAX (verified: reloaded/unused after the call).
+    // as dead â€” here, only RAX (verified: reloaded/unused after the call).
     //
     // The emitted shim (see InstallHook) compares rdx (the bone) against
     // these bounds and returns without rotating when it lies inside an
@@ -6421,7 +6423,7 @@ namespace
         float cam[3] = {g_baseCamX.load(),g_baseCamY.load(),g_baseCamZ.load()};
         // C21: in a first-person vehicle seat the engine camera source is the
         // occupant's own head marker, so using it here hangs the arms and gun
-        // off the seated biped's FACE — rotate the view and they are dragged
+        // off the seated biped's FACE â€” rotate the view and they are dragged
         // with it. Anchor them to the seat itself instead: rigid in the
         // vehicle's frame, so the vehicle still carries them and the head no
         // longer does. Unavailable anchor keeps the existing origin, so this
@@ -6438,8 +6440,8 @@ namespace
         Halo3SelectHandOrigin(g_config.vehicle_hands_follow_body,
                               bodyAnchorValid, bodyAnchor, cam);
         // Forward standoff along the controller's own aim direction (basis
-        // column 0 = forward). EVERY left-hand use — support hand AND the
-        // dual-wield gun seat — is the same wrist-to-palm PALM point (23:17
+        // column 0 = forward). EVERY left-hand use â€” support hand AND the
+        // dual-wield gun seat â€” is the same wrist-to-palm PALM point (23:17
         // headset result: seating the dual gun by the weapon depth put it on
         // the wrist, ~12 cm behind the rendered hand). Right keeps its
         // independent weapon offset.
@@ -6466,7 +6468,7 @@ namespace
     }
 
     // Repurposed 2026-07-19 as the VRIK Stage A2 probe. This call-site patch
-    // sits inside the OBJECT-node recomposer (0x341768) — the pipeline that
+    // sits inside the OBJECT-node recomposer (0x341768) â€” the pipeline that
     // animates every visible biped, including the player's own natively
     // visible legs. With the Bone-probe checkbox on, every recomposed object's
     // root is pushed 0.3 wu left. Legs/NPCs visibly shifting = this boundary
@@ -6518,23 +6520,23 @@ namespace
 
     // CENSUS RESULT (2026-07-19, retired): the two composer hooks we install
     // process ONLY first-person weapon/arm skeletons (42-45 bones, camera-space
-    // at origin) — never world bipeds. The biped skeleton lives in the render
+    // at origin) â€” never world bipeds. The biped skeleton lives in the render
     // pool at RVA ~0x468xxxx (found live via camscan; see docs/VRIK-ROADMAP.md).
     // The census + biped probe that proved this are removed.
 
     // BANK WRITES ARE BANNED (2026-07-15, 03:4x headset result): writing the
     // controller pose into bank record 0 did NOT move the mesh, but it DID
-    // bleed the wrist into the body/camera — record 0 propagates into
+    // bleed the wrist into the body/camera â€” record 0 propagates into
     // camera_control, which the game reads back to drive the camera. The
     // ApplyControllerToBankRoot helper is intentionally no longer called;
     // kept only as documentation of the falsified lever.
     // BULLET-SPAWN FIX (2026-07-19): the projectile spawn / effect origins
     // read the COMPOSED output, which stayed AUTHORED (head-glued) once the
-    // bank write went dormant — bullets emerged at the authored center-screen
+    // bank write went dormant â€” bullets emerged at the authored center-screen
     // muzzle, "slightly left and ahead of the gun". Composed output is WORLD
     // space (output[0] = defaultsRoot * record0), so snap ONLY the right-wrist
-    // subtree onto the shared controller wrist target. Everything else —
-    // especially record 0 and camera_control — is left untouched: rewriting
+    // subtree onto the shared controller wrist target. Everything else â€”
+    // especially record 0 and camera_control â€” is left untouched: rewriting
     // those is the falsified "wrist moves the world" camera feedback.
     bool ApplyControllerToComposedWristSubtree(BoneMatrix* output)
     {
@@ -6549,7 +6551,7 @@ namespace
         float meshScale=1.0f;
         BoneMatrix desired{},invWrist{},t{};
         // Slot 1 (dual-wield secondary): effect origins belong on the LEFT
-        // controller, matching its visible weapon — anchored on the carrier
+        // controller, matching its visible weapon â€” anchored on the carrier
         // hand bone exactly like the visible seat.
         const bool dual=(slot==1);
         const int transformAnchor=dual?lWrist:wrist;
@@ -6598,7 +6600,7 @@ namespace
         CacheAuthoredFirstPersonAlignment(output,start,count);
         // NOTE (2026-07-18): wiring ApplyControllerToComposedWristSubtree here
         // (the "bullet_snap" experiment) caused the RIGHT HAND to spin
-        // uncontrollably and pushed bullets to stage-left — the composed output
+        // uncontrollably and pushed bullets to stage-left â€” the composed output
         // is downstream of the engine weapon-lag pass and re-snapping the wrist
         // fights it. Reverted to the known-good M3 gun tracking. Bullet origin
         // will be fixed via a weapon-fire hook (origin+direction swap) instead,
@@ -6622,7 +6624,7 @@ namespace
         if (FindFirstPersonWeapon(output,slot,weapon))
             CacheAuthoredFirstPersonAlignment(
                 output,0,*reinterpret_cast<int*>(weapon+0x49C));
-        // (bullet_snap reverted here too — see ComposeBonesHook note.)
+        // (bullet_snap reverted here too â€” see ComposeBonesHook note.)
         if (g_config.weapon_probe) ApplyControllerToComposedBones(model,output);
     }
 
@@ -6750,6 +6752,13 @@ namespace
     void Halo3ApplySeatYawFollow();
     bool Halo3SeatAuthorsSteeringNow();
     bool SharedVrTurnSeated();
+
+    void Halo3PreparePhysicalCrouchCamera(uintptr_t base,size_t size);
+    void Halo3ApplyPhysicalCrouchCamera(float* position,float physicalDown,bool playerControlled);
+    void OdstPreparePhysicalCrouchCamera(uintptr_t base,size_t size);
+    void OdstApplyPhysicalCrouchCamera(float* position,float physicalDown,bool playerControlled);
+    void PrepareCachedPhysicalCrouch(GameTitle title,uintptr_t base,size_t size,uint32_t generation);
+    void ApplyCachedPhysicalCrouch(GameTitle title,float* position,float physicalDown,bool playerControlled);
 
     bool ApplyHeadLook(void* src)
     {
@@ -6895,6 +6904,8 @@ namespace
             }
         }
 
+        Halo3ApplyPhysicalCrouchCamera(pos,
+            -Clamp((hpos[1]-g_headPosRef[1])*g_worldScale.load(),-1.5f,1.5f),!cinematic);
         Roomscale_Camera(GameTitle::Halo3, !cinematic && Game_RoomscaleCameraAllowed(GameTitle::Halo3),
             pos, hpos, q, fwd, g_headPosRef, g_worldScale.load());
 
@@ -7021,7 +7032,7 @@ namespace
         static_cast<uint8_t>(Halo3NodeBindingState::NotInstalled)};
     // C7 identity probe: the tag-instance-table and tag-data-base globals,
     // decoded from rip-relative displacements inside the MATCHED type
-    // accessor body (E4 instruction layout) — never from absolute RVAs.
+    // accessor body (E4 instruction layout) â€” never from absolute RVAs.
     void** g_halo3TagInstanceTable = nullptr;
     void** g_halo3TagDataBase = nullptr;
     std::atomic<uint64_t> g_halo3VehicleSnapshot{0};
@@ -7050,7 +7061,7 @@ namespace
 
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
     // O1: ODST's own vehicle binding. Deliberately a separate set of globals
-    // from the Halo 3 ones above — the two titles' offsets differ, and only
+    // from the Halo 3 ones above â€” the two titles' offsets differ, and only
     // one title's camera core is ever installed, so sharing state could only
     // ever let a stale pointer outlive its module.
     //
@@ -7156,7 +7167,7 @@ namespace
         // Blender points are tag/model-space coordinates.
         float anchor[3];
         // C21: the same placement BEFORE the occupant-head bounce is folded in
-        // — rigid in the vehicle's own frame. The camera wants the bounce; the
+        // â€” rigid in the vehicle's own frame. The camera wants the bounce; the
         // hands must not have it, or they inherit the seated biped's head
         // animation. See Halo3ComputeSeatBodyAnchor.
         float anchorBase[3];
@@ -7168,7 +7179,7 @@ namespace
         int32_t seatIndex = -1;
         int32_t parentHandle = -1;
         int32_t nativeInVehicle = 0;
-        // C8: the identity the authored point is keyed on — the seated
+        // C8: the identity the authored point is keyed on â€” the seated
         // parent's, or the CARRIER's when the player is a mounted-turret
         // gunner (whose point is authored in carrier space). Unknown never
         // resolves to a point, so an unidentified vehicle stays stock.
@@ -7207,32 +7218,6 @@ namespace
         Halo3HeadSettleLatch settle{};
     };
     Halo3HeadReference g_halo3HeadReference;
-
-    enum class Halo3NativeSeatState : uint32_t
-    {
-        Stock = 0,
-        Active,
-        StockFallback,
-    };
-
-    // C17 loaded-tag transaction. Camera-thread owned; worker-visible fields
-    // are atomics used only for transition logging. The saved values are
-    // restored on seat change/exit or when the feature is disabled.
-    struct Halo3NativeSeatPatch
-    {
-        uint32_t generation = 0;
-        uint32_t definitionIndex = 0xFFFFFFFFu;
-        int seatIndex = -1;
-        uint32_t* flags = nullptr;
-        int32_t* cameraTrackCount = nullptr;
-        uint32_t originalFlags = 0;
-        int32_t originalCameraTrackCount = 0;
-        bool active = false;
-    };
-    Halo3NativeSeatPatch g_halo3NativeSeatPatch;
-    std::atomic<uint32_t> g_halo3NativeSeatState{
-        static_cast<uint32_t>(Halo3NativeSeatState::Stock)};
-    std::atomic<uint32_t> g_halo3NativeSeatSerial{0};
 
     struct Halo3NativeAnchorCalibration
     {
@@ -7317,10 +7302,10 @@ namespace
                                    float jeepFields[2], int32_t* scoutSpecific,
                                    float* scoutAccel, float tails[3]);
 
-    // Physics type is a class, not a vehicle. The §E5 definition fields the
+    // Physics type is a class, not a vehicle. The Â§E5 definition fields the
     // C7 session confirmed in process (engine_moment 2000 hog / 650 mongoose;
     // alien_scout specific_type 1/3/4) turn it into an identity. A read that
-    // fails, or a value matching nothing, yields Unknown — never a guess.
+    // fails, or a value matching nothing, yields Unknown â€” never a guess.
     Halo3VehicleId Halo3ResolveIdentityCached(uint32_t defIndex,
                                               int physicsType,
                                               uint32_t generation)
@@ -7685,180 +7670,7 @@ namespace
     // apart from the correction never running.
     std::atomic<uint32_t> g_halo3SeatAimReOrigins{0};
 
-    // The occupied Halo 3 seat's own flags, or 0 when no seat is owned. The
-    // first-person seat patch already re-reads this record from the loaded tag
-    // on entry and keeps the ORIGINAL word, so no second tag walk is needed.
-    uint32_t Halo3OccupiedSeatFlags()
-    {
-        const Halo3NativeSeatPatch& patch = g_halo3NativeSeatPatch;
-        if (!patch.active ||
-            g_halo3NativeSeatState.load(std::memory_order_acquire) !=
-                static_cast<uint32_t>(Halo3NativeSeatState::Active))
-        {
-            return 0;
-        }
-        return patch.originalFlags;
-    }
-
-    void Halo3RestoreNativeSeatPatch()
-    {
-        Halo3NativeSeatPatch& patch = g_halo3NativeSeatPatch;
-        const bool hadState = patch.active ||
-            g_halo3NativeSeatState.load(std::memory_order_relaxed) !=
-                static_cast<uint32_t>(Halo3NativeSeatState::Stock);
-        if (patch.active && patch.generation &&
-            patch.generation == TitleAdapter_GetGeneration(GameTitle::Halo3))
-        {
-            __try
-            {
-                const uint32_t patchedFlags =
-                    Halo3FirstPersonSeatFlags(patch.originalFlags);
-                // Restore only values that are still ours. A concurrent engine
-                // change wins rather than being overwritten during teardown.
-                auto* definition = Halo3LoadedTagDefinition(patch.definitionIndex);
-                const int32_t count = definition ? *reinterpret_cast<const int32_t*>(
-                    definition + kHalo3VehicleSeatsBlockOffset) : 0;
-                const uint32_t address = definition ? *reinterpret_cast<const uint32_t*>(
-                    definition + kHalo3VehicleSeatsBlockOffset + 4) : 0;
-                auto* tagBase = g_halo3TagDataBase
-                    ? static_cast<unsigned char*>(*g_halo3TagDataBase) : nullptr;
-                auto* liveFlags = tagBase && address && count > 0 && count <= 126 &&
-                    patch.seatIndex >= 0 && patch.seatIndex < count
-                    ? reinterpret_cast<uint32_t*>(tagBase + size_t(address) * 4 +
-                        size_t(patch.seatIndex) * kHalo3VehicleSeatStride) : nullptr;
-                if (liveFlags && liveFlags == patch.flags && *liveFlags == patchedFlags)
-                    *liveFlags = patch.originalFlags;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                // The loaded map may already be disappearing. Feature cleanup
-                // must never disarm the working camera core.
-            }
-        }
-        patch = {};
-        g_halo3NativeAnchorCalibration = {};
-        g_halo3NativeSeatState.store(
-            static_cast<uint32_t>(Halo3NativeSeatState::Stock),
-            std::memory_order_release);
-        if (hadState)
-            g_halo3NativeSeatSerial.fetch_add(1, std::memory_order_release);
-    }
-
-    // C20: clear the occupied seat's `third person camera` bit for as long as
-    // the VR vehicle camera owns the view, so Halo puts the occupant in its own
-    // first-person state and stops drawing the player's character model in the
-    // space the headset is looking out of. Halo re-reads the bit from the
-    // loaded tag every camera frame (halo3+0x1326E8 -> +0x212198), so the
-    // effect is immediate and the restore below is complete.
-    //
-    // This is NOT C17. C17 additionally zeroed the seat's camera-track count
-    // and then made the resulting native camera the motion parent; that was
-    // headset-rejected. Only the flag is written here, the camera-track count
-    // is read as a bounds check and never modified, and the camera itself
-    // remains the accepted C18/C19 authored-node anchor.
-    bool Halo3EnsureFirstPersonSeatFlag(uint32_t definitionIndex, int seatIndex,
-                                        uint32_t generation)
-    {
-        Halo3NativeSeatPatch& patch = g_halo3NativeSeatPatch;
-        const bool sameSeat = patch.generation == generation &&
-            patch.definitionIndex == definitionIndex &&
-            patch.seatIndex == seatIndex;
-        if (!g_config.vehicle_first_person || !g_config.vehicle_hide_body)
-        {
-            Halo3RestoreNativeSeatPatch();
-            return false;
-        }
-        if (sameSeat && patch.active)
-            return true;
-        if (sameSeat && g_halo3NativeSeatState.load(
-                std::memory_order_relaxed) ==
-                static_cast<uint32_t>(Halo3NativeSeatState::StockFallback))
-            return false;
-
-        Halo3RestoreNativeSeatPatch();
-        patch.generation = generation;
-        patch.definitionIndex = definitionIndex;
-        patch.seatIndex = seatIndex;
-        bool installed = false;
-        __try
-        {
-            void** instSlot = g_halo3TagInstanceTable;
-            void** baseSlot = g_halo3TagDataBase;
-            auto* instTable = instSlot
-                ? static_cast<unsigned char*>(*instSlot) : nullptr;
-            auto* tagBase = baseSlot
-                ? static_cast<unsigned char*>(*baseSlot) : nullptr;
-            if (instTable && tagBase && definitionIndex <= 0xFFFFu &&
-                seatIndex >= 0 && seatIndex <= kHalo3VehicleSeatMax)
-            {
-                const uint32_t instanceDword =
-                    *reinterpret_cast<const uint32_t*>(
-                        instTable + static_cast<size_t>(definitionIndex) * 8 + 4);
-                auto* definition = instanceDword
-                    ? tagBase + static_cast<size_t>(instanceDword) * 4 : nullptr;
-                const int32_t seatCount = definition
-                    ? *reinterpret_cast<const int32_t*>(
-                          definition + kHalo3VehicleSeatsBlockOffset)
-                    : 0;
-                const uint32_t seatsAddress = definition
-                    ? *reinterpret_cast<const uint32_t*>(
-                          definition + kHalo3VehicleSeatsBlockOffset + 4)
-                    : 0;
-                if (definition && seatCount > 0 && seatCount <= 126 &&
-                    seatIndex < seatCount && seatsAddress)
-                {
-                    auto* seat = tagBase +
-                        static_cast<size_t>(seatsAddress) * 4 +
-                        static_cast<size_t>(seatIndex) * kHalo3VehicleSeatStride;
-                    auto* flags = reinterpret_cast<uint32_t*>(seat);
-                    auto* trackCount = reinterpret_cast<int32_t*>(
-                        seat + kHalo3SeatCameraTracksBlockOffset);
-                    const uint32_t originalFlags = *flags;
-                    const int32_t originalTrackCount = *trackCount;
-                    // Every official H3 player seat has bit 4. Requiring it is
-                    // the live layout proof that keeps a bad tag walk stock.
-                    // The track count is only a second bounds check on the same
-                    // seat record; the reference mod keeps those tracks and so
-                    // do we.
-                    if (Halo3SeatFlagsLookLikePlayerSeat(originalFlags) &&
-                        originalTrackCount >= 0 && originalTrackCount <= 16)
-                    {
-                        const uint32_t patchedFlags =
-                            Halo3FirstPersonSeatFlags(originalFlags);
-                        patch.flags = flags;
-                        patch.cameraTrackCount = trackCount;
-                        patch.originalFlags = originalFlags;
-                        patch.originalCameraTrackCount = originalTrackCount;
-                        patch.active = true;
-                        *flags = patchedFlags;
-                        installed = *flags == patchedFlags;
-                    }
-                }
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            installed = false;
-        }
-        if (!installed)
-        {
-            Halo3RestoreNativeSeatPatch();
-            patch.generation = generation;
-            patch.definitionIndex = definitionIndex;
-            patch.seatIndex = seatIndex;
-            g_halo3NativeSeatState.store(
-                static_cast<uint32_t>(Halo3NativeSeatState::StockFallback),
-                std::memory_order_release);
-            g_halo3NativeSeatSerial.fetch_add(1, std::memory_order_release);
-            return false;
-        }
-        g_halo3NativeAnchorCalibration = {};
-        g_halo3NativeSeatState.store(
-            static_cast<uint32_t>(Halo3NativeSeatState::Active),
-            std::memory_order_release);
-        g_halo3NativeSeatSerial.fetch_add(1, std::memory_order_release);
-        return true;
-    }
+#include "halo3_native_seat_patch.inl"
 
     void Halo3DisableVehicleProbe(const char* /*reason logged by worker*/)
     {
@@ -7963,7 +7775,7 @@ namespace
         __try
         {
             // Output user is the constant 0: the retail getter has no bounds
-            // check of its own (docs/HALO3-VEHICLE-EVIDENCE.md §E3 negatives).
+            // check of its own (docs/HALO3-VEHICLE-EVIDENCE.md Â§E3 negatives).
             unit = g_halo3PlayerUnitGetter(0);
             if (unit != -1)
             {
@@ -8077,7 +7889,7 @@ namespace
         // C20: while the player is in a seat, tell Halo that seat is first
         // person so it stops drawing the character model around the headset.
         // Off foot, on feature-disable, or on any layout failure this restores
-        // the seat's own value immediately — including when a config reload
+        // the seat's own value immediately â€” including when a config reload
         // crosses an old live session.
         if (seated)
             Halo3EnsureFirstPersonSeatFlag(defIndex, seat, generation);
@@ -8085,7 +7897,7 @@ namespace
             Halo3RestoreNativeSeatPatch();
         // Publish the vehicle transform for the authored-point camera.
         // C7: root parents publish their +0x50 frame directly; attached
-        // parents (mounted turrets) compose carrier ∘ local, since their
+        // parents (mounted turrets) compose carrier âˆ˜ local, since their
         // stored frame is parent-relative (C6 log proof). Either way the
         // frame origin must pass the bounding-sphere sanity gate or the
         // stock chase view stands for the whole seat session.
@@ -8137,13 +7949,13 @@ namespace
                 };
                 const Halo3Frame local = frameFrom(parentWindow);
                 // Which object's bounding sphere the anchor is sanity-checked
-                // against — the frame's own owner.
+                // against â€” the frame's own owner.
                 const float* boundsWindow = parentWindow;
                 if (mountedTurret)
                 {
                     // C8: the gunner point is authored in CARRIER space, so
                     // take the carrier's frame verbatim. C7 composed
-                    // carrier ∘ local instead, which is ~0.42 wu (1.3 m) low:
+                    // carrier âˆ˜ local instead, which is ~0.42 wu (1.3 m) low:
                     // an attached child's stored transform is relative to the
                     // parent's ATTACHMENT NODE, not its object origin (the
                     // hog's `turret` marker's raw node-local translation
@@ -8318,7 +8130,7 @@ namespace
                         // SATURATES at the limit instead of dropping out. The
                         // old in-limit gate plus its re-settle is what stepped
                         // the camera every time the car moved enough to breach
-                        // the limit — and on a moving vehicle the head never
+                        // the limit â€” and on a moving vehicle the head never
                         // holds still long enough to earn the contribution
                         // back, so it stayed off until the car stopped.
                         float headAnchor[3] = {};
@@ -8355,9 +8167,9 @@ namespace
                 // while MCC renders faster and INTERPOLATES the mesh, the
                 // camera steps in a staircase the mesh does not follow and
                 // posChanged lands far below the camera-frame count. If it is
-                // instead the hull rocking on its suspension — which the
+                // instead the hull rocking on its suspension â€” which the
                 // anchor tracks but the deliberately horizon-stable view does
-                // not — posChanged tracks the frame count and the tilt step is
+                // not â€” posChanged tracks the frame count and the tilt step is
                 // what is large. One drive answers it.
                 if constexpr (kEnableRetiredHalo3Diagnostics)
                 {
@@ -8496,7 +8308,7 @@ namespace
         // C3: settle the first-person camera gate and fire the one-shot
         // recenter on a settled seat entry/exit, so the head frame rebases to
         // the vehicle's heading once the engine's entry swing is over. With
-        // the feature off this changes nothing — no recenter, and the gate
+        // the feature off this changes nothing â€” no recenter, and the gate
         // mirror is never consumed.
         const Halo3VehicleState previousStable = g_halo3VehicleFpDebounce.stable;
         if (g_halo3VehicleFpDebounce.Update(state, kHalo3VehicleDebounceFrames))
@@ -8512,7 +8324,7 @@ namespace
                 // edges. Whatever the player physically walked before boarding
                 // was otherwise carried into the seat as a standing lean, and
                 // whatever they leaned in the seat was carried back out on
-                // foot — the user had to reach for the L3+R3 chord after
+                // foot â€” the user had to reach for the L3+R3 chord after
                 // boarding a Banshee to get back into place. This is the
                 // position half of that chord only: it captures the neutral
                 // head position and never touches the yaw baseline, so it
@@ -8725,7 +8537,7 @@ namespace
     // resolves the OCCUPANT'S `head` MARKER (halo3+0x355853, string id 0x9F),
     // so the origin the hands hang off animates with the seated biped's head
     // and neck as the view turns. That is the exact "chained to my face"
-    // behaviour — rotate the view and the arms and gun are dragged with it.
+    // behaviour â€” rotate the view and the arms and gun are dragged with it.
     //
     // This returns the seat placement BEFORE the occupant-head bounce is added:
     // the authored point carried through the live rendered seat node and
@@ -8754,7 +8566,7 @@ namespace
         Halo3SeatSnapshot seat;
         if (!Halo3ReadSeatSnapshot(seat) || !seat.anchorValid)
             return false;
-        // C13: the trim slot is keyed by SEAT, not just vehicle — a mounted
+        // C13: the trim slot is keyed by SEAT, not just vehicle â€” a mounted
         // gunner shares seat index 0 with the driver, so it takes its own.
         memcpy(out, seat.anchor, sizeof(seat.anchor));
         return true;
@@ -8837,8 +8649,8 @@ namespace
     //
     // The hull's rotation is folded into g_gameYawRef one frame step at a time.
     // Everything the player sees is already expressed against that one
-    // reference — view, hand-aim ray, rendered hands and gun, crosshair, move
-    // stick — so they all turn together and the reticle stays under the hand.
+    // reference â€” view, hand-aim ray, rendered hands and gun, crosshair, move
+    // stick â€” so they all turn together and the reticle stays under the hand.
     // Owned by the engine camera thread, like every other writer of that
     // reference.
     Halo3SeatYaw g_halo3SeatYaw;
@@ -8928,7 +8740,7 @@ namespace
         }
 
         // C10: settled seat entry rebases "straight ahead" onto the hull's own
-        // nose. The generic recenter cannot do this — it reads the heading off
+        // nose. The generic recenter cannot do this â€” it reads the heading off
         // the ENGINE camera, which at that moment is still swinging around the
         // vehicle from the entry animation, so whichever way the player
         // happened to walk in became their forward.
@@ -9145,7 +8957,7 @@ namespace
 
     // C7 identity probe (log-only, worker thread, transition-gated by the
     // caller): resolve the seated vehicle's LOADED definition and dump the
-    // §E5 discriminator fields so the values can be verified in-process
+    // Â§E5 discriminator fields so the values can be verified in-process
     // before any camera keys off them. These identity fields are not part of
     // C17's live seat transaction; SEH covers unload races.
     bool Halo3ReadDefinitionFields(uint32_t defIndex, int32_t counts[10],
@@ -9757,7 +9569,7 @@ namespace
         if (g_enabled.load())
         {
             // C9: turn the shared yaw reference with the hull BEFORE anything
-            // consumes it this frame, and republish who owns steering — the
+            // consumes it this frame, and republish who owns steering â€” the
             // turn stick below and the aim author both branch on it.
             Halo3ApplySeatYawFollow();
             ApplyVrTurn();
@@ -9773,7 +9585,7 @@ namespace
             }
             // The head pose LIVES in this authoritative camera (the proven M3
             // regime). A 07-15 experiment saved/restored the original values
-            // around the copy so gameplay would keep the aim pose — but the
+            // around the copy so gameplay would keep the aim pose â€” but the
             // first-person bone frame is head-camera-relative, and splitting
             // the two frames made the hand-anchored weapon visibly pick up
             // both head and aim motion. Do not scope this write again.
@@ -9796,7 +9608,7 @@ namespace
 
                 // Measure the world-up axis from the engine's camera-up (see the
                 // g_worldUp declaration). Bootstrap from the first sample, then EMA
-                // slowly toward each tick's up — but ONLY while looking roughly
+                // slowly toward each tick's up â€” but ONLY while looking roughly
                 // level (camera-fwd within ~25 deg of horizontal), so staring up or
                 // down a slope for a while can't drag the estimate off vertical.
                 {
@@ -9943,10 +9755,10 @@ namespace
             fwd[1] * up[2] - fwd[2] * up[1],
             fwd[2] * up[0] - fwd[0] * up[2],
             fwd[0] * up[1] - fwd[1] * up[0]};
-        // STEREO GHOSTING — root cause finally OBSERVED (2026-07-14, the
+        // STEREO GHOSTING â€” root cause finally OBSERVED (2026-07-14, the
         // CopyResource probe): between the eye passes, the engine snapshots
         // the full-resolution scene into a sampleable texture
-        // (M2 COPY eye=-1, 2912x2100 fmt29 -> fmt29) — its "last frame"
+        // (M2 COPY eye=-1, 2912x2100 fmt29 -> fmt29) â€” its "last frame"
         // source for temporal effects. In stereo that snapshot is made from
         // whichever eye rendered LAST, and BOTH eyes sample it next frame:
         // the last eye reads itself (clean), the first eye reads the other
@@ -9957,7 +9769,7 @@ namespace
         // cost of a third render (60 fps).
         //
         // The fix (vr.cpp, VR_Begin/EndRasterEye + the CopyResource hook):
-        // keep a per-eye copy of that snapshot — captured after each eye's
+        // keep a per-eye copy of that snapshot â€” captured after each eye's
         // own render, substituted into the game's snapshot texture right
         // before that eye renders again. Each eye then always samples its own
         // previous frame. Three texture copies per frame instead of a third
@@ -10130,10 +9942,37 @@ namespace
                         p[0],p[1],p[2],p[3], p[4],p[5],p[6],p[7],
                         p[8],p[9],p[10],p[11], p[12],p[13],p[14],p[15]);
                 }
+                // Optional DLSS: jitter this eye's projection centre by the
+                // sub-pixel offset vr.cpp asked for (only while DLSS is
+                // consuming frames) and publish the exact camera rasterized.
+                // Theatre consumes the same reconstructed surface, so its
+                // authored projection also needs the sub-pixel sample offsets.
+                {
+                    float jitterNdcX = 0.0f, jitterNdcY = 0.0f;
+                    // Halo's w = -z projection flips the centre terms, so the
+                    // offset ADDED to [8]/[9] is jitter * sign (live matrix:
+                    // [11] = -1); the sample carries the nominal jitter.
+                    const float centerSign = dlss::ProjectionCenterSign(vrProjection);
+                    if (VR_GetEyeJitter(eye, jitterNdcX, jitterNdcY))
+                    {
+                        vrProjection[8] += jitterNdcX * centerSign;
+                        vrProjection[9] += jitterNdcY * centerSign;
+                    }
+                    g_eyeProjectionJitterNdc[eye][0] = jitterNdcX * centerSign;
+                    g_eyeProjectionJitterNdc[eye][1] = jitterNdcY * centerSign;
+                    VrEyeCameraSample sample{};
+                    memcpy(sample.position, camera + 0x00, sizeof(sample.position));
+                    memcpy(sample.forward, camera + 0x0C, sizeof(sample.forward));
+                    memcpy(sample.up, camera + 0x18, sizeof(sample.up));
+                    memcpy(sample.projection, vrProjection, sizeof(sample.projection));
+                    sample.jitterNdcX = jitterNdcX;
+                    sample.jitterNdcY = jitterNdcY;
+                    VR_PublishEyeCamera(eye, sample);
+                }
                 // {view+0x158, view+0x1E8} is a SECOND camera+derived pair on
                 // the main view, consumed by the vtable render method 0x28331C
                 // via 0x295DC0. It is NOT the first-person pair (that is the
-                // sub-view at view+0x6C8: compact +0x6D0, derived +0x8B0 —
+                // sub-view at view+0x6C8: compact +0x6D0, derived +0x8B0 â€”
                 // corrected 2026-07-19). Its exact role is OPEN again; the
                 // previous-frame/temporal-reprojection reading from the ghost
                 // notes is back on the table. These copies keep it coherent
@@ -10144,7 +9983,7 @@ namespace
             }
             // Match the gun/HUD overlay frustum EXACTLY to the widened world
             // raster, otherwise the ~81 deg overlay stretched across the
-            // ~123 deg frame magnifies the first-person weapon and HUD ~2x —
+            // ~123 deg frame magnifies the first-person weapon and HUD ~2x â€”
             // and any deliberate mismatch would also shift where the
             // hand-anchored weapon projects, breaking controller registration.
             // Written BEFORE the per-view preparation below so the tangents are
@@ -10161,7 +10000,7 @@ namespace
                 gunTan[1] = tanf(g_renderHalfFovY.load());
                 // Experimental HUD sizing: the other three overlay cameras get
                 // a scaled frustum (>1 = smaller HUD). Element 0 (the weapon)
-                // is never scaled — its projection must match the world for
+                // is never scaled â€” its projection must match the world for
                 // controller registration. Default 1.0 = byte-identical no-op.
                 // Elements 1-3 are inactive split-screen player cameras, not
                 // independent HUD layers. HUD placement must be solved at the
@@ -10172,7 +10011,7 @@ namespace
             // the engine builds with a CRUSHED viewmodel depth range (a thin
             // near-far slab so the gun never clips walls on a flat screen). In
             // VR that reads as an orthographic, flattened space: the gun looks
-            // squashed, warps when twisted, and cannot move forward — the
+            // squashed, warps when twisted, and cannot move forward â€” the
             // user's exact report. The fix is to render the FP layer through
             // this eye's FULL WORLD camera + projection (position, orientation,
             // FOV AND depth terms), so the weapon lives in true world
@@ -10188,7 +10027,7 @@ namespace
             // Snapshot this eye's finished camera + derived block and ARM the
             // FP hooks BEFORE the per-view preparation: the measured in-eye FP
             // driver runs (~3 per eye per frame, exactly-equal histogram
-            // buckets) are triggered BY g_prepareView below — arming after it
+            // buckets) are triggered BY g_prepareView below â€” arming after it
             // meant every stamp silently missed (2026-07-19 evening logs).
             memcpy(g_eyeCompactCamera, camera, sizeof(g_eyeCompactCamera));
             memcpy(g_eyeDerivedBlock, reinterpret_cast<char*>(view) + 0x98,
@@ -11874,6 +11713,8 @@ namespace
                 memcpy(position, anchor, sizeof(anchor));
         }
 
+        OdstApplyPhysicalCrouchCamera(position,
+            -Clamp((headPosition[1]-g_headPosRef[1])*kOdstWorldUnitsPerMeter,-1.5f,1.5f),!cinematic);
         Roomscale_Camera(GameTitle::Halo3ODST, !cinematic && Game_RoomscaleCameraAllowed(GameTitle::Halo3ODST),
             position, headPosition, quaternion, forward, g_headPosRef, kOdstWorldUnitsPerMeter);
         if (g_positional.load(std::memory_order_relaxed))
@@ -11931,7 +11772,7 @@ namespace
         }
     }
 
-    // O1: ODST vehicle evidence probe. Read-only and inert — it publishes
+    // O1: ODST vehicle evidence probe. Read-only and inert â€” it publishes
     // nothing any camera, HUD or input path consumes; its entire product is
     // log lines that prove (or disprove) the O-E2 offsets against a live game.
     //
@@ -12340,7 +12181,7 @@ namespace
 
         if (OdstSeatWordMeansUnseated(seat))
         {
-            LOG("ODST vehProbe: on foot — tls chain %s, entries %s, "
+            LOG("ODST vehProbe: on foot â€” tls chain %s, entries %s, "
                 "unit=0x%X seat=%d (expected -1) native=%u. This is the "
                 "negative control for the seat word at unit+0x%X",
                 tlsOk ? "OK" : "NULL", entriesOk ? "OK" : "NULL",
@@ -12349,7 +12190,7 @@ namespace
             return;
         }
 
-        LOG("ODST vehProbe: seated — seat=%d native=%u parent=0x%X kind=%u "
+        LOG("ODST vehProbe: seated â€” seat=%d native=%u parent=0x%X kind=%u "
             "def=0x%X type=%d id=%s seats=%u seat0Flags=0x%X "
             "(driver=%d gunner=%d thirdPerson=%d invalidForPlayer=%d) "
             "nodeBank size=%d rel=%d tagNodes=%d coherent=%d",
@@ -13612,6 +13453,29 @@ namespace
                     fovMatch.compactReferenceInput,
                     projection[0], projection[5]);
             }
+            // Optional DLSS: same contract as Halo 3. The derived block is
+            // snapshotted whole below, so the FP driver hooks carry the
+            // jittered centre terms without extra work here.
+            {
+                float jitterNdcX = 0.0f, jitterNdcY = 0.0f;
+                if (!cutsceneTheater &&
+                    VR_GetEyeJitter(eye, jitterNdcX, jitterNdcY))
+                {
+                    const float centerSign = dlss::ProjectionCenterSign(projection);
+                    projection[8] += jitterNdcX * centerSign;
+                    projection[9] += jitterNdcY * centerSign;
+                }
+                VrEyeCameraSample sample{};
+                memcpy(sample.position, camera + layout.compactPosition,
+                       sizeof(sample.position));
+                memcpy(sample.forward, camera + layout.compactForward,
+                       sizeof(sample.forward));
+                memcpy(sample.up, camera + layout.compactUp, sizeof(sample.up));
+                memcpy(sample.projection, projection, sizeof(sample.projection));
+                sample.jitterNdcX = jitterNdcX;
+                sample.jitterNdcY = jitterNdcY;
+                VR_PublishEyeCamera(eye, sample);
+            }
             g_odstRenderHalfFovX[eye].store(halfX, std::memory_order_relaxed);
             g_odstRenderHalfFovY[eye].store(halfY, std::memory_order_relaxed);
 
@@ -13902,7 +13766,7 @@ namespace
     //
     // Native unit_in_vehicle (halo3odst.dll+0x3C54CC). The wildcarded disp32
     // is the engine TLS index; the pinned `41 B8 20` is ODST's object-table
-    // TLS slot and the trailing `62 02` is its unit seat word (+0x262) —
+    // TLS slot and the trailing `62 02` is its unit seat word (+0x262) â€”
     // Halo 3's own bytes there are 0x38 and 0x4E 0x02.
     const char* kOdstUnitInVehicleSig =
         "48 89 5C 24 08 57 48 83 EC 20 45 32 DB 41 83 C9 FF 41 3B C9 "
@@ -14516,11 +14380,11 @@ namespace
         uintptr_t hit = sig::Find(base, size, kCamCopySig);
         if (!hit)
         {
-            LOG("M1: camera signature NOT FOUND — MCC may have updated. Head tracking is");
+            LOG("M1: camera signature NOT FOUND â€” MCC may have updated. Head tracking is");
             LOG("M1: disabled; the game and the VR screen still work normally.");
             return false;
         }
-        // Uniqueness check — if the pattern matched twice we can't trust it.
+        // Uniqueness check â€” if the pattern matched twice we can't trust it.
         const uintptr_t after = hit + 1;
         if (sig::Find(after, base + size - after, kCamCopySig))
         {
@@ -14621,6 +14485,8 @@ namespace
                 LOG("VR comfort: camera-effect signature missing/ambiguous or "
                     "hook failed; native camera recoil/shake remains active");
         }
+
+        Halo3PreparePhysicalCrouchCamera(base,size);
 
         // Halo 3 vehicle-camera transactions. The three established vehicle
         // identities own only the base sampler. Render-node interpolation and
@@ -14953,7 +14819,7 @@ namespace
             LOG("M3: FP camera rebuild signature missing/ambiguous; gun/HUD stay a mono flat layer");
 
         // GAME BRIGHTNESS: hook 0x278EE0 (once thought to size the HUD; the
-        // headset proved it drives brightness). See HudXformHook — it scales the
+        // headset proved it drives brightness). See HudXformHook â€” it scales the
         // two screen color/gamma floats by game_brightness. MinHook on the
         // function installs reliably. Prologue verified unique on disk (push rbp;
         // mov rbp,rsp; sub rsp,0x50; save xmm6/xmm7; the movaps arg shuffle).
@@ -15178,10 +15044,10 @@ namespace
                     "game reticle stays visible");
         }
 
-        // (0x2EEFC8 placement hook removed — measured: no coordinates there.)
+        // (0x2EEFC8 placement hook removed â€” measured: no coordinates there.)
 
         // DO NOT HOOK halo3+0x120DF8. Tried 2026-07-15: it crashes the game on
-        // level load, on contact, even as a pure pass-through (proven — the
+        // level load, on contact, even as a pure pass-through (proven â€” the
         // skip range was never armed, the unconditional probe log never
         // printed, and it still died). Surviving the menus proves nothing:
         // halo3.dll's model pipeline does not run there, so the first real call
@@ -15190,7 +15056,7 @@ namespace
 
         // FP mesh re-anchor: patch the single root-fetch call inside the object
         // node recomposer (see FpRootShim). lea rdx,[rsp+20]; mov ecx,ebx;
-        // call <root>; then the 0x1205AC multiply — unique on disk, verified.
+        // call <root>; then the 0x1205AC multiply â€” unique on disk, verified.
         const char* kFpRootCallSig =
             "48 8D 54 24 20 8B CB E8 ?? ?? ?? ?? 4D 8B C4 48 8D 4C 24 20 49 8B D7 E8";
         uintptr_t callSite = sig::Find(base, size, kFpRootCallSig);
@@ -15275,7 +15141,7 @@ namespace
             if (tramp && newRel >= INT32_MIN && newRel <= INT32_MAX && (relAt & 3) == 0)
             {
                 // Hand-assembled shim, clobbers ONLY rax (the caller keeps its
-                // loop state in r8/r9/r10 across this call — LTCG contract; a
+                // loop state in r8/r9/r10 across this call â€” LTCG contract; a
                 // compiled C++ shim here IS the fatal-error bug). Layout:
                 //   [0x00] mov rax,[lo0]; cmp rdx,rax; jb +0x0F (-> lo1 test)
                 //   [0x0F] mov rax,[hi0]; cmp rdx,rax; jb +0x2A (-> ret)
@@ -15333,7 +15199,7 @@ namespace
         ResolveBodyVars(base, size);
         DumpHudDebugVars(base, size);
 
-        // (CHUD visibility-snapshot hook removed 2026-07-19 evening — its forced
+        // (CHUD visibility-snapshot hook removed 2026-07-19 evening â€” its forced
         // byte writes used a disproven offset map and suppressed the HUD. The
         // reticle kill uses Halo's class-gated path inside 0x2EDF24 only.)
 
@@ -17296,7 +17162,7 @@ namespace
         // failure leaves the complete immersive camera core unchanged.
         LocateCinematicState(base, size);
         LocateOdstCinematicUserInputState(base, size);
-        // O1: the ODST vehicle evidence binding. Optional and read-only —
+        // O1: the ODST vehicle evidence binding. Optional and read-only â€”
         // failure logs loudly and leaves every camera behavior untouched.
         ResolveOdstVehicleBinding(base, size);
 
@@ -17382,6 +17248,7 @@ namespace
         }
         g_odstRuntimeGeneration.store(
             runtimeGeneration, std::memory_order_release);
+        OdstPreparePhysicalCrouchCamera(base,size);
         g_odstLastCamCopyMs.store(0, std::memory_order_release);
         TitleAdapter_ClearHeartbeat(
             GameTitle::Halo3ODST, runtimeGeneration);
@@ -21350,6 +21217,8 @@ namespace
                 up[2] = cgp * cr;
             }
         }
+        ApplyCachedPhysicalCrouch(GameTitle::HaloReach,pos,
+            -Clamp((hpos[1]-effectiveHeadPosRef[1])*kReachWorldUnitsPerMeter,-1.5f,1.5f),!vehicleEntryRecenter);
         Roomscale_Camera(GameTitle::HaloReach, !vehicleEntryRecenter &&
             Game_RoomscaleCameraAllowed(GameTitle::HaloReach), pos, hpos, q, fwd,
             effectiveHeadPosRef, kReachWorldUnitsPerMeter);
@@ -22635,6 +22504,36 @@ namespace
                     transactionValid = false;
                     break;
                 }
+                // Optional DLSS: open this eye's depth window (Reach renders
+                // its eyes outside the raster-eye scope), add the sub-pixel
+                // jitter to the projection centre terms BEFORE the secondary
+                // mirror, the matrix builder and the first-person snapshot
+                // consume this derived block, and publish the exact camera
+                // this eye rasterizes with (compact: position +0x00, forward
+                // +0x0C, up +0x18, the layout the Reach adapter reads).
+                VR_DlssBeginEyeDepthWindow(policy.eye);
+                if (VR_DlssWantsEyeCamera())
+                {
+                    float* eyeProjection = reinterpret_cast<float*>(
+                        primaryDerived + kReachDerivedProjectionOffset);
+                    float jitterNdcX = 0.0f, jitterNdcY = 0.0f;
+                    if (!g_reachOwnerScope.cutsceneTheater &&
+                        VR_GetEyeJitter(policy.eye, jitterNdcX, jitterNdcY))
+                    {
+                        const float centerSign = dlss::ProjectionCenterSign(eyeProjection);
+                        eyeProjection[8] += jitterNdcX * centerSign;
+                        eyeProjection[9] += jitterNdcY * centerSign;
+                    }
+                    VrEyeCameraSample sample{};
+                    memcpy(sample.position, compact + 0x00, sizeof(sample.position));
+                    memcpy(sample.forward, compact + kReachCompactCameraForwardOffset,
+                           sizeof(sample.forward));
+                    memcpy(sample.up, compact + 0x18, sizeof(sample.up));
+                    memcpy(sample.projection, eyeProjection, sizeof(sample.projection));
+                    sample.jitterNdcX = jitterNdcX;
+                    sample.jitterNdcY = jitterNdcY;
+                    VR_PublishEyeCamera(policy.eye, sample);
+                }
                 // Mirror the rebuilt primary compact + derived into the secondary
                 // render pair, matching stock normal setup which mirrors both.
                 memcpy(reinterpret_cast<void*>(
@@ -22711,6 +22610,9 @@ namespace
                 {
                     fpCameraScope.active = false;
                 }
+                // The depth this eye rasterized is complete now, whether or
+                // not the transaction below stays valid.
+                VR_DlssEndEyeDepthWindow(policy.eye);
                 if (!renderReturned)
                 {
                     transactionValid = false;
@@ -24661,8 +24563,10 @@ namespace
 
     #include "reach_contact_melee_runtime.inl"
     #include "halo3_contact_melee_runtime.inl"
+    #include "halo3_physical_crouch.inl"
     #include "halo3_dual_wield_runtime.inl"
     #include "odst_contact_melee_runtime.inl"
+    #include "odst_physical_crouch.inl"
     #include "odst_muzzle_ownership.inl"
     #include "odst_muzzle_publication.inl"
     #include "odst_muzzle_shots.inl"
@@ -25809,7 +25713,7 @@ namespace
                     // plasma_turret's exact tuple), so the engine's own
                     // parent chain decides: a real carrier grants the
                     // attached-weapon frame, a self-parented emplacement and
-                    // unmatched content claim no hull frame — no view
+                    // unmatched content claim no hull frame â€” no view
                     // follow, no steering authorship, no wheel.
                     const int32_t carrier =
                         (identity != ReachVehicleId::Unknown &&
@@ -26950,6 +26854,13 @@ namespace
         std::vector<ReachFrozenThread> m_threads;
     };
 
+    // Superseded call-relay adaptation remains dormant for reference. The
+    // verified process-lifetime host method permits a normal unwindable hook.
+    #if 0
+    #include "native_subtitles_reach.inl"
+    #endif
+    #include "native_subtitles_reach_sources.inl"
+
     bool ResolveReachDetourCodeRange(
         const void* function, ReachDetourCodeRange& range)
     {
@@ -27914,7 +27825,7 @@ namespace
     // block, and the projectile transaction's direct clip-anchor call. Both
     // return addresses are derived at runtime from their unique call-site
     // blocks by decoding the E8 rel32 edges and requiring them to target the
-    // AOB-verified evaluator — never hardcoded. Failure keeps only this
+    // AOB-verified evaluator â€” never hardcoded. Failure keeps only this
     // feature stock; the camera core is untouched.
     bool ResolveReachFiringOriginBinding(
         uintptr_t base, size_t size, uintptr_t& outEvaluator,
@@ -29524,6 +29435,7 @@ namespace
         LOG("Reach decorator wind: %s; native wind advances once per stereo pair; camera/LOD remain native",
             g_reachCamera.decoratorWindState ? "Installed" : "StockFallback (binding unavailable)");
         g_reachCamera.generation = generation;
+        PrepareCachedPhysicalCrouch(GameTitle::HaloReach,base,size,generation);
         g_reachCamera.moduleReference = moduleReference;
         moduleReferenceGuard.transferred = true;
         g_reachCamera.innerTarget = inner;
@@ -29726,7 +29638,7 @@ namespace
         // The shot line (R-V10). Resolve the camera-position evaluator and
         // its two firing call sites; their return addresses are what tell the
         // hook it is on the firing path rather than one of the evaluator's 32
-        // other consumers — including the engine's own camera placement,
+        // other consumers â€” including the engine's own camera placement,
         // which must keep the stock value.
         RevokeReachFiringOriginFeature();
         g_reachFiringOriginMoves.store(0, std::memory_order_relaxed);
@@ -32219,6 +32131,7 @@ namespace
         bool effectsHelperPatched = false;
         bool effectsTransientPatched = false;
         bool effectsModeOnePatched = false;
+        bool effectsSettingPendingLogged = false;
         bool curvatureTouched = false;
         bool curvaturePatched = false;
         void* hudTarget = nullptr;
@@ -32671,6 +32584,7 @@ namespace
     constexpr uint64_t kHalo4WeaponDeltaMaxRecordAge = 12;
 
     std::atomic<bool> g_halo4RuntimeWeaponBoundsProven{false};
+    std::atomic<bool> g_halo4VehicleIdentityProven{false};
     std::atomic<uint64_t> g_halo4RuntimeWeaponBoundsReads{0};
     std::atomic<uint64_t> g_halo4RuntimeWeaponBoundsRefusals{0};
     uintptr_t g_halo4RenderModelTagIndexPointerSlot=0;
@@ -32967,6 +32881,7 @@ namespace
 
     #include "halo4_contact_melee_runtime.inl"
     #include "halo4_vehicle_input.inl"
+    #include "cached_physical_crouch.inl"
 
     void Halo4PublishCollisionTarget(
         int hand, uint32_t generation, const float samples[][3],
@@ -35576,62 +35491,8 @@ namespace
             Halo4FloatingDistance(verified,desiredWorld)<0.01f;
     }
 
-    struct Halo4RenderModelIdentity
-    {
-        uint32_t runtimeImportChecksum = 0;
-        int nodeCount = 0;
-        uintptr_t descriptor = 0;
-    };
-
-    bool Halo4ResolveRenderModelIdentity(
-        uint16_t renderModelIndex, Halo4RenderModelIdentity& identity)
-    {
-        identity=Halo4RenderModelIdentity{};
-        if (!g_halo4RenderModelTagIndexPointerSlot ||
-            !g_halo4RenderModelGroupBaseTable)
-            return false;
-        uintptr_t tagIndexBase=0;
-        if (!Halo4SafeRead(
-                reinterpret_cast<const void*>(
-                    g_halo4RenderModelTagIndexPointerSlot),
-                &tagIndexBase,sizeof(tagIndexBase)) || !tagIndexBase)
-            return false;
-        const uintptr_t packedAddress=tagIndexBase+
-            static_cast<uintptr_t>(renderModelIndex)*8u+4u;
-        if (packedAddress<tagIndexBase) return false;
-        uint32_t packed=0;
-        if (!Halo4SafeRead(
-                reinterpret_cast<const void*>(packedAddress),
-                &packed,sizeof(packed)))
-            return false;
-        const uint32_t page=packed>>28;
-        uintptr_t biasedBase=0;
-        if (!Halo4SafeRead(
-                reinterpret_cast<const void*>(
-                    g_halo4RenderModelGroupBaseTable+
-                    static_cast<uintptr_t>(page)*8u),
-                &biasedBase,sizeof(biasedBase)) || !biasedBase)
-            return false;
-        const uintptr_t descriptorAddress=biasedBase+
-            static_cast<uintptr_t>(packed)*4u;
-        if (descriptorAddress<biasedBase || descriptorAddress>
-            (std::numeric_limits<uintptr_t>::max)()-0x30u)
-            return false;
-        uint32_t checksum=0;
-        int32_t count=0;
-        if (!Halo4SafeRead(
-                reinterpret_cast<const void*>(descriptorAddress+0x08u),
-                &checksum,sizeof(checksum)) ||
-            !Halo4SafeRead(
-                reinterpret_cast<const void*>(descriptorAddress+0x30u),
-                &count,sizeof(count)) || count<=0 ||
-            count>kHalo4FirstPersonBankTransforms)
-            return false;
-        identity.runtimeImportChecksum=checksum;
-        identity.nodeCount=count;
-        identity.descriptor=descriptorAddress;
-        return true;
-    }
+#include "halo4_render_model_identity.inl"
+#include "halo4_vehicle_identity.inl"
 
 #include "halo4_runtime_weapon_bounds.inl"
 
@@ -38175,6 +38036,8 @@ namespace
                 const Halo4CameraBasis beforeHead = stock;
                 if (Halo4ApplyHeadPose(stock, headInput))
                 {
+                    ApplyCachedPhysicalCrouch(GameTitle::Halo4,stock.position,
+                        -Clamp((snapshot.headPosition[1]-headInput.headPositionReference[1])*worldScale,-1.5f,1.5f),true);
                     headTracked = true;
                     g_halo4Camera.headTrackedFrames.fetch_add(
                         1, std::memory_order_relaxed);
@@ -38439,6 +38302,21 @@ namespace
                 lastCenterY = centerY;
                 g_halo4Camera.projectionReadbacks.fetch_add(
                     1, std::memory_order_relaxed);
+                // Optional DLSS: the camera and the row-vector projection the
+                // engine holds for this eye, exactly as read back above (a
+                // proven perspective with zero centre terms). Halo 4 builds
+                // its projection inside setup, so no jitter is written into
+                // it: DLSS runs unjittered on this title until that write
+                // path is proven.
+                if (VR_DlssWantsEyeCamera())
+                {
+                    VrEyeCameraSample sample{};
+                    memcpy(sample.position, actualPosition, sizeof(sample.position));
+                    memcpy(sample.forward, actualForward, sizeof(sample.forward));
+                    memcpy(sample.up, actualUp, sizeof(sample.up));
+                    memcpy(sample.projection, projection, sizeof(sample.projection));
+                    VR_PublishEyeCamera(eye, sample);
+                }
 
                 // C-H4-8: learn from what the engine ACTUALLY built, whether or
                 // not we widened. This is what makes the cover self-correcting
@@ -38758,6 +38636,7 @@ namespace
     bool InstallHalo4Vrik(uintptr_t base, size_t size)
     {
         g_halo4RuntimeWeaponBoundsProven.store(false,std::memory_order_release);
+        g_halo4VehicleIdentityProven.store(false,std::memory_order_release);
         g_halo4RenderModelTagIndexPointerSlot=0;
         g_halo4RenderModelGroupBaseTable=0;
         const uintptr_t hit=sig::Find(base,size,kHalo4ModelSkinningPattern);
@@ -38813,6 +38692,10 @@ namespace
         }
         g_halo4RenderModelTagIndexPointerSlot=tagPointerA;
         g_halo4RenderModelGroupBaseTable=groupTableA;
+        const bool vehicleIdentityProven=Halo4ProveVehicleIdentity(base,size);
+        g_halo4VehicleIdentityProven.store(vehicleIdentityProven,std::memory_order_release);
+        LOG("Halo 4 vehicle profiles: %s",vehicleIdentityProven ?
+            "native parent model/checksum chain verified" : "identity unavailable; per-game settings retained");
         const bool weaponBoundsProven=Halo4ProveRuntimeWeaponBounds(base,size);
         g_halo4RuntimeWeaponBoundsProven.store(weaponBoundsProven,std::memory_order_release);
         LOG("Halo 4 equipped-model collision bounds: %s; geometry failure stays local to weapon contact",
@@ -38825,6 +38708,7 @@ namespace
                           reinterpret_cast<void**>(&original))!=MH_OK)
         {
             g_halo4RuntimeWeaponBoundsProven.store(false,std::memory_order_release);
+        g_halo4VehicleIdentityProven.store(false,std::memory_order_release);
             g_halo4RenderModelTagIndexPointerSlot=0;
             g_halo4RenderModelGroupBaseTable=0;
             LOG("Halo 4 floating hands: MinHook rejected the optional final-palette hook; "
@@ -38839,6 +38723,7 @@ namespace
             g_halo4Camera.modelSkinningTarget=nullptr;
             g_halo4OrigModelSkinning=nullptr;
             g_halo4RuntimeWeaponBoundsProven.store(false,std::memory_order_release);
+        g_halo4VehicleIdentityProven.store(false,std::memory_order_release);
             g_halo4RenderModelTagIndexPointerSlot=0;
             g_halo4RenderModelGroupBaseTable=0;
             LOG("Halo 4 floating hands: optional final-palette hook could not be enabled; "
@@ -39367,7 +39252,8 @@ namespace
         const auto helperPatch = Halo4RelativePatch(
             0xE8, helperSite, base + kHalo4EffectCaveRva + 0x70);
         const auto transientPatch = Halo4TransientPatch();
-        bool ok = Halo4WriteExecutable(
+        const bool hideEffects = g_config.hide_muzzle_flash[3];
+        bool ok = !hideEffects || Halo4WriteExecutable(
             reinterpret_cast<void*>(modeOneSite),
             kHalo4EffectModeOneStock.data(), kHalo4EffectModeOneHidden.data(),
             kHalo4EffectModeOneStock.size());
@@ -39410,9 +39296,11 @@ namespace
         g_halo4EffectsHidden = 0;
         g_halo4Restoration.effectsInstalled.store(
             true, std::memory_order_release);
-        g_halo4EffectsEnabled = 1;
+        g_halo4EffectsEnabled = hideEffects ? 1 : 0;
+        g_halo4Restoration.effectsSettingPendingLogged = false;
         LOG("Halo 4 effects Installed: exact Stage 3AI C50 negative/helper/"
-            "transient routes and mode-1 particle deny are active");
+            "transient routes and mode-1 particle fallback; suppression=%s",
+            hideEffects ? "enabled" : "disabled");
         return true;
     }
 
@@ -39567,6 +39455,8 @@ namespace
         }
     }
 
+    #include "halo4_effect_suppression.inl"
+
     void Halo4RestorationWorkerTick()
     {
         const float curvature = std::clamp(
@@ -39574,25 +39464,27 @@ namespace
                 ? g_config.hud_curvature : 0.5f,
             0.0f, 1.0f) * 2.0f;
         g_halo4HudCurvatureValue = curvature;
+        if (g_halo4Restoration.effectsInstalled.load(std::memory_order_acquire))
+        {
+            const bool hide = g_config.hide_muzzle_flash[3];
+            if (!Halo4SetEffectsSuppressed(g_halo4Camera.base, hide))
+            {
+                if (!g_halo4Restoration.effectsSettingPendingLogged)
+                    LOG("Halo 4 muzzle suppression: setting change pending; "
+                        "owned mode-1 bytes or thread snapshot unavailable; "
+                        "prior suppression retained, camera/HUD stay live");
+                g_halo4Restoration.effectsSettingPendingLogged = true;
+            }
+            else if (g_halo4Restoration.effectsSettingPendingLogged)
+            {
+                LOG("Halo 4 muzzle suppression: pending setting applied (%s)",
+                    hide ? "enabled" : "disabled");
+                g_halo4Restoration.effectsSettingPendingLogged = false;
+            }
+        }
     }
 
-    bool Halo4ReadNativePaused(bool& paused)
-    {
-        paused = false;
-        if (!g_halo4Restoration.pauseProven.load(
-                std::memory_order_acquire) ||
-            !g_halo4Restoration.pauseReason)
-            return false;
-        __try
-        {
-            paused = g_halo4Restoration.pauseReason(3);
-            return true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            return false;
-        }
-    }
+#include "halo4_pause_reader.inl"
 
     bool RemoveHalo4Restoration(uintptr_t base)
     {
@@ -39736,6 +39628,7 @@ namespace
         g_halo4WorldCollision.generation = 0;
         Halo4ResetWorldCollisionState(0);
         g_halo4RuntimeWeaponBoundsProven.store(false,std::memory_order_release);
+        g_halo4VehicleIdentityProven.store(false,std::memory_order_release);
         g_halo4RenderModelTagIndexPointerSlot=0;
         g_halo4RenderModelGroupBaseTable=0;
         g_halo4EngineTlsIndex = nullptr;
@@ -39945,6 +39838,7 @@ namespace
         g_halo4OrigSetup = originalSetup;
         g_halo4OrigWrapper = originalWrapper;
         g_halo4Camera.generation.store(generation, std::memory_order_release);
+        PrepareCachedPhysicalCrouch(GameTitle::Halo4,base,size,generation);
         g_halo4Camera.teardownRequested.store(false, std::memory_order_release);
         g_halo4Camera.cinematicTheaterProof.store(
             cinematicTheaterProof, std::memory_order_release);
@@ -40281,7 +40175,8 @@ namespace
             "%llu suppressed binds); "
             "every unavailable feature stays stock",
             g_halo4Restoration.effectsInstalled.load(
-                std::memory_order_acquire) ? "LIVE" : "StockFallback",
+                std::memory_order_acquire) ?
+                (g_halo4EffectsEnabled ? "LIVE" : "config-disabled") : "StockFallback",
             static_cast<long long>(hiddenEffects),
             g_halo4Restoration.hudInstalled.load(
                 std::memory_order_acquire) ? "LIVE" : "StockFallback",
@@ -40922,6 +40817,9 @@ namespace
             const uint64_t pollNow = GetTickCount64();
             NativeFaultProbe_Poll();
             Roomscale_Report();
+            D3D_ReportSamplerCache();
+            const GameTitle bloomTitle=TitleAdapter_GetActiveTitle();
+            Bloom_ColdTick(bloomTitle,TitleAdapter_GetGeneration(bloomTitle));
             if (pollNow >= nextAnatomicalReportMs)
             {
                 nextAnatomicalReportMs = pollNow + 2000;
@@ -41212,6 +41110,7 @@ namespace
             RefreshGestureMeleeBinding(activeTitle,activeLevelRunning,pollNow);
             VR_ReportWeaponInteractions(pollNow);
             NativeReloadPolicy_Poll();
+            NativeSubtitles_Poll(activeLevelRunning);
             NativeVehicleFirstPerson_Poll();
             {
                 uintptr_t ceBase=0; size_t ceSize=0;
@@ -41416,6 +41315,7 @@ namespace
                 ReachCameraCore_Poll(
                     reachBase, reachSize, reachGeneration, haveReachRange,
                     reachLevelRunning);
+                NativeReachSubtitles_Poll(reachBase,reachSize,reachGeneration,reachLevelRunning);
             }
 #endif
             {
@@ -43138,7 +43038,7 @@ void Game_ToggleHeadTracking()
 
 // Called every frame from VR_OnPresent. Turns head tracking + stereo ON shortly
 // after a level starts driving the camera, and back OFF when you return to the
-// menu — so the mod behaves like a normal VR game (no F2/F11). Manual F2 off
+// menu â€” so the mod behaves like a normal VR game (no F2/F11). Manual F2 off
 // while in a level vetoes auto-arm until the next level load; F2/F11 still work.
 void Game_AutoVrTick()
 {
@@ -44238,7 +44138,7 @@ void Game_AutoVrTick()
             g_needRecenter = true;
             if (!VR_IsStereoEnabled()) VR_ToggleStereo();
             g_autoVrOwned = true;
-            LOG("auto-VR: level detected — head tracking + stereo ON");
+            LOG("auto-VR: level detected â€” head tracking + stereo ON");
         }
     }
     else if (cameraStale)
@@ -44250,7 +44150,7 @@ void Game_AutoVrTick()
             PublishHalo3Lifecycle(true, false, false);
             if (VR_IsStereoEnabled()) VR_ToggleStereo();
             g_autoVrOwned = false;
-            LOG("auto-VR: left the level — back to the flat menu screen");
+            LOG("auto-VR: left the level â€” back to the flat menu screen");
         }
     }
 }
@@ -44539,7 +44439,7 @@ static bool ComputeHalo2ControllerAimStick(
 }
 
 // C9: the virtual steering wheel. Two hands make a wheel out of the line
-// between them — no fixed pivot, so it is wherever the player's hands are and
+// between them â€” no fixed pivot, so it is wherever the player's hands are and
 // taking it never snaps the steering. Double-click both grips to take it,
 // double-click again to let go: the right grip is the dismount, so a sustained
 // squeeze would either eject the driver or cost them the dismount entirely.
@@ -44624,7 +44524,7 @@ int Game_Halo3CurrentSeatTrimSlot()
                               seat.mounted);
 }
 
-// "Warthog gunner", "Hornet passenger" — the F1 label for a trim slot. Takes
+// "Warthog gunner", "Hornet passenger" â€” the F1 label for a trim slot. Takes
 // the slot so menu.cpp needs no enum include; never returns null. Menu thread
 // only: the formatted result lives in a static buffer.
 const char* Game_Halo3SeatTrimName(int slot)
@@ -44961,8 +44861,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     RotateByQuat(q, localDir, f3);
     const float fx = f3[0], fy = f3[1], fz = f3[2];
 
-    // Halo spawns first-person projectiles at the ENGINE's camera — on foot,
-    // the head — and no steering can move that origin. Aiming the bullet ray
+    // Halo spawns first-person projectiles at the ENGINE's camera â€” on foot,
+    // the head â€” and no steering can move that origin. Aiming the bullet ray
     // PARALLEL to the hand ray therefore leaves a permanent head-to-hand
     // parallax miss (the 07-15 report "bullets shoot from my head"). Instead
     // steer the head-origin ray through the point the hand ray reaches at the
@@ -44970,7 +44870,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // reticle, and beyond it the two rays are effectively identical.
     //
     // `hp` is the ROOM head, which maps onto the engine's camera only while the
-    // two are the same point. In a first-person vehicle seat they are not — see
+    // two are the same point. In a first-person vehicle seat they are not â€” see
     // the seat re-origin below, which is the correction for that case.
     const float d = Clamp(g_config.crosshair_distance_m, 2.0f, 50.0f);
     float tx = p[0] + fx * d - hp[0];
@@ -45212,13 +45112,13 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     }
 
     // Full deflection at ~4.8 deg of error (was ~10; user: vertical follow too
-    // slow). The ceiling is the game's own turn rate — raising in-game look
+    // slow). The ceiling is the game's own turn rate â€” raising in-game look
     // sensitivity raises it further.
     const float k = 12.0f;
 
     // A turret seat parks instead of hunting. ToRawStick floors every non-zero
     // command at 27.5% deflection so it clears MCC's inner deadzone, so the
-    // engine only ever hears "stop" or "at least 27.5%" — the proportional
+    // engine only ever hears "stop" or "at least 27.5%" â€” the proportional
     // form has no small correction to give, and on the Warthog turret's
     // UNCAPPED pitch axis that minimum step walks straight past the target,
     // flips the error, and drives back. That is the "wiggle like crazy up and
@@ -45270,7 +45170,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         : Clamp(errPitch * k, -1.0f, 1.0f);
 
     // C9: with the view reference following the hull, a look-steered driver's
-    // yaw error stops depending on the vehicle's heading — the closed loop has
+    // yaw error stops depending on the vehicle's heading â€” the closed loop has
     // no feedback left there, and a fixed hand offset would become a constant
     // turn RATE instead of a heading. That seat's steering is authored openly
     // instead: the wheel while both hands hold it, and Halo's own turn stick
@@ -45521,7 +45421,7 @@ void Game_MapMoveStick(float& mx, float& my)
 #endif
     if (!Game_HasTitleCapability(TitleCapability_ControllerAim))
         return;
-    // C9: in a first-person vehicle seat the left stick is not locomotion —
+    // C9: in a first-person vehicle seat the left stick is not locomotion â€”
     // it is throttle, and on a Scorpion or Wraith it is the hull's own
     // steering. Rotating it by (view - aim) made "forward" diagonal the moment
     // the player looked away from the nose, and on those two the aim is the
@@ -45865,7 +45765,7 @@ bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& owner
             Halo4VehicleRead<uint32_t>(unit,0x24)!=seat.parent||
             Halo4VehicleRead<int16_t>(unit,0x2c)!=seat.seat) return false;
         owner={TitleAdapter_GetGeneration(title),seat.unit,seat.parent,seat.seat,
-            reinterpret_cast<uintptr_t>(unit)};return true;
+            reinterpret_cast<uintptr_t>(unit),Halo4ReadVehicleIdentity(parent)};return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 

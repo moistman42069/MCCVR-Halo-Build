@@ -1,5 +1,6 @@
 #include <Windows.h>
 #include "../src/common/weapon_muzzle.h"
+#include "../src/common/contact_melee_motion.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -11,6 +12,17 @@ static struct {bool gun_barrel_aim=true,left_handed=false;} g_config;
 static std::atomic<bool> g_halo3MuzzleBindingsReady{true};
 static std::atomic<uint32_t> g_halo3RuntimeGeneration{7};
 static weapon_muzzle::Store g_halo3Muzzles;
+static std::atomic<bool> g_baseCamValid{true};
+static std::atomic<float> g_worldScale{1},g_baseCamX{0},g_baseCamY{0},g_baseCamZ{0};
+static float g_headYawRef=0,g_gameYawRef=0,g_headPosRef[3]{};
+static unsigned reticlePublications{};
+static void VR_PublishWeaponReticleRay(GameTitle title,uint8_t slot,
+    const weapon_muzzle::Receipt& receipt,const contact_melee::TrackingToWorld& transform) noexcept
+{
+    Check(title==GameTitle::Halo3&&slot<2&&transform.Valid(),
+        "reticle receives title-local valid tracking/world transform");
+    if(receipt.unit==owner&&receipt.weapon==(slot?secondary:primary)) ++reticlePublications;
+}
 static uint32_t tlsIndex=0;
 static uint32_t* g_engineTlsIndex=&tlsIndex;
 static alignas(8) uint8_t tlsBytes[0x600]{},users[0x2430]{};
@@ -59,6 +71,7 @@ int main()
             Check(g_halo3Muzzles.Read(GameTitle::Halo3,7,owner,context.muzzleWeapon,3,GetTickCount64(),1000000000,
                 uint8_t(slot),marker.barrel,false,sample)&&sample.ray.position[0]==expected.position[0]&&sample.ray.up[2]==expected.up[2],
                 "production H3 publisher uses final composed node, full slot and authored roll");
+            Check(reticlePublications>0,"accepted authored muzzle reaches per-hand reticle publication");
             context.muzzleWeapon^=0x10000;
             Halo3PublishMuzzlePalette(123,context,destination,7);
             Check(!g_halo3Muzzles.Read(GameTitle::Halo3,7,owner,slot?secondary:primary,3,GetTickCount64(),1000000000,

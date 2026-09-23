@@ -103,6 +103,128 @@ int RunRoomscaleInputTests()
              RuntimeMode::Unsupported})
             check(!RoomscaleGameplayEligible(title,mode),"roomscale never admits non-gameplay modes");
     }
+    // A stick pulse can begin and end between two native camera callbacks.
+    // Its cancellation must retire the old packet even though the camera never
+    // observed the stick held down.
+    {
+        testTitle=GameTitle::Halo3;++testGeneration;testNow+=1000;
+        const float q[4]{0,0,0,1},forward[3]{1,0,0};
+        float body[3]{},head[3]{0,1.7f,0},ref[3]{0,1.7f,0};
+        Roomscale_Input(false,0,0);Roomscale_Input(true,0,0);
+        Roomscale_Camera(testTitle,true,body,head,q,forward,ref,1);
+        testNow+=16;head[2]=-.2f;Roomscale_Input(true,0,0);
+        Roomscale_Camera(testTitle,true,body,head,q,forward,ref,1);
+        float x=0,y=0;check(Roomscale_Move(x,y),"stick-pulse fixture has a published walking packet");
+        testNow+=1;Roomscale_Input(true,0,.75f);
+        testNow+=1;Roomscale_Input(true,0,0);
+        x=y=0;
+        check(!Roomscale_Move(x,y),"between-camera manual stick pulse retires the preceding movement packet");
+        Roomscale_Camera(testTitle,true,body,head,q,forward,ref,1);
+        x=y=0;
+        check(!Roomscale_Move(x,y),"missed manual interval waits for native quiet instead of replaying a pre-stick packet");
+    }
+    // Expiration must be tested before consuming motion after a callback gap.
+    // This exercises the actual follow policy used by the production camera.
+    {
+        RoomscaleFollow follow;
+        float body[3]{},head[3]{0,1.7f,0},ref[3]{0,1.7f,0},x=0,y=0;
+        uint64_t now=1000;
+        follow.Update(1,now,true,false,body,head,ref,0,-1,1,0,1,x,y);
+        head[2]=-.2f;
+        bool tailFound=false;
+        for(unsigned frame=0;frame<1000;++frame)
+        {
+            body[0]+=y*.02f;
+            now+=10;
+            follow.Update(1,now,true,false,body,head,ref,0,-1,1,0,1,x,y);
+            if(follow.settling&&!follow.commanded&&follow.lastMotion==now)
+            {tailFound=true;break;}
+        }
+        check(tailFound,"native walker enters bounded uncommanded stopping tail");
+        const float before=ref[2];
+        now+=180;body[0]+=.1f;
+        follow.Update(1,now,true,false,body,head,ref,0,-1,1,0,1,x,y);
+        check(ref[2]==before,"expired stopping tail cannot consume unrelated platform travel after callback gap");
+    }
+    // Retain physical steps taken during VR-stick travel, but never attribute
+    // manual travel (including its braking tail) to the physical follow command.
+    // The bounded fallback resumes after observed native motion becomes quiet;
+    // it does not claim simultaneous manual and roomscale body movement.
+    for (GameTitle title : {GameTitle::Halo2,GameTitle::Halo3,GameTitle::Halo3ODST,
+                           GameTitle::HaloReach,GameTitle::Halo4})
+    {
+        testTitle=title;++testGeneration;testNow+=1000;testTracking=true;
+        const float q[4]{0,0,0,1},forward[3]{1,0,0};
+        float body[3]{},head[3]{0,1.7f,0},ref[3]{0,1.7f,0};
+        auto camera=[&]{Roomscale_Camera(title,true,body,head,q,forward,ref,1);};
+        Roomscale_Input(false,0,0);Roomscale_Input(true,0,0);camera();
+        bool manualPreserved=true;
+        for(int frame=1;frame<=30;++frame)
+        {
+            testNow+=16;body[0]+=.04f;head[2]=-.2f*frame/30;
+            Roomscale_Input(true,0,.75f);camera();
+            float x=0,y=0;
+            manualPreserved&=!Roomscale_Move(x,y)&&ref[2]==0;
+        }
+        check(manualPreserved,"manual movement preserves world travel and never consumes physical debt");
+        bool tailPreserved=true;
+        for(int frame=0;frame<12;++frame)
+        {
+            testNow+=16;body[0]+=.01f;Roomscale_Input(true,0,0);camera();
+            float x=0,y=0;
+            tailPreserved&=!Roomscale_Move(x,y)&&ref[2]==0;
+        }
+        check(tailPreserved,"manual braking and continuing platform motion cannot be claimed as physical follow");
+        float x=0,y=0;
+        for(int frame=0;frame<12;++frame)
+        {testNow+=16;Roomscale_Input(true,0,0);camera();x=y=0;Roomscale_Move(x,y);}
+        check(y>.5f&&ref[2]==0,"physical step taken during manual travel survives until fresh quiet catch-up");
+        const float manualDistance=body[0];
+        for(int frame=0;frame<300;++frame)
+        {
+            body[0]+=y*.032f;testNow+=16;Roomscale_Input(true,0,0);camera();
+            x=y=0;Roomscale_Move(x,y);
+        }
+        check(std::fabs(body[0]-manualDistance-.2f)<.021f&&
+            std::fabs(body[0]-manualDistance+ref[2])<.0001f,
+            "deferred physical catch-up adds exactly one tracked step without cancelling manual world distance");
+        float allManualDistance=manualDistance;
+        bool repeatedDebt=true;
+        for(int cycle=0;cycle<3;++cycle)
+        {
+            for(int frame=0;frame<10;++frame)
+            {
+                testNow+=16;body[0]+=.02f;allManualDistance+=.02f;head[2]-=.01f;
+                Roomscale_Input(true,0,.5f);camera();
+            }
+            x=y=0;
+            for(int frame=0;frame<300;++frame)
+            {
+                body[0]+=y*.032f;testNow+=16;Roomscale_Input(true,0,0);camera();
+                x=y=0;Roomscale_Move(x,y);
+            }
+            repeatedDebt&=std::fabs(body[0]-allManualDistance+head[2])<.021f&&
+                std::fabs(body[0]-allManualDistance+ref[2])<.0001f;
+        }
+        check(repeatedDebt,"repeated manual/physical cycles preserve accumulated physical travel without baseline drift");
+        // Tracking loss must drop retained debt instead of walking later when
+        // a controller or headset becomes fresh again.
+        testNow+=16;Roomscale_Input(true,0,.75f);head[2]-=.2f;camera();
+        testTracking=false;Roomscale_Input(true,0,0);camera();
+        testTracking=true;Roomscale_Input(true,0,0);camera();
+        for(int frame=0;frame<12;++frame)
+        {testNow+=16;Roomscale_Input(true,0,0);camera();}
+        x=y=0;
+        check(!Roomscale_Move(x,y),"tracking recovery never resumes stale physical debt from manual travel");
+        testNow+=16;Roomscale_Input(true,0,.75f);head[2]-=.2f;camera();
+        // There may be no camera or input callback during an interruption.
+        // A fresh poll must not revive debt merely because allowed stays true.
+        testNow+=120;Roomscale_Input(true,0,0);camera();
+        for(int frame=0;frame<12;++frame)
+        {testNow+=16;Roomscale_Input(true,0,0);camera();}
+        x=y=0;
+        check(!Roomscale_Move(x,y),"fresh input after a stale polling gap drops retained physical debt");
+    }
     // Closed-loop synthetic native walker: physical motion must end up in the
     // body, while body + remaining lean stays exactly one tracked displacement.
     // This validates feedback arithmetic, not Halo's unmeasured acceleration.

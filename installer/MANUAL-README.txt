@@ -1,158 +1,87 @@
-HALO MCC VR — ALPHA 0.4.0 — ALL CAMPAIGNS IN VR
-================================================
+HALO MCC VR - SEPTEMBER 23 QoL TEST CANDIDATE
+===========================================
 
-Every MCC campaign now has a playable VR path: Halo CE Original/Anniversary,
-Halo 2 Classic/Anniversary, Halo 3, ODST, Reach, and Halo 4.
-One build supports Steam and Microsoft Store / Xbox app / Game Pass.
-This is an alpha: broad campaign coverage, with the refinements below still open.
+This is an unaccepted test build for all six MCC titles, with both graphics
+modes in Halo CE and Halo 2. Steam and Microsoft Store / Xbox app are supported.
+Read RELEASE-NOTES.md and IMPLEMENTATION-STATUS.md for changes and open reports.
+Passing build checks do not mean every feature or co-op session has been tested.
 
-Download Halo-MCC-VR.zip for playing. Its four files are:
-  HaloMCCVR.dll
-  HaloMCCVRLauncher.exe
-  halomccvr.cfg
-  README.txt (this guide, credits and license notices)
-Developers can use Halo-MCC-VR-Source.zip; players do not need it.
-Test-candidate ZIPs also include a manifest, release notes and separate license
-files; their copy instructions are the same. Keep your existing configuration
-when updating.
-Release notes and the full supported-games table:
-https://github.com/moistman42069/MCCVR-Halo-Build/releases/tag/MCC_VR_ALPHA_0.4.0
+INSTALL WITH THE LAUNCHER
+------------------------
+1. Close MCC and extract the whole ZIP.
+2. Open HaloMCCVRLauncher.exe beside the ModFiles folder.
+3. Select the detected Steam or Store installation, or Browse to the MCC root.
+4. Leave Keep my settings selected to preserve your configuration and append
+   newly available settings. Install / Update writes to Halo_MCC_VR in that root.
+   Replaced files are backed up there. No original game files are replaced.
+5. Connect your headset and choose Launch MCC when ready. Installing never
+   launches the game automatically. The Store edition uses package activation.
+6. Use anti-cheat-disabled MCC. Do not use the mod in matchmaking.
+7. Keep each campaign's FOV at 120, V-Sync off and MCC FSR off. Load a campaign,
+   allow initialization, and press F3 to recenter at your normal playing height.
 
-INSTALL
--------
-1. Fully close MCC. Extract the ZIP before running anything inside it.
-2. Find the MCC root folder containing MCC\Binaries\Win64:
-   Steam: Library > MCC > Manage > Browse local files.
-   Xbox app: MCC > Manage > Files > Browse; open Content if necessary.
-3. Create Halo_MCC_VR in that root and copy the DLL, launcher and config there.
-   Keep this README for reference. Do not replace original game files or place
-   the mod DLL in MCC\Binaries\Win64.
-4. Start your headset connection and active OpenXR runtime, then run
-   HaloMCCVRLauncher.exe from Halo_MCC_VR. SteamVR is the tested route.
-5. Use anti-cheat-disabled MCC. Do not use the mod in matchmaking.
-   For Store, let the launcher activate the game package; do not rename the
-   MCC executable. Store's first launch can take several extra seconds.
-6. Set each campaign's FOV to 120 degrees, V-Sync off, max frame rate 120,
-   and MCC FSR off. In ODST, set look sensitivity to maximum and acceleration off.
-7. Load a campaign, allow initialization, then press F3 to recenter.
-
-You need Windows x64, MCC with the desired campaigns installed, controllers,
-and a working PCVR/OpenXR setup. Run MCC normally once for first-run setup.
-No Visual Studio, source ZIP or separate OpenXR SDK is needed to play.
-
-CE CUSTOM CAMPAIGNS
--------------------
-Install BOTH Halo CE Campaign and Halo CE Multiplayer before playing Cursed
-Halo Again or other CE mods that require them. Original-graphics campaign mods
-can depend on multiplayer assets. Follow each mod's listed dependencies.
-Missing content can leave a full loading bar with music continuing even without
-VR. Check the installed content and try the same mod without VR before using
-Force Inject; recovery cannot supply missing game files.
-Cursed Halo author's installation instructions:
-https://www.patreon.com/infernoplus/posts/cursed-halo-81524237
-
-UPDATING
---------
-Close MCC and back up your old mod folder. Replace the DLL and launcher.
-KEEP YOUR EXISTING halomccvr.cfg to retain alignment, controls and seat settings.
-Missing settings receive defaults. Each MCC edition has its own Halo_MCC_VR
-folder. Keep obsolete halo3xr files in a backup outside the game folder.
-Extracting this ZIP does not install anything automatically.
-
-IMPORTANT HICCUPS
------------------
-- WAIT AT LEAST SEVEN SECONDS after entering a title/level before using Force
-  Inject / Recover VR. Some titles take that long to initialize. Then use
-  the launcher or F1 > Status recovery once and allow the camera-ready delay.
-- Campaign switching can occasionally crash or leave the next game flat.
-  Fully close MCC, restart through the launcher, and load that campaign again.
-  Recovery cannot recreate a lost OpenXR session; restart MCC in that case.
-- CE Original/Anniversary graphics switching works DURING GAMEPLAY, not during
-  cinematics. Wait for the cutscene to end before switching either direction.
-- Disable/remove OpenXR Toolkit when troubleshooting. If cadence drops to half
-  refresh, try lower VR resolution and disable runtime motion smoothing/ASW.
-
-WHAT IS NEW
------------
-- Halo CE Original AND Anniversary VR, native HUD/reticles, full-resolution
-  Anniversary eye rendering, muzzle effects, gameplay graphics switching,
-  world contact, physical melee, and vibration on both controllers.
-- Fixed opt-in left-hand alignment across all six titles and both CE/H2 modes.
-  F1 > Weapon & Aim > Left-handed main weapon > Fix Hand Alignment (Experimental).
-  The alignment option stays off by default; gun placement is preserved.
-- F1 > Controls > D-pad head radius: 10–50 cm; default 30 cm.
-- Optional Quest 3 left thumb-rest D-pad: hold the PHYSICAL LEFT thumb rest and
-  move the PHYSICAL RIGHT stick. Release to restore normal stick use. It is off
-  by default and independent of weapon handedness. Runtime sensor support varies.
-  Existing head gestures and stick-click functions are retained. For CE graphics
-  switching, put the physical left hand beside the left side of your head and
-  click the movement stick. The thumb-rest gesture adds directions, not a new
-  graphics-switch click.
-- All-title automatic re-entry/recovery improvements and Reach HUD-height control.
-
-CAMPAIGN COVERAGE
------------------
-CE: Original/Anniversary stereo, 6DOF, tracked hands/guns, native HUD/reticles,
-    haptics, contact/melee. No cinematic graphics switching or body following.
-H2: Classic/Anniversary stereo, 6DOF, tracked hands/guns, HUD/reticle handling,
-    haptics and contact/melee. HUD/vehicle/scope parity and dual trajectory open.
-H3: Stereo, 6DOF, hands/arm IK, HUD/reticle, scopes, first-person vehicles,
-    cutscenes, contact/melee. Independent dual-fire and visibility refinements open.
-ODST: Stereo, 6DOF, hands, HUD/reticle, first-person vehicles, cutscenes,
-      contact/melee. First captioned opening scene can be black; skip it once.
-Reach: Stereo, 6DOF, hands, HUD/reticle, first-person vehicles, contact/melee,
-       HUD height. HUD curvature and some passenger/effects/clarity work open.
-H4: Stereo, 6DOF, floating hands, HUD/reticle controls, cutscenes, contact/melee.
-    Full arm IK/first-person vehicles unfinished; reported damage blackout open.
-
-CONTROLS AND REFINEMENTS
------------------------
-F1 opens settings; F3 recenters. L3+R3 together recenters and toggles F1.
-Settings save automatically. Slider arrows provide small, repeatable adjustments.
-World collision, true physical melee and gesture melee have separate controls
-under Body & Hands. Physical melee defaults to a 5 m/s threshold (0.30–10 m/s).
-Snap/smooth turning and speed/angle are under Controls. Tune supported vehicle
-seats under Vehicles. Scale/alignment preferences can be adjusted in F1; keep
-MCC's per-campaign FOV at 120 degrees before tuning them.
-
-Optional roomscale body translation is available for H2/H3/ODST/Reach/H4; CE
-currently supports tracked leaning, not native body following. This remains
-experimental. Head/stick movement, recentering, vehicles and menus can affect
-body-following admission. Independent native body-yaw following is future work.
-
-Still planned or under refinement: more reliable campaign switching; CE
-cinematic graphics switching; independent per-gun dual-wield aim/fire/damage;
-H2 vehicle controls and H2/H4 first-person vehicles; all-title zoom/scopes;
-sliding contact and custom/modded weapon geometry; unarmed/secondary/world-object
-melee damage; automatic per-weapon profiles and gun-stock calibration; visibility
-edges; Reach effects/clarity; headset/runtime, co-op and long-session coverage.
-CE uses conservative envelopes from all 12 stock weapon models, not exact Saber
-replacement/custom meshes. Native finger animations are retained by alignment.
-The reported H2 tank-exit reticle issue and H4 damage-blackout case remain open.
-These plans are not features promised by this build or a delivery schedule.
-
-REPORTING / REMOVAL
-------------------
-Report issues on the repository with HaloMCCVR.log and HaloMCCVRLauncher.log,
-campaign/mission/graphics mode, Steam or Store, headset/connection, OpenXR
-runtime/refresh rate, and what happened immediately beforehand.
-With MCC closed, remove only Halo_MCC_VR and its shortcut to uninstall; retain
-a config backup if desired. No original game files need replacing.
-
-BUILD IDENTITY
+MANUAL INSTALL
 --------------
-Tested runtime source: d47a98c947dc60dd98d7259a29a7582d5f46df7f
-DLL SHA-256: ADAB506E9E3BFB1E04DBBF767FDD907EFD414526863AB5C837FD65E7FAB95922
-DLL/launcher/config are the exact tested files, not rebuilt for publication.
-The source archive/release tag adds updated documentation only. SHA256.txt on
-GitHub identifies the downloads. The user confirms the campaign smoke test;
-every mission, weapon and optional feature is not claimed exhaustively tested.
+Create Halo_MCC_VR inside the MCC root (beside MCC, not inside Binaries/Win64).
+Copy the CONTENTS of ModFiles into Halo_MCC_VR, including its assets, licenses
+and optional DLSS runtime. On updates, retain halomccvr.cfg to keep your settings;
+missing settings receive defaults. The launcher can append the new keys for you.
+Run the copied HaloMCCVRLauncher.exe. Keep a backup of the old folder.
+
+UPDATES
+-------
+Check for updates reads the latest stable public release from
+https://github.com/moistman42069/MCCVR-Halo-Build/releases
+Download/install is a separate explicit action with archive and payload checks.
+A public release may be older than this private candidate; the menu distinguishes
+installed source identity from latest public release. Legacy releases without
+the new manifest require manual installation from their release page.
+
+SETTINGS AND CONTROLS
+---------------------
+F1 opens settings; F3 recenters. L3+R3 together recenters and toggles F1.
+Point your main-hand controller at the VR settings panel and use its trigger.
+The dedicated VR Mappings page detects the advertised controller profile and
+stores optional overrides separately per game, including Unbound. The current
+native transport still couples actions that share a native MCC button/action;
+see IMPLEMENTATION-STATUS.md before relying on independent reload/use unbinding.
+Reload & Holsters, Weapon & Aim, Vehicles, Picture and Subtitles group the options.
+Optional stock, physical crouch, roomscale, reload and DLSS need runtime testing.
+
+DLSS uses compatible NVIDIA hardware. Missing/failed optional features preserve
+the ordinary renderer. Actual title/renderer support and limits are documented
+in RELEASE-NOTES.md; a fallback is not proof that DLSS ran. The Picture page
+shows status and current versus planned render size.
+
+TROUBLESHOOTING AND REPORTS
+--------------------------
+Wait at least seven seconds after entering a title before trying Force Inject /
+Recover VR. Recovery cannot recreate a lost OpenXR session; restart MCC then.
+For CE custom campaigns, install both CE Campaign and Multiplayer when the mod
+requires them. Compare the same content without VR if loading stalls.
+Disable third-party graphics/OpenXR wrappers when isolating a rendering report.
+
+Keep HaloMCCVR.log, HaloMCCVR-native-faults.log and HaloMCCVRLauncher.log.
+Report mission/map, stock or custom content, graphics mode, Steam or Store,
+headset/runtime/refresh, host or client, peers' builds, and exact steps.
+Build identity is in BUILD-IDENTITY.txt and CANDIDATE-MANIFEST.json. This package
+is newly built; historical accepted-release hashes do not identify its bytes.
+
+With MCC closed, remove only Halo_MCC_VR and its shortcut to uninstall.
+Keep your configuration and logs if desired; no original game files need changes.
+
+NVIDIA DLSS / NGX: This software contains source code provided by NVIDIA
+Corporation. NVIDIA components retain their included license in
+licenses/NVIDIA-DLSS. Oxanium is supplied under OFL in assets/fonts.
+Community contributions reviewed include pancreations, martysl1, Gab_dC,
+Godoy, UnsealedWings and the LivingFray design discussion. See the source
+implementation ledger for attribution and integration limitations.
 
 CREDITS AND LICENSES
 -------------------
 Continuation maintained by moistman42069, based on pancreations/Halo-MCC-VR.
-Not affiliated with Microsoft or Halo Studios. No game or editing-kit assets
-are distributed. Required notices are included below to keep this ZIP simple.
+Not affiliated with Microsoft or Halo Studios. Required component notices are
+included below; additional font and NVIDIA notices accompany the payload.
 
 MIT License
 

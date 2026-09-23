@@ -17,6 +17,33 @@
     std::atomic<uint32_t> g_odstNativeSeatState{0};   // 0 stock,1 active,2 fail
     std::atomic<uint32_t> g_odstNativeSeatSerial{0};
 
+    bool OdstNativeSeatStillOwned(const OdstNativeSeatPatch& patch)
+    {
+        if (!patch.active || !patch.flags || !patch.generation ||
+            patch.generation != TitleAdapter_GetGeneration(GameTitle::Halo3ODST)) return false;
+        __try
+        {
+            auto* tagBase = g_odstTagDataBase
+                ? static_cast<unsigned char*>(*g_odstTagDataBase) : nullptr;
+            void* instances = g_odstTagInstanceTable ? *g_odstTagInstanceTable : nullptr;
+            if (!tagBase || tagBase != patch.tagBase || !instances || instances != patch.instances)
+                return false;
+            auto* definition = OdstLoadedTagDefinition(patch.definitionIndex);
+            if (!definition || definition != patch.definition) return false;
+            const int32_t count = *reinterpret_cast<const int32_t*>(
+                definition + kOdstVehicleSeatsCountOffset);
+            const uint32_t address = *reinterpret_cast<const uint32_t*>(
+                definition + kOdstVehicleSeatsDataOffset);
+            if (!address || count <= 0 || count > 126 ||
+                patch.seatIndex < 0 || patch.seatIndex >= count) return false;
+            const auto* flags = reinterpret_cast<const uint32_t*>(tagBase + size_t(address)*4 +
+                size_t(patch.seatIndex)*kOdstVehicleSeatStride + kOdstSeatFlagsOffset);
+            return flags == patch.flags &&
+                *flags == (patch.originalFlags & ~kOdstSeatThirdPersonCameraBit);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+
     void OdstRestoreNativeSeatPatch()
     {
         OdstNativeSeatPatch& patch = g_odstNativeSeatPatch;
@@ -80,7 +107,7 @@
         const bool sameSeat = patch.generation == generation &&
             patch.definitionIndex == definitionIndex &&
             patch.seatIndex == seatIndex;
-        if (sameSeat && state == 1)
+        if (sameSeat && state == 1 && OdstNativeSeatStillOwned(patch))
             return true;
         if (sameSeat && state == 2)
             return false;           // proven bad for this seat: never retry
@@ -128,9 +155,10 @@
                             patch.definition = definition;
                             patch.instances = g_odstTagInstanceTable ? *g_odstTagInstanceTable : nullptr;
                             patch.originalFlags = originalFlags;
-                            patch.active = true;
-                            *flags = patchedFlags;
-                            installed = *flags == patchedFlags;
+                            installed = static_cast<uint32_t>(InterlockedCompareExchange(
+                                reinterpret_cast<volatile LONG*>(flags),
+                                static_cast<LONG>(patchedFlags), static_cast<LONG>(originalFlags))) == originalFlags;
+                            patch.active = installed;
                         }
                     }
                 }

@@ -27,3 +27,7 @@ bool HaloCEControls_MapMoveStick(float x,float y,float& outputX,float& outputY) 
 // camera position is not claimed to be the unit's collision/body origin.
 bool HaloCEControls_GetLocomotionFrame(HaloCELocalPlayerState& state,
     halo_ce::RenderContext& context) noexcept;
+
+// Optional read-only native height correction; no engine state writes.
+float HaloCEControls_PhysicalCrouchCorrection(uint32_t generation,uint64_t epoch,
+    float physicalDown,bool allowed) noexcept;

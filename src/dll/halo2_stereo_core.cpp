@@ -1,3 +1,4 @@
+#include "../common/dlss_logic.h"
 #include "halo2_stereo_core.h"
 #include "hook_quiescence.h"
 #include "../common/minhook_lifecycle.h"
@@ -183,6 +184,12 @@ namespace
         // from its popped raster context after render_view returned.
         Halo2SymmetricHalfFovs engineHalfFovs[kHalo2EyeCount]{};
         bool engineHalfFovsValid[kHalo2EyeCount]{};
+        // DLSS: the whole 4x4 the engine rasterised each eye with, from the
+        // same popped raster context (the matrix whose [0]/[5] are the
+        // scale reads above, +0x78 inside the context's projection block),
+        // so the eye camera is published with the engine's own depth terms.
+        float engineProjection[kHalo2EyeCount][16]{};
+        bool engineProjectionValid[kHalo2EyeCount]{};
         bool dirty[kOwnedCameraSpanCount]{};
         // E-H2-29: the engine's once-per-frame scene-target latch as it stood
         // when this pair began, and whether it was readable.
@@ -1816,6 +1823,7 @@ namespace
     bool ReadEngineProjection(StereoScope& scope, int eye) noexcept
     {
         scope.engineHalfFovsValid[eye] = false;
+        scope.engineProjectionValid[eye] = false;
         const uintptr_t base = g_moduleBase.load(std::memory_order_acquire);
         if (!base)
             return false;
@@ -1853,12 +1861,41 @@ namespace
                 return false;
             }
             scope.engineHalfFovsValid[eye] = true;
+            // The 16 floats starting at the scale-X read (64 bytes, inside
+            // the 0x318-byte context); dlss::DecodeProjection validates
+            // them as a perspective matrix or the log shows the rows.
+            std::memcpy(scope.engineProjection[eye],
+                        projection + kHalo2ClassicProjectionScaleXOffset,
+                        sizeof(scope.engineProjection[eye]));
+            scope.engineProjectionValid[eye] = true;
             return true;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
             return false;
         }
+    }
+
+    // Optional DLSS: publish the camera this eye was rasterised with (the
+    // raster basis the mod wrote, verified above against the popped context)
+    // together with the engine's own projection. Runs after render_view and
+    // before the raster-eye scope closes, so the eye's depth copy follows.
+    // Classic writes no projection of ours before the draw, so it is
+    // unjittered.
+    void PublishDlssEyeCamera(const StereoScope& scope, int eye) noexcept
+    {
+        if (!VR_DlssWantsEyeCamera() || eye < 0 || eye >= kHalo2EyeCount ||
+            !scope.engineProjectionValid[eye])
+            return;
+        VrEyeCameraSample sample{};
+        std::memcpy(sample.position, scope.eyes[eye].raster.position,
+                    sizeof(sample.position));
+        std::memcpy(sample.forward, scope.eyes[eye].raster.forward,
+                    sizeof(sample.forward));
+        std::memcpy(sample.up, scope.eyes[eye].raster.up, sizeof(sample.up));
+        std::memcpy(sample.projection, scope.engineProjection[eye],
+                    sizeof(sample.projection));
+        VR_PublishEyeCamera(eye, sample);
     }
 
     // The half-angles the compositor crops with: the engine's own projection
@@ -2193,6 +2230,7 @@ namespace
                             if (originalReturned)
                             {
                                 (void)ReadEngineProjection(*scope, eye);
+                                PublishDlssEyeCamera(*scope, eye);
                                 // E-H2-34: this pop is what the next
                                 // first-person pass will draw from.
                                 g_lastPassEyeCamera = scope->eyes[eye].render;

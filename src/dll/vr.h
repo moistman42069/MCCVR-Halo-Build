@@ -516,7 +516,7 @@ void VR_InitInstance();
 void VR_BeforePresent(IDXGISwapChain* swapchain);
 void VR_AfterPresent(IDXGISwapChain* swapchain, int64_t presentStartQpc,
                      int64_t presentEndQpc, HRESULT presentResult);
-void VR_OnResizeBuffers(IDXGISwapChain* swapchain);
+bool VR_OnResizeBuffers(IDXGISwapChain* swapchain);
 void VR_AfterResizeBuffers(IDXGISwapChain* swapchain);
 
 // Existing title worker only: drains and formats completed transition traces.
@@ -605,6 +605,8 @@ bool VR_CaptureRenderedEye(int eye);
 // into the eye cache without doing COM discovery in the game render hook.
 bool VR_CaptureBackbufferEye(int eye);
 void VR_BeginRasterEye(int eye);
+// Exact immediate-context eye scope on its owning thread; no COM queries.
+bool VR_IsEyeRasterActive(ID3D11DeviceContext* context) noexcept;
 void VR_EndRasterEye();
 // Halo 2 draw census (E-H2-8): counts every DrawIndexed/Draw the title
 // issues, split by whether a per-eye raster scope was open, so the log can
@@ -661,8 +663,11 @@ float VR_GetScopeZoom();
 // radial blur uses a single per-frame sun position, streaking the other eye).
 // The context is the one the game is binding on, so the neutralizing clear
 // lands in the right command order.
+// `depth` is the depth-stencil view the game binds alongside; the optional
+// DLSS resolve remembers which depth buffer belongs to the scene target.
 bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
                               ID3D11RenderTargetView* const* input,
+                              ID3D11DepthStencilView* depth,
                               ID3D11RenderTargetView** output);
 // The D3D hook reports the effective OM targets without querying COM state on
 // every Draw. During a Halo 4 authored capture, the existing shared Draw hooks
@@ -765,6 +770,8 @@ bool VR_GetGameRenderAspect(float& outAspect);
 // the gamepad state MCC reads, so the Sense controllers drive menus and game.
 struct VrPadState
 {
+    uint32_t profileEpoch = 0;
+    bool supportAimActive = false;
     bool valid = false;      // controllers tracked and actions synced
     float moveX = 0, moveY = 0;  // left thumbstick
     float turnX = 0, turnY = 0;  // right thumbstick
@@ -790,6 +797,7 @@ struct VrPadState
     bool weaponConsumePrimary = false, weaponConsumeSupport = false;
 };
 void VR_GetPadState(VrPadState& out);
+const char* VR_ControllerProfileName(bool left);
 // Cold worker only: optional gesture status/counters, never render-hook logs.
 void VR_ReportWeaponInteractions(uint64_t nowMs);
 void VR_UpdateWeaponAlignment(); // cold title worker, after title-profile selection
@@ -864,6 +872,10 @@ struct VrContactTrackingSnapshot
     float rawPrimaryOrientation[4]{0,0,0,1},rawPrimaryPosition[3]{};
 };
 bool VR_GetContactTrackingSnapshot(VrContactTrackingSnapshot& snapshot);
+namespace weapon_muzzle { struct Receipt; }
+// Called at a committed native palette; the compositor never reads engine objects.
+void VR_PublishWeaponReticleRay(GameTitle title,uint8_t slot,const weapon_muzzle::Receipt& receipt,
+    const contact_melee::TrackingToWorld& trackingToWorld) noexcept;
 
 // Universal scope state is owned by the VR controller input path and consumed
 // by the render/compositor path. It is independent of Halo's native zoom.
@@ -895,3 +907,59 @@ void VR_GetStatus(VrStatus& out);
 
 // Lock-free physical tracking/focus freshness for optional native walking.
 bool VR_RoomscaleTrackingFresh() noexcept;
+uint64_t VR_PhysicalCrouchEpoch() noexcept;
+void VR_RecalibratePhysicalCrouch() noexcept;
+
+// --- Optional NVIDIA DLSS eye resolve (config.upscaler = 1) ---------------
+// A title's eye render hook publishes the exact camera it rasterized with:
+// world position, unit forward and up, and the engine's 16-float projection
+// matrix as held (the Halo row-vector layout, [0]/[5] inverse half-frustum
+// tangents and [8]/[9] centre terms, or its transpose; the decoder accepts
+// both and logs which). `jitterNdcX/Y` is whatever VR_GetEyeJitter handed
+// the hook this render, or zero for a title that does not write its
+// projection before the draw (Halo 4, Halo 2). Render thread only, once per
+// eye render, inside that eye's raster scope or depth window, before or
+// after the engine draws (DLSS consumes it at Present).
+struct VrEyeCameraSample
+{
+    float position[3];
+    float forward[3];
+    float up[3];
+    float projection[16];
+    float jitterNdcX;
+    float jitterNdcY;
+};
+void VR_PublishEyeCamera(int eye, const VrEyeCameraSample& sample);
+// True with the projection-centre offsets (NDC units) the hook must ADD to
+// projection[8] and [9] for this eye render. False means render unjittered:
+// DLSS is off, unavailable, or did not resolve the previous frame.
+bool VR_GetEyeJitter(int eye, float& outNdcX, float& outNdcY);
+// True while the DLSS upscaler is selected, so a title hook can skip building
+// a sample (and any guarded engine read behind it) when nothing consumes it.
+bool VR_DlssWantsEyeCamera();
+// A title that renders its eyes outside VR_BeginRasterEye/VR_EndRasterEye
+// (Reach) brackets each eye render with these instead: inside the window the
+// OM hook classifies every depth view bound, and the end copies the winner
+// for that eye. Render thread only; the begin resets the eye's DLSS state
+// exactly as VR_BeginRasterEye does, so publish the camera after it.
+void VR_DlssBeginEyeDepthWindow(int eye);
+void VR_DlssEndEyeDepthWindow(int eye);
+// Plain-language DLSS state for the F1 menu ("off", "ready ...",
+// "unavailable: ...", "active ...").
+void VR_GetDlssStatus(char* out, size_t bytes);
+// This session's render plan for the F1 menu: what the game is rendering now
+// (zero until its backbuffer exists), what this start planned, the headset
+// picture size the DLSS output has, whether the render was shrunk for DLSS,
+// and whether nvngx_dlss.dll was beside the mod at startup. False before the
+// plan exists.
+struct VrDlssRenderPlan
+{
+    unsigned liveRenderW = 0, liveRenderH = 0;
+    unsigned plannedRenderW = 0, plannedRenderH = 0;
+    unsigned outputW = 0, outputH = 0;
+    bool plannedDlss = false;
+    bool runtimePresent = false;
+};
+bool VR_GetDlssRenderPlan(VrDlssRenderPlan& out);
+
+void VR_ObserveReachAlternateDepthBind(ID3D11DeviceContext* context, UINT renderTargetCount, ID3D11DepthStencilView* depth);

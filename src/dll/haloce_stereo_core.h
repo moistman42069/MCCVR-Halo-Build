@@ -19,6 +19,8 @@ bool HaloCE_Armed() noexcept;
 void HaloCE_Recenter() noexcept;
 void HaloCE_PublishTracking(const halo_ce::Tracking& tracking,bool enabled) noexcept;
 void HaloCE_PresentResources(ID3D11Device* device,ID3D11DeviceContext* context) noexcept;
+void HaloCE_SetDlssRequested(bool enabled) noexcept;
+void HaloCE_CaptureClassicDlssDepth(uintptr_t caller) noexcept;
 bool HaloCE_AcquirePair(ID3D11DeviceContext* context,uint64_t currentSerial,
     uint64_t spaceEpoch,halo_ce::EyeCache::Completed& pair) noexcept;
 void HaloCE_ReleasePair(uint64_t borrowId) noexcept;

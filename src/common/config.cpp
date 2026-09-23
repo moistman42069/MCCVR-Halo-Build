@@ -103,6 +103,45 @@ static bool ParseFloatSetting(const char* key, const char* text, float& destinat
     return true;
 }
 
+static bool ParseVehicleModelTrim(const char* key,const char* val)
+{
+    constexpr char prefix[]="vehicle_model_";
+    if(strncmp(key,prefix,sizeof(prefix)-1))return false;
+    const char* rest=key+sizeof(prefix)-1;
+    for(unsigned title=0;title<6;++title)
+    {
+        const auto length=strlen(weapon_interaction::kTitleKeys[title]);
+        if(strncmp(rest,weapon_interaction::kTitleKeys[title],length)||rest[length]!='_')continue;
+        const char* identityText=rest+length+1;
+        if(strlen(identityText)<23)break;
+        uint64_t identity=0;
+        for(unsigned n=0;n<16;++n)
+        {
+            const char digit=identityText[n];
+            const int value=digit>='0'&&digit<='9'?digit-'0':digit>='a'&&digit<='f'?digit-'a'+10:
+                digit>='A'&&digit<='F'?digit-'A'+10:-1;
+            if(value<0){LOG("config: malformed vehicle identity in '%s' ignored",key);return true;}
+            identity=(identity<<4)|static_cast<unsigned>(value);
+        }
+        if(!identity||strncmp(identityText+16,"_seat",5))break;
+        const char* seatText=identityText+21;
+        if(*seatText<'0'||*seatText>'9')break;
+        char* end{};const long seat=strtol(seatText,&end,10);
+        if(seat<0||seat>31||!end||*end!='_')break;
+        const char* axes[]{"forward_m","up_m","right_m"};
+        for(unsigned axis=0;axis<3;++axis)if(!strcmp(end+1,axes[axis]))
+        {
+            float value=0;if(!ParseFloatSetting(key,val,value))return true;
+            const int slot=ConfigEnsureVehicleModelTrim(g_config,static_cast<GameTitle>(title+1),identity,static_cast<int>(seat));
+            if(slot<0){LOG("config: vehicle preset capacity reached; '%s' ignored",key);return true;}
+            g_config.vehicle_model_trims[slot].value[axis]=value;
+            g_config.vehicle_model_trims[slot].set[axis]=true;return true;
+        }
+        break;
+    }
+    LOG("config: malformed vehicle preset '%s' ignored",key);return true;
+}
+
 // C19 per-seat trim keys. `suffix` is what follows vehicle_cam_forward_m_ /
 // vehicle_cam_up_m_ / vehicle_cam_right_m_ and is either "<vehicle>_<seat>" or
 // the C12-era
@@ -238,8 +277,36 @@ static bool FileExists(const wchar_t* path)
         (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
+struct VirtualStockField {const char* key;float Config::*value;float minimum,maximum;};
+static constexpr VirtualStockField kVirtualStockFields[]{
+    {"virtual_stock_strength",&Config::virtual_stock_strength,0.f,1.f},
+    {"virtual_stock_rear_height_m",&Config::virtual_stock_rear_height_m,-.30f,.10f},
+    {"virtual_stock_shoulder_back_m",&Config::virtual_stock_shoulder_back_m,0.f,.25f},
+    {"virtual_stock_shoulder_side_m",&Config::virtual_stock_shoulder_side_m,0.f,.20f},
+    {"virtual_stock_chest_height_m",&Config::virtual_stock_chest_height_m,-.5f,-.22f},
+    {"virtual_stock_chest_back_m",&Config::virtual_stock_chest_back_m,0.f,.25f},
+    {"virtual_stock_chest_side_m",&Config::virtual_stock_chest_side_m,0.f,.20f},
+    {"virtual_stock_adaptive_top_height_m",&Config::virtual_stock_adaptive_top_height_m,-.35f,0.f},
+    {"virtual_stock_adaptive_bottom_height_m",&Config::virtual_stock_adaptive_bottom_height_m,-.65f,-.20f},
+    {"virtual_stock_adaptive_top_half_width_m",&Config::virtual_stock_adaptive_top_half_width_m,.02f,.25f},
+    {"virtual_stock_adaptive_bottom_half_width_m",&Config::virtual_stock_adaptive_bottom_half_width_m,.02f,.30f},
+    {"virtual_stock_proximity_full_m",&Config::virtual_stock_proximity_full_m,.10f,.60f},
+    {"virtual_stock_proximity_release_m",&Config::virtual_stock_proximity_release_m,.15f,.80f},
+};
+
 static void Clamp()
 {
+    const Config stockDefaults{};
+    for(const auto& field:kVirtualStockFields)
+    {
+        float& value=g_config.*field.value;
+        value=std::isfinite(value)?std::clamp(value,field.minimum,field.maximum):stockDefaults.*field.value;
+    }
+    g_config.virtual_stock_rear_reference=std::clamp(g_config.virtual_stock_rear_reference,0,3);
+    if(g_config.virtual_stock_proximity_release_m<=g_config.virtual_stock_proximity_full_m)
+    {g_config.virtual_stock_proximity_full_m=.270f;g_config.virtual_stock_proximity_release_m=.425f;}
+    if(g_config.virtual_stock_adaptive_top_height_m<=g_config.virtual_stock_adaptive_bottom_height_m)
+    {g_config.virtual_stock_adaptive_top_height_m=-.180f;g_config.virtual_stock_adaptive_bottom_height_m=-.450f;}
     g_config.config_version = 5;
     g_config.haptic_intensity = std::clamp(g_config.haptic_intensity, 0.0f, 1.0f);
     g_config.dpad_head_radius = std::clamp(g_config.dpad_head_radius, 0.10f, 0.50f);
@@ -286,6 +353,19 @@ static void Clamp()
     g_config.vehicle_cam_right_m =
         std::clamp(g_config.vehicle_cam_right_m,
                    kVehicleCamRightMin, kVehicleCamRightMax);
+    const float vehicleMinimum[]{kVehicleCamForwardMin,kVehicleCamUpMin,kVehicleCamRightMin};
+    const float vehicleMaximum[]{kVehicleCamForwardMax,kVehicleCamUpMax,kVehicleCamRightMax};
+    for(unsigned title=0;title<6;++title)for(unsigned axis=0;axis<3;++axis)
+    {
+        float& value=g_config.vehicle_cam_game[title][axis];
+        if(!std::isfinite(value)){value=0;g_config.vehicle_cam_game_set[title][axis]=false;}
+        else value=std::clamp(value,vehicleMinimum[axis],vehicleMaximum[axis]);
+    }
+    for(auto& trim:g_config.vehicle_model_trims)for(unsigned axis=0;axis<3;++axis)
+    {
+        if(!std::isfinite(trim.value[axis])){trim.value[axis]=0;trim.set[axis]=false;}
+        else trim.value[axis]=std::clamp(trim.value[axis],vehicleMinimum[axis],vehicleMaximum[axis]);
+    }
     // This one triplet is the base for EVERY seat in all three titles that has
     // no line of its own. On 2026-08-06 it was walked from the accepted
     // 0.10/0.05/0.00 to -0.76/+0.89 by a Reach vehicle the mod could not
@@ -685,8 +765,100 @@ void ConfigLoad(const wchar_t* path)
         const char* key = trim(line);
         const char* val = trim(eq + 1);
         // C-TITLE-1: per-title profile keys, handled by table.
+        if(ParseVehicleModelTrim(key,val))continue;
+        bool vehicleGameKey=false;
+        const char* vehicleAxes[]{"forward","up","right"};
+        for(unsigned title=0;title<6&&!vehicleGameKey;++title)for(unsigned axis=0;axis<3;++axis)
+        {
+            char expected[80]{};
+            sprintf_s(expected,"vehicle_game_%s_%s_m",weapon_interaction::kTitleKeys[title],vehicleAxes[axis]);
+            if(strcmp(key,expected))continue;
+            if(ParseFloatSetting(key,val,g_config.vehicle_cam_game[title][axis]))
+                g_config.vehicle_cam_game_set[title][axis]=true;
+            vehicleGameKey=true;break;
+        }
+        if(vehicleGameKey)continue;
         if (ParseWeaponAlignmentKey(key,val)||ParseTitleProfileKey(key, val))
             continue;
+        bool vrBindingKey=false;
+        for(unsigned title=0;title<weapon_interaction::kTitleCount&&!vrBindingKey;++title)
+            for(unsigned action=0;action<vr_mapping::Count;++action)
+            {
+                char bindingKey[96]{};
+                sprintf_s(bindingKey,"vr_bind_%s_%s",weapon_interaction::kTitleKeys[title],vr_mapping::kKeys[action]);
+                if(strcmp(key,bindingKey)) continue;
+                char* end=nullptr;
+                const long value=strtol(val,&end,10);
+                if(end!=val&&end&&*end==0&&value>=0&&value<vr_mapping::SourceCount)
+                    g_config.vr_bindings[title][action]=static_cast<int>(value);
+                else LOG("config: invalid VR binding '%s' ignored",key);
+                vrBindingKey=true;break;
+            }
+        if(vrBindingKey) continue;
+        if(!strcmp(key,"physical_crouch")) {g_config.physical_crouch=atoi(val)!=0;continue;}
+        if(!strcmp(key,"physical_crouch_depth_m"))
+        {
+            ParseFloatSetting(key,val,g_config.physical_crouch_depth_m);
+            g_config.physical_crouch_depth_m=std::clamp(g_config.physical_crouch_depth_m,.08f,.65f);
+            continue;
+        }
+        bool muzzleFlashKey=false;
+        for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+        {
+            char settingKey[80]{};
+            sprintf_s(settingKey,"hide_muzzle_flash_%s",weapon_interaction::kTitleKeys[title]);
+            if(strcmp(key,settingKey)) continue;
+            char* end=nullptr;const long value=strtol(val,&end,10);
+            if(end!=val&&end&&*end==0&&(value==0||value==1)) g_config.hide_muzzle_flash[title]=value!=0;
+            else LOG("config: invalid muzzle-flash setting '%s' ignored",key);
+            muzzleFlashKey=true;break;
+        }
+        if(muzzleFlashKey) continue;
+        bool bloomKey=false;
+        for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+        {
+            char settingKey[80]{};
+            sprintf_s(settingKey,"bloom_enabled_%s",weapon_interaction::kTitleKeys[title]);
+            if(strcmp(key,settingKey)) continue;
+            char* end=nullptr;const long value=strtol(val,&end,10);
+            if(end!=val&&end&&*end==0&&(value==0||value==1)) g_config.bloom_enabled[title]=value!=0;
+            else LOG("config: invalid bloom setting '%s' ignored",key);
+            bloomKey=true;break;
+        }
+        if(bloomKey) continue;
+        if(!strcmp(key,"vr_action_mapping")) {g_config.vr_action_mapping=atoi(val)!=0;continue;}
+        if(!strcmp(key,"flashlight_suppress_on_two_hand")) {g_config.flashlight_suppress_on_two_hand=atoi(val)!=0;continue;}
+        if(!strcmp(key,"upscaler")) {g_config.upscaler=atoi(val)==1?1:0;continue;}
+        if(!strcmp(key,"dlss_mode")) {g_config.dlss_mode=std::clamp(atoi(val),0,4);continue;}
+        if(!strcmp(key,"dlss_jitter")) {g_config.dlss_jitter=atoi(val)!=0;continue;}
+        if(!strcmp(key,"dlss_preset")) {g_config.dlss_preset=std::clamp(atoi(val),0,5);continue;}
+        if(!strcmp(key,"dlss_debug_view")) {g_config.dlss_debug_view=atoi(val)!=0;continue;}
+        if(!strcmp(key,"vr_gameplay_subtitles")) {g_config.vr_gameplay_subtitles=atoi(val)!=0;continue;}
+        if(!strcmp(key,"vr_gameplay_subtitle_anchor")) {g_config.vr_gameplay_subtitle_anchor=atoi(val)==1?1:0;continue;}
+        if(!strcmp(key,"vr_theatre_subtitle_anchor")) {g_config.vr_theatre_subtitle_anchor=atoi(val)==1?1:0;continue;}
+        struct SubtitleField {const char* key;float* value;float min,max;};
+        const SubtitleField subtitleFields[]{
+            {"vr_gameplay_subtitle_scale",&g_config.vr_gameplay_subtitle_scale,.5f,2.5f},
+            {"vr_gameplay_subtitle_x",&g_config.vr_gameplay_subtitle_x,-1.f,1.f},
+            {"vr_gameplay_subtitle_y",&g_config.vr_gameplay_subtitle_y,-1.f,1.f},
+            {"vr_theatre_subtitle_scale",&g_config.vr_theatre_subtitle_scale,.5f,2.5f},
+            {"vr_theatre_subtitle_x",&g_config.vr_theatre_subtitle_x,-1.f,1.f},
+            {"vr_theatre_subtitle_y",&g_config.vr_theatre_subtitle_y,-1.f,1.f}};
+        bool subtitleKey=false;
+        for(const auto& field:subtitleFields) if(!strcmp(key,field.key))
+        {
+            float value=*field.value;
+            if(ParseFloatSetting(key,val,value)) *field.value=std::clamp(value,field.min,field.max);
+            subtitleKey=true;break;
+        }
+        if(subtitleKey) continue;
+        if(!strcmp(key,"virtual_stock")) {g_config.virtual_stock=atoi(val)!=0;continue;}
+        if(!strcmp(key,"virtual_stock_proximity_release")) {g_config.virtual_stock_proximity_release=atoi(val)!=0;continue;}
+        if(!strcmp(key,"virtual_stock_rear_reference")) {g_config.virtual_stock_rear_reference=std::clamp(atoi(val),0,3);continue;}
+        bool stockKey=false;
+        for(const auto& field:kVirtualStockFields) if(!strcmp(key,field.key))
+        {ParseFloatSetting(key,val,g_config.*field.value);stockKey=true;break;}
+        if(stockKey) continue;
         // Keep new keys outside the already-at-limit legacy else-if chain.
         bool weaponButtonKey = false;
         for (unsigned i=0;i<weapon_interaction::kTitleCount;++i)
@@ -752,6 +924,13 @@ void ConfigLoad(const wchar_t* path)
             g_config.weapon_pouch_down_m=std::clamp(g_config.weapon_pouch_down_m,0.25f,0.85f);
             continue;
         }
+        if(!strcmp(key,"weapon_pouch_location"))
+        {g_config.weapon_pouch_location=atoi(val)==1?1:0;continue;}
+        float* pouchOffset=!strcmp(key,"weapon_pouch_offset_x_m")?&g_config.weapon_pouch_offset_x_m:
+            !strcmp(key,"weapon_pouch_offset_y_m")?&g_config.weapon_pouch_offset_y_m:
+            !strcmp(key,"weapon_pouch_offset_z_m")?&g_config.weapon_pouch_offset_z_m:nullptr;
+        if(pouchOffset)
+        {ParseFloatSetting(key,val,*pouchOffset);*pouchOffset=std::clamp(*pouchOffset,-.40f,.40f);continue;}
         if (!strcmp(key,"weapon_body_zone_radius_m"))
         {
             ParseFloatSetting(key,val,g_config.weapon_body_zone_radius_m);
@@ -921,11 +1100,11 @@ void ConfigLoad(const wchar_t* path)
         else if (!strcmp(key, "vehicle_first_person"))
             g_config.vehicle_first_person = atoi(val) != 0;
         else if (!strcmp(key, "vehicle_cam_forward_m"))
-            g_config.vehicle_cam_forward_m = (float)atof(val);
+            ParseFloatSetting(key,val,g_config.vehicle_cam_forward_m);
         else if (!strcmp(key, "vehicle_cam_up_m"))
-            g_config.vehicle_cam_up_m = (float)atof(val);
+            ParseFloatSetting(key,val,g_config.vehicle_cam_up_m);
         else if (!strcmp(key, "vehicle_cam_right_m"))
-            g_config.vehicle_cam_right_m = (float)atof(val);
+            ParseFloatSetting(key,val,g_config.vehicle_cam_right_m);
         // Per-seat trim overrides: vehicle_cam_forward_m_warthog_passenger.
         // The exact matches above cannot fire for these (different length).
         // A malformed value must NOT invent an override (the seat keeps
@@ -1574,6 +1753,23 @@ void ConfigSave()
     fprintf(f, "vehicle_cam_forward_m = %.2f\n", g_config.vehicle_cam_forward_m);
     fprintf(f, "vehicle_cam_up_m = %.2f\n", g_config.vehicle_cam_up_m);
     fprintf(f, "vehicle_cam_right_m = %.2f\n\n", g_config.vehicle_cam_right_m);
+    fprintf(f,"# Per-game seat fallback. Missing axes inherit the legacy values above.\n");
+    const char* vehicleAxes[]{"forward","up","right"};
+    for(unsigned title=0;title<6;++title)for(unsigned axis=0;axis<3;++axis)
+        if(g_config.vehicle_cam_game_set[title][axis])
+            fprintf(f,"vehicle_game_%s_%s_m = %.3f\n",weapon_interaction::kTitleKeys[title],
+                vehicleAxes[axis],g_config.vehicle_cam_game[title][axis]);
+    fprintf(f,"\n");
+    fprintf(f,"# Identified vehicle/seat overrides; stable authored model identity, never object handles.\n");
+    for(const auto& trim:g_config.vehicle_model_trims)
+    {
+        const int title=weapon_interaction::TitleIndex(trim.title);
+        if(title<0||!trim.identity||trim.seat<0||trim.seat>31)continue;
+        for(unsigned axis=0;axis<3;++axis)if(trim.set[axis])
+            fprintf(f,"vehicle_model_%s_%016llx_seat%d_%s_m = %.3f\n",weapon_interaction::kTitleKeys[title],
+                static_cast<unsigned long long>(trim.identity),trim.seat,vehicleAxes[axis],trim.value[axis]);
+    }
+    fprintf(f,"\n");
     fprintf(f, "# Per-SEAT trim. A line appears here when you adjust the three\n");
     fprintf(f, "# seat sliders while SITTING IN that seat; every seat without\n");
     fprintf(f, "# a line keeps using the universal trim above. Delete a line\n");
@@ -1911,6 +2107,8 @@ void ConfigSave()
         g_config.weapon_pouch_down_m,g_config.weapon_body_zone_radius_m);
     fprintf(f, "# Holster location: 0 = weapon-side shoulder, 1 = weapon-side hip.\n");
     fprintf(f, "weapon_holster_location = %d\n",g_config.weapon_holster_location);
+    fprintf(f,"weapon_pouch_location = %d\nweapon_pouch_offset_x_m = %.3f\nweapon_pouch_offset_y_m = %.3f\nweapon_pouch_offset_z_m = %.3f\n",
+        g_config.weapon_pouch_location,g_config.weapon_pouch_offset_x_m,g_config.weapon_pouch_offset_y_m,g_config.weapon_pouch_offset_z_m);
     fprintf(f, "# Independent grab/insert radii. Click uses a fresh weapon grip in the holster.\n");
     fprintf(f, "# Slide preserves the draw gesture. With both on, click completes first.\n");
     fprintf(f, "weapon_holster_radius_m = %.3f\nweapon_insert_radius_m = %.3f\nweapon_holster_draw_m = %.3f\n",
@@ -1921,7 +2119,7 @@ void ConfigSave()
     fprintf(f, "# One rapid gun-hand out-and-back shake in any direction; no grip; settle to rearm.\n");
     fprintf(f, "weapon_needler_shake = %d\nweapon_shake_travel_m = %.3f\n",
         g_config.weapon_needler_shake?1:0,g_config.weapon_shake_travel_m);
-    fprintf(f, "# Match each title's MCC Reload and Switch Weapon controller buttons.\n");
+    fprintf(f, "# Legacy transport fallback for titles without verified native action lookup.\n");
     fprintf(f, "# Show a generic blue reload item for detected unfamiliar/modded held models.\n");
     fprintf(f, "weapon_unknown_reload_visual = %d\n",g_config.weapon_unknown_reload_visual?1:0);
     fprintf(f, "# 0=X, 1=RB, 2=LB, 3=B, 4=Y, 5=A, 6=LT, 7=RT. CE/H2 share both graphics modes.\n");
@@ -1930,11 +2128,38 @@ void ConfigSave()
         fprintf(f,"weapon_reload_button_%s = %d\n",weapon_interaction::kTitleKeys[i],g_config.weapon_reload_button[i]);
         fprintf(f,"weapon_switch_button_%s = %d\n",weapon_interaction::kTitleKeys[i],g_config.weapon_switch_button[i]);
     }
+    fprintf(f,"\n# VR action bindings: 0=automatic, 1=unbound. Edited in VR Mappings.\n");
+    fprintf(f,"physical_crouch = %d\nphysical_crouch_depth_m = %.3f\n",
+        g_config.physical_crouch?1:0,g_config.physical_crouch_depth_m);
+    fprintf(f,"vr_action_mapping = %d\nflashlight_suppress_on_two_hand = %d\n",
+        g_config.vr_action_mapping?1:0,g_config.flashlight_suppress_on_two_hand?1:0);
+    for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+        for(unsigned action=0;action<vr_mapping::Count;++action)
+            fprintf(f,"vr_bind_%s_%s = %d\n",weapon_interaction::kTitleKeys[title],
+                vr_mapping::kKeys[action],g_config.vr_bindings[title][action]);
+    fprintf(f,"\n# Native localized subtitles: independent gameplay and theatre placement.\n");
+    fprintf(f,"# Per-game muzzle-flash hiding. Supported paths: H2 Original and H4.\n");
+    for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+        fprintf(f,"hide_muzzle_flash_%s = %d\n",weapon_interaction::kTitleKeys[title],g_config.hide_muzzle_flash[title]?1:0);
+    fprintf(f,"# Stock bloom per game. Optional suppression supports H3, ODST and Reach.\n");
+    for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+        fprintf(f,"bloom_enabled_%s = %d\n",weapon_interaction::kTitleKeys[title],g_config.bloom_enabled[title]?1:0);
+    fprintf(f,"vr_gameplay_subtitles = %d\nvr_gameplay_subtitle_scale = %.3f\nvr_gameplay_subtitle_x = %.3f\nvr_gameplay_subtitle_y = %.3f\nvr_gameplay_subtitle_anchor = %d\n",
+        g_config.vr_gameplay_subtitles?1:0,g_config.vr_gameplay_subtitle_scale,g_config.vr_gameplay_subtitle_x,g_config.vr_gameplay_subtitle_y,g_config.vr_gameplay_subtitle_anchor);
+    fprintf(f,"vr_theatre_subtitle_scale = %.3f\nvr_theatre_subtitle_x = %.3f\nvr_theatre_subtitle_y = %.3f\nvr_theatre_subtitle_anchor = %d\n",
+        g_config.vr_theatre_subtitle_scale,g_config.vr_theatre_subtitle_x,g_config.vr_theatre_subtitle_y,g_config.vr_theatre_subtitle_anchor);
+    fprintf(f,"\n# Optional DLSS (0=off, 1=on); modes: DLAA/Quality/Balanced/Performance/Ultra Performance.\n");
+    fprintf(f,"upscaler = %d\ndlss_mode = %d\ndlss_jitter = %d\ndlss_preset = %d\ndlss_debug_view = %d\n",
+        g_config.upscaler,g_config.dlss_mode,g_config.dlss_jitter?1:0,g_config.dlss_preset,g_config.dlss_debug_view?1:0);
     fprintf(f,"\n");
     fprintf(f, "# Two-handed aiming: put your left hand on the gun front and use the\n");
     fprintf(f, "# left grip to steady aim along the two-hand line. 1 = on.\n");
     fprintf(f, "# (default %d)\n", d.two_handed_aim ? 1 : 0);
     fprintf(f, "two_handed_aim = %d\n\n", g_config.two_handed_aim ? 1 : 0);
+    fprintf(f,"# Optional virtual stock: rear reference 0=head,1=shoulder,2=chest,3=adaptive.\n");
+    fprintf(f,"virtual_stock = %d\nvirtual_stock_rear_reference = %d\nvirtual_stock_proximity_release = %d\n",
+        g_config.virtual_stock?1:0,g_config.virtual_stock_rear_reference,g_config.virtual_stock_proximity_release?1:0);
+    for(const auto& field:kVirtualStockFields) fprintf(f,"%s = %.4f\n",field.key,g_config.*field.value);
     fprintf(f, "# Main weapon, aim and trigger on the physical left controller.\n");
     fprintf(f, "# Movement, turning and face buttons keep their physical bindings.\n");
     fprintf(f, "left_handed = %d\n\n", g_config.left_handed ? 1 : 0);

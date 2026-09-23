@@ -29,6 +29,9 @@ XrPath g_rightHandPath=XR_NULL_PATH,g_leftHandPath=XR_NULL_PATH;
 XrAction g_rightAimAction{},g_leftAimAction{},g_hapticAction{},g_actMove{},g_actTurn{};
 XrAction g_actTrigL{},g_actTrigR{},g_actGripL{},g_actGripR{},g_actA{},g_actB{},g_actX{},g_actY{};
 XrAction g_actClickL{},g_actClickR{},g_actMenu{},g_actLeftThumbrest{};
+XrAction g_actFacePadL{},g_actFacePadR{},g_actFaceClickL{},g_actFaceClickR{};
+vr_mapping::Transports fixtureNativeBindings{};
+uint32_t Game_VrActionTransport(vr_mapping::Action action,uint64_t) {return fixtureNativeBindings[action];}
 CRITICAL_SECTION g_headCs{};
 bool g_headCsInit{},fixtureMenu{};
 VrPadState g_padState{};
@@ -134,7 +137,8 @@ void Reset(bool failAction=false,bool rejectBinding=false,bool enablePro=false,b
     g_gameplayActions=XR_NULL_HANDLE;g_rightAimSpace=g_leftAimSpace=XR_NULL_HANDLE;
     for (XrAction* value:{&g_rightAimAction,&g_leftAimAction,&g_hapticAction,&g_actMove,&g_actTurn,
         &g_actTrigL,&g_actTrigR,&g_actGripL,&g_actGripR,&g_actA,&g_actB,&g_actX,&g_actY,
-        &g_actClickL,&g_actClickR,&g_actMenu,&g_actLeftThumbrest}) *value=XR_NULL_HANDLE;
+        &g_actClickL,&g_actClickR,&g_actMenu,&g_actLeftThumbrest,
+        &g_actFacePadL,&g_actFacePadR,&g_actFaceClickL,&g_actFaceClickR}) *value=XR_NULL_HANDLE;
 }
 void CheckTouch(const Suggestion& actual,bool optional)
 {
@@ -169,9 +173,16 @@ void CheckProfiles(unsigned touchCalls,unsigned proCalls)
         else
         {
             ++otherCount;Check(!HasOptional(suggestion),"Optional Touch sensor is never added to unrelated interaction profiles");
-            const size_t expected=suggestion.profile=="/interaction_profiles/valve/index_controller"?17:
-                suggestion.profile=="/interaction_profiles/khr/simple_controller"?6:13;
-            Check(suggestion.bindings.size()==expected,"Other controller profiles retain their complete baseline binding count");
+            const size_t expected=suggestion.profile=="/interaction_profiles/khr/simple_controller"?6:17;
+            Check(suggestion.bindings.size()==expected,"Other controller profiles include their complete controls and supported pad face zones");
+            if(suggestion.profile=="/interaction_profiles/htc/vive_controller"||
+               suggestion.profile=="/interaction_profiles/microsoft/motion_controller")
+                for(const Binding& required:std::vector<Binding>{{"face_pad_l","/user/hand/left/input/trackpad"},
+                    {"face_pad_r","/user/hand/right/input/trackpad"},
+                    {"face_click_l","/user/hand/left/input/trackpad/click"},
+                    {"face_click_r","/user/hand/right/input/trackpad/click"}})
+                    Check(std::count_if(suggestion.bindings.begin(),suggestion.bindings.end(),[&](const Binding& b){
+                        return b.action==required.action&&b.path==required.path;})==1,"Wand/WMR face zones bind the real physical pad components");
         }
     }
     Check(touchCount==touchCalls&&proCount==proCalls&&otherCount==4,"Profile acceptance/fallback leaves all existing controller profiles reachable");
@@ -184,6 +195,7 @@ void CheckProfiles(unsigned touchCalls,unsigned proCalls)
 
 int main()
 {
+    g_config.vr_action_mapping=false; // Existing legacy snapshot cases below.
     Reset(true);Check(CreateControllerActions(),"Optional thumb-rest action creation failure is nonfatal");CheckProfiles(1,0);
     Check(g_actLeftThumbrest==XR_NULL_HANDLE&&!ReadLeftThumbrestTouched()&&queryCalls==0,"Absent optional action is neutral without querying XR");
     Reset(false,true);Check(CreateControllerActions(),"Optional binding rejection is nonfatal");CheckProfiles(2,0);
@@ -253,6 +265,13 @@ int main()
         g_config.weapon_holster_slide=false;gestureRead(false);g_config.weapon_holster_slide=true;
         g_config.weapon_needler_shake=true;gestureRead(false);g_config.weapon_needler_shake=false;
         ++g_config.weapon_reload_button[index];gestureRead(false);--g_config.weapon_reload_button[index];
+        g_config.vr_action_mapping=true;
+        fixtureNativeBindings[vr_mapping::Reload]=g_padState.weaponReloadBinding;
+        fixtureNativeBindings[vr_mapping::SwitchWeapon]=g_padState.weaponSwitchBinding;
+        gestureRead(true);
+        fixtureNativeBindings[vr_mapping::Reload]^=0x1000;gestureRead(false);
+        fixtureNativeBindings[vr_mapping::Reload]=0;gestureRead(false);
+        g_config.vr_action_mapping=false;gestureRead(true);
         g_padState.weaponTitle=GameTitle::None;gestureRead(false);g_padState.weaponTitle=fixtureTitle;
         g_padState.weaponSampleMs=fixtureNow-151;gestureRead(false);g_padState.weaponSampleMs=fixtureNow;
         g_padState.weaponPulseUntilMs=fixtureNow;VrPadState expired{};VR_GetPadState(expired);

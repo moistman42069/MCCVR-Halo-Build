@@ -1,4 +1,7 @@
 #include "haloce_controls.h"
+#include "physical_crouch_camera.h"
+#include "../common/physical_crouch_native_read.h"
+#include "../common/haloce_crouch_contract.h"
 #include "native_vehicle_first_person.h"
 #include "haloce_stereo_core.h"
 #include "haloce_native_bindings.h"
@@ -294,14 +297,17 @@ bool Remove() noexcept
         reinterpret_cast<const void*>(&HaloCEControls_OwnsLookStick),
         reinterpret_cast<const void*>(&HaloCEControls_MapMoveStick),
         reinterpret_cast<const void*>(&HaloCEControls_GetLocomotionFrame),
-        reinterpret_cast<const void*>(&HaloCEControls_GetNativePaused)};
-    const void* trampolines[]{turnOriginal,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
-    if (!WaitForNativeDetourQuiescence(functions,trampolines,8,callbacks)) return false;
+        reinterpret_cast<const void*>(&HaloCEControls_GetNativePaused),
+        reinterpret_cast<const void*>(&HaloCEControls_PhysicalCrouchCorrection)};
+    const void* trampolines[]{turnOriginal,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
+    if (!WaitForNativeDetourQuiescence(functions,trampolines,9,callbacks)) return false;
     if (turnTarget&&MH_RemoveHook(turnTarget)!=MH_OK) return false;
     turnTarget=turnOriginal=nullptr;
     if (retainedModule) { FreeLibrary(retainedModule);retainedModule=nullptr; }
     moduleBase=0;generation=0;retiring=false;return true;
 }
+#include "haloce_physical_crouch.inl"
+
 bool InstallState(uintptr_t base,size_t size,uint32_t gen) noexcept
 {
     const char* failure{};
@@ -314,6 +320,7 @@ bool InstallState(uintptr_t base,size_t size,uint32_t gen) noexcept
     LARGE_INTEGER frequency{};QueryPerformanceFrequency(&frequency);
     if (frequency.QuadPart<=0) { FreeLibrary(retainedModule);retainedModule=nullptr;return false; }
     qpcSeconds=1.0/static_cast<double>(frequency.QuadPart);
+    PrepareCrouchCamera(base,size,gen);
     moduleBase=base;generation=gen;active=true;retiring=false;stateReady=true;
     LOG("CE native control state verified independently: player/input/output ownership and native admission flags");
     return true;
@@ -391,6 +398,10 @@ static bool ReadVehicleCameraOwnerBody(NativeVehicleCameraOwner& owner) noexcept
 }
 bool HaloCEControls_ReadVehicleCameraOwner(NativeVehicleCameraOwner& owner) noexcept
 { Callback callback;return ReadVehicleCameraOwnerBody(owner); }
+float HaloCEControls_PhysicalCrouchCorrection(uint32_t expectedGeneration,uint64_t epoch,
+    float physicalDown,bool allowed) noexcept
+{ Callback callback;return CrouchCameraBody(expectedGeneration,epoch,physicalDown,allowed); }
+
 bool HaloCEControls_GetNativePaused(bool& paused,bool* suppressed,bool* inputKnown) noexcept
 {
     Callback callback;

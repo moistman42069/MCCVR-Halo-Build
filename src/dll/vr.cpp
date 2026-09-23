@@ -6,6 +6,7 @@
 #include "weapon_accessory_renderer.h"
 #include "../common/title_runtime_state.h"
 #include <windows.h>
+#include "../common/virtual_stock_logic.h"
 #include <tlhelp32.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -28,6 +29,9 @@
 #include "vr.h"
 #include "menu.h"
 #include "native_menu_pointer.h"
+#include "native_subtitles.h"
+#include "../common/subtitle_logic.h"
+#include "../common/dual_reticle_logic.h"
 #include "../common/game_menu_pointer.h"
 #include "../common/exclusive_input.h"
 #include "../common/game_menu_pointer_xr.h"
@@ -42,6 +46,14 @@
 #include "d3d11_hook.h"
 #include "d3d_state.h"
 #include "smaa_resource.h"
+#include "dlss.h"
+#include "dlss_camera_ps.h"
+#include "dlss_debug_ps.h"
+#include "dlss_copy_ps.h"
+#include "gpu_eye_timing.h"
+#include "../common/dlss_logic.h"
+#include "../common/dlss_sampler_logic.h"
+#include "../common/dlss_frame_result.h"
 #include "AreaTex.h"
 #include "SearchTex.h"
 #include "title_adapter.h"
@@ -123,9 +135,22 @@ namespace
     XrAction g_hapticAction = XR_NULL_HANDLE;
     XrAction g_actMenu = XR_NULL_HANDLE;
     XrAction g_actLeftThumbrest = XR_NULL_HANDLE;
+    XrAction g_actFacePadL=XR_NULL_HANDLE,g_actFacePadR=XR_NULL_HANDLE;
+    XrAction g_actFaceClickL=XR_NULL_HANDLE,g_actFaceClickR=XR_NULL_HANDLE;
     std::atomic<uint64_t> g_thumbrestDpadSampleMs{0};
     XrPath g_leftHandPath = XR_NULL_PATH;
     XrPath g_rightHandPath = XR_NULL_PATH;
+    std::atomic<vr_mapping::Profile> g_controllerProfiles[2]{};
+    std::atomic<uint32_t> g_controllerProfileEpoch{1};
+    uint32_t WeaponGestureBinding(GameTitle title,vr_mapping::Action action,uint64_t now)
+    {
+        const int index=weapon_interaction::TitleIndex(title);
+        if(index<0) return 0;
+        if(g_config.vr_action_mapping)
+            return Game_VrActionTransport(action,now);
+        return weapon_interaction::Button(action==vr_mapping::Reload?
+            g_config.weapon_reload_button[index]:g_config.weapon_switch_button[index]);
+    }
     bool g_touchProProfileEnabled = false;
     // The headset's real panel rate, read once from the runtime (0 = the runtime
     // does not expose it). Compared against the rate xrWaitFrame targets us at,
@@ -156,6 +181,7 @@ namespace
 
     // D3D11 (the game's device — we never create our own for rendering)
     ID3D11Device* g_device = nullptr;
+    IDXGIAdapter3* g_memoryAdapter = nullptr;
     ID3D11DeviceContext* g_context = nullptr;
 
     // XR swapchains + cached render target views of their images
@@ -168,6 +194,26 @@ namespace
     std::vector<ID3D11Texture2D*> g_nativeCursorImages;
     std::vector<ID3D11RenderTargetView*> g_nativeCursorRtvs;
     bool g_nativeCursorReady = false;
+    XrSwapchain g_nativeSubtitleChain = XR_NULL_HANDLE;
+    std::vector<ID3D11Texture2D*> g_nativeSubtitleImages;
+    std::vector<ID3D11RenderTargetView*> g_nativeSubtitleRtvs;
+    uint64_t g_nativeSubtitleUploaded = 0, g_nativeSubtitleRetryMs = 0;
+    uint32_t g_nativeSubtitleAcquiredIndex = 0;
+    bool g_nativeSubtitleAcquired = false, g_nativeSubtitleFailed = false;
+    bool g_nativeTheatreCaptionReady = false;
+    XrSwapchain g_dualReticleChain = XR_NULL_HANDLE;
+    std::vector<ID3D11Texture2D*> g_dualReticleImages;
+    std::vector<ID3D11RenderTargetView*> g_dualReticleRtvs;
+    bool g_dualReticleAcquired=false,g_dualReticleReady=false,g_dualReticleFailed=false;
+    uint32_t g_dualReticleIndex=0;
+    uint64_t g_dualReticleRetryMs=0;
+    float g_dualReticleColor[3]{-1,-1,-1};
+    XrPosef g_secondaryReticlePose{};
+    bool g_secondaryReticlePoseValid=false;
+    uint64_t g_secondaryReticleSpace=0;
+    uint32_t g_secondaryReticleGeneration=0;
+    GameTitle g_secondaryReticleTitle=GameTitle::None;
+    halo_ce::Snapshot<dual_reticle::ProjectedRay> g_weaponReticleRays[7][2];
     XrSwapchain g_menuChain = XR_NULL_HANDLE;
     std::vector<ID3D11Texture2D*> g_menuImages;
     std::vector<ID3D11RenderTargetView*> g_menuRtvs;
@@ -360,6 +406,10 @@ namespace
     ID3D11Texture2D* g_eyeCache[2] = {nullptr, nullptr};
     ID3D11RenderTargetView* g_eyeCacheRtvs[2] = {nullptr, nullptr};
     D3D11_TEXTURE2D_DESC g_eyeCacheDesc{};
+    // Logical sampling/RTV format remains in g_eyeCacheDesc. Halo 3's native
+    // DLSS cache has typeless storage, an sRGB RTV, and UAV access for NGX.
+    bool g_eyeCacheNativeDlss = false;
+    bool g_eyeCacheDlssRequested = false;
 
     // Removed: the per-eye post-process history machinery (cross-pass
     // discovery, frame-level blanking, and the learned scene-snapshot
@@ -565,6 +615,7 @@ namespace
 #endif
     bool g_stereoValidationDone = false;
     std::atomic<int> g_rasterEye{-1};
+    std::atomic<DWORD> g_rasterOwnerThread{0};
     bool g_rasterRedirected[2] = {false, false};
     IDXGISwapChain* g_gameSwapchain = nullptr; // borrowed; owned by the game
     // The internal scene-color RTV is stable after the first eye render. Keep
@@ -573,6 +624,126 @@ namespace
     // plus a 128-entry linear scan on nearly every RTV bind and could collapse
     // stereo from 90 fps into the 20s.
     ID3D11RenderTargetView* g_sceneColorRtv = nullptr;
+
+    // --- Optional NVIDIA DLSS eye resolve (config.upscaler) ----------------
+    // Everything below is render-thread state. The OM hook only ever does
+    // pointer compares here (plus one bounded description per newly seen
+    // depth view); allocation, NGX and logging happen at eye end or in the
+    // Present-time publish.
+    struct DlssEyeState
+    {
+        dlss::CameraSample current{};
+        dlss::CameraSample previous{};
+        bool published = false;   // a camera sample arrived for this eye render
+        bool depthValid = false;  // the depth copy landed for this eye render
+        bool depthDirect = false; // read the engine SRV before the next eye
+        bool resetPending = true; // tell DLSS to drop its history next time
+        ID3D11Texture2D* depthCopy = nullptr;            // engine depth, typeless
+        ID3D11ShaderResourceView* depthCopySrv = nullptr;
+        ID3D11ShaderResourceView* borrowedCeDepth = nullptr; // exact CE color/depth lease only
+        D3D11_TEXTURE2D_DESC depthCopyDesc{};
+        ID3D11Texture2D* colorIn = nullptr;              // UNORM twin of an sRGB eye
+        D3D11_TEXTURE2D_DESC colorInDesc{};
+        ID3D11Texture2D* motion = nullptr;               // RG16F, previous - current
+        ID3D11RenderTargetView* motionRtv = nullptr;
+        ID3D11ShaderResourceView* motionSrv = nullptr;
+        ID3D11Texture2D* depthOut = nullptr;             // R32F raw depth for DLSS
+        ID3D11RenderTargetView* depthOutRtv = nullptr;
+        ID3D11Texture2D* output = nullptr;               // DLSS result, UAV-capable
+        D3D11_TEXTURE2D_DESC outputDesc{};
+        // This render's colour as a view of colorIn (the source of the flow
+        // input copy), and the optical-flow input frames the backend hands
+        // out (BGRA8; each render's colour is copied into the one
+        // Dlss_FlowInputIndex names). Null without object motion.
+        ID3D11ShaderResourceView* colorInSrv = nullptr;
+        ID3D11Texture2D* flowInput[2]{};
+        ID3D11RenderTargetView* flowInputRtv[2]{};
+        // The last shape whose textures could not be created; that shape is
+        // not retried every frame (the DLSS-9 log: two lines per eye per
+        // frame, 30,000 lines in two minutes).
+        uint32_t failedRenderW = 0, failedRenderH = 0, failedOutputW = 0, failedOutputH = 0;
+    };
+    DlssEyeState g_dlssEye[2];
+
+    // One fresh-left + fresh-right atlas evaluated by one temporal feature.
+    // The halves never alternate across frames: eye 0 always occupies the
+    // left half and eye 1 the right half, so NGX history remains stable.
+    struct DlssStereoBatch
+    {
+        ID3D11Texture2D* color = nullptr;
+        ID3D11Texture2D* motion = nullptr;
+        ID3D11Texture2D* depth = nullptr;
+        ID3D11Texture2D* output = nullptr;
+        ID3D11Texture2D* eyeOutput[2]{};
+        ID3D11RenderTargetView* motionRtv = nullptr;
+        ID3D11RenderTargetView* depthRtv = nullptr;
+        D3D11_TEXTURE2D_DESC inputDesc{};
+        D3D11_TEXTURE2D_DESC outputDesc{};
+        D3D11_TEXTURE2D_DESC eyeOutputDesc{};
+        dlss::StereoBatchPlan plan{};
+        bool eyePrepared[2]{};
+        bool reset = false;
+    };
+    DlssStereoBatch g_dlssBatch;
+
+    // An eye whose upscale is in flight. DlssKickEye submits it the moment
+    // the eye's render ends; DlssFinishEye, at present, waits once for both
+    // eyes and stretches the finished image into the headset image.
+    struct DlssKickedEye
+    {
+        ID3D11Texture2D* output = nullptr;  // null: already written (debug view)
+        D3D11_TEXTURE2D_DESC outputDesc{};
+    };
+    dlss::FrameResult<DlssKickedEye> g_dlssKicked[2];
+    // The depth view the game binds together with the learned scene-colour
+    // target. Kept alive with one reference exactly like g_sceneColorRtv.
+    ID3D11DepthStencilView* g_dlssSceneDepthDsv = nullptr;
+    bool g_dlssEyeSceneDepthSeen = false;
+    // Fallback rule: the last full-raster depth view bound inside the eye.
+    // Every distinct view is described once and then referenced so its
+    // pointer cannot be recycled for a different-shaped buffer.
+    struct DlssDepthViewEntry
+    {
+        ID3D11DepthStencilView* view = nullptr;
+        ID3D11Device* device = nullptr; // borrowed while retained DSV is alive
+        bool fullRaster = false;
+        D3D11_TEXTURE2D_DESC desc{};
+    };
+    constexpr int kDlssDepthViewSlots = 8;
+    DlssDepthViewEntry g_dlssDepthViews[kDlssDepthViewSlots]{};
+    int g_dlssDepthViewCount = 0;
+    bool g_dlssDepthViewTableFull = false;
+    ID3D11DepthStencilView* g_dlssEyeLastFullRasterDsv = nullptr;
+    // The eye whose DLSS depth window is open (Reach renders its eyes
+    // outside the raster-eye scope); -1 otherwise. Read by the OM hook.
+    std::atomic<int> g_dlssDepthWindowEye{-1};
+    ID3D11PixelShader* g_dlssMotionPs = nullptr;
+    ID3D11PixelShader* g_dlssDebugPs = nullptr;
+    ID3D11PixelShader* g_dlssCopyPs = nullptr;   // eye colour -> optical-flow input
+    ID3D11Buffer* g_dlssMotionCb = nullptr;
+    bool g_dlssMotionInitFailed = false;
+    uint32_t g_dlssJitterPhase = 0;
+    // Titles jitter their projection only after a frame in which both eyes
+    // actually resolved through DLSS; a jittered image with no consumer would
+    // just shake.
+    bool g_dlssJitterArmed = false;
+    uint32_t g_dlssEyesResolvedThisFrame = 0;
+    uint64_t g_dlssResolvedEyes = 0;
+    uint64_t g_dlssFallbackEyes = 0;
+    uint64_t g_dlssResets = 0;
+    bool g_dlssDepthSourceLogged = false;
+    bool g_dlssResourcesLogged = false;
+    uint64_t g_dlssFallbackLogMs = 0;
+    char g_dlssFallbackReason[160]{};
+    // A persistent optional-feature failure must return the game to its full
+    // render size, rather than stretching the reduced DLSS input forever.
+    bool g_dlssBatchAttemptedThisFrame = false;
+    uint32_t g_dlssBatchFailedFrames = 0;
+    bool g_dlssBatchSuppressed = false;
+    // Plain-language state for the F1 menu.
+    SRWLOCK g_dlssStatusLock = SRWLOCK_INIT;
+    char g_dlssStatusText[256] = "off";
+    uint64_t g_dlssStatusMs = 0;
 
     // Halo 4 scene-target discovery state. Two-phase, because deciding at bind
     // time picked an early pass and put unlit geometry in the headset: phase 1
@@ -663,6 +834,7 @@ namespace
     // Recenter requests can originate on the input/game camera threads. Only
     // Present owns g_haveCenter and the OpenXR locate used to replace it.
     std::atomic<bool> g_recenterRequested{false};
+    std::atomic<uint32_t> g_crouchCalibrationEpoch{1};
 
     // Screen placement while head tracking is on. World-locked (default) reads
     // as natural because turning your head shifts the screen in your view to
@@ -689,6 +861,10 @@ namespace
     bool g_headCsInit = false;
     XrPosef g_headPose{{0, 0, 0, 1}, {0, 0, 0}};
     bool g_headPoseValid = false;
+    // Protected by g_headCs, or read by the sole pose-publishing frame thread.
+    // Optional stock geometry may only combine poses located for the same time.
+    XrTime g_stockHeadPoseTime = 0;
+    XrTime g_stockControllerPoseTime = 0;
     std::atomic<uint64_t> g_roomscaleHeadSampleMs{0};
     XrPosef g_rightAimPose{{0, 0, 0, 1}, {0, 0, 0}};
     bool g_rightAimPoseValid = false;
@@ -821,6 +997,7 @@ namespace
     ID3D11PixelShader* g_iqResolveLinear = nullptr;  // linear resolve (matches old blit)
     ID3D11PixelShader* g_iqFxaa = nullptr;
     ID3D11PixelShader* g_iqRcas = nullptr;
+    ID3D11PixelShader* g_iqDlssRcas = nullptr;
     ID3D11Buffer* g_iqCb = nullptr;
     ID3D11Texture2D* g_iqChain[3] = {nullptr, nullptr, nullptr};
     ID3D11RenderTargetView* g_iqChainRtv[3] = {nullptr, nullptr, nullptr};
@@ -1586,6 +1763,8 @@ namespace
     // wider format is reported low rather than wrongly precise.
     uint32_t DxgiBytesPerPixel(DXGI_FORMAT f)
     {
+        if (f == DXGI_FORMAT_R32G8X24_TYPELESS || f == DXGI_FORMAT_D32_FLOAT_S8X24_UINT ||
+            f == DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS) return 8;
         switch (VrBlitFormatFamily(f))
         {
         case DXGI_FORMAT_R16G16B16A16_TYPELESS:
@@ -1600,8 +1779,10 @@ namespace
 
     DXGI_FORMAT UnormSibling(DXGI_FORMAT f)
     {
-        if (f == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) return DXGI_FORMAT_R8G8B8A8_UNORM;
-        if (f == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) return DXGI_FORMAT_B8G8R8A8_UNORM;
+        if (f == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || f == DXGI_FORMAT_R8G8B8A8_TYPELESS)
+            return DXGI_FORMAT_R8G8B8A8_UNORM;
+        if (f == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || f == DXGI_FORMAT_B8G8R8A8_TYPELESS)
+            return DXGI_FORMAT_B8G8R8A8_UNORM;
         return f;
     }
 
@@ -1815,6 +1996,18 @@ namespace
             return;
         lastMs = nowMs;
 
+        if (g_memoryAdapter)
+        {
+            DXGI_QUERY_VIDEO_MEMORY_INFO memory{};
+            if (SUCCEEDED(g_memoryAdapter->QueryVideoMemoryInfo(
+                    0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memory)))
+                LOG("VRAM: process local usage %.1f MiB / budget %.1f MiB; render %ux%u; DLSS %s, preset %s",
+                    double(memory.CurrentUsage) / 1048576.0, double(memory.Budget) / 1048576.0,
+                    g_gameBackbufferDesc.Width, g_gameBackbufferDesc.Height,
+                    g_config.upscaler == dlss::kUpscalerDlss ? "on" : "off",
+                    dlss::PresetName(g_config.dlss_preset));
+        }
+
         uint64_t intermediateBytes = 0;
         std::size_t intermediateLive = 0;
         for (std::size_t i = 0; i < kIntermediatePoolCapacity; ++i)
@@ -1875,16 +2068,16 @@ namespace
             D3D11_SHADER_RESOURCE_VIEW_DESC typedDesc{};
             const bool typeless =
                 Halo2FormatIsTypeless(static_cast<uint32_t>(srcDesc.Format));
-            if (typeless)
+            if (typeless || IsSrgb(srcDesc.Format))
             {
-                typedDesc.Format = static_cast<DXGI_FORMAT>(
-                    Halo2ConcreteFormat(static_cast<uint32_t>(srcDesc.Format)));
+                typedDesc.Format = typeless ? static_cast<DXGI_FORMAT>(
+                    Halo2ConcreteFormat(static_cast<uint32_t>(srcDesc.Format))) : srcDesc.Format;
                 typedDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
                 typedDesc.Texture2D.MostDetailedMip = 0;
                 typedDesc.Texture2D.MipLevels = 1;
             }
             if (SUCCEEDED(g_device->CreateShaderResourceView(
-                    src, typeless ? &typedDesc : nullptr, &fresh)) &&
+                    src, (typeless || IsSrgb(srcDesc.Format)) ? &typedDesc : nullptr, &fresh)) &&
                 fresh)
             {
                 ++g_srcViewCreated;
@@ -1960,6 +2153,7 @@ namespace
         release(g_iqResolveLinear);
         release(g_iqFxaa);
         release(g_iqRcas);
+        release(g_iqDlssRcas);
         release(g_iqCb);
 
         static const char* src = R"(
@@ -2099,6 +2293,30 @@ float4 ps_rcas(VSOut i) : SV_Target
     float3 res = saturate(e + 2.0 * (rcas - e));
     return float4(finishPerceptual(res), 1);
 }
+// Fuse the linear resolve and RCAS for perceptual DLSS input. Each tap is
+// the resolved UNORM8 pixel, including quantisation (neighbor UV arithmetic
+// can differ by a hardware interpolation step from the separate pass).
+// Destination-grid offsets preserve the sharpening radius.
+float3 resolvedClamped(float2 uv)
+{
+    uv=clamp(uv,0.5/dstSize,1.0-0.5/dstSize);
+    float3 c=srcTex.SampleLevel(smp,uv,0).rgb;
+    return round(saturate(c)*255.0)/255.0;
+}
+float4 ps_dlss_resolve_rcas(VSOut i) : SV_Target
+{
+    float2 p=i.uv,step=1.0/dstSize;
+    float3 b=resolvedClamped(p+float2(0,-step.y)),d=resolvedClamped(p+float2(-step.x,0));
+    float3 e=resolvedClamped(p),f=resolvedClamped(p+float2(step.x,0)),h=resolvedClamped(p+float2(0,step.y));
+    float3 mn4=min(min(b,d),min(f,h)),mx4=max(max(b,d),max(f,h));
+    float3 hitMin=min(mn4,e)/max(4.0*mx4,1e-5);
+    float3 hitMax=(1.0-max(mx4,e))/min(4.0*mn4-4.0,-1e-5);
+    float3 lobes=max(-hitMin,hitMax);
+    float lobe=max(-0.1875,min(max(lobes.r,max(lobes.g,lobes.b)),0.0));
+    float scaledLobe=lobe*saturate(sharpness);
+    float3 rcas=(scaledLobe*(b+d+f+h)+e)/(4.0*scaledLobe+1.0);
+    return float4(finishPerceptual(saturate(e+2.0*(rcas-e))),1);
+}
 )";
         ID3DBlob* err = nullptr;
         auto compile = [&](const char* entry) -> ID3DBlob* {
@@ -2138,6 +2356,15 @@ float4 ps_rcas(VSOut i) : SV_Target
         cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         if (FAILED(g_device->CreateBuffer(&cb, nullptr, &g_iqCb)))
             return false;
+        // Optional optimization: compilation/allocation failure retains the
+        // already working ordinary resolve, independently of VR ownership.
+        if (ID3DBlob* blob=dlss::kEnableDlssFullOutputResolve ? compile("ps_dlss_resolve_rcas") : nullptr)
+        {
+            const HRESULT hr=g_device->CreatePixelShader(blob->GetBufferPointer(),
+                blob->GetBufferSize(),nullptr,&g_iqDlssRcas);
+            blob->Release();
+            if (FAILED(hr)) LOG("DLSS: fused output shader unavailable (0x%08X); ordinary resolve stays",unsigned(hr));
+        }
         return true;
     }
 
@@ -2291,17 +2518,20 @@ float4 ps_rcas(VSOut i) : SV_Target
         if (g_iqChain[i]) { g_iqChain[i]->Release(); g_iqChain[i] = nullptr; }
     }
 
-    // Two normal ping-pong intermediates at eye size. Genuine SMAA temporarily
-    // needs a third target for blend weights while preserving resolved color.
-    // Slot 2 is released as soon as SMAA is no longer selected.
-    bool EnsureIqChain(uint32_t w, uint32_t h, bool needSmaa)
+    // Allocate only the intermediates this exact pass graph needs. The old
+    // fixed two-target minimum kept another full XR-eye texture alive for a
+    // simple resolve+RCAS path. This depends on pass liveness, not on input
+    // resolution, DLSS model, or the dormant stereo-batch experiment.
+    bool EnsureIqChain(uint32_t w, uint32_t h, int targetCount)
     {
         const DXGI_FORMAT format = UnormSibling((DXGI_FORMAT)g_xrFormat);
         if (g_iqChainDesc.Width != w || g_iqChainDesc.Height != h ||
             g_iqChainDesc.Format != format)
             ReleaseIqChain();
-        if (!needSmaa)
-            ReleaseIqChainSlot(2);
+        if (targetCount < 1 || targetCount > 3)
+            return false;
+        for (int i = targetCount; i < 3; ++i)
+            ReleaseIqChainSlot(i);
 
         D3D11_TEXTURE2D_DESC d{};
         d.Width = w;
@@ -2312,7 +2542,6 @@ float4 ps_rcas(VSOut i) : SV_Target
         d.SampleDesc.Count = 1;
         d.Usage = D3D11_USAGE_DEFAULT;
         d.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-        const int targetCount = needSmaa ? 3 : 2;
         for (int i = 0; i < targetCount; ++i)
         {
             if (g_iqChain[i] && g_iqChainRtv[i] && g_iqChainSrv[i])
@@ -2354,11 +2583,14 @@ float4 ps_rcas(VSOut i) : SV_Target
     {
         ID3D11Query* disjoint = nullptr;
         ID3D11Query* stamps[kIqTimerStamps]{};
+        ID3D11Query* dlssWait[4]{};
+        uint32_t waitMask = 0;
         uint32_t written = 0;
         bool pending = false;
     };
 
     IqTimerSlot g_iqTimer[kIqTimerDepth];
+    GpuEyeTiming g_eyeGpuTiming;
     std::size_t g_iqTimerCursor = 0;   // which slot this frame is recording into
     uint32_t g_iqTimerStampIndex = 0;  // stamps written so far this frame
     bool g_iqTimerArmed = false;
@@ -2367,6 +2599,8 @@ float4 ps_rcas(VSOut i) : SV_Target
     // Accumulated over the reporting window, in microseconds.
     double g_iqResolveUs = 0.0;
     double g_iqPostUs = 0.0;
+    double g_iqDlssWaitUs = 0.0;
+    uint32_t g_iqDlssWaitEyes = 0;
     uint32_t g_iqTimedFrames = 0;
     uint32_t g_iqDisjointFrames = 0;
 
@@ -2390,8 +2624,11 @@ float4 ps_rcas(VSOut i) : SV_Target
                 if (FAILED(g_device->CreateQuery(&stampDesc, &stamp)))
                     return false;
             }
+            for (auto*& stamp : slot.dlssWait)
+                if (FAILED(g_device->CreateQuery(&stampDesc, &stamp))) return false;
         }
         g_iqTimerUsable = true;
+        g_eyeGpuTiming.Init(g_device);
         LOG("IQ TIMING: GPU timestamps armed; the eye publish now reports real "
             "GPU milliseconds, split resolve vs post");
         return true;
@@ -2399,6 +2636,7 @@ float4 ps_rcas(VSOut i) : SV_Target
 
     void ReleaseIqTimer()
     {
+        g_eyeGpuTiming.Release();
         for (auto& slot : g_iqTimer)
         {
             if (slot.disjoint) { slot.disjoint->Release(); slot.disjoint = nullptr; }
@@ -2407,6 +2645,9 @@ float4 ps_rcas(VSOut i) : SV_Target
                 if (stamp) { stamp->Release(); stamp = nullptr; }
             }
             slot.written = 0;
+            for (auto*& stamp : slot.dlssWait)
+            { if (stamp) stamp->Release(); stamp = nullptr; }
+            slot.waitMask = 0;
             slot.pending = false;
         }
         g_iqTimerArmed = false;
@@ -2439,6 +2680,13 @@ float4 ps_rcas(VSOut i) : SV_Target
             if (!complete)
                 continue;
 
+            uint64_t waits[4]{};
+            for (uint32_t i = 0; i < 4; ++i)
+                if (slot.waitMask & (1u << i))
+                    complete &= g_context->GetData(slot.dlssWait[i], &waits[i], sizeof(waits[i]),
+                        D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+            if (!complete) continue;
+
             slot.pending = false;
             if (dj.Disjoint || dj.Frequency == 0)
             {
@@ -2446,6 +2694,12 @@ float4 ps_rcas(VSOut i) : SV_Target
                 continue;
             }
             const double toUs = 1e6 / static_cast<double>(dj.Frequency);
+            for (uint32_t i = 0; i < 4; i += 2)
+                if ((slot.waitMask & (3u << i)) == (3u << i) && waits[i + 1] >= waits[i])
+                {
+                    g_iqDlssWaitUs += (waits[i + 1] - waits[i]) * toUs;
+                    ++g_iqDlssWaitEyes;
+                }
             // Stamps arrive in threes: start, after the resolve, after the
             // post passes. A partial triple (an eye that failed early) is
             // skipped rather than mis-attributed.
@@ -2470,6 +2724,7 @@ float4 ps_rcas(VSOut i) : SV_Target
         if (slot.pending)
             return;
         slot.written = 0;
+        slot.waitMask = 0;
         g_context->Begin(slot.disjoint);
         g_iqTimerArmed = true;
     }
@@ -2484,6 +2739,16 @@ float4 ps_rcas(VSOut i) : SV_Target
         g_context->End(slot.stamps[g_iqTimerStampIndex]);
         ++g_iqTimerStampIndex;
         slot.written = g_iqTimerStampIndex;
+    }
+
+    void IqTimerDlssWait(int eye, bool end)
+    {
+        if (!g_iqTimerArmed || eye < 0 || eye > 1) return;
+        auto& slot = g_iqTimer[g_iqTimerCursor];
+        const unsigned index = eye * 2 + (end ? 1 : 0);
+        if (slot.waitMask & (1u << index)) return;
+        g_context->End(slot.dlssWait[index]);
+        slot.waitMask |= 1u << index;
     }
 
     // The eye publish, in real GPU time, on the same two-second window as the
@@ -2507,14 +2772,42 @@ float4 ps_rcas(VSOut i) : SV_Target
         if (!g_iqTimerUsable || !g_iqTimedFrames)
             return;
         const double frames = static_cast<double>(g_iqTimedFrames);
+        double dlssCpuUs = 0.0;
+        uint32_t dlssEvaluations = 0;
+        Dlss_TakeCpuTime(dlssCpuUs, dlssEvaluations);
+        const auto raster = g_eyeGpuTiming.Collect(g_context,
+            g_config.upscaler == dlss::kUpscalerDlss,
+            g_gameBackbufferDesc.Width, g_gameBackbufferDesc.Height);
+        if (raster.eyes)
+            LOG("DLSS BUDGET: %s render %ux%u: graphics raster %.3f ms/eye, "
+                "input preparation/submission %.3f ms/eye, %u sampled eyes; "
+                "GPU intervals include scheduling contention; compare the same scene",
+                raster.dlss ? "ON" : "OFF", raster.width, raster.height,
+                raster.rasterUs / raster.eyes / 1000.0,
+                raster.prepareUs / raster.eyes / 1000.0, raster.eyes);
+        DlssGpuTiming dlssGpu{};
+        Dlss_TakeGpuTime(dlssGpu);
+        if (g_iqDlssWaitEyes)
+            LOG("DLSS BUDGET: graphics residual wait for compute/flow %.3f ms/eye over %u eyes "
+                "(already overlaps other work; do not add the full compute cost again)",
+                g_iqDlssWaitUs / g_iqDlssWaitEyes / 1000.0, g_iqDlssWaitEyes);
+        g_iqDlssWaitUs = 0; g_iqDlssWaitEyes = 0;
+        if (dlssGpu.evaluations)
+            LOG("DLSS BUDGET: compute merge %.3f ms/eye, transformer/evaluate %.3f ms/eye, "
+                "%u evaluations (GPU intervals, excludes optical-flow wait)",
+                dlssGpu.mergeMicroseconds / dlssGpu.evaluations / 1000.0,
+                dlssGpu.evaluateMicroseconds / dlssGpu.evaluations / 1000.0,
+                dlssGpu.evaluations);
         LOG("IQ GPU: eye publish %.3f ms/frame (resolve %.3f + post %.3f, both "
-            "eyes) over %u timed frames%s",
+            "eyes) over %u timed frames%s; DLSS CPU %.3f ms/frame inside %u evaluations",
             (g_iqResolveUs + g_iqPostUs) / frames / 1000.0,
             g_iqResolveUs / frames / 1000.0,
             g_iqPostUs / frames / 1000.0,
             g_iqTimedFrames,
             g_iqDisjointFrames
-                ? " (some frames discarded: the GPU changed clocks)" : "");
+                ? " (some frames discarded: the GPU changed clocks)" : "",
+            dlssEvaluations ? dlssCpuUs / frames / 1000.0 : 0.0,
+            dlssEvaluations);
         g_iqResolveUs = 0.0;
         g_iqPostUs = 0.0;
         g_iqTimedFrames = 0;
@@ -2539,18 +2832,29 @@ float4 ps_rcas(VSOut i) : SV_Target
     // function always owns the eye resolve; missing prerequisites fail loudly.
     bool BlitImageQuality(ID3D11Texture2D* src, const D3D11_TEXTURE2D_DESC& srcDesc,
                           ID3D11Texture2D* dst, uint32_t dstW, uint32_t dstH,
-                          ID3D11RenderTargetView* dstRtv)
+                          ID3D11RenderTargetView* dstRtv, bool reconstructed = false)
     {
+        reconstructed = reconstructed && dlss::kEnableDlssFullOutputResolve;
         const bool xrSrgb = IsSrgb((DXGI_FORMAT)g_xrFormat);
         const bool finalPerceptual = !xrSrgb;
         const bool wantSharp = g_config.upscale_filter == 1;     // sharp bicubic resolve vs linear
-        const bool wantSmaa = g_config.aa_mode == 3 || g_config.aa_mode == 4;
-        const bool wantFxaa = g_config.aa_mode == 1 || g_config.aa_mode == 2 ||
-                              g_config.aa_mode == 4;
+        // Preserve the user's explicit post-AA setting. The combined DLSS
+        // resolve is selected only when no additional AA pass was requested.
+        const bool wantSmaa =
+            (g_config.aa_mode == 3 || g_config.aa_mode == 4);
+        const bool wantFxaa =
+            (g_config.aa_mode == 1 || g_config.aa_mode == 2 ||
+             g_config.aa_mode == 4);
         const bool fxaaStrong = g_config.aa_mode == 2 || g_config.aa_mode == 4;
         const bool wantAa = wantSmaa || wantFxaa;
         const bool wantRcas = g_config.sharpness > 0.001f;
         const bool post = wantAa || wantRcas;
+        // DLSS already produced perceptual pixels at the destination size.
+        // RCAS can consume those directly: the identity resolve otherwise
+        // decodes/encodes every pixel and writes a redundant full-size target.
+        const bool directRcas = reconstructed && wantRcas && !wantAa &&
+            srcDesc.Width == dstW && srcDesc.Height == dstH &&
+            srcDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM;
 
         // NO FALLBACKS (project policy). The IQ path always renders the eye --
         // "everything off" still runs the linear resolve pass, it never calls
@@ -2562,6 +2866,10 @@ float4 ps_rcas(VSOut i) : SV_Target
             if (!logged) { logged = true; LOG("IQ ERROR: shader pipeline unavailable; eye NOT processed"); }
             return false;
         }
+        const DXGI_FORMAT chainFormat=UnormSibling(static_cast<DXGI_FORMAT>(g_xrFormat));
+        const bool fusedRcas = reconstructed && wantRcas && !wantAa && !wantSharp &&
+            g_iqDlssRcas && srcDesc.Format==DXGI_FORMAT_R8G8B8A8_UNORM &&
+            (chainFormat==DXGI_FORMAT_R8G8B8A8_UNORM || chainFormat==DXGI_FORMAT_B8G8R8A8_UNORM);
         if (wantSmaa && !EnsureSmaaPipeline())
         {
             static bool logged = false;
@@ -2575,9 +2883,11 @@ float4 ps_rcas(VSOut i) : SV_Target
             if (!logged) { logged = true; LOG("IQ ERROR: source SRV unavailable; eye NOT processed"); }
             return false;
         }
-        if (!post)
+        const int intermediateCount = dlss::ResolveIntermediateCount(
+            wantSmaa, wantFxaa, wantRcas, directRcas || fusedRcas);
+        if (intermediateCount == 0)
             ReleaseIqChain();
-        else if (!EnsureIqChain(dstW, dstH, wantSmaa))
+        else if (!EnsureIqChain(dstW, dstH, intermediateCount))
         {
             static bool logged = false;
             if (!logged) { logged = true; LOG("IQ ERROR: intermediate chain unavailable; eye NOT processed"); }
@@ -2592,17 +2902,26 @@ float4 ps_rcas(VSOut i) : SV_Target
             else if (g_config.aa_mode == 3) aaName = "smaa1x";
             else if (g_config.aa_mode == 4) aaName = "smaa1x+fxaa-strong";
             static int lf = -99, la = -99; static float ls = -1.0f;
-            static uint32_t lsw = 0, ldw = 0;
+            static uint32_t lsw = 0, lsh = 0, ldw = 0, ldh = 0;
+            static int lc = -1, li = -1;
+            const int combined = directRcas || fusedRcas ? 1 : 0;
             if (lf != g_config.upscale_filter || la != g_config.aa_mode ||
-                ls != g_config.sharpness || lsw != srcDesc.Width || ldw != dstW)
+                ls != g_config.sharpness || lsw != srcDesc.Width || ldw != dstW ||
+                lsh != srcDesc.Height || ldh != dstH ||
+                lc != combined || li != intermediateCount)
             {
                 lf = g_config.upscale_filter; la = g_config.aa_mode;
                 ls = g_config.sharpness; lsw = srcDesc.Width; ldw = dstW;
+                lsh = srcDesc.Height; ldh = dstH; lc = combined; li = intermediateCount;
                 LOG("IQ: eye pass active -- resolve=%s aa=%s(%d) sharpen=%.2f "
-                    "rcasGain=2.00 src=%ux%u dst=%ux%u post=%d xrSrgb=%d",
+                    "rcasGain=2.00 src=%ux%u dst=%ux%u post=%d xrSrgb=%d combined=%d "
+                    "intermediates=%d (%.1f MiB allocated)",
                     wantSharp ? "bicubic-a075" : "linear", aaName,
                     g_config.aa_mode, g_config.sharpness, srcDesc.Width,
-                    srcDesc.Height, dstW, dstH, post ? 1 : 0, xrSrgb ? 1 : 0);
+                    srcDesc.Height, dstW, dstH, post ? 1 : 0, xrSrgb ? 1 : 0,
+                    combined, intermediateCount,
+                    double(dstW) * dstH * DxgiBytesPerPixel(chainFormat) *
+                        intermediateCount / (1024.0 * 1024.0));
             }
         }
 
@@ -2670,7 +2989,13 @@ float4 ps_rcas(VSOut i) : SV_Target
         // after everything. On the single-pass branch the third equals the
         // second and post reads as zero, which is the answer we want it to give.
         IqTimerStamp();
-        if (!post)
+        if (directRcas || fusedRcas)
+        {
+            IqTimerStamp(); // no separate resampling stage
+            pass(g_blitVs, directRcas ? g_iqRcas : g_iqDlssRcas, srcSrv, nullptr, nullptr, dstRtv,
+                 srcDesc.Width, srcDesc.Height, dstW, dstH, finalPerceptual, 0.0f);
+        }
+        else if (!post)
         {
             // One pass straight to XR: linear for an sRGB RTV, perceptual for
             // the runtime's non-sRGB fallback formats.
@@ -2740,6 +3065,1484 @@ float4 ps_rcas(VSOut i) : SV_Target
             if (savedPointSampler) savedPointSampler->Release();
         }
         return true;
+    }
+
+    // =====================================================================
+    // Optional NVIDIA DLSS eye resolve
+    //
+    // Replaces BlitImageQuality for one eye when config.upscaler selects DLSS
+    // and everything DLSS needs exists for that eye: the title published the
+    // camera it rasterized with (VR_PublishEyeCamera), the eye's depth buffer
+    // was copied at eye end (DlssCaptureEyeDepth), NGX initialized on this
+    // device and a feature exists for this render/output shape. Any missing
+    // piece falls back to the mod's own resolve for that eye and frame and
+    // says why, at most once every two seconds. Nothing here can disarm a
+    // title, end the OpenXR session, or change what the game renders except
+    // the sub-pixel jitter the title asks for through VR_GetEyeJitter.
+    //
+    // Halo 3 at eye end: direct eye colour + direct engine-depth SRV ->
+    // camera/depth pass -> native D3D11 NGX evaluation. Other title paths keep
+    // their input captures. The ordinary configured output resolve runs at
+    // Present. Image-search stays disabled. The independently measured
+    // full-output resolve combines resampling/sharpening when compatible.
+    struct DlssMotionParams
+    {
+        float curPos[4], curRight[4], curUp[4], curFwd[4], curProj[4], curDepth[4];
+        float prevPos[4], prevRight[4], prevUp[4], prevFwd[4], prevProj[4], prevDepth[4];
+        float size[4];   // w, h, 1/w, 1/h
+        float debug[4];  // x: motion-vector scale for the diagnostic view
+    };
+    static_assert(sizeof(DlssMotionParams) == 14 * 16);
+
+    const char* DlssTitleName(GameTitle title)
+    {
+        switch (title)
+        {
+        case GameTitle::Halo3: return "Halo 3";
+        case GameTitle::Halo3ODST: return "Halo 3: ODST";
+        case GameTitle::HaloReach: return "Halo: Reach";
+        case GameTitle::Halo4: return "Halo 4";
+        case GameTitle::HaloCE: return "Halo: CE";
+        case GameTitle::Halo2: return "Halo 2";
+        default: return "no title";
+        }
+    }
+
+    void SetDlssStatus(const char* text)
+    {
+        AcquireSRWLockExclusive(&g_dlssStatusLock);
+        snprintf(g_dlssStatusText, sizeof(g_dlssStatusText), "%s", text);
+        ReleaseSRWLockExclusive(&g_dlssStatusLock);
+    }
+
+    // One bounded line per reason change or per two seconds, plus the F1
+    // status, so a persistent fallback is visible without flooding.
+    void NoteDlssFallback(int eye, const char* reason)
+    {
+        ++g_dlssFallbackEyes;
+        const uint64_t nowMs = GetTickCount64();
+        const bool changed = strncmp(g_dlssFallbackReason, reason,
+                                     sizeof(g_dlssFallbackReason) - 1) != 0;
+        if (changed || nowMs - g_dlssFallbackLogMs >= 2000)
+        {
+            g_dlssFallbackLogMs = nowMs;
+            snprintf(g_dlssFallbackReason, sizeof(g_dlssFallbackReason), "%s",
+                     reason);
+            LOG("DLSS: eye %d uses the mod's own resolve: %s", eye, reason);
+            char text[256];
+            snprintf(text, sizeof(text), "not running: %s", reason);
+            SetDlssStatus(text);
+        }
+    }
+
+    bool EnsureDlssMotionPipeline()
+    {
+        if (g_dlssMotionPs && g_dlssDebugPs && g_dlssCopyPs && g_dlssMotionCb)
+            return true;
+        if (g_dlssMotionInitFailed || !g_device || !EnsureBlitPipeline())
+            return false;
+        auto release = [](auto*& object) {
+            if (object) object->Release();
+            object = nullptr;
+        };
+        release(g_dlssMotionPs);
+        release(g_dlssDebugPs);
+        release(g_dlssCopyPs);
+        release(g_dlssMotionCb);
+
+        if (FAILED(g_device->CreatePixelShader(g_dlssCameraPs, sizeof(g_dlssCameraPs), nullptr, &g_dlssMotionPs)) ||
+            FAILED(g_device->CreatePixelShader(g_dlssDebugPsCode, sizeof(g_dlssDebugPsCode), nullptr, &g_dlssDebugPs)) ||
+            FAILED(g_device->CreatePixelShader(g_dlssCopyPsCode, sizeof(g_dlssCopyPsCode), nullptr, &g_dlssCopyPs)))
+        {
+            g_dlssMotionInitFailed = true;
+            return false;
+        }
+        D3D11_BUFFER_DESC cb{};
+        cb.ByteWidth = sizeof(DlssMotionParams);
+        cb.Usage = D3D11_USAGE_DEFAULT;
+        cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        if (FAILED(g_device->CreateBuffer(&cb, nullptr, &g_dlssMotionCb)))
+        {
+            g_dlssMotionInitFailed = true;
+            return false;
+        }
+        LOG("DLSS: camera-motion pipeline ready");
+        return true;
+    }
+
+    void ReleaseDlssEyeTextures(DlssEyeState& state)
+    {
+        // Revoke before Release: pause or a skipped submission can leave an
+        // unconsumed result pointing at this texture when resize destroys it.
+        g_dlssKicked[static_cast<int>(&state - g_dlssEye)].Reset();
+        auto release = [](auto*& object) {
+            if (object) object->Release();
+            object = nullptr;
+        };
+        // Blit() may have cached a view of the output; drop ours first.
+        if (state.output)
+            ForgetSourceView(state.output);
+        release(state.depthCopySrv);
+        release(state.depthCopy);
+        release(state.colorIn);
+        release(state.motionSrv);
+        release(state.motionRtv);
+        release(state.motion);
+        release(state.depthOutRtv);
+        release(state.depthOut);
+        release(state.output);
+        release(state.colorInSrv);
+        for (int i = 0; i < 2; ++i)
+        {
+            release(state.flowInputRtv[i]);
+            release(state.flowInput[i]);
+        }
+        // Shared D3D12 textures: the backend drops its own references too.
+        Dlss_ReleaseEyeTextures(static_cast<int>(&state - g_dlssEye));
+        state.depthCopyDesc = {};
+        state.colorInDesc = {};
+        state.outputDesc = {};
+        state.depthValid = false;
+        state.depthDirect = false;
+        state.resetPending = true;
+    }
+
+    void ReleaseDlssStereoBatch()
+    {
+        g_dlssKicked[0].Reset();
+        g_dlssKicked[1].Reset();
+        auto release = [](auto*& object) {
+            if (object) object->Release();
+            object = nullptr;
+        };
+        if (g_dlssBatch.output)
+            ForgetSourceView(g_dlssBatch.output);
+        for (auto* output : g_dlssBatch.eyeOutput)
+            if (output) ForgetSourceView(output);
+        release(g_dlssBatch.motionRtv);
+        release(g_dlssBatch.depthRtv);
+        release(g_dlssBatch.color);
+        release(g_dlssBatch.motion);
+        release(g_dlssBatch.depth);
+        release(g_dlssBatch.output);
+        release(g_dlssBatch.eyeOutput[0]);
+        release(g_dlssBatch.eyeOutput[1]);
+        g_dlssBatch = {};
+    }
+
+    void ReleaseDlssDepthTracking()
+    {
+        if (g_dlssSceneDepthDsv)
+        {
+            g_dlssSceneDepthDsv->Release();
+            g_dlssSceneDepthDsv = nullptr;
+        }
+        for (int i = 0; i < g_dlssDepthViewCount; ++i)
+        {
+            if (g_dlssDepthViews[i].view)
+                g_dlssDepthViews[i].view->Release();
+            g_dlssDepthViews[i] = {};
+        }
+        g_dlssDepthViewCount = 0;
+        g_dlssDepthViewTableFull = false;
+        g_dlssEyeSceneDepthSeen = false;
+        g_dlssEyeLastFullRasterDsv = nullptr;
+        g_dlssDepthSourceLogged = false;
+    }
+
+    // Resize, title detach, or the user turning the upscaler off: every
+    // DLSS-owned texture, feature and depth reference goes. NGX itself stays
+    // initialized for the device; the shaders are device-lifetime.
+    void ReleaseDlssResources()
+    {
+        g_dlssKicked[0].Reset();
+        g_dlssKicked[1].Reset();
+        Dlss_ReleaseFeatures();
+        ReleaseDlssStereoBatch();
+        for (DlssEyeState& state : g_dlssEye)
+        {
+            ReleaseDlssEyeTextures(state);
+            state.previous = {};
+            state.published = false;
+        }
+        ReleaseDlssDepthTracking();
+        g_dlssJitterArmed = false;
+        g_dlssEyesResolvedThisFrame = 0;
+        g_dlssResourcesLogged = false;
+    }
+
+    // Whether a depth view is the size the eye is rasterized at RIGHT NOW:
+    // the backbuffer once Present re-learned it, else the render plan. A
+    // live resize binds the new depth views before the first Present at the
+    // new size, so this is evaluated on every bind, never stored: the
+    // DLSS-4 log classified all four views as "not full raster" during that
+    // window and DLSS then had no depth for the rest of the session.
+    bool DlssDepthIsFullRaster(const D3D11_TEXTURE2D_DESC& desc)
+    {
+        if (!desc.Width || !desc.Height)
+            return false;
+        if (g_gameBackbufferDescValid)
+            return desc.Width == g_gameBackbufferDesc.Width &&
+                desc.Height == g_gameBackbufferDesc.Height;
+        unsigned renderW = 0, renderH = 0, outputW = 0, outputH = 0;
+        bool dlss = false, runtimePresent = false;
+        D3D_GetRenderPlan(renderW, renderH, outputW, outputH, dlss, runtimePresent);
+        return renderW && desc.Width == renderW && desc.Height == renderH;
+    }
+
+    // OM hook, inside an eye. `sceneBound` is true when this bind carried the
+    // learned scene-colour target.
+    void DlssNoteEyeDepth(ID3D11DepthStencilView* depth, bool sceneBound)
+    {
+        if (!depth)
+            return;
+        if (sceneBound)
+        {
+            if (depth != g_dlssSceneDepthDsv)
+            {
+                depth->AddRef();
+                if (g_dlssSceneDepthDsv)
+                    g_dlssSceneDepthDsv->Release();
+                g_dlssSceneDepthDsv = depth;
+            }
+            g_dlssEyeSceneDepthSeen = true;
+            return;
+        }
+        for (int i = 0; i < g_dlssDepthViewCount; ++i)
+        {
+            if (g_dlssDepthViews[i].view == depth)
+            {
+                if (DlssDepthIsFullRaster(g_dlssDepthViews[i].desc))
+                    g_dlssEyeLastFullRasterDsv = depth;
+                return;
+            }
+        }
+        if (g_dlssDepthViewCount >= kDlssDepthViewSlots)
+        {
+            g_dlssDepthViewTableFull = true;
+            return;
+        }
+        // First sight of this view: describe it once (the only COM work this
+        // hook ever does for depth) and pin it.
+        ID3D11Resource* resource = nullptr;
+        depth->GetResource(&resource);
+        ID3D11Texture2D* texture = nullptr;
+        D3D11_TEXTURE2D_DESC desc{};
+        if (resource &&
+            SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D),
+                                               reinterpret_cast<void**>(&texture))))
+        {
+            texture->GetDesc(&desc);
+        }
+        const bool fullRaster = texture && DlssDepthIsFullRaster(desc);
+        if (texture) texture->Release();
+        if (resource) resource->Release();
+        depth->AddRef();
+        DlssDepthViewEntry& entry = g_dlssDepthViews[g_dlssDepthViewCount++];
+        entry.view = depth;
+        entry.fullRaster = fullRaster;
+        entry.desc = desc;
+        if (fullRaster)
+            g_dlssEyeLastFullRasterDsv = depth;
+    }
+
+    // Eye end, render thread: copy the depth buffer that represents this eye
+    // before the other eye or the next frame overwrites it.
+    void DlssCaptureEyeDepth(int eye)
+    {
+        if (eye < 0 || eye > 1 || !VR_DlssWantsEyeCamera() ||
+            !g_context || !g_device)
+            return;
+        DlssEyeState& state = g_dlssEye[eye];
+        state.depthValid = false;
+        if (!state.published)
+            return; // no camera for this eye: the resolve would not run anyway
+        bool usedSceneBound = false;
+        if (!dlss::ChooseDepthSource(
+                g_dlssEyeSceneDepthSeen && g_dlssSceneDepthDsv != nullptr,
+                g_dlssEyeLastFullRasterDsv != nullptr, usedSceneBound))
+        {
+            static uint64_t loggedMs = 0;
+            const uint64_t nowMs = GetTickCount64();
+            if (nowMs - loggedMs >= 5000)
+            {
+                loggedMs = nowMs;
+                LOG("DLSS: eye %d saw no usable depth view (%d classified%s; "
+                    "raster %ux%u%s)",
+                    eye, g_dlssDepthViewCount,
+                    g_dlssDepthViewTableFull ? ", table full" : "",
+                    g_gameBackbufferDescValid ? g_gameBackbufferDesc.Width : 0u,
+                    g_gameBackbufferDescValid ? g_gameBackbufferDesc.Height : 0u,
+                    g_gameBackbufferDescValid ? "" : " not yet re-learned");
+                for (int i = 0; i < g_dlssDepthViewCount && i < kDlssDepthViewSlots; ++i)
+                {
+                    LOG("DLSS:   depth view %d: %ux%u fmt %u samples %u",
+                        i, g_dlssDepthViews[i].desc.Width, g_dlssDepthViews[i].desc.Height,
+                        static_cast<unsigned>(g_dlssDepthViews[i].desc.Format),
+                        g_dlssDepthViews[i].desc.SampleDesc.Count);
+                }
+            }
+            return;
+        }
+        ID3D11DepthStencilView* dsv =
+            usedSceneBound ? g_dlssSceneDepthDsv : g_dlssEyeLastFullRasterDsv;
+        ID3D11Resource* resource = nullptr;
+        dsv->GetResource(&resource);
+        if (!resource)
+            return;
+        ID3D11Texture2D* texture = nullptr;
+        if (FAILED(resource->QueryInterface(__uuidof(ID3D11Texture2D),
+                                            reinterpret_cast<void**>(&texture))))
+        {
+            resource->Release();
+            return;
+        }
+        D3D11_TEXTURE2D_DESC desc{};
+        texture->GetDesc(&desc);
+        uint32_t copyFormat = 0, viewFormat = 0;
+        const bool formatOk = dlss::DepthCopyFormats(
+            static_cast<uint32_t>(desc.Format), copyFormat, viewFormat);
+        const bool shapeOk = desc.SampleDesc.Count == 1 && desc.Width && desc.Height;
+        if (!formatOk || !shapeOk)
+        {
+            static bool logged = false;
+            if (!logged)
+            {
+                logged = true;
+                LOG("DLSS: eye depth %ux%u fmt %u samples %u cannot be copied "
+                    "(%s); DLSS stays off for this title",
+                    desc.Width, desc.Height, static_cast<unsigned>(desc.Format),
+                    desc.SampleDesc.Count,
+                    formatOk ? "multisampled" : "not a depth format");
+            }
+            texture->Release();
+            resource->Release();
+            return;
+        }
+        // The old per-eye Halo 3 path could borrow this view because it
+        // evaluated before the other eye rendered. A stereo batch defers its
+        // one evaluation until both eyes exist, so each eye's depth must be
+        // retained independently.
+        unsigned planRenderW = 0, planRenderH = 0, planOutputW = 0;
+        unsigned planOutputH = 0;
+        bool plannedDlss = false, runtimePresent = false;
+        D3D_GetRenderPlan(planRenderW, planRenderH, planOutputW, planOutputH,
+                          plannedDlss, runtimePresent);
+        const bool direct = TitleAdapter_GetActiveTitle() == GameTitle::Halo3 &&
+            !(dlss::kEnableDlss21StereoBatch && plannedDlss) && !g_config.dlss_debug_view &&
+            !Dlss_UsesSharedTextures() &&
+            (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) &&
+            desc.Format == static_cast<DXGI_FORMAT>(copyFormat);
+        if (direct && (!state.depthDirect || state.depthCopy != texture))
+        {
+            D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+            view.Format = static_cast<DXGI_FORMAT>(viewFormat);
+            view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            view.Texture2D.MipLevels = 1;
+            ID3D11ShaderResourceView* srv = nullptr;
+            if (SUCCEEDED(g_device->CreateShaderResourceView(texture, &view, &srv)))
+            {
+                if (state.depthCopySrv) state.depthCopySrv->Release();
+                if (state.depthCopy) state.depthCopy->Release();
+                texture->AddRef();
+                state.depthCopy = texture; state.depthCopySrv = srv;
+                state.depthCopyDesc = desc; state.depthDirect = true;
+            }
+        }
+        const bool usingDirect = direct && state.depthDirect && state.depthCopy == texture;
+        if (!usingDirect && (!state.depthCopy || state.depthDirect || state.depthCopyDesc.Width != desc.Width ||
+            state.depthCopyDesc.Height != desc.Height ||
+            state.depthCopyDesc.Format != static_cast<DXGI_FORMAT>(copyFormat)))
+        {
+            state.depthDirect = false;
+            if (state.depthCopySrv) { state.depthCopySrv->Release(); state.depthCopySrv = nullptr; }
+            if (state.depthCopy) { state.depthCopy->Release(); state.depthCopy = nullptr; }
+            D3D11_TEXTURE2D_DESC copyDesc{};
+            copyDesc.Width = desc.Width;
+            copyDesc.Height = desc.Height;
+            copyDesc.MipLevels = 1;
+            copyDesc.ArraySize = 1;
+            copyDesc.Format = static_cast<DXGI_FORMAT>(copyFormat);
+            copyDesc.SampleDesc.Count = 1;
+            copyDesc.Usage = D3D11_USAGE_DEFAULT;
+            copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+            srvDesc.Format = static_cast<DXGI_FORMAT>(viewFormat);
+            srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Texture2D.MipLevels = 1;
+            if (FAILED(g_device->CreateTexture2D(&copyDesc, nullptr, &state.depthCopy)) ||
+                FAILED(g_device->CreateShaderResourceView(
+                    state.depthCopy, &srvDesc, &state.depthCopySrv)))
+            {
+                LOG("DLSS ERROR: eye %d depth copy (%ux%u fmt %u) could not be created",
+                    eye, desc.Width, desc.Height, copyFormat);
+                if (state.depthCopySrv) { state.depthCopySrv->Release(); state.depthCopySrv = nullptr; }
+                if (state.depthCopy) { state.depthCopy->Release(); state.depthCopy = nullptr; }
+                state.depthCopyDesc = {};
+                texture->Release();
+                resource->Release();
+                return;
+            }
+            state.depthCopyDesc = copyDesc;
+        }
+        // Whole-subresource copy: the only copy D3D11 allows from a depth
+        // buffer, and it needs no unbinding.
+        if (!usingDirect)
+            g_context->CopySubresourceRegion(state.depthCopy, 0, 0, 0, 0, texture, 0, nullptr);
+        state.depthValid = true;
+        if (!g_dlssDepthSourceLogged)
+        {
+            g_dlssDepthSourceLogged = true;
+            LOG("DLSS: depth input %s", usingDirect ? "direct engine SRV; no depth copy" : "captured per eye");
+            LOG("DLSS: eye depth source is %s: %ux%u fmt %u (copy fmt %u, view fmt %u); "
+                "%d depth view(s) classified%s",
+                usedSceneBound
+                    ? "the depth view bound with the learned scene-colour target"
+                    : "the last full-raster depth view bound inside the eye",
+                desc.Width, desc.Height, static_cast<unsigned>(desc.Format),
+                copyFormat, viewFormat, g_dlssDepthViewCount,
+                g_dlssDepthViewTableFull ? " (table full)" : "");
+        }
+        texture->Release();
+        resource->Release();
+    }
+
+    bool EnsureDlssEyeResources(
+        int eye, DlssEyeState& state, const D3D11_TEXTURE2D_DESC& srcDesc,
+        const dlss::OutputSize& out)
+    {
+        const bool directColor = !Dlss_UsesSharedTextures() && g_eyeCacheNativeDlss &&
+            TitleAdapter_GetActiveTitle() == GameTitle::Halo3;
+        const bool needColorCopy = !directColor && (IsSrgb(srcDesc.Format) ||
+            !(srcDesc.BindFlags & D3D11_BIND_UNORDERED_ACCESS));
+        const bool renderMatches = state.motion &&
+            state.colorInDesc.Width == srcDesc.Width &&
+            state.colorInDesc.Height == srcDesc.Height &&
+            (!needColorCopy || state.colorIn);
+        const bool outputMatches = state.output &&
+            state.outputDesc.Width == out.width &&
+            state.outputDesc.Height == out.height;
+        if (renderMatches && outputMatches)
+            return true;
+        if (state.failedRenderW == srcDesc.Width && state.failedRenderH == srcDesc.Height &&
+            state.failedOutputW == out.width && state.failedOutputH == out.height)
+            return false;
+        // Keep the depth copy: it belongs to the engine's buffer shape.
+        ID3D11Texture2D* depthCopy = state.depthCopy;
+        ID3D11ShaderResourceView* depthCopySrv = state.depthCopySrv;
+        const D3D11_TEXTURE2D_DESC depthCopyDesc = state.depthCopyDesc;
+        const bool depthValid = state.depthValid;
+        const bool depthDirect = state.depthDirect;
+        state.depthCopy = nullptr;
+        state.depthCopySrv = nullptr;
+        ReleaseDlssEyeTextures(state);
+        state.depthCopy = depthCopy;
+        state.depthCopySrv = depthCopySrv;
+        state.depthCopyDesc = depthCopyDesc;
+        state.depthValid = depthValid;
+        state.depthDirect = depthDirect;
+
+        D3D11_TEXTURE2D_DESC d{};
+        d.Width = srcDesc.Width;
+        d.Height = srcDesc.Height;
+        d.MipLevels = 1;
+        d.ArraySize = 1;
+        d.SampleDesc.Count = 1;
+        d.Usage = D3D11_USAGE_DEFAULT;
+        bool ok = true;
+        D3D11_TEXTURE2D_DESC o = d;
+        o.Width = out.width;
+        o.Height = out.height;
+        o.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        o.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET |
+            D3D11_BIND_UNORDERED_ACCESS;
+        if (Dlss_UsesSharedTextures())
+        {
+            // D3D12 backend: the textures live on the D3D12 heap and are
+            // opened here; the eye is always copied into the shared colour
+            // input (the game's own target cannot be shared). With object
+            // motion the backend also hands out the two flow input frames.
+            DlssEyeTextures shared{};
+            ok = Dlss_CreateEyeTextures(
+                eye, srcDesc.Width, srcDesc.Height, out.width, out.height,
+                needColorCopy ? UnormSibling(srcDesc.Format) : srcDesc.Format, shared);
+            if (ok)
+            {
+                state.colorIn = shared.color;
+                state.motion = shared.motion;
+                state.depthOut = shared.depth;
+                state.output = shared.output;
+                state.flowInput[0] = shared.flowInput[0];
+                state.flowInput[1] = shared.flowInput[1];
+                d.Format = needColorCopy ? UnormSibling(srcDesc.Format) : srcDesc.Format;
+                ok = SUCCEEDED(g_device->CreateRenderTargetView(state.motion, nullptr, &state.motionRtv)) &&
+                    SUCCEEDED(g_device->CreateShaderResourceView(state.motion, nullptr, &state.motionSrv)) &&
+                    SUCCEEDED(g_device->CreateRenderTargetView(state.depthOut, nullptr, &state.depthOutRtv));
+                for (int i = 0; i < 2 && ok && state.flowInput[i]; ++i)
+                    ok = SUCCEEDED(g_device->CreateRenderTargetView(state.flowInput[i], nullptr, &state.flowInputRtv[i]));
+            }
+        }
+        else
+        {
+            if (needColorCopy)
+            {
+                // Every DLSS input carries UAV access as well: NGX's D3D11
+                // layer rebuilt a "cache helper" for inputs without it on
+                // every evaluation (DLSS-1 log); with the flags the count
+                // fell to a handful per session (DLSS-7 log).
+                d.Format = UnormSibling(srcDesc.Format);
+                d.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+                ok = SUCCEEDED(g_device->CreateTexture2D(&d, nullptr, &state.colorIn));
+            }
+            d.Format = DXGI_FORMAT_R16G16_FLOAT;
+            d.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET |
+                D3D11_BIND_UNORDERED_ACCESS;
+            ok = ok && SUCCEEDED(g_device->CreateTexture2D(&d, nullptr, &state.motion)) &&
+                SUCCEEDED(g_device->CreateRenderTargetView(state.motion, nullptr, &state.motionRtv)) &&
+                SUCCEEDED(g_device->CreateShaderResourceView(state.motion, nullptr, &state.motionSrv));
+            d.Format = DXGI_FORMAT_R32_FLOAT;
+            ok = ok && SUCCEEDED(g_device->CreateTexture2D(&d, nullptr, &state.depthOut)) &&
+                SUCCEEDED(g_device->CreateRenderTargetView(state.depthOut, nullptr, &state.depthOutRtv));
+            ok = ok && SUCCEEDED(g_device->CreateTexture2D(&o, nullptr, &state.output));
+        }
+        if (ok && state.colorIn)
+            ok = SUCCEEDED(g_device->CreateShaderResourceView(state.colorIn, nullptr, &state.colorInSrv));
+        state.colorInDesc = d;
+        state.outputDesc = o;
+        if (!ok)
+        {
+            LOG("DLSS ERROR: eye %d textures could not be created (%ux%u -> %ux%u); "
+                "this shape is not retried",
+                eye, srcDesc.Width, srcDesc.Height, out.width, out.height);
+            ReleaseDlssEyeTextures(state);
+            state.failedRenderW = srcDesc.Width;
+            state.failedRenderH = srcDesc.Height;
+            state.failedOutputW = out.width;
+            state.failedOutputH = out.height;
+            return false;
+        }
+        state.failedRenderW = state.failedRenderH = 0;
+        state.failedOutputW = state.failedOutputH = 0;
+        state.resetPending = true;
+        if (!g_dlssResourcesLogged || eye == 1)
+        {
+            g_dlssResourcesLogged = true;
+            const double renderMb = static_cast<double>(srcDesc.Width) * srcDesc.Height *
+                ((state.depthDirect ? 0.0 : DxgiBytesPerPixel(state.depthCopyDesc.Format)) +
+                 4.0 + 4.0 + (state.colorIn ? 4.0 : 0.0) + (state.flowInput[0] ? 12.0 : 0.0)) /
+                (1024.0 * 1024.0);
+            const double outMb = static_cast<double>(out.width) * out.height * 4.0 /
+                (1024.0 * 1024.0);
+            LOG("DLSS: eye %d resources: render %ux%u (%s%s%s), output %ux%u%s; "
+                "about %.0f MB per eye before DLSS's own allocations",
+                eye, srcDesc.Width, srcDesc.Height,
+                directColor ? "direct eye colour, " : (needColorCopy ? "eye copied to UNORM, " : ""),
+                "motion RG16F + depth R32F",
+                Dlss_HasImageMotion(eye) ? ", GPU image motion (private history/pyramids excluded from estimate)"
+                    : (state.flowInput[0] ? ", external optical flow" : ", camera-only motion"),
+                out.width, out.height,
+                out.exact ? " (exact headset slice)" : " (raster aspect, stretched into the slice)",
+                renderMb + outMb);
+        }
+        return true;
+    }
+
+    // Eye colour -> the optical-flow input frame for this render (the
+    // engine's BGRA8 format; the render target view does the channel order).
+    // True when the frame was written.
+    bool RunDlssFlowCopyPass(DlssEyeState& state, int index, uint32_t width, uint32_t height)
+    {
+        ID3D11RenderTargetView* target =
+            (index == 0 || index == 1) ? state.flowInputRtv[index] : nullptr;
+        if (!target || !state.colorInSrv || !g_dlssCopyPs)
+            return false;
+        D3DStateBackup backup;
+        backup.Capture(g_context);
+        ID3D11ShaderResourceView* savedSrv3 = nullptr;
+        g_context->PSGetShaderResources(3, 1, &savedSrv3);
+        g_context->OMSetRenderTargets(1, &target, nullptr);
+        D3D11_VIEWPORT vp{0, 0, static_cast<float>(width), static_cast<float>(height), 0, 1};
+        g_context->RSSetViewports(1, &vp);
+        g_context->RSSetState(g_blitRasterizer);
+        g_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+        g_context->OMSetDepthStencilState(g_blitDepthOff, 0);
+        g_context->IASetInputLayout(nullptr);
+        g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        g_context->VSSetShader(g_blitVs, nullptr, 0);
+        g_context->GSSetShader(nullptr, nullptr, 0);
+        g_context->PSSetShader(g_dlssCopyPs, nullptr, 0);
+        g_context->PSSetShaderResources(3, 1, &state.colorInSrv);
+        g_context->Draw(3, 0);
+        ID3D11ShaderResourceView* nullSrv = nullptr;
+        g_context->PSSetShaderResources(3, 1, &nullSrv);
+        ID3D11RenderTargetView* nullRtv = nullptr;
+        g_context->OMSetRenderTargets(1, &nullRtv, nullptr);
+        backup.Restore(g_context);
+        g_context->PSSetShaderResources(3, 1, &savedSrv3);
+        if (savedSrv3) savedSrv3->Release();
+        return true;
+    }
+
+    void RunDlssMotionPass(DlssEyeState& state, const dlss::CameraSample& previous,
+                           uint32_t width, uint32_t height,
+                           ID3D11RenderTargetView* motionTarget = nullptr,
+                           ID3D11RenderTargetView* depthTarget = nullptr,
+                           uint32_t viewportX = 0)
+    {
+        const dlss::CameraSample& cur = state.current;
+        DlssMotionParams p{};
+        auto put3 = [](float out[4], const float in[3]) {
+            out[0] = in[0]; out[1] = in[1]; out[2] = in[2]; out[3] = 0.0f;
+        };
+        put3(p.curPos, cur.position); put3(p.curRight, cur.right);
+        put3(p.curUp, cur.up); put3(p.curFwd, cur.forward);
+        p.curProj[0] = cur.projection.tanX; p.curProj[1] = cur.projection.tanY;
+        p.curProj[2] = cur.projection.centerX; p.curProj[3] = cur.projection.centerY;
+        p.curDepth[0] = cur.projection.depthA; p.curDepth[1] = cur.projection.depthB;
+        put3(p.prevPos, previous.position); put3(p.prevRight, previous.right);
+        put3(p.prevUp, previous.up); put3(p.prevFwd, previous.forward);
+        p.prevProj[0] = previous.projection.tanX; p.prevProj[1] = previous.projection.tanY;
+        p.prevProj[2] = previous.projection.centerX; p.prevProj[3] = previous.projection.centerY;
+        p.prevDepth[0] = previous.projection.depthA; p.prevDepth[1] = previous.projection.depthB;
+        p.size[0] = static_cast<float>(width); p.size[1] = static_cast<float>(height);
+        // Classic's final full-raster output can be resized from its native
+        // world raster. Both have the same proven full-view UV mapping.
+        p.size[2] = static_cast<float>(state.depthCopyDesc.Width) / width;
+        p.size[3] = static_cast<float>(state.depthCopyDesc.Height) / height;
+        p.debug[0] = 1.0f / 16.0f; // +-16 render pixels spans the debug colour range
+        p.debug[1] = cur.jitterNdcX;
+        p.debug[2] = cur.jitterNdcY;
+        p.debug[3] = static_cast<float>(viewportX);
+        g_context->UpdateSubresource(g_dlssMotionCb, 0, nullptr, &p, 0, 0);
+
+        D3DStateBackup backup;
+        backup.Capture(g_context);
+        ID3D11Buffer* savedCb = nullptr;
+        ID3D11ShaderResourceView* savedSrv1 = nullptr;
+        g_context->PSGetConstantBuffers(0, 1, &savedCb);
+        g_context->PSGetShaderResources(1, 1, &savedSrv1);
+
+        ID3D11RenderTargetView* targets[2] = {
+            motionTarget ? motionTarget : state.motionRtv,
+            depthTarget ? depthTarget : state.depthOutRtv};
+        g_context->OMSetRenderTargets(2, targets, nullptr);
+        D3D11_VIEWPORT vp{static_cast<float>(viewportX), 0,
+            static_cast<float>(width), static_cast<float>(height), 0, 1};
+        g_context->RSSetViewports(1, &vp);
+        g_context->RSSetState(g_blitRasterizer);
+        g_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+        g_context->OMSetDepthStencilState(g_blitDepthOff, 0);
+        g_context->IASetInputLayout(nullptr);
+        g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        g_context->VSSetShader(g_blitVs, nullptr, 0);
+        g_context->GSSetShader(nullptr, nullptr, 0);
+        g_context->PSSetShader(g_dlssMotionPs, nullptr, 0);
+        g_context->PSSetConstantBuffers(0, 1, &g_dlssMotionCb);
+        ID3D11ShaderResourceView* inputs[1] = {state.borrowedCeDepth?state.borrowedCeDepth:state.depthCopySrv};
+        g_context->PSSetShaderResources(0, 1, inputs);
+        g_context->PSSetSamplers(0, 1, &g_blitSampler);
+        g_context->Draw(3, 0);
+        ID3D11ShaderResourceView* nullSrvs[1]{};
+        g_context->PSSetShaderResources(0, 1, nullSrvs);
+        ID3D11RenderTargetView* nullRtvs[2]{};
+        g_context->OMSetRenderTargets(2, nullRtvs, nullptr);
+
+        backup.Restore(g_context);
+        g_context->PSSetConstantBuffers(0, 1, &savedCb);
+        g_context->PSSetShaderResources(1, 1, &savedSrv1);
+        if (savedCb) savedCb->Release();
+        if (savedSrv1) savedSrv1->Release();
+    }
+
+    // Diagnostic view: the motion vectors as colour, straight into the eye.
+    void RunDlssDebugPass(DlssEyeState& state, ID3D11RenderTargetView* dstRtv,
+                          uint32_t dstW, uint32_t dstH)
+    {
+        D3DStateBackup backup;
+        backup.Capture(g_context);
+        ID3D11Buffer* savedCb = nullptr;
+        ID3D11ShaderResourceView* savedSrv1 = nullptr;
+        g_context->PSGetConstantBuffers(0, 1, &savedCb);
+        g_context->PSGetShaderResources(1, 1, &savedSrv1);
+        g_context->OMSetRenderTargets(1, &dstRtv, nullptr);
+        D3D11_VIEWPORT vp{0, 0, static_cast<float>(dstW), static_cast<float>(dstH), 0, 1};
+        g_context->RSSetViewports(1, &vp);
+        g_context->RSSetState(g_blitRasterizer);
+        g_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+        g_context->OMSetDepthStencilState(g_blitDepthOff, 0);
+        g_context->IASetInputLayout(nullptr);
+        g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        g_context->VSSetShader(g_blitVs, nullptr, 0);
+        g_context->GSSetShader(nullptr, nullptr, 0);
+        g_context->PSSetShader(g_dlssDebugPs, nullptr, 0);
+        g_context->PSSetConstantBuffers(0, 1, &g_dlssMotionCb);
+        ID3D11ShaderResourceView* inputs[6] = {nullptr, state.motionSrv, nullptr,
+                                               nullptr, nullptr, nullptr};
+        g_context->PSSetShaderResources(0, 6, inputs);
+        g_context->PSSetSamplers(0, 1, &g_blitSampler);
+        g_context->Draw(3, 0);
+        ID3D11ShaderResourceView* nullSrvs[6]{};
+        g_context->PSSetShaderResources(0, 6, nullSrvs);
+        backup.Restore(g_context);
+        g_context->PSSetConstantBuffers(0, 1, &savedCb);
+        g_context->PSSetShaderResources(1, 1, &savedSrv1);
+        if (savedCb) savedCb->Release();
+        if (savedSrv1) savedSrv1->Release();
+    }
+
+    // The DLSS output for one raster: the planned headset picture (native x
+    // resolution_scale, the size the launcher shrank the render from) when the
+    // raster has its shape and is no larger; otherwise the raster-shaped fit
+    // into the slice, for a raster the plan did not produce (the fit is off
+    // and MCC chose its own resolution, an old launcher, a supersampled
+    // raster, which then runs as DLAA).
+    dlss::OutputSize DlssOutputFor(uint32_t renderW, uint32_t renderH,
+                                   uint32_t sliceW, uint32_t sliceH)
+    {
+        unsigned planRenderW = 0, planRenderH = 0, planOutW = 0, planOutH = 0;
+        bool planDlss = false, runtimePresent = false;
+        D3D_GetRenderPlan(planRenderW, planRenderH, planOutW, planOutH,
+                          planDlss, runtimePresent);
+        dlss::OutputSize out = dlss::PlannedOutput(
+            renderW, renderH, planOutW, planOutH, sliceW, sliceH);
+        if (!out.width || !out.height)
+            out = dlss::FitOutput(renderW, renderH, sliceW, sliceH);
+        return out;
+    }
+
+    // Once per frame: the render plan the config asks for (headset shape,
+    // Resolution scale, Upscaler, DLSS mode) against the one in force. After
+    // the wanted plan has been the same for half a second (a slider drag
+    // changes it every frame) and it still differs, ask MCC to re-size.
+    // D3D_RequestRenderPlan ignores a pending or refused size, so this is
+    // idempotent and never spams.
+    RuntimeMode DlssPresentationMode()
+    {
+        return g_pausePresentation.load() ? RuntimeMode::Paused
+                                         : TitleAdapter_GetRuntimeMode();
+    }
+
+    void TickRenderPlan()
+    {
+        // A mode/model/size/debug change is an explicit retry. A persistent
+        // failure otherwise remains at full resolution until the player makes
+        // one of those changes or toggles DLSS off and on.
+        static int lastUpscaler = g_config.upscaler;
+        static int lastMode = g_config.dlss_mode;
+        static int lastPreset = g_config.dlss_preset;
+        static float lastScale = g_config.resolution_scale;
+        static bool lastDebug = g_config.dlss_debug_view;
+        const bool debugChanged = lastDebug != g_config.dlss_debug_view;
+        const bool dlssSettingChanged = lastUpscaler != g_config.upscaler ||
+            lastMode != g_config.dlss_mode || lastPreset != g_config.dlss_preset ||
+            lastScale != g_config.resolution_scale ||
+            debugChanged;
+        if (dlssSettingChanged)
+        {
+            // Debug uses the old eye-local motion surfaces; normal operation
+            // uses the compact atlas. Drop the other graph on either edge so
+            // toggling the diagnostic cannot retain both allocations.
+            if (debugChanged && g_config.upscaler == dlss::kUpscalerDlss)
+                ReleaseDlssResources();
+            if (g_dlssBatchSuppressed &&
+                g_config.upscaler == dlss::kUpscalerDlss)
+            {
+                LOG("DLSS: settings changed; retrying the eye resolve");
+                SetDlssStatus(
+                    "retrying the eye resolve after a settings change");
+            }
+            g_dlssBatchSuppressed = false;
+            g_dlssBatchFailedFrames = 0;
+            lastUpscaler = g_config.upscaler;
+            lastMode = g_config.dlss_mode;
+            lastPreset = g_config.dlss_preset;
+            lastScale = g_config.resolution_scale;
+            lastDebug = g_config.dlss_debug_view;
+        }
+        int nativeW = 0, nativeH = 0;
+        nativeW = kNativeRenderWidth; nativeH = kNativeRenderHeight;
+        unsigned planRenderW = 0, planRenderH = 0, planOutW = 0, planOutH = 0;
+        bool planDlss = false, runtimePresent = false;
+        D3D_GetRenderPlan(planRenderW, planRenderH, planOutW, planOutH,
+                          planDlss, runtimePresent);
+        const dlss::RenderPlan world = dlss::PlanRender(
+            nativeW, nativeH, g_config.resolution_scale, g_config.upscaler,
+            g_config.dlss_mode, runtimePresent && !g_dlssBatchSuppressed &&
+            dlss::TitleHasCameraContract(TitleAdapter_GetActiveTitle()) &&
+            Dlss_EnsureInitialized(g_device));
+        const RuntimeMode presentation = DlssPresentationMode();
+        static dlss::RenderPlan lastWant{};
+        static uint64_t stableSinceMs = 0;
+        const uint64_t nowMs = GetTickCount64();
+        if (!dlss::CanChangeRenderPlan(presentation))
+        {
+            // Rejected transition-resize hold, retained dormant. The policy
+            // currently admits all modes, preserving full-resolution menus.
+            lastWant = {};
+            stableSinceMs = nowMs;
+            return;
+        }
+        const dlss::RenderPlan want = dlss::PlanPresentation(world, presentation);
+        if (!want.outputW || !want.outputH)
+            return;
+        if (want.renderW != lastWant.renderW || want.renderH != lastWant.renderH ||
+            want.outputW != lastWant.outputW || want.outputH != lastWant.outputH ||
+            want.dlss != lastWant.dlss)
+        {
+            lastWant = want;
+            stableSinceMs = nowMs;
+            return;
+        }
+        const bool differs =
+            static_cast<unsigned>(want.renderW) != planRenderW ||
+            static_cast<unsigned>(want.renderH) != planRenderH ||
+            static_cast<unsigned>(want.outputW) != planOutW ||
+            static_cast<unsigned>(want.outputH) != planOutH ||
+            want.dlss != planDlss;
+        if (!differs || nowMs - stableSinceMs < 500)
+            return;
+        const D3DRenderPlanResult result = D3D_RequestRenderPlan(
+            static_cast<unsigned>(want.renderW), static_cast<unsigned>(want.renderH),
+            static_cast<unsigned>(want.outputW), static_cast<unsigned>(want.outputH),
+            want.dlss);
+        if (result == D3DRenderPlanResult::Requested)
+        {
+            LOG("render plan queued: %s requests %dx%d canvas; world input %dx%d, output %dx%d",
+                RuntimeModeName(presentation), want.renderW, want.renderH,
+                world.renderW, world.renderH, world.outputW, world.outputH);
+            Menu_PostLiveResize();
+        }
+    }
+
+    bool EnsureDlssStereoBatchResources(const dlss::StereoBatchPlan& plan,
+                                         DXGI_FORMAT sourceFormat);
+    bool DlssStereoBatchResourcesMatch(const dlss::StereoBatchPlan& plan,
+                                       DXGI_FORMAT sourceFormat);
+
+    bool DlssKickStereoBatchEye(int eye, ID3D11Texture2D* src,
+                                const D3D11_TEXTURE2D_DESC& srcDesc)
+    {
+        g_dlssBatchAttemptedThisFrame = true;
+        auto fallback = [&](const char* why) {
+            NoteDlssFallback(eye, why);
+            g_dlssBatch.eyePrepared[eye < 0 || eye > 1 ? 0 : eye] = false;
+            return false;
+        };
+        if (eye < 0 || eye > 1 || !src || !g_device || !g_context)
+            return fallback("no device or eye image for the stereo batch");
+        if (!Dlss_EnsureInitialized(g_device))
+            return fallback(Dlss_StatusText());
+        DlssEyeState& state = g_dlssEye[eye];
+        if (!state.published || !state.current.valid)
+            return fallback("no eye camera arrived for this stereo-batch eye");
+        if (!state.depthValid || !state.depthCopy || !state.depthCopySrv)
+            return fallback("no depth buffer was captured for this stereo-batch eye");
+        if (srcDesc.SampleDesc.Count != 1)
+            return fallback("the stereo-batch eye image is multisampled");
+
+        unsigned planRenderW = 0, planRenderH = 0, planOutW = 0, planOutH = 0;
+        bool plannedDlss = false, runtimePresent = false;
+        D3D_GetRenderPlan(planRenderW, planRenderH, planOutW, planOutH,
+                          plannedDlss, runtimePresent);
+        const dlss::Quality mode = dlss::ModeFromConfig(g_config.dlss_mode);
+        const dlss::StereoBatchPlan plan = dlss::PlanStereoBatch(
+            static_cast<int>(planOutW), static_cast<int>(planOutH), mode);
+        if (!plannedDlss || !runtimePresent || !plan.eyeRenderW ||
+            srcDesc.Width != static_cast<UINT>(plan.eyeRenderW) ||
+            srcDesc.Height != static_cast<UINT>(plan.eyeRenderH))
+            return fallback("waiting for the stereo-batch render size");
+        if (state.depthCopyDesc.Width != srcDesc.Width ||
+            state.depthCopyDesc.Height != srcDesc.Height)
+            return fallback("the stereo-batch eye depth and colour sizes differ");
+
+        const int quality = static_cast<int>(mode);
+        DlssFeatureDesc desc{};
+        desc.renderWidth = plan.atlasRenderW;
+        desc.renderHeight = plan.atlasRenderH;
+        desc.outputWidth = plan.atlasOutputW;
+        desc.outputHeight = plan.atlasOutputH;
+        desc.quality = quality;
+        desc.preset = g_config.dlss_preset;
+        desc.depthInverted = state.current.projection.depthInverted;
+        bool recreated = false;
+        char reason[160]{};
+        DlssFeatureDesc cached{};
+        const bool featureMatches = Dlss_GetFeatureDesc(0, cached) &&
+            cached.renderWidth == desc.renderWidth &&
+            cached.renderHeight == desc.renderHeight &&
+            cached.outputWidth == desc.outputWidth &&
+            cached.outputHeight == desc.outputHeight &&
+            cached.quality == desc.quality && cached.preset == desc.preset &&
+            cached.depthInverted == desc.depthInverted;
+        if (!featureMatches)
+        {
+            uint32_t minW = 0, minH = 0, maxW = 0, maxH = 0;
+            uint32_t optW = 0, optH = 0;
+            if (!Dlss_QueryRenderRange(plan.atlasOutputW, plan.atlasOutputH,
+                                       quality, minW, minH, maxW, maxH,
+                                       optW, optH) ||
+                !dlss::RenderSizeAdmitted(plan.atlasRenderW,
+                                          plan.atlasRenderH,
+                                          minW, minH, maxW, maxH))
+                return fallback(
+                    "the stereo atlas is outside the selected DLSS mode range");
+            if (!Dlss_EnsureFeature(0, g_context, desc, recreated, reason,
+                                    sizeof(reason)))
+                return fallback(reason);
+        }
+        const bool resourcesRecreated =
+            !DlssStereoBatchResourcesMatch(plan, srcDesc.Format);
+        if (!EnsureDlssMotionPipeline() ||
+            !EnsureDlssStereoBatchResources(plan, srcDesc.Format))
+            return fallback("the stereo-batch textures or motion shader are unavailable");
+
+        D3D11_BOX sourceBox{};
+        sourceBox.right = srcDesc.Width;
+        sourceBox.bottom = srcDesc.Height;
+        sourceBox.back = 1;
+        g_context->CopySubresourceRegion(g_dlssBatch.color, 0,
+            static_cast<UINT>(eye) * srcDesc.Width, 0, 0, src, 0, &sourceBox);
+
+        const bool reset = recreated || resourcesRecreated ||
+            state.resetPending ||
+            dlss::ShouldReset(state.current, state.previous);
+        const dlss::CameraSample& previous = reset ? state.current : state.previous;
+        RunDlssMotionPass(state, previous, srcDesc.Width, srcDesc.Height,
+                          g_dlssBatch.motionRtv, g_dlssBatch.depthRtv,
+                          static_cast<UINT>(eye) * srcDesc.Width);
+        g_dlssBatch.eyePrepared[eye] = true;
+        g_dlssBatch.reset = g_dlssBatch.reset || reset;
+        if (!g_dlssBatch.eyePrepared[0] || !g_dlssBatch.eyePrepared[1])
+            return true;
+
+        if (g_dlssEye[0].current.projection.depthInverted !=
+            g_dlssEye[1].current.projection.depthInverted)
+        {
+            g_dlssBatch.eyePrepared[0] =
+                g_dlssBatch.eyePrepared[1] = false;
+            g_dlssBatch.reset = false;
+            return fallback("the two eye depth conventions disagree");
+        }
+
+        float leftJitterX = 0.0f, leftJitterY = 0.0f;
+        float rightJitterX = 0.0f, rightJitterY = 0.0f;
+        dlss::NdcToJitterPixels(g_dlssEye[0].current.jitterNdcX,
+            g_dlssEye[0].current.jitterNdcY, srcDesc.Width, srcDesc.Height,
+            leftJitterX, leftJitterY);
+        dlss::NdcToJitterPixels(g_dlssEye[1].current.jitterNdcX,
+            g_dlssEye[1].current.jitterNdcY, srcDesc.Width, srcDesc.Height,
+            rightJitterX, rightJitterY);
+        if (fabsf(leftJitterX - rightJitterX) > 0.001f ||
+            fabsf(leftJitterY - rightJitterY) > 0.001f)
+        {
+            g_dlssBatch.eyePrepared[0] = g_dlssBatch.eyePrepared[1] = false;
+            g_dlssBatch.reset = false;
+            return fallback("the two eye jitter samples disagree");
+        }
+
+        DlssEvalInputs inputs{};
+        inputs.color = g_dlssBatch.color;
+        inputs.depth = g_dlssBatch.depth;
+        inputs.motion = g_dlssBatch.motion;
+        inputs.output = g_dlssBatch.output;
+        inputs.jitterPixelX = leftJitterX;
+        inputs.jitterPixelY = leftJitterY;
+        inputs.frameTimeMs = static_cast<float>(
+            static_cast<double>(g_displayPeriodNs.load(std::memory_order_relaxed)) / 1.0e6);
+        inputs.reset = g_dlssBatch.reset;
+        uint32_t failure = 0;
+        if (!Dlss_Evaluate(0, g_context, inputs, failure))
+        {
+            g_dlssEye[0].resetPending = g_dlssEye[1].resetPending = true;
+            g_dlssBatch.eyePrepared[0] = g_dlssBatch.eyePrepared[1] = false;
+            g_dlssBatch.reset = false;
+            char text[96];
+            snprintf(text, sizeof(text), "stereo-batch evaluation failed (0x%08X)", failure);
+            return fallback(text);
+        }
+
+        D3D11_BOX half{};
+        half.right = static_cast<UINT>(plan.eyeOutputW);
+        half.bottom = static_cast<UINT>(plan.eyeOutputH);
+        half.back = 1;
+        for (int outputEye = 0; outputEye < 2; ++outputEye)
+        {
+            half.left = static_cast<UINT>(outputEye * plan.eyeOutputW);
+            half.right = half.left + static_cast<UINT>(plan.eyeOutputW);
+            g_context->CopySubresourceRegion(g_dlssBatch.eyeOutput[outputEye], 0,
+                0, 0, 0, g_dlssBatch.output, 0, &half);
+            DlssKickedEye kicked{};
+            kicked.output = g_dlssBatch.eyeOutput[outputEye];
+            kicked.outputDesc = g_dlssBatch.eyeOutputDesc;
+            g_dlssKicked[outputEye].Publish(g_preparedFrame.serial, kicked);
+        }
+        if (g_dlssBatch.reset)
+            ++g_dlssResets;
+        g_dlssEye[0].resetPending = g_dlssEye[1].resetPending = false;
+        g_dlssBatch.eyePrepared[0] = g_dlssBatch.eyePrepared[1] = false;
+        g_dlssBatch.reset = false;
+        g_dlssEyesResolvedThisFrame += 2;
+        g_dlssResolvedEyes += 2;
+        g_dlssFallbackReason[0] = '\0';
+        SetDlssStatus("active: one fresh stereo atlas evaluation per frame");
+        return true;
+    }
+
+    // Starts one eye's upscale: colour copy, motion pass and the DLSS
+    // submission. Called at the end of that eye's render, so the upscale
+    // runs on the compute queue while the game rasters the other eye. False
+    // means nothing was submitted and the caller keeps the mod's own resolve
+    // for this eye and frame. `debugRtv` is only needed for the motion-vector
+    // view, which draws straight into the headset image.
+    bool DlssKickEye(int eye, ID3D11Texture2D* src,
+                     const D3D11_TEXTURE2D_DESC& srcDesc,
+                     uint32_t dstW, uint32_t dstH,
+                     ID3D11RenderTargetView* debugRtv)
+    {
+        if (!VR_DlssWantsEyeCamera())
+            return false;
+        if (!g_config.dlss_debug_view)
+        {
+            if (g_dlssBatchSuppressed)
+                return false;
+            unsigned rw = 0, rh = 0, ow = 0, oh = 0;
+            bool plannedDlss = false, runtimePresent = false;
+            D3D_GetRenderPlan(rw, rh, ow, oh, plannedDlss, runtimePresent);
+            if (dlss::kEnableDlss21StereoBatch && plannedDlss)
+                return DlssKickStereoBatchEye(eye, src, srcDesc);
+        }
+        auto fallback = [&](const char* why) {
+            NoteDlssFallback(eye, why);
+            return false;
+        };
+        if (eye < 0 || eye > 1 || !src || !g_device || !g_context || !dstW || !dstH)
+            return fallback("no device or eye image");
+        if (g_config.dlss_debug_view && !debugRtv)
+            return false; // the view needs the headset image; submit-time kick
+        if (!dlss::UsesWorldRender(DlssPresentationMode()))
+        {
+            g_dlssJitterArmed = false;
+            return false; // Menus are full-resolution, non-temporal canvases.
+        }
+        {
+            int nativeW = 0, nativeH = 0;
+            nativeW = kNativeRenderWidth; nativeH = kNativeRenderHeight;
+            unsigned rw = 0, rh = 0, ow = 0, oh = 0;
+            bool plannedDlss = false, runtimePresent = false;
+            D3D_GetRenderPlan(rw, rh, ow, oh, plannedDlss, runtimePresent);
+            const auto wanted = dlss::PlanRender(nativeW, nativeH, g_config.resolution_scale,
+                g_config.upscaler, g_config.dlss_mode, runtimePresent);
+            // The old path allocated DLAA features for the full-size raster
+            // during the debounce, then immediately destroyed them on resize.
+            if (wanted.dlss && (srcDesc.Width != static_cast<unsigned>(wanted.renderW) ||
+                srcDesc.Height != static_cast<unsigned>(wanted.renderH) ||
+                ow != static_cast<unsigned>(wanted.outputW) || oh != static_cast<unsigned>(wanted.outputH)))
+            {
+                g_dlssJitterArmed = false;
+                return fallback(D3D_FitActive()
+                    ? "waiting for the selected render size"
+                    : "world resize unavailable; enable Fit desktop window and restart");
+            }
+        }
+        // Count only admitted-size world attempts; waiting for a requested
+        // resize must never trip the feature failure backoff.
+        g_dlssBatchAttemptedThisFrame = true;
+        if (!Dlss_EnsureInitialized(g_device))
+            return fallback(Dlss_StatusText());
+        DlssEyeState& state = g_dlssEye[eye];
+        if (!state.published || !state.current.valid)
+            return fallback("no eye camera arrived for this eye render "
+                            "(the title's hook did not publish, or its "
+                            "projection was rejected; see the log)");
+        if (!state.depthValid || (!state.borrowedCeDepth&&(!state.depthCopy || !state.depthCopySrv)))
+            return fallback("no depth buffer was captured for this eye");
+        if (!state.borrowedCeDepth&&(state.depthCopyDesc.Width != srcDesc.Width ||
+            state.depthCopyDesc.Height != srcDesc.Height))
+            return fallback("the eye's depth and colour buffers differ in size");
+        if (srcDesc.SampleDesc.Count != 1)
+            return fallback("the eye image is multisampled");
+        dlss::OutputSize out =
+            DlssOutputFor(srcDesc.Width, srcDesc.Height, dstW, dstH);
+        if (g_config.dlss_debug_view)
+        {
+            out.width = srcDesc.Width;
+            out.height = srcDesc.Height;
+            out.exact = false;
+        }
+        if (!out.width || !out.height)
+            return fallback("no valid DLSS output size");
+
+        const float ratio = static_cast<float>(out.width) / static_cast<float>(srcDesc.Width);
+        dlss::Quality order[5];
+        const int count = dlss::QualitySearchOrder(dlss::QualityForRatio(ratio), order);
+        int quality = -1;
+        DlssFeatureDesc cachedFeature{};
+        if (Dlss_GetFeatureDesc(eye, cachedFeature) &&
+            cachedFeature.renderWidth == srcDesc.Width && cachedFeature.renderHeight == srcDesc.Height &&
+            cachedFeature.outputWidth == out.width && cachedFeature.outputHeight == out.height)
+            quality = cachedFeature.quality; // shape already admitted; NGX queries belong to resize
+        for (int i = 0; i < count && quality < 0; ++i)
+        {
+            uint32_t minW = 0, minH = 0, maxW = 0, maxH = 0, optW = 0, optH = 0;
+            if (!Dlss_QueryRenderRange(out.width, out.height, static_cast<int>(order[i]),
+                                       minW, minH, maxW, maxH, optW, optH))
+                continue;
+            if (dlss::RenderSizeAdmitted(srcDesc.Width, srcDesc.Height, minW, minH, maxW, maxH))
+                quality = static_cast<int>(order[i]);
+        }
+        if (g_config.dlss_debug_view)
+            quality = static_cast<int>(dlss::Quality::Dlaa);
+        if (quality < 0)
+            return fallback("the render size fits no DLSS range for this picture; "
+                            "change DLSS mode or Resolution scale and restart");
+
+        DlssFeatureDesc desc{};
+        desc.renderWidth = srcDesc.Width;
+        desc.renderHeight = srcDesc.Height;
+        desc.outputWidth = out.width;
+        desc.outputHeight = out.height;
+        desc.quality = quality;
+        desc.preset = g_config.dlss_preset;
+        desc.depthInverted = state.current.projection.depthInverted;
+        bool recreated = false;
+        char reason[160];
+        if (!g_config.dlss_debug_view &&
+            !Dlss_EnsureFeature(eye, g_context, desc, recreated, reason, sizeof(reason)))
+            return fallback(reason);
+        if (!EnsureDlssMotionPipeline())
+            return fallback("the motion-vector shader is unavailable");
+        if (!EnsureDlssEyeResources(eye, state, srcDesc, out))
+            return fallback("DLSS textures could not be created");
+
+        // GPU work from here on. No IQ stamps here: this runs at the end of
+        // the eye's render, outside the timed publish; the final stretch in
+        // DlssFinishEye is timed exactly like the DLSS-off resolve.
+        ID3D11Resource* colorInput = src;
+        if (state.colorIn)
+        {
+            g_context->CopyResource(state.colorIn, src);
+            colorInput = state.colorIn;
+        }
+        const bool reset = recreated || state.resetPending ||
+            dlss::ShouldReset(state.current, state.previous);
+        const dlss::CameraSample& previous = reset ? state.current : state.previous;
+        // The active image-motion backend consumes shared colour directly.
+        // This optional copy only belongs to the dormant external flow path.
+        const int flowIndex = Dlss_FlowInputIndex(eye);
+        const bool flowWritten = flowIndex >= 0 &&
+            RunDlssFlowCopyPass(state, flowIndex, srcDesc.Width, srcDesc.Height);
+        RunDlssMotionPass(state, previous, srcDesc.Width, srcDesc.Height);
+
+        if (g_config.dlss_debug_view)
+        {
+            RunDlssDebugPass(state, debugRtv, dstW, dstH);
+            g_dlssKicked[eye].Publish(g_preparedFrame.serial, {});
+        }
+        else
+        {
+            DlssEvalInputs inputs{};
+            inputs.color = colorInput;
+            inputs.depth = state.depthOut;
+            inputs.motion = state.motion;
+            inputs.output = state.output;
+            dlss::NdcToJitterPixels(state.current.jitterNdcX, state.current.jitterNdcY,
+                                    srcDesc.Width, srcDesc.Height,
+                                    inputs.jitterPixelX, inputs.jitterPixelY);
+            if (!reset)
+                dlss::JitterDeltaPixels(state.current, previous, srcDesc.Width, srcDesc.Height,
+                                        inputs.jitterDeltaX, inputs.jitterDeltaY);
+            inputs.flowInputWritten = flowWritten;
+            inputs.frameTimeMs = static_cast<float>(
+                static_cast<double>(g_displayPeriodNs.load(std::memory_order_relaxed)) / 1.0e6);
+            inputs.reset = reset;
+            uint32_t failure = 0;
+            if (!Dlss_Evaluate(eye, g_context, inputs, failure))
+            {
+                state.resetPending = true;
+                char text[96];
+                snprintf(text, sizeof(text), "DLSS evaluation failed (0x%08X)", failure);
+                return fallback(text);
+            }
+            g_dlssKicked[eye].Publish(g_preparedFrame.serial,
+                {state.output, state.outputDesc});
+        }
+        if (reset)
+            ++g_dlssResets;
+        state.resetPending = false;
+        ++g_dlssEyesResolvedThisFrame;
+        ++g_dlssResolvedEyes;
+        g_dlssFallbackReason[0] = '\0';
+
+        const uint64_t nowMs = GetTickCount64();
+        if (eye == 1 && nowMs - g_dlssStatusMs >= 2000)
+        {
+            g_dlssStatusMs = nowMs;
+            char text[256];
+            const bool jitterApplied = state.current.jitterNdcX != 0.0f ||
+                state.current.jitterNdcY != 0.0f;
+            snprintf(text, sizeof(text),
+                     "active: %ux%u -> %ux%u (%s slot, %s), jitter %s, depth %s, "
+                     "motion %s, resets %llu, fallbacks %llu%s",
+                     srcDesc.Width, srcDesc.Height, out.width, out.height,
+                     dlss::QualityName(static_cast<dlss::Quality>(quality)),
+                     dlss::PresetName(g_config.dlss_preset),
+                     !g_config.dlss_jitter ? "off"
+                     : (!g_dlssJitterArmed ? "arming"
+                        : (jitterApplied ? "on" : "not written by this title")),
+                     desc.depthInverted ? "reversed" : "standard",
+                     Dlss_HasImageMotion(eye) ? "image+camera" : "camera only",
+                     static_cast<unsigned long long>(g_dlssResets),
+                     static_cast<unsigned long long>(g_dlssFallbackEyes),
+                     g_config.dlss_debug_view ? " [motion-vector view]" : "");
+            SetDlssStatus(text);
+        }
+        return true;
+    }
+
+    // A completed eye belongs to the source eye, independent of whether its
+    // consumer is immersive projection or a theatre screen. Consume it once.
+    bool DlssTakeEyeOutput(int eye, DlssKickedEye& kicked)
+    {
+        if (eye < 0 || eye > 1 ||
+            !g_dlssKicked[eye].Take(g_preparedFrame.serial, kicked))
+            return false;
+        if (kicked.output)
+        {
+            IqTimerDlssWait(eye, false);
+            Dlss_SyncD3D11(g_context, eye);
+            IqTimerDlssWait(eye, true);
+        }
+        return true;
+    }
+
+    bool SameStereoBatchPlan(const dlss::StereoBatchPlan& a,
+                             const dlss::StereoBatchPlan& b)
+    {
+        return a.eyeRenderW == b.eyeRenderW && a.eyeRenderH == b.eyeRenderH &&
+            a.atlasRenderW == b.atlasRenderW && a.atlasRenderH == b.atlasRenderH &&
+            a.atlasOutputW == b.atlasOutputW && a.atlasOutputH == b.atlasOutputH;
+    }
+
+    bool DlssStereoBatchResourcesMatch(const dlss::StereoBatchPlan& plan,
+                                       DXGI_FORMAT sourceFormat)
+    {
+        return g_dlssBatch.color && g_dlssBatch.motion && g_dlssBatch.depth &&
+            g_dlssBatch.output && g_dlssBatch.eyeOutput[0] &&
+            g_dlssBatch.eyeOutput[1] && g_dlssBatch.motionRtv &&
+            g_dlssBatch.depthRtv &&
+            SameStereoBatchPlan(g_dlssBatch.plan, plan) &&
+            g_dlssBatch.inputDesc.Format == UnormSibling(sourceFormat);
+    }
+
+    bool EnsureDlssStereoBatchResources(const dlss::StereoBatchPlan& plan,
+                                        DXGI_FORMAT sourceFormat)
+    {
+        if (DlssStereoBatchResourcesMatch(plan, sourceFormat))
+            return true;
+
+        ReleaseDlssStereoBatch();
+        D3D11_TEXTURE2D_DESC input{};
+        input.Width = static_cast<UINT>(plan.atlasRenderW);
+        input.Height = static_cast<UINT>(plan.atlasRenderH);
+        input.MipLevels = input.ArraySize = input.SampleDesc.Count = 1;
+        input.Usage = D3D11_USAGE_DEFAULT;
+        input.Format = UnormSibling(sourceFormat);
+        input.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+        bool ok = SUCCEEDED(g_device->CreateTexture2D(
+            &input, nullptr, &g_dlssBatch.color));
+
+        D3D11_TEXTURE2D_DESC field = input;
+        field.Format = DXGI_FORMAT_R16G16_FLOAT;
+        field.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET |
+            D3D11_BIND_UNORDERED_ACCESS;
+        ok = ok && SUCCEEDED(g_device->CreateTexture2D(
+            &field, nullptr, &g_dlssBatch.motion)) &&
+            SUCCEEDED(g_device->CreateRenderTargetView(
+                g_dlssBatch.motion, nullptr, &g_dlssBatch.motionRtv));
+        field.Format = DXGI_FORMAT_R32_FLOAT;
+        ok = ok && SUCCEEDED(g_device->CreateTexture2D(
+            &field, nullptr, &g_dlssBatch.depth)) &&
+            SUCCEEDED(g_device->CreateRenderTargetView(
+                g_dlssBatch.depth, nullptr, &g_dlssBatch.depthRtv));
+
+        D3D11_TEXTURE2D_DESC output = input;
+        output.Width = static_cast<UINT>(plan.atlasOutputW);
+        output.Height = static_cast<UINT>(plan.atlasOutputH);
+        output.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        output.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET |
+            D3D11_BIND_UNORDERED_ACCESS;
+        ok = ok && SUCCEEDED(g_device->CreateTexture2D(
+            &output, nullptr, &g_dlssBatch.output));
+        D3D11_TEXTURE2D_DESC eyeOutput = output;
+        eyeOutput.Width = static_cast<UINT>(plan.eyeOutputW);
+        eyeOutput.Height = static_cast<UINT>(plan.eyeOutputH);
+        eyeOutput.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        ok = ok && SUCCEEDED(g_device->CreateTexture2D(
+            &eyeOutput, nullptr, &g_dlssBatch.eyeOutput[0])) &&
+            SUCCEEDED(g_device->CreateTexture2D(
+                &eyeOutput, nullptr, &g_dlssBatch.eyeOutput[1]));
+        if (!ok)
+        {
+            ReleaseDlssStereoBatch();
+            return false;
+        }
+        g_dlssBatch.inputDesc = input;
+        g_dlssBatch.outputDesc = output;
+        g_dlssBatch.eyeOutputDesc = eyeOutput;
+        g_dlssBatch.plan = plan;
+        const double bytes = static_cast<double>(plan.atlasRenderW) * plan.atlasRenderH * 16.0 +
+            static_cast<double>(plan.atlasOutputW) * plan.atlasOutputH * 8.0;
+        LOG("DLSS: stereo batch resources: two %dx%d eyes -> one %dx%d atlas -> "
+            "two %dx%d reconstructed halves; %.1f MiB before NGX",
+            plan.eyeRenderW, plan.eyeRenderH, plan.atlasRenderW, plan.atlasRenderH,
+            plan.eyeOutputW, plan.eyeOutputH, bytes / (1024.0 * 1024.0));
+        return true;
+    }
+
+    // At present: stretches one eye's finished upscale into the headset
+    // image, after one GPU wait for that eye's evaluation (the first eye's
+    // is normally long complete; the second's finishes while the first is
+    // stretched). False means no upscale is in flight for this eye.
+    bool DlssFinishEye(int eye, ID3D11Texture2D* dst, uint32_t dstW, uint32_t dstH,
+                       ID3D11RenderTargetView* dstRtv)
+    {
+        DlssKickedEye kicked{};
+        if (!DlssTakeEyeOutput(eye, kicked))
+            return false;
+        if (!kicked.output)
+            return true; // the motion-vector view already drew into dst
+        if (!dst || !dstRtv || !dstW || !dstH)
+            return false;
+        // The same resolve as DLSS-off (linear, then the Sharpening slider).
+        if (!BlitImageQuality(kicked.output, kicked.outputDesc, dst, dstW, dstH, dstRtv,
+            true))
+        {
+            LOG("DLSS ERROR: the finished DLSS image could not be copied into "
+                "the headset image");
+            return false;
+        }
+        return true;
+    }
+
+    // Programming Guide 3.5: while an eye is rasterised for DLSS, the game's
+    // texture samplers carry the mip bias for the headset picture, so the
+    // textures arrive as sharp as a native render and DLSS reconstructs
+    // detail instead of sharpening blur. Cleared before the mod's own passes.
+    void DlssBeginEyeSamplerBias()
+    {
+        // DLSS-18 was rejected for cost/smear. Disable its newly armed
+        // sampler substitution before the next experiment; keep the dormant
+        // implementation for a separately measured texture-quality change.
+        if (!dlss_sampler::kEnabled)
+            return;
+        if (g_config.upscaler != dlss::kUpscalerDlss || !Dlss_IsAvailable())
+        {
+            D3D_SetEyeSamplerBias(0.0f);
+            return;
+        }
+        unsigned renderW = 0, renderH = 0, outputW = 0, outputH = 0;
+        bool dlss = false, runtimePresent = false;
+        D3D_GetRenderPlan(renderW, renderH, outputW, outputH, dlss, runtimePresent);
+        D3D_SetEyeSamplerBias(dlss ? dlss::MipBias(renderW, outputW) : 0.0f);
+    }
+
+    void DlssEndEyeSamplerBias()
+    {
+        D3D_SetEyeSamplerBias(0.0f);
+    }
+
+    // The eye-end kick. Every title except Reach publishes its eye into
+    // g_eyeCache by the time VR_EndRasterEye runs (that copy exists so the
+    // other eye cannot overwrite it), so the upscale can start right here.
+    // Reach's eye capture is read at present; it kicks there instead.
+    void DlssKickEyeAtEyeEnd(int eye)
+    {
+        if (eye < 0 || eye > 1 || !VR_DlssWantsEyeCamera() ||
+            g_config.dlss_debug_view)
+            return;
+        if (TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
+            return;
+        if (!g_eyeCache[eye] || !g_eyeCacheDesc.Width || !g_eyeCacheDesc.Height ||
+            !g_stereoW || !g_stereoH)
+            return;
+        DlssKickEye(eye, g_eyeCache[eye], g_eyeCacheDesc, g_stereoW, g_stereoH, nullptr);
+    }
+
+    // Every Present exit, including flat/no-render/failed submissions. Retire
+    // results and advance history only for a completed, consumed eye pair.
+    void DlssEndFrame()
+    {
+        static int lastDisabledReason = -1;
+        const bool outputsConsumed =
+            !g_dlssKicked[0].Ready(g_preparedFrame.serial) &&
+            !g_dlssKicked[1].Ready(g_preparedFrame.serial);
+        g_dlssKicked[0].Reset();
+        g_dlssKicked[1].Reset();
+        g_dlssBatch.eyePrepared[0] = g_dlssBatch.eyePrepared[1] = false;
+        g_dlssBatch.reset = false;
+        if (!VR_DlssWantsEyeCamera())
+        {
+            g_dlssBatchAttemptedThisFrame = false;
+            g_dlssBatchFailedFrames = 0;
+            g_dlssBatchSuppressed = false;
+            if (g_dlssEye[0].output || g_dlssEye[1].output || g_dlssSceneDepthDsv ||
+                g_dlssDepthViewCount)
+            {
+                ReleaseDlssResources();
+                LOG("DLSS: disabled or optional runtime absent; resources released");
+            }
+            g_dlssJitterArmed = false;
+            g_dlssEyesResolvedThisFrame = 0;
+            const int disabledReason = g_config.upscaler != dlss::kUpscalerDlss ? 0 :
+                (!dlss::TitleHasCameraContract(TitleAdapter_GetActiveTitle()) ? 2 : 1);
+            if (disabledReason != lastDisabledReason)
+            {
+                lastDisabledReason = disabledReason;
+                SetDlssStatus(disabledReason == 2
+                    ? "not running: this title has no verified DLSS camera adapter; full-size VR resolve"
+                    : disabledReason == 1
+                        ? "unavailable: optional nvngx_dlss.dll missing; normal VR resolve"
+                        : "off");
+            }
+            return;
+        }
+        lastDisabledReason = -1;
+        if (g_dlssBatchAttemptedThisFrame && !g_config.dlss_debug_view)
+        {
+            if (g_dlssEyesResolvedThisFrame == 2)
+            {
+                g_dlssBatchFailedFrames = 0;
+            }
+            else if (!g_dlssBatchSuppressed && ++g_dlssBatchFailedFrames >= 16)
+            {
+                g_dlssBatchSuppressed = true;
+                ReleaseDlssResources();
+                LOG("DLSS: eye resolve failed for 16 consecutive admitted "
+                    "frames; releasing it and requesting the full-resolution "
+                    "stock resolve (change a DLSS setting to retry)");
+                SetDlssStatus("not running: persistent eye-resolve failure; "
+                    "returning to full resolution (change a DLSS setting to retry)");
+            }
+        }
+        g_dlssBatchAttemptedThisFrame = false;
+        if (g_config.dlss_debug_view && g_dlssBatch.output)
+        {
+            Dlss_ReleaseFeatures();
+            ReleaseDlssStereoBatch();
+            LOG("DLSS: stereo batch released while the motion diagnostic is active");
+        }
+        g_dlssJitterArmed = outputsConsumed && g_dlssEyesResolvedThisFrame == 2;
+        g_dlssEyesResolvedThisFrame = 0;
+        for (DlssEyeState& state : g_dlssEye)
+        {
+            if (g_dlssJitterArmed && state.published && state.current.valid)
+                state.previous = state.current;
+            else
+                state.resetPending = true;
+            state.published = false;
+            state.depthValid = false;
+        }
+        ++g_dlssJitterPhase;
     }
 
     // (The HUD "capture-diff panel" machinery that lived here — per-eye pre-HUD
@@ -3115,7 +4918,7 @@ float4 ps_main(VSOut i) : SV_Target
         params.matte[0] = matte.vMin;
         params.matte[1] = matte.vMax;
         params.matte[2] = matte.active ? 1.0f : 0.0f;
-        const bool bandReady = g_theaterSubtitleBandSrv &&
+        const bool bandReady = !g_nativeTheatreCaptionReady && g_theaterSubtitleBandSrv &&
             g_theaterSubtitleBandStartV >= 0.0f;
         params.matte[3] = bandReady ? g_theaterSubtitleBandStartV : -1.0f;
         params.band[0] = bandReady && g_config.cutscene_theater_subtitle_debug
@@ -3576,11 +5379,16 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 
     bool EnsureEyeCaches(const D3D11_TEXTURE2D_DESC& source)
     {
+        const bool nativeDlss = VR_DlssWantsEyeCamera() &&
+            TitleAdapter_GetActiveTitle() == GameTitle::Halo3 &&
+            source.SampleDesc.Count == 1 &&
+            (source.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
+             source.Format == DXGI_FORMAT_R8G8B8A8_UNORM);
         if (g_eyeCache[0] && g_eyeCache[1] && g_eyeCacheRtvs[0] &&
             g_eyeCacheRtvs[1] &&
             g_eyeCacheDesc.Width == source.Width &&
             g_eyeCacheDesc.Height == source.Height &&
-            g_eyeCacheDesc.Format == source.Format)
+            g_eyeCacheDesc.Format == source.Format && g_eyeCacheDlssRequested == nativeDlss)
             return true;
 #if HALOMCCVR_HALO2_STEREO6DOF
         // Revoke admission before any pointer is released. A new nonzero epoch
@@ -3610,15 +5418,48 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         desc.MiscFlags = 0;
         desc.MipLevels = 1;
         desc.ArraySize = 1;
-        if (FAILED(g_device->CreateTexture2D(&desc, nullptr, &g_eyeCache[0])) ||
-            FAILED(g_device->CreateTexture2D(&desc, nullptr, &g_eyeCache[1])) ||
-            FAILED(g_device->CreateRenderTargetView(g_eyeCache[0], nullptr, &g_eyeCacheRtvs[0])) ||
-            FAILED(g_device->CreateRenderTargetView(g_eyeCache[1], nullptr, &g_eyeCacheRtvs[1])))
+        D3D11_RENDER_TARGET_VIEW_DESC view{};
+        view.Format = source.Format;
+        view.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        if (nativeDlss)
+        {
+            desc.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
+            desc.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
+        }
+        auto create = [&](bool direct) {
+            for (int eye = 0; eye < 2; ++eye)
+            {
+                if (FAILED(g_device->CreateTexture2D(&desc, nullptr, &g_eyeCache[eye])) ||
+                    FAILED(g_device->CreateRenderTargetView(g_eyeCache[eye],
+                        direct ? &view : nullptr, &g_eyeCacheRtvs[eye]))) return false;
+            }
+            return true;
+        };
+        bool direct = nativeDlss;
+        bool created = create(direct);
+        if (!created && direct)
+        {
+            for (int eye = 0; eye < 2; ++eye)
+            {
+                if (g_eyeCacheRtvs[eye]) g_eyeCacheRtvs[eye]->Release();
+                if (g_eyeCache[eye]) g_eyeCache[eye]->Release();
+                g_eyeCacheRtvs[eye] = nullptr; g_eyeCache[eye] = nullptr;
+            }
+            desc.Format = source.Format;
+            desc.BindFlags &= ~D3D11_BIND_UNORDERED_ACCESS;
+            direct = false;
+            created = create(false);
+            LOG("DLSS: direct eye allocation unavailable; using the ordinary eye cache and colour copy");
+        }
+        if (!created)
         {
             LOG("M2: failed to create persistent eye frame caches");
             return false;
         }
         g_eyeCacheDesc = desc;
+        g_eyeCacheDesc.Format = source.Format;
+        g_eyeCacheNativeDlss = direct;
+        g_eyeCacheDlssRequested = nativeDlss;
         g_eyeHasImage[0] = g_eyeHasImage[1] = false;
 #if HALOMCCVR_EXPERIMENTAL_HALO2_TEMPORAL_STEREO
         g_halo2PendingSerial.store(0, std::memory_order_release);
@@ -3907,6 +5748,33 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         };
     }
 
+    // WaitThread only. Preserve the exact allocation rejection stage without
+    // putting logging or device queries in the eye/render hooks.
+    void NoteReachEyeAllocationFailure(
+        const char* stage, HRESULT result, ID3D11Device* device,
+        const D3D11_TEXTURE2D_DESC& desc) noexcept
+    {
+        static uint64_t lastReportMs = 0;
+        static HRESULT lastResult = S_OK;
+        static const char* lastStage = nullptr;
+        const uint64_t now = GetTickCount64();
+        if (stage == lastStage && result == lastResult &&
+            now - lastReportMs < 5000)
+            return;
+        lastReportMs = now;
+        lastStage = stage;
+        lastResult = result;
+        const HRESULT removed = device ? device->GetDeviceRemovedReason() : E_POINTER;
+        LOG("Reach eye-allocation: stage=%s hr=0x%08X removed=0x%08X "
+            "size=%ux%u fmt=%u samples=%u/%u mips=%u array=%u "
+            "usage=%u bind=0x%X cpu=0x%X misc=0x%X",
+            stage, static_cast<unsigned>(result), static_cast<unsigned>(removed),
+            desc.Width, desc.Height, static_cast<unsigned>(desc.Format),
+            desc.SampleDesc.Count, desc.SampleDesc.Quality, desc.MipLevels,
+            desc.ArraySize, static_cast<unsigned>(desc.Usage), desc.BindFlags,
+            desc.CPUAccessFlags, desc.MiscFlags);
+    }
+
     bool EnsureReachEyeCaches(
         ID3D11Device* device,
         const D3D11_TEXTURE2D_DESC& sourceDesc,
@@ -3946,12 +5814,21 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         cacheDesc.MipLevels = 1;
         cacheDesc.ArraySize = 1;
         ReachComRef<ID3D11Texture2D> replacement[2];
-        if (FAILED(device->CreateTexture2D(
-                &cacheDesc, nullptr, replacement[0].Put())) ||
-            FAILED(device->CreateTexture2D(
-                &cacheDesc, nullptr, replacement[1].Put())))
+        if (!device)
         {
+            NoteReachEyeAllocationFailure("device-missing", E_POINTER, device, cacheDesc);
             return false;
+        }
+        for (int eye = 0; eye < 2; ++eye)
+        {
+            const HRESULT created = device->CreateTexture2D(
+                &cacheDesc, nullptr, replacement[eye].Put());
+            if (FAILED(created) || !replacement[eye].Get())
+            {
+                NoteReachEyeAllocationFailure(eye ? "create-right" : "create-left",
+                    FAILED(created) ? created : E_POINTER, device, cacheDesc);
+                return false;
+            }
         }
 
         const uintptr_t replacementIdentities[2] = {
@@ -3971,6 +5848,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             ReachResourceDeviceIdentity(replacement[1].Get()) !=
                 deviceIdentity)
         {
+            NoteReachEyeAllocationFailure("replacement-identity-shape-device",
+                E_FAIL, device, cacheDesc);
             return false;
         }
 
@@ -4378,7 +6257,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         return continuity;
     }
 
-    void ResetReachDisplayCandidateLocked(
+    bool ResetReachDisplayCandidateLocked(
         bool teardown, bool releaseResources) noexcept
     {
         if (ReachModuleEpochValid(g_reachDisplayEpoch))
@@ -4393,9 +6272,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             g_reachDisplayEpoch = {};
             g_reachDisplayResourceRevision = 0;
         }
+        bool resourcesReleased = true;
         if (releaseResources)
         {
-            if (InvalidateReachCaptureResources())
+            resourcesReleased = InvalidateReachCaptureResources();
+            if (resourcesReleased)
             {
                 ReleaseReachEyeCaches();
                 DiscardReachDisplaySnapshots(false);
@@ -4403,6 +6284,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         }
         g_reachDisplayNextAttemptMs = 0;
         g_reachDisplayReadyLogged = false;
+        return resourcesReleased;
     }
 
     bool BuildReachDisplayProof(
@@ -4485,6 +6367,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             !ReachSameCopyShape(sourceShape, eyeShape[0]) ||
             !ReachSameCopyShape(sourceShape, eyeShape[1]))
         {
+            NoteReachEyeAllocationFailure("published-eye-identity-shape",
+                E_FAIL, snapshot.device, sourceDesc);
             failure = ReachDisplayFailure::EyeAllocation;
             return false;
         }
@@ -4499,6 +6383,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         const bool immediate = contextIdentity != 0;
         if (!sameDevice || !immediate)
         {
+            NoteReachEyeAllocationFailure("published-eye-device-context",
+                E_FAIL, snapshot.device, sourceDesc);
             failure = ReachDisplayFailure::DeviceContext;
             return false;
         }
@@ -5613,6 +7499,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED:
             {
                 auto& sc = *reinterpret_cast<XrEventDataSessionStateChanged*>(&ev);
+                if(g_sessionState!=sc.state) g_controllerProfileEpoch.fetch_add(1,std::memory_order_acq_rel);
                 g_sessionState = sc.state;
                 g_sessionStateShared.store(static_cast<int>(sc.state),
                                            std::memory_order_relaxed);
@@ -5703,7 +7590,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 break;
             case XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED:
             {
-                auto logProfile = [](XrPath hand, const char* label) {
+                auto logProfile = [](XrPath hand, const char* label, unsigned index) {
+                    g_controllerProfiles[index].store(vr_mapping::Profile::Unknown,std::memory_order_release);
                     XrInteractionProfileState state{XR_TYPE_INTERACTION_PROFILE_STATE};
                     if (XR_FAILED(xrGetCurrentInteractionProfile(g_session, hand, &state)) ||
                         state.interactionProfile == XR_NULL_PATH)
@@ -5715,10 +7603,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     uint32_t written = 0;
                     if (XR_SUCCEEDED(xrPathToString(g_instance, state.interactionProfile,
                         (uint32_t)sizeof(path), &written, path)))
+                    {
+                        g_controllerProfiles[index].store(vr_mapping::DetectProfile(path),std::memory_order_release);
                         LOG("controller profile %s: %s", label, path);
+                    }
                 };
-                logProfile(g_leftHandPath, "left");
-                logProfile(g_rightHandPath, "right");
+                logProfile(g_leftHandPath, "left",0);
+                logProfile(g_rightHandPath, "right",1);
+                g_controllerProfileEpoch.fetch_add(1,std::memory_order_acq_rel);
                 if (g_actMenu != XR_NULL_HANDLE)
                 {
                     XrBoundSourcesForActionEnumerateInfo info{
@@ -5828,6 +7720,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             ? SmoothTrackedPose(loc.pose, g_headPose, smoothing)
             : loc.pose;
         g_headPoseValid = true;
+        g_stockHeadPoseTime = time;
         LeaveCriticalSection(&g_headCs);
 
         constexpr XrSpaceLocationFlags physicalTracking =
@@ -5863,7 +7756,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     // arcs/ticks take the color; the outline is a darkened version of the same
     // hue so it reads at any color. Called on first use and whenever the color
     // changes (user edit, or the enemy-red switch below) — not per frame.
-    bool PaintReticle(float cr, float cg, float cb, float opacity)
+    std::vector<uint32_t> BuildReticlePixels(float cr, float cg, float cb, float opacity)
     {
         std::vector<uint32_t> px(kReticleSize * kReticleSize);
         const float c = (kReticleSize - 1) * 0.5f;
@@ -5904,6 +7797,12 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 // OpenXR's preferred swapchain is RGBA8 on this runtime.
                 px[y*kReticleSize+x]=(a8<<24)|(b8<<16)|(g8<<8)|r8;
             }
+        return px;
+    }
+
+    bool PaintReticle(float cr, float cg, float cb, float opacity)
+    {
+        const auto px=BuildReticlePixels(cr,cg,cb,opacity);
         uint32_t idx = 0;
         XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
         XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
@@ -5915,6 +7814,55 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         g_context->UpdateSubresource(g_reticleImages[idx], 0, nullptr, px.data(),
                                      kReticleSize * 4, 0);
         xrReleaseSwapchainImage(g_reticleChain, &ri);
+        return true;
+    }
+
+    bool PrepareDualReticleImage()
+    {
+        if(g_dualReticleFailed) return false;
+        const bool rgba=g_xrFormat==DXGI_FORMAT_R8G8B8A8_UNORM || g_xrFormat==DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+        const bool bgra=g_xrFormat==DXGI_FORMAT_B8G8R8A8_UNORM || g_xrFormat==DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        if(!rgba&&!bgra) return false;
+        if(g_dualReticleChain==XR_NULL_HANDLE) {
+            const uint64_t now=GetTickCount64();
+            if(now<g_dualReticleRetryMs) return false;
+            g_dualReticleRetryMs=now+5000;
+            if(!CreateChain(kReticleSize,kReticleSize,g_dualReticleChain,
+                g_dualReticleImages,g_dualReticleRtvs,"independent dual-weapon reticles")) return false;
+        }
+        const float color[3]{g_config.reticle_r,g_config.reticle_g,g_config.reticle_b};
+        const bool dirty=!g_dualReticleReady || color[0]!=g_dualReticleColor[0] ||
+            color[1]!=g_dualReticleColor[1] || color[2]!=g_dualReticleColor[2];
+        if(!dirty&&!g_dualReticleAcquired) return true;
+        XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+        XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+        XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        wait.timeout=0;
+        if(!g_dualReticleAcquired) {
+            if(xrAcquireSwapchainImage(g_dualReticleChain,&acquire,&g_dualReticleIndex)!=XR_SUCCESS) return false;
+            g_dualReticleAcquired=true;
+        }
+        const XrResult ready=xrWaitSwapchainImage(g_dualReticleChain,&wait);
+        if(ready==XR_TIMEOUT_EXPIRED) return false;
+        if(ready!=XR_SUCCESS) {
+            g_dualReticleFailed=true;
+            LOG("Dual reticles: optional image wait failed (%d); existing crosshair retained",ready);
+            return false;
+        }
+        const bool valid=g_dualReticleIndex<g_dualReticleImages.size();
+        if(valid) {
+            const auto pixels=BuildReticlePixels(bgra?color[2]:color[0],color[1],bgra?color[0]:color[2],1.f);
+            g_context->UpdateSubresource(g_dualReticleImages[g_dualReticleIndex],0,nullptr,pixels.data(),kReticleSize*4,0);
+        }
+        const XrResult released=xrReleaseSwapchainImage(g_dualReticleChain,&release);
+        g_dualReticleAcquired=false;
+        if(!valid || released!=XR_SUCCESS) {
+            g_dualReticleFailed=true;
+            LOG("Dual reticles: optional image release failed (%d); existing crosshair retained",released);
+            return false;
+        }
+        std::copy(std::begin(color),std::end(color),g_dualReticleColor);
+        g_dualReticleReady=true;
         return true;
     }
 
@@ -6534,6 +8482,69 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         return q;
     }
 
+    bool PrepareNativeSubtitle(XrCompositionLayerQuad& quad)
+    {
+        const auto image = NativeSubtitles_Read();
+        const GameTitle title = TitleAdapter_GetActiveTitle();
+        const uint64_t now = GetTickCount64();
+        if (g_nativeSubtitleFailed || !image ||
+            !subtitles::Current(image->title, image->generation, image->expiresAtMs,
+                title, TitleAdapter_GetGeneration(title), now) ||
+            image->theatre != VR_IsCutsceneTheaterActive() ||
+            (image->theatre ? !g_config.cutscene_theater_subtitles : !g_config.vr_gameplay_subtitles)) return false;
+        const bool format = g_xrFormat == DXGI_FORMAT_R8G8B8A8_UNORM ||
+            g_xrFormat == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
+            g_xrFormat == DXGI_FORMAT_B8G8R8A8_UNORM ||
+            g_xrFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        if (!format || !image->rgba || image->rgba->size() != image->width * image->height * 4) return false;
+        if (g_nativeSubtitleChain == XR_NULL_HANDLE) {
+            if (now < g_nativeSubtitleRetryMs) return false;
+            g_nativeSubtitleRetryMs = now + 5000;
+            if (!CreateChain(image->width,image->height,g_nativeSubtitleChain,
+                    g_nativeSubtitleImages,g_nativeSubtitleRtvs,"native subtitles")) return false;
+        }
+        if (g_nativeSubtitleUploaded != image->revision || g_nativeSubtitleAcquired) {
+            XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+            XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+            XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+            // Caption readiness must never delay or reject the working eye pair.
+            // A timeout retains the acquire and retries its wait next frame.
+            wait.timeout = 0;
+            if (!g_nativeSubtitleAcquired) {
+                const XrResult r=xrAcquireSwapchainImage(g_nativeSubtitleChain,&acquire,&g_nativeSubtitleAcquiredIndex);
+                if (r != XR_SUCCESS) return false;
+                g_nativeSubtitleAcquired=true;
+            }
+            const XrResult ready=xrWaitSwapchainImage(g_nativeSubtitleChain,&wait);
+            if (ready == XR_TIMEOUT_EXPIRED) return false;
+            if (ready != XR_SUCCESS) {
+                g_nativeSubtitleFailed=true;
+                LOG("Native subtitles: optional swapchain wait failed (%d); stock captions and VR retained",ready);
+                return false;
+            }
+            const bool valid=g_nativeSubtitleAcquiredIndex<g_nativeSubtitleImages.size();
+            if (valid) g_context->UpdateSubresource(g_nativeSubtitleImages[g_nativeSubtitleAcquiredIndex],
+                0,nullptr,image->rgba->data(),image->width*4,0);
+            const XrResult released=xrReleaseSwapchainImage(g_nativeSubtitleChain,&release);
+            g_nativeSubtitleAcquired=false;
+            if (!valid || released != XR_SUCCESS) {
+                g_nativeSubtitleFailed=true;
+                LOG("Native subtitles: optional swapchain release failed (%d, image=%d); stock captions and VR retained",released,valid?1:0);
+                return false;
+            }
+            g_nativeSubtitleUploaded=image->revision;
+        }
+        const float scale=image->theatre?g_config.vr_theatre_subtitle_scale:g_config.vr_gameplay_subtitle_scale;
+        const float x=image->theatre?g_config.vr_theatre_subtitle_x:g_config.vr_gameplay_subtitle_x;
+        const float y=image->theatre?g_config.vr_theatre_subtitle_y:g_config.vr_gameplay_subtitle_y;
+        const bool head=image->theatre?g_config.vr_theatre_subtitle_anchor==1:g_config.vr_gameplay_subtitle_anchor==0;
+        const float distance=image->theatre?g_config.cutscene_theater_distance_m:2.0f;
+        quad=MakeQuad(g_nativeSubtitleChain,image->width,image->height,1.5f*scale,
+            distance,-0.55f+y,XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT,head,x);
+        g_nativeTheatreCaptionReady=image->theatre;
+        return true;
+    }
+
     float UpdatePauseTransition()
     {
         enum class Phase { Idle, FadeOut, FadeIn };
@@ -6866,6 +8877,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         makeAction(g_actClickL, XR_ACTION_TYPE_BOOLEAN_INPUT,  "click_l",    "Left Stick Click");
         makeAction(g_actClickR, XR_ACTION_TYPE_BOOLEAN_INPUT,  "click_r",    "Right Stick Click");
         makeAction(g_actMenu,   XR_ACTION_TYPE_BOOLEAN_INPUT,  "menu",       "Menu / Start");
+        makeAction(g_actFacePadL,XR_ACTION_TYPE_VECTOR2F_INPUT,"face_pad_l","Left Touchpad Face Zones");
+        makeAction(g_actFacePadR,XR_ACTION_TYPE_VECTOR2F_INPUT,"face_pad_r","Right Touchpad Face Zones");
+        makeAction(g_actFaceClickL,XR_ACTION_TYPE_BOOLEAN_INPUT,"face_click_l","Left Touchpad Face Click");
+        makeAction(g_actFaceClickR,XR_ACTION_TYPE_BOOLEAN_INPUT,"face_click_r","Right Touchpad Face Click");
         // Always create the optional action so the F1 checkbox works without
         // recreating a session. Failure must not affect existing controller input.
         makeAction(g_actLeftThumbrest, XR_ACTION_TYPE_BOOLEAN_INPUT,
@@ -6951,6 +8966,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             {g_hapticAction, "/user/hand/right/output/haptic"},
         };
         const Bind wmr[] = {
+            {g_actFacePadL,"/user/hand/left/input/trackpad"},
+            {g_actFacePadR,"/user/hand/right/input/trackpad"},
+            {g_actFaceClickL,"/user/hand/left/input/trackpad/click"},
+            {g_actFaceClickR,"/user/hand/right/input/trackpad/click"},
             {g_rightAimAction, "/user/hand/right/input/aim/pose"},
             {g_leftAimAction, "/user/hand/left/input/aim/pose"},
             {g_actMove,   "/user/hand/left/input/thumbstick"},
@@ -6966,6 +8985,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             {g_hapticAction, "/user/hand/right/output/haptic"},
         };
         const Bind vive[] = {
+            {g_actFacePadL,"/user/hand/left/input/trackpad"},
+            {g_actFacePadR,"/user/hand/right/input/trackpad"},
+            {g_actFaceClickL,"/user/hand/left/input/trackpad/click"},
+            {g_actFaceClickR,"/user/hand/right/input/trackpad/click"},
             {g_rightAimAction, "/user/hand/right/input/aim/pose"},
             {g_leftAimAction, "/user/hand/left/input/aim/pose"},
             {g_actMove,   "/user/hand/left/input/trackpad"},
@@ -7109,6 +9132,27 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         float gunYawDeg = 0.0f;
         float gunPitchDeg = 0.0f;
         float gunRollDeg = 0.0f;
+        XrVector3f supportPosition{0, 0, 0};
+        bool virtualStockEnabled = false;
+        float virtualStockStrength = 1.0f;
+        float virtualStockRearHeightM = 0.0f;
+        int virtualStockRearReference = 0;
+        float virtualStockShoulderBackM = 0.005f;
+        float virtualStockShoulderSideM = 0.015f;
+        float virtualStockChestHeightM = -0.320f;
+        float virtualStockChestBackM = 0.000f;
+        float virtualStockChestSideM = 0.015f;
+        float virtualStockAdaptiveTopHeightM = -0.180f;
+        float virtualStockAdaptiveBottomHeightM = -0.450f;
+        float virtualStockAdaptiveTopHalfWidthM = 0.080f;
+        float virtualStockAdaptiveBottomHalfWidthM = 0.140f;
+        bool virtualStockLeftHanded = false;
+        bool virtualStockProximityRelease = false;
+        float virtualStockProximityFullM = 0.250f;
+        float virtualStockProximityReleaseM = 0.450f;
+        bool headValid = false;
+        XrVector3f headPosition{0, 0, 0};
+        XrQuaternionf headOrientation{0, 0, 0, 1};
     };
 
     struct AimPoseResult
@@ -7144,11 +9188,27 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         return inputs;
     }
 
+    #include "virtual_stock_aim.inl"
+
+    // The OpenXR frame thread owns these globals at snapshot publication. The
+    // public getter below instead passes one copy taken under g_headCs.
+    AimPoseInputs CurrentFrameStockAimPoseInputs(
+        bool rightValid, const XrPosef& right,
+        bool leftValid, const XrPosef& left) noexcept
+    {
+        return CurrentStockAimPoseInputs(rightValid, right, leftValid, left,
+            g_headPoseValid && g_stockHeadPoseTime != 0 &&
+                g_stockHeadPoseTime == g_stockControllerPoseTime,
+            g_headPose.position, g_headPose.orientation);
+    }
+
     // Pure aim calculation shared by the lock-taking public getter and Reach's
     // exact-serial snapshot publisher. It reads no globals, takes no locks, and
     // performs no logging or state publication.
     AimPoseResult ComputeAimPose(const AimPoseInputs& inputs) noexcept
     {
+        if (inputs.virtualStockEnabled)
+            return ComputeStockAimPose(inputs);
         AimPoseResult result{};
         if (!inputs.rightValid)
             return result;
@@ -7626,6 +9686,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             g_meleeSpeedHistory[1] = {};
         }
         g_rightAimPoseValid = valid;
+        g_stockControllerPoseTime = valid && leftValid ? time : 0;
         if (valid)
             g_rightAimPose = location.pose;
         g_rightAimLinearVelocityValid = selectedRightVelocityValid;
@@ -7720,6 +9781,27 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         getB(g_actClickL, pad.clickL);
         getB(g_actClickR, pad.clickR);
         getB(g_actMenu, pad.menu);
+        {
+            float lx=0,ly=0,rx=0,ry=0;bool lc=false,rc=false;
+            getV2(g_actFacePadL,lx,ly);getV2(g_actFacePadR,rx,ry);
+            getB(g_actFaceClickL,lc);getB(g_actFaceClickR,rc);
+            static vr_mapping::PadFaces faces[2];
+            const auto leftProfile=g_controllerProfiles[0].load(std::memory_order_acquire);
+            const auto rightProfile=g_controllerProfiles[1].load(std::memory_order_acquire);
+            const bool leftPad=leftProfile==vr_mapping::Profile::Vive||leftProfile==vr_mapping::Profile::Wmr;
+            const bool rightPad=rightProfile==vr_mapping::Profile::Vive||rightProfile==vr_mapping::Profile::Wmr;
+            const int leftZone=faces[0].Update(ly,leftPad&&lc);
+            const int rightZone=faces[1].Update(ry,rightPad&&rc);
+            if(leftZone) {pad.x|=leftZone>0;pad.y|=leftZone<0;}
+            if(rightZone) {pad.a|=rightZone>0;pad.b|=rightZone<0;}
+            // Vive uses the same pad for locomotion and faces. A clicked
+            // face zone owns those axes for its full hold; WMR retains its
+            // physically separate thumbstick. Center clicks keep L3/R3.
+            if(leftProfile==vr_mapping::Profile::Vive&&leftZone)
+            {pad.clickL=false;pad.moveX=pad.moveY=0;}
+            if(rightProfile==vr_mapping::Profile::Vive&&rightZone)
+            {pad.clickR=false;pad.turnX=pad.turnY=0;}
+        }
         const DpadStickInput thumbrest = ConsumeThumbrestDpad(
             g_config.quest_thumbrest_dpad, ReadLeftThumbrestTouched(),
             pad.valid && valid && leftValid && g_sessionState == XR_SESSION_STATE_FOCUSED &&
@@ -7804,6 +9886,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             weapon_interaction::Settings settings{};
             settings.reload=g_config.manual_reload;settings.holsters=g_config.weapon_holsters;
             settings.leftHanded=leftHanded;settings.pouchDown=g_config.weapon_pouch_down_m;
+            settings.pouchLocation=g_config.weapon_pouch_location;
+            settings.pouchOffset={g_config.weapon_pouch_offset_x_m,g_config.weapon_pouch_offset_y_m,g_config.weapon_pouch_offset_z_m};
             settings.zoneRadius=g_config.weapon_body_zone_radius_m;
             settings.holsterRadius=g_config.weapon_holster_radius_m;
             settings.insertRadius=g_config.weapon_insert_radius_m;
@@ -7815,8 +9899,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             settings.shakeTravel=g_config.weapon_shake_travel_m;
             settings.holsterLocation=g_config.weapon_holster_location;
             const int index=weapon_interaction::TitleIndex(sample.title);
-            settings.reloadButton=index>=0?weapon_interaction::Button(g_config.weapon_reload_button[index]):0;
-            settings.swapButton=index>=0?weapon_interaction::Button(g_config.weapon_switch_button[index]):0;
+            settings.reloadButton=WeaponGestureBinding(sample.title,vr_mapping::Reload,inputNow);
+            settings.swapButton=WeaponGestureBinding(sample.title,vr_mapping::SwitchWeapon,inputNow);
             weaponGesture=g_weaponInteraction.Update(sample,settings);
             const auto& supportQ=leftLocation.pose.orientation;
             g_weaponAccessory=weapon_accessory::Build(sample,settings,weaponGesture,
@@ -7857,14 +9941,18 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         }
         g_scopeZoomStickY.store(pad.valid?pad.turnY:0.0f,
                                 std::memory_order_release);
+        const bool supportWasLatched=g_twoHandLatched.load(std::memory_order_acquire);
+        UpdateTwoHandLatch(valid, location.pose, leftValid, leftLocation.pose,
+                           rawSupportGrip, handChanged, weapon_interaction::BlocksSupportGrab(weaponGesture));
         EnterCriticalSection(&g_headCs);
+        pad.profileEpoch=g_controllerProfileEpoch.load(std::memory_order_acquire);
+        // The same grip edge that acquires OR releases support must not also
+        // activate a flashlight. Publish this frame's decision, not last frame's.
+        pad.supportAimActive=supportWasLatched||g_twoHandLatched.load(std::memory_order_acquire);
         g_padState = pad;
         g_thumbrestDpadSampleMs.store(pad.thumbrestDpad ? inputNow : 0,
             std::memory_order_release);
         LeaveCriticalSection(&g_headCs);
-        UpdateTwoHandLatch(valid, location.pose, leftValid, leftLocation.pose,
-                           rawSupportGrip, handChanged, weaponGesture.releaseTwoHand ||
-                               pad.weaponConsumePrimary || pad.weaponConsumeSupport);
         ApplyControllerHaptics(valid && leftValid);
         static bool padLogged = false;
         if (pad.valid && !padLogged)
@@ -8110,6 +10198,18 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             return false;
         }
         g_device->GetImmediateContext(&g_context);
+        IDXGIDevice* memoryDevice = nullptr;
+        IDXGIAdapter* memoryAdapter = nullptr;
+        if (SUCCEEDED(g_device->QueryInterface(IID_PPV_ARGS(&memoryDevice))))
+        {
+            if (SUCCEEDED(memoryDevice->GetAdapter(&memoryAdapter)))
+            {
+                if (g_memoryAdapter) { g_memoryAdapter->Release(); g_memoryAdapter = nullptr; }
+                memoryAdapter->QueryInterface(IID_PPV_ARGS(&g_memoryAdapter));
+                memoryAdapter->Release();
+            }
+            memoryDevice->Release();
+        }
 
         DXGI_SWAP_CHAIN_DESC scd{};
         sc->GetDesc(&scd);
@@ -8416,7 +10516,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             memcpy(next.rawPrimaryOrientation,orientation,sizeof(orientation));
             memcpy(next.rawPrimaryPosition,position,sizeof(position));
         }
-        const AimPoseResult aim=ComputeAimPose(CurrentAimPoseInputs(
+        const AimPoseResult aim=ComputeAimPose(CurrentFrameStockAimPoseInputs(
             rightFresh,g_rightAimPose,leftFresh,g_leftAimPose));
         next.twoHandAimActive=aim.valid && aim.twoHandActive;
         next.leftHanded=g_capturedLeftHanded.load(std::memory_order_acquire);
@@ -8500,7 +10600,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // prepared Reach serial: this snapshot is an exact-frame contract.
         const bool rightPoseFresh = padFresh && g_rightAimPoseValid;
         const bool leftPoseFresh = padFresh && g_leftAimPoseValid;
-        const AimPoseResult aim = ComputeAimPose(CurrentAimPoseInputs(
+        const AimPoseResult aim = ComputeAimPose(CurrentFrameStockAimPoseInputs(
             rightPoseFresh, g_rightAimPose,
             leftPoseFresh, g_leftAimPose));
         next.rightAimValid = aim.valid;
@@ -8628,7 +10728,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // Halo 2 prepared serial.
         const bool rightPoseFresh = padFresh && g_rightAimPoseValid;
         const bool leftPoseFresh = padFresh && g_leftAimPoseValid;
-        const AimPoseResult aim = ComputeAimPose(CurrentAimPoseInputs(
+        const AimPoseResult aim = ComputeAimPose(CurrentFrameStockAimPoseInputs(
             rightPoseFresh, g_rightAimPose,
             leftPoseFresh, g_leftAimPose));
         next.rightAimValid = aim.valid;
@@ -8745,7 +10845,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // from two prepared serials.
         const bool rightPoseFresh = padFresh && g_rightAimPoseValid;
         const bool leftPoseFresh = padFresh && g_leftAimPoseValid;
-        const AimPoseResult aim = ComputeAimPose(CurrentAimPoseInputs(
+        const AimPoseResult aim = ComputeAimPose(CurrentFrameStockAimPoseInputs(
             rightPoseFresh, g_rightAimPose,
             leftPoseFresh, g_leftAimPose));
         next.rightAimValid = aim.valid;
@@ -9426,7 +11526,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     result.valid=halo_ce::Finite(result.position)&&halo_ce::Valid(result.orientation);
                     return result;
                 };
-                auto aimInputs=CurrentAimPoseInputs(
+                auto aimInputs=CurrentFrameStockAimPoseInputs(
                     upcomingPadFresh&&g_rightAimPoseValid,g_rightAimPose,
                     upcomingPadFresh&&g_leftAimPoseValid,g_leftAimPose);
                 const auto aim=ComputeAimPose(aimInputs);
@@ -9548,16 +11648,44 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if (!g_preparedFrame.begun)
             return;
         const XrFrameState fs = g_preparedFrame.state;
+        HaloCE_SetDlssRequested(TitleAdapter_GetActiveTitle()==GameTitle::HaloCE&&
+            g_config.upscaler==dlss::kUpscalerDlss&&Dlss_IsAvailable());
         HaloCE_PresentResources(g_device,g_context);
         struct CeLease
         {
             halo_ce::EyeCache::Completed pair;
-            ~CeLease() { if (pair.borrowId) HaloCE_ReleasePair(pair.borrowId); }
+            ~CeLease() {
+                for(auto& eye:g_dlssEye) eye.borrowedCeDepth=nullptr;
+                if (pair.borrowId) HaloCE_ReleasePair(pair.borrowId);
+            }
         } ceLease{};
         const bool ceTitle=TitleAdapter_GetActiveTitle()==GameTitle::HaloCE;
         const bool ceImages=ceTitle&&HaloCE_AcquirePair(g_context,g_preparedFrame.serial,
             g_contactSpaceEpoch.load(std::memory_order_acquire),ceLease.pair);
         const bool ceOwned=ceTitle&&HaloCE_OwnsPresentation();
+        if(ceTitle) {
+            static uint64_t previousSerial=0,previousEpoch=0,previousSpace=0;
+            static uint32_t previousGeneration=0;
+            const bool depthPair=ceImages&&ceLease.pair.depthHistoryEpoch&&
+                ceLease.pair.depthViews[0]&&ceLease.pair.depthViews[1]&&
+                ceLease.pair.depthCameras[0].valid&&ceLease.pair.depthCameras[1].valid;
+            for(int eye=0;eye<2;++eye) {
+                auto& state=g_dlssEye[eye];
+                state.published=state.depthValid=depthPair;
+                if(depthPair) {
+                    state.current=ceLease.pair.depthCameras[eye];
+                    state.borrowedCeDepth=ceLease.pair.depthViews[eye];
+                    state.depthCopyDesc=ceLease.pair.depthDescriptor;
+                    state.resetPending|=previousSerial>=ceLease.pair.key.serial||
+                        previousEpoch!=ceLease.pair.depthHistoryEpoch||previousSpace!=ceLease.pair.key.spaceEpoch||
+                        previousGeneration!=ceLease.pair.key.generation;
+                }
+            }
+            if(depthPair) {
+                previousSerial=ceLease.pair.key.serial;previousEpoch=ceLease.pair.depthHistoryEpoch;
+                previousSpace=ceLease.pair.key.spaceEpoch;previousGeneration=ceLease.pair.key.generation;
+            }
+        }
         float comfortFadeAlpha = UpdatePauseTransition();
 
         // M2: per-eye pose + field of view for this frame (foundation for
@@ -9595,7 +11723,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             }
         }
 
-        XrCompositionLayerQuad screenQuad, menuQuad, reticleQuad, scopeQuad, fadeQuad, nativeCursorQuad;
+        XrCompositionLayerQuad screenQuad, menuQuad, reticleQuad, secondaryReticleQuad, scopeQuad, fadeQuad, nativeCursorQuad, nativeSubtitleQuad;
         XrCompositionLayerQuad theaterQuads[2]{};
         XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
         XrCompositionLayerProjection theaterProjection{
@@ -9609,6 +11737,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         static std::vector<XrCompositionLayerBaseHeader*> layers;
         projectionViews.clear();
         layers.clear();
+        g_nativeTheatreCaptionReady=false;
+        const bool nativeSubtitleReady=fs.shouldRender && comfortFadeAlpha<=0.01f &&
+            !Menu_IsOpen() && PrepareNativeSubtitle(nativeSubtitleQuad);
 #if HALOMCCVR_EXPERIMENTAL_HALO2_TEMPORAL_STEREO || \
     HALOMCCVR_HALO2_STEREO6DOF
         bool halo2ProjectionQueued = false;
@@ -9841,6 +11972,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         Game_SetStereoEye(-1);
                     }
                 }
+                TickRenderPlan();
                 const bool pausedPresentation = g_pausePresentation.load();
                 const bool stereo = !pausedPresentation && g_stereoEnabled.load() && viewsValid &&
                                     g_stereoChain != XR_NULL_HANDLE && Game_IsHeadTracking();
@@ -10265,6 +12397,32 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         IqTimerBeginFrame();
                         bool everyReachEyeUploaded = reachImages;
                         everyEyeUploaded = true;
+                        // A stereo batch needs both fresh sources before either
+                        // target eye is presented. Eye-end normally completed
+                        // this already; Reach publishes its retained sources
+                        // here, so prepare both ahead of the presentation loop.
+                        if (dlss::kEnableDlss21StereoBatch &&
+                            VR_DlssWantsEyeCamera() &&
+                            !g_config.dlss_debug_view &&
+                            (!g_dlssKicked[0].Ready(g_preparedFrame.serial) ||
+                             !g_dlssKicked[1].Ready(g_preparedFrame.serial)))
+                        {
+                            for (int batchEye = 0; batchEye < 2; ++batchEye)
+                            {
+                                const bool batchHasImage = reachImages ||
+                                    (!reachTitle && (!halo4Title || halo4Images) &&
+                                     (!halo2Title || halo2Images) &&
+                                     g_eyeHasImage[batchEye]);
+                                ID3D11Texture2D* batchSource = reachImages
+                                    ? reachAccess.eyes[batchEye]
+                                    : (reachTitle ? nullptr : g_eyeCache[batchEye]);
+                                const D3D11_TEXTURE2D_DESC batchDesc = reachImages
+                                    ? g_reachCaptureDesc : g_eyeCacheDesc;
+                                if (batchHasImage && batchSource)
+                                    DlssKickEye(batchEye, batchSource, batchDesc,
+                                                g_stereoW, g_stereoH, nullptr);
+                            }
+                        }
                         Microsoft::WRL::ComPtr<ID3D11CommandList> accessoryCommands[2];
                         HRESULT accessoryPairResult=S_FALSE;
                         for (uint32_t targetEye = 0; targetEye < 2; ++targetEye)
@@ -10281,11 +12439,34 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             ID3D11Texture2D* source = ceImages ? ceLease.pair.eyes[sourceEye] : reachImages
                                 ? reachAccess.eyes[sourceEye]
                                 : (reachTitle ? nullptr : g_eyeCache[sourceEye]);
-                            const D3D11_TEXTURE2D_DESC& sourceDesc = ceImages ? ceLease.pair.descriptor : reachImages
+                            D3D11_TEXTURE2D_DESC sourceDesc = ceImages ? ceLease.pair.descriptor : reachImages
                                 ? g_reachCaptureDesc : g_eyeCacheDesc;
                             bool eyeUploaded = false;
+                            bool sourceReconstructed = false;
                             if (haveImage && source)
                             {
+                                // Select the reconstructed surface BEFORE selecting
+                                // the presentation. Previously theatre paid for NGX
+                                // at eye end, then displayed the low-resolution cache
+                                // and discarded both completed outputs at EndFrame.
+                                if (VR_DlssWantsEyeCamera() &&
+                                    !g_config.dlss_debug_view)
+                                {
+                                    const int dlssEye = static_cast<int>(sourceEye);
+                                    if (g_dlssKicked[dlssEye].Ready(g_preparedFrame.serial) ||
+                                        DlssKickEye(dlssEye, source, sourceDesc,
+                                            g_stereoW, g_stereoH, nullptr))
+                                    {
+                                        DlssKickedEye reconstructed{};
+                                        if (DlssTakeEyeOutput(dlssEye, reconstructed) &&
+                                            reconstructed.output)
+                                        {
+                                            source = reconstructed.output;
+                                            sourceDesc = reconstructed.outputDesc;
+                                            sourceReconstructed = true;
+                                        }
+                                    }
+                                }
                                 ID3D11RenderTargetView* targetRtv =
                                     GetStereoRtv(idx, targetEye);
                                 if (theaterProjectionAttempted && targetRtv)
@@ -10293,8 +12474,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     if (theaterDirectSampling)
                                     {
                                         ID3D11ShaderResourceView* sourceSrv =
-                                            EnsureTheaterDirectSourceSrv(
-                                                sourceEye, source);
+                                            AcquireSrcSrv(source, sourceDesc);
                                         eyeUploaded =
                                             CompositeTheaterProjectionEye(
                                                 targetEye, sourceSrv,
@@ -10306,10 +12486,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                             g_theaterResolvedSrv[targetEye])
                                     {
                                         const bool resolved = BlitImageQuality(
-                                            source, sourceDesc,
-                                            g_theaterResolved[targetEye],
-                                            g_stereoW, g_stereoH,
-                                            g_theaterResolvedRtv[targetEye]);
+                                             source, sourceDesc,
+                                             g_theaterResolved[targetEye],
+                                             g_stereoW, g_stereoH,
+                                             g_theaterResolvedRtv[targetEye],
+                                             sourceReconstructed);
                                         eyeUploaded = resolved &&
                                             CompositeTheaterProjectionEye(
                                                 targetEye,
@@ -10320,9 +12501,26 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 }
                                 else if (!theaterProjectionAttempted && targetRtv)
                                 {
-                                    eyeUploaded = BlitImageQuality(
-                                        source, sourceDesc, g_stereoImages[idx],
-                                        g_stereoW, g_stereoH, targetRtv);
+                                    // DLSS first when selected; any reason it
+                                    // cannot run this eye falls back to the
+                                    // mod's own resolve (fail-open per eye).
+                                    if (VR_DlssWantsEyeCamera() &&
+                                        g_config.dlss_debug_view)
+                                    {
+                                        const int dlssEye = static_cast<int>(sourceEye);
+                                        eyeUploaded =
+                                            DlssFinishEye(dlssEye, g_stereoImages[idx],
+                                                          g_stereoW, g_stereoH, targetRtv) ||
+                                            (DlssKickEye(dlssEye, source, sourceDesc,
+                                                         g_stereoW, g_stereoH, targetRtv) &&
+                                             DlssFinishEye(dlssEye, g_stereoImages[idx],
+                                                           g_stereoW, g_stereoH, targetRtv));
+                                    }
+                                    if (!eyeUploaded)
+                                        eyeUploaded = BlitImageQuality(
+                                            source, sourceDesc, g_stereoImages[idx],
+                                            g_stereoW, g_stereoH, targetRtv,
+                                            sourceReconstructed);
                                     // Optional accessory failure never changes eyeUploaded,
                                     // ownership, XR submission or native weapon rendering.
                                     const uint64_t now=GetTickCount64();
@@ -10939,6 +13137,25 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                           g_config.crosshair,
                                           g_config.kill_reticle)),
                                 g_reticleContainsAuthored);
+                        XrPosef secondaryAim{};
+                        float secondaryQ[4]{},secondaryP[3]{};
+                        const bool secondaryTracked=dual_reticle::Supported(reticleTitle) &&
+                            VR_GetLeftControllerPose(secondaryQ,secondaryP) &&
+                            Halo2BuildMirroredLeftAimOrientation(secondaryQ,g_config.gun_yaw_deg,
+                                g_config.gun_pitch_deg,g_config.gun_roll_deg,secondaryQ);
+                        secondaryAim={{secondaryQ[0],secondaryQ[1],secondaryQ[2],secondaryQ[3]},
+                            {secondaryP[0],secondaryP[1],secondaryP[2]}};
+                        const bool dualReticles=dual_reticle::Eligible(reticleTitle,
+                            SecondaryWeaponPresentationActive(),haveAim,secondaryTracked,
+                            g_config.crosshair,g_config.hide_hud,theaterPresentation) &&
+                            PrepareDualReticleImage();
+                        const uint64_t reticleSpace=g_contactSpaceEpoch.load(std::memory_order_acquire);
+                        const uint32_t reticleGeneration=TitleAdapter_GetGeneration(reticleTitle);
+                        if(!dualReticles || g_secondaryReticleSpace!=reticleSpace ||
+                            g_secondaryReticleGeneration!=reticleGeneration || g_secondaryReticleTitle!=reticleTitle)
+                            g_secondaryReticlePoseValid=false;
+                        g_secondaryReticleSpace=reticleSpace;g_secondaryReticleGeneration=reticleGeneration;
+                        g_secondaryReticleTitle=reticleTitle;
                         const bool reticleQuadSubmitted =
                             reticleOwnerAdmitted &&
                             !titlePositionsNativeReticle &&
@@ -10948,7 +13165,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             // a held authored gun-ray quad on top of it.
                             (reticleTitle != GameTitle::Halo4 ||
                              g_config.kill_reticle) &&
-                            haveAim && reticleChainAdmitted && !theaterPresentation;
+                            haveAim && (reticleChainAdmitted||dualReticles) && !theaterPresentation;
                         if (ceTitle)
                         {
                             static uint64_t lastCeReticleLogMs = 0;
@@ -11025,6 +13242,24 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             const XrVector3f aimRay = Rotate(
                                 g_reticleAimPose.orientation, {0.0f,0.0f,-1.0f});
                             float aimDir[3] = {aimRay.x,aimRay.y,aimRay.z};
+                            weapon_muzzle::Ray committedPrimary{},committedSecondary{};
+                            VrContactTrackingSnapshot reticleTracking{};
+                            bool primaryBarrel=false,secondaryBarrel=false;
+                            if(g_config.gun_barrel_aim && dual_reticle::Supported(reticleTitle) &&
+                                VR_GetContactTrackingSnapshot(reticleTracking)) {
+                                for(unsigned slot=0;slot<2;++slot) {
+                                    dual_reticle::ProjectedRay projected{};
+                                    if(g_weaponReticleRays[static_cast<unsigned>(reticleTitle)][slot].Read(projected) &&
+                                        dual_reticle::Current(projected,reticleTitle,reticleGeneration,
+                                            reticleTracking.referenceEpoch,reticleTracking.serial,
+                                            reticleTracking.timeNs,GetTickCount64(),slot,g_config.left_handed)) {
+                                        if(slot==0) {committedPrimary=projected.tracking;primaryBarrel=true;}
+                                        else {committedSecondary=projected.tracking;secondaryBarrel=true;}
+                                    }
+                                }
+                            }
+                            if(primaryBarrel) std::copy(std::begin(committedPrimary.direction),
+                                std::end(committedPrimary.direction),aimDir);
                             ReachStereoCenterPose reachCenter{};
                             bool reachNativeAim = false;
                             if (reachTitle && projection.viewCount == 2 &&
@@ -11114,13 +13349,15 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
                             reticleQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
                             reticleQuad.space = g_localSpace;
-                            reticleQuad.subImage.swapchain = g_reticleChain;
+                            reticleQuad.subImage.swapchain = dualReticles?g_dualReticleChain:g_reticleChain;
                             reticleQuad.subImage.imageRect =
                                 {{0, 0}, {(int32_t)kReticleSize, (int32_t)kReticleSize}};
                             reticleQuad.subImage.imageArrayIndex = 0;
                             reticleQuad.pose.orientation = q;
                             XrVector3f reticleOrigin =
                                 g_reticleAimPose.position;
+                            if(primaryBarrel) reticleOrigin={committedPrimary.position[0],
+                                committedPrimary.position[1],committedPrimary.position[2]};
                             if (reachNativeAim)
                             {
                                 // The direction and origin share one validated
@@ -11141,12 +13378,40 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             reticleQuad.size = {w, w};
                             layers.push_back(
                                 reinterpret_cast<XrCompositionLayerBaseHeader*>(&reticleQuad));
+                            if(dualReticles) {
+                                g_secondaryReticlePose=g_secondaryReticlePoseValid&&smoothing>0
+                                    ?SmoothTrackedPose(secondaryAim,g_secondaryReticlePose,smoothing):secondaryAim;
+                                g_secondaryReticlePoseValid=true;
+                                XrVector3f direction=Rotate(g_secondaryReticlePose.orientation,{0,0,-1});
+                                XrVector3f origin=g_secondaryReticlePose.position;
+                                if(secondaryBarrel) {
+                                    direction={committedSecondary.direction[0],committedSecondary.direction[1],committedSecondary.direction[2]};
+                                    origin={committedSecondary.position[0],committedSecondary.position[1],committedSecondary.position[2]};
+                                }
+                                const float secondaryYaw=atan2f(direction.x,-direction.z);
+                                const float secondaryPitch=asinf(std::clamp(direction.y,-1.f,1.f));
+                                const XrQuaternionf sy{0,sinf(-secondaryYaw*.5f),0,cosf(-secondaryYaw*.5f)};
+                                const XrQuaternionf sp{sinf(secondaryPitch*.5f),0,0,cosf(secondaryPitch*.5f)};
+                                secondaryReticleQuad=reticleQuad;
+                                secondaryReticleQuad.pose.orientation={sy.w*sp.x,sy.y*sp.w,
+                                    -sy.y*sp.x,sy.w*sp.w};
+                                secondaryReticleQuad.pose.position={origin.x+direction.x*dist,
+                                    origin.y+direction.y*dist,origin.z+direction.z*dist};
+                                layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&secondaryReticleQuad));
+                            }
+                            static bool loggedDual=false;
+                            if(loggedDual!=dualReticles) {
+                                loggedDual=dualReticles;
+                                LOG("Dual-weapon crosshairs: %s; single-glyph pair follows primary/secondary weapon roles; barrel receipts=%d/%d",
+                                    dualReticles?"two independent symbols":"ordinary authored reticle",primaryBarrel,secondaryBarrel);
+                            }
                         }
                         else
                         {
                             // Never blend from a stale pose after tracking or
                             // the crosshair is restored.
                             g_reticleAimPoseValid = false;
+                            g_secondaryReticlePoseValid = false;
                             PublishPresentedReticleAimPose(nullptr);
                         }
 
@@ -11523,6 +13788,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             }
 #endif
         }
+        if (nativeSubtitleReady && !layers.empty())
+            layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&nativeSubtitleQuad));
         // Evaluate against this frame's actual native quad before composition.
         // The cursor follows the last successfully delivered smoothed mouse UV.
         if (comfortFadeAlpha <= 0.01f &&
@@ -12924,6 +15191,13 @@ namespace
 
 void VR_BeforePresent(IDXGISwapChain* sc)
 {
+    // DLSS frame retirement belongs to Present, not to successful stereo
+    // upload. This covers pause/loading, shouldRender=false and every early
+    // return, including failed XR acquisition, without altering VR ownership.
+    struct DlssFrameCleanup
+    {
+        ~DlssFrameCleanup() { DlssEndFrame(); }
+    } dlssFrameCleanup;
     g_nativePointerFrame = {};
     NativeMenuPointer_FrameStatus("no-native-screen");
     struct PublishNativePointerOnExit {
@@ -13403,7 +15677,7 @@ void VR_NotifyCameraTransform()
     }
 }
 
-void VR_OnResizeBuffers(IDXGISwapChain*)
+bool VR_OnResizeBuffers(IDXGISwapChain* sc)
 {
     HaloCE_ForgetPresentationTexture();
     ReleaseCeDesktopMirror();
@@ -13426,6 +15700,9 @@ void VR_OnResizeBuffers(IDXGISwapChain*)
     // targets are resolution-dependent too — drop and re-learn them.
     ReleaseSourceViews();
     ReleaseTheaterProjectionResources();
+    // DLSS holds references to the game's depth views and eye-shaped
+    // textures; they go with the scene target they describe.
+    ReleaseDlssResources();
     if (g_sceneColorRtv)
     {
         g_sceneColorRtv->Release();
@@ -13447,11 +15724,24 @@ void VR_OnResizeBuffers(IDXGISwapChain*)
     // Buffer 0 and the engine's record-0 views are invalid at this edge. A
     // copied readiness token must fail immediately even if COM reuses every
     // pointer value after ResizeBuffers.
-    ResetReachDisplayCandidateLocked(false, false);
+    // Reach retains buffer 0 in its capture lease. Release that graph before
+    // DXGI resizes the active chain, after the existing bounded reader drain.
+    const bool activeReachSwapchain = sc &&
+        (g_reachCaptureProof.continuity.swapchainIdentity ==
+            reinterpret_cast<uintptr_t>(sc) ||
+         (TitleAdapter_GetActiveTitle() == GameTitle::HaloReach &&
+          ReachPresentMatchesEngineSwapchain(g_reachDisplayEpoch, sc)));
+    const bool resourcesReleased =
+        ResetReachDisplayCandidateLocked(false, activeReachSwapchain);
 #endif
     if (ID3D11Texture2D* retained =
             g_nextGameBackbuffer.exchange(nullptr, std::memory_order_acq_rel))
         retained->Release();
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+    return resourcesReleased;
+#else
+    return true;
+#endif
 }
 
 void VR_AfterResizeBuffers(IDXGISwapChain*)
@@ -13465,6 +15755,7 @@ void VR_AfterResizeBuffers(IDXGISwapChain*)
 
 void VR_RequestRecenter()
 {
+    VR_RecalibratePhysicalCrouch();
     g_recenterRequested.store(true, std::memory_order_release);
 }
 
@@ -13600,6 +15891,7 @@ void VR_DetachGamePresentation()
     g_halo4EyeSerial[1].store(0, std::memory_order_release);
 #endif
     g_stereoValidationDone = false;
+    g_rasterOwnerThread.store(0, std::memory_order_release);
     g_rasterEye = -1;
     g_rasterRedirected[0] = g_rasterRedirected[1] = false;
     g_rasterScope = false;
@@ -13618,6 +15910,9 @@ void VR_DetachGamePresentation()
     ReleaseIqChain();
     ReleaseIqTimer();
     ReleaseTheaterProjectionResources();
+    // DLSS holds references to the game's depth views and eye-shaped
+    // textures; they go with the scene target they describe.
+    ReleaseDlssResources();
     if (g_sceneColorRtv)
     {
         g_sceneColorRtv->Release();
@@ -13651,6 +15946,155 @@ bool VR_CaptureRenderedEye(int eye)
         loggedMissing = true;
     }
     return false;
+}
+
+void VR_PublishEyeCamera(int eye, const VrEyeCameraSample& sample)
+{
+    if (eye < 0 || eye > 1)
+        return;
+    DlssEyeState& state = g_dlssEye[eye];
+    if (!VR_DlssWantsEyeCamera())
+    {
+        state.published = false;
+        return;
+    }
+    state.current = dlss::MakeCameraSample(
+        sample.position, sample.forward, sample.up, sample.projection,
+        sample.jitterNdcX, sample.jitterNdcY);
+    state.published = state.current.valid;
+    // One-time evidence per eye and per title: the decoded terms, or the
+    // rejected rows (the evidence needed when a title's layout differs).
+    static uint8_t loggedValid[2]{};
+    static uint8_t loggedRejected[2]{};
+    const GameTitle title = TitleAdapter_GetActiveTitle();
+    const uint8_t titleBit =
+        static_cast<uint8_t>(1u << (static_cast<unsigned>(title) & 7u));
+    if (state.current.valid && !(loggedValid[eye] & titleBit))
+    {
+        loggedValid[eye] |= titleBit;
+        const dlss::ProjectionTerms& t = state.current.projection;
+        LOG("DLSS: %s eye %d camera published%s: tan %.5f/%.5f centre %.6f/%.6f "
+            "depth A=%.7f B=%.5f (%s Z), jitter ndc %.6f/%.6f, "
+            "pos (%.2f, %.2f, %.2f) fwd (%.3f, %.3f, %.3f) up (%.3f, %.3f, %.3f)",
+            DlssTitleName(title), eye,
+            t.transposed ? " (column-vector projection, transposed)" : "",
+            t.tanX, t.tanY, t.centerX, t.centerY, t.depthA, t.depthB,
+            t.depthInverted ? "reversed" : "standard",
+            sample.jitterNdcX, sample.jitterNdcY,
+            sample.position[0], sample.position[1], sample.position[2],
+            sample.forward[0], sample.forward[1], sample.forward[2],
+            sample.up[0], sample.up[1], sample.up[2]);
+    }
+    else if (!state.current.valid && !(loggedRejected[eye] & titleBit))
+    {
+        loggedRejected[eye] |= titleBit;
+        const float* p = sample.projection;
+        LOG("DLSS: %s eye %d camera sample REJECTED; projection rows "
+            "[%.5f %.5f %.5f %.5f] [%.5f %.5f %.5f %.5f] "
+            "[%.5f %.5f %.5f %.5f] [%.5f %.5f %.5f %.5f], "
+            "pos (%.2f, %.2f, %.2f) fwd (%.3f, %.3f, %.3f) up (%.3f, %.3f, %.3f)",
+            DlssTitleName(title), eye,
+            p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
+            p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15],
+            sample.position[0], sample.position[1], sample.position[2],
+            sample.forward[0], sample.forward[1], sample.forward[2],
+            sample.up[0], sample.up[1], sample.up[2]);
+    }
+}
+
+bool VR_DlssWantsEyeCamera()
+{
+    if (g_config.upscaler != dlss::kUpscalerDlss ||
+        !dlss::TitleHasCameraContract(TitleAdapter_GetActiveTitle()))
+        return false;
+    unsigned rw = 0, rh = 0, ow = 0, oh = 0;
+    bool plannedDlss = false, runtimePresent = false;
+    D3D_GetRenderPlan(rw, rh, ow, oh, plannedDlss, runtimePresent);
+    return runtimePresent;
+}
+
+void VR_DlssBeginEyeDepthWindow(int eye)
+{
+    if (eye >= 0 && eye < 2)
+        g_dlssKicked[eye].Reset();
+    if (eye < 0 || eye > 1 || !VR_DlssWantsEyeCamera())
+    {
+        g_dlssDepthWindowEye.store(-1, std::memory_order_relaxed);
+        D3D_SetEyeSamplerBias(0.0f);
+        return;
+    }
+    // Same contract as VR_BeginRasterEye: this eye's camera and depth must
+    // both arrive during THIS render.
+    g_dlssEye[eye].published = false;
+    g_dlssEye[eye].depthValid = false;
+    g_dlssEyeSceneDepthSeen = false;
+    g_dlssEyeLastFullRasterDsv = nullptr;
+    g_dlssDepthWindowEye.store(eye, std::memory_order_relaxed);
+    DlssBeginEyeSamplerBias();
+}
+
+void VR_DlssEndEyeDepthWindow(int eye)
+{
+    if (g_dlssDepthWindowEye.load(std::memory_order_relaxed) != eye)
+        return;
+    g_dlssDepthWindowEye.store(-1, std::memory_order_relaxed);
+    DlssEndEyeSamplerBias();
+    DlssCaptureEyeDepth(eye);
+}
+
+bool VR_GetEyeJitter(int eye, float& outNdcX, float& outNdcY)
+{
+    outNdcX = 0.0f;
+    outNdcY = 0.0f;
+    if (eye < 0 || eye > 1 || !VR_DlssWantsEyeCamera() ||
+        !g_config.dlss_jitter || !g_dlssJitterArmed || !Dlss_IsAvailable() ||
+        !dlss::UsesWorldRender(DlssPresentationMode()) ||
+        !g_gameBackbufferDescValid || !g_stereoW || !g_stereoH)
+        return false;
+    const uint32_t renderW = g_gameBackbufferDesc.Width;
+    const uint32_t renderH = g_gameBackbufferDesc.Height;
+    const dlss::OutputSize out = DlssOutputFor(renderW, renderH, g_stereoW, g_stereoH);
+    uint32_t jitterOutputW = out.width;
+    unsigned planRenderW = 0, planRenderH = 0, planOutputW = 0;
+    unsigned planOutputH = 0;
+    bool plannedDlss = false, runtimePresent = false;
+    D3D_GetRenderPlan(planRenderW, planRenderH, planOutputW, planOutputH,
+                      plannedDlss, runtimePresent);
+    if (dlss::kEnableDlss21StereoBatch && plannedDlss)
+    {
+        const dlss::StereoBatchPlan batch = dlss::PlanStereoBatch(
+            static_cast<int>(planOutputW), static_cast<int>(planOutputH),
+            dlss::ModeFromConfig(g_config.dlss_mode));
+        if (batch.eyeOutputW > 0)
+            jitterOutputW = static_cast<uint32_t>(batch.eyeOutputW);
+    }
+    const uint32_t phases = dlss::JitterPhaseCount(renderW, jitterOutputW);
+    float pixelX = 0.0f, pixelY = 0.0f;
+    dlss::JitterPixels(g_dlssJitterPhase, phases, pixelX, pixelY);
+    dlss::JitterToNdc(pixelX, pixelY, renderW, renderH, outNdcX, outNdcY);
+    return true;
+}
+
+void VR_GetDlssStatus(char* out, size_t bytes)
+{
+    if (!out || !bytes)
+        return;
+    AcquireSRWLockShared(&g_dlssStatusLock);
+    snprintf(out, bytes, "%s", g_dlssStatusText);
+    ReleaseSRWLockShared(&g_dlssStatusLock);
+}
+
+bool VR_GetDlssRenderPlan(VrDlssRenderPlan& out)
+{
+    out = {};
+    D3D_GetRenderPlan(out.plannedRenderW, out.plannedRenderH, out.outputW,
+                      out.outputH, out.plannedDlss, out.runtimePresent);
+    if (g_gameBackbufferDescValid)
+    {
+        out.liveRenderW = g_gameBackbufferDesc.Width;
+        out.liveRenderH = g_gameBackbufferDesc.Height;
+    }
+    return out.outputW != 0 && out.outputH != 0;
 }
 
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
@@ -13725,6 +16169,13 @@ void VR_TraceEvent(const char* tag, int a, int b)
         g_rasterEye.load(), g_rasterRedirected[0] ? 1 : 0);
 }
 
+bool VR_IsEyeRasterActive(ID3D11DeviceContext* context) noexcept
+{
+    const int eye=g_rasterEye.load(std::memory_order_acquire);
+    return context && context==g_context && eye>=0 && eye<2 &&
+        g_rasterOwnerThread.load(std::memory_order_acquire)==GetCurrentThreadId();
+}
+
 void VR_BeginRasterEye(int eye)
 {
 #if HALOMCCVR_HALO2_STEREO6DOF
@@ -13733,15 +16184,28 @@ void VR_BeginRasterEye(int eye)
     // Revoke the prior scope before any resource precondition. Otherwise a
     // transient resize/no-device return can leave yesterday's redirect flag
     // looking like a capture from this prepared frame.
+    g_rasterOwnerThread.store(0, std::memory_order_release);
     g_rasterEye.store(-1, std::memory_order_release);
     if (eye >= 0 && eye < 2)
+    {
         g_rasterRedirected[eye] = false;
+        g_dlssKicked[eye].Reset();
+    }
     if (eye < 0 || eye > 1 || !g_gameSwapchain || !g_device)
         return;
     // Eye caches are created lazily when Halo binds its final scene-color RTV.
     // That RTV's typed view format (not the swapchain resource format) controls
     // the required sRGB conversion.
     g_rasterEye.store(eye, std::memory_order_release);
+    g_rasterOwnerThread.store(GetCurrentThreadId(), std::memory_order_release);
+    g_eyeGpuTiming.Begin(g_context, VR_DlssWantsEyeCamera(),
+        g_gameBackbufferDesc.Width, g_gameBackbufferDesc.Height);
+    DlssBeginEyeSamplerBias();
+    // DLSS: this eye's camera and depth must both arrive during THIS render.
+    g_dlssEye[eye].published = false;
+    g_dlssEye[eye].depthValid = false;
+    g_dlssEyeSceneDepthSeen = false;
+    g_dlssEyeLastFullRasterDsv = nullptr;
 #if HALOMCCVR_HALO2_STEREO6DOF
     if (TitleAdapter_GetActiveTitle() == GameTitle::Halo2)
     {
@@ -14298,6 +16762,16 @@ void VR_EndRasterEye()
     // them. A ping-pong pair only reveals its read side a frame after its
     // write side, so discovery stays open for a fixed window (~2 s of
     // stereo) instead of closing at the first find.
+    DlssEndEyeSamplerBias();
+    g_eyeGpuTiming.EndRaster(g_context);
+    DlssCaptureEyeDepth(completedEye);
+    DlssKickEyeAtEyeEnd(completedEye);
+    // A borrowed engine depth view expires when this eye returns. A failed
+    // kick must not retry at Present using the next eye's overwritten depth.
+    if (completedEye >= 0 && completedEye < 2 && g_dlssEye[completedEye].depthDirect)
+        g_dlssEye[completedEye].depthValid = false;
+    g_eyeGpuTiming.End(g_context);
+    g_rasterOwnerThread.store(0, std::memory_order_release);
     g_rasterEye = -1;
 }
 
@@ -14858,8 +17332,70 @@ bool VR_Halo4AuthoredReticleFeatureHealthy()
     return !g_reticleChainFailed.load(std::memory_order_acquire);
 }
 
+void VR_ObserveReachAlternateDepthBind(
+    ID3D11DeviceContext* context, UINT renderTargetCount,
+    ID3D11DepthStencilView* depth)
+{
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+    const int eye = g_dlssDepthWindowEye.load(std::memory_order_relaxed);
+    if (!depth || eye < 0 || eye > 1)
+        return;
+    const bool reachActive =
+        TitleAdapter_GetActiveTitle() == GameTitle::HaloReach;
+    if (!reachActive)
+        return;
+    const bool dlssDepthWanted = VR_DlssWantsEyeCamera();
+    const bool currentEyeCameraPublished = g_dlssEye[eye].published;
+    const bool exactContext = context && context == g_context;
+    const bool depthStateMutated =
+        renderTargetCount != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL;
+    DlssDepthViewEntry* knownEntry = nullptr;
+    for (int i = 0; i < g_dlssDepthViewCount && !knownEntry; ++i)
+        if (g_dlssDepthViews[i].view == depth)
+            knownEntry = &g_dlssDepthViews[i];
+    const bool knownView = knownEntry != nullptr;
+    const bool depthTrackingCapacity =
+        knownView || g_dlssDepthViewCount < kDlssDepthViewSlots;
+    bool exactDevice = knownEntry && knownEntry->device == g_device;
+    // Known views were device-checked before retention. A distinct DSV pays
+    // one GetDevice AddRef/Release here, then DlssNoteEyeDepth describes and
+    // pins it once; recurring binds stay pointer/atomic-only.
+    if (depth && reachActive && dlssDepthWanted &&
+        currentEyeCameraPublished && exactContext && depthStateMutated &&
+        depthTrackingCapacity && !exactDevice)
+    {
+        ID3D11Device* device = nullptr;
+        depth->GetDevice(&device);
+        exactDevice = device && device == g_device;
+        if (exactDevice && knownEntry)
+            knownEntry->device = g_device;
+        if (device)
+            device->Release();
+    }
+    const bool admitted = dlss::ReachAlternateDepthBindEligible(
+        reachActive, dlssDepthWanted, eye, currentEyeCameraPublished,
+        exactContext, exactDevice, depthStateMutated, true,
+        depthTrackingCapacity);
+    if (admitted)
+    {
+        DlssNoteEyeDepth(depth, false);
+        // The classifier retains a distinct view before returning. Record the
+        // already-proven device as borrowed metadata so recurring binds remain
+        // pointer-only while the retained DSV keeps that device alive.
+        for (int i = 0; i < g_dlssDepthViewCount; ++i)
+            if (g_dlssDepthViews[i].view == depth)
+                g_dlssDepthViews[i].device = g_device;
+    }
+#else
+    (void)context;
+    (void)renderTargetCount;
+    (void)depth;
+#endif
+}
+
 bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
                               ID3D11RenderTargetView* const* input,
+                              ID3D11DepthStencilView* depth,
                               ID3D11RenderTargetView** output)
 {
 #if HALOMCCVR_HALO2_STEREO6DOF
@@ -14888,6 +17424,21 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
             if (!known && halo2Scope.boundCount < kHalo2EyeBoundRtvSlots)
                 halo2Scope.bound[halo2Scope.boundCount++] = input[0];
         }
+        // DLSS depth for Halo 2: both renderers draw into the final target
+        // directly, so the depth view bound together with it is the scene
+        // depth; any other full-raster depth inside the eye is the fallback
+        // rule. Pointer compares only, inside a raster-eye scope only.
+        if (depth && VR_DlssWantsEyeCamera())
+        {
+            const int halo2Eye = g_rasterEye.load(std::memory_order_relaxed);
+            if (halo2Eye >= 0 && halo2Eye <= 1)
+            {
+                ID3D11RenderTargetView* const finalRtv =
+                    g_halo2SynchronousFinalRtv.load(std::memory_order_relaxed);
+                DlssNoteEyeDepth(depth, finalRtv && count && input &&
+                                            input[0] == finalRtv);
+            }
+        }
         return false;
     }
 #endif
@@ -14899,6 +17450,12 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
 #endif
     const int eye = g_rasterEye.load();
     const bool scope=g_rasterScope.load(std::memory_order_acquire);
+    // DLSS depth for a title that renders its eyes outside the raster-eye
+    // scope (Reach): inside its depth window every depth view bound is
+    // classified by the full-raster rule. Pointer compares only.
+    if (depth && eye < 0 && VR_DlssWantsEyeCamera() &&
+        g_dlssDepthWindowEye.load(std::memory_order_relaxed) >= 0)
+        DlssNoteEyeDepth(depth, false);
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
     const bool nativeHud = hudRoute.active && hudRoute.eye >= 0 &&
         hudRoute.eye <= 1;
@@ -15132,6 +17689,11 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
             }
         }
     }
+    // DLSS depth tracking: pointer compares only, and only inside a real eye
+    // render while the upscaler is selected.
+    if (depth && !scope && eye >= 0 && eye <= 1 &&
+        VR_DlssWantsEyeCamera())
+        DlssNoteEyeDepth(depth, sceneChanged);
     return changed;
 }
 
@@ -15166,6 +17728,11 @@ bool VR_GetHeadPose(float outQuat[4], float outPos[3])
     return ok;
 }
 
+const char* VR_ControllerProfileName(bool left)
+{
+    return vr_mapping::ProfileName(g_controllerProfiles[left?0:1].load(std::memory_order_acquire));
+}
+
 void VR_GetPadState(VrPadState& out)
 {
     if (!g_headCsInit)
@@ -15187,8 +17754,8 @@ void VR_GetPadState(VrPadState& out)
     const unsigned weaponOptions=(g_config.manual_reload?1u:0u)|(g_config.weapon_holsters?2u:0u)|(g_config.left_handed?4u:0u)|
         (!g_config.weapon_holster_slide?8u:0u)|(g_config.weapon_holster_click?16u:0u)|(g_config.weapon_needler_shake?32u:0u);
     if(out.weaponOptions!=weaponOptions||out.weaponSpace!=g_contactSpaceEpoch.load(std::memory_order_acquire)||
-        weaponIndex<0||out.weaponReloadBinding!=weapon_interaction::Button(g_config.weapon_reload_button[weaponIndex])||
-        out.weaponSwitchBinding!=weapon_interaction::Button(g_config.weapon_switch_button[weaponIndex])||
+        weaponIndex<0||out.weaponReloadBinding!=WeaponGestureBinding(weaponTitle,vr_mapping::Reload,now)||
+        out.weaponSwitchBinding!=WeaponGestureBinding(weaponTitle,vr_mapping::SwitchWeapon,now)||
         !weapon_interaction::Fresh(now,out.weaponSampleMs,weaponTitle,out.weaponTitle,
         TitleAdapter_GetGeneration(weaponTitle),out.weaponGeneration,
         (g_config.manual_reload||g_config.weapon_holsters)&&Game_IsHeadTracking()&&VR_IsStereoEnabled()&&
@@ -15225,6 +17792,16 @@ uint64_t VR_GetWeaponModelIdentity(GameTitle title,uint32_t generation,uint64_t 
 {
     if(title==GameTitle::HaloCE) return HaloCEFirstPerson_WeaponGraph(generation,space,now);
     return g_weaponModels.Read(title,generation,space,now);
+}
+
+void VR_PublishWeaponReticleRay(GameTitle title,uint8_t slot,const weapon_muzzle::Receipt& receipt,
+    const contact_melee::TrackingToWorld& transform) noexcept
+{
+    if(!dual_reticle::Supported(title)||slot>1) return;
+    dual_reticle::ProjectedRay projected{};
+    if(receipt.title==title&&receipt.slot==slot)
+        (void)dual_reticle::Project(receipt,transform,projected);
+    (void)g_weaponReticleRays[static_cast<unsigned>(title)][slot].Publish(projected);
 }
 
 void VR_PublishReloadTarget(GameTitle title,uint32_t generation,uint64_t identity,uint64_t serial,
@@ -15275,14 +17852,15 @@ void VR_ReportWeaponInteractions(uint64_t nowMs)
     static uint64_t lastReport=0;
     static GameTitle previousTitle=GameTitle::None;
     static unsigned previousOptions=0,previousGrabs=0,previousReloads=0,previousSwaps=0;
-    static uint32_t previousBindings=0;
+    static uint64_t previousBindings=0;
     static bool previousReady=false;
     const GameTitle title=TitleAdapter_GetActiveTitle();
     const int index=weapon_interaction::TitleIndex(title);
     const unsigned options=(g_config.manual_reload?1u:0u)|(g_config.weapon_holsters?2u:0u)|(g_config.left_handed?4u:0u)|
         (!g_config.weapon_holster_slide?8u:0u)|(g_config.weapon_holster_click?16u:0u)|(g_config.weapon_needler_shake?32u:0u);
-    const uint32_t bindings=index>=0?static_cast<uint32_t>(
-        (g_config.weapon_reload_button[index]&0xFF)|((g_config.weapon_switch_button[index]&0xFF)<<8)):0;
+    const uint32_t reloadBinding=WeaponGestureBinding(title,vr_mapping::Reload,nowMs);
+    const uint32_t switchBinding=WeaponGestureBinding(title,vr_mapping::SwitchWeapon,nowMs);
+    const uint64_t bindings=uint64_t(reloadBinding)|(uint64_t(switchBinding)<<32);
     const bool changed=options!=previousOptions||title!=previousTitle||bindings!=previousBindings;
     if(!changed&&nowMs>=lastReport&&nowMs-lastReport<5000) return;
     const uint64_t readyAt=g_weaponGestureReadyMs.load(std::memory_order_acquire);
@@ -15318,8 +17896,7 @@ void VR_ReportWeaponInteractions(uint64_t nowMs)
             "(requests only; native ammo/inventory determine outcome)",
             index>=0?weapon_interaction::kTitleNames[index]:"none",options&1,(options>>1)&1,(options>>2)&1,
             ready?"ready":"stock input; waiting for focused tracked on-foot single-weapon play",
-            index>=0?weapon_interaction::Button(g_config.weapon_reload_button[index]):0,
-            index>=0?weapon_interaction::Button(g_config.weapon_switch_button[index]):0,grabs,reloads,swaps,
+            reloadBinding,switchBinding,grabs,reloads,swaps,
             g_config.weapon_holster_slide?1u:0u,g_config.weapon_holster_click?1u:0u,
             g_config.weapon_body_zone_radius_m,g_config.weapon_insert_radius_m,
             g_config.weapon_holster_radius_m,g_config.weapon_holster_draw_m,g_config.weapon_needler_shake?1u:0u);
@@ -15984,10 +18561,14 @@ bool VR_GetAimPose(float outQuat[4], float outPos[3])
     const XrPosef right = g_rightAimPose;
     const bool okL = g_leftAimPoseValid;
     const XrPosef left = g_leftAimPose;
+    const XrPosef head = g_headPose;
+    const bool stockHeadValid = g_headPoseValid && g_stockHeadPoseTime != 0 &&
+        g_stockHeadPoseTime == g_stockControllerPoseTime;
     LeaveCriticalSection(&g_headCs);
 
     const AimPoseResult aim = ComputeAimPose(
-        CurrentAimPoseInputs(okR, right, okL, left));
+        CurrentStockAimPoseInputs(okR, right, okL, left, stockHeadValid,
+            head.position, head.orientation));
     if (!aim.updateTwoHandActivity)
         return false;
 
@@ -16120,3 +18701,10 @@ bool VR_RoomscaleTrackingFresh() noexcept
     return at && now>=at && now-at<=100 &&
         g_sessionStateShared.load(std::memory_order_acquire)==XR_SESSION_STATE_FOCUSED;
 }
+uint64_t VR_PhysicalCrouchEpoch() noexcept
+{
+    return (uint64_t(g_crouchCalibrationEpoch.load(std::memory_order_acquire))<<32)|
+        uint32_t(g_contactSpaceEpoch.load(std::memory_order_acquire));
+}
+void VR_RecalibratePhysicalCrouch() noexcept
+{g_crouchCalibrationEpoch.fetch_add(1,std::memory_order_acq_rel);}
