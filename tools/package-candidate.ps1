@@ -51,6 +51,16 @@ if (-not $candidateRoot.StartsWith(
 
 Push-Location $repoRoot
 try {
+    # Production code extracted into included fragments is still part of the
+    # translation unit. Keep historical behavioral gates after these extractions.
+    function Read-SourceWithFragments([string]$path) {
+        $text = [IO.File]::ReadAllText($path)
+        foreach ($include in [regex]::Matches($text, '(?m)^\s*#include\s+"([^"\r\n]+\.inl)"')) {
+            $fragment = Join-Path (Split-Path $path) $include.Groups[1].Value
+            $text += "`n" + (Read-SourceWithFragments $fragment)
+        }
+        return $text
+    }
     $status = @(& git -C $repoRoot status --porcelain=v1 --untracked-files=normal)
     if ($LASTEXITCODE -ne 0) {
         throw 'Could not inspect Git worktree state.'
@@ -77,7 +87,7 @@ try {
     # C-H2-55 observer identity is explicitly non-owning. Do not apply that
     # rule globally: accepted ODST/Reach cores deliberately own loader pins,
     # and Halo 2 stereo owns a short cleanup pin while its hooks drain.
-    $halo2ObserverSource = [IO.File]::ReadAllText(
+    $halo2ObserverSource = Read-SourceWithFragments (
         (Join-Path $repoRoot 'src\dll\halo2_observer_6dof.cpp'))
     if ($halo2ObserverSource -match '(?m)^\s*FreeLibrary\s*\(') {
         throw 'C-H2-55 gate failed: the Halo 2 observer released a non-owning module identity.'
@@ -93,7 +103,7 @@ try {
             throw 'C-H2-55 gate failed: a Halo 2 observer FROM_ADDRESS lookup increments the loader refcount.'
         }
     }
-    $gameSource = [IO.File]::ReadAllText(
+    $gameSource = Read-SourceWithFragments (
         (Join-Path $repoRoot 'src\dll\game.cpp'))
     $inputSource = [IO.File]::ReadAllText(
         (Join-Path $repoRoot 'src\dll\input.cpp'))
