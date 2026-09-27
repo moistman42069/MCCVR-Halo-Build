@@ -4,6 +4,8 @@ An independently maintained continuation of [Halo-MCC-VR by pancreations](https:
 
 ## Latest release: Alpha 0.6.0 — Major QoL Experimental Prerelease
 
+**https://steamcommunity.com/sharedfiles/filedetails/?id=3567825314 CAN HELP WITH THE CORTANA HALO 3 MISSION**
+
 This cumulative test release adds a new stylized installer and updater, reorganized VR settings, optional physical crouch, simulated gunstock, subtitle controls in five titles, bloom controls in three titles, DLSS integration across all six games, and vehicle, weapon and rendering refinements. It supports Steam and Microsoft Store / Xbox app editions.
 
 > **Experimental prerelease.** Offline builds and tests do not establish headset acceptance. Some changes need in-game testing, and several co-op, title-specific rendering and input issues remain open. Review the [complete release notes](https://github.com/moistman42069/MCCVR-Halo-Build/releases/tag/MCC_VR_ALPHA_0.6.0) and the included implementation status before updating. Keep your previous build available for rollback.
