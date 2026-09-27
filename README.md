@@ -1,6 +1,6 @@
 # Halo MCC VR
 
-An independently maintained continuation of [Halo-MCC-VR by pancreations](https://github.com/pancreations/Halo-MCC-VR), maintained here by **moistman42069**. Original contributor credit, project history and the MIT license are preserved.
+An independently maintained continuation of [Halo-MCC-VR by pancreations](https://github.com/pancreations/Halo-MCC-VR), maintained here by **moistman42069**. Original contributor credit, project history and the MIT license are preserved. **(JOIN FLAT2VR DISCORD FOR COMMUNICATION AND OTHER GREAT VR MODS/DETAILS. https://discord.gg/flat2vr)**
 
 ## Latest release: Alpha 0.6.0 — Major QoL Experimental Prerelease
 
