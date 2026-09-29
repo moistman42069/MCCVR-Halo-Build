@@ -1,5 +1,8 @@
 // H4EK E977E0 / retail 6176B8: four-argument void firing scope.
 // H4EK E66CD0 / retail 5F3510: nine arguments, including native output velocity.
+// The T-2 shot event uses the recorder's fixed payload/kind declarations only
+// (the gate and the shared publisher are wired in game.cpp).
+#include "telemetry_recorder.h"
 using Halo4MuzzleFireFn=void(__fastcall*)(uint32_t,int16_t,void*,uint8_t);
 using Halo4MuzzleQueryFn=void(__fastcall*)(int32_t,uint8_t,float*,int16_t,float*,void*);
 using Halo4MuzzleViewFn=void(__fastcall*)(uint32_t,uint8_t,uintptr_t,float*,float*,float*);
@@ -20,7 +23,10 @@ struct Halo4MuzzleQueryContext
 {uint32_t unit=UINT32_MAX,generation=0;int32_t inputUser=-1;uint8_t flags=0;int16_t zoom=-1;uint64_t sampleMs=0;};
 struct Halo4MuzzleQueryCapture {bool active=false;uint32_t unit=UINT32_MAX,count=0;};
 struct Halo4MuzzleShotScope
-{bool active=false,query=false,viewApplied=false;uint32_t unit=UINT32_MAX;float position[3]{},direction[3]{};};
+{bool active=false,query=false,viewApplied=false;uint32_t unit=UINT32_MAX;float position[3]{},direction[3]{};
+ // Weapon slot the committed muzzle receipt resolved for this shot (0/1), or
+ // kTelemetryShotIndexUnknown when no receipt owned it. T-2 evidence only.
+ uint8_t slot=kTelemetryShotIndexUnknown;};
 struct Halo4MuzzleRequest
 {uint32_t weapon=UINT32_MAX;int16_t barrel=-1;uint8_t simulation=0;NativeShotTargetLease<0x28>* lease=nullptr;};
 thread_local Halo4MuzzleQueryContext g_halo4BarrelQueryContext;
@@ -88,6 +94,7 @@ bool AcquireHalo4MuzzleTarget(const weapon_muzzle::Receipt& muzzle,NativeShotTar
     void* storage=Halo4MuzzleTargetStorage(context.unit);
     if(!storage||!feature.queryOriginal)return false;
     auto& shot=g_halo4BarrelShot;shot={};shot.active=true;shot.query=true;shot.unit=context.unit;
+    shot.slot=muzzle.slot;
     std::memcpy(shot.position,muzzle.ray.position,12);std::memcpy(shot.direction,muzzle.ray.direction,12);
     alignas(8) unsigned char targeting[0x28]{};float control[3]{};
     const bool previous=g_halo4MuzzleOwnedQuery;g_halo4MuzzleOwnedQuery=true;
@@ -156,6 +163,28 @@ __declspec(noinline) int16_t __fastcall Halo4MuzzleMarkersDetour(uint32_t object
     __finally {feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);}
     return result;
 }
+// T-2 shot event for Halo 4. The disabled gate is passed FIRST: with recording
+// off this returns on a single atomic load, before any TLS/context read. The
+// hooks exist regardless of `gun_barrel_aim`, so this fires on real shots with
+// or without substitution; `substituted` says whether the committed muzzle
+// barrel produced the final ray.
+void PublishHalo4ShotDiagnostic(uint32_t unit,const float origin[3],
+    const float direction[3],bool substituted,bool firesFromCamera,bool unitAim)
+{
+    if(!Telemetry_WeaponEventsAccepting())return;
+    const auto request=g_halo4BarrelRequest;
+    const auto& shot=g_halo4BarrelShot;
+    const uint8_t slot=(shot.active && shot.unit==unit && shot.slot<=1)?
+        uint8_t(shot.slot):kTelemetryShotIndexUnknown;
+    const uint8_t barrel=(request.barrel>=0 && request.barrel<2)?
+        uint8_t(request.barrel):kTelemetryShotIndexUnknown;
+    // The four-argument Halo 4 fire scope carries no prediction flag, so bit0
+    // stays "unknown" (0) rather than inventing one from the simulation byte.
+    PublishShotDiagnostic(GameTitle::Halo4,
+        g_halo4Camera.generation.load(std::memory_order_acquire),unit,
+        request.weapon,slot,barrel,false,substituted,firesFromCamera,unitAim,
+        origin,direction);
+}
 // Exact outer-fire call only. Native velocity, collision and simulation remain
 // native; no replay when the native callback raises an exception.
 __declspec(noinline) void __fastcall Halo4MuzzleAimDetour(uint32_t unit,float* origin,float* direction,float* velocity,
@@ -166,7 +195,9 @@ __declspec(noinline) void __fastcall Halo4MuzzleAimDetour(uint32_t unit,float* o
     {
         if(!feature.aimOriginal)__leave;
         auto& shot=g_halo4BarrelShot;
-        const bool owned=reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x617E95&&
+        const bool firingCall=
+            reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x617E95;
+        const bool owned=firingCall&&
             shot.active&&!shot.query&&shot.unit==unit&&origin&&direction;
         if(owned)
         {
@@ -176,6 +207,11 @@ __declspec(noinline) void __fastcall Halo4MuzzleAimDetour(uint32_t unit,float* o
         feature.aimOriginal(unit,origin,direction,velocity,offset,camera,project,unitAim,simulation);
         if(owned&&std::isfinite(origin[0])&&std::isfinite(origin[1])&&std::isfinite(origin[2]))
             std::memcpy(shot.position,origin,12);
+        // Publish once per actual shot invocation, after the final ray is
+        // decided, whether or not the mod substituted it.
+        if(firingCall&&origin&&direction)
+            PublishHalo4ShotDiagnostic(unit,origin,direction,owned,
+                project!=0,unitAim!=0);
     }
     __finally {feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);}
 }

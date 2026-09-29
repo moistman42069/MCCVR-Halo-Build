@@ -25,6 +25,11 @@ $ErrorActionPreference = 'Stop'
 
 $steamExeName = 'MCC-Win64-Shipping.exe'
 $storeExeName = 'MCCWinStore-Win64-Shipping.exe'
+$analyserManifestPath = 'TelemetryAnalyser/analyse_mccvr_telemetry.py'
+$analyserRelativePath = 'TelemetryAnalyser\analyse_mccvr_telemetry.py'
+$expectedAnalyserBytes = 395283
+$expectedAnalyserHash =
+    '053CF61671BE281551B89A459E0611490F29D0FFD00387B43668043793BAE5B4'
 
 function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
@@ -80,6 +85,9 @@ function Assert-FileIdentity(
     [string]$Path,
     [object]$Evidence,
     [string]$Label) {
+    if ($null -eq $Evidence) {
+        throw "$Label manifest evidence is missing."
+    }
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "$Label is missing: $Path"
     }
@@ -153,7 +161,7 @@ $repoStatus = @(& git -C $repoRoot status --porcelain=v1 --untracked-files=norma
 if ($LASTEXITCODE -ne 0 -or $repoStatus.Count -ne 0) {
     throw 'Repository is dirty; refusing automatic deployment.'
 }
-if (-not (Test-ExactInt32 $manifest.schema_version 42) -or
+if (-not (Test-ExactInt32 $manifest.schema_version 55) -or
         [string]$manifest.status -cne 'UNTESTED_LOCAL_CANDIDATE' -or
         $manifest.accepted -ne $false -or
         [string]$manifest.base_release -cne 'MCC_VR_ALPHA_0.3.3' -or
@@ -164,15 +172,17 @@ if (-not (Test-ExactInt32 $manifest.schema_version 42) -or
         [string]$manifest.source_commit -notmatch '^[0-9a-f]{40}$' -or
         [string]$manifest.source_commit -cne $head -or
         -not $packageId.StartsWith(
-            $head.Substring(0, 7) + '-h2-bounds-reach-contact-and-hand-aim-test-',
+            $head.Substring(0, 7) + '-refinement-audit-',
             [StringComparison]::Ordinal) -or
-        @($manifest.titles).Count -ne 6 -or
+        @($manifest.titles).Count -ne 8 -or
         [string]$manifest.titles[0] -cne 'Halo 3' -or
         [string]$manifest.titles[1] -cne 'Halo 3: ODST' -or
         [string]$manifest.titles[2] -cne 'Halo: Reach' -or
         [string]$manifest.titles[3] -cne 'Halo 4' -or
         [string]$manifest.titles[4] -cne 'Halo 2 Anniversary' -or
         [string]$manifest.titles[5] -cne 'Halo 2 Classic' -or
+        [string]$manifest.titles[6] -cne 'Halo CE Anniversary' -or
+        [string]$manifest.titles[7] -cne 'Halo CE Classic' -or
         $manifest.embedded_build_identity.source_commit -cne
             $manifest.source_commit -or
         $manifest.embedded_build_identity.odst -ne $true -or
@@ -189,7 +199,7 @@ if (-not (Test-ExactInt32 $manifest.schema_version 42) -or
         # behavior block, which happened repeatedly during bring-up.
         [string]$manifest.halo4_candidate.id -cne 'H4-WORLD-CONTACT-STAGE9-RIGHT-GRIP-MELEE' -or
         [string]$manifest.halo4_candidate.status -cne
-            'READY_FOR_HEADSET_TEST_UNACCEPTED' -or
+            'USER_REQUESTED_WIP_CHECKPOINT_UNACCEPTED' -or
         [string]$manifest.halo4_candidate.behavior -notmatch '\S' -or
         $manifest.halo4_candidate.parity_diagnostic.player_visible_behavior_changed -ne
             $true -or
@@ -738,7 +748,8 @@ if (-not (Test-ExactInt32 $manifest.schema_version 42) -or
         [string]$manifest.gen3_world_contact_candidate.halo2_compression_count_offset -cne '0x14' -or
         [string]$manifest.gen3_world_contact_candidate.halo2_compression_address_offset -cne '0x18' -or
         -not (Test-ExactBoolean $manifest.gen3_world_contact_candidate.shared_melee_telemetry $true) -or
-        -not (Test-ExactBoolean $manifest.gen3_world_contact_candidate.direct_hand_npc_damage $false) -or
+        [string]$manifest.gen3_world_contact_candidate.direct_hand_npc_damage -cne
+            'experimental-incomplete-unarmed-and-secondary-response-selection' -or
         [string]$manifest.reach_projectile_alignment_scope -cne
             'exact-local-reach-vehicle-central-line-plus-clipped-on-foot-controller-ray' -or
         $manifest.reach_vehicle_body_hide_interval_lease_enabled -ne $false -or
@@ -767,15 +778,37 @@ if (-not (Test-ExactInt32 $manifest.schema_version 42) -or
     throw 'Candidate manifest identity or cumulative-title contract is invalid.'
 }
 
+$analyserProperties = @($manifest.files.PSObject.Properties | Where-Object {
+    $_.Name -ceq $analyserManifestPath
+})
+if ($analyserProperties.Count -ne 1) {
+    throw "Candidate manifest must contain exactly one $analyserManifestPath entry."
+}
+$analyserEvidence = $analyserProperties[0].Value
+if (-not (Test-ExactInt32 $analyserEvidence.bytes $expectedAnalyserBytes) -or
+        [string]$analyserEvidence.sha256 -cne $expectedAnalyserHash) {
+    throw 'Candidate manifest does not identify the approved telemetry analyser.'
+}
+
 $candidateDll = Join-Path $candidatePath 'HaloMCCVR.dll'
 $candidateLauncher = Join-Path $candidatePath 'HaloMCCVRLauncher.exe'
 $candidateConfig = Join-Path $candidatePath 'halomccvr.cfg'
+$candidateAnalyser = [IO.Path]::GetFullPath(
+    (Join-Path $candidatePath $analyserRelativePath))
+$candidateContentPrefix = $candidatePath.TrimEnd(
+    [IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+if (-not $candidateAnalyser.StartsWith(
+        $candidateContentPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Candidate telemetry analyser path escaped the package: $candidateAnalyser"
+}
 $dllHash = Assert-FileIdentity `
     $candidateDll $manifest.files.'HaloMCCVR.dll' 'Candidate DLL'
 $launcherHash = Assert-FileIdentity `
     $candidateLauncher $manifest.files.'HaloMCCVRLauncher.exe' 'Candidate launcher'
 $configHash = Assert-FileIdentity `
     $candidateConfig $manifest.files.'halomccvr.cfg' 'Candidate seed config'
+$analyserHash = Assert-FileIdentity `
+    $candidateAnalyser $analyserEvidence 'Candidate telemetry analyser'
 
 $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
     $_.ProcessName -in @(
@@ -849,6 +882,15 @@ foreach ($target in $targets) {
 
     $installedDll = Join-Path $gamePath 'HaloMCCVR.dll'
     $installedLauncher = Join-Path $gamePath 'HaloMCCVRLauncher.exe'
+    $installedAnalyserDir = Join-Path $gamePath 'TelemetryAnalyser'
+    $installedAnalyser = [IO.Path]::GetFullPath(
+        (Join-Path $gamePath $analyserRelativePath))
+    $gameContentPrefix = $gamePath.TrimEnd(
+        [IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    if (-not $installedAnalyser.StartsWith(
+            $gameContentPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Installed telemetry analyser path escaped the mod folder: $installedAnalyser"
+    }
     $configPath = Join-Path $gamePath 'halomccvr.cfg'
     $logPath = Join-Path $gamePath 'HaloMCCVR.log'
     $hasExistingPair =
@@ -875,16 +917,26 @@ foreach ($target in $targets) {
             Copy-Item -LiteralPath $seedConfig -Destination $configPath
             Write-Host "  seeded halomccvr.cfg from $seedConfig"
         }
+        if (-not (Test-Path -LiteralPath $installedAnalyserDir -PathType Container)) {
+            New-Item -ItemType Directory -Path $installedAnalyserDir | Out-Null
+        }
         Copy-Item -LiteralPath $candidateDll -Destination $installedDll -Force
         Copy-Item -LiteralPath $candidateLauncher -Destination $installedLauncher -Force
+        Copy-Item -LiteralPath $candidateAnalyser `
+            -Destination $installedAnalyser -Force
         $newDllHash = Get-Sha256 $installedDll
         $newLauncherHash = Get-Sha256 $installedLauncher
-        if ($newDllHash -cne $dllHash -or $newLauncherHash -cne $launcherHash) {
-            throw ("First-install hash mismatch at {0}: DLL={1} launcher={2}" -f `
-                $gamePath, $newDllHash, $newLauncherHash)
+        $newAnalyserHash = Assert-FileIdentity `
+            $installedAnalyser $analyserEvidence 'Installed telemetry analyser'
+        if ($newDllHash -cne $dllHash -or
+                $newLauncherHash -cne $launcherHash -or
+                $newAnalyserHash -cne $analyserHash) {
+            throw ("First-install hash mismatch at {0}: DLL={1} launcher={2} analyser={3}" -f `
+                $gamePath, $newDllHash, $newLauncherHash, $newAnalyserHash)
         }
         Write-Host "  installed DLL:      $newDllHash"
         Write-Host "  installed launcher: $newLauncherHash"
+        Write-Host "  installed analyser: $newAnalyserHash"
         Move-LegacyModFiles $gamePath (Join-Path $backupRoot `
             ('legacy-{0}-{1}' -f $target.Edition,
                 $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")))
@@ -897,9 +949,18 @@ foreach ($target in $targets) {
 
     $priorDllHash = Get-Sha256 $installedDll
     $priorLauncherHash = Get-Sha256 $installedLauncher
+    $installedAnalyserMatches =
+        (Test-Path -LiteralPath $installedAnalyser -PathType Leaf) -and
+        ((Get-Item -LiteralPath $installedAnalyser).Length -eq
+            [int64]$analyserEvidence.bytes) -and
+        ((Get-Sha256 $installedAnalyser) -ceq $analyserHash)
     if ($priorDllHash -ceq $dllHash -and
-            $priorLauncherHash -ceq $launcherHash) {
+            $priorLauncherHash -ceq $launcherHash -and
+            $installedAnalyserMatches) {
+        $verifiedInstalledAnalyserHash = Assert-FileIdentity `
+            $installedAnalyser $analyserEvidence 'Installed telemetry analyser'
         Write-Host ("Already installed for the {0} edition: {1}" -f $target.Edition, $gamePath)
+        Write-Host "  installed analyser: $verifiedInstalledAnalyserHash"
         Move-LegacyModFiles $gamePath (Join-Path $backupRoot `
             ('legacy-{0}-{1}' -f $target.Edition,
                 $createdUtc.ToString("yyyyMMdd-HHmmssfff'Z'")))
@@ -922,6 +983,7 @@ foreach ($target in $targets) {
     New-Item -ItemType Directory -Path $backupDir | Out-Null
 
     $configHashBefore = $null
+    $priorAnalyserHash = $null
     Copy-Item -LiteralPath $installedDll -Destination `
         (Join-Path $backupDir 'HaloMCCVR.dll')
     Copy-Item -LiteralPath $installedLauncher -Destination `
@@ -935,6 +997,17 @@ foreach ($target in $targets) {
         Copy-Item -LiteralPath $logPath -Destination `
             (Join-Path $backupDir 'HaloMCCVR.log')
     }
+    if (Test-Path -LiteralPath $installedAnalyser -PathType Leaf) {
+        $priorAnalyserHash = Get-Sha256 $installedAnalyser
+        $backupAnalyserDir = Join-Path $backupDir 'TelemetryAnalyser'
+        New-Item -ItemType Directory -Path $backupAnalyserDir | Out-Null
+        Copy-Item -LiteralPath $installedAnalyser -Destination `
+            (Join-Path $backupAnalyserDir 'analyse_mccvr_telemetry.py')
+        if ((Get-Sha256 (Join-Path $backupAnalyserDir `
+                    'analyse_mccvr_telemetry.py')) -cne $priorAnalyserHash) {
+            throw 'Telemetry analyser backup verification failed; automatic install made no changes.'
+        }
+    }
 
     if ((Get-Sha256 (Join-Path $backupDir 'HaloMCCVR.dll')) -cne $priorDllHash -or
             (Get-Sha256 (Join-Path $backupDir 'HaloMCCVRLauncher.exe')) -cne
@@ -945,21 +1018,32 @@ foreach ($target in $targets) {
     $stagedDll = Join-Path $gamePath ("HaloMCCVR.dll.$packageId.pending")
     $stagedLauncher = Join-Path $gamePath `
         ("HaloMCCVRLauncher.exe.$packageId.pending")
+    if (-not (Test-Path -LiteralPath $installedAnalyserDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $installedAnalyserDir | Out-Null
+    }
+    $stagedAnalyser = Join-Path $installedAnalyserDir `
+        ("analyse_mccvr_telemetry.py.$packageId.pending")
     if ((Test-Path -LiteralPath $stagedDll) -or
-            (Test-Path -LiteralPath $stagedLauncher)) {
+            (Test-Path -LiteralPath $stagedLauncher) -or
+            (Test-Path -LiteralPath $stagedAnalyser)) {
         throw 'A candidate staging file already exists; refusing to overwrite it.'
     }
 
     try {
         Copy-Item -LiteralPath $candidateDll -Destination $stagedDll
         Copy-Item -LiteralPath $candidateLauncher -Destination $stagedLauncher
+        Copy-Item -LiteralPath $candidateAnalyser -Destination $stagedAnalyser
         if ((Get-Sha256 $stagedDll) -cne $dllHash -or
-                (Get-Sha256 $stagedLauncher) -cne $launcherHash) {
+                (Get-Sha256 $stagedLauncher) -cne $launcherHash -or
+                (Assert-FileIdentity $stagedAnalyser $analyserEvidence `
+                    'Staged telemetry analyser') -cne $analyserHash) {
             throw 'Staged candidate hash verification failed; installed files remain unchanged.'
         }
 
         Copy-Item -LiteralPath $stagedDll -Destination $installedDll -Force
         Copy-Item -LiteralPath $stagedLauncher -Destination $installedLauncher -Force
+        Copy-Item -LiteralPath $stagedAnalyser `
+            -Destination $installedAnalyser -Force
     }
     finally {
         if (Test-Path -LiteralPath $stagedDll -PathType Leaf) {
@@ -968,14 +1052,21 @@ foreach ($target in $targets) {
         if (Test-Path -LiteralPath $stagedLauncher -PathType Leaf) {
             Remove-Item -LiteralPath $stagedLauncher -Force
         }
+        if (Test-Path -LiteralPath $stagedAnalyser -PathType Leaf) {
+            Remove-Item -LiteralPath $stagedAnalyser -Force
+        }
     }
 
     $installedDllHash = Get-Sha256 $installedDll
     $installedLauncherHash = Get-Sha256 $installedLauncher
+    $installedAnalyserHash = Assert-FileIdentity `
+        $installedAnalyser $analyserEvidence 'Installed telemetry analyser'
     if ($installedDllHash -cne $dllHash -or
-            $installedLauncherHash -cne $launcherHash) {
-        throw ("Post-install hash mismatch at {0}: DLL={1} launcher={2}" -f `
-            $gamePath, $installedDllHash, $installedLauncherHash)
+            $installedLauncherHash -cne $launcherHash -or
+            $installedAnalyserHash -cne $analyserHash) {
+        throw ("Post-install hash mismatch at {0}: DLL={1} launcher={2} analyser={3}" -f `
+            $gamePath, $installedDllHash, $installedLauncherHash,
+            $installedAnalyserHash)
     }
     if ($null -ne $configHashBefore -and
             (Get-Sha256 $configPath) -cne $configHashBefore) {
@@ -993,10 +1084,12 @@ foreach ($target in $targets) {
         previous = [ordered]@{
             halo3xr_dll_sha256 = $priorDllHash
             halo3xr_launcher_sha256 = $priorLauncherHash
+            telemetry_analyser_sha256 = $priorAnalyserHash
         }
         installed = [ordered]@{
             halo3xr_dll_sha256 = $installedDllHash
             halo3xr_launcher_sha256 = $installedLauncherHash
+            telemetry_analyser_sha256 = $installedAnalyserHash
             config_sha256 = $configHashBefore
         }
         launched = $false
@@ -1010,6 +1103,7 @@ foreach ($target in $targets) {
     Write-Host ("Installed for the {0} edition: {1}" -f $target.Edition, $gamePath)
     Write-Host "  installed DLL:      $installedDllHash"
     Write-Host "  installed launcher: $installedLauncherHash"
+    Write-Host "  installed analyser: $installedAnalyserHash"
     Write-Host "  preserved previous: $backupDir"
     $results += [pscustomobject]@{
         GameDir = $gamePath; Edition = $target.Edition
@@ -1022,6 +1116,7 @@ Write-Host "Automatically installed candidate: $packageId"
 Write-Host "Installed source:   $($manifest.source_commit)"
 Write-Host "Candidate DLL:      $dllHash"
 Write-Host "Candidate launcher: $launcherHash"
+Write-Host "Candidate analyser: $analyserHash"
 foreach ($result in $results) {
     Write-Host ("  [{0,-6}] {1,-22} {2}" -f $result.Edition, $result.Action, $result.GameDir)
 }

@@ -12,6 +12,10 @@ struct Halo3MuzzleRuntime
 struct Halo3MuzzleRequest
 {
     uint32_t weapon=UINT32_MAX;int16_t barrel=-1;
+    // The fire call's own prediction flag (T-2 shot evidence). The muzzle
+    // substitution path ignores it; it travels with the per-shot request so
+    // the firing-path shot event reports what the native call carried.
+    uint8_t predicted=0;
     NativeShotTargetLease<0x24>* lease=nullptr;
 };
 thread_local Halo3MuzzleRequest g_halo3MuzzleRequest;

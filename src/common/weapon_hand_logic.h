@@ -27,6 +27,14 @@ private:
 
 // After dual wield or a role change, consuming a held grip must not silently
 // turn it into a new support grab. Both hold and toggle modes require release.
+//
+// The durable persistent-support-grip writer shares this one state instead of
+// keeping a second copy: it arms on a proven weapon absence, a generation
+// replacement or an interaction teardown (all of which must survive the Grip
+// still being held) and mirrors the result back, while the physical release
+// edge above remains the only thing that clears it. A proven owner REPLACEMENT
+// deliberately does not arm: the switched weapon is re-acquirable while the
+// Grip stays held.
 struct SupportGripAdmission
 {
     bool requiresRelease = false;
@@ -36,6 +44,9 @@ struct SupportGripAdmission
         if (!gripHeld) requiresRelease = false;
         return !independentWeapons && !rolesChanged && !requiresRelease;
     }
+    // The durable writer's arming edge. Never clears: only Observe does, on a
+    // physical Grip release.
+    void Arm() noexcept { requiresRelease = true; }
 };
 
 // Full engine handles only. Inventory slots are engine roles: primary=0,

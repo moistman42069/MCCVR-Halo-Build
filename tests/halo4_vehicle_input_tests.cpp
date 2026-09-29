@@ -65,6 +65,27 @@ int main()
     Check(Halo4ReadVehicleInput(state)&&state.unit==unit&&!state.seated,"own on-foot unit admitted across input/output mapping");
     Put(biped.data(),0x24,parent);Put(biped.data(),0x2c,int16_t(2));
     Check(Halo4ReadVehicleInput(state)&&state.seated&&state.parent==parent&&state.seat==2,"own native parent and seat admitted");
+    // T6c: the diagnostics-only variant performs the identical reads and
+    // guards but names the exact rejection exit; the shipping wrapper above
+    // passes nullptr and is otherwise unchanged.
+    {
+        const char* reason=nullptr;
+        Halo4VehicleInputState ex{};
+        Check(Halo4ReadVehicleInputEx(ex,&reason)&&!reason,
+            "the diagnostics reader admits the same owned state with no reason");
+        g_halo4Camera.armed=false;
+        reason=nullptr;
+        Check(!Halo4ReadVehicleInputEx(ex,&reason)&&reason&&
+              std::strcmp(reason,"camera")==0,
+            "a disabled camera core names itself as the rejection");
+        g_halo4Camera.armed=true;
+        title=GameTitle::Halo3;
+        reason=nullptr;
+        Check(!Halo4ReadVehicleInputEx(ex,&reason)&&reason&&
+              std::strcmp(reason,"title")==0,
+            "a foreign active title names itself as the rejection");
+        title=GameTitle::Halo4;
+    }
     const auto tlsSaved=tls,mappingSaved=mapping,bipedSaved=biped;
     const auto tableSaved=table,entriesSaved=entries;
     for (int reject=0;reject<22;++reject)

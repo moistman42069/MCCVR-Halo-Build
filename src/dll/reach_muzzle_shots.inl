@@ -1,5 +1,8 @@
 // HREK DE4290 / retail 4C2710: four-argument void outer firing scope.
 // Reach shares its already-installed ten-argument core unit-adjust hook.
+// The T-2 shot evidence uses the recorder's fixed index sentinel only (the
+// gate and the shared publisher are wired in game.cpp).
+#include "telemetry_recorder.h"
 using ReachMuzzleFireFn=void(__fastcall*)(uint32_t,int16_t,void*,uint8_t);
 using ReachMuzzleQueryFn=void(__fastcall*)(int32_t,uint8_t,float*,int16_t,float*,void*);
 using ReachMuzzleViewFn=void(__fastcall*)(uint32_t,uint8_t,float*,float*,float*,float*);
@@ -27,6 +30,18 @@ thread_local ReachMuzzleQueryCapture g_reachBarrelCapture;
 thread_local ReachMuzzleShotScope g_reachBarrelShot;
 thread_local ReachMuzzleRequest g_reachBarrelRequest;
 __declspec(noinline) void MarkReachMuzzleFault(){g_reachBarrel.faulted.store(true,std::memory_order_release);}
+
+// T-2 shot evidence (declared in game.cpp): the firing context of the
+// projectile transaction on this thread. Both values are the engine's own
+// arguments to the four-argument outer firing scope; a missing optional
+// muzzle transaction leaves the sentinels, never a fabricated identity.
+void ReachReadFiringContextForTelemetry(uint32_t& weapon,uint8_t& barrel)
+{
+    const auto request=g_reachBarrelRequest;
+    weapon=request.weapon;
+    barrel=(request.barrel>=0&&request.barrel<2)?
+        uint8_t(request.barrel):kTelemetryShotIndexUnknown;
+}
 
 __declspec(noinline) void __fastcall ReachMuzzleViewDetour(uint32_t unit,uint8_t flags,
     float* direction,float* origin,float* cameraDirection,float* camera)

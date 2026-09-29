@@ -8,6 +8,7 @@
 #include "vr.h"
 #include "game.h"
 #include "native_fault_probe.h"
+#include "telemetry_recorder.h"
 
 #ifndef HALOMCCVR_BUILD_COMMIT
 #define HALOMCCVR_BUILD_COMMIT "unknown"
@@ -86,6 +87,8 @@ static DWORD WINAPI InitThread(LPVOID)
     const std::wstring primaryConfig = dir + L"halomccvr.cfg";
     const std::wstring legacyConfig = dir + L"halo3xr.cfg";
     ConfigLoadMigrating(primaryConfig.c_str(), legacyConfig.c_str());
+    if (!Telemetry_Init())
+        LOG("telemetry: recorder unavailable; VR startup continues");
 
     if (MH_Initialize() != MH_OK)
     {

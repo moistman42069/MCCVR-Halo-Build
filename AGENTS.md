@@ -116,6 +116,11 @@ four identical crashes.
 
 - One evidence-backed behavioral change per candidate. Unique commit and
   artifact hash. Untested or failed candidates do not advance the pointer.
+- Diagnostic-only instrumentation that does not change gameplay, tracking,
+  aiming, input, rendering, or title output may be developed as its own
+  evidence candidate. Keep diagnostic instrumentation separate from
+  behavioral tuning so recorded evidence describes the behavior under test
+  rather than a simultaneous behavior change.
 - Revert a failed experiment when it fails, as its own commit, before starting
   the next one. Do not stack onto a known-failed candidate.
 - **Reverting means disabling the behavior, not deleting the code.** Deleting
@@ -134,6 +139,24 @@ four identical crashes.
 - Never patch game files on disk or interact with Easy Anti-Cheat.
 - Keep logging, file I/O, locks, COM, allocation, and signature scanning out of
   render and palette hot hooks.
+- Diagnostic capture in a hot/prepared-frame path may read state already
+  captured for that same frame, perform bounded allocation-free side-effect-
+  free calculations on it (including a small fixed set of telemetry-only pure
+  counterfactual solves), read `QueryPerformanceCounter`, fill a fixed-size
+  trivially-copyable record, publish through a preallocated lock-free SPSC
+  ring, and update lock-free atomics. It must not format/serialize, allocate,
+  log, perform file I/O, take locks, wait, or signal/notify a per-frame kernel
+  object.
+- Diagnostic capture must reuse the frame's existing OpenXR samples. Extra
+  `xrSyncActions`, `xrGetActionState*`, `xrLocateSpace`, `xrLocateViews`, or
+  other runtime sampling calls solely for telemetry are a separate
+  evidence-backed change and are not allowed in the hot recorder path.
+- Diagnostic serialization and file I/O belong on a dedicated worker created
+  outside loader lock. Recorder failure must fail open and must not change
+  tracking, aiming, rendering, input, or title behavior. Do not add a new
+  third-party dependency solely for diagnostic transport or serialization.
+  Telemetry-only counterfactuals must not mutate Config, the selected runtime
+  Test Profile, diagnostic override state, tracking state, or gameplay output.
 - Preserve finite-value, bounds, index, count, and teardown guards.
 - `camscan` is opt-in and has process-memory write modes. Never build or run a
   write mode without explicit approval.

@@ -153,6 +153,8 @@ static bool ReadLocalPlayerState(HaloCELocalPlayerState& state) noexcept
             if (users)
             {
                 const uint32_t weapon=*reinterpret_cast<const uint32_t*>(users+8);
+                candidate.hasFirstPersonUserRecord=true;
+                candidate.weaponSlotPresent=weapon!=0xffffffffu;
                 candidate.firstPersonVisible=(*reinterpret_cast<const uint8_t*>(users)&1)!=0;
                 if (weapon!=0xffffffffu&&get(weapon,4)&&
                     reinterpret_cast<WeaponOwnerFn>(moduleBase+contract::player_state::state_weapon_owner)(weapon)==candidate.unit)

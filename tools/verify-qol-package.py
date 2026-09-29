@@ -128,7 +128,8 @@ def check_config(data: bytes) -> int:
     require(values["physical_crouch"] == "0", "Optional physical crouch must default off")
     require(values["virtual_stock"] == "0", "Optional virtual stock must default off")
     for key, low, high in (
-        ("virtual_stock_strength", 0, 1), ("physical_crouch_depth_m", .08, .65),
+        ("virtual_stock_standard_strength", 0, 1),
+        ("virtual_stock_plus_strength", 0, 1), ("physical_crouch_depth_m", .08, .65),
         ("virtual_stock_rear_reference", 0, 3), ("weapon_pouch_location", 0, 1),
         ("weapon_pouch_offset_x_m", -.4, .4), ("weapon_pouch_offset_y_m", -.4, .4),
         ("weapon_pouch_offset_z_m", -.4, .4), ("upscaler", 0, 1), ("dlss_mode", 0, 5),

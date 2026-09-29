@@ -454,10 +454,19 @@ int main(int argc,char** argv)
         CHECK(BuildTrackedFirstPersonPalette(known,pose.data(),camera,sample,reference,.33f,true,changed));
         CHECK(same(aligned[5],changed[5]));
         CHECK(!std::memcmp(&aligned[7],&changed[7],sizeof(NodeMatrix)));
+        controls.supportGripAttached=true;
         controls.twoHandAimActive=true;
         CHECK(BuildTrackedFirstPersonPalette(known,pose.data(),camera,sample,reference,.33f,true,changed));
         CHECK(same(changed[6],expected(pose[5],changed[7])));
         CHECK(!std::memcmp(&aligned[7],&changed[7],sizeof(NodeMatrix)));
+        // Persistent support grip: the planted support presentation follows
+        // the valid relationship even when support aim authority is rejected.
+        // This is the state the old aim-authority gate could not express.
+        controls.twoHandAimActive=false;
+        CHECK(BuildTrackedFirstPersonPalette(known,pose.data(),camera,sample,reference,.33f,true,changed));
+        CHECK(same(changed[6],expected(pose[5],changed[7])));
+        CHECK(!std::memcmp(&aligned[7],&changed[7],sizeof(NodeMatrix)));
+        controls.supportGripAttached=false;
         controls.twoHandAimActive=false;controls.leftHanded=false;controls.handAlignment=false;
         CHECK(BuildTrackedFirstPersonPalette(known,pose.data(),camera,sample,reference,.33f,true,baseline));
         controls.handAlignment=true;

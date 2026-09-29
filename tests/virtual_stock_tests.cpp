@@ -1,7 +1,9 @@
 #include "virtual_stock_logic.h"
+#include "virtual_stock_neutral_capture.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 
 namespace
@@ -279,39 +281,182 @@ void TestSupportEndpointSelection(TestContext& test,
         "virtual-stock direction uses the selected support endpoint");
 }
 
-void TestSupportGripHandednessRouting(TestContext& test)
+// Free two-hand production geometry (W2): the fixed Grip -> Grip (GG) pair.
+// The pair is a product rule, so it is never config-selected: nothing about the
+// Virtual Stock support endpoint or "Reduce Support-Hand Rotation" enters it,
+// both grips (or neither) must be usable, and the aim-position pair is the only
+// fallback.
+void TestFixedGripEndpointSelection(TestContext& test,
+    const CommonGeometry& geometry)
+{
+    const Point3 primaryAim = Point(0.34f, 1.42f, -0.18f);
+    const Point3 supportAim = Point(0.22f, 1.38f, -0.55f);
+    const Point3 primaryGrip = Point(0.30f, 1.39f, -0.14f);
+    const Point3 supportGrip = Point(0.26f, 1.40f, -0.61f);
+
+    const auto both = virtual_stock::SelectTwoHandGripEndpoints(
+        primaryAim, supportAim, true, primaryGrip, true, supportGrip);
+    test.Check(both.valid && both.usedGrips,
+        "GG is valid and grip-owned when both grips are committed");
+    test.CheckNear(both.primary, primaryGrip,
+        "GG primary pivot is the primary Grip position");
+    test.CheckNear(both.support, supportGrip,
+        "GG support pivot is the support Grip position");
+
+    // The aim endpoints are not consulted at all while both grips are usable:
+    // whatever the caller's support-endpoint selection produced, the pair is
+    // the grips.
+    const auto movedAims = virtual_stock::SelectTwoHandGripEndpoints(
+        Point(9.0f, -9.0f, 9.0f), Point(-9.0f, 9.0f, -9.0f),
+        true, primaryGrip, true, supportGrip);
+    test.Check(movedAims.valid && movedAims.usedGrips &&
+            ApproximatelyEqual(movedAims.primary, both.primary) &&
+            ApproximatelyEqual(movedAims.support, both.support),
+        "GG ignores both aim endpoints while both grips are usable");
+
+    const auto missingSupport = virtual_stock::SelectTwoHandGripEndpoints(
+        primaryAim, supportAim, true, primaryGrip, false, supportGrip);
+    test.Check(missingSupport.valid && !missingSupport.usedGrips &&
+            ApproximatelyEqual(missingSupport.primary, primaryAim) &&
+            ApproximatelyEqual(missingSupport.support, supportAim),
+        "a missing support grip falls back to the exact aim-position pair");
+
+    const auto missingPrimary = virtual_stock::SelectTwoHandGripEndpoints(
+        primaryAim, supportAim, false, primaryGrip, true, supportGrip);
+    test.Check(missingPrimary.valid && !missingPrimary.usedGrips &&
+            ApproximatelyEqual(missingPrimary.primary, primaryAim) &&
+            ApproximatelyEqual(missingPrimary.support, supportAim),
+        "a missing primary grip falls back to the exact aim-position pair");
+
+    const auto noGrips = virtual_stock::SelectTwoHandGripEndpoints(
+        primaryAim, supportAim, false, primaryGrip, false, supportGrip);
+    test.Check(noGrips.valid && !noGrips.usedGrips,
+        "no grip sample at all falls back to the aim-position pair");
+
+    // A committed but non-finite grip is not usable. It must never be mixed
+    // with the other hand's grip and never fabricated: the whole pair falls
+    // back to the aim positions.
+    const auto nanPrimary = virtual_stock::SelectTwoHandGripEndpoints(
+        primaryAim, supportAim, true, Point(kNan, 1.39f, -0.14f),
+        true, supportGrip);
+    test.Check(nanPrimary.valid && !nanPrimary.usedGrips &&
+            ApproximatelyEqual(nanPrimary.primary, primaryAim) &&
+            ApproximatelyEqual(nanPrimary.support, supportAim),
+        "a committed non-finite primary grip falls back to the aim-position pair");
+    const auto infSupport = virtual_stock::SelectTwoHandGripEndpoints(
+        primaryAim, supportAim, true, primaryGrip, true,
+        Point(0.26f, kInf, -0.61f));
+    test.Check(infSupport.valid && !infSupport.usedGrips &&
+            ApproximatelyEqual(infSupport.primary, primaryAim) &&
+            ApproximatelyEqual(infSupport.support, supportAim),
+        "a committed non-finite support grip falls back to the aim-position pair");
+
+    // Neither pair usable: invalid, so the caller keeps its own fail-closed
+    // behaviour instead of consuming a manufactured pivot.
+    const auto unusable = virtual_stock::SelectTwoHandGripEndpoints(
+        Point(kNan, 0.0f, 1.42f), Point(0.0f, kInf, 0.0f), false, primaryGrip,
+        false, supportGrip);
+    test.Check(!unusable.valid && !unusable.usedGrips,
+        "an unusable aim fallback leaves the GG selection invalid");
+
+    // The VS-off selector consumes exactly the selected pair as the B line,
+    // with the caller's primary forward as the agreement reference.
+    const Point3 ggDirection =
+        NormalizeReference(Subtract(supportGrip, primaryGrip));
+    const auto legacy = virtual_stock::SelectTwoHandAimDirection(
+        false, 1.0f, 0.0f, true, geometry.head, both.support, both.primary,
+        both.support, ggDirection);
+    test.Check(legacy.valid && !legacy.usedVirtualStock,
+        "the VS-off selector accepts the GG pair as its B line");
+    test.CheckNear(legacy.direction, ggDirection,
+        "the VS-off B direction is the Grip -> Grip line");
+
+    // The selected pair is what makes the VS-off product geometry a real
+    // differential against the pre-GG aim-line pair.
+    const Point3 aimDirection =
+        NormalizeReference(Subtract(supportAim, primaryAim));
+    const auto aimLine = virtual_stock::SelectTwoHandAimDirection(
+        false, 1.0f, 0.0f, true, geometry.head, supportAim, primaryAim,
+        supportAim, aimDirection);
+    test.Check(aimLine.valid &&
+            !ApproximatelyEqual(legacy.direction, aimLine.direction),
+        "the GG line is a real differential against the aim-position line");
+}
+
+void TestGripHandednessRouting(TestContext& test)
 {
     const Point3 physicalLeft = Point(-0.20f, 1.25f, -0.50f);
     const Point3 physicalRight = Point(0.25f, 1.35f, -0.40f);
-    auto routeSupport = [](bool leftHanded,
-        Point3 left, bool leftValid, Point3 right, bool rightValid) {
+    struct RoutedGripPositions
+    {
+        Point3 support{};
+        bool supportValid = false;
+        Point3 primary{};
+        bool primaryValid = false;
+    };
+    auto route = [](bool leftHanded,
+        Point3 leftGrip, bool leftGripValid, bool leftAimValid,
+        Point3 rightGrip, bool rightGripValid, bool rightAimValid) {
         if (leftHanded)
         {
-            std::swap(left, right);
-            std::swap(leftValid, rightValid);
+            std::swap(leftGrip, rightGrip);
+            std::swap(leftGripValid, rightGripValid);
+            std::swap(leftAimValid, rightAimValid);
         }
-        return virtual_stock::SelectTwoHandSupportEndpoint(
-            true, Point(0.0f, 0.0f, 0.0f), leftValid, left);
+        return RoutedGripPositions{
+            leftGrip, leftAimValid && leftGripValid,
+            rightGrip, rightAimValid && rightGripValid};
     };
-    const auto rightHanded = routeSupport(
-        false, physicalLeft, true, physicalRight, false);
-    test.Check(rightHanded.usedGrip &&
-            ApproximatelyEqual(rightHanded.position, physicalLeft),
-        "right-handed routing uses the physical-left grip sample as semantic support");
-    const auto rightHandedMissingSupport = routeSupport(
-        false, physicalLeft, false, physicalRight, true);
-    test.Check(!rightHandedMissingSupport.usedGrip,
-        "right-handed routing does not mistake a primary-hand grip sample for support");
+    const auto rightHanded = route(false,
+        physicalLeft, true, true, physicalRight, true, true);
+    test.Check(rightHanded.supportValid && rightHanded.primaryValid &&
+            ApproximatelyEqual(rightHanded.support, physicalLeft) &&
+            ApproximatelyEqual(rightHanded.primary, physicalRight),
+        "right-handed routing maps physical left to semantic support and physical right to semantic primary");
 
-    const auto leftHanded = routeSupport(
-        true, physicalLeft, false, physicalRight, true);
-    test.Check(leftHanded.usedGrip &&
-            ApproximatelyEqual(leftHanded.position, physicalRight),
-        "left-handed routing uses the physical-right grip sample as semantic support");
-    const auto leftHandedMissingSupport = routeSupport(
-        true, physicalLeft, true, physicalRight, false);
-    test.Check(!leftHandedMissingSupport.usedGrip,
-        "left-handed routing does not mistake a primary-hand grip sample for support");
+    const auto leftHanded = route(true,
+        physicalLeft, true, true, physicalRight, true, true);
+    test.Check(leftHanded.supportValid && leftHanded.primaryValid &&
+            ApproximatelyEqual(leftHanded.support, physicalRight) &&
+            ApproximatelyEqual(leftHanded.primary, physicalLeft),
+        "left-handed routing maps physical right to semantic support and physical left to semantic primary");
+
+    const auto rightHandedMissingPrimary = route(false,
+        physicalLeft, true, true, physicalRight, false, true);
+    test.Check(rightHandedMissingPrimary.supportValid &&
+            !rightHandedMissingPrimary.primaryValid &&
+            ApproximatelyEqual(rightHandedMissingPrimary.support, physicalLeft),
+        "missing right-handed primary grip does not substitute the support sample");
+    const auto rightHandedMissingSupport = route(false,
+        physicalLeft, false, true, physicalRight, true, true);
+    test.Check(!rightHandedMissingSupport.supportValid &&
+            rightHandedMissingSupport.primaryValid &&
+            ApproximatelyEqual(rightHandedMissingSupport.primary, physicalRight),
+        "missing right-handed support grip does not consume the primary sample");
+
+    const auto leftHandedMissingPrimary = route(true,
+        physicalLeft, false, true, physicalRight, true, true);
+    test.Check(leftHandedMissingPrimary.supportValid &&
+            !leftHandedMissingPrimary.primaryValid &&
+            ApproximatelyEqual(leftHandedMissingPrimary.support, physicalRight),
+        "missing left-handed primary grip does not substitute the support sample");
+    const auto leftHandedMissingSupport = route(true,
+        physicalLeft, true, true, physicalRight, false, true);
+    test.Check(!leftHandedMissingSupport.supportValid &&
+            leftHandedMissingSupport.primaryValid &&
+            ApproximatelyEqual(leftHandedMissingSupport.primary, physicalLeft),
+        "missing left-handed support grip does not consume the primary sample");
+
+    const auto missingSupportAim = route(false,
+        physicalLeft, true, false, physicalRight, true, true);
+    test.Check(!missingSupportAim.supportValid &&
+            missingSupportAim.primaryValid,
+        "support aim invalidity does not invalidate or replace semantic primary grip");
+    const auto missingPrimaryAim = route(false,
+        physicalLeft, true, true, physicalRight, true, false);
+    test.Check(missingPrimaryAim.supportValid &&
+            !missingPrimaryAim.primaryValid,
+        "primary aim invalidity does not invalidate or replace semantic support grip");
 }
 
 void TestContinuousRearReference(TestContext& test,
@@ -1289,6 +1434,92 @@ void TestProximityRelease(TestContext& test,
         "exact release enters the legacy solver and applies its 0.35 rejection");
 }
 
+void TestHybridHorizontalRelease(TestContext& test)
+{
+    constexpr float full = 0.270f;
+    constexpr float release = 0.425f;
+    const Point3 head = Point(1.0f, 1.7f, -2.0f);
+    const auto evaluate = [&](Point3 primary,
+                              virtual_stock::HybridHorizontalReleaseEvaluation& details) {
+        return virtual_stock::ComputeHybridHorizontalRearReleaseInfluence(
+            primary, true, head, full, release, &details);
+    };
+
+    virtual_stock::HybridHorizontalReleaseEvaluation inside{};
+    const float insideInfluence = evaluate(
+        Point(head.x + 0.20f, -4.0f, head.z), inside);
+    test.Check(inside.valid && insideInfluence == 1.0f &&
+            inside.influence == 1.0f &&
+            std::fabs(inside.horizontalReach - 0.20f) <= 1.0e-6f,
+        "horizontal release is exact full authority inside the full radius");
+
+    virtual_stock::HybridHorizontalReleaseEvaluation outside{};
+    const float outsideInfluence = evaluate(
+        Point(head.x + release, 9.0f, head.z), outside);
+    test.Check(outside.valid && outsideInfluence == 0.0f &&
+            outside.influence == 0.0f,
+        "horizontal release is exact zero authority at the release radius");
+
+    const float midpointReach = (full + release) * 0.5f;
+    virtual_stock::HybridHorizontalReleaseEvaluation midpoint{};
+    const float midpointInfluence = evaluate(
+        Point(head.x, head.y, head.z - midpointReach), midpoint);
+    test.Check(midpoint.valid && midpointInfluence > 0.0f &&
+            midpointInfluence < 1.0f &&
+            std::fabs(midpointInfluence - 0.5f) <= 1.0e-5f,
+        "horizontal release reuses the production cubic proximity curve");
+
+    float previous = 1.0f;
+    bool monotonic = true;
+    for (int step = 0; step <= 100; ++step)
+    {
+        const float reach = static_cast<float>(step) * 0.006f;
+        virtual_stock::HybridHorizontalReleaseEvaluation sample{};
+        const float influence = evaluate(
+            Point(head.x + reach, head.y, head.z), sample);
+        monotonic = monotonic && sample.valid &&
+            influence <= previous + 1.0e-6f;
+        previous = influence;
+    }
+    test.Check(monotonic,
+        "horizontal release authority is monotonic with increasing X/Z reach");
+
+    virtual_stock::HybridHorizontalReleaseEvaluation high{};
+    virtual_stock::HybridHorizontalReleaseEvaluation low{};
+    const float highInfluence = evaluate(
+        Point(head.x + 0.33f, head.y + 5.0f, head.z), high);
+    const float lowInfluence = evaluate(
+        Point(head.x + 0.33f, head.y - 5.0f, head.z), low);
+    test.Check(high.valid && low.valid && highInfluence == lowInfluence &&
+            high.horizontalReach == low.horizontalReach,
+        "horizontal release ignores vertical rear-hand displacement");
+
+    virtual_stock::HybridHorizontalReleaseEvaluation first{};
+    virtual_stock::HybridHorizontalReleaseEvaluation second{};
+    const Point3 repeatedPrimary = Point(head.x - 0.31f, 0.0f, head.z);
+    const float firstInfluence = evaluate(repeatedPrimary, first);
+    const float secondInfluence = evaluate(repeatedPrimary, second);
+    test.Check(first.valid && second.valid &&
+            firstInfluence == secondInfluence &&
+            first.horizontalReach == second.horizontalReach,
+        "horizontal release is stateless and repeatable");
+
+    virtual_stock::HybridHorizontalReleaseEvaluation invalid{};
+    test.Check(virtual_stock::ComputeHybridHorizontalRearReleaseInfluence(
+                Point(kNan, 0.0f, 0.0f), true, head,
+                full, release, &invalid) == 0.0f && !invalid.valid &&
+            virtual_stock::ComputeHybridHorizontalRearReleaseInfluence(
+                Point(0.0f, 0.0f, 0.0f), false, head,
+                full, release, &invalid) == 0.0f && !invalid.valid &&
+            virtual_stock::ComputeHybridHorizontalRearReleaseInfluence(
+                Point(0.0f, 0.0f, 0.0f), true, Point(kInf, 0.0f, 0.0f),
+                full, release, &invalid) == 0.0f && !invalid.valid &&
+            virtual_stock::ComputeHybridHorizontalRearReleaseInfluence(
+                Point(0.0f, 0.0f, 0.0f), true, head,
+                release, full, &invalid) == 0.0f && !invalid.valid,
+        "non-finite or malformed horizontal release geometry fails to zero authority");
+}
+
 void TestStrengthBoundarySemantics(TestContext& test,
     const CommonGeometry& geometry)
 {
@@ -1365,6 +1596,16 @@ void TestLegacyFallbackAndRejection(TestContext& test,
         "legacy opposing-forward rejects extreme");
     test.Check(rejectedLegacy.rejectedAgreement < 0.35f,
         "rejection records agreement");
+    test.Check(ApproximatelyEqual(rejectedLegacy.direction, Point(0.0f, 0.0f, 0.0f)),
+        "legacy Head selector keeps its zero direction on extreme rejection");
+
+    const auto rejectedTarget = virtual_stock::SelectTwoHandAimDirectionForTarget(
+        false, 1.0f, true, geometry.head, geometry.support, geometry.primary,
+        geometry.support, opposingLegacy);
+    test.Check(!rejectedTarget.valid && rejectedTarget.rejectedExtreme &&
+            ApproximatelyEqual(rejectedTarget.direction,
+                NormalizeReference(Subtract(geometry.support, geometry.primary))),
+        "target-aware selector retains its historically normalized rejected direction");
 
     // A valid stock ray does not consult legacy-only primary-forward rejection geometry.
     const Point3 opposingStock = Point(-geometry.stockDirection.x,
@@ -1394,6 +1635,490 @@ void TestLegacyFallbackAndRejection(TestContext& test,
             rejectedFallback.rejectedExtreme &&
             rejectedFallback.rejectedAgreement < 0.35f,
         "degenerate stock ray preserves legacy extreme-angle rejection");
+}
+
+// T13 corrective: persistent-grip retained support steering. A qualified
+// (engaged + trusted) invocation keeps its support-derived direction when the
+// primary -> support agreement crosses below the legacy 0.35 floor; every
+// other guard and every unretained path stays exactly as it was.
+void TestRetainedSupportSteering(TestContext& test)
+{
+    const Point3 primary{0.0f, 0.0f, 0.0f};
+    const Point3 forward{0.0f, 0.0f, -1.0f};
+    const auto supportAtAgreement = [](float agreement) {
+        const float lateral = std::sqrt(1.0f - agreement * agreement);
+        return Point3{lateral, 0.0f, -agreement};
+    };
+    const Point3 above = supportAtAgreement(0.3501f);
+    const Point3 below = supportAtAgreement(0.3499f);
+
+    // Unretained behaviour is byte-identical at the boundary: 0.3501 passes,
+    // 0.3499 rejects with the floor recorded.
+    Point3 unretainedDirection{};
+    bool unretainedRejected = false;
+    float unretainedAgreement = 0.0f;
+    test.Check(virtual_stock::TryBuildAcceptedSupportDirection(
+            primary, above, forward, unretainedDirection,
+            unretainedRejected, unretainedAgreement) &&
+            !unretainedRejected && unretainedAgreement == 0.0f,
+        "the legacy rule still accepts just above the 0.35 agreement floor");
+    test.Check(virtual_stock::Dot(
+            unretainedDirection, forward) > 0.35f &&
+            ApproximatelyEqual(unretainedDirection,
+                NormalizeReference(Subtract(above, primary))),
+        "the accepted legacy direction is the exact normalized segment");
+    test.Check(!virtual_stock::TryBuildAcceptedSupportDirection(
+            primary, below, forward, unretainedDirection,
+            unretainedRejected, unretainedAgreement) &&
+            unretainedRejected &&
+            std::fabs(unretainedAgreement - 0.3499f) <= 1e-5f,
+        "the legacy rule still rejects just below the 0.35 agreement floor");
+
+    // Retained: the floor no longer rejects, the direction is the same exact
+    // normalized segment, and the floor verdict is still reported.
+    Point3 retainedDirection{};
+    bool retainedRejected = false;
+    float retainedAgreement = 0.0f;
+    test.Check(virtual_stock::TryBuildAcceptedSupportDirection(
+            primary, below, forward, retainedDirection,
+            retainedRejected, retainedAgreement, true) &&
+            retainedRejected &&
+            std::fabs(retainedAgreement - 0.3499f) <= 1e-5f,
+        "retention accepts the sub-floor direction and still records the "
+        "floor verdict");
+    test.Check(ApproximatelyEqual(retainedDirection,
+            NormalizeReference(Subtract(below, primary))) &&
+            std::fabs(std::sqrt(virtual_stock::Dot(
+                retainedDirection, retainedDirection)) - 1.0f) <= 1e-5f,
+        "the retained direction is the exact normalized support segment");
+
+    // Retention skips ONLY the floor: finiteness and the minimum segment
+    // length still reject.
+    bool retainedRejectedAfter = true;
+    float retainedAgreementAfter = 1.0f;
+    test.Check(!virtual_stock::TryBuildAcceptedSupportDirection(
+            primary, below, Point(kNan, 0.0f, 0.0f), retainedDirection,
+            retainedRejectedAfter, retainedAgreementAfter, true) &&
+            !retainedRejectedAfter && retainedAgreementAfter == 0.0f,
+        "retention never accepts a non-finite primary forward");
+    // A finite-but-huge forward overflows the dot product: the non-finite
+    // agreement guard must still reject (and record) even when retained.
+    retainedRejectedAfter = false;
+    retainedAgreementAfter = 0.0f;
+    test.Check(!virtual_stock::TryBuildAcceptedSupportDirection(
+            primary, Point(0.577f, 0.577f, 0.577f),
+            Point(3.0e38f, 3.0e38f, 3.0e38f), retainedDirection,
+            retainedRejectedAfter, retainedAgreementAfter, true) &&
+            retainedRejectedAfter && !std::isfinite(retainedAgreementAfter),
+        "retention never accepts a non-finite agreement");
+    retainedRejectedAfter = true;
+    test.Check(!virtual_stock::TryBuildAcceptedSupportDirection(
+            primary, Point(kInf, 0.0f, 0.0f), forward, retainedDirection,
+            retainedRejectedAfter, retainedAgreementAfter, true) &&
+            !retainedRejectedAfter,
+        "retention never accepts non-finite support geometry");
+    retainedRejectedAfter = true;
+    test.Check(!virtual_stock::TryBuildAcceptedSupportDirection(
+            primary, Point(primary.x + 5.0e-5f, primary.y, primary.z), forward,
+            retainedDirection, retainedRejectedAfter, retainedAgreementAfter,
+            true) && !retainedRejectedAfter &&
+            ApproximatelyEqual(retainedDirection, Point(0.0f, 0.0f, 0.0f)),
+        "retention keeps the minimum primary-to-support segment guard");
+
+    // Selector plumbing: VS off with retention keeps the exact legacy ray and
+    // flags the crossed floor; the unretained selector still rejects.
+    const auto retainedSelection =
+        virtual_stock::SelectTwoHandAimDirection(
+            false, 1.0f, 0.0f, true, Point(0.0f, 0.0f, 0.0f), below,
+            primary, below, forward, true);
+    test.Check(retainedSelection.valid && !retainedSelection.usedVirtualStock &&
+            retainedSelection.retainedBeyondAgreementFloor &&
+            !retainedSelection.rejectedExtreme &&
+            std::fabs(retainedSelection.rejectedAgreement - 0.3499f) <= 1e-5f,
+        "the retained legacy selection is valid, attributed and keeps the "
+        "exact crossed floor agreement for diagnostics");
+    // T14-VER-03 F1: the agreement store is retention-only. An ordinary
+    // in-cone acceptance must keep it at exactly zero, so the diagnostic can
+    // never present a normal pass as a crossed floor.
+    const auto inConeSelection =
+        virtual_stock::SelectTwoHandAimDirection(
+            false, 1.0f, 0.0f, true, Point(0.0f, 0.0f, 0.0f), above,
+            primary, above, forward, true);
+    test.Check(inConeSelection.valid && !inConeSelection.usedVirtualStock &&
+            !inConeSelection.retainedBeyondAgreementFloor &&
+            !inConeSelection.rejectedExtreme &&
+            inConeSelection.rejectedAgreement == 0.0f,
+        "an ordinary in-cone selection keeps the retention store at zero");
+    test.CheckNear(retainedSelection.direction,
+        NormalizeReference(Subtract(below, primary)),
+        "the retained legacy selection preserves the exact support direction");
+    const auto unretainedSelection =
+        virtual_stock::SelectTwoHandAimDirection(
+            false, 1.0f, 0.0f, true, Point(0.0f, 0.0f, 0.0f), below,
+            primary, below, forward);
+    test.Check(!unretainedSelection.valid &&
+            unretainedSelection.rejectedExtreme &&
+            !unretainedSelection.retainedBeyondAgreementFloor &&
+            unretainedSelection.rejectedAgreement < 0.35f,
+        "the unretained legacy selection still rejects the sub-floor ray");
+
+    // VS-on stock paths ignore the retention request entirely: a valid stock
+    // ray wins outright and never reports a retained selection.
+    const Point3 stockSupport{0.55f, 0.30f, -0.80f};
+    const auto stockWithRetention =
+        virtual_stock::SelectTwoHandAimDirection(
+            true, 1.0f, 0.0f, true, Point(0.0f, 1.62f, 0.0f), stockSupport,
+            primary, below, Point(-1.0f, 0.0f, 0.0f), true);
+    test.Check(stockWithRetention.valid && stockWithRetention.usedVirtualStock &&
+            !stockWithRetention.retainedBeyondAgreementFloor &&
+            !stockWithRetention.rejectedExtreme,
+        "a valid stock ray is unaffected by the retention request");
+    test.CheckNear(stockWithRetention.direction,
+        NormalizeReference(Subtract(stockSupport, Point(0.0f, 1.62f, 0.0f))),
+        "the stock ray keeps its head-to-support direction");
+}
+
+void TestHybridPureHelpers(TestContext& test)
+{
+    const Point3 primary{0.0f, 0.0f, 0.0f};
+    const Point3 primaryForward{0.0f, 0.0f, -1.0f};
+    const Point3 support{0.6f, 0.0f, -1.0f};
+    Point3 offhand{};
+    bool rejectedExtreme = false;
+    float rejectedAgreement = 0.0f;
+    test.Check(virtual_stock::TryBuildAcceptedSupportDirection(
+            primary, support, primaryForward, offhand,
+            rejectedExtreme, rejectedAgreement) &&
+            !rejectedExtreme && ApproximatelyEqual(
+                offhand, NormalizeReference(Subtract(support, primary))),
+        "Hybrid B accepts an ordinary support translation through the legacy rule");
+
+    const Point3 intermediateExpected = NormalizeReference(Point(
+        primaryForward.x * 0.5f + offhand.x * 0.5f,
+        primaryForward.y * 0.5f + offhand.y * 0.5f,
+        primaryForward.z * 0.5f + offhand.z * 0.5f));
+    Point3 blended{};
+    test.Check(virtual_stock::TryBlendDirectionAuthority(
+            primaryForward, offhand, 0.0f, blended) &&
+            blended.x == primaryForward.x && blended.y == primaryForward.y &&
+            blended.z == primaryForward.z,
+        "Hybrid influence zero returns the exact primary direction");
+    test.Check(virtual_stock::TryBlendDirectionAuthority(
+            primaryForward, offhand, 0.5f, blended) &&
+            ApproximatelyEqual(blended, intermediateExpected),
+        "Hybrid intermediate influence uses normalized direction-domain blending");
+    test.Check(virtual_stock::TryBlendDirectionAuthority(
+            primaryForward, offhand, 1.0f, blended) &&
+            blended.x == offhand.x && blended.y == offhand.y &&
+            blended.z == offhand.z,
+        "Hybrid influence one returns the exact accepted support direction");
+
+    test.Check(!virtual_stock::TryBuildAcceptedSupportDirection(
+            primary, Point(1.0f, 0.0f, 0.0f), primaryForward, blended,
+            rejectedExtreme, rejectedAgreement) && rejectedExtreme &&
+            rejectedAgreement < 0.35f,
+        "Hybrid B preserves the existing 0.35 agreement rejection");
+    test.Check(!virtual_stock::TryBuildAcceptedSupportDirection(
+            primary, primary, primaryForward, blended,
+            rejectedExtreme, rejectedAgreement) && !rejectedExtreme,
+        "Hybrid B rejects a degenerate primary-to-support segment");
+
+    const Point3 target{0.0f, 0.0f, 0.0f};
+    const Point3 stockSupport{0.0f, 0.0f, -1.0f};
+    Point3 stock{};
+    test.Check(!virtual_stock::TryBuildHybridStockDirection(
+            primary, target, stockSupport, 0.0f, stock),
+        "Hybrid strength zero makes C unavailable");
+    test.Check(virtual_stock::TryBuildHybridStockDirection(
+            primary, target, stockSupport, 1.0f, stock) &&
+            ApproximatelyEqual(stock, Point(0.0f, 0.0f, -1.0f)),
+        "Hybrid strength one builds C directly from T to S");
+    const Point3 intermediateTarget{0.0f, 0.0f, 1.0f};
+    const Point3 intermediatePrimary{0.0f, 0.0f, 0.0f};
+    test.Check(virtual_stock::TryBuildHybridStockDirection(
+            intermediatePrimary, intermediateTarget, stockSupport, 0.5f, stock) &&
+            ApproximatelyEqual(stock, Point(0.0f, 0.0f, -1.0f)),
+        "Hybrid intermediate strength uses R between P and T");
+    test.Check(!virtual_stock::TryBuildHybridStockDirection(
+            primary, target, stockSupport, kNan, stock),
+        "Hybrid C rejects non-finite strength");
+
+    const float full = 0.050f;
+    const float release = 0.150f;
+    test.Check(virtual_stock::ComputeHybridSeatInfluence(
+            Point(0.0f, 0.0f, -0.50f), target, stockSupport,
+            full, release) == 1.0f,
+        "Hybrid W is one for a primary hand seated on T-to-S");
+    test.CheckNear(Point(virtual_stock::ComputeHybridSeatInfluence(
+                Point(0.10f, 0.0f, 0.0f), target, stockSupport,
+                full, release), 0.0f, 0.0f),
+        Point(0.5f, 0.0f, 0.0f),
+        "Hybrid W uses the smooth full-to-release fade");
+    test.Check(virtual_stock::ComputeHybridSeatInfluence(
+            Point(0.0f, 0.0f, 0.05f), target, stockSupport,
+            full, release) == 1.0f &&
+            virtual_stock::ComputeHybridSeatInfluence(
+                Point(0.0f, 0.0f, -1.15f), target, stockSupport,
+                full, release) == 0.0f,
+        "Hybrid W clamps projections before T and beyond S to the segment endpoints");
+    test.Check(virtual_stock::ComputeHybridSeatInfluence(
+            Point(0.0f, 0.0f, -0.50f), target, target,
+            full, release) == 0.0f,
+        "Hybrid W fails closed for a degenerate T-to-S segment");
+    test.Check(virtual_stock::ComputeHybridSeatInfluence(
+            Point(kNan, 0.0f, 0.0f), target, stockSupport,
+            full, release) == 0.0f &&
+            virtual_stock::ComputeHybridSeatInfluence(
+                primary, Point(kInf, 0.0f, 0.0f), stockSupport,
+                full, release) == 0.0f,
+        "Hybrid W fails closed for non-finite seating geometry");
+
+    const float lowReady = virtual_stock::ComputeHybridSeatInfluence(
+        Point(0.0f, 0.0f, -0.15f), target,
+        Point(0.0f, 0.0f, -0.30f), full, release);
+    test.Check(lowReady == 1.0f,
+        "Collinear low-ready geometry can produce high W; no posture gate is invented");
+
+    Point3 convergedB{};
+    Point3 convergedC{};
+    test.Check(virtual_stock::TryBuildAcceptedSupportDirection(
+            primary, stockSupport, primaryForward, convergedB,
+            rejectedExtreme, rejectedAgreement) &&
+            virtual_stock::TryBuildHybridStockDirection(
+                primary, primary, stockSupport, 1.0f, convergedC) &&
+            ApproximatelyEqual(convergedB, convergedC),
+        "Hybrid B and full-strength C converge for the same geometric ray");
+
+    test.Check(!virtual_stock::TryBlendDirectionAuthority(
+            primaryForward, Point(0.0f, 0.0f, 1.0f), 0.5f, blended),
+        "Invalid opposing direction blend fails closed for caller fallback to A or HipAim");
+}
+
+void TestHybridRichEvaluatorEquivalence(TestContext& test)
+{
+    struct StockCase
+    {
+        Point3 primary;
+        Point3 target;
+        Point3 support;
+        float strength;
+    };
+    const StockCase stockCases[] = {
+        {Point(0.1f, 0.0f, 0.0f), Point(0.0f, 0.0f, 0.0f),
+            Point(0.0f, 0.0f, -1.0f), 1.0f},
+        {Point(0.1f, 0.0f, 0.0f), Point(0.0f, 0.0f, 1.0f),
+            Point(0.0f, 0.0f, -1.0f), 0.5f},
+        {Point(0.0f, 0.0f, 0.0f), Point(0.0f, 0.0f, 0.0f),
+            Point(0.0f, 0.0f, 0.0f), 1.0f},
+        {Point(kNan, 0.0f, 0.0f), Point(0.0f, 0.0f, 0.0f),
+            Point(0.0f, 0.0f, -1.0f), 1.0f},
+        {Point(0.0f, 0.0f, 0.0f), Point(0.0f, 0.0f, 0.0f),
+            Point(0.0f, 0.0f, -1.0f), 0.0f},
+    };
+    for (const StockCase& item : stockCases)
+    {
+        const virtual_stock::HybridStockEvaluation rich =
+            virtual_stock::EvaluateHybridStock(
+                item.primary, item.target, item.support, item.strength);
+        Point3 compatibilityOutput{};
+        const bool compatibilityValid =
+            virtual_stock::TryBuildHybridStockDirection(
+                item.primary, item.target, item.support, item.strength,
+                compatibilityOutput);
+        test.Check(rich.valid == compatibilityValid,
+            "Rich Hybrid stock evaluator preserves compatibility validity");
+        if (compatibilityValid)
+        {
+            test.Check(rich.direction.x == compatibilityOutput.x &&
+                    rich.direction.y == compatibilityOutput.y &&
+                    rich.direction.z == compatibilityOutput.z,
+                "Rich Hybrid stock evaluator preserves exact compatibility output");
+        }
+    }
+
+    struct SeatCase
+    {
+        Point3 primary;
+        Point3 target;
+        Point3 support;
+        float full;
+        float release;
+    };
+    const SeatCase seatCases[] = {
+        {Point(0.0f, 0.0f, -0.5f), Point(0.0f, 0.0f, 0.0f),
+            Point(0.0f, 0.0f, -1.0f), 0.05f, 0.15f},
+        {Point(0.1f, 0.0f, -0.5f), Point(0.0f, 0.0f, 0.0f),
+            Point(0.0f, 0.0f, -1.0f), 0.05f, 0.15f},
+        {Point(0.0f, 0.0f, 0.1f), Point(0.0f, 0.0f, 0.0f),
+            Point(0.0f, 0.0f, -1.0f), 0.05f, 0.15f},
+        {Point(0.0f, 0.0f, -0.5f), Point(0.0f, 0.0f, 0.0f),
+            Point(0.0f, 0.0f, 0.0f), 0.05f, 0.15f},
+        {Point(kInf, 0.0f, 0.0f), Point(0.0f, 0.0f, 0.0f),
+            Point(0.0f, 0.0f, -1.0f), 0.05f, 0.15f},
+    };
+    for (const SeatCase& item : seatCases)
+    {
+        const virtual_stock::HybridSeatEvaluation rich =
+            virtual_stock::EvaluateHybridSeat(
+                item.primary, item.target, item.support,
+                item.full, item.release);
+        const float compatibility = virtual_stock::ComputeHybridSeatInfluence(
+            item.primary, item.target, item.support,
+            item.full, item.release);
+        test.Check(rich.influence == compatibility,
+            "Rich Hybrid seat evaluator preserves exact compatibility influence");
+    }
+
+    const virtual_stock::HybridSeatEvaluation known =
+        virtual_stock::EvaluateHybridSeat(
+            Point(0.1f, 0.0f, -0.5f), Point(0.0f, 0.0f, 0.0f),
+            Point(0.0f, 0.0f, -1.0f), 0.05f, 0.15f);
+    test.Check(known.valid && known.segmentLength == 1.0f &&
+            known.rawProjection == 0.5f &&
+            known.clampedProjection == 0.5f &&
+            ApproximatelyEqual(known.closest, Point(0.0f, 0.0f, -0.5f)) &&
+            std::fabs(known.seatError - 0.1f) <= 1.0e-6f &&
+            std::fabs(known.influence - 0.5f) <= 1.0e-6f,
+        "Rich Hybrid seat evaluator exposes the expected geometric intermediates");
+}
+
+struct HybridSyntheticResult
+{
+    bool bAccepted = false;
+    bool cAvailable = false;
+    bool active = false;
+    bool finalValid = false;
+    float w = 0.0f;
+    Point3 hip{};
+    Point3 stock{};
+    Point3 final{};
+};
+
+HybridSyntheticResult EvaluateHybridSynthetic(
+    Point3 primary, Point3 target, Point3 support,
+    float strength = 1.0f, float offhandInfluence = 0.50f,
+    float fullSeatDistance = 0.050f,
+    float releaseSeatDistance = 0.150f)
+{
+    HybridSyntheticResult result{};
+    const Point3 primaryForward = Point(0.0f, 0.0f, -1.0f);
+    bool rejectedExtreme = false;
+    float rejectedAgreement = 0.0f;
+    Point3 offhand{};
+    result.bAccepted = virtual_stock::TryBuildAcceptedSupportDirection(
+        primary, support, primaryForward, offhand,
+        rejectedExtreme, rejectedAgreement);
+    result.hip = primaryForward;
+    if (result.bAccepted && !virtual_stock::TryBlendDirectionAuthority(
+            primaryForward, offhand, offhandInfluence, result.hip))
+    {
+        result.hip = primaryForward;
+    }
+    result.cAvailable = virtual_stock::TryBuildHybridStockDirection(
+        primary, target, support, strength, result.stock);
+    if (result.cAvailable)
+    {
+        result.w = virtual_stock::ComputeHybridSeatInfluence(
+            primary, target, support, fullSeatDistance, releaseSeatDistance);
+    }
+    result.final = result.hip;
+    bool stockContributed = false;
+    if (result.cAvailable && result.w > 0.0f &&
+        virtual_stock::TryBlendDirectionAuthority(
+            result.hip, result.stock, result.w, result.final))
+    {
+        stockContributed = true;
+    }
+    result.finalValid = virtual_stock::Finite(result.final);
+    result.active = result.bAccepted || stockContributed;
+    return result;
+}
+
+bool IsFiniteUnitDirection(Point3 direction, float epsilon = 1.0e-4f)
+{
+    if (!virtual_stock::Finite(direction))
+        return false;
+    const float lengthSquared = virtual_stock::Dot(direction, direction);
+    return std::isfinite(lengthSquared) &&
+        std::fabs(lengthSquared - 1.0f) <= epsilon;
+}
+
+void TestHybridGeometricRegressions(TestContext& test)
+{
+    const Point3 target = Point(0.0f, 0.0f, -0.50f);
+    const Point3 support = Point(0.0f, 0.0f, -1.00f);
+    const float rearHandPerturbations[] = {
+        0.001f, 0.005f, 0.010f, 0.020f};
+    constexpr size_t kRearHandPerturbationCount =
+        sizeof(rearHandPerturbations) / sizeof(rearHandPerturbations[0]);
+    HybridSyntheticResult perturbations[kRearHandPerturbationCount]{};
+    for (size_t i = 0; i < kRearHandPerturbationCount; ++i)
+    {
+        const float lateralOffset = 0.050f + rearHandPerturbations[i];
+        perturbations[i] = EvaluateHybridSynthetic(
+            Point(lateralOffset, 0.0f, -0.75f), target, support);
+        test.Check(perturbations[i].finalValid &&
+                IsFiniteUnitDirection(perturbations[i].final) &&
+                std::isfinite(perturbations[i].w),
+            "Hybrid rear-hand millimetre perturbation remains finite and normalized");
+        if (i > 0)
+        {
+            test.Check(perturbations[i].w <= perturbations[i - 1].w,
+                "Hybrid rear-hand perturbation changes W monotonically away from the seat");
+            test.Check(virtual_stock::Dot(
+                    perturbations[i - 1].final, perturbations[i].final) > 0.0f,
+                "Hybrid rear-hand perturbation does not cross a discontinuous direction branch");
+        }
+    }
+
+    const float sweepHeights[] = {
+        -0.20f, -0.12f, -0.10f, -0.05f, 0.0f,
+        -0.05f, -0.10f, -0.12f, -0.20f};
+    constexpr size_t kSweepHeightCount =
+        sizeof(sweepHeights) / sizeof(sweepHeights[0]);
+    HybridSyntheticResult sweep[kSweepHeightCount]{};
+    for (size_t i = 0; i < kSweepHeightCount; ++i)
+    {
+        sweep[i] = EvaluateHybridSynthetic(
+            Point(0.0f, sweepHeights[i], -0.75f), target, support);
+        test.Check(sweep[i].finalValid && IsFiniteUnitDirection(sweep[i].final) &&
+                sweep[i].w >= 0.0f && sweep[i].w <= 1.0f,
+            "Hybrid hip/raise/seat/lower sweep remains finite and bounded");
+    }
+    for (size_t i = 1; i <= 4; ++i)
+    {
+        test.Check(sweep[i].w >= sweep[i - 1].w,
+            "Hybrid seating W rises continuously toward the seat");
+    }
+    for (size_t i = 5; i < kSweepHeightCount; ++i)
+    {
+        test.Check(sweep[i].w <= sweep[i - 1].w,
+            "Hybrid seating W falls continuously after the seat");
+    }
+    for (size_t i = 0; i < kSweepHeightCount; ++i)
+    {
+        test.Check(sweep[i].w == sweep[kSweepHeightCount - 1 - i].w &&
+                ApproximatelyEqual(
+                    sweep[i].final, sweep[kSweepHeightCount - 1 - i].final),
+            "Hybrid seating sweep is stateless and reverses through the same curve");
+    }
+
+    const Point3 compactPrimary = Point(0.0f, 0.0f, 0.0f);
+    const Point3 compactDegenerate = Point(0.00005f, 0.0f, -0.00005f);
+    const HybridSyntheticResult degenerate = EvaluateHybridSynthetic(
+        compactPrimary, compactDegenerate, compactDegenerate);
+    test.Check(!degenerate.bAccepted && !degenerate.cAvailable &&
+            !degenerate.active && degenerate.finalValid &&
+            IsFiniteUnitDirection(degenerate.final) &&
+            ApproximatelyEqual(degenerate.final, Point(0.0f, 0.0f, -1.0f)),
+        "Compact degenerate geometry fails closed without leaking B or C authority");
+
+    const Point3 compactSupport = Point(0.00020f, 0.0f, -0.00020f);
+    const HybridSyntheticResult compact = EvaluateHybridSynthetic(
+        compactPrimary, Point(0.0f, 0.0f, -0.00050f), compactSupport);
+    test.Check(compact.bAccepted && compact.cAvailable && compact.active &&
+            compact.finalValid && IsFiniteUnitDirection(compact.final),
+        "Compact but valid geometry stays finite without a special pistol branch");
 }
 
 void TestOrientationConstruction(TestContext& test,
@@ -1537,6 +2262,163 @@ void TestInvalidInputs(TestContext& test, const CommonGeometry& geometry)
         "Inf aim direction fails closed");
 }
 
+Quat4 AxisAngle(Point3 axis, float radians)
+{
+    const float half = radians * 0.5f;
+    const float sine = std::sin(half);
+    return Quat4{axis.x * sine, axis.y * sine, axis.z * sine,
+        std::cos(half)};
+}
+
+void TestHybridInverseNeck(TestContext& test)
+{
+    constexpr float pi = 3.14159265358979323846f;
+    const Point3 d{0.0f, 0.040f, -0.100f};
+    const Point3 neck{0.3f, 1.4f, -0.2f};
+    const Quat4 neutral = AxisAngle(Point(0.0f, 1.0f, 0.0f), -0.2f);
+    const Quat4 yaw = AxisAngle(Point(0.0f, 1.0f, 0.0f), 0.6f);
+    const Quat4 pitch = AxisAngle(Point(1.0f, 0.0f, 0.0f), -0.4f);
+    const Quat4 orientations[]{neutral, yaw, pitch};
+    for (const Quat4 orientation : orientations)
+    {
+        const Point3 head = Add(neck, RotateByQuaternion(orientation, d));
+        const auto corrected = virtual_stock::EvaluateHybridInverseNeck(
+            head, orientation, neutral, 1.0f, 0.100f, 0.040f, 0.0f);
+        test.Check(corrected.valid,
+            "rigid-orbit inverse-neck geometry is valid");
+        test.CheckNear(corrected.correctedHead,
+            Add(neck, RotateByQuaternion(neutral, d)),
+            "k=1 removes rotational orbit across yaw and pitch", 2.0e-5f);
+    }
+
+    const Point3 head = Add(neck, RotateByQuaternion(yaw, d));
+    const auto zero = virtual_stock::EvaluateHybridInverseNeck(
+        head, yaw, neutral, 0.0f, 0.100f, 0.040f, 0.0f);
+    test.Check(zero.valid && zero.correctedHead.x == head.x &&
+            zero.correctedHead.y == head.y && zero.correctedHead.z == head.z,
+        "k=0 preserves the raw head position exactly");
+    const auto sameHalf = virtual_stock::EvaluateHybridInverseNeck(
+        head, yaw, yaw, 0.5f, 0.100f, 0.040f, 0.0f);
+    const auto sameFull = virtual_stock::EvaluateHybridInverseNeck(
+        head, yaw, yaw, 1.0f, 0.100f, 0.040f, 0.0f);
+    test.Check(sameHalf.valid && sameFull.valid &&
+            ApproximatelyEqual(sameHalf.appliedCorrection, {}) &&
+            ApproximatelyEqual(sameFull.appliedCorrection, {}) &&
+            ApproximatelyEqual(sameFull.correctedHead, head),
+        "Q equal to Q0 yields zero correction at half and full strength");
+
+    const auto half = virtual_stock::EvaluateHybridInverseNeck(
+        head, yaw, neutral, 0.5f, 0.100f, 0.040f, 0.0f);
+    test.CheckNear(half.appliedCorrection,
+        Scale(half.predictedOrbit, 0.5f),
+        "k=0.5 applies exactly half the unclamped orbit");
+
+    const Point3 translation{0.7f, -0.2f, 0.4f};
+    const Point3 translatedHead = Add(head, translation);
+    const auto translated = virtual_stock::EvaluateHybridInverseNeck(
+        translatedHead, yaw, neutral, 1.0f, 0.100f, 0.040f, 0.0f);
+    const auto untranslated = virtual_stock::EvaluateHybridInverseNeck(
+        head, yaw, neutral, 1.0f, 0.100f, 0.040f, 0.0f);
+    test.CheckNear(Subtract(translated.correctedHead,
+            untranslated.correctedHead), translation,
+        "pure body translation with constant Q is preserved exactly");
+    test.CheckNear(translated.correctedHead,
+        Add(Add(neck, translation), RotateByQuaternion(neutral, d)),
+        "combined body translation and head rotation preserves translation");
+
+    const auto signEquivalent = virtual_stock::EvaluateHybridInverseNeck(
+        head, Quat4{-yaw.x, -yaw.y, -yaw.z, -yaw.w}, neutral,
+        1.0f, 0.100f, 0.040f, 0.0f);
+    const auto signReference = virtual_stock::EvaluateHybridInverseNeck(
+        head, yaw, neutral, 1.0f, 0.100f, 0.040f, 0.0f);
+    test.CheckNear(signEquivalent.correctedHead, signReference.correctedHead,
+        "quaternion sign-equivalent current orientations produce equal correction");
+
+    const auto convention = virtual_stock::EvaluateHybridInverseNeck(
+        Point(0.0f, 0.0f, 0.0f), Quat4{}, Quat4{},
+        1.0f, 0.100f, 0.040f, 0.0f);
+    test.Check(convention.valid &&
+            ApproximatelyEqual(convention.currentOffset,
+                Point(0.0f, 0.040f, -0.100f)),
+        "semantic positive forward uses OpenXR local -Z");
+
+    const auto invalid = virtual_stock::EvaluateHybridInverseNeck(
+        head, Quat4{kNan, 0.0f, 0.0f, 1.0f}, neutral,
+        1.0f, 0.100f, 0.040f, 0.0f);
+    test.Check(!invalid.valid && ApproximatelyEqual(invalid.correctedHead, head) &&
+            IsFinitePoint(invalid.correctedHead),
+        "non-finite correction input falls back to finite raw HMD position");
+
+    const auto clamped = virtual_stock::EvaluateHybridInverseNeck(
+        Point(0.0f, 0.0f, 0.0f),
+        AxisAngle(Point(0.0f, 1.0f, 0.0f), pi), Quat4{},
+        1.0f, 0.100f, 0.040f, 0.0f);
+    const float appliedLength = std::sqrt(
+        DistanceSquared(clamped.appliedCorrection, {}));
+    test.Check(clamped.valid && clamped.correctionClamped &&
+            std::fabs(appliedLength -
+                kVirtualStockHybridInverseNeckCorrectionCapM) <= 1.0e-5f,
+        "inverse-neck safety clamp bounds correction at 0.15 metres");
+}
+
+void TestInverseNeckNeutralCapture(TestContext& test)
+{
+    using virtual_stock::AdvanceInverseNeckNeutralCapture;
+    using virtual_stock::InverseNeckNeutralCaptureInput;
+    using virtual_stock::InverseNeckNeutralCaptureState;
+    InverseNeckNeutralCaptureState state{};
+    const Quat4 q0 = AxisAngle(Point(0.0f, 1.0f, 0.0f), 0.25f);
+    auto sample = [&](uint64_t serial, bool family, bool menu, bool suitable,
+                      uint64_t epoch, Quat4 orientation,
+                      bool pending = false) {
+        AdvanceInverseNeckNeutralCapture(state,
+            InverseNeckNeutralCaptureInput{family, menu, suitable, pending,
+                serial, epoch, orientation});
+    };
+    sample(1, true, true, true, 4, q0);
+    test.Check(state.captureArmed && !state.neutralValid,
+        "entering inverse-neck family in F1 arms without capturing");
+    sample(2, true, false, false, 4, q0);
+    test.Check(state.captureArmed && !state.neutralValid,
+        "unfocused or invalid post-menu sample cannot capture neutral");
+    sample(3, true, false, true, 4, q0);
+    test.Check(state.neutralValid && !state.captureArmed &&
+            state.captureSerial == 3 && state.captureContactSpaceEpoch == 4,
+        "first suitable post-menu frame captures Q0 and stamps serial and epoch");
+    const auto retained = state;
+    sample(4, true, false, true, 4,
+        AxisAngle(Point(1.0f, 0.0f, 0.0f), 0.8f));
+    sample(5, true, false, true, 4, Quat4{});
+    test.Check(std::memcmp(&state.neutralOrientation,
+                   &retained.neutralOrientation, sizeof(Quat4)) == 0 &&
+            state.captureSerial == retained.captureSerial &&
+            state.captureContactSpaceEpoch ==
+                retained.captureContactSpaceEpoch,
+        "switches within inverse-neck family retain byte-identical neutral state");
+    sample(6, true, false, true, 5, q0);
+    test.Check(!state.neutralValid && state.captureArmed,
+        "reference-space epoch change invalidates and defers neutral recapture");
+    sample(7, true, false, true, 5, q0, true);
+    test.Check(!state.neutralValid,
+        "pending reference-space transition blocks neutral capture");
+    sample(8, true, false, true, 5, q0);
+    test.Check(state.neutralValid && state.captureSerial == 8 &&
+            state.captureContactSpaceEpoch == 5,
+        "next suitable stable reference-space frame deliberately recaptures");
+    const auto beforePresentationRecenter = state;
+    sample(9, true, true, true, 5, q0);
+    test.Check(state.neutralValid && !state.captureArmed &&
+            state.captureSerial == beforePresentationRecenter.captureSerial &&
+            std::memcmp(&state.neutralOrientation,
+                &beforePresentationRecenter.neutralOrientation,
+                sizeof(Quat4)) == 0,
+        "ordinary presentation recenter/menu activity does not invalidate Q0");
+    sample(10, false, false, true, 5, q0);
+    test.Check(!state.familyActive && !state.captureArmed &&
+            !state.neutralValid && state.captureSerial == 0,
+        "leaving inverse-neck family clears neutral state deliberately");
+}
+
 void TestSupportGrabPoint(TestContext& test)
 {
     const Point3 raw = Point(1.0f, 2.0f, 3.0f);
@@ -1605,7 +2487,8 @@ int main()
     const CommonGeometry geometry;
     TestStockDirectionSelection(test, geometry);
     TestSupportEndpointSelection(test, geometry);
-    TestSupportGripHandednessRouting(test);
+    TestFixedGripEndpointSelection(test, geometry);
+    TestGripHandednessRouting(test);
     TestContinuousRearReference(test, geometry);
     TestShoulderRearReference(test, geometry);
     TestChestRearReference(test, geometry);
@@ -1617,10 +2500,17 @@ int main()
     TestAdaptiveDegenerateGeometry(test);
     TestAdaptiveProximityComposition(test);
     TestProximityRelease(test, geometry);
+    TestHybridHorizontalRelease(test);
     TestStrengthBoundarySemantics(test, geometry);
     TestLegacyFallbackAndRejection(test, geometry);
+    TestRetainedSupportSteering(test);
+    TestHybridPureHelpers(test);
+    TestHybridRichEvaluatorEquivalence(test);
+    TestHybridGeometricRegressions(test);
     TestOrientationConstruction(test, geometry);
     TestToggleStatelessness(test, geometry);
+    TestHybridInverseNeck(test);
+    TestInverseNeckNeutralCapture(test);
     TestInvalidInputs(test, geometry);
     TestSupportGrabPoint(test);
     TestPalmDepthDoesNotAffectAim(test, geometry);

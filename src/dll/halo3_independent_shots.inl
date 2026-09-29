@@ -1,6 +1,9 @@
 // H3EK 411390 / retail 13B08C: native acquisition. This implementation keeps
 // the older early-helper-only experiment above dormant. Native query parameters
 // originate on the same engine thread; no input/output-user mapping is assumed.
+// The T-2 shot event uses the recorder's fixed payload/kind declarations only
+// (the gate and the shared publisher are wired in game.cpp).
+#include "telemetry_recorder.h"
 struct Halo3NativeQueryContext
 {
     uint32_t unit=UINT32_MAX,generation=0;
@@ -209,7 +212,7 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
     NativeShotTargetLease<0x24> lease{};
     NativeShotTargetLease<0x24> muzzleLease{};
     const auto previousMuzzle=g_halo3MuzzleRequest;
-    g_halo3MuzzleRequest={weapon,barrel,&muzzleLease};
+    g_halo3MuzzleRequest={weapon,barrel,predicted,&muzzleLease};
     uint64_t result=0;
     __try
     {
@@ -252,6 +255,29 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
     return result;
 }
 
+// T-2 shot event for Halo 3. The disabled gate is passed FIRST: with recording
+// off this returns on a single atomic load, before any TLS/context read. The
+// final origin/direction come from the firing invocation's own aim call
+// (post-substitution, post-native), and `substituted` says whether this mod's
+// independent path produced that ray. Weapon/barrel/predicted ride the
+// existing per-shot muzzle request; slot rides the acquisition scope and is
+// kTelemetryShotIndexUnknown when no scope owned this shot.
+void PublishHalo3ShotDiagnostic(uint32_t unit,const float origin[3],
+    const float direction[3],bool substituted,bool firesFromCamera,bool unitAim)
+{
+    if(!Telemetry_WeaponEventsAccepting())return;
+    const auto request=g_halo3MuzzleRequest;
+    const auto& scope=g_halo3IndependentShot;
+    const uint8_t slot=(scope.active && scope.unit==unit && scope.slot>=0 &&
+        scope.slot<=1)?uint8_t(scope.slot):kTelemetryShotIndexUnknown;
+    const uint8_t barrel=(request.barrel>=0 && request.barrel<2)?
+        uint8_t(request.barrel):kTelemetryShotIndexUnknown;
+    PublishShotDiagnostic(GameTitle::Halo3,
+        g_halo3RuntimeGeneration.load(std::memory_order_acquire),unit,
+        request.weapon,slot,barrel,request.predicted!=0,substituted,
+        firesFromCamera,unitAim,origin,direction);
+}
+
 __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
     float* origin,float* direction,uint64_t marker,float* offset,uint8_t project,uint8_t unitAim)
 {
@@ -261,8 +287,13 @@ __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
     {
         if(!feature.aimOriginal)__leave;
         auto& scope=g_halo3IndependentShot;
+        // The one native firing call site is the shot boundary for this event:
+        // preparation/query/marker passes call the same helper but return to
+        // other addresses, and they are not shots.
+        const bool firingCall=
+            reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x368B97;
         if(scope.active && !scope.query && scope.barrel && scope.unit==unit && origin && direction &&
-            reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x368B97)
+            firingCall)
         {
             std::memcpy(origin,scope.position,12);
             std::memcpy(direction,scope.direction,12);
@@ -270,19 +301,30 @@ __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
             if(std::isfinite(origin[0])&&std::isfinite(origin[1])&&std::isfinite(origin[2]))
                 std::memcpy(scope.position,origin,12);
             feature.rays[scope.slot].fetch_add(1,std::memory_order_relaxed);
+            // The muzzle ray is what the engine consumed, and the native call
+            // has already produced the final origin/direction.
+            PublishHalo3ShotDiagnostic(unit,origin,direction,true,false,false);
             __leave;
         }
         feature.aimOriginal(unit,origin,direction,marker,offset,project,unitAim);
-        if(!scope.active || scope.query || scope.unit!=unit || !origin || !direction ||
-            scope.slot<0 || scope.slot>1 ||
-            reinterpret_cast<uintptr_t>(_ReturnAddress())!=feature.base+0x368B97)__leave;
-        float candidate[3]{};
-        if(BuildIndependentWeaponDirection(origin,scope.position,scope.direction,
-            std::clamp(g_config.crosshair_distance_m,2.0f,50.0f)*Game_GetWorldScale(),candidate))
+        bool substituted=false;
+        if(scope.active && !scope.query && scope.unit==unit && origin && direction &&
+            scope.slot>=0 && scope.slot<=1 && firingCall)
         {
-            std::memcpy(direction,candidate,sizeof(candidate));
-            feature.rays[scope.slot].fetch_add(1,std::memory_order_relaxed);
+            float candidate[3]{};
+            if(BuildIndependentWeaponDirection(origin,scope.position,scope.direction,
+                std::clamp(g_config.crosshair_distance_m,2.0f,50.0f)*Game_GetWorldScale(),candidate))
+            {
+                std::memcpy(direction,candidate,sizeof(candidate));
+                feature.rays[scope.slot].fetch_add(1,std::memory_order_relaxed);
+                substituted=true;
+            }
         }
+        // Publish once per actual shot invocation, after the final ray is
+        // decided, whether or not the mod substituted it.
+        if(firingCall)
+            PublishHalo3ShotDiagnostic(unit,origin,direction,substituted,
+                project!=0,unitAim!=0);
     }
     __finally {feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);}
 }

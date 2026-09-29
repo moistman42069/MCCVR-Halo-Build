@@ -26,11 +26,15 @@ uint32_t currentGeneration=7;
 bool hasGameplay=true,contextCurrent=true,raiseNative{},mutateOwner{},mutateReference{},
     bindingOkay=true,quiescent=true,vehicleBindingOkay=true,vehicleParentOkay=true,
     vehicleUnitOkay=true,mutateVehicleParent{},mutateVehicleSeat{},mutateVehicleMode{},
-    mutateVehicleRenderer{},mutateVehicleSpace{};
+    mutateVehicleRenderer{},mutateVehicleSpace{},mutateWeapon{},
+    supportRelationshipValid{true},supportWired{};
 unsigned vehicleReads{},vehicleContextReads{};
+unsigned relationshipReads{};
+bool releaseOnSecondRelationshipRead{},epochChangeOnSecondRelationshipRead{};
 uintptr_t fixtureBase{};
 std::array<uint8_t,0x400> fixtureUnit{};
 constexpr uint32_t vehicleId=0x34560009;
+SupportGripRelationshipSnapshot supportRelationship{};
 MH_STATUS createResult=MH_OK,enableResult=MH_OK,disableResult=MH_OK,removeResult=MH_OK;
 RenderContext gameplay{};
 HaloCELocalPlayerState localPlayer{};
@@ -95,6 +99,14 @@ void Reset()
     vehicleReady=vehicleBindingOkay=vehicleParentOkay=vehicleUnitOkay=true;
     mutateVehicleParent=mutateVehicleSeat=mutateVehicleMode=false;
     mutateVehicleRenderer=mutateVehicleSpace=false;
+    // Persistent support grip fixtures. The default is the unwired case (base
+    // behaviour everywhere); the support matrix enables the wired gate and
+    // models "no relationship" as a READABLE disengaged snapshot with an
+    // ordinary (not support-derived) publication. A failed read is a distinct
+    // continuity-unprovable state set explicitly by the tests that need it.
+    mutateWeapon=false;supportWired=false;supportRelationship={};
+    supportRelationshipValid=true;relationshipReads=0;
+    releaseOnSecondRelationshipRead=epochChangeOnSecondRelationshipRead=false;
     vehicleReads=vehicleContextReads=0;fixtureUnit={};
     PutUnit(0xd8,uint32_t(0xffffffffu));PutUnit(0x2d0,int16_t(-1));
     raiseNative=mutateOwner=mutateReference=false;reads=0;
@@ -134,10 +146,25 @@ UnitControlPacket Packet()
 GameTitle TitleAdapter_GetActiveTitle() { return title; }
 bool HaloCENetworkInput_UsesNativeSimulation() noexcept { return networkSession; }
 uint32_t TitleAdapter_GetGeneration(GameTitle) { return currentGeneration; }
+bool VR_SupportGripWiredForTitle(GameTitle) noexcept { return supportWired; }
+bool VR_GetSupportGripRelationship(SupportGripRelationshipSnapshot& out) noexcept
+{
+    ++relationshipReads;
+    out=supportRelationship;
+    // Two-read continuity fixture: only the second read within one transaction
+    // can be mutated, so a release or a same-owner epoch change between the two
+    // reads is exercised exactly as the consumer sees it.
+    if (relationshipReads==2&&releaseOnSecondRelationshipRead)
+    { out.engaged=false;++out.epoch; }
+    else if (relationshipReads==2&&epochChangeOnSecondRelationshipRead)
+        ++out.epoch;
+    return supportRelationshipValid;
+}
 bool HaloCEControls_GetLocomotionFrame(HaloCELocalPlayerState& state,RenderContext& context) noexcept
 {
     ++reads;if (!hasGameplay) return false;state=localPlayer;context=gameplay;
     if (reads>1&&mutateOwner) ++state.player;
+    if (reads>1&&mutateWeapon) ++state.weapon;
     if (reads>1&&mutateReference) ++context.referenceRevision;
     return OnFootControls({state.hasControlledUnit,state.onFoot,state.nativePerspective==0,
         state.nativeInputBlocked,state.nativeLookBlocked,state.nativePaused,state.nativeCinematicFlag,
@@ -147,6 +174,7 @@ bool HaloCEControls_GetLocalPlayerState(HaloCELocalPlayerState& state) noexcept
 {
     ++vehicleReads;if (!hasGameplay) return false;state=localPlayer;
     if (vehicleReads>1&&mutateOwner) ++state.player;
+    if (vehicleReads>1&&mutateWeapon) ++state.weapon;
     if (vehicleReads>1&&mutateVehicleParent) ++state.parent;
     if (vehicleReads>1&&mutateVehicleSeat) PutUnit(0x2d0,int16_t(1));
     if (vehicleReads>1&&mutateVehicleMode) state.nativePerspective=0;
@@ -321,6 +349,186 @@ int main()
     Check(nativeCalls==count+1&&consumedPointer!=&packet&&packet==before&&
         consumedUnit==localPlayer.unit&&consumedUpdate==42&&Near(ReadUnitControl<Vec3>(consumed,0x1c),{0,1,0}),
         "production hook passes private packet exactly once, preserving unit and update ABI");
+    // Persistent support grip: the packet builders consume the support-capable
+    // primaryAim carrier only while this invocation's current validated owner
+    // proves the durable relationship owner and the frozen pose's support
+    // provenance is continuous with the relationship across the two reads. A
+    // mismatch, Unknown/Absent evidence, a failed read, a released
+    // relationship with a support-derived frozen pose, an owner or epoch
+    // change between reads, or a missing independent pose falls through to the
+    // stock native packet. With the feature+title gate off the base path is
+    // untouched.
+    {
+        Vec3 expectedPrimary{},expectedIndependent{};
+        auto armSupport=[&](bool engaged,bool supportDerived=true)
+        {
+            Reset();
+            supportWired=true;
+            auto& rig=gameplay.tracking.controllers;
+            rig.primaryAim={true,{0,0,0},{0,0,0,1}};
+            rig.independentPrimaryAim={true,{0,0,0},{0,.38268343f,0,.92387953f}};
+            // The aim-provenance knob is the frozen solve's own label; the
+            // presentation flag is kept separate. Support-derived fixtures
+            // carry both; the ordinary disengaged fixture carries neither.
+            rig.primaryAimSupportDerived=supportDerived;
+            rig.supportGripAttached=supportDerived;
+            localPlayer.weapon=0x56780003u;
+            localPlayer.hasFirstPersonUserRecord=true;
+            localPlayer.weaponSlotPresent=true;
+            NodeMatrix matrix{};
+            if (!BuildControllerMatrix(gameplay.camera,gameplay.tracking,gameplay.reference,
+                    rig.primaryAim,gameplay.unitsPerMeter,gameplay.positional,matrix)) return false;
+            expectedPrimary=matrix.forward;
+            if (!BuildControllerMatrix(gameplay.camera,gameplay.tracking,gameplay.reference,
+                    rig.independentPrimaryAim,gameplay.unitsPerMeter,gameplay.positional,matrix)) return false;
+            expectedIndependent=matrix.forward;
+            supportRelationship={};
+            supportRelationshipValid=true;
+            supportRelationship.engaged=engaged;
+            if (engaged)
+            {
+                supportRelationship.title=GameTitle::HaloCE;
+                supportRelationship.generation=currentGeneration;
+                supportRelationship.unit=localPlayer.unit;
+                supportRelationship.weapon=localPlayer.weapon;
+            }
+            return Dot(expectedPrimary,expectedIndependent)<.9f;
+        };
+        Check(armSupport(false,false),"ordinary no-relationship fixture poses resolve");
+        UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+        Check(consumedPointer!=&packet&&
+            Near(ReadUnitControl<Vec3>(consumed,0x28),expectedPrimary),
+            "no engaged relationship keeps the existing primary-aim carrier");
+        // The unwired gate is the base path even with a readable relationship.
+        Check(armSupport(true),"engaged support fixture");
+        supportWired=false;
+        UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+        Check(consumedPointer!=&packet&&
+            Near(ReadUnitControl<Vec3>(consumed,0x28),expectedPrimary),
+            "unwired title keeps the base carrier even with the relationship readable");
+        Check(armSupport(true),"engaged support fixture");
+        UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+        Check(consumedPointer!=&packet&&
+            Near(ReadUnitControl<Vec3>(consumed,0x28),expectedPrimary),
+            "proven same owner keeps the support-capable primary carrier");
+        supportRelationship.weapon=0x99990001u;
+        UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+        Check(consumedPointer!=&packet&&
+            Near(ReadUnitControl<Vec3>(consumed,0x28),expectedIndependent),
+            "owner mismatch detaches to the independent one-hand carrier");
+        for (size_t i=0;i<packet.size();++i)
+            if (!(i>=0x1c&&i<0x40))
+                Check(consumed[i]==packet[i],"support detach preserves every nondirection byte");
+        Check(armSupport(true),"engaged support fixture, unknown evidence");
+        localPlayer.weapon=0xffffffffu;localPlayer.weaponSlotPresent=true;
+        UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+        Check(consumedPointer!=&packet&&
+            Near(ReadUnitControl<Vec3>(consumed,0x28),expectedIndependent),
+            "Unknown CE owner evidence detaches to the independent carrier");
+        Check(armSupport(true),"engaged support fixture, absent evidence");
+        localPlayer.weapon=0xffffffffu;localPlayer.weaponSlotPresent=false;
+        UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+        Check(consumedPointer!=&packet&&
+            Near(ReadUnitControl<Vec3>(consumed,0x28),expectedIndependent),
+            "KnownAbsent CE owner evidence detaches to the independent carrier");
+        Check(armSupport(true),"engaged support fixture, missing independent pose");
+        supportRelationship.weapon=0x99990001u;
+        gameplay.tracking.controllers.independentPrimaryAim.valid=false;
+        {
+            const auto calls=nativeCalls;const auto bodiesBefore=bodies.load();
+            UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+            Check(consumedPointer==&packet&&consumed==packet&&nativeCalls==calls+1&&
+                bodies.load()==bodiesBefore,
+                "detaching owner without independent pose retains the stock packet");
+        }
+        Check(armSupport(true),"engaged support fixture, owner change");
+        mutateWeapon=true;
+        {
+            const auto calls=nativeCalls;const auto bodiesBefore=bodies.load();
+            UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+            Check(consumedPointer==&packet&&consumed==packet&&nativeCalls==calls+1&&
+                bodies.load()==bodiesBefore,"owner change between reads retains the stock packet");
+        }
+        mutateWeapon=false;
+        // A readable but disengaged relationship with a support-derived frozen
+        // publication is the release discontinuity: it must not consume the
+        // stale support carrier.
+        Check(armSupport(false,true),"readable disengaged support-derived fixture");
+        UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+        Check(consumedPointer!=&packet&&
+            Near(ReadUnitControl<Vec3>(consumed,0x28),expectedIndependent),
+            "readable disengaged with a support-derived publication detaches to the independent carrier");
+        // A failed relationship read is continuity-unprovable and always
+        // detaches, even to the independent carrier.
+        Check(armSupport(false,true),"unreadable relationship fixture");
+        supportRelationshipValid=false;
+        UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+        Check(consumedPointer!=&packet&&
+            Near(ReadUnitControl<Vec3>(consumed,0x28),expectedIndependent),
+            "unreadable relationship detaches to the independent carrier");
+        // A release between the two reads (engaged -> disengaged with an
+        // advanced epoch) hides behind equal detach booleans but is a
+        // discontinuity: the stock packet must be retained.
+        Check(armSupport(true),"engaged fixture, release between reads");
+        releaseOnSecondRelationshipRead=true;
+        {
+            const auto calls=nativeCalls;const auto bodiesBefore=bodies.load();
+            UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+            Check(consumedPointer==&packet&&consumed==packet&&nativeCalls==calls+1&&
+                bodies.load()==bodiesBefore,"release between reads retains the stock packet");
+        }
+        releaseOnSecondRelationshipRead=false;
+        // A same-owner epoch change between the two reads is also a
+        // continuity break.
+        Check(armSupport(true),"engaged fixture, epoch change between reads");
+        epochChangeOnSecondRelationshipRead=true;
+        {
+            const auto calls=nativeCalls;const auto bodiesBefore=bodies.load();
+            UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+            Check(consumedPointer==&packet&&consumed==packet&&nativeCalls==calls+1&&
+                bodies.load()==bodiesBefore,"same-owner epoch change between reads retains the stock packet");
+        }
+        epochChangeOnSecondRelationshipRead=false;
+        Check(armSupport(true),"engaged support fixture, vehicle");
+        Seated();
+        UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+        Check(consumedPointer!=&packet&&
+            Near(ReadUnitControl<Vec3>(consumed,0x1c),expectedPrimary)&&
+            Near(ReadUnitControl<Vec3>(consumed,0x28),expectedPrimary)&&
+            Near(ReadUnitControl<Vec3>(consumed,0x34),expectedPrimary),
+            "seated proven same owner keeps the support-capable primary carrier");
+        Check(armSupport(true),"engaged support fixture, vehicle detach");
+        Seated();
+        supportRelationship.weapon=0x99990001u;
+        UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+        Check(consumedPointer!=&packet&&
+            Near(ReadUnitControl<Vec3>(consumed,0x1c),expectedIndependent)&&
+            Near(ReadUnitControl<Vec3>(consumed,0x28),expectedIndependent)&&
+            Near(ReadUnitControl<Vec3>(consumed,0x34),expectedIndependent),
+            "seated owner mismatch detaches to the independent one-hand carrier");
+        Check(armSupport(true),"engaged support fixture, vehicle owner change");
+        Seated();
+        mutateWeapon=true;
+        {
+            const auto calls=nativeCalls;const auto vehiclesBefore=vehicles.load();
+            UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+            Check(consumedPointer==&packet&&consumed==packet&&nativeCalls==calls+1&&
+                vehicles.load()==vehiclesBefore,"seated owner change between reads retains the stock packet");
+        }
+        mutateWeapon=false;
+        // The vehicle transaction applies the same two-read continuity proof.
+        Check(armSupport(true),"engaged fixture, vehicle release between reads");
+        Seated();
+        releaseOnSecondRelationshipRead=true;
+        {
+            const auto calls=nativeCalls;const auto vehiclesBefore=vehicles.load();
+            UnitControlBody(localPlayer.unit,&packet,5,moduleBase+0xad0d5b);
+            Check(consumedPointer==&packet&&consumed==packet&&nativeCalls==calls+1&&
+                vehicles.load()==vehiclesBefore,"seated release between reads retains the stock packet");
+        }
+        releaseOnSecondRelationshipRead=false;
+        Reset();
+    }
     for (unsigned reason=0;reason<18;++reason)
     {
         Reset();uint32_t unit=localPlayer.unit;uintptr_t caller=moduleBase+0xad0d5b;

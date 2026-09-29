@@ -12,11 +12,18 @@ const uint8_t* Halo4MuzzleObject(uint32_t handle,uint32_t kinds)
     return tls?Halo4VehicleObject(Halo4VehicleRead<const uint8_t*>(tls,0x18),handle,kinds):nullptr;
 }
 bool Halo4BarrelValidObject(uint32_t handle){return Halo4MuzzleObject(handle,UINT32_MAX)!=nullptr;}
-bool Halo4ReadMuzzleWeapons(uint32_t owner,uint32_t weapons[2])
+bool Halo4ReadMuzzleWeapons(uint32_t owner,uint32_t weapons[2],
+    bool* primaryAbsentOut = nullptr)
 {
+    if(primaryAbsentOut)*primaryAbsentOut=false;
     const auto* unit=Halo4MuzzleObject(owner,1);if(!unit)return false;
     // H4EK E67B60: four inventory entries; retail 5F9E20 / 5FA1C4.
     const uint8_t roles[]{unit[0x63A],unit[0x63B]};
+    // A 0xFF role byte is the native explicit "no weapon in this slot". It is
+    // recorded BEFORE the validation guards below (which reject it), so an
+    // explicitly empty primary slot is a real KnownAbsent state and never an
+    // unexplained refusal (F03/F17).
+    if(primaryAbsentOut)*primaryAbsentOut=roles[0]==0xFF;
     if(roles[0]>=4||(roles[1]>=4&&roles[1]!=0xFF)||roles[0]==roles[1])return false;
     for(int slot=0;slot<2;++slot)
     {

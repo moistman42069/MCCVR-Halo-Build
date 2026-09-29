@@ -1,4 +1,3 @@
-// Adapted from Gab_dC's September 20 contribution; see docs/VIRTUAL-STOCK-INTEGRATION-2026-09-23.md.
 #pragma once
 // Pure geometry helpers for two-hand virtual-stock direction/orientation and
 // support-grab acquisition. Grab-point adjustment is intentionally separate
@@ -18,6 +17,7 @@
 // controller->controller solver.
 #include <algorithm>
 #include <cmath>
+#include "virtual_stock_settings.h"
 
 namespace virtual_stock
 {
@@ -40,6 +40,12 @@ struct DirectionSelection
     bool usedVirtualStock = false;
     bool rejectedExtreme = false;
     float rejectedAgreement = 0.0f;
+    // Persistent support grip corrective (T13): true only when `valid` was
+    // produced by a retained support-steering invocation whose primary ->
+    // support agreement crossed below the legacy 0.35 floor. The floor verdict
+    // itself stays recorded in rejectedAgreement, so the acceptance is never
+    // presented as an ordinary in-cone pass.
+    bool retainedBeyondAgreementFloor = false;
     Point3 direction{0.0f, 0.0f, 0.0f};
 };
 
@@ -47,6 +53,44 @@ struct SupportEndpointSelection
 {
     bool usedGrip = false;
     Point3 position{0.0f, 0.0f, 0.0f};
+};
+
+struct HybridStockEvaluation
+{
+    bool valid = false;
+    bool virtualRearValid = false;
+    Point3 virtualRear{};
+    Point3 direction{};
+};
+
+struct HybridSeatEvaluation
+{
+    bool valid = false;
+    float segmentLength = 0.0f;
+    float rawProjection = 0.0f;
+    float clampedProjection = 0.0f;
+    Point3 closest{};
+    float seatError = 0.0f;
+    float influence = 0.0f;
+};
+
+struct HybridHorizontalReleaseEvaluation
+{
+    bool valid = false;
+    float horizontalReach = 0.0f;
+    float influence = 0.0f;
+};
+
+struct HybridInverseNeckEvaluation
+{
+    bool valid = false;
+    bool correctionClamped = false;
+    Point3 currentOffset{};
+    Point3 neutralOffset{};
+    Point3 predictedOrbit{};
+    Point3 clampedOrbit{};
+    Point3 appliedCorrection{};
+    Point3 correctedHead{};
 };
 
 struct AdaptiveStockTriangle
@@ -113,6 +157,94 @@ inline Point3 RotatePoint(Quat4 q, Point3 value) noexcept
         value.x + q.w * twiceCross.x + u.y * twiceCross.z - u.z * twiceCross.y,
         value.y + q.w * twiceCross.y + u.z * twiceCross.x - u.x * twiceCross.z,
         value.z + q.w * twiceCross.z + u.x * twiceCross.y - u.y * twiceCross.x};
+}
+
+inline bool TryNormalizeQuaternion(Quat4 value, Quat4& out) noexcept
+{
+    if (!Finite(value))
+        return false;
+    const float lengthSquared = value.x * value.x + value.y * value.y +
+        value.z * value.z + value.w * value.w;
+    if (!std::isfinite(lengthSquared) || lengthSquared < 1.0e-8f)
+        return false;
+    const float length = std::sqrt(lengthSquared);
+    if (!std::isfinite(length) || length <= 0.0f)
+        return false;
+    out = Quat4{value.x / length, value.y / length,
+        value.z / length, value.w / length};
+    return Finite(out);
+}
+
+// Neutral-preserving inverse-neck diagnostic. Semantic local forward is -Z,
+// matching the existing OpenXR aiming convention.
+inline HybridInverseNeckEvaluation EvaluateHybridInverseNeck(
+    Point3 head, Quat4 currentOrientation, Quat4 neutralOrientation,
+    float strength, float forwardM, float upM, float lateralM) noexcept
+{
+    HybridInverseNeckEvaluation result{};
+    result.correctedHead = head;
+    if (!Finite(head) || !std::isfinite(strength) ||
+        !std::isfinite(forwardM) || !std::isfinite(upM) ||
+        !std::isfinite(lateralM))
+        return result;
+
+    Quat4 current{};
+    Quat4 neutral{};
+    if (!TryNormalizeQuaternion(currentOrientation, current) ||
+        !TryNormalizeQuaternion(neutralOrientation, neutral))
+        return result;
+
+    const float k = std::clamp(strength,
+        kVirtualStockHybridInverseNeckStrengthMinimum,
+        kVirtualStockHybridInverseNeckStrengthMaximum);
+    const Point3 localOffset{
+        std::clamp(lateralM,
+            kVirtualStockHybridInverseNeckLateralMinimumM,
+            kVirtualStockHybridInverseNeckLateralMaximumM),
+        std::clamp(upM, kVirtualStockHybridInverseNeckUpMinimumM,
+            kVirtualStockHybridInverseNeckUpMaximumM),
+        -std::clamp(forwardM,
+            kVirtualStockHybridInverseNeckForwardMinimumM,
+            kVirtualStockHybridInverseNeckForwardMaximumM)};
+    result.currentOffset = RotatePoint(current, localOffset);
+    result.neutralOffset = RotatePoint(neutral, localOffset);
+    result.predictedOrbit = Point3{
+        result.currentOffset.x - result.neutralOffset.x,
+        result.currentOffset.y - result.neutralOffset.y,
+        result.currentOffset.z - result.neutralOffset.z};
+    const float orbitLengthSquared = Dot(result.predictedOrbit,
+        result.predictedOrbit);
+    if (!Finite(result.currentOffset) || !Finite(result.neutralOffset) ||
+        !Finite(result.predictedOrbit) || !std::isfinite(orbitLengthSquared) ||
+        orbitLengthSquared < 0.0f)
+        return result;
+    const float orbitLength = std::sqrt(orbitLengthSquared);
+    if (!std::isfinite(orbitLength))
+        return result;
+    result.clampedOrbit = result.predictedOrbit;
+    if (orbitLength > kVirtualStockHybridInverseNeckCorrectionCapM)
+    {
+        const float scale = kVirtualStockHybridInverseNeckCorrectionCapM /
+            orbitLength;
+        result.clampedOrbit = Point3{
+            result.predictedOrbit.x * scale,
+            result.predictedOrbit.y * scale,
+            result.predictedOrbit.z * scale};
+        result.correctionClamped = true;
+    }
+    result.appliedCorrection = Point3{
+        result.clampedOrbit.x * k,
+        result.clampedOrbit.y * k,
+        result.clampedOrbit.z * k};
+    result.correctedHead = k <= 0.0f ? head : Point3{
+        head.x - result.appliedCorrection.x,
+        head.y - result.appliedCorrection.y,
+        head.z - result.appliedCorrection.z};
+    result.valid = Finite(result.clampedOrbit) &&
+        Finite(result.appliedCorrection) && Finite(result.correctedHead);
+    if (!result.valid)
+        result = HybridInverseNeckEvaluation{false, false, {}, {}, {}, {}, {}, head};
+    return result;
 }
 
 inline bool TryBuildHmdHorizontalBasis(
@@ -196,6 +328,154 @@ inline SupportEndpointSelection SelectTwoHandSupportEndpoint(
     return result;
 }
 
+// Free two-hand production geometry: Grip -> Grip (GG). With Virtual Stock OFF
+// and the two-hand hold latched, the positional B line IS the primary Grip
+// position -> support Grip position pair. It is a fixed implementation detail
+// of the product, not a user-selectable anchor and not a config/menu switch,
+// and it deliberately never consults "Reduce Support-Hand Rotation": that
+// setting only chooses the Virtual Stock support endpoint.
+//
+// Both grips must be committed (`*GripValid`) and finite. Anything else -
+// either grip missing, non-finite, or the solve carrying no grip sample at all
+// - returns the caller's aim-position pair, which is the exact pre-GG geometry,
+// so absent or untracked grip data degrades to the previous behaviour instead
+// of a mixed grip/aim pair or a fabricated position. A committed-but-
+// non-finite grip is treated the same way here rather than failing the whole
+// selection: the product solve must keep steering (fail-safe, never NaN).
+//
+// This mirrors the Two-Hand Lab's GG anchor (same both-grips-or-aim-line rule);
+// the product path computes it here so GG never depends on the Lab being
+// enabled.
+struct TwoHandGripEndpoints
+{
+    // True only when the returned pair is the Grip -> Grip pair.
+    bool usedGrips = false;
+    // False only when neither pair is usable (non-finite aim endpoints); the
+    // caller then keeps today's fail-closed behaviour.
+    bool valid = false;
+    Point3 primary{};
+    Point3 support{};
+};
+
+inline TwoHandGripEndpoints SelectTwoHandGripEndpoints(
+    Point3 primaryAim, Point3 supportAim, bool primaryGripValid,
+    Point3 primaryGrip, bool supportGripValid, Point3 supportGrip) noexcept
+{
+    TwoHandGripEndpoints result{};
+    if (primaryGripValid && supportGripValid && Finite(primaryGrip) &&
+        Finite(supportGrip))
+    {
+        result.usedGrips = true;
+        result.primary = primaryGrip;
+        result.support = supportGrip;
+        result.valid = true;
+        return result;
+    }
+    if (Finite(primaryAim) && Finite(supportAim))
+    {
+        result.primary = primaryAim;
+        result.support = supportAim;
+        result.valid = true;
+    }
+    return result;
+}
+
+// The legacy controller-to-controller acceptance rule is also the Hybrid
+// offhand candidate. Keep the rejection threshold and diagnostics in one pure
+// helper so Hybrid cannot accidentally bypass the stock-safe agreement guard.
+//
+// `retainBeyondAgreementFloor` is the persistent-support-grip corrective: the
+// caller may set it only for an invocation that is qualified to consume
+// support geometry (wired title, durable relationship engaged and readable,
+// current invocation proving the same owner). When set, the 0.35 agreement
+// floor no longer rejects the direction; every other guard is unchanged
+// (finite inputs, the minimum segment length, the normalization and the
+// finite output check all still run first), and the floor verdict is still
+// written to `rejectedExtreme` / `rejectedAgreement` so a caller can record
+// that the floor would have rejected. The stock ray path and the Hybrid
+// offhand path never set it.
+inline bool TryBuildAcceptedSupportDirection(
+    Point3 primary, Point3 support, Point3 primaryForward,
+    Point3& out, bool& rejectedExtreme, float& rejectedAgreement,
+    bool retainBeyondAgreementFloor = false) noexcept
+{
+    out = Point3{};
+    rejectedExtreme = false;
+    rejectedAgreement = 0.0f;
+    if (!Finite(primary) || !Finite(support) || !Finite(primaryForward))
+        return false;
+
+    const Point3 delta{
+        support.x - primary.x,
+        support.y - primary.y,
+        support.z - primary.z};
+    const float lengthSquared = Dot(delta, delta);
+    if (!Finite(delta) || !std::isfinite(lengthSquared))
+        return false;
+    const float length = std::sqrt(lengthSquared);
+    if (!std::isfinite(length) || length < 1.0e-4f)
+        return false;
+    out = Point3{
+        delta.x / length,
+        delta.y / length,
+        delta.z / length};
+    if (!Finite(out))
+        return false;
+    const float agreement = Dot(out, primaryForward);
+    if (!std::isfinite(agreement))
+    {
+        // A non-finite agreement is never retention-eligible: the primary
+        // forward itself is unusable and the caller must fall back.
+        rejectedExtreme = true;
+        rejectedAgreement = agreement;
+        return false;
+    }
+    if (agreement < 0.35f)
+    {
+        rejectedExtreme = true;
+        rejectedAgreement = agreement;
+        return retainBeyondAgreementFloor;
+    }
+    return true;
+}
+
+// Blend direction-domain authority. The endpoint paths intentionally return
+// their input direction without reconstructing or renormalizing it.
+inline bool TryBlendDirectionAuthority(
+    Point3 primary, Point3 support, float influence, Point3& out) noexcept
+{
+    out = Point3{};
+    if (!Finite(primary) || !Finite(support) || !std::isfinite(influence))
+        return false;
+    if (influence <= 0.0f)
+    {
+        out = primary;
+        return true;
+    }
+    if (influence >= 1.0f)
+    {
+        out = support;
+        return true;
+    }
+    const float primaryWeight = 1.0f - influence;
+    const Point3 candidate{
+        primary.x * primaryWeight + support.x * influence,
+        primary.y * primaryWeight + support.y * influence,
+        primary.z * primaryWeight + support.z * influence};
+    const float lengthSquared = Dot(candidate, candidate);
+    if (!Finite(candidate) || !std::isfinite(lengthSquared) ||
+        lengthSquared < 1.0e-8f)
+        return false;
+    const float length = std::sqrt(lengthSquared);
+    if (!std::isfinite(length) || length <= 0.0f)
+        return false;
+    out = Point3{
+        candidate.x / length,
+        candidate.y / length,
+        candidate.z / length};
+    return Finite(out);
+}
+
 // Rear reference -> raw support-controller direction, normalized.
 inline bool BuildVirtualStockDirection(Point3 rear, Point3 support, Point3& out) noexcept
 {
@@ -221,7 +501,9 @@ inline bool BuildVirtualStockRearTarget(
 {
     if (!Finite(head) || !std::isfinite(rearHeightM))
         return false;
-    const float clampedHeight = std::clamp(rearHeightM, -0.30f, 0.10f);
+    const float clampedHeight = std::clamp(
+        rearHeightM, kVirtualStockRearHeightMinimumM,
+        kVirtualStockRearHeightMaximumM);
     out = Point3{head.x, head.y + clampedHeight, head.z};
     return Finite(out);
 }
@@ -235,8 +517,12 @@ inline bool TryBuildHmdRelativeShoulderRearTarget(
     if (!BuildVirtualStockRearTarget(head, rearHeightM, headRear) ||
         !std::isfinite(shoulderBackM) || !std::isfinite(shoulderSideM))
         return false;
-    const float shoulderBack = std::clamp(shoulderBackM, 0.0f, 0.25f);
-    const float shoulderSide = std::clamp(shoulderSideM, 0.0f, 0.20f);
+    const float shoulderBack = std::clamp(
+        shoulderBackM, kVirtualStockShoulderBackMinimumM,
+        kVirtualStockShoulderBackMaximumM);
+    const float shoulderSide = std::clamp(
+        shoulderSideM, kVirtualStockShoulderSideMinimumM,
+        kVirtualStockShoulderSideMaximumM);
     if (shoulderBack == 0.0f && shoulderSide == 0.0f)
     {
         out = headRear;
@@ -267,9 +553,15 @@ inline bool TryBuildHmdRelativeChestRearTarget(
     if (!Finite(head) || !std::isfinite(chestHeightM) ||
         !std::isfinite(chestBackM) || !std::isfinite(chestSideM))
         return false;
-    const float chestHeight = std::clamp(chestHeightM, -0.50f, -0.220f);
-    const float chestBack = std::clamp(chestBackM, 0.0f, 0.25f);
-    const float chestSide = std::clamp(chestSideM, 0.0f, 0.20f);
+    const float chestHeight = std::clamp(
+        chestHeightM, kVirtualStockChestHeightMinimumM,
+        kVirtualStockChestHeightMaximumM);
+    const float chestBack = std::clamp(
+        chestBackM, kVirtualStockChestBackMinimumM,
+        kVirtualStockChestBackMaximumM);
+    const float chestSide = std::clamp(
+        chestSideM, kVirtualStockChestSideMinimumM,
+        kVirtualStockChestSideMaximumM);
     const Point3 chestBase{head.x, head.y + chestHeight, head.z};
     if (chestBack == 0.0f && chestSide == 0.0f)
     {
@@ -502,10 +794,18 @@ inline bool TryBuildAdaptiveStockPatch(
         !std::isfinite(bottomHalfWidthM))
         return false;
 
-    const float topHeight = std::clamp(topHeightM, -0.35f, 0.0f);
-    const float bottomHeight = std::clamp(bottomHeightM, -0.65f, -0.20f);
-    const float topHalfWidth = std::clamp(topHalfWidthM, 0.02f, 0.25f);
-    const float bottomHalfWidth = std::clamp(bottomHalfWidthM, 0.02f, 0.30f);
+    const float topHeight = std::clamp(
+        topHeightM, kVirtualStockAdaptiveTopHeightMinimumM,
+        kVirtualStockAdaptiveTopHeightMaximumM);
+    const float bottomHeight = std::clamp(
+        bottomHeightM, kVirtualStockAdaptiveBottomHeightMinimumM,
+        kVirtualStockAdaptiveBottomHeightMaximumM);
+    const float topHalfWidth = std::clamp(
+        topHalfWidthM, kVirtualStockAdaptiveTopHalfWidthMinimumM,
+        kVirtualStockAdaptiveTopHalfWidthMaximumM);
+    const float bottomHalfWidth = std::clamp(
+        bottomHalfWidthM, kVirtualStockAdaptiveBottomHalfWidthMinimumM,
+        kVirtualStockAdaptiveBottomHalfWidthMaximumM);
     Point3 horizontalForward{};
     Point3 horizontalRight{};
     if (!TryBuildHmdHorizontalBasis(
@@ -605,7 +905,9 @@ inline bool BuildVirtualStockRearReference(
 {
     if (!std::isfinite(strength))
         return false;
-    const float clampedStrength = std::clamp(strength, 0.0f, 1.0f);
+    const float clampedStrength = std::clamp(
+        strength, kVirtualStockStrengthMinimum,
+        kVirtualStockStrengthMaximum);
     Point3 headTarget{};
     if (!BuildVirtualStockRearTarget(head, rearHeightM, headTarget))
         return false;
@@ -628,6 +930,57 @@ inline bool BuildVirtualStockRearReference(
     return Finite(out);
 }
 
+// Hybrid fixed-stock candidate. Unlike the legacy selectors, zero strength is
+// unavailable rather than a request to reuse the unguarded primary->support
+// ray, so a rejected B cannot be resurrected through C. Optional details are
+// populated from this production calculation rather than a parallel formula.
+inline bool TryBuildHybridStockDirection(
+    Point3 primary, Point3 target, Point3 support, float strength,
+    Point3& out, HybridStockEvaluation* details = nullptr) noexcept
+{
+    out = Point3{};
+    if (details)
+        *details = HybridStockEvaluation{};
+    if (!Finite(primary) || !Finite(target) || !Finite(support) ||
+        !std::isfinite(strength) || strength <= 0.0f)
+        return false;
+    const float clampedStrength = std::clamp(
+        strength, kVirtualStockStrengthMinimum,
+        kVirtualStockStrengthMaximum);
+    Point3 rear = target;
+    if (clampedStrength < 1.0f)
+    {
+        rear = Point3{
+            primary.x + clampedStrength * (target.x - primary.x),
+            primary.y + clampedStrength * (target.y - primary.y),
+            primary.z + clampedStrength * (target.z - primary.z)};
+    }
+    if (!Finite(rear))
+        return false;
+    if (details)
+    {
+        details->virtualRear = rear;
+        details->virtualRearValid = true;
+    }
+    const bool valid = BuildVirtualStockDirection(rear, support, out);
+    if (details)
+    {
+        details->valid = valid;
+        details->direction = out;
+    }
+    return valid;
+}
+
+inline HybridStockEvaluation EvaluateHybridStock(
+    Point3 primary, Point3 target, Point3 support, float strength) noexcept
+{
+    HybridStockEvaluation result{};
+    Point3 direction{};
+    TryBuildHybridStockDirection(
+        primary, target, support, strength, direction, &result);
+    return result;
+}
+
 // Stateless release influence for the full rear target. Invalid geometry or
 // thresholds fail closed to the legacy boundary (zero stock influence).
 inline float ComputeProximityInfluence(
@@ -647,6 +1000,119 @@ inline float ComputeProximityInfluence(
         0.0f, 1.0f);
     const float smooth = t * t * (3.0f - 2.0f * t);
     return std::isfinite(smooth) ? 1.0f - smooth : 0.0f;
+}
+
+// Profile-only Hybrid release geometry. X/Z tracking-space reach deliberately
+// ignores hand height and HMD orientation; invalid enabled geometry fails to
+// zero stock authority rather than granting the C endpoint.
+inline float ComputeHybridHorizontalRearReleaseInfluence(
+    Point3 primary, bool headValid, Point3 head,
+    float fullStockDistance, float releaseDistance,
+    HybridHorizontalReleaseEvaluation* details = nullptr) noexcept
+{
+    if (details)
+        *details = HybridHorizontalReleaseEvaluation{};
+    if (!headValid || !Finite(primary) || !Finite(head) ||
+        !std::isfinite(fullStockDistance) ||
+        !std::isfinite(releaseDistance) || fullStockDistance < 0.0f ||
+        releaseDistance <= fullStockDistance)
+    {
+        return 0.0f;
+    }
+    const float dx = primary.x - head.x;
+    const float dz = primary.z - head.z;
+    const float distanceSquared = dx * dx + dz * dz;
+    if (!std::isfinite(dx) || !std::isfinite(dz) ||
+        !std::isfinite(distanceSquared) || distanceSquared < 0.0f)
+    {
+        return 0.0f;
+    }
+    const float horizontalReach = std::sqrt(distanceSquared);
+    if (!std::isfinite(horizontalReach))
+        return 0.0f;
+    const float influence = ComputeProximityInfluence(
+        horizontalReach, fullStockDistance, releaseDistance);
+    if (details)
+    {
+        details->valid = true;
+        details->horizontalReach = horizontalReach;
+        details->influence = influence;
+    }
+    return influence;
+}
+
+// Hybrid seating authority projects the primary hand onto the finite T->S
+// segment. A nearly collapsed segment is not a valid seat, even though the
+// generic closest-point helper intentionally treats one as an endpoint.
+// Optional details are populated after the production influence arithmetic.
+inline float ComputeHybridSeatInfluence(
+    Point3 primary, Point3 target, Point3 support,
+    float fullSeatDistance, float releaseSeatDistance,
+    HybridSeatEvaluation* details = nullptr) noexcept
+{
+    if (details)
+        *details = HybridSeatEvaluation{};
+    if (!Finite(primary) || !Finite(target) || !Finite(support) ||
+        !std::isfinite(fullSeatDistance) ||
+        !std::isfinite(releaseSeatDistance))
+        return 0.0f;
+    const Point3 segment{
+        support.x - target.x,
+        support.y - target.y,
+        support.z - target.z};
+    const float denominator = Dot(segment, segment);
+    if (!Finite(segment) || !std::isfinite(denominator) ||
+        denominator < 1.0e-8f)
+        return 0.0f;
+    const Point3 fromTarget{
+        primary.x - target.x,
+        primary.y - target.y,
+        primary.z - target.z};
+    const float numerator = Dot(fromTarget, segment);
+    if (!Finite(fromTarget) || !std::isfinite(numerator))
+        return 0.0f;
+    const float rawProjection = numerator / denominator;
+    if (!std::isfinite(rawProjection))
+        return 0.0f;
+    const float projection = std::clamp(rawProjection, 0.0f, 1.0f);
+    const Point3 closest{
+        target.x + segment.x * projection,
+        target.y + segment.y * projection,
+        target.z + segment.z * projection};
+    float errorSquared = 0.0f;
+    if (!Finite(closest) || !TryDistanceSquared(primary, closest, errorSquared))
+        return 0.0f;
+    const float seatError = std::sqrt(errorSquared);
+    if (!std::isfinite(seatError))
+        return 0.0f;
+    const float influence = ComputeProximityInfluence(
+        seatError, fullSeatDistance, releaseSeatDistance);
+    if (details)
+    {
+        const float segmentLength = std::sqrt(denominator);
+        if (std::isfinite(segmentLength))
+        {
+            details->valid = true;
+            details->segmentLength = segmentLength;
+            details->rawProjection = rawProjection;
+            details->clampedProjection = projection;
+            details->closest = closest;
+            details->seatError = seatError;
+            details->influence = influence;
+        }
+    }
+    return influence;
+}
+
+inline HybridSeatEvaluation EvaluateHybridSeat(
+    Point3 primary, Point3 target, Point3 support,
+    float fullSeatDistance, float releaseSeatDistance) noexcept
+{
+    HybridSeatEvaluation result{};
+    ComputeHybridSeatInfluence(
+        primary, target, support, fullSeatDistance, releaseSeatDistance,
+        &result);
+    return result;
 }
 
 // Apply the optional release policy to the configured stock strength. The
@@ -705,17 +1171,32 @@ inline float ApplyVirtualStockProximityReleaseForTarget(
 // head-decoupling. Anything else (option off, no coherent head, degenerate
 // ray) falls back to the legacy primary -> support line with its agreement
 // rejection intact. Exact zero strength always enters that legacy branch.
+//
+// `retainBeyondAgreementFloor` is the persistent-support-grip corrective and
+// applies to the legacy fallback only. The caller sets it only for a
+// qualified invocation (engaged + trusted relationship) AND only while
+// Virtual Stock is off; the stock branch above and the non-retained fallback
+// are byte-identical to the pre-fix rule. When it is set and the floor
+// rejects, the selection stays valid and records the crossed floor in
+// `retainedBeyondAgreementFloor` (with the floor agreement in
+// `rejectedAgreement`), so the caller can distinguish the retained
+// acceptance from an ordinary in-cone pass.
 inline DirectionSelection SelectTwoHandAimDirection(
     bool virtualStockEnabled, float stockStrength, float rearHeightM,
     bool headValid, Point3 head, Point3 stockSupport, Point3 primary,
-    Point3 legacySupport, Point3 primaryForward) noexcept
+    Point3 legacySupport, Point3 primaryForward,
+    bool retainBeyondAgreementFloor = false) noexcept
 {
     DirectionSelection result{};
     if (virtualStockEnabled && std::isfinite(stockStrength) &&
         std::isfinite(rearHeightM))
     {
-        const float clampedStrength = std::clamp(stockStrength, 0.0f, 1.0f);
-        const float clampedHeight = std::clamp(rearHeightM, -0.30f, 0.10f);
+        const float clampedStrength = std::clamp(
+            stockStrength, kVirtualStockStrengthMinimum,
+            kVirtualStockStrengthMaximum);
+        const float clampedHeight = std::clamp(
+            rearHeightM, kVirtualStockRearHeightMinimumM,
+            kVirtualStockRearHeightMaximumM);
         if (clampedStrength > 0.0f && headValid)
         {
             Point3 stock{};
@@ -739,29 +1220,28 @@ inline DirectionSelection SelectTwoHandAimDirection(
             }
         }
     }
-    if (!Finite(primary) || !Finite(legacySupport) || !Finite(primaryForward))
-        return result;
-    const float vx = legacySupport.x - primary.x;
-    const float vy = legacySupport.y - primary.y;
-    const float vz = legacySupport.z - primary.z;
-    const float lengthSquared = vx * vx + vy * vy + vz * vz;
-    if (!std::isfinite(lengthSquared))
-        return result;
-    const float length = std::sqrt(lengthSquared);
-    if (!std::isfinite(length) || length < 1e-4f)
-        return result;
-    const Point3 direction{vx / length, vy / length, vz / length};
-    if (!Finite(direction))
-        return result;
-    const float agreement = Dot(direction, primaryForward);
-    if (!std::isfinite(agreement) || agreement < 0.35f)
+    Point3 candidate{};
+    bool floorRejected = false;
+    float floorAgreement = 0.0f;
+    const bool accepted = TryBuildAcceptedSupportDirection(
+        primary, legacySupport, primaryForward, candidate,
+        floorRejected, floorAgreement, retainBeyondAgreementFloor);
+    result.valid = accepted;
+    if (accepted)
     {
-        result.rejectedExtreme = true;
-        result.rejectedAgreement = agreement;
-        return result;
+        result.direction = candidate;
+        result.retainedBeyondAgreementFloor = floorRejected;
+        // Only a retained acceptance bypassed the floor: it keeps the crossed
+        // agreement the floor rejected (the `DirectionSelection` contract),
+        // while an ordinary in-cone pass keeps exactly zero. No consumer reads
+        // this field for an accepted selection, so the store is diagnostic.
+        result.rejectedAgreement = floorRejected ? floorAgreement : 0.0f;
     }
-    result.valid = true;
-    result.direction = direction;
+    else
+    {
+        result.rejectedExtreme = floorRejected;
+        result.rejectedAgreement = floorAgreement;
+    }
     return result;
 }
 
@@ -773,7 +1253,9 @@ inline DirectionSelection SelectTwoHandAimDirectionForTarget(
     DirectionSelection result{};
     if (virtualStockEnabled && std::isfinite(stockStrength))
     {
-        const float clampedStrength = std::clamp(stockStrength, 0.0f, 1.0f);
+        const float clampedStrength = std::clamp(
+            stockStrength, kVirtualStockStrengthMinimum,
+            kVirtualStockStrengthMaximum);
         if (clampedStrength > 0.0f && rearTargetValid && Finite(rearTarget))
         {
             Point3 rear{};
@@ -800,30 +1282,12 @@ inline DirectionSelection SelectTwoHandAimDirectionForTarget(
             }
         }
     }
-    if (!Finite(primary) || !Finite(legacySupport) || !Finite(primaryForward))
-        return result;
-    const Point3 delta{
-        legacySupport.x - primary.x,
-        legacySupport.y - primary.y,
-        legacySupport.z - primary.z};
-    const float lengthSquared = Dot(delta, delta);
-    if (!std::isfinite(lengthSquared))
-        return result;
-    const float length = std::sqrt(lengthSquared);
-    if (!std::isfinite(length) || length < 1.0e-4f)
-        return result;
-    result.direction = Point3{
-        delta.x / length, delta.y / length, delta.z / length};
-    if (!Finite(result.direction))
-        return result;
-    const float agreement = Dot(result.direction, primaryForward);
-    if (!std::isfinite(agreement) || agreement < 0.35f)
-    {
-        result.rejectedExtreme = true;
-        result.rejectedAgreement = agreement;
-        return result;
-    }
-    result.valid = true;
+    Point3 candidate{};
+    result.valid = TryBuildAcceptedSupportDirection(
+        primary, legacySupport, primaryForward, candidate,
+        result.rejectedExtreme, result.rejectedAgreement);
+    if (result.valid || result.rejectedExtreme)
+        result.direction = candidate;
     return result;
 }
 

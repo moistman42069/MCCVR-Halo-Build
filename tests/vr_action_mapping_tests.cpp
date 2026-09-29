@@ -186,14 +186,16 @@ int main()
     ConfigLoad(path.c_str());
     const Config defaults{};
     Check(g_config.virtual_stock&&g_config.virtual_stock_rear_reference==3,"stock activation and mode load independently of invalid geometry");
-    Check(g_config.virtual_stock_strength==defaults.virtual_stock_strength&&
+    Check(g_config.virtual_stock_standard_strength==defaults.virtual_stock_standard_strength&&
+        g_config.virtual_stock_plus_strength==defaults.virtual_stock_plus_strength&&
         g_config.virtual_stock_shoulder_side_m==defaults.virtual_stock_shoulder_side_m&&g_config.virtual_stock_chest_back_m==0,
         "malformed and nonfinite stock inputs preserve safe defaults");
     Check(g_config.virtual_stock_rear_height_m==-.3f&&g_config.virtual_stock_adaptive_top_half_width_m==.25f,
         "stock geometry clamps finite out-of-range values");
-    Check(g_config.virtual_stock_proximity_full_m==.27f&&g_config.virtual_stock_proximity_release_m==.425f&&
-        g_config.virtual_stock_adaptive_top_height_m==-.18f&&g_config.virtual_stock_adaptive_bottom_height_m==-.45f,
-        "inverted proximity and adaptive pairs restore valid geometry together after parsing");
+    Check(g_config.virtual_stock_proximity_full_m==.27f&&g_config.virtual_stock_proximity_release_m==.425f,
+        "inverted proximity pairs restore valid geometry after parsing");
+    Check(g_config.virtual_stock_adaptive_top_height_m==-.35f&&g_config.virtual_stock_adaptive_bottom_height_m==-.2f,
+        "dormant Adaptive geometry keeps its own finite clamps without a product pair rule");
     Check(g_config.hide_muzzle_flash[0]&&!g_config.hide_muzzle_flash[1]&&!g_config.hide_muzzle_flash[3]&&g_config.hide_muzzle_flash[5],
         "per-game muzzle-flash values parse strictly and independently");
     Check(!g_config.bloom_enabled[0]&&g_config.bloom_enabled[1]&&g_config.bloom_enabled[2],
@@ -203,7 +205,8 @@ int main()
         "pouch location and offsets reject invalid or nonfinite values and clamp finite geometry");
     struct StockSetting {const char* key;float Config::*member;float value;};
     const StockSetting stockSettings[]{
-        {"virtual_stock_strength",&Config::virtual_stock_strength,.75f},
+        {"virtual_stock_standard_strength",&Config::virtual_stock_standard_strength,.75f},
+        {"virtual_stock_plus_strength",&Config::virtual_stock_plus_strength,.85f},
         {"virtual_stock_rear_height_m",&Config::virtual_stock_rear_height_m,-.17f},
         {"virtual_stock_shoulder_back_m",&Config::virtual_stock_shoulder_back_m,.1f},
         {"virtual_stock_shoulder_side_m",&Config::virtual_stock_shoulder_side_m,.12f},
@@ -230,8 +233,8 @@ int main()
     for(unsigned t=0;t<6;++t) Check(g_config.hide_muzzle_flash[t]==expected.hide_muzzle_flash[t],"all six muzzle-flash settings survive round trip");
     for(unsigned t=0;t<6;++t) Check(g_config.bloom_enabled[t]==expected.bloom_enabled[t],"all six bloom settings survive round trip");
     for(const auto& field:stockSettings) Check(std::fabs(g_config.*field.member-expected.*field.member)<.00001f,"each stock geometry field survives config save and reload");
-    Check(g_config.virtual_stock&&g_config.virtual_stock_rear_reference==2&&!g_config.virtual_stock_proximity_release,
-        "stock switches survive config save and reload");
+    Check(g_config.virtual_stock&&g_config.virtual_stock_rear_reference==0&&!g_config.virtual_stock_proximity_release,
+        "stock switches survive config save and reload (Chest is no longer a product selection)");
     Check(g_config.weapon_pouch_location==1&&std::fabs(g_config.weapon_pouch_offset_x_m+.12f)<.00001f&&
         std::fabs(g_config.weapon_pouch_offset_y_m-.23f)<.00001f&&std::fabs(g_config.weapon_pouch_offset_z_m+.34f)<.00001f,
         "shoulder pouch and all three custom offsets survive config save and reload");

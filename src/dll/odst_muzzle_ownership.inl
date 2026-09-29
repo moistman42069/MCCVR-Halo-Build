@@ -8,13 +8,20 @@ const uint8_t* OdstMuzzleObject(uint32_t handle,uint8_t kind)
     const auto* entry=entries+(handle&0xFFFF)*0x18;
     return entry[3]==kind?*reinterpret_cast<const uint8_t* const*>(entry+0x10):nullptr;
 }
-bool OdstReadMuzzleWeapons(uint32_t owner,uint32_t weapons[2])
+bool OdstReadMuzzleWeapons(uint32_t owner,uint32_t weapons[2],
+    bool* primaryAbsentOut=nullptr)
 {
+    if(primaryAbsentOut)*primaryAbsentOut=false;
     const auto* unit=OdstMuzzleObject(owner,0);
     if(!unit)return false;
     // ODSTEK ADE940 and retail 39AB60: four handles at +27C. The firing
     // data helper proves primary/secondary role bytes +276/+277 separately.
     const uint8_t roles[2]{unit[0x276],unit[0x277]};
+    // A 0xFF primary role byte is the native explicit "no weapon in this
+    // slot": report it BEFORE the validation guards so a raw empty slot is
+    // never lost to an unrelated secondary-role/shared-handle rejection. Every
+    // other failure stays uncertainty and is never reported as absence (F03).
+    if(primaryAbsentOut)*primaryAbsentOut=roles[0]==0xFF;
     if(roles[0]>=4||(roles[1]>=4&&roles[1]!=0xFF)||roles[0]==roles[1])return false;
     for(int slot=0;slot<2;++slot)
     {

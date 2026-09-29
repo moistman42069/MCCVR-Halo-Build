@@ -102,43 +102,106 @@ void UnitControlBody(uint32_t unit,const UnitControlPacket* source,int32_t clien
     HaloCELocalPlayerState state{},latest{};RenderContext context{},latestContext{};
     bool aim{};
     if (caller==moduleBase+0xad0d5b&&ready.load(std::memory_order_acquire)&&
-        Owner(unit,state,context)&&CopyPacket(source,packet)&&
-        BuildTrackedUnitControl(context,packet,candidate,aim)&&Owner(unit,latest,latestContext)&&
-        state.player==latest.player&&state.inputUser==latest.inputUser&&
-        state.unit==latest.unit&&
-        context.referenceRevision==latestContext.referenceRevision&&
-        context.rendererEpoch==latestContext.rendererEpoch&&
-        context.tracking.spaceEpoch==latestContext.tracking.spaceEpoch&&
-        ready.load(std::memory_order_acquire)&&HaloCE_RenderContextCurrent(context))
+        Owner(unit,state,context))
     {
-        // The original packet and native camera/input-angle state remain intact.
-        // The engine owns validation, native interpolation and grenade release.
-        native(unit,&candidate,clientUpdate);
-        bodies.fetch_add(1,std::memory_order_relaxed);
-        if (aim) aims.fetch_add(1,std::memory_order_relaxed);
-        else declined.fetch_add(1,std::memory_order_relaxed);
-        return;
+        // Persistent support grip: primaryAim may carry support steering for a
+        // different weapon incarnation. This packet may consume it only while
+        // this invocation's current validated owner proves the durable
+        // relationship owner and the frozen pose's support provenance is
+        // continuous with the relationship across the two reads. A failed
+        // relationship read, a released relationship whose frozen publication
+        // still carries support-derived geometry, an owner change or a
+        // relationship epoch change across the two reads fails closed to the
+        // stock packet. With the feature off the decision is the base one.
+        const bool supportWired=VR_SupportGripWiredForTitle(GameTitle::HaloCE);
+        const CeSupportInvocation before=CeEvaluateSupportInvocation(supportWired,
+            state,context.tracking.controllers.primaryAimSupportDerived);
+        RenderContext effective=context;
+        const bool carrierAvailable=!before.detach||
+            context.tracking.controllers.independentPrimaryAim.valid;
+        if (before.detach&&carrierAvailable)
+            effective.tracking.controllers.primaryAim=
+                context.tracking.controllers.independentPrimaryAim;
+        if (carrierAvailable&&CopyPacket(source,packet)&&
+            BuildTrackedUnitControl(effective,packet,candidate,aim)&&
+            Owner(unit,latest,latestContext))
+        {
+            const CeSupportInvocation after=CeEvaluateSupportInvocation(supportWired,
+                latest,latestContext.tracking.controllers.primaryAimSupportDerived);
+            const bool usedSupport=supportWired&&!before.detach&&
+                context.tracking.controllers.primaryAimSupportDerived;
+            const bool supportContinuityOk=!usedSupport||
+                (!after.detach&&after.readable&&before.readable&&
+                 after.engaged&&before.engaged&&
+                 after.epoch==before.epoch&&
+                 after.generation==before.generation&&
+                 after.unit==before.unit&&after.weapon==before.weapon);
+            const bool decisionStable=before.detach==after.detach;
+            if (state.player==latest.player&&state.inputUser==latest.inputUser&&
+                state.unit==latest.unit&&supportContinuityOk&&decisionStable&&
+                context.referenceRevision==latestContext.referenceRevision&&
+                context.rendererEpoch==latestContext.rendererEpoch&&
+                context.tracking.spaceEpoch==latestContext.tracking.spaceEpoch&&
+                ready.load(std::memory_order_acquire)&&HaloCE_RenderContextCurrent(context))
+            {
+                // The original packet and native camera/input-angle state remain intact.
+                // The engine owns validation, native interpolation and grenade release.
+                native(unit,&candidate,clientUpdate);
+                bodies.fetch_add(1,std::memory_order_relaxed);
+                if (aim) aims.fetch_add(1,std::memory_order_relaxed);
+                else declined.fetch_add(1,std::memory_order_relaxed);
+                return;
+            }
+        }
     }
     int16_t seat=-1,latestSeat=-1;
     if (caller==moduleBase+0xad0d5b&&ready.load(std::memory_order_acquire)&&
         VehicleOwner(unit,state,context,seat))
     {
-        if (CopyPacket(source,packet)&&BuildTrackedVehicleControl(context,packet,candidate)&&
-            VehicleOwner(unit,latest,latestContext,latestSeat)&&
-            state.player==latest.player&&state.inputUser==latest.inputUser&&state.unit==latest.unit&&
-            state.parent==latest.parent&&seat==latestSeat&&
-            state.nativePerspective==latest.nativePerspective&&
-            context.referenceRevision==latestContext.referenceRevision&&
-            context.rendererEpoch==latestContext.rendererEpoch&&
-            context.tracking.spaceEpoch==latestContext.tracking.spaceEpoch&&
-            ready.load(std::memory_order_acquire)&&vehicleReady.load(std::memory_order_acquire)&&
-            HaloCE_RenderContextCurrent(context))
+        // Persistent support grip: BuildTrackedVehicleControl injects the same
+        // primaryAim carrier, so the seat path applies the identical
+        // current-owner policy: a failed read, a release discontinuity or an
+        // owner/epoch change between the two reads fails closed to stock.
+        const bool supportWired=VR_SupportGripWiredForTitle(GameTitle::HaloCE);
+        const CeSupportInvocation before=CeEvaluateSupportInvocation(supportWired,
+            state,context.tracking.controllers.primaryAimSupportDerived);
+        RenderContext effective=context;
+        const bool carrierAvailable=!before.detach||
+            context.tracking.controllers.independentPrimaryAim.valid;
+        if (before.detach&&carrierAvailable)
+            effective.tracking.controllers.primaryAim=
+                context.tracking.controllers.independentPrimaryAim;
+        if (carrierAvailable&&CopyPacket(source,packet)&&
+            BuildTrackedVehicleControl(effective,packet,candidate)&&
+            VehicleOwner(unit,latest,latestContext,latestSeat))
         {
-            // Native driver/gunner forwarding selects which occupant controls
-            // the parent. Physics, seat limits, throttle and actions stay native.
-            native(unit,&candidate,clientUpdate);
-            vehicles.fetch_add(1,std::memory_order_relaxed);
-            return;
+            const CeSupportInvocation after=CeEvaluateSupportInvocation(supportWired,
+                latest,latestContext.tracking.controllers.primaryAimSupportDerived);
+            const bool usedSupport=supportWired&&!before.detach&&
+                context.tracking.controllers.primaryAimSupportDerived;
+            const bool supportContinuityOk=!usedSupport||
+                (!after.detach&&after.readable&&before.readable&&
+                 after.engaged&&before.engaged&&
+                 after.epoch==before.epoch&&
+                 after.generation==before.generation&&
+                 after.unit==before.unit&&after.weapon==before.weapon);
+            const bool decisionStable=before.detach==after.detach;
+            if (state.player==latest.player&&state.inputUser==latest.inputUser&&state.unit==latest.unit&&
+                state.parent==latest.parent&&seat==latestSeat&&
+                state.nativePerspective==latest.nativePerspective&&
+                supportContinuityOk&&decisionStable&&
+                context.referenceRevision==latestContext.referenceRevision&&
+                context.rendererEpoch==latestContext.rendererEpoch&&
+                context.tracking.spaceEpoch==latestContext.tracking.spaceEpoch&&
+                ready.load(std::memory_order_acquire)&&vehicleReady.load(std::memory_order_acquire)&&
+                HaloCE_RenderContextCurrent(context))
+            {
+                // Native driver/gunner forwarding selects which occupant controls
+                // the parent. Physics, seat limits, throttle and actions stay native.
+                native(unit,&candidate,clientUpdate);
+                vehicles.fetch_add(1,std::memory_order_relaxed);
+                return;
+            }
         }
         vehicleDeclined.fetch_add(1,std::memory_order_relaxed);
     }

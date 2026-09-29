@@ -444,6 +444,16 @@ try {
     if ($cache -notmatch '(?m)^BUILD_TESTING:BOOL=ON\r?$') {
         throw 'Refusing to package: BUILD_TESTING is not ON.'
     }
+    $pythonMatch = [regex]::Match(
+        $cache,
+        '(?m)^HALOMCCVR_PACKAGE_PYTHON:FILEPATH=(?<path>.+)\r?$')
+    if (-not $pythonMatch.Success) {
+        throw 'Refusing to package: configured Python interpreter is unavailable.'
+    }
+    $pythonPath = $pythonMatch.Groups['path'].Value.Trim()
+    if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
+        throw "Configured Python interpreter is missing: $pythonPath"
+    }
 
     # Incremental. A clean rebuild was recompiling the whole tree for every
     # candidate, which is minutes per iteration for no safety: the packaged
@@ -507,9 +517,14 @@ try {
 
     $dllPath = Join-Path $payloadDir 'HaloMCCVR.dll'
     $launcherPath = Join-Path $payloadDir 'HaloMCCVRLauncher.exe'
+    $analyserSourcePath = Join-Path $repoRoot `
+        'tools\telemetry_analyser\analyse_mccvr_telemetry.py'
+    $analyserPath = Join-Path $payloadDir `
+        'TelemetryAnalyser\analyse_mccvr_telemetry.py'
     foreach ($requiredPath in @(
             $dllPath,
             $launcherPath,
+            $analyserPath,
             $configPath,
             (Join-Path $payloadDir 'LICENSE'),
             (Join-Path $payloadDir 'MANUAL-README.txt'),
@@ -524,11 +539,29 @@ try {
     $dll = Get-Item -LiteralPath $dllPath
     $launcher = Get-Item -LiteralPath $launcherPath
     $config = Get-Item -LiteralPath $configPath
+    $analyserSource = Get-Item -LiteralPath $analyserSourcePath
+    $analyser = Get-Item -LiteralPath $analyserPath
     $dllHash = (Get-FileHash -LiteralPath $dllPath -Algorithm SHA256).Hash
     $launcherHash =
         (Get-FileHash -LiteralPath $launcherPath -Algorithm SHA256).Hash
     $configHash =
         (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
+    $analyserSourceHash =
+        (Get-FileHash -LiteralPath $analyserSourcePath -Algorithm SHA256).Hash
+    $analyserHash =
+        (Get-FileHash -LiteralPath $analyserPath -Algorithm SHA256).Hash
+    $expectedAnalyserHash =
+        '053CF61671BE281551B89A459E0611490F29D0FFD00387B43668043793BAE5B4'
+    if ($analyserSource.Length -ne 395283 -or
+            $analyserSourceHash -cne $expectedAnalyserHash -or
+            $analyser.Length -ne $analyserSource.Length -or
+            $analyserHash -cne $analyserSourceHash) {
+        throw 'Telemetry analyser source or staged bytes differ from the approved standalone analyser.'
+    }
+    Invoke-Tool { & $pythonPath -B $analyserPath --self-test }
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Staged telemetry analyser self-test failed.'
+    }
 
     $manifest = [ordered]@{
         schema_version = 55
@@ -1103,6 +1136,10 @@ try {
                 bytes = $config.Length
                 sha256 = $configHash
             }
+            'TelemetryAnalyser/analyse_mccvr_telemetry.py' = [ordered]@{
+                bytes = $analyser.Length
+                sha256 = $analyserHash
+            }
         }
         handedness_and_dual_aim_candidate = [ordered]@{
             accepted_baseline = '4e01f28b3ec5f5f8f533ac66d94978509cbcea54'
@@ -1413,6 +1450,7 @@ try {
     Write-Host "DLL:      $dllHash"
     Write-Host "Launcher: $launcherHash"
     Write-Host "Config:   $configHash"
+    Write-Host "Analyser: $analyserHash"
 
     Write-Host 'Package-only mode: no MCC installation was performed.'
 }

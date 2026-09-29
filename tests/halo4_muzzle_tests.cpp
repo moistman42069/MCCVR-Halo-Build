@@ -48,6 +48,12 @@ static bool Halo4FloatingPairMatchesCurrent(){return pairCurrent;}
 static thread_local uintptr_t caller=0;
 #define _ReturnAddress() reinterpret_cast<void*>(::caller)
 #define __readgsqword(offset) reinterpret_cast<uint64_t>(::slots)
+// T-2 sparse shot events: recording is never active under test, so the gate
+// stays closed (exactly the gate-off production path) and the shared publisher
+// (defined in game.cpp) is an inert stand-in here.
+bool Telemetry_WeaponEventsAccepting() noexcept {return false;}
+void PublishShotDiagnostic(GameTitle,uint32_t,uint32_t,uint32_t,uint8_t,uint8_t,
+    bool,bool,bool,bool,const float*,const float*) noexcept {}
 #include "../src/dll/halo4_muzzle_ownership.inl"
 #include "../src/dll/halo4_muzzle_publication.inl"
 #include "../src/dll/halo4_muzzle_shots.inl"
@@ -333,8 +339,38 @@ static void LifecycleTests()
     g_halo4Barrel.callbacks=0;Check(RemoveHalo4Muzzle()&&!g_halo4BarrelBindingsReady,"drained cleanup clears publication authority");
     Check(VirtualFree(image,0,MEM_RELEASE)!=0,"lifecycle fixture released");
 }
+// T6c/F03: the raw primary role byte 0xFF is the native explicit "no weapon in
+// this slot". The reader must report it through the optional absence
+// out-parameter even though the pair itself is refused (the empty slot fails
+// the inventory validation), and no neighbouring rejection may ever report
+// absence.
+static void OwnerEvidenceTests()
+{
+    Reset();
+    uint32_t weapons[2]{};
+    bool absent=true;
+    unitBytes[0x63A]=0xFF;
+    Check(!Halo4ReadMuzzleWeapons(localUnit,weapons,&absent)&&absent,
+        "F03: an empty primary role byte reports primary-absent");
+    absent=true;
+    unitBytes[0x63A]=0;
+    Check(Halo4ReadMuzzleWeapons(localUnit,weapons,&absent)&&!absent,
+        "F03: a complete on-foot inventory reports no absence");
+    absent=true;
+    unitBytes[0x63A]=4;
+    Check(!Halo4ReadMuzzleWeapons(localUnit,weapons,&absent)&&!absent,
+        "F03: an invalid primary role is not reported as absence");
+    absent=true;
+    unitBytes[0x63A]=0;
+    *reinterpret_cast<uint32_t*>(primaryBytes+0x624)=owner^0x10000;
+    Check(!Halo4ReadMuzzleWeapons(localUnit,weapons,&absent)&&!absent,
+        "F03: a foreign-owned weapon is not reported as absence");
+    absent=true;
+    Check(!Halo4ReadMuzzleWeapons(owner^0x10000,weapons,&absent)&&!absent,
+        "F03: an unreadable unit is not reported as absence");
+}
 int main()
 {
-    ShotTests();PublicationTests();LifecycleTests();
+    ShotTests();PublicationTests();OwnerEvidenceTests();LifecycleTests();
     std::printf("PASS: %u production Halo4 muzzle checks (native services stubbed)\n",checks);
 }

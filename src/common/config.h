@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include "vr_action_mapping.h"
+#include "virtual_stock_settings.h"
 
 struct ConfigVehicleModelTrim
 {
@@ -371,7 +372,7 @@ struct Config
     // configuration.
     Config();
 
-    int config_version = 5;
+    int config_version = 6;
 
     // Portable OpenXR feedback and pose stabilization. Headset smoothing is a
     // deliberately tiny previous-frame blend (0.03 shipped default, 10% hard maximum)
@@ -881,47 +882,118 @@ struct Config
     int weapon_reload_button[6]{0,0,0,0,0,0};
     int weapon_switch_button[6]{4,4,4,4,4,4};
 
-    // Two-handed weapon aiming: when you bring your left hand up to the gun
-    // (support-hand grip), aim along the line from the right hand to the left
-    // hand instead of the right wrist alone — steadier, and the barrel points
-    // exactly where you look down the gun. Auto-engages by hand pose; drops
-    // when you lower the support hand. The right grip still cycles grenades.
+    // Two-handed weapon aiming: with the support hand on the gun front, aim
+    // along the two-hand line instead of the primary wrist alone. Engages by
+    // support-grip acquisition in the barrel grab zone: Toggle mode (default)
+    // flips engaged on/off per grip click, Hold mode engages only while the
+    // grip is held. The primary grip still cycles grenades.
     bool two_handed_aim = true;
-    // Optional virtual stock. Raw controllers, grip acquisition, muzzle
-    // position and per-weapon calibration remain independent.
-    bool virtual_stock = false;
-    float virtual_stock_strength = .95f;
-    float virtual_stock_rear_height_m = -.220f;
-    int virtual_stock_rear_reference = 0;
-    float virtual_stock_shoulder_back_m = .005f;
-    float virtual_stock_shoulder_side_m = .015f;
-    float virtual_stock_chest_height_m = -.320f;
-    float virtual_stock_chest_back_m = 0.f;
-    float virtual_stock_chest_side_m = .015f;
-    float virtual_stock_adaptive_top_height_m = -.180f;
-    float virtual_stock_adaptive_bottom_height_m = -.450f;
-    float virtual_stock_adaptive_top_half_width_m = .080f;
-    float virtual_stock_adaptive_bottom_half_width_m = .140f;
-    bool virtual_stock_proximity_release = true;
-    float virtual_stock_proximity_full_m = .270f;
-    float virtual_stock_proximity_release_m = .425f;
+    // Coherent committed-sample aim (A+B, runtime-validated) is the default.
+    // Configs saved before v6 with this key off are migrated on once. In a v6
+    // config, set two_hand_coherent_aim = 0 for the hidden legacy rollback/debug
+    // escape; the F1 control is retired.
+    bool two_hand_coherent_aim = true;
+    // Virtual stock: with two-hand engaged, the base aim orientation follows
+    // the configured rear-reference blend toward the raw support controller.
+    // OFF preserves the released behavior. Changes only the base engaged
+    // two-hand orientation; base position/roll stay primary-controller owned
+    // and grip acquisition/latching are unchanged. Default off.
+    bool virtual_stock = kVirtualStockEnabledDefault;
+    // Standard and Plus remember independent rear-reference influence. The
+    // active mode supplies one effective value to the existing solver seam.
+    float virtual_stock_standard_strength = kVirtualStockStandardStrengthDefault;
+    float virtual_stock_plus_strength = kVirtualStockPlusStrengthDefault;
+    // Gravity-aligned OpenXR LOCAL-space height added to the head target.
+    float virtual_stock_rear_height_m = kVirtualStockRearHeightDefaultM;
+    // Rear reference selector: 0 = Head, 1 = Shoulder, 2 = Chest,
+    // 3 = Hybrid.
+    int virtual_stock_rear_reference = kVirtualStockProductRearReferenceDefault;
+    float virtual_stock_shoulder_back_m = kVirtualStockShoulderBackDefaultM;
+    float virtual_stock_shoulder_side_m = kVirtualStockShoulderSideDefaultM;
+    float virtual_stock_chest_height_m = kVirtualStockChestHeightDefaultM;
+    float virtual_stock_chest_back_m = kVirtualStockChestBackDefaultM;
+    float virtual_stock_chest_side_m = kVirtualStockChestSideDefaultM;
+    float virtual_stock_adaptive_top_height_m =
+        kVirtualStockAdaptiveTopHeightDefaultM;
+    float virtual_stock_adaptive_bottom_height_m =
+        kVirtualStockAdaptiveBottomHeightDefaultM;
+    float virtual_stock_adaptive_top_half_width_m =
+        kVirtualStockAdaptiveTopHalfWidthDefaultM;
+    float virtual_stock_adaptive_bottom_half_width_m =
+        kVirtualStockAdaptiveBottomHalfWidthDefaultM;
+    // Hybrid mode-3 direction authority and finite-segment seating controls.
+    float virtual_stock_hybrid_offhand_influence =
+        kVirtualStockHybridOffhandInfluenceDefault;
+    int virtual_stock_hybrid_ads_reference =
+        kVirtualStockHybridAdsReferenceDefault; // 0 Head, 1 Shoulder.
+    float virtual_stock_hybrid_seat_full_m =
+        kVirtualStockProductHybridSeatFullDefaultM;
+    float virtual_stock_hybrid_seat_release_m =
+        kVirtualStockProductHybridSeatReleaseDefaultM;
+    bool virtual_stock_hybrid_horizontal_release =
+        kVirtualStockProductHybridHorizontalReleaseDefault;
+    float virtual_stock_hybrid_horizontal_full_m =
+        kVirtualStockProductHybridHorizontalFullDefaultM;
+    float virtual_stock_hybrid_horizontal_release_m =
+        kVirtualStockProductHybridHorizontalReleaseDefaultM;
+    // Optional stateless release as the primary controller moves away from
+    // the full rear target. Disabled preserves the current stock-strength
+    // behavior without reading the proximity thresholds.
+    bool virtual_stock_proximity_release = kVirtualStockProximityReleaseDefault;
+    float virtual_stock_proximity_full_m = kVirtualStockProximityFullDefaultM;
+    float virtual_stock_proximity_release_m =
+        kVirtualStockProximityReleaseDefaultM;
+    // Reduce support-hand rotation by using the grip-pose position as the
+    // support endpoint. Position still steers two-handed aim.
+    bool two_hand_support_grip_pose = kTwoHandSupportGripPoseDefault;
+    // Durable owner-bound support grip. New configurations enable it; parsing
+    // an existing explicit value keeps that user's choice without migration.
+    bool persistent_support_grip = true;
+    // Pavlov-inspired controller-input smoothing strength: the fixed speed-25
+    // response with the quaternion-native MCC rotational implementation is
+    // unchanged, and this value wet/dry mixes its output over raw directional
+    // input copies. 0 = off/raw; 25 = the full fixed filter; intermediate
+    // values blend. Consumed by the two-hand directional solver with Virtual
+    // Stock on or off (the VS-ON solve takes the same directional copies; the
+    // VS-OFF-only product geometry and Lab keep their own gates). Legacy
+    // boolean key two_hand_smoothing migrates to 0 or 25.
+    float two_hand_smoothing_strength = kTwoHandSmoothingStrengthDefault;
+    // Free two-hand (VS-OFF) support-steering authority: how much the support
+    // (offhand) controller's directional aim steers the presented aim line
+    // while a free two-hand hold is active. 0 = the primary controller's own
+    // aim is authoritative; 1 = equal authority. Consumed only by the VS-OFF
+    // free two-hand solver; Virtual Stock keeps its own offhand influence.
+    float two_hand_offhand_influence = kTwoHandOffhandInfluenceDefault;
+    // Retired 2026-09-29: the fixed 200 ms VS-OFF acquire/release transition
+    // continuity is internal product behaviour with no player control. This
+    // legacy field is still parsed so historical files load quietly, but it is
+    // dormant: no product or telemetry resolution may read it. The product
+    // truth is TwoHandTransitionContinuityEnabled().
+    bool two_hand_transition_smoothing = true;
+    // Persistent-grip weapon-switch option (PG ON only). When on, a proven
+    // weapon switch while the grip is engaged rebinds the two-hand hold to the
+    // new weapon immediately, with no re-orientation. Off: the switched weapon
+    // becomes grippable again through the normal spatial admission without
+    // releasing the grip button.
+    bool two_hand_switch_inherit = false;
     // Two-hand engage style: true = toggle (click left grip on/off), false =
     // hold (engaged only while the left grip is held).
     bool two_hand_toggle = true;
-    // Wrist-to-palm correction for the left controller. This same point drives
-    // the rendered support hand and the two-hand aiming line so they stay
-    // aligned. Negative seats the hand back toward the wrist; -0.063 is the
-    // headset-tuned release default.
+    // Wrist-to-palm correction for the left controller's support-hand seating
+    // (IK/hand placement). Excluded from the two-hand aim line, which uses
+    // raw tracked controller points. Negative seats the hand back toward the
+    // wrist; -0.063 is the headset-tuned release default.
     float left_hand_forward_m = -0.063f;
     // Sideways nudge of the two-hand grab zone along the right controller's +X
     // (positive = toward the player's right) so the grab line sits on the
     // visible barrel. Headset request 2026-07-19: the AR's barrel sat right of
     // the zone and the left hand reached past it.
     float two_hand_zone_right_m = 0.03f;
-    // Wrist-bone-to-palm distance of the rendered left hand, along the left
-    // controller forward. Extends the two-hand grab line/zone sample out to
-    // the VISIBLE palm (the hand target anchors the wrist bone). Headset-
-    // confirmed 2026-07-19: two-hand grab described as perfect with this.
+    // Support-controller-to-palm depth for two-hand grab acquisition only,
+    // along support forward. Moves the grab sample from the tracked
+    // controller toward the visible palm. Never enters aim geometry,
+    // rendered-hand seating, or shots. Headset-confirmed 2026-07-19:
+    // two-hand grab described as perfect with this.
     float left_grip_forward_m = 0.097f;
 
     // VRIK stage A1: show the player's real body (game-animated) by flipping
@@ -1034,6 +1106,183 @@ struct Config
     TitleTunables title_profiles[kTitleProfileCount]{};
     bool per_gun_alignment = false;
 };
+
+inline bool VirtualStockUsesPlusMode(const Config& config) noexcept
+{
+    return config.virtual_stock_rear_reference == 3;
+}
+
+inline float& VirtualStockActiveStrength(Config& config) noexcept
+{
+    return VirtualStockUsesPlusMode(config)
+        ? config.virtual_stock_plus_strength
+        : config.virtual_stock_standard_strength;
+}
+
+inline float VirtualStockActiveStrength(const Config& config) noexcept
+{
+    return VirtualStockUsesPlusMode(config)
+        ? config.virtual_stock_plus_strength
+        : config.virtual_stock_standard_strength;
+}
+
+inline bool VirtualStockUsesShoulderReference(const Config& config) noexcept
+{
+    return VirtualStockUsesPlusMode(config)
+        ? config.virtual_stock_hybrid_ads_reference == 1
+        : config.virtual_stock_rear_reference == 1;
+}
+
+// Diagnostic-only Q0 capture family. Head-turn sway correction was retired
+// from the product on 2026-09-27, so product resolution can never activate it
+// (VirtualStockAimSettingsFromConfig always resolves inverse-neck off). It
+// survives for isolated diagnostic profiles and their neutral-capture
+// experiments. When it is somehow active it is preserved across
+// mode/reference/tuning changes; presentation recenter does not invalidate;
+// real epoch transitions do via the existing state machine.
+inline bool VirtualStockHeadTurnCorrectionFamilyActive(
+    const VirtualStockAimSettings& settings) noexcept
+{
+    return settings.virtualStockEnabled && settings.hybridInverseNeckEnabled;
+}
+
+inline void SetVirtualStockPlusMode(Config& config, bool plus) noexcept
+{
+    if (plus)
+    {
+        if (!VirtualStockUsesPlusMode(config))
+        {
+            config.virtual_stock_hybrid_ads_reference =
+                config.virtual_stock_rear_reference == 1 ? 1 : 0;
+            config.virtual_stock_rear_reference = 3;
+        }
+    }
+    else if (VirtualStockUsesPlusMode(config))
+    {
+        config.virtual_stock_rear_reference =
+            config.virtual_stock_hybrid_ads_reference == 1 ? 1 : 0;
+    }
+}
+
+inline void SetVirtualStockShoulderReference(
+    Config& config, bool shoulder) noexcept
+{
+    const int reference = shoulder ? 1 : 0;
+    if (VirtualStockUsesPlusMode(config))
+        config.virtual_stock_hybrid_ads_reference = reference;
+    else
+        config.virtual_stock_rear_reference = reference;
+}
+
+inline void ResetVirtualStockSettings(Config& config) noexcept
+{
+    const bool enabled = config.virtual_stock;
+    config.virtual_stock = kVirtualStockEnabledDefault;
+    config.virtual_stock_standard_strength = kVirtualStockStandardStrengthDefault;
+    config.virtual_stock_plus_strength = kVirtualStockPlusStrengthDefault;
+    config.virtual_stock_rear_height_m = kVirtualStockRearHeightDefaultM;
+    config.virtual_stock_rear_reference = kVirtualStockProductRearReferenceDefault;
+    config.virtual_stock_shoulder_back_m = kVirtualStockShoulderBackDefaultM;
+    config.virtual_stock_shoulder_side_m = kVirtualStockShoulderSideDefaultM;
+    config.virtual_stock_chest_height_m = kVirtualStockChestHeightDefaultM;
+    config.virtual_stock_chest_back_m = kVirtualStockChestBackDefaultM;
+    config.virtual_stock_chest_side_m = kVirtualStockChestSideDefaultM;
+    config.virtual_stock_adaptive_top_height_m =
+        kVirtualStockAdaptiveTopHeightDefaultM;
+    config.virtual_stock_adaptive_bottom_height_m =
+        kVirtualStockAdaptiveBottomHeightDefaultM;
+    config.virtual_stock_adaptive_top_half_width_m =
+        kVirtualStockAdaptiveTopHalfWidthDefaultM;
+    config.virtual_stock_adaptive_bottom_half_width_m =
+        kVirtualStockAdaptiveBottomHalfWidthDefaultM;
+    config.virtual_stock_hybrid_offhand_influence =
+        kVirtualStockHybridOffhandInfluenceDefault;
+    config.virtual_stock_hybrid_ads_reference =
+        kVirtualStockHybridAdsReferenceDefault;
+    config.virtual_stock_hybrid_seat_full_m =
+        kVirtualStockProductHybridSeatFullDefaultM;
+    config.virtual_stock_hybrid_seat_release_m =
+        kVirtualStockProductHybridSeatReleaseDefaultM;
+    config.virtual_stock_hybrid_horizontal_release =
+        kVirtualStockProductHybridHorizontalReleaseDefault;
+    config.virtual_stock_hybrid_horizontal_full_m =
+        kVirtualStockProductHybridHorizontalFullDefaultM;
+    config.virtual_stock_hybrid_horizontal_release_m =
+        kVirtualStockProductHybridHorizontalReleaseDefaultM;
+    config.virtual_stock_proximity_release =
+        kVirtualStockProximityReleaseDefault;
+    config.virtual_stock_proximity_full_m = kVirtualStockProximityFullDefaultM;
+    config.virtual_stock_proximity_release_m =
+        kVirtualStockProximityReleaseDefaultM;
+    config.virtual_stock = enabled;
+}
+
+inline VirtualStockAimSettings VirtualStockAimSettingsFromConfig(
+    const Config& config, HybridDiagnosticOverride diagnosticOverride) noexcept
+{
+    VirtualStockAimSettings settings{};
+    settings.virtualStockEnabled = config.virtual_stock;
+    settings.virtualStockStrength = VirtualStockActiveStrength(config);
+    settings.virtualStockRearHeightM = config.virtual_stock_rear_height_m;
+    settings.virtualStockRearReference = config.virtual_stock_rear_reference;
+    settings.virtualStockShoulderBackM = config.virtual_stock_shoulder_back_m;
+    settings.virtualStockShoulderSideM = config.virtual_stock_shoulder_side_m;
+    settings.virtualStockChestHeightM = config.virtual_stock_chest_height_m;
+    settings.virtualStockChestBackM = config.virtual_stock_chest_back_m;
+    settings.virtualStockChestSideM = config.virtual_stock_chest_side_m;
+    settings.virtualStockAdaptiveTopHeightM =
+        config.virtual_stock_adaptive_top_height_m;
+    settings.virtualStockAdaptiveBottomHeightM =
+        config.virtual_stock_adaptive_bottom_height_m;
+    settings.virtualStockAdaptiveTopHalfWidthM =
+        config.virtual_stock_adaptive_top_half_width_m;
+    settings.virtualStockAdaptiveBottomHalfWidthM =
+        config.virtual_stock_adaptive_bottom_half_width_m;
+    settings.virtualStockHybridOffhandInfluence =
+        config.virtual_stock_hybrid_offhand_influence;
+    settings.virtualStockHybridAdsReference =
+        config.virtual_stock_hybrid_ads_reference;
+    settings.virtualStockHybridSeatFullM =
+        config.virtual_stock_hybrid_seat_full_m;
+    settings.virtualStockHybridSeatReleaseM =
+        config.virtual_stock_hybrid_seat_release_m;
+    settings.hybridHorizontalRearReleaseEnabled =
+        config.virtual_stock_hybrid_horizontal_release;
+    settings.hybridHorizontalRearReleaseFullM =
+        config.virtual_stock_hybrid_horizontal_full_m;
+    settings.hybridHorizontalRearReleaseReleaseM =
+        config.virtual_stock_hybrid_horizontal_release_m;
+    settings.hybridDiagnosticOverride = NormalizeHybridDiagnosticOverride(
+        static_cast<uint8_t>(diagnosticOverride));
+    // Planted Standard: normal product Centre/Shoulder ignores ordinary legacy
+    // proximity attenuation. The persisted keys stay compatible/dormant; the
+    // effective resolver forces disabled for rear 0/1 only. Plus (3) already
+    // ignores ordinary proximity via its seat/horizontal path; Chest (2) keeps
+    // persisted behaviour as dormant research.
+    const bool standardProduct =
+        settings.virtualStockRearReference == 0 ||
+        settings.virtualStockRearReference == 1;
+    settings.virtualStockProximityRelease = standardProduct
+        ? false
+        : config.virtual_stock_proximity_release;
+    settings.virtualStockProximityFullM = config.virtual_stock_proximity_full_m;
+    settings.virtualStockProximityReleaseM =
+        config.virtual_stock_proximity_release_m;
+    // Head-turn sway correction was retired from the product (2026-09-27).
+    // Normal Standard/Plus resolution is the former sway=0 path: inverse-neck
+    // disabled with zeroed knobs. The generic NK capability that remains is
+    // reachable only through isolated diagnostic profiles; product resolution
+    // can never enable it here.
+    settings.hybridInverseNeckEnabled = false;
+    settings.hybridInverseNeckStrength =
+        kVirtualStockHybridInverseNeckStrengthDefault;
+    settings.hybridInverseNeckForwardM =
+        kVirtualStockHybridInverseNeckForwardDefaultM;
+    settings.hybridInverseNeckUpM = kVirtualStockHybridInverseNeckUpDefaultM;
+    settings.hybridInverseNeckLateralM =
+        kVirtualStockHybridInverseNeckLateralDefaultM;
+    return settings;
+}
 
 extern Config g_config;
 

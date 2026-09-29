@@ -107,6 +107,17 @@ static void MuzzleTests()
     ResetMuzzle();ShootMuzzle();
     Check(markerCalls==1&&queryCalls==1&&muzzleFires==1&&
         *reinterpret_cast<uint32_t*>(unitBytes+0x1D4)==0x44440007,"single weapon muzzle query and LIFO cleanup");
+    // T-2 shot evidence on the committed-muzzle branch: the mod's barrel ray
+    // was the engine's input, the firing context carries a real barrel index,
+    // and the replaced camera-projection/unit-aim arguments are reported as
+    // false rather than as whatever the caller passed.
+    Check(shotEvents==1&&lastShot.weapon==primary&&lastShot.slot==0&&
+        lastShot.barrel==0&&lastShot.substituted&&!lastShot.predicted&&
+        !lastShot.firesFromCamera&&!lastShot.unitAim,
+        "committed muzzle shot publishes the substituted barrel ray with its real barrel");
+    Check(lastShot.origin[0]==2&&lastShot.origin[1]==2.5f&&lastShot.origin[2]==4&&
+        lastShot.direction[0]==0&&lastShot.direction[1]==1,
+        "committed muzzle shot carries the final clipped muzzle ray");
     Check(!g_halo2IndependentShot.active&&!g_halo2MuzzleRequest.lease&&!g_halo2Muzzle.callbacks&&!g_halo2Dual.callbacks&&!g_halo2CollisionOwnQuery,
         "muzzle scopes and native callbacks balanced");
     ResetMuzzle(true);muzzleNested=true;ShootMuzzle();

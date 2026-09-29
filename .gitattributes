@@ -2,3 +2,6 @@
 third_party/smaa/SMAA.hlsl -text -whitespace
 third_party/smaa/Textures/*.h -text -whitespace
 third_party/smaa/LICENSE.txt -text -whitespace
+
+# The packaged analyser hash is part of the candidate integrity contract.
+tools/telemetry_analyser/analyse_mccvr_telemetry.py -text -whitespace

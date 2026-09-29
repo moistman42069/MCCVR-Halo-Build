@@ -23,6 +23,10 @@ def main() -> None:
         body, line = extract_function(source, signature)
         output += [f'#line {line} "{source_path.as_posix()}"', body + (";" if signature.startswith("struct ") else "")]
     for text, path, signature in (
+        (stock, stock_path,
+         "template <bool CaptureTrace>\n"
+         "    AimPoseResult ComputeAimPoseImpl(\n"
+         "        const AimPoseInputs& inputs, AimPoseTrace* trace) noexcept"),
         (stock, stock_path, "AimPoseResult ComputeStockAimPose(const AimPoseInputs& inputs) noexcept"),
         (source, source_path, "AimPoseResult ComputeAimPose(const AimPoseInputs& inputs) noexcept"),
     ):

@@ -46,6 +46,38 @@ static uint32_t targetUnit{};static uint16_t targetTeam{};static void* targetRes
 static halo_ce::NodeMatrix* contactNativePalette{};
 void VR_PublishReloadTarget(GameTitle,uint32_t,uint64_t,uint64_t,
     const contact_melee::TrackingToWorld&,const float[3]) noexcept {}
+// Persistent support grip: the durable relationship is owned by the OpenXR
+// input path, which does not run under this fixture. `supportWired` models the
+// feature+title applicability gate; the published evidence record is captured
+// so the tri-state producer mapping can be asserted.
+static bool supportWired{};
+static support_grip::OwnerTuple lastSupportOwner{};
+static uint32_t lastSupportTitle{};
+static uint32_t lastSupportGeneration{};
+static support_grip::OwnerEvidence lastSupportEvidence{
+    support_grip::OwnerEvidence::Unknown};
+static unsigned supportPublishCount{};
+void VR_PublishSupportGripOwnerEvidence(GameTitle title,uint32_t generation,
+    const support_grip::OwnerTuple& owner,
+    support_grip::OwnerEvidence evidence) noexcept
+{
+    lastSupportTitle=uint32_t(title);lastSupportGeneration=generation;
+    lastSupportOwner=owner;lastSupportEvidence=evidence;++supportPublishCount;
+}
+// The durable relationship is normally owned by the OpenXR input path. Tests
+// can publish a readable snapshot here; the default is a readable DISENGAGED
+// snapshot, which is the ordinary one-hand state.
+static SupportGripRelationshipSnapshot supportRelationship{};
+static bool supportRelationshipValid{true};
+bool VR_GetSupportGripRelationship(
+    SupportGripRelationshipSnapshot& out) noexcept
+{ out=supportRelationship;return supportRelationshipValid; }
+bool VR_SupportGripWiredForTitle(GameTitle) noexcept { return supportWired; }
+// Weapon-order diagnostic tranche: recording is never active under test, so
+// the probes stay inert through these stubs (mirrors gate-off production).
+bool Telemetry_WeaponEventsAccepting() noexcept { return false; }
+uint64_t Telemetry_PublishWeaponEvent(uint8_t,uint8_t,uint8_t,uint32_t,
+    uint64_t,uint32_t,uint32_t,uint64_t,uint64_t) noexcept { return 0; }
 static uintptr_t contactGraphDefinition{};
 void HaloCEContact_ApplyPalette(const halo_ce::RenderContext& context,const halo_ce::FirstPersonBinding&,
     const halo_ce::NodeMatrix*,halo_ce::NodeMatrix*,HaloCEContactPublication& publication) noexcept
@@ -137,10 +169,17 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,const void* cons
     ++quiescenceCalls;quiescenceRanges+=unsigned(count);
     return functions&&trampolines&&count&&count<=8&&count!=blockedQuiescenceCount&&!activeCallbacks.load();
 }
+// The outermost prepare freezes this invocation's local context before it
+// calls the native original. Capture that exact frozen scope so the
+// persistent-support-grip trust/attachment decision (and the muzzle gating it
+// must not disturb) can be asserted on the context that was prepared.
+static bool frozenPrepareCaptured{};
+static Scope frozenPrepareScope{};
 void __fastcall NativePrepareFixture(int16_t user)
 {
     ++prepareCalls;
     if (!user) nativeSawInvalidated&=!HaloCEFirstPerson_Armed();
+    if (scope) { frozenPrepareScope=*scope;frozenPrepareCaptured=true; }
 }
 void __fastcall NativeLensFixture(float fov,bool rebuild)
 {
@@ -382,6 +421,90 @@ int main(int argc,char** argv)
             gameplayValid=refusal!=4;
             CHECK(invoke(moduleBase+0xb683a0));CHECK(Dot(targetDirection,stock)>.9999f);
         }
+        // Persistent support grip: ControllerShotDirection consumes the
+        // support-capable primaryAim only while this invocation proves the
+        // durable relationship owner. A mismatch detaches to the independent
+        // one-hand carrier for the invocation; a failed reader, an absent
+        // weapon or a missing independent pose stays stock (returns false).
+        // The applicability gate leaves the base path untouched when unwired.
+        {
+            const auto savedTargetPlayer=targetPlayer;
+            const bool savedTargetPlayerValid=targetPlayerValid;
+            const auto savedRelationship=supportRelationship;
+            const bool savedRelationshipValid=supportRelationshipValid;
+            gameplayValid=true;
+            auto& rig=testContext.tracking.controllers;
+            rig.primaryAim={true,{0,0,0},{0,0,0,1}};
+            rig.primaryAimSupportDerived=true;
+            rig.independentPrimaryAim={true,{0,0,0},{0,.38268343f,0,.92387953f}};
+            CHECK(publish());
+            Vec3 expectedPrimary{},expectedIndependent{};NodeMatrix matrix{};
+            CHECK(BuildControllerMatrix(testContext.camera,testContext.tracking,testContext.reference,
+                rig.primaryAim,testContext.unitsPerMeter,testContext.positional,matrix));
+            expectedPrimary=matrix.forward;
+            CHECK(BuildControllerMatrix(testContext.camera,testContext.tracking,testContext.reference,
+                rig.independentPrimaryAim,testContext.unitsPerMeter,testContext.positional,matrix));
+            expectedIndependent=matrix.forward;
+            CHECK(Dot(expectedPrimary,expectedIndependent)<.9f);
+            targetPlayer={};
+            targetPlayer.generation=testGeneration;
+            targetPlayer.unit=0x12340002u;targetPlayer.weapon=0x56780003u;
+            targetPlayer.hasControlledUnit=targetPlayer.onFoot=targetPlayer.nativePreparesFirstPerson=true;
+            targetPlayer.hasFirstPersonUserRecord=true;targetPlayer.weaponSlotPresent=true;
+            targetPlayer.nativeInputBlocked=targetPlayer.nativeLookBlocked=false;
+            targetPlayerValid=true;
+            Vec3 direction{};
+            // Unwired: the decision is the base one even with a readable
+            // snapshot; the frozen support-derived carrier stays in use.
+            supportWired=false;
+            supportRelationship={};supportRelationshipValid=true;
+            CHECK(ControllerShotDirection(targetPlayer.unit,direction));
+            CHECK(Dot(direction,expectedPrimary)>.9999f);
+            // Wired + readable DISENGAGED + a support-derived frozen pose is
+            // the release discontinuity: never reuse the stale support carrier.
+            supportWired=true;
+            CHECK(ControllerShotDirection(targetPlayer.unit,direction));
+            CHECK(Dot(direction,expectedIndependent)>.9999f);
+            // Wired + readable disengaged + an ordinary (not support-derived)
+            // publication keeps the existing one-hand carrier untouched.
+            rig.primaryAimSupportDerived=false;
+            CHECK(publish());
+            CHECK(ControllerShotDirection(targetPlayer.unit,direction));
+            CHECK(Dot(direction,expectedPrimary)>.9999f);
+            rig.primaryAimSupportDerived=true;
+            CHECK(publish());
+            supportRelationship.engaged=true;
+            supportRelationship.title=GameTitle::HaloCE;
+            supportRelationship.generation=testGeneration;
+            supportRelationship.unit=targetPlayer.unit;
+            supportRelationship.weapon=targetPlayer.weapon;
+            CHECK(ControllerShotDirection(targetPlayer.unit,direction));
+            CHECK(Dot(direction,expectedPrimary)>.9999f);
+            targetPlayer.weapon=0x99990001u;
+            CHECK(ControllerShotDirection(targetPlayer.unit,direction));
+            CHECK(Dot(direction,expectedIndependent)>.9999f);
+            supportRelationship={};
+            CHECK(ControllerShotDirection(targetPlayer.unit,direction));
+            CHECK(Dot(direction,expectedIndependent)>.9999f);
+            // A failed relationship read is continuity-unprovable and detaches.
+            supportRelationshipValid=false;
+            CHECK(ControllerShotDirection(targetPlayer.unit,direction));
+            CHECK(Dot(direction,expectedIndependent)>.9999f);
+            supportRelationshipValid=true;
+            rig.independentPrimaryAim.valid=false;
+            CHECK(publish());
+            CHECK(!ControllerShotDirection(targetPlayer.unit,direction));
+            rig.independentPrimaryAim.valid=true;
+            CHECK(publish());
+            targetPlayerValid=false;
+            CHECK(!ControllerShotDirection(targetPlayer.unit,direction));
+            targetPlayerValid=true;
+            targetPlayer.weapon=0xffffffffu;
+            CHECK(!ControllerShotDirection(targetPlayer.unit,direction));
+            targetPlayer=savedTargetPlayer;targetPlayerValid=savedTargetPlayerValid;
+            supportRelationship=savedRelationship;supportRelationshipValid=savedRelationshipValid;
+            supportWired=false;
+        }
         gameplayValid=true;targetPlayer={};targetPlayerValid=false;
         targetFault=true;const auto before=targetNativeCalls;
         CHECK(InvokeTargetFaultFixture());CHECK(callbacks.load()==0&&targetNativeCalls==before+1);targetFault=false;
@@ -562,6 +685,176 @@ int main(int argc,char** argv)
     // Other output users cannot invalidate the locally owned user's receipt.
     CHECK(publish());PrepareHook(1);CHECK(HaloCEFirstPerson_Armed()&&prepareCalls==2);
     CHECK(callbacks.load()==0);
+    // Persistent support grip: the outermost CE prepare is the tri-state
+    // producer for the wired title. A validated user record with a live weapon
+    // is KnownPresent; a non-null raw slot that failed validation is Unknown,
+    // never absence; a valid user record whose raw slot is empty is
+    // KnownAbsent; and the unwired gate publishes nothing.
+    {
+        const auto savedTargetPlayer = targetPlayer;
+        const bool savedTargetPlayerValid = targetPlayerValid;
+        const unsigned publishesBefore = supportPublishCount;
+        CHECK(publish());
+        targetPlayer = {};
+        targetPlayer.generation = testGeneration;
+        targetPlayer.unit = 0x11110001u;
+        targetPlayer.weapon = 0x22220001u;
+        targetPlayer.hasFirstPersonUserRecord = true;
+        targetPlayer.weaponSlotPresent = true;
+        targetPlayerValid = true;
+        supportWired = false;
+        PrepareHook(0);
+        CHECK(supportPublishCount == publishesBefore);
+        supportWired = true;
+        PrepareHook(0);
+        CHECK(supportPublishCount == publishesBefore + 1);
+        CHECK(lastSupportTitle == uint32_t(GameTitle::HaloCE) &&
+            lastSupportGeneration == testGeneration &&
+            lastSupportOwner.title == GameTitle::HaloCE &&
+            lastSupportOwner.unit == 0x11110001u &&
+            lastSupportOwner.weapon == 0x22220001u &&
+            lastSupportEvidence == support_grip::OwnerEvidence::KnownPresent);
+        targetPlayer = {};
+        targetPlayer.generation = testGeneration;
+        targetPlayer.hasFirstPersonUserRecord = true;
+        targetPlayer.weaponSlotPresent = true;
+        PrepareHook(0);
+        CHECK(supportPublishCount == publishesBefore + 2);
+        CHECK(lastSupportEvidence == support_grip::OwnerEvidence::Unknown &&
+            lastSupportOwner.unit == 0xFFFFFFFFu &&
+            lastSupportOwner.weapon == 0xFFFFFFFFu);
+        targetPlayer.weaponSlotPresent = false;
+        PrepareHook(0);
+        CHECK(supportPublishCount == publishesBefore + 3);
+        CHECK(lastSupportEvidence == support_grip::OwnerEvidence::KnownAbsent &&
+            lastSupportOwner.unit == 0xFFFFFFFFu &&
+            lastSupportOwner.weapon == 0xFFFFFFFFu);
+        // No local player record at all is Unknown, never absence.
+        targetPlayer = {};
+        targetPlayer.generation = testGeneration;
+        targetPlayerValid = false;
+        PrepareHook(0);
+        CHECK(supportPublishCount == publishesBefore + 4);
+        CHECK(lastSupportEvidence == support_grip::OwnerEvidence::Unknown &&
+            lastSupportGeneration == 0);
+        targetPlayer = savedTargetPlayer;
+        targetPlayerValid = savedTargetPlayerValid;
+        supportWired = false;
+    }
+    // Persistent support grip, CE prepare-hook trust source (headset round 2):
+    // the outermost prepare must resolve the invocation owner from its OWN
+    // validated local-player read, never from the optional gun_barrel_aim
+    // muzzle read above it. With gun_barrel_aim off (the shipping default) that
+    // gated read never runs, so a decision consuming its state would read
+    // generation 0 -> Unknown -> detach on every invocation: the independent
+    // one-hand carrier would replace the frozen support carrier and the support
+    // hand would never attach ("grip doesn't work" with PG on). The relationship
+    // owner here matches the read owner, so the support hand attaches while the
+    // gated muzzle read stays off; owner mismatch, a failed read and an
+    // unreadable relationship still detach (fail-closed).
+    {
+        const auto savedContext = testContext;
+        const auto savedTargetPlayer = targetPlayer;
+        const bool savedTargetPlayerValid = targetPlayerValid;
+        const bool savedSupportWired = supportWired;
+        const auto savedRelationship = supportRelationship;
+        const bool savedRelationshipValid = supportRelationshipValid;
+        auto& usersSlot = *reinterpret_cast<uintptr_t*>(moduleBase+0x2d9cd90);
+        const uintptr_t savedUsers = usersSlot;
+        static alignas(16) uint8_t supportUsersStorage[0x2000]{};
+        usersSlot = reinterpret_cast<uintptr_t>(supportUsersStorage);
+        constexpr uint32_t supportUnit = 0x11110001u, supportWeapon = 0x22220001u;
+        auto& rig = testContext.tracking.controllers;
+        rig.gunBarrelAim = false;
+        rig.primaryAim = {true,{1,2,3},{0,0,0,1}};
+        rig.independentPrimaryAim = {true,{4,5,6},{0,0,0,1}};
+        rig.primaryAimSupportDerived = true;
+        rig.supportGripAttached = false;
+        targetPlayer = {};
+        targetPlayer.generation = testGeneration;
+        targetPlayer.unit = supportUnit;
+        targetPlayer.weapon = supportWeapon;
+        targetPlayer.hasFirstPersonUserRecord = true;
+        targetPlayer.weaponSlotPresent = true;
+        targetPlayerValid = true;
+        supportWired = true;
+        supportRelationship = {};
+        supportRelationship.engaged = true;
+        supportRelationship.title = GameTitle::HaloCE;
+        supportRelationship.generation = testGeneration;
+        supportRelationship.epoch = 7;
+        supportRelationship.unit = supportUnit;
+        supportRelationship.weapon = supportWeapon;
+        supportRelationshipValid = true;
+        const auto samePose = [](const auto& a,const auto& b)
+        {
+            return a.valid==b.valid&&a.position.x==b.position.x&&a.position.y==b.position.y&&
+                a.position.z==b.position.z&&a.orientation.x==b.orientation.x&&
+                a.orientation.y==b.orientation.y&&a.orientation.z==b.orientation.z&&
+                a.orientation.w==b.orientation.w;
+        };
+        // gun_barrel_aim off + same owner: the dedicated read proves the
+        // relationship owner, the support hand stays attached, and the frozen
+        // support-derived carrier is not substituted with the independent one.
+        // The gated muzzle read keeps its behaviour: no muzzle origin is frozen.
+        frozenPrepareCaptured = false;
+        CHECK(publish());
+        PrepareHook(0);
+        CHECK(frozenPrepareCaptured && frozenPrepareScope.valid);
+        CHECK(frozenPrepareScope.muzzleUnit == UINT32_MAX &&
+            frozenPrepareScope.muzzleWeapon == UINT32_MAX);
+        CHECK(frozenPrepareScope.context.tracking.controllers.supportGripAttached);
+        CHECK(samePose(frozenPrepareScope.context.tracking.controllers.primaryAim,rig.primaryAim));
+        CHECK(frozenPrepareScope.context.tracking.controllers.primaryAimSupportDerived);
+        // A different relationship owner still detaches: this is real owner
+        // evidence, not a blanket attach for any state.
+        supportRelationship.weapon = supportWeapon ^ 0x10000u;
+        frozenPrepareCaptured = false;
+        PrepareHook(0);
+        CHECK(frozenPrepareCaptured &&
+            !frozenPrepareScope.context.tracking.controllers.supportGripAttached);
+        CHECK(samePose(frozenPrepareScope.context.tracking.controllers.primaryAim,rig.independentPrimaryAim));
+        CHECK(!frozenPrepareScope.context.tracking.controllers.primaryAimSupportDerived);
+        // A failed validated read fails closed: even though the fixture still
+        // exposes a matching raw record, the decision must not trust it (the
+        // reset state reads as generation 0 -> Unknown -> detach).
+        supportRelationship.weapon = supportWeapon;
+        targetPlayerValid = false;
+        frozenPrepareCaptured = false;
+        PrepareHook(0);
+        CHECK(frozenPrepareCaptured &&
+            !frozenPrepareScope.context.tracking.controllers.supportGripAttached);
+        CHECK(samePose(frozenPrepareScope.context.tracking.controllers.primaryAim,rig.independentPrimaryAim));
+        CHECK(!frozenPrepareScope.context.tracking.controllers.primaryAimSupportDerived);
+        // An unreadable durable relationship still detaches.
+        targetPlayerValid = true;
+        supportRelationshipValid = false;
+        frozenPrepareCaptured = false;
+        PrepareHook(0);
+        CHECK(frozenPrepareCaptured &&
+            !frozenPrepareScope.context.tracking.controllers.supportGripAttached);
+        CHECK(samePose(frozenPrepareScope.context.tracking.controllers.primaryAim,rig.independentPrimaryAim));
+        CHECK(!frozenPrepareScope.context.tracking.controllers.primaryAimSupportDerived);
+        // PG off: no durable read, no substitution, the frozen invocation is the
+        // untouched base context.
+        supportRelationshipValid = true;
+        supportWired = false;
+        frozenPrepareCaptured = false;
+        PrepareHook(0);
+        CHECK(frozenPrepareCaptured &&
+            !frozenPrepareScope.context.tracking.controllers.supportGripAttached);
+        CHECK(samePose(frozenPrepareScope.context.tracking.controllers.primaryAim,rig.primaryAim));
+        CHECK(frozenPrepareScope.context.tracking.controllers.primaryAimSupportDerived);
+        frozenPrepareCaptured = false;
+        usersSlot = savedUsers;
+        testContext = savedContext;
+        targetPlayer = savedTargetPlayer;
+        targetPlayerValid = savedTargetPlayerValid;
+        supportWired = savedSupportWired;
+        supportRelationship = savedRelationship;
+        supportRelationshipValid = savedRelationshipValid;
+        CHECK(publish());
+    }
     // The shared production stack verifier rejects batches above eight. A
     // blocked second batch must retain the entire native lifetime for retry.
     // No real game hooks/module are needed to verify this admission boundary.
@@ -696,6 +989,27 @@ int main(int argc,char** argv)
     CHECK(visibilityPrepareHook.original&&visibilitySubmitHook.original);
     blockedQuiescenceCount=0;CHECK(RemoveVisibility()&&!visibilityRetiring&&installed.load());
     CHECK(!visibilityPrepareHook.original&&!visibilitySubmitHook.original);
+    {
+        // Weapon-order diagnostic: pure CE stable-commit decision. A commit
+        // requires valid identity on both sides of the original prepare and
+        // an unchanged generation/unit/weapon.
+        HaloCELocalPlayerState before{};
+        before.generation=testGeneration;before.hasControlledUnit=true;
+        before.onFoot=true;before.nativePreparesFirstPerson=true;
+        before.nativeInputBlocked=false;before.nativeLookBlocked=false;
+        before.unit=0x11110001u;before.weapon=0x22220001u;
+        HaloCELocalPlayerState after=before;
+        CHECK(DiagnosticCeStableCommit(before,true,after,true));
+        after.weapon=0x33330001u;
+        CHECK(!DiagnosticCeStableCommit(before,true,after,true));
+        after=before;after.nativePaused=true;
+        CHECK(!DiagnosticCeStableCommit(before,true,after,true));
+        after=before;after.generation=testGeneration+1;
+        CHECK(!DiagnosticCeStableCommit(before,true,after,true));
+        after=before;
+        CHECK(!DiagnosticCeStableCommit(before,false,after,true));
+        CHECK(!DiagnosticCeStableCommit(before,true,after,false));
+    }
     RunCeMuzzleTests();
     quiescenceCalls=quiescenceRanges=0;
     blockedQuiescenceCount=7;

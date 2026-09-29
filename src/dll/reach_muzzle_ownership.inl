@@ -8,10 +8,17 @@ const uint8_t* ReachMuzzleObject(uint32_t handle,uint8_t wantedKind)
 }
 bool ReachBarrelValidObject(uint32_t handle)
 { uint8_t kind=0;return ReachVehicleObjectData(int32_t(handle),kind)!=nullptr; }
-bool ReachReadMuzzleWeapons(uint32_t owner,uint32_t weapons[2])
+bool ReachReadMuzzleWeapons(uint32_t owner,uint32_t weapons[2],
+    bool* primaryAbsentOut=nullptr)
 {
+    if(primaryAbsentOut)*primaryAbsentOut=false;
     const auto* unit=ReachMuzzleObject(owner,0);if(!unit)return false;
     const uint8_t roles[]{unit[0x34A],unit[0x34B]};
+    // A 0xFF primary role byte is the native explicit "no weapon in this
+    // slot": report it BEFORE the validation guards so a raw empty slot is
+    // never lost to an unrelated secondary-role/shared-handle rejection. Every
+    // other failure stays uncertainty and is never reported as absence (F03).
+    if(primaryAbsentOut)*primaryAbsentOut=roles[0]==0xFF;
     if(roles[0]>=4||(roles[1]>=4&&roles[1]!=0xFF)||roles[0]==roles[1])return false;
     for(int slot=0;slot<2;++slot)
     {

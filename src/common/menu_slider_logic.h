@@ -35,3 +35,21 @@ inline float MenuSliderNudge(float value, float minimum, float maximum,
     const double tick=std::round(double(value)/step)+(direction>0 ? 1 : -1);
     return float(std::clamp(tick*step,double(minimum),double(maximum)));
 }
+
+// Unit-fraction <-> percent mapping for sliders that store a 0..1 setting but
+// display a 0..100% label (the offhand-influence control). The percent value
+// is what the slider shows and edits, so the default 0.50 fraction reads
+// "50%" and never the raw fraction. Both directions clamp to the valid range
+// and map non-finite input to 0, so a malformed config can never print or save
+// a garbage value.
+inline float MenuSliderPercentFromUnit(float unit) noexcept
+{
+    if(!std::isfinite(unit)) return 0.0f;
+    return std::clamp(unit,0.0f,1.0f)*100.0f;
+}
+
+inline float MenuSliderUnitFromPercent(float percent) noexcept
+{
+    if(!std::isfinite(percent)) return 0.0f;
+    return std::clamp(percent,0.0f,100.0f)/100.0f;
+}
