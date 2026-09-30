@@ -88,6 +88,13 @@ has its own install component and an embedded administrator execution level.
 The package verifier checks the actual embedded execution-level XML, the separate
 launcher hash, every manual file and byte identity against the installer payload.
 
+The combined telemetry smoke test caught a byte-provenance mismatch introduced
+when applying the initial patch: the analyser had CRLF line endings while the
+contribution pins LF bytes. Restore the exact upstream blob (SHA-256
+`053CF61671BE281551B89A459E0611490F29D0FFD00387B43668043793BAE5B4`),
+retain its `-text` Git attribute and keep the strict provenance assertion. The
+generated sidecars alone were insufficient to pass this test.
+
 ## Validation and remaining evidence
 
 At integration review, all three source-guard self-tests pass (persistent grip,
