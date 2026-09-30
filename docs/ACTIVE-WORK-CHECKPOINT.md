@@ -15,12 +15,15 @@ and shell/gameplay focus policy. Logs: out/review-20260930-avatar-final-build4.l
 out/review-20260930-avatar-final-tests2.log and
 out/review-20260930-avatar-final-parity.log. Packaging repeats the required
 build/tests/gate from a clean source commit and records exact artifact hashes.
-Final ZIP paths, source commit and hashes are written to the ignored
-out/avatar-candidate-handoff-20260930.json after packaging. Deliver build,
-manual payload and matching source ZIPs, then wait for the user's headset test.
+The exact artifacts and SHA-256 values are recorded in the ignored
+out/avatar-candidate-handoff-20260930.json and the release's SHA256.txt. The
+launcher, manual payload, and matching source archive were published as the
+Alpha 0.7.0 community test prerelease on GitHub; wait for user/headset reports.
 
-Do not install, launch MCC, publish or advance CURRENT-STATE. The user closed
-MCC for verification. Both editions remain supported; accepted pointer stays
+No MCC installation or game launch was performed. Alpha 0.7.0 was published
+as an unaccepted test prerelease after explicit user authorization. Do not
+advance CURRENT-STATE before headset acceptance. Both editions remain supported;
+accepted pointer stays
 Alpha0.4.2. No new headset/Proton acceptance is claimed. H3 Elite/Arbiter lower
 hiding is unsupported; CE/H2/ODST/Reach world avatars, CE gun-load report, full
 Linux sign-in resolution and the broader scope remain recorded as unfinished.
