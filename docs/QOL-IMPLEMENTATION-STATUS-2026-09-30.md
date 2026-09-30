@@ -50,7 +50,7 @@ Evidence: `CONTINUATION-IMPLEMENTATION-2026-09-30.md` and
 | Area | Included behavior | Acceptance limit |
 | --- | --- | --- |
 | Launcher | Requests administrator access through its Windows manifest. | UAC consent is still required; this is not signing or a SmartScreen fix. |
-| Distribution | Launcher outside `ModFiles`; separate manual payload archive; matching complete installer/update and source archives. | Manual payload omits the launcher executable. Updater still needs the complete installer archive. |
+| Distribution | New installer/updater UI is a separate download. Windows manual archive includes the legacy game-launch/injection helper; Linux archive has the same files directly at ZIP root without an enclosing `Halo_MCC_VR` folder. | Direct MCC launch does not inject the DLL. Legacy helper's Proton/Wine behavior is unverified; flat layout only addresses extraction nesting. Updater still needs the complete installer archive. |
 | Configuration/update | Existing retain-and-extend config, backup/rollback, source verification, Steam/Store detection, base-root installation and deliberate launch/update actions preserved. | Synthetic filesystem testing is not an actual Steam/Store installation test. |
 | Preference migration | Missing replacement keys no longer mask legacy stock/smoothing values; missing per-game gun/HUD profiles inherit saved global calibration, including the old HUD alias. | Explicit new keys and per-game overrides remain authoritative. Runtime roundtrip fixtures supplement installer string checks. |
 | Virtual stock | Gab_dC PR16 adaptation: Plus and Standard, grab/release aim continuity, lifecycle guards and expanded settings. | Shared aim/ownership changes require title-by-title headset testing and Halo 3 regression. |

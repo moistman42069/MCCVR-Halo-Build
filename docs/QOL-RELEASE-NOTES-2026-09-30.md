@@ -64,9 +64,12 @@ candidate manifest and BUILD-IDENTITY.txt. The accepted pointer remains Alpha
   HUD, with dwell and interaction guards. Free-hand controller posing is separate from this HUD gesture.
 - The launcher requests administrator privileges by default through Windows
   UAC. The user still chooses whether to approve that prompt.
-- The launcher executable sits outside the manual `ModFiles` folder. A separate
-  manual-mod ZIP contains `Halo_MCC_VR` and no launcher executable. The complete
-  build ZIP remains available for installation and GitHub updates.
+- The new installer/updater remains a separate download from the manual files.
+  The Windows manual ZIP includes the older game-launch/injection helper inside
+  `Halo_MCC_VR`, but not the new installer/updater interface. A third Linux
+  compatible manual ZIP places the same payload files directly at archive root,
+  with no enclosing `Halo_MCC_VR` folder. Its helper still needs Proton/Wine
+  validation; a flat ZIP layout alone does not establish Linux support.
 - Retaining settings now preserves legacy stock-strength/smoothing migrations
   and global gun/HUD calibration inherited by missing per-game profiles. New
   defaults no longer mask those saved preferences; explicit per-game values
@@ -107,16 +110,20 @@ The updater consumes the complete installer archive, not the manual-only ZIP.
 When coming from the old 0.6.0 launcher, download and run this complete new
 installer once. The old updater requires a launcher inside its payload and
 cannot install the newly separated layout. Subsequent compatible updates use
-the new launcher. The current private candidate does not create a public update
-release or change what GitHub's latest-release endpoint returns.
+the new launcher. Alpha 0.7.0 is published as a prerelease; its updater checks
+the latest stable release, so download this test build from its release page.
 
-For manual installation, extract the separate manual ZIP's `Halo_MCC_VR` folder
-under the base MCC folder, or copy the complete build's `ModFiles` contents into
-that folder. Preserve an existing `halomccvr.cfg` when updating manually. The
-manual payload deliberately contains no launcher; manual-only users can use the
-separately supplied launcher executable when they need the launch/install UI.
-See `MANUAL-README.txt` for the exact copy/launch procedure. Administrator mode
-does not provide code signing or eliminate SmartScreen warnings.
+For Windows manual installation, extract the Manual ZIP's `Halo_MCC_VR` folder
+under the base MCC folder, preserving an existing `halomccvr.cfg` on updates.
+Run its legacy `HaloMCCVRLauncher.exe` to start MCC with anti-cheat disabled and
+inject the adjacent VR DLL. Starting MCC directly from Steam/Xbox in
+anti-cheat-disabled mode does not inject MCCVR. This legacy game-launch helper
+is distinct from the new installer/updater UI. For Linux/Proton, create/open
+`Halo_MCC_VR` under the MCC root and extract the Linux flat ZIP contents
+directly into it; the archive has no wrapper folder. Proton/Wine execution of
+the helper and actual Linux launch/injection remain unverified. See
+`MANUAL-README.txt` for the exact procedures. Administrator mode does not
+provide code signing or eliminate SmartScreen warnings.
 
 No installed MCC files were replaced and MCC was not launched while preparing
 this candidate. Nothing is published to GitHub by this preparation step.

@@ -23,28 +23,39 @@ INSTALL WITH THE LAUNCHER
 
 MANUAL INSTALL
 --------------
-The separate Manual-ModFiles ZIP already contains a Halo_MCC_VR folder. Place
-that folder directly inside the base MCC folder, preserving your old cfg on
-updates. The following equivalent procedure uses the complete launcher's ZIP:
+The Windows Manual ZIP contains a Halo_MCC_VR folder. Place that folder
+directly inside the base MCC folder, preserving your old cfg on updates. It
+includes the older game-launch/injection helper, not the new installer/updater
+interface. To install using the complete Launcher's ZIP instead:
 Create Halo_MCC_VR inside the MCC root (beside MCC, not inside Binaries/Win64).
 Copy the CONTENTS of ModFiles into Halo_MCC_VR, including its assets, licenses
 and optional DLSS runtime. On updates, retain halomccvr.cfg to keep your settings;
 missing settings receive defaults. The launcher can append the new keys for you.
-The manual ModFiles ZIP intentionally has no launcher. For launcher-based
-install, updates and game launch, extract the separate launcher package and
-run HaloMCCVRLauncher.exe beside ModFiles; the installer places that executable
-beside the mod files in Halo_MCC_VR. If you already copied ModFiles manually,
-you can optionally copy HaloMCCVRLauncher.exe from the root of the launcher
-package into Halo_MCC_VR to add the launch and update menu. Keep a backup of the
-old folder.
+After installing the Windows Manual ZIP, start MCC by running
+HaloMCCVRLauncher.exe from Halo_MCC_VR. It starts MCC with anti-cheat disabled
+and injects the adjacent VR DLL. Starting MCC directly from Steam/Xbox with
+anti-cheat disabled does not inject MCCVR. This older helper does not install,
+check for updates, or provide the new installer's menu; use the separate
+Launcher ZIP for those functions. Keep a backup of the old folder.
+
+LINUX / PROTON FLAT ZIP
+-----------------------
+The separate Linux compatible drag-and-drop ZIP has no enclosing
+Halo_MCC_VR folder. Create/open Halo_MCC_VR inside the base MCC folder and
+extract the archive contents directly into it. Keep its internal assets and
+licenses folders intact. It includes the same older Windows game-launch helper;
+running it under Proton/Wine and launching the game with the mod remain
+unverified. Directly starting MCC without a working DLL injection path will not
+load MCCVR. The flat layout solves archive extraction nesting only and is not a
+claim of full Linux support.
 
 UPDATES
 -------
 Check for updates reads the latest stable public release from
 https://github.com/moistman42069/MCCVR-Halo-Build/releases
 Download/install is a separate explicit action with archive and payload checks.
-A public release may be older than this private candidate; the menu distinguishes
-installed source identity from latest public release. Legacy releases without
+The latest stable release may be older than this prerelease; the menu
+distinguishes installed source identity from latest public release. Legacy releases without
 the new manifest require manual installation from their release page.
 The old 0.6.0 updater expects its launcher inside ModFiles. To upgrade from it
 to this separated layout, download the complete new launcher ZIP and run its
