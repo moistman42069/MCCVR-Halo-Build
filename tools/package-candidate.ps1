@@ -1428,7 +1428,8 @@ try {
     Copy-Item -LiteralPath (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md') -Destination $payloadDir
     Copy-Item -LiteralPath (Join-Path $packageDir 'PREVIOUS-IMPLEMENTATION-STATUS.md') -Destination $payloadDir
     Copy-Item -LiteralPath (Join-Path $packageDir 'LINUX-LOGIN-REVIEW.md') -Destination $payloadDir
-    foreach ($packageDoc in @('RELEASE-NOTES.md', 'IMPLEMENTATION-STATUS.md', 'PREVIOUS-IMPLEMENTATION-STATUS.md')) {
+    Copy-Item -LiteralPath (Join-Path $packageDir 'FINGER-JOINT-IDENTITY.md') -Destination $payloadDir
+    foreach ($packageDoc in @('RELEASE-NOTES.md', 'IMPLEMENTATION-STATUS.md', 'PREVIOUS-IMPLEMENTATION-STATUS.md', 'LINUX-LOGIN-REVIEW.md', 'FINGER-JOINT-IDENTITY.md')) {
         if (-not (Test-Path -LiteralPath (Join-Path $payloadDir $packageDoc) -PathType Leaf)) {
             throw "Candidate package is missing its report ledger: $packageDoc"
         }

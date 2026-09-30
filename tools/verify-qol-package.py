@@ -26,12 +26,14 @@ REQUIRED_PAYLOAD = {
     "HaloMCCVR.dll", "halomccvr.cfg", "INSTALL-MANIFEST.sha256",
     "BUILD-IDENTITY.txt", "LICENSE", "MANUAL-README.txt", "THIRD-PARTY-LICENSES.txt",
     "RELEASE-NOTES.md", "IMPLEMENTATION-STATUS.md", "PREVIOUS-IMPLEMENTATION-STATUS.md", "nvngx_dlss.dll",
+    "LINUX-LOGIN-REVIEW.md", "FINGER-JOINT-IDENTITY.md",
     "licenses/NVIDIA-DLSS/LICENSE.txt", "licenses/NVIDIA-DLSS/NOTICE.txt",
     "TelemetryAnalyser/analyse_mccvr_telemetry.py",
     "assets/fonts/Oxanium.ttf", "assets/fonts/OFL-Oxanium.txt", "assets/fonts/SOURCE.txt",
 }
 ROOT_FILES = {"HaloMCCVRLauncher.exe", "README.txt", "RELEASE-NOTES.md",
-              "IMPLEMENTATION-STATUS.md", "PREVIOUS-IMPLEMENTATION-STATUS.md", "CANDIDATE-MANIFEST.json"}
+              "IMPLEMENTATION-STATUS.md", "PREVIOUS-IMPLEMENTATION-STATUS.md", "CANDIDATE-MANIFEST.json",
+              "LINUX-LOGIN-REVIEW.md", "FINGER-JOINT-IDENTITY.md"}
 
 
 def require(condition: bool, message: str) -> None:
@@ -178,7 +180,8 @@ def check_build(path: Path, commit: str) -> dict:
         dll = archive.read("ModFiles/HaloMCCVR.dll")
         require(commit.encode("ascii") + b"\0" in dll and commit.encode("ascii") + b"-dirty" not in dll,
                 "Packaged DLL does not embed the exact clean source commit")
-        for name in ("RELEASE-NOTES.md", "IMPLEMENTATION-STATUS.md", "PREVIOUS-IMPLEMENTATION-STATUS.md"):
+        for name in ("RELEASE-NOTES.md", "IMPLEMENTATION-STATUS.md", "PREVIOUS-IMPLEMENTATION-STATUS.md",
+                     "LINUX-LOGIN-REVIEW.md", "FINGER-JOINT-IDENTITY.md"):
             require(archive.read(name) == archive.read("ModFiles/" + name), f"Root/payload notes differ: {name}")
         identity = config_values(archive.read("ModFiles/BUILD-IDENTITY.txt"))
         require(identity.get("source_commit") == commit and identity.get("release_tag") == "" and
