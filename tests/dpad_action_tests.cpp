@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <openxr/openxr.h>
 #include "../src/dll/vr.h"
+#include "../src/dll/native_vr_actions.h"
 #include "../src/common/config.h"
 #include "../src/common/weapon_interaction_logic.h"
 #include <atomic>
@@ -13,6 +14,10 @@
 #include <map>
 #include <string>
 #include <vector>
+
+static bool fixtureNativeRouting=false;
+bool NativeVrActions_GestureRouting(GameTitle,uint64_t) noexcept
+{ return fixtureNativeRouting; }
 
 namespace
 {
@@ -353,6 +358,16 @@ int main()
         gestureRead(true);
         fixtureNativeBindings[vr_mapping::Reload]^=0x1000;gestureRead(false);
         fixtureNativeBindings[vr_mapping::Reload]=0;gestureRead(false);
+        fixtureNativeRouting=true;
+        gestureRead(false); // A cached legacy gesture cannot cross routing modes.
+        const auto savedReload=g_padState.weaponReloadBinding;
+        const auto savedSwitch=g_padState.weaponSwitchBinding;
+        g_padState.weaponReloadBinding=NativeVrActions_GestureBit(vr_mapping::Reload);
+        g_padState.weaponSwitchBinding=NativeVrActions_GestureBit(vr_mapping::SwitchWeapon);
+        gestureRead(true);
+        fixtureNativeRouting=false;gestureRead(false);
+        g_padState.weaponReloadBinding=savedReload;
+        g_padState.weaponSwitchBinding=savedSwitch;
         g_config.vr_action_mapping=false;gestureRead(true);
         g_padState.weaponTitle=GameTitle::None;gestureRead(false);g_padState.weaponTitle=fixtureTitle;
         g_padState.weaponSampleMs=fixtureNow-151;gestureRead(false);g_padState.weaponSampleMs=fixtureNow;

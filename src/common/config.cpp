@@ -14,6 +14,7 @@
 #include "config.h"
 #include "weapon_interaction_logic.h"
 #include "flashlight_input.h"
+#include "dlss_logic.h"
 #include "log.h"
 
 Config g_config;
@@ -988,6 +989,17 @@ void ConfigLoad(const wchar_t* path)
                 vrBindingKey=true;break;
             }
         if(vrBindingKey) continue;
+        if(!strcmp(key,"experimental_body_ik")) {g_config.experimental_body_ik=atoi(val)!=0;continue;}
+        if(!strcmp(key,"body_ik_hide_lower")) {g_config.body_ik_hide_lower=atoi(val)!=0;continue;}
+        if(!strcmp(key,"physical_running")) {g_config.physical_running=atoi(val)!=0;continue;}
+        if(!strcmp(key,"physical_running_speed")) {
+            ParseFloatSetting(key,val,g_config.physical_running_speed);
+            g_config.physical_running_speed=std::clamp(g_config.physical_running_speed,.1f,1.f);continue;
+        }
+        if(!strcmp(key,"physical_running_sensitivity")) {
+            ParseFloatSetting(key,val,g_config.physical_running_sensitivity);
+            g_config.physical_running_sensitivity=std::clamp(g_config.physical_running_sensitivity,.25f,3.f);continue;
+        }
         if(!strcmp(key,"physical_crouch")) {g_config.physical_crouch=atoi(val)!=0;continue;}
         if(!strcmp(key,"physical_crouch_depth_m"))
         {
@@ -1024,7 +1036,7 @@ void ConfigLoad(const wchar_t* path)
         if(!strcmp(key,"upscaler")) {g_config.upscaler=atoi(val)==1?1:0;continue;}
         if(!strcmp(key,"dlss_mode")) {g_config.dlss_mode=std::clamp(atoi(val),0,4);continue;}
         if(!strcmp(key,"dlss_jitter")) {g_config.dlss_jitter=atoi(val)!=0;continue;}
-        if(!strcmp(key,"dlss_preset")) {g_config.dlss_preset=std::clamp(atoi(val),0,5);continue;}
+        if(!strcmp(key,"dlss_preset")) {g_config.dlss_preset=std::clamp(atoi(val),0,dlss::kPresetMax);continue;}
         if(!strcmp(key,"dlss_debug_view")) {g_config.dlss_debug_view=atoi(val)!=0;continue;}
         if(!strcmp(key,"vr_gameplay_subtitles")) {g_config.vr_gameplay_subtitles=atoi(val)!=0;continue;}
         if(!strcmp(key,"vr_gameplay_subtitle_anchor")) {g_config.vr_gameplay_subtitle_anchor=atoi(val)==1?1:0;continue;}
@@ -1228,6 +1240,12 @@ void ConfigLoad(const wchar_t* path)
             continue;
         }
         if (!strcmp(key, "hide_hud")) { g_config.hide_hud=atoi(val)!=0; continue; }
+        if (!strcmp(key, "hud_reveal_near_head")) { ParseBoolSetting(key,val,g_config.hud_reveal_near_head); continue; }
+        if (!strcmp(key, "hud_reveal_radius_m")) {
+            if(ParseFloatSetting(key,val,g_config.hud_reveal_radius_m))
+                g_config.hud_reveal_radius_m=std::clamp(g_config.hud_reveal_radius_m,.10f,.40f);
+            continue;
+        }
         if (!strcmp(key, "independent_dual_aim")) { g_config.independent_dual_aim=atoi(val)!=0; continue; }
         if (!strcmp(key, "two_hand_coherent_aim")) { g_config.two_hand_coherent_aim=atoi(val)!=0; continue; }
         if (!strcmp(key, "gun_barrel_aim")) { g_config.gun_barrel_aim=atoi(val)!=0; continue; }
@@ -1968,6 +1986,9 @@ void ConfigSave()
             d.halo4_helmet ? 1 : 0);
     fprintf(f, "halo4_helmet = %d\n\n", g_config.halo4_helmet ? 1 : 0);
     fprintf(f, "# Hide gameplay HUD and VR reticle; menus remain available.\nhide_hud = %d\n\n", g_config.hide_hud ? 1 : 0);
+    fprintf(f, "# Temporarily reveal a hidden HUD with an empty support hand near your head.\n"
+        "hud_reveal_near_head = %d\nhud_reveal_radius_m = %.3f\n\n",
+        g_config.hud_reveal_near_head?1:0,g_config.hud_reveal_radius_m);
     fprintf(f, "# Optional CE Anniversary lens-flare suppression. Does not alter world lighting.\nce_anniversary_disable_lens_flares = %d\n\n", g_config.ce_anniversary_disable_lens_flares ? 1 : 0);
     fprintf(f, "# Each owned dual-wielded gun follows its own controller.\nindependent_dual_aim = %d\n\n", g_config.independent_dual_aim ? 1 : 0);
     fprintf(f, "# Use verified visible weapon muzzle origin and orientation.\ngun_barrel_aim = %d\n\n", g_config.gun_barrel_aim ? 1 : 0);
@@ -2464,6 +2485,9 @@ void ConfigSave()
     fprintf(f,"\n# VR action bindings: 0=automatic, 1=unbound. Edited in VR Mappings.\n");
     fprintf(f,"physical_crouch = %d\nphysical_crouch_depth_m = %.3f\n",
         g_config.physical_crouch?1:0,g_config.physical_crouch_depth_m);
+    fprintf(f,"# Arm-swing locomotion: speed is a fraction of native maximum movement.\n");
+    fprintf(f,"physical_running = %d\nphysical_running_speed = %.3f\nphysical_running_sensitivity = %.3f\n",
+        g_config.physical_running?1:0,g_config.physical_running_speed,g_config.physical_running_sensitivity);
     fprintf(f,"vr_action_mapping = %d\nflashlight_suppress_on_two_hand = %d\n",
         g_config.vr_action_mapping?1:0,g_config.flashlight_suppress_on_two_hand?1:0);
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
@@ -2482,6 +2506,7 @@ void ConfigSave()
     fprintf(f,"vr_theatre_subtitle_scale = %.3f\nvr_theatre_subtitle_x = %.3f\nvr_theatre_subtitle_y = %.3f\nvr_theatre_subtitle_anchor = %d\n",
         g_config.vr_theatre_subtitle_scale,g_config.vr_theatre_subtitle_x,g_config.vr_theatre_subtitle_y,g_config.vr_theatre_subtitle_anchor);
     fprintf(f,"\n# Optional DLSS (0=off, 1=on); modes: DLAA/Quality/Balanced/Performance/Ultra Performance.\n");
+    fprintf(f,"# Model preset: 0=runtime default, 1=F, 2=J, 3=K, 4=L, 5=M, 6=E.\n");
     fprintf(f,"upscaler = %d\ndlss_mode = %d\ndlss_jitter = %d\ndlss_preset = %d\ndlss_debug_view = %d\n",
         g_config.upscaler,g_config.dlss_mode,g_config.dlss_jitter?1:0,g_config.dlss_preset,g_config.dlss_debug_view?1:0);
     fprintf(f,"\n");
@@ -2668,7 +2693,7 @@ void ConfigSave()
     fprintf(f, "# (default %d)\n", d.arm_ik ? 1 : 0);
     fprintf(f, "arm_ik = %d\n\n", g_config.arm_ik ? 1 : 0);
     fprintf(f, "# Floating hands: 1 = show only the hands and the guns they hold\n");
-    fprintf(f, "# (arms hidden); 0 = full arms. Pure render filter over VRIK.\n");
+    fprintf(f, "# (arms hidden); 0 = show arms where a verified tracked chain is available.\n");
     fprintf(f, "# (default %d)\n", d.floating_hands ? 1 : 0);
     fprintf(f, "floating_hands = %d\n\n", g_config.floating_hands ? 1 : 0);
     fprintf(f, "# World collision (experimental): hands and held weapons stop on\n");
@@ -2705,6 +2730,11 @@ void ConfigSave()
     fprintf(f, "# VRIK stage A1: show the player's game-animated body (experimental).\n");
     fprintf(f, "# (default %d)\n", d.body_wip ? 1 : 0);
     fprintf(f, "body_wip = %d\n\n", g_config.body_wip ? 1 : 0);
+    fprintf(f, "# Experimental H3/H4 tracked avatars and supported free-hand finger poses.\n");
+    fprintf(f, "# Overrides the legacy H3 body switch; unsupported rigs retain first-person hands.\n");
+    fprintf(f, "experimental_body_ik = %d\n", g_config.experimental_body_ik ? 1 : 0);
+    fprintf(f, "# Hide separate lower-body regions; H3 Elite/Arbiter require this off.\n");
+    fprintf(f, "body_ik_hide_lower = %d\n\n", g_config.body_ik_hide_lower ? 1 : 0);
     fprintf(f, "# -------------------------------------------------------------------\n");
     fprintf(f, "#  DEVELOPMENT DIAGNOSTICS\n");
     fprintf(f, "#  Leave these off unless a developer asks you to enable one.\n");

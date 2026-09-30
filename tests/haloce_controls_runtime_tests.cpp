@@ -20,6 +20,14 @@ unsigned failures{},turnCalls{},unwindChecks{},unwindFailures{};
 static uint8_t crouchDefinition[0x600]{};
 static float renderedCrouch=.75f;
 static bool interpolationAvailable=true;
+static uintptr_t vehicleDefinition{},vehicleModel{};
+static uint32_t vehicleDefinitionTag=0x12340001,vehicleModelTag=0x23450002;
+static bool replaceSeatOnTagRead{};
+static uintptr_t __fastcall VehicleTagService(uint32_t tag)
+{
+    if(replaceSeatOnTagRead)*reinterpret_cast<int16_t*>(unitAddress+0x2d0)=1;
+    return tag==vehicleDefinitionTag?vehicleDefinition:tag==vehicleModelTag?vehicleModel:0;
+}
 static const uint8_t* __fastcall CrouchTagService(uint32_t) {return crouchDefinition;}
 static int __fastcall CrouchUserService(uint32_t unit) {return unit==unitId?0:-1;}
 static bool __fastcall CrouchInterpolationService(int user,float* value)
@@ -89,7 +97,7 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,const void* cons
     // Exercise production's real Windows unwind admission for EVERY range.
     // This fixture owns no concurrent native workers, so it only replaces the
     // subsequent thread-freeze/drain phase; a leaf wrapper cannot pass here.
-    if (!functions||!trampolines||!count||count>9) return false;
+    if (!functions||!trampolines||!count||count>kNativeDetourRangeCapacity) return false;
     bool valid=true;
     for (size_t i=0;i<count;++i)
     {
@@ -354,6 +362,55 @@ int main()
     float seatedX=7,seatedY=8;
     Check(!HaloCEControls_MapMoveStick(0,1,seatedX,seatedY)&&seatedX==7&&seatedY==8,
         "seated camera turn cannot admit walking rotation of vehicle throttle");
+    // Production optional CE model identity: cache placement and native datum
+    // changes must not change saved trim keys for the same ordered node names.
+    vehicleDefinition=arena+0xe000;vehicleModel=arena+0xe100;
+    const uintptr_t modelNodes=arena+0xd000;
+    Put(vehicleAddress,vehicleDefinitionTag);Put(vehicleDefinition+0x34,vehicleModelTag);
+    Put(vehicleModel+0xb8,int32_t(2));Put(vehicleModel+0xbc,int32_t(0x1000));
+    Put(moduleBase+0x1c34fb0,arena);Put(moduleBase+0x2ea3410,intptr_t(0x1000));
+    Put(moduleBase+0x2d9ce10,intptr_t(modelNodes));
+    std::memcpy(reinterpret_cast<void*>(modelNodes),"frame hull",11);
+    std::memcpy(reinterpret_cast<void*>(modelNodes+0x9c),"frame seat",11);
+    Check(InstallService(0xa9b648,&VehicleTagService),"vehicle model fixture endpoint");
+    vehicleIdentityReady=true;
+    NativeVehicleCameraOwner cameraOwner{};
+    Check(HaloCEControls_ReadVehicleCameraOwner(cameraOwner)&&cameraOwner.vehicleIdentity&&
+        cameraOwner.parent==vehicleId&&cameraOwner.seat==0,"seated owner exposes proven model identity");
+    const uint64_t stableIdentity=cameraOwner.vehicleIdentity;
+    vehicleDefinitionTag+=0x10001;vehicleModelTag+=0x10001;
+    Put(vehicleAddress,vehicleDefinitionTag);Put(vehicleDefinition+0x34,vehicleModelTag);
+    std::memcpy(reinterpret_cast<void*>(modelNodes+0x400),reinterpret_cast<void*>(modelNodes),0x138);
+    Put(moduleBase+0x2d9ce10,intptr_t(modelNodes+0x400));
+    Check(HaloCEControls_ReadVehicleCameraOwner(cameraOwner)&&cameraOwner.vehicleIdentity==stableIdentity,
+        "same model names survive datum and mapped-cache relocation");
+    Put(modelNodes+0x400+0x9c+6,uint8_t('g'));
+    Check(HaloCEControls_ReadVehicleCameraOwner(cameraOwner)&&cameraOwner.vehicleIdentity&&
+        cameraOwner.vehicleIdentity!=stableIdentity,"different ordered model names select a different trim key");
+    Put(modelNodes+0x400+0x9c+6,uint8_t('s'));
+    for(unsigned invalid=0;invalid<7;++invalid)
+    {
+        switch(invalid)
+        {
+        case 0:vehicleIdentityReady=false;break;
+        case 1:Put(vehicleModel+0xb8,int32_t(65));break;
+        case 2:Put(vehicleModel+0xbc,int32_t(-1));break;
+        case 3:Put(moduleBase+0x2d9ce10,intptr_t(1));break;
+        case 4:Put(modelNodes+0x400,uint8_t(1));break;
+        case 5:std::memset(reinterpret_cast<void*>(modelNodes+0x400),'x',32);break;
+        case 6:Put(vehicleDefinition+0x34,UINT32_MAX);break;
+        }
+        Check(HaloCEControls_ReadVehicleCameraOwner(cameraOwner)&&!cameraOwner.vehicleIdentity&&
+            cameraOwner.parent==vehicleId,"invalid optional identity preserves seated camera with per-game offsets");
+        vehicleIdentityReady=true;Put(vehicleModel+0xb8,int32_t(2));Put(vehicleModel+0xbc,int32_t(0x1000));
+        Put(moduleBase+0x2d9ce10,intptr_t(modelNodes+0x400));
+        std::memset(reinterpret_cast<void*>(modelNodes+0x400),0,32);
+        std::memcpy(reinterpret_cast<void*>(modelNodes+0x400),"frame hull",11);
+        Put(vehicleDefinition+0x34,vehicleModelTag);
+    }
+    replaceSeatOnTagRead=true;
+    Check(!HaloCEControls_ReadVehicleCameraOwner(cameraOwner),"seat change during model read revokes whole owner receipt");
+    replaceSeatOnTagRead=false;Put(unitAddress+0x2d0,int16_t(0));
     perspective=0;Put(unitAddress+0xd8,UINT32_MAX);rig.turnX=0;
     TurnDispatch(0,.25f,.5f,moduleBase+0xa99660);
     Check(lastUser==0&&Near(lastYaw,.25f)&&Near(lastPitch,.5f),"another native input user retains both deltas");
@@ -389,8 +446,8 @@ int main()
         "pending callback preserves native dependency pointers while retiring controls");
     callbacks=0;
     Check(Remove()&&!moduleBase&&!retiring.load()&&!stateReady.load()&&!turnReady.load(),
-        "all eight actual compiled retirement ranges resolve and controls finish cleanup after draining");
-    Check(unwindChecks==18&&!unwindFailures,
+        "all ten actual compiled retirement ranges resolve and controls finish cleanup after draining");
+    Check(unwindChecks==20&&!unwindFailures,
         "both complete retirement attempts validate every production function's actual unwind metadata");
     // A same-generation camera re-entry can now publish native state again.
     // Contract installation remains covered separately by the pinned binding suite.

@@ -9,7 +9,7 @@
 inline bool RoomscaleGameplayEligible(GameTitle title, RuntimeMode mode) noexcept
 {
     return mode == RuntimeMode::Gameplay &&
-        (title == GameTitle::Halo2 || title == GameTitle::Halo3 ||
+        (title == GameTitle::HaloCE || title == GameTitle::Halo2 || title == GameTitle::Halo3 ||
          title == GameTitle::Halo3ODST || title == GameTitle::HaloReach ||
          title == GameTitle::Halo4);
 }

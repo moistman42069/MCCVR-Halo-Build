@@ -2,6 +2,8 @@
 #include "visual_hand_offset.h"
 
 #include "haloce_render_logic.h"
+#include "controller_finger_pose_logic.h"
+#include "finger_joint_identity.h"
 #include "two_hand_ik_logic.h"
 #include "../dll/ik.h"
 #include <array>
@@ -173,7 +175,12 @@ struct FirstPersonBinding
     uint64_t rightMask{},leftMask{},gunMask{};
     uint64_t armMask[2]{};
     uint64_t nodeIdentity{}; // Complete ordered names/parents, never a title-wide bone guess.
+    int16_t fingerNodes[2][5][3]{}; // anatomical left/right, index/middle/pinky/ring/thumb
+    uint64_t fingerMasks[2][5]{};
+    finger_joint::Inventory fingerInventory[2]{};
+    bool fingerPoseSupported{};
 };
+
 inline bool ApplyVisibleFirstPersonHandOffsets(const FirstPersonBinding& binding,float units,
     const ControllerRig& rig,NodeMatrix* palette) noexcept
 {
@@ -308,6 +315,173 @@ inline bool BuildFirstPersonBinding(uint32_t graph,uint32_t generation,
     }
     candidate.nodeIdentity=FirstPersonNodeIdentity(nodes,count);
     out=candidate;
+    return true;
+}
+
+inline bool BuildFingerBindings(const AnimationNode* nodes,size_t count,
+    FirstPersonBinding& binding) noexcept
+{
+    // The verified fp_body graph contributes these exact 37 nodes. Weapon
+    // graphs may append their own nodes; accept those only when they do not
+    // extend any finger chain (the exact-subtree check below enforces that).
+    if(!nodes||count<37||count>kFirstPersonMaxNodes||binding.count!=count||
+        binding.leftWrist<0||binding.rightWrist<0)
+        return false;
+    constexpr const char* roots[2][5]{
+        {"frame l index low","frame l middlelow","frame l pinky low","frame l ring low","frame l thumb low"},
+        {"frame r index low","frame r middle low","frame r pinky low","frame r ring low","frame r thumb low"}};
+    constexpr const char* mids[2][5]{
+        {"frame l index mid","frame l middle mid","frame l pinky mid","frame l ring mid","frame l thumb mid"},
+        {"frame r index mid","frame r middle mid","frame r pinky mid","frame r ring mid","frame r thumb mid"}};
+    constexpr const char* tips[2][5]{
+        {"frame l index tip","frame l middle tip","frame l pinky tip","frame l ring tip","frame l thumb tip"},
+        {"frame r index tip","frame r middle tip","frame r pinky tip","frame r ring tip","frame r thumb tip"}};
+    FirstPersonBinding candidate=binding;
+    std::memset(candidate.fingerNodes,0,sizeof(candidate.fingerNodes));
+    std::memset(candidate.fingerMasks,0,sizeof(candidate.fingerMasks));
+    for(unsigned side=0;side<2;++side)
+        for(unsigned finger=0;finger<5;++finger)
+        {
+            int found[3]{-1,-1,-1};
+            for(size_t node=0;node<count;++node)
+            {
+                if(NodeName(nodes[node].name,roots[side][finger]))found[0]=int(node);
+                if(NodeName(nodes[node].name,mids[side][finger]))found[1]=int(node);
+                if(NodeName(nodes[node].name,tips[side][finger]))found[2]=int(node);
+            }
+            const int wrist=side?binding.rightWrist:binding.leftWrist;
+            if(found[0]<0||found[1]<0||found[2]<0||
+                nodes[found[0]].parent!=wrist||nodes[found[1]].parent!=found[0]||
+                nodes[found[2]].parent!=found[1])return false;
+            for(unsigned joint=0;joint<3;++joint)
+                candidate.fingerNodes[side][finger][joint]=int16_t(found[joint]);
+            for(size_t node=0;node<count;++node)
+                if(DescendsFrom(nodes,count,node,size_t(found[0])))
+                    candidate.fingerMasks[side][finger]|=uint64_t{1}<<node;
+            const uint64_t expected=(uint64_t{1}<<found[0])|
+                (uint64_t{1}<<found[1])|(uint64_t{1}<<found[2]);
+            if(candidate.fingerMasks[side][finger]!=expected)return false;
+        }
+    constexpr unsigned sourceFingerForSlot[5]{4,0,1,3,2}; // thumb,index,middle,ring,pinky
+    constexpr finger_joint::Digit digits[5]{finger_joint::Digit::Thumb,
+        finger_joint::Digit::Index,finger_joint::Digit::Middle,
+        finger_joint::Digit::Ring,finger_joint::Digit::Pinky};
+    constexpr uint8_t lengths[5]{3,3,3,3,3};
+    int16_t parents[kFirstPersonMaxNodes]{};
+    for(size_t node=0;node<count;++node)parents[node]=nodes[node].parent;
+    for(unsigned side=0;side<2;++side)
+    {
+        uint16_t chains[5][4]{};
+        for(unsigned slot=0;slot<5;++slot)
+            for(unsigned joint=0;joint<3;++joint)
+                chains[slot][joint]=static_cast<uint16_t>(
+                    candidate.fingerNodes[side][sourceFingerForSlot[slot]][joint]);
+        const int wrist=side?binding.rightWrist:binding.leftWrist;
+        const finger_joint::RigKey key{GameTitle::HaloCE,binding.nodeIdentity,
+            static_cast<uint16_t>(count),finger_joint::Palette::FirstPerson};
+        if(!finger_joint::Build(key,side,static_cast<unsigned>(wrist),parents,
+            chains,lengths,digits,candidate.fingerInventory[side]))return false;
+    }
+    candidate.fingerPoseSupported=true;
+    binding=candidate;
+    return true;
+}
+
+inline bool DescribeFirstPersonFingerJoints(const FirstPersonBinding& binding,
+    unsigned side,finger_joint::Inventory& out) noexcept
+{
+    out={};
+    if(side>1||!binding.fingerPoseSupported)return false;
+    const auto& candidate=binding.fingerInventory[side];
+    if(candidate.rig.title!=GameTitle::HaloCE||
+       candidate.rig.checksum!=binding.nodeIdentity||
+       candidate.rig.nodeCount!=binding.count||
+       candidate.rig.palette!=finger_joint::Palette::FirstPerson||!candidate.count)return false;
+    out=candidate;return true;
+}
+
+inline Vec3 RotateVector(Vec3 value,Vec3 axis,float angle) noexcept
+{
+    const float c=std::cos(angle),s=std::sin(angle);
+    return value*c+Cross(axis,value)*s+axis*(Dot(axis,value)*(1-c));
+}
+inline bool CurlFingerSubtree(const FirstPersonBinding& binding,
+    std::array<NodeMatrix,kFirstPersonMaxNodes>& palette,int joint,Vec3 axis,
+    float angle) noexcept
+{
+    if(joint<0||joint>=binding.count||!Finite(axis)||
+        std::fabs(Dot(axis,axis)-1)>0.02f||!std::isfinite(angle))return false;
+    const NodeMatrix pivot=palette[joint];
+    NodeMatrix target=pivot;
+    target.forward=RotateVector(pivot.forward,axis,angle);
+    target.left=RotateVector(pivot.left,axis,angle);
+    target.up=RotateVector(pivot.up,axis,angle);
+    if(!Valid(target))return false;
+    NodeMatrix staged[kFirstPersonMaxNodes]{};
+    std::memcpy(staged,palette.data(),binding.count*sizeof(NodeMatrix));
+    const uint64_t mask=([&]{for(unsigned side=0;side<2;++side)
+        for(unsigned finger=0;finger<5;++finger)
+            for(unsigned segment=0;segment<3;++segment)
+                if(binding.fingerNodes[side][finger][segment]==joint)
+                    return binding.fingerMasks[side][finger];
+        return uint64_t{};})();
+    if(!mask)return false;
+    for(size_t node=0;node<binding.count;++node)
+        if(mask&(uint64_t{1}<<node))
+        {
+            NodeMatrix moved{};
+            if(!MoveNode(pivot,target,palette[node],moved))return false;
+            staged[node]=moved;
+        }
+    std::memcpy(palette.data(),staged,binding.count*sizeof(NodeMatrix));
+    return true;
+}
+
+inline bool ApplyFreeHandFingerPose(const FirstPersonBinding& binding,
+    const Tracking& tracking,std::array<NodeMatrix,kFirstPersonMaxNodes>& palette) noexcept
+{
+    const auto& rig=tracking.controllers;
+    if(!binding.fingerPoseSupported||rig.supportGripAttached)return true;
+    const unsigned side=rig.leftHanded&&rig.handAlignment?1u:0u;
+    const ControllerFingerInput& input=tracking.controllerFingers[0]; // semantic support hand
+    if(!input.valid)return true;
+    if(!std::isfinite(input.trigger)||!std::isfinite(input.grip)||
+        input.trigger<0||input.trigger>1||input.grip<0||input.grip>1)return false;
+    const int wrist=side?binding.rightWrist:binding.leftWrist;
+    int16_t parents[kFirstPersonMaxNodes]{};
+    for(auto& parent:parents)parent=-1;
+    uint16_t chains[5][4]{};uint8_t lengths[5]{3,3,3,3,3};
+    for(unsigned slot=0;slot<5;++slot)
+        for(unsigned joint=0;joint<3;++joint)
+        {
+            const auto* record=binding.fingerInventory[side].FindNative(slot,joint);
+            if(!record)return false;
+            chains[slot][joint]=record->paletteIndex;
+            parents[record->paletteIndex]=static_cast<int16_t>(record->parentIndex);
+        }
+    struct PoseTransform{float scale{1},rotation[9]{},translation[3]{};};
+    PoseTransform source[kFirstPersonMaxNodes]{},posed[kFirstPersonMaxNodes]{};
+    for(unsigned node=0;node<binding.count;++node)
+    {
+        const auto& m=palette[node];auto& t=source[node];t.scale=m.scale;
+        const float rotation[]{m.forward.x,m.forward.y,m.forward.z,m.left.x,m.left.y,m.left.z,
+            m.up.x,m.up.y,m.up.z};
+        std::memcpy(t.rotation,rotation,sizeof(rotation));
+        t.translation[0]=m.position.x;t.translation[1]=m.position.y;t.translation[2]=m.position.z;
+    }
+    const float down[]{palette[wrist].left.x,palette[wrist].left.y,palette[wrist].left.z};
+    if(!controller_finger_pose::Apply(source,binding.count,static_cast<size_t>(wrist),
+        parents,chains,lengths,down,input,posed,static_cast<const PoseTransform*>(nullptr),&binding.fingerInventory[side]))return false;
+    auto candidate=palette;
+    for(unsigned node=0;node<binding.count;++node)
+    {
+        auto& m=candidate[node];const auto& t=posed[node];m.scale=t.scale;
+        m.forward={t.rotation[0],t.rotation[1],t.rotation[2]};
+        m.left={t.rotation[3],t.rotation[4],t.rotation[5]};
+        m.up={t.rotation[6],t.rotation[7],t.rotation[8]};
+        m.position={t.translation[0],t.translation[1],t.translation[2]};
+    }
+    palette=candidate;
     return true;
 }
 

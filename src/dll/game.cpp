@@ -2,6 +2,7 @@
 #include "contact_melee_queue.h"
 #include "../common/reach_wind_replay.h"
 #include "native_reload_policy.h"
+#include "native_vr_actions.h"
 #include "native_vehicle_first_person.h"
 #include "haloce_native_bindings.h"
 #include "../common/weapon_model_catalog.h"
@@ -19,6 +20,7 @@
 #include "../common/support_grip_logic.h"
 #include "../common/halo4_owner_evidence.h"
 #include "../common/anatomical_palette_logic.h"
+#include "../common/reach_finger_pose_logic.h"
 #include "../common/halo4_runtime_weapon_bounds.h"
 #include "../common/legacy_runtime_weapon_bounds.h"
 #include "menu.h"
@@ -93,6 +95,8 @@
 #include "../common/hud_layout_logic.h"
 #include "../common/input_logic.h"
 #include "../common/halo4_render_logic.h"
+#include "../common/halo4_body_ik_logic.h"
+#include "../common/halo4_fp_finger_pose_logic.h"
 #include "../common/halo4_cui_reticle_logic.h"
 #include "../common/halo4_hud_logic.h"
 #include "../common/halo4_restoration_logic.h"
@@ -1209,6 +1213,12 @@ namespace
         const BoneMatrix* destination,uint32_t generation) noexcept;
     bool InstallOdstMuzzle(uintptr_t base,size_t size,uint32_t generation);
     bool RemoveOdstMuzzle();
+    bool InstallOdstWeaponHaptics(uintptr_t base,size_t size,uint32_t generation);
+    bool RemoveOdstWeaponHaptics();
+    void ReportOdstWeaponHaptics();
+    void OdstApplyControllerFingers(uint16_t tag,const FpInterpolationContext& context,
+        BoneMatrix* destination,uint32_t generation) noexcept;
+    void ReportOdstControllerFingers();
     void ReportOdstMuzzle();
     weapon_muzzle::Store g_reachBarrelMuzzles;
     std::atomic<bool> g_reachBarrelBindingsReady{false};
@@ -1423,6 +1433,15 @@ namespace
     int32_t LegacyCollisionIgnoredObject(GameTitle title);
     bool Halo3ContactMeleeReady();
     bool InstallHalo3ContactMelee(uintptr_t base,size_t size,uint32_t generation);
+    bool InstallHalo3WeaponHaptics(uintptr_t base,size_t size,uint32_t generation);
+    bool RemoveHalo3WeaponHaptics();
+    void ReportHalo3WeaponHaptics();
+    bool InstallHalo3Avatar(uintptr_t base,size_t size,uint32_t generation);
+    bool RemoveHalo3Avatar();
+    void ReportHalo3Avatar();
+    void BeginHalo3AvatarPair(const void* centerCamera);
+    void EndHalo3AvatarPair();
+    void ObserveHalo3AvatarFp(uint16_t tag,const BoneMatrix* destination);
     bool InstallHalo3DualAim(uintptr_t base, size_t size, uint32_t generation);
     bool RemoveHalo3DualAim();
     void PublishHalo3DualAim();
@@ -1503,6 +1522,7 @@ namespace
         int lShoulder = -1;
         uint64_t lWristDescendants = 0;
         bool armIk = false;
+        bool armsSolved = false;
         // Persistent support grip: the visible support attachment this solve
         // was produced under. It already differs whenever `armIk` differs, but
         // it is stored explicitly so a configured-off arm IK cannot silently
@@ -1723,7 +1743,7 @@ namespace
         const bool previousCapture = g_authoredReticleCaptureStarted;
         g_insideHudDrawWidget = true;
         g_authoredReticleCaptureStarted = false;
-        const bool hideHud=g_config.hide_hud&&g_enabled.load()&&VR_IsStereoEnabled()&&
+        const bool hideHud=VR_HudHidden()&&g_enabled.load()&&VR_IsStereoEnabled()&&
             Game_MoveStickIsLocomotion();
         if(hideHud) ++hud_visibility::depth;
         __try { g_realHudDrawWidget(userIndex, descriptor, widgetIndex,
@@ -2316,24 +2336,6 @@ namespace
             LOG("cutscene culling: restored Halo's cinematic FOV policy");
         }
     }
-
-    // VRIK stage: the engine's own switches for body-in-first-person, found in
-    // the same debug-var table (resolved BY NAME, no RVAs):
-    //   director_disable_first_person â€” the camera director stops treating the
-    //     view as first person, which is the engine's condition for drawing
-    //     the player biped (running legs, crouch â€” game-animated).
-    //   render_first_person â€” master switch for the old viewmodel layer.
-    // Applied per frame while the F1 "Show body" WIP toggle is on; original
-    // dwords are captured on first apply and restored when toggled off.
-    // Each lever: value slot + captured original + the value to force when the
-    // "Show body" toggle is ON. onValue is a best guess pending the live poke
-    // session (docs/VRIK-ROADMAP.md); the toggle now works if ANY lever
-    // resolves, instead of the old all-or-nothing that disabled everything
-    // because director/render_first_person were null at install time.
-    struct EngineVarSlot { int32_t* slot=nullptr; int32_t original=0; int32_t onValue=0; };
-    EngineVarSlot g_bodyVars[3];
-    std::atomic<int> g_bodyVarCount{0};
-    std::atomic<bool> g_bodyApplied{false};
 
     // DIAGNOSTIC (hud_probe): dump engine debug-var NAMES that look HUD-related,
     // so we can find a safe-area / HUD-scale / crosshair lever for the edge-crop
@@ -3623,45 +3625,7 @@ namespace
             profile,
             "auto: HUD layout is customized and no title-owned slots are located");
     }
-    void ResolveBodyVars(uintptr_t base, size_t size)
-    {
-        struct { const char* name; int32_t on; } wanted[3] = {
-            {"director_disable_first_person", 1}, // stop treating view as FP
-            {"render_first_person", 0},           // hide the viewmodel layer
-            {"debug_first_person_models", 1},     // has a live value slot on disk
-        };
-        int n=0;
-        for (auto& w : wanted)
-        {
-            int32_t* slot=reinterpret_cast<int32_t*>(FindDebugVarFloat(base,size,w.name));
-            if (slot) { g_bodyVars[n++]={slot,0,w.on}; }
-            LOG("VRIK: body switch '%s' -> %p%s", w.name, slot,
-                slot?"":" (null at install; may init at runtime)");
-        }
-        g_bodyVarCount.store(n,std::memory_order_release);
-        LOG("VRIK: %d/3 body switches resolved; Show body toggle %s",
-            n, n?"available":"disabled");
-    }
-
-    void ApplyBodySetting()
-    {
-        const int n=g_bodyVarCount.load(std::memory_order_acquire);
-        if (!n) return;
-        if (g_config.body_wip)
-        {
-            if (!g_bodyApplied.exchange(true))
-            {
-                for (int i=0;i<n;++i) g_bodyVars[i].original=*g_bodyVars[i].slot;
-                LOG("VRIK: body mode ON (%d switches forced)", n);
-            }
-            for (int i=0;i<n;++i) *g_bodyVars[i].slot=g_bodyVars[i].onValue;
-        }
-        else if (g_bodyApplied.exchange(false))
-        {
-            for (int i=0;i<n;++i) *g_bodyVars[i].slot=g_bodyVars[i].original;
-            LOG("VRIK: body mode OFF (engine values restored)");
-        }
-    }
+#include "body_visibility_switch.inl"
 
     // (Removed 2026-07-19: the old ResolveChudScale/ApplyChudScale patched the
     // 1.0f immediates in 0x278EE0 â€” the headset proved those are the CHUD ALPHA,
@@ -5618,14 +5582,18 @@ namespace
         return true;
     }
 
+    bool ReachBoneMatrixFinite(const BoneMatrix& matrix);
+
     bool ReconstructVisiblePaletteSource(uint16_t tag,
                                          const FpInterpolationContext& context,
                                          const BoneMatrix& root,
                                          const BoneMatrix* source,
                                          const BoneMatrix*& replacement,
                                          const FpExplicitPoseTargets* explicitTargets = nullptr,
-                                         const BoneMatrix* unmodifiedOverride = nullptr)
+                                         const BoneMatrix* unmodifiedOverride = nullptr,
+                                         bool* controllerArmsSolved = nullptr)
     {
+        if (controllerArmsSolved) *controllerArmsSolved=false;
         memset(g_fpPaletteCollisionCorrection,0,sizeof(g_fpPaletteCollisionCorrection));
         if (explicitTargets)
             memcpy(g_fpPaletteCollisionCorrection,explicitTargets->collisionCorrection,
@@ -5671,8 +5639,18 @@ namespace
                 g_fpStereoSolveScope.supportGripResolved
             ? g_fpStereoSolveScope.supportGripAttached
             : twoHandAimActive;
-        const bool armIkActive = ShouldApplyArmIk(
-            g_config.arm_ik, supportGripAttached);
+        // Reach supplies an explicit, pair-frozen source palette and a proven
+        // right-hand target. When its persistent support grip is attached, the
+        // second endpoint is derived from that same right-hand rigid delta
+        // below; this is the exact authored gun-seat point, not a competing
+        // controller aim target. Other titles retain the existing ownership
+        // gate.
+        const bool reachSupportArmTransaction = explicitTargets &&
+            supportGripAttached;
+        const bool armIkActive = reachSupportArmTransaction
+            ? g_config.arm_ik
+            : ShouldApplyArmIk(g_config.arm_ik, supportGripAttached);
+        bool controllerArmsWereSolved=false;
 
         auto cacheMatches = [&](const FpStereoPaletteCache& cache) {
             return cache.valid && cache.tag == tag &&
@@ -5717,6 +5695,8 @@ namespace
                 {
                     memcpy(g_fpPaletteCollisionCorrection,cache.collisionCorrection,
                            sizeof(g_fpPaletteCollisionCorrection));
+                    if (controllerArmsSolved)
+                        *controllerArmsSolved=cache.armsSolved;
                     if (kEnableRetiredHalo3Diagnostics && perfEyeBucket >= 0)
                         g_perfFpPaletteCacheHits[perfEyeBucket].fetch_add(
                             1, std::memory_order_relaxed);
@@ -5747,6 +5727,7 @@ namespace
                 cache.lShoulder = context.lShoulder;
                 cache.lWristDescendants = context.lWristDescendants;
                 cache.armIk = armIkActive;
+                cache.armsSolved = controllerArmsWereSolved;
                 cache.supportGripAttached = supportGripAttached;
                 memcpy(cache.collisionCorrection,g_fpPaletteCollisionCorrection,
                        sizeof(cache.collisionCorrection));
@@ -6052,6 +6033,7 @@ namespace
                                -1.0f,nullptr,g_config.right_shoulder_drop);
                 if (handApplied)
                 {
+                    bool leftArmApplied=false;
                     if (dual)
                     {
                         BoneMatrix authoredLeftWorld{},invAuthoredLeft{},handDelta{};
@@ -6070,6 +6052,7 @@ namespace
                                                      g_fpPaletteScratch[i])) return false;
                         }
                         static std::atomic<bool> loggedDualIk{false};
+                        leftArmApplied=true;
                         if (!explicitTargets && !loggedDualIk.exchange(true))
                             LOG("DUAL VRIK: slot 1 arm IK active on the LEFT "
                                 "controller (wrist %d, elbow %d, shoulder %d)",
@@ -6103,10 +6086,11 @@ namespace
                             if (loadLeftWristTarget(desiredL,leftScale))
                             {
                                 static std::atomic<bool> loggedDualArm{false};
-                                if (applyArm(context.lShoulder,context.lElbow,
-                                             context.lWrist,context.lWristDescendants,
-                                             false,desiredL,1.0f,nullptr,0.0f) &&
-                                    !explicitTargets &&
+                                leftArmApplied=applyArm(
+                                    context.lShoulder,context.lElbow,
+                                    context.lWrist,context.lWristDescendants,
+                                    false,desiredL,1.0f,nullptr,0.0f);
+                                if (leftArmApplied && !explicitTargets &&
                                     !loggedDualArm.exchange(true))
                                     LOG("DUAL VRIK: secondary VISIBLE hand bound to "
                                         "the left controller (wrist %d, elbow %d, "
@@ -6120,14 +6104,35 @@ namespace
                         context.lWrist>=0 && context.lWrist<context.count)
                     {
                         BoneMatrix desiredLeft{}; float leftScale=1.0f;
-                        if (loadLeftWristTarget(desiredLeft,leftScale))
+                        bool leftTargetValid=false;
+                        if (reachSupportArmTransaction)
+                        {
+                            leftTargetValid=ReachBuildRigidCarriedSupportEndpoint(
+                                armRoot,unmod[context.wrist],desiredWristWorld,
+                                unmod[context.lWrist],desiredLeft,
+                                [](const BoneMatrix& a,const BoneMatrix& b,
+                                   BoneMatrix& out){
+                                    return ComposeBoneMatrices(a,b,out);
+                                },
+                                [](const BoneMatrix& value,BoneMatrix& out){
+                                    return InvertBoneMatrix(value,out);
+                                }) &&
+                                ReachBoneMatrixFinite(desiredLeft);
+                            leftScale=explicitTargets->leftScale;
+                        }
+                        else
+                            leftTargetValid=
+                                loadLeftWristTarget(desiredLeft,leftScale);
+                        if (leftTargetValid)
                         {
                             static std::atomic<bool> loggedLeft{false};
-                            if (applyArm(context.lShoulder,context.lElbow,context.lWrist,
-                                         context.lWristDescendants,false,desiredLeft,1.0f,
-                                         kEnableRetiredHalo3Diagnostics
-                                             ? &probeLeft : nullptr,
-                                         0.0f))
+                            leftArmApplied=applyArm(
+                                context.lShoulder,context.lElbow,context.lWrist,
+                                context.lWristDescendants,false,desiredLeft,1.0f,
+                                kEnableRetiredHalo3Diagnostics
+                                    ? &probeLeft : nullptr,
+                                0.0f);
+                            if (leftArmApplied)
                             {
                                 probeLeftValid=true;
                                 g_armFailurePublished.store(nullptr,std::memory_order_relaxed);
@@ -6140,10 +6145,20 @@ namespace
                             }
                             else publishLeftFailure(g_armFailWhy?g_armFailWhy:"apply-arm");
                         }
-                        else if (!explicitTargets)
+                        else if (!explicitTargets || reachSupportArmTransaction)
                             publishLeftFailure("left-controller-pose");
                     }
                     else publishLeftFailure("left-chain-indices");
+                    if (reachSupportArmTransaction && !leftArmApplied)
+                    {
+                        // Do not expose a one-sided or partially written arm
+                        // solve. Skip palette commit/cache and let the existing
+                        // rigid right-wrist transaction rebuild every node
+                        // from untouchedLive, preserving the proven gun pose.
+                        publishLeftFailure("support-arm-transaction-rollback");
+                    }
+                    else
+                    {
                     // Compare this eye's LEFT-arm solve inputs to the other
                     // eye's. dRoot large is expected (eye offset). Any nonzero
                     // dCenterRoot / dWrist / dLens / dDesired names the leaking
@@ -6238,7 +6253,10 @@ namespace
                     // only translates the mesh (user-confirmed 2026-07-19:
                     // "the length just moves the gun"). Size trims are
                     // gun_scale (uniform) and gun_forward_m (seat depth).
+                    controllerArmsWereSolved=!dual && leftArmApplied;
                     replacement=g_fpPaletteScratch;
+                    if (controllerArmsSolved)
+                        *controllerArmsSolved=controllerArmsWereSolved;
                     cacheSolvedPalette(g_fpPaletteScratch);
                     static std::atomic<bool> loggedIk{false};
                     if (!explicitTargets && !loggedIk.exchange(true))
@@ -6266,6 +6284,7 @@ namespace
                         }
                     }
                     return true;
+                    }
                 }
                 if (!dual)
                 {
@@ -6608,6 +6627,8 @@ namespace
         {
             Halo3PublishMuzzlePalette(tag,context,destination,collisionGeneration);
             LegacyApplyVisualHandOffsets(GameTitle::Halo3,tag,boneMap,context,destination);
+            if(context.valid&&context.player==0&&context.slot==0)
+                ObserveHalo3AvatarFp(tag,destination);
         }
 
         // Collect every UNIQUE final-palette submission, not just the first
@@ -10247,6 +10268,8 @@ namespace
         g_fpStereoSolveScope.armed = true;
         g_fpStereoSolveScope.twoHandAimActive = VR_IsTwoHandAiming();
         (void)VR_GetContactTrackingSnapshot(g_fpStereoSolveScope.anatomicalTracking);
+        BeginHalo3AvatarPair(saved);
+        __try {
         const int firstEye = g_config.right_eye_first ? 1 : 0;
         for (int pass = 0; pass < 2; ++pass)
         {
@@ -10492,7 +10515,10 @@ namespace
             VR_CaptureRenderedEye(eye);
             VR_EndRasterEye();
         }
-        g_fpStereoSolveScope.armed = false;
+        } __finally {
+            EndHalo3AvatarPair();
+            g_fpStereoSolveScope.armed = false;
+        }
         g_stereoEye = -1;
         g_eyeFpView.store(nullptr,std::memory_order_release);
 
@@ -13381,6 +13407,7 @@ namespace
         {
             OdstPublishMuzzlePalette(tag,context,destination,collisionGeneration);
             LegacyApplyVisualHandOffsets(GameTitle::Halo3ODST,tag,boneMap,context,destination);
+            OdstApplyControllerFingers(tag,context,destination,collisionGeneration);
         }
     }
 
@@ -14942,6 +14969,8 @@ namespace
         Halo3RestoreNativeSeatPatch();
         // Optional publishers are now stopped too. Retire every old feature
         // before any new module can overwrite its target/original pair.
+        if (!RemoveHalo3Avatar()) return false;
+        if (!RemoveHalo3WeaponHaptics()) return false;
         if (!RemoveHalo3DualAim()) return false;
         if (!DisableAndRemoveHalo3ContactMelee()) return false;
         for (size_t i = g_installedGameHookCount; i > 0; --i)
@@ -15853,6 +15882,8 @@ namespace
                 kHalo3CollisionVectorSignature))
             RememberInstalledGameHook(g_halo3WorldCollision.target);
         (void)InstallHalo3ContactMelee(base,size,runtimeGeneration);
+        (void)InstallHalo3WeaponHaptics(base,size,runtimeGeneration);
+        (void)InstallHalo3Avatar(base,size,runtimeGeneration);
         // The rejected early-helper-only detours remain inert. The new optional
         // path owns acquisition and downstream assist together, with its own
         // default-off setting and feature-only failure isolation.
@@ -17564,6 +17595,7 @@ namespace
 
     bool DisableAndRemoveOdstHooks()
     {
+        if(!RemoveOdstWeaponHaptics())return false;
         if(!RemoveOdstMuzzle())return false;
         if(!DisableAndRemoveOdstContactMelee()) return false;
         // Stop new outer stereo transactions first. Existing ones retain all FP
@@ -17943,6 +17975,7 @@ namespace
 
         (void)InstallOdstContactMelee(base,size,runtimeGeneration);
         (void)InstallOdstMuzzle(base,size,runtimeGeneration);
+        (void)InstallOdstWeaponHaptics(base,size,runtimeGeneration);
 
         // The ownership block that used to sit here now runs the moment the
         // core hooks go live, above. In particular g_odstLastCamCopyMs is NOT
@@ -20924,7 +20957,7 @@ namespace
     {
         bool captureStarted = false;
         const bool hideHud=g_reachScopeRendering ||
-            (g_config.hide_hud&&ReachOwnsHudStereoTransaction());
+            (VR_HudHidden()&&ReachOwnsHudStereoTransaction());
         if(hideHud) ++hud_visibility::depth;
         const bool previousHeightRedirected = g_reachHudHeightRedirected;
         g_reachCamera.activeCallbacks.fetch_add(
@@ -21253,6 +21286,18 @@ namespace
         // the only presentation input exactly as before (PG-off parity).
         bool supportGripAttached = false;
         bool supportGripResolved = false;
+        bool fingerSampleExact = false;
+        bool fingerWeaponEvidenceValid = false;
+        bool secondaryWeaponPresent = false;
+        bool supportFingerIsLeft = true;
+        ControllerFingerInput supportFingerInput{};
+        uint32_t fingerWeaponOwner = UINT32_MAX;
+        uint32_t fingerPrimaryWeapon = UINT32_MAX;
+        bool fingerLeftHanded = false;
+        bool fingerHandAlignment = false;
+        uint64_t fingerTrackingSerial = 0;
+        uint64_t fingerTrackingEpoch = 0;
+        int64_t fingerDisplayTimeNs = 0;
         FpExplicitPoseTargets targets{};
         ReachFpLayoutCacheEntry layouts[kReachFpLayoutCacheCapacity]{};
     };
@@ -21303,6 +21348,10 @@ namespace
     std::atomic<uint32_t> g_reachFpLegPalettePreserved{0};
     std::atomic<uint32_t> g_reachFpLegPaletteIdentityRejects{0};
     std::atomic<uint32_t> g_reachFpLegPaletteBuildFailures{0};
+    std::atomic<uint64_t> g_reachFingerPoseApplied{0};
+    std::atomic<uint64_t> g_reachFingerPoseRefused{0};
+    std::atomic<uint64_t> g_reachFingerPoseWriteFailures{0};
+    std::atomic<uint64_t> g_reachFingerPoseRollbackFailures{0};
 
     struct ReachFpStatus
     {
@@ -21342,9 +21391,12 @@ namespace
     }
 
     void ReachBeginFpPairScope(uint32_t generation, uint64_t preparedSerial,
+                               const ReachVrRenderSnapshot& tracking,
                                const FpExplicitPoseTargets& targets,
                                bool showSeatedLegs);
     void ReachEndFpPairScope();
+    void ReachApplyFreeSupportFingerPose(uint16_t tag,int paletteCount,
+        const ReachFpInterpolationContext& context,BoneMatrix* destination) noexcept;
 
     // Reach's apply_distortions pass divides motion_blur_max by
     // motion_blur_scale. Zeroing both controls creates 0/0 NaNs in the
@@ -24176,8 +24228,8 @@ namespace
         if(now-lastLogMs<2000) return;
         lastLogMs=now;
         if(title==GameTitle::HaloReach){ReportReachContactMelee();ReportReachMuzzle();}
-        if(title==GameTitle::Halo3) ReportHalo3ContactMelee();
-        if(title==GameTitle::Halo3ODST){ReportOdstContactMelee();ReportOdstMuzzle();}
+        if(title==GameTitle::Halo3) { ReportHalo3ContactMelee(); ReportHalo3WeaponHaptics(); ReportHalo3Avatar(); }
+        if(title==GameTitle::Halo3ODST){ReportOdstContactMelee();ReportOdstMuzzle();ReportOdstWeaponHaptics();ReportOdstControllerFingers();}
         if(auto* melee=SharedMeleeForTitle(title))
             LOG("Physical melee title=%d: requested=%d world-contact=%d threshold=%.2f m/s; "
                 "%u polls / %u unavailable, %u missing velocity, peak %.2f m/s, "
@@ -24299,6 +24351,7 @@ namespace
         PublishReachFpStatus(3,0,context.liveSourceCount);
     }
     void ReachBeginFpPairScope(uint32_t generation, uint64_t preparedSerial,
+                               const ReachVrRenderSnapshot& tracking,
                                const FpExplicitPoseTargets& targets,
                                bool showSeatedLegs)
     {
@@ -24311,6 +24364,45 @@ namespace
         g_reachFpPairScope.generation=generation;
         g_reachFpPairScope.preparedSerial=preparedSerial;
         g_reachFpPairScope.targets=targets;
+
+        // Freeze only the exact controller sample used for this prepared
+        // stereo pair. Finger posing is presentation-only and remains stock
+        // whenever tracking freshness, native owner, or weapon identity is
+        // ambiguous.
+        if (g_config.experimental_body_ik &&
+            tracking.preparedSerial==preparedSerial &&
+            tracking.predictedDisplayTimeNs>0 &&
+            tracking.trackingSpaceEpoch>0)
+        {
+            VrContactTrackingSnapshot contact{};
+            if (VR_GetContactTrackingSnapshot(contact) &&
+                contact.timeNs==tracking.predictedDisplayTimeNs &&
+                contact.referenceEpoch==tracking.trackingSpaceEpoch &&
+                contact.leftHanded==tracking.leftHanded &&
+                contact.handAlignment==tracking.handAlignment &&
+                contact.controllerFingers[0].valid)
+            {
+                uint32_t owner=UINT32_MAX,weapon=UINT32_MAX,detail=0;
+                if (ReachPrimaryWeaponEvidence(generation,owner,weapon,detail,
+                        nullptr))
+                {
+                    g_reachFpPairScope.fingerSampleExact=true;
+                    g_reachFpPairScope.fingerWeaponEvidenceValid=true;
+                    g_reachFpPairScope.secondaryWeaponPresent=(detail&1u)!=0;
+                    g_reachFpPairScope.supportFingerIsLeft=
+                        FingerAnatomicalSupportSide(tracking.handAlignment)==0;
+                    g_reachFpPairScope.supportFingerInput=
+                        contact.controllerFingers[0];
+                    g_reachFpPairScope.fingerWeaponOwner=owner;
+                    g_reachFpPairScope.fingerPrimaryWeapon=weapon;
+                    g_reachFpPairScope.fingerLeftHanded=tracking.leftHanded;
+                    g_reachFpPairScope.fingerHandAlignment=tracking.handAlignment;
+                    g_reachFpPairScope.fingerTrackingSerial=contact.serial;
+                    g_reachFpPairScope.fingerTrackingEpoch=contact.referenceEpoch;
+                    g_reachFpPairScope.fingerDisplayTimeNs=contact.timeNs;
+                }
+            }
+        }
 
         // The 82/67 output counts alone also belong to Reach's third-person
         // Spartan/Elite render models. A palette may only become the native
@@ -24409,6 +24501,115 @@ namespace
             context={};
         g_reachFpCaptureSerial=0;
         g_reachFpPairScope={};
+    }
+
+    void ReachApplyFreeSupportFingerPose(uint16_t tag,int paletteCount,
+        const ReachFpInterpolationContext& context,BoneMatrix* destination) noexcept
+    {
+        if(!destination || !g_config.experimental_body_ik ||
+            !g_reachFpPairScope.armed || !g_reachFpPairScope.fingerSampleExact ||
+            !g_reachFpPairScope.fingerWeaponEvidenceValid ||
+            context.generation!=g_reachFpPairScope.generation ||
+            context.preparedSerial!=g_reachFpPairScope.preparedSerial ||
+            !context.valid || !context.transformed || context.interpolationView!=0 ||
+            context.interpolationSlot!=0 ||
+            g_reachFpPairScope.secondaryWeaponPresent)
+        {
+            g_reachFingerPoseRefused.fetch_add(1,std::memory_order_relaxed);
+            return;
+        }
+        const bool supportAttached=context.targets.supportGripResolved
+            ? context.targets.supportGripAttached : context.targets.twoHandAimActive;
+        if(!reach_fingers::FreeSupportPoseAdmitted(true,true,true,
+            g_reachFpPairScope.secondaryWeaponPresent,supportAttached,
+            context.targets.twoHandAimActive,g_reachFpPairScope.fingerSampleExact,
+            context.interpolationSlot==0))
+        {
+            g_reachFingerPoseRefused.fetch_add(1,std::memory_order_relaxed);
+            return;
+        }
+        uint32_t owner=UINT32_MAX,weapon=UINT32_MAX,detail=0;
+        VrContactTrackingSnapshot currentFingerSample{};
+        if(!ReachPrimaryWeaponEvidence(context.generation,owner,weapon,detail,
+                nullptr) || owner!=g_reachFpPairScope.fingerWeaponOwner ||
+            weapon!=g_reachFpPairScope.fingerPrimaryWeapon ||
+            ((detail&1u)!=0)!=g_reachFpPairScope.secondaryWeaponPresent ||
+            !VR_GetContactTrackingSnapshot(currentFingerSample) ||
+            currentFingerSample.serial!=g_reachFpPairScope.fingerTrackingSerial ||
+            currentFingerSample.timeNs!=g_reachFpPairScope.fingerDisplayTimeNs ||
+            currentFingerSample.referenceEpoch!=g_reachFpPairScope.fingerTrackingEpoch ||
+            currentFingerSample.leftHanded!=g_reachFpPairScope.fingerLeftHanded ||
+            currentFingerSample.handAlignment!=g_reachFpPairScope.fingerHandAlignment ||
+            !currentFingerSample.controllerFingers[0].valid ||
+            currentFingerSample.controllerFingers[0].trigger!=
+                g_reachFpPairScope.supportFingerInput.trigger ||
+            currentFingerSample.controllerFingers[0].grip!=
+                g_reachFpPairScope.supportFingerInput.grip)
+        {
+            g_reachFingerPoseRefused.fetch_add(1,std::memory_order_relaxed);
+            return;
+        }
+        uint32_t checksum=0;
+        int verifiedCount=0;
+        if(!ReachReadRenderModelIdentity(tag,checksum,verifiedCount) ||
+            verifiedCount!=paletteCount || (paletteCount!=47&&paletteCount!=41))
+        {
+            g_reachFingerPoseRefused.fetch_add(1,std::memory_order_relaxed);
+            return;
+        }
+        AnatomicalPalmMarkers markers{};
+        if(!ReachAnatomicalPalmMarkers(checksum,paletteCount,markers))
+        {
+            g_reachFingerPoseRefused.fetch_add(1,std::memory_order_relaxed);
+            return;
+        }
+        const unsigned side=g_reachFpPairScope.supportFingerIsLeft?0u:1u;
+        const int wristNode=side==0?markers.leftNode:markers.rightNode;
+        if(wristNode<0||wristNode>=paletteCount)
+        {
+            g_reachFingerPoseRefused.fetch_add(1,std::memory_order_relaxed);
+            return;
+        }
+        Halo4FloatingTransform wrist{},palm{};
+        wrist.scale=destination[wristNode].scale;
+        std::memcpy(wrist.rotation,destination[wristNode].rotation,
+            sizeof(wrist.rotation));
+        std::memcpy(wrist.translation,destination[wristNode].translation,
+            sizeof(wrist.translation));
+        if(!Halo4FloatingTransformValid(wrist) ||
+            !Halo4ComposeFloatingTransforms(wrist,
+                side==0?markers.left:markers.right,palm))
+        {
+            g_reachFingerPoseRefused.fetch_add(1,std::memory_order_relaxed);
+            return;
+        }
+        const float palmDown[3]{-palm.rotation[6],-palm.rotation[7],
+            -palm.rotation[8]};
+        BoneMatrix before[reach_fingers::kSpartanNodeCount]{};
+        BoneMatrix candidate[reach_fingers::kSpartanNodeCount]{};
+        const size_t bytes=size_t(paletteCount)*sizeof(BoneMatrix);
+        if(!SafeReadBytes(destination,before,bytes))
+        {
+            g_reachFingerPoseWriteFailures.fetch_add(1,std::memory_order_relaxed);
+            return;
+        }
+        const bool solved=reach_fingers::Apply(checksum,
+            static_cast<unsigned>(paletteCount),side,before,palmDown,
+            g_reachFpPairScope.supportFingerInput,candidate);
+        if(!solved)
+        {
+            g_reachFingerPoseRefused.fetch_add(1,std::memory_order_relaxed);
+            return;
+        }
+        if(!SafeWriteBytes(destination,candidate,bytes))
+        {
+            if(!SafeWriteBytes(destination,before,bytes))
+                g_reachFingerPoseRollbackFailures.fetch_add(
+                    1,std::memory_order_relaxed);
+            g_reachFingerPoseWriteFailures.fetch_add(1,std::memory_order_relaxed);
+            return;
+        }
+        g_reachFingerPoseApplied.fetch_add(1,std::memory_order_relaxed);
     }
 
     void ReachObserveFpLegPalette(uint16_t tag, int nodeCount)
@@ -25255,9 +25456,10 @@ namespace
                     g_reachWeaponAnchorMoved = alignedRight;
                     g_reachWeaponAnchorPending = true;
                 }
+                bool armsSolved=false;
                 const bool reconstructed=ReconstructVisiblePaletteSource(
                     tag,fp,*root,source,replacement,&targets,
-                    context.untouchedLive);
+                    context.untouchedLive,&armsSolved);
                 selectedSource=replacement;
                 bool leftHandBound=reconstructed &&
                     selectedSource==g_fpPaletteScratch;
@@ -25312,16 +25514,22 @@ namespace
                         LegacyCollisionIgnoredObject(GameTitle::HaloReach),
                         g_reachCamera.generation.load(
                             std::memory_order_acquire),&targets);
-                    // Reach temporarily forces the accepted floating-hands
-                    // presentation independent of the universal config. The
-                    // exact hand masks and held-object boundary come from the
-                    // pinned HREK/retail arms maps. The exact native fp_body
-                    // palette returned through the centered authored-body path
-                    // above, so only arms/attachments can reach this collapse.
+                    // The exact hand/arm masks and held-object boundary come
+                    // from the pinned HREK/retail layouts. When visible arms
+                    // are requested, ReconstructVisiblePaletteSource has
+                    // already solved the verified shoulder/elbow/wrist chains
+                    // against this pair's controller targets. Keep unrelated
+                    // body nodes hidden here; body_wip owns native body
+                    // visibility separately.
                     if (selectedSource==g_fpPaletteScratch)
                     {
                         const uint64_t keep=fp.wristDescendants|
                             fp.lWristDescendants;
+                        const bool showTrackedArms=
+                            ReachMayShowControllerTrackedArms(
+                                !g_config.floating_hands,g_config.arm_ik,
+                                supportGripAttached,targets.rightWristValid,
+                                targets.leftWristValid,armsSolved);
                         const uint64_t hiddenLeft=
                             context.layout.leftControllerOwnedSourceBranch&
                             ~fp.lWristDescendants;
@@ -25342,14 +25550,20 @@ namespace
                                 i>=fp.heldObjectStart;
                             if (!hand && !held)
                             {
-                                if (i<64 &&
-                                    (hiddenLeft&(uint64_t{1}<<i)))
+                                const bool leftArm=i<64 &&
+                                    (hiddenLeft&(uint64_t{1}<<i));
+                                const bool rightArm=i<64 &&
+                                    (hiddenRight&(uint64_t{1}<<i));
+                                const auto action=ReachFpPaletteVisibility(
+                                    hand,held,showTrackedArms,leftArm,rightArm);
+                                if (action==ReachFpVisibilityAction::Keep)
+                                    continue;
+                                if (action==ReachFpVisibilityAction::CollapseAtLeftWrist)
                                 {
                                     g_fpPaletteScratch[i]=
                                         collapsedAtLeftWrist;
                                 }
-                                else if (i<64 &&
-                                         (hiddenRight&(uint64_t{1}<<i)))
+                                else if (action==ReachFpVisibilityAction::CollapseAtRightWrist)
                                 {
                                     g_fpPaletteScratch[i]=
                                         collapsedAtRightWrist;
@@ -25378,6 +25592,11 @@ namespace
         if (original && selectedSource==g_fpPaletteScratch && exactBodyMatchesFrozen &&
             action==ReachFpPaletteAction::ArticulateKnownTransaction)
             ReachApplyVisualHandOffsets(tag,boneMap,context,destination);
+
+        if (original && selectedSource==g_fpPaletteScratch && !bodyLayout &&
+            action==ReachFpPaletteAction::ArticulateKnownTransaction &&
+            !g_reachNestedOuterSuppressed)
+            ReachApplyFreeSupportFingerPose(tag,paletteCount,context,destination);
 
         // Candidate 511eb0b put alignedRight here after the visible palette had
         // already been composed. alignedRight is an absolute world pose; the
@@ -25478,6 +25697,8 @@ namespace
     #include "halo3_contact_melee_runtime.inl"
     #include "halo3_physical_crouch.inl"
     #include "halo3_dual_wield_runtime.inl"
+    #include "halo3_weapon_haptics.inl"
+    #include "halo3_avatar.inl"
     #include "odst_contact_melee_runtime.inl"
     #include "odst_physical_crouch.inl"
     #include "odst_muzzle_ownership.inl"
@@ -25485,6 +25706,8 @@ namespace
     #include "odst_muzzle_shots.inl"
     #include "odst_independent_publication.inl"
     #include "odst_muzzle_lifecycle.inl"
+    #include "odst_weapon_haptics.inl"
+    #include "odst_finger_pose.inl"
     #include "reach_muzzle_ownership.inl"
     #include "reach_muzzle_publication.inl"
     #include "reach_muzzle_shots.inl"
@@ -27571,7 +27794,7 @@ namespace
         // boundary so that pre-inner work can learn or apply the exact body
         // layout, and keep the same scope across both stereo eyes.
         ReachBeginFpPairScope(
-            epoch.generation,candidate.preparedSerial,candidate.fpTargets,
+            epoch.generation,candidate.preparedSerial,tracking,candidate.fpTargets,
             candidate.vehicleViewApplied);
 
         uintptr_t result = 0;
@@ -31241,6 +31464,10 @@ namespace
         static bool loggedLegPreserved=false;
         static bool loggedLegIdentityReject=false;
         static bool loggedLegBuildFailure=false;
+        static uint64_t reportedFingerApplied=0;
+        static uint64_t reportedFingerRefused=0;
+        static uint64_t reportedFingerWrites=0;
+        static uint64_t reportedFingerRollback=0;
         const uint32_t currentGeneration=
             g_reachCamera.generation.load(std::memory_order_acquire);
         if (currentGeneration!=legLogGeneration)
@@ -31250,6 +31477,14 @@ namespace
             loggedLegPreserved=false;
             loggedLegIdentityReject=false;
             loggedLegBuildFailure=false;
+            reportedFingerApplied=g_reachFingerPoseApplied.load(
+                std::memory_order_relaxed);
+            reportedFingerRefused=g_reachFingerPoseRefused.load(
+                std::memory_order_relaxed);
+            reportedFingerWrites=g_reachFingerPoseWriteFailures.load(
+                std::memory_order_relaxed);
+            reportedFingerRollback=g_reachFingerPoseRollbackFailures.load(
+                std::memory_order_relaxed);
         }
         const uint32_t legObservations=
             g_reachFpLegPaletteObservationCount.load(
@@ -31292,6 +31527,28 @@ namespace
                 "shared FP layout remain active",legBuildFailures);
         }
 
+        const uint64_t fingerApplied=g_reachFingerPoseApplied.load(
+            std::memory_order_relaxed);
+        const uint64_t fingerRefused=g_reachFingerPoseRefused.load(
+            std::memory_order_relaxed);
+        const uint64_t fingerWrites=g_reachFingerPoseWriteFailures.load(
+            std::memory_order_relaxed);
+        const uint64_t fingerRollback=g_reachFingerPoseRollbackFailures.load(
+            std::memory_order_relaxed);
+        if(fingerApplied>reportedFingerApplied || fingerRefused>reportedFingerRefused ||
+            fingerWrites>reportedFingerWrites || fingerRollback>reportedFingerRollback)
+        {
+            LOG("Reach FP free-support finger pose: applied=%llu refused=%llu write_failures=%llu rollback_failures=%llu; stock palette remains the fallback",
+                static_cast<unsigned long long>(fingerApplied),
+                static_cast<unsigned long long>(fingerRefused),
+                static_cast<unsigned long long>(fingerWrites),
+                static_cast<unsigned long long>(fingerRollback));
+            reportedFingerApplied=fingerApplied;
+            reportedFingerRefused=fingerRefused;
+            reportedFingerWrites=fingerWrites;
+            reportedFingerRollback=fingerRollback;
+        }
+
         const uint64_t key=g_reachFpStatus.key.load(std::memory_order_acquire);
         if (!key || key==g_reachFpLoggedStatusKey.load(
                 std::memory_order_relaxed)) return;
@@ -31308,10 +31565,11 @@ namespace
             LOG("Reach FP layout learned stock-only: body=%d live=%d; eligible next prepared pair",
                 bodyCount,liveCount);
         else if (code==2)
-            LOG("Reach FP forced floating-hands active: body=%d live=%d "
-                "arm_ik=%d (Reach ignores floating_hands config; left palette "
-                "is independently controller-bound)",
-                bodyCount,liveCount,static_cast<int>(g_config.arm_ik));
+            LOG("Reach FP centered native lower-body palette committed: body=%d live=%d; "
+                "floating_hands=%d arm_ik=%d; support-grip arm endpoint follows "
+                "the authored weapon delta when that transaction commits",
+                bodyCount,liveCount,static_cast<int>(g_config.floating_hands),
+                static_cast<int>(g_config.arm_ik));
         else if (code==3)
             LOG("Reach FP layout changed or failed validation at live=%d; next pair remains stock",
                 liveCount);
@@ -32719,6 +32977,9 @@ namespace
         const BoneMatrix* inputObjectNodeMatrices, const void* nodeMap,
         bool flagA, bool flagB, int32_t totalNodeMatrixCount,
         void* skinning);
+    using Halo4FirstPersonProducerFn = uintptr_t(__fastcall*)(
+        uint32_t userIndex, uint64_t unitObject, uint32_t maxRecords,
+        void* outputRecords);
     using Halo4CuiRenderCommandFn = bool(__fastcall*)(
         void* renderer, const void* command, void* openRenderSections,
         void* renderContext);
@@ -32730,6 +32991,7 @@ namespace
     Halo4SetupFn g_halo4OrigSetup = nullptr;
     Halo4WrapperFn g_halo4OrigWrapper = nullptr;
     Halo4ModelSkinningFn g_halo4OrigModelSkinning = nullptr;
+    Halo4FirstPersonProducerFn g_halo4OrigFirstPersonProducer = nullptr;
     Halo4CuiRenderCommandFn g_halo4OrigCuiRenderCommand = nullptr;
     Halo4CuiGameplayRenderFn g_halo4OrigCuiGameplayRender = nullptr;
     std::atomic<float> g_halo4RenderHalfFovX[2]{};
@@ -32788,6 +33050,7 @@ namespace
         void* setupTarget = nullptr;
         void* wrapperTarget = nullptr;
         void* modelSkinningTarget = nullptr;
+        void* firstPersonProducerTarget = nullptr;
         // C-H4-43q is an optional feature transaction. The gameplay-CUI scope
         // and command dispatcher hooks install/remove together; either can
         // fail without changing camera ownership.
@@ -32847,6 +33110,9 @@ namespace
         std::atomic<uint32_t> vrikLastStormChecksum{0};
         std::atomic<uint32_t> vrikLastHeldChecksum{0};
         std::atomic<uint32_t> vrikLastBodyChecksum{0};
+        std::atomic<uint64_t> vrikBodyIdentityExact{0};
+        std::atomic<uint64_t> vrikBodyLocalUnitMatches{0};
+        std::atomic<uint64_t> vrikBodyLocalUnitMismatches{0};
         std::atomic<int32_t> vrikLastHeldNodeCount{-1};
         // The helper/fixup/armour bones between the joints, which the shared
         // solver does not reach. Counted so a torn arm cannot be reported as
@@ -33594,6 +33860,11 @@ namespace
         bool supportGripResolved = false;
         uint32_t supportGripOwnerUnit = UINT32_MAX;
         uint32_t supportGripOwnerWeapon = UINT32_MAX;
+        // Frozen from the same safe first-person owner proof as the hands
+        // record. Used only to observe native flag-0 body identity; it never
+        // changes the submitted stock body palette.
+        bool localUnitFrozen = false;
+        uint32_t localUnit = UINT32_MAX;
         // Owner-safe one-hand fallback carrier, built once per pair from the
         // same prepared sample. The weapon carrier consumes it when this
         // invocation is untrusted/detached and the prepared aim is
@@ -33602,6 +33873,10 @@ namespace
         bool oneHandRightTargetValid = false;
         Halo4FloatingTransform oneHandRightTargetWorld{};
         bool handAlignment = false;
+        Halo4ControllerWorldPoseInput bodyWorldFrame{};
+        bool bodyWorldFrameValid=false;
+        ControllerFingerInput bodySupportFingerInput{};
+        bool bodyPairLeftHanded=false;
         Halo4FloatingTransform rightTargetWorld{};
         Halo4FloatingTransform leftTargetWorld{};
         // Collision publication is rebuilt from authored model-node extents.
@@ -35680,10 +35955,15 @@ namespace
     // generic analytic elbow point is merely geometry; all axes, poles,
     // attachment orientation and every carried node belong to Halo 4 evidence.
     //
-    // DORMANT SINCE C-H4-30 - no caller. Retained rather than deleted because
-    // AGENTS.md requires reverting a behavior to disable it, not remove it, and
-    // because the arm IK is only untrustworthy while the shoulder and elbow
-    // node identities are unproven.
+    // Optional arms-with-hands solve on the exact H4EK storm_fp chain. The
+    // historical 0.2100-0.2137 readings used the wrong indices on the separate
+    // 120-node flag-0 body and are not an arm-scale measurement. This routine
+    // derives shoulder/elbow/wrist distances from the admitted 80-node
+    // storm_fp palette itself. The classifier admits only the exact ordered
+    // 80-node Storm record with finite bases, plausible live link ranges and
+    // bilateral upper-arm symmetry. It measures shoulder separation but does
+    // not refuse on a camera-axis sign (the world-rooted sign changes with
+    // heading). A solve failure is rolled back before the rigid-hand fallback.
     bool Halo4SolveStormArm(BoneMatrix* nodes, bool left,
                             const BoneMatrix& desired,
                             const BoneMatrix& bodyRoot,
@@ -35764,8 +36044,9 @@ namespace
     }
 
     // Dormant rejected C-H4-13..33 implementation retained per the candidate
-    // rollback contract. No active detour calls this function; C-H4-35 starts
-    // at Halo4BuildFloatingHandsPalette below.
+    // rollback contract. The active path is Halo4BuildFloatingHandsPalette
+    // below; its optional visible-arm branch uses only the verified Storm
+    // chains after the live palette classifier succeeds.
     Halo4VrikStage Halo4BuildVrikPalette(const BoneMatrix* source,
                                          BoneMatrix* solved, bool bodyFill)
     {
@@ -35877,28 +36158,21 @@ namespace
         // authored Blender kit places `vrik:right_hand` and `vrik:left_hand` on,
         // agreeing to seven decimals. The indices were never the problem.
         //
-        // C-H4-30: NO ARM IK. Reach's shipping presentation, which the user
-        // asked for by name after C-H4-29 tore the mesh.
+        // C-H4-30 disabled arm IK after a 2.1x upper-link measurement and a
+        // 0.0552 shoulder span disagreed with H4EK. Keep that rejection reason
+        // load-bearing: the optional arm solver below is reachable only after
+        // the ordered first-person record is identified as Storm and this
+        // function's live basis/link classifier accepts all four measured
+        // links. If the old discrepancy persists in that exact record, the
+        // classifier refuses it. Never widen its measured envelopes to make a
+        // failing model fit; on a per-pair arm refusal, restore source and
+        // retain the proven rigid-hand path.
         //
-        // The arm IK is gone from this path entirely. Everything that shredded
-        // the Storm mesh lived in it: the two-bone solve rotated shoulder and
-        // elbow SUBTREES, so any error in which node is a shoulder, which is an
-        // elbow, or how long the links are came out as a distorted skin. Those
-        // node identities are not trustworthy - the same log window measures the
-        // upper arm at 2.1x its authored bind while the two shoulders sit 0.0552
-        // apart against an authored 0.1409, and no skeleton is both.
-        //
-        // A rigid transform cannot distort a mesh. Each hand subtree is moved by
-        // ONE rigid delta onto its controller and every other body node is
-        // collapsed, so a wrong node can only be invisible or in the wrong
-        // place, never sheared. That is exactly what Reach ships
-        // (BUILDING.md: "its verified right hand plus appended held-object
-        // range remain right-controller-owned; the verified left-hand source
-        // mask receives its own left-controller wrist delta ... and every
-        // non-hand/non-held Reach FP node is collapsed").
-        //
-        // NO RIG SCALE. There is nothing left to scale: the target is an
-        // absolute world pose and the hand is moved onto it rigidly.
+        // The default floating-hands mode retains the rigid hand-only behavior:
+        // one delta per verified hand subtree and no arm-chain edits. The
+        // optional visible-arms branch is a separate, validated two-bone solve
+        // later in this function. Neither branch applies a guessed rig scale;
+        // controller targets are absolute world poses.
         if (bodyFill)
         {
             g_halo4Camera.vrikRigScale.store(1.0f,std::memory_order_relaxed);
@@ -36333,6 +36607,7 @@ namespace
     #include "halo4_muzzle_publication.inl"
     #include "halo4_muzzle_shots.inl"
     #include "halo4_muzzle_lifecycle.inl"
+    #include "halo4_weapon_haptics.inl"
 
     void Halo4BeginFloatingPair()
     {
@@ -36347,6 +36622,11 @@ namespace
             g_halo4RigTracking.preparedSerial;
         Halo4FloatingTargetFrame targetFrame{};
         const bool frameValid=Halo4FreezeFloatingTargetFrame(targetFrame);
+        if (frameValid)
+        {
+            g_halo4FloatingPair.bodyWorldFrame=targetFrame.common;
+            g_halo4FloatingPair.bodyWorldFrameValid=true;
+        }
         g_halo4FloatingPair.reloadTrackingValid=frameValid&&g_config.manual_reload&&
             Halo4BuildReloadTrackingTransform(targetFrame.common,g_halo4FloatingPair.reloadTrackingTransform);
         if (frameValid)
@@ -36369,6 +36649,9 @@ namespace
         if(frameValid && VR_GetContactTrackingSnapshot(contact) &&
             contact.serial==g_halo4FloatingPair.preparedSerial)
         {
+            g_halo4FloatingPair.bodySupportFingerInput=
+                contact.controllerFingers[0];
+            g_halo4FloatingPair.bodyPairLeftHanded=contact.leftHanded;
             uint64_t settings=g_halo4FloatingPair.epoch+1;
             settings=(settings^uint64_t(targetFrame.twoHandAimActive))*1099511628211ull;
             const float trims[]{targetFrame.gunYawDeg,targetFrame.gunPitchDeg,targetFrame.gunRollDeg,
@@ -36506,16 +36789,286 @@ namespace
 
 #include "halo4_render_model_identity.inl"
 #include "halo4_vehicle_identity.inl"
+#include "halo4_body_packet_backend.inl"
 
 #include "halo4_runtime_weapon_bounds.inl"
 
-    // One active no-IK Storm-hands transaction. The first flag-1 record is the
+    // Experimental H4 avatar transaction. The first-person producer finishes
+    // writing each packet's region mask before returning; this wrapper then
+    // edits only the exact local flag-0 storm_masterchief row. Weapons and the
+    // existing tracked-hand palette remain independent and are never gated by
+    // this optional feature.
+    constexpr uint32_t kHalo4FirstPersonRecordCountLimit=16;
+
+    Halo4VrikStage Halo4BuildFloatingHandsPalette(const BoneMatrix* source,
+        BoneMatrix* solved,int nodeCount,int32_t objectIndex,bool publish=true);
+
+    bool Halo4BuildBodyIkCandidate(
+        const Halo4FloatingTransform (&source)[kHalo4BodyIkNodeCount],
+        const BoneMatrix* solvedHands,
+        uint32_t nativeBodyMask,uint32_t nativeHandsMask,
+        Halo4BodyIkPacketMutation& result)
+    {
+        if (!g_halo4FloatingPair.bodyWorldFrameValid ||
+            !g_halo4RigTracking.headPoseValid ||
+            !g_halo4FloatingPair.leftTargetValid ||
+            !g_halo4FloatingPair.rightTargetValid)
+            return false;
+        Halo4BodyIkRequest request{};
+        auto headInput=g_halo4FloatingPair.bodyWorldFrame;
+        memcpy(headInput.controllerOrientation,
+            g_halo4RigTracking.headOrientation,
+            sizeof(headInput.controllerOrientation));
+        memcpy(headInput.controllerPosition,g_halo4RigTracking.headPosition,
+            sizeof(headInput.controllerPosition));
+        headInput.forwardTrim=0.0f;
+        headInput.verticalTrim=0.0f;
+        headInput.lateralTrim=0.0f;
+        headInput.mirrored=false;
+        Halo4ControllerWorldPose headWorld{};
+        if (!Halo4BuildControllerWorldPose(headInput,headWorld)) return false;
+        request.headTargetValid=true;
+        request.desiredWorldHead.scale=1.0f;
+        memcpy(request.desiredWorldHead.rotation,headWorld.basis,
+            sizeof(headWorld.basis));
+        memcpy(request.desiredWorldHead.translation,headWorld.position,
+            sizeof(headWorld.position));
+        if(!Halo4BodyHeadFromHmd(request.desiredWorldHead,request.desiredWorldHead))return false;
+        // Native foot animation remains the floor reference; do not translate
+        // both feet blindly with every headset movement. Hidden legs need no
+        // additional solve and cannot veto the upper-body feature.
+        if(!g_config.body_ik_hide_lower&&!Halo4PrepareBodyFootTargets(source,request))return false;
+
+        // The visible H4 controller carriers are already frozen in this same
+        // world frame. Each elbow pole uses the source forearm direction,
+        // projected by the bounded solver onto the shoulder-to-wrist plane.
+        request.wristValid[0]=request.wristValid[1]=true;
+        Halo4FloatingTransform firstPersonWrists[2]{};
+        if(!solvedHands||
+           !Halo4ToFloatingTransform(solvedHands[kHalo4LeftHandNode],firstPersonWrists[0])||
+           !Halo4ToFloatingTransform(solvedHands[kHalo4RightHandNode],firstPersonWrists[1])||
+           !Halo4BodyWristsFromFirstPerson(firstPersonWrists,request.desiredWorldWrist))return false;
+        const uint32_t uppers[2]{kHalo4BodyIkLeftUpperArm,
+            kHalo4BodyIkRightUpperArm};
+        const uint32_t forearms[2]{kHalo4BodyIkLeftForearm,
+            kHalo4BodyIkRightForearm};
+        for (unsigned side=0;side<2;++side)
+            for (int axis=0;axis<3;++axis)
+                request.elbowPoleWorld[side][axis]=
+                    source[forearms[side]].translation[axis]-
+                    source[uppers[side]].translation[axis];
+        // Finger input is frozen from the same prepared display serial. Only
+        // the unlatched support hand may flex; the primary and weapon-latched
+        // support hand retain Halo's authored grip on the weapon.
+        const unsigned supportAnatomical=g_halo4FloatingPair.handAlignment
+            ? 1u : 0u;
+        if (!g_halo4FloatingPair.supportGripAttached &&
+            !g_halo4FloatingPair.twoHandAimActive &&
+            g_halo4FloatingPair.bodySupportFingerInput.valid)
+        {
+            request.fingerPoseAllowed[supportAnatomical]=true;
+            request.fingerInput[supportAnatomical]=
+                g_halo4FloatingPair.bodySupportFingerInput;
+        }
+        return Halo4BuildBodyIkPacketMutation(kHalo4BodyIkImportChecksum,
+            kHalo4BodyIkNodeCount,source,request,nativeBodyMask,
+            nativeHandsMask,g_config.body_ik_hide_lower,result);
+    }
+
+    // Hot producer-hook diagnostics are atomics only. The 50 ms worker emits
+    // transitions; never perform logging or I/O in the native producer.
+    std::atomic<uint64_t> g_halo4BodyIkApplied{0};
+    std::atomic<uint64_t> g_halo4BodyIkRefused{0};
+    std::atomic<uint64_t> g_halo4BodyIkWriteFailures{0};
+    std::atomic<uint64_t> g_halo4BodyIkRollbackFailures{0};
+    std::atomic<uint64_t> g_halo4BodyIkSehFailures{0};
+
+    void Halo4ApplyBodyIkToProducerRows(uint32_t userIndex,
+        uint64_t unitObject,uint32_t maxRecords,void* outputRecords,
+        uintptr_t emittedRecords)
+    {
+        if (!g_config.experimental_body_ik || !g_config.halo4_hands ||
+            userIndex!=0)
+            return;
+        if(!g_halo4Camera.armed.load(std::memory_order_acquire)||
+            g_halo4Camera.teardownRequested.load(std::memory_order_acquire)||
+            !Halo4FloatingPairMatchesCurrent()||!outputRecords) {
+            g_halo4BodyIkRefused.fetch_add(1,std::memory_order_relaxed);
+            return;
+        }
+
+        auto classify=[](uint16_t model,uint8_t fill,
+            halo4_body_packet::RowKind& kind) {
+            Halo4RenderModelIdentity identity{};
+            if(!Halo4ResolveRenderModelIdentity(model,identity))return true;
+            if(fill==kHalo4FirstPersonBodyFillFlag&&
+                identity.nodeCount==static_cast<int>(kHalo4BodyIkNodeCount)&&
+                identity.runtimeImportChecksum==kHalo4BodyIkImportChecksum)
+                kind=halo4_body_packet::RowKind::Body;
+            else if(fill==kHalo4FirstPersonWeaponFillFlag&&
+                identity.nodeCount==static_cast<int>(kHalo4StormFpBodyNodeCount)&&
+                identity.runtimeImportChecksum==kHalo4StormFpRuntimeImportChecksum)
+                kind=halo4_body_packet::RowKind::Hands;
+            return true;
+        };
+        auto admit=[&](uint64_t unit) {
+            uint32_t ownerUnit=UINT32_MAX,ownerWeapon=UINT32_MAX,ownerDetail=0;
+            if(!DiagnosticHalo4WeaponOwner(g_halo4FloatingPair.generation,
+                    UINT32_MAX,ownerUnit,ownerWeapon,ownerDetail)||
+               !(ownerDetail&4u)||ownerUnit==UINT32_MAX||ownerUnit!=unit||
+               (g_halo4FloatingPair.localUnitFrozen&&
+                g_halo4FloatingPair.localUnit!=ownerUnit))return false;
+            g_halo4FloatingPair.localUnit=ownerUnit;
+            g_halo4FloatingPair.localUnitFrozen=true;
+            if(VR_SupportGripWiredForTitle(GameTitle::Halo4)&&
+                !g_halo4FloatingPair.supportGripResolved) {
+                const auto support=Halo4ReadSupportInvocation(UINT32_MAX);
+                const auto resolved=halo4_owner_evidence::UpdatePairResolution(
+                    halo4_owner_evidence::PairResolutionOf(false,
+                        g_halo4FloatingPair.supportGripAttached),
+                    true,support.trusted,support.evidenceAbsent);
+                if(resolved==halo4_owner_evidence::PairResolution::Unresolved)
+                    return false;
+                g_halo4FloatingPair.supportGripResolved=true;
+                g_halo4FloatingPair.supportGripAttached=
+                    resolved==halo4_owner_evidence::PairResolution::Present;
+                if(g_halo4FloatingPair.supportGripAttached) {
+                    g_halo4FloatingPair.supportGripOwnerUnit=support.owner.unit;
+                    g_halo4FloatingPair.supportGripOwnerWeapon=support.owner.weapon;
+                }
+            }
+            return true;
+        };
+        auto solve=[&](const uint8_t* handsBytes,const uint8_t* bodyBytes,
+            uint32_t bodyMask,uint32_t handsMask,uint8_t* candidateBytes,
+            uint32_t& candidateBodyMask,uint32_t& candidateHandsMask) {
+            BoneMatrix solvedHands[kHalo4FirstPersonBankTransforms]{};
+            BoneMatrix sourceHands[kHalo4FirstPersonBankTransforms]{};
+            if(!Halo4SafeRead(handsBytes,sourceHands,
+                sizeof(sourceHands)))return false;
+            if(Halo4BuildFloatingHandsPalette(
+                sourceHands,solvedHands,
+                kHalo4StormFpBodyNodeCount,
+                int32_t(g_halo4FloatingPair.localUnit),false)!=
+                    Halo4VrikStage::Solved)return false;
+            Halo4FloatingTransform source[kHalo4BodyIkNodeCount]{};
+            Halo4BodyIkPacketMutation solved{};
+            static_assert(sizeof(source)==sizeof(Halo4FloatingTransform)*
+                kHalo4BodyIkNodeCount);
+            memcpy(source,bodyBytes,sizeof(source));
+            if(!Halo4BuildBodyIkCandidate(source,solvedHands,bodyMask,
+                    handsMask,solved))return false;
+            memcpy(candidateBytes,solved.body.transforms,
+                sizeof(solved.body.transforms));
+            candidateBodyMask=solved.bodyRegionMask;
+            candidateHandsMask=solved.duplicateHandsRegionMask;
+            return true;
+        };
+        auto stillCurrent=[&](uint64_t unit) {
+            if(!Halo4FloatingPairMatchesCurrent()||
+                g_halo4Camera.teardownRequested.load(std::memory_order_acquire)||
+                !g_halo4Camera.armed.load(std::memory_order_acquire)||
+                !g_halo4FloatingPair.localUnitFrozen||
+                g_halo4FloatingPair.localUnit!=unit)return false;
+            uint32_t owner=UINT32_MAX,weapon=UINT32_MAX,detail=0;
+            return DiagnosticHalo4WeaponOwner(g_halo4FloatingPair.generation,
+                UINT32_MAX,owner,weapon,detail)&&(detail&4u)&&owner==unit;
+        };
+        auto read=[](const void* source,void* destination,size_t bytes) {
+            return Halo4SafeRead(source,destination,bytes)!=0;
+        };
+        auto write=[](void* destination,const void* source,size_t bytes) {
+            return Halo4SafeWrite(destination,source,bytes)!=0;
+        };
+        const auto result=halo4_body_packet::Apply<
+            sizeof(Halo4FloatingTransform)*kHalo4BodyIkNodeCount>(
+                userIndex,unitObject,maxRecords,outputRecords,emittedRecords,
+                kHalo4FirstPersonRecordCountLimit,
+                kHalo4FirstPersonRecordStride,
+                kHalo4FirstPersonRecordModelIndexOffset,
+                kHalo4FirstPersonRecordObjectIndexOffset,
+                kHalo4FirstPersonRecordFillFlagOffset,
+                kHalo4FirstPersonRecordRegionMaskOffset,
+                kHalo4FirstPersonRecordMatrixOffset,read,write,classify,admit,
+                solve,stillCurrent);
+        if(result==halo4_body_packet::Result::Applied)
+            g_halo4BodyIkApplied.fetch_add(1,std::memory_order_relaxed);
+        else
+            g_halo4BodyIkRefused.fetch_add(1,std::memory_order_relaxed);
+        if(result==halo4_body_packet::Result::WriteFailure||
+           result==halo4_body_packet::Result::RollbackFailure) {
+            g_halo4BodyIkWriteFailures.fetch_add(1,std::memory_order_relaxed);
+            if(result==halo4_body_packet::Result::RollbackFailure)
+                g_halo4BodyIkRollbackFailures.fetch_add(1,
+                    std::memory_order_relaxed);
+        }
+    }
+
+    void Halo4AfterFirstPersonProducer(void*,uint32_t userIndex,
+        uint64_t unitObject,uint32_t maxRecords,void* outputRecords,
+        uintptr_t emittedRecords)
+    {
+        __try
+        {
+            Halo4ApplyBodyIkToProducerRows(userIndex,unitObject,maxRecords,
+                outputRecords,emittedRecords);
+        }
+        __except(EXCEPTION_EXECUTE_HANDLER)
+        {
+            g_halo4BodyIkSehFailures.fetch_add(1,std::memory_order_relaxed);
+            // Native output already exists; an optional avatar fault cannot
+            // suppress that packet or escape into the working VR path.
+        }
+    }
+
+    uintptr_t __fastcall Halo4FirstPersonProducerDetour(
+        uint32_t userIndex,uint64_t unitObject,uint32_t maxRecords,
+        void* outputRecords)
+    {
+        g_halo4Camera.activeCallbacks.fetch_add(1,std::memory_order_acq_rel);
+        uintptr_t emitted=0;
+        __try
+        {
+            Halo4FirstPersonProducerFn original=
+                g_halo4OrigFirstPersonProducer;
+            emitted=halo4_body_packet::InvokeNativeOnceAndThen(original,
+                Halo4AfterFirstPersonProducer,nullptr,userIndex,unitObject,
+                maxRecords,outputRecords);
+        }
+        __finally
+        {
+            g_halo4Camera.activeCallbacks.fetch_sub(1,
+                std::memory_order_acq_rel);
+        }
+        return emitted;
+    }
+
+    // One active Storm-hands transaction. The first flag-1 record is the
     // exact 80-node storm_fp graph and is world-rooted by the current eye. Its
     // direct world delta is staged only after both hands and the final mask
     // validate, then consumed by the immediately following held model.
+    std::atomic<uint64_t> g_halo4FpFingerApplied{0},g_halo4FpFingerRefused{0};
+    void Halo4PoseFreeFirstPersonFingers(BoneMatrix* solved)
+    {
+        if(!g_config.experimental_body_ik || g_halo4FloatingPair.supportGripAttached ||
+           !g_halo4FloatingPair.bodySupportFingerInput.valid ||
+           (VR_SupportGripWiredForTitle(GameTitle::Halo4) &&
+            !g_halo4FloatingPair.supportGripResolved))return;
+        Halo4FloatingTransform source[80]{},posed[80]{};
+        BoneMatrix staged[80]{};
+        bool valid=true;
+        for(unsigned i=0;i<80 && valid;++i)valid=Halo4ToFloatingTransform(solved[i],source[i]);
+        valid=valid && Halo4PoseFreeFpFingers(source,kHalo4StormFpRuntimeImportChecksum,80,
+            FingerAnatomicalSupportSide(g_halo4FloatingPair.handAlignment),
+            g_halo4FloatingPair.bodySupportFingerInput,posed);
+        for(unsigned i=0;i<80 && valid;++i)valid=Halo4ToBoneMatrix(posed[i],staged[i]);
+        if(valid)std::memcpy(solved,staged,sizeof(staged));
+        (valid?g_halo4FpFingerApplied:g_halo4FpFingerRefused).fetch_add(1,std::memory_order_relaxed);
+    }
+
     Halo4VrikStage Halo4BuildFloatingHandsPalette(
         const BoneMatrix* source, BoneMatrix* solved, int nodeCount,
-        int32_t objectIndex)
+        int32_t objectIndex,bool publish)
     {
         if (!source || !solved ||
             nodeCount!=kHalo4StormFpBodyNodeCount ||
@@ -36541,7 +37094,7 @@ namespace
                 solved[kHalo4LeftHandNode],stockLeft))
             return Halo4VrikStage::AnchorFailed;
         const Halo4VrikStage stormStage=
-            Halo4ClassifyStormArms(solved,eyeRootMatrix,true);
+            Halo4ClassifyStormArms(solved,eyeRootMatrix,publish);
         if (stormStage!=Halo4VrikStage::Solved) return stormStage;
 
         Halo4FloatingTransform desiredRight{},desiredLeft{};
@@ -36636,36 +37189,109 @@ namespace
             return Halo4VrikStage::RangeFailed;
 
         Halo4FloatingTransform rightDeltaWorld{},leftDeltaWorld{};
-        if (!Halo4CarryFloatingSubtree(
-                solved,kHalo4RightHandNode,kHalo4RightHandSubtree,
-                desiredRight,rightDeltaWorld))
-            return Halo4VrikStage::RightIkFailed;
-        if (!Halo4CarryFloatingSubtree(
-                solved,kHalo4LeftHandNode,kHalo4LeftHandSubtree,
-                desiredLeft,leftDeltaWorld))
-            return Halo4VrikStage::LeftIkFailed;
+        bool controllerArmsSolved=false;
+        // Keep the optional arm solve atomic. If either side refuses, restore
+        // the exact source palette before applying the established rigid hand
+        // carry so no partial shoulder/elbow mutation reaches the game.
+        BoneMatrix rightHandDelta{},leftHandDelta{};
+        BoneMatrix rightArmTarget{},leftArmTarget{};
+        const bool armTargetsValid=
+            Halo4ToBoneMatrix(desiredRight,rightArmTarget) &&
+            Halo4ToBoneMatrix(desiredLeft,leftArmTarget);
+        BoneMatrix bodyRoot{};
+        const bool bodyRootValid=Halo4BuildControllerBodyRoot(bodyRoot);
+        Halo4VrikStage armFallbackFailure=Halo4VrikStage::RightIkFailed;
+        const auto armTransaction=Halo4RunArmPaletteTransaction(
+            Halo4ShouldSolveVisibleArms(
+                !g_config.floating_hands,g_config.arm_ik,
+                bodyRootValid,armTargetsValid),
+            [&]() {
+                return Halo4SolveStormArm(
+                        solved,false,rightArmTarget,bodyRoot,&rightHandDelta) &&
+                    Halo4ToFloatingTransform(rightHandDelta,rightDeltaWorld);
+            },
+            [&]() {
+                return Halo4SolveStormArm(
+                        solved,true,leftArmTarget,bodyRoot,&leftHandDelta) &&
+                    Halo4ToFloatingTransform(leftHandDelta,leftDeltaWorld);
+            },
+            [&]() {
+                return Halo4SafeRead(source,solved,
+                    sizeof(BoneMatrix)*kHalo4FirstPersonBankTransforms);
+            },
+            [&]() {
+                if (!Halo4CarryFloatingSubtree(
+                        solved,kHalo4RightHandNode,kHalo4RightHandSubtree,
+                        desiredRight,rightDeltaWorld))
+                {
+                    armFallbackFailure=Halo4VrikStage::RightIkFailed;
+                    return false;
+                }
+                if (!Halo4CarryFloatingSubtree(
+                        solved,kHalo4LeftHandNode,kHalo4LeftHandSubtree,
+                        desiredLeft,leftDeltaWorld))
+                {
+                    armFallbackFailure=Halo4VrikStage::LeftIkFailed;
+                    return false;
+                }
+                return true;
+            });
+        controllerArmsSolved=
+            armTransaction==Halo4ArmTransactionResult::Committed;
+        if (armTransaction==Halo4ArmTransactionResult::RightSolveFailed ||
+            armTransaction==Halo4ArmTransactionResult::LeftSolveFailed)
+        {
+            const auto failedStage=armTransaction==
+                    Halo4ArmTransactionResult::LeftSolveFailed
+                ? Halo4VrikStage::LeftIkFailed
+                : Halo4VrikStage::RightIkFailed;
+            g_halo4Camera.vrikStageRefusals[
+                static_cast<size_t>(failedStage)].fetch_add(
+                    1,std::memory_order_relaxed);
+        }
+        if (armTransaction==Halo4ArmTransactionResult::RollbackFailed)
+            return Halo4VrikStage::CopyFailed;
+        if (armTransaction==Halo4ArmTransactionResult::HandFallbackFailed)
+            return armFallbackFailure;
+        if (armTransaction==Halo4ArmTransactionResult::NotRequested)
+        {
+            if (!Halo4CarryFloatingSubtree(
+                    solved,kHalo4RightHandNode,kHalo4RightHandSubtree,
+                    desiredRight,rightDeltaWorld))
+                return Halo4VrikStage::RightIkFailed;
+            if (!Halo4CarryFloatingSubtree(
+                    solved,kHalo4LeftHandNode,kHalo4LeftHandSubtree,
+                    desiredLeft,leftDeltaWorld))
+                return Halo4VrikStage::LeftIkFailed;
+        }
 
-        // Visibility is last. Cross-weighted shoulder/forearm helpers collapse
-        // at the solved wrist instead of stretching back to their old pivots.
+        // Visibility is last. A failed optional solve falls back to the
+        // established floating-hands view, preserving hands and held weapon.
         BoneMatrix collapsedRight=solved[kHalo4RightHandNode];
         BoneMatrix collapsedLeft=solved[kHalo4LeftHandNode];
         collapsedRight.scale=0.0001f;
         collapsedLeft.scale=0.0001f;
         for (int node=0;node<kHalo4StormFpBodyNodeCount;++node)
         {
-            switch (Halo4ClassifyFloatingNode(node))
+            const auto role=Halo4ClassifyFloatingNode(node);
+            switch (role)
             {
             case Halo4FloatingNodeRole::RightHand:
             case Halo4FloatingNodeRole::LeftHand:
                 break;
             case Halo4FloatingNodeRole::CollapseAtRightWrist:
-                solved[node]=collapsedRight;
-                break;
             case Halo4FloatingNodeRole::CollapseAtLeftWrist:
-                solved[node]=collapsedLeft;
-                break;
             case Halo4FloatingNodeRole::Hidden:
-                solved[node].scale=0.0001f;
+                if (Halo4ShouldCollapseFloatingNode(
+                        role,!controllerArmsSolved))
+                {
+                    if (role==Halo4FloatingNodeRole::CollapseAtRightWrist)
+                        solved[node]=collapsedRight;
+                    else if (role==Halo4FloatingNodeRole::CollapseAtLeftWrist)
+                        solved[node]=collapsedLeft;
+                    else
+                        solved[node].scale=0.0001f;
+                }
                 break;
             case Halo4FloatingNodeRole::OutsideBody:
                 return Halo4VrikStage::RangeFailed;
@@ -36678,6 +37304,11 @@ namespace
                 return Halo4VrikStage::RangeFailed;
         }
 
+        if(!publish) {
+            Halo4ApplyVisualHandOffsets(solved,g_halo4FloatingPair.worldScale,g_config.left_handed,g_halo4FloatingPair.handAlignment);
+            return Halo4VrikStage::Solved;
+        }
+        Halo4PoseFreeFirstPersonFingers(solved);
         g_halo4Camera.vrikTargetMiss.store(
             rightDistance,std::memory_order_relaxed);
         const uintptr_t sourceAddress=reinterpret_cast<uintptr_t>(source);
@@ -36703,8 +37334,10 @@ namespace
         staged.epoch=g_halo4FloatingPair.epoch;
         staged.generation=g_halo4FloatingPair.generation;
         staged.preparedSerial=g_halo4FloatingPair.preparedSerial;
-        staged.rightHandDeltaWorld=g_halo4FloatingPair.handAlignment
-            ? primaryWeaponDelta : rightDeltaWorld;
+        // This relationship is always measured from the untouched source
+        // wrist to the controller target. The arm IK's final wrist correction
+        // alone is not the gun delta because shoulder/elbow motion preceded it.
+        staged.rightHandDeltaWorld=primaryWeaponDelta;
         staged.expectedHeldSource=heldSource;
         Halo4PublishAuthoredHandCollisionVolumes(solved, objectIndex);
         Halo4ApplyVisualHandOffsets(solved,g_halo4FloatingPair.worldScale,g_config.left_handed,g_halo4FloatingPair.handAlignment);
@@ -36829,6 +37462,38 @@ namespace
             // including the second eye's, may still freeze it); Present and
             // Absent are terminal. Once resolved, no later record re-reads or
             // re-defines the decision.
+            // Freeze a semantic local-unit handle from the proven owner
+            // reader at the first exact Storm-hands record in this stereo
+            // pair. This is an observation only; later flag-0 body packets
+            // remain byte-for-byte stock. Requiring the official Storm
+            // checksum/count and FP producer agreement prevents a generic
+            // model or stale TLS owner from establishing the reference.
+            if (!g_halo4FloatingPair.localUnitFrozen &&
+                !g_halo4Camera.teardownRequested.load(std::memory_order_acquire) &&
+                g_halo4Camera.armed.load(std::memory_order_acquire) &&
+                Halo4FloatingPairMatchesCurrent() &&
+                reinterpret_cast<uintptr_t>(_ReturnAddress())==
+                    g_halo4Camera.base+kHalo4FirstPersonSkinningReturnRva &&
+                Halo4DiagnosticPeekFillFlag(inputObjectNodeMatrices)==
+                    kHalo4FirstPersonWeaponFillFlag)
+            {
+                Halo4RenderModelIdentity ownerModel{};
+                uint32_t ownerUnit=UINT32_MAX, ownerWeapon=UINT32_MAX;
+                uint32_t ownerDetail=0;
+                const bool exactStorm=Halo4ResolveRenderModelIdentity(
+                    renderModelIndex,ownerModel) &&
+                    ownerModel.nodeCount==kHalo4StormFpBodyNodeCount &&
+                    ownerModel.runtimeImportChecksum==
+                        kHalo4StormFpRuntimeImportChecksum;
+                if (exactStorm && DiagnosticHalo4WeaponOwner(
+                        TitleAdapter_GetGeneration(GameTitle::Halo4),
+                        UINT32_MAX,ownerUnit,ownerWeapon,ownerDetail) &&
+                    (ownerDetail&0x4u)!=0 && ownerUnit!=UINT32_MAX)
+                {
+                    g_halo4FloatingPair.localUnit=ownerUnit;
+                    g_halo4FloatingPair.localUnitFrozen=true;
+                }
+            }
             if (VR_SupportGripWiredForTitle(GameTitle::Halo4) &&
                 !g_halo4FloatingPair.supportGripResolved &&
                 !g_halo4Camera.teardownRequested.load(std::memory_order_acquire) &&
@@ -36976,6 +37641,29 @@ namespace
                     g_halo4Camera.vrikLastBodyChecksum.store(
                         identity.runtimeImportChecksum,
                         std::memory_order_relaxed);
+                    const bool exactBody=Halo4IsStormMasterchiefBodyIdentity(
+                        identity.runtimeImportChecksum,identity.nodeCount);
+                    if (exactBody)
+                    {
+                        g_halo4Camera.vrikBodyIdentityExact.fetch_add(
+                            1,std::memory_order_relaxed);
+                        const bool sameFrozenPair=
+                            Halo4FloatingPairMatchesCurrent() &&
+                            g_halo4FloatingPair.localUnitFrozen &&
+                            g_halo4FloatingPair.generation==
+                                TitleAdapter_GetGeneration(GameTitle::Halo4);
+                        if (sameFrozenPair)
+                        {
+                            if (Halo4BodyBelongsToFrozenLocalUnit(true,
+                                    static_cast<uint32_t>(objectIndex),true,
+                                    g_halo4FloatingPair.localUnit))
+                                g_halo4Camera.vrikBodyLocalUnitMatches.fetch_add(
+                                    1,std::memory_order_relaxed);
+                            else
+                                g_halo4Camera.vrikBodyLocalUnitMismatches.fetch_add(
+                                    1,std::memory_order_relaxed);
+                        }
+                    }
                 }
                 else if (fillFlag==kHalo4FirstPersonWeaponFillFlag)
                     g_halo4Camera.vrikLastWeaponNodeCount.store(
@@ -38323,7 +39011,7 @@ namespace
             return;
         }
 
-        const bool hideHud=g_config.hide_hud;
+        const bool hideHud=VR_HudHidden();
         if(hideHud) ++hud_visibility::depth;
         scope.gameplayPassActive = true;
         g_halo4HudGameplayThreadId = GetCurrentThreadId();
@@ -39243,7 +39931,8 @@ namespace
 
                 // Derive orientation without translating the native body sample.
                 Halo4CameraBasis roomscaleBasis = stock;
-                if (g_config.roomscale_movement && Halo4ApplyHeadPose(roomscaleBasis, headInput))
+                if ((g_config.roomscale_movement || g_config.physical_running) &&
+                    Halo4ApplyHeadPose(roomscaleBasis, headInput))
                 {
                     Roomscale_Camera(GameTitle::Halo4, Game_RoomscaleCameraAllowed(GameTitle::Halo4),
                         stock.position, snapshot.headPosition, snapshot.headOrientation,
@@ -39870,6 +40559,12 @@ namespace
                 hit?hit-base:0,kHalo4ModelSkinningRva);
             return false;
         }
+        const uintptr_t producerHit=sig::Find(base,size,
+            kHalo4FirstPersonProducerPattern);
+        const bool producerUnique=producerHit &&
+            producerHit-base==kHalo4FirstPersonProducerRva &&
+            !sig::Find(producerHit+1,base+size-producerHit-1,
+                kHalo4FirstPersonProducerPattern);
 
         const auto findUniqueAt=[&](const char* pattern,uint32_t expectedRva)
         {
@@ -39950,6 +40645,28 @@ namespace
                 "stock hands remain and camera core stays armed");
             return false;
         }
+        if (producerUnique)
+        {
+            void* producerTarget=reinterpret_cast<void*>(producerHit);
+            Halo4FirstPersonProducerFn producerOriginal=nullptr;
+            if (MH_CreateHook(producerTarget,
+                    reinterpret_cast<void*>(&Halo4FirstPersonProducerDetour),
+                    reinterpret_cast<void**>(&producerOriginal))==MH_OK)
+            {
+                g_halo4OrigFirstPersonProducer=producerOriginal;
+                if (MH_EnableHook(producerTarget)==MH_OK)
+                    g_halo4Camera.firstPersonProducerTarget=producerTarget;
+                else
+                {
+                    MH_RemoveHook(producerTarget);
+                    g_halo4OrigFirstPersonProducer=nullptr;
+                }
+            }
+        }
+        if (!g_halo4Camera.firstPersonProducerTarget)
+            LOG("Halo 4 experimental avatar: exact post-mask first-person producer is unavailable; avatar stays stock, hands/camera remain active");
+        else
+            LOG("Halo 4 experimental avatar: exact local first-person packet producer hooked; feature defaults off and requires 120-node model identity");
         uint32_t epoch=g_halo4Camera.floatingHandsEpoch.fetch_add(
             1,std::memory_order_acq_rel)+1;
         if (!epoch)
@@ -40731,6 +41448,8 @@ namespace
 
     bool RemoveHalo4CameraCore()
     {
+        if(!RemoveHalo4WeaponHaptics())
+        { LOG("Halo 4 teardown: optional weapon haptics need cleanup retry; retaining native dependencies");return false; }
         if(!RemoveHalo4Muzzle())
         { LOG("Halo 4 teardown: optional muzzle hooks need cleanup retry; retaining native dependencies");return false; }
         const uint32_t generation =
@@ -40768,6 +41487,8 @@ namespace
             MH_DisableHook(g_halo4Camera.wrapperTarget);
         if (g_halo4Camera.modelSkinningTarget)
             MH_DisableHook(g_halo4Camera.modelSkinningTarget);
+        if (g_halo4Camera.firstPersonProducerTarget)
+            MH_DisableHook(g_halo4Camera.firstPersonProducerTarget);
         if (g_halo4WorldCollision.rayCastTarget)
             MH_DisableHook(g_halo4WorldCollision.rayCastTarget);
         // Both detours must have returned before a trampoline is freed or the
@@ -40786,6 +41507,8 @@ namespace
             MH_RemoveHook(g_halo4Camera.wrapperTarget);
         if (g_halo4Camera.modelSkinningTarget)
             MH_RemoveHook(g_halo4Camera.modelSkinningTarget);
+        if (g_halo4Camera.firstPersonProducerTarget)
+            MH_RemoveHook(g_halo4Camera.firstPersonProducerTarget);
         if (g_halo4WorldCollision.rayCastTarget)
             MH_RemoveHook(g_halo4WorldCollision.rayCastTarget);
         const MH_STATUS dispatcherRemoved = g_halo4Camera.cuiReticleTarget
@@ -40829,6 +41552,7 @@ namespace
         g_halo4Camera.setupTarget = nullptr;
         g_halo4Camera.wrapperTarget = nullptr;
         g_halo4Camera.modelSkinningTarget = nullptr;
+        g_halo4Camera.firstPersonProducerTarget = nullptr;
         g_halo4Camera.cuiReticleTarget = nullptr;
         g_halo4Camera.cuiReticleGameplayTarget = nullptr;
         g_halo4Camera.cuiReticleCleanupRequired = false;
@@ -40838,6 +41562,7 @@ namespace
         g_halo4OrigSetup = nullptr;
         g_halo4OrigWrapper = nullptr;
         g_halo4OrigModelSkinning = nullptr;
+        g_halo4OrigFirstPersonProducer = nullptr;
         g_halo4OrigCuiRenderCommand = nullptr;
         g_halo4OrigCuiGameplayRender = nullptr;
         g_halo4WorldCollision.rayCastTarget = nullptr;
@@ -41139,6 +41864,7 @@ namespace
         (void)InstallHalo4ContactMelee(base,size,generation);
         (void)InstallHalo4VehicleInput(base,size,generation);
         (void)InstallHalo4Muzzle(base,size,generation);
+        (void)InstallHalo4WeaponHaptics(base,size,generation);
         // C-H4-46: Halo 4 supplies authored pixels to the same shared VR
         // reticle chain as Halo 3/ODST/Reach. CUI never owns placement.
         (void)InstallHalo4CuiReticle(base, size, generation);
@@ -41246,6 +41972,56 @@ namespace
 
     void Halo4CameraLogTick()
     {
+        static uint64_t reportedFpFingerApplied=0,reportedFpFingerRefused=0;
+        static ULONGLONG lastFpFingerReport=0,lastBodyIkReport=0;
+        const ULONGLONG avatarReportNow=GetTickCount64();
+        const auto fpFingerApplied=g_halo4FpFingerApplied.load(std::memory_order_relaxed);
+        const auto fpFingerRefused=g_halo4FpFingerRefused.load(std::memory_order_relaxed);
+        if((fpFingerApplied!=reportedFpFingerApplied || fpFingerRefused!=reportedFpFingerRefused) &&
+           avatarReportNow-lastFpFingerReport>=5000) {
+            lastFpFingerReport=avatarReportNow;
+            LOG("Halo 4 optional FP fingers: applied=%llu stock_fallback=%llu; held grips and camera retained",
+                static_cast<unsigned long long>(fpFingerApplied),static_cast<unsigned long long>(fpFingerRefused));
+            reportedFpFingerApplied=fpFingerApplied;reportedFpFingerRefused=fpFingerRefused;
+        }
+        static uint64_t reportedBodyIkApplied=0;
+        static uint64_t reportedBodyIkRefused=0;
+        static uint64_t reportedBodyIkWriteFailures=0;
+        static uint64_t reportedBodyIkRollbackFailures=0;
+        static uint64_t reportedBodyIkSehFailures=0;
+        const uint64_t bodyIkApplied=g_halo4BodyIkApplied.load(
+            std::memory_order_relaxed);
+        const uint64_t bodyIkRefused=g_halo4BodyIkRefused.load(
+            std::memory_order_relaxed);
+        const uint64_t bodyIkWriteFailures=g_halo4BodyIkWriteFailures.load(
+            std::memory_order_relaxed);
+        const uint64_t bodyIkRollbackFailures=
+            g_halo4BodyIkRollbackFailures.load(std::memory_order_relaxed);
+        const uint64_t bodyIkSehFailures=g_halo4BodyIkSehFailures.load(
+            std::memory_order_relaxed);
+        if ((bodyIkApplied!=reportedBodyIkApplied ||
+            bodyIkRefused!=reportedBodyIkRefused ||
+            bodyIkWriteFailures!=reportedBodyIkWriteFailures ||
+            bodyIkRollbackFailures!=reportedBodyIkRollbackFailures ||
+            bodyIkSehFailures!=reportedBodyIkSehFailures) &&
+            (avatarReportNow-lastBodyIkReport>=5000 ||
+             bodyIkWriteFailures!=reportedBodyIkWriteFailures ||
+             bodyIkRollbackFailures!=reportedBodyIkRollbackFailures ||
+             bodyIkSehFailures!=reportedBodyIkSehFailures))
+        {
+            lastBodyIkReport=avatarReportNow;
+            LOG("Halo 4 experimental body IK: applied=%llu refused=%llu write_failures=%llu rollback_failures=%llu seh_failures=%llu; optional feature only",
+                static_cast<unsigned long long>(bodyIkApplied),
+                static_cast<unsigned long long>(bodyIkRefused),
+                static_cast<unsigned long long>(bodyIkWriteFailures),
+                static_cast<unsigned long long>(bodyIkRollbackFailures),
+                static_cast<unsigned long long>(bodyIkSehFailures));
+            reportedBodyIkApplied=bodyIkApplied;
+            reportedBodyIkRefused=bodyIkRefused;
+            reportedBodyIkWriteFailures=bodyIkWriteFailures;
+            reportedBodyIkRollbackFailures=bodyIkRollbackFailures;
+            reportedBodyIkSehFailures=bodyIkSehFailures;
+        }
         static uint32_t reportedScopeFaults=0;
         const auto scopeFaults=g_halo4ScopeFaults.load();
         if(scopeFaults!=reportedScopeFaults)
@@ -41455,6 +42231,7 @@ namespace
             g_halo4WorldCollision.failures.load(std::memory_order_relaxed);
         ReportHalo4ContactMelee();
         ReportHalo4Muzzle();
+        ReportHalo4WeaponHaptics();
         if (g_halo4VehicleInput.ready.load(std::memory_order_acquire))
             LOG("Halo 4 vehicle input in 2s: seated=%llu unknown/stock=%llu guardedFaults=%llu",
                 static_cast<unsigned long long>(g_halo4VehicleInput.seated.exchange(0)),
@@ -41871,7 +42648,8 @@ namespace
         LOG("Halo 4 C-H4-43 record sequence in 2s: %llu flag0 native-body / %llu "
             "flag1 first-person-loop / "
             "%llu unexpected / %llu header unreadable; nodes.count resolver "
-            "%llu failures; last flag0 nodes %d checksum 0x%08X, last flag1 "
+            "%llu failures; official body identity %llu, frozen-local-unit "
+            "matches %llu / mismatches %llu; last flag0 nodes %d checksum 0x%08X, last flag1 "
             "nodes %d, Storm checksum 0x%08X (H4EK 0x%08X telemetry-only), "
             "held nodes %d checksum 0x%08X",
             static_cast<unsigned long long>(
@@ -41888,6 +42666,15 @@ namespace
                     0,std::memory_order_relaxed)),
             static_cast<unsigned long long>(
                 g_halo4Camera.vrikNodeCountResolveFailures.exchange(
+                    0,std::memory_order_relaxed)),
+            static_cast<unsigned long long>(
+                g_halo4Camera.vrikBodyIdentityExact.exchange(
+                    0,std::memory_order_relaxed)),
+            static_cast<unsigned long long>(
+                g_halo4Camera.vrikBodyLocalUnitMatches.exchange(
+                    0,std::memory_order_relaxed)),
+            static_cast<unsigned long long>(
+                g_halo4Camera.vrikBodyLocalUnitMismatches.exchange(
                     0,std::memory_order_relaxed)),
             g_halo4Camera.vrikLastBodyNodeCount.load(
                 std::memory_order_relaxed),
@@ -42327,7 +43114,15 @@ namespace
                             gateBase, gateSize, gateGeneration);
                 }
             }
+            // Retire a previous generation's optional reader hook before the
+            // transport resolver verifies that reader's original prologue.
+            // Fresh bridge admission waits for the resolver's proven snapshot.
+            NativeVrActions_Poll();
             RefreshGestureMeleeBinding(activeTitle,activeLevelRunning,pollNow);
+            if(const unsigned notice=g_bodyNotice.exchange(0,std::memory_order_acq_rel))
+                LOG("Legacy H3 body switch: %s; independent body/hand visibility remains WIP",
+                    notice==1?"enabled":notice==2?"original boolean values restored":
+                    "guarded access failed; optional switch disabled, VR retained");
             VR_ReportWeaponInteractions(pollNow);
             NativeReloadPolicy_Poll();
             NativeSubtitles_Poll(activeLevelRunning);
@@ -42682,6 +43477,8 @@ namespace
                 // ApplyMotionBlurSetting stays a no-op across the gap instead
                 // of dereferencing pointers into this now-inactive instance.
                 g_motionBlurVarCount.store(-1, std::memory_order_release);
+                g_bodyVarCount.store(0,std::memory_order_release);
+                g_bodyVarGeneration.store(0,std::memory_order_release);
             }
 
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
@@ -43493,7 +44290,9 @@ uint32_t Game_GestureMeleeInput(uint64_t nowMs)
     // XInput's VR transport owns slot zero. Binding snapshots are read by the
     // cold worker and expire across title/generation changes and load gates.
     const uint32_t generation=TitleAdapter_GetGeneration(title);
-    const uint32_t transport=ReadGestureMeleeTransport(title,generation,0,nowMs);
+    const uint32_t transport=NativeVrActions_CanRoute(title,nowMs)
+        ?NativeVrActions_GestureBit(vr_mapping::Melee)
+        :ReadGestureMeleeTransport(title,generation,0,nowMs);
     struct SharedPhysicalMeleeState
     {
         std::atomic<uint8_t> title{static_cast<uint8_t>(GameTitle::None)};
@@ -47207,8 +48006,11 @@ void Game_SetStereoEye(int eye)
 bool WaitForNativeDetourQuiescence(const void* const* functions,
     const void* const* trampolines,size_t count,const std::atomic<uint32_t>& callbacks)
 {
-    if(!functions || !trampolines || !count || count>8) return false;
-    ReachDetourCodeRange ranges[8]{};
+    // This shared worker-side retirement path serves CE's nine control
+    // callbacks and Reach's larger grouped hook sets. Keep the bound fixed and
+    // stack-backed so teardown never allocates while validating detours.
+    if(!functions || !trampolines || !count || count>kNativeDetourRangeCapacity) return false;
+    ReachDetourCodeRange ranges[kNativeDetourRangeCapacity]{};
     for(size_t i=0;i<count;++i)
         if(!functions[i] || !ResolveReachDetourCodeRange(functions[i],ranges[i])) return false;
     for(unsigned waited=0;waited<2000;++waited)
@@ -48065,7 +48867,8 @@ SupportInvocationResolution Game_ResolveSupportInvocation(GameTitle title,
 bool Game_RoomscaleCameraAllowed(GameTitle title)
 {
     if (title!=TitleAdapter_GetActiveTitle()) return false;
-    if (!g_config.roomscale_movement || !g_enabled.load() || !g_positional.load() || !g_vrAim.load() ||
+    if (!(g_config.roomscale_movement || g_config.physical_running) ||
+        !g_enabled.load() || !g_positional.load() || !g_vrAim.load() ||
         !VR_IsStereoEnabled() || Menu_IsOpen() || VR_IsPausePresentation() ||
         VR_IsPausePresentationTarget() || VR_IsCutsceneTheaterActive() ||
         TitleAdapter_GetRuntimeMode()!=RuntimeMode::Gameplay) return false;

@@ -3280,6 +3280,30 @@ all transient carry state at eye entry, and processes one repeatable sequence:
    submitted byte-for-byte stock. Storm's 80-node indices and mask never touch
    that different skeleton.
 
+### Native body identity and local-object observation (2026-09-30)
+
+The official H4EK export
+`tags/objects/characters/storm_masterchief/storm_masterchief.render_model`
+reports 120 nodes and runtime-import checksum `385941760` / `0x17010100`.
+The producer at H4EK `0x92A1F0..0x92B461` stores argument 1 as its per-user
+state index (stride `0x5F48`) and passes the same argument 2 from
+`[rsp+0x78]` into each of the hands, weapon, and native-body
+`model_skinning` calls. H4EK's `first_person_camera.cpp` also asserts that the
+camera's attached object equals the user object. This supports treating the
+shared fill argument as that user's unit object, rather than inferring ownership
+from a model name or the flag byte.
+
+The runtime now records a non-mutating proof attempt: it freezes the current
+unit only after the existing Halo 4 owner reader proves a primary weapon and
+first-person producer agreement at the exact Storm hands record; exact native
+body checksum/count packets then compare their `objectIndex` with that frozen
+unit. This comparison is fail-closed and does not alter flag-0 matrices. The
+predicate tests cover wrong identity, invalid handles, mismatched owner and
+unknown owner. **No retail MCC run has yet demonstrated the checksum match or
+same-unit counters.** Therefore native-body visibility remains stock and no
+full-body toggle is claimed as working in Halo 4 until those live observations
+and a separate region/visibility safety review pass.
+
 This is Reach's accepted player-facing ownership shape implemented through
 Halo 4's own producer: exact current source/consumer pairing, one rigid hand
 motion carrying the held object, then visibility last. It has no IK and no

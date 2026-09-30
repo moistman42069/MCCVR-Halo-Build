@@ -155,13 +155,68 @@ public:
     }
 };
 
+enum class HitKind : uint8_t { None, Object, WorldSurface };
+
+// A world hit has no object datum. The adapter copies only title-verified
+// identity words from its native collision result; they are never handles
+// passed to object APIs. `valid` means the adapter has also checked the
+// title-specific native type/material/feature rules needed by its Apply path.
+struct WorldSurfaceIdentity
+{
+    uint32_t nativeType = 0;
+    uint32_t nativeData[9]{UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,
+                           UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+    int16_t material = -1;
+    bool valid = false;
+};
+
 struct Hit
 {
     uint32_t unit = UINT32_MAX; // Full native handle, including its salt.
     Point position{}, normal{};
     float fraction = 0;
     bool object = false; // A native object hit; the engine decides damageability.
+    HitKind kind = HitKind::None;
+    WorldSurfaceIdentity world{};
 };
+
+inline bool IsCandidate(const Hit& hit,uint32_t owner) noexcept
+{
+    if (!Finite(hit.position) || !Finite(hit.normal) ||
+        !std::isfinite(hit.fraction) || hit.fraction<0 || hit.fraction>1)
+        return false;
+    if (hit.kind==HitKind::WorldSurface)
+        // Native collision type numbers are title-specific (CE world is type
+        // 2 while H3/ODST use other values). The adapter must explicitly
+        // validate the title-owned identity before setting `valid`.
+        return hit.unit==UINT32_MAX && !hit.object && hit.world.valid;
+    // Preserve existing title adapters while they migrate to explicit kinds.
+    return (hit.kind==HitKind::Object || hit.object) && hit.unit!=UINT32_MAX &&
+        hit.unit!=owner;
+}
+
+inline bool SameWorldSurface(const Hit& a,const Hit& b) noexcept
+{
+    if (a.kind!=HitKind::WorldSurface || b.kind!=HitKind::WorldSurface ||
+        !a.world.valid || !b.world.valid || a.unit!=UINT32_MAX ||
+        b.unit!=UINT32_MAX || a.object || b.object ||
+        a.world.nativeType!=b.world.nativeType || a.world.material!=b.world.material)
+        return false;
+    for (unsigned i=0;i<9;++i)
+        if (a.world.nativeData[i]!=b.world.nativeData[i]) return false;
+    const Point positionDelta=Subtract(a.position,b.position);
+    const float positionError=Dot(positionDelta,positionDelta);
+    const float normalLengthA=Dot(a.normal,a.normal), normalLengthB=Dot(b.normal,b.normal);
+    if (!Finite(a.position) || !Finite(b.position) || !Finite(a.normal) ||
+        !Finite(b.normal) || !std::isfinite(positionError) || positionError>0.000025f ||
+        !std::isfinite(normalLengthA) || !std::isfinite(normalLengthB) ||
+        normalLengthA<0.5f || normalLengthB<0.5f ||
+        Dot(a.normal,b.normal)/std::sqrt(normalLengthA*normalLengthB)<0.98f ||
+        !std::isfinite(a.fraction) || !std::isfinite(b.fraction) ||
+        std::abs(a.fraction-b.fraction)>0.01f)
+        return false;
+    return true;
+}
 enum class ContactResult { NoStrike, Applied, NativeRejected };
 
 // One instance per physical hand. The native backend owns collision filtering,
@@ -210,10 +265,7 @@ public:
         for (unsigned i=0; i<sweeps.count; ++i)
         {
             Hit hit{};
-            if (!backend.Query(sweeps.values[i],hit) || !hit.object ||
-                hit.unit==UINT32_MAX || hit.unit==frame.unit ||
-                !Finite(hit.position) || !Finite(hit.normal) ||
-                !std::isfinite(hit.fraction) || hit.fraction<0 || hit.fraction>1)
+            if (!backend.Query(sweeps.values[i],hit) || !IsCandidate(hit,frame.unit))
                 continue;
             if (!found || hit.fraction<selected.fraction)
             { selected=hit; selectedSweep=i; found=true; }

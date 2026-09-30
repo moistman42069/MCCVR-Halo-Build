@@ -7,6 +7,61 @@ candidate manifest and BUILD-IDENTITY.txt. The accepted pointer remains Alpha
 
 ## Changes in this candidate
 
+- Native MCC shell/login windows now receive genuine focus and activation
+  changes. The old global override is retained for known in-game modes,
+  including loading, vehicles, pause and cutscenes. This addresses a concrete
+  source-level risk behind the Linux keyboard report; forced Xbox sign-in and
+  actual Proton text entry still need runtime testing. The Windows launcher
+  continues to request administrator access.
+
+- Individual finger joints are now identified in all six titles' admitted rigs,
+  with per-hand/per-digit native joint IDs, parent relationships and rig-specific
+  palette indices. H2 source-to-render mapping is explicit; uncertain H2 digit
+  names stay Unknown. Existing finger pose code consumes these inventories.
+  This is the foundation for later contact reactions, not an Alyx-style physics
+  implementation or optical finger tracking.
+
+- Experimental full-body IK now has guarded Halo 3 Chief/Elite/Arbiter and Halo 4
+  Chief runtime paths. Both follow the headset and solved controller hand targets,
+  retain native feet within reach, and preserve the ordinary VR path when a pose
+  cannot be admitted. Halo 4 gains proportional arm reach and its own palm-marker
+  conversion so body hands follow the weapon-hand alignment.
+- The same experimental option adds controller-driven free-hand responses on the
+  title-specific rigs. H3/H4/ODST reset proven binds for open, point and fist poses.
+  CE/Reach add separate trigger/index and grip/other-digit flex over native poses;
+  H2 adds conservative grip-only flex. These three paths do not claim a full open
+  hand reset. Held/dual/two-handed grips stay authored. These are not optical finger
+  tracking or object-reactive fingers. See the six-title coverage chart in
+  `IMPLEMENTATION-STATUS.md`; CE/H2/ODST/Reach full-world avatars remain unfinished.
+- CE automatic camera recovery retires its old tracking reference. Regression
+  fixtures cover both graphics modes and stale queued/completed work. The reported
+  gun shift after level loading still needs headset reproduction; this is a tested
+  lifecycle correction, not confirmation that every reported shift is fixed.
+
+- The VR menu matches the launcher's navy/cyan styling and uses its bundled
+  Oxanium font for headings and navigation. The font is embedded and adds no
+  runtime file dependency; existing controls and panel interaction remain.
+
+- Continuation after the first September 30 package adds live resolution changes
+  with desktop fitting off, explicit resize retries, and recovery from obsolete
+  DLSS depth-cache entries. The production DLSS wrapper passed 90 synthetic GPU
+  evaluations; all-game headset performance remains unverified.
+- All six games gain evidence-backed native action bridges for independent VR
+  mappings, including separate Reload/Use and Unbound. Their own native consumer
+  contracts are retained; layouts, vehicles and online behavior need runtime testing.
+- Show arms with hands is separate from the experimental body switch. New
+  H2 single-weapon, Reach support-grip and H4 arm paths preserve tracked hands
+  and weapons when a solve fails. H2 dual-wield arms remain hidden; universal
+  full-body visibility remains WIP. H3's legacy body switch
+  has byte-width, stale-generation and failure-isolation corrections.
+- CE gains persistent vehicle/seat adjustments keyed by verified model-node
+  names. Unknown models retain per-game offsets; identical node-name rigs share
+  a profile. A CE controls cleanup range-count defect is also fixed.
+- CE Classic and Anniversary gain guarded roomscale body following through the
+  existing movement transport. Simultaneous stick/physical following is still
+  unfinished.
+- An optional empty-support-hand-near-head gesture temporarily reveals hidden
+  HUD, with dwell and interaction guards. Free-hand controller posing is separate from this HUD gesture.
 - The launcher requests administrator privileges by default through Windows
   UAC. The user still chooses whether to approve that prompt.
 - The launcher executable sits outside the manual `ModFiles` folder. A separate
@@ -66,6 +121,19 @@ does not provide code signing or eliminate SmartScreen warnings.
 No installed MCC files were replaced and MCC was not launched while preparing
 this candidate. Nothing is published to GitHub by this preparation step.
 
+## Trying the experimental avatars
+
+Enable **Tracked full-body IK (experimental)** in Body / Quality of Life.
+It is off by default. H3 IK takes precedence over the legacy Show full body
+setting so that setting cannot remove the tracked FP wrist data. Start in H3
+as Chief and in H4 as Chief; check looking down, both hands, support grip,
+left-handed mode, physical crouch, turning/walking, weapon changes and reloads.
+Enable Hide lower body if preferred. H3 Elite/Arbiter require that option off
+because their torso and legs share geometry. Unknown rigs keep the normal FP
+view. Fingers on a held gun keep native grips; free hands use physical input.
+These avatars still require headset validation; no new candidate is accepted
+just because offline checks pass.
+
 ## Current limitations that matter when testing
 
 | Feature/report | Status |
@@ -74,13 +142,15 @@ this candidate. Nothing is published to GitHub by this preparation step.
 | Bloom | Controls in H3/ODST/Reach; other titles retain native bloom. General autoexposure and every visual report are not solved by this control. |
 | DLSS | Optional six-title integration including CE/H2 graphics modes; performance, temporal quality and all-title transitions need GPU/headset testing. No frame generation. |
 | Physical crouch | Implemented, off by default; depth/sensitivity/calibration available. Requires native hold-to-crouch. |
-| First-person vehicles | Six per-game offset banks; per-model/seat banks in H2/H3/ODST/Reach/H4. CE persistent vehicle identity unfinished. H2 interpolation change is not proof all stutter is gone. |
-| Native input independence | Per-game VR mappings and Unbound exist; native action aliases can still couple actions. |
-| Roomscale | Retained movement catches up after native movement settles; simultaneous body follow and CE body follow remain incomplete. |
+| First-person vehicles | Six per-game and model/seat offset banks, including new CE model identity. Identical CE node-name rigs share a profile. H2 interpolation change is not proof all stutter is gone. |
+| Native input independence | All six games have guarded direct action bridges with per-game mappings and Unbound. Unsupported/failed binding proof retains the stated native-layout fallback; runtime acceptance is pending. |
+| Roomscale | Guarded movement transport now includes CE Classic/Anniversary. Retained movement catches up after native movement settles; simultaneous stick/physical following remains unfinished. |
+| Body representation | Separate tracked arms; experimental H3/H4 full-world avatars and title-specific free-hand controller gestures. CE/H2/ODST/Reach world avatars remain unfinished. Hide lower body is supported only by rigs with separate leg geometry; H3 Elite/Arbiter require it off. Headset testing remains pending. |
 | Co-op/crashes | Campaign firing/melee/vehicle, CE host/client and new ODST crash reports remain unresolved where failing evidence is absent. |
 | Visual reports | CE lights/arms, H2 lights/AO, Reach smoke/foliage and H4 blackout/letterbox reports remain individual open investigations. |
+| Alyx-style hand physics | Investigated, not implemented: current whole-hand collision lacks per-joint contact limits and an independent stationary query transport. No nonfunctional toggle included. |
 | New proposed features | Per-weapon grip capture/policies and Provolver support were not supplied as completed integrations in the reviewed contribution. |
-| Linux/Proton | Forced login and keyboard/focus reports remain unverified; Windows elevation does not establish Linux compatibility. |
+| Linux/Proton | Shell/login focus override corrected and mode/message policy tested offline. Forced login and Proton keyboard behavior remain unverified; this is not a claim of full Linux support. The official Proton MCC login workaround and its limits are documented in LINUX-LOGIN-REVIEW.md. |
 
 The supplied Reach fault log was from f53f0bd. Its caught SafeFrame read is
 followed by title transitions/unload and a stall; that is not proof the read
@@ -108,6 +178,12 @@ of these newly rebuilt bytes. Original licenses and the OFL Oxanium font license
 remain included.
 
 ## Validation boundary
+
+The cumulative Release build, **121/121 automated suites** and Reach consistency
+gate passed before packaging. The package runner repeats the required checks
+from the clean source commit; its manifest and checksum file identify the exact
+delivered bytes. Source-level corrections and synthetic fault tests are not
+headset or Proton acceptance.
 
 Delivery requires the cumulative Release build, automated tests, Reach
 consistency checks, synthetic installer/update checks and archive/hash/source

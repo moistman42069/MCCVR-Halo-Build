@@ -246,7 +246,7 @@ static Halo2HudDrawMutation BeginHalo2HudDraw(
     // old procedural VR marker transparent. Until this first real draw occurs,
     // the procedural controller marker remains visible as the fail-open
     // fallback.
-    if((Game_IsScopeRendering()||(g_config.hide_hud&&Game_IsHeadTracking()&&Game_MoveStickIsLocomotion()))&&
+    if((Game_IsScopeRendering()||(VR_HudHidden()&&Game_IsHeadTracking()&&Game_MoveStickIsLocomotion()))&&
         (role==halo2_hud_shader::Role::Crosshair||role==halo2_hud_shader::Role::GameplayHud))
     { mutation.kind=Halo2HudDrawMutation::Kind::Hidden;return mutation; }
     if (role == halo2_hud_shader::Role::Crosshair)
@@ -373,7 +373,7 @@ static bool ShouldHideExtraHudDraw(ID3D11DeviceContext* context)
 #if HALOMCCVR_HALO2_STEREO6DOF
     if(context&&g_halo2ShaderHooksAvailable.load(std::memory_order_acquire)&&
         TitleAdapter_GetActiveTitle()==GameTitle::Halo2&&
-        (Game_IsScopeRendering()||(g_config.hide_hud&&Game_IsHeadTracking()&&Game_MoveStickIsLocomotion())))
+        (Game_IsScopeRendering()||(VR_HudHidden()&&Game_IsHeadTracking()&&Game_MoveStickIsLocomotion())))
     {
         ID3D11PixelShader* shader=nullptr;UINT count=0;
         context->PSGetShader(&shader,nullptr,&count);
@@ -479,7 +479,7 @@ static void STDMETHODCALLTYPE PixelShaderSetHook(
     const bool suppress = halo4_helmet_shader::ShouldSuppress(
         g_halo4HelmetShaderPathAvailable.load(std::memory_order_acquire),
         TitleAdapter_GetActiveTitle() == GameTitle::Halo4,
-        g_config.halo4_helmet && !g_config.hide_hud, IsHalo4HelmetShader(shader));
+        g_config.halo4_helmet && !VR_HudHidden(), IsHalo4HelmetShader(shader));
     if (suppress)
     {
         // Match the working V6 bridge exactly: replace only the shader pointer
@@ -703,7 +703,8 @@ static CopyResourceFn g_origCopyResource = nullptr;
 // creation and keep MCC believing its client is still full-size through its own
 // resize handling -- WITHOUT lying to DXGI's present-time client query, which
 // must still see the true small window to downscale correctly. Everything below
-// is gated on g_config.fit_desktop_window; with it off, none of it is installed.
+// now also supports live resolution changes with desktop fitting disabled.
+// The render-size hooks are always installed; only window shrinking is optional.
 typedef HRESULT(STDMETHODCALLTYPE* CreateSwapChainForHwndFn)(IDXGIFactory2*, IUnknown*, HWND,
     const DXGI_SWAP_CHAIN_DESC1*, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*,
     IDXGISwapChain1**);
@@ -719,7 +720,7 @@ static std::atomic<UINT> g_forcedRenderW{0};
 static std::atomic<UINT> g_forcedRenderH{0};
 static bool g_forcedMainSwapchain = false; // only force the game's own (first) swapchain
 static HWND g_gameHwnd = nullptr;          // captured at swapchain creation
-static bool g_fitActive = false;           // set once at startup: fit on AND its hooks installed
+static bool g_renderSizeActive = false; // complete resize hooks, independent of desktop fitting
 // Set on the game's UI thread ONLY while it synchronously processes a WM_SIZE we
 // rewrote to the full render size, so GetClientRectHook feeds MCC's own resize
 // code the full size on exactly that call stack -- never on the render thread's
@@ -734,8 +735,10 @@ void D3D_GetForcedRenderSize(unsigned& width, unsigned& height)
 
 bool D3D_FitActive()
 {
-    return g_fitActive;
+    return g_renderSizeActive && g_config.fit_desktop_window;
 }
+
+bool D3D_CanLiveResize() { return g_renderSizeActive; }
 
 void D3D_SetForcedClientLie(bool on)
 {
@@ -838,7 +841,7 @@ void D3D_GetRenderPlan(unsigned& renderW, unsigned& renderH,
 
 // --- Live render resize -----------------------------------------------------
 // The user changes Resolution scale or the DLSS mode in F1; the menu re-plans
-// and calls D3D_RequestRenderPlan. With the fit active a plan is queued;
+// and calls D3D_RequestRenderPlan. With resize hooks active a plan is queued;
 // loading admission is checked both here and by the window consumer before
 // the forced size moves. The menu then sends the game window WM_SIZE on
 // the UI thread, which WndProcHook rewrites to the forced size exactly as it
@@ -851,8 +854,7 @@ void D3D_GetRenderPlan(unsigned& renderW, unsigned& renderH,
 // the log and F1 say so.
 static UINT g_liveResizeRequestedW = 0;
 static UINT g_liveResizeRequestedH = 0;
-static UINT g_liveResizeFailedW = 0;
-static UINT g_liveResizeFailedH = 0;
+static dlss::FailedResizeSize g_liveResizeFailedSize;
 static ULONGLONG g_liveResizeRequestMs = 0;
 static dlss::LiveResizeDispatch g_liveResizeDispatch;
 static dlss::RenderPlan g_liveResizeCommittedBeforeDispatch;
@@ -881,9 +883,9 @@ D3DRenderPlanResult D3D_RequestRenderPlan(
         return D3DRenderPlanResult::Unchanged;
     // Do not publish a queued plan through window metrics. The UI consumer
     // checks lifecycle admission again before making the new size visible.
-    if (g_fitActive && (renderW != g_forcedRenderW || renderH != g_forcedRenderH))
+    if (g_renderSizeActive && (renderW != g_forcedRenderW || renderH != g_forcedRenderH))
     {
-        if (renderW == g_liveResizeFailedW && renderH == g_liveResizeFailedH)
+        if (g_liveResizeFailedSize.Matches(renderW,renderH))
             return D3DRenderPlanResult::Unchanged;
         dlss::RenderPlan request{};
         request.renderW = static_cast<int>(renderW);
@@ -897,16 +899,14 @@ D3DRenderPlanResult D3D_RequestRenderPlan(
     g_planOutputW = outputW;
     g_planOutputH = outputH;
     g_planDlss = dlss;
-    if (!g_fitActive)
+    if (!g_renderSizeActive)
     {
-        // No forced size exists without the fit; the plan's render stays what
-        // the launcher started, and the output still follows the config.
+        // A missing required hook cannot be repaired by resizing the window.
         static bool logged = false;
         if (!logged && dlss && (renderW != g_planRenderW || renderH != g_planRenderH))
         {
             logged = true;
-            LOG("DLSS: cannot apply world input size without desktop-fit resize hooks; "
-                "enable Fit desktop window and restart. Keeping the full-size render.");
+            LOG("DLSS: cannot apply world input size because required resize hooks are unavailable; keeping the native render size");
         }
         return D3DRenderPlanResult::RestartNeeded;
     }
@@ -957,6 +957,8 @@ bool D3D_BeginLiveResize(unsigned& renderW, unsigned& renderH)
     return true;
 }
 
+void D3D_RetryLiveResize() { g_liveResizeFailedSize.Retry(); }
+
 void D3D_CancelQueuedLiveResize()
 {
     // The UI may reject the admitted request before sending WM_SIZE (missing
@@ -965,8 +967,7 @@ void D3D_CancelQueuedLiveResize()
     // waiting four seconds would expose dimensions the engine never received.
     if (g_liveResizeDispatch.Phase() == 1)
     {
-        g_liveResizeFailedW = g_liveResizeRequestedW;
-        g_liveResizeFailedH = g_liveResizeRequestedH;
+        g_liveResizeFailedSize.Record(g_liveResizeRequestedW,g_liveResizeRequestedH);
         const auto& previous = g_liveResizeCommittedBeforeDispatch;
         g_forcedRenderW = g_planRenderW = previous.renderW;
         g_forcedRenderH = g_planRenderH = previous.renderH;
@@ -1003,12 +1004,11 @@ static void CheckLiveResize(IDXGISwapChain* sc)
     if (GetTickCount64() - g_liveResizeRequestMs < kLiveResizeTimeoutMs)
         return;
     LOG("live resize: MCC did not resize its swapchain to %ux%u within %llu ms "
-        "(still %ux%u); keeping the real size, a restart applies the new one",
+        "(still %ux%u); keeping the real size; retry is available in Picture settings",
         g_liveResizeRequestedW, g_liveResizeRequestedH,
         static_cast<unsigned long long>(kLiveResizeTimeoutMs),
         d.BufferDesc.Width, d.BufferDesc.Height);
-    g_liveResizeFailedW = g_liveResizeRequestedW;
-    g_liveResizeFailedH = g_liveResizeRequestedH;
+    g_liveResizeFailedSize.Record(g_liveResizeRequestedW,g_liveResizeRequestedH);
     g_forcedRenderW = d.BufferDesc.Width;
     g_forcedRenderH = d.BufferDesc.Height;
     g_planRenderW = d.BufferDesc.Width;
@@ -1035,8 +1035,7 @@ static void InitForcedRenderSize()
     // disagree. Config is loaded before this (dllmain InitThread order).
     g_forcedRenderW = g_planRenderW.load();
     g_forcedRenderH = g_planRenderH.load();
-    LOG("fit_desktop_window ON: forcing MCC backbuffer to %ux%u (full headset "
-        "render); the desktop window is shrunk to fit the monitor separately",
+    LOG("Live render sizing: MCC backbuffer %ux%u; desktop fitting is a separate preference",
         g_forcedRenderW.load(), g_forcedRenderH.load());
 }
 
@@ -1198,7 +1197,7 @@ static BOOL WINAPI GetCursorPosHook(LPPOINT p)
 {
     const void* caller = _ReturnAddress();
     const BOOL ok = g_origGetCursorPos(p);
-    if (!ok || !p || !g_fitActive || !g_forcedRenderW || !g_forcedRenderH ||
+    if (!ok || !p || !g_renderSizeActive || !g_forcedRenderW || !g_forcedRenderH ||
         !CallerInExe(caller))
         return ok;
     POINT origin{};
@@ -1237,7 +1236,7 @@ static BOOL WINAPI GetCursorPosHook(LPPOINT p)
 static BOOL WINAPI SetCursorPosHook(int X, int Y)
 {
     const void* caller = _ReturnAddress();
-    if (!g_fitActive || !g_forcedRenderW || !g_forcedRenderH ||
+    if (!g_renderSizeActive || !g_forcedRenderW || !g_forcedRenderH ||
         !CallerInExe(caller))
         return g_origSetCursorPos(X, Y);
     POINT origin{};
@@ -1276,7 +1275,7 @@ static BOOL WINAPI SetCursorPosHook(int X, int Y)
 // unexpected we pass the request through untouched.
 static BOOL WINAPI ClipCursorHook(const RECT* rc)
 {
-    if (!g_fitActive || !g_forcedRenderW || !g_forcedRenderH || !rc)
+    if (!g_renderSizeActive || !g_forcedRenderW || !g_forcedRenderH || !rc)
         return g_origClipCursor(rc);
     POINT origin{};
     LONG cw = 0, ch = 0;
@@ -1319,7 +1318,7 @@ static HWND WINAPI WindowFromPointHook(POINT pt)
     // to still land on the small top-left slice work. Map ANY point inside the
     // render rectangle back down into the real window client before the OS
     // answers, so every menu item resolves to the game window like it should.
-    if (g_fitActive && g_forcedRenderW && g_forcedRenderH)
+    if (g_renderSizeActive && g_forcedRenderW && g_forcedRenderH)
     {
         POINT origin{};
         LONG cw = 0, ch = 0;
@@ -2108,7 +2107,7 @@ static HRESULT STDMETHODCALLTYPE ResizeBuffersHook(IDXGISwapChain* sc, UINT buff
         {
             // Revert the metrics at this edge, before another WM_SIZE can
             // observe dimensions that DXGI rejected.
-            if (g_fitActive)
+            if (g_renderSizeActive)
             {
                 g_forcedRenderW = actual.BufferDesc.Width;
                 g_forcedRenderH = actual.BufferDesc.Height;
@@ -2117,8 +2116,7 @@ static HRESULT STDMETHODCALLTYPE ResizeBuffersHook(IDXGISwapChain* sc, UINT buff
             g_planRenderH = actual.BufferDesc.Height;
             g_liveResizeActualW = actual.BufferDesc.Width;
             g_liveResizeActualH = actual.BufferDesc.Height;
-            g_liveResizeFailedW = fw;
-            g_liveResizeFailedH = fh;
+            g_liveResizeFailedSize.Record(fw,fh);
             g_liveResizeDispatch.Failed();
         }
         LOG("swapchain resize rejected hr=0x%08X resources-released=%u; retaining actual size",
@@ -2130,14 +2128,10 @@ static HRESULT STDMETHODCALLTYPE ResizeBuffersHook(IDXGISwapChain* sc, UINT buff
 
 bool InstallD3D11Hooks()
 {
-    // Config is loaded before this runs. Only when the desktop-window fit is on
-    // do we compute the forced render size and install the swapchain-creation /
-    // GetClientRect hooks below; with it off, none of that exists and the render
-    // path is byte-for-byte the previous behavior.
-    const bool fit = g_config.fit_desktop_window;
+    // Resolution belongs to the headset render, not the optional monitor fit.
+    // Install the complete size/metrics transaction for either window preference.
     InitRenderPlan();
-    if (fit)
-        InitForcedRenderSize();
+    InitForcedRenderSize();
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -2372,7 +2366,6 @@ bool InstallD3D11Hooks()
         sc1->Release();
     }
 
-    if (fit)
     {
         bool forceHookOk = false;
         bool clientRectHookOk = false;
@@ -2445,7 +2438,7 @@ bool InstallD3D11Hooks()
             // navigable in the fitted window (see the block above the hooks).
             // These are supplementary: if any fails, the display fit still works,
             // the menu is just no more navigable than before -- so they do NOT
-            // gate g_fitActive. (g_exeBase is already cached above.)
+            // gate g_renderSizeActive. (g_exeBase is already cached above.)
             void* pGetCursorPos = (void*)GetProcAddress(user32, "GetCursorPos");
             void* pSetCursorPos = (void*)GetProcAddress(user32, "SetCursorPos");
             void* pWindowFromPoint = (void*)GetProcAddress(user32, "WindowFromPoint");
@@ -2500,10 +2493,11 @@ bool InstallD3D11Hooks()
         // The desktop fit only engages if BOTH levers that keep MCC drawing full
         // are in place. If either failed, we leave the window at full size (the
         // previous overflow behavior) rather than risk shrinking it into a crop.
-        g_fitActive = forceHookOk && clientRectHookOk;
-        if (!g_fitActive)
-            LOG("fit_desktop_window ON but a required hook is missing; leaving the "
-                "desktop window full-size (no shrink) to avoid a cropped render");
+        g_renderSizeActive = forceHookOk && clientRectHookOk;
+        if (!g_renderSizeActive) {
+            g_forcedRenderW=0;g_forcedRenderH=0;
+            LOG("Live render sizing unavailable: a required hook is missing; native window and render sizes retained");
+        }
     }
 
     sc->Release();

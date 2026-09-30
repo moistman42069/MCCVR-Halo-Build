@@ -1,6 +1,7 @@
 #include "../common/vr_interaction_refinement_logic.h"
 #include "../common/support_grip_logic.h"
 #include "../common/support_grab_logic.h"
+#include "../common/hud_reveal_logic.h"
 #include "../common/weapon_hand_logic.h"
 #include "../common/weapon_interaction_logic.h"
 #include "../common/weapon_model_observation.h"
@@ -40,6 +41,7 @@
 #include "menu.h"
 #include "native_menu_pointer.h"
 #include "native_subtitles.h"
+#include "native_vr_actions.h"
 #include "../common/subtitle_logic.h"
 #include "../common/dual_reticle_logic.h"
 #include "../common/game_menu_pointer.h"
@@ -66,6 +68,7 @@
 #include "../common/dlss_logic.h"
 #include "../common/dlss_sampler_logic.h"
 #include "../common/dlss_frame_result.h"
+#include "../common/dlss_depth_tracking.h"
 #include "AreaTex.h"
 #include "SearchTex.h"
 #include "title_adapter.h"
@@ -102,6 +105,7 @@
 #include "../common/halo4_cui_reticle_logic.h"
 #include "../common/halo4_world_collision_logic.h"
 #include "../common/input_logic.h"
+#include "../common/weapon_haptic_pulses.h"
 #include "../common/reach_vehicle_logic.h"
 #include "../common/scope_logic.h"
 #include "../common/view_cache_logic.h"
@@ -163,6 +167,8 @@ namespace
     {
         const int index=weapon_interaction::TitleIndex(title);
         if(index<0) return 0;
+        if(g_config.vr_action_mapping&&NativeVrActions_GestureRouting(title,now))
+            return NativeVrActions_GestureBit(action);
         if(g_config.vr_action_mapping)
             return Game_VrActionTransport(action,now);
         return weapon_interaction::Button(action==vr_mapping::Reload?
@@ -187,6 +193,8 @@ namespace
     // peak latches raised by a title's cold collision worker and consumed by
     // the existing OpenXR frame path; no engine thread calls OpenXR directly.
     std::atomic<float> g_contactHaptics[2]{};
+    WeaponHapticPulses g_weaponHaptics;
+    WeaponHapticAdmission g_weaponHapticAdmission;
     void StopControllerHaptics();
     void LogHeadsetPanelRate();
     bool StartFrameWaitThread();
@@ -724,6 +732,7 @@ namespace
         ID3D11DepthStencilView* view = nullptr;
         ID3D11Device* device = nullptr; // borrowed while retained DSV is alive
         bool fullRaster = false;
+        bool seenThisFrame = false;
         D3D11_TEXTURE2D_DESC desc{};
     };
     constexpr int kDlssDepthViewSlots = 8;
@@ -878,6 +887,7 @@ namespace
     bool g_headCsInit = false;
     XrPosef g_headPose{{0, 0, 0, 1}, {0, 0, 0}};
     bool g_headPoseValid = false;
+    hud_reveal::Publication g_hudReveal;
     // Protected by g_headCs, or read by the sole pose-publishing frame thread.
     // Optional stock geometry may only combine poses located for the same time.
     XrTime g_stockHeadPoseTime = 0;
@@ -3908,6 +3918,7 @@ float4 ps_dlss_resolve_rcas(VSOut i) : SV_Target
         {
             if (g_dlssDepthViews[i].view == depth)
             {
+                g_dlssDepthViews[i].seenThisFrame = true;
                 if (DlssDepthIsFullRaster(g_dlssDepthViews[i].desc))
                     g_dlssEyeLastFullRasterDsv = depth;
                 return;
@@ -3936,6 +3947,7 @@ float4 ps_dlss_resolve_rcas(VSOut i) : SV_Target
         depth->AddRef();
         DlssDepthViewEntry& entry = g_dlssDepthViews[g_dlssDepthViewCount++];
         entry.view = depth;
+        entry.seenThisFrame = true;
         entry.fullRaster = fullRaster;
         entry.desc = desc;
         if (fullRaster)
@@ -4435,6 +4447,7 @@ float4 ps_dlss_resolve_rcas(VSOut i) : SV_Target
             debugChanged;
         if (dlssSettingChanged)
         {
+            D3D_RetryLiveResize();
             // Debug uses the old eye-local motion surfaces; normal operation
             // uses the compact atlas. Drop the other graph on either edge so
             // toggling the diagnostic cannot retain both allocations.
@@ -4467,6 +4480,14 @@ float4 ps_dlss_resolve_rcas(VSOut i) : SV_Target
             dlss::TitleHasCameraContract(TitleAdapter_GetActiveTitle()) &&
             Dlss_EnsureInitialized(g_device));
         const RuntimeMode presentation = DlssPresentationMode();
+        static GameTitle lastResizeTitle=GameTitle::None;
+        static uint32_t lastResizeGeneration=0;
+        const auto resizeTitle=TitleAdapter_GetActiveTitle();
+        const auto resizeGeneration=TitleAdapter_GetGeneration(resizeTitle);
+        if(resizeTitle!=lastResizeTitle||resizeGeneration!=lastResizeGeneration) {
+            D3D_RetryLiveResize();
+            lastResizeTitle=resizeTitle;lastResizeGeneration=resizeGeneration;
+        }
         static dlss::RenderPlan lastWant{};
         static uint64_t stableSinceMs = 0;
         const uint64_t nowMs = GetTickCount64();
@@ -4735,9 +4756,9 @@ float4 ps_dlss_resolve_rcas(VSOut i) : SV_Target
                 ow != static_cast<unsigned>(wanted.outputW) || oh != static_cast<unsigned>(wanted.outputH)))
             {
                 g_dlssJitterArmed = false;
-                return fallback(D3D_FitActive()
+                return fallback(D3D_CanLiveResize()
                     ? "waiting for the selected render size"
-                    : "world resize unavailable; enable Fit desktop window and restart");
+                    : "world resize hooks unavailable; native resolution retained");
             }
         }
         // Count only admitted-size world attempts; waiting for a requested
@@ -4790,7 +4811,7 @@ float4 ps_dlss_resolve_rcas(VSOut i) : SV_Target
             quality = static_cast<int>(dlss::Quality::Dlaa);
         if (quality < 0)
             return fallback("the render size fits no DLSS range for this picture; "
-                            "change DLSS mode or Resolution scale and restart");
+                            "change DLSS mode or Resolution scale to retry live");
 
         DlssFeatureDesc desc{};
         desc.renderWidth = srcDesc.Width;
@@ -5068,6 +5089,16 @@ float4 ps_dlss_resolve_rcas(VSOut i) : SV_Target
     // results and advance history only for a completed, consumed eye pair.
     void DlssEndFrame()
     {
+        // No eye may retain a borrowed table pointer across frame retirement.
+        // A full table used to pin obsolete DSVs for the entire title session,
+        // preventing replacement scene buffers from ever being classified.
+        g_dlssEyeLastFullRasterDsv = nullptr;
+        g_dlssDepthViewCount = static_cast<int>(dlss::FinishDepthViewFrame(
+            g_dlssDepthViews, static_cast<size_t>(g_dlssDepthViewCount),
+            g_dlssDepthViewTableFull,
+            [](DlssDepthViewEntry& entry) { if(entry.view) entry.view->Release(); }));
+        if(g_dlssDepthViewCount<kDlssDepthViewSlots)
+            g_dlssDepthViewTableFull=false;
         static int lastDisabledReason = -1;
         const bool outputsConsumed =
             !g_dlssKicked[0].Ready(g_preparedFrame.serial) &&
@@ -8133,6 +8164,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 if (sc.state != XR_SESSION_STATE_FOCUSED)
                 {
                     g_thumbrestDpadSampleMs.store(0, std::memory_order_release);
+                    g_weaponHapticAdmission.Invalidate();
                     StopControllerHaptics();
                 }
                 if (sc.state == XR_SESSION_STATE_READY)
@@ -8167,6 +8199,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 {
                     const char* fatalExitReason =
                         g_frameWaitFatalExitReason;
+                    g_weaponHapticAdmission.Invalidate();
                     StopControllerHaptics();
                     EndPreparedFrameWithoutLayers("session stopping");
                     g_authoredReticlePreparationReady.store(
@@ -8194,6 +8227,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 }
                 else if (sc.state == XR_SESSION_STATE_EXITING || sc.state == XR_SESSION_STATE_LOSS_PENDING)
                 {
+                    g_weaponHapticAdmission.Invalidate();
                     StopControllerHaptics();
                     // The session is ending: drop the transition layer with the
                     // prepared frame instead of letting it survive into a later
@@ -8210,6 +8244,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 break;
             }
             case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
+                g_weaponHapticAdmission.Invalidate();
                 StopControllerHaptics();
                 InvalidateAimContinuityLayer();
                 InvalidateTwoHandLabTemporal();
@@ -9472,6 +9507,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     XrAction g_actX = XR_NULL_HANDLE, g_actY = XR_NULL_HANDLE;
     XrAction g_actClickL = XR_NULL_HANDLE, g_actClickR = XR_NULL_HANDLE;
     VrPadState g_padState{};
+    ControllerFingerSample g_controllerFingerSample{};
     float g_nativePointerTrigger = 0;
 
     bool CreateControllerActions()
@@ -13254,16 +13290,53 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         xrStopHapticFeedback(g_session, &info);
     }
 
-    void ApplyControllerHaptics(bool trackingValid)
+    void ApplyControllerHaptics(bool primaryTrackingValid, bool supportTrackingValid)
     {
         static bool active[2]{false, false};
         static uint64_t lastApplyMs = 0;
         static RuntimeMode previousMode = RuntimeMode::Shell;
+        static GameTitle previousTitle = GameTitle::None;
+        static uint32_t previousGeneration = 0;
+        const GameTitle title = TitleAdapter_GetActiveTitle();
+        const uint32_t generation = TitleAdapter_GetGeneration(title);
+        const uint64_t hapticNow = GetTickCount64();
+        if (title != previousTitle || generation != previousGeneration)
+        {
+            g_weaponHaptics.Clear();
+            g_weaponHapticAdmission.Invalidate();
+            previousTitle = title;
+            previousGeneration = generation;
+        }
+        const bool coupledSupport = primaryTrackingValid&&supportTrackingValid&&VR_IsTwoHandAiming();
         const RuntimeMode mode = TitleAdapter_GetRuntimeMode();
         const bool modeAllows = mode == RuntimeMode::Gameplay ||
             mode == RuntimeMode::Vehicle || mode == RuntimeMode::Turret;
         const bool capabilityAllows =
             Game_HasTitleCapability(TitleCapability_Haptics);
+        const bool tracked[2]{supportTrackingValid, primaryTrackingValid};
+        const bool leftHanded = g_capturedLeftHanded.load(std::memory_order_acquire);
+        const XrPath paths[2]{leftHanded ? g_rightHandPath : g_leftHandPath,
+                              leftHanded ? g_leftHandPath : g_rightHandPath};
+        // A missing support controller must not silence the tracked weapon
+        // hand. Stop only the lost hand immediately, before the reapply timer.
+        for (int hand = 0; hand < 2; ++hand)
+        {
+            if (tracked[hand]) continue;
+            (void)g_weaponHaptics.Read(title,generation,hand,true,hapticNow);
+            if (hand==0) (void)g_weaponHaptics.Read(title,generation,2,true,hapticNow);
+            g_contactHaptics[hand].store(0.0f, std::memory_order_release);
+            if (active[hand])
+            {
+                if (g_session != XR_NULL_HANDLE && g_hapticAction != XR_NULL_HANDLE)
+                {
+                    XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+                    info.action = g_hapticAction;
+                    info.subactionPath = paths[hand];
+                    xrStopHapticFeedback(g_session, &info);
+                }
+                active[hand] = false;
+            }
+        }
         if (!capabilityAllows)
         {
             // Stop is not enough: the requested amplitude is persistent. Drop
@@ -13275,8 +13348,17 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             g_contactHaptics[0].store(0.0f, std::memory_order_release);
             g_contactHaptics[1].store(0.0f, std::memory_order_release);
         }
-        const float intensity =
-            std::clamp(g_config.haptic_intensity, 0.0f, 1.0f);
+        const float intensity = std::isfinite(g_config.haptic_intensity)
+            ? std::clamp(g_config.haptic_intensity, 0.0f, 1.0f) : 0.0f;
+        const bool feedbackUnavailable = (!tracked[0] && !tracked[1]) || !modeAllows ||
+            !capabilityAllows || Menu_IsOpen() ||
+            g_sessionState != XR_SESSION_STATE_FOCUSED ||
+            g_session == XR_NULL_HANDLE || g_hapticAction == XR_NULL_HANDLE ||
+            intensity <= 0.0f;
+        for(int hand=0;hand<2;++hand)
+            g_weaponHapticAdmission.Publish(hand,tracked[hand]&&!feedbackUnavailable,hapticNow);
+        const uint64_t handTokens[2]{g_weaponHapticAdmission.Token(0,hapticNow),
+            g_weaponHapticAdmission.Token(1,hapticNow)};
         // Peak-hold: peek (without consuming) the max amplitude requested since
         // the last applied frame so a short gunfire pulse (SetState(high) then
         // SetState(0) between two frame samples) cannot be aliased to zero.
@@ -13292,14 +13374,16 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             g_contactHaptics[0].load(std::memory_order_acquire),
             g_contactHaptics[1].load(std::memory_order_acquire)};
         const float gamePeek = SampleHapticPeak(peekPeak, latest).apply;
+        if (!coupledSupport) (void)g_weaponHaptics.Read(title,generation,2,true,hapticNow);
+        const float weaponPeek[2]{
+            MergeHapticAmplitude(g_weaponHaptics.Read(title,generation,0,false,hapticNow,handTokens[0]),
+                coupledSupport?g_weaponHaptics.Read(title,generation,2,false,hapticNow,handTokens[1],handTokens[0]):0.0f),
+            g_weaponHaptics.Read(title,generation,1,false,hapticNow,handTokens[1])};
         const float peekAmplitude[2]{
-            MergeHapticAmplitude(gamePeek, contactPeek[0]) * intensity,
-            MergeHapticAmplitude(gamePeek, contactPeek[1]) * intensity};
+            tracked[0] ? MergeHapticAmplitude(MergeHapticAmplitude(gamePeek, contactPeek[0]),weaponPeek[0]) * intensity : 0.0f,
+            tracked[1] ? MergeHapticAmplitude(MergeHapticAmplitude(gamePeek, contactPeek[1]),weaponPeek[1]) * intensity : 0.0f};
         const bool anyAmplitude =
             peekAmplitude[0] > 0.0f || peekAmplitude[1] > 0.0f;
-        const bool feedbackUnavailable = !trackingValid || !modeAllows ||
-            !capabilityAllows || Menu_IsOpen() ||
-            g_sessionState != XR_SESSION_STATE_FOCUSED;
         const bool mustStop = !anyAmplitude || feedbackUnavailable;
         if (mustStop)
         {
@@ -13310,6 +13394,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             // preserved for the next VR frame.
             if (feedbackUnavailable)
             {
+                g_weaponHaptics.Clear();
+                g_requestedHaptics.store(0.0f, std::memory_order_release);
+                g_peakHaptics.store(0.0f, std::memory_order_release);
                 g_contactHaptics[0].store(0.0f, std::memory_order_release);
                 g_contactHaptics[1].store(0.0f, std::memory_order_release);
             }
@@ -13321,6 +13408,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             return;
         }
         previousMode = mode;
+
+        for(int hand=0;hand<2;++hand)
+            if(active[hand]&&peekAmplitude[hand]<=0.0f)
+            {
+                XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+                info.action=g_hapticAction;info.subactionPath=paths[hand];
+                xrStopHapticFeedback(g_session,&info);active[hand]=false;
+            }
 
         const uint64_t now = GetTickCount64();
         if ((active[0] || active[1]) && now - lastApplyMs < 40)
@@ -13335,12 +13430,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         const float contactAmplitude[2]{
             g_contactHaptics[0].exchange(0.0f, std::memory_order_acq_rel),
             g_contactHaptics[1].exchange(0.0f, std::memory_order_acq_rel)};
+        const float supportWeaponAmplitude=g_weaponHaptics.Read(title,generation,2,true,hapticNow,handTokens[1],handTokens[0]);
+        const float weaponAmplitude[2]{
+            MergeHapticAmplitude(g_weaponHaptics.Read(title,generation,0,true,hapticNow,handTokens[0]),
+                coupledSupport?supportWeaponAmplitude:0.0f),
+            g_weaponHaptics.Read(title,generation,1,true,hapticNow,handTokens[1])};
         const float amplitude[2]{
-            MergeHapticAmplitude(gameAmplitude, contactAmplitude[0]) * intensity,
-            MergeHapticAmplitude(gameAmplitude, contactAmplitude[1]) * intensity};
-        const bool leftHanded = g_capturedLeftHanded.load(std::memory_order_acquire);
-        const XrPath paths[2]{leftHanded ? g_rightHandPath : g_leftHandPath,
-                              leftHanded ? g_leftHandPath : g_rightHandPath};
+            tracked[0] ? MergeHapticAmplitude(MergeHapticAmplitude(gameAmplitude, contactAmplitude[0]),weaponAmplitude[0]) * intensity : 0.0f,
+            tracked[1] ? MergeHapticAmplitude(MergeHapticAmplitude(gameAmplitude, contactAmplitude[1]),weaponAmplitude[1]) * intensity : 0.0f};
         for (int hand = 0; hand < 2; ++hand)
         {
             XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
@@ -13424,6 +13521,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 
     bool CaptureRightControllerPose(XrTime time)
     {
+        g_controllerFingerSample={};
         g_primaryGripPoseValid = false;
         if (g_gameplayActions == XR_NULL_HANDLE || g_rightAimAction == XR_NULL_HANDLE ||
             g_rightAimSpace == XR_NULL_HANDLE)
@@ -13690,10 +13788,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         };
         getV2(g_actMove, pad.moveX, pad.moveY);
         getV2(g_actTurn, pad.turnX, pad.turnY);
-        getF(g_actTrigL, pad.trigL);
-        getF(g_actTrigR, pad.trigR);
+        const bool physicalLeftTriggerActive=getF(g_actTrigL, pad.trigL);
+        const bool physicalRightTriggerActive=getF(g_actTrigR, pad.trigR);
         const bool supportGripActive = getF(g_actGripL, pad.gripL);
         const bool primaryGripActive = getF(g_actGripR, pad.gripR);
+        g_controllerFingerSample={g_preparedFrame.serial,time,
+            g_contactSpaceEpoch.load(std::memory_order_acquire),leftHanded,
+            {MakeControllerFingerInput(physicalLeftTriggerActive,pad.trigL,supportGripActive,pad.gripL),
+             MakeControllerFingerInput(physicalRightTriggerActive,pad.trigR,primaryGripActive,pad.gripR)}};
         if (leftHanded)
         {
             std::swap(pad.trigL, pad.trigR);
@@ -13871,6 +13973,34 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         ProbeCaptureWeaponPreLatch();
         UpdateTwoHandLatch(valid, location.pose, leftValid, leftLocation.pose,
                            rawSupportGrip, handChanged, weapon_interaction::BlocksSupportGrab(weaponGesture));
+        {
+            static hud_reveal::Gesture reveal;
+            const GameTitle title=TitleAdapter_GetActiveTitle();
+            const uint32_t generation=TitleAdapter_GetGeneration(title);
+            bool ready=g_config.hide_hud&&g_config.hud_reveal_near_head&&
+                pad.valid&&valid&&leftValid&&!handChanged&&!pad.exclusiveInput&&
+                g_sessionState==XR_SESSION_STATE_FOCUSED&&Game_IsHeadTracking()&&VR_IsStereoEnabled()&&
+                TitleAdapter_GetRuntimeMode()==RuntimeMode::Gameplay&&!Menu_IsOpen()&&
+                !VR_IsPausePresentation()&&!VR_IsPausePresentationTarget()&&!VR_IsCutsceneTheaterActive()&&
+                !SecondaryWeaponPresentationActive()&&!g_weaponInteraction.HasClaimedGrip()&&
+                !supportWasLatched&&!g_twoHandLatched.load(std::memory_order_acquire)&&
+                rawSupportGrip<.15f&&pad.trigL<.15f;
+            float distance=0;
+            if(ready) {
+                XrSpaceLocation head{XR_TYPE_SPACE_LOCATION};
+                constexpr auto tracked=XR_SPACE_LOCATION_POSITION_VALID_BIT|XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
+                ready=(leftLocation.locationFlags&tracked)==tracked&&
+                    XR_SUCCEEDED(xrLocateSpace(g_viewSpace,g_localSpace,time,&head))&&
+                    (head.locationFlags&tracked)==tracked&&NormalizeTrackedPose(head.pose);
+                const auto& h=head.pose.position;const auto& p=leftLocation.pose.position;
+                distance=std::sqrt((h.x-p.x)*(h.x-p.x)+(h.y-p.y)*(h.y-p.y)+(h.z-p.z)*(h.z-p.z));
+            }
+            // Title, generation and tracking-origin changes retire the dwell.
+            const uint64_t epoch=(uint64_t(generation)<<32)^g_contactSpaceEpoch.load(std::memory_order_acquire)^
+                (uint64_t(static_cast<unsigned>(title))<<56);
+            const bool active=reveal.Update(inputNow,epoch,ready,distance,g_config.hud_reveal_radius_m);
+            g_hudReveal.Publish(active,title,generation,inputNow);
+        }
         EnterCriticalSection(&g_headCs);
         pad.profileEpoch=g_controllerProfileEpoch.load(std::memory_order_acquire);
         // The same grip edge that acquires OR releases support must not also
@@ -13880,7 +14010,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         g_thumbrestDpadSampleMs.store(pad.thumbrestDpad ? inputNow : 0,
             std::memory_order_release);
         LeaveCriticalSection(&g_headCs);
-        ApplyControllerHaptics(valid && leftValid);
+        ApplyControllerHaptics(valid, leftValid);
         static bool padLogged = false;
         if (pad.valid && !padLogged)
         {
@@ -14429,6 +14559,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         VrContactTrackingSnapshot next{};
         next.serial=serial;
         next.timeNs=g_preparedFrame.state.predictedDisplayTime;
+        next.headValid=trackingFresh&&g_headPoseValid;
+        next.locomotionBlocked=g_weaponInteraction.HasClaimedGrip()||exclusive_input::Active();
+        if(next.headValid) {
+            const float p[]{g_headPose.position.x,g_headPose.position.y,g_headPose.position.z};
+            const float q[]{g_headPose.orientation.x,g_headPose.orientation.y,g_headPose.orientation.z,g_headPose.orientation.w};
+            memcpy(next.headPosition,p,sizeof(p));memcpy(next.headOrientation,q,sizeof(q));
+        }
         const int64_t pending=g_contactSpaceChangeAtNs.load(std::memory_order_acquire);
         if(!pending || next.timeNs>=pending)
             next.referenceEpoch=g_contactSpaceEpoch.load(std::memory_order_acquire);
@@ -14448,6 +14585,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         const AimPoseResult aim = ComputeAimPose(contactAimInputs);
         next.twoHandAimActive = aim.valid && aim.twoHandActive;
         next.leftHanded = g_capturedLeftHanded.load(std::memory_order_acquire);
+        SelectControllerFingerInputs(g_controllerFingerSample,serial,next.timeNs,next.referenceEpoch,
+            next.leftHanded,trackingFresh,next.controllerFingers);
         next.handAlignment = next.leftHanded && g_config.experimental_hand_alignment;
         next.primaryAimValid = aim.valid;
         if (aim.valid)
@@ -14470,6 +14609,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         next.hands[1].valid=physical.valid;
         for(unsigned hand=0;hand<2;++hand)
         {
+            if(!next.hands[hand].valid)next.controllerFingers[hand]={};
             if(!next.hands[hand].valid) continue;
             const auto& pose=poses[hand];
             const float q[]{pose.orientation.x,pose.orientation.y,pose.orientation.z,pose.orientation.w};
@@ -14635,6 +14775,15 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         const int64_t pendingSpaceChange = g_contactSpaceChangeAtNs.load(std::memory_order_acquire);
         if(!pendingSpaceChange || next.predictedDisplayTimeNs>=pendingSpaceChange)
             next.trackingSpaceEpoch=g_contactSpaceEpoch.load(std::memory_order_acquire);
+        SelectControllerFingerInputs(g_controllerFingerSample,preparedSerial,
+            next.predictedDisplayTimeNs,next.trackingSpaceEpoch,next.leftHanded,
+            padFresh,next.controllerFingers);
+        const bool supportPhysicalFresh=next.leftHanded?
+            (padFresh&&g_rightAimPoseValid):(padFresh&&g_leftAimPoseValid);
+        const bool primaryPhysicalFresh=next.leftHanded?
+            (padFresh&&g_leftAimPoseValid):(padFresh&&g_rightAimPoseValid);
+        if(!supportPhysicalFresh)next.controllerFingers[0]={};
+        if(!primaryPhysicalFresh)next.controllerFingers[1]={};
         next.predictedDisplayPeriodNs =
             g_preparedFrame.state.predictedDisplayPeriod > 0
             ? static_cast<uint64_t>(
@@ -15510,7 +15659,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 ce.motionBlur=g_config.motion_blur;
                 ce.disableAnniversaryLensFlares=g_config.ce_anniversary_disable_lens_flares;
                 ce.hud={g_config.hud_size,g_config.hud_aspect,g_config.hud_curvature,
-                    g_config.hud_vertical_offset,g_config.hide_hud};
+                    g_config.hud_vertical_offset,VR_HudHidden()};
                 ce.headPosition={g_headPose.position.x,g_headPose.position.y,g_headPose.position.z};
                 ce.headOrientation={g_headPose.orientation.x,g_headPose.orientation.y,g_headPose.orientation.z,g_headPose.orientation.w};
                 // Same action-sync, role routing, mount calibration and support
@@ -15525,9 +15674,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 rig.turnSmoothDegS=g_config.turn_smooth_deg_s;
                 rig.vehicleMotion=g_config.vehicle_motion;
                 rig.vehicleViewFollow=g_config.vehicle_view_follow;
-                // CE bring-up: physical body following is deferred until the
-                // basic VR implementation has passed the user's headset test.
-                rig.roomscaleEnabled=false;
+                // Freeze the user's setting with this CE tracking frame;
+                // the camera consumer separately proves native on-foot state.
+                rig.roomscaleEnabled=g_config.roomscale_movement;
+                rig.physicalRunningEnabled=g_config.physical_running;
                 rig.controlsPresentationBlocked=!Game_CeControllerFeaturesRequested()||
                     Menu_IsOpen()||VR_IsPausePresentation()||VR_IsPausePresentationTarget()||
                     VR_IsCutsceneTheaterActive();
@@ -15592,6 +15742,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 for (int hand=0;hand<2;++hand)
                     rig.physical[hand]=pose(g_physicalControllerPose[hand],
                         upcomingPadFresh&&g_physicalControllerValid[hand]);
+                SelectControllerFingerInputs(g_controllerFingerSample,ce.serial,
+                    ce.predictedDisplayTimeNs,ce.spaceEpoch,
+                    rig.leftHanded,upcomingPadFresh,ce.controllerFingers);
+                const bool supportPhysicalFresh=rig.leftHanded?
+                    (upcomingPadFresh&&g_rightAimPoseValid):
+                    (upcomingPadFresh&&g_leftAimPoseValid);
+                if(!supportPhysicalFresh)ce.controllerFingers[0]={};
                 rig.padValid=upcomingPadFresh&&g_padState.valid;
                 if (rig.padValid)
                 {
@@ -16901,7 +17058,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             Game_TitlePositionsNativeCrosshair();
                         const bool reticleUploadAdmitted =
                             reticleTitleAdmitted && !titlePositionsNativeReticle &&
-                            g_config.crosshair && !g_config.hide_hud && haveAim &&
+                            g_config.crosshair && !VR_HudHidden() && haveAim &&
                             EnsureReticleChain();
                         // Reach uploads its captured widget art exactly like
                         // Halo 3 and ODST. The previous "!reachTitle" excluded
@@ -17251,7 +17408,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             {secondaryP[0],secondaryP[1],secondaryP[2]}};
                         const bool dualReticles=dual_reticle::Eligible(reticleTitle,
                             SecondaryWeaponPresentationActive(),haveAim,secondaryTracked,
-                            g_config.crosshair,g_config.hide_hud,theaterPresentation) &&
+                            g_config.crosshair,VR_HudHidden(),theaterPresentation) &&
                             PrepareDualReticleImage();
                         const uint64_t reticleSpace=g_contactSpaceEpoch.load(std::memory_order_acquire);
                         const uint32_t reticleGeneration=TitleAdapter_GetGeneration(reticleTitle);
@@ -17263,7 +17420,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         const bool reticleQuadSubmitted =
                             reticleOwnerAdmitted &&
                             !titlePositionsNativeReticle &&
-                            g_config.crosshair && !g_config.hide_hud &&
+                            g_config.crosshair && !VR_HudHidden() &&
                             // Halo 4 uses kill_reticle=0 as an explicit request
                             // for the stock face-centred CUI reticle. Never add
                             // a held authored gun-ray quad on top of it.
@@ -22125,7 +22282,7 @@ void VR_RequestScopeToggle()
 
 void VR_SetGameHaptics(float amplitude)
 {
-    const float v = std::clamp(amplitude, 0.0f, 1.0f);
+    const float v = std::isfinite(amplitude) ? std::clamp(amplitude, 0.0f, 1.0f) : 0.0f;
     g_requestedHaptics.store(v, std::memory_order_release);
     // Peak-hold: raise the running peak so a pulse that arrives and clears
     // between two VR-frame samples still registers. Lock-free CAS max keeps
@@ -22139,13 +22296,31 @@ void VR_SetGameHaptics(float amplitude)
 
 void VR_PulseContactHaptics(bool left, float amplitude)
 {
-    const float v = std::clamp(amplitude, 0.0f, 1.0f);
+    const float v = std::isfinite(amplitude) ? std::clamp(amplitude, 0.0f, 1.0f) : 0.0f;
     std::atomic<float>& peak = g_contactHaptics[left ? 0 : 1];
     float current = peak.load(std::memory_order_relaxed);
     while (v > current && !peak.compare_exchange_weak(
         current, v, std::memory_order_release, std::memory_order_relaxed))
     {
     }
+}
+
+uint64_t VR_WeaponHapticToken(GameTitle title,uint32_t generation,bool secondary) noexcept
+{
+    if(title!=TitleAdapter_GetActiveTitle()||generation!=TitleAdapter_GetGeneration(title))return 0;
+    return g_weaponHapticAdmission.Token(secondary?0:1,GetTickCount64());
+}
+bool VR_PulseWeaponHaptics(GameTitle title,uint32_t generation,bool secondary,
+    bool supported,float amplitude,uint64_t sourceToken) noexcept
+{
+    if(title!=TitleAdapter_GetActiveTitle()||generation!=TitleAdapter_GetGeneration(title))return false;
+    const uint64_t now=GetTickCount64();
+    if(sourceToken&&sourceToken!=g_weaponHapticAdmission.Token(secondary?0:1,now))return false;
+    const uint64_t supportToken=sourceToken?g_weaponHapticAdmission.Token(0,now):0;
+    if(!g_weaponHaptics.Raise(title,generation,secondary?0:1,amplitude,now,sourceToken))return false;
+    if(!secondary&&supported&&(!sourceToken||supportToken))
+        (void)g_weaponHaptics.Raise(title,generation,2,amplitude,now,sourceToken,supportToken);
+    return true;
 }
 
 bool VR_GetPhysicalControllerPose(int hand, float outQuat[4], float outPos[3])
@@ -22812,6 +22987,14 @@ void VR_ObserveSecondaryWeaponPresentation(GameTitle title, uint32_t generation)
         TitleAdapter_GetActiveTitle() == title &&
         TitleAdapter_GetGeneration(title) == generation)
         g_secondaryWeaponPresentation[slot].Publish(generation, GetTickCount64());
+}
+
+bool VR_HudHidden() noexcept
+{
+    if(!g_config.hide_hud) return false;
+    const auto title=TitleAdapter_GetActiveTitle();
+    return !g_config.hud_reveal_near_head||
+        !g_hudReveal.Active(title,TitleAdapter_GetGeneration(title),GetTickCount64());
 }
 
 bool VR_IsTwoHandAiming()

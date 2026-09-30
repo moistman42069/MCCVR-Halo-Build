@@ -111,12 +111,23 @@ inline uint64_t Fingerprint(const Overrides& bindings,const Transports& native) 
     for(unsigned a=0;a<Count;++a) {value^=uint64_t(bindings[a])|(uint64_t(native[a])<<8);value*=1099511628211ull;}
     return value;
 }
+// Preserve semantic identity before transport encoding. Two actions sharing a
+// native gamepad bit are still different actions, and a post-mapping native
+// consumer must never try to reconstruct that distinction from the bitmask.
+struct MappedActions
+{
+    uint32_t actions = 0;
+    uint32_t transports = 0;
+    bool Has(Action action) const noexcept
+    { return action < Count && (actions & (1u << action)) != 0; }
+};
+
 // Reconfiguration, pause, reconnect and title changes must wait for held
 // controls to release. A held trigger cannot become a new action on resume.
 struct Mapper
 {
     uint64_t identity{}; uint32_t blocked{}, flashlightHeld{}; bool ready{};
-    uint32_t Apply(uint32_t sources,const Overrides& bindings,const Transports& native,
+    MappedActions ApplyDetailed(uint32_t sources,const Overrides& bindings,const Transports& native,
         uint64_t epoch,bool available,bool disableFlashlight=false) noexcept
     {
         const uint64_t next=Fingerprint(bindings,native)^epoch;
@@ -125,13 +136,23 @@ struct Mapper
         const uint32_t flashlightSource=Bit(Resolve(Flashlight,bindings[Flashlight]));
         flashlightHeld&=sources;
         if(disableFlashlight) flashlightHeld|=sources&flashlightSource;
-        if(!available) return 0;
+        if(!available) return {};
         const uint32_t active=sources&~blocked;
-        uint32_t result=0;
+        MappedActions result{};
         for(unsigned a=0;a<Count;++a)
             if(!(a==Flashlight&&(disableFlashlight||(flashlightHeld&flashlightSource)))&&
-               (active&Bit(Resolve(static_cast<Action>(a),bindings[a])))) result|=native[a];
+               (active&Bit(Resolve(static_cast<Action>(a),bindings[a]))))
+            {
+                result.actions |= 1u << a;
+                result.transports |= native[a];
+            }
         return result;
+    }
+    uint32_t Apply(uint32_t sources,const Overrides& bindings,const Transports& native,
+        uint64_t epoch,bool available,bool disableFlashlight=false) noexcept
+    {
+        return ApplyDetailed(sources,bindings,native,epoch,available,
+            disableFlashlight).transports;
     }
 };
 }

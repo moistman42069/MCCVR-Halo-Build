@@ -76,8 +76,10 @@ def main() -> None:
         ("game.cpp", "bool Game_HasTitleCapability(uint32_t requiredCapabilities)"),
         ("vr.cpp", "void VR_SetGameHaptics(float amplitude)"),
         ("vr.cpp", "void VR_PulseContactHaptics(bool left, float amplitude)"),
+        ("vr.cpp", "uint64_t VR_WeaponHapticToken(GameTitle title,uint32_t generation,bool secondary) noexcept"),
+        ("vr.cpp", "bool VR_PulseWeaponHaptics(GameTitle title,uint32_t generation,bool secondary,\n    bool supported,float amplitude,uint64_t sourceToken) noexcept"),
         ("vr.cpp", "void StopControllerHaptics()"),
-        ("vr.cpp", "void ApplyControllerHaptics(bool trackingValid)"),
+        ("vr.cpp", "void ApplyControllerHaptics(bool primaryTrackingValid, bool supportTrackingValid)"),
         ("input.cpp", "DWORD ProcessSetState(DWORD result, DWORD user, XINPUT_VIBRATION* vibration)"),
     )
     for name, signature in definitions:

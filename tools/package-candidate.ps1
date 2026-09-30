@@ -1276,13 +1276,15 @@ try {
             headset_accepted = $false
         }
         ce_haptics = [ordered]@{
-            behavior = 'enable-existing-native-XInput-to-OpenXR-vibration-for-both-controllers'
+            behavior = 'source-tagged-native-weapon-envelopes-on-holding-hand; coupled-support-only-while-engaged; general-XInput-feedback-preserved'
             graphics = 'Original-and-Anniversary'
-            runtime_change = 'CE-descriptor-and-armed-runtime-Haptics-capability-only'
-            reference = 'unchanged-Halo3-motor-blend-short-pulse-intensity-and-stop-policy'
-            accepted_runtime_preserved = '5ac02f53a7896ffd6b8dff37ddc5bc4700890559'
-            evidence = 'docs/CE-HAPTICS-2026-09-15.md'
-            headset_accepted = $true
+            runtime_change = 'optional-exact-trigger-owner-and-firing-damage-scope; authored-vibration-queue-and-native-curve-evaluation'
+            reference = 'native-authored-envelope-scale-duration-and-frequency-band-blend; per-hand-tracking-stop-and-stale-pulse-retirement'
+            prior_headset_baseline = '5ac02f53a7896ffd6b8dff37ddc5bc4700890559'
+            evidence = 'docs/CONTINUATION-IMPLEMENTATION-2026-09-30.md'
+            pinned_verifier = 'tools/verify-ce-weapon-haptics.py'
+            other_title_recoil_routing = 'under-implementation-not-all-title-complete'
+            headset_accepted = $false
         }
         halo_ce_candidate = [ordered]@{
             previous_headset_result = '5ac02f5-all-campaign-runtime-user-accepted-as-flawless-except-absent-CE-haptics'
@@ -1324,7 +1326,7 @@ try {
             weapon_geometry_limit = 'stock-CE-physical-envelope-shared-deliberately-by-Original-and-Anniversary; triangle-exact-Saber-replacement-and-custom-model-surfaces-not-established; unknown-graphs-retain-logged-node-contact'
             native_reticle_verifier = 'tools/re/test_ce_reticle_blend_native.py'
             weapon_geometry_verifier = 'tools/re/verify_ce_weapon_mesh.py'
-            physical_roomscale_body_following = 'disabled-for-CE-deferred'
+            physical_roomscale_body_following = 'guarded-classic-and-anniversary-unaccepted'
             headset_accepted = $false
             editions = 'Steam-and-Microsoft-Store'
         }
@@ -1393,6 +1395,15 @@ try {
         }
         current_notes = 'RELEASE-NOTES.md'
         implementation_ledger = 'IMPLEMENTATION-STATUS.md'
+        experimental_avatar = [ordered]@{
+            enabled_by_default = $false
+            runtime_world_rigs = @('Halo 3 Chief/Elite/Arbiter', 'Halo 4 Chief')
+            halo2_world_avatar = 'unfinished: local world-palette and draw ownership unproven'
+            lower_body_hide = 'separate native regions only; H3 Elite/Arbiter require off'
+            finger_joint_identity = 'title/rig/palette/hand/digit-slot/joint/node; six supported titles'
+            contact_reactive_fingers = 'not implemented; per-joint query/response transport required'
+            headset_accepted = $false
+        }
         update_launcher = [ordered]@{
             automatic_install = $false
             automatic_launch = $false
@@ -1411,9 +1422,12 @@ try {
     Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-RELEASE-NOTES-2026-09-30.md') -Destination (Join-Path $packageDir 'RELEASE-NOTES.md')
     Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-30.md') -Destination (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md')
     Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-23.md') -Destination (Join-Path $packageDir 'PREVIOUS-IMPLEMENTATION-STATUS.md')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/LINUX-PROTON-LOGIN-FOCUS-REVIEW-2026-09-30.md') -Destination (Join-Path $packageDir 'LINUX-LOGIN-REVIEW.md')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/FINGER-JOINT-IDENTITY-2026-09-30.md') -Destination (Join-Path $packageDir 'FINGER-JOINT-IDENTITY.md')
     Copy-Item -LiteralPath (Join-Path $packageDir 'RELEASE-NOTES.md') -Destination $payloadDir
     Copy-Item -LiteralPath (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md') -Destination $payloadDir
     Copy-Item -LiteralPath (Join-Path $packageDir 'PREVIOUS-IMPLEMENTATION-STATUS.md') -Destination $payloadDir
+    Copy-Item -LiteralPath (Join-Path $packageDir 'LINUX-LOGIN-REVIEW.md') -Destination $payloadDir
     foreach ($packageDoc in @('RELEASE-NOTES.md', 'IMPLEMENTATION-STATUS.md', 'PREVIOUS-IMPLEMENTATION-STATUS.md')) {
         if (-not (Test-Path -LiteralPath (Join-Path $payloadDir $packageDoc) -PathType Leaf)) {
             throw "Candidate package is missing its report ledger: $packageDoc"

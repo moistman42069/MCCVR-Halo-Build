@@ -7,6 +7,15 @@ namespace
 {
 constexpr uint32_t testOwner=0x12340007,testTarget=0x34560009;
 unsigned failures{},nativeDamageCalls{},nativeTickCalls{},hapticCalls[2]{};
+unsigned nativeSurfaceCalls{};
+bool dispatchRecoil{},testSupport{},raiseHapticCurve{};
+bool invalidHapticDefinition{},raiseHapticSource{},raiseHapticOriginal{};
+uint64_t testHapticToken=3;
+unsigned stockEnvelopeCalls{},nativeHapticTicks{},weaponPulseCalls{};
+float testEnvelope[15]{},lastWeaponAmplitude{};
+bool lastWeaponSupported{};
+bool breakableSurface=true;
+uint8_t surfaceId=7;
 unsigned meshProbeMask{};bool recordMeshProbes{};
 bool geometricContact{},contactWall{},contactOtherObject{};
 float targetPlane=.25f,obstructionPlane=.15f;
@@ -57,17 +66,60 @@ uint8_t __fastcall TestCollision(uint32_t flags,const float* start,const float* 
     auto& hit=*static_cast<CollisionResult*>(output);hit.type=contactWall?2:3;hit.fraction=fraction;
     hit.object=collisionTarget;hit.material=12;
     if (contactOtherObject) hit.object=0x5678000a;
+    if(contactWall) {
+        auto* bytes=reinterpret_cast<uint8_t*>(&hit);
+        bytes[0x4C]=breakableSurface?8:0;bytes[0x4D]=surfaceId;
+        const uint32_t feature=17;std::memcpy(bytes+0x44,&feature,4);
+    }
     hit.point={start[0]+vector[0]*fraction,start[1]+vector[1]*fraction,start[2]+vector[2]*fraction};
     hit.normal={-1,0,0};return 1;
 }
+void __fastcall TestBreakable(int16_t surface,void* event,uint32_t index)
+{
+    Check(surface==surfaceId&&index==17,"native CE breakable identity retained");
+    ++nativeSurfaceCalls;
+    std::memcpy(&damagePosition,static_cast<uint8_t*>(event)+0x20,12);
+    std::memcpy(&damageDirection,static_cast<uint8_t*>(event)+0x38,12);
+}
 void __fastcall TestDamage(void* event,uint32_t target,int16_t,int16_t,int16_t,const void*)
 {
+    if(dispatchRecoil) {
+        ++nativeDamageCalls;
+        HapticEnqueueBody(0,invalidHapticDefinition?reinterpret_cast<const void*>(1):testEnvelope,
+            1,1,moduleBase+haptic_contract::enqueueReturn);
+        return;
+    }
     ++nativeDamageCalls;Check(target==testTarget,"physical contact cannot hit another target");
     std::memcpy(&damagePosition,static_cast<uint8_t*>(event)+0x20,12);
     std::memcpy(&damageDirection,static_cast<uint8_t*>(event)+0x38,12);
 }
+void __fastcall TestEnvelope(int16_t,const void*,float,float) { ++stockEnvelopeCalls; }
+void __fastcall TestHapticTick() { ++nativeHapticTicks; }
+void __fastcall TestHapticTrigger(uint32_t,int16_t)
+{ if(raiseHapticOriginal)RaiseException(0xe0424848,0,0,nullptr);
+  alignas(16) uint8_t event[0x60]{};
+  DamageBody(event,testOwner,-1,-1,-1,nullptr,moduleBase+haptic_contract::firingDamageReturn); }
+bool CatchHapticOriginal()
+{
+    __try {HapticTriggerHook(0x5678000b,0);}
+    __except(GetExceptionCode()==0xe0424848?EXCEPTION_EXECUTE_HANDLER:EXCEPTION_CONTINUE_SEARCH)
+    {return true;}return false;
+}
+float __fastcall TestHapticCurve(uint16_t curve,float fraction)
+{
+    if(raiseHapticCurve)RaiseException(0xe0424444,0,0,nullptr);
+    Check(curve<=5&&fraction>=0&&fraction<=1,"native envelope curve arguments are bounded");return fraction;
+}
 void __fastcall TestMelee(uint32_t owner,uint32_t target,uint16_t material)
 {
+    if(target==UINT32_MAX) {
+        uint16_t kind=0,chosenMaterial=0,surface=0;uint32_t index=0;
+        FanBody(owner,&target,&kind,&chosenMaterial,&surface,&index,moduleBase+0xB0C467);
+        Check(target==UINT32_MAX,"CE world melee never manufactures an object handle");
+        alignas(16) uint8_t event[0x60]{};std::memcpy(event+0x10,&owner,4);
+        if(surface!=UINT16_MAX)BreakableBody(static_cast<int16_t>(surface),event,index,moduleBase+0xB0C66E);
+        return;
+    }
     Check(owner==testOwner&&target==testTarget&&material==12,"native explicit target/material are retained");
     alignas(16) uint8_t event[0x60]{};std::memcpy(event+0x10,&owner,4);
     DamageBody(event,target,-1,-1,-1,nullptr,moduleBase+0xb0c8a8);
@@ -101,7 +153,8 @@ GameTitle TitleAdapter_GetActiveTitle() { return testTitle; }
 uint32_t TitleAdapter_GetGeneration(GameTitle) { return testGeneration; }
 bool HaloCEControls_GetLocalPlayerState(HaloCELocalPlayerState& out) noexcept
 {
-    out={};out.generation=testGeneration;out.unit=testOwner;out.player=0x23450008;
+    if(raiseHapticSource)RaiseException(0xe0424949,0,0,nullptr);
+    out={};out.generation=testGeneration;out.unit=testOwner;out.player=0x23450008;out.weapon=0x5678000b;out.inputUser=0;
     out.hasControlledUnit=out.onFoot=out.nativePreparesFirstPerson=true;
     out.nativeInputBlocked=out.nativeLookBlocked=false;return stateAvailable;
 }
@@ -111,6 +164,13 @@ bool HaloCE_RenderContextCurrent(const RenderContext& c) noexcept
 { return testCurrent&&c.tracking.generation==testGeneration&&c.referenceRevision==testContext.referenceRevision&&
     c.rendererEpoch==testContext.rendererEpoch; }
 void VR_PulseContactHaptics(bool left,float) { ++hapticCalls[left?0:1]; }
+uint64_t VR_WeaponHapticToken(GameTitle,uint32_t,bool) noexcept{return testHapticToken;}
+bool VR_PulseWeaponHaptics(GameTitle title,uint32_t gen,bool secondary,bool supported,float amplitude,uint64_t token) noexcept
+{ Check(title==GameTitle::HaloCE&&gen==testGeneration&&!secondary&&token&&token==testHapticToken,"CE recoil retains own title/generation/primary role and original hand token");
+  ++weaponPulseCalls;lastWeaponAmplitude=amplitude;lastWeaponSupported=supported;return true; }
+bool VR_GetSupportGripRelationship(SupportGripRelationshipSnapshot& out) noexcept
+{ out={GameTitle::HaloCE,testGeneration,testOwner,0x5678000b,1,testSupport};return true; }
+bool VR_IsTwoHandAiming() { return testSupport; }
 void Logf(const char*,...) {}
 bool WaitForNativeDetourQuiescence(const void* const*,const void* const*,size_t,const std::atomic<uint32_t>& count)
 { return count.load()==0; }
@@ -216,6 +276,30 @@ int main()
     Check(!reachBackend.Apply(testOwner,reachHit,nativeSweep)&&nativeDamageCalls==beforeRequery,
         "owner cannot replace physical target");
     geometricContact=false;
+    worldMeleeReady=true;breakableHook.original=reinterpret_cast<void*>(&TestBreakable);
+    *reinterpret_cast<int16_t*>(moduleBase+world_melee_contract::bsp)=2;
+    contactWall=true;
+    for(int side=0;side<2;++side) {
+        meleeHands[side].Reset();const unsigned before=nativeSurfaceCalls;
+        Publish(Frame(40,0),side);TickHook(testOwner);Publish(Frame(41,.1f),side);TickHook(testOwner);
+        Check(nativeSurfaceCalls==before+1&&Near(damagePosition.x,.15f)&&Near(damageDirection.x,1),
+            "both hands reach native breakable damage with physical point and direction");
+        Publish(Frame(42,.2f),side);TickHook(testOwner);
+        Check(nativeSurfaceCalls==before+1,"continued penetration cannot repeatedly damage glass");
+    }
+    contact_melee::Hit glass{};Backend surfaceBackend{testOwner,1};
+    Check(surfaceBackend.Query(nativeSweep,glass)&&glass.unit==UINT32_MAX&&!glass.object,
+        "CE glass publishes explicit world identity without an object");
+    ++surfaceId;
+    Check(!surfaceBackend.Apply(testOwner,glass,nativeSweep),"changed CE breakable feature rejects stale strike");
+    --surfaceId;
+    ++*reinterpret_cast<int16_t*>(moduleBase+world_melee_contract::bsp);
+    Check(!surfaceBackend.Apply(testOwner,glass,nativeSweep),"changed CE BSP rejects stale strike");
+    --*reinterpret_cast<int16_t*>(moduleBase+world_melee_contract::bsp);
+    breakableSurface=false;const unsigned beforeSolid=nativeSurfaceCalls;
+    Check(surfaceBackend.Query(nativeSweep,glass)&&surfaceBackend.Apply(testOwner,glass,nativeSweep)&&
+        nativeSurfaceCalls==beforeSolid,"solid CE wall uses native material response without breakable damage");
+    worldMeleeReady=false;contactWall=false;breakableSurface=true;breakableHook={};
     // A gun face can share its x extrema with a hand node and still needs a
     // native probe. The exact fourteen-point receipt survives queue transport.
     contact_melee::Frame mesh=Frame(20,.3f);mesh.count=15;mesh.shape=0x9876;
@@ -237,6 +321,60 @@ int main()
     Publish(Frame(11,0));TickHook(testOwner);Publish(Frame(12,.1f));TickHook(testOwner);
     Check(worldFault.load()&&Current()&&callbacks.load()==0,"native collision fault leaves CE camera ownership independent");
     raiseTick=true;Check(CatchNativeTick()&&callbacks.load()==0,"original native tick SEH propagates with balanced callback lifetime");
+    raiseTick=false;stateAvailable=true;hapticReady=true;hapticFault=false;
+    hapticEnqueueHook.original=reinterpret_cast<void*>(&TestEnvelope);
+    hapticUpdateHook.original=reinterpret_cast<void*>(&TestHapticTick);
+    hapticTriggerHook.original=reinterpret_cast<void*>(&TestHapticTrigger);
+    Check(InstallService(haptic_contract::curve,TestHapticCurve),"install isolated native curve service");
+    testEnvelope[0]=.8f;testEnvelope[1]=.1f;testEnvelope[5]=.4f;testEnvelope[6]=.1f;
+    dispatchRecoil=true;alignas(16) uint8_t recoilEvent[0x60]{};
+    HapticTriggerHook(0x5678000b,0);
+    Check(hapticCaptured.load()==1&&stockEnvelopeCalls==0&&!recoilSource.valid&&recoilTriggerWeapon==UINT32_MAX,
+        "exact local firing damage diverts only its authored vibration and restores scope");
+    HapticUpdateHook();
+    Check(nativeHapticTicks==1&&weaponPulseCalls==1&&Near(lastWeaponAmplitude,.66f)&&!lastWeaponSupported,
+        "private native envelope blends authored bands and pulses the one-handed weapon");
+    testSupport=true;HapticUpdateHook();
+    Check(lastWeaponSupported&&lastWeaponAmplitude<.66f,
+        "native envelope age advances and a matching engaged support grip shares recoil");
+    testSupport=false;
+    const unsigned beforeEnvelope=stockEnvelopeCalls;
+    HapticTriggerHook(0x9999000b,0);
+    DamageBody(recoilEvent,testOwner,-1,-1,-1,nullptr,moduleBase+haptic_contract::firingDamageReturn+1);
+    Check(stockEnvelopeCalls==beforeEnvelope+2,"foreign owners and unrelated damage retain stock general vibration");
+    const uint16_t unsupportedCurve=6;std::memcpy(testEnvelope+2,&unsupportedCurve,2);
+    HapticTriggerHook(0x5678000b,0);
+    Check(stockEnvelopeCalls==beforeEnvelope+3,"unproved native curve stays stock without losing feedback");
+    for(auto& voice:recoilVoices)voice={};
+    const unsigned beforePulse=weaponPulseCalls;HapticUpdateHook();
+    Check(weaponPulseCalls==beforePulse&&callbacks.load()==0,"empty envelopes produce no recoil and balance callback ownership");
+    const uint16_t supportedCurve=0;std::memcpy(testEnvelope+2,&supportedCurve,2);
+    HapticTriggerHook(0x5678000b,0);testHapticToken+=2;HapticUpdateHook();
+    Check(weaponPulseCalls==beforePulse,"CE authored voice cannot resume across XR hand cancellation");
+    HapticTriggerHook(0x5678000b,0);
+    raiseHapticCurve=true;HapticUpdateHook();raiseHapticCurve=false;
+    Check(hapticFault.load()&&Current()&&callbacks.load()==0&&weaponPulseCalls==beforePulse,
+        "native curve SEH disables only optional recoil, with no pulse or camera teardown");
+    const bool writerWasHeld=hapticWriter.test_and_set(std::memory_order_acquire);
+    hapticWriter.clear(std::memory_order_release);
+    Check(!writerWasHeld,"curve fault releases private envelope writer ownership");
+    const unsigned stockAfterFault=stockEnvelopeCalls;
+    HapticTriggerHook(0x5678000b,0);HapticUpdateHook();
+    Check(stockEnvelopeCalls==stockAfterFault+1&&weaponPulseCalls==beforePulse&&callbacks.load()==0,
+        "subsequent firing falls back to stock vibration after optional curve fault");
+    hapticFault=false;invalidHapticDefinition=true;
+    HapticTriggerHook(0x5678000b,0);invalidHapticDefinition=false;
+    Check(hapticFault&&stockEnvelopeCalls==stockAfterFault+2&&!recoilSource.valid&&callbacks==0,
+        "invalid authored envelope pointer retains stock enqueue and clears the optional source scope");
+    hapticFault=false;raiseHapticSource=true;
+    HapticTriggerHook(0x5678000b,0);raiseHapticSource=false;
+    Check(hapticFault&&stockEnvelopeCalls==stockAfterFault+3&&Current()&&callbacks==0,
+        "optional local-state read fault preserves original damage and vibration");
+    raiseHapticOriginal=true;
+    Check(CatchHapticOriginal()&&callbacks==0&&recoilTriggerWeapon==UINT32_MAX,
+        "original firing exception propagates while restoring haptic trigger scope");
+    raiseHapticOriginal=false;
+    dispatchRecoil=false;
     active=installed=false;moduleBase=0;VirtualFree(image,0,MEM_RELEASE);
     if (failures) return 1;
     std::puts("PASS: production CE contact native routing, toggles, hand latches, stale-frame rejection and SEH isolation");return 0;

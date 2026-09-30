@@ -36,8 +36,11 @@ point fields; the decoder therefore consumes them as `xmin, xmax, ymin, ymax,
 zmin, zmax`, not as two XYZ corners. Skin indices are resolved through each
 mesh's official per-mesh node map.
 
-Coordinates retain Blam's `+X forward, +Y left, +Z up` convention and convert
-world units to metres with `1 wu = 3.048 m`.
+Coordinates retain Blam's `+X forward, +Y left, +Z up` convention. The authoring
+tool uses `1 wu = 3.048 m` as its calibration convention; this is not a separately
+proven Halo 4 engine constant. Runtime controller placement uses the adjustable
+VR world scale. Do not use this authoring conversion, or historical measurements
+made with the wrong body-node indices, as proof of a runtime palette frame.
 
 ## Controls and output
 

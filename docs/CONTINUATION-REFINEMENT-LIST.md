@@ -1,4 +1,104 @@
-## September 23 packaging cutoff
+## September 30 avatar/finger and login-focus candidate handoff
+
+The user ended further IK/finger expansion for this candidate, requested the
+likely Linux issue be addressed, then requested ZIPs and a complete status
+breakdown. Current cutoff is implemented and offline validated: H3/H4 guarded
+avatars, six-title finger-joint identification and the shell/login focus fix.
+The H2 full-world attempt remains blocked on local world-render ownership.
+Contact-reactive finger physics remains future work; the requested individual
+joint identity foundation is implemented. No placeholder physics toggle ships.
+
+Validation before packaging: cumulative Release DLL/build pass, 121/121 CTest
+suites pass, Reach consistency gate passes. Key checks include own-rig posing,
+H4 partial-write rollback, H3 legacy-body precedence, per-title joint identity
+and shell/gameplay focus policy. Logs: out/review-20260930-avatar-final-build4.log,
+out/review-20260930-avatar-final-tests2.log and
+out/review-20260930-avatar-final-parity.log. Packaging repeats the required
+build/tests/gate from a clean source commit and records exact artifact hashes.
+Final ZIP paths, source commit and hashes are written to the ignored
+out/avatar-candidate-handoff-20260930.json after packaging. Deliver build,
+manual payload and matching source ZIPs, then wait for the user's headset test.
+
+Do not install, launch MCC, publish or advance CURRENT-STATE. The user closed
+MCC for verification. Both editions remain supported; accepted pointer stays
+Alpha0.4.2. No new headset/Proton acceptance is claimed. H3 Elite/Arbiter lower
+hiding is unsupported; CE/H2/ODST/Reach world avatars, CE gun-load report, full
+Linux sign-in resolution and the broader scope remain recorded as unfinished.
+See QOL-IMPLEMENTATION-STATUS-2026-09-30.md for finished/WIP/planned/not-started
+rows, FINGER-JOINT-IDENTITY-2026-09-30.md for the six-title inventory, and
+LINUX-PROTON-LOGIN-FOCUS-REVIEW-2026-09-30.md for the focus fix and limits.
+
+## September 30 continuation takes precedence
+
+Current ordering: disruptive existing bugs before further IK expansion. User
+specifically reports CE gun misalignment after loading in BOTH graphics modes.
+Keep the report distinct from horizon tilt and older transition crashes. See
+CE-GUN-LOAD-ALIGNMENT-2026-09-30.md for tested recovery hardening and the still-open
+headset reproduction. Preserve all avatar and earlier work below.
+
+The user has resumed the full implementation scope and rejected stopping at the
+partial `6b3f38b` candidate. The historical packaging cutoff below is superseded.
+Also attempt native full-body visibility across all titles, a separate tracked
+arms visibility toggle, all-title DLSS corrections and live resolution changes.
+See `ACTIVE-WORK-CHECKPOINT.md` for current work. Do not treat an audit row or a
+passing offline test as completion or headset acceptance.
+
+Also requested: launcher-matched VR-menu styling; a separate experimental
+full-body inverse-kinematics avatar option for all titles, with accurate
+roomscale following and finger poses; and renewed ODST crash investigation.
+This avatar option is distinct from native-body visibility and tracked arms.
+Include a separate Hide lower body option within experimental full-body IK,
+retaining the upper body and finger poses when lower-body tracking is hidden.
+
+User explicitly reinforced coverage of CE, Halo 2, Halo 3, ODST, Reach and
+Halo 4. H4-only integration does not complete the avatar request; each title
+requires its own proven body rig and runtime path, including roomscale,
+controller-driven arms/hands, finger posing and optional lower-body hiding.
+
+### Additional physical interaction and immersion scope
+
+Hand-correct haptics: one-handed gun recoil only on its holding controller,
+two-handed feedback only while support is engaged, and independent dual-wield
+feedback. Honor left-handed mapping and universal vibration intensity. Keep
+world/melee contact local to the contacting hand and retain appropriate general
+damage/vehicle feedback, with immediate lifecycle/tracking/menu cancellation.
+
+Physical melee extension: both tracked hands/held weapons should strike native
+world geometry, breakable glass and damageable objects, with the corresponding
+native material effects/damage. Investigate reports of missed window impacts;
+object-only collision filtering must not silently discard supported BSP hits.
+Preserve stock material destructibility and network authority.
+
+All additions below require separate opt-in toggles. A new Quality of Life
+page mirrors their original section controls and the existing immersion
+settings; both views edit the same saved values.
+
+- Manual reload: cock/charge the correct gun when necessary; authored magazine
+  identity, orientation, insertion port and seating must match that weapon.
+- Physical pickup/disarming: pick up floor weapons; steal a held enemy weapon
+  by the requested close-contact/strike interaction, leaving that enemy unarmed.
+- Enemy grabbing: nearby grip acquisition, contact/haptics, native ragdoll,
+  held-body movement, release/throw, weapon removal and physical damage.
+- Parkour: grip solid world surfaces to climb, and repeated wall jumps while
+  against an eligible wall.
+- Physical running: arm swings build locomotion speed, with speed/sensitivity
+  sliders; user references the Sonic Project 06 VR mod as behavior inspiration.
+- Real-world weapon grip: require actual grip, make weapons contactable, drop
+  native inventory weapon on release and allow pickup again. Enabling this
+  must also enable physical pickup. Preserve native ownership/network meaning.
+- World interaction: touch nearby native interactibles to activate them.
+- Contact-reactive fingers: optional finger articulation conforming to touched
+  objects/surfaces, like Alyx, within the separate experimental full-body IK
+  system. This extends controller-driven finger posing; it is not the same as
+  optical hand tracking or generic grip animation.
+
+Conflicting ordinary inputs must be suppressed in correlation with physical
+ownership/function, without consuming unrelated grips, menu controls, weapon
+aim, or another hand's interaction. Releases, tracking loss, title transition,
+pause, death and co-op authority changes require explicit safe cleanup. These
+new requests do not cancel any earlier bug, parity, launcher or delivery scope.
+
+## September 23 packaging cutoff (historical)
 
 Latest instruction is to finish active integration and package now, conserving
 credits. See ACTIVE-WORK-CHECKPOINT.md and QOL-IMPLEMENTATION-STATUS-2026-09-23.md

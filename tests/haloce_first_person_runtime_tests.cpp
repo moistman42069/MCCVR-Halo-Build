@@ -6,6 +6,9 @@
 #include <thread>
 #include <cstdlib>
 
+Config::Config() {}
+Config g_config;
+
 static GameTitle testTitle=GameTitle::HaloCE;
 static uint32_t testGeneration=3;
 static halo_ce::RenderContext testContext{};

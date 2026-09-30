@@ -2,6 +2,7 @@
 #include "../src/common/dlss_logic.h"
 #include "../src/common/dlss_frame_result.h"
 #include "../src/common/live_resize_logic.h"
+#include "../src/common/dlss_depth_tracking.h"
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -12,6 +13,28 @@ static void Check(bool condition, const char* reason) {
     if (!condition) { ++g_failures; std::cerr << reason << "\n"; }
 }
 int main() {
+    {
+        struct Entry { int view=0; bool seenThisFrame=false; } entries[8]{};
+        unsigned released[9]{};
+        auto release=[&](Entry& entry) { ++released[entry.view]; };
+        for(int i=0;i<8;++i) entries[i]={i+1,true};
+        auto count=dlss::FinishDepthViewFrame(entries,8,true,release);
+        Check(count==8&&released[1]==0,"table pressure cannot retire this frame's live depth views");
+        entries[1].seenThisFrame=entries[7].seenThisFrame=true;
+        count=dlss::FinishDepthViewFrame(entries,count,true,release);
+        Check(count==2&&entries[0].view==2&&entries[1].view==8,
+              "replacement buffers can be learned after obsolete depth views retire");
+        Check(released[1]==1&&released[2]==0&&released[7]==1&&released[8]==0,
+              "retirement releases only unused owned references once");
+        Check(entries[2].view==0&&entries[7].view==0,
+              "compaction clears duplicate ownership from vacated slots");
+        count=dlss::FinishDepthViewFrame(entries,count,false,release);
+        Check(count==2&&released[2]==0&&released[8]==0,
+              "no pressure preserves warm view descriptions across intermittent draws");
+        count=dlss::FinishDepthViewFrame(entries,count,true,release);
+        Check(count==0&&released[2]==1&&released[8]==1,
+              "an abandoned title scene can release every stale tracked view");
+    }
     // --- Optional DLSS eye resolve: pure logic behind the render path -----
     {
         // Output shape: the largest raster-shaped box inside the headset
@@ -322,6 +345,14 @@ int main() {
             // Replay two exit cycles, including loading beginning after the
             // render thread queues a request but before the window consumes it.
             dlss::LiveResizeDispatch dispatch;
+            dlss::FailedResizeSize failed;
+            Check(!failed.Matches(1920,1080),"a fresh session does not suppress a render size");
+            failed.Record(1920,1080);
+            Check(failed.Matches(1920,1080)&&!failed.Matches(1920,1200),
+                "only the exact failed size is suppressed without mixing dimensions");
+            failed.Retry();
+            Check(!failed.Matches(1920,1080),
+                "explicit retry, changed settings and title generations can retry a transient failure");
             const auto world = dlss::PlanRender(2912, 2100, 1.3f, dlss::kUpscalerDlss, 2, true);
             const auto full = dlss::PlanPresentation(world, RuntimeMode::Shell);
             dlss::RenderPlan active = world;

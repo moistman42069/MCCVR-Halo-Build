@@ -22,10 +22,11 @@ struct Halo2ContactRuntime
 
 struct Halo2ContactScope
 {
-    bool active=false,applied=false,requested=false;
+    bool active=false,applied=false,requested=false,worldMatched=false;
     uint32_t owner=UINT32_MAX,target=UINT32_MAX;
     unsigned rays=0;
     contact_melee::Sweep sweep{};
+    contact_melee::Hit expected{};
     contact_melee::Point position{},direction{};
 };
 thread_local Halo2ContactScope g_halo2ContactScope;
@@ -44,6 +45,27 @@ const uint8_t* Halo2ContactObject(uint32_t handle,bool requireBiped=false)
 
 const uint8_t* Halo2ContactBiped(uint32_t handle) { return Halo2ContactObject(handle,true); }
 
+bool Halo2ContactWorldHit(const uint8_t* bytes,contact_melee::Hit& hit) noexcept
+{
+    Halo2BreakableSurfaceIdentity identity{};
+    if(!Halo2ReadBreakableSurfaceIdentity(bytes,0x60,identity))return false;
+    hit={};
+    hit.unit=UINT32_MAX;
+    hit.kind=contact_melee::HitKind::WorldSurface;
+    hit.world.nativeType=identity.type;
+    hit.world.material=static_cast<int16_t>(identity.material);
+    hit.world.nativeData[0]=static_cast<uint32_t>(identity.structureIndex);
+    hit.world.nativeData[1]=static_cast<uint32_t>(identity.feature);
+    hit.world.nativeData[2]=identity.breakableSurfaceIndex;
+    hit.world.nativeData[3]=8; // H2EK collision_result breakable flag bit.
+    std::memcpy(&hit.fraction,bytes+0x04,sizeof(hit.fraction));
+    std::memcpy(&hit.position,bytes+0x08,sizeof(hit.position));
+    std::memcpy(&hit.normal,bytes+0x2C,sizeof(hit.normal));
+    hit.world.valid=std::isfinite(hit.fraction)&&hit.fraction>=0&&hit.fraction<=1&&
+        contact_melee::Finite(hit.position)&&contact_melee::Finite(hit.normal);
+    return hit.world.valid;
+}
+
 bool Halo2RedirectContactVector(uintptr_t caller,uint32_t flags,
     int32_t ignoredA,int32_t ignoredB,Halo2CollisionResult* result,uint8_t& returned)
 {
@@ -56,7 +78,18 @@ bool Halo2RedirectContactVector(uintptr_t caller,uint32_t flags,
     const float start[]{scope.sweep.start.x,scope.sweep.start.y,scope.sweep.start.z};
     const float vector[]{delta.x,delta.y,delta.z};
     returned=g_halo2WorldCollision.original(flags,start,vector,ignoredA,ignoredB,result);
-    if(returned && (result->type!=4 || uint32_t(result->objectIndex)!=scope.target)) returned=0;
+    if(returned)
+    {
+        if(scope.expected.kind==contact_melee::HitKind::WorldSurface)
+        {
+            contact_melee::Hit actual{};
+            if(!Halo2ContactWorldHit(reinterpret_cast<const uint8_t*>(result),actual)||
+                !contact_melee::SameWorldSurface(scope.expected,actual)) returned=0;
+            else scope.worldMatched=true;
+        }
+        else if(result->type!=4 || uint32_t(result->objectIndex)!=scope.target)
+            returned=0;
+    }
     return true;
 }
 
@@ -127,35 +160,52 @@ struct Halo2ContactBackend
         const float vector[]{delta.x,delta.y,delta.z};
         g_halo2Contact.queries.fetch_add(1,std::memory_order_relaxed);
         if(!g_halo2WorldCollision.original || !g_halo2WorldCollision.original(
-            kHalo2CollisionFlags,start,vector,int32_t(owner),-1,&result) || result.type!=4)
+            kHalo2CollisionFlags,start,vector,int32_t(owner),-1,&result))
             return false;
-        hit.unit=uint32_t(result.objectIndex);
-        if(hit.unit==owner || !Halo2ContactObject(hit.unit)) return false;
-        hit.fraction=result.fraction;
-        std::memcpy(&hit.position,result.position,sizeof(hit.position));
-        // H2 builder reads its collision plane normal at result +2C.
-        std::memcpy(&hit.normal,reinterpret_cast<const uint8_t*>(&result)+0x2C,sizeof(hit.normal));
-        hit.object=true;
-        if(!std::isfinite(hit.fraction) || hit.fraction<0 || hit.fraction>1 ||
-            !contact_melee::Finite(hit.position) || !contact_melee::Finite(hit.normal)) return false;
+        if(result.type==4)
+        {
+            hit.unit=uint32_t(result.objectIndex);
+            if(hit.unit==owner || !Halo2ContactObject(hit.unit)) return false;
+            hit.fraction=result.fraction;
+            std::memcpy(&hit.position,result.position,sizeof(hit.position));
+            // H2 builder reads its collision plane normal at result +2C.
+            std::memcpy(&hit.normal,reinterpret_cast<const uint8_t*>(&result)+0x2C,sizeof(hit.normal));
+            hit.object=true;
+            hit.kind=contact_melee::HitKind::Object;
+            if(!std::isfinite(hit.fraction) || hit.fraction<0 || hit.fraction>1 ||
+                !contact_melee::Finite(hit.position) || !contact_melee::Finite(hit.normal)) return false;
+        }
+        else if(!Halo2ContactWorldHit(reinterpret_cast<const uint8_t*>(&result),hit))
+            return false;
         g_halo2Contact.contacts.fetch_add(1,std::memory_order_relaxed);
         return true;
     }
     bool Apply(uint32_t unit,const contact_melee::Hit& hit,const contact_melee::Sweep& sweep) noexcept
     {
-        if(unit!=owner || !Halo2ContactBiped(owner) || !Halo2ContactObject(hit.unit)) return false;
+        const bool worldHit=hit.kind==contact_melee::HitKind::WorldSurface &&
+            hit.unit==UINT32_MAX && !hit.object && hit.world.valid;
+        const bool objectHit=(hit.kind==contact_melee::HitKind::Object || hit.object) &&
+            hit.unit!=UINT32_MAX && Halo2ContactObject(hit.unit);
+        if(unit!=owner || !Halo2ContactBiped(owner) || (!worldHit&&!objectHit)) return false;
         const auto delta=contact_melee::Subtract(sweep.end,sweep.start);
         const float length=std::sqrt(contact_melee::Dot(delta,delta));
         if(!std::isfinite(length) || length<=1e-6f) return false;
-        g_halo2ContactScope={true,false,false,owner,hit.unit,0,sweep,hit.position,
-            {delta.x/length,delta.y/length,delta.z/length}};
+        g_halo2ContactScope={};
+        g_halo2ContactScope.active=true;
+        g_halo2ContactScope.owner=owner;
+        g_halo2ContactScope.target=hit.unit;
+        g_halo2ContactScope.sweep=sweep;
+        g_halo2ContactScope.expected=hit;
+        g_halo2ContactScope.position=hit.position;
+        g_halo2ContactScope.direction={delta.x/length,delta.y/length,delta.z/length};
         // H2EK 480D40 and retail 8F3C80: state C000073 selects the first
         // authored weapon melee response; zero means apply, scalar 1 is full
         // authored damage. The routine retains native prediction/authority.
         __try { g_halo2Contact.melee(owner,0xC000073,0,1.0f); }
         __finally { g_halo2ContactScope.active=false; }
-        return g_halo2ContactScope.rays==25 &&
-            (g_halo2ContactScope.applied || g_halo2ContactScope.requested);
+        return g_halo2ContactScope.rays==25 && (worldHit ?
+            g_halo2ContactScope.worldMatched :
+            (g_halo2ContactScope.applied || g_halo2ContactScope.requested));
     }
 };
 

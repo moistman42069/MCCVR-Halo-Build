@@ -4,6 +4,19 @@
 
 namespace dlss
 {
+    // Render and window threads share failure suppression. Keep dimensions in
+    // one publication so retries cannot observe a width from a different failure.
+    class FailedResizeSize {
+        std::atomic<uint64_t> size_{0};
+    public:
+        void Record(unsigned width,unsigned height) noexcept {
+            size_.store((uint64_t(width)<<32)|height,std::memory_order_release);
+        }
+        void Retry() noexcept { size_.store(0,std::memory_order_release); }
+        bool Matches(unsigned width,unsigned height) const noexcept {
+            return width&&height&&size_.load(std::memory_order_acquire)==((uint64_t(width)<<32)|height);
+        }
+    };
     // Loading is an engine resource transition, not an admitted resize point.
     // Paused and shell canvases still resize normally.
     inline bool CanDispatchLiveResize(RuntimeMode mode)

@@ -25,9 +25,11 @@ struct Halo3ContactRuntime
 struct Halo3ContactScope
 {
     bool active=false,submitted=false;
+    bool worldMatched=false;
     uint32_t owner=UINT32_MAX,target=UINT32_MAX;
     unsigned rays=0;
     contact_melee::Sweep sweep{};
+    contact_melee::Hit expected{};
     float direction[3]{};
     int hand=1; // Controller role: support/secondary=0, main=1.
 };
@@ -68,6 +70,33 @@ bool Halo3ContactObject(uint32_t handle,bool requireBiped=false)
 
 bool Halo3ContactBiped(uint32_t handle) { return Halo3ContactObject(handle,true); }
 
+bool Halo3ContactWorldHit(const uint8_t* bytes,contact_melee::Hit& hit)
+{
+    if(!bytes) return false;
+    const uint32_t type=*reinterpret_cast<const uint32_t*>(bytes);
+    if(type!=1 && type!=3) return false;
+    hit={};
+    hit.unit=UINT32_MAX;
+    hit.kind=contact_melee::HitKind::WorldSurface;
+    hit.world.nativeType=1;
+    // H3EK collision 652A10 (type 1) and helper 654590 (type 3) share this
+    // result layout: surface words +18..27, material +28, type-3 section ID
+    // +3C, and structure/object identity words +4C..58. The melee consumer's
+    // target==-1 branch dispatches the selected material/surface natively.
+    hit.world.nativeType=type;
+    memcpy(hit.world.nativeData,bytes+0x18,4*sizeof(uint32_t));
+    memcpy(hit.world.nativeData+4,bytes+0x3C,sizeof(uint32_t));
+    memcpy(hit.world.nativeData+5,bytes+0x4C,4*sizeof(uint32_t));
+    memcpy(&hit.world.material,bytes+0x28,sizeof(hit.world.material));
+    memcpy(&hit.fraction,bytes+4,sizeof(hit.fraction));
+    memcpy(&hit.position,bytes+8,sizeof(hit.position));
+    memcpy(&hit.normal,bytes+0x2C,sizeof(hit.normal));
+    hit.world.valid=hit.world.nativeData[5]!=UINT32_MAX && hit.world.material!=-1 &&
+        std::isfinite(hit.fraction) && hit.fraction>=0 && hit.fraction<=1 &&
+        contact_melee::Finite(hit.position) && contact_melee::Finite(hit.normal);
+    return hit.world.valid;
+}
+
 #include "halo3_melee_selection.inl"
 
 bool Halo3RedirectContactVector(uintptr_t caller,uint64_t flags,int32_t mode,
@@ -90,7 +119,14 @@ bool Halo3RedirectContactVector(uintptr_t caller,uint64_t flags,int32_t mode,
         const auto* bytes=static_cast<const uint8_t*>(result);
         // Reject a changed/occluded target before the native builder can
         // reparent it, run aim assist, or apply an unrelated contact.
-        if(*reinterpret_cast<const uint32_t*>(bytes)!=4 ||
+        if(scope.expected.kind==contact_melee::HitKind::WorldSurface)
+        {
+            contact_melee::Hit actual{};
+            if(!Halo3ContactWorldHit(bytes,actual) ||
+                !contact_melee::SameWorldSurface(scope.expected,actual)) returned=0;
+            else scope.worldMatched=true;
+        }
+        else if(*reinterpret_cast<const uint32_t*>(bytes)!=4 ||
             *reinterpret_cast<const uint32_t*>(bytes+0x40)!=scope.target)
             returned=0;
     }
@@ -145,21 +181,29 @@ struct Halo3ContactBackend
         g_halo3Contact.queries.fetch_add(1,std::memory_order_relaxed);
         if(!original || !g_halo3Contact.flags ||
             !original(*g_halo3Contact.flags,1,start,vector,static_cast<int32_t>(owner),-1,-1,result) ||
-            *reinterpret_cast<const uint32_t*>(result)!=4) return false;
-        memcpy(&hit.unit,result+0x40,sizeof(hit.unit));
-        if(hit.unit==owner || !Halo3ContactObject(hit.unit)) return false;
-        memcpy(&hit.fraction,result+4,sizeof(hit.fraction));
-        memcpy(&hit.position,result+8,sizeof(hit.position));
-        memcpy(&hit.normal,result+0x2C,sizeof(hit.normal));
-        hit.object=true;
-        if(!std::isfinite(hit.fraction) || hit.fraction<0 || hit.fraction>1 ||
-            !contact_melee::Finite(hit.position) || !contact_melee::Finite(hit.normal)) return false;
+            (*reinterpret_cast<const uint32_t*>(result)!=4 &&
+             *reinterpret_cast<const uint32_t*>(result)!=1)) return false;
+        if(*reinterpret_cast<const uint32_t*>(result)==4)
+        {
+            memcpy(&hit.unit,result+0x40,sizeof(hit.unit));
+            if(hit.unit==owner || !Halo3ContactObject(hit.unit)) return false;
+            memcpy(&hit.fraction,result+4,sizeof(hit.fraction));
+            memcpy(&hit.position,result+8,sizeof(hit.position));
+            memcpy(&hit.normal,result+0x2C,sizeof(hit.normal));
+            hit.object=true;
+            hit.kind=contact_melee::HitKind::Object;
+        }
+        else if(!Halo3ContactWorldHit(result,hit)) return false;
         g_halo3Contact.contacts.fetch_add(1,std::memory_order_relaxed);
         return true;
     }
     bool Apply(uint32_t unit,const contact_melee::Hit& hit,const contact_melee::Sweep& sweep) noexcept
     {
-        if(unit!=owner || !Halo3ContactBiped(owner) || !Halo3ContactObject(hit.unit)) return false;
+        const bool objectHit=hit.kind==contact_melee::HitKind::Object || hit.object;
+        const bool worldHit=hit.kind==contact_melee::HitKind::WorldSurface &&
+            hit.unit==UINT32_MAX && !hit.object && hit.world.valid;
+        if(unit!=owner || !Halo3ContactBiped(owner) || (!objectHit && !worldHit) ||
+            (objectHit && !Halo3ContactObject(hit.unit))) return false;
         const auto* tls=Halo3ContactTls();
         const auto* globals=tls ? *reinterpret_cast<const uint8_t* const*>(tls+0x48) : nullptr;
         if(!globals || (!globals[0] && !globals[1])) return false;
@@ -167,15 +211,23 @@ struct Halo3ContactBackend
         const auto delta=contact_melee::Subtract(sweep.end,sweep.start);
         const float length=std::sqrt(contact_melee::Dot(delta,delta));
         if(!std::isfinite(length) || length<=1e-6f) return false;
-        g_halo3ContactScope={true,false,owner,hit.unit,0,sweep,
-            {delta.x/length,delta.y/length,delta.z/length}};
+        g_halo3ContactScope={};
+        g_halo3ContactScope.active=true;
+        g_halo3ContactScope.owner=owner;
+        g_halo3ContactScope.target=hit.unit;
+        g_halo3ContactScope.sweep=sweep;
+        g_halo3ContactScope.expected=hit;
+        g_halo3ContactScope.direction[0]=delta.x/length;
+        g_halo3ContactScope.direction[1]=delta.y/length;
+        g_halo3ContactScope.direction[2]=delta.z/length;
         g_halo3ContactScope.hand=hand;
         // 79 selects the first authored melee damage response in H3EK A5DE20
         // and retail 35A9A4. It does not request an animation or button action.
         __try { g_halo3Contact.melee(owner,0x79,mode,1.0f); }
         __finally { g_halo3ContactScope.active=false; }
         if(mode==1) g_halo3Contact.predicted.fetch_add(1,std::memory_order_relaxed);
-        return g_halo3ContactScope.rays==25 && (mode==1 || g_halo3ContactScope.submitted);
+        return g_halo3ContactScope.rays==25 && (mode==1 ||
+            (objectHit ? g_halo3ContactScope.submitted : g_halo3ContactScope.worldMatched));
     }
 };
 

@@ -1,3 +1,244 @@
+## September 30 avatar/finger and login-focus candidate handoff
+
+The user ended further IK/finger expansion for this candidate, requested the
+likely Linux issue be addressed, then requested ZIPs and a complete status
+breakdown. Current cutoff is implemented and offline validated: H3/H4 guarded
+avatars, six-title finger-joint identification and the shell/login focus fix.
+The H2 full-world attempt remains blocked on local world-render ownership.
+Contact-reactive finger physics remains future work; the requested individual
+joint identity foundation is implemented. No placeholder physics toggle ships.
+
+Validation before packaging: cumulative Release DLL/build pass, 121/121 CTest
+suites pass, Reach consistency gate passes. Key checks include own-rig posing,
+H4 partial-write rollback, H3 legacy-body precedence, per-title joint identity
+and shell/gameplay focus policy. Logs: out/review-20260930-avatar-final-build4.log,
+out/review-20260930-avatar-final-tests2.log and
+out/review-20260930-avatar-final-parity.log. Packaging repeats the required
+build/tests/gate from a clean source commit and records exact artifact hashes.
+Final ZIP paths, source commit and hashes are written to the ignored
+out/avatar-candidate-handoff-20260930.json after packaging. Deliver build,
+manual payload and matching source ZIPs, then wait for the user's headset test.
+
+Do not install, launch MCC, publish or advance CURRENT-STATE. The user closed
+MCC for verification. Both editions remain supported; accepted pointer stays
+Alpha0.4.2. No new headset/Proton acceptance is claimed. H3 Elite/Arbiter lower
+hiding is unsupported; CE/H2/ODST/Reach world avatars, CE gun-load report, full
+Linux sign-in resolution and the broader scope remain recorded as unfinished.
+See QOL-IMPLEMENTATION-STATUS-2026-09-30.md for finished/WIP/planned/not-started
+rows, FINGER-JOINT-IDENTITY-2026-09-30.md for the six-title inventory, and
+LINUX-PROTON-LOGIN-FOCUS-REVIEW-2026-09-30.md for the focus fix and limits.
+
+## September 30 renewed implementation hold
+
+LATEST USER PRIORITY: fix disruptive existing bugs before further IK expansion.
+The user clarified CE "level misalignment" means the GUN becomes misaligned
+after each level load, not a tilted world/horizon. Investigate saved reports,
+weapon-profile selection and native FP/camera lifecycle. Do not mark it fixed
+without a demonstrated defect and regression validation; headset confirmation
+remains required. Preserve current IK work and finish its in-flight safety tests.
+User subsequently specified BOTH Original and Anniversary. A bounded audit
+found automatic camera recovery did not retire the old reference identity;
+it now calls HaloCE_Recenter. Two production regression cases failed before
+and pass after. DLL builds, seven focused suites and Reach gate pass. This is
+reference-retirement hardening, NOT a confirmed fix of the reported gun shift.
+See CE-GUN-LOAD-ALIGNMENT-2026-09-30.md. Live Discord access failed during tool
+initialization; exact original report remains unrecovered. H3 avatar safety
+review finished: 2317 logic/45 runtime/62 pinned checks, cumulative DLL built.
+No new ZIP, commit, install, launch or accepted-pointer change.
+
+PRECEDING USER PRIORITY CHANGE: conserve usage and finish inverse kinematics
+implementations as much as possible. Prioritize usable, validated H3/H4 avatar
+paths and extend other titles from established native evidence. Other requests
+remain preserved, but further haptic work is paused. In-progress Reach haptics
+must remain inert/buildable until resumed; never package incomplete active hooks.
+Root owns H4 avatar refinement, stock_integration H3 completion, stability_review
+H4 marker proof then H3 review, launcher_packaging Reach avatar assessment after
+checkpointing paused haptics. No all-title runtime acceptance is implied.
+
+Latest build checkpoint: cumulative DLL including shared 603-check transport
+and CE/H2/H3/ODST/H4 adapters builds successfully. H3 now includes admitted
+ordinary shots and separately scoped charging; its backend passes 31 checks
+and pinned proof passes 21. Log: out/review-20260930-haptic-cumulative-build.log.
+The same command's new H3 avatar helper initially failed on a missing algorithm
+include; corrected helper now passes 2027 checks. Runtime integration is active.
+Reach's complete admitted-shot and curve ABI chain is matched; adapter and
+unique contract proof are now being implemented. Root raw curve ABI evidence:
+out/reach-avatar-review/retail-haptic-curve-abi-root.txt.
+H2 own world-avatar assets are independently exported and summarized in
+H2-AVATAR-ASSETS-2026-09-30.md; no new H2 avatar runtime is claimed.
+No new ZIP or headset acceptance; older pending-DLL notes below are historical.
+
+Latest haptics requirement: weapon feedback follows actual hand ownership.
+A one-handed weapon vibrates only its holding controller; handle two-handed
+support and each dual-wield weapon independently, including left-handed mode.
+Preserve contact-specific feedback, intensity, tracking/focus/menu cancellation
+and distinguish recoil from general damage/vehicle feedback. Existing blended
+XInput rumble sent to both controllers does not satisfy this requirement.
+Shared haptic transport now builds and passes 603 production fixture checks:
+independent primary/secondary/coupled-support routing, handedness, support
+release, tracking stop and stale-pulse retirement. CE's native trigger/damage
+source adapter and private authored envelopes build and pass production tests
+and 19 pinned checks. H2's own authored adapter passes 57 production checks and
+35 pinned checks, including optional owner-read and native-pointer faults. H4's
+adapter passes 111 production checks and 38 pinned checks after correcting SEH
+fault publication, support admission and native skipped-evaluator cancellation.
+ODST's own adapter passes 118 production checks and 47 pinned checks, including full native queues and private-bank
+turnover. H3's production routing fixture is in review; Reach runtime bindings
+remain active research (19 corrected opaque-layout helper checks pass).
+Cancellation tokens retire native envelopes
+after tracking/menu/focus loss. All-title headset acceptance remains pending.
+Shared queued pulses now carry both source and coupled-support cancellation
+epochs through consumption, closing the late-writer-after-cancel race. A stalled
+XR publisher retires epochs too. Deterministic reordered publication and a
+two-writer/clear/consumer stress fixture pass in the 603-check result. Log:
+out/review-20260930-haptic-publication-build.log. Final DLL still needs rebuilding.
+See CONTINUATION-IMPLEMENTATION-2026-09-30.md. No new ZIP/commit.
+Cumulative DLL and H2 live-cleanup tests pass after these refinements:
+out/review-20260930-haptic-final-review-build.log. H3's production fixture and
+the remaining native adapters still require their subsequent checks. CE's
+additional invalid-envelope, local-state-read and native-original exception
+cases pass. H4/ODST final lifecycle and H3 refinements require another DLL build.
+Reach matching tooling is now repaired: new analyzed ReachRetailHaptics project
+contains pinned haloreach.dll; reachretail BSim is populated (30 MB), with one
+unrelated 0x77F9E4 signature-generation timeout. Logs:
+out/reach-haptics-retail-import-20260930.log and
+out/reach-haptics-retail-bsim-20260930.log. Both commands completed exit zero.
+H3 cross-review found the original trigger-only scope missed ordinary barrel
+fire. That native source correction remains active; no complete H3 recoil claim.
+Raw retail evaluator compares integer UINT32_MAX, not the decompiler's rendered
+NaN payload; contract correction and full queue retirement are under test.
+Root verified direct-call xrefs in out/h3-haptic-root-retail-xrefs-20260930.txt.
+The subsequent H3 source correction now matches own H3EK admitted-shot
+`A86110 -> A5C2C0` to retail `366858 -> 35C864`, with distinct owner/passenger
+edges. Root dumps: out/h3-haptic-root-{wrappers,shot}-20260930.txt. The source
+adapter and focused tests pass; charging/held feedback and cold cleanup are
+under final refinement before the cumulative DLL rebuild.
+
+CE avatar groundwork now has its own verified asset/render route in
+CE-AVATAR-EVIDENCE-2026-09-30.md. The official world cyborg has 19 nodes and no
+finger joints; native FP hands have finger bones. Do not claim world-rig-only
+finger posing. Retail B48F60/C6350C matches the own-kit world submission, but
+geometry masking and Anniversary world-body integration remain unimplemented.
+H3 avatar work is proving a private GPU-output path to avoid mutating cached
+native skinning palettes; no completed all-title avatar claim.
+
+Subsequent root validation: refined H4 native BSP glass supplement builds;
+Reach/H4 contact fixtures pass 312/621 checks, and pinned proof passes 69.
+Fresh cumulative CTest ran 108 tests: 107 passed; installer fixture was blocked
+by the existing MCC-Win64-Shipping process (PID 4132 at the check). The real
+installer's game-running safety check remains intact; do not terminate MCC or
+claim a fully passing suite. Log: out/review-20260930-cumulative-tests.log.
+H3/ODST official full-world body assets exported and compared against fp_body;
+see H3-ODST-AVATAR-ASSETS-2026-09-30.md. The archived July complete-fp-body
+claim was corrected. No new H3/ODST avatar runtime path is claimed.
+
+Latest user reinforcement: experimental full-player avatar inverse kinematics
+must cover CE, Halo 2, Halo 3, ODST, Reach and Halo 4. The H4 integration is a
+first implementation, not satisfaction of the all-game request. Track native
+body, controller-driven arms/hands, finger poses, roomscale alignment and the
+optional lower-body hide independently for each title. Preserve the separate
+contact-reactive finger request. Do not close avatar work based on first-person
+arm visibility, an offline solver test, or H4-only coverage.
+
+Latest additional scope: physical melee from BOTH hands must reach native
+environment contacts, breakable glass and damageable objects as well as enemies.
+Audit collision masks, object-only filtering, world/BSP hit identity, native
+material effects and breakable-surface damage per title. Preserve native
+indestructibility, authority and per-swing deduplication; do not manufacture
+object handles for world hits. This remains active work, not a completed claim.
+
+Latest root progress: physical-running motion, saved toggle/speed/sensitivity,
+same-frame head/controller publication and atomic native locomotion transport
+are implemented; core Release fixture passes including 60–240 Hz and stale
+sample cancellation. See PHYSICAL-RUNNING-2026-09-30.md. QoL menu mirrors the
+original controls. CE roomscale publisher was still hardcoded false despite
+its earlier consumer work; it now freezes the real config option. New full-body
+IK and Hide lower body config fields exist, both default off; H4 runtime is
+being integrated by launcher_packaging, not yet accepted or fully validated.
+Native action coverage has reached all six titles (255 production fixture
+checks and 172 pinned checks). H4 experimental body/head/arms packet mutation,
+region hiding and free-support finger posing now build and pass their focused
+fixture; root review requested partial-write rollback and optional exception
+isolation refinements before completion. Runtime body/leg acceptance is pending.
+CE native world/glass adapter now builds, passes its production fixture and ten
+pinned checks. See PHYSICAL-MELEE-WORLD-2026-09-30.md. Native CE non-biped object
+damage and exact wall-VFX placement remain active research. Other agents own
+H3/ODST, Reach/H4 and H2 world-contact integration. No new ZIP or commit yet.
+
+Latest user expansion (all earlier work remains): every new VR immersion
+feature is opt-in. Add a Quality of Life menu category mirroring the SAME
+settings in their normal sections, not independent duplicate preferences.
+Requested implementations: physical gun cocking when required and correctly
+matched magazine/insertion poses; floor weapon pickup and enemy disarming
+including striking/stealing their held weapon; nearby grip-to-grab enemies,
+native ragdoll/throw/disarm/kill interactions with physical contact feedback;
+surface grabbing/climbing and repeated wall jumps; arm-swing physical running
+with speed and sensitivity sliders; real-world weapon grip, release-to-drop
+and re-pickup (automatically enable physical pickup when real-world grip is
+enabled); touch-based world interactibles; optional Alyx-like contact-reactive
+fingers on the experimental IK avatar. Suppress each conflicting ordinary game
+input in correlation with its physical function, while retaining menu and
+unrelated control paths. Actual inventory, AI, physics, collision and co-op
+authority must be proven per title; hiding a weapon mesh is not dropping it,
+and a menu checkbox is not a completed native interaction.
+
+These additions are active scope, not already implemented. Current priority
+remains finishing the in-flight avatar/input/vehicle work before native-physics
+integration. See standing refinement list for dependencies and status ledger
+for the distinction between implemented, under investigation and unstarted.
+
+The user rejected stopping at the partial `6b3f38b` candidate and explicitly
+ordered continued implementation, using sub-agents as needed. The previous
+packaging cutoffs are superseded. Do not treat another checklist, negative
+research summary, or passing build as completion of the unfinished features.
+Resume native action independence, roomscale, CE subtitle/vehicle identity,
+vehicle/co-op stability, and the complete inherited report inventory. Keep
+unverified runtime claims distinct from implemented behavior. Packaging and
+delivery remain local only; the accepted pointer and installed games remain
+unchanged pending explicit headset acceptance and further instruction.
+
+Additional user scope in this continuation: make the full-body toggle work
+across all six titles; add a separate arms-with-hands visibility control with
+controller-tracked motion; verify DLSS across all games; make resolution changes
+apply live without a restart. Revisit Pancreations' supplied source for these
+paths. Existing partial visibility toggles are not proof of working coverage.
+
+Latest additions: match the in-game VR menu to the launcher's navy/cyan and
+Oxanium styling. Add a DISTINCT experimental full-body inverse-kinematics mode
+using each title's existing character assets, with headset/controller-driven
+body, roomscale following and finger poses. This is separate from native body
+visibility and the arms-with-hands toggle. Use real finger data where supported
+and controller-driven posing otherwise; preserve authored held-weapon grips.
+ODST random/bridge-explosion crash investigation remains an explicit priority.
+Do not label a visibility toggle or an unused IK helper as a working avatar.
+Provide a separate Hide lower body option inside experimental full-body IK so
+the torso/arms/hands/fingers can remain visible if hip/leg roomscale tracking
+is unsatisfactory. Hide only verified lower-body geometry; preserve upper-body
+transforms even when their hierarchy shares the pelvis root.
+
+Current uncommitted continuation also includes CE/H3/Reach native input adapters
+(151 production-hook fixture checks; pinned verifier 80), H2 single-weapon
+final-packet arms under review, Reach support-grip arms, H4 guarded arms,
+embedded launcher-matched menu font/theme, DLSS preset-E config/menu correction,
+live resize/depth-cache recovery, guarded CE roomscale and HUD reveal. Do not
+confuse these with completed full-body avatar IK. H4's freshly exported official
+120-node body rig is retained compactly in ignored
+`out/h4-body-identity-review/storm_masterchief.summary.rig.json`; body-space
+conversion and skin/hide boundaries are being proven before runtime mutation.
+ODST bounded source review is `ODST-CRASH-SOURCE-REVIEW-2026-09-30.md`; no matching
+fatal stack or crash cure has been established. No continuation package yet.
+
+CE persistent vehicle model/seat profiles are now implemented using verified
+ordered model-node names; structurally identical node-name rigs share profiles.
+The production controls fixture and 15-check pinned verifier pass. CE's cleanup
+range-count defect is fixed and its vehicle-owner wrapper is now included.
+H4 full rig/skin summary succeeded at
+`out/h4-body-identity-review/storm_masterchief.summary.json`: 120 nodes,
+883 permutations, 935 render meshes/node maps and 416 raw meshes. Region/clone
+handling and body-palette frame proof remain active research; do not collapse
+pelvis nodes to implement lower-body hiding. All seven DLSS models additionally
+passed 42 isolated GPU evaluations; not an all-title/headset claim.
+
 ## September 30 resumed community candidate
 
 User explicitly resumes next-build implementation after the latest Discord

@@ -716,6 +716,58 @@ inline constexpr bool ReachShouldBindVisibleLeftHandToController(
     return !twoHandAimActive;
 }
 
+// Arms are visible only after a complete articulated solve. In support-grip
+// mode the left endpoint is derived from the same frozen right-hand rigid
+// delta and authored palette, so a separate left controller target is not
+// required. Outside support grip, both tracked controller endpoints are.
+inline constexpr bool ReachMayShowControllerTrackedArms(
+    bool showArms, bool armIkEnabled, bool supportGripAttached,
+    bool rightTargetValid, bool leftTargetValid,
+    bool armSolveCommitted) noexcept
+{
+    return showArms && armIkEnabled && rightTargetValid &&
+        (leftTargetValid || supportGripAttached) && armSolveCommitted;
+}
+
+// Move an authored support-hand endpoint by exactly the rigid delta that
+// seats the primary wrist at its tracked target. `compose` and `invert` are
+// supplied by the title runtime so tests exercise this transaction boundary
+// without copying engine matrix semantics into the title logic.
+template<class Transform, class Compose, class Invert>
+inline bool ReachBuildRigidCarriedSupportEndpoint(
+    const Transform& armRoot, const Transform& stockRightWrist,
+    const Transform& desiredRightWrist, const Transform& stockSupportWrist,
+    Transform& desiredSupportWrist, Compose compose, Invert invert) noexcept
+{
+    Transform stockRightWorld{}, inverseStockRight{}, rightDelta{};
+    Transform stockSupportWorld{};
+    return compose(armRoot, stockRightWrist, stockRightWorld) &&
+        invert(stockRightWorld, inverseStockRight) &&
+        compose(desiredRightWrist, inverseStockRight, rightDelta) &&
+        compose(armRoot, stockSupportWrist, stockSupportWorld) &&
+        compose(rightDelta, stockSupportWorld, desiredSupportWrist);
+}
+
+enum class ReachFpVisibilityAction : uint8_t
+{
+    Keep,
+    CollapseAtLeftWrist,
+    CollapseAtRightWrist,
+    HideUnrelatedBody,
+};
+
+inline constexpr ReachFpVisibilityAction ReachFpPaletteVisibility(
+    bool handNode, bool heldObject, bool showTrackedArms,
+    bool leftArmNode, bool rightArmNode) noexcept
+{
+    if (handNode || heldObject ||
+        (showTrackedArms && (leftArmNode || rightArmNode)))
+        return ReachFpVisibilityAction::Keep;
+    if (leftArmNode) return ReachFpVisibilityAction::CollapseAtLeftWrist;
+    if (rightArmNode) return ReachFpVisibilityAction::CollapseAtRightWrist;
+    return ReachFpVisibilityAction::HideUnrelatedBody;
+}
+
 // Reach's screen colour/gamma publisher - the exact homologue of the Halo 3
 // (+0x278EE0) and ODST (+0x2A6308) function the headset already proved drives
 // game brightness. All three take (a0, a1, a2) in xmm0-2, shuffle them the same

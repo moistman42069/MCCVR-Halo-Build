@@ -13,14 +13,19 @@
 namespace {
 uint64_t testNow=1000;
 GameTitle testTitle=GameTitle::Halo3;
+RuntimeMode testMode=RuntimeMode::Gameplay;
 uint32_t testGeneration=1;
 bool testTracking=true;
+VrContactTrackingSnapshot testRunTracking{};
 uint64_t RoomscaleTestNow() noexcept { return testNow; }
 }
 GameTitle TitleAdapter_GetActiveTitle() { return testTitle; }
+RuntimeMode TitleAdapter_GetRuntimeMode() {return testMode;}
 uint32_t TitleAdapter_GetGeneration(GameTitle title)
 { return title==testTitle ? testGeneration : 0; }
 bool VR_RoomscaleTrackingFresh() noexcept { return testTracking; }
+bool VR_GetContactTrackingSnapshot(VrContactTrackingSnapshot& snapshot)
+{snapshot=testRunTracking;return snapshot.serial!=0;}
 
 // Windows headers were already included: replace call sites, not WinAPI declarations.
 #define GetTickCount64 RoomscaleTestNow
@@ -35,7 +40,7 @@ int RunRoomscaleInputTests()
     };
     const bool saved=g_config.roomscale_movement;
     g_config.roomscale_movement=true;
-    for (GameTitle title : {GameTitle::Halo2,GameTitle::Halo3,GameTitle::Halo3ODST,
+    for (GameTitle title : {GameTitle::HaloCE,GameTitle::Halo2,GameTitle::Halo3,GameTitle::Halo3ODST,
                            GameTitle::HaloReach,GameTitle::Halo4})
     {
         testTitle=title; ++testGeneration; testNow+=1000; testTracking=true;
@@ -150,7 +155,7 @@ int RunRoomscaleInputTests()
     // manual travel (including its braking tail) to the physical follow command.
     // The bounded fallback resumes after observed native motion becomes quiet;
     // it does not claim simultaneous manual and roomscale body movement.
-    for (GameTitle title : {GameTitle::Halo2,GameTitle::Halo3,GameTitle::Halo3ODST,
+    for (GameTitle title : {GameTitle::HaloCE,GameTitle::Halo2,GameTitle::Halo3,GameTitle::Halo3ODST,
                            GameTitle::HaloReach,GameTitle::Halo4})
     {
         testTitle=title;++testGeneration;testNow+=1000;testTracking=true;
@@ -347,23 +352,84 @@ int RunRoomscaleInputTests()
         Roomscale_Camera(testTitle,true,body,head,q,forward,ref,1);
         check(ref[2]==savedReference,"expired settling does not consume unrelated native motion");
     }
-    for (GameTitle title : {GameTitle::None,GameTitle::Unknown,GameTitle::HaloCE})
+    for (GameTitle title : {GameTitle::None,GameTitle::Unknown})
         check(!RoomscaleGameplayEligible(title,RuntimeMode::Gameplay),
             "roomscale cannot acquire an unsupported title");
-    // A saved experimental setting cannot inject body-follow movement into
-    // CE's basic VR bring-up, even with fresh tracking and physical motion.
+    // CE still requires independent on-foot native camera proof; a saved option
+    // and fresh physical motion cannot grant it on their own.
     testTitle=GameTitle::HaloCE; ++testGeneration; testNow+=1000;
     Roomscale_Input(false,0,0);
     const float ceOrientation[4]{0,0,0,1},ceForward[3]{1,0,0};
     float ceBody[3]{},ceHead[3]{0,1.7f,0},ceReference[3]{0,1.7f,0};
     for (int sample=0;sample<3;++sample) {
         Roomscale_Input(RoomscaleGameplayEligible(testTitle,RuntimeMode::Gameplay),0,0);
-        Roomscale_Camera(testTitle,true,ceBody,ceHead,ceOrientation,ceForward,ceReference,0.328084f);
+        Roomscale_Camera(testTitle,false,ceBody,ceHead,ceOrientation,ceForward,ceReference,0.328084f);
         float x=0,y=0;
         check(!Roomscale_Move(x,y)&&x==0&&y==0,
-            "CE experimental roomscale stays deferred with saved setting enabled");
+            "CE roomscale remains inactive without native on-foot admission");
         testNow+=16; ceHead[2]-=0.2f;
     }
     g_config.roomscale_movement=saved;
+    const bool savedRun=g_config.physical_running;
+    for(int hz:{60,90,120,240}) {
+        physical_running::Gesture gesture;
+        physical_running::Sample sample{};
+        sample.valid=true;sample.epoch=1;sample.head.y=1.7f;
+        float result=0;
+        for(int i=0;i<hz*3;++i) {
+            sample.serial=uint64_t(i)+1;sample.timeNs=1'000'000'000+int64_t(i)*1'000'000'000/hz;
+            const float z=.25f*std::sin(float(i)*10.f/hz);
+            sample.hands[0].z=z;sample.hands[1].z=-z;
+            result=gesture.Update(sample,1,.7f);
+        }
+        check(result>.2f&&result<=.7f,"alternating arms work across headset refresh rates");
+        check(gesture.Update(sample,1,.7f)==result,"duplicate eyes do not advance run acceleration");
+        ++sample.epoch;++sample.serial;sample.timeNs+=16'000'000;
+        check(gesture.Update(sample,1,.7f)==0,"recenter clears running momentum");
+        sample.valid=false;check(gesture.Update(sample,1,.7f)==0,"invalid tracking stops running immediately");
+        for(int mode=0;mode<3;++mode) {
+            gesture.Reset();sample={};sample.valid=true;sample.epoch=1;
+            bool stayedStill=true;
+            for(int i=0;i<hz*2;++i) {
+                sample.serial=uint64_t(i)+1;sample.timeNs=1'000'000'000+int64_t(i)*1'000'000'000/hz;
+                const float z=.25f*std::sin(float(i)*10.f/hz);
+                sample.head={0,1.7f,mode==0?z:0};
+                sample.hands[0].z=z;sample.hands[1].z=mode==2?0:z;
+                stayedStill&=gesture.Update(sample,1,1)==0;
+            }
+            check(stayedStill,"body translation, parallel arm motion and one-hand swings do not run");
+        }
+    }
+    const float savedSpeed=g_config.physical_running_speed;
+    g_config.physical_running=true;g_config.physical_running_speed=.6f;
+    testTitle=GameTitle::Halo3;++testGeneration;testNow+=1000;
+    testRunTracking={};testRunTracking.headValid=true;
+    testRunTracking.hands[0].valid=true;testRunTracking.rawPrimaryValid=true;
+    testRunTracking.referenceEpoch=1;testRunTracking.headPosition[1]=1.7f;
+    float rx=0,ry=0;
+    for(int i=0;i<180;++i) {
+        testRunTracking.serial=uint64_t(i)+1;testRunTracking.timeNs=1'000'000'000+int64_t(i)*16'666'667;
+        const float z=.25f*std::sin(float(i)*.18f);
+        testRunTracking.hands[0].position[2]=z;testRunTracking.rawPrimaryPosition[2]=-z;
+        testNow+=17;
+        Roomscale_Camera(testTitle,true,ceBody,ceHead,ceOrientation,ceForward,ceReference,.328084f);
+    }
+    check(PhysicalRunning_Move(rx,ry)&&rx==0&&ry>0&&ry<=.6f,
+        "arm swings publish bounded forward native movement");
+    for(auto mode:{RuntimeMode::Vehicle,RuntimeMode::Turret}) {
+        testMode=mode;
+        check(!PhysicalRunning_Move(rx,ry),"seat entry immediately rejects the last on-foot running command");
+    }
+    testMode=RuntimeMode::Gameplay;
+    testNow+=101;
+    Roomscale_Camera(testTitle,true,ceBody,ceHead,ceOrientation,ceForward,ceReference,.328084f);
+    check(!PhysicalRunning_Move(rx,ry),"repeated frozen XR sample cannot renew running command");
+    ++testRunTracking.serial;testRunTracking.timeNs+=16'666'667;
+    Roomscale_Camera(testTitle,false,ceBody,ceHead,ceOrientation,ceForward,ceReference,.328084f);
+    check(!PhysicalRunning_Move(rx,ry),"native on-foot admission loss stops running");
+    testRunTracking.locomotionBlocked=true;
+    Roomscale_Camera(testTitle,true,ceBody,ceHead,ceOrientation,ceForward,ceReference,.328084f);
+    check(!PhysicalRunning_Move(rx,ry),"reload/holster grip ownership suppresses arm-swing locomotion");
+    g_config.physical_running=savedRun;g_config.physical_running_speed=savedSpeed;
     return failures;
 }

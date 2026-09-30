@@ -1,5 +1,11 @@
 # VR action bindings: September 23 candidate
 
+September 30 continuation: all six titles now have separately verified native
+consumer bridges; see [native action bridge evidence](NATIVE-VR-ACTION-BRIDGE-2026-09-30.md).
+The transport-only limitations below still apply to the September 23 candidate
+only. They are not a claim that these newer bridges
+have received headset acceptance.
+
 The intended Halo 3 reference behavior is a consistent controller action across
 all titles and MCC layouts, with per-game VR overrides and explicit Unbound.
 This candidate introduces a semantic VR source layer and resolves each action's

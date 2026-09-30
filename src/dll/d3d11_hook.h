@@ -37,16 +37,14 @@ void D3D_GetHalo2HudTelemetry(
     uint64_t& stateFailures);
 
 // --- Desktop-window fit (config.fit_desktop_window) -------------------------
-// The forced full-render backbuffer size (0,0 when the fit is off or not yet
-// initialized). menu.cpp uses it while rewriting MCC's WM_SIZE transaction so
-// the engine keeps drawing the full headset render into the fitted window.
+// The forced render size (0,0 before initialization or if required hooks fail).
+// menu.cpp uses it while rewriting MCC's WM_SIZE transaction. This is separate
+// from the optional physical desktop-window fit.
 void D3D_GetForcedRenderSize(unsigned& width, unsigned& height);
 
-// True only when the desktop fit is on AND its hooks installed at startup. All
-// the window-shrink behavior in menu.cpp is gated on this (not the live config
-// flag), so ticking the restart-required checkbox mid-session can't half-engage
-// the fit without the backbuffer force behind it.
+// Window fitting remains optional; headset render sizing works independently.
 bool D3D_FitActive();
+bool D3D_CanLiveResize();
 
 // menu.cpp brackets the game's own WM_SIZE handling with this. While set, our
 // GetClientRect hook returns the full render size to the game's resize code on
@@ -62,8 +60,8 @@ void D3D_SetForcedClientLie(bool on);
 // a diagnostic rebuild fell out of.
 void CoopProbe_DumpRunUp(const char* reason);
 
-// This game start's render plan, decided once at startup exactly as the
-// launcher decided it: the size the game renders, the headset picture size
+// The current render plan, initially seeded from the launcher and updated by
+// live resolution changes: the size the game renders, the headset picture size
 // (native x resolution_scale) that the DLSS output must have, whether the
 // render was shrunk for DLSS, and whether nvngx_dlss.dll was found beside the
 // mod. Zero sizes before InstallD3D11Hooks.
@@ -72,14 +70,14 @@ void D3D_GetRenderPlan(unsigned& renderW, unsigned& renderH,
                        bool& dlss, bool& dlssRuntimePresent);
 
 // Live render-size change (no restart). Stores the new plan and, when the
-// desktop fit is active and the render size differs, queues the requested
+// render hooks are available and the render size differs, queues the requested
 // backbuffer size so MCC's own resize path (its WM_SIZE handling ->
 // ResizeBuffers, which the fit already intercepts) re-sizes every render
 // target. Returns Requested when the caller must now send the game window a
 // message to the UI thread (menu.cpp posts kLiveResizeMsg for that),
 // Unchanged when nothing needs to happen (same size, a request already
-// pending, or the same size already failed), RestartNeeded when the fit is
-// off (no forced size exists, so only a restart can change the render).
+// pending, or the same size already failed), RestartNeeded when a required
+// hook was unavailable at initialization. Desktop fitting is independent.
 // Deferred means a title is loading: no published dimensions change. The UI
 // handler repeats that admission check before publishing and sending WM_SIZE.
 enum class D3DRenderPlanResult { Unchanged, Requested, RestartNeeded, Deferred };
@@ -90,6 +88,8 @@ D3DRenderPlanResult D3D_RequestRenderPlan(
 // False means no notification or physical fit may be issued for this message.
 bool D3D_BeginLiveResize(unsigned& renderW, unsigned& renderH);
 void D3D_CancelQueuedLiveResize();
+// Explicit settings changes and title-generation changes permit a new attempt.
+void D3D_RetryLiveResize();
 // 0 idle, 1 a live resize is pending, 2 the last one completed, 3 the last
 // one failed (MCC never re-sized; the forced size was reverted to the real
 // backbuffer, reported in actualW/H).

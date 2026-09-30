@@ -21,11 +21,19 @@ bool TitleAdapter_PublishLifecycle(GameTitle,uint32_t,const TitleRuntimeLifecycl
 bool TitleAdapter_PublishHeartbeat(GameTitle,uint32_t,uint64_t) { return true; }
 float Game_GetWorldScale() { return 1.0f/3.048f; }
 bool Game_IsPositionalTracking() { return true; }
-bool Game_RoomscaleCameraAllowed(GameTitle) { return false; }
+static bool roomscaleAllowed=false;
+static unsigned roomscaleCalls=0;
+static float roomscaleBody[3]{},roomscaleForward[3]{};
+bool Game_RoomscaleCameraAllowed(GameTitle) { return roomscaleAllowed; }
 uint64_t VR_PhysicalCrouchEpoch() noexcept { return 1; }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
 bool HaloCEHud_HasCrosshairScope() noexcept { return naturalHudFrame; }
-void Roomscale_Camera(GameTitle,bool,const float*,const float*,const float*,const float*,float*,float) noexcept {}
+void Roomscale_Camera(GameTitle title,bool allowed,const float* body,const float*,const float*,const float* forward,float* reference,float) noexcept {
+    if(title==GameTitle::HaloCE&&allowed) {
+        ++roomscaleCalls;std::memcpy(roomscaleBody,body,sizeof(roomscaleBody));
+        std::memcpy(roomscaleForward,forward,sizeof(roomscaleForward));reference[0]+=.05f;
+    }
+}
 void Logf(const char*,...) { }
 bool WaitForNativeDetourQuiescence(const void* const*,const void* const*,size_t count,
     const std::atomic<uint32_t>& value) { return count<=8&&!value.load(); }
@@ -741,10 +749,21 @@ int main()
             check(HaloCE_Poll(bindings.base,mapped.size(),3,true,true)&&publishedLifecycle.armed&&
                     (publishedLifecycle.enabledCapabilities&TitleCapability_Haptics),
                 "armed CE publishes haptics in Original and Anniversary");
+            RenderContext beforeLoad{};
+            beforeLoad.tracking.serial=42;beforeLoad.tracking.generation=3;beforeLoad.tracking.spaceEpoch=7;
+            beforeLoad.reference.generation=3;beforeLoad.reference.spaceEpoch=7;
+            beforeLoad.referenceRevision=referenceRevision.load();beforeLoad.rendererEpoch=ceRendererEpoch.load();
+            HaloCE_PublishTracking(beforeLoad.tracking,true);recenter=false;
+            check(HaloCE_RenderContextCurrent(beforeLoad),"pre-load CE hand/aim context is initially current");
             lastCameraMs=now-600;
             (void)HaloCE_Poll(bindings.base,mapped.size(),3,true,true);
             check(!publishedLifecycle.armed&&!(publishedLifecycle.enabledCapabilities&TitleCapability_Haptics),
                 "expired CE camera withdraws haptics in either graphics mode");
+            firstCameraMs=now-1100;lastCameraMs=now;
+            (void)HaloCE_Poll(bindings.base,mapped.size(),3,true,true);
+            recenter=false; // the replacement camera consumed the automatic reseed
+            check(!HaloCE_RenderContextCurrent(beforeLoad),
+                "both CE modes reject pre-load hand/aim context after automatic recovery in the same XR space");
         }
         firstCameraMs=0;lastCameraMs=0;lastReport=0;
         armed=true;recenter=false;
@@ -1091,6 +1110,27 @@ int main()
     FrameBody(0,0);
     check(HaloCE_AcquirePair(context.Get(),107,7,pair),"copied native preparation reaches the real GPU pair");
     if (pair.borrowId) { HaloCE_ReleasePair(pair.borrowId); pair={}; }
+    {
+        // Loading can stop the native camera while a completed/queued worker
+        // still carries the old tracking reference. Automatic re-entry must
+        // revoke that reference exactly as an explicit recenter does; merely
+        // toggling recenter lets old work become current again once consumed.
+        const auto oldRevision=referenceRevision.load();
+        const auto now=GetTickCount64();
+        firstCameraMs=now-1700;lastCameraMs=now-600;lastReport=now;
+        (void)HaloCE_Poll(bindings.base,mapped.size(),3,true,true);
+        check(!armed.load()&&recenter.load(),"camera gap requests CE reference reseed");
+        armed=true;recenter=false; // new camera is ready; builder consumed reseed
+        check(referenceRevision.load()!=oldRevision&&
+            !HaloCE_AcquirePair(context.Get(),107,7,pair),
+            "automatic CE re-entry cannot revive the previous reference's completed eyes");
+        if(pair.borrowId){HaloCE_ReleasePair(pair.borrowId);pair={};}
+        FrameBody(0,0); // an old queued preparation completes after re-entry
+        check(!HaloCE_AcquirePair(context.Get(),107,7,pair),
+            "queued CE work from before automatic reseed cannot republish old alignment");
+        if(pair.borrowId){HaloCE_ReleasePair(pair.borrowId);pair={};}
+        firstCameraMs=0;lastCameraMs=0;lastReport=0;
+    }
     publish(108); FrameBody(0,0);
     HaloCE_Recenter();
     recenter=false; // the next builder has consumed the request
@@ -1718,6 +1758,35 @@ int main()
         PublishAnniversaryGameplayContext(saber,tracking,frozen,revision,Game_GetWorldScale(),true);
         check(!HaloCE_GetGameplayContext(received),"unverified native bridge stays stock for controls only");
         gameplayBridgeVerified=true;
+        {
+            // Exercise the actual reference preparation used before Anniversary
+            // eye zero, including native/Saber units and pitch-free walking.
+            auto originalReference=reference;
+            auto pitched=native;pitched.forward={.8f,0,.6f};pitched.up={-.6f,0,.8f};
+            auto pitchedSaber=saber;BuildSaberPose(pitched,offset,bias,pitchedSaber.pose);
+            BuildScope scope{};scope.referenceRevision=revision;
+            scope.views.tracking=tracking;scope.views.tracking.controllers.roomscaleEnabled=true;
+            scope.views.tracking.controllers.controlsPresentationBlocked=false;
+            scope.views.reference=frozen;scope.views.unitsPerMeter=Game_GetWorldScale();scope.views.positional=true;
+            roomscaleAllowed=true;roomscaleCalls=0;
+            PrepareAnniversaryTrackingReference(scope,pitchedSaber);
+            check(roomscaleCalls==1&&std::fabs(roomscaleBody[0]-10)<.0001f&&
+                std::fabs(roomscaleBody[1]-20)<.0001f&&std::fabs(roomscaleBody[2]-30)<.0001f&&
+                std::fabs(roomscaleForward[0]-1)<.0001f&&std::fabs(roomscaleForward[2])<.0001f&&
+                std::fabs(scope.views.reference.position.x-.05f)<.0001f&&
+                std::fabs(reference.position.x-.05f)<.0001f,
+                "Anniversary roomscale uses untracked native center and horizontal reference shared by both eyes");
+            const auto accepted=scope.views.reference;
+            scope.referenceRevision=revision+1;
+            PrepareAnniversaryTrackingReference(scope,pitchedSaber);
+            check(roomscaleCalls==1&&scope.views.reference.position.x==accepted.position.x,
+                "stale Anniversary preparation cannot advance physical movement or tracking reference");
+            scope.referenceRevision=revision;scope.views.tracking.controllers.controlsPresentationBlocked=true;
+            PrepareAnniversaryTrackingReference(scope,pitchedSaber);
+            check(roomscaleCalls==1&&scope.views.reference.position.x==accepted.position.x,
+                "menu and pause presentation cannot authorize CE movement");
+            roomscaleAllowed=false;reference=originalReference;
+        }
         PublishAnniversaryGameplayContext(saber,tracking,frozen,revision,Game_GetWorldScale(),true);
         check(HaloCE_GetGameplayContext(received)&&std::fabs(received.camera.position.x-10)<.0001f&&
             std::fabs(received.camera.position.y-20)<.0001f&&std::fabs(received.camera.position.z-30)<.0001f&&

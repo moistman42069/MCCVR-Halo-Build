@@ -159,6 +159,7 @@ int wmain(int argc,wchar_t** argv) {
             "separated payload without its launcher package root fails before any install write");
         Write(launcherPath, launcherBytes);
         auto first = InstallPayload(source, game, true);
+        if (!first.success) std::wcerr << L"Synthetic installer result: " << first.message << L'\n';
         Require(first.success, "first synthetic install");
         const auto target = steam / "Halo_MCC_VR";
         Require(Read(target / "HaloMCCVR.dll") == "new DLL fixture" && Read(target / "assets/fixture.txt") == "asset fixture" &&

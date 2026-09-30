@@ -21,10 +21,13 @@
 #include "window_resize.h"
 #include "telemetry_recorder.h"
 #include "two_hand_lab_runtime.h"
+#include "menu_font.generated.h"
+#include "menu_style.h"
 #include "../common/log.h"
 #include "../common/config.h"
 #include "../common/weapon_interaction_logic.h"
 #include "../common/halo2_vehicle_identity.h"
+#include "../common/window_focus_policy.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
@@ -56,87 +59,8 @@ namespace
     std::atomic<bool> g_pointerOverGrabHandle{false};
     std::atomic<bool> g_panelDragging{false};
 
-    // Master Chief green with orange visor highlights. Applied once at init,
-    // immediately after StyleColorsDark seeds every slot, so anything not named
-    // here still has a sane value.
-    constexpr ImVec4 Rgb(unsigned hex, float alpha = 1.0f)
-    {
-        return ImVec4(((hex >> 16) & 0xFF) / 255.0f,
-                      ((hex >> 8) & 0xFF) / 255.0f,
-                      (hex & 0xFF) / 255.0f,
-                      alpha);
-    }
-
-    constexpr unsigned kPanelBg     = 0x10160F; // near-black armour green
-    constexpr unsigned kSurfaceBg   = 0x161D14; // sidebar / child panels
-    constexpr unsigned kTroughBg    = 0x1E2A1B; // slider + input backgrounds
-    constexpr unsigned kRaised      = 0x26331F; // buttons at rest
-    constexpr unsigned kRaisedHover = 0x3A4E30;
-    constexpr unsigned kSelected    = 0x2A3A22; // selected row
-    constexpr unsigned kTextMain    = 0xE4EBDF;
-    constexpr unsigned kTextDim     = 0x7E8C76;
-    constexpr unsigned kAccent      = 0xFFA22B; // visor orange
-    constexpr unsigned kAccentHot   = 0xFFBC5E;
-    constexpr unsigned kAccentDown  = 0xE08312;
-    constexpr unsigned kBorder      = 0x2C3A26;
-    constexpr unsigned kSeparator   = 0x35472E;
-    // Deliberately a different orange from the accent so a warning can never be
-    // mistaken for a highlight.
-    constexpr unsigned kWarning     = 0xFF6B3D;
-
-    void ApplyTheme()
-    {
-        ImGuiStyle& s = ImGui::GetStyle();
-        ImVec4* c = s.Colors;
-        c[ImGuiCol_WindowBg]            = Rgb(kPanelBg, 0.96f);
-        c[ImGuiCol_ChildBg]             = Rgb(kSurfaceBg, 1.00f);
-        c[ImGuiCol_PopupBg]             = Rgb(kSurfaceBg, 0.98f);
-        c[ImGuiCol_Text]                = Rgb(kTextMain);
-        c[ImGuiCol_TextDisabled]        = Rgb(kTextDim);
-        c[ImGuiCol_Border]              = Rgb(kBorder);
-        c[ImGuiCol_BorderShadow]        = Rgb(0x000000, 0.0f);
-        c[ImGuiCol_Separator]           = Rgb(kSeparator);
-        c[ImGuiCol_SeparatorHovered]    = Rgb(kAccent, 0.60f);
-        c[ImGuiCol_SeparatorActive]     = Rgb(kAccent);
-        c[ImGuiCol_FrameBg]             = Rgb(kTroughBg);
-        c[ImGuiCol_FrameBgHovered]      = Rgb(kRaisedHover);
-        c[ImGuiCol_FrameBgActive]       = Rgb(kSelected);
-        c[ImGuiCol_TitleBg]             = Rgb(kSurfaceBg);
-        c[ImGuiCol_TitleBgActive]       = Rgb(kSelected);
-        c[ImGuiCol_TitleBgCollapsed]    = Rgb(kSurfaceBg);
-        c[ImGuiCol_MenuBarBg]           = Rgb(kSurfaceBg);
-        c[ImGuiCol_Button]              = Rgb(kRaised);
-        c[ImGuiCol_ButtonHovered]       = Rgb(kRaisedHover);
-        c[ImGuiCol_ButtonActive]        = Rgb(kAccentDown);
-        c[ImGuiCol_Header]              = Rgb(kSelected);
-        c[ImGuiCol_HeaderHovered]       = Rgb(kRaisedHover);
-        c[ImGuiCol_HeaderActive]        = Rgb(kAccentDown, 0.85f);
-        c[ImGuiCol_CheckMark]           = Rgb(kAccent);
-        c[ImGuiCol_SliderGrab]          = Rgb(kAccent);
-        c[ImGuiCol_SliderGrabActive]    = Rgb(kAccentHot);
-        c[ImGuiCol_ScrollbarBg]         = Rgb(kPanelBg, 0.0f);
-        c[ImGuiCol_ScrollbarGrab]       = Rgb(kSeparator);
-        c[ImGuiCol_ScrollbarGrabHovered]= Rgb(kRaisedHover);
-        c[ImGuiCol_ScrollbarGrabActive] = Rgb(kAccent);
-        c[ImGuiCol_Tab]                 = Rgb(kRaised);
-        c[ImGuiCol_TabHovered]          = Rgb(kRaisedHover);
-        c[ImGuiCol_TabSelected]         = Rgb(kSelected);
-        c[ImGuiCol_ResizeGrip]          = Rgb(kPanelBg, 0.0f); // panel is locked
-        c[ImGuiCol_ResizeGripHovered]   = Rgb(kPanelBg, 0.0f);
-        c[ImGuiCol_ResizeGripActive]    = Rgb(kPanelBg, 0.0f);
-        c[ImGuiCol_NavCursor]           = Rgb(kAccent);
-
-        // Square, industrial edges suit the armour look and stay crisp when the
-        // panel is sampled at an angle in the headset.
-        s.WindowRounding = 0.0f;
-        s.ChildRounding = 0.0f;
-        s.FrameRounding = 2.0f;
-        s.GrabRounding = 2.0f;
-        s.TabRounding = 0.0f;
-        s.ScrollbarRounding = 2.0f;
-        s.WindowBorderSize = 0.0f;
-        s.FrameBorderSize = 1.0f;
-    }
+    using namespace vr_menu_style;
+    ImFont* g_headingFont = nullptr;
 
     // Height of the grab bar in menu-texture pixels. The hover test is ImGui's
     // own item rectangle, so the bar you can see is exactly the bar you can grab.
@@ -169,6 +93,7 @@ namespace
     {
         Cat_Welcome = 0,
         Cat_Status,
+        Cat_QualityOfLife,
         Cat_Comfort,
         Cat_Theatre,
         Cat_Controls,
@@ -201,6 +126,7 @@ namespace
     constexpr CategoryRow kCategories[Cat_Count] = {
         {"Welcome",       "Read me first."},
         {"Status",        "What the mod is doing right now, and the switches you reach for mid-game."},
+        {"Quality of Life", "VR comfort and immersion settings, collected here from their usual sections."},
         {"Comfort",       "The flat screen you see in menus, and how head motion feels."},
         {"3D Theatre",    "A room-fixed stereo screen used only when the game locks the cinematic camera."},
         {"Controls",      "Turning, gestures, and controller vibration."},
@@ -225,6 +151,23 @@ namespace
 
     int g_activeCategory = Cat_Status;
     constexpr float kSidebarWidth = 300.0f;
+
+    // Render the original controls in either location, rather than creating
+    // duplicate config values or a second implementation of their callbacks.
+    // Each section has its own ID scope so expanded groups cannot collide.
+    struct CategorySection
+    {
+        bool visible=false,scoped=false;
+        explicit CategorySection(MenuCategory category)
+        {
+            if(g_activeCategory!=category&&g_activeCategory!=Cat_QualityOfLife)return;
+            ImGui::PushID(static_cast<int>(category));scoped=true;
+            visible=g_activeCategory==category||ImGui::CollapsingHeader(kCategories[category].label);
+        }
+        ~CategorySection(){if(scoped)ImGui::PopID();}
+        CategorySection(const CategorySection&)=delete;
+        CategorySection& operator=(const CategorySection&)=delete;
+    };
 
     // The one bar that moves the panel. Everything else is inert, which is the
     // whole point: before this, the settings window itself was a movable ImGui
@@ -258,7 +201,9 @@ namespace
             draw->AddCircleFilled(ImVec2(midX + i * 14.0f, midY), 2.5f, gripColor);
 
         ImGui::SetCursorScreenPos(ImVec2(topLeft.x + 12.0f, topLeft.y + 10.0f));
-        ImGui::TextColored(Rgb(kTextMain), "HALO MCC VR");
+        ImGui::PushFont(g_headingFont);
+        ImGui::TextColored(Rgb(kAccent), "HALO MCC VR");
+        ImGui::PopFont();
         ImGui::SetCursorScreenPos(ImVec2(topLeft.x, bottomRight.y + 6.0f));
         ImGui::TextDisabled("%s", dragging
             ? "Moving the panel. Right stick up/down changes the distance; release to place it."
@@ -350,11 +295,11 @@ namespace
         {
             unsigned width=0,height=0;
             if(!D3D_BeginLiveResize(width,height)) return 0;
-            if(!D3D_FitActive()||!width||!height||width>65535||height>65535||!g_origWndProc)
+            if(!D3D_CanLiveResize()||!width||!height||width>65535||height>65535||!g_origWndProc)
             { D3D_CancelQueuedLiveResize();return 0; }
             // Fit first, suppress intermediate WM_SIZE notifications, then
             // deliver one admitted render-size change on the window thread.
-            g_liveResizeBatch.Apply(hwnd,[&]{FitGameWindow(hwnd);},[&]{
+            g_liveResizeBatch.Apply(hwnd,[&]{if(D3D_FitActive()) FitGameWindow(hwnd);},[&]{
                 struct ClientSizeScope {
                     ClientSizeScope(){D3D_SetForcedClientLie(true);}
                     ~ClientSizeScope(){D3D_SetForcedClientLie(false);}
@@ -374,24 +319,32 @@ namespace
         // headset. Looking through the headset hands desktop focus to SteamVR,
         // and MCC (like most games) stops drawing and ignores input when it
         // isn't the focused window — which showed up as a frozen VR screen. We
-        // tell the game it is always the active, foreground window.
+        // retain the existing active-window behavior in a running title.
+        // Shell/authentication keeps genuine focus so native text dialogs can
+        // acquire/release keyboard input normally.
+        const auto focusAction=DecideWindowFocus(TitleAdapter_GetActiveTitle(),
+            TitleAdapter_GetRuntimeMode(),msg);
         switch (msg)
         {
         case WM_ACTIVATEAPP:
-            wp = TRUE;
+            if(focusAction==WindowFocusAction::KeepActive)wp = TRUE;
             break;
         case WM_ACTIVATE:
-            if (LOWORD(wp) == WA_INACTIVE)
+            if (focusAction==WindowFocusAction::KeepActive&&LOWORD(wp) == WA_INACTIVE)
                 wp = MAKEWPARAM(WA_ACTIVE, 0);
             break;
         case WM_NCACTIVATE:
             // TRUE keeps the window drawn/treated as active.
-            return CallWindowProcW(g_origWndProc, hwnd, msg, TRUE, lp);
+            if(focusAction==WindowFocusAction::KeepActive)
+                return CallWindowProcW(g_origWndProc, hwnd, msg, TRUE, lp);
+            break;
         case WM_KILLFOCUS:
             // Don't let the game hear that it lost keyboard focus.
-            return 0;
+            if(focusAction==WindowFocusAction::SuppressLoss)return 0;
+            break;
         case WM_MOUSEACTIVATE:
-            return MA_ACTIVATE;
+            if(focusAction==WindowFocusAction::ActivateMouse)return MA_ACTIVATE;
+            break;
         case WM_WINDOWPOSCHANGING:
             if (D3D_FitActive())
             {
@@ -425,7 +378,7 @@ namespace
             }
             break;
         case WM_SIZE:
-            if (D3D_FitActive())
+            if (D3D_CanLiveResize() && wp != SIZE_MINIMIZED)
             {
                 // The window is smaller than the render. Tell MCC its client is
                 // still the full render size so it keeps drawing the full frame
@@ -539,6 +492,7 @@ namespace
             ImGui::GetStyle().ItemSpacing.y * 2.0f + 8.0f;
 
         ImGui::BeginChild("##sidebar", ImVec2(kSidebarWidth, -footerHeight), ImGuiChildFlags_Borders);
+        ImGui::PushFont(g_headingFont);
         for (int i = 0; i < Cat_Count; ++i)
         {
             // Virtual Stock Lab is intentionally excluded from normal navigation;
@@ -556,7 +510,7 @@ namespace
                 g_activeCategory = i;
                 g_virtualStockResetArmed = false;
             }
-            // An orange bar down the left edge of the selected row, so the
+            // A cyan bar down the left edge of the selected row, so the
             // current category reads at a glance from across the panel.
             if (selected)
             {
@@ -567,13 +521,16 @@ namespace
                     ImGui::GetColorU32(Rgb(kAccent)));
             }
         }
+        ImGui::PopFont();
         ImGui::EndChild();
 
         ImGui::SameLine();
 
         ImGui::BeginChild("##pane", ImVec2(0, -footerHeight), ImGuiChildFlags_Borders);
         ImGui::PushTextWrapPos(0.0f);
+        ImGui::PushFont(g_headingFont);
         ImGui::TextColored(Rgb(kAccent), "%s", kCategories[g_activeCategory].label);
+        ImGui::PopFont();
         ImGui::TextDisabled("%s", kCategories[g_activeCategory].blurb);
         ImGui::Separator();
         ImGui::Spacing();
@@ -661,7 +618,10 @@ namespace
         ImGui::TextDisabled("L3+R3 recenters and closes this menu; F1 only closes it.");
         }
 
-        if (g_activeCategory == Cat_Comfort)
+        if (g_activeCategory == Cat_QualityOfLife)
+            ImGui::TextWrapped("Expand a section to adjust its settings. These are the same controls as their individual pages.");
+
+        if (CategorySection section{Cat_Comfort}; section.visible)
         {
         ImGui::Text("Virtual screen");
         // These two used to stop at 10 m even though the config file accepts 20,
@@ -695,7 +655,7 @@ namespace
         ImGui::TextDisabled("Turns head tracking + stereo on when a level starts and off in the menu.");
         }
 
-        if (g_activeCategory == Cat_Theatre)
+        if (CategorySection section{Cat_Theatre}; section.visible)
         {
         changed |= ImGui::Checkbox(
             "Enable Stereo 3D Theatre for cutscenes",
@@ -783,8 +743,14 @@ namespace
         }
         }
 
-        if (g_activeCategory == Cat_Controls)
+        if (CategorySection section{Cat_Controls}; section.visible)
         {
+        changed |= ImGui::Checkbox("Physical running", &g_config.physical_running);
+        if(g_config.physical_running) {
+            changed |= vr_menu::SliderFloat("Running speed",&g_config.physical_running_speed,.1f,1.f,"%.2f");
+            changed |= vr_menu::SliderFloat("Running sensitivity",&g_config.physical_running_sensitivity,.25f,3.f,"%.2f");
+            ImGui::TextWrapped("Alternate both arms to move forward while on foot. Speed is a fraction of the game's normal maximum. While running, arm motion takes over the movement stick. Menus and vehicles keep their normal controls.");
+        }
         changed |= ImGui::Checkbox("Roomscale body movement", &g_config.roomscale_movement);
         ImGui::TextDisabled("Physical steps move your character while on foot. Walking follows your head.\n"
             "Controller aiming is preserved. Enable head tracking and positional tracking.\n"
@@ -864,6 +830,10 @@ namespace
                 VR_SetGameHaptics(0.0f);
             changed = true;
         }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Adjust vibration strength; 0%% disables it.\n"
+                              "Supported weapon feedback follows the holding hand, sharing recoil while supporting the gun.\n"
+                              "Damage and vehicle feedback can use both controllers.");
         changed |= ImGui::Checkbox("Point at game menus", &g_config.game_menu_pointer);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Aim your primary controller at MCC's main or pause menu, then pull its trigger to click.\n"
@@ -872,7 +842,7 @@ namespace
         ImGui::TextDisabled("L3+R3 recenters and toggles this menu; the right trigger clicks the VR pointer.");
         }
 
-        if(g_activeCategory==Cat_Mappings)
+        if (CategorySection section{Cat_Mappings}; section.visible)
         {
             static int selectedTitle=0;
             static GameTitle previousTitle=GameTitle::None;
@@ -884,9 +854,11 @@ namespace
             ImGui::Text("Detected right: %s",VR_ControllerProfileName(false));
             ImGui::Combo("Settings for",&selectedTitle,weapon_interaction::kTitleNames,6);
             changed|=ImGui::Checkbox("Automatic VR action routing",&g_config.vr_action_mapping);
-            ImGui::TextWrapped("Automatic uses common VR defaults through the current MCC layout. Changes apply only to the selected game. "
-                "Unbound removes this action's VR button. MCC actions sharing a native button remain linked; "
-                "for example, Reload and Use share an action in Halo 3, ODST and Halo 4. Physical gestures remain separate.");
+            ImGui::TextWrapped("Automatic uses common VR defaults. Changes apply only to the selected game. "
+                "Unbound removes this action's VR button. Physical gestures remain separate.");
+            ImGui::TextWrapped("All six games support separate actions while direct VR routing is available. "
+                "Games using the MCC layout fallback can link actions sharing a native button. "
+                "If the direct route is unavailable, Reload and Use may still share a button.");
             vr_mapping::Transports bindings{};
             const bool haveBindings=activeIndex==selectedTitle&&Game_ReadVrActionBindings(bindings,GetTickCount64());
             for(unsigned action=0;action<vr_mapping::Count;++action)
@@ -911,7 +883,7 @@ namespace
 
         }
 
-        if (g_activeCategory == Cat_Vehicles)
+        if (CategorySection section{Cat_Vehicles}; section.visible)
         {
         ImGui::Text("First-person vehicle camera");
         changed |= ImGui::Checkbox("Sit in the seat (first person)",
@@ -1209,7 +1181,7 @@ namespace
             &g_config.vehicle_wheel_deadzone_deg, 0.0f, 30.0f, "%.0f");
         }
 
-        if (g_activeCategory == Cat_Reload)
+        if (CategorySection section{Cat_Reload}; section.visible)
         {
         ImGui::Text("Reload and holsters");
         changed |= ImGui::Checkbox("Manual Reload", &g_config.manual_reload);
@@ -1283,7 +1255,7 @@ namespace
         }
         }
 
-        if (g_activeCategory == Cat_WeaponAim)
+        if (CategorySection section{Cat_WeaponAim}; section.visible)
         {
         ImGui::Text("Two-handed aiming");
         changed |= ImGui::Checkbox("Two-handed aiming", &g_config.two_handed_aim);
@@ -1474,7 +1446,7 @@ namespace
         }
         }
 
-        if (g_activeCategory == Cat_Crosshair)
+        if (CategorySection section{Cat_Crosshair}; section.visible)
         {
         ImGui::Text("Crosshair and bullet direction");
         changed |= ImGui::Checkbox("Independent dual-wield trajectories", &g_config.independent_dual_aim);
@@ -1540,7 +1512,7 @@ namespace
                             "Set it to 0%% for exact raw tracking.");
         }
 
-        if (g_activeCategory == Cat_Scope)
+        if (CategorySection section{Cat_Scope}; section.visible)
         {
         ImGui::Text("Gun-mounted circular zoom lens");
         ImGui::TextDisabled("Halo 2, Halo 3, ODST, Reach and Halo 4. CE uses native zoom.");
@@ -1577,12 +1549,11 @@ namespace
         }
         }
 
-        if (g_activeCategory == Cat_BodyHands)
+        if (CategorySection section{Cat_BodyHands}; section.visible)
         {
         ImGui::Text("Body (VRIK)");
         changed |= ImGui::Checkbox("Arm IK (bend arm to controller)", &g_config.arm_ik);
-        ImGui::TextDisabled("ON: shoulder stays, elbow bends, hand+gun follow your controller.\n"
-                            "OFF: the whole arm rigid-parents to the controller (old behavior).");
+        ImGui::TextWrapped("Bend supported arm models toward the tracked hands. When a model cannot be solved, keep the working hands and weapons; some titles hide the unsupported arms.");
         if (g_config.arm_ik)
         {
             changed |= vr_menu::SliderFloat("Right shoulder drop", &g_config.right_shoulder_drop,
@@ -1595,9 +1566,13 @@ namespace
                                 "OFF: shoulders ride your head pitch (old). Hand+gun unaffected.");
         }
         ImGui::Spacing();
-        changed |= ImGui::Checkbox("Floating hands (hide arms)", &g_config.floating_hands);
-        ImGui::TextDisabled("Shows only your hands and the guns they hold; the arms are hidden.\n"
-                            "Hands still track your controllers exactly as with full arms.");
+        bool showArms=!g_config.floating_hands;
+        if(ImGui::Checkbox("Show arms with hands",&showArms)) {
+            g_config.floating_hands=!showArms;changed=true;
+        }
+        ImGui::TextWrapped("Keep the tracked hands and weapons visible, with optional articulated arms. Turn off to hide the arms. Custom rigs need a recognized arm chain.");
+        if(TitleAdapter_GetActiveTitle()==GameTitle::Halo2)
+            ImGui::TextWrapped("Halo 2 arm tracking is still in development; the tracked hands remain available.");
         ImGui::Spacing();
         changed |= ImGui::Checkbox("World collision (experimental)",
                                    &g_config.world_collision);
@@ -1617,15 +1592,28 @@ namespace
             ImGui::TextDisabled("Lower is more sensitive; 5.00 m/s is the default and needs a fast swing.");
         }
         ImGui::Spacing();
-        changed |= ImGui::Checkbox("Show body (VRIK stage A1)", &g_config.body_wip);
-        ImGui::TextDisabled("Shows Chief's game-animated body via the engine's own director switches.");
-        ImGui::TextDisabled("Room-scale unit movement is gated until the player-biped boundary is headset-proven.");
+        changed |= ImGui::Checkbox("Show full body", &g_config.body_wip);
+        ImGui::TextWrapped("Legacy body visibility can affect Halo 3's first-person hands. Tracked full-body IK takes priority over this option. Native body visibility in other games is still in development.");
+        changed |= ImGui::Checkbox("Tracked full-body IK (experimental)", &g_config.experimental_body_ik);
+        ImGui::TextWrapped("Experimental avatars: Halo 3 and Halo 4. Other games currently use their tracked first-person hands. Free-hand gestures use physical trigger and grip input; held weapons keep their normal grip.");
+        if (g_config.experimental_body_ik)
+        {
+            changed |= ImGui::Checkbox("Hide lower body", &g_config.body_ik_hide_lower);
+            ImGui::TextWrapped("Lower-body hiding requires separate leg geometry. Unsupported rigs retain first-person hands. Halo 3 Elite/Arbiter full avatars currently require this option off.");
+        }
         }
 
-        if (g_activeCategory == Cat_Hud)
+        if (CategorySection section{Cat_Hud}; section.visible)
         {
         ImGui::Text("HUD layout");
         changed |= ImGui::Checkbox("Hide HUD completely", &g_config.hide_hud);
+        if(g_config.hide_hud) {
+            changed|=ImGui::Checkbox("Reveal with hand near head",&g_config.hud_reveal_near_head);
+            if(g_config.hud_reveal_near_head) {
+                changed|=vr_menu::SliderFloat("HUD reveal distance (m)",&g_config.hud_reveal_radius_m,.10f,.40f,"%.2f");
+                ImGui::TextWrapped("Bring your empty support hand near your headset for a moment. Move it away to hide the HUD again. Gripping, dual wielding, reloading and menus cancel the gesture.");
+            }
+        }
         changed |= vr_menu::SliderFloat("HUD size", &g_config.hud_size, 0.30f, 1.00f, "%.2f");
         changed |= vr_menu::SliderFloat("HUD width / aspect", &g_config.hud_aspect,
                                       kHudAspectMin, kHudAspectMax, "%.2f");
@@ -1681,7 +1669,7 @@ namespace
         }
         }
 
-        if (g_activeCategory == Cat_Picture)
+        if (CategorySection section{Cat_Picture}; section.visible)
         {
         ImGui::Text("Headset picture resolution");
         changed |= vr_menu::SliderFloat("Resolution scale", &g_config.resolution_scale,
@@ -1725,8 +1713,11 @@ namespace
         unsigned actualW=0,actualH=0;
         const int resizeState=D3D_LiveResizeState(actualW,actualH);
         if(resizeState==1) ImGui::TextDisabled("Applying resolution after the current frame...");
-        else if(resizeState==3) ImGui::TextWrapped("Live resize could not complete. The previous render size was restored. Restart MCC to apply the saved preference.");
-        else if(!D3D_FitActive()) ImGui::TextWrapped("Restart MCC to change render size. Live resizing requires fitted desktop window mode.");
+        else if(resizeState==3) {
+            ImGui::TextWrapped("Live resize could not complete. The current native render size was retained.");
+            if(ImGui::Button("Retry resolution change")) D3D_RetryLiveResize();
+        }
+        else if(!D3D_CanLiveResize()) ImGui::TextWrapped("Live resolution hooks are unavailable; the current native render size is retained.");
         else ImGui::TextWrapped("Render size can update live; title loading defers the change. Lower values trade detail for speed; higher values supersample.");
         if (g_config.resolution_scale > kResolutionScaleHeavy)
             ImGui::TextColored(Rgb(kWarning),
@@ -1739,7 +1730,7 @@ namespace
         if(g_config.upscaler)
         {
             changed|=ImGui::Combo("DLSS quality",&g_config.dlss_mode,"DLAA\0Quality\0Balanced\0Performance\0Ultra Performance\0");
-            changed|=ImGui::Combo("DLSS model",&g_config.dlss_preset,"Runtime default\0F\0J\0K\0L\0M\0");
+            changed|=ImGui::Combo("DLSS model",&g_config.dlss_preset,"Runtime default\0F (CNN)\0J\0K\0L\0M\0E (CNN)\0");
             changed|=ImGui::Checkbox("Temporal jitter",&g_config.dlss_jitter);
             char status[512]{};VR_GetDlssStatus(status,sizeof(status));
             ImGui::TextWrapped("%s",status);
@@ -1806,7 +1797,7 @@ namespace
                             "A game with no proven switch is left alone and says so in the log.");
         }
 
-        if(g_activeCategory==Cat_Subtitles)
+        if (CategorySection section{Cat_Subtitles}; section.visible)
         {
             const auto subtitleTitle=TitleAdapter_GetActiveTitle();
             const bool gameplayFeed=subtitleTitle==GameTitle::Halo3 ||
@@ -1842,15 +1833,18 @@ namespace
         if (g_activeCategory == Cat_Desktop)
         {
         ImGui::Text("The window on your monitor");
-        changed |= ImGui::Checkbox("Fit desktop window to my monitor",
-                                   &g_config.fit_desktop_window);
+        if(ImGui::Checkbox("Fit desktop window to my monitor",&g_config.fit_desktop_window)) {
+            changed=true;
+            if(D3D_FitActive()) PostMessageW(D3D_GameWindow(),kFitGameWindowMsg,0,0);
+        }
         ImGui::TextDisabled(
             "For monitors SMALLER than your render (e.g. a big headset resolution on\n"
             "a 1080p screen), where MCC's window overflows and you can't click the\n"
             "\"Halo 3\" tile or Quit. The headset keeps the full resolution above; only\n"
             "the desktop window shrinks to fit and the GPU downscales into it (no\n"
-            "extra render pass, no measurable cost). OFF by default. Takes effect on\n"
-            "the next launch -- close MCC and relaunch.");
+            "extra render pass). ON by default. Enabling it fits the current window;\n"
+            "disabling it stops further fitting to the monitor.\n"
+            "Headset resolution changes work with either setting.");
         }
 
         if (g_activeCategory == Cat_Telemetry)
@@ -2002,8 +1996,8 @@ namespace
         }
         ImGui::TextDisabled("Puts every setting back to the value halomccvr.cfg lists as its\n"
                             "default, including your weapon calibration. The runtime Two-Handed\n"
-                            "Lab is also reset and disabled. Resolution needs a\n"
-                            "game restart; everything else applies immediately.");
+                            "Lab is also reset and disabled. Render resolution updates live\n"
+                            "once its slider settles; loading defers the change.");
         }
 
         if (g_activeCategory == Cat_TwoHandLab)
@@ -2070,9 +2064,15 @@ bool Menu_Init(HWND gameWindow, ID3D11Device* device, ID3D11DeviceContext* conte
     io.MouseDrawCursor = true;             // draw the cursor into our texture
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     ImGui::StyleColorsDark();
-    ApplyTheme();                          // Master Chief green / visor orange
+    ApplyTheme();                          // launcher's navy / cyan palette
     ImGui::GetStyle().ScaleAllSizes(1.5f); // legible at panel distance in the headset
     io.FontGlobalScale = 1.6f;
+    io.Fonts->AddFontDefault(); // retain familiar, readable body text
+    ImFontConfig headingConfig{};
+    headingConfig.FontDataOwnedByAtlas = false; // immutable DLL-resident bytes
+    g_headingFont = io.Fonts->AddFontFromMemoryTTF(
+        const_cast<unsigned char*>(menu_assets::oxanium),
+        static_cast<int>(sizeof(menu_assets::oxanium)), 13.0f, &headingConfig);
 
     if (!ImGui_ImplWin32_Init(gameWindow) || !ImGui_ImplDX11_Init(device, context))
     {

@@ -42,6 +42,86 @@ int main(int argc,char** argv)
         CHECK(!SelectSaberTrackedParticleProjection(constants.data(),200,changed));
         CHECK(constants==before&&!SelectSaberTrackedParticleProjection(nullptr,201,changed));
     }
+    {
+        // Official CE fp_body names/parents: bind both anatomical five-finger
+        // chains, then prove only the free support fingers change. Weapon and
+        // primary-hand packets remain byte-identical.
+        AnimationNode nodes[38]{};
+        Name(nodes[0],"frame bone24",-1);
+        Name(nodes[1],"frame l upperarm",0);Name(nodes[2],"frame r upperarm",0);
+        Name(nodes[3],"frame l forearm",1);Name(nodes[4],"frame r forearm",2);
+        Name(nodes[5],"frame l wrist",3);Name(nodes[6],"frame r wriste",4);
+        Name(nodes[7],"frame gun",6);
+        constexpr const char* rootNames[2][5]{
+            {"frame l index low","frame l middlelow","frame l pinky low","frame l ring low","frame l thumb low"},
+            {"frame r index low","frame r middle low","frame r pinky low","frame r ring low","frame r thumb low"}};
+        constexpr const char* midNames[2][5]{
+            {"frame l index mid","frame l middle mid","frame l pinky mid","frame l ring mid","frame l thumb mid"},
+            {"frame r index mid","frame r middle mid","frame r pinky mid","frame r ring mid","frame r thumb mid"}};
+        constexpr const char* tipNames[2][5]{
+            {"frame l index tip","frame l middle tip","frame l pinky tip","frame l ring tip","frame l thumb tip"},
+            {"frame r index tip","frame r middle tip","frame r pinky tip","frame r ring tip","frame r thumb tip"}};
+        unsigned cursor=8;
+        for(unsigned side=0;side<2;++side)for(unsigned finger=0;finger<5;++finger)
+        {
+            Name(nodes[cursor],rootNames[side][finger],side?6:5);
+            Name(nodes[cursor+1],midNames[side][finger],int(cursor));
+            Name(nodes[cursor+2],tipNames[side][finger],int(cursor+1));cursor+=3;
+        }
+        FirstPersonBinding binding{};
+        CHECK(BuildFirstPersonBinding(25,3,nodes,38,binding));
+        CHECK(BuildFingerBindings(nodes,38,binding)&&binding.fingerPoseSupported);
+        finger_joint::Inventory leftJoints{},rightJoints{};
+        CHECK(DescribeFirstPersonFingerJoints(binding,0,leftJoints)&&
+            DescribeFirstPersonFingerJoints(binding,1,rightJoints));
+        const auto* indexRoot=leftJoints.Find(finger_joint::Digit::Index,finger_joint::Joint::Root);
+        const auto* indexBySlot=leftJoints.FindNative(1,0);
+        CHECK(indexRoot&&indexBySlot&&indexRoot->paletteIndex==8&&
+            indexBySlot->digit==finger_joint::Digit::Index&&
+            indexBySlot->jointOrdinal==0&&indexBySlot->anatomicalJoint==finger_joint::AnatomicalJoint::Unknown);
+        CHECK(!leftJoints.Find(finger_joint::Digit::Unknown,finger_joint::Joint::Root)&&
+            leftJoints.rig.title==GameTitle::HaloCE&&
+            leftJoints.rig.palette==finger_joint::Palette::FirstPerson&&
+            leftJoints.rig.checksum==binding.nodeIdentity);
+        std::array<NodeMatrix,kFirstPersonMaxNodes> source{},posed{};
+        for(unsigned i=0;i<38;++i)
+        { source[i].position={float(i)*.001f,float(i%3)*.002f,float(i%5)*.001f};posed[i]=source[i]; }
+        Tracking tracking{};tracking.controllers.supportGripAttached=false;
+        tracking.controllerFingers[0]=MakeControllerFingerInput(true,.9f,true,.7f);
+        CHECK(ApplyFreeHandFingerPose(binding,tracking,posed));
+        CHECK(std::memcmp(&posed[7],&source[7],sizeof(NodeMatrix))==0&&
+            std::memcmp(&posed[6],&source[6],sizeof(NodeMatrix))==0);
+        bool leftChanged=false,rightChanged=false;
+        for(unsigned i=8;i<38;++i)
+            (i<23?leftChanged:rightChanged)|=std::memcmp(&posed[i],&source[i],sizeof(NodeMatrix))!=0;
+        CHECK(leftChanged&&!rightChanged);
+        auto pointed=source;tracking.controllerFingers[0]=MakeControllerFingerInput(true,0,true,1);
+        CHECK(ApplyFreeHandFingerPose(binding,tracking,pointed));
+        CHECK(std::memcmp(&pointed[8],&source[8],3*sizeof(NodeMatrix))==0);
+        bool curledOther=false;
+        for(unsigned i=11;i<23;++i)
+            curledOther|=std::memcmp(&pointed[i],&source[i],sizeof(NodeMatrix))!=0;
+        CHECK(curledOther);
+        auto pointedAgain=source;CHECK(ApplyFreeHandFingerPose(binding,tracking,pointedAgain));
+        CHECK(!std::memcmp(pointed.data(),pointedAgain.data(),38*sizeof(NodeMatrix)));
+        tracking.controllerFingers[0]=MakeControllerFingerInput(true,1,true,0);
+        auto triggerOnly=source;CHECK(ApplyFreeHandFingerPose(binding,tracking,triggerOnly));
+        CHECK(std::memcmp(&triggerOnly[11],&source[11],12*sizeof(NodeMatrix))==0);
+        CHECK(std::memcmp(&triggerOnly[8],&source[8],3*sizeof(NodeMatrix))!=0);
+        auto aligned=source;tracking.controllers.leftHanded=true;tracking.controllers.handAlignment=true;
+        CHECK(ApplyFreeHandFingerPose(binding,tracking,aligned));
+        leftChanged=rightChanged=false;
+        for(unsigned i=8;i<38;++i)
+            (i<23?leftChanged:rightChanged)|=std::memcmp(&aligned[i],&source[i],sizeof(NodeMatrix))!=0;
+        CHECK(!leftChanged&&rightChanged);
+        auto held=source;tracking.controllers.supportGripAttached=true;
+        CHECK(ApplyFreeHandFingerPose(binding,tracking,held)&&
+            !std::memcmp(held.data(),source.data(),38*sizeof(NodeMatrix)));
+        tracking.controllers.supportGripAttached=false;tracking.controllerFingers[0]={};
+        auto stale=source;
+        CHECK(ApplyFreeHandFingerPose(binding,tracking,stale)&&
+            !std::memcmp(stale.data(),source.data(),38*sizeof(NodeMatrix)));
+    }
     if (argc==4&&std::strcmp(argv[1],"--floating-mesh-fixture")==0)
     {
         std::ifstream input(argv[2],std::ios::binary);

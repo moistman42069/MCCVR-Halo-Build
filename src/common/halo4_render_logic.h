@@ -283,6 +283,34 @@ inline constexpr uint32_t kHalo4FirstPersonMaxNodes =
 // returns to kHalo4FirstPersonSkinningReturnRva.
 inline constexpr uint32_t kHalo4ModelSkinningRva = 0x33D8B8;
 inline constexpr uint32_t kHalo4FirstPersonSkinningReturnRva = 0x36F3C9;
+// Retail's first-person packet producer; the producer applies region masks
+// after its inner palette filler, so row-local avatar edits run after this call.
+inline constexpr uint32_t kHalo4FirstPersonProducerRva = 0x3B1B4C;
+inline constexpr uint32_t kHalo4FirstPersonRecordStride = 0x1910;
+inline constexpr uint32_t kHalo4FirstPersonRecordMatrixOffset = 0xB0;
+inline constexpr uint32_t kHalo4FirstPersonRecordModelIndexOffset = 0x00;
+inline constexpr uint32_t kHalo4FirstPersonRecordObjectIndexOffset = 0x04;
+inline constexpr uint32_t kHalo4FirstPersonRecordFillFlagOffset = 0x08;
+inline constexpr uint32_t kHalo4FirstPersonRecordRegionMaskOffset = 0x0C;
+struct Halo4FirstPersonRecordHeaderLayout
+{
+    uint16_t renderModelIndex=0;
+    uint16_t reserved=0;
+    uint32_t objectIndex=0;
+    uint32_t fillFlag=0;
+    uint32_t regionMask=0;
+};
+static_assert(offsetof(Halo4FirstPersonRecordHeaderLayout,objectIndex)==
+    kHalo4FirstPersonRecordObjectIndexOffset);
+static_assert(offsetof(Halo4FirstPersonRecordHeaderLayout,fillFlag)==
+    kHalo4FirstPersonRecordFillFlagOffset);
+static_assert(offsetof(Halo4FirstPersonRecordHeaderLayout,regionMask)==
+    kHalo4FirstPersonRecordRegionMaskOffset);
+static_assert(sizeof(Halo4FirstPersonRecordHeaderLayout)==0x10);
+inline constexpr char kHalo4FirstPersonProducerPattern[] =
+    "48 8B C4 4C 89 48 20 44 89 40 18 89 50 10 89 48 08 "
+    "55 53 56 57 41 54 41 55 41 56 41 57 48 8D A8 C8 FE FF FF "
+    "48 81 EC F8 01 00 00";
 inline constexpr char kHalo4ModelSkinningPattern[] =
     "48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 "
     "B8 30 31 00 00 E8 ?? ?? ?? ?? 48 2B E0 48 8D AC 24 A0 00 00 00 "
@@ -322,6 +350,50 @@ inline constexpr char kHalo4ModelSkinningTagLookupReloadPattern[] =
 inline constexpr int kHalo4StormFpBodyNodeCount = 80;
 inline constexpr int kHalo4StormFpComposedNodeCount = 85;
 inline constexpr uint32_t kHalo4StormFpRuntimeImportChecksum = 0x150D0000u;
+// H4EK storm_masterchief.render_model (the authored 120-node first-person
+// body/legs model). This is an identity discriminator only; native-body
+// visibility remains stock until retail identity and local-unit ownership
+// are both observed in the live producer.
+inline constexpr int kHalo4StormMasterchiefBodyNodeCount = 120;
+inline constexpr uint32_t kHalo4StormMasterchiefBodyRuntimeImportChecksum =
+    0x17010100u;
+// Exact storm_masterchief region bits in its 120-node first-person model.
+// Set bits suppress the matching region in the row-local retail selector.
+inline constexpr uint32_t kHalo4BodyHideHeadRegions =
+    (1u << 2) | (1u << 8) | (1u << 11);
+inline constexpr uint32_t kHalo4BodyShowUpperRegions =
+    (1u << 0) | (1u << 4) | (1u << 5) | (1u << 6) |
+    (1u << 7) | (1u << 10) | (1u << 12);
+inline constexpr uint32_t kHalo4BodyHideLowerRegions =
+    (1u << 3) | (1u << 9);
+
+inline uint32_t Halo4BuildBodyIkRegionMask(uint32_t nativeMask,
+    bool hideLowerBody) noexcept
+{
+    // A set bit hides that region. Keep native FX/other region choices intact,
+    // suppress the camera-facing head, and admit only the known authored upper
+    // body. The leg option is independent from the torso/arm transaction.
+    uint32_t mask=(nativeMask|kHalo4BodyHideHeadRegions)&
+        ~kHalo4BodyShowUpperRegions;
+    if(hideLowerBody) mask|=kHalo4BodyHideLowerRegions;
+    return mask;
+}
+inline constexpr bool Halo4IsStormMasterchiefBodyIdentity(
+    uint32_t runtimeImportChecksum, int nodeCount) noexcept
+{
+    return runtimeImportChecksum ==
+            kHalo4StormMasterchiefBodyRuntimeImportChecksum &&
+        nodeCount == kHalo4StormMasterchiefBodyNodeCount;
+}
+inline constexpr bool Halo4BodyBelongsToFrozenLocalUnit(
+    bool identityValid, uint32_t bodyObjectIndex, bool localUnitValid,
+    uint32_t frozenLocalUnit) noexcept
+{
+    return identityValid && localUnitValid &&
+        bodyObjectIndex != UINT32_MAX &&
+        frozenLocalUnit != UINT32_MAX &&
+        bodyObjectIndex == frozenLocalUnit;
+}
 inline constexpr int kHalo4RightShoulderNode = 4;
 inline constexpr int kHalo4RightElbowNode = 16;
 inline constexpr int kHalo4RightHandNode = 29;
@@ -458,6 +530,71 @@ inline constexpr Halo4FloatingNodeRole Halo4ClassifyFloatingNode(
     if (Halo4StormNodeInSet(kHalo4LeftShoulderSubtree, node))
         return Halo4FloatingNodeRole::CollapseAtLeftWrist;
     return Halo4FloatingNodeRole::Hidden;
+}
+
+// `floating_hands` is the inverse of visible controller-tracked arms. The
+// body palette must still collapse unrelated torso nodes in either mode.
+inline constexpr bool Halo4ShouldCollapseFloatingNode(
+    Halo4FloatingNodeRole role, bool floatingHands) noexcept
+{
+    if (role == Halo4FloatingNodeRole::Hidden ||
+        role == Halo4FloatingNodeRole::OutsideBody)
+        return true;
+    return floatingHands &&
+        (role == Halo4FloatingNodeRole::CollapseAtRightWrist ||
+         role == Halo4FloatingNodeRole::CollapseAtLeftWrist);
+}
+
+inline constexpr bool Halo4VisibleArmSolveCanCommit(
+    bool requested, bool rightSolved, bool leftSolved) noexcept
+{
+    return requested && rightSolved && leftSolved;
+}
+
+// Hand/grip targets are fully resolved before this test; two-hand ownership
+// can therefore shape the elbows without changing the wrist or weapon target.
+inline constexpr bool Halo4ShouldSolveVisibleArms(
+    bool showArms, bool armIkConfigured,
+    bool bodyRootValid, bool bothHandTargetsValid) noexcept
+{
+    return showArms && armIkConfigured && bodyRootValid &&
+        bothHandTargetsValid;
+}
+
+enum class Halo4ArmTransactionResult : uint8_t
+{
+    NotRequested,
+    Committed,
+    RightSolveFailed,
+    LeftSolveFailed,
+    RollbackFailed,
+    HandFallbackFailed
+};
+
+// Run the optional anatomical solve as one palette transaction. A partial
+// solve is never exposed: restore the caller's untouched source before using
+// the established rigid-hand fallback. Runtime and fixture tests share this
+// exact control flow; callbacks own title-specific palette operations.
+template<class SolveRight, class SolveLeft, class RestoreSource,
+         class CarryHands>
+inline Halo4ArmTransactionResult Halo4RunArmPaletteTransaction(
+    bool requested, SolveRight&& solveRight, SolveLeft&& solveLeft,
+    RestoreSource&& restoreSource, CarryHands&& carryHands)
+{
+    if (!requested) return Halo4ArmTransactionResult::NotRequested;
+    if (!solveRight())
+    {
+        if (!restoreSource()) return Halo4ArmTransactionResult::RollbackFailed;
+        return carryHands() ? Halo4ArmTransactionResult::RightSolveFailed
+                            : Halo4ArmTransactionResult::HandFallbackFailed;
+    }
+    if (!solveLeft())
+    {
+        if (!restoreSource()) return Halo4ArmTransactionResult::RollbackFailed;
+        return carryHands() ? Halo4ArmTransactionResult::LeftSolveFailed
+                            : Halo4ArmTransactionResult::HandFallbackFailed;
+    }
+    return Halo4ArmTransactionResult::Committed;
 }
 
 // The weapon records are consumed before the body record that supplies the
@@ -1553,7 +1690,6 @@ inline constexpr uintptr_t Halo4ExpectedHeldRecordSource(
 // at `+0x3B23AD` passes 0. It partitions an ordered sequence; it does not by
 // itself identify the arms.
 inline constexpr uint32_t kHalo4FirstPersonRecordBankOffset = 0xB0;
-inline constexpr uint32_t kHalo4FirstPersonRecordFillFlagOffset = 0x08;
 inline constexpr int32_t kHalo4FirstPersonBodyFillFlag = 0;
 inline constexpr int32_t kHalo4FirstPersonWeaponFillFlag = 1;
 

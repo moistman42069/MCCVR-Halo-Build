@@ -118,6 +118,36 @@ int main()
 {
     CheckScopeAdmission();
     CheckPhysicalCrouchInput();
+    {
+        // Real collisions: CE uses distinct action identities on the same
+        // default pad button; H3/ODST/H4 also alias the native action itself.
+        // The pre-transport publication must preserve both semantic choices.
+        Overrides overrides{}; overrides.fill(Unbound);
+        Transports aliases{}; aliases[Reload]=aliases[Interact]=0x4000;
+        Mapper isolated;
+        overrides[Reload]=X;
+        isolated.ApplyDetailed(0,overrides,aliases,1,true);
+        auto mapped=isolated.ApplyDetailed(Bit(X),overrides,aliases,1,true);
+        Check(mapped.Has(Reload)&&!mapped.Has(Interact)&&mapped.transports==0x4000,
+            "semantic reload remains distinct from unbound Use despite a shared native transport");
+        overrides[Reload]=Unbound;overrides[Interact]=X;
+        Check(isolated.ApplyDetailed(Bit(X),overrides,aliases,1,true).actions==0,
+            "held alias remap cannot become a different semantic action");
+        isolated.ApplyDetailed(0,overrides,aliases,1,true);
+        mapped=isolated.ApplyDetailed(Bit(X),overrides,aliases,1,true);
+        Check(!mapped.Has(Reload)&&mapped.Has(Interact)&&mapped.transports==0x4000,
+            "semantic Use remains distinct from unbound reload despite a shared native transport");
+        overrides[Reload]=X;
+        isolated.ApplyDetailed(0,overrides,aliases,1,true);
+        mapped=isolated.ApplyDetailed(Bit(X),overrides,aliases,1,true);
+        Check(mapped.Has(Reload)&&mapped.Has(Interact),
+            "intentionally shared VR source admits both independently named actions");
+        aliases[Fire]=0;overrides[Fire]=PrimaryTrigger;
+        isolated.ApplyDetailed(0,overrides,aliases,1,true);
+        mapped=isolated.ApplyDetailed(Bit(PrimaryTrigger),overrides,aliases,1,true);
+        Check(mapped.Has(Fire)&&mapped.transports==0,
+            "native-unbound action still carries semantic identity for a proven direct consumer");
+    }
     Transports native{}; Overrides bindings{};
     for(unsigned a=0;a<Count;++a) native[a]=1u<<a;
     for(unsigned a=0;a<Count;++a) for(int source=Unbound;source<SourceCount;++source)

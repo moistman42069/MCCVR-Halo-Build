@@ -1,5 +1,11 @@
 # VRIK roadmap — full-body VR embodiment (the user's stated end goal)
 
+> September 30 correction: the claim below that `fp_body` contains complete
+> visible arm geometry was based on skeleton names, not skin/mesh evidence.
+> Do not use that claim as an implementation premise. See
+> [the official asset audit](../H3-ODST-AVATAR-ASSETS-2026-09-30.md) for the
+> first-person versus full-world model comparison. This file is historical.
+
 > **2026-07-19 approved plan (authoritative):** upper-body VRIK on the BIPED pipeline.
 > The user's requirement, verbatim: "the controllers following my arms; Master Chief's chest
 > remaining in its spot; me being able to push my arm completely out and have the controller

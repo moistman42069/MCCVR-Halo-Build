@@ -1,6 +1,7 @@
 #include "../src/common/reach_wind_replay.h"
 int RunRoomscaleInputTests();
 #include "../src/common/roomscale_logic.h"
+#include "../src/common/controller_finger_input.h"
 #include "../src/common/vr_interaction_refinement_logic.h"
 #include "../src/common/menu_slider_logic.h"
 #include "../src/common/anatomical_palette_logic.h"
@@ -662,6 +663,61 @@ int main()
                 ? ContactResult::NativeRejected : ContactResult::NoStrike),
                 "walls, native rejection and self-contact never turn into fallback melee attacks");
         }
+
+        struct WorldScene
+        {
+            unsigned applications=0;
+            bool Query(const Sweep&,Hit& hit) noexcept
+            {
+                hit.unit=UINT32_MAX; // BSP surfaces do not have object handles.
+                hit.position={0.05f,0,0}; hit.normal={-1,0,0}; hit.fraction=0.5f;
+                hit.kind=HitKind::WorldSurface;
+                hit.world.nativeType=1;
+                hit.world.nativeData[0]=0x120034u;
+                hit.world.nativeData[1]=0x000A0011u;
+                hit.world.material=2;
+                hit.world.valid=true;
+                return true;
+            }
+            bool Apply(uint32_t,const Hit& hit,const Sweep&) noexcept
+            {
+                if(hit.unit!=UINT32_MAX || hit.object ||
+                    hit.kind!=HitKind::WorldSurface || !hit.world.valid) return false;
+                ++applications;
+                return true;
+            }
+        } world;
+        Hand worldHand;
+        frame.serial++; frame.timeNs+=10'000'000;
+        frame.points[0].x=frame.points[1].x=0;
+        worldHand.Process(frame,5,world);
+        frame.serial++; frame.timeNs+=10'000'000;
+        frame.points[0].x=frame.points[1].x=0.06f;
+        Check(worldHand.Process(frame,5,world)==ContactResult::Applied &&
+              world.applications==1,
+              "explicit native world-surface identity can reach backend without a manufactured object handle");
+        Hit unverifiedWorld{};
+        unverifiedWorld.kind=HitKind::WorldSurface;
+        unverifiedWorld.world.nativeType=1;
+        unverifiedWorld.world.valid=false;
+        Check(!IsCandidate(unverifiedWorld,frame.unit),
+              "world contacts without a verified surface identity are rejected");
+        unverifiedWorld.world.nativeType=2;
+        unverifiedWorld.world.valid=true;
+        Check(IsCandidate(unverifiedWorld,frame.unit),
+              "shared world-contact contract leaves native type semantics to each title adapter");
+        Hit surfaceA{};
+        surfaceA.kind=HitKind::WorldSurface;
+        surfaceA.position={0.05f,0,0}; surfaceA.normal={-1,0,0}; surfaceA.fraction=0.5f;
+        surfaceA.world.nativeType=2; surfaceA.world.nativeData[0]=0x10203040;
+        surfaceA.world.material=7; surfaceA.world.valid=true;
+        Hit surfaceB=surfaceA;
+        surfaceB.position.x+=0.001f;
+        Check(SameWorldSurface(surfaceA,surfaceB),
+              "world revalidation accepts the same native surface within query precision");
+        surfaceB.world.nativeData[0]++;
+        Check(!SameWorldSurface(surfaceA,surfaceB),
+              "world revalidation rejects a different BSP/feature identity even at the same point");
     }
     {
         using namespace contact_melee;
@@ -873,6 +929,76 @@ int main()
     Check(ReachShouldBindVisibleLeftHandToController(false) &&
               !ReachShouldBindVisibleLeftHandToController(true),
           "Reach binds the visible glove to the left controller only in free-hand mode and keeps the authored weapon grip during two-hand aim");
+    Check(ReachMayShowControllerTrackedArms(true,true,false,true,true,true) &&
+              !ReachMayShowControllerTrackedArms(false,true,false,true,true,true) &&
+              !ReachMayShowControllerTrackedArms(true,false,false,true,true,true) &&
+              !ReachMayShowControllerTrackedArms(true,true,false,false,true,true) &&
+              !ReachMayShowControllerTrackedArms(true,true,false,true,false,true) &&
+              !ReachMayShowControllerTrackedArms(true,true,false,true,true,false) &&
+              ReachMayShowControllerTrackedArms(true,true,true,true,false,true) &&
+              !ReachMayShowControllerTrackedArms(true,true,true,true,false,false),
+          "Reach exposes arms after complete solve, using the derived authored support endpoint when attached");
+    struct ReachPose2D { float angle=0.0f,x=0.0f,y=0.0f,scale=1.0f; };
+    const auto composeReachPose=[](const ReachPose2D& a,const ReachPose2D& b,
+                                   ReachPose2D& out) {
+        const float c=std::cos(a.angle),s=std::sin(a.angle);
+        out.angle=a.angle+b.angle;
+        out.x=a.x+a.scale*(c*b.x-s*b.y);
+        out.y=a.y+a.scale*(s*b.x+c*b.y);
+        out.scale=a.scale*b.scale;
+        return std::isfinite(out.angle)&&std::isfinite(out.x)&&
+            std::isfinite(out.y)&&std::isfinite(out.scale);
+    };
+    const auto invertReachPose=[&](const ReachPose2D& value,ReachPose2D& out) {
+        if(!std::isfinite(value.scale)||std::fabs(value.scale)<1.0e-5f)
+            return false;
+        out.angle=-value.angle;out.scale=1.0f/value.scale;
+        const float c=std::cos(out.angle),s=std::sin(out.angle);
+        out.x=-out.scale*(c*value.x-s*value.y);
+        out.y=-out.scale*(s*value.x+c*value.y);
+        return std::isfinite(out.x)&&std::isfinite(out.y);
+    };
+    const ReachPose2D reachRoot{0.6f,2.0f,-1.0f,1.2f};
+    const ReachPose2D reachStockRight{0.2f,0.3f,0.1f,1.0f};
+    const ReachPose2D reachDesiredRight{-0.4f,4.0f,3.0f,1.0f};
+    const ReachPose2D reachStockSupport{0.5f,-0.2f,0.8f,1.0f};
+    ReachPose2D reachSupportEndpoint{};
+    const bool reachEndpointBuilt=ReachBuildRigidCarriedSupportEndpoint(
+        reachRoot,reachStockRight,reachDesiredRight,reachStockSupport,
+        reachSupportEndpoint,composeReachPose,invertReachPose);
+    ReachPose2D reachStockRightWorld{},reachInverseRight{},reachDelta{};
+    ReachPose2D reachStockSupportWorld{},reachExpectedSupport{};
+    const bool reachExpectedBuilt=composeReachPose(reachRoot,reachStockRight,
+        reachStockRightWorld)&&invertReachPose(reachStockRightWorld,
+        reachInverseRight)&&composeReachPose(reachDesiredRight,
+        reachInverseRight,reachDelta)&&composeReachPose(reachRoot,
+        reachStockSupport,reachStockSupportWorld)&&composeReachPose(reachDelta,
+        reachStockSupportWorld,reachExpectedSupport);
+    Check(reachEndpointBuilt&&reachExpectedBuilt&&
+          std::fabs(reachSupportEndpoint.x-reachExpectedSupport.x)<1.0e-5f&&
+          std::fabs(reachSupportEndpoint.y-reachExpectedSupport.y)<1.0e-5f&&
+          std::fabs(reachSupportEndpoint.angle-reachExpectedSupport.angle)<1.0e-5f,
+          "Reach two-hand support wrist endpoint follows the exact right-hand/gun rigid delta");
+    ReachPose2D refusedEndpoint{};
+    Check(!ReachBuildRigidCarriedSupportEndpoint(ReachPose2D{},
+              ReachPose2D{0,0,0,0},reachDesiredRight,reachStockSupport,
+              refusedEndpoint,composeReachPose,invertReachPose),
+          "Reach refuses support-arm transaction when source wrist transform cannot be inverted");
+    Check(ReachFpPaletteVisibility(false,false,true,true,false)==
+              ReachFpVisibilityAction::Keep &&
+              ReachFpPaletteVisibility(false,false,true,false,true)==
+                  ReachFpVisibilityAction::Keep &&
+              ReachFpPaletteVisibility(false,false,false,true,false)==
+                  ReachFpVisibilityAction::CollapseAtLeftWrist &&
+              ReachFpPaletteVisibility(false,false,false,false,true)==
+                  ReachFpVisibilityAction::CollapseAtRightWrist &&
+              ReachFpPaletteVisibility(false,false,true,false,false)==
+                  ReachFpVisibilityAction::HideUnrelatedBody &&
+              ReachFpPaletteVisibility(true,false,false,false,false)==
+                  ReachFpVisibilityAction::Keep &&
+              ReachFpPaletteVisibility(false,true,false,false,false)==
+                  ReachFpVisibilityAction::Keep,
+          "Reach visibility keeps both controller-solved arms and hands/held models, while hiding unrelated first-person body nodes");
     {
         using namespace weapon_order_diagnostic;
         const uint64_t packed = (uint64_t(10) << 32) | 7;
@@ -8668,6 +8794,9 @@ int main()
                 for (uint32_t i = 32; i <= 40; ++i) expectedRight |= 1ull << i;
                 Check(built && binding.valid && binding.leftWrist == 5 &&
                           binding.rightWrist == 6 &&
+                          binding.leftElbow == 3 && binding.rightElbow == 4 &&
+                          binding.leftShoulder == 1 &&
+                          binding.rightShoulder == 2 &&
                           binding.rigKind ==
                               Halo2FirstPersonRigKind::MasterChief &&
                           binding.leftArmAncestors ==
@@ -8689,6 +8818,44 @@ int main()
                           (binding.rightSubtree & (1ull << 2)) == 0,
                     "Halo 2 keeps only the right hand and gun on the right "
                     "controller, excluding both upper arms");
+
+                Halo2FirstPersonTransform armShoulder{},armElbow{},armStockWrist{},
+                    armDesiredWrist{};
+                armShoulder.scale=armElbow.scale=armStockWrist.scale=
+                    armDesiredWrist.scale=1.0f;
+                armShoulder.rotation[0]=armShoulder.rotation[4]=
+                    armShoulder.rotation[8]=1.0f;
+                armElbow.rotation[0]=armElbow.rotation[4]=
+                    armElbow.rotation[8]=1.0f;
+                armStockWrist.rotation[0]=armStockWrist.rotation[4]=
+                    armStockWrist.rotation[8]=1.0f;
+                armDesiredWrist.rotation[0]=armDesiredWrist.rotation[4]=
+                    armDesiredWrist.rotation[8]=1.0f;
+                armElbow.translation[0]=1.0f;
+                armStockWrist.translation[0]=2.0f;
+                armDesiredWrist.translation[0]=1.0f;
+                armDesiredWrist.translation[1]=1.0f;
+                Check(Halo2SolveFinalPacketArm(armShoulder,armElbow,
+                          armStockWrist,armDesiredWrist) &&
+                          std::fabs(std::sqrt(
+                              armElbow.translation[0]*armElbow.translation[0]+
+                              armElbow.translation[1]*armElbow.translation[1])-1.0f)<1.0e-4f,
+                      "H2 final-packet analytic arm solve preserves authored link lengths while reaching tracked wrist");
+                Halo2FirstPersonTransform refusedShoulder{},refusedElbow{};
+                refusedShoulder.scale=refusedElbow.scale=1.0f;
+                refusedShoulder.rotation[0]=refusedShoulder.rotation[4]=
+                    refusedShoulder.rotation[8]=1.0f;
+                refusedElbow.rotation[0]=refusedElbow.rotation[4]=
+                    refusedElbow.rotation[8]=1.0f;
+                refusedElbow.translation[0]=1.0f;
+                Halo2FirstPersonTransform refusedWrist=armStockWrist;
+                Halo2FirstPersonTransform unreachableWrist=armDesiredWrist;
+                unreachableWrist.translation[0]=6.0f;
+                unreachableWrist.translation[1]=0.0f;
+                Check(!Halo2SolveFinalPacketArm(refusedShoulder,refusedElbow,
+                          refusedWrist,unreachableWrist) &&
+                          refusedElbow.translation[0]==1.0f,
+                      "H2 arm solve refuses unreachable targets without partially changing its chain");
 
                 static Halo2FirstPersonSlotCache splitCache{};
                 splitCache = Halo2FirstPersonSlotCache{};
@@ -8745,6 +8912,8 @@ int main()
                 Check(Halo2BuildFirstPersonArmBinding(
                           eliteFlags, eliteParents, kElite, elite) &&
                           elite.leftWrist == 5 && elite.rightWrist == 6 &&
+                          elite.leftElbow == 3 && elite.rightElbow == 4 &&
+                          elite.leftShoulder == 1 && elite.rightShoulder == 2 &&
                           elite.rigKind == Halo2FirstPersonRigKind::Elite &&
                           (elite.leftSubtree & (1ull << 31)) == 0,
                     "C-H2-47 binds the 36-node Elite rig, whose weapon root is "
@@ -11776,6 +11945,27 @@ int main()
                       std::numeric_limits<float>::quiet_NaN(), invalidReach),
             "Halo 4 refuses invalid arm-link or tracked-span inputs");
 
+        Check(!Halo4ShouldCollapseFloatingNode(
+                  Halo4FloatingNodeRole::CollapseAtRightWrist, false) &&
+                  !Halo4ShouldCollapseFloatingNode(
+                      Halo4FloatingNodeRole::CollapseAtLeftWrist, false) &&
+                  Halo4ShouldCollapseFloatingNode(
+                      Halo4FloatingNodeRole::Hidden, false) &&
+                  Halo4ShouldCollapseFloatingNode(
+                      Halo4FloatingNodeRole::CollapseAtRightWrist, true) &&
+                  Halo4ShouldCollapseFloatingNode(
+                      Halo4FloatingNodeRole::CollapseAtLeftWrist, true) &&
+                  !Halo4ShouldCollapseFloatingNode(
+                      Halo4FloatingNodeRole::RightHand, true) &&
+                  !Halo4ShouldCollapseFloatingNode(
+                      Halo4FloatingNodeRole::LeftHand, true),
+            "Halo 4 arms-with-hands shows only the solved chains; floating hands collapses both arms and preserves both hands");
+        Check(Halo4VisibleArmSolveCanCommit(true,true,true) &&
+                  !Halo4VisibleArmSolveCanCommit(true,false,true) &&
+                  !Halo4VisibleArmSolveCanCommit(true,true,false) &&
+                  !Halo4VisibleArmSolveCanCommit(false,true,true),
+            "Halo 4 preserves the hand-only fallback unless both visible-arm solves succeed");
+
         // The 28 helper/fixup/armour bones between the joints. The shared
         // solver writes only the shoulder, the elbow and the hand mask, so
         // these are carried separately; if the band tables ever drift out of
@@ -13395,6 +13585,17 @@ int main()
     Check(std::filesystem::exists(primary), "Legacy config migration creates halomccvr.cfg");
     Check(std::filesystem::exists(legacy), "Legacy config migration retains halo3xr.cfg");
     Check(g_config.screen_width_m == 6.25f, "Legacy values survive migration");
+    Check(!g_config.hud_reveal_near_head&&g_config.hud_reveal_radius_m==.22f,
+        "HUD reveal is opt-in and cannot change existing hide behavior during upgrade");
+    g_config.hud_reveal_near_head=true;g_config.hud_reveal_radius_m=.31f;
+    ConfigSave();ConfigLoad(primary.c_str());
+    Check(g_config.hud_reveal_near_head&&std::fabs(g_config.hud_reveal_radius_m-.31f)<.0001f,
+        "HUD reveal choice and activation distance survive a real config roundtrip");
+    g_config.hud_reveal_near_head=false;g_config.hud_reveal_radius_m=.22f;ConfigSave();
+    g_config.dlss_preset=6;ConfigSave();ConfigLoad(primary.c_str());
+    Check(g_config.dlss_preset==6,
+        "DLSS E survives real config roundtrip instead of silently changing to M");
+    g_config.dlss_preset=0;ConfigSave();
     Check(g_config.haptic_intensity == 0.86f,
         "Malformed new values retain their individual default");
     Check(g_config.dpad_head_radius == 0.30f && !g_config.quest_thumbrest_dpad,
@@ -14830,6 +15031,8 @@ int main()
         file << "physical_melee = 1\n";
         file << "left_handed = 1\n";
         file << "roomscale_movement = 1\n";
+        file << "physical_running = 1\nphysical_running_speed = 0.6\nphysical_running_sensitivity = 2\n";
+        file << "experimental_body_ik = 1\nbody_ik_hide_lower = 1\n";
         file << "physical_melee_swing_speed = 0.10\n";
     }
     ConfigLoad(primary.c_str());
@@ -14843,6 +15046,9 @@ int main()
     Check(g_config.world_collision,
         "the shared world-collision option survives a save/load round trip");
     Check(g_config.roomscale_movement, "roomscale survives config save/load");
+    Check(g_config.physical_running&&g_config.physical_running_speed==.6f&&
+        g_config.physical_running_sensitivity==2&&g_config.experimental_body_ik&&g_config.body_ik_hide_lower,
+        "physical running controls and separate avatar/lower-body toggles survive config save/load");
     Check(g_config.left_handed,
         "left-handed main-weapon mode survives a save/load round trip");
     Check(!g_config.experimental_hand_alignment,
@@ -18988,6 +19194,25 @@ int main()
     }
     Check(!Config{}.roomscale_movement, "roomscale is opt-in for existing and new configurations");
 
+    {
+        ControllerFingerSample sample{9,123,7,false,
+            {MakeControllerFingerInput(true,.25f,true,.75f),MakeControllerFingerInput(true,.8f,true,.1f)}};
+        ControllerFingerInput hands[2]{};
+        Check(SelectControllerFingerInputs(sample,9,123,7,false,true,hands)&&
+            hands[0].trigger==.25f&&hands[1].trigger==.8f,"finger inputs preserve physical support/primary values");
+        sample.leftHanded=true;
+        Check(SelectControllerFingerInputs(sample,9,123,7,true,true,hands)&&
+            hands[0].grip==.1f&&hands[1].grip==.75f,"left-handed finger inputs follow the same roles as frozen hand poses");
+        for(unsigned stale=0;stale<5;++stale)
+            Check(!SelectControllerFingerInputs(sample,stale==4?10:9,stale==0?124:123,stale==1?8:7,stale!=2,stale!=3,hands)&&
+                !hands[0].valid&&!hands[1].valid,"stale time, space, handedness or tracking cannot replay finger input");
+        Check(!MakeControllerFingerInput(false,.5f,true,.5f).valid&&
+            !MakeControllerFingerInput(true,.5f,false,.5f).valid&&
+            !MakeControllerFingerInput(true,std::numeric_limits<float>::quiet_NaN(),true,.5f).valid&&
+            !MakeControllerFingerInput(true,.5f,true,2.f).valid,"missing or malformed finger axes retain authored poses");
+        const auto bounded=MakeControllerFingerInput(true,-.005f,true,1.005f);
+        Check(bounded.valid&&bounded.trigger==0&&bounded.grip==1,"small analog endpoint noise remains bounded");
+    }
     g_failures += RunRoomscaleInputTests();
     if (g_failures == 0)
         std::cout << "HaloMCCVR core tests passed\n";

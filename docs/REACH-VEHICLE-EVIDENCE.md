@@ -1357,7 +1357,9 @@ in the outer finally, preserving any unrelated flag change. If the bit was
 already authored, it performs no owned write or restore. This keeps first-
 person arms/weapon palettes, never changes seat camera mode, never spans frame
 boundaries, and cannot toggle View Follow. The rejected R-V20 seat-bit lease
-remains compiled only as dormant evidence.
+remains compiled only as dormant evidence. The explicit `vehicle_hide_body`
+setting remains independent of the shared `body_wip` full-body setting: when a
+player requests both modes, the explicit seated-vehicle hide continues to win.
 
 ### Vehicle projectile direction
 

@@ -8,6 +8,8 @@
 #include "title_adapter.h"
 #include "vr.h"
 #include "../common/haloce_contact_logic.h"
+#include "../common/haloce_world_melee_contract.h"
+#include "../common/haloce_haptic_contract.h"
 #include "../common/haloce_snapshot.h"
 #include "../common/halo4_world_collision_logic.h"
 #include "../common/vr_interaction_refinement_logic.h"
@@ -30,6 +32,10 @@ using MeleeFn=void(__fastcall*)(uint32_t,uint32_t,uint16_t);
 using DamageFn=void(__fastcall*)(void*,uint32_t,int16_t,int16_t,int16_t,const void*);
 using ObjectFn=uintptr_t(__fastcall*)(uint32_t,uint32_t);
 struct Hook { void* target{};void* original{};bool enabled{}; } tickHook,damageHook;
+Hook fanHook,breakableHook;
+std::atomic<bool> worldMeleeReady{};
+using FanFn=void(__fastcall*)(uint32_t,uint32_t*,uint16_t*,uint16_t*,uint16_t*,uint32_t*);
+using BreakableFn=void(__fastcall*)(int16_t,void*,uint32_t);
 HMODULE retained{};
 uintptr_t moduleBase{};
 std::atomic<uint32_t> generation{},callbacks{};
@@ -64,6 +70,8 @@ struct DamageScope
     bool active{},applied{};
     uint32_t owner{UINT32_MAX},target{UINT32_MAX};
     contact_melee::Point position{},direction{};
+    contact_melee::WorldSurfaceIdentity world{};
+    bool selectedWorld{};
 };
 thread_local DamageScope damageScope;
 
@@ -73,6 +81,7 @@ bool Current() noexcept
         !retiring.load(std::memory_order_acquire)&&TitleAdapter_GetActiveTitle()==GameTitle::HaloCE&&
         TitleAdapter_GetGeneration(GameTitle::HaloCE)==generation.load(std::memory_order_acquire);
 }
+#include "haloce_weapon_haptics.inl"
 bool Admitted(uint32_t unit,HaloCELocalPlayerState& state,RenderContext& context) noexcept
 {
     return Current()&&HaloCEControls_GetLocomotionFrame(state,context)&&state.unit==unit&&
@@ -100,6 +109,73 @@ static_assert(sizeof(CollisionResult)==0x50&&offsetof(CollisionResult,fraction)=
     offsetof(CollisionResult,point)==0x18&&offsetof(CollisionResult,normal)==0x24&&
     offsetof(CollisionResult,material)==0x34&&offsetof(CollisionResult,object)==0x38);
 
+bool WorldIdentity(const CollisionResult& result,contact_melee::WorldSurfaceIdentity& out) noexcept
+{
+    out={};
+    if(result.type!=2||result.material==UINT16_MAX||!worldMeleeReady.load())return false;
+    const auto* bytes=reinterpret_cast<const uint8_t*>(&result);
+    const int16_t bsp=*reinterpret_cast<const int16_t*>(moduleBase+world_melee_contract::bsp);
+    if(bsp<0)return false;
+    out.nativeType=2;out.material=static_cast<int16_t>(result.material);
+    out.nativeData[0]=(bytes[0x4C]&8)?bytes[0x4D]:UINT32_MAX;
+    std::memcpy(&out.nativeData[1],bytes+0x44,4);
+    out.nativeData[2]=static_cast<uint16_t>(bsp);out.nativeData[3]=bytes[0x4C]&8;
+    out.valid=true;return true;
+}
+bool SameWorld(const contact_melee::WorldSurfaceIdentity& a,const contact_melee::WorldSurfaceIdentity& b) noexcept
+{
+    return a.valid&&b.valid&&a.nativeType==b.nativeType&&a.material==b.material&&
+        std::memcmp(a.nativeData,b.nativeData,sizeof(a.nativeData))==0;
+}
+void FanBody(uint32_t owner,uint32_t* target,uint16_t* kind,uint16_t* material,
+    uint16_t* surface,uint32_t* index,uintptr_t caller)
+{
+    auto& scope=damageScope;
+    if(!scope.active||!scope.world.valid||caller!=moduleBase+0xB0C467) {
+        if(fanHook.original)reinterpret_cast<FanFn>(fanHook.original)(owner,target,kind,material,surface,index);
+        return;
+    }
+    // Only the native helper's private output parameters are changed. There
+    // is no head-directed fallback after a physical surface was selected.
+    if(!target||!kind||!material||!surface||!index)return;
+    *target=UINT32_MAX;*kind=*material=*surface=UINT16_MAX;*index=UINT32_MAX;
+    if(owner!=scope.owner||!Object(owner,1)||!worldMeleeReady.load()||
+       *reinterpret_cast<const int16_t*>(moduleBase+world_melee_contract::bsp)!=scope.world.nativeData[2])return;
+    *material=static_cast<uint16_t>(scope.world.material);
+    *surface=static_cast<uint16_t>(scope.world.nativeData[0]);*index=scope.world.nativeData[1];
+    scope.selectedWorld=true;
+}
+__declspec(noinline) void __fastcall FanHook(uint32_t owner,uint32_t* target,uint16_t* kind,
+    uint16_t* material,uint16_t* surface,uint32_t* index)
+{
+    callbacks.fetch_add(1,std::memory_order_acq_rel);
+    __try {FanBody(owner,target,kind,material,surface,index,reinterpret_cast<uintptr_t>(_ReturnAddress()));}
+    __finally {callbacks.fetch_sub(1,std::memory_order_release);}
+}
+void BreakableBody(int16_t surface,void* event,uint32_t index,uintptr_t caller)
+{
+    auto& scope=damageScope;
+    const bool own=scope.active&&scope.world.valid&&caller==moduleBase+0xB0C66E;
+    if(own) {
+        auto* bytes=static_cast<uint8_t*>(event);
+        if(!scope.selectedWorld||!bytes||surface!=scope.world.nativeData[0]||index!=scope.world.nativeData[1]||
+           *reinterpret_cast<const uint32_t*>(bytes+0x10)!=scope.owner||!Object(scope.owner,1)||
+           *reinterpret_cast<const int16_t*>(moduleBase+world_melee_contract::bsp)!=scope.world.nativeData[2])return;
+        std::memcpy(bytes+0x20,&scope.position,sizeof(scope.position));
+        std::memcpy(bytes+0x38,&scope.direction,sizeof(scope.direction));
+    }
+    if(breakableHook.original) {
+        reinterpret_cast<BreakableFn>(breakableHook.original)(surface,event,index);
+        if(own)scope.applied=true;
+    }
+}
+__declspec(noinline) void __fastcall BreakableHook(int16_t surface,void* event,uint32_t index)
+{
+    callbacks.fetch_add(1,std::memory_order_acq_rel);
+    __try {BreakableBody(surface,event,index,reinterpret_cast<uintptr_t>(_ReturnAddress()));}
+    __finally {callbacks.fetch_sub(1,std::memory_order_release);}
+}
+
 void DamageBody(void* event,uint32_t target,int16_t node,int16_t region,
     int16_t material,const void* extra,uintptr_t caller)
 {
@@ -117,7 +193,10 @@ void DamageBody(void* event,uint32_t target,int16_t node,int16_t region,
         std::memcpy(bytes+0x20,&scope.position,sizeof(scope.position));
         std::memcpy(bytes+0x38,&scope.direction,sizeof(scope.direction));
     }
-    original(event,target,node,region,material,extra);
+    const auto previousRecoil=recoilSource;
+    recoilSource=CaptureRecoilSource(target,caller);
+    __try { original(event,target,node,region,material,extra); }
+    __finally { recoilSource=previousRecoil; }
     if (owned) scope.applied=true;
 }
 __declspec(noinline) void __fastcall DamageHook(void* event,uint32_t target,
@@ -139,17 +218,22 @@ struct Backend
         if (!BuildMeleeContactVector(sweep,unitsPerMetre,delta)) return false;
         meleeQueries.fetch_add(1,std::memory_order_relaxed);
         if (!reinterpret_cast<CollisionFn>(moduleBase+contract::contact::contact_collision)(
-            0x1000e9,&sweep.start.x,&delta.x,owner,&result)||result.type!=3||
-            result.object==owner||!Object(result.object,1)) return false;
+            0x1000e9,&sweep.start.x,&delta.x,owner,&result)) return false;
+        contact_melee::WorldSurfaceIdentity world{};
+        const bool worldHit=WorldIdentity(result,world);
+        if(!worldHit&&(result.type!=3||result.object==owner||!Object(result.object,1)))return false;
         if (!std::isfinite(result.fraction)||result.fraction<0||result.fraction>1||
             !contact_melee::Finite(result.point)||!contact_melee::Finite(result.normal)) return false;
-        hit={result.object,result.point,result.normal,result.fraction,true};
+        hit={worldHit?UINT32_MAX:result.object,result.point,result.normal,result.fraction,!worldHit};
+        if(worldHit){hit.kind=contact_melee::HitKind::WorldSurface;hit.world=world;}
         meleeContacts.fetch_add(1,std::memory_order_relaxed);
         return true;
     }
     bool Apply(uint32_t unit,const contact_melee::Hit& hit,const contact_melee::Sweep& sweep) noexcept
     {
-        if (unit!=owner||!Object(owner,1)||!Object(hit.unit,1)) return false;
+        const bool worldHit=hit.kind==contact_melee::HitKind::WorldSurface;
+        if (unit!=owner||!Object(owner,1)||
+            (worldHit?(!hit.world.valid||hit.unit!=UINT32_MAX):!Object(hit.unit,1))) return false;
         // Requery the identical bounded reach segment to retain its first
         // obstruction/material and refuse an occluded or replaced target.
         CollisionResult result{};
@@ -158,19 +242,25 @@ struct Backend
         const float length=std::sqrt(contact_melee::Dot(delta,delta));
         if (!std::isfinite(length)||length<=0.000001f||
             !reinterpret_cast<CollisionFn>(moduleBase+contract::contact::contact_collision)(
-                0x1000e9,&sweep.start.x,&delta.x,owner,&result)||result.type!=3||result.object!=hit.unit||
-            !Object(hit.unit,1)||!std::isfinite(result.fraction)||result.fraction<0||result.fraction>1||
+                0x1000e9,&sweep.start.x,&delta.x,owner,&result)||
+            !std::isfinite(result.fraction)||result.fraction<0||result.fraction>1||
             !contact_melee::Finite(result.point)||!contact_melee::Finite(result.normal)) return false;
+        contact_melee::WorldSurfaceIdentity world{};
+        if(worldHit) {
+            if(!WorldIdentity(result,world)||!SameWorld(hit.world,world))return false;
+        } else if(result.type!=3||result.object!=hit.unit||!Object(hit.unit,1))return false;
         damageScope={true,false,owner,hit.unit,result.point,{delta.x/length,delta.y/length,delta.z/length}};
+        if(worldHit)damageScope.world=world;
         __try
         {
             reinterpret_cast<MeleeFn>(moduleBase+contract::contact::contact_player_melee)(
                 owner,hit.unit,result.material);
         }
         __finally { damageScope.active=false; }
-        assisted=damageScope.applied&&result.fraction*length>
+        const bool accepted=damageScope.applied||(worldHit&&damageScope.selectedWorld&&world.nativeData[0]==UINT32_MAX);
+        assisted=accepted&&result.fraction*length>
             length-kPhysicalMeleeReachMetres*unitsPerMetre+0.00001f*unitsPerMetre;
-        return damageScope.applied;
+        return accepted;
     }
 };
 
@@ -308,8 +398,8 @@ __declspec(noinline) uint8_t __fastcall TickHook(uint32_t unit)
 }
 bool Remove() noexcept
 {
-    active=false;installed=false;worldReady=false;meleeReady=false;retiring=true;
-    for (auto* hook:{&tickHook,&damageHook})
+    active=false;installed=false;worldReady=false;meleeReady=false;worldMeleeReady=false;hapticReady=false;retiring=true;
+    for (auto* hook:{&tickHook,&damageHook,&fanHook,&breakableHook,&hapticEnqueueHook,&hapticUpdateHook,&hapticTriggerHook})
         if (hook->target&&hook->enabled)
         {
             const auto result=MCCVR_DisableHookForRetirement(hook->target);
@@ -318,16 +408,25 @@ bool Remove() noexcept
         }
     const void* functions[]{reinterpret_cast<const void*>(&TickHook),reinterpret_cast<const void*>(&ContactTick),
         reinterpret_cast<const void*>(&DamageHook),reinterpret_cast<const void*>(&DamageBody),
-        reinterpret_cast<const void*>(&HaloCEContact_ApplyPalette),reinterpret_cast<const void*>(&HaloCEContact_CommitPalette)};
-    const void* trampolines[]{tickHook.original,nullptr,damageHook.original,nullptr,nullptr,nullptr};
-    if (!WaitForNativeDetourQuiescence(functions,trampolines,6,callbacks)) return false;
-    for (auto* hook:{&tickHook,&damageHook})
+        reinterpret_cast<const void*>(&HaloCEContact_ApplyPalette),reinterpret_cast<const void*>(&HaloCEContact_CommitPalette),
+        reinterpret_cast<const void*>(&FanHook),reinterpret_cast<const void*>(&FanBody),
+        reinterpret_cast<const void*>(&BreakableHook),reinterpret_cast<const void*>(&BreakableBody),
+        reinterpret_cast<const void*>(&HapticEnqueueHook),reinterpret_cast<const void*>(&HapticEnqueueBody),
+        reinterpret_cast<const void*>(&HapticUpdateHook),reinterpret_cast<const void*>(&UpdateRecoilEnvelopes),
+        reinterpret_cast<const void*>(&HapticTriggerHook)};
+    const void* trampolines[]{tickHook.original,nullptr,damageHook.original,nullptr,nullptr,nullptr,
+        fanHook.original,nullptr,breakableHook.original,nullptr,hapticEnqueueHook.original,nullptr,
+        hapticUpdateHook.original,nullptr,hapticTriggerHook.original};
+    if (!WaitForNativeDetourQuiescence(functions,trampolines,15,callbacks)) return false;
+    for (auto* hook:{&tickHook,&damageHook,&fanHook,&breakableHook,&hapticEnqueueHook,&hapticUpdateHook,&hapticTriggerHook})
     {
         if (hook->target&&MH_RemoveHook(hook->target)!=MH_OK) return false;
         *hook={};
     }
     for (int side=0;side<2;++side)
     { queues[side].Reset();meleeHands[side].Reset();workers[side]={};correction[side].Publish({}); }
+    for(auto& voice:recoilVoices)voice={};
+    hapticFault=false;
     if (retained) { FreeLibrary(retained);retained=nullptr; }
     moduleBase=0;generation=0;retiring=false;return true;
 }
@@ -377,10 +476,38 @@ bool Install(uintptr_t base,size_t size,uint32_t gen) noexcept
         meleeReady=status==MH_OK;
         if (status!=MH_OK) LOG("CE physical melee stock fallback: damage hook status %d",status);
     }
+    worldMeleeReady=false;
+    if(meleeReady.load()) {
+        const NativeContractSet surface{world_melee_contract::entries,world_melee_contract::witnesses,
+            world_melee_contract::relatives,world_melee_contract::pointers};
+        if(VerifyNativeFeatureBindings(base,size,gen,surface,failure)) {
+            const auto fanStatus=create(fanHook,world_melee_contract::fan,reinterpret_cast<void*>(&FanHook));
+            const auto surfaceStatus=fanStatus==MH_OK?
+                create(breakableHook,world_melee_contract::damage,reinterpret_cast<void*>(&BreakableHook)):fanStatus;
+            worldMeleeReady=fanStatus==MH_OK&&surfaceStatus==MH_OK;
+            if(!worldMeleeReady.load())LOG("CE environment melee fallback: optional hook statuses %d/%d; existing melee stays active",fanStatus,surfaceStatus);
+        } else LOG("CE environment melee fallback: %s; existing melee stays active",failure?failure:"surface verification");
+    }
     if (!worldReady.load()&&!meleeReady.load()) { (void)Remove();return false; }
+    hapticReady=false;hapticFault=false;
+    if(meleeReady.load()) {
+        const NativeContractSet haptics{haptic_contract::entries,haptic_contract::witnesses,
+            haptic_contract::relatives,haptic_contract::pointers};
+        if(VerifyNativeFeatureBindings(base,size,gen,haptics,failure)) {
+            const auto updateStatus=create(hapticUpdateHook,haptic_contract::update,reinterpret_cast<void*>(&HapticUpdateHook));
+            const auto enqueueStatus=updateStatus==MH_OK?
+                create(hapticEnqueueHook,haptic_contract::enqueue,reinterpret_cast<void*>(&HapticEnqueueHook)):updateStatus;
+            const auto triggerStatus=enqueueStatus==MH_OK?
+                create(hapticTriggerHook,haptic_contract::trigger,reinterpret_cast<void*>(&HapticTriggerHook)):enqueueStatus;
+            hapticReady=updateStatus==MH_OK&&enqueueStatus==MH_OK&&triggerStatus==MH_OK;
+            if(!hapticReady.load())LOG("CE weapon haptics stock fallback: optional hook statuses %d/%d/%d",updateStatus,enqueueStatus,triggerStatus);
+        } else LOG("CE weapon haptics stock fallback: %s",failure?failure:"native envelope verification");
+    }
     installed=true;active=true;
     LOG("CE contact installed: native biped update, world clamp=%d physical melee=%d; 12 stock CE authored weapon envelopes in both renderers, exact custom/Anniversary replacement surfaces unproven",worldReady.load(),meleeReady.load());
     LOG("CE physical melee reach: %.0f cm along speed-qualified physical swing; native first obstruction, exact target/material requery and per-hand retraction retained",kPhysicalMeleeReachMetres*100);
+    LOG("CE environment melee: native surface/material path %s; exact BSP/feature revalidation, native authored breakable damage",worldMeleeReady.load()?"installed":"unavailable");
+    LOG("CE weapon haptics: %s; exact local firing-damage envelope, native curves, independent hand output; general damage/vehicle rumble unchanged",hapticReady.load()?"installed":"stock fallback");
     return true;
 }
 }
@@ -405,6 +532,8 @@ bool HaloCEContact_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActive) n
             weaponEnvelopes.load(),weaponNodeFallbacks.load(),lastWeaponGraph.load());
         LOG("CE physical melee reach applied=%llu/%llu allowance-cm=%.0f (within total native applications)",
             meleeReachApplied[0].load(),meleeReachApplied[1].load(),kPhysicalMeleeReachMetres*100);
+        LOG("CE weapon haptics ready=%d fault=%d captured=%llu stock-fallback=%llu faults=%llu",
+            hapticReady.load(),hapticFault.load(),hapticCaptured.load(),hapticFallback.load(),hapticFaults.load());
     }
     return Current();
 }

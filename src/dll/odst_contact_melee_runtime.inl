@@ -24,10 +24,11 @@ struct OdstContactRuntime
 
 struct OdstContactScope
 {
-    bool active=false,submitted=false;
+    bool active=false,submitted=false,worldMatched=false;
     uint32_t owner=UINT32_MAX,target=UINT32_MAX;
     unsigned rays=0;
     contact_melee::Sweep sweep{};
+    contact_melee::Hit expected{};
     float direction[3]{};
 };
 thread_local OdstContactScope g_odstContactScope;
@@ -66,6 +67,32 @@ bool OdstContactObject(uint32_t handle,bool requireBiped=false)
 
 bool OdstContactBiped(uint32_t handle) { return OdstContactObject(handle,true); }
 
+bool OdstContactWorldHit(const uint8_t* bytes,contact_melee::Hit& hit)
+{
+    if(!bytes) return false;
+    const uint32_t type=*reinterpret_cast<const uint32_t*>(bytes);
+    if(type!=1 && type!=3) return false;
+    hit={};
+    hit.unit=UINT32_MAX;
+    hit.kind=contact_melee::HitKind::WorldSurface;
+    hit.world.nativeType=type;
+    // ODST kit 6A3B30 (type 1) and 6A56B0 (type 3) share this result layout:
+    // surface words +18..27, material +28, type-3 section ID +3C, and
+    // collision/BSP identity +4C..58. AD4FC0 dispatches the selected
+    // material/surface tuple through its target==-1 environment path.
+    memcpy(hit.world.nativeData,bytes+0x18,4*sizeof(uint32_t));
+    memcpy(hit.world.nativeData+4,bytes+0x3C,sizeof(uint32_t));
+    memcpy(hit.world.nativeData+5,bytes+0x4C,4*sizeof(uint32_t));
+    memcpy(&hit.world.material,bytes+0x28,sizeof(hit.world.material));
+    memcpy(&hit.fraction,bytes+4,sizeof(hit.fraction));
+    memcpy(&hit.position,bytes+8,sizeof(hit.position));
+    memcpy(&hit.normal,bytes+0x2C,sizeof(hit.normal));
+    hit.world.valid=hit.world.nativeData[5]!=UINT32_MAX && hit.world.material!=-1 &&
+        std::isfinite(hit.fraction) && hit.fraction>=0 && hit.fraction<=1 &&
+        contact_melee::Finite(hit.position) && contact_melee::Finite(hit.normal);
+    return hit.world.valid;
+}
+
 bool OdstRedirectContactVector(uintptr_t caller,uint64_t flags,int32_t mode,
     int32_t ignoredA,int32_t ignoredB,int32_t ignoredC,void* result,uint8_t& returned)
 {
@@ -86,7 +113,14 @@ bool OdstRedirectContactVector(uintptr_t caller,uint64_t flags,int32_t mode,
         const auto* bytes=static_cast<const uint8_t*>(result);
         // Reject a changed/occluded target before the native builder can
         // reparent it, run aim assist, or apply an unrelated contact.
-        if(*reinterpret_cast<const uint32_t*>(bytes)!=4 ||
+        if(scope.expected.kind==contact_melee::HitKind::WorldSurface)
+        {
+            contact_melee::Hit actual{};
+            if(!OdstContactWorldHit(bytes,actual) ||
+                !contact_melee::SameWorldSurface(scope.expected,actual)) returned=0;
+            else scope.worldMatched=true;
+        }
+        else if(*reinterpret_cast<const uint32_t*>(bytes)!=4 ||
             *reinterpret_cast<const uint32_t*>(bytes+0x40)!=scope.target)
             returned=0;
     }
@@ -140,21 +174,29 @@ struct OdstContactBackend
         g_odstContact.queries.fetch_add(1,std::memory_order_relaxed);
         if(!original || !g_odstContact.flags ||
             !original(*g_odstContact.flags,1,start,vector,static_cast<int32_t>(owner),-1,-1,result) ||
-            *reinterpret_cast<const uint32_t*>(result)!=4) return false;
-        memcpy(&hit.unit,result+0x40,sizeof(hit.unit));
-        if(hit.unit==owner || !OdstContactObject(hit.unit)) return false;
-        memcpy(&hit.fraction,result+4,sizeof(hit.fraction));
-        memcpy(&hit.position,result+8,sizeof(hit.position));
-        memcpy(&hit.normal,result+0x2C,sizeof(hit.normal));
-        hit.object=true;
-        if(!std::isfinite(hit.fraction) || hit.fraction<0 || hit.fraction>1 ||
-            !contact_melee::Finite(hit.position) || !contact_melee::Finite(hit.normal)) return false;
+            (*reinterpret_cast<const uint32_t*>(result)!=4 &&
+             *reinterpret_cast<const uint32_t*>(result)!=1)) return false;
+        if(*reinterpret_cast<const uint32_t*>(result)==4)
+        {
+            memcpy(&hit.unit,result+0x40,sizeof(hit.unit));
+            if(hit.unit==owner || !OdstContactObject(hit.unit)) return false;
+            memcpy(&hit.fraction,result+4,sizeof(hit.fraction));
+            memcpy(&hit.position,result+8,sizeof(hit.position));
+            memcpy(&hit.normal,result+0x2C,sizeof(hit.normal));
+            hit.object=true;
+            hit.kind=contact_melee::HitKind::Object;
+        }
+        else if(!OdstContactWorldHit(result,hit)) return false;
         g_odstContact.contacts.fetch_add(1,std::memory_order_relaxed);
         return true;
     }
     bool Apply(uint32_t unit,const contact_melee::Hit& hit,const contact_melee::Sweep& sweep) noexcept
     {
-        if(unit!=owner || !OdstContactBiped(owner) || !OdstContactObject(hit.unit)) return false;
+        const bool objectHit=hit.kind==contact_melee::HitKind::Object || hit.object;
+        const bool worldHit=hit.kind==contact_melee::HitKind::WorldSurface &&
+            hit.unit==UINT32_MAX && !hit.object && hit.world.valid;
+        if(unit!=owner || !OdstContactBiped(owner) || (!objectHit && !worldHit) ||
+            (objectHit && !OdstContactObject(hit.unit))) return false;
         const auto* tls=OdstContactTls();
         const auto* globals=tls ? *reinterpret_cast<const uint8_t* const*>(tls+0x40) : nullptr;
         if(!globals || (!globals[0] && !globals[1])) return false;
@@ -162,14 +204,22 @@ struct OdstContactBackend
         const auto delta=contact_melee::Subtract(sweep.end,sweep.start);
         const float length=std::sqrt(contact_melee::Dot(delta,delta));
         if(!std::isfinite(length) || length<=1e-6f) return false;
-        g_odstContactScope={true,false,owner,hit.unit,0,sweep,
-            {delta.x/length,delta.y/length,delta.z/length}};
+        g_odstContactScope={};
+        g_odstContactScope.active=true;
+        g_odstContactScope.owner=owner;
+        g_odstContactScope.target=hit.unit;
+        g_odstContactScope.sweep=sweep;
+        g_odstContactScope.expected=hit;
+        g_odstContactScope.direction[0]=delta.x/length;
+        g_odstContactScope.direction[1]=delta.y/length;
+        g_odstContactScope.direction[2]=delta.z/length;
         // ODST kit AD9810 / retail 39F5AC: 79 selects weapon response
         // +25C. No animation or input request is issued.
         __try { g_odstContact.melee(owner,0x79,mode,1.0f); }
         __finally { g_odstContactScope.active=false; }
         if(mode==1) g_odstContact.predicted.fetch_add(1,std::memory_order_relaxed);
-        return g_odstContactScope.rays==25 && (mode==1 || g_odstContactScope.submitted);
+        return g_odstContactScope.rays==25 && (mode==1 ||
+            (objectHit ? g_odstContactScope.submitted : g_odstContactScope.worldMatched));
     }
 };
 

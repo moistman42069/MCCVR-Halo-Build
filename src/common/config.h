@@ -434,6 +434,9 @@ struct Config
 
     // M3 VR controller turning (right Sense stick).
     bool roomscale_movement = false; // physical horizontal steps drive native walking
+    bool physical_running = false;
+    float physical_running_speed = 1.0f; // fraction of native maximum locomotion
+    float physical_running_sensitivity = 1.0f;
     bool physical_crouch = false;
     float physical_crouch_depth_m = 0.22f;
     bool turn_smooth = true;           // false = snap turn, true = smooth turn
@@ -588,6 +591,8 @@ struct Config
     // while hiding only the helmet frame.
     bool halo4_helmet = true;
     bool hide_hud = false;
+    bool hud_reveal_near_head = false;
+    float hud_reveal_radius_m = .22f;
     // Optional CE Anniversary flare workaround; scene lighting stays native.
     bool ce_anniversary_disable_lens_flares = false;
     // Optional per-controller firing for an owned native dual-wield pair.
@@ -1000,6 +1005,9 @@ struct Config
     // the engine's director/viewmodel switches. Experimental gate for the
     // upper-body VRIK plan (docs/VRIK-ROADMAP.md).
     bool body_wip = false;
+    // Separate opt-in tracked avatar; unsupported rigs retain first-person hands.
+    bool experimental_body_ik = false;
+    bool body_ik_hide_lower = false;
 
     // VRIK arm IK: bend the first-person arm (shoulder planted, elbow solved,
     // hand+gun to the controller) instead of rigid-parenting the whole

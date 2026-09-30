@@ -7,6 +7,7 @@
 // The durable persistent-support-grip relationship publication carries the
 // shared pure owner identity (title + title generation + unit + weapon).
 #include "../common/support_grip_logic.h"
+#include "../common/controller_finger_input.h"
 
 struct IDXGISwapChain;
 struct Halo2CameraRectangle;
@@ -15,6 +16,9 @@ enum class GameTitle : uint8_t;
 // Successful local slot-1 rendering only: inhibits support-grip coupling,
 // independently of collision/melee. Never authorizes inventory or firing.
 void VR_ObserveSecondaryWeaponPresentation(GameTitle title, uint32_t generation);
+
+// Saved HUD hide preference plus the optional, fresh support-hand reveal.
+bool VR_HudHidden() noexcept;
 
 // Runtime-only Hybrid troubleshooting control. It is intentionally absent from
 // Config and resets to Normal when the DLL process starts.
@@ -182,6 +186,7 @@ struct Halo2VrRenderSnapshot
     bool twoHandAimActive = false;
     bool handAlignment = false; // experimental presentation, frozen with this frame
     bool leftHanded = false; // captured with these role-routed controller poses
+    ControllerFingerInput controllerFingers[2]{}; // exact prepared support/primary sample
     bool leftControllerValid = false;
     float leftControllerOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float leftControllerPosition[3]{};
@@ -1057,7 +1062,7 @@ bool VR_ReachGetRenderSnapshot(
     ReachVrRenderSnapshot& snapshot);
 #endif
 // Immutable tracking sample for contact consumers in every title. Hand 0 is
-// left; hand 1 is the weapon aim pose used by the visible right-hand carrier.
+// support; hand 1 is primary. Handedness swaps their physical controller roles.
 struct VrContactTrackingSnapshot
 {
     struct Hand
@@ -1066,6 +1071,10 @@ struct VrContactTrackingSnapshot
         float orientation[4]{0,0,0,1};
         float position[3]{};
     } hands[2];
+    ControllerFingerInput controllerFingers[2]{}; // same support/primary roles
+    bool headValid=false;
+    bool locomotionBlocked=false;
+    float headPosition[3]{},headOrientation[4]{0,0,0,1};
     uint64_t serial=0,referenceEpoch=0;
     int64_t timeNs=0;
     bool twoHandAimActive=false;
@@ -1093,6 +1102,11 @@ void VR_SetGameHaptics(float amplitude);
 // Adds a lock-free, one-shot collision pulse for one OpenXR hand. It is merged
 // with (and never replaces) the title's ordinary XInput rumble.
 void VR_PulseContactHaptics(bool left, float amplitude);
+// Authored recoil whose native source/owner has been proven by its title.
+// Secondary is a weapon role; coupled support is rechecked on the XR frame.
+uint64_t VR_WeaponHapticToken(GameTitle title,uint32_t generation,bool secondary) noexcept;
+bool VR_PulseWeaponHaptics(GameTitle title,uint32_t generation,bool secondary,
+    bool supported,float amplitude,uint64_t sourceToken=0) noexcept;
 
 // Position and rotation of one eye relative to the midpoint of both OpenXR
 // views. Position is in meters and both outputs use OpenXR view-local axes

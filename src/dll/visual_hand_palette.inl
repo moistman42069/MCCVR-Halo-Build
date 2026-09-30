@@ -59,6 +59,9 @@ void Halo4ApplyVisualHandOffsets(BoneMatrix* solved,float units,bool leftHanded,
             {
                 (void)visual_hand::ApplyClassified(kHalo4StormFpBodyNodeCount,left,right,[](size_t node){
                     const auto role=Halo4ClassifyFloatingNode(int(node));
+                    const int index=static_cast<int>(node);
+                    if(!g_config.floating_hands&&Halo4StormNodeInSet(kHalo4LeftShoulderSubtree,index))return 1;
+                    if(!g_config.floating_hands&&Halo4StormNodeInSet(kHalo4RightShoulderSubtree,index))return 2;
                     return role==Halo4FloatingNodeRole::LeftHand||role==Halo4FloatingNodeRole::CollapseAtLeftWrist?1:
                         role==Halo4FloatingNodeRole::RightHand||role==Halo4FloatingNodeRole::CollapseAtRightWrist?2:0;},
                     [&](size_t node){return solved[node].translation;},

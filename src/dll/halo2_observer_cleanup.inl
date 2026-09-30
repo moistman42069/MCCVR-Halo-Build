@@ -16,7 +16,7 @@ bool RemoveCore(const char* reason) noexcept
     g_teardownRequested.store(true,std::memory_order_release);
     g_finalPaletteReady.store(false,std::memory_order_release);
     if constexpr(kHalo2DebugGlobalAimAssistOverrideEnabled) Game_Halo2RestoreAimAssist();
-    if (!RemoveParticleGate()||!RemoveHalo2ContactMelee()||!RemoveHalo2DualAim()||
+    if (!RemoveParticleGate()||!RemoveHalo2ContactMelee()||!RemoveHalo2WeaponHaptics()||!RemoveHalo2DualAim()||
         !RemoveHalo2WorldCollision()) return false;
     Halo2RetirementHook hooks[]{
         {&g_target,&g_originalAddress,reinterpret_cast<const void*>(&Halo2ObserverFinalTransformDetour),&g_activeCallbacks},

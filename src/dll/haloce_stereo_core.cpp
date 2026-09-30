@@ -44,9 +44,9 @@ constexpr bool kCeIntegratedBaseVrEnabled=false;
 // with Classic source/bootstrap and isolated HUD/mirror corrections retained.
 // Pinned native refresh/admission and production fixtures pass; headset pending.
 constexpr bool kCeSceneVisibilityBaseVrEnabled=true;
-// Preserve the unfinished body-following adapter, but keep experimental CE
-// locomotion out of the core VR candidate (September 15 user priority).
-constexpr bool kCeExperimentalRoomscaleEnabled=false;
+// CE uses the same guarded native walking feedback as H3. Both renderers
+// prepare one horizontal tracking reference before constructing either eye.
+constexpr bool kCeExperimentalRoomscaleEnabled=true;
 using PrepareFn=void(__fastcall*)(uintptr_t);
 using BuilderFn=uintptr_t(__fastcall*)(uintptr_t,SaberViewPair*,uint8_t,float*);
 // The first four append arguments are integer/pointer registers. Preserve all
@@ -139,7 +139,7 @@ std::atomic_flag preparationBusy=ATOMIC_FLAG_INIT;
 std::atomic_flag jobPreparationBusy=ATOMIC_FLAG_INIT;
 struct JobScope { uintptr_t job{},activeList{}; bool owned{},cameraOwned{}; };
 thread_local JobScope jobScope;
-struct BuildScope { uintptr_t list{}; ViewConstruction views; bool enabled{},failed{}; };
+struct BuildScope { uintptr_t list{}; ViewConstruction views; bool enabled{},failed{}; uint64_t referenceRevision{}; };
 thread_local BuildScope* buildScope{};
 struct FrameScope
 {
@@ -245,14 +245,17 @@ void PublishGameplayContext(const RenderContext& context) noexcept
 void FollowRoomscale(const Camera& source,const Tracking& tracking,Reference& frozen,
     float scale,bool positional,uint64_t revision) noexcept
 {
-    if (!kCeExperimentalRoomscaleEnabled||!tracking.controllers.roomscaleEnabled||!Valid(source)||!Valid(frozen.orientation)||
+    if (!kCeExperimentalRoomscaleEnabled||
+        !(tracking.controllers.roomscaleEnabled||tracking.controllers.physicalRunningEnabled)||!Valid(source)||!Valid(frozen.orientation)||
         !Valid(tracking.headOrientation)||!Finite(tracking.headPosition)||!Finite(frozen.position)||
         !std::isfinite(scale)||scale<=0||tracking.generation!=frozen.generation||
         tracking.spaceEpoch!=frozen.spaceEpoch||revision!=referenceRevision.load()||recenter.load()) return;
     // Match H3/H2: measure the unmodified native center camera, ask ordinary
     // native walking to follow the physical step, and consume only observed
     // native motion from the tracking reference. No unit-position write.
-    const Vec3 heading=ToNative(source,Rotate(Multiply(Conjugate(frozen.orientation),
+    Camera frame{};Quat inverse{};
+    if(!BuildTrackingFrame(source,frozen,frame,inverse)) return;
+    const Vec3 heading=ToNative(frame,Rotate(Multiply(inverse,
         tracking.headOrientation),{0,0,-1}));
     if (!Finite(heading)) return;
     const float body[]{source.position.x,source.position.y,source.position.z};
@@ -283,27 +286,41 @@ void ApplyPhysicalCrouchReference(const Tracking& tracking,Reference& frozen,
         frozen.position.y-=correction/scale;
 }
 #include "haloce_classic_runtime.inl"
-void PublishAnniversaryGameplayContext(const SaberCamera& nativeCenter,
-    const Tracking& tracking,const Reference& frozen,uint64_t revision,
-    float scale,bool positional) noexcept
+bool ReadAnniversaryNativeCenter(const SaberCamera& nativeCenter,Camera& center) noexcept
 {
-    if (!Current()||CeObserveRendererMode()!=1) return;
-    gameplayCamera.Publish({});
-    if (!gameplayBridgeVerified.load(std::memory_order_acquire)||
-        !std::isfinite(scale)||scale<=0||scale>10) return;
-    Camera mapped{},center{}; Vec3 worldOffset{}; float forwardBias{};
+    if(!gameplayBridgeVerified.load(std::memory_order_acquire)) return false;
+    Camera mapped{}; Vec3 worldOffset{}; float forwardBias{};
     uint8_t freeCamera{}; uintptr_t scene{},externalCamera{};
     if (!Read(bindings.base+0x2e3b826,freeCamera)||freeCamera||
         !Read(bindings.base+0x2e3c418,scene)||!scene||scene>UINTPTR_MAX-0x138||
         !Read(scene+0x130,externalCamera)||externalCamera||
         !Read(bindings.base+0x2b05118,worldOffset)||!Read(bindings.base+0x2e3b838,forwardBias)||
         !NativeCameraFromSaber(nativeCenter,mapped)||
-        !RecoverNativeCameraFromSaberBridge(mapped,worldOffset,forwardBias,center)) return;
+        !RecoverNativeCameraFromSaberBridge(mapped,worldOffset,forwardBias,center)) return false;
+    return true;
+}
+void PublishAnniversaryGameplayContext(const SaberCamera& nativeCenter,
+    const Tracking& tracking,const Reference& frozen,uint64_t revision,
+    float scale,bool positional) noexcept
+{
+    if (!Current()||CeObserveRendererMode()!=1) return;
+    gameplayCamera.Publish({});
+    Camera center{};
+    if(!std::isfinite(scale)||scale<=0||scale>10||!ReadAnniversaryNativeCenter(nativeCenter,center)) return;
     // The original primary append input is the engine's center camera. The
     // rendered eyes already contain HMD rotation/translation and must never
     // become the control/shot reference (that would apply tracking twice).
     PublishGameplayContext({tracking,frozen,center,scale,positional,revision,
         ceRendererEpoch.load(std::memory_order_acquire)});
+}
+void PrepareAnniversaryTrackingReference(BuildScope& scope,const SaberCamera& native) noexcept
+{
+    Camera center{};
+    if(ReadAnniversaryNativeCenter(native,center))
+        FollowRoomscale(center,scope.views.tracking,scope.views.reference,
+            scope.views.unitsPerMeter,scope.views.positional,scope.referenceRevision);
+    ApplyPhysicalCrouchReference(scope.views.tracking,scope.views.reference,
+        scope.views.unitsPerMeter,scope.views.positional);
 }
 uintptr_t AppendBody(uintptr_t list,const SaberCamera* source,uint32_t flags,int32_t index,
     uint64_t a5,uint64_t a6,uint64_t a7,uint64_t a8,uint64_t a9,uint64_t a10,
@@ -315,10 +332,15 @@ uintptr_t AppendBody(uintptr_t list,const SaberCamera* source,uint32_t flags,int
     if (scope&&scope->enabled&&scope->list==list&&eye>=0)
     {
         SaberCamera native{}; uint32_t count{};
-        const bool valid=!scope->failed&&(flags&~0x1000u)==(eye?0x20bu:0x10bu)&&
+        bool valid=!scope->failed&&(flags&~0x1000u)==(eye?0x20bu:0x10bu)&&
             Read(list+8,count)&&count==static_cast<uint32_t>(eye)&&
-            Read(reinterpret_cast<uintptr_t>(source),native)&&
-            scope->views.PrepareEye(eye,native,
+            Read(reinterpret_cast<uintptr_t>(source),native);
+        if(valid&&eye==0) {
+            // The append input is still the unmodified center, in Saber units.
+            // Recover the verified native bridge, never use an already tracked eye.
+            PrepareAnniversaryTrackingReference(*scope,native);
+        }
+        valid=valid&&scope->views.PrepareEye(eye,native,
                 [](SaberCamera& camera) { return RebuildNativeCamera(bindings,camera); });
         if (valid) selected=&scope->views.staged.cameras[eye];
         else scope->failed=true;
@@ -377,12 +399,11 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
             reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,gen};
         Wanted raster{};
         construction.list=address;
+        construction.referenceRevision=revisionBeforeBuild;
         construction.enabled=allocated.Read(raster)&&raster.generation==gen;
         construction.views.tracking=tracking; construction.views.reference=reference;
         construction.views.unitsPerMeter=Game_GetWorldScale();
         construction.views.positional=Game_IsPositionalTracking();
-        ApplyPhysicalCrouchReference(tracking,construction.views.reference,
-            construction.views.unitsPerMeter,construction.views.positional);
         construction.views.width=raster.descriptor.Width; construction.views.height=raster.descriptor.Height;
     }
     const auto nativeResult=ConstructViews(original,arg,list,force?1:secondary,settings,
@@ -1013,8 +1034,8 @@ bool Remove() noexcept
         reinterpret_cast<void*>(&SceneCameraHook)};
     const void* originals[Count]{};
     for (size_t i=0;i<Count;++i) originals[i]=hooks[i].original;
-    // The shared verifier accepts at most eight ranges. Entries are disabled,
-    // so independently checking the remaining roots cannot admit new callers.
+    // Preserve the existing two retirement batches. Entries are disabled, so
+    // checking the remaining roots cannot admit new callers.
     if (!WaitForNativeDetourQuiescence(functions,originals,8,callbacks)||
         !WaitForNativeDetourQuiescence(functions+8,originals+8,Count-8,callbacks)) return false;
     for (auto& hook:hooks) if (hook.target)
@@ -1145,7 +1166,14 @@ bool HaloCE_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActive,bool allo
     if (installed.load()&&fresh&&first&&now-first>=1000&&!armed.exchange(true))
         LOG("CE camera heartbeat ready; stereo outputs and optional hands/aim/HUD/contact report their own validation; physical body following deferred");
     if (!fresh&&armed.exchange(false))
-    { recenter=true; LOG("CE core disarmed by HaloCE_Poll: camera heartbeat expired; hooks retained for re-entry"); firstCameraMs=0; }
+    {
+        // A new reference also needs a new identity. Otherwise queued work
+        // from before loading can become current again after the next builder
+        // consumes recenter, lending old eye/hand/aim alignment to re-entry.
+        HaloCE_Recenter();
+        LOG("CE core disarmed by HaloCE_Poll: camera heartbeat expired; reference revoked, hooks retained for re-entry");
+        firstCameraMs=0;
+    }
     constexpr uint32_t capabilities=TitleCapability_Stereo|TitleCapability_RoomScale|
         TitleCapability_ControllerInput|TitleCapability_RuntimeModes|TitleCapability_Haptics;
     TitleAdapter_PublishLifecycle(GameTitle::HaloCE,gen,{installed.load(),armed.load(),retiring.load(),armed.load()?capabilities:0});

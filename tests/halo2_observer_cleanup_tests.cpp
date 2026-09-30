@@ -13,6 +13,8 @@ CoreState g_coreState=CoreState::Installed;
 constexpr bool kHalo2DebugGlobalAimAssistOverrideEnabled=false;
 void Game_Halo2RestoreAimAssist(){}
 bool optionalReady=true;
+bool hapticReady=true;
+bool RemoveHalo2WeaponHaptics(){return hapticReady;}
 bool RemoveHalo2ContactMelee(){return optionalReady;}
 bool RemoveHalo2DualAim(){return optionalReady;}
 bool RemoveHalo2WorldCollision(){return optionalReady;}
@@ -98,7 +100,7 @@ void Reset()
         *counters[i]=0;enabled[i]=exists[i]=true;quiesced[i]=false;}
     g_coreState=CoreState::Installed;g_armed=true;g_teardownRequested=false;g_finalPaletteReady=true;
     g_generation=7;g_moduleBase=0x123000;g_installed=true;g_moduleReference=reinterpret_cast<HMODULE>(0x123000);
-    g_objectDatumAccessor=0x456000;g_referenceValid=true;optionalReady=true;
+    g_objectDatumAccessor=0x456000;g_referenceValid=true;optionalReady=true;hapticReady=true;
     failDisable=failRemove=ingress=-1;removes=0;
 }
 }
@@ -126,6 +128,10 @@ int main()
     Reset();optionalReady=false;
     Check(!RemoveCore("optional feature still busy")&&g_target&&g_originalAddress,"optional dependency refusal retains core");
     optionalReady=true;Check(RemoveCore("optional retry"),"optional dependency retry");
+    Reset();hapticReady=false;
+    Check(!RemoveCore("haptic ingress busy")&&g_generation==7&&g_objectDatumAccessor==0x456000,
+        "haptic retirement preserves weapon-reader and module dependencies until drained");
+    hapticReady=true;Check(RemoveCore("haptic retry"),"haptic retirement retry completes before core teardown");
     Reset();for(int i=0;i<12;++i){enabled[i]=false;exists[i]=false;}
     Check(RemoveCore("already removed")&&g_generation==0,"absent entries converge safely");
     std::printf("PASS: %u Halo 2 production cleanup checks\n",checks);

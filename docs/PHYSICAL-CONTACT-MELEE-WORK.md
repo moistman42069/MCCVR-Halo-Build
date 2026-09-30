@@ -550,3 +550,59 @@ binding; fixed Reclaimer/grip/right-shoulder injection is rejected. Preserve
 both modes as distinct features. Implement and verify binding resolution,
 setting persistence, independent toggles and duplicate-attack handling before
 the melee candidate is packaged. M10 in the complete checklist tracks this.
+
+## Contact-reactive finger request: bounded source audit, 2026-09-30
+
+The user requested a separate Half-Life: Alyx-style hand physics/finger-reaction
+toggle for all six games. This is distinct from the implemented controller
+trigger/grip gestures. No contact-finger option or contact-finger behavior was
+added by this audit; an option with no actual surface-driven articulation would
+misrepresent the feature.
+
+Existing source provides useful foundations, not a complete implementation:
+
+- CE, H2, H3, ODST, Reach and H4 have their own native contact query adapters and
+  admitted gameplay update paths. Native queries need not run in render/palette
+  hooks. CE's `haloce_contact.cpp` already separates world and melee processing;
+  the other title adapters are in their `*_contact_melee_runtime.inl` files.
+- `contact_melee_queue.h` transfers bounded copied data, without native pointers,
+  from render publication to the simulation consumer. Its frame includes a
+  serial, reference epoch, full unit handle, shape and stable point indices.
+  Those indices do **not** identify a digit, joint, segment radius or allowable
+  curl. Hand and weapon samples share this transport.
+- `contact_melee_motion.h` qualifies moving samples against a swing threshold,
+  selects one hit, and invokes `backend.Apply` for a strike. It deliberately
+  suppresses animation-only motion through its rigid-controller comparison.
+  Running this path for resting fingers would either produce no contact or
+  wrongly introduce melee behavior. H2/Reach/H4 admission is also explicitly
+  gated by `physical_melee`; a hand-physics option must operate independently.
+- Existing world-collision responses constrain a rigid hand/weapon target.
+  They do not return separate contact limits for individual fingers. The
+  new controller-finger helpers accept trigger/grip-derived flexion; they do
+  not yet accept measured collision limits.
+
+A concrete follow-up can reuse the native query contracts but requires a new
+query-only transaction: publish each known rig's labeled joint segments and
+desired flexion; run bounded stationary/swept contact queries in the admitted
+native update callback; return independent digit/joint limits; apply them only
+to a matching free hand and immutable render-pair snapshot. Match title,
+generation, full unit, model/checksum, anatomical hand, reference epoch and
+pose/shape identity. Expired results, model changes, lost tracking and optional
+faults must release the limits without affecting camera, weapons or melee.
+
+The missing contracts are segment thickness/tip extent for each admitted rig,
+a tested conversion from contact point/normal to bounded joint flexion, initial
+penetration/release handling, and an independent request/response scheduler with
+a measured query budget. Existing zero-width native rays alone do not prove
+collision of the rendered finger surface. A conservative synthetic capsule or
+multi-ray hand model is possible, but must be explicitly designed and validated;
+it is not an established native per-finger physics model. Stable contacts also
+need hysteresis so simulation-rate results do not make the two rendered eyes
+or adjacent frames alternate poses.
+
+Required regression cases include stationary fingertips against a wall, moving
+and disappearing objects, initial overlap, grip/release while touching a
+surface, same-pair eye consistency, stale ownership/model changes, query faults,
+and zero damage/event dispatch. Target-title and H3 headset checks remain needed
+for visible contact quality and performance. This bounded audit does not expand
+the current avatar candidate into an untested all-title physics subsystem.

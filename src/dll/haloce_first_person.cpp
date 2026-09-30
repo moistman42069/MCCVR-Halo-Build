@@ -1,4 +1,5 @@
 #include "haloce_first_person.h"
+#include "../common/config.h"
 #include "haloce_contact.h"
 #include "telemetry_recorder.h"
 #include "vr.h"
@@ -601,6 +602,10 @@ bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner) noexce
     FirstPersonBinding binding{};
     const auto& context=owner.context;
     if (!BuildFirstPersonBinding(graph,context.tracking.generation,nodes,count,binding)) return false;
+    // The optional pose applies only to the official CE first-person hand
+    // graph whose five three-joint chains were bound by exact node names and
+    // parent links. Unknown/custom graphs retain the normal tracked-hand path.
+    (void)BuildFingerBindings(nodes,count,binding);
     if (context.tracking.controllers.leftHanded && context.tracking.controllers.handAlignment)
     {
         auto& counter = FindHandAlignmentPlane(binding) ? alignmentKnownGraph : alignmentUnknownGraph;
@@ -613,6 +618,14 @@ bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner) noexce
     HaloCEContactPublication contact{};
     HaloCEContact_ApplyPalette(context,binding,source.data(),staged.data(),contact);
     (void)ApplyVisibleFirstPersonHandOffsets(binding,context.unitsPerMeter,context.tracking.controllers,staged.data());
+    if(g_config.experimental_body_ik)
+    {
+        // A failed/stale optional curl is isolated: keep the already staged
+        // controller-aligned hands and authored gun exactly as they are.
+        auto fingerCandidate=staged;
+        if(ApplyFreeHandFingerPose(binding,context.tracking,fingerCandidate))
+            staged=fingerCandidate;
+    }
     // Ownership is checked after staging as well: a title transition cannot
     // publish an old graph merely because its native builder completed.
     if (!Current()||generation.load()!=context.tracking.generation||

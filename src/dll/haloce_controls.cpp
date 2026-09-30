@@ -2,6 +2,7 @@
 #include "physical_crouch_camera.h"
 #include "../common/physical_crouch_native_read.h"
 #include "../common/haloce_crouch_contract.h"
+#include "../common/haloce_vehicle_identity_contract.h"
 #include "native_vehicle_first_person.h"
 #include "haloce_stereo_core.h"
 #include "haloce_native_bindings.h"
@@ -49,6 +50,7 @@ bool StateCurrent() noexcept
 }
 bool TurnCurrent() noexcept
 { return turnReady.load(std::memory_order_acquire)&&StateCurrent(); }
+#include "haloce_vehicle_identity.inl"
 
 static bool ReadNativePaused(bool& paused) noexcept
 {
@@ -285,7 +287,7 @@ __declspec(noinline) void __fastcall TurnHook(int32_t inputUser,float yawDelta,f
 
 bool Remove() noexcept
 {
-    active=false;retiring=true;stateReady=false;turnReady=false;vehicleViewReady=false;lastOwned=0;
+    active=false;retiring=true;stateReady=false;turnReady=false;vehicleViewReady=false;vehicleIdentityReady=false;lastOwned=0;
     if (turnTarget&&turnEnabled)
     {
         const auto result=MCCVR_DisableHookForRetirement(turnTarget);
@@ -300,9 +302,10 @@ bool Remove() noexcept
         reinterpret_cast<const void*>(&HaloCEControls_MapMoveStick),
         reinterpret_cast<const void*>(&HaloCEControls_GetLocomotionFrame),
         reinterpret_cast<const void*>(&HaloCEControls_GetNativePaused),
-        reinterpret_cast<const void*>(&HaloCEControls_PhysicalCrouchCorrection)};
-    const void* trampolines[]{turnOriginal,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
-    if (!WaitForNativeDetourQuiescence(functions,trampolines,9,callbacks)) return false;
+        reinterpret_cast<const void*>(&HaloCEControls_PhysicalCrouchCorrection),
+        reinterpret_cast<const void*>(&HaloCEControls_ReadVehicleCameraOwner)};
+    const void* trampolines[]{turnOriginal,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
+    if (!WaitForNativeDetourQuiescence(functions,trampolines,std::size(functions),callbacks)) return false;
     if (turnTarget&&MH_RemoveHook(turnTarget)!=MH_OK) return false;
     turnTarget=turnOriginal=nullptr;
     if (retainedModule) { FreeLibrary(retainedModule);retainedModule=nullptr; }
@@ -323,6 +326,7 @@ bool InstallState(uintptr_t base,size_t size,uint32_t gen) noexcept
     if (frequency.QuadPart<=0) { FreeLibrary(retainedModule);retainedModule=nullptr;return false; }
     qpcSeconds=1.0/static_cast<double>(frequency.QuadPart);
     PrepareCrouchCamera(base,size,gen);
+    PrepareVehicleIdentity(base,size,gen);
     moduleBase=base;generation=gen;active=true;retiring=false;stateReady=true;
     LOG("CE native control state verified independently: player/input/output ownership and native admission flags");
     return true;
@@ -395,7 +399,12 @@ static bool ReadVehicleCameraOwnerBody(NativeVehicleCameraOwner& owner) noexcept
         if (!unit||!parent||*reinterpret_cast<const uint32_t*>(unit+0xd8)!=state.parent) return false;
         const auto seat=*reinterpret_cast<const int16_t*>(unit+0x2d0);
         if (seat<0||!StateCurrent()||state.generation!=generation.load(std::memory_order_acquire)) return false;
-        owner={state.generation,state.unit,state.parent,seat,unit};return true;
+        const uint64_t identity=ReadVehicleModelIdentity(parent);
+        if(get(state.unit,1)!=unit||get(state.parent,2)!=parent||
+            *reinterpret_cast<const uint32_t*>(unit+0xd8)!=state.parent||
+            *reinterpret_cast<const int16_t*>(unit+0x2d0)!=seat||!StateCurrent()||
+            state.generation!=generation.load(std::memory_order_acquire))return false;
+        owner={state.generation,state.unit,state.parent,seat,unit,identity};return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 bool HaloCEControls_ReadVehicleCameraOwner(NativeVehicleCameraOwner& owner) noexcept

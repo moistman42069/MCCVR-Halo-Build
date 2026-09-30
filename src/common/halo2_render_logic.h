@@ -1,10 +1,14 @@
 #pragma once
 #include "vr_interaction_refinement_logic.h"
+#include "controller_finger_input.h"
+#include "controller_finger_pose_logic.h"
+#include "finger_joint_identity.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 // Halo 2-only render evidence and cold-observation policy. This header is
 // deliberately pure: no Windows APIs, logging, allocation, hooks, or engine
@@ -15,6 +19,46 @@
 inline constexpr size_t kHalo2RetailFileSize = 15807960;
 inline constexpr size_t kHalo2RetailImageSize = 0x02A38000;
 inline constexpr uint32_t kHalo2RetailPeTimestamp = 0x68A0F0F2;
+
+// H2EK units.cpp 0x480D40 selects damage_target{-1, breakable_index,
+// structure_index, feature} from collision_result. The result tail is
+// title-specific; these offsets were read from that official consumer and
+// matched to retail collision_test_vector's 0x60-byte result.
+struct Halo2BreakableSurfaceIdentity
+{
+    uint32_t type=0;
+    int32_t structureIndex=-1;
+    int32_t feature=-1;
+    uint32_t breakableSurfaceIndex=UINT32_MAX;
+    uint16_t material=UINT16_MAX;
+    bool valid=false;
+};
+
+inline bool Halo2ReadBreakableSurfaceIdentity(const void* result,
+    size_t resultBytes,Halo2BreakableSurfaceIdentity& out) noexcept
+{
+    out={};
+    if(!result||resultBytes<0x60)return false;
+    const auto* bytes=static_cast<const uint8_t*>(result);
+    int32_t type=0;
+    std::memcpy(&type,bytes,sizeof(type));
+    // H2EK damage_target accepts collision types 1 and 3 as world geometry.
+    if(type!=1&&type!=3)return false;
+    if((bytes[0x58]&8u)==0)return false;
+    int16_t material=-1;
+    std::memcpy(&material,bytes+0x24,sizeof(material));
+    if(material<0)return false;
+    int32_t structure=-1,feature=-1;
+    std::memcpy(&structure,bytes+0x3C,sizeof(structure));
+    std::memcpy(&feature,bytes+0x50,sizeof(feature));
+    out.type=static_cast<uint32_t>(type);
+    out.structureIndex=structure;
+    out.feature=feature;
+    out.breakableSurfaceIndex=bytes[0x59];
+    out.material=static_cast<uint16_t>(material);
+    out.valid=true;
+    return true;
+}
 
 inline constexpr const char* kHalo2RetailModuleSha256[] = {
     // Steam
@@ -1670,6 +1714,7 @@ struct Halo2ObserverPoseSnapshot
     float rightAimPosition[3]{};
     bool twoHandAimActive = false;
     bool handAlignment = false;
+    ControllerFingerInput controllerFingers[2]{};
     bool leftControllerValid = false;
     float leftControllerOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float leftControllerPosition[3]{};
@@ -3214,6 +3259,10 @@ struct Halo2FirstPersonArmBinding
     bool valid = false;
     int leftWrist = -1;
     int rightWrist = -1;
+    int leftElbow = -1;
+    int rightElbow = -1;
+    int leftShoulder = -1;
+    int rightShoulder = -1;
     uint32_t count = 0;
     uint64_t leftSubtree = 0;
     uint64_t rightSubtree = 0;
@@ -3222,6 +3271,16 @@ struct Halo2FirstPersonArmBinding
     uint64_t rightArmAncestors = 0;
     uint64_t armAncestors = 0;
     Halo2FirstPersonRigKind rigKind = Halo2FirstPersonRigKind::Unknown;
+    // Digit chains are discovered from each exact graph's hand-child tree.
+    // H2EK proves the shipped Chief/Elite digit counts and parent chains, but
+    // not a stable semantic index-vs-grip mapping across both rigs.
+    int16_t fingerNodes[2][5][3]{}; // anatomical left/right; generic authored chains
+    uint64_t fingerMasks[2][5]{};
+    uint8_t fingerCount[2]{};
+    bool fingerPoseSupported=false;
+    uint64_t fingerRigIdentity=0;
+    int16_t parentIndices[kHalo2FirstPersonPaletteCapacity]{};
+    finger_joint::Inventory fingerInventory[2]{};
 };
 
 // Pure, allocation-free, and deliberately unforgiving: anything that is not the
@@ -3325,6 +3384,22 @@ inline bool Halo2BuildFirstPersonArmBinding(
     out.valid = true;
     out.leftWrist = left;
     out.rightWrist = right;
+    // H2EK Chief and Elite fp render-models both author the exact sequence
+    // upperarm -> forearm -> hand. Derive the two solver joints from this
+    // same live graph parent table; malformed/custom chains remain valid for
+    // the established hand-only path but have no arm-IK eligibility.
+    const int leftElbow = parents[left];
+    const int rightElbow = parents[right];
+    if (leftElbow >= 0 && rightElbow >= 0 &&
+        parents[leftElbow] >= 0 && parents[rightElbow] >= 0 &&
+        leftElbow != rightElbow && parents[leftElbow] != parents[rightElbow] &&
+        parents[leftElbow] != left && parents[rightElbow] != right)
+    {
+        out.leftElbow = leftElbow;
+        out.rightElbow = rightElbow;
+        out.leftShoulder = parents[leftElbow];
+        out.rightShoulder = parents[rightElbow];
+    }
     out.count = count;
     out.leftSubtree = leftMask;
     out.rightSubtree = rightMask;
@@ -3345,10 +3420,131 @@ inline bool Halo2BuildFirstPersonArmBinding(
         out.rigKind = Halo2FirstPersonRigKind::MasterChief;
     else if (directChildCount == 4)
         out.rigKind = Halo2FirstPersonRigKind::Elite;
+    if(out.rigKind!=Halo2FirstPersonRigKind::Unknown)
+    {
+        const int wrists[2]{left,right};
+        bool exact=true;
+        for(unsigned side=0;side<2&&exact;++side)
+        {
+            int roots[5]{};unsigned rootCount=0;
+            for(uint32_t node=0;node<count;++node)
+                if(parents[node]==wrists[side]&&
+                    !(modelFlags[node]&kHalo2ModelFlagSecondary))
+                {
+                    if(rootCount>=5){exact=false;break;}
+                    roots[rootCount++]=static_cast<int>(node);
+                }
+            if(rootCount!=directChildCount){exact=false;break;}
+            for(unsigned finger=0;finger<rootCount&&exact;++finger)
+            {
+                int middle=-1,tip=-1;unsigned middleCount=0,tipCount=0;
+                for(uint32_t node=0;node<count;++node)
+                    if(parents[node]==roots[finger]){middle=static_cast<int>(node);++middleCount;}
+                if(middleCount!=1){exact=false;break;}
+                for(uint32_t node=0;node<count;++node)
+                    if(parents[node]==middle){tip=static_cast<int>(node);++tipCount;}
+                if(tipCount!=1){exact=false;break;}
+                for(uint32_t node=0;node<count;++node)
+                    if(parents[node]==tip){exact=false;break;}
+                if(!exact)break;
+                out.fingerNodes[side][finger][0]=static_cast<int16_t>(roots[finger]);
+                out.fingerNodes[side][finger][1]=static_cast<int16_t>(middle);
+                out.fingerNodes[side][finger][2]=static_cast<int16_t>(tip);
+                out.fingerMasks[side][finger]=(uint64_t{1}<<roots[finger])|
+                    (uint64_t{1}<<middle)|(uint64_t{1}<<tip);
+                out.fingerCount[side]=static_cast<uint8_t>(rootCount);
+            }
+        }
+        out.fingerPoseSupported=exact&&out.fingerCount[0]==directChildCount&&
+            out.fingerCount[1]==directChildCount;
+        if(out.fingerPoseSupported)
+        {
+            uint64_t hash=14695981039346656037ull;
+            auto append=[&](uint8_t value){hash=(hash^value)*1099511628211ull;};
+            append(static_cast<uint8_t>(count));append(static_cast<uint8_t>(count>>8));
+            for(uint32_t node=0;node<count;++node)
+            {
+                append(modelFlags[node]);const uint16_t parent=static_cast<uint16_t>(parents[node]);
+                append(static_cast<uint8_t>(parent));append(static_cast<uint8_t>(parent>>8));
+                out.parentIndices[node]=parents[node];
+            }
+            out.fingerRigIdentity=hash?hash:1;
+            constexpr finger_joint::Digit unknownDigits[5]{finger_joint::Digit::Unknown,
+                finger_joint::Digit::Unknown,finger_joint::Digit::Unknown,
+                finger_joint::Digit::Unknown,finger_joint::Digit::Unknown};
+            for(unsigned side=0;side<2;++side)
+            {
+                uint16_t chains[5][4]{};uint8_t lengths[5]{};
+                for(unsigned digit=0;digit<out.fingerCount[side];++digit)
+                {
+                    lengths[digit]=3;
+                    for(unsigned joint=0;joint<3;++joint)
+                        chains[digit][joint]=static_cast<uint16_t>(out.fingerNodes[side][digit][joint]);
+                }
+                const finger_joint::RigKey key{GameTitle::Halo2,out.fingerRigIdentity,
+                    static_cast<uint16_t>(count),finger_joint::Palette::FirstPerson};
+                if(!finger_joint::Build(key,side,static_cast<unsigned>(side?right:left),
+                    parents,chains,lengths,unknownDigits,out.fingerInventory[side]))
+                    out.fingerPoseSupported=false;
+            }
+        }
+    }
     out.leftArmAncestors = leftArmMask;
     out.rightArmAncestors = rightArmMask;
     out.armAncestors = armMask;
     return true;
+}
+
+inline bool Halo2DescribeFirstPersonFingerJoints(
+    const Halo2FirstPersonArmBinding& binding,unsigned side,
+    finger_joint::Inventory& output) noexcept
+{
+    output={};
+    if(side>1||!binding.valid||!binding.fingerPoseSupported||
+        !binding.fingerRigIdentity)return false;
+    const auto& inventory=binding.fingerInventory[side];
+    if(inventory.rig.title!=GameTitle::Halo2||
+        inventory.rig.checksum!=binding.fingerRigIdentity||
+        inventory.rig.nodeCount!=binding.count||
+        inventory.rig.palette!=finger_joint::Palette::FirstPerson||!inventory.count)return false;
+    output=inventory;return true;
+}
+
+inline bool Halo2MapFingerInventoryToPacket(
+    const finger_joint::Inventory& source,const int32_t* destinationToSource,
+    uint32_t packetCount,finger_joint::Inventory& output) noexcept
+{
+    output={};
+    if(!destinationToSource||!packetCount||packetCount>64||!source.count||
+        source.count>20||!source.rig.nodeCount||source.rig.nodeCount>64||
+        source.rig.title!=GameTitle::Halo2||
+        source.rig.palette!=finger_joint::Palette::FirstPerson)return false;
+    int sourceToDestination[64]{};
+    for(int& destination:sourceToDestination)destination=-1;
+    for(uint32_t destination=0;destination<packetCount;++destination)
+    {
+        const int node=destinationToSource[destination];
+        if(node< -1||node>=source.rig.nodeCount)return false;
+        if(node>=0)
+        {
+            if(sourceToDestination[node]>=0)return false;
+            sourceToDestination[node]=static_cast<int>(destination);
+        }
+    }
+    finger_joint::Inventory candidate=source;
+    candidate.rig.nodeCount=static_cast<uint16_t>(packetCount);
+    for(unsigned i=0;i<candidate.count;++i)
+    {
+        auto& record=candidate.records[i];
+        const unsigned sourceNode=record.paletteIndex,parent=record.parentIndex;
+        if(sourceNode>=source.rig.nodeCount||parent>=source.rig.nodeCount||
+            sourceToDestination[sourceNode]<0||sourceToDestination[parent]<0)return false;
+        record.sourcePaletteIndex=static_cast<uint16_t>(sourceNode);
+        record.paletteIndex=static_cast<uint16_t>(sourceToDestination[sourceNode]);
+        record.parentIndex=static_cast<uint16_t>(sourceToDestination[parent]);
+        record.rig=candidate.rig;
+    }
+    output=candidate;return true;
 }
 
 // Build the rigid world-space motion that places an already root-composed
@@ -3657,6 +3853,111 @@ inline void Halo2ShortestArcRotation(
     for (int i = 0; i < 9; ++i)
         out[i] = vx[i] + vx2[i] * k;
     out[0] += 1.0f; out[4] += 1.0f; out[8] += 1.0f;
+}
+
+// Experimental final-packet arm solve. The wrist target and all three source
+// joint matrices are already root-composed packet transforms. It edits only
+// shoulder/elbow; callers stage the complete packet and publish only when both
+// arms succeed, leaving the existing rigid hands+gun transaction as fallback.
+inline bool Halo2SolveFinalPacketArm(
+    Halo2FirstPersonTransform& shoulder,
+    Halo2FirstPersonTransform& elbow,
+    const Halo2FirstPersonTransform& stockWrist,
+    const Halo2FirstPersonTransform& desiredWrist,
+    float maximumStretch = 1.8f) noexcept
+{
+    if (!Halo2FirstPersonTransformValid(shoulder) ||
+        !Halo2FirstPersonTransformValid(elbow) ||
+        !Halo2FirstPersonTransformValid(stockWrist) ||
+        !Halo2FirstPersonTransformValid(desiredWrist) ||
+        !std::isfinite(maximumStretch) || maximumStretch < 1.0f ||
+        maximumStretch > 2.0f)
+        return false;
+    const float* s=shoulder.translation;
+    const float* e=elbow.translation;
+    const float* w=stockWrist.translation;
+    const float* t=desiredWrist.translation;
+    auto length=[](const float v[3]) noexcept {
+        return std::sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
+    };
+    auto distance=[&](const float a[3],const float b[3]) noexcept {
+        const float v[3]{b[0]-a[0],b[1]-a[1],b[2]-a[2]};
+        return length(v);
+    };
+    const float upper=distance(s,e),lower=distance(e,w);
+    float axis[3]{t[0]-s[0],t[1]-s[1],t[2]-s[2]};
+    const float targetDistance=length(axis),total=upper+lower;
+    if (!std::isfinite(upper)||!std::isfinite(lower)||upper<1.0e-4f||
+        lower<1.0e-4f||targetDistance<1.0e-4f||!std::isfinite(total)||
+        targetDistance>total*maximumStretch)
+        return false;
+    const float stretch=targetDistance>total ? targetDistance/total : 1.0f;
+    const float solvedUpper=upper*stretch,solvedLower=lower*stretch;
+    for(float& value:axis)value/=targetDistance;
+    const float along=(solvedUpper*solvedUpper-solvedLower*solvedLower+
+        targetDistance*targetDistance)/(2.0f*targetDistance);
+    float heightSquared=solvedUpper*solvedUpper-along*along;
+    if (!std::isfinite(heightSquared)||heightSquared< -1.0e-5f)return false;
+    const float height=std::sqrt(std::max(0.0f,heightSquared));
+    float pole[3]{e[0]-(s[0]+t[0])*0.5f,
+                  e[1]-(s[1]+t[1])*0.5f,
+                  e[2]-(s[2]+t[2])*0.5f};
+    const float projection=pole[0]*axis[0]+pole[1]*axis[1]+pole[2]*axis[2];
+    for(int i=0;i<3;++i)pole[i]-=projection*axis[i];
+    float poleLength=length(pole);
+    if(poleLength<1.0e-5f)
+    {
+        const float fallback[3]{0.0f,0.0f,1.0f};
+        const float fallbackProjection=fallback[0]*axis[0]+
+            fallback[1]*axis[1]+fallback[2]*axis[2];
+        for(int i=0;i<3;++i)pole[i]=fallback[i]-fallbackProjection*axis[i];
+        poleLength=length(pole);
+    }
+    if(!std::isfinite(poleLength)||poleLength<1.0e-5f)return false;
+    for(float& value:pole)value/=poleLength;
+    Halo2FirstPersonTransform solvedShoulder=shoulder,solvedElbow=elbow;
+    for(int i=0;i<3;++i)
+        solvedElbow.translation[i]=s[i]+axis[i]*along+pole[i]*height;
+    const float oldUpper[3]{e[0]-s[0],e[1]-s[1],e[2]-s[2]};
+    const float newUpper[3]{solvedElbow.translation[0]-s[0],
+        solvedElbow.translation[1]-s[1],solvedElbow.translation[2]-s[2]};
+    const float oldLower[3]{w[0]-e[0],w[1]-e[1],w[2]-e[2]};
+    const float newLower[3]{t[0]-solvedElbow.translation[0],
+        t[1]-solvedElbow.translation[1],t[2]-solvedElbow.translation[2]};
+    auto normalize=[](float v[3]) noexcept {
+        const float n=std::sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
+        if(!std::isfinite(n)||n<1.0e-5f)return false;
+        for(int i=0;i<3;++i)v[i]/=n;
+        return true;
+    };
+    float oldUpperUnit[3]{oldUpper[0],oldUpper[1],oldUpper[2]};
+    float oldLowerUnit[3]{oldLower[0],oldLower[1],oldLower[2]};
+    float newUpperUnit[3]{newUpper[0],newUpper[1],newUpper[2]};
+    float newLowerUnit[3]{newLower[0],newLower[1],newLower[2]};
+    if(!normalize(oldUpperUnit)||!normalize(oldLowerUnit)||
+       !normalize(newUpperUnit)||!normalize(newLowerUnit))return false;
+    float shoulderTurn[9]{},elbowTurn[9]{},newShoulderRotation[9]{},
+          newElbowRotation[9]{};
+    Halo2ShortestArcRotation(oldUpperUnit,newUpperUnit,shoulderTurn);
+    Halo2ShortestArcRotation(oldLowerUnit,newLowerUnit,elbowTurn);
+    for(int column=0;column<3;++column)
+        for(int row=0;row<3;++row)
+            for(int k=0;k<3;++k)
+            {
+                newShoulderRotation[column*3+row]+=
+                    shoulderTurn[k*3+row]*shoulder.rotation[column*3+k];
+                newElbowRotation[column*3+row]+=
+                    elbowTurn[k*3+row]*elbow.rotation[column*3+k];
+            }
+    std::memcpy(solvedShoulder.rotation,newShoulderRotation,
+                sizeof(newShoulderRotation));
+    std::memcpy(solvedElbow.rotation,newElbowRotation,
+                sizeof(newElbowRotation));
+    if(!Halo2FirstPersonTransformValid(solvedShoulder)||
+       !Halo2FirstPersonTransformValid(solvedElbow))return false;
+    shoulder=solvedShoulder;
+    elbow=solvedElbow;
+    return true;
 }
 
 // Halo 2's controller mount. First the held gun's authored root frame is
@@ -4205,6 +4506,7 @@ struct Halo2FinalPacketOwnershipResult
     uint32_t collapsedNodes = 0;
     uint32_t coLocatedArmNodes = 0;
     uint32_t gunNodes = 0;
+    bool armsSolved = false;
     float rightWristDeltaWorld = 0.0f;
     float leftWristDeltaWorld = 0.0f;
 };
@@ -4500,6 +4802,127 @@ inline bool Halo2RouteLeftHandedPacketHands(
     return true;
 }
 
+inline bool Halo2RotateFingerSubtree(float* hands,uint32_t handsCount,
+    const int32_t* remap,uint32_t sourceCount,uint64_t sourceMask,int pivotSource,
+    const float axis[3],float angle) noexcept
+{
+    if(!hands||!remap||!handsCount||handsCount>64||!sourceCount||sourceCount>64||
+        pivotSource<0||pivotSource>=static_cast<int>(sourceCount)||!sourceMask||
+        !axis||!std::isfinite(angle))return false;
+    const float axisLength=std::sqrt(axis[0]*axis[0]+axis[1]*axis[1]+axis[2]*axis[2]);
+    if(!std::isfinite(axisLength)||axisLength<1.0e-5f)return false;
+    const float n[3]{axis[0]/axisLength,axis[1]/axisLength,axis[2]/axisLength};
+    Halo2FirstPersonTransform pivot{};
+    int pivotDestination=-1;
+    for(uint32_t d=0;d<handsCount;++d)if(remap[d]==pivotSource)
+    { if(pivotDestination>=0)return false;pivotDestination=static_cast<int>(d); }
+    if(pivotDestination<0||!Halo2ReadFirstPersonTransform(
+        hands+static_cast<uint32_t>(pivotDestination)*kHalo2FirstPersonNodeFloats,pivot))return false;
+    const float c=std::cos(angle),s=std::sin(angle),v=1-c;
+    Halo2FirstPersonTransform delta{};
+    delta.rotation[0]=c+n[0]*n[0]*v;
+    delta.rotation[1]=n[1]*n[0]*v+n[2]*s;
+    delta.rotation[2]=n[2]*n[0]*v-n[1]*s;
+    delta.rotation[3]=n[0]*n[1]*v-n[2]*s;
+    delta.rotation[4]=c+n[1]*n[1]*v;
+    delta.rotation[5]=n[2]*n[1]*v+n[0]*s;
+    delta.rotation[6]=n[0]*n[2]*v+n[1]*s;
+    delta.rotation[7]=n[1]*n[2]*v-n[0]*s;
+    delta.rotation[8]=c+n[2]*n[2]*v;
+    for(int row=0;row<3;++row)
+        delta.translation[row]=pivot.translation[row]-
+            (delta.rotation[row]*pivot.translation[0]+
+             delta.rotation[3+row]*pivot.translation[1]+
+             delta.rotation[6+row]*pivot.translation[2]);
+    if(!Halo2FirstPersonTransformValid(delta))return false;
+    float staged[64*kHalo2FirstPersonNodeFloats]{};
+    std::memcpy(staged,hands,static_cast<size_t>(handsCount)*kHalo2FirstPersonNodeStride);
+    bool movedAny=false;
+    for(uint32_t d=0;d<handsCount;++d)
+    {
+        const int source=remap[d];
+        if(source<0||source>=static_cast<int>(sourceCount)||
+            !(sourceMask&(uint64_t{1}<<source)))continue;
+        Halo2FirstPersonTransform stock,moved{};
+        if(!Halo2ReadFirstPersonTransform(hands+d*kHalo2FirstPersonNodeFloats,stock)||
+            !Halo2ComposeFirstPersonTransforms(delta,stock,moved))return false;
+        Halo2WriteFirstPersonTransform(moved,staged+d*kHalo2FirstPersonNodeFloats);
+        movedAny=true;
+    }
+    if(!movedAny)return false;
+    std::memcpy(hands,staged,static_cast<size_t>(handsCount)*kHalo2FirstPersonNodeStride);
+    return true;
+}
+
+inline bool Halo2ApplyFreeSupportFingerGripPose(
+    const Halo2FirstPersonArmBinding& binding,float* hands,uint32_t handsCount,
+    const int32_t* remap,bool handAlignment,bool supportGripAttached,
+    const ControllerFingerInput& input) noexcept
+{
+    if(!binding.fingerPoseSupported||supportGripAttached||!input.valid)return true;
+    if(!hands||!remap||!handsCount||handsCount>64||!binding.count||binding.count>64)
+        return false;
+    if(!std::isfinite(input.grip)||input.grip<0||input.grip>1)return false;
+    if(input.grip<=0.001f)return true;
+    const unsigned side=handAlignment?1u:0u;
+    const auto& sourceInventory=binding.fingerInventory[side];
+    if(!sourceInventory.count||sourceInventory.rig.nodeCount!=binding.count||
+        sourceInventory.rig.checksum!=binding.fingerRigIdentity)return false;
+    int sourceToDestination[64]{};
+    for(int& destination:sourceToDestination)destination=-1;
+    for(uint32_t destination=0;destination<handsCount;++destination)
+    {
+        const int source=remap[destination];
+        if(source< -1||source>=static_cast<int>(binding.count))return false;
+        if(source>=0)
+        {
+            if(sourceToDestination[source]>=0)return false;
+            sourceToDestination[source]=static_cast<int>(destination);
+        }
+    }
+    const int wristSource=side?binding.rightWrist:binding.leftWrist;
+    if(wristSource<0||wristSource>=static_cast<int>(binding.count)||
+        sourceToDestination[wristSource]<0)return false;
+    int16_t packetParents[64]{};
+    for(unsigned node=0;node<handsCount;++node)packetParents[node]=-1;
+    for(unsigned destination=0;destination<handsCount;++destination)
+    {
+        const int source=remap[destination];
+        if(source<0)continue;
+        const int parent=binding.parentIndices[source];
+        if(parent>=0&&parent<static_cast<int>(binding.count)&&
+            sourceToDestination[parent]>=0)
+            packetParents[destination]=static_cast<int16_t>(sourceToDestination[parent]);
+    }
+    finger_joint::Inventory packetInventory{};
+    if(!Halo2MapFingerInventoryToPacket(sourceInventory,remap,handsCount,packetInventory))return false;
+    uint16_t chains[5][4]{};uint8_t lengths[5]{};
+    for(unsigned slot=0;slot<5;++slot)
+        for(unsigned joint=0;joint<4;++joint)
+        {
+            const auto* record=packetInventory.FindNative(slot,joint);
+            if(!record)break;
+            chains[slot][joint]=record->paletteIndex;
+            ++lengths[slot];
+        }
+    Halo2FirstPersonTransform source[64]{},posed[64]{};
+    for(unsigned node=0;node<handsCount;++node)
+        if(!Halo2ReadFirstPersonTransform(hands+node*kHalo2FirstPersonNodeFloats,source[node]))return false;
+    Halo2FirstPersonTransform marker{},palm{};
+    if(!Halo2AnatomicalGripMarker(binding.rigKind,side==0,marker)||
+        !Halo2ComposeFirstPersonTransforms(source[sourceToDestination[wristSource]],marker,palm))return false;
+    const float down[]{-palm.rotation[6],-palm.rotation[7],-palm.rotation[8]};
+    ControllerFingerInput gripOnly{true,0.0f,input.grip};
+    if(!controller_finger_pose::Apply(source,handsCount,
+        static_cast<size_t>(sourceToDestination[wristSource]),packetParents,chains,
+        lengths,down,gripOnly,posed,static_cast<const Halo2FirstPersonTransform*>(nullptr),&packetInventory))return false;
+    float staged[64*kHalo2FirstPersonNodeFloats]{};
+    for(unsigned node=0;node<handsCount;++node)
+        Halo2WriteFirstPersonTransform(posed[node],staged+node*kHalo2FirstPersonNodeFloats);
+    std::memcpy(hands,staged,static_cast<size_t>(handsCount)*kHalo2FirstPersonNodeStride);
+    return true;
+}
+
 // E-H2-45: transform the already root-composed render packets, using the
 // engine-authored hands remap to carry the animation graph's invariant hand
 // flags into destination-model node indices. This is deliberately independent
@@ -4512,7 +4935,10 @@ inline bool Halo2OwnFinalFirstPersonPackets(
     const Halo2CameraBasis& rightCarrier,
     const Halo2CameraBasis& leftCarrier, bool twoHandAimActive,
     float rightScale, float leftScale, float worldScale,
-    Halo2FinalPacketOwnershipResult& out, bool handAlignment = false) noexcept
+    Halo2FinalPacketOwnershipResult& out, bool handAlignment = false,
+    bool showTrackedArms = false, bool poseFreeSupportFingers = false,
+    bool supportGripAttached = false,
+    const ControllerFingerInput& supportFingerInput = {}) noexcept
 {
     out = Halo2FinalPacketOwnershipResult{};
     if (!handsMatrices || !handsRemap || !binding.valid ||
@@ -4702,6 +5128,27 @@ inline bool Halo2OwnFinalFirstPersonPackets(
             desiredLeft, stockLeft, leftDelta))
         return false;
 
+    const bool jointIndicesValid=binding.leftShoulder>=0&&
+        binding.leftShoulder<64&&binding.leftShoulder<binding.count&&
+        binding.leftElbow>=0&&binding.leftElbow<64&&
+        binding.leftElbow<binding.count&&binding.rightShoulder>=0&&
+        binding.rightShoulder<64&&binding.rightShoulder<binding.count&&
+        binding.rightElbow>=0&&binding.rightElbow<64&&
+        binding.rightElbow<binding.count&&
+        binding.leftShoulder!=binding.rightShoulder&&
+        binding.leftElbow!=binding.rightElbow&&
+        binding.leftShoulder!=binding.leftElbow&&
+        binding.rightShoulder!=binding.rightElbow;
+    const uint64_t solveJointMask = jointIndicesValid ?
+        ((uint64_t{1} << binding.leftShoulder) |
+         (uint64_t{1} << binding.leftElbow) |
+         (uint64_t{1} << binding.rightShoulder) |
+         (uint64_t{1} << binding.rightElbow)) : 0;
+    const bool solveArms = showTrackedArms &&
+        binding.rigKind != Halo2FirstPersonRigKind::Unknown &&
+        jointIndicesValid &&
+        solveJointMask != 0;
+
     for (uint32_t destination = 0; destination < handsCount; ++destination)
     {
         float* const node = stagedHands +
@@ -4730,7 +5177,13 @@ inline bool Halo2OwnFinalFirstPersonPackets(
         }
         else
         {
-            if (binding.rigKind == Halo2FirstPersonRigKind::Elite && bit &&
+            if (solveArms && bit && (solveJointMask & bit))
+            {
+                // Keep only verified upperarm/forearm joints for the optional
+                // final-packet solver. Every other non-hand node retains the
+                // established hidden-body behavior.
+            }
+            else if (binding.rigKind == Halo2FirstPersonRigKind::Elite && bit &&
                 (binding.armAncestors & bit))
             {
                 const Halo2FirstPersonTransform& wrist =
@@ -4767,6 +5220,93 @@ inline bool Halo2OwnFinalFirstPersonPackets(
         out.applied = false;
         return false;
     }
+    if (solveArms)
+    {
+        auto destinationForSource=[&](int source)->int {
+            if(source<0)return -1;
+            for(uint32_t destination=0;destination<handsCount;++destination)
+                if(handsRemap[destination]==source)
+                    return static_cast<int>(destination);
+            return -1;
+        };
+        const int leftShoulder=destinationForSource(binding.leftShoulder);
+        const int leftElbow=destinationForSource(binding.leftElbow);
+        const int leftWrist=destinationForSource(binding.leftWrist);
+        const int rightShoulder=destinationForSource(binding.rightShoulder);
+        const int rightElbow=destinationForSource(binding.rightElbow);
+        const int rightWrist=destinationForSource(binding.rightWrist);
+        const size_t handBytes=static_cast<size_t>(handsCount)*
+            kHalo2FirstPersonNodeStride;
+        float beforeSolve[kHalo2FirstPersonPaletteCapacity*
+            kHalo2FirstPersonNodeFloats]{};
+        std::memcpy(beforeSolve,stagedHands,handBytes);
+        bool solved=false;
+        if(leftShoulder>=0&&leftElbow>=0&&leftWrist>=0&&
+           rightShoulder>=0&&rightElbow>=0&&rightWrist>=0)
+        {
+            Halo2FirstPersonTransform ls{},le{},lw{},rs{},re{},rw{};
+            solved=Halo2ReadFirstPersonTransform(stagedHands+
+                    static_cast<uint32_t>(leftShoulder)*
+                        kHalo2FirstPersonNodeFloats,ls)&&
+                Halo2ReadFirstPersonTransform(stagedHands+
+                    static_cast<uint32_t>(leftElbow)*
+                        kHalo2FirstPersonNodeFloats,le)&&
+                Halo2ReadFirstPersonTransform(stagedHands+
+                    static_cast<uint32_t>(leftWrist)*
+                        kHalo2FirstPersonNodeFloats,lw)&&
+                Halo2ReadFirstPersonTransform(stagedHands+
+                    static_cast<uint32_t>(rightShoulder)*
+                        kHalo2FirstPersonNodeFloats,rs)&&
+                Halo2ReadFirstPersonTransform(stagedHands+
+                    static_cast<uint32_t>(rightElbow)*
+                        kHalo2FirstPersonNodeFloats,re)&&
+                Halo2ReadFirstPersonTransform(stagedHands+
+                    static_cast<uint32_t>(rightWrist)*
+                        kHalo2FirstPersonNodeFloats,rw)&&
+                Halo2SolveFinalPacketArm(ls,le,stockLeft,lw)&&
+                Halo2SolveFinalPacketArm(rs,re,stockRight,rw);
+            if(solved)
+            {
+                Halo2WriteFirstPersonTransform(ls,stagedHands+
+                    static_cast<uint32_t>(leftShoulder)*
+                        kHalo2FirstPersonNodeFloats);
+                Halo2WriteFirstPersonTransform(le,stagedHands+
+                    static_cast<uint32_t>(leftElbow)*
+                        kHalo2FirstPersonNodeFloats);
+                Halo2WriteFirstPersonTransform(rs,stagedHands+
+                    static_cast<uint32_t>(rightShoulder)*
+                        kHalo2FirstPersonNodeFloats);
+                Halo2WriteFirstPersonTransform(re,stagedHands+
+                    static_cast<uint32_t>(rightElbow)*
+                        kHalo2FirstPersonNodeFloats);
+            }
+        }
+        if(!solved)
+        {
+            std::memcpy(stagedHands,beforeSolve,handBytes);
+            for(uint32_t destination=0;destination<handsCount;++destination)
+            {
+                const int source=handsRemap[destination];
+                const uint64_t bit=source>=0?uint64_t{1}<<source:0;
+                if(!(bit&(binding.armAncestors)))continue;
+                if(binding.rigKind==Halo2FirstPersonRigKind::Elite)
+                {
+                    const Halo2FirstPersonTransform& wrist=
+                        (bit&binding.leftArmAncestors)?desiredLeft:desiredRight;
+                    Halo2FirstPersonTransform hidden=wrist;
+                    hidden.scale*=0.0001f;
+                    Halo2WriteFirstPersonTransform(hidden,stagedHands+
+                        destination*kHalo2FirstPersonNodeFloats);
+                }
+                else
+                    stagedHands[destination*kHalo2FirstPersonNodeFloats]=0.0001f;
+            }
+        }
+        out.armsSolved=solved;
+    }
+    if(poseFreeSupportFingers&&!supportGripAttached)
+        (void)Halo2ApplyFreeSupportFingerGripPose(binding,stagedHands,handsCount,
+            handsRemap,handAlignment,false,supportFingerInput);
     std::memcpy(handsMatrices, stagedHands,
                 static_cast<size_t>(handsCount) * kHalo2FirstPersonNodeStride);
     std::memcpy(gunMatrices, stagedGun,

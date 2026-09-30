@@ -1,5 +1,6 @@
 // H4EK-owned native contact path. Included after Halo 4's physics types/state.
 // Binding and layout evidence: CONTACT-RESUME-CHECKPOINT.md.
+#include "../common/halo4_contact_world.h"
 using Halo4ContactUpdateFn=void(__fastcall*)(void*);
 using Halo4ContactBuildFn=void(__fastcall*)(uint32_t,int32_t,uint32_t*);
 using Halo4ContactConsumeFn=void(__fastcall*)(uint32_t,uint64_t,int16_t,float,uint8_t,uint32_t*,void*);
@@ -26,15 +27,6 @@ struct Halo4ContactRuntime
     contact_melee::Hand hands[2];
 } g_halo4Contact;
 
-struct Halo4ContactScope
-{
-    bool active=false,applying=false,submitted=false;
-    uint32_t owner=UINT32_MAX,target=UINT32_MAX;
-    unsigned rays=0;
-    contact_melee::Sweep sweep{};
-    float direction[3]{};
-};
-thread_local Halo4ContactScope g_halo4ContactScope;
 CinematicControlState ReadHalo4CinematicControl() noexcept;
 
 bool Halo4ContactMeleeReady()
@@ -63,110 +55,7 @@ const uint8_t* Halo4ContactObject(uint32_t handle,bool requireBiped=false)
 
 const uint8_t* Halo4ContactBiped(uint32_t handle) { return Halo4ContactObject(handle,true); }
 
-bool Halo4RedirectContactRay(uintptr_t caller,Halo4PhysicsRayCastInput* input,
-    Halo4PhysicsRayCastResult* output,bool& returned)
-{
-    auto& scope=g_halo4ContactScope;
-    if(!scope.active || caller<g_halo4Contact.base+0x601B1C ||
-        caller>=g_halo4Contact.base+0x60296C) return false;
-    returned=false;
-    // Only the centre of the native 25-ray grid uses the physical segment.
-    // The later obstruction/retarget ray is suppressed inside this scope too.
-    if(caller!=g_halo4Contact.base+0x6020EA || ++scope.rays!=13 ||
-        !input || !output || !g_halo4WorldCollision.originalRayCast) return true;
-    auto local=*input;
-    const float start[]{scope.sweep.start.x,scope.sweep.start.y,scope.sweep.start.z};
-    const float end[]{scope.sweep.end.x,scope.sweep.end.y,scope.sweep.end.z};
-    memcpy(local.start,start,sizeof(start));
-    memcpy(local.end,end,sizeof(end));
-    returned=g_halo4WorldCollision.originalRayCast(&local,output) &&
-        output->type==4 && static_cast<uint32_t>(output->objectIndex)==scope.target &&
-        Halo4ContactObject(scope.target);
-    return true;
-}
-
-__declspec(noinline) void __fastcall Halo4ContactDamageDetour(uint32_t unit,int32_t damage,
-    const void* definition,const void* impact,const float* direction)
-{
-    g_halo4Contact.callbacks.fetch_add(1,std::memory_order_acq_rel);
-    __try
-    {
-        auto& scope=g_halo4ContactScope;
-        const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
-        const bool own=scope.active && scope.applying &&
-            (caller==g_halo4Contact.base+0x6012F2 || caller==g_halo4Contact.base+0x601315 ||
-             caller==g_halo4Contact.base+0x6013C9 || caller==g_halo4Contact.base+0x6013FD ||
-             caller==g_halo4Contact.base+0x601935);
-        const bool exact=own && unit==scope.owner && impact &&
-            *reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(impact)+0x1C)==scope.target &&
-            Halo4ContactBiped(scope.owner) && Halo4ContactObject(scope.target);
-        if(g_halo4Contact.damageOriginal && (!own || exact))
-        {
-            g_halo4Contact.damageOriginal(unit,damage,definition,impact,own ? scope.direction : direction);
-            if(own) scope.submitted=true;
-        }
-    }
-    __finally { g_halo4Contact.callbacks.fetch_sub(1,std::memory_order_acq_rel); }
-}
-
-struct Halo4ContactBackend
-{
-    uint32_t owner=UINT32_MAX;
-    bool Query(const contact_melee::Sweep& sweep,contact_melee::Hit& hit) noexcept
-    {
-        Halo4PhysicsRayCastInput input{};
-        Halo4PhysicsRayCastResult output{};
-        if(!g_halo4WorldCollision.originalRayCast || !g_halo4Contact.flags) return false;
-        input.profile=0x1A; // H4EK E71F40 / retail 601B1C native melee profile.
-        memcpy(&input.collisionFlags,g_halo4Contact.flags,sizeof(uint64_t));
-        const float start[]{sweep.start.x,sweep.start.y,sweep.start.z};
-        const float end[]{sweep.end.x,sweep.end.y,sweep.end.z};
-        memcpy(input.start,start,sizeof(start));
-        memcpy(input.end,end,sizeof(end));
-        input.ignoredObjects[0]=static_cast<int32_t>(owner);
-        input.ignoredObjectCount=1;
-        input.resultOptions[0]=1;
-        g_halo4Contact.queries.fetch_add(1,std::memory_order_relaxed);
-        if(!g_halo4WorldCollision.originalRayCast(&input,&output) || output.type!=4 ||
-            static_cast<uint32_t>(output.objectIndex)==owner ||
-            !Halo4ContactObject(static_cast<uint32_t>(output.objectIndex))) return false;
-        hit.unit=static_cast<uint32_t>(output.objectIndex);
-        hit.fraction=output.fraction;
-        memcpy(&hit.position,output.position,sizeof(output.position));
-        memcpy(&hit.normal,output.normal,sizeof(output.normal));
-        hit.object=true;
-        if(!contact_melee::Finite(hit.position) || !contact_melee::Finite(hit.normal) ||
-            !std::isfinite(hit.fraction) || hit.fraction<0 || hit.fraction>1) return false;
-        g_halo4Contact.contacts.fetch_add(1,std::memory_order_relaxed);
-        return true;
-    }
-    bool Apply(uint32_t unit,const contact_melee::Hit& hit,const contact_melee::Sweep& sweep) noexcept
-    {
-        if(unit!=owner || !Halo4ContactBiped(owner) || !Halo4ContactObject(hit.unit)) return false;
-        const auto delta=contact_melee::Subtract(sweep.end,sweep.start);
-        const float length=std::sqrt(contact_melee::Dot(delta,delta));
-        if(!std::isfinite(length) || length<=1e-6f) return false;
-        g_halo4ContactScope={true,false,false,owner,hit.unit,0,sweep,
-            {delta.x/length,delta.y/length,delta.z/length}};
-        uint32_t parameters[20]{};
-        bool accepted=false;
-        __try
-        {
-            g_halo4Contact.build(owner,0xEA,parameters);
-            if(g_halo4ContactScope.rays==25 && parameters[0]==hit.unit &&
-                Halo4ContactObject(hit.unit))
-            {
-                const int16_t mode=g_halo4Contact.simulationMode()==4 ? 1 : 0;
-                g_halo4ContactScope.applying=true;
-                g_halo4Contact.consume(owner,0xEA,mode,1.0f,1,parameters,nullptr);
-                if(mode==1) g_halo4Contact.predicted.fetch_add(1,std::memory_order_relaxed);
-                accepted=mode==1 || g_halo4ContactScope.submitted;
-            }
-        }
-        __finally { g_halo4ContactScope.active=false; }
-        return accepted;
-    }
-};
+#include "halo4_contact_melee_backend.inl"
 
 void Halo4ContactTick(uint32_t unit,void* instance)
 {
@@ -236,6 +125,7 @@ __declspec(noinline) void __fastcall Halo4ContactUpdateDetour(void* instance)
 
 bool RemoveHalo4ContactMelee()
 {
+    g_halo4ContactBsp.enabled.store(false,std::memory_order_release);
     g_halo4Contact.enabled.store(false,std::memory_order_release);
     if(!g_halo4Contact.updateTarget && !g_halo4Contact.damageTarget) return true;
     void** targets[]{&g_halo4Contact.updateTarget,&g_halo4Contact.damageTarget};
@@ -268,6 +158,48 @@ bool Halo4ContactVerifyCall(uintptr_t base,uintptr_t caller,uintptr_t target)
         *reinterpret_cast<const int32_t*>(instruction+1)==base+target;
 }
 
+bool InstallHalo4ContactBsp(uintptr_t base,size_t size)
+{
+    g_halo4ContactBsp.enabled.store(false,std::memory_order_release);
+    g_halo4ContactBsp.faulted.store(false,std::memory_order_release);
+    struct Binding {uintptr_t rva;const char* pattern;};
+    constexpr Binding bindings[]{
+        {0x21F7B4,"40 53 48 83 EC 20 48 8B 05 6F 82 74 04 4C 8D 15 B8 A9 74 04 48 8B D9 44 8B 80 A8 00 00 00 48 63 C2 48 6B D0 54 49 03 D0 49 C1 E8 1C 4B 8B 04 C2"},
+        {0x2DE9FC,"40 55 48 8B EC 48 83 EC 30 F3 0F 10 6D 50 0F 57 E4 0F 29 74 24 20 4C 8B D1 0F 28 F5 0F 29 7C 24 10 F3 0F 5C F4 0F 2F F4 72 05 0F 28 FD EB 03 0F"},
+        {0x2DEF10,"48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC C0 00 00 00 0F 29 70 C8 4C 8D 15 42 B2 68 04 8B C2"},
+        {0x2DF698,"48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC C0 00 00 00 33 FF 0F 29 70 C8 4C 8D 15 B8 AA 68 04"},
+        {0x2DEC78,"48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 41 54 41 55 41 56 41 57 48 8D 68 B1 48 81 EC A0 00 00 00 4C 8B 7D 7F 41 8B F1 0F 29 70 C8 8B FA 4C 8B F1 41 BA 20 00 00 00 49 8B 86 E8 00 00 00 4C 8D 0D C1 B4 68 04 48 63 CF 48 C1 E1 05 8B 50"},
+        {0x2DF400,"48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 41 54 41 55 41 56 41 57 48 8D 68 B1 48 81 EC A0 00 00 00 4C 8B 7D 7F 41 8B F1 0F 29 70 C8 8B FA 4C 8B F1 41 BA 20 00 00 00 49 8B 86 E8 00 00 00 4C 8D 0D 39 AD 68 04 48 63 CF 48 C1 E1 05 8B 50"},
+        {0x21DFF8,"48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 41 8B F9 8B D9 49 63 F0 E8 80 FC FF FF 45 33 D2 4C 8B D8 48 85 C0 74 31 4C 6B C6 38 4D 03 D8 74 28"},
+        {0xDEA60,"48 83 EC 28 4C 8B D9 48 8D 8A 88 05 00 00 33 D2 39 51 1C 74 06 83 79 0C FF EB 02 39 11 0F 95 C0 84 C0 74 12 E8 9B 59 F6 FF 48 8B D0 49 8B CB E8"},
+    };
+    for(const auto& binding:bindings)
+    {
+        const uintptr_t found=sig::Find(base,size,binding.pattern);
+        if(found!=base+binding.rva || sig::Find(found+1,base+size-found-1,binding.pattern))
+        { LOG("Halo 4 BSP glass supplement unavailable: own binding +0x%llX missing/ambiguous; material contact retained",static_cast<unsigned long long>(binding.rva));return false; }
+    }
+    if(!Halo4ContactVerifyCall(base,0x21F814,0xDEA60) ||
+        !Halo4ContactVerifyCall(base,0x24F631,0x2DE9FC) ||
+        !Halo4ContactVerifyCall(base,0x24F675,0x2DE9FC) ||
+        !Halo4ContactVerifyCall(base,0x24F657,0x2DEC78) ||
+        !Halo4ContactVerifyCall(base,0x24F663,0x2DEF10) ||
+        !Halo4ContactVerifyCall(base,0x24F69E,0x2DF400) ||
+        !Halo4ContactVerifyCall(base,0x24F6AA,0x2DF698) ||
+        !Halo4ContactVerifyCall(base,0x21E95A,0x21DFF8))
+    {LOG("Halo 4 BSP glass supplement unavailable: own call-edge proof failed; material contact retained");return false;}
+    g_halo4ContactBsp.view=reinterpret_cast<decltype(g_halo4ContactBsp.view)>(base+0x21F7B4);
+    g_halo4ContactBsp.initialize=reinterpret_cast<decltype(g_halo4ContactBsp.initialize)>(base+0x2DE9FC);
+    g_halo4ContactBsp.standard[0]=reinterpret_cast<uint8_t(__fastcall*)(void*,uint32_t,const void*)>(base+0x2DEF10);
+    g_halo4ContactBsp.standard[1]=reinterpret_cast<uint8_t(__fastcall*)(void*,uint32_t,const void*)>(base+0x2DF698);
+    g_halo4ContactBsp.supernode[0]=reinterpret_cast<uint8_t(__fastcall*)(void*,uint32_t,int32_t,int32_t,int32_t,const void*)>(base+0x2DEC78);
+    g_halo4ContactBsp.supernode[1]=reinterpret_cast<uint8_t(__fastcall*)(void*,uint32_t,int32_t,int32_t,int32_t,const void*)>(base+0x2DF400);
+    g_halo4ContactBsp.valid=reinterpret_cast<decltype(g_halo4ContactBsp.valid)>(base+0x21DFF8);
+    g_halo4ContactBsp.enabled.store(true,std::memory_order_release);
+    LOG("Halo 4 BSP glass supplement installed: exact native surface/physical segment, authored validity and damage; headset verification pending");
+    return true;
+}
+
 bool InstallHalo4ContactMelee(uintptr_t base,size_t size,uint32_t generation)
 {
     struct Binding { uintptr_t rva; const char* pattern; };
@@ -281,6 +213,8 @@ bool InstallHalo4ContactMelee(uintptr_t base,size_t size,uint32_t generation)
         {0x9C62C,"48 83 EC 28 E8 CF F7 FF FF 33 C9 84 C0 74 22 8B 0D D7 AB FB 00 65 48 8B 04 25 58 00 00 00 BA 40 00 00 00 48 8B 04 C8 48 8B 0C 10 8B 89 00 CE 01 00 8B C1 48 83 C4 28 C3"},
         {0x9C5A0,"48 83 EC 28 E8 5B F8 FF FF 33 C9 84 C0 74 1F 8B 0D 63 AC FB 00 65 48 8B 04 25 58 00 00 00 BA 40 00 00 00 48 8B 04 C8 48 8B 0C 10 8B 49 1C 8B C1 48 83 C4 28 C3"},
         {0x601EE4,"48 8B 05 AD 91 9F 02 41 BE FE FF FF FF F3 0F 10 25 63 35 79 00 F3 44 0F"},
+        {0x602580,"F2 0F 10 45 E8 8B 45 00 89 43 14 8B 45 F0 F2 41 0F 11 07 F2 0F 10 45 F4 41 89 47 08 8B 45 FC F2 0F 11 43 40 89 43 48 0F B7 45 18 66 89 43 20"},
+        {0x603740,"66 44 3B 43 20 74 26 8B 43 28 44 0F BF 4B 22 44 0F BF 43 20 8B 53 24 8B 4B 18 89 44 24 28 48 8D 44 24 70 48 89 44 24 20"},
     };
     g_halo4Contact.enabled.store(false,std::memory_order_release);
     if(!g_halo4WorldCollision.originalRayCast || !g_halo4EngineTlsIndex ||
@@ -292,6 +226,7 @@ bool InstallHalo4ContactMelee(uintptr_t base,size_t size,uint32_t generation)
         { LOG("Halo 4 contact melee unavailable: native binding +0x%llX missing/ambiguous",static_cast<unsigned long long>(binding.rva)); return false; }
     }
     if(!Halo4ContactVerifyCall(base,0x6020E5,0x1C1D4C) ||
+        !Halo4ContactVerifyCall(base,0x603768,0x21E908) ||
         !Halo4ContactVerifyCall(base,0x6026D4,0x1C1D4C) ||
         !Halo4ContactVerifyCall(base,0x602DD3,0x601120) ||
         !Halo4ContactVerifyCall(base,0x602E10,0x601120) ||
@@ -334,6 +269,7 @@ bool InstallHalo4ContactMelee(uintptr_t base,size_t size,uint32_t generation)
     g_halo4Contact.updateTarget=updateTarget;
     if(MH_EnableHook(updateTarget)!=MH_OK)
     { LOG("Halo 4 contact melee unavailable: simulation hook enable failed; cleanup retained"); return false; }
+    InstallHalo4ContactBsp(base,size);
     g_halo4Contact.enabled.store(true,std::memory_order_release);
     LOG("Halo 4 contact melee installed: independent physical hand/weapon sweeps, exact-target native damage; headset verification pending");
     return true;
@@ -367,6 +303,7 @@ void Halo4PublishContactHand(int hand,const float points[][3],uint32_t count,
 void ReportHalo4ContactMelee()
 {
     if(!g_halo4Contact.updateTarget && !g_halo4Contact.damageTarget) return;
+    LOG("Halo 4 BSP glass supplement: enabled=%d fault=%d",g_halo4ContactBsp.enabled.load()?1:0,g_halo4ContactBsp.faulted.load()?1:0);
     LOG("Halo 4 contact melee: enabled=%d fault=%d queries=%llu contacts=%llu submissions(L/R)=%llu/%llu nativeRejected=%llu queueDrops=%llu predictedAttempts=%llu",
         Halo4ContactMeleeReady()?1:0,g_halo4Contact.faulted.load()?1:0,
         g_halo4Contact.queries.exchange(0),g_halo4Contact.contacts.exchange(0),

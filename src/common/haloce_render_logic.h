@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include "controller_finger_input.h"
 
 // E-CE-1, docs/HALOCE-RENDER-EVIDENCE.md. CE-specific layout verified in
 // HCEEK and MCC CE; this is not an alias for another engine's camera.
@@ -128,6 +129,7 @@ struct ControllerRig
     bool vehicleSmoothTurn{};
     bool gunBarrelAim{};
     bool roomscaleEnabled{};
+    bool physicalRunningEnabled{};
     bool vehicleMotion{true},vehicleViewFollow{};
     float turnSnapDeg{30.0f},turnSmoothDegS{120.0f};
 };
@@ -145,6 +147,9 @@ struct Tracking
     Eye eyes[2];
     int64_t predictedDisplayTimeNs{};
     ControllerRig controllers;
+    // Same prepared sample, support/primary roles. Native first-person
+    // presentation may use this only for a verified free hand.
+    ControllerFingerInput controllerFingers[2]{};
     HudSettings hud;
     bool motionBlur{};
     bool disableAnniversaryLensFlares{};

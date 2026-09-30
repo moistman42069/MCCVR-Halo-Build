@@ -48,6 +48,12 @@ halomccvr_compile_dlss_shader(ps_debug g_dlssDebugPsCode dlss_debug_ps.h)
 halomccvr_compile_dlss_shader(ps_copy g_dlssCopyPsCode dlss_copy_ps.h)
 
 if(BUILD_TESTING)
+    # Explicit hardware check, excluded from portable builds/CTest and packages.
+    add_executable(dlss_gpu_smoke EXCLUDE_FROM_ALL tools/dlss-gpu-smoke.cpp
+        src/dll/dlss.cpp src/dll/nvof.cpp src/common/log.cpp)
+    target_include_directories(dlss_gpu_smoke PRIVATE "${dlss_sdk_SOURCE_DIR}/include")
+    target_compile_definitions(dlss_gpu_smoke PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(dlss_gpu_smoke PRIVATE "${HALOMCCVR_DLSS_NGX_LIB}" d3d11 d3d12 dxgi d3dcompiler version)
     add_executable(halo4_vehicle_identity_tests tests/halo4_vehicle_identity_tests.cpp)
     target_compile_definitions(halo4_vehicle_identity_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halo4_vehicle_identity COMMAND halo4_vehicle_identity_tests)

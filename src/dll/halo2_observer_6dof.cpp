@@ -379,6 +379,7 @@ namespace
         // weapon relationship, not the aim-authority result.
         bool supportGripAttached = false;
         bool handAlignment = false;
+        ControllerFingerInput supportFingerInput{};
         contact_melee::Frame contactFrames[2]{};
         uint32_t muzzleGeneration=0;
         uint64_t muzzleSpace=0,muzzleSerial=0;
@@ -695,6 +696,8 @@ namespace
                     sizeof(snapshot.rightAimPosition));
         snapshot.twoHandAimActive = sample.twoHandAimActive;
         snapshot.handAlignment = sample.handAlignment;
+        std::memcpy(snapshot.controllerFingers,sample.controllerFingers,
+                    sizeof(snapshot.controllerFingers));
         snapshot.independentRightAimValid = sample.independentRightAimValid;
         std::memcpy(snapshot.independentRightAimOrientation,
             sample.independentRightAimOrientation, sizeof(snapshot.independentRightAimOrientation));
@@ -1033,7 +1036,7 @@ namespace
             g_rejectedSamples.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        if (g_config.roomscale_movement)
+        if (g_config.roomscale_movement||g_config.physical_running)
         {
             const HeadReference beforeRoomscale = g_reference;
             Roomscale_Camera(GameTitle::Halo2, Game_RoomscaleCameraAllowed(GameTitle::Halo2),
@@ -2273,7 +2276,12 @@ namespace
                             context.gunCount, context.renderCamera,
                             context.rightCarrier, context.leftCarrier,
                             context.supportGripAttached, context.rightScale,
-                            context.leftScale, context.worldScale, result, context.handAlignment);
+                            context.leftScale, context.worldScale, result,
+                            context.handAlignment,
+                            !g_config.floating_hands && g_config.arm_ik,
+                            g_config.experimental_body_ik,
+                            context.supportGripAttached,
+                            context.supportFingerInput);
                     if (owned)
                     {
                         Halo2PublishFinalPacketCollisionVolumes(
@@ -2746,6 +2754,7 @@ namespace
                     context.rightCarrier = rightCarrier;
                     context.leftCarrier = leftCarrier;
                     context.handAlignment = publication.snapshot.handAlignment;
+                    context.supportFingerInput=publication.snapshot.controllerFingers[0];
                     const Halo2SupportUse supportUse =
                         Halo2EvaluateSupportUse(publication, unitObject,
                             weaponObject);
@@ -2979,7 +2988,12 @@ namespace
                         candidate.gunCount, candidate.renderCamera,
                         candidate.rightCarrier, candidate.leftCarrier,
                         candidate.supportGripAttached, candidate.rightScale,
-                        candidate.leftScale, candidate.worldScale, packetResult, candidate.handAlignment));
+                        candidate.leftScale, candidate.worldScale, packetResult,
+                        candidate.handAlignment,
+                        !g_config.floating_hands && g_config.arm_ik,
+                        g_config.experimental_body_ik,
+                        candidate.supportGripAttached,
+                        candidate.supportFingerInput));
                 if (packetsOwned)
                 {
                     Halo2PublishFinalPacketCollisionVolumes(
@@ -4009,6 +4023,8 @@ namespace
 
     #include "halo2_contact_melee_runtime.inl"
     #include "halo2_dual_wield_runtime.inl"
+    #include "halo2_weapon_haptics.inl"
+    #include "halo2_haptic_lifecycle.inl"
 
     bool InstallHalo2WorldCollision(
         uintptr_t base, size_t size, uint32_t generation) noexcept
@@ -4273,6 +4289,8 @@ namespace
             LOG("Halo 2 contact melee cleanup pending; retaining dependent collision hooks");
             return false;
         }
+        if (!RemoveHalo2WeaponHaptics())
+        {LOG("Halo 2 weapon haptics CleanupRequired: native callbacks retained");return false;}
         if (!RemoveHalo2DualAim())
             return false;
         if (!RemoveHalo2WorldCollision())
@@ -5472,6 +5490,7 @@ namespace
         (void)InstallHalo2WorldCollision(base, size, generation);
         (void)InstallHalo2ContactMelee(base, size, generation);
         (void)InstallHalo2DualAim(base, size);
+        (void)InstallHalo2WeaponHaptics(base, size);
 
         // Optional feature transaction: refusal here leaves the proven camera,
         // stereo, input and hand paths installed and loudly retains stock
@@ -5509,6 +5528,7 @@ namespace
             return;
         g_lastReportMs = now;
         ReportHalo2ContactMelee();
+        ReportHalo2WeaponHaptics();
         LOG("Halo 2 dual aim: enabled=%d fault=%d primaryRays=%llu secondaryRays=%llu refused=%llu",
             g_halo2Dual.enabled.load()?1:0, g_halo2Dual.faulted.load()?1:0,
             g_halo2Dual.primaryRays.exchange(0),
