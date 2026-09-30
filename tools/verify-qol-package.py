@@ -18,6 +18,7 @@ import zipfile
 
 DLSS_SHA256 = "be6e434a94ca32499515eb62ca0e6c274526055d568d0426e4c652dcdfb6ee6e"
 OXANIUM_SHA256 = "2ce01d946e1e1ffc8d7eecfffbda8623bedd63eaf811a20488c4b69af45babb0"
+ANALYSER_SHA256 = "053cf61671be281551b89a459e0611490f29d0ffd00387b43668043793bae5b4"
 TITLES = ("halo3", "odst", "reach", "halo4", "ce", "halo2")
 ACTIONS = ("fire", "grenade", "jump", "melee", "reload", "interact", "switch_weapon",
            "switch_grenade", "equipment", "crouch", "zoom", "flashlight", "sprint")
@@ -183,6 +184,9 @@ def check_build(path: Path, commit: str) -> dict:
         require(identity.get("source_commit") == commit and identity.get("release_tag") == "" and
                 identity.get("build_kind") == "UNTESTED_LOCAL_CANDIDATE", "Launcher build identity mismatch")
         require(listed["nvngx_dlss.dll"] == DLSS_SHA256, "NVIDIA runtime is not the pinned release DLL")
+        analyser = archive.read("ModFiles/TelemetryAnalyser/analyse_mccvr_telemetry.py")
+        require(len(analyser) == 395283 and sha256(analyser) == ANALYSER_SHA256,
+                "Telemetry analyser is not the exact pinned standalone source")
         require(listed["assets/fonts/Oxanium.ttf"] == OXANIUM_SHA256, "Bundled Oxanium font differs from licensed source")
         require(b"SIL OPEN FONT LICENSE" in archive.read("ModFiles/assets/fonts/OFL-Oxanium.txt"),
                 "Missing Oxanium OFL license text")

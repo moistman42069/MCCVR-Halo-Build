@@ -95,6 +95,13 @@ contribution pins LF bytes. Restore the exact upstream blob (SHA-256
 retain its `-text` Git attribute and keep the strict provenance assertion. The
 generated sidecars alone were insufficient to pass this test.
 
+The imported delivery guard also assumed schema 55 and the older PowerShell
+installer. It now checks the actual schema-56 package and archive verifier.
+Packaging verifies the analyser's pinned source/staged size and SHA-256, runs
+the staged self-test with CMake's selected Python, and verifies the archived
+bytes again. Complete synthetic installs exercise the C++ manifest consumer;
+no legacy installation script was enabled to satisfy a stale text check.
+
 ## Validation and remaining evidence
 
 At integration review, all three source-guard self-tests pass (persistent grip,

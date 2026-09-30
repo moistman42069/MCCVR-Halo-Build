@@ -223,27 +223,26 @@ foreach ($contract in $installerContracts) {
         throw 'Reach candidate installer no longer enforces the active R-V23 vehicle contract.'
     }
 }
+$packageVerifier = [IO.File]::ReadAllText((Join-Path $repoRoot 'tools/verify-qol-package.py'))
+# The current candidate uses schema 56 and the C++ installer, not the retired
+# PowerShell deployment path. Check the actual package verification contract.
+# Every installed payload file (including the analyser) is manifest-hashed by
+# that installer; synthetic package installs verify the complete file set.
 $analyserDeliveryContracts = [ordered]@{
     'CMake dist staging' = @($cmake,
         'DESTINATION\s+TelemetryAnalyser[\s\S]{0,80}COMPONENT\s+dist')
     'package manifest schema' = @($package,
-        'schema_version\s*=\s*55')
-    'package analyser manifest path' = @($package,
-        "'TelemetryAnalyser/analyse_mccvr_telemetry\.py'\s*=\s*\[ordered\]@\{")
+        'schema_version\s*=\s*56')
     'package analyser self-test' = @($package,
         '\$analyserPath\s+--self-test')
     'package analyser pinned hash' = @($package,
         '053CF61671BE281551B89A459E0611490F29D0FFD00387B43668043793BAE5B4')
     'package analyser pinned size' = @($package,
         'analyserSource\.Length\s+-ne\s+395283')
-    'installer manifest schema' = @($installer,
-        'Test-ExactInt32\s+\$manifest\.schema_version\s+55')
-    'installer analyser pinned hash' = @($installer,
-        '053CF61671BE281551B89A459E0611490F29D0FFD00387B43668043793BAE5B4')
-    'installer analyser pinned size' = @($installer,
-        '\$expectedAnalyserBytes\s*=\s*395283')
-    'installer analyser identity' = @($installer,
-        "Assert-FileIdentity[\s\S]{0,100}'Installed telemetry analyser'")
+    'archive analyser pinned identity' = @($packageVerifier,
+        'len\(analyser\)\s*==\s*395283\s+and\s+sha256\(analyser\)\s*==\s*ANALYSER_SHA256')
+    'archive analyser pinned hash' = @($packageVerifier,
+        '053cf61671be281551b89a459e0611490f29d0ffd00387b43668043793bae5b4')
 }
 foreach ($contract in $analyserDeliveryContracts.GetEnumerator()) {
     if ($contract.Value[0] -notmatch $contract.Value[1]) {

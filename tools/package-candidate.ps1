@@ -466,6 +466,15 @@ try {
     if ($cache -notmatch '(?m)^BUILD_TESTING:BOOL=ON\r?$') {
         throw 'Refusing to package: BUILD_TESTING is not ON.'
     }
+    $pythonMatch = [regex]::Match($cache,
+        '(?m)^HALOMCCVR_PACKAGE_PYTHON:FILEPATH=(?<path>.+)\r?$')
+    if (-not $pythonMatch.Success) {
+        throw 'Configured package Python interpreter is unavailable.'
+    }
+    $pythonPath = $pythonMatch.Groups['path'].Value.Trim()
+    if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
+        throw "Configured Python interpreter is missing: $pythonPath"
+    }
 
     # Incremental. A clean rebuild was recompiling the whole tree for every
     # candidate, which is minutes per iteration for no safety: the packaged
@@ -557,6 +566,20 @@ try {
         (Get-FileHash -LiteralPath $launcherPath -Algorithm SHA256).Hash
     $configHash =
         (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
+
+    $analyserSourcePath = Join-Path $repoRoot 'tools/telemetry_analyser/analyse_mccvr_telemetry.py'
+    $analyserPath = Join-Path $payloadDir 'TelemetryAnalyser/analyse_mccvr_telemetry.py'
+    $analyserSource = Get-Item -LiteralPath $analyserSourcePath
+    $analyser = Get-Item -LiteralPath $analyserPath
+    $expectedAnalyserHash = '053CF61671BE281551B89A459E0611490F29D0FFD00387B43668043793BAE5B4'
+    $analyserSourceHash = (Get-FileHash -LiteralPath $analyserSourcePath -Algorithm SHA256).Hash
+    $analyserHash = (Get-FileHash -LiteralPath $analyserPath -Algorithm SHA256).Hash
+    if ($analyserSource.Length -ne 395283 -or $analyser.Length -ne $analyserSource.Length -or
+            $analyserSourceHash -cne $expectedAnalyserHash -or $analyserHash -cne $analyserSourceHash) {
+        throw 'Telemetry analyser source or staged bytes differ from the pinned standalone analyser.'
+    }
+    Invoke-Tool { & $pythonPath -B $analyserPath --self-test }
+    if ($LASTEXITCODE -ne 0) { throw 'Staged telemetry analyser self-test failed.' }
 
     $manifest = [ordered]@{
         schema_version = 56
@@ -1446,7 +1469,7 @@ try {
     Invoke-Tool { & git -c core.autocrlf=false -C $repoRoot archive --format=zip --prefix=Halo-MCC-VR/ `
         "--output=$sourceZip" $commit }
     if ($LASTEXITCODE -ne 0) { throw 'Matching source archive failed.' }
-    Invoke-Tool { & python (Join-Path $repoRoot 'tools/verify-qol-package.py') `
+    Invoke-Tool { & $pythonPath (Join-Path $repoRoot 'tools/verify-qol-package.py') `
         $buildZip $sourceZip --manual-zip $manualZip --commit $commit }
     if ($LASTEXITCODE -ne 0) { throw 'Build, manual payload and source ZIP verification failed.' }
     $hashLines = @("Source commit: $commit")
