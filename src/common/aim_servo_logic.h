@@ -76,6 +76,41 @@
 // rather than inheriting a band it does not need.
 inline constexpr float kAimServoStickFloor = 9000.0f / 32767.0f; // 0.2747
 
+// Direction from the engine's head/camera origin through the point the
+// controller ray reaches at the configured crosshair distance. Keep this
+// small calculation shared with its numeric fixture so the applied parallax
+// target is proven to use the same-sample head supplied by the caller.
+struct AimServoParallaxRay
+{
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float distance = 0.0f;
+};
+
+inline AimServoParallaxRay AimServoParallaxRayFromHead(
+    const float primaryAimPosition[3], const float primaryForward[3],
+    const float headPosition[3], float crosshairDistance) noexcept
+{
+    AimServoParallaxRay result{
+        primaryAimPosition[0] + primaryForward[0] * crosshairDistance -
+            headPosition[0],
+        primaryAimPosition[1] + primaryForward[1] * crosshairDistance -
+            headPosition[1],
+        primaryAimPosition[2] + primaryForward[2] * crosshairDistance -
+            headPosition[2],
+        0.0f};
+    result.distance = sqrtf(result.x * result.x + result.y * result.y +
+        result.z * result.z);
+    if (result.distance > 1.0e-3f)
+    {
+        result.x /= result.distance;
+        result.y /= result.distance;
+        result.z /= result.distance;
+    }
+    return result;
+}
+
 struct AimServoAxis
 {
     bool resting = false;

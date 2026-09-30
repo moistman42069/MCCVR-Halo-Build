@@ -1,11 +1,11 @@
 # Building Halo MCC VR
 
-This builds one cumulative Halo 3 + ODST + Halo: Reach runtime. Every title is a
-permanent part of the single Release build -- there is no experimental Reach flag
-to toggle. An unproven or mismatched adapter does not acquire VR ownership; once
-a transaction is claimed, failure rejects it instead of rerendering a flat path.
-Every generated file stays under ignored `out/`; nothing writes to an MCC
-installation.
+This builds one cumulative runtime for CE, H2, H3, ODST, Reach and H4, supporting
+Steam and Microsoft Store editions. There is one Release preset. An unproven
+camera adapter does not acquire VR ownership. Optional feature failures remain
+isolated to that feature; failed eye frames are dropped without ending VR.
+Generated files stay under ignored `out/`; ordinary building and packaging do
+not write to an MCC installation.
 
 ## Requirements
 
@@ -28,12 +28,31 @@ cmake --build --preset release
 ctest --preset release
 ```
 
-There is a single `release` preset. It always builds Release x64 with Halo 3,
-ODST, and Halo: Reach compiled in permanently. `camscan` is excluded: it is an
+There is a single `release` preset. It builds Release x64 with all six titles
+compiled in. `camscan` is excluded: it is an
 opt-in diagnostic with process-memory write modes, not a product target. The
 standalone Reach runtime observer is also excluded and must be selected by name;
 it is never linked into `HaloMCCVR.dll`. The build identity line reports
 `ODST=ON, Reach=ON, ReachRender=ON`.
+
+## Candidate packaging and validation
+
+After committing the completed candidate, run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-candidate.ps1
+```
+
+Do not pass `-Install`. The script builds, tests and packages matching source and
+runtime artifacts with exact source identity and hashes. It does not install or
+launch MCC. The launcher is delivered outside the manual `ModFiles` payload and
+requests administrator access when the user runs it. Both game editions remain
+supported. Packaging is not headset acceptance: keep `docs/CURRENT-STATE.md`
+unchanged until the user accepts an exact candidate.
+
+The notes below describe the Reach camera implementation's historical design.
+Current failure-isolation requirements in `AGENTS.md`, current source and the
+title evidence documents take precedence over historical descriptions.
 
 ## How the permanent Reach camera core behaves
 
@@ -48,13 +67,11 @@ that proof and a one-second fresh-camera safety interval does the worker install
 six mandatory hooks -- inner/outer stereo, interpolation, visible palette, the
 exact first-person camera rebuild, and the HREK-proven class-2 CHUD widget
 transaction -- and arm the per-eye transaction. A failed cold proof admits no
-Reach VR ownership. After ownership, any mandatory authored-crosshair failure
-invalidates the eye pair, disarms that exact title generation, and enters
-verified teardown; no partial flat, procedural, transparent, or approximate
-Reach VR mode continues. Before ownership arms, an exact inner call may still
+Reach VR ownership. Optional authored-crosshair failure must not disarm the
+camera core. Before ownership arms, an exact inner call may still
 execute the untouched engine renderer with the same bounded head-centre
-camera/matrices. Once an eye transaction is claimed, failure suppresses that
-call and enters teardown; it is never rerun through the flat renderer or
+camera/matrices. Once an eye transaction is claimed, a frame failure suppresses
+that frame; it is never rerun through the flat renderer or
 published as a completed Reach stereo pair.
 Halo 3 and ODST are never touched. When Reach is armed the log reports `Reach camera core armed` and
 `Reach camera bring-up: head tracking, stereo, and 6DOF ON`.

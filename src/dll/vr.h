@@ -1,7 +1,12 @@
 #pragma once
 
 #include <d3d11.h>
+#include <openxr/openxr.h>
 #include <cstdint>
+#include "../common/virtual_stock_test_profiles.h"
+// The durable persistent-support-grip relationship publication carries the
+// shared pure owner identity (title + title generation + unit + weapon).
+#include "../common/support_grip_logic.h"
 
 struct IDXGISwapChain;
 struct Halo2CameraRectangle;
@@ -10,6 +15,18 @@ enum class GameTitle : uint8_t;
 // Successful local slot-1 rendering only: inhibits support-grip coupling,
 // independently of collision/melee. Never authorizes inventory or firing.
 void VR_ObserveSecondaryWeaponPresentation(GameTitle title, uint32_t generation);
+
+// Runtime-only Hybrid troubleshooting control. It is intentionally absent from
+// Config and resets to Normal when the DLL process starts.
+HybridDiagnosticOverride VR_GetHybridDiagnosticOverride() noexcept;
+void VR_SetHybridDiagnosticOverride(HybridDiagnosticOverride value) noexcept;
+
+// Runtime-only aim test profile. It is intentionally absent from Config and
+// resets to Custom when the DLL process starts. The effective settings getter
+// is also the seam a future frame telemetry reader can use without menu state.
+VirtualStockTestProfile VR_GetVirtualStockTestProfile() noexcept;
+void VR_SetVirtualStockTestProfile(VirtualStockTestProfile value) noexcept;
+VirtualStockAimSettings VR_GetEffectiveVirtualStockAimSettings() noexcept;
 
 #ifndef HALOMCCVR_HALO2_STEREO6DOF
 #define HALOMCCVR_HALO2_STEREO6DOF 0
@@ -390,6 +407,15 @@ struct Halo4VrRenderSnapshot
     // the accepted two-hand support solve. Consumers must not resample the
     // asynchronous global latch after publication.
     bool twoHandAimActive = false;
+    // Owner-safe ordinary one-hand fallback from the SAME prepared controller
+    // sample as rightAim (ordinary calibrated one-hand solve, no new solver or
+    // mode). The Halo 4 pair consumes it when this invocation cannot prove the
+    // relationship owner and the prepared aim is support-derived, so an
+    // untrusted invocation never rides another owner's two-hand solve. Filled
+    // only while the persistent support grip is wired for Halo 4; otherwise it
+    // stays the falsy default and no consumer reads it.
+    bool oneHandRightAimValid = false;
+    float oneHandRightAimOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     bool handAlignment = false; // experimental presentation, frozen with this frame
     bool leftHanded = false;
     bool leftControllerValid = false;
@@ -749,16 +775,195 @@ bool VR_EndPreparedAuthoredReticleSuppression();
 // M3: the game layer sets this when the crosshair is over an enemy (engine
 // target-lock). While true, the floating reticle repaints red like the OG HUD.
 void VR_SetReticleEnemy(bool enemy);
-// Weapon-hand aim pose shared by bullet steering, the reticle, and the visible
-// barrel. Position = right hand; orientation = right controller, or the
-// right->left two-hand line when two-handed aim engages. False until tracked.
+// Shared/base weapon-hand aim pose for bullet steering, the reticle, and the
+// visible gun. Base position = primary hand; orientation = primary
+// controller, or the engaged two-hand line (configured rear-reference blend ->
+// raw support hand with Virtual stock, else primary -> support) with
+// primary-owned roll.
+// Downstream verified barrel-origin aiming may substitute afterwards.
+// False until the primary hand is tracked.
 bool VR_GetAimPose(float outQuat[4], float outPos[3]);
 // Last controller pose actually used to place the floating reticle after
 // aim_stabilization. Published lock-free by the compositor so Reach's firing
 // hook can aim at the visible sight without taking the tracking lock.
 bool VR_GetPresentedReticleAimPose(
     float outQuat[4], float outPos[3], uint64_t& outSampleMs);
+// Extended presented-reticle read: the same ray and sample time as
+// VR_GetPresentedReticleAimPose plus the solve-time support receipt frozen for
+// that presented serial. The receipt is never recomputed from live durable
+// state at the producer (F07). The support fields are zero/false when the
+// feature is off; `outSolveSerial` is the prepared serial the ray's solve
+// belonged to (0 when no prepared frame has published).
+bool VR_GetPresentedReticleAimPoseWithSupportProvenance(
+    float outQuat[4], float outPos[3], uint64_t& outSampleMs,
+    uint64_t& outSupportEpoch, bool& outSupportTrusted,
+    uint64_t& outSolveSerial);
 bool VR_IsTwoHandAiming();
+
+// ---- T-2 sparse shot events: bounded presentation-state snapshot ----
+// One lock-free read of already-published shared state for the firing-path
+// shot event (Halo 3 / Halo 4 today). It never calls the aim getter, takes no
+// lock, allocates nothing, performs no runtime sampling, and mutates nothing.
+// Each field is an observation of that shared state at the calling instant:
+//   twoHandActive: shared two-hand aim activity bit (raw, not dual-suppressed,
+//                  so it stays independent of the dual-presentation bit);
+//   leftHanded:    captured MCC handedness for the sampling generation;
+//   dualActive:    SecondaryWeaponPresentationActive() dual-presentation
+//                  predicate (the same value the frame capture records).
+struct VRShotFlagSnapshot
+{
+    bool twoHandActive = false;
+    bool leftHanded = false;
+    bool dualActive = false;
+};
+VRShotFlagSnapshot VR_GetShotFlagSnapshot() noexcept;
+// Prepared serial currently published by the capture path (0 before the first
+// publish). Bounded atomic read only; never fabricates an identity and never
+// asserts that a consumer consumed it.
+uint64_t VR_CurrentPreparedSerial() noexcept;
+
+// Solve-time support provenance for one aim solve (persistent support grip,
+// default off). Filled from the receipt frozen by the assembly that produced
+// the pose; a consumer must never substitute a live durable re-read.
+struct VrAimSupportReceipt
+{
+    // Durable relationship epoch this solve was qualified against. 0 only for
+    // a coherently readable DISENGAGED relationship (ordinary one-hand ray); a
+    // nonzero value marks an engaged relationship (trusted or denied) or the
+    // "relationship unreadable" marker.
+    uint64_t supportEpoch = 0;
+    // True only when this exact solve consumed support-capable two-hand
+    // geometry under a proven same-owner invocation.
+    bool supportTrusted = false;
+    bool relationshipReadable = false;
+    bool relationshipEngaged = false;
+    // Prepared serial this solve belonged to (0 before the first publish).
+    uint64_t solveSerial = 0;
+    // Head pose paired with the returned solve: the accepted committed
+    // sample's own head, or the live g_headPose read used to build its inputs.
+    // headValid mirrors the validity term consumed by that solve.
+    bool headValid = false;
+    XrVector3f headPosition{};
+    XrQuaternionf headOrientation{};
+};
+
+// VR_GetAimPose plus the solve-time support receipt. The pose outputs and the
+// return value are identical to VR_GetAimPose; `outReceipt` is zeroed when the
+// feature is off or no solve ran, and otherwise describes the solve that
+// produced the returned pose even when that pose failed final validation.
+bool VR_GetAimPoseWithSupportProvenance(float outQuat[4], float outPos[3],
+    VrAimSupportReceipt& outReceipt, bool preferCommittedSample = false);
+
+// ---------------------------------------------------------------------------
+// Persistent support grip (`persistent_support_grip`, default on)
+//
+// The durable owner-bound relationship is owned by the captured-frame input
+// path (the single writer in UpdateTwoHandLatch): it binds a proven weapon
+// incarnation, retains it while the physical support hand leaves the grab
+// volume, and terminates only on a proven owner break, a lifecycle replacement
+// or an explicit release. Title hooks never mutate the relationship; they
+// publish evidence for the title they are running and read the relationship.
+//
+// Everything below is lock-free and bounded. A false return from a read is NOT
+// "no relationship": it means the publication could not be proven coherent, so
+// the caller must fail closed instead of assuming a disengaged relationship.
+// ---------------------------------------------------------------------------
+
+// One title's owner-evidence publication. `revision` is monotonic per title
+// slot; a fresh acquisition records the revision it observed and may bind only
+// from a KnownPresent published strictly after that (F08). A coherent read
+// reports KnownPresent only for a generation-complete owner naming this exact
+// title, and KnownAbsent/Unknown are never proof of a different owner.
+struct SupportGripOwnerEvidencePublication
+{
+    GameTitle title = GameTitle::None;
+    uint32_t generation = 0;
+    support_grip::OwnerTuple owner{};
+    support_grip::OwnerEvidence evidence =
+        support_grip::OwnerEvidence::Unknown;
+    uint64_t revision = 0;
+};
+
+// The durable relationship as one coherent reading. `engaged` decides whether
+// the owner fields are meaningful: an engaged snapshot carries the bound
+// owner's title/generation/unit/weapon, a coherently disengaged snapshot
+// carries None/0/0xFFFFFFFF and the current epoch. `epoch` changes only on a
+// bind, an invalidation or an explicit release; it is deliberately never an
+// ownership proof on its own.
+struct SupportGripRelationshipSnapshot
+{
+    GameTitle title = GameTitle::None;
+    uint32_t generation = 0;
+    uint32_t unit = 0xFFFFFFFFu;
+    uint32_t weapon = 0xFFFFFFFFu;
+    uint64_t epoch = 0;
+    bool engaged = false;
+};
+
+// Called by a title's owner-evidence producer only (F13): one publication slot
+// per title, one writer at a time inside a slot, monotonic revision. A foreign
+// or retiring title writes only its own slot and a losing concurrent writer is
+// dropped instead of tearing a record.
+void VR_PublishSupportGripOwnerEvidence(GameTitle title, uint32_t generation,
+    const support_grip::OwnerTuple& owner,
+    support_grip::OwnerEvidence evidence) noexcept;
+// Coherent read of one title's latest evidence for `expectedGeneration`. False
+// means unavailable/incoherent (a never-published slot, a torn read, another
+// title's or generation's record) and the caller must treat the evidence as
+// Unknown. `expectedGeneration` 0 is never readable: there is no lifecycle
+// identity to qualify the record against.
+bool VR_ReadSupportGripOwnerEvidence(GameTitle title,
+    uint32_t expectedGeneration, support_grip::OwnerTuple& owner,
+    support_grip::OwnerEvidence& evidence, uint64_t& revision) noexcept;
+// Coherent read of the durable relationship. False means the snapshot could not
+// be proven coherent (or was never published); an unavailable snapshot must
+// fail closed, never be read as a disengaged relationship.
+bool VR_GetSupportGripRelationship(
+    SupportGripRelationshipSnapshot& snapshot) noexcept;
+
+// Per-invocation owner trust gate. A title hook that proved the currently
+// executing weapon invocation is NOT the durable relationship owner sets the
+// gate for the duration of its support-dependent work (for example around its
+// VR_GetAimPose call); an untrusted invocation then resolves to the ordinary
+// calibrated one-hand path for that invocation only. The gate is thread-local,
+// never mutates the durable relationship, and is only consulted while
+// `persistent_support_grip` is on: with the feature off it is inert and the
+// assembly is byte-for-byte the base path (PG-off parity). The caller must
+// always clear it again (fail-open: a stray set can only force one-hand).
+void VR_SetSupportInvocationUntrusted(bool untrusted) noexcept;
+bool VR_SupportInvocationUntrusted() noexcept;
+
+// Transitional applicability gate: true only while `persistent_support_grip`
+// is enabled AND `title` is a wired title (support_grip::
+// PersistentSupportGripApplies). Every new persistent-grip path consults this
+// instead of the config alone: an unwired title then keeps EXACT base
+// behaviour even with the config on, and its durable state is retired. PG off
+// is always false.
+bool VR_SupportGripWiredForTitle(GameTitle title) noexcept;
+
+// Title-native invocation receipt (F06/F07). A title whose FP interpolate hook
+// proves the current weapon invocation's owner publishes the frozen receipt for
+// that stereo pair; the presented-ray producer and its consumers then require
+// it instead of trusting the latest durable evidence cache. Published by the
+// title hook only (read-only with respect to the durable relationship) and
+// inert unless the feature is on: with the config off nothing is published and
+// no consumer consults it.
+void VR_PublishSupportInvocationReceipt(
+    const support_grip::SupportInvocationReceipt& receipt) noexcept;
+// Coherent read of the latest receipt published by `title`. False means no
+// usable receipt exists (never published, torn, or another title's record).
+bool VR_ReadSupportInvocationReceipt(GameTitle title,
+    support_grip::SupportInvocationReceipt& receipt) noexcept;
+// True only when `title` published a receipt that (a) covers `generation` and
+// `serial` under the presented-ray staleness bound, (b) proves the same owner
+// the ray's `raySupportEpoch`/`raySupportTrusted` receipt claims, against the
+// LIVE durable relationship. A false result must refuse the support ray; an
+// ordinary one-hand ray of a title that publishes no receipt is unaffected
+// (`TitlePublishesSupportInvocationReceipt` is the caller's gate).
+bool VR_SupportInvocationReceiptTrustedForReticle(GameTitle title,
+    uint32_t generation, uint64_t serial, uint64_t raySupportEpoch,
+    bool raySupportTrusted) noexcept;
+
 // Latest OpenXR per-eye FOV angles: left, right, up, down (radians).
 bool VR_GetEyeFov(int eye, float outFov[4]);
 // Pixel aspect of Halo's main render surface. Halo lays native 2D HUD geometry

@@ -105,6 +105,16 @@ struct ControllerRig
     // support is the other hand. Physical indices stay left=0, right=1.
     ControllerPose primaryAim,independentPrimaryAim,support,physical[2];
     bool leftHanded{},handAlignment{},twoHandAimActive{},padValid{};
+    // Persistent support grip: visible support presentation follows the valid
+    // weapon relationship for this invocation, not aim authority. The OpenXR
+    // prepared frame seeds it from `twoHandAimActive` (base behaviour); the CE
+    // first-person prepare freezes the per-invocation decision into its copied
+    // context. `primaryAimSupportDerived` is the provenance of the frozen
+    // `primaryAim`: true only when the solve that produced this exact pose
+    // accepted support-derived two-hand geometry. It is never re-sampled from
+    // the live relationship and is cleared when `primaryAim` is substituted
+    // with the independent one-hand carrier.
+    bool supportGripAttached{},primaryAimSupportDerived{};
     bool armIk{true},floatingHands{true},shoulderLevel{true};
     float gunScale{0.96f},supportScale{0.96f};
     float visualPitchDeg{},visualYawDeg{},visualRollDeg{};

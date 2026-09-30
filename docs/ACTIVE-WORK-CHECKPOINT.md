@@ -1,4 +1,31 @@
-## September 23 final packaging handoff (supersedes historical priorities below)
+## September 30 resumed community candidate
+
+User explicitly resumes next-build implementation after the latest Discord
+review, permits sub-agents to conserve usage, and requests package delivery.
+The September 23 stop-research instruction below no longer blocks this work.
+Keep all standing scope. New delivery requirements: launcher requests admin by
+default; launcher is separate from manual drag/drop mod files, including future
+release assets. Preserve both Steam and Store support and the base MCC root.
+
+Starting source is `566e52c`; the reviewed Gab_dC PR16 head is `3c07886` (five
+commits on that exact baseline). Review its broader ownership and telemetry
+changes, not only the stock solver. Contributor headset claims do not accept our
+rebuild. Hot-path logging found in review must not ship synchronously.
+
+Current review and delivery inventory: `COMMUNITY-REVIEW-2026-09-30.md`,
+`COMMUNITY-STABILITY-REVIEW-2026-09-30.md`,
+`QOL-IMPLEMENTATION-STATUS-2026-09-30.md` and
+`QOL-RELEASE-NOTES-2026-09-30.md`. Preserve the entire September 23 ledger as the
+inherited inventory; unresolved reports cannot be closed without evidence.
+
+Package matching build, separate manual payload and source ZIPs with
+`tools/package-candidate.ps1` without `-Install`. No installed-file changes,
+MCC launch, PR, publication or accepted-pointer update is authorized. User's
+zero-remaining-issues target does not authorize invented native bindings or
+false headset/co-op acceptance. Finish and validate the supported integrations;
+record exact remaining research/reproduction blockers in the delivered notes.
+
+## September 23 final packaging handoff (historical)
 
 Latest user priority: finish active integration, conserve remaining credits and
 deliver matching build/source ZIPs now. Do not restart the Discord audit or expand

@@ -22,14 +22,15 @@ TITLES = ("halo3", "odst", "reach", "halo4", "ce", "halo2")
 ACTIONS = ("fire", "grenade", "jump", "melee", "reload", "interact", "switch_weapon",
            "switch_grenade", "equipment", "crouch", "zoom", "flashlight", "sprint")
 REQUIRED_PAYLOAD = {
-    "HaloMCCVR.dll", "HaloMCCVRLauncher.exe", "halomccvr.cfg", "INSTALL-MANIFEST.sha256",
+    "HaloMCCVR.dll", "halomccvr.cfg", "INSTALL-MANIFEST.sha256",
     "BUILD-IDENTITY.txt", "LICENSE", "MANUAL-README.txt", "THIRD-PARTY-LICENSES.txt",
-    "RELEASE-NOTES.md", "IMPLEMENTATION-STATUS.md", "nvngx_dlss.dll",
+    "RELEASE-NOTES.md", "IMPLEMENTATION-STATUS.md", "PREVIOUS-IMPLEMENTATION-STATUS.md", "nvngx_dlss.dll",
     "licenses/NVIDIA-DLSS/LICENSE.txt", "licenses/NVIDIA-DLSS/NOTICE.txt",
+    "TelemetryAnalyser/analyse_mccvr_telemetry.py",
     "assets/fonts/Oxanium.ttf", "assets/fonts/OFL-Oxanium.txt", "assets/fonts/SOURCE.txt",
 }
 ROOT_FILES = {"HaloMCCVRLauncher.exe", "README.txt", "RELEASE-NOTES.md",
-              "IMPLEMENTATION-STATUS.md", "CANDIDATE-MANIFEST.json"}
+              "IMPLEMENTATION-STATUS.md", "PREVIOUS-IMPLEMENTATION-STATUS.md", "CANDIDATE-MANIFEST.json"}
 
 
 def require(condition: bool, message: str) -> None:
@@ -128,7 +129,8 @@ def check_config(data: bytes) -> int:
     require(values["physical_crouch"] == "0", "Optional physical crouch must default off")
     require(values["virtual_stock"] == "0", "Optional virtual stock must default off")
     for key, low, high in (
-        ("virtual_stock_strength", 0, 1), ("physical_crouch_depth_m", .08, .65),
+        ("virtual_stock_standard_strength", 0, 1),
+        ("virtual_stock_plus_strength", 0, 1), ("physical_crouch_depth_m", .08, .65),
         ("virtual_stock_rear_reference", 0, 3), ("weapon_pouch_location", 0, 1),
         ("weapon_pouch_offset_x_m", -.4, .4), ("weapon_pouch_offset_y_m", -.4, .4),
         ("weapon_pouch_offset_z_m", -.4, .4), ("upscaler", 0, 1), ("dlss_mode", 0, 5),
@@ -151,7 +153,7 @@ def check_build(path: Path, commit: str) -> dict:
         require(set(listed) == payload - {"INSTALL-MANIFEST.sha256"},
                 "INSTALL-MANIFEST must cover exactly every payload file except itself")
         metadata = json.loads(archive.read("CANDIDATE-MANIFEST.json"), object_pairs_hook=unique_json)
-        require(metadata.get("schema_version") == 55 and metadata.get("payload_directory") == "ModFiles",
+        require(metadata.get("schema_version") == 56 and metadata.get("payload_directory") == "ModFiles",
                 "Unexpected candidate manifest schema or layout")
         require(metadata.get("source_commit") == commit and metadata.get("accepted") is False and
                 metadata.get("status") == "UNTESTED_LOCAL_CANDIDATE", "Candidate source/status mismatch")
@@ -163,12 +165,19 @@ def check_build(path: Path, commit: str) -> dict:
             entry = metadata["files"][name]
             require(str(entry.get("sha256", "")).lower() == digest and entry.get("bytes") == len(data),
                     f"Candidate file table mismatch: {name}")
-        require(archive.read("HaloMCCVRLauncher.exe") == archive.read("ModFiles/HaloMCCVRLauncher.exe"),
-                "Root and manual payload launchers differ")
+        require("HaloMCCVRLauncher.exe" not in payload,
+                "Installer must be separate from the manual mod payload")
+        launcher = archive.read("HaloMCCVRLauncher.exe")
+        launcher_metadata = metadata.get("launcher", {})
+        require(launcher_metadata.get("bytes") == len(launcher) and
+                str(launcher_metadata.get("sha256", "")).lower() == sha256(launcher),
+                "Separate launcher identity does not match candidate manifest")
+        require(re.search(rb"requestedExecutionLevel\b[^>]*level\s*=\s*[\"']requireAdministrator[\"']", launcher),
+                "Launcher does not embed the required administrator manifest")
         dll = archive.read("ModFiles/HaloMCCVR.dll")
         require(commit.encode("ascii") + b"\0" in dll and commit.encode("ascii") + b"-dirty" not in dll,
                 "Packaged DLL does not embed the exact clean source commit")
-        for name in ("RELEASE-NOTES.md", "IMPLEMENTATION-STATUS.md"):
+        for name in ("RELEASE-NOTES.md", "IMPLEMENTATION-STATUS.md", "PREVIOUS-IMPLEMENTATION-STATUS.md"):
             require(archive.read(name) == archive.read("ModFiles/" + name), f"Root/payload notes differ: {name}")
         identity = config_values(archive.read("ModFiles/BUILD-IDENTITY.txt"))
         require(identity.get("source_commit") == commit and identity.get("release_tag") == "" and
@@ -182,7 +191,22 @@ def check_build(path: Path, commit: str) -> dict:
         config_count = check_config(archive.read("ModFiles/halomccvr.cfg"))
         require(archive.read("README.txt") == archive.read("ModFiles/MANUAL-README.txt"), "Root/manual readme differ")
         return {"payload_files": len(listed), "config_keys": config_count,
-                "dll_sha256": listed["HaloMCCVR.dll"], "launcher_sha256": listed["HaloMCCVRLauncher.exe"]}
+                "dll_sha256": listed["HaloMCCVR.dll"], "launcher_sha256": sha256(launcher)}
+
+
+def check_manual(path: Path, build_path: Path) -> int:
+    with zipfile.ZipFile(path) as manual, zipfile.ZipFile(build_path) as build:
+        files = zip_files(manual)
+        expected = {"Halo_MCC_VR/" + name.removeprefix("ModFiles/"): name
+                    for name in zip_files(build) if name.startswith("ModFiles/")}
+        require(set(files) == set(expected),
+                "Manual ZIP must contain exactly Halo_MCC_VR plus the verified mod payload")
+        require("Halo_MCC_VR/HaloMCCVRLauncher.exe" not in files,
+                "Manual archive unexpectedly includes the installer")
+        for name, original in expected.items():
+            require(manual.read(name) == build.read(original),
+                    f"Manual ZIP differs from verified installer payload: {name}")
+        return len(files)
 
 
 def git(repo: Path, *args: str) -> bytes:
@@ -217,6 +241,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("build_zip", type=Path)
     parser.add_argument("source_zip", type=Path)
+    parser.add_argument("--manual-zip", type=Path)
     parser.add_argument("--commit", default="HEAD")
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
@@ -226,6 +251,9 @@ def main() -> int:
         report = check_build(args.build_zip, commit)
         report.update(source_files=check_source(args.source_zip, args.repo, commit), source_commit=commit,
                       build_zip_sha256=file_sha256(args.build_zip), source_zip_sha256=file_sha256(args.source_zip))
+        if args.manual_zip:
+            report.update(manual_files=check_manual(args.manual_zip, args.build_zip),
+                          manual_zip_sha256=file_sha256(args.manual_zip))
         print(json.dumps({"verified": True, **report}, indent=2))
         return 0
     except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:

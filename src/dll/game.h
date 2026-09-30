@@ -4,6 +4,7 @@
 
 #include "../common/halo3_vehicle_logic.h"
 #include "../common/runtime_types.h"
+#include "../common/support_grip_logic.h"
 #include "../common/vr_action_mapping.h"
 
 // Read-only, generation-tagged controller bindings. No game memory is touched
@@ -300,3 +301,136 @@ void Game_GetProjectionTangents(float& tanX, float& tanY);
 // prepared frame, so OpenXR never receives stale Halo 3 projection metadata.
 bool Game_GetRenderHalfFovs(
     uint64_t preparedFrameSerial, float halfX[2], float halfY[2]);
+
+// ---- Shots-vs-reticle frame tranche (read-only evidence) ----
+// Bounded lock-free reads of engine-side aim/camera publications for the
+// per-prepared-frame telemetry recorder. Hot-path safe: atomic/seqlock reads
+// only, finite-checked, no allocation/log/lock/IO, no gameplay mutation.
+// Active-title qualification happens at the vr.cpp capture site; these
+// readers enforce publication-local validity (generation/armed/freshness)
+// only. Out-params are zeroed on failure; validity is authoritative.
+// Shared legacy aim (H3/ODST/Reach-compact writers, latest-only, no serial).
+bool Game_TelemetryReadSharedAim(float forwardOut[3]) noexcept;
+// Shared camera truth: base = pre-lean origin, eye = rendered camera.
+bool Game_TelemetryReadSharedCamera(bool& baseValidOut, float baseOut[3],
+    bool& eyeValidOut, float eyeOut[3]) noexcept;
+// Live g_worldScale, finite and positive (H3/H4 authority).
+bool Game_TelemetryReadWorldScale(float& scaleOut) noexcept;
+// Reach seated aim with provenance. Same admission as ReachReadAimFeedback
+// (live generation, 500 ms freshness, seated sources only, finite) plus the
+// publication source ordinal (ReachAimFeedbackSource), generation, sampleMs.
+bool Game_TelemetryReadReachSeatedAim(float forwardOut[3], uint8_t& sourceOut,
+    uint32_t& generationOut, uint64_t& sampleMsOut) noexcept;
+// Reach completed-frame eye qualified to the live camera generation.
+bool Game_TelemetryReadReachCompletedEye(float eyeOut[3],
+    uint64_t& preparedSerialOut) noexcept;
+// Halo 4 engine aim + pitch. Pitch is radians (capture converts to degrees);
+// the serial is enginePitchSerial and may differ from its payload by one
+// writer iteration (treat serial +/-1); there is no sample clock (sampleMs
+// = 0).
+bool Game_TelemetryReadHalo4EngineAim(float forwardOut[3],
+    bool& pitchValidOut, float& pitchRadiansOut,
+    uint64_t& pitchSerialOut) noexcept;
+// Halo 4 pristine observer (stock) camera position from the stereo
+// transaction, with its monotonic publication serial. Version-bracketed: the
+// position/valid/serial triple is one whole publication or the read fails
+// open. False keeps the caller's source at the explicit absent label; the
+// position is never interpreted without true.
+bool Game_TelemetryReadHalo4Camera(float eyeOut[3],
+    uint64_t& serialOut) noexcept;
+// T-2 sparse shot evidence: the one shared `shot` publisher, for a title
+// firing detour that lives outside game.cpp (Halo 2's observer translation
+// unit). It applies the disabled gate, suppresses a non-finite final ray,
+// snapshots the presentation flags, fills the title-qualified engine aim
+// source and publishes one event; the caller owns only the final ray and the
+// firing context it actually carries. Callers pass
+// Telemetry_WeaponEventsAccepting() FIRST and then publish nothing else when
+// recording is off.
+void Game_PublishShotDiagnostic(GameTitle title, uint32_t titleGeneration,
+    uint32_t unit, uint32_t weapon, uint8_t slot, uint8_t barrel,
+    bool predicted, bool substituted, bool firesFromCamera, bool unitAim,
+    const float origin[3], const float direction[3]) noexcept;
+
+// ---- Weapon-order diagnostic tranche (read-only evidence) ----
+// Diagnostic-only helpers for the first-B-frame ordering question. They
+// perform bounded read-only native observations under each title's existing
+// guards and never mutate gameplay, tracking, rendering, or lifecycle state.
+// Shared Game_DiagnosticReadPrimaryWeapon detailOut bits:
+//   bit31 native fault (analyser ExceptionOrFault)
+//   bit30 lifecycle/generation guard rejection (analyser GuardRejected)
+//   bit2  FP producer/slot agreement (H3/ODST/Reach/H4; required by commits)
+//   bit1  ownership proven (H2/H4 mirror validation)
+//   bit0  secondary slot present (where the reader naturally knows it)
+// Records the calling thread as this title's proven-safe FP thread for the
+// current title generation and recording session. Diagnostic metadata only;
+// no gameplay meaning.
+void Game_DiagnosticNoteFpThread(GameTitle title) noexcept;
+// Conservative §17 gate for TLS-backed titles (H3/ODST/Reach/H4). Returns 0
+// when a Capture-time probe may run (stored FP thread for this
+// title/generation equals the calling thread); otherwise 1 = no safe FP
+// thread observed yet, 2 = thread mismatch, 3 = title/generation guard
+// rejection. CE/H2 use their own cross-thread-proven readers and do not
+// need this gate.
+uint8_t Game_DiagnosticCaptureProbePermission(GameTitle title) noexcept;
+// Ungated read-only semantic-primary observation. Returns false without
+// touching unitOut/weaponOut when the title cannot prove the identity
+// (lifecycle mismatch, seated/parent rejection, ownership failure, fault).
+bool Game_DiagnosticReadPrimaryWeapon(GameTitle title, uint32_t& unitOut,
+    uint32_t& weaponOut, uint32_t& detailOut) noexcept;
+
+// ---- Persistent support grip: production owner evidence ----
+// Tri-state semantic-primary ownership evidence. `state` is a
+// support_grip::OwnerEvidence value; Unknown is never treated as absence.
+// Returns false only when the title/generation cannot be observed at all.
+// Halo 3 and Halo 2 are wired; every other title reports Unknown (state 0,
+// generation carried) until its own producer lands.
+struct PrimaryWeaponEvidence
+{
+    uint32_t generation = 0;
+    uint32_t unit = 0xFFFFFFFFu;
+    uint32_t weapon = 0xFFFFFFFFu;
+    uint8_t state = 0;   // support_grip::OwnerEvidence
+    uint32_t detail = 0; // Game_DiagnosticReadPrimaryWeapon detail bits
+};
+bool Game_ReadPrimaryWeaponEvidence(GameTitle title,
+    PrimaryWeaponEvidence& out) noexcept;
+
+// Persistent support grip: one observation of the title's current semantic
+// primary, published to the durable relationship input. An unprovable read
+// publishes an explicit Unknown record (generation 0 when the lifecycle is
+// unavailable), so a stale KnownPresent cannot survive an observation that
+// proves nothing. Titles call this from a lifecycle seam that also runs while
+// no weapon packet/invocation exists (Halo 2's level-live poll).
+void Game_PublishSupportGripOwnerEvidence(GameTitle title) noexcept;
+
+// Persistent support grip: resolve one FP invocation's owner trust and publish
+// its (possibly Unknown) owner evidence to the durable relationship input.
+// Stability requires both reads to agree on an unchanged
+// generation/unit/weapon; when `requireProducerAgreement` is set the FP
+// producer/slot agreement bit (bit2) must also be present on both reads for a
+// PRESENT owner. An explicit raw primary-slot absence is probe-provable
+// without that bit (F03: agreement is a present-owner proof only). Read-only
+// with respect to the durable relationship: the shared OpenXR input path is
+// the only writer.
+struct SupportInvocationResolution
+{
+    bool trusted = false;
+    bool evidencePresent = false;
+    bool evidenceAbsent = false;
+    // F06/F07 material for a title that publishes a title-native invocation
+    // receipt: the stable owner proof this invocation resolved (Unknown and
+    // proven absence included) plus the durable-relationship reading taken at
+    // the same instant. Only a title whose presented-ray consumer is wired
+    // copies this into VR_PublishSupportInvocationReceipt.
+    uint32_t generation = 0;
+    support_grip::OwnerEvidence evidence = support_grip::OwnerEvidence::Unknown;
+    bool producerAgreement = false;
+    support_grip::OwnerTuple owner{};
+    bool relationshipReadable = false;
+    bool relationshipEngaged = false;
+    uint64_t relationshipEpoch = 0;
+};
+SupportInvocationResolution Game_ResolveSupportInvocation(GameTitle title,
+    const PrimaryWeaponEvidence& before, bool beforeOk,
+    const PrimaryWeaponEvidence& after, bool afterOk,
+    bool requireProducerAgreement) noexcept;

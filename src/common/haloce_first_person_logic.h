@@ -541,10 +541,12 @@ inline bool BuildTrackedFirstPersonPalette(const FirstPersonBinding& binding,
         if (!MoveNode(source[binding.rightWrist],weaponGrip,gun,renderedGun)||
             !BuildMirroredGripTarget(*alignmentPlane,gun,source[binding.rightWrist],renderedGun,left)) return false;
     }
-    if (rig.twoHandAimActive)
+    if (rig.supportGripAttached)
     {
         // Match the accepted planted support-grip policy; releasing grip
         // immediately restores the independent support controller target.
+        // Persistent support grip: presentation follows the valid weapon
+        // relationship even when support aim authority is reduced/rejected.
         NodeMatrix& support=anatomical?right:left;
         NodeMatrix supportPosition{};
         if (!MoveNode(source[binding.rightWrist],weaponGrip,source[binding.leftWrist],supportPosition)) return false;
@@ -574,7 +576,7 @@ inline bool BuildTrackedFirstPersonPalette(const FirstPersonBinding& binding,
     for (size_t side=0;side<2;++side)
     {
         const NodeMatrix& target=side?right:left;
-        if (ShouldApplyArmIk(rig.armIk,rig.twoHandAimActive))
+        if (ShouldApplyArmIk(rig.armIk,rig.supportGripAttached))
         {
             if (!SolveFirstPersonArm(binding,side,source,camera,rig,target,candidate)) return false;
         }

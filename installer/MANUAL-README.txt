@@ -1,5 +1,5 @@
-HALO MCC VR - SEPTEMBER 23 QoL TEST CANDIDATE
-===========================================
+HALO MCC VR - QoL TEST CANDIDATE
+================================
 
 This is an unaccepted test build for all six MCC titles, with both graphics
 modes in Halo CE and Halo 2. Steam and Microsoft Store / Xbox app are supported.
@@ -8,8 +8,9 @@ Passing build checks do not mean every feature or co-op session has been tested.
 
 INSTALL WITH THE LAUNCHER
 ------------------------
-1. Close MCC and extract the whole ZIP.
-2. Open HaloMCCVRLauncher.exe beside the ModFiles folder.
+1. Close MCC and extract the whole launcher ZIP.
+2. Open HaloMCCVRLauncher.exe beside the ModFiles folder. Windows requests
+   administrator access by default so installation can write protected folders.
 3. Select the detected Steam or Store installation, or Browse to the MCC root.
 4. Leave Keep my settings selected to preserve your configuration and append
    newly available settings. Install / Update writes to Halo_MCC_VR in that root.
@@ -22,11 +23,20 @@ INSTALL WITH THE LAUNCHER
 
 MANUAL INSTALL
 --------------
+The separate Manual-ModFiles ZIP already contains a Halo_MCC_VR folder. Place
+that folder directly inside the base MCC folder, preserving your old cfg on
+updates. The following equivalent procedure uses the complete launcher's ZIP:
 Create Halo_MCC_VR inside the MCC root (beside MCC, not inside Binaries/Win64).
 Copy the CONTENTS of ModFiles into Halo_MCC_VR, including its assets, licenses
 and optional DLSS runtime. On updates, retain halomccvr.cfg to keep your settings;
 missing settings receive defaults. The launcher can append the new keys for you.
-Run the copied HaloMCCVRLauncher.exe. Keep a backup of the old folder.
+The manual ModFiles ZIP intentionally has no launcher. For launcher-based
+install, updates and game launch, extract the separate launcher package and
+run HaloMCCVRLauncher.exe beside ModFiles; the installer places that executable
+beside the mod files in Halo_MCC_VR. If you already copied ModFiles manually,
+you can optionally copy HaloMCCVRLauncher.exe from the root of the launcher
+package into Halo_MCC_VR to add the launch and update menu. Keep a backup of the
+old folder.
 
 UPDATES
 -------
@@ -36,6 +46,9 @@ Download/install is a separate explicit action with archive and payload checks.
 A public release may be older than this private candidate; the menu distinguishes
 installed source identity from latest public release. Legacy releases without
 the new manifest require manual installation from their release page.
+The old 0.6.0 updater expects its launcher inside ModFiles. To upgrade from it
+to this separated layout, download the complete new launcher ZIP and run its
+root launcher once. The new installer can still read legacy payload layouts.
 
 SETTINGS AND CONTROLS
 ---------------------

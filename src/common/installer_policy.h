@@ -48,12 +48,36 @@ inline ConfigMerge MergeConfig(const std::string& existing, const std::string& d
     for (const auto& line : Lines(defaults)) {
         const auto key = ConfigKey(line);
         if (key.empty() || keys.contains(key)) continue;
+        // ConfigSave emits a title-specific copy of every tunable. Existing
+        // profiles that predate this feature inherit the global field unless
+        // an explicit profile key is present. Do not append seed profile
+        // values over a user's saved global calibration during cfg migration.
+        bool inheritedProfile = false;
+        for (const auto prefix : {"halo3_", "odst_", "reach_", "halo4_",
+                                  "halo2a_", "halo2c_", "halo1_"}) {
+            const std::string_view profilePrefix(prefix);
+            if (!key.starts_with(profilePrefix)) continue;
+            const auto suffix = key.substr(profilePrefix.size());
+            if (keys.contains(suffix) ||
+                    (suffix == "hud_curvature" && keys.contains("hud_height"))) {
+                inheritedProfile = true;
+                break;
+            }
+        }
+        if (inheritedProfile) continue;
         // Do not suppress ConfigLoad's migrations or cause a current default to
         // be interpreted as an older, differently calibrated setting.
+        // Previous candidates stored one stock-strength key for the selected
+        // mode, and a boolean smoothing key. Leave missing replacement keys
+        // absent while those legacy values exist so ConfigLoad can migrate
+        // them; once the game saves, the explicit per-mode/numeric keys win.
         if (key == "config_version" || key == "flashlight_mapping_version" ||
             (key == "scope_zoom" && version < 4) ||
             (key == "hud_curvature" && (version < 2 || keys.contains("hud_height"))) ||
-            (key == "weapon_holster_radius_m" && keys.contains("weapon_body_zone_radius_m"))) continue;
+            (key == "weapon_holster_radius_m" && keys.contains("weapon_body_zone_radius_m")) ||
+            ((key == "virtual_stock_standard_strength" || key == "virtual_stock_plus_strength") &&
+                keys.contains("virtual_stock_strength")) ||
+            (key == "two_hand_smoothing_strength" && keys.contains("two_hand_smoothing"))) continue;
         if (!result.addedKeys) {
             if (result.text.back() != '\n') result.text += "\r\n";
             result.text += "\r\n# New Halo MCC VR settings added by the installer.\r\n";
@@ -86,7 +110,7 @@ struct PayloadFile { std::string relative; std::string sha256; };
 inline bool ParseManifest(const std::string& text, std::vector<PayloadFile>& files, std::string& error) {
     files.clear();
     std::set<std::string> seen;
-    bool dll = false, launcher = false, config = false;
+    bool dll = false, config = false;
     for (auto line : Lines(text)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty() || line[0] == '#') continue;
@@ -101,12 +125,11 @@ inline bool ParseManifest(const std::string& text, std::vector<PayloadFile>& fil
             error = "Duplicate or reserved payload path."; return false;
         }
         dll |= canonical == "halomccvr.dll";
-        launcher |= canonical == "halomccvrlauncher.exe";
         config |= canonical == "halomccvr.cfg";
         files.push_back({path, hash});
         if (files.size() > 4096) { error = "Payload manifest has too many files."; return false; }
     }
-    if (!(dll && launcher && config)) { error = "Payload must include the DLL, launcher and default configuration."; return false; }
+    if (!(dll && config)) { error = "Payload must include the DLL and default configuration."; return false; }
     return true;
 }
 

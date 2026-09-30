@@ -1,5 +1,6 @@
 #include "haloce_first_person.h"
 #include "haloce_contact.h"
+#include "telemetry_recorder.h"
 #include "vr.h"
 #include "../common/haloce_contact_logic.h"
 #include "../common/weapon_model_catalog.h"
@@ -146,11 +147,13 @@ bool AimCurrent() noexcept
         TitleAdapter_GetActiveTitle()==GameTitle::HaloCE&&
         TitleAdapter_GetGeneration(GameTitle::HaloCE)==generation.load(std::memory_order_acquire);
 }
-bool LocalOnFootShooter(uint32_t shooter) noexcept
+bool LocalOnFootShooter(uint32_t shooter,HaloCELocalPlayerState* outState=nullptr) noexcept
 {
     if (shooter==0xffffffffu) return false;
     HaloCELocalPlayerState state{};
-    return HaloCEControls_GetLocalPlayerState(state)&&state.hasControlledUnit&&state.unit==shooter&&
+    if (!HaloCEControls_GetLocalPlayerState(state)) return false;
+    if (outState) *outState=state;
+    return state.hasControlledUnit&&state.unit==shooter&&
         state.weapon!=0xffffffffu&&state.onFoot&&state.nativePreparesFirstPerson&&
         !state.nativeInputBlocked&&!state.nativeLookBlocked&&!state.nativePaused&&
         !state.nativeCinematicFlag;
@@ -158,11 +161,30 @@ bool LocalOnFootShooter(uint32_t shooter) noexcept
 bool ControllerShotDirection(uint32_t shooter,Vec3& direction) noexcept
 {
     RenderContext context{};NodeMatrix aim{};
-    if (!AimCurrent()||!LocalOnFootShooter(shooter)||
+    HaloCELocalPlayerState state{};
+    if (!AimCurrent()||!LocalOnFootShooter(shooter,&state)||
         !HaloCE_GetGameplayContext(context)||
-        context.tracking.controllers.controlsPresentationBlocked||
-        !BuildControllerMatrix(context.camera,context.tracking,context.reference,
-            context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,aim)||
+        context.tracking.controllers.controlsPresentationBlocked) return false;
+    // Persistent support grip: the gameplay context's primaryAim may carry
+    // support steering resolved for a different weapon incarnation. This
+    // invocation may consume it only while the current CE owner proves the
+    // durable relationship owner and the frozen pose is actually
+    // support-derived; an unreadable snapshot or a released relationship with
+    // a support-derived frozen publication detaches for this invocation to
+    // the frozen independent one-hand carrier, and a missing independent pose
+    // returns to stock. LocalOnFootShooter has already required a validated
+    // current weapon, so Unknown/Absent CE evidence never reaches carrier
+    // selection. With the feature off the decision is the base one (no read).
+    const CeSupportInvocation decision=CeEvaluateSupportInvocation(
+        VR_SupportGripWiredForTitle(GameTitle::HaloCE),state,
+        context.tracking.controllers.primaryAimSupportDerived);
+    const bool detach=decision.detach;
+    if (detach&&!context.tracking.controllers.independentPrimaryAim.valid)
+        return false;
+    const ControllerPose& carrier=detach?context.tracking.controllers.independentPrimaryAim:
+        context.tracking.controllers.primaryAim;
+    if (!BuildControllerMatrix(context.camera,context.tracking,context.reference,
+        carrier,context.unitsPerMeter,context.positional,aim)||
         !HaloCE_RenderContextCurrent(context)||!AimCurrent()) return false;
     direction=aim.forward;
     return true;
@@ -646,6 +668,27 @@ __declspec(noinline) void __fastcall PaletteHook(uint32_t graph,NodeMatrix* matr
     { applied.fetch_add(1,std::memory_order_relaxed); }
     else refused.fetch_add(1,std::memory_order_relaxed);
 }
+// Weapon-order diagnostic tranche: pure CE stable-commit decision. A commit
+// is recorded only when the validated on-foot first-person identity survives
+// the original prepare unchanged. No engine state, no gameplay meaning.
+bool DiagnosticCeOwned(const HaloCELocalPlayerState& state) noexcept
+{
+    return state.generation != 0 &&
+        state.hasControlledUnit && state.onFoot &&
+        state.nativePreparesFirstPerson &&
+        !state.nativeInputBlocked && !state.nativeLookBlocked &&
+        !state.nativePaused && !state.nativeCinematicFlag &&
+        state.unit != 0xffffffffu && state.weapon != 0xffffffffu;
+}
+bool DiagnosticCeStableCommit(const HaloCELocalPlayerState& before,
+    bool beforeValid, const HaloCELocalPlayerState& after,
+    bool afterValid) noexcept
+{
+    return beforeValid && afterValid &&
+        DiagnosticCeOwned(before) && DiagnosticCeOwned(after) &&
+        before.generation == after.generation &&
+        before.unit == after.unit && before.weapon == after.weapon;
+}
 void RunPrepare(PrepareFn original,int16_t user,Scope* current,Scope* previous)
 {
     scope=current;
@@ -657,6 +700,32 @@ __declspec(noinline) void __fastcall PrepareHook(int16_t user)
     Callback callback;
     auto original=reinterpret_cast<PrepareFn>(prepareHook.original);
     if (!original) return;
+    // Diagnostic-only FP entry plus a before/after stable commit read. The
+    // pre-latch observation only counts as a stable FP commit when the
+    // validated identity survives the original prepare unchanged: a commit
+    // emitted before prepare alone would only prove what local state said,
+    // not what the preparation that ran actually used. No gameplay effect,
+    // independent of gunBarrelAim, and the original prepare is still called
+    // exactly once.
+    // Accepted limitation (N4): HaloCEControls_GetLocalPlayerState false can
+    // represent several state/lifecycle failures, so a failed CE observation
+    // is recorded as ReaderReturnedFalse, never GuardRejected. The analyser
+    // treats it as unavailable evidence for the negative FP-first proof.
+    const bool diagnosticArmed =
+        user == 0 && Telemetry_WeaponEventsAccepting();
+    HaloCELocalPlayerState diagnosticBefore{};
+    bool diagnosticBeforeValid = false;
+    if (diagnosticArmed)
+    {
+        Telemetry_PublishWeaponEvent(
+            static_cast<uint8_t>(WeaponOrderEventKind::FpEntry),
+            static_cast<uint8_t>(WeaponOrderEventStatus::NoObservation),
+            static_cast<uint8_t>(GameTitle::HaloCE),
+            generation.load(std::memory_order_acquire), 0,
+            UINT32_MAX, UINT32_MAX, uint64_t(user), 0);
+        diagnosticBeforeValid =
+            HaloCEControls_GetLocalPlayerState(diagnosticBefore);
+    }
     Scope local{};
     Scope* previous=scope;
     // The original prepare rebuilds stock first-person matrices. Invalidate
@@ -664,6 +733,35 @@ __declspec(noinline) void __fastcall PrepareHook(int16_t user)
     if (user==0&&!previous) lastApplied.store(0,std::memory_order_release);
     Camera stock{};
     uintptr_t users{};
+    // Persistent support grip: only the outermost prepare owns evidence and
+    // trust. A nested prepare must never publish Unknown over this frame's
+    // proven record. CE has no separate FP producer/slot pair, so the
+    // validated reader itself is the proof; only a full raw-slot absence is
+    // KnownAbsent, validation failure stays Unknown. Publishing happens before
+    // the render context is read (and even when that read fails) so an
+    // explicit absence still reaches the durable writer. Read-only with
+    // respect to the durable relationship; PG off publishes nothing.
+    const bool supportWired=VR_SupportGripWiredForTitle(GameTitle::HaloCE);
+    const bool supportOutermostPrepare=supportWired&&(user==0&&!previous);
+    CeSupportInvocation supportDecision{};
+    if (supportOutermostPrepare)
+    {
+        HaloCELocalPlayerState supportState{};
+        const bool supportReadOk=
+            HaloCEControls_GetLocalPlayerState(supportState);
+        const support_grip::OwnerEvidence supportEvidence=
+            support_grip::CeOwnerEvidence(supportReadOk,
+                supportState.hasFirstPersonUserRecord,
+                supportState.weaponSlotPresent,supportState.weapon);
+        const uint32_t supportGeneration=supportReadOk?supportState.generation:0;
+        VR_PublishSupportGripOwnerEvidence(GameTitle::HaloCE,supportGeneration,
+            support_grip::OwnerTuple{GameTitle::HaloCE,supportGeneration,
+                supportEvidence==support_grip::OwnerEvidence::KnownPresent
+                    ? supportState.unit : 0xffffffffu,
+                supportEvidence==support_grip::OwnerEvidence::KnownPresent
+                    ? supportState.weapon : 0xffffffffu},
+            supportEvidence);
+    }
     if (user==0&&!previous&&Current()&&Read(moduleBase+0x29af2c4,stock)&&
         Read(moduleBase+0x2d9cd90,users)&&users&&
         users<=std::numeric_limits<uintptr_t>::max()-0x1e94&&
@@ -675,8 +773,66 @@ __declspec(noinline) void __fastcall PrepareHook(int16_t user)
         if(local.context.tracking.controllers.gunBarrelAim&&
             HaloCEControls_GetLocalPlayerState(state)&&LocalOnFootShooter(state.unit))
         {local.muzzleUnit=state.unit;local.muzzleWeapon=state.weapon;}
+        if (supportOutermostPrepare)
+        {
+            // Presentation ownership (audited): this entry-resolved owner/trust
+            // pair is the owner the native palette invocation consumes.
+            // RunPrepare calls the native original synchronously on this thread
+            // while `scope` holds this frozen local context, PaletteHook applies
+            // that scope, and the native FP prepare performs no inventory/weapon
+            // mutation; the CE weapon-order diagnostic (stable before/after
+            // identity around RunPrepare) recorded zero uncommitted CE FP
+            // invocations. The decision re-reads the durable snapshot once for
+            // this invocation: an unreadable relationship or a released
+            // relationship with a support-derived frozen pose detaches the aim
+            // carrier and the visible support attachment for this invocation.
+            //
+            // The trust decision owns its local-player read. The muzzle read
+            // above is gated on the optional gun_barrel_aim feature and serves
+            // only the muzzle origin: reusing its state here would leave the
+            // default-initialized (generation 0) value on a gun_barrel_aim-off
+            // installation, which maps to Unknown evidence and detaches every
+            // invocation. A failed read is reset to the default state, so it
+            // stays Unknown and detaches (fail-closed); no evidence is inferred
+            // from a failed read.
+            HaloCELocalPlayerState supportTrustState{};
+            if (!HaloCEControls_GetLocalPlayerState(supportTrustState))
+                supportTrustState=HaloCELocalPlayerState{};
+            supportDecision=CeEvaluateSupportInvocation(supportWired,
+                supportTrustState,
+                local.context.tracking.controllers.primaryAimSupportDerived);
+            auto& supportRig=local.context.tracking.controllers;
+            // A same-owner invocation keeps the visible support hand attached
+            // even when support aim authority is off (presentation is not aim
+            // authority).
+            supportRig.supportGripAttached=supportDecision.engaged&&
+                !supportDecision.detach;
+            if (supportDecision.detach&&
+                supportRig.independentPrimaryAim.valid)
+            {
+                supportRig.primaryAim=supportRig.independentPrimaryAim;
+                // The substituted geometry is the independent one-hand
+                // carrier: it is not support-derived.
+                supportRig.primaryAimSupportDerived=false;
+            }
+        }
     }
     RunPrepare(original,user,&local,previous);
+    if (diagnosticArmed)
+    {
+        HaloCELocalPlayerState diagnosticAfter{};
+        const bool diagnosticAfterValid =
+            HaloCEControls_GetLocalPlayerState(diagnosticAfter);
+        if (DiagnosticCeStableCommit(diagnosticBefore, diagnosticBeforeValid,
+                diagnosticAfter, diagnosticAfterValid))
+            Telemetry_PublishWeaponEvent(
+                static_cast<uint8_t>(WeaponOrderEventKind::FpWeaponCommit),
+                static_cast<uint8_t>(WeaponOrderEventStatus::Success),
+                static_cast<uint8_t>(GameTitle::HaloCE),
+                diagnosticBefore.generation,
+                local.valid ? local.context.tracking.serial : 0,
+                diagnosticBefore.unit, diagnosticBefore.weapon, 0, 0x3u);
+    }
 }
 #include "haloce_first_person_visibility.inl"
 #include "haloce_muzzle_lifecycle.inl"

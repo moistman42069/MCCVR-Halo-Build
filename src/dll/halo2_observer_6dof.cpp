@@ -37,6 +37,7 @@
 #include "../common/config.h"
 #include "../common/log.h"
 #include "game.h"
+#include "telemetry_recorder.h"
 #include "title_adapter.h"
 #include "roomscale.h"
 #include "menu.h"
@@ -374,6 +375,9 @@ namespace
         float rightCollisionCorrection[3]{};
         float leftCollisionCorrection[3]{};
         bool twoHandAimActive = false;
+        // Persistent support grip: visible presentation follows the valid
+        // weapon relationship, not the aim-authority result.
+        bool supportGripAttached = false;
         bool handAlignment = false;
         contact_melee::Frame contactFrames[2]{};
         uint32_t muzzleGeneration=0;
@@ -2268,7 +2272,7 @@ namespace
                             context.handsRemap, context.binding, primaryMatrices,
                             context.gunCount, context.renderCamera,
                             context.rightCarrier, context.leftCarrier,
-                            context.twoHandAimActive, context.rightScale,
+                            context.supportGripAttached, context.rightScale,
                             context.leftScale, context.worldScale, result, context.handAlignment);
                     if (owned)
                     {
@@ -2394,11 +2398,125 @@ namespace
         return result;
     }
 
+    // Persistent support grip: durable relationship compatibility for one
+    // packet-builder invocation. Read-only; the shared OpenXR input path owns
+    // all durable mutation. When no relationship is engaged the existing
+    // behaviour is preserved, and for a title this feature is not wired for
+    // (or with the feature off) the decision is the constant base one.
+    struct Halo2SupportUse
+    {
+        bool relationshipEngaged = false;
+        bool ownerUsable = true;
+        bool readable = false;
+        bool detach = false;
+    };
+    Halo2SupportUse Halo2EvaluateSupportUse(
+        const Halo2ObserverPosePublication& publication,
+        uint32_t unitObject, uint32_t weaponObject) noexcept
+    {
+        Halo2SupportUse result{};
+        if (!VR_SupportGripWiredForTitle(GameTitle::Halo2))
+            return result;
+        SupportGripRelationshipSnapshot relationship{};
+        result.readable = VR_GetSupportGripRelationship(relationship);
+        bool ownerTrusted = false;
+        if (result.readable && relationship.engaged)
+        {
+            result.relationshipEngaged = true;
+            result.ownerUsable = support_grip::InvocationOwnerTrusted(
+                relationship.engaged,
+                support_grip::OwnerTuple{relationship.title,
+                    relationship.generation, relationship.unit,
+                    relationship.weapon},
+                support_grip::OwnerEvidence::KnownPresent,
+                support_grip::OwnerTuple{GameTitle::Halo2, publication.generation,
+                    unitObject, weaponObject});
+            ownerTrusted = result.ownerUsable;
+        }
+        // F15: a failed relationship read is continuity-unprovable, not "no
+        // relationship", so it detaches (the shared unit-tested matrix).
+        result.detach = support_grip::SupportInvocationMustDetach(result.readable,
+            result.relationshipEngaged, ownerTrusted,
+            publication.snapshot.twoHandAimActive);
+        return result;
+    }
+    bool Halo2SupportCarrierMustDetach(
+        const Halo2ObserverPosePublication& publication,
+        uint32_t unitObject, uint32_t weaponObject) noexcept
+    {
+        const Halo2SupportUse use =
+            Halo2EvaluateSupportUse(publication, unitObject, weaponObject);
+        return use.detach;
+    }
+    // Persistent support grip: owner-qualified detach decision for the live
+    // carrier consumers outside the packet builder (native aim/aim assist and
+    // the scope camera). A relationship read failure is continuity-unprovable,
+    // not "no relationship", so it detaches. A readable disengaged
+    // relationship detaches only when this publication's frozen snapshot still
+    // carries support-derived geometry (the release discontinuity); an
+    // ordinary one-hand publication stays valid. While engaged this reads the
+    // CURRENT owner with the same production reader the packet builder uses,
+    // so only this invocation's own proof can authorize a support carrier; a
+    // stale globally published evidence record is never an input. Explicit
+    // absence, Unknown evidence and any owner mismatch fail closed and detach
+    // to the independent one-hand carrier. The release/read-failure decision is
+    // the shared unit-tested support_grip::SupportInvocationMustDetach, so both
+    // H2 helper forms use the same matrix. With the feature off or the title
+    // unwired the decision is the constant base one (never detach).
+    bool Halo2SupportCarrierMustDetach(
+        const Halo2ObserverPosePublication& publication) noexcept
+    {
+        if (!VR_SupportGripWiredForTitle(GameTitle::Halo2))
+            return false;
+        SupportGripRelationshipSnapshot relationship{};
+        const bool readable = VR_GetSupportGripRelationship(relationship);
+        const bool engaged = readable && relationship.engaged;
+        bool ownerTrusted = false;
+        if (engaged)
+        {
+            PrimaryWeaponEvidence currentEvidence{};
+            const bool readOk = Game_ReadPrimaryWeaponEvidence(
+                GameTitle::Halo2, currentEvidence);
+            const support_grip::OwnerEvidence evidenceState = readOk
+                ? static_cast<support_grip::OwnerEvidence>(currentEvidence.state)
+                : support_grip::OwnerEvidence::Unknown;
+            ownerTrusted = !support_grip::SupportCarrierMustDetachForInvocation(
+                relationship.engaged,
+                support_grip::OwnerTuple{relationship.title,
+                    relationship.generation, relationship.unit,
+                    relationship.weapon},
+                evidenceState,
+                support_grip::OwnerTuple{GameTitle::Halo2,
+                    currentEvidence.generation, currentEvidence.unit,
+                    currentEvidence.weapon});
+        }
+        return support_grip::SupportInvocationMustDetach(readable, engaged,
+            ownerTrusted, publication.snapshot.twoHandAimActive);
+    }
+
+    // ---- Weapon-order diagnostic tranche (read-only evidence) ----
+    void Halo2DiagnosticPublish(uint8_t kind, uint8_t status,
+        uint64_t preparedSerial, uint32_t unit, uint32_t weapon, uint64_t aux0,
+        uint64_t aux1) noexcept
+    {
+        if (!Telemetry_WeaponEventsAccepting())
+            return;
+        Telemetry_PublishWeaponEvent(kind, status,
+            static_cast<uint8_t>(GameTitle::Halo2),
+            g_generation.load(std::memory_order_acquire), preparedSerial,
+            unit, weapon, aux0, aux1);
+    }
+
     __declspec(noinline) int __fastcall Halo2FirstPersonPacketBuilderDetour(
         uint32_t user, uint32_t unitObject, const float* position,
         const float* forward, const float* up, int packetCapacity,
         uint32_t* packets, uint8_t publishToRenderer)
     {
+        if (user == kOwnedUser)
+            Halo2DiagnosticPublish(
+                static_cast<uint8_t>(WeaponOrderEventKind::FpEntry),
+                static_cast<uint8_t>(WeaponOrderEventStatus::NoObservation),
+                0, UINT32_MAX, UINT32_MAX, publishToRenderer, 0);
         g_packetBuilderActiveCallbacks.fetch_add(1, std::memory_order_acq_rel);
         g_packetBuilderCalls.fetch_add(1, std::memory_order_relaxed);
         const auto original = reinterpret_cast<Halo2FirstPersonPacketBuilderFn>(
@@ -2506,7 +2624,10 @@ namespace
                         1, std::memory_order_relaxed);
                 }
                 else if (!BuildStableFirstPersonCarriers(
-                             publication, generation, rightCarrier, leftCarrier, independentPrimary))
+                             publication, generation, rightCarrier, leftCarrier,
+                             independentPrimary ||
+                                 Halo2SupportCarrierMustDetach(publication,
+                                     unitObject, weaponObject)))
                 {
                     g_packetBuilderCarrierMiss.fetch_add(
                         1, std::memory_order_relaxed);
@@ -2625,8 +2746,26 @@ namespace
                     context.rightCarrier = rightCarrier;
                     context.leftCarrier = leftCarrier;
                     context.handAlignment = publication.snapshot.handAlignment;
-                    context.twoHandAimActive =
-                        !independentPrimary && publication.snapshot.twoHandAimActive;
+                    const Halo2SupportUse supportUse =
+                        Halo2EvaluateSupportUse(publication, unitObject,
+                            weaponObject);
+                    // A released relationship with a stale support-derived
+                    // publication and an unreadable snapshot both present no
+                    // support hand and no two-hand aim authority. An ordinary
+                    // one-hand publication keeps the existing presentation.
+                    context.supportGripAttached = !independentPrimary && !supportUse.detach &&
+                        (supportUse.relationshipEngaged
+                            ? supportUse.ownerUsable
+                            : publication.snapshot.twoHandAimActive);
+                    context.twoHandAimActive = !independentPrimary && !supportUse.detach &&
+                        supportUse.ownerUsable && publication.snapshot.twoHandAimActive;
+                    // The durable evidence publication deliberately does NOT
+                    // happen from this render hook: the writer-side slot
+                    // protocol is documented as never called from a render or
+                    // palette hook. Halo 2's liveness producer is the level-live
+                    // observer poll (see Halo2Observer6Dof_Poll), which also
+                    // runs while no weapon packet is admitted (F09) and reads
+                    // the same guarded direct reader.
                     context.rightScale =
                         std::clamp(g_config.gun_scale, 0.3f, 3.0f);
                     context.leftScale =
@@ -2639,6 +2778,19 @@ namespace
                     context.muzzleLeftHanded=g_config.left_handed;
                     Halo2PrepareContactFrames(publication,independentPrimary,context);
                     context.valid = true;
+                    // Diagnostic-only FP weapon commit: admitted packet
+                    // identity for this renderer (no gameplay effect).
+                    Halo2DiagnosticPublish(
+                        static_cast<uint8_t>(
+                            WeaponOrderEventKind::FpWeaponCommit),
+                        static_cast<uint8_t>(
+                            WeaponOrderEventStatus::Success),
+                        publication.serial, unitObject,
+                        context.weaponObject,
+                        (anniversaryConsumer ? 1u : 0u) |
+                            ((context.secondaryWeaponObject != UINT32_MAX) ?
+                                2u : 0u),
+                        0);
                     if (binding.rigKind ==
                         Halo2FirstPersonRigKind::MasterChief)
                     {
@@ -2826,7 +2978,7 @@ namespace
                         candidate.handsRemap, candidate.binding, gunMatrices,
                         candidate.gunCount, candidate.renderCamera,
                         candidate.rightCarrier, candidate.leftCarrier,
-                        candidate.twoHandAimActive, candidate.rightScale,
+                        candidate.supportGripAttached, candidate.rightScale,
                         candidate.leftScale, candidate.worldScale, packetResult, candidate.handAlignment));
                 if (packetsOwned)
                 {
@@ -3221,10 +3373,24 @@ namespace
         Halo2CameraBasis rightCarrier{}, leftCarrier{};
         const uint32_t generation =
             g_generation.load(std::memory_order_acquire);
+        // Persistent support grip: this used to default to the support-capable
+        // carrier regardless of owner trust, so an engaged relationship with
+        // no matching current owner kept steering native aim and aim assist
+        // through support geometry. The shared decision is evaluated against
+        // this exact publication (its frozen support-derived flag and its
+        // owner identity), so a failed read, a release discontinuity or an
+        // owner mismatch detaches to the independent one-hand carrier; with
+        // no relationship engaged an ordinary publication is preserved.
         if (!Halo2Observer6Dof_ReadPublishedPose(publication) ||
-            !Halo2ObserverControllerSnapshotUsable(publication, generation) ||
-            !BuildStableFirstPersonCarriers(
-                publication, generation, rightCarrier, leftCarrier))
+            !Halo2ObserverControllerSnapshotUsable(publication, generation))
+        {
+            return false;
+        }
+        const bool independentPrimary =
+            Halo2SupportCarrierMustDetach(publication);
+        if (!BuildStableFirstPersonCarriers(
+                publication, generation, rightCarrier, leftCarrier,
+                independentPrimary))
         {
             return false;
         }
@@ -5773,6 +5939,18 @@ bool Halo2Observer6Dof_Poll(
             "particle renderer calls are being skipped; Anniversary remains "
             "stock");
     }
+    // Persistent support grip (F09): the packet transaction only publishes
+    // while a first-person weapon packet is admitted, so a weapon->unarmed
+    // transition could leave a stale KnownPresent cached forever. This poll
+    // runs on the title worker for as long as the level is live, independent
+    // of any weapon packet, and H2's guarded direct reader is proven safe
+    // outside the TLS-restricted titles (A016). Publishing here - including an
+    // explicit KnownAbsent for an empty raw slot and Unknown when the reader
+    // cannot prove itself - is the liveness guarantee for that transition.
+    // With the feature off or the title unwired this is not called at all.
+    if (VR_SupportGripWiredForTitle(GameTitle::Halo2) &&
+        TitleAdapter_GetActiveTitle() == GameTitle::Halo2)
+        Game_PublishSupportGripOwnerEvidence(GameTitle::Halo2);
     ReportTelemetry();
     return true;
 }
@@ -5940,8 +6118,12 @@ bool Halo2Observer6Dof_BuildScopeCamera(Halo2CameraBasis& camera) noexcept
 {
     Halo2ObserverPosePublication p{};Halo2CameraBasis primary{},secondary{};
     const auto gen=g_generation.load(std::memory_order_acquire);
+    // The scope camera is a live carrier consumer too: it uses the same
+    // owner-qualified support decision as native aim/aim assist instead of
+    // resampling the support-capable carrier independently.
     if(!Halo2Observer6Dof_ReadPublishedPose(p)||!Halo2ObserverControllerSnapshotUsable(p,gen)||
-        !BuildStableFirstPersonCarriers(p,gen,primary,secondary))return false;
+        !BuildStableFirstPersonCarriers(p,gen,primary,secondary,
+            Halo2SupportCarrierMustDetach(p)))return false;
     float direction[3]{},basis[9]{};
     if(!Halo2BuildControllerShotDirection(p.stock.position,primary,
         std::clamp(g_config.crosshair_distance_m,2.f,50.f)*Game_GetWorldScale(),direction))return false;
@@ -6162,6 +6344,104 @@ void Halo2Observer6Dof_ShutdownForVrFailure() noexcept
     g_teardownRequested.store(true, std::memory_order_release);
 }
 
+// ---- Weapon-order diagnostic tranche (read-only evidence) ----
+// Independent datum/inventory view: owned local unit plus the FP user-data
+// primary slot validated through the native object table. The FP packet slot
+// is deliberately NOT consulted here; packet evidence arrives separately via
+// FpWeaponCommit so the analyser observes raw agreement or disagreement.
+bool Halo2DiagnosticReadPrimaryWeapon(uint32_t& unitOut, uint32_t& weaponOut,
+    uint32_t& detailOut, bool* primaryAbsentOut) noexcept
+{
+    unitOut = UINT32_MAX;
+    weaponOut = UINT32_MAX;
+    detailOut = 0;
+    if (primaryAbsentOut) *primaryAbsentOut = false;
+    // Lifecycle-guard failures are reported distinctly (bit30 ->
+    // GuardRejected) so they cannot be confused with a reader that ran and
+    // returned false; bit31 is reserved for native faults.
+    if (!g_armed.load(std::memory_order_acquire) ||
+        !g_levelLive.load(std::memory_order_acquire) ||
+        g_teardownRequested.load(std::memory_order_acquire))
+    {
+        detailOut = 0x40000000u;
+        return false;
+    }
+    const uint32_t generationBefore =
+        g_generation.load(std::memory_order_acquire);
+    if (!generationBefore)
+    {
+        detailOut = 0x40000000u;
+        return false;
+    }
+    if (TitleAdapter_GetActiveTitle() != GameTitle::Halo2 ||
+        TitleAdapter_GetGeneration(GameTitle::Halo2) != generationBefore)
+    {
+        detailOut = 0x40000000u;
+        return false;
+    }
+    const uintptr_t module = g_moduleBase.load(std::memory_order_acquire);
+    if (!module)
+    {
+        detailOut = 0x40000000u;
+        return false;
+    }
+    __try
+    {
+        const uint32_t unit = Halo2OwnedUnit();
+        if (unit == UINT32_MAX || !(unit >> 16))
+            return false;
+        const uintptr_t userArray =
+            *reinterpret_cast<const volatile uintptr_t*>(module +
+                kHalo2FirstPersonUserDataPointerRva);
+        if (!userArray)
+            return false;
+        const uintptr_t weaponData = userArray +
+            static_cast<uintptr_t>(kOwnedUser) *
+                kHalo2FirstPersonUserStride +
+            kHalo2FirstPersonWeaponDataOffset;
+        const uint32_t primary =
+            *reinterpret_cast<const volatile uint32_t*>(weaponData +
+                kHalo2FirstPersonWeaponObjectOffset);
+        const uintptr_t secondaryData =
+            weaponData + kHalo2FirstPersonWeaponSlotStride;
+        const uint32_t secondaryObject =
+            *reinterpret_cast<const volatile uint32_t*>(secondaryData +
+                kHalo2FirstPersonWeaponObjectOffset);
+        const bool secondaryPresent =
+            (*reinterpret_cast<const volatile uint8_t*>(secondaryData) & 1u) &&
+            secondaryObject != UINT32_MAX;
+        // The raw native slot is the only explicit absence claim; a non-null
+        // candidate that fails validation stays uncertainty.
+        if (primaryAbsentOut) *primaryAbsentOut = primary == UINT32_MAX;
+        // Datum ownership mirroring Halo2DualWeaponOwned, resolved through
+        // this core's own module base (no dual-aim install dependency).
+        bool owned = false;
+        if (primary != UINT32_MAX && (primary >> 16))
+        {
+            const uint8_t* object = static_cast<const uint8_t*>(
+                Halo2ObjectFromIndex(primary));
+            owned = object && object[0xAA] == 2 && (object[0x130] & 1u) &&
+                *reinterpret_cast<const uint32_t*>(object + 0x158) == unit;
+        }
+        if (g_generation.load(std::memory_order_acquire) != generationBefore)
+        {
+            detailOut = 0x40000000u;
+            return false;
+        }
+        if (!owned)
+            return false;
+        unitOut = unit;
+        weaponOut = primary;
+        detailOut = (secondaryPresent ? 1u : 0u) | 2u;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        detailOut = 0x80000000u;
+        return false;
+    }
+}
+
 #else
 
 bool Halo2Observer6Dof_Poll(
@@ -6202,5 +6482,14 @@ bool Halo2Observer6Dof_BeginClassicFirstPersonEye() noexcept { return false; }
 void Halo2Observer6Dof_EndClassicFirstPersonEye() noexcept {}
 void Halo2Observer6Dof_RequestRecenter() noexcept {}
 void Halo2Observer6Dof_ShutdownForVrFailure() noexcept {}
+bool Halo2DiagnosticReadPrimaryWeapon(uint32_t& unitOut, uint32_t& weaponOut,
+    uint32_t& detailOut, bool* primaryAbsentOut) noexcept
+{
+    unitOut = UINT32_MAX;
+    weaponOut = UINT32_MAX;
+    detailOut = 0;
+    if (primaryAbsentOut) *primaryAbsentOut = false;
+    return false;
+}
 
 #endif

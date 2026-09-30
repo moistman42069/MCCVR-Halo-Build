@@ -35,6 +35,28 @@ function Invoke-Tool([scriptblock]$Block) {
     try { & $Block } finally { $ErrorActionPreference = $saved }
 }
 
+function New-ManualPayloadArchive([string]$SourceDirectory, [string]$ArchivePath) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $sourceRoot = [IO.Path]::GetFullPath($SourceDirectory).TrimEnd('\') + '\'
+    $archive = [IO.Compression.ZipFile]::Open($ArchivePath, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($item in @(Get-ChildItem -LiteralPath $SourceDirectory -File -Recurse | Sort-Object FullName)) {
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                    -not $item.FullName.StartsWith($sourceRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Unsafe manual payload path: $($item.FullName)"
+            }
+            $relative = $item.FullName.Substring($sourceRoot.Length).Replace('\', '/')
+            $entry = $archive.CreateEntry("Halo_MCC_VR/$relative", [IO.Compression.CompressionLevel]::Optimal)
+            $inputStream = [IO.File]::OpenRead($item.FullName)
+            try {
+                $outputStream = $entry.Open()
+                try { $inputStream.CopyTo($outputStream) }
+                finally { $outputStream.Dispose() }
+            } finally { $inputStream.Dispose() }
+        }
+    } finally { $archive.Dispose() }
+}
+
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $candidateRoot = [IO.Path]::GetFullPath(
     (Join-Path $repoRoot 'out\candidates'))
@@ -493,6 +515,11 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw 'Candidate staging failed.'
     }
+    Invoke-Tool { & cmake --install $packageBuildDir --config Release `
+        --prefix $packageDir --component launcher }
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Launcher staging failed.'
+    }
 
     $configGenerator = Join-Path $repoRoot `
         "$packageBuildDir\Release\halomccvr-config-defaults.exe"
@@ -506,7 +533,7 @@ try {
     }
 
     $dllPath = Join-Path $payloadDir 'HaloMCCVR.dll'
-    $launcherPath = Join-Path $payloadDir 'HaloMCCVRLauncher.exe'
+    $launcherPath = Join-Path $packageDir 'HaloMCCVRLauncher.exe'
     foreach ($requiredPath in @(
             $dllPath,
             $launcherPath,
@@ -514,6 +541,7 @@ try {
             (Join-Path $payloadDir 'LICENSE'),
             (Join-Path $payloadDir 'MANUAL-README.txt'),
             (Join-Path $payloadDir 'nvngx_dlss.dll'),
+            (Join-Path $payloadDir 'TelemetryAnalyser/analyse_mccvr_telemetry.py'),
             (Join-Path $payloadDir 'licenses/NVIDIA-DLSS/LICENSE.txt'),
             (Join-Path $payloadDir 'assets/fonts/Oxanium.ttf'))) {
         if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
@@ -531,7 +559,7 @@ try {
         (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
 
     $manifest = [ordered]@{
-        schema_version = 55
+        schema_version = 56
         payload_directory = 'ModFiles'
         status = 'UNTESTED_LOCAL_CANDIDATE'
         accepted = $false
@@ -553,10 +581,17 @@ try {
         }
         deployment_policy = [ordered]@{
             automatic_after_package = $false
-            installer = 'HaloMCCVRLauncher.exe'
+            installer = 'HaloMCCVRLauncher.exe (launcher package root, separate from ModFiles)'
             launches_mcc = $false
             changes_config = $false
             interactive_installer_config_policy = 'retain-existing-and-append-missing-defaults-by-default; explicit-reset-available; backup-before-replacement'
+        }
+        launcher = [ordered]@{
+            path = 'HaloMCCVRLauncher.exe'
+            bytes = $launcher.Length
+            sha256 = $launcherHash
+            execution_level = 'requireAdministrator'
+            manual_payload_contains_launcher = $false
         }
         accepted_halo4_identity = [ordered]@{
             candidate = 'C-H4-56'
@@ -1095,10 +1130,6 @@ try {
                 bytes = $dll.Length
                 sha256 = $dllHash
             }
-            'HaloMCCVRLauncher.exe' = [ordered]@{
-                bytes = $launcher.Length
-                sha256 = $launcherHash
-            }
             'halomccvr.cfg' = [ordered]@{
                 bytes = $config.Length
                 sha256 = $configHash
@@ -1339,7 +1370,7 @@ try {
         }
         current_notes = 'RELEASE-NOTES.md'
         implementation_ledger = 'IMPLEMENTATION-STATUS.md'
-        launcher = [ordered]@{
+        update_launcher = [ordered]@{
             automatic_install = $false
             automatic_launch = $false
             auto_detect_editions = @('Steam', 'Microsoft Store')
@@ -1354,12 +1385,18 @@ try {
 
     }
 
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-RELEASE-NOTES-2026-09-23.md') -Destination (Join-Path $packageDir 'RELEASE-NOTES.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-23.md') -Destination (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-RELEASE-NOTES-2026-09-30.md') -Destination (Join-Path $packageDir 'RELEASE-NOTES.md')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-30.md') -Destination (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-23.md') -Destination (Join-Path $packageDir 'PREVIOUS-IMPLEMENTATION-STATUS.md')
     Copy-Item -LiteralPath (Join-Path $packageDir 'RELEASE-NOTES.md') -Destination $payloadDir
     Copy-Item -LiteralPath (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md') -Destination $payloadDir
+    Copy-Item -LiteralPath (Join-Path $packageDir 'PREVIOUS-IMPLEMENTATION-STATUS.md') -Destination $payloadDir
+    foreach ($packageDoc in @('RELEASE-NOTES.md', 'IMPLEMENTATION-STATUS.md', 'PREVIOUS-IMPLEMENTATION-STATUS.md')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $payloadDir $packageDoc) -PathType Leaf)) {
+            throw "Candidate package is missing its report ledger: $packageDoc"
+        }
+    }
     Copy-Item -LiteralPath (Join-Path $payloadDir 'MANUAL-README.txt') -Destination (Join-Path $packageDir 'README.txt')
-    Copy-Item -LiteralPath $launcherPath -Destination (Join-Path $packageDir 'HaloMCCVRLauncher.exe')
     [IO.File]::WriteAllLines((Join-Path $payloadDir 'BUILD-IDENTITY.txt'),
         @("source_commit=$commit", 'build_kind=UNTESTED_LOCAL_CANDIDATE', 'release_tag='),
         [Text.UTF8Encoding]::new($false))
@@ -1379,8 +1416,8 @@ try {
     }
     [IO.File]::WriteAllLines((Join-Path $payloadDir 'INSTALL-MANIFEST.sha256'),
         $installHashes, [Text.UTF8Encoding]::new($false))
-    if ((Get-FileHash -LiteralPath (Join-Path $packageDir 'HaloMCCVRLauncher.exe') -Algorithm SHA256).Hash -cne $launcherHash) {
-        throw 'Root and manual-payload launchers differ.'
+    if (Test-Path -LiteralPath (Join-Path $payloadDir 'HaloMCCVRLauncher.exe')) {
+        throw 'The manual drag-and-drop payload must not include the launcher executable.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'
@@ -1390,22 +1427,37 @@ try {
         $json + [Environment]::NewLine,
         [Text.UTF8Encoding]::new($false))
 
+    $installerTests = Join-Path $packageBuildDir 'Release/halomccvr_installer_tests.exe'
+    if (-not (Test-Path -LiteralPath $installerTests -PathType Leaf)) {
+        throw "Installer package verifier is missing: $installerTests"
+    }
+    Invoke-Tool { & $installerTests --verify-payload $payloadDir }
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Synthetic Steam/Store package install verification failed.'
+    }
+
     $buildZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Build.zip")
+    $manualZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Manual-ModFiles.zip")
     $sourceZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Source.zip")
     Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $buildZip
+    New-ManualPayloadArchive $payloadDir $manualZip
     # Archive committed bytes, independent of this machine's Windows checkout
     # line-ending preference. This permits exact source/blob verification.
     Invoke-Tool { & git -c core.autocrlf=false -C $repoRoot archive --format=zip --prefix=Halo-MCC-VR/ `
         "--output=$sourceZip" $commit }
     if ($LASTEXITCODE -ne 0) { throw 'Matching source archive failed.' }
+    Invoke-Tool { & python (Join-Path $repoRoot 'tools/verify-qol-package.py') `
+        $buildZip $sourceZip --manual-zip $manualZip --commit $commit }
+    if ($LASTEXITCODE -ne 0) { throw 'Build, manual payload and source ZIP verification failed.' }
     $hashLines = @("Source commit: $commit")
-    foreach ($archive in @($buildZip, $sourceZip)) {
+    foreach ($archive in @($buildZip, $manualZip, $sourceZip)) {
         $hashLines += (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash +
             '  ' + [IO.Path]::GetFileName($archive)
     }
     [IO.File]::WriteAllLines((Join-Path $candidateRoot ("HaloMCCVR-$packageId-SHA256.txt")),
         $hashLines, [Text.UTF8Encoding]::new($false))
     Write-Host "Build ZIP:  $buildZip"
+    Write-Host "Manual ZIP: $manualZip"
     Write-Host "Source ZIP: $sourceZip"
 
     Write-Host "Created untested candidate: $packageDir"

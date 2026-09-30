@@ -15,6 +15,9 @@
 #include "../common/hud_visibility.h"
 #include "../common/exclusive_input.h"
 #include "../common/weapon_hand_logic.h"
+#include "../common/weapon_order_diagnostic_logic.h"
+#include "../common/support_grip_logic.h"
+#include "../common/halo4_owner_evidence.h"
 #include "../common/anatomical_palette_logic.h"
 #include "../common/halo4_runtime_weapon_bounds.h"
 #include "../common/legacy_runtime_weapon_bounds.h"
@@ -54,6 +57,8 @@
 #include "haloce_unit_control.h"
 #include "title_reentry_probe.h"
 #include "roomscale.h"
+#include "telemetry_recorder.h"
+#include "../common/support_diagnostics.h"
 #include "physical_crouch_camera.h"
 #include "../common/physical_crouch_native_read.h"
 #include "../common/physical_crouch_additional_witnesses.h"
@@ -1165,6 +1170,20 @@ namespace
         // Reach supplies this from the same immutable prepared-frame snapshot
         // as both controller targets. H3/ODST use VR_IsTwoHandAiming() instead.
         bool twoHandAimActive = false;
+        // Persistent support grip (Reach slice): the owner trust frozen for
+        // this stereo pair by the FP interpolate invocation. `resolved` stays
+        // false with the feature off, which keeps `twoHandAimActive` the only
+        // presentation input exactly as before (PG-off parity).
+        bool supportGripAttached = false;
+        bool supportGripResolved = false;
+        // Ordinary calibrated one-hand weapon-wrist target for this exact
+        // prepared frame (same position/scale contract as rightWrist, one-hand
+        // orientation only). Used solely as the stale-owner fallback for an FP
+        // invocation that is not the relationship owner; never built with the
+        // feature off.
+        BoneMatrix rightOneHandWrist{};
+        float rightOneHandScale = 1.0f;
+        bool rightOneHandWristValid = false;
         bool handAlignment = false;
         // Same-frame physical tracking reference for native contact melee.
         contact_melee::TrackingToWorld contactSpace[2]{};
@@ -1201,9 +1220,68 @@ namespace
     bool InstallReachMuzzle(uintptr_t base,size_t size,uint32_t generation);
     bool RemoveReachMuzzle();
     void ReportReachMuzzle();
+    // Weapon-order diagnostic tranche: read-only semantic-primary
+    // observations reusing the title readers below. Defined after those
+    // readers; called from the FP interpolate/palette hooks above them.
+    // expectedGeneration is the title adapter generation captured by
+    // Game_DiagnosticReadPrimaryWeapon; every reader rejects a mismatch or a
+    // mid-read generation change as a lifecycle guard rejection.
+    // Production-safe H3 semantic-primary read: the shared body of the
+    // diagnostic probe. `primaryAbsentOut` (optional) reports an explicit raw
+    // empty primary slot from the same guarded native read; it is never set by
+    // a validation/lifecycle failure (F03/F17).
+    bool H3PrimaryWeaponEvidence(uint32_t expectedGeneration, uint32_t& unitOut,
+        uint32_t& weaponOut, uint32_t& detailOut,
+        bool* primaryAbsentOut = nullptr) noexcept;
+    // ODST and Reach production-safe semantic-primary reads: the same body the
+    // title's diagnostic probe uses, plus the raw-primary-slot absence flag
+    // (F03). ODST reads its own role bytes +276/+277 and FP agreement at
+    // tls+0x598; Reach reads its own +34A/+34B and tls+0x6A0. Neither copies
+    // Halo 3's layout.
+    bool OdstPrimaryWeaponEvidence(uint32_t expectedGeneration, uint32_t& unitOut,
+        uint32_t& weaponOut, uint32_t& detailOut,
+        bool* primaryAbsentOut = nullptr) noexcept;
+    bool ReachPrimaryWeaponEvidence(uint32_t expectedGeneration, uint32_t& unitOut,
+        uint32_t& weaponOut, uint32_t& detailOut,
+        bool* primaryAbsentOut = nullptr) noexcept;
+    bool DiagnosticH3Primary(uint32_t expectedGeneration, uint32_t& unitOut,
+        uint32_t& weaponOut, uint32_t& detailOut) noexcept;
+    bool DiagnosticOdstPrimary(uint32_t expectedGeneration, uint32_t& unitOut,
+        uint32_t& weaponOut, uint32_t& detailOut) noexcept;
+    bool DiagnosticReachPrimary(uint32_t expectedGeneration, uint32_t& unitOut,
+        uint32_t& weaponOut, uint32_t& detailOut) noexcept;
+    bool DiagnosticHalo4WeaponOwner(uint32_t expectedGeneration,
+        uint32_t candidate, uint32_t& unitOut, uint32_t& weaponOut,
+        uint32_t& detailOut) noexcept;
+    // Production-safe H4 semantic-primary read: the shared body of the
+    // diagnostic probe. `candidate` is UINT32_MAX for the semantic primary
+    // slot; any other value must resolve to primary slot 0 through the
+    // equipped-weapon mapping (the FP skinning path, where the observed record
+    // is the candidate). `primaryAbsentOut` (optional) reports an explicit raw
+    // empty primary slot from the same guarded read and is never set by a
+    // validation/lifecycle failure (F03/F17).
+    bool Halo4WeaponOwnerEvidence(uint32_t expectedGeneration,
+        uint32_t candidate, uint32_t& unitOut, uint32_t& weaponOut,
+        uint32_t& detailOut, bool* primaryAbsentOut = nullptr) noexcept;
+    // SEH-guarded tri-state observation of Halo 4's semantic primary owner;
+    // a native fault is Unknown, never absence. Used by the production
+    // producer and by Game_ReadPrimaryWeaponEvidence's Halo 4 branch.
+    PrimaryWeaponEvidence Halo4ObservePrimaryWeapon(uint32_t generation,
+        uint32_t candidate) noexcept;
+    // One safe-context support-grip invocation read: the tri-state semantic
+    // primary evidence for `candidate` published to the durable input
+    // (including an explicit Unknown) plus this invocation's relation to the
+    // live relationship. Read-only with respect to the durable relationship.
+    SupportInvocationResolution Halo4ReadSupportInvocation(
+        uint32_t candidate) noexcept;
     void LegacyApplyVisualHandOffsets(GameTitle title,uint16_t tag,const int32_t* boneMap,
         const FpInterpolationContext& context,BoneMatrix* destination);
     bool ReachApplyBarrelAim(int32_t unit,float* origin,float* direction,const float* velocity,uint8_t collision,uint32_t simulation);
+    // T-2 shot evidence: the firing context of the Reach projectile transaction
+    // currently on this thread (weapon datum handle + barrel), read from the
+    // muzzle feature's per-thread request. UINT32_MAX / kTelemetryShotIndexUnknown
+    // when the optional muzzle transaction is absent. Defined with that feature.
+    void ReachReadFiringContextForTelemetry(uint32_t& weapon, uint8_t& barrel);
     thread_local BoneMatrix g_fpUnmodifiedInterpolations[2][64];
     thread_local BoneMatrix g_fpPaletteScratch[kReachFpMaxSourceNodeCount];
     thread_local BoneMatrix g_scopeHiddenPalette[64];
@@ -1425,6 +1503,12 @@ namespace
         int lShoulder = -1;
         uint64_t lWristDescendants = 0;
         bool armIk = false;
+        // Persistent support grip: the visible support attachment this solve
+        // was produced under. It already differs whenever `armIk` differs, but
+        // it is stored explicitly so a configured-off arm IK cannot silently
+        // collapse an attached and a detached solve into one cache entry if
+        // the body ever gains support-attached-dependent geometry (F04/C3).
+        bool supportGripAttached = false;
         float collisionCorrection[2][3]{};
         BoneMatrix root{};
         BoneMatrix original[kReachFpMaxSourceNodeCount]{};
@@ -1440,6 +1524,15 @@ namespace
         // palette cache key, so a per-eye resample would let the eyes solve
         // different arm-IK modes for one presented frame.
         bool twoHandAimActive = false;
+        // Persistent support grip (H3 slice): the owner trust resolved for
+        // this stereo pair's FP invocation, frozen so both eyes use the same
+        // decision. `supportGripResolved` stays false for titles that do not
+        // resolve it (ODST/Reach), which keeps their existing presentation
+        // semantics exactly. A resolved pair with `supportGripAttached=false`
+        // is an owner-untrusted invocation: ordinary one-hand aim and no
+        // support presentation migration for that pair.
+        bool supportGripAttached = false;
+        bool supportGripResolved = false;
         VrContactTrackingSnapshot anatomicalTracking{};
         bool anatomicalCarriersValid = false;
         Halo4FloatingTransform anatomicalPrimaryCarrier{}, anatomicalSupportCarrier{};
@@ -5004,12 +5097,317 @@ namespace
         return nativeResult;
     }
 
+    // ---- Weapon-order diagnostic tranche (read-only evidence) ----
+    void PublishH3FpDiagnostic(WeaponOrderEventKind kind,
+        WeaponOrderEventStatus status, uint64_t preparedSerial, uint32_t unit,
+        uint32_t weapon, uint64_t aux0, uint64_t aux1) noexcept
+    {
+        if (!Telemetry_WeaponEventsAccepting())
+            return;
+        Telemetry_PublishWeaponEvent(static_cast<uint8_t>(kind),
+            static_cast<uint8_t>(status),
+            static_cast<uint8_t>(GameTitle::Halo3),
+            g_halo3RuntimeGeneration.load(std::memory_order_acquire),
+            preparedSerial, unit, weapon, aux0, aux1);
+    }
+
+    // Mirror of vr.cpp's TelemetryDirectionUsable, which lives in that
+    // translation unit's anonymous namespace and is not reachable here; the
+    // predicate and threshold are identical (finite components, squared length
+    // > 1e-12). The sparse shot channel must apply the same usability rule as
+    // the frame's engine_aim_* capture, so a read that succeeds but carries no
+    // direction can never publish a real source ordinal next to a zero or
+    // non-finite vector.
+    bool TelemetryShotDirectionUsable(const float value[3]) noexcept
+    {
+        if (!std::isfinite(value[0]) || !std::isfinite(value[1]) ||
+            !std::isfinite(value[2]))
+            return false;
+        const double lengthSquared = static_cast<double>(value[0]) * value[0] +
+            static_cast<double>(value[1]) * value[1] +
+            static_cast<double>(value[2]) * value[2];
+        return lengthSquared > 1e-12;
+    }
+
+    // ---- T-2 sparse shot events (read-only evidence) ----
+    // One fixed `shot` event per actual firing-path invocation, published from
+    // the title's own firing detour after the final origin/direction are
+    // decided (post-substitution, post-native call) and inside that detour's
+    // SEH scope. Title wrappers pass Telemetry_WeaponEventsAccepting() FIRST:
+    // with recording off the only work is one atomic load, and no other field
+    // below is read. The event channel's admission/sequence/gap semantics are
+    // unchanged (Telemetry_PublishShotEvent).
+    //
+    //   origin/direction  the FINAL ray the engine consumes, engine-world
+    //                     units; a non-finite ray suppresses the event rather
+    //                     than publishing a fabricated one.
+    //   engineAim         title-qualified engine aim feedback snapshot (zeros
+    //                     when that publication is unavailable or carries no
+    //                     usable direction, the frame capture's rule) plus its
+    //                     engineAimSource ordinal (0 when no usable snapshot).
+    //   reticleDirection  consumer-visible presented reticle forward in
+    //                     OpenXR LOCAL (zeros when unavailable). Capture lags
+    //                     the reticle block by construction, so this is
+    //                     normally the previous prepared serial's pose; no
+    //                     serial equality is implied or asserted.
+    //   preparedSerial    the latest published prepared serial at publish (0
+    //                     before the first publish). The firing path consumes
+    //                     no serial inside the weapon transaction, so this is a
+    //                     bounded snapshot, never an equality claim.
+    //   slot/barrel       kTelemetryShotIndexUnknown when the firing context
+    //                     does not carry them (serialized as -1).
+    //   flags             bit0 predicted, bit1 substituted (the mod's
+    //                     independent path produced the final ray), bit2
+    //                     vrAimActive, bit3 twoHandActive, bit4 leftHanded,
+    //                     bit5 dualActive, bit6 firesFromCamera, bit7 unitAim
+    //                     (unknown = 0; the title passes what its own call
+    //                     carries).
+    void PublishShotDiagnostic(GameTitle title, uint32_t titleGeneration,
+        uint32_t unit, uint32_t weapon, uint8_t slot, uint8_t barrel,
+        bool predicted, bool substituted, bool firesFromCamera, bool unitAim,
+        const float origin[3], const float direction[3]) noexcept
+    {
+        if (!Telemetry_WeaponEventsAccepting())
+            return; // one atomic load; no diagnostic read happens when off
+        if (!origin || !direction)
+            return;
+        for (int axis = 0; axis < 3; ++axis)
+            if (!std::isfinite(origin[axis]) ||
+                !std::isfinite(direction[axis]))
+                return; // never publish a non-finite final ray
+        TelemetryShotPayload shot{};
+        shot.slot = slot;
+        shot.barrel = barrel;
+        if (predicted) shot.flags |= 0x0001u;
+        if (substituted) shot.flags |= 0x0002u;
+        if (g_vrAim.load(std::memory_order_acquire)) shot.flags |= 0x0004u;
+        // Bounded snapshot of already-published presentation state: three
+        // lock-free reads, never the aim getter, no lock/allocation/sampling.
+        const VRShotFlagSnapshot presentation = VR_GetShotFlagSnapshot();
+        if (presentation.twoHandActive) shot.flags |= 0x0008u;
+        if (presentation.leftHanded) shot.flags |= 0x0010u;
+        if (presentation.dualActive) shot.flags |= 0x0020u;
+        if (firesFromCamera) shot.flags |= 0x0040u;
+        if (unitAim) shot.flags |= 0x0080u;
+        // Engine aim feedback, title-qualified, with the same source vocabulary
+        // as the frame's engine_aim_source. Every read below is bounded and
+        // lock-free; an unavailable or unusable publication (read failure, or
+        // a direction that is non-finite/zero-length per
+        // TelemetryShotDirectionUsable, the frame capture's own rule) leaves
+        // the zero vector and source 0 (never a guessed ray). Halo 3/ODST read
+        // the shared g_aimFwd publication (ODST's camera copy is
+        // title-qualified); Reach prefers a coherent seated sample and labels
+        // the shared compact fallback; Halo 4 reads its stereo-transaction
+        // observer engine aim.
+        if (title == GameTitle::Halo3)
+        {
+            float aim[3]{};
+            if (Game_TelemetryReadSharedAim(aim) &&
+                TelemetryShotDirectionUsable(aim))
+            {
+                std::memcpy(shot.engineAim, aim, sizeof(shot.engineAim));
+                shot.engineAimSource = static_cast<uint8_t>(
+                    TelemetryEngineAimSource::H3Shared);
+            }
+        }
+        else if (title == GameTitle::Halo3ODST)
+        {
+            float aim[3]{};
+            if (Game_TelemetryReadSharedAim(aim) &&
+                TelemetryShotDirectionUsable(aim))
+            {
+                std::memcpy(shot.engineAim, aim, sizeof(shot.engineAim));
+                shot.engineAimSource = static_cast<uint8_t>(
+                    TelemetryEngineAimSource::OdstShared);
+            }
+        }
+        else if (title == GameTitle::HaloReach)
+        {
+            // The seated reader admits only seated sources, so a shared
+            // compact sample can never masquerade as seated truth; the
+            // fallback path below is the on-foot/shared label.
+            float seated[3]{};
+            uint8_t seatedSource = 0;
+            uint32_t seatedGeneration = 0;
+            uint64_t seatedSampleMs = 0;
+            if (Game_TelemetryReadReachSeatedAim(seated, seatedSource,
+                    seatedGeneration, seatedSampleMs) &&
+                TelemetryShotDirectionUsable(seated))
+            {
+                std::memcpy(shot.engineAim, seated, sizeof(shot.engineAim));
+                shot.engineAimSource = static_cast<uint8_t>(
+                    seatedSource == static_cast<uint8_t>(
+                        ReachAimFeedbackSource::SeatedUnitAim)
+                    ? TelemetryEngineAimSource::ReachSeatedUnitAim
+                    : TelemetryEngineAimSource::ReachSeatedCompactFallback);
+            }
+            else
+            {
+                float compact[3]{};
+                if (Game_TelemetryReadSharedAim(compact) &&
+                    TelemetryShotDirectionUsable(compact))
+                {
+                    std::memcpy(shot.engineAim, compact,
+                        sizeof(shot.engineAim));
+                    shot.engineAimSource = static_cast<uint8_t>(
+                        TelemetryEngineAimSource::ReachOnFootCompactFallback);
+                }
+            }
+        }
+        else if (title == GameTitle::Halo4)
+        {
+            float aim[3]{};
+            bool pitchValid = false;
+            float pitchRadians = 0.0f;
+            uint64_t pitchSerial = 0;
+            if (Game_TelemetryReadHalo4EngineAim(aim, pitchValid,
+                    pitchRadians, pitchSerial) &&
+                TelemetryShotDirectionUsable(aim))
+            {
+                std::memcpy(shot.engineAim, aim, sizeof(shot.engineAim));
+                shot.engineAimSource = static_cast<uint8_t>(
+                    TelemetryEngineAimSource::H4Observer);
+            }
+        }
+        else if (title == GameTitle::Halo2)
+        {
+            // Halo 2 has no g_aimFwd writer, so its engine aim feedback is the
+            // observer publication's STOCK forward (the engine's own camera,
+            // never the mod's tracked pose), exactly as the per-frame Halo 2
+            // branch reads it. The publication must belong to the live Halo 2
+            // generation and carry a usable direction; an unreadable or stale
+            // publication stays the explicit absent label with an exactly-zero
+            // vector (never a guessed ray).
+            const uint32_t generation =
+                TitleAdapter_GetGeneration(GameTitle::Halo2);
+            Halo2ObserverPosePublication publication{};
+            bool usable = false;
+            if (generation != 0 &&
+                Halo2Observer6Dof_ReadPublishedPose(publication) &&
+                publication.generation == generation &&
+                publication.serial != 0)
+            {
+                const float* forward = publication.stock.forward;
+                if (std::isfinite(forward[0]) && std::isfinite(forward[1]) &&
+                    std::isfinite(forward[2]))
+                {
+                    const double lengthSquared =
+                        static_cast<double>(forward[0]) * forward[0] +
+                        static_cast<double>(forward[1]) * forward[1] +
+                        static_cast<double>(forward[2]) * forward[2];
+                    usable = lengthSquared > 1e-12;
+                }
+            }
+            if (usable)
+            {
+                shot.engineAimSource = static_cast<uint8_t>(
+                    TelemetryEngineAimSource::H2Observer);
+                std::memcpy(shot.engineAim, publication.stock.forward,
+                    sizeof(shot.engineAim));
+            }
+            else
+                shot.engineAimSource = static_cast<uint8_t>(
+                    TelemetryEngineAimSource::H2Absent);
+        }
+        // Presented-reticle publication, rotated from its pose to a forward
+        // exactly as the Reach firing path consumes it. The read is a bounded
+        // lock-free 2-attempt seqlock; unavailable/unstable stays zero.
+        float reticleQuat[4]{};
+        float reticlePosition[3]{};
+        uint64_t reticleSampleMs = 0;
+        uint64_t reticleSupportEpoch = 0;
+        uint64_t reticleSolveSerial = 0;
+        bool reticleSupportTrusted = false;
+        if (VR_GetPresentedReticleAimPoseWithSupportProvenance(reticleQuat,
+                reticlePosition, reticleSampleMs, reticleSupportEpoch,
+                reticleSupportTrusted, reticleSolveSerial))
+        {
+            float lengthSquared = 0.0f;
+            for (float component : reticleQuat)
+                lengthSquared += component * component;
+            if (std::isfinite(lengthSquared) && lengthSquared > 1.0e-8f)
+            {
+                const float inverse = 1.0f / sqrtf(lengthSquared);
+                for (float& component : reticleQuat)
+                    component *= inverse;
+                const float localForward[3] = {0.0f, 0.0f, -1.0f};
+                float reticleForward[3]{};
+                RotateByQuat(reticleQuat, localForward, reticleForward);
+                if (std::isfinite(reticleForward[0]) &&
+                    std::isfinite(reticleForward[1]) &&
+                    std::isfinite(reticleForward[2]))
+                    std::memcpy(shot.reticleDirection, reticleForward,
+                        sizeof(shot.reticleDirection));
+            }
+        }
+        std::memcpy(shot.origin, origin, sizeof(shot.origin));
+        std::memcpy(shot.direction, direction, sizeof(shot.direction));
+        Telemetry_PublishShotEvent(
+            static_cast<uint8_t>(WeaponOrderEventStatus::Success),
+            static_cast<uint8_t>(title), titleGeneration,
+            VR_CurrentPreparedSerial(), unit, weapon, shot);
+    }
+
     bool __fastcall FpInterpolateHook(int view,int id,int slot,
                                       BoneMatrix** outBones,int* outCount)
     {
+        // Diagnostic-only FP entry + ungated before-read (no gameplay effect).
+        uint32_t diagnosticBeforeUnit = UINT32_MAX;
+        uint32_t diagnosticBeforeWeapon = UINT32_MAX;
+        uint32_t diagnosticBeforeDetail = 0;
+        const bool diagnosticArmed =
+            Telemetry_WeaponEventsAccepting() && slot == 0 && view == 0;
+        if (diagnosticArmed)
+        {
+            Game_DiagnosticNoteFpThread(GameTitle::Halo3);
+            PublishH3FpDiagnostic(WeaponOrderEventKind::FpEntry,
+                WeaponOrderEventStatus::NoObservation,
+                g_fpStereoSolveScope.armed ?
+                    g_fpStereoSolveScope.anatomicalTracking.serial : 0,
+                UINT32_MAX, UINT32_MAX, uint64_t(slot), uint64_t(view));
+            uint32_t probeUnit = UINT32_MAX, probeWeapon = UINT32_MAX;
+            uint32_t probeDetail = 0;
+            if (Game_DiagnosticReadPrimaryWeapon(GameTitle::Halo3,
+                    probeUnit, probeWeapon, probeDetail))
+            {
+                diagnosticBeforeUnit = probeUnit;
+                diagnosticBeforeWeapon = probeWeapon;
+                diagnosticBeforeDetail = probeDetail;
+            }
+        }
+        // Persistent support grip production evidence (root invocation of the
+        // stereo pair only: whichever slot-0 view interpolates first resolves,
+        // the other eye reuses the pair's frozen decision, and a later
+        // invocation of the same pair must not overwrite it). The before-read
+        // is taken here; the after-read lands IMMEDIATELY after the native
+        // original below, BEFORE any support-dependent MCCVR transform
+        // (A015 §16 ordering). Read-only with respect to the durable
+        // relationship. PG off: no read, no publication, no change.
+        const bool supportRootInvocation = g_config.persistent_support_grip &&
+            slot == 0 &&
+            !(g_fpStereoSolveScope.armed &&
+              g_fpStereoSolveScope.supportGripResolved);
+        PrimaryWeaponEvidence supportBefore{};
+        const bool supportBeforeOk = supportRootInvocation &&
+            Game_ReadPrimaryWeaponEvidence(GameTitle::Halo3, supportBefore);
         uint32_t muzzleUnit=UINT32_MAX,muzzleWeapon=UINT32_MAX;
         const bool muzzleOwner=Halo3CaptureMuzzleOwner(view,slot,muzzleUnit,muzzleWeapon);
         const bool result=g_origFpInterpolate(view,id,slot,outBones,outCount);
+        if (supportRootInvocation)
+        {
+            PrimaryWeaponEvidence supportAfter{};
+            const bool supportAfterOk =
+                Game_ReadPrimaryWeaponEvidence(GameTitle::Halo3, supportAfter);
+            const SupportInvocationResolution resolution =
+                Game_ResolveSupportInvocation(GameTitle::Halo3,
+                    supportBefore, supportBeforeOk, supportAfter, supportAfterOk,
+                    true);
+            if (g_fpStereoSolveScope.armed)
+            {
+                g_fpStereoSolveScope.supportGripAttached = resolution.trusted;
+                g_fpStereoSolveScope.supportGripResolved = true;
+            }
+        }
         if (slot==0 || slot==1)
         {
         g_fpInterpolationContexts[slot]={};
@@ -5091,6 +5489,28 @@ namespace
                                              cameraControl,slot==1);
             }
         }
+        }
+        // Diagnostic-only stable commit, mirroring the existing ownership
+        // stable point ungated: the inventory identity AND the engine FP
+        // record agreement (bit2) must survive the interpolation unchanged.
+        // The Capture probe records bit2 raw without requiring it, so the
+        // pre-latch measurement stays the inventory view.
+        if (diagnosticArmed && result &&
+            diagnosticBeforeWeapon != UINT32_MAX &&
+            (diagnosticBeforeDetail & 0x4u) != 0)
+        {
+            uint32_t afterUnit = UINT32_MAX, afterWeapon = UINT32_MAX;
+            uint32_t afterDetail = 0;
+            if (Game_DiagnosticReadPrimaryWeapon(GameTitle::Halo3, afterUnit,
+                    afterWeapon, afterDetail) &&
+                (afterDetail & 0x4u) != 0 &&
+                afterUnit == diagnosticBeforeUnit &&
+                afterWeapon == diagnosticBeforeWeapon)
+                PublishH3FpDiagnostic(WeaponOrderEventKind::FpWeaponCommit,
+                    WeaponOrderEventStatus::Success,
+                    g_fpStereoSolveScope.armed ?
+                        g_fpStereoSolveScope.anatomicalTracking.serial : 0,
+                    afterUnit, afterWeapon, uint64_t(slot), afterDetail);
         }
         return result;
     }
@@ -5237,8 +5657,22 @@ namespace
             : (g_fpStereoSolveScope.armed
                    ? g_fpStereoSolveScope.twoHandAimActive
                    : VR_IsTwoHandAiming());
+        // Persistent support grip (H3 primary weapon only): the visible support
+        // attachment follows the owner trust frozen for this FP invocation, NOT
+        // the aim-authority flag (A017 §11). A trusted same-owner invocation
+        // keeps the support hand attached even when aim authority is off, and
+        // an untrusted invocation never inherits support presentation. The
+        // frozen decision exists only for a title that resolves it (H3): PG
+        // off, the dual-wield secondary and the explicit-target Reach path all
+        // keep the existing twoHandAimActive semantics exactly.
+        const bool supportGripAttached = g_config.persistent_support_grip &&
+                !explicitTargets && context.slot == 0 &&
+                g_fpStereoSolveScope.armed &&
+                g_fpStereoSolveScope.supportGripResolved
+            ? g_fpStereoSolveScope.supportGripAttached
+            : twoHandAimActive;
         const bool armIkActive = ShouldApplyArmIk(
-            g_config.arm_ik, twoHandAimActive);
+            g_config.arm_ik, supportGripAttached);
 
         auto cacheMatches = [&](const FpStereoPaletteCache& cache) {
             return cache.valid && cache.tag == tag &&
@@ -5253,6 +5687,7 @@ namespace
                 cache.lShoulder == context.lShoulder &&
                 cache.lWristDescendants == context.lWristDescendants &&
                 cache.armIk == armIkActive &&
+                cache.supportGripAttached == supportGripAttached &&
                 memcmp(cache.original, unmodified, paletteBytes) == 0;
         };
         if (g_fpStereoSolveScope.armed)
@@ -5312,6 +5747,7 @@ namespace
                 cache.lShoulder = context.lShoulder;
                 cache.lWristDescendants = context.lWristDescendants;
                 cache.armIk = armIkActive;
+                cache.supportGripAttached = supportGripAttached;
                 memcpy(cache.collisionCorrection,g_fpPaletteCollisionCorrection,
                        sizeof(cache.collisionCorrection));
                 cache.root = root;
@@ -6378,8 +6814,21 @@ namespace
         float cq[4], cp[3];
         // Right/weapon hand uses the shared aim pose (two-hand-adjusted); the
         // left hand uses its own controller for the support-arm IK target.
-        if (left ? !VR_GetLeftControllerPose(cq, cp)
-                 : !VR_GetAimPose(cq, cp)) return false;
+        // Persistent support grip: an owner-untrusted pair (or a pair whose FP
+        // invocation never proved the relationship owner) resolves to the
+        // ordinary calibrated one-hand solve for this invocation only. The
+        // thread-local gate is set and cleared around the aim getter; the
+        // durable relationship is never mutated here. PG off: never set.
+        const bool oneHandOverride = g_config.persistent_support_grip && !left &&
+            g_fpStereoSolveScope.armed &&
+            !g_fpStereoSolveScope.supportGripAttached;
+        if (oneHandOverride)
+            VR_SetSupportInvocationUntrusted(true);
+        const bool poseOk = left ? VR_GetLeftControllerPose(cq, cp)
+                                 : VR_GetAimPose(cq, cp);
+        if (oneHandOverride)
+            VR_SetSupportInvocationUntrusted(false);
+        if (!poseOk) return false;
         float hullYaw = 0.0f, hullPitch = 0.0f;
         const bool followValid =
             Halo3ReadRollStableFollow(hullYaw, hullPitch);
@@ -10970,12 +11419,37 @@ namespace
         g_origOdstUnitCameraPosition = nullptr;
     }
 
+    // T-2 shot event for ODST. The firing-origin hook carries no direction of
+    // its own (the engine keeps the barrel/aiming-vector direction), so this
+    // event is direction-ABSENT by construction: an exact zero direction,
+    // documented, never a fabricated ray. The origin is the final value the
+    // engine will consume from the firing call-site's own buffer (ours when the
+    // substitution wrote it, the engine's otherwise). Slot/barrel/weapon and
+    // predicted are not carried by this call-site, so they stay unknown
+    // (kTelemetryShotIndexUnknown / UINT32_MAX envelope sentinels); a
+    // non-finite origin is suppressed rather than published.
+    void PublishOdstShotDiagnostic(int32_t unitIndex, const float finalOrigin[3],
+        bool substituted)
+    {
+        const float absentDirection[3] = {0.0f, 0.0f, 0.0f};
+        PublishShotDiagnostic(GameTitle::Halo3ODST,
+            g_odstRuntimeGeneration.load(std::memory_order_acquire),
+            static_cast<uint32_t>(unitIndex), UINT32_MAX,
+            kTelemetryShotIndexUnknown, kTelemetryShotIndexUnknown,
+            /*predicted=*/false, substituted, /*firesFromCamera=*/false,
+            /*unitAim=*/false, finalOrigin, absentDirection);
+    }
+
     // Runs on the engine's own weapon path. Everything here is a relaxed load
     // of our own state plus three float stores: no locks, no allocation, no
     // logging, no engine reads beyond the point the original just wrote.
     __declspec(noinline) void __fastcall OdstUnitCameraPositionHook(
         int32_t unitIndex, float* out, uint8_t flags)
     {
+        // T-2 shot gate FIRST: one atomic load, before any diagnostic read.
+        // The substitution below is gameplay and always runs; this only
+        // decides whether the same firing invocation also publishes an event.
+        const bool telemetryAccepting = Telemetry_WeaponEventsAccepting();
         // Capture before the call: this is the site that decides whether we
         // are on the firing path or on one of the 35 other consumers.
         const uintptr_t caller =
@@ -10991,28 +11465,50 @@ namespace
         if (!firingReturn || caller != firingReturn)
             return;                       // not the shot line; leave it alone
         if (g_odstCinematicLocked.load(std::memory_order_relaxed))
-            return;                       // authored camera owns the view
+        {
+            // Authored camera owns the view; the engine's own shot origin is
+            // still the ray this shot will consume, so it is reported stock.
+            if (telemetryAccepting)
+                PublishOdstShotDiagnostic(unitIndex, out, false);
+            return;
+        }
         const int32_t seated =
             g_odstSeatedPlayerUnit.load(std::memory_order_relaxed);
         // Full salted identity rejects a recycled unit slot after a checkpoint.
         if (seated == -1 || seated != unitIndex)
+        {
+            if (telemetryAccepting)
+                PublishOdstShotDiagnostic(unitIndex, out, false);
             return;                       // somebody else's weapon
+        }
         if (!OdstSeatFiresPersonalWeapon())
+        {
+            if (telemetryAccepting)
+                PublishOdstShotDiagnostic(unitIndex, out, false);
             return;                       // driver/mounted gun fires from a barrel
+        }
         if (!g_camValid.load(std::memory_order_acquire))
+        {
+            if (telemetryAccepting)
+                PublishOdstShotDiagnostic(unitIndex, out, false);
             return;
+        }
         const float eyeX = g_camX.load(std::memory_order_relaxed);
         const float eyeY = g_camY.load(std::memory_order_relaxed);
         const float eyeZ = g_camZ.load(std::memory_order_relaxed);
         if (!isfinite(eyeX) || !isfinite(eyeY) || !isfinite(eyeZ))
         {
             g_odstFiringOriginSkips.fetch_add(1, std::memory_order_relaxed);
+            if (telemetryAccepting)
+                PublishOdstShotDiagnostic(unitIndex, out, false);
             return;
         }
         out[0] = eyeX;
         out[1] = eyeY;
         out[2] = eyeZ;
         g_odstFiringOriginMoves.fetch_add(1, std::memory_order_relaxed);
+        if (telemetryAccepting)
+            PublishOdstShotDiagnostic(unitIndex, out, true);
     }
 
     // O3: the follow gate for the shared reader. ODST answers only when its
@@ -12611,9 +13107,63 @@ namespace
         sc.key.store(key, std::memory_order_release);
     }
 
+    // ---- Weapon-order diagnostic tranche (read-only evidence) ----
+    void PublishOdstFpDiagnostic(WeaponOrderEventKind kind,
+        WeaponOrderEventStatus status, uint64_t preparedSerial, uint32_t unit,
+        uint32_t weapon, uint64_t aux0, uint64_t aux1) noexcept
+    {
+        if (!Telemetry_WeaponEventsAccepting())
+            return;
+        Telemetry_PublishWeaponEvent(static_cast<uint8_t>(kind),
+            static_cast<uint8_t>(status),
+            static_cast<uint8_t>(GameTitle::Halo3ODST),
+            g_odstRuntimeGeneration.load(std::memory_order_acquire),
+            preparedSerial, unit, weapon, aux0, aux1);
+    }
+
     bool OdstFpInterpolateWeaponBody(
         int view, int id, int slot, BoneMatrix** outBones, int* outCount)
     {
+        // Diagnostic-only FP entry + ungated before-read (no gameplay effect).
+        uint32_t diagnosticBeforeUnit = UINT32_MAX;
+        uint32_t diagnosticBeforeWeapon = UINT32_MAX;
+        uint32_t diagnosticBeforeDetail = 0;
+        const bool diagnosticArmed =
+            Telemetry_WeaponEventsAccepting() && slot == 0 && view == 0;
+        if (diagnosticArmed)
+        {
+            Game_DiagnosticNoteFpThread(GameTitle::Halo3ODST);
+            PublishOdstFpDiagnostic(WeaponOrderEventKind::FpEntry,
+                WeaponOrderEventStatus::NoObservation,
+                g_fpStereoSolveScope.armed ?
+                    g_fpStereoSolveScope.anatomicalTracking.serial : 0,
+                UINT32_MAX, UINT32_MAX, uint64_t(slot), uint64_t(view));
+            uint32_t probeUnit = UINT32_MAX, probeWeapon = UINT32_MAX;
+            uint32_t probeDetail = 0;
+            if (Game_DiagnosticReadPrimaryWeapon(GameTitle::Halo3ODST,
+                    probeUnit, probeWeapon, probeDetail))
+            {
+                diagnosticBeforeUnit = probeUnit;
+                diagnosticBeforeWeapon = probeWeapon;
+                diagnosticBeforeDetail = probeDetail;
+            }
+        }
+        // Persistent support grip production evidence (root slot-0 invocation
+        // of the stereo pair only: whichever slot-0 view interpolates first
+        // resolves, the other eye reuses the pair's frozen decision, and a
+        // later invocation of the same pair must not overwrite it). ODST keeps
+        // its OWN reader/timing: the before/after reads are ODST's role bytes
+        // +276/+277 with ODST's FP agreement record, never Halo 3's layout. The
+        // after-read lands IMMEDIATELY after the native original and BEFORE any
+        // MCCVR support-dependent transform (A015 §16). Read-only with respect
+        // to the durable relationship; PG off: no read, no publication.
+        const bool supportRootInvocation = g_config.persistent_support_grip &&
+            slot == 0 &&
+            !(g_fpStereoSolveScope.armed &&
+              g_fpStereoSolveScope.supportGripResolved);
+        PrimaryWeaponEvidence supportBefore{};
+        const bool supportBeforeOk = supportRootInvocation &&
+            Game_ReadPrimaryWeaponEvidence(GameTitle::Halo3ODST, supportBefore);
         uint32_t muzzleUnit=UINT32_MAX,muzzleWeapon=UINT32_MAX;
         const bool muzzleOwner=OdstCaptureMuzzleOwner(view,slot,muzzleUnit,muzzleWeapon);
         bool result = false;
@@ -12621,6 +13171,30 @@ namespace
             reinterpret_cast<FpInterpolateFn>(g_odstCamera.originalFpInterpolate);
         if (original)
             result = original(view, id, slot, outBones, outCount);
+        if (supportRootInvocation)
+        {
+            PrimaryWeaponEvidence supportAfter{};
+            const bool supportAfterOk =
+                Game_ReadPrimaryWeaponEvidence(GameTitle::Halo3ODST,
+                    supportAfter);
+            const SupportInvocationResolution resolution =
+                Game_ResolveSupportInvocation(GameTitle::Halo3ODST,
+                    supportBefore, supportBeforeOk, supportAfter, supportAfterOk,
+                    true);
+            // One decision per stereo pair, frozen in the ODST context: both
+            // eyes then present and solve with the same attachment, and the
+            // palette cache key distinguishes support-attached from detached
+            // (the shared FpStereoPaletteCache key in
+            // ReconstructVisiblePaletteSource). Both observed transition forms
+            // fail closed here: an unstable before/after pair resolves Unknown
+            // (never trusted), and a stable B-before-Capture resolves a
+            // KnownPresent owner that is not the relationship owner.
+            if (g_fpStereoSolveScope.armed)
+            {
+                g_fpStereoSolveScope.supportGripAttached = resolution.trusted;
+                g_fpStereoSolveScope.supportGripResolved = true;
+            }
+        }
         if(g_scopeRenderActive.load(std::memory_order_acquire))
         {
             if(slot==0||slot==1)
@@ -12686,6 +13260,26 @@ namespace
         }
         else if (slot == 0 || slot == 1)
             g_fpInterpolationContexts[slot] = {};
+        // Diagnostic-only stable commit, mirroring the existing ownership
+        // stable point ungated: inventory identity plus engine FP record
+        // agreement (bit2) must survive the interpolation unchanged.
+        if (diagnosticArmed && result &&
+            diagnosticBeforeWeapon != UINT32_MAX &&
+            (diagnosticBeforeDetail & 0x4u) != 0)
+        {
+            uint32_t afterUnit = UINT32_MAX, afterWeapon = UINT32_MAX;
+            uint32_t afterDetail = 0;
+            if (Game_DiagnosticReadPrimaryWeapon(GameTitle::Halo3ODST,
+                    afterUnit, afterWeapon, afterDetail) &&
+                (afterDetail & 0x4u) != 0 &&
+                afterUnit == diagnosticBeforeUnit &&
+                afterWeapon == diagnosticBeforeWeapon)
+                PublishOdstFpDiagnostic(WeaponOrderEventKind::FpWeaponCommit,
+                    WeaponOrderEventStatus::Success,
+                    g_fpStereoSolveScope.armed ?
+                        g_fpStereoSolveScope.anatomicalTracking.serial : 0,
+                    afterUnit, afterWeapon, uint64_t(slot), afterDetail);
+        }
         return result;
     }
 
@@ -18044,6 +18638,12 @@ namespace
         std::atomic<float> originX{0.0f};
         std::atomic<float> originY{0.0f};
         std::atomic<float> originZ{0.0f};
+        // F06/F07 producer receipt of the ray that was actually published, so a
+        // weapon-sensitive consumer that reads this point later re-qualifies
+        // it against its own invocation instead of trusting an old point.
+        std::atomic<uint64_t> supportEpoch{0};
+        std::atomic<uint8_t> supportTrusted{0};
+        std::atomic<uint64_t> raySerial{0};
     };
     ReachCompletedReticleTargetPublication g_reachCompletedReticleTarget;
     ReachCompletedReticleTargetPublication g_reachOnFootShotRay;
@@ -18068,6 +18668,9 @@ namespace
     void ReachClearCompletedFrameFeedback()
     {
         g_reachOnFootShotRay.generation.store(0,std::memory_order_release);
+        g_reachOnFootShotRay.supportEpoch.store(0,std::memory_order_relaxed);
+        g_reachOnFootShotRay.supportTrusted.store(0,std::memory_order_relaxed);
+        g_reachOnFootShotRay.raySerial.store(0,std::memory_order_relaxed);
         {
             auto& published = g_reachCompletedReticleAim;
             published.sequence.fetch_add(1, std::memory_order_acq_rel);
@@ -18118,6 +18721,9 @@ namespace
             published.x.store(0.0f, std::memory_order_relaxed);
             published.y.store(0.0f, std::memory_order_relaxed);
             published.z.store(0.0f, std::memory_order_relaxed);
+            published.supportEpoch.store(0, std::memory_order_relaxed);
+            published.supportTrusted.store(0, std::memory_order_relaxed);
+            published.raySerial.store(0, std::memory_order_relaxed);
             published.sequence.fetch_add(1, std::memory_order_release);
         }
     }
@@ -18380,6 +18986,10 @@ namespace
         ReachSeatLeaseKey key{};
         float target[3]{};
         float origin[3]{};
+        // F06/F07 producer receipt frozen with this point.
+        uint64_t supportEpoch = 0;
+        bool supportTrusted = false;
+        uint64_t raySerial = 0;
     };
 
     bool ReachReadShotOccupation(ReachShotOccupationSnapshot& out)
@@ -18448,6 +19058,13 @@ namespace
         return false;
     }
 
+    // F06 consumer qualification, defined with the presented-ray producer below.
+    // Declared here because the weapon-sensitive consumers that read a
+    // previously published presented point run earlier in the file.
+    bool ReachPresentedRayConsumable(GameTitle title, uint32_t generation,
+        uint64_t consumerSerial, uint64_t raySupportEpoch,
+        bool raySupportTrusted, uint64_t raySerial);
+
     bool ReachReadCompletedReticleTarget(
         ReachCompletedReticleTargetSnapshot& out,
         const ReachCompletedReticleTargetPublication& published=g_reachCompletedReticleTarget)
@@ -18482,6 +19099,12 @@ namespace
                 published.originY.load(std::memory_order_relaxed);
             sample.origin[2] =
                 published.originZ.load(std::memory_order_relaxed);
+            sample.supportEpoch =
+                published.supportEpoch.load(std::memory_order_relaxed);
+            sample.supportTrusted =
+                published.supportTrusted.load(std::memory_order_relaxed) != 0;
+            sample.raySerial =
+                published.raySerial.load(std::memory_order_relaxed);
             if (published.sequence.load(std::memory_order_acquire) != before)
                 continue;
             out = sample;
@@ -18590,7 +19213,25 @@ namespace
             nowMs >= sight.sampleMs &&
             nowMs - sight.sampleMs <= kReachShotOriginFreshMs &&
             std::isfinite(sight.origin[0]) && std::isfinite(sight.origin[1]) &&
-            std::isfinite(sight.origin[2]);
+            std::isfinite(sight.origin[2]) &&
+            // F06: the point is consumed later than it was produced; re-prove
+            // the ray's producer receipt against this consuming invocation
+            // (same owner, same epoch, serial staleness bound). A refused ray
+            // leaves this shot completely stock - never a stale-owner origin.
+            //
+            // F3: the consuming frame's serial is the completed rendered eye's
+            // prepared serial - the same frame whose occupation/freshness proof
+            // (ReachShotOriginSampleAdmitted, above) admits this shot. The shot
+            // origin itself is the presented sight ray (R-V27), not that eye
+            // position. Passing the ray's own serial here would make the
+            // staleness bound tautological. The other two re-qualification
+            // sites (the on-foot hand shot and the vehicle redirect) have no
+            // consuming prepared serial in scope inside the weapon transaction,
+            // so they deliberately keep the ray serial and document the
+            // conservative latest-only-receipt behaviour.
+            ReachPresentedRayConsumable(GameTitle::HaloReach, generation,
+                sample.renderedEyePreparedSerial, sight.supportEpoch,
+                sight.supportTrusted, sight.raySerial);
         if (!sightUsable)
         {
             g_reachFiringOriginSkips.fetch_add(1, std::memory_order_relaxed);
@@ -18741,8 +19382,14 @@ namespace
         int32_t unitIndex, float* origin, float* direction,
         const float* basisForward, const float* barrelOffset,
         const float* optionalCameraPoint, uint8_t firesFromCamera,
-        uint8_t useUnitAim, uint8_t collision, uint32_t simulation)
+        uint8_t useUnitAim, uint8_t collision, uint32_t simulation,
+        bool& substituted)
     {
+        // T-2 evidence only: whether one of this body's mod substitutions
+        // produced the final ray. Never read by gameplay; the body's
+        // substitution, collision-clip, receipt/admission and restore paths
+        // are unchanged.
+        substituted = false;
         ReachUnitAdjustFn original = g_origReachUnitAdjust;
         if (!original)
             return;
@@ -18774,6 +19421,16 @@ namespace
             float handDirection[3]{};
             const bool owned=onFootNow && nativeOnFoot &&
                 ReachReadCompletedReticleTarget(handRay,g_reachOnFootShotRay) &&
+                // F06: the published on-foot hand ray is consumed later than it
+                // was produced; re-prove its receipt against this consuming
+                // invocation, or leave the shot stock. F3: no consuming
+                // prepared serial exists inside this weapon transaction, so the
+                // ray serial is passed deliberately; the receipt slot is
+                // latest-only, which is what refuses both an old ray and an old
+                // receipt (see the port document).
+                ReachPresentedRayConsumable(GameTitle::HaloReach, generation,
+                    handRay.raySerial, handRay.supportEpoch,
+                    handRay.supportTrusted, handRay.raySerial) &&
                 ReachBuildHandShotDirection(generation,handRay.generation,
                     unitIndex,currentUnit,handRay.key.unitHandle,GetTickCount64(),
                     handRay.sampleMs,handRay.origin,handRay.target,handDirection);
@@ -18809,6 +19466,7 @@ namespace
                     memcpy(origin,accepted,sizeof(accepted));
                     memcpy(direction,handDirection,sizeof(handDirection));
                     g_reachHandShotMoves.fetch_add(1,std::memory_order_relaxed);
+                    substituted=true; // T-2 evidence: the hand ray is final
                     return;
                 }
                 g_reachHandShotMisses.fetch_add(1,std::memory_order_relaxed);
@@ -18834,7 +19492,18 @@ namespace
         const bool targetCoherent = targetRead &&
             g_reachCompletedReticleTarget.sequence.load(
                 std::memory_order_acquire) == target.sequence;
-        const bool coherent = occupationCoherent && targetCoherent;
+        const bool coherent = occupationCoherent && targetCoherent &&
+            // F06: the presented point is consumed later than it was produced;
+            // the receipt must still prove this consuming invocation's owner
+            // against the live relationship, or the shot stays stock. F3: as at
+            // the on-foot hand-shot site, no consuming prepared serial exists
+            // in this weapon transaction, so the ray serial is passed
+            // deliberately (latest-only receipt => an old ray and an old
+            // receipt are both refused).
+            ReachPresentedRayConsumable(GameTitle::HaloReach,
+                g_reachCamera.generation.load(std::memory_order_acquire),
+                target.raySerial, target.supportEpoch, target.supportTrusted,
+                target.raySerial);
         const uint32_t generation =
             g_reachCamera.generation.load(std::memory_order_acquire);
         const bool localCandidate = occupationCoherent && occupation.active &&
@@ -18883,6 +19552,31 @@ namespace
             towardReticle[2] * inverseLength};
         memcpy(direction, normalized, sizeof(normalized));
         g_reachVehicleShotRedirects.fetch_add(1, std::memory_order_relaxed);
+        substituted=true; // T-2 evidence: the reticle redirect is final
+    }
+
+    // T-2 shot event for Reach. The unit-adjust transaction IS the engine's
+    // projectile-builder call (HREK 0xD67EE0; the pinned retail module has
+    // exactly one image caller, the projectile transaction at 0x4C303A), so
+    // every invocation this hook serves is a firing invocation and one event
+    // is published per invocation. Final origin/direction are read after the
+    // body: post-substitution when a mod path produced the ray, otherwise the
+    // engine's stock values. Reach consumes no prepared serial inside this
+    // weapon transaction (F3), so the event carries the latest published
+    // prepared serial - a bounded snapshot, never an equality claim.
+    void PublishReachShotDiagnostic(int32_t unitIndex, const float* origin,
+        const float* direction, bool substituted, bool firesFromCamera,
+        bool unitAim)
+    {
+        uint32_t weapon = UINT32_MAX;
+        uint8_t barrel = kTelemetryShotIndexUnknown;
+        ReachReadFiringContextForTelemetry(weapon, barrel);
+        PublishShotDiagnostic(GameTitle::HaloReach,
+            g_reachCamera.generation.load(std::memory_order_acquire),
+            static_cast<uint32_t>(unitIndex), weapon,
+            kTelemetryShotIndexUnknown, barrel,
+            /*predicted=*/false, substituted, firesFromCamera, unitAim,
+            origin, direction);
     }
 
     __declspec(noinline) void __fastcall ReachUnitAdjustHook(
@@ -18891,17 +19585,31 @@ namespace
         const float* optionalCameraPoint, uint8_t firesFromCamera,
         uint8_t useUnitAim, uint8_t collision, uint32_t simulation)
     {
+        // T-2 shot gate FIRST: one atomic load, before any diagnostic read.
+        // The transaction below is gameplay and always runs; this only decides
+        // whether the same invocation also publishes a shot event.
+        const bool telemetryAccepting = Telemetry_WeaponEventsAccepting();
         g_reachCamera.activeCallbacks.fetch_add(
             1, std::memory_order_acq_rel);
         __try
         {
             if (reinterpret_cast<uintptr_t>(_ReturnAddress())==g_reachCamera.base+0x4C303F &&
                 ReachApplyBarrelAim(unitIndex,origin,direction,basisForward,collision,simulation))
+            {
+                // The committed muzzle barrel produced this final ray.
+                if (telemetryAccepting)
+                    PublishReachShotDiagnostic(unitIndex,origin,direction,true,
+                        firesFromCamera!=0,useUnitAim!=0);
                 __leave;
+            }
+            bool substituted=false;
             ReachUnitAdjustBody(
                 unitIndex, origin, direction, basisForward, barrelOffset,
                 optionalCameraPoint, firesFromCamera, useUnitAim, collision,
-                simulation);
+                simulation, substituted);
+            if (telemetryAccepting)
+                PublishReachShotDiagnostic(unitIndex,origin,direction,
+                    substituted,firesFromCamera!=0,useUnitAim!=0);
         }
         __finally
         {
@@ -20539,6 +21247,12 @@ namespace
         uint64_t preparedSerial = 0;
         uint16_t legPaletteTag = 0;
         ReachFpLegPaletteKind legPaletteKind = ReachFpLegPaletteKind::None;
+        // Persistent support grip: the owner trust frozen for this stereo pair
+        // by the root FP interpolate invocation. `supportGripResolved` stays
+        // false with the feature off, which keeps `targets.twoHandAimActive`
+        // the only presentation input exactly as before (PG-off parity).
+        bool supportGripAttached = false;
+        bool supportGripResolved = false;
         FpExplicitPoseTargets targets{};
         ReachFpLayoutCacheEntry layouts[kReachFpLayoutCacheCapacity]{};
     };
@@ -22048,14 +22762,49 @@ namespace
                 "the title's own crosshair alpha/fade fields (kill_reticle=1)");
     }
 
+    // F06/F07 consumer qualification for Reach's presented ray. Both halves are
+    // required: the ray's own producer receipt (epoch/trust/prepared serial,
+    // under the staleness bound) AND a title-native invocation receipt for the
+    // consuming frame that still proves the same relationship owner against the
+    // LIVE durable relationship. Matching the durable epoch alone is never
+    // permission (the A->B counterexample), and blind serial equality is not
+    // required: a completed ray may legitimately be one serial old. False means
+    // "refuse the VR ray"; the caller keeps its existing native/stock
+    // behaviour. PG off / unwired title: the ray carries no support receipt and
+    // this returns true, byte-identical to the base path.
+    bool ReachPresentedRayConsumable(GameTitle title, uint32_t generation,
+        uint64_t consumerSerial, uint64_t raySupportEpoch,
+        bool raySupportTrusted, uint64_t raySerial)
+    {
+        if (!VR_SupportGripWiredForTitle(title))
+            return true;
+        support_grip::SupportInvocationReceipt invocation{};
+        SupportGripRelationshipSnapshot relationship{};
+        if (!VR_ReadSupportInvocationReceipt(title, invocation) ||
+            !VR_GetSupportGripRelationship(relationship))
+            return false; // fail closed: an unproven invocation is no proof
+        return support_grip::PresentedRayConsumableForInvocation(title,
+            invocation, generation, consumerSerial,
+            /*relationshipReadable=*/true, relationship.engaged,
+            relationship.epoch,
+            support_grip::OwnerTuple{relationship.title, relationship.generation,
+                relationship.unit, relationship.weapon},
+            raySupportEpoch, raySupportTrusted, raySerial);
+    }
+
     // R-V27: `outOrigin` is where the presented sight ray STARTS, in the same
     // game space as `outTarget`. Both come from one controller pose through one
     // transform, so a shot fired from the origin toward the target is the exact
     // line the player sees - at every range, not just at crosshair_distance_m.
     bool ReachBuildPresentedReticleWorldTarget(
-        const ReachOwnerScope& owner, float outTarget[3], float outOrigin[3],
-        uint64_t& outSampleMs)
+        const ReachOwnerScope& owner, uint32_t generation, float outTarget[3],
+        float outOrigin[3], uint64_t& outSampleMs,
+        uint64_t* outSupportEpoch = nullptr, bool* outSupportTrusted = nullptr,
+        uint64_t* outRaySerial = nullptr)
     {
+        if (outSupportEpoch) *outSupportEpoch = 0;
+        if (outSupportTrusted) *outSupportTrusted = false;
+        if (outRaySerial) *outRaySerial = 0;
         if (!outTarget || !outOrigin || !owner.active)
         {
             return false;
@@ -22064,8 +22813,21 @@ namespace
         float q[4]{};
         float p[3]{};
         uint64_t sampleMs = 0;
-        if (!VR_GetPresentedReticleAimPose(q, p, sampleMs))
+        uint64_t supportEpoch = 0;
+        bool supportTrusted = false;
+        uint64_t raySerial = 0;
+        if (!VR_GetPresentedReticleAimPoseWithSupportProvenance(q, p, sampleMs,
+                supportEpoch, supportTrusted, raySerial))
             return false;
+        // F06: the ray must belong to this consuming frame (serial staleness
+        // bound) and its producer receipt must still agree with the live
+        // relationship AND this title invocation's own owner proof.
+        if (!ReachPresentedRayConsumable(GameTitle::HaloReach, generation,
+                owner.preparedSerial, supportEpoch, supportTrusted, raySerial))
+            return false;
+        if (outSupportEpoch) *outSupportEpoch = supportEpoch;
+        if (outSupportTrusted) *outSupportTrusted = supportTrusted;
+        if (outRaySerial) *outRaySerial = raySerial;
         float qLengthSquared = 0.0f;
         for (float component : q)
         {
@@ -22230,6 +22992,9 @@ namespace
         float presentedTarget[3]{};
         float presentedOrigin[3]{};
         uint64_t presentedTargetMs = 0;
+        uint64_t presentedSupportEpoch = 0;
+        bool presentedSupportTrusted = false;
+        uint64_t presentedRaySerial = 0;
         {
             auto& published=g_reachOnFootShotRay;
             const int32_t unit=LegacyCollisionIgnoredObject(GameTitle::HaloReach);
@@ -22237,7 +23002,9 @@ namespace
                 !owner.vehicleViewApplied && !owner.vehicle.active &&
                 !owner.cutsceneTheater && owner.fpTargets.rightWristValid &&
                 ReachBuildPresentedReticleWorldTarget(
-                    owner,presentedTarget,presentedOrigin,presentedTargetMs);
+                    owner,generation,presentedTarget,presentedOrigin,
+                    presentedTargetMs,&presentedSupportEpoch,
+                    &presentedSupportTrusted,&presentedRaySerial);
             published.sequence.fetch_add(1,std::memory_order_acq_rel);
             published.generation.store(onFoot?generation:0,std::memory_order_relaxed);
             published.sampleMs.store(onFoot?presentedTargetMs:0,std::memory_order_relaxed);
@@ -22248,12 +23015,23 @@ namespace
             published.originX.store(presentedOrigin[0],std::memory_order_relaxed);
             published.originY.store(presentedOrigin[1],std::memory_order_relaxed);
             published.originZ.store(presentedOrigin[2],std::memory_order_relaxed);
+            published.supportEpoch.store(
+                onFoot?presentedSupportEpoch:0,std::memory_order_relaxed);
+            published.supportTrusted.store(
+                onFoot&&presentedSupportTrusted?1u:0u,std::memory_order_relaxed);
+            published.raySerial.store(
+                onFoot?presentedRaySerial:0,std::memory_order_relaxed);
             published.sequence.fetch_add(1,std::memory_order_release);
         }
+        presentedSupportEpoch = 0;
+        presentedSupportTrusted = false;
+        presentedRaySerial = 0;
         const bool targetValid = seated &&
             ReachSeatLeaseKeyValid(reticle.occupation) &&
             ReachBuildPresentedReticleWorldTarget(
-                owner, presentedTarget, presentedOrigin, presentedTargetMs);
+                owner, generation, presentedTarget, presentedOrigin,
+                presentedTargetMs, &presentedSupportEpoch,
+                &presentedSupportTrusted, &presentedRaySerial);
         {
             auto& published = g_reachCompletedReticleTarget;
             published.sequence.fetch_add(1, std::memory_order_acq_rel);
@@ -22293,6 +23071,15 @@ namespace
                 std::memory_order_relaxed);
             published.originZ.store(
                 targetValid ? presentedOrigin[2] : 0.0f,
+                std::memory_order_relaxed);
+            published.supportEpoch.store(
+                targetValid ? presentedSupportEpoch : 0,
+                std::memory_order_relaxed);
+            published.supportTrusted.store(
+                targetValid && presentedSupportTrusted ? 1u : 0u,
+                std::memory_order_relaxed);
+            published.raySerial.store(
+                targetValid ? presentedRaySerial : 0,
                 std::memory_order_relaxed);
             published.sequence.fetch_add(1, std::memory_order_release);
         }
@@ -24038,6 +24825,23 @@ namespace
             if (!ReachBoneMatrixFinite(context.untouchedLive[node]))
                 return;
         context.targets=g_reachFpPairScope.targets;
+        // Persistent support grip: the pair's frozen owner trust travels with
+        // this invocation's targets, so the palette below presents the same
+        // decision the FP hook just resolved. A resolved pair that is NOT the
+        // relationship owner re-seats the visible weapon hand on the ordinary
+        // calibrated one-hand target (B2 stale-owner fallback); an unresolved
+        // pair (feature off) leaves the targets byte-identical to the base.
+        context.targets.supportGripResolved=
+            g_reachFpPairScope.supportGripResolved;
+        context.targets.supportGripAttached=
+            g_reachFpPairScope.supportGripAttached;
+        if (g_reachFpPairScope.supportGripResolved &&
+            !g_reachFpPairScope.supportGripAttached &&
+            context.targets.rightOneHandWristValid)
+        {
+            context.targets.rightWrist=context.targets.rightOneHandWrist;
+            context.targets.rightScale=context.targets.rightOneHandScale;
+        }
 
         // Match the accepted H3/ODST split exactly: the live interpolation bank
         // is only for marker/muzzle/attachment consumers and receives one rigid
@@ -24072,10 +24876,62 @@ namespace
         }
         context.transformed=true;
     }
+    // ---- Weapon-order diagnostic tranche (read-only evidence) ----
+    void PublishReachFpDiagnostic(WeaponOrderEventKind kind,
+        WeaponOrderEventStatus status, uint64_t preparedSerial, uint32_t unit,
+        uint32_t weapon, uint64_t aux0, uint64_t aux1) noexcept
+    {
+        if (!Telemetry_WeaponEventsAccepting())
+            return;
+        Telemetry_PublishWeaponEvent(static_cast<uint8_t>(kind),
+            static_cast<uint8_t>(status),
+            static_cast<uint8_t>(GameTitle::HaloReach),
+            g_reachCamera.generation.load(std::memory_order_acquire),
+            preparedSerial, unit, weapon, aux0, aux1);
+    }
+
     __declspec(noinline) bool __fastcall ReachFpInterpolate(
         int view, int id, int slot, BoneMatrix** outBones, int* outCount)
     {
         g_reachCamera.activeCallbacks.fetch_add(1,std::memory_order_acq_rel);
+        // Diagnostic-only FP entry + ungated before-read (no gameplay effect).
+        uint32_t diagnosticBeforeUnit = UINT32_MAX;
+        uint32_t diagnosticBeforeWeapon = UINT32_MAX;
+        uint32_t diagnosticBeforeDetail = 0;
+        const bool diagnosticArmed =
+            Telemetry_WeaponEventsAccepting() && slot == 0 && view == 0;
+        if (diagnosticArmed)
+        {
+            Game_DiagnosticNoteFpThread(GameTitle::HaloReach);
+            PublishReachFpDiagnostic(WeaponOrderEventKind::FpEntry,
+                WeaponOrderEventStatus::NoObservation,
+                g_reachFpPairScope.preparedSerial,
+                UINT32_MAX, UINT32_MAX, uint64_t(slot), uint64_t(view));
+            uint32_t probeUnit = UINT32_MAX, probeWeapon = UINT32_MAX;
+            uint32_t probeDetail = 0;
+            if (Game_DiagnosticReadPrimaryWeapon(GameTitle::HaloReach,
+                    probeUnit, probeWeapon, probeDetail))
+            {
+                diagnosticBeforeUnit = probeUnit;
+                diagnosticBeforeWeapon = probeWeapon;
+                diagnosticBeforeDetail = probeDetail;
+            }
+        }
+        // Persistent support grip production evidence (root slot-0 invocation
+        // of the stereo pair only: whichever slot-0 view interpolates first
+        // resolves, the other eye reuses the pair's frozen decision, and a
+        // later invocation of the same pair must not overwrite it). The
+        // before-read is taken here; the after-read lands IMMEDIATELY after the
+        // native original and BEFORE ReachCaptureFpInterpolation copies the
+        // support-dependent targets into the per-invocation context (A015 §16
+        // ordering). Read-only with respect to the durable relationship; PG
+        // off: no read, no publication, no receipt.
+        const bool supportRootInvocation = g_config.persistent_support_grip &&
+            slot == 0 && g_reachFpPairScope.armed &&
+            !g_reachFpPairScope.supportGripResolved;
+        PrimaryWeaponEvidence supportBefore{};
+        const bool supportBeforeOk = supportRootInvocation &&
+            Game_ReadPrimaryWeaponEvidence(GameTitle::HaloReach, supportBefore);
         bool result=false;
         uint32_t muzzleUnit=UINT32_MAX,muzzleWeapon=UINT32_MAX;
         (void)ReachCaptureMuzzleOwner(view,slot,muzzleUnit,muzzleWeapon);
@@ -24084,11 +24940,59 @@ namespace
             ReachFpInterpolateFn original=g_reachOrigFpInterpolate;
             if (original)
                 result=original(view,id,slot,outBones,outCount);
+            if (supportRootInvocation)
+            {
+                PrimaryWeaponEvidence supportAfter{};
+                const bool supportAfterOk =
+                    Game_ReadPrimaryWeaponEvidence(GameTitle::HaloReach,
+                        supportAfter);
+                const SupportInvocationResolution resolution =
+                    Game_ResolveSupportInvocation(GameTitle::HaloReach,
+                        supportBefore, supportBeforeOk, supportAfter,
+                        supportAfterOk, true);
+                g_reachFpPairScope.supportGripAttached = resolution.trusted;
+                g_reachFpPairScope.supportGripResolved = true;
+                // F06/F07: freeze the title-native invocation receipt for this
+                // pair so the presented-ray producer and its consumers can
+                // require the consuming invocation's own owner proof instead of
+                // trusting the latest durable cache.
+                support_grip::SupportInvocationReceipt receipt{};
+                receipt.resolved = true;
+                receipt.title = GameTitle::HaloReach;
+                receipt.generation = resolution.generation;
+                receipt.serial = g_reachFpPairScope.preparedSerial;
+                receipt.evidence = resolution.evidence;
+                receipt.producerAgreement = resolution.producerAgreement;
+                receipt.owner = resolution.owner;
+                receipt.relationshipReadable = resolution.relationshipReadable;
+                receipt.relationshipEngaged = resolution.relationshipEngaged;
+                receipt.relationshipEpoch = resolution.relationshipEpoch;
+                VR_PublishSupportInvocationReceipt(receipt);
+            }
             ReachCaptureFpInterpolation(view,id,slot,result,outBones,outCount,muzzleUnit,muzzleWeapon);
         }
         __finally
         {
             g_reachCamera.activeCallbacks.fetch_sub(1,std::memory_order_acq_rel);
+        }
+        // Diagnostic-only stable commit, mirroring the existing ownership
+        // stable point ungated: inventory identity plus engine FP record
+        // agreement (bit2) must survive the interpolation unchanged.
+        if (diagnosticArmed && result &&
+            diagnosticBeforeWeapon != UINT32_MAX &&
+            (diagnosticBeforeDetail & 0x4u) != 0)
+        {
+            uint32_t afterUnit = UINT32_MAX, afterWeapon = UINT32_MAX;
+            uint32_t afterDetail = 0;
+            if (Game_DiagnosticReadPrimaryWeapon(GameTitle::HaloReach,
+                    afterUnit, afterWeapon, afterDetail) &&
+                (afterDetail & 0x4u) != 0 &&
+                afterUnit == diagnosticBeforeUnit &&
+                afterWeapon == diagnosticBeforeWeapon)
+                PublishReachFpDiagnostic(WeaponOrderEventKind::FpWeaponCommit,
+                    WeaponOrderEventStatus::Success,
+                    g_reachFpPairScope.preparedSerial,
+                    afterUnit, afterWeapon, uint64_t(slot), afterDetail);
         }
         return result;
     }
@@ -24357,9 +25261,18 @@ namespace
                 selectedSource=replacement;
                 bool leftHandBound=reconstructed &&
                     selectedSource==g_fpPaletteScratch;
+                // Persistent support grip (A017 §11): for a RESOLVED pair the
+                // visible support attachment follows the frozen relationship
+                // trust, never the aim-authority flag: a trusted same-owner
+                // invocation keeps the support hand attached even when aim
+                // authority is off, and an owner-untrusted invocation never
+                // inherits it. With the feature off the pair is unresolved and
+                // `twoHandAimActive` remains the only input (PG-off parity).
+                const bool supportGripAttached=targets.supportGripResolved
+                    ? targets.supportGripAttached : targets.twoHandAimActive;
                 if (leftHandBound &&
                     ReachShouldBindVisibleLeftHandToController(
-                        targets.twoHandAimActive))
+                        supportGripAttached))
                 {
                     leftHandBound=ReachBindFloatingLeftHandToController(
                         *root,fp,
@@ -26585,6 +27498,28 @@ namespace
                 candidate.fpTargets.leftWrist,
                 candidate.fpTargets.leftScale,&candidate.fpTargets.contactSpace[0],
                 &candidate.fpTargets.contactController[0]);
+        // Persistent support grip stale-owner fallback (B2). Kept unwired with
+        // the feature off (no build, no cost, exact base targets). The same
+        // prepared-frame position/scale contract as rightWrist; only the
+        // orientation source differs: the ordinary calibrated one-hand solve
+        // the Reach frame already computed for this exact serial. When the FP
+        // invocation later proves it is not the relationship owner, the visible
+        // weapon hand is re-seated from this target instead of the
+        // support-steered one. No new solve and no new fallback semantic is
+        // introduced here.
+        if (g_config.persistent_support_grip && tracking.rightPhysicalValid)
+        {
+            ReachVrRenderSnapshot oneHandTracking=tracking;
+            memcpy(oneHandTracking.rightAimOrientation,
+                tracking.rightPhysicalOrientation,
+                sizeof(oneHandTracking.rightAimOrientation));
+            oneHandTracking.rightAimValid=tracking.rightPhysicalValid;
+            candidate.fpTargets.rightOneHandWristValid=
+                ReachBuildPreparedControllerTarget(
+                    oneHandTracking,false,candidate.gameplayBasePosition,
+                    candidate.fpTargets.rightOneHandWrist,
+                    candidate.fpTargets.rightOneHandScale);
+        }
         candidate.fpTargets.contactSerial=tracking.preparedSerial;
         candidate.fpTargets.contactTimeNs=tracking.predictedDisplayTimeNs;
         if (tracking.trackingSpaceEpoch && !candidate.vehicleViewApplied && !candidate.cutsceneTheater)
@@ -26613,6 +27548,15 @@ namespace
             (void)LegacyApplyWorldCollision(
                 GameTitle::HaloReach,1,candidate.fpTargets.rightWrist,
                 candidate.fpTargets.collisionCorrection[1]);
+        // The one-hand fallback target obeys the same collision correction as
+        // the attached target, but keeps its own result out of the published
+        // correction: that field belongs to the served target.
+        if(candidate.fpTargets.rightOneHandWristValid)
+        {
+            float oneHandCorrection[3]{};
+            (void)LegacyApplyWorldCollision(GameTitle::HaloReach,1,
+                candidate.fpTargets.rightOneHandWrist,oneHandCorrection);
+        }
         if(candidate.fpTargets.leftWristValid)
             (void)LegacyApplyWorldCollision(
                 GameTitle::HaloReach,0,candidate.fpTargets.leftWrist,
@@ -32070,6 +33014,22 @@ namespace
         // ray Halo 4 spawns first-person shots along, so it is the feedback the
         // closed loop closes on.
         std::atomic<float> engineAimForward[3]{};
+        // T-3 telemetry-only: the pristine observer (stock) position read at
+        // the top of every proven stereo transaction, with a monotonic serial.
+        // No gameplay reader exists; stores only, inside the same already-
+        // guarded transaction.
+        //
+        // stockCameraVersion is the seqlock guard over the three fields below,
+        // the same version-counter discipline as ReachCompletedEyePublication
+        // and the Halo 2 observer publication: odd while the stereo transaction
+        // is mid-publication, even with the payload at rest. The serial alone
+        // cannot prove coherence - the writer overwrites the position BEFORE it
+        // bumps the serial, so a serial read back unchanged can still cover a
+        // position stored by the next writer iteration.
+        std::atomic<float> stockCameraPosition[3]{};
+        std::atomic<uint32_t> stockCameraVersion{0};
+        std::atomic<bool> stockCameraValid{false};
+        std::atomic<uint64_t> stockCameraSerial{0};
         // Halo 4's own game-yaw reference, the direct analogue of Halo 3's
         // g_gameYawRef. Captured from the engine's heading at each recentre and
         // moved only by the VR turn stick thereafter.
@@ -32624,6 +33584,23 @@ namespace
         float gunPitchDeg = 0.0f;
         float gunRollDeg = 0.0f;
         bool twoHandAimActive = false;
+        // Persistent support grip: the visible rigid support lock follows the
+        // frozen pair decision (relationship engaged AND this pair's owner
+        // trusted), never the aim-authority flag. Frozen once per pair by the
+        // first record that can prove Present/Absent (F04/A003); with the
+        // feature off it is the pair-begin twoHandAimActive copy, so the base
+        // presentation is byte-identical.
+        bool supportGripAttached = false;
+        bool supportGripResolved = false;
+        uint32_t supportGripOwnerUnit = UINT32_MAX;
+        uint32_t supportGripOwnerWeapon = UINT32_MAX;
+        // Owner-safe one-hand fallback carrier, built once per pair from the
+        // same prepared sample. The weapon carrier consumes it when this
+        // invocation is untrusted/detached and the prepared aim is
+        // support-derived, so an untrusted invocation never rides the
+        // wrong owner's two-hand solve.
+        bool oneHandRightTargetValid = false;
+        Halo4FloatingTransform oneHandRightTargetWorld{};
         bool handAlignment = false;
         Halo4FloatingTransform rightTargetWorld{};
         Halo4FloatingTransform leftTargetWorld{};
@@ -34073,6 +35050,23 @@ namespace
         g_halo4Camera.vrikCountOverflow.fetch_add(1,std::memory_order_relaxed);
     }
 
+    // Weapon-order diagnostic tranche: counterless fill-flag peek. Recording
+    // must not change the totals of the existing VRIK presentation counters,
+    // so the diagnostic path never calls Halo4RecordFillFlag.
+    int32_t Halo4DiagnosticPeekFillFlag(const BoneMatrix* input) noexcept
+    {
+        if (!input)
+            return -1;
+        int32_t flag=0;
+        const unsigned char* record=
+            reinterpret_cast<const unsigned char*>(input) -
+            kHalo4FirstPersonRecordBankOffset;
+        if (!Halo4SafeRead(record+kHalo4FirstPersonRecordFillFlagOffset,
+                           &flag,sizeof(flag)))
+            return -1;
+        return flag;
+    }
+
     // The producer-authored 0x1910 record flag partitions the ordered loop:
     // flag 1 covers both storm_fp hands and the held model, then flag 0 closes
     // the sequence with the native body/legs model. It is not anatomy by
@@ -35234,15 +36228,19 @@ namespace
     // Storm record arrives.
     bool Halo4BuildFloatingWorldTarget(
         bool left, const Halo4FloatingTargetFrame& frame,
-        Halo4FloatingTransform& target)
+        Halo4FloatingTransform& target, bool oneHandRight=false)
     {
-        if (left ? !g_halo4RigTracking.leftControllerValid
-                 : !g_halo4RigTracking.rightAimValid)
+        const bool rightValid = oneHandRight
+            ? g_halo4RigTracking.oneHandRightAimValid
+            : g_halo4RigTracking.rightAimValid;
+        if (left ? !g_halo4RigTracking.leftControllerValid : !rightValid)
             return false;
         Halo4ControllerWorldPoseInput input=frame.common;
         memcpy(input.controllerOrientation,
                left ? g_halo4RigTracking.leftControllerOrientation
-                    : g_halo4RigTracking.rightAimOrientation,
+                    : (oneHandRight
+                           ? g_halo4RigTracking.oneHandRightAimOrientation
+                           : g_halo4RigTracking.rightAimOrientation),
                sizeof(input.controllerOrientation));
         memcpy(input.controllerPosition,
                left ? g_halo4RigTracking.leftControllerPosition
@@ -35356,6 +36354,13 @@ namespace
             g_halo4FloatingPair.worldScale=targetFrame.common.worldScale;
             g_halo4FloatingPair.twoHandAimActive=
                 targetFrame.twoHandAimActive;
+            // B4: with the feature wired the visible attachment starts
+            // unresolved (and therefore detached) and is frozen by this pair's
+            // own owner evidence; it is never seeded from the aim-authority
+            // flag. Feature off keeps the exact base default.
+            g_halo4FloatingPair.supportGripAttached=
+                VR_SupportGripWiredForTitle(GameTitle::Halo4)
+                    ? false : targetFrame.twoHandAimActive;
             g_halo4FloatingPair.gunYawDeg=targetFrame.gunYawDeg;
             g_halo4FloatingPair.gunPitchDeg=targetFrame.gunPitchDeg;
             g_halo4FloatingPair.gunRollDeg=targetFrame.gunRollDeg;
@@ -35394,6 +36399,14 @@ namespace
         g_halo4FloatingPair.leftTargetValid=frameValid &&
             Halo4BuildFloatingWorldTarget(
                 true,targetFrame,g_halo4FloatingPair.leftTargetWorld);
+        // The owner-safe one-hand fallback carrier is frozen here, from the
+        // same prepared sample and the same pair frame, before either eye can
+        // reach the palette hook. It is built only for a wired title, so
+        // PG off adds no carrier state at all.
+        if (VR_SupportGripWiredForTitle(GameTitle::Halo4))
+            g_halo4FloatingPair.oneHandRightTargetValid=frameValid &&
+                Halo4BuildFloatingWorldTarget(false,targetFrame,
+                    g_halo4FloatingPair.oneHandRightTargetWorld,true);
         if (g_halo4FloatingPair.rightTargetValid &&
             g_halo4FloatingPair.leftTargetValid)
         {
@@ -35532,14 +36545,31 @@ namespace
         if (stormStage!=Halo4VrikStage::Solved) return stormStage;
 
         Halo4FloatingTransform desiredRight{},desiredLeft{};
+        Halo4FloatingTransform supportRightTarget=
+            g_halo4FloatingPair.rightTargetWorld;
+        if (VR_SupportGripWiredForTitle(GameTitle::Halo4) &&
+            !g_halo4FloatingPair.supportGripAttached &&
+            g_halo4FloatingPair.oneHandRightTargetValid &&
+            support_grip::AimSupportDerived(
+                g_halo4FloatingPair.rightTargetValid,
+                g_halo4FloatingPair.twoHandAimActive))
+        {
+            // Owner-untrusted/detached invocation whose prepared aim is
+            // support-derived: the weapon carrier must not ride the two-hand
+            // solve of an owner this invocation could not prove. The pair's
+            // frozen ordinary one-hand carrier is the owner-safe target. A
+            // coherently disengaged frame (the prepared aim is not
+            // support-derived) keeps the base carrier unchanged.
+            supportRightTarget=g_halo4FloatingPair.oneHandRightTargetWorld;
+        }
         if (!Halo4BuildFloatingControllerRerootTarget(
-                g_halo4FloatingPair.rightTargetWorld,eyeRoot,stockRight,
+                supportRightTarget,eyeRoot,stockRight,
                 desiredRight))
             return Halo4VrikStage::RightPoseFailed;
         bool markerParityApplied=false;
         bool rigidSupportLockApplied=false;
         bool markerParityFallback=false;
-        if (g_halo4FloatingPair.twoHandAimActive)
+        if (g_halo4FloatingPair.supportGripAttached)
         {
             // Match Halo 3's accepted support lock. The left controller still
             // owns the two-hand aim solve, but the visible hand takes the same
@@ -35777,6 +36807,137 @@ namespace
                     flagA,flagB,totalNodeMatrixCount,skinning);
                 return;
             }
+            // Persistent support grip: Halo 4's production owner-evidence
+            // producer and the pair's ONE owner-trust decision (F04/A003).
+            //
+            // The safe context is this first-person model-skinning invocation
+            // on the game render thread, gated by the same conditions the
+            // diagnostic commit uses (armed, no teardown, the proven FP return
+            // address). It is deliberately independent of the optional hands
+            // presentation: with the feature on the durable relationship must
+            // still be fed while `halo4_hands` is off, or Halo 4's ordinary
+            // two-hand authority could never bind.
+            //
+            // The read is the SEMANTIC PRIMARY (`candidate = UINT32_MAX`),
+            // never the record's own object index: the storm-hands record's
+            // object index is the local unit handle. This block runs at the
+            // pair's first safe FP invocation -- by the engine's per-eye
+            // record order (storm hands, held weapon, native body) that is the
+            // storm-hands decision boundary -- before any palette can consume
+            // the decision. A provisional Unknown publishes its explicit
+            // Unknown record and leaves the pair open (later records,
+            // including the second eye's, may still freeze it); Present and
+            // Absent are terminal. Once resolved, no later record re-reads or
+            // re-defines the decision.
+            if (VR_SupportGripWiredForTitle(GameTitle::Halo4) &&
+                !g_halo4FloatingPair.supportGripResolved &&
+                !g_halo4Camera.teardownRequested.load(std::memory_order_acquire) &&
+                g_halo4Camera.armed.load(std::memory_order_acquire) &&
+                Halo4FloatingPairMatchesCurrent() &&
+                reinterpret_cast<uintptr_t>(_ReturnAddress())==
+                    g_halo4Camera.base+kHalo4FirstPersonSkinningReturnRva)
+            {
+                const uint32_t supportBoundaryCandidate=
+                    halo4_owner_evidence::PairRecordWeaponCandidate(
+                        halo4_owner_evidence::PairRecordAction::
+                            StormHandsBoundary,uint32_t(objectIndex));
+                const SupportInvocationResolution supportResolution=
+                    Halo4ReadSupportInvocation(supportBoundaryCandidate);
+                const halo4_owner_evidence::PairResolution pairResolution=
+                    halo4_owner_evidence::UpdatePairResolution(
+                        halo4_owner_evidence::PairResolutionOf(
+                            g_halo4FloatingPair.supportGripResolved,
+                            g_halo4FloatingPair.supportGripAttached),
+                        true,supportResolution.trusted,
+                        supportResolution.evidenceAbsent);
+                if (pairResolution==
+                    halo4_owner_evidence::PairResolution::Present)
+                {
+                    // Authoritative: this invocation proved the durable
+                    // relationship's exact current owner, so the visible
+                    // support attachment is engaged for the whole pair.
+                    g_halo4FloatingPair.supportGripAttached=true;
+                    g_halo4FloatingPair.supportGripResolved=true;
+                    g_halo4FloatingPair.supportGripOwnerUnit=
+                        supportResolution.owner.unit;
+                    g_halo4FloatingPair.supportGripOwnerWeapon=
+                        supportResolution.owner.weapon;
+                    static std::atomic<uint32_t>
+                        s_supportPairPresentGeneration{0};
+                    const uint32_t supportPairGeneration=
+                        g_halo4Camera.generation.load(std::memory_order_acquire);
+                    if (supportPairGeneration &&
+                        s_supportPairPresentGeneration.exchange(
+                            supportPairGeneration,
+                            std::memory_order_relaxed)!=supportPairGeneration)
+                        support_diagnostics::Record(support_diagnostics::Event::H4PairPresent);
+                }
+                else if (pairResolution==
+                    halo4_owner_evidence::PairResolution::Absent)
+                {
+                    // Authoritative absence: the pair stays detached for its
+                    // remaining records and the visible hand is free.
+                    g_halo4FloatingPair.supportGripAttached=false;
+                    g_halo4FloatingPair.supportGripResolved=true;
+                    static std::atomic<uint32_t>
+                        s_supportPairAbsentGeneration{0};
+                    const uint32_t supportPairGeneration=
+                        g_halo4Camera.generation.load(std::memory_order_acquire);
+                    if (supportPairGeneration &&
+                        s_supportPairAbsentGeneration.exchange(
+                            supportPairGeneration,
+                            std::memory_order_relaxed)!=supportPairGeneration)
+                        support_diagnostics::Record(support_diagnostics::Event::H4PairAbsent);
+                }
+                // Provisional Unknown wrote nothing here: the shared resolver
+                // already published the explicit Unknown record, so a stale
+                // KnownPresent cannot survive, and the pair stays open.
+            }
+            // Weapon-order diagnostic: first-person thread/frame marker AND
+            // stable weapon commit for the engine's FP weapon record.
+            // Deliberately independent of the optional hands presentation so
+            // a capture is never silently empty; read-only, no gameplay
+            // effect. The commit requires the same ungated validation the FP
+            // commit contract uses (owned semantic primary plus FP producer
+            // agreement); if it cannot be proven, no commit is invented and
+            // the analyser reports an uncommitted FP invocation instead.
+            if (Telemetry_WeaponEventsAccepting() &&
+                !g_halo4Camera.teardownRequested.load(std::memory_order_acquire) &&
+                g_halo4Camera.armed.load(std::memory_order_acquire) &&
+                reinterpret_cast<uintptr_t>(_ReturnAddress())==
+                    g_halo4Camera.base+kHalo4FirstPersonSkinningReturnRva &&
+                Halo4DiagnosticPeekFillFlag(inputObjectNodeMatrices)==
+                    kHalo4FirstPersonWeaponFillFlag)
+            {
+                Game_DiagnosticNoteFpThread(GameTitle::Halo4);
+                const uint64_t diagnosticSerial = Halo4FloatingPairMatchesCurrent() ?
+                    g_halo4FloatingPair.preparedSerial : 0;
+                Telemetry_PublishWeaponEvent(
+                    static_cast<uint8_t>(WeaponOrderEventKind::FpEntry),
+                    static_cast<uint8_t>(WeaponOrderEventStatus::NoObservation),
+                    static_cast<uint8_t>(GameTitle::Halo4),
+                    g_halo4Camera.generation.load(std::memory_order_acquire),
+                    diagnosticSerial,
+                    UINT32_MAX, UINT32_MAX, 0, 0);
+                uint32_t commitUnit = UINT32_MAX;
+                uint32_t commitWeapon = UINT32_MAX;
+                uint32_t commitDetail = 0;
+                if (DiagnosticHalo4WeaponOwner(
+                        TitleAdapter_GetGeneration(GameTitle::Halo4),
+                        uint32_t(objectIndex), commitUnit, commitWeapon,
+                        commitDetail) &&
+                    (commitDetail & 0x4u) != 0)
+                    Telemetry_PublishWeaponEvent(
+                        static_cast<uint8_t>(
+                            WeaponOrderEventKind::FpWeaponCommit),
+                        static_cast<uint8_t>(
+                            WeaponOrderEventStatus::Success),
+                        static_cast<uint8_t>(GameTitle::Halo4),
+                        g_halo4Camera.generation.load(
+                            std::memory_order_acquire),
+                        diagnosticSerial,
+                        commitUnit, commitWeapon, 0, commitDetail);
+            }
             if (!g_halo4Camera.teardownRequested.load(std::memory_order_acquire) &&
                 g_halo4Camera.armed.load(std::memory_order_acquire) &&
                 // C-H4-32: `arm_ik` is NO LONGER A GATE. There is no arm IK in
@@ -35875,6 +37036,32 @@ namespace
                 else if (decision.action==
                          Halo4FloatingRecordAction::CarryHeldModel)
                 {
+                    // B3: the held-weapon record validates its own exact
+                    // object index against the pair's frozen semantic primary.
+                    // It never re-resolves the pair and never re-defines the
+                    // hand solve that already ran: an untrusted or outdated
+                    // pair stays detached for its remaining records.
+                    if (VR_SupportGripWiredForTitle(GameTitle::Halo4) &&
+                        sequenceCurrent &&
+                        g_halo4FloatingPair.supportGripResolved &&
+                        g_halo4FloatingPair.supportGripAttached &&
+                        !halo4_owner_evidence::PairRecordValidatesFrozenPrimary(
+                            halo4_owner_evidence::PairRecordAction::HeldWeapon,
+                            uint32_t(objectIndex),true,
+                            g_halo4FloatingPair.supportGripOwnerWeapon))
+                    {
+                        static std::atomic<uint32_t>
+                            s_supportHeldMismatchGeneration{0};
+                        const uint32_t supportPairGeneration=
+                            g_halo4Camera.generation.load(
+                                std::memory_order_acquire);
+                        if (supportPairGeneration &&
+                            s_supportHeldMismatchGeneration.exchange(
+                                supportPairGeneration,
+                                std::memory_order_relaxed)!=
+                                supportPairGeneration)
+                            support_diagnostics::Record(support_diagnostics::Event::H4HeldMismatch);
+                    }
                     muzzlePending=Halo4PrepareMuzzlePalette(uint32_t(objectIndex),renderModelIndex,
                         identity.runtimeImportChecksum,identity.nodeCount,nullptr);
                     g_halo4Camera.vrikLastHeldChecksum.store(
@@ -37692,6 +38879,21 @@ namespace
             0.0f, std::memory_order_relaxed);
         g_halo4Camera.engineAimForward[2].store(
             0.0f, std::memory_order_relaxed);
+        // T-3: the telemetry-only stock camera publication goes with them; an
+        // unreadable frame can never retain the previous level's position. The
+        // clear runs inside its own seqlock window, bumping the version twice
+        // (odd, then even) exactly like a real publication: the counter is
+        // never stored, so the even-at-rest parity the reader depends on
+        // survives every reset.
+        g_halo4Camera.stockCameraVersion.fetch_add(
+            1, std::memory_order_acq_rel); // -> odd (clearing)
+        g_halo4Camera.stockCameraValid.store(false, std::memory_order_relaxed);
+        g_halo4Camera.stockCameraSerial.store(0, std::memory_order_relaxed);
+        for (int axis = 0; axis < 3; ++axis)
+            g_halo4Camera.stockCameraPosition[axis].store(
+                0.0f, std::memory_order_relaxed);
+        g_halo4Camera.stockCameraVersion.fetch_add(
+            1, std::memory_order_release); // -> even (cleared)
         // C-H4-10: the yaw reference goes with it. Carrying a heading chosen
         // during the previous level across a load is exactly the fault
         // Halo4ResetTelemetry already avoids for the head reference.
@@ -37906,6 +39108,24 @@ namespace
             // camera is live.
             g_aimSeen.store(true, std::memory_order_release);
         }
+
+        // T-3 telemetry-only: publish the pristine observer position already
+        // read and validated above, under the stock-camera seqlock. No gameplay
+        // reader exists; this cannot affect the frame. The version goes odd
+        // BEFORE the first payload store and even again AFTER the last one, so
+        // the telemetry reader either sees one whole iteration or fails open;
+        // the serial is bumped inside that window and is what the recording
+        // reports.
+        g_halo4Camera.stockCameraVersion.fetch_add(
+            1, std::memory_order_acq_rel); // -> odd (writing)
+        for (int axis = 0; axis < 3; ++axis)
+            g_halo4Camera.stockCameraPosition[axis].store(
+                stock.position[axis], std::memory_order_relaxed);
+        g_halo4Camera.stockCameraValid.store(true, std::memory_order_relaxed);
+        g_halo4Camera.stockCameraSerial.fetch_add(
+            1, std::memory_order_relaxed);
+        g_halo4Camera.stockCameraVersion.fetch_add(
+            1, std::memory_order_release); // -> even (published)
 
         // C-H4-8: put the player inside. The headset's orientation and its
         // room-space movement are applied to the MONO camera here, before the
@@ -41799,6 +43019,9 @@ namespace
                 LogHalo3ParentXformIfDriving(); // H3 vehicle-transform measurement
                 LogHalo3SeatMotionIfDriving(); // H3 seat-motion vibration diagnostic
             }
+            support_diagnostics::Drain([](const char* message, uint32_t count) {
+                LOG("%s (events since last report: %u)", message, count);
+            });
             VR_FramePacingWorkerPoll();
             Sleep(50);
 #else
@@ -41809,11 +43032,30 @@ namespace
                 LogHalo3ParentXformIfDriving(); // H3 vehicle-transform measurement
                 LogHalo3SeatMotionIfDriving(); // H3 seat-motion vibration diagnostic
             }
+            support_diagnostics::Drain([](const char* message, uint32_t count) {
+                LOG("%s (events since last report: %u)", message, count);
+            });
             VR_FramePacingWorkerPoll();
             Sleep(50);
 #endif
         }
     }
+}
+
+// ---- T-2 sparse shot events: cross-translation-unit entry point ----
+// The shared shot publisher lives in this file's first internal-linkage
+// region, but Halo 2's firing detour runs in the observer translation unit
+// (halo2_observer_6dof.cpp). This door owns no state and no policy: the
+// disabled gate, the non-finite ray suppression, the frame/flag snapshot reads
+// and the title-qualified engine aim branch all stay in the one implementation
+// above, so no title can drift into a private copy of the shot contract.
+void Game_PublishShotDiagnostic(GameTitle title, uint32_t titleGeneration,
+    uint32_t unit, uint32_t weapon, uint8_t slot, uint8_t barrel,
+    bool predicted, bool substituted, bool firesFromCamera, bool unitAim,
+    const float origin[3], const float direction[3]) noexcept
+{
+    PublishShotDiagnostic(title, titleGeneration, unit, weapon, slot, barrel,
+        predicted, substituted, firesFromCamera, unitAim, origin, direction);
 }
 
 void Game_RequestManualVrRecovery()
@@ -44844,11 +46086,28 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     if (!g_aimSeen.load() && !halo2Aim)
         return blocked(3, "camera hook not running (not in a level?)");
     float q[4], p[3];
-    if (!VR_GetAimPose(q, p)) // two-hand-adjusted weapon aim (falls back to right hand)
+    VrAimSupportReceipt aimSupportReceipt{};
+    const bool coherentAim = g_config.two_hand_coherent_aim;
+    if (!VR_GetAimPoseWithSupportProvenance(q, p, aimSupportReceipt,
+            coherentAim))
         return blocked(4, "right controller not tracked");
     float hq[4], hp[3];
-    if (!VR_GetHeadPose(hq, hp))
+    if (coherentAim)
+    {
+        if (!aimSupportReceipt.headValid)
+            return blocked(5, "headset not tracked");
+        hp[0] = aimSupportReceipt.headPosition.x;
+        hp[1] = aimSupportReceipt.headPosition.y;
+        hp[2] = aimSupportReceipt.headPosition.z;
+        hq[0] = aimSupportReceipt.headOrientation.x;
+        hq[1] = aimSupportReceipt.headOrientation.y;
+        hq[2] = aimSupportReceipt.headOrientation.z;
+        hq[3] = aimSupportReceipt.headOrientation.w;
+    }
+    else if (!VR_GetHeadPose(hq, hp))
+    {
         return blocked(5, "headset not tracked");
+    }
     if (halo2Aim)
         return ComputeHalo2ControllerAimStick(q, p, hq, hp, outRx, outRy);
     lastAimBlock = 0;
@@ -44859,7 +46118,6 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     const float localDir[3] = {0.0f, 0.0f, -1.0f};
     float f3[3];
     RotateByQuat(q, localDir, f3);
-    const float fx = f3[0], fy = f3[1], fz = f3[2];
 
     // Halo spawns first-person projectiles at the ENGINE's camera â€” on foot,
     // the head â€” and no steering can move that origin. Aiming the bullet ray
@@ -44873,11 +46131,12 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // two are the same point. In a first-person vehicle seat they are not â€” see
     // the seat re-origin below, which is the correction for that case.
     const float d = Clamp(g_config.crosshair_distance_m, 2.0f, 50.0f);
-    float tx = p[0] + fx * d - hp[0];
-    float ty = p[1] + fy * d - hp[1];
-    float tz = p[2] + fz * d - hp[2];
-    const float tl = sqrtf(tx * tx + ty * ty + tz * tz);
-    if (tl > 1e-3f) { tx /= tl; ty /= tl; tz /= tl; }
+    const AimServoParallaxRay parallaxRay = AimServoParallaxRayFromHead(
+        p, f3, hp, d);
+    const float tx = parallaxRay.x;
+    const float ty = parallaxRay.y;
+    const float tz = parallaxRay.z;
+    const float tl = parallaxRay.distance;
     const float cy = atan2f(tx, -tz);
     const float cp = asinf(Clamp(ty, -1.0f, 1.0f));
     float gameYawReference = 0.0f;
@@ -45563,6 +46822,249 @@ void Game_GunScale(int dir)
 }
 
 float Game_GetWorldScale() { return g_worldScale.load(); }
+
+// ---- Shots-vs-reticle frame tranche (read-only evidence) ----
+// See game.h. All readers below are bounded, lock-free, finite-checked and
+// side-effect-free; they never touch gameplay, tracking, or lifecycle state.
+bool Game_TelemetryReadSharedAim(float forwardOut[3]) noexcept
+{
+    if (!forwardOut || !g_aimSeen.load(std::memory_order_acquire))
+        return false;
+    // Latest-only three-float publication (H3/ODST/Reach-compact writers, no
+    // serial): a concurrent writer can mix components across frames, exactly
+    // as the existing in-game consumers accept. Finite-checked at read.
+    const float sample[3] = {
+        g_aimFwdX.load(std::memory_order_relaxed),
+        g_aimFwdY.load(std::memory_order_relaxed),
+        g_aimFwdZ.load(std::memory_order_relaxed)};
+    if (!std::isfinite(sample[0]) || !std::isfinite(sample[1]) ||
+        !std::isfinite(sample[2]))
+        return false;
+    memcpy(forwardOut, sample, sizeof(sample));
+    return true;
+}
+
+bool Game_TelemetryReadSharedCamera(bool& baseValidOut, float baseOut[3],
+    bool& eyeValidOut, float eyeOut[3]) noexcept
+{
+    baseValidOut = g_baseCamValid.load(std::memory_order_acquire);
+    eyeValidOut = g_camValid.load(std::memory_order_acquire);
+    if (!baseOut || !eyeOut)
+        return false;
+    // Always copied (forensic state travels even when invalid); the flags are
+    // authoritative and the recorder zeroes invalid payloads. Shared H3/ODST
+    // singletons: the capture site title-qualifies and labels the writer.
+    const float base[3] = {
+        g_baseCamX.load(std::memory_order_relaxed),
+        g_baseCamY.load(std::memory_order_relaxed),
+        g_baseCamZ.load(std::memory_order_relaxed)};
+    const float eye[3] = {
+        g_camX.load(std::memory_order_relaxed),
+        g_camY.load(std::memory_order_relaxed),
+        g_camZ.load(std::memory_order_relaxed)};
+    memcpy(baseOut, base, sizeof(base));
+    memcpy(eyeOut, eye, sizeof(eye));
+    return baseValidOut || eyeValidOut;
+}
+
+bool Game_TelemetryReadWorldScale(float& scaleOut) noexcept
+{
+    const float scale = g_worldScale.load(std::memory_order_relaxed);
+    // Engine world units per metre (~0.33); the haloce contact bound (>10
+    // rejects) is the precedent for the sanity ceiling.
+    if (!std::isfinite(scale) || scale <= 0.0f || scale > 10.0f)
+        return false;
+    scaleOut = scale;
+    return true;
+}
+
+bool Game_TelemetryReadReachSeatedAim(float forwardOut[3], uint8_t& sourceOut,
+    uint32_t& generationOut, uint64_t& sampleMsOut) noexcept
+{
+    sourceOut = 0;
+    generationOut = 0;
+    sampleMsOut = 0;
+    if (!forwardOut)
+        return false;
+    // Admission mirrors ReachReadAimFeedback exactly (live camera generation,
+    // 500 ms freshness, seated sources only, finite); the source ordinal,
+    // generation and sampleMs additionally travel for telemetry provenance.
+    const uint32_t generation =
+        g_reachCamera.generation.load(std::memory_order_acquire);
+    const uint64_t nowMs = GetTickCount64();
+    auto& published = g_reachAimFeedback;
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        const uint32_t before =
+            published.sequence.load(std::memory_order_acquire);
+        if (!before || (before & 1u))
+            continue;
+        const uint32_t sampleGeneration =
+            published.generation.load(std::memory_order_relaxed);
+        const uint64_t sampleMs =
+            published.sampleMs.load(std::memory_order_relaxed);
+        const auto source = static_cast<ReachAimFeedbackSource>(
+            published.source.load(std::memory_order_relaxed));
+        const float sample[3] = {
+            published.x.load(std::memory_order_relaxed),
+            published.y.load(std::memory_order_relaxed),
+            published.z.load(std::memory_order_relaxed)};
+        if (published.sequence.load(std::memory_order_acquire) != before)
+            continue;
+        if (sampleGeneration != generation || !sampleMs ||
+            nowMs < sampleMs || nowMs - sampleMs > 500 ||
+            source == ReachAimFeedbackSource::OnFootCompact ||
+            !std::isfinite(sample[0]) || !std::isfinite(sample[1]) ||
+            !std::isfinite(sample[2]))
+        {
+            return false;
+        }
+        memcpy(forwardOut, sample, sizeof(sample));
+        sourceOut = static_cast<uint8_t>(source);
+        generationOut = sampleGeneration;
+        sampleMsOut = sampleMs;
+        return true;
+    }
+    return false;
+}
+
+bool Game_TelemetryReadReachCompletedEye(float eyeOut[3],
+    uint64_t& preparedSerialOut) noexcept
+{
+    preparedSerialOut = 0;
+    if (!eyeOut)
+        return false;
+    const uint32_t generation =
+        g_reachCamera.generation.load(std::memory_order_acquire);
+    if (!generation)
+        return false;
+    ReachCompletedEyeSnapshot sample{};
+    if (!ReachReadCompletedEye(sample))
+        return false;
+    // Same-generation completed stereo-pair eye only; its preparedSerial
+    // travels so analysis knows which frame rendered it. Finite-checked.
+    if (sample.generation != generation || !sample.preparedSerial ||
+        !std::isfinite(sample.eye[0]) || !std::isfinite(sample.eye[1]) ||
+        !std::isfinite(sample.eye[2]))
+        return false;
+    memcpy(eyeOut, sample.eye, sizeof(sample.eye));
+    preparedSerialOut = sample.preparedSerial;
+    return true;
+}
+
+bool Game_TelemetryReadHalo4EngineAim(float forwardOut[3],
+    bool& pitchValidOut, float& pitchRadiansOut,
+    uint64_t& pitchSerialOut) noexcept
+{
+    pitchValidOut = false;
+    pitchRadiansOut = 0.0f;
+    pitchSerialOut = 0;
+    if (!forwardOut)
+        return false;
+    if (!g_halo4Camera.armed.load(std::memory_order_acquire) ||
+        g_halo4Camera.teardownRequested.load(std::memory_order_acquire))
+        return false;
+    const uint32_t generation =
+        g_halo4Camera.generation.load(std::memory_order_acquire);
+    if (!generation)
+        return false;
+    // The stereo transaction publishes pitch, then the whole forward, then
+    // valid (release) and bumps the serial (release). The serial is read first
+    // and re-checked after, so the recorded vector is always a genuine
+    // published sample, never a fabricated one. It is NOT a version-bracketed
+    // pair: the payload is stored BEFORE the serial is bumped and the two
+    // serial reads are not fenced around it, so the returned serial may differ
+    // from its payload by one writer iteration - treat serial +/-1 as the
+    // tolerance and never assert an exact serial-to-payload pairing. This
+    // publication is pre-existing and feeds the gameplay aim loop, so the
+    // recorder documents the tolerance instead of changing it.
+    const uint64_t serial =
+        g_halo4Camera.enginePitchSerial.load(std::memory_order_acquire);
+    const bool pitchValid =
+        g_halo4Camera.enginePitchValid.load(std::memory_order_acquire);
+    const float pitch =
+        g_halo4Camera.enginePitch.load(std::memory_order_relaxed);
+    const float sample[3] = {
+        g_halo4Camera.engineAimForward[0].load(std::memory_order_relaxed),
+        g_halo4Camera.engineAimForward[1].load(std::memory_order_relaxed),
+        g_halo4Camera.engineAimForward[2].load(std::memory_order_relaxed)};
+    if (g_halo4Camera.enginePitchSerial.load(std::memory_order_acquire) !=
+            serial ||
+        g_halo4Camera.generation.load(std::memory_order_acquire) !=
+            generation)
+        return false;
+    if (!pitchValid || !serial || !std::isfinite(pitch) ||
+        !std::isfinite(sample[0]) || !std::isfinite(sample[1]) ||
+        !std::isfinite(sample[2]))
+        return false;
+    memcpy(forwardOut, sample, sizeof(sample));
+    pitchValidOut = true;
+    pitchRadiansOut = pitch;
+    pitchSerialOut = serial;
+    return true;
+}
+
+bool Game_TelemetryReadHalo4Camera(float eyeOut[3], uint64_t& serialOut) noexcept
+{
+    serialOut = 0;
+    if (!eyeOut)
+        return false;
+    // The recorded field must read exact zeros whenever this fails; zero the
+    // caller's buffer here so the invalid/absent label never depends on its
+    // prior contents.
+    eyeOut[0] = 0.0f;
+    eyeOut[1] = 0.0f;
+    eyeOut[2] = 0.0f;
+    if (!g_halo4Camera.armed.load(std::memory_order_acquire) ||
+        g_halo4Camera.teardownRequested.load(std::memory_order_acquire))
+        return false;
+    const uint32_t generation =
+        g_halo4Camera.generation.load(std::memory_order_acquire);
+    if (!generation)
+        return false;
+    // stockCameraVersion is a version-counter seqlock (same discipline as
+    // ReachReadCompletedEye and Halo2Observer6Dof_ReadPublishedPose): the
+    // stereo transaction bumps it odd BEFORE it touches the payload and even
+    // again AFTER, so an unchanged even version proves the position, the valid
+    // flag and the serial all belong to one writer iteration. Re-reading the
+    // serial alone could not prove that - the writer overwrites the position
+    // before it bumps the serial, so a serial read back unchanged can still
+    // cover a position stored by the next iteration. An odd or unstable
+    // version is retried a bounded number of times; if it never settles, the
+    // read fails open to invalid with zeros and serial 0 and the caller labels
+    // the source absent, never a torn or cross-iteration position.
+    for (int attempt = 0; attempt < 4; ++attempt)
+    {
+        const uint32_t before =
+            g_halo4Camera.stockCameraVersion.load(std::memory_order_acquire);
+        if (before & 1u)
+            continue;
+        const float sample[3] = {
+            g_halo4Camera.stockCameraPosition[0].load(std::memory_order_relaxed),
+            g_halo4Camera.stockCameraPosition[1].load(std::memory_order_relaxed),
+            g_halo4Camera.stockCameraPosition[2].load(std::memory_order_relaxed)};
+        const bool valid =
+            g_halo4Camera.stockCameraValid.load(std::memory_order_relaxed);
+        const uint64_t serial =
+            g_halo4Camera.stockCameraSerial.load(std::memory_order_relaxed);
+        // Order the payload loads (and the two flags that describe them) before
+        // the version re-read, exactly as the Halo 2 observer reader does.
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (g_halo4Camera.stockCameraVersion.load(std::memory_order_acquire) !=
+            before)
+            continue;
+        if (g_halo4Camera.generation.load(std::memory_order_acquire) !=
+            generation)
+            return false;
+        if (!valid || !serial || !std::isfinite(sample[0]) ||
+            !std::isfinite(sample[1]) || !std::isfinite(sample[2]))
+            return false;
+        memcpy(eyeOut, sample, sizeof(sample));
+        serialOut = serial;
+        return true;
+    }
+    return false;
+}
 bool Game_IsPositionalTracking()
 {
     return g_positional.load(std::memory_order_relaxed);
@@ -45845,6 +47347,719 @@ void* Game_ReloadPolicyWeapon(GameTitle title, uint32_t weapon)
         return local!=UINT32_MAX && (local>>16) && owner==local ? const_cast<uint8_t*>(data) : nullptr;
     }
     __except(EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
+// ---- Weapon-order diagnostic tranche (read-only evidence) ----
+// No gameplay, tracking, aiming, rendering, input, or lifecycle effect.
+// detailOut bits shared by every diagnostic reader:
+//   bit0  secondary slot present (where the reader naturally knows it)
+//   bit1  ownership proven (H2/H4 mirror validation)
+//   bit2  FP-side agreement (engine FP record already shows this handle)
+//   bit30 lifecycle guard rejection (maps to GuardRejected)
+//   bit31 native fault (maps to ExceptionOrFault)
+// The Capture probe records the inventory/ownership view (bit2 raw), while
+// the FP commit check requires bit2 so it fires only at the existing stable
+// commit point where the FP record also agrees. CE is probed directly from
+// vr.cpp through HaloCEControls_GetLocalPlayerState; H2 forwards to the
+// observer core's guarded datum reader below.
+namespace
+{
+    constexpr uint32_t kDiagnosticFpAgreement = 4u;
+    constexpr uint32_t kDiagnosticGuard = 0x40000000u;
+
+    std::atomic<uint64_t> g_diagnosticFpThread[8]{};
+    // Recording session that the FP-thread observation belongs to. A numeric
+    // thread id reused by a later session is not authorization until that
+    // session observes its own FP entry.
+    std::atomic<uint64_t> g_diagnosticFpSession[8]{};
+    int DiagnosticTitleSlot(GameTitle title) noexcept
+    {
+        const int slot = static_cast<int>(title);
+        return (slot >= 0 && slot < 8) ? slot : -1;
+    }
+    // True when the title lifecycle moved after the diagnostic read began:
+    // used to classify a native fault that coincides with a reload/teardown
+    // as a guard rejection rather than an unexplained fault. Safe to call
+    // from an exception handler (atomic loads only).
+    bool DiagnosticLifecycleChanged(GameTitle title,
+        uint32_t expectedGeneration) noexcept
+    {
+        if (title != TitleAdapter_GetActiveTitle() ||
+            TitleAdapter_GetGeneration(title) != expectedGeneration)
+            return true;
+        switch (title)
+        {
+        case GameTitle::Halo3:
+            return g_halo3RuntimeGeneration.load(
+                std::memory_order_acquire) != expectedGeneration;
+        case GameTitle::Halo3ODST:
+            return g_odstRuntimeGeneration.load(
+                std::memory_order_acquire) != expectedGeneration;
+        case GameTitle::HaloReach:
+            return g_reachCamera.generation.load(
+                std::memory_order_acquire) != expectedGeneration;
+        case GameTitle::Halo4:
+            return g_halo4Camera.generation.load(
+                std::memory_order_acquire) != expectedGeneration;
+        default:
+            return false;
+        }
+    }
+    bool H3PrimaryWeaponEvidence(uint32_t expectedGeneration, uint32_t& unitOut,
+        uint32_t& weaponOut, uint32_t& detailOut,
+        bool* primaryAbsentOut) noexcept
+    {
+        if (primaryAbsentOut) *primaryAbsentOut = false;
+        if (!g_halo3PlayerUnitGetter || !g_halo3UnitInVehicle)
+            return false;
+        if (g_halo3RuntimeGeneration.load(std::memory_order_acquire) !=
+            expectedGeneration)
+        {
+            detailOut = kDiagnosticGuard;
+            return false;
+        }
+        const uint32_t owner = uint32_t(g_halo3PlayerUnitGetter(0));
+        if (owner == UINT32_MAX || !(owner >> 16)) return false;
+        if (g_halo3UnitInVehicle(int32_t(owner))) return false;
+        uint32_t weapons[2]{};
+        if (!Halo3ReadOwnedWeapons(owner, weapons, false, primaryAbsentOut))
+            return false;
+        if (weapons[0] == UINT32_MAX) return false;
+        detailOut = (weapons[1] != UINT32_MAX) ? 1u : 0u;
+        // FP-side slot agreement, mirroring the existing stable commit point
+        // without its optional-feature gates. The Capture probe records this
+        // raw; the FP commit requires it.
+        if (g_engineTlsIndex && *g_engineTlsIndex < 0x200)
+        {
+            auto** slots = reinterpret_cast<uint8_t**>(__readgsqword(0x58));
+            const auto* tls = slots ? slots[*g_engineTlsIndex] : nullptr;
+            const auto* users = tls ?
+                *reinterpret_cast<const uint8_t* const*>(tls + 0x568) :
+                nullptr;
+            if (users && *reinterpret_cast<const uint32_t*>(
+                    users + 0x3C) == weapons[0])
+                detailOut |= kDiagnosticFpAgreement;
+        }
+        if (g_halo3RuntimeGeneration.load(std::memory_order_acquire) !=
+            expectedGeneration)
+        {
+            detailOut = kDiagnosticGuard;
+            return false;
+        }
+        unitOut = owner;
+        weaponOut = weapons[0];
+        return true;
+    }
+    bool DiagnosticH3Primary(uint32_t expectedGeneration, uint32_t& unitOut,
+        uint32_t& weaponOut, uint32_t& detailOut) noexcept
+    {
+        return H3PrimaryWeaponEvidence(expectedGeneration, unitOut, weaponOut,
+            detailOut, nullptr);
+    }
+    bool OdstPrimaryWeaponEvidence(uint32_t expectedGeneration, uint32_t& unitOut,
+        uint32_t& weaponOut, uint32_t& detailOut,
+        bool* primaryAbsentOut) noexcept
+    {
+        if (primaryAbsentOut) *primaryAbsentOut = false;
+        if (!g_odstPlayerUnitGetter || !g_odstUnitInVehicle)
+            return false;
+        if (g_odstRuntimeGeneration.load(std::memory_order_acquire) !=
+            expectedGeneration)
+        {
+            detailOut = kDiagnosticGuard;
+            return false;
+        }
+        const uint32_t owner = uint32_t(g_odstPlayerUnitGetter(0));
+        if (owner == UINT32_MAX || !(owner >> 16)) return false;
+        if (g_odstUnitInVehicle(int32_t(owner))) return false;
+        uint32_t weapons[2]{};
+        if (!OdstReadMuzzleWeapons(owner, weapons, primaryAbsentOut)) return false;
+        if (weapons[0] == UINT32_MAX) return false;
+        detailOut = (weapons[1] != UINT32_MAX) ? 1u : 0u;
+        if (g_odstEngineTlsIndex && *g_odstEngineTlsIndex < 0x200)
+        {
+            auto** slots = reinterpret_cast<uint8_t**>(__readgsqword(0x58));
+            const auto* tls = slots ? slots[*g_odstEngineTlsIndex] : nullptr;
+            const auto* users = tls ?
+                *reinterpret_cast<const uint8_t* const*>(tls + 0x598) :
+                nullptr;
+            if (users && *reinterpret_cast<const uint32_t*>(
+                    users + 0x3C) == weapons[0])
+                detailOut |= kDiagnosticFpAgreement;
+        }
+        if (g_odstRuntimeGeneration.load(std::memory_order_acquire) !=
+            expectedGeneration)
+        {
+            detailOut = kDiagnosticGuard;
+            return false;
+        }
+        unitOut = owner;
+        weaponOut = weapons[0];
+        return true;
+    }
+    bool ReachPrimaryWeaponEvidence(uint32_t expectedGeneration, uint32_t& unitOut,
+        uint32_t& weaponOut, uint32_t& detailOut,
+        bool* primaryAbsentOut) noexcept
+    {
+        if (primaryAbsentOut) *primaryAbsentOut = false;
+        if (!g_reachCamera.playerUnitByOutputUser ||
+            !g_reachCamera.unitInVehicle)
+            return false;
+        if (g_reachCamera.generation.load(std::memory_order_acquire) !=
+            expectedGeneration)
+        {
+            detailOut = kDiagnosticGuard;
+            return false;
+        }
+        const uint32_t owner =
+            uint32_t(g_reachCamera.playerUnitByOutputUser(0));
+        if (owner == UINT32_MAX || !(owner >> 16)) return false;
+        if (g_reachCamera.unitInVehicle(int32_t(owner))) return false;
+        if (!ReachMuzzleTargetStorage(owner)) return false;
+        uint32_t weapons[2]{};
+        if (!ReachReadMuzzleWeapons(owner, weapons, primaryAbsentOut))
+            return false;
+        if (weapons[0] == UINT32_MAX) return false;
+        detailOut = (weapons[1] != UINT32_MAX) ? 1u : 0u;
+        if (g_reachCamera.base)
+        {
+            auto** slots = reinterpret_cast<uint8_t**>(__readgsqword(0x58));
+            const uint32_t index = *reinterpret_cast<const uint32_t*>(
+                g_reachCamera.base + kReachEngineTlsIndexRva);
+            const auto* tls =
+                slots && index < 0x200 ? slots[index] : nullptr;
+            const auto* users = tls ?
+                *reinterpret_cast<const uint8_t* const*>(tls + 0x6A0) :
+                nullptr;
+            if (users && *reinterpret_cast<const uint32_t*>(
+                    users + 0x3C) == weapons[0])
+                detailOut |= kDiagnosticFpAgreement;
+        }
+        if (g_reachCamera.generation.load(std::memory_order_acquire) !=
+            expectedGeneration)
+        {
+            detailOut = kDiagnosticGuard;
+            return false;
+        }
+        unitOut = owner;
+        weaponOut = weapons[0];
+        return true;
+    }
+    bool DiagnosticOdstPrimary(uint32_t expectedGeneration, uint32_t& unitOut,
+        uint32_t& weaponOut, uint32_t& detailOut) noexcept
+    {
+        return OdstPrimaryWeaponEvidence(expectedGeneration, unitOut, weaponOut,
+            detailOut, nullptr);
+    }
+    bool DiagnosticReachPrimary(uint32_t expectedGeneration, uint32_t& unitOut,
+        uint32_t& weaponOut, uint32_t& detailOut) noexcept
+    {
+        return ReachPrimaryWeaponEvidence(expectedGeneration, unitOut, weaponOut,
+            detailOut, nullptr);
+    }
+    // candidate == UINT32_MAX selects the primary slot (Capture path); any
+    // other value must resolve to primary slot 0 through the equipped-weapon
+    // mapping (the FP skinning path, where the observed record is the
+    // candidate). `primaryAbsentOut` (optional) reports an explicit raw empty
+    // primary slot from the same guarded read (F03/F17); it is never set by a
+    // validation/lifecycle failure. This is the shared production body: the
+    // diagnostic probe below and the persistent support-grip producer both
+    // read through it, so the native read logic exists once.
+    bool Halo4WeaponOwnerEvidence(uint32_t expectedGeneration,
+        uint32_t candidate, uint32_t& unitOut, uint32_t& weaponOut,
+        uint32_t& detailOut, bool* primaryAbsentOut) noexcept
+    {
+        if (primaryAbsentOut) *primaryAbsentOut = false;
+        if (g_halo4Camera.generation.load(std::memory_order_acquire) !=
+            expectedGeneration)
+        {
+            detailOut = kDiagnosticGuard;
+            return false;
+        }
+        Halo4VehicleInputState seat{};
+        const char* vehicleReason = nullptr;
+        const bool vehicleUsable = Halo4ReadVehicleInputEx(seat, &vehicleReason) &&
+            !seat.seated && seat.unit != UINT32_MAX && (seat.unit >> 16) &&
+            Halo4MuzzleTargetStorage(seat.unit) != nullptr;
+        uint32_t owner = seat.unit;
+        if (!vehicleUsable)
+        {
+            // The optional vehicle-input helper is an admission shortcut, not
+            // a prerequisite for on-foot owner proof. When its runtime reader
+            // cannot establish the local output unit, the engine's own
+            // first-person weapon record carries the same evidence. Fail
+            // closed: every stage below must pass or the owner stays Unknown.
+            if (!g_halo4Camera.armed.load(std::memory_order_acquire) ||
+                g_halo4Camera.teardownRequested.load(std::memory_order_acquire))
+                return false;
+            const auto* tls = Halo4MuzzleTls();
+            const auto* fpRecord = tls ?
+                Halo4VehicleRead<const uint8_t*>(tls, 0x6A0) : nullptr;
+            const uint32_t fpFlags = fpRecord ?
+                Halo4VehicleRead<uint32_t>(fpRecord, 0) : 0u;
+            const uint32_t fpUnit = fpRecord ?
+                Halo4VehicleRead<uint32_t>(fpRecord, 4) : UINT32_MAX;
+            const auto* fpUnitObject = (fpRecord && fpUnit != UINT32_MAX &&
+                (fpUnit >> 16)) ? Halo4MuzzleObject(fpUnit, 1) : nullptr;
+            // H4EK E80C00/E977E0: on foot means no parent (+0x24) and no
+            // controlling parent (+0x694), mirroring Halo4MuzzleTargetStorage.
+            uint32_t fallbackUnit = UINT32_MAX;
+            const auto stage = halo4_owner_evidence::ResolveFromFpRecord(
+                fpRecord != nullptr, fpFlags, fpUnit, fpUnitObject != nullptr,
+                fpUnitObject ? Halo4VehicleRead<uint32_t>(fpUnitObject, 0x24)
+                    : UINT32_MAX,
+                fpUnitObject ? Halo4VehicleRead<uint32_t>(fpUnitObject, 0x694)
+                    : UINT32_MAX,
+                fallbackUnit);
+            static std::atomic<uint32_t> s_vehicleFallbackGeneration{0};
+            if (expectedGeneration &&
+                s_vehicleFallbackGeneration.exchange(expectedGeneration,
+                    std::memory_order_relaxed) != expectedGeneration)
+                // Statement of fact: entry into the fallback does not imply the
+                // later stages resolved. The outcome is logged at the return
+                // site that actually decided it.
+                support_diagnostics::Record(support_diagnostics::Event::H4OwnerFallback);
+            if (stage != halo4_owner_evidence::Stage::Ok) return false;
+            owner = fallbackUnit;
+        }
+        uint32_t weapons[2]{};
+        if (!Halo4ReadMuzzleWeapons(owner, weapons, primaryAbsentOut))
+        {
+            static std::atomic<uint32_t> s_notResolvedMuzzleWeapons{0};
+            static std::atomic<uint32_t> s_notResolvedPrimaryAbsent{0};
+            const bool absent = primaryAbsentOut && *primaryAbsentOut;
+            auto& latch = absent ? s_notResolvedPrimaryAbsent
+                                 : s_notResolvedMuzzleWeapons;
+            if (expectedGeneration &&
+                latch.exchange(expectedGeneration,
+                    std::memory_order_relaxed) != expectedGeneration)
+                support_diagnostics::Record(support_diagnostics::Event::H4OwnerWeaponsUnavailable);
+            return false;
+        }
+        if (weapons[0] == UINT32_MAX)
+        {
+            // Explicit empty primary slot (role byte 0xFF): a real KnownAbsent
+            // state, not an unexplained refusal.
+            static std::atomic<uint32_t> s_notResolvedPrimaryAbsent{0};
+            if (expectedGeneration &&
+                s_notResolvedPrimaryAbsent.exchange(expectedGeneration,
+                    std::memory_order_relaxed) != expectedGeneration)
+                support_diagnostics::Record(support_diagnostics::Event::H4OwnerAbsent);
+            return false;
+        }
+        if (candidate != UINT32_MAX &&
+            ResolveEquippedWeaponSlot(candidate, weapons[0], weapons[1],
+                true, weapons[1] != UINT32_MAX) != 0)
+        {
+            static std::atomic<uint32_t> s_notResolvedCandidate{0};
+            if (expectedGeneration &&
+                s_notResolvedCandidate.exchange(expectedGeneration,
+                    std::memory_order_relaxed) != expectedGeneration)
+                support_diagnostics::Record(support_diagnostics::Event::H4OwnerCandidateMismatch);
+            return false;
+        }
+        // A validated local on-foot owner, always carrying the semantic
+        // primary slot handle -- never the observed candidate.
+        unitOut = owner;
+        weaponOut = weapons[0];
+        detailOut = ((weapons[1] != UINT32_MAX) ? 1u : 0u) | 2u;
+        // Primary-slot FP producer agreement, mirroring the gated muzzle
+        // capture without its option/bindings gate. Recorded raw here; the FP
+        // commit requires the bit so the Capture probe measures the
+        // inventory/ownership view rather than the FP assembly view.
+        const auto* tls = Halo4MuzzleTls();
+        const auto* fp = tls ?
+            Halo4VehicleRead<const uint8_t*>(tls, 0x6A0) : nullptr;
+        if (fp && (Halo4VehicleRead<uint32_t>(fp, 0) & 2) &&
+            Halo4VehicleRead<uint32_t>(fp, 4) == owner &&
+            Halo4VehicleRead<uint32_t>(fp, 0x6C) == weapons[0])
+            detailOut |= kDiagnosticFpAgreement;
+        if (g_halo4Camera.generation.load(std::memory_order_acquire) !=
+            expectedGeneration)
+        {
+            detailOut = kDiagnosticGuard;
+            static std::atomic<uint32_t> s_notResolvedGeneration{0};
+            if (expectedGeneration &&
+                s_notResolvedGeneration.exchange(expectedGeneration,
+                    std::memory_order_relaxed) != expectedGeneration)
+                support_diagnostics::Record(support_diagnostics::Event::H4OwnerGenerationMismatch);
+            return false;
+        }
+        static std::atomic<uint32_t> s_resolvedGeneration{0};
+        if (expectedGeneration &&
+            s_resolvedGeneration.exchange(expectedGeneration,
+                std::memory_order_relaxed) != expectedGeneration)
+            support_diagnostics::Record(support_diagnostics::Event::H4OwnerResolved);
+        return true;
+    }
+    // Weapon-order diagnostic entry: byte-for-byte the production body's
+    // result, kept as the diagnostic probe's own name (the same body is what
+    // the persistent support-grip producer reads).
+    bool DiagnosticHalo4WeaponOwner(uint32_t expectedGeneration,
+        uint32_t candidate, uint32_t& unitOut, uint32_t& weaponOut,
+        uint32_t& detailOut) noexcept
+    {
+        return Halo4WeaponOwnerEvidence(expectedGeneration, candidate, unitOut,
+            weaponOut, detailOut, nullptr);
+    }
+    // SEH-guarded tri-state observation of Halo 4's semantic primary owner.
+    // A native fault is Unknown, never absence; the observation still names
+    // the lifecycle generation so a coherent Unknown record can be published
+    // for the current lifecycle (mirroring Game_ReadPrimaryWeaponEvidence's
+    // per-title branches).
+    PrimaryWeaponEvidence Halo4ObservePrimaryWeapon(uint32_t generation,
+        uint32_t candidate) noexcept
+    {
+        PrimaryWeaponEvidence out{};
+        out.generation = generation;
+        uint32_t unit = UINT32_MAX;
+        uint32_t weapon = UINT32_MAX;
+        uint32_t detail = 0;
+        bool absent = false;
+        bool ok = false;
+        __try
+        {
+            ok = Halo4WeaponOwnerEvidence(generation, candidate, unit, weapon,
+                detail, &absent);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            ok = false;
+            absent = false;
+        }
+        out.detail = detail;
+        if (ok)
+        {
+            out.state = static_cast<uint8_t>(
+                support_grip::OwnerEvidence::KnownPresent);
+            out.unit = unit;
+            out.weapon = weapon;
+        }
+        else
+            out.state = static_cast<uint8_t>(absent
+                ? support_grip::OwnerEvidence::KnownAbsent
+                : support_grip::OwnerEvidence::Unknown);
+        return out;
+    }
+    // One safe-context support-grip invocation read. `candidate` is the
+    // semantic primary (UINT32_MAX) at the pair's decision boundary; a unit
+    // handle must never be offered here (F04). The shared resolver publishes
+    // the tri-state evidence -- including an explicit Unknown, so no stale
+    // KnownPresent survives -- and returns this invocation's relation to the
+    // live relationship. No diagnostic-session dependency.
+    SupportInvocationResolution Halo4ReadSupportInvocation(
+        uint32_t candidate) noexcept
+    {
+        const uint32_t generation =
+            TitleAdapter_GetGeneration(GameTitle::Halo4);
+        const PrimaryWeaponEvidence evidence = (generation &&
+                VR_SupportGripWiredForTitle(GameTitle::Halo4))
+            ? Halo4ObservePrimaryWeapon(generation, candidate)
+            : PrimaryWeaponEvidence{};
+        return Game_ResolveSupportInvocation(GameTitle::Halo4, evidence, true,
+            evidence, true, true);
+    }
+}
+
+void Game_DiagnosticNoteFpThread(GameTitle title) noexcept
+{
+    const int slot = DiagnosticTitleSlot(title);
+    if (slot < 0)
+        return;
+    const uint32_t generation = TitleAdapter_GetGeneration(title);
+    if (!generation)
+    {
+        g_diagnosticFpThread[slot].store(0, std::memory_order_release);
+        g_diagnosticFpSession[slot].store(0, std::memory_order_release);
+        return;
+    }
+    g_diagnosticFpThread[slot].store(
+        (uint64_t(generation) << 32) | GetCurrentThreadId(),
+        std::memory_order_release);
+    g_diagnosticFpSession[slot].store(
+        Telemetry_CurrentSessionToken(), std::memory_order_release);
+}
+
+uint8_t Game_DiagnosticCaptureProbePermission(GameTitle title) noexcept
+{
+    if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST &&
+        title != GameTitle::HaloReach && title != GameTitle::Halo4)
+        return weapon_order_diagnostic::kProbePermissionGuardRejected;
+    const int slot = DiagnosticTitleSlot(title);
+    if (slot < 0)
+        return weapon_order_diagnostic::kProbePermissionGuardRejected;
+    const uint64_t stored =
+        g_diagnosticFpThread[slot].load(std::memory_order_acquire);
+    const uint64_t session =
+        g_diagnosticFpSession[slot].load(std::memory_order_acquire);
+    const bool titleMatches = title == TitleAdapter_GetActiveTitle();
+    const uint32_t generation = TitleAdapter_GetGeneration(title);
+    const bool generationMatches = generation != 0 &&
+        uint32_t(stored >> 32) == generation;
+    return weapon_order_diagnostic::CaptureProbePermission(titleMatches,
+        generationMatches, stored, session,
+        Telemetry_CurrentSessionToken(), GetCurrentThreadId());
+}
+
+bool Game_DiagnosticReadPrimaryWeapon(GameTitle title, uint32_t& unitOut,
+    uint32_t& weaponOut, uint32_t& detailOut) noexcept
+{
+    unitOut = UINT32_MAX;
+    weaponOut = UINT32_MAX;
+    detailOut = 0;
+    if (title != TitleAdapter_GetActiveTitle())
+    {
+        detailOut = 0x40000000u; // lifecycle guard rejection
+        return false;
+    }
+    const uint32_t generation = TitleAdapter_GetGeneration(title);
+    if (!generation)
+    {
+        detailOut = 0x40000000u;
+        return false;
+    }
+    __try
+    {
+        switch (title)
+        {
+        case GameTitle::Halo3:
+            return DiagnosticH3Primary(generation, unitOut, weaponOut,
+                detailOut);
+        case GameTitle::Halo3ODST:
+            return DiagnosticOdstPrimary(generation, unitOut, weaponOut,
+                detailOut);
+        case GameTitle::HaloReach:
+            return DiagnosticReachPrimary(generation, unitOut, weaponOut,
+                detailOut);
+        case GameTitle::Halo4:
+            return DiagnosticHalo4WeaponOwner(generation, UINT32_MAX, unitOut,
+                weaponOut, detailOut);
+        case GameTitle::Halo2:
+            return Halo2DiagnosticReadPrimaryWeapon(unitOut, weaponOut,
+                detailOut);
+        default:
+            return false;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        // A fault that coincides with a title/generation change is a
+        // lifecycle guard rejection, not an unexplained native fault. The
+        // generation recheck is atomic-only and safe inside the handler.
+        detailOut = DiagnosticLifecycleChanged(title, generation)
+            ? 0x40000000u : 0x80000000u;
+        return false;
+    }
+}
+
+// ---- Persistent support grip: production owner evidence ----
+//
+// The tri-state semantic-primary read a title producer publishes to the
+// durable relationship input. All six gameplay titles are wired: Halo 3,
+// ODST and Reach read their own guarded native state through the shared
+// H3/Odst/Reach PrimaryWeaponEvidence bodies, Halo 2 through its own guarded
+// direct reader (safe outside the TLS-restricted titles) and Halo 4 through
+// Halo4WeaponOwnerEvidence (the body behind DiagnosticHalo4WeaponOwner).
+// Each distinguishes an explicit raw primary-slot absence (KnownAbsent) from
+// an unprovable read (Unknown). Halo 3's raw slot absence is source-provable
+// (role byte 0xFF) while the FP interpolation hook is running; whether the
+// hook runs for every unarmed presentation is recorded as an open liveness
+// question in the port doc (Halo 2's absence liveness is provided by its
+// level-live poll seam, Halo 4 by its per-pair skinning invocation).
+bool Game_ReadPrimaryWeaponEvidence(GameTitle title,
+    PrimaryWeaponEvidence& out) noexcept
+{
+    out = {};
+    if (title != TitleAdapter_GetActiveTitle())
+        return false;
+    const uint32_t generation = TitleAdapter_GetGeneration(title);
+    if (!generation)
+        return false;
+    out.generation = generation;
+    if (title == GameTitle::Halo2)
+    {
+        uint32_t unit = UINT32_MAX, weapon = UINT32_MAX, detail = 0;
+        bool absent = false;
+        bool ok = false;
+        __try
+        {
+            ok = Halo2DiagnosticReadPrimaryWeapon(unit, weapon, detail,
+                &absent);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            out.detail = DiagnosticLifecycleChanged(title, generation)
+                ? 0x40000000u : 0x80000000u;
+            out.state = static_cast<uint8_t>(support_grip::OwnerEvidence::Unknown);
+            return true;
+        }
+        out.detail = detail;
+        if (ok)
+        {
+            out.state =
+                static_cast<uint8_t>(support_grip::OwnerEvidence::KnownPresent);
+            out.unit = unit;
+            out.weapon = weapon;
+            return true;
+        }
+        out.state = static_cast<uint8_t>(absent
+            ? support_grip::OwnerEvidence::KnownAbsent
+            : support_grip::OwnerEvidence::Unknown);
+        return true;
+    }
+    if (title == GameTitle::Halo4)
+    {
+        // Halo 4's own guarded reader: the shared production body behind
+        // DiagnosticHalo4WeaponOwner, including the tranche-E first-person
+        // record fallback. A validated local on-foot owner is KnownPresent
+        // (the shared resolver still requires the FP agreement bit for that
+        // claim); an explicit raw empty primary slot is KnownAbsent without
+        // it (F03); everything else is Unknown -- never absence. A native
+        // fault is Unknown inside Halo4ObservePrimaryWeapon.
+        out = Halo4ObservePrimaryWeapon(generation, UINT32_MAX);
+        return true;
+    }
+    if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST &&
+        title != GameTitle::HaloReach)
+    {
+        out.state = static_cast<uint8_t>(support_grip::OwnerEvidence::Unknown);
+        return true;
+    }
+    uint32_t unit = UINT32_MAX, weapon = UINT32_MAX, detail = 0;
+    bool absent = false;
+    bool ok = false;
+    __try
+    {
+        // Each wired title keeps its own reader: Halo 3 role bytes +262/+263,
+        // ODST +276/+277, Reach +34A/+34B, each with its own FP agreement
+        // record. The absence flag comes from the raw primary role byte BEFORE
+        // the slot-validation guards (F03): a proven empty slot must resolve
+        // without the FP agreement bit, which those readers can never set on
+        // that path.
+        if (title == GameTitle::Halo3)
+            ok = H3PrimaryWeaponEvidence(generation, unit, weapon, detail,
+                &absent);
+        else if (title == GameTitle::Halo3ODST)
+            ok = OdstPrimaryWeaponEvidence(generation, unit, weapon, detail,
+                &absent);
+        else
+            ok = ReachPrimaryWeaponEvidence(generation, unit, weapon, detail,
+                &absent);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        // A native fault is never proof of absence: report Unknown (the
+        // lifecycle classification is diagnostic detail only).
+        out.detail = DiagnosticLifecycleChanged(title, generation)
+            ? 0x40000000u : 0x80000000u;
+        out.state = static_cast<uint8_t>(support_grip::OwnerEvidence::Unknown);
+        return true;
+    }
+    out.detail = detail;
+    if (ok)
+    {
+        out.state =
+            static_cast<uint8_t>(support_grip::OwnerEvidence::KnownPresent);
+        out.unit = unit;
+        out.weapon = weapon;
+        return true;
+    }
+    out.state = static_cast<uint8_t>(absent
+        ? support_grip::OwnerEvidence::KnownAbsent
+        : support_grip::OwnerEvidence::Unknown);
+    return true;
+}
+
+// Persistent support grip: one observation of the title's current semantic
+// primary published to the durable relationship input, including an explicit
+// Unknown record, so a stale KnownPresent must not survive an observation that
+// proves nothing. This is the observation path a title can run at a lifecycle
+// seam that does not depend on a weapon packet (Halo 2's level-live poll).
+// Read-only with respect to the durable relationship beyond the publication
+// itself.
+void Game_PublishSupportGripOwnerEvidence(GameTitle title) noexcept
+{
+    PrimaryWeaponEvidence evidence{};
+    if (!Game_ReadPrimaryWeaponEvidence(title, evidence))
+        evidence = {};
+    VR_PublishSupportGripOwnerEvidence(title, evidence.generation,
+        support_grip::OwnerTuple{title, evidence.generation, evidence.unit,
+            evidence.weapon},
+        static_cast<support_grip::OwnerEvidence>(evidence.state));
+}
+
+SupportInvocationResolution Game_ResolveSupportInvocation(GameTitle title,
+    const PrimaryWeaponEvidence& before, bool beforeOk,
+    const PrimaryWeaponEvidence& after, bool afterOk,
+    bool requireProducerAgreement) noexcept
+{
+    SupportInvocationResolution resolution{};
+    uint32_t generation = 0;
+    uint32_t unit = UINT32_MAX;
+    uint32_t weapon = UINT32_MAX;
+    support_grip::OwnerEvidence state = support_grip::OwnerEvidence::Unknown;
+    if (beforeOk && afterOk &&
+        before.generation == after.generation &&
+        before.unit == after.unit && before.weapon == after.weapon)
+    {
+        generation = before.generation;
+        // F03: the agreement bit is a present-owner proof. The native readers
+        // return before setting it when the primary slot is empty, so an
+        // explicit absence must resolve without it; ResolveStableEvidence
+        // requires agreement only for a KnownPresent claim.
+        const support_grip::OwnerEvidence stable =
+            support_grip::ResolveStableEvidence(requireProducerAgreement,
+                before.state, (before.detail & 0x4u) != 0,
+                after.state, (after.detail & 0x4u) != 0);
+        if (stable == support_grip::OwnerEvidence::KnownPresent)
+        {
+            state = support_grip::OwnerEvidence::KnownPresent;
+            unit = before.unit;
+            weapon = before.weapon;
+            resolution.evidencePresent = true;
+        }
+        else if (stable == support_grip::OwnerEvidence::KnownAbsent)
+        {
+            state = support_grip::OwnerEvidence::KnownAbsent;
+            resolution.evidenceAbsent = true;
+        }
+    }
+    if (!generation && beforeOk) generation = before.generation;
+    if (!generation && afterOk) generation = after.generation;
+    // Publish this invocation's evidence (including Unknown) so a stale
+    // KnownPresent can never survive an invocation that could not prove
+    // itself, and a proven absence reaches the durable writer.
+    VR_PublishSupportGripOwnerEvidence(title, generation,
+        support_grip::OwnerTuple{title, generation, unit, weapon}, state);
+    // F06/F07 material: the resolved owner proof (including Unknown/absence)
+    // plus the relationship reading taken at this same instant. A title that
+    // publishes an invocation receipt copies these fields; every other caller
+    // ignores them.
+    resolution.generation = generation;
+    resolution.evidence = state;
+    resolution.owner = support_grip::OwnerTuple{title, before.generation,
+        before.unit, before.weapon};
+    resolution.producerAgreement =
+        (before.detail & 0x4u) != 0 && (after.detail & 0x4u) != 0;
+    if (state == support_grip::OwnerEvidence::KnownPresent)
+    {
+        SupportGripRelationshipSnapshot relationship{};
+        if (VR_GetSupportGripRelationship(relationship))
+        {
+            resolution.relationshipReadable = true;
+            resolution.relationshipEngaged = relationship.engaged;
+            resolution.relationshipEpoch = relationship.epoch;
+            if (support_grip::InvocationOwnerTrusted(relationship.engaged,
+                    support_grip::OwnerTuple{relationship.title,
+                        relationship.generation, relationship.unit,
+                        relationship.weapon},
+                    state,
+                    support_grip::OwnerTuple{title, before.generation,
+                        before.unit, before.weapon}))
+                resolution.trusted = true;
+        }
+    }
+    return resolution;
 }
 
 bool Game_RoomscaleCameraAllowed(GameTitle title)

@@ -30,11 +30,16 @@ thread_local uint32_t g_halo3FiringWeapon = UINT32_MAX;
 // Read-only, full-salt native inventory. H3EK A5DE20/A844A0 and retail
 // 35A9A4/3683A0/356388 prove role bytes +262/+263 and four handles +268.
 // The object entry and owner fields are independently H3-proven, not H2 copies.
-bool Halo3ReadOwnedWeapons(uint32_t owner, uint32_t weapons[2],bool requireDual)
+bool Halo3ReadOwnedWeapons(uint32_t owner, uint32_t weapons[2],bool requireDual,
+    bool* primaryAbsentOut = nullptr)
 {
+    if (primaryAbsentOut) *primaryAbsentOut = false;
     const auto* unit = Halo3MeleeSelectionObject(owner, 0);
     if (!unit) return false;
     const uint8_t roles[2]{unit[0x262], unit[0x263]};
+    // A 0xFF role byte is the native explicit "no weapon in this slot"; every
+    // other failure is uncertainty and must never be reported as absence.
+    if (primaryAbsentOut) *primaryAbsentOut = roles[0] == 0xFF;
     if (roles[0] >= 4 || (roles[1] >= 4 && (requireDual || roles[1]!=0xFF)) ||
         roles[0] == roles[1]) return false;
     for (int slot = 0; slot < 2; ++slot)

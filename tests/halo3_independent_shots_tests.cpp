@@ -66,6 +66,12 @@ static struct
 } g_halo3Dual;
 static uintptr_t caller{};
 #define _ReturnAddress() reinterpret_cast<void*>(::caller)
+// T-2 sparse shot events: recording is never active under test, so the gate
+// stays closed (exactly the gate-off production path) and the shared publisher
+// (defined in game.cpp) is an inert stand-in here.
+bool Telemetry_WeaponEventsAccepting() noexcept {return false;}
+void PublishShotDiagnostic(GameTitle,uint32_t,uint32_t,uint32_t,uint8_t,uint8_t,
+    bool,bool,bool,bool,const float*,const float*) noexcept {}
 #include "../src/dll/halo3_independent_shots.inl"
 #undef _ReturnAddress
 

@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <array>
+#include <algorithm>
 #include <system_error>
 #include <cwctype>
 #pragma comment(lib, "bcrypt.lib")
@@ -204,27 +205,57 @@ InstallResult InstallPayload(const fs::path& payload, const GameInstall& game, b
             throw std::runtime_error("For an update, run the launcher from the extracted release package, outside Halo_MCC_VR.");
         std::vector<PayloadFile> files; std::string error;
         if (!ParseManifest(Read(payload / L"INSTALL-MANIFEST.sha256"), files, error)) throw std::runtime_error(error);
+        // The installer is distributed beside ModFiles, never inside it. This
+        // keeps the manual drag-and-drop tree limited to game payload files.
+        // The launcher still joins the same verified backup/rollback transaction
+        // when the user installs from the launcher package or the updater cache.
+        const auto legacyLauncher = std::find_if(files.begin(), files.end(), [](const PayloadFile& file) {
+            return _wcsicmp(Wide(file.relative).c_str(), L"HaloMCCVRLauncher.exe") == 0;
+        });
+        fs::path launcherSource;
+        if (legacyLauncher != files.end()) {
+            // Read compatibility for already-published packages. New archives
+            // keep the launcher outside ModFiles; this branch lets the new
+            // launcher install a legacy release when one is still latest.
+            launcherSource = payload / Wide(legacyLauncher->relative);
+        } else {
+            launcherSource = payload.parent_path() / L"HaloMCCVRLauncher.exe";
+            if (!NoReparse(launcherSource) || !IsFile(launcherSource))
+                throw std::runtime_error("HaloMCCVRLauncher.exe must be beside the ModFiles folder. Extract the complete launcher package and retry.");
+            const auto launcherHash = Sha256File(launcherSource);
+            if (launcherHash.empty()) throw std::runtime_error("The launcher package could not be verified.");
+            files.push_back({"HaloMCCVRLauncher.exe", launcherHash});
+        }
         // The manifest itself joins the same backup/rollback transaction. It
         // cannot list its own digest, so derive this one from the validated file.
         files.push_back({"INSTALL-MANIFEST.sha256", Sha256File(payload / L"INSTALL-MANIFEST.sha256")});
+        const auto sourceFor = [&](const PayloadFile& file) {
+            const fs::path relative = Wide(file.relative);
+            return _wcsicmp(relative.c_str(), L"HaloMCCVRLauncher.exe") == 0
+                ? launcherSource : payload / relative;
+        };
         const auto suffix = UniqueSuffix();
         stage = target / (L".install-stage-" + suffix);
         backup = target / L"backups" / suffix;
         // Validate the full source and destination sets before the first write.
         for (const auto& file : files) {
             const fs::path relative = Wide(file.relative);
-            if (!NoReparse(payload / relative) || !NoReparse(target / relative) || !IsFile(payload / relative)) throw std::runtime_error("Payload file is missing or a path uses a symbolic link.");
+            const auto source = sourceFor(file);
+            if (!NoReparse(source) || !NoReparse(target / relative) || !IsFile(source)) throw std::runtime_error("Payload file is missing or a path uses a symbolic link.");
             auto expected = file.sha256;
             std::transform(expected.begin(), expected.end(), expected.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (Sha256File(payload / relative) != expected) throw std::runtime_error("Payload SHA-256 mismatch. Download and extract the release again.");
+            if (Sha256File(source) != expected) throw std::runtime_error("Payload SHA-256 mismatch. Download and extract the release again.");
         }
         if (!NoReparse(backup) || Exists(stage) || Exists(backup)) throw std::runtime_error("Unsafe or conflicting staging/backup folder.");
         fs::create_directories(stage);
         for (const auto& file : files) {
             const fs::path relative = Wide(file.relative);
+            const auto source = sourceFor(file);
             fs::create_directories((stage / relative).parent_path());
-            fs::copy_file(payload / relative, stage / relative);
-            if (Sha256File(payload / relative) != Sha256File(stage / relative)) throw std::runtime_error("Copied payload did not verify.");
+            fs::copy_file(source, stage / relative);
+            auto expected = file.sha256;
+            std::transform(expected.begin(), expected.end(), expected.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (Sha256File(stage / relative) != expected) throw std::runtime_error("Staged payload SHA-256 mismatch. Download and extract the release again.");
         }
         const auto cfg = target / L"halomccvr.cfg";
         const auto oldCfg = IsFile(cfg) ? cfg : target / L"halo3xr.cfg";

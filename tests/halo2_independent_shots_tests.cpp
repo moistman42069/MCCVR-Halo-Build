@@ -73,6 +73,34 @@ static struct
 } g_halo2Dual;
 static uintptr_t caller{};
 #define _ReturnAddress() reinterpret_cast<void*>(::caller)
+// T-2 sparse shot events. The recorder gate is stubbed and the one shared
+// publisher (defined in game.cpp, reached here through the game.h door) is
+// captured instead of published, so this suite proves the producer's count,
+// firing-context and substitution flags directly. The gate stub is mutable so
+// the recording-off path can be checked to publish nothing.
+struct CapturedShot
+{
+    GameTitle title=GameTitle::None;uint32_t generation=0,unit=0,weapon=0;
+    uint8_t slot=0,barrel=0;bool predicted=false,substituted=false;
+    bool firesFromCamera=false,unitAim=false;float origin[3]{},direction[3]{};
+};
+static bool telemetryAccepting=true;
+static unsigned shotEvents{};
+static CapturedShot lastShot{};
+bool Telemetry_WeaponEventsAccepting() noexcept {return telemetryAccepting;}
+void Game_PublishShotDiagnostic(GameTitle title,uint32_t titleGeneration,
+    uint32_t unit,uint32_t weapon,uint8_t slot,uint8_t barrel,bool predicted,
+    bool substituted,bool firesFromCamera,bool unitAim,const float* origin,
+    const float* direction) noexcept
+{
+    ++shotEvents;
+    lastShot.title=title;lastShot.generation=titleGeneration;lastShot.unit=unit;
+    lastShot.weapon=weapon;lastShot.slot=slot;lastShot.barrel=barrel;
+    lastShot.predicted=predicted;lastShot.substituted=substituted;
+    lastShot.firesFromCamera=firesFromCamera;lastShot.unitAim=unitAim;
+    if(origin)std::memcpy(lastShot.origin,origin,sizeof(lastShot.origin));
+    if(direction)std::memcpy(lastShot.direction,direction,sizeof(lastShot.direction));
+}
 #include "../src/dll/halo2_independent_shots.inl"
 #undef _ReturnAddress
 
@@ -160,6 +188,7 @@ static void Reset()
     RecordHalo2IndependentQuery();
     fireCalls=queryCalls=cameraCalls=locationCalls=aimCalls=0;
     std::memset(observedTarget,0,sizeof(observedTarget));
+    telemetryAccepting=true;shotEvents=0;lastShot={};
 }
 static void Shoot(uint32_t weapon=primary){Halo2IndependentFireDetour(weapon,-2,-7,0xFA);}
 static bool FaultingShot(){__try{Shoot();}__except(EXCEPTION_EXECUTE_HANDLER){return true;}return false;}
@@ -172,6 +201,27 @@ int main()
     Check(observedRay[0][0]==1&&observedRay[1][1]==1,"later native assist uses independent rays");
     Check(*reinterpret_cast<uint32_t*>(unitBytes+0x1D4)==0x44440007,"normal target restoration");
     Check(g_halo2Dual.callbacks==0&&!g_halo2IndependentShot.active,"scopes balanced");
+    // T-2 shot evidence: exactly one event per firing invocation this detour
+    // serves, published after the final ray is decided. The second shot above
+    // is the secondary weapon's, so it carries that slot and the substituted
+    // hand ray; the firing context is the engine's own fire arguments (barrel
+    // -2 is not a barrel index, so it stays the unknown sentinel).
+    Check(shotEvents==2&&lastShot.title==GameTitle::Halo2&&
+        lastShot.generation==7&&lastShot.unit==owner&&
+        lastShot.weapon==secondary&&lastShot.slot==1&&
+        lastShot.barrel==kTelemetryShotIndexUnknown&&!lastShot.predicted&&
+        lastShot.substituted&&lastShot.firesFromCamera&&lastShot.unitAim,
+        "each firing invocation publishes one substituted shot with its firing context");
+    Check(lastShot.origin[0]==0&&lastShot.origin[1]==0&&lastShot.origin[2]==1&&
+        lastShot.direction[0]==0&&lastShot.direction[1]>0.99f,
+        "the published shot carries the final ray the engine consumed");
+    Reset();telemetryAccepting=false;Shoot();
+    Check(shotEvents==0&&fireCalls==1&&queryCalls==1,
+        "recording-off gate publishes nothing and changes no firing work");
+    Reset();Shoot();
+    Check(shotEvents==1&&lastShot.weapon==primary&&lastShot.slot==0&&
+        lastShot.substituted,
+        "an owned primary shot reports its own slot and substitution");
     Reset();std::swap(carriers[0],carriers[1]);Shoot();Shoot(secondary);
     Check(observedTarget[0]==0x22220005&&observedTarget[1]==0x11110004&&
         observedRay[0][1]==1&&observedRay[1][0]==1,"role-swapped handedness follows the new primary/support controllers");
@@ -213,6 +263,9 @@ int main()
         case 16:exclusive_input::active=true;break;case 17:g_aimAssistViewDirectionOriginal=0;break;
         }
         Shoot();Check(queryCalls==0&&fireCalls==1&&observedTarget[0]==0x44440007,"unsafe scope forwards stock exactly once");
+        Check(shotEvents==1&&!lastShot.substituted&&lastShot.weapon==primary&&
+            lastShot.slot==kTelemetryShotIndexUnknown,
+            "a refused acquisition still publishes the native firing invocation with unknown slot");
     }
     Reset();std::thread other([]{Check(g_halo2IndependentQueryContext.sampleMs==0&&!g_halo2IndependentShot.active,"query context cannot cross threads");});other.join();
     MuzzleTests();

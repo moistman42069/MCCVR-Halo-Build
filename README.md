@@ -2,6 +2,8 @@
 
 An independently maintained continuation of [Halo-MCC-VR by pancreations](https://github.com/pancreations/Halo-MCC-VR), maintained here by **moistman42069**. Original contributor credit, project history and the MIT license are preserved.
 
+The September 30 local candidate adds reviewed [Gab_dC stock/two-hand and telemetry work](docs/PR16-INTEGRATION-REVIEW-2026-09-30.md), an administrator launcher and a separate manual-mod archive. It has not been published or headset accepted. See its [release notes](docs/QOL-RELEASE-NOTES-2026-09-30.md) and [complete status and remaining work](docs/QOL-IMPLEMENTATION-STATUS-2026-09-30.md). The public downloads below still refer to Alpha 0.6.0.
+
 ## Latest release: Alpha 0.6.0 — Major QoL Experimental Prerelease
 
 This cumulative test release adds a new stylized installer and updater, reorganized VR settings, optional physical crouch, simulated gunstock, subtitle controls in five titles, bloom controls in three titles, DLSS integration across all six games, and vehicle, weapon and rendering refinements. It supports Steam and Microsoft Store / Xbox app editions.

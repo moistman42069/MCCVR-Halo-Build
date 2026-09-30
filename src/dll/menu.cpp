@@ -19,6 +19,8 @@
 #include "d3d_state.h"
 #include "d3d11_hook.h"
 #include "window_resize.h"
+#include "telemetry_recorder.h"
+#include "two_hand_lab_runtime.h"
 #include "../common/log.h"
 #include "../common/config.h"
 #include "../common/weapon_interaction_logic.h"
@@ -45,6 +47,7 @@ namespace
     };
     VrPointerInput g_vrPointer;
     bool g_resetArmed = false; // "reset all settings" needs a second click
+    bool g_virtualStockResetArmed = false;
     // Panel drag state. The panel is otherwise completely locked; the grab
     // handle along the top edge is the only thing that moves it. vr.cpp owns the
     // drag itself because it holds the controller ray -- we only tell it whether
@@ -173,6 +176,8 @@ namespace
         Cat_Reload,
         Cat_Vehicles,
         Cat_WeaponAim,
+        Cat_VirtualStockLab,
+        Cat_TwoHandLab,
         Cat_Crosshair,
         Cat_BodyHands,
         Cat_Picture,
@@ -180,6 +185,7 @@ namespace
         Cat_Subtitles,
         Cat_Desktop,
         Cat_Scope,
+        Cat_Telemetry,
         Cat_Advanced,
         Cat_Count
     };
@@ -202,6 +208,8 @@ namespace
         {"Reload & Holsters", "Magazine handling, weapon storage, and gesture zones."},
         {"Vehicles",      "First-person driving: sit in the seat instead of floating behind the vehicle."},
         {"Weapon & Aim",  "Gun placement, per-title calibration, muzzle alignment, and two-handed aiming."},
+        {"Virtual Stock Lab", "Experimental virtual shoulder aiming and proximity release."},
+        {"Two-Handed Lab", "Experimental two-hand anchor, authority and damping rig (runtime-only)."},
         {"Crosshair",     "The floating reticle that shows where the weapon really shoots."},
         {"Body & Hands",  "Arms, shoulders, and how much of Chief you can see."},
         {"Picture",       "Render resolution, sharpening, anti-aliasing and brightness."},
@@ -209,6 +217,7 @@ namespace
         {"Subtitles",     "Localized dialogue in gameplay and 3D theatre."},
         {"Desktop",       "The window on your monitor, not the headset."},
         {"Scope",         "Experimental gun-mounted zoom screen."},
+        {"Telemetry Recorder", "Records controller, headset and aim-solver data for troubleshooting."},
         {"Advanced",      "Tracking calibration, panel placement, and starting over."},
     };
     static_assert(sizeof(kCategories) / sizeof(kCategories[0]) == Cat_Count,
@@ -532,9 +541,21 @@ namespace
         ImGui::BeginChild("##sidebar", ImVec2(kSidebarWidth, -footerHeight), ImGuiChildFlags_Borders);
         for (int i = 0; i < Cat_Count; ++i)
         {
+            // Virtual Stock Lab is intentionally excluded from normal navigation;
+            // product controls live in Weapon & Aim.
+            if (i == Cat_VirtualStockLab)
+                continue;
+            // Two-Handed Lab is runtime-only experimental infrastructure hidden
+            // the same way: no normal navigation entry. Its page block and state
+            // stay wired below; product two-hand controls live in Weapon & Aim.
+            if (i == Cat_TwoHandLab)
+                continue;
             const bool selected = g_activeCategory == i;
             if (ImGui::Selectable(kCategories[i].label, selected))
+            {
                 g_activeCategory = i;
+                g_virtualStockResetArmed = false;
+            }
             // An orange bar down the left edge of the selected row, so the
             // current category reads at a glance from across the panel.
             if (selected)
@@ -1264,6 +1285,99 @@ namespace
 
         if (g_activeCategory == Cat_WeaponAim)
         {
+        ImGui::Text("Two-handed aiming");
+        changed |= ImGui::Checkbox("Two-handed aiming", &g_config.two_handed_aim);
+        ImGui::SameLine();
+        ImGui::TextDisabled(VR_IsTwoHandAiming() ? "[engaged]" : "[one-handed]");
+        changed |= ImGui::Checkbox("Left-handed main weapon", &g_config.left_handed);
+        if (g_config.left_handed)
+        {
+            ImGui::Indent();
+            changed |= ImGui::Checkbox("Fix Hand Alignment (Experimental)",
+                &g_config.experimental_hand_alignment);
+            ImGui::TextDisabled("Off: released hand positioning. On: experimental hand/arm correction.\n"
+                                "Leave off if hands become misaligned.");
+            ImGui::Unindent();
+        }
+        ImGui::TextDisabled("Main weapon, aiming and trigger follow your left hand.\n"
+                            "Your right hand supports the weapon or holds the second gun.");
+        if (g_config.two_handed_aim)
+        {
+            ImGui::Indent();
+            ImGui::TextDisabled("Put your support hand on the front of the gun, click/hold its GRIP.\n"
+                                "Engages only when your hand is on the barrel line.");
+            ImGui::Text("Grip mode");
+            if (ImGui::RadioButton("Toggle (click grip)", g_config.two_hand_toggle))
+            { g_config.two_hand_toggle = true; changed = true; }
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Hold grip", !g_config.two_hand_toggle))
+            { g_config.two_hand_toggle = false; changed = true; }
+            ImGui::Spacing();
+            changed |= ImGui::Checkbox("Persistent support grip",
+                &g_config.persistent_support_grip);
+            ImGui::TextDisabled(
+                "Keeps the support hand attached after a valid grab even when it leaves the original grab area.\n"
+                "Hold mode: releasing the grip button ends it. Toggle mode: the toggle press ends it.\n"
+                "Also ends on an explicit release, or when the weapon, title or life state changes.");
+            ImGui::Indent();
+            ImGui::BeginDisabled(!g_config.persistent_support_grip);
+            changed |= ImGui::Checkbox("Switched weapons already two-handed",
+                &g_config.two_hand_switch_inherit);
+            ImGui::EndDisabled();
+            ImGui::TextDisabled(
+                "Needs Persistent support grip: switching weapons while you hold the grip\n"
+                "gives you the new weapon two-handed immediately.\n"
+                "Off: grip the new weapon normally (no need to release the grip button).");
+            ImGui::Unindent();
+            ImGui::Spacing();
+            changed |= ImGui::Checkbox("Reduce Support-Hand Rotation",
+                &g_config.two_hand_support_grip_pose);
+            ImGui::TextDisabled(
+                "Virtual Stock only: anchors the stock aim line to your support hand's grip position\n"
+                "instead of its aim point. Free two-handed aim always uses both grip positions.");
+            ImGui::Spacing();
+            float offhandInfluencePercent = MenuSliderPercentFromUnit(
+                g_config.two_hand_offhand_influence);
+            if (vr_menu::SliderFloat("Offhand influence",
+                    &offhandInfluencePercent, 0.0f, 100.0f, "%.0f%%",
+                    ImGuiSliderFlags_None))
+            {
+                g_config.two_hand_offhand_influence =
+                    MenuSliderUnitFromPercent(offhandInfluencePercent);
+                changed = true;
+            }
+            ImGui::TextDisabled(
+                "How strongly support-hand position steers free two-hand aim.\n"
+                "0%% = primary-hand orientation only; 100%% = full two-hand positional steering.\n"
+                "Applies when Virtual Stock is off.");
+            changed |= vr_menu::SliderFloat("Two-Hand Smoothing",
+                &g_config.two_hand_smoothing_strength,
+                kTwoHandSmoothingStrengthMinimum,
+                kTwoHandSmoothingStrengthMaximum, "%.0f");
+            ImGui::TextDisabled(
+                "Reduces small tracking jitter in free two-hand aim.\n"
+                "0 = off; higher values apply more smoothing.\n"
+                "Applies to two-handed aiming, Virtual Stock on or off.");
+            ImGui::Spacing();
+            ImGui::Text("Grip and grab-zone calibration");
+            changed |= vr_menu::SliderFloat("Left hand forward offset (m)",
+                                          &g_config.left_hand_forward_m,
+                                          -0.15f, 0.30f, "%.3f");
+            ImGui::TextDisabled("Moves the visible support hand; the aiming line stays on the controllers.");
+            changed |= vr_menu::SliderFloat("Grab zone side offset (m)",
+                                          &g_config.two_hand_zone_right_m,
+                                          -0.10f, 0.10f, "%.3f");
+            ImGui::TextDisabled("Slides the grip-click zone sideways (+ = right) onto the visible barrel.");
+            changed |= vr_menu::SliderFloat("Left palm depth (m)",
+                                          &g_config.left_grip_forward_m,
+                                          -0.05f, 0.25f, "%.3f");
+            ImGui::TextDisabled("Moves the support-hand grab sample forward from the tracked controller toward the visible palm.");
+            ImGui::Unindent();
+        }
+#include "virtual_stock_menu.inl"
+
+        ImGui::Spacing();
+        ImGui::Separator();
         ImGui::Text("Hand-held weapon");
         if(ImGui::Checkbox("Per-gun alignment",&g_config.per_gun_alignment))
         { Config_RefreshWeaponProfile();changed=true; }
@@ -1358,49 +1472,6 @@ namespace
             g_config.right_hand_mesh_z_m=0.0f;
             changed=true;
         }
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Text("Two-handed aiming");
-        changed |= ImGui::Checkbox("Two-handed aiming", &g_config.two_handed_aim);
-        ImGui::SameLine();
-        ImGui::TextDisabled(VR_IsTwoHandAiming() ? "[engaged]" : "[one-handed]");
-        changed |= ImGui::Checkbox("Left-handed main weapon", &g_config.left_handed);
-        if (g_config.left_handed)
-        {
-            ImGui::Indent();
-            changed |= ImGui::Checkbox("Fix Hand Alignment (Experimental)",
-                &g_config.experimental_hand_alignment);
-            ImGui::TextDisabled("Off: released hand positioning. On: experimental hand/arm correction.\n"
-                                "Leave off if hands become misaligned.");
-            ImGui::Unindent();
-        }
-        ImGui::TextDisabled("Main weapon, aiming and trigger follow your left hand.\n"
-                            "Your right hand supports the weapon or holds the second gun.");
-        if (g_config.two_handed_aim)
-        {
-            ImGui::Indent();
-            if (ImGui::RadioButton("Toggle (click grip)", g_config.two_hand_toggle))
-            { g_config.two_hand_toggle = true; changed = true; }
-            ImGui::SameLine();
-            if (ImGui::RadioButton("Hold grip", !g_config.two_hand_toggle))
-            { g_config.two_hand_toggle = false; changed = true; }
-            changed |= vr_menu::SliderFloat("Left hand forward offset (m)",
-                                          &g_config.left_hand_forward_m,
-                                          -0.15f, 0.30f, "%.3f");
-            ImGui::TextDisabled("Moves the visible support hand; the aiming line stays on the controllers.");
-            changed |= vr_menu::SliderFloat("Grab zone side offset (m)",
-                                          &g_config.two_hand_zone_right_m,
-                                          -0.10f, 0.10f, "%.3f");
-            ImGui::TextDisabled("Slides the grip-click zone sideways (+ = right) onto the visible barrel.");
-            changed |= vr_menu::SliderFloat("Left palm depth (m)",
-                                          &g_config.left_grip_forward_m,
-                                          -0.05f, 0.25f, "%.3f");
-            ImGui::TextDisabled("Extends the two-hand grab line and grip-click zone to your visible palm.");
-            ImGui::Unindent();
-        }
-        ImGui::TextDisabled("Put your support hand on the front of the gun, click/hold its GRIP.\n"
-                            "Engages only when your hand is on the barrel line.");
-#include "virtual_stock_menu.inl"
         }
 
         if (g_activeCategory == Cat_Crosshair)
@@ -1782,6 +1853,63 @@ namespace
             "the next launch -- close MCC and relaunch.");
         }
 
+        if (g_activeCategory == Cat_Telemetry)
+        {
+        const TelemetryStatusSnapshot telemetry = Telemetry_GetStatus();
+        const bool active = telemetry.state == TelemetryRecorderState::Starting ||
+            telemetry.state == TelemetryRecorderState::Recording;
+        const bool busy = telemetry.state == TelemetryRecorderState::Finalizing;
+        ImGui::Text("Status: %s", Telemetry_StateName(telemetry.state));
+        if ((active || busy) && telemetry.sessionStartQpc > 0 &&
+            telemetry.qpcFrequency > 0 &&
+            telemetry.qpcNow >= telemetry.sessionStartQpc)
+        {
+            const double seconds = static_cast<double>(
+                telemetry.qpcNow - telemetry.sessionStartQpc) /
+                static_cast<double>(telemetry.qpcFrequency);
+            ImGui::Text("Duration: %.1f s", seconds);
+        }
+        ImGui::Text("Producer calls: %llu",
+            static_cast<unsigned long long>(telemetry.producerCalls));
+        ImGui::Text("Enqueued: %llu",
+            static_cast<unsigned long long>(telemetry.enqueued));
+        ImGui::Text("Written: %llu",
+            static_cast<unsigned long long>(telemetry.written));
+        ImGui::Text("Dropped (queue full): %llu",
+            static_cast<unsigned long long>(telemetry.droppedQueueFull));
+        ImGui::Text("Weapon events: enq %llu / written %llu / dropped %llu",
+            static_cast<unsigned long long>(telemetry.weaponEventsEnqueued),
+            static_cast<unsigned long long>(telemetry.weaponEventsWritten),
+            static_cast<unsigned long long>(
+                telemetry.weaponEventsDroppedQueueFull));
+        ImGui::Text("Duplicates suppressed: %llu",
+            static_cast<unsigned long long>(
+                telemetry.duplicateSerialSuppressed));
+        if (telemetry.state == TelemetryRecorderState::Error ||
+            telemetry.state == TelemetryRecorderState::Unavailable)
+        {
+            ImGui::TextColored(Rgb(kWarning), "Recorder: %s (system %u)",
+                Telemetry_ErrorName(telemetry.error), telemetry.systemError);
+        }
+
+        if (active)
+        {
+            if (ImGui::Button("Stop & save"))
+                Telemetry_RequestStop();
+        }
+        else
+        {
+            ImGui::BeginDisabled(busy ||
+                telemetry.state == TelemetryRecorderState::Unavailable);
+            if (ImGui::Button("Start recording"))
+                Telemetry_RequestStart();
+            ImGui::EndDisabled();
+        }
+        ImGui::Spacing();
+        ImGui::TextDisabled("One sample per prepared VR frame.");
+        ImGui::TextDisabled("Saved in the Telemetry Recordings folder beside HaloMCCVR.log.");
+        }
+
         if (g_activeCategory == Cat_Advanced)
         {
         changed |= ImGui::Checkbox("Bone probe (diagnostic)", &g_config.weapon_probe);
@@ -1858,6 +1986,7 @@ namespace
                 g_config = Config{};
                 ConfigSave();
                 LOG("config: reset to defaults from the menu");
+                two_hand_lab_runtime::ResetSettings();
                 g_resetArmed = false;
             }
             else
@@ -1872,8 +2001,14 @@ namespace
                 g_resetArmed = false;
         }
         ImGui::TextDisabled("Puts every setting back to the value halomccvr.cfg lists as its\n"
-                            "default, including your weapon calibration. Resolution needs a\n"
+                            "default, including your weapon calibration. The runtime Two-Handed\n"
+                            "Lab is also reset and disabled. Resolution needs a\n"
                             "game restart; everything else applies immediately.");
+        }
+
+        if (g_activeCategory == Cat_TwoHandLab)
+        {
+#include "two_hand_lab_menu.inl"
         }
 
         ImGui::PopTextWrapPos();

@@ -1,5 +1,9 @@
 // H2EK 4FE0D0/4FE420: acquisition and subsequent firing assist. The early
 // helper alone is insufficient. Keep the previous detours inert for evidence.
+// The T-2 shot event uses the recorder's fixed payload declarations and the
+// one shared publisher (wired in game.cpp; reached through the game.h door
+// because this file is compiled into the observer translation unit).
+#include "telemetry_recorder.h"
 struct Halo2IndependentShotScope
 {
     bool active=false,query=false,locationApplied=false;
@@ -224,6 +228,31 @@ __declspec(noinline) void __fastcall Halo2IndependentFireDetour(
     }
 }
 
+// T-2 shot event for Halo 2. The disabled gate is passed FIRST: with recording
+// off this returns on a single atomic load, before the firing-context read
+// that follows. The final origin/direction are read after the native aim call
+// (and after the mod's own substitution where it applied), so the event
+// carries the ray the engine's projectile builder consumes. Weapon and barrel
+// ride the per-shot firing context this call is nested in (the engine's own
+// arguments to the firing transaction); the slot is the acquisition scope's
+// resolved slot when that scope owns this unit, else unknown. The aim call
+// carries no prediction flag, so bit0 stays "unknown" (0) here.
+void PublishHalo2ShotDiagnostic(uint32_t unit,const float origin[3],
+    const float direction[3],int slot,bool substituted,bool firesFromCamera,
+    bool unitAim)
+{
+    if(!Telemetry_WeaponEventsAccepting())return;
+    const auto request=g_halo2MuzzleRequest;
+    const uint8_t wireSlot=(slot>=0&&slot<=1)?uint8_t(slot):
+        kTelemetryShotIndexUnknown;
+    const uint8_t wireBarrel=(request.barrel>=0&&request.barrel<2)?
+        uint8_t(request.barrel):kTelemetryShotIndexUnknown;
+    Game_PublishShotDiagnostic(GameTitle::Halo2,
+        g_generation.load(std::memory_order_acquire),unit,request.weapon,
+        wireSlot,wireBarrel,false,substituted,firesFromCamera,unitAim,origin,
+        direction);
+}
+
 __declspec(noinline) void __fastcall Halo2IndependentAimDetour(uint32_t unit,
     float* origin,float* direction,uint64_t marker,float* offset,
     uint8_t projectOrigin,uint8_t useUnitAim,uint8_t collisionAdjust)
@@ -234,8 +263,10 @@ __declspec(noinline) void __fastcall Halo2IndependentAimDetour(uint32_t unit,
     {
         if(!feature.aimOriginal)__leave;
         auto& shot=g_halo2IndependentShot;
+        const bool firingCall=
+            reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x8E4FCD;
         if(shot.active && !shot.query && shot.barrel && unit==shot.unit && origin && direction &&
-            reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x8E4FCD)
+            firingCall)
         {
             std::memcpy(origin,shot.carrier.position,12);
             std::memcpy(direction,shot.carrier.forward,12);
@@ -245,17 +276,34 @@ __declspec(noinline) void __fastcall Halo2IndependentAimDetour(uint32_t unit,
             if(std::isfinite(origin[0])&&std::isfinite(origin[1])&&std::isfinite(origin[2]))
                 std::memcpy(shot.carrier.position,origin,12);
             (shot.slot==0?feature.primaryRays:feature.secondaryRays).fetch_add(1,std::memory_order_relaxed);
+            // The committed muzzle ray was this mod's input to the native
+            // call, and the native call has already produced the final ray.
+            // The call's own projectOrigin/useUnitAim arguments were replaced
+            // by the literal 0/0 above, so those flags are reported as false.
+            PublishHalo2ShotDiagnostic(unit,origin,direction,shot.slot,true,
+                false,false);
             __leave;
         }
         feature.aimOriginal(unit,origin,direction,marker,offset,projectOrigin,useUnitAim,collisionAdjust);
-        if(!shot.active || shot.query || unit!=shot.unit || !origin || !direction ||
-            reinterpret_cast<uintptr_t>(_ReturnAddress())!=feature.base+0x8E4FCD)__leave;
-        float candidate[3]{};
-        if(Halo2BuildControllerShotDirection(origin,shot.carrier,shot.distance,candidate))
+        if(!firingCall || !origin || !direction)__leave;
+        const bool owned=shot.active && !shot.query && unit==shot.unit;
+        bool substituted=false;
+        if(owned)
         {
-            std::memcpy(direction,candidate,sizeof(candidate));
-            (shot.slot==0?feature.primaryRays:feature.secondaryRays).fetch_add(1,std::memory_order_relaxed);
+            float candidate[3]{};
+            if(Halo2BuildControllerShotDirection(origin,shot.carrier,shot.distance,candidate))
+            {
+                std::memcpy(direction,candidate,sizeof(candidate));
+                (shot.slot==0?feature.primaryRays:feature.secondaryRays).fetch_add(1,std::memory_order_relaxed);
+                substituted=true;
+            }
         }
+        // One event per firing invocation this detour serves, after the final
+        // ray is decided, whether or not the mod substituted it. Invocations
+        // that never reach the firing call-site (query/prep passes) publish
+        // nothing.
+        PublishHalo2ShotDiagnostic(unit,origin,direction,owned?shot.slot:-1,
+            substituted,projectOrigin!=0,useUnitAim!=0);
     }
     __finally {feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);}
 }
