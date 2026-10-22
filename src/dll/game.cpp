@@ -77,6 +77,7 @@
 #include "haloce_orientation.h"
 #include "haloce_head_relative.h"
 #include "haloce_unit_control.h"
+#include "haloce_vehicle_cameras.h"
 #include "title_reentry_probe.h"
 #include "roomscale.h"
 #include "sight_layer.h"
@@ -114,6 +115,7 @@
 #include "../common/reach_render_logic.h"
 #include "../common/reach_vehicle_logic.h"
 #include "../common/reach_vehicle_camera_logic.h"
+#include "../common/haloce_vehicle_camera_logic.h"
 #include "../common/reach_hand_shot_logic.h"
 #include "../common/aim_no_unit_logic.h"
 #include "../common/title_runtime_state.h"
@@ -11417,6 +11419,7 @@ namespace
 
     #include "halo3_vehicle_boom.inl"
     #include "vehicle_cameras.inl"
+    #include "haloce_vehicle_cameras.inl"
 
     // ---- C9: the view turns with the vehicle -------------------------------
     // "the camera does not rotate with the car" (user, 2026-07-31). C8 put the
@@ -50217,6 +50220,8 @@ namespace
                 (void)HaloCEHeadRelative_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCENetworkInput_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCEUnitControl_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
+                // The vehicle cameras' chase cameras (haloce_vehicle_cameras.cpp): installed only while they are on.
+                (void)HaloCEVehicleCameras_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
             }
             if (!halo2Active)
                 Halo2ColdObservation_Rearm();
@@ -58315,6 +58320,40 @@ bool Game_VehicleSeatButtonsLive(bool& passenger)
     const uint32_t seat = g_vehicleSeatButtons.load(std::memory_order_acquire);
     passenger = (seat & kVehicleSeatPassenger) != 0;
     return (seat & kVehicleSeatButtonsLive) != 0;
+}
+
+// Halo CE's vehicle cameras (haloce_vehicle_cameras.h): the shared runtime's answers for the game's own camera code.
+bool Game_HaloCEChaseAny() noexcept
+{
+    return g_vehicleCameraPublished.chase.load(std::memory_order_acquire) != 0 &&
+           TitleAdapter_GetActiveTitle() == GameTitle::HaloCE;
+}
+
+bool Game_HaloCEChaseWanted(uint32_t generation, uint32_t parent, int16_t seat) noexcept
+{
+    vehicle_camera_select::ActiveCamera camera;
+    VehicleCameraSeatKey key;
+    return HaloCEVehicleCameraChosen(generation, parent, seat, camera, key) && HaloCEVehicleCameras_FollowingLive();
+}
+
+bool Game_HaloCEEyeNudgeWorld(uint32_t generation, uint32_t parent, int16_t seat, float point[3]) noexcept
+{
+    return HaloCEVehicleCameraEyeNudge(generation, parent, seat, point);
+}
+
+bool Game_HaloCEChasePlace(const HaloCEChaseFrame& frame, float out[3]) noexcept
+{
+    return HaloCEVehicleCameraPlace(frame, out);
+}
+
+bool Game_HaloCEVehicleCameraFollow(uint32_t generation, uint32_t parent, int16_t seat, bool& yaw) noexcept
+{
+    vehicle_camera_select::ActiveCamera camera;
+    VehicleCameraSeatKey key;
+    if (!HaloCEVehicleCameraChosen(generation, parent, seat, camera, key))
+        return false;
+    yaw = camera.rotYaw;
+    return true;
 }
 
 void Game_VehicleControlStep()

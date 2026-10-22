@@ -91,6 +91,8 @@ bool HaloCE_RenderContextCurrent(const halo_ce::RenderContext& value) noexcept
 { return contextCurrent&&value.tracking.generation==testGeneration&&
     value.referenceRevision==gameplay.referenceRevision&&value.rendererEpoch==gameplay.rendererEpoch; }
 void Logf(const char*,...) {}
+// The vehicle cameras' answer for a seat (game.cpp): no chase camera is chosen in this fixture.
+bool Game_HaloCEVehicleCameraFollow(uint32_t,uint32_t,int16_t,bool&) noexcept { return false; }
 bool WaitForNativeDetourQuiescence(const void* const* functions,const void* const* trampolines,
     size_t count,const std::atomic<uint32_t>& pending)
 {
@@ -468,8 +470,8 @@ int main()
         "pending callback preserves native dependency pointers while retiring controls");
     callbacks=0;
     Check(Remove()&&!moduleBase&&!retiring.load()&&!stateReady.load()&&!turnReady.load(),
-        "all eleven actual compiled retirement ranges resolve and controls finish cleanup after draining");
-    Check(unwindChecks==22&&!unwindFailures,
+        "all thirteen actual compiled retirement ranges resolve and controls finish cleanup after draining");
+    Check(unwindChecks==26&&!unwindFailures,
         "both complete retirement attempts validate every production function's actual unwind metadata");
     // A same-generation camera re-entry can now publish native state again.
     // Contract installation remains covered separately by the pinned binding suite.

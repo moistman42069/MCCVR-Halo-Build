@@ -38,6 +38,18 @@ void HostUnloadGate_Pin(HMODULE,std::atomic<bool>*,const std::atomic<uint64_t>*,
 void HostUnloadGate_Unpin(HMODULE) {++unpinned;}
 bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& output) noexcept
 {output=owned;return ownedValid&&title==activeTitle;}
+// Halo CE's vehicle cameras (game.cpp): a chase camera chosen for the owned seat, and a firstperson camera's offset.
+static bool ceChase=false;
+static float ceNudge[3]{};
+bool Game_HaloCEChaseWanted(uint32_t generation,uint32_t parent,int16_t seat) noexcept
+{return ceChase&&generation==owned.generation&&parent==owned.parent&&seat==owned.seat;}
+bool Game_HaloCEEyeNudgeWorld(uint32_t generation,uint32_t parent,int16_t seat,float point[3]) noexcept
+{
+    if ((ceNudge[0]==0&&ceNudge[1]==0&&ceNudge[2]==0)||generation!=owned.generation||parent!=owned.parent||
+        seat!=owned.seat) return false;
+    for(int axis=0;axis<3;++axis) point[axis]+=ceNudge[axis];
+    return true;
+}
 // The sight clock: a millisecond further on at every read.
 uint64_t Sight_NowUs() {static uint64_t us=1000;return us+=1000;}
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -253,6 +265,33 @@ template<unsigned I> void Run()
     r.faulted=false;owned.seat=-1;Check(SelectHook<I>(owned.unit,&mode)==1,"exit seat stays native");
     owned.seat=0;Check(SelectHook<I>(owned.unit,&mode)==0,"new valid seat recovers without cached anchor");
     nativeResult=0;Check(SelectHook<I>(owned.unit,&mode)==0,"native first-person seats remain first person");
+    // HALO CE'S VEHICLE CAMERAS: a seat whose chosen camera is a chase camera keeps the game's following camera,
+    // reported under the mod's own seat state so the director re-chooses; a firstperson camera's offset moves the eye.
+    nativeResult=1;nativeMode=2;ceChase=true;
+    {
+        const auto chosen=SelectHook<I>(owned.unit,&mode);
+        if constexpr(I==0)
+            Check(chosen==1&&mode==haloce_vehicle_camera::kChaseSeatState,
+                "CE chase seat: the following camera, under the chase seat state");
+        else Check(chosen==0&&mode==2,"the chase seat is CE's alone");
+    }
+    nativeResult=0;
+    if constexpr(I==0) {
+        Check(SelectHook<I>(owned.unit,&mode)==1,"CE chase seat of a first-person tag: the following camera, solo");
+        fireTimeAllowed=false;
+        Check(SelectHook<I>(owned.unit,&mode)==0&&mode==haloce_vehicle_camera::kChaseSeatState,
+            "but never a change the simulation would see where those are not allowed");
+        fireTimeAllowed=true;
+    }
+    nativeResult=1;nativeMode=1;
+    Check(SelectHook<I>(owned.unit,&mode)==1&&mode==1,"an entering transition is the game's own, chase or not");
+    nativeMode=2;ceChase=false;
+    Check(SelectHook<I>(owned.unit,&mode)==0&&mode==2,"no chase camera: the first-person override as before");
+    ceNudge[0]=1;ceNudge[2]=-2;camera();
+    if constexpr(I==0) Check(position[0]==11&&position[1]==20&&position[2]==28,"CE: a firstperson offset moves the eye");
+    else Check(position[0]==10&&position[2]==30,"the firstperson offset here is CE's alone");
+    ceNudge[0]=ceNudge[2]=0;
+    nativeResult=0;
 
     r.target[0]=reinterpret_cast<void*>(uintptr_t(0x1000+I*2));
     r.target[1]=reinterpret_cast<void*>(uintptr_t(0x1001+I*2));

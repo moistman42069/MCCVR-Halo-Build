@@ -103,3 +103,30 @@ bool HaloCEControls_GetLocomotionFrame(HaloCELocalPlayerState& state,
 // Optional read-only native height correction; no engine state writes.
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t generation,uint64_t epoch,
     float physicalDown,bool allowed) noexcept;
+
+// THE SEAT THE LOCAL PLAYER SITS IN, for the vehicle cameras' cold worker (game.cpp haloce_vehicle_cameras.inl): what
+// the camera file names it by and the role it plays (haloce_vehicle_camera_logic.h). Read-only, guarded, any thread.
+// OnFoot: the player has no vehicle (or no unit). Unknown: not readable now (the caller keeps what it had).
+enum class HaloCEVehicleSeatRead : uint8_t { OnFoot, Seated, Unknown };
+struct HaloCEVehicleSeatFacts
+{
+    uint32_t generation{},unit{0xffffffffu},parent{0xffffffffu},root{0xffffffffu};
+    int16_t seat{-1};
+    uint32_t definition{0xffffffffu}; // the vehicle's definition datum (its object's first word)
+    bool seatFlagsRead{};
+    uint32_t seatFlags{};
+    bool drivesIt{},aimsIt{};         // the vehicle's two occupant slots hold the player's unit
+    float boundsRadius{};             // world units, the vehicle definition's; 0 = not read
+    uint64_t modelIdentity{};         // haloce_vehicle_identity.inl's node-name fingerprint; 0 = not read
+    char tagPath[128]{};              // the vehicle definition's tag path; "" = not read
+};
+HaloCEVehicleSeatRead HaloCEControls_ReadVehicleSeatFacts(HaloCEVehicleSeatFacts& facts) noexcept;
+// The same seat for a camera hook, every frame: who sits where, and the vehicle's size; no tag path, flags or
+// fingerprint. False on foot or when not readable. Read-only, guarded, any thread.
+struct HaloCEVehicleSeatNow
+{
+    uint32_t generation{},unit{0xffffffffu},parent{0xffffffffu},root{0xffffffffu},definition{0xffffffffu};
+    int16_t seat{-1};
+    float boundsRadius{}; // world units, the vehicle definition's; 0 = not read
+};
+bool HaloCEControls_ReadVehicleSeatNow(HaloCEVehicleSeatNow& seat) noexcept;

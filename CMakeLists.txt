@@ -319,6 +319,7 @@ add_library(halo3xr SHARED
     src/dll/haloce_hud_layout.cpp
     src/dll/haloce_hud_target.cpp
     src/dll/haloce_controls.cpp
+    src/dll/haloce_vehicle_cameras.cpp
     src/dll/haloce_comfort.cpp
     src/dll/haloce_orientation.cpp
     src/dll/haloce_head_relative.cpp
