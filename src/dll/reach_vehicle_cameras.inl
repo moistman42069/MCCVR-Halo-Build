@@ -13,13 +13,16 @@
 // WHAT A CHASE CAMERA CHANGES. The eye the seat view is rendered from (cameraBase), and with it the hands' origin
 // (handsBase), stands at the camera's place. The occupant's body is drawn, as the flat game draws it: the hide of
 // the player's own unit from the seat camera (ReachBeginUnitCameraPlayerHide) is skipped, and a passenger's seat
-// keeps its own third-person camera word (ReachEnsureNativeFirstPersonSeat gives the first-person lease back). The
-// camera's mode turns the view: its rotationTracking yaw stands in for vehicle_view_follow in that seat
-// (ReachApplySeatYawFollow). Nothing the simulation reads is written.
+// keeps its own third-person camera word (ReachEnsureNativeFirstPersonSeat gives the first-person lease back, which is
+// the seat's stock state). The camera's mode turns the view: its rotationTracking yaw stands in for
+// vehicle_view_follow in that seat (ReachApplySeatYawFollow). Its leash holds the head (ReachApplyHeadLook), its
+// "collide" and its aim ring are traced by Reach's sight trace (reach_sight_trace.inl), and a camera's "eyeAdjust":
+// false holds the engine's exposure (engine_exposure_lock.inl). Nothing else the game reads is written.
 //
 // "thirdperson": the game's own camera for the seat is the stock camera of the frame (the render view's compact
-// camera before the mod moves it); its pivot is the point unit_get_camera_info answers for the seat. Where the game's
-// camera stands from that pivot, looking level, gives the distance; the camera then orbits the pivot at the boom's
+// camera before the mod moves it); its pivot is the point unit_get_camera_info answers for the seat (measured: the
+// game's camera orbits it at a constant distance, its elevation about 12 deg less the look in a Mongoose). Where the
+// game's camera stands from that pivot gives the distance; the camera then orbits the pivot at the shared boom's
 // elevation along the vehicle's heading (vehicle_boom_logic.h's orbit shape: Reach's camera track is not read).
 
 // ---- the seat, published by the render thread for the cold worker ----------------------------------------------

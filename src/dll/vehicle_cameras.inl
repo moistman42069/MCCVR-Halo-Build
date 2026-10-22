@@ -25,6 +25,10 @@
 // naming a marker (the vehicle's origin stands in). The cold worker says so in the log for a camera that asks
 // for one.
 //
+// REACH (reach_vehicle_cameras.inl, later in game.cpp): the same file (its "reach" section), selection, seat memory,
+// auto-add, buttons and boom; Reach's render thread publishes the seat it samples and moves the seat's eye, and the
+// note goes to the mod's panel. Not in Reach yet: the glass and body keys, Stick control, a marker origin.
+//
 // THE THIRD-PERSON BOOM (vehicle_boom_logic.h; halo3_vehicle_boom.inl reads the game's side). A camera of origin
 // "thirdperson" stands where the game's own third-person camera would stand at a look pitch of the boom's own --
 // never the aim's. The cold worker works out the seat's shape (the game's camera track across the flat game's look
