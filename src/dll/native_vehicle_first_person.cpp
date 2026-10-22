@@ -63,6 +63,15 @@ struct Runtime
     std::atomic<int> placedSeat{-1};
     std::atomic<uint64_t> placedIdentity{},placedUs{};
     std::atomic<float> placedPoint[3]{};
+    // Halo 4: the game's own selector answer for the local seat, before this override (NativeVehicleFirstPerson_
+    // Halo4NativeChase), and the selector calls left to the game because a vehicle camera's chase view is chosen for
+    // the seat (Game_VehicleCameraChaseSeat). The answer is three words written in turn: a reader that meets a seat
+    // being replaced takes the newer seat with the older answer for at most one call.
+    std::atomic<uint32_t> nativeParent{UINT32_MAX};
+    std::atomic<int> nativeSeat{-1};
+    std::atomic<bool> nativeChase{};
+    std::atomic<uint64_t> nativeMs{};
+    std::atomic<uint64_t> chaseStoodDown{},markerFrameFaults{};
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // Why the selector was not taken over: the native mode it chose (0-4, other), and Owner()'s first refusal.
     std::atomic<uint32_t> modeSeen[6]{};
@@ -366,7 +375,7 @@ template<unsigned I> using SelectorFn=uint32_t(__fastcall*)(uint32_t,Mode<I>*);
 // Keep the guarded feature body separate from native forwarding/finally. A
 // fault in the optional marker query must be handled here, never swallowed by
 // or attributed to the native camera call.
-template<unsigned I> bool SelectOwned(uint32_t unit,Mode<I>* mode) noexcept
+template<unsigned I> bool SelectOwned(uint32_t unit,Mode<I>* mode,uint32_t nativeResult) noexcept
 {
     __try {
         NativeVehicleCameraOwner before{},after{};float point[3]{};
@@ -374,6 +383,19 @@ template<unsigned I> bool SelectOwned(uint32_t unit,Mode<I>* mode) noexcept
         if (mode) runtime[I].modeSeen[(*mode>=0&&*mode<=4)?unsigned(*mode):5u].fetch_add(1,std::memory_order_relaxed);
 #endif
         if (!mode||*mode!=2||!Owner(I,unit,before)) return false;
+        if constexpr (I==2) {
+            // The game's own answer for the local seat (nonzero: its following camera), and a vehicle camera's
+            // chase view, which leaves the seat to it.
+            auto& r=runtime[I];
+            r.nativeParent.store(before.parent,std::memory_order_relaxed);
+            r.nativeSeat.store(before.seat,std::memory_order_relaxed);
+            r.nativeChase.store(nativeResult!=0,std::memory_order_relaxed);
+            r.nativeMs.store(GetTickCount64(),std::memory_order_release);
+            if (Game_VehicleCameraChaseSeat(kBindings[I].title,before.parent,before.seat)) {
+                r.chaseStoodDown.fetch_add(1,std::memory_order_relaxed);
+                return false;
+            }
+        }
         if (!Head(I,before,point,false)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return false;}
         return Owner(I,unit,after)&&before==after;
     } __except(EXCEPTION_EXECUTE_HANDLER) {
@@ -385,6 +407,9 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
     __try {
         NativeVehicleCameraOwner before{},after{};float point[3]{};Mode<I> mode{};
         if (!result||!Owner(I,unit,before)) return;
+        if constexpr (I==2) {
+            if (Game_VehicleCameraChaseSeat(kBindings[I].title,before.parent,before.seat)) return;
+        }
         reinterpret_cast<SelectorFn<I>>(runtime[I].original[Selector])(unit,&mode);
         if (mode!=2) return;
         if (!Head(I,before,point,true)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return;}
@@ -472,7 +497,7 @@ template<unsigned I> uint32_t __fastcall SelectHook(uint32_t unit,Mode<I>* mode)
         const uint32_t nativeResult=result;
 #endif
         bool owned=false;
-        if (!t_stockOnThisThread&&SelectOwned<I>(unit,mode)) {
+        if (!t_stockOnThisThread&&SelectOwned<I>(unit,mode,result)) {
             if (ForTheSimulation<I>()) r.simulationCalls.fetch_add(1,std::memory_order_relaxed);
             else owned=true;
         }
@@ -596,6 +621,41 @@ bool NativeVehicleFirstPerson_PlacedPoint(GameTitle title,NativeVehicleSeatPoint
     }
     return false;
 }
+bool NativeVehicleFirstPerson_Halo4MarkerFrame(uint32_t object,uint32_t name,bool drawn,float frame[13]) noexcept
+{
+    constexpr unsigned i=2;   // Halo 4 only
+    auto& r=runtime[i];
+    if (!frame||object==UINT32_MAX||!(object>>16)) return false;
+    // The callback lease covers this call as it covers the hooks', so retirement waits for it.
+    r.callbacks.fetch_add(1,std::memory_order_acq_rel);
+    bool ok=false;
+    __try {
+        if (Current(i)&&r.ready&&r.marker) {
+            using Query=int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t,uint8_t,uint8_t,uint8_t);
+            alignas(16) uint8_t record[128]{};
+            if (reinterpret_cast<Query>(r.marker)(object,name,record,1,0,0,drawn?1:0)==1) {
+                std::memcpy(frame,record+56,sizeof(float)*seat_camera_ride::kFrameFloats);
+                ok=seat_camera_ride::UsableFrame(frame);
+            }
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        ok=false;
+        r.markerFrameFaults.fetch_add(1,std::memory_order_relaxed);
+    }
+    r.callbacks.fetch_sub(1,std::memory_order_release);
+    return ok;
+}
+bool NativeVehicleFirstPerson_Halo4NativeChase(uint32_t parent,int seat,bool& chase) noexcept
+{
+    constexpr unsigned i=2;   // Halo 4 only
+    const auto& r=runtime[i];
+    if (!r.requested.load(std::memory_order_acquire)||r.faulted.load(std::memory_order_acquire)) return false;
+    const uint64_t at=r.nativeMs.load(std::memory_order_acquire),now=GetTickCount64();
+    if (!at||now<at||now-at>250||r.nativeParent.load(std::memory_order_relaxed)!=parent||
+        r.nativeSeat.load(std::memory_order_relaxed)!=seat) return false;
+    chase=r.nativeChase.load(std::memory_order_relaxed);
+    return true;
+}
 int NativeVehicleFirstPerson_InSimulationTick(GameTitle title) noexcept
 {
     for (unsigned i=0;i<3;++i) if (kBindings[i].title==title) return InTick(i);
@@ -712,6 +772,21 @@ void NativeVehicleFirstPerson_Poll()
                 unsigned(title),r.requested.load()?1:0,r.selected.load(),r.positioned.load(),
                 r.missingMarker.load(),r.faults.load(),r.simulationCalls.load(),
                 r.faulted.load()?" STOCK FALLBACK (guarded access fault)":"");
+            if (title==GameTitle::Halo4) {
+                static uint64_t stoodDownSaid=0,faultsSaid=0;
+                const uint64_t stoodDown=r.chaseStoodDown.load(std::memory_order_relaxed);
+                const uint64_t markerFaults=r.markerFrameFaults.load(std::memory_order_relaxed);
+                if (stoodDown!=stoodDownSaid) {
+                    stoodDownSaid=stoodDown;
+                    LOG("Vehicle first person title=4: a vehicle camera's chase view left the seat to the game's own "
+                        "camera on %llu selector calls so far",static_cast<unsigned long long>(stoodDown));
+                }
+                if (markerFaults!=faultsSaid) {
+                    faultsSaid=markerFaults;
+                    LOG("Vehicle first person title=4: the vehicle cameras' marker reads faulted %llu time(s) (each "
+                        "such frame keeps the seat's own eye)",static_cast<unsigned long long>(markerFaults));
+                }
+            }
 #if HALOMCCVR_DEV_DIAGNOSTICS
             uint32_t modes[6]{},why[7]{};
             for (unsigned k=0;k<6;++k) modes[k]=r.modeSeen[k].exchange(0,std::memory_order_relaxed);

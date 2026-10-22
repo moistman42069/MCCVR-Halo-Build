@@ -38,6 +38,12 @@ void HostUnloadGate_Pin(HMODULE,std::atomic<bool>*,const std::atomic<uint64_t>*,
 void HostUnloadGate_Unpin(HMODULE) {++unpinned;}
 bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& output) noexcept
 {output=owned;return ownedValid&&title==activeTitle;}
+// A vehicle camera's chase view chosen for a seat (game.cpp): none, unless a test says.
+static bool chaseChosen=false;
+static uint32_t chaseParent=0;
+static int chaseSeat=-1;
+bool Game_VehicleCameraChaseSeat(GameTitle title,uint32_t parent,int seat) noexcept
+{return chaseChosen&&title==activeTitle&&parent==chaseParent&&seat==chaseSeat;}
 // The sight clock: a millisecond further on at every read.
 uint64_t Sight_NowUs() {static uint64_t us=1000;return us+=1000;}
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -139,6 +145,40 @@ template<unsigned I> void Run()
         activeGeneration=8;
         Check(!NativeVehicleFirstPerson_PlacedPoint(activeTitle,placed),"a point from another generation is no answer");
         activeGeneration=7;
+        // The game's own answer for the seat, before the override, for the vehicle cameras: its following camera.
+        bool chase=false;
+        Check(NativeVehicleFirstPerson_Halo4NativeChase(owned.parent,owned.seat,chase)&&chase,
+            "the game's own answer for the seat is recorded: its following camera");
+        Check(!NativeVehicleFirstPerson_Halo4NativeChase(owned.parent,owned.seat+1,chase),"and only for that seat");
+        // A vehicle camera's chase view leaves the seat to the game's own camera, which draws the occupant.
+        chaseChosen=true;chaseParent=owned.parent;chaseSeat=owned.seat;
+        const auto stoodDown=r.chaseStoodDown.load();
+        Check(SelectHook<I>(owned.unit,&mode)==1&&r.chaseStoodDown.load()==stoodDown+1,
+            "a chase view keeps the game's own answer for that seat");
+        camera();Check(position[0]==-10,"and the game's own camera point");
+        Check(NativeVehicleFirstPerson_Halo4NativeChase(owned.parent,owned.seat,chase)&&chase,
+            "the game's own answer is still recorded while it is left to the game");
+        chaseSeat=owned.seat+1;
+        Check(SelectHook<I>(owned.unit,&mode)==0,"another seat's chase view leaves this one first person");
+        camera();Check(position[0]==10,"with the camera at the occupant's head");
+        chaseChosen=false;
+        // The vehicle cameras' marker reads go through the same proven query: the vehicle's root as drawn and as
+        // simulated, the head marker's frame refused when it is not a frame.
+        r.ready=true;float frame[13]{};
+        Check(NativeVehicleFirstPerson_Halo4MarkerFrame(owned.parent,0,true,frame)&&frame[10]==99.875f&&frame[0]==1,
+            "the vehicle's root node as drawn");
+        Check(NativeVehicleFirstPerson_Halo4MarkerFrame(owned.parent,0,false,frame)&&frame[10]==100.0f,
+            "and as simulated");
+        Check(!NativeVehicleFirstPerson_Halo4MarkerFrame(owned.unit,0x122,true,frame),
+            "a record that is not a usable frame is no answer");
+        markerFault=true;const auto faults=r.markerFrameFaults.load();
+        Check(!NativeVehicleFirstPerson_Halo4MarkerFrame(owned.unit,0x122,true,frame)&&
+            r.markerFrameFaults.load()==faults+1&&!r.faulted.load()&&r.callbacks.load()==0,
+            "a faulting read is counted, leaves the override standing, and returns its lease");
+        markerFault=false;
+        activeTitle=GameTitle::Halo2;
+        Check(!NativeVehicleFirstPerson_Halo4MarkerFrame(owned.parent,0,true,frame),"the reads answer only in Halo 4");
+        activeTitle=GameTitle::Halo4;r.ready=false;
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if constexpr(I==2) {

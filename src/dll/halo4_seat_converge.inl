@@ -708,6 +708,23 @@ void Halo4SeatConvergeTrace(const uint8_t* tls, const Halo4VehicleInputState& se
         }
         Sight_PublishLimitTrace(kTitle, generation, limitHit, limitRangeWu);
     }
+    // THE VEHICLE CAMERA RAY (halo4_vehicle_cameras.inl, a chase camera's "collide"): from the point the camera is
+    // measured from toward where it stands; the camera is held short of what this meets.
+    SightAuxRay cameraRay{};
+    if (Sight_ReadCameraRay(kTitle, generation, kSightRayFreshMs, cameraRay))
+    {
+        bool cameraHit = false;
+        float cameraRangeWu = 0.0f;
+        if (!auxTrace(cameraRay, cameraHit, cameraRangeWu))
+        {
+            f.traceFaulted.store(true, std::memory_order_release);
+            f.faults.fetch_add(1, std::memory_order_relaxed);
+            LOG("SIGHT Halo 4 seated vehicle camera trace: the native ray raised a fault; the seated trace stays off "
+                "until the title reinstalls (the on-foot trace is untouched)");
+            return;
+        }
+        Sight_PublishCameraTrace(kTitle, generation, cameraHit, cameraRangeWu);
+    }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // [assess-only begin]
     // DEV ASSESSMENT (honest_reticle_assess): the game's own aim from the seat's eye. A native fault here latches only
@@ -835,7 +852,7 @@ bool Halo4SeatConvergePrepare(Halo4SeatConvergePoll& out, const float rayDir[3])
     out.seatKey = Halo4SeatConvergeKey(stamp.parent, stamp.seat);
     halo4_seat_converge::PollFacts facts{};
     facts.aimOn = Sight_AimEnabled() && g_config.reach_vehicle_aim > 0;
-    facts.viewOurs = NativeVehicleFirstPerson_SeatViewOwned(kTitle, stamp.parent, stamp.seat);
+    facts.viewOurs = Halo4SeatViewOwned(stamp.parent, stamp.seat);
     BoneMatrix center{};
     facts.headKnown = Halo4LoadCenterRoot(1.0f, center);
     if (facts.headKnown)
