@@ -790,6 +790,8 @@ void Halo4VehicleCameraTurnView(const VehicleCameraSeatKey& key, bool turns, con
     g_halo4VehicleCameraTurnFrames.fetch_add(1, std::memory_order_relaxed);
 }
 
+bool Halo4VehicleCameraHoldsExposure(const VehicleCameraSeatKey& key); // below
+
 // The stereo transaction, every frame of a player-controlled seat with the head tracked: before the head pose is
 // composed onto `eye` (the frame's camera, from the game's observer) and `hands` (the camera the hands are placed
 // from, the observer as the game made it). `seatRead`/`seat` are the frame's own seat read.
@@ -798,7 +800,10 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
 {
     g_halo4VehicleCameraPass.placed = false;
     if (!g_config.vehicle_cameras)
+    {
+        EngineExposureLockApply(g_halo4Exposure, false);
         return;
+    }
     Halo4VehicleCameraFrame frame;
     const bool sampled = seatRead && Halo4SampleVehicleCameraFrame(seat, frame);
     // The game's own answer for this seat, before the override: its following camera, or its first-person eye.
@@ -807,6 +812,12 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
                              NativeVehicleFirstPerson_Halo4NativeChase(frame.parent, frame.seatIndex, nativeChase);
     if (seatRead && (!seat.seated || sampled))
         Halo4VehicleCameraPublishSeat(true, frame, nativeKnown && nativeChase);
+    // "eyeAdjust": false holds Halo 4's eye adaptation (render_exposure_lock, engine_exposure_lock.inl) while the
+    // camera in use for this seat says so; every other frame gives it back to the engine, as does a teardown on its
+    // way. A compare a frame. Frames that never reach this pass give it back in the transaction.
+    EngineExposureLockApply(g_halo4Exposure, frame.active &&
+                                                 !g_halo4Camera.teardownRequested.load(std::memory_order_acquire) &&
+                                                 Halo4VehicleCameraHoldsExposure(Halo4VehicleCameraKey(frame)));
     if (!frame.active)
     {
         if (seatRead && seat.seated && Halo4VehicleCameraChaseChosen(TitleAdapter_GetGeneration(GameTitle::Halo4),
@@ -858,6 +869,28 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
         g_halo4VehicleCameraPlacedSeat.store(frame.seatIndex, std::memory_order_relaxed);
         g_halo4VehicleCameraPlacedMs.store(GetTickCount64(), std::memory_order_release);
     }
+}
+
+// A CAMERA'S "eyeAdjust": false for exactly this seat (any camera type). One atomic load while no camera in use asks
+// for it; a camera being published both times it is read answers false for that frame.
+bool Halo4VehicleCameraHoldsExposure(const VehicleCameraSeatKey& key)
+{
+    const VehicleCameraPublished& published = g_vehicleCameraPublished;
+    if (!published.holdExposure.load(std::memory_order_acquire))
+        return false;
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        const uint32_t before = published.seq.load(std::memory_order_acquire);
+        if (before & 1u)
+            continue;
+        const bool hold = published.camera.valid && published.camera.holdExposure;
+        const VehicleCameraSeatKey chosenFor = published.seat;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (published.seq.load(std::memory_order_relaxed) != before)
+            continue;
+        return hold && chosenFor == key;
+    }
+    return false;
 }
 
 // ---- the cold worker's side ---------------------------------------------------------------------------------------
@@ -943,8 +976,6 @@ std::string Halo4VehicleCameraNotApplied(const vehicle_camera_select::ActiveCame
         if (camera.aimMarker)
             add("the ring where the vehicle aims");
     }
-    if (camera.holdExposure)
-        add("eyeAdjust");
     if (camera.hideRegions[0])
         add("hideRegions");
     if (camera.hideParts[0])

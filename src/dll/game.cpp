@@ -8851,6 +8851,8 @@ namespace
     EngineExposureLock g_halo3Exposure{"Halo 3 vehicle exposure"};
     // Reach's, while the vehicle camera in use for its seat says "eyeAdjust": false (reach_vehicle_cameras.inl).
     EngineExposureLock g_reachExposure{"Reach vehicle exposure"};
+    // Halo 4's, while the vehicle camera in use for its seat says "eyeAdjust": false (halo4_vehicle_cameras.inl).
+    EngineExposureLock g_halo4Exposure{"Halo 4 vehicle exposure"};
     // Whether the vehicle camera in use for the seat the player is in holds the exposure (vehicle_cameras.inl).
     bool Halo3VehicleCameraHoldsExposure();
 
@@ -46678,6 +46680,8 @@ namespace
         bool headTracked = false;
         // The view's lift on top of the engine's eye that the hands share (g_halo4HandsLiftZ).
         float handsLiftZ = 0.0f;
+        // The vehicle cameras' pass ran this frame (it holds or gives back the exposure itself).
+        bool halo4VehicleCamerasRan = false;
 #if HALOMCCVR_DEV_DIAGNOSTICS
         // This frame's seat, for the seated solve's eye (Halo4PublishSeatEyeRoot, below).
         Halo4VehicleInputState seatEyeSeat{};
@@ -46711,6 +46715,7 @@ namespace
             // a chase camera's place, before the head pose is composed onto it. `controllerRoot` is still the game's
             // own camera here.
             Halo4VehicleCamerasPass(frameSeatRead, frameSeat, controllerRoot, stock);
+            halo4VehicleCamerasRan = true;
 #if HALOMCCVR_DEV_DIAGNOSTICS
             seatEyeSeat = frameSeat;
             seatEyeSeatRead = frameSeatRead;
@@ -46888,6 +46893,10 @@ namespace
             }
         }
         (void)headTracked;
+        // A frame the vehicle cameras' pass did not reach (an authored cinematic, no head pose) gives a held
+        // exposure back to the engine.
+        if (!halo4VehicleCamerasRan)
+            EngineExposureLockApply(g_halo4Exposure, false);
 
         // C-H4-11b's verified writes land in the animation system's telemetry
         // mirror, not in the render input. Leave the investigation code intact,
@@ -48428,6 +48437,8 @@ namespace
         g_halo4Camera.cinematicTheaterProof.store(
             false, std::memory_order_release);
         g_halo4Camera.teardownRequested.store(true, std::memory_order_release);
+        // A held exposure is a module global that outlives this camera core: give it back to the engine.
+        EngineExposureLockRelease(g_halo4Exposure);
         g_halo4Camera.armed.store(false, std::memory_order_release);
         if(!Halo4Type13Remove())
         { LOG("Halo 4 teardown: the Broadsword pilot controller's hook needs cleanup retry; retaining native module"); return false; }
@@ -48859,6 +48870,9 @@ namespace
         (void)InstallHalo4SoundListener(base,size,generation);
         InstallHalo4FireEye(base,size,generation);   // flat parity's measured fire eye (halo4_fire_eye.inl)
         InstallHalo4SeatConverge(base,size,generation);   // after the muzzle lane: its view detour carries the sample
+        // The vehicle cameras' "eyeAdjust": Halo 4's render_exposure_lock, from two signatures that must agree
+        // (engine_exposure_lock.inl). Missing, only that hold stays off.
+        EngineExposureLockResolve(g_halo4Exposure, base, size, kHalo4ExposureLockSig);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         InstallHalo4SeatSight(base,size,generation);   // after the muzzle lane: its bindings and view detour
         (void)InstallHalo4ImpactWitness(base,size);    // AS SEEN (dev): after the muzzle lane, whose aim names the shooter
@@ -51027,7 +51041,7 @@ static void TitleImageUnloading(uintptr_t base, size_t size)
 #endif
     // The engine exposure locks (engine_exposure_lock.inl): a teardown that gives the hold back after the image is
     // gone would read and write an unmapped byte.
-    for (EngineExposureLock* lock : {&g_halo3Exposure, &g_odstExposure, &g_reachExposure})
+    for (EngineExposureLock* lock : {&g_halo3Exposure, &g_odstExposure, &g_reachExposure, &g_halo4Exposure})
         if (EngineExposureLockRetireWithin(*lock, base, size))
             ++retired;
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA

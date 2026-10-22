@@ -32,8 +32,8 @@
 // HALO 4 (halo4_vehicle_cameras.inl, later in game.cpp): the same file (its "halo4" section), selection, seat memory,
 // auto-add, buttons and boom; Halo 4's stereo transaction publishes the seat it samples and moves the eye the frame
 // is drawn from, the first-person seat override leaves a seat with a chase camera to the game's own camera, and the
-// note goes to the mod's panel. Not in Halo 4 yet: the glass and body keys, eyeAdjust, the aim ring, pitch tracking,
-// a marker origin; its drivers steer by the look (no wheel, no Stick).
+// note goes to the mod's panel. Not in Halo 4 yet: the glass and body keys, the aim ring, pitch tracking, a marker
+// origin; its drivers steer by the look (no wheel, no Stick).
 //
 // THE THIRD-PERSON BOOM (vehicle_boom_logic.h; halo3_vehicle_boom.inl reads the game's side). A camera of origin
 // "thirdperson" stands where the game's own third-person camera would stand at a look pitch of the boom's own --
