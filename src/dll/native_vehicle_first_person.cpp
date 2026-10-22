@@ -72,6 +72,9 @@ struct Runtime
     std::atomic<bool> nativeChase{};
     std::atomic<uint64_t> nativeMs{};
     std::atomic<uint64_t> chaseStoodDown{},markerFrameFaults{};
+    // The marker reads' faults since this title's lane was installed: past kMarkerFrameFaultLimit the vehicle cameras
+    // stop asking (each read would only fault again), until the lane is installed afresh.
+    std::atomic<uint32_t> markerFrameFaultsLive{};
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // Why the selector was not taken over: the native mode it chose (0-4, other), and Owner()'s first refusal.
     std::atomic<uint32_t> modeSeen[6]{};
@@ -89,6 +92,7 @@ struct Runtime
     uint64_t reportAt{};
 };
 Runtime runtime[3];
+constexpr uint32_t kMarkerFrameFaultLimit=8;   // Runtime::markerFrameFaultsLive
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // Halo 2's seat camera, frame by frame (seat_head_trace_logic.h): the camera evaluator records, the cold poll
 // reports. One short exclusive section per frame.
@@ -558,7 +562,7 @@ bool Retire(unsigned i)
     // waiting for this teardown may go on, and finds the old image unloaded.
     if (r.module) { const HMODULE held=r.module;FreeLibrary(held);HostUnloadGate_Unpin(held); }
     r.module=nullptr;r.base=0;r.generation=0;r.marker=r.markerInterpolated=nullptr;
-    r.tlsIndex=nullptr;r.tickSlot=r.tickByte=0;
+    r.tlsIndex=nullptr;r.tickSlot=r.tickByte=0;r.markerFrameFaultsLive.store(0,std::memory_order_relaxed);
     r.trimIdentity.store(0);r.trimGeneration.store(0);r.trimSeat.store(-1);
     r.attempted=r.ready=false;r.faulted.store(false,std::memory_order_release);return true;
 }
@@ -626,6 +630,7 @@ bool NativeVehicleFirstPerson_Halo4MarkerFrame(uint32_t object,uint32_t name,boo
     constexpr unsigned i=2;   // Halo 4 only
     auto& r=runtime[i];
     if (!frame||object==UINT32_MAX||!(object>>16)) return false;
+    if (r.markerFrameFaultsLive.load(std::memory_order_relaxed)>=kMarkerFrameFaultLimit) return false;
     // The callback lease covers this call as it covers the hooks', so retirement waits for it.
     r.callbacks.fetch_add(1,std::memory_order_acq_rel);
     bool ok=false;
@@ -641,6 +646,7 @@ bool NativeVehicleFirstPerson_Halo4MarkerFrame(uint32_t object,uint32_t name,boo
     } __except(EXCEPTION_EXECUTE_HANDLER) {
         ok=false;
         r.markerFrameFaults.fetch_add(1,std::memory_order_relaxed);
+        r.markerFrameFaultsLive.fetch_add(1,std::memory_order_relaxed);
     }
     r.callbacks.fetch_sub(1,std::memory_order_release);
     return ok;
@@ -784,7 +790,12 @@ void NativeVehicleFirstPerson_Poll()
                 if (markerFaults!=faultsSaid) {
                     faultsSaid=markerFaults;
                     LOG("Vehicle first person title=4: the vehicle cameras' marker reads faulted %llu time(s) (each "
-                        "such frame keeps the seat's own eye)",static_cast<unsigned long long>(markerFaults));
+                        "such frame places no vehicle camera)%s",
+                        static_cast<unsigned long long>(markerFaults),
+                        r.markerFrameFaultsLive.load(std::memory_order_relaxed)>=kMarkerFrameFaultLimit
+                            ?"; they are no longer asked for until this game's next start, so no vehicle camera "
+                             "is placed until then"
+                            :"");
                 }
             }
 #if HALOMCCVR_DEV_DIAGNOSTICS

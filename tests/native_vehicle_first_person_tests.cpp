@@ -175,7 +175,16 @@ template<unsigned I> void Run()
         Check(!NativeVehicleFirstPerson_Halo4MarkerFrame(owned.unit,0x122,true,frame)&&
             r.markerFrameFaults.load()==faults+1&&!r.faulted.load()&&r.callbacks.load()==0,
             "a faulting read is counted, leaves the override standing, and returns its lease");
+        while (r.markerFrameFaultsLive.load()<kMarkerFrameFaultLimit)
+            NativeVehicleFirstPerson_Halo4MarkerFrame(owned.unit,0x122,true,frame);
         markerFault=false;
+        const auto latched=r.markerFrameFaults.load();
+        Check(!NativeVehicleFirstPerson_Halo4MarkerFrame(owned.parent,0,true,frame)&&
+            r.markerFrameFaults.load()==latched&&!r.faulted.load(),
+            "past the fault limit the reads are no longer asked for, even one that would answer");
+        r.markerFrameFaultsLive.store(0);
+        Check(NativeVehicleFirstPerson_Halo4MarkerFrame(owned.parent,0,true,frame),
+            "and the lane installed afresh asks again");
         activeTitle=GameTitle::Halo2;
         Check(!NativeVehicleFirstPerson_Halo4MarkerFrame(owned.parent,0,true,frame),"the reads answer only in Halo 4");
         activeTitle=GameTitle::Halo4;r.ready=false;
