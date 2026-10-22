@@ -872,8 +872,17 @@ void RetireOdstVehicleBoom()
 // an address in that image? Retires it if so.
 bool OdstVehicleBoomRetireWithin(uintptr_t base, size_t size)
 {
-    if (!g_odstVehicleBoom.generation.load(std::memory_order_acquire) ||
-        !title_image_guard::Within(reinterpret_cast<uintptr_t>(g_odstTagDataBase), base, size))
+    const Halo3VehicleBoomBinding& boom = g_odstVehicleBoom;
+    if (!boom.generation.load(std::memory_order_acquire))
+        return false;
+    // Every address the reads go through: the tag tables' slots, the game globals' slot and the preferences.
+    const uintptr_t kept[] = {reinterpret_cast<uintptr_t>(g_odstTagDataBase),
+                              reinterpret_cast<uintptr_t>(g_odstTagInstanceTable),
+                              reinterpret_cast<uintptr_t>(boom.globals), reinterpret_cast<uintptr_t>(boom.preferences)};
+    bool within = false;
+    for (const uintptr_t address : kept)
+        within = within || title_image_guard::Within(address, base, size);
+    if (!within)
         return false;
     RetireOdstVehicleBoom();
     return true;

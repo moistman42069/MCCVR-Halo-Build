@@ -76,7 +76,8 @@ inline constexpr size_t kHalo3TlsHudUsers = 0xF0;
 inline constexpr int32_t kHalo3HudMessageType = 3;
 
 // ODST posts its HUD lines inline (no post function): the queue is called with the user's queue address, which its
-// callers make as [TLS + kOdstTlsHudUsers] + user * kOdstHudUserStride + kOdstHudQueueOffset.
+// callers make as [TLS + kOdstTlsHudUsers] + user * 0x3B88 + kOdstHudQueueOffset (user 0's: the HUD users' base
+// plus the offset).
 using Halo3HudQueueFn = void(__fastcall*)(void* queue, const wchar_t* text, int32_t type);
 
 struct Halo3HudNote
