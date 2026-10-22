@@ -661,12 +661,15 @@ bool Halo4VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, const vehicle
     Halo3BoomCamera& boom = g_halo3BoomCamera;
     if (!boom.held && !boom.local && (rest.distance >= kHalo4RestKnownWu || waitOver))
     {
-        // Where Halo 4's cold worker starts it (VehicleBoomColdTick): the measured level look, else the unmeasured
-        // one, raised a little.
+        // Where Halo 4's cold worker starts it (VehicleBoomColdTick): the camera's own "boomPitch", else the measured
+        // level look, else the unmeasured one, raised a little. (A start the player kept for the seat is the cold
+        // worker's alone: until its publication comes, the frame or two between stand on this.)
         const float levelDeg = vehicle_boom::BoomPitchSet(g_halo4VehicleCameraLevel.deg)
                                    ? g_halo4VehicleCameraLevel.deg
                                    : halo4_vehicle_camera::kUnmeasuredLevelElevationDeg;
-        Halo3BoomStandIn(halo4_vehicle_camera::BoomRange(), levelDeg + vehicle_boom::kDefaultRaiseDeg);
+        Halo3BoomStandIn(halo4_vehicle_camera::BoomRange(), vehicle_camera_file::BoomPitchSet(camera.boomPitchDeg)
+                                                                ? camera.boomPitchDeg
+                                                                : levelDeg + vehicle_boom::kDefaultRaiseDeg);
     }
     if (rest.distance >= kHalo4RestKnownWu && (boom.held || boom.local))
     {
