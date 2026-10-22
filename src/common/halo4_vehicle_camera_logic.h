@@ -138,32 +138,32 @@ inline void NearestOnLine(const float o[3], const float d[3], const float p[3], 
 // THE PIVOT FINDER. Each sample is a line, the game's camera and the way it looks, in the vehicle's own frame (world
 // units). The point nearest all of them, in the least-squares sense, is where they cross:
 //   A = sum (I - d d^T),  b = sum (I - d d^T) o,  A p = b.
-// A is well conditioned only when the directions spread: its smallest eigenvalue, per sample, is about
+// A is well conditioned only when the directions spread: its smallest eigenvalue, per unit of weight, is about
 // sin^2(spread / 2) for two directions `spread` apart. The answer is given once that passes kMinSpread and the lines
 // pass within kMaxResidualWu of the point on average: a camera track shifts the line a little off the pivot, and
 // lines that miss by more than that are not the following camera's.
+// The sums FORGET: each new line weighs 1 and every older one kKeep times what it did, so a few seconds of lines
+// decide (about 1 / (1 - kKeep) of them) and a line from a moment the game's camera was not yet its following one --
+// the director's own change of view -- is gone soon after.
 struct PivotFinder
 {
     // The spread the lines' directions must have (sin^2 of half of about 8 degrees), and how near the point the lines
     // must pass, root mean square (about 1.5 m).
     static constexpr double kMinSpread = 0.0049;
     static constexpr double kMaxResidualWu = 0.5;
-    // Samples are not added past this many: the point is fixed on the vehicle, and plain sums would otherwise grow
-    // without end (they are kept, not decayed).
-    static constexpr uint32_t kMaxSamples = 4000;
+    static constexpr double kKeep = 0.998;
 
     double a[6]{}; // xx, xy, xz, yy, yz, zz
     double b[3]{};
     double c = 0.0; // sum o^T (I - d d^T) o, for the residual
-    uint32_t samples = 0;
+    double weight = 0.0;
+    uint32_t samples = 0; // lines taken, for the log
 
     void Reset() noexcept { *this = PivotFinder{}; }
 
-    // False (nothing added) for a sample that is not finite, a direction that is not a unit vector, or a full finder.
+    // False (nothing added) for a sample that is not finite or a direction that is not a unit vector.
     bool Add(const float o[3], const float d[3]) noexcept
     {
-        if (samples >= kMaxSamples)
-            return false;
         for (int axis = 0; axis < 3; ++axis)
             if (!std::isfinite(o[axis]) || !std::isfinite(d[axis]))
                 return false;
@@ -176,20 +176,21 @@ struct PivotFinder
         const double mo[3] = {m[0] * ox + m[1] * oy + m[2] * oz, m[1] * ox + m[3] * oy + m[4] * oz,
                               m[2] * ox + m[4] * oy + m[5] * oz};
         for (int k = 0; k < 6; ++k)
-            a[k] += m[k];
+            a[k] = a[k] * kKeep + m[k];
         for (int k = 0; k < 3; ++k)
-            b[k] += mo[k];
-        c += ox * mo[0] + oy * mo[1] + oz * mo[2];
+            b[k] = b[k] * kKeep + mo[k];
+        c = c * kKeep + ox * mo[0] + oy * mo[1] + oz * mo[2];
+        weight = weight * kKeep + 1.0;
         ++samples;
         return true;
     }
 
-    // The smallest eigenvalue of A per sample: how far the directions spread (0 = all one way).
+    // The smallest eigenvalue of A per unit of weight: how far the directions spread (0 = all one way).
     double Spread() const noexcept
     {
-        if (!samples)
+        if (!(weight > 0.0))
             return 0.0;
-        const double n = static_cast<double>(samples);
+        const double n = weight;
         const double m00 = a[0] / n, m01 = a[1] / n, m02 = a[2] / n, m11 = a[3] / n, m12 = a[4] / n, m22 = a[5] / n;
         const double p1 = m01 * m01 + m02 * m02 + m12 * m12;
         if (p1 <= 1.0e-18)
@@ -229,7 +230,7 @@ struct PivotFinder
                               m02 * p[0] + m12 * p[1] + m22 * p[2]};
         double sum = p[0] * ap[0] + p[1] * ap[1] + p[2] * ap[2] - 2.0 * (p[0] * b[0] + p[1] * b[1] + p[2] * b[2]) + c;
         sum = sum < 0.0 ? 0.0 : sum;
-        const double residual = std::sqrt(sum / static_cast<double>(samples));
+        const double residual = std::sqrt(sum / weight);
         if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2]) || !(residual <= kMaxResidualWu))
             return false;
         for (int axis = 0; axis < 3; ++axis)

@@ -187,6 +187,24 @@ static void TestPivotFinder()
     finder.Reset();
     Check(finder.samples == 0 && !finder.Solve(found), "and a reset forgets every line");
 
+    // Lines from the director's change of view (a camera looking along another point) are forgotten within a few
+    // seconds of following-camera lines: the answer then is the following camera's pivot.
+    PivotFinder forgets;
+    const float elsewhere[3] = {3.0f, 2.0f, -1.0f};
+    for (int i = 0; i < 60; ++i)
+    {
+        Following(elsewhere, 1.5f, -30.0f + static_cast<float>(i), 5.0f, o, d);
+        forgets.Add(o, d);
+    }
+    for (int i = 0; i < 3000; ++i)
+    {
+        Following(pivot, 2.3f, -40.0f + static_cast<float>(i % 80), -6.0f + static_cast<float>(i % 9), o, d);
+        forgets.Add(o, d);
+    }
+    Check(forgets.Solve(found, &residual) && std::fabs(found[0] - pivot[0]) < 0.01f &&
+              std::fabs(found[1] - pivot[1]) < 0.01f && std::fabs(found[2] - pivot[2]) < 0.01f,
+          "early lines through another point are forgotten");
+
     float near[3];
     const float lineO[3] = {-3.0f, 0.0f, 1.0f}, lineD[3] = {1.0f, 0.0f, 0.0f}, origin[3] = {0.0f, 0.0f, 0.0f};
     NearestOnLine(lineO, lineD, origin, near);
