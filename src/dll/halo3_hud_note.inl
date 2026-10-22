@@ -91,7 +91,8 @@ struct Halo3HudNote
     // Whether the thread's game mode is checked before a post (Halo 3: MCC's own caller checks it, at the offset that
     // proves it; ODST's caller does not show where, so a post there needs the game clock and the HUD block alone).
     bool checksGameMode = true;
-    const char* title = "Halo 3";
+    const char* const title; // whose note, for the log; fixed at construction, so the cold worker's read never races
+    explicit Halo3HudNote(const char* name) : title(name) {}
     // The mailbox: the cold worker's latest note. `serial` and the texts change together under the lock; `wanted`
     // mirrors `serial` for the game thread's lock-free check.
     SRWLOCK lock = SRWLOCK_INIT;
@@ -106,7 +107,7 @@ struct Halo3HudNote
     std::atomic<int> notReadyWhy{0}; // the last Halo3HudNoteThreadReady refusal (Halo3HudNoteNotReadyText)
     uint32_t reportedPosted = 0, reportedFallbacks = 0, reportedFaults = 0; // cold worker
 };
-Halo3HudNote g_halo3HudNote;
+Halo3HudNote g_halo3HudNote{"Halo 3"};
 
 bool InstallHalo3HudNote(uintptr_t base, size_t size, uint32_t generation)
 {
@@ -373,13 +374,12 @@ static_assert(Halo3HudPatternBytes(kOdstHudPostSiteSig) == 66 && kOdstHudPostSit
 inline constexpr size_t kOdstTlsHudUsers = 0x100;
 inline constexpr size_t kOdstHudQueueOffset = 0x2D00;
 
-Halo3HudNote g_odstHudNote;
+Halo3HudNote g_odstHudNote{"ODST"};
 
 bool InstallOdstHudNote(uintptr_t base, size_t size, uint32_t generation)
 {
     auto& note = g_odstHudNote;
     note.queue.store(nullptr, std::memory_order_release);
-    note.title = "ODST";
     const auto rip = [](uintptr_t at, size_t disp) { return sig::RipTarget(at + disp, at + disp + 4); };
     const char* why = nullptr;
     uintptr_t site = 0, queue = 0, tls = 0;
