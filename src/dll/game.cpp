@@ -14598,6 +14598,17 @@ namespace
             g_camValid.load(std::memory_order_acquire);
     }
 
+    // The ODST seat's view is the mod's: C20 holds the seat in the game's own first-person camera, or a chase camera
+    // of the vehicle cameras' is chosen for it. Under a chase camera the seat keeps the game's third-person camera
+    // (the sampler gives the flag back), which is where a stock seat is aimed from, and the mod places the view at a
+    // pitch of its own, never the aim's: the same as a Halo 3 seat under one, whose view stays owned.
+    bool OdstSeatViewOwned()
+    {
+        return g_odstNativeSeatState.load(std::memory_order_acquire) ==
+                   static_cast<uint32_t>(OdstNativeSeatState::Active) ||
+            Halo3VehicleCameraThirdPerson();
+    }
+
     // O3: the follow gate for the shared reader. ODST answers only when its
     // own transaction is armed and fresh, so a Halo 3 sample can never pitch
     // an ODST camera or the reverse.
@@ -57196,9 +57207,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                     }
                 }
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
-                else if (sightTitle == GameTitle::Halo3ODST && OdstVehicleFpActive() &&
-                         g_odstNativeSeatState.load(std::memory_order_acquire) ==
-                             static_cast<uint32_t>(OdstNativeSeatState::Active))
+                // ODST: also under a chase camera of the vehicle cameras' (OdstSeatViewOwned), where the seat keeps
+                // the game's third-person camera: a stock seat is aimed from that camera, so g_baseCam is the eye
+                // the seat fires from, as in a Halo 3 seat under one. Its trace is what a "collide" camera and the
+                // aim ring's depth read.
+                else if (sightTitle == GameTitle::Halo3ODST && OdstVehicleFpActive() && OdstSeatViewOwned())
                 {
                     convergeWhy = converge::ConvergeOff::SeatUnnamed;
                     OdstSeatSnapshot seat;
@@ -57830,15 +57843,20 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                     if (OdstReadSeatSnapshot(seat) && seat.parentHandle != -1)
                     {
                         seatFacts.identified = seat.identity != OdstVehicleId::Unknown;
-                        seatFacts.view_owned = g_odstNativeSeatState.load(std::memory_order_acquire) ==
-                            static_cast<uint32_t>(OdstNativeSeatState::Active);
+                        // Owned while C20 holds the seat, and under a chase camera of the vehicle cameras' (as a Halo 3
+                        // seat under one): the view is then the mod's, at a pitch of its own (OdstSeatViewOwned).
+                        seatFacts.view_owned = OdstSeatViewOwned();
                         seatFacts.driver = OdstSeatIsDriver(seat.identity, seat.seatIndex, seat.mounted);
                         seatFacts.look_steered = OdstVehicleIsLookSteered(seat.identity);
                         seatAircraft = seat.identity == OdstVehicleId::Banshee || seat.identity == OdstVehicleId::Hornet;
                         seatKey = seat_drive::SeatKey(seat.parentHandle, seat.seatIndex, seat.mounted);
-                        gunSlavedSeat = seatFacts.view_owned &&
+                        // As Halo 3's: a seat whose camera is slaved to its gun is paced while the view is ours; the
+                        // game's own first-person seat camera is that gun camera only while C20 holds the seat.
+                        gunCameraSeat = seatFacts.view_owned &&
                             gun_slaved::CameraSlavedToGun(OdstOccupiedSeatFlags());
-                        gunCameraSeat = gunSlavedSeat;
+                        gunSlavedSeat = gunCameraSeat &&
+                            g_odstNativeSeatState.load(std::memory_order_acquire) ==
+                                static_cast<uint32_t>(OdstNativeSeatState::Active);
                         gunSlavedKey = seatKey;
                     }
                 }
