@@ -152,7 +152,8 @@ static void TestEditsAreFollowed()
     Check(gone.created && gone.changed, "a file deleted while running is written afresh");
     Check(store.Current().FindGame("halo3") != nullptr && store.Current().FindGame("halo3")->key == std::string("halo3") &&
               store.Current().FindGame("reach")->key == std::string("reach") &&
-              store.Current().FindGame("odst")->key == std::string(kDefaultKey),
+              store.Current().FindGame("odst")->key == std::string("odst") &&
+              store.Current().FindGame("halo4")->key == std::string(kDefaultKey),
           "and the built-in cameras are back in use");
 }
 

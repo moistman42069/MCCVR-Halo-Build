@@ -238,8 +238,8 @@ static void TestANewSection()
         const Vehicle* other = Matched(after, "reach", "forklift", driver);
         Check(other && other->isDefault && other->cameras.size() == 3,
               "and every other Reach vehicle the default entry it had");
-        const Vehicle* odst = Matched(after, "odst", "warthog", driver);
-        Check(odst && odst->isDefault, "other games still ride on the default section");
+        const Vehicle* halo4 = Matched(after, "halo4", "warthog", driver);
+        Check(halo4 && halo4->isDefault, "other games still ride on the default section");
         std::size_t same = 0;
         while (same < original.size() && original[same] == text[same])
             ++same;
@@ -261,7 +261,7 @@ static void TestANewSection()
 }
 
 // The same rule in Halo 3: a file without a "halo3" section (its vehicles riding on "default", every game's) gets
-// Halo 3's own section, not Halo 3 entries written into "default" where ODST and the others would find them.
+// Halo 3's own section, not Halo 3 entries written into "default" where Halo 4 and the others would find them.
 static void TestAHalo3NewSection()
 {
     const Table builtIn = DefaultTable();
@@ -292,8 +292,8 @@ static void TestAHalo3NewSection()
     Table after;
     Check(FromJson(text.data(), text.size(), after).ok && after.FindGame("halo3")->key == "halo3",
           "and the file reads with a Halo 3 section");
-    const Vehicle* odst = Matched(after, "odst", "warthog", driver);
-    Check(odst && odst->isDefault, "while ODST's Warthog still rides on the default section");
+    const Vehicle* other = Matched(after, "halo4", "warthog", driver);
+    Check(other && other->isDefault, "while Halo 4's Warthog still rides on the default section");
 }
 
 int main()
