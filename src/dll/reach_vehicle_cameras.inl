@@ -704,23 +704,29 @@ void ReachVehicleCamerasPass(ReachVehicleFrame& frame, const unsigned char* stoc
         return;
     const VehicleCameraSeatKey key = ReachVehicleCameraKey(frame);
 
-    // A FIRSTPERSON CAMERA'S "offset": the seat's eye moved along the seated object's own frame.
+    // A FIRSTPERSON CAMERA'S "offset": the seat's eye moved along the seated object's own frame -- kept within the
+    // seated object's bounds and a margin, as Halo 3 keeps its own (Halo3AnchorWithinBounds, 2 world units).
     float nudge[3];
     if (Halo3VehicleCameraEyeNudge(key.generation, key.vehicle, key.seatIndex, key.identity, key.mounted, nudge))
     {
         vehicle_camera_frame::Basis basis{};
         if (frame.rootValid && ReachVehicleCameraBasis(frame.rootForward, frame.rootUp, basis))
         {
-            float moved[3], hands[3];
+            constexpr float kNudgeMarginWu = 2.0f;
+            const float reachWu = (std::isfinite(frame.boundsRadius) && frame.boundsRadius > 0.0f ? frame.boundsRadius
+                                                                                                   : 0.0f) +
+                                  kNudgeMarginWu;
+            float moved[3], hands[3], fromRoot[3];
             bool finite = true;
             for (int axis = 0; axis < 3; ++axis)
             {
                 const float by = basis.forward[axis] * nudge[0] - basis.left[axis] * nudge[1] + basis.up[axis] * nudge[2];
                 moved[axis] = frame.cameraBase[axis] + by;
                 hands[axis] = frame.handsBase[axis] + by;
+                fromRoot[axis] = moved[axis] - frame.rootPos[axis];
                 finite = finite && std::isfinite(moved[axis]) && std::isfinite(hands[axis]);
             }
-            if (finite)
+            if (finite && vehicle_camera_frame::Dot(fromRoot, fromRoot) <= reachWu * reachWu)
             {
                 memcpy(frame.cameraBase, moved, sizeof(moved));
                 memcpy(frame.handsBase, hands, sizeof(hands));
