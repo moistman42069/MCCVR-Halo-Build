@@ -11164,9 +11164,13 @@ namespace
         }
         if (faulted)
         {
-            // A fault inside the copy leaves the sequence odd: close it, so a capture after the probe is armed again
-            // reads as stable (one writer: this camera thread).
+            // A fault inside the copy leaves the window torn and the sequence odd. The capture is marked not valid
+            // first, then the sequence is closed, so a capture after the probe is armed again reads as stable while
+            // the torn window never does: a reader that sees the closed sequence also sees `valid` cleared (its
+            // re-check after the copy). One writer: this camera thread.
             Halo3ObserverCapture& cap = g_halo3ObserverCapture;
+            cap.valid.store(0, std::memory_order_relaxed);
+            cap.captureMs.store(0, std::memory_order_relaxed);
             if (cap.seq.load(std::memory_order_relaxed) & 1u)
                 cap.seq.fetch_add(1, std::memory_order_release);
             Halo3DisableVehicleProbe("observer capture fault");
@@ -11195,7 +11199,11 @@ namespace
         const float a0 = cap.floats[focusIndex];
         const float a1 = cap.floats[focusIndex + 1];
         const float a2 = cap.floats[focusIndex + 2];
+        std::atomic_thread_fence(std::memory_order_acquire);
         if (cap.seq.load(std::memory_order_acquire) != seq)
+            return false;
+        // A capture that faulted is closed with `valid` already cleared (Halo3CaptureObserver).
+        if (!cap.valid.load(std::memory_order_relaxed))
             return false;
         if (!isfinite(a0) || !isfinite(a1) || !isfinite(a2))
             return false;
@@ -16488,13 +16496,15 @@ namespace
         }
         if (faulted)
         {
-            // A fault inside the copy leaves the sequence odd: close it, so a capture after ODST loads again reads
-            // as stable (one writer: this camera thread).
+            // A fault inside the copy leaves the window torn and the sequence odd: marked not valid first, then
+            // closed, as Halo 3's (Halo3CaptureObserver), so a capture after ODST loads again reads as stable and the
+            // torn window never does. One writer: this camera thread.
             Halo3ObserverCapture& cap = g_odstObserverCapture;
+            cap.valid.store(0, std::memory_order_relaxed);
+            cap.captureMs.store(0, std::memory_order_relaxed);
             if (cap.seq.load(std::memory_order_relaxed) & 1u)
                 cap.seq.fetch_add(1, std::memory_order_release);
             g_odstObserverSlot.store(0, std::memory_order_release);
-            g_odstObserverCapture.valid.store(0, std::memory_order_release);
             g_odstObserverFaults.fetch_add(1, std::memory_order_relaxed);
         }
     }

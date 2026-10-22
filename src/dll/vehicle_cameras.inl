@@ -514,7 +514,11 @@ bool Halo3ReadObserverCamera(float position[3], float focus[3], float* forward =
     const float at[3] = {cap.floats[positionIndex], cap.floats[positionIndex + 1], cap.floats[positionIndex + 2]};
     const float about[3] = {cap.floats[focusIndex], cap.floats[focusIndex + 1], cap.floats[focusIndex + 2]};
     float along[3] = {cap.floats[forwardIndex], cap.floats[forwardIndex + 1], cap.floats[forwardIndex + 2]};
+    std::atomic_thread_fence(std::memory_order_acquire);
     if (cap.seq.load(std::memory_order_acquire) != seq)
+        return false;
+    // A capture that faulted is closed with `valid` already cleared (Halo3CaptureObserver, OdstCaptureObserver).
+    if (!cap.valid.load(std::memory_order_relaxed))
         return false;
     if (!vehicle_camera_place::Finite3(at) || !vehicle_camera_place::Finite3(about))
         return false;
