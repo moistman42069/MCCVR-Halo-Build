@@ -416,15 +416,40 @@ struct Halo3BoomSeatFacts
     int physicsType = -1;
 };
 
+// Where a title keeps the tags a seat camera is read from: its loaded-tag tables (the slots holding the instance
+// table and the tag data base), the vehicle definition's seats block, and the game globals' default track. Halo 3's
+// and ODST's differ only in these (ODST's definitions are 0x20 longer before the seats block, its globals 0x10).
+struct Halo3BoomTagSource
+{
+    void** instances = nullptr;
+    void** tagBase = nullptr;
+    uintptr_t seatsBlock = 0;
+    uintptr_t defaultTrack = 0;
+};
+
 namespace
 {
+// A loaded tag's definition by its datum, through the source's tables (Halo3LoadedTagDefinition's lookup). Guarded
+// by the caller.
+const unsigned char* Halo3BoomLoadedTag(const Halo3BoomTagSource& source, uint32_t datum)
+{
+    const auto* instances = source.instances ? static_cast<const unsigned char*>(*source.instances) : nullptr;
+    const auto* tagBase = source.tagBase ? static_cast<const unsigned char*>(*source.tagBase) : nullptr;
+    const uint32_t index = datum & 0xFFFFu;
+    if (!instances || !tagBase || index == 0xFFFFu)
+        return nullptr;
+    const uint32_t address = *reinterpret_cast<const uint32_t*>(instances + static_cast<size_t>(index) * 8 + 4);
+    return address ? tagBase + static_cast<size_t>(address) * 4 : nullptr;
+}
+
 // One track's control points, by its 'trak' tag index. Guarded by the caller.
-void Halo3BoomCopyTrack(const unsigned char* tagBase, uint32_t trak, vehicle_boom::Track& out, int32_t* points)
+void Halo3BoomCopyTrack(const Halo3BoomTagSource& source, const unsigned char* tagBase, uint32_t trak,
+                        vehicle_boom::Track& out, int32_t* points)
 {
     out.count = 0;
     if ((trak & 0xFFFFu) == 0xFFFFu)
         return;
-    const unsigned char* definition = Halo3LoadedTagDefinition(trak);
+    const unsigned char* definition = Halo3BoomLoadedTag(source, trak);
     if (!definition)
         return;
     const int32_t count = *reinterpret_cast<const int32_t*>(definition + kHalo3TrackPointsCountOffset);
@@ -442,20 +467,20 @@ void Halo3BoomCopyTrack(const unsigned char* tagBase, uint32_t trak, vehicle_boo
     out.count = count;
 }
 
-bool Halo3BoomReadSeatGuarded(uint32_t definitionIndex, int seatIndex, void* const* globals, bool withTrack,
-                              Halo3BoomSeatFacts& out)
+bool Halo3BoomReadSeatGuarded(const Halo3BoomTagSource& source, uint32_t definitionIndex, int seatIndex,
+                              void* const* globals, bool withTrack, Halo3BoomSeatFacts& out)
 {
     __try
     {
         const unsigned char* tagBase =
-            g_halo3TagDataBase ? static_cast<const unsigned char*>(*g_halo3TagDataBase) : nullptr;
+            source.tagBase ? static_cast<const unsigned char*>(*source.tagBase) : nullptr;
         if (!tagBase || definitionIndex > 0xFFFFu || seatIndex < 0 || seatIndex > kHalo3VehicleSeatMax)
             return false;
-        const unsigned char* definition = Halo3LoadedTagDefinition(definitionIndex);
+        const unsigned char* definition = Halo3BoomLoadedTag(source, definitionIndex);
         if (!definition)
             return false;
-        const int32_t seats = *reinterpret_cast<const int32_t*>(definition + kHalo3VehicleSeatsBlockOffset);
-        const uint32_t seatsAddress = *reinterpret_cast<const uint32_t*>(definition + kHalo3VehicleSeatsBlockOffset + 4);
+        const int32_t seats = *reinterpret_cast<const int32_t*>(definition + source.seatsBlock);
+        const uint32_t seatsAddress = *reinterpret_cast<const uint32_t*>(definition + source.seatsBlock + 4);
         if (seats <= 0 || seats > 126 || seatIndex >= seats || !seatsAddress)
             return false;
         const unsigned char* seat =
@@ -475,7 +500,7 @@ bool Halo3BoomReadSeatGuarded(uint32_t definitionIndex, int seatIndex, void* con
         if (first == 0xFFFFFFFFu && globals && *globals)
         {
             const uint32_t fallback = *reinterpret_cast<const uint32_t*>(
-                static_cast<const unsigned char*>(*globals) + kHalo3GlobalsDefaultTrackOffset);
+                static_cast<const unsigned char*>(*globals) + source.defaultTrack);
             if (fallback)
             {
                 first = *reinterpret_cast<const uint32_t*>(tagBase + static_cast<size_t>(fallback) * 4 +
@@ -483,9 +508,9 @@ bool Halo3BoomReadSeatGuarded(uint32_t definitionIndex, int seatIndex, void* con
                 out.defaultTrack = true;
             }
         }
-        Halo3BoomCopyTrack(tagBase, first, out.track, &out.points);
+        Halo3BoomCopyTrack(source, tagBase, first, out.track, &out.points);
         if (tracks && out.tracks >= 2)
-            Halo3BoomCopyTrack(tagBase,
+            Halo3BoomCopyTrack(source, tagBase,
                                *reinterpret_cast<const uint32_t*>(tracks + kHalo3CameraTrackStride +
                                                                   kHalo3CameraTrackTagOffset),
                                out.second, nullptr);
@@ -520,7 +545,10 @@ bool Halo3VehicleBoomReadSeat(uint32_t definitionIndex, int seatIndex, Halo3Boom
     out = Halo3BoomSeatFacts{};
     if (!Halo3VehicleBoomBound() || !g_halo3VehicleBoom.seatCamera)
         return false;
-    if (!Halo3BoomReadSeatGuarded(definitionIndex, seatIndex, g_halo3VehicleBoom.globals, g_halo3VehicleBoom.track, out))
+    const Halo3BoomTagSource source{g_halo3TagInstanceTable, g_halo3TagDataBase, kHalo3VehicleSeatsBlockOffset,
+                                    kHalo3GlobalsDefaultTrackOffset};
+    if (!Halo3BoomReadSeatGuarded(source, definitionIndex, seatIndex, g_halo3VehicleBoom.globals,
+                                  g_halo3VehicleBoom.track, out))
         return false;
     int32_t counts[10]{};
     float jeep[2]{}, tails[3]{}, scoutAccel = 0.0f;
@@ -569,3 +597,236 @@ bool Halo3VehicleBoomGameInverts(bool piloting, bool& inverts)
     inverts = vehicle_boom::GameInverts(look, flight, piloting && g_halo3VehicleBoom.pilot);
     return true;
 }
+
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+// ---- ODST ------------------------------------------------------------------------------------------------------
+// ODST's seat camera (+0x39A070), look update (+0x113AB8), following camera (+0x244118) and track (+0x244B94) are
+// Halo 3's (+0x355898, +0xF7DF0, +0x213CF4, +0x2146C0), instruction for instruction (RVAs of the pinned modules).
+// What differs is ODST's: the seat camera reads the seats block at definition +0x27C and the seat word at +0x262
+// (Halo 3's +0x25C, +0x24E); the track takes the game globals' default at +0x40C (+0x3FC); the look update keeps its
+// player records 0x2C0 apart (0x110) at TLS +0xD8 (+0xC0) and allocates its registers its own way, with the same
+// +-85.5 deg limits, its clamp reading the seat camera's +0x10 / +0x14; the following camera calls the seat camera,
+// the solver and the track in the same order. So ODST has signatures of its own for five sites; the solver, the follow
+// offset, the track's two inner sites, the cubic and the rotation match Halo 3's signatures as they are. Bound at
+// ODST's install against ODST's own tag tables, cross-checked as Halo 3's are. ODST's gamepad abstraction is not
+// bound: its look inversion is not read, and vehicle_boom_invert decides.
+// ADDR-HYGIENE: resolved + guarded, as BindHalo3VehicleBoom's; retired by the title image guard at ODST's unload.
+
+// +0x39A110, in +0x39A070: a seated unit's camera is its parent's seat record + 0x68. Tag base at +12, instance table
+// at +22 (Halo 3's kBoomSeatCameraSig with ODST's seats block and seat word; the on-foot camera's offset wildcarded).
+inline constexpr char kOdstBoomSeatCameraSig[] =
+    "48 8B 48 48 48 8B 44 D1 10 48 8B 15 ?? ?? ?? ?? 0F B7 08 48 8B 05 ?? ?? ?? ?? 44 8B 44 C8 04 45 85 C0 75 04 33 "
+    "C0 EB 04 4A 8D 04 82 8B 88 7C 02 00 00 85 C9 75 04 33 C9 EB 04 48 8D 0C 8A 49 0F BF C2 4C 69 C0 D4 00 00 00 44 "
+    "89 0B 49 8D 40 68 48 03 C1 48 89 43 08 0F B7 87 62 02 00 00 66 89 43 04 41 8B 04 08 83 E0 14 3C 14 75 39 48 8D "
+    "53 10 41 8B C9 E8 ?? ?? ?? ?? EB 2B 0F B7 0F 48 8B 05 ?? ?? ?? ?? 8B 54 C8 04 85 D2 75 04 33 C0 EB 0B 48 8B 05 ?? "
+    "?? ?? ?? 48 8D 04 90 48 05 ?? ?? 00 00 48 89 43 08";
+// +0x113B2F, in +0x113AB8: the look update loads its upper limit (+78) and lower (+103) and asks the seat camera
+// function (+108) for its camera.
+inline constexpr char kOdstBoomLookHeadSig[] =
+    "65 48 8B 04 25 58 00 00 00 4C 63 E1 BF D8 00 00 00 49 69 DC C0 02 00 00 4C 8B 2C D0 48 8B 05 ?? ?? ?? ?? 4A 8B "
+    "3C 2F 8B 88 18 04 00 00 85 C9 75 08 48 83 64 24 30 00 EB 10 48 8B 05 ?? ?? ?? ?? 48 8D 04 88 48 89 44 24 30 F3 "
+    "44 0F 10 2D ?? ?? ?? ?? 48 8D 54 24 50 8B 8C 1F C0 00 00 00 45 0F 28 CD F3 44 0F 10 15 ?? ?? ?? ?? E8 ?? ?? ?? ??";
+// +0x113FEF, in +0x113AB8: the camera's range (+0x10, +0x14) where either end is set, each held to the lower limit
+// (+68).
+inline constexpr char kOdstBoomLookClampSig[] =
+    "48 8B 44 24 58 F3 44 0F 10 05 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? 00 00 F3 0F 10 48 14 41 0F 2E CB F3 0F 10 70 0C "
+    "7A 0F 75 0D F3 0F 10 40 10 41 0F 2E C3 7A 02 74 30 F3 44 0F 10 50 10 44 0F 28 C9 F3 0F 10 05 ?? ?? ?? ?? F3 44 "
+    "0F 5F D0 45 0F 2F EA 77 04 45 0F 28 D5 F3 44 0F 5F C8 45 0F 2F E9 77 04";
+// +0x244537, in +0x244118: the look pitch held to +-90 deg, solved on the camera's track (+44), the track's place
+// and forward at that parameter (+69).
+inline constexpr char kOdstBoomFollowPitchSig[] =
+    "F3 44 0F 58 56 1C F3 0F 10 05 ?? ?? ?? ?? F3 44 0F 5F 15 ?? ?? ?? ?? 41 0F 2F C2 77 04 44 0F 28 D0 45 8A C6 41 "
+    "0F 28 CA 48 8B CB E8 ?? ?? ?? ?? 48 8B 4D BF 4C 8D 4D 97 4C 8D 45 A7 44 88 74 24 20 0F 28 C8 E8 ?? ?? ?? ??";
+// +0x244B94's head: Halo 3's kBoomTrackSig with ODST's globals default (+0x40C). Tag base at +44, instance table at
+// +166, the globals at +139, the rotation at +370.
+inline constexpr char kOdstBoomTrackSig[] =
+    "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 41 54 41 55 41 56 41 57 48 8D 68 A9 48 81 EC C0 00 00 00 8B 51 "
+    "18 45 33 D2 48 8B 1D ?? ?? ?? ?? 49 8B F1 0F 29 70 C8 49 8B F8 0F 29 78 B8 44 0F 29 40 A8 44 0F 28 C1 0F B6 45 "
+    "7F 85 D2 74 25 FF CA 3B C2 0F 4E D0 44 39 51 1C 75 05 41 8B CA EB 07 8B 41 1C 48 8D 0C 83 48 63 C2 48 C1 E0 04 48 "
+    "03 C1 EB 03 49 8B C2 41 83 CB FF 48 85 C0 74 08 8B 48 0C 41 3B CB 75 1B 48 8B 05 ?? ?? ?? ?? 8B 88 0C 04 00 00 49 "
+    "8B C2 85 C9 74 04 48 8D 04 8B 8B 48 0C 48 8B 05 ?? ?? ?? ?? 0F B7 C9 44 39 54 C8 04 0F 84 74 02 00 00 8B 44 C8 "
+    "04 4C 8D 0C 83 4D 85 C9 0F 84 63 02 00 00 41 8B 49 04 41 BF 04 00 00 00 41 3B CF 0F 8C 50 02 00 00 F3 0F 10 3D "
+    "?? ?? ?? ?? 8D 41 FF 66 0F 6E C8 0F 5B C9 0F 28 C1 F3 41 0F 59 C0 F3 0F 5E F9 F3 0F 2C D0 44 0F B7 F2 66 85 D2 7E "
+    "20 45 0F BF C6 41 8D 40 04 3B C1 7F 0A 0F BF C2 FF C8 44 3B C0 7E 0A 66 45 03 F3 66 45 85 F6 7F E0 4D 0F BF EE 48 "
+    "85 FF 0F 84 EE 00 00 00 44 21 55 B3 4C 8D 45 CF 44 21 55 B7 4D 6B E5 1C C7 45 AF 00 00 80 3F 45 39 51 08 75 05 49 "
+    "8B C2 EB 08 41 8B 41 08 48 8D 04 83 41 0F 10 44 04 0C 48 8D 55 AF 48 8D 4D BF F3 0F 7F 45 BF E8 ?? ?? ?? ?? 49 83 "
+    "C4 1C 49 83 C0 0C 49 83 EF 01 75 C7";
+inline constexpr uintptr_t kOdstGlobalsDefaultTrackOffset = 0x40C;
+
+Halo3VehicleBoomBinding g_odstVehicleBoom;
+
+// At ODST's install, after its tag tables are resolved (ResolveOdstVehicleBinding): the seat camera, its look range
+// and its track, as BindHalo3VehicleBoom proves Halo 3's. Each part not proven is unbound on its own and says so.
+void BindOdstVehicleBoom(uintptr_t base, size_t size, uint32_t generation)
+{
+    Halo3VehicleBoomBinding& boom = g_odstVehicleBoom;
+    boom.generation.store(0, std::memory_order_release);
+    boom.seatCamera = boom.limits = boom.track = boom.pilot = false;
+    boom.flatMin = -vehicle_boom::kFlatLookLimit;
+    boom.flatMax = vehicle_boom::kFlatLookLimit;
+    boom.globals = nullptr;
+    boom.preferences = nullptr;
+    if (!generation)
+        return;
+    const auto inside = [base, size](uintptr_t at, size_t bytes) { return at >= base && at + bytes <= base + size; };
+    const auto rip = [&](uintptr_t at, size_t disp, size_t end) -> uintptr_t {
+        return at ? sig::RipTarget(at + disp, at + end) : 0;
+    };
+    const auto here = [&](uintptr_t at, const char* pattern) {
+        const size_t bytes = Halo3BoomPatternBytes(pattern);
+        return at && inside(at, bytes) && sig::Find(at, bytes, pattern) == at;
+    };
+    const auto value = [&](uintptr_t at, float want) {
+        float got = 0.0f;
+        return at && inside(at, 4) && Halo3BoomReadFloat(at, got) && got == want;
+    };
+    const uintptr_t tagBase = reinterpret_cast<uintptr_t>(g_odstTagDataBase);
+    const uintptr_t instances = reinterpret_cast<uintptr_t>(g_odstTagInstanceTable);
+
+    // THE SEAT CAMERA.
+    const uintptr_t seatSite = mcc_clock::FindUnique(base, size, kOdstBoomSeatCameraSig);
+    const uintptr_t seatFn = Halo3BoomFunctionOf(base, seatSite);
+    const char* seatWhy = !seatSite ? "its signature"
+                        : !seatFn ? "its function"
+                        : !tagBase || !instances || rip(seatSite, 12, 16) != tagBase || rip(seatSite, 22, 26) != instances
+                            ? "its tag tables against the mod's"
+                            : nullptr;
+    boom.seatCamera = !seatWhy;
+
+    // THE LOOK LIMITS.
+    const char* limitsWhy = nullptr;
+    if (!boom.seatCamera)
+        limitsWhy = "the seat camera";
+    else
+    {
+        const uintptr_t head = mcc_clock::FindUnique(base, size, kOdstBoomLookHeadSig);
+        const uintptr_t clamp = mcc_clock::FindUnique(base, size, kOdstBoomLookClampSig);
+        const uintptr_t update = Halo3BoomFunctionOf(base, head);
+        const uintptr_t upper = rip(head, 78, 82), lower = rip(head, 103, 107);
+        float hi = 0.0f, lo = 0.0f;
+        if (!head || !clamp)
+            limitsWhy = "its signatures";
+        else if (!update || Halo3BoomFunctionOf(base, clamp) != update)
+            limitsWhy = "its two sites in one function";
+        else if (rip(head, 108, 112) != seatFn)
+            limitsWhy = "its call to the seat camera";
+        else if (rip(clamp, 68, 72) != lower)
+            limitsWhy = "its clamp's lower limit";
+        else if (!inside(upper, 4) || !inside(lower, 4) || !Halo3BoomReadFloat(upper, hi) ||
+                 !Halo3BoomReadFloat(lower, lo) || !(lo < 0.0f && hi > 0.0f && hi <= vehicle_boom::kTrackPitchLimit &&
+                                                     lo >= -vehicle_boom::kTrackPitchLimit))
+            limitsWhy = "its two limits";
+        else
+        {
+            boom.flatMin = lo;
+            boom.flatMax = hi;
+            boom.limits = true;
+        }
+    }
+
+    // THE TRACK.
+    const char* trackWhy = nullptr;
+    if (!boom.seatCamera)
+        trackWhy = "the seat camera";
+    else
+    {
+        const uintptr_t pitch = mcc_clock::FindUnique(base, size, kOdstBoomFollowPitchSig);
+        const uintptr_t offset = mcc_clock::FindUnique(base, size, kBoomFollowOffsetSig);
+        const uintptr_t follow = Halo3BoomFunctionOf(base, pitch);
+        const uintptr_t solver = rip(pitch, 44, 48), track = rip(pitch, 69, 73);
+        const uintptr_t forward = mcc_clock::FindUnique(base, size, kBoomTrackForwardSig);
+        const uintptr_t place = mcc_clock::FindUnique(base, size, kBoomTrackPositionSig);
+        const uintptr_t cubic = rip(forward, 52, 56);
+        if (!pitch || !offset || !follow || Halo3BoomFunctionOf(base, offset) != follow)
+            trackWhy = "the following camera's two sites";
+        else if (!Halo3BoomFunctionCalls(base, follow, seatFn))
+            trackWhy = "the following camera's call to the seat camera";
+        else if (!here(solver, kBoomSolverSig) || rip(solver, 90, 94) != track || !value(rip(solver, 42, 46), 1.0f) ||
+                 !value(rip(solver, 82, 86), vehicle_boom::kSolveHalf) ||
+                 !value(rip(solver, 166, 170), vehicle_boom::kSolveEpsilon))
+            trackWhy = "the pitch solver";
+        else if (!here(track, kOdstBoomTrackSig) || rip(track, 44, 48) != tagBase || rip(track, 166, 170) != instances)
+            trackWhy = "the track";
+        else if (!forward || !place || Halo3BoomFunctionOf(base, forward) != track ||
+                 Halo3BoomFunctionOf(base, place) != track || rip(place, 142, 146) != cubic ||
+                 !here(cubic, kBoomCubicSig) || !value(rip(cubic, 84, 88), vehicle_boom::kCubicThree))
+            trackWhy = "the track's cubic";
+        else if (!here(rip(track, 370, 374), kBoomRotateSig) || !value(rip(rip(track, 370, 374), 190, 194), 1.0f))
+            trackWhy = "the track's rotation";
+        else if (!inside(rip(track, 139, 143), sizeof(void*)))
+            trackWhy = "the game globals' default track";
+        else
+        {
+            boom.globals = reinterpret_cast<void* const*>(rip(track, 139, 143));
+            boom.track = true;
+        }
+    }
+
+    boom.generation.store(generation, std::memory_order_release);
+    if (seatWhy)
+        LOG("ODST third-person boom: the seat camera (+0x39A070) did not prove (%s); the boom orbits the game's pivot",
+            seatWhy);
+    else
+        LOG("ODST third-person boom: the seat camera at +0x%llX; look limits %s; camera track %s; the look inversion "
+            "is not read (vehicle_boom_invert decides)",
+            static_cast<unsigned long long>(seatFn - base),
+            limitsWhy ? "not proven (the flat game's own +-85.5 deg are used)" : "from the seat camera, held to the look "
+                                                                                 "update's own (+0x113AB8)",
+            trackWhy ? "not proven: the boom orbits the game's pivot at its own distance" : "proven (+0x244118)");
+    if (!seatWhy && limitsWhy)
+        LOG("ODST third-person boom: the look limits did not prove (%s)", limitsWhy);
+    if (!seatWhy && trackWhy)
+        LOG("ODST third-person boom: the camera track did not prove (%s)", trackWhy);
+}
+
+// Before halo3odst.dll goes (its teardown), and at its unload (the title image guard): the reads below stop.
+void RetireOdstVehicleBoom()
+{
+    g_odstVehicleBoom.generation.store(0, std::memory_order_release);
+}
+
+// The title image guard's question at an unload (loader lock held, no reader inside its read): does the binding keep
+// an address in that image? Retires it if so.
+bool OdstVehicleBoomRetireWithin(uintptr_t base, size_t size)
+{
+    if (!g_odstVehicleBoom.generation.load(std::memory_order_acquire) ||
+        !title_image_guard::Within(reinterpret_cast<uintptr_t>(g_odstTagDataBase), base, size))
+        return false;
+    RetireOdstVehicleBoom();
+    return true;
+}
+
+bool OdstVehicleBoomBound()
+{
+    const uint32_t generation = g_odstVehicleBoom.generation.load(std::memory_order_acquire);
+    return generation && generation == g_odstRuntimeGeneration.load(std::memory_order_relaxed);
+}
+
+// Cold worker. ODST's seat camera facts for the seat of `definitionIndex`, `seatIndex` (Halo3VehicleBoomReadSeat's),
+// read inside the title image guard: the binding is retired before the image goes.
+bool OdstVehicleBoomReadSeat(uint32_t definitionIndex, int seatIndex, Halo3BoomSeatFacts& out)
+{
+    out = Halo3BoomSeatFacts{};
+    title_image_guard::BeginRead();
+    bool read = false;
+    if (OdstVehicleBoomBound() && g_odstVehicleBoom.seatCamera)
+    {
+        const Halo3BoomTagSource source{g_odstTagInstanceTable, g_odstTagDataBase, kOdstVehicleSeatsCountOffset,
+                                        kOdstGlobalsDefaultTrackOffset};
+        read = Halo3BoomReadSeatGuarded(source, definitionIndex, seatIndex, g_odstVehicleBoom.globals,
+                                        g_odstVehicleBoom.track, out);
+    }
+    title_image_guard::EndRead();
+    return read;
+}
+
+// The look range ODST's flat game holds a seat camera's look to (+0x113AB8), as Halo3VehicleBoomRange.
+vehicle_boom::Range OdstVehicleBoomRange(const Halo3BoomSeatFacts& facts)
+{
+    const Halo3VehicleBoomBinding& boom = g_odstVehicleBoom;
+    if (!OdstVehicleBoomBound() || !boom.limits)
+        return vehicle_boom::LookRange(0.0f, 0.0f);
+    return facts.read ? vehicle_boom::LookRange(facts.rangeMin, facts.rangeMax, boom.flatMin, boom.flatMax)
+                      : vehicle_boom::LookRange(0.0f, 0.0f, boom.flatMin, boom.flatMax);
+}
+#endif

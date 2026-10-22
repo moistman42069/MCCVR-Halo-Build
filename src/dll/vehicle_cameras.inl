@@ -1330,6 +1330,7 @@ struct VehicleCameraRuntime
         Halo3BoomSeatFacts facts{};
         bool piloting = false;
         std::string seatName;
+        const char* titleName = "Halo 3"; // whose seat, for the log
         // The log's check of the track against the game's own camera.
         uint64_t publishedMs = 0;
         bool checkLogged = false;
@@ -1424,9 +1425,9 @@ void VehicleBoomCheckLog(VehicleCameraRuntime& r)
     if (b.bestApartSecond < 1.0e8f)
         std::snprintf(second, sizeof(second), "; by the seat's second track, %.1f cm",
                       static_cast<double>(b.bestApartSecond));
-    LOG("Vehicle cameras (Halo 3): the boom's track checked against the game's own camera in %s: of %u samples the "
+    LOG("Vehicle cameras (%s): the boom's track checked against the game's own camera in %s: of %u samples the "
         "closest stood %.0f cm from its pivot looking %.1f deg, where the track puts it %.0f cm out, %.1f cm apart%s",
-        b.seatName.c_str(), b.checkSamples, static_cast<double>(b.bestStood),
+        b.titleName, b.seatName.c_str(), b.checkSamples, static_cast<double>(b.bestStood),
         static_cast<double>(b.bestPitch / vehicle_boom::kRadiansPerDegree), static_cast<double>(b.bestTrack),
         static_cast<double>(b.bestApart), second);
 }
@@ -1437,8 +1438,10 @@ void VehicleBoomCheckLog(VehicleCameraRuntime& r)
 // of its own, -10 to 60 deg above level (reach_vehicle_camera::BoomRange; Reach's own look limits are not read), and
 // its stick is not inverted unless vehicle_boom_invert says so (Reach's inversion setting is not read). The render thread runs it on the same
 // shared boom (reach_vehicle_cameras.inl).
-// `odstTitle`: the seat is ODST's, whose camera track is not read either: its boom orbits the game's pivot over
-// odst_vehicle_camera::BoomRange, on Halo 3's camera thread code (the same engine).
+// `odstTitle`: the seat is ODST's: its seat camera and track are read from halo3odst.dll as Halo 3's are from halo3.dll
+// (halo3_vehicle_boom.inl's BindOdstVehicleBoom), and run on Halo 3's camera thread code (the same engine). Where
+// ODST's track is not proven its boom orbits the game's pivot over odst_vehicle_camera::BoomRange. ODST's look
+// inversion is not read.
 void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::ActiveCamera& active, bool wanted,
                          bool seated, uint32_t definitionIndex, const char* name, uint64_t nowMs,
                          bool reachTitle = false, bool odstTitle = false)
@@ -1499,6 +1502,7 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
             b.definitionIndex = definitionIndex;
             b.generation = generation;
             b.seatName = name && name[0] ? name : "this seat";
+            b.titleName = titleName;
             if (reachTitle)
             {
                 // Over the whole flat look range an orbit stands the camera straight above the vehicle or under the
@@ -1506,12 +1510,17 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
                 // in from 7 m to under 5 m at its extreme looks): Reach's orbit has a range of its own.
                 vehicle_boom::BuildOrbitShape(reach_vehicle_camera::BoomRange(), b.shape);
             }
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
             else if (odstTitle)
             {
-                // ODST's seat camera and track are Halo 3's tags, but halo3odst.dll's track and look limits are not
-                // bound: an orbit over a range of its own (odst_vehicle_camera_logic.h).
-                vehicle_boom::BuildOrbitShape(odst_vehicle_camera::BoomRange(), b.shape);
+                // ODST's own seat camera and track, as Halo 3's; where the track does not read, an orbit over a range
+                // of its own (odst_vehicle_camera_logic.h): over the whole flat look range an orbit stands the camera
+                // above the vehicle or under the ground.
+                const bool read = OdstVehicleBoomReadSeat(definitionIndex, r.seat.seatIndex, b.facts);
+                if (!read || !vehicle_boom::BuildTrackShape(b.facts.track, OdstVehicleBoomRange(b.facts), b.shape))
+                    vehicle_boom::BuildOrbitShape(odst_vehicle_camera::BoomRange(), b.shape);
             }
+#endif
             else
             {
                 const bool read = Halo3VehicleBoomReadSeat(definitionIndex, r.seat.seatIndex, b.facts);
@@ -1551,22 +1560,31 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
                                                                   ? "the camera file's boomPitch"
                                                                   : "the game's level view, a little higher");
         if (b.shape.track)
-            LOG("Vehicle cameras (Halo 3): the boom in %s stands where the game's own third-person camera would at a "
+            LOG("Vehicle cameras (%s): the boom in %s stands where the game's own third-person camera would at a "
                 "look pitch of its own: the seat's camera track (%d points%s) across the flat game's look range %.1f to "
                 "%.1f deg, from %.1f deg above level looking down to %.1f deg looking up; looking level the game's "
                 "camera stands %.1f deg above level, %.0f cm out. It starts at %.1f deg (%s)",
-                b.seatName.c_str(), b.facts.track.count, b.facts.defaultTrack ? ", the game's default" : "",
+                titleName, b.seatName.c_str(), b.facts.track.count, b.facts.defaultTrack ? ", the game's default" : "",
                 static_cast<double>(b.shape.range.min * deg), static_cast<double>(b.shape.range.max * deg),
                 static_cast<double>(highDeg), static_cast<double>(lowDeg),
                 static_cast<double>(vehicle_boom::ElevationAt(b.shape, 0.0f) * deg),
                 static_cast<double>(levelCm), static_cast<double>(startDeg), from);
         else
         {
+            const Halo3VehicleBoomBinding& binding =
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+                odstTitle ? g_odstVehicleBoom :
+#endif
+                g_halo3VehicleBoom;
+            const bool bound =
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+                odstTitle ? OdstVehicleBoomBound() :
+#endif
+                Halo3VehicleBoomBound();
             const char* why = reachTitle ? "Reach's camera track is not read"
-                            : odstTitle ? "ODST's camera track is not read"
-                            : !Halo3VehicleBoomBound() || !g_halo3VehicleBoom.seatCamera ? "the game's seat camera is not bound"
+                            : !bound || !binding.seatCamera                              ? "the game's seat camera is not bound"
                             : !b.facts.read                                             ? "the seat's tags could not be read"
-                            : !g_halo3VehicleBoom.track                                 ? "the game's camera track is not bound"
+                            : !binding.track                                            ? "the game's camera track is not bound"
                             : b.facts.points < vehicle_boom::kMinTrackPoints            ? "the seat camera has no track of four points"
                             : b.facts.points > vehicle_boom::kMaxTrackPoints            ? "its track has more points than the mod reads"
                                                                                         : "its track did not check out";

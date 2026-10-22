@@ -21284,6 +21284,7 @@ namespace
         }
         RestoreOdstMotionBlurVars();
         ReleaseOdstExposureLock();
+        RetireOdstVehicleBoom();
         ReleaseOdstFiringOriginHook();
         g_odstCamera.installed.store(false, std::memory_order_release);
         ReleaseOdstModuleReferenceAndClearPointers();
@@ -21377,6 +21378,9 @@ namespace
         // O1: the ODST vehicle evidence binding. Optional and read-only â€”
         // failure logs loudly and leaves every camera behavior untouched.
         ResolveOdstVehicleBinding(base, size);
+        // The vehicle cameras' third-person boom: ODST's seat camera and track (halo3_vehicle_boom.inl), against the
+        // tag tables just resolved. Read-only; a part that does not prove leaves the boom an orbit.
+        BindOdstVehicleBoom(base, size, runtimeGeneration);
         // Two-handed aim's camera rung (first_person_view_logic.h): two sites, no hook; fails closed alone.
         (void)BindOdstDirectorCamera(base, size, runtimeGeneration, g_odstEngineTlsIndex);
 
@@ -21660,6 +21664,7 @@ namespace
         }
         RestoreOdstMotionBlurVars();
         ReleaseOdstExposureLock();
+        RetireOdstVehicleBoom();
         ReleaseOdstFiringOriginHook();
 
         const auto reason = static_cast<OdstFallbackReason>(
@@ -51523,6 +51528,9 @@ static void TitleImageUnloading(uintptr_t base, size_t size)
         g_odstNativePauseFlag.store(0, std::memory_order_release);
         ++retired;
     }
+    // The vehicle cameras' boom reads ODST's tags through the tables in that image (halo3_vehicle_boom.inl).
+    if (OdstVehicleBoomRetireWithin(base, size))
+        ++retired;
 #endif
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     if (title_image_guard::Within(g_reachNativePauseFlag.load(std::memory_order_acquire), base, size))
