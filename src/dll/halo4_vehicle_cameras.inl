@@ -539,9 +539,10 @@ inline constexpr uint32_t kHalo4RestSolveEvery = 15;
 inline constexpr float kHalo4RestLevelSin = 0.26f;
 
 // Fills `in` with the game's camera's place for a "thirdperson" camera. False: not known YET (the frame keeps the
-// game's own view of the seat: its following camera, or the seat's eye). True with in.restValid false: it could not be read, and the mod's stand-in applies. `gameCamera` is
-// the frame's observer before the mod moved anything: the game's own camera for the seat; `following` whether that is
-// its following camera (the override stood down and the game chose it).
+// game's own view of the seat: its following camera, or the seat's eye). True with in.restValid false: it could not
+// be read, and the mod's stand-in applies. `gameCamera` is the frame's observer before the mod moved anything: the
+// game's own camera for the seat; `following` whether that is its following camera (the override stood down and the
+// game chose it).
 bool Halo4VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, const vehicle_camera_select::ActiveCamera& camera,
                                  const Halo4CameraBasis& gameCamera, bool following, vehicle_camera_place::Inputs& in)
 {
@@ -580,7 +581,8 @@ bool Halo4VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, const vehicle
                 {
                     const float moved[3] = {found[0] - rest.pivotSolved[0], found[1] - rest.pivotSolved[1],
                                             found[2] - rest.pivotSolved[2]};
-                    if (!rest.pivotKnown || vehicle_camera_frame::Dot(moved, moved) > kHalo4RestPivotMovedWu * kHalo4RestPivotMovedWu)
+                    if (!rest.pivotKnown ||
+                        vehicle_camera_frame::Dot(moved, moved) > kHalo4RestPivotMovedWu * kHalo4RestPivotMovedWu)
                     {
                         // A distance taken from the stand-in point, or from a pivot since moved, is not this pivot's:
                         // the next level look measures it again. Until then it stands, so the camera does not jump.
@@ -891,7 +893,8 @@ void Halo4VehicleCameraTurnView(const VehicleCameraSeatKey& key, bool turns, con
     // A nose near straight up or down has no heading to speak of (over the top of a loop it flips by half a turn),
     // and a frame's turn past kHalo4TurnLeapRad is not the hull turning: the heading is taken afresh instead.
     const float level = sqrtf(hullForward[0] * hullForward[0] + hullForward[1] * hullForward[1]);
-    if (!std::isfinite(delta) || delta == 0.0f || !(level >= kHalo4TurnLevelMin) || std::fabs(delta) > kHalo4TurnLeapRad)
+    if (!std::isfinite(delta) || delta == 0.0f || !(level >= kHalo4TurnLevelMin) ||
+        std::fabs(delta) > kHalo4TurnLeapRad)
         return;
     Halo4AddGameYawReference(delta);
     g_halo4VehicleCameraTurnFrames.fetch_add(1, std::memory_order_relaxed);

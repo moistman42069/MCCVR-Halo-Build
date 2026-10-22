@@ -5,8 +5,9 @@
 //   NAME. Halo 4 gives the mod no tag path to read: a vehicle is known by its render model's identity
 //   (halo4_vehicle_identity.inl: the model's node count above its runtime import checksum, one number on every map and
 //   in every session). The models measured in game go by the stock vehicle's word ("warthog", "mongoose"), the
-//   words Halo 3's and Reach's sections use; the camera file's entries for the others wait on their models. A gun mounted on a vehicle (the Warthog's turret) is a seated object of
-//   its own riding the vehicle: it goes by the CARRIER's name where the carrier is known, as Halo 3 names a gunner by
+//   words Halo 3's and Reach's sections use; the camera file's entries for the others wait on their models. A gun
+//   mounted on a vehicle (the Warthog's turret) is a seated object of its own riding the vehicle: it goes by the
+//   CARRIER's name where the carrier is known, as Halo 3 names a gunner by
 //   the vehicle carrying the gun. Any other vehicle goes by "custom_" and its identity in hex, so each keeps an entry,
 //   a seat memory and a note of its own.
 //
