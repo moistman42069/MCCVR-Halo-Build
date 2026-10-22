@@ -48,13 +48,15 @@ struct ReachVehicleCameraSeatRecord
 ReachVehicleCameraSeatRecord g_reachVehicleCameraSeat;
 inline constexpr uint64_t kReachVehicleCameraSeatFreshMs = 250;
 
-// The carrier's identity, kept per carrier object for the run (render thread). A read that failed (no object data,
-// no definition, a fault) is tried again on the next frames, up to kReachCarrierReadTries, before Unknown is kept.
+// The carrier's identity and its bounding radius (world units, 0 = not read), kept per carrier object for the run
+// (render thread). A read that failed (no object data, no definition, a fault) is tried again on the next frames, up
+// to kReachCarrierReadTries, before Unknown is kept.
 struct ReachVehicleCameraCarrierCache
 {
     uint32_t generation = 0;
     int32_t carrier = -1;
     ReachVehicleId identity = ReachVehicleId::Unknown;
+    float radiusWu = 0.0f;
     bool known = false;
     uint32_t failures = 0;
 };
@@ -69,7 +71,7 @@ VehicleCameraSeatKey ReachVehicleCameraKey(const ReachVehicleFrame& frame)
                                 frame.carrier != frame.directParent};
 }
 
-// Render thread. The identity of the object a gun rides, resolved once per carrier object.
+// Render thread. The identity of the object a gun rides, and its size, resolved once per carrier object.
 ReachVehicleId ReachVehicleCameraCarrierIdentity(const ReachVehicleFrame& frame)
 {
     if (frame.carrier == frame.directParent || frame.carrier == -1 || !g_reachCamera.tagGet)
@@ -85,6 +87,7 @@ ReachVehicleId ReachVehicleCameraCarrierIdentity(const ReachVehicleFrame& frame)
     if (cache.known)
         return cache.identity;
     ReachVehicleId identity = ReachVehicleId::Unknown;
+    float radiusWu = 0.0f;
     bool read = false;
     __try
     {
@@ -98,6 +101,7 @@ ReachVehicleId ReachVehicleCameraCarrierIdentity(const ReachVehicleFrame& frame)
             if (definition)
             {
                 identity = ReachResolveVehicleDefinition(definition, datum);
+                memcpy(&radiusWu, definition + kReachVehicleBoundsRadiusOffset, sizeof(radiusWu));
                 read = true;
             }
         }
@@ -105,11 +109,24 @@ ReachVehicleId ReachVehicleCameraCarrierIdentity(const ReachVehicleFrame& frame)
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
         identity = ReachVehicleId::Unknown;
+        radiusWu = 0.0f;
         read = false;
     }
     cache.identity = identity;
+    cache.radiusWu = std::isfinite(radiusWu) && radiusWu > 0.0f ? radiusWu : 0.0f;
     cache.known = read || ++cache.failures >= kReachCarrierReadTries;
     return identity;
+}
+
+// Render thread. The bounding radius of the object a gun rides (world units), as the carrier's read found it; 0 when
+// it is not known (the gun stands alone, or the read has not succeeded).
+float ReachVehicleCameraCarrierRadiusWu(const ReachVehicleFrame& frame)
+{
+    const ReachVehicleCameraCarrierCache& cache = g_reachVehicleCameraCarrier;
+    return frame.carrier != frame.directParent && cache.carrier == frame.carrier &&
+                   cache.generation == g_reachCamera.generation.load(std::memory_order_acquire)
+               ? cache.radiusWu
+               : 0.0f;
 }
 
 void ReachVehicleCameraPublishSeat(const ReachVehicleFrame& frame)
@@ -215,6 +232,7 @@ std::atomic<float> g_reachVehicleCameraRestWu{0.0f};    // the game's camera's r
 std::atomic<float> g_reachVehicleCameraRestRiseWu{0.0f}; // of it, the height above its pivot
 std::atomic<float> g_reachVehicleCameraRestPitchDeg{0.0f};
 std::atomic<float> g_reachVehicleCameraPivotUpWu{0.0f}; // the pivot's height above the vehicle's origin
+std::atomic<float> g_reachVehicleCameraRadiusCm{0.0f};  // the size a stand-in was laid out by (the carrier's for a gun)
 // Where the game's own camera stands looking level, as an elevation above level from its pivot in whole degrees, for
 // the boom's start (vehicle_cameras.inl's VehicleBoomColdTick), with the seat it was measured in: unset until that
 // seat's camera has been seen looking level. Render thread writes (the only writer, so it reads its own fields
@@ -523,7 +541,11 @@ bool ReachVehicleCameraPlace(const ReachVehicleFrame& frame, const VehicleCamera
             return false;
         memcpy(in.vehicleOrigin, frame.rootPos, sizeof(in.vehicleOrigin));
     }
-    in.vehicleRadiusCm = frame.boundsRadius > 0.0f ? frame.boundsRadius / vehicle_camera_frame::kWorldUnitsPerCm : 0.0f;
+    // The vehicle's size: the carrier's where a gun rides one, so a stand-in stands off the carrier, not the gun.
+    const float carrierRadiusWu = carried ? ReachVehicleCameraCarrierRadiusWu(frame) : 0.0f;
+    const float radiusWu = carrierRadiusWu > 0.0f ? carrierRadiusWu : frame.boundsRadius;
+    in.vehicleRadiusCm = radiusWu > 0.0f ? radiusWu / vehicle_camera_frame::kWorldUnitsPerCm : 0.0f;
+    g_reachVehicleCameraRadiusCm.store(in.vehicleRadiusCm, std::memory_order_relaxed);
     in.seatValid = true;
     memcpy(in.seat, frame.seatPoint, sizeof(in.seat));
     in.seatFrameValid = ReachVehicleCameraBasis(frame.rootForward, frame.rootUp, in.seatFrame);
@@ -986,10 +1008,13 @@ void ReachVehicleCamerasColdLog(bool seated)
     if (standIn && !standInLogged)
     {
         standInLogged = true;
+        // The stand-in as laid out: by the vehicle's own size (a gun's carrier's), never closer than the fixed one.
+        float behindCm = 0.0f, aboveCm = 0.0f;
+        vehicle_camera_place::StandInOffsetCm(g_reachVehicleCameraRadiusCm.load(std::memory_order_relaxed), behindCm,
+                                              aboveCm);
         LOG("Vehicle cameras (Reach): where the game's own third-person camera rests could not be read for this seat, "
             "so the camera stands %.0f cm behind and %.0f cm above the vehicle's origin instead",
-            static_cast<double>(vehicle_camera_place::kStandInBehindCm),
-            static_cast<double>(vehicle_camera_place::kStandInAboveCm));
+            static_cast<double>(behindCm), static_cast<double>(aboveCm));
     }
     const float restWu = g_reachVehicleCameraRestWu.load(std::memory_order_relaxed);
     const bool settled = restWu == restSeenWu;
