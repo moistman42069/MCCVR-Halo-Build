@@ -1015,9 +1015,11 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
     }
     // The hull it turns with: the carrier a gun rides, else the seated object -- unless that object is itself a gun
     // standing alone (its seat fires and does not drive), whose root turns with the aim: the view would chase it.
-    const bool loneGun = !frame.carrierRootValid && frame.flagsKnown &&
-                         (frame.seatFlags & halo4_vehicle_camera::kSeatGunnerBit) != 0 &&
-                         (frame.seatFlags & halo4_vehicle_camera::kSeatDriverBit) == 0;
+    // Without the seat's flags a gun cannot be told from a vehicle's seat 0, so only a vehicle the mod knows tethers.
+    const bool loneGun = !frame.carrierRootValid &&
+                         (frame.flagsKnown ? (frame.seatFlags & halo4_vehicle_camera::kSeatGunnerBit) != 0 &&
+                                                 (frame.seatFlags & halo4_vehicle_camera::kSeatDriverBit) == 0
+                                           : !halo4_vehicle_camera::IdentityName(frame.identity));
     Halo4VehicleCameraTurnView(key, camera.rotYaw && !loneGun,
                                frame.carrierRootValid ? frame.carrierForward : frame.rootForward);
     // The game's camera is its following camera when the override has stood down for this seat and the game itself
