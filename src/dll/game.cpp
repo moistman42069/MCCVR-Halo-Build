@@ -47440,7 +47440,7 @@ namespace
             // The vehicle cameras' exposure hold is asked for afresh by each frame of the player's window
             // (halo4_vehicle_cameras.inl), and applied whichever way the frame went.
             if (window == 0)
-                g_halo4ExposureHoldWanted = false;
+                g_halo4ExposureHoldWanted = g_halo4ExposurePassAsked = false;
             Halo4WrapperBody(element, view, window, returnAddress);
             if (window == 0)
                 Halo4VehicleCameraExposureFrame();
@@ -48514,8 +48514,11 @@ namespace
             return false;
         }
         // A held exposure is a module global that outlives this camera core: give it back to the engine now that no
-        // frame of the wrapper can hold it again, and before the module reference goes.
+        // frame of the wrapper can hold it again, and before the module reference goes. The next game starts with
+        // nothing held.
         EngineExposureLockRelease(g_halo4Exposure);
+        g_halo4ExposureHeld = false;
+        g_halo4ExposureStockFrames = 0;
         // Put Halo 4's own first-person FOV squish back exactly as it was, and
         // only if we were the one who changed it. Done after the hooks are
         // quiescent and before the module reference is released, so the write
