@@ -42,6 +42,9 @@ struct Runtime
     std::atomic<uint32_t> trimVersion{},trimGeneration{};
     std::atomic<int> trimSeat{-1};
     std::atomic<bool> requested{},faulted{};
+    // Halo 2: a fault in one of the vehicle cameras' own reads (NativeVehicleFirstPerson_Halo2Head / _Halo2Root)
+    // turns those reads off for this module instance; the seat view itself goes on.
+    std::atomic<bool> cameraQueriesFaulted{};
     std::atomic<uint32_t> callbacks{};
     std::atomic<uint64_t> selected{},positioned{},missingMarker{},faults{};
     // The seat this override last placed the camera in, and when: the seat's view is ours (seat direct drive
@@ -428,10 +431,13 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
         if constexpr (I==1) {
             // Halo 2: the point the evaluator answered before the head replaces it -- the unit camera position,
             // which for a seated unit is the seat's own camera marker, the point the game's third-person camera
-            // turns about (the vehicle cameras' "thirdperson" pivot). A second writer skips.
+            // turns about (the vehicle cameras' "thirdperson" pivot). Only from the frame's own asks: outside a
+            // tick the unit camera position is read back interpolated, as the vehicle is drawn, while a seat-aim
+            // ask (a fire, the seat drive) may come inside a tick. A second writer skips.
             float native[3]{};
             std::memcpy(native,static_cast<const uint8_t*>(result)+4,12);
-            if (std::isfinite(native[0])&&std::isfinite(native[1])&&std::isfinite(native[2])&&
+            if (!t_seatAskOnThisThread&&
+                std::isfinite(native[0])&&std::isfinite(native[1])&&std::isfinite(native[2])&&
                 !r.nativeWriting.test_and_set(std::memory_order_acquire)) {
                 r.nativeVersion.fetch_add(1,std::memory_order_acq_rel);   // odd: writing
                 r.nativeGeneration.store(before.generation,std::memory_order_relaxed);
@@ -499,10 +505,15 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
                     unsigned(kBindings[I].title),int(before.seat),
                     static_cast<unsigned long long>(before.vehicleIdentity));
         }
-        runtime[I].positioned.fetch_add(1,std::memory_order_relaxed);
-        r.positionedParent.store(before.parent,std::memory_order_relaxed);
-        r.positionedSeat.store(before.seat,std::memory_order_relaxed);
-        r.positionedMs.store(GetTickCount64(),std::memory_order_release);
+        // The seat's VIEW is ours (NativeVehicleFirstPerson_SeatViewOwned) only from the frame's own asks: a seat-aim
+        // ask (Halo 2's fire, the seat drive) places the seat's aim and keeps being made under a chase camera, whose
+        // view is the game's own.
+        if (I!=1||!t_seatAskOnThisThread) {
+            runtime[I].positioned.fetch_add(1,std::memory_order_relaxed);
+            r.positionedParent.store(before.parent,std::memory_order_relaxed);
+            r.positionedSeat.store(before.seat,std::memory_order_relaxed);
+            r.positionedMs.store(GetTickCount64(),std::memory_order_release);
+        }
     } __except(EXCEPTION_EXECUTE_HANDLER) {
         Fault(I);
     }
@@ -582,7 +593,8 @@ bool Retire(unsigned i)
     r.module=nullptr;r.base=0;r.generation=0;r.marker=r.markerInterpolated=nullptr;
     r.tlsIndex=nullptr;r.tickSlot=r.tickByte=0;
     r.trimIdentity.store(0);r.trimGeneration.store(0);r.trimSeat.store(-1);
-    r.attempted=r.ready=false;r.faulted.store(false,std::memory_order_release);return true;
+    r.attempted=r.ready=false;r.faulted.store(false,std::memory_order_release);
+    r.cameraQueriesFaulted.store(false,std::memory_order_release);return true;
 }
 // Halo 4's in-tick byte, where its tick loop marks a tick begun (sim_tick_reader.h: resolved by signature, never a
 // fixed address). Unresolved fails closed: while one-machine changes are not allowed the override then answers
@@ -620,9 +632,11 @@ void NativeVehicleFirstPerson_SetStockOnThisThread(bool stock) noexcept
 {
     t_stockOnThisThread=stock;
 }
-void NativeVehicleFirstPerson_SetSeatAskOnThisThread(bool seatAsk) noexcept
+bool NativeVehicleFirstPerson_SetSeatAskOnThisThread(bool seatAsk) noexcept
 {
+    const bool was=t_seatAskOnThisThread;
     t_seatAskOnThisThread=seatAsk;
+    return was;
 }
 bool NativeVehicleFirstPerson_PlacedPoint(GameTitle title,NativeVehicleSeatPoint& out) noexcept
 {
@@ -680,7 +694,7 @@ bool NativeVehicleFirstPerson_Halo2Head(const NativeVehicleCameraOwner& owner,fl
     r.callbacks.fetch_add(1,std::memory_order_acq_rel);
     bool read=false;
     __try {
-        if (Current(i)&&r.marker) {
+        if (Current(i)&&r.marker&&!r.cameraQueriesFaulted.load(std::memory_order_acquire)) {
             alignas(16) uint8_t record[128]{};
             if (reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t)>(r.marker)(
                     owner.unit,0x4000095,record,1)==1) {
@@ -699,7 +713,7 @@ bool NativeVehicleFirstPerson_Halo2Head(const NativeVehicleCameraOwner& owner,fl
             }
         }
     } __except(EXCEPTION_EXECUTE_HANDLER) {
-        Fault(i);read=false;
+        r.cameraQueriesFaulted.store(true,std::memory_order_release);read=false;
     }
     r.callbacks.fetch_sub(1,std::memory_order_release);
     return read;
@@ -712,7 +726,7 @@ bool NativeVehicleFirstPerson_Halo2Root(uint32_t object,bool drawn,float frame[1
     r.callbacks.fetch_add(1,std::memory_order_acq_rel);
     bool read=false;
     __try {
-        if (Current(i)&&r.markerInterpolated) {
+        if (Current(i)&&r.markerInterpolated&&!r.cameraQueriesFaulted.load(std::memory_order_acquire)) {
             const auto query=reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t,uint8_t,uint8_t)>(
                 r.markerInterpolated);
             alignas(16) uint8_t record[128]{};
@@ -723,7 +737,7 @@ bool NativeVehicleFirstPerson_Halo2Root(uint32_t object,bool drawn,float frame[1
             }
         }
     } __except(EXCEPTION_EXECUTE_HANDLER) {
-        Fault(i);read=false;
+        r.cameraQueriesFaulted.store(true,std::memory_order_release);read=false;
     }
     r.callbacks.fetch_sub(1,std::memory_order_release);
     return read;

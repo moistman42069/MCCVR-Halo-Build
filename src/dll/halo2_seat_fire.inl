@@ -72,7 +72,8 @@ void Halo2SeatFireReaim(uint32_t unit,float* position,float* direction)
     uint32_t chaseParent=UINT32_MAX;int16_t chaseSeat=-1;
     const bool chaseView=Halo2DriveOccupancy(chaseParent,chaseSeat)==1&&
         Game_Halo2VehicleCameraPlacedSeat(chaseParent,chaseSeat);
-    if(chaseView)g_halo2SeatFireChaseKept.fetch_add(1,std::memory_order_relaxed);
+    if(chaseView&&g_config.seat_fire_from_eye&&Sight_FireTimeChangesAllowed())
+        g_halo2SeatFireChaseKept.fetch_add(1,std::memory_order_relaxed);
     if(g_config.seat_fire_from_eye&&Sight_FireTimeChangesAllowed()&&shot_lag::Finite3(head)&&!chaseView)
     {
         const float toPoint[3]{point[0]-head[0],point[1]-head[1],point[2]-head[2]};

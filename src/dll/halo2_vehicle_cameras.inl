@@ -13,13 +13,16 @@
 //     Halo2VehicleCameraSeat: the vehicle's name, the seat's role, and the key every reader matches a camera to.
 //
 // WHAT A CHASE CAMERA CHANGES. The first-person seat override (native_vehicle_first_person.cpp) stands down for the
-// seat (Game_Halo2VehicleCameraChase), so the game's own answer for it stands: a seat the game shows in third person
-// draws its occupant and no first-person view, as the flat game does, and the game's own camera is its chase camera
-// again -- the one the flat game aims and fires from (the seat drive writes no seat whose first-person view it does
-// not own; the stick servo aims it, from the hand, as with vehicle_first_person off). The view's eye stands at the
-// chase camera's place. The camera's tethering turns the view: its rotationTracking yaw stands in for
-// vehicle_view_follow in that seat. Its leash holds the head, and its "collide" is traced by Halo 2's sight trace on
-// the simulation thread (halo2_observer_6dof.cpp, Halo2SightAuxTraces). Nothing the simulation reads is written.
+// seat's VIEW (Game_Halo2VehicleCameraChase): the director's asks and the players update's are answered as the game
+// built them, so a seat the game shows in third person draws its occupant and no first-person view, as the flat game
+// does. The seat's AIM is not changed: the fire's ask and the seat drive's keep the first-person answer, a seat whose
+// view a chase camera placed counts as the mod's own for the seat drive (Game_Halo2VehicleCameraPlacedSeat), and a
+// fire's crosshair test keeps the seat's own start -- so the seat aims and fires as from its seat view, which in a
+// shared simulation (co-op safe) is the game's own line as before. The view's eye stands at the chase camera's place.
+// The camera's tethering turns the view: its rotationTracking yaw stands in for vehicle_view_follow in that seat
+// (and, as the setting does, leaves a following seat to the stick servo). Its leash holds the head, and its "collide"
+// and its aim ring are traced by Halo 2's sight trace on the simulation thread (halo2_observer_6dof.cpp,
+// Halo2SightAuxTraces).
 //
 // "thirdperson": the game's own third-person camera is the observer's stock camera while the override stands down.
 // Its pivot is the point the game's own first-person evaluator answers for the seat -- the unit camera position, which
@@ -290,7 +293,7 @@ struct Halo2VehicleCameraSeatEye
     vehicle_camera_frame::Basis rest{};
 };
 Halo2VehicleCameraSeatEye g_halo2VehicleCameraSeatEye;
-inline constexpr uint32_t kHalo2SeatSettleFrames = 45;
+inline constexpr uint32_t kHalo2SeatSettleFrames = 90; // placements: about 45 rendered frames
 
 // THE GAME'S OWN PIVOT for a kind of seat (observer thread): the point the first-person evaluator answers for it, as a
 // point on the seat's own object -- kept for the session by the seat's vehicle model, seat and carriage, so a seat
@@ -408,7 +411,8 @@ LARGE_INTEGER g_halo2VehicleCameraReachAt{}; // observer thread
 inline constexpr float kHalo2CameraReleasePerSecond = 1.5f;
 
 // Fills `in` with the game's camera's place for a "thirdperson" camera. False: not known YET (the frame keeps the
-// seat's eye). True with in.restValid false: it could not be read, and the mod's stand-in applies.
+// view as the game gives it: its own third-person camera once the override has stood down). True with in.restValid
+// false: it could not be read, and the mod's stand-in applies.
 bool Halo2VehicleCameraRestPlace(const Halo2VehicleCameraSeatSample& sample, const VehicleCameraSeatKey& key,
                                  const vehicle_camera_select::ActiveCamera& camera, const float pivot[3],
                                  vehicle_camera_place::Inputs& in)
@@ -874,6 +878,10 @@ VehicleCameraSeatRead Halo2VehicleCameraSeat(VehicleCameraSeatKey& key, const ch
         return VehicleCameraSeatRead::Unknown;
     if (!seat.seated || seat.generation != TitleAdapter_GetGeneration(GameTitle::Halo2))
         return VehicleCameraSeatRead::OnFoot;
+    // A seat whose vehicle's model has not read yet has no name to go by (a hash of nothing would be every such
+    // vehicle's): it waits, keeping what is published.
+    if (!seat.modelRead)
+        return VehicleCameraSeatRead::Unknown;
     key = VehicleCameraSeatKey{seat.generation, static_cast<int32_t>(seat.parent), seat.seat,
                                halo2_vehicle_camera::KeyIdentity(seat.identity), seat.onCarrier};
     static char buffer[halo2_vehicle_camera::kNameCapacity];

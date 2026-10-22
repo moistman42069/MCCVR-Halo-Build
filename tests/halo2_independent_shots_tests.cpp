@@ -33,8 +33,8 @@ static struct {bool independent_dual_aim=true;float crosshair_distance_m=10;bool
 // The seat-aim flag the evaluator's detour raises around the calls it forwards (a chase camera's stand-down does not
 // apply to them): counted.
 static unsigned seatAskRaised=0;static bool seatAskUp=false;
-[[maybe_unused]] static void NativeVehicleFirstPerson_SetSeatAskOnThisThread(bool up) noexcept
-{if(up)++seatAskRaised;seatAskUp=up;}
+[[maybe_unused]] static bool NativeVehicleFirstPerson_SetSeatAskOnThisThread(bool up) noexcept
+{const bool was=seatAskUp;if(up)++seatAskRaised;seatAskUp=up;return was;}
 // Shots from the muzzle (sight_layer.h): admitted only with the barrel aim off; the converged point itself is
 // sight_layer's (aim_solve_tests), so here it keeps the barrel's direction and counts the asks.
 static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;

@@ -224,14 +224,14 @@ bool Halo2CallFireEyeEvaluator(uint32_t unit, float position[3], int32_t& path)
         {
             float direction[3]{};
             // The seat's aim, not the frame's view (NativeVehicleFirstPerson_SetSeatAskOnThisThread).
-            NativeVehicleFirstPerson_SetSeatAskOnThisThread(true);
+            const bool seatAskWas = NativeVehicleFirstPerson_SetSeatAskOnThisThread(true);
             __try
             {
                 path = evaluator(unit, position, direction);
             }
             __finally
             {
-                NativeVehicleFirstPerson_SetSeatAskOnThisThread(false);
+                NativeVehicleFirstPerson_SetSeatAskOnThisThread(seatAskWas);
             }
             called = true;
         }

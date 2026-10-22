@@ -29,8 +29,9 @@ bool NativeVehicleFirstPerson_SeatViewOwned(GameTitle title,uint32_t parent,int 
 void NativeVehicleFirstPerson_SetStockOnThisThread(bool stock) noexcept;
 // While set on the calling thread the call asks for the seat's AIM, not the frame's view (Halo 2: the evaluator as the
 // game's fire calls it, and the seat drive's own ask): a chase camera of the vehicle camera file does not stand the
-// override down for it, so the seat aims and fires as from its first-person view.
-void NativeVehicleFirstPerson_SetSeatAskOnThisThread(bool seatAsk) noexcept;
+// override down for it, so the seat aims and fires as from its first-person view. Returns the flag as it was, for the
+// caller to put back. Such an ask never counts as the frame's seat view (NativeVehicleFirstPerson_SeatViewOwned).
+bool NativeVehicleFirstPerson_SetSeatAskOnThisThread(bool seatAsk) noexcept;
 // The calling thread is inside a simulation tick (1), outside one (0), or that cannot be told (-1): the title's own
 // in-tick byte, where this override resolved it (Halo 4). A read; nothing else.
 int NativeVehicleFirstPerson_InSimulationTick(GameTitle title) noexcept;
@@ -49,8 +50,8 @@ struct NativeVehicleSeatPoint
 };
 bool NativeVehicleFirstPerson_PlacedPoint(GameTitle title, NativeVehicleSeatPoint& out) noexcept;
 // HALO 2, for the vehicle cameras (halo2_vehicle_cameras.inl). Each only while this override is installed for the
-// current Halo 2 generation; guarded (a fault latches this feature off, as one in its own hooks does). Call on the
-// thread that builds the frame's camera (the observer's).
+// current Halo 2 generation; guarded (a fault turns Head and Root off for the module instance, and leaves the seat
+// view on). Call on the thread that builds the frame's camera (the observer's).
 //   NativePoint: the point the game's own first-person evaluator last answered for our seat BEFORE the override moved
 //     it to the head -- the unit camera position, which for a seated unit is its seat's camera marker: the point the
 //     game's third-person camera turns about. With its seat and when (Sight_NowUs); a seqlock.

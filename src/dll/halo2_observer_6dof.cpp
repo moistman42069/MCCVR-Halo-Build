@@ -1506,27 +1506,17 @@ namespace
         }
         // Still seated, or not known to have left (a menu, a pause, the theater -- the seat sample goes stale
         // while the game is paused): keep the seat's heading for its return. A fresh on-foot sample forgets it.
-        else if(!Halo2Observer6Dof_OnFootFresh()) g_vehicleView.Suspend();
-        else {g_vehicleView={};Game_Halo2VehicleCamerasOnFoot(g_generation.load(std::memory_order_acquire));}
+        else if(!Halo2Observer6Dof_OnFootFresh()) {g_vehicleView.Suspend();g_vehicleViewFollows.store(false,std::memory_order_release);}
+        else {
+            g_vehicleView={};g_vehicleViewFollows.store(false,std::memory_order_release);
+            Game_Halo2VehicleCamerasOnFoot(g_generation.load(std::memory_order_acquire));
+        }
         Halo2CameraBasis tracked{};
         if (!Halo2BuildTrackedCenterCamera(viewBase, head, tracked))
         {
             g_rejectedSamples.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        // A chase camera's leash: the head's movement off the camera's place held inside the camera's box, so a lean
-        // cannot take the view through the hull.
-        if(cameraEyeMoved) {
-            float lean[3]{tracked.position[0]-viewBase.position[0],tracked.position[1]-viewBase.position[1],
-                tracked.position[2]-viewBase.position[2]};
-            if(Game_Halo2VehicleCameraLeash(lean))
-                for(int axis=0;axis<3;++axis) tracked.position[axis]=viewBase.position[axis]+lean[axis];
-        }
-        // The ring where the vehicle aims, from the view this frame is drawn from (taken down without a chase camera).
-        if(cameraEyeMoved)
-            Game_Halo2VehicleAimMarkerStep(tracked.position,tracked.forward,tracked.up,snapshot.headOrientation);
-        else if(vehicle)
-            Game_Halo2VehicleAimMarkerStep(nullptr,nullptr,nullptr,nullptr);
         if (g_config.roomscale_movement||g_config.physical_running)
         {
             const HeadReference beforeRoomscale = g_reference;
@@ -1573,6 +1563,19 @@ namespace
                 }
             }
         }
+        // A chase camera's leash: the head's movement off the camera's place held inside the camera's box, so a lean
+        // cannot take the view through the hull. On the final camera, after the roomscale rebuild above.
+        if(cameraEyeMoved) {
+            float lean[3]{tracked.position[0]-viewBase.position[0],tracked.position[1]-viewBase.position[1],
+                tracked.position[2]-viewBase.position[2]};
+            if(Game_Halo2VehicleCameraLeash(lean))
+                for(int axis=0;axis<3;++axis) tracked.position[axis]=viewBase.position[axis]+lean[axis];
+        }
+        // The ring where the vehicle aims, from the view this frame is drawn from (taken down without a chase camera).
+        if(cameraEyeMoved)
+            Game_Halo2VehicleAimMarkerStep(tracked.position,tracked.forward,tracked.up,snapshot.headOrientation);
+        else if(vehicle)
+            Game_Halo2VehicleAimMarkerStep(nullptr,nullptr,nullptr,nullptr);
         if (!WriteObserverPose(result, tracked))
         {
             g_unreadableSamples.fetch_add(1, std::memory_order_relaxed);

@@ -1,7 +1,7 @@
 #pragma once
 // THE VEHICLE CAMERAS IN HALO 2'S SEATS: what Halo 2's observer (halo2_observer_6dof.cpp, which builds the frame's
 // camera) hands the vehicle cameras (game.cpp, halo2_vehicle_cameras.inl) once a frame of a seat, and what it gets
-// back. Every call is on the observer's thread.
+// back. Every call but Game_Halo2VehicleCameraPlacedSeat is on the observer's thread.
 #include <cstdint>
 
 struct Halo2VehicleCameraSeatSample

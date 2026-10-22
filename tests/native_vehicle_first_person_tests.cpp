@@ -161,11 +161,20 @@ template<unsigned I> void Run()
             "a seat with a chase camera chosen keeps the game's own answer");
         std::memset(result,0,sizeof(result));camera();
         Check(position[0]==-10&&position[1]==-20&&position[2]==-30,"and its evaluator's point is left where the game put it");
-        // An ask for the seat's aim (the game's players update and fire, the seat drive) keeps the first-person
-        // answer under a chase camera: the seat aims and fires as from its seat view.
-        NativeVehicleFirstPerson_SetSeatAskOnThisThread(true);
+        // An ask for the seat's aim (the game's fire, the seat drive) keeps the first-person answer under a chase
+        // camera: the seat aims and fires as from its seat view.
+        Check(!NativeVehicleFirstPerson_SetSeatAskOnThisThread(true),"the seat-aim flag starts down");
         Check(SelectHook<I>(owned.unit,&mode)==0,"a seat-aim ask keeps the first-person answer under a chase camera");
-        NativeVehicleFirstPerson_SetSeatAskOnThisThread(false);
+        {
+            // ...and places the seat's aim, but never counts as the frame's seat view: under a chase camera the
+            // view is the game's own, so the seat view must go stale however often the aim is asked for.
+            const auto positioned=r.positioned.load();
+            const auto at=r.positionedMs.load();
+            std::memset(result,0,sizeof(result));camera();
+            Check(position[0]==10&&r.positioned.load()==positioned&&r.positionedMs.load()==at,
+                "a seat-aim ask places the head without stamping the seat view as the frame's");
+        }
+        Check(NativeVehicleFirstPerson_SetSeatAskOnThisThread(false),"the flag was up, and comes down");
         chaseChosen=false;
         Check(SelectHook<I>(owned.unit,&mode)==0,"without one the seat is first person again");
         camera();Check(position[0]==10&&position[1]==20&&position[2]==30,"at the occupant's head");

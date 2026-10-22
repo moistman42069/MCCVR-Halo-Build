@@ -70,9 +70,9 @@ __declspec(noinline) int32_t __fastcall Halo2IndependentCameraDetour(
         }
         else if(fireAsk)
         {
-            NativeVehicleFirstPerson_SetSeatAskOnThisThread(true);
+            const bool seatAskWas=NativeVehicleFirstPerson_SetSeatAskOnThisThread(true);
             __try {result=feature.cameraOriginal(unit,position,direction);}
-            __finally {NativeVehicleFirstPerson_SetSeatAskOnThisThread(false);}
+            __finally {NativeVehicleFirstPerson_SetSeatAskOnThisThread(seatAskWas);}
         }
         else
             result=feature.cameraOriginal(unit,position,direction);

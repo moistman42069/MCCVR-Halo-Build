@@ -718,9 +718,11 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 const seat_converge::Role seatRole = seat_converge::RoleFromSeatFlags(
                     occupancy > 0 && seatFrame.flagsKnown, seatFrame.flags);
                 facts.driver = facts.look_steered = !seatRole.known || seatRole.driver;
-                // The view the observer built for the seat follows the hull: the setting, or a chase camera's tethering.
-                const bool viewFollows =
-                    g_config.vehicle_view_follow || g_vehicleViewFollows.load(std::memory_order_acquire);
+                // The view the observer built for the seat follows the hull: a chase camera's tethering stands in for the
+                // setting in its seat. The observer's word while it publishes the seat's view, else the setting.
+                const bool viewPublished = seatViewAt && now >= seatViewAt && now - seatViewAt <= 100;
+                const bool viewFollows = viewPublished ? g_vehicleViewFollows.load(std::memory_order_acquire)
+                                                       : g_config.vehicle_view_follow;
                 const seat_drive::Axes axes = viewFollows ? seat_drive::Axes{}
                     : seat_drive::Decide(facts, g_config.reach_vehicle_aim, g_config.seat_direct_drive != 0);
                 const uint32_t key = seat_drive::SeatKey(static_cast<int>(seatParent), seatIndex, false);

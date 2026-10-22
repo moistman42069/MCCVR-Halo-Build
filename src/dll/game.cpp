@@ -60581,8 +60581,11 @@ bool Game_Halo2VehicleCameraChase(const NativeVehicleCameraOwner& owner) noexcep
 {
     if (owner.parent == UINT32_MAX || owner.seat < 0)
         return false;
-    const VehicleCameraSeatKey key{owner.generation, static_cast<int32_t>(owner.parent), owner.seat,
-                                   halo2_vehicle_camera::KeyIdentity(owner.vehicleIdentity),
-                                   owner.root != UINT32_MAX && owner.root != owner.parent};
-    return Halo2VehicleCameraChaseFor(key);
+    // The seat by its object and index (the salted handle names the object for the generation): the owner's model
+    // identity is a fresh read each call, and a read that fails once must not flash the seat's view to first person.
+    vehicle_camera_select::ActiveCamera camera;
+    VehicleCameraSeatKey chosenFor;
+    return VehicleCameraRead(camera, chosenFor) && chosenFor.generation == owner.generation &&
+           chosenFor.vehicle == static_cast<int32_t>(owner.parent) && chosenFor.seatIndex == owner.seat &&
+           chosenFor.mounted == (owner.root != UINT32_MAX && owner.root != owner.parent);
 }
