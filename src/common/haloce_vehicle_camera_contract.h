@@ -71,6 +71,11 @@ inline constexpr std::array<contract::Pointer,0> pointers{};
 inline constexpr uint32_t following=0xC52CA4;
 inline constexpr uint32_t marker=0xB37178;
 inline constexpr uint32_t tag=0xA9B648;
+// The tag cache's address translation (a 32-bit cache pointer, less the first, plus the second) and the tag instance
+// array (0x20 an instance: +0x10 its path, +0x14 its data), as the relatives above prove the engine reads them.
+inline constexpr uint32_t cacheVirtualBase=0x2EA3410;
+inline constexpr uint32_t cacheMappedBase=0x2D9CE10;
+inline constexpr uint32_t tagInstances=0x1C34FB0;
 // The game globals' data, whose +0x108 holds the default camera track's reference.
 inline constexpr uint32_t globals=0x1C55C60;
 }

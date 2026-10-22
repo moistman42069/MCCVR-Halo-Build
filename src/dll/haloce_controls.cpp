@@ -474,8 +474,8 @@ static HaloCEVehicleSeatRead ReadVehicleSeatFactsBody(HaloCEVehicleSeatFacts& fa
             if (up==UINT32_MAX) { out.root=at;break; }
             at=up;
         }
-        const intptr_t virtualBase=*reinterpret_cast<const intptr_t*>(moduleBase+0x2EA3410);
-        const intptr_t mappedBase=*reinterpret_cast<const intptr_t*>(moduleBase+0x2D9CE10);
+        const intptr_t virtualBase=*reinterpret_cast<const intptr_t*>(moduleBase+vehicle_camera_contract::cacheVirtualBase);
+        const intptr_t mappedBase=*reinterpret_cast<const intptr_t*>(moduleBase+vehicle_camera_contract::cacheMappedBase);
         if (out.definition!=UINT32_MAX&&(out.definition&0xffffu)<0x8000u&&mappedBase>0&&virtualBase>=0)
         {
             using TagGet=uintptr_t(__fastcall*)(uint32_t);
@@ -496,7 +496,7 @@ static HaloCEVehicleSeatRead ReadVehicleSeatFactsBody(HaloCEVehicleSeatFacts& fa
                 }
             }
             // The tag instance's path: entry +0x10 of the 0x20-byte instance, a cache pointer like its data's.
-            const uintptr_t table=*reinterpret_cast<const uintptr_t*>(moduleBase+0x1C34FB0);
+            const uintptr_t table=*reinterpret_cast<const uintptr_t*>(moduleBase+vehicle_camera_contract::tagInstances);
             if (table)
             {
                 const int32_t path=*reinterpret_cast<const int32_t*>(table+size_t(out.definition&0xffffu)*0x20+0x10);
@@ -582,8 +582,8 @@ static bool ReadVehicleSeatTrackBody(uint32_t gen,uint32_t parentDatum,int16_t s
         const uintptr_t parent=get(parentDatum,2);
         if (!parent) return false;
         const uint32_t definitionDatum=*reinterpret_cast<const uint32_t*>(parent);
-        const intptr_t virtualBase=*reinterpret_cast<const intptr_t*>(moduleBase+0x2EA3410);
-        const intptr_t mappedBase=*reinterpret_cast<const intptr_t*>(moduleBase+0x2D9CE10);
+        const intptr_t virtualBase=*reinterpret_cast<const intptr_t*>(moduleBase+vehicle_camera_contract::cacheVirtualBase);
+        const intptr_t mappedBase=*reinterpret_cast<const intptr_t*>(moduleBase+vehicle_camera_contract::cacheMappedBase);
         if (definitionDatum==UINT32_MAX||(definitionDatum&0xffffu)>=0x8000u||mappedBase<=0||virtualBase<0) return false;
         const auto relocate=[virtualBase,mappedBase](int32_t address) noexcept {
             return address?static_cast<uintptr_t>(static_cast<intptr_t>(address)-virtualBase+mappedBase):uintptr_t{0}; };
