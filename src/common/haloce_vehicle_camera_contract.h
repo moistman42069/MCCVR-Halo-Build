@@ -31,8 +31,9 @@ inline constexpr std::array<contract::Witness,20> witnesses={{
     {0xB151A1,"44 0F B7 4C 24 38 4C 8D 15 B2 67 28 02 33 C9 40 84 FF 75 08 66 46 39 4C 13 5A 74 7D"},
     // An empty marker name answers the root node, counted.
     {0xB372C0,"48 85 F6 74 0A 44 38 26 75 05 B9 01 00 00 00 0F B7 C1"},
-    // unit_get_camera_info: a seated unit's camera is its vehicle definition's seat (stride 0x11C) at +0x84.
-    {0xB04F8B,"48 69 C0 1C 01 00 00 89 33 48 05 84 00 00 00 48 03 C1"},
+    // unit_get_camera_info: a seated unit's camera is its vehicle definition's seat (stride 0x11C) at +0x84, stored at
+    // +8 of the info it answers.
+    {0xB04F8B,"48 69 C0 1C 01 00 00 89 33 48 05 84 00 00 00 48 03 C1 48 8B 0D ?? ?? ?? ?? 48 89 43 08"},
     // camera_track_splut: the unit camera's tracks block (+0x4C count, +0x50 address, 0x1C an element), its first...
     {0xC529DD,"8B 41 4C 45 33 C9"},
     {0xC529FB,"48 63 51 50 83 E8 01 41 8B C9 41 0F 49 C1 85 D2 74 09 48 8B CA 49 2B CA 49 03 CB 48 98 48 6B D0 1C 48 03 D1"},
