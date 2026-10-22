@@ -14,7 +14,8 @@
 // (handsBase), stands at the camera's place. The occupant's body is drawn, as the flat game draws it: the hide of
 // the player's own unit from the seat camera (ReachBeginUnitCameraPlayerHide) is skipped, and a passenger's seat
 // keeps its own third-person camera word (ReachEnsureNativeFirstPersonSeat gives the first-person lease back, which is
-// the seat's stock state). The camera's mode turns the view: its rotationTracking yaw stands in for
+// the seat's stock state). The sight's ray starts at the camera too, so a passenger's personal shot keeps the game's
+// own origin rather than leaving from it (the shot occupation's chaseCamera). The camera's mode turns the view: its rotationTracking yaw stands in for
 // vehicle_view_follow in that seat (ReachApplySeatYawFollow). Its leash holds the head (ReachApplyHeadLook), its
 // "collide" and its aim ring are traced by Reach's sight trace (reach_sight_trace.inl), and a camera's "eyeAdjust":
 // false holds the engine's exposure (engine_exposure_lock.inl). Nothing else the game reads is written.

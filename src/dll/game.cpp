@@ -21800,6 +21800,9 @@ namespace
         std::atomic<uint64_t> sampleMs{0};
         std::atomic<uint8_t> active{0};
         std::atomic<uint8_t> allowsWeapons{0};
+        // A chase camera of the vehicle camera file is chosen for this seat (reach_vehicle_cameras.inl): the sight's
+        // ray starts at the camera, metres from the occupant, so no shot may leave from it.
+        std::atomic<uint8_t> chaseCamera{0};
         std::atomic<int32_t> unitHandle{-1};
         std::atomic<int32_t> directParent{-1};
         std::atomic<uint32_t> definitionDatum{0xFFFFFFFFu};
@@ -21953,7 +21956,8 @@ namespace
     }
 
     void ReachPublishShotOccupation(
-        uint32_t generation, const ReachVehicleFrame* frame)
+        uint32_t generation, const ReachVehicleFrame* frame,
+        bool chaseCamera = false)
     {
         const bool active = generation && frame && frame->active;
         auto& published = g_reachShotOccupation;
@@ -21969,6 +21973,8 @@ namespace
                 ? 1u
                 : 0u,
             std::memory_order_relaxed);
+        published.chaseCamera.store(
+            active && chaseCamera ? 1u : 0u, std::memory_order_relaxed);
         published.unitHandle.store(
             active ? frame->unitHandle : -1, std::memory_order_relaxed);
         published.directParent.store(
@@ -22175,6 +22181,8 @@ namespace
     std::atomic<uint32_t> g_reachFiringOriginSkipNoSightRay{0};
     // Seated shots whose origin was left stock because trace-and-reaim was live (not a failure).
     std::atomic<uint32_t> g_reachFiringOriginConverged{0};
+    // Seated shots whose origin was left stock because a chase camera was chosen for the seat (not a failure).
+    std::atomic<uint32_t> g_reachFiringOriginChaseKept{0};
     // The occupied seat's own flags word, published by the engine
     // thread that read it so the worker can report it honestly.
     std::atomic<uint32_t> g_reachVehicleSeatFlagsPublished{0};
@@ -22198,6 +22206,7 @@ namespace
         uint64_t sampleMs = 0;
         bool active = false;
         bool allowsWeapons = false;
+        bool chaseCamera = false;
         ReachSeatLeaseKey key{};
     };
 
@@ -22246,6 +22255,8 @@ namespace
                 published.active.load(std::memory_order_relaxed) != 0;
             sample.allowsWeapons =
                 published.allowsWeapons.load(std::memory_order_relaxed) != 0;
+            sample.chaseCamera =
+                published.chaseCamera.load(std::memory_order_relaxed) != 0;
             sample.key = {
                 sample.generation,
                 published.unitHandle.load(std::memory_order_relaxed),
@@ -22445,6 +22456,13 @@ namespace
             else
                 reason = &g_reachFiringOriginSkipStaleEye;
             reason->fetch_add(1, std::memory_order_relaxed);
+            return stockResult;
+        }
+        // A chase camera of the vehicle camera file is chosen for this seat: the sight's ray starts at the camera,
+        // metres behind or above the occupant (and maybe past cover), so the shot leaves from the game's own point.
+        if (occupation.chaseCamera)
+        {
+            g_reachFiringOriginChaseKept.fetch_add(1, std::memory_order_relaxed);
             return stockResult;
         }
         // R-V27: leave from where the SIGHT starts, not from the eye.
@@ -33060,7 +33078,8 @@ namespace
         // thread must match it against the independently completed rendered-eye
         // record before substituting a personal-weapon origin.
         ReachPublishShotOccupation(
-            generation, frame.active ? &frame : nullptr);
+            generation, frame.active ? &frame : nullptr,
+            frame.active && ReachVehicleCameraChaseFor(frame));
         // R-V26, the exact shape of Halo 3's accepted C20 sampler: while the
         // seat is occupied, tell Reach that seat is first person; the instant
         // it is not, give the word back. Idempotent - a seat we already own is
@@ -38160,7 +38179,7 @@ namespace
         {
             static uint64_t s_nextSeatShotLogMs = 0;
             static uint32_t s_seenConverged = 0, s_seenRedirects = 0, s_seenOrigin = 0,
-                s_seenOriginConverged = 0;
+                s_seenOriginConverged = 0, s_seenOriginChase = 0;
             const uint64_t seatShotNowMs = GetTickCount64();
             if (seatShotNowMs >= s_nextSeatShotLogMs)
             {
@@ -38180,11 +38199,14 @@ namespace
                     g_reachFiringOriginMoves.load(std::memory_order_relaxed), s_seenOrigin);
                 const uint32_t originKept = delta(
                     g_reachFiringOriginConverged.load(std::memory_order_relaxed), s_seenOriginConverged);
-                if (converged || redirected || originMoved)
+                const uint32_t originChase = delta(
+                    g_reachFiringOriginChaseKept.load(std::memory_order_relaxed), s_seenOriginChase);
+                if (converged || redirected || originMoved || originChase)
                     LOG("Reach seated shots, last 10 s: %u aimed by trace-and-reaim (Reach's own shot, "
                         "converged; %u passenger origins left stock), %u fallback redirects through the "
-                        "fixed-distance reticle, %u fallback passenger origin swaps",
-                        converged, originKept, redirected, originMoved);
+                        "fixed-distance reticle, %u fallback passenger origin swaps, %u passenger origins left "
+                        "stock under a chase camera",
+                        converged, originKept, redirected, originMoved, originChase);
             }
         }
         if (!loggedPassengerFirstPersonAdmission &&
