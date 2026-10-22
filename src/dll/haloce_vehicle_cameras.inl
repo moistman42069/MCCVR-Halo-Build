@@ -497,6 +497,16 @@ bool HaloCEVehicleCameraPlace(const HaloCEChaseFrame& frame, float out[3])
     // HELD SHORT OF A WALL ("collide"): the line from the pivot to the camera's place, traced on this thread with the
     // sight trace's own query and the vehicle hierarchy ignored, as the game's own crosshair test ignores it.
     float reachUsed = 1.0f;
+    // How far out a wall let the camera go is the seat's and the camera's: another starts all the way out.
+    static VehicleCameraSeatKey reachSeat{}; // game's thread
+    static int reachCamera = -1;
+    if (!(reachSeat == key) || reachCamera != camera.camera)
+    {
+        reachSeat = key;
+        reachCamera = camera.camera;
+        g_haloceVehicleCameraReach = 1.0f;
+        g_haloceVehicleCameraReachAt.QuadPart = 0;
+    }
     if (camera.collide)
     {
         const float toward[3] = {point[0] - placed.pivot[0], point[1] - placed.pivot[1], point[2] - placed.pivot[2]};
