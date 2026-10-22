@@ -33,7 +33,7 @@
 // memory, auto-add, buttons and boom; Halo 2's observer hands over the seat it builds the view for, and the view's
 // eye is moved or stood at a chase camera's place, while the first-person seat override stands down for a chase camera
 // so the game's own third-person answer stands. The note goes to the mod's panel. Not in Halo 2 yet: the glass and
-// body keys, eyeAdjust, the aim ring, pitch tracking, Stick and Wheel control, a marker origin.
+// body keys, eyeAdjust, pitch tracking, Stick and Wheel control, a marker origin.
 //
 // THE THIRD-PERSON BOOM (vehicle_boom_logic.h; halo3_vehicle_boom.inl reads the game's side). A camera of origin
 // "thirdperson" stands where the game's own third-person camera would stand at a look pitch of the boom's own --

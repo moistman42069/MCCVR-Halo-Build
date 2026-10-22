@@ -58390,7 +58390,7 @@ bool Game_GetVehicleAimMarker(float outDir[3], float& outDistanceM)
     outDistanceM = 0.0f;
     float yaw = 0.0f, pitch = 0.0f, distance = 0.0f;
     const GameTitle title = TitleAdapter_GetActiveTitle();
-    if (!outDir || (title != GameTitle::Halo3 && title != GameTitle::HaloReach) ||
+    if (!outDir || (title != GameTitle::Halo3 && title != GameTitle::HaloReach && title != GameTitle::Halo2) ||
         !Halo3VehicleAimMarkerRead(yaw, pitch, distance))
         return false;
     const float cp = cosf(pitch);
@@ -60563,6 +60563,12 @@ bool Game_Halo2VehicleCameraPlacedSeat(uint32_t parent, int16_t seat) noexcept
     return at && now >= at && now - at <= 100 && parent != UINT32_MAX && seat >= 0 &&
            g_halo2VehicleCameraPlacedParent.load(std::memory_order_relaxed) == parent &&
            g_halo2VehicleCameraPlacedSeat.load(std::memory_order_relaxed) == seat;
+}
+
+void Game_Halo2VehicleAimMarkerStep(const float eye[3], const float forward[3], const float up[3],
+                                    const float headQuat[4]) noexcept
+{
+    Halo2VehicleAimMarkerStep(eye, forward, up, headQuat);
 }
 
 void Game_Halo2VehicleCamerasOnFoot(uint32_t generation) noexcept

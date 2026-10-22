@@ -39,6 +39,11 @@ bool Game_Halo2VehicleCamerasPlace(const Halo2VehicleCameraSeatSample& seat, flo
 // After the player's head is added to the view: `head` (world units, the head's movement off the eye) held inside the
 // leash of the chase camera placed this frame. False: no chase camera was placed, or it sets no leash.
 bool Game_Halo2VehicleCameraLeash(float head[3]) noexcept;
+// Once the head is added: the ring where the vehicle aims, for a chase camera that shows it, from the view the frame is
+// drawn from (`eye`, `forward`, `up`: the tracked centre camera) and the head's orientation in the headset's space it
+// was built with ([x, y, z, w]). Null for any of them takes the ring down.
+void Game_Halo2VehicleAimMarkerStep(const float eye[3], const float forward[3], const float up[3],
+                                    const float headQuat[4]) noexcept;
 // A frame of the observer with the player on foot: the seat is published as left.
 void Game_Halo2VehicleCamerasOnFoot(uint32_t generation) noexcept;
 // Any thread: a chase camera of the camera file placed this seat's view within 100 ms. The seat's view is then the

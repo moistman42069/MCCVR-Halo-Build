@@ -1522,6 +1522,11 @@ namespace
             if(Game_Halo2VehicleCameraLeash(lean))
                 for(int axis=0;axis<3;++axis) tracked.position[axis]=viewBase.position[axis]+lean[axis];
         }
+        // The ring where the vehicle aims, from the view this frame is drawn from (taken down without a chase camera).
+        if(cameraEyeMoved)
+            Game_Halo2VehicleAimMarkerStep(tracked.position,tracked.forward,tracked.up,snapshot.headOrientation);
+        else if(vehicle)
+            Game_Halo2VehicleAimMarkerStep(nullptr,nullptr,nullptr,nullptr);
         if (g_config.roomscale_movement||g_config.physical_running)
         {
             const HeadReference beforeRoomscale = g_reference;
@@ -4096,8 +4101,46 @@ namespace
             !g_halo2WorldCollision.installed.load(std::memory_order_acquire))
             return;
         const uint32_t generation = g_generation.load(std::memory_order_acquire);
+        if (!generation)
+            return;
+        // THE VEHICLE AIM RING RAY (halo2_vehicle_cameras.inl): from the seat's own point along the way the vehicle
+        // aims, while the ring is shown, for the depth it is drawn at -- the intent ray's length, the same ignores.
+        SightAuxRay markerRay{};
+        if (Sight_ReadMarkerRay(kTitle, generation, kSightRayFreshMs, markerRay))
+        {
+            const float markerLength = kSightTraceLengthWu;
+            const float markerDelta[3]{markerRay.dir[0] * markerLength, markerRay.dir[1] * markerLength,
+                markerRay.dir[2] * markerLength};
+            alignas(16) Halo2CollisionResult markerResult{};
+            bool markerHit = false, markerCalled = false;
+            g_halo2WorldCollision.callbacks.fetch_add(1, std::memory_order_acq_rel);
+            __try
+            {
+                const auto original = g_halo2WorldCollision.original;
+                if (original &&
+                    g_halo2WorldCollision.installed.load(std::memory_order_acquire) &&
+                    g_halo2WorldCollision.active.load(std::memory_order_acquire))
+                {
+                    markerHit = original(Halo2SightTraceFlags(), markerRay.origin, markerDelta,
+                        static_cast<int32_t>(seatedRoot), -1, &markerResult) != 0;
+                    markerCalled = true;
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                markerCalled = false;
+                Sight_NoteTraceFault(kTitle);
+            }
+            g_halo2WorldCollision.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+            if (!markerCalled)
+                return;
+            markerHit = markerHit && std::isfinite(markerResult.fraction) && markerResult.fraction >= 0.0f &&
+                markerResult.fraction <= 1.0f;
+            Sight_PublishMarkerTrace(kTitle, generation, markerHit,
+                markerHit ? markerResult.fraction * markerLength : 0.0f);
+        }
         SightAuxRay ray{};
-        if (!generation || !Sight_ReadCameraRay(kTitle, generation, kSightRayFreshMs, ray))
+        if (!Sight_ReadCameraRay(kTitle, generation, kSightRayFreshMs, ray))
             return;
         const float length = kHalo2CameraRayLengthWu;
         const float delta[3]{ray.dir[0] * length, ray.dir[1] * length, ray.dir[2] * length};
