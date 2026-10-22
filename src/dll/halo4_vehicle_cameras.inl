@@ -631,7 +631,7 @@ bool Halo4VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, const vehicle
 // or its place is not known yet; the seat's own eye stays.
 bool Halo4VehicleCameraPlace(const Halo4VehicleCameraFrame& frame, const VehicleCameraSeatKey& key,
                              const vehicle_camera_select::ActiveCamera& camera, const Halo4CameraBasis& gameCamera,
-                             bool following, const float seatEye[3], float out[3])
+                             bool following, const float standIn[3], float out[3])
 {
     vehicle_camera_place::Inputs in;
     // The vehicle: the carrier a gun rides, else the seated object itself. The seat's own frame is the seated
@@ -649,7 +649,7 @@ bool Halo4VehicleCameraPlace(const Halo4VehicleCameraFrame& frame, const Vehicle
     else
     {
         in.seatValid = true;
-        memcpy(in.seat, seatEye, sizeof(in.seat));
+        memcpy(in.seat, standIn, sizeof(in.seat));
     }
     in.seatFrameValid = vehicle_camera_frame::FromForwardUp(frame.rootForward, frame.rootUp, in.seatFrame) &&
                         vehicle_camera_frame::Usable(in.seatFrame);
@@ -693,9 +693,9 @@ bool Halo4VehicleCameraPlace(const Halo4VehicleCameraFrame& frame, const Vehicle
     {
         if (camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::Head))
             g_halo4VehicleCameraHeadMisses.fetch_add(1, std::memory_order_relaxed);
-        // The seat's own eye stands in for the head.
+        // The seat's point, else the seated object's root, stands in for the head.
         in.headValid = true;
-        memcpy(in.head, seatEye, sizeof(in.head));
+        memcpy(in.head, in.seatValid ? in.seat : standIn, sizeof(in.head));
     }
     in.viewYaw = g_halo4Camera.gameYawReference.load(std::memory_order_relaxed);
     if (camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::ThirdPerson) &&
@@ -939,12 +939,15 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
     // chose it (a seat the game shows in first person keeps its eye there).
     const bool following = nativeKnown && nativeChase &&
                            !NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo4, frame.parent, frame.seatIndex);
+    // What stands in for the seat or the head when neither reads: the seated object's root. Not the frame's eye, which
+    // under a chase camera is the game's following camera, swinging round the hull with the aim.
     float point[3];
-    if (Halo4VehicleCameraPlace(frame, key, camera, hands, following, eye.position, point))
+    if (Halo4VehicleCameraPlace(frame, key, camera, hands, following, frame.rootPos, point))
     {
         Halo4VehicleCameraPassRecord& pass = g_halo4VehicleCameraPass;
         pass.seat = key;
-        memcpy(pass.seatEye, frame.headValid ? frame.head : eye.position, sizeof(pass.seatEye));
+        memcpy(pass.seatEye, frame.headValid ? frame.head : (frame.seatPointValid ? frame.seatPoint : frame.rootPos),
+               sizeof(pass.seatEye));
         memcpy(pass.vehicleForward, frame.carrierRootValid ? frame.carrierForward : frame.rootForward,
                sizeof(pass.vehicleForward));
         memcpy(pass.looks, hands.forward, sizeof(pass.looks));
