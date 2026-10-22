@@ -11163,7 +11163,14 @@ namespace
             faulted = true;
         }
         if (faulted)
+        {
+            // A fault inside the copy leaves the sequence odd: close it, so a capture after the probe is armed again
+            // reads as stable (one writer: this camera thread).
+            Halo3ObserverCapture& cap = g_halo3ObserverCapture;
+            if (cap.seq.load(std::memory_order_relaxed) & 1u)
+                cap.seq.fetch_add(1, std::memory_order_release);
             Halo3DisableVehicleProbe("observer capture fault");
+        }
     }
 
     // C3: read the engine-evaluated per-seat camera pivot (observer record
@@ -14344,7 +14351,9 @@ namespace
             memcpy(seat.headFwd, xf.headFwd, sizeof(seat.headFwd));
             memcpy(seat.headUp, xf.headUp, sizeof(seat.headUp));
             const OdstVehicleId carrier = static_cast<OdstVehicleId>(xf.carrierVehicleId);
-            if (xf.seq.load(std::memory_order_acquire) != before)
+            // Read from other threads than the sampler's (aim, render): the copy above is ordered before the check.
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (xf.seq.load(std::memory_order_relaxed) != before)
                 continue;
             const uint64_t nowMs = GetTickCount64();
             if (!sampleMs || nowMs < sampleMs || nowMs - sampleMs > 100)
@@ -16450,6 +16459,11 @@ namespace
         }
         if (faulted)
         {
+            // A fault inside the copy leaves the sequence odd: close it, so a capture after ODST loads again reads
+            // as stable (one writer: this camera thread).
+            Halo3ObserverCapture& cap = g_odstObserverCapture;
+            if (cap.seq.load(std::memory_order_relaxed) & 1u)
+                cap.seq.fetch_add(1, std::memory_order_release);
             g_odstObserverSlot.store(0, std::memory_order_release);
             g_odstObserverCapture.valid.store(0, std::memory_order_release);
             g_odstObserverFaults.fetch_add(1, std::memory_order_relaxed);
