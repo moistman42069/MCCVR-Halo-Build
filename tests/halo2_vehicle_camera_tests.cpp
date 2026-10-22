@@ -128,7 +128,8 @@ static void TestOrbit()
               OrbitPivotUpWu(true, bad) == 0.0f && OrbitPivotUpWu(true, nullptr) == 0.0f,
           "never below the origin; unread or broken bounds turn about the origin");
     const vehicle_boom::Range range = BoomRange();
-    Check(std::fabs(range.min + 60.0f * vehicle_boom::kRadiansPerDegree) < 1e-6f && range.max == 0.0f,
+    Check(std::fabs(range.min + 60.0f * vehicle_boom::kRadiansPerDegree) < 1e-6f && range.max == 0.0f &&
+              !std::signbit(range.max),
           "the orbit runs from level with its pivot to 60 deg above (as look pitches, the other way round)");
 }
 

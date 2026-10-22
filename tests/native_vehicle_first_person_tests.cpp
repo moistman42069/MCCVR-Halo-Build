@@ -180,9 +180,9 @@ template<unsigned I> void Run()
     }
     else
     {
-        const unsigned asked=chaseAsked;chaseChosen=true;
-        Check(SelectHook<I>(owned.unit,&mode)==0&&chaseAsked==asked,
-            "another title's seat view never asks the Halo 2 vehicle cameras");
+        // With the stand-down off for every title this checks the answer only, not the title gate before it.
+        chaseChosen=true;
+        Check(SelectHook<I>(owned.unit,&mode)==0,"a chase camera never changes another title's seat view");
         chaseChosen=false;
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS

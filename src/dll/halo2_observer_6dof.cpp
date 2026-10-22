@@ -5338,13 +5338,9 @@ namespace
     #include "halo2_direct_drive.inl"
     #include "halo2_director_perspective.inl"
 
-    // THE SEAT FOR THE VEHICLE CAMERAS (halo2_vehicle_cameras.h), observer thread, once a frame of a seat view: who
-    // sits where (the seat view's own key), the render models of the seated object and of the vehicle it rides (a few
-    // tag lookups: kept per object for the generation, a failed read tried again for up to 30 frames), the seat's own
-    // flags (the seat frame reader's guarded read of the flags word the rebase addresses, kept per occupation), and
-    // the game's own camera this frame. False only for a key with no seat.
     // The seated unit's aiming vector (unit +0x174, the line the engine fires along; the direct drive reads the same),
-    // through the salt-checked accessor and guarded. False unless it reads as a unit vector.
+    // through the salt-checked accessor and guarded. False unless it reads as a unit vector. The engine writes it
+    // once a tick, so it steps at the tick, not the frame.
     bool Halo2VehicleCameraUnitAim(uint32_t unit,float out[3]) noexcept
     {
         float aim[3]{};
@@ -5361,6 +5357,11 @@ namespace
         return true;
     }
 
+    // THE SEAT FOR THE VEHICLE CAMERAS (halo2_vehicle_cameras.h), observer thread, once a frame of a seat view: who
+    // sits where (the seat view's own key), the render models of the seated object and of the vehicle it rides (a few
+    // tag lookups: kept per object for the generation, a failed read tried again for up to 30 frames), the seat's own
+    // flags (the seat frame reader's guarded read of the flags word the rebase addresses, kept per occupation), the
+    // game's own camera this frame, and the seated unit's aim. False only for a key with no seat.
     bool Halo2VehicleCameraSampleSeat(const Halo2VehicleViewKey& key,const Halo2CameraBasis& stock,
         Halo2VehicleCameraSeatSample& out) noexcept
     {

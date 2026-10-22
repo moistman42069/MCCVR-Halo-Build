@@ -230,9 +230,9 @@ struct Halo2VehicleCameraPassRecord
     vehicle_camera_select::ActiveCamera camera{};
     vehicle_camera_place::Placed where{};
     // For the aim ring (Halo2VehicleAimMarkerStep): the seat the camera was placed for, the seat's own point (where
-    // the seat's aim is solved from, before the camera moved the view), the heading the seat aims along (the hull's,
-    // or a gun's own: halo2_vehicle_camera::RingFollowsAim), and the way the game's own camera looked this frame (its
-    // aim pitch).
+    // the seat's aim is solved from, before the camera moved the view), the heading the seat aims along and the way
+    // it looks for its pitch -- a gun's own aiming vector for both, else the hull's heading at the pitch of the
+    // game's own camera this frame (halo2_vehicle_camera::RingFollowsAim).
     VehicleCameraSeatKey seat{};
     bool seatEyeValid = false;
     float seatEye[3]{};
@@ -543,8 +543,8 @@ std::atomic<uint32_t> g_halo2VehicleAimMarkerTracedFrames{0};
 // THE VEHICLE AIM RING ("aimMarker", vehicle_aim_marker_logic.h), as Halo 3 and Reach place it: observer thread, once
 // the view is built from this frame's chase camera. `eye`, `forward` and `up` are the view the frame is drawn from
 // (the tracked centre camera), `headQuat` the head's orientation in the headset's space that view was built with
-// ([x, y, z, w]). The line the seat aims along is its heading (the hull's, or a gun's own) at the game's own aim
-// pitch, from the seat's own point; its depth is Halo 2's sight trace of that ray (Halo2SightAuxTraces); its direction in the headset's space is
+// ([x, y, z, w]). The line the seat aims along is a gun's own aiming vector, else the hull's heading at the game's
+// own aim pitch, from the seat's own point; its depth is Halo 2's sight trace of that ray (Halo2SightAuxTraces); its direction in the headset's space is
 // the view's: the direction from the eye in the view's own axes (right, up, back), turned by the head. The frame
 // thread draws it (Game_GetVehicleAimMarker). Shares Halo 3's ring record: one title runs at a time.
 void Halo2VehicleAimMarkerStep(const float eye[3], const float forward[3], const float up[3], const float headQuat[4])
@@ -628,11 +628,15 @@ VehicleCameraSeatRead Halo2VehicleCameraSeat(VehicleCameraSeatKey& key, const ch
     Halo2VehicleCameraSeatRecord seat;
     if (!Halo2VehicleCameraReadSeat(seat))
         return VehicleCameraSeatRead::Unknown;
+    static uint32_t unreadParent = UINT32_MAX;
     if (!seat.seated || seat.generation != TitleAdapter_GetGeneration(GameTitle::Halo2))
+    {
+        unreadParent = UINT32_MAX;
         return VehicleCameraSeatRead::OnFoot;
+    }
     // A seat whose vehicle's model has not read yet has no name to go by (a hash of nothing would be every such
     // vehicle's): it waits, keeping what is published -- said once if it never reads.
-    static uint32_t unreadGeneration = 0, unreadParent = UINT32_MAX;
+    static uint32_t unreadGeneration = 0;
     static int16_t unreadSeat = -1;
     static uint64_t unreadSinceMs = 0;
     static bool unreadLogged = false;
@@ -809,10 +813,12 @@ void Halo2VehicleCamerasColdLog(bool seated)
     if (frames && orbitCm > 0.0f && orbitCm != orbitLoggedCm)
     {
         orbitLoggedCm = orbitCm;
-        LOG("Vehicle cameras (Halo 2): the third-person camera orbits a point %.0f cm above the vehicle's origin (the "
-            "middle of its height), %.0f cm out (the mod's stand-in for a vehicle %.0f cm across: Halo 2's own "
-            "third-person camera is not shown in a seat view, so where it would stand is not measured)",
-            static_cast<double>(g_halo2VehicleCameraOrbitUpCm.load(std::memory_order_relaxed)),
+        const float upCm = g_halo2VehicleCameraOrbitUpCm.load(std::memory_order_relaxed);
+        LOG("Vehicle cameras (Halo 2): the third-person camera orbits a point %.0f cm above the vehicle's origin (%s), "
+            "%.0f cm out (the mod's stand-in for a vehicle %.0f cm across: Halo 2's own third-person camera is not "
+            "shown in a seat view, so where it would stand is not measured)",
+            static_cast<double>(upCm),
+            upCm > 0.0f ? "the middle of its height" : "its model's height was not read",
             static_cast<double>(orbitCm),
             static_cast<double>(2.0f * g_halo2VehicleCameraRadiusCm.load(std::memory_order_relaxed)));
     }

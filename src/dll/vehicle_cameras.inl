@@ -1519,7 +1519,8 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
             LOG("Vehicle cameras (%s): the boom in %s orbits %s (%s); look range %.1f to %.1f deg, so from %.1f to "
                 "%.1f deg above level. It starts at %.1f deg (%s)",
                 titleName, b.seatName.c_str(),
-                halo2Title ? "the middle of the vehicle's height at the mod's stand-in distance"
+                halo2Title ? "a point above the vehicle's origin (the middle of its height, where its model "
+                             "reads) at the mod's stand-in distance"
                            : "the game's pivot at the game's own distance",
                 why, static_cast<double>(b.shape.range.min * deg), static_cast<double>(b.shape.range.max * deg),
                 static_cast<double>(lowDeg), static_cast<double>(highDeg), static_cast<double>(startDeg), from);
