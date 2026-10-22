@@ -283,12 +283,14 @@ static void TestAimMarker()
     // The built-in cameras have it as Halo Campaign Evolved's do: on for the seat, off in each Untethered mode, so
     // it shows only where the view turns with the vehicle.
     const Table built = DefaultTable();
-    bool seatOn = true, untetheredOff = true, tetheredOn = true;
-    int chaseModes = 0;
+    bool seatOn = true, untetheredOff = true, tetheredOn = true, ceOff = true;
+    int chaseModes = 0, ceModes = 0;
     for (const Game& game : built.games)
         for (const Vehicle& vehicle : game.vehicles)
         {
-            seatOn = seatOn && vehicle.aimMarker == 1;
+            // Halo CE draws no ring (its crosshair is its own HUD's): its built-ins ask for none.
+            const bool ce = game.key == "halo1";
+            seatOn = seatOn && vehicle.aimMarker == (ce ? 0 : 1);
             for (std::size_t c = 0; c < vehicle.cameras.size(); ++c)
             {
                 const Camera& camera = vehicle.cameras[c];
@@ -296,8 +298,14 @@ static void TestAimMarker()
                     continue;
                 for (int m = 0; m < camera.ModeCount(); ++m)
                 {
-                    ++chaseModes;
                     const bool shown = EffectiveAimMarker(vehicle, static_cast<int>(c), m);
+                    if (ce)
+                    {
+                        ++ceModes;
+                        ceOff = ceOff && !shown;
+                        continue;
+                    }
+                    ++chaseModes;
                     if (camera.Mode(m).rotYaw)
                         tetheredOn = tetheredOn && shown && camera.Mode(m).aimMarker == -1;
                     else
@@ -307,6 +315,7 @@ static void TestAimMarker()
         }
     Check(chaseModes > 20 && seatOn && untetheredOff && tetheredOn,
           "built in: the ring in every Tethered mode and in no Untethered one");
+    Check(ceModes > 10 && ceOff, "and none in any of Halo CE's, which draws no ring");
     const std::string builtText = ToJson(built, false);
     Check(Has(builtText, "\"aimMarker\": true,") && Has(builtText, "{ \"name\": \"Untethered\", \"aimMarker\": false }") &&
               Has(builtText, "{ \"name\": \"Tethered\", \"rotationTracking\": [\"yaw\"] }"),

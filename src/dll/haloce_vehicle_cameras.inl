@@ -666,10 +666,11 @@ std::string HaloCEVehicleCameraNotApplied(const vehicle_camera_select::ActiveCam
         add("fadeParts");
     if (camera.holdExposure)
         add("eyeAdjust");
+    // The ring where the vehicle aims: CE's built-ins ask for none, so a camera that does was set so in the file.
+    // ("showHeadlessBody" is not listed: it is on by default in a driver's or gunner's seat view, so it would be listed
+    // for every seat; the readout leaves out what it says of the body in CE instead.)
     if (camera.chase && camera.aimMarker)
         add("the aim ring");
-    if (!camera.chase && camera.showHeadlessBody)
-        add("showHeadlessBody");
     return list;
 }
 

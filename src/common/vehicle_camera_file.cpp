@@ -1466,6 +1466,9 @@ Table DefaultTable()
                      "turret"),
         AnyVehicle(),
     };
+    // CE draws no ring where the vehicle aims (its crosshair is its own HUD's): its built-in cameras ask for none.
+    for (Vehicle& vehicle : halo1.vehicles)
+        vehicle.aimMarker = 0;
 
     // Every other game, until it has cameras of its own.
     Game game;
