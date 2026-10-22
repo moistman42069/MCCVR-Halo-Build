@@ -367,7 +367,9 @@ struct Halo2VehicleCameraRest
 Halo2VehicleCameraRest g_halo2VehicleCameraRest;
 inline constexpr float kHalo2RestKnownWu = 0.25f; // nearer than this the game's camera is still the seat's own view
 inline constexpr float kHalo2RestFurthestWu = 8.0f;
-inline constexpr uint32_t kHalo2RestWaitFrames = 45;
+// Placements asked for once the game's own camera is its own before the stand-in is used: the observer places about
+// twice a rendered frame, so about 45 frames, as Reach waits.
+inline constexpr uint32_t kHalo2RestWaitFrames = 90;
 inline constexpr float kHalo2RestLevelSin = 0.26f;
 
 vehicle_camera_place::State g_halo2VehicleCameraState;  // observer thread
@@ -429,9 +431,9 @@ bool Halo2VehicleCameraRestPlace(const Halo2VehicleCameraSeatSample& sample, con
     float at[3]{}, looks[3]{};
     memcpy(at, sample.stockPosition, sizeof(at));
     memcpy(looks, sample.stockForward, sizeof(looks));
-    const bool observed = pivot && vehicle_camera_place::Finite3(at) && vehicle_camera_place::Finite3(looks) &&
-                          vehicle_camera_frame::Normalize(looks) &&
-                          !NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo2, sample.parent, sample.seat);
+    const bool gameCamera = !NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo2, sample.parent, sample.seat);
+    const bool observed = pivot && gameCamera && vehicle_camera_place::Finite3(at) &&
+                          vehicle_camera_place::Finite3(looks) && vehicle_camera_frame::Normalize(looks);
     if (observed)
     {
         const float stood[3] = {at[0] - pivot[0], at[1] - pivot[1], at[2] - pivot[2]};
@@ -487,9 +489,12 @@ bool Halo2VehicleCameraRestPlace(const Halo2VehicleCameraSeatSample& sample, con
         g_halo2VehicleCameraRestWu.store(rest.distance, std::memory_order_relaxed);
         return true;
     }
+    // Waited out only while the game's camera is its own: the first-person view stays the seat's for a moment after
+    // the override stands down.
     if (rest.waited < kHalo2RestWaitFrames)
     {
-        ++rest.waited;
+        if (gameCamera)
+            ++rest.waited;
         return false;
     }
     in.restValid = false;

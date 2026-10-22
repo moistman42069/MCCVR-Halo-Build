@@ -58,20 +58,24 @@ __declspec(noinline) int32_t __fastcall Halo2IndependentCameraDetour(
         // Co-op safe: at a fire the evaluator answers the line the crosshair test starts on, from the unit's seat
         // camera. The first-person seat override places that camera on this machine only, so for this call it
         // stands down and the line is the one every machine computes.
-        // Every call of this evaluator asks for the seat's aim (the players update and the fire), never the frame's
-        // view: under a chase camera of the vehicle camera file the seat keeps its first-person answer here.
-        if(reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x7597BD&&!Sight_FireTimeChangesAllowed())
+        // The fire's own ask is for the seat's aim: under a chase camera of the vehicle camera file it keeps the
+        // seat's first-person answer, so the round leaves as from the seat view. The players update's ask is the
+        // player's camera for the frame, and is left to the chase camera's stand-down like the director's.
+        const bool fireAsk=reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x7597BD;
+        if(fireAsk&&!Sight_FireTimeChangesAllowed())
         {
             NativeVehicleFirstPerson_SetStockOnThisThread(true);
             __try {result=feature.cameraOriginal(unit,position,direction);}
             __finally {NativeVehicleFirstPerson_SetStockOnThisThread(false);}
         }
-        else
+        else if(fireAsk)
         {
             NativeVehicleFirstPerson_SetSeatAskOnThisThread(true);
             __try {result=feature.cameraOriginal(unit,position,direction);}
             __finally {NativeVehicleFirstPerson_SetSeatAskOnThisThread(false);}
         }
+        else
+            result=feature.cameraOriginal(unit,position,direction);
         // Flat parity (halo2_fire_eye.inl): the firing assist's own call for our unit, before anything below
         // replaces its outputs, is a free sample of the evaluator against the publication's engine eye.
         if(position&&reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x7597BD&&unit==Halo2OwnedUnit())

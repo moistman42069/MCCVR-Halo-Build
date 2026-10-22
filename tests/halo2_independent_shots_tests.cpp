@@ -273,12 +273,15 @@ int main()
     caller=g_halo2Dual.base+0x7597BD;
     Check(Halo2IndependentCameraDetour(owner+0x10000,position,direction)==0x12345678&&direction[0]==1,"remote salted unit retains native camera ray");
     {
-        // The evaluator asks for the seat's aim (the players update, the fire), never the frame's view: a vehicle
-        // chase camera's stand-down does not apply to it.
+        // The fire's ask is for the seat's aim (a vehicle chase camera's stand-down does not apply to it); any other
+        // caller's (the players update: the camera the frame is drawn from) is left to the stand-down.
         const unsigned raised=seatAskRaised;
         caller=g_halo2Dual.base+0x7597BE;
         (void)Halo2IndependentCameraDetour(owner,position,direction);
-        Check(seatAskRaised==raised+1&&!seatAskUp,"a forwarded evaluator call is a seat-aim ask, the flag down after it");
+        Check(seatAskRaised==raised&&!seatAskUp,"another caller's evaluator call is not a seat-aim ask");
+        caller=g_halo2Dual.base+0x7597BD;
+        (void)Halo2IndependentCameraDetour(owner,position,direction);
+        Check(seatAskRaised==raised+1&&!seatAskUp,"the fire's evaluator call is a seat-aim ask, the flag down after it");
     }
     Reset();nested=true;Shoot();Check(fireCalls==2,"nested simultaneous roles fire once each");
     Reset();queryFault=true;Shoot();Check(fireCalls==1&&g_halo2Dual.faulted&&observedTarget[0]==0x44440007,"optional query failure is isolated");

@@ -371,12 +371,13 @@ template<unsigned I> bool ForTheSimulation() noexcept
     if constexpr (I==1) return false;
     else return !Sight_FireTimeChangesAllowed()&&InTick(I)!=0;
 }
-// HALO 2, THE VEHICLE CAMERAS' CHASE CAMERA. The frame's own asks of the selector (the director's) are answered as
-// the game built them while a chase camera of the vehicle camera file is chosen for the seat, so the game shows the
-// seat in third person and draws its occupant. The asks for the seat's AIM -- the evaluator 0x6D4730, which the
-// game calls only from its players update (0x6A37CE) and its fire (0x7597B8), and the seat drive's own ask -- are
-// flagged on their thread (NativeVehicleFirstPerson_SetSeatAskOnThisThread) and keep the first-person answer, so a
-// seat aims and fires from a chase camera exactly as from its seat view.
+// HALO 2, THE VEHICLE CAMERAS' CHASE CAMERA. While a chase camera of the vehicle camera file is chosen for the seat,
+// the selector's asks for the player's camera -- the director's, and the evaluator 0x6D4730's from the players
+// update (0x6A37CE), which builds the camera the frame is drawn from -- are answered as the game built them, so the
+// game shows the seat in third person and draws its occupant. The asks for the seat's AIM -- that evaluator from the
+// fire (0x7597B8) and from the seat drive -- are flagged on their thread
+// (NativeVehicleFirstPerson_SetSeatAskOnThisThread) and keep the first-person answer, so a seat aims and fires from a
+// chase camera exactly as from its seat view.
 thread_local bool t_seatAskOnThisThread=false;
 bool Halo2ChaseStandsDown(const NativeVehicleCameraOwner& owner) noexcept
 {
