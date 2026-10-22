@@ -15629,6 +15629,9 @@ namespace
             }
         }
         viewLift.value = viewLiftZ;
+        // The ring where the vehicle aims (vehicle_cameras.inl), from the eye this view is drawn from and through the
+        // frame its rotation was composed in. A pass that placed no chase camera takes it down.
+        Halo3VehicleAimMarkerStep(position, rotationFollows, hullYaw, hullPitch);
     }
 
     // O1: ODST vehicle evidence probe. Read-only and inert â€” it publishes
@@ -58831,7 +58834,7 @@ bool Game_GetVehicleAimMarker(float outDir[3], float& outDistanceM)
     outDistanceM = 0.0f;
     float yaw = 0.0f, pitch = 0.0f, distance = 0.0f;
     const GameTitle title = TitleAdapter_GetActiveTitle();
-    if (!outDir || (title != GameTitle::Halo3 && title != GameTitle::HaloReach) ||
+    if (!outDir || (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST && title != GameTitle::HaloReach) ||
         !Halo3VehicleAimMarkerRead(yaw, pitch, distance))
         return false;
     const float cp = cosf(pitch);
