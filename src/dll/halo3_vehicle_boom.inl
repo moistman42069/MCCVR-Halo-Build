@@ -523,12 +523,14 @@ bool Halo3BoomReadSeatGuarded(const Halo3BoomTagSource& source, uint32_t definit
     }
 }
 
-bool Halo3BoomReadPreferences(const uint8_t* preferences, bool& look, bool& flight)
+// A controller's look and flight inversion bytes, at the title's offsets in its preferences.
+bool Halo3BoomReadPreferences(const uint8_t* preferences, uintptr_t lookOffset, uintptr_t flightOffset, bool& look,
+                              bool& flight)
 {
     __try
     {
-        look = preferences[kHalo3PadLookInvertOffset] != 0;
-        flight = preferences[kHalo3PadFlightInvertOffset] != 0;
+        look = preferences[lookOffset] != 0;
+        flight = preferences[flightOffset] != 0;
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -592,7 +594,8 @@ bool Halo3VehicleBoomGameInverts(bool piloting, bool& inverts)
     if (!Halo3VehicleBoomBound() || !g_halo3VehicleBoom.preferences)
         return false;
     bool look = false, flight = false;
-    if (!Halo3BoomReadPreferences(g_halo3VehicleBoom.preferences, look, flight))
+    if (!Halo3BoomReadPreferences(g_halo3VehicleBoom.preferences, kHalo3PadLookInvertOffset,
+                                  kHalo3PadFlightInvertOffset, look, flight))
         return false;
     inverts = vehicle_boom::GameInverts(look, flight, piloting && g_halo3VehicleBoom.pilot);
     return true;
@@ -608,8 +611,13 @@ bool Halo3VehicleBoomGameInverts(bool piloting, bool& inverts)
 // +-85.5 deg limits, its clamp reading the seat camera's +0x10 / +0x14; the following camera calls the seat camera,
 // the solver and the track in the same order. So ODST has signatures of its own for five sites; the solver, the follow
 // offset, the track's two inner sites, the cubic and the rotation match Halo 3's signatures as they are. Bound at
-// ODST's install against ODST's own tag tables, cross-checked as Halo 3's are. ODST's gamepad abstraction is not
-// bound: its look inversion is not read, and vehicle_boom_invert decides.
+// ODST's install against ODST's own tag tables, cross-checked as Halo 3's are.
+// The INVERSION: ODST's gamepad abstraction (+0x1B85CC), player-control builder (+0x10FBFC) and pilot test
+// (+0x115320) are Halo 3's (+0x1871BC, +0xF42D8, +0xF91F4) with ODST's layout: preferences 0x238 a controller (Halo
+// 3's 0x21C) with the look and flight bytes at +0x21C / +0x21E (+0x200 / +0x202); the abstraction's pitch at +0x15A8
+// (+0x1498), 0x558 a controller (0x518), which the builder reads at its state + 0x544 (+0x504); the pilot test's
+// player records, seat word and seats block as the look update's and the seat camera's above. Five ODST signatures,
+// none of which matches Halo 3; the pilot test's TLS index, tag tables and type call must be the mod's own.
 // ADDR-HYGIENE: resolved + guarded, as BindHalo3VehicleBoom's; retired by the title image guard at ODST's unload.
 
 // +0x39A110, in +0x39A070: a seated unit's camera is its parent's seat record + 0x68. Tag base at +12, instance table
@@ -652,6 +660,38 @@ inline constexpr char kOdstBoomTrackSig[] =
     "8B C2 EB 08 41 8B 41 08 48 8D 04 83 41 0F 10 44 04 0C 48 8D 55 AF 48 8D 4D BF F3 0F 7F 45 BF E8 ?? ?? ?? ?? 49 83 "
     "C4 1C 49 83 C0 0C 49 83 EF 01 75 C7";
 inline constexpr uintptr_t kOdstGlobalsDefaultTrackOffset = 0x40C;
+// +0x1B8621, in +0x1B85CC: the preferences' base (+6), 0x238 a controller, beside the abstraction's 0x558.
+inline constexpr char kOdstBoomPadHeadSig[] =
+    "8B 42 34 4C 8D 3D ?? ?? ?? ?? 48 63 F1 48 69 DE 58 05 00 00 48 69 EE 38 02 00 00 42 89 84 3B 94 15 00 00 8B 42 "
+    "38 42 89 84 3B 98 15 00 00 42 C6 84 3B B4 15 00 00 00 41 80 7C 2F 14";
+// +0x1B89DA, in +0x1B85CC: the second pitch (+0x15AC) negated by +0x21E, the look pitch (+0x15A8) by +0x21C.
+inline constexpr char kOdstBoomPadInvertSig[] =
+    "41 80 BC 2F 1E 02 00 00 00 74 06 41 0F 28 C4 EB 04 41 0F 28 C1 F3 42 0F 10 8C 3B A8 15 00 00 F3 0F 59 C1 F3 42 "
+    "0F 11 84 3B AC 15 00 00 41 80 BC 2F 1C 02 00 00 00 75 04 45 0F 28 E1 F3 44 0F 59 E1 F3 46 0F 11 A4 3B A8";
+// +0x10FCF7, in +0x10FBFC: the builder's state, image base (+10) plus an image offset (+22), 0x558 a controller.
+inline constexpr char kOdstBoomBuilderStateSig[] =
+    "48 69 CB 58 05 00 00 48 8D 05 ?? ?? ?? ?? 48 89 5C 24 60 48 8D B0 ?? ?? ?? ?? BA 12 00 00 00 48 8B 85 E0 08 00 "
+    "00 48 03 F1 48 8B CE";
+// +0x110335, in +0x10FBFC: the second pitch (+0x548) where the pilot test (+11) says so, else the look pitch (+0x544).
+inline constexpr char kOdstBoomBuilderPitchSig[] =
+    "44 8B A5 C0 08 00 00 41 8B CC E8 ?? ?? ?? ?? 33 DB 84 C0 74 0A F3 0F 10 B6 48 05 00 00 EB 08 F3 0F 10 B6 44 05 "
+    "00 00";
+// +0x115320 whole: the pilot test, Halo 3's with ODST's layout: the TLS index (+12), the instance table (+163), the tag
+// base (+170) and the type accessor's call (+197); the seat's flags bit 2 and the parent's physics type in 0x94.
+inline constexpr char kOdstBoomPilotSig[] =
+    "48 89 5C 24 08 57 48 83 EC 20 8B 15 ?? ?? ?? ?? 45 33 C9 65 48 8B 04 25 58 00 00 00 41 83 CA FF 4C 8B 04 D0 48 63 "
+    "C1 48 69 C8 C0 02 00 00 BA D8 00 00 00 4A 8B 04 02 8B 94 08 C0 00 00 00 41 3B D2 0F 84 BA 00 00 00 B8 20 00 00 00 "
+    "4A 8B 04 00 4C 8B 40 48 0F B7 C2 48 8D 0C 40 49 8B 44 C8 10 44 39 50 10 0F 84 97 00 00 00 0F B7 98 62 02 00 00 66 "
+    "41 3B DA 0F 84 86 00 00 00 0F B7 40 10 41 8D 79 01 48 8D 0C 40 8B C7 49 8B 54 C8 10 8A 8A 96 00 00 00 D3 E0 D1 E8 "
+    "40 84 C7 74 64 0F B7 0A 48 8B 05 ?? ?? ?? ?? 4C 8B 1D ?? ?? ?? ?? 44 39 4C C8 04 75 05 45 8B D1 EB 08 8B 44 C8 04 "
+    "4D 8D 14 83 8B 0A E8 ?? ?? ?? ?? 8B C8 8B C7 D3 E0 A8 94 74 2E 41 8B 82 7C 02 00 00 49 8B D1 85 C0 74 04 49 8D 14 "
+    "83 48 0F BF C3 48 69 C8 D4 00 00 00 45 0F B6 C9 8B 04 11 C1 E8 02 40 84 C7 44 0F 45 CF 48 8B 5C 24 30 41 8A C1 48 "
+    "83 C4 20 5F C3";
+inline constexpr size_t kOdstPadPreferencesStride = 0x238;
+inline constexpr uintptr_t kOdstPadLookInvertOffset = 0x21C;
+inline constexpr uintptr_t kOdstPadFlightInvertOffset = 0x21E;
+inline constexpr uintptr_t kOdstPadPitchOffset = 0x15A8;
+inline constexpr uintptr_t kOdstBuilderPitchOffset = 0x544;
 
 Halo3VehicleBoomBinding g_odstVehicleBoom;
 
@@ -762,21 +802,64 @@ void BindOdstVehicleBoom(uintptr_t base, size_t size, uint32_t generation)
         }
     }
 
+    // THE INVERSION.
+    const char* invertWhy = nullptr;
+    const char* pilotWhy = nullptr;
+    {
+        const uintptr_t head = mcc_clock::FindUnique(base, size, kOdstBoomPadHeadSig);
+        const uintptr_t invert = mcc_clock::FindUnique(base, size, kOdstBoomPadInvertSig);
+        const uintptr_t pad = Halo3BoomFunctionOf(base, head);
+        const uintptr_t preferences = rip(head, 6, 10);
+        const uintptr_t state = mcc_clock::FindUnique(base, size, kOdstBoomBuilderStateSig);
+        const uintptr_t choice = mcc_clock::FindUnique(base, size, kOdstBoomBuilderPitchSig);
+        const uintptr_t builder = Halo3BoomFunctionOf(base, state);
+        if (!head || !invert || !pad || Halo3BoomFunctionOf(base, invert) != pad)
+            invertWhy = "the gamepad abstraction's two sites";
+        else if (!inside(preferences, kOdstPadPreferencesStride))
+            invertWhy = "the controller preferences";
+        else if (!state || !choice || !builder || Halo3BoomFunctionOf(base, choice) != builder ||
+                 rip(state, 10, 14) != base ||
+                 base + *reinterpret_cast<const uint32_t*>(state + 22) + kOdstBuilderPitchOffset !=
+                     preferences + kOdstPadPitchOffset)
+            invertWhy = "the player-control builder's read of the abstraction's pitch";
+        else
+        {
+            boom.preferences = reinterpret_cast<const uint8_t*>(preferences);
+            const uintptr_t pilot = rip(choice, 11, 15);
+            if (!here(pilot, kOdstBoomPilotSig))
+                pilotWhy = "its signature";
+            else if (!g_odstEngineTlsIndex || rip(pilot, 12, 16) != reinterpret_cast<uintptr_t>(g_odstEngineTlsIndex) ||
+                     rip(pilot, 163, 167) != instances || rip(pilot, 170, 174) != tagBase)
+                pilotWhy = "its TLS index and tag tables against the mod's";
+            else if (!g_odstVehicleTypeAccessor ||
+                     rip(pilot, 197, 201) != reinterpret_cast<uintptr_t>(g_odstVehicleTypeAccessor))
+                pilotWhy = "its type accessor against the mod's";
+            else
+                boom.pilot = true;
+        }
+    }
+
     boom.generation.store(generation, std::memory_order_release);
     if (seatWhy)
         LOG("ODST third-person boom: the seat camera (+0x39A070) did not prove (%s); the boom orbits the game's pivot",
             seatWhy);
     else
-        LOG("ODST third-person boom: the seat camera at +0x%llX; look limits %s; camera track %s; the look inversion "
-            "is not read (vehicle_boom_invert decides)",
+        LOG("ODST third-person boom: the seat camera at +0x%llX; look limits %s; camera track %s; look inversion %s",
             static_cast<unsigned long long>(seatFn - base),
             limitsWhy ? "not proven (the flat game's own +-85.5 deg are used)" : "from the seat camera, held to the look "
                                                                                  "update's own (+0x113AB8)",
-            trackWhy ? "not proven: the boom orbits the game's pivot at its own distance" : "proven (+0x244118)");
+            trackWhy ? "not proven: the boom orbits the game's pivot at its own distance" : "proven (+0x244118)",
+            invertWhy ? "not proven: not inverted unless vehicle_boom_invert = 1"
+                      : (pilotWhy ? "from the game's look setting (the pilot test did not prove: a pilot takes it too)"
+                                  : "from the game's look and flight settings (+0x1B85CC, +0x115320)"));
     if (!seatWhy && limitsWhy)
         LOG("ODST third-person boom: the look limits did not prove (%s)", limitsWhy);
     if (!seatWhy && trackWhy)
         LOG("ODST third-person boom: the camera track did not prove (%s)", trackWhy);
+    if (invertWhy)
+        LOG("ODST third-person boom: the game's look inversion did not prove (%s)", invertWhy);
+    else if (pilotWhy)
+        LOG("ODST third-person boom: the pilot test did not prove (%s)", pilotWhy);
 }
 
 // Before halo3odst.dll goes (its teardown), and at its unload (the title image guard): the reads below stop.
@@ -802,6 +885,21 @@ bool OdstVehicleBoomBound()
     return generation && generation == g_odstRuntimeGeneration.load(std::memory_order_relaxed);
 }
 
+// The vehicle's physics type, from ODST's own type accessor (a leaf over the loaded tags); -1 where it faults.
+int OdstBoomPhysicsType(uint32_t definitionIndex)
+{
+    __try
+    {
+        return g_odstVehicleTypeAccessor && definitionIndex <= 0xFFFFu
+                   ? g_odstVehicleTypeAccessor(static_cast<unsigned short>(definitionIndex))
+                   : -1;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return -1;
+    }
+}
+
 // Cold worker. ODST's seat camera facts for the seat of `definitionIndex`, `seatIndex` (Halo3VehicleBoomReadSeat's),
 // read inside the title image guard: the binding is retired before the image goes.
 bool OdstVehicleBoomReadSeat(uint32_t definitionIndex, int seatIndex, Halo3BoomSeatFacts& out)
@@ -815,6 +913,28 @@ bool OdstVehicleBoomReadSeat(uint32_t definitionIndex, int seatIndex, Halo3BoomS
                                         kOdstGlobalsDefaultTrackOffset};
         read = Halo3BoomReadSeatGuarded(source, definitionIndex, seatIndex, g_odstVehicleBoom.globals,
                                         g_odstVehicleBoom.track, out);
+        if (read)
+            out.physicsType = OdstBoomPhysicsType(definitionIndex);
+    }
+    title_image_guard::EndRead();
+    return read;
+}
+
+// Cold worker, every poll: ODST's inversion of the right stick's Y in this seat, as Halo3VehicleBoomGameInverts.
+// `piloting` from Halo3VehicleBoomPiloting on ODST's facts (the pilot test is Halo 3's rule). Read inside the title
+// image guard.
+bool OdstVehicleBoomGameInverts(bool piloting, bool& inverts)
+{
+    inverts = false;
+    title_image_guard::BeginRead();
+    bool read = false;
+    if (OdstVehicleBoomBound() && g_odstVehicleBoom.preferences)
+    {
+        bool look = false, flight = false;
+        read = Halo3BoomReadPreferences(g_odstVehicleBoom.preferences, kOdstPadLookInvertOffset,
+                                        kOdstPadFlightInvertOffset, look, flight);
+        if (read)
+            inverts = vehicle_boom::GameInverts(look, flight, piloting && g_odstVehicleBoom.pilot);
     }
     title_image_guard::EndRead();
     return read;

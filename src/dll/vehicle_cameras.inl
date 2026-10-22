@@ -34,8 +34,8 @@
 // over in Halo 3's snapshot shape, keyed apart from Halo 3's seats by VehicleCameraSeatKey::title. Under a chase
 // camera ODST's sampler gives the seat's first-person flag back, so the game draws the player's character from its
 // own third-person camera. The boom reads ODST's own seat camera and track, and the note goes to ODST's HUD
-// messages. Not in ODST yet: the glass and body keys, Stick control, the boom's inversion from the game's setting
-// (OdstVehicleCameraNotApplied lists what a chosen camera asks for that is not applied).
+// messages. Not in ODST yet: the glass and body keys and Stick control (OdstVehicleCameraNotApplied lists what a
+// chosen camera asks for that is not applied).
 //
 // THE THIRD-PERSON BOOM (vehicle_boom_logic.h; halo3_vehicle_boom.inl reads the game's side). A camera of origin
 // "thirdperson" stands where the game's own third-person camera would stand at a look pitch of the boom's own --
@@ -1457,8 +1457,8 @@ void VehicleBoomCheckLog(VehicleCameraRuntime& r)
 // shared boom (reach_vehicle_cameras.inl).
 // `odstTitle`: the seat is ODST's: its seat camera and track are read from halo3odst.dll as Halo 3's are from halo3.dll
 // (halo3_vehicle_boom.inl's BindOdstVehicleBoom), and run on Halo 3's camera thread code (the same engine). Where
-// ODST's track is not proven its boom orbits the game's pivot over odst_vehicle_camera::BoomRange. ODST's look
-// inversion is not read.
+// ODST's track is not proven its boom orbits the game's pivot over odst_vehicle_camera::BoomRange. ODST's look and
+// flight inversion are read as Halo 3's are.
 void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::ActiveCamera& active, bool wanted,
                          bool seated, uint32_t definitionIndex, const char* name, uint64_t nowMs,
                          bool reachTitle = false, bool odstTitle = false)
@@ -1536,6 +1536,7 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
                 const bool read = OdstVehicleBoomReadSeat(definitionIndex, r.seat.seatIndex, b.facts);
                 if (!read || !vehicle_boom::BuildTrackShape(b.facts.track, OdstVehicleBoomRange(b.facts), b.shape))
                     vehicle_boom::BuildOrbitShape(odst_vehicle_camera::BoomRange(), b.shape);
+                b.piloting = Halo3VehicleBoomPiloting(b.facts);
             }
 #endif
             else
@@ -1615,7 +1616,17 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
 
     // THE INVERSION, every poll: the game's setting can change in its pause menu.
     bool gameInverts = false;
-    const bool known = !reachTitle && !odstTitle && Halo3VehicleBoomGameInverts(b.piloting, gameInverts);
+    bool known = false;
+    bool pilotProven = g_halo3VehicleBoom.pilot;
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+    if (odstTitle)
+    {
+        known = OdstVehicleBoomGameInverts(b.piloting, gameInverts);
+        pilotProven = g_odstVehicleBoom.pilot;
+    }
+    else
+#endif
+        known = !reachTitle && Halo3VehicleBoomGameInverts(b.piloting, gameInverts);
     const int setting = g_config.vehicle_boom_invert;
     const bool inverted = vehicle_boom::Inverted(setting, known, gameInverts);
     g_vehicleBoomInverted.store(inverted, std::memory_order_relaxed);
@@ -1627,8 +1638,8 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
             LOG("Vehicle cameras (%s): the boom's stick is %s (vehicle_boom_invert = %d)", titleName,
                 setting ? "inverted" : "not inverted", setting);
         else if (known)
-            LOG("Vehicle cameras (Halo 3): the boom's stick follows the game's %s inversion, which is %s",
-                b.piloting && g_halo3VehicleBoom.pilot ? "flight" : "look", gameInverts ? "on" : "off");
+            LOG("Vehicle cameras (%s): the boom's stick follows the game's %s inversion, which is %s", titleName,
+                b.piloting && pilotProven ? "flight" : "look", gameInverts ? "on" : "off");
         else
             LOG("Vehicle cameras (%s): the game's look inversion could not be read, so the boom's stick is not "
                 "inverted (vehicle_boom_invert = 1 inverts it)",
