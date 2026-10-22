@@ -46832,6 +46832,8 @@ namespace
                 {
                     // A chase camera's leash holds the head's movement of the eye (halo4_vehicle_cameras.inl).
                     Halo4VehicleCameraLeashHead(beforeHead.position, stock.position);
+                    // ...and the ring where the vehicle aims is placed from the eye as it now stands.
+                    Halo4VehicleAimMarkerStep(stock.position);
                     // This frame's seat (read and published above, before the recenter).
                     const bool onFoot = frameSeatRead && !frameSeat.seated && frameSeat.parent == UINT32_MAX;
                     g_halo4OnFootMs.store(onFoot ? GetTickCount64() : 0, std::memory_order_release);
@@ -58440,7 +58442,7 @@ bool Game_GetVehicleAimMarker(float outDir[3], float& outDistanceM)
     outDistanceM = 0.0f;
     float yaw = 0.0f, pitch = 0.0f, distance = 0.0f;
     const GameTitle title = TitleAdapter_GetActiveTitle();
-    if (!outDir || (title != GameTitle::Halo3 && title != GameTitle::HaloReach) ||
+    if (!outDir || (title != GameTitle::Halo3 && title != GameTitle::HaloReach && title != GameTitle::Halo4) ||
         !Halo3VehicleAimMarkerRead(yaw, pitch, distance))
         return false;
     const float cp = cosf(pitch);

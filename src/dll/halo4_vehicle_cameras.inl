@@ -109,6 +109,28 @@ void Halo4VehicleCameraTakeFrame(const float m[13], float pos[3], float forward[
     memcpy(pos, m + 10, 12);
 }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// DEV: the vehicle's root as this thread's query draws it against as simulated: a moving vehicle shows the two apart
+// when the query is interpolated here, as the camera's frame must be (the hull on screen is the drawn one). Counted
+// by the render thread, reported by the cold worker.
+std::atomic<uint32_t> g_halo4VehicleCameraDrawnSamples{0}, g_halo4VehicleCameraDrawnApart{0};
+std::atomic<uint32_t> g_halo4VehicleCameraDrawnGapMaxMm{0};
+void Halo4VehicleCameraNoteDrawn(uint32_t parent, const float drawn[13])
+{
+    float simulated[13]{};
+    if (!NativeVehicleFirstPerson_Halo4MarkerFrame(parent, 0, false, simulated))
+        return;
+    const float d[3] = {drawn[10] - simulated[10], drawn[11] - simulated[11], drawn[12] - simulated[12]};
+    const float gapMm = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * 304.8f;
+    g_halo4VehicleCameraDrawnSamples.fetch_add(1, std::memory_order_relaxed);
+    if (gapMm > 0.1f)
+        g_halo4VehicleCameraDrawnApart.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t mm = std::isfinite(gapMm) ? static_cast<uint32_t>(gapMm < 1.0e8f ? gapMm : 1.0e8f) : 0u;
+    if (mm > g_halo4VehicleCameraDrawnGapMaxMm.load(std::memory_order_relaxed))
+        g_halo4VehicleCameraDrawnGapMaxMm.store(mm, std::memory_order_relaxed);
+}
+#endif
+
 // Render thread, once a frame of a seat: everything the vehicle cameras read of it. `seat` is the frame's own seat
 // read (the stereo transaction's).
 bool Halo4SampleVehicleCameraFrame(const Halo4VehicleInputState& seat, Halo4VehicleCameraFrame& frame)
@@ -161,6 +183,9 @@ bool Halo4SampleVehicleCameraFrame(const Halo4VehicleInputState& seat, Halo4Vehi
     float root[13]{};
     if (!NativeVehicleFirstPerson_Halo4MarkerFrame(seat.parent, 0, true, root))
         return false;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    Halo4VehicleCameraNoteDrawn(seat.parent, root);
+#endif
     frame.generation = generation;
     frame.unit = seat.unit;
     frame.parent = seat.parent;
@@ -413,6 +438,14 @@ struct Halo4VehicleCameraPassRecord
     float reach = 1.0f; // how much of the way out the wall let the camera go
     vehicle_camera_select::ActiveCamera camera{};
     vehicle_camera_place::Placed where{};
+    // For the aim ring (Halo4VehicleAimMarkerStep): the seat the camera was placed for, the seat's own eye (the
+    // occupant's head: where a point the hand can aim at lies), the way the vehicle faces, and the way the game's own
+    // camera looked this frame (its aim pitch).
+    VehicleCameraSeatKey seat{};
+    float seatEye[3]{};
+    float vehicleForward[3]{};
+    bool looksValid = false;
+    float looks[3]{};
 };
 Halo4VehicleCameraPassRecord g_halo4VehicleCameraPass; // render thread
 
@@ -864,6 +897,13 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
     float point[3];
     if (Halo4VehicleCameraPlace(frame, key, camera, hands, following, eye.position, point))
     {
+        Halo4VehicleCameraPassRecord& pass = g_halo4VehicleCameraPass;
+        pass.seat = key;
+        memcpy(pass.seatEye, frame.headValid ? frame.head : eye.position, sizeof(pass.seatEye));
+        memcpy(pass.vehicleForward, frame.carrierRootValid ? frame.carrierForward : frame.rootForward,
+               sizeof(pass.vehicleForward));
+        memcpy(pass.looks, hands.forward, sizeof(pass.looks));
+        pass.looksValid = vehicle_camera_place::Finite3(pass.looks) && vehicle_camera_frame::Normalize(pass.looks);
         memcpy(eye.position, point, sizeof(point));
         g_halo4VehicleCameraPlacedParent.store(frame.parent, std::memory_order_relaxed);
         g_halo4VehicleCameraPlacedSeat.store(frame.seatIndex, std::memory_order_relaxed);
@@ -873,6 +913,72 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
 
 // A CAMERA'S "eyeAdjust": false for exactly this seat (any camera type). One atomic load while no camera in use asks
 // for it; a camera being published both times it is read answers false for that frame.
+// The ring's frames in Halo 4, and those with a fresh trace of its ray, for the line on leaving the seat.
+std::atomic<uint32_t> g_halo4VehicleAimMarkerFrames{0};
+std::atomic<uint32_t> g_halo4VehicleAimMarkerTracedFrames{0};
+
+// THE VEHICLE AIM RING ("aimMarker", vehicle_aim_marker_logic.h), as Halo 3 and Reach place it: the stereo
+// transaction, once the head pose has put the eye where the frame is drawn from (`eye`). The line the vehicle aims
+// along is its heading at the game's own aim pitch, from the occupant's head; its depth is the seated trace of that
+// ray (halo4_seat_converge.inl); its direction in the headset's space is the head-owned view's own mapping (the
+// heading reference the view is built on, Halo4ApplyHeadPose). The frame thread draws it (Game_GetVehicleAimMarker).
+// Shares Halo 3's ring record: one title runs at a time.
+void Halo4VehicleAimMarkerStep(const float eye[3])
+{
+    const Halo4VehicleCameraPassRecord& pass = g_halo4VehicleCameraPass;
+    float dir[3];
+    if (!g_config.vehicle_aim_marker || !pass.placed || !pass.camera.aimMarker || !eye || !pass.looksValid ||
+        !Halo4ControllerAimActive() || !vehicle_aim_marker::Direction(pass.vehicleForward, pass.looks, dir))
+    {
+        Halo3VehicleAimMarkerClear();
+        return;
+    }
+    if (!(pass.seat == g_halo3VehicleAimMarkerSeat))
+    {
+        g_halo3VehicleAimMarkerSeat = pass.seat;
+        g_halo3VehicleAimMarkerRange.Reset();
+    }
+    const uint32_t generation = TitleAdapter_GetGeneration(GameTitle::Halo4);
+    SightAuxRay ray{};
+    ray.generation = generation;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        ray.origin[axis] = pass.seatEye[axis];
+        ray.dir[axis] = dir[axis];
+    }
+    Sight_PublishMarkerRay(GameTitle::Halo4, ray);
+    bool hit = false;
+    float rangeWu = 0.0f;
+    const bool traced = Sight_ReadMarkerTrace(GameTitle::Halo4, generation, kSightFreshMs, hit, rangeWu);
+    const float range = g_halo3VehicleAimMarkerRange.Use(traced, hit, rangeWu, kSightTraceLengthWu);
+    const float unitsPerVrMetre = g_worldScale.load(std::memory_order_relaxed);
+    const float along = vehicle_aim_marker::PullBack(range, g_config.reticle_surface_offset_m * unitsPerVrMetre);
+    float point[3], fromEye[3], lengthWu = 0.0f, vrYaw = 0.0f, vrPitch = 0.0f;
+    if (!(unitsPerVrMetre > 0.0f) || !shot_point::PointAlongRay(pass.seatEye, dir, along, point) ||
+        !shot_point::FromHead(eye, point, fromEye, lengthWu) ||
+        !Halo3SeatAimToVrReticle(fromEye, false, 0.0f, 0.0f,
+                                 g_halo4Camera.gameYawReference.load(std::memory_order_relaxed),
+                                 g_halo4Camera.headYawReference.load(std::memory_order_relaxed), g_yawSign.load(),
+                                 g_pitchSign.load(), vrYaw, vrPitch))
+    {
+        Halo3VehicleAimMarkerClear();
+        return;
+    }
+    Halo3VehicleAimMarkerMark& mark = g_halo3VehicleAimMarker;
+    mark.seq.fetch_add(1, std::memory_order_acq_rel);
+    mark.vrYaw = vrYaw;
+    mark.vrPitch = vrPitch;
+    mark.distanceM = lengthWu / unitsPerVrMetre;
+    mark.ms.store(GetTickCount64(), std::memory_order_relaxed);
+    mark.seq.fetch_add(1, std::memory_order_release);
+    g_halo3VehicleAimMarkerFrames.fetch_add(1, std::memory_order_relaxed);
+    g_halo4VehicleAimMarkerFrames.fetch_add(1, std::memory_order_relaxed);
+    if (!traced)
+        g_halo3VehicleAimMarkerUntracedFrames.fetch_add(1, std::memory_order_relaxed);
+    else
+        g_halo4VehicleAimMarkerTracedFrames.fetch_add(1, std::memory_order_relaxed);
+}
+
 bool Halo4VehicleCameraHoldsExposure(const VehicleCameraSeatKey& key)
 {
     const VehicleCameraPublished& published = g_vehicleCameraPublished;
@@ -973,8 +1079,6 @@ std::string Halo4VehicleCameraNotApplied(const vehicle_camera_select::ActiveCame
             add("rotationTracking pitch (the view turns with the hull's heading only)");
         if (camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::Marker))
             add("an origin naming a marker (the vehicle's origin is used)");
-        if (camera.aimMarker)
-            add("the ring where the vehicle aims");
     }
     if (camera.hideRegions[0])
         add("hideRegions");
@@ -998,6 +1102,9 @@ void Halo4VehicleCamerasColdLog(bool seated)
     heldStint += g_halo4VehicleCameraHeldFrames.exchange(0, std::memory_order_relaxed);
     tracedStint += collideFrames;
     turnStint += g_halo4VehicleCameraTurnFrames.exchange(0, std::memory_order_relaxed);
+    static uint32_t ringStint = 0, ringTracedStint = 0;
+    ringStint += g_halo4VehicleAimMarkerFrames.exchange(0, std::memory_order_relaxed);
+    ringTracedStint += g_halo4VehicleAimMarkerTracedFrames.exchange(0, std::memory_order_relaxed);
     nudgeStint += g_halo4VehicleCameraNudgeFrames.exchange(0, std::memory_order_relaxed);
     const uint32_t noRoot = g_halo4VehicleCameraNoRootFrames.exchange(0, std::memory_order_relaxed);
     // The boom's angle while one is in use, and the range it went through, for the line on leaving the seat.
@@ -1050,6 +1157,24 @@ void Halo4VehicleCamerasColdLog(bool seated)
                 samples);
         }
     }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    {
+        static uint64_t drawnSaidMs = 0;
+        const uint64_t nowMs = GetTickCount64();
+        if (nowMs - drawnSaidMs >= 5000)
+        {
+            drawnSaidMs = nowMs;
+            const uint32_t samples = g_halo4VehicleCameraDrawnSamples.exchange(0, std::memory_order_relaxed);
+            const uint32_t apart = g_halo4VehicleCameraDrawnApart.exchange(0, std::memory_order_relaxed);
+            const uint32_t gapMm = g_halo4VehicleCameraDrawnGapMaxMm.exchange(0, std::memory_order_relaxed);
+            if (samples)
+                LOG("Vehicle cameras (Halo 4, dev): the vehicle's root as drawn on the stereo transaction stood apart "
+                    "from it as simulated on %u of %u frames, by at most %.1f cm (0 of N while moving: not "
+                    "interpolated there)",
+                    apart, samples, static_cast<double>(gapMm) * 0.1);
+        }
+    }
+#endif
     if (!seated)
     {
         if (trailStint)
@@ -1065,6 +1190,11 @@ void Halo4VehicleCamerasColdLog(bool seated)
         if (turnStint)
             LOG("Vehicle cameras (Halo 4): in that seat the view's heading turned with the hull on %u frames",
                 turnStint);
+        if (ringStint)
+            LOG("Vehicle cameras (Halo 4): in that seat the ring where the vehicle aims was placed on %u frames, %u of "
+                "them at a freshly traced depth",
+                ringStint, ringTracedStint);
+        ringStint = ringTracedStint = 0;
         if (nudgeStint)
             LOG("Vehicle cameras (Halo 4): in that seat the seat's eye was moved by its camera's offset on %u frames",
                 nudgeStint);

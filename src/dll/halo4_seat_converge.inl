@@ -725,6 +725,22 @@ void Halo4SeatConvergeTrace(const uint8_t* tls, const Halo4VehicleInputState& se
         }
         Sight_PublishCameraTrace(kTitle, generation, cameraHit, cameraRangeWu);
     }
+    // THE VEHICLE AIM RING RAY (halo4_vehicle_cameras.inl): the line the vehicle aims along, for the ring's depth.
+    SightAuxRay markerRay{};
+    if (Sight_ReadMarkerRay(kTitle, generation, kSightRayFreshMs, markerRay))
+    {
+        bool markerHit = false;
+        float markerRangeWu = 0.0f;
+        if (!auxTrace(markerRay, markerHit, markerRangeWu))
+        {
+            f.traceFaulted.store(true, std::memory_order_release);
+            f.faults.fetch_add(1, std::memory_order_relaxed);
+            LOG("SIGHT Halo 4 seated vehicle aim ring trace: the native ray raised a fault; the seated trace stays off "
+                "until the title reinstalls (the on-foot trace is untouched)");
+            return;
+        }
+        Sight_PublishMarkerTrace(kTitle, generation, markerHit, markerRangeWu);
+    }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // [assess-only begin]
     // DEV ASSESSMENT (honest_reticle_assess): the game's own aim from the seat's eye. A native fault here latches only
