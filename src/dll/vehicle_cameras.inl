@@ -1350,9 +1350,15 @@ void VehicleBoomCheckLog(VehicleCameraRuntime& r)
 
 // Cold worker, every poll. `wanted`: a camera of origin "thirdperson" is in use in a Halo 3 seat; `seated`: this
 // poll's seat could be read (an unreadable poll keeps the boom as it is).
+// `reachTitle`: the seat is Reach's, whose camera track is not read: its boom orbits the game's pivot over the flat
+// look range Halo 3 measured (Reach's own limits are not read), and its stick is not inverted unless
+// vehicle_boom_invert says so (Reach's inversion setting is not read). The render thread runs it on the same
+// shared boom (reach_vehicle_cameras.inl).
 void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::ActiveCamera& active, bool wanted,
-                         bool seated, uint32_t definitionIndex, const char* name, uint64_t nowMs)
+                         bool seated, uint32_t definitionIndex, const char* name, uint64_t nowMs,
+                         bool reachTitle = false)
 {
+    const char* const titleName = reachTitle ? "Reach" : "Halo 3";
     VehicleCameraRuntime::Boom& b = r.boom;
     const auto publish = [&]() {
         VehicleBoomPublished& published = g_vehicleBoomPublished;
@@ -1381,7 +1387,8 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
     if (!seated)
         return;
 
-    const uint32_t generation = g_halo3VehicleBoom.generation.load(std::memory_order_acquire);
+    const uint32_t generation =
+        reachTitle ? r.seat.generation : g_halo3VehicleBoom.generation.load(std::memory_order_acquire);
     const bool newCamera = !b.published || !(b.seat == r.seat) || b.camera != active.camera ||
                            b.definitionIndex != definitionIndex || b.generation != generation;
     const bool newStart = newCamera || b.fileDegrees != active.boomPitchDeg;
@@ -1399,11 +1406,18 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
             b.definitionIndex = definitionIndex;
             b.generation = generation;
             b.seatName = name && name[0] ? name : "this seat";
-            const bool read = Halo3VehicleBoomReadSeat(definitionIndex, r.seat.seatIndex, b.facts);
-            const vehicle_boom::Range range = Halo3VehicleBoomRange(b.facts);
-            if (!read || !vehicle_boom::BuildTrackShape(b.facts.track, range, b.shape))
-                vehicle_boom::BuildOrbitShape(range, b.shape);
-            b.piloting = Halo3VehicleBoomPiloting(b.facts);
+            if (reachTitle)
+            {
+                vehicle_boom::BuildOrbitShape(vehicle_boom::Range{}, b.shape);
+            }
+            else
+            {
+                const bool read = Halo3VehicleBoomReadSeat(definitionIndex, r.seat.seatIndex, b.facts);
+                const vehicle_boom::Range range = Halo3VehicleBoomRange(b.facts);
+                if (!read || !vehicle_boom::BuildTrackShape(b.facts.track, range, b.shape))
+                    vehicle_boom::BuildOrbitShape(range, b.shape);
+                b.piloting = Halo3VehicleBoomPiloting(b.facts);
+            }
         }
         b.fileDegrees = active.boomPitchDeg;
         b.home = vehicle_boom::PitchForElevation(b.shape, vehicle_boom::DefaultElevation(b.shape, b.fileDegrees));
@@ -1442,15 +1456,16 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
                 static_cast<double>(levelCm), static_cast<double>(startDeg), from);
         else
         {
-            const char* why = !Halo3VehicleBoomBound() || !g_halo3VehicleBoom.seatCamera ? "the game's seat camera is not bound"
+            const char* why = reachTitle ? "Reach's camera track is not read"
+                            : !Halo3VehicleBoomBound() || !g_halo3VehicleBoom.seatCamera ? "the game's seat camera is not bound"
                             : !b.facts.read                                             ? "the seat's tags could not be read"
                             : !g_halo3VehicleBoom.track                                 ? "the game's camera track is not bound"
                             : b.facts.points < vehicle_boom::kMinTrackPoints            ? "the seat camera has no track of four points"
                             : b.facts.points > vehicle_boom::kMaxTrackPoints            ? "its track has more points than the mod reads"
                                                                                         : "its track did not check out";
-            LOG("Vehicle cameras (Halo 3): the boom in %s orbits the game's pivot at the game's own distance (%s); look "
+            LOG("Vehicle cameras (%s): the boom in %s orbits the game's pivot at the game's own distance (%s); look "
                 "range %.1f to %.1f deg, so from %.1f to %.1f deg above level. It starts at %.1f deg (%s)",
-                b.seatName.c_str(), why, static_cast<double>(b.shape.range.min * deg),
+                titleName, b.seatName.c_str(), why, static_cast<double>(b.shape.range.min * deg),
                 static_cast<double>(b.shape.range.max * deg), static_cast<double>(lowDeg), static_cast<double>(highDeg),
                 static_cast<double>(startDeg), from);
         }
@@ -1458,7 +1473,7 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
 
     // THE INVERSION, every poll: the game's setting can change in its pause menu.
     bool gameInverts = false;
-    const bool known = Halo3VehicleBoomGameInverts(b.piloting, gameInverts);
+    const bool known = !reachTitle && Halo3VehicleBoomGameInverts(b.piloting, gameInverts);
     const int setting = g_config.vehicle_boom_invert;
     const bool inverted = vehicle_boom::Inverted(setting, known, gameInverts);
     g_vehicleBoomInverted.store(inverted, std::memory_order_relaxed);
@@ -1467,14 +1482,15 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
     {
         r.boomInversionLogged = said;
         if (setting == 0 || setting == 1)
-            LOG("Vehicle cameras (Halo 3): the boom's stick is %s (vehicle_boom_invert = %d)",
+            LOG("Vehicle cameras (%s): the boom's stick is %s (vehicle_boom_invert = %d)", titleName,
                 setting ? "inverted" : "not inverted", setting);
         else if (known)
             LOG("Vehicle cameras (Halo 3): the boom's stick follows the game's %s inversion, which is %s",
                 b.piloting && g_halo3VehicleBoom.pilot ? "flight" : "look", gameInverts ? "on" : "off");
         else
-            LOG("Vehicle cameras (Halo 3): the game's look inversion could not be read, so the boom's stick is not "
-                "inverted (vehicle_boom_invert = 1 inverts it)");
+            LOG("Vehicle cameras (%s): the game's look inversion could not be read, so the boom's stick is not "
+                "inverted (vehicle_boom_invert = 1 inverts it)",
+                titleName);
     }
 
     // THE PLAYER'S ANGLE, kept for this seat and camera, and the track's check.
@@ -1788,9 +1804,9 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
     if (halo3 && read != VehicleCameraSeatRead::Unknown)
         Halo3VehicleParts_ColdTick(active, r.seat, read == VehicleCameraSeatRead::Seated, definitionIndex, nowMs);
     VehicleBoomColdTick(r, active,
-                        halo3 && read != VehicleCameraSeatRead::OnFoot && active.valid && active.chase &&
+                        (halo3 || reach) && read != VehicleCameraSeatRead::OnFoot && active.valid && active.chase &&
                             active.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::ThirdPerson),
-                        read == VehicleCameraSeatRead::Seated, definitionIndex, name, nowMs);
+                        read == VehicleCameraSeatRead::Seated, definitionIndex, name, nowMs, reach);
 
     const bool onFoot = !active.valid && r.selector.StandDownReason() == vehicle_camera_select::kOnFoot;
     std::string line = r.selector.Describe();

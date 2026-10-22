@@ -326,23 +326,21 @@ bool ReachVehicleCameraRestPlace(const ReachVehicleFrame& frame, const VehicleCa
         rest.placeKept = true;
         g_reachVehicleCameraPivotUpWu.store(read[2], std::memory_order_relaxed);
     }
-    if (rest.placeKept && rest.distance >= kReachRestKnownWu)
+    // THE BOOM (vehicle_cameras.inl's shared boom, which this thread runs in Reach as Halo 3's camera thread does
+    // there): the cold worker's publication for this seat and camera -- an orbit of the pivot over the flat game's
+    // look range, starting at the player's kept angle, else the file's "boomPitch", else the game's level view a
+    // little higher -- or, until one comes, the stand-in orbit. The right stick raises and lowers it.
+    Halo3BoomTake(seat, camera.camera);
+    Halo3BoomCamera& boom = g_halo3BoomCamera;
+    if (!boom.held && !boom.local && rest.waited >= kReachRestWaitFrames)
+        Halo3BoomStandIn();
+    if (rest.placeKept && rest.distance >= kReachRestKnownWu && (boom.held || boom.local))
     {
-        // THE BOOM: an orbit of the pivot over the flat game's look range, at the file's "boomPitch", else where the
-        // game's camera stood looking level, a little higher.
-        static vehicle_boom::Shape orbit{};
-        if (!orbit.valid)
-            vehicle_boom::BuildOrbitShape(vehicle_boom::Range{}, orbit);
-        float elevation = 0.0f;
-        if (vehicle_boom::BoomPitchSet(camera.boomPitchDeg))
-            elevation = camera.boomPitchDeg * vehicle_boom::kRadiansPerDegree;
-        else if (rest.level && rest.distance > 1.0e-3f)
-            elevation = asinf(std::fabs(rest.rise) <= rest.distance ? rest.rise / rest.distance : 0.0f) +
-                        vehicle_boom::kDefaultRaiseDeg * vehicle_boom::kRadiansPerDegree;
-        else
-            elevation = vehicle_boom::DefaultElevation(orbit, vehicle_boom::kBoomPitchUnset);
-        const float pitch = vehicle_boom::PitchForElevation(orbit, elevation);
-        vehicle_boom::Offset(orbit, pitch, rest.distance, in.restOffset);
+        Halo3BoomStep();
+        const float stood[3] = {0.0f, 0.0f, 0.0f}, looks[3] = {0.0f, 0.0f, 0.0f};
+        Halo3BoomPublishCurrent(false, stood, looks);
+        vehicle_boom::Offset(boom.shape, boom.pitch, rest.distance, in.restOffset);
+        g_vehicleBoomLiveMs.store(GetTickCount64(), std::memory_order_release);
         in.restValid = true;
         for (int axis = 0; axis < 3; ++axis)
             in.rest[axis] = in.vehicleOrigin[axis] + in.vehicle.forward[axis] * rest.pivotLocal[0] +
