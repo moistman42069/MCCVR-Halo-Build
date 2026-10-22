@@ -3,7 +3,7 @@
 // by the vehicle's name and the seat's role; this is what a Halo 2 seat goes by.
 //
 //   NAME. A vehicle the mod knows (halo2_vehicle_identity.h: its render model, matched by node count and bounds) goes
-//   by that model's name in lower case, each run of spaces and slashes an underscore: "warthog", "ghost",
+//   by that model's name in lower case, each run of spaces, tabs and slashes an underscore: "warthog", "ghost",
 //   "banshee". A gun mounted on a vehicle is its own object in Halo 2, and its model's name already carries its
 //   vehicle's ("Warthog / Chaingun" is "warthog_chaingun", "Wraith / Minigun" "wraith_minigun"), so its gunner finds
 //   the vehicle's entries. A gun the mod does not know riding a vehicle it does goes by that vehicle's name and

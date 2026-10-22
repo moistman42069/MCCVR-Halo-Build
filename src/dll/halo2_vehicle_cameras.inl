@@ -631,15 +631,16 @@ VehicleCameraSeatRead Halo2VehicleCameraSeat(VehicleCameraSeatKey& key, const ch
         return VehicleCameraSeatRead::OnFoot;
     // A seat whose vehicle's model has not read yet has no name to go by (a hash of nothing would be every such
     // vehicle's): it waits, keeping what is published -- said once if it never reads.
-    static uint32_t unreadParent = UINT32_MAX;
+    static uint32_t unreadGeneration = 0, unreadParent = UINT32_MAX;
     static int16_t unreadSeat = -1;
     static uint64_t unreadSinceMs = 0;
     static bool unreadLogged = false;
     if (!seat.modelRead)
     {
         const uint64_t now = GetTickCount64();
-        if (unreadParent != seat.parent || unreadSeat != seat.seat)
+        if (unreadGeneration != seat.generation || unreadParent != seat.parent || unreadSeat != seat.seat)
         {
+            unreadGeneration = seat.generation;
             unreadParent = seat.parent;
             unreadSeat = seat.seat;
             unreadSinceMs = now;
@@ -654,6 +655,7 @@ VehicleCameraSeatRead Halo2VehicleCameraSeat(VehicleCameraSeatKey& key, const ch
         }
         return VehicleCameraSeatRead::Unknown;
     }
+    unreadParent = UINT32_MAX;
     key = VehicleCameraSeatKey{seat.generation, static_cast<int32_t>(seat.parent), seat.seat,
                                halo2_vehicle_camera::KeyIdentity(seat.identity), seat.onCarrier};
     static char buffer[halo2_vehicle_camera::kNameCapacity];

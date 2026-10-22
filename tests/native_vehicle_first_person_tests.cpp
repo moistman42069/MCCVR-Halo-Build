@@ -180,8 +180,9 @@ template<unsigned I> void Run()
     }
     else
     {
-        chaseChosen=true;
-        Check(SelectHook<I>(owned.unit,&mode)==0,"a chase camera never changes another title's seat view");
+        const unsigned asked=chaseAsked;chaseChosen=true;
+        Check(SelectHook<I>(owned.unit,&mode)==0&&chaseAsked==asked,
+            "another title's seat view never asks the Halo 2 vehicle cameras");
         chaseChosen=false;
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS

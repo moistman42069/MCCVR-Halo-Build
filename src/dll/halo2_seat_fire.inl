@@ -59,7 +59,8 @@ bool Halo2OwnedUnitSeated()
 }
 void Halo2SeatFireReaim(uint32_t unit,float* position,float* direction)
 {
-    if(unit!=Halo2OwnedUnit()||!Halo2OwnedUnitSeated())return;
+    uint32_t seatParent=UINT32_MAX;int16_t seatIndex=-1;
+    if(unit!=Halo2OwnedUnit()||!Halo2OwnedSeat(seatParent,seatIndex))return;
     float point[3]{},head[3]{};
     if(!Halo2SeatShotLine(unit,head,point)||!shot_lag::Finite3(position)||!shot_lag::Finite3(direction))
     {g_halo2SeatFireSkipped.fetch_add(1,std::memory_order_relaxed);return;}
@@ -71,8 +72,7 @@ void Halo2SeatFireReaim(uint32_t unit,float* position,float* direction)
     // Not from a chase camera of the vehicle camera file: the view's eye stands metres from the seat, and the line
     // from there could meet what the seat's own does not (halo2_vehicle_cameras.inl). The re-aim below keeps the
     // engine's own start, through the same point.
-    uint32_t chaseParent=UINT32_MAX;int16_t chaseSeat=-1;
-    const bool chaseView=Halo2OwnedSeat(chaseParent,chaseSeat)&&Game_Halo2VehicleCameraPlacedSeat(chaseParent,chaseSeat);
+    const bool chaseView=Game_Halo2VehicleCameraPlacedSeat(seatParent,seatIndex);
     if(chaseView&&g_config.seat_fire_from_eye&&Sight_FireTimeChangesAllowed())
         g_halo2SeatFireChaseKept.fetch_add(1,std::memory_order_relaxed);
     if(g_config.seat_fire_from_eye&&Sight_FireTimeChangesAllowed()&&shot_lag::Finite3(head)&&!chaseView)

@@ -4104,7 +4104,7 @@ namespace
         if (g_halo2SightAuxFaultedGeneration.exchange(generation, std::memory_order_acq_rel) != generation)
             LOG("Vehicle cameras (Halo 2): a guarded fault in the traces for a chase camera's walls and the aim ring "
                 "turned them off until the game is reloaded; the camera then goes all the way out, and the ring is "
-                "drawn far out along its line");
+                "drawn at the last depth measured, else far out along its line");
     }
     void Halo2SightAuxTraces(uint32_t seatedRoot) noexcept
     {
