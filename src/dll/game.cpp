@@ -16124,8 +16124,16 @@ namespace
                         OdstVehicleBindingState::Installed) &&
                 g_odstVehicleFpStable.load(std::memory_order_relaxed) ==
                     static_cast<uint32_t>(Halo3VehicleState::Vehicle);
-            OdstApplyExposureLock(g_config.vehicle_steady_exposure &&
-                                  seatOwnsView);
+            // The vehicle cameras (vehicle_cameras.inl): a chase camera chosen for this seat looks at no dashboard,
+            // so the game's eye adapts there as it does in Halo 3's, unless the camera says "eyeAdjust": false --
+            // which holds it in any camera, a first-person one included. Outside an authored cinematic.
+            const bool chaseCamera = seatOwnsView && Halo3VehicleCameraThirdPerson();
+            const bool cameraHolds = seatOwnsView &&
+                !g_odstCinematicLocked.load(std::memory_order_relaxed) &&
+                Halo3VehicleCameraHoldsExposure();
+            OdstApplyExposureLock((g_config.vehicle_steady_exposure &&
+                                   seatOwnsView && !chaseCamera) ||
+                                  cameraHolds);
             ApplyOdstMotionBlurSetting();
             // Exact Halo 3 control ownership: publish the source camera's
             // pre-head-look forward for every active camera copy. Vehicles
