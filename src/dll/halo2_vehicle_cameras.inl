@@ -627,9 +627,30 @@ VehicleCameraSeatRead Halo2VehicleCameraSeat(VehicleCameraSeatKey& key, const ch
     if (!seat.seated || seat.generation != TitleAdapter_GetGeneration(GameTitle::Halo2))
         return VehicleCameraSeatRead::OnFoot;
     // A seat whose vehicle's model has not read yet has no name to go by (a hash of nothing would be every such
-    // vehicle's): it waits, keeping what is published.
+    // vehicle's): it waits, keeping what is published -- said once if it never reads.
+    static uint32_t unreadParent = UINT32_MAX;
+    static int16_t unreadSeat = -1;
+    static uint64_t unreadSinceMs = 0;
+    static bool unreadLogged = false;
     if (!seat.modelRead)
+    {
+        const uint64_t now = GetTickCount64();
+        if (unreadParent != seat.parent || unreadSeat != seat.seat)
+        {
+            unreadParent = seat.parent;
+            unreadSeat = seat.seat;
+            unreadSinceMs = now;
+            unreadLogged = false;
+        }
+        else if (!unreadLogged && now - unreadSinceMs > 5000)
+        {
+            unreadLogged = true;
+            LOG("Vehicle cameras (Halo 2): the model of the vehicle in seat %d could not be read, so the seat has no "
+                "name in the camera file and keeps its seat view",
+                static_cast<int>(seat.seat));
+        }
         return VehicleCameraSeatRead::Unknown;
+    }
     key = VehicleCameraSeatKey{seat.generation, static_cast<int32_t>(seat.parent), seat.seat,
                                halo2_vehicle_camera::KeyIdentity(seat.identity), seat.onCarrier};
     static char buffer[halo2_vehicle_camera::kNameCapacity];
@@ -675,6 +696,9 @@ std::string Halo2VehicleCameraNotApplied(const vehicle_camera_select::ActiveCame
             add("rotationTracking pitch (Halo 2's seat view keeps its own level heading)");
         if (camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::Marker))
             add("an origin naming a marker (the vehicle's origin is used)");
+        if (camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::ThirdPerson))
+            add("\"thirdperson\" as the game's own camera (Halo 2 never shows it in a seat view: the camera orbits the "
+                "vehicle at the mod's stand-in distance)");
     }
     if (camera.holdExposure)
         add("eyeAdjust");

@@ -63,8 +63,8 @@ static void TestBuiltInTable()
 
     // Halo 3's, Reach's and Halo 2's sections: an entry for each vehicle the mod knows by name and the seats it gives
     // cameras of their own, then a default entry with the same two cameras as every other game's; every entry starts
-    // in the seat view with the game's own third-person camera second, so the file changes nothing until a camera is
-    // chosen.
+    // in the seat view with the third-person camera second (the game's own where the title shows it in a seat view),
+    // so the file changes nothing until a camera is chosen.
     for (std::size_t section = 0; section < 3; ++section)
     {
         const Game& own = built.games[section];

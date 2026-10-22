@@ -31,9 +31,10 @@
 //
 // HALO 2 (halo2_vehicle_cameras.inl, right after this file): the same file (its "halo2" section), selection, seat
 // memory, auto-add, buttons and boom; Halo 2's observer hands over the seat it builds the view for, and the view's
-// eye is moved or stood at a chase camera's place, while the first-person seat override stands down for a chase camera
-// so the game's own third-person answer stands. The note goes to the mod's panel. Not in Halo 2 yet: the glass and
-// body keys, eyeAdjust, pitch tracking, Stick and Wheel control, a marker origin.
+// eye is moved or stood at a chase camera's place while the seat keeps its first-person seat view (Halo 2's director
+// changes camera only with the seat's perspective, so the game's own third-person camera is never shown in a seat
+// view, and "thirdperson" orbits the vehicle at the mod's stand-in distance). The note goes to the mod's panel. Not in
+// Halo 2 yet: the glass and body keys, eyeAdjust, pitch tracking, Stick and Wheel control, a marker origin.
 //
 // THE THIRD-PERSON BOOM (vehicle_boom_logic.h; halo3_vehicle_boom.inl reads the game's side). A camera of origin
 // "thirdperson" stands where the game's own third-person camera would stand at a look pitch of the boom's own --
@@ -2057,7 +2058,7 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         r.markerNoTraceLogged = true;
         LOG("Vehicle cameras (%s): the ring where the vehicle aims is shown, but the game's trace is not running "
             "for this seat, so it is drawn at the last depth measured, else far out along its line",
-            reach ? "Reach" : "Halo 3");
+            reach ? "Reach" : (halo2 ? "Halo 2" : "Halo 3"));
     }
     if (standInFrames && !r.standInLogged)
     {

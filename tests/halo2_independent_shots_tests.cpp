@@ -273,8 +273,8 @@ int main()
     caller=g_halo2Dual.base+0x7597BD;
     Check(Halo2IndependentCameraDetour(owner+0x10000,position,direction)==0x12345678&&direction[0]==1,"remote salted unit retains native camera ray");
     {
-        // The fire's ask is for the seat's aim (a vehicle chase camera's stand-down does not apply to it); any other
-        // caller's (the players update: the camera the frame is drawn from) is left to the stand-down.
+        // The fire's ask is for the seat's aim and is flagged so; any other caller's (the players update: the camera
+        // the frame is drawn from) is not.
         const unsigned raised=seatAskRaised;
         caller=g_halo2Dual.base+0x7597BE;
         (void)Halo2IndependentCameraDetour(owner,position,direction);
