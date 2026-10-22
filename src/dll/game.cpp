@@ -15350,9 +15350,11 @@ namespace
                         headParented = true;
                     }
                     // THE HEAD AS A FRAME, as Halo 3's: its turn in the seat node's frame, taken against the node of
-                    // the same bank the head came from, its rest latched when it settles, and from then on the seat
-                    // node turned as far as the head has turned in it since (a camera measured from the head).
-                    if (settled && g_config.vehicle_cameras)
+                    // the same bank the head came from, its rest latched when it settles (with the cameras off too, as
+                    // Halo 3's, so turning them on in the seat does not take the head's turn then for its rest), and
+                    // from then on the seat node turned as far as the head has turned in it since (a camera measured
+                    // from the head).
+                    if (settled && (g_config.vehicle_cameras || !headRef.headRestValid))
                     {
                         const auto basisOf = [](const Halo3Matrix4x3& m) {
                             vehicle_camera_frame::Basis b{};
@@ -15372,8 +15374,12 @@ namespace
                                 headRef.headRest = headInSeat;
                                 headRef.headRestValid = true;
                             }
-                            headFrame = vehicle_camera_frame::TurnedSince(liveBasis, headInSeat, headRef.headRest);
-                            headFrameValid = vehicle_camera_frame::Usable(headFrame);
+                            if (g_config.vehicle_cameras)
+                            {
+                                headFrame =
+                                    vehicle_camera_frame::TurnedSince(liveBasis, headInSeat, headRef.headRest);
+                                headFrameValid = vehicle_camera_frame::Usable(headFrame);
+                            }
                         }
                     }
                 }
