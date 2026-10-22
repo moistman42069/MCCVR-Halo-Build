@@ -579,6 +579,9 @@ bool HaloCEVehicleCameraReadTrack(const VehicleCameraSeatKey& seat, Halo3BoomSea
     return true;
 }
 
+// The seat last read is one whose own camera (its tag's) is first person. Cold worker only.
+bool g_haloceVehicleCameraSeatFirstPerson = false;
+
 // The seat the player is in, for the cold worker. OnFoot: not in a seat the vehicle cameras run in (the first-person
 // seat view is off or not installed counts as that, as in Halo 3). Unknown: not readable now (the published camera is
 // kept).
@@ -604,6 +607,8 @@ VehicleCameraSeatRead HaloCEVehicleCameraSeat(VehicleCameraSeatKey& key, const c
     seatView = true; // every CE seat the first-person view runs in has an eye: the occupant's head
     wheelSeat = false; // CE seats are steered by the hand (its own vehicle controls), never a wheel
     definitionIndex = facts.definition;
+    g_haloceVehicleCameraSeatFirstPerson =
+        facts.seatFlagsRead && !(facts.seatFlags & haloce_vehicle_camera::kSeatThirdPersonBit);
 
     // Once per seat: what the seat is, and what its role and name were read from.
     static VehicleCameraSeatKey logged{};
@@ -651,6 +656,19 @@ std::string HaloCEVehicleCameraNotApplied(const vehicle_camera_select::ActiveCam
     if (camera.holdExposure)
         add("eyeAdjust");
     return list;
+}
+
+// What keeps a selected chase camera from being shown in this seat, for the readout; empty when nothing does. A seat
+// whose own camera is first person is shown from the game's following camera only where this machine may change what
+// the simulation's camera answers (native_vehicle_first_person.cpp ChaseSeat): with co-op safe shots on it keeps the
+// game's first-person view (CE's simulation tick cannot be told from its frame, so no call is given the following
+// camera there).
+std::string HaloCEVehicleCameraHeldBack(const vehicle_camera_select::ActiveCamera& camera)
+{
+    if (!camera.valid || !camera.chase || !g_haloceVehicleCameraSeatFirstPerson || Sight_FireTimeChangesAllowed())
+        return {};
+    return "Not shown in this seat while co-op safe shots are on: its own camera is first person, and a chase camera "
+           "there would change what the game's simulation sees";
 }
 
 // Cold worker, every poll while the vehicle cameras are on in CE: the counts the game's thread keeps, as log lines

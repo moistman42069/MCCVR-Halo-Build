@@ -1623,6 +1623,7 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
 VehicleCameraSeatRead HaloCEVehicleCameraSeat(VehicleCameraSeatKey& key, const char*& name, uint8_t& seatBits,
                                               bool& seatView, bool& wheelSeat, uint32_t& definitionIndex);
 std::string HaloCEVehicleCameraNotApplied(const vehicle_camera_select::ActiveCamera& camera);
+std::string HaloCEVehicleCameraHeldBack(const vehicle_camera_select::ActiveCamera& camera);
 void HaloCEVehicleCamerasColdLog(bool seated);
 
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
@@ -1943,6 +1944,8 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         {
             if (const std::string missing = HaloCEVehicleCameraNotApplied(active); !missing.empty())
                 line += ". Not applied in Halo CE yet: " + missing;
+            if (const std::string held = HaloCEVehicleCameraHeldBack(active); !held.empty())
+                line += ". " + held;
         }
     }
     if (line != r.readout)
