@@ -5,7 +5,7 @@
 //   The stereo transaction (an engine thread: the game's own TLS is readable there) samples the seat once a frame,
 //     publishes it for the cold worker, and, while a camera of the file is chosen for exactly that seat, moves the
 //     eye the frame is drawn from before the head pose is composed onto it: a firstperson camera's "offset", or a
-//     chase camera's place (Halo4VehicleCamerasPass). Its only reads of the camera in use are two atomic loads while
+//     chase camera's place (Halo4VehicleCamerasPass). Its only reads of the camera in use are a few atomic loads while
 //     none is chosen.
 //   The cold worker (vehicle_cameras.inl, VehicleCameras_ColdTick) reads the published seat (Halo4VehicleCameraSeat):
 //     the vehicle's name, the seat's role, and the key every reader matches a camera to.
@@ -121,7 +121,7 @@ void Halo4VehicleCameraNoteDrawn(uint32_t parent, const float drawn[13])
     if (!NativeVehicleFirstPerson_Halo4MarkerFrame(parent, 0, false, simulated))
         return;
     const float d[3] = {drawn[10] - simulated[10], drawn[11] - simulated[11], drawn[12] - simulated[12]};
-    const float gapMm = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * 304.8f;
+    const float gapMm = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * 3048.0f;
     g_halo4VehicleCameraDrawnSamples.fetch_add(1, std::memory_order_relaxed);
     if (gapMm > 0.1f)
         g_halo4VehicleCameraDrawnApart.fetch_add(1, std::memory_order_relaxed);
@@ -1005,8 +1005,6 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
     }
 }
 
-// A CAMERA'S "eyeAdjust": false for exactly this seat (any camera type). One atomic load while no camera in use asks
-// for it; a camera being published both times it is read answers false for that frame.
 // The ring's frames in Halo 4, and those with a fresh trace of its ray, for the line on leaving the seat.
 std::atomic<uint32_t> g_halo4VehicleAimMarkerFrames{0};
 std::atomic<uint32_t> g_halo4VehicleAimMarkerTracedFrames{0};
@@ -1073,6 +1071,8 @@ void Halo4VehicleAimMarkerStep(const float eye[3])
         g_halo4VehicleAimMarkerTracedFrames.fetch_add(1, std::memory_order_relaxed);
 }
 
+// A CAMERA'S "eyeAdjust": false for exactly this seat (any camera type). One atomic load while no camera in use asks
+// for it; a camera being published both times it is read answers false for that frame.
 bool Halo4VehicleCameraHoldsExposure(const VehicleCameraSeatKey& key)
 {
     const VehicleCameraPublished& published = g_vehicleCameraPublished;
@@ -1311,6 +1311,8 @@ void Halo4VehicleCamerasColdLog(bool seated)
         standInLogged = noTraceLogged = noRootLogged = false;
         restLoggedWu = restSeenWu = 0.0f;
         pivotLoggedSamples = 0;
+        // The next seat's pivot is its own: a flag left up from this one would be said as the next seat's.
+        g_halo4VehicleCameraPivotSolved.store(0, std::memory_order_relaxed);
         g_halo4VehicleCameraRestWu.store(0.0f, std::memory_order_relaxed);
         return;
     }
