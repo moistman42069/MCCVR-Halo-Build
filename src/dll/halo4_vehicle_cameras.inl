@@ -825,6 +825,19 @@ void Halo4VehicleCameraTurnView(const VehicleCameraSeatKey& key, bool turns, con
 
 bool Halo4VehicleCameraHoldsExposure(const VehicleCameraSeatKey& key); // below
 
+// The exposure hold this frame wants (render thread): cleared as the wrapper starts a frame, set by the pass, applied
+// as the wrapper ends it (Halo4VehicleCameraExposureFrame).
+bool g_halo4ExposureHoldWanted = false;
+
+// The stereo wrapper, as it ends each call for the player's own window: the hold this frame asked for, else the
+// engine's own exposure -- whichever path the frame took (left stock, dropped, a cinematic, the cameras off). A
+// teardown on its way gives it back too. A compare a frame.
+void Halo4VehicleCameraExposureFrame()
+{
+    EngineExposureLockApply(g_halo4Exposure, g_halo4ExposureHoldWanted &&
+                                                 !g_halo4Camera.teardownRequested.load(std::memory_order_acquire));
+}
+
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // DEV: where a placed chase camera stands from the vehicle (cm along its forward, left, up), and where the vehicle's
 // origin is seen from it against the heading the view is built on (degrees right of it, and below level): what a
@@ -863,10 +876,7 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
 {
     g_halo4VehicleCameraPass.placed = false;
     if (!g_config.vehicle_cameras)
-    {
-        EngineExposureLockApply(g_halo4Exposure, false);
         return;
-    }
     Halo4VehicleCameraFrame frame;
     const bool sampled = seatRead && Halo4SampleVehicleCameraFrame(seat, frame);
     // The game's own answer for this seat, before the override: its following camera, or its first-person eye.
@@ -876,11 +886,9 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
     if (seatRead && (!seat.seated || sampled))
         Halo4VehicleCameraPublishSeat(true, frame, nativeKnown && nativeChase);
     // "eyeAdjust": false holds Halo 4's eye adaptation (render_exposure_lock, engine_exposure_lock.inl) while the
-    // camera in use for this seat says so; every other frame gives it back to the engine, as does a teardown on its
-    // way. A compare a frame. Frames that never reach this pass give it back in the transaction.
-    EngineExposureLockApply(g_halo4Exposure, frame.active &&
-                                                 !g_halo4Camera.teardownRequested.load(std::memory_order_acquire) &&
-                                                 Halo4VehicleCameraHoldsExposure(Halo4VehicleCameraKey(frame)));
+    // camera in use for this seat says so. The pass says so for this frame; the wrapper applies it once the frame is
+    // done, on every path, so a frame that never reaches this pass gives it back (Halo4VehicleCameraExposureFrame).
+    g_halo4ExposureHoldWanted = frame.active && Halo4VehicleCameraHoldsExposure(Halo4VehicleCameraKey(frame));
     if (!frame.active)
     {
         if (seatRead && seat.seated && Halo4VehicleCameraChaseChosen(TitleAdapter_GetGeneration(GameTitle::Halo4),

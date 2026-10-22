@@ -46680,8 +46680,6 @@ namespace
         bool headTracked = false;
         // The view's lift on top of the engine's eye that the hands share (g_halo4HandsLiftZ).
         float handsLiftZ = 0.0f;
-        // The vehicle cameras' pass ran this frame (it holds or gives back the exposure itself).
-        bool halo4VehicleCamerasRan = false;
 #if HALOMCCVR_DEV_DIAGNOSTICS
         // This frame's seat, for the seated solve's eye (Halo4PublishSeatEyeRoot, below).
         Halo4VehicleInputState seatEyeSeat{};
@@ -46715,7 +46713,6 @@ namespace
             // a chase camera's place, before the head pose is composed onto it. `controllerRoot` is still the game's
             // own camera here.
             Halo4VehicleCamerasPass(frameSeatRead, frameSeat, controllerRoot, stock);
-            halo4VehicleCamerasRan = true;
 #if HALOMCCVR_DEV_DIAGNOSTICS
             seatEyeSeat = frameSeat;
             seatEyeSeatRead = frameSeatRead;
@@ -46895,10 +46892,6 @@ namespace
             }
         }
         (void)headTracked;
-        // A frame the vehicle cameras' pass did not reach (an authored cinematic, no head pose) gives a held
-        // exposure back to the engine.
-        if (!halo4VehicleCamerasRan)
-            EngineExposureLockApply(g_halo4Exposure, false);
 
         // C-H4-11b's verified writes land in the animation system's telemetry
         // mirror, not in the render input. Leave the investigation code intact,
@@ -47444,7 +47437,13 @@ namespace
         g_halo4Camera.activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
         __try
         {
+            // The vehicle cameras' exposure hold is asked for afresh by each frame of the player's window
+            // (halo4_vehicle_cameras.inl), and applied whichever way the frame went.
+            if (window == 0)
+                g_halo4ExposureHoldWanted = false;
             Halo4WrapperBody(element, view, window, returnAddress);
+            if (window == 0)
+                Halo4VehicleCameraExposureFrame();
         }
         __finally
         {
@@ -48439,8 +48438,6 @@ namespace
         g_halo4Camera.cinematicTheaterProof.store(
             false, std::memory_order_release);
         g_halo4Camera.teardownRequested.store(true, std::memory_order_release);
-        // A held exposure is a module global that outlives this camera core: give it back to the engine.
-        EngineExposureLockRelease(g_halo4Exposure);
         g_halo4Camera.armed.store(false, std::memory_order_release);
         if(!Halo4Type13Remove())
         { LOG("Halo 4 teardown: the Broadsword pilot controller's hook needs cleanup retry; retaining native module"); return false; }
@@ -48516,6 +48513,9 @@ namespace
             g_halo4Camera.cuiReticleCleanupRequired = true;
             return false;
         }
+        // A held exposure is a module global that outlives this camera core: give it back to the engine now that no
+        // frame of the wrapper can hold it again, and before the module reference goes.
+        EngineExposureLockRelease(g_halo4Exposure);
         // Put Halo 4's own first-person FOV squish back exactly as it was, and
         // only if we were the one who changed it. Done after the hooks are
         // quiescent and before the module reference is released, so the write
