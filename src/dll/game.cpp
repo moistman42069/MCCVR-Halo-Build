@@ -14615,6 +14615,16 @@ namespace
             OdstSeatFollowsPitch(seat.identity, seat.seatIndex, seat.mounted);
         const uint32_t generation =
             g_odstRuntimeGeneration.load(std::memory_order_acquire);
+        // HOW THE SEAT IS STEERED while the vehicle cameras run in it (vehicle_control, chosen per seat with the left
+        // stick click): the hand or the wheel, whatever the view does, as in Halo 3. Without the cameras, or "As
+        // before", ODST's own rule: the stick or wheel steers a look-steered driver whose view follows.
+        const int chosenControl = g_vehicleControlEffective.load(std::memory_order_acquire);
+        const vehicle_control::Mode controlMode = vehicle_control::FromConfig(chosenControl);
+        const bool controlChosen =
+            chosenControl >= 0 && controlMode != vehicle_control::Mode::Automatic && fpActive && haveSeat;
+        const bool lookSteeredDriver = haveSeat &&
+            OdstSeatIsDriver(seat.identity, seat.seatIndex, seat.mounted) &&
+            OdstVehicleIsLookSteered(seat.identity);
 
         if (!fpActive || !followEnabled || !active)
         {
@@ -14624,7 +14634,14 @@ namespace
             if (g_odstSeatYaw.armed)
                 g_odstSeatYaw = {};
             g_odstYawSeat = {};
-            g_odstSeatAuthorsSteering.store(0, std::memory_order_release);
+            const bool authorsStill =
+                controlChosen && vehicle_control::Authored(controlMode, lookSteeredDriver, false);
+            if (!authorsStill)
+            {
+                g_halo3SteerAxis.store(0.0f, std::memory_order_relaxed);
+                g_halo3WheelDriving.store(0, std::memory_order_relaxed);
+            }
+            g_odstSeatAuthorsSteering.store(authorsStill ? 1u : 0u, std::memory_order_release);
             Halo3ClearRollStableFollow();
             return;
         }
@@ -14663,8 +14680,9 @@ namespace
             Halo3ClearRollStableFollow();
         }
 
-        const bool authors = OdstSeatAuthorsSteering(
-            seat.identity, seat.seatIndex, seat.mounted, followEnabled);
+        const bool authors = controlChosen
+            ? vehicle_control::Authored(controlMode, lookSteeredDriver, true)
+            : OdstSeatAuthorsSteering(seat.identity, seat.seatIndex, seat.mounted, followEnabled);
         if (!authors)
         {
             g_halo3SteerAxis.store(0.0f, std::memory_order_relaxed);
