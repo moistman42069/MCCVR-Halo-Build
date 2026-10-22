@@ -371,9 +371,15 @@ bool ReachVehicleCameraRestPlace(const ReachVehicleFrame& frame, const VehicleCa
             rest.distance = distance;
             rest.rise = vehicle_camera_frame::Dot(stood, in.vehicle.up);
             rest.level = level;
+            // The game's camera ORBITS its pivot (measured: the same 6.96-6.99 m at looks of -7.6 and +2.2 deg, its
+            // elevation falling as the look rises), so where it stands looking level is the elevation it stood at
+            // plus the look it had then -- not the elevation alone, which moves with the look by as much.
             if (level && distance > 1.0e-3f && std::fabs(rest.rise) <= distance)
-                g_reachVehicleCameraLevelDeg.store(std::round(asinf(rest.rise / distance) * 57.29578f),
+            {
+                const float lookDeg = asinf(lookUp < -1.0f ? -1.0f : (lookUp > 1.0f ? 1.0f : lookUp)) * 57.29578f;
+                g_reachVehicleCameraLevelDeg.store(std::round(asinf(rest.rise / distance) * 57.29578f + lookDeg),
                                                    std::memory_order_release);
+            }
             g_reachVehicleCameraRestRiseWu.store(rest.rise, std::memory_order_relaxed);
             g_reachVehicleCameraRestPitchDeg.store(
                 asinf(lookUp < -1.0f ? -1.0f : (lookUp > 1.0f ? 1.0f : lookUp)) * 57.29578f, std::memory_order_relaxed);
