@@ -109,10 +109,11 @@ static void TestKeyAndSize()
 
 static void TestRing()
 {
-    Check(RingFollowsAim(true, false, 0u), "a gun riding a carrier aims where it looks");
-    Check(RingFollowsAim(false, true, 0x00001098u), "a seat flagged gunner (the Warthog's gun) aims where it looks");
+    Check(RingFollowsAim(true, false, 0u), "a gun riding a carrier shows its own aim, whatever its flags say");
+    Check(RingFollowsAim(false, true, 0x00001098u), "a seat flagged gunner and not driver shows its gun's aim");
+    Check(!RingFollowsAim(false, true, 0x0000801Cu), "a driver that also guns (the Ghost's seat) keeps the hull");
     Check(!RingFollowsAim(false, true, 0x00048014u) && !RingFollowsAim(false, true, 0x00001070u),
-          "a driver's or a passenger's seat aims along the hull");
+          "a driver's or a passenger's seat keeps the hull");
     Check(!RingFollowsAim(false, false, kSeatGunnerBit), "flags that were not read say nothing");
 }
 
