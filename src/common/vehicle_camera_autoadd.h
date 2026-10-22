@@ -9,6 +9,10 @@
 //     riding on -- so nothing about the view changes when it is added; only the file now has a place for it.
 // The entries go at the end of the section the reader took the vehicle from, written in the file's own layout;
 // the rest of the text is left exactly as it was (the player's own notes and order included).
+// A file with no section for the game (written before the mod had cameras for it) whose vehicle the built-in table
+// has a section for gets that game's section added, holding the entries and a copy of the "default" entry the seat
+// was riding on -- so every other vehicle of that game still finds the cameras it had. Nothing is added to the
+// file's "default" section for one game: that section is every other game's too.
 //
 // Pure: no engine and no file I/O. vehicle_camera_store does the reading and writing.
 
@@ -25,6 +29,7 @@ struct Addition
     std::string sectionKey;                        // the file's section the entries go into ("halo3", "default")
     std::vector<vehicle_camera_file::Vehicle> entries; // empty: nothing to add
     bool fromBuiltIn = false;                      // the built-in table's own entries for the vehicle
+    bool newSection = false; // sectionKey is a game section the file does not have yet: it is added, entries and all
 };
 
 // What to add for this vehicle and seat (`seat` is SeatBits; 0 = not known). Nothing when the file already has

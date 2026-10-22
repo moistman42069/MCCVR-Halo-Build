@@ -172,10 +172,87 @@ static void TestTheTextIsAddedTo()
           "nor one without the section");
 }
 
+// A file written before the mod had cameras for a game: the game's vehicles ride on the "default" section, which
+// is every other game's too, so the game's own section is added -- with the "default" entry as the file has it.
+static void TestANewSection()
+{
+    const Table builtIn = DefaultTable();
+    const uint8_t driver = SeatBits(true, false), gunner = SeatBits(false, true);
+    Table old = builtIn;
+    for (std::size_t g = 0; g < old.games.size(); ++g)
+        if (old.games[g].key == "reach")
+        {
+            old.games.erase(old.games.begin() + static_cast<std::ptrdiff_t>(g));
+            break;
+        }
+    // The player's own default entry, which the new section must keep: a third camera of his.
+    for (Game& game : old.games)
+        if (game.key == kDefaultKey)
+        {
+            Camera mine;
+            mine.name = "Mine";
+            game.vehicles[0].cameras.push_back(mine);
+        }
+    Check(old.FindGame("reach")->key == kDefaultKey, "the old file has Reach ride on the default section");
+
+    const Addition warthog = For(old, builtIn, "reach", "warthog", driver);
+    Check(warthog.newSection && warthog.sectionKey == "reach" && warthog.fromBuiltIn,
+          "a Reach Warthog adds Reach's section, from the built-in presets");
+    Check(warthog.entries.size() == 4 && warthog.entries[0].name == "Warthog" &&
+              warthog.entries[2].name == "Warthog gunner" && warthog.entries.back().isDefault &&
+              warthog.entries.back().cameras.size() == 3 && warthog.entries.back().cameras[2].name == "Mine",
+          "every Warthog seat's entry, then the default entry as the file had it");
+
+    const Addition custom = For(old, builtIn, "reach", "custom_1234abcd", gunner);
+    Check(custom.newSection && !custom.fromBuiltIn && custom.entries.size() == 2 &&
+              custom.entries[0].name == "custom_1234abcd" && !custom.entries[0].isDefault &&
+              custom.entries[0].cameras.size() == 3 && custom.entries[1].isDefault,
+          "a vehicle with no preset gets its own entry with the default's cameras, and the default entry");
+
+    for (const bool windows : {false, true})
+    {
+        const std::string original = windows ? Crlf(ToJson(old)) : ToJson(old);
+        Table file;
+        Check(FromJson(original.data(), original.size(), file).ok, "the old file reads");
+        const Addition addition = For(file, builtIn, "reach", "warthog_gauss", gunner);
+        std::string text = original;
+        std::string why;
+        Check(Insert(text, addition, "reach", "warthog_gauss", gunner, why), "the section is spliced in");
+        Table after;
+        Check(FromJson(text.data(), text.size(), after).ok, "and the file still reads");
+        Check(after.FindGame("reach") && after.FindGame("reach")->key == "reach", "with a Reach section");
+        const Vehicle* now = Matched(after, "reach", "warthog_gauss", gunner);
+        Check(now && now->name == "Warthog gunner", "that gives the gun its own entry");
+        const Vehicle* other = Matched(after, "reach", "forklift", driver);
+        Check(other && other->isDefault && other->cameras.size() == 3,
+              "and every other Reach vehicle the default entry it had");
+        const Vehicle* odst = Matched(after, "odst", "warthog", driver);
+        Check(odst && odst->isDefault, "other games still ride on the default section");
+        std::size_t same = 0;
+        while (same < original.size() && original[same] == text[same])
+            ++same;
+        const std::size_t added = text.size() - original.size();
+        Check(text.compare(same + added, std::string::npos, original, same, std::string::npos) == 0,
+              "and nothing else in the text changed");
+        Check(windows ? !Has(text.substr(same, added), "\n\n") && Has(text.substr(same, added), "\r\n")
+                      : !Has(text, "\r"),
+              "in the file's own line ends");
+        // Once there, a second vehicle goes into it the ordinary way.
+        const Addition next = For(after, builtIn, "reach", "custom_77", driver);
+        Check(!next.newSection && next.sectionKey == "reach" && next.entries.size() == 1,
+              "the next new vehicle is added to the section now there");
+        // The section cannot be added twice.
+        std::string again = text;
+        Check(!Insert(again, addition, "reach", "warthog_gauss", gunner, why) && again == text,
+              "a section the file has is not added again");
+    }
+}
+
 int main()
 {
     TestWhatIsAdded();
     TestTheTextIsAddedTo();
+    TestANewSection();
     std::printf("PASS: %u vehicle camera auto-add checks\n", g_checks);
     return 0;
 }
