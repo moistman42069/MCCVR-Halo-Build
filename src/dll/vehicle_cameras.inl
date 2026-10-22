@@ -1686,10 +1686,14 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         const int choice = r.selector.ControlChoice(base);
         if (choice >= 0)
             control = choice;
+        // Reach cannot give a seat's aim to the right stick yet (its reticle would stay on the hand), so a seat
+        // there is the hand's or the wheel's; Stick from the setting keeps Reach's own rule.
+        if (reach && vehicle_control::FromConfig(control) == vehicle_control::Mode::Stick)
+            control = static_cast<int>(vehicle_control::Mode::Automatic);
         if (g_vehicleControlStep.exchange(0, std::memory_order_relaxed) != 0)
         {
             const vehicle_control::Mode next =
-                vehicle_control::Next(vehicle_control::FromConfig(control), r.wheelSeat);
+                vehicle_control::Next(vehicle_control::FromConfig(control), r.wheelSeat, !reach);
             control = static_cast<int>(next);
             r.selector.SetControlChoice(control, base);
             LOG("Vehicle cameras: %s is now controlled by %s (left stick click)", name[0] ? name : "this seat",

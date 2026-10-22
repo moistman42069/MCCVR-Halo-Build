@@ -33357,12 +33357,25 @@ namespace
             (ReachVehicleSeatFollowsHull(
                  frame.identity, frame.seatIndex) ||
              mountedWalkUp);
+        // HOW THE SEAT IS STEERED while the vehicle cameras run in it (vehicle_control, chosen per seat with the
+        // left stick click): the hand or the wheel, whatever the view does, as in Halo 3. With the hand steering a
+        // view that turns with the hull, the hand's angle off straight ahead is a turn rate. Without the cameras,
+        // or "As before", Reach's own rule above: the stick or wheel steers a look-steered driver whose view follows.
+        const int chosenControl = g_vehicleControlEffective.load(std::memory_order_acquire);
+        const vehicle_control::Mode controlMode = vehicle_control::FromConfig(chosenControl);
+        const bool controlChosen = chosenControl >= 0 && controlMode != vehicle_control::Mode::Automatic &&
+            frame.active && ReachVehicleFpActive();
+        const bool lookSteeredDriver = ReachVehicleSeatIsDriver(frame.identity, frame.seatIndex) &&
+            ReachVehicleIsLookSteered(frame.identity);
         if (!follows)
         {
             g_reachYawSeat = {};
             g_reachSeatYaw = {};
+            const bool authorsStill = controlChosen
+                ? vehicle_control::Authored(controlMode, lookSteeredDriver, false)
+                : groundDriverAuthors;
             g_reachSeatAuthorsSteering.store(
-                groundDriverAuthors ? 1u : 0u, std::memory_order_release);
+                authorsStill ? 1u : 0u, std::memory_order_release);
             Halo3ClearRollStableFollow();
             return;
         }
@@ -33397,10 +33410,12 @@ namespace
         {
             Halo3ClearRollStableFollow();
         }
-        const bool authors = groundDriverAuthors ||
-            ReachVehicleSeatAuthorsSteering(
-                frame.identity, frame.seatIndex,
-                followEnabled);
+        const bool authors = controlChosen
+            ? vehicle_control::Authored(controlMode, lookSteeredDriver, true)
+            : groundDriverAuthors ||
+                ReachVehicleSeatAuthorsSteering(
+                    frame.identity, frame.seatIndex,
+                    followEnabled);
         g_reachSeatAuthorsSteering.store(
             authors ? 1u : 0u, std::memory_order_release);
     }
