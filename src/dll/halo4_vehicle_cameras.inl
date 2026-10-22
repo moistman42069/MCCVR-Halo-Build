@@ -1025,7 +1025,7 @@ VehicleCameraSeatRead Halo4VehicleCameraSeat(VehicleCameraSeatKey& key, const ch
     key = Halo4VehicleCameraKey(seat.generation, seat.parent, seat.seatIndex, seat.identity, seat.onCarrier);
     static char buffer[halo4_vehicle_camera::kNameCapacity];
     name = halo4_vehicle_camera::SeatVehicleName(seat.identity, seat.onCarrier, seat.carrierIdentity, buffer);
-    seatBits = halo4_vehicle_camera::SeatBits(seat.flagsKnown, seat.seatFlags, seat.onCarrier);
+    seatBits = halo4_vehicle_camera::SeatBits(seat.flagsKnown, seat.seatFlags, seat.onCarrier, seat.seatIndex);
     seatView = true; // every Halo 4 seat has the first-person seat view
     wheelSeat = false; // Halo 4's drivers steer by the look; there is no wheel
     definitionIndex = seat.definition;

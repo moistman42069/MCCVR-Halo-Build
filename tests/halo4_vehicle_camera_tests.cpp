@@ -70,14 +70,16 @@ static void TestNames()
 
 static void TestRoles()
 {
-    Check(SeatBits(true, kSeatDriverBit, false) == kSeatDriver, "flag bit 2 drives");
-    Check(SeatBits(true, kSeatDriverBit | kSeatGunnerBit, false) == (kSeatDriver | kSeatGunner),
+    Check(SeatBits(true, kSeatDriverBit, false, 0) == kSeatDriver, "flag bit 2 drives");
+    Check(SeatBits(true, kSeatDriverBit | kSeatGunnerBit, false, 0) == (kSeatDriver | kSeatGunner),
           "bits 2 and 3 drive and fire (a Ghost)");
-    Check(SeatBits(true, kSeatGunnerBit, false) == kSeatGunner, "bit 3 fires");
-    Check(SeatBits(true, 0x60u, false) == kSeatPassenger, "neither is a passenger");
-    Check(SeatBits(true, kSeatDriverBit, true) == kSeatGunner, "a gun's seat on a carrier fires and never drives it");
-    Check(SeatBits(false, 0u, true) == kSeatGunner, "even when its flags could not be read");
-    Check(SeatBits(false, kSeatDriverBit, false) == kSeatPassenger, "flags not read leave any other seat a passenger's");
+    Check(SeatBits(true, kSeatGunnerBit, false, 2) == kSeatGunner, "bit 3 fires");
+    Check(SeatBits(true, 0x30u, false, 1) == kSeatPassenger, "neither is a passenger (the Warthog's seat 1, measured)");
+    Check(SeatBits(true, 0x30u, false, 0) == kSeatPassenger, "read flags win over the seat's number");
+    Check(SeatBits(true, kSeatDriverBit, true, 0) == kSeatGunner, "a gun's seat on a carrier fires and never drives it");
+    Check(SeatBits(false, 0u, true, 0) == kSeatGunner, "even when its flags could not be read");
+    Check(SeatBits(false, 0u, false, 0) == kSeatDriver, "flags not read: seat 0 drives");
+    Check(SeatBits(false, kSeatDriverBit, false, 1) == kSeatPassenger, "and any other seat rides");
 }
 
 static void TestEntries()

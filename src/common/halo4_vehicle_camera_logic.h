@@ -12,8 +12,9 @@
 //
 //   ROLE. From the seat's own flags word as the retail module uses it (halo4_seat_converge_logic.h): bit 2 the driver
 //   (the control dispatcher's own test), bit 3 the gunner; a seat with neither is a passenger's. A seat on a gun
-//   riding a carrier fires the gun and never drives the carrier. Flags that could not be read leave a seat on a
-//   carrier the gunner's and any other seat a passenger's.
+//   riding a carrier fires the gun and never drives the carrier. Flags that could not be read (the drive's seat
+//   reader is not bound: direct drive off) leave a seat on a carrier the gunner's, seat 0 of anything else the
+//   driver's -- the seat a vehicle is driven from in every stock vehicle seen -- and any other seat a passenger's.
 //
 //   THE GAME'S OWN THIRD-PERSON CAMERA in a seat (the following camera; halo4_seat_converge_logic.h has the static
 //   reading of the retail module): it stands at pivot [+ the seat's track offset] - distance * aim and looks along the
@@ -92,9 +93,9 @@ inline constexpr uint32_t kSeatDriverBit = 1u << 2;
 inline constexpr uint32_t kSeatGunnerBit = 1u << 3;
 
 // The seat's role as the camera file's SeatBits.
-inline uint8_t SeatBits(bool flagsKnown, uint32_t seatFlags, bool onCarrier) noexcept
+inline uint8_t SeatBits(bool flagsKnown, uint32_t seatFlags, bool onCarrier, int seatIndex) noexcept
 {
-    const bool driver = flagsKnown && !onCarrier && (seatFlags & kSeatDriverBit) != 0;
+    const bool driver = !onCarrier && (flagsKnown ? (seatFlags & kSeatDriverBit) != 0 : seatIndex == 0);
     const bool gunner = onCarrier || (flagsKnown && (seatFlags & kSeatGunnerBit) != 0);
     return vehicle_camera_file::SeatBits(driver, gunner);
 }
