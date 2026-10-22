@@ -699,12 +699,15 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 facts.identified = occupancy > 0;
                 // ...and the native first-person seat view placed THIS seat: the vehicle reference keeps the
                 // stock camera's POSITION, which in a chase seat is pushed out along this very aim, so a write
-                // there would swing the view round the hull (vehicle_first_person = 0 keeps the servo).
+                // there would swing the view round the hull (vehicle_first_person = 0 keeps the servo). A chase
+                // camera of the vehicle camera file places the view itself, off the vehicle and not off the aim,
+                // so its seat is owned too (halo2_vehicle_cameras.inl): it aims as its seat view does.
                 facts.view_owned = havePublication && publication.vehicleReferenceValid &&
                     publication.vehicleUnit == Halo2OwnedUnit() && publication.vehicleParent == seatParent &&
                     publication.vehicleSeat == seatIndex && seatViewAt && now >= seatViewAt &&
                     now - seatViewAt <= 100 &&
-                    NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo2, seatParent, seatIndex);
+                    (NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo2, seatParent, seatIndex) ||
+                     Game_Halo2VehicleCameraPlacedSeat(seatParent, seatIndex));
                 // THE SEAT'S FRAME AND ROLE, read as the rebase reads them (see the header): the occupied seat's live
                 // flags word carries the role too (seat_converge_logic.h: bit 2 driver, bit 3 gunner -- the engine's
                 // own sibling predicates 0x8FC99C / 0x8FCA5C and its aiming-unit test 0x8F8C00). A seat that does NOT

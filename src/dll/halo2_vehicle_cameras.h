@@ -41,3 +41,7 @@ bool Game_Halo2VehicleCamerasPlace(const Halo2VehicleCameraSeatSample& seat, flo
 bool Game_Halo2VehicleCameraLeash(float head[3]) noexcept;
 // A frame of the observer with the player on foot: the seat is published as left.
 void Game_Halo2VehicleCamerasOnFoot(uint32_t generation) noexcept;
+// Any thread: a chase camera of the camera file placed this seat's view within 100 ms. The seat's view is then the
+// mod's own as it is with the first-person seat view (the seat drive writes the seat, and a fire's crosshair line is
+// not moved to the view's eye, which stands metres from the seat).
+bool Game_Halo2VehicleCameraPlacedSeat(uint32_t parent, int16_t seat) noexcept;

@@ -383,6 +383,10 @@ struct Halo2VehicleCameraPassRecord
     vehicle_camera_place::Placed where{};
 };
 Halo2VehicleCameraPassRecord g_halo2VehicleCameraPass; // observer thread
+// The seat a chase camera last placed the view in, and when (observer writes, any thread reads).
+std::atomic<uint64_t> g_halo2VehicleCameraPlacedMs{0};
+std::atomic<uint32_t> g_halo2VehicleCameraPlacedParent{UINT32_MAX};
+std::atomic<int> g_halo2VehicleCameraPlacedSeat{-1};
 
 // "collide": frames with a fresh trace, frames held short of something, frames with no trace to go on.
 std::atomic<uint32_t> g_halo2VehicleCameraCollideFrames{0};
@@ -750,6 +754,9 @@ bool Halo2VehicleCamerasPlace(const Halo2VehicleCameraSeatSample& sample, float 
                                  headBasisRead ? &headBasis : nullptr, point))
         return false;
     memcpy(eye, point, sizeof(point));
+    g_halo2VehicleCameraPlacedParent.store(sample.parent, std::memory_order_relaxed);
+    g_halo2VehicleCameraPlacedSeat.store(sample.seat, std::memory_order_relaxed);
+    g_halo2VehicleCameraPlacedMs.store(GetTickCount64(), std::memory_order_release);
     return true;
 }
 

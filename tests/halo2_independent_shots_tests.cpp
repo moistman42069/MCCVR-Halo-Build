@@ -30,6 +30,11 @@ static struct {bool independent_dual_aim=true;float crosshair_distance_m=10;bool
 // Fire-time changes allowed (the co-op switch off), and the first-person seat override's stand-down a no-op.
 [[maybe_unused]] static bool Sight_FireTimeChangesAllowed(){return true;}
 [[maybe_unused]] static void NativeVehicleFirstPerson_SetStockOnThisThread(bool) noexcept{}
+// The seat-aim flag the evaluator's detour raises around the calls it forwards (a chase camera's stand-down does not
+// apply to them): counted.
+static unsigned seatAskRaised=0;static bool seatAskUp=false;
+[[maybe_unused]] static void NativeVehicleFirstPerson_SetSeatAskOnThisThread(bool up) noexcept
+{if(up)++seatAskRaised;seatAskUp=up;}
 // Shots from the muzzle (sight_layer.h): admitted only with the barrel aim off; the converged point itself is
 // sight_layer's (aim_solve_tests), so here it keeps the barrel's direction and counts the asks.
 static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;
@@ -267,6 +272,14 @@ int main()
     Check(Halo2IndependentCameraDetour(owner,position,direction)==0x12345678&&direction[0]==1,"unrelated camera caller remains native");
     caller=g_halo2Dual.base+0x7597BD;
     Check(Halo2IndependentCameraDetour(owner+0x10000,position,direction)==0x12345678&&direction[0]==1,"remote salted unit retains native camera ray");
+    {
+        // The evaluator asks for the seat's aim (the players update, the fire), never the frame's view: a vehicle
+        // chase camera's stand-down does not apply to it.
+        const unsigned raised=seatAskRaised;
+        caller=g_halo2Dual.base+0x7597BE;
+        (void)Halo2IndependentCameraDetour(owner,position,direction);
+        Check(seatAskRaised==raised+1&&!seatAskUp,"a forwarded evaluator call is a seat-aim ask, the flag down after it");
+    }
     Reset();nested=true;Shoot();Check(fireCalls==2,"nested simultaneous roles fire once each");
     Reset();queryFault=true;Shoot();Check(fireCalls==1&&g_halo2Dual.faulted&&observedTarget[0]==0x44440007,"optional query failure is isolated");
     Reset();fireFault=true;Check(FaultingShot()&&fireCalls==1,"native firing exception never replayed");

@@ -6666,12 +6666,14 @@ namespace
             Sight_IndependentDualAim()?1:0);
         {
             const uint64_t seatApplied=g_halo2SeatFireApplied.exchange(0),seatThrough=g_halo2SeatFireThrough.exchange(0),
-                seatSkipped=g_halo2SeatFireSkipped.exchange(0),seatFromEye=g_halo2SeatFireFromEye.exchange(0);
-            if(seatApplied||seatThrough||seatSkipped||seatFromEye)
+                seatSkipped=g_halo2SeatFireSkipped.exchange(0),seatFromEye=g_halo2SeatFireFromEye.exchange(0),
+                seatChase=g_halo2SeatFireChaseKept.exchange(0);
+            if(seatApplied||seatThrough||seatSkipped||seatFromEye||seatChase)
                 LOG("Halo 2 seat fire: the engine's crosshair line at a seated fire replaced by the player's own (from "
                     "the rendered eye through the traced point) %llu, re-aimed from the seat camera through the point "
                     "%llu, already through it or geometrically refused (SHOT REAIM names which) %llu, left as the game "
-                    "built it (the seat's aim was not converged) %llu",seatFromEye,seatApplied,seatThrough,seatSkipped);
+                    "built it (the seat's aim was not converged) %llu; fires under a vehicle chase camera, kept at the "
+                    "seat's own start %llu",seatFromEye,seatApplied,seatThrough,seatSkipped,seatChase);
         }
         LOG("Halo 2 barrel trajectory: enabled=%d fault=%d applied=%llu refused=%llu option=%d",
             g_halo2Muzzle.enabled.load()?1:0,g_halo2Muzzle.faulted.load()?1:0,

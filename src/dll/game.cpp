@@ -60556,6 +60556,15 @@ bool Game_Halo2VehicleCameraLeash(float head[3]) noexcept
     return head && pass.placed && vehicle_camera_place::LeashHead(pass.camera, pass.where, pass.reach, head);
 }
 
+bool Game_Halo2VehicleCameraPlacedSeat(uint32_t parent, int16_t seat) noexcept
+{
+    const uint64_t at = g_halo2VehicleCameraPlacedMs.load(std::memory_order_acquire);
+    const uint64_t now = GetTickCount64();
+    return at && now >= at && now - at <= 100 && parent != UINT32_MAX && seat >= 0 &&
+           g_halo2VehicleCameraPlacedParent.load(std::memory_order_relaxed) == parent &&
+           g_halo2VehicleCameraPlacedSeat.load(std::memory_order_relaxed) == seat;
+}
+
 void Game_Halo2VehicleCamerasOnFoot(uint32_t generation) noexcept
 {
     g_halo2VehicleCameraPass.placed = false;

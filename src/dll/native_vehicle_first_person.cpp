@@ -371,6 +371,17 @@ template<unsigned I> bool ForTheSimulation() noexcept
     if constexpr (I==1) return false;
     else return !Sight_FireTimeChangesAllowed()&&InTick(I)!=0;
 }
+// HALO 2, THE VEHICLE CAMERAS' CHASE CAMERA. The frame's own asks of the selector (the director's) are answered as
+// the game built them while a chase camera of the vehicle camera file is chosen for the seat, so the game shows the
+// seat in third person and draws its occupant. The asks for the seat's AIM -- the evaluator 0x6D4730, which the
+// game calls only from its players update (0x6A37CE) and its fire (0x7597B8), and the seat drive's own ask -- are
+// flagged on their thread (NativeVehicleFirstPerson_SetSeatAskOnThisThread) and keep the first-person answer, so a
+// seat aims and fires from a chase camera exactly as from its seat view.
+thread_local bool t_seatAskOnThisThread=false;
+bool Halo2ChaseStandsDown(const NativeVehicleCameraOwner& owner) noexcept
+{
+    return !t_seatAskOnThisThread&&Game_Halo2VehicleCameraChase(owner);
+}
 template<unsigned I> using Mode=std::conditional_t<I==2,int32_t,int16_t>;
 template<unsigned I> using SelectorFn=uint32_t(__fastcall*)(uint32_t,Mode<I>*);
 // Keep the guarded feature body separate from native forwarding/finally. A
@@ -386,7 +397,7 @@ template<unsigned I> bool SelectOwned(uint32_t unit,Mode<I>* mode) noexcept
         if (!mode||*mode!=2||!Owner(I,unit,before)) return false;
         // Halo 2: a chase camera of the vehicle camera file is chosen for this seat. The game's own answer stands,
         // so the game draws the occupant and the camera is placed off the seat (Game_Halo2VehicleCameraChase).
-        if constexpr (I==1) if (Game_Halo2VehicleCameraChase(before)) {
+        if constexpr (I==1) if (Halo2ChaseStandsDown(before)) {
             runtime[I].chaseCalls.fetch_add(1,std::memory_order_relaxed);return false;
         }
         if (!Head(I,before,point,false)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return false;}
@@ -400,7 +411,7 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
     __try {
         NativeVehicleCameraOwner before{},after{};float point[3]{};Mode<I> mode{};
         if (!result||!Owner(I,unit,before)) return;
-        if constexpr (I==1) if (Game_Halo2VehicleCameraChase(before)) return;
+        if constexpr (I==1) if (Halo2ChaseStandsDown(before)) return;
         reinterpret_cast<SelectorFn<I>>(runtime[I].original[Selector])(unit,&mode);
         if (mode!=2) return;
         if (!Head(I,before,point,true)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return;}
@@ -607,6 +618,10 @@ bool Install(unsigned i,size_t size)
 void NativeVehicleFirstPerson_SetStockOnThisThread(bool stock) noexcept
 {
     t_stockOnThisThread=stock;
+}
+void NativeVehicleFirstPerson_SetSeatAskOnThisThread(bool seatAsk) noexcept
+{
+    t_seatAskOnThisThread=seatAsk;
 }
 bool NativeVehicleFirstPerson_PlacedPoint(GameTitle title,NativeVehicleSeatPoint& out) noexcept
 {

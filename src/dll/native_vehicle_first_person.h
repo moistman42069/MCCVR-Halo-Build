@@ -27,6 +27,10 @@ bool NativeVehicleFirstPerson_SeatViewOwned(GameTitle title,uint32_t parent,int 
 // seat camera for the line its crosshair test starts on, and every other machine computes that from the game's
 // own chase camera.
 void NativeVehicleFirstPerson_SetStockOnThisThread(bool stock) noexcept;
+// While set on the calling thread the call asks for the seat's AIM, not the frame's view (Halo 2: the evaluator the
+// game's players update and fire call, and the seat drive's own ask): a chase camera of the vehicle camera file does
+// not stand the override down for it, so the seat aims and fires as from its first-person view.
+void NativeVehicleFirstPerson_SetSeatAskOnThisThread(bool seatAsk) noexcept;
 // The calling thread is inside a simulation tick (1), outside one (0), or that cannot be told (-1): the title's own
 // in-tick byte, where this override resolved it (Halo 4). A read; nothing else.
 int NativeVehicleFirstPerson_InSimulationTick(GameTitle title) noexcept;

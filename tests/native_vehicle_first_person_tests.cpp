@@ -161,6 +161,11 @@ template<unsigned I> void Run()
             "a seat with a chase camera chosen keeps the game's own answer");
         std::memset(result,0,sizeof(result));camera();
         Check(position[0]==-10&&position[1]==-20&&position[2]==-30,"and its evaluator's point is left where the game put it");
+        // An ask for the seat's aim (the game's players update and fire, the seat drive) keeps the first-person
+        // answer under a chase camera: the seat aims and fires as from its seat view.
+        NativeVehicleFirstPerson_SetSeatAskOnThisThread(true);
+        Check(SelectHook<I>(owned.unit,&mode)==0,"a seat-aim ask keeps the first-person answer under a chase camera");
+        NativeVehicleFirstPerson_SetSeatAskOnThisThread(false);
         chaseChosen=false;
         Check(SelectHook<I>(owned.unit,&mode)==0,"without one the seat is first person again");
         camera();Check(position[0]==10&&position[1]==20&&position[2]==30,"at the occupant's head");

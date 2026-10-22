@@ -23,7 +23,7 @@
 // barrel, and is handed to the barrel's lane (halo2_direct_drive.inl), which learns the gun from it
 // (seat_barrel_logic.h).
 std::atomic<uint64_t> g_halo2SeatFireApplied{0},g_halo2SeatFireThrough{0},g_halo2SeatFireSkipped{0},
-    g_halo2SeatFireFromEye{0};
+    g_halo2SeatFireFromEye{0},g_halo2SeatFireChaseKept{0};
 // Our unit's seat while its aim is converged: the rendered eye its point was traced from, and the point (fire
 // thread; guarded reads).
 bool Halo2SeatShotLine(uint32_t unit,float head[3],float point[3])
@@ -66,7 +66,14 @@ void Halo2SeatFireReaim(uint32_t unit,float* position,float* direction)
     // Counted from the engine's own start, whichever line is then used.
     float line[3]{direction[0],direction[1],direction[2]};
     const bool bent=Sight_ReaimThroughPoint(GameTitle::Halo2,SightShotSite::CrosshairAssist,position,line,point,true);
-    if(g_config.seat_fire_from_eye&&Sight_FireTimeChangesAllowed()&&shot_lag::Finite3(head))
+    // Not from a chase camera of the vehicle camera file: the view's eye stands metres from the seat, and the line
+    // from there could meet what the seat's own does not (halo2_vehicle_cameras.inl). The re-aim below keeps the
+    // engine's own start, through the same point.
+    uint32_t chaseParent=UINT32_MAX;int16_t chaseSeat=-1;
+    const bool chaseView=Halo2DriveOccupancy(chaseParent,chaseSeat)==1&&
+        Game_Halo2VehicleCameraPlacedSeat(chaseParent,chaseSeat);
+    if(chaseView)g_halo2SeatFireChaseKept.fetch_add(1,std::memory_order_relaxed);
+    if(g_config.seat_fire_from_eye&&Sight_FireTimeChangesAllowed()&&shot_lag::Finite3(head)&&!chaseView)
     {
         const float toPoint[3]{point[0]-head[0],point[1]-head[1],point[2]-head[2]};
         const float range=shot_lag::Length(toPoint),length=shot_lag::Length(direction);
