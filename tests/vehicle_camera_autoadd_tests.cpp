@@ -260,11 +260,48 @@ static void TestANewSection()
     }
 }
 
+// The same rule in Halo 3: a file without a "halo3" section (its vehicles riding on "default", every game's) gets
+// Halo 3's own section, not Halo 3 entries written into "default" where ODST and the others would find them.
+static void TestAHalo3NewSection()
+{
+    const Table builtIn = DefaultTable();
+    const uint8_t driver = SeatBits(true, false);
+    Table old = builtIn;
+    for (std::size_t g = 0; g < old.games.size(); ++g)
+        if (old.games[g].key == "halo3")
+        {
+            old.games.erase(old.games.begin() + static_cast<std::ptrdiff_t>(g));
+            break;
+        }
+    Check(old.FindGame("halo3")->key == kDefaultKey, "the old file has Halo 3 ride on the default section");
+    const Addition warthog = For(old, builtIn, "halo3", "warthog", driver);
+    Check(warthog.newSection && warthog.sectionKey == "halo3" && warthog.fromBuiltIn,
+          "a Halo 3 Warthog adds Halo 3's section, from the built-in presets");
+    Check(warthog.entries.size() == 4 && warthog.entries[0].name == "Warthog" &&
+              warthog.entries[1].name == "Warthog passenger" && warthog.entries[2].name == "Warthog gunner" &&
+              warthog.entries.back().isDefault,
+          "every Halo 3 Warthog seat's entry, then the default entry as the file had it");
+
+    const std::string original = ToJson(old);
+    Table file;
+    Check(FromJson(original.data(), original.size(), file).ok, "the old Halo 3 file reads");
+    const Addition addition = For(file, builtIn, "halo3", "warthog", driver);
+    std::string text = original;
+    std::string why;
+    Check(Insert(text, addition, "halo3", "warthog", driver, why), "Halo 3's section is spliced in");
+    Table after;
+    Check(FromJson(text.data(), text.size(), after).ok && after.FindGame("halo3")->key == "halo3",
+          "and the file reads with a Halo 3 section");
+    const Vehicle* odst = Matched(after, "odst", "warthog", driver);
+    Check(odst && odst->isDefault, "while ODST's Warthog still rides on the default section");
+}
+
 int main()
 {
     TestWhatIsAdded();
     TestTheTextIsAddedTo();
     TestANewSection();
+    TestAHalo3NewSection();
     std::printf("PASS: %u vehicle camera auto-add checks\n", g_checks);
     return 0;
 }
