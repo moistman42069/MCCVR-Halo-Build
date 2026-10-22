@@ -254,6 +254,37 @@ inline constexpr uint32_t kReachRestWaitFrames = 45;
 inline constexpr float kReachRestLevelSin = 0.26f;
 inline constexpr float kReachRestPivotSmoothSeconds = 0.25f;
 
+// The orbit's check (render thread writes, cold worker takes on leaving the seat): the nearest and furthest the game's
+// camera stood from its pivot, in cm, and the lowest and highest it looked, in degrees.
+struct ReachVehicleCameraOrbitCheck
+{
+    std::atomic<uint32_t> seq{0};
+    uint32_t samples = 0;
+    float nearCm = 0.0f, farCm = 0.0f, lowDeg = 0.0f, highDeg = 0.0f;
+};
+ReachVehicleCameraOrbitCheck g_reachVehicleCameraOrbit;
+
+void ReachVehicleCameraOrbitNote(float distanceWu, float lookDeg)
+{
+    ReachVehicleCameraOrbitCheck& check = g_reachVehicleCameraOrbit;
+    const float cm = distanceWu / vehicle_camera_frame::kWorldUnitsPerCm;
+    check.seq.fetch_add(1, std::memory_order_acq_rel);
+    if (!check.samples)
+    {
+        check.nearCm = check.farCm = cm;
+        check.lowDeg = check.highDeg = lookDeg;
+    }
+    else
+    {
+        check.nearCm = cm < check.nearCm ? cm : check.nearCm;
+        check.farCm = cm > check.farCm ? cm : check.farCm;
+        check.lowDeg = lookDeg < check.lowDeg ? lookDeg : check.lowDeg;
+        check.highDeg = lookDeg > check.highDeg ? lookDeg : check.highDeg;
+    }
+    ++check.samples;
+    check.seq.fetch_add(1, std::memory_order_release);
+}
+
 float ReachVehicleCameraSecondsSince(LARGE_INTEGER& at)
 {
     static LARGE_INTEGER frequency{};
@@ -279,6 +310,10 @@ bool ReachVehicleCameraRestPlace(const ReachVehicleFrame& frame, const VehicleCa
     {
         rest = {};
         rest.seat = seat;
+        ReachVehicleCameraOrbitCheck& check = g_reachVehicleCameraOrbit;
+        check.seq.fetch_add(1, std::memory_order_acq_rel);
+        check.samples = 0;
+        check.seq.fetch_add(1, std::memory_order_release);
     }
     const float radiusWu = std::isfinite(in.vehicleRadiusCm) && in.vehicleRadiusCm > 0.0f
         ? in.vehicleRadiusCm * vehicle_camera_frame::kWorldUnitsPerCm : 0.0f;
@@ -303,6 +338,13 @@ bool ReachVehicleCameraRestPlace(const ReachVehicleFrame& frame, const VehicleCa
                                 at[2] - frame.nativeCameraPoint[2]};
         const float distance = sqrtf(vehicle_camera_frame::Dot(stood, stood));
         const float lookUp = vehicle_camera_frame::Dot(looks, in.vehicle.up);
+        // THE ORBIT'S CHECK, for the log on leaving the seat: how near and how far the game's camera stood from the
+        // pivot over the looks it was seen at, beyond the seat's own view. An orbit of that pivot keeps the two close.
+        if (std::isfinite(distance) && distance >= kReachRestKnownWu && distance <= furthestWu && std::isfinite(lookUp))
+        {
+            const float lookDeg = asinf(lookUp < -1.0f ? -1.0f : (lookUp > 1.0f ? 1.0f : lookUp)) * 57.29578f;
+            ReachVehicleCameraOrbitNote(distance, lookDeg);
+        }
         const bool level = std::fabs(lookUp) <= kReachRestLevelSin;
         const bool take = std::isfinite(distance) && distance >= kReachRestKnownWu && distance <= furthestWu &&
                           (level ? (!rest.level || distance > rest.distance) : (!rest.level && distance > rest.distance));
@@ -619,10 +661,6 @@ std::string ReachVehicleCameraNotApplied(const vehicle_camera_select::ActiveCame
         if (camera.aimMarker)
             add("the aim ring");
     }
-    else if (camera.showHeadlessBody)
-    {
-        add("showHeadlessBody");
-    }
     if (camera.holdExposure)
         add("eyeAdjust");
     if (camera.hideRegions[0])
@@ -640,10 +678,22 @@ void ReachVehicleCamerasColdLog(bool seated)
 {
     static bool standInLogged = false, noTraceLogged = false;
     static float restLoggedWu = 0.0f, restSeenWu = 0.0f;
-    static uint32_t trailStint = 0, headMissStint = 0, heldStint = 0;
+    static uint32_t trailStint = 0, headMissStint = 0, heldStint = 0, tracedStint = 0;
     const uint32_t collideFrames = g_reachVehicleCameraCollideFrames.exchange(0, std::memory_order_relaxed);
     const uint32_t noTraceFrames = g_reachVehicleCameraNoTraceFrames.exchange(0, std::memory_order_relaxed);
     heldStint += g_reachVehicleCameraHeldFrames.exchange(0, std::memory_order_relaxed);
+    tracedStint += collideFrames;
+    // The boom's angle while one is in use, and the range it went through, for the line on leaving the seat.
+    static bool boomSeen = false;
+    static float boomLastDeg = 0.0f, boomLowDeg = 0.0f, boomHighDeg = 0.0f;
+    if (seated && (g_vehicleBoomShown.load(std::memory_order_acquire) & 1u))
+    {
+        const float deg = g_vehicleBoomShownDeg.load(std::memory_order_relaxed);
+        boomLowDeg = boomSeen && boomLowDeg < deg ? boomLowDeg : deg;
+        boomHighDeg = boomSeen && boomHighDeg > deg ? boomHighDeg : deg;
+        boomLastDeg = deg;
+        boomSeen = true;
+    }
     if (noTraceFrames > 60 && collideFrames == 0 && !noTraceLogged)
     {
         noTraceLogged = true;
@@ -664,9 +714,39 @@ void ReachVehicleCamerasColdLog(bool seated)
             LOG("Vehicle cameras (Reach): in that seat the occupant's head could not be read on %u frames, and the "
                 "seat's eye stood in for it",
                 headMissStint);
-        if (heldStint)
-            LOG("Vehicle cameras (Reach): in that seat the camera was held short of something on %u frames", heldStint);
-        trailStint = headMissStint = heldStint = 0;
+        if (tracedStint)
+            LOG("Vehicle cameras (Reach): in that seat the camera's line was traced for walls on %u frames and held "
+                "short of something on %u of them",
+                tracedStint, heldStint);
+        if (boomSeen)
+            LOG("Vehicle cameras (Reach): in that seat the third-person boom went from %.1f to %.1f deg above level and "
+                "was left at %.1f deg (kept for that seat and camera)",
+                static_cast<double>(boomLowDeg), static_cast<double>(boomHighDeg), static_cast<double>(boomLastDeg));
+        boomSeen = false;
+        // The orbit's check: a camera that orbits the pivot stands about as far from it at every look.
+        const ReachVehicleCameraOrbitCheck& check = g_reachVehicleCameraOrbit;
+        for (int attempt = 0; attempt < 3; ++attempt)
+        {
+            const uint32_t before = check.seq.load(std::memory_order_acquire);
+            if (before & 1u)
+                continue;
+            const uint32_t samples = check.samples;
+            const float nearCm = check.nearCm, farCm = check.farCm, lowDeg = check.lowDeg, highDeg = check.highDeg;
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (check.seq.load(std::memory_order_relaxed) != before)
+                continue;
+            static uint32_t loggedSamples = 0;
+            if (samples && samples != loggedSamples)
+            {
+                loggedSamples = samples;
+                LOG("Vehicle cameras (Reach): in that seat the game's own camera stood %.0f to %.0f cm from its pivot "
+                    "over %u frames, looking from %.1f to %.1f deg (an orbit of the pivot keeps the two close)",
+                    static_cast<double>(nearCm), static_cast<double>(farCm), samples, static_cast<double>(lowDeg),
+                    static_cast<double>(highDeg));
+            }
+            break;
+        }
+        trailStint = headMissStint = heldStint = tracedStint = 0;
         standInLogged = noTraceLogged = false;
         restLoggedWu = restSeenWu = 0.0f;
         g_reachVehicleCameraRestWu.store(0.0f, std::memory_order_relaxed);

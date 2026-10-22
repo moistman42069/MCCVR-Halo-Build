@@ -1810,6 +1810,14 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
 
     const bool onFoot = !active.valid && r.selector.StandDownReason() == vehicle_camera_select::kOnFoot;
     std::string line = r.selector.Describe();
+    // Reach does not draw the headless body (a Halo 3 key, on by default in a driver's or gunner's seat): its seat
+    // view is not described as showing it.
+    if (reach)
+    {
+        static constexpr char kHeadless[] = ", your body shown without its head";
+        if (const size_t at = line.find(kHeadless); at != std::string::npos)
+            line.erase(at, sizeof(kHeadless) - 1);
+    }
     if (line.empty())
     {
         // Not in a seat this feature reaches: say which of the reasons it is.
