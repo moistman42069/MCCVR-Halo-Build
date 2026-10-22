@@ -60,7 +60,7 @@ struct Halo4VehicleCameraSeatCache
     int seatIndex = -1;
     uint64_t identity = 0, carrierIdentity = 0;
     uint32_t carrier = UINT32_MAX, definition = 0xFFFFFFFFu;
-    uint32_t identityTries = 0, flagTries = 0;
+    uint32_t identityTries = 0, flagTries = 0, carrierTries = 0;
     bool flagsKnown = false;
     uint32_t seatFlags = 0;
     // The head in the seated object's own frame, eased: the seat's point.
@@ -159,15 +159,43 @@ bool Halo4SampleVehicleCameraFrame(const Halo4VehicleInputState& seat, Halo4Vehi
             {
                 cache.identity = Halo4ReadVehicleIdentity(parent);
                 cache.definition = Halo4VehicleRead<uint16_t>(parent, 0x8);
-                const uint32_t carrier = Halo4VehicleRead<uint32_t>(parent, 0x24);
-                const uint8_t* carrierData = carrier != UINT32_MAX ? Halo4VehicleCameraObject(carrier, 0x2003) : nullptr;
-                cache.carrier = carrierData ? carrier : UINT32_MAX;
-                cache.carrierIdentity = carrierData ? Halo4ReadVehicleIdentity(carrierData) : 0;
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
             cache.identity = 0;
+        }
+    }
+    // The carrier a gun rides (the seated object's own parent), read on its own and again until it resolves: a gun
+    // whose carrier was missed for a frame would otherwise be a vehicle of its own for the whole stint.
+    if (cache.carrier == UINT32_MAX && cache.carrierTries < kHalo4SeatReadTries)
+    {
+        __try
+        {
+            const uint8_t* parent = Halo4VehicleCameraObject(seat.parent, 0x2003);
+            const uint32_t carrier = parent ? Halo4VehicleRead<uint32_t>(parent, 0x24) : UINT32_MAX;
+            if (!parent)
+                ++cache.carrierTries;
+            else if (carrier == UINT32_MAX)
+                cache.carrierTries = kHalo4SeatReadTries; // it rides nothing
+            else
+            {
+                ++cache.carrierTries;
+                const uint8_t* carrierData = Halo4VehicleCameraObject(carrier, 0x2003);
+                if (carrierData)
+                {
+                    const uint64_t carrierIdentity = Halo4ReadVehicleIdentity(carrierData);
+                    if (carrierIdentity || cache.carrierTries >= kHalo4SeatReadTries)
+                    {
+                        cache.carrier = carrier;
+                        cache.carrierIdentity = carrierIdentity;
+                    }
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            ++cache.carrierTries;
         }
     }
     if (!cache.flagsKnown && cache.flagTries < kHalo4SeatReadTries)
@@ -302,8 +330,11 @@ void Halo4VehicleCameraPublishSeat(bool seatRead, const Halo4VehicleCameraFrame&
     record.seatFlags = frame.seatFlags;
     record.definition = frame.definition;
     record.nativeChase = nativeChase;
-    record.identityPending = frame.active && !frame.identity &&
-                             g_halo4VehicleCameraSeatCache.identityTries < kHalo4SeatReadTries;
+    // Not named yet: the identity, or a carrier that is there to read, has not resolved and will be tried again.
+    record.identityPending = frame.active && ((!frame.identity &&
+                                               g_halo4VehicleCameraSeatCache.identityTries < kHalo4SeatReadTries) ||
+                                              (frame.carrier == UINT32_MAX &&
+                                               g_halo4VehicleCameraSeatCache.carrierTries < kHalo4SeatReadTries));
     record.ms.store(GetTickCount64(), std::memory_order_relaxed);
     record.seq.fetch_add(1, std::memory_order_release);
 }
