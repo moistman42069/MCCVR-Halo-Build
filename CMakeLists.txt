@@ -885,6 +885,13 @@ if(BUILD_TESTING)
     target_compile_options(halomccvr_reach_vehicle_camera_tests PRIVATE /W4 /WX)
     target_compile_definitions(halomccvr_reach_vehicle_camera_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_reach_vehicle_camera_tests COMMAND halomccvr_reach_vehicle_camera_tests)
+    # Halo CE's seats as the vehicle camera file names them (by tag path), their roles, the game's own third-person
+    # camera from its following camera's command, and the built-in halo1 entries (src/common/haloce_vehicle_camera_logic.h).
+    add_executable(halomccvr_haloce_vehicle_camera_tests tests/haloce_vehicle_camera_tests.cpp
+        src/common/vehicle_camera_file.cpp)
+    target_compile_options(halomccvr_haloce_vehicle_camera_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_haloce_vehicle_camera_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_haloce_vehicle_camera_tests COMMAND halomccvr_haloce_vehicle_camera_tests)
     # The ring where the vehicle aims, beside the crosshair: its picture, colour, direction, range and size
     # (src/common/vehicle_aim_marker_logic.h).
     add_executable(halomccvr_vehicle_aim_marker_tests tests/vehicle_aim_marker_tests.cpp)
