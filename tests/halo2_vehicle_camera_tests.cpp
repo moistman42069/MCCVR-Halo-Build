@@ -109,12 +109,6 @@ static void TestKeyAndSize()
 
 static void TestOrbit()
 {
-    Check(OrbitLevelElevationDeg(1.0f, 4.0f, -2.0f) == std::round(std::asin(0.25f) * 57.29578f - 2.0f),
-          "the level view is the elevation plus the look");
-    Check(!vehicle_boom::BoomPitchSet(OrbitLevelElevationDeg(5.0f, 4.0f, 0.0f)) &&
-              !vehicle_boom::BoomPitchSet(OrbitLevelElevationDeg(1.0f, 0.0f, 0.0f)) &&
-              !vehicle_boom::BoomPitchSet(OrbitLevelElevationDeg(NAN, 4.0f, 0.0f)),
-          "a rise past the distance, no distance, or no number makes no angle");
     const vehicle_boom::Range range = BoomRange();
     Check(std::fabs(range.min + 60.0f * vehicle_boom::kRadiansPerDegree) < 1e-6f &&
               std::fabs(range.max - 10.0f * vehicle_boom::kRadiansPerDegree) < 1e-6f,

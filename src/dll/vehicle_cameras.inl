@@ -408,7 +408,6 @@ bool Halo3VehicleCameraViewTurn(bool& yaw, bool& pitch)
 bool ReachVehicleCameraFollowWanted(); // reach_vehicle_cameras.inl
 bool ReachVehicleCameraLevelElevationDeg(const VehicleCameraSeatKey& seat, float& deg); // reach_vehicle_cameras.inl
 #endif
-bool Halo2VehicleCameraLevelElevationDeg(const VehicleCameraSeatKey& seat, float& deg); // halo2_vehicle_cameras.inl
 
 // Whether a chosen chase camera turns the view with the hull in the seat the player is in: the shared follow
 // reader's master gate (Halo3ReadRollStableFollow), in Halo 3 and in Reach.
@@ -1429,8 +1428,6 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
     if (reachTitle && !ReachVehicleCameraLevelElevationDeg(r.seat, measuredDeg))
         measuredDeg = newCamera ? vehicle_boom::kBoomPitchUnset : b.measuredDeg;
 #endif
-    if (halo2Title && !Halo2VehicleCameraLevelElevationDeg(r.seat, measuredDeg))
-        measuredDeg = newCamera ? vehicle_boom::kBoomPitchUnset : b.measuredDeg;
     const bool newStart = newCamera || b.fileDegrees != active.boomPitchDeg || b.measuredDeg != measuredDeg;
     if (newStart)
     {
@@ -1493,9 +1490,10 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
         float level[3];
         vehicle_boom::OffsetAt(b.shape, 0.0f, level);
         const float levelCm = std::sqrt(vehicle_camera_frame::Dot(level, level)) / vehicle_camera_frame::kWorldUnitsPerCm;
-        const char* from = remembered ? "your angle, kept" : (vehicle_camera_file::BoomPitchSet(b.fileDegrees)
-                                                                  ? "the camera file's boomPitch"
-                                                                  : "the game's level view, a little higher");
+        const char* from = remembered ? "your angle, kept"
+                         : vehicle_camera_file::BoomPitchSet(b.fileDegrees) ? "the camera file's boomPitch"
+                         : halo2Title                                       ? "the boom's own default"
+                                                                            : "the game's level view, a little higher";
         if (b.shape.track)
             LOG("Vehicle cameras (Halo 3): the boom in %s stands where the game's own third-person camera would at a "
                 "look pitch of its own: the seat's camera track (%d points%s) across the flat game's look range %.1f to "
@@ -1509,18 +1507,20 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
         else
         {
             const char* why = reachTitle ? "Reach's camera track is not read"
-                            : halo2Title ? "Halo 2's camera track is not read"
+                            : halo2Title ? "Halo 2's own third-person camera is not shown in a seat view"
                             : !Halo3VehicleBoomBound() || !g_halo3VehicleBoom.seatCamera ? "the game's seat camera is not bound"
                             : !b.facts.read                                             ? "the seat's tags could not be read"
                             : !g_halo3VehicleBoom.track                                 ? "the game's camera track is not bound"
                             : b.facts.points < vehicle_boom::kMinTrackPoints            ? "the seat camera has no track of four points"
                             : b.facts.points > vehicle_boom::kMaxTrackPoints            ? "its track has more points than the mod reads"
                                                                                         : "its track did not check out";
-            LOG("Vehicle cameras (%s): the boom in %s orbits the game's pivot at the game's own distance (%s); look "
-                "range %.1f to %.1f deg, so from %.1f to %.1f deg above level. It starts at %.1f deg (%s)",
-                titleName, b.seatName.c_str(), why, static_cast<double>(b.shape.range.min * deg),
-                static_cast<double>(b.shape.range.max * deg), static_cast<double>(lowDeg), static_cast<double>(highDeg),
-                static_cast<double>(startDeg), from);
+            LOG("Vehicle cameras (%s): the boom in %s orbits %s (%s); look range %.1f to %.1f deg, so from %.1f to "
+                "%.1f deg above level. It starts at %.1f deg (%s)",
+                titleName, b.seatName.c_str(),
+                halo2Title ? "the vehicle's origin at the mod's stand-in distance"
+                           : "the game's pivot at the game's own distance",
+                why, static_cast<double>(b.shape.range.min * deg), static_cast<double>(b.shape.range.max * deg),
+                static_cast<double>(lowDeg), static_cast<double>(highDeg), static_cast<double>(startDeg), from);
         }
     }
 

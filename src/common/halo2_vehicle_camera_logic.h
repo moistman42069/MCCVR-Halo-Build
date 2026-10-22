@@ -150,20 +150,6 @@ inline float BoundsRadius(const float bounds[6]) noexcept
     return std::isfinite(radius) ? radius : 0.0f;
 }
 
-// THE GAME'S OWN THIRD-PERSON CAMERA TURNS ABOUT THE SEAT'S PIVOT, as Halo 1's following camera does and as Reach's
-// was measured to: where it stands looking level is the elevation it stood at PLUS the look it had then, in whole
-// degrees (so a boom that starts from it is not moved for a fraction). `rise` is its height above the pivot,
-// `distance` how far it stands, `lookDeg` its look (up is positive). Unset (vehicle_boom::kBoomPitchUnset) when the
-// two do not make an angle.
-inline float OrbitLevelElevationDeg(float rise, float distance, float lookDeg) noexcept
-{
-    if (!std::isfinite(rise) || !std::isfinite(distance) || !std::isfinite(lookDeg) || !(distance > 1.0e-3f) ||
-        std::fabs(rise) > distance)
-        return vehicle_boom::kBoomPitchUnset;
-    const float degrees = std::asin(rise / distance) / vehicle_boom::kRadiansPerDegree + lookDeg;
-    return std::isfinite(degrees) ? std::round(degrees) : vehicle_boom::kBoomPitchUnset;
-}
-
 // THE BOOM'S RANGE in Halo 2, as look pitches for vehicle_boom's orbit (the camera's elevation is minus the pitch):
 // Halo 2's camera track is not read, so the orbit is held between 10 deg below and 60 deg above level, as Reach's
 // (the whole flat look range stood the camera straight above the vehicle or under the ground there).

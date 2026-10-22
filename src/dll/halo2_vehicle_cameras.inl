@@ -12,25 +12,21 @@
 //   The cold worker (vehicle_cameras.inl, VehicleCameras_ColdTick) reads the published seat through
 //     Halo2VehicleCameraSeat: the vehicle's name, the seat's role, and the key every reader matches a camera to.
 //
-// WHAT A CHASE CAMERA CHANGES. The first-person seat override (native_vehicle_first_person.cpp) stands down for the
-// seat's VIEW (Game_Halo2VehicleCameraChase): the director's asks and the players update's are answered as the game
-// built them, so a seat the game shows in third person draws its occupant and no first-person view, as the flat game
-// does. The seat's AIM is not changed: the fire's ask and the seat drive's keep the first-person answer, a seat whose
-// view a chase camera placed counts as the mod's own for the seat drive (Game_Halo2VehicleCameraPlacedSeat), and a
-// fire's crosshair test keeps the seat's own start -- so the seat aims and fires as from its seat view, which in a
-// shared simulation (co-op safe) is the game's own line as before. The view's eye stands at the chase camera's place.
-// The camera's tethering turns the view: its rotationTracking yaw stands in for vehicle_view_follow in that seat
-// (and, as the setting does, leaves a following seat to the stick servo). Its leash holds the head, and its "collide"
-// and its aim ring are traced by Halo 2's sight trace on the simulation thread (halo2_observer_6dof.cpp,
-// Halo2SightAuxTraces).
+// WHAT A CHASE CAMERA CHANGES: the view's eye, and nothing the game does. Every Halo 2 seat keeps the first-person seat
+// view (native_vehicle_first_person.cpp): Halo 2's director changes camera only with the seat's perspective, so the
+// override cannot hand a seat to the game's own third-person camera mid-ride (kHalo2ChaseStandDown there). The seat
+// aims and fires as from its seat view: a seat whose view a chase camera placed counts as the mod's own for the seat
+// drive (Game_Halo2VehicleCameraPlacedSeat), and a fire's crosshair test keeps the seat's own start, since the view's
+// eye is metres away -- in a shared simulation (co-op safe) the game's own line, as before. The occupant is not drawn,
+// as in the game's first-person view. The camera's tethering turns the view: its rotationTracking yaw stands in for
+// vehicle_view_follow in that seat (and, as the setting does, leaves a following seat to the stick servo). Its leash
+// holds the head, and its "collide" and its aim ring are traced by Halo 2's sight trace on the simulation thread
+// (halo2_observer_6dof.cpp, Halo2SightAuxTraces).
 //
-// "thirdperson": the game's own third-person camera is the observer's stock camera while the override stands down.
-// Its pivot is the point the game's own first-person evaluator answers for the seat -- the unit camera position, which
-// for a seated unit is its seat's camera marker -- read while the seat view is first person (every seat starts in it)
-// and kept, as a point on the seat's own object, for that kind of seat; until it has been read, the occupant's head
-// where it settled in the seat stands in. Where the game's camera stands from the pivot gives the distance; the camera
-// then orbits the pivot at the shared boom's elevation (vehicle_boom_logic.h's orbit shape: Halo 2's camera track is
-// not read).
+// "thirdperson": where Halo 2's own third-person camera would stand cannot be measured -- it is never shown in a seat
+// view, and its camera track is not read -- so the camera orbits the vehicle's origin (the carrier's, for a gun) at
+// the mod's stand-in distance for a vehicle of its size (vehicle_camera_place::StandInOffsetCm), on the shared boom
+// over Halo 2's range (halo2_vehicle_camera::BoomRange): the right stick raises and lowers it.
 //
 // "seat" and "playerhead": the occupant's head marker (as the first-person seat camera places it, carried onto the
 // vehicle as drawn). "seat" is that head where it settled in the seat, held on the seat's own object, so the
@@ -155,82 +151,8 @@ std::atomic<uint32_t> g_halo2VehicleCameraNudgeRefused{0};  // ...and offsets pa
 std::atomic<uint32_t> g_halo2VehicleCameraHeadMisses{0};    // the occupant's head not read
 std::atomic<uint32_t> g_halo2VehicleCameraFrameMisses{0};   // the vehicle's drawn root not read: the eye stays
 std::atomic<uint32_t> g_halo2VehicleCameraLagTrailCm{0};
-std::atomic<uint32_t> g_halo2VehicleCameraPivotSource{0};   // 1 the game's own pivot, 2 the head stood in for it
-std::atomic<float> g_halo2VehicleCameraRestWu{0.0f};        // the game's camera's resting distance in use
-std::atomic<float> g_halo2VehicleCameraRestRiseWu{0.0f};    // of it, the height above its pivot
-std::atomic<float> g_halo2VehicleCameraRestPitchDeg{0.0f};
-std::atomic<float> g_halo2VehicleCameraPivotUpWu{0.0f};     // the pivot's height above the vehicle's origin
-std::atomic<float> g_halo2VehicleCameraPivotHeadCm{0.0f};   // and its distance from the occupant's head
 std::atomic<float> g_halo2VehicleCameraRadiusCm{0.0f};      // the size a stand-in was laid out by
-
-// Where the game's own camera stands looking level, as an elevation above level from its pivot in whole degrees, for
-// the boom's start, with the seat it was measured in (Reach's ReachVehicleCameraLevel, for the same reader).
-struct Halo2VehicleCameraLevel
-{
-    std::atomic<uint32_t> seq{0}; // even = stable
-    VehicleCameraSeatKey seat{};
-    float deg = vehicle_boom::kBoomPitchUnset;
-};
-Halo2VehicleCameraLevel g_halo2VehicleCameraLevel;
-
-void Halo2VehicleCameraLevelStore(const VehicleCameraSeatKey& seat, float deg)
-{
-    Halo2VehicleCameraLevel& level = g_halo2VehicleCameraLevel;
-    level.seq.fetch_add(1, std::memory_order_acq_rel);
-    level.seat = seat;
-    level.deg = deg;
-    level.seq.fetch_add(1, std::memory_order_release);
-}
-
-bool Halo2VehicleCameraLevelElevationDeg(const VehicleCameraSeatKey& seat, float& deg)
-{
-    const Halo2VehicleCameraLevel& level = g_halo2VehicleCameraLevel;
-    for (int attempt = 0; attempt < 3; ++attempt)
-    {
-        const uint32_t before = level.seq.load(std::memory_order_acquire);
-        if (before & 1u)
-            continue;
-        const VehicleCameraSeatKey measuredIn = level.seat;
-        const float measured = level.deg;
-        std::atomic_thread_fence(std::memory_order_acquire);
-        if (level.seq.load(std::memory_order_relaxed) != before)
-            continue;
-        deg = measuredIn == seat ? measured : vehicle_boom::kBoomPitchUnset;
-        return true;
-    }
-    return false;
-}
-
-// The orbit's check (observer writes, cold worker takes on leaving the seat): the nearest and furthest the game's
-// camera stood from its pivot, in cm, and the lowest and highest it looked, in degrees.
-struct Halo2VehicleCameraOrbitCheck
-{
-    std::atomic<uint32_t> seq{0};
-    uint32_t samples = 0;
-    float nearCm = 0.0f, farCm = 0.0f, lowDeg = 0.0f, highDeg = 0.0f;
-};
-Halo2VehicleCameraOrbitCheck g_halo2VehicleCameraOrbit;
-
-void Halo2VehicleCameraOrbitNote(float distanceWu, float lookDeg)
-{
-    Halo2VehicleCameraOrbitCheck& check = g_halo2VehicleCameraOrbit;
-    const float cm = distanceWu / vehicle_camera_frame::kWorldUnitsPerCm;
-    check.seq.fetch_add(1, std::memory_order_acq_rel);
-    if (!check.samples)
-    {
-        check.nearCm = check.farCm = cm;
-        check.lowDeg = check.highDeg = lookDeg;
-    }
-    else
-    {
-        check.nearCm = cm < check.nearCm ? cm : check.nearCm;
-        check.farCm = cm > check.farCm ? cm : check.farCm;
-        check.lowDeg = lookDeg < check.lowDeg ? lookDeg : check.lowDeg;
-        check.highDeg = lookDeg > check.highDeg ? lookDeg : check.highDeg;
-    }
-    ++check.samples;
-    check.seq.fetch_add(1, std::memory_order_release);
-}
+std::atomic<float> g_halo2VehicleCameraOrbitCm{0.0f};       // how far out "thirdperson" orbits the vehicle's origin
 
 float Halo2VehicleCameraSecondsSince(LARGE_INTEGER& at)
 {
@@ -295,86 +217,6 @@ struct Halo2VehicleCameraSeatEye
 Halo2VehicleCameraSeatEye g_halo2VehicleCameraSeatEye;
 inline constexpr uint32_t kHalo2SeatSettleFrames = 90; // placements: about 45 rendered frames
 
-// THE GAME'S OWN PIVOT for a kind of seat (observer thread): the point the first-person evaluator answers for it, as a
-// point on the seat's own object -- kept for the session by the seat's vehicle model, seat and carriage, so a seat
-// boarded straight into a chase camera (the seat memory) has it from an earlier ride.
-struct Halo2VehicleCameraPivot
-{
-    bool valid = false;
-    uint32_t identity = 0;
-    int16_t seat = -1;
-    bool mounted = false;
-    uint32_t parent = UINT32_MAX; // for a vehicle the mod does not know (identity 0): this one only
-    float local[3]{};
-};
-Halo2VehicleCameraPivot g_halo2VehicleCameraPivots[16];
-uint32_t g_halo2VehicleCameraPivotNext = 0;
-uint64_t g_halo2VehicleCameraPivotSeenUs = 0;
-
-Halo2VehicleCameraPivot* Halo2VehicleCameraFindPivot(const VehicleCameraSeatKey& key, bool create)
-{
-    for (Halo2VehicleCameraPivot& pivot : g_halo2VehicleCameraPivots)
-        if (pivot.valid && pivot.identity == key.identity && pivot.seat == key.seatIndex && pivot.mounted == key.mounted &&
-            (key.identity != 0 || pivot.parent == static_cast<uint32_t>(key.vehicle)))
-            return &pivot;
-    if (!create)
-        return nullptr;
-    Halo2VehicleCameraPivot& slot = g_halo2VehicleCameraPivots[g_halo2VehicleCameraPivotNext++ % 16u];
-    slot = Halo2VehicleCameraPivot{};
-    slot.identity = key.identity;
-    slot.seat = static_cast<int16_t>(key.seatIndex);
-    slot.mounted = key.mounted;
-    slot.parent = static_cast<uint32_t>(key.vehicle);
-    return &slot;
-}
-
-// The game's own pivot point, newly answered by the first-person evaluator for this seat, onto the seat's object.
-void Halo2VehicleCameraNotePivot(const Halo2VehicleCameraSeatSample& sample, const VehicleCameraSeatKey& key,
-                                 const float seatOrigin[3], const vehicle_camera_frame::Basis& seatFrame)
-{
-    NativeVehicleSeatPoint native{};
-    if (!NativeVehicleFirstPerson_Halo2NativePoint(native) || native.us == g_halo2VehicleCameraPivotSeenUs ||
-        native.generation != sample.generation || native.parent != sample.parent || native.seat != sample.seat ||
-        !vehicle_camera_place::Finite3(native.point))
-        return;
-    g_halo2VehicleCameraPivotSeenUs = native.us;
-    float local[3];
-    Halo2VehicleCameraToLocal(seatOrigin, seatFrame, native.point, local);
-    // A point further from the seat's object than its own size and a margin is not its seat's camera marker.
-    const float reach = (sample.radius > 0.0f ? sample.radius : 1.0f) + 2.0f;
-    if (!vehicle_camera_place::Finite3(local) || vehicle_camera_frame::Dot(local, local) > reach * reach)
-        return;
-    // Eased in: the marker is fixed on its object, so a sample asked at another moment of the tick than the drawn
-    // frame's (a fire's own ask is inside a tick) only wobbles about the point, and the mean is the point.
-    if (Halo2VehicleCameraPivot* pivot = Halo2VehicleCameraFindPivot(key, true))
-    {
-        for (int axis = 0; axis < 3; ++axis)
-            pivot->local[axis] = pivot->valid ? pivot->local[axis] + (local[axis] - pivot->local[axis]) * 0.1f
-                                              : local[axis];
-        pivot->valid = true;
-    }
-}
-
-// THE GAME'S OWN THIRD-PERSON CAMERA in the seat, as last measured (observer thread): its distance from its pivot and
-// its height above it, taken while it looked within about 15 degrees of level where it has (else at any look), as the
-// furthest it stood -- the game pulls its camera in from walls and through its change of view. Reach's measurement
-// (ReachVehicleCameraRest), on Halo 2's pivot.
-struct Halo2VehicleCameraRest
-{
-    VehicleCameraSeatKey seat{};
-    float distance = 0.0f;
-    float rise = 0.0f;
-    bool level = false;
-    uint32_t waited = 0;
-};
-Halo2VehicleCameraRest g_halo2VehicleCameraRest;
-inline constexpr float kHalo2RestKnownWu = 0.25f; // nearer than this the game's camera is still the seat's own view
-inline constexpr float kHalo2RestFurthestWu = 8.0f;
-// Placements asked for once the game's own camera is its own before the stand-in is used: the observer places about
-// twice a rendered frame, so about 45 frames, as Reach waits.
-inline constexpr uint32_t kHalo2RestWaitFrames = 90;
-inline constexpr float kHalo2RestLevelSin = 0.26f;
-
 vehicle_camera_place::State g_halo2VehicleCameraState;  // observer thread
 vehicle_camera_place::LagState g_halo2VehicleCameraLag; // observer thread
 LARGE_INTEGER g_halo2VehicleCameraLagAt{};              // observer thread
@@ -410,99 +252,28 @@ float g_halo2VehicleCameraReach = 1.0f;      // observer thread
 LARGE_INTEGER g_halo2VehicleCameraReachAt{}; // observer thread
 inline constexpr float kHalo2CameraReleasePerSecond = 1.5f;
 
-// Fills `in` with the game's camera's place for a "thirdperson" camera. False: not known YET (the frame keeps the
-// view as the game gives it: its own third-person camera once the override has stood down). True with in.restValid
-// false: it could not be read, and the mod's stand-in applies.
-bool Halo2VehicleCameraRestPlace(const Halo2VehicleCameraSeatSample& sample, const VehicleCameraSeatKey& key,
-                                 const vehicle_camera_select::ActiveCamera& camera, const float pivot[3],
-                                 vehicle_camera_place::Inputs& in)
+// "thirdperson" (observer thread): an orbit of the vehicle's origin at the mod's stand-in distance for its size, on the
+// shared boom (vehicle_cameras.inl): the cold worker's publication for this seat and camera -- starting at the
+// player's kept angle, else the file's "boomPitch", else the boom's own default -- or, until one comes, the stand-in
+// orbit over the same range. The right stick raises and lowers it.
+void Halo2VehicleCameraOrbitPlace(const VehicleCameraSeatKey& key, const vehicle_camera_select::ActiveCamera& camera,
+                                  vehicle_camera_place::Inputs& in)
 {
-    Halo2VehicleCameraRest& rest = g_halo2VehicleCameraRest;
-    if (!(rest.seat == key))
-    {
-        rest = {};
-        rest.seat = key;
-        Halo2VehicleCameraLevelStore(key, vehicle_boom::kBoomPitchUnset);
-        Halo2VehicleCameraOrbitCheck& check = g_halo2VehicleCameraOrbit;
-        check.seq.fetch_add(1, std::memory_order_acq_rel);
-        check.samples = 0;
-        check.seq.fetch_add(1, std::memory_order_release);
-    }
-    const float radiusWu = std::isfinite(in.vehicleRadiusCm) && in.vehicleRadiusCm > 0.0f
-        ? in.vehicleRadiusCm * vehicle_camera_frame::kWorldUnitsPerCm : 0.0f;
-    const float furthestWu = 4.0f * radiusWu > kHalo2RestFurthestWu ? 4.0f * radiusWu : kHalo2RestFurthestWu;
-    // The game's own camera is the stock one only while the first-person override has stood down for the seat.
-    float at[3]{}, looks[3]{};
-    memcpy(at, sample.stockPosition, sizeof(at));
-    memcpy(looks, sample.stockForward, sizeof(looks));
-    const bool gameCamera = !NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo2, sample.parent, sample.seat);
-    const bool observed = pivot && gameCamera && vehicle_camera_place::Finite3(at) &&
-                          vehicle_camera_place::Finite3(looks) && vehicle_camera_frame::Normalize(looks);
-    if (observed)
-    {
-        const float stood[3] = {at[0] - pivot[0], at[1] - pivot[1], at[2] - pivot[2]};
-        const float distance = sqrtf(vehicle_camera_frame::Dot(stood, stood));
-        const float lookUp = vehicle_camera_frame::Dot(looks, in.vehicle.up);
-        const float lookDeg =
-            std::isfinite(lookUp) ? asinf(lookUp < -1.0f ? -1.0f : (lookUp > 1.0f ? 1.0f : lookUp)) * 57.29578f : 0.0f;
-        const bool usable = std::isfinite(distance) && distance >= kHalo2RestKnownWu && distance <= furthestWu &&
-                            std::isfinite(lookUp);
-        // THE ORBIT'S CHECK, for the log on leaving the seat: how near and how far the game's camera stood from the
-        // pivot over the looks it was seen at. An orbit of that pivot keeps the two close.
-        if (usable)
-            Halo2VehicleCameraOrbitNote(distance, lookDeg);
-        const bool level = std::fabs(lookUp) <= kHalo2RestLevelSin;
-        const bool take =
-            usable && (level ? (!rest.level || distance > rest.distance) : (!rest.level && distance > rest.distance));
-        if (take)
-        {
-            rest.distance = distance;
-            rest.rise = vehicle_camera_frame::Dot(stood, in.vehicle.up);
-            rest.level = level;
-            if (level)
-            {
-                const float levelDeg = halo2_vehicle_camera::OrbitLevelElevationDeg(rest.rise, distance, lookDeg);
-                // A degree either way is the measurement's own wobble: only a move of two restarts the boom.
-                const float published = g_halo2VehicleCameraLevel.deg;
-                if (vehicle_boom::BoomPitchSet(levelDeg) &&
-                    (!vehicle_boom::BoomPitchSet(published) || std::fabs(levelDeg - published) >= 2.0f))
-                    Halo2VehicleCameraLevelStore(key, levelDeg);
-            }
-            g_halo2VehicleCameraRestRiseWu.store(rest.rise, std::memory_order_relaxed);
-            g_halo2VehicleCameraRestPitchDeg.store(lookDeg, std::memory_order_relaxed);
-        }
-    }
-    // THE BOOM (vehicle_cameras.inl's shared boom, which this thread runs in Halo 2 as Halo 3's camera thread does
-    // there): the cold worker's publication for this seat and camera -- an orbit of the pivot over Halo 2's own range
-    // (halo2_vehicle_camera::BoomRange), starting at the player's kept angle, else the file's "boomPitch", else the
-    // game's level view a little higher -- or, until one comes, the stand-in orbit over the same range. The right
-    // stick raises and lowers it.
+    float behindCm = 0.0f, aboveCm = 0.0f;
+    vehicle_camera_place::StandInOffsetCm(in.vehicleRadiusCm, behindCm, aboveCm);
+    const float distanceCm = sqrtf(behindCm * behindCm + aboveCm * aboveCm);
     Halo3BoomTake(key, camera.camera);
     Halo3BoomCamera& boom = g_halo3BoomCamera;
-    if (!boom.held && !boom.local && rest.waited >= kHalo2RestWaitFrames)
+    if (!boom.held && !boom.local)
         Halo3BoomStandIn(halo2_vehicle_camera::BoomRange());
-    if (pivot && rest.distance >= kHalo2RestKnownWu && (boom.held || boom.local))
-    {
-        Halo3BoomStep();
-        const float stood[3] = {0.0f, 0.0f, 0.0f}, unused[3] = {0.0f, 0.0f, 0.0f};
-        Halo3BoomPublishCurrent(false, stood, unused);
-        vehicle_boom::Offset(boom.shape, boom.pitch, rest.distance, in.restOffset);
-        g_vehicleBoomLiveMs.store(GetTickCount64(), std::memory_order_release);
-        in.restValid = true;
-        memcpy(in.rest, pivot, sizeof(in.rest));
-        g_halo2VehicleCameraRestWu.store(rest.distance, std::memory_order_relaxed);
-        return true;
-    }
-    // Waited out only while the game's camera is its own: the first-person view stays the seat's for a moment after
-    // the override stands down.
-    if (rest.waited < kHalo2RestWaitFrames)
-    {
-        if (gameCamera)
-            ++rest.waited;
-        return false;
-    }
-    in.restValid = false;
-    return true;
+    Halo3BoomStep();
+    const float stood[3] = {0.0f, 0.0f, 0.0f}, unused[3] = {0.0f, 0.0f, 0.0f};
+    Halo3BoomPublishCurrent(false, stood, unused);
+    vehicle_boom::Offset(boom.shape, boom.pitch, distanceCm * vehicle_camera_frame::kWorldUnitsPerCm, in.restOffset);
+    g_vehicleBoomLiveMs.store(GetTickCount64(), std::memory_order_release);
+    memcpy(in.rest, in.vehicleOrigin, sizeof(in.rest));
+    in.restValid = true;
+    g_halo2VehicleCameraOrbitCm.store(distanceCm, std::memory_order_relaxed);
 }
 
 // Observer thread, once a frame of a seat: where the chosen chase camera stands. False: none is chosen for this seat,
@@ -566,39 +337,7 @@ bool Halo2VehicleCameraPlace(const Halo2VehicleCameraSeatSample& sample, const V
     in.viewYaw = viewYaw;
 
     if (camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::ThirdPerson))
-    {
-        // THE PIVOT: the game's own, kept for this kind of seat, on the seat's object as drawn; else the seat's point.
-        float pivot[3]{};
-        const float* pivotUsed = nullptr;
-        if (const Halo2VehicleCameraPivot* kept = Halo2VehicleCameraFindPivot(key, false))
-        {
-            Halo2VehicleCameraToWorld(seatOrigin, seatFrame, kept->local, pivot);
-            pivotUsed = pivot;
-            g_halo2VehicleCameraPivotSource.store(1, std::memory_order_relaxed);
-        }
-        else if (in.seatValid)
-        {
-            memcpy(pivot, in.seat, sizeof(pivot));
-            pivotUsed = pivot;
-            g_halo2VehicleCameraPivotSource.store(2, std::memory_order_relaxed);
-        }
-        if (pivotUsed)
-        {
-            float fromVehicle[3];
-            Halo2VehicleCameraToLocal(in.vehicleOrigin, in.vehicle, pivotUsed, fromVehicle);
-            g_halo2VehicleCameraPivotUpWu.store(fromVehicle[2], std::memory_order_relaxed);
-            if (headPoint)
-            {
-                const float apart[3]{pivotUsed[0] - headPoint[0], pivotUsed[1] - headPoint[1],
-                                     pivotUsed[2] - headPoint[2]};
-                g_halo2VehicleCameraPivotHeadCm.store(sqrtf(vehicle_camera_frame::Dot(apart, apart)) /
-                                                          vehicle_camera_frame::kWorldUnitsPerCm,
-                                                      std::memory_order_relaxed);
-            }
-        }
-        if (!Halo2VehicleCameraRestPlace(sample, key, camera, pivotUsed, in))
-            return false;
-    }
+        Halo2VehicleCameraOrbitPlace(key, camera, in);
 
     float point[3];
     vehicle_camera_place::Placed placed;
@@ -718,9 +457,6 @@ bool Halo2VehicleCamerasPlace(const Halo2VehicleCameraSeatSample& sample, float 
         g_halo2VehicleCameraFrameMisses.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    // The game's own pivot, while the first-person evaluator answers it (the seat view is first person).
-    Halo2VehicleCameraNotePivot(sample, key, seatOrigin, seatFrame);
-
     // The occupant's head, and the seat's point it settles into.
     NativeVehicleCameraOwner owner{sample.generation, sample.unit, sample.parent, sample.seat, 0, sample.identity,
                                    sample.root};
@@ -944,8 +680,7 @@ std::string Halo2VehicleCameraNotApplied(const vehicle_camera_select::ActiveCame
 void Halo2VehicleCamerasColdLog(bool seated)
 {
     static bool standInLogged = false, noTraceLogged = false, nudgeRefusedLogged = false, frameMissLogged = false;
-    static uint32_t pivotSourceLogged = 0;
-    static float restLoggedWu = 0.0f, restSeenWu = 0.0f;
+    static float orbitLoggedCm = 0.0f;
     static uint32_t trailStint = 0, headMissStint = 0, heldStint = 0, tracedStint = 0;
     static uint32_t ringStint = 0, ringTracedStint = 0;
     ringStint += g_halo2VehicleAimMarkerFrames.exchange(0, std::memory_order_relaxed);
@@ -1013,34 +748,10 @@ void Halo2VehicleCamerasColdLog(bool seated)
                 "and was left at %.1f deg (kept for that seat and camera)",
                 static_cast<double>(boomLowDeg), static_cast<double>(boomHighDeg), static_cast<double>(boomLastDeg));
         boomSeen = false;
-        // The orbit's check: a camera that orbits the pivot stands about as far from it at every look.
-        const Halo2VehicleCameraOrbitCheck& check = g_halo2VehicleCameraOrbit;
-        for (int attempt = 0; attempt < 3; ++attempt)
-        {
-            const uint32_t before = check.seq.load(std::memory_order_acquire);
-            if (before & 1u)
-                continue;
-            const uint32_t samples = check.samples;
-            const float nearCm = check.nearCm, farCm = check.farCm, lowDeg = check.lowDeg, highDeg = check.highDeg;
-            std::atomic_thread_fence(std::memory_order_acquire);
-            if (check.seq.load(std::memory_order_relaxed) != before)
-                continue;
-            static uint32_t loggedSamples = 0;
-            if (samples && samples != loggedSamples)
-            {
-                loggedSamples = samples;
-                LOG("Vehicle cameras (Halo 2): in that seat the game's own camera stood %.0f to %.0f cm from its "
-                    "pivot over %u frames, looking from %.1f to %.1f deg (an orbit of the pivot keeps the two close)",
-                    static_cast<double>(nearCm), static_cast<double>(farCm), samples, static_cast<double>(lowDeg),
-                    static_cast<double>(highDeg));
-            }
-            break;
-        }
         trailStint = headMissStint = heldStint = tracedStint = 0;
         standInLogged = noTraceLogged = nudgeRefusedLogged = frameMissLogged = false;
-        pivotSourceLogged = 0;
-        restLoggedWu = restSeenWu = 0.0f;
-        g_halo2VehicleCameraRestWu.store(0.0f, std::memory_order_relaxed);
+        orbitLoggedCm = 0.0f;
+        g_halo2VehicleCameraOrbitCm.store(0.0f, std::memory_order_relaxed);
         return;
     }
     if (standIn && !standInLogged)
@@ -1049,39 +760,18 @@ void Halo2VehicleCamerasColdLog(bool seated)
         float behindCm = 0.0f, aboveCm = 0.0f;
         vehicle_camera_place::StandInOffsetCm(g_halo2VehicleCameraRadiusCm.load(std::memory_order_relaxed), behindCm,
                                               aboveCm);
-        LOG("Vehicle cameras (Halo 2): where the game's own third-person camera rests could not be read for this seat, "
-            "so the camera stands %.0f cm behind and %.0f cm above the vehicle's origin instead",
+        LOG("Vehicle cameras (Halo 2): the third-person camera's orbit could not be laid out for this seat, so it "
+            "stands %.0f cm behind and %.0f cm above the vehicle's origin instead",
             static_cast<double>(behindCm), static_cast<double>(aboveCm));
     }
-    const uint32_t pivotSource = g_halo2VehicleCameraPivotSource.load(std::memory_order_relaxed);
-    if (frames && pivotSource && pivotSource != pivotSourceLogged)
+    const float orbitCm = g_halo2VehicleCameraOrbitCm.load(std::memory_order_relaxed);
+    if (frames && orbitCm > 0.0f && orbitCm != orbitLoggedCm)
     {
-        pivotSourceLogged = pivotSource;
-        if (pivotSource == 1)
-            LOG("Vehicle cameras (Halo 2): the third-person camera turns about the game's own pivot for this seat (its "
-                "camera marker, read in the seat view), %.0f cm from the occupant's head and %.0f cm above the "
-                "vehicle's origin",
-                static_cast<double>(g_halo2VehicleCameraPivotHeadCm.load(std::memory_order_relaxed)),
-                static_cast<double>(g_halo2VehicleCameraPivotUpWu.load(std::memory_order_relaxed) /
-                                    vehicle_camera_frame::kWorldUnitsPerCm));
-        else
-            LOG("Vehicle cameras (Halo 2): the game's own pivot for this seat has not been read yet (it is, in the seat "
-                "view), so the third-person camera turns about the occupant's head for now");
-    }
-    const float restWu = g_halo2VehicleCameraRestWu.load(std::memory_order_relaxed);
-    const bool settled = restWu == restSeenWu;
-    restSeenWu = restWu;
-    if (frames && restWu > 0.0f && settled && restWu > restLoggedWu * 1.1f)
-    {
-        restLoggedWu = restWu;
-        LOG("Vehicle cameras (Halo 2): the game's own third-person camera rests %.2f world units (%.0f cm) from its "
-            "pivot in this seat, %.0f cm of that above the pivot (it looked %.1f deg up), and the pivot is %.0f cm "
-            "above the vehicle's origin",
-            static_cast<double>(restWu), static_cast<double>(restWu / vehicle_camera_frame::kWorldUnitsPerCm),
-            static_cast<double>(g_halo2VehicleCameraRestRiseWu.load(std::memory_order_relaxed) /
-                                vehicle_camera_frame::kWorldUnitsPerCm),
-            static_cast<double>(g_halo2VehicleCameraRestPitchDeg.load(std::memory_order_relaxed)),
-            static_cast<double>(g_halo2VehicleCameraPivotUpWu.load(std::memory_order_relaxed) /
-                                vehicle_camera_frame::kWorldUnitsPerCm));
+        orbitLoggedCm = orbitCm;
+        LOG("Vehicle cameras (Halo 2): the third-person camera orbits the vehicle's origin %.0f cm out (the mod's "
+            "stand-in for a vehicle %.0f cm across: Halo 2's own third-person camera is not shown in a seat view, so "
+            "where it would stand is not measured)",
+            static_cast<double>(orbitCm),
+            static_cast<double>(2.0f * g_halo2VehicleCameraRadiusCm.load(std::memory_order_relaxed)));
     }
 }
