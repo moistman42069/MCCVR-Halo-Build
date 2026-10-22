@@ -395,7 +395,8 @@ bool Halo3VehicleCameraViewTurn(bool& yaw, bool& pitch)
 }
 
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
-bool ReachVehicleCameraFollowWanted(); // reach_vehicle_cameras.inl
+bool ReachVehicleCameraFollowWanted();       // reach_vehicle_cameras.inl
+float ReachVehicleCameraLevelElevationDeg(); // reach_vehicle_cameras.inl
 #endif
 
 // Whether a chosen chase camera turns the view with the hull in the seat the player is in: the shared follow
@@ -1250,6 +1251,7 @@ struct VehicleCameraRuntime
         uint32_t definitionIndex = 0xFFFFFFFFu;
         uint32_t generation = 0; // the game side's (halo3_vehicle_boom.inl)
         float fileDegrees = vehicle_camera_file::kBoomPitchUnset;
+        float measuredDeg = vehicle_boom::kBoomPitchUnset; // Reach: the game's camera's level elevation, measured
         uint32_t serial = 0, startSerial = 0;
         float start = 0.0f, home = 0.0f;
         vehicle_boom::Shape shape{};
@@ -1391,7 +1393,14 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
         reachTitle ? r.seat.generation : g_halo3VehicleBoom.generation.load(std::memory_order_acquire);
     const bool newCamera = !b.published || !(b.seat == r.seat) || b.camera != active.camera ||
                            b.definitionIndex != definitionIndex || b.generation != generation;
-    const bool newStart = newCamera || b.fileDegrees != active.boomPitchDeg;
+    // Reach has no track to say where the game's camera stands looking level: the render thread measures it (whole
+    // degrees), and the boom starts from it once known -- moved only while the player has not moved the boom.
+    float measuredDeg = vehicle_boom::kBoomPitchUnset;
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+    if (reachTitle)
+        measuredDeg = ReachVehicleCameraLevelElevationDeg();
+#endif
+    const bool newStart = newCamera || b.fileDegrees != active.boomPitchDeg || b.measuredDeg != measuredDeg;
     if (newStart)
     {
         if (newCamera)
@@ -1420,7 +1429,11 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
             }
         }
         b.fileDegrees = active.boomPitchDeg;
-        b.home = vehicle_boom::PitchForElevation(b.shape, vehicle_boom::DefaultElevation(b.shape, b.fileDegrees));
+        b.measuredDeg = measuredDeg;
+        const float homeDeg = vehicle_camera_file::BoomPitchSet(b.fileDegrees) ? b.fileDegrees
+                            : vehicle_boom::BoomPitchSet(measuredDeg)       ? measuredDeg + vehicle_boom::kDefaultRaiseDeg
+                                                                             : vehicle_boom::kBoomPitchUnset;
+        b.home = vehicle_boom::PitchForElevation(b.shape, vehicle_boom::DefaultElevation(b.shape, homeDeg));
         float kept = 0.0f;
         const bool remembered = r.selector.BoomPitch(kept);
         // A new camera starts where the player left it, else at its own start. A camera file edited while seated

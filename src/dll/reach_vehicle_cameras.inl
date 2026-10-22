@@ -197,6 +197,15 @@ std::atomic<float> g_reachVehicleCameraRestWu{0.0f};    // the game's camera's r
 std::atomic<float> g_reachVehicleCameraRestRiseWu{0.0f}; // of it, the height above its pivot
 std::atomic<float> g_reachVehicleCameraRestPitchDeg{0.0f};
 std::atomic<float> g_reachVehicleCameraPivotUpWu{0.0f}; // the pivot's height above the vehicle's origin
+// Where the game's own camera stands looking level, as an elevation above level from its pivot in whole degrees, for
+// the boom's start (vehicle_cameras.inl's VehicleBoomColdTick); unset until the seat's camera has been seen looking
+// level. Render thread writes, cold worker reads.
+std::atomic<float> g_reachVehicleCameraLevelDeg{vehicle_boom::kBoomPitchUnset};
+
+float ReachVehicleCameraLevelElevationDeg()
+{
+    return g_reachVehicleCameraLevelDeg.load(std::memory_order_acquire);
+}
 
 vehicle_camera_place::State g_reachVehicleCameraState;  // render thread
 vehicle_camera_place::LagState g_reachVehicleCameraLag; // render thread
@@ -318,6 +327,7 @@ bool ReachVehicleCameraRestPlace(const ReachVehicleFrame& frame, const VehicleCa
     {
         rest = {};
         rest.seat = seat;
+        g_reachVehicleCameraLevelDeg.store(vehicle_boom::kBoomPitchUnset, std::memory_order_release);
         ReachVehicleCameraOrbitCheck& check = g_reachVehicleCameraOrbit;
         check.seq.fetch_add(1, std::memory_order_acq_rel);
         check.samples = 0;
@@ -361,6 +371,9 @@ bool ReachVehicleCameraRestPlace(const ReachVehicleFrame& frame, const VehicleCa
             rest.distance = distance;
             rest.rise = vehicle_camera_frame::Dot(stood, in.vehicle.up);
             rest.level = level;
+            if (level && distance > 1.0e-3f && std::fabs(rest.rise) <= distance)
+                g_reachVehicleCameraLevelDeg.store(std::round(asinf(rest.rise / distance) * 57.29578f),
+                                                   std::memory_order_release);
             g_reachVehicleCameraRestRiseWu.store(rest.rise, std::memory_order_relaxed);
             g_reachVehicleCameraRestPitchDeg.store(
                 asinf(lookUp < -1.0f ? -1.0f : (lookUp > 1.0f ? 1.0f : lookUp)) * 57.29578f, std::memory_order_relaxed);
