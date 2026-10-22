@@ -64,11 +64,11 @@ inline constexpr bool WheelSeat(OdstVehicleId id, int seatIndex, bool onCarrier)
 // Halo 3's, whose generations count from the same start.
 inline constexpr uint8_t kSeatKeyTitle = 1;
 
-// THE BOOM'S RANGE in ODST, as look pitches for vehicle_boom's orbit (the camera's elevation is minus the pitch).
-// ODST's seats carry Halo 3's camera tracks, but halo3odst.dll's following camera is not bound, so its boom is an
-// orbit of the game's pivot; over the whole flat look range an orbit stands the camera straight above the vehicle or
-// under the ground (measured in Reach, whose boom is the same orbit). Held between 10 deg below and 60 deg above
-// level, Reach's measured range.
+// THE BOOM'S RANGE in ODST where its orbit stands in, as look pitches for vehicle_boom's orbit (the camera's
+// elevation is minus the pitch). ODST's boom follows the seat's own camera track where halo3odst.dll's seat camera and
+// track are proven and the seat's track reads; otherwise it orbits the game's pivot, and over the whole flat look
+// range an orbit stands the camera straight above the vehicle or under the ground (measured in Reach, whose boom is
+// the same orbit). Held between 10 deg below and 60 deg above level, Reach's measured range.
 inline constexpr float kBoomLowestDeg = -10.0f;
 inline constexpr float kBoomHighestDeg = 60.0f;
 inline vehicle_boom::Range BoomRange() noexcept

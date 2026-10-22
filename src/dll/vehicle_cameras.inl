@@ -29,6 +29,14 @@
 // auto-add, buttons and boom; Reach's render thread publishes the seat it samples and moves the seat's eye, and the
 // note goes to the mod's panel. Not in Reach yet: the glass and body keys, Stick control, a marker origin.
 //
+// ODST (game.cpp's ODST seat block; halo3_vehicle_boom.inl and halo3_hud_note.inl for its boom and note): Halo 3's
+// engine, so its seats run on Halo 3's code here, with the file's "odst" section. LegacyReadSeat hands the ODST seat
+// over in Halo 3's snapshot shape, keyed apart from Halo 3's seats by VehicleCameraSeatKey::title. Under a chase
+// camera ODST's sampler gives the seat's first-person flag back, so the game draws the player's character from its
+// own third-person camera. The boom reads ODST's own seat camera and track, and the note goes to ODST's HUD
+// messages. Not in ODST yet: the glass and body keys, Stick control, the boom's inversion from the game's setting
+// (OdstVehicleCameraNotApplied lists what a chosen camera asks for that is not applied).
+//
 // THE THIRD-PERSON BOOM (vehicle_boom_logic.h; halo3_vehicle_boom.inl reads the game's side). A camera of origin
 // "thirdperson" stands where the game's own third-person camera would stand at a look pitch of the boom's own --
 // never the aim's. The cold worker works out the seat's shape (the game's camera track across the flat game's look
@@ -433,8 +441,9 @@ bool Halo3VehicleCameraSelected(vehicle_camera_select::ActiveCamera& camera, Leg
     return key == chosenFor;
 }
 
-// The seat sampler's question: is this seat shown from a chase camera? It is from the moment one is chosen, so
-// the game's director is already drawing the seat in third person when the camera is first placed.
+// Is the seat the player is in shown from a chase camera? It is from the moment one is chosen, so the game is already
+// drawing the seat in third person when the camera is first placed. Halo 3's seat sampler asks it (ODST's asks
+// VehicleCameraChaseChosenFor with the seat it samples); any thread.
 bool Halo3VehicleCameraThirdPerson()
 {
     vehicle_camera_select::ActiveCamera camera;
@@ -463,7 +472,7 @@ bool ReachVehicleCameraLevelElevationDeg(const VehicleCameraSeatKey& seat, float
 #endif
 
 // Whether a chosen chase camera turns the view with the hull in the seat the player is in: the shared follow
-// reader's master gate (Halo3ReadRollStableFollow), in Halo 3 and in Reach.
+// reader's master gate (Halo3ReadRollStableFollow), in Halo 3, ODST and Reach.
 bool Halo3VehicleCameraFollowWanted()
 {
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
