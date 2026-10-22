@@ -840,7 +840,8 @@ struct Config
     // aims nothing (Motion, the wheel), the way the flat game's stick moves its camera, inside the range the game
     // gives the look. vehicle_boom_rate_deg_s: degrees of look a second at full push (5 to 360). vehicle_boom_invert:
     // -1 = as the game's own look inversion (its flight inversion for an aircraft's pilot; not inverted where it
-    // cannot be read), 0 = not inverted, 1 = inverted. Halo 3 for now. Live.
+    // cannot be read), 0 = not inverted, 1 = inverted. Halo 3, ODST and Reach (Reach's own inversion is not read).
+    // Live.
     float vehicle_boom_rate_deg_s = 60.0f;
     int vehicle_boom_invert = -1;
     float vehicle_wheel_max_deg = 75.0f;      // wheel angle at full lock

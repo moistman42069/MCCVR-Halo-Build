@@ -695,8 +695,9 @@ inline constexpr uintptr_t kOdstBuilderPitchOffset = 0x544;
 
 Halo3VehicleBoomBinding g_odstVehicleBoom;
 
-// At ODST's install, after its tag tables are resolved (ResolveOdstVehicleBinding): the seat camera, its look range
-// and its track, as BindHalo3VehicleBoom proves Halo 3's. Each part not proven is unbound on its own and says so.
+// At ODST's install, after its tag tables are resolved (ResolveOdstVehicleBinding): the seat camera, its look range,
+// its track, and the look inversion with the pilot test, as BindHalo3VehicleBoom proves Halo 3's. Each part not
+// proven is unbound on its own and says so.
 void BindOdstVehicleBoom(uintptr_t base, size_t size, uint32_t generation)
 {
     Halo3VehicleBoomBinding& boom = g_odstVehicleBoom;
