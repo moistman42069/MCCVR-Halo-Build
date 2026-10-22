@@ -202,6 +202,24 @@ vehicle_camera_place::State g_reachVehicleCameraState;  // render thread
 vehicle_camera_place::LagState g_reachVehicleCameraLag; // render thread
 LARGE_INTEGER g_reachVehicleCameraLagAt{};              // render thread
 
+// This frame's placement, for the leash on the head (ReachVehicleCameraLeashHead), later in the same frame on the
+// same thread: ReachApplyHeadLook builds the head-centre camera after the pass.
+struct ReachVehicleCameraPassRecord
+{
+    bool placed = false;
+    vehicle_camera_select::ActiveCamera camera{};
+    vehicle_camera_place::Placed where{};
+};
+ReachVehicleCameraPassRecord g_reachVehicleCameraPass; // render thread
+
+// Render thread, in ReachApplyHeadLook: the player's head movement `head` (world units, added to the eye) held
+// inside the chase camera's leash. False when this frame placed no chase camera or the camera sets no leash.
+bool ReachVehicleCameraLeashHead(float head[3])
+{
+    const ReachVehicleCameraPassRecord& pass = g_reachVehicleCameraPass;
+    return pass.placed && vehicle_camera_place::LeashHead(pass.camera, pass.where, 1.0f, head);
+}
+
 // THE GAME'S OWN THIRD-PERSON CAMERA in the seat, as last measured (render thread): its distance from its pivot and
 // its height above it, taken while it looked within about 15 degrees of level where it has (else at any look), as
 // the furthest it stood -- the game pulls its camera in from walls and through a change of view. The pivot is kept
@@ -427,6 +445,9 @@ bool ReachVehicleCameraPlace(const ReachVehicleFrame& frame, const VehicleCamera
     }
     if (!vehicle_camera_place::Finite3(point))
         return false;
+    g_reachVehicleCameraPass.placed = true;
+    g_reachVehicleCameraPass.camera = camera;
+    g_reachVehicleCameraPass.where = placed;
     g_reachVehicleCameraFrames.fetch_add(1, std::memory_order_relaxed);
     if (g_reachVehicleCameraState.standIn)
         g_reachVehicleCameraStandInFrames.fetch_add(1, std::memory_order_relaxed);
@@ -438,6 +459,7 @@ bool ReachVehicleCameraPlace(const ReachVehicleFrame& frame, const VehicleCamera
 // camera is built from it. `stockCompact` is the frame's camera as the game computed it.
 void ReachVehicleCamerasPass(ReachVehicleFrame& frame, const unsigned char* stockCompact)
 {
+    g_reachVehicleCameraPass.placed = false;
     ReachVehicleCameraPublishSeat(frame);
     if (!frame.active)
         return;
@@ -538,8 +560,6 @@ std::string ReachVehicleCameraNotApplied(const vehicle_camera_select::ActiveCame
             add("an origin naming a marker (the vehicle's origin is used)");
         if (camera.collide)
             add("collide (the camera is not held short of walls)");
-        if (vehicle_camera_file::LeashSet(camera.leashMinCm) || vehicle_camera_file::LeashSet(camera.leashMaxCm))
-            add("the leash");
         if (camera.aimMarker)
             add("the aim ring");
     }

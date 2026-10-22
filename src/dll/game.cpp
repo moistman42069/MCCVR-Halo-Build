@@ -25274,6 +25274,7 @@ namespace
     std::atomic<uint32_t> g_reachCrouchLiftFrames{0};
     std::atomic<uint32_t> g_reachCrouchMaxLiftMm{0};
 
+    bool ReachVehicleCameraLeashHead(float head[3]); // reach_vehicle_cameras.inl
     bool ReachApplyHeadLook(
         unsigned char* cam, const ReachVrRenderSnapshot& tracking,
         const ReachVehicleFrame* vehicle,
@@ -25484,6 +25485,18 @@ namespace
             }
             ox = Clamp(ox, -1.5f, 1.5f); oy = Clamp(oy, -1.5f, 1.5f);
             oz = Clamp(oz, -1.5f, 1.5f);
+            // A chase camera of the vehicle camera file holds the head inside its own leash, so a lean cannot
+            // take the view through the hull (reach_vehicle_cameras.inl, placed earlier in this frame).
+            if (vehicle && vehicle->active)
+            {
+                float lean[3] = {ox, oy, oz};
+                if (ReachVehicleCameraLeashHead(lean))
+                {
+                    ox = lean[0];
+                    oy = lean[1];
+                    oz = lean[2];
+                }
+            }
             pos[0] += ox; pos[1] += oy; pos[2] += oz;
             // THE LEASH BELOW THE CHARACTER'S EYE (Halo: Campaign Evolved's heightleash). A physical
             // duck deeper than the character's own crouch took the view inside his chest and legs:
