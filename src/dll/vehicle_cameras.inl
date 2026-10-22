@@ -30,10 +30,10 @@
 // note goes to the mod's panel. Not in Reach yet: the glass and body keys, Stick control, a marker origin.
 //
 // HALO CE (haloce_vehicle_cameras.inl, right after this file): the same file (its "halo1" section), selection, seat
-// memory, auto-add, buttons and boom; a chase camera stands the game's own following camera at its place (the
-// director's camera on the game's thread), a firstperson camera's offset moves the first-person override's eye, and
-// the note goes to the mod's panel. Not in CE yet: the glass and body keys, eyeAdjust, the leash, the aim ring, Stick
-// and Wheel control, a marker origin.
+// memory, auto-add, buttons, the boom on the seat's own camera track, and the leash; a chase camera stands the game's
+// own following camera at its place (the director's camera on the game's thread), a firstperson camera's offset moves
+// the first-person override's eye, and the note goes to the mod's panel. Not in CE yet: the glass and body keys,
+// eyeAdjust, the aim ring, Stick and Wheel control, a marker origin.
 //
 // THE THIRD-PERSON BOOM (vehicle_boom_logic.h; halo3_vehicle_boom.inl reads the game's side). A camera of origin
 // "thirdperson" stands where the game's own third-person camera would stand at a look pitch of the boom's own --
