@@ -217,8 +217,12 @@ bool Halo3VehicleCameraEyeNudge(uint32_t generation, int32_t vehicle, int32_t se
     return VehicleCameraEyeNudgeFor(VehicleCameraSeatKey{generation, vehicle, seatIndex, identity, mounted}, outWu);
 }
 
-bool VehicleCameraRead(vehicle_camera_select::ActiveCamera& camera, VehicleCameraSeatKey& seat)
+// The chase camera chosen and the seat it is for. False when none is; `torn` (optional) is set when the answer is not
+// known: both reads found the publication mid-write.
+bool VehicleCameraRead(vehicle_camera_select::ActiveCamera& camera, VehicleCameraSeatKey& seat, bool* torn = nullptr)
 {
+    if (torn)
+        *torn = false;
     const VehicleCameraPublished& published = g_vehicleCameraPublished;
     if (!published.chase.load(std::memory_order_acquire))
         return false;
@@ -234,15 +238,18 @@ bool VehicleCameraRead(vehicle_camera_select::ActiveCamera& camera, VehicleCamer
             continue;
         return camera.valid && camera.chase;
     }
+    if (torn)
+        *torn = true;
     return false;
 }
 
-// A chase camera is chosen for exactly the seat `key` names. Any thread; one atomic load while none is.
-bool VehicleCameraChaseChosenFor(const VehicleCameraSeatKey& key)
+// A chase camera is chosen for exactly the seat `key` names. Any thread; one atomic load while none is. `torn` as
+// VehicleCameraRead's.
+bool VehicleCameraChaseChosenFor(const VehicleCameraSeatKey& key, bool* torn = nullptr)
 {
     vehicle_camera_select::ActiveCamera camera;
     VehicleCameraSeatKey chosenFor;
-    return VehicleCameraRead(camera, chosenFor) && chosenFor == key;
+    return VehicleCameraRead(camera, chosenFor, torn) && chosenFor == key;
 }
 
 // The menu's line: which camera is in use, or why none is. One writer (the cold worker).

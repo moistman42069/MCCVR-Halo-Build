@@ -15172,10 +15172,21 @@ namespace
 
         // A chase camera of the mod's own shows the seat from outside: the seat keeps the game's own third-person
         // camera (its first-person flag is not taken, or is given back), so the game draws the player's character,
-        // and that camera is where a "thirdperson" camera stands.
-        if (seated && !VehicleCameraChaseChosenFor(cameraKey))
+        // and that camera is where a "thirdperson" camera stands. A read that finds the publication mid-write twice
+        // keeps this seat's last answer, so the flag never flips for a frame. A seat the flag patch refused is left as
+        // it is: nothing of it was written, and its record of natively lacking the flag stays published for the
+        // aim frame (seat_aim_world_frame.inl).
+        static VehicleCameraSeatKey s_chaseSeat{}; // this sampler's thread only
+        static bool s_chaseShown = false;
+        bool chaseTorn = false;
+        bool chaseShown = seated && VehicleCameraChaseChosenFor(cameraKey, &chaseTorn);
+        if (chaseTorn)
+            chaseShown = s_chaseShown && s_chaseSeat == cameraKey;
+        s_chaseSeat = cameraKey;
+        s_chaseShown = chaseShown;
+        if (seated && !chaseShown)
             OdstEnsureFirstPersonSeatFlag(defIndex, seat, generation);
-        else
+        else if (!(seated && OdstSeatPatchRefused(defIndex, seat, generation)))
             OdstRestoreNativeSeatPatch();
 
         float cameraAnchor[3] = {};
