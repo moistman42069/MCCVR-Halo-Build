@@ -162,10 +162,11 @@ bool HaloCEVehicleCameraLevelElevationDeg(const VehicleCameraSeatKey& seat, floa
 }
 
 // THE LEASH of the camera last placed (Game_HaloCEVehicleCameraLeash): the game's thread writes it with every
-// placement, the render paths read it once a frame through the sequence. It holds only while a chase camera is chosen
-// and the player still sits in the seat it was placed for: after a step to the seat's own view, or out of the seat,
-// nothing places a camera to take it back, and a box laid around a chase camera's point must not hold a head that is
-// somewhere else.
+// placement, the render paths read it once a frame through the sequence. It holds only while the chase camera chosen
+// now is for the seat it was placed in, and only for a few frames after the last placement: after a step to the seat's
+// own view, or out of the seat, nothing places a camera to take it back, and a box laid around a chase camera's point
+// must not hold a head that is somewhere else. The render paths read only published records -- never the game's own
+// state -- so the check costs them no call into the game.
 struct HaloCEVehicleCameraLeashRecord
 {
     std::atomic<uint32_t> seq{0}; // even = stable
@@ -177,7 +178,7 @@ struct HaloCEVehicleCameraLeashRecord
     vehicle_camera_frame::LeashBox box{};
 };
 HaloCEVehicleCameraLeashRecord g_haloceVehicleCameraLeash;
-inline constexpr uint64_t kHaloCEVehicleCameraLeashFreshMs = 200;
+inline constexpr uint64_t kHaloCEVehicleCameraLeashFreshMs = 100; // placements come at the camera's own rate
 
 void HaloCEVehicleCameraLeashPublish(bool set, uint32_t generation, uint32_t parent, int16_t seat,
                                      const vehicle_camera_frame::Basis& carrier, const vehicle_camera_frame::LeashBox& box)
@@ -200,8 +201,10 @@ bool HaloCEVehicleCameraLeashRead(uint32_t generation, vehicle_camera_frame::Bas
                                   vehicle_camera_frame::LeashBox& box)
 {
     const HaloCEVehicleCameraLeashRecord& record = g_haloceVehicleCameraLeash;
-    if (!g_vehicleCameraPublished.chase.load(std::memory_order_acquire))
-        return false;
+    vehicle_camera_select::ActiveCamera chosen;
+    VehicleCameraSeatKey chosenFor;
+    if (!VehicleCameraRead(chosen, chosenFor))
+        return false; // one load while no chase camera is chosen
     for (int attempt = 0; attempt < 2; ++attempt)
     {
         const uint32_t before = record.seq.load(std::memory_order_acquire);
@@ -219,9 +222,7 @@ bool HaloCEVehicleCameraLeashRead(uint32_t generation, vehicle_camera_frame::Bas
         const uint64_t now = GetTickCount64();
         if (!set || at != generation || !ms || now < ms || now - ms > kHaloCEVehicleCameraLeashFreshMs)
             return false;
-        HaloCEVehicleSeatNow sitting{};
-        if (!HaloCEControls_ReadVehicleSeatNow(sitting) || sitting.generation != at || sitting.parent != parent ||
-            sitting.seat != seat)
+        if (chosenFor.generation != at || chosenFor.vehicle != static_cast<int32_t>(parent) || chosenFor.seatIndex != seat)
             return false;
         carrier = c;
         box = b;

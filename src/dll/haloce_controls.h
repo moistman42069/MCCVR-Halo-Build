@@ -106,8 +106,10 @@ float HaloCEControls_PhysicalCrouchCorrection(uint32_t generation,uint64_t epoch
     float physicalDown,bool allowed) noexcept;
 
 // THE SEAT THE LOCAL PLAYER SITS IN, for the vehicle cameras' cold worker (game.cpp haloce_vehicle_cameras.inl): what
-// the camera file names it by and the role it plays (haloce_vehicle_camera_logic.h). Read-only, guarded, any thread.
-// OnFoot: the player has no vehicle (or no unit). Unknown: not readable now (the caller keeps what it had).
+// the camera file names it by and the role it plays (haloce_vehicle_camera_logic.h). Guarded; the game's thread or
+// the cold worker. These seat reads write nothing of their own, but the player state they start from asks the game
+// for the player's perspective (state_user_perspective), which stores what it works out: keep them off the render
+// paths. OnFoot: the player has no vehicle (or no unit). Unknown: not readable now (the caller keeps what it had).
 enum class HaloCEVehicleSeatRead : uint8_t { OnFoot, Seated, Unknown };
 struct HaloCEVehicleSeatFacts
 {
@@ -123,7 +125,7 @@ struct HaloCEVehicleSeatFacts
 };
 HaloCEVehicleSeatRead HaloCEControls_ReadVehicleSeatFacts(HaloCEVehicleSeatFacts& facts) noexcept;
 // The same seat for a camera hook, every frame: who sits where, and the vehicle's size; no tag path, flags or
-// fingerprint. False on foot or when not readable. Read-only, guarded, any thread.
+// fingerprint. False on foot or when not readable. Guarded; the game's thread (see above).
 struct HaloCEVehicleSeatNow
 {
     uint32_t generation{},unit{0xffffffffu},parent{0xffffffffu},root{0xffffffffu},definition{0xffffffffu};
@@ -135,7 +137,7 @@ bool HaloCEControls_ReadVehicleSeatNow(HaloCEVehicleSeatNow& seat) noexcept;
 // following camera hangs its camera on in seat `seat` of the vehicle `parent`, as camera_track_splut picks it -- the
 // seat camera's first track, else the game globals' default. Positions and orientations of up to
 // vehicle_boom::kMaxTrackPoints control points; a track with more is read with track.count 0. False when the seat is
-// not readable now (another generation, the vehicle gone). Read-only, guarded, any thread.
+// not readable now (another generation, the vehicle gone). Guarded; the cold worker (it reads tags, not the player).
 struct HaloCEVehicleSeatTrack
 {
     // The seat camera's look limits (radians, up positive), both 0 = none of its own: the player's look pitch is held

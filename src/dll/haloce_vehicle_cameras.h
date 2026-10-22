@@ -58,10 +58,10 @@ bool Game_HaloCEChaseSeat(uint32_t unit) noexcept;
 bool Game_HaloCEEyeNudgeWorld(uint32_t generation,uint32_t parent,int16_t seat,float point[3]) noexcept;
 bool Game_HaloCEChasePlace(const HaloCEChaseFrame& frame,float out[3]) noexcept;
 bool Game_HaloCEVehicleCameraFollow(uint32_t generation,uint32_t parent,int16_t seat,bool& yaw) noexcept;
-// THE LEASH of the chase camera placed in the last 200 ms for this generation (haloce_vehicle_leash_logic.h): the frame
+// THE LEASH of the chase camera placed in the last 100 ms for this generation (haloce_vehicle_leash_logic.h): the frame
 // its offset is laid out in and the box the head stays inside, in world units around the camera's point. False while
-// no placed camera sets one, while no chase camera is chosen, and once the player no longer sits in the seat it was
-// placed for. Any thread (the render paths read it once a frame).
+// no placed camera sets one, and while the chase camera chosen now is not for the seat it was placed in. Any thread
+// (the render paths read it once a frame); it reads only published records, never the game's state.
 bool Game_HaloCEVehicleCameraLeash(uint32_t generation,vehicle_camera_frame::Basis& carrier,
     vehicle_camera_frame::LeashBox& box) noexcept;
 // A render path's frame whose reference the leash moved (one atomic add), for the seat's log line.
