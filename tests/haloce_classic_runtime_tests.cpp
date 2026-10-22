@@ -22,6 +22,9 @@ uint64_t Sight_NowUs() { static uint64_t now=1000000; return now+=1000; }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
 // No seat in this fixture: the tracking frame keeps the native camera heading.
 bool HaloCEControls_SeatHeading(uint32_t,halo_ce::Vec3&) noexcept { return false; }
+// The vehicle cameras' chase-camera leash (game.cpp): none placed in this fixture.
+bool Game_HaloCEVehicleCameraLeash(uint32_t,vehicle_camera_frame::Basis&,vehicle_camera_frame::LeashBox&) noexcept
+{ return false; }
 // The motion tracker's lane (haloce_head_relative.cpp) is not linked here: the gameplay publication hands it
 // the frame's head, counted so the Classic publication is seen to reach it.
 static unsigned headPublications{};

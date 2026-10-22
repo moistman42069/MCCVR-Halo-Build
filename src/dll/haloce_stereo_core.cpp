@@ -1,5 +1,7 @@
 #include "haloce_stereo_core.h"
 #include "haloce_controls.h"
+#include "haloce_vehicle_cameras.h"
+#include "../common/haloce_vehicle_leash_logic.h"
 #include "haloce_head_relative.h"
 #include "physical_crouch_camera.h"
 uint64_t VR_PhysicalCrouchEpoch() noexcept;
@@ -322,6 +324,15 @@ void ApplyPhysicalCrouchReference(const Tracking& tracking,Reference& frozen,
     if(std::isfinite(correction)&&correction>0&&correction<=std::max(0.f,down))
         frozen.position.y-=correction/scale;
 }
+// A CHASE CAMERA'S LEASH (haloce_vehicle_leash_logic.h): the vehicle cameras publish the box the head stays inside
+// with each placement; this frame's reference holds the head there. One read a frame; nothing while no camera sets one.
+void ApplyVehicleCameraLeash(const Camera& source,const Tracking& tracking,Reference& frozen,
+    float scale,bool positional) noexcept
+{
+    vehicle_camera_frame::Basis carrier{};vehicle_camera_frame::LeashBox box{};
+    if(!positional||!Game_HaloCEVehicleCameraLeash(frozen.generation,carrier,box))return;
+    (void)haloce_vehicle_leash::LeashReference(source,tracking,scale,positional,carrier,box,frozen);
+}
 #include "haloce_classic_runtime.inl"
 bool ReadAnniversaryNativeCenter(const SaberCamera& nativeCenter,Camera& center) noexcept
 {
@@ -353,11 +364,15 @@ void PublishAnniversaryGameplayContext(const SaberCamera& nativeCenter,
 void PrepareAnniversaryTrackingReference(BuildScope& scope,const SaberCamera& native) noexcept
 {
     Camera center{};
-    if(ReadAnniversaryNativeCenter(native,center))
+    const bool haveCenter=ReadAnniversaryNativeCenter(native,center);
+    if(haveCenter)
         FollowRoomscale(center,scope.views.tracking,scope.views.reference,
             scope.views.unitsPerMeter,scope.views.positional,scope.referenceRevision);
     ApplyPhysicalCrouchReference(scope.views.tracking,scope.views.reference,
         scope.views.unitsPerMeter,scope.views.positional);
+    if(haveCenter)
+        ApplyVehicleCameraLeash(center,scope.views.tracking,scope.views.reference,
+            scope.views.unitsPerMeter,scope.views.positional);
 }
 uintptr_t AppendBody(uintptr_t list,const SaberCamera* source,uint32_t flags,int32_t index,
     uint64_t a5,uint64_t a6,uint64_t a7,uint64_t a8,uint64_t a9,uint64_t a10,

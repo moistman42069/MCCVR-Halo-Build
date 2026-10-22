@@ -58346,6 +58346,12 @@ bool Game_HaloCEChasePlace(const HaloCEChaseFrame& frame, float out[3]) noexcept
     return HaloCEVehicleCameraPlace(frame, out);
 }
 
+bool Game_HaloCEVehicleCameraLeash(uint32_t generation, vehicle_camera_frame::Basis& carrier,
+                                   vehicle_camera_frame::LeashBox& box) noexcept
+{
+    return HaloCEVehicleCameraLeashRead(generation, carrier, box);
+}
+
 bool Game_HaloCEVehicleCameraFollow(uint32_t generation, uint32_t parent, int16_t seat, bool& yaw) noexcept
 {
     vehicle_camera_select::ActiveCamera camera;

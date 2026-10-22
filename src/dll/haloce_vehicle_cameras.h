@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include "../common/vehicle_camera_frame_logic.h"
 
 // THE VEHICLE CAMERAS IN HALO CE'S SEATS: the engine side (haloce_vehicle_cameras.cpp). A chase camera of the vehicle
 // camera file is placed in the game's own third-person camera: the director's following camera
@@ -52,3 +53,8 @@ bool Game_HaloCEChaseWanted(uint32_t generation,uint32_t parent,int16_t seat) no
 bool Game_HaloCEEyeNudgeWorld(uint32_t generation,uint32_t parent,int16_t seat,float point[3]) noexcept;
 bool Game_HaloCEChasePlace(const HaloCEChaseFrame& frame,float out[3]) noexcept;
 bool Game_HaloCEVehicleCameraFollow(uint32_t generation,uint32_t parent,int16_t seat,bool& yaw) noexcept;
+// THE LEASH of the chase camera placed in the last 200 ms for this generation (haloce_vehicle_leash_logic.h): the frame
+// its offset is laid out in and the box the head stays inside, in world units around the camera's point. False while
+// no placed camera sets one. Any thread (the render paths read it once a frame).
+bool Game_HaloCEVehicleCameraLeash(uint32_t generation,vehicle_camera_frame::Basis& carrier,
+    vehicle_camera_frame::LeashBox& box) noexcept;

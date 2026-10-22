@@ -7,6 +7,7 @@
 #include <string>
 
 #include "../src/common/haloce_vehicle_camera_logic.h"
+#include "../src/common/haloce_vehicle_leash_logic.h"
 
 using namespace haloce_vehicle_camera;
 using vehicle_camera_file::kSeatDriver;
@@ -138,12 +139,82 @@ static void TestBuiltInEntries()
     Check(seatFirst, "every halo1 entry starts in the seat view, then the game's own third person");
 }
 
+// The head's displacement from the camera's point in the world, as CE's BuildEye lays it.
+static bool HeadInWorld(const halo_ce::Camera& native, const halo_ce::Tracking& tracking,
+                        const halo_ce::Reference& reference, float unitsPerMeter, float out[3])
+{
+    halo_ce::Camera frame{};
+    halo_ce::Quat inverse{};
+    if (!halo_ce::BuildTrackingFrame(native, reference, frame, inverse))
+        return false;
+    const halo_ce::Vec3 world =
+        halo_ce::ToNative(frame, halo_ce::Rotate(inverse, tracking.headPosition - reference.position)) * unitsPerMeter;
+    out[0] = world.x;
+    out[1] = world.y;
+    out[2] = world.z;
+    return true;
+}
+
+static void TestLeash()
+{
+    using namespace halo_ce;
+    Camera native{};
+    native.position = {10, 20, 3};
+    native.forward = {0, 1, 0}; // the camera looks along world +Y
+    native.up = {0, 0, 1};
+    native.verticalFov = 1.2f;
+    native.viewport = {0, 0, 720, 1280};
+    native.window = native.viewport;
+    native.nearPlane = 0.01f;
+    native.farPlane = 1000;
+    Reference reference{};
+    reference.orientation = {0, 0, 0, 1};
+    Tracking tracking{};
+    tracking.headOrientation = {0, 0, 0, 1};
+    // Head moved half a metre to the room's right (+x) and 30 cm up (+y in tracking space).
+    tracking.headPosition = {0.5f, 0.3f, 0.0f};
+    const float upm = 0.328f; // world units per metre (1 wu = 3.048 m)
+    float before[3];
+    Check(HeadInWorld(native, tracking, reference, upm, before), "the head's place in the world reads");
+    // Looking along +Y, the room's right is world -X... whichever: the carrier frame below is the world's own.
+    const vehicle_camera_frame::Basis carrier = vehicle_camera_frame::FromAngles(0.0f, 0.0f, 0.0f);
+    // A box 10 cm each way on every axis around the camera's point.
+    const float leashMin[3] = {-10, -10, -10}, leashMax[3] = {10, 10, 10}, camera[3] = {0, 0, 0};
+    const vehicle_camera_frame::LeashBox box = vehicle_camera_frame::LeashToBasis(leashMin, leashMax, camera);
+    Reference leashed = reference;
+    Check(haloce_vehicle_leash::LeashReference(native, tracking, upm, true, carrier, box, leashed),
+          "a head outside the box moves the reference");
+    float after[3];
+    Check(HeadInWorld(native, tracking, leashed, upm, after), "and the head reads again");
+    const float limit = 10.0f / 304.8f + 1.0e-4f;
+    Check(std::fabs(after[0]) <= limit && std::fabs(after[1]) <= limit && std::fabs(after[2]) <= limit,
+          "the head then stands on the box's limits");
+    // An axis inside its limit keeps its value: a box wide along up keeps the head's rise.
+    const float tallMin[3] = {-10, -10, -1000}, tallMax[3] = {10, 10, 1000};
+    leashed = reference;
+    Check(haloce_vehicle_leash::LeashReference(native, tracking, upm, true, carrier,
+                                               vehicle_camera_frame::LeashToBasis(tallMin, tallMax, camera), leashed),
+          "a box wide along up still stops the sideways move");
+    Check(HeadInWorld(native, tracking, leashed, upm, after) && Near(after[2], before[2]),
+          "and leaves the rise as it was");
+    // Inside the box: nothing moves.
+    const float wideMin[3] = {-1000, -1000, -1000}, wideMax[3] = {1000, 1000, 1000};
+    leashed = reference;
+    Check(!haloce_vehicle_leash::LeashReference(native, tracking, upm, true, carrier,
+                                                vehicle_camera_frame::LeashToBasis(wideMin, wideMax, camera), leashed) &&
+              leashed.position.x == 0.0f && leashed.position.y == 0.0f,
+          "a head inside the box moves nothing");
+    Check(!haloce_vehicle_leash::LeashReference(native, tracking, upm, false, carrier, box, leashed),
+          "without positional tracking there is nothing to hold");
+}
+
 int main()
 {
     TestNames();
     TestRoles();
     TestGameCamera();
     TestBuiltInEntries();
+    TestLeash();
     std::printf("haloce vehicle camera tests: %u checks passed\n", g_checks);
     return 0;
 }

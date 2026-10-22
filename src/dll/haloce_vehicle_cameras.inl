@@ -15,14 +15,15 @@
 // camera) moves with it; the simulation's own camera (director_camera_deterministic, the line the game aims and fires
 // along) is the game's, as it is for a flat player in that seat. The camera's mode turns the view: its rotationTracking
 // yaw stands in for vehicle_view_follow in that seat (haloce_controls.cpp's turn). "collide" is traced with the sight
-// trace's own query on the game's thread (HaloCEContact_TraceSegment).
+// trace's own query on the game's thread (HaloCEContact_TraceSegment). The leash is published with each placement and
+// held by the render paths in the frame's tracking reference (haloce_vehicle_leash_logic.h).
 //
 // "thirdperson": the game's own camera is the following camera's command, before the hook moves it: the pivot it hangs
 // from (the seat camera's marker, as drawn) and where it stands from that pivot (haloce_vehicle_camera_logic.h
 // GameCameraFromPivot). Its distance gives the boom's; the boom then orbits the pivot at its own elevation along the
 // vehicle's heading (vehicle_boom_logic.h's orbit shape, CE's camera track not being read), as Reach's does.
 //
-// Not in CE: the leash, the aim ring, the glass and body keys, eyeAdjust (classic CE has no eye adaptation to hold),
+// Not in CE: the aim ring, the glass and body keys, eyeAdjust (classic CE has no eye adaptation to hold), pitch follow
 // and a marker origin. The readout says so for a camera that asks.
 
 // ---- the camera chosen for a seat ----------------------------------------------------------------------------------
@@ -151,6 +152,62 @@ bool HaloCEVehicleCameraLevelElevationDeg(const VehicleCameraSeatKey& seat, floa
         if (level.seq.load(std::memory_order_relaxed) != before)
             continue;
         deg = measuredIn == seat ? measured : vehicle_boom::kBoomPitchUnset;
+        return true;
+    }
+    return false;
+}
+
+// THE LEASH of the camera last placed (Game_HaloCEVehicleCameraLeash): the game's thread writes it with every
+// placement, the render paths read it once a frame through the sequence.
+struct HaloCEVehicleCameraLeashRecord
+{
+    std::atomic<uint32_t> seq{0}; // even = stable
+    std::atomic<uint64_t> ms{0};
+    bool set = false;
+    uint32_t generation = 0;
+    vehicle_camera_frame::Basis carrier{};
+    vehicle_camera_frame::LeashBox box{};
+};
+HaloCEVehicleCameraLeashRecord g_haloceVehicleCameraLeash;
+inline constexpr uint64_t kHaloCEVehicleCameraLeashFreshMs = 200;
+
+void HaloCEVehicleCameraLeashPublish(bool set, uint32_t generation, const vehicle_camera_frame::Basis& carrier,
+                                     const vehicle_camera_frame::LeashBox& box)
+{
+    HaloCEVehicleCameraLeashRecord& record = g_haloceVehicleCameraLeash;
+    if (!set && !record.set)
+        return; // nothing to take back: one load while no camera sets a leash
+    record.seq.fetch_add(1, std::memory_order_acq_rel);
+    record.set = set;
+    record.generation = generation;
+    record.carrier = carrier;
+    record.box = box;
+    record.ms.store(GetTickCount64(), std::memory_order_relaxed);
+    record.seq.fetch_add(1, std::memory_order_release);
+}
+
+bool HaloCEVehicleCameraLeashRead(uint32_t generation, vehicle_camera_frame::Basis& carrier,
+                                  vehicle_camera_frame::LeashBox& box)
+{
+    const HaloCEVehicleCameraLeashRecord& record = g_haloceVehicleCameraLeash;
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        const uint32_t before = record.seq.load(std::memory_order_acquire);
+        if (!before || (before & 1u))
+            continue;
+        const bool set = record.set;
+        const uint32_t at = record.generation;
+        const uint64_t ms = record.ms.load(std::memory_order_relaxed);
+        const vehicle_camera_frame::Basis c = record.carrier;
+        const vehicle_camera_frame::LeashBox b = record.box;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (record.seq.load(std::memory_order_relaxed) != before)
+            continue;
+        const uint64_t now = GetTickCount64();
+        if (!set || at != generation || !ms || now < ms || now - ms > kHaloCEVehicleCameraLeashFreshMs)
+            return false;
+        carrier = c;
+        box = b;
         return true;
     }
     return false;
@@ -421,6 +478,7 @@ bool HaloCEVehicleCameraPlace(const HaloCEChaseFrame& frame, float out[3])
 
     // HELD SHORT OF A WALL ("collide"): the line from the pivot to the camera's place, traced on this thread with the
     // sight trace's own query and the vehicle hierarchy ignored, as the game's own crosshair test ignores it.
+    float reachUsed = 1.0f;
     if (camera.collide)
     {
         const float toward[3] = {point[0] - placed.pivot[0], point[1] - placed.pivot[1], point[2] - placed.pivot[2]};
@@ -449,11 +507,23 @@ bool HaloCEVehicleCameraPlace(const HaloCEChaseFrame& frame, float out[3])
             for (int axis = 0; axis < 3; ++axis)
                 point[axis] = placed.pivot[axis] + toward[axis] * reach;
             g_haloceVehicleCameraHeldFrames.fetch_add(1, std::memory_order_relaxed);
+            reachUsed = reach;
         }
     }
     else
     {
         g_haloceVehicleCameraReach = 1.0f;
+    }
+    // THE LEASH: the box the head stays inside, around the camera's point as it stands (a camera pulled in from a wall
+    // keeps its limits where the file puts them), for the render paths' reference this frame.
+    {
+        const bool leashed =
+            vehicle_camera_file::LeashSet(camera.leashMinCm) || vehicle_camera_file::LeashSet(camera.leashMaxCm);
+        const float cameraCm[3] = {placed.offsetCm[0] * reachUsed, placed.offsetCm[1] * reachUsed,
+                                   placed.offsetCm[2] * reachUsed};
+        HaloCEVehicleCameraLeashPublish(leashed, frame.generation, placed.carrier,
+                                        vehicle_camera_frame::LeashToBasis(camera.leashMinCm, camera.leashMaxCm,
+                                                                           cameraCm));
     }
     g_haloceVehicleCameraFrames.fetch_add(1, std::memory_order_relaxed);
     if (g_haloceVehicleCameraState.standIn)
@@ -526,8 +596,6 @@ std::string HaloCEVehicleCameraNotApplied(const vehicle_camera_select::ActiveCam
             add("rotationTracking pitch (CE's view turns with the hull's heading only)");
         if (camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::Marker))
             add("an origin naming a marker (the vehicle's origin is used)");
-        if (vehicle_camera_file::LeashSet(camera.leashMinCm) || vehicle_camera_file::LeashSet(camera.leashMaxCm))
-            add("the leash");
     }
     if (camera.hideRegions[0])
         add("hideRegions");
