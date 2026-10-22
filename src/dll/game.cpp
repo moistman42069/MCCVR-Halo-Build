@@ -33967,8 +33967,10 @@ namespace
 
         uintptr_t result = 0;
         ReachUnitCameraHideScope bodyHide{};
-        // A chase camera of the vehicle camera file sees the occupant, as the flat game's own camera does.
-        if (candidate.vehicleViewApplied && !ReachVehicleCameraChaseFor(candidate.vehicle))
+        // A chase camera of the vehicle camera file sees the occupant, as the flat game's own camera does -- once it is
+        // placed this frame. Until then (its place still being measured) the eye is the seat's own and stays hidden.
+        if (candidate.vehicleViewApplied &&
+            !(g_reachVehicleCameraPass.placed && ReachVehicleCameraChaseFor(candidate.vehicle)))
             ReachBeginUnitCameraPlayerHide(candidate.vehicle, bodyHide);
         __try
         {
