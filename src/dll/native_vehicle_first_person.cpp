@@ -56,6 +56,9 @@ struct Runtime
     uint32_t tickSlot{},tickByte{};
     // Selector calls for our own seat that were answered as the game built them, for the simulation's sake.
     std::atomic<uint64_t> simulationCalls{};
+    // Halo 2: selector calls for our own seat left to the game's own answer because a chase camera of the vehicle
+    // camera file is chosen for it (Game_Halo2VehicleCameraChase).
+    std::atomic<uint64_t> chaseCalls{};
     // The point the camera was last placed at (NativeVehicleFirstPerson_PlacedPoint). Seqlock with a try-lock
     // writer, as the trim publication: a second writer skips rather than tear the record.
     std::atomic_flag placedWriting=ATOMIC_FLAG_INIT;
@@ -383,7 +386,9 @@ template<unsigned I> bool SelectOwned(uint32_t unit,Mode<I>* mode) noexcept
         if (!mode||*mode!=2||!Owner(I,unit,before)) return false;
         // Halo 2: a chase camera of the vehicle camera file is chosen for this seat. The game's own answer stands,
         // so the game draws the occupant and the camera is placed off the seat (Game_Halo2VehicleCameraChase).
-        if constexpr (I==1) if (Game_Halo2VehicleCameraChase(before)) return false;
+        if constexpr (I==1) if (Game_Halo2VehicleCameraChase(before)) {
+            runtime[I].chaseCalls.fetch_add(1,std::memory_order_relaxed);return false;
+        }
         if (!Head(I,before,point,false)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return false;}
         return Owner(I,unit,after)&&before==after;
     } __except(EXCEPTION_EXECUTE_HANDLER) {
@@ -823,6 +828,9 @@ void NativeVehicleFirstPerson_Poll()
                 unsigned(title),r.requested.load()?1:0,r.selected.load(),r.positioned.load(),
                 r.missingMarker.load(),r.faults.load(),r.simulationCalls.load(),
                 r.faulted.load()?" STOCK FALLBACK (guarded access fault)":"");
+            if (const uint64_t chase=r.chaseCalls.load())
+                LOG("Vehicle first person title=%u: %llu selector calls for our seat left to the game's own answer "
+                    "for a chase camera of the vehicle camera file",unsigned(title),static_cast<unsigned long long>(chase));
 #if HALOMCCVR_DEV_DIAGNOSTICS
             uint32_t modes[6]{},why[7]{};
             for (unsigned k=0;k<6;++k) modes[k]=r.modeSeen[k].exchange(0,std::memory_order_relaxed);
