@@ -33718,6 +33718,18 @@ namespace
 
         ReachPrepareScope(candidate,headDerived,access);
 
+        // The vehicle camera file's aim ring, against the head-centre camera just built (reach_vehicle_cameras.inl).
+        if (candidate.vehicleViewApplied)
+        {
+            float ringEye[3];
+            memcpy(ringEye, candidate.headCenter + 0x00, sizeof(ringEye));
+            ReachVehicleAimMarkerStep(ringEye);
+        }
+        else
+        {
+            Halo3VehicleAimMarkerClear();
+        }
+
         if (candidate.vehicleViewApplied)
         {
             const float* handOrigin = g_config.vehicle_hands_follow_body
@@ -58339,7 +58351,8 @@ bool Game_GetVehicleAimMarker(float outDir[3], float& outDistanceM)
 {
     outDistanceM = 0.0f;
     float yaw = 0.0f, pitch = 0.0f, distance = 0.0f;
-    if (!outDir || TitleAdapter_GetActiveTitle() != GameTitle::Halo3 ||
+    const GameTitle title = TitleAdapter_GetActiveTitle();
+    if (!outDir || (title != GameTitle::Halo3 && title != GameTitle::HaloReach) ||
         !Halo3VehicleAimMarkerRead(yaw, pitch, distance))
         return false;
     const float cp = cosf(pitch);

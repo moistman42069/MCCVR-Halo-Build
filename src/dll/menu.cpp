@@ -1401,8 +1401,8 @@ namespace
             "way to control the seat. Right B then uses, gets out and reloads,\n"
             "and a passenger's support trigger switches weapon. Each seat keeps\n"
             "its last camera, mode and controls. Needs first-person vehicles on.\n"
-            "Reach: the note is on the mod's panel, and the ring and the glass\n"
-            "and body keys are Halo 3's only for now.");
+            "Reach: the note is on the mod's panel, and the glass and body keys\n"
+            "are Halo 3's only for now.");
         if (g_config.vehicle_cameras)
         {
             if (ImGui::Button("Next camera"))

@@ -210,6 +210,14 @@ struct ReachVehicleCameraPassRecord
     float reach = 1.0f; // how much of the way out the wall let the camera go
     vehicle_camera_select::ActiveCamera camera{};
     vehicle_camera_place::Placed where{};
+    // For the aim ring (ReachVehicleAimMarkerStep): the seat the camera was placed for, the seat's own eye before the
+    // camera moved it (the eye the seat's steering and aim are solved from), the way the vehicle faces, and the way
+    // the game's own camera looked this frame (its aim pitch).
+    VehicleCameraSeatKey seat{};
+    float seatEye[3]{};
+    float vehicleForward[3]{};
+    bool looksValid = false;
+    float looks[3]{};
 };
 ReachVehicleCameraPassRecord g_reachVehicleCameraPass; // render thread
 
@@ -544,10 +552,20 @@ bool ReachVehicleCameraPlace(const ReachVehicleFrame& frame, const VehicleCamera
     {
         g_reachVehicleCameraReach = 1.0f;
     }
-    g_reachVehicleCameraPass.reach = reachUsed;
-    g_reachVehicleCameraPass.placed = true;
-    g_reachVehicleCameraPass.camera = camera;
-    g_reachVehicleCameraPass.where = placed;
+    ReachVehicleCameraPassRecord& pass = g_reachVehicleCameraPass;
+    pass.reach = reachUsed;
+    pass.placed = true;
+    pass.camera = camera;
+    pass.where = placed;
+    pass.seat = key;
+    memcpy(pass.seatEye, frame.cameraBase, sizeof(pass.seatEye));
+    memcpy(pass.vehicleForward, frame.rawCarrierForward, sizeof(pass.vehicleForward));
+    pass.looksValid = false;
+    if (stockCompact)
+    {
+        memcpy(pass.looks, stockCompact + 0x0C, sizeof(pass.looks));
+        pass.looksValid = vehicle_camera_place::Finite3(pass.looks) && vehicle_camera_frame::Normalize(pass.looks);
+    }
     g_reachVehicleCameraFrames.fetch_add(1, std::memory_order_relaxed);
     if (g_reachVehicleCameraState.standIn)
         g_reachVehicleCameraStandInFrames.fetch_add(1, std::memory_order_relaxed);
@@ -625,6 +643,72 @@ void ReachVehicleCamerasPass(ReachVehicleFrame& frame, const unsigned char* stoc
     }
 }
 
+// The ring's frames in Reach, and those with a fresh trace of its ray, for the line on leaving the seat.
+std::atomic<uint32_t> g_reachVehicleAimMarkerFrames{0};
+std::atomic<uint32_t> g_reachVehicleAimMarkerTracedFrames{0};
+
+// THE VEHICLE AIM RING ("aimMarker", vehicle_aim_marker_logic.h), as Halo 3 places it: render thread, once the
+// head-centre camera is built from this frame's chase camera, `eye` the point the view is drawn from. The line the
+// vehicle aims along is its heading at the game's own aim pitch, from the seat's own eye (where a point the hand can
+// aim at lies); its depth is Reach's sight trace of that ray (reach_sight_trace.inl); its direction in the headset's
+// space as the head-centre camera mapped the world this frame. The frame thread draws it (Game_GetVehicleAimMarker).
+// Shares Halo 3's ring record: one title runs at a time.
+void ReachVehicleAimMarkerStep(const float eye[3])
+{
+    const ReachVehicleCameraPassRecord& pass = g_reachVehicleCameraPass;
+    float dir[3];
+    if (!g_config.vehicle_aim_marker || !pass.placed || !pass.camera.aimMarker || !eye || !pass.looksValid ||
+        !vehicle_aim_marker::Direction(pass.vehicleForward, pass.looks, dir))
+    {
+        Halo3VehicleAimMarkerClear();
+        return;
+    }
+    if (!(pass.seat == g_halo3VehicleAimMarkerSeat))
+    {
+        g_halo3VehicleAimMarkerSeat = pass.seat;
+        g_halo3VehicleAimMarkerRange.Reset();
+    }
+    const uint32_t generation = TitleAdapter_GetGeneration(GameTitle::HaloReach);
+    SightAuxRay ray{};
+    ray.generation = generation;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        ray.origin[axis] = pass.seatEye[axis];
+        ray.dir[axis] = dir[axis];
+    }
+    Sight_PublishMarkerRay(GameTitle::HaloReach, ray);
+    bool hit = false;
+    float rangeWu = 0.0f;
+    const bool traced = Sight_ReadMarkerTrace(GameTitle::HaloReach, generation, kSightFreshMs, hit, rangeWu);
+    const float range = g_halo3VehicleAimMarkerRange.Use(traced, hit, rangeWu, kSightTraceLengthWu);
+    const float unitsPerVrMetre = g_worldScale.load(std::memory_order_relaxed);
+    const float along = vehicle_aim_marker::PullBack(range, g_config.reticle_surface_offset_m * unitsPerVrMetre);
+    float hullYaw = 0.0f, hullPitch = 0.0f;
+    const bool followed = Halo3ReadRollStableFollow(hullYaw, hullPitch);
+    float point[3], fromEye[3], lengthWu = 0.0f, vrYaw = 0.0f, vrPitch = 0.0f;
+    if (!(unitsPerVrMetre > 0.0f) || !shot_point::PointAlongRay(pass.seatEye, dir, along, point) ||
+        !shot_point::FromHead(eye, point, fromEye, lengthWu) ||
+        !Halo3SeatAimToVrReticle(fromEye, followed, hullYaw, hullPitch, g_gameYawRef, g_headYawRef, g_yawSign.load(),
+                                 g_pitchSign.load(), vrYaw, vrPitch))
+    {
+        Halo3VehicleAimMarkerClear();
+        return;
+    }
+    Halo3VehicleAimMarkerMark& mark = g_halo3VehicleAimMarker;
+    mark.seq.fetch_add(1, std::memory_order_acq_rel);
+    mark.vrYaw = vrYaw;
+    mark.vrPitch = vrPitch;
+    mark.distanceM = lengthWu / unitsPerVrMetre;
+    mark.ms.store(GetTickCount64(), std::memory_order_relaxed);
+    mark.seq.fetch_add(1, std::memory_order_release);
+    g_halo3VehicleAimMarkerFrames.fetch_add(1, std::memory_order_relaxed);
+    g_reachVehicleAimMarkerFrames.fetch_add(1, std::memory_order_relaxed);
+    if (!traced)
+        g_halo3VehicleAimMarkerUntracedFrames.fetch_add(1, std::memory_order_relaxed);
+    else
+        g_reachVehicleAimMarkerTracedFrames.fetch_add(1, std::memory_order_relaxed);
+}
+
 // ---- the cold worker's side ---------------------------------------------------------------------------------------
 
 // The seat the player is in, for the cold worker. OnFoot: not in a seat the Reach seat view runs in. Unknown: the
@@ -683,8 +767,6 @@ std::string ReachVehicleCameraNotApplied(const vehicle_camera_select::ActiveCame
             add("rotationTracking pitch");
         if (camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::Marker))
             add("an origin naming a marker (the vehicle's origin is used)");
-        if (camera.aimMarker)
-            add("the aim ring");
     }
     if (camera.hideRegions[0])
         add("hideRegions");
@@ -706,6 +788,9 @@ void ReachVehicleCamerasColdLog(bool seated)
     const uint32_t noTraceFrames = g_reachVehicleCameraNoTraceFrames.exchange(0, std::memory_order_relaxed);
     heldStint += g_reachVehicleCameraHeldFrames.exchange(0, std::memory_order_relaxed);
     tracedStint += collideFrames;
+    static uint32_t ringStint = 0, ringTracedStint = 0;
+    ringStint += g_reachVehicleAimMarkerFrames.exchange(0, std::memory_order_relaxed);
+    ringTracedStint += g_reachVehicleAimMarkerTracedFrames.exchange(0, std::memory_order_relaxed);
     // The boom's angle while one is in use, and the range it went through, for the line on leaving the seat.
     static bool boomSeen = false;
     static float boomLastDeg = 0.0f, boomLowDeg = 0.0f, boomHighDeg = 0.0f;
@@ -741,6 +826,11 @@ void ReachVehicleCamerasColdLog(bool seated)
             LOG("Vehicle cameras (Reach): in that seat the camera's line was traced for walls on %u frames and held "
                 "short of something on %u of them",
                 tracedStint, heldStint);
+        if (ringStint)
+            LOG("Vehicle cameras (Reach): in that seat the ring where the vehicle aims was placed on %u frames, %u of "
+                "them at a freshly traced depth",
+                ringStint, ringTracedStint);
+        ringStint = ringTracedStint = 0;
         if (boomSeen)
             LOG("Vehicle cameras (Reach): in that seat the third-person boom went from %.1f to %.1f deg above level and "
                 "was left at %.1f deg (kept for that seat and camera)",

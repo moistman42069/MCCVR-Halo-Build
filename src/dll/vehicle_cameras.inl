@@ -1972,8 +1972,9 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
     if (markerFrames > 60 && markerUntracedFrames == markerFrames && !r.markerNoTraceLogged)
     {
         r.markerNoTraceLogged = true;
-        LOG("Vehicle cameras (Halo 3): the ring where the vehicle aims is shown, but the game's trace is not running "
-            "for this seat, so it is drawn at the last depth measured, else far out along its line");
+        LOG("Vehicle cameras (%s): the ring where the vehicle aims is shown, but the game's trace is not running "
+            "for this seat, so it is drawn at the last depth measured, else far out along its line",
+            reach ? "Reach" : "Halo 3");
     }
     if (standInFrames && !r.standInLogged)
     {
