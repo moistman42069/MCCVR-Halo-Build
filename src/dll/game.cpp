@@ -13971,6 +13971,11 @@ namespace
         float rootFwd[3]{};
         float rootLeft[3]{};
         float rootUp[3]{};
+        // The occupant's head as a frame: the seat node's live frame turned as far as the head has turned in it since
+        // it settled (vehicle_camera_frame::TurnedSince), for a camera measured from the head.
+        uint32_t headFrameValid = 0;
+        float headFwd[3]{};
+        float headUp[3]{};
     };
     OdstVehicleTransform g_odstVehicleTransform;
     std::atomic<uint64_t> g_odstVehicleSampleMs{0};
@@ -14012,6 +14017,10 @@ namespace
         bool interpolateNodes = false;
         bool nodeInterpolated = false;
         Halo3HeadSettleLatch settle{};
+        // The head's turn in the seat node's frame when it settled: what a camera measured from the head turns from
+        // (the vehicle cameras' "playerhead", as Halo 3's Halo3HeadReference::headRest).
+        bool headRestValid = false;
+        vehicle_camera_frame::Basis headRest{};
     };
     OdstHeadReference g_odstHeadReference;
 
@@ -14174,7 +14183,8 @@ namespace
     // The occupant's animated head marker, in world space. Optional: losing it
     // costs the seat bounce, never the seat.
     bool OdstReadPhaseMatchedHead(int unitHandle, bool interpolateNodes,
-                                  float outWorld[3])
+                                  float outWorld[3],
+                                  Halo3Matrix4x3* outMatrix = nullptr)
     {
         if (g_odstNodeBinding.load(std::memory_order_acquire) !=
                 static_cast<uint8_t>(OdstVehicleBindingState::Installed) ||
@@ -14194,6 +14204,8 @@ namespace
                 outWorld[2] = marker.matrix.position[2];
                 ok = std::isfinite(outWorld[0]) &&
                     std::isfinite(outWorld[1]) && std::isfinite(outWorld[2]);
+                if (outMatrix)
+                    *outMatrix = marker.matrix;
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -14279,9 +14291,9 @@ namespace
     // THE ODST SEAT AS THE VEHICLE CAMERAS READ IT (vehicle_cameras.inl's LegacyReadSeat): Halo 3's snapshot shape,
     // filled from ODST's sampler. pos/fwd/up are the live seat node's frame; hull* the vehicle's object frame (the
     // carrier's for a gun riding one); `mounted` is whether the seated object rides a carrier (the cameras' sense, apart
-    // from the first-person seat's, which ODST never sets); `identity` is ODST's own (OdstVehicleId). No head frame
-    // ("playerhead" stays in the seat's frame). False: not in a seat with an eye, or stale (100 ms), torn or not a
-    // frame. `carrierId`: the carrier's identity, when asked for.
+    // from the first-person seat's, which ODST never sets); `identity` is ODST's own (OdstVehicleId); the head frame
+    // once the occupant's head has settled. False: not in a seat with an eye, or stale (100 ms), torn or not a frame.
+    // `carrierId`: the carrier's identity, when asked for.
     bool OdstReadCameraSeat(Halo3SeatSnapshot& out, OdstVehicleId* carrierId)
     {
         OdstVehicleTransform& xf = g_odstVehicleTransform;
@@ -14320,6 +14332,9 @@ namespace
             memcpy(seat.rootFwd, xf.rootFwd, sizeof(seat.rootFwd));
             memcpy(seat.rootLeft, xf.rootLeft, sizeof(seat.rootLeft));
             memcpy(seat.rootUp, xf.rootUp, sizeof(seat.rootUp));
+            seat.headFrameValid = xf.headFrameValid != 0;
+            memcpy(seat.headFwd, xf.headFwd, sizeof(seat.headFwd));
+            memcpy(seat.headUp, xf.headUp, sizeof(seat.headUp));
             const OdstVehicleId carrier = static_cast<OdstVehicleId>(xf.carrierVehicleId);
             if (xf.seq.load(std::memory_order_acquire) != before)
                 continue;
@@ -14330,6 +14345,9 @@ namespace
                 if (!std::isfinite(seat.rootPos[i]) || !std::isfinite(seat.rootFwd[i]) ||
                     !std::isfinite(seat.rootLeft[i]) || !std::isfinite(seat.rootUp[i]))
                     seat.rootValid = false;
+            for (int i = 0; i < 3 && seat.headFrameValid; ++i)
+                if (!std::isfinite(seat.headFwd[i]) || !std::isfinite(seat.headUp[i]))
+                    seat.headFrameValid = false;
             Halo3Frame node{}, hull{};
             memcpy(node.pos, seat.pos, sizeof(node.pos));
             memcpy(node.fwd, seat.fwd, sizeof(node.fwd));
@@ -15160,6 +15178,8 @@ namespace
         float rawFwd[3] = {};
         float nodePos[3] = {};
         float nodeUp[3] = {};
+        vehicle_camera_frame::Basis headFrame{};
+        bool headFrameValid = false;
         bool anchorValid = false;
         bool headParented = false;
         bool nodeInterpolated = false;
@@ -15228,14 +15248,17 @@ namespace
                 }
                 float headWorld[3] = {};
                 float currentHeadLocal[3] = {};
+                Halo3Matrix4x3 headMatrix{};
                 if (anchorValid && stableSeat &&
                     OdstReadPhaseMatchedHead(unit, nodeInterpolated,
-                                             headWorld) &&
+                                             headWorld, &headMatrix) &&
                     Halo3MatrixInverseTransformPoint(liveNode, headWorld,
                                                      currentHeadLocal))
                 {
                     float headAnchor[3] = {};
-                    if (headRef.settle.Update(nowMs, currentHeadLocal) &&
+                    const bool settled =
+                        headRef.settle.Update(nowMs, currentHeadLocal);
+                    if (settled &&
                         Halo3ComputeHeadParentedPoint(
                             liveNode, headWorld, headRef.settle.reference,
                             authoredNodeLocal, g_config.vehicle_bounce,
@@ -15244,6 +15267,33 @@ namespace
                         memcpy(cameraAnchor, headAnchor,
                                sizeof(cameraAnchor));
                         headParented = true;
+                    }
+                    // THE HEAD AS A FRAME, as Halo 3's: its turn in the seat node's frame, taken against the node of
+                    // the same bank the head came from, its rest latched when it settles, and from then on the seat
+                    // node turned as far as the head has turned in it since (a camera measured from the head).
+                    if (settled && g_config.vehicle_cameras)
+                    {
+                        const auto basisOf = [](const Halo3Matrix4x3& m) {
+                            vehicle_camera_frame::Basis b{};
+                            memcpy(b.forward, m.forward, sizeof(b.forward));
+                            memcpy(b.left, m.left, sizeof(b.left));
+                            memcpy(b.up, m.up, sizeof(b.up));
+                            return b;
+                        };
+                        const vehicle_camera_frame::Basis liveBasis = basisOf(liveNode);
+                        const vehicle_camera_frame::Basis headBasis = basisOf(headMatrix);
+                        if (vehicle_camera_frame::Usable(liveBasis) && vehicle_camera_frame::Usable(headBasis))
+                        {
+                            const vehicle_camera_frame::Basis headInSeat =
+                                vehicle_camera_frame::InFrame(liveBasis, headBasis);
+                            if (!headRef.headRestValid)
+                            {
+                                headRef.headRest = headInSeat;
+                                headRef.headRestValid = true;
+                            }
+                            headFrame = vehicle_camera_frame::TurnedSince(liveBasis, headInSeat, headRef.headRest);
+                            headFrameValid = vehicle_camera_frame::Usable(headFrame);
+                        }
                     }
                 }
                 else if (!headRef.settle.valid)
@@ -15318,6 +15368,9 @@ namespace
             memcpy(xf.rootFwd, cameraFrame.root.forward, sizeof(xf.rootFwd));
             memcpy(xf.rootLeft, cameraFrame.root.left, sizeof(xf.rootLeft));
             memcpy(xf.rootUp, cameraFrame.root.up, sizeof(xf.rootUp));
+            xf.headFrameValid = headFrameValid ? 1u : 0u;
+            memcpy(xf.headFwd, headFrame.forward, sizeof(xf.headFwd));
+            memcpy(xf.headUp, headFrame.up, sizeof(xf.headUp));
             xf.valid.store(1, std::memory_order_relaxed);
             xf.sampleMs.store(nowMs, std::memory_order_relaxed);
         }
@@ -15329,6 +15382,7 @@ namespace
             xf.hullValid = 0;
             xf.rootValid = 0;
             xf.cameraOnCarrier = 0;
+            xf.headFrameValid = 0;
             xf.valid.store(0, std::memory_order_relaxed);
         }
         xf.seq.fetch_add(1, std::memory_order_release);
