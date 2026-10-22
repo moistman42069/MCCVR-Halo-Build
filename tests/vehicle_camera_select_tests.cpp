@@ -339,6 +339,8 @@ static void TestBuiltInPresets()
     Check(Has(selector.Describe(), "default (Driver): camera 1 of 2"), "and another game the default section's");
     selector.Update("reach", true, "warthog", kSeatDriver);
     Check(Has(selector.Describe(), "Warthog (Driver): camera 1 of 4"), "while Reach has a section of its own");
+    selector.Update("halo4", true, "warthog", kSeatGunner);
+    Check(Has(selector.Describe(), "Warthog gunner (Gunner): camera 1 of 3"), "and so has Halo 4");
 }
 
 static void TestTwoCamerasOfOneName()

@@ -50,20 +50,22 @@ static std::string OneVehicle(const char* body)
 static void TestBuiltInTable()
 {
     const Table built = DefaultTable();
-    Check(built.games.size() == 3 && built.games[0].key == std::string("halo3") &&
-              built.games[1].key == std::string("reach") && built.games[2].key == kDefaultKey,
-          "the built-in table has Halo 3's and Reach's own sections and the default one");
+    Check(built.games.size() == 4 && built.games[0].key == std::string("halo3") &&
+              built.games[1].key == std::string("reach") && built.games[2].key == std::string("halo4") &&
+              built.games[3].key == kDefaultKey,
+          "the built-in table has Halo 3's, Reach's and Halo 4's own sections and the default one");
     Check(built.FindGame("halo3") == &built.games[0] && built.FindGame("reach") == &built.games[1] &&
-              built.FindGame("odst") == &built.games[2],
-          "Halo 3 and Reach find their own, any other game the default");
+              built.FindGame("halo4") == &built.games[2] && built.FindGame("odst") == &built.games[3],
+          "Halo 3, Reach and Halo 4 find their own, any other game the default");
     const Game* game = built.FindGame("odst");
     Check(game->vehicles.size() == 1 && game->vehicles[0].isDefault, "the default section has one default entry");
     const Vehicle& any = game->vehicles[0];
 
-    // Halo 3's and Reach's sections: an entry for each vehicle the mod knows by name and the seats it gives cameras
-    // of their own, then a default entry with the same two cameras as every other game's; every entry starts in the
-    // seat view with the game's own third-person camera second, so the file changes nothing until a camera is chosen.
-    for (std::size_t section = 0; section < 2; ++section)
+    // Halo 3's, Reach's and Halo 4's sections: an entry for each vehicle the mod knows by name and the seats it gives
+    // cameras of their own, then a default entry with the same two cameras as every other game's; every entry starts
+    // in the seat view with the game's own third-person camera second, so the file changes nothing until a camera is
+    // chosen.
+    for (std::size_t section = 0; section < 3; ++section)
     {
         const Game& own = built.games[section];
         Check(own.vehicles.size() > 10 && own.vehicles.back().isDefault && own.vehicles.back().cameras.size() == 2,
@@ -111,6 +113,21 @@ static void TestBuiltInTable()
           "every walk-up gun takes the turret's cameras");
     Check(reach.vehicles[static_cast<std::size_t>(MatchVehicle(reach, "forklift", kSeatDriver))].isDefault,
           "and a vehicle with no entry of its own rides Reach's default");
+
+    // Halo 4's entries find its vehicles by the stock words the mod names their models by; a mounted gun goes by
+    // its carrier, so every Warthog turret is the Warthog gunner's.
+    const Game& halo4 = built.games[2];
+    const auto halo4Entry = [&halo4](const char* vehicle, uint8_t seat) -> std::string {
+        const int index = MatchVehicle(halo4, vehicle, seat);
+        return index >= 0 ? halo4.vehicles[static_cast<std::size_t>(index)].name : std::string();
+    };
+    Check(halo4Entry("warthog", kSeatDriver) == "Warthog" && halo4Entry("warthog", kSeatPassenger) == "Warthog passenger" &&
+              halo4Entry("warthog", kSeatGunner) == "Warthog gunner",
+          "Halo 4's Warthog has a driver's, a passenger's and a gunner's entry");
+    Check(halo4Entry("mantis", kSeatDriver) == "Mantis" && halo4Entry("broadsword", kSeatDriver) == "Broadsword",
+          "Halo 4's own vehicles have entries of their own");
+    Check(halo4.vehicles[static_cast<std::size_t>(MatchVehicle(halo4, "custom_0000001d12345678", kSeatDriver))].isDefault,
+          "and a vehicle the mod has not measured rides Halo 4's default");
     Check(any.cameras.size() == 2 && any.defaultCamera == 0, "two cameras, starting in the first");
     Check(any.cameras[0].type == CameraType::FirstPerson, "the first is the seat view the player already has");
     Check(any.cameras[1].type == CameraType::Chase && any.cameras[1].ModeCount() == 2, "the second has two modes");
@@ -137,14 +154,14 @@ static void TestBuiltInTable()
     Check(Has(text, "\"_readme\"") && !Has(ToJson(built, false), "\"_readme\""), "the guide is optional");
     Check(Has(text, "{ \"name\": \"Seat\", \"type\": \"firstperson\" }"),
           "a firstperson camera names only what was set");
-    Check(Has(text, "\"origin\": \"thirdperson\"") && back.games[2].vehicles[0].cameras[1].origin == Origin::ThirdPerson,
+    Check(Has(text, "\"origin\": \"thirdperson\"") && back.games[3].vehicles[0].cameras[1].origin == Origin::ThirdPerson,
           "the game's own third-person place is written and read by name");
     Check(OriginText(Origin::ThirdPerson, "x") == "thirdperson", "and named so in a readout");
     Check(any.cameras[1].lag == kThirdPersonLagSeconds && Has(text, "\"lag\": 0.5, \"lagDamping\": 1.5") &&
-              back.games[2].vehicles[0].cameras[1].lag == kThirdPersonLagSeconds,
+              back.games[3].vehicles[0].cameras[1].lag == kThirdPersonLagSeconds,
           "the built-in third-person camera follows on a spring, and the file says so");
     Check(!BoomPitchSet(any.cameras[1].boomPitch) && Has(text, "\"boomPitch\": null") &&
-              !BoomPitchSet(back.games[2].vehicles[0].cameras[1].boomPitch),
+              !BoomPitchSet(back.games[3].vehicles[0].cameras[1].boomPitch),
           "the built-in third-person camera names its boom, unset: where the game's camera looks level, a little higher");
     Check(!Has(ToJson(built, false), "\"origin\": \"seat\", \"offset\": [-200, 90, 70], \"locationTracking\": [\"yaw\"], "
                                      "\"rotationTracking\": [], \"collide\": true, \"collideMargin\": 30, \"lag\": 0.15, "
@@ -186,7 +203,7 @@ static void TestGames()
     Table untouched = DefaultTable();
     ParseResult bad = Read("{ \"games\": { \"halo5\": { \"vehicles\": { } } } }", untouched);
     Check(Flagged(bad, "games.halo5") && Flagged(bad, "line 1"), "an unknown game key is refused");
-    Check(untouched.games.size() == 3 && untouched.games[2].key == kDefaultKey, "and the table is left as it was");
+    Check(untouched.games.size() == 4 && untouched.games[3].key == kDefaultKey, "and the table is left as it was");
     bad = Read("{ \"games\": { \"reach\": { \"vehicles\": { } }, \"REACH\": { \"vehicles\": { } } } }", untouched);
     Check(Flagged(bad, "listed once"), "a game listed twice is refused");
     bad = Read("{ \"version\": 1 }", untouched);
