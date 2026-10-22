@@ -405,6 +405,9 @@ bool Halo4VehicleCameraOwnsSeatView(uint32_t parent, int seat) noexcept
 // Counted by the render thread, taken by the cold worker for its log lines (Halo4VehicleCamerasColdLog).
 std::atomic<uint32_t> g_halo4VehicleCameraFrames{0};        // chase placements
 std::atomic<uint32_t> g_halo4VehicleCameraStandInFrames{0}; // of them, "thirdperson" at the mod's stand-in
+// Why the stand-in: 1 = the game's following camera was up but never stood within reach to be measured, 0 = the game's
+// camera there is not its following one.
+std::atomic<uint32_t> g_halo4VehicleCameraStandInFollowing{0};
 std::atomic<uint32_t> g_halo4VehicleCameraNudgeFrames{0};   // firstperson eyes moved by an offset
 std::atomic<uint32_t> g_halo4VehicleCameraHeadMisses{0};    // "playerhead" with no head marker read
 std::atomic<uint32_t> g_halo4VehicleCameraNoRootFrames{0};  // a chosen camera with the vehicle's root unread
@@ -536,7 +539,7 @@ inline constexpr uint32_t kHalo4RestSolveEvery = 15;
 inline constexpr float kHalo4RestLevelSin = 0.26f;
 
 // Fills `in` with the game's camera's place for a "thirdperson" camera. False: not known YET (the frame keeps the
-// seat's own eye). True with in.restValid false: it could not be read, and the mod's stand-in applies. `gameCamera` is
+// game's own view of the seat: its following camera, or the seat's eye). True with in.restValid false: it could not be read, and the mod's stand-in applies. `gameCamera` is
 // the frame's observer before the mod moved anything: the game's own camera for the seat; `following` whether that is
 // its following camera (the override stood down and the game chose it).
 bool Halo4VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, const vehicle_camera_select::ActiveCamera& camera,
@@ -689,12 +692,13 @@ bool Halo4VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, const vehicle
             ++rest.waited;
         return false;
     }
+    g_halo4VehicleCameraStandInFollowing.store(following ? 1u : 0u, std::memory_order_relaxed);
     in.restValid = false;
     return true;
 }
 
 // Render thread, once a frame of a seat: where the chosen chase camera stands. False: none is chosen for this seat,
-// or its place is not known yet; the seat's own eye stays.
+// or its place is not known yet; the game's own view of the seat stays.
 bool Halo4VehicleCameraPlace(const Halo4VehicleCameraFrame& frame, const VehicleCameraSeatKey& key,
                              const vehicle_camera_select::ActiveCamera& camera, const Halo4CameraBasis& gameCamera,
                              bool following, const float standIn[3], float out[3])
@@ -1235,6 +1239,7 @@ void Halo4VehicleCamerasColdLog(bool seated)
     static float restLoggedWu = 0.0f, restSeenWu = 0.0f;
     static uint32_t trailStint = 0, headMissStint = 0, heldStint = 0, tracedStint = 0, turnStint = 0, nudgeStint = 0;
     static uint32_t pivotLoggedSamples = 0;
+    static uint32_t noRootStint = 0, noTraceStint = 0;
     const uint32_t collideFrames = g_halo4VehicleCameraCollideFrames.exchange(0, std::memory_order_relaxed);
     const uint32_t noTraceFrames = g_halo4VehicleCameraNoTraceFrames.exchange(0, std::memory_order_relaxed);
     heldStint += g_halo4VehicleCameraHeldFrames.exchange(0, std::memory_order_relaxed);
@@ -1244,7 +1249,8 @@ void Halo4VehicleCamerasColdLog(bool seated)
     ringStint += g_halo4VehicleAimMarkerFrames.exchange(0, std::memory_order_relaxed);
     ringTracedStint += g_halo4VehicleAimMarkerTracedFrames.exchange(0, std::memory_order_relaxed);
     nudgeStint += g_halo4VehicleCameraNudgeFrames.exchange(0, std::memory_order_relaxed);
-    const uint32_t noRoot = g_halo4VehicleCameraNoRootFrames.exchange(0, std::memory_order_relaxed);
+    noRootStint += g_halo4VehicleCameraNoRootFrames.exchange(0, std::memory_order_relaxed);
+    noTraceStint += noTraceFrames;
     // The boom's angle while one is in use, and the range it went through, for the line on leaving the seat.
     static bool boomSeen = false;
     static float boomLastDeg = 0.0f, boomLowDeg = 0.0f, boomHighDeg = 0.0f;
@@ -1256,13 +1262,13 @@ void Halo4VehicleCamerasColdLog(bool seated)
         boomLastDeg = deg;
         boomSeen = true;
     }
-    if (noRoot > 60 && !noRootLogged)
+    if (noRootStint > 60 && !noRootLogged)
     {
         noRootLogged = true;
         LOG("Vehicle cameras (Halo 4): a camera is chosen for this seat, but the vehicle's place could not be read, so "
             "the game's own camera is shown");
     }
-    if (noTraceFrames > 60 && collideFrames == 0 && !noTraceLogged)
+    if (noTraceStint > 60 && tracedStint == 0 && !noTraceLogged)
     {
         noTraceLogged = true;
         LOG("Vehicle cameras (Halo 4): this camera asks to be kept out of walls (\"collide\"), but the seated trace is "
@@ -1329,7 +1335,7 @@ void Halo4VehicleCamerasColdLog(bool seated)
             LOG("Vehicle cameras (Halo 4): in that seat the lagged camera trailed its place by at most %u cm", trailStint);
         if (headMissStint)
             LOG("Vehicle cameras (Halo 4): in that seat the occupant's head could not be read on %u frames, and the "
-                "seat's eye stood in for it",
+                "seat's point stood in for it",
                 headMissStint);
         if (tracedStint)
             LOG("Vehicle cameras (Halo 4): in that seat the camera's line was traced for walls on %u frames and held "
@@ -1351,7 +1357,7 @@ void Halo4VehicleCamerasColdLog(bool seated)
                 "and was left at %.1f deg (kept for that seat and camera)",
                 static_cast<double>(boomLowDeg), static_cast<double>(boomHighDeg), static_cast<double>(boomLastDeg));
         boomSeen = false;
-        trailStint = headMissStint = heldStint = tracedStint = turnStint = nudgeStint = 0;
+        trailStint = headMissStint = heldStint = tracedStint = turnStint = nudgeStint = noRootStint = noTraceStint = 0;
         standInLogged = noTraceLogged = noRootLogged = false;
         restLoggedWu = restSeenWu = 0.0f;
         pivotLoggedSamples = 0;
@@ -1366,8 +1372,10 @@ void Halo4VehicleCamerasColdLog(bool seated)
         float behindCm = 0.0f, aboveCm = 0.0f;
         vehicle_camera_place::StandInOffsetCm(0.0f, behindCm, aboveCm);
         LOG("Vehicle cameras (Halo 4): where the game's own third-person camera rests could not be read for this seat "
-            "(the game's own camera there is not its following camera), so the camera stands %.0f cm behind and %.0f "
-            "cm above the vehicle's origin instead",
+            "(%s), so the camera stands %.0f cm behind and %.0f cm above the vehicle's origin instead",
+            g_halo4VehicleCameraStandInFollowing.load(std::memory_order_relaxed)
+                ? "its following camera never stood within reach to be measured"
+                : "the game's own camera there is not its following camera",
             static_cast<double>(behindCm), static_cast<double>(aboveCm));
     }
     const float restWu = g_halo4VehicleCameraRestWu.load(std::memory_order_relaxed);

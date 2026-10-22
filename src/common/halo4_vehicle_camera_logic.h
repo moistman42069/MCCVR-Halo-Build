@@ -4,8 +4,8 @@
 //
 //   NAME. Halo 4 gives the mod no tag path to read: a vehicle is known by its render model's identity
 //   (halo4_vehicle_identity.inl: the model's node count above its runtime import checksum, one number on every map and
-//   in every session). The models measured in game go by the stock vehicle's word ("warthog", "mongoose"), the
-//   words Halo 3's and Reach's sections use. A gun mounted on a vehicle (the Warthog's turret) is a seated object of
+//   in every session). The models measured in game go by the stock vehicle's word ("warthog", "broadsword"), the
+//   words Halo 3's and Reach's sections use; the camera file's entries for the others wait on their models. A gun mounted on a vehicle (the Warthog's turret) is a seated object of
 //   its own riding the vehicle: it goes by the CARRIER's name where the carrier is known, as Halo 3 names a gunner by
 //   the vehicle carrying the gun. Any other vehicle goes by "custom_" and its identity in hex, so each keeps an entry,
 //   a seat memory and a note of its own.
@@ -117,8 +117,8 @@ inline float OrbitLevelElevationDeg(float rise, float distance, float lookDeg) n
 
 // Where the game's following camera stands looking level, before it has been measured in a seat: level with its
 // pivot (it stands at pivot - distance * aim, so a level aim puts it at the pivot's height; only a camera track lifts
-// it). The pivot is high already: seen in game, a Warthog's driver's 3.5 m above the vehicle's origin. A boom that
-// starts from Halo 3's measured 18.6 deg stood the camera another 3.6 m higher and put the Warthog out of a level view.
+// it). The pivot is high already: a Warthog driver's stands 3.5 m above the vehicle's origin. A boom started from
+// Halo 3's measured 18.6 deg would stand the camera another 3.6 m higher, with the Warthog out of a level view.
 inline constexpr float kUnmeasuredLevelElevationDeg = 0.0f;
 
 // THE BOOM'S RANGE in Halo 4, as look pitches for vehicle_boom's orbit (the camera's elevation is minus the pitch):
