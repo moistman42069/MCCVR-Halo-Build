@@ -1441,15 +1441,16 @@ Table DefaultTable()
     // vehicle's ("warthog_chaingun", "warthog_gauss", "wraith_minigun", "spectre_plasma"), so its gunner finds the
     // vehicle's gunner entry. The walk-up guns are "c_turret_ap", "h_turret_ap" and the Covenant gun tower. A seat's
     // origin is the occupant's head where it settled in the seat, so the seat cameras stand off it as Halo 3's stand
-    // off its seat eye.
+    // off its seat eye. The Warthog's front seats look over the occupant's own shoulder from straight behind and well
+    // above it (placed from pictures in game): nearer the hull's centre line its gun and roll bar fill the view.
     Game halo2;
     halo2.key = kGameKeys[4];
     halo2.vehicles = {
         Entry("Warthog", "warthog", driver,
-              {Chase("Over the Shoulder", Origin::Seat, -200, 90, 70, true, 0.15f),
+              {Chase("Over the Shoulder", Origin::Seat, -250, 0, 140, true, 0.15f),
                Chase("Left Side", Origin::Seat, 0, -140, 40, true, 0.0f)}),
         Entry("Warthog passenger", "warthog", passenger,
-              {Chase("Over the Shoulder", Origin::Seat, -200, -90, 70, true, 0.15f),
+              {Chase("Over the Shoulder", Origin::Seat, -250, 0, 140, true, 0.15f),
                Chase("Right Side", Origin::Seat, 0, 140, 40, true, 0.0f)}),
         Entry("Warthog gunner", "warthog", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
         Entry("Mongoose", "mongoose", driver, {Chase("Over the Shoulder", Origin::Seat, -170, 80, 70, true, 0.15f)}),
