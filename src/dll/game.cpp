@@ -2679,6 +2679,11 @@ namespace
     // The same two seams in ODST (halo3_head_relative.inl; not confirmed in game).
     bool InstallOdstHeadRelative(uintptr_t base, size_t size, uint32_t generation);
     bool RemoveOdstHeadRelative();
+    // The vehicle camera note in ODST's own HUD messages (halo3_hud_note.inl): posted from ODST's listener hook.
+    bool InstallOdstHudNote(uintptr_t base, size_t size, uint32_t generation);
+    void RemoveOdstHudNote();
+    void OdstHudNotePost();
+    void OdstVehicleNoteShow(const std::wstring& text, float seconds);
     void OdstHeadRelativePublish(const float* forward, const float* up, bool gameplay);
     void OdstHeadRelativeReport();
 #endif
@@ -21219,6 +21224,7 @@ namespace
         // quiet must not leave the stereo hooks enabled and the title DLL held while it is retried. By now the
         // camera hook that publishes the head for them is off, so both lanes only forward.
         if(!RemoveOdstHeadRelative())return false;
+        RemoveOdstHudNote();
 
         bool removedAll = true;
         for (size_t i = g_odstCamera.hookTargetCount; i > 0; --i)
@@ -21591,6 +21597,9 @@ namespace
         (void)InstallOdstWeaponHaptics(base,size,runtimeGeneration);
         // The motion tracker and the sound listener by the head (halo3_head_relative.inl): own transactions.
         (void)InstallOdstHeadRelative(base,size,runtimeGeneration);
+        // The vehicle camera note in the game's HUD messages (halo3_hud_note.inl): no hook of its own, it is posted
+        // from the listener hook above; not bound, the note uses the mod's panel.
+        (void)InstallOdstHudNote(base,size,runtimeGeneration);
 
         // The ownership block that used to sit here now runs the moment the
         // core hooks go live, above. In particular g_odstLastCamCopyMs is NOT

@@ -1156,6 +1156,8 @@ __declspec(noinline) void __fastcall OdstListenerUpdateDetour(bool flag)
         if (lane.original)
             CallNativeWithSpareSlots(lane.original, flag);
         Halo3ListenerApplyHead(lane);
+        // The vehicle camera note (halo3_hud_note.inl): this update runs after ODST's HUD update, as Halo 3's does.
+        OdstHudNotePost();
 #if HALOMCCVR_DEV_DIAGNOSTICS
         const uint32_t thread = GetCurrentThreadId();
         uint32_t first = 0;

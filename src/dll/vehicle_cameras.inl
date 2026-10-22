@@ -2051,10 +2051,14 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
                 note.push_back(static_cast<wchar_t>(*c));
             while (!note.empty() && note.back() == L' ')
                 note.pop_back();
-            // Halo 3 posts it in the game's own HUD messages where it can; Reach and ODST on the mod's panel (no HUD
-            // message of their own is bound).
+            // Halo 3 and ODST post it in the game's own HUD messages where they can; Reach on the mod's panel (no HUD
+            // message of Reach's own is bound).
             if (halo3)
                 Halo3VehicleNoteShow(note, kVehicleCameraNoteSeconds);
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+            else if (odst)
+                OdstVehicleNoteShow(note, kVehicleCameraNoteSeconds);
+#endif
             else
                 NativeNotice_Show(note.c_str(), kVehicleCameraNoteSeconds);
         }
