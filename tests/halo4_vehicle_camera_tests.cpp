@@ -40,6 +40,9 @@ static void TestNames()
     Check(IdentityName(0x0000001d1a19101eull) != nullptr &&
               std::strcmp(IdentityName(0x0000001d1a19101eull), "broadsword") == 0,
           "the Broadsword's model is named");
+    Check(IdentityName(0x0000003511090710ull) != nullptr &&
+              std::strcmp(IdentityName(0x0000003511090710ull), "warthog") == 0,
+          "and the Warthog's, measured in Forge");
     bool distinct = true, named = true;
     const std::size_t count = sizeof(kKnownVehicles) / sizeof(kKnownVehicles[0]);
     for (std::size_t a = 0; a < count; ++a)

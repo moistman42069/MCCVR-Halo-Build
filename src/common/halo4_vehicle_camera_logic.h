@@ -47,6 +47,7 @@ struct KnownVehicle
 // in game from the stock vehicles; an identity not listed is a vehicle of its own ("custom_..."), never refused.
 inline constexpr KnownVehicle kKnownVehicles[] = {
     {0x0000001d1a19101eull, "broadsword"}, // the Broadsword boost camera fix's identity (game.cpp)
+    {0x0000003511090710ull, "warthog"},    // Forge: the Default and the Rocket Warthog, its passenger's seat
 };
 
 // The name of a measured identity; null for any other.
