@@ -14283,6 +14283,8 @@ namespace
             seat.carrierHandle = xf.carrierHandle;
             seat.identity = static_cast<OdstVehicleId>(xf.vehicleId);
             seat.mounted = xf.mountedTurret != 0;
+            // Read from the aim and render threads too: the copy above is ordered before the check.
+            std::atomic_thread_fence(std::memory_order_acquire);
             if (xf.seq.load(std::memory_order_acquire) != before)
                 continue;
             const uint64_t nowMs = GetTickCount64();
