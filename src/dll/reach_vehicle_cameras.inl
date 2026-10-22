@@ -489,9 +489,42 @@ bool ReachVehicleCameraPlace(const ReachVehicleFrame& frame, const VehicleCamera
             in.headValid = false;
         }
         if (in.headValid)
+        {
             memcpy(in.head, head.matrix.position, sizeof(in.head));
+            // THE HEAD AS A FRAME ("playerhead", as Halo 3 lays it out): the seat's frame turned as far as the head
+            // has turned in it since it settled, so the camera turns and nods with the head and the marker's own axis
+            // convention never matters. Settled = read in this seat for kReachHeadSettleFrames frames.
+            static constexpr uint32_t kReachHeadSettleFrames = 45;
+            struct HeadReference
+            {
+                VehicleCameraSeatKey seat{};
+                uint32_t frames = 0;
+                bool restValid = false;
+                vehicle_camera_frame::Basis rest{};
+            };
+            static HeadReference headRef; // render thread
+            if (!(headRef.seat == key))
+                headRef = HeadReference{key};
+            vehicle_camera_frame::Basis headBasis{};
+            if (in.seatFrameValid && ReachVehicleCameraBasis(head.matrix.forward, head.matrix.up, headBasis))
+            {
+                const vehicle_camera_frame::Basis inSeat = vehicle_camera_frame::InFrame(in.seatFrame, headBasis);
+                if (!headRef.restValid && ++headRef.frames >= kReachHeadSettleFrames)
+                {
+                    headRef.rest = inSeat;
+                    headRef.restValid = true;
+                }
+                if (headRef.restValid)
+                {
+                    in.headFrame = vehicle_camera_frame::TurnedSince(in.seatFrame, inSeat, headRef.rest);
+                    in.headFrameValid = vehicle_camera_frame::Usable(in.headFrame);
+                }
+            }
+        }
         else
+        {
             g_reachVehicleCameraHeadMisses.fetch_add(1, std::memory_order_relaxed);
+        }
     }
     if (!in.headValid)
     {
