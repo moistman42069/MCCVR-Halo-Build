@@ -982,7 +982,10 @@ struct Halo4VehicleCameraNose
 };
 Halo4VehicleCameraNose g_halo4VehicleCameraNose;
 bool g_halo4VehicleCameraNoseWanted = false;
-uint32_t g_halo4VehicleCameraNoseFootGeneration = 0; // the game the pass last saw the player on foot in
+// The game in which the pass has seen the player on foot since the last occupation it took (and the cameras have run
+// all along): the next seat in that game is a boarding. Cleared when a seat is taken and while the cameras are off,
+// so a seat first seen mid-drive -- the cameras switched on in it, a game that starts in one -- keeps its heading.
+uint32_t g_halo4VehicleCameraNoseArmed = 0;
 float g_halo4VehicleCameraNoseYaw = 0.0f;
 // For the cold worker's line: how often, and by how much the heading reference turned the last time.
 std::atomic<uint32_t> g_halo4VehicleCameraNoseTurns{0};
@@ -1018,8 +1021,9 @@ void Halo4VehicleCameraNoseStep(const Halo4VehicleCameraFrame& frame, bool loneG
     nose.seat = frame.seatIndex;
     const float* forward = frame.carrierRootValid ? frame.carrierForward : frame.rootForward;
     const float level = sqrtf(forward[0] * forward[0] + forward[1] * forward[1]);
-    if (loneGun || !(level >= kHalo4TurnLevelMin) || g_halo4VehicleCameraNoseFootGeneration != frame.generation ||
-        !g_config.vehicle_first_person)
+    const bool boarding = g_halo4VehicleCameraNoseArmed != 0 && g_halo4VehicleCameraNoseArmed == frame.generation;
+    g_halo4VehicleCameraNoseArmed = 0;
+    if (loneGun || !(level >= kHalo4TurnLevelMin) || !boarding || !g_config.vehicle_first_person)
         return;
     g_halo4VehicleCameraNoseYaw = atan2f(forward[1], forward[0]);
     g_halo4VehicleCameraNoseWanted = true;
@@ -1030,7 +1034,10 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
 {
     g_halo4VehicleCameraPass.placed = false;
     if (!g_config.vehicle_cameras)
+    {
+        g_halo4VehicleCameraNoseArmed = 0;
         return;
+    }
     Halo4VehicleCameraFrame frame;
     const bool sampled = seatRead && Halo4SampleVehicleCameraFrame(seat, frame);
     // The game's own answer for this seat, before the override: its following camera, or its first-person eye.
@@ -1050,7 +1057,7 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
     {
         g_halo4VehicleCameraNose = Halo4VehicleCameraNose{};
         g_halo4VehicleCameraNoseWanted = false;
-        g_halo4VehicleCameraNoseFootGeneration = TitleAdapter_GetGeneration(GameTitle::Halo4);
+        g_halo4VehicleCameraNoseArmed = TitleAdapter_GetGeneration(GameTitle::Halo4);
     }
     if (!frame.active)
     {
