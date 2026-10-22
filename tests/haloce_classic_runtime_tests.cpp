@@ -34,6 +34,8 @@ bool Game_HaloCEVehicleCameraLeash(uint32_t,vehicle_camera_frame::Basis& carrier
     box=vehicle_camera_frame::LeashBox{};
     return true;
 }
+static unsigned leashHeld{};
+void Game_HaloCEVehicleCameraLeashHeld() noexcept { ++leashHeld; }
 // The motion tracker's lane (haloce_head_relative.cpp) is not linked here: the gameplay publication hands it
 // the frame's head, counted so the Classic publication is seen to reach it.
 static unsigned headPublications{};
@@ -525,14 +527,14 @@ int main()
             // of no size stands both eyes about the camera's own point, and the reference kept for later frames is not
             // touched.
             const Reference kept=reference;
-            const unsigned readsBefore=leashReads;
+            const unsigned readsBefore=leashReads,heldBefore=leashHeld;
             leashPlaced=true;
             tracking.serial=++serial; HaloCE_PublishTracking(tracking,true);
             ClassicGameRenderBody(.125f,.75f);
             leashPlaced=false;
             const Vec3 middle=(observedViews[0].position+observedViews[1].position)*0.5f;
             RenderContext leashedContext{};
-            check(leashReads>readsBefore&&nearVector(middle,stockWindow.render.position),
+            check(leashReads>readsBefore&&leashHeld>heldBefore&&nearVector(middle,stockWindow.render.position),
                 "a leashed frame stands the eyes about the camera's point, the head's room translation held back");
             check(HaloCE_GetGameplayContext(leashedContext)&&
                 !nearVector(leashedContext.reference.position,kept.position)&&

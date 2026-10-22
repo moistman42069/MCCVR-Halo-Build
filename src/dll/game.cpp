@@ -58364,6 +58364,11 @@ bool Game_HaloCEVehicleCameraLeash(uint32_t generation, vehicle_camera_frame::Ba
     return HaloCEVehicleCameraLeashRead(generation, carrier, box);
 }
 
+void Game_HaloCEVehicleCameraLeashHeld() noexcept
+{
+    g_haloceVehicleCameraLeashHeldFrames.fetch_add(1, std::memory_order_relaxed);
+}
+
 bool Game_HaloCEVehicleCameraFollow(uint32_t generation, uint32_t parent, int16_t seat, bool& yaw) noexcept
 {
     vehicle_camera_select::ActiveCamera camera;

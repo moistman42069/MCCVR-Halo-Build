@@ -35,6 +35,7 @@ bool HaloCEControls_SeatHeading(uint32_t,halo_ce::Vec3&) noexcept { return false
 // The vehicle cameras' chase-camera leash (game.cpp): none placed in this fixture.
 bool Game_HaloCEVehicleCameraLeash(uint32_t,vehicle_camera_frame::Basis&,vehicle_camera_frame::LeashBox&) noexcept
 { return false; }
+void Game_HaloCEVehicleCameraLeashHeld() noexcept {}
 // The motion tracker's lane (haloce_head_relative.cpp) is not linked here: the gameplay publication hands it
 // the frame's head, recorded so the test can see that it does.
 static unsigned headPublications{};

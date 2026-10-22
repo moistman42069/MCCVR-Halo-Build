@@ -331,7 +331,8 @@ void ApplyVehicleCameraLeash(const Camera& source,const Tracking& tracking,Refer
 {
     vehicle_camera_frame::Basis carrier{};vehicle_camera_frame::LeashBox box{};
     if(!positional||!Game_HaloCEVehicleCameraLeash(frozen.generation,carrier,box))return;
-    (void)haloce_vehicle_leash::LeashReference(source,tracking,scale,positional,carrier,box,frozen);
+    if(haloce_vehicle_leash::LeashReference(source,tracking,scale,positional,carrier,box,frozen))
+        Game_HaloCEVehicleCameraLeashHeld();
 }
 #include "haloce_classic_runtime.inl"
 bool ReadAnniversaryNativeCenter(const SaberCamera& nativeCenter,Camera& center) noexcept

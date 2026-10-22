@@ -106,9 +106,11 @@ struct HaloCEVehicleCameraLayout
     VehicleCameraSeatKey seat{};
     bool seatValid = false, headValid = false, headAsked = false, pivotValid = false, seatFrame = false;
     float seat3[3]{}, head3[3]{}, pivot3[3]{};
+    float seatForward3[3]{}, seatUp3[3]{}; // the occupant's root node's axes on the vehicle
 };
 HaloCEVehicleCameraLayout g_haloceVehicleCameraLayout;
 std::atomic<uint32_t> g_haloceVehicleCameraLagTrailCm{0};
+std::atomic<uint32_t> g_haloceVehicleCameraLeashHeldFrames{0}; // render paths: frames the leash moved the reference
 std::atomic<uint32_t> g_haloceVehicleCameraCollideFrames{0};
 std::atomic<uint32_t> g_haloceVehicleCameraHeldFrames{0};
 std::atomic<uint32_t> g_haloceVehicleCameraNoTraceFrames{0};
@@ -463,6 +465,12 @@ bool HaloCEVehicleCameraPlace(const HaloCEChaseFrame& frame, float out[3])
         layout.headAsked = camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::Head);
         layout.pivotValid = frame.gameValid;
         local(frame.seatPos, layout.seat3);
+        const float* const vehicleAxes[3] = {in.vehicle.forward, in.vehicle.left, in.vehicle.up};
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            layout.seatForward3[axis] = vehicle_camera_frame::Dot(frame.seatForward, vehicleAxes[axis]);
+            layout.seatUp3[axis] = vehicle_camera_frame::Dot(frame.seatUp, vehicleAxes[axis]);
+        }
         local(frame.headPos, layout.head3);
         local(frame.pivot, layout.pivot3);
         layout.seq.fetch_add(1, std::memory_order_release);
@@ -703,8 +711,9 @@ void HaloCEVehicleCamerasColdLog(bool seated)
     nudgeStint += g_haloceVehicleCameraNudgeFrames.exchange(0, std::memory_order_relaxed);
     const uint32_t standIn = g_haloceVehicleCameraStandInFrames.exchange(0, std::memory_order_relaxed);
     headMissStint += g_haloceVehicleCameraHeadMisses.exchange(0, std::memory_order_relaxed);
-    static uint32_t seatFrameStint = 0;
+    static uint32_t seatFrameStint = 0, leashStint = 0;
     seatFrameStint += g_haloceVehicleCameraSeatFrameRefused.exchange(0, std::memory_order_relaxed);
+    leashStint += g_haloceVehicleCameraLeashHeldFrames.exchange(0, std::memory_order_relaxed);
     const uint32_t trail = g_haloceVehicleCameraLagTrailCm.exchange(0, std::memory_order_relaxed);
     trailStint = trail > trailStint ? trail : trailStint;
     if (!seated)
@@ -714,6 +723,10 @@ void HaloCEVehicleCamerasColdLog(bool seated)
                 "on %u frames, and the vehicle's frame served the seat's",
                 seatFrameStint);
         seatFrameStint = 0;
+        if (leashStint)
+            LOG("Vehicle cameras (Halo CE): in that seat the leash held the head inside its box on %u rendered frames",
+                leashStint);
+        leashStint = 0;
         if (placedStint || nudgeStint)
             LOG("Vehicle cameras (Halo CE): in that seat a chase camera was placed on %u frames and a firstperson "
                 "camera's offset moved the eye on %u",
@@ -750,23 +763,38 @@ void HaloCEVehicleCamerasColdLog(bool seated)
             const VehicleCameraSeatKey seat = layout.seat;
             const bool seatValid = layout.seatValid, headValid = layout.headValid, headAsked = layout.headAsked,
                        pivotValid = layout.pivotValid, seatFrame = layout.seatFrame;
-            float s3[3], h3[3], p3[3];
+            float s3[3], h3[3], p3[3], sf3[3], su3[3];
             memcpy(s3, layout.seat3, sizeof(s3));
             memcpy(h3, layout.head3, sizeof(h3));
             memcpy(p3, layout.pivot3, sizeof(p3));
+            memcpy(sf3, layout.seatForward3, sizeof(sf3));
+            memcpy(su3, layout.seatUp3, sizeof(su3));
             std::atomic_thread_fence(std::memory_order_acquire);
             if (layout.seq.load(std::memory_order_relaxed) == before)
             {
                 layoutLogged = seat;
-                constexpr double cm = 1.0 / vehicle_camera_frame::kWorldUnitsPerCm;
+                // A point that was not read has no place to give.
+                const auto where = [](bool valid, const float point[3], char (&text)[48]) {
+                    constexpr double cm = 1.0 / vehicle_camera_frame::kWorldUnitsPerCm;
+                    if (valid)
+                        std::snprintf(text, sizeof(text), " (%.0f %.0f %.0f)", point[0] * cm, point[1] * cm, point[2] * cm);
+                    else
+                        text[0] = '\0';
+                };
+                char seatAt[48], headAt[48], pivotAt[48], seatAxes[96] = "";
+                where(seatValid, s3, seatAt);
+                where(headValid, h3, headAt);
+                where(pivotValid, p3, pivotAt);
+                // The occupant's root node's axes on the vehicle: what decides whether it can serve as the seat's frame.
+                if (seatValid)
+                    std::snprintf(seatAxes, sizeof(seatAxes), "; its root node's forward %.2f %.2f %.2f, up %.2f %.2f %.2f",
+                                  sf3[0], sf3[1], sf3[2], su3[0], su3[1], su3[2]);
                 LOG("Vehicle cameras (Halo CE): seat %d's layout on its vehicle, cm forward/left/up from the vehicle's "
-                    "root node: the seat %s (%.0f %.0f %.0f; its frame %s), the head %s (%.0f %.0f %.0f), the game's "
-                    "third-person pivot %s (%.0f %.0f %.0f)",
-                    seat.seatIndex, seatValid ? "read" : "NOT read", s3[0] * cm, s3[1] * cm, s3[2] * cm,
-                    seatFrame ? "taken" : "not taken, the vehicle's serves",
-                    headValid ? "read" : headAsked ? "NOT read" : "not read: only a playerhead camera reads it",
-                    h3[0] * cm, h3[1] * cm, h3[2] * cm, pivotValid ? "read" : "NOT read", p3[0] * cm, p3[1] * cm,
-                    p3[2] * cm);
+                    "root node: the seat %s%s (its frame %s%s), the head %s%s, the game's third-person pivot %s%s",
+                    seat.seatIndex, seatValid ? "read" : "NOT read", seatAt,
+                    seatFrame ? "taken" : "not taken, the vehicle's serves", seatAxes,
+                    headValid ? "read" : headAsked ? "NOT read" : "not read: only a playerhead camera reads it", headAt,
+                    pivotValid ? "read" : "NOT read", pivotAt);
             }
         }
     }

@@ -64,3 +64,5 @@ bool Game_HaloCEVehicleCameraFollow(uint32_t generation,uint32_t parent,int16_t 
 // placed for. Any thread (the render paths read it once a frame).
 bool Game_HaloCEVehicleCameraLeash(uint32_t generation,vehicle_camera_frame::Basis& carrier,
     vehicle_camera_frame::LeashBox& box) noexcept;
+// A render path's frame whose reference the leash moved (one atomic add), for the seat's log line.
+void Game_HaloCEVehicleCameraLeashHeld() noexcept;
