@@ -160,21 +160,25 @@ bool HaloCEVehicleCameraLevelElevationDeg(const VehicleCameraSeatKey& seat, floa
 }
 
 // THE LEASH of the camera last placed (Game_HaloCEVehicleCameraLeash): the game's thread writes it with every
-// placement, the render paths read it once a frame through the sequence.
+// placement, the render paths read it once a frame through the sequence. It holds only while a chase camera is chosen
+// and the player still sits in the seat it was placed for: after a step to the seat's own view, or out of the seat,
+// nothing places a camera to take it back, and a box laid around a chase camera's point must not hold a head that is
+// somewhere else.
 struct HaloCEVehicleCameraLeashRecord
 {
     std::atomic<uint32_t> seq{0}; // even = stable
     std::atomic<uint64_t> ms{0};
     bool set = false;
-    uint32_t generation = 0;
+    uint32_t generation = 0, parent = 0xFFFFFFFFu;
+    int16_t seat = -1;
     vehicle_camera_frame::Basis carrier{};
     vehicle_camera_frame::LeashBox box{};
 };
 HaloCEVehicleCameraLeashRecord g_haloceVehicleCameraLeash;
 inline constexpr uint64_t kHaloCEVehicleCameraLeashFreshMs = 200;
 
-void HaloCEVehicleCameraLeashPublish(bool set, uint32_t generation, const vehicle_camera_frame::Basis& carrier,
-                                     const vehicle_camera_frame::LeashBox& box)
+void HaloCEVehicleCameraLeashPublish(bool set, uint32_t generation, uint32_t parent, int16_t seat,
+                                     const vehicle_camera_frame::Basis& carrier, const vehicle_camera_frame::LeashBox& box)
 {
     HaloCEVehicleCameraLeashRecord& record = g_haloceVehicleCameraLeash;
     if (!set && !record.set)
@@ -182,6 +186,8 @@ void HaloCEVehicleCameraLeashPublish(bool set, uint32_t generation, const vehicl
     record.seq.fetch_add(1, std::memory_order_acq_rel);
     record.set = set;
     record.generation = generation;
+    record.parent = parent;
+    record.seat = seat;
     record.carrier = carrier;
     record.box = box;
     record.ms.store(GetTickCount64(), std::memory_order_relaxed);
@@ -192,13 +198,16 @@ bool HaloCEVehicleCameraLeashRead(uint32_t generation, vehicle_camera_frame::Bas
                                   vehicle_camera_frame::LeashBox& box)
 {
     const HaloCEVehicleCameraLeashRecord& record = g_haloceVehicleCameraLeash;
+    if (!g_vehicleCameraPublished.chase.load(std::memory_order_acquire))
+        return false;
     for (int attempt = 0; attempt < 2; ++attempt)
     {
         const uint32_t before = record.seq.load(std::memory_order_acquire);
         if (!before || (before & 1u))
             continue;
         const bool set = record.set;
-        const uint32_t at = record.generation;
+        const uint32_t at = record.generation, parent = record.parent;
+        const int16_t seat = record.seat;
         const uint64_t ms = record.ms.load(std::memory_order_relaxed);
         const vehicle_camera_frame::Basis c = record.carrier;
         const vehicle_camera_frame::LeashBox b = record.box;
@@ -207,6 +216,10 @@ bool HaloCEVehicleCameraLeashRead(uint32_t generation, vehicle_camera_frame::Bas
             continue;
         const uint64_t now = GetTickCount64();
         if (!set || at != generation || !ms || now < ms || now - ms > kHaloCEVehicleCameraLeashFreshMs)
+            return false;
+        HaloCEVehicleSeatNow sitting{};
+        if (!HaloCEControls_ReadVehicleSeatNow(sitting) || sitting.generation != at || sitting.parent != parent ||
+            sitting.seat != seat)
             return false;
         carrier = c;
         box = b;
@@ -526,7 +539,7 @@ bool HaloCEVehicleCameraPlace(const HaloCEChaseFrame& frame, float out[3])
             vehicle_camera_file::LeashSet(camera.leashMinCm) || vehicle_camera_file::LeashSet(camera.leashMaxCm);
         const float cameraCm[3] = {placed.offsetCm[0] * reachUsed, placed.offsetCm[1] * reachUsed,
                                    placed.offsetCm[2] * reachUsed};
-        HaloCEVehicleCameraLeashPublish(leashed, frame.generation, placed.carrier,
+        HaloCEVehicleCameraLeashPublish(leashed, frame.generation, frame.parent, frame.seat, placed.carrier,
                                         vehicle_camera_frame::LeashToBasis(camera.leashMinCm, camera.leashMaxCm,
                                                                            cameraCm));
     }
