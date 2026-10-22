@@ -29,6 +29,12 @@
 // auto-add, buttons and boom; Reach's render thread publishes the seat it samples and moves the seat's eye, and the
 // note goes to the mod's panel. Not in Reach yet: the glass and body keys, Stick control, a marker origin.
 //
+// HALO 2 (halo2_vehicle_cameras.inl, right after this file): the same file (its "halo2" section), selection, seat
+// memory, auto-add, buttons and boom; Halo 2's observer hands over the seat it builds the view for, and the view's
+// eye is moved or stood at a chase camera's place, while the first-person seat override stands down for a chase camera
+// so the game's own third-person answer stands. The note goes to the mod's panel. Not in Halo 2 yet: the glass and
+// body keys, eyeAdjust, the aim ring, pitch tracking, Stick and Wheel control, a marker origin.
+//
 // THE THIRD-PERSON BOOM (vehicle_boom_logic.h; halo3_vehicle_boom.inl reads the game's side). A camera of origin
 // "thirdperson" stands where the game's own third-person camera would stand at a look pitch of the boom's own --
 // never the aim's. The cold worker works out the seat's shape (the game's camera track across the flat game's look
@@ -402,6 +408,7 @@ bool Halo3VehicleCameraViewTurn(bool& yaw, bool& pitch)
 bool ReachVehicleCameraFollowWanted(); // reach_vehicle_cameras.inl
 bool ReachVehicleCameraLevelElevationDeg(const VehicleCameraSeatKey& seat, float& deg); // reach_vehicle_cameras.inl
 #endif
+bool Halo2VehicleCameraLevelElevationDeg(const VehicleCameraSeatKey& seat, float& deg); // halo2_vehicle_cameras.inl
 
 // Whether a chosen chase camera turns the view with the hull in the seat the player is in: the shared follow
 // reader's master gate (Halo3ReadRollStableFollow), in Halo 3 and in Reach.
@@ -1369,15 +1376,19 @@ void VehicleBoomCheckLog(VehicleCameraRuntime& r)
 
 // Cold worker, every poll. `wanted`: a camera of origin "thirdperson" is in use in a Halo 3 seat; `seated`: this
 // poll's seat could be read (an unreadable poll keeps the boom as it is).
-// `reachTitle`: the seat is Reach's, whose camera track is not read: its boom orbits the game's pivot over a range
-// of its own, -10 to 60 deg above level (reach_vehicle_camera::BoomRange; Reach's own look limits are not read), and
-// its stick is not inverted unless vehicle_boom_invert says so (Reach's inversion setting is not read). The render thread runs it on the same
-// shared boom (reach_vehicle_cameras.inl).
+// `title`: the seat's game. Reach's and Halo 2's camera tracks are not read: their boom orbits the game's pivot over a
+// range of its own, -10 to 60 deg above level (reach_vehicle_camera::BoomRange, halo2_vehicle_camera::BoomRange; their
+// own look limits are not read), and its stick is not inverted unless vehicle_boom_invert says so (their inversion
+// settings are not read). Their camera threads run it on the same shared boom (reach_vehicle_cameras.inl,
+// halo2_vehicle_cameras.inl).
 void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::ActiveCamera& active, bool wanted,
                          bool seated, uint32_t definitionIndex, const char* name, uint64_t nowMs,
-                         bool reachTitle = false)
+                         GameTitle title = GameTitle::Halo3)
 {
-    const char* const titleName = reachTitle ? "Reach" : "Halo 3";
+    const bool reachTitle = title == GameTitle::HaloReach;
+    const bool halo2Title = title == GameTitle::Halo2;
+    const bool orbitTitle = reachTitle || halo2Title; // no camera track read: an orbit of the pivot
+    const char* const titleName = reachTitle ? "Reach" : (halo2Title ? "Halo 2" : "Halo 3");
     VehicleCameraRuntime::Boom& b = r.boom;
     const auto publish = [&]() {
         VehicleBoomPublished& published = g_vehicleBoomPublished;
@@ -1407,17 +1418,19 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
         return;
 
     const uint32_t generation =
-        reachTitle ? r.seat.generation : g_halo3VehicleBoom.generation.load(std::memory_order_acquire);
+        orbitTitle ? r.seat.generation : g_halo3VehicleBoom.generation.load(std::memory_order_acquire);
     const bool newCamera = !b.published || !(b.seat == r.seat) || b.camera != active.camera ||
                            b.definitionIndex != definitionIndex || b.generation != generation;
-    // Reach has no track to say where the game's camera stands looking level: the render thread measures it in this
-    // seat (whole degrees), and the boom starts from it once known -- moved only while the player has not moved the
-    // boom. A measurement from the seat before is not this seat's; a torn read keeps what was in use.
+    // Reach and Halo 2 have no track to say where the game's camera stands looking level: their camera thread measures
+    // it in this seat (whole degrees), and the boom starts from it once known -- moved only while the player has not
+    // moved the boom. A measurement from the seat before is not this seat's; a torn read keeps what was in use.
     float measuredDeg = vehicle_boom::kBoomPitchUnset;
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     if (reachTitle && !ReachVehicleCameraLevelElevationDeg(r.seat, measuredDeg))
         measuredDeg = newCamera ? vehicle_boom::kBoomPitchUnset : b.measuredDeg;
 #endif
+    if (halo2Title && !Halo2VehicleCameraLevelElevationDeg(r.seat, measuredDeg))
+        measuredDeg = newCamera ? vehicle_boom::kBoomPitchUnset : b.measuredDeg;
     const bool newStart = newCamera || b.fileDegrees != active.boomPitchDeg || b.measuredDeg != measuredDeg;
     if (newStart)
     {
@@ -1439,6 +1452,11 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
                 // ground (measured in Reach: the stick took it to 85.5 deg either way, and the game's own camera pulls
                 // in from 7 m to under 5 m at its extreme looks): Reach's orbit has a range of its own.
                 vehicle_boom::BuildOrbitShape(reach_vehicle_camera::BoomRange(), b.shape);
+            }
+            else if (halo2Title)
+            {
+                // Halo 2's the same, for the same reason (halo2_vehicle_camera::BoomRange).
+                vehicle_boom::BuildOrbitShape(halo2_vehicle_camera::BoomRange(), b.shape);
             }
             else
             {
@@ -1491,6 +1509,7 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
         else
         {
             const char* why = reachTitle ? "Reach's camera track is not read"
+                            : halo2Title ? "Halo 2's camera track is not read"
                             : !Halo3VehicleBoomBound() || !g_halo3VehicleBoom.seatCamera ? "the game's seat camera is not bound"
                             : !b.facts.read                                             ? "the seat's tags could not be read"
                             : !g_halo3VehicleBoom.track                                 ? "the game's camera track is not bound"
@@ -1507,7 +1526,7 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
 
     // THE INVERSION, every poll: the game's setting can change in its pause menu.
     bool gameInverts = false;
-    const bool known = !reachTitle && Halo3VehicleBoomGameInverts(b.piloting, gameInverts);
+    const bool known = !orbitTitle && Halo3VehicleBoomGameInverts(b.piloting, gameInverts);
     const int setting = g_config.vehicle_boom_invert;
     const bool inverted = vehicle_boom::Inverted(setting, known, gameInverts);
     g_vehicleBoomInverted.store(inverted, std::memory_order_relaxed);
@@ -1586,6 +1605,11 @@ VehicleCameraSeatRead ReachVehicleCameraSeat(VehicleCameraSeatKey& key, const ch
 std::string ReachVehicleCameraNotApplied(const vehicle_camera_select::ActiveCamera& camera);
 void ReachVehicleCamerasColdLog(bool seated);
 #endif
+// Halo 2's side (halo2_vehicle_cameras.inl, right after this file).
+VehicleCameraSeatRead Halo2VehicleCameraSeat(VehicleCameraSeatKey& key, const char*& name, uint8_t& seatBits,
+                                            bool& seatView, bool& wheelSeat, uint32_t& definitionIndex);
+std::string Halo2VehicleCameraNotApplied(const vehicle_camera_select::ActiveCamera& camera);
+void Halo2VehicleCamerasColdLog(bool seated);
 
 // WaitThread, every poll. Everything slow about the feature happens here.
 void VehicleCameras_ColdTick(uint64_t nowMs)
@@ -1655,7 +1679,7 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         wasOn = true;
         r.nextFilePollMs = 0;
         LOG("Vehicle cameras: on. The cameras of each seat are read from %s in the mod's folder; F1 > Vehicles "
-            "steps through them. Halo 3 and Reach seats for now, and only while vehicle_first_person is on",
+            "steps through them. Halo 3, Reach and Halo 2 seats for now, and only while vehicle_first_person is on",
             vehicle_camera_store::kFileNameText);
     }
 
@@ -1688,11 +1712,17 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
     uint32_t definitionIndex = 0xFFFFFFFFu;
     const GameTitle title = TitleAdapter_GetActiveTitle();
     const bool halo3 = title == GameTitle::Halo3;
-    bool reach = false;
+    bool reach = false, halo2 = false;
     if (halo3)
     {
         gameKey = "halo3";
         read = Halo3VehicleCameraSeat(key, name, seatBits, seatView, wheelSeat, definitionIndex);
+    }
+    else if (title == GameTitle::Halo2)
+    {
+        halo2 = true;
+        gameKey = "halo2";
+        read = Halo2VehicleCameraSeat(key, name, seatBits, seatView, wheelSeat, definitionIndex);
     }
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     else if (title == GameTitle::HaloReach)
@@ -1740,6 +1770,16 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         // there is the hand's or the wheel's; Stick from the setting keeps Reach's own rule.
         if (reach && vehicle_control::FromConfig(control) == vehicle_control::Mode::Stick)
             control = static_cast<int>(vehicle_control::Mode::Automatic);
+        // Every Halo 2 seat is aimed by the hand (the seat drive, else the stick servo), and Halo 2 has no wheel: the
+        // seat is Motion whatever the setting, and the left stick click has nothing else to give it.
+        if (halo2)
+        {
+            control = static_cast<int>(vehicle_control::Mode::Motion);
+            if (g_vehicleControlStep.exchange(0, std::memory_order_relaxed) != 0)
+                LOG("Vehicle cameras: %s stays controlled by %s (left stick click): Halo 2's seats are aimed by your "
+                    "hand, with no stick or wheel control there yet",
+                    name[0] ? name : "this seat", vehicle_control::Name(vehicle_control::Mode::Motion));
+        }
         if (g_vehicleControlStep.exchange(0, std::memory_order_relaxed) != 0)
         {
             const vehicle_control::Mode next =
@@ -1756,7 +1796,7 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
     }
     g_vehicleControlEffective.store(inSeat ? control : -1, std::memory_order_release);
     g_vehicleSeatButtons.store(
-        inSeat && (halo3 || reach)
+        inSeat && (halo3 || reach || halo2)
             ? kVehicleSeatButtonsLive | ((r.seatBits & vehicle_camera_file::kSeatPassenger) ? kVehicleSeatPassenger : 0u)
             : 0u,
         std::memory_order_release);
@@ -1838,15 +1878,17 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
     if (halo3 && read != VehicleCameraSeatRead::Unknown)
         Halo3VehicleParts_ColdTick(active, r.seat, read == VehicleCameraSeatRead::Seated, definitionIndex, nowMs);
     VehicleBoomColdTick(r, active,
-                        (halo3 || reach) && read != VehicleCameraSeatRead::OnFoot && active.valid && active.chase &&
+                        (halo3 || reach || halo2) && read != VehicleCameraSeatRead::OnFoot && active.valid &&
+                            active.chase &&
                             active.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::ThirdPerson),
-                        read == VehicleCameraSeatRead::Seated, definitionIndex, name, nowMs, reach);
+                        read == VehicleCameraSeatRead::Seated, definitionIndex, name, nowMs,
+                        reach ? GameTitle::HaloReach : (halo2 ? GameTitle::Halo2 : GameTitle::Halo3));
 
     const bool onFoot = !active.valid && r.selector.StandDownReason() == vehicle_camera_select::kOnFoot;
     std::string line = r.selector.Describe();
-    // Reach does not draw the headless body (a Halo 3 key, on by default in a driver's or gunner's seat): its seat
-    // view is not described as showing it.
-    if (reach)
+    // Reach and Halo 2 do not draw the headless body (a Halo 3 key, on by default in a driver's or gunner's seat):
+    // their seat view is not described as showing it.
+    if (reach || halo2)
     {
         static constexpr char kHeadless[] = ", your body shown without its head";
         if (const size_t at = line.find(kHeadless); at != std::string::npos)
@@ -1857,8 +1899,8 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         // Not in a seat this feature reaches: say which of the reasons it is.
         if (!onFoot)
             line = "no camera: " + r.selector.StandDownReason();
-        else if (!halo3 && !reach)
-            line = "no camera: vehicle cameras are in Halo 3 and Reach only for now";
+        else if (!halo3 && !reach && !halo2)
+            line = "no camera: vehicle cameras are in Halo 3, Reach and Halo 2 only for now";
         else if (!g_config.vehicle_first_person)
             line = "no camera: first-person vehicles are off, so a seat keeps the game's own camera";
         else
@@ -1886,6 +1928,11 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
                 line += ". Not applied in Reach yet: " + missing;
         }
 #endif
+        else if (halo2)
+        {
+            if (const std::string missing = Halo2VehicleCameraNotApplied(active); !missing.empty())
+                line += ". Not applied in Halo 2 yet: " + missing;
+        }
     }
     if (line != r.readout)
     {
@@ -1904,8 +1951,8 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
                 note.push_back(static_cast<wchar_t>(*c));
             while (!note.empty() && note.back() == L' ')
                 note.pop_back();
-            // Halo 3 posts it in the game's own HUD messages where it can; Reach on the mod's panel (no HUD message
-            // of Reach's own is bound).
+            // Halo 3 posts it in the game's own HUD messages where it can; Reach and Halo 2 on the mod's panel (no HUD
+            // message of their own is bound).
             if (halo3)
                 Halo3VehicleNoteShow(note, kVehicleCameraNoteSeconds);
             else
@@ -1964,6 +2011,8 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
     if (reach)
         ReachVehicleCamerasColdLog(!onFoot);
 #endif
+    if (halo2)
+        Halo2VehicleCamerasColdLog(!onFoot);
 
     const uint32_t frames = g_halo3VehicleCameraFrames.exchange(0, std::memory_order_relaxed);
     const uint32_t tickFrames = g_halo3VehicleCameraTickFrames.exchange(0, std::memory_order_relaxed);

@@ -114,6 +114,9 @@
 #include "../common/reach_render_logic.h"
 #include "../common/reach_vehicle_logic.h"
 #include "../common/reach_vehicle_camera_logic.h"
+#include "../common/halo2_vehicle_camera_logic.h"
+#include "../common/halo2_vehicle_identity.h"
+#include "halo2_vehicle_cameras.h"
 #include "../common/reach_hand_shot_logic.h"
 #include "../common/aim_no_unit_logic.h"
 #include "../common/title_runtime_state.h"
@@ -11417,6 +11420,7 @@ namespace
 
     #include "halo3_vehicle_boom.inl"
     #include "vehicle_cameras.inl"
+    #include "halo2_vehicle_cameras.inl"
 
     // ---- C9: the view turns with the vehicle -------------------------------
     // "the camera does not rotate with the car" (user, 2026-07-31). C8 put the
@@ -60532,4 +60536,38 @@ roomscale_admission::Verdict Game_RoomscaleCameraVerdict(GameTitle title)
 bool Game_RoomscaleCameraAllowed(GameTitle title)
 {
     return Game_RoomscaleCameraVerdict(title).Admitted();
+}
+
+// ---- the vehicle cameras in Halo 2's seats (halo2_vehicle_cameras.h; halo2_vehicle_cameras.inl has the work) ----
+
+bool Game_Halo2VehicleCamerasBegin(const Halo2VehicleCameraSeatSample& seat, bool& followHull) noexcept
+{
+    return Halo2VehicleCamerasBegin(seat, followHull);
+}
+
+bool Game_Halo2VehicleCamerasPlace(const Halo2VehicleCameraSeatSample& seat, float viewYaw, float eye[3]) noexcept
+{
+    return Halo2VehicleCamerasPlace(seat, viewYaw, eye);
+}
+
+bool Game_Halo2VehicleCameraLeash(float head[3]) noexcept
+{
+    const Halo2VehicleCameraPassRecord& pass = g_halo2VehicleCameraPass;
+    return head && pass.placed && vehicle_camera_place::LeashHead(pass.camera, pass.where, pass.reach, head);
+}
+
+void Game_Halo2VehicleCamerasOnFoot(uint32_t generation) noexcept
+{
+    g_halo2VehicleCameraPass.placed = false;
+    Halo2VehicleCameraPublishSeat(nullptr, generation);
+}
+
+bool Game_Halo2VehicleCameraChase(const NativeVehicleCameraOwner& owner) noexcept
+{
+    if (owner.parent == UINT32_MAX || owner.seat < 0)
+        return false;
+    const VehicleCameraSeatKey key{owner.generation, static_cast<int32_t>(owner.parent), owner.seat,
+                                   halo2_vehicle_camera::KeyIdentity(owner.vehicleIdentity),
+                                   owner.root != UINT32_MAX && owner.root != owner.parent};
+    return Halo2VehicleCameraChaseFor(key);
 }

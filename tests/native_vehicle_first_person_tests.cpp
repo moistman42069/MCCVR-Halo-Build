@@ -38,6 +38,11 @@ void HostUnloadGate_Pin(HMODULE,std::atomic<bool>*,const std::atomic<uint64_t>*,
 void HostUnloadGate_Unpin(HMODULE) {++unpinned;}
 bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& output) noexcept
 {output=owned;return ownedValid&&title==activeTitle;}
+// The vehicle cameras' question (game.cpp): a chase camera is chosen for this Halo 2 seat. No, unless a test says so.
+static bool chaseChosen=false;
+static unsigned chaseAsked=0;
+bool Game_Halo2VehicleCameraChase(const NativeVehicleCameraOwner& owner) noexcept
+{++chaseAsked;return chaseChosen&&owner.parent==owned.parent&&owner.seat==owned.seat;}
 // The sight clock: a millisecond further on at every read.
 uint64_t Sight_NowUs() {static uint64_t us=1000;return us+=1000;}
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -139,6 +144,32 @@ template<unsigned I> void Run()
         activeGeneration=8;
         Check(!NativeVehicleFirstPerson_PlacedPoint(activeTitle,placed),"a point from another generation is no answer");
         activeGeneration=7;
+    }
+    if constexpr(I==1) {
+        // The point the game's own evaluator answered before the head replaced it: the vehicle cameras' pivot.
+        NativeVehicleSeatPoint native{};
+        Check(NativeVehicleFirstPerson_Halo2NativePoint(native)&&native.point[0]==-10&&native.point[1]==-20&&
+            native.point[2]==-30&&native.parent==owned.parent&&native.seat==owned.seat&&native.generation==7&&
+            native.vehicleIdentity==owned.vehicleIdentity&&native.us,"H2 native seat point published with its seat");
+        activeGeneration=8;
+        Check(!NativeVehicleFirstPerson_Halo2NativePoint(native),"a native point from another generation is no answer");
+        activeGeneration=7;
+        // A chase camera of the vehicle camera file chosen for the seat leaves it to the game's own answer.
+        const unsigned asked=chaseAsked;
+        chaseChosen=true;
+        Check(SelectHook<I>(owned.unit,&mode)==1&&mode==2&&chaseAsked>asked,
+            "a seat with a chase camera chosen keeps the game's own answer");
+        std::memset(result,0,sizeof(result));camera();
+        Check(position[0]==-10&&position[1]==-20&&position[2]==-30,"and its evaluator's point is left where the game put it");
+        chaseChosen=false;
+        Check(SelectHook<I>(owned.unit,&mode)==0,"without one the seat is first person again");
+        camera();Check(position[0]==10&&position[1]==20&&position[2]==30,"at the occupant's head");
+    }
+    else
+    {
+        const unsigned asked=chaseAsked;chaseChosen=true;
+        Check(SelectHook<I>(owned.unit,&mode)==0&&chaseAsked==asked,"the vehicle cameras' stand-down is Halo 2's alone");
+        chaseChosen=false;
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if constexpr(I==2) {

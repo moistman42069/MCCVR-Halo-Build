@@ -44,6 +44,24 @@ struct NativeVehicleSeatPoint
     uint64_t us{};
 };
 bool NativeVehicleFirstPerson_PlacedPoint(GameTitle title, NativeVehicleSeatPoint& out) noexcept;
+// HALO 2, for the vehicle cameras (halo2_vehicle_cameras.inl). Each only while this override is installed for the
+// current Halo 2 generation; guarded (a fault latches this feature off, as one in its own hooks does). Call on the
+// thread that builds the frame's camera (the observer's).
+//   NativePoint: the point the game's own first-person evaluator last answered for our seat BEFORE the override moved
+//     it to the head -- the unit camera position, which for a seated unit is its seat's camera marker: the point the
+//     game's third-person camera turns about. With its seat and when (Sight_NowUs); a seqlock.
+//   Head: the occupant's head marker (position, forward, up), carried onto the vehicle as drawn this frame where
+//     vehicle_cam_smoothing is on -- as the seat camera places it, before its trims.
+//   Root: an object's root node this frame, as drawn (`drawn`) or as simulated: the engine's node matrix (scale,
+//     forward, left, up, position; seat_camera_ride_logic.h).
+bool NativeVehicleFirstPerson_Halo2NativePoint(NativeVehicleSeatPoint& out) noexcept;
+bool NativeVehicleFirstPerson_Halo2Head(const NativeVehicleCameraOwner& owner, float position[3], float forward[3],
+                                        float up[3]) noexcept;
+bool NativeVehicleFirstPerson_Halo2Root(uint32_t object, bool drawn, float frame[13]) noexcept;
+// game.cpp (halo2_vehicle_cameras.inl): a chase camera of the vehicle camera file is chosen for exactly this Halo 2
+// seat. While it is, the override leaves the seat to the game's own (third-person) answer. One atomic load while none
+// is chosen.
+bool Game_Halo2VehicleCameraChase(const NativeVehicleCameraOwner& owner) noexcept;
 #if HALOMCCVR_DEV_DIAGNOSTICS
 void Game_Halo4CameraOwnerReport() noexcept;   // dev: why Game_ReadVehicleCameraOwner refused Halo 4 seats
 

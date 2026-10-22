@@ -63,6 +63,13 @@ struct Runtime
     std::atomic<int> placedSeat{-1};
     std::atomic<uint64_t> placedIdentity{},placedUs{};
     std::atomic<float> placedPoint[3]{};
+    // Halo 2: the point the game's own evaluator answered for the seat before the override moved it to the head
+    // (NativeVehicleFirstPerson_Halo2NativePoint), the same seqlock shape.
+    std::atomic_flag nativeWriting=ATOMIC_FLAG_INIT;
+    std::atomic<uint32_t> nativeVersion{},nativeGeneration{},nativeParent{UINT32_MAX};
+    std::atomic<int> nativeSeat{-1};
+    std::atomic<uint64_t> nativeIdentity{},nativeUs{};
+    std::atomic<float> nativePoint[3]{};
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // Why the selector was not taken over: the native mode it chose (0-4, other), and Owner()'s first refusal.
     std::atomic<uint32_t> modeSeen[6]{};
@@ -374,6 +381,9 @@ template<unsigned I> bool SelectOwned(uint32_t unit,Mode<I>* mode) noexcept
         if (mode) runtime[I].modeSeen[(*mode>=0&&*mode<=4)?unsigned(*mode):5u].fetch_add(1,std::memory_order_relaxed);
 #endif
         if (!mode||*mode!=2||!Owner(I,unit,before)) return false;
+        // Halo 2: a chase camera of the vehicle camera file is chosen for this seat. The game's own answer stands,
+        // so the game draws the occupant and the camera is placed off the seat (Game_Halo2VehicleCameraChase).
+        if constexpr (I==1) if (Game_Halo2VehicleCameraChase(before)) return false;
         if (!Head(I,before,point,false)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return false;}
         return Owner(I,unit,after)&&before==after;
     } __except(EXCEPTION_EXECUTE_HANDLER) {
@@ -385,6 +395,7 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
     __try {
         NativeVehicleCameraOwner before{},after{};float point[3]{};Mode<I> mode{};
         if (!result||!Owner(I,unit,before)) return;
+        if constexpr (I==1) if (Game_Halo2VehicleCameraChase(before)) return;
         reinterpret_cast<SelectorFn<I>>(runtime[I].original[Selector])(unit,&mode);
         if (mode!=2) return;
         if (!Head(I,before,point,true)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return;}
@@ -396,9 +407,28 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
         [[maybe_unused]] float native[3]{};
         if constexpr (I==2) std::memcpy(native,static_cast<const uint8_t*>(result)+4,12);
 #endif
+        auto& r=runtime[I];
+        if constexpr (I==1) {
+            // Halo 2: the point the evaluator answered before the head replaces it -- the unit camera position,
+            // which for a seated unit is the seat's own camera marker, the point the game's third-person camera
+            // turns about (the vehicle cameras' "thirdperson" pivot). A second writer skips.
+            float native[3]{};
+            std::memcpy(native,static_cast<const uint8_t*>(result)+4,12);
+            if (std::isfinite(native[0])&&std::isfinite(native[1])&&std::isfinite(native[2])&&
+                !r.nativeWriting.test_and_set(std::memory_order_acquire)) {
+                r.nativeVersion.fetch_add(1,std::memory_order_acq_rel);   // odd: writing
+                r.nativeGeneration.store(before.generation,std::memory_order_relaxed);
+                r.nativeParent.store(before.parent,std::memory_order_relaxed);
+                r.nativeSeat.store(before.seat,std::memory_order_relaxed);
+                r.nativeIdentity.store(before.vehicleIdentity,std::memory_order_relaxed);
+                for (unsigned axis=0;axis<3;++axis) r.nativePoint[axis].store(native[axis],std::memory_order_relaxed);
+                r.nativeUs.store(Sight_NowUs(),std::memory_order_relaxed);
+                r.nativeVersion.fetch_add(1,std::memory_order_release);   // even: published
+                r.nativeWriting.clear(std::memory_order_release);
+            }
+        }
         // After the full native evaluation, including any slave-turret marker.
         std::memcpy(static_cast<uint8_t*>(result)+4,point,12);
-        auto& r=runtime[I];
         if constexpr (I==2) {
             if (!r.placedWriting.test_and_set(std::memory_order_acquire)) {
                 r.placedVersion.fetch_add(1,std::memory_order_acq_rel);   // odd: writing
@@ -595,6 +625,87 @@ bool NativeVehicleFirstPerson_PlacedPoint(GameTitle title,NativeVehicleSeatPoint
         out=p;return true;
     }
     return false;
+}
+bool NativeVehicleFirstPerson_Halo2NativePoint(NativeVehicleSeatPoint& out) noexcept
+{
+    constexpr unsigned i=1;   // Halo 2 only
+    if (kBindings[i].title!=TitleAdapter_GetActiveTitle()) return false;
+    const auto& r=runtime[i];
+    if (!r.requested.load(std::memory_order_acquire)||r.faulted.load(std::memory_order_acquire)) return false;
+    for (int attempt=0;attempt<2;++attempt) {
+        const uint32_t before=r.nativeVersion.load(std::memory_order_acquire);
+        if (!before||(before&1u)) continue;
+        NativeVehicleSeatPoint p{};
+        p.generation=r.nativeGeneration.load(std::memory_order_relaxed);
+        p.parent=r.nativeParent.load(std::memory_order_relaxed);
+        p.seat=static_cast<int16_t>(r.nativeSeat.load(std::memory_order_relaxed));
+        p.vehicleIdentity=r.nativeIdentity.load(std::memory_order_relaxed);
+        for (unsigned axis=0;axis<3;++axis) p.point[axis]=r.nativePoint[axis].load(std::memory_order_relaxed);
+        p.us=r.nativeUs.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (r.nativeVersion.load(std::memory_order_relaxed)!=before) continue;
+        if (!p.us||p.generation!=TitleAdapter_GetGeneration(kBindings[i].title)||p.parent==UINT32_MAX||p.seat<0)
+            return false;
+        out=p;return true;
+    }
+    return false;
+}
+bool NativeVehicleFirstPerson_Halo2Head(const NativeVehicleCameraOwner& owner,float position[3],float forward[3],
+    float up[3]) noexcept
+{
+    constexpr unsigned i=1;   // Halo 2 only
+    auto& r=runtime[i];
+    if (!position||!forward||!up||owner.unit==UINT32_MAX) return false;
+    r.callbacks.fetch_add(1,std::memory_order_acq_rel);
+    bool read=false;
+    __try {
+        if (Current(i)&&r.marker) {
+            alignas(16) uint8_t record[128]{};
+            if (reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t)>(r.marker)(
+                    owner.unit,0x4000095,record,1)==1) {
+                float p[3]{},f[3]{},u[3]{};
+                std::memcpy(p,record+96,12);std::memcpy(f,record+60,12);std::memcpy(u,record+84,12);
+                float fl=0,ul=0,dot=0;bool finite=true;
+                for (unsigned axis=0;axis<3;++axis) {
+                    finite=finite&&std::isfinite(p[axis])&&std::isfinite(f[axis])&&std::isfinite(u[axis]);
+                    fl+=f[axis]*f[axis];ul+=u[axis]*u[axis];dot+=f[axis]*u[axis];
+                }
+                if (finite&&std::fabs(fl-1)<=0.05f&&std::fabs(ul-1)<=0.05f&&std::fabs(dot)<=0.05f) {
+                    if (g_config.vehicle_cam_smoothing) RideDrawnVehicle(owner,p);
+                    std::memcpy(position,p,12);std::memcpy(forward,f,12);std::memcpy(up,u,12);
+                    read=true;
+                }
+            }
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        Fault(i);read=false;
+    }
+    r.callbacks.fetch_sub(1,std::memory_order_release);
+    return read;
+}
+bool NativeVehicleFirstPerson_Halo2Root(uint32_t object,bool drawn,float frame[13]) noexcept
+{
+    constexpr unsigned i=1;   // Halo 2 only
+    auto& r=runtime[i];
+    if (!frame||object==UINT32_MAX) return false;
+    r.callbacks.fetch_add(1,std::memory_order_acq_rel);
+    bool read=false;
+    __try {
+        if (Current(i)&&r.markerInterpolated) {
+            const auto query=reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t,uint8_t,uint8_t)>(
+                r.markerInterpolated);
+            alignas(16) uint8_t record[128]{};
+            if (query(object,0,record,1,0,drawn?1:0)==1) {
+                float m[seat_camera_ride::kFrameFloats]{};
+                std::memcpy(m,record+56,sizeof(m));
+                if (seat_camera_ride::UsableFrame(m)) {std::memcpy(frame,m,sizeof(m));read=true;}
+            }
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        Fault(i);read=false;
+    }
+    r.callbacks.fetch_sub(1,std::memory_order_release);
+    return read;
 }
 int NativeVehicleFirstPerson_InSimulationTick(GameTitle title) noexcept
 {
