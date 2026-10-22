@@ -1136,8 +1136,9 @@ void Halo4VehicleCamerasColdLog(bool seated)
     headMissStint += g_halo4VehicleCameraHeadMisses.exchange(0, std::memory_order_relaxed);
     const uint32_t trail = g_halo4VehicleCameraLagTrailCm.exchange(0, std::memory_order_relaxed);
     trailStint = trail > trailStint ? trail : trailStint;
-    // The pivot the game's camera turns about, each time it is found again with more lines behind it.
-    if (g_halo4VehicleCameraPivotSolved.load(std::memory_order_acquire))
+    // The pivot the game's camera turns about, each time it is found again with more lines behind it (in the seat:
+    // the flag stays up after it, until the next seat's first frame).
+    if (seated && g_halo4VehicleCameraPivotSolved.load(std::memory_order_acquire))
     {
         const uint32_t samples = g_halo4VehicleCameraPivotSamples.load(std::memory_order_relaxed);
         if (samples && (!pivotLoggedSamples || samples >= 4 * pivotLoggedSamples))
