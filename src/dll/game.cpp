@@ -15576,6 +15576,7 @@ namespace
             // deliberately zero here: the orientation above already applied
             // them, and applying them twice double-pitches the lean.
             bool leanFollowed = false;
+            float lean[3] = {0.0f, 0.0f, 0.0f};
             if (rotationFollows)
             {
                 const float trackedYawDelta =
@@ -15590,22 +15591,29 @@ namespace
                     Halo3TransformBasisVector(positionBasis, roomLocal,
                                               positionWorld))
                 {
-                    position[0] += Clamp(positionWorld[0] * scale, -1.5f, 1.5f);
-                    position[1] += Clamp(positionWorld[1] * scale, -1.5f, 1.5f);
-                    position[2] += Clamp(positionWorld[2] * scale, -1.5f, 1.5f);
+                    lean[0] = Clamp(positionWorld[0] * scale, -1.5f, 1.5f);
+                    lean[1] = Clamp(positionWorld[1] * scale, -1.5f, 1.5f);
+                    lean[2] = Clamp(positionWorld[2] * scale, -1.5f, 1.5f);
                     leanFollowed = true;
                 }
             }
             if (!leanFollowed)
             {
-                position[0] += Clamp(
+                lean[0] = Clamp(
                     (cosYaw * forwardMove + sinYaw * rightMove) * scale,
                     -1.5f, 1.5f);
-                position[1] += Clamp(
+                lean[1] = Clamp(
                     (sinYaw * forwardMove - cosYaw * rightMove) * scale,
                     -1.5f, 1.5f);
-                position[2] += Clamp(dy * scale, -1.5f, 1.5f);
+                lean[2] = Clamp(dy * scale, -1.5f, 1.5f);
             }
+            // A chase camera's own leash (vehicle_cameras.inl): the head moves the view only inside the box the camera
+            // sets, so a lean cannot take the eyes through what the camera sits beside.
+            if (!cinematic)
+                Halo3VehicleCameraLeashHead(lean);
+            position[0] += lean[0];
+            position[1] += lean[1];
+            position[2] += lean[2];
             // THE LEASH BELOW THE CHARACTER'S EYE, as Halo 3's ApplyHeadLook: at most
             // head_leash_below_eye_m below his CURRENT eye, on foot and player-controlled only.
             const float leash = g_config.head_leash_below_eye_m;
