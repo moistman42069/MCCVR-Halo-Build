@@ -201,13 +201,17 @@ bool HaloCEVehicleCameras_FollowingLive() noexcept
     return Current();
 }
 
+// Counted before anything is checked, as the hook is: retirement waits for the count, so the module cannot go between
+// the check and the query.
 bool HaloCEVehicleCameras_RootFrame(uint32_t object,float position[3],float forward[3],float up[3]) noexcept
 {
-    if (!Current()||object==UINT32_MAX) return false;
     callbacks.fetch_add(1,std::memory_order_acq_rel);
     bool ok=false;
-    __try { ok=MarkerFrame(object,"",position,forward,up); }
-    __except(EXCEPTION_EXECUTE_HANDLER) { faults.fetch_add(1,std::memory_order_relaxed);ok=false; }
+    if (object!=UINT32_MAX&&Current())
+    {
+        __try { ok=MarkerFrame(object,"",position,forward,up); }
+        __except(EXCEPTION_EXECUTE_HANDLER) { faults.fetch_add(1,std::memory_order_relaxed);ok=false; }
+    }
     callbacks.fetch_sub(1,std::memory_order_release);
     return ok;
 }
