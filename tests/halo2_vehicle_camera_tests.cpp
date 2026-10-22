@@ -107,6 +107,15 @@ static void TestKeyAndSize()
           "bounds that are not a box have no size");
 }
 
+static void TestRing()
+{
+    Check(RingFollowsAim(true, false, 0u), "a gun riding a carrier aims where it looks");
+    Check(RingFollowsAim(false, true, 0x00001098u), "a seat flagged gunner (the Warthog's gun) aims where it looks");
+    Check(!RingFollowsAim(false, true, 0x00048014u) && !RingFollowsAim(false, true, 0x00001070u),
+          "a driver's or a passenger's seat aims along the hull");
+    Check(!RingFollowsAim(false, false, kSeatGunnerBit), "flags that were not read say nothing");
+}
+
 static void TestOrbit()
 {
     const float warthog[6] = {-0.996299f, 0.984343f, -0.51156f, 0.503887f, -0.018016f, 0.760923f};
@@ -150,6 +159,7 @@ int main()
     TestRoles();
     TestKeyAndSize();
     TestOrbit();
+    TestRing();
     TestEntries();
     std::printf("halo2_vehicle_camera_tests: %u checks passed\n", g_checks);
     return 0;

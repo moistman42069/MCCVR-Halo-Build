@@ -229,8 +229,9 @@ struct Halo2VehicleCameraPassRecord
     vehicle_camera_select::ActiveCamera camera{};
     vehicle_camera_place::Placed where{};
     // For the aim ring (Halo2VehicleAimMarkerStep): the seat the camera was placed for, the seat's own point (where
-    // the seat's aim is solved from, before the camera moved the view), the way the vehicle faces, and the way the
-    // game's own camera looked this frame (its aim pitch).
+    // the seat's aim is solved from, before the camera moved the view), the heading the seat aims along (the hull's,
+    // or a gun's own: halo2_vehicle_camera::RingFollowsAim), and the way the game's own camera looked this frame (its
+    // aim pitch).
     VehicleCameraSeatKey seat{};
     bool seatEyeValid = false;
     float seatEye[3]{};
@@ -418,10 +419,9 @@ bool Halo2VehicleCameraPlace(const Halo2VehicleCameraSeatSample& sample, const V
     pass.seat = key;
     pass.seatEyeValid = in.seatValid && vehicle_camera_place::Finite3(in.seat);
     memcpy(pass.seatEye, in.seat, sizeof(pass.seatEye));
-    // The way the seat aims: the hull's heading for a seat the hull carries, the gun's own (where the game's camera
-    // looks) for a gun -- one riding a carrier, or a gunner's seat -- which turns on its own.
-    const bool gunSeat = onCarrier || (halo2_vehicle_camera::SeatBits(sample.flagsKnown, sample.seatFlags, onCarrier,
-                                                                      sample.seat) & halo2_vehicle_camera::kSeatGunnerBit);
+    // The heading the seat aims along: the hull's, or a gun's own (where the game's camera looks), which turns on its
+    // own (halo2_vehicle_camera::RingFollowsAim).
+    const bool gunSeat = halo2_vehicle_camera::RingFollowsAim(onCarrier, sample.flagsKnown, sample.seatFlags);
     memcpy(pass.vehicleForward, gunSeat ? sample.stockForward : in.vehicle.forward, sizeof(pass.vehicleForward));
     memcpy(pass.looks, sample.stockForward, sizeof(pass.looks));
     pass.looksValid = vehicle_camera_place::Finite3(pass.looks) && vehicle_camera_frame::Normalize(pass.looks);
@@ -539,8 +539,8 @@ std::atomic<uint32_t> g_halo2VehicleAimMarkerTracedFrames{0};
 // THE VEHICLE AIM RING ("aimMarker", vehicle_aim_marker_logic.h), as Halo 3 and Reach place it: observer thread, once
 // the view is built from this frame's chase camera. `eye`, `forward` and `up` are the view the frame is drawn from
 // (the tracked centre camera), `headQuat` the head's orientation in the headset's space that view was built with
-// ([x, y, z, w]). The line the vehicle aims along is its heading at the game's own aim pitch, from the seat's own
-// point; its depth is Halo 2's sight trace of that ray (Halo2SightAuxTraces); its direction in the headset's space is
+// ([x, y, z, w]). The line the seat aims along is its heading (the hull's, or a gun's own) at the game's own aim
+// pitch, from the seat's own point; its depth is Halo 2's sight trace of that ray (Halo2SightAuxTraces); its direction in the headset's space is
 // the view's: the direction from the eye in the view's own axes (right, up, back), turned by the head. The frame
 // thread draws it (Game_GetVehicleAimMarker). Shares Halo 3's ring record: one title runs at a time.
 void Halo2VehicleAimMarkerStep(const float eye[3], const float forward[3], const float up[3], const float headQuat[4])

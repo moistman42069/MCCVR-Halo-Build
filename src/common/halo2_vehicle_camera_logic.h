@@ -150,6 +150,14 @@ inline float BoundsRadius(const float bounds[6]) noexcept
     return std::isfinite(radius) ? radius : 0.0f;
 }
 
+// THE AIM RING'S HEADING (Halo2VehicleAimMarkerStep): a seat that aims a gun -- a gun riding a carrier, or a seat
+// whose own flags (the engine's, read: `flagsKnown`) carry the gunner bit -- aims where the gun looks, which turns on
+// its own; any other seat aims along the hull's heading. False where the flags were not read and nothing is ridden.
+inline bool RingFollowsAim(bool onCarrier, bool flagsKnown, uint32_t seatFlags) noexcept
+{
+    return onCarrier || (flagsKnown && (seatFlags & kSeatGunnerBit) != 0);
+}
+
 // THE THIRD-PERSON ORBIT'S PIVOT in Halo 2 (the game's own camera is never shown in a seat view, so its pivot is not
 // measured): the middle of the vehicle's height, in world units above its origin -- a vehicle's root sits at the
 // bottom of its model (the Warthog's bounds run from -0.02 to 0.76 wu up), and an orbit of that would put the camera
