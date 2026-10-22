@@ -1423,11 +1423,8 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
             {
                 // Over the whole flat look range an orbit stands the camera straight above the vehicle or under the
                 // ground (measured in Reach: the stick took it to 85.5 deg either way, and the game's own camera pulls
-                // in from 7 m to under 5 m at its extreme looks). Halo 3's track keeps its boom within its own swing;
-                // without one, Reach's orbit is held between 10 deg below and 60 deg above level.
-                vehicle_boom::BuildOrbitShape(vehicle_boom::Range{-60.0f * vehicle_boom::kRadiansPerDegree,
-                                                                  10.0f * vehicle_boom::kRadiansPerDegree},
-                                              b.shape);
+                // in from 7 m to under 5 m at its extreme looks): Reach's orbit has a range of its own.
+                vehicle_boom::BuildOrbitShape(reach_vehicle_camera::BoomRange(), b.shape);
             }
             else
             {

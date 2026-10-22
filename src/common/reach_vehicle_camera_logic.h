@@ -19,11 +19,13 @@
 //
 // Pure: no engine.
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 
 #include "reach_vehicle_logic.h"
+#include "vehicle_boom_logic.h"
 #include "vehicle_camera_file.h"
 
 namespace reach_vehicle_camera
@@ -92,6 +94,31 @@ inline void CustomName(const ReachVehicleFingerprint& fingerprint, int physicsTy
             hash *= 16777619u;
         }
     std::snprintf(out, kNameCapacity, "custom_%08x", static_cast<unsigned>(hash));
+}
+
+// THE GAME'S OWN THIRD-PERSON CAMERA ORBITS THE SEAT'S PIVOT (measured in a Mongoose: the same 7 m from the point
+// unit_get_camera_info gives the seat at looks of -7.6 and +2.2 deg, its elevation falling as the look rises). Where it
+// stands looking level is therefore the elevation it stood at PLUS the look it had then, in whole degrees (so a boom
+// that starts from it is not moved for a fraction). `rise` is its height above the pivot, `distance` how far it
+// stands, `lookDeg` its look (up is positive). Unset (vehicle_boom::kBoomPitchUnset) when the two do not make an angle.
+inline float OrbitLevelElevationDeg(float rise, float distance, float lookDeg) noexcept
+{
+    if (!std::isfinite(rise) || !std::isfinite(distance) || !std::isfinite(lookDeg) || !(distance > 1.0e-3f) ||
+        std::fabs(rise) > distance)
+        return vehicle_boom::kBoomPitchUnset;
+    const float degrees = std::asin(rise / distance) / vehicle_boom::kRadiansPerDegree + lookDeg;
+    return std::isfinite(degrees) ? std::round(degrees) : vehicle_boom::kBoomPitchUnset;
+}
+
+// THE BOOM'S RANGE in Reach, as look pitches for vehicle_boom's orbit (the camera's elevation is minus the pitch):
+// Halo 3's track bounds its boom to its own swing; with no track, the orbit over the whole flat look range stood the
+// camera straight above the vehicle or under the ground (measured). Held between 10 deg below and 60 deg above level.
+inline constexpr float kBoomLowestDeg = -10.0f;
+inline constexpr float kBoomHighestDeg = 60.0f;
+inline vehicle_boom::Range BoomRange() noexcept
+{
+    return vehicle_boom::Range{-kBoomHighestDeg * vehicle_boom::kRadiansPerDegree,
+                               -kBoomLowestDeg * vehicle_boom::kRadiansPerDegree};
 }
 
 // The seat's vehicle as the camera file names it. `carrier` is the identity of the object the seated one rides

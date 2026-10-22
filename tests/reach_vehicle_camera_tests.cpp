@@ -143,11 +143,46 @@ static void TestBuiltInEntries()
           "and a vehicle with no entry of its own Reach's default");
 }
 
+// The game's own camera orbits the seat's pivot: where it stands looking level, and the boom's range.
+static void TestOrbit()
+{
+    // Measured in a Mongoose: 699 cm out, 129 cm up at a look of +2.2 deg; 696 cm out, 230 cm up at -7.6 deg.
+    const float a = OrbitLevelElevationDeg(129.0f, 699.0f, 2.2f);
+    const float b = OrbitLevelElevationDeg(230.0f, 696.0f, -7.6f);
+    Check(a == 13.0f && b == 12.0f, "both samples put the level elevation at about 12-13 deg, whatever the look");
+    Check(std::fabs(a - b) <= 1.0f, "the look is taken out: two looks 10 deg apart agree within a degree");
+    Check(OrbitLevelElevationDeg(0.0f, 500.0f, 0.0f) == 0.0f, "level and looking level is level");
+    Check(!vehicle_boom::BoomPitchSet(OrbitLevelElevationDeg(10.0f, 0.0f, 0.0f)) &&
+              !vehicle_boom::BoomPitchSet(OrbitLevelElevationDeg(600.0f, 500.0f, 0.0f)) &&
+              !vehicle_boom::BoomPitchSet(OrbitLevelElevationDeg(std::nanf(""), 500.0f, 0.0f)),
+          "a sample that makes no angle is unset");
+
+    const vehicle_boom::Range range = BoomRange();
+    vehicle_boom::Shape orbit;
+    vehicle_boom::BuildOrbitShape(range, orbit);
+    const float lowest = vehicle_boom::ElevationAt(orbit, range.max) / vehicle_boom::kRadiansPerDegree;
+    const float highest = vehicle_boom::ElevationAt(orbit, range.min) / vehicle_boom::kRadiansPerDegree;
+    Check(std::fabs(lowest - kBoomLowestDeg) < 0.1f && std::fabs(highest - kBoomHighestDeg) < 0.1f,
+          "the orbit goes from 10 deg below to 60 deg above level");
+    const float start = vehicle_boom::ElevationAt(
+        orbit, vehicle_boom::PitchForElevation(orbit, (a + vehicle_boom::kDefaultRaiseDeg) * vehicle_boom::kRadiansPerDegree));
+    Check(std::fabs(start / vehicle_boom::kRadiansPerDegree - (a + vehicle_boom::kDefaultRaiseDeg)) < 0.5f,
+          "and the start, the game's level view a little higher, lies inside it");
+    float up = 0.0f, down = 0.0f;
+    for (int frame = 0; frame < 200; ++frame)
+    {
+        up = vehicle_boom::Step(up, 1.0f, 0.05f, 60.0f, false, range);
+        down = vehicle_boom::Step(down, -1.0f, 0.05f, 60.0f, false, range);
+    }
+    Check(up == range.max && down == range.min, "a stick held all the way stops the boom at the ends");
+}
+
 int main()
 {
     TestNames();
     TestRoles();
     TestBuiltInEntries();
+    TestOrbit();
     std::printf("PASS: %u Reach vehicle camera checks\n", g_checks);
     return 0;
 }
