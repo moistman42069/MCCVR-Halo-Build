@@ -138,8 +138,9 @@ struct Camera
     // its head; 0 = the seat view as the game gives it, which draws its first-person legs only; -1 (left out) = the
     // seat's default (EffectiveShowHeadlessBody). A chase camera is not changed by it.
     int showHeadlessBody = -1;
-    // "eyeAdjust" (any camera; Halo 3, Reach): false holds the game's eye adaptation while the camera is in use, so the
-    // exposure stays as it was when the camera was chosen -- a dark cockpit then cannot brighten the view outside.
+    // "eyeAdjust" (any camera; Halo 3, Reach, Halo 4): false holds the game's eye adaptation while the camera is in
+    // use, so the exposure stays as it was when the camera was chosen -- a dark cockpit then cannot brighten the view
+    // outside.
     bool eyeAdjust = true;
     // "hideRegions" (Halo 3): the regions of the player's own vehicle this camera does not draw -- each a region's
     // name as the parts file lists it ("canopy"), or its number there. Empty = the vehicle drawn whole.
