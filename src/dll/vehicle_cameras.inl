@@ -1377,9 +1377,9 @@ void VehicleBoomCheckLog(VehicleCameraRuntime& r)
 // Cold worker, every poll. `wanted`: a camera of origin "thirdperson" is in use in a Halo 3 seat; `seated`: this
 // poll's seat could be read (an unreadable poll keeps the boom as it is).
 // `title`: the seat's game. Reach's and Halo 2's camera tracks are not read: their boom orbits a pivot (Reach's the
-// game's own, Halo 2's the middle of the vehicle's height) over a range of its own, -10 to 60 deg above level (reach_vehicle_camera::BoomRange, halo2_vehicle_camera::BoomRange; their
-// own look limits are not read), and its stick is not inverted unless vehicle_boom_invert says so (their inversion
-// settings are not read). Their camera threads run it on the same shared boom (reach_vehicle_cameras.inl,
+// game's own, Halo 2's the middle of the vehicle's height) over a range of its own (reach_vehicle_camera::BoomRange,
+// -10 to 60 deg above level; halo2_vehicle_camera::BoomRange, 0 to 60; their own look limits are not read), and its
+// stick is not inverted unless vehicle_boom_invert says so (their inversion settings are not read). Their camera threads run it on the same shared boom (reach_vehicle_cameras.inl,
 // halo2_vehicle_cameras.inl).
 void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::ActiveCamera& active, bool wanted,
                          bool seated, uint32_t definitionIndex, const char* name, uint64_t nowMs,

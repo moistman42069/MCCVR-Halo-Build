@@ -175,13 +175,16 @@ inline float OrbitPivotUpWu(bool read, const float bounds[6]) noexcept
 }
 
 // THE BOOM'S RANGE in Halo 2, as look pitches for vehicle_boom's orbit (the camera's elevation is minus the pitch):
-// Halo 2's camera track is not read, so the orbit is held between 10 deg below and 60 deg above level, as Reach's
-// (the whole flat look range stood the camera straight above the vehicle or under the ground there).
-inline constexpr float kBoomLowestDeg = -10.0f;
+// Halo 2's camera track is not read, so the orbit is held to a range of its own, as Reach's is (the whole flat look
+// range stood the camera straight above the vehicle or under the ground there): from level with its pivot -- the
+// middle of the vehicle's height (OrbitPivotUpWu) -- to 60 deg above. Below its pivot's height the orbit only looks
+// at the vehicle's underside and reaches the ground within a metre (seen in game at Reach's -10 deg).
+inline constexpr float kBoomLowestDeg = 0.0f;
 inline constexpr float kBoomHighestDeg = 60.0f;
 inline vehicle_boom::Range BoomRange() noexcept
 {
+    // (0 - lowest), not -lowest: a lowest of 0 makes +0, which logs as "0.0", not "-0.0".
     return vehicle_boom::Range{-kBoomHighestDeg * vehicle_boom::kRadiansPerDegree,
-                               -kBoomLowestDeg * vehicle_boom::kRadiansPerDegree};
+                               (0.0f - kBoomLowestDeg) * vehicle_boom::kRadiansPerDegree};
 }
 } // namespace halo2_vehicle_camera
