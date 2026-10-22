@@ -143,6 +143,31 @@ static void TestBuiltInEntries()
           "and a vehicle with no entry of its own Reach's default");
 }
 
+// The Warthog's seat cameras as chosen in game: above the turret post for the driver and the passenger, above and
+// behind the gunner. Halo 3's keep their own values.
+static void TestWarthogPlacements()
+{
+    const vehicle_camera_file::Table builtIn = vehicle_camera_file::DefaultTable();
+    const auto offset = [&](const char* game, const char* entry, const char* camera, float x, float y, float z) {
+        const vehicle_camera_file::Game* section = builtIn.FindGame(game);
+        if (!section)
+            return false;
+        for (const vehicle_camera_file::Vehicle& vehicle : section->vehicles)
+            if (vehicle.name == entry)
+                for (const vehicle_camera_file::Camera& c : vehicle.cameras)
+                    if (c.name == camera)
+                        return c.offset[0] == x && c.offset[1] == y && c.offset[2] == z;
+        return false;
+    };
+    Check(offset("reach", "Warthog", "Over the Shoulder", -160.0f, 0.0f, 160.0f) &&
+              offset("reach", "Warthog passenger", "Over the Shoulder", -160.0f, 0.0f, 160.0f) &&
+              offset("reach", "Warthog gunner", "Behind the Gun", -280.0f, 0.0f, 160.0f),
+          "Reach's Warthog seats take the placements chosen in game");
+    Check(offset("halo3", "Warthog", "Over the Shoulder", -200.0f, 90.0f, 70.0f) &&
+              offset("halo3", "Warthog gunner", "Behind the Gun", -150.0f, 0.0f, 50.0f),
+          "and Halo 3's keep theirs");
+}
+
 // The game's own camera orbits the seat's pivot: where it stands looking level, and the boom's range.
 static void TestOrbit()
 {
@@ -182,6 +207,7 @@ int main()
     TestNames();
     TestRoles();
     TestBuiltInEntries();
+    TestWarthogPlacements();
     TestOrbit();
     std::printf("PASS: %u Reach vehicle camera checks\n", g_checks);
     return 0;

@@ -1387,16 +1387,19 @@ Table DefaultTable()
     // carries the vehicle's word ("warthog_gauss", "wraith_gunner", "scorpion_anti_infantry"), or -- a walk-up gun
     // riding a carrier, as the Falcon's side guns do -- by the carrier's. Sizes follow Reach's own bounds: the
     // Falcon stands about 9 m across and the Sabre's bounds about 16 m.
+    // The Warthog's seat cameras stand higher and further back than Halo 3's: Reach's seat point sits low in the seat,
+    // so Halo 3's values put the driver's and the passenger's camera behind the turret post and the gunner's against
+    // his own back (three placements a seat compared in game).
     Game reach;
     reach.key = kGameKeys[2];
     reach.vehicles = {
         Entry("Warthog", "warthog", driver,
-              {Chase("Over the Shoulder", Origin::Seat, -200, 90, 70, true, 0.15f),
+              {Chase("Over the Shoulder", Origin::Seat, -160, 0, 160, true, 0.15f),
                Chase("Left Side", Origin::Seat, 0, -140, 40, true, 0.0f)}),
         Entry("Warthog passenger", "warthog", passenger,
-              {Chase("Over the Shoulder", Origin::Seat, -200, -90, 70, true, 0.15f),
+              {Chase("Over the Shoulder", Origin::Seat, -160, 0, 160, true, 0.15f),
                Chase("Right Side", Origin::Seat, 0, 140, 40, true, 0.0f)}),
-        Entry("Warthog gunner", "warthog", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+        Entry("Warthog gunner", "warthog", gunner, {Chase("Behind the Gun", Origin::Seat, -280, 0, 160, true, 0.1f)}),
         Entry("Mongoose", "mongoose", driver, {Chase("Over the Shoulder", Origin::Seat, -170, 80, 70, true, 0.15f)}),
         Entry("Mongoose passenger", "mongoose", passenger,
               {Chase("Over the Shoulder", Origin::Seat, -170, -80, 70, true, 0.15f)}),
