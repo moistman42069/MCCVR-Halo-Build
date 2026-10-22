@@ -13988,6 +13988,7 @@ namespace
         uint32_t carrierDefinitionIndex = 0xFFFFFFFFu;
         uint32_t cameraOnCarrier = 0;
         uint32_t carrierVehicleId = static_cast<uint32_t>(OdstVehicleId::Unknown);
+        uint32_t cameraFrameSampled = 0; // this sample looked for the cameras' frame (they were on): hullValid answers
         uint32_t hullValid = 0;
         float hullPos[3]{};
         float hullFwd[3]{};
@@ -14351,6 +14352,7 @@ namespace
             seat.identity = xf.vehicleId;
             seat.mounted = xf.cameraOnCarrier != 0;
             const bool hullValid = xf.hullValid != 0;
+            const bool frameSampled = xf.cameraFrameSampled != 0;
             memcpy(seat.hullPos, xf.hullPos, sizeof(seat.hullPos));
             memcpy(seat.hullFwd, xf.hullFwd, sizeof(seat.hullFwd));
             memcpy(seat.hullUp, xf.hullUp, sizeof(seat.hullUp));
@@ -14375,7 +14377,9 @@ namespace
                 return false;
             if (!hullValid)
             {
-                if (frameless)
+                // Frameless only where the frame was looked for: a sample from before the cameras were switched on
+                // carries none, and is a moment stale rather than a seat without a frame.
+                if (frameless && frameSampled)
                     *frameless = true;
                 return false;
             }
@@ -15261,7 +15265,8 @@ namespace
         // THE VEHICLE CAMERAS' VIEW OF THE SEAT (vehicle_cameras.inl): the vehicle's frame as the game moves it (the
         // carrier's, for a gun riding one), its bounds and its drawn root node. Only while they are on.
         OdstCameraSeatFrame cameraFrame{};
-        if (seated && g_config.vehicle_cameras)
+        const bool cameraFrameSampled = seated && g_config.vehicle_cameras;
+        if (cameraFrameSampled)
             OdstSampleCameraFrame(generation, parent, parentObjectData, anchorId, carrier, carrierObjectData,
                                   carrierDefIndex, carrierIsRoot, cameraFrame);
         const VehicleCameraSeatKey cameraKey{generation, parent, seat, static_cast<uint32_t>(anchorId),
@@ -15478,6 +15483,7 @@ namespace
             xf.carrierDefinitionIndex = cameraFrame.onCarrier ? carrierDefIndex : 0xFFFFFFFFu;
             xf.cameraOnCarrier = cameraFrame.onCarrier ? 1u : 0u;
             xf.carrierVehicleId = static_cast<uint32_t>(cameraFrame.carrierId);
+            xf.cameraFrameSampled = cameraFrameSampled ? 1u : 0u;
             xf.hullValid = cameraFrame.hullValid ? 1u : 0u;
             memcpy(xf.hullPos, cameraFrame.hull.pos, sizeof(xf.hullPos));
             memcpy(xf.hullFwd, cameraFrame.hull.fwd, sizeof(xf.hullFwd));
@@ -15499,6 +15505,7 @@ namespace
             xf.anchorValid = 0;
             xf.anchorBaseValid = 0;
             xf.headParented = 0;
+            xf.cameraFrameSampled = 0;
             xf.hullValid = 0;
             xf.rootValid = 0;
             xf.cameraOnCarrier = 0;
