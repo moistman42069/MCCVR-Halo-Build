@@ -92,6 +92,9 @@ static void TestEntries()
               EntryFor(IdentityName(0x0000001312130c01ull), kSeatDriver) == "Mongoose" &&
               EntryFor("mongoose", kSeatPassenger) == "Mongoose passenger",
           "the Mongoose's model is named, and its seats find their entries");
+    Check(IdentityName(0x0000000f120e1a0bull) != nullptr &&
+              EntryFor(IdentityName(0x0000000f120e1a0bull), kSeatDriver | kSeatGunner) == "Ghost",
+          "the Ghost's model is named, and its seat (it drives and fires) finds the Ghost's entry");
     char buffer[kNameCapacity];
     const char* custom = SeatVehicleName(0x0000002a12345678ull, false, 0, buffer);
     Check(EntryFor(custom, kSeatDriver) == "default", "an unmeasured vehicle rides Halo 4's default entry");

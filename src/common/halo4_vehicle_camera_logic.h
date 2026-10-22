@@ -51,6 +51,7 @@ inline constexpr KnownVehicle kKnownVehicles[] = {
     {0x0000001d1a19101eull, "broadsword"}, // the Broadsword boost camera fix's identity (game.cpp)
     {0x0000003511090710ull, "warthog"},    // Forge: the Default and the Rocket Warthog, its passenger's seat
     {0x0000001312130c01ull, "mongoose"},   // Forge: its driver's seat (seat flags 00020014)
+    {0x0000000f120e1a0bull, "ghost"},      // Forge: its seat, the driver's and the gun's (seat flags 0400001C)
 };
 
 // The name of a measured identity; null for any other.
