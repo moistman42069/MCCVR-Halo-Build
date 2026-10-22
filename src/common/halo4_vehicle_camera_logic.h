@@ -4,7 +4,7 @@
 //
 //   NAME. Halo 4 gives the mod no tag path to read: a vehicle is known by its render model's identity
 //   (halo4_vehicle_identity.inl: the model's node count above its runtime import checksum, one number on every map and
-//   in every session). The models measured in game go by the stock vehicle's word ("warthog", "broadsword"), the
+//   in every session). The models measured in game go by the stock vehicle's word ("warthog", "mongoose"), the
 //   words Halo 3's and Reach's sections use; the camera file's entries for the others wait on their models. A gun mounted on a vehicle (the Warthog's turret) is a seated object of
 //   its own riding the vehicle: it goes by the CARRIER's name where the carrier is known, as Halo 3 names a gunner by
 //   the vehicle carrying the gun. Any other vehicle goes by "custom_" and its identity in hex, so each keeps an entry,
@@ -49,6 +49,7 @@ struct KnownVehicle
 inline constexpr KnownVehicle kKnownVehicles[] = {
     {0x0000001d1a19101eull, "broadsword"}, // the Broadsword boost camera fix's identity (game.cpp)
     {0x0000003511090710ull, "warthog"},    // Forge: the Default and the Rocket Warthog, its passenger's seat
+    {0x0000001312130c01ull, "mongoose"},   // Forge: its driver's seat (seat flags 00020014)
 };
 
 // The name of a measured identity; null for any other.
