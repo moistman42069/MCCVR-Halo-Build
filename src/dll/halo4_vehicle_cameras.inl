@@ -510,12 +510,13 @@ struct Halo4VehicleCameraRest
     VehicleCameraSeatKey seat{};
     halo4_vehicle_camera::PivotFinder finder{};
     bool pivotKnown = false;
-    float pivotLocal[3]{};
+    float pivotSolved[3]{}; // the last solve: what the distance is measured from
+    float pivotLocal[3]{};  // eased toward it: what the camera orbits, so a new solve glides rather than steps
+    LARGE_INTEGER pivotAt{};
     uint32_t sinceSolve = 0;
     float distance = 0.0f;
     float rise = 0.0f;
     bool level = false;
-    bool measuredFromPivot = false; // the distance was taken from the found pivot, not the stand-in point
     // Until the lines cross: the height, over the vehicle's origin, at which the game's camera line passes it.
     float standInHeight = 0.0f;
     uint32_t seen = 0;   // frames the game's following camera has been up in this seat, since it last was not
@@ -530,6 +531,7 @@ inline constexpr uint32_t kHalo4RestWaitFrames = 45;
 // stand-in, so the seat's view and its aim are the mod's again.
 inline constexpr uint32_t kHalo4RestFollowingWaitFrames = 300;
 inline constexpr float kHalo4RestPivotMovedWu = 0.1f;
+inline constexpr float kHalo4RestPivotSmoothSeconds = 0.25f; // Halo 3's kHalo3RestPivotSmoothSeconds
 inline constexpr uint32_t kHalo4RestSolveEvery = 15;
 inline constexpr float kHalo4RestLevelSin = 0.26f;
 
@@ -573,17 +575,22 @@ bool Halo4VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, const vehicle
                 float found[3]{}, residual = 0.0f;
                 if (rest.finder.Solve(found, &residual))
                 {
-                    const float moved[3] = {found[0] - rest.pivotLocal[0], found[1] - rest.pivotLocal[1],
-                                            found[2] - rest.pivotLocal[2]};
+                    const float moved[3] = {found[0] - rest.pivotSolved[0], found[1] - rest.pivotSolved[1],
+                                            found[2] - rest.pivotSolved[2]};
                     if (!rest.pivotKnown || vehicle_camera_frame::Dot(moved, moved) > kHalo4RestPivotMovedWu * kHalo4RestPivotMovedWu)
                     {
-                        // Distances taken from the stand-in point, or from a pivot since moved, are not this pivot's:
-                        // measure again from here.
-                        rest.distance = 0.0f;
+                        // A distance taken from the stand-in point, or from a pivot since moved, is not this pivot's:
+                        // the next level look measures it again. Until then it stands, so the camera does not jump.
                         rest.level = false;
                     }
+                    if (!rest.pivotKnown)
+                    {
+                        // The eased point starts where the stand-in's orbit turned, so the camera glides to the pivot.
+                        rest.pivotLocal[0] = rest.pivotLocal[1] = 0.0f;
+                        rest.pivotLocal[2] = rest.standInHeight;
+                    }
                     rest.pivotKnown = true;
-                    memcpy(rest.pivotLocal, found, sizeof(found));
+                    memcpy(rest.pivotSolved, found, sizeof(found));
                     for (int axis = 0; axis < 3; ++axis)
                         g_halo4VehicleCameraPivot[axis].store(found[axis], std::memory_order_relaxed);
                     g_halo4VehicleCameraPivotResidualWu.store(residual, std::memory_order_relaxed);
@@ -594,7 +601,7 @@ bool Halo4VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, const vehicle
             // Until the lines have crossed, the point of this line nearest the vehicle's origin stands in.
             float pivot[3]{};
             if (rest.pivotKnown)
-                memcpy(pivot, rest.pivotLocal, sizeof(pivot));
+                memcpy(pivot, rest.pivotSolved, sizeof(pivot));
             else
             {
                 const float origin[3] = {0.0f, 0.0f, 0.0f};
@@ -614,7 +621,6 @@ bool Halo4VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, const vehicle
                 rest.distance = distance;
                 rest.rise = stood[2];
                 rest.level = level;
-                rest.measuredFromPivot = rest.pivotKnown;
                 const float lookDeg = asinf(lookUp < -1.0f ? -1.0f : (lookUp > 1.0f ? 1.0f : lookUp)) * 57.29578f;
                 if (level && rest.pivotKnown)
                 {
@@ -634,6 +640,16 @@ bool Halo4VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, const vehicle
     // there): the cold worker's publication for this seat and camera -- an orbit of the pivot over Halo 4's range
     // (halo4_vehicle_camera::BoomRange), starting at the player's kept angle, else the file's "boomPitch", else the
     // game's level view a little higher -- or, until one comes, the stand-in orbit over the same range.
+    // The pivot the camera orbits eases toward the last solve.
+    {
+        const float seconds = Halo4VehicleCameraSecondsSince(rest.pivotAt);
+        if (rest.pivotKnown)
+        {
+            const float blend = seconds >= 0.0f ? 1.0f - std::exp(-seconds / kHalo4RestPivotSmoothSeconds) : 1.0f;
+            for (int axis = 0; axis < 3; ++axis)
+                rest.pivotLocal[axis] += (rest.pivotSolved[axis] - rest.pivotLocal[axis]) * blend;
+        }
+    }
     // The wait for the game's camera to be read: while its following camera is up, until it has been up
     // kHalo4RestFollowingWaitFrames (its distance is coming: the director's own change of view settles first, and
     // meanwhile the frame shows that camera itself, the flat game's view); else kHalo4RestWaitFrames of placing.
