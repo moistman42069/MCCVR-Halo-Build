@@ -15143,7 +15143,10 @@ namespace
                             data + kOdstObjectParentNodeOffset);
                         parent = *reinterpret_cast<const int32_t*>(
                             data + kOdstObjectParentOffset);
-                        if (parent != -1)
+                        // An index past the object table's capacity is not an entry: the unit reads as unseated
+                        // (no parent data) rather than a read past the table, whose fault disarms the whole seat.
+                        if (parent != -1 &&
+                            static_cast<uint32_t>(parent & 0xFFFF) < kOdstObjectTableCapacity)
                         {
                             unsigned char* parentEntry = entries +
                                 static_cast<size_t>(parent & 0xFFFF) *
