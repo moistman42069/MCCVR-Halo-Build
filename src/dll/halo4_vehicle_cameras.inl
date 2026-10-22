@@ -1030,8 +1030,10 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
     // "eyeAdjust": false holds Halo 4's eye adaptation (render_exposure_lock, engine_exposure_lock.inl) while the
     // camera in use for this seat says so. The pass says so for this frame; the wrapper applies it once the frame is
     // done, on every path (Halo4VehicleCameraExposureFrame).
+    // A frame the pass cannot decide (the seat read failed, or the vehicle's place did not read) is not an answer:
+    // it rides out like a frame left stock.
     g_halo4ExposureHoldWanted = frame.active && Halo4VehicleCameraHoldsExposure(Halo4VehicleCameraKey(frame));
-    g_halo4ExposurePassAsked = true;
+    g_halo4ExposurePassAsked = frame.active || (seatRead && !seat.seated);
     if (seatRead && !seat.seated)
     {
         g_halo4VehicleCameraNose = Halo4VehicleCameraNose{};
