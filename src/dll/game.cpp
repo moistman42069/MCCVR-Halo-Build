@@ -14653,15 +14653,20 @@ namespace
             g_camValid.load(std::memory_order_acquire);
     }
 
-    // The ODST seat's view is the mod's: C20 holds the seat in the game's own first-person camera, or a chase camera
-    // of the vehicle cameras' is chosen for it. Under a chase camera the seat keeps the game's third-person camera
-    // (the sampler gives the flag back), which is where a stock seat is aimed from, and the mod places the view at a
-    // pitch of its own, never the aim's: the same as a Halo 3 seat under one, whose view stays owned.
+    // The seat sampler's last decision for the seat it sampled: a chase camera of the vehicle cameras' shows it (the
+    // seat's first-person flag not taken or given back). Camera thread writes; the aim reads it, so the aim follows
+    // what the game is drawing, the sampler's hold over a torn read included.
+    std::atomic<uint32_t> g_odstChaseShown{0};
+
+    // The ODST seat's view is the mod's: C20 holds the seat in the game's own first-person camera, or the sampler
+    // shows it from a chase camera of the vehicle cameras'. Under a chase camera the seat keeps the game's
+    // third-person camera, which is where a stock seat is aimed from, and the mod places the view at a pitch of its
+    // own, never the aim's: the same as a Halo 3 seat under one, whose view stays owned.
     bool OdstSeatViewOwned()
     {
         return g_odstNativeSeatState.load(std::memory_order_acquire) ==
                    static_cast<uint32_t>(OdstNativeSeatState::Active) ||
-            Halo3VehicleCameraThirdPerson();
+            (g_odstChaseShown.load(std::memory_order_acquire) != 0 && OdstVehicleFpActive());
     }
 
     // O3: the follow gate for the shared reader. ODST answers only when its
@@ -15211,6 +15216,7 @@ namespace
             // A fault here means an offset is wrong for this build. Disarm the
             // whole ODST vehicle transaction loudly rather than keep reading.
             OdstRestoreNativeSeatPatch();
+            g_odstChaseShown.store(0, std::memory_order_release);
             g_odstVehicleTransform.valid.store(0, std::memory_order_relaxed);
             g_odstVehicleFpStable.store(
                 static_cast<uint32_t>(Halo3VehicleState::Unknown),
@@ -15275,6 +15281,7 @@ namespace
             chaseShown = s_chaseShown && s_chaseSeat == cameraKey;
         s_chaseSeat = cameraKey;
         s_chaseShown = chaseShown;
+        g_odstChaseShown.store(chaseShown ? 1u : 0u, std::memory_order_release);
         if (seated && !chaseShown)
             OdstEnsureFirstPersonSeatFlag(defIndex, seat, generation);
         else if (!(seated && OdstSeatPatchRefused(defIndex, seat, generation)))
@@ -57281,7 +57288,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             // reach_vehicle_aim = 0 (cfg only; F1's Converged aim covers seats) keeps every seat's old aim.
             // ...and only while C20 actually holds that seat in the first-person camera (vehicle_hide_body): without
             // it the engine renders its chase camera, g_baseCam is that camera, and a solve from it would bend
-            // the shot for an eye the seat does not fire from.
+            // the shot for an eye the seat does not fire from -- while the mod shows a FIRST-PERSON view there. Under
+            // a chase camera of the vehicle cameras' that chase camera is what the seat is aimed from, so the seat is
+            // named and solved from it (below; Halo 3 keeps its patch Active then, ODST asks OdstSeatViewOwned).
             if (seated && g_config.reach_vehicle_aim > 0)
             {
                 // (The witness's reason until a seat whose view is ours names its vehicle.)
