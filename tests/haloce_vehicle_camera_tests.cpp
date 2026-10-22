@@ -130,6 +130,26 @@ static void TestBuiltInEntries()
     Check(EntryFor("shade", kSeatDriver | kSeatGunner) == "Shade", "the Shade");
     Check(EntryFor("wraith", kSeatDriver | kSeatGunner) == "Wraith", "the Wraith");
     Check(EntryFor("fancy_hog", kSeatDriver) == "default", "a vehicle the section does not name rides its default");
+    // The Warthog's over-the-shoulder cameras stand over the outer shoulder, higher than Halo 3's (the seat's point is
+    // the occupant's hips), and Halo 3's own stay as they were.
+    const auto offset = [](const char* game, const char* entry, const char* camera, float x, float y, float z) {
+        const vehicle_camera_file::Game* section = builtIn.FindGame(game);
+        if (!section)
+            return false;
+        for (const vehicle_camera_file::Vehicle& vehicle : section->vehicles)
+            if (vehicle.name == entry)
+                for (const vehicle_camera_file::Camera& c : vehicle.cameras)
+                    if (c.name == camera)
+                        return c.offset[0] == x && c.offset[1] == y && c.offset[2] == z;
+        return false;
+    };
+    Check(offset("halo1", "Warthog", "Over the Shoulder", -170.0f, -30.0f, 140.0f) &&
+              offset("halo1", "Warthog passenger", "Over the Shoulder", -170.0f, 30.0f, 140.0f) &&
+              offset("halo1", "Warthog gunner", "Behind the Gun", -150.0f, 0.0f, 90.0f),
+          "CE's Warthog seats take the placements chosen from the first pictures in game");
+    Check(offset("halo3", "Warthog", "Over the Shoulder", -200.0f, 90.0f, 70.0f) &&
+              offset("halo3", "Warthog passenger", "Over the Shoulder", -200.0f, -90.0f, 70.0f),
+          "and Halo 3's keep theirs");
     // Every entry starts in the seat view, and the second camera is where the game's own rests.
     bool seatFirst = true;
     for (const vehicle_camera_file::Vehicle& vehicle : ce->vehicles)
