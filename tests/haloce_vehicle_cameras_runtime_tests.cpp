@@ -93,6 +93,14 @@ bool RootFrameFaults()
     float p[3], f[3], u[3];
     return !HaloCEVehicleCameras_RootFrame(kRoot, p, f, u);
 }
+
+// A stand-in for the game's following camera to hook for real: the same signature, a body MinHook can relocate.
+unsigned standInCalls{};
+__declspec(noinline) void __fastcall StandInFollowing(void* camera, const void* controls, void* result)
+{
+    ++standInCalls;
+    TestFollowing(camera, controls, result);
+}
 } // namespace
 
 Config::Config() {}
@@ -240,13 +248,30 @@ int main()
     Check(CommandIsTheGames(command), "nor is another title's camera moved");
     testTitle = GameTitle::HaloCE;
 
-    // Retirement: it waits for every callback, and both compiled ranges resolve.
-    target = reinterpret_cast<void*>(moduleBase + halo_ce::vehicle_camera_contract::following);
+    // Retirement, on a real hook (a stand-in with the following camera's signature): it waits for every callback,
+    // disables first, removes only once drained, and both compiled ranges resolve.
+    void* standIn = reinterpret_cast<void*>(&StandInFollowing);
+    Check(MH_CreateHook(standIn, reinterpret_cast<void*>(&FollowingHook), &original) == MH_OK &&
+              MH_EnableHook(standIn) == MH_OK,
+          "fixture: the stand-in is hooked");
+    target = standIn;
+    enabled = true;
+    // Called through a pointer the compiler cannot see through: the hook changes what the call does behind its back.
+    void(__fastcall* volatile callStandIn)(void*, const void*, void*) = &StandInFollowing;
+    const unsigned placedHooked = placeCalls;
+    callStandIn(nullptr, nullptr, command);
+    Check(standInCalls == 1 && placeCalls == placedHooked + 1 && Near(reinterpret_cast<const float*>(command + 4)[0], 1),
+          "through the real hook the game's camera runs, then the chase camera is placed");
     callbacks = 1;
-    Check(!Remove() && retiring.load() && moduleBase != 0, "a callback still counted keeps the module and the hook");
+    Check(!Remove() && retiring.load() && moduleBase != 0 && target == standIn && !enabled,
+          "a callback still counted: the hook is disabled, but the module and the hook are kept");
+    callStandIn(nullptr, nullptr, command);
+    Check(standInCalls == 2 && placeCalls == placedHooked + 1 && CommandIsTheGames(command),
+          "a disabled hook is the game's own camera");
     callbacks = 0;
     Check(Remove() && !moduleBase && !generation.load() && !retiring.load() && !target && !original,
-          "with every callback drained the hook retires and the module is let go");
+          "with every callback drained the hook is removed and the module is let go");
+    Check(MH_EnableHook(standIn) == MH_ERROR_NOT_CREATED, "and nothing of the hook is left behind");
     Check(unwindChecks == 4 && !unwindFailures, "both retirements resolve the hook's and the root-frame query's ranges");
 
     MH_Uninitialize();

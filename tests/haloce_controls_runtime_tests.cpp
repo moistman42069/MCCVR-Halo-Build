@@ -443,8 +443,8 @@ int main()
         // THE SEAT CAMERA'S TRACK (the vehicle cameras' boom): the seat's camera at +0x84 of its seat in the vehicle
         // definition's seat block; its look limits; its first track, else the game globals' default; the control
         // points, at most 32 of them copied. Cache pointers are relocated as the engine relocates them.
-        const intptr_t virtualBase=*reinterpret_cast<const intptr_t*>(moduleBase+0x2ea3410);
-        const intptr_t mappedBase=*reinterpret_cast<const intptr_t*>(moduleBase+0x2d9ce10);
+        const intptr_t virtualBase=*reinterpret_cast<const intptr_t*>(moduleBase+halo_ce::vehicle_camera_contract::cacheVirtualBase);
+        const intptr_t mappedBase=*reinterpret_cast<const intptr_t*>(moduleBase+halo_ce::vehicle_camera_contract::cacheMappedBase);
         const auto cache=[&](uintptr_t host){ return int32_t(intptr_t(host)-mappedBase+virtualBase); };
         const uintptr_t seats=arena+0xe800,tracks=arena+0xeb00,points=arena+0xec40,defaultPoints=arena+0xee40,
             defaultReference=arena+0xef80,globalsData=arena+0xf000;
