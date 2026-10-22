@@ -209,6 +209,18 @@ static void TestANewSection()
               custom.entries[0].cameras.size() == 3 && custom.entries[1].isDefault,
           "a vehicle with no preset gets its own entry with the default's cameras, and the default entry");
 
+    // A file whose default section has no "default" entry gave the game's vehicles no camera: the new section adds
+    // the vehicle's presets alone, and a vehicle with none gets nothing (it had no camera before either).
+    Table bare = old;
+    for (Game& game : bare.games)
+        if (game.key == kDefaultKey)
+            game.vehicles.clear();
+    const Addition presetsOnly = For(bare, builtIn, "reach", "warthog", driver);
+    Check(presetsOnly.newSection && presetsOnly.entries.size() == 3 && !presetsOnly.entries.back().isDefault,
+          "with no default entry to copy, the new section holds the presets alone");
+    Check(For(bare, builtIn, "reach", "custom_1234abcd", driver).entries.empty(),
+          "and a vehicle with no preset and nothing to ride on gets nothing");
+
     for (const bool windows : {false, true})
     {
         const std::string original = windows ? Crlf(ToJson(old)) : ToJson(old);
