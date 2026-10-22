@@ -113,6 +113,7 @@
 #include "../common/reach_chud_logic.h"
 #include "../common/reach_render_logic.h"
 #include "../common/reach_vehicle_logic.h"
+#include "../common/reach_vehicle_camera_logic.h"
 #include "../common/reach_hand_shot_logic.h"
 #include "../common/aim_no_unit_logic.h"
 #include "../common/title_runtime_state.h"
@@ -21306,6 +21307,24 @@ namespace
         // ReachPublishCompletedFrameFeedback).
         bool nativeCameraValid = false;
         float nativeCameraPoint[3]{};
+        // For the vehicle cameras (reach_vehicle_cameras.inl), all from the same sample: the seated object's root
+        // node as drawn, the seat's own point on it (latched once per occupation), the root of the carrier a gun
+        // rides (an attached gun's, a walk-up gun's on a vehicle), the definition's bounding sphere, and the
+        // identity tuple and physics type the identity was resolved from.
+        bool rootValid = false;
+        float rootPos[3]{};
+        float rootForward[3]{};
+        float rootLeft[3]{};
+        float rootUp[3]{};
+        float seatPoint[3]{};
+        bool carrierRootValid = false;
+        float carrierPos[3]{};
+        float carrierForward[3]{};
+        float carrierLeft[3]{};
+        float carrierUp[3]{};
+        float boundsRadius = 0.0f;
+        ReachVehicleFingerprint fingerprint{};
+        int32_t physicsType = -1;
     };
 
     struct ReachRenderHelpers
@@ -32114,6 +32133,7 @@ namespace
     // perspective long enough for the engine to build the first-person weapon
     // models. The value-only key and re-resolve-before-restore safety that
     // R-V20 designed is kept; only the toggling is gone.
+    bool ReachVehicleCameraChaseFor(const ReachVehicleFrame& frame); // reach_vehicle_cameras.inl
     bool ReachEnsureNativeFirstPersonSeat(const ReachVehicleFrame& frame)
     {
         if (!kReachSeatFirstPersonPresentationEnabled)
@@ -32132,8 +32152,10 @@ namespace
         // Co-op safe: the seat's flags are data the simulation reads too, so clearing the camera bit changes the
         // game on this machine only. While one-machine changes are not allowed the passenger seat is left as the
         // game built it (and keeps the game's own camera).
+        // A chase camera of the vehicle camera file shows the seat as the flat game does: the seat keeps its own
+        // third-person word, so the game draws the occupant and no first-person weapon.
         if (!frame.active || !g_config.vehicle_first_person || !Sight_FireTimeChangesAllowed() ||
-            (frame.seatFlags & kReachSeatAllowsWeaponsBit) == 0 ||
+            (frame.seatFlags & kReachSeatAllowsWeaponsBit) == 0 || ReachVehicleCameraChaseFor(frame) ||
             g_reachCamera.teardownRequested.load(std::memory_order_acquire) ||
             g_reachCamera.vehicleCameraBindingState.load(
                 std::memory_order_acquire) != static_cast<uint8_t>(
@@ -32698,6 +32720,15 @@ namespace
                 frame.definitionDatum = definitionDatum;
                 frame.identity = identity;
                 frame.seatFlags = seatFlags;
+                frame.rootValid = true;
+                memcpy(frame.rootPos, rootMarker.matrix.position, sizeof(frame.rootPos));
+                memcpy(frame.rootForward, rootMarker.matrix.forward, sizeof(frame.rootForward));
+                memcpy(frame.rootLeft, rootMarker.matrix.left, sizeof(frame.rootLeft));
+                memcpy(frame.rootUp, rootMarker.matrix.up, sizeof(frame.rootUp));
+                memcpy(frame.seatPoint, anchorWorld, sizeof(frame.seatPoint));
+                frame.boundsRadius = std::isfinite(boundsRadius) && boundsRadius > 0.0f ? boundsRadius : 0.0f;
+                frame.fingerprint = fingerprint;
+                frame.physicsType = observedType;
                 frame.unitAimValid = unitAimValid;
                 frame.nativeCameraValid = true;   // finite: checked right after the camera-info call
                 memcpy(frame.nativeCameraPoint, info.worldCameraPoint,
@@ -32823,6 +32854,11 @@ namespace
                             Halo3MatrixValid(carrierRoot.matrix);
                         if (frame.carrierBasisValid)
                         {
+                            frame.carrierRootValid = true;
+                            memcpy(frame.carrierPos, carrierRoot.matrix.position, sizeof(frame.carrierPos));
+                            memcpy(frame.carrierForward, carrierRoot.matrix.forward, sizeof(frame.carrierForward));
+                            memcpy(frame.carrierLeft, carrierRoot.matrix.left, sizeof(frame.carrierLeft));
+                            memcpy(frame.carrierUp, carrierRoot.matrix.up, sizeof(frame.carrierUp));
                             memcpy(frame.rawCarrierForward,
                                    carrierRoot.matrix.forward,
                                    sizeof(frame.rawCarrierForward));
@@ -33243,10 +33279,21 @@ namespace
             ReachVehicleUsesWheel(identity);
     }
 
+    // The vehicle cameras in Reach's seats (the camera file, the seat's eye moved or stood at a chase camera).
+#include "reach_vehicle_cameras.inl"
+
     void ReachApplySeatYawFollow(const ReachVehicleFrame& frame)
     {
         const uint32_t generation = g_reachCamera.generation.load(
             std::memory_order_relaxed);
+        // A chase camera of the vehicle camera file turns the view by its own mode's rotationTracking in its seat;
+        // every other seat view by the checkbox. Steering follows whichever applies, as it follows the checkbox.
+        bool cameraYaw = false, cameraPitch = false;
+        const bool cameraTurns = ReachVehicleCameraViewTurn(frame, cameraYaw, cameraPitch);
+        const bool followEnabled = cameraTurns ? cameraYaw : g_config.vehicle_view_follow;
+        const bool pitchWanted = !cameraTurns || cameraPitch;
+        if (cameraTurns && cameraYaw)
+            g_reachVehicleCameraFollowMs.store(GetTickCount64(), std::memory_order_release);
         // R-V16: ownership is follow-coupled again, exactly as the accepted
         // Halo 3 title does it. R-V14 handed a ground driver's stick to the
         // hull unconditionally, which cured the resting-hand slide but left
@@ -33258,7 +33305,7 @@ namespace
         // Follow ON keeps R-V14's authored stick steering, which is also what
         // Halo 3 does with the switch on.
         const bool groundDriverAuthors = frame.active &&
-            g_config.vehicle_view_follow &&
+            followEnabled &&
             ReachVehicleSeatIsDriver(frame.identity, frame.seatIndex) &&
             ReachVehicleUsesWheel(frame.identity) &&
             ReachVehicleFpActive();
@@ -33293,7 +33340,7 @@ namespace
             frame.carrier != frame.directParent;
         const bool follows = frame.active && ReachVehicleFpActive() &&
             frame.carrierBasisValid &&
-            g_config.vehicle_view_follow &&
+            followEnabled &&
             (ReachVehicleSeatFollowsHull(
                  frame.identity, frame.seatIndex) ||
              mountedWalkUp);
@@ -33323,7 +33370,7 @@ namespace
             g_gameYawRef = WrapPi(g_gameYawRef + delta);
 
         float hullPitch = 0.0f;
-        if (ReachVehicleSeatFollowsPitch(
+        if (pitchWanted && ReachVehicleSeatFollowsPitch(
                 frame.identity, frame.seatIndex) &&
             g_reachSeatYaw.armed &&
             Halo3RollStablePitchFromForward(
@@ -33340,7 +33387,7 @@ namespace
         const bool authors = groundDriverAuthors ||
             ReachVehicleSeatAuthorsSteering(
                 frame.identity, frame.seatIndex,
-                g_config.vehicle_view_follow);
+                followEnabled);
         g_reachSeatAuthorsSteering.store(
             authors ? 1u : 0u, std::memory_order_release);
     }
@@ -33537,6 +33584,9 @@ namespace
         PublishDirectorView(g_reachTwoHandView, g_reachDirectorCamera, g_reachSandboxEditor, GetTickCount64(),
                             epoch.generation);
         ReachApplySeatYawFollow(vehicleFrame);
+        // The vehicle camera file's camera for this seat: the seat's eye moved, or stood at a chase camera's place,
+        // before the head-centre camera is built from it. The stock camera is the game's own for this frame.
+        ReachVehicleCamerasPass(vehicleFrame, primaryCompact);
         const bool stableVehicle =
             g_reachVehicleFpStable.load(std::memory_order_relaxed)==
                 static_cast<uint32_t>(Halo3VehicleState::Vehicle);
@@ -33852,7 +33902,8 @@ namespace
 
         uintptr_t result = 0;
         ReachUnitCameraHideScope bodyHide{};
-        if (candidate.vehicleViewApplied)
+        // A chase camera of the vehicle camera file sees the occupant, as the flat game's own camera does.
+        if (candidate.vehicleViewApplied && !ReachVehicleCameraChaseFor(candidate.vehicle))
             ReachBeginUnitCameraPlayerHide(candidate.vehicle, bodyHide);
         __try
         {
