@@ -48,13 +48,17 @@ struct ReachVehicleCameraSeatRecord
 ReachVehicleCameraSeatRecord g_reachVehicleCameraSeat;
 inline constexpr uint64_t kReachVehicleCameraSeatFreshMs = 250;
 
-// The carrier's identity, kept per carrier object for the run (render thread).
+// The carrier's identity, kept per carrier object for the run (render thread). A read that failed (no object data,
+// no definition, a fault) is tried again on the next frames, up to kReachCarrierReadTries, before Unknown is kept.
 struct ReachVehicleCameraCarrierCache
 {
     uint32_t generation = 0;
     int32_t carrier = -1;
     ReachVehicleId identity = ReachVehicleId::Unknown;
+    bool known = false;
+    uint32_t failures = 0;
 };
+inline constexpr uint32_t kReachCarrierReadTries = 30;
 ReachVehicleCameraCarrierCache g_reachVehicleCameraCarrier;
 
 // The seat's key as every reader of the published camera matches it (VehicleCameraSeatKey).
@@ -72,9 +76,16 @@ ReachVehicleId ReachVehicleCameraCarrierIdentity(const ReachVehicleFrame& frame)
         return ReachVehicleId::Unknown;
     const uint32_t generation = g_reachCamera.generation.load(std::memory_order_acquire);
     ReachVehicleCameraCarrierCache& cache = g_reachVehicleCameraCarrier;
-    if (cache.generation == generation && cache.carrier == frame.carrier)
+    if (cache.generation != generation || cache.carrier != frame.carrier)
+    {
+        cache = ReachVehicleCameraCarrierCache{};
+        cache.generation = generation;
+        cache.carrier = frame.carrier;
+    }
+    if (cache.known)
         return cache.identity;
     ReachVehicleId identity = ReachVehicleId::Unknown;
+    bool read = false;
     __try
     {
         uint8_t kind = 0;
@@ -85,16 +96,19 @@ ReachVehicleId ReachVehicleCameraCarrierIdentity(const ReachVehicleFrame& frame)
             const auto* definition =
                 static_cast<const unsigned char*>(g_reachCamera.tagGet(kReachVehicleGroupTag, datum));
             if (definition)
+            {
                 identity = ReachResolveVehicleDefinition(definition, datum);
+                read = true;
+            }
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
         identity = ReachVehicleId::Unknown;
+        read = false;
     }
-    cache.generation = generation;
-    cache.carrier = frame.carrier;
     cache.identity = identity;
+    cache.known = read || ++cache.failures >= kReachCarrierReadTries;
     return identity;
 }
 
