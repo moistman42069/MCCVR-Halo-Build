@@ -793,6 +793,8 @@ struct Halo4VehicleCameraTurn
     LARGE_INTEGER at{};
 };
 Halo4VehicleCameraTurn g_halo4VehicleCameraTurn; // render thread
+inline constexpr float kHalo4TurnLevelMin = 0.3f;  // the forward's length in the horizontal plane (about 72 deg up)
+inline constexpr float kHalo4TurnLeapRad = 0.35f;  // about 20 deg in one frame
 
 void Halo4VehicleCameraTurnView(const VehicleCameraSeatKey& key, bool turns, const float hullForward[3])
 {
@@ -813,13 +815,12 @@ void Halo4VehicleCameraTurnView(const VehicleCameraSeatKey& key, bool turns, con
     }
     const float delta = vehicle_camera_frame::YawDelta(heading, turn.heading);
     turn.heading = heading;
-    if (!std::isfinite(delta) || delta == 0.0f)
+    // A nose near straight up or down has no heading to speak of (over the top of a loop it flips by half a turn),
+    // and a frame's turn past kHalo4TurnLeapRad is not the hull turning: the heading is taken afresh instead.
+    const float level = sqrtf(hullForward[0] * hullForward[0] + hullForward[1] * hullForward[1]);
+    if (!std::isfinite(delta) || delta == 0.0f || !(level >= kHalo4TurnLevelMin) || std::fabs(delta) > kHalo4TurnLeapRad)
         return;
-    float reference = g_halo4Camera.gameYawReference.load(std::memory_order_relaxed);
-    while (!g_halo4Camera.gameYawReference.compare_exchange_weak(reference, WrapPi(reference + delta),
-                                                                 std::memory_order_relaxed))
-    {
-    }
+    Halo4AddGameYawReference(delta);
     g_halo4VehicleCameraTurnFrames.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -927,7 +928,13 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
         Halo4VehicleCameraTurnView(key, false, frame.rootForward);
         return;
     }
-    Halo4VehicleCameraTurnView(key, camera.rotYaw, frame.carrierRootValid ? frame.carrierForward : frame.rootForward);
+    // The hull it turns with: the carrier a gun rides, else the seated object -- unless that object is itself a gun
+    // standing alone (its seat fires and does not drive), whose root turns with the aim: the view would chase it.
+    const bool loneGun = !frame.carrierRootValid && frame.flagsKnown &&
+                         (frame.seatFlags & halo4_vehicle_camera::kSeatGunnerBit) != 0 &&
+                         (frame.seatFlags & halo4_vehicle_camera::kSeatDriverBit) == 0;
+    Halo4VehicleCameraTurnView(key, camera.rotYaw && !loneGun,
+                               frame.carrierRootValid ? frame.carrierForward : frame.rootForward);
     // The game's camera is its following camera when the override has stood down for this seat and the game itself
     // chose it (a seat the game shows in first person keeps its eye there).
     const bool following = nativeKnown && nativeChase &&
