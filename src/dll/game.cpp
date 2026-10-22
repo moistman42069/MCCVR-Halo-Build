@@ -33570,6 +33570,8 @@ namespace
             !ReachRenderCandidate_IsPreflightCurrent(preflight) ||
             !prepared.Ready() || !VR_ReachDisplayReady(epoch))
         {
+            // A frame the mod leaves stock runs no vehicle camera pass: a held exposure goes back to the engine.
+            EngineExposureLockApply(g_reachExposure, false);
             return g_reachOrigMainRenderView(
                 workspace, playerView, windowIndex);
         }
@@ -33580,6 +33582,7 @@ namespace
         if (!VR_ReachGetRenderSnapshot(prepared, tracking) ||
             tracking.preparedSerial != prepared.Serial())
         {
+            EngineExposureLockApply(g_reachExposure, false);
             return g_reachOrigMainRenderView(
                 workspace, playerView, windowIndex);
         }
@@ -33618,6 +33621,7 @@ namespace
             memcmp(primaryDerived, secondaryDerived,
                    kReachDerivedBlockSize) != 0)
         {
+            EngineExposureLockApply(g_reachExposure, false);
             return g_reachOrigMainRenderView(
                 workspace, playerView, windowIndex);
         }
@@ -34931,8 +34935,6 @@ namespace
         ReachClearHullHeading();
         g_reachCamera.teardownRequested.store(
             true, std::memory_order_release);
-        // A held exposure is a module global that outlives this camera core: give it back to the engine.
-        EngineExposureLockRelease(g_reachExposure);
         g_reachCamera.armed.store(false, std::memory_order_release);
         for (int eye = 0; eye < 2; ++eye)
         {
@@ -34999,6 +35001,9 @@ namespace
         }
         if (!DisableAndRemoveReachHooks())
             return false;
+        // A held exposure is a module global that outlives this camera core: give it back to the engine, now that no
+        // render callback is left to engage it again (Halo 3 releases its own after its hooks are removed too).
+        EngineExposureLockRelease(g_reachExposure);
 
         // CleanupLocked won the same atomic race against every callback's
         // Installing claim. Only successful hook removal and quiescence make

@@ -694,8 +694,12 @@ void ReachVehicleCamerasPass(ReachVehicleFrame& frame, const unsigned char* stoc
     g_reachVehicleCameraPass.placed = false;
     ReachVehicleCameraPublishSeat(frame);
     // "eyeAdjust": false holds Reach's eye adaptation (render_exposure_lock, engine_exposure_lock.inl) while the
-    // camera in use for this seat says so; every other frame gives it back to the engine. A compare a frame.
-    EngineExposureLockApply(g_reachExposure, frame.active && ReachVehicleCameraHoldsExposure(ReachVehicleCameraKey(frame)));
+    // camera in use for this seat says so; every other frame gives it back to the engine, as do an authored
+    // cinematic (Halo 3 gates its hold the same way) and a teardown on its way. A compare a frame. Frames the mod
+    // leaves stock never reach here, and give it back themselves (ReachMainRenderViewBody).
+    EngineExposureLockApply(g_reachExposure, frame.active && !g_reachCinematicLocked.load(std::memory_order_relaxed) &&
+                                                 !g_reachCamera.teardownRequested.load(std::memory_order_acquire) &&
+                                                 ReachVehicleCameraHoldsExposure(ReachVehicleCameraKey(frame)));
     if (!frame.active)
         return;
     const VehicleCameraSeatKey key = ReachVehicleCameraKey(frame);
