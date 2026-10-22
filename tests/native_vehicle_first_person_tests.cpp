@@ -154,13 +154,16 @@ template<unsigned I> void Run()
         activeGeneration=8;
         Check(!NativeVehicleFirstPerson_Halo2NativePoint(native),"a native point from another generation is no answer");
         activeGeneration=7;
-        // A chase camera of the vehicle camera file chosen for the seat leaves it to the game's own answer.
-        const unsigned asked=chaseAsked;
+        // A chase camera of the vehicle camera file chosen for the seat keeps the first-person seat view: Halo 2's
+        // director changes camera only with the seat's perspective, so the stand-down is off (kHalo2ChaseStandDown).
         chaseChosen=true;
-        Check(SelectHook<I>(owned.unit,&mode)==1&&mode==2&&chaseAsked>asked,
-            "a seat with a chase camera chosen keeps the game's own answer");
-        std::memset(result,0,sizeof(result));camera();
-        Check(position[0]==-10&&position[1]==-20&&position[2]==-30,"and its evaluator's point is left where the game put it");
+        Check(SelectHook<I>(owned.unit,&mode)==0,"a seat with a chase camera chosen keeps the first-person answer");
+        {
+            const auto positioned=r.positioned.load();
+            std::memset(result,0,sizeof(result));camera();
+            Check(position[0]==10&&position[1]==20&&position[2]==30&&r.positioned.load()==positioned+1,
+                "and its view stays at the occupant's head, the frame's seat view");
+        }
         // An ask for the seat's aim (the game's fire, the seat drive) keeps the first-person answer under a chase
         // camera: the seat aims and fires as from its seat view.
         Check(!NativeVehicleFirstPerson_SetSeatAskOnThisThread(true),"the seat-aim flag starts down");

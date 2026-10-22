@@ -374,17 +374,22 @@ template<unsigned I> bool ForTheSimulation() noexcept
     if constexpr (I==1) return false;
     else return !Sight_FireTimeChangesAllowed()&&InTick(I)!=0;
 }
-// HALO 2, THE VEHICLE CAMERAS' CHASE CAMERA. While a chase camera of the vehicle camera file is chosen for the seat,
-// the selector's asks for the player's camera -- the director's, and the evaluator 0x6D4730's from the players
-// update (0x6A37CE), which builds the camera the frame is drawn from -- are answered as the game built them, so the
-// game shows the seat in third person and draws its occupant. The asks for the seat's AIM -- that evaluator from the
-// fire (0x7597B8) and from the seat drive -- are flagged on their thread
-// (NativeVehicleFirstPerson_SetSeatAskOnThisThread) and keep the first-person answer, so a seat aims and fires from a
-// chase camera exactly as from its seat view.
+// HALO 2, THE VEHICLE CAMERAS' CHASE CAMERA. The stand-down below would answer the selector's asks for the player's
+// camera -- the director's, and the evaluator 0x6D4730's from the players update (0x6A37CE) -- as the game built them
+// while a chase camera of the vehicle camera file is chosen for the seat, so the game would show the seat in third
+// person; the asks for the seat's AIM -- that evaluator from the fire (0x7597B8) and from the seat drive -- are flagged
+// on their thread (NativeVehicleFirstPerson_SetSeatAskOnThisThread) and would keep the first-person answer.
+// It is OFF (kHalo2ChaseStandDown). In game (Halo 2 Classic, Warthog driver and gunner) the stand-down was counted on
+// every frame's ask, yet the game's camera stayed its first-person one and the occupant was never drawn. The retail
+// routine that asks the selector for the director (0x6D4B20) changes camera only when the seat's perspective differs
+// from the one it last acted on, or when forced -- as Halo 1's director_choose_game_perspective does -- so a seat
+// boarded in first person stays there, and standing down mid-seat only took the head off the seat's camera. Every
+// Halo 2 seat keeps the first-person seat view; a chase camera moves the view's eye (halo2_vehicle_cameras.inl).
+inline constexpr bool kHalo2ChaseStandDown=false;
 thread_local bool t_seatAskOnThisThread=false;
 bool Halo2ChaseStandsDown(const NativeVehicleCameraOwner& owner) noexcept
 {
-    return !t_seatAskOnThisThread&&Game_Halo2VehicleCameraChase(owner);
+    return kHalo2ChaseStandDown&&!t_seatAskOnThisThread&&Game_Halo2VehicleCameraChase(owner);
 }
 template<unsigned I> using Mode=std::conditional_t<I==2,int32_t,int16_t>;
 template<unsigned I> using SelectorFn=uint32_t(__fastcall*)(uint32_t,Mode<I>*);

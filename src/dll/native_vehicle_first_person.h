@@ -64,8 +64,8 @@ bool NativeVehicleFirstPerson_Halo2Head(const NativeVehicleCameraOwner& owner, f
                                         float up[3]) noexcept;
 bool NativeVehicleFirstPerson_Halo2Root(uint32_t object, bool drawn, float frame[13]) noexcept;
 // game.cpp (halo2_vehicle_cameras.inl): a chase camera of the vehicle camera file is chosen for exactly this Halo 2
-// seat. While it is, the override leaves the seat to the game's own (third-person) answer. One atomic load while none
-// is chosen.
+// seat. The override's stand-down for it is off (native_vehicle_first_person.cpp, kHalo2ChaseStandDown). One atomic
+// load while none is chosen.
 bool Game_Halo2VehicleCameraChase(const NativeVehicleCameraOwner& owner) noexcept;
 #if HALOMCCVR_DEV_DIAGNOSTICS
 void Game_Halo4CameraOwnerReport() noexcept;   // dev: why Game_ReadVehicleCameraOwner refused Halo 4 seats
