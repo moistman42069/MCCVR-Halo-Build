@@ -46767,6 +46767,16 @@ namespace
                 }
             }
 
+            // A seat the vehicle cameras run in faces the vehicle's nose on boarding (halo4_vehicle_cameras.inl,
+            // Halo4VehicleCameraTakeNose): the heading reference is the nose's from the head's yaw as it stands.
+            float noseYaw = 0.0f;
+            if (decoded && g_halo4Camera.headReferenceValid.load(std::memory_order_acquire) &&
+                Halo4VehicleCameraTakeNose(noseYaw))
+            {
+                g_halo4Camera.gameYawReference.store(noseYaw, std::memory_order_relaxed);
+                g_halo4Camera.headYawReference.store(head.yaw, std::memory_order_relaxed);
+            }
+
             if (decoded &&
                 g_halo4Camera.headReferenceValid.load(std::memory_order_acquire))
             {
