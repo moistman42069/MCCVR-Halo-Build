@@ -15,7 +15,7 @@ inline constexpr std::array<contract::Entry,3> entries={{
     // The cached tag getter (a datum's definition data) the seat facts and the seat's camera track are read through.
     {"vehicle_camera_tag",0xA9B648,"48 8B 05 61 99 19 01 48 0F BF D1 48 C1 E2 05 48 63 4C 02 14 33 C0 85 C9 74 11 48 8B C1 48 2B 05 A4 7D 40 02 48 03 05 9D 17 30 02 C3",false},
 }};
-inline constexpr std::array<contract::Witness,17> witnesses={{
+inline constexpr std::array<contract::Witness,20> witnesses={{
     // The command's focus position (+4, from the camera info), its focus distance (+0x1C) and offset (+0x10/+0x14/+0x18).
     {0xC52CEA,"F2 0F 10 45 E7 48 8D 4D 67 8B 45 EF F2 0F 11 43 04"},
     {0xC52D03,"89 43 0C"},
@@ -42,8 +42,13 @@ inline constexpr std::array<contract::Witness,17> witnesses={{
     // ...evaluated at (pitch + half pi) / pi over the track's control points (+4 count, +8 address, 0x3C a point).
     {0xC52A6C,"44 8B 40 04 F3 0F 5E 15"},
     {0xC52AB6,"48 63 57 08 4D 8B C1 85 D2 74 09 4C 8B C2 4D 2B C2 4D 03 C3 0F BF FB 8D 47 03 48 63 C8 48 6B E9 3C"},
+    // The player's look pitch is held to the seat camera's limits (+0x44 lowest, +0x48 highest) where either is set,
+    // each inside the flat game's own +-85.5 deg; the camera is unit_get_camera_info's answer.
+    {0xA99D00,"48 8D 4C 24 20 E8"},
+    {0xA99D23,"4C 8B 74 24 28"},
+    {0xA99F24,"F3 45 0F 10 5E 48 4C 8B 2D C7 2E 30 02 F3 41 0F 10 7E 40 48 8D 14 40 48 63 41 34 48 03 C8 45 0F 2E D9 48 63 74 91 08 7A 14 75 12 F3 41 0F 10 46 44 41 0F 2E C1 7A 06 0F 84 D6 00 00 00 F3 45 0F 10 46 44"},
 }};
-inline constexpr std::array<contract::Relative,14> relatives={{
+inline constexpr std::array<contract::Relative,17> relatives={{
     {0xA9AFEB,7,3,0x1C34FB0},
     {0xA9AFFD,7,3,0x2EA3410},
     {0xA9B004,7,3,0x2D9CE10},
@@ -58,6 +63,9 @@ inline constexpr std::array<contract::Relative,14> relatives={{
     {0xC52A59,8,4,0x194F5D8},
     {0xC52A70,8,4,0x194F81C},
     {0xC52B57,5,1,0xC49B98},
+    {0xA99D05,5,1,0xB04EE4},
+    {0xA99CCE,9,5,0x194FE68},
+    {0xA99CDA,9,5,0x194F5CC},
 }};
 inline constexpr std::array<contract::Pointer,0> pointers{};
 inline constexpr uint32_t following=0xC52CA4;

@@ -138,6 +138,9 @@ bool HaloCEControls_ReadVehicleSeatNow(HaloCEVehicleSeatNow& seat) noexcept;
 // not readable now (another generation, the vehicle gone). Read-only, guarded, any thread.
 struct HaloCEVehicleSeatTrack
 {
+    // The seat camera's look limits (radians, up positive), both 0 = none of its own: the player's look pitch is held
+    // to them, each inside the flat game's own +-85.5 deg (vehicle_boom::LookRange).
+    float pitchMin{},pitchMax{};
     int32_t tracks{};       // tracks the seat camera lists
     bool defaultTrack{};    // it lists none: the game globals' default
     int32_t points{};       // control points in the track

@@ -20,10 +20,12 @@
 //
 //   ITS CAMERA TRACK. That place is the seat camera's track (following_camera.c's camera track: control points of a
 //   position along the look's heading -- forward, left, up, world units -- and an orientation), evaluated at the look
-//   pitch: CE takes the track's parameter straight from the pitch, t = (pitch + pi/2) / pi with the pitch held to
-//   +-90 deg (camera_track_splut), where Halo 3 solves for it from the points' orientations. The four points and the
-//   cubic through them are Halo 3's (vehicle_boom::TrackAt). So the boom stands the camera where the game's would
-//   stand at a look pitch of its own (TrackShape), as Halo 3's does.
+//   pitch: CE takes the track's parameter straight from the pitch, t = (pitch + pi/2) / pi (camera_track_splut), the
+//   pitch held to +-90 deg first (following_camera_update), where Halo 3 solves for it from the points'
+//   orientations. The four points and the cubic through them are Halo 3's (vehicle_boom::TrackAt). So the boom stands
+//   the camera where the game's would stand at a look pitch of its own (TrackShape), across the look range the
+//   player's look is held to in that seat, as Halo 3's does. The following camera's distance scale is not applied:
+//   it starts at 1 and only the following camera's own zoom input moves it.
 //
 // Pure: no engine.
 

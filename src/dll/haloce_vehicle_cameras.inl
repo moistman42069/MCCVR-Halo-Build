@@ -580,6 +580,8 @@ bool HaloCEVehicleCameraReadTrack(const VehicleCameraSeatKey& seat, Halo3BoomSea
     if (!HaloCEControls_ReadVehicleSeatTrack(seat.generation, static_cast<uint32_t>(seat.vehicle), seat.seatIndex, track))
         return false;
     facts.read = true;
+    facts.rangeMin = track.pitchMin;
+    facts.rangeMax = track.pitchMax;
     facts.tracks = track.tracks;
     facts.defaultTrack = track.defaultTrack;
     facts.points = track.points;

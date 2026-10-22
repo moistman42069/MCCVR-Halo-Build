@@ -596,6 +596,9 @@ static bool ReadVehicleSeatTrackBody(uint32_t gen,uint32_t parentDatum,int16_t s
         const uintptr_t seatBlock=relocate(*reinterpret_cast<const int32_t*>(definition+0x2e8));
         if (seats<=0||seats>64||seat>=seats||!seatBlock) return false;
         const uintptr_t camera=seatBlock+size_t(seat)*0x11c+0x84;
+        // Its look limits (+0x44 lowest, +0x48 highest), as the player's look update holds the pitch to them.
+        read.pitchMin=*reinterpret_cast<const float*>(camera+0x44);
+        read.pitchMax=*reinterpret_cast<const float*>(camera+0x48);
         // Its first track's reference (+0x4C count, +0x50 address, the datum at +0xC), else the globals' default.
         read.tracks=*reinterpret_cast<const int32_t*>(camera+0x4c);
         uint32_t trackDatum=UINT32_MAX;

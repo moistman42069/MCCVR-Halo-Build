@@ -1279,6 +1279,7 @@ struct VehicleCameraRuntime
         vehicle_boom::Shape shape{};
         Halo3BoomSeatFacts facts{};
         bool ceTrack = false; // facts.track is Halo CE's, evaluated its own way (haloce_vehicle_camera::TrackPlace)
+        uint32_t trackRetries = 0; // CE: reads of a track that could not be read the first time
         bool piloting = false;
         std::string seatName;
         // The log's check of the track against the game's own camera.
@@ -1290,6 +1291,7 @@ struct VehicleCameraRuntime
     int boomInversionLogged = -100;
 };
 inline constexpr uint64_t kVehicleCameraFilePollMs = 2000;
+inline constexpr uint32_t kVehicleBoomCeTrackRetries = 5;
 
 // ---- the boom on the cold worker ----
 
@@ -1389,7 +1391,7 @@ void VehicleBoomCheckLog(VehicleCameraRuntime& r)
 // its stick is not inverted unless vehicle_boom_invert says so (Reach's inversion setting is not read). The render thread runs it on the same
 // shared boom (reach_vehicle_cameras.inl).
 // `ceTitle`: the seat is Halo CE's. Its boom follows the seat camera's track as CE evaluates it
-// (haloce_vehicle_camera::TrackShape) across the flat look range, as Halo 3's does; where the track cannot be read, an
+// (haloce_vehicle_camera::TrackShape) across the seat's look range, as Halo 3's does; where the track cannot be read, an
 // orbit over CE's range (haloce_vehicle_camera::BoomRange), started from where the game's camera stands looking level
 // as the game's thread measures it (haloce_vehicle_cameras.inl). The stick is not inverted unless vehicle_boom_invert
 // says so (CE's inversion setting is not read).
@@ -1441,7 +1443,27 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
     // A CE seat on its track knows its level view from the track: its measurement is not taken.
     if (ceTitle && (newCamera || !b.shape.track) && !HaloCEVehicleCameraLevelElevationDeg(r.seat, measuredDeg))
         measuredDeg = newCamera ? vehicle_boom::kBoomPitchUnset : b.measuredDeg;
-    const bool newStart = newCamera || b.fileDegrees != active.boomPitchDeg || b.measuredDeg != measuredDeg;
+    // A CE seat's track that could not be read (a poll that caught the seat mid-change) is tried again, a few times.
+    bool ceTrackArrived = false;
+    if (ceTitle && !newCamera && b.ceTrack && !b.facts.read && b.trackRetries < kVehicleBoomCeTrackRetries)
+    {
+        ++b.trackRetries;
+        Halo3BoomSeatFacts facts{};
+        if (HaloCEVehicleCameraReadTrack(r.seat, facts))
+        {
+            vehicle_boom::Shape shape{};
+            if (haloce_vehicle_camera::TrackShape(facts.track, vehicle_boom::LookRange(facts.rangeMin, facts.rangeMax),
+                                                  shape))
+            {
+                b.shape = shape;
+                ceTrackArrived = true;
+                measuredDeg = vehicle_boom::kBoomPitchUnset;
+            }
+            b.facts = facts;
+        }
+    }
+    const bool newStart =
+        newCamera || ceTrackArrived || b.fileDegrees != active.boomPitchDeg || b.measuredDeg != measuredDeg;
     if (newStart)
     {
         if (newCamera)
@@ -1465,11 +1487,14 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
             }
             else if (ceTitle)
             {
-                // CE's following camera hangs on the seat camera's track, evaluated its own way; across the flat
-                // game's look range, as Halo 3's boom is. Without it, an orbit over a range of its own, as Reach's.
+                // CE's following camera hangs on the seat camera's track, evaluated its own way; across the look
+                // range the player's look is held to in that seat (the seat camera's limits where it sets them, the
+                // flat game's +-85.5 deg otherwise), as Halo 3's boom is. Without it, an orbit over a range of its
+                // own, as Reach's.
                 b.ceTrack = true;
                 const bool read = HaloCEVehicleCameraReadTrack(r.seat, b.facts);
-                if (!read || !haloce_vehicle_camera::TrackShape(b.facts.track, vehicle_boom::Range{}, b.shape))
+                if (!read || !haloce_vehicle_camera::TrackShape(
+                                 b.facts.track, vehicle_boom::LookRange(b.facts.rangeMin, b.facts.rangeMax), b.shape))
                     vehicle_boom::BuildOrbitShape(haloce_vehicle_camera::BoomRange(), b.shape);
                 else
                     measuredDeg = vehicle_boom::kBoomPitchUnset;
@@ -1492,8 +1517,9 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
         float kept = 0.0f;
         const bool remembered = r.selector.BoomPitch(kept);
         // A new camera starts where the player left it, else at its own start. A camera file edited while seated
-        // moves the start only of a boom the player has not moved.
-        if (newCamera || !remembered)
+        // moves the start only of a boom the player has not moved. A CE track read late changes the boom's shape, so
+        // it starts again as a new camera does.
+        if (newCamera || ceTrackArrived || !remembered)
         {
             b.start = remembered ? vehicle_boom::PitchForElevation(b.shape, kept * vehicle_boom::kRadiansPerDegree) : b.home;
             ++b.startSerial;
