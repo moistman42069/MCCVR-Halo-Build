@@ -471,20 +471,16 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
 // HALO CE: A SEAT SHOWN FROM A CHASE CAMERA (game.cpp haloce_vehicle_cameras.inl). The camera is placed in the game's
 // own following camera, so the seat keeps the third-person camera the game gives it: no first-person override. The
 // director re-chooses its camera only when the seat state it is told changes (director_choose_game_perspective), so
-// such a seat is reported under a state of the mod's own (haloce_vehicle_camera::kChaseSeatState): it then takes the
-// following camera when a chase camera is chosen and the first-person one again when not. The state is only ever
+// such a seat is reported under states of the mod's own (haloce_vehicle_camera::kChaseSeatState, and
+// kChaseSeatStateNotFollowing where this call is not given the following camera): it then re-chooses whenever the
+// answer changes, and takes the first-person camera again when no chase camera is chosen. The state is only ever
 // compared there; the simulation's own camera (director_camera_deterministic) discards it.
-template<unsigned I> bool ChaseSeat(uint32_t unit,Mode<I>* mode) noexcept
+// Whether the seat is a chase seat does not hang on the first-person override's own gates (a pause, blocked input):
+// a frame that read differently would re-choose the director's camera and reset the following camera with it.
+template<unsigned I> bool ChaseSeat(uint32_t unit,const Mode<I>* mode) noexcept
 {
     if constexpr (I!=0) return false;
-    else {
-        __try {
-            NativeVehicleCameraOwner owner{};
-            return mode&&*mode==2&&Owner(I,unit,owner)&&Game_HaloCEChaseWanted(owner.generation,owner.parent,owner.seat);
-        } __except(EXCEPTION_EXECUTE_HANDLER) {
-            Fault(I);return false;
-        }
-    }
+    else return mode&&*mode==2&&Game_HaloCEChaseSeat(unit);
 }
 // NativeVehicleFirstPerson_SetStockOnThisThread: the hooks below forward and change nothing while it is set.
 thread_local bool t_stockOnThisThread=false;
@@ -500,9 +496,11 @@ template<unsigned I> uint32_t __fastcall SelectHook(uint32_t unit,Mode<I>* mode)
         bool owned=false;
         if (!t_stockOnThisThread&&ChaseSeat<I>(unit,mode)) {
             // The game's following camera: the seat's own wherever its tag has one; a seat of a first-person camera
-            // gets it only where this machine may change what the simulation's camera answers.
+            // gets it only where this machine may change what the simulation's camera answers. In solo that includes
+            // the simulation's own camera, so the seat aims from the game's third-person camera, as a flat player's
+            // third-person seat does; in a shared simulation the simulation keeps the game's answer.
             if (!result&&!ForTheSimulation<I>()) result=1;
-            *mode=Mode<I>(haloce_vehicle_camera::kChaseSeatState);
+            *mode=Mode<I>(result?haloce_vehicle_camera::kChaseSeatState:haloce_vehicle_camera::kChaseSeatStateNotFollowing);
         }
         else if (!t_stockOnThisThread&&SelectOwned<I>(unit,mode)) {
             if (ForTheSimulation<I>()) r.simulationCalls.fetch_add(1,std::memory_order_relaxed);

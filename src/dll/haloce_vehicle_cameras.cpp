@@ -157,7 +157,7 @@ bool Install(size_t size) noexcept
     { LOG("CE vehicle cameras: chase cameras stock (enable status %d)",status);return false; }
     enabled=true;ready=true;
     LOG("CE vehicle cameras: chase cameras installed in the game's following camera (halo1+0x%X); the simulation's "
-        "own camera is not touched",vehicle_camera_contract::following);
+        "own camera is never placed",vehicle_camera_contract::following);
     return true;
 }
 }

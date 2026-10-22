@@ -7,8 +7,10 @@
 // camera file is placed in the game's own third-person camera: the director's following camera
 // (following_camera_update) runs as built, and its command to the observer then stands the camera at the chosen place
 // (its pivot moved there, its offset and distance taken off, so the observer neither swings nor pulls it in). Only
-// the frame's camera: the simulation's own camera (director_camera_deterministic) is never touched. The placement
-// itself is game.cpp's (haloce_vehicle_cameras.inl), with the shared camera runtime.
+// the frame's camera is placed: the simulation's own camera (director_camera_deterministic) is the game's third-person
+// one -- in a seat whose own camera is first person, only in solo (native_vehicle_first_person.cpp ChaseSeat), and in a
+// shared simulation the game's first-person one. The placement itself is game.cpp's (haloce_vehicle_cameras.inl), with
+// the shared camera runtime.
 //
 // The hook is installed only while the vehicle cameras are on in CE, and retired with the title like every CE feature.
 
@@ -44,12 +46,13 @@ struct HaloCEChaseFrame
 // game.cpp (haloce_vehicle_cameras.inl): what the shared camera runtime answers for a CE seat. Any thread the game's
 // camera code runs on; one atomic load each while no camera of the kind is chosen.
 //   ChaseAny: some chase camera is chosen now, in CE.
-//   ChaseWanted: a chase camera is chosen for exactly this seat, and the following camera's hook is live to place it.
+//   ChaseSeat: `unit` is the local player's, seated, a chase camera is chosen for exactly its seat, and the following
+//     camera's hook is live to place it.
 //   EyeNudgeWorld: a firstperson camera's "offset" for this seat moves `point` (the seat's eye, world units).
 //   ChasePlace: where the chosen chase camera stands this frame.
 //   VehicleCameraFollow: a chase camera is chosen for this seat; `yaw` = its mode turns the view with the hull.
 bool Game_HaloCEChaseAny() noexcept;
-bool Game_HaloCEChaseWanted(uint32_t generation,uint32_t parent,int16_t seat) noexcept;
+bool Game_HaloCEChaseSeat(uint32_t unit) noexcept;
 bool Game_HaloCEEyeNudgeWorld(uint32_t generation,uint32_t parent,int16_t seat,float point[3]) noexcept;
 bool Game_HaloCEChasePlace(const HaloCEChaseFrame& frame,float out[3]) noexcept;
 bool Game_HaloCEVehicleCameraFollow(uint32_t generation,uint32_t parent,int16_t seat,bool& yaw) noexcept;

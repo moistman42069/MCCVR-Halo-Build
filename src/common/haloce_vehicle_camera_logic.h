@@ -256,4 +256,7 @@ inline vehicle_boom::Range BoomRange() noexcept
 // director, which re-chooses its camera only when the reported state changes, takes the game's following camera when
 // a chase camera is chosen and the first-person one again when it is not.
 inline constexpr int16_t kChaseSeatState = 0x0102;
+// The same seat on a call that is not given the following camera (a first-person seat's simulation camera where
+// one-machine changes are not allowed): a state of its own, so a change in that answer is a change the director sees.
+inline constexpr int16_t kChaseSeatStateNotFollowing = 0x0103;
 } // namespace haloce_vehicle_camera

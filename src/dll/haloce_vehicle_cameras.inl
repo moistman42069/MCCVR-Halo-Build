@@ -13,10 +13,11 @@
 // player's character in the seat and no first-person weapon, as the flat game does; the observer is then told to
 // stand that camera at the chosen place. Everything the view is built from in either graphics mode (the observer's
 // camera) moves with it; the simulation's own camera (director_camera_deterministic, the line the game aims and fires
-// along) is the game's, as it is for a flat player in that seat. The camera's mode turns the view: its rotationTracking
-// yaw stands in for vehicle_view_follow in that seat (haloce_controls.cpp's turn). "collide" is traced with the sight
-// trace's own query on the game's thread (HaloCEContact_TraceSegment). The leash is published with each placement and
-// held by the render paths in the frame's tracking reference (haloce_vehicle_leash_logic.h).
+// along) is never placed: it is the game's third-person camera, as a flat player's in a third-person seat (a seat whose
+// own camera is first person gets that only in solo; see haloce_vehicle_cameras.h). The camera's mode turns the view:
+// its rotationTracking yaw stands in for vehicle_view_follow in that seat (haloce_controls.cpp's turn). "collide" is
+// traced with the sight trace's own query on the game's thread (HaloCEContact_TraceSegment). The leash is published
+// with each placement and held by the render paths in the frame's tracking reference (haloce_vehicle_leash_logic.h).
 //
 // "thirdperson": the game's own camera is the following camera's command, before the hook moves it: the pivot it hangs
 // from (the seat camera's marker, as drawn) and where it stands from that pivot (haloce_vehicle_camera_logic.h

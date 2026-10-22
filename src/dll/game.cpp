@@ -58329,11 +58329,17 @@ bool Game_HaloCEChaseAny() noexcept
            TitleAdapter_GetActiveTitle() == GameTitle::HaloCE;
 }
 
-bool Game_HaloCEChaseWanted(uint32_t generation, uint32_t parent, int16_t seat) noexcept
+bool Game_HaloCEChaseSeat(uint32_t unit) noexcept
 {
+    if (!Game_HaloCEChaseAny())
+        return false;
+    HaloCEVehicleSeatNow now{};
+    if (!HaloCEControls_ReadVehicleSeatNow(now) || now.unit != unit)
+        return false;
     vehicle_camera_select::ActiveCamera camera;
     VehicleCameraSeatKey key;
-    return HaloCEVehicleCameraChosen(generation, parent, seat, camera, key) && HaloCEVehicleCameras_FollowingLive();
+    return HaloCEVehicleCameraChosen(now.generation, now.parent, now.seat, camera, key) &&
+           HaloCEVehicleCameras_FollowingLive();
 }
 
 bool Game_HaloCEEyeNudgeWorld(uint32_t generation, uint32_t parent, int16_t seat, float point[3]) noexcept

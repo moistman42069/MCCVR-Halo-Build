@@ -38,11 +38,12 @@ void HostUnloadGate_Pin(HMODULE,std::atomic<bool>*,const std::atomic<uint64_t>*,
 void HostUnloadGate_Unpin(HMODULE) {++unpinned;}
 bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& output) noexcept
 {output=owned;return ownedValid&&title==activeTitle;}
-// Halo CE's vehicle cameras (game.cpp): a chase camera chosen for the owned seat, and a firstperson camera's offset.
+// Halo CE's vehicle cameras (game.cpp): a chase camera chosen for the owned unit's seat (read apart from the first-
+// person override's owner, as the game's seat read is), and a firstperson camera's offset.
 static bool ceChase=false;
 static float ceNudge[3]{};
-bool Game_HaloCEChaseWanted(uint32_t generation,uint32_t parent,int16_t seat) noexcept
-{return ceChase&&generation==owned.generation&&parent==owned.parent&&seat==owned.seat;}
+bool Game_HaloCEChaseSeat(uint32_t unit) noexcept
+{return ceChase&&unit==owned.unit&&owned.seat>=0;}
 bool Game_HaloCEEyeNudgeWorld(uint32_t generation,uint32_t parent,int16_t seat,float point[3]) noexcept
 {
     if ((ceNudge[0]==0&&ceNudge[1]==0&&ceNudge[2]==0)||generation!=owned.generation||parent!=owned.parent||
@@ -279,9 +280,15 @@ template<unsigned I> void Run()
     if constexpr(I==0) {
         Check(SelectHook<I>(owned.unit,&mode)==1,"CE chase seat of a first-person tag: the following camera, solo");
         fireTimeAllowed=false;
-        Check(SelectHook<I>(owned.unit,&mode)==0&&mode==haloce_vehicle_camera::kChaseSeatState,
-            "but never a change the simulation would see where those are not allowed");
+        Check(SelectHook<I>(owned.unit,&mode)==0&&mode==haloce_vehicle_camera::kChaseSeatStateNotFollowing,
+            "but never a change the simulation would see where those are not allowed, under a state of its own");
         fireTimeAllowed=true;
+        // A frame the first-person override's owner cannot be read in (a pause, blocked input) keeps the chase seat.
+        ownedValid=false;nativeResult=1;
+        Check(SelectHook<I>(owned.unit,&mode)==1&&mode==haloce_vehicle_camera::kChaseSeatState,
+            "CE chase seat: kept through a frame the override's owner is not read");
+        ownedValid=true;nativeResult=0;
+        Check(SelectHook<I>(owned.unit+1,&mode)==0&&mode==2,"another unit's seat is never a chase seat");
     }
     nativeResult=1;nativeMode=1;
     Check(SelectHook<I>(owned.unit,&mode)==1&&mode==1,"an entering transition is the game's own, chase or not");
