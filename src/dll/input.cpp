@@ -262,8 +262,9 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         // passenger's seat the support trigger switches weapon. Before anything below reads a button, so every
         // route to the game -- the action mapper, the native bridge, legacy routing -- sees the seat's buttons.
         {
-            bool passenger = false;
-            const bool live = Game_VehicleSeatButtonsLive(passenger) && !Menu_IsOpen() && !pad.exclusiveInput;
+            bool passenger = false, controlModes = true;
+            const bool live =
+                Game_VehicleSeatButtonsLive(passenger, controlModes) && !Menu_IsOpen() && !pad.exclusiveInput;
             vehicle_seat_buttons::Buttons buttons;
             buttons.x = pad.x;
             buttons.y = pad.y;
@@ -285,7 +286,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 // The clock is read under the lock, so the polls the state machine sees are in time order.
                 std::lock_guard<std::mutex> lock(g_seatButtonsLock);
                 asked = g_seatButtons.Step(buttons, live, passenger, GetTickCount64(),
-                                           vehicle_seat_buttons::kDefaultHoldMs, rightB);
+                                           vehicle_seat_buttons::kDefaultHoldMs, rightB, controlModes);
             }
 #if HALOMCCVR_DEV_DIAGNOSTICS
             static std::atomic<bool> seatBWas{false};

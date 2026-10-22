@@ -4,7 +4,8 @@
 //   left Y tap        the next camera
 //   left X tap        the camera's next tethering mode
 //   left Y or X held  re-centre the view (the moment the hold is long enough, not on release)
-//   left stick click  the next way to control the seat (vehicle_control: hand, stick, wheel)
+//   left stick click  the next way to control the seat (vehicle_control: hand, stick, wheel), in a game whose seats
+//                     offer more than one; elsewhere it is the game's own click
 //   right B           the game's own B -- in Halo 3 a vehicle's B action, the Banshee's bomb -- unless the action
 //                     mapper is on and binds B to nothing (its default): B then does nothing in the game, and right
 //                     B is what left X does there everywhere else (use, exit the vehicle, reload), the only way out
@@ -66,9 +67,10 @@ class Seat
 public:
     // One poll. `live`: the vehicle cameras run in the seat the player is in. `passenger`: it is a passenger's.
     // `holdMs`: how long a hold re-centres (0 = never). `rightB`: what right B gives the game (RightBFor).
-    // `buttons` is changed in place to what the game gets.
+    // `controlModes`: the game's seats can be controlled more than one way, so the left stick click is the mod's;
+    // false leaves the click to the game and asks for no step. `buttons` is changed in place to what the game gets.
     Requests Step(Buttons& buttons, bool live, bool passenger, uint64_t nowMs, uint32_t holdMs,
-                  RightB rightB = RightB::Itself) noexcept
+                  RightB rightB = RightB::Itself, bool controlModes = true) noexcept
     {
         Requests asked;
         if (!live)
@@ -87,7 +89,7 @@ public:
         {
             Tap(x_, raw.x, nowMs, holdMs, asked.recenter, asked.mode);
             Tap(y_, raw.y, nowMs, holdMs, asked.recenter, asked.camera);
-            if (raw.clickL && !clickWas_)
+            if (controlModes && raw.clickL && !clickWas_)
             {
                 clickArmed_ = true;
                 clickChord_ = false;
@@ -110,7 +112,7 @@ public:
         buttons.x = rightB == RightB::LeftXsJob && rightBDown;
         buttons.b = rightB == RightB::Itself && rightBDown;
         buttons.y = false;
-        buttons.clickL = false;
+        buttons.clickL = !controlModes && raw.clickL;
         if (passenger)
         {
             const float pull = std::isfinite(raw.supportTrigger) ? raw.supportTrigger : 0.0f;

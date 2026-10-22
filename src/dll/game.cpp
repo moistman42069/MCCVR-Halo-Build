@@ -58366,10 +58366,11 @@ void Game_VehicleCameraStep(int cameraDirection, int modeDirection)
     VehicleCameraRequestStep(cameraDirection, modeDirection);
 }
 
-bool Game_VehicleSeatButtonsLive(bool& passenger)
+bool Game_VehicleSeatButtonsLive(bool& passenger, bool& controlModes)
 {
     const uint32_t seat = g_vehicleSeatButtons.load(std::memory_order_acquire);
     passenger = (seat & kVehicleSeatPassenger) != 0;
+    controlModes = (seat & kVehicleSeatOneControl) == 0;
     return (seat & kVehicleSeatButtonsLive) != 0;
 }
 

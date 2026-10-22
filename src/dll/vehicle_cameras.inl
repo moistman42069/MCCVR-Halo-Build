@@ -215,9 +215,10 @@ std::atomic<int> g_vehicleControlStep{0};
 // The seat's control mode, as vehicle_control's numbers: the player's choice for this seat where he made one,
 // else the setting. -1 = not in a seat the vehicle cameras run in, where the setting alone decides.
 std::atomic<int> g_vehicleControlEffective{-1};
-// The camera buttons are the mod's in this seat (bit 0), and it is a passenger's (bit 1). Read by the input hook.
+// The camera buttons are the mod's in this seat (bit 0), it is a passenger's (bit 1), and the game's seats have one
+// way to be controlled, so the left stick click stays the game's (bit 2). Read by the input hook.
 std::atomic<uint32_t> g_vehicleSeatButtons{0};
-inline constexpr uint32_t kVehicleSeatButtonsLive = 1u, kVehicleSeatPassenger = 2u;
+inline constexpr uint32_t kVehicleSeatButtonsLive = 1u, kVehicleSeatPassenger = 2u, kVehicleSeatOneControl = 4u;
 
 // How the seat the player is in is controlled (vehicle_control_logic.h). Any thread.
 vehicle_control::Mode VehicleControlModeNow()
@@ -1777,7 +1778,8 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
             control = choice;
         // Reach cannot give a seat's aim to the right stick yet (its reticle would stay on the hand), so a seat
         // there is the hand's or the wheel's; Stick from the setting keeps Reach's own rule. Halo 4 has neither a
-        // wheel nor a stick-aimed seat: its seats are the hand's.
+        // wheel nor a stick-aimed seat: its seats are the hand's, and the left stick click stays the game's
+        // (kVehicleSeatOneControl).
         if ((reach || halo4) && vehicle_control::FromConfig(control) == vehicle_control::Mode::Stick)
             control = static_cast<int>(vehicle_control::Mode::Automatic);
         if (g_vehicleControlStep.exchange(0, std::memory_order_relaxed) != 0)
@@ -1797,7 +1799,8 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
     g_vehicleControlEffective.store(inSeat ? control : -1, std::memory_order_release);
     g_vehicleSeatButtons.store(
         inSeat && (halo3 || reach || halo4)
-            ? kVehicleSeatButtonsLive | ((r.seatBits & vehicle_camera_file::kSeatPassenger) ? kVehicleSeatPassenger : 0u)
+            ? kVehicleSeatButtonsLive | ((r.seatBits & vehicle_camera_file::kSeatPassenger) ? kVehicleSeatPassenger : 0u) |
+                  (halo4 ? kVehicleSeatOneControl : 0u)
             : 0u,
         std::memory_order_release);
 

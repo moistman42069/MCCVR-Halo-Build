@@ -23,11 +23,12 @@ struct Poll
     uint64_t now = 1000;
     Buttons out;
     RightB rightB = RightB::LeftXsJob;
+    bool controlModes = true;
     Requests Run(Buttons in, bool live = true, bool passenger = false, uint64_t step = 10)
     {
         now += step;
         out = in;
-        return seat.Step(out, live, passenger, now, kDefaultHoldMs, rightB);
+        return seat.Step(out, live, passenger, now, kDefaultHoldMs, rightB, controlModes);
     }
 };
 
@@ -180,6 +181,15 @@ static void TestStickClick()
     Poll boarded;
     boarded.Run(With(false, false, false, true));
     Check(!boarded.Run(With(false, false)).control, "a click that was down when the seat came up is not one");
+
+    Poll one;
+    one.controlModes = false;
+    one.Run(With(false, false));
+    one.Run(With(false, false, false, true));
+    Check(one.out.clickL, "in a game whose seats have one way to be controlled the click is the game's");
+    Check(!one.Run(With(false, false)).control && !one.out.clickL, "and its release asks for no step");
+    one.Run(With(false, true));
+    Check(one.Run(With(false, false)).camera == 1, "the camera buttons are still the mod's there");
 }
 
 static void TestWhatTheGameGets()
