@@ -460,13 +460,14 @@ bool ReachVehicleCameraRestPlace(const ReachVehicleFrame& frame, const VehicleCa
         g_reachVehicleCameraPivotUpWu.store(read[2], std::memory_order_relaxed);
     }
     // THE BOOM (vehicle_cameras.inl's shared boom, which this thread runs in Reach as Halo 3's camera thread does
-    // there): the cold worker's publication for this seat and camera -- an orbit of the pivot over the flat game's
-    // look range, starting at the player's kept angle, else the file's "boomPitch", else the game's level view a
-    // little higher -- or, until one comes, the stand-in orbit. The right stick raises and lowers it.
+    // there): the cold worker's publication for this seat and camera -- an orbit of the pivot over Reach's own orbit
+    // range (reach_vehicle_camera::BoomRange), starting at the player's kept angle, else the file's "boomPitch", else
+    // the game's level view a little higher -- or, until one comes, the stand-in orbit over the same range. The right
+    // stick raises and lowers it.
     Halo3BoomTake(seat, camera.camera);
     Halo3BoomCamera& boom = g_halo3BoomCamera;
     if (!boom.held && !boom.local && rest.waited >= kReachRestWaitFrames)
-        Halo3BoomStandIn();
+        Halo3BoomStandIn(reach_vehicle_camera::BoomRange());
     if (rest.placeKept && rest.distance >= kReachRestKnownWu && (boom.held || boom.local))
     {
         Halo3BoomStep();

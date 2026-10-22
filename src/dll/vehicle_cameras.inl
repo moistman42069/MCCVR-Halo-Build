@@ -520,13 +520,17 @@ void Halo3BoomTake(const VehicleCameraSeatKey& seat, int camera)
     }
 }
 
-// Camera thread: no publication in time for this seat. The boom orbits the pivot within the flat game's own range,
-// from the built-in start, until one comes.
-void Halo3BoomStandIn()
+// Camera thread: no publication in time for this seat. The boom orbits the pivot within `range` (by default the flat
+// game's own; Reach passes its own orbit's), from the built-in start, until one comes.
+void Halo3BoomStandIn(const vehicle_boom::Range& range = vehicle_boom::Range{})
 {
     static vehicle_boom::Shape orbit; // camera thread only
-    if (!orbit.valid)
-        vehicle_boom::BuildOrbitShape(vehicle_boom::Range{}, orbit);
+    static vehicle_boom::Range built{};
+    if (!orbit.valid || built.min != range.min || built.max != range.max)
+    {
+        vehicle_boom::BuildOrbitShape(range, orbit);
+        built = range;
+    }
     Halo3BoomCamera& boom = g_halo3BoomCamera;
     memcpy(&boom.shape, &orbit, sizeof(orbit));
     boom.home = vehicle_boom::PitchForElevation(orbit, vehicle_boom::DefaultElevation(orbit, vehicle_boom::kBoomPitchUnset));
@@ -1360,9 +1364,9 @@ void VehicleBoomCheckLog(VehicleCameraRuntime& r)
 
 // Cold worker, every poll. `wanted`: a camera of origin "thirdperson" is in use in a Halo 3 seat; `seated`: this
 // poll's seat could be read (an unreadable poll keeps the boom as it is).
-// `reachTitle`: the seat is Reach's, whose camera track is not read: its boom orbits the game's pivot over the flat
-// look range Halo 3 measured (Reach's own limits are not read), and its stick is not inverted unless
-// vehicle_boom_invert says so (Reach's inversion setting is not read). The render thread runs it on the same
+// `reachTitle`: the seat is Reach's, whose camera track is not read: its boom orbits the game's pivot over a range
+// of its own, -10 to 60 deg above level (reach_vehicle_camera::BoomRange; Reach's own look limits are not read), and
+// its stick is not inverted unless vehicle_boom_invert says so (Reach's inversion setting is not read). The render thread runs it on the same
 // shared boom (reach_vehicle_cameras.inl).
 void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::ActiveCamera& active, bool wanted,
                          bool seated, uint32_t definitionIndex, const char* name, uint64_t nowMs,
