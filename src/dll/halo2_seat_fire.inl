@@ -45,15 +45,17 @@ bool Halo2SeatShotPoint(uint32_t unit,float point[3])
     float head[3]{};
     return Halo2SeatShotLine(unit,head,point);
 }
+// Our unit's seat, read guarded: its vehicle and seat index. False: not seated.
+bool Halo2OwnedSeat(uint32_t& parent,int16_t& seat)
+{
+    __try {return Halo2DriveOccupancy(parent,seat)==1;}
+    __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
 // Our unit is seated at all (the counters below count seated fires only).
 bool Halo2OwnedUnitSeated()
 {
-    __try
-    {
-        uint32_t parent=UINT32_MAX;int16_t seat=-1;
-        return Halo2DriveOccupancy(parent,seat)==1;
-    }
-    __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+    uint32_t parent=UINT32_MAX;int16_t seat=-1;
+    return Halo2OwnedSeat(parent,seat);
 }
 void Halo2SeatFireReaim(uint32_t unit,float* position,float* direction)
 {
@@ -70,8 +72,7 @@ void Halo2SeatFireReaim(uint32_t unit,float* position,float* direction)
     // from there could meet what the seat's own does not (halo2_vehicle_cameras.inl). The re-aim below keeps the
     // engine's own start, through the same point.
     uint32_t chaseParent=UINT32_MAX;int16_t chaseSeat=-1;
-    const bool chaseView=Halo2DriveOccupancy(chaseParent,chaseSeat)==1&&
-        Game_Halo2VehicleCameraPlacedSeat(chaseParent,chaseSeat);
+    const bool chaseView=Halo2OwnedSeat(chaseParent,chaseSeat)&&Game_Halo2VehicleCameraPlacedSeat(chaseParent,chaseSeat);
     if(chaseView&&g_config.seat_fire_from_eye&&Sight_FireTimeChangesAllowed())
         g_halo2SeatFireChaseKept.fetch_add(1,std::memory_order_relaxed);
     if(g_config.seat_fire_from_eye&&Sight_FireTimeChangesAllowed()&&shot_lag::Finite3(head)&&!chaseView)
