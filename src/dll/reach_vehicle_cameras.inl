@@ -557,10 +557,35 @@ bool ReachVehicleCameraPlace(const ReachVehicleFrame& frame, const VehicleCamera
 
 // Render thread, every main render view: after the seat is sampled and its yaw followed, before the head-centre
 // camera is built from it. `stockCompact` is the frame's camera as the game computed it.
+// A CAMERA'S "eyeAdjust": false for exactly this seat (any camera type). One atomic load while no camera in use asks
+// for it; a camera being published both times it is read answers false for that frame.
+bool ReachVehicleCameraHoldsExposure(const VehicleCameraSeatKey& key)
+{
+    const VehicleCameraPublished& published = g_vehicleCameraPublished;
+    if (!published.holdExposure.load(std::memory_order_acquire))
+        return false;
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        const uint32_t before = published.seq.load(std::memory_order_acquire);
+        if (before & 1u)
+            continue;
+        const bool hold = published.camera.valid && published.camera.holdExposure;
+        const VehicleCameraSeatKey chosenFor = published.seat;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (published.seq.load(std::memory_order_relaxed) != before)
+            continue;
+        return hold && chosenFor == key;
+    }
+    return false;
+}
+
 void ReachVehicleCamerasPass(ReachVehicleFrame& frame, const unsigned char* stockCompact)
 {
     g_reachVehicleCameraPass.placed = false;
     ReachVehicleCameraPublishSeat(frame);
+    // "eyeAdjust": false holds Reach's eye adaptation (render_exposure_lock, engine_exposure_lock.inl) while the
+    // camera in use for this seat says so; every other frame gives it back to the engine. A compare a frame.
+    EngineExposureLockApply(g_reachExposure, frame.active && ReachVehicleCameraHoldsExposure(ReachVehicleCameraKey(frame)));
     if (!frame.active)
         return;
     const VehicleCameraSeatKey key = ReachVehicleCameraKey(frame);
@@ -661,8 +686,6 @@ std::string ReachVehicleCameraNotApplied(const vehicle_camera_select::ActiveCame
         if (camera.aimMarker)
             add("the aim ring");
     }
-    if (camera.holdExposure)
-        add("eyeAdjust");
     if (camera.hideRegions[0])
         add("hideRegions");
     if (camera.hideParts[0])

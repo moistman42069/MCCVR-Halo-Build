@@ -8848,6 +8848,8 @@ namespace
     // owns the view (vehicle_steady_exposure); Halo 3's while the camera in use says "eyeAdjust": false.
     EngineExposureLock g_odstExposure{"ODST vehicle exposure"};
     EngineExposureLock g_halo3Exposure{"Halo 3 vehicle exposure"};
+    // Reach's, while the vehicle camera in use for its seat says "eyeAdjust": false (reach_vehicle_cameras.inl).
+    EngineExposureLock g_reachExposure{"Reach vehicle exposure"};
     // Whether the vehicle camera in use for the seat the player is in holds the exposure (vehicle_cameras.inl).
     bool Halo3VehicleCameraHoldsExposure();
 
@@ -34898,6 +34900,8 @@ namespace
         ReachClearHullHeading();
         g_reachCamera.teardownRequested.store(
             true, std::memory_order_release);
+        // A held exposure is a module global that outlives this camera core: give it back to the engine.
+        EngineExposureLockRelease(g_reachExposure);
         g_reachCamera.armed.store(false, std::memory_order_release);
         for (int eye = 0; eye < 2; ++eye)
         {
@@ -37631,6 +37635,9 @@ namespace
         // Trace-and-reaim: resolve and value-check the engine's own crosshair-trace flags against this
         // build (fails closed; see reach_sight_trace.inl).
         ReachResolveSightFlags(base, size);
+        // The vehicle cameras' "eyeAdjust": Reach's render_exposure_lock, from two signatures that must agree
+        // (engine_exposure_lock.inl). Missing, only that hold stays off.
+        EngineExposureLockResolve(g_reachExposure, base, size, kReachExposureLockSig);
         InstallReachContactMelee(base,size,generation);
         (void)InstallReachMuzzle(base,size,generation);
         // Optional and feature-local: a refusal leaves the game's own tracker and nothing else changes.
