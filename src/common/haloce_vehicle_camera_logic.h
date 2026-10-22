@@ -24,7 +24,8 @@
 //   pitch held to +-90 deg first (following_camera_update), where Halo 3 solves for it from the points'
 //   orientations. The four points and the cubic through them are Halo 3's (vehicle_boom::TrackAt). So the boom stands
 //   the camera where the game's would stand at a look pitch of its own (TrackShape), across the look range the
-//   player's look is held to in that seat, as Halo 3's does. The following camera's distance scale is not applied:
+//   player's look is held to in that seat (on level ground: the game tilts those limits with a sloping vehicle, the
+//   boom keeps them level), as Halo 3's does. The following camera's distance scale is not applied:
 //   it starts at 1 and only the following camera's own zoom input moves it.
 //
 // Pure: no engine.

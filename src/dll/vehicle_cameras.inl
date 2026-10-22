@@ -1459,6 +1459,16 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
                 ceTrackArrived = true;
                 measuredDeg = vehicle_boom::kBoomPitchUnset;
             }
+            else
+            {
+                // Read at last, but not a track the boom can follow: the orbit stays, and the log says why now.
+                LOG("Vehicle cameras (Halo CE): the boom in %s keeps orbiting the game's pivot: the seat's camera track "
+                    "was read late, and %s",
+                    b.seatName.c_str(),
+                    facts.points < vehicle_boom::kMinTrackPoints   ? "it has under four points"
+                    : facts.points > vehicle_boom::kMaxTrackPoints ? "it has more points than the mod reads"
+                                                                   : "it did not check out");
+            }
             b.facts = facts;
         }
     }
@@ -1489,7 +1499,8 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
             {
                 // CE's following camera hangs on the seat camera's track, evaluated its own way; across the look
                 // range the player's look is held to in that seat (the seat camera's limits where it sets them, the
-                // flat game's +-85.5 deg otherwise), as Halo 3's boom is. Without it, an orbit over a range of its
+                // flat game's +-85.5 deg otherwise; the game tilts them on a slope, the boom keeps them level), as
+                // Halo 3's boom is. Without it, an orbit over a range of its
                 // own, as Reach's.
                 b.ceTrack = true;
                 const bool read = HaloCEVehicleCameraReadTrack(r.seat, b.facts);
@@ -1540,7 +1551,7 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
                                                                   : "the game's level view, a little higher");
         if (b.shape.track)
             LOG("Vehicle cameras (%s): the boom in %s stands where the game's own third-person camera would at a "
-                "look pitch of its own: the seat's camera track (%d points%s) across the flat game's look range %.1f to "
+                "look pitch of its own: the seat's camera track (%d points%s) across the seat's look range %.1f to "
                 "%.1f deg, from %.1f deg above level looking down to %.1f deg looking up; looking level the game's "
                 "camera stands %.1f deg above level, %.0f cm out. It starts at %.1f deg (%s)",
                 titleName, b.seatName.c_str(), b.facts.track.count, b.facts.defaultTrack ? ", the game's default" : "",

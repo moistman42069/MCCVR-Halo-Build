@@ -141,7 +141,8 @@ bool HaloCEControls_ReadVehicleSeatNow(HaloCEVehicleSeatNow& seat) noexcept;
 struct HaloCEVehicleSeatTrack
 {
     // The seat camera's look limits (radians, up positive), both 0 = none of its own: the player's look pitch is held
-    // to them, each inside the flat game's own +-85.5 deg (vehicle_boom::LookRange).
+    // to them, each inside the flat game's own +-85.5 deg (vehicle_boom::LookRange); on a sloping vehicle the game tilts
+    // them with it.
     float pitchMin{},pitchMax{};
     int32_t tracks{};       // tracks the seat camera lists
     bool defaultTrack{};    // it lists none: the game globals' default
