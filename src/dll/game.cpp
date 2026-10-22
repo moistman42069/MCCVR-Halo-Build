@@ -58335,17 +58335,35 @@ bool Game_HaloCEChaseHead() noexcept
            TitleAdapter_GetActiveTitle() == GameTitle::HaloCE;
 }
 
+// The last unit given a chase seat, and when: a call the light seat read refuses (one frame of a transient state read)
+// keeps that answer a moment, so the director is not sent to the first-person camera and back, resetting its
+// following camera both times. A unit that has left its seat is not seated (the selector's own seat state), so this
+// never holds a chase seat open past the seat.
+std::atomic<uint32_t> g_haloceChaseSeatUnit{UINT32_MAX};
+std::atomic<uint64_t> g_haloceChaseSeatMs{0};
+inline constexpr uint64_t kHaloCEChaseSeatHoldMs = 250;
+
 bool Game_HaloCEChaseSeat(uint32_t unit) noexcept
 {
     if (!Game_HaloCEChaseAny())
         return false;
     HaloCEVehicleSeatNow now{};
-    if (!HaloCEControls_ReadVehicleSeatNow(now) || now.unit != unit)
+    if (!HaloCEControls_ReadVehicleSeatNow(now))
+    {
+        const uint64_t at = g_haloceChaseSeatMs.load(std::memory_order_acquire);
+        const uint64_t ms = GetTickCount64();
+        return at && ms >= at && ms - at <= kHaloCEChaseSeatHoldMs &&
+               g_haloceChaseSeatUnit.load(std::memory_order_relaxed) == unit && HaloCEVehicleCameras_FollowingLive();
+    }
+    if (now.unit != unit)
         return false;
     vehicle_camera_select::ActiveCamera camera;
     VehicleCameraSeatKey key;
-    return HaloCEVehicleCameraChosen(now.generation, now.parent, now.seat, camera, key) &&
-           HaloCEVehicleCameras_FollowingLive();
+    const bool chase = HaloCEVehicleCameraChosen(now.generation, now.parent, now.seat, camera, key) &&
+                       HaloCEVehicleCameras_FollowingLive();
+    g_haloceChaseSeatUnit.store(unit, std::memory_order_relaxed);
+    g_haloceChaseSeatMs.store(chase ? GetTickCount64() : 0, std::memory_order_release);
+    return chase;
 }
 
 bool Game_HaloCEEyeNudgeWorld(uint32_t generation, uint32_t parent, int16_t seat, float point[3]) noexcept
