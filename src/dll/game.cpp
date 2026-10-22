@@ -14979,6 +14979,44 @@ namespace
         }
     }
 
+    // The vehicle a seated gun rides, for the vehicle cameras: its entry's salt and kind checked as the parent's handle
+    // names it, its object data, its definition, and whether it is a root object itself. Guarded on its own, so a
+    // fault drops only the carrier (the seat sampler's own fault disarms the whole ODST seat). Camera thread.
+    void OdstReadSeatCarrier(unsigned char* entries, int carrier, unsigned char*& data, uint32_t& definitionIndex,
+                             bool& isRoot)
+    {
+        data = nullptr;
+        definitionIndex = 0xFFFFFFFFu;
+        isRoot = false;
+        if (!entries || carrier == -1 || static_cast<uint32_t>(carrier & 0xFFFF) >= kOdstObjectTableCapacity)
+            return;
+        unsigned char* found = nullptr;
+        uint32_t foundDefinition = 0xFFFFFFFFu;
+        bool foundRoot = false;
+        __try
+        {
+            unsigned char* entry = entries + static_cast<size_t>(carrier & 0xFFFF) * kOdstObjectEntryStride;
+            if (*reinterpret_cast<const uint16_t*>(entry + kOdstObjectEntryIdentifierOffset) ==
+                    static_cast<uint16_t>(static_cast<uint32_t>(carrier) >> 16) &&
+                *(entry + kOdstObjectEntryKindOffset) == kOdstObjectKindVehicle)
+            {
+                found = *reinterpret_cast<unsigned char**>(entry + kOdstObjectEntryDataOffset);
+                if (found)
+                {
+                    foundDefinition = *reinterpret_cast<const uint16_t*>(found);
+                    foundRoot = *reinterpret_cast<const int32_t*>(found + kOdstObjectParentOffset) == -1;
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return;
+        }
+        data = found;
+        definitionIndex = found ? foundDefinition : 0xFFFFFFFFu;
+        isRoot = found && foundRoot;
+    }
+
     void OdstSampleVehicleState(uint64_t nowMs)
     {
         if (g_odstVehicleBinding.load(std::memory_order_acquire) !=
@@ -15068,37 +15106,11 @@ namespace
                                 parentObjectData = parentData;
                                 carrier = *reinterpret_cast<const int32_t*>(
                                     parentData + kOdstObjectParentOffset);
-                                // The vehicle a gun rides, for the vehicle cameras: its entry's salt and kind
-                                // checked as the parent's handle names it.
+                                // The vehicle a gun rides, for the vehicle cameras alone: guarded on its own
+                                // (OdstReadSeatCarrier), so a fault there drops the carrier and nothing else.
                                 if (g_config.vehicle_cameras && carrier != -1)
-                                {
-                                    unsigned char* carrierEntry = entries +
-                                        static_cast<size_t>(carrier & 0xFFFF) *
-                                            kOdstObjectEntryStride;
-                                    if (*reinterpret_cast<const uint16_t*>(
-                                            carrierEntry +
-                                            kOdstObjectEntryIdentifierOffset) ==
-                                            static_cast<uint16_t>(
-                                                static_cast<uint32_t>(carrier) >> 16) &&
-                                        *(carrierEntry + kOdstObjectEntryKindOffset) ==
-                                            kOdstObjectKindVehicle)
-                                    {
-                                        carrierObjectData =
-                                            *reinterpret_cast<unsigned char**>(
-                                                carrierEntry +
-                                                kOdstObjectEntryDataOffset);
-                                        if (carrierObjectData)
-                                        {
-                                            carrierDefIndex =
-                                                *reinterpret_cast<const uint16_t*>(
-                                                    carrierObjectData);
-                                            carrierIsRoot =
-                                                *reinterpret_cast<const int32_t*>(
-                                                    carrierObjectData +
-                                                    kOdstObjectParentOffset) == -1;
-                                        }
-                                    }
-                                }
+                                    OdstReadSeatCarrier(entries, carrier, carrierObjectData, carrierDefIndex,
+                                                        carrierIsRoot);
                                 const uint16_t definitionIndex =
                                     *reinterpret_cast<const uint16_t*>(
                                         parentData);
