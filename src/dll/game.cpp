@@ -50975,6 +50975,11 @@ static void TitleImageUnloading(uintptr_t base, size_t size)
         ++retired;
     }
 #endif
+    // The engine exposure locks (engine_exposure_lock.inl): a teardown that gives the hold back after the image is
+    // gone would read and write an unmapped byte.
+    for (EngineExposureLock* lock : {&g_halo3Exposure, &g_odstExposure, &g_reachExposure})
+        if (EngineExposureLockRetireWithin(*lock, base, size))
+            ++retired;
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
     if (g_halo4Restoration.pauseProven.load(std::memory_order_acquire) &&
         (title_image_guard::Within(reinterpret_cast<uintptr_t>(g_halo4Restoration.pauseReason), base, size) ||

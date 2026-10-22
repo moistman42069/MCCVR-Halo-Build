@@ -49,9 +49,12 @@ struct EngineExposureLock
     explicit EngineExposureLock(const char* name) noexcept : who(name) {}
     const char* who; // the log's prefix: "ODST vehicle exposure", ...
     // The engine's two copies of the lock byte: the INTERNAL one the integrator reads, and the EDITABLE one the
-    // engine rebuilds it from every frame. Both or neither (a lone internal write is provably inert).
-    uint8_t* internal = nullptr;
-    uint8_t* editable = nullptr;
+    // engine rebuilds it from every frame. Both or neither (a lone internal write is provably inert). Both lie in
+    // the title's image, so the loader's unload notification retires them (EngineExposureLockRetireWithin) before
+    // the image is unmapped, and every access holds the title image guard (title_image_guard.h): measured, a
+    // teardown that released the hold after MCC had freed halo3.dll read the unmapped byte (one caught fault).
+    std::atomic<uint8_t*> internal{nullptr};
+    std::atomic<uint8_t*> editable{nullptr};
     std::atomic<uint32_t> state{0};
     std::atomic<uint32_t> engages{0};
     // Reads back the byte the ENGINE holds a frame after we engage, so the log reports whether the hold actually
@@ -65,8 +68,8 @@ struct EngineExposureLock
 inline bool EngineExposureLockResolve(EngineExposureLock& lock, uintptr_t base, size_t size,
                                       const char* adaptationSig = kEngineExposureLockSig)
 {
-    lock.internal = nullptr;
-    lock.editable = nullptr;
+    lock.internal.store(nullptr, std::memory_order_release);
+    lock.editable.store(nullptr, std::memory_order_release);
     const uintptr_t exposureHit = sig::Find(base, size, adaptationSig);
     const bool exposureUnique = exposureHit &&
         !sig::Find(exposureHit + 1, base + size - exposureHit - 1, adaptationSig);
@@ -110,8 +113,8 @@ inline bool EngineExposureLockResolve(EngineExposureLock& lock, uintptr_t base, 
             (unsigned long long)(internalLock - base), (unsigned long long)(testLock - base));
         return false;
     }
-    lock.internal = reinterpret_cast<uint8_t*>(internalLock);
-    lock.editable = reinterpret_cast<uint8_t*>(editableLock);
+    lock.internal.store(reinterpret_cast<uint8_t*>(internalLock), std::memory_order_release);
+    lock.editable.store(reinterpret_cast<uint8_t*>(editableLock), std::memory_order_release);
     LOG("%s: render_exposure_lock resolved at +0x%llX (from the adaptation test at +0x%llX), and the settings-block "
         "copy at +0x%llX names it and its editable source +0x%llX; a held exposure writes both",
         lock.who, (unsigned long long)(internalLock - base), (unsigned long long)(exposureHit - base),
@@ -121,29 +124,43 @@ inline bool EngineExposureLockResolve(EngineExposureLock& lock, uintptr_t base, 
 
 // Engaged: adaptation held (both copies 1); released: the engine's own (both 0). Cheap while nothing changes: a read
 // and a compare of each byte. Call from the camera pass, once a frame.
-inline void EngineExposureLockApply(EngineExposureLock& lock, bool engage)
+// The access itself, inside the title image guard: false when it faulted. `observed` is the internal byte as read.
+inline bool EngineExposureLockWrite(EngineExposureLock& lock, uint8_t want, uint8_t& observed)
 {
-    if (!lock.internal && !lock.editable)
-        return;
-    uint8_t observed = 0xFFu;
+    bool ok = true;
+    title_image_guard::BeginRead();
+    uint8_t* const internal = lock.internal.load(std::memory_order_acquire);
+    uint8_t* const editable = lock.editable.load(std::memory_order_acquire);
     __try
     {
         // Write the internal one first: it is the copy the engine rewrites every frame, so if the editable write
         // faults we are left latched on the self-healing copy rather than the permanent one.
-        const uint8_t want = engage ? 1u : 0u;
-        if (lock.internal)
+        if (internal)
         {
-            observed = *lock.internal;
+            observed = *internal;
             if (observed != want)
-                *lock.internal = want;
+                *internal = want;
         }
-        if (lock.editable && *lock.editable != want)
-            *lock.editable = want;
+        if (editable && *editable != want)
+            *editable = want;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        lock.internal = nullptr;
-        lock.editable = nullptr;
+        ok = false;
+    }
+    title_image_guard::EndRead();
+    return ok;
+}
+
+inline void EngineExposureLockApply(EngineExposureLock& lock, bool engage)
+{
+    if (!lock.internal.load(std::memory_order_acquire) && !lock.editable.load(std::memory_order_acquire))
+        return;
+    uint8_t observed = 0xFFu;
+    if (!EngineExposureLockWrite(lock, engage ? 1u : 0u, observed))
+    {
+        lock.internal.store(nullptr, std::memory_order_release);
+        lock.editable.store(nullptr, std::memory_order_release);
         LOG("%s: FAULTED writing an adaptation switch; exposure control abandoned, everything else unaffected",
             lock.who);
         return;
@@ -174,7 +191,8 @@ inline void EngineExposureLockApply(EngineExposureLock& lock, bool engage)
         }
         LOG("%s: adaptation %s (engage #%u; internal copy %s, editable copy %s)", lock.who,
             engage ? "HELD steady for the seat view" : "returned to the engine's own control", engages,
-            lock.internal ? "on" : "unavailable", lock.editable ? "on" : "unavailable");
+            lock.internal.load(std::memory_order_relaxed) ? "on" : "unavailable",
+            lock.editable.load(std::memory_order_relaxed) ? "on" : "unavailable");
     }
 }
 
@@ -182,11 +200,27 @@ inline void EngineExposureLockApply(EngineExposureLock& lock, bool engage)
 // module has gone.
 inline void EngineExposureLockRelease(EngineExposureLock& lock)
 {
-    if (lock.internal || lock.editable)
+    if (lock.internal.load(std::memory_order_acquire) || lock.editable.load(std::memory_order_acquire))
         EngineExposureLockApply(lock, false);
-    lock.internal = nullptr;
-    lock.editable = nullptr;
+    lock.internal.store(nullptr, std::memory_order_release);
+    lock.editable.store(nullptr, std::memory_order_release);
     lock.state.store(0, std::memory_order_relaxed);
     lock.verifyPending.store(0, std::memory_order_relaxed);
     lock.verified.store(0, std::memory_order_relaxed);
+}
+
+// The loader's unload notification for the image at `base` / `size` (title_image_guard.h: the guard held exclusively,
+// the loader lock held): atomic stores only. The lock's bytes are dropped when they lie in the departing image; the
+// title wrote its own stock value back with the image, so nothing is left to restore. True when it retired any.
+inline bool EngineExposureLockRetireWithin(EngineExposureLock& lock, uintptr_t base, size_t size)
+{
+    const uintptr_t internal = reinterpret_cast<uintptr_t>(lock.internal.load(std::memory_order_acquire));
+    const uintptr_t editable = reinterpret_cast<uintptr_t>(lock.editable.load(std::memory_order_acquire));
+    if (!title_image_guard::Within(internal, base, size) && !title_image_guard::Within(editable, base, size))
+        return false;
+    lock.internal.store(nullptr, std::memory_order_release);
+    lock.editable.store(nullptr, std::memory_order_release);
+    lock.state.store(0, std::memory_order_relaxed);
+    lock.verifyPending.store(0, std::memory_order_relaxed);
+    return true;
 }
