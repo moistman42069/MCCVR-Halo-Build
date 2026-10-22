@@ -1328,12 +1328,16 @@ void VehicleCameraAutoAdd(VehicleCameraRuntime& r, const char* gameKey, const ch
             name, names.c_str(), vehicle_camera_store::kFileNameText, why.c_str());
         return;
     }
+    // A new game section also holds a copy of the default entry the seat rode on (vehicle_camera_autoadd.h).
+    const char* const what = addition.newSection
+        ? (addition.fromBuiltIn ? "a NEW section for this game: the built-in entries for it, and the default entry it rode on"
+                                : "a NEW section for this game: an entry of its own with the default entry's cameras, "
+                                  "and that default entry")
+        : (addition.fromBuiltIn ? "the built-in entries for it" : "the default entry's cameras under its own name");
     LOG("Vehicle cameras: %s rode on the camera file's \"default\" entry, so %s %s added to %s (section \"%s\", %s); "
         "the rest of the file is as it was, and the file as it first was is kept as %s%s",
         name, names.c_str(), addition.entries.size() == 1 ? "was" : "were", vehicle_camera_store::kFileNameText,
-        addition.sectionKey.c_str(),
-        addition.fromBuiltIn ? "the built-in entries for it" : "the default entry's cameras under its own name",
-        vehicle_camera_store::kFileNameText, vehicle_camera_store::kBackupSuffixText);
+        addition.sectionKey.c_str(), what, vehicle_camera_store::kFileNameText, vehicle_camera_store::kBackupSuffixText);
     r.nextFilePollMs = 0;
 }
 
