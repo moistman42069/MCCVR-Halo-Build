@@ -825,6 +825,36 @@ void Halo4VehicleCameraTurnView(const VehicleCameraSeatKey& key, bool turns, con
 
 bool Halo4VehicleCameraHoldsExposure(const VehicleCameraSeatKey& key); // below
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// DEV: where a placed chase camera stands from the vehicle (cm along its forward, left, up), and where the vehicle's
+// origin is seen from it against the heading the view is built on (degrees right of it, and below level): what a
+// picture from a fixed headset shows, read without the picture. Render thread writes, the cold worker reports.
+std::atomic<float> g_halo4VehicleCameraDevLocal[3]{};
+std::atomic<float> g_halo4VehicleCameraDevRightDeg{0.0f}, g_halo4VehicleCameraDevBelowDeg{0.0f};
+std::atomic<uint32_t> g_halo4VehicleCameraDevPlaced{0};
+void Halo4VehicleCameraNotePlaced(const Halo4VehicleCameraFrame& frame, const float point[3])
+{
+    const bool carried = frame.carrierRootValid;
+    vehicle_camera_frame::Basis v{};
+    if (!vehicle_camera_frame::FromForwardUp(carried ? frame.carrierForward : frame.rootForward,
+                                             carried ? frame.carrierUp : frame.rootUp, v))
+        return;
+    const float* origin = carried ? frame.carrierPos : frame.rootPos;
+    const float d[3] = {point[0] - origin[0], point[1] - origin[1], point[2] - origin[2]};
+    g_halo4VehicleCameraDevLocal[0].store(vehicle_camera_frame::Dot(d, v.forward) * 304.8f, std::memory_order_relaxed);
+    g_halo4VehicleCameraDevLocal[1].store(vehicle_camera_frame::Dot(d, v.left) * 304.8f, std::memory_order_relaxed);
+    g_halo4VehicleCameraDevLocal[2].store(vehicle_camera_frame::Dot(d, v.up) * 304.8f, std::memory_order_relaxed);
+    const float toward[3] = {-d[0], -d[1], -d[2]};
+    const float flat = sqrtf(toward[0] * toward[0] + toward[1] * toward[1]);
+    const float reference = g_halo4Camera.gameYawReference.load(std::memory_order_relaxed);
+    // A yaw is positive toward the left: "right of the heading" is the heading less the bearing.
+    g_halo4VehicleCameraDevRightDeg.store(WrapPi(reference - atan2f(toward[1], toward[0])) * 57.29578f,
+                                          std::memory_order_relaxed);
+    g_halo4VehicleCameraDevBelowDeg.store(atan2f(-toward[2], flat) * 57.29578f, std::memory_order_relaxed);
+    g_halo4VehicleCameraDevPlaced.fetch_add(1, std::memory_order_relaxed);
+}
+#endif
+
 // The stereo transaction, every frame of a player-controlled seat with the head tracked: before the head pose is
 // composed onto `eye` (the frame's camera, from the game's observer) and `hands` (the camera the hands are placed
 // from, the observer as the game made it). `seatRead`/`seat` are the frame's own seat read.
@@ -908,6 +938,9 @@ void Halo4VehicleCamerasPass(bool seatRead, const Halo4VehicleInputState& seat, 
         g_halo4VehicleCameraPlacedParent.store(frame.parent, std::memory_order_relaxed);
         g_halo4VehicleCameraPlacedSeat.store(frame.seatIndex, std::memory_order_relaxed);
         g_halo4VehicleCameraPlacedMs.store(GetTickCount64(), std::memory_order_release);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        Halo4VehicleCameraNotePlaced(frame, point);
+#endif
     }
 }
 
@@ -1173,6 +1206,15 @@ void Halo4VehicleCamerasColdLog(bool seated)
                     "from it as simulated on %u of %u frames, by at most %.1f cm (0 of N while moving: not "
                     "interpolated there)",
                     apart, samples, static_cast<double>(gapMm) * 0.1);
+            if (g_halo4VehicleCameraDevPlaced.exchange(0, std::memory_order_relaxed))
+                LOG("Vehicle cameras (Halo 4, dev): the chase camera stands %.0f cm ahead, %.0f cm left and %.0f cm "
+                    "above the vehicle's origin; seen from it the origin is %.1f deg right of the view's heading and "
+                    "%.1f deg below level",
+                    static_cast<double>(g_halo4VehicleCameraDevLocal[0].load(std::memory_order_relaxed)),
+                    static_cast<double>(g_halo4VehicleCameraDevLocal[1].load(std::memory_order_relaxed)),
+                    static_cast<double>(g_halo4VehicleCameraDevLocal[2].load(std::memory_order_relaxed)),
+                    static_cast<double>(g_halo4VehicleCameraDevRightDeg.load(std::memory_order_relaxed)),
+                    static_cast<double>(g_halo4VehicleCameraDevBelowDeg.load(std::memory_order_relaxed)));
         }
     }
 #endif
