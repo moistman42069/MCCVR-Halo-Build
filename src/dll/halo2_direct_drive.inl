@@ -718,7 +718,10 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 const seat_converge::Role seatRole = seat_converge::RoleFromSeatFlags(
                     occupancy > 0 && seatFrame.flagsKnown, seatFrame.flags);
                 facts.driver = facts.look_steered = !seatRole.known || seatRole.driver;
-                const seat_drive::Axes axes = g_config.vehicle_view_follow ? seat_drive::Axes{}
+                // The view the observer built for the seat follows the hull: the setting, or a chase camera's tethering.
+                const bool viewFollows =
+                    g_config.vehicle_view_follow || g_vehicleViewFollows.load(std::memory_order_acquire);
+                const seat_drive::Axes axes = viewFollows ? seat_drive::Axes{}
                     : seat_drive::Decide(facts, g_config.reach_vehicle_aim, g_config.seat_direct_drive != 0);
                 const uint32_t key = seat_drive::SeatKey(static_cast<int>(seatParent), seatIndex, false);
                 // The seat's account for the SIGHT ... seat line (every update that does not end in a converged
@@ -789,7 +792,7 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                     // nothing -- when the seat, its policy and everything but the view are unchanged.
                     seat_drive::Seat viewed = facts;
                     viewed.view_owned = true;
-                    const bool onlyTheView = !facts.view_owned && !g_config.vehicle_view_follow &&
+                    const bool onlyTheView = !facts.view_owned && !viewFollows &&
                         seat_drive::Decide(viewed, g_config.reach_vehicle_aim, g_config.seat_direct_drive != 0).any();
                     if (onlyTheView && facts.identified && st.stintActive && st.stintKey == key &&
                         ++st.stintStaleUpdates <= kHalo2StintStaleUpdates)

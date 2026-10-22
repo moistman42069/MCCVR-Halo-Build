@@ -697,6 +697,10 @@ namespace
     std::atomic<bool> g_vehicleFrameVerified{false};
     std::atomic<bool> g_vehicleIdentityVerified{false};
     std::atomic<uint64_t> g_vehicleViewApplied{0},g_vehicleViewRefused{0};
+    // The seat view the observer built last turned with the hull: vehicle_view_follow, or the tethering of a chase
+    // camera of the vehicle camera file standing in for it (halo2_vehicle_cameras.inl). Observer writes; the seat
+    // drive reads it in place of the setting.
+    std::atomic<bool> g_vehicleViewFollows{false};
     // Frames the seat was kept through a stalled simulation (Halo2SeatHeldThroughStall).
     std::atomic<uint64_t> g_vehicleViewHeld{0};
     bool ReadVehicleViewFrame(Halo2VehicleViewKey&,Halo2CameraBasis&) noexcept;
@@ -1491,6 +1495,7 @@ namespace
             ownsVehicleReference=framed&&
                 g_vehicleView.Build(vehicleKey,stock,hull,followHull,
                     GetTickCount64(),viewBase,g_footSeatSeedValid?&g_footSeatSeed:nullptr);
+            g_vehicleViewFollows.store(ownsVehicleReference&&followHull,std::memory_order_release);
             if(ownsVehicleReference) {
                 g_footSeatSeedValid=false;g_vehicleViewApplied.fetch_add(1,std::memory_order_relaxed);
                 if(cameraSeatValid)
