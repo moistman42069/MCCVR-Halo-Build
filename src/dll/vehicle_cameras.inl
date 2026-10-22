@@ -63,7 +63,8 @@ struct LegacySeat
     VehicleCameraSeatKey key{};
 };
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
-bool OdstReadCameraSeat(Halo3SeatSnapshot& out, OdstVehicleId* carrierId = nullptr); // game.cpp's ODST seat block
+bool OdstReadCameraSeat(Halo3SeatSnapshot& out, OdstVehicleId* carrierId = nullptr,
+                        bool* frameless = nullptr); // game.cpp's ODST seat block
 #endif
 
 bool LegacyReadSeat(LegacySeat& seat)

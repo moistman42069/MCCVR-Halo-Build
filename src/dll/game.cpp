@@ -14298,9 +14298,12 @@ namespace
     // carrier's for a gun riding one); `mounted` is whether the seated object rides a carrier (the cameras' sense, apart
     // from the first-person seat's, which ODST never sets); `identity` is ODST's own (OdstVehicleId); the head frame
     // once the occupant's head has settled. False: not in a seat with an eye, or stale (100 ms), torn or not a frame.
-    // `carrierId`: the carrier's identity, when asked for.
-    bool OdstReadCameraSeat(Halo3SeatSnapshot& out, OdstVehicleId* carrierId)
+    // `carrierId`: the carrier's identity, when asked for. `frameless`, when asked for: set where the seat's sample is
+    // fresh but carries no vehicle frame the cameras can use (OdstSampleCameraFrame), which lasts while the seat does.
+    bool OdstReadCameraSeat(Halo3SeatSnapshot& out, OdstVehicleId* carrierId, bool* frameless)
     {
+        if (frameless)
+            *frameless = false;
         OdstVehicleTransform& xf = g_odstVehicleTransform;
         for (int attempt = 0; attempt < 2; ++attempt)
         {
@@ -14344,8 +14347,14 @@ namespace
             if (xf.seq.load(std::memory_order_acquire) != before)
                 continue;
             const uint64_t nowMs = GetTickCount64();
-            if (!sampleMs || nowMs < sampleMs || nowMs - sampleMs > 100 || !hullValid)
+            if (!sampleMs || nowMs < sampleMs || nowMs - sampleMs > 100)
                 return false;
+            if (!hullValid)
+            {
+                if (frameless)
+                    *frameless = true;
+                return false;
+            }
             for (int i = 0; i < 3 && seat.rootValid; ++i)
                 if (!std::isfinite(seat.rootPos[i]) || !std::isfinite(seat.rootFwd[i]) ||
                     !std::isfinite(seat.rootLeft[i]) || !std::isfinite(seat.rootUp[i]))
@@ -14376,16 +14385,33 @@ namespace
 
     // The seat the player is in, for the vehicle cameras' cold worker (vehicle_cameras.inl): the vehicle's name and the
     // seat's role as the camera file finds them (odst_vehicle_camera_logic.h), and the key every reader matches a
-    // camera to. OnFoot: not in a seat the ODST seat view runs in. Unknown: the seat's snapshot is a moment stale.
+    // camera to. OnFoot: not in a seat the ODST seat view runs in, or in one with no vehicle frame the cameras can use
+    // (the seat keeps the first-person seat view, and no camera or seat button is left over from the seat before).
+    // Unknown: the seat's snapshot is a moment stale.
     VehicleCameraSeatRead OdstVehicleCameraSeat(VehicleCameraSeatKey& key, const char*& name, uint8_t& seatBits,
                                                bool& seatView, bool& wheelSeat, uint32_t& definitionIndex)
     {
+        static bool s_framelessLogged = false; // once a stint in the seats
         if (!OdstVehicleFpActive())
+        {
+            s_framelessLogged = false;
             return VehicleCameraSeatRead::OnFoot;
+        }
         Halo3SeatSnapshot seat;
         OdstVehicleId carrier = OdstVehicleId::Unknown;
-        if (!OdstReadCameraSeat(seat, &carrier))
-            return VehicleCameraSeatRead::Unknown;
+        bool frameless = false;
+        if (!OdstReadCameraSeat(seat, &carrier, &frameless))
+        {
+            if (!frameless)
+                return VehicleCameraSeatRead::Unknown;
+            if (!s_framelessLogged)
+            {
+                s_framelessLogged = true;
+                LOG("Vehicle cameras (ODST): this seat has no vehicle frame the cameras can use (a vehicle riding "
+                    "another, or a frame that did not check out); it keeps the first-person seat view");
+            }
+            return VehicleCameraSeatRead::OnFoot;
+        }
         const auto id = static_cast<OdstVehicleId>(seat.identity);
         key = VehicleCameraSeatKey{g_odstRuntimeGeneration.load(std::memory_order_relaxed), seat.parentHandle,
                                    seat.seatIndex, seat.identity, seat.mounted, odst_vehicle_camera::kSeatKeyTitle};
@@ -14832,8 +14858,10 @@ namespace
 
     // THE SEAT'S VEHICLE FOR THE VEHICLE CAMERAS (vehicle_cameras.inl). A gun riding a vehicle (the Warthog's, the
     // Scorpion's, the Wraith's: their own objects in ODST) stores its frame relative to the carrier's attachment node,
-    // so the vehicle is the carrier, which must be a root object -- as Halo 3 takes it (Halo3FrameStatus::Carrier).
-    // Everything else sits on a root vehicle, its parent. Camera thread.
+    // so the vehicle is the carrier, which must be a root object -- as Halo 3 takes it for a mounted turret
+    // (Halo3FrameStatus::Carrier). Only a gun, or a seated object the mod does not know, takes a carrier's frame
+    // (odst_vehicle_camera::GunOnCarrier); any other vehicle riding something has no frame here, and its seat no
+    // camera. Everything else sits on a root vehicle, its parent. Camera thread.
     struct OdstCameraSeatFrame
     {
         bool onCarrier = false;
@@ -14893,8 +14921,8 @@ namespace
         return cache.id;
     }
 
-    void OdstSampleCameraFrame(uint32_t generation, int parent, unsigned char* parentData, int carrier,
-                               unsigned char* carrierData, uint32_t carrierDefIndex, bool carrierIsRoot,
+    void OdstSampleCameraFrame(uint32_t generation, int parent, unsigned char* parentData, OdstVehicleId seated,
+                               int carrier, unsigned char* carrierData, uint32_t carrierDefIndex, bool carrierIsRoot,
                                OdstCameraSeatFrame& out)
     {
         out = {};
@@ -14905,7 +14933,7 @@ namespace
             owner = parent;
             ownerData = parentData;
         }
-        else if (carrierData && carrierIsRoot)
+        else if (carrierData && carrierIsRoot && odst_vehicle_camera::GunOnCarrier(seated, true))
         {
             owner = carrier;
             ownerData = carrierData;
@@ -15176,7 +15204,7 @@ namespace
         // carrier's, for a gun riding one), its bounds and its drawn root node. Only while they are on.
         OdstCameraSeatFrame cameraFrame{};
         if (seated && g_config.vehicle_cameras)
-            OdstSampleCameraFrame(generation, parent, parentObjectData, carrier, carrierObjectData,
+            OdstSampleCameraFrame(generation, parent, parentObjectData, anchorId, carrier, carrierObjectData,
                                   carrierDefIndex, carrierIsRoot, cameraFrame);
         const VehicleCameraSeatKey cameraKey{generation, parent, seat, static_cast<uint32_t>(anchorId),
                                              cameraFrame.onCarrier, odst_vehicle_camera::kSeatKeyTitle};
