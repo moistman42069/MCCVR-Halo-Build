@@ -409,6 +409,7 @@ bool ReachVehicleCameraFollowWanted(); // reach_vehicle_cameras.inl
 bool ReachVehicleCameraLevelElevationDeg(const VehicleCameraSeatKey& seat, float& deg); // reach_vehicle_cameras.inl
 #endif
 bool HaloCEVehicleCameraLevelElevationDeg(const VehicleCameraSeatKey& seat, float& deg); // haloce_vehicle_cameras.inl
+bool HaloCEVehicleCameraReadTrack(const VehicleCameraSeatKey& seat, Halo3BoomSeatFacts& facts); // the same
 
 // Whether a chosen chase camera turns the view with the hull in the seat the player is in: the shared follow
 // reader's master gate (Halo3ReadRollStableFollow), in Halo 3 and in Reach.
@@ -1271,6 +1272,7 @@ struct VehicleCameraRuntime
         float start = 0.0f, home = 0.0f;
         vehicle_boom::Shape shape{};
         Halo3BoomSeatFacts facts{};
+        bool ceTrack = false; // facts.track is Halo CE's, evaluated its own way (haloce_vehicle_camera::TrackPlace)
         bool piloting = false;
         std::string seatName;
         // The log's check of the track against the game's own camera.
@@ -1287,11 +1289,11 @@ inline constexpr uint64_t kVehicleCameraFilePollMs = 2000;
 
 // The log's check of the track: where the game's own camera stood from its pivot (world units) and the way it
 // looked, against where the track puts it at that look pitch. Centimetres apart; false when there is nothing to
-// compare.
+// compare. `ceTrack`: a Halo CE track (haloce_vehicle_camera_logic.h).
 bool VehicleBoomTrackApart(const vehicle_boom::Track& track, const float stood[3], const float looks[3], float& apart,
-                           float& pitch, float& stoodCm, float& trackCm)
+                           float& pitch, float& stoodCm, float& trackCm, bool ceTrack = false)
 {
-    if (!vehicle_boom::Usable(track))
+    if (ceTrack ? !haloce_vehicle_camera::TrackUsable(track) : !vehicle_boom::Usable(track))
         return false;
     float heading[2] = {looks[0], looks[1]};
     const float level = std::sqrt(heading[0] * heading[0] + heading[1] * heading[1]);
@@ -1303,7 +1305,7 @@ bool VehicleBoomTrackApart(const vehicle_boom::Track& track, const float stood[3
     const float measured[3] = {stood[0] * heading[0] + stood[1] * heading[1],
                                -stood[0] * heading[1] + stood[1] * heading[0], stood[2]};
     float place[3];
-    if (!vehicle_boom::TrackOffset(track, pitch, place))
+    if (ceTrack ? !haloce_vehicle_camera::TrackPlace(track, pitch, place) : !vehicle_boom::TrackOffset(track, pitch, place))
         return false;
     const float d[3] = {measured[0] - place[0], measured[1] - place[1], measured[2] - place[2]};
     apart = std::sqrt(vehicle_camera_frame::Dot(d, d)) / vehicle_camera_frame::kWorldUnitsPerCm;
@@ -1367,9 +1369,9 @@ void VehicleBoomCheckLog(VehicleCameraRuntime& r)
     if (b.bestApartSecond < 1.0e8f)
         std::snprintf(second, sizeof(second), "; by the seat's second track, %.1f cm",
                       static_cast<double>(b.bestApartSecond));
-    LOG("Vehicle cameras (Halo 3): the boom's track checked against the game's own camera in %s: of %u samples the "
+    LOG("Vehicle cameras (%s): the boom's track checked against the game's own camera in %s: of %u samples the "
         "closest stood %.0f cm from its pivot looking %.1f deg, where the track puts it %.0f cm out, %.1f cm apart%s",
-        b.seatName.c_str(), b.checkSamples, static_cast<double>(b.bestStood),
+        b.ceTrack ? "Halo CE" : "Halo 3", b.seatName.c_str(), b.checkSamples, static_cast<double>(b.bestStood),
         static_cast<double>(b.bestPitch / vehicle_boom::kRadiansPerDegree), static_cast<double>(b.bestTrack),
         static_cast<double>(b.bestApart), second);
 }
@@ -1380,8 +1382,11 @@ void VehicleBoomCheckLog(VehicleCameraRuntime& r)
 // of its own, -10 to 60 deg above level (reach_vehicle_camera::BoomRange; Reach's own look limits are not read), and
 // its stick is not inverted unless vehicle_boom_invert says so (Reach's inversion setting is not read). The render thread runs it on the same
 // shared boom (reach_vehicle_cameras.inl).
-// `ceTitle`: the seat is Halo CE's, the same way: an orbit over CE's range (haloce_vehicle_camera::BoomRange), started
-// from where the game's camera stands looking level as the game's thread measures it (haloce_vehicle_cameras.inl).
+// `ceTitle`: the seat is Halo CE's. Its boom follows the seat camera's track as CE evaluates it
+// (haloce_vehicle_camera::TrackShape) across the flat look range, as Halo 3's does; where the track cannot be read, an
+// orbit over CE's range (haloce_vehicle_camera::BoomRange), started from where the game's camera stands looking level
+// as the game's thread measures it (haloce_vehicle_cameras.inl). The stick is not inverted unless vehicle_boom_invert
+// says so (CE's inversion setting is not read).
 void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::ActiveCamera& active, bool wanted,
                          bool seated, uint32_t definitionIndex, const char* name, uint64_t nowMs,
                          bool reachTitle = false, bool ceTitle = false)
@@ -1427,7 +1432,8 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
     if (reachTitle && !ReachVehicleCameraLevelElevationDeg(r.seat, measuredDeg))
         measuredDeg = newCamera ? vehicle_boom::kBoomPitchUnset : b.measuredDeg;
 #endif
-    if (ceTitle && !HaloCEVehicleCameraLevelElevationDeg(r.seat, measuredDeg))
+    // A CE seat on its track knows its level view from the track: its measurement is not taken.
+    if (ceTitle && (newCamera || !b.shape.track) && !HaloCEVehicleCameraLevelElevationDeg(r.seat, measuredDeg))
         measuredDeg = newCamera ? vehicle_boom::kBoomPitchUnset : b.measuredDeg;
     const bool newStart = newCamera || b.fileDegrees != active.boomPitchDeg || b.measuredDeg != measuredDeg;
     if (newStart)
@@ -1453,8 +1459,14 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
             }
             else if (ceTitle)
             {
-                // CE's following camera hangs on a track of its own, which is not read: an orbit, as Reach's.
-                vehicle_boom::BuildOrbitShape(haloce_vehicle_camera::BoomRange(), b.shape);
+                // CE's following camera hangs on the seat camera's track, evaluated its own way; across the flat
+                // game's look range, as Halo 3's boom is. Without it, an orbit over a range of its own, as Reach's.
+                b.ceTrack = true;
+                const bool read = HaloCEVehicleCameraReadTrack(r.seat, b.facts);
+                if (!read || !haloce_vehicle_camera::TrackShape(b.facts.track, vehicle_boom::Range{}, b.shape))
+                    vehicle_boom::BuildOrbitShape(haloce_vehicle_camera::BoomRange(), b.shape);
+                else
+                    measuredDeg = vehicle_boom::kBoomPitchUnset;
             }
             else
             {
@@ -1495,11 +1507,11 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
                                                                   ? "the camera file's boomPitch"
                                                                   : "the game's level view, a little higher");
         if (b.shape.track)
-            LOG("Vehicle cameras (Halo 3): the boom in %s stands where the game's own third-person camera would at a "
+            LOG("Vehicle cameras (%s): the boom in %s stands where the game's own third-person camera would at a "
                 "look pitch of its own: the seat's camera track (%d points%s) across the flat game's look range %.1f to "
                 "%.1f deg, from %.1f deg above level looking down to %.1f deg looking up; looking level the game's "
                 "camera stands %.1f deg above level, %.0f cm out. It starts at %.1f deg (%s)",
-                b.seatName.c_str(), b.facts.track.count, b.facts.defaultTrack ? ", the game's default" : "",
+                titleName, b.seatName.c_str(), b.facts.track.count, b.facts.defaultTrack ? ", the game's default" : "",
                 static_cast<double>(b.shape.range.min * deg), static_cast<double>(b.shape.range.max * deg),
                 static_cast<double>(highDeg), static_cast<double>(lowDeg),
                 static_cast<double>(vehicle_boom::ElevationAt(b.shape, 0.0f) * deg),
@@ -1507,7 +1519,10 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
         else
         {
             const char* why = reachTitle ? "Reach's camera track is not read"
-                            : ceTitle    ? "Halo CE's camera track is not read"
+                            : ceTitle && !b.facts.read ? "the seat's camera track could not be read"
+                            : ceTitle && b.facts.points < vehicle_boom::kMinTrackPoints ? "the seat camera's track has under four points"
+                            : ceTitle && b.facts.points > vehicle_boom::kMaxTrackPoints ? "its track has more points than the mod reads"
+                            : ceTitle ? "its track did not check out"
                             : !Halo3VehicleBoomBound() || !g_halo3VehicleBoom.seatCamera ? "the game's seat camera is not bound"
                             : !b.facts.read                                             ? "the seat's tags could not be read"
                             : !g_halo3VehicleBoom.track                                 ? "the game's camera track is not bound"
@@ -1570,7 +1585,8 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
         if (current.sampled && b.shape.track && nowMs <= current.ms + 200)
         {
             float apart = 0.0f, lookPitch = 0.0f, stoodCm = 0.0f, trackCm = 0.0f;
-            if (VehicleBoomTrackApart(b.facts.track, current.stood, current.looks, apart, lookPitch, stoodCm, trackCm))
+            if (VehicleBoomTrackApart(b.facts.track, current.stood, current.looks, apart, lookPitch, stoodCm, trackCm,
+                                      b.ceTrack))
             {
                 ++b.checkSamples;
                 if (apart < b.bestApart)
@@ -1581,7 +1597,8 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
                     b.bestTrack = trackCm;
                 }
                 float second = 0.0f;
-                if (VehicleBoomTrackApart(b.facts.second, current.stood, current.looks, second, lookPitch, stoodCm, trackCm) &&
+                if (VehicleBoomTrackApart(b.facts.second, current.stood, current.looks, second, lookPitch, stoodCm, trackCm,
+                                          b.ceTrack) &&
                     second < b.bestApartSecond)
                     b.bestApartSecond = second;
             }

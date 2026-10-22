@@ -208,6 +208,82 @@ static void TestLeash()
           "without positional tracking there is nothing to hold");
 }
 
+// A track of five points from 1 wu behind and 2 up (its start, looking straight down) to 3 behind at the pivot's height
+// (its end, looking straight up), 0.25 wu to the left, its height falling as the square of the parameter: the cubic
+// through any four of them is the curve itself.
+static vehicle_boom::Track CurveTrack()
+{
+    vehicle_boom::Track track;
+    track.count = 5;
+    for (int i = 0; i < 5; ++i)
+    {
+        const float t = static_cast<float>(i) / 4.0f;
+        track.points[i].position[0] = -1.0f - 2.0f * t;
+        track.points[i].position[1] = 0.25f;
+        track.points[i].position[2] = 2.0f - 2.0f * t * t;
+        track.points[i].orientation[3] = 1.0f;
+    }
+    return track;
+}
+
+static void TestTrack()
+{
+    Check(Near(TrackParameter(-kHalfPi), 0.0f) && Near(TrackParameter(0.0f), 0.5f) && Near(TrackParameter(kHalfPi), 1.0f),
+          "looking straight down, level and straight up take the track's start, middle and end");
+    Check(Near(TrackParameter(-3.0f), 0.0f) && Near(TrackParameter(3.0f), 1.0f) && Near(TrackParameter(NAN), 0.5f),
+          "a pitch past 90 deg holds at the end, and one that is not a number is level");
+
+    const vehicle_boom::Track track = CurveTrack();
+    float place[3];
+    Check(TrackPlace(track, 0.0f, place) && Near(place[0], -2.0f) && Near(place[1], 0.25f) && Near(place[2], 1.5f),
+          "looking level, the camera stands halfway along the track");
+    Check(TrackPlace(track, -kHalfPi, place) && Near(place[0], -1.0f) && Near(place[2], 2.0f),
+          "looking straight down, at its start");
+    Check(TrackPlace(track, kHalfPi, place) && Near(place[0], -3.0f) && Near(place[2], 0.0f),
+          "looking straight up, at its end");
+    Check(TrackPlace(track, 0.25f * kPi, place) && Near(place[0], -2.5f) && Near(place[2], 2.0f - 2.0f * 0.5625f),
+          "looking 45 deg up, three quarters along, on the curve between the points");
+
+    vehicle_boom::Track bare = track;
+    for (int i = 0; i < bare.count; ++i)
+        bare.points[i].orientation[3] = 0.0f;
+    Check(TrackUsable(bare) && !vehicle_boom::Usable(bare), "CE never reads the points' orientations; Halo 3 does");
+    vehicle_boom::Track broken = track;
+    broken.count = 3;
+    Check(!TrackUsable(broken) && !TrackPlace(broken, 0.0f, place), "a track of three points is not evaluated");
+    broken = track;
+    broken.points[2].position[1] = NAN;
+    Check(!TrackUsable(broken), "nor one with a place that is not a number");
+    broken = track;
+    broken.points[4].position[0] = -200.0f;
+    Check(!TrackUsable(broken), "nor one with a place 200 world units out");
+
+    vehicle_boom::Shape shape;
+    Check(TrackShape(track, vehicle_boom::Range{}, shape) && shape.valid && shape.track,
+          "the track gives the boom a shape across the flat look range");
+    float level[3];
+    vehicle_boom::OffsetAt(shape, 0.0f, level);
+    Check(Near(level[0], -2.0f, 1.0e-3f) && Near(level[2], 1.5f, 1.0e-3f),
+          "the shape looking level is the track looking level");
+    float far[3];
+    vehicle_boom::Offset(shape, 0.0f, 99.0f, far);
+    Check(Near(far[0], level[0]) && Near(far[2], level[2]), "a track's offsets are its own, never scaled by a distance");
+    Check(vehicle_boom::ElevationAt(shape, shape.range.min) > vehicle_boom::ElevationAt(shape, 0.0f) &&
+              vehicle_boom::ElevationAt(shape, 0.0f) > vehicle_boom::ElevationAt(shape, shape.range.max),
+          "looking down stands the camera higher, looking up lower");
+    const float elevation = vehicle_boom::ElevationAt(shape, 0.3f);
+    Check(Near(vehicle_boom::PitchForElevation(shape, elevation), 0.3f, 2.0e-3f),
+          "an elevation on the track gives back the pitch it stands at");
+    Check(Near(vehicle_boom::DefaultElevation(shape, vehicle_boom::kBoomPitchUnset),
+               vehicle_boom::ElevationAt(shape, 0.0f) + vehicle_boom::kDefaultRaiseDeg * vehicle_boom::kRadiansPerDegree),
+          "without a file's boomPitch the boom starts at the track's level view, a little higher");
+
+    vehicle_boom::Shape kept = shape;
+    Check(!TrackShape(broken, vehicle_boom::Range{}, kept) && !kept.valid, "a track that cannot be evaluated gives no shape");
+    const vehicle_boom::Range backwards{0.5f, -0.5f};
+    Check(!TrackShape(track, backwards, kept) && !kept.valid, "nor does a range that is not one");
+}
+
 int main()
 {
     TestNames();
@@ -215,6 +291,7 @@ int main()
     TestGameCamera();
     TestBuiltInEntries();
     TestLeash();
+    TestTrack();
     std::printf("haloce vehicle camera tests: %u checks passed\n", g_checks);
     return 0;
 }

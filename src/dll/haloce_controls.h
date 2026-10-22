@@ -4,6 +4,7 @@
 #include "vr.h"
 #include "../common/haloce_frame_context.h"
 #include "../common/support_grip_logic.h"
+#include "../common/vehicle_boom_logic.h"
 
 // Native state is independently verified and available even if optional
 // controller-shot, hand-palette or turn hooks cannot be installed.
@@ -130,3 +131,17 @@ struct HaloCEVehicleSeatNow
     float boundsRadius{}; // world units, the vehicle definition's; 0 = not read
 };
 bool HaloCEControls_ReadVehicleSeatNow(HaloCEVehicleSeatNow& seat) noexcept;
+// THE SEAT CAMERA'S TRACK, for the vehicle cameras' boom (haloce_vehicle_camera_logic.h): the track the game's
+// following camera hangs its camera on in seat `seat` of the vehicle `parent`, as camera_track_splut picks it -- the
+// seat camera's first track, else the game globals' default. Positions and orientations of up to
+// vehicle_boom::kMaxTrackPoints control points; a track with more is read with track.count 0. False when the seat is
+// not readable now (another generation, the vehicle gone). Read-only, guarded, any thread.
+struct HaloCEVehicleSeatTrack
+{
+    int32_t tracks{};       // tracks the seat camera lists
+    bool defaultTrack{};    // it lists none: the game globals' default
+    int32_t points{};       // control points in the track
+    vehicle_boom::Track track{};
+};
+bool HaloCEControls_ReadVehicleSeatTrack(uint32_t generation,uint32_t parent,int16_t seat,
+    HaloCEVehicleSeatTrack& track) noexcept;

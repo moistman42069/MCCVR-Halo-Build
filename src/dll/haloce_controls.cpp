@@ -329,9 +329,10 @@ bool Remove() noexcept
         reinterpret_cast<const void*>(&HaloCEControls_ReadVehicleCameraOwner),
         reinterpret_cast<const void*>(&HaloCEControls_SeatHeading),
         reinterpret_cast<const void*>(&HaloCEControls_ReadVehicleSeatFacts),
-        reinterpret_cast<const void*>(&HaloCEControls_ReadVehicleSeatNow)};
+        reinterpret_cast<const void*>(&HaloCEControls_ReadVehicleSeatNow),
+        reinterpret_cast<const void*>(&HaloCEControls_ReadVehicleSeatTrack)};
     const void* trampolines[]{turnOriginal,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,
-        nullptr,nullptr};
+        nullptr,nullptr,nullptr};
     if (!WaitForNativeDetourQuiescence(functions,trampolines,std::size(functions),callbacks)) return false;
     if (turnTarget&&MH_RemoveHook(turnTarget)!=MH_OK) return false;
     turnTarget=turnOriginal=nullptr;
@@ -478,7 +479,7 @@ static HaloCEVehicleSeatRead ReadVehicleSeatFactsBody(HaloCEVehicleSeatFacts& fa
         if (out.definition!=UINT32_MAX&&(out.definition&0xffffu)<0x8000u&&mappedBase>0&&virtualBase>=0)
         {
             using TagGet=uintptr_t(__fastcall*)(uint32_t);
-            const uintptr_t definition=reinterpret_cast<TagGet>(moduleBase+0xA9B648)(out.definition);
+            const uintptr_t definition=reinterpret_cast<TagGet>(moduleBase+vehicle_camera_contract::tag)(out.definition);
             if (definition)
             {
                 // object_definition: bounding radius +4 (world units).
@@ -553,7 +554,7 @@ static bool ReadVehicleSeatNowBody(HaloCEVehicleSeatNow& seat) noexcept
         if (out.definition!=UINT32_MAX&&(out.definition&0xffffu)<0x8000u)
         {
             using TagGet=uintptr_t(__fastcall*)(uint32_t);
-            const uintptr_t definition=reinterpret_cast<TagGet>(moduleBase+0xA9B648)(out.definition);
+            const uintptr_t definition=reinterpret_cast<TagGet>(moduleBase+vehicle_camera_contract::tag)(out.definition);
             const float radius=definition?*reinterpret_cast<const float*>(definition+4):0.0f;
             if (std::isfinite(radius)&&radius>0&&radius<1000) out.boundsRadius=radius;
         }
@@ -567,6 +568,75 @@ static bool ReadVehicleSeatNowBody(HaloCEVehicleSeatNow& seat) noexcept
 }
 bool HaloCEControls_ReadVehicleSeatNow(HaloCEVehicleSeatNow& seat) noexcept
 { Callback callback;return ReadVehicleSeatNowBody(seat); }
+// THE SEAT CAMERA'S TRACK (haloce_controls.h). Every address and field is one vehicle_camera_contract proved at
+// admission: the seat camera (unit_get_camera_info), its tracks and the default (camera_track_splut). Guarded.
+static bool ReadVehicleSeatTrackBody(uint32_t gen,uint32_t parentDatum,int16_t seat,HaloCEVehicleSeatTrack& out) noexcept
+{
+    if (!vehicleCameraFactsReady.load(std::memory_order_acquire)||!StateCurrent()||
+        gen!=generation.load(std::memory_order_acquire)||seat<0||parentDatum==UINT32_MAX||!(parentDatum>>16))
+        return false;
+    HaloCEVehicleSeatTrack read{};
+    __try
+    {
+        const auto get=reinterpret_cast<ObjectGetFn>(moduleBase+contract::player_state::state_object_try_get);
+        const uintptr_t parent=get(parentDatum,2);
+        if (!parent) return false;
+        const uint32_t definitionDatum=*reinterpret_cast<const uint32_t*>(parent);
+        const intptr_t virtualBase=*reinterpret_cast<const intptr_t*>(moduleBase+0x2EA3410);
+        const intptr_t mappedBase=*reinterpret_cast<const intptr_t*>(moduleBase+0x2D9CE10);
+        if (definitionDatum==UINT32_MAX||(definitionDatum&0xffffu)>=0x8000u||mappedBase<=0||virtualBase<0) return false;
+        const auto relocate=[virtualBase,mappedBase](int32_t address) noexcept {
+            return address?static_cast<uintptr_t>(static_cast<intptr_t>(address)-virtualBase+mappedBase):uintptr_t{0}; };
+        using TagGet=uintptr_t(__fastcall*)(uint32_t);
+        const auto tag=reinterpret_cast<TagGet>(moduleBase+vehicle_camera_contract::tag);
+        const uintptr_t definition=tag(definitionDatum);
+        if (!definition) return false;
+        // The seat's camera: the vehicle definition's seat block (+0x2E4 count, +0x2E8 address, 0x11C a seat) at +0x84.
+        const int32_t seats=*reinterpret_cast<const int32_t*>(definition+0x2e4);
+        const uintptr_t seatBlock=relocate(*reinterpret_cast<const int32_t*>(definition+0x2e8));
+        if (seats<=0||seats>64||seat>=seats||!seatBlock) return false;
+        const uintptr_t camera=seatBlock+size_t(seat)*0x11c+0x84;
+        // Its first track's reference (+0x4C count, +0x50 address, the datum at +0xC), else the globals' default.
+        read.tracks=*reinterpret_cast<const int32_t*>(camera+0x4c);
+        uint32_t trackDatum=UINT32_MAX;
+        if (read.tracks>0)
+        {
+            const uintptr_t first=relocate(*reinterpret_cast<const int32_t*>(camera+0x50));
+            if (first) trackDatum=*reinterpret_cast<const uint32_t*>(first+0xc);
+        }
+        if (trackDatum==UINT32_MAX)
+        {
+            const uintptr_t globals=*reinterpret_cast<const uintptr_t*>(moduleBase+vehicle_camera_contract::globals);
+            const uintptr_t reference=globals?relocate(*reinterpret_cast<const int32_t*>(globals+0x108)):0;
+            if (!reference) return false;
+            trackDatum=*reinterpret_cast<const uint32_t*>(reference+0xc);
+            read.defaultTrack=true;
+        }
+        if (trackDatum==UINT32_MAX||(trackDatum&0xffffu)>=0x8000u) return false;
+        const uintptr_t track=tag(trackDatum);
+        if (!track) return false;
+        // The track's control points: +4 count, +8 address, 0x3C a point (position, then orientation i j k w).
+        read.points=*reinterpret_cast<const int32_t*>(track+4);
+        const uintptr_t points=relocate(*reinterpret_cast<const int32_t*>(track+8));
+        if (points&&read.points>=vehicle_boom::kMinTrackPoints&&read.points<=vehicle_boom::kMaxTrackPoints)
+        {
+            for (int32_t i=0;i<read.points;++i)
+            {
+                const auto* point=reinterpret_cast<const float*>(points+size_t(i)*0x3c);
+                for (int k=0;k<3;++k) read.track.points[i].position[k]=point[k];
+                for (int k=0;k<4;++k) read.track.points[i].orientation[k]=point[3+k];
+            }
+            read.track.count=read.points;
+        }
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
+    if (!StateCurrent()||gen!=generation.load(std::memory_order_acquire)) return false;
+    out=read;
+    return true;
+}
+bool HaloCEControls_ReadVehicleSeatTrack(uint32_t gen,uint32_t parent,int16_t seat,HaloCEVehicleSeatTrack& track) noexcept
+{ Callback callback;return ReadVehicleSeatTrackBody(gen,parent,seat,track); }
 // THE SEAT'S VIEW HEADING (halo_ce::Reference::seatHeading; haloce_render_logic.h has the why and the measurement).
 // The player's control record for input user N sits at control + 0x14 + N * 0x58, with its unit handle 4 bytes
 // before it; its yaw and pitch are the two floats at +8 / +0xC -- the pair CE's own action builder copies into the

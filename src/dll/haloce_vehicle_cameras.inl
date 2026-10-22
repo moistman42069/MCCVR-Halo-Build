@@ -20,8 +20,9 @@
 //
 // "thirdperson": the game's own camera is the following camera's command, before the hook moves it: the pivot it hangs
 // from (the seat camera's marker, as drawn) and where it stands from that pivot (haloce_vehicle_camera_logic.h
-// GameCameraFromPivot). Its distance gives the boom's; the boom then orbits the pivot at its own elevation along the
-// vehicle's heading (vehicle_boom_logic.h's orbit shape, CE's camera track not being read), as Reach's does.
+// GameCameraFromPivot). The boom stands the camera where the game's would stand at a look pitch of its own, from the
+// seat camera's track (haloce_vehicle_camera::TrackShape), as Halo 3's does; a seat whose track cannot be read has the
+// boom orbit the pivot at the game's own distance instead, as Reach's does.
 //
 // Not in CE: the aim ring, the glass and body keys, eyeAdjust (classic CE has no eye adaptation to hold), pitch follow
 // and a marker origin. The readout says so for a camera that asks.
@@ -324,18 +325,21 @@ bool HaloCEVehicleCameraRestPlace(const HaloCEChaseFrame& frame, const VehicleCa
         g_haloceVehicleCameraPivotUpWu.store(read[2], std::memory_order_relaxed);
     }
     // THE BOOM (vehicle_cameras.inl's shared boom, run here on the game's thread as Halo 3's camera thread runs it): the
-    // cold worker's publication for this seat and camera -- an orbit of the pivot over CE's range
-    // (haloce_vehicle_camera::BoomRange), starting at the player's kept angle, else the file's "boomPitch", else the
-    // game's level view a little higher -- or, until one comes, the stand-in orbit over the same range.
+    // cold worker's publication for this seat and camera -- the seat camera's track, else an orbit of the pivot over
+    // CE's range (haloce_vehicle_camera::BoomRange), starting at the player's kept angle, else the file's "boomPitch",
+    // else the game's level view a little higher -- or, until one comes, the stand-in orbit over that range. Each frame
+    // the game's own camera is handed back with it, for the cold worker's check of the track.
     Halo3BoomTake(seat, camera.camera);
     Halo3BoomCamera& boom = g_halo3BoomCamera;
     if (!boom.held && !boom.local && rest.waited >= kHaloCERestWaitFrames)
         Halo3BoomStandIn(haloce_vehicle_camera::BoomRange());
-    if (rest.placeKept && rest.distance >= kHaloCERestKnownWu && (boom.held || boom.local))
+    // An orbit stands as far out as the game's camera does, so it waits for that; a track has its own.
+    if (rest.placeKept && (boom.shape.track || rest.distance >= kHaloCERestKnownWu) && (boom.held || boom.local))
     {
         Halo3BoomStep();
-        const float stood[3] = {0.0f, 0.0f, 0.0f}, looking[3] = {0.0f, 0.0f, 0.0f};
-        Halo3BoomPublishCurrent(false, stood, looking);
+        static const float kNone[3] = {0.0f, 0.0f, 0.0f};
+        Halo3BoomPublishCurrent(observed && boom.shape.track, observed ? frame.gameFromPivot : kNone,
+                                observed ? looks : kNone);
         vehicle_boom::Offset(boom.shape, boom.pitch, rest.distance, in.restOffset);
         g_vehicleBoomLiveMs.store(GetTickCount64(), std::memory_order_release);
         in.restValid = true;
@@ -533,6 +537,22 @@ bool HaloCEVehicleCameraPlace(const HaloCEChaseFrame& frame, float out[3])
 }
 
 // ---- the cold worker's side ---------------------------------------------------------------------------------------
+
+// The seat camera's track in `seat`, into the boom's seat facts (VehicleBoomColdTick): read, the tracks the seat lists,
+// whether it took the game's default, and the control points. False (facts cleared) when the seat cannot be read now.
+bool HaloCEVehicleCameraReadTrack(const VehicleCameraSeatKey& seat, Halo3BoomSeatFacts& facts)
+{
+    facts = Halo3BoomSeatFacts{};
+    HaloCEVehicleSeatTrack track{};
+    if (!HaloCEControls_ReadVehicleSeatTrack(seat.generation, static_cast<uint32_t>(seat.vehicle), seat.seatIndex, track))
+        return false;
+    facts.read = true;
+    facts.tracks = track.tracks;
+    facts.defaultTrack = track.defaultTrack;
+    facts.points = track.points;
+    facts.track = track.track;
+    return true;
+}
 
 // The seat the player is in, for the cold worker. OnFoot: not in a seat the vehicle cameras run in (the first-person
 // seat view is off or not installed counts as that, as in Halo 3). Unknown: not readable now (the published camera is

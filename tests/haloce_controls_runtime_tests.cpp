@@ -470,8 +470,8 @@ int main()
         "pending callback preserves native dependency pointers while retiring controls");
     callbacks=0;
     Check(Remove()&&!moduleBase&&!retiring.load()&&!stateReady.load()&&!turnReady.load(),
-        "all thirteen actual compiled retirement ranges resolve and controls finish cleanup after draining");
-    Check(unwindChecks==26&&!unwindFailures,
+        "all fourteen actual compiled retirement ranges resolve and controls finish cleanup after draining");
+    Check(unwindChecks==28&&!unwindFailures,
         "both complete retirement attempts validate every production function's actual unwind metadata");
     // A same-generation camera re-entry can now publish native state again.
     // Contract installation remains covered separately by the pinned binding suite.

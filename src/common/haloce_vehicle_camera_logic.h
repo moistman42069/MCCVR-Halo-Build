@@ -18,6 +18,13 @@
 //   observer stands the camera at pivot + offset - forward * distance (collision aside), so where the game's camera
 //   stands from its pivot is worked out from the command alone (GameCameraFromPivot).
 //
+//   ITS CAMERA TRACK. That place is the seat camera's track (following_camera.c's camera track: control points of a
+//   position along the look's heading -- forward, left, up, world units -- and an orientation), evaluated at the look
+//   pitch: CE takes the track's parameter straight from the pitch, t = (pitch + pi/2) / pi with the pitch held to
+//   +-90 deg (camera_track_splut), where Halo 3 solves for it from the points' orientations. The four points and the
+//   cubic through them are Halo 3's (vehicle_boom::TrackAt). So the boom stands the camera where the game's would
+//   stand at a look pitch of its own (TrackShape), as Halo 3's does.
+//
 // Pure: no engine.
 
 #include <cmath>
@@ -165,9 +172,9 @@ inline bool GameCameraFromPivot(const float forward[3], const float offset[3], f
 }
 
 // Where the game's camera stands looking level, as an elevation above level from its pivot in whole degrees: the
-// elevation it stood at plus the look it had then (the boom is an orbit of the pivot in CE, as in Reach: its camera
-// track is not read). `rise` its height above the pivot, `distance` how far it stands, `lookDeg` its look (up is
-// positive). Unset (vehicle_boom::kBoomPitchUnset) when the two do not make an angle.
+// elevation it stood at plus the look it had then (for the orbit a seat whose track cannot be read falls back to).
+// `rise` its height above the pivot, `distance` how far it stands, `lookDeg` its look (up is positive). Unset
+// (vehicle_boom::kBoomPitchUnset) when the two do not make an angle.
 inline float LevelElevationDeg(float rise, float distance, float lookDeg) noexcept
 {
     if (!std::isfinite(rise) || !std::isfinite(distance) || !std::isfinite(lookDeg) || !(distance > 1.0e-3f) ||
@@ -177,9 +184,66 @@ inline float LevelElevationDeg(float rise, float distance, float lookDeg) noexce
     return std::isfinite(degrees) ? std::round(degrees) : vehicle_boom::kBoomPitchUnset;
 }
 
-// THE BOOM'S RANGE in CE, as look pitches for vehicle_boom's orbit (the elevation is minus the pitch): held between
-// 10 deg below and 60 deg above level, as Reach's orbit is -- over the whole flat look range an orbit stands the
-// camera straight above the vehicle or under the ground.
+// ---- the seat camera's track ----------------------------------------------------------------------------------
+
+inline constexpr float kHalfPi = 1.57079633f;
+inline constexpr float kPi = 3.14159265f;
+
+// The track's parameter at look pitch `pitch` (radians, up positive), as CE's following camera takes it.
+inline float TrackParameter(float pitch) noexcept
+{
+    const float held = !std::isfinite(pitch) ? 0.0f : (pitch < -kHalfPi ? -kHalfPi : (pitch > kHalfPi ? kHalfPi : pitch));
+    return (held + kHalfPi) / kPi;
+}
+
+// A track CE can evaluate: four points or more (the mod copies up to vehicle_boom::kMaxTrackPoints) at finite places
+// within 100 world units of the pivot. CE's evaluation never reads the orientations.
+inline bool TrackUsable(const vehicle_boom::Track& track) noexcept
+{
+    if (track.count < vehicle_boom::kMinTrackPoints || track.count > vehicle_boom::kMaxTrackPoints)
+        return false;
+    for (int i = 0; i < track.count; ++i)
+        for (int k = 0; k < 3; ++k)
+            if (!std::isfinite(track.points[i].position[k]) || std::fabs(track.points[i].position[k]) > 100.0f)
+                return false;
+    return true;
+}
+
+// Where the game's camera stands from its pivot at look pitch `pitch`: forward, left, up along the look's heading,
+// world units.
+inline bool TrackPlace(const vehicle_boom::Track& track, float pitch, float out[3]) noexcept
+{
+    return TrackUsable(track) && vehicle_boom::TrackAt(track, TrackParameter(pitch), out, nullptr) &&
+           std::isfinite(out[0]) && std::isfinite(out[1]) && std::isfinite(out[2]);
+}
+
+// The boom's shape from the track (vehicle_boom::Shape, track = true) across `range`. False (and `out` cleared) when
+// the track cannot be evaluated.
+inline bool TrackShape(const vehicle_boom::Track& track, const vehicle_boom::Range& range, vehicle_boom::Shape& out) noexcept
+{
+    out = vehicle_boom::Shape{};
+    if (!TrackUsable(track) || !std::isfinite(range.min) || !std::isfinite(range.max) || range.min > range.max)
+        return false;
+    out.range = range;
+    for (int i = 0; i < vehicle_boom::kShapeSamples; ++i)
+    {
+        float place[3];
+        if (!TrackPlace(track, vehicle_boom::SamplePitch(out, i), place))
+        {
+            out = vehicle_boom::Shape{};
+            return false;
+        }
+        for (int k = 0; k < 3; ++k)
+            out.offset[i][k] = place[k];
+    }
+    out.track = true;
+    out.valid = true;
+    return true;
+}
+
+// THE BOOM'S RANGE in CE where the seat's track cannot be read, as look pitches for vehicle_boom's orbit (the
+// elevation is minus the pitch): held between 10 deg below and 60 deg above level, as Reach's orbit is -- over the
+// whole flat look range an orbit stands the camera straight above the vehicle or under the ground.
 inline constexpr float kBoomLowestDeg = -10.0f;
 inline constexpr float kBoomHighestDeg = 60.0f;
 inline vehicle_boom::Range BoomRange() noexcept
