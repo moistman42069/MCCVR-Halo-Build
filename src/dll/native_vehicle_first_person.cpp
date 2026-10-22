@@ -497,8 +497,9 @@ template<unsigned I> uint32_t __fastcall SelectHook(uint32_t unit,Mode<I>* mode)
         if (!t_stockOnThisThread&&ChaseSeat<I>(unit,mode)) {
             // The game's following camera: the seat's own wherever its tag has one; a seat of a first-person camera
             // gets it only where this machine may change what the simulation's camera answers. In solo that includes
-            // the simulation's own camera, so the seat aims from the game's third-person camera, as a flat player's
-            // third-person seat does; in a shared simulation the simulation keeps the game's answer.
+            // the simulation's own camera, which then follows the seated character on the character's own camera
+            // track (the game's following camera takes a seat's camera only for a seat of a third-person camera, a
+            // driver or an unseen rider); in a shared simulation the simulation keeps the game's answer.
             if (!result&&!ForTheSimulation<I>()) result=1;
             *mode=Mode<I>(result?haloce_vehicle_camera::kChaseSeatState:haloce_vehicle_camera::kChaseSeatStateNotFollowing);
         }

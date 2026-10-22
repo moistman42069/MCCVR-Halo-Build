@@ -13,8 +13,7 @@
 // player's character in the seat and no first-person weapon, as the flat game does; the observer is then told to
 // stand that camera at the chosen place. Everything the view is built from in either graphics mode (the observer's
 // camera) moves with it; the simulation's own camera (director_camera_deterministic, the line the game aims and fires
-// along) is never placed: it is the game's third-person camera, as a flat player's in a third-person seat (a seat whose
-// own camera is first person gets that only in solo; see haloce_vehicle_cameras.h). The camera's mode turns the view:
+// along) is never placed: it stays the game's (haloce_vehicle_cameras.h says which). The camera's mode turns the view:
 // its rotationTracking yaw stands in for vehicle_view_follow in that seat (haloce_controls.cpp's turn). "collide" is
 // traced with the sight trace's own query on the game's thread (HaloCEContact_TraceSegment). The leash is published
 // with each placement and held by the render paths in the frame's tracking reference (haloce_vehicle_leash_logic.h).
@@ -25,8 +24,9 @@
 // seat camera's track (haloce_vehicle_camera::TrackShape), as Halo 3's does; a seat whose track cannot be read has the
 // boom orbit the pivot at the game's own distance instead, as Reach's does.
 //
-// Not in CE: the aim ring, the glass and body keys, eyeAdjust (classic CE has no eye adaptation to hold), pitch follow
-// and a marker origin. The readout says so for a camera that asks.
+// Not in CE: the aim ring, the glass and body keys, eyeAdjust (classic CE has no eye adaptation to hold),
+// rotationTracking pitch and roll, a marker origin, and Stick and Wheel control (CE's seats keep its own hand controls).
+// The readout says so for a camera that asks (HaloCEVehicleCameraNotApplied).
 
 // ---- the camera chosen for a seat ----------------------------------------------------------------------------------
 
@@ -40,10 +40,10 @@ bool HaloCEVehicleCameraChosen(uint32_t generation, uint32_t parent, int16_t sea
            key.vehicle == static_cast<int32_t>(parent) && key.seatIndex == seat;
 }
 
-// The vehicle's root node and size, for a firstperson offset: read again on the game's thread, as drawn.
-// A FIRSTPERSON CAMERA'S "offset": the seat's eye moved along the vehicle's own frame, kept within the vehicle's
-// bounds and a margin, as Halo 3 keeps its own (Halo3AnchorWithinBounds, 2 world units). False (`point` unchanged)
-// while the camera in use for exactly this seat is not a firstperson camera with an offset.
+// A FIRSTPERSON CAMERA'S "offset": the seat's eye moved along the vehicle's own frame (its root node and size, read
+// again on the game's thread, as drawn), kept within the vehicle's bounds and a margin, as Halo 3 keeps its own
+// (Halo3AnchorWithinBounds, 2 world units). False (`point` unchanged) while the camera in use for exactly this seat is
+// not a firstperson camera with an offset.
 std::atomic<uint32_t> g_haloceVehicleCameraNudgeFrames{0};
 bool HaloCEVehicleCameraEyeNudge(uint32_t generation, uint32_t parent, int16_t seat, float point[3])
 {
@@ -666,6 +666,10 @@ std::string HaloCEVehicleCameraNotApplied(const vehicle_camera_select::ActiveCam
         add("fadeParts");
     if (camera.holdExposure)
         add("eyeAdjust");
+    if (camera.chase && camera.aimMarker)
+        add("the aim ring");
+    if (!camera.chase && camera.showHeadlessBody)
+        add("showHeadlessBody");
     return list;
 }
 

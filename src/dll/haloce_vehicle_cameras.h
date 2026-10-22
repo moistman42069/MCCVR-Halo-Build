@@ -7,10 +7,13 @@
 // camera file is placed in the game's own third-person camera: the director's following camera
 // (following_camera_update) runs as built, and its command to the observer then stands the camera at the chosen place
 // (its pivot moved there, its offset and distance taken off, so the observer neither swings nor pulls it in). Only
-// the frame's camera is placed: the simulation's own camera (director_camera_deterministic) is the game's third-person
-// one -- in a seat whose own camera is first person, only in solo (native_vehicle_first_person.cpp ChaseSeat), and in a
-// shared simulation the game's first-person one. The placement itself is game.cpp's (haloce_vehicle_cameras.inl), with
-// the shared camera runtime.
+// the frame's camera is placed. The simulation's own camera (director_camera_deterministic) stays the game's: its
+// third-person camera in a seat of a third-person camera; in a seat whose own camera is first person, in solo the
+// game's following camera about the seated character (native_vehicle_first_person.cpp ChaseSeat), and in a shared
+// simulation its first-person camera. The observer's camera the hook moves is also where the local player's aim
+// assist measures from (inferred from the Halo 1 engine's names, not traced in the retail module): a chase camera moves
+// that origin, as the game's own third-person camera does. The placement itself is game.cpp's
+// (haloce_vehicle_cameras.inl), with the shared camera runtime.
 //
 // The hook is installed only while the vehicle cameras are on in CE, and retired with the title like every CE feature.
 
