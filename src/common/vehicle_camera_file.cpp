@@ -1382,6 +1382,57 @@ Table DefaultTable()
         AnyVehicle(),
     };
 
+    // Halo: Reach: the vehicles the mod names by their identity (ReachVehicleCameraName: the stock tag's own word,
+    // "warthog", "warthog_chaingun", "space_banshee"). A gun mounted on a vehicle is named by its own tag, which
+    // carries the vehicle's word ("warthog_gauss", "wraith_gunner", "scorpion_anti_infantry"), or -- a walk-up gun
+    // riding a carrier, as the Falcon's side guns do -- by the carrier's. Sizes follow Reach's own bounds: the
+    // Falcon stands about 9 m across and the Sabre's bounds about 16 m.
+    Game reach;
+    reach.key = kGameKeys[2];
+    reach.vehicles = {
+        Entry("Warthog", "warthog", driver,
+              {Chase("Over the Shoulder", Origin::Seat, -200, 90, 70, true, 0.15f),
+               Chase("Left Side", Origin::Seat, 0, -140, 40, true, 0.0f)}),
+        Entry("Warthog passenger", "warthog", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -200, -90, 70, true, 0.15f),
+               Chase("Right Side", Origin::Seat, 0, 140, 40, true, 0.0f)}),
+        Entry("Warthog gunner", "warthog", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+        Entry("Mongoose", "mongoose", driver, {Chase("Over the Shoulder", Origin::Seat, -170, 80, 70, true, 0.15f)}),
+        Entry("Mongoose passenger", "mongoose", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, -80, 70, true, 0.15f)}),
+        Entry("Ghost", "ghost", driver,
+              {Chase("Follow", Origin::Vehicle, -450, 0, 220, true, 0.25f),
+               Chase("Over the Shoulder", Origin::Vehicle, -10, 60, 135, true, 0.1f)}),
+        Entry("Revenant", "revenant", driver,
+              {Chase("Follow", Origin::Vehicle, -500, 0, 250, true, 0.25f),
+               Chase("Over the Shoulder", Origin::Seat, -170, 80, 80, true, 0.15f)}),
+        Entry("Revenant passenger", "revenant", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, -80, 80, true, 0.15f)}),
+        Entry("Banshee", "banshee", driver,
+              {Chase("Over the Shoulder", Origin::Vehicle, -350, 150, 200, false, 0.2f),
+               Chase("Chase", Origin::Vehicle, -600, 0, 150, false, 0.3f)}),
+        Entry("Falcon", "falcon", driver,
+              {Chase("Over the Shoulder", Origin::Seat, -300, 150, 120, false, 0.2f),
+               Chase("Chase", Origin::Vehicle, -1300, 0, 450, false, 0.3f)}),
+        Entry("Falcon passenger", "falcon", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, 0, 80, false, 0.15f)}),
+        Entry("Falcon gunner", "falcon", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, false, 0.1f)}),
+        Entry("Sabre", "sabre", driver,
+              {Chase("Chase", Origin::Vehicle, -1800, 0, 450, false, 0.3f),
+               Chase("Over the Shoulder", Origin::Seat, -400, 150, 150, false, 0.2f)}),
+        Entry("Scorpion", "scorpion", driver, {Chase("High", Origin::Vehicle, -700, 0, 700, true, 0.3f)}),
+        Entry("Scorpion gunner", "scorpion", gunner,
+              {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+        Entry("Wraith", "wraith", driver, {Chase("High", Origin::Vehicle, -700, 100, 700, true, 0.3f)}),
+        Entry("Wraith gunner", "wraith", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+        AlsoMatching(AlsoMatching(AlsoMatching(Entry("Turret", "turret", 0,
+                                                     {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+                                               "shade"),
+                                  "machinegun"),
+                     "cannon"),
+        AnyVehicle(),
+    };
+
     // Every other game, until it has cameras of its own.
     Game game;
     game.key = kDefaultKey;
@@ -1389,6 +1440,7 @@ Table DefaultTable()
 
     Table table;
     table.games.push_back(std::move(halo3));
+    table.games.push_back(std::move(reach));
     table.games.push_back(std::move(game));
     return table;
 }

@@ -247,10 +247,10 @@ inline constexpr int kMaxTethers = 8;   // per camera
 // A larger file is refused before it is parsed.
 inline constexpr std::size_t kMaxFileBytes = 512u * 1024u;
 
-// The built-in table: what a missing file gives, and what the first run writes out. One "default" section whose
-// "default" entry lists the existing seat view first and, second, a camera where the game's own third-person
-// camera rests, so the feature changes nothing until the player steps to another camera and suits a vehicle of
-// any size.
+// The built-in table: what a missing file gives, and what the first run writes out. Halo 3's and Reach's sections
+// list the vehicles the mod knows, and one "default" section covers every other game. Every "default" entry lists
+// the existing seat view first and, second, a camera where the game's own third-person camera rests, so the
+// feature changes nothing until the player steps to another camera and suits a vehicle of any size.
 Table DefaultTable();
 
 struct ParseResult
