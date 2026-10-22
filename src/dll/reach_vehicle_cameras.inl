@@ -380,7 +380,11 @@ bool ReachVehicleCameraRestPlace(const ReachVehicleFrame& frame, const VehicleCa
             {
                 const float lookDeg = asinf(lookUp < -1.0f ? -1.0f : (lookUp > 1.0f ? 1.0f : lookUp)) * 57.29578f;
                 const float levelDeg = reach_vehicle_camera::OrbitLevelElevationDeg(rest.rise, distance, lookDeg);
-                if (vehicle_boom::BoomPitchSet(levelDeg))
+                // A degree either way is the measurement's own wobble (seen in game: 12, then 11, as the camera
+                // eased out), and each change restarts a boom the player has not moved: only a move of two counts.
+                const float published = g_reachVehicleCameraLevelDeg.load(std::memory_order_relaxed);
+                if (vehicle_boom::BoomPitchSet(levelDeg) &&
+                    (!vehicle_boom::BoomPitchSet(published) || std::fabs(levelDeg - published) >= 2.0f))
                     g_reachVehicleCameraLevelDeg.store(levelDeg, std::memory_order_release);
             }
             g_reachVehicleCameraRestRiseWu.store(rest.rise, std::memory_order_relaxed);
