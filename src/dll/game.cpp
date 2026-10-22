@@ -14530,6 +14530,14 @@ namespace
                 PublishOdstShotDiagnostic(unitIndex, out, false);
             return;                       // driver/mounted gun fires from a barrel
         }
+        // A chase camera of the vehicle cameras' is chosen: the rendered eye is that camera, metres behind or above
+        // the vehicle, and a shot from it could leave past cover. The game's own origin stays.
+        if (g_vehicleCameraPublished.chase.load(std::memory_order_acquire))
+        {
+            if (telemetryAccepting)
+                PublishOdstShotDiagnostic(unitIndex, out, false);
+            return;
+        }
         if (!g_camValid.load(std::memory_order_acquire))
         {
             if (telemetryAccepting)
@@ -14561,6 +14569,7 @@ namespace
     {
         return g_odstFiringOriginReturn != 0 &&
             !g_odstCinematicLocked.load(std::memory_order_relaxed) &&
+            !g_vehicleCameraPublished.chase.load(std::memory_order_acquire) &&
             g_odstSeatedPlayerUnit.load(std::memory_order_relaxed) != -1 &&
             OdstSeatFiresPersonalWeapon() &&
             g_camValid.load(std::memory_order_acquire);
