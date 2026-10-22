@@ -175,6 +175,23 @@ static bool HeadInWorld(const halo_ce::Camera& native, const halo_ce::Tracking& 
     return true;
 }
 
+// Along each of the carrier's axes, the head after the leash: where it was if it was inside the box that way, else on
+// the very limit it had crossed.
+static bool HeldToBox(const float was[3], const float now[3], const vehicle_camera_frame::Basis& carrier,
+                      const vehicle_camera_frame::LeashBox& box)
+{
+    const float* const axes[3] = {carrier.forward, carrier.left, carrier.up};
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        const float earlier = vehicle_camera_frame::Dot(was, axes[axis]);
+        const float along = vehicle_camera_frame::Dot(now, axes[axis]);
+        const float want = earlier < box.low[axis] ? box.low[axis] : (earlier > box.high[axis] ? box.high[axis] : earlier);
+        if (!Near(along, want))
+            return false;
+    }
+    return true;
+}
+
 static void TestLeash()
 {
     using namespace halo_ce;
@@ -206,17 +223,16 @@ static void TestLeash()
           "a head outside the box moves the reference");
     float after[3];
     Check(HeadInWorld(native, tracking, leashed, upm, after), "and the head reads again");
-    const float limit = 10.0f / 304.8f + 1.0e-4f;
-    Check(std::fabs(after[0]) <= limit && std::fabs(after[1]) <= limit && std::fabs(after[2]) <= limit,
-          "the head then stands on the box's limits");
+    Check(HeldToBox(before, after, carrier, box), "the head then stands on the limits it crossed, and nowhere nearer");
     // An axis inside its limit keeps its value: a box wide along up keeps the head's rise.
     const float tallMin[3] = {-10, -10, -1000}, tallMax[3] = {10, 10, 1000};
     leashed = reference;
     Check(haloce_vehicle_leash::LeashReference(native, tracking, upm, true, carrier,
                                                vehicle_camera_frame::LeashToBasis(tallMin, tallMax, camera), leashed),
           "a box wide along up still stops the sideways move");
-    Check(HeadInWorld(native, tracking, leashed, upm, after) && Near(after[2], before[2]),
-          "and leaves the rise as it was");
+    Check(HeadInWorld(native, tracking, leashed, upm, after) &&
+              HeldToBox(before, after, carrier, vehicle_camera_frame::LeashToBasis(tallMin, tallMax, camera)),
+          "and holds the head on the sideways limit while leaving the rise as it was");
     // Inside the box: nothing moves.
     const float wideMin[3] = {-1000, -1000, -1000}, wideMax[3] = {1000, 1000, 1000};
     leashed = reference;
@@ -253,18 +269,8 @@ static void TestLeash()
           "a turned room's head outside the box moves the reference");
     float now[3];
     Check(HeadInWorld(native, reaching, held, upm, now), "and the head reads again");
-    bool inside = true, onALimit = false;
-    for (int axis = 0; axis < 3; ++axis)
-    {
-        const float along = vehicle_camera_frame::Dot(now, axes[axis]);
-        inside = inside && along >= uneven.low[axis] - 1.0e-4f && along <= uneven.high[axis] + 1.0e-4f;
-        onALimit = onALimit || Near(along, uneven.low[axis]) || Near(along, uneven.high[axis]);
-        // An axis that was inside its limits keeps where it was.
-        const float earlier = vehicle_camera_frame::Dot(was, axes[axis]);
-        if (earlier >= uneven.low[axis] && earlier <= uneven.high[axis])
-            inside = inside && Near(along, earlier);
-    }
-    Check(inside && onALimit, "the head then stands inside the box along the turned carrier, on a limit where it crossed one");
+    Check(HeldToBox(was, now, tilted, uneven),
+          "along the turned carrier the head then stands on each limit it crossed, and keeps each axis it was inside");
 }
 
 // A track of five points from 1 wu behind and 2 up (its start, looking straight down) to 3 behind at the pivot's height
