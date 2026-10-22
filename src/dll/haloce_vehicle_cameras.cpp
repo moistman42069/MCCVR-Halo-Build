@@ -72,7 +72,7 @@ void Place(uint8_t* command) noexcept
     {
         if (!MarkerFrame(seat.root,"",frame.vehiclePos,frame.vehicleForward,frame.vehicleUp)) return;
         frame.seatValid=MarkerFrame(seat.unit,"",frame.seatPos,frame.seatForward,frame.seatUp);
-        frame.headValid=MarkerFrame(seat.unit,"head",frame.headPos,frame.headForward,frame.headUp);
+        frame.headValid=Game_HaloCEChaseHead()&&MarkerFrame(seat.unit,"head",frame.headPos,frame.headForward,frame.headUp);
     }
     __except(EXCEPTION_EXECUTE_HANDLER) { faults.fetch_add(1,std::memory_order_relaxed);return; }
     std::memcpy(frame.pivot,command+4,12);

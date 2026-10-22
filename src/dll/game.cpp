@@ -58329,6 +58329,12 @@ bool Game_HaloCEChaseAny() noexcept
            TitleAdapter_GetActiveTitle() == GameTitle::HaloCE;
 }
 
+bool Game_HaloCEChaseHead() noexcept
+{
+    return g_vehicleCameraPublished.chaseHead.load(std::memory_order_acquire) != 0 &&
+           TitleAdapter_GetActiveTitle() == GameTitle::HaloCE;
+}
+
 bool Game_HaloCEChaseSeat(uint32_t unit) noexcept
 {
     if (!Game_HaloCEChaseAny())

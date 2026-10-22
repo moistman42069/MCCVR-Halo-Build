@@ -104,7 +104,7 @@ struct HaloCEVehicleCameraLayout
 {
     std::atomic<uint32_t> seq{0};
     VehicleCameraSeatKey seat{};
-    bool seatValid = false, headValid = false, pivotValid = false, seatFrame = false;
+    bool seatValid = false, headValid = false, headAsked = false, pivotValid = false, seatFrame = false;
     float seat3[3]{}, head3[3]{}, pivot3[3]{};
 };
 HaloCEVehicleCameraLayout g_haloceVehicleCameraLayout;
@@ -460,6 +460,7 @@ bool HaloCEVehicleCameraPlace(const HaloCEChaseFrame& frame, float out[3])
         layout.seatValid = frame.seatValid;
         layout.seatFrame = in.seatFrameValid;
         layout.headValid = frame.headValid;
+        layout.headAsked = camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::Head);
         layout.pivotValid = frame.gameValid;
         local(frame.seatPos, layout.seat3);
         local(frame.headPos, layout.head3);
@@ -729,8 +730,8 @@ void HaloCEVehicleCamerasColdLog(bool seated)
         if (before && !(before & 1u) && !(layout.seat == layoutLogged))
         {
             const VehicleCameraSeatKey seat = layout.seat;
-            const bool seatValid = layout.seatValid, headValid = layout.headValid, pivotValid = layout.pivotValid,
-                       seatFrame = layout.seatFrame;
+            const bool seatValid = layout.seatValid, headValid = layout.headValid, headAsked = layout.headAsked,
+                       pivotValid = layout.pivotValid, seatFrame = layout.seatFrame;
             float s3[3], h3[3], p3[3];
             memcpy(s3, layout.seat3, sizeof(s3));
             memcpy(h3, layout.head3, sizeof(h3));
@@ -744,7 +745,8 @@ void HaloCEVehicleCamerasColdLog(bool seated)
                     "root node: the seat %s (%.0f %.0f %.0f; its frame %s), the head %s (%.0f %.0f %.0f), the game's "
                     "third-person pivot %s (%.0f %.0f %.0f)",
                     seat.seatIndex, seatValid ? "read" : "NOT read", s3[0] * cm, s3[1] * cm, s3[2] * cm,
-                    seatFrame ? "taken" : "not taken, the vehicle's serves", headValid ? "read" : "NOT read",
+                    seatFrame ? "taken" : "not taken, the vehicle's serves",
+                    headValid ? "read" : headAsked ? "NOT read" : "not read: only a playerhead camera reads it",
                     h3[0] * cm, h3[1] * cm, h3[2] * cm, pivotValid ? "read" : "NOT read", p3[0] * cm, p3[1] * cm,
                     p3[2] * cm);
             }

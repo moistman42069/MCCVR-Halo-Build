@@ -62,6 +62,7 @@ struct VehicleCameraPublished
 {
     std::atomic<uint32_t> seq{0}; // even = stable
     std::atomic<uint32_t> chase{0};
+    std::atomic<uint32_t> chaseHead{0}; // a chase camera measured from the occupant's head ("playerhead")
     std::atomic<uint32_t> eyeNudge{0};
     std::atomic<uint32_t> showHeadlessBody{0};
     std::atomic<uint32_t> holdExposure{0};
@@ -77,6 +78,11 @@ void VehicleCameraPublish(const vehicle_camera_select::ActiveCamera& camera, con
     published.camera = camera;
     published.seat = seat;
     published.chase.store(camera.valid && camera.chase ? 1u : 0u, std::memory_order_relaxed);
+    published.chaseHead.store(camera.valid && camera.chase &&
+                                      camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::Head)
+                                  ? 1u
+                                  : 0u,
+                              std::memory_order_relaxed);
     const bool nudged = camera.offsetCm[0] != 0.0f || camera.offsetCm[1] != 0.0f || camera.offsetCm[2] != 0.0f;
     published.eyeNudge.store(camera.valid && !camera.chase && nudged ? 1u : 0u, std::memory_order_relaxed);
     published.showHeadlessBody.store(camera.valid && !camera.chase && camera.showHeadlessBody ? 1u : 0u, std::memory_order_relaxed);

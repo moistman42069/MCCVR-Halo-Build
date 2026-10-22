@@ -46,12 +46,14 @@ struct HaloCEChaseFrame
 // game.cpp (haloce_vehicle_cameras.inl): what the shared camera runtime answers for a CE seat. Any thread the game's
 // camera code runs on; one atomic load each while no camera of the kind is chosen.
 //   ChaseAny: some chase camera is chosen now, in CE.
+//   ChaseHead: the chase camera chosen now is measured from the occupant's head (the hook reads the head only then).
 //   ChaseSeat: `unit` is the local player's, seated, a chase camera is chosen for exactly its seat, and the following
 //     camera's hook is live to place it.
 //   EyeNudgeWorld: a firstperson camera's "offset" for this seat moves `point` (the seat's eye, world units).
 //   ChasePlace: where the chosen chase camera stands this frame.
 //   VehicleCameraFollow: a chase camera is chosen for this seat; `yaw` = its mode turns the view with the hull.
 bool Game_HaloCEChaseAny() noexcept;
+bool Game_HaloCEChaseHead() noexcept;
 bool Game_HaloCEChaseSeat(uint32_t unit) noexcept;
 bool Game_HaloCEEyeNudgeWorld(uint32_t generation,uint32_t parent,int16_t seat,float point[3]) noexcept;
 bool Game_HaloCEChasePlace(const HaloCEChaseFrame& frame,float out[3]) noexcept;
