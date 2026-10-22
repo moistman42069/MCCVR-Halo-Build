@@ -657,7 +657,14 @@ bool Halo4VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, const vehicle
     Halo3BoomTake(seat, camera.camera);
     Halo3BoomCamera& boom = g_halo3BoomCamera;
     if (!boom.held && !boom.local && (rest.distance >= kHalo4RestKnownWu || waitOver))
-        Halo3BoomStandIn(halo4_vehicle_camera::BoomRange());
+    {
+        // Where Halo 4's cold worker starts it (VehicleBoomColdTick): the measured level look, else the unmeasured
+        // one, raised a little.
+        const float levelDeg = vehicle_boom::BoomPitchSet(g_halo4VehicleCameraLevel.deg)
+                                   ? g_halo4VehicleCameraLevel.deg
+                                   : halo4_vehicle_camera::kUnmeasuredLevelElevationDeg;
+        Halo3BoomStandIn(halo4_vehicle_camera::BoomRange(), levelDeg + vehicle_boom::kDefaultRaiseDeg);
+    }
     if (rest.distance >= kHalo4RestKnownWu && (boom.held || boom.local))
     {
         Halo3BoomStep();

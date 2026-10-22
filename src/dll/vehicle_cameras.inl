@@ -532,7 +532,9 @@ void Halo3BoomTake(const VehicleCameraSeatKey& seat, int camera)
 
 // Camera thread: no publication in time for this seat. The boom orbits the pivot within `range` (by default the flat
 // game's own; Reach passes its own orbit's), from the built-in start, until one comes.
-void Halo3BoomStandIn(const vehicle_boom::Range& range = vehicle_boom::Range{})
+// `startDeg`: where it starts (degrees above level); unset = Halo 3's measured level look, raised a little.
+void Halo3BoomStandIn(const vehicle_boom::Range& range = vehicle_boom::Range{},
+                      float startDeg = vehicle_boom::kBoomPitchUnset)
 {
     static vehicle_boom::Shape orbit; // camera thread only
     static vehicle_boom::Range built{};
@@ -543,7 +545,7 @@ void Halo3BoomStandIn(const vehicle_boom::Range& range = vehicle_boom::Range{})
     }
     Halo3BoomCamera& boom = g_halo3BoomCamera;
     memcpy(&boom.shape, &orbit, sizeof(orbit));
-    boom.home = vehicle_boom::PitchForElevation(orbit, vehicle_boom::DefaultElevation(orbit, vehicle_boom::kBoomPitchUnset));
+    boom.home = vehicle_boom::PitchForElevation(orbit, vehicle_boom::DefaultElevation(orbit, startDeg));
     boom.pitch = boom.home;
     boom.local = true;
 }
