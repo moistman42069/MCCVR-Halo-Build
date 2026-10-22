@@ -53,8 +53,9 @@ bool NativeVehicleFirstPerson_PlacedPoint(GameTitle title, NativeVehicleSeatPoin
 // current Halo 2 generation; guarded (a fault turns Head and Root off for the module instance, and leaves the seat
 // view on). Call on the thread that builds the frame's camera (the observer's).
 //   NativePoint: the point the game's own first-person evaluator last answered for our seat BEFORE the override moved
-//     it to the head -- the unit camera position, which for a seated unit is its seat's camera marker: the point the
-//     game's third-person camera turns about. With its seat and when (Sight_NowUs); a seqlock.
+//     it to the head -- the unit camera position, which for a seated unit is its seat's camera marker. With its seat
+//     and when (Sight_NowUs); a seqlock. Published only with the chase-camera stand-down (kHalo2ChaseStandDown in
+//     native_vehicle_first_person.cpp), which is off: false until then.
 //   Head: the occupant's head marker (position, forward, up), carried onto the vehicle as drawn this frame where
 //     vehicle_cam_smoothing is on -- as the seat camera places it, before its trims.
 //   Root: an object's root node this frame, as drawn (`drawn`) or as simulated: the engine's node matrix (scale,

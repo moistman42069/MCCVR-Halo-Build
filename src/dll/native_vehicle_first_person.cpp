@@ -43,8 +43,8 @@ struct Runtime
     std::atomic<int> trimSeat{-1};
     std::atomic<bool> requested{},faulted{};
     // Halo 2: a fault in one of the vehicle cameras' own reads (NativeVehicleFirstPerson_Halo2Head / _Halo2Root)
-    // turns those reads off for this module instance; the seat view itself goes on.
-    std::atomic<bool> cameraQueriesFaulted{};
+    // turns those reads off for this module instance; the seat view itself goes on. Logged once by the poll.
+    std::atomic<bool> cameraQueriesFaulted{},cameraQueriesFaultLogged{};
     std::atomic<uint32_t> callbacks{};
     std::atomic<uint64_t> selected{},positioned{},missingMarker{},faults{};
     // The seat this override last placed the camera in, and when: the seat's view is ours (seat direct drive
@@ -404,8 +404,8 @@ template<unsigned I> bool SelectOwned(uint32_t unit,Mode<I>* mode) noexcept
         if (mode) runtime[I].modeSeen[(*mode>=0&&*mode<=4)?unsigned(*mode):5u].fetch_add(1,std::memory_order_relaxed);
 #endif
         if (!mode||*mode!=2||!Owner(I,unit,before)) return false;
-        // Halo 2: a chase camera of the vehicle camera file is chosen for this seat. The game's own answer stands,
-        // so the game draws the occupant and the camera is placed off the seat (Game_Halo2VehicleCameraChase).
+        // Halo 2, only while the chase-camera stand-down is on (kHalo2ChaseStandDown; it is off): a chase camera of
+        // the vehicle camera file chosen for this seat would leave the game's own answer standing.
         if constexpr (I==1) if (Halo2ChaseStandsDown(before)) {
             runtime[I].chaseCalls.fetch_add(1,std::memory_order_relaxed);return false;
         }
@@ -433,12 +433,13 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
         if constexpr (I==2) std::memcpy(native,static_cast<const uint8_t*>(result)+4,12);
 #endif
         auto& r=runtime[I];
-        if constexpr (I==1) {
-            // Halo 2: the point the evaluator answered before the head replaces it -- the unit camera position,
-            // which for a seated unit is the seat's own camera marker, the point the game's third-person camera
-            // turns about (the vehicle cameras' "thirdperson" pivot). Only from the frame's own asks: outside a
-            // tick the unit camera position is read back interpolated, as the vehicle is drawn, while a seat-aim
-            // ask (a fire, the seat drive) may come inside a tick. A second writer skips.
+        if constexpr (I==1 && kHalo2ChaseStandDown) {
+            // Halo 2, only with the chase-camera stand-down (kHalo2ChaseStandDown; it is off, and nothing reads this
+            // then): the point the evaluator answered before the head replaces it -- the unit camera position, which
+            // for a seated unit is the seat's own camera marker, a candidate for the point the game's third-person
+            // camera turns about. Only from the frame's own asks: outside a tick the unit camera position is read
+            // back interpolated, as the vehicle is drawn, while a seat-aim ask (a fire, the seat drive) may come
+            // inside a tick. A second writer skips.
             float native[3]{};
             std::memcpy(native,static_cast<const uint8_t*>(result)+4,12);
             if (!t_seatAskOnThisThread&&
@@ -511,8 +512,8 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
                     static_cast<unsigned long long>(before.vehicleIdentity));
         }
         // The seat's VIEW is ours (NativeVehicleFirstPerson_SeatViewOwned) only from the frame's own asks: a seat-aim
-        // ask (Halo 2's fire, the seat drive) places the seat's aim and keeps being made under a chase camera, whose
-        // view is the game's own.
+        // ask (Halo 2's fire, the seat drive) places the seat's aim, and is still made while the frame's view is the
+        // game's own (as it would be under the chase-camera stand-down, kHalo2ChaseStandDown).
         if (I!=1||!t_seatAskOnThisThread) {
             runtime[I].positioned.fetch_add(1,std::memory_order_relaxed);
             r.positionedParent.store(before.parent,std::memory_order_relaxed);
@@ -599,7 +600,8 @@ bool Retire(unsigned i)
     r.tlsIndex=nullptr;r.tickSlot=r.tickByte=0;
     r.trimIdentity.store(0);r.trimGeneration.store(0);r.trimSeat.store(-1);
     r.attempted=r.ready=false;r.faulted.store(false,std::memory_order_release);
-    r.cameraQueriesFaulted.store(false,std::memory_order_release);return true;
+    r.cameraQueriesFaulted.store(false,std::memory_order_release);
+    r.cameraQueriesFaultLogged.store(false,std::memory_order_release);return true;
 }
 // Halo 4's in-tick byte, where its tick loop marks a tick begun (sim_tick_reader.h: resolved by signature, never a
 // fixed address). Unresolved fails closed: while one-machine changes are not allowed the override then answers
@@ -863,6 +865,12 @@ void NativeVehicleFirstPerson_Poll()
                 unsigned(title),r.requested.load()?1:0,r.selected.load(),r.positioned.load(),
                 r.missingMarker.load(),r.faults.load(),r.simulationCalls.load(),
                 r.faulted.load()?" STOCK FALLBACK (guarded access fault)":"");
+            if (r.cameraQueriesFaulted.load(std::memory_order_acquire)&&
+                !r.cameraQueriesFaultLogged.exchange(true,std::memory_order_acq_rel))
+                LOG("Vehicle first person title=%u: a guarded access fault in the vehicle cameras' own reads (the "
+                    "occupant's head, a vehicle's drawn root) turned them off until the game is reloaded; the seat view "
+                    "goes on, and the vehicle cameras keep the seat's own eye",unsigned(title));
+            // Only while the chase-camera stand-down is on (kHalo2ChaseStandDown).
             if (const uint64_t chase=r.chaseCalls.load())
                 LOG("Vehicle first person title=%u: %llu selector calls for our seat left to the game's own answer "
                     "for a chase camera of the vehicle camera file",unsigned(title),static_cast<unsigned long long>(chase));

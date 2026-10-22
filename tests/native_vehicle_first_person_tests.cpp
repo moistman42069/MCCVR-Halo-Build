@@ -146,14 +146,10 @@ template<unsigned I> void Run()
         activeGeneration=7;
     }
     if constexpr(I==1) {
-        // The point the game's own evaluator answered before the head replaced it: the vehicle cameras' pivot.
+        // The point the game's own evaluator answered before the head replaced it is published only with the
+        // chase-camera stand-down (kHalo2ChaseStandDown), which is off.
         NativeVehicleSeatPoint native{};
-        Check(NativeVehicleFirstPerson_Halo2NativePoint(native)&&native.point[0]==-10&&native.point[1]==-20&&
-            native.point[2]==-30&&native.parent==owned.parent&&native.seat==owned.seat&&native.generation==7&&
-            native.vehicleIdentity==owned.vehicleIdentity&&native.us,"H2 native seat point published with its seat");
-        activeGeneration=8;
-        Check(!NativeVehicleFirstPerson_Halo2NativePoint(native),"a native point from another generation is no answer");
-        activeGeneration=7;
+        Check(!NativeVehicleFirstPerson_Halo2NativePoint(native),"no H2 native seat point while the stand-down is off");
         // A chase camera of the vehicle camera file chosen for the seat keeps the first-person seat view: Halo 2's
         // director changes camera only with the seat's perspective, so the stand-down is off (kHalo2ChaseStandDown).
         chaseChosen=true;
@@ -169,8 +165,8 @@ template<unsigned I> void Run()
         Check(!NativeVehicleFirstPerson_SetSeatAskOnThisThread(true),"the seat-aim flag starts down");
         Check(SelectHook<I>(owned.unit,&mode)==0,"a seat-aim ask keeps the first-person answer under a chase camera");
         {
-            // ...and places the seat's aim, but never counts as the frame's seat view: under a chase camera the
-            // view is the game's own, so the seat view must go stale however often the aim is asked for.
+            // ...and places the seat's aim, but never counts as the frame's seat view: the aim may be asked for
+            // while the frame's view is the game's own, so it must not keep the seat view fresh.
             const auto positioned=r.positioned.load();
             const auto at=r.positionedMs.load();
             std::memset(result,0,sizeof(result));camera();
@@ -184,8 +180,8 @@ template<unsigned I> void Run()
     }
     else
     {
-        const unsigned asked=chaseAsked;chaseChosen=true;
-        Check(SelectHook<I>(owned.unit,&mode)==0&&chaseAsked==asked,"the vehicle cameras' stand-down is Halo 2's alone");
+        chaseChosen=true;
+        Check(SelectHook<I>(owned.unit,&mode)==0,"a chase camera never changes another title's seat view");
         chaseChosen=false;
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
