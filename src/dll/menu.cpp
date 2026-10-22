@@ -1329,7 +1329,7 @@ namespace
             "Reach and Halo 4 seats are not affected.");
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::Text("How you control a seat (Halo 3, Reach)");
+        ImGui::Text("How you control a seat (Halo 3, ODST, Reach)");
         changed |= ImGui::Combo("Seat controls", &g_config.vehicle_control,
                                 "As before\0Motion: your hand\0Stick\0Wheel\0");
         ImGui::TextDisabled(
@@ -1345,6 +1345,7 @@ namespace
             "those vehicles while the view turns with them.\n"
             "With vehicle cameras on, the left stick click changes this for the\n"
             "seat you are in, and each seat keeps its own choice.\n"
+            "ODST: only with vehicle cameras on.\n"
             "Reach: only with vehicle cameras on, and Motion or Wheel only (Stick\n"
             "keeps Reach's own rule there).");
         changed |= vr_menu::SliderFloat("Ignore aim behind, within (m)",

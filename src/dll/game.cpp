@@ -11947,6 +11947,7 @@ namespace
     // the plain flight stick, not a wheel.
     bool OdstSeatUsesWheel();
     bool OdstSeatAuthorsSteeringNow();
+    bool OdstSeatStickAimsNow();
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     bool ReachSeatUsesWheel();
     bool ReachSeatAuthorsSteeringNow();
@@ -12000,10 +12001,16 @@ namespace
     }
 
     // Re-checks the live Halo 3 gate, as the flag above does: the camera thread that clears it stops with the
-    // title.
+    // title. ODST's seat answers for itself (its camera thread's flag, its own live gate), as for the steering.
     bool Halo3SeatStickAimsNow()
     {
-        return g_halo3SeatStickAims.load(std::memory_order_acquire) != 0 && Halo3VehicleFpActive();
+        if (g_halo3SeatStickAims.load(std::memory_order_acquire) != 0 && Halo3VehicleFpActive())
+            return true;
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+        return OdstSeatStickAimsNow();
+#else
+        return false;
+#endif
     }
 
     const char* Halo3VehicleIdName(uint32_t id);
@@ -14668,6 +14675,9 @@ namespace
     Halo3SeatYaw g_odstSeatYaw;
     Halo3SeatPositionKey g_odstYawSeat;
     std::atomic<uint32_t> g_odstSeatAuthorsSteering{0};
+    // The right stick aims this seat on both axes and the hand aims nothing: Stick chosen for a seat the vehicle
+    // cameras run in (Halo 3's g_halo3SeatStickAims). Written with the flag above, on the camera thread.
+    std::atomic<uint32_t> g_odstSeatStickAims{0};
 
     // O3: integrate the rendered hull's yaw into the VR heading reference and
     // publish its roll-free pitch. Runs where Halo 3 runs its equivalent: on
@@ -14699,6 +14709,9 @@ namespace
         const bool lookSteeredDriver = haveSeat &&
             OdstSeatIsDriver(seat.identity, seat.seatIndex, seat.mounted) &&
             OdstVehicleIsLookSteered(seat.identity);
+        // Stick, in any seat the cameras run in: a gunner's, a passenger's, a tank driver's (as Halo 3's).
+        g_odstSeatStickAims.store(controlChosen && vehicle_control::StickAims(controlMode) ? 1u : 0u,
+                                  std::memory_order_release);
 
         if (!fpActive || !followEnabled || !active)
         {
@@ -14773,6 +14786,11 @@ namespace
     {
         return g_odstSeatAuthorsSteering.load(std::memory_order_acquire) != 0 &&
             OdstVehicleFpActive();
+    }
+
+    bool OdstSeatStickAimsNow()
+    {
+        return g_odstSeatStickAims.load(std::memory_order_acquire) != 0 && OdstVehicleFpActive();
     }
 
     bool OdstSeatUsesWheel()
@@ -57966,7 +57984,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 seatAxes.pitch = false;
             // A seat the right stick aims (vehicle_control = stick): the hand's aim is not written into it on
             // either axis. The stick is passed through, and the reticle placed, where the poll ends.
-            if (driveSeated && driveTitle == GameTitle::Halo3 && Halo3SeatStickAimsNow())
+            if (driveSeated && (driveTitle == GameTitle::Halo3 || driveTitle == GameTitle::Halo3ODST) &&
+                Halo3SeatStickAimsNow())
                 seatAxes = seat_drive::Axes{};
             if (!driveSeated)
                 gunSlavedSeat = gunCameraSeat = false;
@@ -58465,7 +58484,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // aim on both axes, as on a flat screen, and the hand aims nothing -- its aim is not written (above) and
     // not steered toward. The reticle goes where the game's own crosshair is (SeatStickReticleStep).
     const bool seatAuthored = Halo3SeatAuthorsSteeringNow();
-    const bool stickSeat = TitleAdapter_GetActiveTitle() == GameTitle::Halo3 && Halo3SeatStickAimsNow();
+    // Halo 3 and ODST (the same engine: the game's own camera is their observer's, read per title).
+    const GameTitle stickTitle = TitleAdapter_GetActiveTitle();
+    const bool stickSeat =
+        (stickTitle == GameTitle::Halo3 || stickTitle == GameTitle::Halo3ODST) && Halo3SeatStickAimsNow();
     if (!freeCamera && (seatAuthored || stickSeat))
     {
         if (seatAuthored && Game_Halo3VehicleWheelActive())
@@ -58494,11 +58516,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         if (stickSeat)
         {
             float cameraAt[3], cameraAbout[3], cameraForward[3];
-            if (Halo3ReadObserverCamera(cameraAt, cameraAbout, cameraForward))
+            if (Halo3ReadObserverCamera(cameraAt, cameraAbout, cameraForward, stickTitle))
             {
                 SeatLimitPoll stickPoll{};
-                stickPoll.title = GameTitle::Halo3;
-                stickPoll.eyes = limitEyes && limitEyesTitle == GameTitle::Halo3;
+                stickPoll.title = stickTitle;
+                stickPoll.eyes = limitEyes && limitEyesTitle == stickTitle;
                 memcpy(stickPoll.head, limitHead, sizeof(stickPoll.head));
                 stickPoll.followed = followedVehicleFrame;
                 stickPoll.hullYaw = hullYaw;

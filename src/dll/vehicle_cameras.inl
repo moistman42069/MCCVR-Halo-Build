@@ -34,8 +34,8 @@
 // over in Halo 3's snapshot shape, keyed apart from Halo 3's seats by VehicleCameraSeatKey::title. Under a chase
 // camera ODST's sampler gives the seat's first-person flag back, so the game draws the player's character from its
 // own third-person camera. The boom reads ODST's own seat camera and track, and the note goes to ODST's HUD
-// messages. Not in ODST yet: the glass and body keys and Stick control (OdstVehicleCameraNotApplied lists what a
-// chosen camera asks for that is not applied).
+// messages. Not in ODST yet: the glass and body keys (OdstVehicleCameraNotApplied lists what a chosen camera asks
+// for that is not applied).
 //
 // THE THIRD-PERSON BOOM (vehicle_boom_logic.h; halo3_vehicle_boom.inl reads the game's side). A camera of origin
 // "thirdperson" stands where the game's own third-person camera would stand at a look pitch of the boom's own --
@@ -1903,10 +1903,10 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         const int choice = r.selector.ControlChoice(base);
         if (choice >= 0)
             control = choice;
-        // Reach and ODST cannot give a seat's aim to the right stick yet (the stick-aimed reticle reads Halo 3's
-        // observer and seat state), so a seat there is the hand's or the wheel's; Stick from the setting keeps the
-        // title's own rule.
-        const bool stickOffered = !reach && !odst;
+        // Reach cannot give a seat's aim to the right stick yet (the stick-aimed reticle reads the observer and
+        // seat state of Halo 3 and ODST only), so a seat there is the hand's or the wheel's; Stick from the setting
+        // keeps the title's own rule.
+        const bool stickOffered = !reach;
         if (!stickOffered && vehicle_control::FromConfig(control) == vehicle_control::Mode::Stick)
             control = static_cast<int>(vehicle_control::Mode::Automatic);
         if (g_vehicleControlStep.exchange(0, std::memory_order_relaxed) != 0)

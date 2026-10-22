@@ -822,8 +822,9 @@ struct Config
     // on a flat screen, and the hand aims nothing; 3 = Wheel, the invisible wheel is in your hands from the
     // moment you sit in a look-steered ground vehicle (an aircraft takes the stick for its heading), and every
     // other seat is the hand's. 0 = as before this choice existed: the hand aims every seat, except that the
-    // stick or wheel steers a look-steered driver whose view turns with the vehicle. Halo 3 for now; in the
-    // other games the stick or wheel still steers only a view that follows the vehicle.
+    // stick or wheel steers a look-steered driver whose view turns with the vehicle. Halo 3; ODST and Reach with
+    // the vehicle cameras on (Reach: not Stick); in the other games the stick or wheel still steers only a view that
+    // follows the vehicle.
     int vehicle_control = 1;
     // Where the hand steers a look-steered driver's heading (Motion, or 0 with a view the world holds still), a
     // point the aim resolves to that is BEHIND the vehicle and NEAR it turns nothing: the vehicle keeps its forward,
