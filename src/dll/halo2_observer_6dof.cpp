@@ -4095,8 +4095,17 @@ namespace
     // camera is measured from toward where it sits, while one with "collide" is up -- the seat trace's own query and
     // flags, with the vehicle hierarchy's root ignored, and Halo 2 skips an ignored object with everything attached
     // to it, so the player's own vehicle and its occupants are looked past. Only while the observer published a ray;
-    // nothing the aim reads moves, and a fault here stops Halo 2's sight trace as one in the intent ray's does.
+    // nothing the aim reads moves. A fault here stops these two optional traces for the module's generation, and
+    // leaves the aim's own trace running (it latches on its own faults).
     constexpr float kHalo2CameraRayLengthWu = 40.0f;
+    std::atomic<uint32_t> g_halo2SightAuxFaultedGeneration{0};
+    void Halo2SightAuxFault(uint32_t generation) noexcept
+    {
+        if (g_halo2SightAuxFaultedGeneration.exchange(generation, std::memory_order_acq_rel) != generation)
+            LOG("Vehicle cameras (Halo 2): a guarded fault in the traces for a chase camera's walls and the aim ring "
+                "turned them off until the game is reloaded; the camera then goes all the way out, and the ring is "
+                "drawn far out along its line");
+    }
     void Halo2SightAuxTraces(uint32_t seatedRoot) noexcept
     {
         constexpr GameTitle kTitle = GameTitle::Halo2;
@@ -4104,8 +4113,9 @@ namespace
             !g_halo2WorldCollision.installed.load(std::memory_order_acquire))
             return;
         const uint32_t generation = g_generation.load(std::memory_order_acquire);
-        if (!generation)
+        if (!generation || g_halo2SightAuxFaultedGeneration.load(std::memory_order_acquire) == generation)
             return;
+        bool faulted = false;
         // THE VEHICLE AIM RING RAY (halo2_vehicle_cameras.inl): from the seat's own point along the way the vehicle
         // aims, while the ring is shown, for the depth it is drawn at -- the intent ray's length, the same ignores.
         SightAuxRay markerRay{};
@@ -4132,9 +4142,14 @@ namespace
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
                 markerCalled = false;
-                Sight_NoteTraceFault(kTitle);
+                faulted = true;
             }
             g_halo2WorldCollision.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+            if (faulted)
+            {
+                Halo2SightAuxFault(generation);
+                return;
+            }
             if (!markerCalled)
                 return;
             markerHit = markerHit && std::isfinite(markerResult.fraction) && markerResult.fraction >= 0.0f &&
@@ -4165,9 +4180,11 @@ namespace
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
             called = false;
-            Sight_NoteTraceFault(kTitle);
+            faulted = true;
         }
         g_halo2WorldCollision.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+        if (faulted)
+            Halo2SightAuxFault(generation);
         if (!called)
             return;
         hit = hit && std::isfinite(result.fraction) && result.fraction >= 0.0f && result.fraction <= 1.0f;
