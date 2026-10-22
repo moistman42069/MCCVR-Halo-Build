@@ -207,17 +207,27 @@ LARGE_INTEGER g_reachVehicleCameraLagAt{};              // render thread
 struct ReachVehicleCameraPassRecord
 {
     bool placed = false;
+    float reach = 1.0f; // how much of the way out the wall let the camera go
     vehicle_camera_select::ActiveCamera camera{};
     vehicle_camera_place::Placed where{};
 };
 ReachVehicleCameraPassRecord g_reachVehicleCameraPass; // render thread
+
+// "collide": frames with a fresh trace, frames held short of something, frames with no trace to go on (counted by
+// the render thread, taken by the cold worker); and how much of the way out the camera may go, eased.
+std::atomic<uint32_t> g_reachVehicleCameraCollideFrames{0};
+std::atomic<uint32_t> g_reachVehicleCameraHeldFrames{0};
+std::atomic<uint32_t> g_reachVehicleCameraNoTraceFrames{0};
+float g_reachVehicleCameraReach = 1.0f;      // render thread
+LARGE_INTEGER g_reachVehicleCameraReachAt{}; // render thread
+inline constexpr float kReachCameraReleasePerSecond = 1.5f;
 
 // Render thread, in ReachApplyHeadLook: the player's head movement `head` (world units, added to the eye) held
 // inside the chase camera's leash. False when this frame placed no chase camera or the camera sets no leash.
 bool ReachVehicleCameraLeashHead(float head[3])
 {
     const ReachVehicleCameraPassRecord& pass = g_reachVehicleCameraPass;
-    return pass.placed && vehicle_camera_place::LeashHead(pass.camera, pass.where, 1.0f, head);
+    return pass.placed && vehicle_camera_place::LeashHead(pass.camera, pass.where, pass.reach, head);
 }
 
 // THE GAME'S OWN THIRD-PERSON CAMERA in the seat, as last measured (render thread): its distance from its pivot and
@@ -443,6 +453,56 @@ bool ReachVehicleCameraPlace(const ReachVehicleFrame& frame, const VehicleCamera
     }
     if (!vehicle_camera_place::Finite3(point))
         return false;
+
+    // HELD SHORT OF A WALL ("collide"): the line from the pivot to the camera's place is traced by Reach's own sight
+    // trace on its simulation thread (reach_sight_trace.inl), and the camera stops short of what it meets. The trace
+    // is a tick or two behind; with none to go on the camera goes all the way.
+    float reachUsed = 1.0f;
+    if (camera.collide)
+    {
+        const float toward[3] = {point[0] - placed.pivot[0], point[1] - placed.pivot[1], point[2] - placed.pivot[2]};
+        const float length = sqrtf(vehicle_camera_frame::Dot(toward, toward));
+        float wanted = 1.0f;
+        if (std::isfinite(length) && length > 0.05f)
+        {
+            const uint32_t generation = TitleAdapter_GetGeneration(GameTitle::HaloReach);
+            SightAuxRay ray{};
+            ray.generation = generation;
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                ray.origin[axis] = placed.pivot[axis];
+                ray.dir[axis] = toward[axis] / length;
+            }
+            Sight_PublishCameraRay(GameTitle::HaloReach, ray);
+            bool hit = false;
+            float rangeWu = 0.0f;
+            if (Sight_ReadCameraTrace(GameTitle::HaloReach, generation, 150, hit, rangeWu))
+            {
+                wanted = vehicle_camera_place::CollideReach(hit, rangeWu, length, camera.collideMarginCm);
+                g_reachVehicleCameraCollideFrames.fetch_add(1, std::memory_order_relaxed);
+            }
+            else
+            {
+                g_reachVehicleCameraNoTraceFrames.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        const float since = ReachVehicleCameraSecondsSince(g_reachVehicleCameraReachAt);
+        const float reach = vehicle_camera_place::EaseReach(g_reachVehicleCameraReach, wanted,
+                                                            since < 0.0f ? 0.0f : (since > 0.1f ? 0.1f : since),
+                                                            kReachCameraReleasePerSecond);
+        if (reach < 0.999f)
+        {
+            for (int axis = 0; axis < 3; ++axis)
+                point[axis] = placed.pivot[axis] + toward[axis] * reach;
+            g_reachVehicleCameraHeldFrames.fetch_add(1, std::memory_order_relaxed);
+            reachUsed = reach;
+        }
+    }
+    else
+    {
+        g_reachVehicleCameraReach = 1.0f;
+    }
+    g_reachVehicleCameraPass.reach = reachUsed;
     g_reachVehicleCameraPass.placed = true;
     g_reachVehicleCameraPass.camera = camera;
     g_reachVehicleCameraPass.where = placed;
@@ -556,8 +616,6 @@ std::string ReachVehicleCameraNotApplied(const vehicle_camera_select::ActiveCame
             add("rotationTracking pitch");
         if (camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::Marker))
             add("an origin naming a marker (the vehicle's origin is used)");
-        if (camera.collide)
-            add("collide (the camera is not held short of walls)");
         if (camera.aimMarker)
             add("the aim ring");
     }
@@ -580,9 +638,18 @@ std::string ReachVehicleCameraNotApplied(const vehicle_camera_select::ActiveCame
 // lines when there is something to say. `seated` false = the player has left the seat.
 void ReachVehicleCamerasColdLog(bool seated)
 {
-    static bool standInLogged = false;
+    static bool standInLogged = false, noTraceLogged = false;
     static float restLoggedWu = 0.0f, restSeenWu = 0.0f;
-    static uint32_t trailStint = 0, headMissStint = 0;
+    static uint32_t trailStint = 0, headMissStint = 0, heldStint = 0;
+    const uint32_t collideFrames = g_reachVehicleCameraCollideFrames.exchange(0, std::memory_order_relaxed);
+    const uint32_t noTraceFrames = g_reachVehicleCameraNoTraceFrames.exchange(0, std::memory_order_relaxed);
+    heldStint += g_reachVehicleCameraHeldFrames.exchange(0, std::memory_order_relaxed);
+    if (noTraceFrames > 60 && collideFrames == 0 && !noTraceLogged)
+    {
+        noTraceLogged = true;
+        LOG("Vehicle cameras (Reach): this camera asks to be kept out of walls (\"collide\"), but Reach's sight trace "
+            "is not running for this seat, so it goes all the way out");
+    }
     const uint32_t frames = g_reachVehicleCameraFrames.exchange(0, std::memory_order_relaxed);
     const uint32_t standIn = g_reachVehicleCameraStandInFrames.exchange(0, std::memory_order_relaxed);
     g_reachVehicleCameraNudgeFrames.exchange(0, std::memory_order_relaxed);
@@ -597,8 +664,10 @@ void ReachVehicleCamerasColdLog(bool seated)
             LOG("Vehicle cameras (Reach): in that seat the occupant's head could not be read on %u frames, and the "
                 "seat's eye stood in for it",
                 headMissStint);
-        trailStint = headMissStint = 0;
-        standInLogged = false;
+        if (heldStint)
+            LOG("Vehicle cameras (Reach): in that seat the camera was held short of something on %u frames", heldStint);
+        trailStint = headMissStint = heldStint = 0;
+        standInLogged = noTraceLogged = false;
         restLoggedWu = restSeenWu = 0.0f;
         g_reachVehicleCameraRestWu.store(0.0f, std::memory_order_relaxed);
         return;

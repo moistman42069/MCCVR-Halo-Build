@@ -787,6 +787,24 @@ void ReachSightTraceAt(uint32_t unit, ReachSightSite site)
             }
             Sight_PublishLimitTrace(GameTitle::HaloReach, limitGeneration, limitHit, limitHit ? limitRangeWu : 0.0f);
         }
+        // THE VEHICLE CAMERA RAY (reach_vehicle_cameras.inl): from the point a chase camera is measured from toward
+        // where it sits, while one with "collide" is up. The same query, flags and ignores, so the player's own
+        // vehicle and its parts are looked past. Only while the render thread published one.
+        SightAuxRay cameraRay{};
+        if (Sight_ReadCameraRay(GameTitle::HaloReach, limitGeneration, kSightRayFreshMs, cameraRay))
+        {
+            bool cameraHit = false;
+            float cameraRangeWu = 0.0f;
+            const auto isOurs = [&](int32_t object) { return object != -1 && ReachSightRootOf(object) == root; };
+            if (!SightAuxTraceVector(original, flags, mode, cameraRay, traceLengthWu, kReachSightTraceSkipWu,
+                                     kReachSightSelfStepWu, seated ? kReachSightSelfPasses : 1, ignoreA, ignoreB,
+                                     ignoreC, isOurs, cameraHit, cameraRangeWu))
+            {
+                trace.faulted.store(true, std::memory_order_release);   // fail closed, as the intent trace does
+                return;
+            }
+            Sight_PublishCameraTrace(GameTitle::HaloReach, limitGeneration, cameraHit, cameraHit ? cameraRangeWu : 0.0f);
+        }
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // [assess-only begin]
