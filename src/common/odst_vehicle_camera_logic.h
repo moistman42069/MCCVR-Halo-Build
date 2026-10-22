@@ -17,6 +17,7 @@
 #include <cstdint>
 
 #include "odst_vehicle_logic.h"
+#include "vehicle_boom_logic.h"
 #include "vehicle_camera_file.h"
 
 namespace odst_vehicle_camera
@@ -62,4 +63,17 @@ inline constexpr bool WheelSeat(OdstVehicleId id, int seatIndex, bool onCarrier)
 // The seat key's title mark (vehicle_cameras.inl's VehicleCameraSeatKey::title): ODST's seats are keyed apart from
 // Halo 3's, whose generations count from the same start.
 inline constexpr uint8_t kSeatKeyTitle = 1;
+
+// THE BOOM'S RANGE in ODST, as look pitches for vehicle_boom's orbit (the camera's elevation is minus the pitch).
+// ODST's seats carry Halo 3's camera tracks, but halo3odst.dll's following camera is not bound, so its boom is an
+// orbit of the game's pivot; over the whole flat look range an orbit stands the camera straight above the vehicle or
+// under the ground (measured in Reach, whose boom is the same orbit). Held between 10 deg below and 60 deg above
+// level, Reach's measured range.
+inline constexpr float kBoomLowestDeg = -10.0f;
+inline constexpr float kBoomHighestDeg = 60.0f;
+inline vehicle_boom::Range BoomRange() noexcept
+{
+    return vehicle_boom::Range{-kBoomHighestDeg * vehicle_boom::kRadiansPerDegree,
+                               -kBoomLowestDeg * vehicle_boom::kRadiansPerDegree};
+}
 } // namespace odst_vehicle_camera

@@ -47,8 +47,47 @@ struct VehicleCameraSeatKey
     int32_t seatIndex = -1;
     uint32_t identity = 0;
     bool mounted = false;
+    // 0 for Halo 3 and Reach; ODST's seats carry odst_vehicle_camera::kSeatKeyTitle, its generations counting from
+    // the same start as Halo 3's.
+    uint8_t title = 0;
     friend bool operator==(const VehicleCameraSeatKey&, const VehicleCameraSeatKey&) = default;
 };
+
+// THE LEGACY SEAT: Halo 3's or ODST's. One engine, so one snapshot shape (Halo3SeatSnapshot), read from whichever
+// title's seat sampler is live: one title runs at a time, and a sampler's snapshot goes stale 100 ms after its camera
+// thread stops. `title` is whose it is; `key` is what every reader matches a camera to.
+struct LegacySeat
+{
+    GameTitle title = GameTitle::Halo3;
+    Halo3SeatSnapshot snapshot{};
+    VehicleCameraSeatKey key{};
+};
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+bool OdstReadCameraSeat(Halo3SeatSnapshot& out, OdstVehicleId* carrierId = nullptr); // game.cpp's ODST seat block
+#endif
+
+bool LegacyReadSeat(LegacySeat& seat)
+{
+    if (Halo3ReadSeatSnapshot(seat.snapshot))
+    {
+        seat.title = GameTitle::Halo3;
+        seat.key = VehicleCameraSeatKey{g_halo3RuntimeGeneration.load(std::memory_order_relaxed),
+                                        seat.snapshot.parentHandle, seat.snapshot.seatIndex, seat.snapshot.identity,
+                                        seat.snapshot.mounted};
+        return true;
+    }
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+    if (OdstReadCameraSeat(seat.snapshot))
+    {
+        seat.title = GameTitle::Halo3ODST;
+        seat.key = VehicleCameraSeatKey{g_odstRuntimeGeneration.load(std::memory_order_relaxed),
+                                        seat.snapshot.parentHandle, seat.snapshot.seatIndex, seat.snapshot.identity,
+                                        seat.snapshot.mounted, odst_vehicle_camera::kSeatKeyTitle};
+        return true;
+    }
+#endif
+    return false;
+}
 
 // One writer (the cold worker). `chase` is the readers' whole cost while no chase camera is in use, and
 // `eyeNudge` / `showHeadlessBody` theirs while no firstperson camera moves the seat's eye / shows the body.
@@ -121,11 +160,10 @@ bool Halo3VehicleCameraHoldsExposure()
     const VehicleCameraPublished& published = g_vehicleCameraPublished;
     if (!published.holdExposure.load(std::memory_order_acquire))
         return false;
-    Halo3SeatSnapshot seat;
-    if (!Halo3ReadSeatSnapshot(seat))
+    LegacySeat seat;
+    if (!LegacyReadSeat(seat))
         return false;
-    const VehicleCameraSeatKey wanted{g_halo3RuntimeGeneration.load(std::memory_order_relaxed), seat.parentHandle,
-                                      seat.seatIndex, seat.identity, seat.mounted};
+    const VehicleCameraSeatKey wanted = seat.key;
     for (int attempt = 0; attempt < 2; ++attempt)
     {
         const uint32_t before = published.seq.load(std::memory_order_acquire);
@@ -145,13 +183,11 @@ bool Halo3VehicleCameraHoldsExposure()
 // units [forward, right, up] in the vehicle's own frame. False while the camera in use for exactly this seat is not
 // a firstperson camera with an offset. The seat sampler's question, every frame of a seat: one atomic load while
 // none is set.
-bool Halo3VehicleCameraEyeNudge(uint32_t generation, int32_t vehicle, int32_t seatIndex, uint32_t identity,
-                                bool mounted, float outWu[3])
+bool VehicleCameraEyeNudgeFor(const VehicleCameraSeatKey& wanted, float outWu[3])
 {
     const VehicleCameraPublished& published = g_vehicleCameraPublished;
     if (!published.eyeNudge.load(std::memory_order_acquire))
         return false;
-    const VehicleCameraSeatKey wanted{generation, vehicle, seatIndex, identity, mounted};
     for (int attempt = 0; attempt < 2; ++attempt)
     {
         const uint32_t before = published.seq.load(std::memory_order_acquire);
@@ -175,6 +211,12 @@ bool Halo3VehicleCameraEyeNudge(uint32_t generation, int32_t vehicle, int32_t se
     return false;
 }
 
+bool Halo3VehicleCameraEyeNudge(uint32_t generation, int32_t vehicle, int32_t seatIndex, uint32_t identity,
+                                bool mounted, float outWu[3])
+{
+    return VehicleCameraEyeNudgeFor(VehicleCameraSeatKey{generation, vehicle, seatIndex, identity, mounted}, outWu);
+}
+
 bool VehicleCameraRead(vehicle_camera_select::ActiveCamera& camera, VehicleCameraSeatKey& seat)
 {
     const VehicleCameraPublished& published = g_vehicleCameraPublished;
@@ -193,6 +235,14 @@ bool VehicleCameraRead(vehicle_camera_select::ActiveCamera& camera, VehicleCamer
         return camera.valid && camera.chase;
     }
     return false;
+}
+
+// A chase camera is chosen for exactly the seat `key` names. Any thread; one atomic load while none is.
+bool VehicleCameraChaseChosenFor(const VehicleCameraSeatKey& key)
+{
+    vehicle_camera_select::ActiveCamera camera;
+    VehicleCameraSeatKey chosenFor;
+    return VehicleCameraRead(camera, chosenFor) && chosenFor == key;
 }
 
 // The menu's line: which camera is in use, or why none is. One writer (the cold worker).
@@ -355,22 +405,23 @@ struct Halo3VehicleCameraPass
     // frame a camera that turns with the vehicle follows): the aim ring's heading (Halo3VehicleAimMarkerStep).
     VehicleCameraSeatKey seat{};
     float vehicleForward[3]{};
+    GameTitle title = GameTitle::Halo3; // whose seat: its observer and its traces
 };
 Halo3VehicleCameraPass g_halo3VehicleCameraPass;
 uint64_t g_halo3VehicleCameraReachAt = 0;
 inline constexpr float kHalo3CameraReleasePerSecond = 1.5f;
 
-// A chase camera is chosen for exactly the seat the snapshot shows. Any thread; one atomic load while none is.
-bool Halo3VehicleCameraSelected(vehicle_camera_select::ActiveCamera& camera, Halo3SeatSnapshot& seat,
+// A chase camera is chosen for exactly the seat the snapshot shows (Halo 3's or ODST's: LegacyReadSeat). Any thread;
+// one atomic load while none is.
+bool Halo3VehicleCameraSelected(vehicle_camera_select::ActiveCamera& camera, LegacySeat& seat,
                                 VehicleCameraSeatKey& key)
 {
     VehicleCameraSeatKey chosenFor;
     if (!VehicleCameraRead(camera, chosenFor))
         return false;
-    if (!Halo3ReadSeatSnapshot(seat))
+    if (!LegacyReadSeat(seat))
         return false;
-    key = VehicleCameraSeatKey{g_halo3RuntimeGeneration.load(std::memory_order_relaxed), seat.parentHandle,
-                               seat.seatIndex, seat.identity, seat.mounted};
+    key = seat.key;
     return key == chosenFor;
 }
 
@@ -379,7 +430,7 @@ bool Halo3VehicleCameraSelected(vehicle_camera_select::ActiveCamera& camera, Hal
 bool Halo3VehicleCameraThirdPerson()
 {
     vehicle_camera_select::ActiveCamera camera;
-    Halo3SeatSnapshot seat;
+    LegacySeat seat;
     VehicleCameraSeatKey key;
     return Halo3VehicleCameraSelected(camera, seat, key);
 }
@@ -389,7 +440,7 @@ bool Halo3VehicleCameraThirdPerson()
 bool Halo3VehicleCameraViewTurn(bool& yaw, bool& pitch)
 {
     vehicle_camera_select::ActiveCamera camera;
-    Halo3SeatSnapshot seat;
+    LegacySeat seat;
     VehicleCameraSeatKey key;
     if (!Halo3VehicleCameraSelected(camera, seat, key))
         return false;
@@ -418,10 +469,18 @@ bool Halo3VehicleCameraFollowWanted()
 // The game's own camera for the local player as its observer computed it this frame, before any effect and
 // before the mod's seat camera: where it stands, and the point it turns about. For a seat the director draws in
 // third person those are the game's chase camera and the seat's camera pivot. `forward`, when asked for, is
-// the way it looks: the line a flat player's crosshair marks.
-bool Halo3ReadObserverCamera(float position[3], float focus[3], float* forward = nullptr)
+// the way it looks: the line a flat player's crosshair marks. `title`: Halo 3's observer, or ODST's (the same
+// record: OdstCaptureObserver).
+bool Halo3ReadObserverCamera(float position[3], float focus[3], float* forward = nullptr,
+                             GameTitle title = GameTitle::Halo3)
 {
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+    Halo3ObserverCapture& cap = title == GameTitle::Halo3ODST ? g_odstObserverCapture : g_halo3ObserverCapture;
+#else
+    if (title != GameTitle::Halo3)
+        return false;
     Halo3ObserverCapture& cap = g_halo3ObserverCapture;
+#endif
     if (!cap.valid.load(std::memory_order_acquire))
         return false;
     if (GetTickCount64() - cap.captureMs.load(std::memory_order_relaxed) > 200)
@@ -626,7 +685,8 @@ inline constexpr float kHalo3RestLevelSin = 0.26f; // within about 15 degrees of
 
 // Fills `in` with the place. False: not known YET, and the seat keeps the view it has for this frame. True with
 // in.restValid false: it could not be read at all, and the caller's stand-in applies.
-bool Halo3VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, int camera, vehicle_camera_place::Inputs& in)
+bool Halo3VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, int camera, vehicle_camera_place::Inputs& in,
+                                 GameTitle title = GameTitle::Halo3)
 {
     Halo3VehicleCameraRest& rest = g_halo3VehicleCameraRest;
     if (!(rest.seat == seat))
@@ -640,7 +700,7 @@ bool Halo3VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, int camera, v
     const float pivotReachWu = 2.0f * radiusWu > kHalo3RestPivotReachWu ? 2.0f * radiusWu : kHalo3RestPivotReachWu;
     const float furthestWu = 4.0f * radiusWu > kHalo3RestFurthestWu ? 4.0f * radiusWu : kHalo3RestFurthestWu;
     float at[3], about[3], looks[3];
-    bool observed = Halo3ReadObserverCamera(at, about, looks);
+    bool observed = Halo3ReadObserverCamera(at, about, looks, title);
     if (observed)
     {
         const float fromVehicle[3] = {about[0] - in.vehicleOrigin[0], about[1] - in.vehicleOrigin[1],
@@ -677,8 +737,9 @@ bool Halo3VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, int camera, v
     // THE BOOM: the publication for this seat, else -- once the wait is over -- the stand-in orbit.
     Halo3BoomTake(seat, camera);
     Halo3BoomCamera& boom = g_halo3BoomCamera;
+    // ODST's camera track is not read: its stand-in orbits over the range its published orbit has.
     if (!boom.held && !boom.local && rest.waited >= kHalo3RestWaitFrames)
-        Halo3BoomStandIn();
+        Halo3BoomStandIn(title == GameTitle::Halo3ODST ? odst_vehicle_camera::BoomRange() : vehicle_boom::Range{});
     if (observed && (boom.held || boom.local))
     {
         Halo3BoomStep();
@@ -767,10 +828,11 @@ bool Halo3VehicleCameraPlace(float viewYaw, float out[3])
 {
     g_halo3VehicleCameraPass.placed = false;
     vehicle_camera_select::ActiveCamera camera;
-    Halo3SeatSnapshot seat;
+    LegacySeat legacy;
     VehicleCameraSeatKey key;
-    if (!Halo3VehicleCameraSelected(camera, seat, key))
+    if (!Halo3VehicleCameraSelected(camera, legacy, key))
         return false;
+    const Halo3SeatSnapshot& seat = legacy.snapshot;
 
     vehicle_camera_place::Inputs in;
     bool drawn = seat.rootValid;
@@ -803,7 +865,7 @@ bool Halo3VehicleCameraPlace(float viewYaw, float out[3])
     in.vehicleRadiusCm = std::isfinite(seat.boundsRadiusWu) && seat.boundsRadiusWu > 0.0f
         ? seat.boundsRadiusWu / vehicle_camera_frame::kWorldUnitsPerCm : 0.0f;
     if (camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::ThirdPerson) &&
-        !Halo3VehicleCameraRestPlace(key, camera.camera, in))
+        !Halo3VehicleCameraRestPlace(key, camera.camera, in, legacy.title))
         return false;
 
     float point[3];
@@ -852,7 +914,7 @@ bool Halo3VehicleCameraPlace(float viewYaw, float out[3])
         float wanted = 1.0f;
         if (std::isfinite(length) && length > 0.05f)
         {
-            const uint32_t generation = g_halo3RuntimeGeneration.load(std::memory_order_relaxed);
+            const uint32_t generation = key.generation;
             SightAuxRay ray{};
             ray.generation = generation;
             for (int axis = 0; axis < 3; ++axis)
@@ -860,10 +922,10 @@ bool Halo3VehicleCameraPlace(float viewYaw, float out[3])
                 ray.origin[axis] = pivot[axis];
                 ray.dir[axis] = toward[axis] / length;
             }
-            Sight_PublishCameraRay(GameTitle::Halo3, ray);
+            Sight_PublishCameraRay(legacy.title, ray);
             bool hit = false;
             float rangeWu = 0.0f;
-            if (Sight_ReadCameraTrace(GameTitle::Halo3, generation, 150, hit, rangeWu))
+            if (Sight_ReadCameraTrace(legacy.title, generation, 150, hit, rangeWu))
             {
                 wanted = vehicle_camera_place::CollideReach(hit, rangeWu, length, camera.collideMarginCm);
                 g_halo3VehicleCameraCollideFrames.fetch_add(1, std::memory_order_relaxed);
@@ -899,6 +961,7 @@ bool Halo3VehicleCameraPlace(float viewYaw, float out[3])
     g_halo3VehicleCameraPass.camera = camera;
     g_halo3VehicleCameraPass.where = placed;
     g_halo3VehicleCameraPass.seat = key;
+    g_halo3VehicleCameraPass.title = legacy.title;
     memcpy(g_halo3VehicleCameraPass.vehicleForward, seat.rawFwd, sizeof(g_halo3VehicleCameraPass.vehicleForward));
 
     Halo3VehicleCameraPoint& published = g_halo3VehicleCameraPoint;
@@ -1013,7 +1076,8 @@ void Halo3VehicleAimMarkerStep(const float eye[3], bool followed, float hullYaw,
     // from it ran down the vehicle's side and the ring slid the opposite way to the aim. That camera stays the
     // fallback while the seat's eye has not been read.
     float at[3], about[3], looks[3], dir[3];
-    if (!Halo3ReadObserverCamera(at, about, looks) || !vehicle_aim_marker::Direction(pass.vehicleForward, looks, dir))
+    if (!Halo3ReadObserverCamera(at, about, looks, pass.title) ||
+        !vehicle_aim_marker::Direction(pass.vehicleForward, looks, dir))
     {
         Halo3VehicleAimMarkerClear();
         return;
@@ -1025,7 +1089,7 @@ void Halo3VehicleAimMarkerStep(const float eye[3], bool followed, float hullYaw,
         if (std::isfinite(seatEye[0]) && std::isfinite(seatEye[1]) && std::isfinite(seatEye[2]))
             memcpy(at, seatEye, sizeof(at));
     }
-    const uint32_t generation = g_halo3RuntimeGeneration.load(std::memory_order_relaxed);
+    const uint32_t generation = pass.seat.generation;
     SightAuxRay ray{};
     ray.generation = generation;
     for (int axis = 0; axis < 3; ++axis)
@@ -1033,10 +1097,10 @@ void Halo3VehicleAimMarkerStep(const float eye[3], bool followed, float hullYaw,
         ray.origin[axis] = at[axis];
         ray.dir[axis] = dir[axis];
     }
-    Sight_PublishMarkerRay(GameTitle::Halo3, ray);
+    Sight_PublishMarkerRay(pass.title, ray);
     bool hit = false;
     float rangeWu = 0.0f;
-    const bool traced = Sight_ReadMarkerTrace(GameTitle::Halo3, generation, kSightFreshMs, hit, rangeWu);
+    const bool traced = Sight_ReadMarkerTrace(pass.title, generation, kSightFreshMs, hit, rangeWu);
     const float range = g_halo3VehicleAimMarkerRange.Use(traced, hit, rangeWu, kSightTraceLengthWu);
     // Pulled back off the surface as the crosshair is, then seen from the eye this pass's view is drawn from.
     const float unitsPerVrMetre = g_worldScale.load(std::memory_order_relaxed);
@@ -1373,11 +1437,13 @@ void VehicleBoomCheckLog(VehicleCameraRuntime& r)
 // of its own, -10 to 60 deg above level (reach_vehicle_camera::BoomRange; Reach's own look limits are not read), and
 // its stick is not inverted unless vehicle_boom_invert says so (Reach's inversion setting is not read). The render thread runs it on the same
 // shared boom (reach_vehicle_cameras.inl).
+// `odstTitle`: the seat is ODST's, whose camera track is not read either: its boom orbits the game's pivot over
+// odst_vehicle_camera::BoomRange, on Halo 3's camera thread code (the same engine).
 void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::ActiveCamera& active, bool wanted,
                          bool seated, uint32_t definitionIndex, const char* name, uint64_t nowMs,
-                         bool reachTitle = false)
+                         bool reachTitle = false, bool odstTitle = false)
 {
-    const char* const titleName = reachTitle ? "Reach" : "Halo 3";
+    const char* const titleName = reachTitle ? "Reach" : (odstTitle ? "ODST" : "Halo 3");
     VehicleCameraRuntime::Boom& b = r.boom;
     const auto publish = [&]() {
         VehicleBoomPublished& published = g_vehicleBoomPublished;
@@ -1406,8 +1472,8 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
     if (!seated)
         return;
 
-    const uint32_t generation =
-        reachTitle ? r.seat.generation : g_halo3VehicleBoom.generation.load(std::memory_order_acquire);
+    const uint32_t generation = reachTitle || odstTitle ? r.seat.generation
+                                                        : g_halo3VehicleBoom.generation.load(std::memory_order_acquire);
     const bool newCamera = !b.published || !(b.seat == r.seat) || b.camera != active.camera ||
                            b.definitionIndex != definitionIndex || b.generation != generation;
     // Reach has no track to say where the game's camera stands looking level: the render thread measures it in this
@@ -1439,6 +1505,12 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
                 // ground (measured in Reach: the stick took it to 85.5 deg either way, and the game's own camera pulls
                 // in from 7 m to under 5 m at its extreme looks): Reach's orbit has a range of its own.
                 vehicle_boom::BuildOrbitShape(reach_vehicle_camera::BoomRange(), b.shape);
+            }
+            else if (odstTitle)
+            {
+                // ODST's seat camera and track are Halo 3's tags, but halo3odst.dll's track and look limits are not
+                // bound: an orbit over a range of its own (odst_vehicle_camera_logic.h).
+                vehicle_boom::BuildOrbitShape(odst_vehicle_camera::BoomRange(), b.shape);
             }
             else
             {
@@ -1491,6 +1563,7 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
         else
         {
             const char* why = reachTitle ? "Reach's camera track is not read"
+                            : odstTitle ? "ODST's camera track is not read"
                             : !Halo3VehicleBoomBound() || !g_halo3VehicleBoom.seatCamera ? "the game's seat camera is not bound"
                             : !b.facts.read                                             ? "the seat's tags could not be read"
                             : !g_halo3VehicleBoom.track                                 ? "the game's camera track is not bound"
@@ -1507,7 +1580,7 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
 
     // THE INVERSION, every poll: the game's setting can change in its pause menu.
     bool gameInverts = false;
-    const bool known = !reachTitle && Halo3VehicleBoomGameInverts(b.piloting, gameInverts);
+    const bool known = !reachTitle && !odstTitle && Halo3VehicleBoomGameInverts(b.piloting, gameInverts);
     const int setting = g_config.vehicle_boom_invert;
     const bool inverted = vehicle_boom::Inverted(setting, known, gameInverts);
     g_vehicleBoomInverted.store(inverted, std::memory_order_relaxed);
@@ -1586,6 +1659,31 @@ VehicleCameraSeatRead ReachVehicleCameraSeat(VehicleCameraSeatKey& key, const ch
 std::string ReachVehicleCameraNotApplied(const vehicle_camera_select::ActiveCamera& camera);
 void ReachVehicleCamerasColdLog(bool seated);
 #endif
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+// ODST's side (game.cpp's ODST seat block, after its sampler).
+VehicleCameraSeatRead OdstVehicleCameraSeat(VehicleCameraSeatKey& key, const char*& name, uint8_t& seatBits,
+                                           bool& seatView, bool& wheelSeat, uint32_t& definitionIndex);
+#endif
+
+// What a selected camera asks for that ODST does not do yet, for the log and the readout; empty when nothing.
+std::string OdstVehicleCameraNotApplied(const vehicle_camera_select::ActiveCamera& camera)
+{
+    if (!camera.valid)
+        return {};
+    std::string list = Halo3VehicleCameraNotApplied(camera);
+    const auto add = [&list](const char* what) {
+        if (!list.empty())
+            list += "; ";
+        list += what;
+    };
+    if (camera.hideRegions[0])
+        add("hideRegions");
+    if (camera.hideParts[0])
+        add("hideParts");
+    if (camera.fadeParts[0])
+        add("fadeParts");
+    return list;
+}
 
 // WaitThread, every poll. Everything slow about the feature happens here.
 void VehicleCameras_ColdTick(uint64_t nowMs)
@@ -1655,7 +1753,7 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         wasOn = true;
         r.nextFilePollMs = 0;
         LOG("Vehicle cameras: on. The cameras of each seat are read from %s in the mod's folder; F1 > Vehicles "
-            "steps through them. Halo 3 and Reach seats for now, and only while vehicle_first_person is on",
+            "steps through them. Halo 3, ODST and Reach seats for now, and only while vehicle_first_person is on",
             vehicle_camera_store::kFileNameText);
     }
 
@@ -1688,7 +1786,7 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
     uint32_t definitionIndex = 0xFFFFFFFFu;
     const GameTitle title = TitleAdapter_GetActiveTitle();
     const bool halo3 = title == GameTitle::Halo3;
-    bool reach = false;
+    bool reach = false, odst = false;
     if (halo3)
     {
         gameKey = "halo3";
@@ -1700,6 +1798,29 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         reach = true;
         gameKey = "reach";
         read = ReachVehicleCameraSeat(key, name, seatBits, seatView, wheelSeat, definitionIndex);
+    }
+#endif
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+    else if (title == GameTitle::Halo3ODST)
+    {
+        odst = true;
+        gameKey = "odst";
+        read = OdstVehicleCameraSeat(key, name, seatBits, seatView, wheelSeat, definitionIndex);
+    }
+#endif
+    // Halo 3's camera thread code places ODST's seats too (the same engine): its log lines name the title.
+    const char* const legacyName = odst ? "ODST" : "Halo 3";
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+    if (odst)
+    {
+        static uint32_t observerFaultsLogged = 0;
+        const uint32_t observerFaults = g_odstObserverFaults.load(std::memory_order_relaxed);
+        if (observerFaults != observerFaultsLogged)
+        {
+            observerFaultsLogged = observerFaults;
+            LOG("Vehicle cameras (ODST): reading the game's own camera faulted, so it is not read again until ODST "
+                "loads again; a third-person camera stands at the mod's stand-in");
+        }
     }
 #endif
     if (read == VehicleCameraSeatRead::Seated)
@@ -1756,7 +1877,7 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
     }
     g_vehicleControlEffective.store(inSeat ? control : -1, std::memory_order_release);
     g_vehicleSeatButtons.store(
-        inSeat && (halo3 || reach)
+        inSeat && (halo3 || reach || odst)
             ? kVehicleSeatButtonsLive | ((r.seatBits & vehicle_camera_file::kSeatPassenger) ? kVehicleSeatPassenger : 0u)
             : 0u,
         std::memory_order_release);
@@ -1838,15 +1959,16 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
     if (halo3 && read != VehicleCameraSeatRead::Unknown)
         Halo3VehicleParts_ColdTick(active, r.seat, read == VehicleCameraSeatRead::Seated, definitionIndex, nowMs);
     VehicleBoomColdTick(r, active,
-                        (halo3 || reach) && read != VehicleCameraSeatRead::OnFoot && active.valid && active.chase &&
+                        (halo3 || reach || odst) && read != VehicleCameraSeatRead::OnFoot && active.valid &&
+                            active.chase &&
                             active.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::ThirdPerson),
-                        read == VehicleCameraSeatRead::Seated, definitionIndex, name, nowMs, reach);
+                        read == VehicleCameraSeatRead::Seated, definitionIndex, name, nowMs, reach, odst);
 
     const bool onFoot = !active.valid && r.selector.StandDownReason() == vehicle_camera_select::kOnFoot;
     std::string line = r.selector.Describe();
-    // Reach does not draw the headless body (a Halo 3 key, on by default in a driver's or gunner's seat): its seat
-    // view is not described as showing it.
-    if (reach)
+    // Reach and ODST do not draw the headless body (a Halo 3 key, on by default in a driver's or gunner's seat): their
+    // seat view is not described as showing it.
+    if (reach || odst)
     {
         static constexpr char kHeadless[] = ", your body shown without its head";
         if (const size_t at = line.find(kHeadless); at != std::string::npos)
@@ -1857,8 +1979,8 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         // Not in a seat this feature reaches: say which of the reasons it is.
         if (!onFoot)
             line = "no camera: " + r.selector.StandDownReason();
-        else if (!halo3 && !reach)
-            line = "no camera: vehicle cameras are in Halo 3 and Reach only for now";
+        else if (!halo3 && !reach && !odst)
+            line = "no camera: vehicle cameras are in Halo 3, ODST and Reach only for now";
         else if (!g_config.vehicle_first_person)
             line = "no camera: first-person vehicles are off, so a seat keeps the game's own camera";
         else
@@ -1886,6 +2008,11 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
                 line += ". Not applied in Reach yet: " + missing;
         }
 #endif
+        else if (odst)
+        {
+            if (const std::string missing = OdstVehicleCameraNotApplied(active); !missing.empty())
+                line += ". Not applied in ODST yet: " + missing;
+        }
     }
     if (line != r.readout)
     {
@@ -1904,8 +2031,8 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
                 note.push_back(static_cast<wchar_t>(*c));
             while (!note.empty() && note.back() == L' ')
                 note.pop_back();
-            // Halo 3 posts it in the game's own HUD messages where it can; Reach on the mod's panel (no HUD message
-            // of Reach's own is bound).
+            // Halo 3 posts it in the game's own HUD messages where it can; Reach and ODST on the mod's panel (no HUD
+            // message of their own is bound).
             if (halo3)
                 Halo3VehicleNoteShow(note, kVehicleCameraNoteSeconds);
             else
@@ -1932,9 +2059,9 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         // A lagged camera trails its place in a turn or a speed change, and starts over only on a leap of its place
         // (a respawn, a seat change) or a runaway: never for going fast.
         if (r.lagTrailCmStint || r.lagJumpsStint || r.lagRunawaysStint || r.lagLimitedStint)
-            LOG("Vehicle cameras (Halo 3): in that seat the lagged camera trailed its place by at most %u cm, was "
+            LOG("Vehicle cameras (%s): in that seat the lagged camera trailed its place by at most %u cm, was "
                 "held at its lagLimit on %u frames, and started over %u time(s) on a leap of its place and %u on a "
-                "runaway",
+                "runaway", legacyName,
                 r.lagTrailCmStint, r.lagLimitedStint, r.lagJumpsStint, r.lagRunawaysStint);
         r.lagJumpsStint = r.lagRunawaysStint = r.lagTrailCmStint = r.lagLimitedStint = 0;
         r.loggedLine.clear();
@@ -1943,17 +2070,17 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         r.noTraceLogged = false;
         r.markerNoTraceLogged = false;
         if (r.heldFramesStint)
-            LOG("Vehicle cameras (Halo 3): in that seat the camera was held short of something on %u frames",
+            LOG("Vehicle cameras (%s): in that seat the camera was held short of something on %u frames", legacyName,
                 r.heldFramesStint);
         r.heldFramesStint = 0;
         if (r.restKeptStint)
-            LOG("Vehicle cameras (Halo 3): in that seat the game's own camera could not be read on %u frames, and the "
-                "third-person camera kept its last place on the vehicle through them", r.restKeptStint);
+            LOG("Vehicle cameras (%s): in that seat the game's own camera could not be read on %u frames, and the "
+                "third-person camera kept its last place on the vehicle through them", legacyName, r.restKeptStint);
         r.restKeptStint = 0;
         if (r.pivotStepCmStint)
-            LOG("Vehicle cameras (Halo 3): in that seat the game's camera pivot moved on the vehicle by up to %u cm "
+            LOG("Vehicle cameras (%s): in that seat the game's camera pivot moved on the vehicle by up to %u cm "
                 "from one frame to the next (the third-person camera carries it on the vehicle as drawn, smoothed "
-                "over %.2f s)",
+                "over %.2f s)", legacyName,
                 r.pivotStepCmStint, static_cast<double>(kHalo3RestPivotSmoothSeconds));
         r.pivotStepCmStint = 0;
         r.restLoggedWu = 0.0f;
@@ -1987,9 +2114,9 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         r.restLoggedWu = restWu;
         const float upWu = g_halo3VehicleCameraRestUpWu.load(std::memory_order_relaxed);
         const float pivotUpWu = g_halo3VehicleCameraRestPivotUpWu.load(std::memory_order_relaxed);
-        LOG("Vehicle cameras (Halo 3): the game's own third-person camera rests %.2f world units (%.0f cm) from "
+        LOG("Vehicle cameras (%s): the game's own third-person camera rests %.2f world units (%.0f cm) from "
             "its pivot in this seat, %.0f cm of that above the pivot (it looked %.1f deg up), "
-            "and the pivot is %.0f cm above the vehicle's origin",
+            "and the pivot is %.0f cm above the vehicle's origin", legacyName,
             static_cast<double>(restWu), static_cast<double>(restWu / vehicle_camera_frame::kWorldUnitsPerCm),
             static_cast<double>(upWu / vehicle_camera_frame::kWorldUnitsPerCm),
             static_cast<double>(g_halo3VehicleCameraRestPitchDeg.load(std::memory_order_relaxed)),
@@ -1998,8 +2125,8 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
     if (noTraceFrames > 60 && collideFrames == 0 && !r.noTraceLogged)
     {
         r.noTraceLogged = true;
-        LOG("Vehicle cameras (Halo 3): this camera asks to be kept out of walls (\"collide\"), but the game's trace is "
-            "not running for this seat, so it goes all the way out");
+        LOG("Vehicle cameras (%s): this camera asks to be kept out of walls (\"collide\"), but the game's trace is "
+            "not running for this seat, so it goes all the way out", legacyName);
     }
     const uint32_t markerFrames = g_halo3VehicleAimMarkerFrames.exchange(0, std::memory_order_relaxed);
     const uint32_t markerUntracedFrames = g_halo3VehicleAimMarkerUntracedFrames.exchange(0, std::memory_order_relaxed);
@@ -2008,13 +2135,13 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         r.markerNoTraceLogged = true;
         LOG("Vehicle cameras (%s): the ring where the vehicle aims is shown, but the game's trace is not running "
             "for this seat, so it is drawn at the last depth measured, else far out along its line",
-            reach ? "Reach" : "Halo 3");
+            reach ? "Reach" : legacyName);
     }
     if (standInFrames && !r.standInLogged)
     {
         r.standInLogged = true;
-        LOG("Vehicle cameras (Halo 3): where the game's own third-person camera rests could not be read for "
-            "this seat, so the camera stands %.0f cm behind and %.0f cm above the vehicle's origin instead",
+        LOG("Vehicle cameras (%s): where the game's own third-person camera rests could not be read for "
+            "this seat, so the camera stands %.0f cm behind and %.0f cm above the vehicle's origin instead", legacyName,
             static_cast<double>(vehicle_camera_place::kStandInBehindCm),
             static_cast<double>(vehicle_camera_place::kStandInAboveCm));
     }
@@ -2025,11 +2152,11 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
         {
             r.frameSourceLogged = source;
             if (source == 0)
-                LOG("Vehicle cameras (Halo 3): the camera is placed from the vehicle's root node as it is drawn");
+                LOG("Vehicle cameras (%s): the camera is placed from the vehicle's root node as it is drawn", legacyName);
             else
-                LOG("Vehicle cameras (Halo 3): the vehicle's drawn root node did not check out against its own "
+                LOG("Vehicle cameras (%s): the vehicle's drawn root node did not check out against its own "
                     "frame, so the camera is placed from the simulation's frame; it can shake against the vehicle "
-                    "at speed");
+                    "at speed", legacyName);
         }
     }
 }

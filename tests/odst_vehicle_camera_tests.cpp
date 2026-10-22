@@ -133,11 +133,46 @@ static void TestBuiltInEntries()
     Check(same, "every entry ODST shares with Halo 3 has Halo 3's cameras");
 }
 
+// The boom's orbit range, and the observer's slot as the effect function's own bytes give it (the pinned module's: the
+// slot load and the stride load at +0x56 and +0x6A of halo3odst +0x1ACAF0).
+static void TestBoomAndObserver()
+{
+    const vehicle_boom::Range range = BoomRange();
+    const float deg = 1.0f / vehicle_boom::kRadiansPerDegree;
+    Check(range.min < range.max && -range.max * deg > -10.5f && -range.max * deg < -9.5f &&
+              -range.min * deg > 59.5f && -range.min * deg < 60.5f,
+          "the orbit holds the camera between 10 deg below and 60 deg above level");
+    vehicle_boom::Shape orbit;
+    vehicle_boom::BuildOrbitShape(range, orbit);
+    const float start = vehicle_boom::DefaultElevation(orbit, vehicle_boom::kBoomPitchUnset) * deg;
+    Check(orbit.valid && !orbit.track && start > -10.0f && start < 60.0f,
+          "and an orbit's built-in start lies inside it");
+
+    const uint8_t slotLoad[5] = {0xBF, 0xA8, 0x05, 0x00, 0x00};
+    const uint8_t strideLoad[7] = {0x48, 0x69, 0xDE, 0xD0, 0x03, 0x00, 0x00};
+    Check(OdstDecodeObserverSlot(slotLoad, strideLoad) == 0x5A8, "the retail effect's bytes give slot 0x5A8");
+    const uint8_t halo3Slot[5] = {0xBF, 0x78, 0x05, 0x00, 0x00};
+    Check(OdstDecodeObserverSlot(halo3Slot, strideLoad) == 0x578, "and Halo 3's the slot it reads");
+    uint8_t wrong[5] = {0xB9, 0xA8, 0x05, 0x00, 0x00};
+    Check(OdstDecodeObserverSlot(wrong, strideLoad) == 0, "another instruction there gives nothing");
+    uint8_t stride[7] = {0x48, 0x69, 0xDE, 0xC0, 0x03, 0x00, 0x00};
+    Check(OdstDecodeObserverSlot(slotLoad, stride) == 0, "nor does a record of another size");
+    stride[3] = 0xD0;
+    stride[2] = 0xDF;
+    Check(OdstDecodeObserverSlot(slotLoad, stride) == 0, "nor a stride loaded another way");
+    const uint8_t odd[5] = {0xBF, 0xA9, 0x05, 0x00, 0x00};
+    const uint8_t far[5] = {0xBF, 0x00, 0x40, 0x00, 0x00};
+    Check(OdstDecodeObserverSlot(odd, strideLoad) == 0 && OdstDecodeObserverSlot(far, strideLoad) == 0,
+          "nor a slot no TLS member could be");
+    Check(OdstDecodeObserverSlot(nullptr, strideLoad) == 0, "nor nothing");
+}
+
 int main()
 {
     TestNames();
     TestRoles();
     TestBuiltInEntries();
+    TestBoomAndObserver();
     std::printf("odst vehicle camera tests: %u checks passed\n", g_checks);
     return 0;
 }
