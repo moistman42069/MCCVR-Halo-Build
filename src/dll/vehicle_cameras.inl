@@ -1376,8 +1376,8 @@ void VehicleBoomCheckLog(VehicleCameraRuntime& r)
 
 // Cold worker, every poll. `wanted`: a camera of origin "thirdperson" is in use in a Halo 3 seat; `seated`: this
 // poll's seat could be read (an unreadable poll keeps the boom as it is).
-// `title`: the seat's game. Reach's and Halo 2's camera tracks are not read: their boom orbits the game's pivot over a
-// range of its own, -10 to 60 deg above level (reach_vehicle_camera::BoomRange, halo2_vehicle_camera::BoomRange; their
+// `title`: the seat's game. Reach's and Halo 2's camera tracks are not read: their boom orbits a pivot (Reach's the
+// game's own, Halo 2's the middle of the vehicle's height) over a range of its own, -10 to 60 deg above level (reach_vehicle_camera::BoomRange, halo2_vehicle_camera::BoomRange; their
 // own look limits are not read), and its stick is not inverted unless vehicle_boom_invert says so (their inversion
 // settings are not read). Their camera threads run it on the same shared boom (reach_vehicle_cameras.inl,
 // halo2_vehicle_cameras.inl).
@@ -1421,9 +1421,10 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
         orbitTitle ? r.seat.generation : g_halo3VehicleBoom.generation.load(std::memory_order_acquire);
     const bool newCamera = !b.published || !(b.seat == r.seat) || b.camera != active.camera ||
                            b.definitionIndex != definitionIndex || b.generation != generation;
-    // Reach and Halo 2 have no track to say where the game's camera stands looking level: their camera thread measures
-    // it in this seat (whole degrees), and the boom starts from it once known -- moved only while the player has not
-    // moved the boom. A measurement from the seat before is not this seat's; a torn read keeps what was in use.
+    // Reach has no track to say where the game's camera stands looking level: its camera thread measures it in this
+    // seat (whole degrees), and the boom starts from it once known -- moved only while the player has not moved the
+    // boom. A measurement from the seat before is not this seat's; a torn read keeps what was in use. Halo 2 measures
+    // nothing (its own third-person camera is never shown in a seat view): its boom starts at the boom's default.
     float measuredDeg = vehicle_boom::kBoomPitchUnset;
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     if (reachTitle && !ReachVehicleCameraLevelElevationDeg(r.seat, measuredDeg))
@@ -1518,7 +1519,7 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
             LOG("Vehicle cameras (%s): the boom in %s orbits %s (%s); look range %.1f to %.1f deg, so from %.1f to "
                 "%.1f deg above level. It starts at %.1f deg (%s)",
                 titleName, b.seatName.c_str(),
-                halo2Title ? "the vehicle's origin at the mod's stand-in distance"
+                halo2Title ? "the middle of the vehicle's height at the mod's stand-in distance"
                            : "the game's pivot at the game's own distance",
                 why, static_cast<double>(b.shape.range.min * deg), static_cast<double>(b.shape.range.max * deg),
                 static_cast<double>(lowDeg), static_cast<double>(highDeg), static_cast<double>(startDeg), from);

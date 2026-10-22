@@ -152,7 +152,8 @@ std::atomic<uint32_t> g_halo2VehicleCameraHeadMisses{0};    // the occupant's he
 std::atomic<uint32_t> g_halo2VehicleCameraFrameMisses{0};   // the vehicle's drawn root not read: the eye stays
 std::atomic<uint32_t> g_halo2VehicleCameraLagTrailCm{0};
 std::atomic<float> g_halo2VehicleCameraRadiusCm{0.0f};      // the size a stand-in was laid out by
-std::atomic<float> g_halo2VehicleCameraOrbitCm{0.0f};       // how far out "thirdperson" orbits the vehicle's origin
+std::atomic<float> g_halo2VehicleCameraOrbitCm{0.0f};       // how far out "thirdperson" orbits its pivot
+std::atomic<float> g_halo2VehicleCameraOrbitUpCm{0.0f};     // and how far above the vehicle's origin the pivot is
 
 float Halo2VehicleCameraSecondsSince(LARGE_INTEGER& at)
 {
@@ -276,6 +277,7 @@ void Halo2VehicleCameraOrbitPlace(const VehicleCameraSeatKey& key, const vehicle
         in.rest[axis] = in.vehicleOrigin[axis] + in.vehicle.up[axis] * pivotUpWu;
     in.restValid = vehicle_camera_place::Finite3(in.rest);
     g_halo2VehicleCameraOrbitCm.store(distanceCm, std::memory_order_relaxed);
+    g_halo2VehicleCameraOrbitUpCm.store(pivotUpWu / vehicle_camera_frame::kWorldUnitsPerCm, std::memory_order_relaxed);
 }
 
 // Observer thread, once a frame of a seat: where the chosen chase camera stands. False: none is chosen for this seat,
@@ -302,11 +304,12 @@ bool Halo2VehicleCameraPlace(const Halo2VehicleCameraSeatSample& sample, const V
         in.vehicle = seatFrame;
     }
     // The vehicle's size and height: the carrier's where a gun rides one, so a stand-in stands off the carrier, not the
-    // gun.
+    // gun (its size falls back to the gun's where the carrier's was not read; its height, laid out on the carrier's
+    // frame, does not: the orbit then turns about the carrier's origin).
     const bool carrierSized = onCarrier && sample.carrierRadius > 0.0f;
     const float radiusWu = carrierSized ? sample.carrierRadius : sample.radius;
-    const float pivotUpWu = carrierSized ? halo2_vehicle_camera::OrbitPivotUpWu(sample.carrierModelRead, sample.carrierBounds)
-                                         : halo2_vehicle_camera::OrbitPivotUpWu(sample.modelRead, sample.bounds);
+    const float pivotUpWu = onCarrier ? halo2_vehicle_camera::OrbitPivotUpWu(sample.carrierModelRead, sample.carrierBounds)
+                                      : halo2_vehicle_camera::OrbitPivotUpWu(sample.modelRead, sample.bounds);
     in.vehicleRadiusCm = radiusWu > 0.0f ? radiusWu / vehicle_camera_frame::kWorldUnitsPerCm : 0.0f;
     g_halo2VehicleCameraRadiusCm.store(in.vehicleRadiusCm, std::memory_order_relaxed);
 
@@ -803,9 +806,10 @@ void Halo2VehicleCamerasColdLog(bool seated)
     if (frames && orbitCm > 0.0f && orbitCm != orbitLoggedCm)
     {
         orbitLoggedCm = orbitCm;
-        LOG("Vehicle cameras (Halo 2): the third-person camera orbits the vehicle's origin %.0f cm out (the mod's "
-            "stand-in for a vehicle %.0f cm across: Halo 2's own third-person camera is not shown in a seat view, so "
-            "where it would stand is not measured)",
+        LOG("Vehicle cameras (Halo 2): the third-person camera orbits a point %.0f cm above the vehicle's origin (the "
+            "middle of its height), %.0f cm out (the mod's stand-in for a vehicle %.0f cm across: Halo 2's own "
+            "third-person camera is not shown in a seat view, so where it would stand is not measured)",
+            static_cast<double>(g_halo2VehicleCameraOrbitUpCm.load(std::memory_order_relaxed)),
             static_cast<double>(orbitCm),
             static_cast<double>(2.0f * g_halo2VehicleCameraRadiusCm.load(std::memory_order_relaxed)));
     }
