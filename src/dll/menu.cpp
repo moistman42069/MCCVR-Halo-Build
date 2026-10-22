@@ -1329,7 +1329,7 @@ namespace
             "Reach and Halo 4 seats are not affected.");
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::Text("How you control a seat (Halo 3)");
+        ImGui::Text("How you control a seat (Halo 3, Reach)");
         changed |= ImGui::Combo("Seat controls", &g_config.vehicle_control,
                                 "As before\0Motion: your hand\0Stick\0Wheel\0");
         ImGui::TextDisabled(
