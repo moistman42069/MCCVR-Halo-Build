@@ -201,13 +201,45 @@ std::atomic<float> g_reachVehicleCameraRestRiseWu{0.0f}; // of it, the height ab
 std::atomic<float> g_reachVehicleCameraRestPitchDeg{0.0f};
 std::atomic<float> g_reachVehicleCameraPivotUpWu{0.0f}; // the pivot's height above the vehicle's origin
 // Where the game's own camera stands looking level, as an elevation above level from its pivot in whole degrees, for
-// the boom's start (vehicle_cameras.inl's VehicleBoomColdTick); unset until the seat's camera has been seen looking
-// level. Render thread writes, cold worker reads.
-std::atomic<float> g_reachVehicleCameraLevelDeg{vehicle_boom::kBoomPitchUnset};
-
-float ReachVehicleCameraLevelElevationDeg()
+// the boom's start (vehicle_cameras.inl's VehicleBoomColdTick), with the seat it was measured in: unset until that
+// seat's camera has been seen looking level. Render thread writes (the only writer, so it reads its own fields
+// plainly), cold worker reads through the sequence.
+struct ReachVehicleCameraLevel
 {
-    return g_reachVehicleCameraLevelDeg.load(std::memory_order_acquire);
+    std::atomic<uint32_t> seq{0}; // even = stable
+    VehicleCameraSeatKey seat{};
+    float deg = vehicle_boom::kBoomPitchUnset;
+};
+ReachVehicleCameraLevel g_reachVehicleCameraLevel;
+
+void ReachVehicleCameraLevelStore(const VehicleCameraSeatKey& seat, float deg)
+{
+    ReachVehicleCameraLevel& level = g_reachVehicleCameraLevel;
+    level.seq.fetch_add(1, std::memory_order_acq_rel);
+    level.seat = seat;
+    level.deg = deg;
+    level.seq.fetch_add(1, std::memory_order_release);
+}
+
+// Cold worker: the level view measured in `seat`; unset when the measurement in hand is another seat's (the render
+// thread has not yet placed a camera in this one). False: the record was being written both times it was read.
+bool ReachVehicleCameraLevelElevationDeg(const VehicleCameraSeatKey& seat, float& deg)
+{
+    const ReachVehicleCameraLevel& level = g_reachVehicleCameraLevel;
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
+        const uint32_t before = level.seq.load(std::memory_order_acquire);
+        if (before & 1u)
+            continue;
+        const VehicleCameraSeatKey measuredIn = level.seat;
+        const float measured = level.deg;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (level.seq.load(std::memory_order_relaxed) != before)
+            continue;
+        deg = measuredIn == seat ? measured : vehicle_boom::kBoomPitchUnset;
+        return true;
+    }
+    return false;
 }
 
 vehicle_camera_place::State g_reachVehicleCameraState;  // render thread
@@ -330,7 +362,7 @@ bool ReachVehicleCameraRestPlace(const ReachVehicleFrame& frame, const VehicleCa
     {
         rest = {};
         rest.seat = seat;
-        g_reachVehicleCameraLevelDeg.store(vehicle_boom::kBoomPitchUnset, std::memory_order_release);
+        ReachVehicleCameraLevelStore(seat, vehicle_boom::kBoomPitchUnset);
         ReachVehicleCameraOrbitCheck& check = g_reachVehicleCameraOrbit;
         check.seq.fetch_add(1, std::memory_order_acq_rel);
         check.samples = 0;
@@ -382,10 +414,10 @@ bool ReachVehicleCameraRestPlace(const ReachVehicleFrame& frame, const VehicleCa
                 const float levelDeg = reach_vehicle_camera::OrbitLevelElevationDeg(rest.rise, distance, lookDeg);
                 // A degree either way is the measurement's own wobble (seen in game: 12, then 11, as the camera
                 // eased out), and each change restarts a boom the player has not moved: only a move of two counts.
-                const float published = g_reachVehicleCameraLevelDeg.load(std::memory_order_relaxed);
+                const float published = g_reachVehicleCameraLevel.deg;
                 if (vehicle_boom::BoomPitchSet(levelDeg) &&
                     (!vehicle_boom::BoomPitchSet(published) || std::fabs(levelDeg - published) >= 2.0f))
-                    g_reachVehicleCameraLevelDeg.store(levelDeg, std::memory_order_release);
+                    ReachVehicleCameraLevelStore(seat, levelDeg);
             }
             g_reachVehicleCameraRestRiseWu.store(rest.rise, std::memory_order_relaxed);
             g_reachVehicleCameraRestPitchDeg.store(

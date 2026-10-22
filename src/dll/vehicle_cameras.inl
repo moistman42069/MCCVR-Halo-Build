@@ -399,8 +399,8 @@ bool Halo3VehicleCameraViewTurn(bool& yaw, bool& pitch)
 }
 
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
-bool ReachVehicleCameraFollowWanted();       // reach_vehicle_cameras.inl
-float ReachVehicleCameraLevelElevationDeg(); // reach_vehicle_cameras.inl
+bool ReachVehicleCameraFollowWanted(); // reach_vehicle_cameras.inl
+bool ReachVehicleCameraLevelElevationDeg(const VehicleCameraSeatKey& seat, float& deg); // reach_vehicle_cameras.inl
 #endif
 
 // Whether a chosen chase camera turns the view with the hull in the seat the player is in: the shared follow
@@ -1401,12 +1401,13 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
         reachTitle ? r.seat.generation : g_halo3VehicleBoom.generation.load(std::memory_order_acquire);
     const bool newCamera = !b.published || !(b.seat == r.seat) || b.camera != active.camera ||
                            b.definitionIndex != definitionIndex || b.generation != generation;
-    // Reach has no track to say where the game's camera stands looking level: the render thread measures it (whole
-    // degrees), and the boom starts from it once known -- moved only while the player has not moved the boom.
+    // Reach has no track to say where the game's camera stands looking level: the render thread measures it in this
+    // seat (whole degrees), and the boom starts from it once known -- moved only while the player has not moved the
+    // boom. A measurement from the seat before is not this seat's; a torn read keeps what was in use.
     float measuredDeg = vehicle_boom::kBoomPitchUnset;
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
-    if (reachTitle)
-        measuredDeg = ReachVehicleCameraLevelElevationDeg();
+    if (reachTitle && !ReachVehicleCameraLevelElevationDeg(r.seat, measuredDeg))
+        measuredDeg = newCamera ? vehicle_boom::kBoomPitchUnset : b.measuredDeg;
 #endif
     const bool newStart = newCamera || b.fileDegrees != active.boomPitchDeg || b.measuredDeg != measuredDeg;
     if (newStart)
