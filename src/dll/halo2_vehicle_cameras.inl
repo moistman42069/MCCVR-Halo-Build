@@ -7,8 +7,8 @@
 //     worker and answers how a chosen chase camera turns the view, and, once the view's heading is built, to
 //     Halo2VehicleCamerasPlace, which moves the view's eye: a firstperson camera's "offset", or a chase camera's
 //     place. The hands are built on that eye (the seat's vehicle reference), so they go with it. The leash holds the
-//     head once it is added (Halo2VehicleCameraLeash). It reads the cold worker's published camera with two atomic
-//     loads while none is chosen.
+//     head once it is added (Halo2VehicleCameraLeash). While no offset or chase camera is chosen for the seat, a
+//     frame reads only the cold worker's publications: it asks the game for nothing.
 //   The cold worker (vehicle_cameras.inl, VehicleCameras_ColdTick) reads the published seat through
 //     Halo2VehicleCameraSeat: the vehicle's name, the seat's role, and the key every reader matches a camera to.
 //
@@ -147,7 +147,6 @@ bool Halo2VehicleCameraChaseFor(const VehicleCameraSeatKey& key, vehicle_camera_
 // Counted by the observer, taken by the cold worker for its log lines (Halo2VehicleCamerasColdLog).
 std::atomic<uint32_t> g_halo2VehicleCameraFrames{0};        // chase placements
 std::atomic<uint32_t> g_halo2VehicleCameraStandInFrames{0}; // of them, "thirdperson" at the mod's stand-in
-std::atomic<uint32_t> g_halo2VehicleCameraNudgeFrames{0};   // firstperson eyes moved by an offset
 std::atomic<uint32_t> g_halo2VehicleCameraNudgeRefused{0};  // ...and offsets past the vehicle's bounds, not applied
 std::atomic<uint32_t> g_halo2VehicleCameraHeadMisses{0};    // the occupant's head not read
 std::atomic<uint32_t> g_halo2VehicleCameraFrameMisses{0};   // the vehicle's drawn root not read: the eye stays
@@ -455,6 +454,13 @@ bool Halo2VehicleCamerasPlace(const Halo2VehicleCameraSeatSample& sample, float 
     if (!g_config.vehicle_cameras || !g_config.vehicle_first_person || !eye)
         return false;
     const VehicleCameraSeatKey key = Halo2VehicleCameraKey(sample);
+    // What is chosen for the seat: a firstperson camera's offset, or a chase camera. Neither: nothing to do.
+    float nudge[3];
+    const bool nudged =
+        Halo3VehicleCameraEyeNudge(key.generation, key.vehicle, key.seatIndex, key.identity, key.mounted, nudge);
+    vehicle_camera_select::ActiveCamera camera;
+    if (!nudged && !Halo2VehicleCameraChaseFor(key, &camera))
+        return false;
     // The seat's own object as drawn this frame: every camera of this seat is laid out on it.
     float seatOrigin[3]{};
     vehicle_camera_frame::Basis seatFrame{};
@@ -463,7 +469,32 @@ bool Halo2VehicleCamerasPlace(const Halo2VehicleCameraSeatSample& sample, float 
         g_halo2VehicleCameraFrameMisses.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    // The occupant's head, and the seat's point it settles into.
+
+    // A FIRSTPERSON CAMERA'S "offset": the seat's eye moved along the seated object's own frame -- kept within its
+    // bounds and a margin, as Halo 3 keeps its own (Halo3AnchorWithinBounds, 2 world units).
+    if (nudged)
+    {
+        constexpr float kNudgeMarginWu = 2.0f;
+        const float reachWu = (sample.radius > 0.0f ? sample.radius : 0.0f) + kNudgeMarginWu;
+        float moved[3], fromRoot[3];
+        bool finite = true;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            moved[axis] = eye[axis] + seatFrame.forward[axis] * nudge[0] - seatFrame.left[axis] * nudge[1] +
+                          seatFrame.up[axis] * nudge[2];
+            fromRoot[axis] = moved[axis] - seatOrigin[axis];
+            finite = finite && std::isfinite(moved[axis]);
+        }
+        if (finite && vehicle_camera_frame::Dot(fromRoot, fromRoot) <= reachWu * reachWu)
+        {
+            memcpy(eye, moved, sizeof(moved));
+            return true;
+        }
+        g_halo2VehicleCameraNudgeRefused.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    // A CHASE CAMERA. The occupant's head, and the seat's point it settles into.
     NativeVehicleCameraOwner owner{sample.generation, sample.unit, sample.parent, sample.seat, 0, sample.identity,
                                    sample.root};
     float head[3]{}, headForward[3]{}, headUp[3]{};
@@ -485,36 +516,7 @@ bool Halo2VehicleCamerasPlace(const Halo2VehicleCameraSeatSample& sample, float 
         }
     }
 
-    // A FIRSTPERSON CAMERA'S "offset": the seat's eye moved along the seated object's own frame -- kept within its
-    // bounds and a margin, as Halo 3 keeps its own (Halo3AnchorWithinBounds, 2 world units).
-    float nudge[3];
-    if (Halo3VehicleCameraEyeNudge(key.generation, key.vehicle, key.seatIndex, key.identity, key.mounted, nudge))
-    {
-        constexpr float kNudgeMarginWu = 2.0f;
-        const float reachWu = (sample.radius > 0.0f ? sample.radius : 0.0f) + kNudgeMarginWu;
-        float moved[3], fromRoot[3];
-        bool finite = true;
-        for (int axis = 0; axis < 3; ++axis)
-        {
-            moved[axis] = eye[axis] + seatFrame.forward[axis] * nudge[0] - seatFrame.left[axis] * nudge[1] +
-                          seatFrame.up[axis] * nudge[2];
-            fromRoot[axis] = moved[axis] - seatOrigin[axis];
-            finite = finite && std::isfinite(moved[axis]);
-        }
-        if (finite && vehicle_camera_frame::Dot(fromRoot, fromRoot) <= reachWu * reachWu)
-        {
-            memcpy(eye, moved, sizeof(moved));
-            g_halo2VehicleCameraNudgeFrames.fetch_add(1, std::memory_order_relaxed);
-            return true;
-        }
-        g_halo2VehicleCameraNudgeRefused.fetch_add(1, std::memory_order_relaxed);
-        return false;
-    }
-
-    // A CHASE CAMERA: the eye stands at its place.
-    vehicle_camera_select::ActiveCamera camera;
-    if (!Halo2VehicleCameraChaseFor(key, &camera))
-        return false;
+    // The eye stands at the chase camera's place.
     float point[3];
     if (!Halo2VehicleCameraPlace(sample, key, camera, viewYaw, seatOrigin, seatFrame, headRead ? head : nullptr,
                                  headBasisRead ? &headBasis : nullptr, point))
@@ -714,7 +716,6 @@ void Halo2VehicleCamerasColdLog(bool seated)
     }
     const uint32_t frames = g_halo2VehicleCameraFrames.exchange(0, std::memory_order_relaxed);
     const uint32_t standIn = g_halo2VehicleCameraStandInFrames.exchange(0, std::memory_order_relaxed);
-    g_halo2VehicleCameraNudgeFrames.exchange(0, std::memory_order_relaxed);
     const uint32_t nudgeRefused = g_halo2VehicleCameraNudgeRefused.exchange(0, std::memory_order_relaxed);
     const uint32_t frameMisses = g_halo2VehicleCameraFrameMisses.exchange(0, std::memory_order_relaxed);
     headMissStint += g_halo2VehicleCameraHeadMisses.exchange(0, std::memory_order_relaxed);
