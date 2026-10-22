@@ -24,9 +24,10 @@
 // (halo2_observer_6dof.cpp, Halo2SightAuxTraces).
 //
 // "thirdperson": where Halo 2's own third-person camera would stand cannot be measured -- it is never shown in a seat
-// view, and its camera track is not read -- so the camera orbits the vehicle's origin (the carrier's, for a gun) at
-// the mod's stand-in distance for a vehicle of its size (vehicle_camera_place::StandInOffsetCm), on the shared boom
-// over Halo 2's range (halo2_vehicle_camera::BoomRange): the right stick raises and lowers it.
+// view, and its camera track is not read -- so the camera orbits the middle of the vehicle's height above its origin
+// (the carrier's, for a gun; halo2_vehicle_camera::OrbitPivotUpWu) at the mod's stand-in distance for a vehicle of
+// its size (vehicle_camera_place::StandInOffsetCm), on the shared boom over Halo 2's range
+// (halo2_vehicle_camera::BoomRange): the right stick raises and lowers it.
 //
 // "seat" and "playerhead": the occupant's head marker (as the first-person seat camera places it, carried onto the
 // vehicle as drawn). "seat" is that head where it settled in the seat, held on the seat's own object, so the
@@ -252,12 +253,12 @@ float g_halo2VehicleCameraReach = 1.0f;      // observer thread
 LARGE_INTEGER g_halo2VehicleCameraReachAt{}; // observer thread
 inline constexpr float kHalo2CameraReleasePerSecond = 1.5f;
 
-// "thirdperson" (observer thread): an orbit of the vehicle's origin at the mod's stand-in distance for its size, on the
-// shared boom (vehicle_cameras.inl): the cold worker's publication for this seat and camera -- starting at the
-// player's kept angle, else the file's "boomPitch", else the boom's own default -- or, until one comes, the stand-in
-// orbit over the same range. The right stick raises and lowers it.
+// "thirdperson" (observer thread): an orbit of the middle of the vehicle's height (`pivotUpWu` above its origin) at the
+// mod's stand-in distance for its size, on the shared boom (vehicle_cameras.inl): the cold worker's publication for
+// this seat and camera -- starting at the player's kept angle, else the file's "boomPitch", else the boom's own
+// default -- or, until one comes, the stand-in orbit over the same range. The right stick raises and lowers it.
 void Halo2VehicleCameraOrbitPlace(const VehicleCameraSeatKey& key, const vehicle_camera_select::ActiveCamera& camera,
-                                  vehicle_camera_place::Inputs& in)
+                                  float pivotUpWu, vehicle_camera_place::Inputs& in)
 {
     float behindCm = 0.0f, aboveCm = 0.0f;
     vehicle_camera_place::StandInOffsetCm(in.vehicleRadiusCm, behindCm, aboveCm);
@@ -271,8 +272,9 @@ void Halo2VehicleCameraOrbitPlace(const VehicleCameraSeatKey& key, const vehicle
     Halo3BoomPublishCurrent(false, stood, unused);
     vehicle_boom::Offset(boom.shape, boom.pitch, distanceCm * vehicle_camera_frame::kWorldUnitsPerCm, in.restOffset);
     g_vehicleBoomLiveMs.store(GetTickCount64(), std::memory_order_release);
-    memcpy(in.rest, in.vehicleOrigin, sizeof(in.rest));
-    in.restValid = true;
+    for (int axis = 0; axis < 3; ++axis)
+        in.rest[axis] = in.vehicleOrigin[axis] + in.vehicle.up[axis] * pivotUpWu;
+    in.restValid = vehicle_camera_place::Finite3(in.rest);
     g_halo2VehicleCameraOrbitCm.store(distanceCm, std::memory_order_relaxed);
 }
 
@@ -299,8 +301,12 @@ bool Halo2VehicleCameraPlace(const Halo2VehicleCameraSeatSample& sample, const V
         memcpy(in.vehicleOrigin, seatOrigin, sizeof(in.vehicleOrigin));
         in.vehicle = seatFrame;
     }
-    // The vehicle's size: the carrier's where a gun rides one, so a stand-in stands off the carrier, not the gun.
-    const float radiusWu = onCarrier && sample.carrierRadius > 0.0f ? sample.carrierRadius : sample.radius;
+    // The vehicle's size and height: the carrier's where a gun rides one, so a stand-in stands off the carrier, not the
+    // gun.
+    const bool carrierSized = onCarrier && sample.carrierRadius > 0.0f;
+    const float radiusWu = carrierSized ? sample.carrierRadius : sample.radius;
+    const float pivotUpWu = carrierSized ? halo2_vehicle_camera::OrbitPivotUpWu(sample.carrierModelRead, sample.carrierBounds)
+                                         : halo2_vehicle_camera::OrbitPivotUpWu(sample.modelRead, sample.bounds);
     in.vehicleRadiusCm = radiusWu > 0.0f ? radiusWu / vehicle_camera_frame::kWorldUnitsPerCm : 0.0f;
     g_halo2VehicleCameraRadiusCm.store(in.vehicleRadiusCm, std::memory_order_relaxed);
 
@@ -337,7 +343,7 @@ bool Halo2VehicleCameraPlace(const Halo2VehicleCameraSeatSample& sample, const V
     in.viewYaw = viewYaw;
 
     if (camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::ThirdPerson))
-        Halo2VehicleCameraOrbitPlace(key, camera, in);
+        Halo2VehicleCameraOrbitPlace(key, camera, pivotUpWu, in);
 
     float point[3];
     vehicle_camera_place::Placed placed;

@@ -12,21 +12,23 @@ struct Halo2VehicleCameraSeatSample
     // The seated object's render model (halo2_vehicle_identity.h; 0 = not one the mod knows), and the one of the
     // vehicle it rides (the root) where it rides one.
     uint64_t identity = 0, carrierIdentity = 0;
-    // The seated object's render model's bounds and node count, where they were read: a vehicle the mod does not know
-    // is named by them, and its size is half the bounds' diagonal.
+    // The seated object's render model's bounds (x, y, z: low, high each) and node count, where they were read: a
+    // vehicle the mod does not know is named by them, and its size is half the bounds' diagonal. The carrier's bounds
+    // too, where it rides one.
     bool modelRead = false;
     float bounds[6]{};
     unsigned nodes = 0;
+    bool carrierModelRead = false;
+    float carrierBounds[6]{};
     // Their sizes, world units (halo2_vehicle_camera::BoundsRadius): the seated object's, and the carrier's where it
     // rides one. 0 = not read.
     float radius = 0.0f, carrierRadius = 0.0f;
     // The occupied seat's own flags (seat_converge_logic.h: bit 2 driver, bit 3 gunner), where they were read.
     bool flagsKnown = false;
     uint32_t seatFlags = 0;
-    // The game's own camera this frame, before the view is built on it (the observer's stock pose).
-    float stockPosition[3]{};
+    // The way the game's own camera looks this frame, before the view is built on it (the observer's stock pose): along
+    // the aim the game holds for the seat.
     float stockForward[3]{};
-    float stockUp[3]{};
 };
 
 // Once a frame of a seat the seat view runs in, before the view is built: the seat is published for the cold worker.

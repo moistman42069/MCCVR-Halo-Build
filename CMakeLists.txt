@@ -886,7 +886,7 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_reach_vehicle_camera_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_reach_vehicle_camera_tests COMMAND halomccvr_reach_vehicle_camera_tests)
     # Halo 2's seats as the vehicle camera file names them: a model's name, a gun's, a vehicle the mod does not know,
-    # a seat's role, the orbit's level view and range, and the built-in entry each finds
+    # a seat's role, the orbit's pivot and range, and the built-in entry each finds
     # (src/common/halo2_vehicle_camera_logic.h).
     add_executable(halomccvr_halo2_vehicle_camera_tests tests/halo2_vehicle_camera_tests.cpp
         src/common/vehicle_camera_file.cpp)

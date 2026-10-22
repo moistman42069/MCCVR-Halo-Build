@@ -1,6 +1,6 @@
 // Halo 2's seats as the vehicle camera file names them (src/common/halo2_vehicle_camera_logic.h): each model's name,
-// a gun's, a vehicle the mod does not know, a seat's role, the key's identity, a model's size, the orbit's level
-// view and range, and the built-in entries each finds.
+// a gun's, a vehicle the mod does not know, a seat's role, the key's identity, a model's size, the orbit's pivot and
+// range, and the built-in entries each finds.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -109,6 +109,14 @@ static void TestKeyAndSize()
 
 static void TestOrbit()
 {
+    const float warthog[6] = {-0.996299f, 0.984343f, -0.51156f, 0.503887f, -0.018016f, 0.760923f};
+    Check(std::fabs(OrbitPivotUpWu(true, warthog) - 0.3714535f) < 1e-5f,
+          "the orbit turns about the middle of the vehicle's height");
+    const float sunk[6] = {-1.0f, 1.0f, -1.0f, 1.0f, -2.0f, 0.5f};
+    const float bad[6] = {0.0f, 1.0f, 0.0f, 1.0f, 1.0f, NAN};
+    Check(OrbitPivotUpWu(true, sunk) == 0.0f && OrbitPivotUpWu(false, warthog) == 0.0f &&
+              OrbitPivotUpWu(true, bad) == 0.0f && OrbitPivotUpWu(true, nullptr) == 0.0f,
+          "never below the origin; unread or broken bounds turn about the origin");
     const vehicle_boom::Range range = BoomRange();
     Check(std::fabs(range.min + 60.0f * vehicle_boom::kRadiansPerDegree) < 1e-6f &&
               std::fabs(range.max - 10.0f * vehicle_boom::kRadiansPerDegree) < 1e-6f,

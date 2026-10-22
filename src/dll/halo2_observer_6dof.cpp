@@ -5358,6 +5358,8 @@ namespace
         if(key.root!=UINT32_MAX&&key.root!=key.parent) {
             const ModelCache& ridden=model(carrier,key.root);
             out.carrierIdentity=ridden.identity;
+            out.carrierModelRead=ridden.read;
+            memcpy(out.carrierBounds,ridden.bounds,sizeof(out.carrierBounds));
             out.carrierRadius=ridden.read?halo2_vehicle_camera::BoundsRadius(ridden.bounds):0.0f;
         }
         struct FlagsCache
@@ -5378,9 +5380,7 @@ namespace
             flags.known=live.flagsKnown;flags.flags=live.flags;
         }
         out.flagsKnown=flags.known;out.seatFlags=flags.flags;
-        memcpy(out.stockPosition,stock.position,sizeof(out.stockPosition));
         memcpy(out.stockForward,stock.forward,sizeof(out.stockForward));
-        memcpy(out.stockUp,stock.up,sizeof(out.stockUp));
         return true;
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS

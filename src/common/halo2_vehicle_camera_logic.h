@@ -38,7 +38,7 @@ inline constexpr uint32_t KeyIdentity(uint64_t identity) noexcept
     return static_cast<uint32_t>(identity ^ (identity >> 32));
 }
 
-// A model's name as the camera file uses it: lower case, every run of spaces and slashes one underscore, no
+// A model's name as the camera file uses it: lower case, every run of spaces, tabs and slashes one underscore, no
 // underscore at either end. False (and `out` empty) for no name, or one that does not fit.
 inline bool FileName(const char* modelName, char (&out)[kNameCapacity]) noexcept
 {
@@ -148,6 +148,22 @@ inline float BoundsRadius(const float bounds[6]) noexcept
     }
     const float radius = 0.5f * std::sqrt(sum);
     return std::isfinite(radius) ? radius : 0.0f;
+}
+
+// THE THIRD-PERSON ORBIT'S PIVOT in Halo 2 (the game's own camera is never shown in a seat view, so its pivot is not
+// measured): the middle of the vehicle's height, in world units above its origin -- a vehicle's root sits at the
+// bottom of its model (the Warthog's bounds run from -0.02 to 0.76 wu up), and an orbit of that would put the camera
+// on the ground at a level look. `bounds` are the model's (x, y, z: low, high each); 0 where they were not read or do
+// not make a box.
+inline float OrbitPivotUpWu(bool read, const float bounds[6]) noexcept
+{
+    if (!read || !bounds)
+        return 0.0f;
+    const float low = bounds[4], high = bounds[5];
+    if (!std::isfinite(low) || !std::isfinite(high) || high < low)
+        return 0.0f;
+    const float middle = 0.5f * (low + high);
+    return middle > 0.0f ? middle : 0.0f;
 }
 
 // THE BOOM'S RANGE in Halo 2, as look pitches for vehicle_boom's orbit (the camera's elevation is minus the pitch):
