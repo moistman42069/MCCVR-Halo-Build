@@ -880,8 +880,9 @@ std::string ReachVehicleCameraNotApplied(const vehicle_camera_select::ActiveCame
     {
         if (camera.rotRoll)
             add("rotationTracking roll (the horizon is never rolled)");
-        if (camera.rotPitch)
-            add("rotationTracking pitch");
+        // Pitch follows the hull only with yaw (ReachVehicleCameraViewTurn), as in Halo 3.
+        if (camera.rotPitch && !camera.rotYaw)
+            add("rotationTracking pitch without yaw");
         if (camera.origin == static_cast<uint8_t>(vehicle_camera_file::Origin::Marker))
             add("an origin naming a marker (the vehicle's origin is used)");
     }
