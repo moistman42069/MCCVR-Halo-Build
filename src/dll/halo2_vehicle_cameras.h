@@ -26,9 +26,12 @@ struct Halo2VehicleCameraSeatSample
     // The occupied seat's own flags (seat_converge_logic.h: bit 2 driver, bit 3 gunner), where they were read.
     bool flagsKnown = false;
     uint32_t seatFlags = 0;
-    // The way the game's own camera looks this frame, before the view is built on it (the observer's stock pose): along
-    // the aim the game holds for the seat.
+    // The way the game's own camera looks this frame, before the view is built on it (the observer's stock pose).
     float stockForward[3]{};
+    // The seated unit's own aiming vector (unit +0x174: the line the engine fires along), where it read as one. A gun
+    // seat's camera can look far off it (seen up to 38 deg in a Warthog's gun), so the aim ring of a gun follows this.
+    bool aimRead = false;
+    float aimForward[3]{};
 };
 
 // Once a frame of a seat the seat view runs in, before the view is built: the seat is published for the cold worker.

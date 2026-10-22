@@ -5343,6 +5343,24 @@ namespace
     // tag lookups: kept per object for the generation, a failed read tried again for up to 30 frames), the seat's own
     // flags (the seat frame reader's guarded read of the flags word the rebase addresses, kept per occupation), and
     // the game's own camera this frame. False only for a key with no seat.
+    // The seated unit's aiming vector (unit +0x174, the line the engine fires along; the direct drive reads the same),
+    // through the salt-checked accessor and guarded. False unless it reads as a unit vector.
+    bool Halo2VehicleCameraUnitAim(uint32_t unit,float out[3]) noexcept
+    {
+        float aim[3]{};
+        __try
+        {
+            const auto* object=static_cast<const uint8_t*>(Halo2ObjectFromIndex(unit));
+            if(!object) return false;
+            memcpy(aim,object+kHalo2UnitAimingVectorOffset,sizeof(aim));
+        }
+        __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+        const float length=std::sqrt(aim[0]*aim[0]+aim[1]*aim[1]+aim[2]*aim[2]);
+        if(!std::isfinite(length)||std::fabs(length-1.0f)>0.05f) return false;
+        for(int axis=0;axis<3;++axis) out[axis]=aim[axis]/length;
+        return true;
+    }
+
     bool Halo2VehicleCameraSampleSeat(const Halo2VehicleViewKey& key,const Halo2CameraBasis& stock,
         Halo2VehicleCameraSeatSample& out) noexcept
     {
@@ -5398,6 +5416,7 @@ namespace
         }
         out.flagsKnown=flags.known;out.seatFlags=flags.flags;
         memcpy(out.stockForward,stock.forward,sizeof(out.stockForward));
+        out.aimRead=Halo2VehicleCameraUnitAim(key.unit,out.aimForward);
         return true;
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS

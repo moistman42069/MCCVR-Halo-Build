@@ -422,11 +422,12 @@ bool Halo2VehicleCameraPlace(const Halo2VehicleCameraSeatSample& sample, const V
     pass.seat = key;
     pass.seatEyeValid = in.seatValid && vehicle_camera_place::Finite3(in.seat);
     memcpy(pass.seatEye, in.seat, sizeof(pass.seatEye));
-    // The heading the seat aims along: the hull's, or a gun's own (where the game's camera looks), which turns on its
-    // own (halo2_vehicle_camera::RingFollowsAim).
+    // The line the seat aims along: a gun's own aim (halo2_vehicle_camera::RingFollowsAim) -- the unit's aiming vector,
+    // which the engine fires along, its heading and its pitch; else the hull's heading at the game's camera's pitch.
     const bool gunSeat = halo2_vehicle_camera::RingFollowsAim(onCarrier, sample.flagsKnown, sample.seatFlags);
-    memcpy(pass.vehicleForward, gunSeat ? sample.stockForward : in.vehicle.forward, sizeof(pass.vehicleForward));
-    memcpy(pass.looks, sample.stockForward, sizeof(pass.looks));
+    const float* const gunAim = gunSeat && sample.aimRead ? sample.aimForward : sample.stockForward;
+    memcpy(pass.vehicleForward, gunSeat ? gunAim : in.vehicle.forward, sizeof(pass.vehicleForward));
+    memcpy(pass.looks, gunSeat ? gunAim : sample.stockForward, sizeof(pass.looks));
     pass.looksValid = vehicle_camera_place::Finite3(pass.looks) && vehicle_camera_frame::Normalize(pass.looks);
     g_halo2VehicleCameraFrames.fetch_add(1, std::memory_order_relaxed);
     if (g_halo2VehicleCameraState.standIn)
