@@ -115,6 +115,12 @@ inline float OrbitLevelElevationDeg(float rise, float distance, float lookDeg) n
     return std::isfinite(degrees) ? std::round(degrees) : vehicle_boom::kBoomPitchUnset;
 }
 
+// Where the game's following camera stands looking level, before it has been measured in a seat: level with its
+// pivot (it stands at pivot - distance * aim, so a level aim puts it at the pivot's height; only a camera track lifts
+// it). The pivot is high already: seen in game, a Warthog's driver's 3.5 m above the vehicle's origin. A boom that
+// starts from Halo 3's measured 18.6 deg stood the camera another 3.6 m higher and put the Warthog out of a level view.
+inline constexpr float kUnmeasuredLevelElevationDeg = 0.0f;
+
 // THE BOOM'S RANGE in Halo 4, as look pitches for vehicle_boom's orbit (the camera's elevation is minus the pitch):
 // the camera track is not read, so the boom orbits the pivot over a range of its own. Reach's measured range (10 deg
 // below to 60 deg above level: the whole flat look range put an orbiting camera straight above the vehicle or under

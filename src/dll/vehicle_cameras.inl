@@ -1471,9 +1471,12 @@ void VehicleBoomColdTick(VehicleCameraRuntime& r, const vehicle_camera_select::A
         }
         b.fileDegrees = active.boomPitchDeg;
         b.measuredDeg = measuredDeg;
+        // Halo 4's game camera, until it is measured in the seat, is taken to look level from its pivot's height
+        // (halo4_vehicle_camera::kUnmeasuredLevelElevationDeg): its pivot already stands high over the vehicle.
         const float homeDeg = vehicle_camera_file::BoomPitchSet(b.fileDegrees) ? b.fileDegrees
                             : vehicle_boom::BoomPitchSet(measuredDeg)       ? measuredDeg + vehicle_boom::kDefaultRaiseDeg
-                                                                             : vehicle_boom::kBoomPitchUnset;
+                            : halo4Title ? halo4_vehicle_camera::kUnmeasuredLevelElevationDeg + vehicle_boom::kDefaultRaiseDeg
+                                         : vehicle_boom::kBoomPitchUnset;
         b.home = vehicle_boom::PitchForElevation(b.shape, vehicle_boom::DefaultElevation(b.shape, homeDeg));
         float kept = 0.0f;
         const bool remembered = r.selector.BoomPitch(kept);

@@ -103,6 +103,7 @@ static void TestLevelAndRange()
     Check(OrbitLevelElevationDeg(5.0f, 3.0f, 0.0f) == vehicle_boom::kBoomPitchUnset &&
               OrbitLevelElevationDeg(0.0f, 0.0f, 0.0f) == vehicle_boom::kBoomPitchUnset,
           "a rise past the distance, or no distance, gives no angle");
+    Check(kUnmeasuredLevelElevationDeg == 0.0f, "unmeasured, the game's camera looks level from its pivot's height");
     const vehicle_boom::Range range = BoomRange();
     Check(range.min < range.max && std::fabs(range.min + 60.0f * vehicle_boom::kRadiansPerDegree) < 1.0e-5f &&
               std::fabs(range.max - 10.0f * vehicle_boom::kRadiansPerDegree) < 1.0e-5f,
