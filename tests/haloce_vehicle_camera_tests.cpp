@@ -206,6 +206,45 @@ static void TestLeash()
           "a head inside the box moves nothing");
     Check(!haloce_vehicle_leash::LeashReference(native, tracking, upm, false, carrier, box, leashed),
           "without positional tracking there is nothing to hold");
+
+    // A room turned 63 deg, a seat heading apart from the camera's own and a carrier turned 30 deg and pitched 10: the
+    // reference is moved back through the frame's yaw, so the head still lands on the box's limits along the carrier.
+    Reference turned = reference;
+    turned.orientation = {0, std::sin(0.55f), 0, std::cos(0.55f)};
+    turned.seatHeadingValid = true;
+    turned.seatHeading = {0.6f, 0.8f, 0.0f};
+    Tracking reaching = tracking;
+    reaching.headPosition = {0.4f, -0.2f, 0.35f};
+    const vehicle_camera_frame::Basis tilted = vehicle_camera_frame::FromAngles(0.5236f, 0.1745f, 0.0f);
+    const float unevenMin[3] = {-5, -20, -8}, unevenMax[3] = {15, 5, 12};
+    const vehicle_camera_frame::LeashBox uneven = vehicle_camera_frame::LeashToBasis(unevenMin, unevenMax, camera);
+    const float* const axes[3] = {tilted.forward, tilted.left, tilted.up};
+    float was[3];
+    Check(HeadInWorld(native, reaching, turned, upm, was), "the turned room's head reads");
+    bool outside = false;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        const float along = vehicle_camera_frame::Dot(was, axes[axis]);
+        outside = outside || along < uneven.low[axis] || along > uneven.high[axis];
+    }
+    Check(outside, "the head starts outside the uneven box");
+    Reference held = turned;
+    Check(haloce_vehicle_leash::LeashReference(native, reaching, upm, true, tilted, uneven, held),
+          "a turned room's head outside the box moves the reference");
+    float now[3];
+    Check(HeadInWorld(native, reaching, held, upm, now), "and the head reads again");
+    bool inside = true, onALimit = false;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        const float along = vehicle_camera_frame::Dot(now, axes[axis]);
+        inside = inside && along >= uneven.low[axis] - 1.0e-4f && along <= uneven.high[axis] + 1.0e-4f;
+        onALimit = onALimit || Near(along, uneven.low[axis]) || Near(along, uneven.high[axis]);
+        // An axis that was inside its limits keeps where it was.
+        const float earlier = vehicle_camera_frame::Dot(was, axes[axis]);
+        if (earlier >= uneven.low[axis] && earlier <= uneven.high[axis])
+            inside = inside && Near(along, earlier);
+    }
+    Check(inside && onALimit, "the head then stands inside the box along the turned carrier, on a limit where it crossed one");
 }
 
 // A track of five points from 1 wu behind and 2 up (its start, looking straight down) to 3 behind at the pivot's height

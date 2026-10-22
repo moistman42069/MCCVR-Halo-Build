@@ -65,10 +65,14 @@ static void TestBuiltInTable()
     // cameras of their own, then a default entry with the same two cameras as every other game's; every entry starts
     // in the seat view with the game's own third-person camera second, so the file changes nothing until a camera is
     // chosen.
+    // Entries each section holds at least, its default entry included: Halo 3's and Reach's more than ten, Halo CE's
+    // nine vehicle seats and its default.
+    static constexpr std::size_t kLeastEntries[3] = {11, 11, 10};
     for (std::size_t section = 0; section < 3; ++section)
     {
         const Game& own = built.games[section];
-        Check(own.vehicles.size() > 8 && own.vehicles.back().isDefault && own.vehicles.back().cameras.size() == 2,
+        Check(own.vehicles.size() >= kLeastEntries[section] && own.vehicles.back().isDefault &&
+                  own.vehicles.back().cameras.size() == 2,
               "a game with its own section has its vehicles' entries and a default entry of two cameras");
         bool startsInSeat = true, thirdPersonSecond = true, othersBeyond = true, namedOnce = true;
         for (const Vehicle& vehicle : own.vehicles)
