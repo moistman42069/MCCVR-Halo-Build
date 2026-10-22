@@ -14589,8 +14589,11 @@ namespace
             return;                       // driver/mounted gun fires from a barrel
         }
         // A chase camera of the vehicle cameras' is chosen: the rendered eye is that camera, metres behind or above
-        // the vehicle, and a shot from it could leave past cover. The game's own origin stays.
-        if (g_vehicleCameraPublished.chase.load(std::memory_order_acquire))
+        // the vehicle, and a shot from it could leave past cover. A firstperson camera with an offset moves the eye
+        // too (up to the vehicle's bounds and a margin), so a shot from it could leave outside the hull. In both the
+        // game's own origin stays.
+        if (g_vehicleCameraPublished.chase.load(std::memory_order_acquire) ||
+            g_vehicleCameraPublished.eyeNudge.load(std::memory_order_acquire))
         {
             if (telemetryAccepting)
                 PublishOdstShotDiagnostic(unitIndex, out, false);
@@ -14621,13 +14624,15 @@ namespace
     }
 
     // True while O6 above hands the local seated player's own-weapon shot the rendered eye: the hook is
-    // installed, no authored camera holds the view, the seat fires the occupant's weapon, and the rendered eye
-    // is valid. The seat's converged aim solves from that eye while this holds (Game_ComputeAimStick).
+    // installed, no authored camera holds the view, no camera of the vehicle cameras' moves the eye (a chase camera, a
+    // firstperson offset), the seat fires the occupant's weapon, and the rendered eye is valid. The seat's converged
+    // aim solves from that eye while this holds (Game_ComputeAimStick).
     bool OdstFiringOriginFromEye()
     {
         return g_odstFiringOriginReturn != 0 &&
             !g_odstCinematicLocked.load(std::memory_order_relaxed) &&
             !g_vehicleCameraPublished.chase.load(std::memory_order_acquire) &&
+            !g_vehicleCameraPublished.eyeNudge.load(std::memory_order_acquire) &&
             g_odstSeatedPlayerUnit.load(std::memory_order_relaxed) != -1 &&
             OdstSeatFiresPersonalWeapon() &&
             g_camValid.load(std::memory_order_acquire);
