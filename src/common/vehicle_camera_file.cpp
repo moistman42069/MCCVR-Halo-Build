@@ -1436,6 +1436,47 @@ Table DefaultTable()
         AnyVehicle(),
     };
 
+    // Halo 2: the vehicles the mod names by their render model (halo2_vehicle_camera_logic.h: the model's name in
+    // lower case, "warthog", "ghost"). A gun mounted on a vehicle is its own object, whose model's name carries its
+    // vehicle's ("warthog_chaingun", "warthog_gauss", "wraith_minigun", "spectre_plasma"), so its gunner finds the
+    // vehicle's gunner entry. The walk-up guns are "c_turret_ap", "h_turret_ap" and the Covenant gun tower. A seat's
+    // origin is the occupant's head where it settled in the seat, so the seat cameras stand off it as Halo 3's stand
+    // off its seat eye.
+    Game halo2;
+    halo2.key = kGameKeys[4];
+    halo2.vehicles = {
+        Entry("Warthog", "warthog", driver,
+              {Chase("Over the Shoulder", Origin::Seat, -200, 90, 70, true, 0.15f),
+               Chase("Left Side", Origin::Seat, 0, -140, 40, true, 0.0f)}),
+        Entry("Warthog passenger", "warthog", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -200, -90, 70, true, 0.15f),
+               Chase("Right Side", Origin::Seat, 0, 140, 40, true, 0.0f)}),
+        Entry("Warthog gunner", "warthog", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+        Entry("Mongoose", "mongoose", driver, {Chase("Over the Shoulder", Origin::Seat, -170, 80, 70, true, 0.15f)}),
+        Entry("Mongoose passenger", "mongoose", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, -80, 70, true, 0.15f)}),
+        Entry("Ghost", "ghost", driver,
+              {Chase("Follow", Origin::Vehicle, -450, 0, 220, true, 0.25f),
+               Chase("Over the Shoulder", Origin::Vehicle, -10, 60, 135, true, 0.1f)}),
+        Entry("Spectre", "spectre", driver, {Chase("Follow", Origin::Vehicle, -500, 0, 250, true, 0.25f)}),
+        Entry("Spectre passenger", "spectre", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, -80, 80, true, 0.15f)}),
+        Entry("Spectre gunner", "spectre", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+        Entry("Banshee", "banshee", driver,
+              {Chase("Over the Shoulder", Origin::Vehicle, -350, 150, 200, false, 0.2f),
+               Chase("Chase", Origin::Vehicle, -600, 0, 150, false, 0.3f)}),
+        Entry("Scorpion", "scorpion", driver, {Chase("High", Origin::Vehicle, -700, 0, 700, true, 0.3f)}),
+        Entry("Scorpion passenger", "scorpion", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -200, 0, 120, true, 0.15f)}),
+        Entry("Scorpion gunner", "scorpion", gunner,
+              {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+        Entry("Wraith", "wraith", driver, {Chase("High", Origin::Vehicle, -700, 100, 700, true, 0.3f)}),
+        Entry("Wraith gunner", "wraith", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+        AlsoMatching(Entry("Turret", "turret", 0, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+                     "guntower"),
+        AnyVehicle(),
+    };
+
     // Every other game, until it has cameras of its own.
     Game game;
     game.key = kDefaultKey;
@@ -1444,6 +1485,7 @@ Table DefaultTable()
     Table table;
     table.games.push_back(std::move(halo3));
     table.games.push_back(std::move(reach));
+    table.games.push_back(std::move(halo2));
     table.games.push_back(std::move(game));
     return table;
 }
