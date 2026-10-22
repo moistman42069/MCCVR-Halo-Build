@@ -418,7 +418,11 @@ bool Halo2VehicleCameraPlace(const Halo2VehicleCameraSeatSample& sample, const V
     pass.seat = key;
     pass.seatEyeValid = in.seatValid && vehicle_camera_place::Finite3(in.seat);
     memcpy(pass.seatEye, in.seat, sizeof(pass.seatEye));
-    memcpy(pass.vehicleForward, in.vehicle.forward, sizeof(pass.vehicleForward));
+    // The way the seat aims: the hull's heading for a seat the hull carries, the gun's own (where the game's camera
+    // looks) for a gun -- one riding a carrier, or a gunner's seat -- which turns on its own.
+    const bool gunSeat = onCarrier || (halo2_vehicle_camera::SeatBits(sample.flagsKnown, sample.seatFlags, onCarrier,
+                                                                      sample.seat) & halo2_vehicle_camera::kSeatGunnerBit);
+    memcpy(pass.vehicleForward, gunSeat ? sample.stockForward : in.vehicle.forward, sizeof(pass.vehicleForward));
     memcpy(pass.looks, sample.stockForward, sizeof(pass.looks));
     pass.looksValid = vehicle_camera_place::Finite3(pass.looks) && vehicle_camera_frame::Normalize(pass.looks);
     g_halo2VehicleCameraFrames.fetch_add(1, std::memory_order_relaxed);
