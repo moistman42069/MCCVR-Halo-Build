@@ -14555,9 +14555,10 @@ namespace
             /*unitAim=*/false, finalOrigin, absentDirection);
     }
 
-    // Runs on the engine's own weapon path. Everything here is a relaxed load
-    // of our own state plus three float stores: no locks, no allocation, no
-    // logging, no engine reads beyond the point the original just wrote.
+    // Runs on the engine's own weapon path. Everything here is atomic loads of
+    // our own state, a tick read and three float stores: no locks, no
+    // allocation, no logging, no engine reads beyond the point the original
+    // just wrote.
     __declspec(noinline) void __fastcall OdstUnitCameraPositionHook(
         int32_t unitIndex, float* out, uint8_t flags)
     {
