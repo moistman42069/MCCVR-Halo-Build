@@ -22145,6 +22145,23 @@ void VR_ForgetEngineTargets()
     g_forgetEngineTargets.store(true, std::memory_order_release);
 }
 
+// What the mod keeps of the last swapchain between presents. While these stand it lives on, and Windows refuses a host's
+// next engine a flip swapchain on the window: that engine then falls back to a blit swapchain, whose presents a window
+// that has shown flip content never shows. Between engines only (HostDeviceHook): the last one has stopped presenting.
+void VR_ReleaseSwapchainHolds()
+{
+    HaloCE_ForgetPresentationTexture();
+    ReleaseCeDesktopMirror();
+    ReleaseSourceViews();
+    if (ID3D11Texture2D* retained =
+            g_nextGameBackbuffer.exchange(nullptr, std::memory_order_acq_rel))
+        retained->Release();
+    if (g_flipIndexChain)
+        g_flipIndexChain->Release();
+    g_flipIndexChain = nullptr;
+    g_flipIndexOwner = nullptr;
+}
+
 void VR_BeforePresent(IDXGISwapChain* sc)
 {
     // Diagnostic-only frame-boundary marker (no gameplay effect).

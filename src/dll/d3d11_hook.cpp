@@ -2242,6 +2242,7 @@ static bool RetrySwapchainAfterDeviceShare(HRESULT hr)
         session->GetImmediateContext(&context);
     if (!context)
         return false;
+    VR_ReleaseSwapchainHolds();
     const bool cleared = ClearContextForHandOver(context);
     context->Release();
     return cleared;
@@ -2298,6 +2299,7 @@ static HRESULT WINAPI HostDeviceHook(IDXGIAdapter* adapter, D3D_DRIVER_TYPE driv
         if (context)
         {
             WriteDeviceShareMarker();
+            VR_ReleaseSwapchainHolds();
             if (!ClearContextForHandOver(context))
             {
                 LOG("host device: clearing the context faulted; the host keeps its own device");

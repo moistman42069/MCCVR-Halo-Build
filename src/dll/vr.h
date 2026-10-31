@@ -593,6 +593,7 @@ void VR_AfterResizeBuffers(IDXGISwapChain* swapchain);
 // A host's next engine was given the session's device: forget what was learned of the last engine's targets, at the next
 // present (on the present's thread).
 void VR_ForgetEngineTargets();
+void VR_ReleaseSwapchainHolds();
 // The D3D11 device the headset's session was made on, as an identity (null until there is a session). Any thread.
 ID3D11Device* VR_SessionDevice();
 
