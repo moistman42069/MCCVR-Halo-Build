@@ -31,10 +31,11 @@ inline bool UsesTokenGeometry(const Model* model) noexcept
 namespace weapon_model
 {
 // A held weapon that aims one-handed whatever the one-handed aim range says: its grip distance is no guide, as the
-// Needler's sits beside the SMG's. The Needle Rifle shares the needles flag and is a long gun.
+// Needler's sits beside the SMG's and the Plasma Pistol's reads as a long gun's. The Needle Rifle shares the needles
+// flag and is a long gun.
 inline bool AlwaysOneHandedAim(const Model* model) noexcept
 {
-    return model&&model->needles&&strcmp(model->name,"needle_rifle")!=0;
+    return model&&((model->needles&&strcmp(model->name,"needle_rifle")!=0)||strstr(model->name,"plasma_pistol"));
 }
 inline const Model* Find(GameTitle title,uint64_t identity) noexcept
 {
