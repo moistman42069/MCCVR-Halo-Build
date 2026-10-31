@@ -138,11 +138,11 @@ int main(){
     assert(GripZoneAuthority(false,{0,0,-kGripZoneFullLineMetres-.001f})==1);
     assert(GripZoneAuthority(false,{.22f,.05f,-.05f})==1);
     assert(GripZoneAuthority(false,{0,0,-.60f})==1);
-    assert(GripZoneAuthority(false,{0,0,-.07f})==0);
+    assert(GripZoneAuthority(false,{0,0,-kGripZoneNoLineMetres+.001f})==0);
     assert(kGripZoneFullLineMetres==2*kGripZoneNoLineMetres);
     // Between them the aim lets go in proportion: half way is half.
-    assert(std::fabs(GripZoneAuthority(false,{0,0,-.12f})-.5f)<.001f);
-    assert(std::fabs(GripZoneAuthority(false,{0,0,-.10f})-.25f)<.001f);
-    assert(std::fabs(GripZoneAuthority(false,{0,0,-.15f})-.875f)<.001f);
-    assert(GripZoneAuthority(true,{0,0,-.12f})==0);
+    assert(std::fabs(GripZoneAuthority(false,{0,0,-kGripZoneNoLineMetres*1.5f})-.5f)<.001f);
+    assert(std::fabs(GripZoneAuthority(false,{0,0,-kGripZoneNoLineMetres*1.25f})-.25f)<.001f);
+    assert(std::fabs(GripZoneAuthority(false,{0,0,-kGripZoneNoLineMetres*1.875f})-.875f)<.001f);
+    assert(GripZoneAuthority(true,{0,0,-kGripZoneNoLineMetres*1.5f})==0);
 }
