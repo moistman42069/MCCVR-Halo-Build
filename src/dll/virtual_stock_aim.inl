@@ -435,6 +435,30 @@
                 if constexpr(CaptureTrace)
                     trace->finalDirection=trace->primaryDirection;
             }
+            // Partial authority: the same two poses in proportion, so the aim
+            // comes to the main hand without a snap.
+            else if(result.twoHandActive&&inputs.closeGripAuthority<1.f){
+                const float steer=inputs.closeGripAuthority;
+                const XrPosef& primary=inputs.right;
+                const XrQuaternionf& steered=result.pose.orientation;
+                const float side=primary.orientation.x*steered.x+primary.orientation.y*steered.y+
+                    primary.orientation.z*steered.z+primary.orientation.w*steered.w<0.0f?-steer:steer;
+                const XrQuaternionf blend{
+                    primary.orientation.x*(1.0f-steer)+steered.x*side,
+                    primary.orientation.y*(1.0f-steer)+steered.y*side,
+                    primary.orientation.z*(1.0f-steer)+steered.z*side,
+                    primary.orientation.w*(1.0f-steer)+steered.w*side};
+                const float blendLength=sqrtf(blend.x*blend.x+blend.y*blend.y+blend.z*blend.z+blend.w*blend.w);
+                result.pose.position={
+                    primary.position.x+(result.pose.position.x-primary.position.x)*steer,
+                    primary.position.y+(result.pose.position.y-primary.position.y)*steer,
+                    primary.position.z+(result.pose.position.z-primary.position.z)*steer};
+                if(std::isfinite(blendLength)&&blendLength>=1e-5f)
+                    result.pose.orientation={blend.x/blendLength,blend.y/blendLength,
+                        blend.z/blendLength,blend.w/blendLength};
+                if constexpr(CaptureTrace)
+                    trace->finalDirection=traceXrVec(Rotate(result.pose.orientation,{0.0f,0.0f,-1.0f}));
+            }
             const XrQuaternionf corrected = multiply(
                 result.pose.orientation,
                 multiply(multiply(qYaw, qPitch), qRoll));

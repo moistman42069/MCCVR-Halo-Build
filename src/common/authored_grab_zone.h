@@ -79,11 +79,15 @@ inline float CloseHandAuthority(Point local,float rangeMetres=kOneHandRangeDefau
 // Decided by the weapon's grip zone and not by where the hands are (two_hand_grip_zone_authority). A brief tracking
 // drop-out of an occluded support controller reads as the hand far away, which on a pistol hold switched the aim to
 // two-handed for those frames. A short grip zone (a side-by-side hold) never steers; a long one always does, except
-// with the hands almost together, where the line between them has no usable direction.
+// with the hands almost together, where the line between them has no usable direction. It lets go of the aim across
+// the distance out to double that, so the aim does not snap to the main hand.
 inline constexpr float kGripZoneNoLineMetres=.08f;
+inline constexpr float kGripZoneFullLineMetres=2*kGripZoneNoLineMetres;
 inline float GripZoneAuthority(bool shortZone,Point local){
     if(shortZone||!Valid(local))return 0;
-    return Distance2(local,{0,0,0})<=kGripZoneNoLineMetres*kGripZoneNoLineMetres?0.f:1.f;
+    const float distance=std::sqrt(Distance2(local,{0,0,0}));
+    const float authority=(distance-kGripZoneNoLineMetres)/(kGripZoneFullLineMetres-kGripZoneNoLineMetres);
+    return authority<=0?0.f:authority>=1?1.f:authority;
 }
 // Which kind a zone is for the aim: 2 short, 1 long, by the player's range (two_hand_one_hand_range_m). The grip point
 // moves with the weapon's animations (one gun read 0.16 m and 0.23 m within a second, in play), so while the support

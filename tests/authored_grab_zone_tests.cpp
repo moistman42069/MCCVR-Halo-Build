@@ -135,8 +135,14 @@ int main(){
     // By the grip zone: where the hands read does not change the answer.
     assert(GripZoneAuthority(true,{0,0,-.05f})==0);
     assert(GripZoneAuthority(true,{0,0,-.60f})==0);
-    assert(GripZoneAuthority(false,{0,0,-.15f})==1);
+    assert(GripZoneAuthority(false,{0,0,-kGripZoneFullLineMetres-.001f})==1);
     assert(GripZoneAuthority(false,{.22f,.05f,-.05f})==1);
     assert(GripZoneAuthority(false,{0,0,-.60f})==1);
     assert(GripZoneAuthority(false,{0,0,-.07f})==0);
+    assert(kGripZoneFullLineMetres==2*kGripZoneNoLineMetres);
+    // Between them the aim lets go in proportion: half way is half.
+    assert(std::fabs(GripZoneAuthority(false,{0,0,-.12f})-.5f)<.001f);
+    assert(std::fabs(GripZoneAuthority(false,{0,0,-.10f})-.25f)<.001f);
+    assert(std::fabs(GripZoneAuthority(false,{0,0,-.15f})-.875f)<.001f);
+    assert(GripZoneAuthority(true,{0,0,-.12f})==0);
 }

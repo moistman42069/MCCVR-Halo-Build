@@ -2104,6 +2104,20 @@ void TestCloseGripAuthority()
         inputs.closeGripAuthority=1.f;AimPoseTrace trace{};
         const auto middle=ComputeAimPose(inputs,&trace);
         Check(middle.valid&&SameAimResult(middle,ComputeAimPose(inputs)),"close-hand traced and normal solves agree");
+        inputs.closeGripAuthority=0.f;
+        const auto mainHand=ComputeAimPose(inputs);
+        inputs.closeGripAuthority=.5f;
+        const auto halfWay=ComputeAimPose(inputs);
+        const auto dot=[](const XrQuaternionf& a,const XrQuaternionf& b){
+            return std::fabs(a.x*b.x+a.y*b.y+a.z*b.z+a.w*b.w);};
+        Check(halfWay.valid&&
+            dot(halfWay.pose.orientation,mainHand.pose.orientation)>=dot(middle.pose.orientation,mainHand.pose.orientation)-1e-4f&&
+            dot(halfWay.pose.orientation,middle.pose.orientation)>=dot(middle.pose.orientation,mainHand.pose.orientation)-1e-4f,
+            "partial authority turns the aim between the main hand's and the steered one");
+        Check(std::fabs(halfWay.pose.position.x-(mainHand.pose.position.x+middle.pose.position.x)*.5f)<1e-4f&&
+            std::fabs(halfWay.pose.position.y-(mainHand.pose.position.y+middle.pose.position.y)*.5f)<1e-4f&&
+            std::fabs(halfWay.pose.position.z-(mainHand.pose.position.z+middle.pose.position.z)*.5f)<1e-4f,
+            "partial authority moves the pose half way between them");
     }
 }
 
