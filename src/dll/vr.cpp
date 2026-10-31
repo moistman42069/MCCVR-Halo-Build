@@ -14054,6 +14054,18 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         authored_grab::Point local{};
         if(!authored_grab::publication.Read(key,GetTickCount64(),local)){
             ++authored_grab::fallbacks;hit=false;
+            static uint64_t missLogMs=0;
+            const uint64_t missNowMs=GetTickCount64();
+            if(missNowMs-missLogMs>=5000){
+                missLogMs=missNowMs;
+                const auto& seen=authored_grab::publication;
+                const uint64_t seenAt=seen.at.load();
+                LOG("Authored grip zone: no point to read for title %u generation %u unit %08X weapon %08X; "
+                    "published title %u generation %u unit %08X weapon %08X, %llu ms ago, ready %d",
+                    key[0],key[1],key[2],key[3],seen.key[0].load(),seen.key[1].load(),seen.key[2].load(),
+                    seen.key[3].load(),static_cast<unsigned long long>(seenAt?missNowMs-seenAt:0),
+                    seen.calibrated.load()?1:0);
+            }
             // A supported weapon waiting for a fresh endpoint must not reopen
             // the old 80cm barrel zone. Unknown weapons retain the old fallback.
             return authored_grab::publication.Owns(key);
