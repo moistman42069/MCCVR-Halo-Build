@@ -2439,7 +2439,7 @@ void ConfigSave()
              kMenuOffsetLimit, kMenuOffsetLimit);
     fprintf(f, "menu_side_m = %.2f\n\n", g_config.menu_side_m);
     fprintf(f, "# Aim the primary controller at MCC / pause menus; trigger clicks.\n");
-    fprintf(f, "# Optional; requires MCC desktop focus. Does not affect gameplay or F1.\n");
+    fprintf(f, "# On by default; requires MCC desktop focus. Does not affect gameplay or F1.\n");
     fprintf(f, "game_menu_pointer = %d\n\n", g_config.game_menu_pointer ? 1 : 0);
     fprintf(f, "# Let OFXR Bridge (an OpenXR frame-generation layer) run in this game.\n");
     fprintf(f, "# Off by default: OFXR has crashed the mod a few seconds in. Off keeps\n");

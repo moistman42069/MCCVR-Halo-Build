@@ -16038,12 +16038,12 @@ int main()
     Check(g_config.halo4_seat_converge == 1, "legacy config inherits Halo 4 seated convergence (on)");
     Check(!g_config.manual_reload&&g_config.weapon_holsters,
         "legacy config leaves manual reload off and inherits weapon holsters (on)");
-    Check(!g_config.game_menu_pointer, "legacy config leaves native menu pointing off");
-    g_config.game_menu_pointer = true;
-    ConfigSave();
+    Check(g_config.game_menu_pointer, "legacy config inherits native menu pointing (on)");
     g_config.game_menu_pointer = false;
+    ConfigSave();
+    g_config.game_menu_pointer = true;
     ConfigLoad(primary.c_str());
-    Check(g_config.game_menu_pointer, "native menu pointer toggle survives save/load");
+    Check(!g_config.game_menu_pointer, "native menu pointer toggle survives save/load");
     Check(!g_config.world_collision,
         "legacy configs inherit the opt-in world-collision default");
     Check(!g_config.physical_melee && !g_config.gesture_melee &&

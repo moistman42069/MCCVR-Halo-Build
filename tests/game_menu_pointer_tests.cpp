@@ -124,7 +124,8 @@ int main()
     Check(!p.Update(Pack(now,true,.5f,.5f,true),now,true,0,500).move,"zero client rejects");
 
     NativeMenuPointer_Init(fakeWindow);
-    Frame(true); Check(moves==0&&buttons.empty(),"disabled default never moves or clicks");
+    g_config.game_menu_pointer=false;
+    Frame(true); Check(moves==0&&buttons.empty(),"disabled never moves or clicks");
     g_config.game_menu_pointer=true;
     Frame(true,true); Check(buttons.empty(),"held trigger at activation never clicks");
     Frame(true); Check(cursor.x>=599&&cursor.x<=600&&cursor.y>=299&&cursor.y<=300,"UV maps physical client plus screen origin");
