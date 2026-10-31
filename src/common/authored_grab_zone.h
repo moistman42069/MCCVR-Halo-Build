@@ -93,20 +93,27 @@ inline float GripZoneAuthority(bool shortZone,Point local){
 // moves with the weapon's animations (one gun read 0.16 m and 0.23 m within a second, in play), so while the support
 // hand holds, the kind stands until the weapon or the range changes. It stands only once the point has come to rest: a
 // weapon drawn with the grip held reads its draw animation first (a pistol read 0.37 m, then 0.13 m at rest, in play).
-// Single writer: the frame thread.
+// Between grips a gun whose grip sits at the range would read both ways from sensor noise alone (an SMG at 0.25 m with
+// the range at 0.25 m, in play), and each grip would keep whichever came last: its answer stands across 1 cm either
+// side of the range, until the weapon or the range changes. Single writer: the frame thread.
 inline constexpr uint64_t kGripZoneRestMs=300;
 inline constexpr float kGripZoneRestMetres=.03f;
+inline constexpr float kGripZoneKindHoldMetres=.01f;
 struct GripZoneKindMemory{
     Key key{};float range=0;int kind=0;Point anchor{};uint64_t restSince=0;bool atRest=false;
     int Step(Key k,Point centre,float rangeMetres,bool gripping,uint64_t now){
         if(!Valid(centre))return kind;
         if(!kind||key!=k||range!=rangeMetres){
-            key=k;range=rangeMetres;anchor=centre;restSince=now;atRest=false;
+            key=k;range=rangeMetres;anchor=centre;restSince=now;atRest=false;kind=0;
         }else if(atRest&&gripping)return kind;
         else if(Distance2(anchor,centre)>kGripZoneRestMetres*kGripZoneRestMetres){
             anchor=centre;restSince=now;atRest=false;
         }else atRest=now-restSince>=kGripZoneRestMs;
-        kind=Distance2(centre,{0,0,0})<=rangeMetres*rangeMetres?2:1;
+        const float d2=Distance2(centre,{0,0,0});
+        const float low=rangeMetres-kGripZoneKindHoldMetres,high=rangeMetres+kGripZoneKindHoldMetres;
+        if(kind==2&&d2<=high*high)return kind;
+        if(kind==1&&d2>=low*low)return kind;
+        kind=d2<=rangeMetres*rangeMetres?2:1;
         return kind;
     }
 };

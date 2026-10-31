@@ -104,16 +104,30 @@ int main(){
         uint64_t t=1000;
         GripZoneKindMemory zone;
         assert(zone.Step(gun,{0,0,-.23f},.24f,false,t)==2);
-        assert(zone.Step(gun,{0,0,-.25f},.24f,false,t+=50)==1);
+        assert(zone.Step(gun,{0,0,-.26f},.24f,false,t+=50)==1);
         // At rest and gripping, an animation moving the grip point does not change it.
-        zone.Step(gun,{0,0,-.25f},.24f,false,t+=kGripZoneRestMs);
-        assert(zone.Step(gun,{0,0,-.25f},.24f,true,t+=50)==1);
+        zone.Step(gun,{0,0,-.26f},.24f,false,t+=kGripZoneRestMs);
+        assert(zone.Step(gun,{0,0,-.26f},.24f,true,t+=50)==1);
         assert(zone.Step(gun,{0,0,-.10f},.24f,true,t+=50)==1);
         assert(zone.Step(gun,{0,0,-.60f},.24f,true,t+=50)==1);
         // A change of range applies at once, even gripping, and then holds once at rest.
         assert(zone.Step(gun,{0,0,-.25f},.26f,true,t+=50)==2);
         zone.Step(gun,{0,0,-.25f},.26f,true,t+=kGripZoneRestMs);
         assert(zone.Step(gun,{0,0,-.40f},.26f,true,t+=50)==2);
+        // A grip at the range: sensor noise between grips does not change the answer, grip after grip.
+        {
+            GripZoneKindMemory limit;
+            const int first=limit.Step(gun,{0,0,-.2500f},.25f,false,t+=50);
+            for(float noise:{-.0030f,.0030f,-.0060f,.0060f,0.f})
+                assert(limit.Step(gun,{0,0,-.25f+noise},.25f,false,t+=50)==first);
+            // Beyond the hold it does follow; a slider change decides afresh at once.
+            assert(limit.Step(gun,{0,0,-.30f},.25f,false,t+=50)==1);
+            assert(limit.Step(gun,{0,0,-.245f},.25f,false,t+=50)==1);
+            assert(limit.Step(gun,{0,0,-.20f},.25f,false,t+=50)==2);
+            assert(limit.Step(gun,{0,0,-.255f},.25f,false,t+=50)==2);
+            assert(limit.Step(gun,{0,0,-.255f},.26f,false,t+=50)==2);
+            assert(limit.Step(gun,{0,0,-.255f},.25f,false,t+=50)==1);
+        }
         // A reading with no usable point keeps the answer.
         assert(zone.Step(gun,{9,9,9},.26f,false,t+=50)==2);
         // A weapon drawn with the grip held: its draw animation does not decide, its rest does.
