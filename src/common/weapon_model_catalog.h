@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstddef>
+#include <initializer_list>
 #include <cstring>
 
 namespace weapon_model
@@ -31,11 +32,15 @@ inline bool UsesTokenGeometry(const Model* model) noexcept
 namespace weapon_model
 {
 // A held weapon that aims one-handed whatever the one-handed aim range says: its grip distance is no guide, as the
-// Needler's sits beside the SMG's and the Plasma Pistol's reads as a long gun's. The Needle Rifle shares the needles
-// flag and is a long gun.
+// Needler's sits beside the SMG's and the Plasma Pistol's reads as a long gun's. The plasma rifles are held the same
+// way, whatever the name says. The Needle Rifle shares the needles flag and is a long gun. Halo CE's names have spaces.
 inline bool AlwaysOneHandedAim(const Model* model) noexcept
 {
-    return model&&((model->needles&&strcmp(model->name,"needle_rifle")!=0)||strstr(model->name,"plasma_pistol"));
+    if(!model)return false;
+    if(model->needles)return strcmp(model->name,"needle_rifle")!=0;
+    for(const char* name:{"plasma_pistol","plasma pistol","plasma_rifle","plasma rifle"})
+        if(strstr(model->name,name))return true;
+    return false;
 }
 inline const Model* Find(GameTitle title,uint64_t identity) noexcept
 {

@@ -41,11 +41,27 @@ void Check(bool ok,const char* message)
 {++checks;if(!ok){++failures;std::printf("FAIL: %s\n",message);}}
 int main()
 {
-    // Every title's Needler and Plasma Pistol aim one-handed by name, and nothing else does; the Needle Rifle is a long gun.
+    // Every title's Needler, Plasma Pistol and plasma rifles aim one-handed by name, and nothing else does; the Needle
+    // Rifle is a long gun, and a plasma cannon or launcher is not a plasma rifle.
     for(const auto& model:weapon_model::kModels)
-        Check(weapon_model::AlwaysOneHandedAim(&model)==
-              (strstr(model.name,"needler")!=nullptr||strstr(model.name,"plasma_pistol")!=nullptr),
-              "only a Needler or Plasma Pistol always aims one-handed");
+    {
+        const char* const name=model.name;
+        const bool plasmaHandgun=strstr(name,"plasma_pistol")||strstr(name,"plasma pistol")||
+            strstr(name,"plasma_rifle")||strstr(name,"plasma rifle");
+        Check(weapon_model::AlwaysOneHandedAim(&model)==(strstr(name,"needler")!=nullptr||plasmaHandgun),
+              "only a Needler, Plasma Pistol or plasma rifle always aims one-handed");
+    }
+    {
+        int ce=0,brute=0,red=0;
+        for(const auto& model:weapon_model::kModels)
+        {
+            if(!weapon_model::AlwaysOneHandedAim(&model))continue;
+            ce+=model.title==GameTitle::HaloCE&&strstr(model.name,"plasma")?1:0;
+            brute+=strcmp(model.name,"fp_brute_plasma_rifle")==0?1:0;
+            red+=strcmp(model.name,"fp_plasma_rifle_red")==0?1:0;
+        }
+        Check(ce==2&&brute>0&&red>0,"Halo CE's two, the Brute's and ODST's red one are all covered");
+    }
     Check(!weapon_model::AlwaysOneHandedAim(nullptr),"an unknown weapon follows the range");
     BoneMatrix primary{},secondary{};int32_t remap=1;
     g_fpInterpolationContexts[0]={&primary,7,false}; // already consumed body receipt
