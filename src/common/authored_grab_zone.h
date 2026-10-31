@@ -57,6 +57,16 @@ struct Publication {
     }
 };
 inline Publication publication;
+// A weapon that arrives with the support hand already attached (a switch with the grip held) has no endpoint yet, and
+// an attached frame only refreshes one: it goes on publishing through its draw, so it has a grip point to be judged by.
+inline constexpr uint64_t kAttachedNewOwnerMs=2000;
+struct AttachedOwnerWindow{
+    Key key{};uint64_t since=0;
+    bool Publishes(Key k,uint64_t now){
+        if(!since||key!=k){key=k;since=now;}
+        return now-since<kAttachedNewOwnerMs;
+    }
+};
 inline std::atomic<float> lastX{0},lastY{0},lastZ{0};
 inline std::atomic<uint64_t> hits{0},misses{0},fallbacks{0};
 // Short authored separation permits a side-by-side support grip. Longer arms
@@ -81,7 +91,7 @@ inline float CloseHandAuthority(Point local,float rangeMetres=kOneHandRangeDefau
 // two-handed for those frames. A short grip zone (a side-by-side hold) never steers; a long one always does, except
 // with the hands almost together, where the line between them has no usable direction. It lets go of the aim across
 // the distance out to double that, so the aim does not snap to the main hand.
-inline constexpr float kGripZoneNoLineMetres=.04f;
+inline constexpr float kGripZoneNoLineMetres=.06f;
 inline constexpr float kGripZoneFullLineMetres=2*kGripZoneNoLineMetres;
 inline float GripZoneAuthority(bool shortZone,Point local){
     if(shortZone||!Valid(local))return 0;

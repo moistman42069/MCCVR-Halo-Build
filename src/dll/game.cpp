@@ -52335,7 +52335,9 @@ void Game_PublishAuthoredGrip(GameTitle title,uint32_t generation,uint32_t unit,
        !right||!left||!desired||!std::isfinite(units)||units<=0)return;
     const authored_grab::Key key{unsigned(title),generation,unit,weapon};
     const auto now=GetTickCount64();
-    if(attached){authored_grab::publication.Refresh(key,now);return;}
+    static authored_grab::AttachedOwnerWindow attachedOwner;
+    const bool newOwner=attachedOwner.Publishes(key,now);
+    if(attached&&!newOwner){authored_grab::publication.Refresh(key,now);return;}
     BoneMatrix r{},l{},d{},inverse{},relative{},target{};
     memcpy(&r,right,sizeof(r));memcpy(&l,left,sizeof(l));memcpy(&d,desired,sizeof(d));
     if(!InvertBoneMatrix(r,inverse)||!ComposeBoneMatrices(inverse,l,relative)||

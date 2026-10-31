@@ -146,6 +146,17 @@ int main(){
         GripZoneKindMemory fresh;
         assert(fresh.Step(gun,{0,0,-.10f},.24f,true,t+=50)==2);
     }
+    // A weapon arriving attached publishes through its draw, then only refreshes.
+    {
+        const Key first{1,1,10,20},second{1,1,10,21};
+        AttachedOwnerWindow window;
+        assert(window.Publishes(first,1000));
+        assert(window.Publishes(first,1000+kAttachedNewOwnerMs-1));
+        assert(!window.Publishes(first,1000+kAttachedNewOwnerMs));
+        assert(window.Publishes(second,5000));
+        assert(!window.Publishes(second,5000+kAttachedNewOwnerMs));
+        assert(window.Publishes(first,9000));
+    }
     // By the grip zone: where the hands read does not change the answer.
     assert(GripZoneAuthority(true,{0,0,-.05f})==0);
     assert(GripZoneAuthority(true,{0,0,-.60f})==0);
