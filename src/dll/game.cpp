@@ -2448,6 +2448,8 @@ namespace
         int lShoulder = -1;
         uint64_t lWristDescendants = 0;
         uint32_t muzzleUnit=UINT32_MAX,muzzleWeapon=UINT32_MAX;
+        // Who holds the weapon, for a title whose muzzle owner may be withheld (Halo3CaptureGripOwner).
+        uint32_t gripUnit=UINT32_MAX,gripWeapon=UINT32_MAX;
         bool valid = false;
     };
 
@@ -2507,6 +2509,9 @@ namespace
     weapon_muzzle::Store g_halo3Muzzles;
     std::atomic<bool> g_halo3MuzzleBindingsReady{false};
     bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept;
+    std::atomic<bool> g_halo3GripOwnerReady{false};
+    bool Halo3CaptureGripOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept;
+    void BindHalo3GripOwner(uintptr_t base,size_t size);
     void Halo3ApplySecondaryWeaponAlignment(uint16_t tag,const FpInterpolationContext& context,
         BoneMatrix* destination,const int32_t* boneMap);
     void Halo3PublishMuzzlePalette(uint16_t tag,const FpInterpolationContext& context,
@@ -7252,6 +7257,8 @@ namespace
             Game_ReadPrimaryWeaponEvidence(GameTitle::Halo3, supportBefore);
         uint32_t muzzleUnit=UINT32_MAX,muzzleWeapon=UINT32_MAX;
         const bool muzzleOwner=Halo3CaptureMuzzleOwner(view,slot,muzzleUnit,muzzleWeapon);
+        uint32_t gripUnit=UINT32_MAX,gripWeapon=UINT32_MAX;
+        const bool gripOwner=Halo3CaptureGripOwner(view,slot,gripUnit,gripWeapon);
         const bool result=g_origFpInterpolate(view,id,slot,outBones,outCount);
         if (result && view==0 && (slot==0 || slot==1))
             g_halo3FirstPersonMs.store(GetTickCount64(), std::memory_order_release);
@@ -7294,6 +7301,11 @@ namespace
                 if(muzzleOwner && Halo3CaptureMuzzleOwner(view,slot,currentUnit,currentWeapon) &&
                     currentUnit==muzzleUnit && currentWeapon==muzzleWeapon)
                 {context.muzzleUnit=muzzleUnit;context.muzzleWeapon=muzzleWeapon;}
+                currentUnit=currentWeapon=UINT32_MAX;
+                const bool gripKept=gripOwner && Halo3CaptureGripOwner(view,slot,currentUnit,currentWeapon) &&
+                    currentUnit==gripUnit && currentWeapon==gripWeapon;
+                context.gripUnit=gripKept?gripUnit:UINT32_MAX;
+                context.gripWeapon=gripKept?gripWeapon:UINT32_MAX;
                 context.wrist=wrist;
                 context.cameraControl=cameraControl;
                 context.elbow=elbow;
@@ -7507,8 +7519,10 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     {
         if(context.slot!=0||context.player!=0||!context.valid||!source||
            context.wrist<0||context.wrist>=context.count||context.lWrist<0||context.lWrist>=context.count)return;
+        const bool gripOwner=context.gripUnit!=UINT32_MAX&&context.gripWeapon!=UINT32_MAX;
         Game_PublishAuthoredGrip(TitleAdapter_GetActiveTitle(),context.generation,
-            context.muzzleUnit,context.muzzleWeapon,&source[context.wrist],&source[context.lWrist],
+            gripOwner?context.gripUnit:context.muzzleUnit,gripOwner?context.gripWeapon:context.muzzleWeapon,
+            &source[context.wrist],&source[context.lWrist],
             &desired,basis,g_worldScale.load(),attached);
     }
 
@@ -20048,6 +20062,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // default-off setting and feature-only failure isolation.
         if(!InstallHalo3DualAim(base,size,runtimeGeneration))
             (void)InstallHalo3ZoomReader(base,size,runtimeGeneration);
+        BindHalo3GripOwner(base,size);
         InstallSteps::Mark("dual aim");
         // The evaluator's chase path, the start of a stock seat's crosshair line (seat_upstream_logic.h 4b): no hook,
         // so it is bound whether or not the lane above installed.

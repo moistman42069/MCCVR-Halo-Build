@@ -2,6 +2,7 @@ static bool muzzleHookExists=false,muzzleHookEnabled=false,muzzleIngress=false;
 static int muzzleLifecycleFailure=0,muzzleScan=0;
 static uintptr_t muzzleFixtureBase=0;
 static std::atomic<bool> g_halo3MuzzleBindingsReady{false};
+static std::atomic<bool> g_halo3GripOwnerReady{false};
 namespace MuzzleSig
 {
 static uintptr_t Find(uintptr_t base,size_t,const char*)

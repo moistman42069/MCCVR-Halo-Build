@@ -15,6 +15,7 @@ static struct {float barrel_pitch_deg=0,barrel_yaw_deg=0,barrel_roll_deg=0;bool 
 [[maybe_unused]] static bool Sight_GunBarrelAim(){return g_config.gun_barrel_aim;}
 [[maybe_unused]] static bool Sight_IndependentDualAim(){return false;}
 static std::atomic<bool> g_halo3MuzzleBindingsReady{true};
+static std::atomic<bool> g_halo3GripOwnerReady{true};
 static std::atomic<uint32_t> g_halo3RuntimeGeneration{7};
 static weapon_muzzle::Store g_halo3Muzzles;
 static std::atomic<bool> g_baseCamValid{true};
@@ -63,6 +64,15 @@ int main()
     uint32_t unit=UINT32_MAX,weapon=UINT32_MAX;
     Check(Halo3CaptureMuzzleOwner(0,0,unit,weapon)&&unit==owner&&weapon==primary,"primary exact full native FP handle captured");
     Check(Halo3CaptureMuzzleOwner(0,1,unit,weapon)&&weapon==secondary,"secondary exact full native FP handle captured");
+    // The grip point's owner stands without the muzzle lane, and without its own proof it is refused.
+    g_halo3MuzzleBindingsReady=false;
+    Check(!Halo3CaptureMuzzleOwner(0,0,unit,weapon),"no muzzle bindings: no muzzle owner");
+    unit=weapon=0;
+    Check(Halo3CaptureGripOwner(0,0,unit,weapon)&&unit==owner&&weapon==primary,"no muzzle bindings: the grip owner is still read");
+    g_halo3MuzzleBindingsReady=true;
+    g_halo3GripOwnerReady=false;
+    Check(!Halo3CaptureGripOwner(0,0,unit,weapon)&&!Halo3CaptureMuzzleOwner(0,0,unit,weapon),"grip bindings unproven: neither is read");
+    g_halo3GripOwnerReady=true;
     Check(!Halo3CaptureMuzzleOwner(1,0,unit,weapon)&&!Halo3CaptureMuzzleOwner(0,2,unit,weapon),"foreign player and slot refused");
     BoneMatrix destination[64];
     for(auto& node:destination){node.scale=2;node.translation[0]=2;node.translation[1]=3;node.translation[2]=4;}

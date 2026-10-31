@@ -1,9 +1,9 @@
 // H3's own FP users/slots and weapon-handle member, independently established
 // in native reload-tail evidence. Capture before AND after interpolation, so
 // a later inventory lookup cannot attach an old palette to a replacement gun.
-bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept
+bool Halo3CaptureGripOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept
 {
-    if(!(Sight_GunBarrelAim()||Sight_ShotsFromMuzzle()) || !g_halo3MuzzleBindingsReady.load(std::memory_order_acquire) ||
+    if(!g_halo3GripOwnerReady.load(std::memory_order_acquire) ||
         player!=0 || slot<0 || slot>1 || !g_engineTlsIndex || !g_halo3PlayerUnitGetter ||
         !g_halo3UnitInVehicle)return false;
     __try
@@ -20,6 +20,12 @@ bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon
         unit=owner;weapon=weapons[slot];return true;
     }
     __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+
+bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept
+{
+    return (Sight_GunBarrelAim()||Sight_ShotsFromMuzzle()) && g_halo3MuzzleBindingsReady.load(std::memory_order_acquire) &&
+        Halo3CaptureGripOwner(player,slot,unit,weapon);
 }
 
 void Halo3PublishMuzzlePalette(uint16_t tag,const FpInterpolationContext& context,
