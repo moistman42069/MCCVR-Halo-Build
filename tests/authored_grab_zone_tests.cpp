@@ -101,22 +101,36 @@ int main(){
     // The kind follows the range exactly while not gripping.
     {
         const Key gun{2,1,10,20},other{2,1,10,21};
+        uint64_t t=1000;
         GripZoneKindMemory zone;
-        assert(zone.Step(gun,{0,0,-.23f},.24f,false)==2);
-        assert(zone.Step(gun,{0,0,-.25f},.24f,false)==1);
-        // While gripping, an animation moving the grip point does not change it.
-        assert(zone.Step(gun,{0,0,-.10f},.24f,true)==1);
-        assert(zone.Step(gun,{0,0,-.60f},.24f,true)==1);
-        // A change of range applies at once, even gripping, and then holds.
-        assert(zone.Step(gun,{0,0,-.25f},.26f,true)==2);
-        assert(zone.Step(gun,{0,0,-.40f},.26f,true)==2);
-        // So does another weapon: nothing carries over from the last one.
-        assert(zone.Step(other,{0,0,-.40f},.26f,true)==1);
+        assert(zone.Step(gun,{0,0,-.23f},.24f,false,t)==2);
+        assert(zone.Step(gun,{0,0,-.25f},.24f,false,t+=50)==1);
+        // At rest and gripping, an animation moving the grip point does not change it.
+        zone.Step(gun,{0,0,-.25f},.24f,false,t+=kGripZoneRestMs);
+        assert(zone.Step(gun,{0,0,-.25f},.24f,true,t+=50)==1);
+        assert(zone.Step(gun,{0,0,-.10f},.24f,true,t+=50)==1);
+        assert(zone.Step(gun,{0,0,-.60f},.24f,true,t+=50)==1);
+        // A change of range applies at once, even gripping, and then holds once at rest.
+        assert(zone.Step(gun,{0,0,-.25f},.26f,true,t+=50)==2);
+        zone.Step(gun,{0,0,-.25f},.26f,true,t+=kGripZoneRestMs);
+        assert(zone.Step(gun,{0,0,-.40f},.26f,true,t+=50)==2);
         // A reading with no usable point keeps the answer.
-        assert(zone.Step(other,{9,9,9},.26f,false)==1);
+        assert(zone.Step(gun,{9,9,9},.26f,false,t+=50)==2);
+        // A weapon drawn with the grip held: its draw animation does not decide, its rest does.
+        assert(zone.Step(other,{0,0,-.37f},.24f,true,t+=50)==1);
+        assert(zone.Step(other,{0,0,-.20f},.24f,true,t+=50)==2);
+        assert(zone.Step(other,{0,0,-.13f},.24f,true,t+=50)==2);
+        assert(zone.Step(other,{0,0,-.13f},.24f,true,t+=kGripZoneRestMs)==2);
+        assert(zone.Step(other,{0,0,-.37f},.24f,true,t+=50)==2);
+        // Gripping in the middle of an animation: it goes on until the point rests.
+        GripZoneKindMemory moving;
+        moving.Step(gun,{0,0,-.10f},.24f,false,t+=50);
+        moving.Step(gun,{0,0,-.10f},.24f,false,t+=kGripZoneRestMs);
+        assert(moving.Step(gun,{0,0,-.40f},.24f,false,t+=50)==1);
+        assert(moving.Step(gun,{0,0,-.15f},.24f,true,t+=50)==2);
         // A first reading while already gripping still decides.
         GripZoneKindMemory fresh;
-        assert(fresh.Step(gun,{0,0,-.10f},.24f,true)==2);
+        assert(fresh.Step(gun,{0,0,-.10f},.24f,true,t+=50)==2);
     }
     // By the grip zone: where the hands read does not change the answer.
     assert(GripZoneAuthority(true,{0,0,-.05f})==0);
