@@ -323,6 +323,7 @@ int main()
         fixtureTitle=static_cast<GameTitle>(title);
         const int index=title-1;
         g_config.manual_reload=g_config.weapon_holsters=true;
+        g_config.dual_wield_shake_reload=false;
         // The publication below (options 3) is one made with reload and holsters on, the slide gesture on and the
         // click gesture off; the click gesture is on by default, so the fixture states both.
         g_config.weapon_holster_slide=true;g_config.weapon_holster_click=false;

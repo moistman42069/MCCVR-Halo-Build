@@ -14183,6 +14183,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // mode deliberately does not consult it: a fresh press is already a
         // deliberate acquisition.
         bool awaitZoneReentry = false;
+        // support_grip::StepGestureInherit: a hold waiting out a weapon gesture.
+        bool inheritAfterGesture = false;
     };
     PersistentSupportGripState g_persistentSupportGrip;
 
@@ -14198,6 +14200,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // The default-switch crossing requirement never outlives the feature: a
         // later re-enable must start from ordinary admission.
         g_persistentSupportGrip.awaitZoneReentry = false;
+        g_persistentSupportGrip.inheritAfterGesture = false;
         if (g_persistentSupportGrip.writer.engaged)
         {
             (void)support_grip::DurableWriterRelease(
@@ -14271,7 +14274,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // (F02 title/generation/mode, F11 interaction gesture, F16 roles).
         const bool forcedTeardown =
             rolesChanged || weaponGesture || identityLost;
-        if (writer.engaged && forcedTeardown)
+        const support_grip::GestureInheritStep gestureInherit =
+            support_grip::StepGestureInherit(
+                g_persistentSupportGrip.inheritAfterGesture, switchInherit,
+                writer.engaged, weaponGesture, rolesChanged || identityLost,
+                !toggleMode, gripHeld, rising, evidenceCoherent);
+        g_persistentSupportGrip.inheritAfterGesture = gestureInherit.pending;
+        if (writer.engaged && forcedTeardown && !gestureInherit.keepsHold)
             admission.Arm();
         // A role/gesture/lifecycle teardown (or a lifecycle replacement) is a
         // deliberate discontinuity: the default-switch crossing requirement
@@ -14330,9 +14339,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     g_persistentSupportGrip.awaitZoneReentry, gripHeld, inZone);
             g_persistentSupportGrip.awaitZoneReentry =
                 zoneReentry.awaitZoneReentry;
-            const bool acquisitionEdge = toggleMode
+            const bool acquisitionEdge = gestureInherit.resume || (toggleMode
                 ? (rising && inZone && !writer.engaged)
-                : zoneReentry.holdAcquisitionEdge;
+                : zoneReentry.holdAcquisitionEdge);
             // F08: an acquisition intent may begin only from a provable
             // evidence revision, because its floor is what stops a cached
             // previous-owner publication from creating the relation. Dropping

@@ -1628,7 +1628,7 @@ struct Config
     bool weapon_holster_slide = true;
     bool weapon_holster_click = true;
     bool weapon_needler_shake = false;
-    bool dual_wield_shake_reload = false;
+    bool dual_wield_shake_reload = true;
     bool weapon_unknown_reload_visual = true;
     float weapon_shake_travel_m = 0.10f;
     // 0 shoulder, 1 hip, 2 over the shoulder (Campaign Evolved's spot), 3 custom (the three values below).
