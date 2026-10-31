@@ -1744,7 +1744,7 @@ struct Config
     // switch during play (authored_grab::GripZoneAuthority). Weapons with no grip zone keep the distance test.
     bool two_hand_grip_zone_authority = true;
     // One-handed aim range, metres. With the grip zone deciding: a weapon whose grip is within this of the main hand
-    // is pistol-style (authored_grab::GripZoneKind). With the distance deciding: the side measure of the volume in
+    // is pistol-style (authored_grab::GripZoneKindMemory). With the distance deciding: the side measure of the volume in
     // which the hands count as close (authored_grab::CloseHandAuthority), the others scaling with it.
     float two_hand_one_hand_range_m = 0.24f;
     // Two-hand engage style: true = toggle (click left grip on/off), false =

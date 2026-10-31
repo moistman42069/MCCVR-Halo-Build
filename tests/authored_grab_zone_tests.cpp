@@ -98,17 +98,26 @@ int main(){
     assert(CloseHandAuthority({.13f,0,0},.12f)==1);
     assert(CloseHandAuthority({0,0,-.31f},.48f)==0);
     assert(CloseHandAuthority({0,0,-.33f},.48f)==1);
-    // The kind holds across a band around the boundary, and a clear reading settles it.
-    assert(GripZoneKind(0,{0,0,-.23f})==2);
-    assert(GripZoneKind(0,{0,0,-.25f})==1);
-    assert(GripZoneKind(2,{0,0,-.26f})==2);
-    assert(GripZoneKind(1,{0,0,-.22f})==1);
-    assert(GripZoneKind(2,{0,0,-.28f})==1);
-    assert(GripZoneKind(1,{0,0,-.20f})==2);
-    // A wider range makes a compact gun pistol-style.
-    assert(GripZoneKind(0,{0,0,-.28f},.30f)==2);
-    assert(GripZoneKind(0,{0,0,-.28f},.24f)==1);
-    assert(GripZoneKind(2,{0,0,0},.24f)==2);
+    // The kind follows the range exactly while not gripping.
+    {
+        const Key gun{2,1,10,20},other{2,1,10,21};
+        GripZoneKindMemory zone;
+        assert(zone.Step(gun,{0,0,-.23f},.24f,false)==2);
+        assert(zone.Step(gun,{0,0,-.25f},.24f,false)==1);
+        // While gripping, an animation moving the grip point does not change it.
+        assert(zone.Step(gun,{0,0,-.10f},.24f,true)==1);
+        assert(zone.Step(gun,{0,0,-.60f},.24f,true)==1);
+        // A change of range applies at once, even gripping, and then holds.
+        assert(zone.Step(gun,{0,0,-.25f},.26f,true)==2);
+        assert(zone.Step(gun,{0,0,-.40f},.26f,true)==2);
+        // So does another weapon: nothing carries over from the last one.
+        assert(zone.Step(other,{0,0,-.40f},.26f,true)==1);
+        // A reading with no usable point keeps the answer.
+        assert(zone.Step(other,{9,9,9},.26f,false)==1);
+        // A first reading while already gripping still decides.
+        GripZoneKindMemory fresh;
+        assert(fresh.Step(gun,{0,0,-.10f},.24f,true)==2);
+    }
     // By the grip zone: where the hands read does not change the answer.
     assert(GripZoneAuthority(true,{0,0,-.05f})==0);
     assert(GripZoneAuthority(true,{0,0,-.60f})==0);

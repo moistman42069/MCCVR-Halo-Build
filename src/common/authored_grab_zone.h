@@ -85,16 +85,19 @@ inline float GripZoneAuthority(bool shortZone,Point local){
     if(shortZone||!Valid(local))return 0;
     return Distance2(local,{0,0,0})<=kGripZoneNoLineMetres*kGripZoneNoLineMetres?0.f:1.f;
 }
-// Which kind a zone is for the aim: 2 short, 1 long, by the player's range (two_hand_one_hand_range_m). A 3 cm band
-// around it, since a grip point passing the boundary read as both within half a second (at 0.24 m, in play).
-inline int GripZoneKind(int previous,Point centre,float rangeMetres=kOneHandRangeDefaultMetres){
-    if(!Valid(centre))return previous;
-    const float d2=Distance2(centre,{0,0,0});
-    const float low=rangeMetres-.03f,high=rangeMetres+.03f;
-    if(previous==2&&d2<=high*high)return 2;
-    if(previous==1&&d2>=low*low)return 1;
-    return d2<=rangeMetres*rangeMetres?2:1;
-}
+// Which kind a zone is for the aim: 2 short, 1 long, by the player's range (two_hand_one_hand_range_m). The grip point
+// moves with the weapon's animations (one gun read 0.16 m and 0.23 m within a second, in play), so while the support
+// hand holds, the kind stands until the weapon or the range changes. Single writer: the frame thread.
+struct GripZoneKindMemory{
+    Key key{};float range=0;int kind=0;
+    int Step(Key k,Point centre,float rangeMetres,bool gripping){
+        const bool same=kind&&key==k&&range==rangeMetres;
+        if(!Valid(centre)||(same&&gripping))return kind;
+        key=k;range=rangeMetres;
+        kind=Distance2(centre,{0,0,0})<=rangeMetres*rangeMetres?2:1;
+        return kind;
+    }
+};
 inline bool Hit(Point centre,Point sample){
     if(!Valid(centre)||!Valid(sample))return false;
     // 22cm segment plus 12cm rounded ends: 46cm total. OpenXR forward
