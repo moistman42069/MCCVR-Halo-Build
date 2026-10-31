@@ -55,8 +55,8 @@ manifest is UTF-8/ASCII, one
 relative to `ModFiles`; backslashes and forward slashes are supported. Do not
 list directories, duplicate names, absolute paths or the manifest itself.
 `BUILD-IDENTITY.txt` contains `source_commit=<40 hex>`,
-`build_kind=UNTESTED_LOCAL_CANDIDATE` (or `PUBLIC_RELEASE`) and
-`release_tag=<exact published GitHub tag, otherwise empty>`, one per line.
+`build_kind=RELEASE_CANDIDATE` (or `PUBLIC_RELEASE`) and
+`release_tag=<exact published GitHub tag, or RC-<short commit> for a release candidate>`, one per line.
 The menu displays the installed identity, describes discovery as the latest
 public release, and labels replacement of a candidate as Install public release.
 

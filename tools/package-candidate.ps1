@@ -608,7 +608,7 @@ try {
     $manifest = [ordered]@{
         schema_version = 56
         payload_directory = 'ModFiles'
-        status = 'UNTESTED_LOCAL_CANDIDATE'
+        status = 'RELEASE_CANDIDATE'
         accepted = $false
         package_id = $packageId
         created_utc = $createdUtc.ToString('o')
@@ -1418,7 +1418,6 @@ try {
             headset_accepted = $false
         }
         current_notes = 'RELEASE-NOTES.md'
-        implementation_ledger = 'IMPLEMENTATION-STATUS.md'
         experimental_avatar = [ordered]@{
             enabled_by_default = $false
             runtime_world_rigs = @('Halo 3 Chief/Elite/Arbiter', 'Halo 4 Chief')
@@ -1439,28 +1438,20 @@ try {
         }
         historical_metadata_notice = 'Older stage/profile IDs and feature results below describe inherited work and retain their original coverage limits. Current accepted baseline is Alpha 0.4.2 source 1a9766c. This unaccepted refinement audit candidate does not complete the full standing scope. Current changes and unresolved items are listed in RELEASE-NOTES.md. Earlier standing and deferred scope is preserved.'
         halo4_new_damage_blackout_report = 'deferred-unresolved-distinct-from-earlier-cryptum-shader-suppression'
-        note = 'Unaccepted major QoL candidate above Alpha0.4.2 source1a9766c. Current implementation and unresolved reports are enumerated in RELEASE-NOTES.md and IMPLEMENTATION-STATUS.md. New launcher/install/update payload; both editions; no game launch or installation during preparation. Older nested stage metadata is historical, not a claim of current headset acceptance or complete community-backlog resolution.'
+        note = 'Unaccepted major QoL candidate above Alpha0.4.2 source1a9766c. Current implementation and unresolved reports are enumerated in RELEASE-NOTES.md. New launcher/install/update payload; both editions; no game launch or installation during preparation. Older nested stage metadata is historical, not a claim of current headset acceptance or complete community-backlog resolution.'
 
     }
 
     Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-RELEASE-NOTES-2026-09-30.md') -Destination (Join-Path $packageDir 'RELEASE-NOTES.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-30.md') -Destination (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-23.md') -Destination (Join-Path $packageDir 'PREVIOUS-IMPLEMENTATION-STATUS.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/LINUX-PROTON-LOGIN-FOCUS-REVIEW-2026-09-30.md') -Destination (Join-Path $packageDir 'LINUX-LOGIN-REVIEW.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/FINGER-JOINT-IDENTITY-2026-09-30.md') -Destination (Join-Path $packageDir 'FINGER-JOINT-IDENTITY.md')
     Copy-Item -LiteralPath (Join-Path $packageDir 'RELEASE-NOTES.md') -Destination $payloadDir
-    Copy-Item -LiteralPath (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md') -Destination $payloadDir
-    Copy-Item -LiteralPath (Join-Path $packageDir 'PREVIOUS-IMPLEMENTATION-STATUS.md') -Destination $payloadDir
-    Copy-Item -LiteralPath (Join-Path $packageDir 'LINUX-LOGIN-REVIEW.md') -Destination $payloadDir
-    Copy-Item -LiteralPath (Join-Path $packageDir 'FINGER-JOINT-IDENTITY.md') -Destination $payloadDir
-    foreach ($packageDoc in @('RELEASE-NOTES.md', 'IMPLEMENTATION-STATUS.md', 'PREVIOUS-IMPLEMENTATION-STATUS.md', 'LINUX-LOGIN-REVIEW.md', 'FINGER-JOINT-IDENTITY.md')) {
+    foreach ($packageDoc in @('RELEASE-NOTES.md')) {
         if (-not (Test-Path -LiteralPath (Join-Path $payloadDir $packageDoc) -PathType Leaf)) {
             throw "Candidate package is missing its report ledger: $packageDoc"
         }
     }
     Copy-Item -LiteralPath (Join-Path $payloadDir 'MANUAL-README.txt') -Destination (Join-Path $packageDir 'README.txt')
     [IO.File]::WriteAllLines((Join-Path $payloadDir 'BUILD-IDENTITY.txt'),
-        @("source_commit=$commit", 'build_kind=UNTESTED_LOCAL_CANDIDATE', 'release_tag='),
+        @("source_commit=$commit", 'build_kind=RELEASE_CANDIDATE', "release_tag=RC-$($commit.Substring(0, 7))"),
         [Text.UTF8Encoding]::new($false))
     # Hash the complete manual/install payload, including config, runtime,
     # fonts, licenses and identity. The manifest itself is deliberately excluded.
