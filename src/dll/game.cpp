@@ -2028,6 +2028,20 @@ namespace
             m_lastLogMs = 0;
         }
 
+        // Close the gate for hooks taken out at a native pause. The pause is the
+        // frozen half of the proof: the level was running when it began. The
+        // player view can go on changing behind the pause menu, in which case
+        // no still sample comes, and only a pause of 6 s reached the
+        // already-running proof: a shorter one left the player flat for up to
+        // 6 s after resuming (in play, 4.8 s after a 1.7 s pause; 0.3 s after
+        // an 8 s one). odstPauseRearmGate still holds the install until the
+        // pause has exited and the camera is stable.
+        void RearmAcrossPause()
+        {
+            Rearm();
+            (void)m_logic.Observe(false);
+        }
+
         // Read-only view of the last sampled decision. AllowsInstall must be
         // called exactly ONCE per worker tick (each call consumes a sample);
         // every other consumer in that tick asks this instead. An unprovable
@@ -51870,7 +51884,10 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 {
                     odstHooked = false;
                     // The next install must prove the level is running again.
-                    g_odstLevelLoadGate.Rearm();
+                    if (reason == OdstFallbackReason::NativePause)
+                        g_odstLevelLoadGate.RearmAcrossPause();
+                    else
+                        g_odstLevelLoadGate.Rearm();
                     if (reason == OdstFallbackReason::UnsupportedCameraMode)
                     {
                         // A menu is a temporary camera mode, not the end of the
