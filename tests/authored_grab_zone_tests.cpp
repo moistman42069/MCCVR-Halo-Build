@@ -146,6 +146,14 @@ int main(){
         GripZoneKindMemory fresh;
         assert(fresh.Step(gun,{0,0,-.10f},.24f,true,t+=50)==2);
     }
+    // A grip point no hand could hold the gun from: held side by side.
+    assert(OnGun({-.095f,0,-.231f}));
+    assert(OnGun({-.09f,.01f,-.36f}));
+    assert(OnGun({-.08f,-.09f,-.06f}));
+    assert(OnGun({-.10f,0,-.58f}));
+    assert(!OnGun({-.45f,-.64f,.43f}));
+    assert(!OnGun({-.15f,-.23f,.10f}));
+    assert(!OnGun({-.31f,-.31f,-.12f}));
     // A weapon arriving attached publishes through its draw, then only refreshes.
     {
         const Key first{1,1,10,20},second{1,1,10,21};

@@ -69,6 +69,13 @@ struct AttachedOwnerWindow{
 };
 inline std::atomic<float> lastX{0},lastY{0},lastZ{0};
 inline std::atomic<uint64_t> hits{0},misses{0},fallbacks{0};
+// Whether a hand there could be holding the gun in front of the main hand. A one-handed weapon's authored support hand
+// hangs at the side instead (0.45 m out, 0.64 m down, 0.43 m behind, read in play), and has no grip on it to reach for:
+// such a weapon is held side by side, as a short zone is.
+inline bool OnGun(Point centre){
+    return Valid(centre)&&centre[2]<=.05f&&centre[2]>=-.75f&&std::fabs(centre[0])<=.30f&&
+        centre[1]>=-.35f&&centre[1]<=.25f;
+}
 // Short authored separation permits a side-by-side support grip. Longer arms
 // use a short longitudinal capsule; no weapon-specific calibration.
 inline bool Short(Point centre){return Valid(centre)&&Distance2(centre,{0,0,0})<=.24f*.24f;}

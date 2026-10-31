@@ -14071,6 +14071,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             return authored_grab::publication.Owns(key);
         }
         authored_grab::lastX.store(local[0]);authored_grab::lastY.store(local[1]);authored_grab::lastZ.store(local[2]);
+        if(!authored_grab::OnGun(local))local={0.f,0.f,0.f};
         {
             static authored_grab::GripZoneKindMemory zoneMemory;
             const int zoneKind=zoneMemory.Step(key,local,g_config.two_hand_one_hand_range_m,
