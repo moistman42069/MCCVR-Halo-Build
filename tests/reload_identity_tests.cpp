@@ -41,6 +41,11 @@ void Check(bool ok,const char* message)
 {++checks;if(!ok){++failures;std::printf("FAIL: %s\n",message);}}
 int main()
 {
+    // Every title's Needler aims one-handed by name, and nothing else does; the Needle Rifle is a long gun.
+    for(const auto& model:weapon_model::kModels)
+        Check(weapon_model::AlwaysOneHandedAim(&model)==(strstr(model.name,"needler")!=nullptr),
+              "only a Needler always aims one-handed");
+    Check(!weapon_model::AlwaysOneHandedAim(nullptr),"an unknown weapon follows the range");
     BoneMatrix primary{},secondary{};int32_t remap=1;
     g_fpInterpolationContexts[0]={&primary,7,false}; // already consumed body receipt
     g_fpInterpolationContexts[1]={&secondary,7,false};

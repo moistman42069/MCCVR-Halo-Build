@@ -14074,8 +14074,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if(!authored_grab::OnGun(local))local={0.f,0.f,0.f};
         {
             static authored_grab::GripZoneKindMemory zoneMemory;
-            const int zoneKind=zoneMemory.Step(key,local,g_config.two_hand_one_hand_range_m,
+            int zoneKind=zoneMemory.Step(key,local,g_config.two_hand_one_hand_range_m,
                 g_twoHandLatched.load(std::memory_order_relaxed),GetTickCount64());
+            if(weapon_model::AlwaysOneHandedAim(weapon_model::Find(title,VR_GetWeaponModelIdentity(title,generation,
+                g_contactSpaceEpoch.load(std::memory_order_acquire),GetTickCount64()))))
+                zoneKind=2;
             const int previousKind=g_gripZoneKind.exchange(zoneKind,std::memory_order_acq_rel);
             g_gripZoneKindMs.store(GetTickCount64(),std::memory_order_release);
             if(previousKind!=zoneKind)
