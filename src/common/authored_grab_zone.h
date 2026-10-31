@@ -98,7 +98,7 @@ inline float CloseHandAuthority(Point local,float rangeMetres=kOneHandRangeDefau
 // two-handed for those frames. A short grip zone (a side-by-side hold) never steers; a long one always does, except
 // with the hands almost together, where the line between them has no usable direction. It lets go of the aim across
 // the distance out to double that, so the aim does not snap to the main hand.
-inline constexpr float kGripZoneNoLineMetres=.06f;
+inline constexpr float kGripZoneNoLineMetres=.07f;
 inline constexpr float kGripZoneFullLineMetres=2*kGripZoneNoLineMetres;
 inline float GripZoneAuthority(bool shortZone,Point local){
     if(shortZone||!Valid(local))return 0;
