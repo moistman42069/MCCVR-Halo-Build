@@ -57,6 +57,28 @@ float BlendXInputMotors(uint16_t lowFrequencyMotor, uint16_t highFrequencyMotor)
 
 // Distance is from the tracked head centre, preserving the original 30 cm
 // gesture by default. Title-specific side-of-head requirements stay at caller.
+// The head D-pad gesture when a hand comes up while walking: the stick goes on walking until it returns to centre, and
+// only then does it become the D-pad. `moving` false always gives the plain gesture.
+struct DpadMovementLatch
+{
+    bool walking = false;
+    bool wasAtHead = false;
+    bool Step(bool atHead, bool moving) noexcept
+    {
+        if (!atHead)
+        {
+            walking = wasAtHead = false;
+            return false;
+        }
+        if (!moving)
+            walking = false;
+        else if (!wasAtHead)
+            walking = true;
+        wasAtHead = true;
+        return !walking;
+    }
+};
+
 bool DpadHeadWithinRadius(const float head[3], const float controller[3],
     float radiusMetres) noexcept;
 

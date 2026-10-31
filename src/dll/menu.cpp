@@ -942,6 +942,11 @@ namespace
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("A smaller radius requires the selected controller to be closer to your head.");
+        changed |= ImGui::Checkbox("Keep walking when my hand comes up", &g_config.dpad_keep_moving);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("If you're walking when your hand reaches your head, you keep walking.\n"
+                              "Let the stick return to centre and it becomes the D-pad.\n"
+                              "Off: the stick becomes the D-pad at once and you stop.");
         changed |= ImGui::Checkbox("Quest 3 left thumb-rest D-pad",
                                    &g_config.quest_thumbrest_dpad);
         if (ImGui::IsItemHovered())

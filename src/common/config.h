@@ -698,6 +698,7 @@ struct Config
     int dpad_hand = 0;
     // Head-gesture activation radius in metres; the existing reach is 30 cm.
     float dpad_head_radius = 0.30f;
+    bool dpad_keep_moving = true; // a hand raised while walking leaves the stick walking until it centres
     // Quest 3 alternate D-pad: touch the physical left thumb rest, then use
     // the physical right stick. Handedness never swaps these controls.
     bool quest_thumbrest_dpad = false;

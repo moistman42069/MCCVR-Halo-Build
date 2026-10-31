@@ -1396,6 +1396,11 @@ void ConfigLoad(const wchar_t* path)
             *holsterCustom=std::isfinite(*holsterCustom)?std::clamp(*holsterCustom,-.80f,.80f):fallback;
             continue;
         }
+        if (!strcmp(key, "dpad_keep_moving"))
+        {
+            ParseBoolSetting(key, val, g_config.dpad_keep_moving);
+            continue;
+        }
         if (!strcmp(key, "dpad_head_radius"))
         {
             ParseFloatSetting(key, val, g_config.dpad_head_radius);
@@ -2588,6 +2593,9 @@ void ConfigSave()
     fprintf(f, "# the selected controller to be closer to your head.\n");
     fprintf(f, "# (default %.2f, range 0.10 to 0.50)\n", d.dpad_head_radius);
     fprintf(f, "dpad_head_radius = %.3f\n\n", g_config.dpad_head_radius);
+    fprintf(f, "# Raising the hand while walking leaves the stick walking until it returns to centre; then it is the\n");
+    fprintf(f, "# D-pad. 0: the stick is the D-pad at once and walking stops. (default %d)\n", d.dpad_keep_moving ? 1 : 0);
+    fprintf(f, "dpad_keep_moving = %d\n\n", g_config.dpad_keep_moving ? 1 : 0);
     fprintf(f, "# Quest 3 alternate D-pad: touch the left controller's thumb rest,\n");
     fprintf(f, "# then move the right stick. Always uses the physical left thumb rest\n");
     fprintf(f, "# and physical right stick, including in left-handed mode.\n");

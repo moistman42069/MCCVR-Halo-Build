@@ -82,6 +82,18 @@ int main()
         Check(DpadHeadWithinRadius(head, controller, test.radius) == test.inside,
             "radius preserves strict boundary, limits and invalid-setting fallback");
     }
+    {
+        DpadMovementLatch latch;
+        Check(!latch.Step(false, true), "hand down: never the D-pad");
+        Check(!latch.Step(true, true), "hand comes up while walking: the stick keeps walking");
+        Check(!latch.Step(true, true), "and goes on walking while it stays pushed");
+        Check(latch.Step(true, false), "the stick returns to centre: now the D-pad");
+        Check(latch.Step(true, true), "pushed again from centre at the head: a D-pad press");
+        Check(!latch.Step(false, true), "hand down: walking again");
+        DpadMovementLatch still;
+        Check(still.Step(true, false), "hand comes up standing still: the D-pad at once");
+        Check(still.Step(true, true), "and the stick presses it");
+    }
     Check(DpadHeadWithinRadius(head, diagonalInside, 0.30f) &&
         !DpadHeadWithinRadius(head, diagonalOutside, 0.30f), "head radius measures all three axes");
     Check(!DpadHeadWithinRadius(nullptr, head, 0.30f) &&

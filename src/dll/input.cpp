@@ -362,6 +362,9 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 }
             }
         }
+        static thread_local DpadMovementLatch dpadMovement;
+        dpadMode = dpadMovement.Step(dpadMode, g_config.dpad_keep_moving && Game_MoveStickIsLocomotion() &&
+            pad.moveX * pad.moveX + pad.moveY * pad.moveY > 0.04f);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         if (dpadMode) g_witness.raw |= seat_witness::RawDpadGesture;
 #endif
