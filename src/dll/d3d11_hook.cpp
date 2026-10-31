@@ -1986,12 +1986,50 @@ static std::atomic<uint64_t> g_lastGamePresentMs{0};
 static std::atomic<uint64_t> g_deviceSharedAtMs{0};
 static void DeviceShareProved(uint64_t now);
 
+// A host's presents, every 10 s and at each new swapchain: which swapchain, and what DXGI says became of them. The
+// flat window can stop changing while these go on (Project Reclaimer's later engines).
+static void HostPresentReport(IDXGISwapChain* sc, HRESULT hr, uint64_t now)
+{
+    static IDXGISwapChain* lastSwapchain = nullptr;
+    static uint64_t lastMs = 0;
+    static uint32_t presents = 0, notOk = 0;
+    static HRESULT lastNotOk = S_OK;
+    ++presents;
+    if (hr != S_OK)
+    {
+        ++notOk;
+        lastNotOk = hr;
+    }
+    if (!sc || (sc == lastSwapchain && now - lastMs < 10000))
+        return;
+    lastSwapchain = sc;
+    lastMs = now;
+    DXGI_SWAP_CHAIN_DESC desc{};
+    sc->GetDesc(&desc);
+    UINT lastCount = 0;
+    const HRESULT countResult = sc->GetLastPresentCount(&lastCount);
+    DXGI_FRAME_STATISTICS stats{};
+    const HRESULT statsResult = sc->GetFrameStatistics(&stats);
+    BOOL fullscreen = FALSE;
+    sc->GetFullscreenState(&fullscreen, nullptr);
+    LOG("host presents: swapchain %p effect %d flags 0x%X %ux%u window %p fullscreen %d: %u presents, %u not S_OK "
+        "(last 0x%08X); present count 0x%08X/%u; on screen 0x%08X: count %u, refresh %u",
+        static_cast<void*>(sc), static_cast<int>(desc.SwapEffect), desc.Flags, desc.BufferDesc.Width,
+        desc.BufferDesc.Height, static_cast<void*>(desc.OutputWindow), fullscreen ? 1 : 0, presents, notOk,
+        static_cast<unsigned>(lastNotOk), static_cast<unsigned>(countResult), lastCount,
+        static_cast<unsigned>(statsResult), stats.PresentCount, stats.PresentRefreshCount);
+    presents = notOk = 0;
+    lastNotOk = S_OK;
+}
+
 static void NotePresentResult(IDXGISwapChain* sc, HRESULT hr, bool game)
 {
     if (game)
     {
         const uint64_t now = GetTickCount64();
         g_lastGamePresentMs.store(now, std::memory_order_relaxed);
+        if (g_hostOwnsRenderSize)
+            HostPresentReport(sc, hr, now);
         // A present Windows did not show: the window is covered or minimised.
         static std::atomic<bool> loggedOccluded{false};
         if (hr == DXGI_STATUS_OCCLUDED && !loggedOccluded.exchange(true, std::memory_order_relaxed))
@@ -2059,6 +2097,12 @@ static HRESULT STDMETHODCALLTYPE CreateSwapChainForHwndHook(IDXGIFactory2* self,
     HRESULT hr = CreateSwapChainForHwndBody(self, device, hwnd, pDesc, pFullscreen, restrictOut, ppSwapChain);
     if (RetrySwapchainAfterDeviceShare(hr))
         hr = CreateSwapChainForHwndBody(self, device, hwnd, pDesc, pFullscreen, restrictOut, ppSwapChain);
+    if (g_hostOwnsRenderSize && pDesc)
+        LOG("host swapchain: created for window %p: %ux%u format %d effect %d scaling %d alpha %d flags 0x%X, %s, "
+            "result 0x%08X, swapchain %p", static_cast<void*>(hwnd), pDesc->Width, pDesc->Height,
+            static_cast<int>(pDesc->Format), static_cast<int>(pDesc->SwapEffect), static_cast<int>(pDesc->Scaling),
+            static_cast<int>(pDesc->AlphaMode), pDesc->Flags, pFullscreen ? "fullscreen description" : "windowed",
+            static_cast<unsigned>(hr), SUCCEEDED(hr) && ppSwapChain ? static_cast<void*>(*ppSwapChain) : nullptr);
     SwapchainsChanged();
     return hr;
 }
@@ -2101,6 +2145,12 @@ static HRESULT STDMETHODCALLTYPE CreateSwapChainHook(IDXGIFactory* self, IUnknow
     HRESULT hr = CreateSwapChainBody(self, device, pDesc, ppSwapChain);
     if (RetrySwapchainAfterDeviceShare(hr))
         hr = CreateSwapChainBody(self, device, pDesc, ppSwapChain);
+    if (g_hostOwnsRenderSize && pDesc)
+        LOG("host swapchain: created (legacy call) for window %p: %ux%u format %d effect %d flags 0x%X, windowed %d, "
+            "result 0x%08X, swapchain %p", static_cast<void*>(pDesc->OutputWindow), pDesc->BufferDesc.Width,
+            pDesc->BufferDesc.Height, static_cast<int>(pDesc->BufferDesc.Format), static_cast<int>(pDesc->SwapEffect),
+            pDesc->Flags, pDesc->Windowed ? 1 : 0, static_cast<unsigned>(hr),
+            SUCCEEDED(hr) && ppSwapChain ? static_cast<void*>(*ppSwapChain) : nullptr);
     SwapchainsChanged();
     return hr;
 }

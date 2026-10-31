@@ -20327,6 +20327,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 // other host drawing is not held for: under ODST it draws into every frame. The view is let go at
                 // once: it would hold the backbuffer, which a host's next engine needs freed.
                 const GameTitle mirrorTitle=TitleAdapter_GetActiveTitle();
+                static uint32_t mirrorFrames=0,mirrorDraws=0;
+                static uint64_t mirrorReportMs=0;
+                ++mirrorFrames;
                 if (g_config.desktop_mirror&&stereoWorldFrame&&!D3D_HostUiPanelIsScreen()&&
                     (mirrorTitle==GameTitle::Halo3||mirrorTitle==GameTitle::Halo3ODST))
                 {
@@ -20335,6 +20338,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     RECT mirrorClient{};
                     D3D11_VIEWPORT mirrorViewport{};
                     mirrorViewport.MaxDepth=1.0f;
+                    // Every 10 s: whether the drawing changes the backbuffer the window is to show.
+                    const uint64_t mirrorNowMs=GetTickCount64();
+                    const bool mirrorReport=mirrorNowMs-mirrorReportMs>=10000;
+                    uint32_t texelBefore=0,texelAfter=0;
+                    const bool readBefore=mirrorReport&&ReadDesktopMiddle(backbuffer,bd,texelBefore);
                     const bool mirrored=g_eyeCache[mirrorEye]&&g_eyeHasImage[mirrorEye]&&
                         Game_GetRenderHalfFovs(g_preparedFrame.serial,mirrorHalfX,mirrorHalfY)&&
                         GetClientRect(D3D_GameWindow(),&mirrorClient)&&
@@ -20345,6 +20353,16 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         DrawEyeToDesktop(g_eyeCache[mirrorEye],g_eyeCacheDesc,backbuffer,bd,mirrorViewport);
                     if (g_ceDesktopRtv) g_ceDesktopRtv->Release();
                     g_ceDesktopRtv=nullptr;g_ceDesktopBuffer=nullptr;
+                    mirrorDraws+=mirrored?1u:0u;
+                    if (mirrorReport)
+                    {
+                        const bool readAfter=ReadDesktopMiddle(backbuffer,bd,texelAfter);
+                        LOG("desktop mirror: %u of %u frames drawn in 10 s; backbuffer %p middle texel %s%08X -> %s%08X",
+                            mirrorDraws,mirrorFrames,static_cast<void*>(backbuffer),readBefore?"":"unread ",texelBefore,
+                            readAfter?"":"unread ",texelAfter);
+                        mirrorReportMs=mirrorNowMs;
+                        mirrorDraws=mirrorFrames=0;
+                    }
                     static int lastMirrorState=-1;
                     if (lastMirrorState!=static_cast<int>(mirrored))
                     {
@@ -20366,6 +20384,19 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             static_cast<void*>(mirrorChain.OutputWindow),chainClass,
                             IsWindowVisible(mirrorChain.OutputWindow)?1:0,static_cast<void*>(D3D_GameWindow()),
                             static_cast<void*>(top),topClass,static_cast<void*>(GetForegroundWindow()));
+                        LOG("desktop mirror: that window: style 0x%08llX, extended 0x%08llX, %ldx%ld at %ld,%ld",
+                            static_cast<unsigned long long>(GetWindowLongPtrW(mirrorChain.OutputWindow,GWL_STYLE)),
+                            static_cast<unsigned long long>(GetWindowLongPtrW(mirrorChain.OutputWindow,GWL_EXSTYLE)),
+                            shown.right-shown.left,shown.bottom-shown.top,shown.left,shown.top);
+                        EnumChildWindows(mirrorChain.OutputWindow,[](HWND child,LPARAM)->BOOL{
+                            char childClass[64]{};
+                            GetClassNameA(child,childClass,sizeof(childClass));
+                            RECT rect{};GetWindowRect(child,&rect);
+                            LOG("desktop mirror: child window %p (%s), visible %d, %ldx%ld at %ld,%ld",
+                                static_cast<void*>(child),childClass,IsWindowVisible(child)?1:0,
+                                rect.right-rect.left,rect.bottom-rect.top,rect.left,rect.top);
+                            return TRUE;
+                        },0);
                     }
                 }
 

@@ -5,6 +5,8 @@ namespace
 ID3D11RenderTargetView* g_ceDesktopRtv{};
 ID3D11Texture2D* g_ceDesktopBuffer{}; // identity held by g_ceDesktopRtv
 ID3D11PixelShader* g_ceDesktopPs[3]{};
+ID3D11Texture2D* g_desktopProbe{}; // one texel, in g_desktopProbeFormat
+DXGI_FORMAT g_desktopProbeFormat{};
 
 // The shared blit backup predates shader class linkage and tessellation.
 // Keep the complete shader bindings local to this optional desktop draw.
@@ -26,6 +28,34 @@ void ReleaseCeDesktopMirror()
     g_ceDesktopRtv=nullptr;g_ceDesktopBuffer=nullptr;
     for (auto*& shader:g_ceDesktopPs)
     { if (shader) shader->Release();shader=nullptr; }
+    if (g_desktopProbe) g_desktopProbe->Release();
+    g_desktopProbe=nullptr;
+}
+
+// The backbuffer's middle texel as it stands, its first four bytes. It waits for the GPU: for occasional evidence only.
+bool ReadDesktopMiddle(ID3D11Texture2D* backbuffer,const D3D11_TEXTURE2D_DESC& descriptor,uint32_t& texel)
+{
+    if (!g_device||!g_context||!backbuffer||descriptor.SampleDesc.Count!=1) return false;
+    if (g_desktopProbe&&g_desktopProbeFormat!=descriptor.Format)
+    { g_desktopProbe->Release();g_desktopProbe=nullptr; }
+    if (!g_desktopProbe)
+    {
+        D3D11_TEXTURE2D_DESC probe{};
+        probe.Width=probe.Height=probe.MipLevels=probe.ArraySize=1;
+        probe.Format=descriptor.Format;
+        probe.SampleDesc.Count=1;
+        probe.Usage=D3D11_USAGE_STAGING;
+        probe.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+        if (FAILED(g_device->CreateTexture2D(&probe,nullptr,&g_desktopProbe))) return false;
+        g_desktopProbeFormat=descriptor.Format;
+    }
+    const D3D11_BOX middle{descriptor.Width/2,descriptor.Height/2,0,descriptor.Width/2+1,descriptor.Height/2+1,1};
+    g_context->CopySubresourceRegion(g_desktopProbe,0,0,0,0,backbuffer,0,&middle);
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(g_context->Map(g_desktopProbe,0,D3D11_MAP_READ,0,&mapped))) return false;
+    memcpy(&texel,mapped.pData,sizeof(texel));
+    g_context->Unmap(g_desktopProbe,0);
+    return true;
 }
 
 bool CeDesktopViewport(const halo_ce::EyeCache::Completed& pair,
