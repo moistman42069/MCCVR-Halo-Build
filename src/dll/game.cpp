@@ -54663,7 +54663,16 @@ void Game_AutoVrTick()
     const bool hostScreenOnPanel =
         reclaimer_host::ScreenShownAsPanel(hostScreenUp, hostDrawing_.gameFrame, D3D_HostUiPanelUsable());
     const bool hostScreenFlat = hostScreenUp && !hostScreenOnPanel;
-    D3D_HostUiPanelCarriesScreen(hostScreenOnPanel);
+    // The panel goes on showing whatever the host draws; only this takes the controller for the menu pointer.
+    const bool hostScreenTakesInput = hostScreenOnPanel && (!hostDrawing_.inPlay || hostScreenRule.OpenedByPress());
+    D3D_HostUiPanelCarriesScreen(hostScreenTakesInput);
+    static bool previousHostScreenTakesInput = false;
+    if (hostScreenTakesInput != previousHostScreenTakesInput)
+    {
+        previousHostScreenTakesInput = hostScreenTakesInput;
+        LOG("host screen: %s", hostScreenTakesInput ? "the menu pointer has the controller"
+                                                    : "the controller is the game's");
+    }
     static int previousHostDrawing = 0; // 0 nothing, 1 an overlay, 2 a screen on the flat picture, 3 one on the panel
     const int hostDrawing = hostScreenOnPanel ? 3 : hostScreenUp ? 2 : hostDraws ? 1 : 0;
     if (hostDrawing != previousHostDrawing)

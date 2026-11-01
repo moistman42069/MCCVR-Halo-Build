@@ -9,8 +9,32 @@ static int g_failed = 0;
 #define CHECK(condition) \
     do { if (!(condition)) { ++g_failed; std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #condition); } } while (0)
 
+static void PopupInPlayIsNotOpenedByPress()
+{
+    using reclaimer_host::ScreenRule;
+    ScreenRule rule;
+    ScreenRule::In in{};
+    in.hostDraws = true;in.inPlay = true;in.gameFrame = true;in.coverageKnown = true;in.coveragePermille = 1000;
+    in.nowMs = 1000;
+    const bool popupIsScreen = rule.Step(in);
+    const bool popupOpened = rule.OpenedByPress();
+    // Closed, then the player's own Menu press opens one.
+    in.hostDraws = false;in.nowMs = 2000;rule.Step(in);
+    in.menuPressSerial = 1;in.nowMs = 2100;rule.Step(in);
+    in.hostDraws = true;in.nowMs = 2200;
+    const bool menuIsScreen = rule.Step(in);
+    const bool menuOpened = rule.OpenedByPress();
+    // Its close: the drawing goes.
+    in.hostDraws = false;in.nowMs = 5000;rule.Step(in);
+    const bool stillOpened = rule.OpenedByPress();
+    CHECK(popupIsScreen && !popupOpened);
+    CHECK(menuIsScreen && menuOpened);
+    CHECK(!stillOpened);
+}
+
 int main()
 {
+    PopupInPlayIsNotOpenedByPress();
     // The path a person gives, and the client a join-link command starts.
     {
         const auto Check = [](bool ok, const char* what) {
