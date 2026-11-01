@@ -952,6 +952,11 @@ namespace
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Hold your left controller to your head and press Y for the scoreboard.\n"
                               "Uses the key Tab. If you rebound it, set reclaimer_scoreboard_key in halomccvr.cfg.");
+        changed |= ImGui::Checkbox("A and B near my head vote in Project Reclaimer", &g_config.reclaimer_vote_gesture);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Hold your right controller to your head: A votes yes, B votes no.\n"
+                              "Uses the keys F5 and F6. If you rebound them, set reclaimer_vote_yes_key and\n"
+                              "reclaimer_vote_no_key in halomccvr.cfg.");
         changed |= ImGui::Checkbox("Keep walking when my hand comes up", &g_config.dpad_keep_moving);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("If you're walking when your hand reaches your head, you keep walking.\n"

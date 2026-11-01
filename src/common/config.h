@@ -703,6 +703,9 @@ struct Config
     int reclaimer_talk_key = 0x56; // its Windows virtual-key code: V, the host's default for Push to talk
     bool reclaimer_scoreboard_gesture = true; // Project Reclaimer: Y with the left controller at the head shows the scoreboard
     int reclaimer_scoreboard_key = 0x09; // its Windows virtual-key code: Tab, the host's default
+    bool reclaimer_vote_gesture = true; // Project Reclaimer: A and B with the right controller at the head vote yes and no
+    int reclaimer_vote_yes_key = 0x74; // Windows virtual-key codes: F5 and F6, the host's defaults
+    int reclaimer_vote_no_key = 0x75;
     // Quest 3 alternate D-pad: touch the physical left thumb rest, then use
     // the physical right stick. Handedness never swaps these controls.
     bool quest_thumbrest_dpad = false;
