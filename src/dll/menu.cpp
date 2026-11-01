@@ -1113,7 +1113,7 @@ namespace
             for(const auto& title:g_config.vr_bindings)
                 contextualTrigger=contextualTrigger&&title[vr_mapping::Grenade]==vr_mapping::SupportTriggerFree&&
                     title[vr_mapping::Zoom]==vr_mapping::SupportTriggerOnGun;
-            if(ImGui::Checkbox("Left trigger follows your left hand",&contextualTrigger))
+            if(ImGui::Checkbox("Grip-contextual Trigger",&contextualTrigger))
             {
                 for(auto& title:g_config.vr_bindings)
                 {
@@ -1127,7 +1127,7 @@ namespace
                 "turning it off puts them back on Automatic. Reload and holster grips send nothing. Dual wielding and "
                 "vehicle seats keep the plain trigger.");
             ImGui::BeginDisabled(!contextualTrigger);
-            if(ImGui::Checkbox("Gripping air uses equipment",&g_config.trigger_air_equipment))
+            if(ImGui::Checkbox("Empty Grip + Trigger uses Equipment",&g_config.trigger_air_equipment))
             {
                 for(auto& title:g_config.vr_bindings)
                     if(g_config.trigger_air_equipment) title[vr_mapping::Equipment]=vr_mapping::SupportTriggerAir;
@@ -1136,9 +1136,8 @@ namespace
                 if(g_config.trigger_air_equipment) g_config.vr_action_mapping=true;
                 changed=true;
             }
-            if(ImGui::IsItemHovered())
-                ImGui::SetTooltip("Pull the left trigger while gripping nothing to use equipment.\n"
-                                  "Off, or in a game without equipment: that pull throws a grenade.");
+            ImGui::TextWrapped("Squeeze the grip with nothing in that hand, then pull the trigger, to use your equipment. "
+                "Off, or in a game without equipment, that pull throws a grenade.");
             ImGui::EndDisabled();
             ImGui::Spacing();
             ImGui::Combo("Settings for",&selectedTitle,weapon_interaction::kTitleNames,6);
