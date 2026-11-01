@@ -5,6 +5,36 @@
 #include <cstdint>
 
 namespace game_menu_pointer {
+// The right stick as a mouse wheel over what the pointer is on: whole notches, faster the further it is pushed, from
+// the time it was held. Positive is up, away from the player.
+struct StickWheel
+{
+    float pending = 0.0f;
+    uint32_t lastMs = 0;
+    int Step(float stick, uint32_t now) noexcept
+    {
+        constexpr float kDeadzone = 0.25f, kNotchesPerSecond = 10.0f;
+        const uint32_t elapsed = lastMs ? std::min<uint32_t>(now - lastMs, 100u) : 0u;
+        lastMs = now;
+        if (!std::isfinite(stick) || std::fabs(stick) < kDeadzone)
+        {
+            pending = 0.0f;
+            return 0;
+        }
+        // The first touch moves one notch at once, so a flick always scrolls.
+        if (pending == 0.0f)
+            pending = stick > 0.0f ? 1.0f : -1.0f;
+        else
+            pending += stick * kNotchesPerSecond * float(elapsed) * 0.001f;
+        const int notches = int(pending);
+        pending -= float(notches);
+        if (pending == 0.0f)
+            pending = stick > 0.0f ? 1e-4f : -1e-4f;
+        return notches;
+    }
+    void Reset() noexcept { pending = 0.0f; lastMs = 0; }
+};
+
 inline bool MenuMode(RuntimeMode mode, bool pauseScreen) noexcept
 {
     // MCC's shell preloads all six modules. The camera-owner resolver calls

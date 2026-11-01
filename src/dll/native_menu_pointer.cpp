@@ -19,8 +19,10 @@ std::atomic<uint64_t> visual{0};
 std::atomic<unsigned> moveCount{0}, clickCount{0};
 std::atomic<unsigned> cursorFailures{0};
 std::atomic<const char*> frameStatus{"no-screen"}, deliveryStatus{"idle"};
+std::atomic<float> scrollStick{0.0f};
 // All remaining state belongs exclusively to MCC's window thread.
 game_menu_pointer::Pointer pointer;
+game_menu_pointer::StickWheel stickWheel;
 UINT_PTR timer = 0;
 bool mouseDown = false;
 bool faultLogged = false;
@@ -58,6 +60,7 @@ void Cancel()
     delivered.store(false, std::memory_order_release);
     visual.store(0, std::memory_order_release);
     pointer.Reset();
+    stickWheel.Reset();
     if (!Button(false)) Fault();
     // Retry a failed release on the existing timer. Never forget a sent down.
     if (timer && !mouseDown) { KillTimer(nullptr, timer); timer = 0; }
@@ -98,6 +101,15 @@ void Apply()
             LOG("game menu pointer: %s at %d,%d of %dx%d", mouseDown ? "press" : "release", int(result.x),
                 int(result.y), int(client.right-client.left), int(client.bottom-client.top));
         moveCount.fetch_add(1, std::memory_order_relaxed);
+        // The cursor is on the target now, so the wheel goes to what is under it. Not during a drag.
+        const int notches = stickWheel.Step(scrollStick.load(std::memory_order_acquire), GetTickCount());
+        if (notches && !mouseDown) {
+            INPUT wheel{};
+            wheel.type = INPUT_MOUSE;
+            wheel.mi.dwFlags = MOUSEEVENTF_WHEEL;
+            wheel.mi.mouseData = static_cast<DWORD>(notches * WHEEL_DELTA);
+            if (SendInput(1, &wheel, sizeof(wheel)) != 1) Fault();
+        }
         deliveryStatus.store("delivered");
         visual.store(game_menu_pointer::Pack(GetTickCount(), true,
             float(result.x) / (client.right-client.left),
@@ -126,6 +138,10 @@ void NativeMenuPointer_Publish(bool active, float u, float v, bool pressed)
             postFailures.fetch_add(1, std::memory_order_relaxed);
         }
     }
+}
+void NativeMenuPointer_PublishScroll(float stick)
+{
+    scrollStick.store(stick, std::memory_order_release);
 }
 bool NativeMenuPointer_ConsumesTrigger()
 {
