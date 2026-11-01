@@ -41,15 +41,16 @@ void Check(bool ok,const char* message)
 {++checks;if(!ok){++failures;std::printf("FAIL: %s\n",message);}}
 int main()
 {
-    // Every title's Needler, Plasma Pistol and plasma rifles aim one-handed by name, and nothing else does; the Needle
+    // Every title's Needler, Plasma Pistol, plasma rifles and magnums aim one-handed by name, and nothing else does; the Needle
     // Rifle is a long gun, and a plasma cannon or launcher is not a plasma rifle.
     for(const auto& model:weapon_model::kModels)
     {
         const char* const name=model.name;
         const bool plasmaHandgun=strstr(name,"plasma_pistol")||strstr(name,"plasma pistol")||
-            strstr(name,"plasma_rifle")||strstr(name,"plasma rifle");
+            strstr(name,"plasma_rifle")||strstr(name,"plasma rifle")||strstr(name,"magnum")||strstr(name,"automag")||
+            strcmp(name,"pistol")==0;
         Check(weapon_model::AlwaysOneHandedAim(&model)==(strstr(name,"needler")!=nullptr||plasmaHandgun),
-              "only a Needler, Plasma Pistol or plasma rifle always aims one-handed");
+              "only a Needler, Plasma Pistol, plasma rifle or magnum always aims one-handed");
     }
     {
         int ce=0,brute=0,red=0;

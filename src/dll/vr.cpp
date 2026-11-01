@@ -14052,6 +14052,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
            evidence!=support_grip::OwnerEvidence::KnownPresent)return false;
         const authored_grab::Key key{unsigned(title),generation,owner.unit,owner.weapon};
         authored_grab::Point local{};
+        // By name, so this stands whatever the grip point reads, or if there is none to read.
+        const bool namedOneHanded=weapon_model::AlwaysOneHandedAim(weapon_model::Find(title,VR_GetWeaponModelIdentity(
+            title,generation,g_contactSpaceEpoch.load(std::memory_order_acquire),GetTickCount64())));
+        if(namedOneHanded){
+            g_gripZoneKind.store(2,std::memory_order_release);
+            g_gripZoneKindMs.store(GetTickCount64(),std::memory_order_release);
+        }
         if(!authored_grab::publication.Read(key,GetTickCount64(),local)){
             ++authored_grab::fallbacks;hit=false;
             static uint64_t missLogMs=0;
@@ -14076,9 +14083,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             static authored_grab::GripZoneKindMemory zoneMemory;
             int zoneKind=zoneMemory.Step(key,local,g_config.two_hand_one_hand_range_m,
                 g_twoHandLatched.load(std::memory_order_relaxed),GetTickCount64());
-            if(weapon_model::AlwaysOneHandedAim(weapon_model::Find(title,VR_GetWeaponModelIdentity(title,generation,
-                g_contactSpaceEpoch.load(std::memory_order_acquire),GetTickCount64()))))
-                zoneKind=2;
+            if(namedOneHanded)zoneKind=2;
             const int previousKind=g_gripZoneKind.exchange(zoneKind,std::memory_order_acq_rel);
             g_gripZoneKindMs.store(GetTickCount64(),std::memory_order_release);
             if(previousKind!=zoneKind)
@@ -15823,6 +15828,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if (hit) clickLock.Apply(g_nativePointerTrigger,u,v);
         else clickLock.Reset();
         g_nativePointerFrame = {hit, pressed, u, v};
+        NativeMenuPointer_PublishScroll(hit ? g_padState.turnY : 0.0f);
         NativeMenuPointer_FrameStatus(hit ? "hit" : "ray-miss");
     }
 

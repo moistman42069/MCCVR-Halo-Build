@@ -2519,6 +2519,7 @@ namespace
     weapon_muzzle::Store g_odstMuzzles;
     std::atomic<bool> g_odstMuzzleBindingsReady{false};
     bool OdstCaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept;
+    bool OdstCaptureGripOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept;
     void PublishOdstIndependentAim();
     void OdstPublishMuzzlePalette(uint16_t tag,const FpInterpolationContext& context,
         const BoneMatrix* destination,uint32_t generation) noexcept;
@@ -2534,6 +2535,7 @@ namespace
     weapon_muzzle::Store g_reachBarrelMuzzles;
     std::atomic<bool> g_reachBarrelBindingsReady{false};
     bool ReachCaptureMuzzleOwner(int view,int slot,uint32_t& unit,uint32_t& weapon) noexcept;
+    bool ReachCaptureGripOwner(int view,int slot,uint32_t& unit,uint32_t& weapon) noexcept;
     struct ReachFpInterpolationContext;
     void ReachApplyVisualHandOffsets(uint16_t tag,const int32_t* boneMap,
         const ReachFpInterpolationContext& context,BoneMatrix* destination);
@@ -16796,6 +16798,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
             Game_ReadPrimaryWeaponEvidence(GameTitle::Halo3ODST, supportBefore);
         uint32_t muzzleUnit=UINT32_MAX,muzzleWeapon=UINT32_MAX;
         const bool muzzleOwner=OdstCaptureMuzzleOwner(view,slot,muzzleUnit,muzzleWeapon);
+        uint32_t gripUnit=UINT32_MAX,gripWeapon=UINT32_MAX;
+        const bool gripOwner=OdstCaptureGripOwner(view,slot,gripUnit,gripWeapon);
         bool result = false;
         FpInterpolateFn original =
             reinterpret_cast<FpInterpolateFn>(g_odstCamera.originalFpInterpolate);
@@ -16876,6 +16880,11 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     if(muzzleOwner&&OdstCaptureMuzzleOwner(view,slot,currentUnit,currentWeapon)&&
                         currentUnit==muzzleUnit&&currentWeapon==muzzleWeapon)
                     {context.muzzleUnit=muzzleUnit;context.muzzleWeapon=muzzleWeapon;}
+                    currentUnit=currentWeapon=UINT32_MAX;
+                    const bool gripKept=gripOwner&&OdstCaptureGripOwner(view,slot,currentUnit,currentWeapon)&&
+                        currentUnit==gripUnit&&currentWeapon==gripWeapon;
+                    context.gripUnit=gripKept?gripUnit:UINT32_MAX;
+                    context.gripWeapon=gripKept?gripWeapon:UINT32_MAX;
                     context.player = view;
                     context.slot = slot;
                     context.wrist = layoutOk?layout.rightWrist:-1;
@@ -25801,6 +25810,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         bool transformed = false;
         uint32_t generation = 0;
         uint32_t muzzleUnit = UINT32_MAX, muzzleWeapon = UINT32_MAX;
+        uint32_t gripUnit = UINT32_MAX, gripWeapon = UINT32_MAX;
         uint64_t preparedSerial = 0;
         uint64_t captureSerial = 0;
         BoneMatrix* source = nullptr;
@@ -29738,6 +29748,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
         if (ReachCaptureMuzzleOwner(view,slot,currentUnit,currentWeapon) &&
             muzzleUnit==currentUnit && muzzleWeapon==currentWeapon)
         { context.muzzleUnit=muzzleUnit;context.muzzleWeapon=muzzleWeapon; }
+        currentUnit=currentWeapon=UINT32_MAX;
+        if (ReachCaptureGripOwner(view,slot,currentUnit,currentWeapon))
+        { context.gripUnit=currentUnit;context.gripWeapon=currentWeapon; }
 
         const ReachFpLayoutCacheEntry* frozen=
             ReachFindFrozenLayout(count,view,id,slot);
@@ -30182,6 +30195,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 fp.valid=true;
                 fp.generation=context.generation;
                 fp.muzzleUnit=context.muzzleUnit;fp.muzzleWeapon=context.muzzleWeapon;
+                fp.gripUnit=context.gripUnit;fp.gripWeapon=context.gripWeapon;
                 selectedSource=context.untouchedLive;
                 const BoneMatrix* replacement=selectedSource;
                 FpExplicitPoseTargets targets=context.targets;

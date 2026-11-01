@@ -2,9 +2,10 @@
 // retail 2E9E65/2E9E8E, independently established
 // in native reload-tail evidence. Capture before AND after interpolation, so
 // a later inventory lookup cannot attach an old palette to a replacement gun.
-bool OdstCaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept
+// Apart from the options: co-op safe shots stands them down, and the authored grip point goes on needing this.
+bool OdstCaptureGripOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept
 {
-    if(!(Sight_GunBarrelAim()||Sight_ShotsFromMuzzle()) || !g_odstMuzzleBindingsReady.load(std::memory_order_acquire) ||
+    if(!g_odstMuzzleBindingsReady.load(std::memory_order_acquire) ||
         player!=0 || slot<0 || slot>1 || !g_odstEngineTlsIndex || !g_odstPlayerUnitGetter ||
         !g_odstUnitInVehicle)return false;
     __try
@@ -21,6 +22,11 @@ bool OdstCaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon)
         unit=owner;weapon=weapons[slot];return true;
     }
     __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+
+bool OdstCaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept
+{
+    return (Sight_GunBarrelAim()||Sight_ShotsFromMuzzle()) && OdstCaptureGripOwner(player,slot,unit,weapon);
 }
 
 void OdstPublishMuzzlePalette(uint16_t tag,const FpInterpolationContext& context,

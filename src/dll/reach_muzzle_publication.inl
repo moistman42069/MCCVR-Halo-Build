@@ -1,6 +1,7 @@
-bool ReachCaptureMuzzleOwner(int view,int slot,uint32_t& unit,uint32_t& weapon) noexcept
+// Apart from the options: co-op safe shots stands them down, and the authored grip point goes on needing this.
+bool ReachCaptureGripOwner(int view,int slot,uint32_t& unit,uint32_t& weapon) noexcept
 {
-    if(!(Sight_GunBarrelAim()||Sight_ShotsFromMuzzle())||!g_reachBarrelBindingsReady.load(std::memory_order_acquire)||view!=0||slot<0||slot>1||
+    if(!g_reachBarrelBindingsReady.load(std::memory_order_acquire)||view!=0||slot<0||slot>1||
         !g_reachCamera.playerUnitByOutputUser||!g_reachCamera.unitInVehicle)return false;
     __try
     {
@@ -15,6 +16,10 @@ bool ReachCaptureMuzzleOwner(int view,int slot,uint32_t& unit,uint32_t& weapon) 
         unit=owner;weapon=weapons[slot];return true;
     }
     __except(EXCEPTION_EXECUTE_HANDLER){return false;}
+}
+bool ReachCaptureMuzzleOwner(int view,int slot,uint32_t& unit,uint32_t& weapon) noexcept
+{
+    return (Sight_GunBarrelAim()||Sight_ShotsFromMuzzle())&&ReachCaptureGripOwner(view,slot,unit,weapon);
 }
 // WHY NO MUZZLE WAS PUBLISHED (dev builds; ReportReachMuzzle prints the window). The barrel lane reads the muzzle
 // this publishes; when it finds none it refuses the shot with "no muzzle publication", and these say why.
