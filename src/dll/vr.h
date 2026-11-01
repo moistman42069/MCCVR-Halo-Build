@@ -1107,7 +1107,8 @@ struct VrPadState
     // of weapon handedness. These axes have already been removed from turn.
     bool thumbrestDpad = false;
     bool exclusiveInput = false;
-    bool talkX = false, scoreboardY = false; // before the pointer's or a menu's hold takes them: these work in lobbies too
+    // Before the pointer's or a menu's hold takes them: these work in lobbies too.
+    bool talkX = false, scoreboardY = false, voteA = false, voteB = false;
     float dpadX = 0.0f, dpadY = 0.0f;
     // Optional body-gesture output, validated again before XInput delivery.
     uint32_t weaponButtons = 0;

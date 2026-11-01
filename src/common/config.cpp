@@ -1401,6 +1401,23 @@ void ConfigLoad(const wchar_t* path)
             ParseBoolSetting(key, val, g_config.reclaimer_talk_gesture);
             continue;
         }
+        if (!strcmp(key, "reclaimer_vote_gesture"))
+        {
+            ParseBoolSetting(key, val, g_config.reclaimer_vote_gesture);
+            continue;
+        }
+        if (!strcmp(key, "reclaimer_vote_yes_key"))
+        {
+            const int code = atoi(val);
+            g_config.reclaimer_vote_yes_key = code > 0 && code < 255 ? code : Config{}.reclaimer_vote_yes_key;
+            continue;
+        }
+        if (!strcmp(key, "reclaimer_vote_no_key"))
+        {
+            const int code = atoi(val);
+            g_config.reclaimer_vote_no_key = code > 0 && code < 255 ? code : Config{}.reclaimer_vote_no_key;
+            continue;
+        }
         if (!strcmp(key, "reclaimer_scoreboard_gesture"))
         {
             ParseBoolSetting(key, val, g_config.reclaimer_scoreboard_gesture);
@@ -2630,6 +2647,13 @@ void ConfigSave()
     fprintf(f, "# The scoreboard key's Windows virtual-key code, if you rebound it: 9 is Tab. (default %d)\n",
             d.reclaimer_scoreboard_key);
     fprintf(f, "reclaimer_scoreboard_key = %d\n\n", g_config.reclaimer_scoreboard_key);
+    fprintf(f, "# Project Reclaimer: A and B with the right controller at the head vote yes and no. (default %d)\n",
+            d.reclaimer_vote_gesture ? 1 : 0);
+    fprintf(f, "reclaimer_vote_gesture = %d\n\n", g_config.reclaimer_vote_gesture ? 1 : 0);
+    fprintf(f, "# The vote keys' Windows virtual-key codes, if you rebound them: 116 is F5, 117 is F6. (defaults %d, %d)\n",
+            d.reclaimer_vote_yes_key, d.reclaimer_vote_no_key);
+    fprintf(f, "reclaimer_vote_yes_key = %d\n", g_config.reclaimer_vote_yes_key);
+    fprintf(f, "reclaimer_vote_no_key = %d\n\n", g_config.reclaimer_vote_no_key);
     fprintf(f, "# Quest 3 alternate D-pad: touch the left controller's thumb rest,\n");
     fprintf(f, "# then move the right stick. Always uses the physical left thumb rest\n");
     fprintf(f, "# and physical right stick, including in left-handed mode.\n");

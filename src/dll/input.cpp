@@ -227,8 +227,15 @@ std::atomic<uint32_t> g_menuPressSerial{0};
     // Project Reclaimer's keys at the head (HeadKeyGesture). Every thread that polls the pad shares each key, so a press
     // happens once. A key only ever goes to this process's own window: anywhere else it would type a letter.
     // Returns whether the button belongs to the key right now.
+    bool ControllerAtHead(int hand)
+    {
+        float headQ[4], headP[3], handQ[4], handP[3];
+        return VR_GetPhysicalControllerPose(hand, handQ, handP) && VR_GetHeadPose(headQ, headP) &&
+            DpadHeadWithinRadius(headP, handP, g_config.dpad_head_radius);
+    }
+
     bool StepHeadKey(HeadKeyGesture& gesture, WORD& sentKey, bool enabled, int key, const char* name, bool padValid,
-                     bool down)
+                     bool down, int hand = 0)
     {
         static SRWLOCK lock = SRWLOCK_INIT;
         AcquireSRWLockExclusive(&lock);
@@ -242,11 +249,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         }
         bool atHead = false;
         if (allowed && down && !gesture.talking)
-        {
-            float headQ[4], headP[3], handQ[4], handP[3];
-            atHead = VR_GetPhysicalControllerPose(0, handQ, handP) && VR_GetHeadPose(headQ, headP) &&
-                DpadHeadWithinRadius(headP, handP, g_config.dpad_head_radius);
-        }
+            atHead = ControllerAtHead(hand);
         const HeadKeyGesture::Key step = gesture.Step(atHead, down, allowed);
         if (step != HeadKeyGesture::Key::None)
         {
@@ -286,14 +289,28 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         const bool yDown = pad.valid && pad.scoreboardY;
         bool yAtHead = false;
         if (yDown && g_hostOwnsRenderSize && g_config.reclaimer_scoreboard_gesture)
-        {
-            float headQ[4], headP[3], handQ[4], handP[3];
-            yAtHead = VR_GetPhysicalControllerPose(0, handQ, handP) && VR_GetHeadPose(headQ, headP) &&
-                DpadHeadWithinRadius(headP, handP, g_config.dpad_head_radius);
-        }
+            yAtHead = ControllerAtHead(0);
+        // B at the right ear gives way to the same chord: Y held with it is the pause, not a vote.
+        static HeadYChord headB;
+        const bool bDown = pad.valid && pad.voteB;
+        bool bAtHead = false;
+        if (bDown && g_hostOwnsRenderSize && g_config.reclaimer_vote_gesture)
+            bAtHead = ControllerAtHead(1);
         AcquireSRWLockExclusive(&headYLock);
-        const HeadYChord::Y yRoute = headY.Step(yDown, yAtHead, pad.b, g_config.y_b_start_chord, GetTickCount64());
+        const uint64_t chordNow = GetTickCount64();
+        const HeadYChord::Y yRoute = headY.Step(yDown, yAtHead, pad.voteB, g_config.y_b_start_chord, chordNow);
+        const HeadYChord::Y bRoute = headB.Step(bDown, bAtHead, pad.scoreboardY, g_config.y_b_start_chord, chordNow);
         ReleaseSRWLockExclusive(&headYLock);
+        static HeadKeyGesture voteYesGesture, voteNoGesture;
+        static WORD voteYesKey = 0, voteNoKey = 0;
+        if (StepHeadKey(voteYesGesture, voteYesKey, g_config.reclaimer_vote_gesture, g_config.reclaimer_vote_yes_key,
+                        "vote yes", pad.valid, pad.valid && pad.voteA, 1))
+            pad.a = false;
+        const bool voteOwnsB = StepHeadKey(voteNoGesture, voteNoKey,
+            g_config.reclaimer_vote_gesture && bRoute != HeadYChord::Y::Game, g_config.reclaimer_vote_no_key, "vote no",
+            pad.valid, bRoute == HeadYChord::Y::Key, 1);
+        if (voteOwnsB || bRoute == HeadYChord::Y::Waiting)
+            pad.b = false;
         const bool scoreboardOwnsY = StepHeadKey(scoreboardGesture, scoreboardKey,
             g_config.reclaimer_scoreboard_gesture && yRoute != HeadYChord::Y::Game, g_config.reclaimer_scoreboard_key,
             "scoreboard", pad.valid, yRoute == HeadYChord::Y::Key);
