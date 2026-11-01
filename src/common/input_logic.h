@@ -64,15 +64,19 @@ float BlendXInputMotors(uint16_t lowFrequencyMotor, uint16_t highFrequencyMotor)
 struct HeadKeyGesture
 {
     enum class Key { None, Press, Release };
+    // The host misses a key held much under this, so a quick press stays down this long. Stopping being allowed still
+    // lets go at once.
+    static constexpr uint64_t kMinHoldMs = 150;
     bool talking = false;
     bool xWasDown = false;
-    Key Step(bool atHead, bool xDown, bool allowed) noexcept
+    uint64_t pressedAtMs = 0;
+    Key Step(bool atHead, bool xDown, bool allowed, uint64_t nowMs) noexcept
     {
         const bool rising = xDown && !xWasDown;
         xWasDown = xDown;
         if (talking)
         {
-            if (xDown && allowed)
+            if (allowed && (xDown || nowMs - pressedAtMs < kMinHoldMs))
                 return Key::None;
             talking = false;
             return Key::Release;
@@ -80,6 +84,7 @@ struct HeadKeyGesture
         if (rising && atHead && allowed)
         {
             talking = true;
+            pressedAtMs = nowMs;
             return Key::Press;
         }
         return Key::None;
@@ -88,7 +93,8 @@ struct HeadKeyGesture
 
 // Y at the head gives way to the Y + B pause. Y waits kHoldOffMs for B before it counts: a Tab tap can leave the host's
 // scoreboard up, so not even a moment of it may go out ahead of a chord. Y away from the head is the game's at once. B at
-// any point in the press gives the whole press to the chord, until Y is let go.
+// any point in the press gives the whole press to the chord, until Y is let go. A tap let go during the wait counts on
+// its release, so the wait never swallows a quick press.
 struct HeadYChord
 {
     static constexpr uint64_t kHoldOffMs = 120;
@@ -96,13 +102,15 @@ struct HeadYChord
     uint64_t downSinceMs = 0;
     bool atHead = false;
     bool chord = false;
+    bool counted = false;
     Y Step(bool yDown, bool atHeadNow, bool bDown, bool chordEnabled, uint64_t nowMs) noexcept
     {
         if (!yDown)
         {
+            const bool tap = downSinceMs && atHead && !chord && !counted;
             downSinceMs = 0;
-            atHead = chord = false;
-            return Y::Game;
+            atHead = chord = counted = false;
+            return tap ? Y::Key : Y::Game;
         }
         if (!downSinceMs)
         {
@@ -115,7 +123,10 @@ struct HeadYChord
             chord = true;
         if (chord)
             return Y::Game;
-        return chordEnabled && nowMs - downSinceMs < kHoldOffMs ? Y::Waiting : Y::Key;
+        if (chordEnabled && nowMs - downSinceMs < kHoldOffMs)
+            return Y::Waiting;
+        counted = true;
+        return Y::Key;
     }
 };
 

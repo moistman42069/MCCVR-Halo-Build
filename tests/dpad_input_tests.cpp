@@ -86,19 +86,27 @@ int main()
     {
         using Key = HeadKeyGesture::Key;
         HeadKeyGesture talk;
-        Check(talk.Step(false, true, true) == Key::None && !talk.talking, "X away from the head is the game's X");
-        Check(talk.Step(true, true, true) == Key::None && !talk.talking, "a hand raised with X already held does not talk");
-        Check(talk.Step(true, false, true) == Key::None, "and letting go does nothing");
-        Check(talk.Step(true, true, true) == Key::Press && talk.talking, "a fresh X at the head presses the key");
-        Check(talk.Step(true, true, true) == Key::None && talk.talking, "held, once");
-        Check(talk.Step(false, true, true) == Key::None && talk.talking, "lowering the hand keeps it held");
-        Check(talk.Step(false, false, true) == Key::Release && !talk.talking, "X's release lets it go");
-        Check(talk.Step(true, false, true) == Key::None, "nothing is down");
-        Check(talk.Step(true, true, true) == Key::Press, "pressed again");
-        Check(talk.Step(true, true, false) == Key::Release && !talk.talking, "focus lost or the menu opened lets it go");
-        Check(talk.Step(true, true, true) == Key::None && !talk.talking, "X still held does not press again");
-        Check(talk.Step(true, false, true) == Key::None, "until it is let go");
-        Check(talk.Step(true, true, false) == Key::None && !talk.talking, "not allowed: no press");
+        uint64_t talkNow = 0;
+        const auto step = [&](bool atHead, bool down, bool allowed) { return talk.Step(atHead, down, allowed, talkNow += 1000); };
+        Check(step(false, true, true) == Key::None && !talk.talking, "X away from the head is the game's X");
+        Check(step(true, true, true) == Key::None && !talk.talking, "a hand raised with X already held does not talk");
+        Check(step(true, false, true) == Key::None, "and letting go does nothing");
+        Check(step(true, true, true) == Key::Press && talk.talking, "a fresh X at the head presses the key");
+        Check(step(true, true, true) == Key::None && talk.talking, "held, once");
+        Check(step(false, true, true) == Key::None && talk.talking, "lowering the hand keeps it held");
+        Check(step(false, false, true) == Key::Release && !talk.talking, "X's release lets it go");
+        Check(step(true, false, true) == Key::None, "nothing is down");
+        Check(step(true, true, true) == Key::Press, "pressed again");
+        Check(step(true, true, false) == Key::Release && !talk.talking, "focus lost or the menu opened lets it go");
+        Check(step(true, true, true) == Key::None && !talk.talking, "X still held does not press again");
+        Check(step(true, false, true) == Key::None, "until it is let go");
+        Check(step(true, true, false) == Key::None && !talk.talking, "not allowed: no press");
+        HeadKeyGesture quick;
+        Check(quick.Step(true, true, true, 5000) == Key::Press, "a quick press");
+        Check(quick.Step(true, false, true, 5040) == Key::None && quick.talking, "stays down after the button is let go");
+        Check(quick.Step(true, false, true, 5000 + HeadKeyGesture::kMinHoldMs) == Key::Release, "for the shortest hold the host sees");
+        Check(quick.Step(true, true, true, 6000) == Key::Press, "pressed again");
+        Check(quick.Step(true, false, false, 6040) == Key::Release, "not allowed lets go without waiting");
     }
     {
         using Y = HeadYChord::Y;
@@ -117,6 +125,18 @@ int main()
         Check(y.Step(true, true, true, true, 5000) == Y::Game, "B first: the chord");
         y.Step(false, true, false, true, 5100);
         Check(y.Step(true, true, true, false, 6000) == Y::Key, "the chord turned off: no wait, and B changes nothing");
+        y.Step(false, true, false, false, 6100);
+        Check(y.Step(true, true, false, true, 7000) == Y::Waiting, "a tap waits like any press");
+        Check(y.Step(false, true, false, true, 7050) == Y::Key, "let go during the wait, it counts once");
+        Check(y.Step(false, true, false, true, 7060) == Y::Game, "and only once");
+        y.Step(true, true, false, true, 8000);
+        y.Step(true, true, false, true, 8000 + HeadYChord::kHoldOffMs);
+        Check(y.Step(false, true, false, true, 8200) == Y::Game, "a press that already counted has nothing more on release");
+        y.Step(true, true, false, true, 9000);
+        y.Step(true, true, true, true, 9050);
+        Check(y.Step(false, true, true, true, 9100) == Y::Game, "letting go of a chord sends nothing");
+        y.Step(true, false, false, true, 10000);
+        Check(y.Step(false, false, false, true, 10050) == Y::Game, "a tap away from the head is the game's");
     }
     {
         // A screen holds the controller only while the character is really gone, and lets go at once.

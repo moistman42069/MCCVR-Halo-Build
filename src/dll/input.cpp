@@ -247,7 +247,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         bool atHead = false;
         if (allowed && down && !gesture.talking)
             atHead = ControllerAtHead(hand);
-        const HeadKeyGesture::Key step = gesture.Step(atHead, down, allowed);
+        const HeadKeyGesture::Key step = gesture.Step(atHead, down, allowed, GetTickCount64());
         if (step != HeadKeyGesture::Key::None)
         {
             const bool press = step == HeadKeyGesture::Key::Press;
@@ -1380,12 +1380,12 @@ void Input_StepHeadKeys(VrPadState& pad)
                     "vote yes", pad.valid, pad.valid && rawA, 1))
         pad.a = false;
     const bool voteOwnsB = StepHeadKey(voteNoGesture, voteNoKey,
-        g_config.reclaimer_vote_gesture && bRoute != HeadYChord::Y::Game, g_config.reclaimer_vote_no_key, "vote no",
+        g_config.reclaimer_vote_gesture && !headB.chord, g_config.reclaimer_vote_no_key, "vote no",
         pad.valid, bRoute == HeadYChord::Y::Key, 1);
     if (voteOwnsB || bRoute == HeadYChord::Y::Waiting)
         pad.b = false;
     const bool scoreboardOwnsY = StepHeadKey(scoreboardGesture, scoreboardKey,
-        g_config.reclaimer_scoreboard_gesture && yRoute != HeadYChord::Y::Game, g_config.reclaimer_scoreboard_key,
+        g_config.reclaimer_scoreboard_gesture && !headY.chord, g_config.reclaimer_scoreboard_key,
         "scoreboard", pad.valid, yRoute == HeadYChord::Y::Key);
     if (scoreboardOwnsY || yRoute == HeadYChord::Y::Waiting)
         pad.y = false;
