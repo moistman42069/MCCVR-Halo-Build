@@ -109,6 +109,11 @@ void Apply()
             wheel.mi.dwFlags = MOUSEEVENTF_WHEEL;
             wheel.mi.mouseData = static_cast<DWORD>(notches * WHEEL_DELTA);
             if (SendInput(1, &wheel, sizeof(wheel)) != 1) Fault();
+            // What a screen that does not scroll was sent, to set beside the report.
+            static unsigned wheelLogs = 0;
+            if (wheelLogs < 24 && ++wheelLogs)
+                LOG("game menu pointer: wheel %d notch(es) at %d,%d of %dx%d", notches, int(result.x), int(result.y),
+                    int(client.right-client.left), int(client.bottom-client.top));
         }
         deliveryStatus.store("delivered");
         visual.store(game_menu_pointer::Pack(GetTickCount(), true,
