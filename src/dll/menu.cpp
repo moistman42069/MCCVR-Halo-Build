@@ -31,6 +31,7 @@
 #include "../common/log.h"
 #include "../common/config.h"
 #include "../common/input_preset.h"
+#include "../common/menu_mirror.h"
 #include "../common/roomscale_recenter_logic.h"
 #include "../common/reclaimer_host_logic.h"
 #include "../common/weapon_interaction_logic.h"
@@ -3188,6 +3189,44 @@ void Menu_PostLiveResize()
     }
 }
 
+#if HALOMCCVR_SETTINGS_WINDOW
+static void MirrorPublish(DXGI_FORMAT) {}
+bool Menu_MirrorBeat() { return false; }
+#else
+static MenuMirrorShared* g_mirror = nullptr;
+static void MirrorPublish(DXGI_FORMAT format)
+{
+    IDXGIResource* resource = nullptr;
+    HANDLE shared = nullptr;
+    if (FAILED(g_tex->QueryInterface(IID_PPV_ARGS(&resource))))
+        return;
+    const HRESULT handle = resource->GetSharedHandle(&shared);
+    resource->Release();
+    if (FAILED(handle) || !shared)
+        return;
+    const HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+        static_cast<DWORD>(sizeof(MenuMirrorShared)), kMenuMirrorMapping);
+    if (!mapping)
+        return;
+    auto* block = static_cast<MenuMirrorShared*>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(MenuMirrorShared)));
+    if (!block)
+        return;
+    block->format.store(static_cast<uint32_t>(format));
+    block->texture.store(reinterpret_cast<uint64_t>(shared));
+    block->version.store(kMenuMirrorVersion, std::memory_order_release);
+    g_mirror = block;
+}
+bool Menu_MirrorBeat()
+{
+    if (!g_mirror)
+        return false;
+    const uint64_t now = GetTickCount64();
+    g_mirror->gameBeatMs.store(now, std::memory_order_relaxed);
+    const uint64_t desktop = g_mirror->desktopBeatMs.load(std::memory_order_relaxed);
+    return desktop && now >= desktop && now - desktop < kMenuMirrorAttachedMs;
+}
+#endif
+
 bool Menu_Init(HWND gameWindow, ID3D11Device* device, ID3D11DeviceContext* context, DXGI_FORMAT rtFormat)
 {
     if (g_ready)
@@ -3205,6 +3244,9 @@ bool Menu_Init(HWND gameWindow, ID3D11Device* device, ID3D11DeviceContext* conte
     td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_DEFAULT;
     td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+#if !HALOMCCVR_SETTINGS_WINDOW
+    td.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+#endif
     if (FAILED(device->CreateTexture2D(&td, nullptr, &g_tex)) ||
         FAILED(device->CreateRenderTargetView(g_tex, nullptr, &g_rtv)))
     {
@@ -3251,6 +3293,7 @@ bool Menu_Init(HWND gameWindow, ID3D11Device* device, ID3D11DeviceContext* conte
         PostMessageW(gameWindow, kFitGameWindowMsg, 0, 0);
 
     NativeMenuPointer_Init(gameWindow);
+    MirrorPublish(rtFormat);
     g_ready = true;
     LOG("menu ready (F1 to toggle)");
     return true;
@@ -3337,18 +3380,50 @@ ID3D11Texture2D* Menu_Render()
     // The Win32 backend updates the desktop mouse during NewFrame. Apply the
     // VR ray afterward so it is the final pointer sample ImGui consumes.
     ImGuiIO& io = ImGui::GetIO();
-    if (g_vrPointer.hit)
-        io.AddMousePosEvent(g_vrPointer.u * MENU_W, g_vrPointer.v * MENU_H);
+    // A pointer on the desktop window goes first; off it, the headset's has the menu.
+    bool pointerHit = g_vrPointer.hit, pointerPressed = g_vrPointer.pressed;
+    float pointerU = g_vrPointer.u, pointerV = g_vrPointer.v, pointerScroll = g_vrPointer.scrollY;
+#if !HALOMCCVR_SETTINGS_WINDOW
+    const bool mirrorAttached = Menu_MirrorBeat();
+    if (mirrorAttached && g_mirror->pointerHit.load(std::memory_order_relaxed))
+    {
+        pointerHit = true;
+        pointerPressed = g_mirror->pointerPressed.load(std::memory_order_relaxed) != 0;
+        pointerU = g_mirror->pointerU.load(std::memory_order_relaxed);
+        pointerV = g_mirror->pointerV.load(std::memory_order_relaxed);
+        pointerScroll = g_mirror->scrollMilli.exchange(0, std::memory_order_relaxed) / 1000.0f;
+    }
+    if (g_mirror)
+    {
+        static uint32_t charsRead = 0;
+        const uint32_t written = g_mirror->charsWritten.load(std::memory_order_acquire);
+        if (written - charsRead > kMenuMirrorChars)
+            charsRead = written - kMenuMirrorChars;
+        for (; charsRead != written; ++charsRead)
+        {
+            const uint16_t typed = g_mirror->chars[charsRead % kMenuMirrorChars].load(std::memory_order_relaxed);
+            if (typed == L'\b')
+            {
+                io.AddKeyEvent(ImGuiKey_Backspace, true);
+                io.AddKeyEvent(ImGuiKey_Backspace, false);
+            }
+            else if (typed >= 0x20)
+                io.AddInputCharacterUTF16(typed);
+        }
+    }
+#endif
+    if (pointerHit)
+        io.AddMousePosEvent(pointerU * MENU_W, pointerV * MENU_H);
     else
         io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     static bool previousVrPressed = false;
-    if (g_vrPointer.pressed != previousVrPressed)
+    if (pointerPressed != previousVrPressed)
     {
-        io.AddMouseButtonEvent(0, g_vrPointer.pressed);
-        previousVrPressed = g_vrPointer.pressed;
+        io.AddMouseButtonEvent(0, pointerPressed);
+        previousVrPressed = pointerPressed;
     }
-    if (g_vrPointer.hit && g_vrPointer.scrollY != 0.0f)
-        io.AddMouseWheelEvent(0.0f, g_vrPointer.scrollY);
+    if (pointerHit && pointerScroll != 0.0f)
+        io.AddMouseWheelEvent(0.0f, pointerScroll);
     g_vrPointer.scrollY = 0.0f;
     ImGui::NewFrame();
     DrawUI();
@@ -3363,6 +3438,10 @@ ID3D11Texture2D* Menu_Render()
     g_ctx->RSSetViewports(1, &vp);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     backup.Restore(g_ctx);
+#if !HALOMCCVR_SETTINGS_WINDOW
+    if (mirrorAttached)
+        g_ctx->Flush(); // another device reads this picture
+#endif
 
     LeaveCriticalSection(&g_cs);
     return g_tex;

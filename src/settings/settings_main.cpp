@@ -1,5 +1,6 @@
 // The VR menu on the desktop: the same menu.cpp the headset shows, drawn into the same texture and clicked through the
 // same pointer path, with the game's side answered by settings_stubs.cpp. It edits halomccvr.cfg and nothing else.
+// While a game is running it shows that game's own menu instead (menu_mirror.h).
 #include <windows.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
@@ -11,6 +12,7 @@
 #include "../dll/menu.h"
 #include "../common/config.h"
 #include "../common/log.h"
+#include "../common/menu_mirror.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -18,6 +20,41 @@ namespace
 {
 constexpr wchar_t kTitle[] = L"Halo MCC VR Settings";
 constexpr wchar_t kTitleGameOpen[] = L"Halo MCC VR Settings - the game is open, so nothing here is being saved";
+constexpr wchar_t kTitleLive[] = L"Halo MCC VR Settings - live with the running game";
+
+// The game's menu, while connected: its picture on this device, and the block its pointer and typing go through.
+struct LiveMenu
+{
+    HANDLE mapping = nullptr;
+    MenuMirrorShared* block = nullptr;
+    ComPtr<ID3D11Texture2D> picture;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    bool connected() const { return block != nullptr; }
+    void Disconnect()
+    {
+        picture.Reset();
+        if (block) UnmapViewOfFile(block);
+        if (mapping) CloseHandle(mapping);
+        block = nullptr;
+        mapping = nullptr;
+    }
+    bool Connect(ID3D11Device* device)
+    {
+        mapping = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, kMenuMirrorMapping);
+        if (mapping)
+            block = static_cast<MenuMirrorShared*>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(MenuMirrorShared)));
+        const uint64_t now = GetTickCount64();
+        if (block && block->version.load(std::memory_order_acquire) == kMenuMirrorVersion &&
+            now - block->gameBeatMs.load() < kMenuMirrorGoneMs &&
+            SUCCEEDED(device->OpenSharedResource(reinterpret_cast<HANDLE>(block->texture.load()), IID_PPV_ARGS(&picture))))
+        {
+            format = static_cast<DXGI_FORMAT>(block->format.load());
+            return true;
+        }
+        Disconnect();
+        return false;
+    }
+};
 
 bool GameIsOpen()
 {
@@ -119,6 +156,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
 
     ULONGLONG checkedGame = GetTickCount64();
     bool running = true;
+    LiveMenu live;
+    const auto bufferFormat = [&](DXGI_FORMAT format)
+    {
+        return SUCCEEDED(chain->ResizeBuffers(2, MENU_W, MENU_H, format, 0));
+    };
     while (running)
     {
         float scroll = 0.0f;
@@ -128,6 +170,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
             if (message.message == WM_QUIT) running = false;
             if (message.message == WM_MOUSEWHEEL)
                 scroll += GET_WHEEL_DELTA_WPARAM(message.wParam) / static_cast<float>(WHEEL_DELTA);
+            if (message.message == WM_CHAR && live.connected())
+            {
+                const uint32_t slot = live.block->charsWritten.load(std::memory_order_relaxed);
+                live.block->chars[slot % kMenuMirrorChars].store(static_cast<uint16_t>(message.wParam), std::memory_order_relaxed);
+                live.block->charsWritten.store(slot + 1, std::memory_order_release);
+            }
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
@@ -146,6 +194,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
                 // The game saved its own changes as it closed.
                 if (!open) ConfigLoad(configPath.c_str());
             }
+            const bool gone = live.connected() &&
+                (!open || now - live.block->gameBeatMs.load(std::memory_order_relaxed) >= kMenuMirrorGoneMs);
+            if (gone)
+            {
+                live.Disconnect();
+                bufferFormat(DXGI_FORMAT_R8G8B8A8_UNORM);
+                SetWindowTextW(window, open ? kTitleGameOpen : kTitle);
+            }
+            else if (open && !live.connected() && live.Connect(device.Get()))
+            {
+                if (bufferFormat(live.format))
+                    SetWindowTextW(window, kTitleLive);
+                else
+                    live.Disconnect();
+            }
         }
 
         POINT cursor{};
@@ -155,6 +218,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
         GetClientRect(window, &client);
         const bool hit = GetForegroundWindow() == window && client.right > 0 && client.bottom > 0 &&
             PtInRect(&client, cursor);
+        if (live.connected())
+        {
+            MenuMirrorShared& block = *live.block;
+            block.desktopBeatMs.store(now, std::memory_order_relaxed);
+            block.pointerU.store(hit ? static_cast<float>(cursor.x) / client.right : 0.0f, std::memory_order_relaxed);
+            block.pointerV.store(hit ? static_cast<float>(cursor.y) / client.bottom : 0.0f, std::memory_order_relaxed);
+            block.pointerPressed.store(hit && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, std::memory_order_relaxed);
+            block.pointerHit.store(hit, std::memory_order_relaxed);
+            if (hit && scroll != 0.0f)
+                block.scrollMilli.fetch_add(static_cast<int32_t>(scroll * 1000.0f), std::memory_order_relaxed);
+            ComPtr<ID3D11Texture2D> backBuffer;
+            if (SUCCEEDED(chain->GetBuffer(0, IID_PPV_ARGS(&backBuffer))))
+                context->CopyResource(backBuffer.Get(), live.picture.Get());
+            chain->Present(1, 0);
+            continue;
+        }
         if (hit)
             Menu_SetVrPointer(true, static_cast<float>(cursor.x) / client.right,
                 static_cast<float>(cursor.y) / client.bottom, (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, scroll);

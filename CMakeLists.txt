@@ -430,7 +430,8 @@ add_executable(halomccvr_settings WIN32 src/settings/settings_main.cpp src/setti
 set_target_properties(halomccvr_settings PROPERTIES OUTPUT_NAME "HaloMCCVRSettings")
 target_include_directories(halomccvr_settings PRIVATE src/dll src/common "${HALOMCCVR_GENERATED_DIR}"
     $<TARGET_PROPERTY:halo3xr,INCLUDE_DIRECTORIES>)
-target_compile_definitions(halomccvr_settings PRIVATE $<TARGET_PROPERTY:halo3xr,COMPILE_DEFINITIONS>)
+target_compile_definitions(halomccvr_settings PRIVATE $<TARGET_PROPERTY:halo3xr,COMPILE_DEFINITIONS>
+    HALOMCCVR_SETTINGS_WINDOW=1)
 target_link_libraries(halomccvr_settings PRIVATE imgui_lib d3d11 dxgi d3dcompiler gdi32 shell32 ole32)
 
 add_library(halomccvr_reclaimer_relay SHARED src/relay/reclaimer_relay.cpp)

@@ -20516,6 +20516,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 // The menu is submitted in BOTH modes (it used to live only in
                 // the mono-screen branch, which made F1 invisible in stereo).
                 // In stereo it head-locks so it is always in front of you.
+                const bool mirrorAttached = Menu_MirrorBeat();
                 if (Menu_IsOpen())
                 {
                     const bool menuHeadLocked =
@@ -20556,6 +20557,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 else
                 {
                     Menu_ClearVrPointer();
+                    if (mirrorAttached)
+                        Menu_Render();
                 }
                 backbuffer->Release();
             }
