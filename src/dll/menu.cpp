@@ -152,7 +152,7 @@ namespace
         {"Desktop",       "The window on your monitor, not the headset."},
         {"Scope",         "Experimental gun-mounted zoom screen."},
         {"Telemetry Recorder", "Records controller, headset and aim-solver data for troubleshooting."},
-        {"Advanced",      "Tracking calibration, panel placement, and starting over."},
+        {"Advanced",      "Aim internals, tracking calibration, panel placement, and starting over."},
     };
     static_assert(sizeof(kCategories) / sizeof(kCategories[0]) == Cat_Count,
                   "kCategories must list exactly one row per MenuCategory");
@@ -1176,17 +1176,6 @@ namespace
             ImGui::TextWrapped("Flashlight suppression leaves grip tracking and two-hand aiming available. "
                 "MCC actions that share the same native button can still occur together.");
         }
-        if (ImGui::CollapsingHeader("Two-handed grip and melee##section", ImGuiTreeNodeFlags_None))
-        {
-            if (ImGui::RadioButton("Toggle (click grip)", g_config.two_hand_toggle))
-            { g_config.two_hand_toggle = true; changed = true; }
-            ImGui::SameLine();
-            if (ImGui::RadioButton("Hold grip", !g_config.two_hand_toggle))
-            { g_config.two_hand_toggle = false; changed = true; }
-            changed |= ImGui::Checkbox("Physical melee", &g_config.physical_melee);
-            changed |= ImGui::Checkbox("Gesture melee (experimental)", &g_config.gesture_melee);
-            ImGui::TextDisabled("The same settings as Weapon & Aim and Body & Hands, here because a preset saves them.");
-        }
         }
 
         if (CategorySection section{Cat_Vehicles}; section.visible)
@@ -1865,7 +1854,7 @@ namespace
         }
         }
 
-        if (CategorySection section{Cat_WeaponAim}; section.visible)
+        if (CategorySection section{Cat_Advanced}; section.visible)
         {
         if (ImGui::CollapsingHeader("Aim (every title)##section", ImGuiTreeNodeFlags_None))
         {
@@ -1947,6 +1936,10 @@ namespace
         ImGui::Separator();
         // Here, not under Comfort: it changes how the hands (and so the aim) are read, not how the view feels.
         }
+        }
+
+        if (CategorySection section{Cat_WeaponAim}; section.visible)
+        {
         if (ImGui::CollapsingHeader("Hand smoothing##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Hand smoothing", &g_config.hand_smoothing);
@@ -1990,7 +1983,13 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Two-handed aiming##section", ImGuiTreeNodeFlags_None))
+        }
+
+        // Also in Controls, as the two-handed grip.
+        if (CategorySection section{Cat_WeaponAim, Cat_Controls}; section.visible)
+        {
+        if (ImGui::CollapsingHeader(g_activeCategory == Cat_Controls ? "Two-handed grip##section" : "Two-handed aiming##section",
+                                    ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Two-handed aiming", &g_config.two_handed_aim);
         ImGui::SameLine();
@@ -2125,6 +2124,11 @@ namespace
             ImGui::Unindent();
         }
         }
+        }
+
+        if (CategorySection section{Cat_WeaponAim}; section.visible)
+        {
+
 #include "virtual_stock_menu.inl"
 
         ImGui::Spacing();
@@ -2508,6 +2512,24 @@ namespace
                                    &g_config.world_collision);
         ImGui::TextDisabled("Hands and held weapons stop on the world and pulse gently on contact.\n"
                             "Available in Halo CE, Halo 2, Halo 3, ODST, Reach, and Halo 4.");
+        ImGui::Spacing();
+        changed |= ImGui::Checkbox("Show full body", &g_config.body_wip);
+        ImGui::TextWrapped("Legacy body visibility can affect Halo 3's first-person hands. Tracked full-body IK takes priority over this option. Native body visibility in other games is still in development.");
+        changed |= ImGui::Checkbox("Tracked full-body IK (experimental)", &g_config.experimental_body_ik);
+        ImGui::TextWrapped("Experimental avatars: Halo 3 and Halo 4. Other games currently use their tracked first-person hands. Free-hand gestures use physical trigger and grip input; held weapons keep their normal grip.");
+        if (g_config.experimental_body_ik)
+        {
+            changed |= ImGui::Checkbox("Hide lower body", &g_config.body_ik_hide_lower);
+            ImGui::TextWrapped("Lower-body hiding requires separate leg geometry. Unsupported rigs retain first-person hands. Halo 3 Elite/Arbiter full avatars currently require this option off.");
+        }
+        }
+        }
+
+        // Also in Controls, because a preset saves these.
+        if (CategorySection section{Cat_BodyHands, Cat_Controls}; section.visible)
+        {
+        if (ImGui::CollapsingHeader("Melee##section", ImGuiTreeNodeFlags_None))
+        {
         changed |= ImGui::Checkbox("True physical melee (experimental)",
                                    &g_config.physical_melee);
         ImGui::TextDisabled("Strike a target with either hand or its held gun. Works with world collision on or off.");
@@ -2520,16 +2542,6 @@ namespace
                 "Required swing speed", &g_config.physical_melee_swing_speed,
                 kPhysicalMeleeSpeedMin, kPhysicalMeleeSpeedMax, "%.2f m/s");
             ImGui::TextDisabled("Lower is more sensitive; 5.00 m/s is the default and needs a fast swing.");
-        }
-        ImGui::Spacing();
-        changed |= ImGui::Checkbox("Show full body", &g_config.body_wip);
-        ImGui::TextWrapped("Legacy body visibility can affect Halo 3's first-person hands. Tracked full-body IK takes priority over this option. Native body visibility in other games is still in development.");
-        changed |= ImGui::Checkbox("Tracked full-body IK (experimental)", &g_config.experimental_body_ik);
-        ImGui::TextWrapped("Experimental avatars: Halo 3 and Halo 4. Other games currently use their tracked first-person hands. Free-hand gestures use physical trigger and grip input; held weapons keep their normal grip.");
-        if (g_config.experimental_body_ik)
-        {
-            changed |= ImGui::Checkbox("Hide lower body", &g_config.body_ik_hide_lower);
-            ImGui::TextWrapped("Lower-body hiding requires separate leg geometry. Unsupported rigs retain first-person hands. Halo 3 Elite/Arbiter full avatars currently require this option off.");
         }
         }
         }

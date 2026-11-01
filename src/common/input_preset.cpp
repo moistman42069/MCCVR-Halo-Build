@@ -37,6 +37,7 @@ constexpr BoolField kBools[] = {
     {"right_stick_crouch", &Config::right_stick_crouch},
     {"physical_melee", &Config::physical_melee},
     {"gesture_melee", &Config::gesture_melee},
+    {"two_handed_aim", &Config::two_handed_aim},
     {"two_hand_toggle", &Config::two_hand_toggle},
     {"manual_reload", &Config::manual_reload},
     {"weapon_holsters", &Config::weapon_holsters},
@@ -56,6 +57,7 @@ constexpr FloatField kFloats[] = {
     {"dpad_head_radius", &Config::dpad_head_radius},
     {"physical_running_speed", &Config::physical_running_speed},
     {"physical_running_sensitivity", &Config::physical_running_sensitivity},
+    {"physical_melee_swing_speed", &Config::physical_melee_swing_speed},
 };
 
 std::filesystem::path Folder()
