@@ -1396,6 +1396,28 @@ void ConfigLoad(const wchar_t* path)
             *holsterCustom=std::isfinite(*holsterCustom)?std::clamp(*holsterCustom,-.80f,.80f):fallback;
             continue;
         }
+        if (!strcmp(key, "reclaimer_talk_gesture"))
+        {
+            ParseBoolSetting(key, val, g_config.reclaimer_talk_gesture);
+            continue;
+        }
+        if (!strcmp(key, "reclaimer_scoreboard_gesture"))
+        {
+            ParseBoolSetting(key, val, g_config.reclaimer_scoreboard_gesture);
+            continue;
+        }
+        if (!strcmp(key, "reclaimer_scoreboard_key"))
+        {
+            const int code = atoi(val);
+            g_config.reclaimer_scoreboard_key = code > 0 && code < 255 ? code : Config{}.reclaimer_scoreboard_key;
+            continue;
+        }
+        if (!strcmp(key, "reclaimer_talk_key"))
+        {
+            const int code = atoi(val);
+            g_config.reclaimer_talk_key = code > 0 && code < 255 ? code : Config{}.reclaimer_talk_key;
+            continue;
+        }
         if (!strcmp(key, "dpad_keep_moving"))
         {
             ParseBoolSetting(key, val, g_config.dpad_keep_moving);
@@ -2596,6 +2618,18 @@ void ConfigSave()
     fprintf(f, "# Raising the hand while walking leaves the stick walking until it returns to centre; then it is the\n");
     fprintf(f, "# D-pad. 0: the stick is the D-pad at once and walking stops. (default %d)\n", d.dpad_keep_moving ? 1 : 0);
     fprintf(f, "dpad_keep_moving = %d\n\n", g_config.dpad_keep_moving ? 1 : 0);
+    fprintf(f, "# Project Reclaimer: X with the left controller at the head (within dpad_head_radius) presses the talk\n");
+    fprintf(f, "# key, so voice chat follows Reclaimer's Hold or Toggle talk mode. (default %d)\n", d.reclaimer_talk_gesture ? 1 : 0);
+    fprintf(f, "reclaimer_talk_gesture = %d\n\n", g_config.reclaimer_talk_gesture ? 1 : 0);
+    fprintf(f, "# The talk key's Windows virtual-key code, if you rebound Push to talk in Reclaimer: 86 is V, 66 is B\n");
+    fprintf(f, "# (team), 78 is N (proximity). (default %d)\n", d.reclaimer_talk_key);
+    fprintf(f, "reclaimer_talk_key = %d\n\n", g_config.reclaimer_talk_key);
+    fprintf(f, "# Project Reclaimer: Y with the left controller at the head presses the scoreboard key. (default %d)\n",
+            d.reclaimer_scoreboard_gesture ? 1 : 0);
+    fprintf(f, "reclaimer_scoreboard_gesture = %d\n\n", g_config.reclaimer_scoreboard_gesture ? 1 : 0);
+    fprintf(f, "# The scoreboard key's Windows virtual-key code, if you rebound it: 9 is Tab. (default %d)\n",
+            d.reclaimer_scoreboard_key);
+    fprintf(f, "reclaimer_scoreboard_key = %d\n\n", g_config.reclaimer_scoreboard_key);
     fprintf(f, "# Quest 3 alternate D-pad: touch the left controller's thumb rest,\n");
     fprintf(f, "# then move the right stick. Always uses the physical left thumb rest\n");
     fprintf(f, "# and physical right stick, including in left-handed mode.\n");

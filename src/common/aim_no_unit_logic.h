@@ -63,6 +63,26 @@ constexpr uint64_t kExitMs = 60;
 // A sample older than this answers nothing (the sampler stopped: a load, a pause, a teardown): fail open.
 constexpr uint64_t kStaleMs = 250;
 
+// Whether a host's screen may hold the controller because the player has no character. Read from the samples alone, on
+// a thread of its own: the debounce below is stepped by the input poll that the holding of the controller cuts short,
+// so it could never see the character come back. A blip of Absent must last kEnterMs; a Present ends it at once.
+struct NoCharacterNow
+{
+    uint64_t absentSinceMs = 0;
+    bool Step(Presence presence, uint64_t sampleMs, uint64_t nowMs) noexcept
+    {
+        const bool fresh = sampleMs != 0 && (sampleMs >= nowMs || nowMs - sampleMs <= kStaleMs);
+        if (!fresh || presence != Presence::Absent)
+        {
+            absentSinceMs = 0;
+            return false;
+        }
+        if (!absentSinceMs)
+            absentSinceMs = sampleMs;
+        return sampleMs >= absentSinceMs && sampleMs - absentSinceMs >= kEnterMs;
+    }
+};
+
 enum class Edge : uint8_t
 {
     None,

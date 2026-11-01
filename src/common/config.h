@@ -699,6 +699,10 @@ struct Config
     // Head-gesture activation radius in metres; the existing reach is 30 cm.
     float dpad_head_radius = 0.20f;
     bool dpad_keep_moving = true; // a hand raised while walking leaves the stick walking until it centres
+    bool reclaimer_talk_gesture = true; // Project Reclaimer: X with the left controller at the head presses the talk key
+    int reclaimer_talk_key = 0x56; // its Windows virtual-key code: V, the host's default for Push to talk
+    bool reclaimer_scoreboard_gesture = true; // Project Reclaimer: Y with the left controller at the head shows the scoreboard
+    int reclaimer_scoreboard_key = 0x09; // its Windows virtual-key code: Tab, the host's default
     // Quest 3 alternate D-pad: touch the physical left thumb rest, then use
     // the physical right stick. Handedness never swaps these controls.
     bool quest_thumbrest_dpad = false;
