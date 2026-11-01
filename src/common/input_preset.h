@@ -18,8 +18,14 @@ bool SameScheme(const Config& a, const Config& b) noexcept;
 std::string Serialize(const Config& scheme);
 void Parse(const char* text, Config& out); // `out` starts from Config{}
 
+// A preset's optional description, one line in its file, for saying who the scheme is for.
+inline constexpr size_t kDescriptionMost = 240;
+std::string DescriptionLine(const std::string& description); // what goes in the file; empty for no description
+std::string ParseDescription(const char* text);
+
 int BuiltInCount() noexcept;
 const char* BuiltInName(int index) noexcept;
+const char* BuiltInDescription(int index) noexcept;
 void BuiltIn(int index, Config& out); // `out` starts from Config{}
 
 // Letters, digits, spaces, '-' and '_' only, so a name is always a safe file name. Empty when nothing is left, and
@@ -27,6 +33,7 @@ void BuiltIn(int index, Config& out); // `out` starts from Config{}
 std::string SafeName(const char* name);
 std::vector<std::string> ListSaved();
 bool Find(const std::string& name, Config& out); // a built-in or a saved file
-bool Save(const std::string& name, const Config& scheme);
+std::string DescriptionOf(const std::string& name); // a built-in or a saved file; empty when it has none
+bool Save(const std::string& name, const Config& scheme, const std::string& description);
 bool Delete(const std::string& name);
 }

@@ -163,7 +163,40 @@ void Parse(const char* text, Config& out)
     }
 }
 
+std::string DescriptionLine(const std::string& description)
+{
+    std::string text;
+    for (const char c : description)
+        if (text.size() < kDescriptionMost)
+            text += c == '\n' || c == '\r' || c == '\t' ? ' ' : c;
+    while (!text.empty() && text.back() == ' ') text.pop_back();
+    while (!text.empty() && text.front() == ' ') text.erase(text.begin());
+    return text.empty() ? std::string{} : "description = " + text + "\n";
+}
+
+std::string ParseDescription(const char* text)
+{
+    constexpr char kKey[] = "description = ";
+    std::istringstream lines(text ? text : "");
+    std::string line;
+    while (std::getline(lines, line))
+        if (line.rfind(kKey, 0) == 0)
+        {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            return line.substr(sizeof(kKey) - 1);
+        }
+    return {};
+}
+
 int BuiltInCount() noexcept { return 2; }
+
+const char* BuiltInDescription(int index) noexcept
+{
+    return index == 0 ? "The game's own button layout, with nothing remapped. A good place to start."
+         : index == 1 ? "Arranged for VR controllers: right grip melees, left grip uses equipment, X reloads and uses, "
+                        "Y switches weapon, and the stick clicks crouch and zoom."
+                      : "";
+}
 
 const char* BuiltInName(int index) noexcept
 {
@@ -225,7 +258,19 @@ bool Find(const std::string& name, Config& out)
     return true;
 }
 
-bool Save(const std::string& name, const Config& scheme)
+std::string DescriptionOf(const std::string& name)
+{
+    for (int i = 0; i < BuiltInCount(); ++i)
+        if (name == BuiltInName(i)) return BuiltInDescription(i);
+    if (SafeName(name.c_str()) != name || name.empty()) return {};
+    std::ifstream file(FileFor(name));
+    if (!file) return {};
+    std::stringstream text;
+    text << file.rdbuf();
+    return ParseDescription(text.str().c_str());
+}
+
+bool Save(const std::string& name, const Config& scheme, const std::string& description)
 {
     if (SafeName(name.c_str()) != name || name.empty()) return false;
     std::error_code error;
@@ -236,7 +281,7 @@ bool Save(const std::string& name, const Config& scheme)
         LOG("input preset: could not write '%s'", name.c_str());
         return false;
     }
-    file << Serialize(scheme);
+    file << DescriptionLine(description) << Serialize(scheme);
     LOG("input preset: saved '%s'", name.c_str());
     return static_cast<bool>(file);
 }

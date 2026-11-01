@@ -125,6 +125,13 @@ void CheckInputPresets()
     input_preset::Parse("# only one key\nturn_snap_deg = 15\nvr_bind_halo3_fire = 999\n",missing);
     Check(missing.turn_snap_deg==15.f&&missing.vr_bindings[0][Fire]==Automatic&&missing.turn_smooth==Config{}.turn_smooth,
         "keys a preset omits take their default, and bad values are refused");
+    Check(input_preset::ParseDescription((input_preset::DescriptionLine(" For new\nplayers # one ")+input_preset::Serialize(scheme)).c_str())==
+        "For new players # one","a description survives a preset file, on one line");
+    Check(input_preset::DescriptionLine("  ").empty()&&input_preset::ParseDescription(input_preset::Serialize(scheme).c_str()).empty(),
+        "no description is no line");
+    Config described{};
+    input_preset::Parse((input_preset::DescriptionLine("turn_snap_deg = 99")+input_preset::Serialize(scheme)).c_str(),described);
+    Check(input_preset::SameScheme(described,scheme),"a description never reads as a setting");
     Config def{},plain{};
     input_preset::BuiltIn(0,def);
     Check(input_preset::SameScheme(def,plain)&&!def.vr_action_mapping&&!def.trigger_air_equipment,"Default is the canon: nothing remapped");

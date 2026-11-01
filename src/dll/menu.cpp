@@ -186,6 +186,8 @@ namespace
         static Config baseline;
         static std::string baselineName;
         static bool baselineFound=false;
+        static char description[input_preset::kDescriptionMost+1]="";
+        static std::string savedDescription;
         if(!listed){saved=input_preset::ListSaved();listed=true;}
         const std::string active=g_config.input_preset;
         if(!baselineFound||baselineName!=active)
@@ -193,6 +195,11 @@ namespace
             baseline=Config{};
             baselineName=active;
             baselineFound=input_preset::Find(active,baseline);
+            // A built-in's description is shown, not edited: the box is for the player's own.
+            bool builtIn=false;
+            for(int i=0;i<input_preset::BuiltInCount();++i) builtIn=builtIn||active==input_preset::BuiltInName(i);
+            savedDescription=builtIn?std::string{}:input_preset::DescriptionOf(active);
+            strncpy_s(description,savedDescription.c_str(),_TRUNCATE);
         }
         const auto apply=[&](const std::string& name)
         {
@@ -217,6 +224,8 @@ namespace
         }
         const bool isSaved=std::find(saved.begin(),saved.end(),active)!=saved.end();
         const bool modified=baselineFound&&!input_preset::SameScheme(g_config,baseline);
+        for(int i=0;i<input_preset::BuiltInCount();++i)
+            if(active==input_preset::BuiltInName(i)) ImGui::TextWrapped("%s",input_preset::BuiltInDescription(i));
         if(modified)
         {
             ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"Changed since you chose this preset.");
@@ -225,9 +234,12 @@ namespace
         }
         else if(!baselineFound&&isSaved==false&&!active.empty())
             ImGui::TextDisabled("This preset's file is gone. Your settings stay as they are.");
-        if(isSaved&&modified&&ImGui::Button("Save over this preset"))
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##presetdescription",isSaved?"Description (optional)":"Description for a new preset (optional)",
+            description,sizeof(description));
+        if(isSaved&&(modified||savedDescription!=description)&&ImGui::Button("Save over this preset"))
         {
-            input_preset::Save(active,g_config);
+            input_preset::Save(active,g_config,description);
             baselineFound=false;
         }
         ImGui::SetNextItemWidth(320.0f);
@@ -238,7 +250,7 @@ namespace
             std::string name=input_preset::SafeName(newName);
             for(int n=static_cast<int>(saved.size())+1;name.empty()||std::find(saved.begin(),saved.end(),name)!=saved.end();++n)
                 name="My preset "+std::to_string(n);
-            if(input_preset::Save(name,g_config))
+            if(input_preset::Save(name,g_config,description))
             {
                 strncpy_s(g_config.input_preset,name.c_str(),_TRUNCATE);
                 newName[0]=0;
