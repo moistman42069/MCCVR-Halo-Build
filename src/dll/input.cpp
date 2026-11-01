@@ -609,7 +609,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         const bool physicalCrouchEnabled=g_config.physical_crouch;
         // The roomscale jump recenter also wants the game's own jump binding when the mapper is off (below).
         const bool jumpWitnessWanted=g_config.roomscale_movement&&g_config.roomscale_recenter_jump;
-        const bool nativeReady=(semanticMode||physicalCrouchEnabled||jumpWitnessWanted)&&gameplayMode&&
+        const bool nativeReady=(semanticMode||physicalCrouchEnabled||g_config.right_stick_crouch||jumpWitnessWanted)&&gameplayMode&&
             (Game_ReadVrActionBindings(nativeActions,inputNow)||directActions);
         const bool nativeMapping=semanticMode&&nativeReady;
         // The head height and the standing reference come from the OpenXR frame thread, in one frame a
@@ -643,13 +643,26 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         const uint64_t crouchEpoch=crouchSample.reference;
         const uint32_t crouchTransport=
             directActions?NativeVrActions_GestureBit(vr_mapping::Crouch):nativeActions[vr_mapping::Crouch];
-        const uint32_t crouchButtons=g_physicalCrouchInput.Update(currentTitle,
+        const uint32_t physicalCrouchButtons=g_physicalCrouchInput.Update(currentTitle,
             TitleAdapter_GetGeneration(currentTitle),crouchHeadY,crouchSample.baseline,crouchEpoch,inputNow,
             physicalCrouchEnabled,crouchTracking&&nativeReady,g_config.physical_crouch_depth_m,
             crouchTransport);
         PhysicalCrouchCamera_Publish(currentTitle,TitleAdapter_GetGeneration(currentTitle),
             crouchEpoch,inputNow,physicalCrouchEnabled&&crouchTracking&&nativeReady,
-            crouchButtons!=0);
+            physicalCrouchButtons!=0);
+        // Crouching with the right stick, only where the headset owns the view's pitch and nothing else wants the axis.
+        // A pause keeps the crouch; every thread that polls the pad shares the one state.
+        bool stickCrouched=false;
+        {
+            static std::mutex stickCrouchLock;
+            static StickCrouch stickCrouch;
+            std::lock_guard<std::mutex> lock(stickCrouchLock);
+            if(gameplayMode)
+                stickCrouch.Step(pad.turnX,pad.turnY,g_config.right_stick_crouch&&inputMode==RuntimeMode::Gameplay&&
+                    crouchOnFoot&&!inSeat&&Game_IsHeadTracking()&&!VR_IsScopeActive()&&!pad.thumbrestDpad);
+            stickCrouched=stickCrouch.crouched&&nativeReady;
+        }
+        const uint32_t crouchButtons=physicalCrouchButtons|(stickCrouched?crouchTransport:0u);
         if(crouchSample.reference)
             g_physicalCrouchRiseCapped.store(physicalCrouchEnabled&&crouchSample.riseCapped,
                 std::memory_order_relaxed);

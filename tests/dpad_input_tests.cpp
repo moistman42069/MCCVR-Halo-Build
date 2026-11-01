@@ -84,6 +84,21 @@ int main()
             "radius preserves strict boundary, limits and invalid-setting fallback");
     }
     {
+        StickCrouch stick;
+        Check(!stick.Step(0.0f, -0.5f, true), "a part push does nothing");
+        Check(stick.Step(0.1f, -0.9f, true), "down crouches");
+        Check(stick.Step(0.0f, 0.0f, true), "and the crouch stays with the stick let go");
+        Check(!stick.Step(0.0f, 0.9f, true), "up stands");
+        Check(!stick.Step(0.0f, 0.0f, true), "and stays standing");
+        Check(!stick.Step(0.9f, -0.75f, true), "a mostly sideways push is a turn");
+        stick.Step(0.0f, 0.0f, true);
+        Check(stick.Step(0.0f, -0.9f, true), "down again");
+        Check(!stick.Step(0.0f, -0.9f, false), "a seat stands the player");
+        Check(!stick.Step(0.0f, -0.9f, true), "a stick still held down on the way out does not crouch");
+        stick.Step(0.0f, 0.0f, true);
+        Check(stick.Step(0.0f, -0.9f, true), "until it comes back");
+    }
+    {
         using Key = HeadKeyGesture::Key;
         HeadKeyGesture talk;
         uint64_t talkNow = 0;

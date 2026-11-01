@@ -1,4 +1,5 @@
 #pragma once
+#include <cmath>
 
 #include <cstdint>
 #include "runtime_types.h"
@@ -128,6 +129,35 @@ struct HeadYChord
             return Y::Waiting;
         counted = true;
         return Y::Key;
+    }
+};
+
+// Crouching with the right stick: down crouches and up stands, and the crouch stays until then. The push must be mostly
+// vertical, so turning with a stick that drifts never crouches, and the stick must come back before it counts again.
+// `onFoot` false stands the player up: a seat ends a crouch, and it does not come back on the way out.
+struct StickCrouch
+{
+    static constexpr float kPush = 0.7f, kRearm = 0.4f, kVerticalOverHorizontal = 1.5f;
+    bool crouched = false;
+    bool armed = true;
+    bool Step(float x, float y, bool onFoot) noexcept
+    {
+        if (!onFoot)
+        {
+            crouched = false;
+            armed = false;
+        }
+        else if (armed)
+        {
+            if (std::fabs(y) >= kPush && std::fabs(y) > std::fabs(x) * kVerticalOverHorizontal)
+            {
+                crouched = y < 0.0f;
+                armed = false;
+            }
+        }
+        if (std::fabs(y) < kRearm)
+            armed = true;
+        return crouched;
     }
 };
 

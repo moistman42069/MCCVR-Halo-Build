@@ -34,6 +34,7 @@ constexpr BoolField kBools[] = {
     {"reclaimer_vote_gesture", &Config::reclaimer_vote_gesture},
     {"physical_running", &Config::physical_running},
     {"physical_crouch", &Config::physical_crouch},
+    {"right_stick_crouch", &Config::right_stick_crouch},
     {"physical_melee", &Config::physical_melee},
     {"gesture_melee", &Config::gesture_melee},
     {"two_hand_toggle", &Config::two_hand_toggle},

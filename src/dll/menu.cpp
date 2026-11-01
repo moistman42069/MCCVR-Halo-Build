@@ -863,6 +863,22 @@ namespace
         if(!g_config.physical_crouch)
             ImGui::TextDisabled("Physical crouch is off (Controls > Movement).");
         }
+        if (ImGui::CollapsingHeader("Controller vibration##section", ImGuiTreeNodeFlags_None))
+        {
+        float hapticPercent = g_config.haptic_intensity * 100.0f;
+        if (vr_menu::SliderFloat("Controller vibration", &hapticPercent,
+                               0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_None))
+        {
+            g_config.haptic_intensity = hapticPercent / 100.0f;
+            if (g_config.haptic_intensity <= 0.0f)
+                VR_SetGameHaptics(0.0f);
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Adjust vibration strength; 0%% disables it.\n"
+                              "Supported weapon feedback follows the holding hand, sharing recoil while supporting the gun.\n"
+                              "Damage and vehicle feedback can use both controllers.");
+        }
         if (ImGui::CollapsingHeader("Sound##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Sound follows your head", &g_config.audio_follows_head);
@@ -990,6 +1006,9 @@ namespace
         if(ImGui::Checkbox("Physical crouch",&g_config.physical_crouch))
             changed=true;
         ImGui::TextDisabled("Lower your head to crouch. Depth and calibration are in Comfort > Roomscale.");
+        changed |= ImGui::Checkbox("Right stick crouches", &g_config.right_stick_crouch);
+        ImGui::TextDisabled("On foot: push the right stick down to crouch and up to stand. Needs MCC's\n"
+            "hold-to-crouch setting. The game's own crouch button still works.");
         ImGui::Spacing();
         }
         if (ImGui::CollapsingHeader("VR turning (right controller stick)##section", ImGuiTreeNodeFlags_None))
@@ -1066,20 +1085,6 @@ namespace
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Touch the physical left controller's thumb rest, then move the physical right stick.\n"
                               "These controls stay on the same physical hands in left-handed mode.");
-        ImGui::Spacing();
-        float hapticPercent = g_config.haptic_intensity * 100.0f;
-        if (vr_menu::SliderFloat("Controller vibration", &hapticPercent,
-                               0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_None))
-        {
-            g_config.haptic_intensity = hapticPercent / 100.0f;
-            if (g_config.haptic_intensity <= 0.0f)
-                VR_SetGameHaptics(0.0f);
-            changed = true;
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Adjust vibration strength; 0%% disables it.\n"
-                              "Supported weapon feedback follows the holding hand, sharing recoil while supporting the gun.\n"
-                              "Damage and vehicle feedback can use both controllers.");
         ImGui::TextDisabled("L3+R3 recenters and toggles this menu; the right trigger clicks the VR pointer.");
         }
         if (ImGui::CollapsingHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
