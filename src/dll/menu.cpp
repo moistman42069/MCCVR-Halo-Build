@@ -1102,19 +1102,25 @@ namespace
             ImGui::TextWrapped("Automatic keeps an action where the game's own button layout has it. Choosing anything "
                 "else for a row turns remapping on. Physical gestures remain separate.");
             ImGui::Spacing();
-            ImGui::TextUnformatted("Left trigger by what your left hand is doing");
-            if(ImGui::Button("Grenade with a free hand, zoom gripping the gun"))
+            // Read from the rows themselves, so the box can't disagree with them: on only while all six games use it.
+            bool contextualTrigger=true;
+            for(const auto& title:g_config.vr_bindings)
+                contextualTrigger=contextualTrigger&&title[vr_mapping::Grenade]==vr_mapping::SupportTriggerFree&&
+                    title[vr_mapping::Zoom]==vr_mapping::SupportTriggerOnGun;
+            if(ImGui::Checkbox("Left trigger follows your left hand",&contextualTrigger))
             {
                 for(auto& title:g_config.vr_bindings)
                 {
-                    title[vr_mapping::Grenade]=vr_mapping::SupportTriggerFree;
-                    title[vr_mapping::Zoom]=vr_mapping::SupportTriggerOnGun;
+                    title[vr_mapping::Grenade]=contextualTrigger?vr_mapping::SupportTriggerFree:vr_mapping::Automatic;
+                    title[vr_mapping::Zoom]=contextualTrigger?vr_mapping::SupportTriggerOnGun:vr_mapping::Automatic;
                 }
-                g_config.vr_action_mapping=true;
+                if(contextualTrigger) g_config.vr_action_mapping=true;
                 changed=true;
             }
-            ImGui::TextDisabled("Sets those two rows for all six games. Reload and holster grips send nothing, and dual\n"
-                "wielding and vehicle seats keep the plain trigger.");
+            ImGui::TextWrapped("Free hand: grenade. Gripping the gun: zoom. Sets those two rows for all six games, and "
+                "turning it off puts them back on Automatic. Reload and holster grips send nothing. Dual wielding and "
+                "vehicle seats keep the plain trigger.");
+            ImGui::BeginDisabled(!contextualTrigger);
             if(ImGui::Checkbox("Gripping air uses equipment",&g_config.trigger_air_equipment))
             {
                 for(auto& title:g_config.vr_bindings)
@@ -1127,6 +1133,7 @@ namespace
             if(ImGui::IsItemHovered())
                 ImGui::SetTooltip("Pull the left trigger while gripping nothing to use equipment.\n"
                                   "Off, or in a game without equipment: that pull throws a grenade.");
+            ImGui::EndDisabled();
             ImGui::Spacing();
             ImGui::Combo("Settings for",&selectedTitle,weapon_interaction::kTitleNames,6);
             ImGui::TextWrapped("All six games support separate actions while direct VR routing is available. "
