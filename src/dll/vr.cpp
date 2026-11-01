@@ -15492,6 +15492,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         g_nativePointerTrigger=pad.trigR;
         g_nativePointerStickY=pad.turnY;
         Input_StepHeadKeys(pad);
+        pad.dualWield=SecondaryWeaponPresentationActive();
         const bool pointerMode=g_config.game_menu_pointer&&!Menu_IsOpen()&&
             g_sessionState==XR_SESSION_STATE_FOCUSED&&valid&&
             NativeMenuPointer_ConsumesTrigger()&&

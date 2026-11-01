@@ -271,6 +271,7 @@ add_library(halo3xr SHARED
     ${HALOMCCVR_GENERATED_DIR}/smaa_resources.rc
     src/common/log.cpp
     src/common/config.cpp
+    src/common/input_preset.cpp
     src/common/input_logic.cpp
     src/common/scope_logic.cpp
     src/common/title_registry.cpp
@@ -553,7 +554,7 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_installer_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
     target_link_libraries(halomccvr_installer_tests PRIVATE bcrypt advapi32)
     add_test(NAME halomccvr_installer_tests COMMAND halomccvr_installer_tests)
-    add_executable(halomccvr_vr_mapping_tests tests/vr_action_mapping_tests.cpp src/common/config.cpp src/common/log.cpp src/common/scope_logic.cpp)
+    add_executable(halomccvr_vr_mapping_tests tests/vr_action_mapping_tests.cpp src/common/config.cpp src/common/input_preset.cpp src/common/log.cpp src/common/scope_logic.cpp)
     target_compile_definitions(halomccvr_vr_mapping_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_vr_mapping_tests COMMAND halomccvr_vr_mapping_tests)
     add_executable(halomccvr_halo4_pause_lifetime_tests tests/halo4_pause_lifetime_tests.cpp)

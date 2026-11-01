@@ -11,7 +11,7 @@ enum Action : unsigned { Fire, Grenade, Jump, Melee, Reload, Interact, SwitchWea
     SwitchGrenade, Equipment, Crouch, Zoom, Flashlight, Sprint, Count };
 enum Source : int { Automatic, Unbound, PrimaryTrigger, SupportTrigger, PrimaryGrip,
     SupportGrip, A, B, X, Y, LeftClick, RightClick, DpadUp, DpadDown, DpadLeft,
-    DpadRight, SourceCount };
+    DpadRight, SupportTriggerFree, SupportTriggerOnGun, SupportTriggerAir, SourceCount };
 enum class Profile : unsigned { Unknown, Touch, Index, Vive, Wmr, Simple };
 inline constexpr const char* kKeys[Count]{"fire","grenade","jump","melee","reload",
     "interact","switch_weapon","switch_grenade","equipment","crouch","zoom","flashlight","sprint"};
@@ -21,12 +21,23 @@ inline constexpr const char* kNames[Count]{"Fire","Grenade / secondary fire","Ju
 inline constexpr const char* kSourceNames[SourceCount]{"Automatic","Unbound","Weapon trigger",
     "Support trigger","Weapon grip","Support grip","Right A / lower face","Right B / upper face",
     "Left X / lower face","Left Y / upper face","Left stick / pad click","Right stick / pad click",
-    "D-pad gesture up","D-pad gesture down","D-pad gesture left","D-pad gesture right"};
+    "D-pad gesture up","D-pad gesture down","D-pad gesture left","D-pad gesture right",
+    "Support trigger, hand free","Support trigger, gripping the gun","Support trigger, gripping air"};
 using Overrides = std::array<int, Count>;
 using Transports = std::array<uint32_t, Count>;
 inline constexpr int kDefaults[Count]{PrimaryTrigger,SupportTrigger,A,PrimaryGrip,X,X,
     Y,DpadLeft,SupportGrip,LeftClick,RightClick,DpadUp,Unbound};
 inline constexpr unsigned kNoAction=0xFF;
+// The control that presses a gamepad button when nothing is remapped: what the unmapped route in input.cpp copies.
+// Start and Back have no row. Zero is a button the game gives this action none of.
+inline constexpr int LayoutSource(uint32_t transport) noexcept
+{
+    constexpr struct { uint32_t bit; int source; } route[]{{1u<<17,PrimaryTrigger},{1u<<16,SupportTrigger},
+        {0x200,PrimaryGrip},{0x100,SupportGrip},{0x1000,A},{0x2000,B},{0x4000,X},{0x8000,Y},{0x40,LeftClick},
+        {0x80,RightClick},{0x1,DpadUp},{0x2,DpadDown},{0x4,DpadLeft},{0x8,DpadRight}};
+    for(const auto& r:route) if(transport&r.bit) return r.source;
+    return Unbound;
+}
 // Named UI glyph -> action switch in each official editing kit. These are
 // action identities, never raw buttons. See VR-ACTION-BINDING-EVIDENCE-2026-09-23.md.
 inline constexpr unsigned NativeAction(GameTitle title, Action action) noexcept
@@ -73,6 +84,16 @@ inline const char* ProfileName(Profile profile) noexcept
 }
 inline constexpr int Resolve(Action action,int source) noexcept
 { return source==Automatic&&action<Count?kDefaults[action]:(source>Automatic&&source<SourceCount?source:Unbound); }
+// A row left on Automatic follows the game's own button layout, so a player who remaps one action keeps every other
+// where it was. Until that layout is known the row stays Automatic, and Resolve answers with kDefaults.
+inline Overrides EffectiveOverrides(const Overrides& bindings,const Transports& layout,bool layoutKnown) noexcept
+{
+    Overrides effective=bindings;
+    if(layoutKnown)
+        for(unsigned a=0;a<Count;++a)
+            if(effective[a]==Automatic) effective[a]=LayoutSource(layout[a]);
+    return effective;
+}
 inline constexpr uint32_t Bit(int source) noexcept
 {return source>Unbound&&source<SourceCount?1u<<source:0;}
 inline uint32_t DpadSources(float x,float y) noexcept
@@ -111,6 +132,28 @@ inline uint64_t Fingerprint(const Overrides& bindings,const Transports& native) 
     for(unsigned a=0;a<Count;++a) {value^=uint64_t(bindings[a])|(uint64_t(native[a])<<8);value*=1099511628211ull;}
     return value;
 }
+// The support trigger by what the support hand is doing as it is pulled: free, on the gun, or gripping air. The pull
+// keeps its meaning until it is let go, so moving the hand cannot throw a grenade halfway through a zoom. The one
+// exception is the gun: when the hand leaves it the zoom ends, and that pull does nothing more.
+// `plain` is a hand with no such meaning (dual wielding, where the trigger fires the other gun, or a vehicle seat).
+// `claimed` is a grip the mod is using for a magazine or a holster: the pull does nothing.
+// `airUsable` false makes an air grip a free hand.
+struct SupportTriggerContext
+{
+    bool down{}; int latched=Unbound;
+    uint32_t Step(bool triggerDown,bool gripDown,bool onGun,bool claimed,bool plain,bool airUsable) noexcept
+    {
+        if(!triggerDown) {down=false;latched=Unbound;return 0;}
+        if(!down)
+        {
+            down=true;
+            latched=plain?SupportTriggerFree:claimed?Unbound:onGun?SupportTriggerOnGun:
+                !gripDown||!airUsable?SupportTriggerFree:SupportTriggerAir;
+        }
+        else if(latched==SupportTriggerOnGun&&!onGun) latched=Unbound;
+        return Bit(latched);
+    }
+};
 // Preserve semantic identity before transport encoding. Two actions sharing a
 // native gamepad bit are still different actions, and a post-mapping native
 // consumer must never try to reconstruct that distinction from the bitmask.

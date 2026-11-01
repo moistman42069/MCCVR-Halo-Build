@@ -268,6 +268,12 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         return gesture.talking;
     }
 
+    // What each action of a game is bound to right now: its Automatic rows follow the game's own layout.
+    vr_mapping::Overrides EffectiveBindings(int title,const vr_mapping::Transports& layout,bool layoutKnown)
+    {
+        return vr_mapping::EffectiveOverrides(g_config.vr_bindings[title],layout,layoutKnown);
+    }
+
     void MergeVrPad(XINPUT_STATE* state)
     {
         VrPadState pad;
@@ -311,9 +317,11 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         // (use, exit) where the action mapper binds B to nothing (vehicle_seat_buttons::RightBFor); and in a
         // passenger's seat the support trigger switches weapon. Before anything below reads a button, so every
         // route to the game -- the action mapper, the native bridge, legacy routing -- sees the seat's buttons.
+        bool inSeat = false;
         {
             bool passenger = false;
             const bool live = Game_VehicleSeatButtonsLive(passenger) && !Menu_IsOpen() && !pad.exclusiveInput;
+            inSeat = live;
             vehicle_seat_buttons::Buttons buttons;
             buttons.x = pad.x;
             buttons.y = pad.y;
@@ -324,10 +332,15 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             // Does the action mapper bind right B to anything in this game? (By default it binds it to nothing.)
             bool bBound = false;
             const int seatTitle = weapon_interaction::TitleIndex(TitleAdapter_GetActiveTitle());
-            if (seatTitle >= 0)
+            if (seatTitle >= 0 && g_config.vr_action_mapping)
+            {
+                vr_mapping::Transports layout{};
+                const bool layoutKnown = Game_ReadVrActionBindings(layout, GetTickCount64());
+                const auto effective = EffectiveBindings(seatTitle, layout, layoutKnown);
                 for (unsigned action = 0; action < vr_mapping::Count; ++action)
                     bBound = bBound || vr_mapping::Resolve(static_cast<vr_mapping::Action>(action),
-                                                           g_config.vr_bindings[seatTitle][action]) == vr_mapping::B;
+                                                           effective[action]) == vr_mapping::B;
+            }
             const vehicle_seat_buttons::RightB rightB =
                 vehicle_seat_buttons::RightBFor(g_config.vr_action_mapping, bBound);
             vehicle_seat_buttons::Requests asked;
@@ -442,9 +455,25 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         const bool scopeFeatureAvailable=g_config.scope_enabled&&Game_IsHeadTracking()&&Game_HasScopeRenderer()&&
             !Game_AimFrameZoomOwnsZoom();
         const bool scopeAvailable=scopeFeatureAvailable&&gameplayMode;
+        vr_mapping::Transports gameLayout{};
+        const bool gameLayoutKnown=mappingTitle>=0&&g_config.vr_action_mapping&&
+            Game_ReadVrActionBindings(gameLayout,GetTickCount64());
+        const vr_mapping::Overrides effectiveBindings=mappingTitle>=0?
+            EffectiveBindings(mappingTitle,gameLayout,gameLayoutKnown):vr_mapping::Overrides{};
         const int zoomSource=mappingTitle>=0&&g_config.vr_action_mapping?
-            vr_mapping::Resolve(vr_mapping::Zoom,g_config.vr_bindings[mappingTitle][vr_mapping::Zoom]):vr_mapping::RightClick;
-        const uint32_t collectedSources=ScopeAndActionSources(pad,dpadMode);
+            vr_mapping::Resolve(vr_mapping::Zoom,effectiveBindings[vr_mapping::Zoom]):vr_mapping::RightClick;
+        uint32_t collectedSources=ScopeAndActionSources(pad,dpadMode);
+        {
+            // An air grip means nothing while its setting is off, or where no action this game has is bound to it.
+            bool airUsable=false;
+            for(unsigned action=0;g_config.trigger_air_equipment&&action<vr_mapping::Count;++action)
+                airUsable=airUsable||(effectiveBindings[action]==vr_mapping::SupportTriggerAir&&
+                    vr_mapping::NativeAction(currentTitle,static_cast<vr_mapping::Action>(action))!=vr_mapping::kNoAction);
+            static thread_local vr_mapping::SupportTriggerContext supportTrigger;
+            collectedSources|=supportTrigger.Step(
+                !menuOpen&&!pad.exclusiveInput&&(collectedSources&vr_mapping::Bit(vr_mapping::SupportTrigger))!=0,
+                pad.gripL>0.6f,pad.supportAimActive,pad.weaponConsumeSupport,pad.dualWield||inSeat,airUsable);
+        }
         // Changing D-pad gesture routes while the stick is held is cancellation,
         // not the release edge that toggles a scope. Face/trigger bindings are
         // unaffected by entering the optional head D-pad gesture.
@@ -517,7 +546,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                         native[action]=NativeVrActions_GestureBit(static_cast<vr_mapping::Action>(action));
                     if(scopeAvailable) native[vr_mapping::Zoom]=0;
                     const auto actions=g_vrActionMapper.ApplyDetailed(collectedSources,
-                        g_config.vr_bindings[index],native,
+                        effectiveBindings,native,
                         (uint64_t(TitleAdapter_GetGeneration(title))<<32)|(uint64_t(title)<<24)|pad.profileEpoch,
                         ready,g_config.disable_flashlight_input||
                             (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive));
@@ -641,7 +670,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         if(directActions) for(unsigned action=0;action<vr_mapping::Count;++action)
             mappingTransports[action]=NativeVrActions_GestureBit(static_cast<vr_mapping::Action>(action));
         auto semanticActions=g_vrActionMapper.ApplyDetailed(actionSources,
-            mappingTitle>=0?g_config.vr_bindings[mappingTitle]:emptyMappings,mappingTransports,
+            mappingTitle>=0?effectiveBindings:emptyMappings,mappingTransports,
             (uint64_t(TitleAdapter_GetGeneration(currentTitle))<<32)|(uint64_t(currentTitle)<<24)|pad.profileEpoch,
             nativeMapping,g_config.disable_flashlight_input||
                 (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive));

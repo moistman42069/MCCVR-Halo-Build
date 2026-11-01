@@ -6,6 +6,8 @@
 #include <cfloat>
 #include <cmath>
 #include <iterator>
+#include <string>
+#include <vector>
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
@@ -28,6 +30,7 @@
 #include "menu_style.h"
 #include "../common/log.h"
 #include "../common/config.h"
+#include "../common/input_preset.h"
 #include "../common/roomscale_recenter_logic.h"
 #include "../common/reclaimer_host_logic.h"
 #include "../common/weapon_interaction_logic.h"
@@ -103,7 +106,6 @@ namespace
         Cat_Comfort,
         Cat_Theatre,
         Cat_Controls,
-        Cat_Mappings,
         Cat_Reload,
         Cat_Vehicles,
         Cat_WeaponAim,
@@ -135,8 +137,7 @@ namespace
         {"Quality of Life", "VR comfort and immersion settings, collected here from their usual sections."},
         {"Comfort",       "The flat screen you see in menus, and how head motion feels."},
         {"3D Theatre",    "A room-fixed stereo screen used only when the game locks the cinematic camera."},
-        {"Controls",      "Turning, gestures, and controller vibration."},
-        {"VR Mappings",   "Controller actions, saved independently for each game."},
+        {"Controls",      "Your control scheme: presets, button mappings, movement, turning and gestures."},
         {"Reload & Holsters", "Magazine handling, weapon storage, and gesture zones."},
         {"Vehicles",      "First-person driving: sit in the seat instead of floating behind the vehicle."},
         {"Weapon & Aim",  "Gun placement, per-title calibration, muzzle alignment, and two-handed aiming."},
@@ -164,9 +165,9 @@ namespace
     struct CategorySection
     {
         bool visible=false,scoped=false;
-        explicit CategorySection(MenuCategory category)
+        explicit CategorySection(MenuCategory category,MenuCategory alsoIn=Cat_Count)
         {
-            if(g_activeCategory!=category&&g_activeCategory!=Cat_QualityOfLife)return;
+            if(g_activeCategory!=category&&g_activeCategory!=alsoIn&&g_activeCategory!=Cat_QualityOfLife)return;
             ImGui::PushID(static_cast<int>(category));scoped=true;
             visible=true;
         }
@@ -174,6 +175,92 @@ namespace
         CategorySection(const CategorySection&)=delete;
         CategorySection& operator=(const CategorySection&)=delete;
     };
+
+    // Choosing a preset applies it at once; the file or built-in stays as it was until the player saves over it.
+    void DrawInputPresets(bool& changed)
+    {
+        static std::vector<std::string> saved;
+        static bool listed=false;
+        static char newName[64]="";
+        static Config baseline;
+        static std::string baselineName;
+        static bool baselineFound=false;
+        if(!listed){saved=input_preset::ListSaved();listed=true;}
+        const std::string active=g_config.input_preset;
+        if(!baselineFound||baselineName!=active)
+        {
+            baseline=Config{};
+            baselineName=active;
+            baselineFound=input_preset::Find(active,baseline);
+        }
+        const auto apply=[&](const std::string& name)
+        {
+            Config scheme{};
+            if(!input_preset::Find(name,scheme)) return;
+            input_preset::CopyScheme(g_config,scheme);
+            strncpy_s(g_config.input_preset,name.c_str(),_TRUNCATE);
+            baselineFound=false;
+            changed=true;
+        };
+        ImGui::SetNextItemWidth(-140.0f);
+        if(ImGui::BeginCombo("Input preset",active.empty()?"(not saved)":active.c_str()))
+        {
+            for(int i=0;i<input_preset::BuiltInCount();++i)
+                if(ImGui::Selectable(input_preset::BuiltInName(i),active==input_preset::BuiltInName(i)))
+                    apply(input_preset::BuiltInName(i));
+            std::string chosen;
+            for(const auto& name:saved)
+                if(ImGui::Selectable(name.c_str(),active==name)) chosen=name;
+            if(!chosen.empty()) apply(chosen);
+            ImGui::EndCombo();
+        }
+        const bool isSaved=std::find(saved.begin(),saved.end(),active)!=saved.end();
+        const bool modified=baselineFound&&!input_preset::SameScheme(g_config,baseline);
+        if(modified)
+        {
+            ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"Changed since you chose this preset.");
+            ImGui::SameLine();
+            if(ImGui::Button("Undo changes")) apply(active);
+        }
+        else if(!baselineFound&&isSaved==false&&!active.empty())
+            ImGui::TextDisabled("This preset's file is gone. Your settings stay as they are.");
+        if(isSaved&&modified&&ImGui::Button("Save over this preset"))
+        {
+            input_preset::Save(active,g_config);
+            baselineFound=false;
+        }
+        ImGui::SetNextItemWidth(320.0f);
+        ImGui::InputTextWithHint("##presetname","Name (optional)",newName,sizeof(newName));
+        ImGui::SameLine();
+        if(ImGui::Button("Save as new preset"))
+        {
+            std::string name=input_preset::SafeName(newName);
+            for(int n=static_cast<int>(saved.size())+1;name.empty()||std::find(saved.begin(),saved.end(),name)!=saved.end();++n)
+                name="My preset "+std::to_string(n);
+            if(input_preset::Save(name,g_config))
+            {
+                strncpy_s(g_config.input_preset,name.c_str(),_TRUNCATE);
+                newName[0]=0;
+                listed=false;
+                baselineFound=false;
+                changed=true;
+            }
+        }
+        if(isSaved)
+        {
+            ImGui::SameLine();
+            if(ImGui::Button("Delete this preset"))
+            {
+                input_preset::Delete(active);
+                g_config.input_preset[0]=0;
+                listed=false;
+                baselineFound=false;
+                changed=true;
+            }
+        }
+        ImGui::TextDisabled("Saves your buttons, turning, movement, gestures, reload and holsters. Not your aim or\n"
+            "body fit. Presets are files in Input Presets beside halomccvr.cfg, so you can share them.");
+    }
 
     // The one bar that moves the panel. Everything else is inert, which is the
     // whole point: before this, the settings window itself was a movable ImGui
@@ -710,6 +797,51 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
+        if (ImGui::CollapsingHeader("Roomscale##section", ImGuiTreeNodeFlags_None))
+        {
+        changed |= ImGui::Checkbox("Roomscale body movement", &g_config.roomscale_movement);
+        ImGui::TextDisabled("Physical steps move your character while on foot. Walking follows your head.\n"
+            "Controller aiming is preserved. Enable head tracking and positional tracking.\n"
+            "The movement stick takes priority. Physical steps are retained and the body catches up once movement settles. "
+            "Recenter with F3 when needed.");
+        if (g_config.roomscale_movement)
+        {
+            // A/B: switches live; each switch starts the follow afresh from where you stand.
+            ImGui::Text("Follow:");
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("Hysteresis (A)", &g_config.roomscale_follow_law, 1);
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("Threshold (B)", &g_config.roomscale_follow_law, 0);
+            ImGui::TextDisabled(g_config.roomscale_follow_law
+                ? "Hysteresis: a lean under 3 cm never walks, the body brakes by letting go instead of backing up,\n"
+                  "and a distance you walked away during a tracking gap is still caught up."
+                : "Threshold: walks from 1.5 cm and brakes by reversing. Kept as it shipped in Alpha 0.6.0, "
+                  "for comparison.");
+            // The view recenter (roomscale_recenter_logic.h): three independent options, all on by default.
+            ImGui::Spacing();
+            ImGui::Text("Bring the view back over your character (steadier aim):");
+            changed |= ImGui::Checkbox("On a jump", &g_config.roomscale_recenter_jump);
+            if (g_config.roomscale_recenter_jump)
+                changed |= vr_menu::SliderFloat("Jump slide time", &g_config.roomscale_recenter_jump_s,
+                    roomscale_recenter::kMinSeconds, roomscale_recenter::kMaxSeconds, "%.2f s");
+            changed |= ImGui::Checkbox("When you start moving with the stick", &g_config.roomscale_recenter_move_start);
+            if (g_config.roomscale_recenter_move_start)
+                changed |= vr_menu::SliderFloat("Start-moving slide time", &g_config.roomscale_recenter_move_start_s,
+                    roomscale_recenter::kMinSeconds, roomscale_recenter::kMaxSeconds, "%.2f s");
+            changed |= ImGui::Checkbox("Gradually while moving with the stick", &g_config.roomscale_recenter_moving);
+            if (g_config.roomscale_recenter_moving)
+                changed |= vr_menu::SliderFloat("Slide speed while moving", &g_config.roomscale_recenter_moving_speed,
+                    roomscale_recenter::kMinSpeed, roomscale_recenter::kMaxSpeed, "%.2f m/s");
+            ImGui::TextDisabled(
+                "In the air, and while the stick moves you, your character cannot step under your head,\n"
+                "so your view sits away from where the game aims and shoots from. These slide the view back\n"
+                "over the character while that motion hides it. They never turn the view or change your\n"
+                "height, and your hands and reticle move with it.\n"
+                "On a jump / when you start moving: one quick slide, over the time you set.\n"
+                "Gradually while moving: a steady slide at the speed you set, for as long as the stick is\n"
+                "held. It need not finish: once you stand still, your legs walk to you as before.");
+        }
+        }
         if (ImGui::CollapsingHeader("Sound##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Sound follows your head", &g_config.audio_follows_head);
@@ -824,53 +956,15 @@ namespace
 
         if (CategorySection section{Cat_Controls}; section.visible)
         {
+        DrawInputPresets(changed);
+        ImGui::Spacing();
+        if (ImGui::CollapsingHeader("Movement##section", ImGuiTreeNodeFlags_None))
+        {
         changed |= ImGui::Checkbox("Physical running", &g_config.physical_running);
         if(g_config.physical_running) {
             changed |= vr_menu::SliderFloat("Running speed",&g_config.physical_running_speed,.1f,1.f,"%.2f");
             changed |= vr_menu::SliderFloat("Running sensitivity",&g_config.physical_running_sensitivity,.25f,3.f,"%.2f");
             ImGui::TextWrapped("Alternate both arms to move forward while on foot. Speed is a fraction of the game's normal maximum. While running, arm motion takes over the movement stick. Menus and vehicles keep their normal controls.");
-        }
-        changed |= ImGui::Checkbox("Roomscale body movement", &g_config.roomscale_movement);
-        ImGui::TextDisabled("Physical steps move your character while on foot. Walking follows your head.\n"
-            "Controller aiming is preserved. Enable head tracking and positional tracking.\n"
-            "The movement stick takes priority. Physical steps are retained and the body catches up once movement settles. "
-            "Recenter with F3 when needed.");
-        if (g_config.roomscale_movement)
-        {
-            // A/B: switches live; each switch starts the follow afresh from where you stand.
-            ImGui::Text("Follow:");
-            ImGui::SameLine();
-            changed |= ImGui::RadioButton("Hysteresis (A)", &g_config.roomscale_follow_law, 1);
-            ImGui::SameLine();
-            changed |= ImGui::RadioButton("Threshold (B)", &g_config.roomscale_follow_law, 0);
-            ImGui::TextDisabled(g_config.roomscale_follow_law
-                ? "Hysteresis: a lean under 3 cm never walks, the body brakes by letting go instead of backing up,\n"
-                  "and a distance you walked away during a tracking gap is still caught up."
-                : "Threshold: walks from 1.5 cm and brakes by reversing. Kept as it shipped in Alpha 0.6.0, "
-                  "for comparison.");
-            // The view recenter (roomscale_recenter_logic.h): three independent options, all on by default.
-            ImGui::Spacing();
-            ImGui::Text("Bring the view back over your character (steadier aim):");
-            changed |= ImGui::Checkbox("On a jump", &g_config.roomscale_recenter_jump);
-            if (g_config.roomscale_recenter_jump)
-                changed |= vr_menu::SliderFloat("Jump slide time", &g_config.roomscale_recenter_jump_s,
-                    roomscale_recenter::kMinSeconds, roomscale_recenter::kMaxSeconds, "%.2f s");
-            changed |= ImGui::Checkbox("When you start moving with the stick", &g_config.roomscale_recenter_move_start);
-            if (g_config.roomscale_recenter_move_start)
-                changed |= vr_menu::SliderFloat("Start-moving slide time", &g_config.roomscale_recenter_move_start_s,
-                    roomscale_recenter::kMinSeconds, roomscale_recenter::kMaxSeconds, "%.2f s");
-            changed |= ImGui::Checkbox("Gradually while moving with the stick", &g_config.roomscale_recenter_moving);
-            if (g_config.roomscale_recenter_moving)
-                changed |= vr_menu::SliderFloat("Slide speed while moving", &g_config.roomscale_recenter_moving_speed,
-                    roomscale_recenter::kMinSpeed, roomscale_recenter::kMaxSpeed, "%.2f m/s");
-            ImGui::TextDisabled(
-                "In the air, and while the stick moves you, your character cannot step under your head,\n"
-                "so your view sits away from where the game aims and shoots from. These slide the view back\n"
-                "over the character while that motion hides it. They never turn the view or change your\n"
-                "height, and your hands and reticle move with it.\n"
-                "On a jump / when you start moving: one quick slide, over the time you set.\n"
-                "Gradually while moving: a steady slide at the speed you set, for as long as the stick is\n"
-                "held. It need not finish: once you stand still, your legs walk to you as before.");
         }
         // Neither the checkbox nor the depth re-samples the standing height: it is learned all the time,
         // and only the Calibrate button takes the player's current height as their own word.
@@ -893,6 +987,7 @@ namespace
                     "press Calibrate while standing tall for the full crouch depth.");
         }
         ImGui::Spacing();
+        }
         if (ImGui::CollapsingHeader("VR turning (right controller stick)##section", ImGuiTreeNodeFlags_None))
         {
         if (ImGui::RadioButton("Snap turn", !g_config.turn_smooth))
@@ -988,9 +1083,7 @@ namespace
                               "Release the trigger before your first click. Off preserves normal menu controls.");
         ImGui::TextDisabled("L3+R3 recenters and toggles this menu; the right trigger clicks the VR pointer.");
         }
-        }
-
-        if (CategorySection section{Cat_Mappings}; section.visible)
+        if (ImGui::CollapsingHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
         {
             static int selectedTitle=0;
             static GameTitle previousTitle=GameTitle::None;
@@ -1000,10 +1093,37 @@ namespace
             previousTitle=active;
             ImGui::Text("Detected left: %s",VR_ControllerProfileName(true));
             ImGui::Text("Detected right: %s",VR_ControllerProfileName(false));
+            changed|=ImGui::Checkbox("Remap buttons (off: every button is the game's own)",&g_config.vr_action_mapping);
+            ImGui::TextWrapped("Automatic keeps an action where the game's own button layout has it. Choosing anything "
+                "else for a row turns remapping on. Physical gestures remain separate.");
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Left trigger by what your left hand is doing");
+            if(ImGui::Button("Grenade with a free hand, zoom gripping the gun"))
+            {
+                for(auto& title:g_config.vr_bindings)
+                {
+                    title[vr_mapping::Grenade]=vr_mapping::SupportTriggerFree;
+                    title[vr_mapping::Zoom]=vr_mapping::SupportTriggerOnGun;
+                }
+                g_config.vr_action_mapping=true;
+                changed=true;
+            }
+            ImGui::TextDisabled("Sets those two rows for all six games. Reload and holster grips send nothing, and dual\n"
+                "wielding and vehicle seats keep the plain trigger.");
+            if(ImGui::Checkbox("Gripping air uses equipment",&g_config.trigger_air_equipment))
+            {
+                for(auto& title:g_config.vr_bindings)
+                    if(g_config.trigger_air_equipment) title[vr_mapping::Equipment]=vr_mapping::SupportTriggerAir;
+                    else if(title[vr_mapping::Equipment]==vr_mapping::SupportTriggerAir)
+                        title[vr_mapping::Equipment]=vr_mapping::Automatic;
+                if(g_config.trigger_air_equipment) g_config.vr_action_mapping=true;
+                changed=true;
+            }
+            if(ImGui::IsItemHovered())
+                ImGui::SetTooltip("Pull the left trigger while gripping nothing to use equipment.\n"
+                                  "Off, or in a game without equipment: that pull throws a grenade.");
+            ImGui::Spacing();
             ImGui::Combo("Settings for",&selectedTitle,weapon_interaction::kTitleNames,6);
-            changed|=ImGui::Checkbox("Automatic VR action routing",&g_config.vr_action_mapping);
-            ImGui::TextWrapped("Automatic uses common VR defaults. Changes apply only to the selected game. "
-                "Unbound removes this action's VR button. Physical gestures remain separate.");
             ImGui::TextWrapped("All six games support separate actions while direct VR routing is available. "
                 "Games using the MCC layout fallback can link actions sharing a native button. "
                 "If the direct route is unavailable, Reload and Use may still share a button.");
@@ -1018,10 +1138,21 @@ namespace
                 ImGui::PushID(static_cast<int>(action));
                 ImGui::TextUnformatted(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)));
                 ImGui::SetNextItemWidth(-1);
-                changed|=ImGui::Combo("##source",&g_config.vr_bindings[selectedTitle][action],
-                    vr_mapping::kSourceNames,vr_mapping::SourceCount);
+                if(ImGui::Combo("##source",&g_config.vr_bindings[selectedTitle][action],
+                    vr_mapping::kSourceNames,vr_mapping::SourceCount))
+                {
+                    if(g_config.vr_bindings[selectedTitle][action]!=vr_mapping::Automatic)
+                        g_config.vr_action_mapping=true;
+                    changed=true;
+                }
                 if(g_config.vr_bindings[selectedTitle][action]==vr_mapping::Automatic)
-                    ImGui::TextDisabled("Default: %s",vr_mapping::kSourceNames[vr_mapping::kDefaults[action]]);
+                {
+                    if(haveBindings)
+                        ImGui::TextDisabled("The game has this on: %s",
+                            vr_mapping::kSourceNames[vr_mapping::LayoutSource(bindings[action])]);
+                    else
+                        ImGui::TextDisabled("Follows the game's own layout.");
+                }
                 if(haveBindings&&!bindings[action]) ImGui::TextDisabled("No native action binding available in this title.");
                 ImGui::PopID();
             }
@@ -1032,7 +1163,18 @@ namespace
             changed|=ImGui::Checkbox("Suppress flashlight while supporting a weapon",&g_config.flashlight_suppress_on_two_hand);
             ImGui::TextWrapped("Flashlight suppression leaves grip tracking and two-hand aiming available. "
                 "MCC actions that share the same native button can still occur together.");
-
+        }
+        if (ImGui::CollapsingHeader("Two-handed grip and melee##section", ImGuiTreeNodeFlags_None))
+        {
+            if (ImGui::RadioButton("Toggle (click grip)", g_config.two_hand_toggle))
+            { g_config.two_hand_toggle = true; changed = true; }
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Hold grip", !g_config.two_hand_toggle))
+            { g_config.two_hand_toggle = false; changed = true; }
+            changed |= ImGui::Checkbox("Physical melee", &g_config.physical_melee);
+            changed |= ImGui::Checkbox("Gesture melee (experimental)", &g_config.gesture_melee);
+            ImGui::TextDisabled("The same settings as Weapon & Aim and Body & Hands, here because a preset saves them.");
+        }
         }
 
         if (CategorySection section{Cat_Vehicles}; section.visible)
@@ -1546,7 +1688,8 @@ namespace
         }
         }
 
-        if (CategorySection section{Cat_Reload}; section.visible)
+        // Also in Controls, because a preset saves these.
+        if (CategorySection section{Cat_Reload, Cat_Controls}; section.visible)
         {
         if (ImGui::CollapsingHeader("Reload and holsters##section", ImGuiTreeNodeFlags_None))
         {
@@ -1705,7 +1848,7 @@ namespace
             changed |= vr_menu::SliderFloat("Pouch / hip depth below head (m)",
                 &g_config.weapon_pouch_down_m,0.25f,0.85f,"%.2f");
             ImGui::TextWrapped("Reload and switch gestures follow the current game's action bindings automatically. "
-                "Button choices are in VR Mappings. Release a claimed grip before starting another gesture.");
+                "Button choices are in Controls > VR Mappings. Release a claimed grip before starting another gesture.");
         }
         }
         }

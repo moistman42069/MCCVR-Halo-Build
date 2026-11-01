@@ -2,6 +2,7 @@
 #include "../src/common/vr_action_passthrough.h"
 #include "../src/dll/native_vr_actions.h"
 #include "../src/common/config.h"
+#include "../src/common/input_preset.h"
 #include "../src/common/weapon_interaction_logic.h"
 #include "../src/common/scope_action_input.h"
 #include "../src/common/physical_crouch_input.h"
@@ -19,6 +20,63 @@ using namespace vr_mapping;
 unsigned checks{};
 void Check(bool ok,const char* why)
 {++checks;if(!ok){std::fprintf(stderr,"FAIL: %s\n",why);std::exit(1);}}
+void CheckInputPresets()
+{
+    using namespace vr_mapping;
+    Check(LayoutSource(0x1000)==A&&LayoutSource(0x100)==SupportGrip&&LayoutSource(1u<<16)==SupportTrigger&&
+        LayoutSource(0x4)==DpadLeft&&LayoutSource(0x10)==Unbound&&LayoutSource(0)==Unbound,"the unmapped route's buttons");
+    Overrides rows{};
+    rows[Fire]=Y;
+    Transports layout{};
+    layout[Fire]=1u<<17;layout[Jump]=0x1000;
+    const auto followed=EffectiveOverrides(rows,layout,true);
+    Check(followed[Fire]==Y&&followed[Jump]==A&&followed[Melee]==Unbound,"Automatic rows follow the game's layout, others stay");
+    Check(EffectiveOverrides(rows,layout,false)[Jump]==Automatic,"an unknown layout leaves a row Automatic");
+
+    SupportTriggerContext t;
+    Check(t.Step(false,false,false,false,false,true)==0,"no pull");
+    Check(t.Step(true,false,false,false,false,true)==Bit(SupportTriggerFree),"a free hand");
+    Check(t.Step(true,true,true,false,false,true)==Bit(SupportTriggerFree),"a pull keeps its meaning as the hand moves");
+    t.Step(false,false,false,false,false,true);
+    Check(t.Step(true,true,true,false,false,true)==Bit(SupportTriggerOnGun),"gripping the gun");
+    Check(t.Step(true,false,false,false,false,true)==0,"leaving the gun ends the zoom without a grenade");
+    Check(t.Step(true,false,false,false,false,true)==0,"for the rest of the pull");
+    t.Step(false,false,false,false,false,true);
+    Check(t.Step(true,false,true,false,false,true)==Bit(SupportTriggerOnGun),"a toggled two-hand hold counts with the grip up");
+    t.Step(false,false,false,false,false,true);
+    Check(t.Step(true,true,false,false,false,true)==Bit(SupportTriggerAir),"gripping air");
+    t.Step(false,false,false,false,false,true);
+    Check(t.Step(true,true,false,false,false,false)==Bit(SupportTriggerFree),"air off: a free hand");
+    t.Step(false,false,false,false,false,true);
+    Check(t.Step(true,false,false,true,false,true)==0,"a magazine or holster grip sends nothing");
+    t.Step(false,false,false,false,false,true);
+    Check(t.Step(true,true,true,false,true,true)==Bit(SupportTriggerFree),"dual wielding or a seat keeps the plain trigger");
+
+    Config scheme{};
+    scheme.turn_smooth=false;scheme.vr_action_mapping=true;scheme.trigger_air_equipment=true;scheme.turn_snap_deg=45.f;
+    scheme.vr_bindings[3][Zoom]=SupportTriggerOnGun;scheme.world_scale=9.f;
+    Config loaded{};
+    input_preset::Parse(input_preset::Serialize(scheme).c_str(),loaded);
+    Check(input_preset::SameScheme(loaded,scheme),"a preset round trips");
+    Check(loaded.world_scale==Config{}.world_scale,"a preset carries no setting outside the scheme");
+    Config kept{};
+    kept.world_scale=2.f;
+    input_preset::CopyScheme(kept,scheme);
+    Check(kept.world_scale==2.f&&kept.vr_bindings[3][Zoom]==SupportTriggerOnGun,"applying a preset leaves the rest alone");
+    Config missing{};
+    input_preset::Parse("# only one key\nturn_snap_deg = 15\nvr_bind_halo3_fire = 999\n",missing);
+    Check(missing.turn_snap_deg==15.f&&missing.vr_bindings[0][Fire]==Automatic&&missing.turn_smooth==Config{}.turn_smooth,
+        "keys a preset omits take their default, and bad values are refused");
+    Config def{},plain{};
+    input_preset::BuiltIn(0,def);
+    Check(input_preset::SameScheme(def,plain)&&!def.vr_action_mapping&&!def.trigger_air_equipment,"Default is the canon: nothing remapped");
+    Config vr{};
+    input_preset::BuiltIn(1,vr);
+    Check(vr.vr_action_mapping&&vr.vr_bindings[2][Jump]==kDefaults[Jump],"the VR layout is written out in full");
+    Check(input_preset::SafeName("  My: preset/1 ")=="My preset1"&&input_preset::SafeName("default").empty()&&
+        input_preset::SafeName("../..")=="","a preset name is a safe file name, and never a built-in's");
+}
+
 void CheckScopeAdmission()
 {
     // Exercise the production release detector, not a duplicate toggle model.
@@ -233,6 +291,7 @@ void CheckDirectContextPassthrough()
 }
 int main()
 {
+    CheckInputPresets();
     CheckDirectContextPassthrough();
     CheckScopeAdmission();
     CheckPhysicalCrouchInput();

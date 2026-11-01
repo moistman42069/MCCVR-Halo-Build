@@ -66,8 +66,9 @@ SETTINGS AND CONTROLS
 ---------------------
 F1 opens settings; F3 recenters. L3+R3 together recenters and toggles F1.
 Point your main-hand controller at the VR settings panel and use its trigger.
-The dedicated VR Mappings page detects the advertised controller profile and
-stores optional overrides separately per game, including Unbound. The current
+Controls holds input presets, which save your control scheme under a name, and
+VR Mappings, which detects the advertised controller profile and stores optional
+overrides separately per game, including Unbound. The current
 native transport still couples actions that share a native MCC button/action,
 so reload and use may not unbind independently.
 Reload & Holsters, Weapon & Aim, Vehicles, Picture and Subtitles group the options.

@@ -717,6 +717,9 @@ struct Config
     // default for now -- the plain route, each VR button as the gamepad button it stands for, is the one that works;
     // the automatic one has known faults.
     bool vr_action_mapping = false;
+    char input_preset[64] = "Default"; // input_preset.h; empty: a scheme no preset named
+    // The support trigger with the support grip held on nothing uses equipment. Off: that pull is a free hand's.
+    bool trigger_air_equipment = false;
     bool flashlight_suppress_on_two_hand = true;
     // Optional temporal upscaler; ordinary eye resolve remains the default.
     int upscaler = 0;
@@ -2338,3 +2341,4 @@ void ConfigLoad(const wchar_t* path);
 void Config_ApplyAimModes(); // missing file -> file is created with defaults
 void ConfigLoadMigrating(const wchar_t* primaryPath, const wchar_t* legacyPath);
 void ConfigSave();
+const wchar_t* Config_Path();

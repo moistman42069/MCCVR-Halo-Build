@@ -1046,6 +1046,7 @@ void ConfigLoad(const wchar_t* path)
     bool loadedScopeZoom = false;
     bool loadedHolsterRadius = false;
     bool flashlightMappingV2 = false;
+    bool loadedInputPreset = false;
     bool leftHandForwardResetV1 = false;
     bool loadedSharedLeftHandForward = false;
     bool twoHandZoneBaselineV1 = false;
@@ -1177,6 +1178,8 @@ void ConfigLoad(const wchar_t* path)
         }
         if(bloomChoiceKey) continue;
         if(!strcmp(key,"vr_action_mapping")) {g_config.vr_action_mapping=atoi(val)!=0;continue;}
+        if(!strcmp(key,"input_preset")) {strncpy_s(g_config.input_preset,val,_TRUNCATE);loadedInputPreset=true;continue;}
+        if(!strcmp(key,"trigger_air_equipment")) {g_config.trigger_air_equipment=atoi(val)!=0;continue;}
         if(!strcmp(key,"flashlight_suppress_on_two_hand")) {g_config.flashlight_suppress_on_two_hand=atoi(val)!=0;continue;}
         if(!strcmp(key,"upscaler")) {g_config.upscaler=atoi(val)==1?1:0;continue;}
         if(!strcmp(key,"dlss_mode")) {g_config.dlss_mode=std::clamp(atoi(val),0,4);continue;}
@@ -2188,6 +2191,16 @@ void ConfigLoad(const wchar_t* path)
             LOG("config: unknown key '%s' ignored", key);
     }
     fclose(f);
+    // A file from before input presets. A remapping player's Automatic rows meant the fixed VR layout, and Automatic
+    // now follows the game's own: write that layout out so nothing moves under them.
+    if (!loadedInputPreset && g_config.vr_action_mapping)
+    {
+        g_config.input_preset[0] = 0;
+        for (auto& title : g_config.vr_bindings)
+            for (unsigned action = 0; action < vr_mapping::Count; ++action)
+                if (title[action] == vr_mapping::Automatic)
+                    title[action] = vr_mapping::kDefaults[action];
+    }
     if (loadedLegacyVirtualStockStrength)
     {
         if (VirtualStockUsesPlusMode(g_config))
@@ -2320,6 +2333,11 @@ void ConfigLoadMigrating(const wchar_t* primaryPath, const wchar_t* legacyPath)
         return;
     }
     ConfigLoad(primaryPath);
+}
+
+const wchar_t* Config_Path()
+{
+    return g_path.c_str();
 }
 
 void ConfigSave()
@@ -3602,7 +3620,7 @@ void ConfigSave()
         fprintf(f,"weapon_reload_button_%s = %d\n",weapon_interaction::kTitleKeys[i],g_config.weapon_reload_button[i]);
         fprintf(f,"weapon_switch_button_%s = %d\n",weapon_interaction::kTitleKeys[i],g_config.weapon_switch_button[i]);
     }
-    fprintf(f,"\n# VR action bindings: 0=automatic, 1=unbound. Edited in VR Mappings.\n");
+    fprintf(f,"\n# VR action bindings: 0=the game's own layout, 1=unbound. Edited in F1 > Controls > VR Mappings.\n");
     fprintf(f,"# Physical crouch: lower your head by physical_crouch_depth_m (metres, 0.08 to 0.65) to crouch,\n"
               "# on foot. It needs MCC's hold-to-crouch setting: toggle crouch is not overridden.\n"
               "# 0 = crouch with the button only. (default %d, depth %.2f)\n",
@@ -3629,6 +3647,10 @@ void ConfigSave()
         g_config.physical_running?1:0,g_config.physical_running_speed,g_config.physical_running_sensitivity);
     fprintf(f,"vr_action_mapping = %d\nflashlight_suppress_on_two_hand = %d\n",
         g_config.vr_action_mapping?1:0,g_config.flashlight_suppress_on_two_hand?1:0);
+    fprintf(f,"# The input preset last chosen in F1 > Controls. (default %s)\ninput_preset = %s\n",
+        d.input_preset,g_config.input_preset);
+    fprintf(f,"# The support trigger with the support grip held on nothing uses equipment. (default %d)\n"
+              "trigger_air_equipment = %d\n",d.trigger_air_equipment?1:0,g_config.trigger_air_equipment?1:0);
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
         for(unsigned action=0;action<vr_mapping::Count;++action)
             fprintf(f,"vr_bind_%s_%s = %d\n",weapon_interaction::kTitleKeys[title],
