@@ -33,6 +33,9 @@ void CheckInputPresets()
     Check(followed[Fire]==Y&&followed[Jump]==A&&followed[Melee]==Unbound,"Automatic rows follow the game's layout, others stay");
     Check(EffectiveOverrides(rows,layout,false)[Jump]==Automatic,"an unknown layout leaves a row Automatic");
 
+    Check(OneHandedGripOnGun(true,true,.25f*.25f),"a grip near a pistol's hand is on it");
+    Check(!OneHandedGripOnGun(true,true,.35f*.35f),"far from it, an air grip");
+    Check(!OneHandedGripOnGun(false,true,.1f*.1f)&&!OneHandedGripOnGun(true,false,.1f*.1f),"only a one-handed gun, only with the grip held");
     SupportTriggerContext t;
     Check(t.Step(false,false,false,false,false,true)==0,"no pull");
     Check(t.Step(true,false,false,false,false,true)==Bit(SupportTriggerFree),"a free hand");

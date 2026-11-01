@@ -1108,6 +1108,7 @@ struct VrPadState
     bool thumbrestDpad = false;
     bool exclusiveInput = false;
     bool dualWield = false; // the support trigger fires the other gun
+    bool supportOnOneHandedGun = false; // vr_mapping::OneHandedGripOnGun
     float dpadX = 0.0f, dpadY = 0.0f;
     // Optional body-gesture output, validated again before XInput delivery.
     uint32_t weaponButtons = 0;

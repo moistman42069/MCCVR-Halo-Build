@@ -472,7 +472,8 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             static thread_local vr_mapping::SupportTriggerContext supportTrigger;
             collectedSources|=supportTrigger.Step(
                 !menuOpen&&!pad.exclusiveInput&&(collectedSources&vr_mapping::Bit(vr_mapping::SupportTrigger))!=0,
-                pad.gripL>0.6f,pad.supportAimActive,pad.weaponConsumeSupport,pad.dualWield||inSeat,airUsable);
+                pad.gripL>0.6f,pad.supportAimActive||pad.supportOnOneHandedGun,pad.weaponConsumeSupport,
+                pad.dualWield||inSeat,airUsable);
         }
         // Changing D-pad gesture routes while the stick is held is cancellation,
         // not the release edge that toggles a scope. Face/trigger bindings are

@@ -132,6 +132,11 @@ inline uint64_t Fingerprint(const Overrides& bindings,const Transports& native) 
     for(unsigned a=0;a<Count;++a) {value^=uint64_t(bindings[a])|(uint64_t(native[a])<<8);value*=1099511628211ull;}
     return value;
 }
+// A one-handed weapon has no front grip to reach for, and its two-handed zone is small: for the support trigger, a grip
+// held anywhere near the gun hand is on the gun, so its zoom stays in reach. Beyond this it is an air grip.
+inline constexpr float kOneHandedGripRangeMetres=.30f;
+inline constexpr bool OneHandedGripOnGun(bool oneHanded,bool gripDown,float distanceSquared) noexcept
+{ return oneHanded&&gripDown&&distanceSquared<=kOneHandedGripRangeMetres*kOneHandedGripRangeMetres; }
 // The support trigger by what the support hand is doing as it is pulled: free, on the gun, or gripping air. The pull
 // keeps its meaning until it is let go, so moving the hand cannot throw a grenade halfway through a zoom. The one
 // exception is the gun: when the hand leaves it the zoom ends, and that pull does nothing more.

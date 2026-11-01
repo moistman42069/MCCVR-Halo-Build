@@ -15744,6 +15744,19 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // The same grip edge that acquires OR releases support must not also
         // activate a flashlight. Publish this frame's decision, not last frame's.
         pad.supportAimActive=supportWasLatched||g_twoHandLatched.load(std::memory_order_acquire);
+        if(pad.gripL>0.6f&&valid&&leftValid)
+        {
+            const GameTitle gripTitle=TitleAdapter_GetActiveTitle();
+            const bool oneHanded=(g_gripZoneKind.load(std::memory_order_acquire)==2&&
+                inputNow-g_gripZoneKindMs.load(std::memory_order_acquire)<=2000)||
+                weapon_model::AlwaysOneHandedAim(weapon_model::Find(gripTitle,VR_GetWeaponModelIdentity(gripTitle,
+                    TitleAdapter_GetGeneration(gripTitle),g_contactSpaceEpoch.load(std::memory_order_acquire),inputNow)));
+            const float gripX=location.pose.position.x-leftLocation.pose.position.x;
+            const float gripY=location.pose.position.y-leftLocation.pose.position.y;
+            const float gripZ=location.pose.position.z-leftLocation.pose.position.z;
+            pad.supportOnOneHandedGun=vr_mapping::OneHandedGripOnGun(oneHanded,true,gripX*gripX+gripY*gripY+gripZ*gripZ);
+        }
+        else pad.supportOnOneHandedGun=false;
         g_padState = pad;
         g_thumbrestDpadSampleMs.store(pad.thumbrestDpad ? inputNow : 0,
             std::memory_order_release);

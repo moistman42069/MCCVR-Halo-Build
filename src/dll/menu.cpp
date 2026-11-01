@@ -841,6 +841,27 @@ namespace
                 "Gradually while moving: a steady slide at the speed you set, for as long as the stick is\n"
                 "held. It need not finish: once you stand still, your legs walk to you as before.");
         }
+        ImGui::Spacing();
+        // Neither the checkbox nor the depth re-samples the standing height: it is learned all the time,
+        // and only the Calibrate button takes the player's current height as their own word.
+        if(g_config.physical_crouch)
+        {
+            float crouchCm=g_config.physical_crouch_depth_m*100.f;
+            if(vr_menu::SliderFloat("Crouch activation depth",&crouchCm,8.f,65.f,"%.0f cm"))
+            {g_config.physical_crouch_depth_m=crouchCm*.01f;changed=true;}
+            if(ImGui::Button("Calibrate crouch at my current height")) VR_RecalibratePhysicalCrouch();
+            ImGui::TextWrapped("Lower your head by the activation depth to crouch. Your standing height is learned "
+                "on its own: a few seconds standing normally sets it, and recentering, cutscenes and level loads "
+                "leave it alone. Playing seated? Press Calibrate while seated: the reference then stays at that "
+                "height, rising by at most a little under two thirds of the activation depth, so half-rising "
+                "never leaves you crouched. Smaller depths activate sooner. On foot only; button crouch remains "
+                "separate. Use MCC's hold-to-crouch setting; native toggle crouch is not overridden.");
+            if(Input_PhysicalCrouchRiseCapped())
+                ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"You stood taller than the reference learns on its own: "
+                    "press Calibrate while standing tall for the full crouch depth.");
+        }
+        if(!g_config.physical_crouch)
+            ImGui::TextDisabled("Physical crouch is off (Controls > Movement).");
         }
         if (ImGui::CollapsingHeader("Sound##section", ImGuiTreeNodeFlags_None))
         {
@@ -966,26 +987,9 @@ namespace
             changed |= vr_menu::SliderFloat("Running sensitivity",&g_config.physical_running_sensitivity,.25f,3.f,"%.2f");
             ImGui::TextWrapped("Alternate both arms to move forward while on foot. Speed is a fraction of the game's normal maximum. While running, arm motion takes over the movement stick. Menus and vehicles keep their normal controls.");
         }
-        // Neither the checkbox nor the depth re-samples the standing height: it is learned all the time,
-        // and only the Calibrate button takes the player's current height as their own word.
         if(ImGui::Checkbox("Physical crouch",&g_config.physical_crouch))
             changed=true;
-        if(g_config.physical_crouch)
-        {
-            float crouchCm=g_config.physical_crouch_depth_m*100.f;
-            if(vr_menu::SliderFloat("Crouch activation depth",&crouchCm,8.f,65.f,"%.0f cm"))
-            {g_config.physical_crouch_depth_m=crouchCm*.01f;changed=true;}
-            if(ImGui::Button("Calibrate crouch at my current height")) VR_RecalibratePhysicalCrouch();
-            ImGui::TextWrapped("Lower your head by the activation depth to crouch. Your standing height is learned "
-                "on its own: a few seconds standing normally sets it, and recentering, cutscenes and level loads "
-                "leave it alone. Playing seated? Press Calibrate while seated: the reference then stays at that "
-                "height, rising by at most a little under two thirds of the activation depth, so half-rising "
-                "never leaves you crouched. Smaller depths activate sooner. On foot only; button crouch remains "
-                "separate. Use MCC's hold-to-crouch setting; native toggle crouch is not overridden.");
-            if(Input_PhysicalCrouchRiseCapped())
-                ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"You stood taller than the reference learns on its own: "
-                    "press Calibrate while standing tall for the full crouch depth.");
-        }
+        ImGui::TextDisabled("Lower your head to crouch. Depth and calibration are in Comfort > Roomscale.");
         ImGui::Spacing();
         }
         if (ImGui::CollapsingHeader("VR turning (right controller stick)##section", ImGuiTreeNodeFlags_None))
@@ -1076,11 +1080,6 @@ namespace
             ImGui::SetTooltip("Adjust vibration strength; 0%% disables it.\n"
                               "Supported weapon feedback follows the holding hand, sharing recoil while supporting the gun.\n"
                               "Damage and vehicle feedback can use both controllers.");
-        changed |= ImGui::Checkbox("Point at game menus", &g_config.game_menu_pointer);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Aim your primary controller at MCC's main or pause menu, then pull its trigger to click.\n"
-                              "A white ring marks the cursor and shrinks when clicked. MCC must have desktop focus.\n"
-                              "Release the trigger before your first click. Off preserves normal menu controls.");
         ImGui::TextDisabled("L3+R3 recenters and toggles this menu; the right trigger clicks the VR pointer.");
         }
         if (ImGui::CollapsingHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
@@ -3076,6 +3075,11 @@ namespace
         }
         if (ImGui::CollapsingHeader("Menu panel##section", ImGuiTreeNodeFlags_None))
         {
+        changed |= ImGui::Checkbox("Point at game menus", &g_config.game_menu_pointer);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Aim your primary controller at MCC's main or pause menu, then pull its trigger to click.\n"
+                              "A white ring marks the cursor and shrinks when clicked. MCC must have desktop focus.\n"
+                              "Release the trigger before your first click. Off preserves normal menu controls.");
         ImGui::TextDisabled("Currently %.2f m away, %.2f m wide, %+.2f m high, %+.2f m across.",
                             g_config.menu_distance_m, g_config.menu_width_m,
                             g_config.menu_height_m, g_config.menu_side_m);
