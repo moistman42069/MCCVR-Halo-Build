@@ -21,7 +21,7 @@ constexpr COLORREF kReclaimerPanel = RGB(31, 24, 13), kReclaimerField = RGB(46, 
 constexpr int kReclaimerLeft = 26, kReclaimerTop = 612, kReclaimerRight = 954, kReclaimerBottom = 796;
 constexpr UINT kDone = WM_APP + 20;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage,
-          ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch };
+          ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings };
 // The window's client size at 96 dpi.
 constexpr int kMenuWidth = 980, kMenuHeight = 890;
 struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag; bool candidate = true; };
@@ -71,6 +71,8 @@ struct Menu {
         EnableWindow(GetDlgItem(window, Install), !busy && game && hasPayload && !same);
         EnableWindow(GetDlgItem(window, Launch), !busy && installed);
         EnableWindow(GetDlgItem(window, Folder), !busy && game);
+        EnableWindow(GetDlgItem(window, Settings), !busy && game &&
+            fs::is_regular_file(game->root / L"Halo_MCC_VR" / L"HaloMCCVRSettings.exe"));
         EnableWindow(GetDlgItem(window, Check), !busy);
         const auto identity = game ? ReadIdentity(game->root / L"Halo_MCC_VR") : BuildIdentity{};
         const bool sameRelease = installed && !identity.tag.empty() && identity.tag == latest.tag && !identity.candidate;
@@ -204,8 +206,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Label(*menu, L"02  /  YOUR VR SETUP", 38, 310, 570);
         menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_AUTOCHECKBOX | WS_TABSTOP, 38, 340, 850, 30, Retain);
         SendMessageW(menu->retain, BM_SETCHECK, BST_CHECKED, 0); SetWindowTheme(menu->retain, L"", L"");
-        Control(*menu, L"BUTTON", L"INSTALL VR MOD", BS_OWNERDRAW | WS_TABSTOP, 38, 390, 414, 48, Install);
-        Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 474, 390, 300, 48, Launch);
+        Control(*menu, L"BUTTON", L"INSTALL VR MOD", BS_OWNERDRAW | WS_TABSTOP, 38, 390, 270, 48, Install);
+        Control(*menu, L"BUTTON", L"VR SETTINGS", BS_OWNERDRAW | WS_TABSTOP, 324, 390, 200, 48, Settings);
+        Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 540, 390, 234, 48, Launch);
         Control(*menu, L"BUTTON", L"MOD FOLDER", BS_OWNERDRAW | WS_TABSTOP, 796, 390, 146, 48, Folder);
         Label(*menu, L"03  /  RELEASE UPDATES", 38, 472, 570);
         Control(*menu, L"BUTTON", L"CHECK FOR UPDATES", BS_OWNERDRAW | WS_TABSTOP, 38, 503, 270, 40, Check);
@@ -288,6 +291,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         case Browse: BrowseFolder(*menu); break;
         case Scan: menu->installs = DetectInstalls(menu->selfDir); menu->Populate(); menu->Text(menu->status, L"Detection complete. Select the MCC installation you want to use."); break;
         case Folder: if (auto* game = menu->Selected()) { auto path = game->root / L"Halo_MCC_VR"; if (!fs::exists(path)) path = game->root; ShellExecuteW(window, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL); } break;
+        case Settings: if (auto* game = menu->Selected()) {
+            const auto folder = game->root / L"Halo_MCC_VR";
+            const std::wstring config = L"\"" + (folder / L"halomccvr.cfg").wstring() + L"\"";
+            ShellExecuteW(window, L"open", (folder / L"HaloMCCVRSettings.exe").c_str(), config.c_str(), folder.c_str(), SW_SHOWNORMAL);
+        } break;
         case ReleasePage: ShellExecuteW(window, L"open", L"https://github.com/moistman42069/MCCVR-Halo-Build/releases/latest", nullptr, nullptr, SW_SHOWNORMAL); break;
         case Launch: if (auto* game = menu->Selected()) { menu->launchDir = (game->root / L"Halo_MCC_VR").wstring(); DestroyWindow(window); } break;
         case ReclaimerPath:

@@ -423,6 +423,16 @@ endif()
 # so HaloMCCVRReclaimerRelay.dll rides its process starts and loads HaloMCCVR.dll into the engine worker before
 # that worker runs (src/relay/reclaimer_relay.cpp). The launcher uses it when it sits beside a Project Reclaimer
 # client and no MCC install is around it.
+# The VR menu on the desktop: menu.cpp itself, with the game's side answered by settings_stubs.cpp.
+add_executable(halomccvr_settings WIN32 src/settings/settings_main.cpp src/settings/settings_stubs.cpp
+    src/dll/menu.cpp src/common/config.cpp src/common/input_preset.cpp src/common/log.cpp
+    src/common/input_logic.cpp src/common/scope_logic.cpp)
+set_target_properties(halomccvr_settings PROPERTIES OUTPUT_NAME "HaloMCCVRSettings")
+target_include_directories(halomccvr_settings PRIVATE src/dll src/common "${HALOMCCVR_GENERATED_DIR}"
+    $<TARGET_PROPERTY:halo3xr,INCLUDE_DIRECTORIES>)
+target_compile_definitions(halomccvr_settings PRIVATE $<TARGET_PROPERTY:halo3xr,COMPILE_DEFINITIONS>)
+target_link_libraries(halomccvr_settings PRIVATE imgui_lib d3d11 dxgi d3dcompiler gdi32 shell32 ole32)
+
 add_library(halomccvr_reclaimer_relay SHARED src/relay/reclaimer_relay.cpp)
 set_target_properties(halomccvr_reclaimer_relay PROPERTIES OUTPUT_NAME "HaloMCCVRReclaimerRelay")
 target_include_directories(halomccvr_reclaimer_relay PRIVATE src/common "${minhook_SOURCE_DIR}/include")
@@ -1755,6 +1765,9 @@ install(TARGETS halo3xr_launcher
     COMPONENT launcher)
 # The Project Reclaimer relay rides beside HaloMCCVR.dll, so the launcher's Project Reclaimer section can start it
 # from an installed Halo_MCC_VR folder.
+install(TARGETS halomccvr_settings
+    RUNTIME DESTINATION .
+    COMPONENT dist)
 install(TARGETS halomccvr_reclaimer_relay
     RUNTIME DESTINATION .
     COMPONENT dist)

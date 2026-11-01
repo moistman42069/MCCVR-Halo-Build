@@ -23,7 +23,7 @@ TITLES = ("halo3", "odst", "reach", "halo4", "ce", "halo2")
 ACTIONS = ("fire", "grenade", "jump", "melee", "reload", "interact", "switch_weapon",
            "switch_grenade", "equipment", "crouch", "zoom", "flashlight", "sprint")
 REQUIRED_PAYLOAD = {
-    "HaloMCCVR.dll", "halomccvr.cfg", "INSTALL-MANIFEST.sha256",
+    "HaloMCCVR.dll", "HaloMCCVRSettings.exe", "halomccvr.cfg", "INSTALL-MANIFEST.sha256",
     "BUILD-IDENTITY.txt", "LICENSE", "MANUAL-README.txt", "THIRD-PARTY-LICENSES.txt",
     "RELEASE-NOTES.md", "nvngx_dlss.dll",
     "licenses/NVIDIA-DLSS/LICENSE.txt", "licenses/NVIDIA-DLSS/NOTICE.txt",

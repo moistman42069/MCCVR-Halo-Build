@@ -5,6 +5,9 @@ activation code remains in `launcher.cpp`. A new menu selects an installation
 and calls that same launch path only when the user selects **Launch MCC**.
 Installation and update discovery do not start MCC.
 
+**VR SETTINGS.** Opens `HaloMCCVRSettings.exe` from the selected install's `Halo_MCC_VR` folder: the VR menu's own code on
+the desktop (`src/settings`), editing that folder's `halomccvr.cfg`. It does not save while the game is open.
+
 **Unattended launch (`--headless`, dev builds only).** A launcher built with
 `HALOMCCVR_DEV_DIAGNOSTICS` (the `dev` preset) accepts
 `HaloMCCVRLauncher.exe --headless`: it skips the menu and launches the mod in

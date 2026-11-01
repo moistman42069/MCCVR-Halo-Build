@@ -2343,3 +2343,4 @@ void Config_ApplyAimModes(); // missing file -> file is created with defaults
 void ConfigLoadMigrating(const wchar_t* primaryPath, const wchar_t* legacyPath);
 void ConfigSave();
 const wchar_t* Config_Path();
+void Config_SetReadOnly(bool readOnly); // the desktop settings window, while the game owns the file

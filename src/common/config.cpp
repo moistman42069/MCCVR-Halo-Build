@@ -2336,6 +2336,12 @@ void ConfigLoadMigrating(const wchar_t* primaryPath, const wchar_t* legacyPath)
     ConfigLoad(primaryPath);
 }
 
+static std::atomic<bool> g_configReadOnly{false};
+void Config_SetReadOnly(bool readOnly)
+{
+    g_configReadOnly.store(readOnly);
+}
+
 const wchar_t* Config_Path()
 {
     return g_path.c_str();
@@ -2344,7 +2350,7 @@ const wchar_t* Config_Path()
 void ConfigSave()
 {
     const std::lock_guard lock(g_profileMutex);
-    if (g_path.empty())
+    if (g_path.empty() || g_configReadOnly.load())
         return;
     Config_ApplyWeaponProfile(g_observedWeaponIdentity);
     Clamp();

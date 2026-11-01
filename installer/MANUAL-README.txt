@@ -65,6 +65,8 @@ root launcher once. The new installer can still read legacy payload layouts.
 SETTINGS AND CONTROLS
 ---------------------
 F1 opens settings; F3 recenters. L3+R3 together recenters and toggles F1.
+The launcher's VR SETTINGS button opens the same menu on your monitor, or run
+HaloMCCVRSettings.exe in this folder. It saves only while the game is closed.
 Point your main-hand controller at the VR settings panel and use its trigger.
 Controls holds input presets, which save your control scheme under a name, and
 VR Mappings, which detects the advertised controller profile and stores optional
