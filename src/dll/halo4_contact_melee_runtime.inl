@@ -1,9 +1,13 @@
 // H4EK-owned native contact path. Included after Halo 4's physics types/state.
 // Binding and layout evidence: CONTACT-RESUME-CHECKPOINT.md.
 #include "../common/halo4_contact_world.h"
-using Halo4ContactUpdateFn=void(__fastcall*)(void*);
+// UnitInstance::Update (0x5ECCB4) returns a byte, "this object did something this tick" (`mov al, r12b`):
+// the biped and vehicle Update virtuals OR it into their own result, and the per-object update lets an
+// object whose updates all report nothing go idle. The detour passes it back, as Halo 3's twin does.
+using Halo4ContactUpdateFn=uint8_t(__fastcall*)(void*);
 using Halo4ContactBuildFn=void(__fastcall*)(uint32_t,int32_t,uint32_t*);
 using Halo4ContactConsumeFn=void(__fastcall*)(uint32_t,uint64_t,int16_t,float,uint8_t,uint32_t*,void*);
+// Forwarded through CallNativeWithSpareSlots (native_forward.h), like every title's damage event.
 using Halo4ContactDamageFn=void(__fastcall*)(uint32_t,int32_t,const void*,const void*,const float*);
 using Halo4ContactObjectFn=const uint8_t*(__fastcall*)(uint32_t,uint32_t);
 struct Halo4ContactRuntime
@@ -55,6 +59,28 @@ const uint8_t* Halo4ContactObject(uint32_t handle,bool requireBiped=false)
 
 const uint8_t* Halo4ContactBiped(uint32_t handle) { return Halo4ContactObject(handle,true); }
 
+// A live object's type: the header's kind byte at entry +4, the byte PhysicsRayCast's own object predicate tests
+// (halo4 0x1BFDB2: 0 biped, 1 vehicle), read only after the native accessor's full salt check passed. For the
+// sight trace's hit class. -1: a stale handle. Callers guard it (the simulation thread's __try).
+int Halo4SightObjectType(uint32_t handle)
+{
+    if(!Halo4ContactObject(handle)) return -1;
+    auto** slots=reinterpret_cast<const uint8_t**>(__readgsqword(0x58));
+    const auto* table=*reinterpret_cast<const uint8_t* const*>(slots[*g_halo4EngineTlsIndex]+0x18);
+    const auto* entries=*reinterpret_cast<const uint8_t* const*>(table+0x50);
+    return entries[(handle&0xFFFF)*0x18+4];
+}
+
+// The same, behind its own guard (kept free of C++ objects so __try is legal).
+int Halo4SightObjectTypeGuarded(int32_t object)
+{
+    if(object==-1) return -1;
+    __try { return Halo4SightObjectType(static_cast<uint32_t>(object)); }
+    __except(EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
+
+// Halo4RedirectContactRay, Halo4ContactDamageDetour (its damage forward goes through
+// CallNativeWithSpareSlots, see Halo4ContactDamageFn) and Halo4ContactBackend, shared with the native fixture.
 #include "halo4_contact_melee_backend.inl"
 
 void Halo4ContactTick(uint32_t unit,void* instance)
@@ -69,7 +95,7 @@ void Halo4ContactTick(uint32_t unit,void* instance)
         if(unit==g_halo4Contact.owner.load(std::memory_order_acquire) && biped==instance)
         {
             const uint64_t now=GetTickCount64();
-            const bool admit=!exclusive_input::Active() && g_config.physical_melee && g_enabled.load() && VR_IsStereoEnabled() &&
+            const bool admit=!exclusive_input::Active() && Sight_PhysicalMelee() && g_enabled.load() && VR_IsStereoEnabled() &&
                 g_halo4Camera.armed.load() && !g_halo4Camera.teardownRequested.load() &&
                 g_halo4Contact.generation==g_halo4Camera.generation.load() &&
                 g_halo4Contact.playbackMode && g_halo4Contact.playbackMode()==0 &&
@@ -103,9 +129,218 @@ void Halo4ContactTick(uint32_t unit,void* instance)
     g_halo4Contact.processing.store(false,std::memory_order_release);
 }
 
-__declspec(noinline) void __fastcall Halo4ContactUpdateDetour(void* instance)
+// THE SHOT'S OWN QUERY. Among Halo 4's PhysicsRayCast callers on the fire tick (the dev
+// sight_ray_census lists them) is a shot's aim-assist query: caller +0x1DC6FA (function
+// 0x1DC2F4), profile 0x1A, 128 wu from the engine eye along the aim, flags 0x...44D409. It builds them
+// the way Reach and Halo 3 build their crosshair query (global | 0x202000 there):
+//      mov rax,[rip+global]; mov ecx,0x404400; mov edi,eax; ...; or edi,ecx; shr rax,32; ... call PhysicsRayCast
+// Every `mov ecx, 0x404400` anchor must have that load before it, the `shr rax, 32` after it and a call to
+// the hooked PhysicsRayCast within 0x200 bytes; all must name one global inside the module, and the global
+// must hold the melee query's flags (ValueAgreement with the global the contact install pinned: the same
+// engine default). Then the trace uses global | 0x404400, the shot's flags. Any doubt: 0, and the trace
+// keeps the melee query's flags.
+// ADDR-HYGIENE: resolved + guarded (anchor + load + call edge + value agreement; no address is assumed).
+std::atomic<uint64_t> g_halo4SightShotFlags{0};
+
+const char* Halo4ResolveShotFlags(uintptr_t base,size_t size,uint64_t meleeValue,uint64_t& flags,
+    uint32_t& anchors,uintptr_t& global)
+{
+    static constexpr char kAnchor[]="B9 00 44 40 00";   // mov ecx, 0x404400
+    constexpr uint64_t kShotFlagsOr=0x404400;
+    flags=0; anchors=0; global=0;
+    const uintptr_t rayCast=reinterpret_cast<uintptr_t>(g_halo4WorldCollision.rayCastTarget);
+    uintptr_t textBegin=0,textEnd=0;
+    uint32_t stamp=0;
+    size_t imageSize=0;
+    if(!rayCast) return "PhysicsRayCast is not hooked on this build";
+    if(!meleeValue) return "the melee collision flags are zero";
+    if(!ResolveOdstTextRange(base,size,textBegin,textEnd,stamp,imageSize)) return "the module has no .text section";
+    __try
+    {
+        for(uintptr_t at=sig::Find(textBegin,textEnd-textBegin,kAnchor);at;
+            at=at+1<textEnd ? sig::Find(at+1,textEnd-at-1,kAnchor) : 0)
+        {
+            const auto* code=reinterpret_cast<const uint8_t*>(at);
+            const uint8_t* load=nullptr;
+            for(uintptr_t back=7;back<=0x10 && at-back>=textBegin && !load;++back)
+                if(code[-static_cast<intptr_t>(back)]==0x48 && code[1-static_cast<intptr_t>(back)]==0x8B &&
+                    code[2-static_cast<intptr_t>(back)]==0x05)
+                    load=code-back;
+            if(!load) continue;   // another use of the constant, not a flags build
+            bool high=false,calls=false;
+            for(uintptr_t fwd=5;fwd<=0x20 && at+fwd+4<=textEnd && !high;++fwd)
+                high=code[fwd]==0x48 && code[fwd+1]==0xC1 && code[fwd+2]==0xE8 && code[fwd+3]==0x20;
+            for(uintptr_t fwd=5;fwd<=0x200 && at+fwd+5<=textEnd && !calls;++fwd)
+            {
+                if(code[fwd]!=0xE8) continue;
+                int32_t rel=0;
+                memcpy(&rel,code+fwd+1,sizeof(rel));
+                calls=at+fwd+5+static_cast<intptr_t>(rel)==rayCast;
+            }
+            if(!high || !calls) continue;
+            int32_t disp=0;
+            memcpy(&disp,load+3,sizeof(disp));
+            const uintptr_t named=reinterpret_cast<uintptr_t>(load)+7+static_cast<intptr_t>(disp);
+            if(named<base || named+sizeof(uint64_t)>base+size || (named&7u))
+                return "a shot-flags load does not address an aligned qword inside the module";
+            if(global && named!=global) return "two shot queries name different flags globals";
+            global=named;
+            if(++anchors>4) return "more shot-query anchors than any known build has";
+        }
+        if(!anchors) return "no `mov ecx, 0x404400` feeding PhysicsRayCast";
+        uint64_t value=0;
+        memcpy(&value,reinterpret_cast<const void*>(global),sizeof(value));
+        if(value!=meleeValue) return "the shot-flags global disagrees with the melee query's flags";
+        flags=value|kShotFlagsOr;
+        return nullptr;
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    {
+        return "a fault while reading the shot query's code";
+    }
+}
+
+// TRACE-AND-REAIM, Halo 4 on foot (sight_layer.h; the servo side is in Game_ComputeAimStick). Halo 4
+// queries collision with Havok PhysicsRayCast, which is only safe in a native simulation context: this
+// runs inside the per-unit update the contact lane hooks, after its own contact tick, with profile 0x1A
+// and the SHOT's own flags (above) when they resolve, else the melee collision flags the contact install
+// pinned from their own call site (the query the contact lane issues itself), and ignores the unit.
+// The unit is the one whose first-person body the render thread last solved (g_halo4SightUnit), and a
+// seated unit (parent != -1) is not traced here: a seat's ray is traced from the seat's control update
+// (halo4_seat_converge.inl), under the seat's own stance.
+void Halo4SightTraceTick(uint32_t unit,void* instance)
+{
+    constexpr GameTitle kTitle=GameTitle::Halo4;
+    if(!LegacySight(kTitle).flags.load(std::memory_order_acquire) || !g_halo4Contact.flags ||
+        !g_halo4WorldCollision.originalRayCast || TitleAdapter_GetActiveTitle()!=kTitle) return;
+    const uint64_t now=GetTickCount64();
+    const uint64_t unitAt=g_halo4SightUnitAtMs.load(std::memory_order_acquire);
+    if(!unitAt || now<unitAt || now-unitAt>250 ||
+        unit!=static_cast<uint32_t>(g_halo4SightUnit.load(std::memory_order_relaxed))) return;
+    Sight_NoteTitleTick(kTitle);   // the measured tick (flat parity's carry; the dev SHOT LAG line's too)
+    if(Sight_TraceFaulted(kTitle) || !Sight_TraceDue(kTitle,Sight_NowMs())) return;
+    const uint32_t generation=TitleAdapter_GetGeneration(kTitle);
+    SightRay ray{};
+    if(!Sight_ReadRay(kTitle,generation,kSightRayFreshMs,ray)) return;
+    const float length=kSightTraceLengthWu;
+    Halo4PhysicsRayCastInput input{};
+    Halo4PhysicsRayCastResult output{};
+    input.profile=0x1A;
+    for(int axis=0;axis<3;++axis)
+    {
+        input.start[axis]=ray.head[axis]+ray.dir[axis]*kSightTraceSkipWu;
+        input.end[axis]=input.start[axis]+ray.dir[axis]*length;
+    }
+    input.ignoredObjects[0]=static_cast<int32_t>(unit);
+    input.ignoredObjectCount=1;
+    input.resultOptions[0]=1;
+    bool returned=false,onFoot=false;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // [assess-only begin]
+    // DEV ASSESSMENT (honest_reticle_assess): the game's own aim ray from the engine eye, traced in this same
+    // update with the same profile, flags and ignore. Only while the key published one. Its native call has its
+    // own __try: a fault in it latches only the ASSESSMENT trace off (Sight_NoteAssessTraceFault), never the
+    // intent trace (the outer handler's Sight_NoteTraceFault is the aim's).
+    SightAssessRay assess{};
+    const bool assessDue=!Sight_AssessTraceFaulted(kTitle) &&
+        Sight_ReadAssessRay(kTitle,generation,kSightRayFreshMs,assess);
+    Halo4PhysicsRayCastInput assessInput=input;
+    Halo4PhysicsRayCastResult assessOutput{};
+    bool assessReturned=false,assessFaulted=false;
+    if(assessDue)
+        for(int axis=0;axis<3;++axis)
+        {
+            assessInput.start[axis]=assess.origin[axis]+assess.dir[axis]*kSightTraceSkipWu;
+            assessInput.end[axis]=assessInput.start[axis]+assess.dir[axis]*length;
+        }
+    // [assess-only end]
+#endif
+    LARGE_INTEGER before{},after{};
+    __try
+    {
+        const auto* biped=Halo4ContactBiped(unit);
+        onFoot=biped && biped==instance && *reinterpret_cast<const int32_t*>(biped+0x24)==-1;
+        if(onFoot)
+        {
+            const uint64_t shotFlags=g_halo4SightShotFlags.load(std::memory_order_acquire);
+            if(shotFlags) memcpy(&input.collisionFlags,&shotFlags,sizeof(shotFlags));
+            else memcpy(&input.collisionFlags,g_halo4Contact.flags,sizeof(uint64_t));
+            QueryPerformanceCounter(&before);
+            returned=g_halo4WorldCollision.originalRayCast(&input,&output);
+            QueryPerformanceCounter(&after);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // [assess-only begin]
+            if(assessDue)
+            {
+                memcpy(&assessInput.collisionFlags,&input.collisionFlags,sizeof(assessInput.collisionFlags));
+                __try
+                {
+                    assessReturned=g_halo4WorldCollision.originalRayCast(&assessInput,&assessOutput);
+                }
+                __except(EXCEPTION_EXECUTE_HANDLER)
+                {
+                    assessFaulted=true;
+                }
+            }
+            // [assess-only end]
+#endif
+        }
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    {
+        Sight_NoteTraceFault(kTitle);
+        return;
+    }
+    if(!onFoot) return;
+    const bool hit=returned && std::isfinite(output.fraction) && output.fraction>=0.0f && output.fraction<=1.0f;
+    // The on-foot stance: a range a seat's trace left is withdrawn before this one is published.
+    Sight_SetStance(kTitle,0);
+    Sight_PublishTrace(kTitle,generation,hit,hit ? kSightTraceSkipWu+output.fraction*length : 0.0f,
+        static_cast<uint64_t>(after.QuadPart-before.QuadPart));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // SIGHT HITS (dev): what the ray stopped on, by class (an object hit is result type 4, its handle at +0x28, as
+    // the contact backend reads it) -- after the cost was taken, so the trace's time is its own.
+    {
+        const bool objectHit=hit && output.type==4 && output.objectIndex!=-1;
+        const int type=objectHit ? Halo4SightObjectTypeGuarded(output.objectIndex) : -1;
+        Sight_NoteTraceHit(kTitle,sight_hit::ClassifyHit(hit,objectHit,type),type,
+            hit ? kSightTraceSkipWu+output.fraction*length : 0.0f,false);
+    }
+#endif
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // [assess-only begin]
+    if(assessFaulted)
+        Sight_NoteAssessTraceFault(kTitle);   // the assessment's own latch, not the aim's
+    else if(assessDue)
+    {
+        const bool assessHit=assessReturned && std::isfinite(assessOutput.fraction) &&
+            assessOutput.fraction>=0.0f && assessOutput.fraction<=1.0f;
+        Sight_PublishAssessTrace(kTitle,generation,assessHit,
+            assessHit ? kSightTraceSkipWu+assessOutput.fraction*length : 0.0f);
+    }
+    // [assess-only end]
+#endif
+}
+
+// Flat parity's fire-eye proof (halo4_fire_eye.inl), fed from our unit's own update: only for the render's
+// first-person unit (a cheap atomic test first: every unit comes through), on foot by the same biped test the trace uses.
+void Halo4FireEyeTickFromUpdate(uint32_t unit,void* instance)
+{
+    if(unit!=static_cast<uint32_t>(g_halo4SightUnit.load(std::memory_order_relaxed))) return;
+    bool onFoot=false;
+    __try
+    {
+        const auto* biped=Halo4ContactBiped(unit);
+        onFoot=biped && biped==instance && *reinterpret_cast<const int32_t*>(biped+0x24)==-1;
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) { onFoot=false; }
+    Halo4NoteFireEyeTick(unit,onFoot);
+}
+
+__declspec(noinline) uint8_t __fastcall Halo4ContactUpdateDetour(void* instance)
 {
     g_halo4Contact.callbacks.fetch_add(1,std::memory_order_acq_rel);
+    uint8_t result=0;
     __try
     {
         uint32_t unit=UINT32_MAX;
@@ -117,16 +352,21 @@ __declspec(noinline) void __fastcall Halo4ContactUpdateDetour(void* instance)
                 unit=*reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(instance)-0xC);
         }
         __except(EXCEPTION_EXECUTE_HANDLER) { unit=UINT32_MAX; }
-        if(g_halo4Contact.updateOriginal) g_halo4Contact.updateOriginal(instance);
+        if(g_halo4Contact.updateOriginal) result=g_halo4Contact.updateOriginal(instance);
         if(unit!=UINT32_MAX) Halo4ContactTick(unit,instance);
+        if(unit!=UINT32_MAX) Halo4SightTraceTick(unit,instance);
+        if(unit!=UINT32_MAX) Halo4FireEyeTickFromUpdate(unit,instance);
     }
     __finally { g_halo4Contact.callbacks.fetch_sub(1,std::memory_order_acq_rel); }
+    return result;
 }
 
 bool RemoveHalo4ContactMelee()
 {
     g_halo4ContactBsp.enabled.store(false,std::memory_order_release);
     g_halo4Contact.enabled.store(false,std::memory_order_release);
+    LegacySight(GameTitle::Halo4).flags.store(0,std::memory_order_release);
+    g_halo4SightShotFlags.store(0,std::memory_order_release);
     if(!g_halo4Contact.updateTarget && !g_halo4Contact.damageTarget) return true;
     void** targets[]{&g_halo4Contact.updateTarget,&g_halo4Contact.damageTarget};
     for(auto target:targets) if(*target)
@@ -217,6 +457,8 @@ bool InstallHalo4ContactMelee(uintptr_t base,size_t size,uint32_t generation)
         {0x603740,"66 44 3B 43 20 74 26 8B 43 28 44 0F BF 4B 22 44 0F BF 43 20 8B 53 24 8B 4B 18 89 44 24 28 48 8D 44 24 70 48 89 44 24 20"},
     };
     g_halo4Contact.enabled.store(false,std::memory_order_release);
+    LegacySight(GameTitle::Halo4).flags.store(0,std::memory_order_release);
+    g_halo4SightShotFlags.store(0,std::memory_order_release);
     if(!g_halo4WorldCollision.originalRayCast || !g_halo4EngineTlsIndex ||
         g_halo4Contact.updateTarget || g_halo4Contact.damageTarget) return false;
     for(const auto& binding:bindings)
@@ -272,13 +514,47 @@ bool InstallHalo4ContactMelee(uintptr_t base,size_t size,uint32_t generation)
     InstallHalo4ContactBsp(base,size);
     g_halo4Contact.enabled.store(true,std::memory_order_release);
     LOG("Halo 4 contact melee installed: independent physical hand/weapon sweeps, exact-target native damage; headset verification pending");
+    // Trace-and-reaim (Halo4SightTraceTick) measures its range with this lane's native melee query.
+    {
+        uint64_t meleeFlags=0;
+        memcpy(&meleeFlags,g_halo4Contact.flags,sizeof(meleeFlags));
+        auto& sight=LegacySight(GameTitle::Halo4);
+        Sight_ResetTitle(GameTitle::Halo4);
+        uint64_t shotFlags=0;
+        uint32_t shotAnchors=0;
+        uintptr_t shotGlobal=0;
+        const char* shotWhy=Halo4ResolveShotFlags(base,size,meleeFlags,shotFlags,shotAnchors,shotGlobal);
+        g_halo4SightShotFlags.store(shotWhy ? 0 : shotFlags,std::memory_order_release);
+        sight.why.store(meleeFlags ? nullptr : "the melee collision flags are zero",std::memory_order_release);
+        sight.flags.store(meleeFlags,std::memory_order_release);
+        if(!shotWhy)
+            LOG("SIGHT Halo 4 aim trace %s: PhysicsRayCast, profile 0x1A, the SHOT's own flags 0x%llX (%u "
+                "aim-assist anchor(s), global +0x%llX = the melee query's 0x%llX, | 0x404400); on foot, the unit "
+                "ignored", meleeFlags ? "armed" : "NOT armed",static_cast<unsigned long long>(shotFlags),
+                shotAnchors,static_cast<unsigned long long>(shotGlobal-base),
+                static_cast<unsigned long long>(meleeFlags));
+        else
+            LOG("SIGHT Halo 4 aim trace %s: PhysicsRayCast, native melee profile 0x1A, melee collision flags "
+                "0x%llX (global +0x2FFB098, pinned from its own call site; the shot's own flags did not resolve: "
+                "%s); on foot, the unit ignored", meleeFlags ? "armed" : "NOT armed",
+                static_cast<unsigned long long>(meleeFlags),shotWhy);
+        // What those flags let the ray stop on, decoded with Halo 4's own layout (sight_hit_class_logic.h).
+        if(meleeFlags)
+            Sight_AnnounceTraceQuery(GameTitle::Halo4,sight_hit::Engine::Halo4,shotWhy ? meleeFlags : shotFlags,
+                "PhysicsRayCast, profile 0x1A",
+                shotWhy ? "the melee query's flags, a proxy: the shot's own did not resolve"
+                        : "the engine's own shot aim-assist query, resolved and value-checked",
+                "on foot it ignores the unit (the engine skips the held weapon with it); a seat is traced only "
+                "with halo4_seat_converge = 1, from the seat's control update: the vehicle's root, the occupant and "
+                "the seat's parent ignored, and the engine skips the rest of that vehicle but a boarder");
+    }
     return true;
 }
 
 void Halo4PublishContactHand(int hand,const float points[][3],uint32_t count,
     int32_t unit,uint64_t shape)
 {
-    if(!Halo4ContactMeleeReady() || !g_config.physical_melee || hand<0 || hand>1 ||
+    if(!Halo4ContactMeleeReady() || !Sight_PhysicalMelee() || hand<0 || hand>1 ||
         !points || !count || count>contact_melee::kMaxPoints || unit==-1 ||
         g_halo4FloatingPair.generation!=g_halo4Contact.generation) return;
     ContactMeleePacket packet{};

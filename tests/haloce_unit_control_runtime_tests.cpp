@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <MinHook.h>
 #include "../src/dll/haloce_native_bindings.h"
+#include "../src/common/config.h"
 #include <cstdio>
 #include <limits>
 namespace
@@ -34,6 +35,13 @@ bool releaseOnSecondRelationshipRead{},epochChangeOnSecondRelationshipRead{};
 uintptr_t fixtureBase{};
 std::array<uint8_t,0x400> fixtureUnit{};
 constexpr uint32_t vehicleId=0x34560009;
+// Seat convergence: a vehicle object of its own (the shared buffer's parent link would never end the root walk),
+// and what the engine's camera evaluator answers.
+std::array<uint8_t,0x400> fixtureVehicle{};
+bool separateVehicle{};
+int seatEyeResult{},seatEyePerspective{};
+float seatEye[3]{};
+unsigned seatEyeCalls{};
 SupportGripRelationshipSnapshot supportRelationship{};
 MH_STATUS createResult=MH_OK,enableResult=MH_OK,disableResult=MH_OK,removeResult=MH_OK;
 RenderContext gameplay{};
@@ -51,6 +59,8 @@ uintptr_t __fastcall NativeObjectGet(uint32_t object,uint32_t mask)
 {
     if (mask==1&&object==0x12340007&&vehicleUnitOkay)
         return reinterpret_cast<uintptr_t>(fixtureUnit.data());
+    if (separateVehicle&&(mask==2||mask==0xffffffffu)&&object==vehicleId&&vehicleParentOkay)
+        return reinterpret_cast<uintptr_t>(fixtureVehicle.data());
     if (mask==2&&object==vehicleId&&vehicleParentOkay)
         return reinterpret_cast<uintptr_t>(fixtureUnit.data());
     return 0;
@@ -108,6 +118,15 @@ void Reset()
     supportRelationshipValid=true;relationshipReads=0;
     releaseOnSecondRelationshipRead=epochChangeOnSecondRelationshipRead=false;
     vehicleReads=vehicleContextReads=0;fixtureUnit={};
+    fixtureVehicle={};separateVehicle=false;seatEyeResult=seatEyePerspective=0;seatEyeCalls=0;
+    seatEye[0]=seatEye[1]=seatEye[2]=0;
+    {
+        const uint32_t none=0xffffffffu;
+        std::memcpy(fixtureVehicle.data()+0xd8,&none,4);    // the vehicle is its own root
+        std::memcpy(fixtureVehicle.data()+0x304,&none,4);   // no driving occupant
+        std::memcpy(fixtureVehicle.data()+0x308,&none,4);   // no aiming occupant
+    }
+    Sight_ResetTitle(GameTitle::HaloCE);Sight_SetStance(GameTitle::HaloCE,0);
     PutUnit(0xd8,uint32_t(0xffffffffu));PutUnit(0x2d0,int16_t(-1));
     raiseNative=mutateOwner=mutateReference=false;reads=0;
     createResult=enableResult=disableResult=removeResult=MH_OK;
@@ -144,7 +163,15 @@ UnitControlPacket Packet()
 }
 }
 GameTitle TitleAdapter_GetActiveTitle() { return title; }
+Config::Config() {}
+Config g_config;   // the sight layer reads converged_aim (its default, on)
 bool HaloCENetworkInput_UsesNativeSimulation() noexcept { return networkSession; }
+int HaloCEFirstPerson_SeatEye(uint32_t,float position[3],int& perspective) noexcept
+{
+    ++seatEyeCalls;
+    if (seatEyeResult>0) { std::memcpy(position,seatEye,sizeof(seatEye));perspective=seatEyePerspective; }
+    return seatEyeResult;
+}
 uint32_t TitleAdapter_GetGeneration(GameTitle) { return currentGeneration; }
 bool VR_SupportGripWiredForTitle(GameTitle) noexcept { return supportWired; }
 bool VR_GetSupportGripRelationship(SupportGripRelationshipSnapshot& out) noexcept
@@ -558,6 +585,61 @@ int main()
     for (size_t i=0;i<packet.size();++i)
         if (!(i>=0x1c&&i<0x40))
             Check(consumed[i]==packet[i],"native seated packet preserves actions and throttle");
+    {
+        // SEAT CONVERGENCE (seat_converge_logic.h). The seat's aim (+0x28) is bent from the engine's own seat
+        // camera through the point the hand's ray hits; facing and looking keep the controller's forward.
+        const auto seatedTrace=[&](float rangeWu) {
+            const uint32_t key=seat_converge::StanceKey(vehicleId,0);
+            Sight_SetStance(GameTitle::HaloCE,key);
+            Sight_PublishTrace(GameTitle::HaloCE,7,true,rangeWu,0);
+        };
+        Reset();Seated();separateVehicle=true;seatEyeResult=1;seatEye[1]=.5f;
+        {
+            const uint32_t unit=localPlayer.unit;
+            std::memcpy(fixtureVehicle.data()+0x308,&unit,4);   // this unit aims the vehicle's gun
+        }
+        seatedTrace(10.0f);
+        const auto convergedBefore=seatConvergedPackets.load();
+        UnitControlBody(localPlayer.unit,&packet,47,moduleBase+0xad0d5b);
+        const float inverse=1.0f/std::sqrt(100.25f);
+        Check(consumedPointer!=&packet&&seatEyeCalls==1&&seatConvergedPackets.load()==convergedBefore+1&&
+            Near(ReadUnitControl<Vec3>(consumed,0x28),{10*inverse,-.5f*inverse,0})&&
+            Near(ReadUnitControl<Vec3>(consumed,0x1c),{1,0,0})&&Near(ReadUnitControl<Vec3>(consumed,0x34),{1,0,0})&&
+            Sight_ConvergedLive(GameTitle::HaloCE)&&Sight_AimWrittenLive(GameTitle::HaloCE)&&
+            Sight_SeatConvergedLive(GameTitle::HaloCE,seat_converge::StanceKey(vehicleId,0),150),
+            "a seat's aim is bent from the engine's seat camera through the traced point; facing and looking keep the hand's forward");
+        HaloCESeatAim solved{};
+        Check(HaloCEUnitControl_SeatAim(localPlayer.unit,solved)&&!callbacks.load()&&solved.sight.role.gunner&&
+            !solved.sight.role.driver&&solved.sight.root==vehicleId&&solved.sight.seat==0&&
+            std::fabs(solved.point[0]-10)<1e-4f&&std::fabs(solved.point[1])<1e-4f&&std::fabs(solved.eye[1]-.5f)<1e-6f,
+            "the seat's solve names its role from the vehicle's occupants, its root, its eye and its point");
+        // Each of our own reasons leaves the controller's forward, exactly as before.
+        const auto refused=[&](const char* message) {
+            const auto before=seatConvergedPackets.load();
+            UnitControlBody(localPlayer.unit,&packet,47,moduleBase+0xad0d5b);
+            Check(consumedPointer!=&packet&&seatConvergedPackets.load()==before&&
+                Near(ReadUnitControl<Vec3>(consumed,0x28),{1,0,0}),message);
+        };
+        Reset();Seated();separateVehicle=true;seatEyeResult=1;seatEyePerspective=1;seatedTrace(10.0f);
+        refused("a seat the engine aims from its chase camera keeps the hand's forward");
+        Reset();Seated();separateVehicle=true;seatEyeResult=0;seatedTrace(10.0f);
+        refused("an unbound camera evaluator keeps the hand's forward");
+        Reset();Seated();separateVehicle=true;seatEyeResult=-1;seatedTrace(10.0f);
+        refused("a faulted camera evaluator keeps the hand's forward");
+        Reset();Seated();separateVehicle=true;seatEyeResult=1;
+        Sight_SetStance(GameTitle::HaloCE,0);Sight_PublishTrace(GameTitle::HaloCE,7,true,10.0f,0);
+        refused("a range traced on foot never bends a seat's aim");
+        Reset();Seated();separateVehicle=true;seatEyeResult=1;
+        Sight_SetStance(GameTitle::HaloCE,seat_converge::StanceKey(vehicleId,0));
+        refused("a seat with no trace yet keeps the hand's forward");
+        Reset();Seated();separateVehicle=true;seatEyeResult=1;seatedTrace(10.0f);
+        g_config.converged_aim=0;
+        refused("converged_aim off keeps the hand's forward");
+        g_config.converged_aim=1;
+        Reset();Seated();seatEyeResult=1;seatedTrace(10.0f);   // the vehicle's parent chain never ends
+        refused("a hierarchy whose root does not resolve keeps the hand's forward");
+        Reset();
+    }
     Reset();Seated();
     const auto reticleNativeCalls=nativeCalls;
     Check(HaloCEUnitControl_VehicleAimCurrent(localPlayer,gameplay)&&!callbacks.load()&&

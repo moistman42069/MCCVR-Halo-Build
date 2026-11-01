@@ -14,8 +14,11 @@ template<class T> inline T ReadUnitControl(const UnitControlPacket& packet,size_
 template<class T> inline void WriteUnitControl(UnitControlPacket& packet,size_t offset,const T& value) noexcept
 { std::memcpy(packet.data()+offset,&value,sizeof(value)); }
 
+// `aimOverride` (optional): the aiming direction to write instead of the controller's own forward --
+// trace-and-reaim's converged aim (src/dll/sight_layer.h), which passes through the point the eye-anchored
+// intent ray hits as seen from CE's engine eye. It is written only if finite and unit length.
 inline bool BuildTrackedUnitControl(const RenderContext& context,const UnitControlPacket& source,
-    UnitControlPacket& output,bool& controllerAim) noexcept
+    UnitControlPacket& output,bool& controllerAim,const Vec3* aimOverride=nullptr) noexcept
 {
     controllerAim=false;
     if (!context.tracking.serial||!context.tracking.generation||!context.referenceRevision||
@@ -42,7 +45,9 @@ inline bool BuildTrackedUnitControl(const RenderContext& context,const UnitContr
     WriteUnitControl(candidate,0x1c,heading);
     WriteUnitControl(candidate,0x34,head);
     NodeMatrix aim{};
-    if (BuildControllerMatrix(context.camera,context.tracking,context.reference,
+    if (aimOverride&&Finite(*aimOverride)&&std::fabs(Dot(*aimOverride,*aimOverride)-1)<=0.01f)
+    { WriteUnitControl(candidate,0x28,*aimOverride);controllerAim=true; }
+    else if (BuildControllerMatrix(context.camera,context.tracking,context.reference,
         context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,aim))
     { WriteUnitControl(candidate,0x28,aim.forward);controllerAim=true; }
     output=candidate;

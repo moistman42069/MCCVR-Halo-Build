@@ -26,9 +26,27 @@ static unsigned roomscaleCalls=0;
 static float roomscaleBody[3]{},roomscaleForward[3]{};
 bool Game_RoomscaleCameraAllowed(GameTitle) { return roomscaleAllowed; }
 uint64_t VR_PhysicalCrouchEpoch() noexcept { return 1; }
+float VR_RecenterStandingLiftM(GameTitle) noexcept { return 0.0f; }
+// The sight clock (sight_layer.cpp is not linked here): the gameplay context's camera stamp.
+uint64_t Sight_NowUs() { static uint64_t now=1000000; return now+=1000; }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
+// No seat in this fixture: the tracking frame keeps the native camera heading.
+bool HaloCEControls_SeatHeading(uint32_t,halo_ce::Vec3&) noexcept { return false; }
+// The motion tracker's lane (haloce_head_relative.cpp) is not linked here: the gameplay publication hands it
+// the frame's head, recorded so the test can see that it does.
+static unsigned headPublications{};
+static bool headPublicationAnniversary{};
+static halo_ce::RenderContext headPublication{};
+void HaloCEHeadRelative_PublishHead(const halo_ce::RenderContext& context,bool anniversary) noexcept
+{ ++headPublications;headPublication=context;headPublicationAnniversary=anniversary; }
 bool HaloCEHud_HasCrosshairScope() noexcept { return naturalHudFrame; }
-void Roomscale_Camera(GameTitle title,bool allowed,const float* body,const float*,const float*,const float* forward,float* reference,float) noexcept {
+roomscale_admission::Verdict Game_RoomscaleCameraVerdict(GameTitle) {
+    roomscale_admission::Verdict verdict{};
+    verdict.refusal=roomscaleAllowed?roomscale_admission::Refusal::None:roomscale_admission::Refusal::Seated;
+    return verdict;
+}
+void Roomscale_Camera(GameTitle title,const roomscale_admission::Verdict& admission,const float* body,const float*,const float*,const float* forward,float* reference,float) noexcept {
+    const bool allowed=admission.Admitted();
     if(title==GameTitle::HaloCE&&allowed) {
         ++roomscaleCalls;std::memcpy(roomscaleBody,body,sizeof(roomscaleBody));
         std::memcpy(roomscaleForward,forward,sizeof(roomscaleForward));reference[0]+=.05f;
@@ -1755,8 +1773,10 @@ int main()
         gameplayCamera.Publish({}); RenderContext received{};
         check(!HaloCE_GetGameplayContext(received),"Anniversary controls require an actual stock-camera publication");
         gameplayBridgeVerified=false;
+        const unsigned headPublicationsBefore=headPublications;
         PublishAnniversaryGameplayContext(saber,tracking,frozen,revision,Game_GetWorldScale(),true);
         check(!HaloCE_GetGameplayContext(received),"unverified native bridge stays stock for controls only");
+        check(headPublications==headPublicationsBefore,"no gameplay publication, no head for the motion tracker");
         gameplayBridgeVerified=true;
         {
             // Exercise the actual reference preparation used before Anniversary
@@ -1792,6 +1812,11 @@ int main()
             std::fabs(received.camera.position.y-20)<.0001f&&std::fabs(received.camera.position.z-30)<.0001f&&
             received.tracking.serial==140&&received.referenceRevision==revision,
             "Anniversary stock-camera receipt reaches nonrender controls without tracked-eye offsets");
+        check(headPublications==headPublicationsBefore+1&&headPublicationAnniversary&&
+            std::fabs(headPublication.camera.position.x-10)<.0001f&&headPublication.tracking.serial==140&&
+            headPublication.referenceRevision==revision&&headPublication.cameraStampUs!=0&&
+            headPublication.cameraStampUs==received.cameraStampUs,
+            "the same publication hands the motion tracker's lane this frame's stock centre, tracking sample and sight stamp, marked Anniversary");
         tracking.serial=141; tracking.headPosition.x=.7f; HaloCE_PublishTracking(tracking,true);
         check(HaloCE_GetGameplayContext(received)&&received.tracking.serial==141&&
             received.tracking.headPosition.x==.7f&&std::fabs(received.camera.position.x-10)<.0001f,

@@ -169,6 +169,8 @@ namespace
         uint32_t renderViewCalls = 0;
         uint32_t renderViewReturns = 0;
         uint8_t completedEyeMask = 0;
+        // MONO RENDERING: this frame is one pass, as the eye drawn first, from the tracked centre.
+        bool mono = false;
         void* window = nullptr;
         void* renderCamera = nullptr;
         void* rasterCamera = nullptr;
@@ -190,6 +192,11 @@ namespace
         // so the eye camera is published with the engine's own depth terms.
         float engineProjection[kHalo2EyeCount][16]{};
         bool engineProjectionValid[kHalo2EyeCount]{};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // Dev AS SEEN (halo2_impact_witness.inl): the observer publication this frame's window camera was built from.
+        bool asSeenPublished = false;
+        Halo2ObserverPosePublication asSeenPublication{};
+#endif
         bool dirty[kOwnedCameraSpanCount]{};
         // E-H2-29: the engine's once-per-frame scene-target latch as it stood
         // when this pair began, and whether it was readable.
@@ -266,6 +273,11 @@ namespace
     void* g_firstPersonTarget = nullptr;
     std::atomic<uintptr_t> g_firstPersonOriginal{0};
     std::atomic<uint64_t> g_firstPersonCentred{0};
+    // MONO RENDERING: Classic frames completed as one pass, and mono frames dropped; the eye the last completed
+    // frame was drawn as when it was one pass (-1: a pair).
+    std::atomic<uint64_t> g_monoFrames{0};
+    std::atomic<uint64_t> g_monoDrops{0};
+    std::atomic<int> g_lastCompletedMonoEye{-1};
     std::atomic<uint64_t> g_firstPersonUnreadable{0};
     // E-H2-34: first-pass eyes rendered with no known previous pop (the
     // weapon keeps the stale camera's offset for that one pass).
@@ -866,11 +878,15 @@ namespace
                     std::memory_order_relaxed);
                 output.orientation[component] = normalized[component];
             }
+            // The neutral height is the standing one, not a crouch the recenter happened to catch
+            // (VR_RecenterStandingLiftM; the same height the observer's reference takes).
+            const float standingLift = VR_RecenterStandingLiftM(GameTitle::Halo2);
             for (int axis = 0; axis < 3; ++axis)
             {
+                const float captured = position[axis] + (axis == 1 ? standingLift : 0.0f);
                 g_headReferenceBits[4 + axis].store(
-                    FloatBits(position[axis]), std::memory_order_relaxed);
-                output.position[axis] = position[axis];
+                    FloatBits(captured), std::memory_order_relaxed);
+                output.position[axis] = captured;
             }
             if ((g_headReferenceResetSerial.load(
                      std::memory_order_acquire) &
@@ -954,7 +970,8 @@ namespace
             std::memcpy(
                 head.referencePosition, reference.position,
                 sizeof(head.referencePosition));
-            return Halo2BuildTrackedCenterCamera(stock, head, center);
+            return Halo2BuildTrackedCenterCamera(
+                Halo2SelfTrackBase(published, publication, generation, stock), head, center);
         case Halo2PoseOwnerDecision::NoPose:
         default:
             g_telemetry.poseUnavailable.fetch_add(1, std::memory_order_relaxed);
@@ -1942,6 +1959,19 @@ namespace
         }
     }
 
+    bool GuardedCompleteMonoPair(
+        uint32_t generation, uint64_t serial, int eye) noexcept
+    {
+        __try
+        {
+            return VR_Halo2CompleteSynchronousMonoPair(generation, serial, eye);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
     int NoteClaimedTransactionException() noexcept
     {
         g_telemetry.transactionExceptions.fetch_add(
@@ -2086,7 +2116,9 @@ namespace
             const int firstEye = scope->rightEyeFirst
                 ? kHalo2RightEye
                 : kHalo2LeftEye;
-            for (int pass = 0; pass < kHalo2EyeCount; ++pass)
+            const int passes =
+                static_cast<int>(Halo2ExpectedEyePasses(scope->mono));
+            for (int pass = 0; pass < passes; ++pass)
             {
                 const int eye = pass == 0 ? firstEye : 1 - firstEye;
                 if (scope->invalidated ||
@@ -2477,6 +2509,11 @@ namespace
         candidate.halfFovs = rasterHalfFovs;
         for (int eye = 0; eye < kHalo2EyeCount; ++eye)
             candidate.eyes[eye] = eyes[eye];
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        candidate.asSeenPublished = published && publication.generation == generation;
+        if (candidate.asSeenPublished)
+            candidate.asSeenPublication = publication;
+#endif
         scope = candidate;
         return true;
     }
@@ -2659,6 +2696,20 @@ namespace
                     1, std::memory_order_relaxed);
             return;
         }
+        // MONO RENDERING (mono_view_logic.h): asked once for this claimed frame, and only once the capture source
+        // is settled (learning it compares the two eyes' pictures). One pass, as the eye drawn first, from the
+        // tracked centre: the midpoint of the eyes, turned the head's way, under the same cover.
+        const int firstEye = scope.rightEyeFirst ? kHalo2RightEye : kHalo2LeftEye;
+        if (VR_Halo2CaptureSourceSettled())
+        {
+            float monoCover[4]{};
+            scope.mono = VR_MonoRenderThisFrame(GameTitle::Halo2, monoCover);
+            if (scope.mono)
+            {
+                scope.eyes[firstEye].render = scope.renderCenter;
+                scope.eyes[firstEye].raster = scope.rasterCenter;
+            }
+        }
         g_stereoScope = &scope;
         __try
         {
@@ -2682,19 +2733,32 @@ namespace
             !scope.exceptionSeen && scope.outerReturned &&
             HeadReferenceIsCurrent(scope) &&
             scope.exactInnerInvocations == 1 &&
-            scope.renderViewCalls == kHalo2EyeCount &&
-            scope.renderViewReturns == kHalo2EyeCount &&
-            scope.completedEyeMask ==
-                ((1u << kHalo2EyeCount) - 1u) &&
+            Halo2EyePassesComplete(
+                scope.mono, firstEye, scope.renderViewCalls,
+                scope.renderViewReturns, scope.completedEyeMask) &&
             SnapshotTokenIsCurrent(generation, snapshot.preparedSerial);
         if (completeShape &&
-            GuardedCompletePair(generation, snapshot.preparedSerial))
+            (scope.mono
+                ? GuardedCompleteMonoPair(
+                      generation, snapshot.preparedSerial, firstEye)
+                : GuardedCompletePair(generation, snapshot.preparedSerial)))
         {
             scope.pairCompleted = true;
             g_lastCompletedPairSerial.store(
                 snapshot.preparedSerial, std::memory_order_release);
             g_telemetry.completedPairs.fetch_add(
                 1, std::memory_order_relaxed);
+            g_lastCompletedMonoEye.store(scope.mono ? firstEye : -1, std::memory_order_relaxed);
+            if (scope.mono)
+                g_monoFrames.fetch_add(1, std::memory_order_relaxed);
+            else
+                VR_NoteStereoFrameRendered(GameTitle::Halo2);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // Dev AS SEEN (halo2_impact_witness.inl): the classic pair is submitted with this snapshot's views.
+            Halo2Observer6Dof_DevNoteAsSeenFrame(0, snapshot.preparedSerial, scope.renderCenter,
+                snapshot.headOrientation,
+                scope.asSeenPublished ? &scope.asSeenPublication : nullptr);
+#endif
             return;
         }
 
@@ -2710,6 +2774,11 @@ namespace
         }
         RejectToken(generation, snapshot.preparedSerial);
         g_telemetry.droppedPairs.fetch_add(1, std::memory_order_relaxed);
+        if (scope.mono)
+        {
+            g_monoDrops.fetch_add(1, std::memory_order_relaxed);
+            VR_NoteMonoFrameRejected(GameTitle::Halo2);
+        }
     }
 
     __declspec(noinline) void __fastcall Halo2PlayerWindowDetour(
@@ -2812,6 +2881,21 @@ namespace
         if (g_lastTelemetryMs && now - g_lastTelemetryMs < kTelemetryPeriodMs)
             return;
         const TelemetrySnapshot current = ReadTelemetry();
+        // MONO RENDERING: Classic frames drawn as one pass and mono frames dropped, said when they change. In a
+        // mono frame the stereo line's eyes= counts one per frame.
+        {
+            static uint64_t loggedMono = 0, loggedMonoDrops = 0;
+            const uint64_t mono = g_monoFrames.load(std::memory_order_relaxed);
+            const uint64_t monoDrops = g_monoDrops.load(std::memory_order_relaxed);
+            if (mono != loggedMono || monoDrops != loggedMonoDrops)
+            {
+                loggedMono = mono;
+                loggedMonoDrops = monoDrops;
+                LOG("Halo 2 Classic mono: %llu frames drawn as one pass, %llu mono frames dropped",
+                    static_cast<unsigned long long>(mono),
+                    static_cast<unsigned long long>(monoDrops));
+            }
+        }
         // The first post-install sample is evidence even when every counter is
         // zero: it distinguishes an installed hook that has not been reached
         // yet (for example, a loading/cinematic path) from a camera transaction
@@ -2933,18 +3017,34 @@ namespace
                     windowDelta += d * d;
                 }
                 windowDelta = std::sqrt(windowDelta);
-                LOG("Halo 2 stereo core: render cameras written for the last "
-                    "pair - eye 0 (%.4f, %.4f, %.4f) eye 1 (%.4f, %.4f, %.4f), "
-                    "separation %.4f wu = %.1f mm; the engine's window camera "
-                    "stood at (%.4f, %.4f, %.4f), %.1f mm from the observer "
-                    "pose the mod published%s",
-                    eyePosition[0][0], eyePosition[0][1], eyePosition[0][2],
-                    eyePosition[1][0], eyePosition[1][1], eyePosition[1][2],
-                    separation, separation * kHalo2MetersPerWorldUnit * 1000.0f,
-                    windowPosition[0], windowPosition[1], windowPosition[2],
-                    windowDelta * kHalo2MetersPerWorldUnit * 1000.0f,
-                    g_lastPublishedValid.load(std::memory_order_relaxed)
-                        ? "" : " (no publication was available)");
+                const int monoEye = g_lastCompletedMonoEye.load(std::memory_order_relaxed);
+                if (monoEye == 0 || monoEye == 1)
+                {
+                    // A mono frame wrote one camera; the other eye's is the last stereo frame's.
+                    LOG("Halo 2 stereo core: render camera written for the last frame (mono, one pass as eye %d) "
+                        "(%.4f, %.4f, %.4f); the engine's window camera stood at (%.4f, %.4f, %.4f), %.1f mm "
+                        "from the observer pose the mod published%s",
+                        monoEye, eyePosition[monoEye][0], eyePosition[monoEye][1], eyePosition[monoEye][2],
+                        windowPosition[0], windowPosition[1], windowPosition[2],
+                        windowDelta * kHalo2MetersPerWorldUnit * 1000.0f,
+                        g_lastPublishedValid.load(std::memory_order_relaxed)
+                            ? "" : " (no publication was available)");
+                }
+                else
+                {
+                    LOG("Halo 2 stereo core: render cameras written for the last "
+                        "pair - eye 0 (%.4f, %.4f, %.4f) eye 1 (%.4f, %.4f, %.4f), "
+                        "separation %.4f wu = %.1f mm; the engine's window camera "
+                        "stood at (%.4f, %.4f, %.4f), %.1f mm from the observer "
+                        "pose the mod published%s",
+                        eyePosition[0][0], eyePosition[0][1], eyePosition[0][2],
+                        eyePosition[1][0], eyePosition[1][1], eyePosition[1][2],
+                        separation, separation * kHalo2MetersPerWorldUnit * 1000.0f,
+                        windowPosition[0], windowPosition[1], windowPosition[2],
+                        windowDelta * kHalo2MetersPerWorldUnit * 1000.0f,
+                        g_lastPublishedValid.load(std::memory_order_relaxed)
+                            ? "" : " (no publication was available)");
+                }
             }
             g_lastTelemetry = current;
         }

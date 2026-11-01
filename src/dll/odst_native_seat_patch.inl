@@ -1,4 +1,13 @@
 // Included by game.cpp and the native seat lifetime fixture.
+    // The same three states as Halo 3's Halo3NativeSeatState. Active is the only one in which the seat is held
+    // in the game's first-person camera (C20); StockFallback is a seat this patch refused or failed to take.
+    enum class OdstNativeSeatState : uint32_t
+    {
+        Stock = 0,
+        Active,
+        StockFallback,
+    };
+
     // Seat-flag patch (hide body). Same transaction shape as Halo 3's: patch
     // only the occupied loaded seat, restore only a value that is still ours.
     struct OdstNativeSeatPatch
@@ -14,8 +23,18 @@
         bool active = false;
     };
     OdstNativeSeatPatch g_odstNativeSeatPatch;
-    std::atomic<uint32_t> g_odstNativeSeatState{0};   // 0 stock,1 active,2 fail
+    std::atomic<uint32_t> g_odstNativeSeatState{
+        static_cast<uint32_t>(OdstNativeSeatState::Stock)};
     std::atomic<uint32_t> g_odstNativeSeatSerial{0};
+    // The occupied seat's ORIGINAL tag flags lack bit 4 (third-person camera): C20 refused it, and unmodded ODST
+    // rebases this seat's aim by the vehicle's up frame itself. Same contract as Halo 3's
+    // g_halo3SeatNativeNoThirdPerson (seat_aim_world_frame.inl stands down and logs the seat once).
+    std::atomic<uint32_t> g_odstSeatNativeNoThirdPerson{0};
+
+    constexpr uint32_t OdstSeatNativeNoThirdPersonKey(uint32_t definitionIndex, int seatIndex)
+    {
+        return 0x80000000u | (definitionIndex & 0xFFFFu) << 8 | (static_cast<uint32_t>(seatIndex) & 0xFFu);
+    }
 
     bool OdstNativeSeatStillOwned(const OdstNativeSeatPatch& patch)
     {
@@ -48,7 +67,8 @@
     {
         OdstNativeSeatPatch& patch = g_odstNativeSeatPatch;
         const bool hadState =
-            g_odstNativeSeatState.load(std::memory_order_relaxed) != 0;
+            g_odstNativeSeatState.load(std::memory_order_relaxed) !=
+                static_cast<uint32_t>(OdstNativeSeatState::Stock);
         if (patch.active && patch.flags && patch.generation &&
             patch.generation == TitleAdapter_GetGeneration(GameTitle::Halo3ODST))
         {
@@ -86,9 +106,11 @@
             }
         }
         patch = {};
+        g_odstSeatNativeNoThirdPerson.store(0, std::memory_order_relaxed);
         if (hadState)
         {
-            g_odstNativeSeatState.store(0, std::memory_order_relaxed);
+            g_odstNativeSeatState.store(
+                static_cast<uint32_t>(OdstNativeSeatState::Stock), std::memory_order_relaxed);
             g_odstNativeSeatSerial.fetch_add(1, std::memory_order_release);
         }
     }
@@ -96,6 +118,23 @@
     bool OdstEnsureFirstPersonSeatFlag(uint32_t definitionIndex, int seatIndex,
                                        uint32_t generation)
     {
+        // Co-op safe: the seat's flags are data the simulation reads too (the firing assist, target acquisition, a
+        // seated-eye function), so clearing the camera bit changes the game on this machine only and a shared
+        // session ends at the first shot from the seat. While one-machine changes are not allowed the seat is left
+        // as the game built it and keeps the game's own camera.
+        if (!Sight_FireTimeChangesAllowed())
+        {
+            static uint32_t s_loggedGeneration = 0;
+            if (s_loggedGeneration != generation)
+            {
+                s_loggedGeneration = generation;
+                LOG("ODST first-person seat: not taken while co-op safe shots is on. The seat's data would have to "
+                    "be edited on this machine only, which ends a shared session at the first shot from the seat; "
+                    "seats keep the game's own camera");
+            }
+            OdstRestoreNativeSeatPatch();
+            return false;
+        }
         if (!g_config.vehicle_first_person || !g_config.vehicle_hide_body)
         {
             OdstRestoreNativeSeatPatch();
@@ -107,9 +146,10 @@
         const bool sameSeat = patch.generation == generation &&
             patch.definitionIndex == definitionIndex &&
             patch.seatIndex == seatIndex;
-        if (sameSeat && state == 1 && OdstNativeSeatStillOwned(patch))
+        if (sameSeat && state == static_cast<uint32_t>(OdstNativeSeatState::Active) &&
+            OdstNativeSeatStillOwned(patch))
             return true;
-        if (sameSeat && state == 2)
+        if (sameSeat && state == static_cast<uint32_t>(OdstNativeSeatState::StockFallback))
             return false;           // proven bad for this seat: never retry
         OdstRestoreNativeSeatPatch();
         patch.generation = generation;
@@ -117,6 +157,7 @@
         patch.seatIndex = seatIndex;
 
         bool installed = false;
+        bool nativeNoThirdPerson = false;
         if (definitionIndex <= 0xFFFFu && seatIndex >= 0 && seatIndex <= 125)
         {
             __try
@@ -144,6 +185,8 @@
                         auto* flags = reinterpret_cast<uint32_t*>(
                             seat + kOdstSeatFlagsOffset);
                         const uint32_t originalFlags = *flags;
+                        nativeNoThirdPerson =
+                            (originalFlags & kOdstSeatThirdPersonCameraBit) == 0;
                         // Only ever touch a seat that actually is a
                         // third-person player seat today.
                         if (originalFlags & kOdstSeatThirdPersonCameraBit)
@@ -174,11 +217,16 @@
             patch.generation = generation;
             patch.definitionIndex = definitionIndex;
             patch.seatIndex = seatIndex;
-            g_odstNativeSeatState.store(2, std::memory_order_relaxed);
+            g_odstSeatNativeNoThirdPerson.store(nativeNoThirdPerson
+                ? OdstSeatNativeNoThirdPersonKey(definitionIndex, seatIndex) : 0u,
+                std::memory_order_relaxed);
+            g_odstNativeSeatState.store(
+                static_cast<uint32_t>(OdstNativeSeatState::StockFallback), std::memory_order_relaxed);
             g_odstNativeSeatSerial.fetch_add(1, std::memory_order_release);
             return false;
         }
-        g_odstNativeSeatState.store(1, std::memory_order_relaxed);
+        g_odstNativeSeatState.store(
+            static_cast<uint32_t>(OdstNativeSeatState::Active), std::memory_order_relaxed);
         g_odstNativeSeatSerial.fetch_add(1, std::memory_order_release);
         return true;
     }

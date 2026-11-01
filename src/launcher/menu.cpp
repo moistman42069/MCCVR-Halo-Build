@@ -1,5 +1,7 @@
 #include "installer.h"
 #include "updater.h"
+#include "reclaimer_menu.h"
+#include "../common/reclaimer_host_logic.h"
 #include <shobjidl.h>
 #include <shellapi.h>
 #include <uxtheme.h>
@@ -12,8 +14,16 @@ namespace mcc_installer {
 namespace fs = std::filesystem;
 namespace {
 constexpr COLORREF kBackground = RGB(7, 16, 25), kPanel = RGB(15, 32, 44), kText = RGB(217, 237, 239), kMuted = RGB(143, 174, 186), kAccent = RGB(110, 229, 232);
+// Project Reclaimer is another game's client, not a step of the MCC setup above it: its section is a panel of its
+// own, warm where the rest of the menu is teal.
+constexpr COLORREF kReclaimerPanel = RGB(31, 24, 13), kReclaimerField = RGB(46, 35, 18), kReclaimerAccent = RGB(240, 178, 84), kReclaimerMuted = RGB(186, 156, 112);
+// The panel's box, at 96 dpi.
+constexpr int kReclaimerLeft = 26, kReclaimerTop = 612, kReclaimerRight = 954, kReclaimerBottom = 796;
 constexpr UINT kDone = WM_APP + 20;
-enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage };
+enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage,
+          ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch };
+// The window's client size at 96 dpi.
+constexpr int kMenuWidth = 980, kMenuHeight = 890;
 struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag; bool candidate = true; };
 BuildIdentity ReadIdentity(const fs::path& directory) {
     BuildIdentity identity; std::ifstream file(directory / L"BUILD-IDENTITY.txt", std::ios::binary);
@@ -35,7 +45,9 @@ BuildIdentity ReadIdentity(const fs::path& directory) {
 }
 struct Menu {
     HINSTANCE instance{}; HWND window{}, games{}, path{}, retain{}, status{}, release{};
-    HFONT body{}, smallFont{}, title{}, label{}; HBRUSH background{}, panel{};
+    // Project Reclaimer (reclaimer_menu.h): the kept path's field, what is known of it, and the launch asked for.
+    HWND reclaimerPath{}, reclaimerInfo{}; std::wstring reclaimerExe; bool reclaimerStartable = false;
+    HFONT body{}, smallFont{}, title{}, label{}; HBRUSH background{}, panel{}, reclaimerPanel{}, reclaimerField{};
     std::vector<GameInstall> installs;
     fs::path selfDir, payload; std::wstring launchDir;
     fs::path fontPath; bool fontLoaded = false;
@@ -54,7 +66,8 @@ struct Menu {
         const bool installed = game && fs::is_regular_file(game->root / L"Halo_MCC_VR" / L"HaloMCCVR.dll");
         bool same = game && !_wcsicmp(fs::absolute(payload).c_str(), fs::absolute(game->root / L"Halo_MCC_VR").c_str());
         const bool hasPayload = !payload.empty() && fs::is_regular_file(payload / L"INSTALL-MANIFEST.sha256");
-        for (int id : {Games, Browse, Scan, Retain, ReleasePage}) EnableWindow(GetDlgItem(window, id), !busy);
+        for (int id : {Games, Browse, Scan, Retain, ReleasePage, ReclaimerPath, ReclaimerBrowse, ReclaimerDetect}) EnableWindow(GetDlgItem(window, id), !busy);
+        EnableWindow(GetDlgItem(window, ReclaimerLaunch), !busy && reclaimerStartable);
         EnableWindow(GetDlgItem(window, Install), !busy && game && hasPayload && !same);
         EnableWindow(GetDlgItem(window, Launch), !busy && installed);
         EnableWindow(GetDlgItem(window, Folder), !busy && game);
@@ -117,17 +130,51 @@ void BrowseFolder(Menu& menu) {
     }
     dialog->Release();
 }
+std::wstring ReclaimerField(Menu& menu) {
+    wchar_t text[2048]{}; GetWindowTextW(menu.reclaimerPath, text, static_cast<int>(std::size(text)));
+    return reclaimer_host::TidyPath(text);
+}
+// Shows what is known of the path in the field; with `keep`, keeps it as the choice.
+void ReclaimerShow(Menu& menu, bool keep) {
+    const auto exe = ReclaimerField(menu);
+    const auto info = reclaimer_launch::Describe(menu.selfDir, exe);
+    menu.reclaimerStartable = info.startable; menu.Text(menu.reclaimerInfo, info.text);
+    if (keep && !reclaimer_launch::SaveClient(menu.selfDir, exe))
+        menu.Text(menu.status, L"The Project Reclaimer path could not be saved beside the launcher (reclaimer_client.txt). It is used for this launch only.");
+    EnableWindow(GetDlgItem(menu.window, ReclaimerLaunch), !menu.busy && menu.reclaimerStartable);
+}
+void BrowseReclaimer(Menu& menu) {
+    IFileOpenDialog* dialog = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
+    DWORD flags = 0; dialog->GetOptions(&flags); dialog->SetOptions(flags | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+    const COMDLG_FILTERSPEC filter[]{{L"Project Reclaimer game program", L"project-reclaimer*.exe"}, {L"Programs", L"*.exe"}};
+    dialog->SetFileTypes(static_cast<UINT>(std::size(filter)), filter);
+    dialog->SetTitle(L"Choose the Project Reclaimer game program (project-reclaimer-client-v*.exe)");
+    if (SUCCEEDED(dialog->Show(menu.window))) {
+        IShellItem* item = nullptr; PWSTR path = nullptr;
+        if (SUCCEEDED(dialog->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+            SetWindowTextW(menu.reclaimerPath, path); ReclaimerShow(menu, true);
+            menu.Text(menu.status, menu.reclaimerStartable ? L"Project Reclaimer selected. Choose Launch Project Reclaimer when your headset is ready." : L"That file cannot be started with the VR mod: see the note under its path.");
+        }
+        if (path) CoTaskMemFree(path); if (item) item->Release();
+    }
+    dialog->Release();
+}
 void DrawButton(Menu& menu, const DRAWITEMSTRUCT& item) {
     const bool disabled = item.itemState & ODS_DISABLED, pressed = item.itemState & ODS_SELECTED;
-    const bool primary = item.CtlID == Launch;
-    const COLORREF fill = disabled ? RGB(17, 29, 37) : primary ? (pressed ? RGB(39, 112, 121) : RGB(33, 85, 99)) : (pressed ? RGB(36, 71, 85) : kPanel);
+    const bool primary = item.CtlID == Launch || item.CtlID == ReclaimerLaunch;
+    const bool warm = item.CtlID == ReclaimerBrowse || item.CtlID == ReclaimerDetect || item.CtlID == ReclaimerLaunch;
+    const COLORREF fill = warm
+        ? (disabled ? RGB(36, 30, 20) : primary ? (pressed ? RGB(150, 104, 34) : RGB(116, 80, 26)) : (pressed ? RGB(84, 62, 28) : RGB(56, 43, 22)))
+        : disabled ? RGB(17, 29, 37) : primary ? (pressed ? RGB(39, 112, 121) : RGB(33, 85, 99)) : (pressed ? RGB(36, 71, 85) : kPanel);
     HBRUSH brush = CreateSolidBrush(fill); FillRect(item.hDC, &item.rcItem, brush); DeleteObject(brush);
-    HPEN pen = CreatePen(PS_SOLID, 1, disabled ? RGB(39, 58, 67) : primary ? kAccent : RGB(59, 107, 122));
+    HPEN pen = CreatePen(PS_SOLID, 1, warm ? (disabled ? RGB(74, 60, 38) : primary ? kReclaimerAccent : RGB(150, 112, 56))
+                                           : disabled ? RGB(39, 58, 67) : primary ? kAccent : RGB(59, 107, 122));
     const auto oldPen = SelectObject(item.hDC, pen); const auto oldBrush = SelectObject(item.hDC, GetStockObject(HOLLOW_BRUSH));
     Rectangle(item.hDC, item.rcItem.left, item.rcItem.top, item.rcItem.right, item.rcItem.bottom);
     SelectObject(item.hDC, oldBrush); SelectObject(item.hDC, oldPen); DeleteObject(pen);
     wchar_t text[256]{}; GetWindowTextW(item.hwndItem, text, 256);
-    SetBkMode(item.hDC, TRANSPARENT); SetTextColor(item.hDC, disabled ? RGB(80, 105, 115) : kText); SelectObject(item.hDC, menu.label);
+    SetBkMode(item.hDC, TRANSPARENT); SetTextColor(item.hDC, disabled ? (warm ? RGB(120, 102, 76) : RGB(80, 105, 115)) : kText); SelectObject(item.hDC, menu.label);
     RECT rect = item.rcItem; DrawTextW(item.hDC, text, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     if (item.itemState & ODS_FOCUS) { InflateRect(&rect, -4, -4); DrawFocusRect(item.hDC, &rect); }
 }
@@ -138,6 +185,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     switch (message) {
     case WM_CREATE: {
         menu->background = CreateSolidBrush(kBackground); menu->panel = CreateSolidBrush(kPanel);
+        menu->reclaimerPanel = CreateSolidBrush(kReclaimerPanel); menu->reclaimerField = CreateSolidBrush(kReclaimerField);
         menu->body = Font(*menu, 16, FW_NORMAL, L"Segoe UI"); menu->smallFont = Font(*menu, 13, FW_NORMAL, L"Segoe UI"); menu->label = Font(*menu, 14, FW_SEMIBOLD, menu->fontLoaded ? L"Oxanium" : L"Bahnschrift");
         // Use a user's installed Halo font when available. No proprietary font
         // is redistributed. The bundled OFL-licensed Oxanium supplies an angular
@@ -165,7 +213,15 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Control(*menu, L"BUTTON", L"RELEASE PAGE", BS_OWNERDRAW | WS_TABSTOP, 580, 503, 175, 40, ReleasePage);
         menu->release = Control(*menu, L"STATIC", L"Updates are checked only when you choose. Steam and Xbox app use the same release.", SS_LEFT, 40, 555, 895, 38);
         SendMessageW(menu->release, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
-        menu->status = Control(*menu, L"STATIC", L"Choose an installation to begin. The mod stays in its own Halo_MCC_VR folder.", SS_LEFT, 40, 615, 895, 74);
+        // The section's heading is painted with its panel (WM_PAINT).
+        menu->reclaimerPath = Control(*menu, L"EDIT", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 46, 657, 634, 32, ReclaimerPath);
+        SendMessageW(menu->reclaimerPath, EM_SETLIMITTEXT, 2000, 0);
+        Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, 654, 122, 38, ReclaimerBrowse);
+        Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, 654, 110, 38, ReclaimerDetect);
+        menu->reclaimerInfo = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 48, 698, 890, 38);
+        SendMessageW(menu->reclaimerInfo, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
+        Control(*menu, L"BUTTON", L"LAUNCH PROJECT RECLAIMER", BS_OWNERDRAW | WS_TABSTOP, 46, 742, 406, 42, ReclaimerLaunch);
+        menu->status = Control(*menu, L"STATIC", L"Choose an installation to begin. The mod stays in its own Halo_MCC_VR folder.", SS_LEFT, 40, 812, 895, 66);
         SendMessageW(menu->status, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         return 0;
     }
@@ -177,16 +233,39 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SelectObject(dc, menu->label); SetTextColor(dc, kMuted); const wchar_t* subtitle = L"THE MASTER CHIEF COLLECTION  /  VIRTUAL REALITY";
         TextOutW(dc, menu->Px(41), menu->Px(93), subtitle, static_cast<int>(wcslen(subtitle)));
         HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); auto old = SelectObject(dc, pen);
-        for (int y : {121, 299, 460, 603}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
+        for (int y : {121, 299, 460}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
         // Original geometric HUD accents; no extracted game art or assets.
         for (int x = 811; x < 943; x += 22) { MoveToEx(dc, menu->Px(x), menu->Px(43), nullptr); LineTo(dc, menu->Px(x + 18), menu->Px(25)); }
-        SelectObject(dc, old); DeleteObject(pen); if (message == WM_PAINT) EndPaint(window, &paint); return 0;
+        SelectObject(dc, old); DeleteObject(pen);
+        // Project Reclaimer's panel: its own ground, an edge and a bar down its left side in its own colour, the
+        // heading on the left and what it is on the right.
+        {
+            RECT box{menu->Px(kReclaimerLeft), menu->Px(kReclaimerTop), menu->Px(kReclaimerRight), menu->Px(kReclaimerBottom)};
+            FillRect(dc, &box, menu->reclaimerPanel);
+            HBRUSH edge = CreateSolidBrush(RGB(122, 90, 44)), bar = CreateSolidBrush(kReclaimerAccent);
+            FrameRect(dc, &box, edge);
+            RECT stripe{box.left, box.top, box.left + menu->Px(5), box.bottom}; FillRect(dc, &stripe, bar);
+            DeleteObject(edge); DeleteObject(bar);
+            SetBkMode(dc, TRANSPARENT); SelectObject(dc, menu->label); SetTextColor(dc, kReclaimerAccent);
+            SetTextCharacterExtra(dc, menu->Px(2));
+            const wchar_t* heading = L"PROJECT RECLAIMER";
+            TextOutW(dc, menu->Px(46), menu->Px(kReclaimerTop + 14), heading, static_cast<int>(wcslen(heading)));
+            SetTextCharacterExtra(dc, 0);
+            SelectObject(dc, menu->smallFont); SetTextColor(dc, kReclaimerMuted);
+            RECT note{menu->Px(330), menu->Px(kReclaimerTop + 15), menu->Px(940), menu->Px(kReclaimerTop + 40)};
+            DrawTextW(dc, L"EXPERIMENTAL  /  A SEPARATE GAME CLIENT, NOT PART OF THE MCC SETUP ABOVE", -1, &note, DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        if (message == WM_PAINT) EndPaint(window, &paint); return 0;
     }
     case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: {
-        HDC dc = reinterpret_cast<HDC>(wParam); SetTextColor(dc, kText); SetBkColor(dc, kBackground); return reinterpret_cast<LRESULT>(menu->background);
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        if (reinterpret_cast<HWND>(lParam) == menu->reclaimerInfo) { SetTextColor(dc, kText); SetBkColor(dc, kReclaimerPanel); return reinterpret_cast<LRESULT>(menu->reclaimerPanel); }
+        SetTextColor(dc, kText); SetBkColor(dc, kBackground); return reinterpret_cast<LRESULT>(menu->background);
     }
     case WM_CTLCOLORLISTBOX: case WM_CTLCOLOREDIT: {
-        HDC dc = reinterpret_cast<HDC>(wParam); SetTextColor(dc, kText); SetBkColor(dc, kPanel); return reinterpret_cast<LRESULT>(menu->panel);
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        if (reinterpret_cast<HWND>(lParam) == menu->reclaimerPath) { SetTextColor(dc, kText); SetBkColor(dc, kReclaimerField); return reinterpret_cast<LRESULT>(menu->reclaimerField); }
+        SetTextColor(dc, kText); SetBkColor(dc, kPanel); return reinterpret_cast<LRESULT>(menu->panel);
     }
     case WM_MEASUREITEM:
         if (reinterpret_cast<MEASUREITEMSTRUCT*>(lParam)->CtlID == Games) { reinterpret_cast<MEASUREITEMSTRUCT*>(lParam)->itemHeight = menu->Px(29); return TRUE; }
@@ -211,6 +290,20 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         case Folder: if (auto* game = menu->Selected()) { auto path = game->root / L"Halo_MCC_VR"; if (!fs::exists(path)) path = game->root; ShellExecuteW(window, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL); } break;
         case ReleasePage: ShellExecuteW(window, L"open", L"https://github.com/moistman42069/MCCVR-Halo-Build/releases/latest", nullptr, nullptr, SW_SHOWNORMAL); break;
         case Launch: if (auto* game = menu->Selected()) { menu->launchDir = (game->root / L"Halo_MCC_VR").wstring(); DestroyWindow(window); } break;
+        case ReclaimerPath:
+            if (HIWORD(wParam) == EN_CHANGE) ReclaimerShow(*menu, false);
+            else if (HIWORD(wParam) == EN_KILLFOCUS) ReclaimerShow(*menu, true);
+            break;
+        case ReclaimerBrowse: BrowseReclaimer(*menu); break;
+        case ReclaimerDetect: {
+            std::wstring how; const auto found = reclaimer_launch::DetectClient(menu->selfDir, how);
+            if (found.empty()) menu->Text(menu->status, L"No Project Reclaimer was found. Run Project Reclaimer once so that Windows knows where it is, then choose Detect again; or choose Browse and pick its program (project-reclaimer-client-v*.exe).");
+            else { SetWindowTextW(menu->reclaimerPath, found.c_str()); ReclaimerShow(*menu, true); menu->Text(menu->status, how); }
+        } break;
+        case ReclaimerLaunch:
+            ReclaimerShow(*menu, true);
+            if (menu->reclaimerStartable) { menu->reclaimerExe = ReclaimerField(*menu); DestroyWindow(window); }
+            break;
         case Install: if (auto* game = menu->Selected()) {
             const auto target = *game; const auto payload = menu->payload; const bool retain = SendMessageW(menu->retain, BM_GETCHECK, 0, 0) == BST_CHECKED;
             menu->Text(menu->status, L"Verifying files and installing. MCC will not start until you choose Launch MCC.");
@@ -247,7 +340,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     return DefWindowProcW(window, message, wParam, lParam);
 }
 }
-std::wstring ShowLauncherMenu(HINSTANCE instance, const fs::path& launcherDir, int showCommand) {
+std::wstring ShowLauncherMenu(HINSTANCE instance, const fs::path& launcherDir, int showCommand, std::wstring* reclaimerExe) {
     Menu menu; menu.instance = instance; menu.selfDir = launcherDir;
     menu.payload = fs::is_regular_file(launcherDir / L"ModFiles" / L"INSTALL-MANIFEST.sha256") ? launcherDir / L"ModFiles" : launcherDir;
     menu.fontPath = menu.payload / L"assets" / L"fonts" / L"Oxanium.ttf";
@@ -257,16 +350,23 @@ std::wstring ShowLauncherMenu(HINSTANCE instance, const fs::path& launcherDir, i
     WNDCLASSEXW type{sizeof(type)}; type.lpfnWndProc = WindowProc; type.hInstance = instance; type.hCursor = LoadCursorW(nullptr, IDC_ARROW); type.hIcon = LoadIconW(nullptr, IDI_APPLICATION); type.lpszClassName = L"HaloMCCVRSetupMenu";
     RegisterClassExW(&type);
     RECT workArea{}; SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
-    const int fitWidth = MulDiv(workArea.right - workArea.left - 32, 96, 980);
-    const int fitHeight = MulDiv(workArea.bottom - workArea.top - 55, 96, 710);
+    const int fitWidth = MulDiv(workArea.right - workArea.left - 32, 96, kMenuWidth);
+    const int fitHeight = MulDiv(workArea.bottom - workArea.top - 55, 96, kMenuHeight);
     const int dpi = std::max(60, std::min({static_cast<int>(GetDpiForSystem()), fitWidth, fitHeight}));
     menu.dpi = dpi;
-    RECT rect{0, 0, MulDiv(980, dpi, 96), MulDiv(710, dpi, 96)};
+    RECT rect{0, 0, MulDiv(kMenuWidth, dpi, 96), MulDiv(kMenuHeight, dpi, 96)};
     constexpr DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     AdjustWindowRectExForDpi(&rect, style, FALSE, 0, dpi);
     HWND window = CreateWindowExW(0, type.lpszClassName, L"Halo MCC VR | Setup & Launch", style, CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, instance, &menu);
     if (window) {
         menu.installs = DetectInstalls(launcherDir); menu.Populate();
+        // The kept Project Reclaimer program; with none kept, one that is found is offered and kept only once the
+        // player uses it.
+        {
+            std::wstring how; auto client = reclaimer_launch::SavedClient(launcherDir);
+            if (client.empty()) client = reclaimer_launch::DetectClient(launcherDir, how);
+            SetWindowTextW(menu.reclaimerPath, client.c_str()); ReclaimerShow(menu, false);
+        }
         ShowWindow(window, showCommand); UpdateWindow(window);
         MSG message{};
         while (GetMessageW(&message, nullptr, 0, 0) > 0) if (!IsDialogMessageW(window, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
@@ -274,8 +374,10 @@ std::wstring ShowLauncherMenu(HINSTANCE instance, const fs::path& launcherDir, i
     if (menu.worker.joinable()) menu.worker.join();
     for (HFONT font : {menu.body, menu.smallFont, menu.title, menu.label}) if (font) DeleteObject(font);
     if (menu.background) DeleteObject(menu.background); if (menu.panel) DeleteObject(menu.panel);
+    if (menu.reclaimerPanel) DeleteObject(menu.reclaimerPanel); if (menu.reclaimerField) DeleteObject(menu.reclaimerField);
     if (menu.fontLoaded) RemoveFontResourceExW(menu.fontPath.c_str(), FR_PRIVATE, nullptr);
     if (SUCCEEDED(com)) CoUninitialize();
+    if (reclaimerExe) *reclaimerExe = menu.reclaimerExe;
     return menu.launchDir;
 }
 } // namespace mcc_installer

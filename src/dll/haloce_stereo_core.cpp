@@ -1,7 +1,10 @@
 #include "haloce_stereo_core.h"
 #include "haloce_controls.h"
+#include "haloce_head_relative.h"
 #include "physical_crouch_camera.h"
 uint64_t VR_PhysicalCrouchEpoch() noexcept;
+float VR_RecenterStandingLiftM(GameTitle title) noexcept;   // vr.h
+uint64_t Sight_NowUs();   // sight_layer.h: the one sight clock the gameplay context's camera is stamped on
 #include "haloce_native_bindings.h"
 #include "haloce_hud_layout.h"
 #include "haloce_hud_target.h"
@@ -13,6 +16,7 @@ uint64_t VR_PhysicalCrouchEpoch() noexcept;
 #include "../common/haloce_dlss_logic.h"
 #include "../common/haloce_dlss_contract.h"
 #include "../common/log.h"
+#include "../common/shot_lag_logic.h"
 #include "game.h"
 #include "title_adapter.h"
 #include "hook_quiescence.h"
@@ -44,6 +48,9 @@ constexpr bool kCeIntegratedBaseVrEnabled=false;
 // with Classic source/bootstrap and isolated HUD/mirror corrections retained.
 // Pinned native refresh/admission and production fixtures pass; headset pending.
 constexpr bool kCeSceneVisibilityBaseVrEnabled=true;
+// CE's body following (roomscale), enabled so that every title has roomscale. It is gated at run time
+// by roomscale_movement (the rig's roomscaleEnabled) exactly like the other titles, and by
+// physical_running (the rig's physicalRunningEnabled) for physical running.
 // CE uses the same guarded native walking feedback as H3. Both renderers
 // prepare one horizontal tracking reference before constructing either eye.
 constexpr bool kCeExperimentalRoomscaleEnabled=true;
@@ -237,10 +244,29 @@ struct GameplayCameraSample
     uint64_t capturedAtMs{};
 };
 Snapshot<GameplayCameraSample> gameplayCamera;
+// Flat parity: the published camera's track (shot_lag::EyeTrack), on the sight clock. Both renderers publish through
+// here; the lock keeps the track whole whichever thread does.
+shot_lag::EyeTrack gameplayCameraTrack;
+uint32_t gameplayCameraTrackGeneration{};
+SRWLOCK gameplayCameraTrackLock=SRWLOCK_INIT;
 void PublishGameplayContext(const RenderContext& context) noexcept
 {
-    if (Valid(context.camera)&&HaloCE_RenderContextCurrent(context))
-        gameplayCamera.Publish({context,GetTickCount64()});
+    if (!Valid(context.camera)||!HaloCE_RenderContextCurrent(context)) return;
+    RenderContext stamped=context;
+    const float eye[3]{context.camera.position.x,context.camera.position.y,context.camera.position.z};
+    float velocity[3]{};
+    AcquireSRWLockExclusive(&gameplayCameraTrackLock);
+    if(gameplayCameraTrackGeneration!=context.tracking.generation)
+    {gameplayCameraTrack.Reset();gameplayCameraTrackGeneration=context.tracking.generation;}
+    stamped.cameraStampUs=Sight_NowUs();
+    gameplayCameraTrack.Push(stamped.cameraStampUs,eye);
+    stamped.cameraVelValid=gameplayCameraTrack.Velocity(120000,30000,velocity);
+    ReleaseSRWLockExclusive(&gameplayCameraTrackLock);
+    stamped.cameraVel=stamped.cameraVelValid?Vec3{velocity[0],velocity[1],velocity[2]}:Vec3{};
+    gameplayCamera.Publish({stamped,GetTickCount64()});
+    // The same frame's head, for what is drawn against where the player LOOKS (the motion tracker,
+    // haloce_head_relative.cpp): this stock centre, tracking sample and reference, on this sight-clock stamp.
+    HaloCEHeadRelative_PublishHead(stamped,Anniversary());
 }
 void FollowRoomscale(const Camera& source,const Tracking& tracking,Reference& frozen,
     float scale,bool positional,uint64_t revision) noexcept
@@ -264,13 +290,24 @@ void FollowRoomscale(const Camera& source,const Tracking& tracking,Reference& fr
         tracking.headOrientation.z,tracking.headOrientation.w};
     const float forward[]{heading.x,heading.y,heading.z};
     float position[]{frozen.position.x,frozen.position.y,frozen.position.z};
-    Roomscale_Camera(GameTitle::HaloCE,positional&&!tracking.controllers.controlsPresentationBlocked&&
-        Game_RoomscaleCameraAllowed(GameTitle::HaloCE),body,head,orientation,forward,position,scale);
+    Roomscale_Camera(GameTitle::HaloCE,
+        !positional ? Roomscale_Refuse(roomscale_admission::Refusal::Disabled)
+        : tracking.controllers.controlsPresentationBlocked ? Roomscale_Refuse(roomscale_admission::Refusal::Menu)
+        : Game_RoomscaleCameraVerdict(GameTitle::HaloCE),body,head,orientation,forward,position,scale);
     const Vec3 next{position[0],position[1],position[2]};
     if (!Finite(next)||!Current()||revision!=referenceRevision.load()||recenter.load()) return;
     frozen.position=next;
     reference=frozen;
     publishedReference.Publish({frozen,revision});
+}
+// THE SEAT'S VIEW HEADING (Reference::seatHeading, haloce_render_logic.h): set or cleared on the tracking
+// reference once per frame, before the frame's eyes, controllers, sight ray and publications are built from it, so
+// every consumer of BuildTrackingFrame maps the room through the same heading.
+void ApplySeatHeading(Reference& frozen) noexcept
+{
+    Vec3 heading{};
+    frozen.seatHeadingValid=HaloCEControls_SeatHeading(frozen.generation,heading);
+    frozen.seatHeading=frozen.seatHeadingValid?heading:Vec3{};
 }
 // A per-frame effective reference applies one vertical camera correction to
 // both eyes, controllers and native aim. The user's calibration stays intact.
@@ -396,7 +433,16 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
     if (force&&constructTrackedViews)
     {
         if (recenter.exchange(false)||reference.generation!=gen||reference.spaceEpoch!=tracking.spaceEpoch)
+        {
             reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,gen};
+            reference.position.y+=VR_RecenterStandingLiftM(GameTitle::HaloCE);   // the standing height, not a caught crouch
+        }
+        ApplySeatHeading(reference);
+        // Roomscale (body following) in the Anniversary renderer is NOT done here: the native camera for
+        // THIS frame is built inside ConstructViews, after the reference is fixed. It runs at eye zero's
+        // append instead (PrepareAnniversaryTrackingReference), from this frame's untracked native centre,
+        // before either eye is prepared, followed by the physical crouch correction. A second follow here
+        // from the previous frame's published centre would step Roomscale_Camera twice per frame.
         Wanted raster{};
         construction.list=address;
         construction.referenceRevision=revisionBeforeBuild;
@@ -416,7 +462,11 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
         SaberViewPair source{},rasterSource{},committed{}; StagedViewPair staged{};
         if (!constructTrackedViews&&
             (recenter.exchange(false)||reference.generation!=gen||reference.spaceEpoch!=tracking.spaceEpoch))
+        {
             reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,gen};
+            reference.position.y+=VR_RecenterStandingLiftM(GameTitle::HaloCE);
+        }
+        if (!constructTrackedViews) ApplySeatHeading(reference);
         if (!recenter.load(std::memory_order_acquire)&&
             revisionBeforeBuild==referenceRevision.load(std::memory_order_acquire))
             publishedReference.Publish({constructTrackedViews?construction.views.reference:reference,revisionBeforeBuild});
@@ -1190,10 +1240,11 @@ bool HaloCE_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActive,bool allo
             ce_resolution::rebuilds.load(),ce_resolution::failures.load(),ce_resolution::lastFailure.load());
         LOG("CE DIAG gen=%u installed=%d armed=%d built=%llu pairs=%llu dropped=%llu stock=%llu descriptorMiss=%llu previewFolded=%llu stage=%u sceneRefresh=%llu",
             gen,installed.load(),armed.load(),built.load(),captured.load(),dropped.load(),stock.load(),descriptorMiss.load(),previewFolded.load(),lastPairStage.load(),sceneVisibilityRefreshes.load());
-        LOG("CE CLASSIC gen=%u installed=%d pairs=%llu drops=%llu stock=%llu outputs=%llu sourceMiss=%llu failure=%u sourceFailure=%u",
+        LOG("CE CLASSIC gen=%u installed=%d pairs=%llu drops=%llu stock=%llu outputs=%llu sourceMiss=%llu failure=%u sourceFailure=%u mono=%llu monoDrops=%llu passes=%llu",
             gen,classicInstalled.load(),classicPairs.load(),classicDrops.load(),classicStock.load(),
             classicOutputs.load(),classicSourceMiss.load(),static_cast<unsigned>(classicLastFailure.load()),
-            static_cast<unsigned>(classicSourceFailure.load()));
+            static_cast<unsigned>(classicSourceFailure.load()),classicMonoFrames.load(),classicMonoDrops.load(),
+            classicPasses.load());
         LOG("CE CLASSIC PREP stage=%u cache=%d raster=%ux%u output=%ux%u",
             classicPairStage.load(),classicCacheBegan.load(),classicRasterWidth.load(),
             classicRasterHeight.load(),classicOutputWidth.load(),classicOutputHeight.load());
@@ -1300,6 +1351,10 @@ bool HaloCE_AcquirePair(ID3D11DeviceContext* context,uint64_t currentSerial,uint
     return cache.AcquireCompleted(key,context,pair);
 }
 void HaloCE_ReleasePair(uint64_t borrowId) noexcept { cache.ReleaseCompleted(borrowId); }
+int32_t HaloCE_ObservedRenderer() noexcept
+{ return ceObservedRenderer.load(std::memory_order_acquire); }
+uint64_t HaloCE_TakeMonoDrops() noexcept
+{ return classicMonoDropsUnreported.exchange(0,std::memory_order_acq_rel); }
 bool HaloCE_RenderContextCurrent(const halo_ce::RenderContext& context) noexcept
 {
     Tracking tracking{};

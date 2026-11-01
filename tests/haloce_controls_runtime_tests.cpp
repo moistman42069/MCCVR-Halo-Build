@@ -304,7 +304,7 @@ int main()
     perspective=1;Put(unitAddress+0xd8,vehicleId);Put(unitAddress+0x2d0,int16_t(0));
     Put(vehicleAddress+0xd8,UINT32_MAX);
     Put(vehicleAddress+0x30,halo_ce::Vec3{1,0,0});Put(vehicleAddress+0x3c,halo_ce::Vec3{0,0,1});
-    vehicleViewReady=true;rig.vehicleMotion=true;rig.vehicleViewFollow=true;
+    vehicleViewReady=true;rig.vehicleControls=true;rig.vehicleViewFollow=true;
     rig.turnX=0;++gameplay.tracking.serial;vehicleFollow={};
     TurnDispatch(1,.25f,.5f,moduleBase+0xa99660);
     Check(lastYaw==0&&lastPitch==0&&HaloCEControls_OwnsLookStick(),
@@ -337,12 +337,34 @@ int main()
     rig.vehicleViewFollow=true;++gameplay.tracking.serial;
     TurnDispatch(1,.25f,.5f,moduleBase+0xa99660);
     Check(lastYaw==0,"enabling view-follow cannot replay the off-period rotation");
+    // THE SEAT'S VIEW HEADING (Reference::seatHeading): the production reader on this fixture's seated player
+    // (input user 1: the control record at control + 0x14 + 0x58, its yaw / pitch at +8 / +0xC).
+    {
+        halo_ce::Vec3 heading{9,9,9};
+        Put(control+0x14+0x58+8,1.2f);Put(control+0x14+0x58+0xc,-.3f);
+        Check(HaloCEControls_SeatHeading(3,heading)&&Near(heading.x,std::cos(1.2f))&&
+            Near(heading.y,std::sin(1.2f))&&heading.z==0,
+            "a seated player's view heading is the control record's own yaw, flat");
+        Check(!HaloCEControls_SeatHeading(4,heading),"another title generation gets no seat heading");
+        Put(control+0x14+0x58+8,std::nanf(""));
+        Check(!HaloCEControls_SeatHeading(3,heading),"a non-finite control yaw is no heading");
+        Put(control+0x14+0x58+8,40.0f);
+        Check(!HaloCEControls_SeatHeading(3,heading),"a control yaw outside the game's range is no heading");
+        Put(control+0x14+0x58+8,1.2f);Put(control+0x10+0x58,unitId+1);
+        Check(!HaloCEControls_SeatHeading(3,heading),"a record that is not the local unit's is no heading");
+        Put(control+0x10+0x58,unitId);Put(unitAddress+0xd8,UINT32_MAX);
+        Check(!HaloCEControls_SeatHeading(3,heading),
+            "on foot there is no seat heading: the native camera's heading is the control yaw already");
+        Put(unitAddress+0xd8,vehicleId);
+        Check(HaloCEControls_SeatHeading(3,heading)&&!callbacks.load(),
+            "seated again the heading reads, and no callback lease is left behind");
+    }
     for (int reject=0;reject<9;++reject)
     {
         switch(reject)
         {
         case 0:vehicleViewReady=false;break;
-        case 1:rig.vehicleMotion=false;break;
+        case 1:rig.vehicleControls=false;break;
         case 2:Put(unitAddress+0x2d0,int16_t(-1));break;
         case 3:Put(vehicleAddress+0xd8,uint32_t(0x6789000a));break;
         case 4:Put(vehicleAddress+0x30,halo_ce::Vec3{0,0,1});break;
@@ -354,7 +376,7 @@ int main()
         ++gameplay.tracking.serial;TurnDispatch(1,.25f,.5f,moduleBase+0xa99660);
         Check(Near(lastYaw,.25f)&&Near(lastPitch,.5f)&&!HaloCEControls_OwnsLookStick(),
             "unproven, disabled, nested, stale or unreadable vehicle view retains original native input");
-        vehicleViewReady=true;rig.vehicleMotion=true;vehicleAddress=arena+0xc000;
+        vehicleViewReady=true;rig.vehicleControls=true;vehicleAddress=arena+0xc000;
         Put(unitAddress+0x2d0,int16_t(0));Put(unitAddress+0xd8,vehicleId);
         Put(vehicleAddress+0xd8,UINT32_MAX);Put(vehicleAddress+0x30,halo_ce::Vec3{0,1,0});
         Put(vehicleAddress+0x3c,halo_ce::Vec3{0,0,1});contextCurrent=true;
@@ -446,8 +468,8 @@ int main()
         "pending callback preserves native dependency pointers while retiring controls");
     callbacks=0;
     Check(Remove()&&!moduleBase&&!retiring.load()&&!stateReady.load()&&!turnReady.load(),
-        "all ten actual compiled retirement ranges resolve and controls finish cleanup after draining");
-    Check(unwindChecks==20&&!unwindFailures,
+        "all eleven actual compiled retirement ranges resolve and controls finish cleanup after draining");
+    Check(unwindChecks==22&&!unwindFailures,
         "both complete retirement attempts validate every production function's actual unwind metadata");
     // A same-generation camera re-entry can now publish native state again.
     // Contract installation remains covered separately by the pinned binding suite.

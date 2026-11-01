@@ -24,6 +24,11 @@ void HaloCE_CaptureClassicDlssDepth(uintptr_t caller) noexcept;
 bool HaloCE_AcquirePair(ID3D11DeviceContext* context,uint64_t currentSerial,
     uint64_t spaceEpoch,halo_ce::EyeCache::Completed& pair) noexcept;
 void HaloCE_ReleasePair(uint64_t borrowId) noexcept;
+// MONO RENDERING: CE's last observed renderer (-1 not read yet, 0 Classic: the one with a single-pass path,
+// 1 Anniversary), and the number of mono frames Classic dropped since the last call (the present reports them,
+// VR_NoteMonoFrameRejected).
+int32_t HaloCE_ObservedRenderer() noexcept;
+uint64_t HaloCE_TakeMonoDrops() noexcept;
 bool HaloCE_OwnsPresentation() noexcept;
 // Optional native features receive one coherent tracking/reference/context.
 // Native first-person callers supply the current STOCK center camera before

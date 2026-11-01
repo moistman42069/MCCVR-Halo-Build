@@ -7,6 +7,44 @@
 // frame — our hook is where all VR work happens.
 
 bool InstallD3D11Hooks();
+// A lost GPU device, logged: `result` is what a call returned; nothing is logged unless it says the device was
+// removed, reset or hung. The device's own reason (GetDeviceRemovedReason) is read and logged with it. Once per
+// device and at most a few lines in a session: every later call on a lost device fails the same way.
+struct ID3D11Device;
+void D3D_NoteDeviceLoss(const char* where, long result, ID3D11Device* device);
+// The game's Draw / DrawIndexed calls since this was last asked (once a present), and in `smallDraws` those of at
+// most 96 elements: text, HUD widgets and other quads. 0 where the draw hooks are not installed.
+uint32_t D3D_TakeFrameDrawCalls(uint32_t& smallDraws);
+// A host that owns the render size, and no frame for a second has drawn like a game engine: what it presents is its
+// own screen, with no eye pass to show. Always false in MCC.
+bool D3D_HostEngineQuiet();
+// True while the host itself is drawing over the game's frame: a screen of its own (a menu, a loading screen)
+// or an overlay during play. Always false in MCC. See HostScreenNoteBind in d3d11_hook.cpp; which of the two it
+// is, reclaimer_host::ScreenRule decides.
+bool D3D_HostDrawsOverFrame();
+// How much of the picture the host's present drawing changes, in parts of a thousand. False = not measured (yet,
+// or not here).
+bool D3D_HostUiCoverage(uint32_t& permille);
+// THE HOST'S UI AS A PANEL (reclaimer_host_logic.h). The picture of what the host drew over the frame being
+// presented: the frame's size and layout, premultiplied colour (or opaque). True only inside the present of a
+// frame the host drew over (VR_BeforePresent, on the present's thread); the texture is the hook's and is good for
+// that call and no longer.
+struct ID3D11Texture2D;
+struct D3DHostUiPicture
+{
+    ID3D11Texture2D* texture = nullptr;
+    uint32_t width = 0, height = 0;
+    bool opaque = false;
+};
+bool D3D_HostUiPicture(D3DHostUiPicture& out);
+// Any thread: a frame was presented with such a picture in the last 300 ms, and the panel has not been given up.
+bool D3D_HostUiPanelUsable();
+// The panel cannot be shown here (logged once): the flat picture carries the host's screens from now on.
+void D3D_HostUiPanelGiveUp(const char* why);
+// Whether what the panel carries is a SCREEN of the host's (reclaimer_host::ScreenRule), told by the rule's owner
+// every pass; the menu pointer works on the panel while it is. Stale after half a second.
+void D3D_HostUiPanelCarriesScreen(bool screen);
+bool D3D_HostUiPanelIsScreen();
 
 // True only after Halo 2's identified native crosshair shader has completed a
 // capture for the currently loaded halo2.dll generation. Until then the shared
@@ -27,6 +65,10 @@ void D3D_GetHalo4HelmetTelemetry(
 // independently gated and suppresses only the incompatible full-screen draw
 // while Halo 4 stereo is active.
 bool D3D_Halo4ScreenEffectShaderPathAvailable();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// The pixel shader census (dev_ps_census.inl): bind no pixel shader in place of the numbered one; 0 = none.
+void D3D_DevSetBlankPixelShader(int number);
+#endif
 void D3D_GetHalo4ScreenEffectTelemetry(
     uint64_t& shadersRegistered, uint64_t& suppressions);
 void D3D_GetHalo2HudTelemetry(
@@ -94,6 +136,10 @@ void D3D_RetryLiveResize();
 // one failed (MCC never re-sized; the forced size was reverted to the real
 // backbuffer, reported in actualW/H).
 int D3D_LiveResizeState(unsigned& actualW, unsigned& actualH);
+// Project Reclaimer: the size its Native render resolution is given for a Picture panel size of wantW x wantH (never
+// larger than its display), and its display mode as its settings stated it at its last read
+// (reclaimer_host::ClientDisplayMode as int). False, with the size unchanged, until it has read its display mode.
+bool D3D_HostNativeRenderAnswer(unsigned wantW, unsigned wantH, unsigned& width, unsigned& height, int& clientMode);
 HWND D3D_GameWindow();
 
 

@@ -24,7 +24,18 @@
         "HALOMCCVR_EXPERIMENTAL_HALO2_TEMPORAL_STEREO": "OFF",
         "HALOMCCVR_HALO2_STEREO6DOF": "ON",
         "HALOMCCVR_HALO2_OBSERVER_6DOF": "ON",
-        "HALOMCCVR_HALO2_RENDER_PROBE": "OFF"
+        "HALOMCCVR_HALO2_RENDER_PROBE": "OFF",
+        "HALOMCCVR_DEV_DIAGNOSTICS": "OFF"
+      }
+    },
+    {
+      "name": "dev",
+      "inherits": "release",
+      "displayName": "Halo MCC VR development (diagnostics + test hooks compiled in)",
+      "description": "The release build plus HALOMCCVR_DEV_DIAGNOSTICS: headless-test hooks, censuses, traces and measurement logs. Never packaged (package-candidate.ps1 refuses it).",
+      "binaryDir": "${sourceDir}/out/build/dev",
+      "cacheVariables": {
+        "HALOMCCVR_DEV_DIAGNOSTICS": "ON"
       }
     }
   ],
@@ -33,12 +44,25 @@
       "name": "release",
       "configurePreset": "release",
       "configuration": "Release"
+    },
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "configuration": "Release"
     }
   ],
   "testPresets": [
     {
       "name": "release",
       "configurePreset": "release",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "dev",
+      "configurePreset": "dev",
       "configuration": "Release",
       "output": {
         "outputOnFailure": true

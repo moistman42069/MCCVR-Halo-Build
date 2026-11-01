@@ -1,3 +1,82 @@
+## October 26: preserve dual pickup while suppressing secondary reload
+
+User reports the alias suppression also prevents dual pickup. Disable that
+behavior in rollback037db157; keep the dormant code. Native action4/42/1F
+records must pass unchanged, including frame/ms counters and long-held state.
+
+Kit343FC0 separates interactions: +40 bit5 is tested at344157 and calls
+346370 at344165 for held dual interaction; bit6 is independently tested at
+344309 for secondary reload. The prior input-reader approach erased both.
+Use the independently matched player-action edge resolver instead: kit341C20,
+retailE7C68..E7EFC, called at kit34D138 / retailE4CDF (returnE4CE4).
+Run native first, then clear ONLY packet+40 bit6 under a fresh blocked-Reload
+publication. Preserve all other packet bytes and the native previous-button
+state. Primary suppression and native dual-shake request paths are unchanged.
+
+The first argument is a PLAYER DATUM, not controller index0. Compare it with
+the exact output-user0 player getter at retailEE45C. H3EK's mapping writer
+3E9DBF stores output-user player into table+B8; descriptor105A6F0 contains the
+named assertion `player_mapping_globals->output_user_player_mapping[output_user_index]==NONE`.
+Retail getter reads the homologous table+B8 (engine TLS110), separately from
+the accepted unit getterEE48C/table+C8. Verify entry, getter, edge-bit and exact
+caller patterns uniquely on the worker. All checks pass on the pinned binaries.
+
+This optional hook is entered through the register-preserving assembly thunk;
+its original result, native caller, volatile registers and native single-call
+behavior are retained. It participates in three-hook retirement/quiescence.
+Missing proof, nonlocal owner, unrelated caller, stale publication or optional
+fault keeps this feature stock; an optional fault does not disable the action
+bridge. Worker diagnostics report edge-only versus stock-fallback.
+
+Read-only verifier covers the new proofs and distinct pickup/reload semantics.
+Windows fixture checks exact flag preservation, local/other player, caller,
+feature-off/failure, native call count/result and untouched shared records.
+The assembly probe covers the added thunk. Windows/headset result is pending.
+
+## October 26: H3 secondary reload input aliases
+
+User confirms primary suppression works but secondary button still reloads.
+Read-only inspection of the pinned H3EK/retail images establishes a separate
+secondary held-bit4 path. Kit reads actions4/42 at44B0F0/44B119 (held) and
+4/1F at44B14C/44B17D (long held). Output+2C bit5 promotes bit4. Existing action
+packing preserves that field; edge resolver341C20 creates bit6 at341D67.
+344309 tests bit6 and344330..344339 sets secondary control bit31, matching the
+already documented secondary reload action3F. Action3F is a unit action,
+not an input-reader ID.
+
+Retail caller return RVAs are F6159/F6172/F6196/F61B2, inside the existing
+verified consumer. Match the unique exact block F614F..F61B2 independently.
+While manual reload's blocked semantic bit is current, return released private
+records ONLY for those four action/caller pairs. Do not suppress the aliases
+elsewhere, remap raw controller buttons, or route primary gesture pulses into
+the secondary. Dual shake reload remains the separate proven native slot path.
+Proof mismatch leaves this secondary feature stock and logs on the worker;
+primary reload, holster and other bridge behavior continue.
+
+`tools/re/verify_h3_secondary_reload.py` verifies pinned hashes, kit instructions,
+retail calls and unique runtime signature. Passed locally against user-provided
+binaries. Windows fixture adds alias, caller, proof-failure, off-toggle and
+primary-gesture isolation checks; Windows/headset validation remains pending.
+
+## October 26: preserve the native caller across reader thunks
+
+User source7124f9d6: CE/H2 manual reload and holster suppression works;
+Reach/H3/ODST/H4 does not. Supplied HaloMCCVR.log shows converter activity
+with zero direct reads. Source inspection identifies a deterministic admission
+failure: ReaderHook used _ReturnAddress(), which points into the preserving
+assembly thunk rather than the native consumer. All four later-title bridges
+therefore reject the caller before routing or suppression. CE/H2 use different
+entry paths and are unaffected.
+
+The thunk saves six registers and allocates 88h bytes, placing the native
+return address at rsp+B8h. Pass that address as the third C++ argument (r8),
+then restore the original r8 with all other preserved registers. Keep the
+existing independently verified native consumer bounds, owner and freshness
+checks. No native address, hook target or consumer whitelist is changed.
+The assembly regression probe now verifies exact caller forwarding as well as
+volatile-register preservation; runtime fixtures pass their explicit caller.
+Windows CI/headset validation remains pending.
+
 # Native VR action isolation: September 30 implementation
 
 The Halo 3 reference experience is a consistent VR action regardless of MCC's

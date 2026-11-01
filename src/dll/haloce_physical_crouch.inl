@@ -15,12 +15,17 @@ float CrouchCameraBody(uint32_t expectedGeneration,uint64_t epoch,float physical
 {
     PhysicalCrouchCameraRequest request{};
     HaloCELocalPlayerState state{};
-    if(!allowed||!crouchCameraReady.load(std::memory_order_acquire)||!StateCurrent()||
-       !PhysicalCrouchCamera_Read(request)||!ReadLocalPlayerState(state)||
+    const uint32_t gateWhy=(!allowed?0x1u:0u)|(!crouchCameraReady.load(std::memory_order_acquire)?0x4u:0u)|
+        (!StateCurrent()?0x8u:0u);
+    const bool requested=!gateWhy&&PhysicalCrouchCamera_Read(request);
+    if(gateWhy||!requested||!ReadLocalPlayerState(state)||
        !state.hasControlledUnit||!state.onFoot||!state.nativePreparesFirstPerson||
        state.nativeInputBlocked||state.nativeLookBlocked||state.nativePaused||state.nativeCinematicFlag||
        state.generation!=expectedGeneration)
-    {crouchCameraLease.Reset();return 0;}
+    {
+        PhysicalCrouchCamera_NoteNativeMiss(GameTitle::HaloCE,gateWhy?gateWhy:(!requested?0x40u:0x10u));
+        crouchCameraLease.Reset();return 0;
+    }
     __try
     {
         const auto get=reinterpret_cast<ObjectGetFn>(moduleBase+contract::player_state::state_object_try_get);
@@ -59,8 +64,11 @@ float CrouchCameraBody(uint32_t expectedGeneration,uint64_t epoch,float physical
            get(state.unit,1)!=reinterpret_cast<uintptr_t>(unit)||
            physical_crouch_native::Read<uint32_t>(unit,0)!=tag||!StateCurrent()||generation.load()!=expectedGeneration)
         {crouchCameraLease.Reset();return 0;}
-        return crouchCameraLease.Update(request,GameTitle::HaloCE,expectedGeneration,epoch,GetTickCount64(),
-            state.unit,reinterpret_cast<uintptr_t>(unit),reduction,physicalDown);
+        PhysicalCrouchCamera_NoteNativeDrop(GameTitle::HaloCE,reduction);   // dev: the game's own crouch
+        const float correction=crouchCameraLease.Update(request,GameTitle::HaloCE,expectedGeneration,epoch,
+            GetTickCount64(),state.unit,reinterpret_cast<uintptr_t>(unit),reduction,physicalDown);
+        PhysicalCrouchCamera_NoteApplied(GameTitle::HaloCE,correction);   // dev: handed to the camera
+        return correction;
     }
     __except(EXCEPTION_EXECUTE_HANDLER) {crouchCameraLease.Reset();return 0;}
 }

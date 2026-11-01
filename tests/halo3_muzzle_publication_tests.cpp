@@ -1,3 +1,4 @@
+#include "../src/common/visual_aim.h"
 #include <Windows.h>
 #include "../src/common/weapon_muzzle.h"
 #include "../src/common/contact_melee_motion.h"
@@ -8,12 +9,18 @@ static unsigned checks{};
 static void Check(bool value,const char* name)
 {++checks;if(!value){std::fprintf(stderr,"FAIL: %s\n",name);std::exit(1);}}
 static constexpr uint32_t owner=0x12340001,primary=0x56780002,secondary=0x789A0003;
-static struct {bool gun_barrel_aim=true,left_handed=false;} g_config;
+static struct {float barrel_pitch_deg=0,barrel_yaw_deg=0,barrel_roll_deg=0;bool gun_barrel_aim=true,left_handed=false,shots_from_muzzle=false;} g_config;
+// The three shot switches as they are in effect (sight_layer.h); here, the test's own config.
+[[maybe_unused]] static bool Sight_ShotsFromMuzzle(){return g_config.shots_from_muzzle;}
+[[maybe_unused]] static bool Sight_GunBarrelAim(){return g_config.gun_barrel_aim;}
+[[maybe_unused]] static bool Sight_IndependentDualAim(){return false;}
 static std::atomic<bool> g_halo3MuzzleBindingsReady{true};
+static std::atomic<bool> g_halo3GripOwnerReady{true};
 static std::atomic<uint32_t> g_halo3RuntimeGeneration{7};
 static weapon_muzzle::Store g_halo3Muzzles;
 static std::atomic<bool> g_baseCamValid{true};
 static std::atomic<float> g_worldScale{1},g_baseCamX{0},g_baseCamY{0},g_baseCamZ{0};
+static float BaseCamHandsZ(){return g_baseCamZ.load();}
 static float g_headYawRef=0,g_gameYawRef=0,g_headPosRef[3]{};
 static unsigned reticlePublications{};
 static void VR_PublishWeaponReticleRay(GameTitle title,uint8_t slot,
@@ -35,6 +42,8 @@ static auto g_halo3UnitInVehicle=&Seated;
 static bool Halo3ReadOwnedWeapons(uint32_t unit,uint32_t* weapons,bool requireDual)
 {weapons[0]=primary;weapons[1]=secondary;return owned&&unit==owner&&!requireDual;}
 struct BoneMatrix {float scale=1,rotation[9]{1,0,0,0,1,0,0,0,1},translation[3]{};};
+static bool DesiredWristWorld(bool,BoneMatrix& visual,float& scale,float*,BoneMatrix* neutral)
+{visual={};*neutral=visual;scale=1;return true;}
 struct FpInterpolationContext
 {bool valid=true;int player=0,slot=0;uint32_t generation=7,muzzleUnit=owner,muzzleWeapon=primary;};
 static struct
@@ -55,6 +64,15 @@ int main()
     uint32_t unit=UINT32_MAX,weapon=UINT32_MAX;
     Check(Halo3CaptureMuzzleOwner(0,0,unit,weapon)&&unit==owner&&weapon==primary,"primary exact full native FP handle captured");
     Check(Halo3CaptureMuzzleOwner(0,1,unit,weapon)&&weapon==secondary,"secondary exact full native FP handle captured");
+    // The grip point's owner stands without the muzzle lane, and without its own proof it is refused.
+    g_halo3MuzzleBindingsReady=false;
+    Check(!Halo3CaptureMuzzleOwner(0,0,unit,weapon),"no muzzle bindings: no muzzle owner");
+    unit=weapon=0;
+    Check(Halo3CaptureGripOwner(0,0,unit,weapon)&&unit==owner&&weapon==primary,"no muzzle bindings: the grip owner is still read");
+    g_halo3MuzzleBindingsReady=true;
+    g_halo3GripOwnerReady=false;
+    Check(!Halo3CaptureGripOwner(0,0,unit,weapon)&&!Halo3CaptureMuzzleOwner(0,0,unit,weapon),"grip bindings unproven: neither is read");
+    g_halo3GripOwnerReady=true;
     Check(!Halo3CaptureMuzzleOwner(1,0,unit,weapon)&&!Halo3CaptureMuzzleOwner(0,2,unit,weapon),"foreign player and slot refused");
     BoneMatrix destination[64];
     for(auto& node:destination){node.scale=2;node.translation[0]=2;node.translation[1]=3;node.translation[2]=4;}

@@ -9,8 +9,9 @@ Passing build checks do not mean every feature or co-op session has been tested.
 INSTALL WITH THE LAUNCHER
 ------------------------
 1. Close MCC and extract the whole launcher ZIP.
-2. Open HaloMCCVRLauncher.exe beside the ModFiles folder. Windows requests
-   administrator access by default so installation can write protected folders.
+2. Open HaloMCCVRLauncher.exe beside the ModFiles folder. It does not ask for
+   administrator access. If Windows refuses the install folder, run it once as
+   administrator to install, then open it normally to launch.
 3. Select the detected Steam or Store installation, or Browse to the MCC root.
 4. Leave Keep my settings selected to preserve your configuration and append
    newly available settings. Install / Update writes to Halo_MCC_VR in that root.

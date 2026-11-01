@@ -118,7 +118,17 @@ bool ProbeInstall(const fs::path& candidate, GameInstall& result) {
             const auto bin = base / L"MCC" / L"Binaries" / L"Win64";
             const bool store = IsFile(bin / L"MCCWinStore-Win64-Shipping.exe");
             if (store || IsFile(bin / L"MCC-Win64-Shipping.exe")) {
-                result = {base.lexically_normal(), store || IsFile(base / L"MicrosoftGame.config")};
+                // The folder's REAL path. Windows registers a Store install as
+                // C:\Program Files\WindowsApps\Microsoft.Chelan_..., which is a junction to the Xbox library
+                // folder (...\XboxGames\...\Content). Listed as found, both appear, the junction first, and
+                // installing to that one stops at "Installation through a junction ... is not supported": the
+                // entry a Game Pass player is offered by default would not work.
+                // Resolved, both are the same folder and are listed once. If it cannot be resolved the
+                // path stays as it was found.
+                std::error_code resolveError;
+                const auto real = fs::canonical(base, resolveError);
+                const auto root = resolveError || real.empty() ? base.lexically_normal() : real;
+                result = {root, store || IsFile(base / L"MicrosoftGame.config")};
                 return true;
             }
         }
@@ -299,6 +309,14 @@ InstallResult InstallPayload(const fs::path& payload, const GameInstall& game, b
             } else if (!DeleteFileW((target / it->relative).c_str())) restored = false;
         }
         result.message = Wide(error.what());
+        // The launcher does not ask for administrator rights, so a folder Windows protects refuses the first
+        // write. Say what gets past it, and that the game should not be started from that elevated launcher.
+        if (const auto* refused = dynamic_cast<const fs::filesystem_error*>(&error);
+            refused && (refused->code() == std::errc::permission_denied ||
+                        refused->code().value() == ERROR_ACCESS_DENIED))
+            result.message += L"\nWindows refused access to the game folder. Close the launcher, right-click "
+                              L"HaloMCCVRLauncher.exe, choose Run as administrator, and install again. Then close "
+                              L"it and open it normally to launch MCC.";
         if (!written.empty()) result.message += restored ? L"\nPrevious mod files were restored." : L"\nSome files could not be restored. Keep the backup and restore it before launching.";
         if (!backup.empty() && Exists(backup)) { result.backup = backup; result.message += L"\nBackup: " + backup.wstring(); }
         // A failed stage is intentionally retained for diagnosis; no unchecked

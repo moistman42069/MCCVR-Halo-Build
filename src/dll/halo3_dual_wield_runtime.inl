@@ -5,8 +5,16 @@ using Halo3DualFireFn = uint64_t(__fastcall*)(uint32_t, int16_t, void*, int32_t,
 using Halo3DualAimFn = void(__fastcall*)(uint32_t, float*, float*, uint64_t, float*, uint8_t, uint8_t);
 using Halo3DualQueryFn = void(__fastcall*)(int32_t,uint8_t,float*,int16_t,float*,void*);
 using Halo3DualCameraFn = int32_t(__fastcall*)(uint32_t,float*,float*);
+// The camera evaluator's chase path (retail 0x2144C0, called from the evaluator at 0x2121D2; not hooked): the camera
+// an unmodded machine uses for a stock third-person seat (seat_upstream_logic.h StockCamera).
+using Halo3ChaseCameraFn = void(__fastcall*)(uint32_t,float*,float*);
 struct Halo3DualRuntime
 {
+    std::atomic<Halo3ChaseCameraFn> chaseCamera{nullptr};
+    // The chase path is bound and asked whether or not this lane's hooks are in (BindHalo3ChaseCamera): it has its
+    // own generation, and its own fault latch -- one fault ends the asking for the generation.
+    std::atomic<uint32_t> chaseGeneration{0};
+    std::atomic<bool> chaseFaulted{false};
     uintptr_t base = 0;
     uint32_t generation = 0;
     uint64_t installedAtMs = 0;
@@ -55,6 +63,8 @@ bool Halo3ReadOwnedWeapons(uint32_t owner, uint32_t weapons[2],bool requireDual,
 bool Halo3ReadOwnedDualWeapons(uint32_t owner,uint32_t weapons[2])
 {return Halo3ReadOwnedWeapons(owner,weapons,true);}
 
+#include "halo3_dual_shake_reload.inl"
+
 #include "halo3_muzzle_publication.inl"
 
 // Runs at the existing admitted stereo boundary. The native firing thread
@@ -64,7 +74,7 @@ void PublishHalo3DualAimBody()
     auto& feature = g_halo3Dual;
     if (!feature.enabled.load(std::memory_order_acquire) ||
         feature.faulted.load(std::memory_order_acquire) || !g_vrAim.load() ||
-        !g_config.independent_dual_aim ||
+        !Sight_IndependentDualAim() ||
         !g_enabled.load() || !g_baseCamValid.load() ||
         feature.generation != g_halo3RuntimeGeneration.load()) return;
     __try
@@ -88,7 +98,7 @@ void PublishHalo3DualAimBody()
         if (!std::isfinite(scale) || scale <= 0) return;
         const float sh = sinf(g_headYawRef), ch = cosf(g_headYawRef);
         const float cg = cosf(g_gameYawRef), sg = sinf(g_gameYawRef);
-        const float base[3]{g_baseCamX.load(), g_baseCamY.load(), g_baseCamZ.load()};
+        const float base[3]{g_baseCamX.load(), g_baseCamY.load(), BaseCamHandsZ()};
         for (int slot = 0; slot < 2; ++slot)
         {
             const auto& hand = tracking.hands[slot == 0 ? 1 : 0];

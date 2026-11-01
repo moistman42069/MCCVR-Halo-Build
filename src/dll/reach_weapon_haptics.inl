@@ -145,6 +145,11 @@ __declspec(noinline) void __fastcall SourceHook(uint32_t weapon, int32_t barrel,
     runtime.callbacks.fetch_add(1, std::memory_order_acq_rel);
     const auto previous = firingSource;
     const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (g_config.dev_sim_bisect & 128)
+        firingSource = reach_haptics::Source{};
+    else
+#endif
     firingSource = caller == runtime.base + reach_haptic_contract::admitted_effect_call + 5
         ? CaptureSource(weapon, barrel) : reach_haptics::Source{};
     __try { if (runtime.sourceOriginal) runtime.sourceOriginal(weapon, barrel, selected); }
@@ -230,6 +235,12 @@ __declspec(noinline) void __fastcall QueueHook(int32_t user, uint32_t tag, float
     volatile bool readFault = false;
     __try
     {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (g_config.dev_sim_bisect & 128)
+        {
+        }
+        else
+#endif
         if (caller == runtime.base + reach_haptic_contract::local_queue_call + 5 &&
             user == 0 && effectSource.valid && ReadQueueBase(manager))
         { std::memcpy(before, manager, sizeof(before)); beforeValid = true; }
@@ -287,6 +298,10 @@ __declspec(noinline) uint64_t __fastcall EvaluateHook(const void* queue)
     __try
     {
         if (runtime.evaluateOriginal) result = runtime.evaluateOriginal(queue);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (g_config.dev_sim_bisect & 128)
+            __leave;
+#endif
         if (observingUpdate && Current())
         {
             const void* own = nullptr;
@@ -387,6 +402,10 @@ __declspec(noinline) void __fastcall UpdateHook(float dt)
     __try
     {
         if (runtime.updateOriginal) runtime.updateOriginal(dt);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (g_config.dev_sim_bisect & 128)
+            __leave;
+#endif
         if (localEvaluationObserved) UpdatePrivate(dt);
         else ClearPrivateVoices();
     }

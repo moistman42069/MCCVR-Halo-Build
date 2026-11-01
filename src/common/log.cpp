@@ -1,7 +1,8 @@
 #include <windows.h>
 #include <cstdio>
 #include <cstdarg>
-#include <share.h>
+#include <io.h>
+#include <fcntl.h>
 #include <string>
 #include "log.h"
 
@@ -21,10 +22,31 @@ void LogInit(const wchar_t* filePath)
     g_directory = slash == std::wstring::npos ? std::wstring() : g_directory.substr(0, slash + 1);
     std::wstring prev(filePath);
     prev += L".prev";
-    MoveFileExW(filePath, prev.c_str(), MOVEFILE_REPLACE_EXISTING);
-    // Open with shared read/write so the log can be read live while the game
-    // runs (otherwise it stays locked until the game exits).
-    g_file = _wfsopen(filePath, L"wt", _SH_DENYNO);
+    // The rename fails while another process still holds the old log. A log
+    // opened inheritable and without delete sharing is kept by the crash
+    // reporter MCC spawns (which outlives MCC): every later rename then fails
+    // silently, and .prev stays days old while each launch overwrites the
+    // log -- the evidence of a crash goes with the relaunch.
+    // Copy it then: the holder shares read.
+    if (!MoveFileExW(filePath, prev.c_str(), MOVEFILE_REPLACE_EXISTING) &&
+        GetLastError() != ERROR_FILE_NOT_FOUND)
+        CopyFileW(filePath, prev.c_str(), FALSE);
+    // Shared read/write/delete, so the log can be read live (and rotated) while
+    // the game runs, and NOT inheritable, so no child process ever holds it.
+    const HANDLE handle = CreateFileW(filePath, GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return;
+    const int fd = _open_osfhandle(reinterpret_cast<intptr_t>(handle), _O_WRONLY | _O_TEXT);
+    if (fd < 0)
+    {
+        CloseHandle(handle);
+        return;
+    }
+    g_file = _fdopen(fd, "wt");
+    if (!g_file)
+        _close(fd);
 }
 
 void Logf(const char* fmt, ...)

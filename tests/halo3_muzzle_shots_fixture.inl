@@ -117,5 +117,14 @@ static void MuzzleTests()
     ResetMuzzle();muzzleNativeFault=true;
     Check(FaultingMuzzle()&&markerCalls==1&&muzzleFires==1&&!g_halo3Muzzle.callbacks&&!g_halo3Dual.callbacks&&
         !g_halo3MuzzleRequest.lease&&!g_legacyCollisionOwnedQuery,"H3 native marker exception propagates once with balanced scopes");
+    // Shots from the muzzle: the control asks for the converged point; a seat held at its stop or a turret
+    // (SeatMuzzleShotHeld) refuses before asking, and the shot leaves as the game fires it.
+    ResetMuzzle();g_config.gun_barrel_aim=false;g_config.shots_from_muzzle=true;muzzleAimCalls=0;seatHeld=false;
+    (void)ShootMuzzle();Check(muzzleAimCalls==1&&muzzleFires==1,"H3 shots from the muzzle ask for the point (control)");
+    ResetMuzzle();g_config.gun_barrel_aim=false;g_config.shots_from_muzzle=true;muzzleAimCalls=0;seatHeld=true;
+    seatHeldCalls=0;expectMuzzle=false;(void)ShootMuzzle();
+    Check(seatHeldCalls==1&&muzzleAimCalls==0&&muzzleFires==1&&*reinterpret_cast<uint32_t*>(unitBytes+0x21C)==0x44440007,
+        "H3 seat held at its stop or a turret refuses the redirect; native fire forwarded once");
+    seatHeld=false;g_config.shots_from_muzzle=false;
     g_config.gun_barrel_aim=false;g_halo3Muzzle.enabled=false;
 }

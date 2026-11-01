@@ -32,12 +32,28 @@ bool RemoveReachMuzzle()
     }
     return true;
 }
-bool InstallReachMuzzle(uintptr_t base,size_t size,uint32_t generation)
+// THE LANE'S PROOF OF THE IMAGE, taken before the core hooks the unit-adjust (ReachMuzzlePreflight, from the camera
+// install, ahead of the "Reach vehicle shot line" hook).
+//
+// One of the fourteen patterns is the HEAD of the unit-adjust (+0x484F24). This lane runs on that function's
+// trampoline, so it installs only AFTER the core has hooked it -- and by then the head reads `E9 <jump>`. A
+// proof taken that late does not match, and the lane logs "StockFallback: missing/ambiguous binding +484F24" at
+// every Reach level: no committed first-person barrel, no "shots leave the visible muzzle", and no fire scope
+// (the fire detour is where a fire's shooter mark and fire eye begin). The pattern is
+// unique at +0x484F24 on the image as shipped. Same rule as Halo 4's (halo4_muzzle_lifecycle.inl):
+// a signature is a statement about the GAME's code, so it is read before we rewrite that code. sig::Find also
+// reads our own enabled hooks as the bytes they replaced (sigscan.h), which is the net under this order.
+struct ReachMuzzleImageProof
 {
-    auto& feature=g_reachBarrel;
-    for(auto* target:feature.targets)if(target)return false;
-    if(!generation||size<=0x4C4924||!g_origReachUnitAdjust||!g_reachUnitAdjustTarget||
-        !g_reachVehicleShotRedirectEnabled.load(std::memory_order_acquire))return false;
+    uintptr_t base=0;
+    uint32_t generation=0,failedRva=0;
+    bool proven=false,failedEdge=false;
+};
+ReachMuzzleImageProof g_reachMuzzleImageProof;
+bool ProveReachMuzzleImage(uintptr_t base,size_t size,uint32_t& failedRva,bool& failedEdge)
+{
+    failedRva=0;failedEdge=false;
+    if(size<=0x4C4924)return false;
     struct Binding {uint32_t rva;const char* pattern;};
     constexpr Binding bindings[]{
         {0x4C2710,"48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 C0 D9 FF FF B8 40 27 00 00 E8 9E 9B 3A 00 48 2B E0 0F 29 B4"},
@@ -59,7 +75,7 @@ bool InstallReachMuzzle(uintptr_t base,size_t size,uint32_t generation)
     {
         const auto match=sig::Find(base,size,binding.pattern);
         if(match!=base+binding.rva||sig::Find(match+1,base+size-match-1,binding.pattern))
-        {LOG("Reach muzzle StockFallback: missing/ambiguous binding +%X",binding.rva);return false;}
+        {failedRva=binding.rva;return false;}
     }
     struct Edge {uint32_t call,target;};
     constexpr Edge edges[]{
@@ -76,7 +92,37 @@ bool InstallReachMuzzle(uintptr_t base,size_t size,uint32_t generation)
     {
         const auto* call=reinterpret_cast<const uint8_t*>(base+edge.call);
         if(call[0]!=0xE8||base+edge.call+5+*reinterpret_cast<const int32_t*>(call+1)!=base+edge.target)
-        {LOG("Reach muzzle StockFallback: changed native edge +%X",edge.call);return false;}
+        {failedRva=edge.call;failedEdge=true;return false;}
+    }
+    return true;
+}
+// Cold, on the title's install thread, before the unit-adjust hook is enabled.
+void ReachMuzzlePreflight(uintptr_t base,size_t size,uint32_t generation)
+{
+    auto& proof=g_reachMuzzleImageProof;
+    proof=ReachMuzzleImageProof{};
+    if(!base||!generation)return;
+    proof.base=base;proof.generation=generation;
+    proof.proven=ProveReachMuzzleImage(base,size,proof.failedRva,proof.failedEdge);
+}
+bool InstallReachMuzzle(uintptr_t base,size_t size,uint32_t generation)
+{
+    auto& feature=g_reachBarrel;
+    for(auto* target:feature.targets)if(target)return false;
+    if(!generation||size<=0x4C4924||!g_origReachUnitAdjust||!g_reachUnitAdjustTarget||
+        !g_reachVehicleShotRedirectEnabled.load(std::memory_order_acquire))return false;
+    // The image as it stood before the core's hooks; a caller that took no preflight for this image proves it now
+    // (sig::Find reads through our own hooks, and says so in the log).
+    uint32_t failedRva=0;bool failedEdge=false,proven=false;
+    const auto& proof=g_reachMuzzleImageProof;
+    if(proof.base==base&&proof.generation==generation)
+    {proven=proof.proven;failedRva=proof.failedRva;failedEdge=proof.failedEdge;}
+    else proven=ProveReachMuzzleImage(base,size,failedRva,failedEdge);
+    if(!proven)
+    {
+        if(failedEdge)LOG("Reach muzzle StockFallback: changed native edge +%X",failedRva);
+        else LOG("Reach muzzle StockFallback: missing/ambiguous binding +%X",failedRva);
+        return false;
     }
     feature.base=base;feature.generation=generation;feature.installedAtMs=GetTickCount64();feature.faulted.store(false);
     struct Hook {uint32_t rva;void* detour;void** original;};
@@ -97,7 +143,7 @@ bool InstallReachMuzzle(uintptr_t base,size_t size,uint32_t generation)
         if(MH_EnableHook(target)!=MH_OK)
         {LOG("Reach muzzle StockFallback: hook enable failed");(void)RemoveReachMuzzle();return false;}
     feature.enabled.store(true,std::memory_order_release);g_reachBarrelBindingsReady.store(true,std::memory_order_release);
-    LOG("Reach muzzle Installed: optional committed FP barrel with native targeting/obstruction; option=%d",g_config.gun_barrel_aim?1:0);
+    LOG("Reach muzzle Installed: optional committed FP barrel with native targeting/obstruction; option=%d",Sight_GunBarrelAim()?1:0);
     return true;
 }
 void ReportReachMuzzle()
@@ -105,5 +151,60 @@ void ReportReachMuzzle()
     auto& feature=g_reachBarrel;if(!feature.targets[0])return;
     LOG("Reach barrel trajectory: enabled=%d fault=%d applied=%llu refused=%llu queries=%llu restoreRefused=%llu option=%d",
         feature.enabled.load()?1:0,feature.faulted.load()?1:0,feature.applied.exchange(0),feature.refused.exchange(0),
-        feature.queries.exchange(0),feature.restoreRefused.exchange(0),g_config.gun_barrel_aim?1:0);
+        feature.queries.exchange(0),feature.restoreRefused.exchange(0),Sight_GunBarrelAim()?1:0);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Dev: why the window's barrel shots were refused, and whether the lane's query context can reach the fire.
+    auto& why=g_reachBarrelWhy;
+    static constexpr const char* names[kReachWhyCount]{"lane disabled or faulted","option off","exclusive input",
+        "VR aim off","not Reach / another generation","no fire lease","barrel index","marker query for another object",
+        "marker count","no unit-adjust","camera not armed or cinematic","no query context on the fire thread",
+        "query context stale (over 100 ms, or another generation)","no target storage","weapons unreadable",
+        "no tracking snapshot","weapon slot unresolved","aim hand not valid","no muzzle publication",
+        "muzzle not finite after the obstruction check","no converged point","native targeting refused",
+        "muzzle published for another unit or weapon","muzzle published in another tracking space",
+        "muzzle published over 100 ms ago","muzzle from a later or far older frame than the tracking snapshot",
+        "muzzle published for another generation, slot, barrel or hand"};
+    char text[640];int used=0;uint32_t total=0;
+    for(int i=0;i<kReachWhyCount;++i)
+    {
+        const uint32_t n=why.why[i].exchange(0,std::memory_order_relaxed);
+        if(!n)continue;
+        total+=n;
+        if(used<int(sizeof(text))-80)
+        {
+            const int wrote=_snprintf_s(text+used,sizeof(text)-used,_TRUNCATE,"%s%s=%u",used?", ":"",names[i],n);
+            if(wrote>0)used+=wrote;
+        }
+    }
+    const uint32_t fires=why.fires.exchange(0),queries=why.queries.exchange(0),captures=why.captures.exchange(0);
+    const uint32_t views0=why.captureViews0.exchange(0),views1=why.captureViews1.exchange(0),viewsMany=why.captureViewsMany.exchange(0);
+    if(total||fires)
+        LOG("Reach barrel refusals (dev): %s; fires %u on thread %u; targeting queries %u (sampled %u: the view asked "
+            "0 times %u, once %u, more %u) on thread %u",total?text:"none",fires,why.fireThread.load(),queries,captures,
+            views0,views1,viewsMany,why.queryThread.load());
+    // And why the first-person palette published no muzzle for the lane to read.
+    auto& publish=g_reachMuzzlePublishWhy;
+    static constexpr const char* publishNames[kReachPublishCount]{"option off or bindings not ready","no slot-0 view-0 palette",
+        "pair scope not armed or another frame","render model unread","model not in the marker table","no owner",
+        "another owner than the interpolation captured","no tracked aim hand in the frame's targets","marker node count differs",
+        "marker transform refused","fault"};
+    char publishText[512];int publishUsed=0;uint32_t publishTotal=0;
+    for(int i=0;i<kReachPublishCount;++i)
+    {
+        const uint32_t n=publish.why[i].exchange(0,std::memory_order_relaxed);
+        if(!n)continue;
+        publishTotal+=n;
+        if(publishUsed<int(sizeof(publishText))-80)
+        {
+            const int wrote=_snprintf_s(publishText+publishUsed,sizeof(publishText)-publishUsed,_TRUNCATE,"%s%s=%u",
+                publishUsed?", ":"",publishNames[i],n);
+            if(wrote>0)publishUsed+=wrote;
+        }
+    }
+    const uint32_t publishCalls=publish.calls.exchange(0),publishBarrels=publish.barrels.exchange(0);
+    if(total||fires)
+        LOG("Reach muzzle publication (dev): %u first-person palettes, %u barrel(s) published; not published: %s; last "
+            "model not in the table: checksum 0x%08X with %u nodes",publishCalls,publishBarrels,
+            publishTotal?publishText:"none",publish.unknownChecksum.load(),publish.unknownNodes.load());
+#endif
 }

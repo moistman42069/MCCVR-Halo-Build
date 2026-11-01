@@ -79,9 +79,12 @@ __declspec(noinline) void __fastcall OdstMuzzleQueryDetour(int32_t inputUser,uin
     auto& feature=g_odstMuzzle;feature.callbacks.fetch_add(1,std::memory_order_acq_rel);
     const auto previous=g_odstMuzzleCapture;g_odstMuzzleCapture={};
     const bool capture=feature.enabled.load()&&!feature.faulted.load()&&
-        (g_config.gun_barrel_aim||(kEnableOdstIndependentAim&&g_config.independent_dual_aim))&&
+        (Sight_GunBarrelAim()||Sight_MuzzleShotsConverge()||(kEnableOdstIndependentAim&&Sight_IndependentDualAim()))&&
         inputUser>=0&&inputUser<4&&!(flags&1)&&direction&&control&&targeting;
     g_odstMuzzleCapture.active=capture;
+    // The game's own zoom level for the local player (Aim Frame Zoom): the ordinary query only, never ours.
+    if(inputUser==0&&!(flags&1)&&!g_legacyCollisionOwnedQuery)
+        NoteGameZoomLevel(GameTitle::Halo3ODST,zoom,feature.generation);
     __try
     {
         if(!feature.queryOriginal)__leave;
@@ -133,7 +136,7 @@ bool AcquireOdstMuzzleTarget(const weapon_muzzle::Receipt& muzzle,NativeShotTarg
 bool ApplyOdstMuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t capacity)
 {
     auto& feature=g_odstMuzzle;const auto request=g_odstMuzzleRequest;
-    if(!feature.enabled.load()||feature.faulted.load()||!g_config.gun_barrel_aim||
+    if(!feature.enabled.load()||feature.faulted.load()||!(Sight_GunBarrelAim()||Sight_MuzzleShotsConverge())||
         exclusive_input::Active()||!g_vrAim.load()||!g_enabled.load()||!VR_IsStereoEnabled()||
         TitleAdapter_GetActiveTitle()!=GameTitle::Halo3ODST||feature.generation!=g_odstRuntimeGeneration.load()||
         !request.lease||request.lease->active||request.barrel<0||request.barrel>=2||
@@ -151,11 +154,21 @@ bool ApplyOdstMuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t 
         context.unit,request.weapon,tracking.referenceEpoch,now,tracking.timeNs,uint8_t(slot),uint8_t(request.barrel),
         g_config.left_handed,muzzle))return false;
     float velocity[3]{},direction[3]{};std::memcpy(direction,muzzle.ray.direction,12);
+    float before[3]{};std::memcpy(before,muzzle.ray.position,12);
     const bool previous=g_legacyCollisionOwnedQuery;g_legacyCollisionOwnedQuery=true;
     __try {feature.aimOriginal(context.unit,muzzle.ray.position,direction,reinterpret_cast<uint64_t>(velocity),nullptr,0,0);}
     __finally {g_legacyCollisionOwnedQuery=previous;}
     for(int axis=0;axis<3;++axis)
         if(!std::isfinite(muzzle.ray.position[axis])||!std::isfinite(direction[axis]))return false;
+    // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
+    // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
+    // The second gun under independent dual aim follows its own controller (the shot that lane prepared).
+    // A seat held at its stop or a turret (unit_in_vehicle reads false there) refuses it: SeatMuzzleShotHeld.
+    if(!Sight_GunBarrelAim()&&
+        ((slot==1&&kEnableOdstIndependentAim&&Sight_IndependentDualAim())||
+         SeatMuzzleShotHeld(GameTitle::Halo3ODST)||
+         !Sight_AimMuzzleShot(GameTitle::Halo3ODST,TitleAdapter_GetGeneration(GameTitle::Halo3ODST),
+            before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up)))return false;
     if(!AcquireOdstMuzzleTarget(muzzle,*request.lease))return false;
     const auto& ray=muzzle.ray;auto* bytes=static_cast<uint8_t*>(markers);
     const float side[3]{ray.up[1]*ray.direction[2]-ray.up[2]*ray.direction[1],
@@ -172,7 +185,7 @@ bool PrepareOdstIndependentShot(uint32_t weapon,NativeShotTargetLease<0x28>& lea
 {
     if constexpr(!kEnableOdstIndependentAim)return false;
     auto& feature=g_odstMuzzle;
-    if(!feature.enabled.load()||feature.faulted.load()||!g_config.independent_dual_aim||
+    if(!feature.enabled.load()||feature.faulted.load()||!Sight_IndependentDualAim()||
         exclusive_input::Active()||!g_vrAim.load()||!g_enabled.load()||!VR_IsStereoEnabled()||
         TitleAdapter_GetActiveTitle()!=GameTitle::Halo3ODST||feature.generation!=g_odstRuntimeGeneration.load())return false;
     int32_t scene=-1,shot=-1;
@@ -222,12 +235,22 @@ __declspec(noinline) void __fastcall OdstMuzzleAimDetour(uint32_t unit,float* or
     {
         if(!feature.aimOriginal)__leave;
         auto& shot=g_odstMuzzleShot;
+        // The fire's shot line (0x396B7C from 0x3AEB26) names the shooter before its assist (0x3AED8A) traces the
+        // crosshair: the local player's fire only from here (shot_lag::FireMark). Seated, the shooter is taken to be
+        // the occupant as in Halo 3 (ODST's fire also walks the controlling parent, +0x2B8 at 0x3AEA59); were it the
+        // vehicle, a seated query simply stays as the game built it (fail closed).
+        if(reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x3AEB2B)
+            t_odstFire=shot_lag::FireMark(t_odstFire,unit!=UINT32_MAX &&
+                static_cast<int32_t>(unit)==LegacyCollisionIgnoredObject(GameTitle::Halo3ODST));
         if(shot.active&&!shot.query&&shot.barrel&&shot.unit==unit&&origin&&direction&&
             reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x3AEB2B)
         {
             std::memcpy(origin,shot.position,12);std::memcpy(direction,shot.direction,12);
             feature.aimOriginal(unit,origin,direction,velocity,nullptr,0,0);
             if(std::isfinite(origin[0])&&std::isfinite(origin[1])&&std::isfinite(origin[2]))std::memcpy(shot.position,origin,12);
+            // Dev SHOT LAG, the muzzle path: the final muzzle ray.
+            Sight_NoteShotLagFromIntent(GameTitle::Halo3ODST,SightShotPath::Muzzle,origin,direction,
+                t_legacyFirePredicted,false,-1);
         }
         else
         {
@@ -240,6 +263,14 @@ __declspec(noinline) void __fastcall OdstMuzzleAimDetour(uint32_t unit,float* or
                     std::clamp(g_config.crosshair_distance_m,2.f,50.f)*Game_GetWorldScale(),candidate))
                     std::memcpy(direction,candidate,12);
             }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // Dev SHOT LAG, the native path: the local player's own shot, as the record aimed it from the fire tick's
+            // origin (a seat's shot leaves through the crosshair-assist line, measured there).
+            if(origin&&direction&&reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x3AEB2B&&
+                static_cast<int32_t>(unit)==LegacyCollisionIgnoredObject(GameTitle::Halo3ODST))
+                Sight_NoteShotLagFromIntent(GameTitle::Halo3ODST,SightShotPath::Native,origin,direction,
+                    t_legacyFirePredicted,false,-1);
+#endif
         }
     }
     __finally {feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);}
@@ -248,6 +279,8 @@ __declspec(noinline) uint64_t __fastcall OdstMuzzleFireDetour(uint32_t weapon,in
 {
     auto& feature=g_odstMuzzle;feature.callbacks.fetch_add(1,std::memory_order_acq_rel);
     const auto previousShot=g_odstMuzzleShot;const auto previousRequest=g_odstMuzzleRequest;
+    // The shooter is unknown until the shot line names it (OdstMuzzleAimDetour): shot_lag::FireMark.
+    const int8_t previousFire=t_odstFire;t_odstFire=shot_lag::kFireOther;
     NativeShotTargetLease<0x28> lease{},controllerLease{};g_odstMuzzleShot={};g_odstMuzzleRequest={weapon,barrel,&lease};uint64_t result=0;
     __try
     {
@@ -255,12 +288,19 @@ __declspec(noinline) uint64_t __fastcall OdstMuzzleFireDetour(uint32_t weapon,in
         __try {ready=PrepareOdstIndependentShot(weapon,controllerLease);}
         __except(EXCEPTION_EXECUTE_HANDLER){MarkOdstMuzzleFault();}
         if(!ready){RestoreOdstMuzzleTarget(controllerLease);g_odstMuzzleShot={};}
-        if(feature.fireOriginal)result=feature.fireOriginal(weapon,barrel,data,index,predicted);
+        if(feature.fireOriginal)
+        {
+            // The shot-lag witness labels this fire's crosshair query and aim with the fire's own flag.
+            const int previousPredicted=t_legacyFirePredicted;
+            t_legacyFirePredicted=predicted?1:0;
+            __try {result=feature.fireOriginal(weapon,barrel,data,index,predicted);}
+            __finally {t_legacyFirePredicted=previousPredicted;}
+        }
     }
     __finally
     {
         RestoreOdstMuzzleTarget(lease);RestoreOdstMuzzleTarget(controllerLease);
-        g_odstMuzzleShot=previousShot;g_odstMuzzleRequest=previousRequest;
+        g_odstMuzzleShot=previousShot;g_odstMuzzleRequest=previousRequest;t_odstFire=previousFire;
         feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);
     }
     return result;

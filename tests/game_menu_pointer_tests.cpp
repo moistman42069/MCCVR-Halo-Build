@@ -60,6 +60,8 @@ RuntimeMode TitleAdapter_GetRuntimeMode() { return mode; }
 bool VR_IsPausePresentation() { return pauseScreen; }
 bool VR_IsPausePresentationTarget() { return pauseScreen; }
 bool VR_IsCutsceneTheaterActive() { return false; }
+static bool hostPanelScreen = false;
+bool D3D_HostUiPanelIsScreen() { return hostPanelScreen; }
 
 static int checks = 0, failures = 0;
 static void Check(bool ok, const char* name) {
@@ -122,7 +124,8 @@ int main()
     Check(!p.Update(Pack(now,true,.5f,.5f,true),now,true,0,500).move,"zero client rejects");
 
     NativeMenuPointer_Init(fakeWindow);
-    Frame(true); Check(moves==0&&buttons.empty(),"disabled default never moves or clicks");
+    g_config.game_menu_pointer=false;
+    Frame(true); Check(moves==0&&buttons.empty(),"disabled never moves or clicks");
     g_config.game_menu_pointer=true;
     Frame(true,true); Check(buttons.empty(),"held trigger at activation never clicks");
     Frame(true); Check(cursor.x>=599&&cursor.x<=600&&cursor.y>=299&&cursor.y<=300,"UV maps physical client plus screen origin");
@@ -146,6 +149,10 @@ int main()
     Frame(true); Frame(true,true); mode=RuntimeMode::Gameplay;
     Watchdog(nullptr,0,0,0); Check(!mouseDown,"gameplay transition releases");
     Frame(true); Check(!NativeMenuPointer_ConsumesTrigger(),"gameplay never consumes trigger");
+    hostPanelScreen=true; Frame(true);
+    Check(NativeMenuPointer_ConsumesTrigger(),"a host's screen shown as a panel is a menu during gameplay");
+    hostPanelScreen=false; Watchdog(nullptr,0,0,0); Frame(true);
+    Check(!NativeMenuPointer_ConsumesTrigger(),"and the pointer goes with that screen");
     mode=RuntimeMode::Paused; Frame(true);
     Check(NativeMenuPointer_ConsumesTrigger(),"pause hover consumes VR trigger only");
     mode=RuntimeMode::Unsupported; Frame(true); Frame(true,true);
@@ -170,6 +177,40 @@ int main()
     Check(!queued.load(),"retry drains normally");
     Frame(true,true); g_config.game_menu_pointer=false; Watchdog(nullptr,0,0,0);
     Check(!mouseDown,"toggle off releases");
+    {
+        // The right stick as a wheel: a flick moves one notch, a hold repeats, faster when pushed further.
+        game_menu_pointer::StickWheel wheel;
+        Check(wheel.Step(0.f,1000)==0,"centred stick: no wheel");
+        Check(wheel.Step(.2f,1050)==0,"inside the deadzone: no wheel");
+        Check(wheel.Step(.5f,1100)==1,"a flick up moves one notch at once");
+        int upward=0;uint32_t t=1100;
+        for(int i=0;i<20;++i)upward+=wheel.Step(1.f,t+=50);
+        Check(upward>=9&&upward<=11,"held fully: about ten notches a second");
+        wheel.Step(0.f,t+=50);
+        Check(wheel.Step(-.5f,t+=50)==-1,"released, then a flick down moves one notch down");
+        int slow=0;
+        for(int i=0;i<20;++i)slow+=wheel.Step(-.3f,t+=50);
+        Check(slow<0&&slow>-upward,"pushed a little: slower");
+        wheel.Reset();
+        Check(wheel.Step(1.f,t+=50)==1,"after a reset it starts afresh");
+    }
+    {
+        // A click holds where it was aimed; a hand that goes on moving is a drag.
+        game_menu_pointer::ClickLock lock;
+        float u=.5f,v=.5f;lock.Apply(.1f,u,v);
+        Check(u==.5f&&v==.5f,"no pull: the point is the ray's");
+        u=.5f;v=.5f;lock.Apply(.2f,u,v);
+        u=.51f;v=.49f;lock.Apply(.7f,u,v);
+        Check(u==.5f&&v==.5f,"a pull's jolt does not move the point");
+        u=.6f;v=.5f;lock.Apply(.7f,u,v);
+        Check(u==.6f,"past the drag distance the point follows");
+        u=.5f;v=.5f;lock.Apply(.7f,u,v);
+        Check(u==.5f,"and keeps following for the rest of the pull");
+        lock.Apply(0.f,u,v);
+        u=.7f;v=.7f;lock.Apply(.2f,u,v);
+        u=.71f;lock.Apply(.2f,u,v);
+        Check(u==.7f,"the next pull locks afresh");
+    }
     std::printf("%d checks, %d failures\n",checks,failures);
     return failures ? 1 : 0;
 }

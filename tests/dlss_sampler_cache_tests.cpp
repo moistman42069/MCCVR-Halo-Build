@@ -19,6 +19,7 @@ static void STDMETHODCALLTYPE OriginalBind(ID3D11DeviceContext*,UINT,UINT count,
 {++bindCalls;bound=count&&samplers?samplers[0]:nullptr;}
 static auto g_origCreateSamplerState=&OriginalCreate;
 static auto g_origPSSetSamplers=&OriginalBind;
+#include "../src/common/hook_cost_scope.h"
 #include "../src/dll/dlss_sampler_cache.inl"
 int main()
 {

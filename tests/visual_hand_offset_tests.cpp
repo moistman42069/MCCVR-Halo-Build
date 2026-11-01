@@ -19,7 +19,6 @@ static bool NormalizedBasis(const BoneMatrix& m,float* out){std::memcpy(out,m.ro
 static bool SafeReadBytes(const void* from,void* to,size_t bytes){if(!from||!to)return false;std::memcpy(to,from,bytes);return true;}
 static bool SafeWriteBytes(void* to,const void* from,size_t bytes){return SafeReadBytes(from,to,bytes);}
 static std::atomic<float> g_worldScale{.33f};
-static constexpr float kOdstWorldUnitsPerMeter=1.f/3.048f;
 static uint32_t checksum=504041493;static int modelCount=37;
 static int LegacyAnatomicalRenderNodeCount(GameTitle,uint16_t,uint32_t* sum){*sum=checksum;return modelCount;}
 static struct{struct{bool leftHanded=false,handAlignment=false;} anatomicalTracking;}g_fpStereoSolveScope;
@@ -58,10 +57,10 @@ static void LegacyTests()
         g_fpStereoSolveScope.anatomicalTracking={mode!=0,mode==2};BoneMatrix palette[42]{},before[42]{};int32_t map[37]{};
         for(int i=0;i<37;++i)map[i]=i;palette[1].scale=palette[2].scale=palette[3].scale=palette[4].scale=.0001f;
         std::memcpy(before,palette,sizeof(palette));FpInterpolationContext context;
-        LegacyApplyVisualHandOffsets(title,123,map,context,palette);
+        g_worldScale=.45f;LegacyApplyVisualHandOffsets(title,123,map,context,palette);g_worldScale=.33f;
         const bool swapped=mode==1;
-        Check(Near(palette[swapped?6:5].translation[0],.1f*(title==GameTitle::Halo3?.33f:kOdstWorldUnitsPerMeter)),"physical left offset follows released/anatomical handedness");
-        Check(Near(palette[swapped?5:6].translation[2],-.05f*(title==GameTitle::Halo3?.33f:kOdstWorldUnitsPerMeter)),"physical right offset independent");
+        Check(Near(palette[swapped?6:5].translation[0],.1f*.45f),"physical left offset follows released/anatomical handedness at the live world scale");
+        Check(Near(palette[swapped?5:6].translation[2],-.05f*.45f),"physical right offset independent");
         Check(std::memcmp(palette[3].translation,palette[5].translation,12)==0&&
             std::memcmp(palette[4].translation,palette[6].translation,12)==0,"H3/ODST hidden elbow anchors remain attached to their own shifted hands");
         Check(std::memcmp(palette+37,before+37,5*sizeof(BoneMatrix))==0,"gun descendants outside verified body model remain byte-exact");
@@ -86,8 +85,8 @@ static void ReachTests()
     const auto savedLeft=VisualLeftHandOffset(g_config);const auto savedRight=VisualRightHandOffset(g_config);
     g_config=Config{};ReachApplyVisualHandOffsets(123,kReachSpartanFpBodyBoneMap.data(),context,palette);
     Check(std::memcmp(palette,before,sizeof(palette))==0,"Reach zero offsets preserve all body and held matrices");Settings();
-    ReachApplyVisualHandOffsets(123,kReachSpartanFpBodyBoneMap.data(),context,palette);
-    Check(Near(palette[14].translation[0],.1f*kReachWorldUnitsPerMeter)&&Near(palette[11].translation[2],-.05f*kReachWorldUnitsPerMeter),"Reach actual palette remap routes physical hands");
+    g_worldScale=.45f;ReachApplyVisualHandOffsets(123,kReachSpartanFpBodyBoneMap.data(),context,palette);g_worldScale=.33f;
+    Check(Near(palette[14].translation[0],.1f*.45f)&&Near(palette[11].translation[2],-.05f*.45f),"Reach actual palette remap routes physical hands at the live world scale");
     Check(std::memcmp(palette+47,before+47,5*sizeof(BoneMatrix))==0,"Reach held nodes excluded");
     for(int node=0;node<47;++node)
     {
@@ -150,11 +149,19 @@ static void CeTests()
 static void ConfigTests()
 {
     const auto path=std::filesystem::temp_directory_path()/(L"mccvr-hand-offset-fixture-"+std::to_wstring(GetCurrentProcessId())+L".cfg");
-    {std::ofstream f(path);f<<"left_hand_mesh_x_m = 0.04\nright_hand_mesh_z_m = -0.02\nhalo3_left_hand_mesh_x_m = 0.07\n";}
-    ConfigLoad(path.c_str());Config_ApplyTitleProfile(0);Check(Near(g_config.left_hand_mesh_x_m,.07f)&&Near(g_config.right_hand_mesh_z_m,-.02f),"per-title overrides and shared migration defaults load");
-    g_config.left_hand_mesh_y_m=.03f;g_config.right_hand_mesh_x_m=-.06f;ConfigSave();ConfigLoad(path.c_str());
+    {std::ofstream f(path);f<<"left_hand_mesh_x_m = 0.04\nright_hand_mesh_z_m = -0.02\nhalo3_left_hand_mesh_x_m = 0.07\nleft_gun_forward_m = -0.12\nhalo3_left_gun_forward_m = 0.07\nodst_left_gun_forward_m = -0.12\n";}
+    ConfigLoad(path.c_str());Config_ApplyTitleProfile(0);
+    Check(Near(g_config.left_hand_mesh_x_m,.07f)&&Near(g_config.right_hand_mesh_z_m,-.02f),"per-title overrides and shared migration defaults load");
+    Check(Near(g_config.left_gun_forward_m,.07f)&&Near(g_config.title_profiles[1].left_gun_forward_m,-.12f),
+        "per-title weapon offset overrides load independently");
+    g_config.left_hand_mesh_y_m=.03f;g_config.right_hand_mesh_x_m=-.06f;
+    g_config.left_gun_up_m=.03f;g_config.gun_up_m=-.06f;ConfigSave();ConfigLoad(path.c_str());
     Check(Near(g_config.left_hand_mesh_y_m,.03f)&&Near(g_config.right_hand_mesh_x_m,-.06f),"live hand sliders persist independently");
-    Config_ApplyTitleProfile(1);Check(Near(g_config.left_hand_mesh_x_m,.04f)&&g_config.left_hand_mesh_y_m==0,"title transition restores own hand offsets");
+    Check(Near(g_config.left_gun_up_m,.03f)&&Near(g_config.gun_up_m,-.06f),
+        "independent left/right weapon offsets persist separately");
+    Config_ApplyTitleProfile(1);
+    Check(Near(g_config.left_hand_mesh_x_m,.04f)&&g_config.left_hand_mesh_y_m==0,"title transition restores own hand offsets");
+    Check(Near(g_config.left_gun_forward_m,-.12f),"title transition uses its own weapon offset");
     Config_ApplyTitleProfile(-1);std::filesystem::remove(path);
 }
 int main(){CommonTests();LegacyTests();ReachTests();Halo4Tests();Halo2Tests();CeTests();ConfigTests();std::printf("PASS: %u visual-hand production/config checks\n",checks);}

@@ -116,6 +116,22 @@ XrQuaternionf AxisAngle(const XrVector3f& axis, float degrees)
         static_cast<float>(std::cos(radians*0.5))};
 }
 
+// The generator extracts the two legacy geometry helpers, not the full
+// shipping adapter (which needs live title/owner evidence). Model that seam
+// here so this isolated fixture can test that the authored result takes
+// precedence while authored_grab_zone_tests.cpp covers the portable geometry.
+bool g_authoredGrabHandled = false;
+bool g_authoredGrabResult = false;
+unsigned g_authoredGrabCalls = 0;
+bool AuthoredSupportGrabHit(const XrPosef&, const XrPosef&, bool& hit) noexcept
+{
+    ++g_authoredGrabCalls;
+    if (!g_authoredGrabHandled)
+        return false;
+    hit = g_authoredGrabResult;
+    return true;
+}
+
 #include "grip_pose_capture_functions.inl"
 
 void TestNoQueryShortCircuits()
@@ -229,7 +245,7 @@ void TestFiniteValues()
 bool BaseAcquisitionReference(const XrPosef& rpose, const XrPosef& lpose)
 {
     const XrVector3f rfwd=Rotate(rpose.orientation,{0,0,-1});
-    const float zoneRight=std::clamp(g_config.two_hand_zone_right_m,-0.10f,0.10f);
+    const float zoneRight=std::clamp(g_config.two_hand_zone_right_m,-0.02f,0.18f);
     const XrVector3f rright=Rotate(rpose.orientation,{1,0,0});
     const XrVector3f origin{rpose.position.x+rright.x*zoneRight,
                             rpose.position.y+rright.y*zoneRight,
@@ -243,7 +259,7 @@ bool BaseAcquisitionReference(const XrPosef& rpose, const XrPosef& lpose)
     const float along=v.x*rfwd.x+v.y*rfwd.y+v.z*rfwd.z;
     const XrVector3f perp{v.x-along*rfwd.x,v.y-along*rfwd.y,v.z-along*rfwd.z};
     const float lateral=sqrtf(perp.x*perp.x+perp.y*perp.y+perp.z*perp.z);
-    return along>0.08f&&along<0.80f&&lateral<0.09f;
+    return along>0.12f&&along<0.76f&&lateral<0.09f;
 }
 
 // F1 seam against the shipping acquisition helpers themselves. The base helper
@@ -331,7 +347,7 @@ void TestSupportGrabAcquisitionSeam()
 
     // The shipped palm depth moves the acquisition sample in both rules. A
     // neutral wrist makes the support forward and the primary acquisition axis
-    // coincide, so both helpers must agree on both sides of the 0.80 m bound.
+    // coincide, so both helpers must agree on both sides of the 0.76 m bound.
     const XrVector3f deepSupport{0.32f,1.40f,-1.00f}; // 0.75 m along at zero depth
     const XrPosef deepPose{identity,deepSupport};
     g_config.left_grip_forward_m=0.0f;
@@ -343,7 +359,7 @@ void TestSupportGrabAcquisitionSeam()
     Check(deepZeroBase&&deepZeroPersistent,
         "at 0.75 m along both rules accept the hand with no palm depth");
     Check(!deepPalmBase&&!deepPalmPersistent,
-        "the shipped palm depth pushes the same hand past the 0.80 m bound in both rules");
+        "the shipped palm depth pushes the same hand past the 0.76 m bound in both rules");
 
     // The shipped zone-right nudge still moves the base boundary (PG-off must
     // change nothing) and the persistent helper reads the same value.
@@ -365,6 +381,25 @@ void TestSupportGrabAcquisitionSeam()
     Check(!TwoHandGrabZoneHit(nanPose,lposeNeutral)&&
             !PersistentSupportGrabZoneHit(nanPose,lposeNeutral),
         "non-finite primary geometry fails closed in both acquisition helpers");
+
+    // When the authored adapter has a fresh matching endpoint, both
+    // acquisition paths must use its answer instead of legacy barrel geometry.
+    const unsigned callsBeforeAuthored = g_authoredGrabCalls;
+    g_authoredGrabHandled = true;
+    g_authoredGrabResult = true;
+    Check(TwoHandGrabZoneHit(rpose, edgePose),
+        "base acquisition accepts a positive authored endpoint result");
+    Check(PersistentSupportGrabZoneHit(rpose, lposeNeutral),
+        "persistent acquisition accepts a positive authored endpoint result");
+    g_authoredGrabResult = false;
+    Check(!TwoHandGrabZoneHit(rpose, lposeNeutral),
+        "base acquisition rejects when the authored endpoint says miss");
+    Check(!PersistentSupportGrabZoneHit(rpose, lposeNeutral),
+        "persistent acquisition rejects when the authored endpoint says miss");
+    Check(g_authoredGrabCalls == callsBeforeAuthored + 4,
+        "both acquisition paths consult the authored adapter before legacy fallback");
+    g_authoredGrabHandled = false;
+    g_authoredGrabResult = false;
 
     g_config.two_hand_zone_right_m=0.0f;
     g_config.left_grip_forward_m=0.097f;

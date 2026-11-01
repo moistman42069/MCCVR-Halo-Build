@@ -2,6 +2,8 @@
 // H3EK mappings and native ABI proof: PHYSICAL-CONTACT-MELEE-WORK.md.
 using Halo3ContactUpdateFn=uint8_t(__fastcall*)(uint32_t);
 using Halo3ContactMeleeFn=void(__fastcall*)(uint32_t,int32_t,int16_t,float);
+// Forwarded through CallNativeWithSpareSlots (native_forward.h) like ODST's twin, which uses its caller's
+// stack past its six arguments. This build's 36FE00 stops at entry+0x30, but a game update may not.
 using Halo3ContactDamageFn=void(__fastcall*)(void*,uint32_t,int16_t,int16_t,uint16_t,void*);
 struct Halo3ContactRuntime
 {
@@ -69,6 +71,26 @@ bool Halo3ContactObject(uint32_t handle,bool requireBiped=false)
 }
 
 bool Halo3ContactBiped(uint32_t handle) { return Halo3ContactObject(handle,true); }
+
+// Any live object's data (unit, vehicle, weapon...), for the sight trace's parent-chain walk; null when the
+// table no longer holds the handle.
+const uint8_t* Halo3SightObjectData(uint32_t handle)
+{
+    if(!Halo3ContactObject(handle)) return nullptr;
+    const auto* table=*reinterpret_cast<const uint8_t* const*>(Halo3ContactTls()+0x38);
+    const auto* entries=*reinterpret_cast<const uint8_t* const*>(table+0x48);
+    return *reinterpret_cast<const uint8_t* const*>(entries+(handle&0xFFFF)*0x18+0x10);
+}
+
+// A live object's type: the header byte at entry +3 that collision_test_vector's own predicate tests (halo3
+// 0x1FC512: 0 biped, 1 vehicle), for the sight trace's hit class and its boarder rule. -1: a stale handle.
+int Halo3SightObjectType(uint32_t handle)
+{
+    if(!Halo3ContactObject(handle)) return -1;
+    const auto* table=*reinterpret_cast<const uint8_t* const*>(Halo3ContactTls()+0x38);
+    const auto* entries=*reinterpret_cast<const uint8_t* const*>(table+0x48);
+    return entries[(handle&0xFFFF)*0x18+3];
+}
 
 bool Halo3ContactWorldHit(const uint8_t* bytes,contact_melee::Hit& hit)
 {
@@ -156,7 +178,7 @@ __declspec(noinline) void __fastcall Halo3ContactDamageDetour(void* event,uint32
             }
             if(g_halo3Contact.damageOriginal)
             {
-                g_halo3Contact.damageOriginal(event,target,region,node,material,result);
+                CallNativeWithSpareSlots(g_halo3Contact.damageOriginal,event,target,region,node,material,result);
                 if(own) scope.submitted=true;
             }
         }
@@ -241,7 +263,7 @@ void Halo3ContactTick(uint32_t unit)
     {
         const uint64_t now=GetTickCount64();
         int32_t scene=-1,shot=-1;
-        const bool admit=!exclusive_input::Active() && g_config.physical_melee && g_enabled.load(std::memory_order_acquire) &&
+        const bool admit=!exclusive_input::Active() && Sight_PhysicalMelee() && g_enabled.load(std::memory_order_acquire) &&
             VR_IsStereoEnabled() && g_halo3Contact.generation==g_halo3RuntimeGeneration.load() &&
             g_halo3Contact.playback && !g_halo3Contact.playback() &&
             ReadCinematicControl(scene,shot)==CinematicControlState::PlayerControlled &&
@@ -278,14 +300,28 @@ void Halo3ContactTick(uint32_t unit)
     g_halo3Contact.processing.store(false,std::memory_order_release);
 }
 
+void Halo3DualShakeUnitTick(uint32_t unit) noexcept;
+
 __declspec(noinline) uint8_t __fastcall Halo3ContactUpdateDetour(uint32_t unit)
 {
+    Halo3HookCalled(Halo3Hook::ContactUpdate);
     g_halo3Contact.callbacks.fetch_add(1,std::memory_order_acq_rel);
     uint8_t result=0;
     __try
     {
         if(g_halo3Contact.updateOriginal) result=g_halo3Contact.updateOriginal(unit);
         Halo3ContactTick(unit);
+        // The unit action update runs while idle as well as while firing.
+        Halo3DualShakeUnitTick(unit);
+        // Trace-and-reaim (legacy_sight_trace.inl): the local on-foot unit's intent ray.
+        if(LegacySight(GameTitle::Halo3).flags.load(std::memory_order_acquire) && g_halo3PlayerUnitGetter)
+        {
+            const int32_t local=g_halo3PlayerUnitGetter(0);
+            if(local!=-1 && unit==static_cast<uint32_t>(local))
+                LegacySightTraceTick(GameTitle::Halo3,unit,local,
+                    g_halo3UnitInVehicle && !g_halo3UnitInVehicle(local),g_halo3WorldCollision,
+                    Halo3SightObjectData,Halo3SightObjectType);
+        }
     }
     __finally { g_halo3Contact.callbacks.fetch_sub(1,std::memory_order_acq_rel); }
     return result;
@@ -298,6 +334,22 @@ bool Halo3ContactVerifyCall(uintptr_t base,uintptr_t caller,uintptr_t target)
         *reinterpret_cast<const int32_t*>(instruction+1)==base+target;
 }
 
+// A HOST THAT HOOKS A ROUTINE ITSELF. True when the code at `rva` begins with a jump this mod did not place
+// (sig::Find reads the mod's own hooks as the bytes they replaced, so a head that does not match is someone
+// else's) and the pattern from its seventeenth byte on reads there and nowhere else: the routine is the one
+// expected, with its first instructions replaced. Sixteen bytes cover a five-byte and a fourteen-byte jump at
+// the instruction boundaries of the head this is used on.
+bool Halo3ContactHostDetourAt(uintptr_t base,size_t size,uintptr_t rva,const char* pattern)
+{
+    constexpr size_t kHead=16;
+    if(strlen(pattern)<kHead*3+2 || rva+kHead>=size) return false;
+    const auto* code=reinterpret_cast<const uint8_t*>(base+rva);
+    if(code[0]!=0xE9 && !(code[0]==0xFF && code[1]==0x25)) return false;
+    const char* const tail=pattern+kHead*3;
+    const uintptr_t hit=sig::Find(base,size,tail);
+    return hit==base+rva+kHead && !sig::Find(hit+1,base+size-hit-1,tail);
+}
+
 bool InstallHalo3ContactMelee(uintptr_t base,size_t size,uint32_t generation)
 {
     struct Binding { uintptr_t rva; const char* pattern; };
@@ -308,12 +360,21 @@ bool InstallHalo3ContactMelee(uintptr_t base,size_t size,uint32_t generation)
         {0x35B265,"48 8B 0D ?? ?? ?? ?? 48 8D 85 B0 00 00 00 48 89 44 24 38 4C 8D 4D 30 44 89 5C 24 30 4C 8D 45 E0 44 89 5C 24 28 41 8A D4 44 89 7C 24 20 E8 ?? ?? ?? ??"},
         {0xF01A0,"48 83 EC 28 E8 ?? ?? ?? ?? 32 D2 84 C0 74 27 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 41 B8 48 00 00 00 48 8B 04 C8 4A 8B 0C 00 38 91 60 01 00 00 74 02 B2 01 8A C2 48 83 C4 28 C3"}};
     g_halo3Contact.enabled.store(false,std::memory_order_release);
+    LegacySight(GameTitle::Halo3).flags.store(0,std::memory_order_release);
     if(!g_halo3WorldCollision.original || g_halo3Contact.updateTarget || g_halo3Contact.damageTarget) return false;
+    // A HOST THAT DETOURS THE DAMAGE ROUTINE +0x36FE00 ITSELF (Project Reclaimer does): the exact head does not
+    // read there. That must not stop the whole install: the aim trace rides this lane's simulation hook, and
+    // without it every poll reads "SIGHT Halo 3 converge-off ... NoTraceFlags". The mod does not stack a damage
+    // hook on a host's: contact melee stays off in such a host, and the simulation hook and the aim trace
+    // install as they do everywhere.
+    bool hostHooksDamage=false;
     for(const auto& binding:bindings)
     {
         const uintptr_t hit=sig::Find(base,size,binding.pattern);
-        if(hit!=base+binding.rva || sig::Find(hit+1,base+size-hit-1,binding.pattern))
-        { LOG("Halo 3 contact melee unavailable: native binding +0x%llX missing/ambiguous",static_cast<unsigned long long>(binding.rva)); return false; }
+        if(hit==base+binding.rva && !sig::Find(hit+1,base+size-hit-1,binding.pattern)) continue;
+        if(binding.rva==0x36FE00 && !hit && Halo3ContactHostDetourAt(base,size,binding.rva,binding.pattern))
+        { hostHooksDamage=true; continue; }
+        LOG("Halo 3 contact melee unavailable: native binding +0x%llX missing/ambiguous",static_cast<unsigned long long>(binding.rva)); return false;
     }
     if(!Halo3ContactVerifyCall(base,0x39A5AD,0x379B30) ||
         !Halo3ContactVerifyCall(base,0x35B292,0x1FD748) ||
@@ -332,21 +393,36 @@ bool InstallHalo3ContactMelee(uintptr_t base,size_t size,uint32_t generation)
     g_halo3Contact.secondaryAtMs.store(0);
     for(int hand=0;hand<2;++hand)
     { g_halo3Contact.queue[hand].Reset(); g_halo3Contact.hands[hand].Reset(); }
+    if(!hostHooksDamage)
+    {
     void* const damageTarget=reinterpret_cast<void*>(base+0x36FE00);
     if(MH_CreateHook(damageTarget,reinterpret_cast<void*>(&Halo3ContactDamageDetour),
             reinterpret_cast<void**>(&g_halo3Contact.damageOriginal))!=MH_OK)
     { LOG("Halo 3 contact melee unavailable: damage hook creation failed"); return false; }
     g_halo3Contact.damageTarget=damageTarget;
-    if(MH_EnableHook(damageTarget)!=MH_OK)
+    if(MCCVR_EnableHook(damageTarget)!=MH_OK)
     { LOG("Halo 3 contact melee unavailable: damage hook enable failed; retained for cleanup"); return false; }
+    }
     void* const updateTarget=reinterpret_cast<void*>(base+0x379B30);
     if(MH_CreateHook(updateTarget,reinterpret_cast<void*>(&Halo3ContactUpdateDetour),
             reinterpret_cast<void**>(&g_halo3Contact.updateOriginal))!=MH_OK)
     { LOG("Halo 3 contact melee unavailable: simulation hook creation failed"); return false; }
     g_halo3Contact.updateTarget=updateTarget;
-    if(MH_EnableHook(updateTarget)!=MH_OK)
+    if(MCCVR_EnableHook(updateTarget)!=MH_OK)
     { LOG("Halo 3 contact melee unavailable: simulation hook enable failed; retained for cleanup"); return false; }
-    g_halo3Contact.enabled.store(true,std::memory_order_release);
+    Halo3HookWatchInstalled(Halo3Hook::ContactUpdate,reinterpret_cast<uintptr_t>(updateTarget));
+    // In a host that hooks the damage routine the lane stays disabled (Halo3ContactTick does nothing then);
+    // the simulation hook is in for the aim trace alone.
+    g_halo3Contact.enabled.store(!hostHooksDamage,std::memory_order_release);
+    // The aim trace runs inside this lane's simulation hook, with the flags global pinned above.
+    LegacyResolveSightFlags(GameTitle::Halo3,base,size,g_halo3WorldCollision,g_halo3Contact.flags);
+    if(hostHooksDamage)
+    {
+        LOG("Halo 3 contact melee OFF in this host: the host hooks the damage routine +0x36FE00 itself and the mod "
+            "does not stack on it (melee by gesture and by button are unchanged). The simulation hook is in for "
+            "the aim trace");
+        return true;
+    }
     (void)InstallHalo3MeleeSelection(base,size);
     LOG("Halo 3 contact melee installed: physical hand/weapon contact, native exact-target damage; headset verification pending");
     return true;
@@ -356,7 +432,7 @@ void Halo3PublishContactHand(int hand,const FpInterpolationContext& context,
     const BoneMatrix& root,const BoneMatrix* solved,const float points[][3],
     int count,int32_t unit,uint32_t generation)
 {
-    if(!Halo3ContactMeleeReady() || !g_config.physical_melee || hand<0 || hand>1 ||
+    if(!Halo3ContactMeleeReady() || !Sight_PhysicalMelee() || hand<0 || hand>1 ||
         unit==-1 || !points || !solved || count<=0 || count>64 ||
         generation!=g_halo3Contact.generation || !g_baseCamValid.load()) return;
     const uint64_t now=GetTickCount64();
@@ -388,7 +464,7 @@ void Halo3PublishContactHand(int hand,const FpInterpolationContext& context,
     frame.transform.axis[2]={-cg*ch+sg*sh,-sg*ch-cg*sh,0};
     const auto reference=frame.transform.World({g_headPosRef[0],g_headPosRef[1],g_headPosRef[2]});
     frame.transform.origin={g_baseCamX.load()-reference.x,g_baseCamY.load()-reference.y,
-                            g_baseCamZ.load()-reference.z};
+                            BaseCamHandsZ()-reference.z};
     if(poseValid && tracking.referenceEpoch)
     {
         uint64_t epoch=(14695981039346656037ull^tracking.referenceEpoch)*1099511628211ull;

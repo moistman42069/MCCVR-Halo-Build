@@ -353,6 +353,39 @@ inline bool BuildGpuPose(const Profile& p,const Pose& world,const Pose& inverseB
     output=candidate;return true;
 }
 
+// THE HEAD OF EACH BODY A SEAT DRAWS WITHOUT IT (a vehicle camera's "showHeadlessBody"): a world render model by its
+// skeleton checksum and node count, its region count, and the regions that are its head. Campaign Chief, the Elite
+// and the Arbiter are the avatar's own profiles (SelectProfile; a test keeps them equal). The multiplayer Spartan
+// (Forge and custom games) was found in a seat by hiding its eight regions one at a time: index 4 is its helmet, and
+// an armour choice is a permutation within a region, so it holds for every helmet.
+struct SeatBodyModel
+{
+    uint32_t checksum;
+    unsigned nodes, regions;
+    uint16_t head;
+};
+inline constexpr SeatBodyModel kSeatBodyModels[]{
+    {0x17121B0Du, 51, 6, uint16_t(1u << 2)},                             // campaign Chief
+    {0x10140D04u, 55, 9, uint16_t((1u << 3) | (1u << 4) | (1u << 5))},  // the Elite
+    {0x17180910u, 55, 2, uint16_t(1u << 1)},                             // the Arbiter
+    {0x1708080Eu, 51, 8, uint16_t(1u << 4)},                             // the multiplayer Spartan
+};
+// The model's entry, or null for a skeleton no entry has. `regions` is checked by the caller: a known skeleton with
+// another region count is not the model the entry was measured on.
+inline const SeatBodyModel* FindSeatBodyModel(uint32_t checksum, unsigned nodes) noexcept
+{
+    for (const SeatBodyModel& model : kSeatBodyModels)
+        if (model.checksum == checksum && model.nodes == nodes)
+            return &model;
+    return nullptr;
+}
+
+// The first-person body models (official tag exports): their palettes carry the lower body only.
+inline bool IsFpBodyPalette(uint32_t checksum,unsigned count) noexcept
+{
+    return (checksum==353376263u&&count==51)||(checksum==319362069u&&count==55)||(checksum==269747456u&&count==55);
+}
+
 inline bool MaskRegions(const Profile& p,bool hideLower,unsigned regionCount,
     std::array<int16_t,RegionCapacity>& meshes) noexcept
 {

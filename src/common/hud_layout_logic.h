@@ -99,7 +99,8 @@ inline constexpr std::array<uint8_t, kHudLayoutMaxAnchor> HudLayoutBytes(
 //    0  virtual width, virtual height
 //    8  sensor origin, sensor radius, blip radius
 //   24  global safe frame horiz., global safe frame vert.
-inline constexpr HudLayoutAdapter kHalo3HudLayoutAdapter = {
+// Headset-rejected: matching alternate records did not affect the visible HUD.
+inline constexpr HudLayoutAdapter kHalo3AlternateHudLayoutCandidate = {
     HudLayoutProfile::Halo3,
     "Halo 3",
     HudLayoutBytes({
@@ -115,13 +116,29 @@ inline constexpr HudLayoutAdapter kHalo3HudLayoutAdapter = {
     24,
     24,
     -28,
-    3,
+    2,
     3,
     false,
-    {},
-    0,
+    // Ultimate Firefight authors two live resolution classes; its stock
+    // 1280x720 record has zero safe-frame scale and remains rejected.
+    {{
+        {HudLayoutBytes({0x40,0x06,0x00,0x00,0x44,0x02,0x00,0x00,0x00,0x00,0x5C,0x42,0x00,0x00,0x02,0x44,0x00,0x00,0x68,0x42,0x00,0x00,0x80,0x40}),
+         HudLayoutBytes({0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF}),24,24},
+        {HudLayoutBytes({0xC0,0x03,0x00,0x00,0x44,0x02,0x00,0x00,0x00,0x00,0x5C,0x42,0x00,0x00,0x02,0x44,0x00,0x00,0x68,0x42,0x00,0x00,0x80,0x40}),
+         HudLayoutBytes({0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF}),24,24}
+    }},
+    2,
     false,
 };
+
+// Restore the accepted stock locator while retaining the failed candidate.
+inline constexpr HudLayoutAdapter kHalo3HudLayoutAdapter = [] {
+    auto adapter=kHalo3AlternateHudLayoutCandidate;
+    adapter.expectedBlocks=3;
+    adapter.maxBlocks=3;
+    adapter.altAnchorCount=0;
+    return adapter;
+}();
 
 inline constexpr HudLayoutAdapter kOdstHudLayoutAdapter = {
     HudLayoutProfile::Halo3ODST,
@@ -387,6 +404,21 @@ inline constexpr bool HudLayoutAcceptedCountOk(
 {
     return accepted >= adapter.expectedBlocks &&
         accepted <= adapter.maxBlocks;
+}
+
+// The safe-frame slots point into the running level's tag data, which the
+// title frees while it unloads. Its camera beacon is the proof the level is
+// still live: no slot is read, verified, rescanned or written unless the title
+// copied a camera within this window. Build bd2aac6 read Halo 3's cached slot
+// 0 a second after the last camera copy, as the level was unloading, and
+// faulted (caught by SafeFrameVerifySlot's own guard).
+inline constexpr uint64_t kHudLayoutLiveCameraWindowMs = 1000;
+
+inline constexpr bool HudLayoutTitleFrameLive(
+    uint64_t lastCameraMs, uint64_t nowMs)
+{
+    return lastCameraMs != 0 && nowMs >= lastCameraMs &&
+        nowMs - lastCameraMs <= kHudLayoutLiveCameraWindowMs;
 }
 
 inline constexpr bool HudLayoutCanReacquireFromRemembered(

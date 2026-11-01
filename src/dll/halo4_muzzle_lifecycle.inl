@@ -32,11 +32,27 @@ bool RemoveHalo4Muzzle()
     }
     return true;
 }
-bool InstallHalo4Muzzle(uintptr_t base,size_t size,uint32_t generation)
+// THE LANE'S PROOF OF THE IMAGE, taken before any of this mod's Halo 4 hooks is enabled (Halo4MuzzlePreflight, from
+// the camera install, ahead of InstallHalo4Vrik).
+//
+// The proof is a set of byte patterns at fixed places, and one of them is the HEAD of the first-person packet
+// producer (+0x3B1B4C). The avatar lane hooks that producer (InstallHalo4Vrik: "exact local first-person packet
+// producer hooked"), so once it has run the head reads E9 <jump> instead of the game's own bytes and the pattern
+// does not match. A proof taken after that hook logs "StockFallback: missing/ambiguous binding +3B1B4C" at every
+// Halo 4 level and costs Halo 4 its shots from the muzzle, its fire re-aim, its seat sight and its seated
+// convergence (every shot then reads "not ours", "FIRES 0").
+// A signature is a statement about the GAME's code: it has to be read before we rewrite that code.
+struct Halo4MuzzleImageProof
 {
-    auto& feature=g_halo4Barrel;
-    for(auto* target:feature.targets)if(target)return false;
-    if(!generation||size<=0x619607||!g_halo4VehicleInput.ready.load(std::memory_order_acquire))return false;
+    uintptr_t base=0;
+    uint32_t generation=0,failedRva=0;
+    bool proven=false,failedEdge=false;
+};
+Halo4MuzzleImageProof g_halo4MuzzleImageProof;
+bool ProveHalo4MuzzleImage(uintptr_t base,size_t size,uint32_t& failedRva,bool& failedEdge)
+{
+    failedRva=0;failedEdge=false;
+    if(size<=0x619607)return false;
     struct Binding {uint32_t rva;const char* pattern;};
     constexpr Binding bindings[]{
         {0x6176B8,"40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 88 DC FF FF B8 78 24 00 00 E8 39 91 44 00 48 2B E0 0F 29 B4 24 60 24"},
@@ -58,7 +74,7 @@ bool InstallHalo4Muzzle(uintptr_t base,size_t size,uint32_t generation)
     {
         const auto match=sig::Find(base,size,binding.pattern);
         if(match!=base+binding.rva||sig::Find(match+1,base+size-match-1,binding.pattern))
-        {LOG("Halo4 muzzle StockFallback: missing/ambiguous binding +%X",binding.rva);return false;}
+        {failedRva=binding.rva;return false;}
     }
     struct Edge {uint32_t call,target;};
     constexpr Edge edges[]{
@@ -77,7 +93,35 @@ bool InstallHalo4Muzzle(uintptr_t base,size_t size,uint32_t generation)
     {
         const auto* call=reinterpret_cast<const uint8_t*>(base+edge.call);
         if(call[0]!=0xE8||base+edge.call+5+*reinterpret_cast<const int32_t*>(call+1)!=base+edge.target)
-        {LOG("Halo4 muzzle StockFallback: changed native edge +%X",edge.call);return false;}
+        {failedRva=edge.call;failedEdge=true;return false;}
+    }
+    return true;
+}
+// Cold, on the title's install thread, before the first Halo 4 hook of the optional lanes is enabled.
+void Halo4MuzzlePreflight(uintptr_t base,size_t size,uint32_t generation)
+{
+    auto& proof=g_halo4MuzzleImageProof;
+    proof=Halo4MuzzleImageProof{};
+    if(!base||!generation)return;
+    proof.base=base;proof.generation=generation;
+    proof.proven=ProveHalo4MuzzleImage(base,size,proof.failedRva,proof.failedEdge);
+}
+bool InstallHalo4Muzzle(uintptr_t base,size_t size,uint32_t generation)
+{
+    auto& feature=g_halo4Barrel;
+    for(auto* target:feature.targets)if(target)return false;
+    if(!generation||size<=0x619607||!g_halo4VehicleInput.ready.load(std::memory_order_acquire))return false;
+    // The image as it stood before our own hooks; a caller that took no preflight for this image proves it now.
+    uint32_t failedRva=0;bool failedEdge=false,proven=false;
+    const auto& proof=g_halo4MuzzleImageProof;
+    if(proof.base==base&&proof.generation==generation)
+    {proven=proof.proven;failedRva=proof.failedRva;failedEdge=proof.failedEdge;}
+    else proven=ProveHalo4MuzzleImage(base,size,failedRva,failedEdge);
+    if(!proven)
+    {
+        if(failedEdge)LOG("Halo4 muzzle StockFallback: changed native edge +%X",failedRva);
+        else LOG("Halo4 muzzle StockFallback: missing/ambiguous binding +%X",failedRva);
+        return false;
     }
     feature.base=base;feature.generation=generation;feature.installedAtMs=GetTickCount64();feature.faulted.store(false);
     struct Hook {uint32_t rva;void* detour;void** original;};
@@ -99,7 +143,7 @@ bool InstallHalo4Muzzle(uintptr_t base,size_t size,uint32_t generation)
         if(MH_EnableHook(target)!=MH_OK)
         {LOG("Halo4 muzzle StockFallback: hook enable failed");(void)RemoveHalo4Muzzle();return false;}
     feature.enabled.store(true,std::memory_order_release);g_halo4BarrelBindingsReady.store(true,std::memory_order_release);
-    LOG("Halo4 muzzle Installed: optional committed FP barrel with native targeting/obstruction; option=%d",g_config.gun_barrel_aim?1:0);
+    LOG("Halo4 muzzle Installed: optional committed FP barrel with native targeting/obstruction; option=%d",Sight_GunBarrelAim()?1:0);
     return true;
 }
 void ReportHalo4Muzzle()
@@ -107,5 +151,5 @@ void ReportHalo4Muzzle()
     auto& feature=g_halo4Barrel;if(!feature.targets[0])return;
     LOG("Halo4 barrel trajectory: enabled=%d fault=%d applied=%llu refused=%llu queries=%llu restoreRefused=%llu option=%d",
         feature.enabled.load()?1:0,feature.faulted.load()?1:0,feature.applied.exchange(0),feature.refused.exchange(0),
-        feature.queries.exchange(0),feature.restoreRefused.exchange(0),g_config.gun_barrel_aim?1:0);
+        feature.queries.exchange(0),feature.restoreRefused.exchange(0),Sight_GunBarrelAim()?1:0);
 }

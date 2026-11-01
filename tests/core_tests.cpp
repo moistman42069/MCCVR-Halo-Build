@@ -1,5 +1,9 @@
+#include "../src/common/weapon_alignment.h"
 #include "../src/common/reach_wind_replay.h"
 int RunRoomscaleInputTests();
+int RunRoomscaleRecenterTests();
+int RunRoomscaleAdmissionTests();
+int RunDirectorCameraTests();
 #include "../src/common/roomscale_logic.h"
 #include "../src/common/controller_finger_input.h"
 #include "../src/common/vr_interaction_refinement_logic.h"
@@ -9,10 +13,12 @@ int RunRoomscaleInputTests();
 #include "../src/common/legacy_runtime_weapon_bounds.h"
 #include "../src/common/halo2_snap_turn_logic.h"
 #include "../src/common/halo2_vehicle_view.h"
+#include "../src/common/halo2_foot_view.h"
 #include "../src/common/halo2_datum_logic.h"
 #include "../src/common/halo3_melee_selection_logic.h"
 #include "../src/common/weapon_order_diagnostic_logic.h"
 #include "../src/common/contact_melee_motion.h"
+#include "../src/common/session_read_logic.h"
 #include "../src/dll/contact_melee_queue.h"
 #include <array>
 #include <cstdlib>
@@ -59,8 +65,10 @@ int RunRoomscaleInputTests();
 #include "reach_hand_shot_logic.h"
 #include "halo4_adapter.h"
 #include "halo4_cui_reticle_logic.h"
+#include "halo4_reticle_alpha_logic.h"
 #include "halo4_helmet_shader_logic.h"
 #include "halo4_screen_effect_shader_logic.h"
+#include "halo4_scene_copy_logic.h"
 #include "halo4_hud_logic.h"
 #include "halo4_restoration_logic.h"
 #include "halo4_parity_trace_logic.h"
@@ -83,6 +91,8 @@ int RunRoomscaleInputTests();
 #include "vr.h"
 
 #include <authored_reticle_logic.h>
+#include <seat_camera_ride_logic.h>
+#include <seat_head_trace_logic.h>
 
 namespace
 {
@@ -208,6 +218,28 @@ namespace
 int main()
 {
     {
+        using namespace halo4_reticle_alpha;
+        const uint8_t all = 15, rgb = 7;
+        const Blend additive{true, 2, kBlendOpAdd, all};      // (one, one): it adds
+        const Blend showThrough{true, 5, kBlendOpAdd, all};   // (one, source alpha): alpha is what shows through
+        const Blend over{true, kBlendInvSrcAlpha, kBlendOpAdd, all};
+        const Blend opaque{false, 1, kBlendOpAdd, all};       // blending off
+        const Blend subtract{true, kBlendInvSrcAlpha, 3, all};
+        Check(WritesCoverage(over) && !WritesCoverage(additive) && !WritesCoverage(showThrough) &&
+                  !WritesCoverage(opaque) && !WritesCoverage(subtract),
+              "H4 reticle alpha: only an enabled add with (one minus source alpha) on the scene writes coverage");
+        Check(!DropsAlphaWrite(over), "H4 reticle alpha: a draw that writes coverage keeps its alpha");
+        Check(DropsAlphaWrite(additive) && DropsAlphaWrite(showThrough),
+              "H4 reticle alpha: the game's two HUD blends are drawn without their alpha write");
+        Check(DropsAlphaWrite(opaque) && DropsAlphaWrite(subtract),
+              "H4 reticle alpha: any other alpha that is not coverage is not written either");
+        const Blend additiveRgb{true, 2, kBlendOpAdd, rgb};
+        Check(!DropsAlphaWrite(additiveRgb), "H4 reticle alpha: a draw that writes no alpha is left as it is");
+        Check(WriteMaskWithoutAlpha(all) == rgb && WriteMaskWithoutAlpha(rgb) == rgb &&
+                  WriteMaskWithoutAlpha(kWriteAlpha) == 0,
+              "H4 reticle alpha: the twin's mask is the game's without the alpha bit");
+    }
+    {
         const float identity[]{0.f,0.f,0.f,1.f},zero[3]{};
         auto basis=[](float yaw) {Halo2CameraBasis b{};b.forward[0]=std::cos(yaw);
             b.forward[1]=std::sin(yaw);b.up[2]=1;return b;};
@@ -264,14 +296,162 @@ int main()
         Check(state.Build(key,basis(.6f),basis(0),false,2000,reference)&&
             std::fabs(std::atan2(reference.forward[1],reference.forward[0])-.6f)<1e-5f,
             "H2 stale observer gap reseeds the vehicle reference");
+        {
+            const float seed=-1.2f;
+            auto seated=key;seated.seat=3;
+            Check(state.Build(seated,basis(2.5f),basis(0),false,2004,reference,&seed)&&
+                std::fabs(std::atan2(reference.forward[1],reference.forward[0])+1.2f)<1e-5f,
+                "H2 a seat taken from the on-foot heading starts there, not at the stock (hand) heading");
+            const float later=0.9f;
+            Check(state.Build(seated,basis(2.5f),basis(0),false,2005,reference,&later)&&
+                std::fabs(std::atan2(reference.forward[1],reference.forward[0])+1.2f)<1e-5f,
+                "H2 a seed only starts an occupation; it does not move one");
+        }
+        {
+            // A pause inside the occupation keeps the seat's heading; the stock heading (under the seat drive,
+            // the hand's) does not reseed it. A different occupation, or a suspension used up, does reseed.
+            Halo2VehicleViewState paused;Halo2CameraBasis out{};
+            Check(paused.Build(key,basis(.2f),basis(0),false,3000,out),"H2 pause: seated");
+            paused.Suspend();
+            Check(!paused.active&&paused.resumeValid,"H2 pause: suspended with the heading kept");
+            Check(paused.Build(key,basis(2.2f),basis(0),false,9000,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-.2f)<1e-5f&&!paused.resumeValid,
+                "H2 pause: the same occupation resumes its own heading, not the stock (hand) heading");
+            paused.Suspend();
+            auto otherSeat=key;++otherSeat.seat;
+            Check(paused.Build(otherSeat,basis(1.1f),basis(0),false,9500,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-1.1f)<1e-5f,
+                "H2 pause: another occupation starts fresh");
+            Check(paused.Build(key,basis(2.6f),basis(0),false,9510,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-2.6f)<1e-5f,
+                "H2 pause: a resume is used once");
+            // With the view following the hull, the resumed heading is the one SHOWN (hull turn included).
+            Halo2VehicleViewState follow;
+            Check(follow.Build(key,basis(.2f),basis(0),true,20000,out)&&
+                follow.Build(key,basis(.2f),basis(.5f),true,20010,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-.7f)<1e-5f,"H2 pause: following the hull");
+            follow.Suspend();
+            Check(follow.Build(key,basis(2.0f),basis(.5f),true,29000,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-.7f)<1e-5f,
+                "H2 pause: a followed heading resumes where it was shown");
+            // The vehicle turned while the view was suspended (a menu over a running game): still followed.
+            follow.Suspend();
+            Check(follow.Build(key,basis(2.0f),basis(1.0f),true,39000,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-1.2f)<1e-5f,
+                "H2 pause: a hull turn made while suspended is still followed");
+            // A recenter folds the head's turn into the kept heading: the view the player looked along resumes.
+            Halo2VehicleViewState fold;
+            Check(fold.Build(key,basis(.4f),basis(0),false,40000,out),"H2 recenter: seated");
+            fold.Suspend();
+            fold.FoldResume(.3f);
+            Check(fold.Build(key,basis(2.0f),basis(0),false,49000,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-.7f)<1e-5f,
+                "H2 recenter: the head's turn from the old reference is kept");
+            // The player's own recenter re-aligns the seat to the vehicle's nose.
+            Halo2VehicleViewState nose;
+            Check(nose.Build(key,basis(.4f),basis(1.1f),false,50000,out),"H2 manual recenter: seated");
+            nose.Suspend();
+            nose.ReseedResume(nose.lastHullYaw,nose.lastHullYaw);
+            Check(nose.Build(key,basis(2.0f),basis(1.1f),false,59000,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-1.1f)<1e-5f,
+                "H2 manual recenter: the seat looks along the vehicle's nose");
+        }
         const auto saved=reference;auto bad=basis(0);bad.forward[0]=NAN;
         Check(!state.Build(key,bad,basis(0),false,2010,reference)&&!state.active&&
             std::memcmp(&saved,&reference,sizeof(saved))==0,"H2 invalid camera leaves output unchanged");
         Halo2ObserverPosePublication publication{};publication.stock=basis(.5f);
         publication.vehicleReference=basis(1.f);
         Check(&Halo2ControllerReference(publication)==&publication.stock,"H2 on-foot reference unchanged");
+        publication.footReference=basis(1.5f);
+        publication.footReferenceValid=true;
+        Check(&Halo2ControllerReference(publication)==&publication.footReference,
+              "H2 on foot under direct drive: the controller takes the mod's own heading");
         publication.vehicleReferenceValid=true;
         Check(&Halo2ControllerReference(publication)==&publication.vehicleReference,"H2 seated publication supplies shared reference");
+    }
+    {
+        // Halo 2 on foot under direct drive: the view's heading is the mod's own. It takes the heading the
+        // view had, then ignores the stock camera (which now follows the hand) and turns only with the stick.
+        auto basis=[](float yaw) {Halo2CameraBasis b{};b.forward[0]=std::cos(yaw);
+            b.forward[1]=std::sin(yaw);b.up[2]=1;return b;};
+        auto yawOf=[](const Halo2CameraBasis& b) {return std::atan2(b.forward[1],b.forward[0]);};
+        Halo2FootViewState foot;
+        Halo2CameraBasis out{};
+        Check(!foot.Basis(basis(.4f),out),"H2 foot heading: nothing until engaged");
+        Check(foot.Engage(3,.4f)&&foot.Basis(basis(.4f),out)&&std::fabs(yawOf(out)-.4f)<1e-6f,
+            "H2 foot heading: engaging keeps the view where it was");
+        // The hand turns the body (and so the stock camera) 2 rad away; the view base does not follow, and
+        // it keeps the stock camera's position and is level.
+        auto handTurned=basis(2.4f);handTurned.position[0]=5.f;handTurned.position[2]=1.f;
+        Check(foot.Basis(handTurned,out)&&std::fabs(yawOf(out)-.4f)<1e-6f&&out.position[0]==5.f&&
+                  out.position[2]==1.f&&out.forward[2]==0.f&&out.up[2]==1.f,
+              "H2 foot heading: the stock camera following the hand does not turn the view");
+        Check(foot.Engage(3,2.4f)&&std::fabs(foot.yaw-.4f)<1e-6f,
+              "H2 foot heading: re-engaging the same generation keeps the owned heading");
+        // Smooth: 90 deg/s for half a second turns right 45 deg; inside the dead zone nothing moves.
+        for(int i=0;i<50;++i) foot.Turn(true,1.f,false,30.f,90.f,0.01f);
+        Check(std::fabs(foot.yaw-(.4f-0.785398f))<1e-4f,"H2 foot heading: smooth turn right lowers the heading");
+        const float held=foot.yaw;
+        foot.Turn(true,.1f,false,30.f,90.f,0.01f);
+        foot.Turn(true,-1.f,false,30.f,90.f,0.5f);   // a 0.5 s hitch is capped at 0.1 s
+        Check(std::fabs(foot.yaw-(held+0.15708f))<1e-4f,"H2 foot heading: dead zone and the dt cap hold");
+        // Snap: one step per push, re-armed under 0.3; a push carried into snap mode does not snap.
+        Halo2FootViewState snap;snap.Engage(4,0.f);
+        Check(!snap.Turn(true,.9f,true,30.f,90.f,.01f),"H2 foot heading: a push held when the heading is taken does not snap");
+        snap.Turn(true,0.f,true,30.f,90.f,.01f);
+        Check(snap.Turn(true,.9f,true,30.f,90.f,.01f)&&std::fabs(snap.yaw+0.523599f)<1e-5f,
+              "H2 foot heading: a snap right turns 30 deg right");
+        Check(!snap.Turn(true,.9f,true,30.f,90.f,.01f)&&!snap.Turn(true,.5f,true,30.f,90.f,.01f),
+              "H2 foot heading: a held push snaps once");
+        snap.Turn(true,.2f,true,30.f,90.f,.01f);
+        Check(snap.Turn(true,-.7f,true,30.f,90.f,.01f)&&std::fabs(snap.yaw)<1e-5f,"H2 foot heading: snap left re-armed");
+        snap.Turn(true,0.f,true,30.f,90.f,.01f);
+        snap.Turn(true,.9f,false,30.f,90.f,0.f);   // held through a switch to snap
+        Check(!snap.Turn(true,.9f,true,30.f,90.f,.01f),"H2 foot heading: a push held across a switch to snap does not snap");
+        snap.Turn(true,0.f,true,30.f,90.f,.01f);
+        Check(!snap.Turn(false,.9f,true,30.f,90.f,.01f)&&!snap.Turn(true,.9f,true,30.f,90.f,.01f),
+              "H2 foot heading: an invalid pad sample latches the stick");
+        // A new generation (level load) re-seeds; release stops it; the yaw seam wraps.
+        Check(foot.Engage(5,1.f)&&std::fabs(foot.yaw-1.f)<1e-6f,"H2 foot heading: a new generation re-seeds");
+        foot.Release();
+        Check(!foot.Basis(basis(0.f),out)&&!foot.Turn(true,1.f,false,30.f,90.f,.01f),"H2 foot heading: released");
+        Halo2FootViewState seam;seam.Engage(6,-3.1f);
+        for(int i=0;i<20;++i) seam.Turn(true,1.f,false,30.f,90.f,.01f);
+        Check(std::fabs(seam.yaw-2.869026f)<1e-4f,"H2 foot heading: turning past -pi wraps");
+        Check(!seam.Engage(0,1.f)&&!seam.Engage(7,NAN),"H2 foot heading: refuses a bad seed");
+
+        // A frame the observer did not publish: the player's own camera (near the last published one) takes
+        // the published heading and keeps its own position; a director camera, or no heading, is untouched.
+        Halo2ObserverPosePublication published{};
+        published.generation=9;published.stock=basis(2.0f);
+        published.footReference=basis(.3f);published.footReferenceValid=true;
+        auto inHand=basis(2.05f);inHand.position[1]=7.f;
+        const auto self=Halo2SelfTrackBase(true,published,9,inHand);
+        Check(std::fabs(yawOf(self)-.3f)<1e-6f&&self.position[1]==7.f,
+              "H2 self-tracked frame on foot under the drive takes the view's own heading");
+        Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,9,basis(-1.0f)))+1.f)<1e-6f,
+              "H2 self-tracked director camera keeps its own heading");
+        Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,8,inHand))-2.05f)<1e-6f&&
+                  std::fabs(yawOf(Halo2SelfTrackBase(false,published,9,inHand))-2.05f)<1e-6f,
+              "H2 self-tracked frame needs a publication of this generation");
+        // In a seat the seat's own heading (the vehicle reference) wins, drive or no drive.
+        published.vehicleReference=basis(-.7f);published.vehicleReferenceValid=true;
+        Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,9,inHand))+.7f)<1e-6f,
+              "H2 self-tracked frame in a seat takes the seat's heading, not the native look");
+        published.footReferenceValid=false;
+        Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,9,inHand))+.7f)<1e-6f,
+              "H2 self-tracked frame in a seat without the foot heading still takes the seat's");
+        published.vehicleReferenceValid=false;
+        Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,9,inHand))-2.05f)<1e-6f,
+              "H2 self-tracked frame without the drive's heading is untouched");
+        // ...but the view's lift above the engine eye (the crouch give-back, the leash) rides with the player's
+        // camera with or without the drive: the camera in hand has his crouch in it, the head offset the
+        // player's. Never a director's camera.
+        published.viewLiftZ=.1f;
+        const auto director=basis(-1.0f);
+        Check(std::fabs(Halo2SelfTrackBase(true,published,9,inHand).position[2]-(inHand.position[2]+.1f))<1e-6f &&
+              Halo2SelfTrackBase(true,published,9,director).position[2]==director.position[2],
+              "H2 self-tracked frame takes the published lift; a director camera does not");
     }
     {
         for (float offset : {0.0f,0.17f,-0.17f,1.0f,-1.0f})
@@ -1131,6 +1311,224 @@ int main()
               "sig::Find locates a match at the final offset");
     }
     {
+        // THE IMAGE sig::Find MATCHES IS THE GAME'S, NOT THE ONE WE HAVE HOOKED (sigscan.h). With a hook patch
+        // source set, every answer must equal the byte-by-byte reference run over the image AS SHIPPED, whatever
+        // the hooks overwrote: Halo 4's and Reach's muzzle lanes were refused for every player because a proof
+        // of a function head ran after another lane's hook had turned that head into a jump.
+        //
+        // `shipped` is the game's code; `live` is what is in memory, with K five- and seven-byte patches drawn
+        // from the same tiny alphabet (so a patch often CREATES a live match that the game's bytes do not have,
+        // and often destroys one they do). Checked at every start offset the callers use: the whole image, and
+        // one byte past a hit (the uniqueness re-scan), which regularly begins inside a patch.
+        uint32_t rng = 0x2468ACE1u;
+        auto NextByte = [&rng]() -> uint8_t {
+            rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+            return static_cast<uint8_t>(rng >> 24);
+        };
+        static std::vector<sig::HookPatch> fakePatches;
+        const sig::HookPatchSource source = [](uintptr_t base, size_t size, sig::HookPatch* out,
+                                               uint32_t capacity) -> uint32_t {
+            uint32_t count = 0;
+            for (const sig::HookPatch& patch : fakePatches)
+            {
+                if (patch.address >= base + size || patch.address + patch.size <= base)
+                    continue;
+                if (count < capacity)
+                    out[count] = patch;
+                ++count;
+            }
+            return count;
+        };
+        static uint32_t observedThrough = 0;
+        const sig::ProofThroughHookObserver observer = [](uintptr_t, size_t, uintptr_t) { ++observedThrough; };
+
+        bool allAgree = true, observerHonest = true;
+        uint32_t hitsThroughPatch = 0, liveOnlyRejected = 0, hits = 0, misses = 0, manyPatchRounds = 0;
+        bool correctedAgree = true;
+        uint32_t correctedCases = 0, correctedChanged = 0, ambiguousKept = 0;
+        for (int round = 0; round < 60; ++round)
+        {
+            std::vector<uint8_t> shipped(2048);
+            for (auto& b : shipped)
+                b = static_cast<uint8_t>(NextByte() & 0x03);
+            std::vector<uint8_t> live = shipped;
+            const uintptr_t liveBase = reinterpret_cast<uintptr_t>(live.data());
+            fakePatches.clear();
+            // Round 0 has none (the source is set but returns nothing); some rounds exceed the scanner's
+            // 64-patch local buffer.
+            const int patchCount = round == 0 ? 0 : (round % 7 == 0 ? 90 : 1 + NextByte() % 12);
+            manyPatchRounds += patchCount > 64 ? 1u : 0u;
+            for (int k = 0; k < patchCount; ++k)
+            {
+                sig::HookPatch patch{};
+                patch.size = (NextByte() & 1) ? 5 : 7;
+                // Non-overlapping slots of 20 bytes, like distinct function heads; the image's first bytes included.
+                const size_t slot = static_cast<size_t>(k) * 20 + (NextByte() % 13);
+                if (slot + patch.size > live.size())
+                    break;
+                patch.address = liveBase + slot;
+                for (size_t j = 0; j < patch.size; ++j)
+                {
+                    patch.original[j] = shipped[slot + j];
+                    live[slot + j] = static_cast<uint8_t>(NextByte() & 0x03);
+                }
+                fakePatches.push_back(patch);
+            }
+            sig::SetHookPatchSource(source);
+            sig::SetProofThroughHookObserver(observer);
+            for (int trial = 0; trial < 60; ++trial)
+            {
+                const size_t n = 1 + (NextByte() % 14);
+                std::vector<uint8_t> bytes(n), wild(n);
+                std::string pattern;
+                const bool fromImage = (NextByte() % 3) != 0;
+                // Bias the origin toward the patched slots: that is where the two images differ.
+                size_t origin = (static_cast<size_t>(NextByte()) * 8) % (shipped.size() - 16);
+                if ((NextByte() & 1) && !fakePatches.empty())
+                {
+                    const size_t slot = static_cast<size_t>(
+                        fakePatches[NextByte() % fakePatches.size()].address - liveBase);
+                    const size_t back = NextByte() % 6;
+                    origin = slot >= back ? slot - back : slot;
+                    if (origin > shipped.size() - 16)
+                        origin = shipped.size() - 16;
+                }
+                const std::vector<uint8_t>& from = (NextByte() % 5 == 0) ? live : shipped;
+                for (size_t j = 0; j < n; ++j)
+                {
+                    wild[j] = (NextByte() % 5 == 0) ? 1 : 0;
+                    bytes[j] = wild[j] ? 0 : (fromImage ? from[origin + j] : static_cast<uint8_t>(NextByte() & 0x03));
+                    if (!pattern.empty())
+                        pattern += ' ';
+                    static const char* kHex = "0123456789ABCDEF";
+                    if (wild[j])
+                    {
+                        pattern += "??";
+                    }
+                    else
+                    {
+                        pattern += kHex[bytes[j] >> 4];
+                        pattern += kHex[bytes[j] & 0x0F];
+                    }
+                }
+                bool anyConcrete = false;
+                for (uint8_t w : wild)
+                    anyConcrete = anyConcrete || !w;
+                if (!anyConcrete)
+                    continue; // all-wildcard is covered above
+                {
+                    // A scanner that counts live matches itself (Halo 2's region walker) hands its result to
+                    // CorrectLiveCountForHooks, which must make it the count over the image as shipped: exactly,
+                    // while the live count is below the 2 such a scanner stops at.
+                    const auto countIn = [&](const std::vector<uint8_t>& image, size_t& firstOut) -> uint32_t {
+                        uint32_t matches = 0;
+                        firstOut = SIZE_MAX;
+                        for (size_t at = 0; at + n <= image.size(); ++at)
+                        {
+                            bool match = true;
+                            for (size_t j = 0; j < n && match; ++j)
+                                match = wild[j] || image[at + j] == bytes[j];
+                            if (!match)
+                                continue;
+                            if (!matches)
+                                firstOut = at;
+                            ++matches;
+                        }
+                        return matches;
+                    };
+                    size_t liveFirst = SIZE_MAX, shippedFirst = SIZE_MAX;
+                    const uint32_t liveCount = countIn(live, liveFirst);
+                    const uint32_t shippedCount = countIn(shipped, shippedFirst);
+                    const uintptr_t liveFirstAddress = liveFirst == SIZE_MAX ? 0 : liveBase + liveFirst;
+                    uintptr_t first = liveFirstAddress;
+                    uint32_t count = liveCount > 2 ? 2 : liveCount;
+                    sig::CorrectLiveCountForHooks(liveBase, live.size(), bytes.data(), wild.data(), n, first, count);
+                    if (liveCount < 2)
+                    {
+                        ++correctedCases;
+                        const uintptr_t wanted = shippedFirst == SIZE_MAX ? 0 : liveBase + shippedFirst;
+                        if (count != shippedCount || first != wanted)
+                            correctedAgree = false;
+                        correctedChanged += (count != liveCount || first != liveFirstAddress) ? 1u : 0u;
+                    }
+                    else
+                    {
+                        ++ambiguousKept;
+                        if (count != 2 || first != liveFirstAddress)
+                            correctedAgree = false;
+                    }
+                }
+                size_t start = 0;
+                for (int pass = 0; pass < 3; ++pass)
+                {
+                    const uintptr_t expectedShipped =
+                        ReferenceFind(shipped.data() + start, shipped.size() - start, bytes, wild);
+                    const size_t expected = expectedShipped
+                        ? static_cast<size_t>(expectedShipped - reinterpret_cast<uintptr_t>(shipped.data()))
+                        : SIZE_MAX;
+                    const uintptr_t liveOnly = ReferenceFind(live.data() + start, live.size() - start, bytes, wild);
+                    const uint32_t observedBefore = observedThrough;
+                    const uintptr_t actualAddress =
+                        sig::Find(liveBase + start, live.size() - start, pattern.c_str());
+                    const size_t actual = actualAddress ? static_cast<size_t>(actualAddress - liveBase) : SIZE_MAX;
+                    if (actual != expected)
+                        allAgree = false;
+                    if (expected == SIZE_MAX)
+                        ++misses;
+                    else
+                        ++hits;
+                    if (liveOnly && (expected == SIZE_MAX || liveOnly - liveBase < expected))
+                        ++liveOnlyRejected; // the hooked bytes offered a match the game's code does not have
+                    // The observer fires exactly when the match needed the saved bytes.
+                    bool neededSaved = false;
+                    if (expected != SIZE_MAX)
+                        for (size_t j = 0; j < n; ++j)
+                            neededSaved = neededSaved || (!wild[j] && live[expected + j] != bytes[j]);
+                    hitsThroughPatch += neededSaved ? 1u : 0u;
+                    if ((observedThrough != observedBefore) != neededSaved)
+                        observerHonest = false;
+                    if (expected == SIZE_MAX)
+                        break;
+                    start = expected + 1; // the uniqueness re-scan
+                }
+            }
+        }
+        sig::SetHookPatchSource(nullptr);
+        sig::SetProofThroughHookObserver(nullptr);
+        Check(allAgree, "sig::Find with hooks present matches the reference run over the image as shipped");
+        Check(observerHonest, "the proof-through-hook observer fires exactly when a match needed the saved bytes");
+        Check(correctedAgree, "CorrectLiveCountForHooks turns a live count into the count over the image as shipped");
+        Check(correctedCases > 300 && correctedChanged > 30 && ambiguousKept > 100,
+              "the live-count corpus covered unchanged, corrected and ambiguous results");
+        Check(hits > 500 && misses > 100 && hitsThroughPatch > 50 && liveOnlyRejected > 50 && manyPatchRounds > 0,
+              "the hooked-image corpus covered hits, misses, matches read through a hook, live-only artefacts "
+              "and more than 64 hooks");
+        // And the source being gone restores the plain scan: a patched head is invisible again (the old defect).
+        std::vector<uint8_t> image{0x10, 0x48, 0x8B, 0xC4, 0x55, 0x53, 0x56, 0x57, 0x20};
+        const uintptr_t imageBase = reinterpret_cast<uintptr_t>(image.data());
+        fakePatches.clear();
+        sig::HookPatch head{};
+        head.address = imageBase + 1;
+        head.size = 5;
+        std::memcpy(head.original, image.data() + 1, 5);
+        fakePatches.push_back(head);
+        const uint8_t jump[5]{0xE9, 0x11, 0x22, 0x33, 0x44};
+        std::memcpy(image.data() + 1, jump, 5);
+        Check(sig::Find(imageBase, image.size(), "48 8B C4 55 53 56 57") == 0,
+              "without a patch source a hooked head reads as our jump (the defect)");
+        sig::SetHookPatchSource(source);
+        Check(sig::Find(imageBase, image.size(), "48 8B C4 55 53 56 57") == imageBase + 1,
+              "with it the head proves, whenever the proof runs");
+        uint8_t copy[9]{};
+        Check(sig::CopyUnhooked(imageBase, copy, sizeof(copy)) == 1 && copy[1] == 0x48 && copy[5] == 0x53 &&
+                  copy[0] == 0x10 && copy[8] == 0x20,
+              "sig::CopyUnhooked undoes the hook and nothing else");
+        Check(sig::CopyUnhooked(imageBase + 3, copy, 2) == 1 && copy[0] == 0xC4 && copy[1] == 0x55,
+              "sig::CopyUnhooked undoes a hook that only partly lies in the range");
+        sig::SetHookPatchSource(nullptr);
+        fakePatches.clear();
+    }
+    {
         // Level-load gate decision core. Each Observe() is one 50 ms worker
         // sample; `true` means the engine's player-view fingerprint changed.
         // Scenarios replay the preserved captures in
@@ -1264,6 +1662,42 @@ int main()
               "after rearm the dying ticks hold again until a real freeze");
     }
     {
+        // The crosshair's kept picture is of the art at one HUD scale: a change of scale is a new identity.
+        const uint64_t art = 0x33637B71E3AA1D40ULL;
+        Check(AuthoredReticleKeyAtScale(0, 0) == 0 && AuthoredReticleKeyAtScale(0, 7) == 0,
+              "no art stays no art at any scale");
+        Check(AuthoredReticleKeyAtScale(art, 0) == art, "before any change of scale the key is the art's own");
+        Check(AuthoredReticleKeyAtScale(art, 1) != art &&
+                  AuthoredReticleKeyAtScale(art, 1) != AuthoredReticleKeyAtScale(art, 2),
+              "each change of scale gives the same art another key");
+        Check(AuthoredReticleKeyAtScale(art, 3) == AuthoredReticleKeyAtScale(art, 3),
+              "and the same scale the same key");
+        Check(AuthoredReticleKeyAtScale(0x9E3779B97F4A7C15ULL, 1) == 1, "an art key never becomes none");
+        // What it is for: a picture taken before the layout's scale was written is retaken after it, once the
+        // new identity has settled, with no change of weapon.
+        AuthoredReticleRefreshState state{};
+        uint64_t frame = 100;
+        bool uploaded = false;
+        for (; frame < 100 + kAuthoredIdentitySettleFrames + 2 && !uploaded; ++frame)
+            uploaded = ShouldUploadAuthoredReticle(AuthoredReticleRefreshPolicy::IdentityAndColorState, true, true,
+                                                   AuthoredReticleKeyAtScale(art, 0), 0, 0, frame, 1, state);
+        Check(uploaded, "the first picture is taken once its art has settled");
+        MarkAuthoredReticleUploaded(state, AuthoredReticleKeyAtScale(art, 0), 0, 0, frame);
+        bool again = false;
+        for (uint64_t f = frame + 10; f < frame + 200; ++f)
+            again = again || ShouldUploadAuthoredReticle(AuthoredReticleRefreshPolicy::IdentityAndColorState, true,
+                                                         true, AuthoredReticleKeyAtScale(art, 0), 0, 0, f, 1, state);
+        Check(!again, "the same art at the same scale is kept");
+        const uint64_t written = frame + 200;
+        uint64_t retakenAt = 0;
+        for (uint64_t f = written; f < written + 100 && !retakenAt; ++f)
+            if (ShouldUploadAuthoredReticle(AuthoredReticleRefreshPolicy::IdentityAndColorState, true, true,
+                                            AuthoredReticleKeyAtScale(art, 1), 0, 0, f, 1, state))
+                retakenAt = f;
+        Check(retakenAt >= written + kAuthoredIdentitySettleFrames && retakenAt < written + 100,
+              "after the scale changes the picture is retaken, some frames after the change");
+    }
+    {
         const float neutral[4]{1.0f, 0.3f, 0.6f, 0.9f};
         const float neutralFaded[4]{0.5f, 0.15f, 0.3f, 0.45f};
         const float friendly[4]{1.0f, 0.8f, 0.2f, 0.4f};
@@ -1283,6 +1717,328 @@ int main()
         const float invalid[4]{1.0f, 0.0f, INFINITY, 0.0f};
         Check(ClassifyAuthoredReticleColorOrdering(invalid) == 0,
               "authored invalid colour rejected");
+    }
+    {
+        // Reach's captured crosshair is premultiplied (drawn over transparent
+        // black); the aim quad blends as straight alpha. Converting first
+        // must add exactly the colour the flat game adds - not colour x alpha
+        // again, which is what made the faded DMR crosshair so faint in VR.
+        const float rgb[3]{0.55f, 0.80f, 1.0f};
+        const float background = 0.25f;
+        for (float opacity : {0.1f, 0.35f, 0.6f, 1.0f})
+        {
+            // Premultiplied/over encoding: alpha channel = coverage.
+            const AuthoredReticleStraightTexel straight = AuthoredReticleStraightAlpha(
+                rgb[0] * opacity, rgb[1] * opacity, rgb[2] * opacity, opacity);
+            const float flatBlue = rgb[2] * opacity + background * (1.0f - opacity);
+            Check(std::fabs(CompositeUnpremultipliedChannel(straight.b, straight.a, background) -
+                            flatBlue) < 1.0e-5f &&
+                      std::fabs(CompositeUnpremultipliedChannel(straight.g, straight.a, background) -
+                                (rgb[1] * opacity + background * (1.0f - opacity))) < 1.0e-5f,
+                  "straight alpha: the VR quad equals the flat blend");
+            Check(std::fabs(CompositePremultipliedChannel(rgb[2] * opacity, opacity, background) -
+                            flatBlue) < 1.0e-5f,
+                  "straight alpha: the premultiplied reading of the capture is the flat blend");
+            const float legacy = CompositeUnpremultipliedChannel(rgb[2] * opacity, opacity, background);
+            Check(opacity == 1.0f ? std::fabs(legacy - flatBlue) < 1.0e-5f
+                                  : legacy < flatBlue - 0.05f * opacity,
+                  "straight alpha: copying premultiplied art in applied the fade twice");
+            // Alpha channel written with the colour factors: coverage squared.
+            const AuthoredReticleStraightTexel squared = AuthoredReticleStraightAlpha(
+                rgb[0] * opacity, rgb[1] * opacity, rgb[2] * opacity, opacity * opacity);
+            Check(std::fabs(squared.a * squared.b - rgb[2] * opacity) < 1.0e-5f &&
+                      std::fabs(squared.a * squared.r - rgb[0] * opacity) < 1.0e-5f &&
+                      squared.r <= 1.0f && squared.g <= 1.0f && squared.b <= 1.0f,
+                  "straight alpha: an under-reporting alpha still adds the flat colour");
+        }
+        const AuthoredReticleStraightTexel none = AuthoredReticleStraightAlpha(0, 0, 0, 0);
+        Check(none.a == 0.0f && none.r == 0.0f, "straight alpha: transparent stays transparent");
+
+        // The development summary of a probe readback.
+        constexpr uint32_t size = 4;
+        constexpr size_t pitch = size * 4 + 8;
+        std::array<uint8_t, pitch * size> rows{};
+        uint8_t* t = rows.data() + 1 * pitch + 2 * 4;   // premultiplied, alpha 90
+        t[0] = 50; t[1] = 72; t[2] = 90; t[3] = 90;
+        t = rows.data() + 2 * pitch + 1 * 4;            // alpha under colour
+        t[0] = 10; t[1] = 20; t[2] = 60; t[3] = 30;
+        const AuthoredReticleAlphaSummary s =
+            SummarizeAuthoredReticleAlpha(rows.data(), pitch, size);
+        Check(s.inkTexels == 2 && s.alphaBelowColourTexels == 1 &&
+                  s.capturedAlphaPeak == 90 && s.capturedAlphaMean == 60 &&
+                  s.addedColourPeak == 90 && s.legacyAddedColourPeak == 32 &&
+                  s.drawnAlphaPeak == 90 && s.drawnAlphaMean == 75 &&
+                  s.drawnAddedColourPeak == 90,
+              "alpha summary: captured vs drawn alpha and the colour each adds");
+        Check(SummarizeAuthoredReticleAlpha(nullptr, pitch, size).inkTexels == 0 &&
+                  SummarizeAuthoredReticleAlpha(rows.data(), size * 4 - 1, size).inkTexels == 0,
+              "alpha summary: no data or a short pitch is refused");
+    }
+    {
+        // Where the art sits in its texture: a square ring of ink centred on
+        // (32, 18) of a 64x64 readback, i.e. well above the texture centre, as
+        // Halo 4's capture left the magnum's art. Rows carry padding, as a
+        // mapped staging texture's do.
+        constexpr uint32_t size = 64;
+        constexpr size_t pitch = size * 4 + 32;
+        std::array<uint8_t, pitch * size> colour{};
+        std::array<uint8_t, pitch * size> alpha{};
+        for (uint32_t y = 14; y < 22; ++y)
+            for (uint32_t x = 28; x < 36; ++x)
+            {
+                if (y != 14 && y != 21 && x != 28 && x != 35)
+                    continue;
+                uint8_t* c = colour.data() + y * pitch + x * 4;
+                c[0] = 40; c[1] = 160; c[2] = 220; c[3] = 0;
+                alpha[y * pitch + x * 4 + 3] = 255;
+            }
+        const AuthoredReticleArtCentre byColour =
+            MeasureAuthoredReticleArtCentre(colour.data(), pitch, size, true, 2);
+        Check(byColour.valid && std::fabs(byColour.u - 0.5f) < 1.0e-5f &&
+                  std::fabs(byColour.v - 18.0f / 64.0f) < 1.0e-5f,
+              "art centre: colour ink locates a ring above the texture centre");
+        const AuthoredReticleArtCentre byAlpha =
+            MeasureAuthoredReticleArtCentre(alpha.data(), pitch, size, false, 2);
+        Check(byAlpha.valid && std::fabs(byAlpha.u - byColour.u) < 1.0e-5f &&
+                  std::fabs(byAlpha.v - byColour.v) < 1.0e-5f,
+              "art centre: alpha ink finds the same centre");
+        Check(!MeasureAuthoredReticleArtCentre(alpha.data(), pitch, size, true, 2).valid,
+              "art centre: colour ink ignores alpha-only art");
+        Check(std::fabs(AuthoredReticleArtAspect(byAlpha) - 1.0f) < 1.0e-4f && byAlpha.spreadU > 0.0f,
+              "art shape: a square ring is as wide as it is tall");
+        {
+            // The same ring drawn twice as wide: 16 texels across, 8 down.
+            std::array<uint8_t, pitch * size> wide{};
+            for (uint32_t y = 14; y < 22; ++y)
+                for (uint32_t x = 24; x < 40; ++x)
+                    if (y == 14 || y == 21 || x == 24 || x == 25 || x == 38 || x == 39)
+                        wide[y * pitch + x * 4 + 3] = 255;
+            const AuthoredReticleArtCentre stretched =
+                MeasureAuthoredReticleArtCentre(wide.data(), pitch, size, false, 2);
+            const float aspect = AuthoredReticleArtAspect(stretched);
+            Check(stretched.valid && std::fabs(stretched.u - 0.5f) < 1.0e-5f && aspect > 1.8f && aspect < 2.2f,
+                  "art shape: a ring stretched to twice its width measures about twice as wide as tall");
+        }
+        Check(AuthoredReticleArtAspect(AuthoredReticleArtCentre{}) == 0.0f,
+              "art shape: no measurement has no aspect");
+        {
+            // Halo 3's magnification: the art keeps one size across rasters and safe frames for one HUD size.
+            const float mcc = Halo3ReticleCaptureScale(4.0f, true, 2100.0f, 0.2989f, 0.43f);
+            Check(std::fabs(mcc - 4.0f) < 1.0e-3f, "halo 3 magnification: the tuned raster keeps 4x");
+            const float reclaimer = Halo3ReticleCaptureScale(4.0f, true, 1440.0f, 0.2331f, 0.43f);
+            Check(std::fabs(reclaimer * 1440.0f * 0.2331f - mcc * 2100.0f * 0.2989f) < 1.0f,
+                  "halo 3 magnification: Project Reclaimer's smaller raster and safe frame show the art as large");
+            const float larger = Halo3ReticleCaptureScale(4.0f, true, 2100.0f, 0.2989f * 1.2f, 0.43f * 1.2f);
+            Check(std::fabs(larger - 4.0f) < 1.0e-3f,
+                  "halo 3 magnification: a larger HUD size still draws a larger crosshair");
+            Check(Halo3ReticleCaptureScale(4.0f, false, 1440.0f, 0.2331f, 0.43f) == 4.0f &&
+                      Halo3ReticleCaptureScale(4.0f, true, 0.0f, 0.2331f, 0.43f) == 4.0f &&
+                      Halo3ReticleCaptureScale(4.0f, true, 1440.0f, std::nanf(""), 0.43f) == 4.0f &&
+                      Halo3ReticleCaptureScale(4.0f, true, 1440.0f, 0.2331f, 0.0f) == 4.0f,
+                  "halo 3 magnification: the title's own safe frame or an unusable input keeps 4x");
+            Check(Halo3ReticleCaptureScale(4.0f, true, 100.0f, 0.15f, 1.0f) == 16.0f &&
+                      Halo3ReticleCaptureScale(4.0f, true, 100000.0f, 1.0f, 0.15f) == 1.0f,
+                  "halo 3 magnification: kept within a quarter and four times the tuned 4x");
+        }
+        {
+            // The HUD's own scale: the pair measured in a headset with the ring 1.36 times as wide as tall.
+            const float raster = 2912.0f / 2100.0f;
+            const float measured = AuthoredReticleCanvasStretch(0.5246f, 0.2989f, raster, kHalo3HudCanvasAspect);
+            Check(std::fabs(measured - 1.369f) < 0.01f, "canvas stretch: the headset's measured pair gives 1.37");
+            const float tuned = AuthoredReticleCanvasStretch(0.4095f, 0.3128f, raster, kHalo3HudCanvasAspect);
+            Check(std::fabs(tuned - 1.021f) < 0.01f, "canvas stretch: a narrower HUD setting is nearly round");
+            Check(AuthoredReticleCanvasStretch(0.0f, 0.3f, raster, kHalo3HudCanvasAspect) == 1.0f &&
+                      AuthoredReticleCanvasStretch(0.5f, 0.3f, 0.0f, kHalo3HudCanvasAspect) == 1.0f &&
+                      AuthoredReticleCanvasStretch(0.5f, 0.3f, raster, std::nanf("")) == 1.0f &&
+                      AuthoredReticleCanvasStretch(9.0f, 0.1f, raster, kHalo3HudCanvasAspect) == 1.0f,
+                  "canvas stretch: an unusable input or an absurd result leaves the capture alone");
+            const AuthoredReticleCaptureFit wide = AuthoredReticleFitForStretch(measured);
+            Check(std::fabs(wide.across * measured - 1.0f) < 1.0e-5f && wide.down == 1.0f,
+                  "capture fit: art drawn wide is narrowed across, and its height is left");
+            const AuthoredReticleCaptureFit tall = AuthoredReticleFitForStretch(0.8f);
+            Check(tall.across == 1.0f && std::fabs(tall.down - 0.8f) < 1.0e-6f,
+                  "capture fit: art drawn tall is shortened, never widened");
+            const AuthoredReticleCaptureFit none = AuthoredReticleFitForStretch(std::nanf(""));
+            Check(none.across == 1.0f && none.down == 1.0f, "capture fit: no stretch, no change");
+            // One capture: the mod's layout applied, or the title's own safe frame.
+            const AuthoredReticleCaptureFit applied =
+                AuthoredReticleFitForCapture(true, 0.5246f, 0.2989f, raster, kHalo3HudCanvasAspect);
+            Check(std::fabs(applied.across - wide.across) < 1.0e-6f && applied.down == 1.0f,
+                  "capture fit: with the mod's layout applied the pair's own stretch is undone");
+            const AuthoredReticleCaptureFit own =
+                AuthoredReticleFitForCapture(false, 0.5246f, 0.2989f, raster, kHalo3HudCanvasAspect);
+            Check(own.across == 1.0f && std::fabs(own.down - raster / kHalo3HudCanvasAspect) < 1.0e-5f,
+                  "capture fit: under the title's own safe frame only the canvas stretches the art");
+            // A HUD laid out for the raster itself (Reach): the pair alone stretches its art.
+            const float rasterCanvas = AuthoredReticleCanvasAspect(true, raster);
+            Check(rasterCanvas == raster && AuthoredReticleCanvasAspect(false, raster) == kHalo3HudCanvasAspect,
+                  "canvas aspect: the raster's for a HUD laid out for it, 16:9 otherwise");
+            const AuthoredReticleCaptureFit reachOwn =
+                AuthoredReticleFitForCapture(false, 0.5246f, 0.2989f, raster, rasterCanvas);
+            Check(reachOwn.across == 1.0f && reachOwn.down == 1.0f,
+                  "capture fit: a raster-shaped HUD under its own safe frame is not fitted");
+            const AuthoredReticleCaptureFit reachApplied =
+                AuthoredReticleFitForCapture(true, 0.5246f, 0.3581f, raster, rasterCanvas);
+            Check(std::fabs(reachApplied.across - 0.3581f / 0.5246f) < 1.0e-5f && reachApplied.down == 1.0f,
+                  "capture fit: a raster-shaped HUD is narrowed by the pair's own ratio");
+        }
+        const std::array<uint8_t, pitch * size> blank{};
+        Check(!MeasureAuthoredReticleArtCentre(blank.data(), pitch, size, true, 2).valid,
+              "art centre: a blank capture has no centre");
+        Check(!MeasureAuthoredReticleArtCentre(colour.data(), size * 4 - 4, size, true, 2).valid &&
+                  !MeasureAuthoredReticleArtCentre(nullptr, pitch, size, true, 2).valid,
+              "art centre: a short row pitch or no data is refused");
+
+        // The quad moves DOWN by the art's height above the centre, so the
+        // art's centre lands on the aim point; a centred art does not move it.
+        const AuthoredReticleQuadShift shift = AuthoredReticleArtCentreShift(byColour, 0.755f);
+        Check(std::fabs(shift.right) < 1.0e-6f &&
+                  std::fabs(shift.up - (18.0f / 64.0f - 0.5f) * 0.755f) < 1.0e-6f &&
+                  shift.up < 0.0f,
+              "art centre: art above the centre moves the quad down by its offset");
+        AuthoredReticleArtCentre right{};
+        right.u = 0.6f; right.v = 0.5f; right.valid = true;
+        Check(std::fabs(AuthoredReticleArtCentreShift(right, 1.0f).right + 0.1f) < 1.0e-6f,
+              "art centre: art right of the centre moves the quad left");
+        AuthoredReticleArtCentre wild{};
+        wild.u = 0.5f; wild.v = 0.0f; wild.valid = true;
+        Check(std::fabs(AuthoredReticleArtCentreShift(wild, 1.0f).up + 1.0f / 3.0f) < 1.0e-6f,
+              "art centre: a wild measurement is clamped to a third of the quad");
+        const AuthoredReticleQuadShift none = AuthoredReticleArtCentreShift({}, 1.0f);
+        Check(none.right == 0.0f && none.up == 0.0f,
+              "art centre: no measurement leaves the quad centred");
+
+        // Bloom shuffles the centroid by a texel; the centre in use holds until
+        // a measurement moves it past the deadband, and a gap keeps it.
+        AuthoredReticleArtCentre nudged = byColour;
+        nudged.v += 1.0f / 512.0f;
+        Check(SettleAuthoredReticleArtCentre(byColour, nudged, 2.0f / 512.0f).v == byColour.v,
+              "art centre: a texel of jitter does not move the quad");
+        AuthoredReticleArtCentre moved = byColour;
+        moved.v += 5.0f / 512.0f;
+        Check(SettleAuthoredReticleArtCentre(byColour, moved, 2.0f / 512.0f).v == moved.v,
+              "art centre: a real move is followed at once");
+        Check(SettleAuthoredReticleArtCentre(byColour, {}, 2.0f / 512.0f).v == byColour.v &&
+                  SettleAuthoredReticleArtCentre({}, byColour, 2.0f / 512.0f).valid,
+              "art centre: an unmeasured sample keeps the centre; the first one sets it");
+    }
+    {
+        // The capture window follows art drawn away from the view's centre (a Halo 2 vehicle's reticle).
+        const auto at = [](float dxTexels, float dyTexels) {
+            AuthoredReticleArtCentre c{};
+            c.u = 0.5f + dxTexels / 512.0f;
+            c.v = 0.5f + dyTexels / 512.0f;
+            c.ink = 1000;
+            c.valid = true;
+            return c;
+        };
+        const auto step = [](ReticleCaptureFollow& f, const AuthoredReticleArtCentre& c, uint64_t capture,
+                             uint64_t now) { return f.Step(c, capture, now, 512.0f, 32.0f, 6.0f, 768.0f, 3); };
+        ReticleCaptureFollow follow{};
+        Check(!step(follow, at(10.0f, -20.0f), 5, 6) && follow.x == 0.0f && follow.y == 0.0f,
+              "capture follow: art near the middle is left where the capture puts it");
+        // A reticle drawn 236 px low, its lower half cut by the texture: the first centre is of what shows.
+        Check(step(follow, at(0.0f, 200.0f), 6, 7) && follow.y == 200.0f && follow.movedSerial == 7,
+              "capture follow: art far from the middle moves the window");
+        Check(!step(follow, at(0.0f, 200.0f), 7, 8) && follow.y == 200.0f,
+              "capture follow: a capture cut with the old window does not move the new one");
+        Check(step(follow, at(0.0f, 36.0f), 8, 9) && follow.y == 236.0f,
+              "capture follow: the whole art, now in view, takes the window the rest of the way");
+        Check(!step(follow, at(2.0f, -4.0f), 10, 11) && follow.y == 236.0f,
+              "capture follow: a moved window holds inside its deadband");
+        Check(step(follow, at(0.0f, 9.0f), 11, 12) && follow.y == 245.0f,
+              "capture follow: a moved window tracks past its deadband");
+        // Back on foot: the crosshair is in the middle of the view again, so far above the window.
+        Check(step(follow, at(0.0f, -240.0f), 13, 14) && follow.x == 0.0f && follow.y == 0.0f,
+              "capture follow: art back near the middle puts the window in the middle outright");
+        // Artless captures while away send the window home; in the middle they change nothing.
+        ReticleCaptureFollow away{};
+        (void)step(away, at(0.0f, 300.0f), 1, 2);
+        Check(!step(away, {}, 3, 4) && !step(away, {}, 4, 5) && step(away, {}, 5, 6) && away.y == 0.0f,
+              "capture follow: a window that finds no art goes back to the middle");
+        Check(!step(away, {}, 7, 8) && !step(away, {}, 8, 9) && !step(away, {}, 9, 10) && away.moves == 2,
+              "capture follow: no art in the middle is nothing to follow");
+        ReticleCaptureFollow outward{};
+        Check(step(outward, at(0.0f, 240.0f), 1, 2) && step(outward, at(0.0f, 240.0f), 3, 4) &&
+                  step(outward, at(0.0f, 240.0f), 5, 6) && step(outward, at(0.0f, 240.0f), 7, 8) &&
+                  outward.y == 768.0f && !step(outward, at(0.0f, 240.0f), 9, 10),
+              "capture follow: the window stops at its limit");
+    }
+    {
+        // A seat camera's point is carried from the vehicle as simulated to the vehicle as drawn.
+        using seat_camera_ride::CarryPoint;
+        const auto frame = [](float x, float y, float z, float yawDeg) {
+            const float a = yawDeg * 3.14159265f / 180.0f;
+            return std::array<float, 13>{1.0f, std::cos(a), std::sin(a), 0.0f, -std::sin(a), std::cos(a), 0.0f,
+                                         0.0f, 0.0f, 1.0f, x, y, z};
+        };
+        const auto near3 = [](const float p[3], float x, float y, float z) {
+            return std::fabs(p[0] - x) < 1.0e-4f && std::fabs(p[1] - y) < 1.0e-4f && std::fabs(p[2] - z) < 1.0e-4f;
+        };
+        const auto simulated = frame(10.0f, 20.0f, 3.0f, 30.0f);
+        float same[3]{10.5f, 20.25f, 3.6f};
+        Check(CarryPoint(simulated.data(), simulated.data(), same) && near3(same, 10.5f, 20.25f, 3.6f),
+              "seat ride: a vehicle drawn where it is simulated leaves the point alone");
+        // Drawn 0.03 of a world unit behind along x (a tick's travel at 5.5 m/s, drawn at the tick before).
+        const auto behind = frame(9.97f, 20.0f, 3.0f, 30.0f);
+        float moved[3]{10.5f, 20.25f, 3.6f};
+        Check(CarryPoint(simulated.data(), behind.data(), moved) && near3(moved, 10.47f, 20.25f, 3.6f),
+              "seat ride: the point moves with the drawn vehicle");
+        // Drawn one degree short of the simulated heading: a point two units ahead of the node swings with it.
+        const auto ahead = frame(0.0f, 0.0f, 0.0f, 0.0f);
+        const auto turned = frame(0.0f, 0.0f, 0.0f, -1.0f);
+        float lever[3]{2.0f, 0.0f, 1.0f};
+        Check(CarryPoint(ahead.data(), turned.data(), lever) &&
+                  near3(lever, 2.0f * std::cos(3.14159265f / 180.0f), -2.0f * std::sin(3.14159265f / 180.0f), 1.0f),
+              "seat ride: the vehicle's turn between the ticks carries the point round the node");
+        auto skewed = simulated;
+        skewed[1] = 0.5f;
+        float kept[3]{10.5f, 20.25f, 3.6f};
+        Check(!CarryPoint(simulated.data(), skewed.data(), kept) && near3(kept, 10.5f, 20.25f, 3.6f),
+              "seat ride: a frame that is not a rotation is refused");
+        const auto distant = frame(13.0f, 20.0f, 3.0f, 30.0f);
+        Check(!CarryPoint(simulated.data(), distant.data(), kept) && near3(kept, 10.5f, 20.25f, 3.6f),
+              "seat ride: a node three units away is not one frame's interpolation");
+        auto scaled = simulated;
+        scaled[0] = 1.2f;
+        Check(!CarryPoint(simulated.data(), scaled.data(), kept), "seat ride: frames of two scales are refused");
+
+        // The witness: a camera left at the tick sits ahead of a hull drawn a fifth of the way to it.
+        seat_head_trace::Carry carry{};
+        seat_head_trace::Window window{};
+        for (int k = 0; k < 6; ++k)
+        {
+            seat_head_trace::Sample s{};
+            s.us = 1000000ull + uint64_t(k) * 16667ull;
+            s.tick = 100 + k;
+            s.factor = 0.2f;
+            s.atTick[0] = s.placed[0] = 0.04f * float(k);
+            s.hull[0] = 0.04f * float(k) - 1.0f;
+            s.hullDrawn[0] = s.hull[0] - 0.8f * 0.04f;
+            s.hullValid = true;
+            window.Add(s, carry);
+        }
+        Check(window.moving == 5 && window.hullMeasured == 5 && window.hullAtFactor == 5 && window.aheadTick == 5 &&
+                  std::fabs(window.aheadSumMm / window.hullMeasured - 0.8 * 0.04 * 3048.0) < 0.5,
+              "seat trace: a camera at the tick leads a hull drawn at the factor by the rest of the step");
+        seat_head_trace::Carry carried{};
+        seat_head_trace::Window riding{};
+        for (int k = 0; k < 6; ++k)
+        {
+            seat_head_trace::Sample s{};
+            s.us = 1000000ull + uint64_t(k) * 16667ull;
+            s.tick = 100 + k;
+            s.factor = 0.2f;
+            s.atTick[0] = 0.04f * float(k);
+            s.placed[0] = s.atTick[0] - 0.8f * 0.04f;
+            s.hull[0] = 0.04f * float(k) - 1.0f;
+            s.hullDrawn[0] = s.hull[0] - 0.8f * 0.04f;
+            s.hullValid = s.carried = true;
+            riding.Add(s, carried);
+        }
+        Check(riding.on == 5 && riding.carried == 6 && std::fabs(riding.aheadMaxMm) < 0.5f &&
+                  std::fabs(riding.aheadMinMm) < 0.5f,
+              "seat trace: a carried camera sits on the drawn hull");
     }
     {
         AuthoredReticleRefreshState state{};
@@ -2484,10 +3240,6 @@ int main()
             }
             Check(retook && std::fabs(moved - aim) < 0.012f,
                 "a real hand move breaks the park and the gun follows it");
-            // A 15 deg/s shade cannot be made to follow a hand flick by any
-            // gain, which is why its reticle must ride the barrel instead.
-            static_assert(kAimServoTurretReticleRidesBarrel,
-                          "a turret's reticle reports the gun, not the hand");
         }
         Check(kReachVehicleIdentityCount == kReachVehicleIdentityTrimCount &&
               kReachVehicleTrimCount == kReachVehicleIdentityCount + 1 &&
@@ -2684,6 +3436,18 @@ int main()
               ReachVehicleUsesWheel(ReachVehicleId::Forklift) &&
               !ReachVehicleUsesWheel(ReachVehicleId::Banshee),
             "Reach view-follow and steering ownership remain seat-explicit");
+        // Critic M1: a look-steered DRIVER's pitch is never latched (the game's autolevel is not a limit), as
+        // in Halo 3 / ODST; gunners, passengers, tank drivers and turrets latch both axes.
+        Check(!ReachSeatPitchLatches(ReachVehicleId::Warthog, 0) &&
+              !ReachSeatPitchLatches(ReachVehicleId::Ghost, 0) &&
+              !ReachSeatPitchLatches(ReachVehicleId::Banshee, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::Warthog, 1) &&
+              ReachSeatPitchLatches(ReachVehicleId::WarthogChaingun, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::Scorpion, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::Wraith, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::ShadePlasma, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::Unknown, 0),
+            "Reach seat latch exempts only a look-steered driver's pitch");
         // R-V19 is intentionally refresh-rate independent: every supported
         // 72-144 Hz headset consumes that frame's render-matched carrier basis.
         Check(!kReachR_V15RawHullFollowEnabled,
@@ -4583,6 +5347,13 @@ int main()
               !invalidPass.writeLastWindow &&
               invalidPass.restoreLastWindowAfterPass,
             "Reach last-window policy fails closed for invalid passes and preserves the final result");
+        const ReachStereoPassPolicy monoLeftFirst = SelectReachMonoPassPolicy(false, 1);
+        const ReachStereoPassPolicy monoRightFirst = SelectReachMonoPassPolicy(true, 0);
+        Check(monoLeftFirst.valid && monoLeftFirst.eye == 0 && monoLeftFirst.writeLastWindow &&
+              monoLeftFirst.lastWindowInput == 1 && !monoLeftFirst.restoreLastWindowAfterPass &&
+              monoRightFirst.valid && monoRightFirst.eye == 1 && monoRightFirst.writeLastWindow &&
+              monoRightFirst.lastWindowInput == 0 && !monoRightFirst.restoreLastWindowAfterPass,
+            "Reach's one mono pass is the first eye and the frame's final window");
         Check(kReachRollbackLayout.workspaceSize == 0x2B0 &&
               kReachCameraPairDataSize == 0x2A8 &&
               kReachSecondaryDerivedOffset + kReachDerivedBlockSize ==
@@ -6407,6 +7178,22 @@ int main()
             "H2 still rejects a repeated, backwards, missing, or wrapped serial "
             "after the first Complete, because those are what a stale or reused "
             "eye actually looks like");
+        Check(Halo2EyePassesComplete(false, 0, 2, 2, 3) &&
+                  Halo2EyePassesComplete(false, 1, 2, 2, 3),
+            "H2 MONO: a pair is two passes that completed both eyes, whichever "
+            "eye went first");
+        Check(Halo2EyePassesComplete(true, 0, 1, 1, 1) &&
+                  Halo2EyePassesComplete(true, 1, 1, 1, 2),
+            "H2 MONO: a mono frame is one pass that completed the eye drawn first");
+        Check(!Halo2EyePassesComplete(false, 0, 1, 1, 1) &&
+                  !Halo2EyePassesComplete(true, 0, 2, 2, 3) &&
+                  !Halo2EyePassesComplete(true, 0, 1, 1, 2) &&
+                  !Halo2EyePassesComplete(true, 1, 1, 1, 1) &&
+                  !Halo2EyePassesComplete(true, 0, 1, 0, 1) &&
+                  !Halo2EyePassesComplete(true, 0, 1, 1, 0),
+            "H2 MONO: a pair short of an eye, a mono frame with a second pass, "
+            "the wrong eye, an unreturned pass or an uncompleted eye is never "
+            "complete");
         Check(!Halo2StructuralFailureRequiresQuarantine(
                   0, false, false, false, false),
             "A clean zero-eye H2 failure retains its one stock replay");
@@ -6451,6 +7238,14 @@ int main()
             "ODST reproduces the live Halo 3 projection scales");
         Check(!ComputeOdstHalo3FovMatch(0.0f, 0.9f, matchedFov),
             "ODST rejects an invalid headset FOV pair");
+        float odstNativeX = 0.0f, odstNativeY = 0.0f;
+        Check(OdstNativeTangentsFromProjection(2.5f, -4.0f, odstNativeX, odstNativeY) &&
+                  std::fabs(odstNativeX - 0.4f) < 0.0001f &&
+                  std::fabs(odstNativeY - 0.25f) < 0.0001f,
+            "ODST reads the game's own view from a projection's scales");
+        Check(!OdstNativeTangentsFromProjection(0.0f, 1.0f, odstNativeX, odstNativeY) &&
+                  !OdstNativeTangentsFromProjection(1.0f, NAN, odstNativeX, odstNativeY),
+            "ODST refuses a projection that names no view");
 
         for (int count : {41, 42, 43, 45, 46})
         {
@@ -6628,7 +7423,7 @@ int main()
         const HudLayoutAdapter* odstHud =
             HudLayoutAdapterFor(HudLayoutProfile::Halo3ODST);
         Check(halo3Hud && halo3Hud->expectedBlocks == 3,
-            "Halo 3 HUD layout retains its three proven skin blocks");
+            "Halo 3 HUD layout restores the accepted three stock skin records");
         Check(odstHud && odstHud->expectedBlocks == 1,
             "ODST HUD layout accepts only its uniquely proven globals block");
         const HudLayoutAdapter* reachHud =
@@ -6701,7 +7496,7 @@ int main()
         Check(HudLayoutAcceptedCountOk(*halo3Hud, 3) &&
                   !HudLayoutAcceptedCountOk(*halo3Hud, 2) &&
                   !HudLayoutAcceptedCountOk(*halo3Hud, 4),
-            "Halo 3 still accepts exactly three layout blocks");
+            "Halo 3 rejects the failed two-record alternate layout candidate");
         Check(HudLayoutAcceptedCountOk(*odstHud, 1) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 0) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 2),
@@ -6743,6 +7538,19 @@ int main()
                       HudLayoutProfile::Halo3ODST, 9,
                       HudLayoutProfile::Halo3ODST, 8),
             "foreign-title and stale-generation HUD results are rejected");
+        // Build bd2aac6 verified Halo 3's cached slot ~1 s after its last
+        // camera copy, as the level unloaded, and read freed tag data.
+        Check(HudLayoutTitleFrameLive(5000, 5000) &&
+                  HudLayoutTitleFrameLive(5000, 5000 + kHudLayoutLiveCameraWindowMs),
+            "a title that copied a camera within the window may touch its HUD slots");
+        Check(!HudLayoutTitleFrameLive(5000, 5001 + kHudLayoutLiveCameraWindowMs) &&
+                  !HudLayoutTitleFrameLive(0, 5000) &&
+                  !HudLayoutTitleFrameLive(0, 0) &&
+                  !HudLayoutTitleFrameLive(5000, 4999),
+            "a stale, cleared (retired) or future camera beacon leaves cached "
+            "HUD slots unread");
+        Check(kHudLayoutLiveCameraWindowMs == 1000,
+            "the HUD liveness window is the scan path's original 1 s");
 
         Check(OdstHudLayoutEligible(true, true, true, true, false, false),
             "ODST starts shared HUD layout work on its first eligible camera heartbeat");
@@ -6992,6 +7800,11 @@ int main()
                   !VrHalo4ReticleRtvNeedsTypedFallback(true, true, false),
             "Stage 3BQ retries a typed RTV only for a failed Halo 4 authored-"
             "reticle view creation");
+        Check(VrImageFormatIsTypeless(DXGI_FORMAT_R8G8B8A8_TYPELESS) &&
+                  VrImageFormatIsTypeless(DXGI_FORMAT_B8G8R8A8_TYPELESS) &&
+                  !VrImageFormatIsTypeless(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) &&
+                  !VrImageFormatIsTypeless(DXGI_FORMAT_B8G8R8A8_UNORM),
+            "a typeless XR image (SteamVR's) is named as one; a typed one keeps its default view");
         bool writebackTruthTable = true;
         for (uint32_t bits = 0; bits < 16; ++bits)
         {
@@ -8200,6 +9013,44 @@ int main()
                       (3.0f - 20.0f * kHalo2MetersPerWorldUnit)) < 1.0e-3f,
             "The Saber translation adds the engine-owned offsets and pushes "
             "the camera along saber(forward) by the engine's forward scale");
+
+        // The flat probe's inverse: a tilted, yawed camera survives the round trip.
+        {
+            Halo2CameraBasis tilted{};
+            tilted.position[0] = -12.5f;
+            tilted.position[1] = 40.25f;
+            tilted.position[2] = 3.75f;
+            const float yaw = 0.7f, pitch = -0.3f;
+            tilted.forward[0] = std::cos(pitch) * std::cos(yaw);
+            tilted.forward[1] = std::cos(pitch) * std::sin(yaw);
+            tilted.forward[2] = std::sin(pitch);
+            tilted.up[0] = -std::sin(pitch) * std::cos(yaw);
+            tilted.up[1] = -std::sin(pitch) * std::sin(yaw);
+            tilted.up[2] = std::cos(pitch);
+            Halo2SaberViewMatrix tiltedMatrix{};
+            Halo2CameraBasis back{};
+            const bool round =
+                Halo2BuildSaberViewMatrix(tilted, offsetConstants, tiltedMatrix) &&
+                Halo2SaberViewMatrixToCamera(tiltedMatrix.m, offsetConstants, back);
+            float worst = 0.0f;
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                worst = std::max(worst, std::fabs(back.position[axis] - tilted.position[axis]));
+                worst = std::max(worst, std::fabs(back.forward[axis] - tilted.forward[axis]));
+                worst = std::max(worst, std::fabs(back.up[axis] - tilted.up[axis]));
+            }
+            Check(round && worst < 1.0e-3f,
+                "The Saber view matrix inverts back to the Blam camera it was "
+                "built from (position, forward and up), offsets and forward "
+                "push included");
+            float nan16[16]{};
+            nan16[13] = std::numeric_limits<float>::quiet_NaN();
+            Halo2CameraBasis kept = tilted;
+            Check(!Halo2SaberViewMatrixToCamera(nan16, offsetConstants, kept) &&
+                      kept.position[0] == tilted.position[0],
+                "A non-finite Saber matrix is refused and leaves the output "
+                "untouched");
+        }
 
         Halo2CameraBasis degenerateBasis{};
         Halo2SaberViewMatrix untouched{};
@@ -9814,6 +10665,14 @@ int main()
                       !Halo2SaberViewRecordIsMainView(0x40) &&
                       !Halo2SaberViewRecordIsMainView(0x4),
                 "E-H2-21 a record with any of flags 0x4C is not a main view");
+            Check(kHalo2SaberViewSlotsRva == 0x01DFF3B0 &&
+                      kHalo2SaberViewSlotsRva + kHalo2SaberViewSlotPointerOffset == 0x01DFF858 &&
+                      kHalo2SaberViewSlotStride == 0x4E0 && kHalo2SaberViewSlotCount == 12,
+                "the view slot pointer is the one the scene render reads at 0x471E59");
+            Check(Halo2SaberViewSlotsIntact(0, 0) && Halo2SaberViewSlotsIntact(0, 0xFFF) &&
+                      Halo2SaberViewSlotsIntact(0xFFF, 0xFFF) && Halo2SaberViewSlotsIntact(0x0F0, 0xFFF) &&
+                      !Halo2SaberViewSlotsIntact(0xFFF, 0xFFE) && !Halo2SaberViewSlotsIntact(0x0F0, 0),
+                "an eye pass waits while any slot seen filled this level is empty");
             float a[16]{1,0,0,0, 0,1,0,0, 0,0,1,0, 1.0f,2.0f,3.0f,1};
             float b[16]{1,0,0,0, 0,1,0,0, 0,0,1,0, 1.0f,2.0f,3.0f,1};
             Check(Halo2SaberViewMatricesMatch(a, b, 2.0e-3f, 0.02f),
@@ -10738,6 +11597,21 @@ int main()
                   !halo4_screen_effect_shader::ShouldSuppress(
                       true, true, true, false),
             "Halo 4 motion-suck suppression is exact, feature-local, title-local, and stereo-only");
+
+        // The frame copy: taken from the eye's image only when every condition holds.
+        using halo4_scene_copy::TakesEyeImage;
+        Check(TakesEyeImage(true, true, true, true, true, true, false),
+            "Halo 4: a copy out of the scene colour texture while an eye is drawn reads that eye's image");
+        Check(!TakesEyeImage(false, true, true, true, true, true, false) &&
+                  !TakesEyeImage(true, false, true, true, true, true, false) &&
+                  !TakesEyeImage(true, true, false, true, true, true, false) &&
+                  !TakesEyeImage(true, true, true, false, true, true, false) &&
+                  !TakesEyeImage(true, true, true, true, false, true, false) &&
+                  !TakesEyeImage(true, true, true, true, true, false, false),
+            "Halo 4: switched off, another title, another source, no eye being drawn on this context, an eye "
+            "whose draws were not redirected, or no eye image: the copy is left as the game made it");
+        Check(!TakesEyeImage(true, true, true, true, true, true, true),
+            "Halo 4: a copy that would read and write the eye's image is left alone");
     }
 
     Halo4CuiReticleInstallProof halo4CuiInstall{};
@@ -13562,7 +14436,7 @@ int main()
             "The V5 seed defaults keep the welcome visible, fit the desktop "
             "window, use the V5 HUD size, and seed the accepted Halo 2 "
             "Classic yaw/pitch alignment");
-        Check(fresh.dpad_hand == 0 && fresh.dpad_head_radius == 0.30f &&
+        Check(fresh.dpad_hand == 0 && fresh.dpad_head_radius == 0.20f &&
                   !fresh.quest_thumbrest_dpad,
             "D-pad defaults preserve the existing 30 cm left-hand head gesture and leave Quest thumb-rest mode off");
         Check(fresh.two_hand_coherent_aim,
@@ -13598,7 +14472,7 @@ int main()
     g_config.dlss_preset=0;ConfigSave();
     Check(g_config.haptic_intensity == 0.86f,
         "Malformed new values retain their individual default");
-    Check(g_config.dpad_head_radius == 0.30f && !g_config.quest_thumbrest_dpad,
+    Check(g_config.dpad_head_radius == 0.20f && !g_config.quest_thumbrest_dpad,
         "Legacy configs retain the existing D-pad gesture radius and keep the new thumb-rest mode off");
     const std::string organizedConfig = ReadTextFile(primary);
     Check(!g_config.independent_dual_aim && CountText(organizedConfig,
@@ -13648,6 +14522,59 @@ int main()
         std::filesystem::remove(oldAimConfig);
         std::filesystem::remove(rollbackAimConfig);
     }
+    {
+        // Direct drive is the default. A file without aim_direct_drive (every config written before
+        // the key existed) takes it ON, and so does a first run with no file at all; the old per-lane keys can
+        // only turn it on, so a leftover legacy_direct_drive = 0 / reach_direct_drive = 0 does not
+        // turn it off. An explicit aim_direct_drive = 0 is still honoured.
+        const std::filesystem::path driveConfig = configDir / L"direct-drive-default.cfg";
+        const auto loadDrive = [&](const char* text) {
+            { std::ofstream file(driveConfig); file << text; }
+            ConfigLoad(driveConfig.c_str());
+        };
+        loadDrive("config_version = 6\n");
+        Check(g_config.aim_direct_drive == 1 && g_config.legacy_direct_drive == 1 &&
+                  g_config.reach_direct_drive == 3,
+            "A config without aim_direct_drive takes direct drive ON in every lane");
+        loadDrive("legacy_direct_drive = 0\nreach_direct_drive = 0\n");
+        Check(g_config.aim_direct_drive == 1 && g_config.legacy_direct_drive == 1,
+            "The old per-lane keys at 0 do not turn direct drive off");
+        loadDrive("aim_direct_drive = 0\n");
+        Check(g_config.aim_direct_drive == 0 && g_config.legacy_direct_drive == 0 &&
+                  g_config.reach_direct_drive == 0,
+            "An explicit aim_direct_drive = 0 turns every lane off");
+        std::filesystem::remove(driveConfig);
+        ConfigLoad(driveConfig.c_str());
+        Check(g_config.aim_direct_drive == 1 && g_config.legacy_direct_drive == 1 &&
+                  g_config.reach_direct_drive == 3,
+            "A first run with no config file derives direct drive ON in every lane");
+        ConfigLoad(primary.c_str());
+        std::filesystem::remove(driveConfig);
+    }
+#if !HALOMCCVR_DEV_DIAGNOSTICS
+    {
+        // There is no player-facing honest reticle. A player build
+        // ignores the old key, never reads the dev assessment key, and saves
+        // neither, so no player cfg can move the reticle off the aim point.
+        const std::filesystem::path honestConfig = configDir / L"honest-reticle-retired.cfg";
+        {
+            std::ofstream file(honestConfig);
+            file << "honest_reticle_onfoot = 1\n";
+            file << "honest_reticle_assess = 2\n";
+        }
+        g_config.honest_reticle_assess = 0;
+        ConfigLoad(honestConfig.c_str());
+        Check(g_config.honest_reticle_assess == 0,
+            "A player build reads neither honest_reticle_onfoot nor the dev assessment key");
+        ConfigSave();
+        const std::string savedHonest = ReadTextFile(honestConfig);
+        Check(CountText(savedHonest, "honest_reticle_onfoot") == 0 &&
+                  CountText(savedHonest, "honest_reticle_assess") == 0,
+            "A player build saves neither honest-reticle key");
+        ConfigLoad(primary.c_str());
+        std::filesystem::remove(honestConfig);
+    }
+#endif
     {
         // Exercise the real installer merge followed by runtime parsing and
         // saving. Text-only installer assertions cannot catch new defaults
@@ -14543,7 +15470,9 @@ int main()
           "\nhalo2a_gun_scale = ", "\nhalo2c_gun_scale = ",
           "\nhalo1_gun_scale = ", "\nhalo2a_hud_size = ",
           "\nhalo2c_hud_size = ", "\nhalo3_left_hand_forward_m = ",
-          "\nhalo2c_barrel_pitch_deg = ", "\nhalo3_barrel_roll_deg = "})
+          "\nhalo2c_barrel_pitch_deg = ", "\nhalo3_barrel_roll_deg = ",
+          "\nreach_crosshair_size_deg = ", "\nhalo2a_crosshair_opacity = ",
+          "\nhalo1_crosshair_brightness = "})
     {
         Check(organizedConfig.find(profilePrefix) != std::string::npos,
             "The universal config carries every per-title tunable profile");
@@ -14579,6 +15508,193 @@ int main()
             "Leaving every title restores the shared defaults");
     }
     {
+        // The crosshair's size, opacity and brightness are per game. A profile that names none starts from the
+        // shared key, or at its game's own start where the game has one; an edit lands in the running game's
+        // profile; and
+        // with no game running the three follow and edit Reach's, never the shared defaults.
+        ConfigSave();
+        const auto crosshairPath = configDir / L"crosshair-per-game.cfg";
+        {
+            std::ofstream file(crosshairPath);
+            file << "config_version = 6\n";
+            file << "crosshair_size_deg = 5\n";
+            file << "crosshair_opacity = 0.8\n";
+            file << "crosshair_brightness = 1.5\n";
+            file << "halo3_crosshair_size_deg = 3\n";
+            file << "odst_crosshair_opacity = 0.4\n";
+        }
+        ConfigLoad(crosshairPath.c_str());
+        // The file's shared size is 5 and its opacity 0.8. A game with a start of its own takes that; the rest
+        // take the file's shared values.
+        const auto sizeSeed = [](int profile) {
+            return kCrosshairStarts[profile].size_deg != 4.0f ? kCrosshairStarts[profile].size_deg : 5.0f;
+        };
+        const auto opacitySeed = [](int profile) {
+            return kCrosshairStarts[profile].opacity != 1.25f ? kCrosshairStarts[profile].opacity : 0.8f;
+        };
+        const float reachSeed = sizeSeed(kTitleProfileReach);
+        const float reachOpacitySeed = opacitySeed(kTitleProfileReach);
+        Check(reachSeed == 10.3f && reachOpacitySeed == 0.69f && sizeSeed(4) == 8.0f && sizeSeed(5) == 8.0f &&
+                  sizeSeed(6) == 7.2f && sizeSeed(0) == 6.0f && sizeSeed(1) == 6.0f && sizeSeed(3) == 5.0f &&
+                  opacitySeed(0) == 0.8f && opacitySeed(4) == 0.8f,
+              "crosshair per game: the games' starts are Halo 3 and ODST 6, Reach 10.3 at 0.69, Halo 2 8, Halo: "
+              "Combat Evolved 7.2 and Halo 4 the shared 4 at 1.25");
+        bool seeded = g_config.base_tunables.crosshair_size_deg == 5.0f &&
+            g_config.base_tunables.crosshair_opacity == 0.8f;
+        for (int i = 0; i < kTitleProfileCount; ++i)
+        {
+            const auto& profile = g_config.title_profiles[i];
+            const float size = i == 0 ? 3.0f : sizeSeed(i);
+            const float opacity = i == 1 ? 0.4f : opacitySeed(i);
+            seeded = seeded && std::fabs(profile.crosshair_size_deg - size) < 1.0e-4f &&
+                std::fabs(profile.crosshair_opacity - opacity) < 1.0e-4f && profile.crosshair_brightness == 1.5f;
+        }
+        Check(seeded, "crosshair per game: a profile that names no value starts from the shared key, or at its "
+                      "game's own start where it has one, and a named value stays");
+        Check(std::string(Config_TitleProfileName(kTitleProfileReach)) == "Halo: Reach",
+              "crosshair per game: the no-game profile is Reach's");
+        Check(Config_ActiveTitleProfile() == -1 && Config_ShownTitleProfile() == kTitleProfileReach &&
+                  std::fabs(g_config.crosshair_size_deg - reachSeed) < 1.0e-4f &&
+                  std::fabs(g_config.crosshair_opacity - reachOpacitySeed) < 1.0e-4f &&
+                  g_config.crosshair_brightness == 1.5f,
+              "crosshair per game: with no game running the live crosshair is Reach's");
+        Config_ApplyTitleProfile(0);
+        Check(Config_ShownTitleProfile() == 0 && g_config.crosshair_size_deg == 3.0f,
+              "crosshair per game: a running game's own size goes live");
+        g_config.crosshair_size_deg = 6.0f;
+        g_config.crosshair_brightness = 0.9f;
+        Config_StoreLiveTunables();
+        Check(g_config.title_profiles[0].crosshair_size_deg == 6.0f &&
+                  g_config.title_profiles[0].crosshair_brightness == 0.9f &&
+                  std::fabs(g_config.title_profiles[kTitleProfileReach].crosshair_size_deg - reachSeed) < 1.0e-4f &&
+                  g_config.title_profiles[1].crosshair_brightness == 1.5f &&
+                  g_config.base_tunables.crosshair_size_deg == 5.0f &&
+                  g_config.base_tunables.crosshair_brightness == 1.5f,
+              "crosshair per game: an edit lands in the running game's profile only");
+        Config_ApplyTitleProfile(1);
+        Check(g_config.crosshair_size_deg == 6.0f && g_config.crosshair_opacity == 0.4f,
+              "crosshair per game: the next game brings its own");
+        Config_ApplyTitleProfile(-1);
+        Check(std::fabs(g_config.crosshair_size_deg - reachSeed) < 1.0e-4f &&
+                  std::fabs(g_config.crosshair_opacity - reachOpacitySeed) < 1.0e-4f,
+              "crosshair per game: leaving every game puts Reach's back on the sliders");
+        g_config.crosshair_size_deg = 8.0f;
+        ConfigSave();
+        Check(g_config.title_profiles[kTitleProfileReach].crosshair_size_deg == 8.0f &&
+                  g_config.base_tunables.crosshair_size_deg == 5.0f,
+              "crosshair per game: an edit with no game running lands in Reach's profile, not the shared key");
+        const std::string crosshairSaved = ReadTextFile(crosshairPath);
+        Check(CountText(crosshairSaved, "\ncrosshair_size_deg = 5.00") == 1 &&
+                  CountText(crosshairSaved, "\nreach_crosshair_size_deg = 8.0000") == 1 &&
+                  CountText(crosshairSaved, "\nhalo3_crosshair_size_deg = 6.0000") == 1 &&
+                  CountText(crosshairSaved, "\nhalo3_crosshair_brightness = 0.9000") == 1 &&
+                  CountText(crosshairSaved, "\nodst_crosshair_opacity = 0.4000") == 1 &&
+                  CountText(crosshairSaved, "\ncrosshair_opacity = 0.80") == 1,
+              "crosshair per game: the file keeps the shared keys and every game's own");
+        ConfigLoad(crosshairPath.c_str());
+        Check(g_config.title_profiles[kTitleProfileReach].crosshair_size_deg == 8.0f &&
+                  g_config.title_profiles[0].crosshair_size_deg == 6.0f &&
+                  g_config.title_profiles[3].crosshair_size_deg == 5.0f &&
+                  g_config.title_profiles[4].crosshair_size_deg == 8.0f &&
+                  g_config.base_tunables.crosshair_size_deg == 5.0f && g_config.crosshair_size_deg == 8.0f,
+              "crosshair per game: a save and load keeps each game's own and the shared default apart");
+        // An update's config merge adds no per-game crosshair key to a config that has the shared one, so the
+        // loader gives each game its start: the player's own size, or the game's own where it has one.
+        const std::string mergedCrosshair =
+            mcc_installer::MergeConfig("config_version=6\ncrosshair_size_deg=6\n", organizedConfig).text;
+        Check(mergedCrosshair.find("reach_crosshair_size_deg") == std::string::npos &&
+                  mergedCrosshair.find("halo3_crosshair_size_deg") == std::string::npos &&
+                  mergedCrosshair.find("halo3_crosshair_opacity") == std::string::npos &&
+                  CountText(mergedCrosshair, "crosshair_opacity = ") == 1,
+              "crosshair per game: an update names no per-game crosshair value in a config that has its own "
+              "shared ones, and adds a shared key it lacks once");
+        // A config written when one size, 10.1 by default, served every game: the games with a start of their
+        // own take it, and the rest keep the file's size.
+        {
+            std::ofstream file(crosshairPath);
+            file << "config_version = 6\n";
+            file << "crosshair_size_deg = 10.10\n";
+        }
+        ConfigLoad(crosshairPath.c_str());
+        Check(g_config.base_tunables.crosshair_size_deg == 10.1f &&
+                  g_config.title_profiles[0].crosshair_size_deg == 6.0f &&
+                  g_config.title_profiles[1].crosshair_size_deg == 6.0f &&
+                  g_config.title_profiles[3].crosshair_size_deg == 10.1f &&
+                  g_config.title_profiles[kTitleProfileReach].crosshair_size_deg == 10.3f &&
+                  g_config.title_profiles[kTitleProfileReach].crosshair_opacity == 0.69f &&
+                  g_config.title_profiles[4].crosshair_size_deg == 8.0f &&
+                  g_config.title_profiles[5].crosshair_size_deg == 8.0f &&
+                  g_config.title_profiles[6].crosshair_size_deg == 7.2f &&
+                  g_config.title_profiles[0].crosshair_opacity == 1.25f,
+              "crosshair per game: an older config's one size stays Halo 4's, and Halo 3, ODST, Reach, "
+              "Halo 2 and Halo: Combat Evolved start at their own");
+        const Config untouched;
+        bool defaults = untouched.crosshair_size_deg == 4.0f && untouched.crosshair_opacity == 1.25f &&
+            untouched.reticle_min_scale_dist_m == 0.7f;
+        for (int i = 0; i < kTitleProfileCount; ++i)
+            defaults = defaults && untouched.title_profiles[i].crosshair_size_deg == kCrosshairStarts[i].size_deg &&
+                untouched.title_profiles[i].crosshair_opacity == kCrosshairStarts[i].opacity &&
+                untouched.title_profiles[i].crosshair_brightness == 1.25f;
+        Check(defaults && untouched.title_profiles[kTitleProfileReach].crosshair_size_deg == 10.3f &&
+                  untouched.title_profiles[kTitleProfileReach].crosshair_opacity == 0.69f &&
+                  untouched.title_profiles[4].crosshair_size_deg == 8.0f &&
+                  untouched.title_profiles[5].crosshair_size_deg == 8.0f &&
+                  untouched.title_profiles[6].crosshair_size_deg == 7.2f &&
+                  untouched.title_profiles[0].crosshair_size_deg == 6.0f,
+              "crosshair per game: a fresh configuration has every game's own starting size and opacity, and the "
+              "crosshair shrinks away within 0.7 m");
+        // The HUD layout's four values follow the same rule: Reach's with no game running, never the shared
+        // defaults, and an edit made then lands in Reach's profile.
+        {
+            std::ofstream file(crosshairPath);
+            file << "config_version = 6\n";
+            file << "hud_size = 0.50\n";
+            file << "hud_aspect = 1.10\n";
+            file << "reach_hud_size = 0.39\n";
+            file << "halo3_hud_aspect = 0.91\n";
+        }
+        ConfigLoad(crosshairPath.c_str());
+        Check(g_config.hud_size == 0.39f && g_config.hud_aspect == 1.10f &&
+                  g_config.base_tunables.hud_size == 0.50f && g_config.title_profiles[0].hud_size == 0.50f &&
+                  g_config.title_profiles[0].hud_aspect == 0.91f,
+              "HUD per game: with no game running the live HUD layout is Reach's");
+        Config_ApplyTitleProfile(0);
+        Check(g_config.hud_size == 0.50f && g_config.hud_aspect == 0.91f,
+              "HUD per game: a running game's own layout goes live");
+        Config_ApplyTitleProfile(-1);
+        g_config.hud_size = 0.60f;
+        g_config.hud_vertical_offset = -8.0f;
+        ConfigSave();
+        Check(g_config.title_profiles[kTitleProfileReach].hud_size == 0.60f &&
+                  g_config.title_profiles[kTitleProfileReach].hud_vertical_offset == -8.0f &&
+                  g_config.base_tunables.hud_size == 0.50f && g_config.title_profiles[0].hud_size == 0.50f,
+              "HUD per game: an edit with no game running lands in Reach's profile, not the shared key");
+        const std::string hudSaved = ReadTextFile(crosshairPath);
+        Check(CountText(hudSaved, "\nhud_size = 0.50") == 1 &&
+                  CountText(hudSaved, "\nreach_hud_size = 0.6000") == 1 &&
+                  CountText(hudSaved, "\nhalo3_hud_size = 0.5000") == 1,
+              "HUD per game: the file keeps the shared size and each game's own");
+        // A first run, with no file yet, writes the same thing.
+        std::filesystem::remove(crosshairPath);
+        ConfigLoad(crosshairPath.c_str());
+        const std::string firstRun = ReadTextFile(crosshairPath);
+        Check(CountText(firstRun, "\ncrosshair_size_deg = 4.00") == 1 &&
+                  CountText(firstRun, "\nreach_crosshair_size_deg = 10.3000") == 1 &&
+                  CountText(firstRun, "\nreach_crosshair_opacity = 0.6900") == 1 &&
+                  CountText(firstRun, "\nhalo2a_crosshair_size_deg = 8.0000") == 1 &&
+                  CountText(firstRun, "\nhalo2c_crosshair_size_deg = 8.0000") == 1 &&
+                  CountText(firstRun, "\nhalo1_crosshair_size_deg = 7.2000") == 1 &&
+                  CountText(firstRun, "\nhalo3_crosshair_size_deg = 6.0000") == 1 &&
+                  CountText(firstRun, "\nhalo3_crosshair_opacity = 1.2500") == 1 &&
+                  CountText(firstRun, "\nreticle_min_scale_dist_m = 0.70") == 1 &&
+                  g_config.crosshair_size_deg == 10.3f && g_config.crosshair_opacity == 0.69f &&
+                  g_config.base_tunables.crosshair_size_deg == 4.0f,
+              "crosshair per game: a first run writes every game's starting size and opacity and leaves the "
+              "shared defaults alone");
+        ConfigLoad(primary.c_str());
+        std::filesystem::remove(crosshairPath);
+    }
+    {
         // Real save/load, swap, disable and graphics-mode transitions. A gun
         // overlay must never leak into the defaults or carry HUD edits with it.
         constexpr GameTitle titles[]{GameTitle::Halo3,GameTitle::Halo3ODST,
@@ -14597,7 +15713,9 @@ int main()
             g_config.per_gun_alignment=true;Config_RefreshWeaponProfile();
             Check(Config_ActiveWeaponProfileName()!=nullptr&&g_config.gun_forward_m==-.123f,
                 "first gun inherits title calibration when enabled");
-            g_config.gun_forward_m=.231234f;g_config.barrel_roll_deg=37.f;
+            // Exercise precision within the new +/-0.30 m slider range.
+            const float firstGunForward=weapon_alignment::Baseline(title).forward+.231234f;
+            g_config.gun_forward_m=firstGunForward;g_config.barrel_roll_deg=37.f;
             g_config.halo2_classic_gun_pitch_deg=12.f;g_config.muzzle_height_m=.12f;
             g_config.hud_size=.71f;
             ConfigSave();
@@ -14610,11 +15728,11 @@ int main()
                 "second gun starts from fallback including Classic and muzzle trims");
             g_config.gun_forward_m=-.211f;
             Config_ApplyWeaponProfile(guns[0]);
-            Check(std::abs(g_config.gun_forward_m-.231234f)<1e-6f&&
+            Check(std::abs(g_config.gun_forward_m-firstGunForward)<1e-6f&&
                 g_config.barrel_roll_deg==37.f&&g_config.halo2_classic_gun_pitch_deg==12.f,
                 "switching back restores the first gun exactly");
             ConfigSave();ConfigLoad(primary.c_str());Config_ApplyWeaponProfile(guns[0]);
-            Check(g_config.per_gun_alignment&&std::abs(g_config.gun_forward_m-.231234f)<1e-6f&&
+            Check(g_config.per_gun_alignment&&std::abs(g_config.gun_forward_m-firstGunForward)<1e-6f&&
                 g_config.halo2_classic_gun_pitch_deg==12.f&&g_config.muzzle_height_m==.12f,
                 "stable title and weapon identity survives a full config round trip");
             Config_ApplyWeaponProfile(guns[1]);
@@ -14642,7 +15760,9 @@ int main()
         "vehicle_first_person", "vehicle_cam_forward_m", "vehicle_cam_up_m",
         "vehicle_cam_right_m",
         "vehicle_view_follow", "vehicle_cam_smoothing",
-        "vehicle_motion", "vehicle_wheel_max_deg",
+        "vehicle_motion", "vehicle_vr_controls", "vehicle_cameras", "vehicle_camera_note", "vehicle_camera_autoadd", "vehicle_aim_marker", "vehicle_control",
+        "vehicle_aim_reject_metres", "vehicle_aim_reject_dot", "vehicle_boom_rate_deg_s", "vehicle_boom_invert",
+        "vehicle_wheel_max_deg",
         "vehicle_wheel_deadzone_deg",
         "halo4_helmet", "crosshair", "crosshair_distance_m", "crosshair_size_deg",
         "reticle_r", "reticle_g", "reticle_b", "kill_reticle",
@@ -14693,6 +15813,7 @@ int main()
         file << "haptic_intensity = 2.0\n";
         file << "headset_smoothing = 1.0\n";
         file << "aim_stabilization = -1.0\n";
+        file << "aim_lead_ticks = 9.0\n";
         file << "vehicle_cam_forward_m = -9.0\n";
         file << "vehicle_cam_up_m = 9.0\n";
         file << "vehicle_cam_right_m = 9.0\n";
@@ -14703,6 +15824,7 @@ int main()
     Check(g_config.headset_smoothing == 0.10f,
         "Headset smoothing is capped at the low-latency maximum");
     Check(g_config.aim_stabilization == 0.0f, "Aim stabilization is safely clamped");
+    Check(g_config.aim_lead_ticks == 3.0f, "The aim lead is held inside its range of 0 to 3 ticks");
     Check(g_config.vehicle_cam_forward_m == kVehicleCamForwardMin &&
               g_config.vehicle_cam_up_m == kVehicleCamUpMax &&
               g_config.vehicle_cam_right_m == kVehicleCamRightMax,
@@ -14903,15 +16025,25 @@ int main()
               g_config.cutscene_theater_width_m == 6.0f &&
               g_config.cutscene_theater_distance_m == 4.0f,
         "legacy configs inherit the enabled cutscene-theatre defaults");
-    Check(!g_config.roomscale_movement, "legacy config leaves roomscale off");
+    Check(g_config.roomscale_movement, "legacy config inherits roomscale body movement (on)");
+    Check(g_config.roomscale_recenter_jump && g_config.roomscale_recenter_move_start &&
+          g_config.roomscale_recenter_moving && g_config.roomscale_recenter_moving_speed == 0.25f,
+          "legacy config inherits the roomscale view recenter options (on; they act only with roomscale on)");
+    Check(g_config.shots_from_muzzle, "legacy config inherits shots from the muzzle");
+    Check(g_config.coop_safe_shots == 2, "legacy config gets co-op safe shots automatic");
+    Check(g_config.aim_lead_ticks == 1.0f, "legacy config inherits the aim lead at its default of one tick");
+    Check(g_config.physical_crouch && g_config.physical_crouch_depth_m == 0.22f,
+          "legacy config inherits the physical crouch (on) at its default depth");
     Check(!g_config.experimental_hand_alignment, "legacy config preserves released hand positioning");
-    Check(!g_config.manual_reload&&!g_config.weapon_holsters,"legacy config leaves both weapon gestures off");
-    Check(!g_config.game_menu_pointer, "legacy config leaves native menu pointing off");
-    g_config.game_menu_pointer = true;
-    ConfigSave();
+    Check(g_config.halo4_seat_converge == 1, "legacy config inherits Halo 4 seated convergence (on)");
+    Check(!g_config.manual_reload&&g_config.weapon_holsters,
+        "legacy config leaves manual reload off and inherits weapon holsters (on)");
+    Check(g_config.game_menu_pointer, "legacy config inherits native menu pointing (on)");
     g_config.game_menu_pointer = false;
+    ConfigSave();
+    g_config.game_menu_pointer = true;
     ConfigLoad(primary.c_str());
-    Check(g_config.game_menu_pointer, "native menu pointer toggle survives save/load");
+    Check(!g_config.game_menu_pointer, "native menu pointer toggle survives save/load");
     Check(!g_config.world_collision,
         "legacy configs inherit the opt-in world-collision default");
     Check(!g_config.physical_melee && !g_config.gesture_melee &&
@@ -14950,8 +16082,8 @@ int main()
         struct RadiusCase { const char* value; float expected; };
         for (const RadiusCase radius : {
                  RadiusCase{"0.01", 0.10f}, RadiusCase{"0.99", 0.50f},
-                 RadiusCase{"nan", 0.30f}, RadiusCase{"inf", 0.30f},
-                 RadiusCase{"malformed", 0.30f}})
+                 RadiusCase{"nan", 0.20f}, RadiusCase{"inf", 0.20f},
+                 RadiusCase{"malformed", 0.20f}})
         {
             {
                 std::ofstream file(primary);
@@ -14996,11 +16128,12 @@ int main()
             file << "weapon_pouch_down_m = nan\nweapon_body_zone_radius_m = 99\n";
         }
         ConfigLoad(primary.c_str());
-        Check(!g_config.manual_reload&&!g_config.weapon_holsters&&g_config.weapon_pouch_down_m==0.50f&&
-            g_config.weapon_body_zone_radius_m==0.40f,"invalid geometry stays finite, bounded and opt-in");
+        Check(!g_config.manual_reload&&g_config.weapon_holsters&&g_config.weapon_pouch_down_m==0.50f&&
+            g_config.weapon_body_zone_radius_m==0.40f,
+            "invalid geometry stays finite and bounded; manual reload stays opt-in");
         Check(g_config.weapon_holster_radius_m==0.40f&&g_config.weapon_holster_slide&&
-            !g_config.weapon_holster_click&&!g_config.weapon_needler_shake&&g_config.weapon_unknown_reload_visual,
-            "old shared radius migrates to both zones while preserving draw and default-off shake");
+            g_config.weapon_holster_click&&!g_config.weapon_needler_shake&&g_config.weapon_unknown_reload_visual,
+            "old shared radius migrates to both zones while preserving the draw and click gestures and default-off shake");
         {
             std::ofstream file(primary);
             file << "weapon_holster_radius_m = 0.33\nweapon_body_zone_radius_m = 0.12\n"
@@ -15020,7 +16153,7 @@ int main()
                 "weapon_holster_draw_m = inf\nweapon_shake_travel_m = 999\n";
         }
         ConfigLoad(primary.c_str());
-        Check(g_config.weapon_holster_radius_m==0.20f&&g_config.weapon_insert_radius_m==0.06f&&
+        Check(g_config.weapon_holster_radius_m==0.30f&&g_config.weapon_insert_radius_m==0.06f&&
             g_config.weapon_holster_draw_m==0.25f&&g_config.weapon_shake_travel_m==0.20f,
             "new interaction geometry rejects nonfinite data and clamps finite bounds");
     }
@@ -15031,13 +16164,21 @@ int main()
         file << "physical_melee = 1\n";
         file << "left_handed = 1\n";
         file << "roomscale_movement = 1\n";
+        file << "roomscale_recenter_jump = 1\nroomscale_recenter_jump_s = 0.35\n";
+        file << "roomscale_recenter_move_start = 1\nroomscale_recenter_move_start_s = 9\n";
+        file << "roomscale_recenter_moving = 1\nroomscale_recenter_moving_speed = 0.01\n";
         file << "physical_running = 1\nphysical_running_speed = 0.6\nphysical_running_sensitivity = 2\n";
+        file << "physical_crouch = 0\n";
+        file << "coop_safe_shots = 0\n";
+        file << "aim_lead_ticks = 1.5\n";
         file << "experimental_body_ik = 1\nbody_ik_hide_lower = 1\n";
         file << "physical_melee_swing_speed = 0.10\n";
+        file << "halo4_seat_converge = 0\n";
     }
     ConfigLoad(primary.c_str());
     Check(g_config.world_collision,
         "the shared world-collision option can be enabled from config");
+    Check(g_config.halo4_seat_converge == 0, "Halo 4 seated convergence is a player key: every build reads it");
     Check(g_config.physical_melee &&
               g_config.physical_melee_swing_speed == 0.3f,
         "physical melee loads independently and clamps its swing threshold");
@@ -15046,13 +16187,47 @@ int main()
     Check(g_config.world_collision,
         "the shared world-collision option survives a save/load round trip");
     Check(g_config.roomscale_movement, "roomscale survives config save/load");
+    Check(g_config.roomscale_recenter_jump && g_config.roomscale_recenter_jump_s==0.35f &&
+          g_config.roomscale_recenter_move_start && g_config.roomscale_recenter_move_start_s==1.0f &&
+          g_config.roomscale_recenter_moving && g_config.roomscale_recenter_moving_speed==0.1f,
+        "the roomscale view recenter options survive config save/load, held to their ranges");
     Check(g_config.physical_running&&g_config.physical_running_speed==.6f&&
         g_config.physical_running_sensitivity==2&&g_config.experimental_body_ik&&g_config.body_ik_hide_lower,
         "physical running controls and separate avatar/lower-body toggles survive config save/load");
+    Check(!g_config.physical_crouch, "a config that switched the physical crouch off keeps it off through save/load");
+    Check(!g_config.coop_safe_shots, "a config that switched co-op safe shots off keeps it off through save/load");
+    Check(g_config.aim_lead_ticks == 1.5f, "the aim lead survives config save/load");
     Check(g_config.left_handed,
         "left-handed main-weapon mode survives a save/load round trip");
     Check(!g_config.experimental_hand_alignment,
         "left-handed updates keep released positioning until explicitly opted in");
+    Check(g_config.halo4_seat_converge == 0, "Halo 4 seated convergence survives config save/load");
+    {
+        // Co-op safe shots before and after its automatic value existed (its own file; primary is loaded again).
+        const std::filesystem::path coopPath = configDir / L"halomccvr-coop-safe.cfg";
+        {
+            std::ofstream file(coopPath);
+            file << "coop_safe_shots = 1\n";
+        }
+        ConfigLoad(coopPath.c_str());
+        Check(g_config.coop_safe_shots == 2,
+            "a config from before automatic co-op safe shots moves its on to automatic");
+        ConfigSave();
+        ConfigLoad(coopPath.c_str());
+        Check(g_config.coop_safe_shots == 2, "automatic co-op safe shots survives config save/load");
+        g_config.coop_safe_shots = 1;
+        ConfigSave();
+        ConfigLoad(coopPath.c_str());
+        Check(g_config.coop_safe_shots == 1, "co-op safe shots chosen as always stays always through save/load");
+        {
+            std::ofstream file(coopPath);
+            file << "coop_safe_shots = 0\n";
+        }
+        ConfigLoad(coopPath.c_str());
+        Check(g_config.coop_safe_shots == 0, "a config from before automatic co-op safe shots keeps off");
+        std::filesystem::remove(coopPath);
+        ConfigLoad(primary.c_str());
+    }
     g_config.experimental_hand_alignment = true;
     ConfigSave();
     ConfigLoad(primary.c_str());
@@ -16810,6 +17985,108 @@ int main()
                   lookupOk,
                 "Vehicle identity separates same-type cousins and an "
                 "unidentified vehicle resolves to no point at all");
+
+            // A vehicle the mod cannot name is still aimed like the stock vehicle it is DRIVEN like: its physics
+            // gives the class, its seat's driver flag the role. (HugeGrass's Sparrowhawk was left on the stick
+            // servo in every seat because it had no identity.)
+            Halo3DefinitionFields planeDef;   planeDef.physicsType = 2;   // the Pelican, the Phantom
+            Halo3DefinitionFields fighterDef; fighterDef.physicsType = 4; // the Seraph, the Longsword
+            Halo3DefinitionFields vtolDef;    vtolDef.physicsType = 7;    // the Sparrowhawk
+            Halo3DefinitionFields mantisDef;  mantisDef.physicsType = 6;
+            Halo3DefinitionFields blindScout; blindScout.physicsType = 3;
+            Check(Halo3ControlClass(tankDef) == Halo3VehicleId::Scorpion &&
+                  Halo3ControlClass(oddJeep) == Halo3VehicleId::Warthog &&
+                  Halo3ControlClass(planeDef) == Halo3VehicleId::Hornet &&
+                  Halo3ControlClass(ghostDef) == Halo3VehicleId::Ghost &&
+                  Halo3ControlClass(scoutOdd) == Halo3VehicleId::Ghost &&
+                  Halo3ControlClass(wraithDef) == Halo3VehicleId::Wraith &&
+                  Halo3ControlClass(blindScout) == Halo3VehicleId::Unknown &&
+                  Halo3ControlClass(fighterDef) == Halo3VehicleId::Banshee &&
+                  Halo3ControlClass(turretDef) == Halo3VehicleId::StationaryTurret &&
+                  Halo3ControlClass(vtolDef) == Halo3VehicleId::Hornet &&
+                  Halo3ControlClass(choppDef) == Halo3VehicleId::Chopper &&
+                  Halo3ControlClass(mantisDef) == Halo3VehicleId::Unknown &&
+                  Halo3ControlClass(Halo3DefinitionFields{}) == Halo3VehicleId::Unknown,
+                "Every Halo 3 physics class names the stock vehicle it is driven like");
+
+            const Halo3SeatRole sparrowhawkPilot =
+                Halo3SeatRoleOf(Halo3VehicleId::Unknown, Halo3VehicleId::Hornet, 0, false, 0x4000801Cu);
+            const Halo3SeatRole seraphPilot =
+                Halo3SeatRoleOf(Halo3VehicleId::Unknown, Halo3VehicleId::Banshee, 0, false, 0x4080801Du);
+            const Halo3SeatRole modTankDriver =
+                Halo3SeatRoleOf(Halo3VehicleId::Unknown, Halo3VehicleId::Scorpion, 0, false, 0x0010801Cu);
+            const Halo3SeatRole modGunner =
+                Halo3SeatRoleOf(Halo3VehicleId::Unknown, Halo3VehicleId::Hornet, 0, true, 0x0010801Cu);
+            const Halo3SeatRole modPassenger =
+                Halo3SeatRoleOf(Halo3VehicleId::Unknown, Halo3VehicleId::Hornet, 2, false, 0x00001070u);
+            const Halo3SeatRole giantSeat =
+                Halo3SeatRoleOf(Halo3VehicleId::Unknown, Halo3VehicleId::Unknown, 0, false, 0x0000801Cu);
+            const Halo3SeatRole stockHog =
+                Halo3SeatRoleOf(Halo3VehicleId::Warthog, Halo3VehicleId::Warthog, 0, false, 0u);
+            Check(sparrowhawkPilot.driver && sparrowhawkPilot.lookSteered && sparrowhawkPilot.aircraft &&
+                  seraphPilot.driver && seraphPilot.lookSteered && seraphPilot.aircraft &&
+                  modTankDriver.driver && !modTankDriver.lookSteered && !modTankDriver.aircraft &&
+                  !modGunner.driver && !modPassenger.driver && modPassenger.aircraft &&
+                  giantSeat.driver && !giantSeat.lookSteered && !giantSeat.aircraft &&
+                  stockHog.driver && stockHog.lookSteered && !stockHog.aircraft,
+                "A seat of a vehicle the mod cannot name takes its role from its own driver flag and its class; "
+                "a named vehicle's seat is as before");
+            Check(Halo3IsSeatParentKind(0) && Halo3IsSeatParentKind(kHalo3ObjectKindVehicle) &&
+                  Halo3IsSeatParentKind(kHalo3ObjectKindGiant) && !Halo3IsSeatParentKind(2) &&
+                  !Halo3IsSeatParentKind(11) && !Halo3IsSeatParentKind(13) && !Halo3IsSeatParentKind(200),
+                "A unit is seated on a biped, a vehicle or a giant (the Scarab), the kinds Halo 3's own seat code takes");
+
+            // A tank's bounding radius tells the Scorpion from the Elephant,
+            // once the definition's radius is proven by the live sphere.
+            Check(Halo3DefinitionRadiusUsable(kHalo3ObjectKindVehicle, 1.0f) &&
+                  Halo3DefinitionRadiusUsable(kHalo3ObjectKindVehicle, 0.8f) &&
+                  !Halo3DefinitionRadiusUsable(0, 1.0f) &&
+                  !Halo3DefinitionRadiusUsable(-1, 1.0f) &&
+                  !Halo3DefinitionRadiusUsable(kHalo3ObjectKindVehicle, 0.0f) &&
+                  !Halo3DefinitionRadiusUsable(kHalo3ObjectKindVehicle, 500.0f) &&
+                  !Halo3DefinitionRadiusUsable(kHalo3ObjectKindVehicle,
+                                               std::nanf("")),
+                "A definition's radius is used only from a definition that "
+                "reads as a vehicle's, at a size a vehicle can have");
+            Check(Halo3ResolveTank(2.200f) == Halo3VehicleId::Scorpion &&
+                  Halo3ResolveTank(2.25f) == Halo3VehicleId::Scorpion &&
+                  Halo3ResolveTank(5.129f) == Halo3VehicleId::Elephant &&
+                  Halo3ResolveTank(3.5f) == Halo3VehicleId::Unknown &&
+                  Halo3ResolveTank(-1.0f) == Halo3VehicleId::Scorpion,
+                "A tank is the Scorpion at the Scorpion's radius (2.2 wu), "
+                "the Elephant at the Elephant's (5.129), another vehicle at "
+                "any other, and the Scorpion when its radius is unknown");
+            Check(Halo3StockRadiusFits(1.4f, 1.4f) &&
+                  !Halo3StockRadiusFits(2.6f, 1.4f) &&
+                  Halo3StockRadiusFits(-1.0f, 1.4f) &&
+                  Halo3StockRadiusFits(2.6f, 0.0f),
+                "A vehicle is the stock one its physics reads as at that "
+                "one's radius, and whenever either radius is unknown");
+            Halo3DefinitionFields modFlyer;
+            modFlyer.physicsType = 4;
+            modFlyer.boundingRadius = 2.6f;
+            Halo3DefinitionFields stockBanshee = modFlyer;
+            stockBanshee.boundingRadius = 1.4f;
+            Halo3DefinitionFields elephantDef;
+            elephantDef.physicsType = 0;
+            elephantDef.boundingRadius = 5.129f;
+            Check(Halo3ResolveVehicleId(stockBanshee) == Halo3VehicleId::Banshee &&
+                      Halo3ResolveVehicleId(modFlyer) == Halo3VehicleId::Unknown &&
+                      Halo3ResolveVehicleId(elephantDef) == Halo3VehicleId::Elephant &&
+                      Halo3FindSeatPoint(Halo3VehicleId::Elephant, 0, false) == nullptr &&
+                      Halo3FindSeatPoint(Halo3VehicleId::Elephant, 0, true) == nullptr &&
+                      !Halo3VehicleIsLookSteered(Halo3VehicleId::Elephant),
+                "A mod's flyer with another radius is not a Banshee; the "
+                "Elephant is known, has no tuned eye point and is not "
+                "look-steered");
+            Halo3DefinitionFields unprovenTank;
+            unprovenTank.physicsType = 0;
+            unprovenTank.boundingRadius = -1.0f;
+            Check(Halo3ResolveVehicleId(unprovenTank) ==
+                      Halo3VehicleId::Scorpion,
+                "A tank whose radius is not proven still reads as the "
+                "Scorpion");
+
         }
 
         // O1: ODST's own identity rules. ODST ships the same authored vehicles
@@ -17156,6 +18433,39 @@ int main()
                   !Halo3AnchorWithinBounds(skyPos, boundsCenter, 1e9f, 2.0f),
                 "Frame composition carries mounted turrets and the sanity "
                 "gate rejects wrong-frame anchors");
+            {
+                // The drawn root node may stand further off the simulation's origin at speed.
+                Check(Halo3RootNodeReachWu(0.0f) == 1.0f && std::fabs(Halo3RootNodeReachWu(60.0f) - 7.0f) < 1.0e-4f &&
+                          Halo3RootNodeReachWu(1.0e6f) == 1.0f + kHalo3RootNodeMaxSpeedWu * kHalo3RootNodeLagSeconds &&
+                          Halo3RootNodeReachWu(std::nanf("")) == 1.0f,
+                      "root node reach: a world unit at rest, more at speed, capped, and a bad speed is rest");
+                Halo3StepSpeed track;
+                const float p0[3] = {0.0f, 0.0f, 0.0f}, p1[3] = {2.0f, 0.0f, 0.0f}, p2[3] = {4.0f, 0.0f, 0.0f};
+                const bool first = Halo3StepSpeedUpdate(track, p0, 10.0) == 0.0f;
+                const bool held = Halo3StepSpeedUpdate(track, p0, 10.01) == 0.0f;   // no step yet
+                const float stepped = Halo3StepSpeedUpdate(track, p1, 10.0333);     // 2 wu in a 30 Hz tick
+                const float between = Halo3StepSpeedUpdate(track, p1, 10.05);       // a frame inside the tick
+                const float next = Halo3StepSpeedUpdate(track, p2, 10.0667);
+                const float still = Halo3StepSpeedUpdate(track, p2, 10.7);          // stopped
+                const float jump = Halo3StepSpeedUpdate(track, p0, 12.0);           // a step after a long gap
+                Check(first && held && std::fabs(stepped - 60.0f) < 0.5f && std::fabs(between - 60.0f) < 0.5f &&
+                          std::fabs(next - 60.0f) < 0.5f && still == 0.0f && jump == 0.0f,
+                      "step speed: each tick's step over the time since the last, held between ticks, 0 once still");
+                Halo3StepSpeed moving;
+                (void)Halo3StepSpeedUpdate(moving, p0, 20.0);
+                (void)Halo3StepSpeedUpdate(moving, p1, 20.0333);                  // 60 wu/s along +x: reach 7 wu
+                const float behind[3] = {-5.0f, 0.3f, 0.0f}, aside[3] = {0.0f, 4.0f, 0.0f}, tooFar[3] = {-9.0f, 0.0f, 0.0f};
+                Halo3StepSpeed resting;
+                Check(Halo3RootNodeWithinReach(behind, moving) && !Halo3RootNodeWithinReach(aside, moving) &&
+                          !Halo3RootNodeWithinReach(tooFar, moving) && !Halo3RootNodeWithinReach(behind, resting),
+                      "root node reach: along the motion it grows with speed, off it a world unit, at rest a world unit");
+            }
+            // A giant: HugeGrass's Lich has a live sphere of 112.25 wu, and its seat's frame stands inside it.
+            const float lichCenter[3] = {40.0f, -12.0f, 30.0f};
+            const float lichOrigin[3] = {10.0f, 5.0f, 2.0f};
+            Check(Halo3AnchorWithinBounds(lichOrigin, lichCenter, 112.25f, 2.0f) &&
+                      !Halo3AnchorWithinBounds(skyPos, boundsCenter, kHalo3MaxBoundsRadiusWu + 1.0f, 2.0f),
+                  "A giant vehicle's bounding sphere is a real one; past the limit is still a bad read");
         }
 
         // C17 native parenting: calibration must preserve the exact Blender
@@ -18082,9 +19392,56 @@ int main()
                 !Halo3SeatFollowsPitch(Halo3VehicleId::Unknown, 0, false);
             Check(pitchSafe && hillSafe && sideSafe && pitchSeatPolicy,
                   "Vehicle pitch follow is roll-stable and seat-safe");
+            // The seat-drive honest reticle: a VR direction taken forward through
+            // the follow basis (as Game_ComputeAimStick maps a seat's target) comes
+            // back as the same VR direction, where undoing only the flat mapping
+            // leaves the hull's pitch on it. Unfollowed, it is the flat inverse.
+            constexpr float seatHeadYawRef = 0.9f;
+            constexpr float seatYawSign = -1.0f;
+            constexpr float seatPitchSign = 1.0f;
+            constexpr float seatSlope = 0.349066f;   // 20 degrees
+            float seatAim[9], seatVrYaw = 0.0f, seatVrPitch = 0.0f;
+            const float seatVrYawIn = 1.3f, seatVrPitchIn = -0.1f;
+            const bool seatComposed = Halo3ComposeRollStableFollowBasis(
+                0.4f, seatSlope, 0.7f,
+                seatYawSign * Halo3WrapPi(seatVrYawIn - seatHeadYawRef),
+                seatPitchSign * seatVrPitchIn, 0.0f, seatAim);
+            const bool seatFollowedRoundTrip = seatComposed &&
+                Halo3SeatAimToVrReticle(seatAim, true, 0.4f, seatSlope, 0.7f,
+                    seatHeadYawRef, seatYawSign, seatPitchSign,
+                    seatVrYaw, seatVrPitch) &&
+                approx(Halo3WrapPi(seatVrYaw - seatVrYawIn), 0.0f) &&
+                approx(seatVrPitch, seatVrPitchIn);
+            // Straight over the hood on the slope: the flat inverse reads the
+            // hull's 20 degrees as the reticle's pitch; the follow inverse, 0.
+            float hoodAim[9], hoodYaw = 0.0f, hoodPitch = 0.0f;
+            const bool hoodComposed = Halo3ComposeRollStableFollowBasis(
+                0.4f, seatSlope, 0.4f, 0.0f, 0.0f, 0.0f, hoodAim);
+            const bool seatHoodSafe = hoodComposed &&
+                approx(std::asin(hoodAim[2]), seatSlope) &&
+                Halo3SeatAimToVrReticle(hoodAim, true, 0.4f, seatSlope, 0.4f,
+                    seatHeadYawRef, seatYawSign, seatPitchSign,
+                    hoodYaw, hoodPitch) &&
+                approx(hoodPitch, 0.0f) &&
+                approx(Halo3WrapPi(hoodYaw - seatHeadYawRef), 0.0f);
+            const float flatSeatAim[3] = {
+                std::cos(-0.2f) * std::cos(0.5f),
+                std::cos(-0.2f) * std::sin(0.5f), std::sin(-0.2f)};
+            const bool seatFlatSafe =
+                Halo3SeatAimToVrReticle(flatSeatAim, false, 0.0f, 0.0f, 0.3f,
+                    seatHeadYawRef, seatYawSign, seatPitchSign,
+                    seatVrYaw, seatVrPitch) &&
+                approx(seatVrYaw,
+                    seatHeadYawRef + seatYawSign * Halo3WrapPi(0.5f - 0.3f)) &&
+                approx(seatVrPitch, seatPitchSign * -0.2f) &&
+                !Halo3SeatAimToVrReticle(badNose, false, 0.0f, 0.0f, 0.0f,
+                    0.0f, 1.0f, 1.0f, seatVrYaw, seatVrPitch) &&
+                !Halo3SeatAimToVrReticle(zeroAim, true, 0.0f, 0.0f, 0.0f,
+                    0.0f, 1.0f, 1.0f, seatVrYaw, seatVrPitch);
             const bool inverseSafe = inverseFollowSafe &&
                 inverseFlatSafe && inverseRejectsZero &&
-                inverseRejectsNonfinite;
+                inverseRejectsNonfinite && seatFollowedRoundTrip &&
+                seatHoodSafe && seatFlatSafe;
             Check(inverseSafe,
                   "World-space vehicle aim inverts to tracked yaw/pitch");
         }
@@ -19171,10 +20528,13 @@ int main()
         const float before=reference[0];
         body[0]+=10*scale;
         follow.Update(7,327,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
-        Check(mx==0 && my==0 && reference[0]==before, "teleport rebases demand without consuming false travel");
+        Check((mx!=0 || my!=0) && reference[0]==before,
+            "a teleport keeps the owed physical step, without consuming the jump as travel");
+        const float owedBefore=std::hypot(follow.error[0],follow.error[1]);
         head[0]+=2;
         follow.Update(7,338,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
-        Check(mx==0 && my==0, "tracking jump cannot become a long unattended walk");
+        Check(std::fabs(std::hypot(follow.error[0],follow.error[1])-owedBefore)<1e-4f,
+            "a tracking jump adds nothing to what is owed: it cannot become a long unattended walk");
         head[0]+=0.1f;
         follow.Update(8,349,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
         Check(mx==0 && my==0, "new title generation cancels pending movement");
@@ -19182,9 +20542,11 @@ int main()
         follow.Update(8,360,false,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
         Check(mx==0 && my==0 && !follow.seeded, "disabled roomscale leaves existing tracking reference alone");
         follow.Update(8,371,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
+        Check(mx!=0, "the step taken while roomscale was disabled is still owed when it comes back");
         head[0]+=0.1f;
         follow.Update(8,750,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
-        Check(mx==0 && my==0, "stale camera resumes without replaying physical movement");
+        Check(mx!=0 && std::fabs(follow.error[0]-0.2f)<1e-4f,
+            "a stale camera resumes owing everything walked while it was away (legs end up under you)");
         reference[0]=head[0]; reference[2]=head[2];
         follow.Update(8,761,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
         Check(mx==0 && my==0, "manual recenter cancels prior roomscale demand");
@@ -19192,7 +20554,464 @@ int main()
         Check(!follow.Update(8,772,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my) && mx==0 && my==0,
             "nonfinite tracking cannot produce locomotion");
     }
-    Check(!Config{}.roomscale_movement, "roomscale is opt-in for existing and new configurations");
+    // A follow the body does not answer (a deadzone above the stick floor, a wall) stands down after
+    // kStallMs, and does not restart until the head is a further kFollowStart away.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.05f; step();
+        Check((mx!=0 || my!=0) && follow.following, "a 5 cm step starts a follow");
+        for (int i=0;i<60;++i) step();   // ~660 ms of commanding with the body stuck
+        Check(mx==0 && my==0 && !follow.following, "a command the body never answers stands down");
+        head[0]=0.07f; step();
+        Check(mx==0 && my==0, "2 cm further does not restart a stood-down follow");
+        head[0]=0.085f; step();
+        Check((mx!=0 || my!=0) && follow.following, "3.5 cm further tries again");
+    }
+    // The A/B switch's threshold law (RoomscaleFollowOriginal, upstream verbatim, as it shipped in Alpha
+    // 0.6.0) is the law the hysteresis law changed: a 2.5 cm lean walks under it and not under hysteresis.
+    {
+        RoomscaleFollowOriginal thresholdLaw;
+        RoomscaleFollow hysteresisLaw;
+        float bodyA[3]{}, headA[3]{0,1.7f,0}, referenceA[3]{0,1.7f,0};
+        float bodyB[3]{}, headB[3]{0,1.7f,0}, referenceB[3]{0,1.7f,0};
+        float ax=0,ay=0,bx=0,by=0; uint64_t now=100;
+        auto step=[&]{now+=11;
+            thresholdLaw.Update(3,now,true,false,bodyA,headA,referenceA,0,-1,1,0,1.0f,ax,ay);
+            hysteresisLaw.Update(3,now,true,false,bodyB,headB,referenceB,0,-1,1,0,1.0f,bx,by);};
+        step();
+        headA[0]=headB[0]=0.025f; step();
+        Check((ax!=0 || ay!=0) && bx==0 && by==0,
+            "A/B: a 2.5 cm lean walks under the threshold law and not under the hysteresis law");
+    }
+    // Follow hysteresis: head sway inside kFollowStart never walks; once a follow starts it runs
+    // until the error is inside kFollowStop. (Head right = tracking +x; body right = world -y here.)
+    for (float scale : {0.328084f, 1.0f})
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,scale,mx,my);};
+        step();
+        head[0]=0.025f; step();
+        Check(mx==0 && my==0 && !follow.following, "a 2.5 cm lean (ordinary head sway) does not start a follow");
+        head[0]=0.035f; step();
+        Check((mx!=0 || my!=0) && follow.following, "a 3.5 cm lean starts a follow");
+        body[1]-=0.015f*scale; step();
+        Check(std::fabs(reference[0]-0.015f)<1e-5f && follow.following && (mx!=0 || my!=0),
+            "inside the start band but outside the stop band, an active follow keeps going");
+        body[1]-=0.01f*scale; step();
+        Check(!follow.following, "inside 1.5 cm the follow ends");
+        for (int i=0;i<6;++i) { now+=89; step(); }
+        head[0]+=0.015f; step();
+        Check(mx==0 && my==0 && !follow.following, "after it ends, sway back to 2.5 cm does not restart it");
+    }
+    // Brake by releasing: closing fast on the target, the command drops to zero instead of pointing
+    // back against the error (MCC's stick floor would make any reverse command a real walk back).
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.3f; step();
+        bool neverReversed=mx>0, released=false;
+        // Stop short of the target: this walker ignores the command, so past the head it would be a
+        // genuine overshoot, which the follow rightly corrects.
+        for (int i=0;i<40 && head[0]-reference[0]>0.02f;++i)
+        {
+            body[1]-=0.011f; step();   // 1 m/s toward the head
+            neverReversed&=mx>=0;
+            released|=(mx==0 && my==0);
+        }
+        Check(neverReversed && released, "approaching fast, the follow releases the stick instead of reversing it");
+    }
+    // Inside the stop band nothing is commanded, even while the body still coasts toward the head (MCC
+    // floors any nonzero move command to a >=27% stick: a fresh step, not a nudge). The coasting travel
+    // is still consumed into the reference.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.035f; step();
+        Check(follow.following && (mx!=0 || my!=0), "fixture: a 3.5 cm lean starts a follow");
+        for (int i=0;i<40 && follow.following;++i) { body[1]-=0.001f; step(); }   // ~9 cm/s toward the head
+        Check(!follow.following, "fixture: the follow ends inside the stop band");
+        const float consumed=reference[0];
+        body[1]-=0.001f; step();
+        Check(mx==0 && my==0, "a body still coasting inside the stop band is not commanded");
+        Check(reference[0]>consumed, "its coasting travel is still consumed into the reference");
+    }
+    // A stick press ends a running follow: once native travel is quiet again, a residual inside the
+    // start band stays quiet instead of resuming the old follow down to the stop band.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&](bool manual){now+=11;return follow.Update(3,now,true,manual,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step(false);
+        head[0]=0.035f; step(false);
+        Check(follow.following && (mx!=0 || my!=0), "fixture: a follow is running");
+        head[0]=0.025f; step(true);
+        Check(!follow.following && mx==0 && my==0, "the stick ends the follow");
+        bool quiet=true;
+        for (int i=0;i<30;++i) { step(false); quiet&=mx==0 && my==0 && !follow.following; }
+        Check(quiet && !follow.manualPaused, "a 2.5 cm residual does not resume walking after the stick");
+        head[0]=0.045f; step(false);
+        Check(follow.following && (mx!=0 || my!=0), "a lean past the start band still starts a new follow");
+    }
+    // A released stick pauses roomscale for a bounded time only: body motion that never stops (Reach's
+    // eye swinging as the aim turns the character) cannot hold the pause open while the player walks off.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&](bool manual){now+=11;return follow.Update(3,now,true,manual,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step(false);
+        step(true);                                     // the stick
+        const uint64_t released=now;
+        head[0]=0.3f;                                   // then a 30 cm step away, still aiming around
+        bool resumed=false; uint64_t resumedAt=0; float swing=0.0005f;
+        for (int i=0;i<100 && !resumed;++i)
+        {
+            body[0]+=swing; swing=-swing;               // the eye swings half a millimetre every frame
+            step(false);
+            if (mx!=0 || my!=0) { resumed=true; resumedAt=now; }
+        }
+        Check(resumed && resumedAt-released<=RoomscaleFollow::kManualPauseMaxMs+22,
+            "aim swing cannot hold the manual pause open: the follow resumes within kManualPauseMaxMs");
+        Check(resumed && resumedAt-released>=150, "the pause still covers the stick's braking tail");
+        Check(follow.probing, "ended by the cap, the next run is a probe (the body may still move on its own)");
+        for (int i=0;i<5;++i) { body[0]+=swing; swing=-swing; step(false); }
+        Check((mx!=0 || my!=0) && !follow.stalled,
+            "the eye's half-millimetre swing is not a jump: the probe keeps following");
+    }
+    // The owed distance survives an interruption (otherwise the body is left standing away from the player).
+    // Tracking or admission goes away while the player walks 0.6 m; when it comes back the body still
+    // owes the whole 0.6 m -- the offset at the moment of return is NOT the new "under me".
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&](bool enabled){now+=11;return follow.Update(3,now,enabled,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step(true);
+        for (int i=0;i<30;++i) { head[0]+=0.02f; step(false); }   // tracking lost; the player walks 0.6 m
+        for (int i=0;i<5;++i) step(true);                           // tracking back
+        Check(std::fabs(follow.error[0]-0.6f)<1e-4f && (mx!=0 || my!=0),
+            "after a tracking gap the whole distance walked is still owed, and the body walks it");
+        // The same across an admission change (the camera rebases the follow in progress).
+        follow.Rebase();
+        step(true);
+        Check(std::fabs(follow.error[0]-0.6f)<1e-4f && (mx!=0 || my!=0),
+            "an admission change ends the follow in progress but keeps what is owed");
+        // A recenter is the one thing that says the player is over the body again.
+        reference[0]=head[0]; reference[2]=head[2];
+        step(true);
+        Check(mx==0 && my==0 && std::fabs(follow.error[0])<1e-4f, "a recenter clears what is owed");
+    }
+    // ...over the body at THAT instant. A recenter that lands while the follow is not admitted (F1, a seat, a
+    // pause; ODST recenters at every unpause) bakes nothing into the lean: the step after it is owed.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&](bool enabled){now+=11;return follow.Update(3,now,enabled,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step(true);
+        head[0]=0.2f; step(false);
+        reference[0]=head[0]; reference[2]=head[2];                  // the recenter, while not admitted
+        for (int i=0;i<20;++i) { head[0]+=0.02f; step(false); }     // then a 0.4 m step before admission returns
+        step(true);
+        Check(std::fabs(follow.initialLean[0])<1e-6f && std::fabs(follow.error[0]-0.4f)<1e-4f && (mx!=0 || my!=0),
+            "a recenter noticed late bakes nothing into the lean: the step after it is owed and walked");
+    }
+    // A tracking fault is not owed. A head that jumps further between two updates than a person can
+    // is folded into the neutral lean; a debt larger than any play space is dropped.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]+=1.0f; step();
+        Check(mx==0 && my==0 && std::fabs(follow.error[0])<1e-4f, "a 1 m head jump in one frame is not walked");
+        head[0]+=0.2f; step();
+        Check(mx!=0 && std::fabs(follow.error[0]-0.2f)<1e-4f, "a real step after the jump is still followed");
+        // Walking away in ordinary steps past kMaxDebtM (the follow cannot move this body) is dropped.
+        for (int i=0;i<200 && follow.error[0]<RoomscaleFollow::kMaxDebtM-0.05f;++i) { head[0]+=0.05f; step(); }
+        head[0]+=0.1f; step();
+        Check(mx==0 && my==0 && std::fabs(follow.error[0])<1e-4f,
+            "a debt larger than any play space is a tracking fault, never a long walk");
+    }
+    // A tracking jump moves the REFERENCE: the view (head minus reference) does not jump with the fault,
+    // so the body stays under the player.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        const float viewBefore=head[0]-reference[0];
+        head[0]+=1.0f; step();
+        Check(std::fabs((head[0]-reference[0])-viewBefore)<1e-4f && std::fabs(follow.initialLean[0])<1e-6f,
+            "a head jump is folded into the reference: the view does not jump and nothing is baked into the lean");
+        // ...and a debt past kMaxDebtM puts the view back over the body.
+        for (int i=0;i<200 && follow.error[0]<RoomscaleFollow::kMaxDebtM-0.05f;++i) { head[0]+=0.05f; step(); }
+        head[0]+=0.1f; step();
+        Check(std::fabs((head[0]-reference[0])-follow.initialLean[0])<1e-4f,
+            "a debt larger than any play space returns the view over the body");
+    }
+    // A level's first admission puts the reference over the head (the title captured it earlier, tracked
+    // or not): nothing is baked into the lean.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0.55f,1.7f,-0.2f}, reference[3]{0,1.7f,0};
+        float mx=0,my=0;
+        Check(follow.Update(5,100,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my) &&
+              reference[0]==0.55f && reference[2]==-0.2f && reference[1]==1.7f &&
+              follow.initialLean[0]==0 && follow.initialLean[1]==0 && mx==0 && my==0,
+            "a new generation's first seed moves the reference to the head, horizontally, without a walk");
+    }
+    // The first run after any re-seed other than a level start or a recenter is a probe; and while we push,
+    // travel against the push is never our step. Halo 4 leaving third person: the camera glides back to
+    // the eye while the follow pushes, and that glide must not be claimed as a walk.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.3f; step();
+        Check(!follow.probing && (mx!=0 || my!=0), "fixture: a level's first run is an ordinary follow");
+        follow.Rebase(); step();
+        Check(follow.probing && (mx!=0 || my!=0), "after an admission change the first run is a probe");
+        const float kept=reference[0];
+        body[1]-=0.3f; step();   // the camera arrives back at the eye in one 30 cm chunk, the way it pushes
+        Check(reference[0]==kept && follow.stalled && follow.guard==RoomscaleFollow::Guard::NotOurs,
+            "a probe does not claim the camera's glide back to the eye");
+    }
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.4f; step();
+        for (int i=0;i<3;++i) { body[1]-=0.02f; step(); }   // walking toward the head: claimed
+        Check(reference[0]>0.05f && (mx!=0 || my!=0), "fixture: a running follow claims its walk");
+        const float kept=reference[0];
+        bool unclaimed=true;
+        for (int i=0;i<5;++i)
+        {
+            body[1]+=0.04f; step();   // pushed toward the head, the body point goes the other way
+            unclaimed&=reference[0]==kept && follow.guard==RoomscaleFollow::Guard::NotOurs;
+        }
+        Check(unclaimed && (mx!=0 || my!=0), "travel against the push while we push is not claimed; the follow keeps pushing");
+        // A body still coasting the old way just after the command turns IS ours: overshoot past the head.
+        RoomscaleFollow turn;
+        float tb[3]{}, th[3]{0,1.7f,0}, tr[3]{0,1.7f,0};
+        now=100;
+        auto tstep=[&]{now+=11;return turn.Update(3,now,true,false,tb,th,tr,0,-1,1,0,1.0f,mx,my);};
+        tstep();
+        th[0]=0.1f; tstep();
+        for (int i=0;i<5;++i) { tb[1]-=0.03f; tstep(); }   // 15 cm toward a 10 cm target: 5 cm past it
+        Check(turn.following && (mx<0 || my!=0), "fixture: an overshoot past the start band turns the command");
+        const float coastedFrom=tr[0];
+        tb[1]-=0.02f; tstep();                             // still coasting the old way as the command turns
+        Check(tr[0]>coastedFrom, "the body coasting the old way just after the command turns is still claimed");
+        bool coastClaimed=true;
+        for (int i=0;i<3;++i)
+        {
+            const float before=tr[0];
+            tb[1]-=0.01f; tstep();   // the game's deceleration spans several updates
+            coastClaimed&=tr[0]>before && turn.guard!=RoomscaleFollow::Guard::NotOurs;
+        }
+        Check(coastClaimed, "the coast stays claimed for as long as it lasts, not one update");
+    }
+    // The stopping tail is claimed only while the body keeps moving the way the follow walked: travel
+    // against that direction (a platform, a knockback) ends the tail unclaimed.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.10f; step();
+        for (int i=0;i<40 && follow.following;++i) { body[1]-=0.01f; step(); }
+        Check(!follow.following && follow.settling, "fixture: the follow has ended and the tail is settling");
+        const float kept=reference[0];
+        body[1]+=0.004f; step();   // the body is pushed back, against the walk
+        Check(reference[0]==kept && !follow.settling, "travel against the walked direction ends the tail unclaimed");
+    }
+    // And the tail is bounded: however steadily the body keeps drifting the walked way, nothing is claimed
+    // more than kSettleMaxMs after the last command.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.10f; step();
+        for (int i=0;i<40 && follow.following;++i) { body[1]-=0.01f; step(); }
+        const uint64_t lastCommand=follow.lastCommand;
+        bool claimedLate=false, claimedEarly=false;
+        for (int i=0;i<90;++i)
+        {
+            const float before=reference[0];
+            body[1]-=0.0002f; step();   // a slow, steady drift the walked way
+            if (reference[0]!=before)
+            {
+                if (now-lastCommand>RoomscaleFollow::kSettleMaxMs) claimedLate=true;
+                else claimedEarly=true;
+            }
+        }
+        Check(claimedEarly && !claimedLate, "the tail is claimed up to kSettleMaxMs after the last command, never after");
+    }
+    // A unit that ignores the stick is not pushed forever, and what it does meanwhile is not claimed.
+    // Reach stops control for 2-7 s at a time (measured); a follow that keeps commanding through that
+    // consumes the body point's jump as control comes back and chases it 2.2 m out and
+    // back at full stick. Here: an 8 cm lean, a unit that never moves, then the body point swinging
+    // 0.4 m back and 0.7 m on in 30 Hz sim-tick chunks (Head right = tracking +x; body right = world -y).
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.08f; step();
+        Check(mx!=0 || my!=0, "fixture: an 8 cm lean starts a follow");
+        const uint64_t pushed=now;
+        uint64_t stoodAt=0;
+        for (int i=0;i<80 && !stoodAt;++i) { step(); if (mx==0 && my==0) stoodAt=now; }
+        Check(stoodAt && stoodAt-pushed>=RoomscaleFollow::kNoResponseMs &&
+              stoodAt-pushed<=RoomscaleFollow::kNoResponseMs+11 && follow.stalled,
+            "a unit that ignores the stick for kNoResponseMs is stood down");
+        bool untouched=true;
+        const float kept=reference[0];
+        for (float d : {-0.13f,0.f,0.f,-0.13f,0.f,0.f,-0.14f,0.f,0.f,0.23f,0.f,0.f,0.24f,0.f,0.f,
+                        0.23f,0.f,0.f,-0.2f,0.f,0.f,-0.1f})
+        {
+            body[1]-=d; step();
+            untouched&=mx==0 && my==0 && reference[0]==kept;
+        }
+        Check(untouched, "while stood down, the body point's swing is neither followed nor claimed");
+        const uint64_t swingEnded=now;
+        uint64_t resumedAt=0;
+        for (int i=0;i<40 && !resumedAt;++i) { step(); if (mx!=0 || my!=0) resumedAt=now; }
+        Check(resumedAt && resumedAt-swingEnded>=RoomscaleFollow::kStallQuietMs &&
+              resumedAt-swingEnded<=RoomscaleFollow::kStallQuietMs+22,
+            "once the body point is still again, the follow resumes");
+        Check(std::fabs(follow.error[0]-0.08f)<1e-4f && follow.probing,
+            "with the whole lean still owed, as a probe");
+        const float beforeJump=reference[0];
+        body[1]-=0.3f; step();
+        Check(reference[0]==beforeJump && follow.stalled && follow.guard==RoomscaleFollow::Guard::NotOurs,
+            "while probing, a 0.3 m jump the way it pushes is the game moving him: stood down, unclaimed");
+        body[1]+=0.3f;
+        for (int i=0;i<40 && follow.stalled;++i) step();
+        bool sideways=false;
+        for (int i=0;i<3 && !sideways;++i)
+        {
+            const float before=reference[0];
+            body[0]+=0.02f; step();   // 2 cm across the push, per update
+            sideways=follow.stalled && reference[0]==before && follow.guard==RoomscaleFollow::Guard::NotOurs;
+        }
+        Check(sideways, "while probing, travel across the push is not our step either");
+    }
+    // Stood down with the body point never moving (a deadzone above the stick floor, a wall), the follow
+    // does not push again on a timer: it restarts when the head is a further kFollowStart away, as a
+    // probe, and a probe the unit answers becomes an ordinary follow again.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.08f; step();
+        uint64_t stoodAt=0;
+        for (int i=0;i<80 && !stoodAt;++i) { step(); if (mx==0 && my==0) stoodAt=now; }
+        bool held=stoodAt!=0;
+        for (int i=0;i<400;++i) { step(); held&=mx==0 && my==0; }   // 4.4 s with the body point still
+        Check(held && follow.stalled,
+            "stood down against a body that never moves, it does not push again on a timer");
+        head[0]=0.10f; step();
+        Check(mx==0 && my==0, "2 cm further does not restart it");
+        head[0]=0.115f; step();
+        Check((mx!=0 || my!=0) && follow.probing, "3.5 cm further tries again, as a probe");
+        for (int i=0;i<20 && follow.following;++i) { body[1]-=0.011f; step(); }   // 1 m/s the way it pushes
+        Check(!follow.probing && !follow.stalled && reference[0]>0.05f,
+            "a probe the unit answers is an ordinary follow again, its travel claimed");
+    }
+    // ...and a stand-down ends quietly when the player walks back over the body.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.08f; step();
+        for (int i=0;i<80 && !follow.stalled;++i) step();
+        head[0]=0.01f; step();
+        Check(follow.stalled==false && !follow.probing && mx==0 && my==0,
+            "walking back over the body ends a stand-down with nothing to walk");
+    }
+    // A run that WALKS and then stops answering, still commanding, stands down too -- not only a run
+    // that never moved. Measured: 0.5 m steps in Halo 3, Halo 2 and Halo CE walk most of the way,
+    // then stop 16-27 mm short (past the stop band) while a 0.06-0.09 command the unit never moves
+    // for runs on. The native walker decelerates gradually, so the brake-by-release
+    // never zeroes the command in between and the run never restarts: progress counted from the start
+    // of the run (~0.48 m) can never read as "no response".
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.5f; step();
+        Check(follow.following && (mx!=0 || my!=0), "fixture: a 0.5 m step starts a follow");
+        bool gap=false, stood=false;
+        for (int i=0;i<300 && !stood;++i)
+        {
+            // Up to ~0.9 m/s, easing to a stop 2 cm short (the walker's own braking).
+            body[1]-=std::min(0.01f,std::max(0.0f,(follow.error[0]-0.02f)*0.15f));
+            step();
+            stood=follow.stalled && mx==0 && my==0;
+            gap|=!stood && mx==0 && my==0;
+        }
+        Check(!gap, "fixture: the command never paused on the way in (one run throughout)");
+        Check(stood && follow.guard!=RoomscaleFollow::Guard::NotOurs && follow.error[0]>RoomscaleFollow::kFollowStop,
+            "a run that walked most of the way and then stopped answering stands down, short of the stop band");
+        head[0]+=0.02f; step();
+        Check(mx==0 && my==0, "and 2 cm further does not restart it");
+    }
+    // An unpause is not a lost title. The sim resumes a moment after the pause flag clears (Reach:
+    // ~1.5 s measured in a Falcon, where nothing else stamps the heartbeat), so the teardown waits
+    // kTitlePauseResumeGraceMs from the unpause before a stale heartbeat counts.
+    {
+        const uint64_t lastBeat=10'000, unpaused=23'700;   // paused ~13 s, then the flag clears
+        Check(!TitleHeartbeatLost(20'000,lastBeat,true,0,1000), "a paused title is never lost");
+        Check(!TitleHeartbeatLost(unpaused+1'500,lastBeat,false,unpaused,1000),
+            "1.5 s after an unpause, before the sim resumes, the title is not lost");
+        Check(!TitleHeartbeatLost(unpaused+1'600,unpaused+1'450,false,unpaused,1000),
+            "once the sim stamps again the heartbeat is fresh");
+        Check(TitleHeartbeatLost(unpaused+kTitlePauseResumeGraceMs+1,lastBeat,false,unpaused,1000),
+            "a title that never resumes after the unpause is lost once the grace ends");
+        Check(TitleHeartbeatLost(5'001,4'000,false,0,1000) && !TitleHeartbeatLost(5'000,4'000,false,0,1000),
+            "outside any pause, more than one second without a heartbeat is lost");
+        Check(!TitleHeartbeatLost(5'000,0,false,0,1000) && !TitleHeartbeatLost(3'000,4'000,false,0,1000),
+            "no heartbeat yet, or one stamped after this frame read the clock, never tears down");
+        // Halo 4's level-exit rule (2.5 s of an unchanged camera serial) has the same shape: its pause screen
+        // renders stock windows, so the serial stands still for the whole pause.
+        Check(!TitleHeartbeatLost(unpaused+50,lastBeat,false,unpaused,2500),
+            "Halo 4: the first worker tick after a 13 s pause is not a level exit");
+        Check(TitleHeartbeatLost(unpaused+kTitlePauseResumeGraceMs+1,lastBeat,false,unpaused,2500),
+            "Halo 4: a level quit from the pause menu still retires the core once the grace ends");
+    }
+    Check(Config{}.roomscale_movement, "roomscale body movement is on for a new configuration");
 
     {
         ControllerFingerSample sample{9,123,7,false,
@@ -19213,7 +21032,137 @@ int main()
         const auto bounded=MakeControllerFingerInput(true,-.005f,true,1.005f);
         Check(bounded.valid&&bounded.trigger==0&&bounded.grip==1,"small analog endpoint noise remains bounded");
     }
+    {
+        // The session read: each layout's own offsets, built as the engine lays them out.
+        using namespace session_read;
+        struct Fixture
+        {
+            const Layout* layout;
+            alignas(8) uint8_t globals[0x40]{}, header[0x80]{}, count[0x100]{};
+            explicit Fixture(const Layout& l, int type, int players, uint64_t mask, int local) : layout(&l)
+            {
+                globals[0] = 1;
+                if (l.typeDword) { const uint32_t v = uint32_t(type); std::memcpy(globals + l.typeOffset, &v, 4); }
+                else globals[l.typeOffset] = uint8_t(type);
+                std::memcpy(header, "players", 8);
+                const uint32_t signature = kDataArraySignature;
+                const int32_t maximum = 16;
+                if (l.wideHeader)
+                {
+                    const uint64_t size = l.datumSize;
+                    std::memcpy(header + 0x20, &size, 8);
+                    std::memcpy(header + 0x28, &signature, 4);
+                    std::memcpy(header + 0x2C, &maximum, 4);
+                }
+                else
+                {
+                    std::memcpy(header + 0x20, &maximum, 4);
+                    std::memcpy(header + 0x24, &l.datumSize, 4);
+                    std::memcpy(header + 0x2C, &signature, 4);
+                }
+                const int32_t p = players, me = local;
+                std::memcpy(count, &p, 4);
+                if (l.mask64) std::memcpy(count + l.maskOffset, &mask, 8);
+                else { const uint32_t m = uint32_t(mask); std::memcpy(count + l.maskOffset, &m, 4); }
+                std::memcpy(count + l.localOffset, &me, 4);
+            }
+            Session read() const { return Read(globals, header, count, *layout); }
+        };
+        for (const Layout* layout : {&kHalo3, &kOdst, &kReach, &kHalo4, &kHalo2})
+        {
+            Fixture solo(*layout, 3, 1, 0x1, 0);
+            Session s = solo.read();
+            Check(s.type == 3 && s.players == 1 && s.others == 0, "session: a solo level is a sync-server with one player");
+            Fixture host(*layout, 3, 2, 0x3, 0);
+            s = host.read();
+            Check(s.type == 3 && s.players == 2 && s.others == 1, "session: a co-op host has the same type and another machine");
+            Fixture joiner(*layout, 2, 3, 0x7, 2);
+            s = joiner.read();
+            Check(s.type == 2 && s.players == 3 && s.others == 2, "session: a joiner's own machine bit is not counted");
+            Fixture wrongSize(*layout, 3, 1, 0x1, 0);
+            wrongSize.header[layout->wideHeader ? 0x20 : 0x24] ^= 0x08;
+            s = wrongSize.read();
+            Check(s.type == 3 && s.players == kNotRead && s.others == kNotRead,
+                "session: another build's players array proves nothing beside it");
+            Fixture wrongName(*layout, 3, 1, 0x1, 0);
+            wrongName.header[0] = 'q';
+            Check(wrongName.read().players == kNotRead, "session: the array must carry its own name");
+            Fixture noLocal(*layout, 3, 2, 0x3, -1);
+            s = noLocal.read();
+            Check(s.players == 2 && s.others == kNotRead, "session: without a local machine the others are not read");
+            Fixture garbage(*layout, 3, 99, 0x1, 0);
+            Check(garbage.read().players == kNotRead, "session: a count past sixteen players is not believed");
+            Check(Read(nullptr, host.header, host.count, *layout).type == kNotRead &&
+                Read(host.globals, nullptr, host.count, *layout).players == kNotRead &&
+                Read(host.globals, host.header, nullptr, *layout).players == kNotRead,
+                "session: a missing pointer reads nothing past it");
+            if (layout->progressFlags)
+            {
+                Fixture idle(*layout, 3, 1, 0x1, 0);
+                idle.globals[0] = idle.globals[1] = 0;
+                Check(idle.read().type == kNotRead, "session: no game in progress has no type");
+            }
+        }
+        {
+            Fixture wide(kHalo4, 5, 4, (uint64_t(1) << 16) | 0x1F | (uint64_t(1) << 40), 16);
+            const Session s = wide.read();
+            Check(s.type == 5 && s.players == 4 && s.others == 5,
+                "session: Halo 4's mask is 64 bits wide and only its 17 machine bits count");
+        }
+        {
+            alignas(8) uint8_t tls[0x200]{};
+            Fixture host(kReach, 3, 2, 0x3, 1);
+            const uint8_t* pointers[3]{host.globals, host.header, host.count};
+            std::memcpy(tls + kReachSlots.gameGlobals, &pointers[0], sizeof(void*));
+            std::memcpy(tls + kReachSlots.playersArray, &pointers[1], sizeof(void*));
+            std::memcpy(tls + kReachSlots.countBlock, &pointers[2], sizeof(void*));
+            const Session s = ReadTls(tls, kReachSlots, kReach);
+            Check(s.type == 3 && s.players == 2 && s.others == 1, "session: the three pointers come from the engine's TLS block");
+            Check(ReadTls(nullptr, kReachSlots, kReach).type == kNotRead, "session: no TLS block reads nothing");
+        }
+        {
+            // Whether a one-machine change can end the session, from the three facts as they were read in play.
+            const auto standing = [](int type, int players, int others) {
+                Session s{};
+                s.type = type;
+                s.players = players;
+                s.others = others;
+                return Classify(s);
+            };
+            Check(standing(3, 1, 0) == Standing::Alone && OneMachineChangesSafe(Standing::Alone),
+                "session: a synchronous server with one player and no other machine is alone");
+            Check(standing(3, 2, 1) == Standing::Shared && standing(2, 2, 1) == Standing::Shared &&
+                !OneMachineChangesSafe(Standing::Shared), "session: a co-op host and a co-op joiner share a simulation");
+            Check(standing(3, 2, 0) == Standing::Shared && standing(3, 1, 1) == Standing::Shared,
+                "session: either count alone says someone else is here");
+            Check(standing(2, 1, 0) == Standing::Shared, "session: a synchronous client is never alone");
+            Check(standing(4, 2, 1) == Standing::Authoritative && standing(5, 1, 0) == Standing::Authoritative &&
+                OneMachineChangesSafe(Standing::Authoritative), "session: a distributed game has an authority");
+            Check(standing(3, kNotRead, kNotRead) == Standing::Unknown && standing(3, 1, kNotRead) == Standing::Unknown &&
+                standing(3, kNotRead, 0) == Standing::Unknown && standing(kNotRead, 1, 0) == Standing::Unknown &&
+                standing(0, 1, 0) == Standing::Unknown && standing(9, 1, 0) == Standing::Unknown &&
+                !OneMachineChangesSafe(Standing::Unknown), "session: anything not read is not safe");
+            // The gate: a settled run of fresh safe notes opens it; anything else closes it or starts the run again.
+            unsigned notes = 0;
+            for (unsigned i = 0; i < kGateSettleNotes - 1; ++i)
+                notes = GateNote(notes, true, i != 0);
+            Check(!GateOpen(notes, 0), "gate: one note short of the run it stays closed");
+            notes = GateNote(notes, true, true);
+            Check(GateOpen(notes, 0) && GateOpen(notes, kGateStaleMs), "gate: a settled run of safe notes opens it");
+            Check(!GateOpen(notes, kGateStaleMs + 1), "gate: notes that stop coming close it");
+            Check(GateNote(notes, true, false) == 1 && !GateOpen(GateNote(notes, true, false), 0),
+                "gate: a note after a gap, or from another title, starts the run again");
+            Check(GateNote(notes, false, true) == 0, "gate: one note that is not safe closes it at once");
+            Check(GateNote(0x7FFFFFFFu, true, true) == 0x7FFFFFFFu, "gate: the run does not wrap");
+        }
+        Check(std::strcmp(TypeName(3), "sync-server") == 0 && std::strcmp(TypeName(2), "sync-client") == 0 &&
+            std::strcmp(TypeName(4), "dist-client") == 0 && std::strcmp(TypeName(9), "unknown") == 0,
+            "session: the type names are the game's own");
+    }
     g_failures += RunRoomscaleInputTests();
+    g_failures += RunRoomscaleRecenterTests();
+    g_failures += RunRoomscaleAdmissionTests();
+    g_failures += RunDirectorCameraTests();
     if (g_failures == 0)
         std::cout << "HaloMCCVR core tests passed\n";
     return g_failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

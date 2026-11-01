@@ -2,6 +2,8 @@ bool RemoveHalo3DualAim()
 {
     auto& feature = g_halo3Dual;
     feature.enabled.store(false, std::memory_order_release);
+    feature.chaseCamera.store(nullptr, std::memory_order_release);   // callers hold the callback count: the wait covers them
+    feature.chaseGeneration.store(0, std::memory_order_release);
     void** targets[]{&feature.fireTarget, &feature.aimTarget,&feature.queryTarget,&feature.cameraTarget};
     bool any = false;
     for (auto target : targets)
@@ -12,7 +14,14 @@ bool RemoveHalo3DualAim()
         if (status != MH_OK && status != MH_ERROR_DISABLED && status != MH_ERROR_NOT_CREATED)
         { LOG("Halo 3 dual aim CleanupRequired: disable failed"); return false; }
     }
-    if (!any) return RemoveHalo3Muzzle();
+    if (!any)
+    {
+        // No hook to retire, but the chase path is asked without this lane's hooks and may be mid-ask on a
+        // simulation thread. It is unbound above, so no new ask reaches the game; one already inside holds the count.
+        if (feature.callbacks.load(std::memory_order_acquire) != 0)
+        { LOG("Halo 3 dual aim CleanupRequired: a chase camera ask is still running"); return false; }
+        return RemoveHalo3Muzzle();
+    }
     const void* functions[]{reinterpret_cast<const void*>(&Halo3IndependentFireDetour),
         reinterpret_cast<const void*>(&Halo3IndependentAimDetour),
         reinterpret_cast<const void*>(&Halo3IndependentQueryDetour),
@@ -43,6 +52,52 @@ bool RemoveHalo3DualAim()
     feature.queryOriginal=nullptr;
     feature.cameraOriginal=nullptr;
     return true;
+}
+
+// THE EVALUATOR'S CHASE PATH (seat_upstream_logic.h 4b and StockCamera): never hooked, only ever called under the
+// lane's callback count (Halo3AskChaseCamera). It is the start of a stock seat's crosshair line, so it is bound
+// whether or not this lane's hooks went in -- also in a host that hooks the evaluator's entry itself, where the
+// evaluator's own signature no longer reads. Resolved from the evaluator's body, never assumed:
+//   * the evaluator is the one expected: its call at 0x2121B8 goes to the seat's third-person test 0x1326E8 (a link
+//     a hook on either function's entry leaves in place);
+//   * its branch `test eax, eax; jne; call <first person>; jmp; call <chase>` at 0x2121C7 matches;
+//   * the chase call lands on a function whose body matches uniquely in the module.
+// Unbound: a stock seat's record is solved from the last crosshair query's start, and the log says so.
+// ADDR-HYGIENE: resolved (decoded from the evaluator's body) + guarded (the evaluator's own call target, and a
+// unique body signature at the decoded target).
+void BindHalo3ChaseCamera(uintptr_t base, size_t size, uint32_t generation)
+{
+    auto& feature = g_halo3Dual;
+    feature.chaseCamera.store(nullptr, std::memory_order_release);
+    feature.chaseGeneration.store(0, std::memory_order_release);
+    feature.chaseFaulted.store(false, std::memory_order_release);
+    static constexpr char kChaseBody[] =
+        "48 89 5C 24 08 48 89 6C 24 18 48 89 74 24 20 57 41 56 41 57 48 83 EC 50 44 8B 0D ?? ?? ?? ?? 33 DB 65 48 8B "
+        "04 25 58 00 00 00 4C 8B FA 48 8B 15 ?? ?? ?? ?? 49 8B E8 44 8B F1";
+    const auto* branch = reinterpret_cast<const uint8_t*>(base + 0x2121C7);
+    const bool shape = size > 0x2121D7 && branch[0] == 0x85 && branch[1] == 0xC0 && branch[2] == 0x75 &&
+        branch[3] == 0x07 && branch[4] == 0xE8 && branch[9] == 0xEB && branch[10] == 0x05 && branch[11] == 0xE8;
+    uintptr_t test = 0;
+    const uintptr_t testCall = base + seat_view::kHalo3EvaluatorCallRva;
+    const bool evaluator = generation && shape &&
+        seat_view::ReadCall(reinterpret_cast<const uint8_t*>(testCall), testCall, test) &&
+        test == base + seat_view::kHalo3ThirdPersonRva;
+    const uintptr_t chase = evaluator ? base + 0x2121D7 + *reinterpret_cast<const int32_t*>(branch + 12) : 0;
+    const uintptr_t hit = chase ? sig::Find(base, size, kChaseBody) : 0;
+    if (!chase || hit != chase || sig::Find(hit + 1, base + size - hit - 1, kChaseBody))
+    {
+        LOG("Halo 3 seat stock camera: the evaluator's chase path did not bind (branch %s, the evaluator's call to "
+            "the third-person test %s, body %s); a seat's record is solved from the last crosshair query's start, so "
+            "only while the gun fires",
+            shape ? "matched" : "changed", evaluator ? "matched" : "changed or not read",
+            hit ? (hit == chase ? "ambiguous" : "elsewhere") : "missing");
+        return;
+    }
+    feature.chaseGeneration.store(generation, std::memory_order_release);
+    feature.chaseCamera.store(reinterpret_cast<Halo3ChaseCameraFn>(chase), std::memory_order_release);
+    LOG("Halo 3 seat stock camera: the evaluator's chase path bound at +0x%llX (from the evaluator's call +0x2121D2); "
+        "a seat's record is solved from it at every control pass",
+        static_cast<unsigned long long>(chase - base));
 }
 
 bool InstallHalo3DualAim(uintptr_t base, size_t size, uint32_t generation)
@@ -112,8 +167,8 @@ bool InstallHalo3DualAim(uintptr_t base, size_t size, uint32_t generation)
         {LOG("Halo 3 dual aim StockFallback: native query/camera hook creation failed");(void)RemoveHalo3DualAim();return false;}
         *hook.target=target;
     }
-    if (MH_EnableHook(feature.cameraTarget)!=MH_OK || MH_EnableHook(feature.queryTarget)!=MH_OK ||
-        MH_EnableHook(feature.aimTarget) != MH_OK || MH_EnableHook(feature.fireTarget) != MH_OK)
+    if (MCCVR_EnableHook(feature.cameraTarget)!=MH_OK || MCCVR_EnableHook(feature.queryTarget)!=MH_OK ||
+        MCCVR_EnableHook(feature.aimTarget) != MH_OK || MCCVR_EnableHook(feature.fireTarget) != MH_OK)
     {
         LOG("Halo 3 dual aim StockFallback: hook enable failed");
         (void)RemoveHalo3DualAim();
@@ -121,7 +176,53 @@ bool InstallHalo3DualAim(uintptr_t base, size_t size, uint32_t generation)
     }
     feature.enabled.store(true, std::memory_order_release);
     (void)InstallHalo3Muzzle(base,size);
-    LOG("Halo 3 dual aim Installed: optional independent controller rays with native per-shot acquisition; option=%d; single weapon, vehicles and remote units retain native aim",g_config.independent_dual_aim?1:0);
+    LOG("Halo 3 dual aim Installed: optional independent controller rays with native per-shot acquisition; option=%d; single weapon, vehicles and remote units retain native aim",Sight_IndependentDualAim()?1:0);
+    return true;
+}
+
+// AIM FRAME ZOOM'S READ OF THE GAME'S ZOOM LEVEL when the lane above did not install -- a host that hooks one of
+// its other functions itself, as Project Reclaimer hooks the evaluator (+0x212198), refuses the whole lane. The
+// aim query's hook alone goes into the lane's own slot, so RemoveHalo3DualAim retires it like the lane's. With
+// the lane not enabled its detour captures nothing, stamps nothing and asks nothing of the game: it notes the
+// zoom level the game hands its own query and calls through.
+// ADDR-HYGIENE: guarded (the query's unique body signature at its recorded RVA, and the native call to it).
+bool InstallHalo3ZoomReader(uintptr_t base, size_t size, uint32_t generation)
+{
+    auto& feature = g_halo3Dual;
+    if (feature.fireTarget || feature.aimTarget || feature.queryTarget || feature.cameraTarget || !generation ||
+        size <= 0x13B100)
+        return false;
+    static constexpr char kQuery[] =
+        "48 8B C4 48 89 58 08 66 44 89 48 20 4C 89 40 18 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 18 FF FF FF 48 81 "
+        "EC B0 01 00";
+    const uintptr_t hit = sig::Find(base, size, kQuery);
+    const auto* call = reinterpret_cast<const uint8_t*>(base + 0xF4CC8);
+    if (hit != base + 0x13B08C || sig::Find(hit + 1, base + size - hit - 1, kQuery) || call[0] != 0xE8 ||
+        base + 0xF4CC8 + 5 + *reinterpret_cast<const int32_t*>(call + 1) != hit)
+    {
+        LOG("Halo 3 zoom reader: the aim query did not bind (missing, ambiguous or not called as expected); Aim "
+            "Frame Zoom has no zoom level here");
+        return false;
+    }
+    feature.base = base;
+    feature.generation = generation;
+    feature.faulted.store(false);
+    if (MH_CreateHook(reinterpret_cast<void*>(hit), reinterpret_cast<void*>(&Halo3IndependentQueryDetour),
+                      reinterpret_cast<void**>(&feature.queryOriginal)) != MH_OK)
+    {
+        LOG("Halo 3 zoom reader: hook creation failed; Aim Frame Zoom has no zoom level here");
+        feature.queryOriginal = nullptr;
+        return false;
+    }
+    feature.queryTarget = reinterpret_cast<void*>(hit);
+    if (MH_EnableHook(feature.queryTarget) != MH_OK)
+    {
+        LOG("Halo 3 zoom reader: hook enable failed; Aim Frame Zoom has no zoom level here");
+        (void)RemoveHalo3DualAim();
+        return false;
+    }
+    LOG("Halo 3 zoom reader: installed on the aim query alone (the dual aim lane did not install); Aim Frame Zoom "
+        "reads the game's zoom level from it");
     return true;
 }
 
@@ -137,8 +238,8 @@ void ReportHalo3DualAim()
         g_halo3Dual.rays[0].exchange(0), g_halo3Dual.rays[1].exchange(0),
         g_halo3Dual.refused.exchange(0));
     LOG("Halo 3 dual native targeting: queries=%llu restoreRefused=%llu option=%d",
-        g_halo3Dual.nativeQueries.exchange(0),g_halo3Dual.targetRestoresRefused.exchange(0),g_config.independent_dual_aim?1:0);
+        g_halo3Dual.nativeQueries.exchange(0),g_halo3Dual.targetRestoresRefused.exchange(0),Sight_IndependentDualAim()?1:0);
     LOG("Halo 3 barrel trajectory: enabled=%d fault=%d applied=%llu refused=%llu option=%d",
         g_halo3Muzzle.enabled.load()?1:0,g_halo3Muzzle.faulted.load()?1:0,
-        g_halo3Muzzle.applied.exchange(0),g_halo3Muzzle.refused.exchange(0),g_config.gun_barrel_aim?1:0);
+        g_halo3Muzzle.applied.exchange(0),g_halo3Muzzle.refused.exchange(0),Sight_GunBarrelAim()?1:0);
 }

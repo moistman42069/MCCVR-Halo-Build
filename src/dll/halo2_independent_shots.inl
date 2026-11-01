@@ -17,7 +17,7 @@ thread_local Halo2IndependentShotScope g_halo2IndependentShot;
 
 void RecordHalo2IndependentQuery()
 {
-    if(g_config.independent_dual_aim || g_config.gun_barrel_aim)
+    if(Sight_IndependentDualAim() || Sight_GunBarrelAim() || Sight_ShotsFromMuzzle())
         g_halo2IndependentQueryContext={Halo2OwnedUnit(),g_generation.load(),GetTickCount64()};
 }
 
@@ -55,7 +55,25 @@ __declspec(noinline) int32_t __fastcall Halo2IndependentCameraDetour(
     __try
     {
         if(!feature.cameraOriginal)__leave;
-        result=feature.cameraOriginal(unit,position,direction);
+        // Co-op safe: at a fire the evaluator answers the line the crosshair test starts on, from the unit's seat
+        // camera. The first-person seat override places that camera on this machine only, so for this call it
+        // stands down and the line is the one every machine computes.
+        if(reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x7597BD&&!Sight_FireTimeChangesAllowed())
+        {
+            NativeVehicleFirstPerson_SetStockOnThisThread(true);
+            __try {result=feature.cameraOriginal(unit,position,direction);}
+            __finally {NativeVehicleFirstPerson_SetStockOnThisThread(false);}
+        }
+        else
+            result=feature.cameraOriginal(unit,position,direction);
+        // Flat parity (halo2_fire_eye.inl): the firing assist's own call for our unit, before anything below
+        // replaces its outputs, is a free sample of the evaluator against the publication's engine eye.
+        if(position&&reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x7597BD&&unit==Halo2OwnedUnit())
+            Halo2NoteFireEyeProof(unit,shot_lag::Finite3(position)?position:nullptr,result);
+        // A local SEAT's fire: the engine's crosshair line becomes the player's own, through the seat's converged
+        // point (it may replace the position: after the proof sample above).
+        if(position&&direction&&reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x7597BD)
+            Halo2SeatFireReaim(unit,position,direction);
         const auto& shot=g_halo2IndependentShot;
         if(!shot.active || shot.query || unit!=shot.unit || !position || !direction ||
             reinterpret_cast<uintptr_t>(_ReturnAddress())!=feature.base+0x7597BD)__leave;
@@ -101,12 +119,26 @@ bool Halo2ReadIndependentWeapons(uint32_t unit,uint32_t (&weapons)[2],bool requi
 bool Halo2ReadIndependentPair(uint32_t unit,uint32_t (&weapons)[2])
 {return Halo2ReadIndependentWeapons(unit,weapons,true);}
 
+void Halo2DualShakeTick(uint32_t unit) noexcept
+{
+    if(!g_config.dual_wield_shake_reload||!g_halo2Dual.enabled.load()||
+        g_halo2Dual.generation!=g_generation.load())return;
+    __try {
+        uint32_t weapons[2]{};
+        if(Halo2IndependentTargetStorage(unit)&&Halo2ReadIndependentPair(unit,weapons))
+            VR_DualWieldObserveOwner(GameTitle::Halo2,g_generation.load(),unit,weapons);
+    } __except(EXCEPTION_EXECUTE_HANDLER) { /* Unknown ownership leaves native controls untouched. */ }
+}
+
+// `distance` (world units, >0): the acquisition aims at that point along the carrier instead of the
+// crosshair distance -- a shot from the muzzle through the converged point aims at the point itself. It must
+// be set before the query below, the only consumer of shot.distance on a muzzle shot.
 bool AcquireHalo2IndependentShot(uint32_t weapon,NativeShotTargetLease<0x24>& lease,
-    const weapon_muzzle::Receipt* muzzle=nullptr)
+    const weapon_muzzle::Receipt* muzzle=nullptr,float distance=0.0f)
 {
     auto& feature=g_halo2Dual;
     const auto query=reinterpret_cast<Halo2AimAssistCalculateFn>(g_aimAssistOriginal.load());
-    if(!feature.enabled.load() || feature.faulted.load() || (!muzzle&&!g_config.independent_dual_aim) ||
+    if(!feature.enabled.load() || feature.faulted.load() || (!muzzle&&!Sight_IndependentDualAim()) ||
         !Game_Halo2ControllerAimActive() || !Halo2Observer6Dof_FinalPaletteArmed() ||
         !Halo2Observer6Dof_DirectWeaponAimArmed() || !query ||
         !g_aimAssistViewDirectionOriginal.load() || feature.generation!=g_generation.load())return false;
@@ -140,7 +172,8 @@ bool AcquireHalo2IndependentShot(uint32_t weapon,NativeShotTargetLease<0x24>& le
         carrier=slot==0?primary:secondary;
     }
     g_halo2IndependentShot={true,true,false,context.unit,slot,carrier,
-        std::clamp(g_config.crosshair_distance_m,2.0f,50.0f)*Game_GetWorldScale(),muzzle!=nullptr};
+        std::isfinite(distance)&&distance>0.0f ? distance
+            : std::clamp(g_config.crosshair_distance_m,2.0f,50.0f)*Game_GetWorldScale(),muzzle!=nullptr};
     const auto previousRay=g_aimAssistControllerRayScope;
     g_aimAssistControllerRayScope={};
     g_aimAssistControllerRayScope.active=true;
@@ -284,8 +317,17 @@ __declspec(noinline) void __fastcall Halo2IndependentAimDetour(uint32_t unit,
                 false,false);
             __leave;
         }
+        // Where the fire starts as the caller filled it (the barrel's marker), before the native projects or
+        // obstruction-clamps it.
+        float entryOrigin[3]{};
+        const bool entryKnown=firingCall&&origin&&shot_lag::Finite3(origin);
+        if(entryKnown)std::memcpy(entryOrigin,origin,sizeof(entryOrigin));
         feature.aimOriginal(unit,origin,direction,marker,offset,projectOrigin,useUnitAim,collisionAdjust);
         if(!firingCall || !origin || !direction)__leave;
+        // A local seat's shot stays exactly as the engine built it here (the barrel, or the unit's own aim: its
+        // natural limits live in this direction); the dev witness only measures it against the traced point.
+        Halo2SeatNoteFireLine(unit,g_halo2MuzzleRequest.weapon,g_halo2MuzzleRequest.barrel,
+            entryKnown?entryOrigin:nullptr,origin,direction);
         const bool owned=shot.active && !shot.query && unit==shot.unit;
         bool substituted=false;
         if(owned)

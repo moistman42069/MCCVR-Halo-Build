@@ -121,6 +121,7 @@ struct ControllerRig
     float visualPitchDeg{},visualYawDeg{},visualRollDeg{};
     float supportMountPitchDeg{},supportMountYawDeg{},supportMountRollDeg{};
     float gunForwardM{-0.14f},gunRightM{},gunUpM{};
+    float leftGunForwardM{-.16f},leftGunRightM{-.02f},leftGunUpM{-.05f};
     float supportForwardM{-0.063f};
     float visualLeftHandOffset[3]{},visualRightHandOffset[3]{};
     float shoulderBackM{},primaryShoulderDrop{0.06f};
@@ -128,9 +129,13 @@ struct ControllerRig
     bool turnSmooth{true},controlsPresentationBlocked{true};
     bool vehicleSmoothTurn{};
     bool gunBarrelAim{};
+    // Shots from the muzzle (shots_from_muzzle, and the barrel aim off): the barrel shot keeps the muzzle
+    // origin but flies through the converged point. Its own flag, because gunBarrelAim also moves CE's
+    // continuous target acquisition onto the barrel, which this mode must not.
+    bool muzzleShots{};
     bool roomscaleEnabled{};
     bool physicalRunningEnabled{};
-    bool vehicleMotion{true},vehicleViewFollow{};
+    bool vehicleControls{true},vehicleViewFollow{};
     float turnSnapDeg{30.0f},turnSmoothDegS{120.0f};
 };
 struct HudSettings
@@ -153,6 +158,10 @@ struct Tracking
     HudSettings hud;
     bool motionBlur{};
     bool disableAnniversaryLensFlares{};
+    // MONO RENDERING (mono_view_logic.h): this frame's world is drawn once, from the midpoint of the eyes looking
+    // the way the head looks, and shown to both. Only Classic draws it (StageClassicViewPair); the eyes above stay
+    // the real ones, for everything that is submitted or laid into the picture.
+    bool mono{};
 };
 struct Reference
 {
@@ -160,6 +169,19 @@ struct Reference
     Quat orientation;
     uint64_t spaceEpoch{};
     uint32_t generation{};
+    // THE SEAT'S VIEW HEADING (BuildTrackingFrame). On foot the room is mapped into the world through the native
+    // camera's heading, which there IS the player's own control yaw: nothing the mod writes moves it. In a seat the
+    // native camera can take its direction from the unit's or the vehicle's AIM instead (a Warthog gunner's camera
+    // is the gun; a seat's first-person camera runs along the biped's aiming vector) -- and that aim is what the
+    // hand writes. Mapping the hand through a frame that follows the hand's own output turns its offset from
+    // "forward" into a turn RATE: measured in Halo CE's Warthog gunner seat, a hand held 10 deg to one side turns
+    // the gun, the camera and the whole VR view at ~80 deg/s for as long as it is held, and only a hand held
+    // exactly along the frame's forward stands still. So in a seat the frame's heading is the player's control
+    // yaw itself, read from the control record the game's look update owns (HaloCEControls_SeatHeading): the turn
+    // stick and "view follows the vehicle" still move it, the aim does not. Invalid = on foot, or not readable:
+    // the native camera's heading is used.
+    Vec3 seatHeading{};
+    bool seatHeadingValid{};
 };
 struct Cover { float verticalFov{}, halfX{}, halfY{}; };
 
@@ -202,7 +224,15 @@ inline bool BuildTrackingFrame(const Camera& native,const Reference& reference,
     if (!Valid(native)||!Valid(reference.orientation)) return false;
     Vec3 forward{native.forward.x,native.forward.y,0};
     float length=std::sqrt(Dot(forward,forward));
-    if (length<0.0001f)
+    // A seat: the player's own control heading, never a camera that follows the aim (Reference::seatHeading).
+    bool seat=false;
+    if (reference.seatHeadingValid)
+    {
+        const Vec3 heading{reference.seatHeading.x,reference.seatHeading.y,0};
+        const float headingLength=std::sqrt(Dot(heading,heading));
+        if (std::isfinite(headingLength)&&headingLength>=0.0001f) { forward=heading;length=headingLength;seat=true; }
+    }
+    if (!seat&&length<0.0001f)
     {
         // At the native pitch pole its up axis still records the heading.
         const float direction=native.forward.z>=0?-1.0f:1.0f;

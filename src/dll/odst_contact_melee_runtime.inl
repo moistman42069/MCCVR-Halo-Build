@@ -1,13 +1,23 @@
 // ODST native contact adapter. Included after the title-owned native getters.
-// ODST kit mappings and native ABI proof: PHYSICAL-CONTACT-MELEE-WORK.md.
+// ODST kit mappings and native ABI proof: PHYSICAL-CONTACT-MELEE-WORK.md (including the damage
+// event's use of its caller's seventh argument slot, below).
 using OdstContactUpdateFn=uint8_t(__fastcall*)(uint32_t);
 using OdstContactMeleeFn=void(__fastcall*)(uint32_t,int32_t,int16_t,float);
+// The damage event 3B68A8 takes six arguments but keeps a bool in its CALLER's stack at entry+0x38, the
+// slot a seventh would use (LTCG: every native caller reserves it, so the compiler may). Forwarded with only
+// its six, that byte lands on the detour's saved r15 and goes back to the native caller -- the unit-action
+// updater 3FCBE4 then reads its own unit through a pointer one byte off and faults (a crash in ODST).
+// So the original is called through CallNativeWithSpareSlots (native_forward.h), whose spare
+// stack slots it may scribble on. tools/audit_caller_area.py finds any other hooked function that does this.
 using OdstContactDamageFn=void(__fastcall*)(void*,uint32_t,int16_t,int16_t,uint16_t,void*);
 struct OdstContactRuntime
 {
     std::atomic<bool> enabled{false},faulted{false},processing{false};
     std::atomic<uint32_t> callbacks{0};
     std::atomic<uint64_t> queries{0},contacts{0},submitted[2]{},rejected{0},overflow{0},predicted{0};
+    // Damage events forwarded to the native, and those from the unit-action updater (3FCBE4, return
+    // 3FCF1F) -- the caller that crashes when the forward reserves too little stack (OdstContactDamageFn).
+    std::atomic<uint64_t> damageEvents{0},actionDamageEvents{0};
     uintptr_t base=0;
     uint32_t generation=0;
     void* updateTarget=nullptr;
@@ -66,6 +76,26 @@ bool OdstContactObject(uint32_t handle,bool requireBiped=false)
 }
 
 bool OdstContactBiped(uint32_t handle) { return OdstContactObject(handle,true); }
+
+// Any live object's data (unit, vehicle, weapon...), for the sight trace's parent-chain walk; null when the
+// table no longer holds the handle.
+const uint8_t* OdstSightObjectData(uint32_t handle)
+{
+    if(!OdstContactObject(handle)) return nullptr;
+    const auto* table=*reinterpret_cast<const uint8_t* const*>(OdstContactTls()+kOdstTlsObjectTableOffset);
+    const auto* entries=*reinterpret_cast<const uint8_t* const*>(table+0x48);
+    return *reinterpret_cast<const uint8_t* const*>(entries+(handle&0xFFFF)*0x18+0x10);
+}
+
+// A live object's type: the header byte at entry +3 that collision_test_vector's own predicate tests (odst
+// 0x22E5D6: 0 biped, 1 vehicle), for the sight trace's hit class and its boarder rule. -1: a stale handle.
+int OdstSightObjectType(uint32_t handle)
+{
+    if(!OdstContactObject(handle)) return -1;
+    const auto* table=*reinterpret_cast<const uint8_t* const*>(OdstContactTls()+kOdstTlsObjectTableOffset);
+    const auto* entries=*reinterpret_cast<const uint8_t* const*>(table+0x48);
+    return entries[(handle&0xFFFF)*0x18+3];
+}
 
 bool OdstContactWorldHit(const uint8_t* bytes,contact_melee::Hit& hit)
 {
@@ -150,7 +180,10 @@ __declspec(noinline) void __fastcall OdstContactDamageDetour(void* event,uint32_
             }
             if(g_odstContact.damageOriginal)
             {
-                g_odstContact.damageOriginal(event,target,region,node,material,result);
+                g_odstContact.damageEvents.fetch_add(1,std::memory_order_relaxed);
+                if(caller==g_odstContact.base+0x3FCF1F)
+                    g_odstContact.actionDamageEvents.fetch_add(1,std::memory_order_relaxed);
+                CallNativeWithSpareSlots(g_odstContact.damageOriginal,event,target,region,node,material,result);
                 if(own) scope.submitted=true;
             }
         }
@@ -233,7 +266,7 @@ void OdstContactTick(uint32_t unit)
     {
         const uint64_t now=GetTickCount64();
         int32_t scene=-1,shot=-1;
-        const bool admit=!exclusive_input::Active() && g_config.physical_melee && g_enabled.load(std::memory_order_acquire) &&
+        const bool admit=!exclusive_input::Active() && Sight_PhysicalMelee() && g_enabled.load(std::memory_order_acquire) &&
             VR_IsStereoEnabled() && g_odstContact.generation==g_odstRuntimeGeneration.load() &&
             g_odstContact.playback && !g_odstContact.playback() &&
             ReadCinematicControl(scene,shot)==CinematicControlState::PlayerControlled &&
@@ -277,6 +310,15 @@ __declspec(noinline) uint8_t __fastcall OdstContactUpdateDetour(uint32_t unit)
     {
         if(g_odstContact.updateOriginal) result=g_odstContact.updateOriginal(unit);
         OdstContactTick(unit);
+        // Trace-and-reaim (legacy_sight_trace.inl): the local on-foot unit's intent ray.
+        if(LegacySight(GameTitle::Halo3ODST).flags.load(std::memory_order_acquire) && g_odstPlayerUnitGetter)
+        {
+            const int32_t local=g_odstPlayerUnitGetter(0);
+            if(local!=-1 && unit==static_cast<uint32_t>(local))
+                LegacySightTraceTick(GameTitle::Halo3ODST,unit,local,
+                    g_odstUnitInVehicle && !g_odstUnitInVehicle(local),g_odstWorldCollision,
+                    OdstSightObjectData,OdstSightObjectType);
+        }
     }
     __finally { g_odstContact.callbacks.fetch_sub(1,std::memory_order_acq_rel); }
     return result;
@@ -299,6 +341,7 @@ bool InstallOdstContactMelee(uintptr_t base,size_t size,uint32_t generation)
         {0x39FE8B,"48 8B 0D 36 E5 DD 01 48 8D 85 A0 00 00 00 48 89 44 24 38 4C 8D 4D 20 44 89 5C 24 30 4C 8D 45 B8 44 89 5C 24 28 41 8A D7 44 89 6C 24 20 E8 4F F9 E8 FF"},
         {0x10B0A8,"48 83 EC 28 E8 9F FB FF FF 32 D2 84 C0 74 27 8B 0D 5F 4A 98 00 65 48 8B 04 25 58 00 00 00 41 B8 40 00 00 00 48 8B 04 C8 4A 8B 0C 00 38 91 60 01 00 00 74 02 B2 01 8A C2 48 83 C4 28 C3"}};
     g_odstContact.enabled.store(false,std::memory_order_release);
+    LegacySight(GameTitle::Halo3ODST).flags.store(0,std::memory_order_release);
     if(!g_odstWorldCollision.original || g_odstContact.updateTarget || g_odstContact.damageTarget) return false;
     for(const auto& binding:bindings)
     {
@@ -341,6 +384,8 @@ bool InstallOdstContactMelee(uintptr_t base,size_t size,uint32_t generation)
     { LOG("ODST contact melee unavailable: simulation hook enable failed; retained for cleanup"); return false; }
     g_odstContact.enabled.store(true,std::memory_order_release);
     LOG("ODST contact melee installed: physical hand/weapon contact, native exact-target damage; headset verification pending");
+    // The aim trace runs inside this lane's simulation hook, with the flags global pinned above.
+    LegacyResolveSightFlags(GameTitle::Halo3ODST,base,size,g_odstWorldCollision,g_odstContact.flags);
     return true;
 }
 
@@ -348,7 +393,7 @@ void OdstPublishContactHand(int hand,const FpInterpolationContext& context,
     const BoneMatrix& root,const BoneMatrix* solved,const float points[][3],
     int count,int32_t unit,uint32_t generation)
 {
-    if(!OdstContactMeleeReady() || !g_config.physical_melee || hand<0 || hand>1 ||
+    if(!OdstContactMeleeReady() || !Sight_PhysicalMelee() || hand<0 || hand>1 ||
         unit==-1 || !points || !solved || count<=0 || count>64 ||
         generation!=g_odstContact.generation || !g_baseCamValid.load()) return;
     const uint64_t now=GetTickCount64();
@@ -381,7 +426,7 @@ void OdstPublishContactHand(int hand,const FpInterpolationContext& context,
     frame.transform.axis[2]={-cg*ch+sg*sh,-sg*ch-cg*sh,0};
     const auto reference=frame.transform.World({g_headPosRef[0],g_headPosRef[1],g_headPosRef[2]});
     frame.transform.origin={g_baseCamX.load()-reference.x,g_baseCamY.load()-reference.y,
-                            g_baseCamZ.load()-reference.z};
+                            BaseCamHandsZ()-reference.z};
     if(poseValid && tracking.referenceEpoch)
     {
         uint64_t epoch=(14695981039346656037ull^tracking.referenceEpoch)*1099511628211ull;
@@ -423,9 +468,10 @@ void OdstPublishContactHand(int hand,const FpInterpolationContext& context,
 void ReportOdstContactMelee()
 {
     if(!g_odstContact.updateTarget) return;
-    LOG("ODST contact melee: enabled=%d fault=%d queries=%llu contacts=%llu submissions(L/R)=%llu/%llu nativeRejected=%llu queueDrops=%llu predictedRequests=%llu",
+    LOG("ODST contact melee: enabled=%d fault=%d queries=%llu contacts=%llu submissions(L/R)=%llu/%llu nativeRejected=%llu queueDrops=%llu predictedRequests=%llu; damage events forwarded %llu (unit-action %llu)",
         OdstContactMeleeReady()?1:0,g_odstContact.faulted.load()?1:0,
         g_odstContact.queries.exchange(0),g_odstContact.contacts.exchange(0),
         g_odstContact.submitted[0].exchange(0),g_odstContact.submitted[1].exchange(0),
-        g_odstContact.rejected.exchange(0),g_odstContact.overflow.exchange(0),g_odstContact.predicted.exchange(0));
+        g_odstContact.rejected.exchange(0),g_odstContact.overflow.exchange(0),g_odstContact.predicted.exchange(0),
+        g_odstContact.damageEvents.exchange(0),g_odstContact.actionDamageEvents.exchange(0));
 }

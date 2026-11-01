@@ -57,6 +57,90 @@ float BlendXInputMotors(uint16_t lowFrequencyMotor, uint16_t highFrequencyMotor)
 
 // Distance is from the tracked head centre, preserving the original 30 cm
 // gesture by default. Title-specific side-of-head requirements stay at caller.
+// A Project Reclaimer key from the controller: a button with the left controller at the head presses the key, and the
+// button's release lets it go, so the host's own handling (its Hold or Toggle talk mode, say) decides what that means.
+// Only a fresh press at the head starts it, the button then belongs to the key until it is let go, and a press that
+// stops being allowed lets the key go.
+struct HeadKeyGesture
+{
+    enum class Key { None, Press, Release };
+    bool talking = false;
+    bool xWasDown = false;
+    Key Step(bool atHead, bool xDown, bool allowed) noexcept
+    {
+        const bool rising = xDown && !xWasDown;
+        xWasDown = xDown;
+        if (talking)
+        {
+            if (xDown && allowed)
+                return Key::None;
+            talking = false;
+            return Key::Release;
+        }
+        if (rising && atHead && allowed)
+        {
+            talking = true;
+            return Key::Press;
+        }
+        return Key::None;
+    }
+};
+
+// Y at the head gives way to the Y + B pause. Y waits kHoldOffMs for B before it counts: a Tab tap can leave the host's
+// scoreboard up, so not even a moment of it may go out ahead of a chord. Y away from the head is the game's at once. B at
+// any point in the press gives the whole press to the chord, until Y is let go.
+struct HeadYChord
+{
+    static constexpr uint64_t kHoldOffMs = 120;
+    enum class Y { Game, Waiting, Key };
+    uint64_t downSinceMs = 0;
+    bool atHead = false;
+    bool chord = false;
+    Y Step(bool yDown, bool atHeadNow, bool bDown, bool chordEnabled, uint64_t nowMs) noexcept
+    {
+        if (!yDown)
+        {
+            downSinceMs = 0;
+            atHead = chord = false;
+            return Y::Game;
+        }
+        if (!downSinceMs)
+        {
+            downSinceMs = nowMs ? nowMs : 1;
+            atHead = atHeadNow;
+        }
+        if (!atHead)
+            return Y::Game;
+        if (chordEnabled && bDown)
+            chord = true;
+        if (chord)
+            return Y::Game;
+        return chordEnabled && nowMs - downSinceMs < kHoldOffMs ? Y::Waiting : Y::Key;
+    }
+};
+
+// The head D-pad gesture when a hand comes up while walking: the stick goes on walking until it returns to centre, and
+// only then does it become the D-pad. `moving` false always gives the plain gesture.
+struct DpadMovementLatch
+{
+    bool walking = false;
+    bool wasAtHead = false;
+    bool Step(bool atHead, bool moving) noexcept
+    {
+        if (!atHead)
+        {
+            walking = wasAtHead = false;
+            return false;
+        }
+        if (!moving)
+            walking = false;
+        else if (!wasAtHead)
+            walking = true;
+        wasAtHead = true;
+        return !walking;
+    }
+};
+
 bool DpadHeadWithinRadius(const float head[3], const float controller[3],
     float radiusMetres) noexcept;
 

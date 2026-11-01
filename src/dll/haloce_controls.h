@@ -83,6 +83,10 @@ inline CeSupportInvocation CeEvaluateSupportInvocation(bool featureWired,
 
 bool HaloCEControls_Poll(uintptr_t base,size_t size,uint32_t generation,bool active) noexcept;
 bool HaloCEControls_GetLocalPlayerState(HaloCELocalPlayerState& state) noexcept;
+// The seated local player's own control yaw as a horizontal world direction (halo_ce::Reference::seatHeading): the
+// angle the game's look update owns for the player's input user, which the turn stick moves and the hand's aim never
+// does. False on foot, with no controlled unit, or when the record does not read.
+bool HaloCEControls_SeatHeading(uint32_t expectedGeneration,halo_ce::Vec3& heading) noexcept;
 // Reads the verified native clock independently of player/unit/weapon state,
 // which can be unavailable while the pause menu or restart screen is visible.
 // Optional input suppression is independent of unit/weapon lifetime and is

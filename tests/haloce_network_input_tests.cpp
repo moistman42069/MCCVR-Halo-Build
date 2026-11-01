@@ -93,6 +93,14 @@ bool HaloCEControls_GetLocalPlayerState(HaloCELocalPlayerState& out) noexcept
 bool HaloCE_GetGameplayContext(RenderContext& out) noexcept
 { out=context;if(ownerReads>1&&mutateEpoch)++out.referenceRevision;return frameOkay; }
 bool HaloCE_RenderContextCurrent(const RenderContext&) noexcept { return currentOkay; }
+// Seat convergence (haloce_unit_control.cpp owns the solve): what it answers here, and what it was told.
+HaloCESeatAim seatSolve{};
+bool seatSolved{};
+unsigned seatApplied{},seatAppliedConverged{};
+seat_converge::Why seatAppliedWhy{};
+bool HaloCEUnitControl_SeatAim(uint32_t,HaloCESeatAim& out) noexcept { out=seatSolve;return seatSolved; }
+void HaloCEUnitControl_SeatAimApplied(const HaloCESeatAim& aim,uint32_t,int16_t,bool converged) noexcept
+{ ++seatApplied;if (converged) ++seatAppliedConverged;seatAppliedWhy=aim.why; }
 void Logf(const char*,...) {}
 bool halo_ce::VerifyNativeFeatureBindings(uintptr_t,size_t,uint32_t,const NativeContractSet&,const char*& failure) noexcept
 { failure=proofOkay?nullptr:"fixture mismatch";return proofOkay; }
@@ -171,8 +179,33 @@ int main(int argc,char** argv)
     Vec3 local{std::cos(y)*std::cos(p),std::sin(y)*std::cos(p),std::sin(p)};
     Seat(unitId,&local);Check(Near(local,{0,1,0}),"native seat transform applies exactly once");
     Check(std::memcmp(result.data()+0xc,seed.data()+0xc,12)==0,"seated ABI preserves drive throttle");
+    Check(seatApplied==1&&!seatAppliedConverged,"an unconverged seat action is accounted, never marked converged");
     ownerReads=0;mutateSeat=true;ActionBody(Source(),&result,moduleBase+0xa9988d);
     Check(result==seed,"seat transition rejects stale basis");
+    {
+        // SEAT CONVERGENCE upstream of replication: a gunner's or a passenger's outgoing direction is the aim bent
+        // through the traced point (here straight up the world's +Z, nothing like the controller's forward); a
+        // seat that drives keeps the hand's forward, because CE's one network direction steers the hull.
+        const auto seatedAction=[&](bool driver) {
+            Reset();player.onFoot=false;player.parent=parentId;player.nativePerspective=0;
+            WriteAction(seed,4,.2f);
+            seatSolve={};seatSolve.why=seat_converge::Why::Converged;seatSolve.sight.parent=parentId;
+            seatSolve.sight.seat=0;seatSolve.sight.role.known=true;seatSolve.sight.role.driver=driver;
+            seatSolve.sight.role.gunner=true;seatSolve.aim[2]=1;
+            seatSolved=true;seatApplied=seatAppliedConverged=0;
+            ActionBody(Source(),&result,moduleBase+0xa9988d);
+            seatSolved=false;seatSolve={};
+            return ReadAction<float>(result,8);
+        };
+        const float gunnerPitch=seatedAction(false);
+        Check(Near(gunnerPitch,1.570796327f)&&seatApplied==1&&seatAppliedConverged==1,
+            "a gunner's outgoing action carries the converged aim, through the native seat transform's inverse");
+        const float driverPitch=seatedAction(true);
+        Check(Near(driverPitch,0.f)&&seatApplied==1&&!seatAppliedConverged&&
+            seatAppliedWhy==seat_converge::Why::PolicyOff,
+            "a driving seat's one direction keeps the hand's forward (it steers the hull), counted as policy");
+        Reset();
+    }
     Reset();nativeFault=true;const auto before=calls;
     Check(Fault()&&calls==before+1&&!callbacks.load(),"native exception propagates once and releases ownership");
     Reset();ready=false;original=nullptr;

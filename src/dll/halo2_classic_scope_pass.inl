@@ -1,6 +1,7 @@
             // H2EK render_view owns visibility as well as rasterization. Run
-            // the optional mono view only after both real eye images are safe.
-            if(scope->completedEyeMask==3&&!scope->invalidated&&
+            // the optional mono view only after both real eye images are safe
+            // (in a mono frame, its one image).
+            if(scope->completedEyeMask==Halo2ExpectedEyeMask(scope->mono,firstEye)&&!scope->invalidated&&
                 g_zoomFaultGeneration.load()!=scope->generation&&VR_ScopeShouldRenderThisFrame())
             {
                 VR_InvalidateScopeImage();

@@ -58,10 +58,18 @@ halo3_avatar::Request RequestFor(const halo3_avatar::Profile& p,const halo3_avat
 int main()
 {
     using namespace halo3_avatar;
+    {
+        const SeatBodyModel* spartan=FindSeatBodyModel(0x1708080E,51);
+        Check(spartan&&spartan->regions==8&&spartan->head==(1u<<4),"the multiplayer Spartan's helmet is its region 4");
+        Check(!FindSeatBodyModel(0x1708080E,55)&&!FindSeatBodyModel(0x12345678,51),"an unknown skeleton has no head");
+    }
     const uint32_t checksums[]{0x17121B0D,0x10140D04,0x17180910};
     for(unsigned model=0;model<3;++model)
     {
         Profile p{};Check(SelectProfile(checksums[model],model?55:51,p),"own world identity");
+        // A seat's headless body knows the same head as the avatar does.
+        const SeatBodyModel* seat=FindSeatBodyModel(checksums[model],model?55:51);
+        Check(seat&&seat->regions==p.regions&&seat->head==p.headRegions,"a seat's body hides the avatar's own head regions");
         Profile untouched=p;Check(!SelectProfile(checksums[model],1,p)&&p.count==untouched.count,"bad count leaves profile unchanged");
         Pose source=Authored(p),result{};auto request=RequestFor(p,source);
         for(unsigned side=0;side<2;++side)

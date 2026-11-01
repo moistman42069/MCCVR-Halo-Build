@@ -9,6 +9,7 @@
 #include <cstring>
 #include <thread>
 #include "../src/common/halo2_render_logic.h"
+#include "../src/common/shot_lag_logic.h"
 #include "../src/common/weapon_hand_logic.h"
 #include "../src/common/native_shot_target_lease.h"
 #include "../src/common/exclusive_input.h"
@@ -20,7 +21,27 @@ static void Check(bool value,const char* name)
 static constexpr uint32_t owner=0x12340001,primary=0x56780002,secondary=0x789A0003;
 static constexpr uint32_t kOwnedUser=0;
 static std::atomic<uint32_t> g_generation{7};
-static struct {bool independent_dual_aim=true;float crosshair_distance_m=10;bool gun_barrel_aim=false,left_handed=false;} g_config;
+static struct {bool independent_dual_aim=true;float crosshair_distance_m=10;bool gun_barrel_aim=false,left_handed=false,
+    shots_from_muzzle=false,dual_wield_shake_reload=false;} g_config;
+// The independent-shots suite isolates the native reload worker. Its integration
+// behavior is covered by native_reload_policy_tests; this fixture only needs the
+// new hook dependency to compile without linking the production worker.
+static unsigned nativeDualShakeCalls{};
+void VR_DualWieldObserveOwner(GameTitle,uint32_t,uint32_t,const uint32_t[2]) noexcept
+{++nativeDualShakeCalls;}
+// The three shot switches as they are in effect (sight_layer.h); here, the test's own config.
+[[maybe_unused]] static bool Sight_ShotsFromMuzzle(){return g_config.shots_from_muzzle;}
+[[maybe_unused]] static bool Sight_GunBarrelAim(){return g_config.gun_barrel_aim;}
+[[maybe_unused]] static bool Sight_IndependentDualAim(){return g_config.independent_dual_aim;}
+// Fire-time changes allowed (the co-op switch off), and the first-person seat override's stand-down a no-op.
+[[maybe_unused]] static bool Sight_FireTimeChangesAllowed(){return true;}
+[[maybe_unused]] static void NativeVehicleFirstPerson_SetStockOnThisThread(bool) noexcept{}
+// Shots from the muzzle (sight_layer.h): admitted only with the barrel aim off; the converged point itself is
+// sight_layer's (aim_solve_tests), so here it keeps the barrel's direction and counts the asks.
+static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;
+static bool Sight_MuzzleShotsConverge(){return g_config.shots_from_muzzle&&!g_config.gun_barrel_aim;}
+static bool Halo2AimMuzzleShot(const float*,const float*,float*,float*,float& distance)
+{++muzzleAimCalls;distance=0;return !muzzleAimRefuses;}
 static bool controller=true,palette=true,direct=true,owned=true,publicationValid=true,trackingValid=true,carrierValid=true;
 static bool storageReplaced=false,queryFault=false,fireFault=false,omitLocation=false,omitView=false,
     changeWeapons=false,changeGeneration=false,replaceStorage=false,changeNativeTarget=false,nested=false;
@@ -101,6 +122,22 @@ void Game_PublishShotDiagnostic(GameTitle title,uint32_t titleGeneration,
     if(origin)std::memcpy(lastShot.origin,origin,sizeof(lastShot.origin));
     if(direction)std::memcpy(lastShot.direction,direction,sizeof(lastShot.direction));
 }
+// Flat parity (halo2_fire_eye.inl): the firing assist's own camera call for OUR unit is a proof sample; another
+// unit's would end our stint, so it must never arrive here.
+static unsigned fireEyeProofSamples{};
+static void Halo2NoteFireEyeProof(uint32_t unit,const float* position,int32_t path)
+{
+    ++fireEyeProofSamples;
+    Check(unit==localUnit&&position&&path==0x12345678,"only our unit's assist camera answer feeds the fire-eye proof");
+}
+// Seat convergence (halo2_seat_fire.inl): the camera and aim detours hand every call to these two; the seat's
+// own gates live there (and in halo2_direct_drive.inl). Here they must see exactly the firing call sites.
+static unsigned seatFireReaims{},seatFireLines{};
+static void Halo2SeatFireReaim(uint32_t,float* position,float* direction)
+{++seatFireReaims;Check(position&&direction,"the seat re-aim sees the evaluator's outputs");}
+static void Halo2SeatNoteFireLine(uint32_t,uint32_t,int16_t,const float*,const float* origin,
+    const float* direction)
+{++seatFireLines;Check(origin&&direction,"the seat witness sees the fire's own line");}
 #include "../src/dll/halo2_independent_shots.inl"
 #undef _ReturnAddress
 
@@ -215,6 +252,7 @@ int main()
     Check(lastShot.origin[0]==0&&lastShot.origin[1]==0&&lastShot.origin[2]==1&&
         lastShot.direction[0]==0&&lastShot.direction[1]>0.99f,
         "the published shot carries the final ray the engine consumed");
+    Check(fireEyeProofSamples==2,"each owned firing-assist camera call is one flat-parity proof sample");
     Reset();telemetryAccepting=false;Shoot();
     Check(shotEvents==0&&fireCalls==1&&queryCalls==1,
         "recording-off gate publishes nothing and changes no firing work");

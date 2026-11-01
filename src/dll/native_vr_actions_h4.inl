@@ -36,6 +36,7 @@ struct ThreadState {
     uint32_t generation{};
     uint64_t publishedAt{}, converterAt{}, cancelEpoch{};
     uint32_t actions{};
+    uint32_t blocked{};
     bool direct{}, converted{};
     native_action_button::Record records[vr_mapping::Count]{};
     void Reset(uint32_t next) noexcept {
@@ -47,7 +48,7 @@ struct ThreadState {
 } thread_local local;
 bool Current() noexcept {
     return runtime.admitted.load(std::memory_order_acquire) &&
-        !runtime.faulted.load(std::memory_order_relaxed) && g_config.vr_action_mapping &&
+        !runtime.faulted.load(std::memory_order_relaxed) && (g_config.vr_action_mapping||Config_GestureOnlyWeaponInput()) &&
         TitleAdapter_GetActiveTitle()==title &&
         TitleAdapter_GetGeneration(title)==runtime.generation;
 }
@@ -61,18 +62,18 @@ void __fastcall ConverterHook(uintptr_t unused,int elapsedMs,const void* raw,
         reinterpret_cast<Convert>(runtime.original[0])(unused,elapsedMs,raw,output,axes,activity);
         const auto now=GetTickCount64();
         const auto cancelEpoch=publication.cancelEpoch.load(std::memory_order_acquire);
-        uint32_t actions=0;bool direct=false;uint64_t publishedAt=0;
+        uint32_t actions=0,blocked=0;bool direct=false;uint64_t publishedAt=0;
         // Both direct and copied native routes write base + controller*0x3c.
         // H4 does not preserve RCX as a controller ID in this converter.
         if(Current() && reinterpret_cast<uintptr_t>(output)==runtime.padState &&
-            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(std::memory_order_acquire)) && elapsedMs>=0 && elapsedMs<=1000 &&
+            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(std::memory_order_acquire),&blocked) && elapsedMs>=0 && elapsedMs<=1000 &&
             cancelEpoch==publication.cancelEpoch.load(std::memory_order_acquire)) {
             if(local.generation!=runtime.generation) local.Reset(runtime.generation);
-            local.publishedAt=publishedAt;local.actions=actions;local.direct=direct;
+            local.publishedAt=publishedAt;local.actions=actions;local.direct=direct;local.blocked=blocked;
             local.cancelEpoch=cancelEpoch;
             local.converterAt=now;local.converted=true;
             for(unsigned i=0;i<vr_mapping::Count;++i)
-                local.records[i].Advance(local.direct && (local.actions&(1u<<i)),unsigned(elapsedMs));
+                local.records[i].Advance((local.direct||(local.blocked&(1u<<i))) && (local.actions&(1u<<i)),unsigned(elapsedMs));
             runtime.converted.fetch_add(1,std::memory_order_relaxed);
         } else if(reinterpret_cast<uintptr_t>(output)==runtime.padState) local.converted=false;
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
@@ -101,10 +102,14 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
             publication.generation.load(std::memory_order_acquire)!=local.generation ||
             local.cancelEpoch!=publication.cancelEpoch.load(std::memory_order_acquire)) return native;
         runtime.readerAt.store(now,std::memory_order_release);
-        if(!local.direct) return native;
         const int semantic=native_action_button::SemanticAction(title,action);
         if(semantic<0) return native;
         auto& record=local.records[semantic];
+        if(local.blocked&(1u<<semantic)) {
+            runtime.routed.fetch_add(1,std::memory_order_relaxed);
+            return record.bytes.data();
+        }
+        if(!local.direct) return native;
         const auto virtualState=record.ReadCounters();
         if(!virtualState.frames) return native;
         // Native keyboard/gamepad holds retain their own counters, amount and
@@ -117,16 +122,17 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
         runtime.routed.fetch_add(1,std::memory_order_relaxed);
         return record.bytes.data();
 }
-void* __fastcall ReaderHook(void* state,unsigned action) {
+void* __fastcall ReaderHook(void* state,unsigned action,uintptr_t caller) {
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
     void* result=nullptr;
     __try {
         result=reinterpret_cast<Read>(runtime.original[1])(state,action);
-        result=ReadOwned(state,action,result,reinterpret_cast<uintptr_t>(_ReturnAddress()));
+        result=ReadOwned(state,action,result,caller);
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
     return result;
 }
-void* const hooks[]{reinterpret_cast<void*>(&ConverterHook),reinterpret_cast<void*>(&ReaderHook)};
+// The reader is entered through a register-preserving asm thunk (native_vr_reader_thunks.asm).
+void* const hooks[]{reinterpret_cast<void*>(&ConverterHook),reinterpret_cast<void*>(&NativeVrReaderThunkHalo4)};
 bool ProveConsumerBounds(uintptr_t base) {
     DWORD64 imageBase=0;
     const auto* entry=RtlLookupFunctionEntry(base+consumerBegin,&imageBase,nullptr);
@@ -142,10 +148,10 @@ bool Retire() {
         if(status!=MH_OK && status!=MH_ERROR_DISABLED) return false;
         runtime.enabled[i]=false;
     }
-    const void* functions[]{hooks[0],hooks[1],reinterpret_cast<void*>(&ReadOwned),reinterpret_cast<void*>(&Current),
-        reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames)};
-    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr};
-    if(!WaitForNativeDetourQuiescence(functions,trampolines,6,runtime.callbacks)) return false;
+    const void* functions[]{hooks[0],hooks[1],reinterpret_cast<void*>(&ReaderHook),reinterpret_cast<void*>(&ReadOwned),
+        reinterpret_cast<void*>(&Current),reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames)};
+    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr,nullptr};
+    if(!WaitForNativeDetourQuiescence(functions,trampolines,7,runtime.callbacks)) return false;
     for(unsigned i=0;i<2;++i) if(runtime.target[i]) {
         if(MH_RemoveHook(runtime.target[i])!=MH_OK) return false;
         runtime.target[i]=runtime.original[i]=nullptr;
@@ -175,7 +181,7 @@ void Poll() {
     }
     if(runtime.module && (active!=title || generation!=runtime.generation))
         if(!Retire()) return;
-    if(active!=title || !generation || generation==blockedGeneration || !g_config.vr_action_mapping) return;
+    if(active!=title || !generation || generation==blockedGeneration || !(g_config.vr_action_mapping||Config_GestureOnlyWeaponInput())) return;
     if(!runtime.attempted) {
         // The preexisting read-only transport resolver must verify the reader
         // before MinHook changes its prologue. Retain that cache so optional

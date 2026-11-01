@@ -11,7 +11,10 @@ bool Blit(ID3D11Texture2D* src, const D3D11_TEXTURE2D_DESC& srcDesc,
             TitleAdapter_GetActiveTitle() == GameTitle::Halo4,
             dstW, dstH) || halo_ce::ReticleUploadNeedsAlphaRepair(
             TitleAdapter_GetActiveTitle() == GameTitle::HaloCE,
-            authoredReticleUpload,srcDesc.Width,srcDesc.Height,dstW,dstH);
+            authoredReticleUpload,srcDesc.Width,srcDesc.Height,dstW,dstH) ||
+        VrBlitNeedsReachReticleStraightAlpha(
+            TitleAdapter_GetActiveTitle() == GameTitle::HaloReach,
+            authoredReticleUpload, srcDesc.Width, srcDesc.Height, dstW, dstH);
     const bool fastPath = !reticleAlphaRepair &&
         VrBlitCanUseDirectCopy(
         srcDesc.Width, srcDesc.Height, srcDesc.Format,

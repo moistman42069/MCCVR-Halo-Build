@@ -103,6 +103,10 @@ option(HALOMCCVR_HALO2_ANNIVERSARY_STEREO
     "Enable Halo 2 Anniversary per-eye stereo (C-H2-10)" ON)
 option(HALOMCCVR_HALO2_RENDER_PROBE
     "Enable the Halo 2 read-only render-topology census (D-H2-1, diagnostic)" OFF)
+# Development diagnostics and headless-test hooks. A config flag is not a sufficient guard, so anything
+# that answers a question rather than playing the game is compiled out of a player build. OFF = shipping; the "dev" preset turns it on; package-candidate.ps1 refuses it.
+option(HALOMCCVR_DEV_DIAGNOSTICS
+    "Compile in development diagnostics and headless-test hooks (never packaged)" OFF)
 if(HALOMCCVR_EXPERIMENTAL_HALO2_TEMPORAL_STEREO AND
    NOT HALOMCCVR_EXPERIMENTAL_HALO2_COLD_OBSERVATION)
     message(FATAL_ERROR
@@ -271,6 +275,10 @@ add_library(halo3xr SHARED
     src/common/scope_logic.cpp
     src/common/title_registry.cpp
     src/common/title_runtime_state.cpp
+    src/common/vehicle_camera_autoadd.cpp
+    src/common/vehicle_camera_file.cpp
+    src/common/vehicle_camera_select.cpp
+    src/common/vehicle_camera_store.cpp
     src/dll/dllmain.cpp
     src/dll/native_fault_probe.cpp
     src/dll/telemetry_recorder.cpp
@@ -278,6 +286,7 @@ add_library(halo3xr SHARED
     src/dll/vr.cpp
     src/dll/weapon_accessory_renderer.cpp
     src/dll/native_reload_policy.cpp
+    src/dll/host_unload_gate.cpp
     src/dll/native_vehicle_first_person.cpp
     src/dll/menu.cpp
     src/dll/native_menu_pointer.cpp
@@ -285,8 +294,12 @@ add_library(halo3xr SHARED
     src/dll/game.cpp
     src/dll/ik.cpp
     src/dll/input.cpp
+    src/dll/seat_exit_witness.cpp
     src/dll/roomscale.cpp
+    src/dll/sight_layer.cpp
+    src/dll/dev_pad.cpp
     src/dll/title_adapter.cpp
+    src/dll/title_image_guard.cpp
     src/dll/title_reentry_probe.cpp
     src/dll/reach_adapter.cpp
     src/dll/halo2_adapter.cpp
@@ -308,6 +321,7 @@ add_library(halo3xr SHARED
     src/dll/haloce_controls.cpp
     src/dll/haloce_comfort.cpp
     src/dll/haloce_orientation.cpp
+    src/dll/haloce_head_relative.cpp
     src/dll/haloce_unit_control.cpp
     src/dll/haloce_network_input.cpp
     src/dll/halo2_anniversary_stereo.cpp
@@ -316,6 +330,22 @@ add_library(halo3xr SHARED
 if(HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA)
     target_sources(halo3xr PRIVATE src/dll/halo4_restoration.asm)
 endif()
+# Halo 3 / ODST / Halo 4 direct drive (legacy_direct_drive): the control-update detours.
+target_sources(halo3xr PRIVATE src/dll/legacy_player_control_hook.asm)
+# Where the direct drives' code is in the loaded game DLL (src/common/drive_sites.h, drive_resolve.h): the DLL's
+# side of the resolution, and the address-verification library it uses (the TLS directory read, the watchdog, the
+# reporter).
+target_sources(halo3xr PRIVATE
+    src/dll/drive_cascade.cpp
+    src/common/addrcascade/AddressCascade.cpp)
+# A title install's searches, saved per build of the game DLL for the next launch (install_search_cache.h).
+target_sources(halo3xr PRIVATE src/dll/install_search_cache.cpp)
+# Halo 2 direct drive (halo2_direct_drive.inl): its control-update detour, with the observer it reads.
+if(HALOMCCVR_HALO2_OBSERVER_6DOF)
+    target_sources(halo3xr PRIVATE src/dll/halo2_player_control_hook.asm)
+endif()
+# CE's saber bone-convert hook enters through a register-preserving thunk (haloce_first_person.cpp).
+target_sources(halo3xr PRIVATE src/dll/haloce_skin_convert_thunk.asm)
 set_target_properties(halo3xr PROPERTIES OUTPUT_NAME "HaloMCCVR")
 target_include_directories(halo3xr PRIVATE
     ${HALOMCCVR_GENERATED_DIR}
@@ -324,7 +354,10 @@ target_include_directories(halo3xr PRIVATE
 if(HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE)
     target_sources(halo3xr PRIVATE
         src/dll/reach_render_candidate.cpp
-        src/dll/reach_render_preflight.cpp)
+        src/dll/reach_render_preflight.cpp
+        src/dll/reach_aim_provider.cpp
+        src/dll/reach_player_control_hook.asm
+        src/dll/reach_render_gate_thunk.asm)
 endif()
 target_compile_definitions(halo3xr PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
@@ -338,6 +371,10 @@ target_compile_definitions(halo3xr PRIVATE
     HALOMCCVR_HALO2_STEREO6DOF=$<BOOL:${HALOMCCVR_HALO2_STEREO6DOF}>
     HALOMCCVR_HALO2_OBSERVER_6DOF=$<BOOL:${HALOMCCVR_HALO2_OBSERVER_6DOF}>
     HALOMCCVR_HALO2_RENDER_PROBE=$<BOOL:${HALOMCCVR_HALO2_RENDER_PROBE}>
+    HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>
+    # Fault injection for the direct drives' address resolution (config key drive_fault): dev builds only. A player
+    # build leaves it undefined, and the forcing code is not compiled (addrcascade::fault, drive_resolve::Fault).
+    $<$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>:ADDRCASCADE_FAULTS=1>
     HALOMCCVR_HALO2_ANNIVERSARY_STEREO=$<BOOL:${HALOMCCVR_HALO2_ANNIVERSARY_STEREO}>
     HALOMCCVR_BUILD_COMMIT="${HALOMCCVR_BUILD_COMMIT}"
     HALOMCCVR_BUILD_ODST="${HALOMCCVR_BUILD_ODST}"
@@ -347,10 +384,13 @@ target_compile_definitions(halo3xr PRIVATE
     HALOMCCVR_BUILD_HALO2="${HALOMCCVR_BUILD_HALO2}")
 target_link_libraries(halo3xr PRIVATE
     openxr_loader minhook imgui_lib
-    d3d11 dxgi d3dcompiler gdi32)
+    d3d11 dxgi d3dcompiler gdi32 advapi32 shell32 ole32)
 target_sources(halo3xr PRIVATE src/dll/native_subtitles.cpp)
 target_sources(halo3xr PRIVATE src/dll/physical_crouch_camera.cpp)
 target_sources(halo3xr PRIVATE src/dll/native_vr_actions.cpp)
+# The bridge's native readers are entered through register-preserving thunks (LTCG callers keep
+# volatile registers live across those leaf calls; see the .asm).
+target_sources(halo3xr PRIVATE src/dll/native_vr_reader_thunks.asm)
 target_sources(halo3xr PRIVATE src/dll/bloom_override.cpp)
 if(HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE)
     target_link_libraries(halo3xr PRIVATE bcrypt)
@@ -363,12 +403,61 @@ add_executable(halo3xr_launcher WIN32 src/launcher/launcher.cpp
 set_target_properties(halo3xr_launcher PROPERTIES
     OUTPUT_NAME "HaloMCCVRLauncher")
 target_compile_definitions(halo3xr_launcher PRIVATE
-    UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+    # --headless, the unattended launch, is a headless-test hook: dev builds only.
+    HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>)
 # IApplicationActivationManager: the Microsoft Store edition is a packaged app
 # and can only be started through packaged activation.
 target_link_libraries(halo3xr_launcher PRIVATE ole32 bcrypt advapi32 winhttp crypt32 shell32 uxtheme)
+# The launcher runs with the user's own rights. The game it starts inherits its token, and in an elevated game
+# the OpenXR loader ignores XR_RUNTIME_JSON: a headset runtime chosen with that variable is replaced by the
+# machine's registered one and VR never starts. An install into a folder the user cannot write to says so and
+# asks for the launcher to be run as administrator for that install (installer.cpp).
 if(MSVC)
-    target_link_options(halo3xr_launcher PRIVATE "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
+    target_link_options(halo3xr_launcher PRIVATE "/MANIFESTUAC:level='asInvoker' uiAccess='false'")
+endif()
+
+# THE PROJECT RECLAIMER RELAY (experimental; packaged beside HaloMCCVR.dll by the dist install below).
+# Project Reclaimer runs MCC's halo3.dll in a worker process two generations below the one a launcher can start,
+# so HaloMCCVRReclaimerRelay.dll rides its process starts and loads HaloMCCVR.dll into the engine worker before
+# that worker runs (src/relay/reclaimer_relay.cpp). The launcher uses it when it sits beside a Project Reclaimer
+# client and no MCC install is around it.
+add_library(halomccvr_reclaimer_relay SHARED src/relay/reclaimer_relay.cpp)
+set_target_properties(halomccvr_reclaimer_relay PROPERTIES OUTPUT_NAME "HaloMCCVRReclaimerRelay")
+target_include_directories(halomccvr_reclaimer_relay PRIVATE src/common "${minhook_SOURCE_DIR}/include")
+target_compile_definitions(halomccvr_reclaimer_relay PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_link_libraries(halomccvr_reclaimer_relay PRIVATE minhook)
+
+# The launcher for a Project Reclaimer folder: the same sources WITHOUT the administrator manifest. The MCC
+# launcher asks for administrator to install into the game's folder; a game it starts is then elevated, and the
+# OpenXR loader ignores XR_RUNTIME_JSON in an elevated process, so a player who selects their runtime with that
+# variable got the machine's registered one instead (seen: Oculus with no headset, SteamVR running). Project
+# Reclaimer needs no install step, so its launcher runs as the player. It never shows the MCC menu.
+add_executable(halo3xr_reclaimer_launcher WIN32 src/launcher/launcher.cpp
+    src/launcher/installer.cpp src/launcher/menu.cpp src/launcher/updater.cpp)
+set_target_properties(halo3xr_reclaimer_launcher PROPERTIES OUTPUT_NAME "HaloMCCVRReclaimerLauncher")
+target_compile_definitions(halo3xr_reclaimer_launcher PRIVATE
+    UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+    HALOMCCVR_RECLAIMER_LAUNCHER=1
+    HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>)
+target_link_libraries(halo3xr_reclaimer_launcher PRIVATE ole32 bcrypt advapi32 winhttp crypt32 shell32 uxtheme)
+
+# THE FLAT PROBE (dev preset only; never packaged -- package-candidate.ps1 refuses a dev cache and copies named
+# files only). HaloMCCFlatProbe.dll is the AS SEEN control arm: stock flat Halo 3 measured with the same code as the
+# VR witness (src/common/as_seen_logic.h). OBSERVE ONLY: no OpenXR, no stereo, no presentation change, no writes.
+# Loaded alone by the dev launcher's --flat-probe (tools/Install-FlatProbe.ps1 stages it).
+if(HALOMCCVR_DEV_DIAGNOSTICS)
+    add_library(halomcc_flat_probe SHARED
+        src/probe/flat_probe.cpp
+        src/common/log.cpp
+        src/dll/sigscan.cpp)
+    set_target_properties(halomcc_flat_probe PROPERTIES OUTPUT_NAME "HaloMCCFlatProbe")
+    # minhook's own sources carry minhook_lifecycle.c (MCCVR_DisableHookForRetirement), see above.
+    target_include_directories(halomcc_flat_probe PRIVATE src/common src/dll "${minhook_SOURCE_DIR}/include")
+    target_compile_definitions(halomcc_flat_probe PRIVATE
+        UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+        HALOMCCVR_BUILD_COMMIT="${HALOMCCVR_BUILD_COMMIT}")
+    target_link_libraries(halomcc_flat_probe PRIVATE minhook d3d11 dxgi)
 endif()
 
 # Opt-in reverse-engineering helper; never shipped or built by the default
@@ -391,6 +480,12 @@ set_target_properties(reach_runtime_observer PROPERTIES
     OUTPUT_NAME "reach-runtime-observer")
 
 if(BUILD_TESTING)
+    add_executable(authored_grab_zone_tests tests/authored_grab_zone_tests.cpp)
+    add_test(NAME authored_grab_zone_tests COMMAND authored_grab_zone_tests)
+    add_executable(halo3_live_hud_tests tests/halo3_live_hud_tests.cpp)
+    add_test(NAME halo3_live_hud_tests COMMAND halo3_live_hud_tests)
+    add_executable(halomccvr_post_effect_policy_tests tests/post_effect_policy_tests.cpp)
+    add_test(NAME halomccvr_post_effect_policy_tests COMMAND halomccvr_post_effect_policy_tests)
     add_executable(halomccvr_bloom_override_tests tests/bloom_override_tests.cpp src/dll/bloom_override.cpp src/common/config.cpp)
     target_compile_definitions(halomccvr_bloom_override_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_bloom_override_tests PRIVATE d3d11)
@@ -423,11 +518,23 @@ if(BUILD_TESTING)
     target_compile_features(halo4_contact_backend_tests PRIVATE cxx_std_20)
     target_compile_options(halo4_contact_backend_tests PRIVATE /W4 /EHsc)
     add_test(NAME halo4_contact_backend COMMAND halo4_contact_backend_tests)
-    add_executable(native_vr_actions_runtime_tests tests/native_vr_actions_runtime_tests.cpp)
+    add_executable(native_vr_actions_runtime_tests tests/native_vr_actions_runtime_tests.cpp
+        src/dll/native_vr_reader_thunks.asm)
     target_include_directories(native_vr_actions_runtime_tests PRIVATE "${minhook_SOURCE_DIR}/include")
     target_compile_definitions(native_vr_actions_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME native_vr_actions_runtime COMMAND native_vr_actions_runtime_tests)
+    # The reader thunks must keep every volatile register but rax across the C++ hook (an asm probe
+    # plays the LTCG caller; the hook clobbers everything).
+    add_executable(native_vr_reader_thunk_tests tests/native_vr_reader_thunk_tests.cpp
+        tests/native_vr_reader_thunk_probe.asm src/dll/native_vr_reader_thunks.asm)
+    add_test(NAME native_vr_reader_thunks COMMAND native_vr_reader_thunk_tests)
+    # HaloMCCVR.log keeps the previous launch as .prev even while another process holds the old log.
+    add_executable(halomccvr_log_rotation_tests tests/log_rotation_tests.cpp src/common/log.cpp)
+    add_test(NAME halomccvr_log_rotation COMMAND halomccvr_log_rotation_tests)
     add_test(NAME halomccvr_physical_crouch_tests COMMAND halomccvr_physical_crouch_tests)
+    add_executable(halomccvr_hand_smoothing_tests tests/hand_smoothing_tests.cpp src/common/config.cpp)
+    target_compile_definitions(halomccvr_hand_smoothing_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_hand_smoothing_tests COMMAND halomccvr_hand_smoothing_tests)
     add_executable(halomccvr_physical_crouch_camera_tests tests/physical_crouch_camera_tests.cpp src/dll/physical_crouch_camera.cpp)
     add_test(NAME halomccvr_physical_crouch_camera_tests COMMAND halomccvr_physical_crouch_camera_tests)
     add_executable(halomccvr_dlss_sampler_tests tests/dlss_sampler_cache_tests.cpp)
@@ -458,6 +565,34 @@ if(BUILD_TESTING)
     add_executable(halomccvr_hook_lifecycle_tests tests/minhook_lifecycle_tests.cpp)
     target_link_libraries(halomccvr_hook_lifecycle_tests PRIVATE minhook)
     add_test(NAME halomccvr_hook_lifecycle_tests COMMAND halomccvr_hook_lifecycle_tests)
+    # A byte-pattern proof must read the GAME's code where this mod has hooked it (sigscan.h): real MinHook
+    # hooks on synthetic code, the production scanner, and the control that shows a hooked head reads our jump.
+    add_executable(halomccvr_proof_after_hook_tests tests/proof_after_hook_tests.cpp src/dll/sigscan.cpp)
+    target_compile_definitions(halomccvr_proof_after_hook_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_proof_after_hook_tests PRIVATE minhook)
+    add_test(NAME halomccvr_proof_after_hook_tests COMMAND halomccvr_proof_after_hook_tests)
+    # The scanner's memory of one loaded image (sigscan.h, ImageMemoScope): the same answers as the search.
+    add_executable(halomccvr_sigscan_memo_tests tests/sigscan_memo_tests.cpp src/dll/sigscan.cpp)
+    target_compile_definitions(halomccvr_sigscan_memo_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_sigscan_memo_tests COMMAND halomccvr_sigscan_memo_tests)
+    # The install's searches saved for the next launch (install_search_cache.h): the file, the build identity, and
+    # every saved answer checked as the scanner checks one it remembers, on synthetic images and the test's own.
+    add_executable(halomccvr_install_search_cache_tests tests/install_search_cache_tests.cpp
+        src/dll/install_search_cache.cpp src/dll/sigscan.cpp)
+    target_compile_definitions(halomccvr_install_search_cache_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_install_search_cache_tests PRIVATE minhook)
+    add_test(NAME halomccvr_install_search_cache_tests COMMAND halomccvr_install_search_cache_tests)
+    # A per-frame reader of a title's image stops at the title's unload (title_image_guard.h): a real DLL is
+    # loaded and freed under a reader thread.
+    add_executable(halomccvr_title_image_guard_tests tests/title_image_guard_tests.cpp src/dll/title_image_guard.cpp)
+    target_compile_definitions(halomccvr_title_image_guard_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_title_image_guard_tests COMMAND halomccvr_title_image_guard_tests)
+    add_executable(halomccvr_host_unload_gate_tests tests/host_unload_gate_tests.cpp)
+    add_test(NAME halomccvr_host_unload_gate_tests COMMAND halomccvr_host_unload_gate_tests)
+    add_executable(halomccvr_title_build_identity_tests tests/title_build_identity_tests.cpp)
+    add_test(NAME halomccvr_title_build_identity_tests COMMAND halomccvr_title_build_identity_tests)
+    add_executable(halomccvr_reclaimer_host_logic_tests tests/reclaimer_host_logic_tests.cpp)
+    add_test(NAME halomccvr_reclaimer_host_logic_tests COMMAND halomccvr_reclaimer_host_logic_tests)
     # Packaging runs this tiny program against a nonexistent path to generate
     # the current source tree's exact default config. It is intentionally not
     # installed by CMake: package-candidate stages and hashes its output while
@@ -475,6 +610,9 @@ if(BUILD_TESTING)
     add_executable(halomccvr_core_tests
         tests/core_tests.cpp
         tests/roomscale_input_tests.cpp
+        tests/roomscale_recenter_tests.cpp
+        tests/roomscale_admission_tests.cpp
+        tests/director_camera_tests.cpp
         src/common/input_logic.cpp
         src/common/scope_logic.cpp
         src/common/title_registry.cpp
@@ -639,18 +777,142 @@ if(BUILD_TESTING)
     target_include_directories(halomccvr_dpad_input_tests PRIVATE src/common src/dll)
     target_compile_definitions(halomccvr_dpad_input_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_dpad_input_tests COMMAND halomccvr_dpad_input_tests)
+    # SEATEXIT witness (dev-only vehicle-exit diagnostic): ring compression, the Use/Exit verdict, the drive
+    # summary, the native Use record span, vehicle kinematics and the edge-log limiter are pure logic.
+    add_executable(halomccvr_seat_exit_witness_tests tests/seat_exit_witness_tests.cpp)
+    target_compile_features(halomccvr_seat_exit_witness_tests PRIVATE cxx_std_20)
+    target_compile_definitions(halomccvr_seat_exit_witness_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_seat_exit_witness_tests COMMAND halomccvr_seat_exit_witness_tests)
     add_executable(halomccvr_weapon_interaction_tests tests/weapon_interaction_tests.cpp)
+    add_executable(halomccvr_weapon_defaults_tests tests/weapon_defaults_tests.cpp)
+    add_test(NAME halomccvr_weapon_defaults_tests COMMAND halomccvr_weapon_defaults_tests)
     add_executable(halomccvr_native_reload_tests tests/native_reload_policy_tests.cpp src/common/config.cpp)
     add_executable(halomccvr_native_vehicle_fp_tests tests/native_vehicle_first_person_tests.cpp src/common/config.cpp)
     target_include_directories(halomccvr_native_vehicle_fp_tests PRIVATE "${minhook_SOURCE_DIR}/include")
     target_compile_definitions(halomccvr_native_vehicle_fp_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_native_vehicle_fp_tests COMMAND halomccvr_native_vehicle_fp_tests)
+    # The same production detours with the dev-only seat-eye and first-person witnesses compiled in (the
+    # target above is the player-build flavour).
+    add_executable(halomccvr_native_vehicle_fp_dev_tests tests/native_vehicle_first_person_tests.cpp src/common/config.cpp)
+    target_include_directories(halomccvr_native_vehicle_fp_dev_tests PRIVATE "${minhook_SOURCE_DIR}/include")
+    target_compile_definitions(halomccvr_native_vehicle_fp_dev_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+        HALOMCCVR_DEV_DIAGNOSTICS=1)
+    add_test(NAME halomccvr_native_vehicle_fp_dev_tests COMMAND halomccvr_native_vehicle_fp_dev_tests)
     add_executable(halomccvr_odst_seat_lifetime_tests tests/odst_seat_lifetime_tests.cpp)
     target_compile_definitions(halomccvr_odst_seat_lifetime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_odst_seat_lifetime_tests COMMAND halomccvr_odst_seat_lifetime_tests)
     add_executable(halomccvr_halo3_seat_lifetime_tests tests/halo3_seat_lifetime_tests.cpp)
     target_compile_definitions(halomccvr_halo3_seat_lifetime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_halo3_seat_lifetime_tests COMMAND halomccvr_halo3_seat_lifetime_tests)
+    add_executable(halomccvr_seat_view_tests tests/seat_view_tests.cpp)
+    target_compile_definitions(halomccvr_seat_view_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_seat_view_tests COMMAND halomccvr_seat_view_tests)
+    # The production install / sync / teardown of the Halo 3 seat view (src/dll/halo3_seat_view.inl) over a
+    # fixture module whose director call sites are run. Player and dev flavour (the dev A/B key).
+    add_executable(halomccvr_halo3_seat_view_tests tests/halo3_seat_view_tests.cpp)
+    target_compile_definitions(halomccvr_halo3_seat_view_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_halo3_seat_view_tests COMMAND halomccvr_halo3_seat_view_tests)
+    add_executable(halomccvr_halo3_seat_view_dev_tests tests/halo3_seat_view_tests.cpp)
+    target_compile_definitions(halomccvr_halo3_seat_view_dev_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+        HALOMCCVR_DEV_DIAGNOSTICS=1)
+    add_test(NAME halomccvr_halo3_seat_view_dev_tests COMMAND halomccvr_halo3_seat_view_dev_tests)
+    # Vehicle cameras: the small JSON reader for hand-edited files (src/common/json_lite.h) and the camera
+    # file itself -- model, reader, writer and vehicle matching (src/common/vehicle_camera_file.h). Pure logic.
+    add_executable(halomccvr_json_lite_tests tests/json_lite_tests.cpp)
+    target_compile_options(halomccvr_json_lite_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_json_lite_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_json_lite_tests COMMAND halomccvr_json_lite_tests)
+    add_executable(halomccvr_vehicle_camera_file_tests tests/vehicle_camera_file_tests.cpp
+        src/common/vehicle_camera_file.cpp)
+    target_compile_options(halomccvr_vehicle_camera_file_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_vehicle_camera_file_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_vehicle_camera_file_tests COMMAND halomccvr_vehicle_camera_file_tests)
+    # Where a camera sits: the offset, the tracked rotations and the leash in the games' space
+    # (src/common/vehicle_camera_frame_logic.h).
+    add_executable(halomccvr_vehicle_camera_frame_tests tests/vehicle_camera_frame_tests.cpp)
+    target_compile_options(halomccvr_vehicle_camera_frame_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_vehicle_camera_frame_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_vehicle_camera_frame_tests COMMAND halomccvr_vehicle_camera_frame_tests)
+    # Which camera is in use: the entry for a seat, stepping, what a seat remembers, a reloaded file
+    # (src/common/vehicle_camera_select.h).
+    add_executable(halomccvr_vehicle_camera_select_tests tests/vehicle_camera_select_tests.cpp
+        src/common/vehicle_camera_select.cpp src/common/vehicle_camera_file.cpp)
+    target_compile_options(halomccvr_vehicle_camera_select_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_vehicle_camera_select_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_vehicle_camera_select_tests COMMAND halomccvr_vehicle_camera_select_tests)
+    # A vehicle of its own in the player's camera file: what is added, and the text it is spliced into
+    # (src/common/vehicle_camera_autoadd.h). Pure logic.
+    add_executable(halomccvr_vehicle_camera_autoadd_tests tests/vehicle_camera_autoadd_tests.cpp
+        src/common/vehicle_camera_autoadd.cpp src/common/vehicle_camera_file.cpp)
+    target_compile_options(halomccvr_vehicle_camera_autoadd_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_vehicle_camera_autoadd_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_vehicle_camera_autoadd_tests COMMAND halomccvr_vehicle_camera_autoadd_tests)
+    # The camera file on disk: written once when missing, added to and never rewritten, read again when edited
+    # (src/common/vehicle_camera_store.h). Works in a folder of its own under the temp folder.
+    add_executable(halomccvr_vehicle_camera_store_tests tests/vehicle_camera_store_tests.cpp
+        src/common/vehicle_camera_store.cpp src/common/vehicle_camera_autoadd.cpp src/common/vehicle_camera_file.cpp)
+    target_compile_options(halomccvr_vehicle_camera_store_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_vehicle_camera_store_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_vehicle_camera_store_tests COMMAND halomccvr_vehicle_camera_store_tests)
+    # Where the camera in use is this frame: the selected camera laid onto the vehicle a game reports
+    # (src/common/vehicle_camera_place_logic.h).
+    add_executable(halomccvr_vehicle_camera_place_tests tests/vehicle_camera_place_tests.cpp
+        src/common/vehicle_camera_select.cpp src/common/vehicle_camera_file.cpp)
+    target_compile_options(halomccvr_vehicle_camera_place_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_vehicle_camera_place_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_vehicle_camera_place_tests COMMAND halomccvr_vehicle_camera_place_tests)
+    # How a vehicle seat is controlled, apart from how the view turns: hand, stick or wheel, and the left
+    # stick click's cycle (src/common/vehicle_control_logic.h).
+    add_executable(halomccvr_vehicle_control_tests tests/vehicle_control_tests.cpp)
+    target_compile_options(halomccvr_vehicle_control_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_vehicle_control_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_vehicle_control_tests COMMAND halomccvr_vehicle_control_tests)
+    # A look-steered driver's hand aim refused behind and near the vehicle, in its own ground plane
+    # (src/common/vehicle_aim_reject_logic.h).
+    add_executable(halomccvr_vehicle_aim_reject_tests tests/vehicle_aim_reject_tests.cpp)
+    target_compile_options(halomccvr_vehicle_aim_reject_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_vehicle_aim_reject_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_vehicle_aim_reject_tests COMMAND halomccvr_vehicle_aim_reject_tests)
+    # Which present carries the game's picture: not a host's token surface, not another device than the
+    # headset session's (src/common/present_owner_logic.h).
+    add_executable(halomccvr_present_owner_tests tests/present_owner_tests.cpp)
+    target_compile_options(halomccvr_present_owner_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_present_owner_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_present_owner_tests COMMAND halomccvr_present_owner_tests)
+    # Which OpenXR API layers the loader put between the mod and the runtime, and the ones known to break it
+    # (src/common/openxr_layer_report_logic.h).
+    add_executable(halomccvr_openxr_layer_report_tests tests/openxr_layer_report_tests.cpp)
+    target_compile_options(halomccvr_openxr_layer_report_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_openxr_layer_report_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_openxr_layer_report_tests COMMAND halomccvr_openxr_layer_report_tests)
+    # The third-person boom: Halo 3's camera track as the game evaluates it, the flat game's look range, the
+    # boom's angle from the stick and where it starts (src/common/vehicle_boom_logic.h).
+    add_executable(halomccvr_vehicle_boom_tests tests/vehicle_boom_tests.cpp)
+    target_compile_options(halomccvr_vehicle_boom_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_vehicle_boom_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_vehicle_boom_tests COMMAND halomccvr_vehicle_boom_tests)
+    # The player's lag tuning laid over the camera file (src/common/vehicle_camera_tuning.h).
+    add_executable(halomccvr_vehicle_camera_tuning_tests tests/vehicle_camera_tuning_tests.cpp)
+    target_compile_options(halomccvr_vehicle_camera_tuning_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_vehicle_camera_tuning_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_vehicle_camera_tuning_tests COMMAND halomccvr_vehicle_camera_tuning_tests)
+    # The vehicle camera note in the game's own HUD messages (src/common/hud_note_logic.h).
+    add_executable(halomccvr_hud_note_tests tests/hud_note_tests.cpp)
+    target_compile_options(halomccvr_hud_note_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_hud_note_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_hud_note_tests COMMAND halomccvr_hud_note_tests)
+    # The vehicle camera buttons in a seat: taps, holds, the left stick click, and what reaches the game
+    # (src/common/vehicle_seat_buttons.h).
+    add_executable(halomccvr_vehicle_seat_buttons_tests tests/vehicle_seat_buttons_tests.cpp)
+    target_compile_options(halomccvr_vehicle_seat_buttons_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_vehicle_seat_buttons_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_vehicle_seat_buttons_tests COMMAND halomccvr_vehicle_seat_buttons_tests)
+    # The ring where the vehicle aims, beside the crosshair: its picture, colour, direction, range and size
+    # (src/common/vehicle_aim_marker_logic.h).
+    add_executable(halomccvr_vehicle_aim_marker_tests tests/vehicle_aim_marker_tests.cpp)
+    target_compile_options(halomccvr_vehicle_aim_marker_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_vehicle_aim_marker_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_vehicle_aim_marker_tests COMMAND halomccvr_vehicle_aim_marker_tests)
     add_executable(halomccvr_halo4_vehicle_input_tests tests/halo4_vehicle_input_tests.cpp)
     target_compile_definitions(halomccvr_halo4_vehicle_input_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_halo4_vehicle_input_tests COMMAND halomccvr_halo4_vehicle_input_tests)
@@ -804,6 +1066,359 @@ if(BUILD_TESTING)
     add_executable(halomccvr_left_hand_shared_tests tests/left_hand_shared_tests.cpp)
     target_include_directories(halomccvr_left_hand_shared_tests PRIVATE src/common)
     add_test(NAME halomccvr_left_hand_shared_tests COMMAND halomccvr_left_hand_shared_tests)
+    add_executable(halomccvr_aim_solve_tests tests/aim_solve_tests.cpp)
+    target_include_directories(halomccvr_aim_solve_tests PRIVATE src/common)
+    add_test(NAME halomccvr_aim_solve_tests COMMAND halomccvr_aim_solve_tests)
+    add_executable(halomccvr_seat_drive_policy_tests tests/seat_drive_policy_tests.cpp)
+    target_include_directories(halomccvr_seat_drive_policy_tests PRIVATE src/common)
+    add_test(NAME halomccvr_seat_drive_policy_tests COMMAND halomccvr_seat_drive_policy_tests)
+    # Seat convergence for Halo CE and Halo 2 (src/common/seat_converge_logic.h): the seat's role from its flags
+    # word or the vehicle's occupant handles, the verdict on the engine's camera answer, the stance key, the
+    # line-versus-point measure and the engine's aiming-bounds clamp.
+    add_executable(halomccvr_seat_converge_tests tests/seat_converge_tests.cpp)
+    target_include_directories(halomccvr_seat_converge_tests PRIVATE src/common)
+    add_test(NAME halomccvr_seat_converge_tests COMMAND halomccvr_seat_converge_tests)
+    # Aiming a seat's gun through the point (src/common/seat_barrel_logic.h): the barrel's geometry learned from
+    # the lines of the seat's own fires, and the aim for which the barrel's line runs through a point.
+    add_executable(halomccvr_seat_barrel_tests tests/seat_barrel_tests.cpp)
+    target_include_directories(halomccvr_seat_barrel_tests PRIVATE src/common)
+    add_test(NAME halomccvr_seat_barrel_tests COMMAND halomccvr_seat_barrel_tests)
+    # Reach's motion tracker follows the head (src/common/reach_head_relative_logic.h): the decode of the game's
+    # own heading store and its two readers, and the two headset checks on the game's own placement arithmetic.
+    add_executable(halomccvr_reach_head_relative_tests tests/reach_head_relative_tests.cpp)
+    target_include_directories(halomccvr_reach_head_relative_tests PRIVATE src/common)
+    add_test(NAME halomccvr_reach_head_relative_tests COMMAND halomccvr_reach_head_relative_tests)
+    # Halo 3's player tags (src/common/halo3_player_tags_logic.h): which navpoints are teammates' tags, what each
+    # setting does to one, and the positions named beside its signatures.
+    add_executable(halomccvr_halo3_player_tags_tests tests/halo3_player_tags_tests.cpp)
+    target_include_directories(halomccvr_halo3_player_tags_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo3_player_tags_tests COMMAND halomccvr_halo3_player_tags_tests)
+    # Halo 4's motion tracker follows the head (src/common/halo4_head_relative_logic.h; a retail-derived lead, not
+    # H4EK-verified): the decode of the three sites and its refusals, the proof the hook takes at run time before
+    # it changes anything (agree, disagree, a reference that did not move, withdrawal), and the two headset checks
+    # on the game's own placement arithmetic.
+    add_executable(halomccvr_halo4_head_relative_tests tests/halo4_head_relative_tests.cpp)
+    target_include_directories(halomccvr_halo4_head_relative_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo4_head_relative_tests COMMAND halomccvr_halo4_head_relative_tests)
+    # Halo 4's sound listener follows the head (src/common/halo4_sound_listener_logic.h; a retail-derived lead, not
+    # H4EK-verified): the decode of the four sites and its refusals, the value agreement and the proof the hook
+    # takes at run time before it changes anything, what the listener is given on the game's own builder,
+    # transform and mirror, every refusal, and the measurement the dev report prints.
+    add_executable(halomccvr_halo4_sound_listener_tests tests/halo4_sound_listener_tests.cpp)
+    target_include_directories(halomccvr_halo4_sound_listener_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo4_sound_listener_tests COMMAND halomccvr_halo4_sound_listener_tests)
+    # Reach's navigation markers, the pure half (src/common/reach_nav_marker_logic.h). Geometry on the header's
+    # own MODEL of the game's projection, not on the game: with the eye's field of view the model's marker is
+    # on its point's pixel for each eye with the head turned and the gun swept; with the game's it is off by
+    # the magnification; the field-of-view verdicts; the decoding of the projection's sites from byte patterns.
+    add_executable(halomccvr_reach_nav_marker_tests tests/reach_nav_marker_tests.cpp)
+    target_include_directories(halomccvr_reach_nav_marker_tests PRIVATE src/common)
+    add_test(NAME halomccvr_reach_nav_marker_tests COMMAND halomccvr_reach_nav_marker_tests)
+    # Head-relative HUD and sound, the shared pure half (src/common/head_relative_logic.h): the heading of a
+    # forward vector, the game's forward with the head's yaw, the head sample's verdict, and the player's two
+    # headset checks (gun swept: contacts stay put; head turned: contacts turn) as geometry.
+    add_executable(halomccvr_head_relative_tests tests/head_relative_tests.cpp)
+    target_include_directories(halomccvr_head_relative_tests PRIVATE src/common)
+    add_test(NAME halomccvr_head_relative_tests COMMAND halomccvr_head_relative_tests)
+    # Head-relative motion tracker, Halo CE (src/common/haloce_head_relative_logic.h; a retail-derived lead, not
+    # HCEEK-verified): the decode of the nine sites and every refusal of it, the exact guard on the stored heading,
+    # the two-stage proof taken at run time (provisional at rest, confirmed by a turn, withdrawal, no second
+    # provisional pass), the head built from the frame's own context, and the headset check as geometry.
+    add_executable(halomccvr_ce_head_relative_tests tests/haloce_head_relative_tests.cpp)
+    target_include_directories(halomccvr_ce_head_relative_tests PRIVATE src/common)
+    add_test(NAME halomccvr_ce_head_relative_tests COMMAND halomccvr_ce_head_relative_tests)
+    # The same lane's PRODUCTION body (src/dll/haloce_head_relative.cpp) over a synthetic image built from the
+    # header's patterns at addresses that are not retail's: the install proof through sig::Find and the function
+    # table, the detour and its one write, every report line as formatted, the retirement and what a reinstall
+    # keeps. Player flavour, then dev flavour (the 2-second line the first run is judged by).
+    add_executable(halomccvr_ce_head_relative_runtime_tests tests/haloce_head_relative_runtime_tests.cpp
+        src/dll/sigscan.cpp src/common/config.cpp)
+    target_include_directories(halomccvr_ce_head_relative_runtime_tests PRIVATE src/common src/dll)
+    target_compile_definitions(halomccvr_ce_head_relative_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_ce_head_relative_runtime_tests PRIVATE minhook psapi)
+    add_test(NAME halomccvr_ce_head_relative_runtime_tests COMMAND halomccvr_ce_head_relative_runtime_tests)
+    add_executable(halomccvr_ce_head_relative_runtime_dev_tests tests/haloce_head_relative_runtime_tests.cpp
+        src/dll/sigscan.cpp src/common/config.cpp)
+    target_include_directories(halomccvr_ce_head_relative_runtime_dev_tests PRIVATE src/common src/dll)
+    target_compile_definitions(halomccvr_ce_head_relative_runtime_dev_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+        HALOMCCVR_DEV_DIAGNOSTICS=1)
+    target_link_libraries(halomccvr_ce_head_relative_runtime_dev_tests PRIVATE minhook psapi)
+    add_test(NAME halomccvr_ce_head_relative_runtime_dev_tests COMMAND halomccvr_ce_head_relative_runtime_dev_tests)
+    # The F8/F9 pitch trim (src/common/pitch_trim_logic.h): applied with stereo off, zero in stereo VR, and a key
+    # press in stereo changes nothing (two stray F9 presses once put the reticle 4 degrees above every shot).
+    add_executable(halomccvr_pitch_trim_tests tests/pitch_trim_tests.cpp)
+    target_include_directories(halomccvr_pitch_trim_tests PRIVATE src/common)
+    add_test(NAME halomccvr_pitch_trim_tests COMMAND halomccvr_pitch_trim_tests)
+    # Mod hotkeys are bare keys (src/common/hotkey_logic.h): a key with Ctrl, Alt or a Windows key held is
+    # another tool's chord (a replay-capture Ctrl+F9 once trimmed the view two degrees per clip).
+    add_executable(halomccvr_hotkey_tests tests/hotkey_tests.cpp)
+    target_include_directories(halomccvr_hotkey_tests PRIVATE src/common)
+    add_test(NAME halomccvr_hotkey_tests COMMAND halomccvr_hotkey_tests)
+    # Head-relative motion tracker, Halo 3 / ODST (src/common/halo3_head_relative_logic.h): the game's placement
+    # arithmetic as read from halo3.dll, the head's heading substituted into it, every refusal, the signatures'
+    # decode offsets, and the two headset checks as geometry.
+    add_executable(halomccvr_halo3_head_relative_tests tests/halo3_head_relative_tests.cpp)
+    target_include_directories(halomccvr_halo3_head_relative_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo3_head_relative_tests COMMAND halomccvr_halo3_head_relative_tests)
+    # Halo 3 tag names (src/common/halo3_tag_names.h): the cache header as halo3.dll checks it, the name table in
+    # both address layouts on synthetic files, every refusal of a name, the short name an unknown vehicle goes by,
+    # the decode of the two signatures on images built from their own patterns, and the stock vehicles by tag path
+    # (src/common/halo3_vehicle_logic.h) with what the rule makes of vehicles read offline from Sandtrap and HugeGrass.
+    add_executable(halomccvr_halo3_tag_names_tests tests/halo3_tag_names_tests.cpp)
+    target_include_directories(halomccvr_halo3_tag_names_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo3_tag_names_tests COMMAND halomccvr_halo3_tag_names_tests)
+    # Halo 3 tag names at runtime (src/dll/halo3_tag_names.inl) on a synthetic halo3.dll image: the install's decode,
+    # the cold worker reading each map once and proving it, a new map and a map ending under one generation, every
+    # refusal logged once with backoff, the camera thread's verdicts, and the removal.
+    add_executable(halomccvr_halo3_tag_names_runtime_tests tests/halo3_tag_names_runtime_tests.cpp)
+    target_include_directories(halomccvr_halo3_tag_names_runtime_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo3_tag_names_runtime_tests COMMAND halomccvr_halo3_tag_names_runtime_tests)
+    # Halo 3 string ids (src/common/halo3_string_ids.h): a map's strings on a synthetic table and buffer laid out as
+    # retail's, every refusal, the text of global, map and unknown ids, and the decode of the three signatures.
+    add_executable(halomccvr_halo3_string_ids_tests tests/halo3_string_ids_tests.cpp)
+    target_include_directories(halomccvr_halo3_string_ids_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo3_string_ids_tests COMMAND halomccvr_halo3_string_ids_tests)
+    # Halo 3 glass fade (src/common/halo3_glass_fade.h): which parameters a camera's fadeParts touches per blend mode,
+    # read against the stock glass shaders, and what it does to each.
+    add_executable(halomccvr_foreign_detour_tests tests/foreign_detour_tests.cpp)
+    target_include_directories(halomccvr_foreign_detour_tests PRIVATE src/common)
+    add_test(NAME halomccvr_foreign_detour_tests COMMAND halomccvr_foreign_detour_tests)
+    add_executable(halomccvr_halo3_glass_fade_tests tests/halo3_glass_fade_tests.cpp)
+    target_include_directories(halomccvr_halo3_glass_fade_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo3_glass_fade_tests COMMAND halomccvr_halo3_glass_fade_tests)
+    # Halo 3: the motion tracker's blips move with the HUD height (src/common/halo3_tracker_hud_height_logic.h;
+    # retail-derived and run): the decode of the five sites on an image built from the header's patterns and
+    # every way it refuses (a missing site, a call elsewhere, a neighbouring field, a scale pair not beside its
+    # origin), the positions inside each pattern, and the move itself with its refusals and its restore rule.
+    add_executable(halomccvr_halo3_tracker_hud_height_tests tests/halo3_tracker_hud_height_tests.cpp)
+    target_include_directories(halomccvr_halo3_tracker_hud_height_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo3_tracker_hud_height_tests COMMAND halomccvr_halo3_tracker_hud_height_tests)
+    # Halo 2's motion tracker follows the head (src/common/halo2_head_relative_logic.h; a retail-derived lead, not
+    # H2EK-verified): the decode of the four sites and its refusals, the proof the hook takes at run time before
+    # it changes anything (agree, disagree, a reference that did not move, withdrawal), the game's placement
+    # arithmetic as read from halo2.dll, and the two headset checks on it.
+    add_executable(halomccvr_halo2_head_relative_tests tests/halo2_head_relative_tests.cpp)
+    target_include_directories(halomccvr_halo2_head_relative_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo2_head_relative_tests COMMAND halomccvr_halo2_head_relative_tests)
+    # The dev sound listener witness, the pure half (src/common/sound_listener_witness_logic.h, and per title
+    # halo2_sound_listener_logic.h -- a retail-derived lead, not H2EK-verified -- and haloce_sound_listener_logic.h):
+    # the angle between two directions, the window and its verdict (head / aim / together / the game's camera /
+    # neither), the decode of Halo 2's listener sites and record with every refusal, and Halo CE's packet held
+    # against the head the listener hook builds. The runtime that uses them exists in dev builds only.
+    add_executable(halomccvr_sound_listener_witness_tests tests/sound_listener_witness_tests.cpp src/dll/ik.cpp)
+    target_include_directories(halomccvr_sound_listener_witness_tests PRIVATE src/common)
+    add_test(NAME halomccvr_sound_listener_witness_tests COMMAND halomccvr_sound_listener_witness_tests)
+    # Gun-slaved seats (src/common/gun_slaved_seat_logic.h): seat flag bit 7, the occupant-aim binding, the servo's
+    # feedback and lag gate, the gun-settle gate of the crosshair witness and the nod witness.
+    add_executable(halomccvr_gun_slaved_seat_tests tests/gun_slaved_seat_tests.cpp)
+    target_include_directories(halomccvr_gun_slaved_seat_tests PRIVATE src/common)
+    add_test(NAME halomccvr_gun_slaved_seat_tests COMMAND halomccvr_gun_slaved_seat_tests)
+    # The free camera with no player unit (src/common/aim_no_unit_logic.h): the death/respawn debounce, its
+    # fail-open rules and the frame the aim servo composes while the player has no unit.
+    add_executable(halomccvr_aim_no_unit_tests tests/aim_no_unit_tests.cpp)
+    target_include_directories(halomccvr_aim_no_unit_tests PRIVATE src/common)
+    add_test(NAME halomccvr_aim_no_unit_tests COMMAND halomccvr_aim_no_unit_tests)
+    add_executable(halomccvr_seat_aim_frame_tests tests/seat_aim_frame_tests.cpp)
+    target_include_directories(halomccvr_seat_aim_frame_tests PRIVATE src/common)
+    add_test(NAME halomccvr_seat_aim_frame_tests COMMAND halomccvr_seat_aim_frame_tests)
+    # Seat frame conversion (src/common/seat_frame_logic.h): every title's vehicle-up rebase R(u) and its inverse.
+    add_executable(halomccvr_seat_frame_logic_tests tests/seat_frame_logic_tests.cpp)
+    target_include_directories(halomccvr_seat_frame_logic_tests PRIVATE src/common)
+    add_test(NAME halomccvr_seat_frame_logic_tests COMMAND halomccvr_seat_frame_logic_tests)
+    # Seat frame readers (src/common/seat_frame_sites.h, src/dll/seat_frame_reader.h): the read over a synthetic
+    # world per title, the case decision, and the live Bind over an executable fixture.
+    add_executable(halomccvr_seat_frame_sites_tests tests/seat_frame_sites_tests.cpp src/dll/sigscan.cpp)
+    target_compile_definitions(halomccvr_seat_frame_sites_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_seat_frame_sites_tests PRIVATE psapi)
+    add_test(NAME halomccvr_seat_frame_sites_tests COMMAND halomccvr_seat_frame_sites_tests)
+    # The production install / sync / teardown of the seat aim rebase skip (src/dll/seat_aim_world_frame.inl)
+    # over a VirtualAlloc'd executable fixture: player flavour, then dev flavour (the A/B key and the witness).
+    add_executable(halomccvr_seat_aim_world_frame_tests tests/seat_aim_world_frame_tests.cpp src/dll/sigscan.cpp)
+    target_compile_definitions(halomccvr_seat_aim_world_frame_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_seat_aim_world_frame_tests PRIVATE psapi)
+    add_test(NAME halomccvr_seat_aim_world_frame_tests COMMAND halomccvr_seat_aim_world_frame_tests)
+    add_executable(halomccvr_seat_aim_world_frame_dev_tests tests/seat_aim_world_frame_tests.cpp src/dll/sigscan.cpp)
+    target_compile_definitions(halomccvr_seat_aim_world_frame_dev_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+        HALOMCCVR_DEV_DIAGNOSTICS=1)
+    target_link_libraries(halomccvr_seat_aim_world_frame_dev_tests PRIVATE psapi)
+    add_test(NAME halomccvr_seat_aim_world_frame_dev_tests COMMAND halomccvr_seat_aim_world_frame_dev_tests)
+    add_executable(halomccvr_converge_policy_tests tests/converge_policy_tests.cpp)
+    target_include_directories(halomccvr_converge_policy_tests PRIVATE src/common)
+    add_test(NAME halomccvr_converge_policy_tests COMMAND halomccvr_converge_policy_tests)
+    # The seat limit reticle (src/common/seat_limit_reticle_logic.h): a seat's angular stops in the record's frame,
+    # the clamp of the hand's aim through that frame and back, and the edge hysteresis.
+    add_executable(halomccvr_seat_limit_reticle_tests tests/seat_limit_reticle_tests.cpp)
+    target_include_directories(halomccvr_seat_limit_reticle_tests PRIVATE src/common)
+    add_test(NAME halomccvr_seat_limit_reticle_tests COMMAND halomccvr_seat_limit_reticle_tests)
+    # A look-steered land driver's gun band (src/common/vehicle_gun_band_logic.h): the barrels learned in
+    # the hull frame (animated barrels refused), the firing assist's cap, and the clamp of the shot's elevation.
+    add_executable(halomccvr_vehicle_gun_band_tests tests/vehicle_gun_band_tests.cpp)
+    target_include_directories(halomccvr_vehicle_gun_band_tests PRIVATE src/common)
+    add_test(NAME halomccvr_vehicle_gun_band_tests COMMAND halomccvr_vehicle_gun_band_tests)
+    add_executable(halomccvr_assess_reticle_tests tests/assess_reticle_tests.cpp)
+    target_include_directories(halomccvr_assess_reticle_tests PRIVATE src/common)
+    add_test(NAME halomccvr_assess_reticle_tests COMMAND halomccvr_assess_reticle_tests)
+    add_executable(halomccvr_shot_lag_tests tests/shot_lag_tests.cpp)
+    target_include_directories(halomccvr_shot_lag_tests PRIVATE src/common)
+    add_test(NAME halomccvr_shot_lag_tests COMMAND halomccvr_shot_lag_tests)
+    # The written aim's lead (src/common/aim_lead_logic.h): a steady sweep written where it will be one lead
+    # time on; a step, a gap, a stop and an aim at rest written unchanged; the cap; and the stated noise bound.
+    add_executable(halomccvr_aim_lead_tests tests/aim_lead_tests.cpp)
+    target_include_directories(halomccvr_aim_lead_tests PRIVATE src/common)
+    add_test(NAME halomccvr_aim_lead_tests COMMAND halomccvr_aim_lead_tests)
+    # The seated record upstream of replication (src/common/seat_upstream_logic.h): the stock query model
+    # and its exact inverse, the learned velocity gain, the write in effect at a tick, the seated recomposition's
+    # fail-closed rules and the stock-line witness.
+    add_executable(halomccvr_seat_upstream_tests tests/seat_upstream_tests.cpp)
+    target_include_directories(halomccvr_seat_upstream_tests PRIVATE src/common)
+    add_test(NAME halomccvr_seat_upstream_tests COMMAND halomccvr_seat_upstream_tests)
+    # The shot impact witness (src/common/shot_impact_logic.h, dev): where a round actually goes -- the
+    # spawned object's proof, the native's turn, inherited velocity, the round's line and impact against P, the
+    # reticle's map to the world, the trigger latch and the report lines.
+    add_executable(halomccvr_shot_impact_tests tests/shot_impact_tests.cpp)
+    target_include_directories(halomccvr_shot_impact_tests PRIVATE src/common)
+    add_test(NAME halomccvr_shot_impact_tests COMMAND halomccvr_shot_impact_tests)
+    # As seen (src/common/as_seen_logic.h, dev): an impact against the crosshair drawn in the first frame
+    # that shows it, binned by strafe speed and range, with the clocks between -- shared by the VR witness and the flat
+    # probe (HaloMCCFlatProbe.dll), so both hosts compute it identically.
+    add_executable(halomccvr_as_seen_tests tests/as_seen_tests.cpp)
+    target_include_directories(halomccvr_as_seen_tests PRIVATE src/common)
+    add_test(NAME halomccvr_as_seen_tests COMMAND halomccvr_as_seen_tests)
+    # Source-consistency guard for the seated converged claim: game.cpp assigns the claim from
+    # converge::SeatedClaimDecide and nothing else, never clears sightSeatedConverged, and reads no natural-cause
+    # symbol into the claim's facts. No behavioural test compiles game.cpp, so a natural-cause switch-off added
+    # at the call site would otherwise pass every test. Python stdlib only; --self-test checks the checker.
+    add_test(NAME halomccvr_seated_claim_guard
+        COMMAND "${Python3_EXECUTABLE}" -O
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_seated_claim.py"
+            --self-test)
+    # The sight layer's one clock: sight_layer.cpp reads only Sight_NowMs()/Sight_NowUs(), its ray
+    # publications stamp themselves (never a caller's sampleMs), and every trace driver passes Sight_NowMs() to
+    # Sight_TraceDue. A GetTickCount64 stamp aged against QPC lost its window to the clocks' offset (the seat limit
+    # ray). Python stdlib only; --self-test checks the checker.
+    add_test(NAME halomccvr_sight_clock_guard
+        COMMAND "${Python3_EXECUTABLE}" -O
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_sight_clock.py"
+            --self-test)
+    # Isolation guard for the dev assessment marker (honest_reticle_assess): it is a SECOND marker,
+    # never the player's reticle. Its code sits in [assess-only] regions inside #if HALOMCCVR_DEV_DIAGNOSTICS;
+    # nothing outside them reads the key, Game_GetClampedAimDirection or the publication, and nothing inside them
+    # writes the reticle, a mark, a shot, the aim or the drive. --self-test proves each rule fails on a misuse.
+    add_test(NAME halomccvr_assess_isolation_guard
+        COMMAND "${Python3_EXECUTABLE}" -O
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_assess_isolation.py"
+            --self-test)
+    # Every LOG(...) passes as many arguments as its format converts. Logf is a plain variadic, so
+    # nothing else checks it, and no test runs game.cpp's install path: a LOG one argument short handed "%s" a
+    # TLS offset and killed MCC at every Reach and Halo 4 level load. Counts only (not types). Python stdlib.
+    add_test(NAME halomccvr_log_format_guard
+        COMMAND "${Python3_EXECUTABLE}" -O
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_log_formats.py"
+            --self-test "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    add_executable(halomccvr_aim_caller_tests tests/aim_caller_tests.cpp)
+    target_include_directories(halomccvr_aim_caller_tests PRIVATE src/common)
+    add_test(NAME halomccvr_aim_caller_tests COMMAND halomccvr_aim_caller_tests)
+    add_executable(halomccvr_halo4_seat_aim_logic_tests tests/halo4_seat_aim_logic_tests.cpp)
+    target_include_directories(halomccvr_halo4_seat_aim_logic_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo4_seat_aim_logic_tests COMMAND halomccvr_halo4_seat_aim_logic_tests)
+    # Halo 4 seated convergence (src/common/halo4_seat_converge_logic.h): the solve's start and its carry, the
+    # fixed point over a model of the game's following camera and the rate it is reached at, the start held
+    # across a gap in the samples, the reasons a poll does not solve, and the witness's line-against-point measure.
+    add_executable(halomccvr_halo4_seat_converge_tests tests/halo4_seat_converge_tests.cpp)
+    target_include_directories(halomccvr_halo4_seat_converge_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo4_seat_converge_tests COMMAND halomccvr_halo4_seat_converge_tests)
+    add_executable(halomccvr_type13_flight_log_tests tests/type13_flight_log_tests.cpp)
+    target_include_directories(halomccvr_type13_flight_log_tests PRIVATE src/common)
+    add_test(NAME halomccvr_type13_flight_log_tests COMMAND halomccvr_type13_flight_log_tests)
+    # addrcascade (src/common/addrcascade): the address-verification library the direct drives resolve through.
+    # Its two source files are unmodified copies, so its tests compile them ALONE: of this project's folders only
+    # its own is on the include path, at /W4 /WX, with a consumer that includes nothing else of this project. One
+    # convenient #include of a project header would never fail in the DLL's build, where they all are.
+    # Built twice: as a player build sees it (ADDRCASCADE_FAULTS undefined, fault() a constant false) and as a dev
+    # build does (ADDRCASCADE_FAULTS=1).
+    foreach(halomccvr_addrcascade_flavour "" "_faults")
+        set(halomccvr_addrcascade_target "halomccvr_addrcascade${halomccvr_addrcascade_flavour}_tests")
+        add_executable(${halomccvr_addrcascade_target}
+            tests/addrcascade_tests.cpp src/common/addrcascade/AddressCascade.cpp)
+        target_include_directories(${halomccvr_addrcascade_target} PRIVATE src/common/addrcascade)
+        if(MSVC)
+            target_compile_options(${halomccvr_addrcascade_target} PRIVATE /W4 /WX)
+        endif()
+        add_test(NAME ${halomccvr_addrcascade_target} COMMAND ${halomccvr_addrcascade_target})
+    endforeach()
+    target_compile_definitions(halomccvr_addrcascade_faults_tests PRIVATE ADDRCASCADE_FAULTS=1)
+    # Drive address resolution (src/common/drive_resolve.h) over synthetic images: found as recorded, followed
+    # when the code moved, refused when ambiguous or missing, told apart by the recorded address, resolved inside
+    # its function, read through this mod's own hooks, and every forced fault.
+    add_executable(halomccvr_drive_resolve_tests tests/drive_resolve_tests.cpp)
+    target_include_directories(halomccvr_drive_resolve_tests PRIVATE src/common)
+    add_test(NAME halomccvr_drive_resolve_tests COMMAND halomccvr_drive_resolve_tests)
+    # EVERY REAL PLAN of src/common/drive_sites.h -- the code that decides what each drive hooks -- run on an image
+    # synthesised from the tables themselves (each row's bytes at its recorded RVA, inside function extents
+    # generated from the rows, with a matching .pdata, calls and rip loads filled as the plan requires): as
+    # recorded, moved, and with one row broken at a time; then the proofs that are not rows. No game file.
+    add_executable(halomccvr_drive_sites_tests tests/drive_sites_tests.cpp)
+    target_include_directories(halomccvr_drive_sites_tests PRIVATE src/common)
+    add_test(NAME halomccvr_drive_sites_tests COMMAND halomccvr_drive_sites_tests)
+    # The DLL's side of that resolution (src/dll/drive_cascade.cpp), as shipped, on a module that is really loaded
+    # (the test's own executable): opened through VirtualQuery, its .pdata compared with the operating system's own
+    # lookup, its TLS index taken from its PE TLS directory, a signature read through a hook patch, the address
+    # cache's file written, verified from, replaced, refused and left whole by a failed write on disk, the line
+    # that says which rung won, and the hook watchdog as the cold worker steps it. Player flavour (the dev fault
+    # key must do nothing), then dev flavour (each forced fault must show).
+    foreach(halomccvr_drive_cascade_flavour "" "_dev")
+        set(halomccvr_drive_cascade_target "halomccvr_drive_cascade${halomccvr_drive_cascade_flavour}_tests")
+        add_executable(${halomccvr_drive_cascade_target} tests/drive_cascade_tests.cpp
+            src/dll/drive_cascade.cpp src/dll/sigscan.cpp src/common/config.cpp
+            src/common/addrcascade/AddressCascade.cpp)
+        target_include_directories(${halomccvr_drive_cascade_target} PRIVATE src/common src/dll)
+        target_compile_definitions(${halomccvr_drive_cascade_target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        target_link_libraries(${halomccvr_drive_cascade_target} PRIVATE psapi)
+        add_test(NAME ${halomccvr_drive_cascade_target} COMMAND ${halomccvr_drive_cascade_target})
+    endforeach()
+    target_compile_definitions(halomccvr_drive_cascade_dev_tests PRIVATE
+        HALOMCCVR_DEV_DIAGNOSTICS=1 ADDRCASCADE_FAULTS=1)
+    # THE OFFLINE CHECK of the direct drives' addresses against the game's own DLL files
+    # (tools/drive_address_check.cpp): each DLL laid out as an image, every drive's own resolution run on it from
+    # the same tables the DLL uses (src/common/drive_sites.h), then again on a copy with every section moved, and
+    # again with each fault forced. It needs the MCC install folder (--mcc <folder>, or the HALOMCCVR_MCC_DIR
+    # environment variable) and only reads the DLLs. With neither it exits 77, which ctest reports as skipped: a
+    # machine without the game does not fail its tests.
+    # With --loaded <scratch folder> it also maps a copy of each DLL as the Windows loader does (its code not run)
+    # and resolves every drive on it through the DLL's own side of the resolution (src/dll/drive_cascade.cpp).
+    # That side is built here as a dev build builds it, so the tool can run the search beside the verified addresses
+    # (the self-test bit of drive_fault) on each mapped copy. With --loaded it also makes each install's own
+    # decision on the mapped copy, says the line the install logs, and puts the address cache through a real
+    # file in that folder. Everything is done for the player build's plans and for the dev build's.
+    # The test below never passes --loaded, and where HALOMCCVR_MCC_DIR is not set it is SKIPPED, which ctest
+    # counts among the tests that passed: a green run there has read no game DLL.
+    add_executable(halomccvr_drive_address_check tools/drive_address_check.cpp
+        src/dll/drive_cascade.cpp src/dll/sigscan.cpp src/common/config.cpp
+        src/common/addrcascade/AddressCascade.cpp)
+    target_include_directories(halomccvr_drive_address_check PRIVATE src/common)
+    target_compile_definitions(halomccvr_drive_address_check PRIVATE
+        NOMINMAX WIN32_LEAN_AND_MEAN ADDRCASCADE_FAULTS=1 HALOMCCVR_DEV_DIAGNOSTICS=1)
+    target_link_libraries(halomccvr_drive_address_check PRIVATE psapi)
+    add_test(NAME halomccvr_drive_address_check COMMAND halomccvr_drive_address_check --moved --faults --brief)
+    set_tests_properties(halomccvr_drive_address_check PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(halomccvr_dev_pad_script_tests tests/dev_pad_script_tests.cpp)
+    target_include_directories(halomccvr_dev_pad_script_tests PRIVATE src/common)
+    add_test(NAME halomccvr_dev_pad_script_tests COMMAND halomccvr_dev_pad_script_tests)
+    add_executable(halomccvr_sight_range_tests tests/sight_range_tests.cpp)
+    target_include_directories(halomccvr_sight_range_tests PRIVATE src/common)
+    add_test(NAME halomccvr_sight_range_tests COMMAND halomccvr_sight_range_tests)
+    # What the intent ray can hit: each title's trace flags decoded with that title's own bit layout
+    # must include bipeds and vehicles (and each engine's line-of-sight flags must be seen to leave bipeds out);
+    # the class of a trace result; the seated look-past keeps a boarder; Halo 2's projectile-flags agreement.
+    add_executable(halomccvr_sight_hit_class_tests tests/sight_hit_class_tests.cpp)
+    target_include_directories(halomccvr_sight_hit_class_tests PRIVATE src/common)
+    add_test(NAME halomccvr_sight_hit_class_tests COMMAND halomccvr_sight_hit_class_tests)
+    add_executable(halomccvr_native_forward_tests tests/native_forward_tests.cpp)
+    add_test(NAME halomccvr_native_forward_tests COMMAND halomccvr_native_forward_tests)
+    add_executable(halomccvr_sight_scope_tests tests/sight_scope_tests.cpp src/dll/sight_layer.cpp)
+    target_include_directories(halomccvr_sight_scope_tests PRIVATE src/common src/dll)
+    target_compile_definitions(halomccvr_sight_scope_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_sight_scope_tests COMMAND halomccvr_sight_scope_tests)
     add_executable(halomccvr_ce_render_tests tests/haloce_render_tests.cpp)
     target_include_directories(halomccvr_ce_render_tests PRIVATE src/common)
     add_test(NAME halomccvr_ce_render_tests COMMAND halomccvr_ce_render_tests)
@@ -813,6 +1428,13 @@ if(BUILD_TESTING)
     add_executable(halomccvr_ce_classic_view_pair_tests tests/haloce_classic_view_pair_tests.cpp)
     target_include_directories(halomccvr_ce_classic_view_pair_tests PRIVATE src/common)
     add_test(NAME halomccvr_ce_classic_view_pair_tests COMMAND halomccvr_ce_classic_view_pair_tests)
+    add_executable(halomccvr_weapon_animation_motion_tests tests/weapon_animation_motion_tests.cpp)
+    add_test(NAME halomccvr_weapon_animation_motion_tests COMMAND halomccvr_weapon_animation_motion_tests)
+    add_executable(halomccvr_halo3_secondary_motion_tests tests/halo3_secondary_motion_tests.cpp)
+    add_test(NAME halomccvr_halo3_secondary_motion_tests COMMAND halomccvr_halo3_secondary_motion_tests)
+    add_executable(halomccvr_weapon_alignment_tests tests/weapon_alignment_tests.cpp)
+    target_include_directories(halomccvr_weapon_alignment_tests PRIVATE src/common)
+    add_test(NAME halomccvr_weapon_alignment_tests COMMAND halomccvr_weapon_alignment_tests)
     add_executable(halomccvr_ce_first_person_tests tests/haloce_first_person_tests.cpp src/dll/ik.cpp)
     target_include_directories(halomccvr_ce_first_person_tests PRIVATE src/common)
     add_test(NAME halomccvr_ce_first_person_tests COMMAND halomccvr_ce_first_person_tests)
@@ -820,7 +1442,7 @@ if(BUILD_TESTING)
     target_include_directories(halomccvr_ce_contact_tests PRIVATE src/common)
     add_test(NAME halomccvr_ce_contact_tests COMMAND halomccvr_ce_contact_tests)
     add_executable(halomccvr_ce_contact_runtime_tests tests/haloce_contact_runtime_tests.cpp
-        src/dll/haloce_native_bindings.cpp src/dll/ik.cpp)
+        src/dll/haloce_native_bindings.cpp src/dll/ik.cpp src/dll/sight_layer.cpp)
     target_include_directories(halomccvr_ce_contact_runtime_tests PRIVATE src/common src/dll)
     target_compile_definitions(halomccvr_ce_contact_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_ce_contact_runtime_tests PRIVATE minhook)
@@ -880,6 +1502,27 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_ce_reticle_pixels_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_ce_reticle_pixels_tests PRIVATE d3d11 d3dcompiler)
     add_test(NAME halomccvr_ce_reticle_pixels_tests COMMAND halomccvr_ce_reticle_pixels_tests)
+    add_executable(halomccvr_reach_reticle_alpha_pixels_tests tests/reach_reticle_alpha_pixels_tests.cpp)
+    target_compile_definitions(halomccvr_reach_reticle_alpha_pixels_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_reach_reticle_alpha_pixels_tests PRIVATE d3d11 d3dcompiler)
+    add_test(NAME halomccvr_reach_reticle_alpha_pixels_tests COMMAND halomccvr_reach_reticle_alpha_pixels_tests)
+    add_executable(halomccvr_reticle_tint_pixels_tests tests/reticle_tint_pixels_tests.cpp)
+    target_compile_definitions(halomccvr_reticle_tint_pixels_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_reticle_tint_pixels_tests PRIVATE d3d11 d3dcompiler)
+    add_test(NAME halomccvr_reticle_tint_pixels_tests COMMAND halomccvr_reticle_tint_pixels_tests)
+    add_executable(halomccvr_mono_view_tests tests/mono_view_tests.cpp)
+    add_test(NAME halomccvr_mono_view_tests COMMAND halomccvr_mono_view_tests)
+    # A player build reads every key it writes: compiled without the development flag whatever this build is.
+    add_executable(halomccvr_config_player_roundtrip_tests tests/config_player_roundtrip_tests.cpp
+        src/common/config.cpp)
+    target_compile_definitions(halomccvr_config_player_roundtrip_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_config_player_roundtrip_tests COMMAND halomccvr_config_player_roundtrip_tests)
+    add_executable(halomccvr_hook_cost_tests tests/hook_cost_tests.cpp)
+    add_test(NAME halomccvr_hook_cost_tests COMMAND halomccvr_hook_cost_tests)
+    add_executable(halomccvr_host_ui_panel_pixels_tests tests/host_ui_panel_pixels_tests.cpp)
+    target_compile_definitions(halomccvr_host_ui_panel_pixels_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_host_ui_panel_pixels_tests PRIVATE d3d11 d3dcompiler)
+    add_test(NAME halomccvr_host_ui_panel_pixels_tests COMMAND halomccvr_host_ui_panel_pixels_tests)
     add_executable(halomccvr_ce_hud_target_tests tests/haloce_hud_target_tests.cpp)
     target_include_directories(halomccvr_ce_hud_target_tests PRIVATE src/common src/dll)
     target_compile_definitions(halomccvr_ce_hud_target_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -905,7 +1548,18 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_ce_orientation_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_ce_orientation_runtime_tests PRIVATE minhook)
     add_test(NAME halomccvr_ce_orientation_runtime_tests COMMAND halomccvr_ce_orientation_runtime_tests)
-    add_executable(halomccvr_ce_unit_control_runtime_tests tests/haloce_unit_control_runtime_tests.cpp)
+    # The same production body with the dev sound listener witness compiled in (it samples inside the listener
+    # detour): every check above must still hold -- the witness changes nothing that is handed on -- and the
+    # witness must have measured the game's own packet and the handed one against the head.
+    add_executable(halomccvr_ce_orientation_runtime_dev_tests tests/haloce_orientation_runtime_tests.cpp
+        src/dll/haloce_native_bindings.cpp src/dll/ik.cpp)
+    target_include_directories(halomccvr_ce_orientation_runtime_dev_tests PRIVATE src/common src/dll)
+    target_compile_definitions(halomccvr_ce_orientation_runtime_dev_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+        HALOMCCVR_DEV_DIAGNOSTICS=1)
+    target_link_libraries(halomccvr_ce_orientation_runtime_dev_tests PRIVATE minhook)
+    add_test(NAME halomccvr_ce_orientation_runtime_dev_tests COMMAND halomccvr_ce_orientation_runtime_dev_tests)
+    add_executable(halomccvr_ce_unit_control_runtime_tests tests/haloce_unit_control_runtime_tests.cpp
+        src/dll/sight_layer.cpp)
     target_include_directories(halomccvr_ce_unit_control_runtime_tests PRIVATE src/common src/dll "${minhook_SOURCE_DIR}/include")
     target_compile_definitions(halomccvr_ce_unit_control_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_ce_unit_control_runtime_tests COMMAND halomccvr_ce_unit_control_runtime_tests)
@@ -914,7 +1568,8 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_ce_network_input_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_ce_network_input_tests COMMAND halomccvr_ce_network_input_tests)
     add_executable(halomccvr_ce_first_person_runtime_tests tests/haloce_first_person_runtime_tests.cpp
-        src/dll/haloce_native_bindings.cpp src/dll/ik.cpp)
+        src/dll/haloce_native_bindings.cpp src/dll/ik.cpp src/dll/sight_layer.cpp
+        src/dll/haloce_skin_convert_thunk.asm)
     target_include_directories(halomccvr_ce_first_person_runtime_tests PRIVATE src/common src/dll)
     target_compile_definitions(halomccvr_ce_first_person_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_ce_first_person_runtime_tests PRIVATE minhook)
@@ -968,6 +1623,10 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_native_fault_probe_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_halo3_collision_dispatch_tests COMMAND halomccvr_halo3_collision_dispatch_tests)
     add_test(NAME halomccvr_native_fault_probe_tests COMMAND halomccvr_native_fault_probe_tests)
+    add_executable(halomccvr_own_image_fault_filter_tests tests/own_image_fault_filter_tests.cpp)
+    target_compile_definitions(halomccvr_own_image_fault_filter_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(halomccvr_own_image_fault_filter_tests PRIVATE /W4)
+    add_test(NAME halomccvr_own_image_fault_filter_tests COMMAND halomccvr_own_image_fault_filter_tests)
     target_include_directories(halomccvr_halo3_independent_shots_tests PRIVATE "${minhook_SOURCE_DIR}/include")
     target_compile_definitions(halomccvr_halo3_independent_shots_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_options(halomccvr_halo3_independent_shots_tests PRIVATE /MAP)
@@ -985,6 +1644,52 @@ if(BUILD_TESTING)
     add_test(NAME halo4_weapon_haptics COMMAND halo4_weapon_haptics_tests)
     add_executable(reach_weapon_haptics_logic_tests tests/reach_weapon_haptics_logic_tests.cpp)
     add_test(NAME reach_weapon_haptics_logic COMMAND reach_weapon_haptics_logic_tests)
+    add_executable(dual_wield_shake_tests tests/dual_wield_shake_tests.cpp)
+    target_compile_features(dual_wield_shake_tests PRIVATE cxx_std_20)
+    add_test(NAME dual_wield_shake COMMAND dual_wield_shake_tests)
+    add_executable(odst_fp_map_probe_tests tests/odst_fp_map_probe_tests.cpp)
+    target_compile_features(odst_fp_map_probe_tests PRIVATE cxx_std_20)
+    add_test(NAME odst_fp_map_probe COMMAND odst_fp_map_probe_tests)
+    add_executable(halo3_dual_shake_tests tests/halo3_dual_shake_tests.cpp)
+    target_compile_features(halo3_dual_shake_tests PRIVATE cxx_std_20)
+    add_test(NAME halo3_dual_shake COMMAND halo3_dual_shake_tests)
+    set(HALOMCCVR_ODST_MODDED_ASSETS "${HALOMCCVR_GENERATED_DIR}/odst_modded_fp_assets.inl")
+    add_custom_command(OUTPUT "${HALOMCCVR_ODST_MODDED_ASSETS}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_odst_modded_fp_fixture.py"
+            --source-root "${CMAKE_CURRENT_SOURCE_DIR}" --output "${HALOMCCVR_ODST_MODDED_ASSETS}"
+        DEPENDS tools/generate_odst_modded_fp_fixture.py
+            docs/ODST-MODDED-WEAPONS-MAP-EVIDENCE.json
+            docs/ODST-MYTHIC-FP-MAP-EVIDENCE.json VERBATIM)
+    add_executable(odst_modded_fp_tests tests/odst_modded_fp_tests.cpp "${HALOMCCVR_ODST_MODDED_ASSETS}")
+    target_include_directories(odst_modded_fp_tests PRIVATE "${HALOMCCVR_GENERATED_DIR}")
+    target_compile_features(odst_modded_fp_tests PRIVATE cxx_std_20)
+    add_test(NAME odst_modded_fp COMMAND odst_modded_fp_tests)
+    set(HALOMCCVR_HALO3_MODDED_FIXTURE "${HALOMCCVR_GENERATED_DIR}/halo3_modded_fp_fixture.inl")
+    set(HALOMCCVR_HALO3_MODDED_ASSETS "${HALOMCCVR_GENERATED_DIR}/halo3_modded_fp_assets.inl")
+    add_custom_command(OUTPUT "${HALOMCCVR_HALO3_MODDED_FIXTURE}" "${HALOMCCVR_HALO3_MODDED_ASSETS}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_halo3_modded_fp_fixture.py"
+            --source-root "${CMAKE_CURRENT_SOURCE_DIR}" --output "${HALOMCCVR_HALO3_MODDED_FIXTURE}"
+        DEPENDS tools/generate_halo3_modded_fp_fixture.py tools/generate_haptics_runtime_fixture.py
+            src/dll/game.cpp src/dll/legacy_runtime_weapon_bounds.inl
+            docs/HALO3-MODDED-WEAPONS-MAP-EVIDENCE.json VERBATIM)
+    add_executable(halo3_modded_fp_tests tests/halo3_modded_fp_tests.cpp
+        "${HALOMCCVR_HALO3_MODDED_FIXTURE}" "${HALOMCCVR_HALO3_MODDED_ASSETS}")
+    target_include_directories(halo3_modded_fp_tests PRIVATE "${HALOMCCVR_GENERATED_DIR}")
+    target_compile_features(halo3_modded_fp_tests PRIVATE cxx_std_20)
+    add_test(NAME halo3_modded_fp COMMAND halo3_modded_fp_tests)
+    set(HALOMCCVR_REACH_MODDED_FIXTURE "${HALOMCCVR_GENERATED_DIR}/reach_modded_fp_fixture.inl")
+    set(HALOMCCVR_REACH_MODDED_ASSETS "${HALOMCCVR_GENERATED_DIR}/reach_modded_fp_assets.inl")
+    add_custom_command(OUTPUT "${HALOMCCVR_REACH_MODDED_FIXTURE}" "${HALOMCCVR_REACH_MODDED_ASSETS}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_reach_modded_fp_fixture.py"
+            --source-root "${CMAKE_CURRENT_SOURCE_DIR}" --output "${HALOMCCVR_REACH_MODDED_FIXTURE}"
+        DEPENDS tools/generate_reach_modded_fp_fixture.py tools/generate_haptics_runtime_fixture.py
+            src/dll/game.cpp src/dll/legacy_runtime_weapon_bounds.inl
+            docs/REACH-MODDED-WEAPONS-M20-EVIDENCE.json VERBATIM)
+    add_executable(reach_modded_fp_layout_tests tests/reach_modded_fp_layout_tests.cpp
+        "${HALOMCCVR_REACH_MODDED_FIXTURE}" "${HALOMCCVR_REACH_MODDED_ASSETS}")
+    target_include_directories(reach_modded_fp_layout_tests PRIVATE "${HALOMCCVR_GENERATED_DIR}")
+    target_compile_features(reach_modded_fp_layout_tests PRIVATE cxx_std_20)
+    add_test(NAME reach_modded_fp_layout COMMAND reach_modded_fp_layout_tests)
     add_executable(halomccvr_reach_finger_pose_tests tests/reach_finger_pose_tests.cpp)
     target_compile_features(halomccvr_reach_finger_pose_tests PRIVATE cxx_std_20)
     add_test(NAME halomccvr_reach_finger_pose_tests COMMAND halomccvr_reach_finger_pose_tests)
@@ -1047,6 +1752,11 @@ install(TARGETS halo3xr
 install(TARGETS halo3xr_launcher
     RUNTIME DESTINATION .
     COMPONENT launcher)
+# The Project Reclaimer relay rides beside HaloMCCVR.dll, so the launcher's Project Reclaimer section can start it
+# from an installed Halo_MCC_VR folder.
+install(TARGETS halomccvr_reclaimer_relay
+    RUNTIME DESTINATION .
+    COMPONENT dist)
 install(FILES
     LICENSE
     installer/MANUAL-README.txt

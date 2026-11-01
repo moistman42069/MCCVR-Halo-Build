@@ -44,9 +44,15 @@
 //    and a 15 deg/s gun is not stalled - it is converging, one degree at a
 //    time, which actively resets the stall timer every frame. So the reticle
 //    kept promising the hand's direction for seconds on end.
+//    (The turret reticle does not ride the barrel, though: it stays on the
+//    hand's point and the game's own tracers show a slewing gun, as in flat
+//    Halo; see the note at the end of this file and converge_policy.h.)
 //
-// This header holds the pure, testable half of the fix. Both parts are scoped
-// to turret seats: no other seat, title, or on-foot case reaches them.
+// This header holds the pure, testable half of the fix: the servo's rest
+// hysteresis, scoped to turret seats and to the death /
+// free camera while the local player has no unit, which hunts the same
+// minimum step on both axes (aim_no_unit::ServoParks). No other seat and no
+// on-foot aim reaches it.
 
 // ---- 1. Rest hysteresis --------------------------------------------------
 //
@@ -190,11 +196,6 @@ inline void AimServoReset(AimServoAxis& axis)
 inline constexpr float kAimServoRestEnterRadians = 0.0060f; // ~0.34 deg
 inline constexpr float kAimServoRestExitRadians = 0.0180f;  // ~1.03 deg
 
-// ---- 2. Honest reticle on a rate-limited barrel ---------------------------
-//
-// A turret's shots leave the BARREL, never the occupant's eye, so no origin
-// substitution can make them follow a reticle the barrel is not pointing at.
-// The only honest reticle for a turret is the one that rides the gun: the
-// hand steers, the crosshair reports. That is unconditional in a turret seat
-// rather than stall-gated, because a slow gun converges instead of stalling.
-inline constexpr bool kAimServoTurretReticleRidesBarrel = true;
+// (A turret's reticle does not ride its barrel: the reticle stays
+// on the hand's point and the game's own tracers show a slewing gun, as in flat
+// Halo -- src/common/converge_policy.h. The servo above still parks the gun.)

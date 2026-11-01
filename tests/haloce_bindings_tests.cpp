@@ -1,5 +1,6 @@
 #include "haloce_native_bindings.h"
 #include "haloce_contracts.generated.h"
+#include "haloce_crouch_contract.h"
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
@@ -101,6 +102,21 @@ int main(int argc,char** argv)
         "optional feature failure leaves camera bindings independently usable");
     check(!VerifyNativeFeatureBindings(base,image.size(),4,{},failure),
         "empty optional contract cannot claim proof");
+    {
+        // The crouch camera's contract holds the longest pinned patterns (a 118-byte entry, a 110-byte
+        // witness). The verifier's pattern buffer was 96 bytes, so this group never verified anywhere and
+        // CE's crouch camera never armed; nothing tested it. Written verbatim, its relatives resolve from
+        // the written bytes exactly as they do in the pinned PE.
+        auto crouchImage=Fixture();
+        for (const auto& entry:crouch_contract::entries) WritePattern(crouchImage,entry.rva,entry.pattern);
+        for (const auto& witness:crouch_contract::witnesses) WritePattern(crouchImage,witness.rva,witness.pattern);
+        const NativeContractSet crouchSet{crouch_contract::entries,crouch_contract::witnesses,
+            crouch_contract::relatives,crouch_contract::pointers};
+        const char* crouchFailure=nullptr;
+        check(VerifyNativeFeatureBindings(reinterpret_cast<uintptr_t>(crouchImage.data()),crouchImage.size(),4,
+            crouchSet,crouchFailure),"crouch camera contract (patterns longer than 96 bytes) verifies");
+        if (crouchFailure) std::fprintf(stderr,"crouch contract failure: %s\n",crouchFailure);
+    }
     std::memset(image.data()+0x3000,0xcc,32);
     SaberViewPair native{};
     Tracking tracking{}; tracking.generation=5;
@@ -223,7 +239,8 @@ int main(int argc,char** argv)
             {contract::hud_layout::entries,contract::hud_layout::witnesses,contract::hud_layout::relatives,contract::hud_layout::pointers},
             {contract::hud_target::entries,contract::hud_target::witnesses,contract::hud_target::relatives,contract::hud_target::pointers},
             {contract::player_state::entries,contract::player_state::witnesses,contract::player_state::relatives,contract::player_state::pointers},
-            {contract::controls::entries,contract::controls::witnesses,contract::controls::relatives,contract::controls::pointers}};
+            {contract::controls::entries,contract::controls::witnesses,contract::controls::relatives,contract::controls::pointers},
+            {crouch_contract::entries,crouch_contract::witnesses,crouch_contract::relatives,crouch_contract::pointers}};
         std::set<uint32_t> relocatedPointers;
         for (const auto& set:featureSets) for (const auto& pointer:set.pointers)
         {

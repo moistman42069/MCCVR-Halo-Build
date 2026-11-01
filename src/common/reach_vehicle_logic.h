@@ -376,6 +376,17 @@ inline constexpr bool ReachVehicleUsesWheel(ReachVehicleId id)
     return ReachVehicleIsLookSteered(id) && !ReachVehicleIsAircraft(id);
 }
 
+// Whether the direct-drive hook's seat-limit latch may read the game's PITCH moves as a limit, by the same
+// rule Halo 3 / ODST use (seat_drive::PitchLatches): a look-steered driver's pitch is levelled by the game's
+// own update as the vehicle moves (autolevel), which the latch would take for a limit and hold the write
+// short of the hand, following the autolevel instead. So that seat's pitch is written as the hand's, never
+// latched; its yaw still latches. Every other seat -- gunners, passengers, a tank driver aiming a turret with a
+// real pitch stop (Scorpion, Wraith: not look-steered) -- latches both axes. An unresolved seat latches both.
+inline constexpr bool ReachSeatPitchLatches(ReachVehicleId id, int seat)
+{
+    return !(ReachVehicleSeatIsDriver(id, seat) && ReachVehicleIsLookSteered(id));
+}
+
 inline constexpr int ReachVehicleExpectedPhysicsType(ReachVehicleId id)
 {
     switch (id)

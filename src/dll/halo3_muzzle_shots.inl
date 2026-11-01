@@ -26,7 +26,7 @@ bool ApplyHalo3MuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t
 {
     auto& feature=g_halo3Muzzle;
     const auto request=g_halo3MuzzleRequest;
-    if(!feature.enabled.load() || feature.faulted.load() || !g_config.gun_barrel_aim ||
+    if(!feature.enabled.load() || feature.faulted.load() || !(Sight_GunBarrelAim()||Sight_MuzzleShotsConverge()) ||
         !g_halo3Dual.enabled.load() || g_halo3Dual.faulted.load() || exclusive_input::Active() ||
         !g_vrAim.load() || !g_enabled.load() || !VR_IsStereoEnabled() ||
         TitleAdapter_GetActiveTitle()!=GameTitle::Halo3 ||
@@ -50,6 +50,8 @@ bool ApplyHalo3MuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t
     // output keeps this preflight separate from the ordinary firing call.
     float velocity[3]{},direction[3]{};
     std::memcpy(direction,muzzle.ray.direction,12);
+    float before[3]{};
+    std::memcpy(before,muzzle.ray.position,12);
     const bool previousCollisionQuery=g_legacyCollisionOwnedQuery;
     g_legacyCollisionOwnedQuery=true;
     __try
@@ -60,6 +62,14 @@ bool ApplyHalo3MuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t
     __finally {g_legacyCollisionOwnedQuery=previousCollisionQuery;}
     for(int axis=0;axis<3;++axis)
         if(!std::isfinite(muzzle.ray.position[axis])||!std::isfinite(direction[axis]))return false;
+    // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
+    // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
+    // The second gun under independent dual aim follows its own controller (the shot that lane prepared).
+    // A seat held at its stop or a turret (unit_in_vehicle reads false there) refuses it: SeatMuzzleShotHeld.
+    if(!Sight_GunBarrelAim() &&
+        ((slot==1&&Sight_IndependentDualAim()) || SeatMuzzleShotHeld(GameTitle::Halo3) ||
+         !Sight_AimMuzzleShot(GameTitle::Halo3,TitleAdapter_GetGeneration(GameTitle::Halo3),
+            before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up)))return false;
     if(!AcquireHalo3IndependentShot(request.weapon,*request.lease,&muzzle))return false;
     auto* bytes=static_cast<uint8_t*>(markers);
     const auto& ray=muzzle.ray;

@@ -1,5 +1,6 @@
 // Production H4 contact boundary, included by game.cpp and its native fixture.
 #include "halo4_contact_bsp.inl"
+#include "native_forward.h"   // CallNativeWithSpareSlots: the damage event is an LTCG native (0x5ECCB4)
 struct Halo4ContactScope
 {
     bool active=false,applying=false,submitted=false;
@@ -58,7 +59,10 @@ __declspec(noinline) void __fastcall Halo4ContactDamageDetour(uint32_t unit,int3
                  Halo4ContactObject(scope.target)));
         if(g_halo4Contact.damageOriginal && (!own || exact))
         {
-            g_halo4Contact.damageOriginal(unit,damage,definition,impact,own ? scope.direction : direction);
+            // Through CallNativeWithSpareSlots, like every title's damage event: the native may use the stack
+            // past its declared arguments, which a plain forward would hand it inside this detour's frame.
+            CallNativeWithSpareSlots(g_halo4Contact.damageOriginal,unit,damage,definition,impact,
+                own ? scope.direction : direction);
             if(own) scope.submitted=true;
         }
     }

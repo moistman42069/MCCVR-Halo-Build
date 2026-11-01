@@ -183,7 +183,7 @@ bool VehicleTurnFrame(const HaloCELocalPlayerState& state,const RenderContext& c
     int16_t& seat,float& hullYaw) noexcept
 {
     if (!vehicleViewReady.load(std::memory_order_acquire)||!StateCurrent()||
-        !context.tracking.controllers.vehicleMotion||!context.tracking.controllers.padValid||
+        !context.tracking.controllers.vehicleControls||!context.tracking.controllers.padValid||
         context.tracking.controllers.controlsPresentationBlocked||
         state.generation!=context.tracking.generation||!state.hasControlledUnit||state.onFoot||
         (state.nativePerspective!=0&&state.nativePerspective!=1)||state.parent==UINT32_MAX||!(state.parent>>16)||
@@ -303,8 +303,9 @@ bool Remove() noexcept
         reinterpret_cast<const void*>(&HaloCEControls_GetLocomotionFrame),
         reinterpret_cast<const void*>(&HaloCEControls_GetNativePaused),
         reinterpret_cast<const void*>(&HaloCEControls_PhysicalCrouchCorrection),
-        reinterpret_cast<const void*>(&HaloCEControls_ReadVehicleCameraOwner)};
-    const void* trampolines[]{turnOriginal,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
+        reinterpret_cast<const void*>(&HaloCEControls_ReadVehicleCameraOwner),
+        reinterpret_cast<const void*>(&HaloCEControls_SeatHeading)};
+    const void* trampolines[]{turnOriginal,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
     if (!WaitForNativeDetourQuiescence(functions,trampolines,std::size(functions),callbacks)) return false;
     if (turnTarget&&MH_RemoveHook(turnTarget)!=MH_OK) return false;
     turnTarget=turnOriginal=nullptr;
@@ -409,6 +410,40 @@ static bool ReadVehicleCameraOwnerBody(NativeVehicleCameraOwner& owner) noexcept
 }
 bool HaloCEControls_ReadVehicleCameraOwner(NativeVehicleCameraOwner& owner) noexcept
 { Callback callback;return ReadVehicleCameraOwnerBody(owner); }
+// THE SEAT'S VIEW HEADING (halo_ce::Reference::seatHeading; haloce_render_logic.h has the why and the measurement).
+// The player's control record for input user N sits at control + 0x14 + N * 0x58, with its unit handle 4 bytes
+// before it; its yaw and pitch are the two floats at +8 / +0xC -- the pair CE's own action builder copies into the
+// outgoing action's +4 / +8 (contract::network_input::action_build: `mov rax,[rcx+8] ... mov [rdx+4],rax`), and the
+// pair the look update this file hooks (TurnBody) advances. World angles: the seat transform CE applies afterwards
+// (0xB0584C) only tilts a direction by the vehicle's up, and not at all for a seat whose tag has bit 4.
+// ADDR-HYGIENE: guarded -- the record's unit handle must be the local player's unit (ReadLocalPlayerState already
+// requires control + 0x10 + N * 0x58 == unit and control + 0x170 == unit; re-read here), the yaw must be finite
+// and inside [-2pi, 4pi], and the pitch finite; anything else answers "no heading" and the native camera's is used.
+static bool SeatHeadingBody(uint32_t expectedGeneration,halo_ce::Vec3& heading) noexcept
+{
+    HaloCELocalPlayerState state{};
+    if (!ReadLocalPlayerState(state)||state.generation!=expectedGeneration||!state.hasControlledUnit||
+        state.onFoot||state.parent==UINT32_MAX||!(state.parent>>16)||state.inputUser<0||state.inputUser>=4)
+        return false;
+    float yaw{},pitch{};
+    __try
+    {
+        const uintptr_t control=*reinterpret_cast<const uintptr_t*>(moduleBase+0x2d8fe70);
+        if (!control) return false;
+        const uintptr_t record=control+0x14+size_t(state.inputUser)*0x58;
+        if (*reinterpret_cast<const uint32_t*>(record-4)!=state.unit) return false;
+        yaw=*reinterpret_cast<const float*>(record+8);
+        pitch=*reinterpret_cast<const float*>(record+0xc);
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
+    if (!std::isfinite(yaw)||!std::isfinite(pitch)||yaw<-6.2832f||yaw>12.5664f||
+        !StateCurrent()||state.generation!=generation.load(std::memory_order_acquire)) return false;
+    heading={std::cos(yaw),std::sin(yaw),0};
+    return true;
+}
+bool HaloCEControls_SeatHeading(uint32_t expectedGeneration,halo_ce::Vec3& heading) noexcept
+{ Callback callback;return SeatHeadingBody(expectedGeneration,heading); }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t expectedGeneration,uint64_t epoch,
     float physicalDown,bool allowed) noexcept
 { Callback callback;return CrouchCameraBody(expectedGeneration,epoch,physicalDown,allowed); }

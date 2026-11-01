@@ -28,9 +28,21 @@ struct Halo3IndependentShotScope
 thread_local Halo3NativeQueryContext g_halo3NativeQueryContext;
 thread_local Halo3QueryCapture g_halo3QueryCapture;
 thread_local Halo3IndependentShotScope g_halo3IndependentShot;
+// The input user of the native acquisition running on this thread (-1 outside one): its camera evaluator call for
+// user 0 is the game's own eye at this tick (PublishHalo3TickEye).
+thread_local int32_t t_halo3AcquisitionUser=-1;
+// When the native acquisition last ran for input user 0 (Sight_NowUs): the record's "no fresh game eye" cause --
+// the game skipped its acquisition, or it ran without reaching the evaluator (shot_lag::TickEyeAcquisition).
+std::atomic<uint64_t> g_halo3AcquisitionUser0Us{0};
+// Acquisition evaluator calls for input user 0 that took the chase-camera path (the evaluator's own return,
+// shot_lag::EvaluatorTookFirstPersonPath): never published as the game eye; counted on the SHOT RECORD game eye line.
+std::atomic<uint32_t> g_halo3TickEyeChasePath{0};
 
 __declspec(noinline) void MarkHalo3IndependentShotFault()
 {g_halo3Dual.faulted.store(true,std::memory_order_release);}
+// The chase path faulted when asked: it is not asked again for this generation (LegacyDriveReport says so).
+__declspec(noinline) void MarkHalo3ChaseCameraFault()
+{g_halo3Dual.chaseFaulted.store(true,std::memory_order_release);}
 
 __declspec(noinline) int32_t __fastcall Halo3IndependentCameraDetour(
     uint32_t unit,float* position,float* direction)
@@ -48,6 +60,22 @@ __declspec(noinline) int32_t __fastcall Halo3IndependentCameraDetour(
             g_halo3QueryCapture.unit=unit;
             ++g_halo3QueryCapture.count;
         }
+        // The eye the game targets and fires from at this tick: the acquisition's own evaluator call for input
+        // user 0 (never our own replayed query, which runs as an owned collision query with a substituted camera),
+        // and only a FIRST-PERSON eye: the evaluator returns the path it took (0x2121B8..0x2121D2: 0 = the
+        // first-person update 0x17DAEC, else the chase camera 0x2144C0). A chase eye is not the record's eye.
+        if(caller==feature.base+0x13B1DC && t_halo3AcquisitionUser==0 && position && !g_legacyCollisionOwnedQuery &&
+            !g_halo3IndependentShot.active)
+        {
+            // The whole camera, whichever path (seat_upstream_logic.h): the seated record is solved from it and the
+            // seat's velocity gain is learned from its direction.
+            if(direction)
+                PublishHalo3AcquisitionCamera(feature.generation,static_cast<int32_t>(unit),result,position,direction);
+            if(shot_lag::EvaluatorTookFirstPersonPath(result))
+                PublishHalo3TickEye(feature.generation,static_cast<int32_t>(unit),position);
+            else
+                g_halo3TickEyeChasePath.fetch_add(1,std::memory_order_relaxed);
+        }
         const auto& shot=g_halo3IndependentShot;
         if(!shot.active || unit!=shot.unit || !position || !direction ||
             (caller!=feature.base+0x13B1DC && caller!=feature.base+0x13BC0D))__leave;
@@ -61,6 +89,44 @@ __declspec(noinline) int32_t __fastcall Halo3IndependentCameraDetour(
     return result;
 }
 
+// THE CHASE CAMERA OF OUR SEAT, ASKED (seat_upstream_logic.h 4b and StockCamera). The evaluator's own chase path for
+// `unit` (BindHalo3ChaseCamera): its camera position and direction now -- the camera every machine whose seat tag
+// keeps bit 4 queries the seat from, this one included while the tag is as loaded. Read offline: the path writes
+// only its two out-parameters and its stack (0x3555EC, 0x34674C, the spline helpers 0x214A54 / 0x2146C0 / 0x214D80
+// and 0xA4164 read), so asking it changes nothing the simulation reads. It needs none of this lane's hooks: it is
+// bound and asked in a host that hooks the evaluator itself. Only on a simulation thread (the stick call, the
+// fire), under the lane's callback count. False: unbound, faulted or another generation, or a non-finite answer.
+__declspec(noinline) bool Halo3AskChaseCamera(int32_t unit,float position[3],float direction[3])
+{
+    auto& feature=g_halo3Dual;
+    feature.callbacks.fetch_add(1,std::memory_order_acq_rel);
+    bool ok=false;
+    __try
+    {
+        const Halo3ChaseCameraFn chase=feature.chaseCamera.load(std::memory_order_acquire);
+        const uint32_t generation=feature.chaseGeneration.load(std::memory_order_acquire);
+        if(chase && unit!=-1 && generation && !feature.chaseFaulted.load(std::memory_order_acquire) &&
+            generation==g_halo3RuntimeGeneration.load(std::memory_order_acquire))
+        {
+            float p[3]{},d[3]{};
+            chase(static_cast<uint32_t>(unit),p,d);
+            ok=shot_lag::Finite3(p) && shot_lag::Finite3(d);
+            if(ok)
+            {
+                std::memcpy(position,p,sizeof(p));
+                std::memcpy(direction,d,sizeof(d));
+            }
+        }
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    {
+        ok=false;
+        MarkHalo3ChaseCameraFault();
+    }
+    feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);
+    return ok;
+}
+
 __declspec(noinline) void __fastcall Halo3IndependentQueryDetour(
     int32_t inputUser,uint8_t flags,float* direction,int16_t zoom,float* control,void* targeting)
 {
@@ -72,9 +138,18 @@ __declspec(noinline) void __fastcall Halo3IndependentQueryDetour(
     // A TLS record is usable only on this same native thread at firing time.
     const bool capture=feature.enabled.load(std::memory_order_acquire) &&
         !feature.faulted.load(std::memory_order_acquire) &&
-        (g_config.independent_dual_aim || g_config.gun_barrel_aim) &&
+        (Sight_IndependentDualAim() || Sight_GunBarrelAim() || Sight_ShotsFromMuzzle()) &&
         inputUser>=0 && inputUser<4 && !(flags&1) && direction && control && targeting;
     g_halo3QueryCapture.active=capture;
+    const int32_t previousAcquisitionUser=t_halo3AcquisitionUser;
+    t_halo3AcquisitionUser=inputUser;
+    // Only while the lane itself is in: with the query hooked for the zoom level alone (InstallHalo3ZoomReader) the
+    // tick eye's acquisition reading stays what it is without this lane.
+    if(inputUser==0 && !g_legacyCollisionOwnedQuery && feature.enabled.load(std::memory_order_acquire))
+        g_halo3AcquisitionUser0Us.store(Sight_NowUs(),std::memory_order_relaxed);
+    // The game's own zoom level for the local player (Aim Frame Zoom): the ordinary query only, never ours.
+    if(inputUser==0 && !(flags&1) && !g_legacyCollisionOwnedQuery)
+        NoteGameZoomLevel(GameTitle::Halo3,zoom,feature.generation);
     __try
     {
         if(!feature.queryOriginal)__leave;
@@ -87,6 +162,7 @@ __declspec(noinline) void __fastcall Halo3IndependentQueryDetour(
     }
     __finally
     {
+        t_halo3AcquisitionUser=previousAcquisitionUser;
         g_halo3QueryCapture=previousCapture;
         feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);
     }
@@ -111,7 +187,7 @@ bool AcquireHalo3IndependentShot(uint32_t weapon,NativeShotTargetLease<0x24>& le
 {
     auto& feature=g_halo3Dual;
     if(!feature.enabled.load(std::memory_order_acquire) || feature.faulted.load() ||
-        (!muzzle&&!g_config.independent_dual_aim) || exclusive_input::Active() ||
+        (!muzzle&&!Sight_IndependentDualAim()) || exclusive_input::Active() ||
         !g_vrAim.load() || !g_enabled.load() || !VR_IsStereoEnabled() ||
         TitleAdapter_GetActiveTitle()!=GameTitle::Halo3 ||
         feature.generation!=g_halo3RuntimeGeneration.load() || !feature.queryOriginal)
@@ -209,8 +285,19 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
     feature.callbacks.fetch_add(1,std::memory_order_acq_rel);
     const auto previous=g_halo3IndependentShot;
     g_halo3IndependentShot={};
+    // The weapon this firing call fires, for the shot line's consumers below it on this thread (its owner, +0x168,
+    // is the unit that holds the gun: a turret or vehicle for a mounted gun, never the occupant 0x3524B0 receives).
+    const uint32_t previousFiringWeapon=g_halo3FiringWeapon;
+    g_halo3FiringWeapon=weapon;
+    // A fire whose shooter is unknown until its shot line names it (Halo3IndependentAimDetour): no crosshair re-aim
+    // touches it before then (shot_lag::FireMark).
+    const int8_t previousFire=t_halo3Fire;
+    t_halo3Fire=shot_lag::kFireOther;
     NativeShotTargetLease<0x24> lease{};
     NativeShotTargetLease<0x24> muzzleLease{};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    Halo3ImpactFireBegin(predicted);   // dev SHOT IMPACT: this fire's shot line, projectiles and their fate
+#endif
     const auto previousMuzzle=g_halo3MuzzleRequest;
     g_halo3MuzzleRequest={weapon,barrel,predicted,&muzzleLease};
     uint64_t result=0;
@@ -233,6 +320,9 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
             feature.fireEntries.fetch_add(1,std::memory_order_relaxed);
             if(data)feature.fireWithData.fetch_add(1,std::memory_order_relaxed);
             if(predicted)feature.firePredicted.fetch_add(1,std::memory_order_relaxed);
+            // The shot-lag witness labels this fire's crosshair query and aim with the fire's own flag.
+            const int previousPredicted=t_legacyFirePredicted;
+            t_legacyFirePredicted=predicted?1:0;
             __try
             {
                 result=feature.fireOriginal(weapon,barrel,data,index,predicted);
@@ -240,6 +330,7 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
             }
             __finally
             {
+                t_legacyFirePredicted=previousPredicted;
                 if(AbnormalTermination())feature.fireUnwinds.fetch_add(1,std::memory_order_relaxed);
             }
         }
@@ -250,9 +341,30 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
         RestoreHalo3IndependentShot(lease);
         g_halo3IndependentShot=previous;
         g_halo3MuzzleRequest=previousMuzzle;
+        g_halo3FiringWeapon=previousFiringWeapon;
+        t_halo3Fire=previousFire;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        Halo3ImpactFireEnd();
+#endif
         feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);
     }
     return result;
+}
+
+// The unit that holds `weapon` (weapon +0x168: H3EK A844A0 / retail 3683A0 read it as the firing routine's owner,
+// and Halo3ReadOwnedWeapons proves it on every inventory read), or UINT32_MAX. Guarded: a stale handle reads as none.
+uint32_t Halo3WeaponOwner(uint32_t weapon)
+{
+    if(weapon==UINT32_MAX)return UINT32_MAX;
+    __try
+    {
+        const auto* data=Halo3MeleeSelectionObject(weapon,2);
+        return data ? *reinterpret_cast<const uint32_t*>(data+0x168) : UINT32_MAX;
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    {
+        return UINT32_MAX;
+    }
 }
 
 // T-2 shot event for Halo 3. The disabled gate is passed FIRST: with recording
@@ -292,6 +404,11 @@ __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
         // other addresses, and they are not shots.
         const bool firingCall=
             reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x368B97;
+        // The shot line names the shooter: the OCCUPANT (0x368B82 walks the gunner chain +0x2A4 down to it), so two
+        // players in one vehicle are told apart. Its fire's crosshair query (the assist, 0x368DFE) comes after it.
+        if(firingCall)
+            t_halo3Fire=shot_lag::FireMark(t_halo3Fire,unit!=UINT32_MAX &&
+                static_cast<int32_t>(unit)==LegacyCollisionIgnoredObject(GameTitle::Halo3));
         if(scope.active && !scope.query && scope.barrel && scope.unit==unit && origin && direction &&
             firingCall)
         {
@@ -304,6 +421,11 @@ __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
             // The muzzle ray is what the engine consumed, and the native call
             // has already produced the final origin/direction.
             PublishHalo3ShotDiagnostic(unit,origin,direction,true,false,false);
+            Sight_NoteShotLagFromIntent(GameTitle::Halo3,SightShotPath::Muzzle,origin,direction,
+                t_legacyFirePredicted,false,-1);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            Halo3ImpactNoteShotLine(unit,origin,direction,true);   // dev SHOT IMPACT: the line we handed the game
+#endif
             __leave;
         }
         feature.aimOriginal(unit,origin,direction,marker,offset,project,unitAim);
@@ -323,8 +445,29 @@ __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
         // Publish once per actual shot invocation, after the final ray is
         // decided, whether or not the mod substituted it.
         if(firingCall)
+        {
             PublishHalo3ShotDiagnostic(unit,origin,direction,substituted,
                 project!=0,unitAim!=0);
+            const uint32_t owner=Halo3WeaponOwner(g_halo3FiringWeapon);
+            // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): the barrel's own line, before the assist
+            // (0x368DFE) turns it -- only for a shot the native aimed, never one this mod substituted.
+            if(!substituted && !scope.active)
+                Halo3GunBandNoteShot(unit,owner,g_halo3FiringWeapon,g_halo3MuzzleRequest.barrel,origin,direction,
+                    unitAim!=0);
+            // Dev: a gun-slaved turret's own shot against the traced point (legacy_sight_trace.inl). The shooter is
+            // the firing weapon's OWNER: `unit` is the occupant (0x368B82 `mov ecx, esi` walks the gunner chain
+            // +0x2A4 down to it), which never equals the turret the witness waits for.
+            LegacySightNoteTurretShot(GameTitle::Halo3,owner,origin,direction);
+            // Dev SHOT LAG, the native path: the record's aim from the fire tick's origin (the firing assist may
+            // still turn it at its crosshair hit afterwards -- that is the crosshair-assist path's line). The local
+            // player's own unit only (a seat's shot is the vehicle's: the crosshair-assist line covers it).
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            if(static_cast<int32_t>(unit)==LegacyCollisionIgnoredObject(GameTitle::Halo3))
+                Sight_NoteShotLagFromIntent(GameTitle::Halo3,SightShotPath::Native,origin,direction,
+                    t_legacyFirePredicted,false,-1);
+            Halo3ImpactNoteShotLine(unit,origin,direction,false);   // dev SHOT IMPACT: the line we handed the game
+#endif
+        }
     }
     __finally {feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);}
 }

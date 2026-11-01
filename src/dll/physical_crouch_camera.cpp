@@ -1,4 +1,5 @@
 #include "physical_crouch_camera.h"
+#include <windows.h>
 #include <atomic>
 
 namespace {
@@ -46,3 +47,53 @@ bool PhysicalCrouchCamera_Read(PhysicalCrouchCameraRequest& result) noexcept
         invalidation.load(std::memory_order_acquire)!=admission) return false;
     result=candidate;return true;
 }
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+namespace {
+constexpr size_t kWitnessSlots=8;
+std::atomic<float> witnessDrop[kWitnessSlots]{};
+std::atomic<uint64_t> witnessAt[kWitnessSlots]{};
+std::atomic<uint32_t> missWhy[kWitnessSlots]{};
+std::atomic<uint64_t> missAt[kWitnessSlots]{};
+std::atomic<float> appliedWu[kWitnessSlots]{};
+std::atomic<uint64_t> appliedAt[kWitnessSlots]{};
+}
+void PhysicalCrouchCamera_NoteApplied(GameTitle title,float correctionWu) noexcept
+{
+    const size_t slot=static_cast<size_t>(title)%kWitnessSlots;
+    appliedWu[slot].store(correctionWu,std::memory_order_relaxed);
+    appliedAt[slot].store(GetTickCount64(),std::memory_order_release);
+}
+bool PhysicalCrouchCamera_Applied(GameTitle title,uint64_t maxAgeMs,float& correctionWu) noexcept
+{
+    const size_t slot=static_cast<size_t>(title)%kWitnessSlots;
+    const uint64_t at=appliedAt[slot].load(std::memory_order_acquire),now=GetTickCount64();
+    correctionWu=appliedWu[slot].load(std::memory_order_relaxed);
+    return at&&now>=at&&now-at<=maxAgeMs;
+}
+void PhysicalCrouchCamera_NoteNativeMiss(GameTitle title,uint32_t why) noexcept
+{
+    const size_t slot=static_cast<size_t>(title)%kWitnessSlots;
+    missWhy[slot].store(why,std::memory_order_relaxed);
+    missAt[slot].store(GetTickCount64(),std::memory_order_release);
+}
+uint32_t PhysicalCrouchCamera_NativeMiss(GameTitle title,uint64_t maxAgeMs) noexcept
+{
+    const size_t slot=static_cast<size_t>(title)%kWitnessSlots;
+    const uint64_t at=missAt[slot].load(std::memory_order_acquire),now=GetTickCount64();
+    return at&&now>=at&&now-at<=maxAgeMs ? missWhy[slot].load(std::memory_order_relaxed) : 0u;
+}
+void PhysicalCrouchCamera_NoteNativeDrop(GameTitle title,float dropWu) noexcept
+{
+    const size_t slot=static_cast<size_t>(title)%kWitnessSlots;
+    witnessDrop[slot].store(dropWu,std::memory_order_relaxed);
+    witnessAt[slot].store(GetTickCount64(),std::memory_order_release);
+}
+bool PhysicalCrouchCamera_NativeDrop(GameTitle title,uint64_t maxAgeMs,float& dropWu) noexcept
+{
+    const size_t slot=static_cast<size_t>(title)%kWitnessSlots;
+    const uint64_t at=witnessAt[slot].load(std::memory_order_acquire),now=GetTickCount64();
+    dropWu=witnessDrop[slot].load(std::memory_order_relaxed);
+    return at&&now>=at&&now-at<=maxAgeMs;
+}
+#endif

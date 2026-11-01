@@ -5,3 +5,7 @@ third_party/smaa/LICENSE.txt -text -whitespace
 
 # The packaged analyser hash is part of the candidate integrity contract.
 tools/telemetry_analyser/analyse_mccvr_telemetry.py -text -whitespace
+
+# The address-verification library is kept byte for byte as its origin has it.
+src/common/addrcascade/AddressCascade.hpp -text -whitespace
+src/common/addrcascade/AddressCascade.cpp -text -whitespace

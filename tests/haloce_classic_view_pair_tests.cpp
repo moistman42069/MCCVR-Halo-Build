@@ -77,5 +77,40 @@ int main()
         ClassicPairResult::Ready&&near(pair.eyes[0].render.position.x,source.render.position.x)&&
         near(pair.eyes[0].render.position.z,source.render.position.z),
         "positional toggle leaves binocular eye offsets active");
+    {
+        // MONO: one camera at the midpoint of the eyes, turned the head's way (no cant), in both slots, under the
+        // same cover. The pair's tracking keeps the real eyes, for what is submitted.
+        Tracking eyes=preserved.tracking;
+        eyes.eyes[0].offset={-0.030f,0.002f,0.001f};
+        eyes.eyes[1].offset={0.034f,0.002f,-0.001f};
+        eyes.eyes[0].orientation={0,0.0436f,0,0.99905f};
+        eyes.eyes[1].orientation={0,-0.0436f,0,0.99905f};
+        ClassicViewPair stereo{},mono{};
+        check(StageClassicViewPair(source,eyes,reference,2,1.0f,true,stereo)==ClassicPairResult::Ready&&
+            !stereo.mono,"canted stereo pair stages");
+        eyes.mono=true;
+        check(StageClassicViewPair(source,eyes,reference,2,1.0f,true,mono)==ClassicPairResult::Ready&&
+            mono.mono,"mono pair stages");
+        check(std::memcmp(&mono.eyes[0],&mono.eyes[1],sizeof(Window))==0,"both slots hold the one camera");
+        const auto midway=[&](const Camera& a,const Camera& b,const Camera& m) {
+            return near(m.position.x,(a.position.x+b.position.x)*0.5f)&&
+                near(m.position.y,(a.position.y+b.position.y)*0.5f)&&
+                near(m.position.z,(a.position.z+b.position.z)*0.5f);
+        };
+        check(midway(stereo.eyes[0].render,stereo.eyes[1].render,mono.eyes[0].render)&&
+            midway(stereo.eyes[0].raster,stereo.eyes[1].raster,mono.eyes[0].raster),
+            "the mono camera sits at the midpoint of the eyes, render and raster alike");
+        check(near(mono.eyes[0].render.forward.x,source.render.forward.x)&&
+            near(mono.eyes[0].render.forward.y,source.render.forward.y)&&
+            near(mono.eyes[0].render.forward.z,source.render.forward.z)&&
+            !near(stereo.eyes[0].render.forward.y,stereo.eyes[1].render.forward.y),
+            "the mono camera looks the head's way, not along either canted eye");
+        check(std::memcmp(&mono.cover,&stereo.cover,sizeof(Cover))==0&&
+            near(mono.eyes[0].render.verticalFov,stereo.eyes[0].render.verticalFov),
+            "mono keeps the pair's cover, wide enough for either eye");
+        check(near(mono.tracking.eyes[0].offset.x,-0.030f)&&near(mono.tracking.eyes[1].offset.x,0.034f),
+            "the real eyes stay in the pair's tracking");
+        check(ClassicPairCurrent(mono,source,4,3,77,2),"a mono pair is current exactly as a stereo pair is");
+    }
     return failures?1:0;
 }

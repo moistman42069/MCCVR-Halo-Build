@@ -191,6 +191,14 @@ void TestFormats()
     Paint(left.Get(),square,0x40806020);Paint(right.Get(),square,0xffffffff);
     Check(MirrorCeDesktop(Pair(left.Get(),right.Get(),square),target.Get(),smallDesc)&&Solid(target.Get(),0x40806020),
         "512-square finished eye bypasses the shared reticle alpha repair");
+    // MONO: one picture handed out for both eyes mirrors as a pair does. One texture as both eyes of a pair, or a
+    // mono frame whose eyes differ, is still refused.
+    auto mono=Pair(left.Get(),left.Get(),square);mono.monoEye=0;
+    Check(MirrorCeDesktop(mono,target.Get(),smallDesc)&&Solid(target.Get(),0x40806020),"a mono picture mirrors");
+    Check(!MirrorCeDesktop(Pair(left.Get(),left.Get(),square),target.Get(),smallDesc),
+        "one texture as both eyes of a pair is refused");
+    auto mismatched=Pair(left.Get(),right.Get(),square);mismatched.monoEye=0;
+    Check(!MirrorCeDesktop(mismatched,target.Get(),smallDesc),"a mono frame whose eyes differ is refused");
 }
 bool SameState(const D3DStateBackup& a,const D3DStateBackup& b)
 {

@@ -129,7 +129,11 @@ def check_config(data: bytes) -> int:
     for key in ("virtual_stock", "virtual_stock_proximity_release",
                 "vr_action_mapping", "flashlight_suppress_on_two_hand", "physical_crouch"):
         require(values.get(key) in ("0", "1"), f"Missing boolean config setting: {key}")
-    require(values["physical_crouch"] == "0", "Optional physical crouch must default off")
+    require(values.get("coop_safe_shots") in ("0", "1", "2"), "Missing config setting: coop_safe_shots")
+    require(values["physical_crouch"] == "1", "Physical crouch must default on")
+    require(values["coop_safe_shots"] == "2", "Co-op safe shots must default to automatic")
+    require(values.get("coop_safe_shots_version") == "2",
+            "The packaged config must say its co-op safe shots value is a chosen one")
     require(values["virtual_stock"] == "0", "Optional virtual stock must default off")
     for key, low, high in (
         ("virtual_stock_standard_strength", 0, 1),
@@ -175,8 +179,16 @@ def check_build(path: Path, commit: str) -> dict:
         require(launcher_metadata.get("bytes") == len(launcher) and
                 str(launcher_metadata.get("sha256", "")).lower() == sha256(launcher),
                 "Separate launcher identity does not match candidate manifest")
-        require(re.search(rb"requestedExecutionLevel\b[^>]*level\s*=\s*[\"']requireAdministrator[\"']", launcher),
-                "Launcher does not embed the required administrator manifest")
+        # The launcher must not ask for administrator rights: the game inherits its token, and an elevated game
+        # ignores an OpenXR runtime chosen with XR_RUNTIME_JSON.
+        require(re.search(rb"requestedExecutionLevel\b[^>]*level\s*=\s*[\"']asInvoker[\"']", launcher),
+                "Launcher manifest must be asInvoker (it must not ask for administrator rights)")
+        # The launcher's unattended launch (--headless, no menu and no dialogs) is a dev-only test hook.
+        require("--headless".encode("utf-16-le") not in launcher,
+                "Packaged launcher contains the dev-only --headless hook (HALOMCCVR_DEV_DIAGNOSTICS must be OFF)")
+        # The flat probe's launch (--flat-probe, HaloMCCFlatProbe.dll alone, MCC flat) is a dev-only measurement hook.
+        require("--flat-probe".encode("utf-16-le") not in launcher,
+                "Packaged launcher contains the dev-only --flat-probe hook (HALOMCCVR_DEV_DIAGNOSTICS must be OFF)")
         dll = archive.read("ModFiles/HaloMCCVR.dll")
         require(commit.encode("ascii") + b"\0" in dll and commit.encode("ascii") + b"-dirty" not in dll,
                 "Packaged DLL does not embed the exact clean source commit")

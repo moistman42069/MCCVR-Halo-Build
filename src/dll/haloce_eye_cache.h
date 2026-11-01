@@ -34,6 +34,8 @@ public:
         D3D11_TEXTURE2D_DESC depthDescriptor{};
         dlss::CameraSample depthCameras[2]{};
         uint64_t depthHistoryEpoch{};
+        // A mono frame (ClassicViewPair::mono): one picture, drawn as this eye, in both `eyes`. -1: a pair.
+        int monoEye{-1};
     };
     EyeCache() = default;
     ~EyeCache(); // owner must retire all callbacks/borrows before destruction
@@ -84,6 +86,8 @@ private:
     Cover completedCovers_[2]{};
     unsigned mask_{};
     bool complete_{};
+    // The frame being captured is one picture, eye 0 only; and so is the completed one.
+    bool mono_{},completedMono_{};
     ID3D11Texture2D* depth_[2]{},*completedDepth_[2]{};
     ID3D11ShaderResourceView* depthViews_[2]{},*completedDepthViews_[2]{};
     D3D11_TEXTURE2D_DESC depthSource_{},depthDescriptor_{};

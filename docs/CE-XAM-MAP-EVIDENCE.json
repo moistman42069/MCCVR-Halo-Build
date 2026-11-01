@@ -1,0 +1,697 @@
+{
+  "sha256": "7bc45beb5bb6a3b3d4bd3b8515e50bdfac358a5a31e8e98b4daac2a30d212730",
+  "assets": [
+    {
+      "name": "weapons\\uzi\\fp\\fp",
+      "count": 42,
+      "nodes": [
+        {
+          "name": "frame bone24",
+          "parent": 0
+        },
+        {
+          "name": "frame l upperarm",
+          "parent": 0
+        },
+        {
+          "name": "frame r upperarm",
+          "parent": 0
+        },
+        {
+          "name": "frame l forearm",
+          "parent": 1
+        },
+        {
+          "name": "frame r forearm",
+          "parent": 2
+        },
+        {
+          "name": "frame l wriste",
+          "parent": 3
+        },
+        {
+          "name": "frame r wriste",
+          "parent": 4
+        },
+        {
+          "name": "frame gun",
+          "parent": 6
+        },
+        {
+          "name": "frame l index low",
+          "parent": 5
+        },
+        {
+          "name": "frame l middlelow",
+          "parent": 5
+        },
+        {
+          "name": "frame l pinky low",
+          "parent": 5
+        },
+        {
+          "name": "frame l ring low",
+          "parent": 5
+        },
+        {
+          "name": "frame l thumb low",
+          "parent": 5
+        },
+        {
+          "name": "frame r index low",
+          "parent": 6
+        },
+        {
+          "name": "frame r middle low",
+          "parent": 6
+        },
+        {
+          "name": "frame r pinky low",
+          "parent": 6
+        },
+        {
+          "name": "frame r ring low",
+          "parent": 6
+        },
+        {
+          "name": "frame r thumb low",
+          "parent": 6
+        },
+        {
+          "name": "frame display",
+          "parent": 7
+        },
+        {
+          "name": "frame l index mid",
+          "parent": 8
+        },
+        {
+          "name": "frame l middle mid",
+          "parent": 9
+        },
+        {
+          "name": "frame l pinky mid",
+          "parent": 10
+        },
+        {
+          "name": "frame l ring mid",
+          "parent": 11
+        },
+        {
+          "name": "frame l thumb mid",
+          "parent": 12
+        },
+        {
+          "name": "frame magazine",
+          "parent": 7
+        },
+        {
+          "name": "frame ophandle",
+          "parent": 7
+        },
+        {
+          "name": "frame r index mid",
+          "parent": 13
+        },
+        {
+          "name": "frame r middle mid",
+          "parent": 14
+        },
+        {
+          "name": "frame r pinky mid",
+          "parent": 15
+        },
+        {
+          "name": "frame r ring mid",
+          "parent": 16
+        },
+        {
+          "name": "frame r thumb mid",
+          "parent": 17
+        },
+        {
+          "name": "frame safety button",
+          "parent": 7
+        },
+        {
+          "name": "frame l index tip",
+          "parent": 19
+        },
+        {
+          "name": "frame l middle tip",
+          "parent": 20
+        },
+        {
+          "name": "frame l pinky tip",
+          "parent": 21
+        },
+        {
+          "name": "frame l ring tip",
+          "parent": 22
+        },
+        {
+          "name": "frame l thumb tip",
+          "parent": 23
+        },
+        {
+          "name": "frame r index tip",
+          "parent": 26
+        },
+        {
+          "name": "frame r middle tip",
+          "parent": 27
+        },
+        {
+          "name": "frame r pinky tip",
+          "parent": 28
+        },
+        {
+          "name": "frame r ring tip",
+          "parent": 29
+        },
+        {
+          "name": "frame r thumb tip",
+          "parent": 30
+        }
+      ]
+    },
+    {
+      "name": "weapons\\rpg\\fp\\fp",
+      "count": 42,
+      "nodes": [
+        {
+          "name": "frame bone24",
+          "parent": 0
+        },
+        {
+          "name": "frame l upperarm",
+          "parent": -1
+        },
+        {
+          "name": "frame r upperarm",
+          "parent": 0
+        },
+        {
+          "name": "frame l forearm",
+          "parent": 1
+        },
+        {
+          "name": "frame r forearm",
+          "parent": 2
+        },
+        {
+          "name": "frame l wriste",
+          "parent": 3
+        },
+        {
+          "name": "frame r wriste",
+          "parent": 4
+        },
+        {
+          "name": "frame gun",
+          "parent": 6
+        },
+        {
+          "name": "frame l index low",
+          "parent": 5
+        },
+        {
+          "name": "frame l middlelow",
+          "parent": 5
+        },
+        {
+          "name": "frame l pinky low",
+          "parent": 5
+        },
+        {
+          "name": "frame l ring low",
+          "parent": 5
+        },
+        {
+          "name": "frame l thumb low",
+          "parent": 5
+        },
+        {
+          "name": "frame r index low",
+          "parent": 6
+        },
+        {
+          "name": "frame r middle low",
+          "parent": 6
+        },
+        {
+          "name": "frame r pinky low",
+          "parent": 6
+        },
+        {
+          "name": "frame r ring low",
+          "parent": 6
+        },
+        {
+          "name": "frame r thumb low",
+          "parent": 6
+        },
+        {
+          "name": "frame body",
+          "parent": 7
+        },
+        {
+          "name": "frame foregrip",
+          "parent": 7
+        },
+        {
+          "name": "frame l index mid",
+          "parent": 8
+        },
+        {
+          "name": "frame l middle mid",
+          "parent": 9
+        },
+        {
+          "name": "frame l pinky mid",
+          "parent": 10
+        },
+        {
+          "name": "frame l ring mid",
+          "parent": 11
+        },
+        {
+          "name": "frame l thumb mid",
+          "parent": 12
+        },
+        {
+          "name": "frame r index mid",
+          "parent": 13
+        },
+        {
+          "name": "frame r middle mid",
+          "parent": 14
+        },
+        {
+          "name": "frame r pinky mid",
+          "parent": 15
+        },
+        {
+          "name": "frame r ring mid",
+          "parent": 16
+        },
+        {
+          "name": "frame r thumb mid",
+          "parent": 17
+        },
+        {
+          "name": "frame tubes",
+          "parent": 7
+        },
+        {
+          "name": "frame l index tip",
+          "parent": 20
+        },
+        {
+          "name": "frame l middle tip",
+          "parent": 21
+        },
+        {
+          "name": "frame l pinky tip",
+          "parent": 22
+        },
+        {
+          "name": "frame l ring tip",
+          "parent": 23
+        },
+        {
+          "name": "frame l thumb tip",
+          "parent": 24
+        },
+        {
+          "name": "frame push_bar",
+          "parent": 18
+        },
+        {
+          "name": "frame r index tip",
+          "parent": 25
+        },
+        {
+          "name": "frame r middle tip",
+          "parent": 26
+        },
+        {
+          "name": "frame r pinky tip",
+          "parent": 27
+        },
+        {
+          "name": "frame r ring tip",
+          "parent": 28
+        },
+        {
+          "name": "frame r thumb tip",
+          "parent": 29
+        }
+      ]
+    },
+    {
+      "name": "weapons\\hl1 mp5\\fp\\fp",
+      "count": 41,
+      "nodes": [
+        {
+          "name": "frame bone24",
+          "parent": 0
+        },
+        {
+          "name": "frame l upperarm",
+          "parent": 0
+        },
+        {
+          "name": "frame r upperarm",
+          "parent": 0
+        },
+        {
+          "name": "frame l forearm",
+          "parent": 1
+        },
+        {
+          "name": "frame r forearm",
+          "parent": 2
+        },
+        {
+          "name": "frame l wriste",
+          "parent": 3
+        },
+        {
+          "name": "frame r wriste",
+          "parent": 4
+        },
+        {
+          "name": "frame l index low",
+          "parent": 5
+        },
+        {
+          "name": "frame l middlelow",
+          "parent": 5
+        },
+        {
+          "name": "frame l pinky low",
+          "parent": 5
+        },
+        {
+          "name": "frame l ring low",
+          "parent": 5
+        },
+        {
+          "name": "frame l thumb low",
+          "parent": 5
+        },
+        {
+          "name": "frame r index low",
+          "parent": 6
+        },
+        {
+          "name": "frame r middle low",
+          "parent": 6
+        },
+        {
+          "name": "frame r pinky low",
+          "parent": 6
+        },
+        {
+          "name": "frame r ring low",
+          "parent": 6
+        },
+        {
+          "name": "frame r thumb low",
+          "parent": 6
+        },
+        {
+          "name": "mp5_master",
+          "parent": 6
+        },
+        {
+          "name": "bone01",
+          "parent": 17
+        },
+        {
+          "name": "frame l index mid",
+          "parent": 7
+        },
+        {
+          "name": "frame l middle mid",
+          "parent": 8
+        },
+        {
+          "name": "frame l pinky mid",
+          "parent": 9
+        },
+        {
+          "name": "frame l ring mid",
+          "parent": 10
+        },
+        {
+          "name": "frame l thumb mid",
+          "parent": 11
+        },
+        {
+          "name": "frame r index mid",
+          "parent": 12
+        },
+        {
+          "name": "frame r middle mid",
+          "parent": 13
+        },
+        {
+          "name": "frame r pinky mid",
+          "parent": 14
+        },
+        {
+          "name": "frame r ring mid",
+          "parent": 15
+        },
+        {
+          "name": "frame r thumb mid",
+          "parent": 16
+        },
+        {
+          "name": "bone02",
+          "parent": 18
+        },
+        {
+          "name": "frame l index tip",
+          "parent": 19
+        },
+        {
+          "name": "frame l middle tip",
+          "parent": 20
+        },
+        {
+          "name": "frame l pinky tip",
+          "parent": 21
+        },
+        {
+          "name": "frame l ring tip",
+          "parent": 22
+        },
+        {
+          "name": "frame l thumb tip",
+          "parent": 23
+        },
+        {
+          "name": "frame r index tip",
+          "parent": 24
+        },
+        {
+          "name": "frame r middle tip",
+          "parent": 25
+        },
+        {
+          "name": "frame r pinky tip",
+          "parent": 26
+        },
+        {
+          "name": "frame r ring tip",
+          "parent": 27
+        },
+        {
+          "name": "frame r thumb tip",
+          "parent": 28
+        },
+        {
+          "name": "bone03",
+          "parent": 29
+        }
+      ]
+    },
+    {
+      "name": "weapons\\stinger\\fp\\fp",
+      "count": 42,
+      "nodes": [
+        {
+          "name": "frame bone24",
+          "parent": 0
+        },
+        {
+          "name": "frame l upperarm",
+          "parent": -1
+        },
+        {
+          "name": "frame r upperarm",
+          "parent": 0
+        },
+        {
+          "name": "frame l forearm",
+          "parent": 1
+        },
+        {
+          "name": "frame r forearm",
+          "parent": 2
+        },
+        {
+          "name": "frame l wriste",
+          "parent": 3
+        },
+        {
+          "name": "frame r wriste",
+          "parent": 4
+        },
+        {
+          "name": "frame gun",
+          "parent": 6
+        },
+        {
+          "name": "frame l index low",
+          "parent": 5
+        },
+        {
+          "name": "frame l middlelow",
+          "parent": 5
+        },
+        {
+          "name": "frame l pinky low",
+          "parent": 5
+        },
+        {
+          "name": "frame l ring low",
+          "parent": 5
+        },
+        {
+          "name": "frame l thumb low",
+          "parent": 5
+        },
+        {
+          "name": "frame r index low",
+          "parent": 6
+        },
+        {
+          "name": "frame r middle low",
+          "parent": 6
+        },
+        {
+          "name": "frame r pinky low",
+          "parent": 6
+        },
+        {
+          "name": "frame r ring low",
+          "parent": 6
+        },
+        {
+          "name": "frame r thumb low",
+          "parent": 6
+        },
+        {
+          "name": "frame body",
+          "parent": 7
+        },
+        {
+          "name": "frame foregrip",
+          "parent": 7
+        },
+        {
+          "name": "frame l index mid",
+          "parent": 8
+        },
+        {
+          "name": "frame l middle mid",
+          "parent": 9
+        },
+        {
+          "name": "frame l pinky mid",
+          "parent": 10
+        },
+        {
+          "name": "frame l ring mid",
+          "parent": 11
+        },
+        {
+          "name": "frame l thumb mid",
+          "parent": 12
+        },
+        {
+          "name": "frame r index mid",
+          "parent": 13
+        },
+        {
+          "name": "frame r middle mid",
+          "parent": 14
+        },
+        {
+          "name": "frame r pinky mid",
+          "parent": 15
+        },
+        {
+          "name": "frame r ring mid",
+          "parent": 16
+        },
+        {
+          "name": "frame r thumb mid",
+          "parent": 17
+        },
+        {
+          "name": "frame tubes",
+          "parent": 7
+        },
+        {
+          "name": "frame l index tip",
+          "parent": 20
+        },
+        {
+          "name": "frame l middle tip",
+          "parent": 21
+        },
+        {
+          "name": "frame l pinky tip",
+          "parent": 22
+        },
+        {
+          "name": "frame l ring tip",
+          "parent": 23
+        },
+        {
+          "name": "frame l thumb tip",
+          "parent": 24
+        },
+        {
+          "name": "frame push_bar",
+          "parent": 18
+        },
+        {
+          "name": "frame r index tip",
+          "parent": 25
+        },
+        {
+          "name": "frame r middle tip",
+          "parent": 26
+        },
+        {
+          "name": "frame r pinky tip",
+          "parent": 27
+        },
+        {
+          "name": "frame r ring tip",
+          "parent": 28
+        },
+        {
+          "name": "frame r thumb tip",
+          "parent": 29
+        }
+      ]
+    }
+  ]
+}

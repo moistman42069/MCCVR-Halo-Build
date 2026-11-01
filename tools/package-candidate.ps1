@@ -215,14 +215,12 @@ try {
             'Halo2ShouldSuppressClassicFirstPersonParticle' -or
         $halo2LogicSource -notmatch
             'currentUserFirstPerson\s*!=\s*0\s*&&\s*\r?\n\s*Halo2ClassicRenderTreeRuns' -or
-        $menuSource -notmatch 'H2 Classic gun yaw \(deg\)' -or
-        $menuSource -notmatch 'H2 Classic gun pitch \(deg\)' -or
         $configHeaderSource -notmatch
             'bool fit_desktop_window\s*=\s*true' -or
         $configHeaderSource -notmatch 'float hud_size\s*=\s*0\.43f' -or
         $configHeaderSource -notmatch 'bool show_welcome\s*=\s*true' -or
         $vrSource -notmatch 'Halo 2 Stage 3AM performance gate') {
-        throw 'C-H2-88 gate failed: Classic muzzle isolation, the two alignment controls, V5 defaults, welcome, or bounded Stage 3AM diagnostics are missing.'
+        throw 'C-H2-88 gate failed: Classic muzzle isolation, V5 defaults, welcome, or bounded Stage 3AM diagnostics are missing.'
     }
     $halo4RestoreLogicSource = [IO.File]::ReadAllText(
         (Join-Path $repoRoot 'src\common\halo4_restoration_logic.h'))
@@ -263,7 +261,7 @@ try {
         $d3dSource -notmatch 'D3D_Halo4HelmetShaderPathAvailable' -or
         $halo4RestoreAsmSource -notmatch 'Halo4EffectTransientWrapper' -or
         $halo4RestoreAsmSource -notmatch 'Halo4CurvatureBridge' -or
-        $configHeaderSource -notmatch 'bool halo4_helmet\s*=\s*true' -or
+        $configHeaderSource -notmatch 'bool halo4_helmet\s*=\s*false' -or
         $menuSource -notmatch 'Show Halo 4 helmet frame') {
         throw 'C-H4-56 gate failed: the full-frontend visor geometry admission, native-reticle replay canvas, exact visor-shader toggle, pause, effects, or adjustable HUD source is missing.'
     }
@@ -310,15 +308,24 @@ try {
             'scoped aim-assist view helper accepts the normalized') {
         throw 'C-H2-92 gate failed: the rejected debug global is not dormant or controller-scoped native target selection, accepted camera suppression, fail-open isolation, telemetry, or unit coverage is missing.'
     }
-    if ($configHeaderSource -notmatch
-            'halo2_classic_gun_pitch_deg\s*=\s*-9\.5f' -or
-        $configHeaderSource -notmatch
-            'halo2_classic_gun_yaw_deg\s*=\s*1\.0f' -or
-        $coreTestsSource -notmatch
-            'fresh\.halo2_classic_gun_yaw_deg\s*==\s*1\.0f' -or
-        $coreTestsSource -notmatch
-            'fresh\.halo2_classic_gun_pitch_deg\s*==\s*-9\.5f') {
-        throw 'Halo 2 Classic default-alignment gate failed: yaw +1.0 / pitch -9.5 or unit coverage is missing.'
+    # The old Classic sliders were retired by the weapons-alignment request.
+    # Validate the active fixed correction and independent barrel publication,
+    # not legacy serialized configuration defaults that no longer drive it.
+    $alignmentSource = [IO.File]::ReadAllText(
+        (Join-Path $repoRoot 'src\common\weapon_alignment.h'))
+    $alignmentTestsSource = [IO.File]::ReadAllText(
+        (Join-Path $repoRoot 'tests\weapon_alignment_tests.cpp'))
+    $cmakeSource = [IO.File]::ReadAllText(
+        (Join-Path $repoRoot 'CMakeLists.txt'))
+    if ($alignmentSource -notmatch 'kH2ClassicVisualPitch\s*=\s*-9\.5f' -or
+        $halo2ObserverSource -notmatch 'classicConsumer\?weapon_alignment::kH2ClassicVisualPitch\+' -or
+        $halo2ObserverSource -notmatch 'Halo2RemoveVisualFrame' -or
+        $halo2ObserverSource -notmatch 'candidate\.muzzleNeutralCarrier\[0\]=rightCarrier' -or
+        $menuSource -match 'SliderFloat\(\s*"H2 Classic gun (yaw|pitch)' -or
+        $menuSource -notmatch 'Reset visual rotation' -or
+        $alignmentTestsSource -notmatch 'Halo2RemoveVisualFrame' -or
+        $cmakeSource -notmatch 'add_test\(NAME halomccvr_weapon_alignment_tests') {
+        throw 'Weapon alignment gate failed: fixed Classic -9.5 visual pitch, independent barrel frame, retired sliders, or registered tests are missing.'
     }
     $halo2StereoSource = [IO.File]::ReadAllText(
         (Join-Path $repoRoot 'src\dll\halo2_stereo_core.cpp'))
@@ -466,6 +473,11 @@ try {
     if ($cache -notmatch '(?m)^BUILD_TESTING:BOOL=ON\r?$') {
         throw 'Refusing to package: BUILD_TESTING is not ON.'
     }
+    # Development diagnostics and automated-test hooks must never ship (a config flag is not a guard).
+    # The persistent incremental cache would otherwise carry a -D...=ON silently into a package.
+    if ($cache -notmatch '(?m)^HALOMCCVR_DEV_DIAGNOSTICS:BOOL=OFF\r?$') {
+        throw 'Refusing to package: HALOMCCVR_DEV_DIAGNOSTICS is not OFF (dev tooling / test hooks compiled in).'
+    }
     $pythonMatch = [regex]::Match($cache,
         '(?m)^HALOMCCVR_PACKAGE_PYTHON:FILEPATH=(?<path>.+)\r?$')
     if (-not $pythonMatch.Success) {
@@ -545,6 +557,7 @@ try {
     $launcherPath = Join-Path $packageDir 'HaloMCCVRLauncher.exe'
     foreach ($requiredPath in @(
             $dllPath,
+            (Join-Path $payloadDir 'HaloMCCVRReclaimerRelay.dll'),
             $launcherPath,
             $configPath,
             (Join-Path $payloadDir 'LICENSE'),
@@ -555,6 +568,17 @@ try {
             (Join-Path $payloadDir 'assets/fonts/Oxanium.ttf'))) {
         if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
             throw "Candidate package is missing: $requiredPath"
+        }
+    }
+
+    # Dev tooling must be compiled OUT, not switched off. The cache check above proves the option;
+    # this proves the artifact: no dev-only log tag may appear anywhere in the packaged DLL.
+    $dllText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dllPath))
+    foreach ($devTag in @('REACHWP', 'REACHVS', 'REACHDDP', 'REACHAIMPROBE', 'REACHDIRECTDRIVE',
+            'REACHCROUCHCAM', 'DEV BUILD', 'CENSUS collision_test_vector', 'Roomscale trace',
+            'DEV TEST OVERRIDE', 'DEV fault injection', 'REACHSIGHT shot', 'REACHSIGHT engine trace')) {
+        if ($dllText.Contains($devTag)) {
+            throw "Refusing to package: dev-only tag '$devTag' is compiled into HaloMCCVR.dll."
         }
     }
 
@@ -613,7 +637,7 @@ try {
             path = 'HaloMCCVRLauncher.exe'
             bytes = $launcher.Length
             sha256 = $launcherHash
-            execution_level = 'requireAdministrator'
+            execution_level = 'asInvoker'
             manual_payload_contains_launcher = $false
         }
         accepted_halo4_identity = [ordered]@{
@@ -654,7 +678,7 @@ try {
             effect_cave_restored_on_cleanup = $true
             effect_policy = 'stage3ai-selected-local-first-person-finite-far'
             effect_failure_policy = 'stock-effects-camera-hud-and-openxr-remain-armed'
-            helmet_default_visible = $true
+            helmet_default_visible = $false
             helmet_control = 'halo4_helmet'
             helmet_binding =
                 'exact-3dmigoto-pixel-shader-4BE62AC49C2BF210'
@@ -1186,7 +1210,7 @@ try {
         }
         roomscale_candidate = [ordered]@{
             config_key = 'roomscale_movement'
-            default_enabled = $false
+            default_enabled = $true
             implementation = 'native-walking-with-observed-horizontal-camera-reference-consumption'
             title_coverage = 'H2-Classic-Anniversary-H3-ODST-Reach-H4'
             head_relative_walking = $true

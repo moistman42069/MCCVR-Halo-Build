@@ -1,4 +1,6 @@
 #include "../src/common/vr_action_mapping.h"
+#include "../src/common/vr_action_passthrough.h"
+#include "../src/dll/native_vr_actions.h"
 #include "../src/common/config.h"
 #include "../src/common/weapon_interaction_logic.h"
 #include "../src/common/scope_action_input.h"
@@ -9,6 +11,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <string>
 #include <limits>
 
 using namespace vr_mapping;
@@ -68,6 +72,14 @@ void CheckScopeAdmission()
         scope.Update(true,bits,source,1,route,true,false);
         Check(!scope.Update(true,0,source,1,0,true,false).changed,"leaving D-pad gesture cancels rather than releases zoom");
     }
+    {
+        // MCC polls the pad from more than one thread, and they share one detector (input.cpp g_scopeInput): the
+        // release one poll takes is not taken again by the next.
+        ScopeActionInput shared;
+        auto poll=[&](uint32_t bits){return shared.Update(true,bits,RightClick,1,0,true,false);};
+        poll(0);poll(0);poll(Bit(RightClick));poll(Bit(RightClick));
+        Check(poll(0).changed&&!poll(0).changed,"a second poller does not take the same zoom release again");
+    }
     ScopeActionInput scope;
     scope.Update(true,0,A,1,0,true,false);
     scope.Update(true,Bit(A),A,1,0,true,false);
@@ -87,35 +99,141 @@ void CheckPhysicalCrouchInput()
         {
             PhysicalCrouchInput crouch;
             uint64_t now=1;
-            auto tick=[&](float y,bool available=true,uint64_t epoch=0x12345678ABCDEF01ull,uint32_t generation=0xABCDEF01u) {
-                return crouch.Update(title,generation,y,epoch,now++,true,available,.22f,mask);
+            // The standing reference is handed in (the OpenXR frame thread learns it), with its sample count.
+            float baseline=1.7f;uint64_t reference=0x12345678ABCDEF01ull;
+            auto tick=[&](float y,bool available=true,uint32_t generation=0xABCDEF01u) {
+                return crouch.Update(title,generation,y,baseline,reference,now++,true,available,.22f,mask);
             };
             Overrides unbound{};unbound.fill(Unbound);
             Transports native{};native[Crouch]=mask;
             Mapper mapper;mapper.Apply(0,unbound,native,1,true);
-            Check(tick(1.7f)==0,"physical crouch first sample calibrates without pressing");
+            Check(tick(1.7f)==0,"physical crouch first sample at the reference does not press");
             const auto buttons=mapper.Apply(Bit(LeftClick),unbound,native,1,true)|tick(1.4f);
             Check(buttons==mask,"physical crouch emits verified transport even when VR crouch button is Unbound");
             Check(tick(1.53f)==mask&&tick(1.56f)==0,"physical crouch output uses hysteresis and releases while standing");
             tick(1.4f);crouch.Suspend(true);
             Check(tick(1.4f)==0&&tick(1.4f)==0,"menu/pointer/focus suspension cannot replay held crouch");
             Check(tick(1.7f)==0&&tick(1.4f)==mask,"standing re-admits physical gesture after suspension");
-            Check(tick(1.4f,true,0x12345678ABCDEF02ull)==0,"full tracking/recenter epoch resets physical crouch calibration");
-            Check(tick(1.1f,true,0x12345678ABCDEF02ull)==mask,"fresh crouch after recenter uses new standing height");
-            Check(tick(1.1f,true,0x12345678ABCDEF02ull,0xABCDEF02u)==0,"title generation independently resets physical crouch");
-            Check(crouch.Update(title,2,1.7f,9,now++,false,true,.22f,mask)==0,
+            reference=0x12345678ABCDEF02ull;baseline=1.4f;
+            Check(tick(1.4f)==0,"a new standing reference re-arms physical crouch released");
+            Check(tick(1.1f)==mask,"fresh crouch measured from the new standing height");
+            Check(tick(1.1f,true,0xABCDEF02u)==0,"title generation independently re-arms physical crouch");
+            Check(crouch.Update(title,2,1.7f,1.7f,9,now++,false,true,.22f,mask)==0,
                 "explicit feature disable clears physical crouch output");
-            Check(crouch.Update(title,2,1.4f,9,now++,true,true,.22f,mask)==0,
-                "feature re-enable calibrates instead of replaying old crouch");
+            Check(crouch.Update(title,2,1.4f,1.7f,9,now++,true,true,.22f,mask)==0,
+                "feature re-enable with the head already low stands first instead of replaying old crouch");
         }
     }
     PhysicalCrouchInput unavailable;
-    Check(unavailable.Update(GameTitle::Halo3,1,1.7f,1,1,true,true,.22f,0)==0&&
-        unavailable.Update(GameTitle::Halo3,1,1.4f,1,2,true,true,.22f,0)==0,
+    Check(unavailable.Update(GameTitle::Halo3,1,1.7f,1.7f,1,1,true,true,.22f,0)==0&&
+        unavailable.Update(GameTitle::Halo3,1,1.4f,1.7f,1,2,true,true,.22f,0)==0,
         "native crouch without proven transport cannot inject a guessed button");
+}
+// One input poll as both production routes compose it (input.cpp): in direct
+// mode the mapper sees the bridge's gesture bits, the router sees the REAL
+// layout, and the result is the pad buttons plus the bridge publication.
+struct Poll { MappedActions mapped; RoutedActions routed; };
+Poll RunPoll(Mapper& mapper,GameTitle title,bool direct,uint32_t sources,
+    const Overrides& bindings,const Transports& layout)
+{
+    Transports mapping=layout;
+    if(direct) for(unsigned a=0;a<Count;++a) mapping[a]=NativeVrActions_GestureBit(static_cast<Action>(a));
+    Poll poll{};
+    poll.mapped=mapper.ApplyDetailed(sources,bindings,mapping,(uint64_t(title)<<24)|1,true);
+    poll.routed=RouteActions(title,direct,poll.mapped,layout);
+    return poll;
+}
+void CheckDirectContextPassthrough()
+{
+    constexpr uint32_t padX=0x4000,padA=0x1000,padB=0x2000,padY=0x8000;
+    constexpr uint32_t context=(1u<<Reload)|(1u<<Interact);
+    // MCC's default Halo 2 layout: Reload (0x2E) and touch_device (0x23) are
+    // both on X; Jump on A; Fire on the right trigger.
+    Transports layout{};
+    for(unsigned a=0;a<Count;++a) layout[a]=1u<<a;
+    layout[Reload]=layout[Interact]=padX;layout[Jump]=padA;layout[Fire]=1u<<17;
+    Overrides automatic{};
+    {
+        Mapper mapper;
+        RunPoll(mapper,GameTitle::Halo2,true,0,automatic,layout);
+        for(unsigned poll=0;poll<40;++poll) // a held X: tap, then well past H2's hold threshold
+        {
+            const auto p=RunPoll(mapper,GameTitle::Halo2,true,Bit(X),automatic,layout);
+            Check(p.mapped.Has(Reload)&&p.mapped.Has(Interact),"H2 default X still names Reload and Use semantically");
+            Check(p.routed.buttons==padX,"H2 direct: held X reaches the game as the real X button on every poll");
+            Check(!(p.routed.published&context),"H2 direct: bridge publishes neither Reload 2E nor touch_device 23");
+        }
+        const auto released=RunPoll(mapper,GameTitle::Halo2,true,0,automatic,layout);
+        Check(released.routed.buttons==0&&released.routed.published==0,"H2 direct: releasing X releases the real button");
+        auto p=RunPoll(mapper,GameTitle::Halo2,true,Bit(A),automatic,layout);
+        Check(p.routed.buttons==0&&p.routed.published==(1u<<Jump),"H2 direct: Jump stays on the bridge, real A withheld");
+        RunPoll(mapper,GameTitle::Halo2,true,0,automatic,layout);
+        p=RunPoll(mapper,GameTitle::Halo2,true,Bit(PrimaryTrigger),automatic,layout);
+        Check(p.routed.buttons==0&&p.routed.published==(1u<<Fire),"H2 direct: Fire stays on the bridge, real trigger withheld");
+        RunPoll(mapper,GameTitle::Halo2,true,0,automatic,layout);
+        p=RunPoll(mapper,GameTitle::Halo2,true,Bit(X)|Bit(Y),automatic,layout);
+        Check(p.routed.buttons==padX&&p.routed.published==(1u<<SwitchWeapon),
+            "H2 direct: X passes through while Y (switch weapon) stays bridged in the same poll");
+    }
+    {
+        // Transport fallback (no direct route) is byte-identical to before.
+        Mapper mapper;
+        RunPoll(mapper,GameTitle::Halo2,false,0,automatic,layout);
+        const auto p=RunPoll(mapper,GameTitle::Halo2,false,Bit(X),automatic,layout);
+        Check(p.routed.buttons==p.mapped.transports&&p.routed.buttons==padX&&p.routed.published==p.mapped.actions,
+            "H2 transport fallback unchanged");
+    }
+    {
+        // Use device bound in MCC to a different button than Reload: each VR
+        // action sends its own real button, so the game's context actions on
+        // that button still run. Neither reaches the bridge.
+        Transports split=layout;split[Interact]=padB;
+        Overrides bindings=automatic;bindings[Interact]=Y;
+        Mapper mapper;
+        RunPoll(mapper,GameTitle::Halo2,true,0,bindings,split);
+        auto p=RunPoll(mapper,GameTitle::Halo2,true,Bit(Y),bindings,split);
+        Check(p.routed.buttons==padB&&!(p.routed.published&context),"H2 direct: Use sends its own real MCC button");
+        RunPoll(mapper,GameTitle::Halo2,true,0,bindings,split);
+        p=RunPoll(mapper,GameTitle::Halo2,true,Bit(X),bindings,split);
+        Check(p.routed.buttons==padX&&!(p.routed.published&context),"H2 direct: Reload sends only the real reload button");
+        // A context action with NO native binding has no button to send; the
+        // bridge remains its only route, exactly as before.
+        Transports unbound=layout;unbound[Reload]=0;
+        RunPoll(mapper,GameTitle::Halo2,true,0,automatic,unbound);
+        p=RunPoll(mapper,GameTitle::Halo2,true,Bit(X),automatic,unbound);
+        Check(p.routed.buttons==padX&&(p.routed.published&context)==(1u<<Reload),
+            "H2 direct: natively unbound Reload stays on the bridge");
+        // Binding reader unavailable: nothing to pass through, bridge unchanged.
+        RunPoll(mapper,GameTitle::Halo2,true,0,automatic,Transports{});
+        p=RunPoll(mapper,GameTitle::Halo2,true,Bit(X),automatic,Transports{});
+        Check(p.routed.buttons==0&&(p.routed.published&context)==context,
+            "H2 direct with no readable layout keeps the bridge route");
+    }
+    for(const auto title:{GameTitle::Halo3,GameTitle::Halo3ODST,GameTitle::HaloReach,GameTitle::Halo4,GameTitle::HaloCE})
+    {
+        Check(DirectPassthroughActions(title)==0,"only Halo 2 passes context actions through");
+        Mapper direct,fallback;
+        RunPoll(direct,title,true,0,automatic,layout);RunPoll(fallback,title,false,0,automatic,layout);
+        for(unsigned poll=0;poll<40;++poll)
+        {
+            const auto d=RunPoll(direct,title,true,Bit(X),automatic,layout);
+            Check(d.routed.buttons==0&&(d.routed.published&context)==context,
+                "other titles direct: X stays withheld and the bridge publishes Reload and Use");
+            const auto f=RunPoll(fallback,title,false,Bit(X),automatic,layout);
+            Check(f.routed.buttons==f.mapped.transports&&f.routed.published==f.mapped.actions,
+                "other titles transport fallback unchanged");
+        }
+    }
+    Check(std::strcmp(ActionName(GameTitle::Halo2,Interact),kNames[Interact])!=0,
+        "Halo 2 index 5 is labelled as touch_device, not pick up");
+    for(const auto title:{GameTitle::Halo3,GameTitle::Halo3ODST,GameTitle::HaloReach,GameTitle::Halo4,GameTitle::HaloCE,GameTitle::Halo2})
+        for(unsigned a=0;a<Count;++a)
+            if(!(title==GameTitle::Halo2&&a==Interact))
+                Check(std::strcmp(ActionName(title,static_cast<Action>(a)),kNames[a])==0,"other labels unchanged");
 }
 int main()
 {
+    CheckDirectContextPassthrough();
     CheckScopeAdmission();
     CheckPhysicalCrouchInput();
     {
@@ -201,9 +319,22 @@ int main()
     ConfigLoad(path.c_str());
     Check(g_config.vr_bindings[0][Fire]==Unbound&&g_config.vr_bindings[2][Fire]==PrimaryGrip,"per-game overrides load independently");
     Check(g_config.vr_bindings[5][Reload]==Automatic&&g_config.vr_bindings[4][Melee]==Automatic,"invalid file values retain defaults");
+    Check(!g_config.disable_autoexposure_odst,"ODST exposure is native by default");
+    {std::ofstream file(path);file<<"bloom_enabled_odst = 1\nbloom_enabled_reach = 1\n";}
+    ConfigLoad(path.c_str());
+    Check(g_config.bloom_enabled[1]&&g_config.bloom_enabled[2]&&!g_config.bloom_chosen[1]&&!g_config.bloom_chosen[2],
+        "a saved legacy bloom setting is kept as it was");
+    Check(!Config_BloomWanted(1)&&!Config_BloomWanted(2)&&Config_BloomWanted(0),
+        "ODST and Reach play without bloom in VR until the player chooses");
+    {std::ifstream file(path);const std::string text((std::istreambuf_iterator<char>(file)),std::istreambuf_iterator<char>());
+        Check(text=="bloom_enabled_odst = 1\nbloom_enabled_reach = 1\n","loading leaves the bloom file untouched");}
+    g_config.bloom_chosen[1]=g_config.bloom_chosen[2]=true;
+    ConfigSave();ConfigLoad(path.c_str());
+    Check(Config_BloomWanted(1)&&Config_BloomWanted(2),"a chosen bloom survives reload");
+    for(unsigned t=0;t<6;++t) g_config.bloom_chosen[t]=false;
     const bool defaultFlashes[6]{false,false,false,true,false,true};
     for(unsigned t=0;t<6;++t) Check(g_config.hide_muzzle_flash[t]==defaultFlashes[t],"muzzle-flash suppression defaults stay title-specific");
-    for(unsigned t=0;t<6;++t) Check(g_config.bloom_enabled[t],"all titles preserve native bloom by default");
+    for(unsigned t=0;t<6;++t) Check(Config{}.bloom_enabled[t]&&!Config{}.bloom_chosen[t],"saved bloom defaults to on and unchosen");
     {std::ofstream file(path);
         file<<"virtual_stock = 1\nvirtual_stock_rear_reference = 3\nvirtual_stock_strength = nan\n"
             "virtual_stock_shoulder_side_m = inf\nvirtual_stock_chest_back_m = garbage\n"
@@ -212,8 +343,10 @@ int main()
             "virtual_stock_adaptive_top_height_m = -.35\nvirtual_stock_adaptive_bottom_height_m = -.2\n"
             "weapon_pouch_location = 99\nweapon_pouch_offset_x_m = -999\nweapon_pouch_offset_y_m = 999\nweapon_pouch_offset_z_m = nan\n"
             "hide_muzzle_flash_halo3 = 1\nhide_muzzle_flash_odst = 7\nhide_muzzle_flash_halo4 = 0\nhide_muzzle_flash_halo2 = junk\n"
-            "bloom_enabled_halo3 = 0\nbloom_enabled_odst = junk\nbloom_enabled_reach = 7\n";}
+            "bloom_enabled_halo3 = 0\nbloom_enabled_odst = junk\nbloom_enabled_reach = 7\n"
+            "disable_autoexposure_odst = 1\ndisable_autoexposure_odst = junk\ndisable_autoexposure_odst = 7\n";}
     ConfigLoad(path.c_str());
+    Check(g_config.disable_autoexposure_odst,"exposure accepts one and rejects malformed boolean overrides");
     const Config defaults{};
     Check(g_config.virtual_stock&&g_config.virtual_stock_rear_reference==3,"stock activation and mode load independently of invalid geometry");
     Check(g_config.virtual_stock_standard_strength==defaults.virtual_stock_standard_strength&&
@@ -229,7 +362,7 @@ int main()
     Check(g_config.hide_muzzle_flash[0]&&!g_config.hide_muzzle_flash[1]&&!g_config.hide_muzzle_flash[3]&&g_config.hide_muzzle_flash[5],
         "per-game muzzle-flash values parse strictly and independently");
     Check(!g_config.bloom_enabled[0]&&g_config.bloom_enabled[1]&&g_config.bloom_enabled[2],
-        "bloom parses independently with strict boolean values");
+        "bloom parses independently with strict boolean values (malformed keeps the default)");
     Check(g_config.weapon_pouch_location==0&&g_config.weapon_pouch_offset_x_m==-.4f&&
         g_config.weapon_pouch_offset_y_m==.4f&&g_config.weapon_pouch_offset_z_m==0,
         "pouch location and offsets reject invalid or nonfinite values and clamp finite geometry");
@@ -256,12 +389,15 @@ int main()
     ConfigLoad(path.c_str());
     for(const auto& field:stockSettings) Check(std::fabs(g_config.*field.member-field.value)<.00001f,"each stock field loads from its public config key");
     for(unsigned t=0;t<6;++t) for(unsigned a=0;a<Count;++a) g_config.vr_bindings[t][a]=static_cast<int>((t+a)%SourceCount);
-    for(unsigned t=0;t<6;++t) g_config.bloom_enabled[t]=(t%2)==0;
+    for(unsigned t=0;t<6;++t) {g_config.bloom_enabled[t]=(t%2)==0;g_config.bloom_chosen[t]=(t%3)==0;}
+    g_config.disable_autoexposure_odst=true;
     const auto expected=g_config;
     ConfigSave();ConfigLoad(path.c_str());
+    Check(g_config.disable_autoexposure_odst==expected.disable_autoexposure_odst,"exposure survives save and reload");
     for(unsigned t=0;t<6;++t) Check(g_config.vr_bindings[t]==expected.vr_bindings[t],"all six per-game mappings survive round trip");
     for(unsigned t=0;t<6;++t) Check(g_config.hide_muzzle_flash[t]==expected.hide_muzzle_flash[t],"all six muzzle-flash settings survive round trip");
     for(unsigned t=0;t<6;++t) Check(g_config.bloom_enabled[t]==expected.bloom_enabled[t],"all six bloom settings survive round trip");
+    for(unsigned t=0;t<6;++t) Check(g_config.bloom_chosen[t]==expected.bloom_chosen[t],"all six bloom choices survive round trip");
     for(const auto& field:stockSettings) Check(std::fabs(g_config.*field.member-expected.*field.member)<.00001f,"each stock geometry field survives config save and reload");
     Check(g_config.virtual_stock&&g_config.virtual_stock_rear_reference==0&&!g_config.virtual_stock_proximity_release,
         "stock switches survive config save and reload (Chest is no longer a product selection)");
@@ -320,6 +456,50 @@ int main()
         ConfigVehicleModelCam(g_config,GameTitle::Halo2,0x123456789abcdef0ull,1,0)==-.2f&&
         ConfigVehicleModelCam(g_config,GameTitle::HaloCE,0x123456789abcdef0ull,0,0)==.31f,
         "identified vehicle presets survive save/reload without transient instance IDs");
+    // A seat with a built-in offset: placed with no config line, moved by a line one axis at a time, and handed
+    // back to the built-in offset (not to the game's base) by its reset.
+    {
+        const uint64_t mantis=0x000000551b05181eull;
+        const Config fresh{};
+        Check(ConfigVehicleModelCam(fresh,GameTitle::Halo4,mantis,0,0)==.30f&&
+            ConfigVehicleModelCam(fresh,GameTitle::Halo4,mantis,0,1)==.80f&&
+            ConfigVehicleModelCam(fresh,GameTitle::Halo4,mantis,0,2)==0.f,
+            "the Mantis pilot's seat camera ships above the cockpit");
+        Check(ConfigVehicleModelCam(fresh,GameTitle::Halo4,mantis,1,1)==ConfigGameVehicleCam(fresh,GameTitle::Halo4,1)&&
+            ConfigVehicleModelCam(fresh,GameTitle::Halo4,mantis+1,0,1)==ConfigGameVehicleCam(fresh,GameTitle::Halo4,1)&&
+            ConfigVehicleModelCam(fresh,GameTitle::Halo3,mantis,0,1)==ConfigGameVehicleCam(fresh,GameTitle::Halo3,1),
+            "a built-in seat offset reaches only its own game, model and seat");
+        for(const ConfigShippedVehicleModelTrim& trim:kConfigShippedVehicleModelTrims)
+            Check(trim.identity&&trim.seat>=0&&trim.seat<=31&&trim.name&&*trim.name&&
+                trim.forward>=kVehicleCamForwardMin&&trim.forward<=kVehicleCamForwardMax&&
+                trim.up>=kVehicleCamUpMin&&trim.up<=kVehicleCamUpMax&&
+                trim.right>=kVehicleCamRightMin&&trim.right<=kVehicleCamRightMax&&
+                ConfigShippedVehicleModelTrimFor(trim.title,trim.identity,trim.seat)==&trim,
+                "every built-in seat offset is one its sliders can reach, and is named once");
+        {std::ofstream file(path);file<<"vehicle_model_halo4_000000551b05181e_seat0_up_m = 1.1\n";}
+        ConfigLoad(path.c_str());
+        Check(ConfigVehicleModelCam(g_config,GameTitle::Halo4,mantis,0,1)==1.1f&&
+            ConfigVehicleModelCam(g_config,GameTitle::Halo4,mantis,0,0)==.30f,
+            "a config line moves one axis of a built-in seat offset and leaves the others");
+        ConfigSave();ConfigLoad(path.c_str());
+        Check(ConfigVehicleModelCam(g_config,GameTitle::Halo4,mantis,0,1)==1.1f&&
+            ConfigVehicleModelCam(g_config,GameTitle::Halo4,mantis,0,0)==.30f,
+            "a moved built-in seat offset survives save and reload");
+        const int slot=ConfigVehicleModelTrimSlot(g_config,GameTitle::Halo4,mantis,0);
+        ConfigResetVehicleModelTrim(g_config,slot);
+        Check(slot>=0&&ConfigVehicleModelCam(g_config,GameTitle::Halo4,mantis,0,1)==.80f&&
+            ConfigVehicleModelCam(g_config,GameTitle::Halo4,mantis,0,0)==.30f,
+            "resetting a seat with a built-in offset returns to that offset");
+        const int other=ConfigEnsureVehicleModelTrim(g_config,GameTitle::Halo4,mantis+1,0);
+        g_config.vehicle_model_trims[other].value[1]=.5f;g_config.vehicle_model_trims[other].set[1]=true;
+        ConfigResetVehicleModelTrim(g_config,other);
+        Check(other>=0&&ConfigVehicleModelTrimSlot(g_config,GameTitle::Halo4,mantis+1,0)<0,
+            "resetting a seat with no built-in offset hands it back to its game's base");
+        {std::ofstream file(path);}
+        ConfigLoad(path.c_str());
+        Check(ConfigVehicleModelCam(g_config,GameTitle::Halo4,mantis,0,1)==.80f,
+            "a config file with no line for the seat keeps its built-in offset");
+    }
     Check(vehicle_identity::Path("vehicles\\warthog\\warthog")==vehicle_identity::Path("VEHICLES/WARTHOG/WARTHOG")&&
         vehicle_identity::Path("vehicles\\warthog\\warthog")!=vehicle_identity::Path("vehicles\\ghost\\ghost"),
         "authored path identity normalizes cache spelling and keeps different vehicles separate");

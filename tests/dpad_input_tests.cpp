@@ -1,4 +1,5 @@
 #include "../src/common/input_logic.h"
+#include "../src/common/aim_no_unit_logic.h"
 #include "../src/common/exclusive_input.h"
 #include "../src/common/flashlight_input.h"
 #include <windows.h>
@@ -81,6 +82,63 @@ int main()
         const float controller[3]{test.distance, 0, 0};
         Check(DpadHeadWithinRadius(head, controller, test.radius) == test.inside,
             "radius preserves strict boundary, limits and invalid-setting fallback");
+    }
+    {
+        using Key = HeadKeyGesture::Key;
+        HeadKeyGesture talk;
+        Check(talk.Step(false, true, true) == Key::None && !talk.talking, "X away from the head is the game's X");
+        Check(talk.Step(true, true, true) == Key::None && !talk.talking, "a hand raised with X already held does not talk");
+        Check(talk.Step(true, false, true) == Key::None, "and letting go does nothing");
+        Check(talk.Step(true, true, true) == Key::Press && talk.talking, "a fresh X at the head presses the key");
+        Check(talk.Step(true, true, true) == Key::None && talk.talking, "held, once");
+        Check(talk.Step(false, true, true) == Key::None && talk.talking, "lowering the hand keeps it held");
+        Check(talk.Step(false, false, true) == Key::Release && !talk.talking, "X's release lets it go");
+        Check(talk.Step(true, false, true) == Key::None, "nothing is down");
+        Check(talk.Step(true, true, true) == Key::Press, "pressed again");
+        Check(talk.Step(true, true, false) == Key::Release && !talk.talking, "focus lost or the menu opened lets it go");
+        Check(talk.Step(true, true, true) == Key::None && !talk.talking, "X still held does not press again");
+        Check(talk.Step(true, false, true) == Key::None, "until it is let go");
+        Check(talk.Step(true, true, false) == Key::None && !talk.talking, "not allowed: no press");
+    }
+    {
+        using Y = HeadYChord::Y;
+        HeadYChord y;
+        Check(y.Step(true, false, false, true, 1000) == Y::Game, "Y away from the head is the game's at once");
+        Check(y.Step(true, true, false, true, 2000) == Y::Game, "and stays so if the hand comes up during that press");
+        y.Step(false, true, false, true, 2100);
+        Check(y.Step(true, true, false, true, 3000) == Y::Waiting, "Y at the head waits for B");
+        Check(y.Step(true, true, false, true, 3000 + HeadYChord::kHoldOffMs) == Y::Key, "alone, it counts");
+        Check(y.Step(true, true, true, true, 3200) == Y::Game, "B with the scoreboard up gives the press to the chord");
+        Check(y.Step(true, true, false, true, 3300) == Y::Game, "for the rest of the press");
+        y.Step(false, true, false, true, 3400);
+        Check(y.Step(true, true, false, true, 4000) == Y::Waiting, "a new press waits again");
+        Check(y.Step(true, true, true, true, 4050) == Y::Game, "B during the wait: nothing is sent");
+        y.Step(false, true, false, true, 4100);
+        Check(y.Step(true, true, true, true, 5000) == Y::Game, "B first: the chord");
+        y.Step(false, true, false, true, 5100);
+        Check(y.Step(true, true, true, false, 6000) == Y::Key, "the chord turned off: no wait, and B changes nothing");
+    }
+    {
+        // A screen holds the controller only while the character is really gone, and lets go at once.
+        using aim_no_unit::Presence;
+        aim_no_unit::NoCharacterNow none;
+        Check(!none.Step(Presence::Absent, 1000, 1000), "a blip of no character takes nothing");
+        Check(none.Step(Presence::Absent, 1000 + aim_no_unit::kEnterMs, 1000 + aim_no_unit::kEnterMs), "a held absence does");
+        Check(!none.Step(Presence::Present, 1300, 1300), "a respawn lets go on its first sample");
+        Check(!none.Step(Presence::Absent, 1350, 1350), "and an absence starts its wait again");
+        Check(!none.Step(Presence::Absent, 1350, 1350 + aim_no_unit::kStaleMs + 1), "a sampler gone quiet holds nothing");
+    }
+    {
+        DpadMovementLatch latch;
+        Check(!latch.Step(false, true), "hand down: never the D-pad");
+        Check(!latch.Step(true, true), "hand comes up while walking: the stick keeps walking");
+        Check(!latch.Step(true, true), "and goes on walking while it stays pushed");
+        Check(latch.Step(true, false), "the stick returns to centre: now the D-pad");
+        Check(latch.Step(true, true), "pushed again from centre at the head: a D-pad press");
+        Check(!latch.Step(false, true), "hand down: walking again");
+        DpadMovementLatch still;
+        Check(still.Step(true, false), "hand comes up standing still: the D-pad at once");
+        Check(still.Step(true, true), "and the stick presses it");
     }
     Check(DpadHeadWithinRadius(head, diagonalInside, 0.30f) &&
         !DpadHeadWithinRadius(head, diagonalOutside, 0.30f), "head radius measures all three axes");

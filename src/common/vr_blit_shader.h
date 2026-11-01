@@ -3,6 +3,8 @@
 // Shared production upload shader. Kept verbatim when exposed to the focused
 // pixel fixture: native RGB-only art needs both visible-ink measurement and
 // this straight-alpha conversion before OpenXR composites the aim quad.
+// Reach's authored capture (premultiplied colour, see
+// AuthoredReticleStraightAlpha) takes the same fix() so its fade applies once.
 inline constexpr char kVrBlitShader[]=R"(
 Texture2D srcTex : register(t0);
 SamplerState smp : register(s0);

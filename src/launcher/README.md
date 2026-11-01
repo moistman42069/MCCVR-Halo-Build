@@ -5,6 +5,30 @@ activation code remains in `launcher.cpp`. A new menu selects an installation
 and calls that same launch path only when the user selects **Launch MCC**.
 Installation and update discovery do not start MCC.
 
+**Unattended launch (`--headless`, dev builds only).** A launcher built with
+`HALOMCCVR_DEV_DIAGNOSTICS` (the `dev` preset) accepts
+`HaloMCCVRLauncher.exe --headless`: it skips the menu and launches the mod in
+the launcher's OWN folder (the menu's Launch always targets
+`<game>\Halo_MCC_VR`, so a side-by-side test install is launched this way). It
+never shows a dialog: every message, including what a dialog would have said,
+goes to `HaloMCCVRLauncher.log`, and the exit code reports the result: 0 = the
+game is running after 12 s, 2 = Steam edition and no `steam.exe` process, 1 =
+any other failure. It never offers VR recovery for a running game, and on the
+Store edition it does not wait for a manual start if activation fails. The test
+harness (`tools/Enter-Reach-FA.ps1`) uses it so an unattended run cannot leave a
+modal box on someone's desktop. The harness starts it with
+`__COMPAT_LAYER=RunAsInvoker`, so no UAC prompt can appear whatever the
+launcher's manifest asks for;
+the launcher removes that variable before it starts the game. A player build
+never parses the switch, and `tools/verify-qol-package.py` refuses a packaged
+launcher that contains it.
+
+The exit code 2 for a missing Steam applies in every build. So does logging:
+every message box shown while a launch runs writes its full text to the log
+(`ERROR shown to user: ...`, `NOTICE shown to user: ...`). Boxes shown before
+a launch starts (the update helper, a failure of the menu itself) are not
+logged, because the log belongs to the mod folder being launched.
+
 Package layout:
 
 ```
@@ -42,9 +66,12 @@ fixed-drive XboxGames/XBOX fallback and Browse cover additional libraries.
 Each result must contain one of MCC's actual shipping executable layouts.
 The installer always targets that root's dedicated `Halo_MCC_VR` folder.
 It refuses active MCC processes, path junctions/symbolic links and corrupt
-payload hashes. The launcher requests administrator access by default through
-its embedded Windows application manifest so protected Steam library folders
-can be written without a second manual elevation step. The launcher executable
+payload hashes. The launcher runs with the user's own rights (its manifest is
+`asInvoker`): the game it starts inherits its token, and an elevated game
+ignores an OpenXR runtime chosen with `XR_RUNTIME_JSON`, so VR would not start
+for a player who selects the runtime that way. If Windows refuses the install
+folder, the installer says to run the launcher as administrator for that
+install, and to open it normally afterwards to launch. The launcher executable
 is installed as a separate file beside the mod payload inside `Halo_MCC_VR`;
 it is not part of the source `ModFiles` tree; the separately packaged manual
 archives provide the legacy launch helper for manual users.
@@ -89,3 +116,30 @@ locked-destination rollback and strict GitHub JSON parsing.
 with valid and malicious local archives. Neither test launches or writes to a
 real MCC installation. Native Steam/Store launch behavior still requires user
 runtime testing; those paths were preserved, not runtime-accepted by these tests.
+
+## Project Reclaimer (experimental)
+
+The menu's last section starts Project Reclaimer, a standalone client that runs MCC's `halo3.dll`, with the VR
+mod. It needs `HaloMCCVR.dll` and `HaloMCCVRReclaimerRelay.dll` beside the launcher (or in its `ModFiles`
+folder); the relay is not in a player package.
+
+- **The path** of the game program (`project-reclaimer-client-v<version>.exe`, or `project-reclaimer-v<version>.exe`
+  before 0.9.23) is typed, pasted, or picked with
+  Browse. It is kept as the one line of `reclaimer_client.txt` beside the launcher and read back at the next
+  start. Clearing the field forgets it.
+- **Detect** looks, in this order, where the client's own join links point (it registers a `reclaimer:` link
+  for the user the first time it runs: `Software\Classes\reclaimer\shell\open\command`), at a client that is
+  running now, and in the folders around the launcher. With no path kept, the menu offers what Detect finds
+  when it opens and keeps it only once it is used.
+- **The line under the path** gives the client's version from the file itself (the client updates itself in
+  place and keeps its first name) and whether the VR mod has been run with that version.
+- **Launch Project Reclaimer** starts the client suspended, loads the relay and resumes it. Logs and settings
+  are the launcher folder's own: `HaloMCCVRLauncher.log`, `HaloMCCVRReclaimerRelay.log`, `HaloMCCVR.log`,
+  `halomccvr.cfg`.
+
+`HaloMCCVRReclaimerLauncher.exe` is the same program as a one-click start: in a folder with the relay and a
+client it can find (the kept path first), it starts that client with no menu. Where it finds none it opens
+the menu. `HaloMCCVRLauncher.exe` always opens the menu.
+
+Validation: `halomccvr_reclaimer_host_logic_tests` covers the path tidying and the join-link command. The menu
+was drawn and read off screen; the launch from the menu's button has not been run.

@@ -1,3 +1,5 @@
+#include "../src/common/reach_weapon_defaults.h"
+#include "../src/common/visual_aim.h"
 #include <Windows.h>
 #include <MinHook.h>
 #include <atomic>
@@ -24,7 +26,11 @@ static struct {
     int32_t(*playerUnitByOutputUser)(int32_t)=Player;bool(*unitInVehicle)(int32_t)=Seated;
 } g_reachCamera;
 static std::atomic<bool> g_vrAim{true},g_enabled{true},g_reachBarrelBindingsReady{true},g_reachCinematicLocked{false},g_reachVehicleShotRedirectEnabled{true};
-static struct {bool gun_barrel_aim=true,left_handed=false;} g_config;
+static struct {bool gun_barrel_aim=true,left_handed=false,shots_from_muzzle=false;} g_config;
+// The three shot switches as they are in effect (sight_layer.h); here, the test's own config.
+[[maybe_unused]] static bool Sight_ShotsFromMuzzle(){return g_config.shots_from_muzzle;}
+[[maybe_unused]] static bool Sight_GunBarrelAim(){return g_config.gun_barrel_aim;}
+[[maybe_unused]] static bool Sight_IndependentDualAim(){return false;}
 static weapon_muzzle::Store g_reachBarrelMuzzles;
 static thread_local bool g_legacyCollisionOwnedQuery=false;
 static alignas(8) uint8_t tlsBytes[0x700]{},users[0x53A8]{},unitBytes[0x400]{},replacementBytes[0x400]{},
@@ -39,6 +45,14 @@ static unsigned char* ReachVehicleObjectData(int32_t handle,uint8_t& kind)
 }
 static GameTitle title=GameTitle::HaloReach;
 static GameTitle TitleAdapter_GetActiveTitle(){return title;}
+// Shots from the muzzle (sight_layer.h): admitted only with the barrel aim off; the converged point itself is
+// sight_layer's (aim_solve_tests), so here it keeps the barrel's direction and counts the asks.
+static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;
+static bool Sight_MuzzleShotsConverge(){return g_config.shots_from_muzzle&&!g_config.gun_barrel_aim;}
+static uint32_t muzzleAimUnit=UINT32_MAX;
+static bool ReachAimMuzzleShot(uint32_t unit,const float*,const float*,float*,float*)
+{++muzzleAimCalls;muzzleAimUnit=unit;return !muzzleAimRefuses;}
+static void ReachSightMeasureShot(int32_t,const float*,const float*,const float*,uint8_t,uint8_t){}
 static bool VR_IsStereoEnabled(){return stereo;}
 struct VrContactTrackingSnapshot
 {uint64_t serial=11,referenceEpoch=3;int64_t timeNs=1000000000;struct {bool valid=true;} hands[2];};
@@ -50,7 +64,8 @@ struct BoneMatrix {float scale=1,rotation[9]{1,0,0,0,1,0,0,0,1},translation[3]{}
 struct ReachFpInterpolationContext {
     bool valid=true;uint32_t generation=7,muzzleUnit=owner,muzzleWeapon=primary;
     int interpolationView=0,interpolationSlot=0;uint64_t preparedSerial=11;
-    struct {uint64_t contactSerial=11,contactReference=3;int64_t contactTimeNs=1000000000;bool rightWristValid=true;} targets;
+    // contactReference is Reach's melee hash of the tracking-space epoch (3 here): never equal to it.
+    struct {BoneMatrix aimVisual{},aimNeutral{},rightWrist{};uint64_t contactSerial=11,contactReference=0x9E3779B97F4A7C15ull,contactSpaceEpoch=3;int64_t contactTimeNs=1000000000;bool rightWristValid=true;} targets;
 };
 static struct {bool armed=true;uint64_t preparedSerial=11;} g_reachFpPairScope;
 static uint32_t liveChecksum=0;static int liveCount=0;
@@ -60,6 +75,11 @@ using ReachUnitAdjustFn=void(__fastcall*)(int32_t,float*,float*,const float*,con
 static ReachUnitAdjustFn g_origReachUnitAdjust=nullptr;
 static void* g_reachUnitAdjustTarget=reinterpret_cast<void*>(imageBase+0x484F24);
 static thread_local uintptr_t caller=0;
+// THE LOCAL PLAYER'S FIRE (shot_lag_logic.h FireMark; game.cpp t_reachFire): opened and restored by the fire.
+#include "../src/common/shot_lag_logic.h"
+static thread_local int8_t t_reachFire=shot_lag::kFireNone;
+// Flat parity's per-fire eye (game.cpp t_reachFireEye): opened empty by each fire, restored at its exit.
+static thread_local shot_lag::FireEyeScope t_reachFireEye{};
 #define _ReturnAddress() reinterpret_cast<void*>(::caller)
 #define __readgsqword(offset) reinterpret_cast<uint64_t>(::slots)
 #include "../src/dll/reach_muzzle_ownership.inl"
@@ -123,10 +143,23 @@ static void __fastcall NativeFire(uint32_t weapon,int16_t barrel,void* data,uint
     if(expectMuzzle)Check(velocity[0]==11,"real native velocity output retained");
     caller=imageBase+0x10F954;ReachMuzzleViewDetour(owner,0,direction,point,cameraDirection,camera);
     if(expectMuzzle)Check(point[0]==2&&point[1]==2.5f&&cameraDirection[1]==1&&camera[0]==2,"later native assist shares barrel ray");
+    // The crosshair re-aim at this assist: inside an open fire (never kFireNone), and a barrel shot's own line.
+    Check(t_reachFire!=shot_lag::kFireNone,"the fire is open while its assist runs");
+    {
+        float eye[3]{};
+        if(!nested||weapon==primary)
+            Check(t_reachFireEye.For(int32_t(owner),eye)==shot_lag::FireEye::NotRead,
+                "each fire opens its fire-eye scope empty: no earlier fire's eye is reused");
+        const float mine[3]{1,2,3};t_reachFireEye.Store(int32_t(owner),true,mine);
+    }
+    Check(g_reachBarrelShot.active==expectMuzzle,"the barrel's own line owns exactly the barrel shot's assist");
     if(nested&&weapon==primary)
     {
         const auto request=g_reachBarrelRequest;ReachMuzzleFireDetour(secondary,0,data,simulation);
         Check(g_reachBarrelRequest.weapon==primary&&g_reachBarrelRequest.lease==request.lease&&g_reachBarrelShot.active,"nested fire restores outer scope");
+        float eye[3]{};
+        Check(t_reachFireEye.For(int32_t(owner),eye)==shot_lag::FireEye::Measured&&eye[2]==3,
+            "a nested fire restores the outer fire's eye");
     }
     if(nativeChangesTarget)*reinterpret_cast<uint32_t*>(unitBytes+0x2C0)=0xABCD0006;
     caller=previous;if(fireFault)RaiseException(0xE0424444,0,0,nullptr);
@@ -158,6 +191,11 @@ static bool FaultingShot(){__try{Shoot();}__except(EXCEPTION_EXECUTE_HANDLER){re
 static void ShotTests()
 {
     Reset();Shoot();Check(fireCalls==1&&queryCalls==1&&markerCalls==1&&aimCalls==2&&*reinterpret_cast<uint32_t*>(unitBytes+0x2C0)==0x44440007,"single native fire and exact target restoration");
+    Check(t_reachFire==shot_lag::kFireNone,"the fire's exit restores the local-fire tag");
+    {
+        float eye[3]{};
+        Check(t_reachFireEye.For(int32_t(owner),eye)==shot_lag::FireEye::NotRead,"the fire's exit restores its eye scope");
+    }
     Reset(true);nested=true;g_reachBarrelQueryContext.flags=2;Shoot();Check(fireCalls==2&&queryCalls==2&&!g_reachBarrelShot.active&&*reinterpret_cast<uint32_t*>(unitBytes+0x2C0)==0x44440007,"nested native target leases restore LIFO");
     for(int reason=0;reason<26;++reason)
     {
@@ -193,6 +231,10 @@ static void PublicationTests()
         ReachFpInterpolationContext context;ReachPublishMuzzlePalette(123,context,destination);weapon_muzzle::Receipt sample{};weapon_muzzle::Ray expected{};
         Check(weapon_muzzle::Transform(marker,2,destination[marker.node].rotation,destination[marker.node].translation,expected),"Reach authored marker fixture");
         Check(g_reachBarrelMuzzles.Read(GameTitle::HaloReach,7,owner,primary,3,GetTickCount64(),1000000000,0,marker.barrel,false,sample)&&sample.ray.position[0]==expected.position[0],"actual committed Reach node publishes correct barrel");
+        // The lane reads the receipt back with the tracking snapshot's epoch (3). Published under Reach's melee
+        // hash of that epoch, as it was, no read could ever match: the lane refused every shot it was asked for.
+        Check(!g_reachBarrelMuzzles.Read(GameTitle::HaloReach,7,owner,primary,0x9E3779B97F4A7C15ull,GetTickCount64(),1000000000,0,marker.barrel,false,sample),
+            "the receipt's space is the tracking-space epoch, not the melee hash of it");
         context.muzzleWeapon^=0x10000;ReachPublishMuzzlePalette(123,context,destination);
         Check(!g_reachBarrelMuzzles.Read(GameTitle::HaloReach,7,owner,primary,3,GetTickCount64(),1000000000,0,marker.barrel,false,sample),"replacement weapon invalidates old marker");
     }
@@ -302,6 +344,30 @@ static void LifecycleTests()
     {
         reset();image[edge[0]]^=1;Check(!InstallReachMuzzle(lifecycleBase,size,7)&&createCalls==0,"changed downstream edge prevents adaptation");image[edge[0]]^=1;
     }
+    // THE ORDER THE GAME INSTALLS IN. The proof is taken, THEN the core hooks the unit-adjust, whose head (binding 4,
+    // +0x484F24) reads our jump from then on. Proving after the hook is what logged "missing/ambiguous binding
+    // +484F24" in every Reach session; the preflight is what the lane installs on now.
+    reset();g_reachMuzzleImageProof={};ReachMuzzlePreflight(lifecycleBase,size,7);
+    Check(g_reachMuzzleImageProof.proven&&bindingScan==28,"preflight proves all fourteen patterns and their uniqueness");
+    bindingScan=0;missingBinding=4;
+    Check(InstallReachMuzzle(lifecycleBase,size,7)&&bindingScan==0&&createCalls==4,
+        "the proof taken before the unit-adjust hook authorises the lane; nothing is read again through the hook");
+    missingBinding=-1;Check(RemoveReachMuzzle(),"preflight install cleanup");
+    reset();g_reachMuzzleImageProof={};missingBinding=4;
+    Check(!InstallReachMuzzle(lifecycleBase,size,7)&&createCalls==0,"control: a proof read after the hook sees the jump and refuses");
+    reset();g_reachMuzzleImageProof={};ReachMuzzlePreflight(lifecycleBase,size,6);bindingScan=0;missingBinding=4;
+    Check(!InstallReachMuzzle(lifecycleBase,size,7)&&createCalls==0,"another generation's proof is not reused");
+    reset();g_reachMuzzleImageProof={};ReachMuzzlePreflight(lifecycleBase+0x1000,size,7);bindingScan=0;missingBinding=4;
+    Check(!InstallReachMuzzle(lifecycleBase,size,7)&&createCalls==0,"another image's proof is not reused");
+    reset();g_reachMuzzleImageProof={};missingBinding=9;ReachMuzzlePreflight(lifecycleBase,size,7);
+    missingBinding=-1;bindingScan=0;
+    Check(!g_reachMuzzleImageProof.proven&&g_reachMuzzleImageProof.failedRva==0x4C2A4F&&!g_reachMuzzleImageProof.failedEdge,
+        "a failed preflight names the binding");
+    Check(!InstallReachMuzzle(lifecycleBase,size,7)&&bindingScan==0&&createCalls==0,"a failed preflight is not retried behind the hooks");
+    reset();g_reachMuzzleImageProof={};image[0x4C303A]^=1;ReachMuzzlePreflight(lifecycleBase,size,7);image[0x4C303A]^=1;
+    Check(!g_reachMuzzleImageProof.proven&&g_reachMuzzleImageProof.failedEdge&&g_reachMuzzleImageProof.failedRva==0x4C303A,
+        "a changed edge at the preflight is named as an edge");
+    g_reachMuzzleImageProof={};
     reset();Check(InstallReachMuzzle(lifecycleBase,size,7),"fixture installed");ingress=true;
     Check(!RemoveReachMuzzle()&&removeCalls==0,"zero counter with thread in ingress retains code");ingress=false;
     g_reachBarrel.callbacks=1;Check(!RemoveReachMuzzle()&&removeCalls==0,"active callback retains code");

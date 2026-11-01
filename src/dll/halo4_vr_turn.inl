@@ -21,7 +21,8 @@ void Halo4ApplyVrTurn(const VrPadState& pad)
     float reference =
         g_halo4Camera.gameYawReference.load(std::memory_order_relaxed);
     Halo4VehicleInputState seat{};
-    const bool seated=g_config.vehicle_smooth_turn&&Halo4ReadVehicleInput(seat)&&seat.seated;
+    // The camera hook's seat stamp: this input-side caller has no engine TLS of its own to read the seat with.
+    const bool seated=g_config.vehicle_smooth_turn&&Halo4ReadSeatStamp(seat)&&seat.seated;
     if (UseSmoothVrTurn(g_config.turn_smooth,g_config.vehicle_smooth_turn,seated))
     {
         Halo3ConsumeSnapTurn(false, x, snapLatched);
