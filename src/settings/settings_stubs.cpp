@@ -38,6 +38,7 @@ void D3D_SetForcedClientLie(bool) {}
 
 bool Game_CanToggleImmersiveView() { return false; }
 bool Game_GetWriteUp() { return false; }
+bool Game_ReadZoomLevel(int&) { return false; }
 bool Game_IsHeadTrackingApplied() { return false; }
 bool Game_IsStereoGeometryOnlyBringup() { return false; }
 bool Game_ReadVrActionBindings(vr_mapping::Transports&, uint64_t, unsigned) { return false; }

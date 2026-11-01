@@ -52440,6 +52440,19 @@ bool Game_AimFrameZoomOwnsZoom()
     return title == GameTitle::Halo3ODST && g_odstMuzzle.enabled.load(std::memory_order_acquire) &&
         !VR_DlssWantsEyeCamera();
 }
+bool Game_ReadZoomLevel(int& level)
+{
+    const GameTitle title = TitleAdapter_GetActiveTitle();
+    if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST)
+        return false;
+    const uint32_t generation = (title == GameTitle::Halo3ODST ? g_odstRuntimeGeneration : g_halo3RuntimeGeneration)
+        .load(std::memory_order_acquire);
+    const uint64_t ms = g_gameZoomMs.load(std::memory_order_acquire);
+    const uint64_t now = GetTickCount64();
+    level = g_gameZoomLevel.load(std::memory_order_relaxed);
+    return generation && g_gameZoomTitle.load(std::memory_order_relaxed) == static_cast<int>(title) &&
+        g_gameZoomGeneration.load(std::memory_order_relaxed) == generation && ms && now >= ms && now - ms <= 500;
+}
 bool Game_IsScopeRendering(){return g_scopeRenderActive.load(std::memory_order_acquire);}
 bool Game_SetScopeRendering(bool active){return g_scopeRenderActive.exchange(active,std::memory_order_acq_rel);}
 bool Game_IsCameraOnlyBringup()

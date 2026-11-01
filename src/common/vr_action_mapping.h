@@ -159,6 +159,61 @@ struct SupportTriggerContext
         return Bit(latched);
     }
 };
+// Out of the game's zoom when the support hand leaves the gun. Zoom is one button stepping through a weapon's levels (a
+// sniper: first level, second, out), so the way out is pressed like any other, and the game's own zoom level says what
+// each press did: lower or the same level is judged afresh, deeper presses again, and not zoomed ends it. A press only
+// ever begins on a level that reads zoomed, so this cannot zoom in. A level the game has stopped reporting stands it
+// down, as do the hand coming back and a fresh pull of the trigger: the player's own input wins.
+struct ZoomExit
+{
+    static constexpr uint64_t kSettleMs=100,kPressMs=60,kGapMs=40,kUnseenMs=300;
+    static constexpr int kMostPresses=4;
+    enum class Phase{Idle,Settle,Press,Answer};
+    Phase phase=Phase::Idle;
+    bool wasOnGun=false,triggerRested=false;
+    uint64_t at=0;
+    int pressLevel=-1,presses=0;
+    bool Step(bool enabled,bool onGun,bool triggerDown,bool levelKnown,int level,uint64_t now) noexcept
+    {
+        const bool letGo=wasOnGun&&!onGun;
+        wasOnGun=onGun;
+        if(!enabled||onGun) {phase=Phase::Idle;return false;}
+        if(phase==Phase::Idle)
+        {
+            if(!letGo) return false;
+            phase=Phase::Settle;at=now;presses=0;triggerRested=!triggerDown;
+            return false;
+        }
+        if(triggerRested&&triggerDown) {phase=Phase::Idle;return false;}
+        triggerRested=triggerRested||!triggerDown;
+        const auto press=[&]
+        {
+            if(presses>=kMostPresses) {phase=Phase::Idle;return false;}
+            ++presses;phase=Phase::Press;at=now;pressLevel=level;
+            return true;
+        };
+        switch(phase)
+        {
+        case Phase::Settle:
+            // A zoom pulled on the way out of the grip takes a moment to read.
+            if(now-at<kSettleMs) return false;
+            if(!levelKnown||level<0) {phase=Phase::Idle;return false;}
+            return press();
+        case Phase::Press:
+            // A press once begun is held its full length, as a shorter one may go unseen.
+            if(now-at<kPressMs) return true;
+            phase=Phase::Answer;
+            return false;
+        case Phase::Answer:
+            if(!levelKnown||level<0) {phase=Phase::Idle;return false;}
+            if(level!=pressLevel) {if(now-at>=kPressMs+kGapMs) return press();return false;}
+            if(now-at>=kUnseenMs) return press();
+            return false;
+        default:
+            return false;
+        }
+    }
+};
 // Preserve semantic identity before transport encoding. Two actions sharing a
 // native gamepad bit are still different actions, and a post-mapping native
 // consumer must never try to reconstruct that distinction from the bitmask.

@@ -474,6 +474,22 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 !menuOpen&&!pad.exclusiveInput&&(collectedSources&vr_mapping::Bit(vr_mapping::SupportTrigger))!=0,
                 pad.gripL>0.6f,pad.supportAimActive||pad.supportOnOneHandedGun,pad.weaponConsumeSupport,
                 pad.dualWield||inSeat,airUsable);
+            // The contextual trigger's zoom ends when the hand leaves the gun. The lens has a state of its own to close;
+            // the game's zoom is pressed out, through the same source the trigger uses.
+            const bool contextualZoom=g_config.vr_action_mapping&&zoomSource==vr_mapping::SupportTriggerOnGun&&
+                gameplayMode&&!menuOpen&&!pad.exclusiveInput&&!pad.dualWield&&!inSeat;
+            const bool handOnGun=pad.supportAimActive||pad.supportOnOneHandedGun;
+            static std::mutex zoomExitLock;
+            static vr_mapping::ZoomExit zoomExit;
+            static bool lensHandWasOn=false;
+            int zoomLevel=-1;
+            const bool zoomLevelKnown=Game_ReadZoomLevel(zoomLevel);
+            std::lock_guard<std::mutex> lock(zoomExitLock);
+            const bool pressOut=zoomExit.Step(contextualZoom&&!scopeFeatureAvailable,handOnGun,
+                (collectedSources&vr_mapping::Bit(vr_mapping::SupportTrigger))!=0,zoomLevelKnown,zoomLevel,GetTickCount64());
+            if(pressOut) collectedSources|=vr_mapping::Bit(vr_mapping::SupportTriggerOnGun);
+            if(contextualZoom&&scopeFeatureAvailable&&lensHandWasOn&&!handOnGun) VR_SetScopeActive(false);
+            lensHandWasOn=handOnGun;
         }
         // Changing D-pad gesture routes while the stick is held is cancellation,
         // not the release edge that toggles a scope. Face/trigger bindings are

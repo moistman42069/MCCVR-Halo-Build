@@ -55,6 +55,61 @@ void CheckInputPresets()
     t.Step(false,false,false,false,false,true);
     Check(t.Step(true,true,true,false,true,true)==Bit(SupportTriggerFree),"dual wielding or a seat keeps the plain trigger");
 
+    {
+        // Letting go steps a two-level zoom all the way out, reading the game's level after each press.
+        ZoomExit z;
+        Check(!z.Step(true,true,false,true,0,1000),"on the gun: nothing");
+        Check(!z.Step(true,false,false,true,0,1010),"let go: it settles first");
+        Check(z.Step(true,false,false,true,0,1120),"then a press from the first level");
+        Check(z.Step(true,false,false,true,1,1150),"held its full length, whatever the game reads");
+        Check(!z.Step(true,false,false,true,1,1190),"let go");
+        Check(!z.Step(true,false,false,true,1,1200),"the level went deeper: the gap first");
+        Check(z.Step(true,false,false,true,1,1240),"then the next press");
+        z.Step(true,false,false,true,1,1300);
+        Check(!z.Step(true,false,false,true,-1,1320)&&z.phase==ZoomExit::Phase::Idle,"out: finished");
+        Check(!z.Step(true,false,false,true,-1,1500),"and it stays finished");
+    }
+    {
+        ZoomExit z;
+        z.Step(true,true,false,true,-1,1000);
+        z.Step(true,false,false,true,-1,1010);
+        Check(!z.Step(true,false,false,true,-1,1200)&&z.phase==ZoomExit::Phase::Idle,"not zoomed: never a press, so it cannot zoom in");
+    }
+    {
+        ZoomExit z;
+        z.Step(true,true,false,true,0,1000);
+        z.Step(true,false,false,true,0,1010);
+        z.Step(true,false,false,true,0,1120);
+        z.Step(true,false,false,true,0,1190);
+        Check(!z.Step(true,false,false,true,0,1300),"no answer yet: it waits");
+        Check(z.Step(true,false,false,true,0,1425),"a press the game did not see goes again");
+    }
+    {
+        ZoomExit z;
+        z.Step(true,true,false,true,0,1000);
+        z.Step(true,false,false,false,0,1010);
+        Check(!z.Step(true,false,false,false,0,1200)&&z.phase==ZoomExit::Phase::Idle,"a level not read: no press");
+        z.Step(true,true,false,true,0,2000);
+        z.Step(true,false,false,true,0,2010);
+        Check(!z.Step(true,false,true,true,0,2020)&&z.phase==ZoomExit::Phase::Idle,"a fresh pull of the trigger: the player's own");
+        z.Step(true,true,true,true,0,3000);
+        z.Step(true,false,true,true,0,3010);
+        Check(z.Step(true,false,true,true,0,3120),"a trigger still held from the zoom is not a fresh pull");
+        Check(!z.Step(true,true,true,true,0,3130)&&z.phase==ZoomExit::Phase::Idle,"the hand coming back ends it");
+        ZoomExit stuck;
+        stuck.Step(true,true,false,true,0,1000);
+        stuck.Step(true,false,false,true,0,1010);
+        int pressed=0;
+        bool was=false;
+        for(uint64_t t=1020;t<9000;t+=10)
+        {
+            const bool now=stuck.Step(true,false,false,true,0,t);
+            pressed+=now&&!was;
+            was=now;
+        }
+        Check(pressed==ZoomExit::kMostPresses,"a level that never moves gives up");
+    }
+
     Config scheme{};
     scheme.turn_smooth=false;scheme.vr_action_mapping=true;scheme.trigger_air_equipment=true;scheme.turn_snap_deg=45.f;
     scheme.vr_bindings[3][Zoom]=SupportTriggerOnGun;scheme.world_scale=9.f;
