@@ -661,6 +661,10 @@ static void Clamp()
             : kVirtualStockProximityReleaseDefaultM;
     g_config.physical_melee_swing_speed = std::clamp(
         g_config.physical_melee_swing_speed, kPhysicalMeleeSpeedMin, kPhysicalMeleeSpeedMax);
+    g_config.gesture_melee_speed = std::clamp(g_config.gesture_melee_speed, kPhysicalMeleeSpeedMin, kPhysicalMeleeSpeedMax);
+    g_config.gesture_melee_extension = std::clamp(g_config.gesture_melee_extension, 0.0f, 6.0f);
+    g_config.gesture_melee_travel = std::clamp(g_config.gesture_melee_travel, 0.0f, 1.2f);
+    g_config.gesture_melee_reach = std::clamp(g_config.gesture_melee_reach, 0.0f, 1.0f);
     g_config.right_shoulder_drop = std::clamp(g_config.right_shoulder_drop, 0.0f, 0.3f);
     g_config.shoulder_back_m = std::clamp(g_config.shoulder_back_m, -0.3f, 0.3f);
     g_config.gun_pitch_deg = std::clamp(g_config.gun_pitch_deg, -180.0f, 180.0f);
@@ -1178,6 +1182,11 @@ void ConfigLoad(const wchar_t* path)
         }
         if(bloomChoiceKey) continue;
         if(!strcmp(key,"vr_action_mapping")) {g_config.vr_action_mapping=atoi(val)!=0;continue;}
+        if(!strcmp(key,"gesture_melee_speed")) {ParseFloatSetting(key,val,g_config.gesture_melee_speed);continue;}
+        if(!strcmp(key,"gesture_melee_extension")) {ParseFloatSetting(key,val,g_config.gesture_melee_extension);continue;}
+        if(!strcmp(key,"gesture_melee_travel")) {ParseFloatSetting(key,val,g_config.gesture_melee_travel);continue;}
+        if(!strcmp(key,"gesture_melee_reach")) {ParseFloatSetting(key,val,g_config.gesture_melee_reach);continue;}
+        if(!strcmp(key,"gesture_melee_require_grip")) {ParseBoolSetting(key,val,g_config.gesture_melee_require_grip);continue;}
         if(!strcmp(key,"input_preset")) {strncpy_s(g_config.input_preset,val,_TRUNCATE);loadedInputPreset=true;continue;}
         if(!strcmp(key,"trigger_air_equipment")) {g_config.trigger_air_equipment=atoi(val)!=0;continue;}
         if(!strcmp(key,"right_stick_crouch")) {g_config.right_stick_crouch=atoi(val)!=0;continue;}
@@ -3901,6 +3910,16 @@ void ConfigSave()
     fprintf(f, "# Gesture melee: connect a fast swing to the active game's melee binding.\n");
     fprintf(f, "# (default %d)\n", d.gesture_melee ? 1 : 0);
     fprintf(f, "gesture_melee = %d\n", g_config.gesture_melee ? 1 : 0);
+    fprintf(f, "# What counts as a swing, measured relative to your head. Speed in m/s (default %.2f), how fast the\n"
+               "# arm must be extending in m/s (default %.2f), how far from your head the hand must be in metres\n"
+               "# (default %.2f), and how far a chop with the grip held must travel instead of extending in metres,\n"
+               "# 0 = off (default %.2f). require_grip: only with that hand's grip held (default %d).\n",
+            d.gesture_melee_speed, d.gesture_melee_extension, d.gesture_melee_reach, d.gesture_melee_travel,
+            d.gesture_melee_require_grip ? 1 : 0);
+    fprintf(f, "gesture_melee_speed = %.2f\ngesture_melee_extension = %.2f\ngesture_melee_reach = %.2f\n"
+               "gesture_melee_travel = %.2f\ngesture_melee_require_grip = %d\n",
+            g_config.gesture_melee_speed, g_config.gesture_melee_extension, g_config.gesture_melee_reach,
+            g_config.gesture_melee_travel, g_config.gesture_melee_require_grip ? 1 : 0);
     fprintf(f, "# Required controller/weapon sample speed in metres per second.\n");
     fprintf(f, "# (default %.2f, range 0.3 to 10.0)\n",
             d.physical_melee_swing_speed);

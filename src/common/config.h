@@ -1813,6 +1813,12 @@ struct Config
     // Higher required speed makes both less sensitive; existing saves persist.
     bool physical_melee = false;
     bool gesture_melee = false;
+    // What counts as a swing (gesture_melee_logic.h). A swing presses the game's own melee input, nothing more.
+    float gesture_melee_speed = 3.0f;      // m/s, relative to the head
+    float gesture_melee_extension = 1.5f;  // m/s the arm must be reaching away from the head
+    float gesture_melee_travel = 0.40f;    // m a held-grip chop must cover instead; 0 = extension only
+    float gesture_melee_reach = 0.30f;     // m the hand must be from the head
+    bool gesture_melee_require_grip = false; // off: in the game's own layout the grips are buttons of their own
     float physical_melee_swing_speed = kPhysicalMeleeSpeedDefault;
 
     // Lower the RIGHT (weapon) shoulder so Master Chief's arm doesn't clip up

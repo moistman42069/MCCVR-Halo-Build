@@ -2505,14 +2505,31 @@ namespace
                                    &g_config.physical_melee);
         ImGui::TextDisabled("Strike a target with either hand or its held gun. Works with world collision on or off.");
         changed |= ImGui::Checkbox("Gesture melee (experimental)", &g_config.gesture_melee);
-        ImGui::TextDisabled("A fast swing activates the game's configured melee binding.");
+        ImGui::TextDisabled("A punch away from your body presses the game's own melee, so it works in multiplayer.");
         ImGui::TextDisabled("True physical melee takes priority when both modes are selected.");
-        if (g_config.physical_melee || g_config.gesture_melee)
+        if (g_config.physical_melee)
         {
             changed |= vr_menu::SliderFloat(
                 "Required swing speed", &g_config.physical_melee_swing_speed,
                 kPhysicalMeleeSpeedMin, kPhysicalMeleeSpeedMax, "%.2f m/s");
-            ImGui::TextDisabled("Lower is more sensitive; 5.00 m/s is the default and needs a fast swing.");
+            ImGui::TextDisabled("True physical melee. Lower is more sensitive; 5.00 m/s is the default and needs a fast swing.");
+        }
+        if (g_config.gesture_melee || g_config.physical_melee)
+        {
+            changed |= ImGui::Checkbox("Only while gripping (make a fist to punch)", &g_config.gesture_melee_require_grip);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Stops any fast reach from counting. The grip still does its own job in the game,\n"
+                                  "so use this if your grips are not bound to anything a punch would set off.");
+            changed |= vr_menu::SliderFloat("Gesture swing speed", &g_config.gesture_melee_speed,
+                kPhysicalMeleeSpeedMin, kPhysicalMeleeSpeedMax, "%.2f m/s");
+            changed |= vr_menu::SliderFloat("Gesture arm extension speed", &g_config.gesture_melee_extension,
+                0.0f, 6.0f, "%.2f m/s");
+            changed |= vr_menu::SliderFloat("Gesture reach from head", &g_config.gesture_melee_reach,
+                0.0f, 1.0f, "%.2f m");
+            changed |= vr_menu::SliderFloat("Gesture chop travel, grip held", &g_config.gesture_melee_travel,
+                0.0f, 1.2f, "%.2f m");
+            ImGui::TextDisabled("Lower extension speed if punches are missed; raise it if aiming sets off a melee.\n"
+                                "A chop barely extends, so with the grip held its travel counts instead. 0 turns that off.");
         }
         ImGui::Spacing();
         changed |= ImGui::Checkbox("Show full body", &g_config.body_wip);

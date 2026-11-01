@@ -418,6 +418,7 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
 #include "../common/odst_vehicle_logic.h"
 #include "../common/scope_logic.h"
 #include "../common/two_hand_ik_logic.h"
+#include "../common/gesture_melee_logic.h"
 #include "gesture_melee_bindings.inl"
 #include "reclaimer_flight.inl"
 
@@ -52783,7 +52784,7 @@ uint32_t Game_GestureMeleeInput(uint64_t nowMs)
         std::atomic<bool> available{false};
         std::atomic<uint64_t> pulseUntilMs{0};
         std::atomic<uint64_t> cooldownUntilMs{0};
-        std::atomic<bool> velocityLatched[2]{};
+        std::atomic<uint32_t> seenSwings[2]{};
     };
     static SharedPhysicalMeleeState state;
     const uint8_t titleValue = static_cast<uint8_t>(title);
@@ -52796,8 +52797,6 @@ uint32_t Game_GestureMeleeInput(uint64_t nowMs)
     {
         state.pulseUntilMs.store(0, std::memory_order_release);
         state.cooldownUntilMs.store(0, std::memory_order_release);
-        state.velocityLatched[0].store(false, std::memory_order_release);
-        state.velocityLatched[1].store(false, std::memory_order_release);
     }
 
     auto& telemetry=*SharedMeleeForTitle(title);
@@ -52816,19 +52815,19 @@ uint32_t Game_GestureMeleeInput(uint64_t nowMs)
         state.available.store(false,std::memory_order_release);
         state.pulseUntilMs.store(0,std::memory_order_release);
         state.cooldownUntilMs.store(0,std::memory_order_release);
-        state.velocityLatched[0].store(false,std::memory_order_release);
-        state.velocityLatched[1].store(false,std::memory_order_release);
         telemetry.unavailable.fetch_add(1,std::memory_order_relaxed);
         return false;
     }
 
+    // In a seat the swing is not a melee. Halo 3 and ODST have left RuntimeMode::Gameplay by then; these three report
+    // Gameplay in a seat too, so each asks its own on-foot state, as the physical crouch does.
     bool titleArmed = false;
     switch (title)
     {
     case GameTitle::Halo2:
 #if HALOMCCVR_HALO2_STEREO6DOF
         titleArmed = Halo2Observer6Dof_Armed() &&
-            Halo2Observer6Dof_FinalPaletteArmed();
+            Halo2Observer6Dof_FinalPaletteArmed() && Halo2Observer6Dof_OnFootFresh();
 #endif
         break;
     case GameTitle::Halo3:
@@ -52839,10 +52838,13 @@ uint32_t Game_GestureMeleeInput(uint64_t nowMs)
         break;
     case GameTitle::HaloReach:
         titleArmed = g_reachCamera.armed.load(std::memory_order_acquire);
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+        titleArmed = titleArmed && Game_ReachDirectDriveOnFootWhy() == 0;
+#endif
         break;
     case GameTitle::Halo4:
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
-        titleArmed = g_halo4Camera.armed.load(std::memory_order_acquire);
+        titleArmed = g_halo4Camera.armed.load(std::memory_order_acquire) && Game_Halo4OnFoot();
 #endif
         break;
     default:
@@ -52853,8 +52855,6 @@ uint32_t Game_GestureMeleeInput(uint64_t nowMs)
         state.available.store(false,std::memory_order_release);
         state.pulseUntilMs.store(0,std::memory_order_release);
         state.cooldownUntilMs.store(0,std::memory_order_release);
-        state.velocityLatched[0].store(false,std::memory_order_release);
-        state.velocityLatched[1].store(false,std::memory_order_release);
         telemetry.unavailable.fetch_add(1,std::memory_order_relaxed);
         return false;
     }
@@ -52863,14 +52863,12 @@ uint32_t Game_GestureMeleeInput(uint64_t nowMs)
     if(changed || newlyAvailable)
     {
         // A layout switch, new title, toggle or resumed native reader is not a
-        // new swing. Wait for each hand to settle before accepting its edge.
-        state.velocityLatched[0].store(true,std::memory_order_release);
-        state.velocityLatched[1].store(true,std::memory_order_release);
+        // new swing, and neither is one made while this lane was closed.
+        state.seenSwings[0].store(VR_GestureMeleeSwings(0),std::memory_order_release);
+        state.seenSwings[1].store(VR_GestureMeleeSwings(1),std::memory_order_release);
         return 0;
     }
 
-    const float requiredSpeed = std::clamp(
-        g_config.physical_melee_swing_speed, kPhysicalMeleeSpeedMin, kPhysicalMeleeSpeedMax);
     for (int hand = 0; hand < 2; ++hand)
     {
         float speed = -1.0f;
@@ -52884,32 +52882,19 @@ uint32_t Game_GestureMeleeInput(uint64_t nowMs)
             while(previous<peak && !telemetry.peakCmPerSecond.compare_exchange_weak(
                 previous,peak,std::memory_order_relaxed)) {}
         }
-        std::atomic<bool>& latch = state.velocityLatched[hand];
-        const bool wasLatched = latch.load(std::memory_order_acquire);
-        const Halo4PhysicalMeleeVelocityDecision decision =
-            Halo4UpdatePhysicalMeleeVelocityLatch(
-                velocityValid, speed, requiredSpeed, wasLatched);
-        if (!decision.latched)
-        {
-            latch.store(false, std::memory_order_release);
-            continue;
-        }
-        if (!decision.trigger)
-            continue;
-        bool expected = false;
-        if (!latch.compare_exchange_strong(
-                expected, true, std::memory_order_acq_rel,
-                std::memory_order_relaxed))
+        // Detected on the OpenXR frame; several threads poll here, and the exchange gives each swing to one of them.
+        const uint32_t swings = VR_GestureMeleeSwings(hand);
+        if (state.seenSwings[hand].exchange(swings, std::memory_order_acq_rel) == swings)
             continue;
         telemetry.crossings.fetch_add(1,std::memory_order_relaxed);
         if (nowMs >= state.cooldownUntilMs.load(std::memory_order_acquire))
         {
             telemetry.pulses.fetch_add(1,std::memory_order_relaxed);
             state.pulseUntilMs.store(
-                nowMs + kHalo4PhysicalMeleePulseMs,
+                nowMs + gesture_melee::kPulseMs,
                 std::memory_order_release);
             state.cooldownUntilMs.store(
-                nowMs + kHalo4PhysicalMeleeCooldownMs,
+                nowMs + gesture_melee::kCooldownMs,
                 std::memory_order_release);
         }
         else telemetry.cooldownBlocks.fetch_add(1,std::memory_order_relaxed);

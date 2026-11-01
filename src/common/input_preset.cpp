@@ -37,6 +37,7 @@ constexpr BoolField kBools[] = {
     {"right_stick_crouch", &Config::right_stick_crouch},
     {"physical_melee", &Config::physical_melee},
     {"gesture_melee", &Config::gesture_melee},
+    {"gesture_melee_require_grip", &Config::gesture_melee_require_grip},
     {"two_hand_toggle", &Config::two_hand_toggle},
     {"manual_reload", &Config::manual_reload},
     {"weapon_holsters", &Config::weapon_holsters},
@@ -51,6 +52,10 @@ constexpr IntField kInts[] = {
     {"weapon_holster_location", &Config::weapon_holster_location},
 };
 constexpr FloatField kFloats[] = {
+    {"gesture_melee_speed", &Config::gesture_melee_speed},
+    {"gesture_melee_extension", &Config::gesture_melee_extension},
+    {"gesture_melee_travel", &Config::gesture_melee_travel},
+    {"gesture_melee_reach", &Config::gesture_melee_reach},
     {"turn_snap_deg", &Config::turn_snap_deg},
     {"turn_smooth_deg_s", &Config::turn_smooth_deg_s},
     {"dpad_head_radius", &Config::dpad_head_radius},

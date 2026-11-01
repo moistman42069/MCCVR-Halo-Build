@@ -16274,6 +16274,33 @@ int main()
         "physical melee clamps at ten while retaining the default of five");
 
     {
+        const Config d{};
+        Check(!d.gesture_melee_require_grip && d.gesture_melee_speed == 3.0f && d.gesture_melee_extension == 1.5f &&
+                  d.gesture_melee_travel == 0.40f && d.gesture_melee_reach == 0.30f,
+            "gesture melee's swing checks have their defaults");
+        {
+            std::ofstream file(primary);
+            file << "gesture_melee_speed = 7.5\ngesture_melee_extension = 2.0\ngesture_melee_travel = 0\n"
+                    "gesture_melee_reach = 0.45\ngesture_melee_require_grip = 1\n";
+        }
+        ConfigLoad(primary.c_str());
+        ConfigSave();
+        ConfigLoad(primary.c_str());
+        Check(g_config.gesture_melee_speed == 7.5f && g_config.gesture_melee_extension == 2.0f &&
+                  g_config.gesture_melee_travel == 0.0f && g_config.gesture_melee_reach == 0.45f &&
+                  g_config.gesture_melee_require_grip,
+            "gesture melee's swing checks survive a save/load round trip");
+        {
+            std::ofstream file(primary);
+            file << "gesture_melee_speed = 99\ngesture_melee_extension = -3\ngesture_melee_reach = 9\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.gesture_melee_speed == kPhysicalMeleeSpeedMax && g_config.gesture_melee_extension == 0.0f &&
+                  g_config.gesture_melee_reach == 1.0f,
+            "gesture melee's swing checks clamp to their ranges");
+    }
+
+    {
         std::ofstream file(primary);
         file << "y_b_start_chord = 0\n";
     }
@@ -17577,7 +17604,9 @@ int main()
     const Halo4PhysicalMeleeVelocityDecision fiveMetreSwing =
         Halo4UpdatePhysicalMeleeVelocityLatch(true, 5.0f, 5.0f, false);
     const Halo4PhysicalMeleeVelocityDecision overMaximumThreshold =
-        Halo4UpdatePhysicalMeleeVelocityLatch(true, 5.1f, 5.1f, false);
+        Halo4UpdatePhysicalMeleeVelocityLatch(true, 10.1f, 10.1f, false);
+    Check(Halo4UpdatePhysicalMeleeVelocityLatch(true, 10.0f, 10.0f, false).trigger,
+        "the whole of the Required swing speed slider works");
     Check(firstSwing.trigger && firstSwing.latched &&
           !heldSwing.trigger && heldSwing.latched &&
           !releasedSwing.trigger && !releasedSwing.latched &&
