@@ -97,9 +97,9 @@ inline float CloseHandAuthority(Point local,float rangeMetres=kOneHandRangeDefau
 // drop-out of an occluded support controller reads as the hand far away, which on a pistol hold switched the aim to
 // two-handed for those frames. A short grip zone (a side-by-side hold) never steers; a long one always does, except
 // with the hands almost together, where the line between them has no usable direction. It lets go of the aim across
-// the distance out to double that, so the aim does not snap to the main hand.
+// the distance out to 1.25 times that, so the aim does not snap to the main hand.
 inline constexpr float kGripZoneNoLineMetres=.07f;
-inline constexpr float kGripZoneFullLineMetres=2*kGripZoneNoLineMetres;
+inline constexpr float kGripZoneFullLineMetres=1.25f*kGripZoneNoLineMetres;
 inline float GripZoneAuthority(bool shortZone,Point local){
     if(shortZone||!Valid(local))return 0;
     const float distance=std::sqrt(Distance2(local,{0,0,0}));
