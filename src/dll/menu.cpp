@@ -942,6 +942,16 @@ namespace
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("A smaller radius requires the selected controller to be closer to your head.");
+        changed |= ImGui::Checkbox("X near my head talks in Project Reclaimer", &g_config.reclaimer_talk_gesture);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Hold your left controller to your head and press X for voice chat.\n"
+                              "It follows Reclaimer's talk mode (Audio): hold to talk, or press to start and stop.\n"
+                              "Uses the key V. If you rebound Push to talk, set reclaimer_talk_key in halomccvr.cfg.");
+        changed |= ImGui::Checkbox("Y near my head shows the scoreboard in Project Reclaimer",
+                                   &g_config.reclaimer_scoreboard_gesture);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Hold your left controller to your head and press Y for the scoreboard.\n"
+                              "Uses the key Tab. If you rebound it, set reclaimer_scoreboard_key in halomccvr.cfg.");
         changed |= ImGui::Checkbox("Keep walking when my hand comes up", &g_config.dpad_keep_moving);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("If you're walking when your hand reaches your head, you keep walking.\n"

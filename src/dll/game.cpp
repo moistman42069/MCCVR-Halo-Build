@@ -54664,7 +54664,15 @@ void Game_AutoVrTick()
         reclaimer_host::ScreenShownAsPanel(hostScreenUp, hostDrawing_.gameFrame, D3D_HostUiPanelUsable());
     const bool hostScreenFlat = hostScreenUp && !hostScreenOnPanel;
     // The panel goes on showing whatever the host draws; only this takes the controller for the menu pointer.
-    const bool hostScreenTakesInput = hostScreenOnPanel && (!hostDrawing_.inPlay || hostScreenRule.OpenedByPress());
+    static aim_no_unit::NoCharacterNow hostScreenNoCharacter;
+    const GameTitle hostScreenTitle = TitleAdapter_GetActiveTitle();
+    const size_t hostScreenSlot = TitleRuntimeSlotIndex(hostScreenTitle);
+    const uint64_t hostScreenUnit = hostScreenSlot < kTitleRuntimeSlotCount ?
+        g_aimUnitPresence[hostScreenSlot].load(std::memory_order_relaxed) : 0;
+    const bool hostScreenNoUnit = hostScreenNoCharacter.Step(aim_no_unit::UnpackPresence(hostScreenUnit),
+        aim_no_unit::UnpackMs(hostScreenUnit), now);
+    const bool hostScreenTakesInput = hostScreenOnPanel &&
+        (!inLevelStable || hostScreenNoUnit || hostScreenRule.OpenedByPress());
     D3D_HostUiPanelCarriesScreen(hostScreenTakesInput);
     static bool previousHostScreenTakesInput = false;
     if (hostScreenTakesInput != previousHostScreenTakesInput)

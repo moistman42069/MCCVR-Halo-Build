@@ -224,10 +224,81 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         return (SHORT)(v * 32767.0f);
     }
 
+    // Project Reclaimer's keys at the head (HeadKeyGesture). Every thread that polls the pad shares each key, so a press
+    // happens once. A key only ever goes to this process's own window: anywhere else it would type a letter.
+    // Returns whether the button belongs to the key right now.
+    bool StepHeadKey(HeadKeyGesture& gesture, WORD& sentKey, bool enabled, int key, const char* name, bool padValid,
+                     bool down)
+    {
+        static SRWLOCK lock = SRWLOCK_INIT;
+        AcquireSRWLockExclusive(&lock);
+        bool allowed = padValid && g_hostOwnsRenderSize && enabled && !Menu_IsOpen();
+        if (allowed)
+        {
+            DWORD foregroundProcess = 0;
+            if (const HWND foreground = GetForegroundWindow())
+                GetWindowThreadProcessId(foreground, &foregroundProcess);
+            allowed = foregroundProcess == GetCurrentProcessId();
+        }
+        bool atHead = false;
+        if (allowed && down && !gesture.talking)
+        {
+            float headQ[4], headP[3], handQ[4], handP[3];
+            atHead = VR_GetPhysicalControllerPose(0, handQ, handP) && VR_GetHeadPose(headQ, headP) &&
+                DpadHeadWithinRadius(headP, handP, g_config.dpad_head_radius);
+        }
+        const HeadKeyGesture::Key step = gesture.Step(atHead, down, allowed);
+        if (step != HeadKeyGesture::Key::None)
+        {
+            const bool press = step == HeadKeyGesture::Key::Press;
+            if (press)
+                sentKey = static_cast<WORD>(key);
+            INPUT input{};
+            input.type = INPUT_KEYBOARD;
+            input.ki.wVk = sentKey;
+            input.ki.wScan = static_cast<WORD>(MapVirtualKeyW(sentKey, MAPVK_VK_TO_VSC));
+            input.ki.dwFlags = press ? 0 : KEYEVENTF_KEYUP;
+            const bool sent = SendInput(1, &input, sizeof(input)) == 1;
+            static uint32_t logged = 0;
+            if (logged < 24 && ++logged)
+                LOG("Reclaimer %s key: %s 0x%02X%s", name, press ? "pressed" : "released", unsigned(sentKey),
+                    sent ? "" : " (Windows refused it)");
+            if (press && sent)
+                VR_PulseGameHaptics(0.35f);
+        }
+        const bool ownsButton = gesture.talking;
+        ReleaseSRWLockExclusive(&lock);
+        return ownsButton;
+    }
+
     void MergeVrPad(XINPUT_STATE* state)
     {
         VrPadState pad;
         VR_GetPadState(pad);
+        static HeadKeyGesture talkGesture, scoreboardGesture;
+        static WORD talkKey = 0, scoreboardKey = 0;
+        if (StepHeadKey(talkGesture, talkKey, g_config.reclaimer_talk_gesture, g_config.reclaimer_talk_key, "talk",
+                        pad.valid, pad.valid && pad.talkX))
+            pad.x = false;
+        // Y + B stays the pause. Polled from several threads, so one lock over the press's state.
+        static SRWLOCK headYLock = SRWLOCK_INIT;
+        static HeadYChord headY;
+        const bool yDown = pad.valid && pad.scoreboardY;
+        bool yAtHead = false;
+        if (yDown && g_hostOwnsRenderSize && g_config.reclaimer_scoreboard_gesture)
+        {
+            float headQ[4], headP[3], handQ[4], handP[3];
+            yAtHead = VR_GetPhysicalControllerPose(0, handQ, handP) && VR_GetHeadPose(headQ, headP) &&
+                DpadHeadWithinRadius(headP, handP, g_config.dpad_head_radius);
+        }
+        AcquireSRWLockExclusive(&headYLock);
+        const HeadYChord::Y yRoute = headY.Step(yDown, yAtHead, pad.b, g_config.y_b_start_chord, GetTickCount64());
+        ReleaseSRWLockExclusive(&headYLock);
+        const bool scoreboardOwnsY = StepHeadKey(scoreboardGesture, scoreboardKey,
+            g_config.reclaimer_scoreboard_gesture && yRoute != HeadYChord::Y::Game, g_config.reclaimer_scoreboard_key,
+            "scoreboard", pad.valid, yRoute == HeadYChord::Y::Key);
+        if (scoreboardOwnsY || yRoute == HeadYChord::Y::Waiting)
+            pad.y = false;
         if (!pad.valid)
         {
             Game_VehicleBoomStick(0.0f);
