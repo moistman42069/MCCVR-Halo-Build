@@ -3,7 +3,7 @@ HALO MCC VR - QoL TEST CANDIDATE
 
 This is an unaccepted test build for all six MCC titles, with both graphics
 modes in Halo CE and Halo 2. Steam and Microsoft Store / Xbox app are supported.
-Read RELEASE-NOTES.md for changes and open reports.
+Read RELEASE-NOTES.md and IMPLEMENTATION-STATUS.md for changes and open reports.
 Passing build checks do not mean every feature or co-op session has been tested.
 
 INSTALL WITH THE LAUNCHER
@@ -68,8 +68,8 @@ F1 opens settings; F3 recenters. L3+R3 together recenters and toggles F1.
 Point your main-hand controller at the VR settings panel and use its trigger.
 The dedicated VR Mappings page detects the advertised controller profile and
 stores optional overrides separately per game, including Unbound. The current
-native transport still couples actions that share a native MCC button/action,
-so reload and use may not unbind independently.
+native transport still couples actions that share a native MCC button/action;
+see IMPLEMENTATION-STATUS.md before relying on independent reload/use unbinding.
 Reload & Holsters, Weapon & Aim, Vehicles, Picture and Subtitles group the options.
 Optional stock, physical crouch, roomscale, reload and DLSS need runtime testing.
 

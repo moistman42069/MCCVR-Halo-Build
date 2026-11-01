@@ -38,7 +38,7 @@ BuildIdentity ReadIdentity(const fs::path& directory) {
         else if (key == "release_tag") identity.tag = value;
         else if (key == "build_kind") kind = value;
     }
-    identity.candidate = kind != "PUBLIC_RELEASE" && kind != "RELEASE_CANDIDATE";
+    identity.candidate = kind != "PUBLIC_RELEASE";
     if (!identity.tag.empty()) identity.label = std::wstring(identity.tag.begin(), identity.tag.end());
     else if (!commit.empty()) identity.label = L"local candidate " + std::wstring(commit.begin(), commit.begin() + std::min<size_t>(commit.size(), 12));
     return identity;

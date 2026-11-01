@@ -31,7 +31,8 @@ candidate manifest and BUILD-IDENTITY.txt. The accepted pointer remains Alpha
   CE/Reach add separate trigger/index and grip/other-digit flex over native poses;
   H2 adds conservative grip-only flex. These three paths do not claim a full open
   hand reset. Held/dual/two-handed grips stay authored. These are not optical finger
-  tracking or object-reactive fingers. CE/H2/ODST/Reach full-world avatars remain unfinished.
+  tracking or object-reactive fingers. See the six-title coverage chart in
+  `IMPLEMENTATION-STATUS.md`; CE/H2/ODST/Reach full-world avatars remain unfinished.
 - CE automatic camera recovery retires its old tracking reference. Regression
   fixtures cover both graphics modes and stale queued/completed work. The reported
   gun shift after level loading still needs headset reproduction; this is a tested
@@ -89,7 +90,9 @@ candidate manifest and BUILD-IDENTITY.txt. The accepted pointer remains Alpha
 
 The earlier physical crouch, per-game/per-weapon settings, vehicle camera banks,
 reload/holster controls, dual H2/H3 reticles, H2 Original/H4 muzzle-hide fallback,
-subtitle controls, bloom controls and optional DLSS work remain included.
+subtitle controls, bloom controls and optional DLSS work remain included. Exact
+coverage and limitations follow in `IMPLEMENTATION-STATUS.md` and the complete
+inherited `PREVIOUS-IMPLEMENTATION-STATUS.md`.
 
 ## Install, update and manual files
 
