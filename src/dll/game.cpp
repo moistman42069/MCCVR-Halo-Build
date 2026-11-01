@@ -54631,16 +54631,18 @@ void Game_AutoVrTick()
     // (reclaimer_host_logic.h, "the host's UI as a panel"): a screen then leaves the picture stereo, and only
     // turns the menu pointer on for the panel.
     // Not everything the host draws is a screen (reclaimer_host::ScreenRule): in play it is one only when the
-    // player's own press opened it. The controller's Menu presses are counted by the input path; Esc is counted
-    // here, and only while this process is the foreground one (the key goes nowhere else then).
+    // player's own press opened it. The controller's Menu presses are counted by the input path; Esc and the
+    // scoreboard key (the player's own, or Y at the head) are counted here, and only while this process is the
+    // foreground one (the key goes nowhere else then).
     const bool hostDraws = D3D_HostDrawsOverFrame();
     static reclaimer_host::ScreenRule hostScreenRule;
     static uint32_t escPresses = 0;
-    static bool escWasDown = false;
+    static bool escWasDown = false, scoreboardKeyWasDown = false;
     if (g_hostOwnsRenderSize)
     {
         const bool escDown = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
-        if (escDown && !escWasDown)
+        const bool scoreboardKeyDown = (GetAsyncKeyState(g_config.reclaimer_scoreboard_key) & 0x8000) != 0;
+        if ((escDown && !escWasDown) || (scoreboardKeyDown && !scoreboardKeyWasDown))
         {
             DWORD foregroundProcess = 0;
             const HWND foreground = GetForegroundWindow();
@@ -54650,6 +54652,7 @@ void Game_AutoVrTick()
                 ++escPresses;
         }
         escWasDown = escDown;
+        scoreboardKeyWasDown = scoreboardKeyDown;
     }
     reclaimer_host::ScreenRule::In hostDrawing_{};
     hostDrawing_.hostDraws = hostDraws;
@@ -54674,6 +54677,22 @@ void Game_AutoVrTick()
     const bool hostScreenTakesInput = hostScreenOnPanel &&
         (!inLevelStable || hostScreenNoUnit || hostScreenRule.OpenedByPress());
     D3D_HostUiPanelCarriesScreen(hostScreenTakesInput);
+    // What may tell a menu that stayed up from a popup under a closed one: their sizes read alike.
+    static uint64_t hostScreenSampleMs = 0;
+    static uint32_t hostScreenSamples = 0;
+    if (hostScreenOnPanel && hostScreenSamples < 600 && now - hostScreenSampleMs >= 1000)
+    {
+        hostScreenSampleMs = now;
+        ++hostScreenSamples;
+        uint32_t uiDraws = 0, uiUnblended = 0;
+        D3D_HostUiDrawCounts(uiDraws, uiUnblended);
+        CURSORINFO cursor{};
+        cursor.cbSize = sizeof(cursor);
+        const bool cursorShown = GetCursorInfo(&cursor) && (cursor.flags & CURSOR_SHOWING);
+        LOG("host screen sample: takes input %d, presses %u, changes %u/1000, draws %u, unblended %u, cursor %d",
+            hostScreenTakesInput ? 1 : 0, hostDrawing_.menuPressSerial,
+            hostDrawing_.coverageKnown ? hostDrawing_.coveragePermille : 0u, uiDraws, uiUnblended, cursorShown ? 1 : 0);
+    }
     static bool previousHostScreenTakesInput = false;
     if (hostScreenTakesInput != previousHostScreenTakesInput)
     {

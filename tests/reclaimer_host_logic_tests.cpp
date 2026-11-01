@@ -32,9 +32,34 @@ static void PopupInPlayIsNotOpenedByPress()
     CHECK(!stillOpened);
 }
 
+static void ScoreboardKeyOpensAScreen()
+{
+    using reclaimer_host::ScreenRule;
+    ScreenRule rule;
+    ScreenRule::In in{};
+    in.hostDraws = true;in.inPlay = true;in.gameFrame = true;in.coverageKnown = true;in.coveragePermille = 20;
+    in.nowMs = 1000;
+    const bool overlayIsScreen = rule.Step(in);
+    // The key goes down and the scoreboard comes up.
+    in.menuPressSerial = 1;in.nowMs = 1100;rule.Step(in);
+    in.coveragePermille = 82;in.nowMs = 1200;
+    const bool boardIsScreen = rule.Step(in);
+    const bool boardOpened = rule.OpenedByPress();
+    in.nowMs = 9000;rule.Step(in);
+    const bool stillOpen = rule.OpenedByPress();
+    // Tapped again, it closes back to the overlay.
+    in.menuPressSerial = 2;in.coveragePermille = 30;in.nowMs = 9100;
+    const bool closedIsScreen = rule.Step(in);
+    const bool closedOpened = rule.OpenedByPress();
+    CHECK(!overlayIsScreen);
+    CHECK(boardIsScreen && boardOpened && stillOpen);
+    CHECK(!closedIsScreen && !closedOpened);
+}
+
 int main()
 {
     PopupInPlayIsNotOpenedByPress();
+    ScoreboardKeyOpensAScreen();
     // The path a person gives, and the client a join-link command starts.
     {
         const auto Check = [](bool ok, const char* what) {

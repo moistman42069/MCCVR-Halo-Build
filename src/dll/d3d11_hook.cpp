@@ -3084,6 +3084,11 @@ bool D3D_HostEngineQuiet()
     const uint64_t last = g_lastEngineDrawMs.load(std::memory_order_relaxed);
     return g_hostOwnsRenderSize && GetTickCount64() - last >= 1000;
 }
+void D3D_HostUiDrawCounts(uint32_t& draws, uint32_t& unblended)
+{
+    draws = g_hostUiLayer.readyDraws;
+    unblended = g_hostUiLayer.readyUnblended;
+}
 bool D3D_HostUiPicture(D3DHostUiPicture& out)
 {
     const HostUiLayer& layer = g_hostUiLayer;

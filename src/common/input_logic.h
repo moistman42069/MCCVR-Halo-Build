@@ -70,6 +70,7 @@ struct HeadKeyGesture
     bool talking = false;
     bool xWasDown = false;
     uint64_t pressedAtMs = 0;
+    uint32_t logged = 0;
     Key Step(bool atHead, bool xDown, bool allowed, uint64_t nowMs) noexcept
     {
         const bool rising = xDown && !xWasDown;

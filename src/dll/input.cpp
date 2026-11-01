@@ -259,8 +259,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             input.ki.wScan = static_cast<WORD>(MapVirtualKeyW(sentKey, MAPVK_VK_TO_VSC));
             input.ki.dwFlags = press ? 0 : KEYEVENTF_KEYUP;
             const bool sent = SendInput(1, &input, sizeof(input)) == 1;
-            static uint32_t logged = 0;
-            if (logged < 24 && ++logged)
+            if (gesture.logged < 24 && ++gesture.logged)
                 LOG("Reclaimer %s key: %s 0x%02X%s", name, press ? "pressed" : "released", unsigned(sentKey),
                     sent ? "" : " (Windows refused it)");
             if (press && sent)

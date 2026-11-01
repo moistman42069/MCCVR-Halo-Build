@@ -25,6 +25,8 @@ bool D3D_HostDrawsOverFrame();
 // How much of the picture the host's present drawing changes, in parts of a thousand. False = not measured (yet,
 // or not here).
 bool D3D_HostUiCoverage(uint32_t& permille);
+// How many draws made up the host's drawing of the last presented frame, and how many of those did not blend.
+void D3D_HostUiDrawCounts(uint32_t& draws, uint32_t& unblended);
 // THE HOST'S UI AS A PANEL (reclaimer_host_logic.h). The picture of what the host drew over the frame being
 // presented: the frame's size and layout, premultiplied colour (or opaque). True only inside the present of a
 // frame the host drew over (VR_BeforePresent, on the present's thread); the texture is the hook's and is good for
