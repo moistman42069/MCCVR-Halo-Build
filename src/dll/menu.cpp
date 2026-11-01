@@ -1033,11 +1033,6 @@ namespace
             changed |= vr_menu::SliderFloat("Snap increment (deg)", &g_config.turn_snap_deg, 5.0f, 90.0f, "%.0f");
 
         ImGui::Spacing();
-        changed |= ImGui::Checkbox("Y + B sends Start (pause / resume)",
-                                   &g_config.y_b_start_chord);
-        ImGui::TextDisabled("On by default. Turn it off if you prefer Y and B to stay separate.");
-
-        ImGui::Spacing();
         }
         if (ImGui::CollapsingHeader("D-pad gesture (hold controller next to head)##section", ImGuiTreeNodeFlags_None))
         {
@@ -1053,14 +1048,35 @@ namespace
             changed = true;
         }
         float dpadHeadRadiusCm = g_config.dpad_head_radius * 100.0f;
-        if (vr_menu::SliderFloat("D-pad head radius", &dpadHeadRadiusCm,
+        if (vr_menu::SliderFloat("Head radius", &dpadHeadRadiusCm,
                                  10.0f, 50.0f, "%.0f cm"))
         {
             g_config.dpad_head_radius = dpadHeadRadiusCm / 100.0f;
             changed = true;
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("A smaller radius requires the selected controller to be closer to your head.");
+            ImGui::SetTooltip("A smaller radius requires the controller to be closer to your head.\n"
+                              "Also sets how close the Project Reclaimer keys need it.");
+        changed |= ImGui::Checkbox("Keep walking when my hand comes up", &g_config.dpad_keep_moving);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("If you're walking when your hand reaches your head, you keep walking.\n"
+                              "Let the stick return to centre and it becomes the D-pad.\n"
+                              "Off: the stick becomes the D-pad at once and you stop.");
+        changed |= ImGui::Checkbox("Quest 3 left thumb-rest D-pad",
+                                   &g_config.quest_thumbrest_dpad);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Touch the physical left controller's thumb rest, then move the physical right stick.\n"
+                              "These controls stay on the same physical hands in left-handed mode.");
+        }
+        if (ImGui::CollapsingHeader("Button combinations##section", ImGuiTreeNodeFlags_None))
+        {
+        changed |= ImGui::Checkbox("Y + B sends Start (pause / resume)",
+                                   &g_config.y_b_start_chord);
+        ImGui::TextDisabled("On by default. Turn it off if you prefer Y and B to stay separate.");
+        ImGui::TextDisabled("L3+R3 recenters and toggles this menu; the right trigger clicks the VR pointer.");
+        }
+        if (ImGui::CollapsingHeader("Project Reclaimer keys at your head##section", ImGuiTreeNodeFlags_None))
+        {
         changed |= ImGui::Checkbox("X near my head talks in Project Reclaimer", &g_config.reclaimer_talk_gesture);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Hold your left controller to your head and press X for voice chat.\n"
@@ -1076,17 +1092,7 @@ namespace
             ImGui::SetTooltip("Hold your right controller to your head: A votes yes, B votes no.\n"
                               "Uses the keys F5 and F6. If you rebound them, set reclaimer_vote_yes_key and\n"
                               "reclaimer_vote_no_key in halomccvr.cfg.");
-        changed |= ImGui::Checkbox("Keep walking when my hand comes up", &g_config.dpad_keep_moving);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("If you're walking when your hand reaches your head, you keep walking.\n"
-                              "Let the stick return to centre and it becomes the D-pad.\n"
-                              "Off: the stick becomes the D-pad at once and you stop.");
-        changed |= ImGui::Checkbox("Quest 3 left thumb-rest D-pad",
-                                   &g_config.quest_thumbrest_dpad);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Touch the physical left controller's thumb rest, then move the physical right stick.\n"
-                              "These controls stay on the same physical hands in left-handed mode.");
-        ImGui::TextDisabled("L3+R3 recenters and toggles this menu; the right trigger clicks the VR pointer.");
+        ImGui::TextDisabled("Within the head radius set in D-pad gesture.");
         }
         if (ImGui::CollapsingHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
         {
