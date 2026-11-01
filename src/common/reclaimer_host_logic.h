@@ -536,6 +536,10 @@ struct ScreenRule
             closeAsked_ = false;
         return !small_;
     }
+    // Whether the player's own press opened what is up. In play, only then may it take the controller: a popup
+    // nobody opened (a vote to kick reads 100% of the picture) is as large as a menu, and the player must go on
+    // walking under it.
+    bool OpenedByPress() const { return byMenu_; }
 
 private:
     uint32_t seenPress_ = 0;
