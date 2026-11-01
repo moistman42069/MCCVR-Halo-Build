@@ -697,7 +697,7 @@ struct Config
     // D-pad (UEVR-style gesture): 0 = left controller, 1 = right controller.
     int dpad_hand = 0;
     // Head-gesture activation radius in metres; the existing reach is 30 cm.
-    float dpad_head_radius = 0.30f;
+    float dpad_head_radius = 0.20f;
     bool dpad_keep_moving = true; // a hand raised while walking leaves the stick walking until it centres
     // Quest 3 alternate D-pad: touch the physical left thumb rest, then use
     // the physical right stick. Handedness never swaps these controls.

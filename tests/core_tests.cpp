@@ -14436,7 +14436,7 @@ int main()
             "The V5 seed defaults keep the welcome visible, fit the desktop "
             "window, use the V5 HUD size, and seed the accepted Halo 2 "
             "Classic yaw/pitch alignment");
-        Check(fresh.dpad_hand == 0 && fresh.dpad_head_radius == 0.30f &&
+        Check(fresh.dpad_hand == 0 && fresh.dpad_head_radius == 0.20f &&
                   !fresh.quest_thumbrest_dpad,
             "D-pad defaults preserve the existing 30 cm left-hand head gesture and leave Quest thumb-rest mode off");
         Check(fresh.two_hand_coherent_aim,
@@ -14472,7 +14472,7 @@ int main()
     g_config.dlss_preset=0;ConfigSave();
     Check(g_config.haptic_intensity == 0.86f,
         "Malformed new values retain their individual default");
-    Check(g_config.dpad_head_radius == 0.30f && !g_config.quest_thumbrest_dpad,
+    Check(g_config.dpad_head_radius == 0.20f && !g_config.quest_thumbrest_dpad,
         "Legacy configs retain the existing D-pad gesture radius and keep the new thumb-rest mode off");
     const std::string organizedConfig = ReadTextFile(primary);
     Check(!g_config.independent_dual_aim && CountText(organizedConfig,
@@ -16082,8 +16082,8 @@ int main()
         struct RadiusCase { const char* value; float expected; };
         for (const RadiusCase radius : {
                  RadiusCase{"0.01", 0.10f}, RadiusCase{"0.99", 0.50f},
-                 RadiusCase{"nan", 0.30f}, RadiusCase{"inf", 0.30f},
-                 RadiusCase{"malformed", 0.30f}})
+                 RadiusCase{"nan", 0.20f}, RadiusCase{"inf", 0.20f},
+                 RadiusCase{"malformed", 0.20f}})
         {
             {
                 std::ofstream file(primary);
