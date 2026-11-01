@@ -42,7 +42,7 @@ static void ScoreboardKeyOpensAScreen()
     const bool overlayIsScreen = rule.Step(in);
     // The key goes down and the scoreboard comes up.
     in.menuPressSerial = 1;in.nowMs = 1100;rule.Step(in);
-    in.coveragePermille = 82;in.nowMs = 1200;
+    in.coveragePermille = 723;in.nowMs = 1200;
     const bool boardIsScreen = rule.Step(in);
     const bool boardOpened = rule.OpenedByPress();
     in.nowMs = 9000;rule.Step(in);
@@ -56,9 +56,33 @@ static void ScoreboardKeyOpensAScreen()
     CHECK(!closedIsScreen && !closedOpened);
 }
 
+static void MenuClosedOverAPopupLetsGo()
+{
+    using reclaimer_host::ScreenRule;
+    ScreenRule rule;
+    ScreenRule::In in{};
+    in.hostDraws = true;in.inPlay = true;in.gameFrame = true;in.coverageKnown = true;in.coveragePermille = 64;
+    in.nowMs = 1000;rule.Step(in);
+    in.menuPressSerial = 1;in.coveragePermille = 1000;in.nowMs = 1100;rule.Step(in);
+    const bool menuOpened = rule.OpenedByPress();
+    // Closed by a press: the popup is what is left.
+    in.menuPressSerial = 2;in.coveragePermille = 64;in.nowMs = 9000;rule.Step(in);
+    const bool afterPress = rule.OpenedByPress();
+    // Opened again, then closed by clicking Resume: no press at all.
+    in.menuPressSerial = 3;in.coveragePermille = 1000;in.nowMs = 10000;rule.Step(in);
+    const bool reopened = rule.OpenedByPress();
+    in.coveragePermille = 64;in.nowMs = 20000;rule.Step(in);
+    const bool afterClick = rule.OpenedByPress();
+    // A menu opened over the popup keeps its moment to come up.
+    in.menuPressSerial = 4;in.nowMs = 21000;rule.Step(in);
+    const bool stillComing = rule.OpenedByPress();
+    CHECK(menuOpened && !afterPress && reopened && !afterClick && stillComing);
+}
+
 int main()
 {
     PopupInPlayIsNotOpenedByPress();
+    MenuClosedOverAPopupLetsGo();
     ScoreboardKeyOpensAScreen();
     // The path a person gives, and the client a join-link command starts.
     {

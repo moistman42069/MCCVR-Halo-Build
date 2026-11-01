@@ -54677,22 +54677,6 @@ void Game_AutoVrTick()
     const bool hostScreenTakesInput = hostScreenOnPanel &&
         (!inLevelStable || hostScreenNoUnit || hostScreenRule.OpenedByPress());
     D3D_HostUiPanelCarriesScreen(hostScreenTakesInput);
-    // What may tell a menu that stayed up from a popup under a closed one: their sizes read alike.
-    static uint64_t hostScreenSampleMs = 0;
-    static uint32_t hostScreenSamples = 0;
-    if (hostScreenOnPanel && hostScreenSamples < 600 && now - hostScreenSampleMs >= 1000)
-    {
-        hostScreenSampleMs = now;
-        ++hostScreenSamples;
-        uint32_t uiDraws = 0, uiUnblended = 0;
-        D3D_HostUiDrawCounts(uiDraws, uiUnblended);
-        CURSORINFO cursor{};
-        cursor.cbSize = sizeof(cursor);
-        const bool cursorShown = GetCursorInfo(&cursor) && (cursor.flags & CURSOR_SHOWING);
-        LOG("host screen sample: takes input %d, presses %u, changes %u/1000, draws %u, unblended %u, cursor %d",
-            hostScreenTakesInput ? 1 : 0, hostDrawing_.menuPressSerial,
-            hostDrawing_.coverageKnown ? hostDrawing_.coveragePermille : 0u, uiDraws, uiUnblended, cursorShown ? 1 : 0);
-    }
     static bool previousHostScreenTakesInput = false;
     if (hostScreenTakesInput != previousHostScreenTakesInput)
     {

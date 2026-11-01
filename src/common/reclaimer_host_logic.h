@@ -465,6 +465,9 @@ struct ScreenRule
 {
     static constexpr uint64_t kMenuOpensMs = 1500;
     static constexpr uint32_t kSmallPermille = 50, kNotSmallPermille = 80;
+    // Below this a press's screen has gone, whatever is left: the host's menus read about 1000 and its scoreboard 700 or
+    // more, and a vote's popup left under a closed menu reads 56 to 82, around the two thresholds above.
+    static constexpr uint32_t kOpenedFloorPermille = 300;
     struct In
     {
         bool hostDraws = false;
@@ -530,14 +533,15 @@ struct ScreenRule
         // drawing is small -- at once after a press that may have closed it, otherwise after the time a menu takes
         // to come (a press whose menu never came, or went leaving a name behind, must not flatten the picture
         // later). And a drawing that is more than an overlay is a menu that is up, whoever opened it.
-        if (small_ && byMenu_ && (closeAsked_ || in.nowMs - byMenuAtMs_ > kMenuOpensMs))
+        if (in.coveragePermille < kOpenedFloorPermille && byMenu_ &&
+            (closeAsked_ || in.nowMs - byMenuAtMs_ > kMenuOpensMs))
             byMenu_ = closeAsked_ = false;
         if (!small_)
             closeAsked_ = false;
         return !small_;
     }
     // Whether the player's own press opened what is up. In play, only then may it take the controller: a popup
-    // nobody opened (a vote to kick reads 100% of the picture) is as large as a menu, and the player must go on
+    // nobody opened (a vote to kick can read 100% of the picture) is as large as a menu, and the player must go on
     // walking under it.
     bool OpenedByPress() const { return byMenu_; }
 
