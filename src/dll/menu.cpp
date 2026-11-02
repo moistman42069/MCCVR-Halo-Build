@@ -177,6 +177,13 @@ namespace
         CategorySection& operator=(const CategorySection&)=delete;
     };
 
+    // A setting that changes the game on this machine only (sight_layer.h: Sight_FireTimeChangesAllowed), which other
+    // players' games would not follow. `what` says what becomes of it in co-op.
+    void SingleplayerOnly(const char* what)
+    {
+        ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"(Singleplayer only) %s",what);
+    }
+
     // Choosing a preset applies it at once; the file or built-in stays as it was until the player saves over it.
     void DrawInputPresets(bool& changed)
     {
@@ -1201,6 +1208,7 @@ namespace
         {
         changed |= ImGui::Checkbox("Sit in the seat (first person)",
                                    &g_config.vehicle_first_person);
+        SingleplayerOnly("In co-op, seats in Halo CE and ODST and Reach's passenger seats keep the game's camera, automatically.");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("All six games. CE, Halo 2 and Halo 4 use the seated character's head position.\n"
                 "Position settings have a separate base for each game. Identified vehicles also retain individual seat adjustments.");
         ImGui::TextDisabled(
@@ -1489,6 +1497,7 @@ namespace
             bool halo4Seats = g_config.halo4_seat_converge != 0;
             if (ImGui::Checkbox("Halo 4: converged aim in seats", &halo4Seats))
             { g_config.halo4_seat_converge = halo4Seats ? 1 : 0; changed = true; }
+            SingleplayerOnly("In co-op, the seat keeps the game's own aim line, automatically.");
             ImGui::TextDisabled("ON (default): in a Halo 4 seat the game traces your aim, and the seat's aim is\n"
                                 "bent so the line the game itself aims that seat along passes through the point\n"
                                 "you point at; the crosshair sits on that point. With Co-op safe shots on, that\n"
@@ -1730,8 +1739,11 @@ namespace
                 "Bring it below your weapon hand, then release to reload.\n"
                 "Native ammo and reserve limits still apply.");
             changed |= ImGui::Checkbox("Disable automatic reload", &g_config.manual_reload_disable_auto);
+            SingleplayerOnly("May break a co-op session. This one does NOT turn itself off.");
             changed |= ImGui::Checkbox("Skip reload and weapon-ready animations", &g_config.manual_reload_skip_animations);
+            SingleplayerOnly("May break a co-op session. This one does NOT turn itself off.");
             changed |= ImGui::Checkbox("Shortened reload animation", &g_config.manual_reload_shortened_animation);
+            SingleplayerOnly("May break a co-op session. This one does NOT turn itself off.");
             if(g_config.manual_reload_shortened_animation)
                 ImGui::TextDisabled(g_config.manual_reload_skip_animations ?
                     "Full animation skip takes precedence while both are enabled." :
@@ -1900,6 +1912,7 @@ namespace
                                 "follows the hand, the body follows the stick). Halo CE always writes its aim\n"
                                 "directly. Both switches are live.");
             changed |= ImGui::Checkbox("Shots leave the visible muzzle", &g_config.shots_from_muzzle);
+            SingleplayerOnly("In co-op, shots leave your eye instead, automatically.");
             ImGui::TextDisabled("ON: on foot, each shot starts at your gun's visible muzzle and flies through the\n"
                                 "point your converged aim is on (the reticle), so it lands where the shot from your\n"
                                 "eye would have while tracers and projectiles come out of the barrel. Needs Converged\n"
@@ -2271,8 +2284,10 @@ namespace
         if (ImGui::CollapsingHeader("Crosshair and bullet direction##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Independent dual-wield trajectories", &g_config.independent_dual_aim);
+        SingleplayerOnly("Turns off automatically in co-op.");
         ImGui::TextDisabled("Halo 2 and Halo 3: each gun follows its own controller when dual wielding.");
         changed |= ImGui::Checkbox("Aim from the visible gun barrel", &g_config.gun_barrel_aim);
+        SingleplayerOnly("In co-op, shots leave your eye instead, automatically.");
         ImGui::TextDisabled("Uses the visible muzzle position and direction when available.\n"
                             "Gun alignment determines shot direction while this is enabled.");
         changed |= vr_menu::SliderFloat("Crosshair vertical angle (deg)",
@@ -2553,6 +2568,7 @@ namespace
         {
         changed |= ImGui::Checkbox("True physical melee (experimental)",
                                    &g_config.physical_melee);
+        SingleplayerOnly("In co-op, a swing presses the game's melee instead, automatically. Halo CE: it does nothing.");
         ImGui::TextDisabled("Strike a target with either hand or its held gun. Works with world collision on or off.");
         changed |= ImGui::Checkbox("Gesture melee (experimental)", &g_config.gesture_melee);
         ImGui::TextDisabled("A punch away from your body presses the game's own melee.");
