@@ -26,6 +26,10 @@ enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Fol
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, OpenInstalled };
 // The window's client size at 96 dpi.
 constexpr int kMenuWidth = 980, kMenuHeight = 934;
+// The box for a launcher running outside its install, under the install's details. It takes this much room, and
+// everything below it moves down only while it shows; `kOutsideBelow` is where "below" starts.
+constexpr int kOutsideLeft = 38, kOutsideTop = 294, kOutsideRight = 942, kOutsideBottom = 342, kOutsideRoom = 54, kOutsideBelow = 305;
+constexpr COLORREF kOutsidePanel = RGB(38, 32, 12), kOutsideEdge = RGB(122, 100, 44);
 struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel; bool candidate = true; };
 BuildIdentity ReadIdentity(const fs::path& directory) {
     BuildIdentity identity; std::ifstream file(directory / L"BUILD-IDENTITY.txt", std::ios::binary);
@@ -54,7 +58,7 @@ struct Menu {
     HFONT body{}, smallFont{}, title{}, label{}; HBRUSH background{}, panel{}, reclaimerPanel{}, reclaimerField{};
     std::vector<GameInstall> installs;
     fs::path selfDir, payload; std::wstring launchDir;
-    HWND outsideNote{}, openInstalled{};
+    HWND outsideNote{}, openInstalled{}; HBRUSH outsidePanel{}; int outsideShift = 0;
     fs::path fontPath; bool fontLoaded = false;
     bool busy = false, updateReady = false, helperStarted = false;
     std::thread worker; std::wstring operationMessage;
@@ -75,6 +79,18 @@ struct Menu {
     std::wstring ReleasePageUrl() const {
         const auto& source = CurrentChannel();
         return L"https://github.com/" + std::wstring(source.owner, source.owner + strlen(source.owner)) + L"/MCCVR-Halo-Build/releases";
+    }
+    void ShiftForOutsideBox(int shift) {
+        if (shift == outsideShift) return;
+        const int from = Px(kOutsideBelow + outsideShift), by = Px(shift) - Px(outsideShift);
+        for (HWND child = GetWindow(window, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+            RECT rect{}; GetWindowRect(child, &rect); MapWindowPoints(nullptr, window, reinterpret_cast<POINT*>(&rect), 2);
+            if (rect.top >= from) SetWindowPos(child, nullptr, rect.left, rect.top + by, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+        }
+        outsideShift = shift;
+        RECT size{0, 0, Px(kMenuWidth), Px(kMenuHeight + shift)};
+        AdjustWindowRectExForDpi(&size, static_cast<DWORD>(GetWindowLongPtrW(window, GWL_STYLE)), FALSE, 0, dpi);
+        SetWindowPos(window, nullptr, 0, 0, size.right - size.left, size.bottom - size.top, SWP_NOMOVE | SWP_NOZORDER);
     }
     void Refresh() {
         auto* game = Selected();
@@ -111,10 +127,10 @@ struct Menu {
         std::error_code sameError;
         const bool outside = installed && !fs::equivalent(selfDir, game->root / L"Halo_MCC_VR", sameError);
         ShowWindow(outsideNote, outside ? SW_SHOW : SW_HIDE);
+        ShiftForOutsideBox(outside ? kOutsideRoom : 0);
         const bool canOpen = outside && fs::is_regular_file(game->root / L"Halo_MCC_VR" / L"HaloMCCVRLauncher.exe");
         ShowWindow(openInstalled, canOpen ? SW_SHOW : SW_HIDE);
         EnableWindow(openInstalled, !busy);
-        SetWindowPos(path, nullptr, 0, 0, Px(outside ? 640 : 895), Px(77), SWP_NOMOVE | SWP_NOZORDER);
         InvalidateRect(window, nullptr, FALSE);
     }
     void Populate(const fs::path& preferred = {}) {
@@ -266,7 +282,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     switch (message) {
     case WM_CREATE: {
         menu->background = CreateSolidBrush(kBackground); menu->panel = CreateSolidBrush(kPanel);
-        menu->reclaimerPanel = CreateSolidBrush(kReclaimerPanel); menu->reclaimerField = CreateSolidBrush(kReclaimerField);
+        menu->outsidePanel = CreateSolidBrush(kOutsidePanel); menu->reclaimerPanel = CreateSolidBrush(kReclaimerPanel); menu->reclaimerField = CreateSolidBrush(kReclaimerField);
         menu->body = Font(*menu, 16, FW_NORMAL, L"Segoe UI"); menu->smallFont = Font(*menu, 13, FW_NORMAL, L"Segoe UI"); menu->label = Font(*menu, 14, FW_SEMIBOLD, menu->fontLoaded ? L"Oxanium" : L"Bahnschrift");
         // Use a user's installed Halo font when available. No proprietary font
         // is redistributed. The bundled OFL-licensed Oxanium supplies an angular
@@ -281,10 +297,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, 160, 110, 38, Scan);
         menu->path = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 214, 895, 77);
         SendMessageW(menu->path, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
-        // The reason, directly above the button it is the reason for.
-        menu->outsideNote = Control(*menu, L"STATIC", L"This is a copy outside Halo_MCC_VR. Updates go there, but Project Reclaimer runs this copy.", SS_LEFT | SS_NOPREFIX, 696, 201, 246, 56);
+        // The reason and the way out, in a box of their own under the install's details.
+        menu->outsideNote = Control(*menu, L"STATIC", L"This is a copy outside Halo_MCC_VR. Updates go there, but Project Reclaimer runs this copy.", SS_LEFT | SS_NOPREFIX | SS_CENTERIMAGE, 52, 296, 630, 44);
         SendMessageW(menu->outsideNote, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
-        menu->openInstalled = Control(*menu, L"BUTTON", L"OPEN INSTALLED LAUNCHER", BS_OWNERDRAW | WS_TABSTOP, 696, 259, 246, 34, OpenInstalled);
+        menu->openInstalled = Control(*menu, L"BUTTON", L"OPEN INSTALLED LAUNCHER", BS_OWNERDRAW | WS_TABSTOP, 696, 301, 234, 34, OpenInstalled);
         Label(*menu, L"02  /  YOUR VR SETUP", 38, 310, 570);
         menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_AUTOCHECKBOX | WS_TABSTOP, 38, 340, 850, 30, Retain);
         SendMessageW(menu->retain, BM_SETCHECK, BST_CHECKED, 0); SetWindowTheme(menu->retain, L"", L"");
@@ -323,14 +339,20 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SelectObject(dc, menu->label); SetTextColor(dc, kMuted); const wchar_t* subtitle = L"THE MASTER CHIEF COLLECTION  /  VIRTUAL REALITY";
         TextOutW(dc, menu->Px(41), menu->Px(93), subtitle, static_cast<int>(wcslen(subtitle)));
         HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); auto old = SelectObject(dc, pen);
-        for (int y : {121, 299, 460}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
+        const int shift = menu->outsideShift;
+        for (int y : {121, 299 + shift, 460 + shift}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
         // Original geometric HUD accents; no extracted game art or assets.
         for (int x = 811; x < 943; x += 22) { MoveToEx(dc, menu->Px(x), menu->Px(43), nullptr); LineTo(dc, menu->Px(x + 18), menu->Px(25)); }
         SelectObject(dc, old); DeleteObject(pen);
+        if (shift) {
+            RECT box{menu->Px(kOutsideLeft), menu->Px(kOutsideTop), menu->Px(kOutsideRight), menu->Px(kOutsideBottom)};
+            FillRect(dc, &box, menu->outsidePanel);
+            HBRUSH edge = CreateSolidBrush(kOutsideEdge); FrameRect(dc, &box, edge); DeleteObject(edge);
+        }
         // Project Reclaimer's panel: its own ground, an edge and a bar down its left side in its own colour, the
         // heading on the left and what it is on the right.
         {
-            RECT box{menu->Px(kReclaimerLeft), menu->Px(kReclaimerTop), menu->Px(kReclaimerRight), menu->Px(kReclaimerBottom)};
+            RECT box{menu->Px(kReclaimerLeft), menu->Px(kReclaimerTop + shift), menu->Px(kReclaimerRight), menu->Px(kReclaimerBottom + shift)};
             FillRect(dc, &box, menu->reclaimerPanel);
             HBRUSH edge = CreateSolidBrush(RGB(122, 90, 44)), bar = CreateSolidBrush(kReclaimerAccent);
             FrameRect(dc, &box, edge);
@@ -339,17 +361,17 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetBkMode(dc, TRANSPARENT); SelectObject(dc, menu->label); SetTextColor(dc, kReclaimerAccent);
             SetTextCharacterExtra(dc, menu->Px(2));
             const wchar_t* heading = L"PROJECT RECLAIMER";
-            TextOutW(dc, menu->Px(46), menu->Px(kReclaimerTop + 14), heading, static_cast<int>(wcslen(heading)));
+            TextOutW(dc, menu->Px(46), menu->Px(kReclaimerTop + shift + 14), heading, static_cast<int>(wcslen(heading)));
             SetTextCharacterExtra(dc, 0);
             SelectObject(dc, menu->smallFont); SetTextColor(dc, kReclaimerMuted);
-            RECT note{menu->Px(330), menu->Px(kReclaimerTop + 15), menu->Px(940), menu->Px(kReclaimerTop + 40)};
+            RECT note{menu->Px(330), menu->Px(kReclaimerTop + shift + 15), menu->Px(940), menu->Px(kReclaimerTop + shift + 40)};
             DrawTextW(dc, L"EXPERIMENTAL  /  A SEPARATE GAME CLIENT, NOT PART OF THE MCC SETUP ABOVE", -1, &note, DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX);
         }
         if (message == WM_PAINT) EndPaint(window, &paint); return 0;
     }
     case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: {
         HDC dc = reinterpret_cast<HDC>(wParam);
-        if (reinterpret_cast<HWND>(lParam) == menu->outsideNote) { SetTextColor(dc, RGB(255, 204, 77)); SetBkColor(dc, kBackground); return reinterpret_cast<LRESULT>(menu->background); }
+        if (reinterpret_cast<HWND>(lParam) == menu->outsideNote) { SetTextColor(dc, RGB(255, 204, 77)); SetBkColor(dc, kOutsidePanel); return reinterpret_cast<LRESULT>(menu->outsidePanel); }
         if (reinterpret_cast<HWND>(lParam) == menu->reclaimerInfo) { SetTextColor(dc, kText); SetBkColor(dc, kReclaimerPanel); return reinterpret_cast<LRESULT>(menu->reclaimerPanel); }
         SetTextColor(dc, kText); SetBkColor(dc, kBackground); return reinterpret_cast<LRESULT>(menu->background);
     }
@@ -469,7 +491,7 @@ std::wstring ShowLauncherMenu(HINSTANCE instance, const fs::path& launcherDir, i
     RegisterClassExW(&type);
     RECT workArea{}; SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
     const int fitWidth = MulDiv(workArea.right - workArea.left - 32, 96, kMenuWidth);
-    const int fitHeight = MulDiv(workArea.bottom - workArea.top - 55, 96, kMenuHeight);
+    const int fitHeight = MulDiv(workArea.bottom - workArea.top - 55, 96, kMenuHeight + kOutsideRoom);
     const int dpi = std::max(60, std::min({static_cast<int>(GetDpiForSystem()), fitWidth, fitHeight}));
     menu.dpi = dpi;
     RECT rect{0, 0, MulDiv(kMenuWidth, dpi, 96), MulDiv(kMenuHeight, dpi, 96)};
