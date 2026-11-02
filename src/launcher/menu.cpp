@@ -2,6 +2,7 @@
 #include "updater.h"
 #include "reclaimer_menu.h"
 #include "../common/reclaimer_host_logic.h"
+#include "../common/credits_file.h"
 #include <shobjidl.h>
 #include <shellapi.h>
 #include <uxtheme.h>
@@ -29,22 +30,6 @@ enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Fol
 constexpr int kMenuWidth = 1350, kMenuHeight = 904;
 // The credits column, right of the divider, at 96 dpi: the title stays put and the list below it scrolls.
 constexpr int kCreditsDivider = 968, kCreditsLeft = 986, kCreditsListTop = 76, kCreditsListWidth = 352;
-struct Credit { const wchar_t* name; const wchar_t* what; };
-// The project's line of succession first, then everyone else from most contributed to least.
-constexpr Credit kCredits[] = {
-    {L"Pancreations", L"Created the original Halo-MCC-VR and its DLSS foundation, the base everything here is built on."},
-    {L"MoistMan", L"Continued the project as Halo MCC VR, maintaining it and extending it across all six games on Steam and the Xbox app, with physical crouch and melee, weapon handling and tracked body avatars."},
-    {L"NitsuJack", L"Aim, multiplayer and roomscale work, Project Reclaimer support, vehicle cameras ported from Halo Campaign Evolved UEVR, input presets, the desktop settings window, launcher reorganization and multi-repository auto updating."},
-    {L"Godoy", L"Weapon alignment and per-game gun offsets, two-handed grip zones, restored hand and gun animations, modded weapon support, bloom and autoexposure controls, world scale and dual-wield shake reload."},
-    {L"Gab_dC / gabrieldch", L"Virtual stock, two-hand and support handling, coherent aim and telemetry."},
-    {L"martysl1", L"Subtitle, UI and bloom work, and the Reach DLSS leads."},
-    {L"blindcowboy24", L"Initial Roomscale setup for Aim/multiplayer revamp."},
-    {L"LivingFray / Maso", L"Ownership and restoration design leads."},
-    {L"marcusau2", L"The earlier per-gun calibration."},
-    {L"SilentVortigaunt", L"The trailer."},
-    {L"UnsealedWings", L"Performance and HUD proposals."},
-    {L"PurplePeanut", L"The Provolver proposal."},
-};
 struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel, built, release, published; bool candidate = true; };
 BuildIdentity ReadIdentity(const fs::path& directory) {
     BuildIdentity identity; std::ifstream file(directory / L"BUILD-IDENTITY.txt", std::ios::binary);
@@ -85,6 +70,7 @@ struct Menu {
     bool channelChosen = false, channelChanged = false;
     // Project Reclaimer (reclaimer_menu.h): the kept path's field, what is known of it, and the launch asked for.
     HWND reclaimerPath{}, reclaimerInfo{}; std::wstring reclaimerExe, reclaimerDir; bool reclaimerStartable = false;
+    std::vector<CreditEntry> credits;
     HWND creditsList{};
     int creditsScroll = 0, creditsContent = 0, creditsDragFrom = -1, creditsDragScroll = 0;
     HFONT body{}, smallFont{}, title{}, label{}, creditsTitle{}; HBRUSH background{}, panel{}, reclaimerPanel{}, reclaimerField{};
@@ -306,6 +292,17 @@ void DrawCreditsHeart(HDC dc, int left, int top, int unit) {
     Polygon(dc, core, static_cast<int>(std::size(core)));
     SelectObject(dc, oldBrush); SelectObject(dc, oldPen); DeleteObject(edge); DeleteObject(fill); DeleteObject(glow);
 }
+// The list comes from CREDITS.txt so that it can change without a new launcher. With no file, there is just no list.
+std::vector<CreditEntry> ReadCredits(const fs::path& file) {
+    constexpr std::streamsize kLargest = 256 * 1024;
+    std::ifstream input(file, std::ios::binary);
+    std::string bytes(static_cast<size_t>(kLargest), '\0');
+    input.read(bytes.data(), kLargest);
+    bytes.resize(static_cast<size_t>(input.gcount()));
+    std::wstring text(bytes.size(), L'\0');
+    text.resize(static_cast<size_t>(MultiByteToWideChar(CP_UTF8, 0, bytes.data(), static_cast<int>(bytes.size()), text.data(), static_cast<int>(text.size()))));
+    return ParseCredits(text);
+}
 void DrawCreditsTitle(Menu& menu, HDC dc) {
     HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); const auto old = SelectObject(dc, pen);
     MoveToEx(dc, menu.Px(kCreditsDivider), menu.Px(26), nullptr); LineTo(dc, menu.Px(kCreditsDivider), menu.Px(kMenuHeight - 26));
@@ -330,9 +327,9 @@ int DrawCreditsList(Menu& menu, HDC dc, int width, int top) {
         y = box.bottom + menu.Px(after);
     };
     paragraph(L"Halo MCC VR is a community effort with contributions from multiple dedicated Halo and VR fans.", menu.smallFont, kText, 18);
-    for (const auto& credit : kCredits) {
-        paragraph(credit.name, menu.label, kAccent, 3);
-        paragraph(credit.what, menu.smallFont, kText, 14);
+    for (const auto& credit : menu.credits) {
+        paragraph(credit.name.c_str(), menu.label, kAccent, 3);
+        paragraph(credit.what.c_str(), menu.smallFont, kText, 14);
     }
     return y;
 }
@@ -680,6 +677,7 @@ std::wstring ShowLauncherMenu(HINSTANCE instance, const fs::path& launcherDir, i
     Menu menu; menu.instance = instance; menu.selfDir = launcherDir;
     menu.payload = fs::is_regular_file(launcherDir / L"ModFiles" / L"INSTALL-MANIFEST.sha256") ? launcherDir / L"ModFiles" : launcherDir;
     menu.fontPath = menu.payload / L"assets" / L"fonts" / L"Oxanium.ttf";
+    menu.credits = ReadCredits(menu.payload / L"CREDITS.txt");
     menu.fontLoaded = AddFontResourceExW(menu.fontPath.c_str(), FR_PRIVATE, nullptr) != 0;
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);

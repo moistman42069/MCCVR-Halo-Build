@@ -1778,6 +1778,7 @@ install(FILES
     LICENSE
     installer/MANUAL-README.txt
     installer/THIRD-PARTY-LICENSES.txt
+    installer/CREDITS.txt
     DESTINATION .
     COMPONENT dist)
 install(DIRECTORY src/launcher/assets/ DESTINATION assets COMPONENT dist)

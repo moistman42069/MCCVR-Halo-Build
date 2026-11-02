@@ -24,7 +24,7 @@ ACTIONS = ("fire", "grenade", "jump", "melee", "reload", "interact", "switch_wea
            "switch_grenade", "equipment", "crouch", "zoom", "flashlight", "sprint")
 REQUIRED_PAYLOAD = {
     "HaloMCCVR.dll", "HaloMCCVRSettings.exe", "halomccvr.cfg", "INSTALL-MANIFEST.sha256",
-    "BUILD-IDENTITY.txt", "LICENSE", "MANUAL-README.txt", "THIRD-PARTY-LICENSES.txt",
+    "BUILD-IDENTITY.txt", "CREDITS.txt", "LICENSE", "MANUAL-README.txt", "THIRD-PARTY-LICENSES.txt",
     "RELEASE-NOTES.md", "nvngx_dlss.dll",
     "licenses/NVIDIA-DLSS/LICENSE.txt", "licenses/NVIDIA-DLSS/NOTICE.txt",
     "TelemetryAnalyser/analyse_mccvr_telemetry.py",
