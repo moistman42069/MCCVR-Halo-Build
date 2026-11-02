@@ -1624,7 +1624,7 @@ namespace
             &g_config.vehicle_wheel_deadzone_deg, 0.0f, 30.0f, "%.0f");
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::Text("Vehicle cameras (Halo 3, Reach)");
+        ImGui::Text("Vehicle cameras (Halo 3, ODST, Reach, Halo 4)");
         changed |= ImGui::Checkbox("Cameras from halomccvr_vehicle_cameras.json",
                                    &g_config.vehicle_cameras);
         changed |= ImGui::Combo("Note when the camera changes", &g_config.vehicle_camera_note,
@@ -1650,7 +1650,9 @@ namespace
             "and a passenger's support trigger switches weapon. Each seat keeps\n"
             "its last camera, mode and controls. Needs first-person vehicles on.\n"
             "Reach: the note is on the mod's panel, and the glass and body keys\n"
-            "are Halo 3's only for now.");
+            "are Halo 3's only for now.\n"
+            "Halo 4: the same, and its seats steer by your hand (no Stick or\n"
+            "Wheel); a camera turns with the vehicle's heading only.");
         if (g_config.vehicle_cameras)
         {
             if (ImGui::Button("Next camera"))

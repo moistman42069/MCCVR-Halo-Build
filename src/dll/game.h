@@ -369,9 +369,10 @@ void Game_VehicleCameraResetLag();
 // convention; `outDistanceM`: how far along it the ring is drawn, VR metres.
 bool Game_GetVehicleAimMarker(float outDir[3], float& outDistanceM);
 // The vehicle camera buttons (vehicle_seat_buttons.h), for the input hook. Live: the seat the player is in is one
-// the vehicle cameras run in, so left X, left Y and the left stick click are theirs; `passenger` says it is a
-// passenger's. ControlStep asks for the seat's next way to be controlled (the left stick click).
-bool Game_VehicleSeatButtonsLive(bool& passenger);
+// the vehicle cameras run in, so left X and left Y are theirs, and the left stick click too where `controlModes`
+// says the game's seats can be controlled more than one way; `passenger` says it is a passenger's. ControlStep asks
+// for the seat's next way to be controlled (the left stick click).
+bool Game_VehicleSeatButtonsLive(bool& passenger, bool& controlModes);
 void Game_VehicleControlStep();
 // THE THIRD-PERSON BOOM (vehicle_boom_logic.h), for the input hook and the F1 menu. TakesStick: a Halo 3 seat's
 // camera stands where the game's own third-person camera does, and the right stick's Y aims nothing in it (not a

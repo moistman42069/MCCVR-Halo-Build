@@ -122,6 +122,7 @@
 #include "../common/halo3_held_palette_logic.h"
 #include "../common/reach_vehicle_logic.h"
 #include "../common/reach_vehicle_camera_logic.h"
+#include "../common/halo4_vehicle_camera_logic.h"
 #include "../common/reach_hand_shot_logic.h"
 #include "../common/aim_no_unit_logic.h"
 #include "../common/title_runtime_state.h"
@@ -9206,6 +9207,8 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     EngineExposureLock g_halo3Exposure{"Halo 3 vehicle exposure"};
     // Reach's, while the vehicle camera in use for its seat says "eyeAdjust": false (reach_vehicle_cameras.inl).
     EngineExposureLock g_reachExposure{"Reach vehicle exposure"};
+    // Halo 4's, while the vehicle camera in use for its seat says "eyeAdjust": false (halo4_vehicle_cameras.inl).
+    EngineExposureLock g_halo4Exposure{"Halo 4 vehicle exposure"};
     // Whether the vehicle camera in use for the seat the player is in holds the exposure (vehicle_cameras.inl).
     bool Halo3VehicleCameraHoldsExposure();
 
@@ -45289,6 +45292,16 @@ static constexpr bool kOdstMappedFpEnabled = false;
     #include "halo4_head_relative.inl"
     // The sound listener follows the head instead of the aim (the same evidence class, the same head sample).
     #include "halo4_sound_listener.inl"
+    // A Halo 4 seat's view is the mod's: the first-person seat override placed its camera, or a chase camera of the
+    // vehicle camera file stood the eye at its own place (halo4_vehicle_cameras.inl, later). Either way the seat's
+    // aim is the hand's as in the seat view: the game's own camera for the seat, which a write would swing round the
+    // hull, is not what the player sees.
+    bool Halo4VehicleCameraOwnsSeatView(uint32_t parent, int seat) noexcept;
+    bool Halo4SeatViewOwned(uint32_t parent, int seat) noexcept
+    {
+        return NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo4, parent, seat) ||
+               Halo4VehicleCameraOwnsSeatView(parent, seat);
+    }
     // Halo 4 seated convergence (every build; the player key halo4_seat_converge): the aim-camera sample, the
     // seated trace and the solve's start.
     #include "halo4_seat_converge.inl"
@@ -48467,6 +48480,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
 
     #include "halo4_scope.inl"
 
+    // The vehicle cameras in Halo 4's seats (the camera file; the seat's eye moved or stood at a chase camera).
+    #include "halo4_vehicle_cameras.inl"
+
     // THE BROADSWORD'S VIEW RIDES ITS COCKPIT, location only. In a seat the observer the eyes are built from is the
     // game's camera director following the point the seat camera was placed at, and the director's position lags:
     // under the Broadsword's boost the view falls behind the cockpit and catches up once the boost ends. For the
@@ -48611,7 +48627,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // Retain the game body/aim camera before HMD composition.  Hands are
         // controller-owned in this frame; `stock` below becomes the HMD-owned
         // render camera and must not be reused for their placement.
-        const Halo4CameraBasis controllerRoot = stock;
+        Halo4CameraBasis controllerRoot = stock;
         Halo4BroadswordRideCockpit(stock);
 
         // C-H4-9: publish the ENGINE's own look pitch, taken before any of our
@@ -48709,6 +48725,11 @@ static constexpr bool kOdstMappedFpEnabled = false;
             // The game's own first-person answer for this frame (director_camera_logic.h), on the same thread.
             PublishDirectorView(g_halo4TwoHandView, g_halo4DirectorCamera, g_halo4SandboxEditor, GetTickCount64(),
                                 g_halo4Camera.generation.load(std::memory_order_acquire));
+            // The vehicle camera file's camera for this seat (halo4_vehicle_cameras.inl): the seat published for the
+            // cold worker, and the eye moved by a firstperson camera's offset (the hands' camera with it) or stood at
+            // a chase camera's place, before the head pose is composed onto it. `controllerRoot` is still the game's
+            // own camera here.
+            Halo4VehicleCamerasPass(frameSeatRead, frameSeat, controllerRoot, stock);
 #if HALOMCCVR_DEV_DIAGNOSTICS
             seatEyeSeat = frameSeat;
             seatEyeSeatRead = frameSeatRead;
@@ -48761,6 +48782,16 @@ static constexpr bool kOdstMappedFpEnabled = false;
                         snapshot.headPosition[axis] + (axis == 1 ? standingLift : 0.0f),
                         std::memory_order_relaxed);
                 }
+            }
+
+            // A seat the vehicle cameras run in faces the vehicle's nose on boarding (halo4_vehicle_cameras.inl,
+            // Halo4VehicleCameraTakeNose): the heading reference is the nose's from the head's yaw as it stands.
+            float noseYaw = 0.0f;
+            if (decoded && g_halo4Camera.headReferenceValid.load(std::memory_order_acquire) &&
+                Halo4VehicleCameraTakeNose(noseYaw))
+            {
+                g_halo4Camera.gameYawReference.store(noseYaw, std::memory_order_relaxed);
+                g_halo4Camera.headYawReference.store(head.yaw, std::memory_order_relaxed);
             }
 
             if (decoded &&
@@ -48823,6 +48854,10 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 const Halo4CameraBasis beforeHead = stock;
                 if (Halo4ApplyHeadPose(stock, headInput))
                 {
+                    // A chase camera's leash holds the head's movement of the eye (halo4_vehicle_cameras.inl).
+                    Halo4VehicleCameraLeashHead(beforeHead.position, stock.position);
+                    // ...and the ring where the vehicle aims is placed from the eye as it now stands.
+                    Halo4VehicleAimMarkerStep(stock.position);
                     // This frame's seat (read and published above, before the recenter).
                     const bool onFoot = frameSeatRead && !frameSeat.seated && frameSeat.parent == UINT32_MAX;
                     g_halo4OnFootMs.store(onFoot ? GetTickCount64() : 0, std::memory_order_release);
@@ -49429,7 +49464,13 @@ static constexpr bool kOdstMappedFpEnabled = false;
         g_halo4Camera.activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
         __try
         {
+            // The vehicle cameras' exposure hold is asked for afresh by each frame of the player's window
+            // (halo4_vehicle_cameras.inl), and applied whichever way the frame went.
+            if (window == 0)
+                g_halo4ExposureHoldWanted = g_halo4ExposurePassAsked = false;
             Halo4WrapperBody(element, view, window, returnAddress);
+            if (window == 0)
+                Halo4VehicleCameraExposureFrame();
         }
         __finally
         {
@@ -50499,6 +50540,12 @@ static constexpr bool kOdstMappedFpEnabled = false;
             g_halo4Camera.cuiReticleCleanupRequired = true;
             return false;
         }
+        // A held exposure is a module global that outlives this camera core: give it back to the engine now that no
+        // frame of the wrapper can hold it again, and before the module reference goes. The next game starts with
+        // nothing held.
+        EngineExposureLockRelease(g_halo4Exposure);
+        g_halo4ExposureHeld = false;
+        g_halo4ExposureStockFrames = 0;
         // Put Halo 4's own first-person FOV squish back exactly as it was, and
         // only if we were the one who changed it. Done after the hooks are
         // quiescent and before the module reference is released, so the write
@@ -50855,6 +50902,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
         (void)InstallHalo4SoundListener(base,size,generation);
         InstallHalo4FireEye(base,size,generation);   // flat parity's measured fire eye (halo4_fire_eye.inl)
         InstallHalo4SeatConverge(base,size,generation);   // after the muzzle lane: its view detour carries the sample
+        // The vehicle cameras' "eyeAdjust": Halo 4's render_exposure_lock, from two signatures that must agree
+        // (engine_exposure_lock.inl). Missing, only that hold stays off.
+        EngineExposureLockResolve(g_halo4Exposure, base, size, kHalo4ExposureLockSig);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         InstallHalo4SeatSight(base,size,generation);   // after the muzzle lane: its bindings and view detour
         (void)InstallHalo4ImpactWitness(base,size);    // AS SEEN (dev): after the muzzle lane, whose aim names the shooter
@@ -53093,7 +53143,7 @@ static void TitleImageUnloading(uintptr_t base, size_t size)
 #endif
     // The engine exposure locks (engine_exposure_lock.inl): a teardown that gives the hold back after the image is
     // gone would read and write an unmapped byte.
-    for (EngineExposureLock* lock : {&g_halo3Exposure, &g_odstExposure, &g_reachExposure})
+    for (EngineExposureLock* lock : {&g_halo3Exposure, &g_odstExposure, &g_reachExposure, &g_halo4Exposure})
         if (EngineExposureLockRetireWithin(*lock, base, size))
             ++retired;
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
@@ -57392,6 +57442,25 @@ static bool ReachSeatAimFrameBindingInstalled()
 #include "seat_aim_world_frame.inl"
 #include "halo3_seat_view.inl"
 #include "legacy_direct_drive.inl"
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+namespace
+{
+// halo4_vehicle_cameras.inl: the occupied seat's flags word, read as the seat frame reader reads it for the Halo 4
+// drive (seat_frame_reader.h), on the calling engine thread. False: the drive's reader is not bound, or a link of the
+// read did not read.
+bool Halo4SeatFlagsRead(uint32_t unit, uint32_t& flags)
+{
+    const int slot = LegacyDriveSlot(GameTitle::Halo4);
+    if (slot < 0)
+        return false;
+    const seat_frame_rt::Live live = seat_frame_rt::Read(g_legacyDrive[slot].frame, nullptr, unit);
+    if (!live.flagsKnown)
+        return false;
+    flags = live.flags;
+    return true;
+}
+} // namespace
+#endif
 #include "halo3_hook_watch.inl"
 // The Halo 4 tracker lane's proof reference (declared with the legacy drive's other accessors, above): the yaw
 // the input thread last published for the direct drive to write. Only while the drive is LIVE (armed on its own
@@ -59550,7 +59619,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 {
                     seatFacts.identified = true;
                     seatFacts.view_owned =
-                        NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo4, seat.parent, seat.seat);
+                        Halo4SeatViewOwned(seat.parent, seat.seat);
                     seatFacts.driver = true;
                     seatFacts.look_steered = true;
                     seatKey = seat_drive::SeatKey(static_cast<int>(seat.parent), seat.seat, false);
@@ -60563,10 +60632,11 @@ void Game_VehicleCameraStep(int cameraDirection, int modeDirection)
     VehicleCameraRequestStep(cameraDirection, modeDirection);
 }
 
-bool Game_VehicleSeatButtonsLive(bool& passenger)
+bool Game_VehicleSeatButtonsLive(bool& passenger, bool& controlModes)
 {
     const uint32_t seat = g_vehicleSeatButtons.load(std::memory_order_acquire);
     passenger = (seat & kVehicleSeatPassenger) != 0;
+    controlModes = (seat & kVehicleSeatOneControl) == 0;
     return (seat & kVehicleSeatButtonsLive) != 0;
 }
 
@@ -60639,7 +60709,8 @@ bool Game_GetVehicleAimMarker(float outDir[3], float& outDistanceM)
     outDistanceM = 0.0f;
     float yaw = 0.0f, pitch = 0.0f, distance = 0.0f;
     const GameTitle title = TitleAdapter_GetActiveTitle();
-    if (!outDir || (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST && title != GameTitle::HaloReach) ||
+    if (!outDir || (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST && title != GameTitle::HaloReach &&
+                    title != GameTitle::Halo4) ||
         !Halo3VehicleAimMarkerRead(yaw, pitch, distance))
         return false;
     const float cp = cosf(pitch);
@@ -61187,6 +61258,18 @@ void Game_Halo4CameraOwnerReport() noexcept
 #else
 #define MCCVR_H4_OWNER_WHY(n) ((void)0)
 #endif
+
+bool Game_VehicleCameraChaseSeat(GameTitle title, uint32_t parent, int seat) noexcept
+{
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    if (title == GameTitle::Halo4 && g_config.vehicle_cameras)
+        return Halo4VehicleCameraChaseChosen(TitleAdapter_GetGeneration(GameTitle::Halo4), parent, seat);
+#endif
+    (void)title;
+    (void)parent;
+    (void)seat;
+    return false;
+}
 
 bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& owner) noexcept
 {

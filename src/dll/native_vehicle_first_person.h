@@ -44,6 +44,17 @@ struct NativeVehicleSeatPoint
     uint64_t us{};
 };
 bool NativeVehicleFirstPerson_PlacedPoint(GameTitle title, NativeVehicleSeatPoint& out) noexcept;
+// Halo 4: the frame of `object`'s marker `name` (0 = its root node) -- scale, forward, left, up and position, 13
+// floats -- as drawn this frame (`drawn`) or as simulated, through this override's own proven marker query (the seat
+// camera's head query). Any engine thread with the game's TLS. False while the override is not installed for the
+// active generation, when the answer is not one usable frame, or when the query faulted.
+bool NativeVehicleFirstPerson_Halo4MarkerFrame(uint32_t object, uint32_t name, bool drawn, float frame[13]) noexcept;
+// Halo 4: what the game's own camera selector answered for this seat when last asked, before this override (`chase`
+// true: its following camera; false: its first-person eye), within the last 250 ms. False: no such answer.
+bool NativeVehicleFirstPerson_Halo4NativeChase(uint32_t parent, int seat, bool& chase) noexcept;
+// game.cpp: a chase camera of the vehicle camera file is chosen for this seat. The override then leaves the seat to
+// the game's own camera, which draws the occupant in it, as the flat game does (Halo 4).
+bool Game_VehicleCameraChaseSeat(GameTitle title, uint32_t parent, int seat) noexcept;
 #if HALOMCCVR_DEV_DIAGNOSTICS
 void Game_Halo4CameraOwnerReport() noexcept;   // dev: why Game_ReadVehicleCameraOwner refused Halo 4 seats
 
