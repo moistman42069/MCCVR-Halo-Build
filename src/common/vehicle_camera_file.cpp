@@ -1665,6 +1665,40 @@ Table DefaultTable()
         AnyVehicle(),
     };
 
+    // Halo: Combat Evolved: the vehicles the mod names by their tag (haloce_vehicle_camera::NameFromTagPath: the stock
+    // folder's word, "warthog", "rocket_warthog", "ghost", "shade"). The rocket Warthog finds the Warthog's entries
+    // ("warthog" is in its name). A Ghost's, a Banshee's, a Shade's one seat drives and fires; the Scorpion's driver
+    // fires its cannon, and its riders sit on its sides. CE's vehicles are Halo 3's size, so the cameras start from Halo 3's;
+    // a seat's point is its occupant's root node, at the hips, so the Warthog's over-the-shoulder cameras stand higher
+    // than Halo 3's and over the outer shoulder, clear of the gun's mount behind the seats.
+    Game halo1;
+    halo1.key = kGameKeys[5];
+    halo1.vehicles = {
+        Entry("Warthog", "warthog", driver,
+              {Chase("Over the Shoulder", Origin::Seat, -170, -30, 140, true, 0.15f),
+               Chase("Left Side", Origin::Seat, 0, -140, 40, true, 0.0f)}),
+        Entry("Warthog passenger", "warthog", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, 30, 140, true, 0.15f),
+               Chase("Right Side", Origin::Seat, 0, 140, 40, true, 0.0f)}),
+        Entry("Warthog gunner", "warthog", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 90, true, 0.1f)}),
+        Entry("Ghost", "ghost", driver,
+              {Chase("Follow", Origin::Vehicle, -450, 0, 220, true, 0.25f),
+               Chase("Over the Shoulder", Origin::Vehicle, -10, 60, 135, true, 0.1f)}),
+        Entry("Banshee", "banshee", driver,
+              {Chase("Over the Shoulder", Origin::Vehicle, -350, 150, 200, false, 0.2f),
+               Chase("Chase", Origin::Vehicle, -600, 0, 150, false, 0.3f)}),
+        Entry("Scorpion", "scorpion", driver, {Chase("High", Origin::Vehicle, -700, 0, 700, true, 0.3f)}),
+        Entry("Scorpion passenger", "scorpion", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, 0, 80, true, 0.15f)}),
+        Entry("Wraith", "wraith", driver, {Chase("High", Origin::Vehicle, -700, 100, 700, true, 0.3f)}),
+        AlsoMatching(Entry("Shade", "shade", 0, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+                     "turret"),
+        AnyVehicle(),
+    };
+    // CE draws no ring where the vehicle aims (its crosshair is its own HUD's): its built-in cameras ask for none.
+    for (Vehicle& vehicle : halo1.vehicles)
+        vehicle.aimMarker = 0;
+
     // Every other game, until it has cameras of its own.
     Game game;
     game.key = kDefaultKey;
@@ -1676,6 +1710,7 @@ Table DefaultTable()
     table.games.push_back(std::move(odst));
     table.games.push_back(std::move(halo4));
     table.games.push_back(std::move(halo2));
+    table.games.push_back(std::move(halo1));
     table.games.push_back(std::move(game));
     return table;
 }

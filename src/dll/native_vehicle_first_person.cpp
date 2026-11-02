@@ -25,6 +25,8 @@
 #include <cmath>
 #include <cstring>
 #include <type_traits>
+#include "../common/haloce_vehicle_camera_logic.h"
+#include "haloce_vehicle_cameras.h"
 
 namespace
 {
@@ -360,6 +362,12 @@ __declspec(noinline) bool Head(unsigned i,const NativeVehicleCameraOwner& owner,
     for (unsigned axis=0;axis<3;++axis)
         if (!std::isfinite(position[axis])||std::fabs(position[axis])>100000.0f) return false;
     if (i==1&&place&&g_config.vehicle_cam_smoothing) RideDrawnVehicle(owner,position);
+    // Halo CE's vehicle cameras: a firstperson camera's "offset" moves the seat's eye (one atomic load while none does).
+    if (i==0&&place) {
+        float moved[3]{position[0],position[1],position[2]};
+        if (Game_HaloCEEyeNudgeWorld(owner.generation,owner.parent,owner.seat,moved))
+            std::memcpy(position,moved,sizeof(moved));
+    }
     return true;
 }
 __declspec(noinline) void Fault(unsigned i) noexcept
@@ -553,6 +561,20 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
         Fault(I);
     }
 }
+// HALO CE: A SEAT SHOWN FROM A CHASE CAMERA (game.cpp haloce_vehicle_cameras.inl). The camera is placed in the game's
+// own following camera, so the seat keeps the third-person camera the game gives it: no first-person override. The
+// director re-chooses its camera only when the seat state it is told changes (director_choose_game_perspective), so
+// such a seat is reported under states of the mod's own (haloce_vehicle_camera::kChaseSeatState, and
+// kChaseSeatStateNotFollowing where this call is not given the following camera): it then re-chooses whenever the
+// answer changes, and takes the first-person camera again when no chase camera is chosen. The state is only ever
+// compared there; the simulation's own camera (director_camera_deterministic) discards it.
+// Whether the seat is a chase seat does not hang on the first-person override's own gates (a pause, blocked input):
+// a frame that read differently would re-choose the director's camera and reset the following camera with it.
+template<unsigned I> bool ChaseSeat(uint32_t unit,const Mode<I>* mode) noexcept
+{
+    if constexpr (I!=0) return false;
+    else return mode&&*mode==2&&Game_HaloCEChaseSeat(unit);
+}
 // NativeVehicleFirstPerson_SetStockOnThisThread: the hooks below forward and change nothing while it is set.
 thread_local bool t_stockOnThisThread=false;
 template<unsigned I> uint32_t __fastcall SelectHook(uint32_t unit,Mode<I>* mode)
@@ -565,7 +587,16 @@ template<unsigned I> uint32_t __fastcall SelectHook(uint32_t unit,Mode<I>* mode)
         const uint32_t nativeResult=result;
 #endif
         bool owned=false;
-        if (!t_stockOnThisThread&&SelectOwned<I>(unit,mode,result)) {
+        if (!t_stockOnThisThread&&ChaseSeat<I>(unit,mode)) {
+            // The game's following camera: the seat's own wherever its tag has one; a seat of a first-person camera
+            // gets it only where this machine may change what the simulation's camera answers. In solo that includes
+            // the simulation's own camera, which then follows the seated character on the character's own camera
+            // track (the game's following camera takes a seat's camera only for a seat of a third-person camera, a
+            // driver or an unseen rider); in a shared simulation the simulation keeps the game's answer.
+            if (!result&&!ForTheSimulation<I>()) result=1;
+            *mode=Mode<I>(result?haloce_vehicle_camera::kChaseSeatState:haloce_vehicle_camera::kChaseSeatStateNotFollowing);
+        }
+        else if (!t_stockOnThisThread&&SelectOwned<I>(unit,mode,result)) {
             if (ForTheSimulation<I>()) r.simulationCalls.fetch_add(1,std::memory_order_relaxed);
             else owned=true;
         }
@@ -819,6 +850,12 @@ int NativeVehicleFirstPerson_InSimulationTick(GameTitle title) noexcept
 {
     for (unsigned i=0;i<3;++i) if (kBindings[i].title==title) return InTick(i);
     return -1;
+}
+bool NativeVehicleFirstPerson_Requested(GameTitle title) noexcept
+{
+    if (title!=TitleAdapter_GetActiveTitle()) return false;
+    for (unsigned i=0;i<3;++i) if (kBindings[i].title==title) return Current(i);
+    return false;
 }
 bool NativeVehicleFirstPerson_SeatViewOwned(GameTitle title,uint32_t parent,int seat) noexcept
 {

@@ -286,6 +286,7 @@ void ClassicWindowBody(Window* window,uintptr_t caller)
         FollowRoomscale(source.render,scope->pair.tracking,scope->reference,
             scope->scale,scope->positional,scope->revision);
         ApplyPhysicalCrouchReference(scope->pair.tracking,scope->reference,scope->scale,scope->positional);
+        ApplyVehicleCameraLeash(source.render,scope->pair.tracking,scope->reference,scope->scale,scope->positional);
         publishedReference.Publish({scope->reference,scope->revision});
         const auto stage=StageClassicViewPair(source,scope->pair.tracking,scope->reference,
             scope->epoch,scope->scale,scope->positional,scope->pair);

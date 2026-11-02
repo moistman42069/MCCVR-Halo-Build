@@ -18,6 +18,8 @@ struct NativeVehicleCameraOwner
 // only: in Halo 4 by the engine's own in-tick byte, in Halo 2 through SetStockOnThisThread below, and in Halo CE,
 // whose tick is not read, not at all.
 void NativeVehicleFirstPerson_Poll();
+// The override is installed and asked for (vehicle_first_person) in the active title, and has not faulted.
+bool NativeVehicleFirstPerson_Requested(GameTitle title) noexcept;
 bool NativeVehicleFirstPerson_TrimTarget(GameTitle title,uint64_t& identity,int& seat) noexcept;
 // This override placed the camera in exactly this seat within 250 ms: the seat's view is the occupant's own
 // head, not the native chase camera (which orbits with the aim).

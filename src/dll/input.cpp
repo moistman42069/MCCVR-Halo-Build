@@ -999,7 +999,11 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         // On this path the game's Y is the aim servo's (the hand's pitch, or nothing while the wheel steers), never
         // the stick's, except in a stick-aimed seat, where the boom holds; the scope's magnification keeps the axis
         // while the scope is open. Off this path the stick's Y goes to the game as it always has, and the boom holds.
-        Game_VehicleBoomStick(haveStick && !VR_IsScopeActive() && Game_VehicleBoomTakesStick() ? pad.turnY : 0.0f);
+        // Halo CE aims a seat with the hand through its own control packet and its look stick turns the view's yaw
+        // only, so where the VR look owns the stick (the game gets neither axis) its Y aims nothing there either.
+        const bool boomAxisFree =
+            haveStick || (TitleAdapter_GetActiveTitle() == GameTitle::HaloCE && Game_VrOwnsLookStick());
+        Game_VehicleBoomStick(boomAxisFree && !VR_IsScopeActive() && Game_VehicleBoomTakesStick() ? pad.turnY : 0.0f);
         if (haveStick)
         {
             state->Gamepad.sThumbRX = ToRawStick(rx);

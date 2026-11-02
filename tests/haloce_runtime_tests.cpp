@@ -32,6 +32,18 @@ uint64_t Sight_NowUs() { static uint64_t now=1000000; return now+=1000; }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
 // No seat in this fixture: the tracking frame keeps the native camera heading.
 bool HaloCEControls_SeatHeading(uint32_t,halo_ce::Vec3&) noexcept { return false; }
+// The vehicle cameras' chase-camera leash (game.cpp): none placed in this fixture unless a test places one, a box of
+// no size around the camera's point in the world's own frame.
+static bool leashPlaced{};
+static unsigned leashHeld{};
+bool Game_HaloCEVehicleCameraLeash(uint32_t,vehicle_camera_frame::Basis& carrier,vehicle_camera_frame::LeashBox& box) noexcept
+{
+    if (!leashPlaced) return false;
+    carrier=vehicle_camera_frame::FromAngles(0,0,0);
+    box=vehicle_camera_frame::LeashBox{};
+    return true;
+}
+void Game_HaloCEVehicleCameraLeashHeld() noexcept { ++leashHeld; }
 // The motion tracker's lane (haloce_head_relative.cpp) is not linked here: the gameplay publication hands it
 // the frame's head, recorded so the test can see that it does.
 static unsigned headPublications{};
@@ -1805,6 +1817,26 @@ int main()
             PrepareAnniversaryTrackingReference(scope,pitchedSaber);
             check(roomscaleCalls==1&&scope.views.reference.position.x==accepted.position.x,
                 "menu and pause presentation cannot authorize CE movement");
+            // A CHASE CAMERA'S LEASH, in the Anniversary preparation: a box of no size about the camera's point holds
+            // the head there, so the frame's reference is moved onto the head; the reference kept for later frames is
+            // left as the same preparation leaves it without a leash.
+            roomscaleAllowed=false;
+            scope.referenceRevision=revision;scope.views.tracking.controllers.controlsPresentationBlocked=false;
+            scope.views.tracking.headPosition=frozen.position+halo_ce::Vec3{.3f,.1f,-.2f};
+            const auto keptReference=reference;
+            scope.views.reference=frozen;
+            PrepareAnniversaryTrackingReference(scope,pitchedSaber);
+            const auto unleashed=reference;
+            reference=keptReference;
+            scope.views.reference=frozen;
+            const unsigned heldBefore=leashHeld;
+            leashPlaced=true;
+            PrepareAnniversaryTrackingReference(scope,pitchedSaber);
+            leashPlaced=false;
+            const halo_ce::Vec3 apart=scope.views.reference.position-scope.views.tracking.headPosition;
+            check(leashHeld==heldBefore+1&&halo_ce::Dot(apart,apart)<1.0e-8f&&
+                std::memcmp(&reference,&unleashed,sizeof(reference))==0,
+                "an Anniversary frame's leash holds the head at the camera's point and leaves the kept reference alone");
             roomscaleAllowed=false;reference=originalReference;
         }
         PublishAnniversaryGameplayContext(saber,tracking,frozen,revision,Game_GetWorldScale(),true);

@@ -1,6 +1,7 @@
 #include "haloce_native_bindings.h"
 #include "haloce_contracts.generated.h"
 #include "haloce_crouch_contract.h"
+#include "haloce_vehicle_camera_contract.h"
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
@@ -240,7 +241,8 @@ int main(int argc,char** argv)
             {contract::hud_target::entries,contract::hud_target::witnesses,contract::hud_target::relatives,contract::hud_target::pointers},
             {contract::player_state::entries,contract::player_state::witnesses,contract::player_state::relatives,contract::player_state::pointers},
             {contract::controls::entries,contract::controls::witnesses,contract::controls::relatives,contract::controls::pointers},
-            {crouch_contract::entries,crouch_contract::witnesses,crouch_contract::relatives,crouch_contract::pointers}};
+            {crouch_contract::entries,crouch_contract::witnesses,crouch_contract::relatives,crouch_contract::pointers},
+            {vehicle_camera_contract::entries,vehicle_camera_contract::witnesses,vehicle_camera_contract::relatives,vehicle_camera_contract::pointers}};
         std::set<uint32_t> relocatedPointers;
         for (const auto& set:featureSets) for (const auto& pointer:set.pointers)
         {

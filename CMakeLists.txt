@@ -320,6 +320,7 @@ add_library(halo3xr SHARED
     src/dll/haloce_hud_layout.cpp
     src/dll/haloce_hud_target.cpp
     src/dll/haloce_controls.cpp
+    src/dll/haloce_vehicle_cameras.cpp
     src/dll/haloce_comfort.cpp
     src/dll/haloce_orientation.cpp
     src/dll/haloce_head_relative.cpp
@@ -951,6 +952,13 @@ if(BUILD_TESTING)
     target_compile_options(halomccvr_halo2_vehicle_camera_tests PRIVATE /W4 /WX)
     target_compile_definitions(halomccvr_halo2_vehicle_camera_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_halo2_vehicle_camera_tests COMMAND halomccvr_halo2_vehicle_camera_tests)
+    # Halo CE's seats as the vehicle camera file names them (by tag path), their roles, the game's own third-person
+    # camera from its following camera's command, and the built-in halo1 entries (src/common/haloce_vehicle_camera_logic.h).
+    add_executable(halomccvr_haloce_vehicle_camera_tests tests/haloce_vehicle_camera_tests.cpp
+        src/common/vehicle_camera_file.cpp)
+    target_compile_options(halomccvr_haloce_vehicle_camera_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_haloce_vehicle_camera_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_haloce_vehicle_camera_tests COMMAND halomccvr_haloce_vehicle_camera_tests)
     # The ring where the vehicle aims, beside the crosshair: its picture, colour, direction, range and size
     # (src/common/vehicle_aim_marker_logic.h).
     add_executable(halomccvr_vehicle_aim_marker_tests tests/vehicle_aim_marker_tests.cpp)
@@ -1581,6 +1589,12 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_ce_controls_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_ce_controls_runtime_tests PRIVATE minhook)
     add_test(NAME halomccvr_ce_controls_runtime_tests COMMAND halomccvr_ce_controls_runtime_tests)
+    add_executable(halomccvr_ce_vehicle_cameras_runtime_tests tests/haloce_vehicle_cameras_runtime_tests.cpp
+        src/dll/haloce_native_bindings.cpp)
+    target_include_directories(halomccvr_ce_vehicle_cameras_runtime_tests PRIVATE src/common src/dll)
+    target_compile_definitions(halomccvr_ce_vehicle_cameras_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_ce_vehicle_cameras_runtime_tests PRIVATE minhook)
+    add_test(NAME halomccvr_ce_vehicle_cameras_runtime_tests COMMAND halomccvr_ce_vehicle_cameras_runtime_tests)
     add_executable(halomccvr_ce_comfort_tests tests/haloce_comfort_tests.cpp src/dll/haloce_native_bindings.cpp)
     target_include_directories(halomccvr_ce_comfort_tests PRIVATE src/common src/dll)
     target_compile_definitions(halomccvr_ce_comfort_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

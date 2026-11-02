@@ -84,6 +84,7 @@
 #include "haloce_orientation.h"
 #include "haloce_head_relative.h"
 #include "haloce_unit_control.h"
+#include "haloce_vehicle_cameras.h"
 #include "title_reentry_probe.h"
 #include "roomscale.h"
 #include "sight_layer.h"
@@ -126,6 +127,7 @@
 #include "../common/halo2_vehicle_camera_logic.h"
 #include "../common/halo2_vehicle_identity.h"
 #include "halo2_vehicle_cameras.h"
+#include "../common/haloce_vehicle_camera_logic.h"
 #include "../common/reach_hand_shot_logic.h"
 #include "../common/aim_no_unit_logic.h"
 #include "../common/title_runtime_state.h"
@@ -11814,6 +11816,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     #include "halo3_vehicle_boom.inl"
     #include "vehicle_cameras.inl"
     #include "halo2_vehicle_cameras.inl"
+    #include "haloce_vehicle_cameras.inl"
 
     // ---- C9: the view turns with the vehicle -------------------------------
     // "the camera does not rotate with the car" (user, 2026-07-31). C8 put the
@@ -52292,6 +52295,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 (void)HaloCEHeadRelative_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCENetworkInput_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCEUnitControl_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
+                // The vehicle cameras' chase cameras (haloce_vehicle_cameras.cpp): installed only while they are on.
+                (void)HaloCEVehicleCameras_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
             }
             if (!halo2Active)
                 Halo2ColdObservation_Rearm();
@@ -60642,6 +60647,94 @@ bool Game_VehicleSeatButtonsLive(bool& passenger, bool& controlModes)
     passenger = (seat & kVehicleSeatPassenger) != 0;
     controlModes = (seat & kVehicleSeatOneControl) == 0;
     return (seat & kVehicleSeatButtonsLive) != 0;
+}
+
+// Halo CE's vehicle cameras (haloce_vehicle_cameras.h): the shared runtime's answers for the game's own camera code.
+bool Game_HaloCEChaseAny() noexcept
+{
+    return g_vehicleCameraPublished.chase.load(std::memory_order_acquire) != 0 &&
+           TitleAdapter_GetActiveTitle() == GameTitle::HaloCE;
+}
+
+bool Game_HaloCEChaseHead() noexcept
+{
+    return g_vehicleCameraPublished.chaseHead.load(std::memory_order_acquire) != 0 &&
+           TitleAdapter_GetActiveTitle() == GameTitle::HaloCE;
+}
+
+// The last seat given a chase camera, and when: a call the light seat read refuses (one frame of a transient state
+// read) keeps that answer a moment, so the director is not sent to the first-person camera and back, resetting its
+// following camera both times. It answers only for the same unit, and only while the chosen chase camera is still for
+// that generation, vehicle and seat; a unit that has left its seat is not seated (the selector's own seat state), so
+// it never holds a chase seat open past the seat. Selector calls only; the fields may be seen out of step, which costs
+// at most one frame's answer.
+static std::atomic<uint32_t> s_haloceChaseUnit{UINT32_MAX};
+static std::atomic<uint32_t> s_haloceChaseGeneration{0};
+static std::atomic<uint32_t> s_haloceChaseParent{UINT32_MAX};
+static std::atomic<int32_t> s_haloceChaseSeat{-1};
+static std::atomic<uint64_t> s_haloceChaseMs{0};
+inline constexpr uint64_t kHaloCEChaseSeatHoldMs = 250;
+
+bool Game_HaloCEChaseSeat(uint32_t unit) noexcept
+{
+    if (!Game_HaloCEChaseAny())
+        return false;
+    vehicle_camera_select::ActiveCamera camera;
+    VehicleCameraSeatKey key;
+    HaloCEVehicleSeatNow now{};
+    if (!HaloCEControls_ReadVehicleSeatNow(now))
+    {
+        const uint64_t at = s_haloceChaseMs.load(std::memory_order_acquire);
+        const uint64_t ms = GetTickCount64();
+        return at && ms >= at && ms - at <= kHaloCEChaseSeatHoldMs &&
+               s_haloceChaseUnit.load(std::memory_order_relaxed) == unit &&
+               HaloCEVehicleCameraChosen(s_haloceChaseGeneration.load(std::memory_order_relaxed),
+                                         s_haloceChaseParent.load(std::memory_order_relaxed),
+                                         static_cast<int16_t>(s_haloceChaseSeat.load(std::memory_order_relaxed)),
+                                         camera, key) &&
+               HaloCEVehicleCameras_FollowingLive();
+    }
+    if (now.unit != unit)
+        return false;
+    const bool chase = HaloCEVehicleCameraChosen(now.generation, now.parent, now.seat, camera, key) &&
+                       HaloCEVehicleCameras_FollowingLive();
+    s_haloceChaseUnit.store(unit, std::memory_order_relaxed);
+    s_haloceChaseGeneration.store(now.generation, std::memory_order_relaxed);
+    s_haloceChaseParent.store(now.parent, std::memory_order_relaxed);
+    s_haloceChaseSeat.store(now.seat, std::memory_order_relaxed);
+    s_haloceChaseMs.store(chase ? GetTickCount64() : 0, std::memory_order_release);
+    return chase;
+}
+
+bool Game_HaloCEEyeNudgeWorld(uint32_t generation, uint32_t parent, int16_t seat, float point[3]) noexcept
+{
+    return HaloCEVehicleCameraEyeNudge(generation, parent, seat, point);
+}
+
+bool Game_HaloCEChasePlace(const HaloCEChaseFrame& frame, float out[3]) noexcept
+{
+    return HaloCEVehicleCameraPlace(frame, out);
+}
+
+bool Game_HaloCEVehicleCameraLeash(uint32_t generation, vehicle_camera_frame::Basis& carrier,
+                                   vehicle_camera_frame::LeashBox& box) noexcept
+{
+    return HaloCEVehicleCameraLeashRead(generation, carrier, box);
+}
+
+void Game_HaloCEVehicleCameraLeashHeld() noexcept
+{
+    g_haloceVehicleCameraLeashHeldFrames.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool Game_HaloCEVehicleCameraFollow(uint32_t generation, uint32_t parent, int16_t seat, bool& yaw) noexcept
+{
+    vehicle_camera_select::ActiveCamera camera;
+    VehicleCameraSeatKey key;
+    if (!HaloCEVehicleCameraChosen(generation, parent, seat, camera, key))
+        return false;
+    yaw = camera.rotYaw;
+    return true;
 }
 
 void Game_VehicleControlStep()

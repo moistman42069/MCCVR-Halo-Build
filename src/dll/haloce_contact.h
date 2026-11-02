@@ -20,3 +20,8 @@ void HaloCEContact_ApplyPalette(const halo_ce::RenderContext& context,
 // Publish the unblocked pose only after the native palette really commits.
 void HaloCEContact_CommitPalette(const halo_ce::RenderContext& context,
     const HaloCEContactPublication& publication) noexcept;
+// A line traced with the sight trace's own query (the engine's projectile flags), for the vehicle cameras' "collide":
+// `ignore` and everything attached to it are skipped. Only on the game's own thread (the camera code the observer's
+// own collision runs in), never the render thread. True when traced, with `hit` and the fraction of the line it went.
+bool HaloCEContact_TraceSegment(const float start[3],const float displacement[3],uint32_t ignore,bool& hit,
+    float& fraction) noexcept;

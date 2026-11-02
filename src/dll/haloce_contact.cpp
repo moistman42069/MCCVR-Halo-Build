@@ -528,11 +528,11 @@ bool Remove() noexcept
         reinterpret_cast<const void*>(&BreakableHook),reinterpret_cast<const void*>(&BreakableBody),
         reinterpret_cast<const void*>(&HapticEnqueueHook),reinterpret_cast<const void*>(&HapticEnqueueBody),
         reinterpret_cast<const void*>(&HapticUpdateHook),reinterpret_cast<const void*>(&UpdateRecoilEnvelopes),
-        reinterpret_cast<const void*>(&HapticTriggerHook)};
+        reinterpret_cast<const void*>(&HapticTriggerHook),reinterpret_cast<const void*>(&HaloCEContact_TraceSegment)};
     const void* trampolines[]{tickHook.original,nullptr,damageHook.original,nullptr,nullptr,nullptr,
         fanHook.original,nullptr,breakableHook.original,nullptr,hapticEnqueueHook.original,nullptr,
-        hapticUpdateHook.original,nullptr,hapticTriggerHook.original};
-    if (!WaitForNativeDetourQuiescence(functions,trampolines,15,callbacks)) return false;
+        hapticUpdateHook.original,nullptr,hapticTriggerHook.original,nullptr};
+    if (!WaitForNativeDetourQuiescence(functions,trampolines,16,callbacks)) return false;
     for (auto* hook:{&tickHook,&damageHook,&fanHook,&breakableHook,&hapticEnqueueHook,&hapticUpdateHook,&hapticTriggerHook})
     {
         if (hook->target&&MH_RemoveHook(hook->target)!=MH_OK) return false;
@@ -633,6 +633,26 @@ bool Install(uintptr_t base,size_t size,uint32_t gen) noexcept
     LOG("CE weapon haptics: %s; exact local firing-damage envelope, native curves, independent hand output; general damage/vehicle rumble unchanged",hapticReady.load()?"installed":"stock fallback");
     return true;
 }
+}
+
+bool HaloCEContact_TraceSegment(const float start[3],const float displacement[3],uint32_t ignore,bool& hit,
+    float& fraction) noexcept
+{
+    constexpr GameTitle kTitle=GameTitle::HaloCE;
+    callbacks.fetch_add(1,std::memory_order_acq_rel);
+    bool traced=false;
+    __try
+    {
+        if (!Current()||Sight_TraceFaulted(kTitle)||!start||!displacement) __leave;
+        CollisionResult result{};bool faulted=false;
+        const uint8_t returned=GuardedSightTrace(start,displacement,ignore,result,faulted);
+        if (faulted) { Sight_NoteTraceFault(kTitle);exceptions.fetch_add(1,std::memory_order_relaxed);__leave; }
+        hit=returned&&std::isfinite(result.fraction)&&result.fraction>=0&&result.fraction<=1;
+        fraction=hit?result.fraction:1.0f;
+        traced=true;
+    }
+    __finally { callbacks.fetch_sub(1,std::memory_order_release); }
+    return traced;
 }
 
 bool HaloCEContact_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActive) noexcept

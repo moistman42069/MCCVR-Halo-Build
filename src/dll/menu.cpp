@@ -1624,7 +1624,7 @@ namespace
             &g_config.vehicle_wheel_deadzone_deg, 0.0f, 30.0f, "%.0f");
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::Text("Vehicle cameras (Halo 3, ODST, Reach, Halo 4, Halo 2)");
+        ImGui::Text("Vehicle cameras (every title)");
         changed |= ImGui::Checkbox("Cameras from halomccvr_vehicle_cameras.json",
                                    &g_config.vehicle_cameras);
         changed |= ImGui::Combo("Note when the camera changes", &g_config.vehicle_camera_note,
