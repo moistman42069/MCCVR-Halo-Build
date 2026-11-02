@@ -133,7 +133,7 @@ struct Menu {
         const bool sameRelease = installed && !identity.tag.empty() && identity.tag == latest.tag && !identity.candidate;
         EnableWindow(GetDlgItem(window, Update), !busy && game && updateReady && !sameRelease);
         Text(GetDlgItem(window, Update), identity.candidate && installed ? L"INSTALL PUBLIC RELEASE" : L"INSTALL UPDATE");
-        if (game) Text(path, (game->store ? L"XBOX APP / MICROSOFT STORE\n" : L"STEAM\n") + game->root.wstring() +
+        if (game) Text(path, (game->store ? L"Version: Xbox app / Microsoft Store" : L"Version: Steam") +
             L"\nVR folder: " + (game->root / L"Halo_MCC_VR").wstring() + L"\nInstalled: " + (installed ? identity.label : L"not installed"));
         else Text(path, L"No MCC installation found. Choose Browse and select the folder containing MCC, or the Xbox Content folder.");
         Text(GetDlgItem(window, Install), installed ? L"INSTALL / UPDATE" : L"INSTALL VR MOD");
@@ -302,7 +302,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         StyleCombo(*menu, menu->games);
         Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, 160, 122, 38, Browse);
         Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, 160, 110, 38, Scan);
-        menu->path = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 214, 895, 77);
+        menu->path = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 222, 895, 69);
         SendMessageW(menu->path, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         Label(*menu, L"02  /  YOUR VR SETUP", 38, 310, 570);
         menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_AUTOCHECKBOX | WS_TABSTOP, 38, 340, 850, 30, Retain);
