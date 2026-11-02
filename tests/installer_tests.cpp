@@ -109,6 +109,15 @@ static void Policies() {
         const std::string skips = "[" + release("newest", true, asset("MOTYSHIZ", "Halo-MCC-VR-x-Source.zip")) + "," +
             release("older", true, asset("MOTYSHIZ", "Halo-MCC-VR-y-Launcher.zip")) + "]";
         Require(ParseNewestRelease(skips, nitsujack).tag == "older", "a release with nothing to install is passed over");
+        const std::string several = "[" + release("first", true, asset("MOTYSHIZ", "Halo-MCC-VR-a-Launcher.zip")) + "," +
+            release("second", true, asset("MOTYSHIZ", "Halo-MCC-VR-b-Source.zip")) + "," +
+            release("third", false, asset("MOTYSHIZ", "Halo-MCC-VR-c-Launcher.zip")) + "]";
+        const auto listed = ParseReleaseList(several, nitsujack);
+        Require(listed.size() == 2 && listed[0].tag == "first" && listed[1].tag == "third", "the version list keeps every installable release");
+        std::string dated = "[" + release("older", true, asset("MOTYSHIZ", "Halo-MCC-VR-a-Launcher.zip")) + "," + release("newer", true, asset("MOTYSHIZ", "Halo-MCC-VR-b-Launcher.zip")) + "]";
+        dated.insert(dated.find("\"tag_name\":\"older\""), "\"published_at\":\"2026-01-01T00:00:00Z\",");
+        dated.insert(dated.find("\"tag_name\":\"newer\""), "\"published_at\":\"2026-02-01T00:00:00Z\",");
+        Require(ParseReleaseList(dated, nitsujack).front().tag == "newer", "the version list is newest first by date");
         threw = false; try { ParseNewestRelease(ours, godoy); } catch (...) { threw = true; }
         Require(threw, "one source's list can't supply another's download");
         threw = false; try { ParseReleaseUpdate(release("x", true, asset("moistman42069", "Halo-MCC-VR.zip")), official); } catch (...) { threw = true; }

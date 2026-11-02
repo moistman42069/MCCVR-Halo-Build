@@ -13,6 +13,6 @@ InstallResult InstallPayload(const std::filesystem::path& payload, const GameIns
 // Empty on cancellation. Returning a directory only requests the existing
 // native launch path; installing never starts the game. `reclaimerExe`, when given, receives the Project
 // Reclaimer game program the player chose to start instead (the menu's last section); empty otherwise.
-std::wstring ShowLauncherMenu(HINSTANCE instance, const std::filesystem::path& launcherDir, int showCommand,
+std::wstring ShowLauncherMenu(HINSTANCE instance, const std::filesystem::path& launcherDir, int showCommand, std::wstring* reclaimerDir,
                               std::wstring* reclaimerExe = nullptr);
 } // namespace mcc_installer

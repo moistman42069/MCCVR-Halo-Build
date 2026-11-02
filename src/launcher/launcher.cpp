@@ -1493,15 +1493,15 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
         }
         if (headless || flatProbe)
             return LaunchInstalledMod(launcherDir.wstring());
-        std::wstring reclaimerExe;
-        const auto selected = mcc_installer::ShowLauncherMenu(instance, launcherDir, showCommand, &reclaimerExe);
+        std::wstring reclaimerExe, reclaimerDir;
+        const auto selected = mcc_installer::ShowLauncherMenu(instance, launcherDir, showCommand, &reclaimerDir, &reclaimerExe);
         if (!reclaimerExe.empty())
         {
             ReclaimerClient chosen;
             chosen.exe = reclaimerExe;
             chosen.version = ReclaimerVersionOfFile(reclaimerExe, &chosen.versionFromName);
             chosen.named = true;
-            return LaunchReclaimer(reclaimer_launch::ModDir(launcherDir).wstring(), chosen);
+            return LaunchReclaimer(reclaimer_launch::ModDir(reclaimerDir).wstring(), chosen);
         }
         return selected.empty() ? 0 : LaunchInstalledMod(selected);
     }

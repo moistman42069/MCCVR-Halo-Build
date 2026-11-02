@@ -147,14 +147,20 @@ inline size_t NewestPublished(const std::vector<std::string>& dates) {
     }
     return newest;
 }
-// A channel with prereleases: GitHub's "latest" never names one, so the list is read, newest first. A release with
-// nothing a player can install is passed over; the tag shown before installing says which one was found.
-inline ReleaseUpdate ParseNewestRelease(const std::string& text, const ReleaseChannel& channel) {
+// Everything a player can install from a repository, newest first by publish date. A release with nothing a player
+// can install is passed over, as is a prerelease on a channel that does not take them.
+inline std::vector<ReleaseUpdate> ParseReleaseList(const std::string& text, const ReleaseChannel& channel) {
     const auto json = ReleaseJsonReader(text).Read();
     if (json.kind != ReleaseJson::Kind::Array) throw std::runtime_error("Invalid GitHub release response.");
+    std::vector<ReleaseUpdate> releases;
     for (const auto& release : json.array) {
-        try { return ReleaseFromJson(release, channel); } catch (const std::runtime_error&) {}
+        try { releases.push_back(ReleaseFromJson(release, channel)); } catch (const std::runtime_error&) {}
     }
-    throw std::runtime_error("This source has no release the launcher can install. Open the release page for manual instructions.");
+    if (releases.empty()) throw std::runtime_error("This source has no release the launcher can install. Open the release page for manual instructions.");
+    std::stable_sort(releases.begin(), releases.end(), [](const ReleaseUpdate& a, const ReleaseUpdate& b) { return a.published > b.published; });
+    return releases;
+}
+inline ReleaseUpdate ParseNewestRelease(const std::string& text, const ReleaseChannel& channel) {
+    return ParseReleaseList(text, channel).front();
 }
 } // namespace mcc_installer
