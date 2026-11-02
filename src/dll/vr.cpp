@@ -19539,7 +19539,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         }
 #endif
                         // THE VEHICLE AIM RING (Halo Campaign Evolved's "aimMarker"; vehicle_cameras.inl): where the
-                        // VEHICLE aims, beside the crosshair, while a Halo 3 chase camera asks for it. The camera
+                        // VEHICLE aims, beside the crosshair, while a Halo 3 or Reach chase camera asks for it. The camera
                         // pass publishes the direction from the eye and the distance; it is drawn here from this
                         // frame's stereo centre, parked at the crosshair's cap as the crosshair is, as wide as the
                         // crosshair at that distance, and queued BEFORE the crosshair so the crosshair draws over
@@ -19549,7 +19549,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             float ringDistanceM = 0.0f;
                             bool ringShown = false;
                             ReachStereoCenterPose ringCenter{};
-                            if (reticleOwnerAdmitted && reticleTitle == GameTitle::Halo3 && !VR_HudHidden() &&
+                            if (reticleOwnerAdmitted &&
+                                (reticleTitle == GameTitle::Halo3 || reticleTitle == GameTitle::HaloReach) &&
+                                !VR_HudHidden() &&
                                 !theaterPresentation && !VR_IsPausePresentation() && projection.viewCount == 2 &&
                                 projectionViews.size() == 2 && Game_GetVehicleAimMarker(ringDir, ringDistanceM))
                             {

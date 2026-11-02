@@ -1573,7 +1573,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("How you control a seat (Halo 3)##section", ImGuiTreeNodeFlags_None))
+        if (ImGui::CollapsingHeader("How you control a seat (Halo 3, ODST, Reach)##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Combo("Seat controls", &g_config.vehicle_control,
                                 "As before\0Motion: your hand\0Stick\0Wheel\0");
@@ -1589,7 +1589,10 @@ namespace
             "As before: your hand aims, except that the stick or wheel steers\n"
             "those vehicles while the view turns with them.\n"
             "With vehicle cameras on, the left stick click changes this for the\n"
-            "seat you are in, and each seat keeps its own choice.");
+            "seat you are in, and each seat keeps its own choice.\n"
+            "ODST: only with vehicle cameras on.\n"
+            "Reach: only with vehicle cameras on, and Motion or Wheel only (Stick\n"
+            "keeps Reach's own rule there).");
         changed |= vr_menu::SliderFloat("Ignore aim behind, within (m)",
             &g_config.vehicle_aim_reject_metres, 0.0f, 20.0f, "%.1f");
         changed |= vr_menu::SliderFloat("Behind is a dot below",
@@ -1621,7 +1624,7 @@ namespace
             &g_config.vehicle_wheel_deadzone_deg, 0.0f, 30.0f, "%.0f");
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::Text("Vehicle cameras (Halo 3)");
+        ImGui::Text("Vehicle cameras (Halo 3, Reach)");
         changed |= ImGui::Checkbox("Cameras from halomccvr_vehicle_cameras.json",
                                    &g_config.vehicle_cameras);
         changed |= ImGui::Combo("Note when the camera changes", &g_config.vehicle_camera_note,
@@ -1645,7 +1648,9 @@ namespace
             "either held a second = re-centre the view, left stick click = next\n"
             "way to control the seat. Right B then uses, gets out and reloads,\n"
             "and a passenger's support trigger switches weapon. Each seat keeps\n"
-            "its last camera, mode and controls. Needs first-person vehicles on.");
+            "its last camera, mode and controls. Needs first-person vehicles on.\n"
+            "Reach: the note is on the mod's panel, and the glass and body keys\n"
+            "are Halo 3's only for now.");
         if (g_config.vehicle_cameras)
         {
             if (ImGui::Button("Next camera"))

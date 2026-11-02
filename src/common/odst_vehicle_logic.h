@@ -56,6 +56,48 @@ inline constexpr int kOdstMaximumRenderNodes = 255;
 // Halo 3 reads +0x24E; ODST's own seat-mode chooser at 0x1535D3 reads +0x262.
 inline constexpr size_t kOdstUnitSeatWordOffset = 0x262;
 
+// The object's bounding sphere and its frame, as Halo 3's (halo3_vehicle_logic.h kHalo3Object*Offset) -- read only by
+// the vehicle cameras. ADDR-HYGIENE: guarded -- field offsets proven in the pinned module, and every read is checked
+// at run time (the frame orthonormal, its origin inside its own bounds) before anything is placed from it.
+//   +0x50 position, +0x5C forward, +0x68 up: halo3odst +0x380C34 (object_get_world_matrix, the homolog of halo3
+//     +0x3453DC, the same instructions with ODST's object-table TLS slot 0x20) builds the object's matrix from
+//     exactly these. An attached object's are relative to its parent's attachment node, as in Halo 3.
+//   +0x1C bounding-sphere centre, +0x28 radius: halo3odst +0x3DB93C (the homolog of halo3 +0x397230, same shape)
+//     takes `movss xmm0, [obj+0x28]` and `lea r9, [obj+0x1C]` into its sphere query.
+inline constexpr size_t kOdstObjectBoundsCenterOffset = 0x1C;
+inline constexpr size_t kOdstObjectBoundsRadiusOffset = 0x28;
+inline constexpr size_t kOdstObjectPositionOffset = 0x50;
+inline constexpr size_t kOdstObjectForwardOffset = 0x5C;
+inline constexpr size_t kOdstObjectUpOffset = 0x68;
+
+// THE OBSERVER (the game's own camera for a player), read by the vehicle cameras as Halo 3's is: an array of 0x3D0-byte
+// records at an engine TLS slot. Its record is Halo 3's -- halo3odst +0x1AEEF9 reads the camera's focus (the pivot a
+// seat's third-person camera turns about) at +0x18C beside +0x1AC and +0x194 exactly as halo3 +0x18032C does, and
+// +0x1ACBF7 its position (+0x11C) and forward (+0x144) as halo3 +0x17E04B -- but the slot differs (0x5A8, Halo 3's
+// 0x578). The slot and the stride are decoded from the matched observer camera effect (kObserverCameraEffectSig, unique
+// in each module): `mov edi, imm32` (BF) at +0x56 loads the slot, `imul rbx, rsi, imm32` (48 69 DE) at +0x6A the stride.
+// ADDR-HYGIENE: resolved -- read from the matched function, its opcode bytes and the stride checked before the slot
+// is taken; a mismatch leaves the observer unread (the "thirdperson" camera then stands at the mod's stand-in).
+inline constexpr size_t kOdstObserverSlotLoadOffset = 0x56;
+inline constexpr size_t kOdstObserverStrideLoadOffset = 0x6A;
+inline constexpr uint32_t kOdstObserverStride = 0x3D0;
+
+// The observer slot decoded from the effect function's bytes at +0x56 (5 bytes) and +0x6A (7 bytes): 0 when either
+// instruction is not the expected one, the stride is not a record's, or the slot is not a plausible TLS member.
+inline uint32_t OdstDecodeObserverSlot(const uint8_t slotLoad[5], const uint8_t strideLoad[7])
+{
+    if (!slotLoad || !strideLoad || slotLoad[0] != 0xBF || strideLoad[0] != 0x48 || strideLoad[1] != 0x69 ||
+        strideLoad[2] != 0xDE)
+        return 0;
+    const uint32_t slot = uint32_t{slotLoad[1]} | uint32_t{slotLoad[2]} << 8 | uint32_t{slotLoad[3]} << 16 |
+                          uint32_t{slotLoad[4]} << 24;
+    const uint32_t stride = uint32_t{strideLoad[3]} | uint32_t{strideLoad[4]} << 8 | uint32_t{strideLoad[5]} << 16 |
+                            uint32_t{strideLoad[6]} << 24;
+    if (stride != kOdstObserverStride || slot == 0 || slot > 0x2000 || (slot & 7u) != 0)
+        return 0;
+    return slot;
+}
+
 // Live interpolated node bank on the object. Halo 3's cluster sits at
 // +0x132/+0x134/+0x136/+0x138; ODST's is the same cluster shifted -0xC.
 inline constexpr size_t kOdstObjectOrientationBankSizeOffset = 0x126;

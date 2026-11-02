@@ -79,10 +79,26 @@ inline constexpr size_t kHalo3TlsGameTime = 0xC8;
 inline constexpr size_t kHalo3TlsHudUsers = 0xF0;
 inline constexpr int32_t kHalo3HudMessageType = 3;
 
+// ODST posts its HUD lines inline (no post function): the queue is called with the user's queue address, which its
+// callers make as [TLS + kOdstTlsHudUsers] + user * 0x3B88 + kOdstHudQueueOffset (user 0's: the HUD users' base
+// plus the offset).
+using Halo3HudQueueFn = void(__fastcall*)(void* queue, const wchar_t* text, int32_t type);
+
 struct Halo3HudNote
 {
     std::atomic<Halo3HudMessageFn> post{nullptr};
-    const uint32_t* tlsIndex = nullptr; // written before `post` is published, cleared after it is withdrawn
+    const uint32_t* tlsIndex = nullptr; // written before `post` / `queue` is published, cleared after it is withdrawn
+    // A title that posts inline (ODST): the queue itself, and where user 0's queue lies; `post` stays null. Written
+    // before `queue` is published.
+    std::atomic<Halo3HudQueueFn> queue{nullptr};
+    size_t tlsHudUsers = kHalo3TlsHudUsers;
+    size_t queueOffset = 0;
+    // Whether the thread's game mode is checked before a post (Halo 3: MCC's own caller checks it, at the offset that
+    // proves it; ODST's caller does not show where, so a post there needs the game clock and the HUD block alone).
+    bool checksGameMode = true;
+    const char* const title; // whose note, for the log; fixed at construction, so the cold worker's read never races
+    const GameTitle sessionTitle; // whose session type decides whether the note may use the game's HUD
+    explicit Halo3HudNote(const char* name, GameTitle session = GameTitle::Halo3) : title(name), sessionTitle(session) {}
     // The mailbox: the cold worker's latest note. `serial` and the texts change together under the lock; `wanted`
     // mirrors `serial` for the game thread's lock-free check.
     SRWLOCK lock = SRWLOCK_INIT;
@@ -97,7 +113,7 @@ struct Halo3HudNote
     std::atomic<int> notReadyWhy{0}; // the last Halo3HudNoteThreadReady refusal (Halo3HudNoteNotReadyText)
     uint32_t reportedPosted = 0, reportedFallbacks = 0, reportedFaults = 0; // cold worker
 };
-Halo3HudNote g_halo3HudNote;
+Halo3HudNote g_halo3HudNote{"Halo 3"};
 
 bool InstallHalo3HudNote(uintptr_t base, size_t size, uint32_t generation)
 {
@@ -144,15 +160,16 @@ void RemoveHalo3HudNote()
 
 namespace
 {
-bool Halo3HudNoteSessionAllows()
+// Whether this session lets the note use the game's HUD, asked of the note's own title.
+bool Halo3HudNoteSessionAllows(const Halo3HudNote& note)
 {
     return hud_note::SessionAllows(Sight_FireTimeChangesAllowed(), g_hostIsProjectReclaimer,
-                                   Sight_SessionType(GameTitle::Halo3));
+                                   Sight_SessionType(note.sessionTitle));
 }
 
-// The calling thread holds the HUD block, the game clock and a campaign or multiplayer game: 0. Otherwise the first
-// thing missing (Halo3HudNoteNotReadyText). Guarded: no C++ object here.
-int Halo3HudNoteThreadReady(const uint32_t* tlsIndex)
+// The calling thread holds the HUD block, the game clock and (where the note checks it) a campaign or multiplayer
+// game: 0. Otherwise the first thing missing (Halo3HudNoteNotReadyText). Guarded: no C++ object here.
+int Halo3HudNoteThreadReady(const uint32_t* tlsIndex, size_t tlsHudUsers, bool checksGameMode)
 {
     __try
     {
@@ -160,14 +177,17 @@ int Halo3HudNoteThreadReady(const uint32_t* tlsIndex)
         const uint8_t* block = slots ? slots[*tlsIndex] : nullptr;
         if (!block)
             return 1;
-        const auto* game = *reinterpret_cast<const uint8_t* const*>(block + kHalo3TlsGameGlobals);
-        if (!game)
-            return 2;
-        if (game[0x10] != kHalo3GameModeCampaign && game[0x10] != kHalo3GameModeMultiplayer)
-            return 3;
+        if (checksGameMode)
+        {
+            const auto* game = *reinterpret_cast<const uint8_t* const*>(block + kHalo3TlsGameGlobals);
+            if (!game)
+                return 2;
+            if (game[0x10] != kHalo3GameModeCampaign && game[0x10] != kHalo3GameModeMultiplayer)
+                return 3;
+        }
         if (!*reinterpret_cast<void* const*>(block + kHalo3TlsGameTime))
             return 4;
-        if (!*reinterpret_cast<void* const*>(block + kHalo3TlsHudUsers))
+        if (!*reinterpret_cast<void* const*>(block + tlsHudUsers))
             return 5;
         return 0;
     }
@@ -203,18 +223,38 @@ bool Halo3HudNoteCall(Halo3HudMessageFn post, const wchar_t* text)
         return false;
     }
 }
+
+// An inline-posting title's post, made as its own callers make it: user 0's queue in the thread's HUD block.
+bool Halo3HudNoteQueueCall(Halo3HudQueueFn queue, const uint32_t* tlsIndex, size_t tlsHudUsers, size_t queueOffset,
+                           const wchar_t* text)
+{
+    __try
+    {
+        const auto* slots = reinterpret_cast<uint8_t* const*>(__readgsqword(0x58));
+        uint8_t* block = slots ? slots[*tlsIndex] : nullptr;
+        uint8_t* users = block ? *reinterpret_cast<uint8_t* const*>(block + tlsHudUsers) : nullptr;
+        if (!users)
+            return false;
+        CallNativeWithSpareSlots(queue, static_cast<void*>(users + queueOffset), text, kHalo3HudMessageType);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
 } // namespace
 
 // The game thread, from the listener update's detour after the game's update: post the latest note the HUD has not
 // shown. The common case is two atomic loads.
-void Halo3HudNotePost()
+void HudNotePost(Halo3HudNote& note)
 {
-    auto& note = g_halo3HudNote;
     const uint32_t shown = note.shown.load(std::memory_order_acquire);
     if (note.wanted.load(std::memory_order_acquire) == shown)
         return;
     const Halo3HudMessageFn post = note.post.load(std::memory_order_acquire);
-    if (!post || !Halo3HudNoteSessionAllows())
+    const Halo3HudQueueFn queue = note.queue.load(std::memory_order_acquire);
+    if ((!post && !queue) || !Halo3HudNoteSessionAllows(note))
         return; // the cold worker's fallback shows it on the panel
     wchar_t text[hud_note::kMaxChars + 1];
     uint32_t serial = 0;
@@ -227,7 +267,7 @@ void Halo3HudNotePost()
     const uint64_t now = GetTickCount64();
     if (!hud_note::Due(serial, shown, now >= askedMs ? now - askedMs : 0))
         return;
-    if (const int why = Halo3HudNoteThreadReady(note.tlsIndex))
+    if (const int why = Halo3HudNoteThreadReady(note.tlsIndex, note.tlsHudUsers, note.checksGameMode))
     {
         note.notReady.fetch_add(1, std::memory_order_relaxed);
         note.notReadyWhy.store(why, std::memory_order_relaxed);
@@ -237,20 +277,27 @@ void Halo3HudNotePost()
     if (!note.shown.compare_exchange_strong(expected, serial, std::memory_order_acq_rel))
         return; // the panel took it
     text[hud_note::kMaxChars] = L'\0';
-    if (Halo3HudNoteCall(post, text))
+    const bool called = post ? Halo3HudNoteCall(post, text)
+                             : Halo3HudNoteQueueCall(queue, note.tlsIndex, note.tlsHudUsers, note.queueOffset, text);
+    if (called)
         note.posted.fetch_add(1, std::memory_order_relaxed);
     else
         note.faults.fetch_add(1, std::memory_order_relaxed);
 }
 
-// Cold worker: show a vehicle camera note the way vehicle_camera_note says.
-void Halo3VehicleNoteShow(const std::wstring& text, float seconds)
+void Halo3HudNotePost()
 {
-    auto& note = g_halo3HudNote;
-    const bool hudReady = note.post.load(std::memory_order_acquire) &&
-                          g_halo3HeadAudio.ready.load(std::memory_order_acquire);
+    HudNotePost(g_halo3HudNote);
+}
+
+// Cold worker: show a vehicle camera note the way vehicle_camera_note says, through `note` (its title's), whose post
+// runs from the sound listener update's hook while `audioReady` (that hook) is.
+void VehicleNoteShowOn(Halo3HudNote& note, bool audioReady, const std::wstring& text, float seconds)
+{
+    const bool hudReady =
+        (note.post.load(std::memory_order_acquire) || note.queue.load(std::memory_order_acquire)) && audioReady;
     const hud_note::Route route =
-        hud_note::Choose(g_config.vehicle_camera_note, hudReady, Halo3HudNoteSessionAllows());
+        hud_note::Choose(g_config.vehicle_camera_note, hudReady, Halo3HudNoteSessionAllows(note));
     if (route != hud_note::Route::GameHud)
     {
         // A note still waiting for the game is older than this one: neither side shows it now.
@@ -275,10 +322,14 @@ void Halo3VehicleNoteShow(const std::wstring& text, float seconds)
     ReleaseSRWLockExclusive(&note.lock);
 }
 
-// Cold worker, every pass: a note the game has not taken in time goes to the panel; and a line when the counts move.
-void Halo3VehicleNoteTick()
+void Halo3VehicleNoteShow(const std::wstring& text, float seconds)
 {
-    auto& note = g_halo3HudNote;
+    VehicleNoteShowOn(g_halo3HudNote, g_halo3HeadAudio.ready.load(std::memory_order_acquire), text, seconds);
+}
+
+// Cold worker, every pass: a note the game has not taken in time goes to the panel; and a line when the counts move.
+void VehicleNoteTickOn(Halo3HudNote& note)
+{
     const uint32_t shown = note.shown.load(std::memory_order_acquire);
     if (note.wanted.load(std::memory_order_acquire) != shown)
     {
@@ -307,9 +358,91 @@ void Halo3VehicleNoteTick()
         note.reportedPosted = posted;
         note.reportedFallbacks = fallbacks;
         note.reportedFaults = faults;
-        LOG("HUD NOTE Halo 3: %u in the game's HUD messages, %u on the mod's panel after the game did not take them "
+        LOG("HUD NOTE %s: %u in the game's HUD messages, %u on the mod's panel after the game did not take them "
             "(%u frames not ready, the last because %s), %u faulted",
-            posted, fallbacks, note.notReady.load(std::memory_order_relaxed),
+            note.title, posted, fallbacks, note.notReady.load(std::memory_order_relaxed),
             Halo3HudNoteNotReadyText(note.notReadyWhy.load(std::memory_order_relaxed)), faults);
     }
+}
+
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+// ---- ODST ------------------------------------------------------------------------------------------------------
+// ODST's queue is Halo 3's (kHalo3HudQueueSig matches it once, +0x2FFFCC: five slots of 0xE8, the text copied, the
+// game time at [TLS+0xC8]+0xC). ODST has no post function: its callers make the post inline, and MCC's own type-3
+// caller (+0x30F234, the "no navpoints" line's homolog) does it as kOdstHudPostSiteSig pins -- `mov r8d, 3` (the type,
+// and the highest user), the engine TLS index, [TLS+0x100] (Halo 3's 0xF0), user * 0x3B88 (0x28C8) + 0x2D00 (0x1F8C),
+// then the call to the queue. A second caller (+0x2FEE2B) builds the same address with other registers. The post site's
+// TLS index, the queue's and the mod's ODST engine TLS index must agree, and the site's call must land on the queue.
+// Its game-mode check sits in a caller not proven here, so ODST's post needs the game clock and the HUD block alone;
+// the note is only made in a vehicle seat. Posted from ODST's sound listener hook (halo3_head_relative.inl), which runs
+// after its HUD update as Halo 3's does. ADDR-HYGIENE: resolved + guarded (cross-checked as above), withdrawn before
+// the listener hook is removed.
+inline constexpr char kOdstHudPostSiteSig[] =
+    "41 B8 03 00 00 00 41 3B F8 77 ?? 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 41 B9 00 01 00 00 48 8B 14 C8 48 "
+    "69 CF 88 3B 00 00 4A 8B 04 0A 48 8D 54 24 30 48 05 00 2D 00 00 48 03 C8 E8 ?? ?? ?? ??";
+inline constexpr size_t kOdstHudPostSiteTlsDisp = 13; // its `mov ecx, [rip+disp]`: the TLS index variable
+inline constexpr size_t kOdstHudPostSiteCallRel = 62; // its call's rel32: the queue
+static_assert(Halo3HudPatternBytes(kOdstHudPostSiteSig) == 66 && kOdstHudPostSiteCallRel + 4 == 66 &&
+              kOdstHudPostSiteTlsDisp + 4 < 66);
+inline constexpr size_t kOdstTlsHudUsers = 0x100;
+inline constexpr size_t kOdstHudQueueOffset = 0x2D00;
+
+Halo3HudNote g_odstHudNote{"ODST", GameTitle::Halo3ODST};
+
+bool InstallOdstHudNote(uintptr_t base, size_t size, uint32_t generation)
+{
+    auto& note = g_odstHudNote;
+    note.queue.store(nullptr, std::memory_order_release);
+    const auto rip = [](uintptr_t at, size_t disp) { return sig::RipTarget(at + disp, at + disp + 4); };
+    const char* why = nullptr;
+    uintptr_t site = 0, queue = 0, tls = 0;
+    if (!(site = mcc_clock::FindUnique(base, size, kOdstHudPostSiteSig)))
+        why = "MCC's own type-3 post";
+    else if (!(queue = rip(site, kOdstHudPostSiteCallRel)) || queue < base || queue >= base + size ||
+             sig::Find(queue, kHalo3HudQueueSigBytes, kHalo3HudQueueSig) != queue)
+        why = "the queue at the post's call";
+    else if ((tls = rip(site, kOdstHudPostSiteTlsDisp)) != rip(queue, kHalo3HudQueueTlsDisp))
+        why = "the TLS index the post and the queue read";
+    else if (!g_odstEngineTlsIndex || tls != reinterpret_cast<uintptr_t>(g_odstEngineTlsIndex))
+        why = "the TLS index against the engine's";
+    if (why)
+    {
+        LOG("HUD NOTE ODST: not bound (%s did not prove); the vehicle camera note uses the mod's own panel", why);
+        return false;
+    }
+    note.tlsIndex = reinterpret_cast<const uint32_t*>(tls);
+    note.tlsHudUsers = kOdstTlsHudUsers;
+    note.queueOffset = kOdstHudQueueOffset;
+    note.checksGameMode = false;
+    note.queue.store(reinterpret_cast<Halo3HudQueueFn>(queue), std::memory_order_release);
+    LOG("HUD NOTE ODST: bound (generation %u): queue +0x%llX, posted as MCC's own +0x%llX posts its type-3 line, from "
+        "the sound listener update's hook",
+        generation, static_cast<unsigned long long>(queue - base), static_cast<unsigned long long>(site - base));
+    return true;
+}
+
+// Before halo3odst.dll goes: called once the listener hook is retired, so nothing is inside a post.
+void RemoveOdstHudNote()
+{
+    g_odstHudNote.queue.store(nullptr, std::memory_order_release);
+    g_odstHudNote.tlsIndex = nullptr;
+}
+
+void OdstHudNotePost()
+{
+    HudNotePost(g_odstHudNote);
+}
+
+void OdstVehicleNoteShow(const std::wstring& text, float seconds)
+{
+    VehicleNoteShowOn(g_odstHudNote, g_odstHeadAudio.ready.load(std::memory_order_acquire), text, seconds);
+}
+#endif
+
+void Halo3VehicleNoteTick()
+{
+    VehicleNoteTickOn(g_halo3HudNote);
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+    VehicleNoteTickOn(g_odstHudNote);
+#endif
 }

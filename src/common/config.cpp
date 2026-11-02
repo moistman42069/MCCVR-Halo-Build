@@ -3347,9 +3347,10 @@ void ConfigSave()
     fprintf(f, "# their Tethered modes). 0 = never shown, whatever the file says.\n");
     fprintf(f, "# (default %d)\n", d.vehicle_aim_marker ? 1 : 0);
     fprintf(f, "vehicle_aim_marker = %d\n\n", g_config.vehicle_aim_marker ? 1 : 0);
-    fprintf(f, "# How you control a vehicle seat (Halo 3 for now). This is apart from\n");
-    fprintf(f, "# how your view turns: each works with a view the world holds still\n");
-    fprintf(f, "# and with one that turns with the vehicle.\n");
+    fprintf(f, "# How you control a vehicle seat (Halo 3; ODST and Reach with vehicle\n");
+    fprintf(f, "# cameras on, Reach without Stick). This is apart from how your view\n");
+    fprintf(f, "# turns: each works with a view the world holds still and with one\n");
+    fprintf(f, "# that turns with the vehicle.\n");
     fprintf(f, "#   1 = Motion: your hand aims in every seat, and a Warthog, Mongoose,\n");
     fprintf(f, "#       Ghost, Prowler, Chopper, Banshee or Hornet turns toward it.\n");
     fprintf(f, "#       With a view that turns with the vehicle, pointing aside keeps\n");

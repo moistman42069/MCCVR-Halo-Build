@@ -80,6 +80,38 @@ Addition For(const Table& file, const Table& builtIn, const char* gameKey, const
     // The built-in table's entries for this vehicle: the one that would serve this seat, and every other with a
     // match text of its own in common (the vehicle's other seats), unless the file has an entry by that name.
     const Game* builtInGame = builtIn.FindGame(gameKey);
+
+    // THE GAME HAS NO SECTION IN THE FILE, and the built-in table has one: that section is added, with this
+    // vehicle's entries and the "default" entry the seat was riding on, as the file has it.
+    if (gameKey != nullptr && game->key != gameKey && builtInGame != nullptr && builtInGame->key == gameKey)
+    {
+        addition.sectionKey = gameKey;
+        addition.newSection = true;
+        const int preset = vehicle_camera_file::MatchVehicle(*builtInGame, vehicleName, seat);
+        if (preset >= 0 && !builtInGame->vehicles[static_cast<std::size_t>(preset)].isDefault)
+        {
+            const Vehicle& serving = builtInGame->vehicles[static_cast<std::size_t>(preset)];
+            for (const Vehicle& candidate : builtInGame->vehicles)
+                if (!candidate.isDefault && SharesMatch(candidate, serving))
+                    addition.entries.push_back(candidate);
+            addition.fromBuiltIn = true;
+        }
+        const bool riding = matched >= 0 && game->vehicles[static_cast<std::size_t>(matched)].isDefault;
+        if (addition.entries.empty())
+        {
+            if (!riding)
+                return Addition{};
+            Vehicle own = game->vehicles[static_cast<std::size_t>(matched)];
+            own.isDefault = false;
+            own.name = vehicleName;
+            own.match = {Lower(vehicleName)};
+            own.seats = 0;
+            addition.entries.push_back(own);
+        }
+        if (riding)
+            addition.entries.push_back(game->vehicles[static_cast<std::size_t>(matched)]);
+        return addition;
+    }
     if (builtInGame)
     {
         const int preset = vehicle_camera_file::MatchVehicle(*builtInGame, vehicleName, seat);
@@ -150,21 +182,34 @@ bool Insert(std::string& text, const Addition& addition, const char* gameKey, co
     const json_lite::Value* games = root.Get("games");
     const json_lite::Value* section = games ? games->Get(addition.sectionKey.c_str()) : nullptr;
     const json_lite::Value* vehicles = section ? section->Get("vehicles") : nullptr;
-    if (!vehicles || !vehicles->IsObject() || vehicles->at >= text.size() || text[vehicles->at] != '{')
+    // The object the entries go at the end of: the section's "vehicles", or -- for a section the file does not
+    // have yet -- "games" itself, where the whole section goes.
+    const json_lite::Value* into = vehicles;
+    if (addition.newSection)
     {
-        why = "the file has no \"games\" > \"" + addition.sectionKey + "\" > \"vehicles\" object";
+        if (section)
+        {
+            why = "the file already has a \"" + addition.sectionKey + "\" section";
+            return false;
+        }
+        into = games;
+    }
+    if (!into || !into->IsObject() || into->at >= text.size() || text[into->at] != '{')
+    {
+        why = addition.newSection ? std::string("the file has no \"games\" object")
+                                  : "the file has no \"games\" > \"" + addition.sectionKey + "\" > \"vehicles\" object";
         return false;
     }
-    const std::size_t end = ObjectEnd(text, vehicles->at);
+    const std::size_t end = ObjectEnd(text, into->at);
     if (end == 0)
     {
-        why = "the \"vehicles\" object does not close";
+        why = addition.newSection ? "the \"games\" object does not close" : "the \"vehicles\" object does not close";
         return false;
     }
     const std::size_t close = end - 1;
     // Where the last member ends (or the '{' when there is none), and the closing brace's own indentation.
     std::size_t last = close;
-    while (last > vehicles->at + 1 && std::isspace(static_cast<unsigned char>(text[last - 1])))
+    while (last > into->at + 1 && std::isspace(static_cast<unsigned char>(text[last - 1])))
         --last;
     std::size_t lineStart = close;
     while (lineStart > last && text[lineStart - 1] != '\n')
@@ -174,7 +219,10 @@ bool Insert(std::string& text, const Addition& addition, const char* gameKey, co
         if (text[i] == ' ' || text[i] == '\t')
             indent += text[i];
 
-    std::string added = vehicles->keys.empty() ? "\n" : ",\n";
+    std::string added = into->keys.empty() ? "\n" : ",\n";
+    // A new section is written as the built-in file writes one: its key, then "vehicles", then the entries.
+    if (addition.newSection)
+        added += "    \"" + addition.sectionKey + "\": {\n      \"vehicles\": {\n";
     for (std::size_t i = 0; i < addition.entries.size(); ++i)
     {
         std::string entry = vehicle_camera_file::VehicleJson(addition.entries[i]);
@@ -182,6 +230,8 @@ bool Insert(std::string& text, const Addition& addition, const char* gameKey, co
             entry.insert(entry.size() - 1, ","); // before the entry's own last newline
         added += entry;
     }
+    if (addition.newSection)
+        added += "      }\n    }\n";
     added += indent;
     if (text.find("\r\n") != std::string::npos)
     {

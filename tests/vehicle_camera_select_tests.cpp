@@ -341,8 +341,12 @@ static void TestBuiltInPresets()
     Check(Has(selector.Describe(), "default (Driver): camera 1 of 2"), "a vehicle it does not know gets two");
     Check(selector.Note() == L"Unidentified \u00B7 Seat, Untethered",
           "and its note names the vehicle, not the default entry");
-    selector.Update("reach", true, "warthog", kSeatDriver);
+    selector.Update("halo4", true, "warthog", kSeatDriver);
     Check(Has(selector.Describe(), "default (Driver): camera 1 of 2"), "and another game the default section's");
+    selector.Update("odst", true, "warthog", kSeatDriver);
+    Check(Has(selector.Describe(), "Warthog (Driver): camera 1 of 4"), "while ODST has a section of its own");
+    selector.Update("reach", true, "warthog", kSeatDriver);
+    Check(Has(selector.Describe(), "Warthog (Driver): camera 1 of 4"), "while Reach has a section of its own");
 }
 
 static void TestTwoCamerasOfOneName()

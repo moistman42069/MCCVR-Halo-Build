@@ -142,8 +142,9 @@ struct Camera
     // its head; 0 = the seat view as the game gives it, which draws its first-person legs only; -1 (left out) = the
     // seat's default (EffectiveShowHeadlessBody). A chase camera is not changed by it.
     int showHeadlessBody = -1;
-    // "eyeAdjust" (any camera; Halo 3): false holds the game's eye adaptation while the camera is in use, so the
-    // exposure stays as it was when the camera was chosen -- a dark cockpit then cannot brighten the view outside.
+    // "eyeAdjust" (any camera; Halo 3, ODST, Reach): false holds the game's eye adaptation while the camera is in use,
+    // so the exposure stays as it was when the camera was chosen -- a dark cockpit then cannot brighten the view
+    // outside.
     bool eyeAdjust = true;
     // "hideRegions" (Halo 3): the regions of the player's own vehicle this camera does not draw -- each a region's
     // name as the parts file lists it ("canopy"), or its number there. Empty = the vehicle drawn whole.
@@ -251,10 +252,10 @@ inline constexpr int kMaxTethers = 8;   // per camera
 // A larger file is refused before it is parsed.
 inline constexpr std::size_t kMaxFileBytes = 512u * 1024u;
 
-// The built-in table: what a missing file gives, and what the first run writes out. One "default" section whose
-// "default" entry lists the existing seat view first and, second, a camera where the game's own third-person
-// camera rests, so the feature changes nothing until the player steps to another camera and suits a vehicle of
-// any size.
+// The built-in table: what a missing file gives, and what the first run writes out. Halo 3's and Reach's sections
+// list the vehicles the mod knows, and one "default" section covers every other game. Every "default" entry lists
+// the existing seat view first and, second, a camera where the game's own third-person camera rests, so the
+// feature changes nothing until the player steps to another camera and suits a vehicle of any size.
 Table DefaultTable();
 
 struct ParseResult

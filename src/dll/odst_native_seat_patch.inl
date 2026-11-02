@@ -115,6 +115,16 @@
         }
     }
 
+    // The patch refused exactly this seat (StockFallback): nothing of it was written, and its flags are the game's.
+    bool OdstSeatPatchRefused(uint32_t definitionIndex, int seatIndex, uint32_t generation)
+    {
+        const OdstNativeSeatPatch& patch = g_odstNativeSeatPatch;
+        return patch.generation == generation && patch.definitionIndex == definitionIndex &&
+            patch.seatIndex == seatIndex && !patch.active &&
+            g_odstNativeSeatState.load(std::memory_order_relaxed) ==
+                static_cast<uint32_t>(OdstNativeSeatState::StockFallback);
+    }
+
     bool OdstEnsureFirstPersonSeatFlag(uint32_t definitionIndex, int seatIndex,
                                        uint32_t generation)
     {

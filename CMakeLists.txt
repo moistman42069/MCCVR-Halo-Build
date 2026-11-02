@@ -921,6 +921,20 @@ if(BUILD_TESTING)
     target_compile_options(halomccvr_vehicle_seat_buttons_tests PRIVATE /W4 /WX)
     target_compile_definitions(halomccvr_vehicle_seat_buttons_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_vehicle_seat_buttons_tests COMMAND halomccvr_vehicle_seat_buttons_tests)
+    # Reach's seats as the vehicle camera file names them: each identity's name, a seat's role, a vehicle the mod
+    # does not know, and the built-in entry each finds (src/common/reach_vehicle_camera_logic.h).
+    add_executable(halomccvr_reach_vehicle_camera_tests tests/reach_vehicle_camera_tests.cpp
+        src/common/vehicle_camera_file.cpp)
+    target_compile_options(halomccvr_reach_vehicle_camera_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_reach_vehicle_camera_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_reach_vehicle_camera_tests COMMAND halomccvr_reach_vehicle_camera_tests)
+    # ODST's seats as the vehicle camera file names them: each identity's name, a seat's role, a gun riding a carrier,
+    # and the built-in entry each finds (src/common/odst_vehicle_camera_logic.h).
+    add_executable(halomccvr_odst_vehicle_camera_tests tests/odst_vehicle_camera_tests.cpp
+        src/common/vehicle_camera_file.cpp)
+    target_compile_options(halomccvr_odst_vehicle_camera_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_odst_vehicle_camera_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_odst_vehicle_camera_tests COMMAND halomccvr_odst_vehicle_camera_tests)
     # The ring where the vehicle aims, beside the crosshair: its picture, colour, direction, range and size
     # (src/common/vehicle_aim_marker_logic.h).
     add_executable(halomccvr_vehicle_aim_marker_tests tests/vehicle_aim_marker_tests.cpp)
