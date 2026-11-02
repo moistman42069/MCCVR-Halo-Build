@@ -27,24 +27,23 @@ enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Fol
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version };
 // The window's client size at 96 dpi.
 constexpr int kMenuWidth = 1350, kMenuHeight = 904;
-// The credits column, right of the divider, at 96 dpi.
-constexpr int kCreditsDivider = 968, kCreditsLeft = 986, kCreditsRight = 1328;
+// The credits column, right of the divider, at 96 dpi: the title stays put and the list below it scrolls.
+constexpr int kCreditsDivider = 968, kCreditsLeft = 986, kCreditsListTop = 76, kCreditsListWidth = 352;
 struct Credit { const wchar_t* name; const wchar_t* what; };
+// The project's line of succession first, then everyone else from most contributed to least.
 constexpr Credit kCredits[] = {
     {L"Pancreations", L"Created the original Halo-MCC-VR and its DLSS foundation, the base everything here is built on."},
     {L"MoistMan", L"Continued the project as Halo MCC VR, maintaining it and extending it across all six games on Steam and the Xbox app, with physical crouch and melee, weapon handling and tracked body avatars."},
-    {L"NitsuJack", L"Aim, multiplayer and roomscale work, Project Reclaimer support, vehicle cameras ported from Halo Campaign Evolved UEVR, input presets and the desktop settings window."},
+    {L"NitsuJack", L"Aim, multiplayer and roomscale work, Project Reclaimer support, vehicle cameras ported from Halo Campaign Evolved UEVR, input presets, the desktop settings window, launcher reorganization and multi-repository auto updating."},
     {L"Godoy", L"Weapon alignment and per-game gun offsets, two-handed grip zones, restored hand and gun animations, modded weapon support, bloom and autoexposure controls, world scale and dual-wield shake reload."},
-};
-constexpr const wchar_t* kAlsoCredited[] = {
-    L"Gab_dC / gabrieldch: virtual stock, two-hand and support handling, coherent aim and telemetry",
-    L"martysl1: subtitle, UI and bloom work, and the Reach DLSS leads",
-    L"LivingFray / Maso: ownership and restoration design leads",
-    L"marcusau2: the earlier per-gun calibration",
-    L"blindcowboy24: the first roomscale setup",
-    L"UnsealedWings: performance and HUD proposals",
-    L"PurplePeanut: the Provolver proposal",
-    L"SilentVortigaunt: the trailer",
+    {L"Gab_dC / gabrieldch", L"Virtual stock, two-hand and support handling, coherent aim and telemetry."},
+    {L"martysl1", L"Subtitle, UI and bloom work, and the Reach DLSS leads."},
+    {L"blindcowboy24", L"Initial Roomscale setup for Aim/multiplayer revamp."},
+    {L"LivingFray / Maso", L"Ownership and restoration design leads."},
+    {L"marcusau2", L"The earlier per-gun calibration."},
+    {L"UnsealedWings", L"Performance and HUD proposals."},
+    {L"PurplePeanut", L"The Provolver proposal."},
+    {L"SilentVortigaunt", L"The trailer."},
 };
 struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel, built, release, published; bool candidate = true; };
 BuildIdentity ReadIdentity(const fs::path& directory) {
@@ -86,6 +85,8 @@ struct Menu {
     bool channelChosen = false, channelChanged = false;
     // Project Reclaimer (reclaimer_menu.h): the kept path's field, what is known of it, and the launch asked for.
     HWND reclaimerPath{}, reclaimerInfo{}; std::wstring reclaimerExe, reclaimerDir; bool reclaimerStartable = false;
+    HWND creditsList{};
+    int creditsScroll = 0, creditsContent = 0, creditsDragFrom = -1, creditsDragScroll = 0;
     HFONT body{}, smallFont{}, title{}, label{}, creditsTitle{}; HBRUSH background{}, panel{}, reclaimerPanel{}, reclaimerField{};
     std::vector<GameInstall> installs;
     fs::path selfDir, payload; std::wstring launchDir;
@@ -305,22 +306,25 @@ void DrawCreditsHeart(HDC dc, int left, int top, int unit) {
     Polygon(dc, core, static_cast<int>(std::size(core)));
     SelectObject(dc, oldBrush); SelectObject(dc, oldPen); DeleteObject(edge); DeleteObject(fill); DeleteObject(glow);
 }
-void DrawCredits(Menu& menu, HDC dc) {
+void DrawCreditsTitle(Menu& menu, HDC dc) {
     HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); const auto old = SelectObject(dc, pen);
     MoveToEx(dc, menu.Px(kCreditsDivider), menu.Px(26), nullptr); LineTo(dc, menu.Px(kCreditsDivider), menu.Px(kMenuHeight - 26));
     SelectObject(dc, old); DeleteObject(pen);
     SetBkMode(dc, TRANSPARENT);
-    const int left = menu.Px(kCreditsLeft), right = menu.Px(kCreditsRight);
     SelectObject(dc, menu.creditsTitle); SetTextColor(dc, kAccent);
     const wchar_t* title = L"Credits"; const int titleLength = static_cast<int>(wcslen(title));
     SIZE titleSize{}; GetTextExtentPoint32W(dc, title, titleLength, &titleSize);
-    TextOutW(dc, left, menu.Px(30), title, titleLength);
+    TextOutW(dc, menu.Px(kCreditsLeft), menu.Px(30), title, titleLength);
     const int unit = std::max(1, menu.Px(2));
-    DrawCreditsHeart(dc, left + titleSize.cx + menu.Px(12), menu.Px(30) + (titleSize.cy - 11 * unit) / 2, unit);
-    int y = menu.Px(30) + titleSize.cy + menu.Px(12);
+    DrawCreditsHeart(dc, menu.Px(kCreditsLeft) + titleSize.cx + menu.Px(12), menu.Px(30) + (titleSize.cy - 11 * unit) / 2, unit);
+}
+// Writes the list from the given height down, and returns where it ended.
+int DrawCreditsList(Menu& menu, HDC dc, int width, int top) {
+    SetBkMode(dc, TRANSPARENT);
+    int y = top;
     const auto paragraph = [&](const wchar_t* text, HFONT font, COLORREF color, int after) {
         SelectObject(dc, font); SetTextColor(dc, color);
-        RECT box{left, y, right, y};
+        RECT box{0, y, width, y};
         DrawTextW(dc, text, -1, &box, DT_WORDBREAK | DT_NOPREFIX | DT_CALCRECT);
         DrawTextW(dc, text, -1, &box, DT_WORDBREAK | DT_NOPREFIX);
         y = box.bottom + menu.Px(after);
@@ -330,8 +334,68 @@ void DrawCredits(Menu& menu, HDC dc) {
         paragraph(credit.name, menu.label, kAccent, 3);
         paragraph(credit.what, menu.smallFont, kText, 14);
     }
-    paragraph(L"Also thanks to", menu.label, kMuted, 6);
-    for (const auto* entry : kAlsoCredited) paragraph(entry, menu.smallFont, kMuted, 5);
+    return y;
+}
+// The scroll bar's thumb, or an empty box when everything fits. Drawn here so it matches the menu.
+RECT CreditsThumb(const Menu& menu, const RECT& client) {
+    const int view = client.bottom, range = menu.creditsContent - view;
+    if (range <= 0) return {};
+    const int height = std::max(menu.Px(30), MulDiv(view, view, menu.creditsContent));
+    const int top = MulDiv(menu.creditsScroll, view - height, range);
+    return {client.right - menu.Px(6), top, client.right, top + height};
+}
+void ScrollCredits(Menu& menu, int to) {
+    RECT client{}; GetClientRect(menu.creditsList, &client);
+    menu.creditsScroll = std::clamp(to, 0, std::max(0, menu.creditsContent - static_cast<int>(client.bottom)));
+    InvalidateRect(menu.creditsList, nullptr, FALSE);
+}
+LRESULT CALLBACK CreditsProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    auto* menu = reinterpret_cast<Menu*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (message == WM_NCCREATE) { menu = static_cast<Menu*>(reinterpret_cast<CREATESTRUCTW*>(lParam)->lpCreateParams); SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(menu)); }
+    if (!menu) return DefWindowProcW(window, message, wParam, lParam);
+    RECT client{}; GetClientRect(window, &client);
+    switch (message) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PRINTCLIENT: case WM_PAINT: {
+        PAINTSTRUCT paint{}; HDC target = message == WM_PRINTCLIENT ? reinterpret_cast<HDC>(wParam) : BeginPaint(window, &paint);
+        // Drawn off screen first, so that scrolling does not flicker.
+        HDC dc = CreateCompatibleDC(target); HBITMAP bitmap = CreateCompatibleBitmap(target, client.right, client.bottom); const auto oldBitmap = SelectObject(dc, bitmap);
+        FillRect(dc, &client, menu->background);
+        const int textWidth = client.right - menu->Px(16);
+        menu->creditsContent = DrawCreditsList(*menu, dc, textWidth, -menu->creditsScroll) + menu->creditsScroll;
+        if (const int limit = std::max(0, menu->creditsContent - static_cast<int>(client.bottom)); menu->creditsScroll > limit) { menu->creditsScroll = limit; InvalidateRect(window, nullptr, FALSE); }
+        if (const RECT thumb = CreditsThumb(*menu, client); thumb.bottom > thumb.top) {
+            RECT track{thumb.left, 0, thumb.right, client.bottom};
+            HBRUSH trackBrush = CreateSolidBrush(kPanel), thumbBrush = CreateSolidBrush(menu->creditsDragFrom >= 0 ? kAccent : RGB(59, 107, 122));
+            FillRect(dc, &track, trackBrush); FillRect(dc, &thumb, thumbBrush); DeleteObject(trackBrush); DeleteObject(thumbBrush);
+        }
+        BitBlt(target, 0, 0, client.right, client.bottom, dc, 0, 0, SRCCOPY);
+        SelectObject(dc, oldBitmap); DeleteObject(bitmap); DeleteDC(dc);
+        if (message == WM_PAINT) EndPaint(window, &paint);
+        return 0;
+    }
+    case WM_MOUSEWHEEL: ScrollCredits(*menu, menu->creditsScroll - MulDiv(GET_WHEEL_DELTA_WPARAM(wParam), menu->Px(60), WHEEL_DELTA)); return 0;
+    case WM_LBUTTONDOWN: {
+        const RECT thumb = CreditsThumb(*menu, client);
+        const int x = static_cast<short>(LOWORD(lParam)), y = static_cast<short>(HIWORD(lParam));
+        if (thumb.bottom <= thumb.top || x < thumb.left) return 0;
+        // Clicking the track pages toward the click; the thumb itself drags.
+        if (y < thumb.top) ScrollCredits(*menu, menu->creditsScroll - client.bottom);
+        else if (y >= thumb.bottom) ScrollCredits(*menu, menu->creditsScroll + client.bottom);
+        else { menu->creditsDragFrom = y; menu->creditsDragScroll = menu->creditsScroll; SetCapture(window); InvalidateRect(window, nullptr, FALSE); }
+        return 0;
+    }
+    case WM_MOUSEMOVE:
+        if (menu->creditsDragFrom >= 0) {
+            const RECT thumb = CreditsThumb(*menu, client);
+            const int travel = client.bottom - (thumb.bottom - thumb.top);
+            if (travel > 0) ScrollCredits(*menu, menu->creditsDragScroll + MulDiv(static_cast<short>(HIWORD(lParam)) - menu->creditsDragFrom, menu->creditsContent - client.bottom, travel));
+        }
+        return 0;
+    case WM_LBUTTONUP: if (menu->creditsDragFrom >= 0) ReleaseCapture(); return 0;
+    case WM_CAPTURECHANGED: menu->creditsDragFrom = -1; InvalidateRect(window, nullptr, FALSE); return 0;
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
 }
 void DrawCheckbox(Menu& menu, const DRAWITEMSTRUCT& item) {
     const bool disabled = item.itemState & ODS_DISABLED;
@@ -451,6 +515,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Control(*menu, L"BUTTON", L"LAUNCH PROJECT RECLAIMER", BS_OWNERDRAW | WS_TABSTOP, 46, 756, 406, 42, ReclaimerLaunch);
         menu->status = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 826, 895, 66);
         SendMessageW(menu->status, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
+        menu->creditsList = CreateWindowExW(0, L"HaloMCCVRCredits", L"", WS_CHILD | WS_VISIBLE, menu->Px(kCreditsLeft), menu->Px(kCreditsListTop),
+            menu->Px(kCreditsListWidth), menu->Px(kMenuHeight - kCreditsListTop - 26), window, nullptr, menu->instance, menu);
         return 0;
     }
     case WM_PRINTCLIENT: case WM_PAINT: {
@@ -465,7 +531,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         // Original geometric HUD accents; no extracted game art or assets.
         for (int x = 811; x < 943; x += 22) { MoveToEx(dc, menu->Px(x), menu->Px(43), nullptr); LineTo(dc, menu->Px(x + 18), menu->Px(25)); }
         SelectObject(dc, old); DeleteObject(pen);
-        DrawCredits(*menu, dc);
+        DrawCreditsTitle(*menu, dc);
         // Project Reclaimer's panel: its own ground, an edge and a bar down its left side in its own colour, the
         // heading on the left and what it is on the right.
         {
@@ -598,6 +664,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         menu->Text(menu->status, menu->operationMessage); menu->Refresh(); return 0;
     case WM_CLOSE: if (!menu->busy) DestroyWindow(window); return 0;
+    case WM_MOUSEWHEEL: {
+        // A wheel turned over the list scrolls it, whichever control has the keyboard focus.
+        const POINT cursor{static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam))};
+        RECT list{}; GetWindowRect(menu->creditsList, &list);
+        if (PtInRect(&list, cursor)) return SendMessageW(menu->creditsList, message, wParam, lParam);
+        break;
+    }
     case WM_DESTROY: PostQuitMessage(0); return 0;
     }
     return DefWindowProcW(window, message, wParam, lParam);
@@ -612,6 +685,8 @@ std::wstring ShowLauncherMenu(HINSTANCE instance, const fs::path& launcherDir, i
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     WNDCLASSEXW type{sizeof(type)}; type.lpfnWndProc = WindowProc; type.hInstance = instance; type.hCursor = LoadCursorW(nullptr, IDC_ARROW); type.hIcon = LoadIconW(nullptr, IDI_APPLICATION); type.lpszClassName = L"HaloMCCVRSetupMenu";
     RegisterClassExW(&type);
+    WNDCLASSEXW creditsType{sizeof(creditsType)}; creditsType.lpfnWndProc = CreditsProc; creditsType.hInstance = instance; creditsType.hCursor = LoadCursorW(nullptr, IDC_ARROW); creditsType.lpszClassName = L"HaloMCCVRCredits";
+    RegisterClassExW(&creditsType);
     RECT workArea{}; SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
     const int fitWidth = MulDiv(workArea.right - workArea.left - 32, 96, kMenuWidth);
     const int fitHeight = MulDiv(workArea.bottom - workArea.top - 55, 96, kMenuHeight);
