@@ -31,7 +31,7 @@ what: The earlier per-gun calibration.
 section: Also Thanks To
 
 name: blindcowboy24
-what: Initial Roomscale setup for Aim/multiplayer revamp.
+what: Initial Roomscale setup for Aim/multiplayer revamp, ported from Halo Campaign Evolved UEVR.
 
 name: Maso
 what: Multiplayer VR work for HaloCEVR (PR #153), whose ideas for tracking and restoring game state informed this mod.
@@ -40,7 +40,7 @@ name: LivingFray
 what: HaloCEVR, the VR mod for the original Halo CE, used here as a reference.
 
 name: SilentVortigaunt
-what: The trailer.
+what: Early trailer for Project Reclaimer support.
 
 name: UnsealedWings
 what: Performance and HUD proposals.
