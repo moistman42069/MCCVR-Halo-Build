@@ -394,8 +394,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         PAINTSTRUCT paint{}; HDC dc = message == WM_PRINTCLIENT ? reinterpret_cast<HDC>(wParam) : BeginPaint(window, &paint);
         RECT client{}; GetClientRect(window, &client); FillRect(dc, &client, menu->background);
         SetBkMode(dc, TRANSPARENT); SetTextColor(dc, kAccent); SelectObject(dc, menu->title);
-        SetTextCharacterExtra(dc, menu->Px(4)); TextOutW(dc, menu->Px(37), menu->Px(30), L"HALO / MCC VR", 13); SetTextCharacterExtra(dc, 0);
-        SelectObject(dc, menu->label); SetTextColor(dc, kMuted); const wchar_t* subtitle = L"THE MASTER CHIEF COLLECTION  /  VIRTUAL REALITY";
+        SetTextCharacterExtra(dc, menu->Px(4)); TextOutW(dc, menu->Px(37), menu->Px(30), L"Halo MCC VR", 11); SetTextCharacterExtra(dc, 0);
+        SelectObject(dc, menu->label); SetTextColor(dc, kMuted); const wchar_t* subtitle = L"The Master Chief Collection in Virtual Reality";
         TextOutW(dc, menu->Px(41), menu->Px(93), subtitle, static_cast<int>(wcslen(subtitle)));
         HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); auto old = SelectObject(dc, pen);
         for (int y : {121, 270, 520}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
