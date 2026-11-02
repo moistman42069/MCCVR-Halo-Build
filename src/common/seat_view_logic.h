@@ -28,6 +28,17 @@
 // window, a seat the unit is still boarding and a vehicle whose own definition forces third person -- all answered
 // 1 whatever bit 4 says. Clearing bit 4 therefore changed the answer only in state 2, and the relay changes it
 // only there.
+//
+// THE OTHER WAY ROUND. A seat whose own data already lacks bit 4 (the campaign Pelican's troop seats, seats a host
+// or a map adds) is first person in the game itself: the director hides the occupant's character and draws the
+// first-person arms and weapon at its camera. A chase camera of the mod's own moves only the eye, so those arms
+// would hang in front of it with no body behind them. While such a camera shows a seat, the relay turns a settled
+// "first person" answer, whatever produced it, into "third person" for the one occupant, and the director draws the
+// seat as it draws every stock seat. The simulation still reads the seat's own flag, so the game's own camera for that unit
+// (the unit camera evaluator +0x212198, the firing assist, the acquisition) is the same as an unmodded peer's. The
+// director's chase path +0x2144C0 takes the seat's camera only for a seat flagged 0x15 and the unit's own
+// otherwise, and a camera with no tracks takes the globals' default, so a seat that was never meant to be seen
+// from outside still has a camera to draw from.
 
 #include <cstddef>
 #include <cstdint>
@@ -65,11 +76,17 @@ inline constexpr int kThirdPerson = 1, kFirstPerson = 0;
 inline constexpr int kStateSettled = 2;
 
 // What a director call is told. `result` and `state` are the game's own; `armedUnit` is the occupant whose seat
-// view the mod owns (-1 = none).
-inline constexpr int Decide(int result, int state, int32_t unit, int32_t armedUnit)
+// view the mod owns (-1 = none); `chaseUnit` is the occupant of a seat that is first person in its own data while
+// a chase camera of the mod's shows it (-1 = none).
+inline constexpr int Decide(int result, int state, int32_t unit, int32_t armedUnit, int32_t chaseUnit = -1)
 {
-    return result == kThirdPerson && state == kStateSettled && armedUnit != -1 && unit == armedUnit
-        ? kFirstPerson : result;
+    if (state != kStateSettled || unit == -1)
+        return result;
+    if (result == kThirdPerson && unit == armedUnit)
+        return kFirstPerson;
+    if (result == kFirstPerson && unit == chaseUnit)
+        return kThirdPerson;
+    return result;
 }
 
 // `call rel32` at `site`: where it goes.

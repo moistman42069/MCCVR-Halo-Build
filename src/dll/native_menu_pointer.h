@@ -4,6 +4,7 @@
 void NativeMenuPointer_Init(HWND window);
 // Render thread publishes only a bounded atomic sample and a coalesced message.
 void NativeMenuPointer_Publish(bool active, float u = 0, float v = 0, bool pressed = false);
+void NativeMenuPointer_PublishScroll(float stick);
 bool NativeMenuPointer_ConsumesTrigger();
 void NativeMenuPointer_ReportFailures(); // existing diagnostics worker only
 void NativeMenuPointer_FrameStatus(const char* status); // static literal, atomic only

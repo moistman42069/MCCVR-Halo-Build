@@ -775,6 +775,36 @@ void TestDefaultSwitchZoneReentry(TestContext& test)
               /*switchInherit=*/true),
         "zone re-entry: the inherit option never arms the crossing requirement");
 
+    // A holster draw with the inherit option: the teardown arms nothing, the
+    // hold waits out the gesture and comes back once owner evidence can bind.
+    {
+        auto step = StepGestureInherit(false, true, true, true, false, true, true, false, true);
+        test.Check(step.keepsHold && step.pending && !step.resume,
+            "gesture inherit: the gesture's teardown keeps the hold and arms nothing");
+        step = StepGestureInherit(step.pending, true, false, true, false, true, true, false, true);
+        test.Check(!step.keepsHold && step.pending && !step.resume,
+            "gesture inherit: it waits while the gesture lasts");
+        step = StepGestureInherit(step.pending, true, false, false, false, true, true, false, false);
+        test.Check(step.resume && step.pending,
+            "gesture inherit: unreadable evidence keeps the wait for a later update");
+        step = StepGestureInherit(step.pending, true, false, false, false, true, true, false, true);
+        test.Check(step.resume && !step.pending,
+            "gesture inherit: the hold comes back after the gesture, once");
+        test.Check(!StepGestureInherit(false, true, true, false, false, true, true, false, true).pending,
+            "gesture inherit: no gesture, nothing to do");
+        test.Check(!StepGestureInherit(false, false, true, true, false, true, true, false, true).keepsHold,
+            "gesture inherit: option off keeps release-before-reacquire");
+        test.Check(!StepGestureInherit(true, true, false, true, false, true, false, false, true).pending,
+            "gesture inherit: letting go of the grip ends the wait");
+        test.Check(!StepGestureInherit(true, true, false, true, false, false, false, true, true).pending,
+            "gesture inherit: a toggle press ends the wait");
+        test.Check(!StepGestureInherit(true, true, false, false, true, true, true, false, true).resume,
+            "gesture inherit: a broken lifecycle ends the wait");
+        const auto toggled = StepGestureInherit(true, true, false, false, false, false, false, false, true);
+        test.Check(toggled.resume && !toggled.pending,
+            "gesture inherit: toggle mode comes back with no grip held");
+    }
+
     // The requirement survives a zone reading that stays TRUE, so the held Grip
     // that never left the replacement's grab zone cannot acquire - the installed
     // defect re-bound 38-51 ms after the drop, i.e. within the next updates.

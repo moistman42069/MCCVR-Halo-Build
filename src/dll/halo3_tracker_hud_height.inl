@@ -258,7 +258,7 @@ bool InstallHalo3TrackerHudHeight(uintptr_t base, size_t size, uint32_t generati
     lane.record = reinterpret_cast<const uint8_t* const*>(base + static_cast<uintptr_t>(sites.recordRva));
 #endif
     lane.ready.store(true, std::memory_order_release);
-    if (MH_EnableHook(target) != MH_OK)
+    if (MCCVR_EnableHook(target) != MH_OK)
     {
         LOG("TRACKER HUD HEIGHT Halo 3: StockFallback: the blip-draw hook did not enable");
         (void)RemoveHalo3TrackerHudHeight();

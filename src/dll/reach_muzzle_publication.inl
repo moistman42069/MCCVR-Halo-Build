@@ -1,6 +1,7 @@
-bool ReachCaptureMuzzleOwner(int view,int slot,uint32_t& unit,uint32_t& weapon) noexcept
+// Apart from the options: co-op safe shots stands them down, and the authored grip point goes on needing this.
+bool ReachCaptureGripOwner(int view,int slot,uint32_t& unit,uint32_t& weapon) noexcept
 {
-    if(!(Sight_GunBarrelAim()||Sight_ShotsFromMuzzle())||!g_reachBarrelBindingsReady.load(std::memory_order_acquire)||view!=0||slot<0||slot>1||
+    if(!g_reachBarrelBindingsReady.load(std::memory_order_acquire)||view!=0||slot<0||slot>1||
         !g_reachCamera.playerUnitByOutputUser||!g_reachCamera.unitInVehicle)return false;
     __try
     {
@@ -15,6 +16,10 @@ bool ReachCaptureMuzzleOwner(int view,int slot,uint32_t& unit,uint32_t& weapon) 
         unit=owner;weapon=weapons[slot];return true;
     }
     __except(EXCEPTION_EXECUTE_HANDLER){return false;}
+}
+bool ReachCaptureMuzzleOwner(int view,int slot,uint32_t& unit,uint32_t& weapon) noexcept
+{
+    return (Sight_GunBarrelAim()||Sight_ShotsFromMuzzle())&&ReachCaptureGripOwner(view,slot,unit,weapon);
 }
 // WHY NO MUZZLE WAS PUBLISHED (dev builds; ReportReachMuzzle prints the window). The barrel lane reads the muzzle
 // this publishes; when it finds none it refuses the shot with "no muzzle publication", and these say why.
@@ -80,6 +85,20 @@ void ReachPublishMuzzlePalette(uint16_t tag,const ReachFpInterpolationContext& c
                 const auto& node=destination[marker->node];
                 if(!weapon_muzzle::Transform(*marker,node.scale,node.rotation,node.translation,ray))
                 {ReachMuzzleNotPublished(kReachPublishTransform);continue;}
+                auto neutral=tracking.aimNeutral,visual=tracking.aimVisual;
+                for(int i=0;i<3;++i) {
+                    const float delta=tracking.rightWrist.translation[i]-visual.translation[i];
+                    neutral.translation[i]+=delta;visual.translation[i]+=delta;
+                }
+                if (!weapon_alignment::Reframe(visual.rotation,visual.translation,
+                        neutral.rotation,neutral.translation,ray)) {
+                    ReachMuzzleNotPublished(kReachPublishTransform);continue;
+                }
+                // Rotate only the barrel ray, in the same neutral controller
+                // frame used above. Keep the muzzle origin fixed.
+                if(!weapon_alignment::ApplyReachBarrelDefaults(checksum,neutral.rotation,ray)) {
+                    ReachMuzzleNotPublished(kReachPublishTransform);continue;
+                }
                 // THE RECEIPT'S SPACE IS THE TRACKING-SPACE EPOCH, the number the barrel lane reads it back with
                 // (VR_GetContactTrackingSnapshot's referenceEpoch, as Halo 3's publication does). NOT
                 // contactReference: that is Reach's melee HASH of the epoch, which no epoch ever equals, so every

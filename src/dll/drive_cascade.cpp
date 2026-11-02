@@ -792,15 +792,151 @@ bool HookWatch::Pass(uint64_t install, bool possible, bool called, uint64_t nowM
 
 void SayNeverCalled(const char* drive, const char* what, uint32_t rva, const char* state)
 {
+    SayHookNeverCalled(drive, what, rva, state,
+                       "Nothing is written through a hook that does not run: the aim stays on the stick servo");
+}
+
+void SayHookNeverCalled(const char* feature, const char* what, uint32_t rva, const char* state,
+                        const char* consequence)
+{
     LOG("%s: INSTALLED BUT NEVER CALLED. The hook on %s at +0x%X has stood through %u s in which %s, and the "
         "game has not called it once. Either that address is not the code this game build runs for it, or the "
-        "game was not in that state after all. Nothing is written through a hook that does not run: the aim "
-        "stays on the stick servo",
-        drive, what, rva, HookWatch::kSeconds, state);
+        "game was not in that state after all. %s",
+        feature, what, rva, HookWatch::kSeconds, state, consequence);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if (addrcascade::fault(static_cast<int>(drive_resolve::kFaultHookSilent)))
         LOG("%s: DEV fault injection (drive_fault 0x%X) told that watchdog its hook never ran; the line above says "
-            "nothing about this game build", drive, static_cast<unsigned>(addrcascade::fault_mask()));
+            "nothing about this game build", feature, static_cast<unsigned>(addrcascade::fault_mask()));
 #endif
+}
+
+void HookWatchBoard::Begin(uint32_t install)
+{
+    if (install == install_)
+        return;
+    install_ = install;
+    for (auto& slot : slots_)
+        slot = Slot{};
+    summarised_ = false;
+    inPlayMs_ = 0;
+    lastInPlayAtMs_ = 0;
+}
+
+bool HookWatchBoard::Pass(size_t index, const void* target, bool possible, bool called, uint64_t nowMs)
+{
+    if (index >= kMaxWatches)
+        return false;
+    Slot& slot = slots_[index];
+    // No install of the set: nothing is watched, whatever the caller passes.
+    if (!install_)
+        target = nullptr;
+    slot.installed = target != nullptr;
+    const bool fired = slot.watch.Pass(HookWatch::Install(target, install_), target && possible, called, nowMs);
+    // A hook that went away is a new install when it comes back: its verdict went with the old one.
+    if (!slot.installed)
+        slot.fired = false;
+    slot.fired = slot.fired || fired;
+    return fired;
+}
+
+bool HookWatchBoard::SummaryDue(bool inPlay, uint64_t nowMs)
+{
+    if (!install_ || summarised_)
+        return false;
+    // The base state's time, counted as HookWatch counts a period: between two passes that both found it, and
+    // never more than one period for a gap (a stalled worker saw nothing in between).
+    if (inPlay && lastInPlayAtMs_ && nowMs > lastInPlayAtMs_)
+        inPlayMs_ += nowMs - lastInPlayAtMs_ < HookWatch::kPeriodMs ? nowMs - lastInPlayAtMs_ : HookWatch::kPeriodMs;
+    lastInPlayAtMs_ = inPlay ? nowMs : 0;
+    uint32_t installed = 0, waiting = 0;
+    for (size_t i = 0; i < kMaxWatches; ++i)
+    {
+        const Verdict verdict = VerdictOf(i);
+        installed += verdict != Verdict::NotInstalled ? 1 : 0;
+        waiting += verdict == Verdict::Waiting ? 1 : 0;
+    }
+    if (!installed || (waiting && inPlayMs_ < kSummaryAfterMs))
+        return false;
+    summarised_ = true;
+    return true;
+}
+
+HookWatchBoard::Verdict HookWatchBoard::VerdictOf(size_t index) const
+{
+    if (index >= kMaxWatches || !slots_[index].installed)
+        return Verdict::NotInstalled;
+    const Slot& slot = slots_[index];
+    if (slot.fired)
+        return Verdict::NeverCalled;
+    return slot.watch.everCalled() ? Verdict::Called : Verdict::Waiting;
+}
+
+void HookWatchBoard::Summary(const char* title, const char* const* names, size_t count, char* out,
+                             size_t size) const
+{
+    if (!out || !size)
+        return;
+    out[0] = 0;
+    if (count > kMaxWatches)
+        count = kMaxWatches;
+    uint32_t watched = 0, called = 0, dead = 0, waiting = 0;
+    for (size_t i = 0; i < count; ++i)
+    {
+        switch (VerdictOf(i))
+        {
+        case Verdict::NotInstalled: break;
+        case Verdict::Waiting: ++watched; ++waiting; break;
+        case Verdict::Called: ++watched; ++called; break;
+        case Verdict::NeverCalled: ++watched; ++dead; break;
+        }
+    }
+    size_t used = 0;
+    const auto append = [&](const char* text) {
+        while (*text && used + 1 < size)
+            out[used++] = *text++;
+        out[used] = 0;
+    };
+    const auto appendNumber = [&](uint32_t value) {
+        char digits[16];
+        std::snprintf(digits, sizeof(digits), "%u", value);
+        append(digits);
+    };
+    const auto list = [&](Verdict which) {
+        bool first = true;
+        for (size_t i = 0; i < count; ++i)
+            if (VerdictOf(i) == which)
+            {
+                if (!first)
+                    append(", ");
+                append(names && names[i] ? names[i] : "?");
+                first = false;
+            }
+    };
+    append(title ? title : "?");
+    append(" hook watch: ");
+    appendNumber(watched);
+    append(" watched");
+    if (watched && called == watched)
+    {
+        append(", all called");
+        return;
+    }
+    append(": ");
+    appendNumber(called);
+    append(" called");
+    if (dead)
+    {
+        append("; ");
+        appendNumber(dead);
+        append(" NEVER CALLED: ");
+        list(Verdict::NeverCalled);
+    }
+    if (waiting)
+    {
+        append("; ");
+        appendNumber(waiting);
+        append(" not yet in the state that calls them: ");
+        list(Verdict::Waiting);
+    }
 }
 } // namespace drive_cascade

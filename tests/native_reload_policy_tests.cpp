@@ -248,6 +248,10 @@ int main()
         Check(native_reload::Options(true,bits&1,bits&2,bits&4)==((bits&2)?(bits&3):bits),"full skip has deterministic precedence");
         Check(native_reload::Options(false,bits&1,bits&2,bits&4)==0,"manual mode gates all reload options");
     }
+    // Dual-wield shake reload is a button press now; only its setting lives here.
+    g_config.dual_wield_shake_reload=true;ConfigSave();g_config.dual_wield_shake_reload=false;ConfigLoad(path);
+    Check(g_config.dual_wield_shake_reload,"dual shake option persists independently");
+    g_config.dual_wield_shake_reload=false;
     DeleteFileW(path);
     Run<0>();Run<1>();Run<2>();Run<3>();Run<4>();Run<5>();
     TailRun<0>();TailRun<1>();TailRun<2>();TailRun<3>();TailRun<4>();TailRun<5>();

@@ -71,14 +71,18 @@ static void TestBuiltInTable()
     Check(selector.Update("halo3", true, "unidentified", kSeatDriver), "sitting down selects a camera");
     const ActiveCamera seat = selector.Active();
     Check(seat.valid && !seat.chase, "the built-in table starts in the seat view");
-    Check(seat.camera == 0 && seat.cameraCount == 2 && seat.modeCount == 1, "the seat view is camera 1 of 2");
+    Check(seat.camera == 0 && seat.cameraCount == 2 && seat.modeCount == 2 && seat.mode == 0 && !seat.rotYaw &&
+              seat.rotationSet,
+          "the seat view is camera 1 of 2, in its first mode, Untethered");
     Check(seat.changes == 1, "sitting down counts as a change");
     Check(selector.StandDownReason().empty(), "no stand-down reason while a camera is selected");
     Check(selector.Describe() == "default (Driver): camera 1 of 2 \"Seat\", the seat view, your body shown without its head",
           "the seat view's log line");
     Check(!selector.Update("halo3", true, "unidentified", kSeatDriver), "the same seat again changes nothing");
     Check(selector.Active() == seat, "and publishes the same record");
-    Check(!selector.StepMode(1), "the seat view has one mode");
+    Check(selector.StepMode(1) && selector.Active().rotYaw && selector.Active().mode == 1,
+          "the seat view steps to Tethered, which turns the view with the vehicle");
+    Check(selector.StepMode(1) && !selector.Active().rotYaw && selector.Active().mode == 0, "and back to Untethered");
     Check(!selector.StepCamera(0), "a step of zero is no step");
 
     Check(selector.StepCamera(1), "stepping to the next camera");
@@ -93,7 +97,7 @@ static void TestBuiltInTable()
     Check(behind.origin == static_cast<uint8_t>(Origin::ThirdPerson) && behind.marker[0] == '\0',
           "it is measured from where the game's own third-person camera rests and names no marker");
     Check(behind.collide && behind.collideMarginCm == 30.0f, "it is pulled in from obstacles by the default margin");
-    Check(behind.changes == 2, "a step counts as a change");
+    Check(behind.changes == 4, "a step counts as a change (sitting down, the seat view's two mode steps, this one)");
     Check(selector.Describe() ==
               "default (Driver): camera 2 of 2 \"Third Person\", mode 1 of 2 \"Untethered\", chase from thirdperson, "
               "offset 0 0 0 cm, location Yaw, rotation None, leash None, lag 0.5 s",
@@ -105,7 +109,7 @@ static void TestBuiltInTable()
     Check(selector.Active().mode == 1 && selector.Active().rotYaw, "the second mode turns the view with the vehicle");
     Check(selector.Active().aimMarker && Has(selector.Describe(), "lag 0.5 s, aim ring"),
           "and shows the ring where the vehicle aims, and its line says so");
-    Check(selector.Active().changes == 3, "a mode step counts as a change");
+    Check(selector.Active().changes == 5, "a mode step counts as a change");
     Check(selector.StepMode(1) && selector.Active().mode == 0, "the modes wrap round forwards");
     Check(selector.StepMode(-1) && selector.Active().mode == 1, "and backwards");
 
@@ -318,7 +322,8 @@ static void TestBuiltInPresets()
     selector.SetTable(DefaultTable());
     selector.Update("halo3", true, "warthog", kSeatDriver);
     Check(Has(selector.Describe(), "Warthog (Driver): camera 1 of 4 \"Seat\""), "a Warthog driver has four cameras");
-    Check(selector.Note() == L"Warthog \u00B7 Seat", "the headset note names the vehicle and the camera");
+    Check(selector.Note() == L"Warthog \u00B7 Seat, Untethered",
+          "the headset note names the vehicle, the camera and its mode");
     Check(selector.StepCamera(1) && Has(selector.Describe(), "\"Third Person\""), "the second the game's own");
     Check(selector.Note() == L"Warthog \u00B7 Third Person, Untethered", "and the mode where there is more than one");
     Check(selector.TuningKey("halo3") == "halo3\tWarthog\tThird Person", "lag tuning keys the camera by game, entry, name");
@@ -334,7 +339,8 @@ static void TestBuiltInPresets()
           "a flyer's own cameras ride its pitch and roll");
     selector.Update("halo3", true, "unidentified", kSeatDriver);
     Check(Has(selector.Describe(), "default (Driver): camera 1 of 2"), "a vehicle it does not know gets two");
-    Check(selector.Note() == L"Unidentified \u00B7 Seat", "and its note names the vehicle, not the default entry");
+    Check(selector.Note() == L"Unidentified \u00B7 Seat, Untethered",
+          "and its note names the vehicle, not the default entry");
     selector.Update("halo4", true, "warthog", kSeatDriver);
     Check(Has(selector.Describe(), "default (Driver): camera 1 of 2"), "and another game the default section's");
     selector.Update("odst", true, "warthog", kSeatDriver);

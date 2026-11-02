@@ -1,5 +1,6 @@
 #include "../common/hud_visibility.h"
 #include <windows.h>
+#include <shlobj.h>
 #include <d3d11.h>
 #include <d3d11_1.h>
 #include <dxgi1_2.h>
@@ -42,6 +43,7 @@
 #include "../common/reclaimer_host_logic.h"
 #include "../common/host_ui_layer_blend.h"
 #include "../common/hook_cost_scope.h"
+#include "../common/present_owner_logic.h"
 
 // THE MOD'S OWN COST IN THE CALLS IT HOOKS (hook_cost_logic.h; hook_cost_frames in the settings file). One frame
 // in N, every context hook below reads the processor's cycle counter around itself and around the game's real
@@ -436,6 +438,7 @@ static void STDMETHODCALLTYPE Halo2DrawIndexedCensusHook(
 {
     HookCostScope cost(hook_cost::Site::DrawIndexed);
     NoteFrameDraw(indexCount);
+    if(PostEffects_ShouldSkipDraw(context))return;
     if (g_hostBindOpen && HostUiLayerOpen(_ReturnAddress(), context))
     {
         g_origHalo2DrawIndexed(context, indexCount, startIndex, baseVertex);
@@ -466,6 +469,7 @@ static void STDMETHODCALLTYPE Halo2DrawCensusHook(
 {
     HookCostScope cost(hook_cost::Site::Draw);
     NoteFrameDraw(vertexCount);
+    if(PostEffects_ShouldSkipDraw(context))return;
     if (g_hostBindOpen && HostUiLayerOpen(_ReturnAddress(), context))
     {
         g_origHalo2Draw(context, vertexCount, startVertex);
@@ -644,6 +648,7 @@ static HRESULT STDMETHODCALLTYPE CreatePixelShaderHook(
         device, bytecode, bytecodeLength, linkage, shader);
     if (FAILED(result) || !shader || !*shader || !bytecode || !bytecodeLength)
         return result;
+    PostEffects_ObserveDevice(device);
     Bloom_ObserveShaderCreated(*shader,bytecode,bytecodeLength);
 
 #if HALOMCCVR_HALO2_STEREO6DOF
@@ -697,6 +702,7 @@ static void STDMETHODCALLTYPE Halo4DrawIndexedFramingHook(
     INT baseVertex)
 {
     HookCostScope cost(hook_cost::Site::DrawIndexed);
+    if(PostEffects_ShouldSkipDraw(context))return;
     VrHalo4ReticleDrawScope reticleDraw(context);
     BloomDrawScope bloom(context);
     HookCostNative native(cost);
@@ -707,6 +713,7 @@ static void STDMETHODCALLTYPE Halo4DrawFramingHook(
     ID3D11DeviceContext* context, UINT vertexCount, UINT startVertex)
 {
     HookCostScope cost(hook_cost::Site::Draw);
+    if(PostEffects_ShouldSkipDraw(context))return;
     VrHalo4ReticleDrawScope reticleDraw(context);
     BloomDrawScope bloom(context);
     HookCostNative native(cost);
@@ -906,6 +913,18 @@ static std::atomic<UINT> g_planOutputW{0};
 static std::atomic<UINT> g_planOutputH{0};
 static std::atomic<bool> g_planDlss{false};
 static bool g_planDlssRuntimePresent = false;
+// In a host that draws the game at its own size (Project Reclaimer): the size the Picture panel asks for, width in
+// the high half, fitted to what the host accepts; what its Native render resolution is answered with
+// (HostEnumDisplaySettingsShim). 0 until planned.
+static std::atomic<uint64_t> g_hostWant{0};
+// What the host's Native read was last answered (width in the high half), the real display mode at that read, and
+// the client's display mode from its settings then (reclaimer_host::ClientDisplayMode). All 0 until the host reads.
+static std::atomic<uint64_t> g_hostLastAnswered{0};
+static std::atomic<uint64_t> g_hostDisplaySize{0};
+static std::atomic<int> g_hostClientDisplayMode{0};
+// `atStart`: the plan made as the mod starts, before the host has read its size; later, a change the host takes at
+// its next start.
+static void HostWantRenderSize(UINT width, UINT height, bool atStart);
 
 static bool DlssRuntimeBesideMod()
 {
@@ -972,6 +991,8 @@ static void InitRenderPlan()
         : (g_config.upscaler == dlss::kUpscalerDlss
                ? "DLSS selected but nvngx_dlss.dll is not beside the mod; full-size render"
                : "DLSS off"));
+    if (g_hostOwnsRenderSize)
+        HostWantRenderSize(g_planOutputW.load(), g_planOutputH.load(), true);
 }
 
 void D3D_GetRenderPlan(unsigned& renderW, unsigned& renderH,
@@ -1015,9 +1036,13 @@ D3DRenderPlanResult D3D_RequestRenderPlan(
 {
     if (!renderW || !renderH || !outputW || !outputH)
         return D3DRenderPlanResult::Unchanged;
-    // The host draws at its own size: no plan the config asks for can be applied, and none is queued.
+    // The host draws at its own size: nothing is queued. Project Reclaimer's follows the Picture panel through its
+    // Native render resolution, which the mod answers (HostEnumDisplaySettingsShim).
     if (g_hostOwnsRenderSize)
+    {
+        HostWantRenderSize(outputW, outputH, false);
         return D3DRenderPlanResult::Unchanged;
+    }
     static bool loggedLoadingDeferral = false;
     if (!dlss::CanDispatchLiveResize(TitleAdapter_GetRuntimeMode()))
     {
@@ -1187,8 +1212,10 @@ static void InitForcedRenderSize()
     {
         // The forced size stays 0, which is this file's pass-through: the swapchain is created and resized as
         // the game asks, no size is lied about, and AdoptHostRenderSize takes the game's size as the plan.
-        LOG("Live render sizing: OFF in this host. It draws the game at its own render resolution whatever the "
-            "swapchain's size, so the game's own swapchain is the VR raster and Resolution scale does nothing");
+        LOG("Live render sizing: the host draws the game at its own render resolution whatever the swapchain's "
+            "size, so the mod sizes no swapchain and the game's own is the VR raster. With Project Reclaimer in "
+            "Borderless and its Render resolution on Native that size is the Picture panel's, fitted inside the "
+            "display (its display mode is answered with it)");
         return;
     }
     g_forcedRenderW = g_planRenderW.load();
@@ -1220,8 +1247,226 @@ static void AdoptHostRenderSize(UINT width, UINT height, const char* when)
     g_planOutputW = width;
     g_planOutputH = height;
     g_planDlss = false;
-    LOG("render plan: the host's own %ux%u (%s); the game renders and the headset gets that picture", width,
-        height, when);
+    const uint64_t want = g_hostWant.load(std::memory_order_relaxed);
+    const UINT wantW = static_cast<UINT>(want >> 32), wantH = static_cast<UINT>(want);
+    const uint64_t answered = g_hostLastAnswered.load(std::memory_order_relaxed);
+    if (want && answered == ((uint64_t(width) << 32) | height) && (wantW != width || wantH != height))
+        LOG("render plan: the host's own %ux%u (%s), what its Native render resolution was given; the game renders "
+            "and the headset gets that picture", width, height, when);
+    else if (want && (wantW != width || wantH != height))
+    {
+        const auto clientMode =
+            static_cast<reclaimer_host::ClientDisplayMode>(g_hostClientDisplayMode.load(std::memory_order_relaxed));
+        if (clientMode == reclaimer_host::ClientDisplayMode::Windowed)
+            LOG("render plan: the host's own %ux%u (%s); the game renders and the headset gets that picture. It is "
+                "not the Picture panel's %ux%u: windowed, Project Reclaimer renders at its Render resolution preset, "
+                "or 1920x1080 on Native. The Picture panel's size needs Display mode Borderless with Render "
+                "resolution Native, from its next start", width, height, when, wantW, wantH);
+        else
+            LOG("render plan: the host's own %ux%u (%s); the game renders and the headset gets that picture. It is "
+                "not the Picture panel's %ux%u: Project Reclaimer takes that size with Display mode Borderless and "
+                "Render resolution Native (Settings > Graphics), from its next start", width, height, when, wantW,
+                wantH);
+    }
+    else
+        LOG("render plan: the host's own %ux%u (%s)%s; the game renders and the headset gets that picture", width,
+            height, when, want ? ", the Picture panel's size" : "");
+}
+
+// PROJECT RECLAIMER'S RENDER SIZE FROM THE PICTURE PANEL. Its Native render resolution is the current display mode
+// of the window's monitor, which it reads through its own import of EnumDisplaySettingsW(ENUM_CURRENT_SETTINGS) (in
+// four places in 0.9.8, each choosing between Native and its 16:9 presets). That import is claimed and answers the
+// Picture panel's size, fitted to the range Reclaimer accepts (reclaimer_host::FitNativeRenderSize). Every other
+// field and mode number, and every caller outside its image -- DXGI, Windows, this mod -- see the real display. A
+// preset never asks, so it keeps its own size. Reclaimer reads it as it starts (its code suggests also when its own
+// settings change; unmeasured), not on a display-change message (a posted WM_DISPLAYCHANGE was not followed by a
+// read), so a size the panel asks for later is taken at its next start. Windowed, Native ignores the read and renders
+// 1920 x 1080 (0.9.23). The same read decides the client's swapchain buffers and, in exclusive fullscreen, the
+// display mode DXGI switches to, so the answer is never larger than the real display and exclusive fullscreen is told
+// the truth (reclaimer_host::AnswerNativeRenderSize).
+using EnumDisplaySettingsWFn = BOOL(WINAPI*)(LPCWSTR, DWORD, DEVMODEW*);
+static EnumDisplaySettingsWFn g_hostPrevEnumDisplaySettingsW = nullptr;
+static std::atomic<uint32_t> g_hostAnswers{0};
+
+// The client's display mode as its settings.json (Documents\My Games\Project Reclaimer) states it now. Read only when
+// the client reads its display mode, which it does as it starts and when its own settings change.
+static reclaimer_host::ClientDisplayMode ReadHostClientDisplayMode()
+{
+    PWSTR documents = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &documents)) || !documents)
+        return reclaimer_host::ClientDisplayMode::Unknown;
+    std::wstring path = documents;
+    CoTaskMemFree(documents);
+    path += L"\\My Games\\Project Reclaimer\\settings.json";
+    const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return reclaimer_host::ClientDisplayMode::Unknown;
+    std::string text;
+    LARGE_INTEGER size{};
+    if (GetFileSizeEx(file, &size) && size.QuadPart > 0 && size.QuadPart <= (1 << 20))
+    {
+        text.resize(static_cast<size_t>(size.QuadPart));
+        DWORD read = 0;
+        if (!ReadFile(file, text.data(), static_cast<DWORD>(text.size()), &read, nullptr))
+            read = 0;
+        text.resize(read);
+    }
+    CloseHandle(file);
+    if (text.empty())
+        return reclaimer_host::ClientDisplayMode::Unknown;
+    return reclaimer_host::ReadClientDisplayMode(text);
+}
+
+static const char* HostClientDisplayModeName(reclaimer_host::ClientDisplayMode mode)
+{
+    switch (mode)
+    {
+    case reclaimer_host::ClientDisplayMode::Windowed: return "windowed";
+    case reclaimer_host::ClientDisplayMode::Borderless: return "borderless";
+    case reclaimer_host::ClientDisplayMode::ExclusiveFullscreen: return "exclusive fullscreen";
+    default: return "unknown";
+    }
+}
+
+static BOOL WINAPI HostEnumDisplaySettingsShim(LPCWSTR device, DWORD mode, DEVMODEW* dm)
+{
+    const EnumDisplaySettingsWFn real =
+        g_hostPrevEnumDisplaySettingsW ? g_hostPrevEnumDisplaySettingsW : &EnumDisplaySettingsW;
+    const BOOL ok = real(device, mode, dm);
+    if (!ok || mode != ENUM_CURRENT_SETTINGS || !dm)
+        return ok;
+    const uint64_t want = g_hostWant.load(std::memory_order_relaxed);
+    if (!want)
+        return ok;
+    const DWORD realW = dm->dmPelsWidth, realH = dm->dmPelsHeight;
+    const reclaimer_host::ClientDisplayMode clientMode = ReadHostClientDisplayMode();
+    g_hostDisplaySize.store((uint64_t(realW) << 32) | realH, std::memory_order_relaxed);
+    g_hostClientDisplayMode.store(static_cast<int>(clientMode), std::memory_order_relaxed);
+    unsigned answerW = 0, answerH = 0;
+    const reclaimer_host::NativeAnswer answer = reclaimer_host::AnswerNativeRenderSize(
+        static_cast<unsigned>(want >> 32), static_cast<unsigned>(want & 0xFFFFFFFFu), realW, realH, clientMode,
+        g_config.reclaimer_fit_to_display, answerW, answerH);
+    dm->dmPelsWidth = answerW;
+    dm->dmPelsHeight = answerH;
+    // Every answer while there have been few (Reclaimer reads it when it decides its size, not each frame), then
+    // only a changed one.
+    const uint64_t answered = (uint64_t(answerW) << 32) | answerH;
+    const uint32_t answers = g_hostAnswers.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (g_hostLastAnswered.exchange(answered, std::memory_order_relaxed) != answered || answers <= 12)
+    {
+        const char* const modeName = HostClientDisplayModeName(clientMode);
+        if (answer == reclaimer_host::NativeAnswer::Panel)
+            LOG("render size: Project Reclaimer (%s) read its display mode (%lux%lu) and was given the Picture "
+                "panel's %ux%u, what its Native render resolution renders at%s (read %u)", modeName, realW, realH,
+                answerW, answerH,
+                answerW > realW || answerH > realH
+                    ? "; larger than the display, as reclaimer_fit_to_display = 0 allows"
+                    : "",
+                answers);
+        else if (answer == reclaimer_host::NativeAnswer::PanelWithinDisplay)
+            LOG("render size: Project Reclaimer (%s) read its display mode (%lux%lu) and was given %ux%u, the "
+                "Picture panel's %llux%llu scaled down to fit inside the display: a picture larger than the screen "
+                "is suspected of stopping the graphics card on some PCs (reclaimer_fit_to_display = 0 gives the "
+                "full size) (read %u)", modeName, realW, realH, answerW, answerH,
+                static_cast<unsigned long long>(want >> 32), static_cast<unsigned long long>(want & 0xFFFFFFFFu),
+                answers);
+        else
+            LOG("render size: Project Reclaimer (%s) read its display mode (%lux%lu) and was given it unchanged%s "
+                "(read %u)", modeName, realW, realH,
+                clientMode == reclaimer_host::ClientDisplayMode::ExclusiveFullscreen
+                    ? ": exclusive fullscreen switches the display to that size, so it must be one the display has. "
+                      "Borderless is the display mode for VR"
+                    : ": the Picture panel's size does not fit it",
+                answers);
+    }
+    return ok;
+}
+
+bool D3D_HostNativeRenderAnswer(unsigned wantW, unsigned wantH, unsigned& width, unsigned& height, int& clientMode)
+{
+    width = wantW;
+    height = wantH;
+    clientMode = g_hostClientDisplayMode.load(std::memory_order_relaxed);
+    const uint64_t display = g_hostDisplaySize.load(std::memory_order_relaxed);
+    if (!g_hostOwnsRenderSize || !display)
+        return false;
+    reclaimer_host::AnswerNativeRenderSize(wantW, wantH, static_cast<unsigned>(display >> 32),
+                                           static_cast<unsigned>(display & 0xFFFFFFFFu),
+                                           static_cast<reclaimer_host::ClientDisplayMode>(clientMode),
+                                           g_config.reclaimer_fit_to_display, width, height);
+    return true;
+}
+
+static void ClaimHostDisplayModeImport()
+{
+    const BYTE* base = reinterpret_cast<const BYTE*>(GetModuleHandleW(nullptr));
+    if (!base)
+        return;
+    const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    const auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    for (auto desc = dir.VirtualAddress ? reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(base + dir.VirtualAddress)
+                                        : nullptr;
+         desc && desc->Name; ++desc)
+    {
+        if (_stricmp(reinterpret_cast<const char*>(base + desc->Name), "user32.dll") != 0 ||
+            !desc->OriginalFirstThunk)
+            continue;
+        auto names = reinterpret_cast<const IMAGE_THUNK_DATA*>(base + desc->OriginalFirstThunk);
+        auto iat = reinterpret_cast<IMAGE_THUNK_DATA*>(const_cast<BYTE*>(base) + desc->FirstThunk);
+        for (; names->u1.AddressOfData; ++names, ++iat)
+        {
+            if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal))
+                continue;
+            const auto imp = reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(base + names->u1.AddressOfData);
+            if (strcmp(imp->Name, "EnumDisplaySettingsW") != 0)
+                continue;
+            void** slot = reinterpret_cast<void**>(&iat->u1.Function);
+            if (*slot == reinterpret_cast<void*>(&HostEnumDisplaySettingsShim))
+                return;
+            DWORD oldProtect = 0;
+            if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtect))
+            {
+                LOG("render size: the host's import of EnumDisplaySettingsW could not be claimed (error %lu); its "
+                    "Native render resolution stays the display's", GetLastError());
+                return;
+            }
+            g_hostPrevEnumDisplaySettingsW = reinterpret_cast<EnumDisplaySettingsWFn>(*slot);
+            *slot = reinterpret_cast<void*>(&HostEnumDisplaySettingsShim);
+            VirtualProtect(slot, sizeof(void*), oldProtect, &oldProtect);
+            LOG("render size: claimed the host's import of EnumDisplaySettingsW (previous handler %p); its Native "
+                "render resolution renders at the Picture panel's size",
+                reinterpret_cast<void*>(g_hostPrevEnumDisplaySettingsW));
+            return;
+        }
+    }
+    LOG("render size: the host imports no EnumDisplaySettingsW by name; its render resolution stays its own");
+}
+
+static void HostWantRenderSize(UINT width, UINT height, bool atStart)
+{
+    if (!g_hostOwnsRenderSize || !width || !height)
+        return;
+    unsigned fitW = width, fitH = height;
+    if (!reclaimer_host::FitNativeRenderSize(fitW, fitH))
+    {
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true, std::memory_order_relaxed))
+            LOG("render size: the Picture panel's %ux%u is outside what Project Reclaimer accepts (640x480 to "
+                "7680x4320) at any size of that shape; its Native render resolution stays the display's",
+                width, height);
+        return;
+    }
+    const uint64_t want = (uint64_t(fitW) << 32) | fitH;
+    if (g_hostWant.exchange(want, std::memory_order_relaxed) == want)
+        return;
+    const char* const when = atStart ? "" : "; Project Reclaimer takes it at its next start";
+    if (fitW != width || fitH != height)
+        LOG("render size: the Picture panel asks for %ux%u, %ux%u in the range Project Reclaimer accepts%s", width,
+            height, fitW, fitH, when);
+    else
+        LOG("render size: the Picture panel asks for %ux%u%s", fitW, fitH, when);
 }
 
 // Game-executable image range, used to scope the client-rect lie and cursor
@@ -1600,7 +1845,209 @@ static BOOL WINAPI GetMonitorInfoWHook(HMONITOR mon, LPMONITORINFO mi)
     return ok;
 }
 
-static HRESULT STDMETHODCALLTYPE CreateSwapChainForHwndHook(IDXGIFactory2* self, IUnknown* device,
+// WHICH PRESENTS CARRY THE GAME'S PICTURE (present_owner_logic.h says why). A present or a resize of any other
+// swapchain passes straight through to DXGI: no headset frame, no host screen tracking, none of the mod's views
+// released. The verdict is kept per thread for the swapchain last asked about, and read again when a swapchain is
+// created or resized (a destroyed swapchain's address can be given to a new one, and a resize changes its size)
+// or when the headset session's device appears.
+static std::atomic<uint32_t> g_swapchainEpoch{1};
+static void SwapchainsChanged()
+{
+    g_swapchainEpoch.fetch_add(1, std::memory_order_acq_rel);
+}
+
+static bool IsGameSwapchain(IDXGISwapChain* sc)
+{
+    if (!sc)
+        return false;
+    struct Cached
+    {
+        IDXGISwapChain* sc = nullptr;
+        uint32_t epoch = 0;
+        ID3D11Device* session = nullptr;
+        bool game = false;
+    };
+    static thread_local Cached cached;
+    const uint32_t epoch = g_swapchainEpoch.load(std::memory_order_acquire);
+    ID3D11Device* const session = VR_SessionDevice();
+    if (cached.sc == sc && cached.epoch == epoch && cached.session == session)
+        return cached.game;
+
+    ID3D11Device* device = nullptr;
+    const bool d3d11 = SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), reinterpret_cast<void**>(&device))) &&
+        device;
+    DXGI_SWAP_CHAIN_DESC desc{};
+    const bool described = SUCCEEDED(sc->GetDesc(&desc));
+    const present_owner::Verdict verdict = present_owner::Classify(
+        d3d11, g_hostOwnsRenderSize, described, desc.BufferDesc.Width, desc.BufferDesc.Height,
+        reinterpret_cast<uintptr_t>(device), reinterpret_cast<uintptr_t>(session));
+    if (device)
+        device->Release();
+    cached = {sc, epoch, session, verdict == present_owner::Verdict::Game};
+    if (!cached.game)
+    {
+        static std::atomic<uint32_t> logged{0};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 12)
+            LOG("present: a %ux%u swapchain presented on thread %lu is %s; the mod leaves its presents and resizes "
+                "to DXGI (no headset frame from it)",
+                desc.BufferDesc.Width, desc.BufferDesc.Height, GetCurrentThreadId(),
+                present_owner::Describe(verdict));
+    }
+    return cached.game;
+}
+
+// In a host that draws at its own size, a swapchain created this small is a token surface: it is never taken as
+// the game's window or size. A size of 0 is the window's own.
+static bool HostTokenSwapchain(UINT width, UINT height, HWND window)
+{
+    RECT client{};
+    if ((!width || !height) && window && GetClientRect(window, &client))
+    {
+        if (!width)
+            width = static_cast<UINT>(client.right - client.left);
+        if (!height)
+            height = static_cast<UINT>(client.bottom - client.top);
+    }
+    const bool token = present_owner::IsTokenSurface(width, height);
+    if (token)
+    {
+        static std::atomic<uint32_t> logged{0};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 4)
+            LOG("swapchain: the host made a %ux%u swapchain (window %p): too small to be the game's picture, so "
+                "not taken as the game's window or size", width, height, static_cast<void*>(window));
+    }
+    return token;
+}
+
+// A LOST DEVICE, logged (d3d11_hook.h). After a device is removed every call on it fails, and the host usually
+// closes itself moments later with nothing in this log to say why.
+static const char* DeviceLossName(HRESULT hr)
+{
+    switch (hr)
+    {
+    case S_OK: return "not lost";
+    case DXGI_ERROR_DEVICE_REMOVED: return "removed";
+    case DXGI_ERROR_DEVICE_HUNG: return "hung: the GPU stopped answering the commands it was given";
+    case DXGI_ERROR_DEVICE_RESET: return "reset: a badly formed command";
+    case DXGI_ERROR_DRIVER_INTERNAL_ERROR: return "the driver's internal error";
+    case DXGI_ERROR_INVALID_CALL: return "an invalid call";
+    default: return "other";
+    }
+}
+void D3D_NoteDeviceLoss(const char* where, long result, ID3D11Device* device)
+{
+    const HRESULT hr = static_cast<HRESULT>(result);
+    if (hr != DXGI_ERROR_DEVICE_REMOVED && hr != DXGI_ERROR_DEVICE_HUNG && hr != DXGI_ERROR_DEVICE_RESET &&
+        hr != DXGI_ERROR_DRIVER_INTERNAL_ERROR)
+        return;
+    // Once per device (a few devices at most), and a few lines in all.
+    static std::atomic<ID3D11Device*> noted[4]{};
+    static std::atomic<uint32_t> lines{0};
+    for (auto& slot : noted)
+    {
+        ID3D11Device* expected = nullptr;
+        if (slot.compare_exchange_strong(expected, device, std::memory_order_acq_rel))
+            break;
+        if (expected == device)
+            return;
+    }
+    if (lines.fetch_add(1, std::memory_order_relaxed) >= 6)
+        return;
+    const HRESULT reason = device ? device->GetDeviceRemovedReason() : hr;
+    LOG("GPU DEVICE LOST: %s returned 0x%08X (%s); the device's own reason is 0x%08X (%s); thread %lu, %s device, "
+        "the host %s over the frame. Everything the mod logs after this line is the aftermath",
+        where ? where : "a call", static_cast<unsigned>(hr), DeviceLossName(hr), static_cast<unsigned>(reason),
+        DeviceLossName(reason), GetCurrentThreadId(),
+        device && device == VR_SessionDevice() ? "the headset session's" : "another",
+        D3D_HostDrawsOverFrame() ? "was drawing" : "was not drawing");
+}
+
+// The headset session's device, asked about its health four times a second at the game's presents: a removal
+// is then logged even when no call of the mod's happens to fail before the host closes.
+static void CheckSessionDeviceHealth()
+{
+    static std::atomic<ULONGLONG> nextMs{0};
+    const ULONGLONG now = GetTickCount64();
+    if (now < nextMs.load(std::memory_order_relaxed))
+        return;
+    nextMs.store(now + 250, std::memory_order_relaxed);
+    ID3D11Device* const device = VR_SessionDevice();
+    if (!device)
+        return;
+    const HRESULT reason = device->GetDeviceRemovedReason();
+    if (FAILED(reason))
+        D3D_NoteDeviceLoss("the headset session's device, asked at a present,", reason, device);
+}
+
+// When the game's swapchain last presented (HostDeviceHook: a host's new device is its next engine's only then).
+static std::atomic<uint64_t> g_lastGamePresentMs{0};
+
+// A HOST'S SECOND DEVICE: a hand-over awaiting its first game frame (0 none), and that frame's arrival.
+static std::atomic<uint64_t> g_deviceSharedAtMs{0};
+static void DeviceShareProved(uint64_t now);
+
+// A host's presents, every 10 s and at each new swapchain: which swapchain, and what DXGI says became of them. The
+// flat window can stop changing while these go on (Project Reclaimer's later engines).
+static void HostPresentReport(IDXGISwapChain* sc, HRESULT hr, uint64_t now)
+{
+    static IDXGISwapChain* lastSwapchain = nullptr;
+    static uint64_t lastMs = 0;
+    static uint32_t presents = 0, notOk = 0;
+    static HRESULT lastNotOk = S_OK;
+    ++presents;
+    if (hr != S_OK)
+    {
+        ++notOk;
+        lastNotOk = hr;
+    }
+    if (!sc || (sc == lastSwapchain && now - lastMs < 10000))
+        return;
+    lastSwapchain = sc;
+    lastMs = now;
+    DXGI_SWAP_CHAIN_DESC desc{};
+    sc->GetDesc(&desc);
+    UINT lastCount = 0;
+    const HRESULT countResult = sc->GetLastPresentCount(&lastCount);
+    DXGI_FRAME_STATISTICS stats{};
+    const HRESULT statsResult = sc->GetFrameStatistics(&stats);
+    BOOL fullscreen = FALSE;
+    sc->GetFullscreenState(&fullscreen, nullptr);
+    LOG("host presents: swapchain %p effect %d flags 0x%X %ux%u window %p fullscreen %d: %u presents, %u not S_OK "
+        "(last 0x%08X); present count 0x%08X/%u; on screen 0x%08X: count %u, refresh %u",
+        static_cast<void*>(sc), static_cast<int>(desc.SwapEffect), desc.Flags, desc.BufferDesc.Width,
+        desc.BufferDesc.Height, static_cast<void*>(desc.OutputWindow), fullscreen ? 1 : 0, presents, notOk,
+        static_cast<unsigned>(lastNotOk), static_cast<unsigned>(countResult), lastCount,
+        static_cast<unsigned>(statsResult), stats.PresentCount, stats.PresentRefreshCount);
+    presents = notOk = 0;
+    lastNotOk = S_OK;
+}
+
+static void NotePresentResult(IDXGISwapChain* sc, HRESULT hr, bool game)
+{
+    if (game)
+    {
+        const uint64_t now = GetTickCount64();
+        g_lastGamePresentMs.store(now, std::memory_order_relaxed);
+        if (g_hostOwnsRenderSize)
+            HostPresentReport(sc, hr, now);
+        // A present Windows did not show: the window is covered or minimised.
+        static std::atomic<bool> loggedOccluded{false};
+        if (hr == DXGI_STATUS_OCCLUDED && !loggedOccluded.exchange(true, std::memory_order_relaxed))
+            LOG("present: Windows reports the game's window occluded; its presents do not reach the monitor");
+        if (SUCCEEDED(hr) && g_deviceSharedAtMs.load(std::memory_order_relaxed))
+            DeviceShareProved(now);
+    }
+    if (!FAILED(hr) || !sc)
+        return;
+    ID3D11Device* device = nullptr;
+    if (FAILED(sc->GetDevice(__uuidof(ID3D11Device), reinterpret_cast<void**>(&device))))
+        device = nullptr;
+    D3D_NoteDeviceLoss(game ? "Present of the game's swapchain" : "Present of another swapchain", hr, device);
+    if (device)
+        device->Release();
+}
+
+static HRESULT CreateSwapChainForHwndBody(IDXGIFactory2* self, IUnknown* device,
     HWND hwnd, const DXGI_SWAP_CHAIN_DESC1* pDesc,
     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreen, IDXGIOutput* restrictOut,
     IDXGISwapChain1** ppSwapChain)
@@ -1626,7 +2073,8 @@ static HRESULT STDMETHODCALLTYPE CreateSwapChainForHwndHook(IDXGIFactory2* self,
     }
     if (g_hostOwnsRenderSize)
         ForgetHostBackbuffer();
-    if (pDesc && g_hostOwnsRenderSize && !g_forcedMainSwapchain)
+    if (pDesc && g_hostOwnsRenderSize && !g_forcedMainSwapchain &&
+        !HostTokenSwapchain(pDesc->Width, pDesc->Height, hwnd))
     {
         g_forcedMainSwapchain = true;
         g_gameHwnd = hwnd;
@@ -1636,7 +2084,30 @@ static HRESULT STDMETHODCALLTYPE CreateSwapChainForHwndHook(IDXGIFactory2* self,
                                         restrictOut, ppSwapChain);
 }
 
-static HRESULT STDMETHODCALLTYPE CreateSwapChainHook(IDXGIFactory* self, IUnknown* device,
+// After a hand-over the old engine's swapchain is on the device the new one uses, and a flip swapchain on a window
+// is refused until the old one's last use is flushed: clear and flush once, and ask again. False: not this case.
+static bool RetrySwapchainAfterDeviceShare(HRESULT hr);
+
+static HRESULT STDMETHODCALLTYPE CreateSwapChainForHwndHook(IDXGIFactory2* self, IUnknown* device,
+    HWND hwnd, const DXGI_SWAP_CHAIN_DESC1* pDesc,
+    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreen, IDXGIOutput* restrictOut,
+    IDXGISwapChain1** ppSwapChain)
+{
+    SwapchainsChanged();
+    HRESULT hr = CreateSwapChainForHwndBody(self, device, hwnd, pDesc, pFullscreen, restrictOut, ppSwapChain);
+    if (RetrySwapchainAfterDeviceShare(hr))
+        hr = CreateSwapChainForHwndBody(self, device, hwnd, pDesc, pFullscreen, restrictOut, ppSwapChain);
+    if (g_hostOwnsRenderSize && pDesc)
+        LOG("host swapchain: created for window %p: %ux%u format %d effect %d scaling %d alpha %d flags 0x%X, %s, "
+            "result 0x%08X, swapchain %p", static_cast<void*>(hwnd), pDesc->Width, pDesc->Height,
+            static_cast<int>(pDesc->Format), static_cast<int>(pDesc->SwapEffect), static_cast<int>(pDesc->Scaling),
+            static_cast<int>(pDesc->AlphaMode), pDesc->Flags, pFullscreen ? "fullscreen description" : "windowed",
+            static_cast<unsigned>(hr), SUCCEEDED(hr) && ppSwapChain ? static_cast<void*>(*ppSwapChain) : nullptr);
+    SwapchainsChanged();
+    return hr;
+}
+
+static HRESULT CreateSwapChainBody(IDXGIFactory* self, IUnknown* device,
     DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSwapChain)
 {
     if (pDesc && g_forcedRenderW && g_forcedRenderH && !g_forcedMainSwapchain)
@@ -1657,13 +2128,216 @@ static HRESULT STDMETHODCALLTYPE CreateSwapChainHook(IDXGIFactory* self, IUnknow
     }
     if (g_hostOwnsRenderSize)
         ForgetHostBackbuffer();
-    if (pDesc && g_hostOwnsRenderSize && !g_forcedMainSwapchain)
+    if (pDesc && g_hostOwnsRenderSize && !g_forcedMainSwapchain &&
+        !HostTokenSwapchain(pDesc->BufferDesc.Width, pDesc->BufferDesc.Height, pDesc->OutputWindow))
     {
         g_forcedMainSwapchain = true;
         g_gameHwnd = pDesc->OutputWindow;
         AdoptHostRenderSize(pDesc->BufferDesc.Width, pDesc->BufferDesc.Height, "its swapchain as created");
     }
     return g_origCreateSwapChain(self, device, pDesc, ppSwapChain);
+}
+
+static HRESULT STDMETHODCALLTYPE CreateSwapChainHook(IDXGIFactory* self, IUnknown* device,
+    DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSwapChain)
+{
+    SwapchainsChanged();
+    HRESULT hr = CreateSwapChainBody(self, device, pDesc, ppSwapChain);
+    if (RetrySwapchainAfterDeviceShare(hr))
+        hr = CreateSwapChainBody(self, device, pDesc, ppSwapChain);
+    if (g_hostOwnsRenderSize && pDesc)
+        LOG("host swapchain: created (legacy call) for window %p: %ux%u format %d effect %d flags 0x%X, windowed %d, "
+            "result 0x%08X, swapchain %p", static_cast<void*>(pDesc->OutputWindow), pDesc->BufferDesc.Width,
+            pDesc->BufferDesc.Height, static_cast<int>(pDesc->BufferDesc.Format), static_cast<int>(pDesc->SwapEffect),
+            pDesc->Flags, pDesc->Windowed ? 1 : 0, static_cast<unsigned>(hr),
+            SUCCEEDED(hr) && ppSwapChain ? static_cast<void*>(*ppSwapChain) : nullptr);
+    SwapchainsChanged();
+    return hr;
+}
+
+// A HOST'S SECOND DEVICE (present_owner_logic.h DecideDeviceShare says when): the host's next engine is given the
+// headset session's device, as MCC's titles all share one. The old engine's work on the context is over by then, and it
+// is handed over clean. Not made multithread protected: in the run that did, the mod's draw count fell from 1340 a frame
+// to 4 at the hand-over while the game went on drawing, so the context's calls had stopped reaching the mod's hooks.
+using D3D11CreateDeviceFn = HRESULT(WINAPI*)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL*,
+                                             UINT, UINT, ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
+static D3D11CreateDeviceFn g_origD3D11CreateDevice = nullptr;
+
+static bool CallerIsHostExe(void* returnAddress)
+{
+    HMODULE caller = nullptr;
+    return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              static_cast<LPCWSTR>(returnAddress), &caller) &&
+        caller == GetModuleHandleW(nullptr);
+}
+
+// Beside the log: written just before a hand-over, removed by its first game frame. Still there at the next launch,
+// the hand-over ended in a crash or at a frozen picture: that launch stands down, and the one after may try again.
+static bool DeviceShareMarkerPath(wchar_t* path, size_t capacity)
+{
+    const wchar_t* dir = LogDirectory();
+    return dir && *dir && _snwprintf_s(path, capacity, _TRUNCATE, L"%lsHaloMCCVR-device-share.pending", dir) > 0;
+}
+static std::atomic<bool> g_deviceShareStoodDown{false};
+static void ReadDeviceShareMarker()
+{
+    wchar_t path[MAX_PATH];
+    if (!DeviceShareMarkerPath(path, MAX_PATH) || GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES)
+        return;
+    DeleteFileW(path);
+    g_deviceShareStoodDown.store(true, std::memory_order_relaxed);
+    LOG("host device: the last launch's hand-over never reached a game frame (it crashed or was closed at a frozen "
+        "picture); this launch leaves the host its own devices, and the next may try again");
+}
+static void WriteDeviceShareMarker()
+{
+    wchar_t path[MAX_PATH];
+    if (!DeviceShareMarkerPath(path, MAX_PATH))
+        return;
+    const HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file != INVALID_HANDLE_VALUE)
+        CloseHandle(file);
+}
+static void DeviceShareProved(uint64_t now)
+{
+    const uint64_t at = g_deviceSharedAtMs.exchange(0, std::memory_order_relaxed);
+    if (!at)
+        return;
+    wchar_t path[MAX_PATH];
+    if (DeviceShareMarkerPath(path, MAX_PATH))
+        DeleteFileW(path);
+    LOG("host device: the next engine's first frame on the session's device, %llu ms after the hand-over",
+        static_cast<unsigned long long>(now - at));
+}
+
+// Faults here are the old engine's teardown meeting the context: the caller then leaves the host its own device.
+static bool ClearContextForHandOver(ID3D11DeviceContext* context)
+{
+    __try
+    {
+        context->ClearState();
+        context->Flush();
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+static bool RetrySwapchainAfterDeviceShare(HRESULT hr)
+{
+    static std::atomic<uint64_t> retriedFor{0};
+    const uint64_t at = g_deviceSharedAtMs.load(std::memory_order_relaxed);
+    if (SUCCEEDED(hr) || !at)
+        return false;
+    LOG("host device: a swapchain after the hand-over was refused (0x%08X)%s", static_cast<unsigned>(hr),
+        hr == E_ACCESSDENIED && retriedFor.load(std::memory_order_relaxed) != at ? "; clearing the context and asking "
+                                                                                   "once more" : "");
+    if (hr != E_ACCESSDENIED || retriedFor.exchange(at, std::memory_order_relaxed) == at)
+        return false;
+    ID3D11Device* const session = VR_SessionDevice();
+    ID3D11DeviceContext* context = nullptr;
+    if (session)
+        session->GetImmediateContext(&context);
+    if (!context)
+        return false;
+    VR_ReleaseSwapchainHolds();
+    const bool cleared = ClearContextForHandOver(context);
+    context->Release();
+    return cleared;
+}
+
+static bool SameAdapter(IDXGIAdapter* requested, ID3D11Device* session)
+{
+    if (!requested)
+        return true;
+    IDXGIDevice* dxgi = nullptr;
+    IDXGIAdapter* adapter = nullptr;
+    DXGI_ADAPTER_DESC a{}, b{};
+    bool same = false;
+    if (SUCCEEDED(session->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgi))) &&
+        SUCCEEDED(dxgi->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetDesc(&a)) && SUCCEEDED(requested->GetDesc(&b)))
+        same = a.AdapterLuid.LowPart == b.AdapterLuid.LowPart && a.AdapterLuid.HighPart == b.AdapterLuid.HighPart;
+    if (adapter)
+        adapter->Release();
+    if (dxgi)
+        dxgi->Release();
+    return same;
+}
+
+static HRESULT WINAPI HostDeviceHook(IDXGIAdapter* adapter, D3D_DRIVER_TYPE driverType, HMODULE software, UINT flags,
+                                     const D3D_FEATURE_LEVEL* levels, UINT levelCount, UINT sdkVersion,
+                                     ID3D11Device** deviceOut, D3D_FEATURE_LEVEL* levelOut,
+                                     ID3D11DeviceContext** contextOut)
+{
+    ID3D11Device* const session = VR_SessionDevice();
+    const uint64_t now = GetTickCount64();
+    const uint64_t last = g_lastGamePresentMs.load(std::memory_order_relaxed);
+    const uint64_t quietMs = last && now >= last ? now - last : 0;
+    const bool lost = session && FAILED(session->GetDeviceRemovedReason());
+    const bool usable = session && !lost;
+    bool levelAccepted = !levels || !levelCount;
+    if (usable && levels)
+        for (UINT i = 0; i < levelCount; ++i)
+            levelAccepted = levelAccepted || levels[i] == session->GetFeatureLevel();
+    // One engine change, one thread. The same thread asking again is the host probing and then asking for real.
+    static std::atomic<DWORD> sharedThread{0};
+    static std::atomic<uint64_t> sharedAtMs{0};
+    const uint64_t sharedAt = sharedAtMs.load(std::memory_order_relaxed);
+    const bool anotherThreadHasIt = sharedAt && last <= sharedAt &&
+        sharedThread.load(std::memory_order_relaxed) != GetCurrentThreadId();
+    present_owner::DeviceShare decision = present_owner::DecideDeviceShare(
+        deviceOut != nullptr, CallerIsHostExe(_ReturnAddress()), session != nullptr, lost, quietMs,
+        usable && SameAdapter(adapter, session), flags, usable ? session->GetCreationFlags() : 0u, levelAccepted,
+        g_config.reclaimer_share_device, g_deviceShareStoodDown.load(std::memory_order_relaxed), anotherThreadHasIt);
+
+    ID3D11DeviceContext* context = nullptr;
+    if (decision == present_owner::DeviceShare::Share)
+    {
+        session->GetImmediateContext(&context);
+        if (context)
+        {
+            WriteDeviceShareMarker();
+            VR_ReleaseSwapchainHolds();
+            if (!ClearContextForHandOver(context))
+            {
+                LOG("host device: clearing the context faulted; the host keeps its own device");
+                wchar_t path[MAX_PATH];
+                if (DeviceShareMarkerPath(path, MAX_PATH))
+                    DeleteFileW(path);
+                decision = present_owner::DeviceShare::SessionLost;
+            }
+        }
+        else
+            decision = present_owner::DeviceShare::SessionLost;
+    }
+    static std::atomic<uint32_t> logged{0};
+    if (logged.fetch_add(1, std::memory_order_relaxed) < 16)
+        LOG("host device: D3D11CreateDevice on thread %lu, adapter %p, flags 0x%X, game last presented %llu ms ago: %s",
+            GetCurrentThreadId(), static_cast<void*>(adapter), flags, static_cast<unsigned long long>(quietMs),
+            present_owner::Describe(decision));
+    if (decision != present_owner::DeviceShare::Share)
+    {
+        if (context)
+            context->Release();
+        return g_origD3D11CreateDevice(adapter, driverType, software, flags, levels, levelCount, sdkVersion, deviceOut,
+                                       levelOut, contextOut);
+    }
+    sharedThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    sharedAtMs.store(now, std::memory_order_relaxed);
+    g_deviceSharedAtMs.store(now, std::memory_order_relaxed);
+    VR_ForgetEngineTargets();
+    SwapchainsChanged();
+    session->AddRef();
+    *deviceOut = session;
+    if (levelOut)
+        *levelOut = session->GetFeatureLevel();
+    if (contextOut)
+        *contextOut = context;
+    else
+        context->Release();
+    return S_OK;
 }
 
 // Broad probe paths deliberately NOT installed here; each was retired after
@@ -2395,10 +3069,20 @@ bool D3D_HostDrawsOverFrame()
     const ULONGLONG now = GetTickCount64();
     return at && now >= at && now - at <= 200;
 }
+// When a frame last drew like a game engine does (a level draws thousands; a host's own screen a handful).
+static std::atomic<uint64_t> g_lastEngineDrawMs{0};
 uint32_t D3D_TakeFrameDrawCalls(uint32_t& smallDraws)
 {
     smallDraws = g_frameSmallDraws.exchange(0, std::memory_order_relaxed);
-    return g_frameDraws.exchange(0, std::memory_order_relaxed);
+    const uint32_t draws = g_frameDraws.exchange(0, std::memory_order_relaxed);
+    if (draws >= 64)
+        g_lastEngineDrawMs.store(GetTickCount64(), std::memory_order_relaxed);
+    return draws;
+}
+bool D3D_HostEngineQuiet()
+{
+    const uint64_t last = g_lastEngineDrawMs.load(std::memory_order_relaxed);
+    return g_hostOwnsRenderSize && GetTickCount64() - last >= 1000;
 }
 bool D3D_HostUiPicture(D3DHostUiPicture& out)
 {
@@ -2974,10 +3658,14 @@ static UINT PacedSyncInterval(UINT requested)
 static HRESULT STDMETHODCALLTYPE PresentHook(IDXGISwapChain* sc, UINT syncInterval, UINT flags)
 {
     const bool topLevel = (g_presentDepth++ == 0);
-    const bool runVrFrame = topLevel && !(flags & DXGI_PRESENT_TEST);
+    // Only the game's own swapchain makes a headset frame (IsGameSwapchain): a host's other swapchain, presented
+    // from another thread, passes straight through.
+    const bool gamePresent = topLevel && IsGameSwapchain(sc);
+    const bool runVrFrame = gamePresent && !(flags & DXGI_PRESENT_TEST);
     LARGE_INTEGER hookStart{};
     if (runVrFrame)
     {
+        CheckSessionDeviceHealth();
         HookCostFrame();
         TitleReentryProbe_PublishPresentCaller(_ReturnAddress(), GetTickCount64());
         if constexpr (kEnableCoopPresentProbe)
@@ -2993,6 +3681,8 @@ static HRESULT STDMETHODCALLTYPE PresentHook(IDXGISwapChain* sc, UINT syncInterv
     if (runVrFrame)
         QueryPerformanceCounter(&presentStart);
     HRESULT hr = g_origPresent(sc, pacedSyncInterval, flags);
+    if (topLevel)
+        NotePresentResult(sc, hr, gamePresent);
     if (runVrFrame)
     {
         QueryPerformanceCounter(&presentEnd);
@@ -3009,10 +3699,14 @@ static HRESULT STDMETHODCALLTYPE Present1Hook(IDXGISwapChain1* sc, UINT syncInte
                                               const DXGI_PRESENT_PARAMETERS* params)
 {
     const bool topLevel = (g_presentDepth++ == 0);
-    const bool runVrFrame = topLevel && !(flags & DXGI_PRESENT_TEST);
+    // Only the game's own swapchain makes a headset frame (IsGameSwapchain): a host's other swapchain, presented
+    // from another thread, passes straight through.
+    const bool gamePresent = topLevel && IsGameSwapchain(sc);
+    const bool runVrFrame = gamePresent && !(flags & DXGI_PRESENT_TEST);
     LARGE_INTEGER hookStart{};
     if (runVrFrame)
     {
+        CheckSessionDeviceHealth();
         HookCostFrame();
         TitleReentryProbe_PublishPresentCaller(_ReturnAddress(), GetTickCount64());
         if constexpr (kEnableCoopPresentProbe)
@@ -3028,6 +3722,8 @@ static HRESULT STDMETHODCALLTYPE Present1Hook(IDXGISwapChain1* sc, UINT syncInte
     if (runVrFrame)
         QueryPerformanceCounter(&presentStart);
     HRESULT hr = g_origPresent1(sc, pacedSyncInterval, flags, params);
+    if (topLevel)
+        NotePresentResult(sc, hr, gamePresent);
     if (runVrFrame)
     {
         QueryPerformanceCounter(&presentEnd);
@@ -3040,8 +3736,8 @@ static HRESULT STDMETHODCALLTYPE Present1Hook(IDXGISwapChain1* sc, UINT syncInte
     return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE ResizeBuffersHook(IDXGISwapChain* sc, UINT bufferCount, UINT width,
-                                                   UINT height, DXGI_FORMAT format, UINT flags)
+static HRESULT ResizeBuffersBody(IDXGISwapChain* sc, UINT bufferCount, UINT width,
+                                 UINT height, DXGI_FORMAT format, UINT flags)
 {
     Bloom_BeforeResize();
     // With the fit on, keep the backbuffer pinned to the full launched render
@@ -3094,12 +3790,25 @@ static HRESULT STDMETHODCALLTYPE ResizeBuffersHook(IDXGISwapChain* sc, UINT buff
     return result;
 }
 
+static HRESULT STDMETHODCALLTYPE ResizeBuffersHook(IDXGISwapChain* sc, UINT bufferCount, UINT width,
+                                                   UINT height, DXGI_FORMAT format, UINT flags)
+{
+    // Another swapchain's resize is its own: none of the mod's views refer to its buffers (IsGameSwapchain).
+    const HRESULT result = IsGameSwapchain(sc)
+        ? ResizeBuffersBody(sc, bufferCount, width, height, format, flags)
+        : g_origResizeBuffers(sc, bufferCount, width, height, format, flags);
+    SwapchainsChanged();
+    return result;
+}
+
 bool InstallD3D11Hooks()
 {
     // Resolution belongs to the headset render, not the optional monitor fit.
     // Install the complete size/metrics transaction for either window preference.
     InitRenderPlan();
     InitForcedRenderSize();
+    if (g_hostOwnsRenderSize)
+        ClaimHostDisplayModeImport();
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -3337,6 +4046,16 @@ bool InstallD3D11Hooks()
         sc1->Release();
     }
 
+    if (g_hostIsProjectReclaimer)
+    {
+        ReadDeviceShareMarker();
+        void* const createDevice = reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"d3d11.dll"),
+                                                                          "D3D11CreateDevice"));
+        if (!createDevice || MH_CreateHook(createDevice, reinterpret_cast<void*>(&HostDeviceHook),
+                                           reinterpret_cast<void**>(&g_origD3D11CreateDevice)) != MH_OK)
+            LOG("warning: D3D11CreateDevice hook failed; a second engine in this host will not reach the headset");
+    }
+
     {
         bool forceHookOk = false;
         bool clientRectHookOk = false;
@@ -3496,6 +4215,11 @@ bool InstallD3D11Hooks()
         bloomShaderStateCreated&&ceCommands==MH_OK&&sharedClearState==MH_OK&&
         sharedOmRtUav==MH_OK&&ceContextStateObserved;
     Bloom_SetAvailable(bloomAvailable,g_origBloomSetResources);
+    const bool postEffectsAvailable=enabled&&bloomMainDrawsCreated&&bloomExtraDrawsCreated&&
+        bloomShaderStateCreated&&ceCommands==MH_OK&&sharedClearState==MH_OK&&ceContextStateObserved;
+    PostEffects_SetAvailable(postEffectsAvailable);
+    LOG("Native shader toggles %s: Reach/ODST bloom, ODST autoexposure; no ReShade required",
+        postEffectsAvailable?"available":"StockFallback (hook admission incomplete)");
     LOG("Bloom consumer path %s: optional exact Reach/H3/ODST shaders, 64 MiB source+zero cache; default native bloom",
         bloomAvailable?"available":"StockFallback (hook admission incomplete)");
     HaloCEHudLayout_SetObservationAvailable(enabled&&ceRasterObservationCreated);

@@ -26,6 +26,13 @@ static void TestChoose()
     Check(Choose(1, true, false) == Route::Panel, "a shared co-op simulation: the panel");
     Check(Choose(2, true, true) == Route::Panel, "2 is always the panel");
     Check(Choose(7, true, true) == Route::GameHud, "an unknown value reads as 1");
+    Check(SessionAllows(true, false, -1), "the co-op switch open allows it anywhere");
+    Check(!SessionAllows(false, false, 3), "MCC with the switch closed: the panel, whatever the type");
+    for (const int type : {1, 3, 4, 5})
+        Check(SessionAllows(false, true, type), "Project Reclaimer: not known to be shared, the game's HUD");
+    Check(!SessionAllows(false, true, 2), "Project Reclaimer, a synchronous client: the panel");
+    Check(!SessionAllows(false, true, -1), "Project Reclaimer, nothing read: the panel");
+    Check(!SessionAllows(false, true, 0), "Project Reclaimer, no simulation: the panel");
 }
 
 static void TestText()

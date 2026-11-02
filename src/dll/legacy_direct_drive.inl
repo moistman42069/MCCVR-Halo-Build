@@ -736,7 +736,7 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     for (auto& role : st.byRole)
         role.store(0, std::memory_order_relaxed);
     const MH_STATUS created = MH_CreateHook(target, detour, orig);
-    if (created != MH_OK || MH_EnableHook(target) != MH_OK)
+    if (created != MH_OK || MCCVR_EnableHook(target) != MH_OK)
     {
         if (created == MH_OK)
             MH_RemoveHook(target);

@@ -26,7 +26,8 @@ namespace anniversary
 {
 static unsigned char state[0x200],expected[sizeof(state)],savedContext[kHalo2SaberSceneContextResetBytes],recordBytes[0x800];
 static int32_t savedLatch=17,latch=31;
-static bool applyOk=true;
+static bool applyOk=true,slotsIntact=true;
+static bool ViewSlotsIntact(uintptr_t){return slotsIntact;}
 static bool ReadGuarded(uintptr_t at,float& out){memcpy(&out,reinterpret_cast<void*>(at),4);Phase();return true;}
 static bool ApplyEyeCamera(uintptr_t record,const Halo2CameraBasis& camera,int,const Halo2SaberEyeCover& cover)
 {
@@ -57,7 +58,7 @@ static void Run(bool ok=true,bool haveLatch=true)
 static void Reset()
 {
     for(size_t i=0;i<sizeof(state);++i)state[i]=expected[i]=static_cast<unsigned char>(i*19+7);
-    memset(savedContext,0xBC,sizeof(savedContext));latch=31;applyOk=true;
+    memset(savedContext,0xBC,sizeof(savedContext));latch=31;applyOk=true;slotsIntact=true;
 }
 }
 namespace classic
@@ -136,5 +137,6 @@ int main()
     Reset();classic::Run(true,true,1);Check(draws==1&&ends==1&&image,"a mono frame drawn as the right eye starts the lens");
     Reset();anniversary::Run(false);Check(!draws&&!ends,"failed Anniversary real pair cannot start lens");
     Reset();anniversary::Run(true,false);Check(!draws&&!ends,"missing native latch refuses optional pass");
+    Reset();anniversary::slotsIntact=false;anniversary::Run();Check(!draws&&!ends,"an emptied view slot refuses the optional pass");
     printf("Halo 2 scope: %u checks passed\n",checks);
 }

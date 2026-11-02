@@ -39,7 +39,8 @@ void LegacyApplyVisualHandOffsets(GameTitle title,uint16_t tag,const int32_t* bo
             }
         }
         const auto& tracking=g_fpStereoSolveScope.anatomicalTracking;
-        const float units=title==GameTitle::Halo3?g_worldScale.load():kOdstWorldUnitsPerMeter;
+        // The hands themselves are placed with the live world scale, so their nudges are too.
+        const float units=g_worldScale.load();
         if(ApplyBoneHandVisualOffsets(staged,count,left,right,palms.leftNode,palms.rightNode,units,
                 tracking.leftHanded,tracking.handAlignment))
             (void)SafeWriteBytes(destination,staged,size_t(count)*sizeof(BoneMatrix));

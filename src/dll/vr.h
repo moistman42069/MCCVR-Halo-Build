@@ -118,13 +118,23 @@ constexpr bool VrBlitNeedsReachReticleStraightAlpha(
 }
 
 // Stage 3BQ's explicit typed RTV retry is also selected by CE's verified RGB
-// authored upload. Other swapchain consumers retain their established default-
-// descriptor behavior even if their first view creation fails.
+// authored upload. Every other swapchain consumer keeps the default descriptor
+// for a typed image; a TYPELESS image (VrImageFormatIsTypeless) is given the
+// negotiated XR format from the start, since a default view of it is invalid.
 constexpr bool VrHalo4ReticleRtvNeedsTypedFallback(
     bool halo4ReticleUpload, bool defaultCreationFailed,
     bool viewStillMissing) noexcept
 {
     return halo4ReticleUpload && defaultCreationFailed && viewStillMissing;
+}
+
+// The colour formats a runtime may hand out as an XR image with no type of its
+// own (SteamVR does): such an image has no default render target view.
+constexpr bool VrImageFormatIsTypeless(DXGI_FORMAT format) noexcept
+{
+    return format == DXGI_FORMAT_R8G8B8A8_TYPELESS || format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+           format == DXGI_FORMAT_B8G8R8X8_TYPELESS || format == DXGI_FORMAT_R10G10B10A2_TYPELESS ||
+           format == DXGI_FORMAT_R16G16B16A16_TYPELESS;
 }
 
 // Stage 3BL keeps the accepted alpha-only metric for every other title. Halo
@@ -580,6 +590,12 @@ void VR_AfterPresent(IDXGISwapChain* swapchain, int64_t presentStartQpc,
                      int64_t presentEndQpc, HRESULT presentResult);
 bool VR_OnResizeBuffers(IDXGISwapChain* swapchain);
 void VR_AfterResizeBuffers(IDXGISwapChain* swapchain);
+// A host's next engine was given the session's device: forget what was learned of the last engine's targets, at the next
+// present (on the present's thread).
+void VR_ForgetEngineTargets();
+void VR_ReleaseSwapchainHolds();
+// The D3D11 device the headset's session was made on, as an identity (null until there is a session). Any thread.
+ID3D11Device* VR_SessionDevice();
 
 // Existing title worker only: drains and formats completed transition traces.
 // Render, camera, and palette hooks only publish fixed-size POD records.
@@ -814,6 +830,9 @@ bool VR_GetLeftControllerPose(float outQuat[4], float outPos[3]);
 bool VR_GetControllerLinearVelocity(bool left, float outVelocity[3]);
 // Melee-only 60 ms tracked peak; ordinary motion velocity stays instantaneous.
 bool VR_GetPhysicalMeleeSpeed(bool left,float& speed);
+// Swings detected so far by a physical hand (0 left, 1 right): gesture_melee_logic.h, stepped once per frame.
+uint32_t VR_GestureMeleeSwings(int hand);
+bool VR_GestureMeleeSwingDirection(int hand, float outDirection[3]); // of that hand's latest swing
 // Called only from Halo's already-validated class-2 CHUD path. The active
 // weapon reticle is redirected into the controller-ray quad texture instead
 // of being drawn at the center of either VR eye.
@@ -1063,6 +1082,9 @@ bool VR_MonoRenderThisFrame(GameTitle title, float coverFov[4]);
 void VR_NoteMonoFrameRendered(GameTitle title, int eye);
 // `title` drew a pair: the latest picture is two eyes' again.
 void VR_NoteStereoFrameRendered(GameTitle title);
+// Aim Frame Zoom: `title`'s frame was drawn along the aim at the half-angle tangents `tanX` and `tanY`, as one
+// pass captured as `eye`, or (eye -1) as a pair; the present shows it as a frame `widthDeg` wide on the aim.
+void VR_NoteAimFrameRendered(GameTitle title, int eye, float tanX, float tanY, float widthDeg);
 // `title`'s renderer turned a single pass down (its own checks on the frame failed, or it faulted). A run of them
 // is answered with a probe pair; single passes dropped where pairs are drawn leave the title in stereo.
 void VR_NoteMonoFrameRejected(GameTitle title);
@@ -1088,6 +1110,8 @@ struct VrPadState
     // of weapon handedness. These axes have already been removed from turn.
     bool thumbrestDpad = false;
     bool exclusiveInput = false;
+    bool dualWield = false; // the support trigger fires the other gun
+    bool supportOnOneHandedGun = false; // vr_mapping::OneHandedGripOnGun
     float dpadX = 0.0f, dpadY = 0.0f;
     // Optional body-gesture output, validated again before XInput delivery.
     uint32_t weaponButtons = 0;
@@ -1100,6 +1124,9 @@ struct VrPadState
     uint32_t weaponReloadBinding = 0, weaponSwitchBinding = 0;
     GameTitle weaponTitle{};
     bool weaponConsumePrimary = false, weaponConsumeSupport = false;
+    // A dual-wield shake's own reload press is in weaponButtons (input.cpp lets it through
+    // gesture-only suppression for its 120 ms).
+    bool weaponDualReloadPulse = false;
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // SEATEXIT witness only: capacitive touch, bit 0 left thumb rest, 1 right thumb rest, 2 left
     // thumbstick, 3 right thumbstick. Read for the log; nothing acts on it.
@@ -1110,11 +1137,16 @@ void VR_GetPadState(VrPadState& out);
 const char* VR_ControllerProfileName(bool left);
 // Cold worker only: optional gesture status/counters, never render-hook logs.
 void VR_ReportWeaponInteractions(uint64_t nowMs);
+void VR_ReachDefaultVisualAngles(float& yaw,float& pitch,float& roll) noexcept;
+void VR_ObserveSecondaryWeaponModel(GameTitle title,uint32_t generation,uint64_t identity) noexcept;
+void VR_LegacyDefaultVisualAngles(bool secondary,bool classic,float& yaw,float& pitch,float& roll) noexcept;
+float VR_DefaultWeaponVisualYaw() noexcept;
 void VR_UpdateWeaponAlignment(); // cold title worker, after title-profile selection
 namespace contact_melee { struct TrackingToWorld; }
 void VR_PublishReloadTarget(GameTitle title,uint32_t generation,uint64_t identity,uint64_t serial,
     const contact_melee::TrackingToWorld& trackingToWorld,const float world[3]) noexcept;
 // Optional, read-only equipped-model observations. No inventory or animation writes.
+void VR_ObserveHalo2VisualModel(bool secondary,uint32_t generation,uint64_t identity) noexcept;
 void VR_ObserveWeaponModel(GameTitle title,uint32_t generation,uint64_t identity) noexcept;
 uint64_t VR_GetWeaponModelIdentity(GameTitle title,uint32_t generation,uint64_t space,uint64_t now) noexcept;
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
@@ -1202,6 +1234,10 @@ void VR_RequestScopeToggle();
 // Receives Halo's blended XInput rumble level (0..1). The render thread maps
 // it to portable OpenXR feedback on both hands and owns all stop conditions.
 void VR_SetGameHaptics(float amplitude);
+// One blip of the mod's own on both hands (a camera switched, the wheel taken), felt for a fixed short time and
+// then gone. It never touches the held level VR_SetGameHaptics sets for the game: a host that sends no vibration
+// of its own until something changes (Project Reclaimer) would otherwise keep that level.
+void VR_PulseGameHaptics(float amplitude);
 // Adds a lock-free, one-shot collision pulse for one OpenXR hand. It is merged
 // with (and never replaces) the title's ordinary XInput rumble.
 void VR_PulseContactHaptics(bool left, float amplitude);
@@ -1342,3 +1378,12 @@ struct VrDlssRenderPlan
 bool VR_GetDlssRenderPlan(VrDlssRenderPlan& out);
 
 void VR_ObserveReachAlternateDepthBind(ID3D11DeviceContext* context, UINT renderTargetCount, ID3D11DepthStencilView* depth);
+
+// Native simulation thread, read only: the local player's current dual pair, so the input thread
+// knows which hand holds what. A shake then presses that hand's reload button (shared input);
+// nothing is requested of the simulation.
+void VR_DualWieldObserveOwner(GameTitle title,uint32_t generation,uint32_t unit,
+    const uint32_t weapons[2]) noexcept;
+
+// Cold-worker input admission and clock diagnostics (self-throttled to every 5 s).
+void VR_ReportDualWieldReloadInput(GameTitle title);

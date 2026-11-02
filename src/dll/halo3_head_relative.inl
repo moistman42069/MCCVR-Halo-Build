@@ -550,7 +550,7 @@ bool InstallHeadRelativeTracker(Halo3HeadRelativeLane& lane, uintptr_t base, siz
     lane.provenUnitGetter.store(lane.ownUnitProven ? reinterpret_cast<int (__fastcall*)(int)>(unitGetter) : nullptr,
                                 std::memory_order_release);
     lane.ready.store(true, std::memory_order_release);
-    if (MH_EnableHook(point) != MH_OK || MH_EnableHook(object) != MH_OK)
+    if (MCCVR_EnableHook(point) != MH_OK || MCCVR_EnableHook(object) != MH_OK)
     {
         LOG("TRACKER HEAD %s: StockFallback: a tracker hook did not enable", lane.title);
         (void)RemoveHeadRelativeTracker(lane, pointDetour, objectDetour);
@@ -677,6 +677,7 @@ void Halo3ListenerApplyHead(Halo3HeadAudioLane& lane)
 
 __declspec(noinline) void __fastcall Halo3ListenerUpdateDetour(bool flag)
 {
+    Halo3HookCalled(Halo3Hook::SoundListener);
     auto& lane = g_halo3HeadAudio;
     lane.callbacks.fetch_add(1, std::memory_order_acq_rel);
     __try
@@ -863,7 +864,7 @@ bool InstallHeadRelativeAudio(Halo3HeadAudioLane& lane, uintptr_t base, size_t s
     }
     lane.target = target;
     lane.ready.store(true, std::memory_order_release);
-    if (MH_EnableHook(target) != MH_OK)
+    if (MCCVR_EnableHook(target) != MH_OK)
     {
         LOG("AUDIO HEAD %s: StockFallback: the listener hook did not enable", lane.title);
         (void)RemoveHeadRelativeAudio(lane, detour);
@@ -902,6 +903,8 @@ bool InstallHalo3HeadRelative(uintptr_t base, size_t size, uint32_t generation)
     audio.head = &lane.head;
     const bool listener = InstallHeadRelativeAudio(audio, base, size, generation,
                                                    reinterpret_cast<void*>(&Halo3ListenerUpdateDetour));
+    if (listener)
+        Halo3HookWatchInstalled(Halo3Hook::SoundListener, reinterpret_cast<uintptr_t>(audio.target));
     return tracker || listener;
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -352,6 +353,30 @@ inline AuthoredReticleCaptureFit AuthoredReticleFitForCapture(bool modLayoutAppl
         safeHorizontal = safeVertical = 1.0f;
     return AuthoredReticleFitForStretch(
         AuthoredReticleCanvasStretch(safeHorizontal, safeVertical, rasterAspect, canvasAspect));
+}
+
+// HOW MUCH THE CAPTURE MAGNIFIES HALO 3'S HUD. The capture shows the raster's centre magnified, and Halo 3 draws
+// its art at a raster size in proportion to `rasterHeight * safeVertical`. The safe frame is the HUD size setting
+// corrected for the raster's shape against the headset's, so one fixed magnification showed the same crosshair at
+// a different size per render resolution and raster shape: Project Reclaimer's 2560x1440 raster at 0.2331 drew it
+// 0.53 times as tall as MCC's 2912x2100 at 0.2989, both at a HUD size of 0.43. The magnification is scaled to hold
+// the art at the size it had where `baseScale` was tuned, for the same HUD size: `hudSize` still scales the
+// crosshair with the rest of the HUD, as it did. Under the title's own safe frame it is left as it was. Kept
+// within a quarter and four times `baseScale`.
+inline constexpr float kHalo3ReticleReferenceRasterHeight = 2100.0f;
+inline constexpr float kHalo3ReticleReferenceVerticalPerSize = 0.2989f / 0.43f;
+inline float Halo3ReticleCaptureScale(float baseScale, bool modLayoutApplied, float rasterHeight,
+                                      float safeVertical, float hudSize) noexcept
+{
+    if (!modLayoutApplied || !std::isfinite(baseScale) || !std::isfinite(rasterHeight) ||
+        !std::isfinite(safeVertical) || !std::isfinite(hudSize) || baseScale <= 0.0f || rasterHeight <= 0.0f ||
+        safeVertical <= 0.0f || hudSize <= 0.0f)
+        return baseScale;
+    const float scale = baseScale * kHalo3ReticleReferenceRasterHeight * kHalo3ReticleReferenceVerticalPerSize /
+        (rasterHeight * safeVertical / hudSize);
+    if (!std::isfinite(scale))
+        return baseScale;
+    return std::clamp(scale, baseScale * 0.25f, baseScale * 4.0f);
 }
 
 // The captured art's width over its height, from its ink spread; 0 when it has no height to compare with.

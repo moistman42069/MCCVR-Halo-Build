@@ -1,3 +1,4 @@
+#include "../src/common/weapon_alignment.h"
 #include "../src/common/reach_wind_replay.h"
 int RunRoomscaleInputTests();
 int RunRoomscaleRecenterTests();
@@ -1820,6 +1821,25 @@ int main()
         }
         Check(AuthoredReticleArtAspect(AuthoredReticleArtCentre{}) == 0.0f,
               "art shape: no measurement has no aspect");
+        {
+            // Halo 3's magnification: the art keeps one size across rasters and safe frames for one HUD size.
+            const float mcc = Halo3ReticleCaptureScale(4.0f, true, 2100.0f, 0.2989f, 0.43f);
+            Check(std::fabs(mcc - 4.0f) < 1.0e-3f, "halo 3 magnification: the tuned raster keeps 4x");
+            const float reclaimer = Halo3ReticleCaptureScale(4.0f, true, 1440.0f, 0.2331f, 0.43f);
+            Check(std::fabs(reclaimer * 1440.0f * 0.2331f - mcc * 2100.0f * 0.2989f) < 1.0f,
+                  "halo 3 magnification: Project Reclaimer's smaller raster and safe frame show the art as large");
+            const float larger = Halo3ReticleCaptureScale(4.0f, true, 2100.0f, 0.2989f * 1.2f, 0.43f * 1.2f);
+            Check(std::fabs(larger - 4.0f) < 1.0e-3f,
+                  "halo 3 magnification: a larger HUD size still draws a larger crosshair");
+            Check(Halo3ReticleCaptureScale(4.0f, false, 1440.0f, 0.2331f, 0.43f) == 4.0f &&
+                      Halo3ReticleCaptureScale(4.0f, true, 0.0f, 0.2331f, 0.43f) == 4.0f &&
+                      Halo3ReticleCaptureScale(4.0f, true, 1440.0f, std::nanf(""), 0.43f) == 4.0f &&
+                      Halo3ReticleCaptureScale(4.0f, true, 1440.0f, 0.2331f, 0.0f) == 4.0f,
+                  "halo 3 magnification: the title's own safe frame or an unusable input keeps 4x");
+            Check(Halo3ReticleCaptureScale(4.0f, true, 100.0f, 0.15f, 1.0f) == 16.0f &&
+                      Halo3ReticleCaptureScale(4.0f, true, 100000.0f, 1.0f, 0.15f) == 1.0f,
+                  "halo 3 magnification: kept within a quarter and four times the tuned 4x");
+        }
         {
             // The HUD's own scale: the pair measured in a headset with the ring 1.36 times as wide as tall.
             const float raster = 2912.0f / 2100.0f;
@@ -7218,6 +7238,14 @@ int main()
             "ODST reproduces the live Halo 3 projection scales");
         Check(!ComputeOdstHalo3FovMatch(0.0f, 0.9f, matchedFov),
             "ODST rejects an invalid headset FOV pair");
+        float odstNativeX = 0.0f, odstNativeY = 0.0f;
+        Check(OdstNativeTangentsFromProjection(2.5f, -4.0f, odstNativeX, odstNativeY) &&
+                  std::fabs(odstNativeX - 0.4f) < 0.0001f &&
+                  std::fabs(odstNativeY - 0.25f) < 0.0001f,
+            "ODST reads the game's own view from a projection's scales");
+        Check(!OdstNativeTangentsFromProjection(0.0f, 1.0f, odstNativeX, odstNativeY) &&
+                  !OdstNativeTangentsFromProjection(1.0f, NAN, odstNativeX, odstNativeY),
+            "ODST refuses a projection that names no view");
 
         for (int count : {41, 42, 43, 45, 46})
         {
@@ -7395,7 +7423,7 @@ int main()
         const HudLayoutAdapter* odstHud =
             HudLayoutAdapterFor(HudLayoutProfile::Halo3ODST);
         Check(halo3Hud && halo3Hud->expectedBlocks == 3,
-            "Halo 3 HUD layout retains its three proven skin blocks");
+            "Halo 3 HUD layout restores the accepted three stock skin records");
         Check(odstHud && odstHud->expectedBlocks == 1,
             "ODST HUD layout accepts only its uniquely proven globals block");
         const HudLayoutAdapter* reachHud =
@@ -7468,7 +7496,7 @@ int main()
         Check(HudLayoutAcceptedCountOk(*halo3Hud, 3) &&
                   !HudLayoutAcceptedCountOk(*halo3Hud, 2) &&
                   !HudLayoutAcceptedCountOk(*halo3Hud, 4),
-            "Halo 3 still accepts exactly three layout blocks");
+            "Halo 3 rejects the failed two-record alternate layout candidate");
         Check(HudLayoutAcceptedCountOk(*odstHud, 1) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 0) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 2),
@@ -7772,6 +7800,11 @@ int main()
                   !VrHalo4ReticleRtvNeedsTypedFallback(true, true, false),
             "Stage 3BQ retries a typed RTV only for a failed Halo 4 authored-"
             "reticle view creation");
+        Check(VrImageFormatIsTypeless(DXGI_FORMAT_R8G8B8A8_TYPELESS) &&
+                  VrImageFormatIsTypeless(DXGI_FORMAT_B8G8R8A8_TYPELESS) &&
+                  !VrImageFormatIsTypeless(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) &&
+                  !VrImageFormatIsTypeless(DXGI_FORMAT_B8G8R8A8_UNORM),
+            "a typeless XR image (SteamVR's) is named as one; a typed one keeps its default view");
         bool writebackTruthTable = true;
         for (uint32_t bits = 0; bits < 16; ++bits)
         {
@@ -10632,6 +10665,14 @@ int main()
                       !Halo2SaberViewRecordIsMainView(0x40) &&
                       !Halo2SaberViewRecordIsMainView(0x4),
                 "E-H2-21 a record with any of flags 0x4C is not a main view");
+            Check(kHalo2SaberViewSlotsRva == 0x01DFF3B0 &&
+                      kHalo2SaberViewSlotsRva + kHalo2SaberViewSlotPointerOffset == 0x01DFF858 &&
+                      kHalo2SaberViewSlotStride == 0x4E0 && kHalo2SaberViewSlotCount == 12,
+                "the view slot pointer is the one the scene render reads at 0x471E59");
+            Check(Halo2SaberViewSlotsIntact(0, 0) && Halo2SaberViewSlotsIntact(0, 0xFFF) &&
+                      Halo2SaberViewSlotsIntact(0xFFF, 0xFFF) && Halo2SaberViewSlotsIntact(0x0F0, 0xFFF) &&
+                      !Halo2SaberViewSlotsIntact(0xFFF, 0xFFE) && !Halo2SaberViewSlotsIntact(0x0F0, 0),
+                "an eye pass waits while any slot seen filled this level is empty");
             float a[16]{1,0,0,0, 0,1,0,0, 0,0,1,0, 1.0f,2.0f,3.0f,1};
             float b[16]{1,0,0,0, 0,1,0,0, 0,0,1,0, 1.0f,2.0f,3.0f,1};
             Check(Halo2SaberViewMatricesMatch(a, b, 2.0e-3f, 0.02f),
@@ -14395,7 +14436,7 @@ int main()
             "The V5 seed defaults keep the welcome visible, fit the desktop "
             "window, use the V5 HUD size, and seed the accepted Halo 2 "
             "Classic yaw/pitch alignment");
-        Check(fresh.dpad_hand == 0 && fresh.dpad_head_radius == 0.30f &&
+        Check(fresh.dpad_hand == 0 && fresh.dpad_head_radius == 0.20f &&
                   !fresh.quest_thumbrest_dpad,
             "D-pad defaults preserve the existing 30 cm left-hand head gesture and leave Quest thumb-rest mode off");
         Check(fresh.two_hand_coherent_aim,
@@ -14431,7 +14472,7 @@ int main()
     g_config.dlss_preset=0;ConfigSave();
     Check(g_config.haptic_intensity == 0.86f,
         "Malformed new values retain their individual default");
-    Check(g_config.dpad_head_radius == 0.30f && !g_config.quest_thumbrest_dpad,
+    Check(g_config.dpad_head_radius == 0.20f && !g_config.quest_thumbrest_dpad,
         "Legacy configs retain the existing D-pad gesture radius and keep the new thumb-rest mode off");
     const std::string organizedConfig = ReadTextFile(primary);
     Check(!g_config.independent_dual_aim && CountText(organizedConfig,
@@ -15494,10 +15535,10 @@ int main()
         const float reachSeed = sizeSeed(kTitleProfileReach);
         const float reachOpacitySeed = opacitySeed(kTitleProfileReach);
         Check(reachSeed == 10.3f && reachOpacitySeed == 0.69f && sizeSeed(4) == 8.0f && sizeSeed(5) == 8.0f &&
-                  sizeSeed(6) == 7.2f && sizeSeed(0) == 5.0f && sizeSeed(1) == 5.0f && sizeSeed(3) == 5.0f &&
+                  sizeSeed(6) == 7.2f && sizeSeed(0) == 6.0f && sizeSeed(1) == 6.0f && sizeSeed(3) == 5.0f &&
                   opacitySeed(0) == 0.8f && opacitySeed(4) == 0.8f,
-              "crosshair per game: the games' starts are Reach 10.3 at 0.69, Halo 2 8, Halo: Combat Evolved 7.2 "
-              "and the rest the shared 4 at 1.25");
+              "crosshair per game: the games' starts are Halo 3 and ODST 6, Reach 10.3 at 0.69, Halo 2 8, Halo: "
+              "Combat Evolved 7.2 and Halo 4 the shared 4 at 1.25");
         bool seeded = g_config.base_tunables.crosshair_size_deg == 5.0f &&
             g_config.base_tunables.crosshair_opacity == 0.8f;
         for (int i = 0; i < kTitleProfileCount; ++i)
@@ -15531,7 +15572,7 @@ int main()
                   g_config.base_tunables.crosshair_brightness == 1.5f,
               "crosshair per game: an edit lands in the running game's profile only");
         Config_ApplyTitleProfile(1);
-        Check(g_config.crosshair_size_deg == 5.0f && g_config.crosshair_opacity == 0.4f,
+        Check(g_config.crosshair_size_deg == 6.0f && g_config.crosshair_opacity == 0.4f,
               "crosshair per game: the next game brings its own");
         Config_ApplyTitleProfile(-1);
         Check(std::fabs(g_config.crosshair_size_deg - reachSeed) < 1.0e-4f &&
@@ -15576,8 +15617,8 @@ int main()
         }
         ConfigLoad(crosshairPath.c_str());
         Check(g_config.base_tunables.crosshair_size_deg == 10.1f &&
-                  g_config.title_profiles[0].crosshair_size_deg == 10.1f &&
-                  g_config.title_profiles[1].crosshair_size_deg == 10.1f &&
+                  g_config.title_profiles[0].crosshair_size_deg == 6.0f &&
+                  g_config.title_profiles[1].crosshair_size_deg == 6.0f &&
                   g_config.title_profiles[3].crosshair_size_deg == 10.1f &&
                   g_config.title_profiles[kTitleProfileReach].crosshair_size_deg == 10.3f &&
                   g_config.title_profiles[kTitleProfileReach].crosshair_opacity == 0.69f &&
@@ -15585,7 +15626,7 @@ int main()
                   g_config.title_profiles[5].crosshair_size_deg == 8.0f &&
                   g_config.title_profiles[6].crosshair_size_deg == 7.2f &&
                   g_config.title_profiles[0].crosshair_opacity == 1.25f,
-              "crosshair per game: an older config's one size stays Halo 3's, ODST's and Halo 4's, and Reach, "
+              "crosshair per game: an older config's one size stays Halo 4's, and Halo 3, ODST, Reach, "
               "Halo 2 and Halo: Combat Evolved start at their own");
         const Config untouched;
         bool defaults = untouched.crosshair_size_deg == 4.0f && untouched.crosshair_opacity == 1.25f &&
@@ -15599,7 +15640,7 @@ int main()
                   untouched.title_profiles[4].crosshair_size_deg == 8.0f &&
                   untouched.title_profiles[5].crosshair_size_deg == 8.0f &&
                   untouched.title_profiles[6].crosshair_size_deg == 7.2f &&
-                  untouched.title_profiles[0].crosshair_size_deg == 4.0f,
+                  untouched.title_profiles[0].crosshair_size_deg == 6.0f,
               "crosshair per game: a fresh configuration has every game's own starting size and opacity, and the "
               "crosshair shrinks away within 0.7 m");
         // The HUD layout's four values follow the same rule: Reach's with no game running, never the shared
@@ -15643,7 +15684,7 @@ int main()
                   CountText(firstRun, "\nhalo2a_crosshair_size_deg = 8.0000") == 1 &&
                   CountText(firstRun, "\nhalo2c_crosshair_size_deg = 8.0000") == 1 &&
                   CountText(firstRun, "\nhalo1_crosshair_size_deg = 7.2000") == 1 &&
-                  CountText(firstRun, "\nhalo3_crosshair_size_deg = 4.0000") == 1 &&
+                  CountText(firstRun, "\nhalo3_crosshair_size_deg = 6.0000") == 1 &&
                   CountText(firstRun, "\nhalo3_crosshair_opacity = 1.2500") == 1 &&
                   CountText(firstRun, "\nreticle_min_scale_dist_m = 0.70") == 1 &&
                   g_config.crosshair_size_deg == 10.3f && g_config.crosshair_opacity == 0.69f &&
@@ -15672,7 +15713,9 @@ int main()
             g_config.per_gun_alignment=true;Config_RefreshWeaponProfile();
             Check(Config_ActiveWeaponProfileName()!=nullptr&&g_config.gun_forward_m==-.123f,
                 "first gun inherits title calibration when enabled");
-            g_config.gun_forward_m=.231234f;g_config.barrel_roll_deg=37.f;
+            // Exercise precision within the new +/-0.30 m slider range.
+            const float firstGunForward=weapon_alignment::Baseline(title).forward+.231234f;
+            g_config.gun_forward_m=firstGunForward;g_config.barrel_roll_deg=37.f;
             g_config.halo2_classic_gun_pitch_deg=12.f;g_config.muzzle_height_m=.12f;
             g_config.hud_size=.71f;
             ConfigSave();
@@ -15685,11 +15728,11 @@ int main()
                 "second gun starts from fallback including Classic and muzzle trims");
             g_config.gun_forward_m=-.211f;
             Config_ApplyWeaponProfile(guns[0]);
-            Check(std::abs(g_config.gun_forward_m-.231234f)<1e-6f&&
+            Check(std::abs(g_config.gun_forward_m-firstGunForward)<1e-6f&&
                 g_config.barrel_roll_deg==37.f&&g_config.halo2_classic_gun_pitch_deg==12.f,
                 "switching back restores the first gun exactly");
             ConfigSave();ConfigLoad(primary.c_str());Config_ApplyWeaponProfile(guns[0]);
-            Check(g_config.per_gun_alignment&&std::abs(g_config.gun_forward_m-.231234f)<1e-6f&&
+            Check(g_config.per_gun_alignment&&std::abs(g_config.gun_forward_m-firstGunForward)<1e-6f&&
                 g_config.halo2_classic_gun_pitch_deg==12.f&&g_config.muzzle_height_m==.12f,
                 "stable title and weapon identity survives a full config round trip");
             Config_ApplyWeaponProfile(guns[1]);
@@ -15995,12 +16038,12 @@ int main()
     Check(g_config.halo4_seat_converge == 1, "legacy config inherits Halo 4 seated convergence (on)");
     Check(!g_config.manual_reload&&g_config.weapon_holsters,
         "legacy config leaves manual reload off and inherits weapon holsters (on)");
-    Check(!g_config.game_menu_pointer, "legacy config leaves native menu pointing off");
-    g_config.game_menu_pointer = true;
-    ConfigSave();
+    Check(g_config.game_menu_pointer, "legacy config inherits native menu pointing (on)");
     g_config.game_menu_pointer = false;
+    ConfigSave();
+    g_config.game_menu_pointer = true;
     ConfigLoad(primary.c_str());
-    Check(g_config.game_menu_pointer, "native menu pointer toggle survives save/load");
+    Check(!g_config.game_menu_pointer, "native menu pointer toggle survives save/load");
     Check(!g_config.world_collision,
         "legacy configs inherit the opt-in world-collision default");
     Check(!g_config.physical_melee && !g_config.gesture_melee &&
@@ -16039,8 +16082,8 @@ int main()
         struct RadiusCase { const char* value; float expected; };
         for (const RadiusCase radius : {
                  RadiusCase{"0.01", 0.10f}, RadiusCase{"0.99", 0.50f},
-                 RadiusCase{"nan", 0.30f}, RadiusCase{"inf", 0.30f},
-                 RadiusCase{"malformed", 0.30f}})
+                 RadiusCase{"nan", 0.20f}, RadiusCase{"inf", 0.20f},
+                 RadiusCase{"malformed", 0.20f}})
         {
             {
                 std::ofstream file(primary);
@@ -16229,6 +16272,39 @@ int main()
     ConfigLoad(primary.c_str());
     Check(g_config.physical_melee_swing_speed == 10.0f && Config{}.physical_melee_swing_speed == 5.0f,
         "physical melee clamps at ten while retaining the default of five");
+
+    {
+        const Config d{};
+        Check(!d.gesture_melee_require_grip && d.gesture_melee_speed == 1.5f && d.gesture_melee_extension == 1.5f &&
+                  d.gesture_melee_travel == 0.40f && d.gesture_melee_reach == 0.30f && d.gesture_melee_off_hand &&
+                  d.gesture_melee_directional && d.gesture_melee_aim_hold_ms == 250 && d.gesture_melee_aim_ramp_ms == 150 &&
+                  d.gesture_melee_press_ms == 80 && d.gesture_melee_cooldown_ms == 500 &&
+                  d.gesture_melee_holster_veto_ms == 400 && !d.gesture_melee_smoothed_hands,
+            "gesture melee's swing checks have their defaults");
+        {
+            std::ofstream file(primary);
+            file << "gesture_melee_speed = 7.5\ngesture_melee_extension = 2.0\ngesture_melee_travel = 0\n"
+                    "gesture_melee_reach = 0.45\ngesture_melee_require_grip = 1\ngesture_melee_off_hand = 0\n"
+                    "gesture_melee_directional = 0\ngesture_melee_aim_hold_ms = 300\ngesture_melee_cooldown_ms = 700\n";
+        }
+        ConfigLoad(primary.c_str());
+        ConfigSave();
+        ConfigLoad(primary.c_str());
+        Check(g_config.gesture_melee_speed == 7.5f && g_config.gesture_melee_extension == 2.0f &&
+                  g_config.gesture_melee_travel == 0.0f && g_config.gesture_melee_reach == 0.45f &&
+                  g_config.gesture_melee_require_grip && !g_config.gesture_melee_off_hand &&
+                  !g_config.gesture_melee_directional && g_config.gesture_melee_aim_hold_ms == 300 &&
+                  g_config.gesture_melee_cooldown_ms == 700,
+            "gesture melee's swing checks survive a save/load round trip");
+        {
+            std::ofstream file(primary);
+            file << "gesture_melee_speed = 99\ngesture_melee_extension = -3\ngesture_melee_reach = 9\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.gesture_melee_speed == kPhysicalMeleeSpeedMax && g_config.gesture_melee_extension == 0.0f &&
+                  g_config.gesture_melee_reach == 1.0f,
+            "gesture melee's swing checks clamp to their ranges");
+    }
 
     {
         std::ofstream file(primary);
@@ -17534,7 +17610,9 @@ int main()
     const Halo4PhysicalMeleeVelocityDecision fiveMetreSwing =
         Halo4UpdatePhysicalMeleeVelocityLatch(true, 5.0f, 5.0f, false);
     const Halo4PhysicalMeleeVelocityDecision overMaximumThreshold =
-        Halo4UpdatePhysicalMeleeVelocityLatch(true, 5.1f, 5.1f, false);
+        Halo4UpdatePhysicalMeleeVelocityLatch(true, 10.1f, 10.1f, false);
+    Check(Halo4UpdatePhysicalMeleeVelocityLatch(true, 10.0f, 10.0f, false).trigger,
+        "the whole of the Required swing speed slider works");
     Check(firstSwing.trigger && firstSwing.latched &&
           !heldSwing.trigger && heldSwing.latched &&
           !releasedSwing.trigger && !releasedSwing.latched &&
@@ -18390,6 +18468,33 @@ int main()
                   !Halo3AnchorWithinBounds(skyPos, boundsCenter, 1e9f, 2.0f),
                 "Frame composition carries mounted turrets and the sanity "
                 "gate rejects wrong-frame anchors");
+            {
+                // The drawn root node may stand further off the simulation's origin at speed.
+                Check(Halo3RootNodeReachWu(0.0f) == 1.0f && std::fabs(Halo3RootNodeReachWu(60.0f) - 7.0f) < 1.0e-4f &&
+                          Halo3RootNodeReachWu(1.0e6f) == 1.0f + kHalo3RootNodeMaxSpeedWu * kHalo3RootNodeLagSeconds &&
+                          Halo3RootNodeReachWu(std::nanf("")) == 1.0f,
+                      "root node reach: a world unit at rest, more at speed, capped, and a bad speed is rest");
+                Halo3StepSpeed track;
+                const float p0[3] = {0.0f, 0.0f, 0.0f}, p1[3] = {2.0f, 0.0f, 0.0f}, p2[3] = {4.0f, 0.0f, 0.0f};
+                const bool first = Halo3StepSpeedUpdate(track, p0, 10.0) == 0.0f;
+                const bool held = Halo3StepSpeedUpdate(track, p0, 10.01) == 0.0f;   // no step yet
+                const float stepped = Halo3StepSpeedUpdate(track, p1, 10.0333);     // 2 wu in a 30 Hz tick
+                const float between = Halo3StepSpeedUpdate(track, p1, 10.05);       // a frame inside the tick
+                const float next = Halo3StepSpeedUpdate(track, p2, 10.0667);
+                const float still = Halo3StepSpeedUpdate(track, p2, 10.7);          // stopped
+                const float jump = Halo3StepSpeedUpdate(track, p0, 12.0);           // a step after a long gap
+                Check(first && held && std::fabs(stepped - 60.0f) < 0.5f && std::fabs(between - 60.0f) < 0.5f &&
+                          std::fabs(next - 60.0f) < 0.5f && still == 0.0f && jump == 0.0f,
+                      "step speed: each tick's step over the time since the last, held between ticks, 0 once still");
+                Halo3StepSpeed moving;
+                (void)Halo3StepSpeedUpdate(moving, p0, 20.0);
+                (void)Halo3StepSpeedUpdate(moving, p1, 20.0333);                  // 60 wu/s along +x: reach 7 wu
+                const float behind[3] = {-5.0f, 0.3f, 0.0f}, aside[3] = {0.0f, 4.0f, 0.0f}, tooFar[3] = {-9.0f, 0.0f, 0.0f};
+                Halo3StepSpeed resting;
+                Check(Halo3RootNodeWithinReach(behind, moving) && !Halo3RootNodeWithinReach(aside, moving) &&
+                          !Halo3RootNodeWithinReach(tooFar, moving) && !Halo3RootNodeWithinReach(behind, resting),
+                      "root node reach: along the motion it grows with speed, off it a world unit, at rest a world unit");
+            }
             // A giant: HugeGrass's Lich has a live sphere of 112.25 wu, and its seat's frame stands inside it.
             const float lichCenter[3] = {40.0f, -12.0f, 30.0f};
             const float lichOrigin[3] = {10.0f, 5.0f, 2.0f};

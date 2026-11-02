@@ -472,6 +472,7 @@ struct Reader
             }
             else if (key == "rotationTracking")
             {
+                camera.rotationOwn = camera.rotationSet = true;
                 ok = Axes(item, at, camera.rotYaw, camera.rotPitch, camera.rotRoll);
             }
             else if (key == "collide")
@@ -642,7 +643,9 @@ struct Reader
                 one.mode.locPitch = camera.locPitch;
                 one.mode.locRoll = camera.locRoll;
             }
-            if (!one.hasRotation)
+            if (one.hasRotation)
+                camera.rotationSet = true;
+            else
             {
                 one.mode.rotYaw = camera.rotYaw;
                 one.mode.rotPitch = camera.rotPitch;
@@ -1067,7 +1070,8 @@ void WriteCamera(std::string& out, const Vehicle& vehicle, const Camera& camera)
         camera.locRoll != unset.locRoll)
         out += ", \"locationTracking\": " +
                (camera.locView ? std::string("\"view\"") : AxesJson(camera.locYaw, camera.locPitch, camera.locRoll));
-    if (all || camera.rotYaw != unset.rotYaw || camera.rotPitch != unset.rotPitch || camera.rotRoll != unset.rotRoll)
+    if (all || camera.rotationOwn || camera.rotYaw != unset.rotYaw || camera.rotPitch != unset.rotPitch ||
+        camera.rotRoll != unset.rotRoll)
         out += ", \"rotationTracking\": " + AxesJson(camera.rotYaw, camera.rotPitch, camera.rotRoll);
     if (all || camera.collide != unset.collide)
         out += std::string(", \"collide\": ") + (camera.collide ? "true" : "false");
@@ -1250,14 +1254,6 @@ namespace
 // The built-in cameras' parts. Every seat starts in its seat view, so the file changes nothing until another
 // camera is chosen; the second camera is where the game's own third-person camera rests, which suits a vehicle of
 // any size. A vehicle the mod knows adds one or two of its own, after Halo Campaign Evolved's.
-Camera SeatView()
-{
-    Camera seat;
-    seat.name = "Seat";
-    seat.type = CameraType::FirstPerson;
-    return seat;
-}
-
 // Two modes: the world held still, and the view turning with the vehicle's heading. The aim ring only in the second,
 // as Halo Campaign Evolved's built-in cameras have it: there it is where the view comes to rest.
 void UntetheredAndTethered(Camera& camera)
@@ -1269,6 +1265,18 @@ void UntetheredAndTethered(Camera& camera)
     turning.rotYaw = true;
     still.aimMarker = 0;
     camera.tethering = {still, turning};
+    camera.rotationSet = true;
+}
+
+// The seat view, Untethered first (the view as it is without the file) and Tethered, as Halo Campaign Evolved's
+// cockpit cameras are.
+Camera SeatView()
+{
+    Camera seat;
+    seat.name = "Seat";
+    seat.type = CameraType::FirstPerson;
+    UntetheredAndTethered(seat);
+    return seat;
 }
 
 Camera ThirdPerson()
@@ -1317,11 +1325,94 @@ Vehicle Entry(const char* key, const char* match, uint8_t seats, std::vector<Cam
 
 // An entry that also matches another text: the stock tag's own word where it is not the vehicle's name, so a mod's
 // variant named by its tag ("behemoth_fast", "mauler_fast") finds the stock vehicle's cameras.
+// The entry with its third-person camera (always its second) raised `up` cm.
+Vehicle RaisedThirdPerson(Vehicle vehicle, float up)
+{
+    vehicle.cameras[1].offset[2] = up;
+    return vehicle;
+}
+
 Vehicle AlsoMatching(Vehicle vehicle, const char* match)
 {
     vehicle.match.push_back(match);
     return vehicle;
 }
+
+// Mod maps' own vehicles, with cameras tuned in play: read by this file's own reader, so they are written exactly as
+// a player's file would have them. A stock vehicle has its entry above.
+constexpr char kModVehicles[] = R"json({ "version": 1, "games": { "halo3": { "vehicles": {
+  "super_mantis": { "match": ["super_mantis"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "chase", "origin": "seat", "offset": [0, 0, -900]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Right Pit", "type": "chase", "origin": "seat", "offset": [450, -900, -100], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Left Pit", "type": "chase", "origin": "seat", "offset": [-450, -900, -100], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "scarab_multiplayer": { "match": ["scarab_multiplayer"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "showHeadlessBody": true, "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "phantom_test": { "match": ["phantom_test"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Gun", "type": "chase", "origin": "seat", "offset": [-400, -10, -400], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "seraph_reach": { "match": ["seraph_reach"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "sparrowhawk": { "match": ["sparrowhawk"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "showHeadlessBody": true, "fadeParts": {"sparrowhawk_glass": 0.5}, "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "drone_alpha": { "match": ["drone_alpha"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "fadeParts": {"drone_fighter_cockpit_glass": 0.3, "drone_fighter_cockpit": 0.3}, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw", "pitch"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "pelican_multiplayer": { "match": ["pelican_multiplayer"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "longswordh2a": { "match": ["longswordh2a"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "eyeAdjust": false, "fadeParts": {"longsword glass": 0.1, "screen_01": 0.1, "screen_02": 0.1, "screen_03": 0.1}, "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "lich": { "match": ["lich"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "skiff_fast": { "match": ["skiff_fast"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "falcon_gl": { "match": ["falcon_gl"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "falcon": { "match": ["falcon"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "sabre": { "match": ["sabre"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "odst_pod2": { "match": ["odst_pod2"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "vulture": { "match": ["vulture"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "albatross": { "match": ["albatross"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] },
+  "olifaunt": { "match": ["olifaunt"], "defaultCamera": 0, "cameras": [
+      {"name": "Seat", "type": "firstperson", "tethering": [{"name": "Untethered", "aimMarker": false}, {"name": "Tethered", "rotationTracking": ["yaw"]}]},
+      {"name": "Third Person", "type": "chase", "origin": "thirdperson", "offset": [0, 0, 0], "locationTracking": ["yaw"], "rotationTracking": [], "collide": true, "collideMargin": 30, "lag": 0.5, "lagDamping": 1.5, "tethering": [{"name": "Untethered"}, {"name": "Tethered", "rotationTracking": ["yaw"]}]}
+  ] }
+} } } })json";
 
 Vehicle AnyVehicle()
 {
@@ -1344,33 +1435,36 @@ Table DefaultTable()
     halo3.key = kGameKeys[0];
     halo3.vehicles = {
         Entry("Warthog", "warthog", driver,
-              {Chase("Over the Shoulder", Origin::Seat, -200, 90, 70, true, 0.15f),
+              {Chase("Over the Shoulder", Origin::Seat, -90, -100, 50, true, 0.15f),
                Chase("Left Side", Origin::Seat, 0, -140, 40, true, 0.0f)}),
         Entry("Warthog passenger", "warthog", passenger,
-              {Chase("Over the Shoulder", Origin::Seat, -200, -90, 70, true, 0.15f),
+              {Chase("Over the Shoulder", Origin::Seat, 0, 90, 10, true, 0.15f),
                Chase("Right Side", Origin::Seat, 0, 140, 40, true, 0.0f)}),
-        Entry("Warthog gunner", "warthog", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+        RaisedThirdPerson(Entry("Warthog gunner", "warthog", gunner,
+                                {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+                          300),
         Entry("Mongoose", "mongoose", driver, {Chase("Over the Shoulder", Origin::Seat, -170, 80, 70, true, 0.15f)}),
         Entry("Mongoose passenger", "mongoose", passenger,
               {Chase("Over the Shoulder", Origin::Seat, -170, -80, 70, true, 0.15f)}),
         Entry("Ghost", "ghost", driver,
               {Chase("Follow", Origin::Vehicle, -450, 0, 220, true, 0.25f),
-               Chase("Over the Shoulder", Origin::Vehicle, -10, 60, 135, true, 0.1f)}),
-        Entry("Chopper", "chopper", driver, {Chase("Follow", Origin::Vehicle, -500, 0, 250, true, 0.25f)}),
+               Chase("Over the Shoulder", Origin::Vehicle, -70, 90, 100, true, 0.1f)}),
+        RaisedThirdPerson(Entry("Chopper", "chopper", driver, {Chase("Follow", Origin::Vehicle, -500, 0, 250, true, 0.25f)}),
+                          300),
         AlsoMatching(Entry("Prowler", "prowler", driver, {Chase("Follow", Origin::Vehicle, -550, 0, 300, true, 0.25f)}),
                      "mauler"),
         AlsoMatching(Entry("Prowler gunner", "prowler", gunner,
                            {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
                      "mauler"),
         Entry("Banshee", "banshee", driver,
-              {Chase("Over the Shoulder", Origin::Vehicle, -350, 150, 200, false, 0.2f),
+              {Chase("Over the Shoulder", Origin::Vehicle, -300, 200, 350, false, 0.2f),
                Chase("Chase", Origin::Vehicle, -600, 0, 150, false, 0.3f)}),
         Entry("Hornet", "hornet", driver,
               {Chase("Over the Shoulder", Origin::Vehicle, -350, 150, 250, false, 0.2f),
                Chase("Chase", Origin::Vehicle, -700, 0, 250, false, 0.3f)}),
         Entry("Scorpion", "scorpion", driver, {Chase("High", Origin::Vehicle, -700, 0, 700, true, 0.3f)}),
         Entry("Scorpion gunner", "scorpion", gunner,
-              {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+              {Chase("Over the Shoulder", Origin::Seat, -100, 50, 10, true, 0.1f)}),
         Entry("Wraith", "wraith", driver, {Chase("High", Origin::Vehicle, -700, 100, 700, true, 0.3f)}),
         Entry("Wraith gunner", "wraith", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
         AlsoMatching(Entry("Elephant", "elephant", driver,
@@ -1380,8 +1474,14 @@ Table DefaultTable()
                            {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
                      "behemoth"),
         Entry("Turret", "turret", 0, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
-        AnyVehicle(),
     };
+    Table mods;
+    if (FromJson(kModVehicles, sizeof(kModVehicles) - 1, mods).ok)
+        if (const Game* modGame = mods.FindGame(kGameKeys[0]))
+            for (const Vehicle& vehicle : modGame->vehicles)
+                if (!vehicle.isDefault)
+                    halo3.vehicles.push_back(vehicle);
+    halo3.vehicles.push_back(AnyVehicle());
 
     // Halo: Reach: the vehicles the mod names by their identity (ReachVehicleCameraName: the stock tag's own word,
     // "warthog", "warthog_chaingun", "space_banshee"). A gun mounted on a vehicle is named by its own tag, which
@@ -1446,33 +1546,36 @@ Table DefaultTable()
     odst.key = kGameKeys[1];
     odst.vehicles = {
         Entry("Warthog", "warthog", driver,
-              {Chase("Over the Shoulder", Origin::Seat, -200, 90, 70, true, 0.15f),
+              {Chase("Over the Shoulder", Origin::Seat, -90, -100, 50, true, 0.15f),
                Chase("Left Side", Origin::Seat, 0, -140, 40, true, 0.0f)}),
         Entry("Warthog passenger", "warthog", passenger,
-              {Chase("Over the Shoulder", Origin::Seat, -200, -90, 70, true, 0.15f),
+              {Chase("Over the Shoulder", Origin::Seat, 0, 90, 10, true, 0.15f),
                Chase("Right Side", Origin::Seat, 0, 140, 40, true, 0.0f)}),
-        Entry("Warthog gunner", "warthog", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+        RaisedThirdPerson(Entry("Warthog gunner", "warthog", gunner,
+                                {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+                          300),
         Entry("Mongoose", "mongoose", driver, {Chase("Over the Shoulder", Origin::Seat, -170, 80, 70, true, 0.15f)}),
         Entry("Mongoose passenger", "mongoose", passenger,
               {Chase("Over the Shoulder", Origin::Seat, -170, -80, 70, true, 0.15f)}),
         Entry("Ghost", "ghost", driver,
               {Chase("Follow", Origin::Vehicle, -450, 0, 220, true, 0.25f),
-               Chase("Over the Shoulder", Origin::Vehicle, -10, 60, 135, true, 0.1f)}),
-        Entry("Chopper", "chopper", driver, {Chase("Follow", Origin::Vehicle, -500, 0, 250, true, 0.25f)}),
+               Chase("Over the Shoulder", Origin::Vehicle, -70, 90, 100, true, 0.1f)}),
+        RaisedThirdPerson(Entry("Chopper", "chopper", driver, {Chase("Follow", Origin::Vehicle, -500, 0, 250, true, 0.25f)}),
+                          300),
         AlsoMatching(Entry("Prowler", "prowler", driver, {Chase("Follow", Origin::Vehicle, -550, 0, 300, true, 0.25f)}),
                      "mauler"),
         AlsoMatching(Entry("Prowler gunner", "prowler", gunner,
                            {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
                      "mauler"),
         Entry("Banshee", "banshee", driver,
-              {Chase("Over the Shoulder", Origin::Vehicle, -350, 150, 200, false, 0.2f),
+              {Chase("Over the Shoulder", Origin::Vehicle, -300, 200, 350, false, 0.2f),
                Chase("Chase", Origin::Vehicle, -600, 0, 150, false, 0.3f)}),
         Entry("Hornet", "hornet", driver,
               {Chase("Over the Shoulder", Origin::Vehicle, -350, 150, 250, false, 0.2f),
                Chase("Chase", Origin::Vehicle, -700, 0, 250, false, 0.3f)}),
         Entry("Scorpion", "scorpion", driver, {Chase("High", Origin::Vehicle, -700, 0, 700, true, 0.3f)}),
         Entry("Scorpion gunner", "scorpion", gunner,
-              {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+              {Chase("Over the Shoulder", Origin::Seat, -100, 50, 10, true, 0.1f)}),
         Entry("Scorpion rider", "scorpion", passenger,
               {Chase("Over the Shoulder", Origin::Seat, -200, 0, 100, true, 0.15f)}),
         Entry("Wraith", "wraith", driver, {Chase("High", Origin::Vehicle, -700, 100, 700, true, 0.3f)}),

@@ -1,4 +1,5 @@
 #pragma once
+#include <cmath>
 
 #include <cstdint>
 #include "runtime_types.h"
@@ -57,6 +58,131 @@ float BlendXInputMotors(uint16_t lowFrequencyMotor, uint16_t highFrequencyMotor)
 
 // Distance is from the tracked head centre, preserving the original 30 cm
 // gesture by default. Title-specific side-of-head requirements stay at caller.
+// A Project Reclaimer key from the controller: a button with the left controller at the head presses the key, and the
+// button's release lets it go, so the host's own handling (its Hold or Toggle talk mode, say) decides what that means.
+// Only a fresh press at the head starts it, the button then belongs to the key until it is let go, and a press that
+// stops being allowed lets the key go.
+struct HeadKeyGesture
+{
+    enum class Key { None, Press, Release };
+    // The host misses a key held much under this, so a quick press stays down this long. Stopping being allowed still
+    // lets go at once.
+    static constexpr uint64_t kMinHoldMs = 150;
+    bool talking = false;
+    bool xWasDown = false;
+    uint64_t pressedAtMs = 0;
+    uint32_t logged = 0;
+    Key Step(bool atHead, bool xDown, bool allowed, uint64_t nowMs) noexcept
+    {
+        const bool rising = xDown && !xWasDown;
+        xWasDown = xDown;
+        if (talking)
+        {
+            if (allowed && (xDown || nowMs - pressedAtMs < kMinHoldMs))
+                return Key::None;
+            talking = false;
+            return Key::Release;
+        }
+        if (rising && atHead && allowed)
+        {
+            talking = true;
+            pressedAtMs = nowMs;
+            return Key::Press;
+        }
+        return Key::None;
+    }
+};
+
+// Y at the head gives way to the Y + B pause. Y waits kHoldOffMs for B before it counts: a Tab tap can leave the host's
+// scoreboard up, so not even a moment of it may go out ahead of a chord. Y away from the head is the game's at once. B at
+// any point in the press gives the whole press to the chord, until Y is let go. A tap let go during the wait counts on
+// its release, so the wait never swallows a quick press.
+struct HeadYChord
+{
+    static constexpr uint64_t kHoldOffMs = 120;
+    enum class Y { Game, Waiting, Key };
+    uint64_t downSinceMs = 0;
+    bool atHead = false;
+    bool chord = false;
+    bool counted = false;
+    Y Step(bool yDown, bool atHeadNow, bool bDown, bool chordEnabled, uint64_t nowMs) noexcept
+    {
+        if (!yDown)
+        {
+            const bool tap = downSinceMs && atHead && !chord && !counted;
+            downSinceMs = 0;
+            atHead = chord = counted = false;
+            return tap ? Y::Key : Y::Game;
+        }
+        if (!downSinceMs)
+        {
+            downSinceMs = nowMs ? nowMs : 1;
+            atHead = atHeadNow;
+        }
+        if (!atHead)
+            return Y::Game;
+        if (chordEnabled && bDown)
+            chord = true;
+        if (chord)
+            return Y::Game;
+        if (chordEnabled && nowMs - downSinceMs < kHoldOffMs)
+            return Y::Waiting;
+        counted = true;
+        return Y::Key;
+    }
+};
+
+// Crouching with the right stick: down crouches and up stands, and the crouch stays until then. The push must be mostly
+// vertical, so turning with a stick that drifts never crouches, and the stick must come back before it counts again.
+// `onFoot` false stands the player up: a seat ends a crouch, and it does not come back on the way out.
+struct StickCrouch
+{
+    static constexpr float kPush = 0.7f, kRearm = 0.4f, kVerticalOverHorizontal = 1.5f;
+    bool crouched = false;
+    bool armed = true;
+    bool Step(float x, float y, bool onFoot) noexcept
+    {
+        if (!onFoot)
+        {
+            crouched = false;
+            armed = false;
+        }
+        else if (armed)
+        {
+            if (std::fabs(y) >= kPush && std::fabs(y) > std::fabs(x) * kVerticalOverHorizontal)
+            {
+                crouched = y < 0.0f;
+                armed = false;
+            }
+        }
+        if (std::fabs(y) < kRearm)
+            armed = true;
+        return crouched;
+    }
+};
+
+// The head D-pad gesture when a hand comes up while walking: the stick goes on walking until it returns to centre, and
+// only then does it become the D-pad. `moving` false always gives the plain gesture.
+struct DpadMovementLatch
+{
+    bool walking = false;
+    bool wasAtHead = false;
+    bool Step(bool atHead, bool moving) noexcept
+    {
+        if (!atHead)
+        {
+            walking = wasAtHead = false;
+            return false;
+        }
+        if (!moving)
+            walking = false;
+        else if (!wasAtHead)
+            walking = true;
+        wasAtHead = true;
+        return !walking;
+    }
+};
+
 bool DpadHeadWithinRadius(const float head[3], const float controller[3],
     float radiusMetres) noexcept;
 
