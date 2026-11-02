@@ -2547,8 +2547,7 @@ namespace
         }
         }
 
-        // Also in Controls, because a preset saves these.
-        if (CategorySection section{Cat_BodyHands, Cat_Controls}; section.visible)
+        if (CategorySection section{Cat_Controls}; section.visible)
         {
         if (ImGui::CollapsingHeader("Melee##section", ImGuiTreeNodeFlags_None))
         {
