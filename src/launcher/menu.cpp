@@ -133,7 +133,7 @@ struct Menu {
         const bool sameRelease = installed && !identity.tag.empty() && identity.tag == latest.tag && !identity.candidate;
         EnableWindow(GetDlgItem(window, Update), !busy && game && updateReady && !sameRelease);
         Text(GetDlgItem(window, Update), identity.candidate && installed ? L"INSTALL PUBLIC RELEASE" : L"INSTALL UPDATE");
-        if (game) Text(path, (game->store ? L"Version: Xbox app / Microsoft Store" : L"Version: Steam") +
+        if (game) Text(path, std::wstring(game->store ? L"Version: Xbox app / Microsoft Store" : L"Version: Steam") +
             L"\nVR folder: " + (game->root / L"Halo_MCC_VR").wstring() + L"\nInstalled: " + (installed ? identity.label : L"not installed"));
         else Text(path, L"No MCC installation found. Choose Browse and select the folder containing MCC, or the Xbox Content folder.");
         Text(GetDlgItem(window, Install), installed ? L"INSTALL / UPDATE" : L"INSTALL VR MOD");
