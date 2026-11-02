@@ -16274,6 +16274,39 @@ int main()
         "physical melee clamps at ten while retaining the default of five");
 
     {
+        const Config d{};
+        Check(!d.gesture_melee_require_grip && d.gesture_melee_speed == 1.5f && d.gesture_melee_extension == 1.5f &&
+                  d.gesture_melee_travel == 0.40f && d.gesture_melee_reach == 0.30f && d.gesture_melee_off_hand &&
+                  d.gesture_melee_directional && d.gesture_melee_aim_hold_ms == 250 && d.gesture_melee_aim_ramp_ms == 150 &&
+                  d.gesture_melee_press_ms == 80 && d.gesture_melee_cooldown_ms == 500 &&
+                  d.gesture_melee_holster_veto_ms == 400 && !d.gesture_melee_smoothed_hands,
+            "gesture melee's swing checks have their defaults");
+        {
+            std::ofstream file(primary);
+            file << "gesture_melee_speed = 7.5\ngesture_melee_extension = 2.0\ngesture_melee_travel = 0\n"
+                    "gesture_melee_reach = 0.45\ngesture_melee_require_grip = 1\ngesture_melee_off_hand = 0\n"
+                    "gesture_melee_directional = 0\ngesture_melee_aim_hold_ms = 300\ngesture_melee_cooldown_ms = 700\n";
+        }
+        ConfigLoad(primary.c_str());
+        ConfigSave();
+        ConfigLoad(primary.c_str());
+        Check(g_config.gesture_melee_speed == 7.5f && g_config.gesture_melee_extension == 2.0f &&
+                  g_config.gesture_melee_travel == 0.0f && g_config.gesture_melee_reach == 0.45f &&
+                  g_config.gesture_melee_require_grip && !g_config.gesture_melee_off_hand &&
+                  !g_config.gesture_melee_directional && g_config.gesture_melee_aim_hold_ms == 300 &&
+                  g_config.gesture_melee_cooldown_ms == 700,
+            "gesture melee's swing checks survive a save/load round trip");
+        {
+            std::ofstream file(primary);
+            file << "gesture_melee_speed = 99\ngesture_melee_extension = -3\ngesture_melee_reach = 9\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.gesture_melee_speed == kPhysicalMeleeSpeedMax && g_config.gesture_melee_extension == 0.0f &&
+                  g_config.gesture_melee_reach == 1.0f,
+            "gesture melee's swing checks clamp to their ranges");
+    }
+
+    {
         std::ofstream file(primary);
         file << "y_b_start_chord = 0\n";
     }
@@ -17577,7 +17610,9 @@ int main()
     const Halo4PhysicalMeleeVelocityDecision fiveMetreSwing =
         Halo4UpdatePhysicalMeleeVelocityLatch(true, 5.0f, 5.0f, false);
     const Halo4PhysicalMeleeVelocityDecision overMaximumThreshold =
-        Halo4UpdatePhysicalMeleeVelocityLatch(true, 5.1f, 5.1f, false);
+        Halo4UpdatePhysicalMeleeVelocityLatch(true, 10.1f, 10.1f, false);
+    Check(Halo4UpdatePhysicalMeleeVelocityLatch(true, 10.0f, 10.0f, false).trigger,
+        "the whole of the Required swing speed slider works");
     Check(firstSwing.trigger && firstSwing.latched &&
           !heldSwing.trigger && heldSwing.latched &&
           !releasedSwing.trigger && !releasedSwing.latched &&

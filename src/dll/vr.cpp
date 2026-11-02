@@ -3,6 +3,7 @@
 #include "../common/halo4_weapon_visual_defaults.h"
 #include "../common/authored_grab_zone.h"
 #include "../common/vr_interaction_refinement_logic.h"
+#include "../common/gesture_melee_logic.h"
 #include "../common/hand_smoothing.h"
 #include "../common/support_grip_logic.h"
 #include "../common/support_grab_logic.h"
@@ -1077,6 +1078,11 @@ namespace
     XrPosef g_rightAimPose{{0, 0, 0, 1}, {0, 0, 0}};
     bool g_rightAimPoseValid = false;
     PhysicalMeleeSpeedHistory g_meleeSpeedHistory[2]{};
+    gesture_melee::Detector g_gestureMeleeDetector[2];
+    std::atomic<uint32_t> g_gestureMeleeSwings[2]{};
+    std::atomic<float> g_gestureMeleeSwingDirection[2][3]{};
+    uint64_t g_gestureMeleeClaimedMs = 0;
+    XrTime g_gestureMeleeLastTime = 0;
     // Title interfaces use right=primary, left=support/secondary roles.
     std::atomic<bool> g_capturedLeftHanded{false};
     XrPosef g_physicalControllerPose[2]{};
@@ -15240,6 +15246,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             selectedLeftVelocity,selectedLeftVelocityValid,
             leftUsedPoseDerived);
 
+        // Swing melee reads the hands as they really moved; smoothing would blunt the leading edge of a strike.
+        const float gestureHandLeft[3]{leftLocation.pose.position.x,leftLocation.pose.position.y,leftLocation.pose.position.z};
+        const float gestureHandRight[3]{location.pose.position.x,location.pose.position.y,location.pose.position.z};
+        const bool gestureHandValid[2]{leftValid,valid};
+
         // HAND SMOOTHING: after the velocities above (swing melee and arm-swing running stay on raw motion),
         // before anything stores or reads a controller pose of this frame.
         {
@@ -15493,6 +15504,61 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         g_nativePointerStickY=pad.turnY;
         Input_StepHeadKeys(pad);
         pad.dualWield=SecondaryWeaponPresentationActive();
+        {
+            const bool wanted=g_config.gesture_melee||g_config.physical_melee;
+            float headQ[4],headP[3];
+            const bool headValid=wanted&&VR_GetHeadPose(headQ,headP);
+            const float dt=g_gestureMeleeLastTime&&time>g_gestureMeleeLastTime?
+                static_cast<float>(time-g_gestureMeleeLastTime)*1.0e-9f:0.0f;
+            g_gestureMeleeLastTime=time;
+            gesture_melee::Settings settings{};
+            settings.speed=g_config.gesture_melee_speed;
+            settings.extension=g_config.gesture_melee_extension;
+            settings.travel=g_config.gesture_melee_travel;
+            settings.reach=g_config.gesture_melee_reach;
+            settings.requireGrip=g_config.gesture_melee_require_grip;
+            settings.smoothingMs=g_config.gesture_melee_smoothing_ms;
+            settings.maxSpeed=g_config.gesture_melee_max_speed;
+            settings.maxReach=g_config.gesture_melee_max_reach;
+            const uint64_t swingNow=GetTickCount64();
+            if(g_weaponInteraction.HasClaimedGrip()) g_gestureMeleeClaimedMs=swingNow;
+            const bool gestureRecent=g_gestureMeleeClaimedMs&&
+                swingNow-g_gestureMeleeClaimedMs<static_cast<uint64_t>(g_config.gesture_melee_holster_veto_ms);
+            float smoothedHands[2][3]{};
+            if(g_config.gesture_melee_smoothed_hands)
+            {
+                EnterCriticalSection(&g_headCs);
+                for(int hand=0;hand<2;++hand)
+                {
+                    smoothedHands[hand][0]=g_physicalControllerPose[hand].position.x;
+                    smoothedHands[hand][1]=g_physicalControllerPose[hand].position.y;
+                    smoothedHands[hand][2]=g_physicalControllerPose[hand].position.z;
+                }
+                LeaveCriticalSection(&g_headCs);
+            }
+            for(int hand=0;hand<2;++hand)
+            {
+                // The pad's grips are by role here; these hands are physical.
+                const bool primary=hand==(leftHanded?0:1);
+                const bool grip=(primary?pad.gripR:pad.gripL)>0.6f;
+                // Each hand's own jobs. The off hand is also bracing the gun, or simply not punching.
+                const bool standDown=gestureRecent||(primary?g_weaponInteraction.PrimaryNearHolster():
+                    !g_config.gesture_melee_off_hand||g_weaponInteraction.SupportNearPouch()||
+                    g_weaponInteraction.HoldingMagazine()||g_twoHandLatched.load(std::memory_order_acquire));
+                gesture_melee::Swing swing{};
+                if(g_gestureMeleeDetector[hand].Step(headValid&&!handChanged&&gestureHandValid[hand],
+                    g_config.gesture_melee_smoothed_hands?smoothedHands[hand]:hand==0?gestureHandLeft:gestureHandRight,
+                    headP,grip,!primary,standDown,dt,settings,&swing))
+                {
+                    for(int axis=0;axis<3;++axis)
+                        g_gestureMeleeSwingDirection[hand][axis].store(swing.direction[axis],std::memory_order_relaxed);
+                    g_gestureMeleeSwings[hand].fetch_add(1,std::memory_order_acq_rel);
+                    if(g_config.gesture_melee_log)
+                        LOG("Gesture melee: %s hand swing: speed %.2f, extension %.2f, reach %.2f, travel %.2f",
+                            primary?"gun":"off",swing.speed,swing.extension,swing.reach,swing.travel);
+                }
+            }
+        }
         const bool pointerMode=g_config.game_menu_pointer&&!Menu_IsOpen()&&
             g_sessionState==XR_SESSION_STATE_FOCUSED&&valid&&
             NativeMenuPointer_ConsumesTrigger()&&
@@ -25493,6 +25559,19 @@ bool VR_GetRightControllerPose(float outQuat[4], float outPos[3])
     }
     LeaveCriticalSection(&g_headCs);
     return ok;
+}
+
+bool VR_GestureMeleeSwingDirection(int hand, float outDirection[3])
+{
+    if(hand<0||hand>1) return false;
+    for(int axis=0;axis<3;++axis)
+        outDirection[axis]=g_gestureMeleeSwingDirection[hand][axis].load(std::memory_order_relaxed);
+    return outDirection[0]!=0.0f||outDirection[1]!=0.0f||outDirection[2]!=0.0f;
+}
+
+uint32_t VR_GestureMeleeSwings(int hand)
+{
+    return hand>=0&&hand<2?g_gestureMeleeSwings[hand].load(std::memory_order_acquire):0;
 }
 
 bool VR_GetPhysicalMeleeSpeed(bool left,float& speed)
