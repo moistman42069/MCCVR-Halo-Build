@@ -160,7 +160,7 @@ struct Menu {
         const auto identity = game ? ReadIdentity(game->root / L"Halo_MCC_VR") : BuildIdentity{};
         const bool sameRelease = installed && !identity.release.empty() && identity.release == latest.tag;
         EnableWindow(GetDlgItem(window, Update), !busy && game && updateReady && !sameRelease);
-        Text(GetDlgItem(window, Update), installed ? L"INSTALL UPDATE" : L"INSTALL VR MOD");
+        Text(GetDlgItem(window, Update), installed ? L"INSTALL" : L"INSTALL VR MOD");
         if (game) Text(path, std::wstring(game->store ? L"Version: Xbox app / Microsoft Store" : L"Version: Steam") +
             L"\nVR folder: " + (game->root / L"Halo_MCC_VR").wstring() );
         else Text(path, L"No MCC installation found. Choose Browse and select the folder containing MCC, or the Xbox Content folder.");
@@ -250,7 +250,7 @@ void BrowseReclaimer(Menu& menu) {
 }
 void DrawButton(Menu& menu, const DRAWITEMSTRUCT& item) {
     const bool disabled = item.itemState & ODS_DISABLED, pressed = item.itemState & ODS_SELECTED;
-    // Install update joins them once a release has been found: it is enabled then, and it is the next step.
+    // Install joins them once a version is chosen: it is enabled then, and it is the next step.
     const bool primary = item.CtlID == Launch || item.CtlID == ReclaimerLaunch || item.CtlID == Update;
     const bool warm = item.CtlID == ReclaimerBrowse || item.CtlID == ReclaimerDetect || item.CtlID == ReclaimerLaunch;
     const COLORREF fill = warm
@@ -347,7 +347,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         menu->version = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 386, 642, 240, Version);
         StyleCombo(*menu, menu->version);
         Control(*menu, L"BUTTON", L"CHECK FOR UPDATES", BS_OWNERDRAW | WS_TABSTOP, 696, 386, 246, 38, Check);
-        Control(*menu, L"BUTTON", L"INSTALL UPDATE", BS_OWNERDRAW | WS_TABSTOP, 38, 436, 642, 38, Update);
+        Control(*menu, L"BUTTON", L"INSTALL", BS_OWNERDRAW | WS_TABSTOP, 38, 436, 642, 38, Update);
         Control(*menu, L"BUTTON", L"RELEASE PAGE", BS_OWNERDRAW | WS_TABSTOP, 696, 436, 246, 38, ReleasePage);
         menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_AUTOCHECKBOX | WS_TABSTOP, 38, 482, 850, 30, Retain);
         SendMessageW(menu->retain, BM_SETCHECK, BST_CHECKED, 0); SetWindowTheme(menu->retain, L"", L"");
@@ -489,13 +489,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (menu->operationMessage.empty() && menu->work == Menu::Work::Check) {
             menu->ListVersions();
             menu->Text(menu->release, L"Installing replaces the current build.");
-            menu->operationMessage = L"Release found. Choose Install update to download it, or pick another version.";
+            menu->operationMessage = L"Release found. Choose Install to download it, or pick another version.";
         } else if (menu->operationMessage.empty() && menu->work == Menu::Work::Latest) {
             menu->channelChosen = true;
             SendMessageW(menu->channel, CB_SETCURSEL, menu->latestChannel, 0);
             menu->ListVersions();
             menu->Text(menu->release, (menu->latestPassedOver.empty() ? std::wstring{} : L"Could not read: " + menu->latestPassedOver + L". ") + L"Installing replaces the current build.");
-            menu->operationMessage = L"Repository chosen. Choose Install update to download it, or pick another version.";
+            menu->operationMessage = L"Repository chosen. Choose Install to download it, or pick another version.";
         } else if (menu->operationMessage.empty() && menu->work == Menu::Work::Download) {
             // For the install to keep: the package itself does not know its release's name or date.
             {
