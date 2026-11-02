@@ -135,15 +135,21 @@ inline ReleaseUpdate ReleaseFromJson(const ReleaseJson& json, const ReleaseChann
 inline ReleaseUpdate ParseReleaseUpdate(const std::string& text, const ReleaseChannel& channel = kReleaseChannels[0]) {
     return ReleaseFromJson(ReleaseJsonReader(text).Read(), channel);
 }
-// The installed build, as the launcher states it: its repository, the release it came from when that is known, and
-// its build. A package records only its repository and build; the release name and date are saved when the launcher's
-// own update installs it (the launcher's INSTALLED-RELEASE.txt).
-inline std::wstring InstalledText(const std::wstring& repository, const std::wstring& release, const std::wstring& published, const std::wstring& build) {
-    std::wstring text = L"Installed: ";
-    const auto add = [&](const std::wstring& part) { if (part.empty()) return; if (text.back() != L' ') text += L", "; text += part; };
-    add(repository); add(release);
-    if (!published.empty()) add(L"published " + published);
-    add(build);
+// The installed build, as the launcher states it, each part named. A package records its repository, build and build
+// date; the release name and publish date are saved when the launcher's own update installs it (the launcher's
+// INSTALLED-RELEASE.txt), so a build installed any other way has no release on record and gives its build date instead.
+inline std::wstring InstalledText(const std::wstring& repository, const std::wstring& release, const std::wstring& published, const std::wstring& build, const std::wstring& built) {
+    std::wstring text = L"Installed:";
+    const auto add = [&](const wchar_t* name, const std::wstring& value) {
+        if (value.empty()) return;
+        text += text.back() == L':' ? L"  " : L"  |  ";
+        text += name; text += L": "; text += value;
+    };
+    add(L"Repository", repository);
+    add(L"Release", release.empty() ? L"not recorded" : release);
+    add(L"Build", build);
+    if (!release.empty()) add(L"Published", published);
+    else add(L"Built", built);
     return text;
 }
 // Which release is furthest ahead by date, or npos when none has a date. GitHub's published_at is UTC in one fixed
