@@ -64,7 +64,7 @@ BuildIdentity ReadIdentity(const fs::path& directory) {
 }
 struct Menu {
     HINSTANCE instance{}; HWND window{}, games{}, path{}, retain{}, status{}, channel{};
-    bool channelChosen = false;
+    bool channelChosen = false, channelChanged = false;
     // Project Reclaimer (reclaimer_menu.h): the kept path's field, what is known of it, and the launch asked for.
     HWND reclaimerPath{}, reclaimerInfo{}; std::wstring reclaimerExe, reclaimerDir; bool reclaimerStartable = false;
     HFONT body{}, smallFont{}, title{}, label{}; HBRUSH background{}, panel{}, reclaimerPanel{}, reclaimerField{};
@@ -453,11 +453,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         switch (LOWORD(wParam)) {
         case Retain: menu->keepSettings = !menu->keepSettings; InvalidateRect(menu->retain, nullptr, FALSE); break;
         case Games: if (HIWORD(wParam) == CBN_SELCHANGE) { menu->Refresh(); ReclaimerShow(*menu, false); } break;
-        case Channel: if (HIWORD(wParam) == CBN_SELCHANGE) {
-            menu->channelChosen = true; menu->versions.clear(); menu->ListVersions();
-            menu->Text(menu->status, L"Choose Check for updates to list this repository's versions.");
-            menu->Refresh();
-        } break;
+        case Channel:
+            if (HIWORD(wParam) == CBN_SELCHANGE) {
+                menu->channelChosen = true; menu->channelChanged = true; menu->versions.clear(); menu->ListVersions();
+                menu->Refresh();
+            }
+            // Choosing a repository lists its versions, once the list has closed: arrowing through an open list changes
+            // the selection on the way to the one wanted.
+            if ((HIWORD(wParam) == CBN_SELCHANGE || HIWORD(wParam) == CBN_CLOSEUP) && menu->channelChanged && !SendMessageW(menu->channel, CB_GETDROPPEDSTATE, 0, 0)) {
+                menu->channelChanged = false;
+                PostMessageW(window, WM_COMMAND, Check, 0);
+            }
+            break;
         case Version: if (HIWORD(wParam) == CBN_SELCHANGE) {
             menu->ChooseVersion(static_cast<size_t>(SendMessageW(menu->version, CB_GETCURSEL, 0, 0)));
             menu->Refresh();

@@ -92,13 +92,14 @@ keys and calibration keys that still require runtime migration are not blindly
 appended. Unchecking keep-settings installs this build's defaults, with the
 previous primary config included in the same backup.
 
-**Check for updates** reads the newest release of the source in **Download from**:
-Moistman's latest stable release, or the newest release, prereleases included, of
-Nitsujack's or Godoy's fork. The menu starts on the source named by `release_channel` in the
+Choosing a repository in **Update from repository** lists its releases, and **Check for
+updates** lists them again: Moistman's latest stable release, or the releases, prereleases
+included, of Nitsujack's or Godoy's fork. The launcher checks nothing until one of these is
+chosen. The menu starts on the source named by `release_channel` in the
 package's `BUILD-IDENTITY.txt` (`tools/package-candidate.ps1` takes it from the `origin`
 remote), and on Moistman's for a package without one. It never uses the retired pancreations
 origin. Each download must come from the chosen source's own release URLs. **Release page** opens
-that source's release list. **Install** downloads the
+the chosen version's page, or that source's release list when no release is chosen. **Install** downloads the
 single player ZIP over HTTPS and verifies GitHub's asset size and SHA-256 digest.
 ZIP extraction rejects traversal, absolute paths, duplicate Windows names,
 reserved device names, symlinks and excessive expanded sizes before extracting.
