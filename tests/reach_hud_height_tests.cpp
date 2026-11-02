@@ -24,6 +24,7 @@ struct
 } g_reachCamera;
 struct { float hud_vertical_offset = 16.0f; } g_config;
 constexpr float kHudHeightMin = -300.0f, kHudHeightMax = 300.0f;
+static std::atomic<bool> g_aimFramePass{false};
 #include "../src/dll/reach_hud_height.inl"
 
 unsigned calls = 0, checks = 0;
@@ -72,7 +73,7 @@ void Reset()
     activeTitle=GameTitle::HaloReach; activeGeneration=3; stereo=true;
     g_enabled=true; g_reachCamera.generation=3; g_reachCamera.installed=true;
     g_reachCamera.armed=true; g_reachCamera.teardownRequested=false;
-    g_reachHudHeightEnabled=true; g_reachHudHeightRedirected=false;
+    g_reachHudHeightEnabled=true; g_reachHudHeightRedirected=false; g_aimFramePass=false;
     g_reachHudHeightApplied=0; g_reachHudHeightRefused=0;
     g_reachOrigHudAnchorBasis=&NativeAnchor; g_config.hud_vertical_offset=16;
     calls=0; nativeResult=true; throwNative=false; revokeDuringNative=false;
@@ -121,6 +122,7 @@ int main()
       Run(true,"only virtual pixel Y translated for either native anchor flag"); }
     Reset(); nativeResult=false; Run(false,"failed native anchor unchanged");
     Reset(); g_reachHudHeightRedirected=true; Run(false,"captured/suppressed reticle unchanged");
+    Reset(); g_aimFramePass=true; Run(false,"the aim frame's HUD height is the game's");
     Reset(); g_reachHudHeightEnabled=false; Run(false,"feature unavailable stays stock");
     Reset(); activeTitle=GameTitle::Halo3; Run(false,"other title stays stock");
     Reset(); activeGeneration=4; Run(false,"stale generation stays stock");
