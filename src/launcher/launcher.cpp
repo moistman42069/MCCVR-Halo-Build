@@ -1453,6 +1453,10 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
         const auto installed = mcc_installer::InstallPayload(payload, game, retainConfig);
         MessageBoxW(nullptr, installed.message.c_str(), L"Halo MCC VR update", MB_OK | (installed.success ? MB_ICONINFORMATION : MB_ICONERROR));
         if (!installed.success) return 1;
+        // What the menu wrote down about this release: the package itself does not know its release's name or date.
+        std::error_code savedError;
+        std::filesystem::copy_file(payload.parent_path() / L"INSTALLED-RELEASE.txt", game.root / L"Halo_MCC_VR" / L"INSTALLED-RELEASE.txt",
+                                   std::filesystem::copy_options::overwrite_existing, savedError);
         // Reopen the newly installed launcher's menu. The separate Launch MCC
         // button is still required; installing an update never starts MCC.
         const auto updated = game.root / L"Halo_MCC_VR" / L"HaloMCCVRLauncher.exe";
