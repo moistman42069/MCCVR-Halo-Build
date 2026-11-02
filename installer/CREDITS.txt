@@ -1,0 +1,43 @@
+# The credits shown in the launcher. Edit this file and reopen the launcher to see the change.
+#
+# One block per person, in the order they should appear:
+#   name: how they are credited
+#   what: what they contributed
+#
+# Order: the project's line of succession first, then everyone else from most contributed to least.
+
+name: Pancreations
+what: Created the original Halo-MCC-VR and its DLSS foundation, the base everything here is built on.
+
+name: MoistMan
+what: Continued the project as Halo MCC VR, maintaining it and extending it across all six games on Steam and the Xbox app, with physical crouch and melee, weapon handling and tracked body avatars.
+
+name: NitsuJack
+what: Aim, multiplayer and roomscale work, Project Reclaimer support, vehicle cameras ported from Halo Campaign Evolved UEVR, input presets, the desktop settings window, launcher reorganization and multi-repository auto updating.
+
+name: Godoy
+what: Weapon alignment and per-game gun offsets, two-handed grip zones, restored hand and gun animations, modded weapon support, bloom and autoexposure controls, world scale and dual-wield shake reload.
+
+name: Gab_dC / gabrieldch
+what: Virtual stock, two-hand and support handling, coherent aim and telemetry.
+
+name: martysl1
+what: Subtitle, UI and bloom work, and the Reach DLSS leads.
+
+name: blindcowboy24
+what: Initial Roomscale setup for Aim/multiplayer revamp.
+
+name: LivingFray / Maso
+what: Ownership and restoration design leads.
+
+name: marcusau2
+what: The earlier per-gun calibration.
+
+name: SilentVortigaunt
+what: The trailer.
+
+name: UnsealedWings
+what: Performance and HUD proposals.
+
+name: PurplePeanut
+what: The Provolver proposal.

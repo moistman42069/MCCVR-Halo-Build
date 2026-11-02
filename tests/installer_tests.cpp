@@ -1,5 +1,6 @@
 #include "../src/common/installer_policy.h"
 #include "../src/common/release_update_policy.h"
+#include "../src/common/credits_file.h"
 #include "../src/launcher/installer.h"
 #include "../src/launcher/updater.h"
 #include <fstream>
@@ -78,6 +79,13 @@ static void Policies() {
     Require(NewestPublished({"2026-11-02T00:00:00Z", "2026-11-02T00:00:00Z"}) == 0, "a tie stays with the earlier repository");
     Require(NewestPublished({"", "2026-11-02T00:00:00Z", "not a date"}) == 1, "a repository with no date is passed over");
     Require(NewestPublished({"", ""}) == std::string::npos, "no dates, no choice");
+    {
+        const auto credits = ParseCredits(L"\xFEFF# a comment: skipped\r\nwhat: nobody to credit yet\r\n\r\nname: First\r\nwhat: Did: this\r\nlink: Ko-fi https://example.com\r\n\nname:   Second  \nname:\nnot a key\n");
+        Require(credits.size() == 2, "each named person is listed");
+        Require(credits[0].name == L"First" && credits[0].what == L"Did: this", "a person and what they did, colons and all");
+        Require(credits[1].name == L"Second" && credits[1].what.empty(), "a person with no description");
+        Require(ParseCredits(L"").empty(), "no file, no list");
+    }
     Require(InstalledText(L"Nitsujack", L"nitsujack-reclaimer-5", L"2026-11-01", L"RC-fd42f87", L"2026-10-31") == L"Installed:  Repository: Nitsujack  |  Release: nitsujack-reclaimer-5  |  Build: RC-fd42f87  |  Published: 2026-11-01", "an updated build names its release and when it was published");
     Require(InstalledText(L"Nitsujack", L"", L"", L"RC-983a98e", L"2026-11-02") == L"Installed:  Repository: Nitsujack  |  Release: not recorded  |  Build: RC-983a98e  |  Built: 2026-11-02", "a build from elsewhere says what it knows");
     Require(InstalledText(L"", L"", L"", L"RC-983a98e", L"") == L"Installed:  Release: not recorded  |  Build: RC-983a98e", "an older package has no repository or date");

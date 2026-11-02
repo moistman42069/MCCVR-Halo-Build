@@ -125,6 +125,12 @@ with valid and malicious local archives. Neither test launches or writes to a
 real MCC installation. Native Steam/Store launch behavior still requires user
 runtime testing; those paths were preserved, not runtime-accepted by these tests.
 
+## Credits
+
+The credits column lists `CREDITS.txt` (`installer/CREDITS.txt` in the source), which ships in the mod folder. Each
+person is a `name:` line and a `what:` line. Editing the installed copy shows on the next launcher start, and an update
+replaces it. Keys the launcher does not know are skipped, so later additions do not break older launchers.
+
 ## Project Reclaimer (experimental)
 
 The menu's last section starts Project Reclaimer, a standalone client that runs MCC's `halo3.dll`, with the VR
