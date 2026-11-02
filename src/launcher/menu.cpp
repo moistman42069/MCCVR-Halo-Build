@@ -20,11 +20,11 @@ constexpr COLORREF kReclaimerPanel = RGB(31, 24, 13), kReclaimerField = RGB(46, 
 // The panel's box, at 96 dpi.
 constexpr int kReclaimerLeft = 26, kReclaimerTop = 612, kReclaimerRight = 954, kReclaimerBottom = 796;
 constexpr UINT kDone = WM_APP + 20;
-enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage,
+enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings };
 // The window's client size at 96 dpi.
 constexpr int kMenuWidth = 980, kMenuHeight = 890;
-struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag; bool candidate = true; };
+struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel; bool candidate = true; };
 BuildIdentity ReadIdentity(const fs::path& directory) {
     BuildIdentity identity; std::ifstream file(directory / L"BUILD-IDENTITY.txt", std::ios::binary);
     if (!file) return identity;
@@ -37,6 +37,7 @@ BuildIdentity ReadIdentity(const fs::path& directory) {
         if (key == "source_commit") commit = value;
         else if (key == "release_tag") identity.tag = value;
         else if (key == "build_kind") kind = value;
+        else if (key == "release_channel") identity.channel = value;
     }
     identity.candidate = kind != "PUBLIC_RELEASE" && kind != "RELEASE_CANDIDATE";
     if (!identity.tag.empty()) identity.label = std::wstring(identity.tag.begin(), identity.tag.end());
@@ -44,7 +45,8 @@ BuildIdentity ReadIdentity(const fs::path& directory) {
     return identity;
 }
 struct Menu {
-    HINSTANCE instance{}; HWND window{}, games{}, path{}, retain{}, status{}, release{};
+    HINSTANCE instance{}; HWND window{}, games{}, path{}, retain{}, status{}, release{}, channel{};
+    bool channelChosen = false;
     // Project Reclaimer (reclaimer_menu.h): the kept path's field, what is known of it, and the launch asked for.
     HWND reclaimerPath{}, reclaimerInfo{}; std::wstring reclaimerExe; bool reclaimerStartable = false;
     HFONT body{}, smallFont{}, title{}, label{}; HBRUSH background{}, panel{}, reclaimerPanel{}, reclaimerField{};
@@ -61,12 +63,23 @@ struct Menu {
     int Px(int value) const { return MulDiv(value, dpi, 96); }
     GameInstall* Selected() { const auto index = SendMessageW(games, CB_GETCURSEL, 0, 0); return index >= 0 && static_cast<size_t>(index) < installs.size() ? &installs[static_cast<size_t>(index)] : nullptr; }
     void Text(HWND control, const std::wstring& text) { SetWindowTextW(control, text.c_str()); }
+    const ReleaseChannel& CurrentChannel() const {
+        const auto index = SendMessageW(channel, CB_GETCURSEL, 0, 0);
+        return kReleaseChannels[index >= 0 && static_cast<size_t>(index) < std::size(kReleaseChannels) ? index : 0];
+    }
     void Refresh() {
         auto* game = Selected();
+        // Until the player picks one, the source is the one this package came from: the launcher's own, or for a
+        // launcher with no package beside it, the selected install's.
+        if (!channelChosen) {
+            auto own = ReadIdentity(payload).channel;
+            if (own.empty() && game) own = ReadIdentity(game->root / L"Halo_MCC_VR").channel;
+            SendMessageW(channel, CB_SETCURSEL, ReleaseChannelIndex(own), 0);
+        }
         const bool installed = game && fs::is_regular_file(game->root / L"Halo_MCC_VR" / L"HaloMCCVR.dll");
         bool same = game && !_wcsicmp(fs::absolute(payload).c_str(), fs::absolute(game->root / L"Halo_MCC_VR").c_str());
         const bool hasPayload = !payload.empty() && fs::is_regular_file(payload / L"INSTALL-MANIFEST.sha256");
-        for (int id : {Games, Browse, Scan, Retain, ReleasePage, ReclaimerPath, ReclaimerBrowse, ReclaimerDetect}) EnableWindow(GetDlgItem(window, id), !busy);
+        for (int id : {Games, Channel, Browse, Scan, Retain, ReleasePage, ReclaimerPath, ReclaimerBrowse, ReclaimerDetect}) EnableWindow(GetDlgItem(window, id), !busy);
         EnableWindow(GetDlgItem(window, ReclaimerLaunch), !busy && reclaimerStartable);
         EnableWindow(GetDlgItem(window, Install), !busy && game && hasPayload && !same);
         EnableWindow(GetDlgItem(window, Launch), !busy && installed);
@@ -211,6 +224,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 540, 390, 234, 48, Launch);
         Control(*menu, L"BUTTON", L"MOD FOLDER", BS_OWNERDRAW | WS_TABSTOP, 796, 390, 146, 48, Folder);
         Label(*menu, L"03  /  RELEASE UPDATES", 38, 472, 570);
+        Label(*menu, L"DOWNLOAD FROM", 600, 472, 142);
+        menu->channel = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 746, 466, 196, 140, Channel);
+        SendMessageW(menu->channel, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), menu->Px(25));
+        SendMessageW(menu->channel, CB_SETITEMHEIGHT, 0, menu->Px(29));
+        for (const auto& source : kReleaseChannels) SendMessageW(menu->channel, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(source.label));
         Control(*menu, L"BUTTON", L"CHECK FOR UPDATES", BS_OWNERDRAW | WS_TABSTOP, 38, 503, 270, 40, Check);
         Control(*menu, L"BUTTON", L"INSTALL UPDATE", BS_OWNERDRAW | WS_TABSTOP, 324, 503, 240, 40, Update);
         Control(*menu, L"BUTTON", L"RELEASE PAGE", BS_OWNERDRAW | WS_TABSTOP, 580, 503, 175, 40, ReleasePage);
@@ -271,11 +289,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetTextColor(dc, kText); SetBkColor(dc, kPanel); return reinterpret_cast<LRESULT>(menu->panel);
     }
     case WM_MEASUREITEM:
-        if (reinterpret_cast<MEASUREITEMSTRUCT*>(lParam)->CtlID == Games) { reinterpret_cast<MEASUREITEMSTRUCT*>(lParam)->itemHeight = menu->Px(29); return TRUE; }
+        if (reinterpret_cast<MEASUREITEMSTRUCT*>(lParam)->CtlID == Games || reinterpret_cast<MEASUREITEMSTRUCT*>(lParam)->CtlID == Channel) { reinterpret_cast<MEASUREITEMSTRUCT*>(lParam)->itemHeight = menu->Px(29); return TRUE; }
         break;
     case WM_DRAWITEM: {
         const auto& item = *reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
-        if (item.CtlID == Games) {
+        if (item.CtlID == Games || item.CtlID == Channel) {
             FillRect(item.hDC, &item.rcItem, menu->panel); SetBkMode(item.hDC, TRANSPARENT); SetTextColor(item.hDC, kText); SelectObject(item.hDC, menu->body);
             std::wstring text = L"Select a detected MCC installation";
             if (item.itemID != static_cast<UINT>(-1)) { const auto length = SendMessageW(item.hwndItem, CB_GETLBTEXTLEN, item.itemID, 0); if (length >= 0 && length < 32768) { text.resize(static_cast<size_t>(length) + 1); SendMessageW(item.hwndItem, CB_GETLBTEXT, item.itemID, reinterpret_cast<LPARAM>(text.data())); text.resize(static_cast<size_t>(length)); } }
@@ -288,6 +306,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (menu->busy) return 0;
         switch (LOWORD(wParam)) {
         case Games: if (HIWORD(wParam) == CBN_SELCHANGE) menu->Refresh(); break;
+        case Channel: if (HIWORD(wParam) == CBN_SELCHANGE) {
+            menu->channelChosen = true; menu->updateReady = false; menu->latest = {};
+            menu->Text(menu->release, std::wstring(L"Updates will come from ") + menu->CurrentChannel().label + L". Choose Check for updates to see its newest release.");
+            menu->Refresh();
+        } break;
         case Browse: BrowseFolder(*menu); break;
         case Scan: menu->installs = DetectInstalls(menu->selfDir); menu->Populate(); menu->Text(menu->status, L"Detection complete. Select the MCC installation you want to use."); break;
         case Folder: if (auto* game = menu->Selected()) { auto path = game->root / L"Halo_MCC_VR"; if (!fs::exists(path)) path = game->root; ShellExecuteW(window, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL); } break;
@@ -296,7 +319,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             const std::wstring config = L"\"" + (folder / L"halomccvr.cfg").wstring() + L"\"";
             ShellExecuteW(window, L"open", (folder / L"HaloMCCVRSettings.exe").c_str(), config.c_str(), folder.c_str(), SW_SHOWNORMAL);
         } break;
-        case ReleasePage: ShellExecuteW(window, L"open", L"https://github.com/moistman42069/MCCVR-Halo-Build/releases/latest", nullptr, nullptr, SW_SHOWNORMAL); break;
+        case ReleasePage: ShellExecuteW(window, L"open", (L"https://github.com/" + std::wstring(menu->CurrentChannel().owner, menu->CurrentChannel().owner + strlen(menu->CurrentChannel().owner)) + L"/MCCVR-Halo-Build/releases").c_str(), nullptr, nullptr, SW_SHOWNORMAL); break;
         case Launch: if (auto* game = menu->Selected()) { menu->launchDir = (game->root / L"Halo_MCC_VR").wstring(); DestroyWindow(window); } break;
         case ReclaimerPath:
             if (HIWORD(wParam) == EN_CHANGE) ReclaimerShow(*menu, false);
@@ -318,8 +341,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             menu->Start(Menu::Work::Install, [menu, target, payload, retain] { menu->operationMessage = InstallPayload(payload, target, retain).message; });
         } break;
         case Check:
-            menu->updateReady = false; menu->Text(menu->status, L"Checking the project's latest public GitHub release...");
-            menu->Start(Menu::Work::Check, [menu] { menu->latest = CheckForUpdate(); }); break;
+            menu->updateReady = false; menu->Text(menu->status, std::wstring(L"Checking the newest release from ") + menu->CurrentChannel().label + L"...");
+            menu->Start(Menu::Work::Check, [menu, source = &menu->CurrentChannel()] { menu->latest = CheckForUpdate(*source); }); break;
         case Update: if (auto* game = menu->Selected(); game && menu->updateReady) {
             menu->operationGame = *game; menu->operationRetain = SendMessageW(menu->retain, BM_GETCHECK, 0, 0) == BST_CHECKED;
             menu->Text(menu->status, L"Downloading and verifying the release. The launcher will reopen to install it. MCC will stay closed.");
@@ -334,7 +357,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (menu->operationMessage.empty() && menu->work == Menu::Work::Check) {
             menu->updateReady = true;
             const std::wstring tag(menu->latest.tag.begin(), menu->latest.tag.end());
-            menu->Text(menu->release, L"Latest public release: " + tag + L". Installing it replaces the current build, including any test candidate.");
+            menu->Text(menu->release, std::wstring(L"Newest release from ") + menu->CurrentChannel().label + L": " + tag + L". Installing it replaces the current build, including any test candidate.");
             menu->operationMessage = L"Release found. Choose Install update to download it, or open the release page for its changes.";
         } else if (menu->operationMessage.empty() && menu->work == Menu::Work::Download) {
             if (StartUpdateHelper(menu->downloaded, menu->operationGame, menu->operationRetain, menu->operationMessage)) {

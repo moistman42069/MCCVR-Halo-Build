@@ -125,8 +125,10 @@ try {
 }
 }
 
-ReleaseUpdate CheckForUpdate() {
-    return ParseReleaseUpdate(Request(L"https://api.github.com/repos/moistman42069/MCCVR-Halo-Build/releases/latest", {}, 2 * 1024 * 1024));
+ReleaseUpdate CheckForUpdate(const ReleaseChannel& channel) {
+    const std::wstring repository = L"https://api.github.com/repos/" + Widen(channel.owner) + L"/MCCVR-Halo-Build/releases";
+    if (channel.prereleases) return ParseNewestRelease(Request(repository + L"?per_page=10", {}, 2 * 1024 * 1024), channel);
+    return ParseReleaseUpdate(Request(repository + L"/latest", {}, 2 * 1024 * 1024), channel);
 }
 void ExtractUpdateArchive(const fs::path& archive, const fs::path& output) {
     if (fs::exists(output)) throw std::runtime_error("Update extraction folder must be new.");

@@ -81,6 +81,37 @@ static void Policies() {
     }
     auto badDigest = std::string(json); badDigest.replace(badDigest.find("sha256:"), 7, "sha512:");
     bool threw = false; try { ParseReleaseUpdate(badDigest); } catch (...) { threw = true; } Require(threw, "unknown digest rejected");
+    {
+        const std::string digestOk(64, 'a');
+        const auto asset = [&](const std::string& owner, const std::string& name) {
+            return "{\"name\":\"" + name + "\",\"browser_download_url\":\"https://github.com/" + owner +
+                "/MCCVR-Halo-Build/releases/download/t/" + name + "\",\"digest\":\"sha256:" + digestOk + "\",\"size\":1024}";
+        };
+        const auto release = [](const std::string& tag, bool pre, const std::string& assets) {
+            return "{\"draft\":false,\"prerelease\":" + std::string(pre ? "true" : "false") + ",\"tag_name\":\"" + tag + "\",\"assets\":[" + assets + "]}";
+        };
+        const auto& nitsujack = kReleaseChannels[ReleaseChannelIndex("nitsujack")];
+        const auto& godoy = kReleaseChannels[ReleaseChannelIndex("godoy")];
+        const auto& official = kReleaseChannels[ReleaseChannelIndex("official")];
+        Require(ReleaseChannelIndex("unknown") == ReleaseChannelIndex("official") && ReleaseChannelIndex("") == ReleaseChannelIndex("official"),
+            "a package with no known channel starts on the official source");
+        const std::string ours = "[" + release("nitsujack-reclaimer-5", true,
+            asset("MOTYSHIZ", "Halo-MCC-VR-reclaimer-5-Launcher.zip") + "," + asset("MOTYSHIZ", "Halo-MCC-VR-reclaimer-5-Manual.zip") + "," +
+            asset("MOTYSHIZ", "Halo-MCC-VR-reclaimer-5-Source.zip")) + "]";
+        const auto newest = ParseNewestRelease(ours, nitsujack);
+        Require(newest.tag == "nitsujack-reclaimer-5" && newest.assetName == "Halo-MCC-VR-reclaimer-5-Launcher.zip", "a prerelease's launcher ZIP is the one chosen");
+        const std::string theirs = "[" + release("godoy-test-1", false, asset("Godoy301", "Halo-MCC-VR-godoy-test-1-Launcher.zip.zip")) + "]";
+        Require(ParseNewestRelease(theirs, godoy).assetName == "Halo-MCC-VR-godoy-test-1-Launcher.zip.zip", "a double-extension launcher ZIP is accepted");
+        const std::string skips = "[" + release("newest", true, asset("MOTYSHIZ", "Halo-MCC-VR-x-Source.zip")) + "," +
+            release("older", true, asset("MOTYSHIZ", "Halo-MCC-VR-y-Launcher.zip")) + "]";
+        Require(ParseNewestRelease(skips, nitsujack).tag == "older", "a release with nothing to install is passed over");
+        threw = false; try { ParseNewestRelease(ours, godoy); } catch (...) { threw = true; }
+        Require(threw, "one source's list can't supply another's download");
+        threw = false; try { ParseReleaseUpdate(release("x", true, asset("moistman42069", "Halo-MCC-VR.zip")), official); } catch (...) { threw = true; }
+        Require(threw, "the official source still takes stable releases only");
+        threw = false; try { ParseNewestRelease("{}", nitsujack); } catch (...) { threw = true; }
+        Require(threw, "a list that is not a list is refused");
+    }
     auto foreign = std::string(json); foreign.replace(foreign.find("github.com/moistman42069"), 22, "github.com/another-user");
     threw = false; try { ParseReleaseUpdate(foreign); } catch (...) { threw = true; } Require(threw, "foreign release URL rejected");
 }
