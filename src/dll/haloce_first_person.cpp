@@ -1,3 +1,5 @@
+#include "game.h"
+#include "../common/visual_aim.h"
 #include "haloce_first_person.h"
 #include "../common/config.h"
 #include "haloce_contact.h"
@@ -103,6 +105,18 @@ struct PaletteReceipt
     uint64_t weaponGraph{};
 };
 Snapshot<PaletteReceipt> paletteReceipt;
+struct FpOrientationProbe {
+    uint32_t generation{},graph{};uint64_t identity{};
+    int count{},gun{},right{},left{};
+    NodeMatrix before{},after{},expected{};
+};
+Snapshot<FpOrientationProbe> fpOrientationProbe;
+struct FpRefusalProbe {
+    uint32_t generation{},graph{},stage{},count{};
+    uint64_t identity{},invalidNodes{},zeroScaleNodes{};
+    float leftUpper{},leftLower{},rightUpper{},rightLower{};
+};
+Snapshot<FpRefusalProbe> fpRefusalProbe;
 thread_local Scope* scope{};
 struct ParticleScope { const SaberCamera* camera{};Tracking eye{}; };
 thread_local const ParticleScope* particleScope{};
@@ -814,14 +828,27 @@ __declspec(noinline) void __fastcall ParticleDrawHook(const SaberCamera* camera,
     __try { if (original) original(camera,texture,pass,batch); }
     __finally { particleScope=previous;callbacks.fetch_sub(1,std::memory_order_release); }
 }
-bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner) noexcept
+thread_local weapon_animation::Reference animationReference;
+thread_local weapon_animation::ReferenceCache animationReferenceCache;
+std::atomic<uint64_t> animationApplied{},animationSettling{};
+bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner,const NodeMatrix* animationRoot) noexcept
 {
     AnimationNode nodes[kFirstPersonMaxNodes]{};
     uint32_t count{};
-    if (!ReadGraph(graph,nodes,count)) return false;
+    if (!ReadGraph(graph,nodes,count)) {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        (void)fpRefusalProbe.Publish({owner.context.tracking.generation,graph,10});
+#endif
+        return false;
+    }
     FirstPersonBinding binding{};
     const auto& context=owner.context;
-    if (!BuildFirstPersonBinding(graph,context.tracking.generation,nodes,count,binding)) return false;
+    if (!BuildFirstPersonBinding(graph,context.tracking.generation,nodes,count,binding)) {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        (void)fpRefusalProbe.Publish({context.tracking.generation,graph,11,count});
+#endif
+        return false;
+    }
     // The optional pose applies only to the official CE first-person hand
     // graph whose five three-joint chains were bound by exact node names and
     // parent links. Unknown/custom graphs retain the normal tracked-hand path.
@@ -833,8 +860,73 @@ bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner) noexce
     }
     std::array<NodeMatrix,kFirstPersonMaxNodes> source{},staged{};
     if (!CopyPalette(matrices,source.data(),count)) return false;
+    NodeMatrix animationDelta{};bool haveAnimation=false;
+    if(animationRoot&&Valid(*animationRoot)&&binding.gun>=0&&binding.gun<int(count)&&binding.rightWrist>=0&&binding.rightWrist<int(count)&&owner.muzzleUnit!=UINT32_MAX&&owner.muzzleWeapon!=UINT32_MAX&&MuzzleOwner(owner.muzzleUnit,owner.muzzleWeapon)) {
+        // E-CE-FP-1: the palette composes through these invocation arguments.
+        // Classic can prepare multiple cameras between outer prepare receipts.
+        const NodeMatrix& camera=*animationRoot;
+        // The solver already retains gun-to-wrist translation. Observe the
+        // wrist position, not the gun position, to avoid adding that motion twice.
+        const auto anchor=FirstPersonGunAimFrame(binding,source[binding.gun]);
+        weapon_animation::Pose local{},delta{};
+        const bool localValid=FirstPersonAnimationLocal(camera,anchor,source[binding.rightWrist],local);
+        if(!localValid)animationReference={};
+        haveAnimation=localValid&&animationReference.Update({binding.generation,
+            (uint64_t(owner.muzzleUnit)<<32)|owner.muzzleWeapon,binding.nodeIdentity,context.rendererEpoch},
+            local,GetTickCount64(),context.unitsPerMeter,delta,true,&animationReferenceCache);
+        if(haveAnimation) {animationDelta=AnimationMatrix(delta);++animationApplied;}
+        else ++animationSettling;
+    } else animationReference={};
+    uint32_t refusalStage=0;
     if (!BuildTrackedFirstPersonPalette(binding,source.data(),context.camera,context.tracking,
-            context.reference,context.unitsPerMeter,context.positional,staged)) return false;
+            context.reference,context.unitsPerMeter,context.positional,staged,&refusalStage,haveAnimation?&animationDelta:nullptr)) {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        FpRefusalProbe failure{};
+        failure.generation=binding.generation;failure.graph=graph;failure.stage=refusalStage;
+        failure.count=count;failure.identity=binding.nodeIdentity;
+        for(uint32_t i=0;i<count;++i) {
+            if(!Valid(source[i]))failure.invalidNodes|=uint64_t{1}<<i;
+            if(source[i].scale==0)failure.zeroScaleNodes|=uint64_t{1}<<i;
+        }
+        const auto distance=[&](int a,int b) {
+            if(a<0 || b<0 || a>=int(count) || b>=int(count))return -1.0f;
+            const Vec3 delta=source[a].position-source[b].position;return std::sqrt(Dot(delta,delta));
+        };
+        failure.leftUpper=distance(binding.shoulder[0],binding.elbow[0]);
+        failure.leftLower=distance(binding.elbow[0],binding.leftWrist);
+        failure.rightUpper=distance(binding.shoulder[1],binding.elbow[1]);
+        failure.rightLower=distance(binding.elbow[1],binding.rightWrist);
+        (void)fpRefusalProbe.Publish(failure);
+#endif
+        return false;
+    }
+    if(!context.tracking.controllers.leftHanded&&MuzzleOwner(owner.muzzleUnit,owner.muzzleWeapon)) {
+        NodeMatrix primary{};
+        if(BuildControllerMatrix(context.camera,context.tracking,context.reference,
+                context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,primary)) {
+            const float basis[9]{primary.forward.x,primary.forward.y,primary.forward.z,
+                primary.left.x,primary.left.y,primary.left.z,primary.up.x,primary.up.y,primary.up.z};
+            Game_PublishAuthoredGrip(GameTitle::HaloCE,binding.generation,owner.muzzleUnit,owner.muzzleWeapon,
+                &source[binding.rightWrist],&source[binding.leftWrist],&staged[binding.rightWrist],
+                basis,context.unitsPerMeter,context.tracking.controllers.supportGripAttached);
+        }
+    }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Passive pose evidence (dev builds: it rebuilds the controller matrix a
+    // second time per palette); formatting and logging stay in the cold poll.
+    (void)fpRefusalProbe.Publish({binding.generation,graph,0,count,binding.nodeIdentity});
+    FpOrientationProbe probe{};
+    probe.generation=binding.generation;probe.graph=graph;probe.identity=binding.nodeIdentity;
+    probe.count=int(count);probe.gun=binding.gun;probe.right=binding.rightWrist;probe.left=binding.leftWrist;
+    probe.before=FirstPersonGunAimFrame(binding,source[binding.gun]);
+    probe.after=FirstPersonGunAimFrame(binding,staged[binding.gun]);
+    if(BuildControllerMatrix(context.camera,context.tracking,context.reference,
+            context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,probe.expected) &&
+        ApplyVisualMount(context.tracking.controllers,context.unitsPerMeter,true,probe.expected))
+        (void)fpOrientationProbe.Publish(probe);
+#else
+    (void)refusalStage;
+#endif
     HaloCEContactPublication contact{};
     HaloCEContact_ApplyPalette(context,binding,source.data(),staged.data(),contact);
     (void)ApplyVisibleFirstPersonHandOffsets(binding,context.unitsPerMeter,context.tracking.controllers,staged.data());
@@ -893,11 +985,18 @@ __declspec(noinline) void __fastcall PaletteHook(uint32_t graph,NodeMatrix* matr
     Callback callback;
     auto original=reinterpret_cast<PaletteFn>(paletteHook.original);
     if (!original) return;
+    NodeMatrix animationRoot{};
+    const bool haveAnimationRoot=Current()&&scope&&scope->valid&&scope->output==matrices&&
+        reinterpret_cast<uintptr_t>(_ReturnAddress())==moduleBase+0xb29d8d&&
+        Read(reinterpret_cast<uintptr_t>(position),animationRoot.position)&&
+        Read(reinterpret_cast<uintptr_t>(forward),animationRoot.forward)&&
+        Read(reinterpret_cast<uintptr_t>(up),animationRoot.up);
+    animationRoot.left=Cross(animationRoot.up,animationRoot.forward);
     original(graph,matrices,animation,position,forward,up);
     if (!Current()||!scope||!scope->valid||scope->output!=matrices||
         reinterpret_cast<uintptr_t>(_ReturnAddress())!=moduleBase+0xb29d8d) return;
     observed.fetch_add(1,std::memory_order_relaxed);
-    if (ApplyPalette(graph,matrices,*scope))
+    if (ApplyPalette(graph,matrices,*scope,haveAnimationRoot?&animationRoot:nullptr))
     { applied.fetch_add(1,std::memory_order_relaxed); }
     else refused.fetch_add(1,std::memory_order_relaxed);
 }
@@ -1003,8 +1102,7 @@ __declspec(noinline) void __fastcall PrepareHook(int16_t user)
         local.output=reinterpret_cast<NodeMatrix*>(users+0x1088);
         local.valid=true;
         HaloCELocalPlayerState state{};
-        if((local.context.tracking.controllers.gunBarrelAim||local.context.tracking.controllers.muzzleShots)&&
-            HaloCEControls_GetLocalPlayerState(state)&&LocalOnFootShooter(state.unit))
+        if(HaloCEControls_GetLocalPlayerState(state)&&LocalOnFootShooter(state.unit))
         {local.muzzleUnit=state.unit;local.muzzleWeapon=state.weapon;}
         if (supportOutermostPrepare)
         {
@@ -1451,6 +1549,26 @@ bool HaloCEFirstPerson_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActiv
             gen,muzzleInstalled.load(),muzzleFaulted.load(),muzzleApplied.load(),muzzleRefused.load(),muzzleRestoreRefused.load());
         LOG("CE FP gen=%u installed=%d observed=%llu applied=%llu stock=%llu exceptions=%llu",
             gen,installed.load(),observed.load(),applied.load(),refused.load(),exceptions.load());
+        LOG("CE weapon animation: applied=%llu settling=%llu",
+            static_cast<unsigned long long>(animationApplied.load()),
+            static_cast<unsigned long long>(animationSettling.load()));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        FpRefusalProbe failure{};
+        if(fpRefusalProbe.Read(failure) && failure.generation==gen)
+            LOG("CE FP stage graph=%08X identity=%llX count=%u stage=%u invalidNodes=%llX zeroScale=%llX armLengths=%.6f/%.6f/%.6f/%.6f (0=staged 1=input 2=controller 3=grip 4=hand 5=nodes 6=left-arm 7=right-arm 8=floating 10=read 11=binding)",
+                failure.graph,failure.identity,failure.count,failure.stage,failure.invalidNodes,failure.zeroScaleNodes,
+                failure.leftUpper,failure.leftLower,failure.rightUpper,failure.rightLower);
+        FpOrientationProbe probe{};
+        if(fpOrientationProbe.Read(probe) && probe.generation==gen) {
+            LOG("CE FP orientation graph=%08X identity=%llX count=%d gun=%d wrists=%d/%d beforeF=%.4f/%.4f/%.4f afterF=%.4f/%.4f/%.4f aimF=%.4f/%.4f/%.4f afterUp=%.4f/%.4f/%.4f aimUp=%.4f/%.4f/%.4f",
+                probe.graph,probe.identity,probe.count,probe.gun,probe.left,probe.right,
+                probe.before.forward.x,probe.before.forward.y,probe.before.forward.z,
+                probe.after.forward.x,probe.after.forward.y,probe.after.forward.z,
+                probe.expected.forward.x,probe.expected.forward.y,probe.expected.forward.z,
+                probe.after.up.x,probe.after.up.y,probe.after.up.z,
+                probe.expected.up.x,probe.expected.up.y,probe.expected.up.z);
+        }
+#endif
         if (alignmentKnownGraph.load() || alignmentUnknownGraph.load())
             LOG("CE hand alignment gen=%u verifiedGripGraph=%llu unknownGraphPriorMount=%llu; unknown graphs retain prior hand placement",
                 gen,alignmentKnownGraph.load(),alignmentUnknownGraph.load());

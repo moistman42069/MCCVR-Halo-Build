@@ -13,7 +13,10 @@
 //              stamped with the game time at [TLS+0xC8]+0xC; with every slot in use the oldest is replaced.
 //
 // PROOF (addrcascade: resolved + guarded, nothing hardcoded): the post function by a unique signature that names
-// the HUD block's layout (0xF0, 0x28C8, 0x1F8C); its one call lands on the queue, matched in place by a second
+// the HUD users' place in TLS (0xF0) but not the HUD block's size and offset (0x28C8, 0x1F8C), which a host may
+// change: Project Reclaimer enlarges every user's HUD block (0x28C8 -> 0x7FC8, its fields 0x5700 further on,
+// 206 patches across the HUD code, these two among them), and the post function then reaches its own layout
+// whatever it is; its one call lands on the queue, matched in place by a second
 // signature that names [TLS+0xC8]; both read the SAME TLS index variable, and so does MCC's own caller, found by a
 // third unique signature that names the game-mode check -- and whose type-3 call lands on the post function.
 // Any one missing or disagreeing: not bound, and the note uses the mod's panel (NativeNotice_Show) as before.
@@ -26,12 +29,13 @@
 //
 // CO-OP. A HUD line is presentation, but it lives in the game's own state; in a shared co-op simulation the mod
 // leaves that state as the game keeps it (Sight_FireTimeChangesAllowed false) and shows the note on its panel.
+// Project Reclaimer asks its simulation type instead (hud_note::SessionAllows).
 
 using Halo3HudMessageFn = void(__fastcall*)(int32_t user, const wchar_t* text, int32_t type);
 
 inline constexpr char kHalo3HudMessageSig[] =
     "48 83 EC 28 83 F9 04 7D ?? 44 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 41 BB F0 00 00 00 4E 8B 14 C8 "
-    "48 63 C1 48 69 C8 C8 28 00 00 4B 8B 04 1A 48 05 8C 1F 00 00 48 03 C8 E8 ?? ?? ?? ?? 48 83 C4 28 C3";
+    "48 63 C1 48 69 C8 ?? ?? 00 00 4B 8B 04 1A 48 05 ?? ?? 00 00 48 03 C8 E8 ?? ?? ?? ?? 48 83 C4 28 C3";
 inline constexpr size_t kHalo3HudMessageTlsDisp = 12;  // its `mov r9d, [rip+disp]`: the TLS index variable
 inline constexpr size_t kHalo3HudMessageCallRel = 59;  // its call's rel32: the queue
 inline constexpr char kHalo3HudQueueSig[] =
@@ -140,6 +144,12 @@ void RemoveHalo3HudNote()
 
 namespace
 {
+bool Halo3HudNoteSessionAllows()
+{
+    return hud_note::SessionAllows(Sight_FireTimeChangesAllowed(), g_hostIsProjectReclaimer,
+                                   Sight_SessionType(GameTitle::Halo3));
+}
+
 // The calling thread holds the HUD block, the game clock and a campaign or multiplayer game: 0. Otherwise the first
 // thing missing (Halo3HudNoteNotReadyText). Guarded: no C++ object here.
 int Halo3HudNoteThreadReady(const uint32_t* tlsIndex)
@@ -204,7 +214,7 @@ void Halo3HudNotePost()
     if (note.wanted.load(std::memory_order_acquire) == shown)
         return;
     const Halo3HudMessageFn post = note.post.load(std::memory_order_acquire);
-    if (!post || !Sight_FireTimeChangesAllowed())
+    if (!post || !Halo3HudNoteSessionAllows())
         return; // the cold worker's fallback shows it on the panel
     wchar_t text[hud_note::kMaxChars + 1];
     uint32_t serial = 0;
@@ -240,7 +250,7 @@ void Halo3VehicleNoteShow(const std::wstring& text, float seconds)
     const bool hudReady = note.post.load(std::memory_order_acquire) &&
                           g_halo3HeadAudio.ready.load(std::memory_order_acquire);
     const hud_note::Route route =
-        hud_note::Choose(g_config.vehicle_camera_note, hudReady, Sight_FireTimeChangesAllowed());
+        hud_note::Choose(g_config.vehicle_camera_note, hudReady, Halo3HudNoteSessionAllows());
     if (route != hud_note::Route::GameHud)
     {
         // A note still waiting for the game is older than this one: neither side shows it now.

@@ -271,6 +271,7 @@ add_library(halo3xr SHARED
     ${HALOMCCVR_GENERATED_DIR}/smaa_resources.rc
     src/common/log.cpp
     src/common/config.cpp
+    src/common/input_preset.cpp
     src/common/input_logic.cpp
     src/common/scope_logic.cpp
     src/common/title_registry.cpp
@@ -339,6 +340,8 @@ target_sources(halo3xr PRIVATE src/dll/legacy_player_control_hook.asm)
 target_sources(halo3xr PRIVATE
     src/dll/drive_cascade.cpp
     src/common/addrcascade/AddressCascade.cpp)
+# A title install's searches, saved per build of the game DLL for the next launch (install_search_cache.h).
+target_sources(halo3xr PRIVATE src/dll/install_search_cache.cpp)
 # Halo 2 direct drive (halo2_direct_drive.inl): its control-update detour, with the observer it reads.
 if(HALOMCCVR_HALO2_OBSERVER_6DOF)
     target_sources(halo3xr PRIVATE src/dll/halo2_player_control_hook.asm)
@@ -383,7 +386,7 @@ target_compile_definitions(halo3xr PRIVATE
     HALOMCCVR_BUILD_HALO2="${HALOMCCVR_BUILD_HALO2}")
 target_link_libraries(halo3xr PRIVATE
     openxr_loader minhook imgui_lib
-    d3d11 dxgi d3dcompiler gdi32)
+    d3d11 dxgi d3dcompiler gdi32 advapi32 shell32 ole32)
 target_sources(halo3xr PRIVATE src/dll/native_subtitles.cpp)
 target_sources(halo3xr PRIVATE src/dll/physical_crouch_camera.cpp)
 target_sources(halo3xr PRIVATE src/dll/native_vr_actions.cpp)
@@ -416,11 +419,22 @@ if(MSVC)
     target_link_options(halo3xr_launcher PRIVATE "/MANIFESTUAC:level='asInvoker' uiAccess='false'")
 endif()
 
-# THE PROJECT RECLAIMER RELAY (experimental; not packaged: package-candidate.ps1 copies named files only).
+# THE PROJECT RECLAIMER RELAY (experimental; packaged beside HaloMCCVR.dll by the dist install below).
 # Project Reclaimer runs MCC's halo3.dll in a worker process two generations below the one a launcher can start,
 # so HaloMCCVRReclaimerRelay.dll rides its process starts and loads HaloMCCVR.dll into the engine worker before
 # that worker runs (src/relay/reclaimer_relay.cpp). The launcher uses it when it sits beside a Project Reclaimer
 # client and no MCC install is around it.
+# The VR menu on the desktop: menu.cpp itself, with the game's side answered by settings_stubs.cpp.
+add_executable(halomccvr_settings WIN32 src/settings/settings_main.cpp src/settings/settings_stubs.cpp
+    src/dll/menu.cpp src/common/config.cpp src/common/input_preset.cpp src/common/log.cpp
+    src/common/input_logic.cpp src/common/scope_logic.cpp)
+set_target_properties(halomccvr_settings PROPERTIES OUTPUT_NAME "HaloMCCVRSettings")
+target_include_directories(halomccvr_settings PRIVATE src/dll src/common "${HALOMCCVR_GENERATED_DIR}"
+    $<TARGET_PROPERTY:halo3xr,INCLUDE_DIRECTORIES>)
+target_compile_definitions(halomccvr_settings PRIVATE $<TARGET_PROPERTY:halo3xr,COMPILE_DEFINITIONS>
+    HALOMCCVR_SETTINGS_WINDOW=1)
+target_link_libraries(halomccvr_settings PRIVATE imgui_lib d3d11 dxgi d3dcompiler gdi32 shell32 ole32)
+
 add_library(halomccvr_reclaimer_relay SHARED src/relay/reclaimer_relay.cpp)
 set_target_properties(halomccvr_reclaimer_relay PROPERTIES OUTPUT_NAME "HaloMCCVRReclaimerRelay")
 target_include_directories(halomccvr_reclaimer_relay PRIVATE src/common "${minhook_SOURCE_DIR}/include")
@@ -479,6 +493,12 @@ set_target_properties(reach_runtime_observer PROPERTIES
     OUTPUT_NAME "reach-runtime-observer")
 
 if(BUILD_TESTING)
+    add_executable(authored_grab_zone_tests tests/authored_grab_zone_tests.cpp)
+    add_test(NAME authored_grab_zone_tests COMMAND authored_grab_zone_tests)
+    add_executable(halo3_live_hud_tests tests/halo3_live_hud_tests.cpp)
+    add_test(NAME halo3_live_hud_tests COMMAND halo3_live_hud_tests)
+    add_executable(halomccvr_post_effect_policy_tests tests/post_effect_policy_tests.cpp)
+    add_test(NAME halomccvr_post_effect_policy_tests COMMAND halomccvr_post_effect_policy_tests)
     add_executable(halomccvr_bloom_override_tests tests/bloom_override_tests.cpp src/dll/bloom_override.cpp src/common/config.cpp)
     target_compile_definitions(halomccvr_bloom_override_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_bloom_override_tests PRIVATE d3d11)
@@ -546,7 +566,7 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_installer_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
     target_link_libraries(halomccvr_installer_tests PRIVATE bcrypt advapi32)
     add_test(NAME halomccvr_installer_tests COMMAND halomccvr_installer_tests)
-    add_executable(halomccvr_vr_mapping_tests tests/vr_action_mapping_tests.cpp src/common/config.cpp src/common/log.cpp src/common/scope_logic.cpp)
+    add_executable(halomccvr_vr_mapping_tests tests/vr_action_mapping_tests.cpp src/common/config.cpp src/common/input_preset.cpp src/common/log.cpp src/common/scope_logic.cpp)
     target_compile_definitions(halomccvr_vr_mapping_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_vr_mapping_tests COMMAND halomccvr_vr_mapping_tests)
     add_executable(halomccvr_halo4_pause_lifetime_tests tests/halo4_pause_lifetime_tests.cpp)
@@ -568,6 +588,13 @@ if(BUILD_TESTING)
     add_executable(halomccvr_sigscan_memo_tests tests/sigscan_memo_tests.cpp src/dll/sigscan.cpp)
     target_compile_definitions(halomccvr_sigscan_memo_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_sigscan_memo_tests COMMAND halomccvr_sigscan_memo_tests)
+    # The install's searches saved for the next launch (install_search_cache.h): the file, the build identity, and
+    # every saved answer checked as the scanner checks one it remembers, on synthetic images and the test's own.
+    add_executable(halomccvr_install_search_cache_tests tests/install_search_cache_tests.cpp
+        src/dll/install_search_cache.cpp src/dll/sigscan.cpp)
+    target_compile_definitions(halomccvr_install_search_cache_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_install_search_cache_tests PRIVATE minhook)
+    add_test(NAME halomccvr_install_search_cache_tests COMMAND halomccvr_install_search_cache_tests)
     # A per-frame reader of a title's image stops at the title's unload (title_image_guard.h): a real DLL is
     # loaded and freed under a reader thread.
     add_executable(halomccvr_title_image_guard_tests tests/title_image_guard_tests.cpp src/dll/title_image_guard.cpp)
@@ -759,6 +786,8 @@ if(BUILD_TESTING)
         "${HALOMCCVR_GENERATED_DIR}" "${openxr_SOURCE_DIR}/include")
     target_compile_definitions(halomccvr_haptics_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_haptics_runtime_tests COMMAND halomccvr_haptics_runtime_tests)
+    add_executable(halomccvr_gesture_melee_tests tests/gesture_melee_tests.cpp)
+    add_test(NAME halomccvr_gesture_melee_tests COMMAND halomccvr_gesture_melee_tests)
     add_executable(halomccvr_dpad_input_tests tests/dpad_input_tests.cpp src/common/input_logic.cpp)
     target_include_directories(halomccvr_dpad_input_tests PRIVATE src/common src/dll)
     target_compile_definitions(halomccvr_dpad_input_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -770,6 +799,8 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_seat_exit_witness_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_seat_exit_witness_tests COMMAND halomccvr_seat_exit_witness_tests)
     add_executable(halomccvr_weapon_interaction_tests tests/weapon_interaction_tests.cpp)
+    add_executable(halomccvr_weapon_defaults_tests tests/weapon_defaults_tests.cpp)
+    add_test(NAME halomccvr_weapon_defaults_tests COMMAND halomccvr_weapon_defaults_tests)
     add_executable(halomccvr_native_reload_tests tests/native_reload_policy_tests.cpp src/common/config.cpp)
     add_executable(halomccvr_native_vehicle_fp_tests tests/native_vehicle_first_person_tests.cpp src/common/config.cpp)
     target_include_directories(halomccvr_native_vehicle_fp_tests PRIVATE "${minhook_SOURCE_DIR}/include")
@@ -857,6 +888,18 @@ if(BUILD_TESTING)
     target_compile_options(halomccvr_vehicle_aim_reject_tests PRIVATE /W4 /WX)
     target_compile_definitions(halomccvr_vehicle_aim_reject_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_vehicle_aim_reject_tests COMMAND halomccvr_vehicle_aim_reject_tests)
+    # Which present carries the game's picture: not a host's token surface, not another device than the
+    # headset session's (src/common/present_owner_logic.h).
+    add_executable(halomccvr_present_owner_tests tests/present_owner_tests.cpp)
+    target_compile_options(halomccvr_present_owner_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_present_owner_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_present_owner_tests COMMAND halomccvr_present_owner_tests)
+    # Which OpenXR API layers the loader put between the mod and the runtime, and the ones known to break it
+    # (src/common/openxr_layer_report_logic.h).
+    add_executable(halomccvr_openxr_layer_report_tests tests/openxr_layer_report_tests.cpp)
+    target_compile_options(halomccvr_openxr_layer_report_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_openxr_layer_report_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_openxr_layer_report_tests COMMAND halomccvr_openxr_layer_report_tests)
     # The third-person boom: Halo 3's camera track as the game evaluates it, the flat game's look range, the
     # boom's angle from the stick and where it starts (src/common/vehicle_boom_logic.h).
     add_executable(halomccvr_vehicle_boom_tests tests/vehicle_boom_tests.cpp)
@@ -1074,6 +1117,11 @@ if(BUILD_TESTING)
     add_executable(halomccvr_reach_head_relative_tests tests/reach_head_relative_tests.cpp)
     target_include_directories(halomccvr_reach_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_reach_head_relative_tests COMMAND halomccvr_reach_head_relative_tests)
+    # Halo 3's player tags (src/common/halo3_player_tags_logic.h): which navpoints are teammates' tags, what each
+    # setting does to one, and the positions named beside its signatures.
+    add_executable(halomccvr_halo3_player_tags_tests tests/halo3_player_tags_tests.cpp)
+    target_include_directories(halomccvr_halo3_player_tags_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo3_player_tags_tests COMMAND halomccvr_halo3_player_tags_tests)
     # Halo 4's motion tracker follows the head (src/common/halo4_head_relative_logic.h; a retail-derived lead, not
     # H4EK-verified): the decode of the three sites and its refusals, the proof the hook takes at run time before
     # it changes anything (agree, disagree, a reference that did not move, withdrawal), and the two headset checks
@@ -1409,6 +1457,13 @@ if(BUILD_TESTING)
     add_executable(halomccvr_ce_classic_view_pair_tests tests/haloce_classic_view_pair_tests.cpp)
     target_include_directories(halomccvr_ce_classic_view_pair_tests PRIVATE src/common)
     add_test(NAME halomccvr_ce_classic_view_pair_tests COMMAND halomccvr_ce_classic_view_pair_tests)
+    add_executable(halomccvr_weapon_animation_motion_tests tests/weapon_animation_motion_tests.cpp)
+    add_test(NAME halomccvr_weapon_animation_motion_tests COMMAND halomccvr_weapon_animation_motion_tests)
+    add_executable(halomccvr_halo3_secondary_motion_tests tests/halo3_secondary_motion_tests.cpp)
+    add_test(NAME halomccvr_halo3_secondary_motion_tests COMMAND halomccvr_halo3_secondary_motion_tests)
+    add_executable(halomccvr_weapon_alignment_tests tests/weapon_alignment_tests.cpp)
+    target_include_directories(halomccvr_weapon_alignment_tests PRIVATE src/common)
+    add_test(NAME halomccvr_weapon_alignment_tests COMMAND halomccvr_weapon_alignment_tests)
     add_executable(halomccvr_ce_first_person_tests tests/haloce_first_person_tests.cpp src/dll/ik.cpp)
     target_include_directories(halomccvr_ce_first_person_tests PRIVATE src/common)
     add_test(NAME halomccvr_ce_first_person_tests COMMAND halomccvr_ce_first_person_tests)
@@ -1624,6 +1679,52 @@ if(BUILD_TESTING)
     add_test(NAME halo4_weapon_haptics COMMAND halo4_weapon_haptics_tests)
     add_executable(reach_weapon_haptics_logic_tests tests/reach_weapon_haptics_logic_tests.cpp)
     add_test(NAME reach_weapon_haptics_logic COMMAND reach_weapon_haptics_logic_tests)
+    add_executable(dual_wield_shake_tests tests/dual_wield_shake_tests.cpp)
+    target_compile_features(dual_wield_shake_tests PRIVATE cxx_std_20)
+    add_test(NAME dual_wield_shake COMMAND dual_wield_shake_tests)
+    add_executable(odst_fp_map_probe_tests tests/odst_fp_map_probe_tests.cpp)
+    target_compile_features(odst_fp_map_probe_tests PRIVATE cxx_std_20)
+    add_test(NAME odst_fp_map_probe COMMAND odst_fp_map_probe_tests)
+    add_executable(halo3_dual_shake_tests tests/halo3_dual_shake_tests.cpp)
+    target_compile_features(halo3_dual_shake_tests PRIVATE cxx_std_20)
+    add_test(NAME halo3_dual_shake COMMAND halo3_dual_shake_tests)
+    set(HALOMCCVR_ODST_MODDED_ASSETS "${HALOMCCVR_GENERATED_DIR}/odst_modded_fp_assets.inl")
+    add_custom_command(OUTPUT "${HALOMCCVR_ODST_MODDED_ASSETS}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_odst_modded_fp_fixture.py"
+            --source-root "${CMAKE_CURRENT_SOURCE_DIR}" --output "${HALOMCCVR_ODST_MODDED_ASSETS}"
+        DEPENDS tools/generate_odst_modded_fp_fixture.py
+            docs/ODST-MODDED-WEAPONS-MAP-EVIDENCE.json
+            docs/ODST-MYTHIC-FP-MAP-EVIDENCE.json VERBATIM)
+    add_executable(odst_modded_fp_tests tests/odst_modded_fp_tests.cpp "${HALOMCCVR_ODST_MODDED_ASSETS}")
+    target_include_directories(odst_modded_fp_tests PRIVATE "${HALOMCCVR_GENERATED_DIR}")
+    target_compile_features(odst_modded_fp_tests PRIVATE cxx_std_20)
+    add_test(NAME odst_modded_fp COMMAND odst_modded_fp_tests)
+    set(HALOMCCVR_HALO3_MODDED_FIXTURE "${HALOMCCVR_GENERATED_DIR}/halo3_modded_fp_fixture.inl")
+    set(HALOMCCVR_HALO3_MODDED_ASSETS "${HALOMCCVR_GENERATED_DIR}/halo3_modded_fp_assets.inl")
+    add_custom_command(OUTPUT "${HALOMCCVR_HALO3_MODDED_FIXTURE}" "${HALOMCCVR_HALO3_MODDED_ASSETS}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_halo3_modded_fp_fixture.py"
+            --source-root "${CMAKE_CURRENT_SOURCE_DIR}" --output "${HALOMCCVR_HALO3_MODDED_FIXTURE}"
+        DEPENDS tools/generate_halo3_modded_fp_fixture.py tools/generate_haptics_runtime_fixture.py
+            src/dll/game.cpp src/dll/legacy_runtime_weapon_bounds.inl
+            docs/HALO3-MODDED-WEAPONS-MAP-EVIDENCE.json VERBATIM)
+    add_executable(halo3_modded_fp_tests tests/halo3_modded_fp_tests.cpp
+        "${HALOMCCVR_HALO3_MODDED_FIXTURE}" "${HALOMCCVR_HALO3_MODDED_ASSETS}")
+    target_include_directories(halo3_modded_fp_tests PRIVATE "${HALOMCCVR_GENERATED_DIR}")
+    target_compile_features(halo3_modded_fp_tests PRIVATE cxx_std_20)
+    add_test(NAME halo3_modded_fp COMMAND halo3_modded_fp_tests)
+    set(HALOMCCVR_REACH_MODDED_FIXTURE "${HALOMCCVR_GENERATED_DIR}/reach_modded_fp_fixture.inl")
+    set(HALOMCCVR_REACH_MODDED_ASSETS "${HALOMCCVR_GENERATED_DIR}/reach_modded_fp_assets.inl")
+    add_custom_command(OUTPUT "${HALOMCCVR_REACH_MODDED_FIXTURE}" "${HALOMCCVR_REACH_MODDED_ASSETS}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_reach_modded_fp_fixture.py"
+            --source-root "${CMAKE_CURRENT_SOURCE_DIR}" --output "${HALOMCCVR_REACH_MODDED_FIXTURE}"
+        DEPENDS tools/generate_reach_modded_fp_fixture.py tools/generate_haptics_runtime_fixture.py
+            src/dll/game.cpp src/dll/legacy_runtime_weapon_bounds.inl
+            docs/REACH-MODDED-WEAPONS-M20-EVIDENCE.json VERBATIM)
+    add_executable(reach_modded_fp_layout_tests tests/reach_modded_fp_layout_tests.cpp
+        "${HALOMCCVR_REACH_MODDED_FIXTURE}" "${HALOMCCVR_REACH_MODDED_ASSETS}")
+    target_include_directories(reach_modded_fp_layout_tests PRIVATE "${HALOMCCVR_GENERATED_DIR}")
+    target_compile_features(reach_modded_fp_layout_tests PRIVATE cxx_std_20)
+    add_test(NAME reach_modded_fp_layout COMMAND reach_modded_fp_layout_tests)
     add_executable(halomccvr_reach_finger_pose_tests tests/reach_finger_pose_tests.cpp)
     target_compile_features(halomccvr_reach_finger_pose_tests PRIVATE cxx_std_20)
     add_test(NAME halomccvr_reach_finger_pose_tests COMMAND halomccvr_reach_finger_pose_tests)
@@ -1686,6 +1787,14 @@ install(TARGETS halo3xr
 install(TARGETS halo3xr_launcher
     RUNTIME DESTINATION .
     COMPONENT launcher)
+# The Project Reclaimer relay rides beside HaloMCCVR.dll, so the launcher's Project Reclaimer section can start it
+# from an installed Halo_MCC_VR folder.
+install(TARGETS halomccvr_settings
+    RUNTIME DESTINATION .
+    COMPONENT dist)
+install(TARGETS halomccvr_reclaimer_relay
+    RUNTIME DESTINATION .
+    COMPONENT dist)
 install(FILES
     LICENSE
     installer/MANUAL-README.txt

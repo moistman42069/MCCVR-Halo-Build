@@ -9,6 +9,7 @@ struct GestureBindingCache
 {
     std::atomic<uint64_t> value[4]{};
     std::atomic<uint64_t> actions[4][vr_mapping::Count]{};
+    std::atomic<uint64_t> secondaryReload[4]{};
     std::atomic<uint64_t> observedMs{0};
     std::atomic<uint64_t> sequence{0};
     uintptr_t attemptedBase=0, state=0;
@@ -65,6 +66,21 @@ void RefreshGestureMeleeBinding(const TitleDescriptor* title,bool levelRunning,u
     for(unsigned action=0;readable&&action<vr_mapping::Count;++action)
         readable=GestureReadNativeBindings(d,g_gestureBinding.state,actions[action],
             vr_mapping::NativeAction(d.title,static_cast<vr_mapping::Action>(action)));
+    // Halo 3's left-weapon reload is its own native action: H3EK's builder reads action 4 (alias 42)
+    // held into the secondary reload edge, which becomes unit action 3F
+    // (NATIVE-VR-ACTION-BRIDGE-2026-09-30.md). Dual-wield shake reload presses what it is bound to.
+    // An unreadable or unbound entry stays 0; it never affects the other actions.
+    uint32_t secondaryReload[4]{};
+    if(readable && d.title==GameTitle::Halo3)
+    {
+        uint32_t alias[4]{};
+        if(!GestureReadNativeBindings(d,g_gestureBinding.state,secondaryReload,4) ||
+           !GestureReadNativeBindings(d,g_gestureBinding.state,alias,0x42))
+            for(auto& transport:secondaryReload) transport=0;
+        else
+            for(unsigned controller=0;controller<4;++controller)
+                if(!secondaryReload[controller]) secondaryReload[controller]=alias[controller];
+    }
     FreeLibrary(pinned);
     if(!readable) { g_gestureBinding.observedMs.store(0,std::memory_order_release); return; }
     g_gestureBinding.sequence.fetch_add(1,std::memory_order_acq_rel);
@@ -78,6 +94,9 @@ void RefreshGestureMeleeBinding(const TitleDescriptor* title,bool levelRunning,u
         }
         const uint64_t value=(uint64_t(generation)<<32) | (uint64_t(title->title)<<24) | transport[controller];
         g_gestureBinding.value[controller].store(value,std::memory_order_release);
+        g_gestureBinding.secondaryReload[controller].store(
+            (uint64_t(generation)<<32)|(uint64_t(title->title)<<24)|secondaryReload[controller],
+            std::memory_order_release);
         for(unsigned action=0;action<vr_mapping::Count;++action)
             g_gestureBinding.actions[controller][action].store(
                 (uint64_t(generation)<<32)|(uint64_t(title->title)<<24)|actions[action][controller],
@@ -118,6 +137,16 @@ bool Game_ReadVrActionBindings(vr_mapping::Transports& out,uint64_t now,unsigned
     // other verified actions (Fire/Jump can legitimately be native-unbound).
     if(sequence!=g_gestureBinding.sequence.load(std::memory_order_acquire)) {out={};return false;}
     return true;
+}
+
+uint32_t Game_SecondaryReloadTransport(GameTitle title,uint64_t now)
+{
+    if(title!=GameTitle::Halo3) return 0;
+    const uint64_t observed=g_gestureBinding.observedMs.load(std::memory_order_acquire);
+    if(!observed||now<observed||now-observed>150) return 0;
+    const uint64_t value=g_gestureBinding.secondaryReload[0].load(std::memory_order_acquire);
+    if(uint32_t(value>>32)!=TitleAdapter_GetGeneration(title)||((value>>24)&0xFF)!=uint64_t(title)) return 0;
+    return uint32_t(value)&0x3FFFF;
 }
 
 uint32_t Game_VrActionTransport(vr_mapping::Action action,uint64_t now)

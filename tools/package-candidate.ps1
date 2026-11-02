@@ -215,14 +215,12 @@ try {
             'Halo2ShouldSuppressClassicFirstPersonParticle' -or
         $halo2LogicSource -notmatch
             'currentUserFirstPerson\s*!=\s*0\s*&&\s*\r?\n\s*Halo2ClassicRenderTreeRuns' -or
-        $menuSource -notmatch 'H2 Classic gun yaw \(deg\)' -or
-        $menuSource -notmatch 'H2 Classic gun pitch \(deg\)' -or
         $configHeaderSource -notmatch
             'bool fit_desktop_window\s*=\s*true' -or
         $configHeaderSource -notmatch 'float hud_size\s*=\s*0\.43f' -or
         $configHeaderSource -notmatch 'bool show_welcome\s*=\s*true' -or
         $vrSource -notmatch 'Halo 2 Stage 3AM performance gate') {
-        throw 'C-H2-88 gate failed: Classic muzzle isolation, the two alignment controls, V5 defaults, welcome, or bounded Stage 3AM diagnostics are missing.'
+        throw 'C-H2-88 gate failed: Classic muzzle isolation, V5 defaults, welcome, or bounded Stage 3AM diagnostics are missing.'
     }
     $halo4RestoreLogicSource = [IO.File]::ReadAllText(
         (Join-Path $repoRoot 'src\common\halo4_restoration_logic.h'))
@@ -310,15 +308,24 @@ try {
             'scoped aim-assist view helper accepts the normalized') {
         throw 'C-H2-92 gate failed: the rejected debug global is not dormant or controller-scoped native target selection, accepted camera suppression, fail-open isolation, telemetry, or unit coverage is missing.'
     }
-    if ($configHeaderSource -notmatch
-            'halo2_classic_gun_pitch_deg\s*=\s*-9\.5f' -or
-        $configHeaderSource -notmatch
-            'halo2_classic_gun_yaw_deg\s*=\s*1\.0f' -or
-        $coreTestsSource -notmatch
-            'fresh\.halo2_classic_gun_yaw_deg\s*==\s*1\.0f' -or
-        $coreTestsSource -notmatch
-            'fresh\.halo2_classic_gun_pitch_deg\s*==\s*-9\.5f') {
-        throw 'Halo 2 Classic default-alignment gate failed: yaw +1.0 / pitch -9.5 or unit coverage is missing.'
+    # The old Classic sliders were retired by the weapons-alignment request.
+    # Validate the active fixed correction and independent barrel publication,
+    # not legacy serialized configuration defaults that no longer drive it.
+    $alignmentSource = [IO.File]::ReadAllText(
+        (Join-Path $repoRoot 'src\common\weapon_alignment.h'))
+    $alignmentTestsSource = [IO.File]::ReadAllText(
+        (Join-Path $repoRoot 'tests\weapon_alignment_tests.cpp'))
+    $cmakeSource = [IO.File]::ReadAllText(
+        (Join-Path $repoRoot 'CMakeLists.txt'))
+    if ($alignmentSource -notmatch 'kH2ClassicVisualPitch\s*=\s*-9\.5f' -or
+        $halo2ObserverSource -notmatch 'classicConsumer\?weapon_alignment::kH2ClassicVisualPitch\+' -or
+        $halo2ObserverSource -notmatch 'Halo2RemoveVisualFrame' -or
+        $halo2ObserverSource -notmatch 'candidate\.muzzleNeutralCarrier\[0\]=rightCarrier' -or
+        $menuSource -match 'SliderFloat\(\s*"H2 Classic gun (yaw|pitch)' -or
+        $menuSource -notmatch 'Reset visual rotation' -or
+        $alignmentTestsSource -notmatch 'Halo2RemoveVisualFrame' -or
+        $cmakeSource -notmatch 'add_test\(NAME halomccvr_weapon_alignment_tests') {
+        throw 'Weapon alignment gate failed: fixed Classic -9.5 visual pitch, independent barrel frame, retired sliders, or registered tests are missing.'
     }
     $halo2StereoSource = [IO.File]::ReadAllText(
         (Join-Path $repoRoot 'src\dll\halo2_stereo_core.cpp'))
@@ -550,6 +557,8 @@ try {
     $launcherPath = Join-Path $packageDir 'HaloMCCVRLauncher.exe'
     foreach ($requiredPath in @(
             $dllPath,
+            (Join-Path $payloadDir 'HaloMCCVRReclaimerRelay.dll'),
+            (Join-Path $payloadDir 'HaloMCCVRSettings.exe'),
             $launcherPath,
             $configPath,
             (Join-Path $payloadDir 'LICENSE'),
@@ -600,7 +609,7 @@ try {
     $manifest = [ordered]@{
         schema_version = 56
         payload_directory = 'ModFiles'
-        status = 'UNTESTED_LOCAL_CANDIDATE'
+        status = 'RELEASE_CANDIDATE'
         accepted = $false
         package_id = $packageId
         created_utc = $createdUtc.ToString('o')
@@ -1410,7 +1419,6 @@ try {
             headset_accepted = $false
         }
         current_notes = 'RELEASE-NOTES.md'
-        implementation_ledger = 'IMPLEMENTATION-STATUS.md'
         experimental_avatar = [ordered]@{
             enabled_by_default = $false
             runtime_world_rigs = @('Halo 3 Chief/Elite/Arbiter', 'Halo 4 Chief')
@@ -1431,28 +1439,20 @@ try {
         }
         historical_metadata_notice = 'Older stage/profile IDs and feature results below describe inherited work and retain their original coverage limits. Current accepted baseline is Alpha 0.4.2 source 1a9766c. This unaccepted refinement audit candidate does not complete the full standing scope. Current changes and unresolved items are listed in RELEASE-NOTES.md. Earlier standing and deferred scope is preserved.'
         halo4_new_damage_blackout_report = 'deferred-unresolved-distinct-from-earlier-cryptum-shader-suppression'
-        note = 'Unaccepted major QoL candidate above Alpha0.4.2 source1a9766c. Current implementation and unresolved reports are enumerated in RELEASE-NOTES.md and IMPLEMENTATION-STATUS.md. New launcher/install/update payload; both editions; no game launch or installation during preparation. Older nested stage metadata is historical, not a claim of current headset acceptance or complete community-backlog resolution.'
+        note = 'Unaccepted major QoL candidate above Alpha0.4.2 source1a9766c. Current implementation and unresolved reports are enumerated in RELEASE-NOTES.md. New launcher/install/update payload; both editions; no game launch or installation during preparation. Older nested stage metadata is historical, not a claim of current headset acceptance or complete community-backlog resolution.'
 
     }
 
     Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-RELEASE-NOTES-2026-09-30.md') -Destination (Join-Path $packageDir 'RELEASE-NOTES.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-30.md') -Destination (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-23.md') -Destination (Join-Path $packageDir 'PREVIOUS-IMPLEMENTATION-STATUS.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/LINUX-PROTON-LOGIN-FOCUS-REVIEW-2026-09-30.md') -Destination (Join-Path $packageDir 'LINUX-LOGIN-REVIEW.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/FINGER-JOINT-IDENTITY-2026-09-30.md') -Destination (Join-Path $packageDir 'FINGER-JOINT-IDENTITY.md')
     Copy-Item -LiteralPath (Join-Path $packageDir 'RELEASE-NOTES.md') -Destination $payloadDir
-    Copy-Item -LiteralPath (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md') -Destination $payloadDir
-    Copy-Item -LiteralPath (Join-Path $packageDir 'PREVIOUS-IMPLEMENTATION-STATUS.md') -Destination $payloadDir
-    Copy-Item -LiteralPath (Join-Path $packageDir 'LINUX-LOGIN-REVIEW.md') -Destination $payloadDir
-    Copy-Item -LiteralPath (Join-Path $packageDir 'FINGER-JOINT-IDENTITY.md') -Destination $payloadDir
-    foreach ($packageDoc in @('RELEASE-NOTES.md', 'IMPLEMENTATION-STATUS.md', 'PREVIOUS-IMPLEMENTATION-STATUS.md', 'LINUX-LOGIN-REVIEW.md', 'FINGER-JOINT-IDENTITY.md')) {
+    foreach ($packageDoc in @('RELEASE-NOTES.md')) {
         if (-not (Test-Path -LiteralPath (Join-Path $payloadDir $packageDoc) -PathType Leaf)) {
             throw "Candidate package is missing its report ledger: $packageDoc"
         }
     }
     Copy-Item -LiteralPath (Join-Path $payloadDir 'MANUAL-README.txt') -Destination (Join-Path $packageDir 'README.txt')
     [IO.File]::WriteAllLines((Join-Path $payloadDir 'BUILD-IDENTITY.txt'),
-        @("source_commit=$commit", 'build_kind=UNTESTED_LOCAL_CANDIDATE', 'release_tag='),
+        @("source_commit=$commit", 'build_kind=RELEASE_CANDIDATE', "release_tag=RC-$($commit.Substring(0, 7))"),
         [Text.UTF8Encoding]::new($false))
     # Hash the complete manual/install payload, including config, runtime,
     # fonts, licenses and identity. The manifest itself is deliberately excluded.

@@ -114,7 +114,7 @@ inline bool BuildContactFrames(const RenderContext& context,const FirstPersonBin
     for (bool value:{rig.leftHanded,rig.handAlignment,rig.twoHandAimActive,rig.armIk,rig.floatingHands})
         settings=ContactHash(settings,uint64_t(value));
     for (float value:{context.unitsPerMeter,rig.gunScale,rig.supportScale,rig.gunForwardM,
-        rig.gunRightM,rig.gunUpM,rig.supportForwardM,rig.visualPitchDeg,rig.visualYawDeg,
+        rig.gunRightM,rig.gunUpM,rig.leftGunForwardM,rig.leftGunRightM,rig.leftGunUpM,rig.supportForwardM,rig.visualPitchDeg,rig.visualYawDeg,
         rig.visualRollDeg,rig.supportMountPitchDeg,rig.supportMountYawDeg,rig.supportMountRollDeg,
         rig.shoulderBackM,rig.primaryShoulderDrop})
     {

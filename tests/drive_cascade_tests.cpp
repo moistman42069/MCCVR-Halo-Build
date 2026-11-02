@@ -1901,6 +1901,118 @@ void TestHookWatch()
         addrcascade::set_fault_mask(0);
     }
 }
+
+// A title's hooks watched as one set (drive_cascade::HookWatchBoard), stepped as the cold worker steps it: Begin,
+// one Pass per watch, then SummaryDue, every 50 ms.
+struct BoardWorker
+{
+    drive_cascade::HookWatchBoard board;
+    uint64_t now = 1000000;
+    // Per watch: where its hook is (null: none), whether its call is possible, whether it is called.
+    struct Hook { const void* target; bool possible; bool called; };
+    int fired = 0, summaries = 0;
+    void Run(uint32_t install, const Hook* hooks, size_t count, bool inPlay, uint32_t ms)
+    {
+        for (uint32_t t = 0; t < ms; t += 50)
+        {
+            now += 50;
+            board.Begin(install);
+            for (size_t i = 0; i < count; ++i)
+                fired += board.Pass(i, hooks[i].target, hooks[i].possible, hooks[i].called, now) ? 1 : 0;
+            summaries += board.SummaryDue(inPlay, now) ? 1 : 0;
+        }
+    }
+    std::string Summary(const char* const* names, size_t count) const
+    {
+        char text[512];
+        board.Summary("Test title", names, count, text, sizeof(text));
+        return text;
+    }
+};
+
+void TestHookWatchBoard()
+{
+    using Verdict = drive_cascade::HookWatchBoard::Verdict;
+    static const int a = 0, b = 0, c = 0;
+    const char* const names[]{"alpha", "beta", "gamma"};
+    const uint32_t limitMs = drive_cascade::HookWatch::kPeriods * drive_cascade::HookWatch::kPeriodMs;
+    {
+        BoardWorker w;
+        const BoardWorker::Hook hooks[]{{&a, true, false}, {&b, true, false}};
+        w.Run(0, hooks, 2, true, 120000);
+        Check(w.fired == 0 && w.summaries == 0 && w.board.VerdictOf(0) == Verdict::NotInstalled,
+              "board: no install of the set, nothing is watched and nothing is said");
+    }
+    {
+        BoardWorker w;
+        const BoardWorker::Hook hooks[]{{&a, true, true}, {&b, true, true}};
+        w.Run(1, hooks, 2, true, 100);
+        Check(w.summaries == 1 && w.Summary(names, 2) == "Test title hook watch: 2 watched, all called",
+              "board: every hook called, the one summary at once");
+        w.Run(1, hooks, 2, true, 120000);
+        Check(w.summaries == 1 && w.fired == 0, "board: and never again for that install");
+    }
+    {
+        BoardWorker w;
+        const BoardWorker::Hook hooks[]{{&a, true, true}, {&b, true, false}, {nullptr, true, false}};
+        w.Run(1, hooks, 3, true, limitMs - 200);
+        Check(w.fired == 0 && w.summaries == 0 && w.board.VerdictOf(1) == Verdict::Waiting,
+              "board: a possible, uncalled hook waits until its limit");
+        w.Run(1, hooks, 3, true, 400);
+        Check(w.fired == 1 && w.board.VerdictOf(1) == Verdict::NeverCalled && w.summaries == 1,
+              "board: it fires once, and that settles the set: the summary follows in the same pass");
+        Check(w.Summary(names, 3) == "Test title hook watch: 2 watched: 1 called; 1 NEVER CALLED: beta",
+              "board: the summary names it; a hook that is not installed is not counted");
+        // The set installed again: everything starts over, the one summary included.
+        w.Run(2, hooks, 3, true, limitMs + 200);
+        Check(w.fired == 2 && w.summaries == 2, "board: a new install of the set is watched and summed up afresh");
+    }
+    {
+        // A hook whose state never comes (a seat, in a level without vehicles): the summary waits for a minute of
+        // play, and says the hook is still waiting.
+        BoardWorker w;
+        const BoardWorker::Hook hooks[]{{&a, true, true}, {&b, false, false}};
+        w.Run(1, hooks, 2, false, 600000);
+        Check(w.summaries == 0, "board: ten minutes outside play do not count toward the summary");
+        w.Run(1, hooks, 2, true, static_cast<uint32_t>(drive_cascade::HookWatchBoard::kSummaryAfterMs) - 500);
+        Check(w.summaries == 0, "board: nor does less than a minute of play");
+        w.Run(1, hooks, 2, true, 1000);
+        Check(w.summaries == 1 && w.fired == 0 &&
+                  w.Summary(names, 2) ==
+                      "Test title hook watch: 2 watched: 1 called; 1 not yet in the state that calls them: beta",
+              "board: after a minute of play the summary says which hook still waits for its state");
+    }
+    {
+        // A stalled worker: two passes a minute apart are one period of play, not a minute.
+        BoardWorker w;
+        const BoardWorker::Hook hooks[]{{&a, false, false}};
+        w.Run(1, hooks, 1, true, 50);
+        w.now += 60000;
+        w.board.Begin(1);
+        (void)w.board.Pass(0, &a, false, false, w.now);
+        Check(!w.board.SummaryDue(true, w.now), "board: a worker that stalled for a minute counted one period");
+    }
+    {
+        // A hook that goes away and comes back within one install of the set (one installed only while wanted):
+        // its verdict goes with it, and it is watched afresh.
+        BoardWorker w;
+        BoardWorker::Hook hooks[]{{&a, true, true}, {&c, true, false}};
+        w.Run(1, hooks, 2, true, limitMs + 200);
+        Check(w.fired == 1 && w.board.VerdictOf(1) == Verdict::NeverCalled, "board: the on-demand hook fired");
+        hooks[1].target = nullptr;
+        w.Run(1, hooks, 2, true, 100);
+        Check(w.board.VerdictOf(1) == Verdict::NotInstalled, "board: gone, it is not installed");
+        hooks[1] = {&c, true, true};
+        w.Run(1, hooks, 2, true, 100);
+        Check(w.board.VerdictOf(1) == Verdict::Called && w.fired == 1, "board: back and called, it is called");
+    }
+    {
+        char tiny[24];
+        drive_cascade::HookWatchBoard board;
+        board.Summary("A very long title name", names, 3, tiny, sizeof(tiny));
+        Check(std::strlen(tiny) == sizeof(tiny) - 1, "board: a summary longer than its buffer is cut, terminated");
+    }
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -1929,6 +2041,7 @@ int main(int argc, char** argv)
     TestCacheLockReleased();
 #endif
     TestHookWatch();
+    TestHookWatchBoard();
 
     std::printf("drive_cascade_tests (%s build): %u checks, %u failures\n",
                 HALOMCCVR_DEV_DIAGNOSTICS ? "dev" : "player", checks, failures);

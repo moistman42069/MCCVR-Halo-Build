@@ -38,7 +38,7 @@ int wmain(int argc, wchar_t** argv) {
     ImGui::PopFont();ImGui::TextDisabled("VR SETTINGS / OFFLINE STYLE PREVIEW");ImGui::Separator();
     ImGui::BeginChild("Navigation",ImVec2(300,-35),ImGuiChildFlags_Borders);
     ImGui::PushFont(heading);
-    for(const char* label:{"Welcome","Status","Comfort","3D Theatre","Controls","VR Mappings",
+    for(const char* label:{"Welcome","Status","Comfort","3D Theatre","Controls",
         "Reload & Holsters","Vehicles","Weapon & Aim","Crosshair","Body & Hands","Picture",
         "HUD","Subtitles","Desktop","Scope","Telemetry Recorder","Advanced"})
         ImGui::Selectable(label,strcmp(label,"Body & Hands")==0);

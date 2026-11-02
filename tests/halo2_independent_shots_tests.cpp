@@ -22,7 +22,13 @@ static constexpr uint32_t owner=0x12340001,primary=0x56780002,secondary=0x789A00
 static constexpr uint32_t kOwnedUser=0;
 static std::atomic<uint32_t> g_generation{7};
 static struct {bool independent_dual_aim=true;float crosshair_distance_m=10;bool gun_barrel_aim=false,left_handed=false,
-    shots_from_muzzle=false;} g_config;
+    shots_from_muzzle=false,dual_wield_shake_reload=false;} g_config;
+// The independent-shots suite isolates the native reload worker. Its integration
+// behavior is covered by native_reload_policy_tests; this fixture only needs the
+// new hook dependency to compile without linking the production worker.
+static unsigned nativeDualShakeCalls{};
+void VR_DualWieldObserveOwner(GameTitle,uint32_t,uint32_t,const uint32_t[2]) noexcept
+{++nativeDualShakeCalls;}
 // The three shot switches as they are in effect (sight_layer.h); here, the test's own config.
 [[maybe_unused]] static bool Sight_ShotsFromMuzzle(){return g_config.shots_from_muzzle;}
 [[maybe_unused]] static bool Sight_GunBarrelAim(){return g_config.gun_barrel_aim;}

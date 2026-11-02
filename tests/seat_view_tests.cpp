@@ -87,6 +87,15 @@ int main()
               "boarding, the entry window and a forced third-person vehicle keep the game's answer");
     Check(Decide(kFirstPerson, kStateSettled, 0x1234, 0x1234) == kFirstPerson, "a first-person answer is passed on");
     Check(Decide(7, kStateSettled, 0x1234, 0x1234) == 7, "an answer that is neither is passed on untouched");
+    // A seat first person in its own data, shown from a chase camera: only that occupant, only settled, third person.
+    Check(Decide(kFirstPerson, kStateSettled, 0x1234, -1, 0x1234) == kThirdPerson, "the chase occupant, settled: third person");
+    Check(Decide(kFirstPerson, kStateSettled, 0x1234, -1, 0x9999) == kFirstPerson, "another unit keeps the game's first person");
+    Check(Decide(kFirstPerson, kStateSettled, 0x1234, -1, -1) == kFirstPerson, "no chase occupant keeps the game's first person");
+    Check(Decide(kFirstPerson, kStateSettled, -1, -1, -1) == kFirstPerson, "no unit, nobody armed either way");
+    for (const int state : {0, 1, 3, 4, 5})
+        Check(Decide(kFirstPerson, state, 0x1234, -1, 0x1234) == kFirstPerson, "outside a settled seat: the game's answer");
+    Check(Decide(kThirdPerson, kStateSettled, 0x1234, -1, 0x1234) == kThirdPerson, "a third-person answer stays third person");
+    Check(Decide(7, kStateSettled, 0x1234, -1, 0x1234) == 7, "...and one that is neither is passed on untouched");
 
     // The call's five bytes.
     uint8_t call[kCallBytes]{};

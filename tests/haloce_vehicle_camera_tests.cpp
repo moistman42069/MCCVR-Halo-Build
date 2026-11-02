@@ -147,8 +147,8 @@ static void TestBuiltInEntries()
               offset("halo1", "Warthog passenger", "Over the Shoulder", -170.0f, 30.0f, 140.0f) &&
               offset("halo1", "Warthog gunner", "Behind the Gun", -150.0f, 0.0f, 90.0f),
           "CE's Warthog seats take the placements chosen from the first pictures in game");
-    Check(offset("halo3", "Warthog", "Over the Shoulder", -200.0f, 90.0f, 70.0f) &&
-              offset("halo3", "Warthog passenger", "Over the Shoulder", -200.0f, -90.0f, 70.0f),
+    Check(offset("halo3", "Warthog", "Over the Shoulder", -90.0f, -100.0f, 50.0f) &&
+              offset("halo3", "Warthog passenger", "Over the Shoulder", 0.0f, 90.0f, 10.0f),
           "and Halo 3's keep theirs");
     // Every entry starts in the seat view, and the second camera is where the game's own rests.
     bool seatFirst = true;

@@ -214,6 +214,8 @@ void Sight_NoteFireTimeStoodDown(GameTitle title);
 // apart in a log. Each note also steps the automatic switch's gate (Sight_FireTimeChangesAllowed), which acts on
 // it only under coop_safe_shots = 2.
 void Sight_NoteSession(GameTitle title, int type, int players, int otherMachines);
+// The simulation type last noted for the title (-1: none). Any thread.
+int Sight_SessionType(GameTitle title);
 // THE WRITTEN AIM, LED (the player key aim_lead_ticks; src/common/aim_lead_logic.h). A record written at one control
 // pass is first used by the next simulation tick, so a shot leaves along a hand sample about a tick old. The title's
 // simulation-thread write of the ON-FOOT record hands its setpoint through here just before it writes: `yaw` and

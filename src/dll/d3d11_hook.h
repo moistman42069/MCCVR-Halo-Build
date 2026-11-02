@@ -7,9 +7,17 @@
 // frame — our hook is where all VR work happens.
 
 bool InstallD3D11Hooks();
+// A lost GPU device, logged: `result` is what a call returned; nothing is logged unless it says the device was
+// removed, reset or hung. The device's own reason (GetDeviceRemovedReason) is read and logged with it. Once per
+// device and at most a few lines in a session: every later call on a lost device fails the same way.
+struct ID3D11Device;
+void D3D_NoteDeviceLoss(const char* where, long result, ID3D11Device* device);
 // The game's Draw / DrawIndexed calls since this was last asked (once a present), and in `smallDraws` those of at
 // most 96 elements: text, HUD widgets and other quads. 0 where the draw hooks are not installed.
 uint32_t D3D_TakeFrameDrawCalls(uint32_t& smallDraws);
+// A host that owns the render size, and no frame for a second has drawn like a game engine: what it presents is its
+// own screen, with no eye pass to show. Always false in MCC.
+bool D3D_HostEngineQuiet();
 // True while the host itself is drawing over the game's frame: a screen of its own (a menu, a loading screen)
 // or an overlay during play. Always false in MCC. See HostScreenNoteBind in d3d11_hook.cpp; which of the two it
 // is, reclaimer_host::ScreenRule decides.
@@ -128,6 +136,10 @@ void D3D_RetryLiveResize();
 // one failed (MCC never re-sized; the forced size was reverted to the real
 // backbuffer, reported in actualW/H).
 int D3D_LiveResizeState(unsigned& actualW, unsigned& actualH);
+// Project Reclaimer: the size its Native render resolution is given for a Picture panel size of wantW x wantH (never
+// larger than its display), and its display mode as its settings stated it at its last read
+// (reclaimer_host::ClientDisplayMode as int). False, with the size unchanged, until it has read its display mode.
+bool D3D_HostNativeRenderAnswer(unsigned wantW, unsigned wantH, unsigned& width, unsigned& height, int& clientMode);
 HWND D3D_GameWindow();
 
 

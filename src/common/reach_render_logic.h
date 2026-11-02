@@ -2,11 +2,13 @@
 
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <span>
+#include "fp_source_ownership.h"
 
 // Reach-only render evidence and allocation-free policy. This file contains no
 // Windows, COM, MinHook, logging, or engine writes, so the exact routing and
@@ -962,6 +964,10 @@ struct ReachFpBodyLayout
     uint64_t leftHandSourceDescendants = 0;
     uint64_t rightControllerOwnedSourceBranch = 0;
     uint64_t leftControllerOwnedSourceBranch = 0;
+    uint64_t bodySourceMask = 0;
+    uint64_t rightAuxiliarySourceMask = 0;
+    uint64_t leftAuxiliarySourceMask = 0;
+    std::array<int32_t, kReachSpartanFpBodyNodeCount> paletteToSource{};
 
     constexpr bool Valid() const noexcept
     {
@@ -972,21 +978,21 @@ struct ReachFpBodyLayout
              paletteBodyNodeCount == kReachEliteFpBodyNodeCount);
         if (!kindMatchesBody)
             return false;
-        const uint64_t bodySourceMask =
-            (uint64_t{1} << paletteBodyNodeCount) - uint64_t{1};
         return
             liveSourceNodeCount >= paletteBodyNodeCount &&
             liveSourceNodeCount <= kReachFpMaxSourceNodeCount &&
+            std::popcount(bodySourceMask) == static_cast<int>(paletteBodyNodeCount) &&
+            (liveSourceNodeCount >= 64 || (bodySourceMask >> liveSourceNodeCount) == 0) &&
             rightControllerOwnedSourceBranch ==
                 (rightHandSourceDescendants |
-                 kReachRightControllerOwnedAuxiliarySourceMask) &&
+                 rightAuxiliarySourceMask) &&
             leftControllerOwnedSourceBranch ==
                 (leftHandSourceDescendants |
-                 kReachLeftControllerOwnedAuxiliarySourceMask) &&
+                 leftAuxiliarySourceMask) &&
             (rightHandSourceDescendants &
-             kReachRightControllerOwnedAuxiliarySourceMask) == 0 &&
+             rightAuxiliarySourceMask) == 0 &&
             (leftHandSourceDescendants &
-             kReachLeftControllerOwnedAuxiliarySourceMask) == 0 &&
+             leftAuxiliarySourceMask) == 0 &&
             (leftControllerOwnedSourceBranch &
              rightHandSourceDescendants) == 0 &&
             (rightControllerOwnedSourceBranch &
@@ -999,7 +1005,8 @@ struct ReachFpBodyLayout
 inline bool ResolveReachFpBodyLayout(
     std::span<const int32_t> paletteBoneMap,
     size_t liveSourceNodeCount,
-    ReachFpBodyLayout& out) noexcept
+    ReachFpBodyLayout& out,
+    uint32_t runtimeImportChecksum = 0) noexcept
 {
     out = {};
     const size_t paletteBodyNodeCount = paletteBoneMap.size();
@@ -1011,15 +1018,23 @@ inline bool ResolveReachFpBodyLayout(
         return false;
     }
 
-    // A body fingerprint is a complete permutation of its fixed source prefix.
-    // Validate that invariant separately from exact equality so duplicates and
-    // appended/out-of-range source indices always fail closed.
+    // The render-model checksum identifies the official anatomical output
+    // order. A modded animation graph may reorder that body and interleave its
+    // weapon nodes. Without identity proof, keep the original exact-map gate.
+    const bool spartan = paletteBodyNodeCount == kReachSpartanFpBodyNodeCount;
+    const std::span<const int32_t> officialMap = spartan
+        ? std::span<const int32_t>{kReachSpartanFpBodyBoneMap}
+        : std::span<const int32_t>{kReachEliteFpBodyBoneMap};
+    const bool verifiedBody = runtimeImportChecksum ==
+        (spartan ? 0x181E0B17u : 0x19021311u);
     std::array<bool, kReachFpMaxSourceNodeCount> seen{};
-    for (int32_t source : paletteBoneMap)
+    for (size_t output = 0; output < paletteBodyNodeCount; ++output)
     {
+        const int32_t source = paletteBoneMap[output];
         if (source < 0 ||
-            static_cast<size_t>(source) >= paletteBodyNodeCount ||
-            seen[static_cast<size_t>(source)])
+            static_cast<size_t>(source) >= liveSourceNodeCount || source >= 64 ||
+            seen[static_cast<size_t>(source)] ||
+            (!verifiedBody && source != officialMap[output]))
         {
             return false;
         }
@@ -1031,18 +1046,12 @@ inline bool ResolveReachFpBodyLayout(
     uint64_t rightPaletteMask = 0;
     if (paletteBodyNodeCount == kReachSpartanFpBodyNodeCount)
     {
-        for (size_t i = 0; i < paletteBodyNodeCount; ++i)
-            if (paletteBoneMap[i] != kReachSpartanFpBodyBoneMap[i])
-                return false;
         kind = ReachFpBodyKind::Spartan;
         leftPaletteMask = kReachSpartanLeftHandPaletteMask;
         rightPaletteMask = kReachSpartanRightHandPaletteMask;
     }
     else
     {
-        for (size_t i = 0; i < paletteBodyNodeCount; ++i)
-            if (paletteBoneMap[i] != kReachEliteFpBodyBoneMap[i])
-                return false;
         kind = ReachFpBodyKind::Elite;
         leftPaletteMask = kReachEliteLeftHandPaletteMask;
         rightPaletteMask = kReachEliteRightHandPaletteMask;
@@ -1050,6 +1059,8 @@ inline bool ResolveReachFpBodyLayout(
 
     uint64_t leftSourceMask = 0;
     uint64_t rightSourceMask = 0;
+    ReachFpBodyLayout layout{};
+    std::array<int32_t, kReachSpartanFpBodyNodeCount> sourceRemap{};
     for (size_t output = 0; output < paletteBodyNodeCount; ++output)
     {
         const uint64_t outputBit = uint64_t{1} << output;
@@ -1059,39 +1070,84 @@ inline bool ResolveReachFpBodyLayout(
             leftSourceMask |= sourceBit;
         if (rightPaletteMask & outputBit)
             rightSourceMask |= sourceBit;
+        layout.bodySourceMask |= sourceBit;
+        layout.paletteToSource[output] = paletteBoneMap[output];
+        sourceRemap[static_cast<size_t>(officialMap[output])] = paletteBoneMap[output];
+        const uint64_t officialBit = uint64_t{1} << officialMap[output];
+        if (kReachRightControllerOwnedAuxiliarySourceMask & officialBit)
+            layout.rightAuxiliarySourceMask |= sourceBit;
+        if (kReachLeftControllerOwnedAuxiliarySourceMask & officialBit)
+            layout.leftAuxiliarySourceMask |= sourceBit;
     }
 
-    ReachFpBodyLayout layout{};
     layout.kind = kind;
     layout.paletteBodyNodeCount = paletteBodyNodeCount;
     layout.liveSourceNodeCount = liveSourceNodeCount;
-    // The official Spartan and Elite animation graphs share this exact
-    // first-person arm/camera prefix.
-    layout.rightShoulderSource = 6;
-    layout.rightElbowSource = 9;
-    layout.rightWristSource = 13;
-    layout.leftShoulderSource = 5;
-    layout.leftElbowSource = 7;
-    layout.leftWristSource = 11;
-    layout.cameraControlSource = 4;
+    // Translate the title-proven anatomical anchors, never assume that a
+    // custom graph retains the official source indices or an appended gun.
+    layout.rightShoulderSource = sourceRemap[6];
+    layout.rightElbowSource = sourceRemap[9];
+    layout.rightWristSource = sourceRemap[13];
+    layout.leftShoulderSource = sourceRemap[5];
+    layout.leftElbowSource = sourceRemap[7];
+    layout.leftWristSource = sourceRemap[11];
+    layout.cameraControlSource = sourceRemap[4];
     layout.rightHandPaletteDescendants = rightPaletteMask;
     layout.leftHandPaletteDescendants = leftPaletteMask;
     layout.rightHandSourceDescendants = rightSourceMask;
     layout.leftHandSourceDescendants = leftSourceMask;
     layout.rightControllerOwnedSourceBranch =
-        rightSourceMask | kReachRightControllerOwnedAuxiliarySourceMask;
+        rightSourceMask | layout.rightAuxiliarySourceMask;
     layout.leftControllerOwnedSourceBranch =
-        leftSourceMask | kReachLeftControllerOwnedAuxiliarySourceMask;
+        leftSourceMask | layout.leftAuxiliarySourceMask;
+    if (!layout.Valid())
+        return false;
     out = layout;
     return true;
 }
 
+// Compatibility query for the original exact layouts only. Custom graphs
+// require the current model's explicit remap via ResolveReachFpHeldSources.
 inline constexpr bool ReachFpSourceIndexIsHeldObject(
     const ReachFpBodyLayout& layout, int32_t sourceIndex) noexcept
 {
-    return layout.Valid() && sourceIndex >= 0 &&
-        static_cast<size_t>(sourceIndex) >= layout.paletteBodyNodeCount &&
-        static_cast<size_t>(sourceIndex) < layout.liveSourceNodeCount;
+    if (!layout.Valid()) return false;
+    for (size_t i = 0; i < layout.paletteBodyNodeCount; ++i)
+    {
+        const int32_t expected = layout.kind == ReachFpBodyKind::Spartan
+            ? kReachSpartanFpBodyBoneMap[i] : kReachEliteFpBodyBoneMap[i];
+        if (layout.paletteToSource[i] != expected) return false;
+    }
+    return sourceIndex >= static_cast<int32_t>(layout.paletteBodyNodeCount) &&
+        sourceIndex < static_cast<int32_t>(layout.liveSourceNodeCount);
+}
+
+// The native model's own remap identifies precisely the sources it renders.
+// Never infer weapon ownership from gaps in an Elite/Spartan body mapping.
+inline bool ResolveReachFpHeldSources(
+    const ReachFpBodyLayout& layout, std::span<const int32_t> modelBoneMap,
+    FpHeldSources& out) noexcept
+{
+    out = {};
+    out.explicitMap = true;
+    if (!layout.Valid() || modelBoneMap.empty() ||
+        modelBoneMap.size() > kReachFpMaxSourceNodeCount)
+        return false;
+    FpHeldSources candidate{};
+    candidate.explicitMap = true;
+    for (int32_t source : modelBoneMap)
+    {
+        if (source < 0 || static_cast<size_t>(source) >= layout.liveSourceNodeCount ||
+            (source < 64 && (layout.bodySourceMask & (uint64_t{1} << source))))
+            return false;
+        const uint64_t bit = uint64_t{1} << (source % 64);
+        auto& word = candidate.bits[source / 64];
+        if (word & bit)
+            return false;
+        word |= bit;
+    }
+    out = candidate;
+    return true;
 }
 
 enum class ReachFpPairLayoutDecision : uint8_t
@@ -1296,10 +1352,8 @@ inline constexpr std::array<uint8_t, 4> kReachSkyParallaxQuantizeOriginal{
 inline constexpr std::array<uint8_t, 4> kReachSkyParallaxQuantizeNeutral{
     0x31, 0xC0, 0x90, 0x90}; // xor eax,eax; nop; nop
 
-// Halo's authored physical scale is one world unit per ten feet. Reach must use
-// the same exact conversion for every tracked position so room-scale motion and
-// runtime IPD cannot disagree. This is title-local: accepted Halo 3 calibration
-// remains independently adjustable through g_worldScale.
+// Native authored units, used for engine distances and tag measurements.
+// Tracked eyes, head and controllers use the live per-title world scale.
 inline constexpr float kReachWorldUnitsPerMeter = 1.0f / 3.048f;
 inline constexpr uintptr_t kReachPlayerViewCameraStateOffset = 0x03B0;
 inline constexpr uintptr_t kReachPlayerViewCurrentMatricesOffset = 0x0490;

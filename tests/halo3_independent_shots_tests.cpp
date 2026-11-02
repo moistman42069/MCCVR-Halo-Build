@@ -35,6 +35,9 @@ struct VrContactTrackingSnapshot
 static VrContactTrackingSnapshot tracking;
 static weapon_muzzle::Store g_halo3Muzzles;
 static thread_local bool g_legacyCollisionOwnedQuery=false;
+// Aim Frame Zoom's record of the game's zoom level (game.cpp); the lane only reports it.
+static int g_notedZoomLevel=-2;
+[[maybe_unused]] static void NoteGameZoomLevel(GameTitle,int16_t level,uint32_t){g_notedZoomLevel=level;}
 static alignas(8) unsigned char unitBytes[0x400]{},replacementBytes[0x400]{};
 static int32_t Player(int32_t){return int32_t(localUnit);}
 static bool Seated(int32_t){return seated;}
@@ -207,6 +210,7 @@ static bool WaitForNativeDetourQuiescence(const void* const* functions,const voi
 }
 #define MH_CreateHook FixtureCreate
 #define MH_EnableHook FixtureEnable
+#define MCCVR_EnableHook FixtureEnable
 #define MH_RemoveHook FixtureRemove
 #define LOG(...) (++logged)
 static bool RemoveHalo3Muzzle(){return true;}
@@ -215,6 +219,7 @@ static bool InstallHalo3Muzzle(uintptr_t,size_t){return false;}
 #undef LOG
 #undef MH_CreateHook
 #undef MH_EnableHook
+#undef MCCVR_EnableHook
 #undef MH_RemoveHook
 
 static void LifecycleTests()

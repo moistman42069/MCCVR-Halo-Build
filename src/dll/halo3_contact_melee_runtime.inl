@@ -300,14 +300,19 @@ void Halo3ContactTick(uint32_t unit)
     g_halo3Contact.processing.store(false,std::memory_order_release);
 }
 
+void Halo3DualShakeUnitTick(uint32_t unit) noexcept;
+
 __declspec(noinline) uint8_t __fastcall Halo3ContactUpdateDetour(uint32_t unit)
 {
+    Halo3HookCalled(Halo3Hook::ContactUpdate);
     g_halo3Contact.callbacks.fetch_add(1,std::memory_order_acq_rel);
     uint8_t result=0;
     __try
     {
         if(g_halo3Contact.updateOriginal) result=g_halo3Contact.updateOriginal(unit);
         Halo3ContactTick(unit);
+        // The unit action update runs while idle as well as while firing.
+        Halo3DualShakeUnitTick(unit);
         // Trace-and-reaim (legacy_sight_trace.inl): the local on-foot unit's intent ray.
         if(LegacySight(GameTitle::Halo3).flags.load(std::memory_order_acquire) && g_halo3PlayerUnitGetter)
         {
@@ -395,7 +400,7 @@ bool InstallHalo3ContactMelee(uintptr_t base,size_t size,uint32_t generation)
             reinterpret_cast<void**>(&g_halo3Contact.damageOriginal))!=MH_OK)
     { LOG("Halo 3 contact melee unavailable: damage hook creation failed"); return false; }
     g_halo3Contact.damageTarget=damageTarget;
-    if(MH_EnableHook(damageTarget)!=MH_OK)
+    if(MCCVR_EnableHook(damageTarget)!=MH_OK)
     { LOG("Halo 3 contact melee unavailable: damage hook enable failed; retained for cleanup"); return false; }
     }
     void* const updateTarget=reinterpret_cast<void*>(base+0x379B30);
@@ -403,8 +408,9 @@ bool InstallHalo3ContactMelee(uintptr_t base,size_t size,uint32_t generation)
             reinterpret_cast<void**>(&g_halo3Contact.updateOriginal))!=MH_OK)
     { LOG("Halo 3 contact melee unavailable: simulation hook creation failed"); return false; }
     g_halo3Contact.updateTarget=updateTarget;
-    if(MH_EnableHook(updateTarget)!=MH_OK)
+    if(MCCVR_EnableHook(updateTarget)!=MH_OK)
     { LOG("Halo 3 contact melee unavailable: simulation hook enable failed; retained for cleanup"); return false; }
+    Halo3HookWatchInstalled(Halo3Hook::ContactUpdate,reinterpret_cast<uintptr_t>(updateTarget));
     // In a host that hooks the damage routine the lane stays disabled (Halo3ContactTick does nothing then);
     // the simulation hook is in for the aim trace alone.
     g_halo3Contact.enabled.store(!hostHooksDamage,std::memory_order_release);

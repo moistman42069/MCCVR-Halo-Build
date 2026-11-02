@@ -11,6 +11,19 @@
 #include "../common/support_grip_logic.h"
 #include "../common/vr_action_mapping.h"
 
+// Native 13-float matrix records (scale, column-major basis, translation).
+// Call only with owner-verified authored wrists and the solved primary target.
+void Game_PublishAuthoredGrip(GameTitle title, uint32_t generation,
+    uint32_t unit, uint32_t weapon, const void* right, const void* left,
+    const void* desired, const float* controllerBasis, float units, bool attached);
+
+// True only for a current, occupied support hand in Halo 3.
+bool Game_BlockHalo3SupportPickup() noexcept;
+// Whether a dual-wielded second gun's shots leave on a line of their own (Halo 2, Halo 3): independent dual aim,
+// or barrel aim through the muzzle lane, with the dual lane's hooks live. Otherwise both guns fire along the game's
+// one aim: a proof failure (Project Reclaimer's Halo 3), a fault, the co-op guard, or both options off.
+bool Game_SecondaryShotsOwnLine(GameTitle title) noexcept;
+
 // Read-only, generation-tagged controller bindings. No game memory is touched
 // on the caller's thread. False means there is no verified current snapshot.
 bool Game_ReadVrActionBindings(vr_mapping::Transports& out, uint64_t nowMs,
@@ -104,6 +117,15 @@ bool Game_IsStereoGeometryOnlyBringup();
 bool Game_UsesTitleOwnedHeadTracking();
 bool Game_IsCameraOnlyBringup(); // private ODST camera core; no gameplay features
 bool Game_HasScopeRenderer(); // optional title-local zoom view is available
+// Aim Frame Zoom has the zoom button in the active title (Halo 3 with aim_frame_zoom on): it reaches the game,
+// and the gun-mounted lens is not offered.
+bool Game_AimFrameZoomOwnsZoom();
+// The game's own zoom level for the local player (-1 not zoomed), Halo 3 and ODST. False: not read lately.
+bool Game_ReadZoomLevel(int& level);
+// Halo 3's HUD layout as it draws now: the one written (Game_GetAppliedHudSafeFrame), or, before it is written
+// for a customised layout, the title's own (MCC 0.87, Project Reclaimer 0.97) with the player's size. False: the
+// title's own layout.
+bool Game_GetHalo3HudSafeFrameInEffect(float& horizontal, float& vertical, float* size);
 bool Game_IsScopeRendering();
 bool Game_SetScopeRendering(bool active);
 // True only while the exact Reach stereo + mandatory authored-crosshair
@@ -166,9 +188,11 @@ void Game_DetachForVrRuntimeFailure();
 void Game_LocateHudSafeFrames();  // manual rescan (menu button; normally automatic)
 void Game_GetHudSafeFrameStatus(int& matches, bool& scanning);
 // The safe-frame pair the active title's HUD is drawn with, while the mod's layout is in every slot; false while
-// it is not (the title's own safe frame then scales across and down alike). Lock-free: the crosshair capture
-// reads it on the thread that draws the HUD.
-bool Game_GetAppliedHudSafeFrame(float& horizontal, float& vertical);
+// it is not (the title's own safe frame then scales across and down alike). `size`, when given, receives the HUD
+// size that pair was computed from. Lock-free: the crosshair capture reads it on the thread that draws the HUD.
+bool Game_GetAppliedHudSafeFrame(float& horizontal, float& vertical, float* size = nullptr);
+// Project Reclaimer: what reclaimer_flight_buttons does there right now, for the Vehicles panel.
+const char* Game_ReclaimerFlightStatus();
 
 // Head-tracking controls, driven by hotkeys so we can tune it live in-headset.
 void Game_ToggleHeadTracking(); // F2
@@ -474,6 +498,8 @@ int Input_ClaimXInputIat();
 void Input_RequestPauseToggle();
 // How many times the player has asked for the game's menu from the controller (wraps; compare for change only).
 uint32_t Input_MenuPressSerial();
+struct VrPadState;
+void Input_StepHeadKeys(VrPadState& pad);
 // MCC's crouch-lock (toggle crouch) settings, read from its GameUserSettings.ini by the cold worker
 // (a timestamp check every 2 s, a parse only when MCC rewrites the file) for the CROUCH log line.
 // Diagnostic only: the file did not predict Reach's crouch behaviour in FA (see input.cpp).
@@ -503,6 +529,10 @@ bool Game_HasAuthoritativePauseState();
 // left/right render camera for the next game frame.
 void Game_SetStereoEye(int eye);
 float Game_GetWorldScale();
+// The gamepad transport the player's layout binds to Halo 3's left-weapon (secondary) reload,
+// controller 0; 0 when unknown, unbound, stale or another title (gesture_melee_bindings.inl).
+uint32_t Game_SecondaryReloadTransport(GameTitle title, uint64_t now);
+void Game_SetWorldScale(float value);
 // The F6 positional (leaning) toggle, shared by every title's camera core.
 bool Game_IsPositionalTracking();
 // >1 while the player is zoomed (weapon scope); 1.0 at hip. Drives the scope.
