@@ -26,7 +26,26 @@ constexpr UINT kDone = WM_APP + 20;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version };
 // The window's client size at 96 dpi.
-constexpr int kMenuWidth = 980, kMenuHeight = 904;
+constexpr int kMenuWidth = 1350, kMenuHeight = 904;
+// The credits column, right of the divider, at 96 dpi.
+constexpr int kCreditsDivider = 968, kCreditsLeft = 986, kCreditsRight = 1328;
+struct Credit { const wchar_t* name; const wchar_t* what; };
+constexpr Credit kCredits[] = {
+    {L"Pancreations", L"Created the original Halo-MCC-VR and its DLSS foundation, the base everything here is built on."},
+    {L"MoistMan", L"Continued the project as Halo MCC VR, maintaining it and extending it across all six games on Steam and the Xbox app, with physical crouch and melee, weapon handling and tracked body avatars."},
+    {L"NitsuJack", L"Aim, multiplayer and roomscale work, Project Reclaimer support, vehicle cameras ported from Halo Campaign Evolved UEVR, input presets and the desktop settings window."},
+    {L"Godoy", L"Weapon alignment and per-game gun offsets, two-handed grip zones, restored hand and gun animations, modded weapon support, bloom and autoexposure controls, world scale and dual-wield shake reload."},
+};
+constexpr const wchar_t* kAlsoCredited[] = {
+    L"Gab_dC / gabrieldch: virtual stock, two-hand and support handling, coherent aim and telemetry",
+    L"martysl1: subtitle, UI and bloom work, and the Reach DLSS leads",
+    L"LivingFray / Maso: ownership and restoration design leads",
+    L"marcusau2: the earlier per-gun calibration",
+    L"blindcowboy24: the first roomscale setup",
+    L"UnsealedWings: performance and HUD proposals",
+    L"PurplePeanut: the Provolver proposal",
+    L"SilentVortigaunt: the trailer",
+};
 struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel, built, release, published; bool candidate = true; };
 BuildIdentity ReadIdentity(const fs::path& directory) {
     BuildIdentity identity; std::ifstream file(directory / L"BUILD-IDENTITY.txt", std::ios::binary);
@@ -67,7 +86,7 @@ struct Menu {
     bool channelChosen = false, channelChanged = false;
     // Project Reclaimer (reclaimer_menu.h): the kept path's field, what is known of it, and the launch asked for.
     HWND reclaimerPath{}, reclaimerInfo{}; std::wstring reclaimerExe, reclaimerDir; bool reclaimerStartable = false;
-    HFONT body{}, smallFont{}, title{}, label{}; HBRUSH background{}, panel{}, reclaimerPanel{}, reclaimerField{};
+    HFONT body{}, smallFont{}, title{}, label{}, creditsTitle{}; HBRUSH background{}, panel{}, reclaimerPanel{}, reclaimerField{};
     std::vector<GameInstall> installs;
     fs::path selfDir, payload; std::wstring launchDir;
     HWND version{}, installedLine{};
@@ -271,6 +290,49 @@ void DrawButton(Menu& menu, const DRAWITEMSTRUCT& item) {
     RECT rect = item.rcItem; DrawTextW(item.hDC, text, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     if (item.itemState & ODS_FOCUS) { InflateRect(&rect, -4, -4); DrawFocusRect(item.hDC, &rect); }
 }
+// The heart beside the Credits title: faceted like the menu's other geometric accents, with a glowing core.
+void DrawCreditsHeart(HDC dc, int left, int top, int unit) {
+    static constexpr POINT kShape[] = {{3, 0}, {5, 0}, {6, 2}, {7, 0}, {9, 0}, {12, 3}, {12, 5}, {6, 11}, {0, 5}, {0, 3}};
+    POINT outer[std::size(kShape)], core[std::size(kShape)];
+    for (size_t i = 0; i < std::size(kShape); ++i) {
+        outer[i] = {left + kShape[i].x * unit, top + kShape[i].y * unit};
+        core[i] = {left + 3 * unit + kShape[i].x * unit / 2, top + 2 * unit + kShape[i].y * unit / 2};
+    }
+    HPEN edge = CreatePen(PS_SOLID, std::max(1, unit / 2 + 1), kAccent); HBRUSH fill = CreateSolidBrush(kPanel), glow = CreateSolidBrush(kAccent);
+    const auto oldPen = SelectObject(dc, edge); const auto oldBrush = SelectObject(dc, fill);
+    Polygon(dc, outer, static_cast<int>(std::size(outer)));
+    SelectObject(dc, GetStockObject(NULL_PEN)); SelectObject(dc, glow);
+    Polygon(dc, core, static_cast<int>(std::size(core)));
+    SelectObject(dc, oldBrush); SelectObject(dc, oldPen); DeleteObject(edge); DeleteObject(fill); DeleteObject(glow);
+}
+void DrawCredits(Menu& menu, HDC dc) {
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); const auto old = SelectObject(dc, pen);
+    MoveToEx(dc, menu.Px(kCreditsDivider), menu.Px(26), nullptr); LineTo(dc, menu.Px(kCreditsDivider), menu.Px(kMenuHeight - 26));
+    SelectObject(dc, old); DeleteObject(pen);
+    SetBkMode(dc, TRANSPARENT);
+    const int left = menu.Px(kCreditsLeft), right = menu.Px(kCreditsRight);
+    SelectObject(dc, menu.creditsTitle); SetTextColor(dc, kAccent);
+    const wchar_t* title = L"Credits"; const int titleLength = static_cast<int>(wcslen(title));
+    SIZE titleSize{}; GetTextExtentPoint32W(dc, title, titleLength, &titleSize);
+    TextOutW(dc, left, menu.Px(30), title, titleLength);
+    const int unit = std::max(1, menu.Px(2));
+    DrawCreditsHeart(dc, left + titleSize.cx + menu.Px(12), menu.Px(30) + (titleSize.cy - 11 * unit) / 2, unit);
+    int y = menu.Px(30) + titleSize.cy + menu.Px(12);
+    const auto paragraph = [&](const wchar_t* text, HFONT font, COLORREF color, int after) {
+        SelectObject(dc, font); SetTextColor(dc, color);
+        RECT box{left, y, right, y};
+        DrawTextW(dc, text, -1, &box, DT_WORDBREAK | DT_NOPREFIX | DT_CALCRECT);
+        DrawTextW(dc, text, -1, &box, DT_WORDBREAK | DT_NOPREFIX);
+        y = box.bottom + menu.Px(after);
+    };
+    paragraph(L"Halo MCC VR is a community effort with contributions from multiple dedicated Halo and VR fans.", menu.smallFont, kText, 18);
+    for (const auto& credit : kCredits) {
+        paragraph(credit.name, menu.label, kAccent, 3);
+        paragraph(credit.what, menu.smallFont, kText, 14);
+    }
+    paragraph(L"Also thanks to", menu.label, kMuted, 6);
+    for (const auto* entry : kAlsoCredited) paragraph(entry, menu.smallFont, kMuted, 5);
+}
 void DrawCheckbox(Menu& menu, const DRAWITEMSTRUCT& item) {
     const bool disabled = item.itemState & ODS_DISABLED;
     HBRUSH clear = CreateSolidBrush(kBackground); FillRect(item.hDC, &item.rcItem, clear); DeleteObject(clear);
@@ -347,7 +409,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_CREATE: {
         menu->background = CreateSolidBrush(kBackground); menu->panel = CreateSolidBrush(kPanel);
         menu->reclaimerPanel = CreateSolidBrush(kReclaimerPanel); menu->reclaimerField = CreateSolidBrush(kReclaimerField);
-        menu->body = Font(*menu, 16, FW_NORMAL, L"Segoe UI"); menu->smallFont = Font(*menu, 13, FW_NORMAL, L"Segoe UI"); menu->label = Font(*menu, 14, FW_SEMIBOLD, menu->fontLoaded ? L"Oxanium" : L"Bahnschrift");
+        menu->body = Font(*menu, 16, FW_NORMAL, L"Segoe UI"); menu->smallFont = Font(*menu, 13, FW_NORMAL, L"Segoe UI"); menu->label = Font(*menu, 14, FW_SEMIBOLD, menu->fontLoaded ? L"Oxanium" : L"Bahnschrift"); menu->creditsTitle = Font(*menu, 26, FW_SEMIBOLD, menu->fontLoaded ? L"Oxanium" : L"Bahnschrift");
         // Use a user's installed Halo font when available. No proprietary font
         // is redistributed. The bundled OFL-licensed Oxanium supplies an angular
         // sci-fi face, with Bahnschrift as a final Windows fallback.
@@ -395,7 +457,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         PAINTSTRUCT paint{}; HDC dc = message == WM_PRINTCLIENT ? reinterpret_cast<HDC>(wParam) : BeginPaint(window, &paint);
         RECT client{}; GetClientRect(window, &client); FillRect(dc, &client, menu->background);
         SetBkMode(dc, TRANSPARENT); SetTextColor(dc, kAccent); SelectObject(dc, menu->title);
-        SetTextCharacterExtra(dc, menu->Px(4)); TextOutW(dc, menu->Px(37), menu->Px(30), L"Halo MCC VR", 11); SetTextCharacterExtra(dc, 0);
+        SetTextCharacterExtra(dc, menu->Px(4)); TextOutW(dc, menu->Px(37), menu->Px(30), L"HALO MCC VR", 11); SetTextCharacterExtra(dc, 0);
         SelectObject(dc, menu->label); SetTextColor(dc, kMuted); const wchar_t* subtitle = L"The Master Chief Collection in Virtual Reality";
         TextOutW(dc, menu->Px(41), menu->Px(93), subtitle, static_cast<int>(wcslen(subtitle)));
         HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); auto old = SelectObject(dc, pen);
@@ -403,6 +465,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         // Original geometric HUD accents; no extracted game art or assets.
         for (int x = 811; x < 943; x += 22) { MoveToEx(dc, menu->Px(x), menu->Px(43), nullptr); LineTo(dc, menu->Px(x + 18), menu->Px(25)); }
         SelectObject(dc, old); DeleteObject(pen);
+        DrawCredits(*menu, dc);
         // Project Reclaimer's panel: its own ground, an edge and a bar down its left side in its own colour, the
         // heading on the left and what it is on the right.
         {
@@ -573,7 +636,7 @@ std::wstring ShowLauncherMenu(HINSTANCE instance, const fs::path& launcherDir, i
         while (GetMessageW(&message, nullptr, 0, 0) > 0) if (!IsDialogMessageW(window, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
     }
     if (menu.worker.joinable()) menu.worker.join();
-    for (HFONT font : {menu.body, menu.smallFont, menu.title, menu.label}) if (font) DeleteObject(font);
+    for (HFONT font : {menu.body, menu.smallFont, menu.title, menu.label, menu.creditsTitle}) if (font) DeleteObject(font);
     if (menu.background) DeleteObject(menu.background); if (menu.panel) DeleteObject(menu.panel);
     if (menu.reclaimerPanel) DeleteObject(menu.reclaimerPanel); if (menu.reclaimerField) DeleteObject(menu.reclaimerField);
     if (menu.fontLoaded) RemoveFontResourceExW(menu.fontPath.c_str(), FR_PRIVATE, nullptr);
