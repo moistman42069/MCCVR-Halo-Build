@@ -1,5 +1,6 @@
 // The Project Reclaimer decisions the launcher and the relay share (src/common/reclaimer_host_logic.h).
 #include "../src/common/reclaimer_host_logic.h"
+#include <cmath>
 #include <cstdio>
 
 using namespace reclaimer_host;
@@ -8,8 +9,81 @@ static int g_failed = 0;
 #define CHECK(condition) \
     do { if (!(condition)) { ++g_failed; std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #condition); } } while (0)
 
+static void PopupInPlayIsNotOpenedByPress()
+{
+    using reclaimer_host::ScreenRule;
+    ScreenRule rule;
+    ScreenRule::In in{};
+    in.hostDraws = true;in.inPlay = true;in.gameFrame = true;in.coverageKnown = true;in.coveragePermille = 1000;
+    in.nowMs = 1000;
+    const bool popupIsScreen = rule.Step(in);
+    const bool popupOpened = rule.OpenedByPress();
+    // Closed, then the player's own Menu press opens one.
+    in.hostDraws = false;in.nowMs = 2000;rule.Step(in);
+    in.menuPressSerial = 1;in.nowMs = 2100;rule.Step(in);
+    in.hostDraws = true;in.nowMs = 2200;
+    const bool menuIsScreen = rule.Step(in);
+    const bool menuOpened = rule.OpenedByPress();
+    // Its close: the drawing goes.
+    in.hostDraws = false;in.nowMs = 5000;rule.Step(in);
+    const bool stillOpened = rule.OpenedByPress();
+    CHECK(popupIsScreen && !popupOpened);
+    CHECK(menuIsScreen && menuOpened);
+    CHECK(!stillOpened);
+}
+
+static void ScoreboardKeyOpensAScreen()
+{
+    using reclaimer_host::ScreenRule;
+    ScreenRule rule;
+    ScreenRule::In in{};
+    in.hostDraws = true;in.inPlay = true;in.gameFrame = true;in.coverageKnown = true;in.coveragePermille = 20;
+    in.nowMs = 1000;
+    const bool overlayIsScreen = rule.Step(in);
+    // The key goes down and the scoreboard comes up.
+    in.menuPressSerial = 1;in.nowMs = 1100;rule.Step(in);
+    in.coveragePermille = 723;in.nowMs = 1200;
+    const bool boardIsScreen = rule.Step(in);
+    const bool boardOpened = rule.OpenedByPress();
+    in.nowMs = 9000;rule.Step(in);
+    const bool stillOpen = rule.OpenedByPress();
+    // Tapped again, it closes back to the overlay.
+    in.menuPressSerial = 2;in.coveragePermille = 30;in.nowMs = 9100;
+    const bool closedIsScreen = rule.Step(in);
+    const bool closedOpened = rule.OpenedByPress();
+    CHECK(!overlayIsScreen);
+    CHECK(boardIsScreen && boardOpened && stillOpen);
+    CHECK(!closedIsScreen && !closedOpened);
+}
+
+static void MenuClosedOverAPopupLetsGo()
+{
+    using reclaimer_host::ScreenRule;
+    ScreenRule rule;
+    ScreenRule::In in{};
+    in.hostDraws = true;in.inPlay = true;in.gameFrame = true;in.coverageKnown = true;in.coveragePermille = 64;
+    in.nowMs = 1000;rule.Step(in);
+    in.menuPressSerial = 1;in.coveragePermille = 1000;in.nowMs = 1100;rule.Step(in);
+    const bool menuOpened = rule.OpenedByPress();
+    // Closed by a press: the popup is what is left.
+    in.menuPressSerial = 2;in.coveragePermille = 64;in.nowMs = 9000;rule.Step(in);
+    const bool afterPress = rule.OpenedByPress();
+    // Opened again, then closed by clicking Resume: no press at all.
+    in.menuPressSerial = 3;in.coveragePermille = 1000;in.nowMs = 10000;rule.Step(in);
+    const bool reopened = rule.OpenedByPress();
+    in.coveragePermille = 64;in.nowMs = 20000;rule.Step(in);
+    const bool afterClick = rule.OpenedByPress();
+    // A menu opened over the popup keeps its moment to come up.
+    in.menuPressSerial = 4;in.nowMs = 21000;rule.Step(in);
+    const bool stillComing = rule.OpenedByPress();
+    CHECK(menuOpened && !afterPress && reopened && !afterClick && stillComing);
+}
+
 int main()
 {
+    PopupInPlayIsNotOpenedByPress();
+    MenuClosedOverAPopupLetsGo();
+    ScoreboardKeyOpensAScreen();
     // The path a person gives, and the client a join-link command starts.
     {
         const auto Check = [](bool ok, const char* what) {
@@ -43,6 +117,46 @@ int main()
     CHECK(IsClientExeName(L"project-reclaimer-v0.9.8.exe"));
     CHECK(IsClientExeName(L"Project-Reclaimer-V1.0.exe"));
     CHECK(IsClientExeName(Leaf(L"D:\\Some Games\\Project Reclaimer\\0.9.8\\project-reclaimer-v0.9.8.exe")));
+    // The client's centered crosshair: on, changing nothing else.
+    {
+        std::string out;
+        CHECK(WithCenteredCrosshair("{\n  \"version\": 1,\n  \"centered_crosshair\": true\n}", out) ==
+              CenteredCrosshairEdit::AlreadyOn);
+        CHECK(WithCenteredCrosshair("{\"version\":1,\"centered_crosshair\" : false,\"fov\":70}", out) ==
+                  CenteredCrosshairEdit::TurnedOn &&
+              out == "{\"version\":1,\"centered_crosshair\" : true,\"fov\":70}");
+        CHECK(WithCenteredCrosshair("\xEF\xBB\xBF{\n  \"version\": 1,\n  \"fov\": 70\n}\n", out) ==
+                  CenteredCrosshairEdit::TurnedOn &&
+              out == "\xEF\xBB\xBF{\n  \"centered_crosshair\": true,\n  \"version\": 1,\n  \"fov\": 70\n}\n");
+        CHECK(WithCenteredCrosshair("{ }", out) == CenteredCrosshairEdit::TurnedOn &&
+              out == "{\n  \"centered_crosshair\": true\n }");
+        CHECK(WithCenteredCrosshair("", out) == CenteredCrosshairEdit::Created &&
+              out == "{\n  \"version\": 1,\n  \"centered_crosshair\": true\n}\n");
+        CHECK(WithCenteredCrosshair("{\"centered_crosshair\": 1}", out) == CenteredCrosshairEdit::Unreadable);
+        CHECK(WithCenteredCrosshair("[1, 2]", out) == CenteredCrosshairEdit::Unreadable);
+    }
+    // The client's display mode: exclusive fullscreen becomes borderless, changing nothing else.
+    {
+        std::string out;
+        CHECK(WithoutExclusiveFullscreen("{\n    \"display_mode\": \"exclusive_fullscreen\",\n    \"fov\": 70\n}", out) ==
+                  DisplayModeEdit::MadeBorderless &&
+              out == "{\n    \"display_mode\": \"borderless\",\n    \"fov\": 70\n}");
+        CHECK(WithoutExclusiveFullscreen("{\"display_mode\" :\"exclusive_fullscreen\"}", out) ==
+                  DisplayModeEdit::MadeBorderless &&
+              out == "{\"display_mode\" :\"borderless\"}");
+        CHECK(WithoutExclusiveFullscreen("{\"display_mode\": \"borderless\"}", out) == DisplayModeEdit::Kept);
+        CHECK(WithoutExclusiveFullscreen("{\"display_mode\": \"windowed\"}", out) == DisplayModeEdit::Kept);
+        CHECK(WithoutExclusiveFullscreen("{\"display_mode\": \"exclusive_fullscreen_x\"}", out) == DisplayModeEdit::Kept);
+        CHECK(WithoutExclusiveFullscreen("{\"fov\": 70}", out) == DisplayModeEdit::Kept);
+        CHECK(WithoutExclusiveFullscreen("", out) == DisplayModeEdit::Kept);
+        CHECK(WithoutExclusiveFullscreen("{\"display_mode\": 2}", out) == DisplayModeEdit::Unreadable);
+    }
+    CHECK(IsClientExeName(L"project-reclaimer-client-v0.9.23.exe"));
+    CHECK(IsClientExeName(L"project-reclaimer-client.exe"));
+    CHECK(IsClientExeName(Leaf(L"D:\\Some Games\\Project Reclaimer\\0.9.23\\project-reclaimer-client-v0.9.23.exe")));
+    CHECK(!IsClientExeName(L"project-reclaimer-clientx-v0.9.23.exe"));
+    CHECK(!IsClientExeName(L"project-reclaimer-client-dedicated-v0.9.23.exe"));
+    CHECK(VersionOf(L"project-reclaimer-client-v0.9.23.exe").part[2] == 23);
     CHECK(!IsClientExeName(L"project-reclaimer-dedicated-v0.9.8.exe"));
     CHECK(!IsClientExeName(L"reclaimer-rcon-v0.9.8.exe"));
     CHECK(!IsClientExeName(L"project-reclaimer-v0.9.8.exe.bak"));
@@ -364,6 +478,71 @@ int main()
         CHECK(ChangedTexels(a.data(), pitch, b.data(), pitch, w, h, bpt) == 2);
         CHECK(ChangedTexels(a.data(), w * bpt - 1, b.data(), pitch, w, h, bpt) == 0);
         CHECK(ChangedTexels(nullptr, pitch, b.data(), pitch, w, h, bpt) == 0);
+    }
+    {
+        // The size Reclaimer's Native render resolution is answered with: the Picture panel's, fitted to its range.
+        unsigned w = 2912, h = 2100;
+        CHECK(FitNativeRenderSize(w, h) && w == 2912 && h == 2100);
+        w = 7688; h = 5544;                             // Resolution scale 2.64 ("Keith David")
+        CHECK(FitNativeRenderSize(w, h) && h <= kNativeRenderMaxHeight && w <= kNativeRenderMaxWidth &&
+              w % 2 == 0 && h % 2 == 0 && std::fabs(double(w) / h - 7688.0 / 5544.0) < 0.002);
+        w = 9000; h = 1000;                             // too wide: the width is the limit
+        CHECK(FitNativeRenderSize(w, h) && w == kNativeRenderMaxWidth && h == 852);
+        w = 1456; h = 1050;                             // Resolution scale 0.5
+        CHECK(FitNativeRenderSize(w, h) && w == 1456 && h == 1050);
+        w = 600; h = 400;                               // smaller than Reclaimer accepts: left alone
+        CHECK(!FitNativeRenderSize(w, h) && w == 600 && h == 400);
+        w = 0; h = 1050;
+        CHECK(!FitNativeRenderSize(w, h));
+        w = 20000; h = 100;                             // no size in range has that shape
+        CHECK(!FitNativeRenderSize(w, h));
+    }
+    {
+        // The client's display mode as its settings state it.
+        CHECK(ReadClientDisplayMode("{\"display_mode\": \"windowed\"}") == ClientDisplayMode::Windowed);
+        CHECK(ReadClientDisplayMode("{\n  \"display_mode\" : \"borderless\"\n}") == ClientDisplayMode::Borderless);
+        CHECK(ReadClientDisplayMode("{\"display_mode\":\"exclusive_fullscreen\"}") ==
+              ClientDisplayMode::ExclusiveFullscreen);
+        CHECK(ReadClientDisplayMode("{\"fov\": 70}") == ClientDisplayMode::Borderless);
+        CHECK(ReadClientDisplayMode("") == ClientDisplayMode::Borderless);
+        CHECK(ReadClientDisplayMode("{\"display_mode\": 2}") == ClientDisplayMode::Unknown);
+        CHECK(ReadClientDisplayMode("{\"display_mode\": \"fullscreen\"}") == ClientDisplayMode::Unknown);
+    }
+    {
+        // What Native is answered: never a size larger than the display, and the real mode in exclusive fullscreen.
+        unsigned w = 0, h = 0;
+        CHECK(AnswerNativeRenderSize(2912, 2100, 2560, 1440, ClientDisplayMode::Borderless, true, w, h) ==
+                  NativeAnswer::PanelWithinDisplay &&
+              w == 1996 && h == 1440);
+        CHECK(AnswerNativeRenderSize(2912, 2100, 3840, 2160, ClientDisplayMode::Borderless, true, w, h) ==
+                  NativeAnswer::Panel &&
+              w == 2912 && h == 2100);
+        CHECK(AnswerNativeRenderSize(2184, 1576, 3840, 2160, ClientDisplayMode::Windowed, true, w, h) ==
+                  NativeAnswer::Panel &&
+              w == 2184 && h == 1576);
+        CHECK(AnswerNativeRenderSize(2912, 2100, 2560, 1440, ClientDisplayMode::ExclusiveFullscreen, true, w, h) ==
+                  NativeAnswer::Display &&
+              w == 2560 && h == 1440);
+        CHECK(AnswerNativeRenderSize(2912, 2100, 2560, 1440, ClientDisplayMode::Unknown, true, w, h) ==
+                  NativeAnswer::PanelWithinDisplay &&
+              w <= 2560 && h <= 1440);
+        CHECK(AnswerNativeRenderSize(4000, 1000, 2560, 1440, ClientDisplayMode::Borderless, true, w, h) ==
+                  NativeAnswer::PanelWithinDisplay &&
+              w == 2560 && h == 640);                   // too wide: the width is the limit
+        CHECK(AnswerNativeRenderSize(2912, 2100, 640, 480, ClientDisplayMode::Borderless, true, w, h) ==
+                  NativeAnswer::Display &&
+              w == 640 && h == 480);                    // scaled down it would be under 480 high
+        CHECK(AnswerNativeRenderSize(0, 2100, 2560, 1440, ClientDisplayMode::Borderless, true, w, h) ==
+                  NativeAnswer::Display &&
+              w == 2560 && h == 1440);
+        CHECK(AnswerNativeRenderSize(2912, 2100, 0, 0, ClientDisplayMode::Borderless, true, w, h) == NativeAnswer::Display);
+        // Fitting turned off: the Picture panel's full size, larger than the display; exclusive still the real size.
+        CHECK(AnswerNativeRenderSize(2912, 2100, 2560, 1440, ClientDisplayMode::Borderless, false, w, h) ==
+                  NativeAnswer::Panel &&
+              w == 2912 && h == 2100);
+        CHECK(AnswerNativeRenderSize(2912, 2100, 2560, 1440, ClientDisplayMode::ExclusiveFullscreen, false, w, h) ==
+                  NativeAnswer::Display &&
+              w == 2560 && h == 1440);
     }
 
     if (g_failed)

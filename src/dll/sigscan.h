@@ -111,6 +111,13 @@ namespace sig
     // pattern's text, no pointers. It is used by one thread at a time (a scope
     // is the calling thread's own). When it is full, the searches it cannot
     // hold are simply made.
+    //
+    // ANSWERS SAVED BY AN EARLIER LAUNCH (install_search_cache.h) are put in an
+    // emptied memo as entries marked `saved`, and are answered by exactly the
+    // rules above: a match is compared again in place, "no second match" is
+    // taken, any other "no match" is searched for again. They are counted apart
+    // (fromSaved, savedStale). `changes` counts what this load's searches added
+    // or corrected, so the caller knows whether there is anything to save.
     struct ImageMemo
     {
         static constexpr uint32_t kCapacity = 384;
@@ -121,11 +128,15 @@ namespace sig
             uint32_t start = 0;     // the searched range, as offsets in the image
             uint32_t length = 0;
             uint32_t match = 0;     // the offset of the first match, or kNoMatch
+            uint8_t saved = 0;      // 1: put here from an earlier launch's saved answers, not searched in this load
         };
         uintptr_t base = 0;
         size_t size = 0;
         uint32_t generation = 0;
         uint32_t count = 0;
+        uint32_t changes = 0;        // entries added or corrected by a search since the memo was emptied or saved
+        bool savedLoaded = false;    // an earlier launch's answers were looked for in this load of the image
+        uint32_t lastKnown = 0;      // answers the last install took without a search (the caller keeps this)
         Entry entries[kCapacity]{};
     };
     struct ImageMemoCounts
@@ -136,6 +147,9 @@ namespace sig
         uint32_t searchedAgain = 0;  // a remembered match no longer stood, so its range was searched again
         uint32_t notHeld = 0;        // searches the memo had no room to keep
         uint32_t disagreed = 0;      // checking only: remembered answers the search did not confirm
+        uint32_t fromSaved = 0;      // answers taken from an earlier launch's saved answers (not in `remembered`)
+        uint32_t savedStale = 0;     // of `searchedAgain`: a saved match that no longer stood
+        double ms = 0.0;             // the time spent answering, searches and compares together
     };
     class ImageMemoScope
     {
@@ -157,6 +171,7 @@ namespace sig
         bool Covers(uintptr_t base, size_t size) const;
 
     private:
+        uintptr_t AnswerUntimed(uintptr_t base, size_t size, const char* pattern);
         ImageMemo* memo_ = nullptr;      // null: this scope only counts
         ImageMemoScope* outer_ = nullptr;
         uintptr_t base_ = 0;

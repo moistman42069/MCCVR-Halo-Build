@@ -1,0 +1,71 @@
+{
+  "map_sha256": "7bc45beb5bb6a3b3d4bd3b8515e50bdfac358a5a31e8e98b4daac2a30d212730",
+  "assets": [
+    {
+      "weapon": "weapons\\m4a1\\m4a1",
+      "model": "weapons\\m4a1\\fp\\fp",
+      "graph": "weapons\\m4a1\\fp\\fp",
+      "count": 41,
+      "graph_identity": "7560F22650441950",
+      "marker": {
+        "node_name": "frame gun",
+        "graph_node": 7,
+        "translation": [
+          0.1778762936592102,
+          -0.0038481398951262236,
+          -0.015455139800906181
+        ],
+        "rotation_xyzw": [
+          -0.0,
+          -0.0,
+          -0.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "weapon": "weapons\\hl1 mp5\\hl1 mp5",
+      "model": "weapons\\hl1 mp5\\fp\\fp",
+      "graph": "weapons\\hl1 mp5\\fp\\fp",
+      "count": 41,
+      "graph_identity": "0698859159826A29",
+      "marker": {
+        "node_name": "mp5_master",
+        "graph_node": 17,
+        "translation": [
+          -0.029054678976535797,
+          -0.13586808741092682,
+          0.08599190413951874
+        ],
+        "rotation_xyzw": [
+          0.09229599684476852,
+          0.09253700077533722,
+          0.7010250091552734,
+          0.7010570168495178
+        ]
+      }
+    },
+    {
+      "weapon": "weapons\\hl2 smg\\hl2 smg",
+      "model": "weapons\\hl2 smg 2\\fp\\fp",
+      "graph": "weapons\\hl2 smg\\fp\\fp",
+      "count": 48,
+      "graph_identity": "D822330265B09099",
+      "marker": {
+        "node_name": "frame gun",
+        "graph_node": 7,
+        "translation": [
+          -0.005343679804354906,
+          -0.008946740068495274,
+          0.1647018939256668
+        ],
+        "rotation_xyzw": [
+          0.4844599962234497,
+          0.49893298745155334,
+          0.5161060094833374,
+          0.4999989867210388
+        ]
+      }
+    }
+  ]
+}

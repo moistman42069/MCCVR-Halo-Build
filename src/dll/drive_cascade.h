@@ -236,4 +236,57 @@ private:
 // title). `what`: the hooked code. `rva`: where in the title's module the hook is. `state`: the state the game
 // was seen in all that time, in which it calls that code.
 void SayNeverCalled(const char* drive, const char* what, uint32_t rva, const char* state);
+// The same line for any hook: `feature` begins it, and `consequence` (one sentence) says what the player is left
+// with while that hook does not run. SayNeverCalled is this with a drive's consequence.
+void SayHookNeverCalled(const char* feature, const char* what, uint32_t rva, const char* state,
+                        const char* consequence);
+
+// A TITLE'S HOOKS, WATCHED AS ONE SET: one HookWatch per hook, passed over by the cold worker on every loop as a
+// drive's is, and one line per install of the set that says how all of them stood. Each watch keeps the
+// HookWatch rules: it counts only time its own `possible` held at every pass, and it fires once per install of its
+// hook. Log-only; the board decides nothing.
+class HookWatchBoard
+{
+public:
+    static constexpr size_t kMaxWatches = 32;
+    // The time the set's base state held, in all, after which the summary is said even if a watch is still
+    // waiting for the state that calls its hook (a vehicle seat, in a level without vehicles).
+    static constexpr uint64_t kSummaryAfterMs = 60000;
+
+    enum class Verdict : uint8_t
+    {
+        NotInstalled,   // no hook at this pass
+        Waiting,        // installed, not called yet, not called dead
+        Called,         // the hook has been called since its install
+        NeverCalled,    // the watch fired
+    };
+
+    // Every loop, before the passes. `install`: which install of the whole set this is (0: none is live). Another
+    // number than at the last call starts every watch and the summary again.
+    void Begin(uint32_t install);
+    // One pass of watch `index`. `target`: where its hook is now (null: not installed; it may come and go within
+    // one install of the set). True exactly once per install of that hook, as HookWatch::Pass.
+    bool Pass(size_t index, const void* target, bool possible, bool called, uint64_t nowMs);
+    // After the loop's passes. `inPlay`: the set's base state held at this pass. True exactly once per install of
+    // the set: at the first pass at which every installed watch has settled (called, or called dead) or, failing
+    // that, once `inPlay` has held for kSummaryAfterMs in all.
+    bool SummaryDue(bool inPlay, uint64_t nowMs);
+    Verdict VerdictOf(size_t index) const;
+    // The summary, after `title`: "N watched, all called", or "N watched: C called; K NEVER CALLED: a, b;
+    // W not yet in the state that calls them: c". `names[i]` names watch i; `count` watches are told.
+    void Summary(const char* title, const char* const* names, size_t count, char* out, size_t size) const;
+
+private:
+    struct Slot
+    {
+        HookWatch watch;
+        bool installed = false;
+        bool fired = false;
+    };
+    Slot slots_[kMaxWatches];
+    uint32_t install_ = 0;
+    bool summarised_ = false;
+    uint64_t inPlayMs_ = 0;
+    uint64_t lastInPlayAtMs_ = 0;
+};
 } // namespace drive_cascade

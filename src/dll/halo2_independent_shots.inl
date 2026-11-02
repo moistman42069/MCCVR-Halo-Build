@@ -119,6 +119,17 @@ bool Halo2ReadIndependentWeapons(uint32_t unit,uint32_t (&weapons)[2],bool requi
 bool Halo2ReadIndependentPair(uint32_t unit,uint32_t (&weapons)[2])
 {return Halo2ReadIndependentWeapons(unit,weapons,true);}
 
+void Halo2DualShakeTick(uint32_t unit) noexcept
+{
+    if(!g_config.dual_wield_shake_reload||!g_halo2Dual.enabled.load()||
+        g_halo2Dual.generation!=g_generation.load())return;
+    __try {
+        uint32_t weapons[2]{};
+        if(Halo2IndependentTargetStorage(unit)&&Halo2ReadIndependentPair(unit,weapons))
+            VR_DualWieldObserveOwner(GameTitle::Halo2,g_generation.load(),unit,weapons);
+    } __except(EXCEPTION_EXECUTE_HANDLER) { /* Unknown ownership leaves native controls untouched. */ }
+}
+
 // `distance` (world units, >0): the acquisition aims at that point along the carrier instead of the
 // crosshair distance -- a shot from the muzzle through the converged point aims at the point itself. It must
 // be set before the query below, the only consumer of shot.distance on a muzzle shot.

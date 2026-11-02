@@ -381,8 +381,8 @@ struct CrosshairStart
     float opacity;
 };
 inline constexpr CrosshairStart kCrosshairStarts[kTitleProfileCount] = {
-    {4.00f, 1.25f},  // Halo 3
-    {4.00f, 1.25f},  // Halo 3: ODST
+    {6.00f, 1.25f},  // Halo 3
+    {6.00f, 1.25f},  // Halo 3: ODST
     {10.30f, 0.69f}, // Halo: Reach
     {4.00f, 1.25f},  // Halo 4
     {8.00f, 1.25f},  // Halo 2 Anniversary
@@ -392,6 +392,7 @@ inline constexpr CrosshairStart kCrosshairStarts[kTitleProfileCount] = {
 
 struct TitleTunables
 {
+    float world_scale = .33f;
     float gun_scale = 0.96f;
     float left_hand_scale = 0.96f;
     // Visible hand meshes only, in each hand's local frame (metres).
@@ -408,7 +409,10 @@ struct TitleTunables
     float gun_forward_m = -0.14f;
     float gun_right_m = 0.0f;
     float gun_up_m = 0.0f;
-    float left_hand_forward_m = -0.063f;
+    float left_gun_forward_m = -0.16f;
+    float left_gun_right_m = 0.04f;
+    float left_gun_up_m = -0.06f;
+    float left_hand_forward_m = 0.0f;
     // The HUD layout. With no game running these four follow and edit Reach's profile rather than the shared
     // defaults (kTitleProfileReach), like the crosshair's below.
     float hud_size = 0.43f;
@@ -427,10 +431,13 @@ struct TitleTunables
     float crosshair_size_deg = 4.00f;
     float crosshair_opacity = 1.25f;
     float crosshair_brightness = 1.25f;
+    // Whole-game brightness is stored independently for each title.
+    float game_brightness = 1.11f;
 };
 
 struct Config
 {
+    float world_scale = .33f;
     // Stamps the Halo 3, ODST and Reach shipped seat tables into their
     // independent per-seat arrays. Every other member keeps its default member
     // initializer, so Config{} remains the one description of a fresh
@@ -495,6 +502,11 @@ struct Config
     bool host_ui_panel = true;
     float host_ui_panel_width_m = 2.8f;    // the panel's width, in meters (16:9 at 2.4 m: about 60 degrees across)
     float host_ui_panel_distance_m = 2.4f; // how far in front of the eyes it floats, in meters
+    // Project Reclaimer only: how its Hornet-class flyers (a Sparrowhawk, Falcon or Vulture on a mod map too)
+    // change height. Halo 3 reads that from a player preference MCC fills in and Reclaimer leaves at Halo 3's
+    // default, classic (aim up or down to climb or dive; the buttons do nothing). 1 = MCC's Ascend and Descend
+    // buttons (right A and the left grip); 0 = classic. Nothing in MCC. Followed live. (reclaimer_flight.inl)
+    bool reclaimer_flight_buttons = true;
 
     // Universal cutscene-only stereo theatre. A title enters it only after its
     // adapter proves the engine owns an authored camera and player camera
@@ -532,7 +544,18 @@ struct Config
     float menu_width_m = 1.1f;      // panel width; height follows the 4:3 texture
     float menu_height_m = -0.08f;   // vertical offset, negative = below eye line
     float menu_side_m = 0.0f;       // sideways offset, positive = to your right
-    bool game_menu_pointer = false; // optional controller mouse in native menus
+    bool game_menu_pointer = true; // controller mouse in native menus
+    // OFXR Bridge, an OpenXR frame-generation layer, has crashed the mod; off, the mod sets OFXR's own off switch
+    // (XRFG_DISABLE_OFXR_BRIDGE) in the game's process before OpenXR starts, so OFXR stays out of this game only.
+    bool allow_ofxr_bridge = false;
+    // Project Reclaimer: its Native render resolution is never given a size larger than the monitor
+    // (reclaimer_host::AnswerNativeRenderSize). A picture larger than the screen is suspected of stopping the graphics
+    // card on some PCs; off gives it the Picture panel's full size. Exclusive fullscreen always gets the real size.
+    bool reclaimer_fit_to_display = true;
+    // Project Reclaimer: a title it starts after the first (ODST, after Halo 3's menu) gets the headset session's D3D11
+    // device instead of a new one, which the headset could not show (present_owner_logic.h DecideDeviceShare).
+    // Off: that title freezes in the headset, as before.
+    bool reclaimer_share_device = true;
 
     // Show the welcome page automatically, once, at the start of each launch.
     // The mod has no other way to tell a player anything before they play: the
@@ -566,6 +589,7 @@ struct Config
     // Lowering the head by the depth crouches, on foot. It holds MCC's crouch while the head is down, so it
     // needs MCC's hold-to-crouch setting: toggle crouch is not overridden.
     bool physical_crouch = true;
+    bool right_stick_crouch = true; // right stick down crouches and up stands (input_logic.h, StickCrouch)
     float physical_crouch_depth_m = 0.22f;
     // AUTOMATED TESTING ONLY (default 0): let roomscale and physical crouch accept a head pose OpenXR reports
     // VALID but not TRACKED. A simulated runtime can report an overridden head exactly that way, so
@@ -629,6 +653,14 @@ struct Config
     // object-anchored markers' arrows. Read live, every projection.
     // Acts only with nav_marker_arrow_in_view = 1.
     float nav_marker_ring = 0.75f;
+    // PLAYER TAGS: the service tag and arrow Halo 3 draws over each teammate (halo3_player_tags.inl). show 0 =
+    // none; scale and opacity multiply the game's own size and alpha; max_distance_m hides tags farther than that
+    // from your eye (fading over the last fifth, at most 5 m), 0 = no limit. Objective markers and flag, ball and
+    // bomb carriers keep the game's own. Halo 3, in MCC and in Project Reclaimer. Read live, every HUD draw.
+    bool player_tags_show = true;
+    float player_tags_scale = 0.45f;           // 0.25 to 2
+    float player_tags_opacity = 0.15f;         // 0 to 1
+    float player_tags_max_distance_m = 0.0f;   // 0 to 300
     // DEV BUILDS ONLY (parsed and saved there; a player build always has the default).
     // nav_marker_witness: 1 = report the pixel the game puts each marker on against the pixel the eye's own
     // picture shows its target at. Live.
@@ -666,7 +698,15 @@ struct Config
     // D-pad (UEVR-style gesture): 0 = left controller, 1 = right controller.
     int dpad_hand = 0;
     // Head-gesture activation radius in metres; the existing reach is 30 cm.
-    float dpad_head_radius = 0.30f;
+    float dpad_head_radius = 0.20f;
+    bool dpad_keep_moving = true; // a hand raised while walking leaves the stick walking until it centres
+    bool reclaimer_talk_gesture = true; // Project Reclaimer: X with the left controller at the head presses the talk key
+    int reclaimer_talk_key = 0x56; // its Windows virtual-key code: V, the host's default for Push to talk
+    bool reclaimer_scoreboard_gesture = true; // Project Reclaimer: Y with the left controller at the head shows the scoreboard
+    int reclaimer_scoreboard_key = 0x09; // its Windows virtual-key code: Tab, the host's default
+    bool reclaimer_vote_gesture = true; // Project Reclaimer: A and B with the right controller at the head vote yes and no
+    int reclaimer_vote_yes_key = 0x74; // Windows virtual-key codes: F5 and F6, the host's defaults
+    int reclaimer_vote_no_key = 0x75;
     // Quest 3 alternate D-pad: touch the physical left thumb rest, then use
     // the physical right stick. Handedness never swaps these controls.
     bool quest_thumbrest_dpad = false;
@@ -678,6 +718,9 @@ struct Config
     // default for now -- the plain route, each VR button as the gamepad button it stands for, is the one that works;
     // the automatic one has known faults.
     bool vr_action_mapping = false;
+    char input_preset[64] = "Default"; // input_preset.h; empty: a scheme no preset named
+    // The support trigger with the support grip held on nothing uses equipment. Off: that pull is a free hand's.
+    bool trigger_air_equipment = false;
     bool flashlight_suppress_on_two_hand = true;
     // Optional temporal upscaler; ordinary eye resolve remains the default.
     int upscaler = 0;
@@ -798,7 +841,7 @@ struct Config
     // changes nothing until another camera is chosen (F1 > Vehicles). A camera the mod places shows the
     // seat from outside, with the player's character drawn in it. Halo 3 for now, and only with
     // vehicle_first_person on.
-    bool vehicle_cameras = false;
+    bool vehicle_cameras = true;
     // A short note when the vehicle camera, its tethering mode or the seat's controls change, and on getting in:
     // "Warthog - Third Person, Tethered - Motion". 0 = none; 1 = in the game's own HUD messages, in the HUD's font
     // (Halo 3; the mod's panel when the game's HUD cannot take it, and in a shared co-op simulation);
@@ -832,7 +875,7 @@ struct Config
     // the point's direction with the vehicle's forward below vehicle_aim_reject_dot (-0.5: more than 120 deg off the
     // nose; -1 refuses nothing). For a camera placed outside the vehicle, whose hand ray easily lands on the ground
     // just behind it. Every camera, the seat view included. Halo 3 for now. Live.
-    float vehicle_aim_reject_metres = 5.0f;
+    float vehicle_aim_reject_metres = 20.0f;
     float vehicle_aim_reject_dot = -0.5f;
     // THE THIRD-PERSON BOOM (vehicle_boom_logic.h): a vehicle camera that stands where the game's own third-person
     // camera does ("origin": "thirdperson") is raised and lowered by the right stick's Y in a seat where that axis
@@ -1346,6 +1389,9 @@ struct Config
     // controller ray. 0 = previous placement.
     float gun_right_m = 0.0f;
     float gun_up_m = 0.0f;
+    float left_gun_forward_m = -0.16f;
+    float left_gun_right_m = 0.04f;
+    float left_gun_up_m = -0.06f;
 
     // Halo 2 CLASSIC ONLY: extra rotation and offset applied to the visible
     // gun AND hands together, so Classic can be lined up with what
@@ -1383,6 +1429,11 @@ struct Config
     bool hide_muzzle_flash[6]{false,false,false,true,false,true};
     // Per-game stock bloom. Verified optional suppression: H3, ODST, Reach.
     bool bloom_enabled[6]{true,true,true,true,true,true};
+    // Set once the player picks bloom for that game in the menu. Until then ODST and Reach draw
+    // without bloom while VR is on, and bloom_enabled above keeps whatever the file held: nothing
+    // is rewritten, so outside VR (or without the mod) the player's own setting stands.
+    bool bloom_chosen[6]{};
+    bool disable_autoexposure_odst = false;
 
     // Experimental gun-mounted VR zoom screen. R3 is isolated from Halo's
     // native zoom so the full VR gun/body remain visible; scope_zoom is the
@@ -1398,6 +1449,26 @@ struct Config
     // (the hand's point lies past the stop the gun is held at). (default 1)
     int scope_converge = 1;
     float scope_zoom = 24.0f;
+    // AIM FRAME ZOOM (live; F1 > Scope; Halo 3, in MCC and in Project Reclaimer, and ODST). While the game itself is
+    // zoomed -- its own zoom level, never the button -- the headset shows one flat picture the game draws along the
+    // aim at its own zoomed field of view, as a frame centred on the aim, in place of the immersive view. The zoom
+    // button then reaches the game, so the gun-mounted lens is not offered there while this is on. Per zoom
+    // level (index 0: the first; 1: the second and higher): the frame's width in degrees, and a strength that
+    // narrows the game's zoomed view further (1 = the game's own). The move time eases the frame in from, and back
+    // out to, the game's own angles (0 = at once). game.cpp: AimFrameThisFrame; vr.cpp: the aim frame quad.
+    // On by default, with a 100 degree frame at strength 1 for both levels (the game's own zoomed view, which the tester
+    // found feels like the flat game's): the tester's settings (2026-10-30).
+    bool aim_frame_zoom = true;
+    // 3D inside the frame: the two eye passes are drawn along the aim and each eye sees its own picture in the
+    // frame (the cost of the ordinary 3D view). 0 = one flat picture for both eyes.
+    bool aim_frame_stereo = true;
+    // How far apart the frame's two eyes are, as a multiple of your own eye spacing (binoculars set their lenses
+    // wider for the same reason): far targets show little depth at real spacing. The two pictures meet at the
+    // point you aim at, so it and the game's crosshair sit at the frame's own depth. 1 to 10.
+    float aim_frame_3d_strength = 6.0f;
+    float aim_frame_size_deg[2]{100.0f, 100.0f};
+    float aim_frame_strength[2]{1.0f, 1.0f};
+    float aim_frame_move_s = 0.12f;
     float scope_screen_width_m = 0.159f;
     float scope_screen_right_m = -0.058f;
     float scope_screen_up_m = 0.216f;
@@ -1418,7 +1489,7 @@ struct Config
     // publishes: halo3+0x278EE0, halo3odst+0x2A6308, haloreach+0x252E28. 1.0 =
     // the game's own brightness; higher = brighter, lower = darker. NOT a HUD
     // control — the function once thought to size the HUD adjusts brightness.
-    // One value for all three titles, so a change is felt everywhere.
+    // Live value follows the selected title profile; the shared key seeds older configs.
     float game_brightness = 1.11f;
 
     // Halo's internal raster scale, applied by the launcher on the next game
@@ -1439,6 +1510,9 @@ struct Config
     // disabled the desktop window behaves exactly as it always has. Like
     // resolution_scale, this takes effect on the next game start.
     bool fit_desktop_window = true;
+    // Halo 3 and ODST: one eye of the headset's picture on the monitor while in VR, which otherwise stays on its last
+    // flat frame (for anyone watching or streaming the window). One extra full-screen draw a frame.
+    bool desktop_mirror = true;
 
     // The VR frame is submitted inside MCC's desktop Present, so MCC's own
     // V-Sync would pace the HEADSET at the DESKTOP monitor's refresh -- a 60 Hz
@@ -1546,6 +1620,10 @@ struct Config
 
     // Optional body gestures; each title keeps its own MCC controller layout.
     bool manual_reload = false;
+    // Opt-in: while manual_reload or weapon_holsters is on, withhold the game's own reload and
+    // weapon-switch bindings (buttons and keyboard) so only the gestures do them. Off keeps
+    // every native binding working beside the gestures. Needs the native VR action bridge.
+    bool gesture_only_weapon_input = false;
     bool manual_reload_disable_auto = false;
     bool manual_reload_skip_animations = false;
     bool manual_reload_shortened_animation = false;
@@ -1562,6 +1640,7 @@ struct Config
     bool weapon_holster_slide = true;
     bool weapon_holster_click = true;
     bool weapon_needler_shake = false;
+    bool dual_wield_shake_reload = true;
     bool weapon_unknown_reload_visual = true;
     float weapon_shake_travel_m = 0.10f;
     // 0 shoulder, 1 hip, 2 over the shoulder (Campaign Evolved's spot), 3 custom (the three values below).
@@ -1574,7 +1653,8 @@ struct Config
     float weapon_holster_custom_x_m = 0.198f;
     float weapon_holster_custom_y_m = 0.085f;
     float weapon_holster_custom_z_m = -0.284f;
-    // X, RB, LB, B, Y, A, LT, RT. H3, ODST, Reach, H4, CE, H2.
+    // X, RB, LB, B, Y, A, LT, RT. H3, ODST, Reach, H4, CE, H2. In Project Reclaimer, Halo 3's X means RB
+    // (weapon_interaction::ReloadButton).
     int weapon_reload_button[6]{0,0,0,0,0,0};
     int weapon_switch_button[6]{4,4,4,4,4,4};
 
@@ -1672,6 +1752,13 @@ struct Config
     // becomes grippable again through the normal spatial admission without
     // releasing the grip button.
     bool two_hand_switch_inherit = false;
+    // Two-handed aim follows the weapon's grip zone instead of how far apart the hands read each frame, so it does not
+    // switch during play (authored_grab::GripZoneAuthority). Weapons with no grip zone keep the distance test.
+    bool two_hand_grip_zone_authority = true;
+    // One-handed aim range, metres. With the grip zone deciding: a weapon whose grip is within this of the main hand
+    // is pistol-style (authored_grab::GripZoneKindMemory). With the distance deciding: the side measure of the volume in
+    // which the hands count as close (authored_grab::CloseHandAuthority), the others scaling with it.
+    float two_hand_one_hand_range_m = 0.24f;
     // Two-hand engage style: true = toggle (click left grip on/off), false =
     // hold (engaged only while the left grip is held).
     bool two_hand_toggle = true;
@@ -1679,12 +1766,12 @@ struct Config
     // (IK/hand placement). Excluded from the two-hand aim line, which uses
     // raw tracked controller points. Negative seats the hand back toward the
     // wrist; -0.063 is the headset-tuned release default.
-    float left_hand_forward_m = -0.063f;
+    float left_hand_forward_m = 0.0f;
     // Sideways nudge of the two-hand grab zone along the right controller's +X
     // (positive = toward the player's right) so the grab line sits on the
     // visible barrel. Headset request 2026-07-19: the AR's barrel sat right of
     // the zone and the left hand reached past it.
-    float two_hand_zone_right_m = 0.03f;
+    float two_hand_zone_right_m = 0.08f; // Menu zero represents this physical baseline.
     // Support-controller-to-palm depth for two-hand grab acquisition only,
     // along support forward. Moves the grab sample from the tracked
     // controller toward the visible palm. Never enters aim geometry,
@@ -1726,6 +1813,24 @@ struct Config
     // Higher required speed makes both less sensitive; existing saves persist.
     bool physical_melee = false;
     bool gesture_melee = false;
+    // What counts as a swing (gesture_melee_logic.h). A swing presses the game's own melee input, nothing more.
+    float gesture_melee_speed = 1.5f;      // m/s, relative to the head
+    float gesture_melee_extension = 1.5f;  // m/s the arm must be reaching away from the head
+    float gesture_melee_travel = 0.40f;    // m an off-hand chop must cover instead; 0 = extension only
+    float gesture_melee_reach = 0.30f;     // m the hand must be from the head
+    bool gesture_melee_require_grip = false; // off: in the game's own layout the grips are buttons of their own
+    bool gesture_melee_off_hand = true;    // the hand without the gun punches too
+    bool gesture_melee_directional = true; // the aim follows the swing while it lands
+    int gesture_melee_aim_hold_ms = 250;
+    int gesture_melee_aim_ramp_ms = 150;
+    int gesture_melee_press_ms = 80;
+    int gesture_melee_cooldown_ms = 500;
+    int gesture_melee_holster_veto_ms = 400; // no swing this soon after a reload or holster gesture
+    float gesture_melee_smoothing_ms = 20.0f;
+    float gesture_melee_max_speed = 12.0f; // faster, or further than max_reach, is tracking jumping
+    float gesture_melee_max_reach = 1.2f;
+    bool gesture_melee_smoothed_hands = false; // read the hands after Hand smoothing instead of as they moved
+    bool gesture_melee_log = false;
     float physical_melee_swing_speed = kPhysicalMeleeSpeedDefault;
 
     // Lower the RIGHT (weapon) shoulder so Master Chief's arm doesn't clip up
@@ -1801,6 +1906,19 @@ struct Config
     // Dev builds: every remembered answer is searched for as well, and the install's line counts the ones the
     // search did not confirm. The proof of the memory against a running game; it costs every search. (default 0)
     int dev_install_search_check = 0;
+    // INSTALL SEARCH CACHE (install_search_cache.h; Halo 3): 1 = what an install's searches found is also saved,
+    // per build of the game's DLL, to HaloMCCVR-install-searches.bin beside this file, and the first install of the
+    // next launch starts from it: every saved match is compared again in place before it is used, and searched for
+    // again where it no longer stands. A game patch, another store's DLL or Project Reclaimer's each get their own
+    // entry. 0 = nothing is read or saved; every launch's first install searches. Needs install_search_memory = 1.
+    // Read when an install begins. (default 1)
+    int install_search_cache = 1;
+    // INSTALL HOOKS TOGETHER (minhook_lifecycle.h, MCCVR_EnableHook; Halo 3): 1 = the optional features' hooks an
+    // install enables go live together with the core's, in the one pass the core already makes. Each separate enable
+    // suspends every thread of the game in turn; one install made about twenty of them, each 0.3-1 s at a level's
+    // start, which was most of the wait for VR. 0 = each feature enables its hooks on its own, as before. Read when
+    // an install begins. (default 1)
+    int install_hooks_together = 1;
 
     // C-TITLE-1: per-title weapon/hand/HUD/crosshair profiles. Every supported
     // game - and Halo 2's Anniversary and Classic renderers separately - keeps
@@ -1995,6 +2113,19 @@ inline VirtualStockAimSettings VirtualStockAimSettingsFromConfig(
 
 extern Config g_config;
 
+// Gesture-only weapon input is in force: chosen, and something it applies to is on.
+inline bool Config_GestureOnlyWeaponInput() noexcept
+{ return g_config.gesture_only_weapon_input && (g_config.manual_reload || g_config.weapon_holsters); }
+
+// Bloom wanted in VR for a game (weapon_interaction title index: 0 H3, 1 ODST, 2 Reach): the player's
+// own choice once made; until then ODST and Reach default to no bloom, every other game to its value.
+inline bool Config_BloomWanted(unsigned title) noexcept
+{
+    if (title >= 6) return true;
+    if (g_config.bloom_chosen[title]) return g_config.bloom_enabled[title];
+    return (title == 1 || title == 2) ? false : g_config.bloom_enabled[title];
+}
+
 // True when the HOST decides the size the game is drawn at and the mod cannot move it. False in MCC, where
 // the game draws at its swapchain's size and the mod sets that from resolution_scale. Project Reclaimer draws
 // the game through a viewport of its own "render resolution" setting whatever the swapchain's size: a larger
@@ -2004,6 +2135,8 @@ extern Config g_config;
 // the game's own swapchain as the VR raster; resolution_scale does nothing.
 // Set once at start (dllmain.cpp), before the D3D11 hooks are installed.
 extern bool g_hostOwnsRenderSize;
+// The game runs in Project Reclaimer (dllmain.cpp): what is Reclaimer's alone keys on this, not on the render size.
+extern bool g_hostIsProjectReclaimer;
 
 // C-TITLE-1 profile control. `profile` is 0..5 (Halo 3, ODST, Reach,
 // Halo 4, Halo 2 Anniversary, Halo 2 Classic) or -1 for the shared
@@ -2227,3 +2360,5 @@ void ConfigLoad(const wchar_t* path);
 void Config_ApplyAimModes(); // missing file -> file is created with defaults
 void ConfigLoadMigrating(const wchar_t* primaryPath, const wchar_t* legacyPath);
 void ConfigSave();
+const wchar_t* Config_Path();
+void Config_SetReadOnly(bool readOnly); // the desktop settings window, while the game owns the file

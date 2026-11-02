@@ -413,6 +413,8 @@ namespace sig
                 memo.size = size;
                 memo.generation = generation;
                 memo.count = 0;
+                memo.changes = 0;
+                memo.savedLoaded = false;
             }
             memo_ = &memo;
             check_ = check;
@@ -435,6 +437,20 @@ namespace sig
 
     uintptr_t ImageMemoScope::Answer(uintptr_t base, size_t size, const char* pattern)
     {
+        // Two counter reads per search, against a search's milliseconds.
+        LARGE_INTEGER began{}, ended{}, frequency{};
+        QueryPerformanceCounter(&began);
+        const uintptr_t answer = AnswerUntimed(base, size, pattern);
+        QueryPerformanceCounter(&ended);
+        QueryPerformanceFrequency(&frequency);
+        if (frequency.QuadPart > 0)
+            counts_.ms += static_cast<double>(ended.QuadPart - began.QuadPart) * 1000.0 /
+                          static_cast<double>(frequency.QuadPart);
+        return answer;
+    }
+
+    uintptr_t ImageMemoScope::AnswerUntimed(uintptr_t base, size_t size, const char* pattern)
+    {
         if (!memo_)
         {
             ++counts_.searched;
@@ -456,11 +472,15 @@ namespace sig
             const uint32_t match = found ? static_cast<uint32_t>(found - memo.base) : ImageMemo::kNoMatch;
             if (entry)
             {
+                if (entry->match != match)
+                    ++memo.changes;
                 entry->match = match;
+                entry->saved = 0;
             }
             else if (memo.count < ImageMemo::kCapacity)
             {
-                memo.entries[memo.count++] = ImageMemo::Entry{key, start, length, match};
+                memo.entries[memo.count++] = ImageMemo::Entry{key, start, length, match, 0};
+                ++memo.changes;
             }
             else
             {
@@ -486,6 +506,8 @@ namespace sig
             if (!stands)
             {
                 ++counts_.searchedAgain;
+                if (entry->saved)
+                    ++counts_.savedStale;
                 const uintptr_t found = Search(base, size, pattern);
                 keep(found);
                 return found;
@@ -510,7 +532,10 @@ namespace sig
                 return found;
             }
         }
-        ++counts_.remembered;
+        if (entry->saved)
+            ++counts_.fromSaved;
+        else
+            ++counts_.remembered;
         if (check_)
         {
             const uintptr_t found = Search(base, size, pattern);

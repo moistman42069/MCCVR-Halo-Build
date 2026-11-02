@@ -15,6 +15,8 @@ static bool eyeActive=true;
 static unsigned checks{},sets{};
 GameTitle TitleAdapter_GetActiveTitle(){return title;}
 bool VR_IsEyeRasterActive(ID3D11DeviceContext* context) noexcept {return eyeActive&&context==eyeContext;}
+static bool stereoOn=true;
+bool VR_IsStereoEnabled(){return stereoOn;}
 void Logf(const char*,...){}
 static void Check(bool ok,const char* why){++checks;if(!ok){std::fprintf(stderr,"FAIL: %s\n",why);std::exit(1);}}
 static void STDMETHODCALLTYPE Set(ID3D11DeviceContext* context,UINT start,UINT count,ID3D11ShaderResourceView* const* views)
@@ -125,8 +127,46 @@ int main()
     Bloom_ObserveSrvCreated(device.Get(),a.Get());
     Bloom_ObserveShaderCreated(shader,reachBytes,sizeof(reachBytes));Bind(context.Get(),a.Get(),r.Get(),shader);
     g_config.bloom_enabled[2]=false;
-    {BloomDrawScope scope(context.Get());Check(BoundIs(context.Get(),0,a.Get())&&!BoundIs(context.Get(),1,r.Get()),"Reach changes slot1 only");}
+    {BloomDrawScope scope(context.Get());Check(BoundIs(context.Get(),0,a.Get())&&BoundIs(context.Get(),1,r.Get()),"Reach no longer uses resolution-dependent SRV substitution");}
     Check(BoundIs(context.Get(),0,a.Get())&&BoundIs(context.Get(),1,r.Get()),"Reach restores exact original pair");
+    PostEffects_SetAvailable(true);PostEffects_ObserveDevice(device.Get());
+    Bloom_ObserveShader(context.Get(),shader,0);
+    eyeActive=false;
+    Check(PostEffects_ShouldSkipDraw(context.Get()),"Reach suppression works outside the eye scope with no SRV dimension requirement");
+    g_config.bloom_chosen[2]=true;g_config.bloom_enabled[2]=true;
+    Check(!PostEffects_ShouldSkipDraw(context.Get()),"a chosen Reach bloom restores the native pass immediately");
+    g_config.bloom_chosen[2]=false;
+    Check(PostEffects_ShouldSkipDraw(context.Get()),"until chosen, Reach plays without bloom in VR whatever the saved value");
+    stereoOn=false;
+    Check(!PostEffects_ShouldSkipDraw(context.Get()),"outside VR the native pass always draws");
+    stereoOn=true;
+    g_config.bloom_enabled[2]=false;
+    Bloom_Invalidate(context.Get(),false);
+    Check(PostEffects_ShouldSkipDraw(context.Get()),"render-target change does not erase the still-bound pixel shader");
+    Bloom_Invalidate(context.Get(),true);
+    Check(!PostEffects_ShouldSkipDraw(context.Get()),"unknown pipeline state never suppresses a draw");
+    Bloom_ObserveShader(context.Get(),shader,1);
+    Check(!PostEffects_ShouldSkipDraw(context.Get()),"dynamic shader instances remain native");
+    Bloom_ObserveShader(context.Get(),shader,0);
+    auto otherContext=reinterpret_cast<ID3D11DeviceContext*>(uintptr_t(0x43210));
+    Check(!PostEffects_ShouldSkipDraw(otherContext),"another context never inherits the tracked effect");
+    title=GameTitle::Halo3ODST;g_config.bloom_enabled[1]=false;
+    Check(!PostEffects_ShouldSkipDraw(context.Get()),"Reach hash is not applied to ODST");
+    Bloom_ObserveShaderCreated(shader,h3Bytes,sizeof(h3Bytes));Bloom_ObserveShader(context.Get(),shader,0);
+    Check(PostEffects_ShouldSkipDraw(context.Get()),"ODST bloom uses its own exact hash");
+    title=GameTitle::Halo3;
+    Check(!PostEffects_ShouldSkipDraw(context.Get()),"Halo 3 retains its existing consumer path");
+    title=GameTitle::Halo3ODST;
+    const uint8_t exposureBytes[]{0x31,0xcd,0xef,0xb};
+    Check(Crc32(exposureBytes,sizeof(exposureBytes))==kOdstAutoExposure,"known ODST exposure CRC fixture");
+    Bloom_ObserveShaderCreated(shader,exposureBytes,sizeof(exposureBytes));Bloom_ObserveShader(context.Get(),shader,0);
+    Check(!PostEffects_ShouldSkipDraw(context.Get()),"exposure is enabled by default and independent of bloom");
+    g_config.disable_autoexposure_odst=true;
+    Check(PostEffects_ShouldSkipDraw(context.Get()),"ODST exposure uses its independent toggle");
+    title=GameTitle::HaloReach;Check(!PostEffects_ShouldSkipDraw(context.Get()),"exposure suppression is ODST only");
+    title=GameTitle::Halo3ODST;Bloom_ObserveShaderCreated(shader,"other",5);Bloom_ObserveShader(context.Get(),shader,0);
+    Check(!PostEffects_ShouldSkipDraw(context.Get()),"reused shader pointer cannot inherit exposure identity");
+    PostEffects_SetAvailable(false);eyeActive=true;
     title=GameTitle::Halo3;Bloom_ColdTick(title,3);
     Bloom_ObserveShaderCreated(shader,h3Bytes,sizeof(h3Bytes));Bloom_ObserveSrvCreated(device.Get(),b.Get());
     ComPtr<IDXGIDevice> dxgiDevice;ComPtr<IDXGIAdapter> adapter;ComPtr<IDXGIFactory> factory;

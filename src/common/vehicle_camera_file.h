@@ -123,6 +123,10 @@ struct Camera
     // ROTATION TRACKING: which of the vehicle's rotations turn the player's VIEW. Independent of each other:
     // pitch and roll without yaw tilt the view with the vehicle's deck while the player keeps his own heading.
     bool rotYaw = false, rotPitch = false, rotRoll = false;
+    // Whether the file said so: `rotationOwn` the camera's own "rotationTracking", `rotationSet` that or any of its
+    // modes'. A firstperson camera that never says leaves how its view turns to the game's setting
+    // (vehicle_view_follow); one that does turns it as its mode says, as a chase camera always does.
+    bool rotationOwn = false, rotationSet = false;
     bool collide = true;
     float collideMargin = 30.0f; // cm short of whatever blocks the offset
     // LAG ("lag", "lagDamping"): the camera follows its place on a spring and damper rather than a rigid boom.

@@ -135,6 +135,18 @@
             g_halo3NativeSeatSerial.fetch_add(1, std::memory_order_release);
     }
 
+    // A chase camera of the mod's own shows the seat: whatever makes the director's answer "first person" (bit 4 clear
+    // in the seat's own data, or a host's own hook on the test), it would draw the arms and weapon at that camera. Its
+    // occupant is told "third person" instead, so the game draws the character (seat_view_logic.h, THE OTHER WAY
+    // ROUND). A seat the game already answers third person is not changed. The director alone is answered; the tag is
+    // not written.
+    void Halo3ArmChaseCamera(int32_t unit)
+    {
+        Halo3SeatViewArmChase(unit != -1 && !Halo3SeatViewWritesTag() && Halo3SeatViewAvailable() &&
+                                      Halo3VehicleCameraThirdPerson()
+                                  ? unit : -1);
+    }
+
     // THE FIRST-PERSON SEAT. For as long as the VR vehicle camera owns the view, Halo is to treat the occupant as
     // first person, so it stops drawing the player's character model in the space the headset is looking out of.
     //
@@ -163,7 +175,14 @@
             patch.seatIndex == seatIndex;
         if (!g_config.vehicle_first_person || !g_config.vehicle_hide_body)
         {
-            Halo3RestoreNativeSeatPatch();
+            // The body setting off still leaves a chase camera to answer. Given back once, not per frame: giving back
+            // disarms, and a director call between that and the next line would draw the arms.
+            if (!g_config.vehicle_first_person || patch.generation ||
+                g_halo3NativeSeatState.load(std::memory_order_relaxed) !=
+                    static_cast<uint32_t>(Halo3NativeSeatState::Stock))
+                Halo3RestoreNativeSeatPatch();
+            if (g_config.vehicle_first_person)
+                Halo3ArmChaseCamera(unit);
             return false;
         }
         const bool writeTag = Halo3SeatViewWritesTag();
@@ -173,7 +192,10 @@
             // A chase camera of the mod's own (vehicle_cameras.inl) shows the seat from outside: the
             // director keeps its own third-person answer, so the game draws the player's character.
             if (!writeTag)
+            {
                 Halo3SeatViewArm(Halo3VehicleCameraThirdPerson() ? -1 : unit);
+                Halo3ArmChaseCamera(unit);
+            }
             return true;
         }
         if (sameSeat && !patch.active && patch.attemptWroteTag == writeTag &&
@@ -181,7 +203,10 @@
             g_halo3NativeSeatState.load(
                 std::memory_order_relaxed) ==
                 static_cast<uint32_t>(Halo3NativeSeatState::StockFallback))
+        {
+            Halo3ArmChaseCamera(unit);
             return false;
+        }
 
         Halo3RestoreNativeSeatPatch();
         patch.generation = generation;
@@ -283,12 +308,16 @@
                 static_cast<uint32_t>(Halo3NativeSeatState::StockFallback),
                 std::memory_order_release);
             g_halo3NativeSeatSerial.fetch_add(1, std::memory_order_release);
+            Halo3ArmChaseCamera(unit);
             return false;
         }
         g_halo3NativeAnchorCalibration = {};
         patch.attemptWroteTag = writeTag;
         if (!patch.tagWritten)
+        {
             Halo3SeatViewArm(Halo3VehicleCameraThirdPerson() ? -1 : unit);
+            Halo3ArmChaseCamera(unit);
+        }
         g_halo3NativeSeatState.store(
             static_cast<uint32_t>(Halo3NativeSeatState::Active),
             std::memory_order_release);

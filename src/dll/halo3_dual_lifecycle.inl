@@ -167,8 +167,8 @@ bool InstallHalo3DualAim(uintptr_t base, size_t size, uint32_t generation)
         {LOG("Halo 3 dual aim StockFallback: native query/camera hook creation failed");(void)RemoveHalo3DualAim();return false;}
         *hook.target=target;
     }
-    if (MH_EnableHook(feature.cameraTarget)!=MH_OK || MH_EnableHook(feature.queryTarget)!=MH_OK ||
-        MH_EnableHook(feature.aimTarget) != MH_OK || MH_EnableHook(feature.fireTarget) != MH_OK)
+    if (MCCVR_EnableHook(feature.cameraTarget)!=MH_OK || MCCVR_EnableHook(feature.queryTarget)!=MH_OK ||
+        MCCVR_EnableHook(feature.aimTarget) != MH_OK || MCCVR_EnableHook(feature.fireTarget) != MH_OK)
     {
         LOG("Halo 3 dual aim StockFallback: hook enable failed");
         (void)RemoveHalo3DualAim();
@@ -177,6 +177,52 @@ bool InstallHalo3DualAim(uintptr_t base, size_t size, uint32_t generation)
     feature.enabled.store(true, std::memory_order_release);
     (void)InstallHalo3Muzzle(base,size);
     LOG("Halo 3 dual aim Installed: optional independent controller rays with native per-shot acquisition; option=%d; single weapon, vehicles and remote units retain native aim",Sight_IndependentDualAim()?1:0);
+    return true;
+}
+
+// AIM FRAME ZOOM'S READ OF THE GAME'S ZOOM LEVEL when the lane above did not install -- a host that hooks one of
+// its other functions itself, as Project Reclaimer hooks the evaluator (+0x212198), refuses the whole lane. The
+// aim query's hook alone goes into the lane's own slot, so RemoveHalo3DualAim retires it like the lane's. With
+// the lane not enabled its detour captures nothing, stamps nothing and asks nothing of the game: it notes the
+// zoom level the game hands its own query and calls through.
+// ADDR-HYGIENE: guarded (the query's unique body signature at its recorded RVA, and the native call to it).
+bool InstallHalo3ZoomReader(uintptr_t base, size_t size, uint32_t generation)
+{
+    auto& feature = g_halo3Dual;
+    if (feature.fireTarget || feature.aimTarget || feature.queryTarget || feature.cameraTarget || !generation ||
+        size <= 0x13B100)
+        return false;
+    static constexpr char kQuery[] =
+        "48 8B C4 48 89 58 08 66 44 89 48 20 4C 89 40 18 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 18 FF FF FF 48 81 "
+        "EC B0 01 00";
+    const uintptr_t hit = sig::Find(base, size, kQuery);
+    const auto* call = reinterpret_cast<const uint8_t*>(base + 0xF4CC8);
+    if (hit != base + 0x13B08C || sig::Find(hit + 1, base + size - hit - 1, kQuery) || call[0] != 0xE8 ||
+        base + 0xF4CC8 + 5 + *reinterpret_cast<const int32_t*>(call + 1) != hit)
+    {
+        LOG("Halo 3 zoom reader: the aim query did not bind (missing, ambiguous or not called as expected); Aim "
+            "Frame Zoom has no zoom level here");
+        return false;
+    }
+    feature.base = base;
+    feature.generation = generation;
+    feature.faulted.store(false);
+    if (MH_CreateHook(reinterpret_cast<void*>(hit), reinterpret_cast<void*>(&Halo3IndependentQueryDetour),
+                      reinterpret_cast<void**>(&feature.queryOriginal)) != MH_OK)
+    {
+        LOG("Halo 3 zoom reader: hook creation failed; Aim Frame Zoom has no zoom level here");
+        feature.queryOriginal = nullptr;
+        return false;
+    }
+    feature.queryTarget = reinterpret_cast<void*>(hit);
+    if (MH_EnableHook(feature.queryTarget) != MH_OK)
+    {
+        LOG("Halo 3 zoom reader: hook enable failed; Aim Frame Zoom has no zoom level here");
+        (void)RemoveHalo3DualAim();
+        return false;
+    }
+    LOG("Halo 3 zoom reader: installed on the aim query alone (the dual aim lane did not install); Aim Frame Zoom "
+        "reads the game's zoom level from it");
     return true;
 }
 

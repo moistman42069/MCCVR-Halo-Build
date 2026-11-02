@@ -218,6 +218,7 @@ __declspec(noinline) void RestorePrecompiledConstants(uintptr_t postprocess, int
 
 void __fastcall DrawHook(void* record, uint32_t entry)
 {
+    Halo3HookCalled(Halo3Hook::PartDraw);
     runtime.callbacks.fetch_add(1, std::memory_order_acq_rel);
     bool fading = false;
     bool perDraw = false;

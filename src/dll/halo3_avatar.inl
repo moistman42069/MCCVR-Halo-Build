@@ -303,7 +303,7 @@ bool InstallHalo3Avatar(uintptr_t base,size_t size,uint32_t generation) {
     // which would switch on hooks the rest of the mod holds off (a retired title's among them).
     for(unsigned i=0;i<8;++i) {
         if(!r.targets[i])continue;
-        const MH_STATUS enabled=MH_EnableHook(r.targets[i]);
+        const MH_STATUS enabled=MCCVR_EnableHook(r.targets[i]);
         if(enabled!=MH_OK) {
             LOG("Halo 3 avatar StockFallback: hook +0x%llX not enabled (MinHook status %d)",
                 static_cast<unsigned long long>(bindings[i].rva),static_cast<int>(enabled));

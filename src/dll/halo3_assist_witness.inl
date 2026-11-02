@@ -235,7 +235,7 @@ void InstallHalo3AssistWitness(uintptr_t base, size_t size)
         return;
     }
     w.target = target;
-    if (MH_EnableHook(target) != MH_OK)
+    if (MCCVR_EnableHook(target) != MH_OK)
     {
         LOG("SHOT Halo 3 assist witness: the hook did not enable; no assist line");
         (void)RemoveHalo3AssistWitness();

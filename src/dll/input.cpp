@@ -1,3 +1,4 @@
+#include "../common/manual_weapon_input.h"
 #include <windows.h>
 #include <Xinput.h>
 #include <cmath>
@@ -65,7 +66,12 @@ namespace
     // polled too rarely to see the hold reach its second took the release for a tap and stepped the camera.
     vehicle_seat_buttons::Seat g_seatButtons;
     std::mutex g_seatButtonsLock;
-    thread_local ScopeActionInput g_scopeInput;
+    // The zoom release's one edge, for every thread that polls the pad, for the same reason: with a copy per thread
+    // each of MCC's polling threads took the same release, two scope toggles a few ms apart, and the scope stayed
+    // shut whenever the render thread saw them in different frames (ODST zoom, 2026-10-30).
+    ScopeActionInput g_scopeInput;
+    std::mutex g_scopeInputLock;
+    void SuspendScopeInput() { std::lock_guard<std::mutex> lock(g_scopeInputLock); g_scopeInput.Suspend(); }
     thread_local PhysicalCrouchInput g_physicalCrouchInput;
     std::atomic<bool> g_physicalCrouchRiseCapped{false};   // the menu's recalibrate hint
     thread_local vr_mapping::Mapper g_vrActionMapper;
@@ -218,6 +224,56 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         return (SHORT)(v * 32767.0f);
     }
 
+    // Project Reclaimer's keys at the head (HeadKeyGesture). A key only ever goes to this process's own window: anywhere
+    // else it would type a letter. Returns whether the button belongs to the key right now.
+    bool ControllerAtHead(int hand)
+    {
+        float headQ[4], headP[3], handQ[4], handP[3];
+        return VR_GetPhysicalControllerPose(hand, handQ, handP) && VR_GetHeadPose(headQ, headP) &&
+            DpadHeadWithinRadius(headP, handP, g_config.dpad_head_radius);
+    }
+
+    bool StepHeadKey(HeadKeyGesture& gesture, WORD& sentKey, bool enabled, int key, const char* name, bool padValid,
+                     bool down, int hand = 0)
+    {
+        bool allowed = padValid && g_hostOwnsRenderSize && enabled && !Menu_IsOpen();
+        if (allowed)
+        {
+            DWORD foregroundProcess = 0;
+            if (const HWND foreground = GetForegroundWindow())
+                GetWindowThreadProcessId(foreground, &foregroundProcess);
+            allowed = foregroundProcess == GetCurrentProcessId();
+        }
+        bool atHead = false;
+        if (allowed && down && !gesture.talking)
+            atHead = ControllerAtHead(hand);
+        const HeadKeyGesture::Key step = gesture.Step(atHead, down, allowed, GetTickCount64());
+        if (step != HeadKeyGesture::Key::None)
+        {
+            const bool press = step == HeadKeyGesture::Key::Press;
+            if (press)
+                sentKey = static_cast<WORD>(key);
+            INPUT input{};
+            input.type = INPUT_KEYBOARD;
+            input.ki.wVk = sentKey;
+            input.ki.wScan = static_cast<WORD>(MapVirtualKeyW(sentKey, MAPVK_VK_TO_VSC));
+            input.ki.dwFlags = press ? 0 : KEYEVENTF_KEYUP;
+            const bool sent = SendInput(1, &input, sizeof(input)) == 1;
+            if (gesture.logged < 24 && ++gesture.logged)
+                LOG("Reclaimer %s key: %s 0x%02X%s", name, press ? "pressed" : "released", unsigned(sentKey),
+                    sent ? "" : " (Windows refused it)");
+            if (press && sent)
+                VR_PulseGameHaptics(0.35f);
+        }
+        return gesture.talking;
+    }
+
+    // What each action of a game is bound to right now: its Automatic rows follow the game's own layout.
+    vr_mapping::Overrides EffectiveBindings(int title,const vr_mapping::Transports& layout,bool layoutKnown)
+    {
+        return vr_mapping::EffectiveOverrides(g_config.vr_bindings[title],layout,layoutKnown);
+    }
+
     void MergeVrPad(XINPUT_STATE* state)
     {
         VrPadState pad;
@@ -226,7 +282,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         {
             Game_VehicleBoomStick(0.0f);
             g_vrActionMapper.ready=false;
-            g_scopeInput.Suspend();
+            SuspendScopeInput();
             g_physicalCrouchInput.Suspend(g_config.physical_crouch);
             PhysicalCrouchCamera_Invalidate();
             Roomscale_Input(false,0,0);
@@ -261,10 +317,12 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         // (use, exit) where the action mapper binds B to nothing (vehicle_seat_buttons::RightBFor); and in a
         // passenger's seat the support trigger switches weapon. Before anything below reads a button, so every
         // route to the game -- the action mapper, the native bridge, legacy routing -- sees the seat's buttons.
+        bool inSeat = false;
         {
             bool passenger = false, controlModes = true;
             const bool live =
                 Game_VehicleSeatButtonsLive(passenger, controlModes) && !Menu_IsOpen() && !pad.exclusiveInput;
+            inSeat = live;
             vehicle_seat_buttons::Buttons buttons;
             buttons.x = pad.x;
             buttons.y = pad.y;
@@ -275,10 +333,15 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             // Does the action mapper bind right B to anything in this game? (By default it binds it to nothing.)
             bool bBound = false;
             const int seatTitle = weapon_interaction::TitleIndex(TitleAdapter_GetActiveTitle());
-            if (seatTitle >= 0)
+            if (seatTitle >= 0 && g_config.vr_action_mapping)
+            {
+                vr_mapping::Transports layout{};
+                const bool layoutKnown = Game_ReadVrActionBindings(layout, GetTickCount64());
+                const auto effective = EffectiveBindings(seatTitle, layout, layoutKnown);
                 for (unsigned action = 0; action < vr_mapping::Count; ++action)
                     bBound = bBound || vr_mapping::Resolve(static_cast<vr_mapping::Action>(action),
-                                                           g_config.vr_bindings[seatTitle][action]) == vr_mapping::B;
+                                                           effective[action]) == vr_mapping::B;
+            }
             const vehicle_seat_buttons::RightB rightB =
                 vehicle_seat_buttons::RightBFor(g_config.vr_action_mapping, bBound);
             vehicle_seat_buttons::Requests asked;
@@ -322,7 +385,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 LOG("Vehicle cameras: view re-centred (left X or Y held)");
             }
             if (asked.camera || asked.mode || asked.control || asked.recenter)
-                VR_SetGameHaptics(asked.recenter ? 0.6f : 0.35f);
+                VR_PulseGameHaptics(asked.recenter ? 0.6f : 0.35f);
         }
 
         static thread_local ExclusiveInputHolds physicalHolds;
@@ -357,6 +420,9 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 }
             }
         }
+        static thread_local DpadMovementLatch dpadMovement;
+        dpadMode = dpadMovement.Step(dpadMode, g_config.dpad_keep_moving && Game_MoveStickIsLocomotion() &&
+            pad.moveX * pad.moveX + pad.moveY * pad.moveY > 0.04f);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         if (dpadMode) g_witness.raw |= seat_witness::RawDpadGesture;
 #endif
@@ -387,20 +453,58 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             !VR_IsPausePresentation()&&!VR_IsPausePresentationTarget()&&!VR_IsCutsceneTheaterActive();
         const uint64_t mappingEpoch=(uint64_t(TitleAdapter_GetGeneration(currentTitle))<<32)|
             (uint64_t(currentTitle)<<24)|pad.profileEpoch;
-        const bool scopeFeatureAvailable=g_config.scope_enabled&&Game_IsHeadTracking()&&Game_HasScopeRenderer();
+        const bool scopeFeatureAvailable=g_config.scope_enabled&&Game_IsHeadTracking()&&Game_HasScopeRenderer()&&
+            !Game_AimFrameZoomOwnsZoom();
         const bool scopeAvailable=scopeFeatureAvailable&&gameplayMode;
+        vr_mapping::Transports gameLayout{};
+        const bool gameLayoutKnown=mappingTitle>=0&&g_config.vr_action_mapping&&
+            Game_ReadVrActionBindings(gameLayout,GetTickCount64());
+        const vr_mapping::Overrides effectiveBindings=mappingTitle>=0?
+            EffectiveBindings(mappingTitle,gameLayout,gameLayoutKnown):vr_mapping::Overrides{};
         const int zoomSource=mappingTitle>=0&&g_config.vr_action_mapping?
-            vr_mapping::Resolve(vr_mapping::Zoom,g_config.vr_bindings[mappingTitle][vr_mapping::Zoom]):vr_mapping::RightClick;
-        const uint32_t collectedSources=ScopeAndActionSources(pad,dpadMode);
+            vr_mapping::Resolve(vr_mapping::Zoom,effectiveBindings[vr_mapping::Zoom]):vr_mapping::RightClick;
+        uint32_t collectedSources=ScopeAndActionSources(pad,dpadMode);
+        {
+            // An air grip means nothing while its setting is off, or where no action this game has is bound to it.
+            bool airUsable=false;
+            for(unsigned action=0;g_config.trigger_air_equipment&&action<vr_mapping::Count;++action)
+                airUsable=airUsable||(effectiveBindings[action]==vr_mapping::SupportTriggerAir&&
+                    vr_mapping::NativeAction(currentTitle,static_cast<vr_mapping::Action>(action))!=vr_mapping::kNoAction);
+            static thread_local vr_mapping::SupportTriggerContext supportTrigger;
+            collectedSources|=supportTrigger.Step(
+                !menuOpen&&!pad.exclusiveInput&&(collectedSources&vr_mapping::Bit(vr_mapping::SupportTrigger))!=0,
+                pad.gripL>0.6f,pad.supportAimActive||pad.supportOnOneHandedGun,pad.weaponConsumeSupport,
+                pad.dualWield||inSeat,airUsable);
+            // The contextual trigger's zoom ends when the hand leaves the gun. The lens has a state of its own to close;
+            // the game's zoom is pressed out, through the same source the trigger uses.
+            const bool contextualZoom=g_config.vr_action_mapping&&zoomSource==vr_mapping::SupportTriggerOnGun&&
+                gameplayMode&&!menuOpen&&!pad.exclusiveInput&&!pad.dualWield&&!inSeat;
+            const bool handOnGun=pad.supportAimActive||pad.supportOnOneHandedGun;
+            static std::mutex zoomExitLock;
+            static vr_mapping::ZoomExit zoomExit;
+            static bool lensHandWasOn=false;
+            int zoomLevel=-1;
+            const bool zoomLevelKnown=Game_ReadZoomLevel(zoomLevel);
+            std::lock_guard<std::mutex> lock(zoomExitLock);
+            const bool pressOut=zoomExit.Step(contextualZoom&&!scopeFeatureAvailable,handOnGun,
+                (collectedSources&vr_mapping::Bit(vr_mapping::SupportTrigger))!=0,zoomLevelKnown,zoomLevel,GetTickCount64());
+            if(pressOut) collectedSources|=vr_mapping::Bit(vr_mapping::SupportTriggerOnGun);
+            if(contextualZoom&&scopeFeatureAvailable&&lensHandWasOn&&!handOnGun) VR_SetScopeActive(false);
+            lensHandWasOn=handOnGun;
+        }
         // Changing D-pad gesture routes while the stick is held is cancellation,
         // not the release edge that toggles a scope. Face/trigger bindings are
         // unaffected by entering the optional head D-pad gesture.
         const unsigned scopeRoute=zoomSource>=vr_mapping::DpadUp?
             (pad.thumbrestDpad?2u:(dpadMode?1u:0u)):0u;
-        const ScopeToggleUpdate scope=g_scopeInput.Update(scopeFeatureAvailable,collectedSources,
-            zoomSource,mappingEpoch,scopeRoute,
-            scopeAvailable&&!menuOpen&&(!pad.exclusiveInput||pad.thumbrestDpad),
-            chord.consumeClicks||pauseChord.consumeClicks);
+        ScopeToggleUpdate scope{};
+        {
+            std::lock_guard<std::mutex> lock(g_scopeInputLock);
+            scope=g_scopeInput.Update(scopeFeatureAvailable,collectedSources,
+                zoomSource,mappingEpoch,scopeRoute,
+                scopeAvailable&&!menuOpen&&(!pad.exclusiveInput||pad.thumbrestDpad),
+                chord.consumeClicks||pauseChord.consumeClicks);
+        }
         if(scope.changed&&scopeAvailable)
         {
             VR_RequestScopeToggle();
@@ -460,7 +564,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                         native[action]=NativeVrActions_GestureBit(static_cast<vr_mapping::Action>(action));
                     if(scopeAvailable) native[vr_mapping::Zoom]=0;
                     const auto actions=g_vrActionMapper.ApplyDetailed(collectedSources,
-                        g_config.vr_bindings[index],native,
+                        effectiveBindings,native,
                         (uint64_t(TitleAdapter_GetGeneration(title))<<32)|(uint64_t(title)<<24)|pad.profileEpoch,
                         ready,g_config.disable_flashlight_input||
                             (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive));
@@ -522,7 +626,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         const bool physicalCrouchEnabled=g_config.physical_crouch;
         // The roomscale jump recenter also wants the game's own jump binding when the mapper is off (below).
         const bool jumpWitnessWanted=g_config.roomscale_movement&&g_config.roomscale_recenter_jump;
-        const bool nativeReady=(semanticMode||physicalCrouchEnabled||jumpWitnessWanted)&&gameplayMode&&
+        const bool nativeReady=(semanticMode||physicalCrouchEnabled||g_config.right_stick_crouch||jumpWitnessWanted)&&gameplayMode&&
             (Game_ReadVrActionBindings(nativeActions,inputNow)||directActions);
         const bool nativeMapping=semanticMode&&nativeReady;
         // The head height and the standing reference come from the OpenXR frame thread, in one frame a
@@ -556,13 +660,26 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         const uint64_t crouchEpoch=crouchSample.reference;
         const uint32_t crouchTransport=
             directActions?NativeVrActions_GestureBit(vr_mapping::Crouch):nativeActions[vr_mapping::Crouch];
-        const uint32_t crouchButtons=g_physicalCrouchInput.Update(currentTitle,
+        const uint32_t physicalCrouchButtons=g_physicalCrouchInput.Update(currentTitle,
             TitleAdapter_GetGeneration(currentTitle),crouchHeadY,crouchSample.baseline,crouchEpoch,inputNow,
             physicalCrouchEnabled,crouchTracking&&nativeReady,g_config.physical_crouch_depth_m,
             crouchTransport);
         PhysicalCrouchCamera_Publish(currentTitle,TitleAdapter_GetGeneration(currentTitle),
             crouchEpoch,inputNow,physicalCrouchEnabled&&crouchTracking&&nativeReady,
-            crouchButtons!=0);
+            physicalCrouchButtons!=0);
+        // Crouching with the right stick, only where the headset owns the view's pitch and nothing else wants the axis.
+        // A pause keeps the crouch; every thread that polls the pad shares the one state.
+        bool stickCrouched=false;
+        {
+            static std::mutex stickCrouchLock;
+            static StickCrouch stickCrouch;
+            std::lock_guard<std::mutex> lock(stickCrouchLock);
+            if(gameplayMode)
+                stickCrouch.Step(pad.turnX,pad.turnY,g_config.right_stick_crouch&&inputMode==RuntimeMode::Gameplay&&
+                    crouchOnFoot&&!inSeat&&Game_IsHeadTracking()&&!VR_IsScopeActive()&&!pad.thumbrestDpad);
+            stickCrouched=stickCrouch.crouched&&nativeReady;
+        }
+        const uint32_t crouchButtons=physicalCrouchButtons|(stickCrouched?crouchTransport:0u);
         if(crouchSample.reference)
             g_physicalCrouchRiseCapped.store(physicalCrouchEnabled&&crouchSample.riseCapped,
                 std::memory_order_relaxed);
@@ -584,7 +701,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         if(directActions) for(unsigned action=0;action<vr_mapping::Count;++action)
             mappingTransports[action]=NativeVrActions_GestureBit(static_cast<vr_mapping::Action>(action));
         auto semanticActions=g_vrActionMapper.ApplyDetailed(actionSources,
-            mappingTitle>=0?g_config.vr_bindings[mappingTitle]:emptyMappings,mappingTransports,
+            mappingTitle>=0?effectiveBindings:emptyMappings,mappingTransports,
             (uint64_t(TitleAdapter_GetGeneration(currentTitle))<<32)|(uint64_t(currentTitle)<<24)|pad.profileEpoch,
             nativeMapping,g_config.disable_flashlight_input||
                 (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive));
@@ -659,8 +776,17 @@ std::atomic<uint32_t> g_menuPressSerial{0};
 #endif
         const bool weaponGesture=pad.weaponConsumeSupport||pad.weaponConsumePrimary||pad.weaponButtons;
         const uint32_t gestureMelee=weaponGesture?0:Game_GestureMeleeInput(inputNow);
-        if(semanticMode) NativeVrActions_Publish(state,currentTitle,inputNow,
-            routedActions.published | ((crouchButtons|gestureMelee|pad.weaponButtons)>>18),directActions);
+        const uint32_t blockedWeaponActions=manual_weapon_input::Blocked(
+            gameplayMode&&inputMode==RuntimeMode::Gameplay&&g_config.gesture_only_weapon_input,
+            g_config.manual_reload,g_config.weapon_holsters)&
+            // A dual-wield shake is pressing a reload binding: let Reload through for its 120 ms
+            // (Halo 3's left-reload edge is otherwise cleared under a blocked Reload).
+            ~(pad.weaponDualReloadPulse?(1u<<vr_mapping::Reload):0u);
+        const uint32_t gestureActions=((crouchButtons|gestureMelee)>>18)|
+            manual_weapon_input::Gestures(pad.weaponButtons,pad.weaponReloadBinding,pad.weaponSwitchBinding);
+        if(semanticMode||blockedWeaponActions||(currentTitle==GameTitle::Halo3&&g_config.two_handed_aim)) NativeVrActions_Publish(state,currentTitle,inputNow,
+            manual_weapon_input::Publish(routedActions.published,gestureActions,blockedWeaponActions),
+            directActions,blockedWeaponActions);
         btn |= static_cast<WORD>(gestureMelee & 0xFFFF);
         btn |= static_cast<WORD>(pad.weaponButtons & 0xFFFF);
         state->Gamepad.wButtons = btn;
@@ -1022,7 +1148,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         if (!Game_AllowsSharedControllerInput())
         {
             g_vrActionMapper.ready=false;
-            g_scopeInput.Suspend();
+            SuspendScopeInput();
             g_physicalCrouchInput.Suspend(g_config.physical_crouch);
             PhysicalCrouchCamera_Invalidate();
             Roomscale_Input(false, 0, 0);
@@ -1064,7 +1190,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             WitnessPad(pad);
 #endif
             g_vrActionMapper.ready=false;
-            g_scopeInput.Suspend();
+            SuspendScopeInput();
             g_physicalCrouchInput.Suspend(g_config.physical_crouch);
             PhysicalCrouchCamera_Invalidate();
             Roomscale_Input(false, 0, 0);
@@ -1280,6 +1406,48 @@ void Input_Halo2SwitchInputEvidence(Halo2SwitchInputEvidence& evidence)
     const uint64_t fedBackMs = g_fedBackMs.load(std::memory_order_relaxed);
     evidence.virtualBackAgeMs =
         fedBackMs && fedBackMs <= now ? now - fedBackMs : UINT64_MAX;
+}
+
+// Project Reclaimer's keys at the head, from the headset's own input loop: the game does not read the controller in
+// every lobby or menu, and these go by where the hand is alone. They take their buttons before anything else sees them.
+void Input_StepHeadKeys(VrPadState& pad)
+{
+    const bool rawX = pad.x, rawY = pad.y, rawA = pad.a, rawB = pad.b;
+    static HeadKeyGesture talkGesture, scoreboardGesture;
+    static WORD talkKey = 0, scoreboardKey = 0;
+    if (StepHeadKey(talkGesture, talkKey, g_config.reclaimer_talk_gesture, g_config.reclaimer_talk_key, "talk",
+                    pad.valid, pad.valid && rawX))
+        pad.x = false;
+    // Y + B stays the pause.
+    static HeadYChord headY;
+    const bool yDown = pad.valid && rawY;
+    bool yAtHead = false;
+    if (yDown && g_hostOwnsRenderSize && g_config.reclaimer_scoreboard_gesture)
+        yAtHead = ControllerAtHead(0);
+    // B at the right ear gives way to the same chord: Y held with it is the pause, not a vote.
+    static HeadYChord headB;
+    const bool bDown = pad.valid && rawB;
+    bool bAtHead = false;
+    if (bDown && g_hostOwnsRenderSize && g_config.reclaimer_vote_gesture)
+        bAtHead = ControllerAtHead(1);
+    const uint64_t chordNow = GetTickCount64();
+    const HeadYChord::Y yRoute = headY.Step(yDown, yAtHead, rawB, g_config.y_b_start_chord, chordNow);
+    const HeadYChord::Y bRoute = headB.Step(bDown, bAtHead, rawY, g_config.y_b_start_chord, chordNow);
+    static HeadKeyGesture voteYesGesture, voteNoGesture;
+    static WORD voteYesKey = 0, voteNoKey = 0;
+    if (StepHeadKey(voteYesGesture, voteYesKey, g_config.reclaimer_vote_gesture, g_config.reclaimer_vote_yes_key,
+                    "vote yes", pad.valid, pad.valid && rawA, 1))
+        pad.a = false;
+    const bool voteOwnsB = StepHeadKey(voteNoGesture, voteNoKey,
+        g_config.reclaimer_vote_gesture && !headB.chord, g_config.reclaimer_vote_no_key, "vote no",
+        pad.valid, bRoute == HeadYChord::Y::Key, 1);
+    if (voteOwnsB || bRoute == HeadYChord::Y::Waiting)
+        pad.b = false;
+    const bool scoreboardOwnsY = StepHeadKey(scoreboardGesture, scoreboardKey,
+        g_config.reclaimer_scoreboard_gesture && !headY.chord, g_config.reclaimer_scoreboard_key,
+        "scoreboard", pad.valid, yRoute == HeadYChord::Y::Key);
+    if (scoreboardOwnsY || yRoute == HeadYChord::Y::Waiting)
+        pad.y = false;
 }
 
 uint32_t Input_MenuPressSerial()

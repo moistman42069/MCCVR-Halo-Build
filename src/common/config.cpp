@@ -1,3 +1,4 @@
+#include "weapon_alignment.h"
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
@@ -21,6 +22,7 @@
 
 Config g_config;
 bool g_hostOwnsRenderSize = false;
+bool g_hostIsProjectReclaimer = false;
 
 // Shipped per-seat placements become built-in defaults, so a config file that
 // predates a key is still placed rather than bare. Halo 3/ODST rows are
@@ -497,7 +499,8 @@ static void Clamp()
     g_config.right_hand_mesh_y_m = std::isfinite(g_config.right_hand_mesh_y_m) ? std::clamp(g_config.right_hand_mesh_y_m, -.20f, .20f) : 0.0f;
     g_config.right_hand_mesh_z_m = std::isfinite(g_config.right_hand_mesh_z_m) ? std::clamp(g_config.right_hand_mesh_z_m, -.20f, .20f) : 0.0f;
 
-    g_config.game_brightness = std::clamp(g_config.game_brightness, 0.5f, 2.0f);
+    g_config.game_brightness = std::isfinite(g_config.game_brightness)
+        ? std::clamp(g_config.game_brightness, 0.5f, 2.0f) : TitleTunables{}.game_brightness;
     // Free-form: a hand-typed 0.90 stays 0.90. (Until 2026-07-20 this snapped
     // to the six installer tiers, so any custom value was silently rounded.)
     g_config.resolution_scale = std::clamp(g_config.resolution_scale,
@@ -514,7 +517,7 @@ static void Clamp()
     g_config.hud_vertical_offset = std::clamp(g_config.hud_vertical_offset,
                                               kHudHeightMin, kHudHeightMax);
     g_config.left_hand_forward_m = std::clamp(g_config.left_hand_forward_m, -0.15f, 0.30f);
-    g_config.two_hand_zone_right_m = std::clamp(g_config.two_hand_zone_right_m, -0.10f, 0.10f);
+    g_config.two_hand_zone_right_m = std::clamp(g_config.two_hand_zone_right_m, -0.02f, 0.18f);
     g_config.left_grip_forward_m = std::clamp(g_config.left_grip_forward_m, -0.05f, 0.25f);
     g_config.virtual_stock_standard_strength =
         std::isfinite(g_config.virtual_stock_standard_strength)
@@ -658,14 +661,26 @@ static void Clamp()
             : kVirtualStockProximityReleaseDefaultM;
     g_config.physical_melee_swing_speed = std::clamp(
         g_config.physical_melee_swing_speed, kPhysicalMeleeSpeedMin, kPhysicalMeleeSpeedMax);
+    g_config.gesture_melee_speed = std::clamp(g_config.gesture_melee_speed, kPhysicalMeleeSpeedMin, kPhysicalMeleeSpeedMax);
+    g_config.gesture_melee_extension = std::clamp(g_config.gesture_melee_extension, 0.0f, 6.0f);
+    g_config.gesture_melee_travel = std::clamp(g_config.gesture_melee_travel, 0.0f, 1.2f);
+    g_config.gesture_melee_reach = std::clamp(g_config.gesture_melee_reach, 0.0f, 1.0f);
+    g_config.gesture_melee_aim_hold_ms = std::clamp(g_config.gesture_melee_aim_hold_ms, 0, 1000);
+    g_config.gesture_melee_aim_ramp_ms = std::clamp(g_config.gesture_melee_aim_ramp_ms, 0, 1000);
+    g_config.gesture_melee_press_ms = std::clamp(g_config.gesture_melee_press_ms, 20, 500);
+    g_config.gesture_melee_cooldown_ms = std::clamp(g_config.gesture_melee_cooldown_ms, 100, 3000);
+    g_config.gesture_melee_holster_veto_ms = std::clamp(g_config.gesture_melee_holster_veto_ms, 0, 3000);
+    g_config.gesture_melee_smoothing_ms = std::clamp(g_config.gesture_melee_smoothing_ms, 0.0f, 200.0f);
+    g_config.gesture_melee_max_speed = std::clamp(g_config.gesture_melee_max_speed, 10.0f, 100.0f);
+    g_config.gesture_melee_max_reach = std::clamp(g_config.gesture_melee_max_reach, 1.0f, 3.0f);
     g_config.right_shoulder_drop = std::clamp(g_config.right_shoulder_drop, 0.0f, 0.3f);
     g_config.shoulder_back_m = std::clamp(g_config.shoulder_back_m, -0.3f, 0.3f);
     g_config.gun_pitch_deg = std::clamp(g_config.gun_pitch_deg, -180.0f, 180.0f);
     g_config.gun_yaw_deg = std::clamp(g_config.gun_yaw_deg, -180.0f, 180.0f);
     g_config.gun_roll_deg = std::clamp(g_config.gun_roll_deg, -180.0f, 180.0f);
-    g_config.gun_forward_m = std::clamp(g_config.gun_forward_m, -0.3f, 0.5f);
-    g_config.gun_right_m = std::clamp(g_config.gun_right_m, -0.3f, 0.3f);
-    g_config.gun_up_m = std::clamp(g_config.gun_up_m, -0.3f, 0.3f);
+    g_config.gun_forward_m = std::clamp(g_config.gun_forward_m, weapon_alignment::kForwardMinimum, weapon_alignment::kForwardMaximum);
+    g_config.gun_right_m = std::clamp(g_config.gun_right_m, weapon_alignment::kRightMinimum, weapon_alignment::kRightMaximum);
+    g_config.gun_up_m = std::clamp(g_config.gun_up_m, weapon_alignment::kUpMinimum, weapon_alignment::kUpMaximum);
     g_config.halo2_classic_gun_pitch_deg =
         std::clamp(g_config.halo2_classic_gun_pitch_deg, -180.0f, 180.0f);
     g_config.halo2_classic_gun_yaw_deg =
@@ -680,6 +695,19 @@ static void Clamp()
         std::clamp(g_config.halo2_classic_gun_up_m, -0.3f, 0.3f);
     g_config.muzzle_height_m = std::clamp(g_config.muzzle_height_m, -0.3f, 0.3f);
     g_config.scope_zoom = std::clamp(g_config.scope_zoom, 6.0f, 24.0f);
+    for (int level = 0; level < 2; ++level)
+    {
+        const float size = g_config.aim_frame_size_deg[level];
+        g_config.aim_frame_size_deg[level] = std::isfinite(size) ? std::clamp(size, 10.0f, 120.0f) : 100.0f;
+        const float strength = g_config.aim_frame_strength[level];
+        g_config.aim_frame_strength[level] = std::isfinite(strength) ? std::clamp(strength, 0.5f, 4.0f) : 1.0f;
+    }
+    g_config.aim_frame_3d_strength = std::isfinite(g_config.aim_frame_3d_strength)
+        ? std::clamp(g_config.aim_frame_3d_strength, 1.0f, 10.0f) : 6.0f;
+    g_config.two_hand_one_hand_range_m = std::isfinite(g_config.two_hand_one_hand_range_m)
+        ? std::clamp(g_config.two_hand_one_hand_range_m, 0.06f, 0.48f) : 0.24f;
+    g_config.aim_frame_move_s = std::isfinite(g_config.aim_frame_move_s)
+        ? std::clamp(g_config.aim_frame_move_s, 0.0f, 1.0f) : 0.12f;
     g_config.scope_screen_width_m = std::clamp(g_config.scope_screen_width_m, 0.04f, 0.25f);
     g_config.scope_screen_right_m = std::clamp(g_config.scope_screen_right_m, -0.30f, 0.30f);
     g_config.scope_screen_up_m = std::clamp(g_config.scope_screen_up_m, -0.20f, 0.30f);
@@ -750,6 +778,7 @@ struct TunableField
 };
 
 const TunableField kTunableFields[] = {
+    {"game_brightness", &TitleTunables::game_brightness, &Config::game_brightness, 0.5f, 2.0f},
     {"left_hand_mesh_x_m", &TitleTunables::left_hand_mesh_x_m, &Config::left_hand_mesh_x_m, -.20f, .20f},
     {"left_hand_mesh_y_m", &TitleTunables::left_hand_mesh_y_m, &Config::left_hand_mesh_y_m, -.20f, .20f},
     {"left_hand_mesh_z_m", &TitleTunables::left_hand_mesh_z_m, &Config::left_hand_mesh_z_m, -.20f, .20f},
@@ -766,11 +795,13 @@ const TunableField kTunableFields[] = {
      -180.0f, 180.0f},
     {"gun_roll_deg", &TitleTunables::gun_roll_deg, &Config::gun_roll_deg,
      -180.0f, 180.0f},
-    {"gun_forward_m", &TitleTunables::gun_forward_m, &Config::gun_forward_m,
-     -0.30f, 0.50f},
-    {"gun_right_m", &TitleTunables::gun_right_m, &Config::gun_right_m,
-     -0.30f, 0.30f},
-    {"gun_up_m", &TitleTunables::gun_up_m, &Config::gun_up_m, -0.30f, 0.30f},
+    {"world_scale", &TitleTunables::world_scale, &Config::world_scale, .165f, .495f},
+    {"gun_forward_m", &TitleTunables::gun_forward_m, &Config::gun_forward_m, weapon_alignment::kForwardMinimum, weapon_alignment::kForwardMaximum},
+    {"gun_right_m", &TitleTunables::gun_right_m, &Config::gun_right_m, weapon_alignment::kRightMinimum, weapon_alignment::kRightMaximum},
+    {"gun_up_m", &TitleTunables::gun_up_m, &Config::gun_up_m, weapon_alignment::kUpMinimum, weapon_alignment::kUpMaximum},
+    {"left_gun_forward_m", &TitleTunables::left_gun_forward_m, &Config::left_gun_forward_m, weapon_alignment::kForwardMinimum, weapon_alignment::kForwardMaximum},
+    {"left_gun_right_m", &TitleTunables::left_gun_right_m, &Config::left_gun_right_m, weapon_alignment::kRightMinimum, weapon_alignment::kRightMaximum},
+    {"left_gun_up_m", &TitleTunables::left_gun_up_m, &Config::left_gun_up_m, weapon_alignment::kUpMinimum, weapon_alignment::kUpMaximum},
     {"left_hand_forward_m", &TitleTunables::left_hand_forward_m,
      &Config::left_hand_forward_m, -0.15f, 0.30f},
     {"hud_size", &TitleTunables::hud_size, &Config::hud_size, 0.30f, 1.00f, kTitleProfileReach},
@@ -811,6 +842,17 @@ std::atomic<int> g_activeTitleProfile{-1};
 // key holds.
 float ProfileSeed(int profile, const TunableField& descriptor, float shared)
 {
+    // Each game's calibrated gun position. A shared value the player moved away from the old single
+    // default (-0.14 / 0 / 0 m) keeps that adjustment on top of every game's baseline.
+    const auto gun=weapon_alignment::Baseline(profile);
+    const TitleTunables legacy{};
+    if (descriptor.member == &TitleTunables::gun_forward_m) return gun.forward+(shared-legacy.gun_forward_m);
+    if (descriptor.member == &TitleTunables::gun_right_m) return gun.right+(shared-legacy.gun_right_m);
+    if (descriptor.member == &TitleTunables::gun_up_m) return gun.up+(shared-legacy.gun_up_m);
+    const auto left=weapon_alignment::HasProfile(profile)?weapon_alignment::kLeftOffsets[profile]:weapon_alignment::Offsets{-.16f,.04f,-.06f};
+    if (descriptor.member == &TitleTunables::left_gun_forward_m) return left.forward;
+    if (descriptor.member == &TitleTunables::left_gun_right_m) return left.right;
+    if (descriptor.member == &TitleTunables::left_gun_up_m) return left.up;
     const TitleTunables defaults{};
     const CrosshairStart& own = kCrosshairStarts[profile];
     if (descriptor.member == &TitleTunables::crosshair_size_deg && own.size_deg != defaults.crosshair_size_deg)
@@ -1016,6 +1058,11 @@ void ConfigLoad(const wchar_t* path)
     bool loadedScopeZoom = false;
     bool loadedHolsterRadius = false;
     bool flashlightMappingV2 = false;
+    bool loadedInputPreset = false;
+    bool leftHandForwardResetV1 = false;
+    bool loadedSharedLeftHandForward = false;
+    bool twoHandZoneBaselineV1 = false;
+    bool loadedTwoHandZoneRight = false;
     bool aimDirectDriveSeen = false;
     bool coopSafeShotsV2 = false;   // coop_safe_shots_version >= 2: a 1 in this file is a chosen "always"
     bool loadedLegacyVirtualStockStrength = false;
@@ -1055,6 +1102,13 @@ void ConfigLoad(const wchar_t* path)
             vehicleGameKey=true;break;
         }
         if(vehicleGameKey)continue;
+        if (!strcmp(key,"world_scale")) {ParseFloatSetting(key,val,g_config.world_scale);continue;}
+        // Legacy key, no longer read: bloom_chosen_<game> records the player's own bloom choice.
+        if (!strcmp(key,"bloom_defaults_version")) continue;
+        if (!strcmp(key,"left_hand_forward_reset_version")) {leftHandForwardResetV1=atoi(val)>=1;continue;}
+        if (!strcmp(key,"left_hand_forward_m")) loadedSharedLeftHandForward=true;
+        if (!strcmp(key,"two_hand_zone_baseline_version")) {twoHandZoneBaselineV1=atoi(val)>=1;continue;}
+        if (!strcmp(key,"two_hand_zone_right_m")) loadedTwoHandZoneRight=true;
         if (ParseWeaponAlignmentKey(key,val)||ParseTitleProfileKey(key, val))
             continue;
         bool vrBindingKey=false;
@@ -1107,6 +1161,12 @@ void ConfigLoad(const wchar_t* path)
             muzzleFlashKey=true;break;
         }
         if(muzzleFlashKey) continue;
+        if(!strcmp(key,"disable_autoexposure_odst")) {
+            char* end=nullptr;const long value=strtol(val,&end,10);
+            if(end!=val&&end&&*end==0&&(value==0||value==1))g_config.disable_autoexposure_odst=value!=0;
+            else LOG("config: invalid autoexposure setting '%s' ignored",key);
+            continue;
+        }
         bool bloomKey=false;
         for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
         {
@@ -1119,7 +1179,37 @@ void ConfigLoad(const wchar_t* path)
             bloomKey=true;break;
         }
         if(bloomKey) continue;
+        bool bloomChoiceKey=false;
+        for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+        {
+            char settingKey[80]{};
+            sprintf_s(settingKey,"bloom_chosen_%s",weapon_interaction::kTitleKeys[title]);
+            if(strcmp(key,settingKey)) continue;
+            g_config.bloom_chosen[title]=atoi(val)!=0;
+            bloomChoiceKey=true;break;
+        }
+        if(bloomChoiceKey) continue;
         if(!strcmp(key,"vr_action_mapping")) {g_config.vr_action_mapping=atoi(val)!=0;continue;}
+        if(!strcmp(key,"gesture_melee_speed")) {ParseFloatSetting(key,val,g_config.gesture_melee_speed);continue;}
+        if(!strcmp(key,"gesture_melee_extension")) {ParseFloatSetting(key,val,g_config.gesture_melee_extension);continue;}
+        if(!strcmp(key,"gesture_melee_travel")) {ParseFloatSetting(key,val,g_config.gesture_melee_travel);continue;}
+        if(!strcmp(key,"gesture_melee_reach")) {ParseFloatSetting(key,val,g_config.gesture_melee_reach);continue;}
+        if(!strcmp(key,"gesture_melee_require_grip")) {ParseBoolSetting(key,val,g_config.gesture_melee_require_grip);continue;}
+        if(!strcmp(key,"gesture_melee_off_hand")) {ParseBoolSetting(key,val,g_config.gesture_melee_off_hand);continue;}
+        if(!strcmp(key,"gesture_melee_directional")) {ParseBoolSetting(key,val,g_config.gesture_melee_directional);continue;}
+        if(!strcmp(key,"gesture_melee_smoothed_hands")) {ParseBoolSetting(key,val,g_config.gesture_melee_smoothed_hands);continue;}
+        if(!strcmp(key,"gesture_melee_log")) {ParseBoolSetting(key,val,g_config.gesture_melee_log);continue;}
+        if(!strcmp(key,"gesture_melee_aim_hold_ms")) {g_config.gesture_melee_aim_hold_ms=atoi(val);continue;}
+        if(!strcmp(key,"gesture_melee_aim_ramp_ms")) {g_config.gesture_melee_aim_ramp_ms=atoi(val);continue;}
+        if(!strcmp(key,"gesture_melee_press_ms")) {g_config.gesture_melee_press_ms=atoi(val);continue;}
+        if(!strcmp(key,"gesture_melee_cooldown_ms")) {g_config.gesture_melee_cooldown_ms=atoi(val);continue;}
+        if(!strcmp(key,"gesture_melee_holster_veto_ms")) {g_config.gesture_melee_holster_veto_ms=atoi(val);continue;}
+        if(!strcmp(key,"gesture_melee_smoothing_ms")) {ParseFloatSetting(key,val,g_config.gesture_melee_smoothing_ms);continue;}
+        if(!strcmp(key,"gesture_melee_max_speed")) {ParseFloatSetting(key,val,g_config.gesture_melee_max_speed);continue;}
+        if(!strcmp(key,"gesture_melee_max_reach")) {ParseFloatSetting(key,val,g_config.gesture_melee_max_reach);continue;}
+        if(!strcmp(key,"input_preset")) {strncpy_s(g_config.input_preset,val,_TRUNCATE);loadedInputPreset=true;continue;}
+        if(!strcmp(key,"trigger_air_equipment")) {g_config.trigger_air_equipment=atoi(val)!=0;continue;}
+        if(!strcmp(key,"right_stick_crouch")) {g_config.right_stick_crouch=atoi(val)!=0;continue;}
         if(!strcmp(key,"flashlight_suppress_on_two_hand")) {g_config.flashlight_suppress_on_two_hand=atoi(val)!=0;continue;}
         if(!strcmp(key,"upscaler")) {g_config.upscaler=atoi(val)==1?1:0;continue;}
         if(!strcmp(key,"dlss_mode")) {g_config.dlss_mode=std::clamp(atoi(val),0,4);continue;}
@@ -1232,6 +1322,16 @@ void ConfigLoad(const wchar_t* path)
             ParseBoolSetting(key, val, g_config.two_hand_transition_smoothing);
             continue;
         }
+        if(!strcmp(key,"two_hand_one_hand_range_m"))
+        {
+            ParseFloatSetting(key, val, g_config.two_hand_one_hand_range_m);
+            continue;
+        }
+        if(!strcmp(key,"two_hand_grip_zone_authority"))
+        {
+            ParseBoolSetting(key, val, g_config.two_hand_grip_zone_authority);
+            continue;
+        }
         if(!strcmp(key,"two_hand_switch_inherit"))
         {
             ParseBoolSetting(key, val, g_config.two_hand_switch_inherit);
@@ -1270,6 +1370,8 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key,"weapon_holsters")) { g_config.weapon_holsters=atoi(val)!=0;continue; }
         if (!strcmp(key,"weapon_holster_slide")) { g_config.weapon_holster_slide=atoi(val)!=0;continue; }
         if (!strcmp(key,"weapon_holster_click")) { g_config.weapon_holster_click=atoi(val)!=0;continue; }
+        if (!strcmp(key,"gesture_only_weapon_input")) { g_config.gesture_only_weapon_input=atoi(val)!=0;continue; }
+        if (!strcmp(key,"dual_wield_shake_reload")) { g_config.dual_wield_shake_reload=atoi(val)!=0;continue; }
         if (!strcmp(key,"weapon_needler_shake")) { g_config.weapon_needler_shake=atoi(val)!=0;continue; }
         if (!strcmp(key,"weapon_unknown_reload_visual")) { g_config.weapon_unknown_reload_visual=atoi(val)!=0;continue; }
         if (!strcmp(key,"weapon_shake_travel_m"))
@@ -1327,6 +1429,50 @@ void ConfigLoad(const wchar_t* path)
             *holsterCustom=std::isfinite(*holsterCustom)?std::clamp(*holsterCustom,-.80f,.80f):fallback;
             continue;
         }
+        if (!strcmp(key, "reclaimer_talk_gesture"))
+        {
+            ParseBoolSetting(key, val, g_config.reclaimer_talk_gesture);
+            continue;
+        }
+        if (!strcmp(key, "reclaimer_vote_gesture"))
+        {
+            ParseBoolSetting(key, val, g_config.reclaimer_vote_gesture);
+            continue;
+        }
+        if (!strcmp(key, "reclaimer_vote_yes_key"))
+        {
+            const int code = atoi(val);
+            g_config.reclaimer_vote_yes_key = code > 0 && code < 255 ? code : Config{}.reclaimer_vote_yes_key;
+            continue;
+        }
+        if (!strcmp(key, "reclaimer_vote_no_key"))
+        {
+            const int code = atoi(val);
+            g_config.reclaimer_vote_no_key = code > 0 && code < 255 ? code : Config{}.reclaimer_vote_no_key;
+            continue;
+        }
+        if (!strcmp(key, "reclaimer_scoreboard_gesture"))
+        {
+            ParseBoolSetting(key, val, g_config.reclaimer_scoreboard_gesture);
+            continue;
+        }
+        if (!strcmp(key, "reclaimer_scoreboard_key"))
+        {
+            const int code = atoi(val);
+            g_config.reclaimer_scoreboard_key = code > 0 && code < 255 ? code : Config{}.reclaimer_scoreboard_key;
+            continue;
+        }
+        if (!strcmp(key, "reclaimer_talk_key"))
+        {
+            const int code = atoi(val);
+            g_config.reclaimer_talk_key = code > 0 && code < 255 ? code : Config{}.reclaimer_talk_key;
+            continue;
+        }
+        if (!strcmp(key, "dpad_keep_moving"))
+        {
+            ParseBoolSetting(key, val, g_config.dpad_keep_moving);
+            continue;
+        }
         if (!strcmp(key, "dpad_head_radius"))
         {
             ParseFloatSetting(key, val, g_config.dpad_head_radius);
@@ -1368,6 +1514,8 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "seat_fire_from_eye")) { g_config.seat_fire_from_eye = atoi(val) != 0; continue; }
         if (!strcmp(key, "halo4_seat_converge")) { g_config.halo4_seat_converge = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "install_search_memory")) { g_config.install_search_memory = atoi(val) != 0 ? 1 : 0; continue; }
+        if (!strcmp(key, "install_search_cache")) { g_config.install_search_cache = atoi(val) != 0 ? 1 : 0; continue; }
+        if (!strcmp(key, "install_hooks_together")) { g_config.install_hooks_together = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "aim_direct_drive"))
         { g_config.aim_direct_drive = atoi(val) != 0 ? 1 : 0; aimDirectDriveSeen = true; continue; }
         if (!strcmp(key, "drive_address_cache")) { g_config.drive_address_cache = atoi(val) != 0 ? 1 : 0; continue; }
@@ -1384,6 +1532,14 @@ void ConfigLoad(const wchar_t* path)
         // A player's setting stands ABOVE the development-only part below: a key read only in there is saved by a
         // player build and then called unknown at its next start (tests/config_player_roundtrip_tests.cpp).
         if (!strcmp(key, "mono_rendering")) { g_config.mono_rendering = atoi(val) != 0; continue; }
+        if (!strcmp(key, "aim_frame_zoom")) { g_config.aim_frame_zoom = atoi(val) != 0; continue; }
+        if (!strcmp(key, "aim_frame_stereo")) { g_config.aim_frame_stereo = atoi(val) != 0; continue; }
+        if (!strcmp(key, "aim_frame_3d_strength")) { g_config.aim_frame_3d_strength = (float)atof(val); continue; }
+        if (!strcmp(key, "aim_frame_size_deg_1")) { g_config.aim_frame_size_deg[0] = (float)atof(val); continue; }
+        if (!strcmp(key, "aim_frame_size_deg_2")) { g_config.aim_frame_size_deg[1] = (float)atof(val); continue; }
+        if (!strcmp(key, "aim_frame_strength_1")) { g_config.aim_frame_strength[0] = (float)atof(val); continue; }
+        if (!strcmp(key, "aim_frame_strength_2")) { g_config.aim_frame_strength[1] = (float)atof(val); continue; }
+        if (!strcmp(key, "aim_frame_move_s")) { g_config.aim_frame_move_s = (float)atof(val); continue; }
         if (!strcmp(key, "hook_cost_frames"))
         {
             const int frames = atoi(val);
@@ -1393,6 +1549,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "host_ui_panel")) { g_config.host_ui_panel = atoi(val) != 0; continue; }
         if (!strcmp(key, "host_ui_panel_width_m")) { g_config.host_ui_panel_width_m = (float)atof(val); continue; }
         if (!strcmp(key, "host_ui_panel_distance_m")) { g_config.host_ui_panel_distance_m = (float)atof(val); continue; }
+        if (!strcmp(key, "reclaimer_flight_buttons")) { g_config.reclaimer_flight_buttons = atoi(val) != 0; continue; }
 #if HALOMCCVR_DEV_DIAGNOSTICS   // research tools and dev overrides: a player build never reads them
         if (!strcmp(key, "reach_aim_probe")) { g_config.reach_aim_probe=atoi(val); continue; }
         if (!strcmp(key, "dev_install_search_check")) { g_config.dev_install_search_check = atoi(val) != 0 ? 1 : 0; continue; }
@@ -1547,6 +1704,21 @@ void ConfigLoad(const wchar_t* path)
             g_config.nav_marker_ring = (v >= 0.0f && v <= 1.0f) ? v : Config{}.nav_marker_ring;
             continue;
         }
+        if (!strcmp(key, "player_tags_show")) { g_config.player_tags_show = atoi(val) != 0; continue; }
+        if (!strcmp(key, "player_tags_scale") || !strcmp(key, "player_tags_opacity") ||
+            !strcmp(key, "player_tags_max_distance_m"))
+        {
+            // Out of range or NaN reads as the default.
+            const float v = static_cast<float>(atof(val));
+            const Config d{};
+            if (!strcmp(key, "player_tags_scale"))
+                g_config.player_tags_scale = (v >= 0.25f && v <= 2.0f) ? v : d.player_tags_scale;
+            else if (!strcmp(key, "player_tags_opacity"))
+                g_config.player_tags_opacity = (v >= 0.0f && v <= 1.0f) ? v : d.player_tags_opacity;
+            else
+                g_config.player_tags_max_distance_m = (v >= 0.0f && v <= 300.0f) ? v : d.player_tags_max_distance_m;
+            continue;
+        }
         if (!strcmp(key, "experimental_hand_alignment"))
         {
             g_config.experimental_hand_alignment = atoi(val) != 0;
@@ -1557,6 +1729,15 @@ void ConfigLoad(const wchar_t* path)
             g_config.left_handed = atoi(val) != 0;
             continue;
         }
+        // Keep the new independent left-hand offset keys outside the legacy
+        // else-if chain: those extra arms exceed MSVC's block-nesting limit (C1061).
+        if (!strcmp(key, "left_gun_forward_m"))
+        { g_config.left_gun_forward_m = (float)atof(val); continue; }
+        if (!strcmp(key, "left_gun_right_m"))
+        { g_config.left_gun_right_m = (float)atof(val); continue; }
+        if (!strcmp(key, "left_gun_up_m"))
+        { g_config.left_gun_up_m = (float)atof(val); continue; }
+
         // Here, not in the else-if chain below: that chain is at MSVC's block nesting limit (C1061).
         if (!strcmp(key, "vehicle_vr_controls"))
         {
@@ -1688,6 +1869,26 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "game_menu_pointer"))
         {
             g_config.game_menu_pointer = atoi(val) != 0;
+            continue;
+        }
+        if (!strcmp(key, "allow_ofxr_bridge"))
+        {
+            g_config.allow_ofxr_bridge = atoi(val) != 0;
+            continue;
+        }
+        if (!strcmp(key, "desktop_mirror"))
+        {
+            g_config.desktop_mirror = atoi(val) != 0;
+            continue;
+        }
+        if (!strcmp(key, "reclaimer_share_device"))
+        {
+            g_config.reclaimer_share_device = atoi(val) != 0;
+            continue;
+        }
+        if (!strcmp(key, "reclaimer_fit_to_display"))
+        {
+            g_config.reclaimer_fit_to_display = atoi(val) != 0;
             continue;
         }
         if (!strcmp(key, "config_version"))
@@ -1935,7 +2136,7 @@ void ConfigLoad(const wchar_t* path)
         else if (!strcmp(key, "reticle_element_id"))
             continue; // retired runtime tag-index picker; accept old configs quietly
         else if (!strcmp(key, "game_brightness"))
-            g_config.game_brightness = (float)atof(val);
+            ParseFloatSetting(key, val, g_config.game_brightness);
         else if (!strcmp(key, "resolution_scale"))
             g_config.resolution_scale = (float)atof(val);
         else if (!strcmp(key, "fit_desktop_window"))
@@ -2020,6 +2221,16 @@ void ConfigLoad(const wchar_t* path)
             LOG("config: unknown key '%s' ignored", key);
     }
     fclose(f);
+    // A file from before input presets. A remapping player's Automatic rows meant the fixed VR layout, and Automatic
+    // now follows the game's own: write that layout out so nothing moves under them.
+    if (!loadedInputPreset && g_config.vr_action_mapping)
+    {
+        g_config.input_preset[0] = 0;
+        for (auto& title : g_config.vr_bindings)
+            for (unsigned action = 0; action < vr_mapping::Count; ++action)
+                if (title[action] == vr_mapping::Automatic)
+                    title[action] = vr_mapping::kDefaults[action];
+    }
     if (loadedLegacyVirtualStockStrength)
     {
         if (VirtualStockUsesPlusMode(g_config))
@@ -2096,10 +2307,31 @@ void ConfigLoad(const wchar_t* path)
             "choose Always on the Advanced page to keep it on everywhere");
     }
     Config_ApplyAimModes();
+    if (!twoHandZoneBaselineV1 && loadedTwoHandZoneRight) {
+        // The grab zone's default side offset moved from 0.030 m to 0.080 m, and every saved file holds the
+        // old default. Keep each saved adjustment relative to it (a file at the old default reads 0.080).
+        // Before Clamp, which applies the new range. In memory only: the next save writes it.
+        constexpr float kLegacyTwoHandZoneRight=0.03f,kTwoHandZoneRight=0.08f;
+        g_config.two_hand_zone_right_m+=kTwoHandZoneRight-kLegacyTwoHandZoneRight;
+    }
     Clamp();
     NormalizeVirtualStockProximityPair();
     NormalizeVirtualStockHybridSeatPair();
     NormalizeVirtualStockHybridHorizontalPair();
+    if (!leftHandForwardResetV1) {
+        // left_hand_forward_m is now an extra on top of each game's left-gun position, no longer the
+        // whole standoff measured from the old -0.063 m default. Keep each saved adjustment relative to
+        // that default (a file at the old default reads 0). In memory only: the next save writes it.
+        constexpr float kLegacyLeftHandForward=-0.063f;
+        if (loadedSharedLeftHandForward)
+            g_config.left_hand_forward_m=std::clamp(
+                g_config.left_hand_forward_m-kLegacyLeftHandForward,-0.15f,0.30f);
+        for (int field=0;field<kTunableFieldCount;++field)
+            if (kTunableFields[field].member==&TitleTunables::left_hand_forward_m)
+                for (int profile=0;profile<kTitleProfileCount;++profile)
+                    if (g_profileFieldSet[profile][field])
+                        g_config.title_profiles[profile].left_hand_forward_m-=kLegacyLeftHandForward;
+    }
     ResolveTitleProfiles();
     LOG("config: loaded (screen %.2fm wide at %.2fm)", g_config.screen_width_m, g_config.screen_distance_m);
 }
@@ -2133,10 +2365,21 @@ void ConfigLoadMigrating(const wchar_t* primaryPath, const wchar_t* legacyPath)
     ConfigLoad(primaryPath);
 }
 
+static std::atomic<bool> g_configReadOnly{false};
+void Config_SetReadOnly(bool readOnly)
+{
+    g_configReadOnly.store(readOnly);
+}
+
+const wchar_t* Config_Path()
+{
+    return g_path.c_str();
+}
+
 void ConfigSave()
 {
     const std::lock_guard lock(g_profileMutex);
-    if (g_path.empty())
+    if (g_path.empty() || g_configReadOnly.load())
         return;
     Config_ApplyWeaponProfile(g_observedWeaponIdentity);
     Clamp();
@@ -2214,6 +2457,10 @@ void ConfigSave()
             d.host_ui_panel_distance_m);
     fprintf(f, "host_ui_panel_width_m = %.2f\n", g_config.host_ui_panel_width_m);
     fprintf(f, "host_ui_panel_distance_m = %.2f\n\n", g_config.host_ui_panel_distance_m);
+    fprintf(f, "# Project Reclaimer only. How its Hornet-class flyers climb and dive. 1 = with the buttons, as in\n");
+    fprintf(f, "# MCC (right A climbs, the left grip dives). 0 = Project Reclaimer's classic Halo 3 controls: aim\n");
+    fprintf(f, "# up or down to climb or dive. (default %d)\n", d.reclaimer_flight_buttons ? 1 : 0);
+    fprintf(f, "reclaimer_flight_buttons = %d\n\n", g_config.reclaimer_flight_buttons ? 1 : 0);
     fprintf(f, "# Stereo 3D theatre for engine-confirmed cutscenes where the game\n");
     fprintf(f, "# has taken camera control away from the player. Shared by every\n");
     fprintf(f, "# supported title, including future title adapters. (default %d)\n",
@@ -2290,8 +2537,20 @@ void ConfigSave()
              kMenuOffsetLimit, kMenuOffsetLimit);
     fprintf(f, "menu_side_m = %.2f\n\n", g_config.menu_side_m);
     fprintf(f, "# Aim the primary controller at MCC / pause menus; trigger clicks.\n");
-    fprintf(f, "# Optional; requires MCC desktop focus. Does not affect gameplay or F1.\n");
+    fprintf(f, "# On by default; requires MCC desktop focus. Does not affect gameplay or F1.\n");
     fprintf(f, "game_menu_pointer = %d\n\n", g_config.game_menu_pointer ? 1 : 0);
+    fprintf(f, "# Let OFXR Bridge (an OpenXR frame-generation layer) run in this game.\n");
+    fprintf(f, "# Off by default: OFXR has crashed the mod a few seconds in. Off keeps\n");
+    fprintf(f, "# OFXR out of this game only; other games still get it. Applies at launch.\n");
+    fprintf(f, "allow_ofxr_bridge = %d\n\n", g_config.allow_ofxr_bridge ? 1 : 0);
+    fprintf(f, "# Project Reclaimer: keep its picture no larger than your monitor (Display\n");
+    fprintf(f, "# mode Borderless, Render resolution Native). A picture larger than the\n");
+    fprintf(f, "# screen is suspected of stopping the graphics card on some PCs; 0 gives it\n");
+    fprintf(f, "# the Picture panel's full size. Applies at Project Reclaimer's next start.\n");
+    fprintf(f, "reclaimer_fit_to_display = %d\n\n", g_config.reclaimer_fit_to_display ? 1 : 0);
+    fprintf(f, "# Project Reclaimer: show a game it starts after the first (ODST, after Halo 3's menu) in the\n");
+    fprintf(f, "# headset, by giving it the headset's graphics device. 0 = that game freezes in the headset.\n");
+    fprintf(f, "reclaimer_share_device = %d\n\n", g_config.reclaimer_share_device ? 1 : 0);
     fprintf(f, "# Show the welcome page by itself once at the start of each launch.\n");
     fprintf(f, "# Tick \"Don't show this again\" on that page to clear this. The page\n");
     fprintf(f, "# itself always stays in the F1 menu, so you can read it again later.\n");
@@ -2387,6 +2646,18 @@ void ConfigSave()
     fprintf(f, "# Lower brings them closer to the centre. 0 = the game's own ring.\n");
     fprintf(f, "# Live in F1 > HUD > Waypoints. (default %.2f, range 0 to 1)\n", d.nav_marker_ring);
     fprintf(f, "nav_marker_ring = %.2f\n\n", g_config.nav_marker_ring);
+    fprintf(f, "# Player tags: the service tag and arrow over each teammate. Halo 3 (MCC and Project\n");
+    fprintf(f, "# Reclaimer) and ODST. Objective markers and flag, ball and bomb carriers are not changed.\n");
+    fprintf(f, "# Live in F1 > HUD > Waypoints.\n");
+    fprintf(f, "# Show them at all. (default %d)\n", d.player_tags_show ? 1 : 0);
+    fprintf(f, "player_tags_show = %d\n", g_config.player_tags_show ? 1 : 0);
+    fprintf(f, "# Size, times the game's own. (default %.2f, range 0.25 to 2)\n", d.player_tags_scale);
+    fprintf(f, "player_tags_scale = %.2f\n", g_config.player_tags_scale);
+    fprintf(f, "# Opacity, times the game's own. (default %.2f, range 0 to 1)\n", d.player_tags_opacity);
+    fprintf(f, "player_tags_opacity = %.2f\n", g_config.player_tags_opacity);
+    fprintf(f, "# Hide tags farther than this many metres from you; they fade out over the last 5 m.\n");
+    fprintf(f, "# 0 = no limit. (default %.0f, range 0 to 300)\n", d.player_tags_max_distance_m);
+    fprintf(f, "player_tags_max_distance_m = %.0f\n\n", g_config.player_tags_max_distance_m);
     fprintf(f, "# Degrees per snap turn.\n");
     fprintf(f, "# (default %.0f, range 5 to 90)\n", d.turn_snap_deg);
     fprintf(f, "turn_snap_deg = %.0f\n\n", g_config.turn_snap_deg);
@@ -2415,6 +2686,28 @@ void ConfigSave()
     fprintf(f, "# the selected controller to be closer to your head.\n");
     fprintf(f, "# (default %.2f, range 0.10 to 0.50)\n", d.dpad_head_radius);
     fprintf(f, "dpad_head_radius = %.3f\n\n", g_config.dpad_head_radius);
+    fprintf(f, "# Raising the hand while walking leaves the stick walking until it returns to centre; then it is the\n");
+    fprintf(f, "# D-pad. 0: the stick is the D-pad at once and walking stops. (default %d)\n", d.dpad_keep_moving ? 1 : 0);
+    fprintf(f, "dpad_keep_moving = %d\n\n", g_config.dpad_keep_moving ? 1 : 0);
+    fprintf(f, "# Project Reclaimer: X with the left controller at the head (within dpad_head_radius) presses the talk\n");
+    fprintf(f, "# key, so voice chat follows Reclaimer's Hold or Toggle talk mode. (default %d)\n", d.reclaimer_talk_gesture ? 1 : 0);
+    fprintf(f, "reclaimer_talk_gesture = %d\n\n", g_config.reclaimer_talk_gesture ? 1 : 0);
+    fprintf(f, "# The talk key's Windows virtual-key code, if you rebound Push to talk in Reclaimer: 86 is V, 66 is B\n");
+    fprintf(f, "# (team), 78 is N (proximity). (default %d)\n", d.reclaimer_talk_key);
+    fprintf(f, "reclaimer_talk_key = %d\n\n", g_config.reclaimer_talk_key);
+    fprintf(f, "# Project Reclaimer: Y with the left controller at the head presses the scoreboard key. (default %d)\n",
+            d.reclaimer_scoreboard_gesture ? 1 : 0);
+    fprintf(f, "reclaimer_scoreboard_gesture = %d\n\n", g_config.reclaimer_scoreboard_gesture ? 1 : 0);
+    fprintf(f, "# The scoreboard key's Windows virtual-key code, if you rebound it: 9 is Tab. (default %d)\n",
+            d.reclaimer_scoreboard_key);
+    fprintf(f, "reclaimer_scoreboard_key = %d\n\n", g_config.reclaimer_scoreboard_key);
+    fprintf(f, "# Project Reclaimer: A and B with the right controller at the head vote yes and no. (default %d)\n",
+            d.reclaimer_vote_gesture ? 1 : 0);
+    fprintf(f, "reclaimer_vote_gesture = %d\n\n", g_config.reclaimer_vote_gesture ? 1 : 0);
+    fprintf(f, "# The vote keys' Windows virtual-key codes, if you rebound them: 116 is F5, 117 is F6. (defaults %d, %d)\n",
+            d.reclaimer_vote_yes_key, d.reclaimer_vote_no_key);
+    fprintf(f, "reclaimer_vote_yes_key = %d\n", g_config.reclaimer_vote_yes_key);
+    fprintf(f, "reclaimer_vote_no_key = %d\n\n", g_config.reclaimer_vote_no_key);
     fprintf(f, "# Quest 3 alternate D-pad: touch the left controller's thumb rest,\n");
     fprintf(f, "# then move the right stick. Always uses the physical left thumb rest\n");
     fprintf(f, "# and physical right stick, including in left-handed mode.\n");
@@ -2763,6 +3056,8 @@ void ConfigSave()
     fprintf(f, "# Size of the right hand and the weapon it holds. Home/End adjust it\n");
     fprintf(f, "# in-game. 1.00 = the size the active game authored the model at.\n");
     fprintf(f, "# (default %.2f, range 0.3 to 3)\n", d.gun_scale);
+    fprintf(f, "# Tracked-motion world scale in game units per metre (0.33 = 100%%, range 0.165-0.495).\n");
+    fprintf(f, "world_scale = %.4f\n\n", g_config.base_tunables.world_scale);
     fprintf(f, "gun_scale = %.2f\n\n", g_config.base_tunables.gun_scale);
     fprintf(f, "# Size of the LEFT hand, and of the second gun when dual-wielding.\n");
     fprintf(f, "# Separate from gun_scale because the left hand is usually empty.\n");
@@ -3131,6 +3426,28 @@ void ConfigSave()
     fprintf(f, "# converged_aim and the aim written (direct drive). Live in F1 > Scope. (default %d)\n",
             d.scope_converge);
     fprintf(f, "scope_converge = %d\n\n", g_config.scope_converge);
+    fprintf(f, "# Aim Frame Zoom (Halo 3, MCC and Project Reclaimer, and ODST): while the game is zoomed, the\n");
+    fprintf(f, "# headset shows the game's zoomed picture as a frame centred on your aim instead of the\n");
+    fprintf(f, "# immersive view. The zoom button then reaches the game, so the lens above is not offered in\n");
+    fprintf(f, "# those games while this is on. 1 = on. (default %d)\n", d.aim_frame_zoom ? 1 : 0);
+    fprintf(f, "aim_frame_zoom = %d\n\n", g_config.aim_frame_zoom ? 1 : 0);
+    fprintf(f, "# The frame in 3D: each eye sees its own picture of the zoomed view. 0 = one flat picture.\n");
+    fprintf(f, "# (default %d)\n", d.aim_frame_stereo ? 1 : 0);
+    fprintf(f, "aim_frame_stereo = %d\n\n", g_config.aim_frame_stereo ? 1 : 0);
+    fprintf(f, "# The frame's 3D strength: its eye spacing as a multiple of yours. (default %.1f, range 1 to 10)\n",
+            d.aim_frame_3d_strength);
+    fprintf(f, "aim_frame_3d_strength = %.2f\n\n", g_config.aim_frame_3d_strength);
+    fprintf(f, "# The frame's width in degrees at the first zoom level (_1) and the second and higher (_2).\n");
+    fprintf(f, "# (default %.0f / %.0f, range 10 to 120)\n", d.aim_frame_size_deg[0], d.aim_frame_size_deg[1]);
+    fprintf(f, "aim_frame_size_deg_1 = %.1f\n", g_config.aim_frame_size_deg[0]);
+    fprintf(f, "aim_frame_size_deg_2 = %.1f\n\n", g_config.aim_frame_size_deg[1]);
+    fprintf(f, "# How much further the frame narrows the game's own zoomed view, per level (1 = the game's).\n");
+    fprintf(f, "# (default %.2f / %.2f, range 0.5 to 4)\n", d.aim_frame_strength[0], d.aim_frame_strength[1]);
+    fprintf(f, "aim_frame_strength_1 = %.2f\n", g_config.aim_frame_strength[0]);
+    fprintf(f, "aim_frame_strength_2 = %.2f\n\n", g_config.aim_frame_strength[1]);
+    fprintf(f, "# Seconds the frame takes to move between the normal view and the frame. 0 = at once.\n");
+    fprintf(f, "# (default %.2f, range 0 to 1)\n", d.aim_frame_move_s);
+    fprintf(f, "aim_frame_move_s = %.2f\n\n", g_config.aim_frame_move_s);
     fprintf(f, "# Default experimental magnification used for every weapon.\n");
     fprintf(f, "# Initial zoom restored whenever R3 opens the scope; right-stick Y adjusts it.\n");
     fprintf(f, "# (default %.2f, range 6.0 to 24.0)\n", d.scope_zoom);
@@ -3152,9 +3469,9 @@ void ConfigSave()
     fprintf(f, "#  Shared intent; each title adapter maps it to that game's renderer.\n");
     fprintf(f, "# -------------------------------------------------------------------\n\n");
     fprintf(f, "# Game brightness / gamma. 1.0 = the game's own; higher = brighter.\n");
-    fprintf(f, "# One value for Halo 3, ODST and Reach, so a change is felt in all three.\n");
+    fprintf(f, "# Shared starting value; each game saves its own game_brightness profile below.\n");
     fprintf(f, "# (default %.2f, range 0.5 to 2)\n", d.game_brightness);
-    fprintf(f, "game_brightness = %.2f\n\n", g_config.game_brightness);
+    fprintf(f, "game_brightness = %.2f\n\n", g_config.base_tunables.game_brightness);
     fprintf(f, "# How sharp the game renders inside the headset. ANY value in range\n");
     fprintf(f, "# works, so pick your own: 0.90 really means 90%%, not \"rounded to 80\".\n");
     fprintf(f, "# The named tiers are only shortcuts in the F1 menu:\n");
@@ -3197,6 +3514,9 @@ void ConfigSave()
     fprintf(f, "# changing this, the same as resolution_scale.\n");
     fprintf(f, "# (V5 default %d)\n", d.fit_desktop_window ? 1 : 0);
     fprintf(f, "fit_desktop_window = %d\n\n", g_config.fit_desktop_window ? 1 : 0);
+    fprintf(f, "# Halo 3 and ODST: show one eye of the headset's picture on the monitor. 0 = the monitor stays on\n");
+    fprintf(f, "# its last flat frame while in VR. (default %d)\n", d.desktop_mirror ? 1 : 0);
+    fprintf(f, "desktop_mirror = %d\n\n", g_config.desktop_mirror ? 1 : 0);
     fprintf(f, "# Let the HEADSET set the frame rate, not your monitor. The VR frame\n");
     fprintf(f, "# is submitted inside MCC's desktop present, so MCC's V-Sync would\n");
     fprintf(f, "# pace your headset at your DESKTOP's refresh -- a 60 Hz desktop\n");
@@ -3293,6 +3613,8 @@ void ConfigSave()
     fprintf(f, "# Optional pouch-to-gun reload (off by default) and the holster's reserve-weapon draw (on by\n");
     fprintf(f, "# default); native ammo, reload animation and inventory rules remain.\n");
     fprintf(f, "manual_reload = %d\nweapon_holsters = %d\n",g_config.manual_reload?1:0,g_config.weapon_holsters?1:0);
+    fprintf(f, "# 1 = while manual reload or holsters are on, the game's reload and weapon-switch buttons do nothing; gestures only.\n");
+    fprintf(f, "gesture_only_weapon_input = %d\n", g_config.gesture_only_weapon_input?1:0);
     fprintf(f, "manual_reload_disable_auto = %d\nmanual_reload_skip_animations = %d\n",
         g_config.manual_reload_disable_auto?1:0,g_config.manual_reload_skip_animations?1:0);
     fprintf(f, "# Shortened reload retains the native chambering tail; full animation skip takes precedence.\n");
@@ -3318,6 +3640,8 @@ void ConfigSave()
         g_config.weapon_holster_radius_m,g_config.weapon_insert_radius_m,g_config.weapon_holster_draw_m);
     fprintf(f, "weapon_holster_slide = %d\nweapon_holster_click = %d\n",
         g_config.weapon_holster_slide?1:0,g_config.weapon_holster_click?1:0);
+    fprintf(f, "# Dual wield: a shake presses that hand's reload button (Halo 3 both hands, Halo 2 right). Independent of manual_reload.\n");
+    fprintf(f, "dual_wield_shake_reload = %d\n", g_config.dual_wield_shake_reload?1:0);
     fprintf(f, "# Recognized Needlers across all titles and Reach Needle Rifle; requires manual_reload.\n");
     fprintf(f, "# One rapid gun-hand out-and-back shake in any direction; no grip; settle to rearm.\n");
     fprintf(f, "weapon_needler_shake = %d\nweapon_shake_travel_m = %.3f\n",
@@ -3326,12 +3650,13 @@ void ConfigSave()
     fprintf(f, "# Show a generic blue reload item for detected unfamiliar/modded held models.\n");
     fprintf(f, "weapon_unknown_reload_visual = %d\n",g_config.weapon_unknown_reload_visual?1:0);
     fprintf(f, "# 0=X, 1=RB, 2=LB, 3=B, 4=Y, 5=A, 6=LT, 7=RT. CE/H2 share both graphics modes.\n");
+    fprintf(f, "# Project Reclaimer: Halo 3 reload 0 (X, MCC's default) presses RB, Reclaimer's reload.\n");
     for(unsigned i=0;i<weapon_interaction::kTitleCount;++i)
     {
         fprintf(f,"weapon_reload_button_%s = %d\n",weapon_interaction::kTitleKeys[i],g_config.weapon_reload_button[i]);
         fprintf(f,"weapon_switch_button_%s = %d\n",weapon_interaction::kTitleKeys[i],g_config.weapon_switch_button[i]);
     }
-    fprintf(f,"\n# VR action bindings: 0=automatic, 1=unbound. Edited in VR Mappings.\n");
+    fprintf(f,"\n# VR action bindings: 0=the game's own layout, 1=unbound. Edited in F1 > Controls > VR Mappings.\n");
     fprintf(f,"# Physical crouch: lower your head by physical_crouch_depth_m (metres, 0.08 to 0.65) to crouch,\n"
               "# on foot. It needs MCC's hold-to-crouch setting: toggle crouch is not overridden.\n"
               "# 0 = crouch with the button only. (default %d, depth %.2f)\n",
@@ -3353,11 +3678,17 @@ void ConfigSave()
     fprintf(f,"# (Halo 3, ODST, Reach, Halo 4; on foot). 0 = as before. No menu control (log: VIEW HEIGHT).\n");
     fprintf(f,"# (default %d)\n",d.view_follows_standing_height?1:0);
     fprintf(f,"view_follows_standing_height = %d\n",g_config.view_follows_standing_height?1:0);
+    fprintf(f,"# Right stick down crouches and up stands, on foot. It needs MCC's hold-to-crouch setting. (default %d)\n"
+              "right_stick_crouch = %d\n",d.right_stick_crouch?1:0,g_config.right_stick_crouch?1:0);
     fprintf(f,"# Arm-swing locomotion: speed is a fraction of native maximum movement.\n");
     fprintf(f,"physical_running = %d\nphysical_running_speed = %.3f\nphysical_running_sensitivity = %.3f\n",
         g_config.physical_running?1:0,g_config.physical_running_speed,g_config.physical_running_sensitivity);
     fprintf(f,"vr_action_mapping = %d\nflashlight_suppress_on_two_hand = %d\n",
         g_config.vr_action_mapping?1:0,g_config.flashlight_suppress_on_two_hand?1:0);
+    fprintf(f,"# The input preset last chosen in F1 > Controls. (default %s)\ninput_preset = %s\n",
+        d.input_preset,g_config.input_preset);
+    fprintf(f,"# The support trigger with the support grip held on nothing uses equipment. (default %d)\n"
+              "trigger_air_equipment = %d\n",d.trigger_air_equipment?1:0,g_config.trigger_air_equipment?1:0);
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
         for(unsigned action=0;action<vr_mapping::Count;++action)
             fprintf(f,"vr_bind_%s_%s = %d\n",weapon_interaction::kTitleKeys[title],
@@ -3366,9 +3697,14 @@ void ConfigSave()
     fprintf(f,"# Per-game muzzle-flash hiding. Supported paths: H2 Original and H4.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
         fprintf(f,"hide_muzzle_flash_%s = %d\n",weapon_interaction::kTitleKeys[title],g_config.hide_muzzle_flash[title]?1:0);
+    fprintf(f,"disable_autoexposure_odst = %d\n",g_config.disable_autoexposure_odst?1:0);
     fprintf(f,"# Stock bloom per game. Optional suppression supports H3, ODST and Reach.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
         fprintf(f,"bloom_enabled_%s = %d\n",weapon_interaction::kTitleKeys[title],g_config.bloom_enabled[title]?1:0);
+    fprintf(f,"# 1 = the bloom setting above is your own choice. 0: ODST and Reach play without bloom in VR\n"
+              "# and the value above is left as it was.\n");
+    for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+        fprintf(f,"bloom_chosen_%s = %d\n",weapon_interaction::kTitleKeys[title],g_config.bloom_chosen[title]?1:0);
     fprintf(f,"vr_gameplay_subtitles = %d\nvr_gameplay_subtitle_scale = %.3f\nvr_gameplay_subtitle_x = %.3f\nvr_gameplay_subtitle_y = %.3f\nvr_gameplay_subtitle_anchor = %d\n",
         g_config.vr_gameplay_subtitles?1:0,g_config.vr_gameplay_subtitle_scale,g_config.vr_gameplay_subtitle_x,g_config.vr_gameplay_subtitle_y,g_config.vr_gameplay_subtitle_anchor);
     fprintf(f,"vr_theatre_subtitle_scale = %.3f\nvr_theatre_subtitle_x = %.3f\nvr_theatre_subtitle_y = %.3f\nvr_theatre_subtitle_anchor = %d\n",
@@ -3536,6 +3872,14 @@ void ConfigSave()
     fprintf(f, "# 0 = grip the new weapon normally; the grip button need not be released.\n");
     fprintf(f, "# (default %d)\n", d.two_hand_switch_inherit ? 1 : 0);
     fprintf(f, "two_hand_switch_inherit = %d\n\n", g_config.two_hand_switch_inherit ? 1 : 0);
+    fprintf(f, "# Two-handed aim follows the weapon's grip zone: a pistol-style hold never steers, a long gun always\n");
+    fprintf(f, "# does, so a tracking drop-out cannot switch it. 0 = decided by how far apart the hands read each\n");
+    fprintf(f, "# frame. (default %d)\n", d.two_hand_grip_zone_authority ? 1 : 0);
+    fprintf(f, "two_hand_grip_zone_authority = %d\n\n", g_config.two_hand_grip_zone_authority ? 1 : 0);
+    fprintf(f, "# One-handed aim range in metres. With that 1: a weapon whose grip is within this of the main hand\n");
+    fprintf(f, "# aims one-handed. With that 0: how close the hands must be for the main hand to aim alone. (default\n");
+    fprintf(f, "# %.2f, range 0.06 to 0.48)\n", d.two_hand_one_hand_range_m);
+    fprintf(f, "two_hand_one_hand_range_m = %.2f\n\n", g_config.two_hand_one_hand_range_m);
     fprintf(f, "# Main weapon, aim and trigger on the physical left controller.\n");
     fprintf(f, "# Movement, turning and face buttons keep their physical bindings.\n");
     fprintf(f, "left_handed = %d\n\n", g_config.left_handed ? 1 : 0);
@@ -3548,10 +3892,17 @@ void ConfigSave()
     fprintf(f, "# Left controller wrist-to-palm correction for support-hand seating/IK, in meters.\n");
     fprintf(f, "# Excluded from the two-hand aim line, which uses raw tracked points.\n");
     fprintf(f, "# (default %.3f, range -0.15 to 0.30)\n", d.left_hand_forward_m);
+    fprintf(f, "left_gun_forward_m = %.3f\n", g_config.base_tunables.left_gun_forward_m);
+    fprintf(f, "left_gun_right_m = %.3f\n", g_config.base_tunables.left_gun_right_m);
+    fprintf(f, "left_gun_up_m = %.3f\n", g_config.base_tunables.left_gun_up_m);
+    fprintf(f, "# 1 = left_hand_forward_m below is the extra on top of the left-gun offsets.\n");
+    fprintf(f, "left_hand_forward_reset_version = 1\n");
     fprintf(f, "left_hand_forward_m = %.3f\n\n", g_config.base_tunables.left_hand_forward_m);
     fprintf(f, "# Sideways nudge of the two-hand grab zone (+ = player's right), so the\n");
-    fprintf(f, "# grab line sits on the visible barrel, in meters.\n");
-    fprintf(f, "# (default %.3f, range -0.10 to 0.10)\n", d.two_hand_zone_right_m);
+    fprintf(f, "# grab line sits on the visible barrel, in meters (absolute; menu zero = 0.080 m).\n");
+    fprintf(f, "# (default %.3f, absolute range -0.02 to 0.18; menu -0.10 to 0.10)\n", d.two_hand_zone_right_m);
+    fprintf(f, "# 1 = two_hand_zone_right_m below is measured with the 0.080 m default.\n");
+    fprintf(f, "two_hand_zone_baseline_version = 1\n");
     fprintf(f, "two_hand_zone_right_m = %.3f\n\n", g_config.two_hand_zone_right_m);
     fprintf(f, "# Support-controller-to-palm depth for two-hand grab acquisition only, in meters.\n");
     fprintf(f, "# Does not change aim geometry, hand seating, or shots.\n");
@@ -3579,6 +3930,37 @@ void ConfigSave()
     fprintf(f, "# Gesture melee: connect a fast swing to the active game's melee binding.\n");
     fprintf(f, "# (default %d)\n", d.gesture_melee ? 1 : 0);
     fprintf(f, "gesture_melee = %d\n", g_config.gesture_melee ? 1 : 0);
+    fprintf(f, "# What counts as a swing, measured relative to your head. Speed in m/s (default %.2f), how fast the\n"
+               "# arm must be extending in m/s (default %.2f), how far from your head the hand must be in metres\n"
+               "# (default %.2f), and how far an off-hand chop must travel instead of extending in metres,\n"
+               "# 0 = off (default %.2f). require_grip: only with that hand's grip held (default %d).\n",
+            d.gesture_melee_speed, d.gesture_melee_extension, d.gesture_melee_reach, d.gesture_melee_travel,
+            d.gesture_melee_require_grip ? 1 : 0);
+    fprintf(f, "gesture_melee_speed = %.2f\ngesture_melee_extension = %.2f\ngesture_melee_reach = %.2f\n"
+               "gesture_melee_travel = %.2f\ngesture_melee_require_grip = %d\n",
+            g_config.gesture_melee_speed, g_config.gesture_melee_extension, g_config.gesture_melee_reach,
+            g_config.gesture_melee_travel, g_config.gesture_melee_require_grip ? 1 : 0);
+    fprintf(f, "# off_hand: the hand without the gun punches too (default %d). directional: the aim follows the swing\n"
+               "# for aim_hold_ms, then blends back over aim_ramp_ms (default %d, %d, %d).\n",
+            d.gesture_melee_off_hand ? 1 : 0, d.gesture_melee_directional ? 1 : 0, d.gesture_melee_aim_hold_ms,
+            d.gesture_melee_aim_ramp_ms);
+    fprintf(f, "gesture_melee_off_hand = %d\ngesture_melee_directional = %d\ngesture_melee_aim_hold_ms = %d\n"
+               "gesture_melee_aim_ramp_ms = %d\n",
+            g_config.gesture_melee_off_hand ? 1 : 0, g_config.gesture_melee_directional ? 1 : 0,
+            g_config.gesture_melee_aim_hold_ms, g_config.gesture_melee_aim_ramp_ms);
+    fprintf(f, "# File only. How long the press is held and the time between swings, in ms (default %d, %d); no swing this\n"
+               "# soon after a reload or holster gesture, ms (default %d); velocity smoothing, ms (default %.0f); faster\n"
+               "# than this m/s or further than this m is tracking jumping (default %.1f, %.2f); read the hands after\n"
+               "# Hand smoothing instead of as they moved (default %d); log every swing (default %d).\n",
+            d.gesture_melee_press_ms, d.gesture_melee_cooldown_ms, d.gesture_melee_holster_veto_ms,
+            d.gesture_melee_smoothing_ms, d.gesture_melee_max_speed, d.gesture_melee_max_reach,
+            d.gesture_melee_smoothed_hands ? 1 : 0, d.gesture_melee_log ? 1 : 0);
+    fprintf(f, "gesture_melee_press_ms = %d\ngesture_melee_cooldown_ms = %d\ngesture_melee_holster_veto_ms = %d\n"
+               "gesture_melee_smoothing_ms = %.1f\ngesture_melee_max_speed = %.1f\ngesture_melee_max_reach = %.2f\n"
+               "gesture_melee_smoothed_hands = %d\ngesture_melee_log = %d\n",
+            g_config.gesture_melee_press_ms, g_config.gesture_melee_cooldown_ms, g_config.gesture_melee_holster_veto_ms,
+            g_config.gesture_melee_smoothing_ms, g_config.gesture_melee_max_speed, g_config.gesture_melee_max_reach,
+            g_config.gesture_melee_smoothed_hands ? 1 : 0, g_config.gesture_melee_log ? 1 : 0);
     fprintf(f, "# Required controller/weapon sample speed in metres per second.\n");
     fprintf(f, "# (default %.2f, range 0.3 to 10.0)\n",
             d.physical_melee_swing_speed);
@@ -3632,6 +4014,14 @@ void ConfigSave()
     fprintf(f, "# what an earlier one found in the same load of the game's DLL and searches it only for what is new.\n");
     fprintf(f, "# 0 = every install searches all of it again. (default %d)\n", d.install_search_memory);
     fprintf(f, "install_search_memory = %d\n", g_config.install_search_memory);
+    fprintf(f, "# Halo 3: 1 = what those searches found is saved for each build of the game's DLL, and the next\n");
+    fprintf(f, "# launch checks each saved place before using it (HaloMCCVR-install-searches.bin, safe to delete).\n");
+    fprintf(f, "# 0 = nothing is saved or read. (default %d)\n", d.install_search_cache);
+    fprintf(f, "install_search_cache = %d\n", g_config.install_search_cache);
+    fprintf(f, "# Halo 3: 1 = the hooks of the optional features go live together with the core's, in one pass\n");
+    fprintf(f, "# that pauses the game's threads once. 0 = each feature pauses them again for its own. (default %d)\n",
+            d.install_hooks_together);
+    fprintf(f, "install_hooks_together = %d\n", g_config.install_hooks_together);
     fprintf(f, "# --- Per-title weapon/hand/HUD/crosshair profiles (C-TITLE-1) ---\n");
     fprintf(f, "# Every supported game - and Halo 2 Anniversary vs Classic\n");
     fprintf(f, "# separately - keeps its OWN copy of the tunables below.\n");

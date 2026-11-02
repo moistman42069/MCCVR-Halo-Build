@@ -136,17 +136,18 @@ int wmain(int argc,wchar_t** argv) {
         Write(store / "MicrosoftGame.config", "fixture");
         GameInstall game, xbox;
         Require(ProbeInstall(steam, game) && !game.store, "Steam layout detection");
-        Require(ProbeInstall(store.parent_path(), xbox) && xbox.store && xbox.root == store, "Xbox Content layout detection");
+        Require(ProbeInstall(store.parent_path(), xbox) && xbox.store && fs::equivalent(xbox.root, store), "Xbox Content layout detection");
         GameInstall nested;
-        Require(ProbeInstall(steam / "MCC/Binaries/Win64", nested) && nested.root == steam, "browse a child folder");
+        Require(ProbeInstall(steam / "MCC/Binaries/Win64", nested) && fs::equivalent(nested.root, steam), "browse a child folder");
         for(const auto& gameRoot:{steam,store}) {
             for(const auto& browse:{gameRoot,gameRoot/"MCC",gameRoot/"MCC/Binaries",gameRoot/"MCC/Binaries/Win64",
                 gameRoot/"Halo_MCC_VR",gameRoot/"Halo_MCC_VR/ModFiles"}) {
                 GameInstall resolved;
-                Require(ProbeInstall(browse,resolved)&&resolved.root==gameRoot,
+                Require(ProbeInstall(browse,resolved)&&fs::equivalent(resolved.root, gameRoot),
                     "root/bin/already-installed-folder browsing always resolves to actual game root");
-                Require((resolved.root/"Halo_MCC_VR").parent_path()==gameRoot,
-                    "VR destination is a direct child of game root for either edition");
+                const auto vrTarget = (resolved.root / L"Halo_MCC_VR").lexically_normal();
+                Require(vrTarget.parent_path() == resolved.root.lexically_normal(),
+                    "VR destination is a direct child of the normalized game root for either edition");
             }
         }
         Write(source / "HaloMCCVR.dll", "new DLL fixture"); Write(source.parent_path() / "HaloMCCVRLauncher.exe", "new launcher fixture");

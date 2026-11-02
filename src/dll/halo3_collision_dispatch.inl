@@ -30,6 +30,7 @@
         int32_t ignoredObjectA,int32_t ignoredObjectB,
         int32_t ignoredObjectC,void* result)
     {
+        Halo3HookCalled(Halo3Hook::WorldCollision);
         g_halo3WorldCollision.callbacks.fetch_add(
             1,std::memory_order_acq_rel);
         uint8_t nativeResult=0;

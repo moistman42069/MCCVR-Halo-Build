@@ -63,6 +63,8 @@ bool Halo3ReadOwnedWeapons(uint32_t owner, uint32_t weapons[2],bool requireDual,
 bool Halo3ReadOwnedDualWeapons(uint32_t owner,uint32_t weapons[2])
 {return Halo3ReadOwnedWeapons(owner,weapons,true);}
 
+#include "halo3_dual_shake_reload.inl"
+
 #include "halo3_muzzle_publication.inl"
 
 // Runs at the existing admitted stereo boundary. The native firing thread

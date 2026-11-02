@@ -5,6 +5,9 @@ activation code remains in `launcher.cpp`. A new menu selects an installation
 and calls that same launch path only when the user selects **Launch MCC**.
 Installation and update discovery do not start MCC.
 
+**VR SETTINGS.** Opens `HaloMCCVRSettings.exe` from the selected install's `Halo_MCC_VR` folder: the VR menu's own code on
+the desktop (`src/settings`), editing that folder's `halomccvr.cfg`. It does not save while the game is open.
+
 **Unattended launch (`--headless`, dev builds only).** A launcher built with
 `HALOMCCVR_DEV_DIAGNOSTICS` (the `dev` preset) accepts
 `HaloMCCVRLauncher.exe --headless`: it skips the menu and launches the mod in
@@ -55,8 +58,8 @@ manifest is UTF-8/ASCII, one
 relative to `ModFiles`; backslashes and forward slashes are supported. Do not
 list directories, duplicate names, absolute paths or the manifest itself.
 `BUILD-IDENTITY.txt` contains `source_commit=<40 hex>`,
-`build_kind=UNTESTED_LOCAL_CANDIDATE` (or `PUBLIC_RELEASE`) and
-`release_tag=<exact published GitHub tag, otherwise empty>`, one per line.
+`build_kind=RELEASE_CANDIDATE` (or `PUBLIC_RELEASE`) and
+`release_tag=<exact published GitHub tag, or RC-<short commit> for a release candidate>`, one per line.
 The menu displays the installed identity, describes discovery as the latest
 public release, and labels replacement of a candidate as Install public release.
 
@@ -123,7 +126,8 @@ The menu's last section starts Project Reclaimer, a standalone client that runs 
 mod. It needs `HaloMCCVR.dll` and `HaloMCCVRReclaimerRelay.dll` beside the launcher (or in its `ModFiles`
 folder); the relay is not in a player package.
 
-- **The path** of the game program (`project-reclaimer-v<version>.exe`) is typed, pasted, or picked with
+- **The path** of the game program (`project-reclaimer-client-v<version>.exe`, or `project-reclaimer-v<version>.exe`
+  before 0.9.23) is typed, pasted, or picked with
   Browse. It is kept as the one line of `reclaimer_client.txt` beside the launcher and read back at the next
   start. Clearing the field forgets it.
 - **Detect** looks, in this order, where the client's own join links point (it registers a `reclaimer:` link

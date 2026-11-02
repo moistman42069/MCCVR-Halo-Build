@@ -12,7 +12,7 @@ static void ConfigureRig(RenderContext& context,bool left,bool anatomical)
 {
     auto& rig=context.tracking.controllers;
     rig.controlsPresentationBlocked=false;rig.leftHanded=left;rig.handAlignment=anatomical;
-    rig.gunScale=rig.supportScale=1;rig.gunForwardM=rig.supportForwardM=0;rig.primaryShoulderDrop=0;
+    rig.gunScale=rig.supportScale=1;rig.gunForwardM=rig.supportForwardM=0;rig.leftGunForwardM=rig.leftGunRightM=rig.leftGunUpM=0;rig.primaryShoulderDrop=0;
     rig.physical[0]={true,{-.3f,1.2f,-.6f},{}};
     rig.physical[1]={true,{.3f,1.2f,-.6f},{}};
     rig.primaryAim=rig.physical[left?0:1];rig.support=rig.physical[left?1:0];
