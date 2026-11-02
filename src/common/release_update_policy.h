@@ -92,18 +92,30 @@ public:
     ReleaseJson Read() { if (input.size() > 2 * 1024 * 1024) Fail(); auto result = Value(0); Space(); if (at != input.size()) Fail(); return result; }
 };
 struct ReleaseUpdate { std::string tag, assetName, url, sha256; uint64_t bytes = 0; };
-inline ReleaseUpdate ParseReleaseUpdate(const std::string& text) {
-    const auto json = ReleaseJsonReader(text).Read();
-    if (json.kind != ReleaseJson::Kind::Object || json.At("draft").kind != ReleaseJson::Kind::Boolean || json.At("draft").text != "false" || json.At("prerelease").kind != ReleaseJson::Kind::Boolean || json.At("prerelease").text != "false" || json.At("tag_name").kind != ReleaseJson::Kind::String)
+// Where updates can come from. A package names its own in BUILD-IDENTITY.txt (release_channel), which is what the
+// launcher starts on. The test channels publish everything as prereleases or with their own asset names.
+struct ReleaseChannel { const char* key; const wchar_t* label; const char* owner; bool prereleases; };
+inline constexpr ReleaseChannel kReleaseChannels[] = {
+    {"official", L"Moistman (official)", "moistman42069", false},
+    {"nitsujack", L"Nitsujack", "MOTYSHIZ", true},
+    {"godoy", L"Godoy", "Godoy301", true},
+};
+inline size_t ReleaseChannelIndex(std::string_view key) {
+    for (size_t i = 0; i < std::size(kReleaseChannels); ++i) if (key == kReleaseChannels[i].key) return i;
+    return 0;
+}
+inline ReleaseUpdate ReleaseFromJson(const ReleaseJson& json, const ReleaseChannel& channel) {
+    if (json.kind != ReleaseJson::Kind::Object || json.At("draft").kind != ReleaseJson::Kind::Boolean || json.At("draft").text != "false" || json.At("prerelease").kind != ReleaseJson::Kind::Boolean || (!channel.prereleases && json.At("prerelease").text != "false") || json.At("tag_name").kind != ReleaseJson::Kind::String)
         throw std::runtime_error("The latest release is unavailable or is not a stable release.");
     ReleaseUpdate result; size_t candidates = 0;
     for (const auto& asset : json.At("assets").array) {
         const auto name = asset.At("name").text;
         std::string lower = name; std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         // Explicit player archive naming. Never select sources, symbols or logs.
-        if (!(lower == "halo-mcc-vr.zip" || lower == "halomccvr.zip" || (lower.starts_with("halomccvr-") && lower.ends_with("-build.zip")))) continue;
+        if (!(lower == "halo-mcc-vr.zip" || lower == "halomccvr.zip" || (lower.starts_with("halomccvr-") && lower.ends_with("-build.zip")) ||
+            (lower.starts_with("halo-mcc-vr-") && (lower.ends_with("-launcher.zip") || lower.ends_with("-launcher.zip.zip"))))) continue;
         ++candidates;
-        const std::string prefix = "https://github.com/moistman42069/MCCVR-Halo-Build/releases/download/";
+        const std::string prefix = std::string("https://github.com/") + channel.owner + "/MCCVR-Halo-Build/releases/download/";
         const auto url = asset.At("browser_download_url").text;
         const auto digest = asset.At("digest").text;
         if (!url.starts_with(prefix) || url.find_first_of("\r\n\t\\?#") != std::string::npos || digest.size() != 71 || !digest.starts_with("sha256:") ||
@@ -118,5 +130,18 @@ inline ReleaseUpdate ParseReleaseUpdate(const std::string& text) {
     }
     if (candidates != 1) throw std::runtime_error("A single compatible player ZIP was not found in the latest release. Open the release page for manual installation.");
     return result;
+}
+inline ReleaseUpdate ParseReleaseUpdate(const std::string& text, const ReleaseChannel& channel = kReleaseChannels[0]) {
+    return ReleaseFromJson(ReleaseJsonReader(text).Read(), channel);
+}
+// A channel with prereleases: GitHub's "latest" never names one, so the list is read, newest first. A release with
+// nothing a player can install is passed over; the tag shown before installing says which one was found.
+inline ReleaseUpdate ParseNewestRelease(const std::string& text, const ReleaseChannel& channel) {
+    const auto json = ReleaseJsonReader(text).Read();
+    if (json.kind != ReleaseJson::Kind::Array) throw std::runtime_error("Invalid GitHub release response.");
+    for (const auto& release : json.array) {
+        try { return ReleaseFromJson(release, channel); } catch (const std::runtime_error&) {}
+    }
+    throw std::runtime_error("This source has no release the launcher can install. Open the release page for manual instructions.");
 }
 } // namespace mcc_installer

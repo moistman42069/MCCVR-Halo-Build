@@ -3,7 +3,7 @@
 #include "../common/release_update_policy.h"
 namespace mcc_installer {
 std::string Sha256File(const std::filesystem::path& path);
-ReleaseUpdate CheckForUpdate();
+ReleaseUpdate CheckForUpdate(const ReleaseChannel& channel);
 // Download and safely extract, then return the verified package payload path.
 std::filesystem::path DownloadUpdate(const ReleaseUpdate& release);
 // Exposed separately so normal and malicious archive fixtures exercise the

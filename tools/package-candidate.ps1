@@ -530,6 +530,12 @@ try {
         throw "Refusing to reuse candidate directory: $packageDir"
     }
     $payloadDir = Join-Path $packageDir 'ModFiles'
+    # Which release page this package belongs to: the launcher's update source starts here. It follows the repository
+    # the package is built from, so each fork's own builds update from that fork.
+    $originUrl = (& git -C $repoRoot remote get-url origin 2>$null | Out-String).Trim()
+    $releaseChannel = if ($originUrl -match '[/:]MOTYSHIZ/') { 'nitsujack' }
+        elseif ($originUrl -match '[/:]Godoy301/') { 'godoy' }
+        else { 'official' }
 
     Invoke-Tool { & cmake --install $packageBuildDir --config Release `
         --prefix $payloadDir --component dist }
@@ -1434,7 +1440,7 @@ try {
             auto_detect_editions = @('Steam', 'Microsoft Store')
             preserve_and_extend_config = $true
             per_file_sha256_manifest = 'ModFiles/INSTALL-MANIFEST.sha256'
-            update_repository = 'moistman42069/MCCVR-Halo-Build'
+            update_repository = 'chosen in the launcher; starts on release_channel in BUILD-IDENTITY.txt'
             update_policy = 'explicit-latest-public-release-with-asset-digest-and-safe-extraction'
         }
         historical_metadata_notice = 'Older stage/profile IDs and feature results below describe inherited work and retain their original coverage limits. Current accepted baseline is Alpha 0.4.2 source 1a9766c. This unaccepted refinement audit candidate does not complete the full standing scope. Current changes and unresolved items are listed in RELEASE-NOTES.md. Earlier standing and deferred scope is preserved.'
@@ -1452,7 +1458,8 @@ try {
     }
     Copy-Item -LiteralPath (Join-Path $payloadDir 'MANUAL-README.txt') -Destination (Join-Path $packageDir 'README.txt')
     [IO.File]::WriteAllLines((Join-Path $payloadDir 'BUILD-IDENTITY.txt'),
-        @("source_commit=$commit", 'build_kind=RELEASE_CANDIDATE', "release_tag=RC-$($commit.Substring(0, 7))"),
+        @("source_commit=$commit", 'build_kind=RELEASE_CANDIDATE', "release_tag=RC-$($commit.Substring(0, 7))",
+            "release_channel=$releaseChannel"),
         [Text.UTF8Encoding]::new($false))
     # Hash the complete manual/install payload, including config, runtime,
     # fonts, licenses and identity. The manifest itself is deliberately excluded.
