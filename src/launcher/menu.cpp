@@ -23,7 +23,7 @@ constexpr COLORREF kReclaimerPanel = RGB(31, 24, 13), kReclaimerField = RGB(46, 
 constexpr int kReclaimerLeft = 26, kReclaimerTop = 656, kReclaimerRight = 954, kReclaimerBottom = 840;
 constexpr UINT kDone = WM_APP + 20;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
-          ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest };
+          ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, OpenInstalled };
 // The window's client size at 96 dpi.
 constexpr int kMenuWidth = 980, kMenuHeight = 934;
 struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel; bool candidate = true; };
@@ -54,6 +54,7 @@ struct Menu {
     HFONT body{}, smallFont{}, title{}, label{}; HBRUSH background{}, panel{}, reclaimerPanel{}, reclaimerField{};
     std::vector<GameInstall> installs;
     fs::path selfDir, payload; std::wstring launchDir;
+    HWND outsideNote{}, openInstalled{};
     fs::path fontPath; bool fontLoaded = false;
     bool busy = false, updateReady = false, helperStarted = false;
     std::thread worker; std::wstring operationMessage;
@@ -104,6 +105,18 @@ struct Menu {
             L"\nVR folder: " + (game->root / L"Halo_MCC_VR").wstring() + L"\nInstalled: " + (installed ? identity.label : L"not installed"));
         else Text(path, L"No MCC installation found. Choose Browse and select the folder containing MCC, or the Xbox Content folder.");
         Text(GetDlgItem(window, Install), installed ? L"INSTALL / UPDATE" : L"INSTALL VR MOD");
+        // A copy of the launcher outside the install: updates and Launch MCC go to the install, and Project Reclaimer to
+        // this copy (reclaimer_launch::ModDir), so one launcher can be acting on two different builds. Only once the mod
+        // is installed: running from an extracted ZIP is how it gets installed in the first place.
+        std::error_code sameError;
+        const bool outside = installed && !fs::equivalent(selfDir, game->root / L"Halo_MCC_VR", sameError);
+        Text(outsideNote, outside ? L"Running from a copy outside Halo_MCC_VR: " + ShortenedFolder(selfDir.wstring()) +
+            L"\nUpdates go to Halo_MCC_VR, not here. Project Reclaimer runs this copy." : L"");
+        ShowWindow(outsideNote, outside ? SW_SHOW : SW_HIDE);
+        const bool canOpen = outside && fs::is_regular_file(game->root / L"Halo_MCC_VR" / L"HaloMCCVRLauncher.exe");
+        ShowWindow(openInstalled, canOpen ? SW_SHOW : SW_HIDE);
+        EnableWindow(openInstalled, !busy);
+        SetWindowPos(path, nullptr, 0, 0, Px(canOpen ? 640 : 895), Px(77), SWP_NOMOVE | SWP_NOZORDER);
         InvalidateRect(window, nullptr, FALSE);
     }
     void Populate(const fs::path& preferred = {}) {
@@ -270,6 +283,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, 160, 110, 38, Scan);
         menu->path = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 214, 895, 77);
         SendMessageW(menu->path, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
+        menu->outsideNote = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 440, 48, 502, 68);
+        SendMessageW(menu->outsideNote, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
+        menu->openInstalled = Control(*menu, L"BUTTON", L"OPEN INSTALLED LAUNCHER", BS_OWNERDRAW | WS_TABSTOP, 696, 240, 246, 38, OpenInstalled);
         Label(*menu, L"02  /  YOUR VR SETUP", 38, 310, 570);
         menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_AUTOCHECKBOX | WS_TABSTOP, 38, 340, 850, 30, Retain);
         SendMessageW(menu->retain, BM_SETCHECK, BST_CHECKED, 0); SetWindowTheme(menu->retain, L"", L"");
@@ -334,6 +350,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: {
         HDC dc = reinterpret_cast<HDC>(wParam);
+        if (reinterpret_cast<HWND>(lParam) == menu->outsideNote) { SetTextColor(dc, RGB(255, 204, 77)); SetBkColor(dc, kBackground); return reinterpret_cast<LRESULT>(menu->background); }
         if (reinterpret_cast<HWND>(lParam) == menu->reclaimerInfo) { SetTextColor(dc, kText); SetBkColor(dc, kReclaimerPanel); return reinterpret_cast<LRESULT>(menu->reclaimerPanel); }
         SetTextColor(dc, kText); SetBkColor(dc, kBackground); return reinterpret_cast<LRESULT>(menu->background);
     }
@@ -373,6 +390,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             const auto folder = game->root / L"Halo_MCC_VR";
             const std::wstring config = L"\"" + (folder / L"halomccvr.cfg").wstring() + L"\"";
             ShellExecuteW(window, L"open", (folder / L"HaloMCCVRSettings.exe").c_str(), config.c_str(), folder.c_str(), SW_SHOWNORMAL);
+        } break;
+        case OpenInstalled: if (auto* game = menu->Selected()) {
+            const auto folder = game->root / L"Halo_MCC_VR";
+            if (reinterpret_cast<INT_PTR>(ShellExecuteW(window, L"open", (folder / L"HaloMCCVRLauncher.exe").c_str(), nullptr, folder.c_str(), SW_SHOWNORMAL)) > 32) DestroyWindow(window);
+            else menu->Text(menu->status, L"The installed launcher could not be opened. Open HaloMCCVRLauncher.exe in Halo_MCC_VR yourself.");
         } break;
         case ReleasePage: ShellExecuteW(window, L"open", menu->ReleasePageUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL); break;
         case Launch: if (auto* game = menu->Selected()) { menu->launchDir = (game->root / L"Halo_MCC_VR").wstring(); DestroyWindow(window); } break;
