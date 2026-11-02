@@ -1459,7 +1459,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $payloadDir 'MANUAL-README.txt') -Destination (Join-Path $packageDir 'README.txt')
     [IO.File]::WriteAllLines((Join-Path $payloadDir 'BUILD-IDENTITY.txt'),
         @("source_commit=$commit", 'build_kind=RELEASE_CANDIDATE', "release_tag=RC-$($commit.Substring(0, 7))",
-            "release_channel=$releaseChannel"),
+            "release_channel=$releaseChannel", "built=$((& git -C $repoRoot show -s --format=%cs $commit).Trim())"),
         [Text.UTF8Encoding]::new($false))
     # Hash the complete manual/install payload, including config, runtime,
     # fonts, licenses and identity. The manifest itself is deliberately excluded.

@@ -27,7 +27,7 @@ enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Fol
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version };
 // The window's client size at 96 dpi.
 constexpr int kMenuWidth = 980, kMenuHeight = 904;
-struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel, release, published; bool candidate = true; };
+struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel, built, release, published; bool candidate = true; };
 BuildIdentity ReadIdentity(const fs::path& directory) {
     BuildIdentity identity; std::ifstream file(directory / L"BUILD-IDENTITY.txt", std::ios::binary);
     if (!file) return identity;
@@ -41,6 +41,7 @@ BuildIdentity ReadIdentity(const fs::path& directory) {
         else if (key == "release_tag") identity.tag = value;
         else if (key == "build_kind") kind = value;
         else if (key == "release_channel") identity.channel = value;
+        else if (key == "built") identity.built = value;
     }
     identity.candidate = kind != "PUBLIC_RELEASE" && kind != "RELEASE_CANDIDATE";
     // The release this build was installed as, if the launcher's update installed it. Only for this very build: anything
@@ -168,7 +169,7 @@ struct Menu {
         else Text(path, L"No MCC installation found. Choose Browse and select the folder containing MCC, or the Xbox Content folder.");
         if (installed) {
             const auto wide = [](const std::string& text) { return std::wstring(text.begin(), text.end()); };
-            Text(installedLine, InstalledText(identity.channel.empty() ? L"" : kReleaseChannels[ReleaseChannelIndex(identity.channel)].label, wide(identity.release), wide(identity.published), identity.label));
+            Text(installedLine, InstalledText(identity.channel.empty() ? L"" : kReleaseChannels[ReleaseChannelIndex(identity.channel)].label, wide(identity.release), wide(identity.published), identity.label, wide(identity.built)));
         } else Text(installedLine, game ? L"Installed: not installed" : L"");
         InvalidateRect(window, nullptr, FALSE);
     }
