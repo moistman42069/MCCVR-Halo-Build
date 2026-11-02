@@ -21,12 +21,12 @@ constexpr COLORREF kBackground = RGB(7, 16, 25), kPanel = RGB(15, 32, 44), kText
 // own, warm where the rest of the menu is teal.
 constexpr COLORREF kReclaimerPanel = RGB(31, 24, 13), kReclaimerField = RGB(46, 35, 18), kReclaimerAccent = RGB(240, 178, 84), kReclaimerMuted = RGB(186, 156, 112);
 // The panel's box, at 96 dpi.
-constexpr int kReclaimerLeft = 26, kReclaimerTop = 706, kReclaimerRight = 954, kReclaimerBottom = 890;
+constexpr int kReclaimerLeft = 26, kReclaimerTop = 652, kReclaimerRight = 954, kReclaimerBottom = 836;
 constexpr UINT kDone = WM_APP + 20;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version };
 // The window's client size at 96 dpi.
-constexpr int kMenuWidth = 980, kMenuHeight = 984;
+constexpr int kMenuWidth = 980, kMenuHeight = 930;
 struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel, release, published; bool candidate = true; };
 BuildIdentity ReadIdentity(const fs::path& directory) {
     BuildIdentity identity; std::ifstream file(directory / L"BUILD-IDENTITY.txt", std::ios::binary);
@@ -70,6 +70,9 @@ struct Menu {
     std::vector<GameInstall> installs;
     fs::path selfDir, payload; std::wstring launchDir;
     HWND version{}, installedLine{};
+    // The download this launcher was opened from, when it holds a package that is not the install itself: the first of
+    // the versions, and how a first install happens with nothing to check for.
+    bool packageListed = false, packageChosen = false;
     fs::path fontPath; bool fontLoaded = false;
     bool busy = false, updateReady = false, helperStarted = false;
     std::thread worker; std::wstring operationMessage;
@@ -101,25 +104,35 @@ struct Menu {
         const auto installed = game ? game->root / L"Halo_MCC_VR" : fs::path{};
         return game && fs::is_regular_file(installed / L"HaloMCCVR.dll") ? installed : selfDir;
     }
-    // The listed version chosen, or nothing until a repository has been checked.
-    void ChooseVersion(size_t index) {
-        latest = index < versions.size() ? versions[index] : ReleaseUpdate{};
-        updateReady = index < versions.size();
-        SendMessageW(version, CB_SETCURSEL, updateReady ? static_cast<WPARAM>(index) : static_cast<WPARAM>(-1), 0);
+    // The combo's row chosen: the download, or a listed release.
+    void ChooseVersion(size_t row) {
+        const size_t first = packageListed ? 1 : 0;
+        packageChosen = packageListed && row == 0;
+        const bool release = row >= first && row - first < versions.size();
+        latest = release ? versions[row - first] : ReleaseUpdate{};
+        updateReady = packageChosen || release;
+        SendMessageW(version, CB_SETCURSEL, updateReady ? static_cast<WPARAM>(row) : static_cast<WPARAM>(-1), 0);
     }
     void ListVersions() {
         const auto* game = Selected();
-        const auto installedTag = game ? ReadIdentity(game->root / L"Halo_MCC_VR").release : std::string{};
+        const auto installed = game ? ReadIdentity(game->root / L"Halo_MCC_VR") : BuildIdentity{};
         SendMessageW(version, CB_RESETCONTENT, 0, 0);
+        if (packageListed) {
+            const auto own = ReadIdentity(payload);
+            std::wstring text = L"This download  |  " + own.label;
+            if (!own.tag.empty() && own.tag == installed.tag) text += L" (Installed)";
+            SendMessageW(version, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text.c_str()));
+        }
         for (size_t i = 0; i < versions.size(); ++i) {
             const auto& release = versions[i];
             std::wstring text(release.tag.begin(), release.tag.end());
             if (i == 0) text += L" (Latest)";
-            if (!installedTag.empty() && release.tag == installedTag) text += L" (Installed)";
+            if (!installed.release.empty() && release.tag == installed.release) text += L" (Installed)";
             if (release.published.size() >= 10) text += L"  |  " + std::wstring(release.published.begin(), release.published.begin() + 10);
             SendMessageW(version, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text.c_str()));
         }
-        ChooseVersion(0);
+        // A check just made is what the player asked to see; otherwise the download.
+        ChooseVersion(packageListed && !versions.empty() ? 1 : 0);
     }
     void Refresh() {
         auto* game = Selected();
@@ -133,10 +146,11 @@ struct Menu {
         const bool installed = game && fs::is_regular_file(game->root / L"Halo_MCC_VR" / L"HaloMCCVR.dll");
         bool same = game && !_wcsicmp(fs::absolute(payload).c_str(), fs::absolute(game->root / L"Halo_MCC_VR").c_str());
         const bool hasPayload = !payload.empty() && fs::is_regular_file(payload / L"INSTALL-MANIFEST.sha256");
-        EnableWindow(version, !busy && !versions.empty());
+        
         for (int id : {Games, Channel, Browse, Scan, Retain, ReleasePage, ReclaimerPath, ReclaimerBrowse, ReclaimerDetect}) EnableWindow(GetDlgItem(window, id), !busy);
         EnableWindow(GetDlgItem(window, ReclaimerLaunch), !busy && reclaimerStartable);
-        EnableWindow(GetDlgItem(window, Install), !busy && game && hasPayload && !same);
+        if (const bool package = game && hasPayload && !same; package != packageListed) { packageListed = package; ListVersions(); }
+        EnableWindow(version, !busy && (packageListed || !versions.empty()));
         EnableWindow(GetDlgItem(window, Launch), !busy && installed);
         EnableWindow(GetDlgItem(window, Folder), !busy && game);
         EnableWindow(GetDlgItem(window, Settings), !busy && game &&
@@ -146,11 +160,10 @@ struct Menu {
         const auto identity = game ? ReadIdentity(game->root / L"Halo_MCC_VR") : BuildIdentity{};
         const bool sameRelease = installed && !identity.release.empty() && identity.release == latest.tag;
         EnableWindow(GetDlgItem(window, Update), !busy && game && updateReady && !sameRelease);
-        Text(GetDlgItem(window, Update), identity.candidate && installed ? L"INSTALL PUBLIC RELEASE" : L"INSTALL UPDATE");
+        Text(GetDlgItem(window, Update), installed ? L"INSTALL UPDATE" : L"INSTALL VR MOD");
         if (game) Text(path, std::wstring(game->store ? L"Version: Xbox app / Microsoft Store" : L"Version: Steam") +
             L"\nVR folder: " + (game->root / L"Halo_MCC_VR").wstring() );
         else Text(path, L"No MCC installation found. Choose Browse and select the folder containing MCC, or the Xbox Content folder.");
-        Text(GetDlgItem(window, Install), installed ? L"INSTALL / UPDATE" : L"INSTALL VR MOD");
         if (installed) {
             const auto wide = [](const std::string& text) { return std::wstring(text.begin(), text.end()); };
             Text(installedLine, InstalledText(identity.channel.empty() ? L"" : kReleaseChannels[ReleaseChannelIndex(identity.channel)].label, wide(identity.release), wide(identity.published), identity.label));
@@ -320,39 +333,38 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         StyleCombo(*menu, menu->games);
         Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, 160, 122, 38, Browse);
         Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, 160, 110, 38, Scan);
-        menu->path = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 216, 895, 46);
+        menu->path = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 216, 640, 46);
         SendMessageW(menu->path, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
-        Label(*menu, L"02  /  YOUR VR SETUP", 38, 281, 570);
-        menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_AUTOCHECKBOX | WS_TABSTOP, 38, 311, 850, 30, Retain);
-        SendMessageW(menu->retain, BM_SETCHECK, BST_CHECKED, 0); SetWindowTheme(menu->retain, L"", L"");
-        Control(*menu, L"BUTTON", L"INSTALL VR MOD", BS_OWNERDRAW | WS_TABSTOP, 38, 361, 270, 48, Install);
-        Control(*menu, L"BUTTON", L"VR SETTINGS", BS_OWNERDRAW | WS_TABSTOP, 324, 361, 200, 48, Settings);
-        Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 540, 361, 234, 48, Launch);
-        Control(*menu, L"BUTTON", L"MOD FOLDER", BS_OWNERDRAW | WS_TABSTOP, 796, 361, 146, 48, Folder);
-        Label(*menu, L"03  /  RELEASE UPDATES", 38, 443, 570);
-        menu->installedLine = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 40, 470, 895, 22);
+        Control(*menu, L"BUTTON", L"MOD FOLDER", BS_OWNERDRAW | WS_TABSTOP, 696, 219, 246, 38, Folder);
+        Label(*menu, L"02  /  RELEASE UPDATES", 38, 281, 570);
+        menu->installedLine = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 40, 308, 895, 22);
         SendMessageW(menu->installedLine, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         // The same columns as section 01, and top to bottom in the order they are used: where from, which version, install.
-        menu->channel = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 498, 642, 140, Channel);
+        menu->channel = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 336, 642, 140, Channel);
         StyleCombo(*menu, menu->channel);
         for (const auto& source : kReleaseChannels) SendMessageW(menu->channel, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(source.label));
-        Control(*menu, L"BUTTON", L"LATEST", BS_OWNERDRAW | WS_TABSTOP, 696, 498, 246, 38, Latest);
-        menu->version = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 548, 642, 240, Version);
+        Control(*menu, L"BUTTON", L"LATEST", BS_OWNERDRAW | WS_TABSTOP, 696, 336, 246, 38, Latest);
+        menu->version = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 386, 642, 240, Version);
         StyleCombo(*menu, menu->version);
-        Control(*menu, L"BUTTON", L"CHECK FOR UPDATES", BS_OWNERDRAW | WS_TABSTOP, 696, 548, 246, 38, Check);
-        Control(*menu, L"BUTTON", L"INSTALL UPDATE", BS_OWNERDRAW | WS_TABSTOP, 38, 598, 642, 38, Update);
-        Control(*menu, L"BUTTON", L"RELEASE PAGE", BS_OWNERDRAW | WS_TABSTOP, 696, 598, 246, 38, ReleasePage);
-        menu->release = Control(*menu, L"STATIC", L"Updates are checked only when you choose.", SS_LEFT, 40, 649, 895, 38);
+        Control(*menu, L"BUTTON", L"CHECK FOR UPDATES", BS_OWNERDRAW | WS_TABSTOP, 696, 386, 246, 38, Check);
+        Control(*menu, L"BUTTON", L"INSTALL UPDATE", BS_OWNERDRAW | WS_TABSTOP, 38, 436, 642, 38, Update);
+        Control(*menu, L"BUTTON", L"RELEASE PAGE", BS_OWNERDRAW | WS_TABSTOP, 696, 436, 246, 38, ReleasePage);
+        menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_AUTOCHECKBOX | WS_TABSTOP, 38, 482, 850, 30, Retain);
+        SendMessageW(menu->retain, BM_SETCHECK, BST_CHECKED, 0); SetWindowTheme(menu->retain, L"", L"");
+        menu->release = Control(*menu, L"STATIC", L"Updates are checked only when you choose.", SS_LEFT, 40, 516, 895, 24);
         SendMessageW(menu->release, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
+        Label(*menu, L"03  /  YOUR VR SETUP", 38, 557, 570);
+        Control(*menu, L"BUTTON", L"VR SETTINGS", BS_OWNERDRAW | WS_TABSTOP, 38, 586, 270, 48, Settings);
+        Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 324, 586, 618, 48, Launch);
         // The section's heading is painted with its panel (WM_PAINT).
-        menu->reclaimerPath = Control(*menu, L"EDIT", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 46, 751, 634, 32, ReclaimerPath);
+        menu->reclaimerPath = Control(*menu, L"EDIT", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 46, 697, 634, 32, ReclaimerPath);
         SendMessageW(menu->reclaimerPath, EM_SETLIMITTEXT, 2000, 0);
-        Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, 748, 122, 38, ReclaimerBrowse);
-        Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, 748, 110, 38, ReclaimerDetect);
-        menu->reclaimerInfo = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 48, 792, 890, 38);
+        Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, 694, 122, 38, ReclaimerBrowse);
+        Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, 694, 110, 38, ReclaimerDetect);
+        menu->reclaimerInfo = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 48, 738, 890, 38);
         SendMessageW(menu->reclaimerInfo, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
-        Control(*menu, L"BUTTON", L"LAUNCH PROJECT RECLAIMER", BS_OWNERDRAW | WS_TABSTOP, 46, 836, 406, 42, ReclaimerLaunch);
-        menu->status = Control(*menu, L"STATIC", L"Choose an installation to begin. The mod stays in its own Halo_MCC_VR folder.", SS_LEFT, 40, 906, 895, 66);
+        Control(*menu, L"BUTTON", L"LAUNCH PROJECT RECLAIMER", BS_OWNERDRAW | WS_TABSTOP, 46, 782, 406, 42, ReclaimerLaunch);
+        menu->status = Control(*menu, L"STATIC", L"Choose an installation to begin. The mod stays in its own Halo_MCC_VR folder.", SS_LEFT, 40, 852, 895, 66);
         SendMessageW(menu->status, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         return 0;
     }
@@ -364,7 +376,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SelectObject(dc, menu->label); SetTextColor(dc, kMuted); const wchar_t* subtitle = L"THE MASTER CHIEF COLLECTION  /  VIRTUAL REALITY";
         TextOutW(dc, menu->Px(41), menu->Px(93), subtitle, static_cast<int>(wcslen(subtitle)));
         HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); auto old = SelectObject(dc, pen);
-        for (int y : {121, 270, 431}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
+        for (int y : {121, 270, 546}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
         // Original geometric HUD accents; no extracted game art or assets.
         for (int x = 811; x < 943; x += 22) { MoveToEx(dc, menu->Px(x), menu->Px(43), nullptr); LineTo(dc, menu->Px(x + 18), menu->Px(25)); }
         SelectObject(dc, old); DeleteObject(pen);
@@ -424,7 +436,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         } break;
         case Version: if (HIWORD(wParam) == CBN_SELCHANGE) {
             menu->ChooseVersion(static_cast<size_t>(SendMessageW(menu->version, CB_GETCURSEL, 0, 0)));
-            const bool newest = !menu->versions.empty() && menu->latest.tag == menu->versions.front().tag;
+            const bool newest = menu->packageChosen || (!menu->versions.empty() && menu->latest.tag == menu->versions.front().tag);
             menu->Text(menu->release, newest ? L"Installing replaces the current build." : L"This is an older release. Installing replaces the current build.");
             menu->Refresh();
         } break;
@@ -452,18 +464,17 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             ReclaimerShow(*menu, true);
             if (menu->reclaimerStartable) { menu->reclaimerExe = ReclaimerField(*menu); menu->reclaimerDir = menu->ModFolder().wstring(); DestroyWindow(window); }
             break;
-        case Install: if (auto* game = menu->Selected()) {
-            const auto target = *game; const auto payload = menu->payload; const bool retain = SendMessageW(menu->retain, BM_GETCHECK, 0, 0) == BST_CHECKED;
-            menu->Text(menu->status, L"Verifying files and installing. MCC will not start until you choose Launch MCC.");
-            menu->Start(Menu::Work::Install, [menu, target, payload, retain] { menu->operationMessage = InstallPayload(payload, target, retain).message; });
-        } break;
         case Check:
             menu->updateReady = false; menu->Text(menu->status, std::wstring(L"Listing the releases from ") + menu->CurrentChannel().label + L"...");
             menu->Start(Menu::Work::Check, [menu, source = &menu->CurrentChannel()] { menu->versions = ListReleases(*source); }); break;
         case Latest:
             menu->updateReady = false; menu->Text(menu->status, L"Comparing the newest release from each repository...");
             menu->Start(Menu::Work::Latest, [menu] { menu->versions = ListLatestAcrossChannels(menu->latestChannel, menu->latestPassedOver); }); break;
-        case Update: if (auto* game = menu->Selected(); game && menu->updateReady) {
+        case Update: if (auto* game = menu->Selected(); game && menu->packageChosen) {
+            const auto target = *game; const auto payload = menu->payload; const bool retain = SendMessageW(menu->retain, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            menu->Text(menu->status, L"Verifying files and installing. MCC will not start until you choose Launch MCC.");
+            menu->Start(Menu::Work::Install, [menu, target, payload, retain] { menu->operationMessage = InstallPayload(payload, target, retain).message; });
+        } else if (game && menu->updateReady) {
             menu->operationGame = *game; menu->operationRetain = SendMessageW(menu->retain, BM_GETCHECK, 0, 0) == BST_CHECKED;
             menu->Text(menu->status, L"Downloading and verifying the release. The launcher will reopen to install it. MCC will stay closed.");
             menu->Start(Menu::Work::Download, [menu] { menu->downloaded = DownloadUpdate(menu->latest); });
@@ -474,7 +485,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case kDone:
         if (menu->worker.joinable()) menu->worker.join();
         menu->busy = false;
-        if (menu->work == Menu::Work::Install) ReclaimerShow(*menu, false);
+        if (menu->work == Menu::Work::Install) { menu->ListVersions(); ReclaimerShow(*menu, false); }
         if (menu->operationMessage.empty() && menu->work == Menu::Work::Check) {
             menu->ListVersions();
             menu->Text(menu->release, L"Installing replaces the current build.");
