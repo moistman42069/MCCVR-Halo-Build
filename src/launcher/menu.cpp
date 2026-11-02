@@ -73,7 +73,7 @@ struct Menu {
     std::vector<CreditEntry> credits;
     HWND creditsList{};
     int creditsScroll = 0, creditsContent = 0, creditsDragFrom = -1, creditsDragScroll = 0;
-    HFONT body{}, smallFont{}, title{}, label{}, creditsTitle{}; HBRUSH background{}, panel{}, reclaimerPanel{}, reclaimerField{};
+    HFONT body{}, smallFont{}, title{}, label{}, creditsTitle{}, creditsSection{}; HBRUSH background{}, panel{}, reclaimerPanel{}, reclaimerField{};
     std::vector<GameInstall> installs;
     fs::path selfDir, payload; std::wstring launchDir;
     HWND version{}, installedLine{};
@@ -328,6 +328,7 @@ int DrawCreditsList(Menu& menu, HDC dc, int width, int top) {
     };
     paragraph(L"Halo MCC VR is a community effort with contributions from multiple dedicated Halo and VR fans.", menu.smallFont, kText, 18);
     for (const auto& credit : menu.credits) {
+        if (!credit.section.empty()) { y += menu.Px(8); paragraph(credit.section.c_str(), menu.creditsSection, kMuted, 12); }
         paragraph(credit.name.c_str(), menu.label, kAccent, 3);
         paragraph(credit.what.c_str(), menu.smallFont, kText, 14);
     }
@@ -470,7 +471,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_CREATE: {
         menu->background = CreateSolidBrush(kBackground); menu->panel = CreateSolidBrush(kPanel);
         menu->reclaimerPanel = CreateSolidBrush(kReclaimerPanel); menu->reclaimerField = CreateSolidBrush(kReclaimerField);
-        menu->body = Font(*menu, 16, FW_NORMAL, L"Segoe UI"); menu->smallFont = Font(*menu, 13, FW_NORMAL, L"Segoe UI"); menu->label = Font(*menu, 14, FW_SEMIBOLD, menu->fontLoaded ? L"Oxanium" : L"Bahnschrift"); menu->creditsTitle = Font(*menu, 26, FW_SEMIBOLD, menu->fontLoaded ? L"Oxanium" : L"Bahnschrift");
+        menu->body = Font(*menu, 16, FW_NORMAL, L"Segoe UI"); menu->smallFont = Font(*menu, 13, FW_NORMAL, L"Segoe UI"); menu->label = Font(*menu, 14, FW_SEMIBOLD, menu->fontLoaded ? L"Oxanium" : L"Bahnschrift"); menu->creditsTitle = Font(*menu, 26, FW_SEMIBOLD, menu->fontLoaded ? L"Oxanium" : L"Bahnschrift"); menu->creditsSection = Font(*menu, 19, FW_SEMIBOLD, menu->fontLoaded ? L"Oxanium" : L"Bahnschrift");
         // Use a user's installed Halo font when available. No proprietary font
         // is redistributed. The bundled OFL-licensed Oxanium supplies an angular
         // sci-fi face, with Bahnschrift as a final Windows fallback.
@@ -709,7 +710,7 @@ std::wstring ShowLauncherMenu(HINSTANCE instance, const fs::path& launcherDir, i
         while (GetMessageW(&message, nullptr, 0, 0) > 0) if (!IsDialogMessageW(window, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
     }
     if (menu.worker.joinable()) menu.worker.join();
-    for (HFONT font : {menu.body, menu.smallFont, menu.title, menu.label, menu.creditsTitle}) if (font) DeleteObject(font);
+    for (HFONT font : {menu.body, menu.smallFont, menu.title, menu.label, menu.creditsTitle, menu.creditsSection}) if (font) DeleteObject(font);
     if (menu.background) DeleteObject(menu.background); if (menu.panel) DeleteObject(menu.panel);
     if (menu.reclaimerPanel) DeleteObject(menu.reclaimerPanel); if (menu.reclaimerField) DeleteObject(menu.reclaimerField);
     if (menu.fontLoaded) RemoveFontResourceExW(menu.fontPath.c_str(), FR_PRIVATE, nullptr);

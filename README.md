@@ -121,7 +121,8 @@ Logs can contain your Windows user name and folder paths: look them over before 
 |---|---|
 | **Gab_dC / gabrieldch** | Virtual stock, two-hand and support handling, coherent aim and telemetry ([upstream PR #16](https://github.com/moistman42069/MCCVR-Halo-Build/pull/16)) |
 | **martysl1** | Subtitle, UI and bloom work, and the Reach DLSS leads |
-| **LivingFray / Maso** | Ownership and restoration design leads |
+| **Maso** | Multiplayer VR work for [HaloCEVR (PR #153)](https://github.com/LivingFray/HaloCEVR/pull/153), whose ideas for tracking and restoring game state informed this mod |
+| **LivingFray** | [HaloCEVR](https://github.com/LivingFray/HaloCEVR), the VR mod for the original Halo CE, used here as a reference |
 | **marcusau2** | The earlier per-gun calibration |
 | **blindcowboy24** | The first roomscale setup, written for Halo Campaign Evolved UEVR and ported here |
 

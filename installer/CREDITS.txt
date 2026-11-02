@@ -5,6 +5,7 @@
 #   what: what they contributed
 #
 # Order: the project's line of succession first, then everyone else from most contributed to least.
+# "section: Also Thanks To" starts the people with no commits in this project's history, ordered the same way.
 
 name: Pancreations
 what: Created the original Halo-MCC-VR and its DLSS foundation, the base everything here is built on.
@@ -21,14 +22,19 @@ what: Weapon alignment and per-game gun offsets, two-handed grip zones, restored
 name: Gab_dC / gabrieldch
 what: Virtual stock, two-hand and support handling, coherent aim and telemetry.
 
+section: Also Thanks To
+
 name: martysl1
 what: Subtitle, UI and bloom work, and the Reach DLSS leads.
 
 name: blindcowboy24
 what: Initial Roomscale setup for Aim/multiplayer revamp.
 
-name: LivingFray / Maso
-what: Ownership and restoration design leads.
+name: Maso
+what: Multiplayer VR work for HaloCEVR (PR #153), whose ideas for tracking and restoring game state informed this mod.
+
+name: LivingFray
+what: HaloCEVR, the VR mod for the original Halo CE, used here as a reference.
 
 name: marcusau2
 what: The earlier per-gun calibration.
