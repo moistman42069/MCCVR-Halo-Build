@@ -231,7 +231,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 540, 390, 234, 48, Launch);
         Control(*menu, L"BUTTON", L"MOD FOLDER", BS_OWNERDRAW | WS_TABSTOP, 796, 390, 146, 48, Folder);
         Label(*menu, L"03  /  RELEASE UPDATES", 38, 472, 570);
-        Label(*menu, L"Download From Repository:", 38, 507, 280);
+        Label(*menu, L"Update from repository:", 38, 507, 280);
         menu->channel = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 324, 501, 240, 140, Channel);
         SendMessageW(menu->channel, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), menu->Px(25));
         SendMessageW(menu->channel, CB_SETITEMHEIGHT, 0, menu->Px(29));
