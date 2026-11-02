@@ -458,6 +458,8 @@ struct Halo4VrRenderSnapshot
     // MONO RENDERING (src/common/mono_view_logic.h): this frame is one pass. Both `eyes` are then the one camera:
     // no offset, no cant, and the frustum that covers either eye. Last, so the offsets asserted below stand.
     bool mono = false;
+    // The eyes' real offsets whatever `eyes` holds in a mono frame: Aim Frame Zoom's 3D stands the eyes along the aim.
+    float stereoEyePosition[2][3]{};
 };
 
 static_assert(sizeof(Halo4VrEyeSnapshot) == 0x30);

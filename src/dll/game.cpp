@@ -5388,9 +5388,10 @@ namespace
         // No layout of ours in the game: the HUD draws at the game's own, which is what the capture expects then.
         if (g_safeFrameHitCount.load(std::memory_order_acquire) <= 0)
             return true;
-        // ODST and Reach: only the frame's own layout still in the game holds the capture, and only just after the
-        // frame: this runs for every crosshair there, Aim Frame Zoom or not, and must never leave one without its art.
-        if (title == GameTitle::Halo3ODST || title == GameTitle::HaloReach)
+        // ODST, Reach and Halo 4 (whose HUD has no layout record of this kind): only the frame's own layout still in
+        // the game holds the capture, and only just after the frame: this runs for every crosshair there, Aim Frame
+        // Zoom or not, and must never leave one without its art.
+        if (title == GameTitle::Halo3ODST || title == GameTitle::HaloReach || title == GameTitle::Halo4)
             return g_layoutAppliedForFrame.load(std::memory_order_acquire) != 1 ||
                 !down || GetTickCount64() - down >= 2000;
         return g_layoutAppliedForFrame.load(std::memory_order_acquire) ==
@@ -47949,6 +47950,17 @@ static constexpr bool kOdstMappedFpEnabled = false;
             __finally {--hud_visibility::depth;}
             return;
         }
+        // AIM FRAME ZOOM: the frame is the flat game's picture, so its HUD and reticle are the game's own. No reticle
+        // eye scope was opened for this pass (crosshair=0 opens one, and takes the path below, to hide its reticle).
+        if (g_aimFramePass.load(std::memory_order_acquire) && caller == expectedCaller && !scope.active)
+        {
+            g_aimFrameWidgets.fetch_add(1, std::memory_order_relaxed);
+            const bool hideFrameHud = VR_HudHidden();
+            if (hideFrameHud) ++hud_visibility::depth;
+            __try {original(windowIndex,renderBufferChannel,viewportBounds,optionalProfileValue,renderMode,flag);}
+            __finally {if (hideFrameHud) --hud_visibility::depth;}
+            return;
+        }
         const bool ownsGameplayPass = caller == expectedCaller &&
             !scope.gameplayPassActive &&
             Halo4OwnsCuiReticleEyeTransaction() &&
@@ -47985,9 +47997,12 @@ static constexpr bool kOdstMappedFpEnabled = false;
             // held through the whole front end. 43j proved Halo 4 batches the
             // descendant draws past the logical 0x29 marker.
             const int captureEye = g_config.right_eye_first ? 1 : 0;
+            // Just out of the frame the crosshair is still leaving its zoomed look: the art from before the zoom
+            // stays up, and the dispatcher below still moves the flat copy off the eye.
             const bool wantsCaptureReplay =
                 scope.eye == captureEye && g_config.crosshair &&
                 g_config.kill_reticle &&
+                AimFrameCrosshairReadyForCapture(GameTitle::Halo4) &&
                 VR_ShouldCaptureAuthoredReticleThisFrame();
             if (wantsCaptureReplay)
             {
@@ -48052,7 +48067,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // sibling visor draws receive the same native HUD transform as radar,
         // shields and ammo. The private reticle replay temporarily clears it
         // inside Halo4CuiGameplayRenderBody and therefore remains stock.
-        if (g_halo4CuiFrontendCallbackDepth == 1)
+        // AIM FRAME ZOOM: not in the frame's passes, whose HUD keeps the game's own shape, as the private replay's does.
+        if (g_halo4CuiFrontendCallbackDepth == 1 && !g_aimFramePass.load(std::memory_order_acquire))
             g_halo4HudGameplayThreadId = GetCurrentThreadId();
         __try
         {
@@ -48656,6 +48672,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
     }
 
     #include "halo4_scope.inl"
+    #include "halo4_aim_frame.inl"
 
     // The vehicle cameras in Halo 4's seats (the camera file; the seat's eye moved or stood at a chase camera).
     #include "halo4_vehicle_cameras.inl"
@@ -48743,10 +48760,11 @@ static constexpr bool kOdstMappedFpEnabled = false;
     // the eye/observer cleanup below.
     Halo4StereoResult Halo4StereoTransaction(
         uintptr_t element, uintptr_t view, uint32_t window,
-        const Halo4SetupArgs& args, bool& frameStarted, bool& monoFrameOut)
+        const Halo4SetupArgs& args, bool& frameStarted, bool& monoFrameOut, bool& aimFrameOut)
     {
         frameStarted = false;
         monoFrameOut = false;
+        aimFrameOut = false;
         Halo4VrRenderSnapshot snapshot{};
         if (!VR_Halo4GetRenderSnapshot(snapshot))
         {
@@ -48769,8 +48787,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
         const bool authoredTheater = VR_IsCutsceneTheaterActive();
         // MONO RENDERING (mono_view_logic.h): the snapshot's two eyes are one camera, and one pass is drawn with
         // it, as the eye the eye-order setting draws first. The theatre keeps its two eyes.
-        const bool monoFrame = snapshot.mono && !authoredTheater;
-        const int eyePasses = monoFrame ? 1 : 2;
+        bool monoFrame = snapshot.mono && !authoredTheater;
+        int eyePasses = monoFrame ? 1 : 2;
         // Read once: the pass below and what is published for it name the same eye.
         const int firstEye = g_config.right_eye_first ? 1 : 0;
         monoFrameOut = monoFrame;
@@ -49189,12 +49207,27 @@ static constexpr bool kOdstMappedFpEnabled = false;
             g_halo4Camera.fovRatio.load(std::memory_order_relaxed);
         calibration.learned =
             g_halo4Camera.fovLearned.load(std::memory_order_acquire);
+        // AIM FRAME ZOOM (halo4_aim_frame.inl): one pass along the aim, or in 3D one for each eye; it wins over mono
+        // rendering, as in Halo 3. A frame's outcome is its own, not a verdict on mono: aimFrameOut, not monoFrameOut.
+        AimFrame aimFrame{};
+        float aimFrameObserverFov = 0.0f;
+        const bool aimFrameUp = Halo4AimFrameCameras(calibration, controllerRoot, stock, snapshot, worldScale,
+                                                     authoredTheater, eyeCameras, aimFrame, aimFrameObserverFov);
+        const bool aimFrameStereo = aimFrameUp && g_config.aim_frame_stereo;
+        if (aimFrameUp)
+        {
+            monoFrame = !aimFrameStereo;
+            eyePasses = monoFrame ? 1 : 2;
+            monoFrameOut = false;
+            aimFrameOut = true;
+        }
+
         float verticalFovWrite[2]{};
         float expectedHalfY[2]{};
         bool widenFov[2] = {false, false};
         for (int eye = 0; eye < 2; ++eye)
         {
-            widenFov[eye] = !authoredTheater &&
+            widenFov[eye] = !authoredTheater && !aimFrameUp &&
                 snapshot.eyes[eye].fovValid &&
                 Halo4SolveCoverVerticalFov(
                     snapshot.eyes[eye].fov, calibration,
@@ -49250,7 +49283,12 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 // retail converter 0x38F094-0x38F0AC scales both fields by one
                 // shared factor, so the vertical write is the whole handle and
                 // touching the ratio as well would double-apply.
-                if (widenFov[eye])
+                if (aimFrameUp)
+                {
+                    memcpy(eyeObserver + kHalo4ObserverVerticalFovOffset,
+                           &aimFrameObserverFov, sizeof(aimFrameObserverFov));
+                }
+                else if (widenFov[eye])
                 {
                     memcpy(eyeObserver + kHalo4ObserverVerticalFovOffset,
                            &verticalFovWrite[eye],
@@ -49343,6 +49381,14 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 lastCenterY = centerY;
                 g_halo4Camera.projectionReadbacks.fetch_add(
                     1, std::memory_order_relaxed);
+                // The frame shows what the engine built, whatever its shape; a zoom far from the game's own means the
+                // gain no longer answers as it was measured to, and this is not the picture asked for. The lens holds
+                // its own pass to 1%; this allows the zoom's own moving a little between read and build.
+                if (aimFrameUp && !aim_frame::TangentsAgree(aimFrame.tanY, tanf(halfFovY[eye]), 0.05f))
+                {
+                    rejection = Halo4StereoRejection::ProjectionInvalid;
+                    break;
+                }
                 // Optional DLSS: the camera and the row-vector projection the
                 // engine holds for this eye, exactly as read back above (a
                 // proven perspective with zero centre terms). Halo 4 builds
@@ -49364,7 +49410,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 // instead of resting on an assumed field meaning: if the engine
                 // answers a write differently than expected, the next frame's
                 // solve already uses the corrected gain and ratio.
-                const float writtenVerticalFov = widenFov[eye]
+                const float writtenVerticalFov = aimFrameUp
+                    ? aimFrameObserverFov
+                    : widenFov[eye]
                     ? verticalFovWrite[eye]
                     : stock.verticalFov;
                 // Measure retail's converter scale from the engine's own two
@@ -49385,7 +49433,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                         elementVerticalFov / writtenVerticalFov,
                         std::memory_order_relaxed);
                 }
-                if (Halo4LearnFovCalibration(
+                // The frame's narrow pass teaches nothing the cover needs: the gain stays the eye passes' measure.
+                if (!aimFrameUp && Halo4LearnFovCalibration(
                         writtenVerticalFov, halfFovX[eye], halfFovY[eye],
                         calibration))
                 {
@@ -49396,7 +49445,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     g_halo4Camera.fovLearned.store(
                         true, std::memory_order_release);
                 }
-                if (snapshot.eyes[eye].fovValid)
+                if (!aimFrameUp && snapshot.eyes[eye].fovValid)
                 {
                     const bool contained = Halo4CoverContainsFov(
                         halfFovX[eye], halfFovY[eye], snapshot.eyes[eye].fov);
@@ -49425,13 +49474,18 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 // Placement is owned entirely by the existing OpenXR reticle
                 // quad. No CUI screen coordinate or game-space target enters
                 // the authored-art transaction.
-                Halo4BeginCuiReticleEye(eye, snapshot.preparedSerial);
+                // AIM FRAME ZOOM: not in the frame's passes, where the game draws its own reticle and zoom art into
+                // the picture where it always does (crosshair=0 still means none).
+                if (!aimFrameUp || !g_config.crosshair)
+                    Halo4BeginCuiReticleEye(eye, snapshot.preparedSerial);
+                g_aimFramePass.store(aimFrameUp, std::memory_order_release);
                 __try
                 {
                     g_halo4OrigWrapper(element, view, window);
                 }
                 __finally
                 {
+                    g_aimFramePass.store(false, std::memory_order_release);
                     // The type-0x29 marker normally closes the redirect. This
                     // same-thread scope exit is the last-resort state restore
                     // for malformed/exceptional command streams.
@@ -49472,12 +49526,16 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 // present's pair check, its image and its frame serial.
                 halfFovX[1 - firstEye] = halfFovX[firstEye];
                 halfFovY[1 - firstEye] = halfFovY[firstEye];
-                VR_NoteMonoFrameRendered(GameTitle::Halo4, firstEye);
+                if (!aimFrameUp)
+                    VR_NoteMonoFrameRendered(GameTitle::Halo4, firstEye);
             }
-            else
+            else if (!aimFrameUp)
             {
                 VR_NoteStereoFrameRendered(GameTitle::Halo4);
             }
+            if (aimFrameUp)
+                VR_NoteAimFrameRendered(GameTitle::Halo4, aimFrameStereo ? -1 : firstEye, tanf(halfFovX[firstEye]),
+                                        tanf(halfFovY[firstEye]), aimFrame.widthDeg);
             for (int eye = 0; eye < 2; ++eye)
             {
                 g_halo4RenderHalfFovX[eye].store(
@@ -49600,11 +49658,12 @@ static constexpr bool kOdstMappedFpEnabled = false;
         Halo4StereoResult result = Halo4StereoResult::NotStarted;
         bool frameStarted = false;
         bool monoFrame = false;
+        bool aimFrame = false;
         bool transactionException = false;
         __try
         {
             result = Halo4StereoTransaction(
-                element, view, window, args, frameStarted, monoFrame);
+                element, view, window, args, frameStarted, monoFrame, aimFrame);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -49623,6 +49682,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // a single pass turned down (mono_view::MonoRejections sorts out whether mono was the reason).
         if (monoFrame && result != Halo4StereoResult::Complete)
             VR_NoteMonoFrameRejected(GameTitle::Halo4);
+        if (aimFrame)
+            Halo4AimFrameNote(result != Halo4StereoResult::Complete);
         if (result == Halo4StereoResult::NotStarted)
         {
             // Ownership never began, so the untouched stock wrapper is safe.
@@ -51244,6 +51305,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             reportedBodyIkRollbackFailures=bodyIkRollbackFailures;
             reportedBodyIkSehFailures=bodyIkSehFailures;
         }
+        Halo4AimFrameColdTick();
         static uint32_t reportedScopeFaults=0;
         const auto scopeFaults=g_halo4ScopeFaults.load();
         if(scopeFaults!=reportedScopeFaults)
@@ -53479,6 +53541,10 @@ namespace
         case GameTitle::HaloReach:
             return g_reachBarrel.enabled.load(std::memory_order_acquire) ? g_reachBarrel.generation : 0;
 #endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        case GameTitle::Halo4:
+            return g_halo4Barrel.enabled.load(std::memory_order_acquire) ? g_halo4Barrel.generation : 0;
+#endif
         default: return 0;
         }
     }
@@ -53490,6 +53556,11 @@ namespace
         if (title == GameTitle::HaloReach)
             return g_reachBarrel.enabled.load(std::memory_order_acquire) &&
                 g_reachAimFrameOffGeneration.load(std::memory_order_acquire) != g_reachBarrel.generation;
+#endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        if (title == GameTitle::Halo4)
+            return g_halo4Barrel.enabled.load(std::memory_order_acquire) &&
+                g_halo4AimFrameOffGeneration.load(std::memory_order_acquire) != g_halo4Barrel.generation;
 #endif
         (void)title;
         return false;

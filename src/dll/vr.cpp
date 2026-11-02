@@ -16800,6 +16800,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             // renders at Halo 4's stock FOV instead of dropping the frame.
             next.eyes[eye].fovValid =
                 VR_GetEyeFov(eye, next.eyes[eye].fov);
+            memcpy(next.stereoEyePosition[eye], next.eyes[eye].position, sizeof(next.stereoEyePosition[eye]));
         }
         // MONO RENDERING (mono_view_logic.h): one pass, by a camera at the midpoint of the eyes with a frustum
         // that covers either. Both eyes' inputs are that camera's, so the title builds it by its own eye path.
