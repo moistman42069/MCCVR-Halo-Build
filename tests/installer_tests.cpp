@@ -74,6 +74,10 @@ static void Policies() {
     const auto libraries = VdfValues("\"libraryfolders\" { \"0\" { \"path\" \"C:\\\\Steam\" } \"1\" { \"path\" \"D:\\\\Steam Library\" } }", "path");
     Require(libraries.size() == 2 && libraries[1] == "D:\\Steam Library", "Valve library escaping");
     const auto json = R"({"tag_name":"MCC_VR_ALPHA_0.6.0","draft":false,"prerelease":false,"assets":[{"name":"HaloMCCVR-abcdef0-Build.zip","browser_download_url":"https://github.com/moistman42069/MCCVR-Halo-Build/releases/download/0.6/build.zip","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":100},{"name":"source.zip","size":99}]})";
+    Require(NewestPublished({"2026-10-01T00:00:00Z", "2026-11-02T18:05:54Z", "2026-11-02T18:05:53Z"}) == 1, "the newest date wins across repositories");
+    Require(NewestPublished({"2026-11-02T00:00:00Z", "2026-11-02T00:00:00Z"}) == 0, "a tie stays with the earlier repository");
+    Require(NewestPublished({"", "2026-11-02T00:00:00Z", "not a date"}) == 1, "a repository with no date is passed over");
+    Require(NewestPublished({"", ""}) == std::string::npos, "no dates, no choice");
     const auto release = ParseReleaseUpdate(json);
     Require(release.bytes == 100 && release.tag == "MCC_VR_ALPHA_0.6.0", "release parser chooses player ZIP");
     for (const auto input : {R"({"tag_name":"x","draft":false,"prerelease":false,"assets":[]})", R"({"a":1,"a":2})", R"([1,])", R"({"a":"\uD800"})", R"({"a":01})"}) {

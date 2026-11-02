@@ -4,6 +4,9 @@
 namespace mcc_installer {
 std::string Sha256File(const std::filesystem::path& path);
 ReleaseUpdate CheckForUpdate(const ReleaseChannel& channel);
+// Every repository's newest installable release, and which is furthest ahead by date. One that cannot be read is
+// passed over and named in `passedOver`; with none readable this throws.
+ReleaseUpdate CheckLatestAcrossChannels(size_t& channel, std::wstring& passedOver);
 // Download and safely extract, then return the verified package payload path.
 std::filesystem::path DownloadUpdate(const ReleaseUpdate& release);
 // Exposed separately so normal and malicious archive fixtures exercise the
