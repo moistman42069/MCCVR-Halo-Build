@@ -223,7 +223,16 @@ bool Halo2CallFireEyeEvaluator(uint32_t unit, float position[3], int32_t& path)
             feature.generation == g_generation.load(std::memory_order_acquire))
         {
             float direction[3]{};
-            path = evaluator(unit, position, direction);
+            // The seat's aim, not the frame's view (NativeVehicleFirstPerson_SetSeatAskOnThisThread).
+            const bool seatAskWas = NativeVehicleFirstPerson_SetSeatAskOnThisThread(true);
+            __try
+            {
+                path = evaluator(unit, position, direction);
+            }
+            __finally
+            {
+                NativeVehicleFirstPerson_SetSeatAskOnThisThread(seatAskWas);
+            }
             called = true;
         }
     }

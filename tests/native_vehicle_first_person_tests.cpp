@@ -44,6 +44,10 @@ static uint32_t chaseParent=0;
 static int chaseSeat=-1;
 bool Game_VehicleCameraChaseSeat(GameTitle title,uint32_t parent,int seat) noexcept
 {return chaseChosen&&title==activeTitle&&parent==chaseParent&&seat==chaseSeat;}
+// The vehicle cameras' question (game.cpp): a chase camera is chosen for this Halo 2 seat. No, unless a test says so.
+static unsigned chaseAsked=0;
+bool Game_Halo2VehicleCameraChase(const NativeVehicleCameraOwner& owner) noexcept
+{++chaseAsked;return chaseChosen&&owner.parent==owned.parent&&owner.seat==owned.seat;}
 // The sight clock: a millisecond further on at every read.
 uint64_t Sight_NowUs() {static uint64_t us=1000;return us+=1000;}
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -188,6 +192,46 @@ template<unsigned I> void Run()
         activeTitle=GameTitle::Halo2;
         Check(!NativeVehicleFirstPerson_Halo4MarkerFrame(owned.parent,0,true,frame),"the reads answer only in Halo 4");
         activeTitle=GameTitle::Halo4;r.ready=false;
+    }
+    if constexpr(I==1) {
+        // The point the game's own evaluator answered before the head replaced it is published only with the
+        // chase-camera stand-down (kHalo2ChaseStandDown), which is off.
+        NativeVehicleSeatPoint native{};
+        Check(!NativeVehicleFirstPerson_Halo2NativePoint(native),"no H2 native seat point while the stand-down is off");
+        // A chase camera of the vehicle camera file chosen for the seat keeps the first-person seat view: Halo 2's
+        // director changes camera only with the seat's perspective, so the stand-down is off (kHalo2ChaseStandDown).
+        chaseChosen=true;
+        Check(SelectHook<I>(owned.unit,&mode)==0,"a seat with a chase camera chosen keeps the first-person answer");
+        {
+            const auto positioned=r.positioned.load();
+            std::memset(result,0,sizeof(result));camera();
+            Check(position[0]==10&&position[1]==20&&position[2]==30&&r.positioned.load()==positioned+1,
+                "and its view stays at the occupant's head, the frame's seat view");
+        }
+        // An ask for the seat's aim (the game's fire, the seat drive) keeps the first-person answer under a chase
+        // camera: the seat aims and fires as from its seat view.
+        Check(!NativeVehicleFirstPerson_SetSeatAskOnThisThread(true),"the seat-aim flag starts down");
+        Check(SelectHook<I>(owned.unit,&mode)==0,"a seat-aim ask keeps the first-person answer under a chase camera");
+        {
+            // ...and places the seat's aim, but never counts as the frame's seat view: the aim may be asked for
+            // while the frame's view is the game's own, so it must not keep the seat view fresh.
+            const auto positioned=r.positioned.load();
+            const auto at=r.positionedMs.load();
+            std::memset(result,0,sizeof(result));camera();
+            Check(position[0]==10&&r.positioned.load()==positioned&&r.positionedMs.load()==at,
+                "a seat-aim ask places the head without stamping the seat view as the frame's");
+        }
+        Check(NativeVehicleFirstPerson_SetSeatAskOnThisThread(false),"the flag was up, and comes down");
+        chaseChosen=false;
+        Check(SelectHook<I>(owned.unit,&mode)==0,"without one the seat is first person again");
+        camera();Check(position[0]==10&&position[1]==20&&position[2]==30,"at the occupant's head");
+    }
+    else
+    {
+        // With the stand-down off for every title this checks the answer only, not the title gate before it.
+        chaseChosen=true;
+        Check(SelectHook<I>(owned.unit,&mode)==0,"a chase camera never changes another title's seat view");
+        chaseChosen=false;
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if constexpr(I==2) {

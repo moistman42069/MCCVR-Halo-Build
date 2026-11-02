@@ -19550,7 +19550,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             bool ringShown = false;
                             ReachStereoCenterPose ringCenter{};
                             if (reticleOwnerAdmitted &&
-                                (reticleTitle == GameTitle::Halo3 || reticleTitle == GameTitle::HaloReach) &&
+                                (reticleTitle == GameTitle::Halo3 || reticleTitle == GameTitle::HaloReach ||
+                                 reticleTitle == GameTitle::Halo2) &&
                                 !VR_HudHidden() &&
                                 !theaterPresentation && !VR_IsPausePresentation() && projection.viewCount == 2 &&
                                 projectionViews.size() == 2 && Game_GetVehicleAimMarker(ringDir, ringDistanceM))

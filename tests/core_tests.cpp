@@ -441,6 +441,22 @@ int main()
         published.footReferenceValid=false;
         Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,9,inHand))+.7f)<1e-6f,
               "H2 self-tracked frame in a seat without the foot heading still takes the seat's");
+        // A seat eye the vehicle cameras moved (a chase camera's place) stays where the publication put it from the
+        // camera in hand; one they did not move keeps the camera in hand's position.
+        published.vehicleReference.position[0]=published.stock.position[0]+3.f;
+        published.vehicleReference.position[2]=published.stock.position[2]+1.f;
+        Check(Halo2SelfTrackBase(true,published,9,inHand).position[0]==inHand.position[0],
+              "H2 self-tracked seat frame keeps the camera in hand's position while the eye is not moved");
+        published.vehicleEyeMoved=true;
+        {
+            const auto moved=Halo2SelfTrackBase(true,published,9,inHand);
+            Check(std::fabs(moved.position[0]-(inHand.position[0]+3.f))<1e-5f&&
+                      std::fabs(moved.position[2]-(inHand.position[2]+1.f))<1e-5f&&moved.position[1]==7.f,
+                  "H2 self-tracked seat frame keeps a moved eye's offset from the camera in hand");
+        }
+        published.vehicleEyeMoved=false;
+        published.vehicleReference.position[0]=published.stock.position[0];
+        published.vehicleReference.position[2]=published.stock.position[2];
         published.vehicleReferenceValid=false;
         Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,9,inHand))-2.05f)<1e-6f,
               "H2 self-tracked frame without the drive's heading is untouched");

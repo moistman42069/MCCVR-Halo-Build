@@ -51,23 +51,24 @@ static std::string OneVehicle(const char* body)
 static void TestBuiltInTable()
 {
     const Table built = DefaultTable();
-    Check(built.games.size() == 5 && built.games[0].key == std::string("halo3") &&
+    Check(built.games.size() == 6 && built.games[0].key == std::string("halo3") &&
               built.games[1].key == std::string("reach") && built.games[2].key == std::string("odst") &&
-              built.games[3].key == std::string("halo4") && built.games[4].key == kDefaultKey,
-          "the built-in table has Halo 3's, Reach's, ODST's and Halo 4's own sections and the default one");
+              built.games[3].key == std::string("halo4") && built.games[4].key == std::string("halo2") &&
+              built.games[5].key == kDefaultKey,
+          "the built-in table has Halo 3's, Reach's, ODST's, Halo 4's and Halo 2's own sections and the default one");
     Check(built.FindGame("halo3") == &built.games[0] && built.FindGame("reach") == &built.games[1] &&
               built.FindGame("odst") == &built.games[2] && built.FindGame("halo4") == &built.games[3] &&
-              built.FindGame("another_game") == &built.games[4],
-          "Halo 3, Reach, ODST and Halo 4 find their own, any other game the default");
+              built.FindGame("halo2") == &built.games[4] && built.FindGame("another_game") == &built.games[5],
+          "Halo 3, Reach, ODST, Halo 4 and Halo 2 find their own, any other game the default");
     const Game* game = built.FindGame("another_game");
     Check(game->vehicles.size() == 1 && game->vehicles[0].isDefault, "the default section has one default entry");
     const Vehicle& any = game->vehicles[0];
 
-    // Halo 3's, Reach's, ODST's and Halo 4's sections: an entry for each vehicle the mod knows by name and the seats it
-    // gives cameras of their own, then a default entry with the same two cameras as every other game's; every entry
-    // starts in the seat view with the game's own third-person camera second, so the file changes nothing until a
-    // camera is chosen.
-    for (std::size_t section = 0; section < 4; ++section)
+    // Halo 3's, Reach's, ODST's, Halo 4's and Halo 2's sections: an entry for each vehicle the mod knows by name and the
+    // seats it gives cameras of their own, then a default entry with the same two cameras as every other game's; every
+    // entry starts in the seat view with the third-person camera second (the game's own where the title shows it in a
+    // seat view), so the file changes nothing until a camera is chosen.
+    for (std::size_t section = 0; section < 5; ++section)
     {
         const Game& own = built.games[section];
         Check(own.vehicles.size() > 10 && own.vehicles.back().isDefault && own.vehicles.back().cameras.size() == 2,
@@ -83,10 +84,11 @@ static void TestBuiltInTable()
                            vehicle.cameras[0].type == CameraType::FirstPerson;
             thirdPersonSecond = thirdPersonSecond && vehicle.cameras[1].origin == Origin::ThirdPerson &&
                                 vehicle.cameras[1].name == "Third Person";
-            // One match text, the vehicle's name; Halo 3's and ODST's Elephant and Prowler also their stock tags'
-            // words, and Reach's turret the words of its walk-up guns.
+            // One match text, the vehicle's name; Halo 3's and ODST's Elephant and Prowler also their stock tags' words,
+            // Reach's turret the words of its walk-up guns, and Halo 2's the gun tower's.
             const bool tagWord = vehicle.name.rfind("Elephant", 0) == 0 || vehicle.name.rfind("Prowler", 0) == 0;
-            const std::size_t matches = section == 1 && vehicle.name == "Turret" ? 4u : (tagWord ? 2u : 1u);
+            const bool turret = vehicle.name == "Turret";
+            const std::size_t matches = section == 1 && turret ? 4u : (section == 4 && turret ? 2u : (tagWord ? 2u : 1u));
             if (!vehicle.isDefault)
                 othersBeyond = othersBeyond && vehicle.cameras.size() >= 3 && vehicle.match.size() == matches;
             for (const Vehicle& other : own.vehicles)
@@ -134,6 +136,30 @@ static void TestBuiltInTable()
           "Halo 4's own vehicles have entries of their own");
     Check(halo4.vehicles[static_cast<std::size_t>(MatchVehicle(halo4, "custom_0000001d12345678", kSeatDriver))].isDefault,
           "and a vehicle the mod has not measured rides Halo 4's default");
+
+    // Halo 2's entries find Halo 2's vehicles by the names the mod gives them (halo2_vehicle_camera_logic.h): a gun's
+    // model name carries its vehicle's, and every walk-up gun takes the turret's cameras.
+    const Game& halo2 = built.games[4];
+    const auto halo2EntryFor = [&halo2](const char* vehicle, uint8_t seat) -> std::string {
+        const int index = MatchVehicle(halo2, vehicle, seat);
+        return index >= 0 ? halo2.vehicles[static_cast<std::size_t>(index)].name : std::string();
+    };
+    Check(halo2EntryFor("warthog", kSeatDriver) == "Warthog" &&
+              halo2EntryFor("warthog", kSeatPassenger) == "Warthog passenger" &&
+              halo2EntryFor("warthog_chaingun", kSeatGunner) == "Warthog gunner" &&
+              halo2EntryFor("warthog_gauss", kSeatGunner) == "Warthog gunner",
+          "Halo 2's Warthog has a driver's, a passenger's and its guns' gunner's entry");
+    Check(halo2EntryFor("wraith_minigun", kSeatGunner) == "Wraith gunner" &&
+              halo2EntryFor("spectre_plasma", kSeatGunner) == "Spectre gunner" &&
+              halo2EntryFor("scorpion", kSeatDriver) == "Scorpion" && halo2EntryFor("ghost", kSeatDriver) == "Ghost" &&
+              halo2EntryFor("banshee", kSeatDriver) == "Banshee",
+          "and its other vehicles and guns theirs");
+    Check(halo2EntryFor("c_turret_ap", turretSeat) == "Turret" && halo2EntryFor("h_turret_ap", turretSeat) == "Turret" &&
+              halo2EntryFor("cov_guntower", turretSeat) == "Turret",
+          "every Halo 2 walk-up gun takes the turret's cameras");
+    Check(halo2.vehicles[static_cast<std::size_t>(MatchVehicle(halo2, "phantom", kSeatPassenger))].isDefault &&
+              halo2.vehicles[static_cast<std::size_t>(MatchVehicle(halo2, "custom_0badf00d", kSeatDriver))].isDefault,
+          "and a vehicle with no entry of its own rides Halo 2's default");
     {
         const Game& halo3 = built.games[0];
         int modEntries = 0;
@@ -178,14 +204,14 @@ static void TestBuiltInTable()
     Check(Has(text, "{ \"name\": \"Seat\", \"type\": \"firstperson\",\n") &&
               !Has(text, "{ \"name\": \"Seat\", \"type\": \"firstperson\", \"origin\""),
           "a firstperson camera names only what was set: its modes, no placement");
-    Check(Has(text, "\"origin\": \"thirdperson\"") && back.games[4].vehicles[0].cameras[1].origin == Origin::ThirdPerson,
+    Check(Has(text, "\"origin\": \"thirdperson\"") && back.games[5].vehicles[0].cameras[1].origin == Origin::ThirdPerson,
           "the game's own third-person place is written and read by name");
     Check(OriginText(Origin::ThirdPerson, "x") == "thirdperson", "and named so in a readout");
     Check(any.cameras[1].lag == kThirdPersonLagSeconds && Has(text, "\"lag\": 0.5, \"lagDamping\": 1.5") &&
-              back.games[4].vehicles[0].cameras[1].lag == kThirdPersonLagSeconds,
+              back.games[5].vehicles[0].cameras[1].lag == kThirdPersonLagSeconds,
           "the built-in third-person camera follows on a spring, and the file says so");
     Check(!BoomPitchSet(any.cameras[1].boomPitch) && Has(text, "\"boomPitch\": null") &&
-              !BoomPitchSet(back.games[4].vehicles[0].cameras[1].boomPitch),
+              !BoomPitchSet(back.games[5].vehicles[0].cameras[1].boomPitch),
           "the built-in third-person camera names its boom, unset: where the game's camera looks level, a little higher");
     Check(!Has(ToJson(built, false), "\"origin\": \"seat\", \"offset\": [-200, 90, 70], \"locationTracking\": [\"yaw\"], "
                                      "\"rotationTracking\": [], \"collide\": true, \"collideMargin\": 30, \"lag\": 0.15, "

@@ -32,6 +32,8 @@
 #include "../common/manual_vr_recovery_logic.h"
 #include "halo2_observer_6dof.h"
 #include "native_vehicle_first_person.h"
+#include "halo2_vehicle_cameras.h"
+#include "../common/halo2_vehicle_camera_logic.h"
 #include "physical_crouch_camera.h"
 #include "sigscan.h"
 // Where the direct drive's code is in the loaded game DLL (halo2_direct_drive.inl): the tables and their
@@ -704,9 +706,16 @@ namespace
     std::atomic<bool> g_vehicleFrameVerified{false};
     std::atomic<bool> g_vehicleIdentityVerified{false};
     std::atomic<uint64_t> g_vehicleViewApplied{0},g_vehicleViewRefused{0};
+    // The seat view the observer built last turned with the hull: vehicle_view_follow, or the tethering of a chase
+    // camera of the vehicle camera file standing in for it (halo2_vehicle_cameras.inl). Observer writes; the seat
+    // drive reads it in place of the setting.
+    std::atomic<bool> g_vehicleViewFollows{false};
     // Frames the seat was kept through a stalled simulation (Halo2SeatHeldThroughStall).
     std::atomic<uint64_t> g_vehicleViewHeld{0};
     bool ReadVehicleViewFrame(Halo2VehicleViewKey&,Halo2CameraBasis&) noexcept;
+    // The seat for the vehicle cameras (halo2_vehicle_cameras.h), from the seat view's key and the stock camera.
+    bool Halo2VehicleCameraSampleSeat(const Halo2VehicleViewKey&,const Halo2CameraBasis&,
+        Halo2VehicleCameraSeatSample&) noexcept;
     // Roomscale re-seats of the reference (ApplyHeadPose): how many, and how far
     // the head had moved from the reference between its capture and the follow's
     // first admission -- the offset a re-seat removes from between view and legs.
@@ -777,7 +786,7 @@ namespace
         const Halo2CameraBasis* vehicleReference=nullptr,
         const Halo2VehicleViewKey* vehicleKey=nullptr,
         const Halo2CameraBasis* footReference=nullptr,
-        float viewLiftZ=0.0f) noexcept
+        float viewLiftZ=0.0f,bool vehicleEyeMoved=false) noexcept
     {
         g_publicationVersion.fetch_add(1, std::memory_order_acq_rel);
         g_publication.generation = generation;
@@ -788,6 +797,7 @@ namespace
         g_publication.tracked = tracked;
         g_publication.vehicleReferenceValid=vehicleReference&&vehicleKey;
         g_publication.vehicleReference=vehicleReference?*vehicleReference:Halo2CameraBasis{};
+        g_publication.vehicleEyeMoved=vehicleReference&&vehicleKey&&vehicleEyeMoved;
         g_publication.footReferenceValid=footReference!=nullptr;
         g_publication.footReference=footReference?*footReference:Halo2CameraBasis{};
         g_publication.viewLiftZ=std::isfinite(viewLiftZ)?viewLiftZ:0.0f;
@@ -1477,19 +1487,39 @@ namespace
         bool ownsVehicleReference=false;
         const bool vehicleRequested=vehicle&&g_config.vehicle_vr_controls&&Game_IsHeadTracking()&&VR_IsStereoEnabled()&&
             !Menu_IsOpen()&&!VR_IsPausePresentation()&&!VR_IsCutsceneTheaterActive();
+        // THE VEHICLE CAMERAS (halo2_vehicle_cameras.h): the seat is handed over before its view is built (a chase
+        // camera's tethering turns the view in place of vehicle_view_follow), and the built view's eye is moved by a
+        // firstperson camera's offset or stood at a chase camera's place. The hands are built on that eye.
+        Halo2VehicleCameraSeatSample cameraSeat{};
+        bool cameraSeatValid=false,cameraEyeMoved=false;
         if(vehicleRequested) {
             vehicleKey.generation=g_generation.load(std::memory_order_acquire);
             vehicleKey.space=snapshot.trackingSpaceEpoch;
-            ownsVehicleReference=ReadVehicleViewFrame(vehicleKey,hull)&&
-                g_vehicleView.Build(vehicleKey,stock,hull,g_config.vehicle_view_follow,
+            const bool framed=ReadVehicleViewFrame(vehicleKey,hull);
+            bool followHull=g_config.vehicle_view_follow;
+            if(framed) {
+                cameraSeatValid=Halo2VehicleCameraSampleSeat(vehicleKey,stock,cameraSeat);
+                if(cameraSeatValid) (void)Game_Halo2VehicleCamerasBegin(cameraSeat,followHull);
+            }
+            ownsVehicleReference=framed&&
+                g_vehicleView.Build(vehicleKey,stock,hull,followHull,
                     GetTickCount64(),viewBase,g_footSeatSeedValid?&g_footSeatSeed:nullptr);
-            if(ownsVehicleReference) {g_footSeatSeedValid=false;g_vehicleViewApplied.fetch_add(1,std::memory_order_relaxed);}
+            g_vehicleViewFollows.store(ownsVehicleReference&&followHull,std::memory_order_release);
+            if(ownsVehicleReference) {
+                g_footSeatSeedValid=false;g_vehicleViewApplied.fetch_add(1,std::memory_order_relaxed);
+                if(cameraSeatValid)
+                    cameraEyeMoved=Game_Halo2VehicleCamerasPlace(cameraSeat,
+                        std::atan2(viewBase.forward[1],viewBase.forward[0]),viewBase.position);
+            }
             else {g_vehicleView={};g_vehicleViewRefused.fetch_add(1,std::memory_order_relaxed);}
         }
         // Still seated, or not known to have left (a menu, a pause, the theater -- the seat sample goes stale
         // while the game is paused): keep the seat's heading for its return. A fresh on-foot sample forgets it.
-        else if(!Halo2Observer6Dof_OnFootFresh()) g_vehicleView.Suspend();
-        else g_vehicleView={};
+        else if(!Halo2Observer6Dof_OnFootFresh()) {g_vehicleView.Suspend();g_vehicleViewFollows.store(false,std::memory_order_release);}
+        else {
+            g_vehicleView={};g_vehicleViewFollows.store(false,std::memory_order_release);
+            Game_Halo2VehicleCamerasOnFoot(g_generation.load(std::memory_order_acquire));
+        }
         Halo2CameraBasis tracked{};
         if (!Halo2BuildTrackedCenterCamera(viewBase, head, tracked))
         {
@@ -1542,6 +1572,19 @@ namespace
                 }
             }
         }
+        // A chase camera's leash: the head's movement off the camera's place held inside the camera's box, so a lean
+        // cannot take the view through the hull. On the final camera, after the roomscale rebuild above.
+        if(cameraEyeMoved) {
+            float lean[3]{tracked.position[0]-viewBase.position[0],tracked.position[1]-viewBase.position[1],
+                tracked.position[2]-viewBase.position[2]};
+            if(Game_Halo2VehicleCameraLeash(lean))
+                for(int axis=0;axis<3;++axis) tracked.position[axis]=viewBase.position[axis]+lean[axis];
+        }
+        // The ring where the vehicle aims, from the view this frame is drawn from (taken down without a chase camera).
+        if(cameraEyeMoved)
+            Game_Halo2VehicleAimMarkerStep(tracked.position,tracked.forward,tracked.up,snapshot.headOrientation);
+        else if(vehicle)
+            Game_Halo2VehicleAimMarkerStep(nullptr,nullptr,nullptr,nullptr);
         if (!WriteObserverPose(result, tracked))
         {
             g_unreadableSamples.fetch_add(1, std::memory_order_relaxed);
@@ -1554,7 +1597,7 @@ namespace
             g_generation.load(std::memory_order_acquire),
             snapshot.preparedSerial, stock, tracked, effectiveReference, snapshot,
             ownsVehicleReference?&viewBase:nullptr,ownsVehicleReference?&vehicleKey:nullptr,
-            ownsFootReference?&viewBase:nullptr,viewLiftZ);
+            ownsFootReference?&viewBase:nullptr,viewLiftZ,ownsVehicleReference&&cameraEyeMoved);
         // Published at the view's own heading: from here the drive may write the hand's aim into the
         // record, and the right stick stops reaching the game.
         g_footViewEngagedMs.store(ownsFootReference ? GetTickCount64() : 0, std::memory_order_release);
@@ -4057,6 +4100,106 @@ namespace
 #endif
     }
 
+    // THE VEHICLE CAMERA RAY (halo2_vehicle_cameras.inl), simulation thread, every seated update: from the point a chase
+    // camera is measured from toward where it sits, while one with "collide" is up -- the seat trace's own query and
+    // flags, with the vehicle hierarchy's root ignored, and Halo 2 skips an ignored object with everything attached
+    // to it, so the player's own vehicle and its occupants are looked past. Only while the observer published a ray;
+    // nothing the aim reads moves. A fault here stops these two optional traces for the module's generation, and
+    // leaves the aim's own trace running (it latches on its own faults).
+    constexpr float kHalo2CameraRayLengthWu = 40.0f;
+    std::atomic<uint32_t> g_halo2SightAuxFaultedGeneration{0};
+    void Halo2SightAuxFault(uint32_t generation) noexcept
+    {
+        if (g_halo2SightAuxFaultedGeneration.exchange(generation, std::memory_order_acq_rel) != generation)
+            LOG("Vehicle cameras (Halo 2): a guarded fault in the traces for a chase camera's walls and the aim ring "
+                "turned them off until the game is reloaded; the camera then goes all the way out, and the ring is "
+                "drawn at the last depth measured, else far out along its line");
+    }
+    void Halo2SightAuxTraces(uint32_t seatedRoot) noexcept
+    {
+        constexpr GameTitle kTitle = GameTitle::Halo2;
+        if (seatedRoot == UINT32_MAX || Sight_TraceFaulted(kTitle) ||
+            !g_halo2WorldCollision.installed.load(std::memory_order_acquire))
+            return;
+        const uint32_t generation = g_generation.load(std::memory_order_acquire);
+        if (!generation || g_halo2SightAuxFaultedGeneration.load(std::memory_order_acquire) == generation)
+            return;
+        bool faulted = false;
+        // THE VEHICLE AIM RING RAY (halo2_vehicle_cameras.inl): from the seat's own point along the way the vehicle
+        // aims, while the ring is shown, for the depth it is drawn at -- the intent ray's length, the same ignores.
+        SightAuxRay markerRay{};
+        if (Sight_ReadMarkerRay(kTitle, generation, kSightRayFreshMs, markerRay))
+        {
+            const float markerLength = kSightTraceLengthWu;
+            const float markerDelta[3]{markerRay.dir[0] * markerLength, markerRay.dir[1] * markerLength,
+                markerRay.dir[2] * markerLength};
+            alignas(16) Halo2CollisionResult markerResult{};
+            bool markerHit = false, markerCalled = false;
+            g_halo2WorldCollision.callbacks.fetch_add(1, std::memory_order_acq_rel);
+            __try
+            {
+                const auto original = g_halo2WorldCollision.original;
+                if (original &&
+                    g_halo2WorldCollision.installed.load(std::memory_order_acquire) &&
+                    g_halo2WorldCollision.active.load(std::memory_order_acquire))
+                {
+                    markerHit = original(Halo2SightTraceFlags(), markerRay.origin, markerDelta,
+                        static_cast<int32_t>(seatedRoot), -1, &markerResult) != 0;
+                    markerCalled = true;
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                markerCalled = false;
+                faulted = true;
+            }
+            g_halo2WorldCollision.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+            if (faulted)
+            {
+                Halo2SightAuxFault(generation);
+                return;
+            }
+            if (!markerCalled)
+                return;
+            markerHit = markerHit && std::isfinite(markerResult.fraction) && markerResult.fraction >= 0.0f &&
+                markerResult.fraction <= 1.0f;
+            Sight_PublishMarkerTrace(kTitle, generation, markerHit,
+                markerHit ? markerResult.fraction * markerLength : 0.0f);
+        }
+        SightAuxRay ray{};
+        if (!Sight_ReadCameraRay(kTitle, generation, kSightRayFreshMs, ray))
+            return;
+        const float length = kHalo2CameraRayLengthWu;
+        const float delta[3]{ray.dir[0] * length, ray.dir[1] * length, ray.dir[2] * length};
+        alignas(16) Halo2CollisionResult result{};
+        bool hit = false, called = false;
+        const uint32_t flags = Halo2SightTraceFlags();
+        g_halo2WorldCollision.callbacks.fetch_add(1, std::memory_order_acq_rel);
+        __try
+        {
+            const auto original = g_halo2WorldCollision.original;
+            if (original &&
+                g_halo2WorldCollision.installed.load(std::memory_order_acquire) &&
+                g_halo2WorldCollision.active.load(std::memory_order_acquire))
+            {
+                hit = original(flags, ray.origin, delta, static_cast<int32_t>(seatedRoot), -1, &result) != 0;
+                called = true;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            called = false;
+            faulted = true;
+        }
+        g_halo2WorldCollision.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+        if (faulted)
+            Halo2SightAuxFault(generation);
+        if (!called)
+            return;
+        hit = hit && std::isfinite(result.fraction) && result.fraction >= 0.0f && result.fraction <= 1.0f;
+        Sight_PublishCameraTrace(kTitle, generation, hit, hit ? result.fraction * length : 0.0f);
+    }
+
     // The ultimate parent of `object` (Halo 2's own walk, 0x8D6A50: the parent handle at +0x14, up to the root),
     // through the salt-checked accessor. UINT32_MAX when a link does not resolve or the chain does not end.
     uint32_t Halo2UltimateParent(uint32_t object) noexcept
@@ -4223,6 +4366,12 @@ namespace
                     // path. Keep the complete stock updater for those units.
                     if (seated)
                     {
+                        // A chase camera's line to its place, for its "collide" (halo2_vehicle_cameras.inl).
+                        {
+                            const uint32_t cameraParent = *reinterpret_cast<const uint32_t*>(unit + 0x14);
+                            if (cameraParent != UINT32_MAX)
+                                Halo2SightAuxTraces(Halo2UltimateParent(cameraParent));
+                        }
                         // ...but the seat's intent ray is traced here, on the simulation thread, like the
                         // on-foot one (seat_converge_logic.h): the seat drive bends its write through the point.
                         // Only while the hand aims the seat; the trace itself changes nothing in the unit.
@@ -5200,6 +5349,89 @@ namespace
 
     #include "halo2_direct_drive.inl"
     #include "halo2_director_perspective.inl"
+
+    // The seated unit's aiming vector (unit +0x174, the line the engine fires along; the direct drive reads the same),
+    // through the salt-checked accessor and guarded. False unless it reads as a unit vector. The engine writes it
+    // once a tick, so it steps at the tick, not the frame.
+    bool Halo2VehicleCameraUnitAim(uint32_t unit,float out[3]) noexcept
+    {
+        float aim[3]{};
+        __try
+        {
+            const auto* object=static_cast<const uint8_t*>(Halo2ObjectFromIndex(unit));
+            if(!object) return false;
+            memcpy(aim,object+kHalo2UnitAimingVectorOffset,sizeof(aim));
+        }
+        __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+        const float length=std::sqrt(aim[0]*aim[0]+aim[1]*aim[1]+aim[2]*aim[2]);
+        if(!std::isfinite(length)||std::fabs(length-1.0f)>0.05f) return false;
+        for(int axis=0;axis<3;++axis) out[axis]=aim[axis]/length;
+        return true;
+    }
+
+    // THE SEAT FOR THE VEHICLE CAMERAS (halo2_vehicle_cameras.h), observer thread, once a frame of a seat view: who
+    // sits where (the seat view's own key), the render models of the seated object and of the vehicle it rides (a few
+    // tag lookups: kept per object for the generation, a failed read tried again for up to 30 frames), the seat's own
+    // flags (the seat frame reader's guarded read of the flags word the rebase addresses, kept per occupation), the
+    // game's own camera this frame, and the seated unit's aim. False only for a key with no seat.
+    bool Halo2VehicleCameraSampleSeat(const Halo2VehicleViewKey& key,const Halo2CameraBasis& stock,
+        Halo2VehicleCameraSeatSample& out) noexcept
+    {
+        out={};
+        if(!key.generation||key.unit==UINT32_MAX||key.parent==UINT32_MAX||key.seat<0) return false;
+        out.generation=key.generation;out.unit=key.unit;out.parent=key.parent;out.root=key.root;out.seat=key.seat;
+        struct ModelCache
+        {
+            uint32_t generation=0,object=UINT32_MAX,tries=0;
+            bool read=false;
+            uint64_t identity=0;
+            float bounds[6]{};
+            unsigned nodes=0;
+        };
+        static ModelCache seated{},carrier{};
+        const auto model=[&key](ModelCache& cache,uint32_t object) -> const ModelCache& {
+            if(cache.generation!=key.generation||cache.object!=object) {
+                cache=ModelCache{};cache.generation=key.generation;cache.object=object;
+            }
+            if(!cache.read&&cache.tries<30) {
+                ++cache.tries;
+                cache.read=ReadHalo2VehicleModel(object,cache.identity,cache.bounds,cache.nodes);
+            }
+            return cache;
+        };
+        const ModelCache& own=model(seated,key.parent);
+        out.identity=own.identity;out.modelRead=own.read;out.nodes=own.nodes;
+        memcpy(out.bounds,own.bounds,sizeof(out.bounds));
+        out.radius=own.read?halo2_vehicle_camera::BoundsRadius(own.bounds):0.0f;
+        if(key.root!=UINT32_MAX&&key.root!=key.parent) {
+            const ModelCache& ridden=model(carrier,key.root);
+            out.carrierIdentity=ridden.identity;
+            out.carrierModelRead=ridden.read;
+            memcpy(out.carrierBounds,ridden.bounds,sizeof(out.carrierBounds));
+            out.carrierRadius=ridden.read?halo2_vehicle_camera::BoundsRadius(ridden.bounds):0.0f;
+        }
+        struct FlagsCache
+        {
+            uint32_t generation=0,unit=UINT32_MAX,parent=UINT32_MAX,tries=0;
+            int16_t seat=-1;
+            bool known=false;
+            uint32_t flags=0;
+        };
+        static FlagsCache flags{};
+        if(flags.generation!=key.generation||flags.unit!=key.unit||flags.parent!=key.parent||flags.seat!=key.seat) {
+            flags=FlagsCache{};flags.generation=key.generation;flags.unit=key.unit;flags.parent=key.parent;
+            flags.seat=key.seat;
+        }
+        if(!flags.known&&flags.tries<30) {
+            ++flags.tries;
+            const seat_frame_rt::Live live=seat_frame_rt::Read(g_halo2SeatFrame,&Halo2ObjectFromIndex,key.unit);
+            flags.known=live.flagsKnown;flags.flags=live.flags;
+        }
+        out.flagsKnown=flags.known;out.seatFlags=flags.flags;
+        memcpy(out.stockForward,stock.forward,sizeof(out.stockForward));
+        out.aimRead=Halo2VehicleCameraUnitAim(key.unit,out.aimForward);
+        return true;
+    }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // Dev: the sound listener witness samples from the tracker's accessor detour (one call, once a game tick).
     void Halo2ListenerWitnessTick(int32_t user) noexcept;
@@ -6534,12 +6766,14 @@ namespace
             Sight_IndependentDualAim()?1:0);
         {
             const uint64_t seatApplied=g_halo2SeatFireApplied.exchange(0),seatThrough=g_halo2SeatFireThrough.exchange(0),
-                seatSkipped=g_halo2SeatFireSkipped.exchange(0),seatFromEye=g_halo2SeatFireFromEye.exchange(0);
-            if(seatApplied||seatThrough||seatSkipped||seatFromEye)
+                seatSkipped=g_halo2SeatFireSkipped.exchange(0),seatFromEye=g_halo2SeatFireFromEye.exchange(0),
+                seatChase=g_halo2SeatFireChaseKept.exchange(0);
+            if(seatApplied||seatThrough||seatSkipped||seatFromEye||seatChase)
                 LOG("Halo 2 seat fire: the engine's crosshair line at a seated fire replaced by the player's own (from "
                     "the rendered eye through the traced point) %llu, re-aimed from the seat camera through the point "
                     "%llu, already through it or geometrically refused (SHOT REAIM names which) %llu, left as the game "
-                    "built it (the seat's aim was not converged) %llu",seatFromEye,seatApplied,seatThrough,seatSkipped);
+                    "built it (the seat's aim was not converged) %llu; fires under a vehicle chase camera, kept at the "
+                    "seat's own start %llu",seatFromEye,seatApplied,seatThrough,seatSkipped,seatChase);
         }
         LOG("Halo 2 barrel trajectory: enabled=%d fault=%d applied=%llu refused=%llu option=%d",
             g_halo2Muzzle.enabled.load()?1:0,g_halo2Muzzle.faulted.load()?1:0,

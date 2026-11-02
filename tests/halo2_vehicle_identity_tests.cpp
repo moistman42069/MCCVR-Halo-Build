@@ -46,6 +46,19 @@ int main(){
     parent[0xAA]=0;Check(ReadHalo2VehicleIdentity(parentHandle)==0,"nonvehicle object refused");parent[0xAA]=1;
     Put(parent,0x118,int16_t{53});Check(ReadHalo2VehicleIdentity(parentHandle)==0,"partial native matrix stride refused");
     Put(parent,0x118,static_cast<int16_t>(warthog->nodes*0x34));
+    {
+        // The model itself, for the vehicle cameras: the bounds and node count the identity is matched from.
+        uint64_t identity=0;float bounds[6]{};unsigned nodes=0;
+        Check(ReadHalo2VehicleModel(parentHandle,identity,bounds,nodes)&&identity==warthog->identity&&
+            nodes==warthog->nodes&&!std::memcmp(bounds,warthog->bounds,sizeof(bounds)),
+            "the model read gives the Warthog's identity, bounds and nodes");
+        Put(data,0x100,10000.f);
+        Check(ReadHalo2VehicleModel(parentHandle,identity,bounds,nodes)&&identity==0&&bounds[0]==10000.f&&
+            nodes==warthog->nodes,"a model the mod does not know reads with no identity, its bounds kept for its name");
+        Check(!ReadHalo2VehicleModel(parentHandle-0x10000,identity,bounds,nodes)&&identity==0&&nodes==0,
+            "a stale parent reads no model");
+        std::memcpy(data+0x100,warthog->bounds,24);
+    }
     Put(data,0x100,10000.f);Check(ReadHalo2VehicleIdentity(parentHandle)==0,"unknown/custom model retains game fallback");
     Put(data,0x100,std::numeric_limits<float>::quiet_NaN());Check(ReadHalo2VehicleIdentity(parentHandle)==0,"nonfinite model bounds refused");
     std::memcpy(data+0x100,warthog->bounds,24);mutate=true;

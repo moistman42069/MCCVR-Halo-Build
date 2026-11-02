@@ -943,6 +943,14 @@ if(BUILD_TESTING)
     target_compile_options(halomccvr_halo4_vehicle_camera_tests PRIVATE /W4 /WX)
     target_compile_definitions(halomccvr_halo4_vehicle_camera_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_halo4_vehicle_camera_tests COMMAND halomccvr_halo4_vehicle_camera_tests)
+    # Halo 2's seats as the vehicle camera file names them: a model's name, a gun's, a vehicle the mod does not know,
+    # a seat's role, the orbit's pivot and range, and the built-in entry each finds
+    # (src/common/halo2_vehicle_camera_logic.h).
+    add_executable(halomccvr_halo2_vehicle_camera_tests tests/halo2_vehicle_camera_tests.cpp
+        src/common/vehicle_camera_file.cpp)
+    target_compile_options(halomccvr_halo2_vehicle_camera_tests PRIVATE /W4 /WX)
+    target_compile_definitions(halomccvr_halo2_vehicle_camera_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_halo2_vehicle_camera_tests COMMAND halomccvr_halo2_vehicle_camera_tests)
     # The ring where the vehicle aims, beside the crosshair: its picture, colour, direction, range and size
     # (src/common/vehicle_aim_marker_logic.h).
     add_executable(halomccvr_vehicle_aim_marker_tests tests/vehicle_aim_marker_tests.cpp)
