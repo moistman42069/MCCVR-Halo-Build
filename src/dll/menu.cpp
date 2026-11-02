@@ -1775,19 +1775,24 @@ namespace
             ImGui::TextDisabled("Off (default): the gestures and the game's own buttons both work.\n"
                                 "On: only the gestures reload and switch weapons while those options are on.");
         }
-        if (ImGui::Button("Over-the-shoulder weapon switch (Campaign Evolved)"))
+        // That mod's gesture: reach over the weapon-side shoulder and squeeze the grip. Read from the settings it is made
+        // of, so the box can't disagree with them.
+        bool overShoulder = g_config.weapon_holsters && g_config.weapon_holster_location == 2 &&
+            g_config.weapon_holster_click && !g_config.weapon_holster_slide &&
+            fabsf(g_config.weapon_holster_radius_m - weapon_interaction::kOverShoulderRadius) < 0.001f;
+        if (ImGui::Checkbox("Over-the-shoulder weapon switch", &overShoulder))
         {
-            // That mod's gesture: reach over the weapon-side shoulder and squeeze the grip.
+            const Config defaults{};
             g_config.weapon_holsters = true;
-            g_config.weapon_holster_location = 2;
-            g_config.weapon_holster_click = true;
-            g_config.weapon_holster_slide = false;
-            g_config.weapon_holster_radius_m = weapon_interaction::kOverShoulderRadius;
+            g_config.weapon_holster_location = overShoulder ? 2 : defaults.weapon_holster_location;
+            g_config.weapon_holster_click = overShoulder ? true : defaults.weapon_holster_click;
+            g_config.weapon_holster_slide = overShoulder ? false : defaults.weapon_holster_slide;
+            g_config.weapon_holster_radius_m = overShoulder ? weapon_interaction::kOverShoulderRadius
+                                                            : defaults.weapon_holster_radius_m;
             changed = true;
         }
-        ImGui::TextDisabled("One press sets the holster up like the Campaign Evolved mod: reach over your\n"
-                            "weapon-side shoulder and squeeze the weapon grip to switch weapons. Every game.\n"
-                            "Your switch-weapon button still works.");
+        ImGui::TextDisabled("Reach over your weapon-side shoulder and squeeze the weapon grip to switch weapons, in every\n"
+                            "game. Off puts the holster back on its defaults. Your switch-weapon button still works.");
         {
             // The holster where the player's own hand goes: arm here, then squeeze the weapon grip there.
             static uint32_t shownCount = VR_HolsterCaptureCount();
