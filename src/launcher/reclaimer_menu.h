@@ -9,8 +9,9 @@
 
 namespace reclaimer_launch
 {
-// The folder whose HaloMCCVR.dll, relay and settings a Project Reclaimer launch from this launcher uses: the
-// launcher's own folder, or its ModFiles folder in a package that has not been installed.
+// The folder whose HaloMCCVR.dll, relay and settings a Project Reclaimer launch uses, given the folder asked for: the
+// menu asks for the selected install's Halo_MCC_VR, and for its own folder only when nothing is installed; in a package
+// that has not been installed, that is its ModFiles folder.
 std::filesystem::path ModDir(const std::filesystem::path& launcherDir);
 
 // The kept choice: the one line of reclaimer_client.txt beside the launcher. Empty when there is none.
