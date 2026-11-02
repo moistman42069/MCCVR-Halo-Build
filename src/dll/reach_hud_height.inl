@@ -45,7 +45,9 @@ static bool ReachHudHeightOwnsStereo() noexcept
 
 static void ReachAdjustHudAnchorHeight(void* basis) noexcept
 {
-    if (!basis || g_reachHudHeightRedirected || !ReachHudHeightOwnsStereo())
+    // The frame's HUD height is left as the game places it (AIM FRAME ZOOM).
+    if (!basis || g_reachHudHeightRedirected || g_aimFramePass.load(std::memory_order_acquire) ||
+        !ReachHudHeightOwnsStereo())
         return;
     const float height = g_config.hud_vertical_offset;
     if (!std::isfinite(height) || height < kHudHeightMin ||

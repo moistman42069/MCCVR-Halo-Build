@@ -1157,6 +1157,8 @@ uint64_t VR_GetWeaponModelIdentity(GameTitle title,uint32_t generation,uint64_t 
 struct ReachVrEyeSnapshot
 {
     float position[3]{};
+    // The eye's real offset whatever `position` holds in a mono frame: Aim Frame Zoom's 3D stands the eyes along the aim.
+    float stereoPosition[3]{};
     float orientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float fov[4]{}; // left, right, up, down
 };
