@@ -159,10 +159,11 @@ struct Menu {
         EnableWindow(GetDlgItem(window, Check), !busy);
         EnableWindow(GetDlgItem(window, Latest), !busy);
         const auto identity = game ? ReadIdentity(game->root / L"Halo_MCC_VR") : BuildIdentity{};
-        const bool sameRelease = installed && !identity.release.empty() && identity.release == latest.tag;
-        EnableWindow(GetDlgItem(window, Update), !busy && game && updateReady && !sameRelease);
+        const bool current = installed && (packageChosen ? !identity.tag.empty() && identity.tag == ReadIdentity(payload).tag
+                                                         : !identity.release.empty() && identity.release == latest.tag);
+        EnableWindow(GetDlgItem(window, Update), !busy && game && updateReady);
         const bool older = !packageChosen && !versions.empty() && !latest.tag.empty() && latest.tag != versions.front().tag;
-        Text(GetDlgItem(window, Update), !installed ? L"INSTALL VR MOD" : packageChosen ? L"INSTALL THIS DOWNLOAD (Replaces Current Build)"
+        Text(GetDlgItem(window, Update), !installed ? L"INSTALL VR MOD" : current ? L"REINSTALL CURRENT VERSION" : packageChosen ? L"INSTALL THIS DOWNLOAD (Replaces Current Build)"
             : older ? L"INSTALL OLDER VERSION (Replaces Current Build)" : L"INSTALL UPDATE (Replaces Current Build)");
         if (game) Text(path, std::wstring(game->store ? L"Version: Xbox app / Microsoft Store" : L"Version: Steam") +
             L"\nVR folder: " + (game->root / L"Halo_MCC_VR").wstring() );
