@@ -41,9 +41,9 @@ constexpr Credit kCredits[] = {
     {L"blindcowboy24", L"Initial Roomscale setup for Aim/multiplayer revamp."},
     {L"LivingFray / Maso", L"Ownership and restoration design leads."},
     {L"marcusau2", L"The earlier per-gun calibration."},
+    {L"SilentVortigaunt", L"The trailer."},
     {L"UnsealedWings", L"Performance and HUD proposals."},
     {L"PurplePeanut", L"The Provolver proposal."},
-    {L"SilentVortigaunt", L"The trailer."},
 };
 struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel, built, release, published; bool candidate = true; };
 BuildIdentity ReadIdentity(const fs::path& directory) {
