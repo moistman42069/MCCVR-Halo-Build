@@ -85,6 +85,8 @@ static void Policies() {
         Require(credits[0].name == L"First" && credits[0].what == L"Did: this", "a person and what they did, colons and all");
         Require(credits[1].name == L"Second" && credits[1].what.empty(), "a person with no description");
         Require(ParseCredits(L"").empty(), "no file, no list");
+        const auto sections = ParseCredits(L"name: A\nsection: Also\nname: B\nname: C\n");
+        Require(sections.size() == 3 && sections[0].section.empty() && sections[1].section == L"Also" && sections[2].section.empty(), "a section heads the next person only");
     }
     Require(InstalledText(L"Nitsujack", L"nitsujack-reclaimer-5", L"2026-11-01", L"RC-fd42f87", L"2026-10-31") == L"Installed:  Repository: Nitsujack  |  Release: nitsujack-reclaimer-5  |  Build: RC-fd42f87  |  Published: 2026-11-01", "an updated build names its release and when it was published");
     Require(InstalledText(L"Nitsujack", L"", L"", L"RC-983a98e", L"2026-11-02") == L"Installed:  Repository: Nitsujack  |  Release: not recorded  |  Build: RC-983a98e  |  Built: 2026-11-02", "a build from elsewhere says what it knows");
