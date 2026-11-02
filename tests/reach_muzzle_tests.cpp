@@ -1,3 +1,5 @@
+#include "../src/common/reach_weapon_defaults.h"
+#include "../src/common/visual_aim.h"
 #include <Windows.h>
 #include <MinHook.h>
 #include <atomic>
@@ -63,7 +65,7 @@ struct ReachFpInterpolationContext {
     bool valid=true;uint32_t generation=7,muzzleUnit=owner,muzzleWeapon=primary;
     int interpolationView=0,interpolationSlot=0;uint64_t preparedSerial=11;
     // contactReference is Reach's melee hash of the tracking-space epoch (3 here): never equal to it.
-    struct {uint64_t contactSerial=11,contactReference=0x9E3779B97F4A7C15ull,contactSpaceEpoch=3;int64_t contactTimeNs=1000000000;bool rightWristValid=true;} targets;
+    struct {BoneMatrix aimVisual{},aimNeutral{},rightWrist{};uint64_t contactSerial=11,contactReference=0x9E3779B97F4A7C15ull,contactSpaceEpoch=3;int64_t contactTimeNs=1000000000;bool rightWristValid=true;} targets;
 };
 static struct {bool armed=true;uint64_t preparedSerial=11;} g_reachFpPairScope;
 static uint32_t liveChecksum=0;static int liveCount=0;

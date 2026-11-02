@@ -13,7 +13,7 @@ static void STDMETHODCALLTYPE HudDrawIndexedInstancedHook(ID3D11DeviceContext* c
     UINT indices,UINT instances,UINT startIndex,INT baseVertex,UINT startInstance)
 {
     HookCostScope cost(hook_cost::Site::DrawOther);
-    if(ShouldHideExtraHudDraw(context))return;
+    if(PostEffects_ShouldSkipDraw(context)||ShouldHideExtraHudDraw(context))return;
     BloomDrawScope bloom(context);
     HookCostNative native(cost);
     g_origHudDrawIndexedInstanced(context,indices,instances,startIndex,baseVertex,startInstance);
@@ -22,7 +22,7 @@ static void STDMETHODCALLTYPE HudDrawInstancedHook(ID3D11DeviceContext* context,
     UINT vertices,UINT instances,UINT startVertex,UINT startInstance)
 {
     HookCostScope cost(hook_cost::Site::DrawOther);
-    if(ShouldHideExtraHudDraw(context))return;
+    if(PostEffects_ShouldSkipDraw(context)||ShouldHideExtraHudDraw(context))return;
     BloomDrawScope bloom(context);
     HookCostNative native(cost);
     g_origHudDrawInstanced(context,vertices,instances,startVertex,startInstance);
@@ -30,7 +30,7 @@ static void STDMETHODCALLTYPE HudDrawInstancedHook(ID3D11DeviceContext* context,
 static void STDMETHODCALLTYPE HudDrawAutoHook(ID3D11DeviceContext* context)
 {
     HookCostScope cost(hook_cost::Site::DrawOther);
-    if(ShouldHideExtraHudDraw(context))return;
+    if(PostEffects_ShouldSkipDraw(context)||ShouldHideExtraHudDraw(context))return;
     BloomDrawScope bloom(context);
     HookCostNative native(cost);
     g_origHudDrawAuto(context);
@@ -38,7 +38,7 @@ static void STDMETHODCALLTYPE HudDrawAutoHook(ID3D11DeviceContext* context)
 static void STDMETHODCALLTYPE HudDrawIndexedIndirectHook(ID3D11DeviceContext* context,ID3D11Buffer* arguments,UINT offset)
 {
     HookCostScope cost(hook_cost::Site::DrawOther);
-    if(ShouldHideExtraHudDraw(context))return;
+    if(PostEffects_ShouldSkipDraw(context)||ShouldHideExtraHudDraw(context))return;
     BloomDrawScope bloom(context);
     HookCostNative native(cost);
     g_origHudDrawIndexedIndirect(context,arguments,offset);
@@ -46,7 +46,7 @@ static void STDMETHODCALLTYPE HudDrawIndexedIndirectHook(ID3D11DeviceContext* co
 static void STDMETHODCALLTYPE HudDrawIndirectHook(ID3D11DeviceContext* context,ID3D11Buffer* arguments,UINT offset)
 {
     HookCostScope cost(hook_cost::Site::DrawOther);
-    if(ShouldHideExtraHudDraw(context))return;
+    if(PostEffects_ShouldSkipDraw(context)||ShouldHideExtraHudDraw(context))return;
     BloomDrawScope bloom(context);
     HookCostNative native(cost);
     g_origHudDrawIndirect(context,arguments,offset);

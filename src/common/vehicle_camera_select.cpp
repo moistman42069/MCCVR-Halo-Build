@@ -207,6 +207,7 @@ void Selector::Select(int camera, int mode, bool countsAsChange)
     next.rotYaw = tether.rotYaw;
     next.rotPitch = tether.rotPitch;
     next.rotRoll = tether.rotRoll;
+    next.rotationSet = chosen.rotationSet;
     next.collide = chosen.collide;
     next.collideMarginCm = chosen.collideMargin;
     next.lagSeconds = vehicle_camera_file::LagSecondsOf(chosen);

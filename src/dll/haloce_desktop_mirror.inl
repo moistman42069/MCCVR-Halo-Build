@@ -5,6 +5,8 @@ namespace
 ID3D11RenderTargetView* g_ceDesktopRtv{};
 ID3D11Texture2D* g_ceDesktopBuffer{}; // identity held by g_ceDesktopRtv
 ID3D11PixelShader* g_ceDesktopPs[3]{};
+ID3D11Texture2D* g_desktopProbe{}; // one texel, in g_desktopProbeFormat
+DXGI_FORMAT g_desktopProbeFormat{};
 
 // The shared blit backup predates shader class linkage and tessellation.
 // Keep the complete shader bindings local to this optional desktop draw.
@@ -26,6 +28,34 @@ void ReleaseCeDesktopMirror()
     g_ceDesktopRtv=nullptr;g_ceDesktopBuffer=nullptr;
     for (auto*& shader:g_ceDesktopPs)
     { if (shader) shader->Release();shader=nullptr; }
+    if (g_desktopProbe) g_desktopProbe->Release();
+    g_desktopProbe=nullptr;
+}
+
+// The backbuffer's middle texel as it stands, its first four bytes. It waits for the GPU: for occasional evidence only.
+bool ReadDesktopMiddle(ID3D11Texture2D* backbuffer,const D3D11_TEXTURE2D_DESC& descriptor,uint32_t& texel)
+{
+    if (!g_device||!g_context||!backbuffer||descriptor.SampleDesc.Count!=1) return false;
+    if (g_desktopProbe&&g_desktopProbeFormat!=descriptor.Format)
+    { g_desktopProbe->Release();g_desktopProbe=nullptr; }
+    if (!g_desktopProbe)
+    {
+        D3D11_TEXTURE2D_DESC probe{};
+        probe.Width=probe.Height=probe.MipLevels=probe.ArraySize=1;
+        probe.Format=descriptor.Format;
+        probe.SampleDesc.Count=1;
+        probe.Usage=D3D11_USAGE_STAGING;
+        probe.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+        if (FAILED(g_device->CreateTexture2D(&probe,nullptr,&g_desktopProbe))) return false;
+        g_desktopProbeFormat=descriptor.Format;
+    }
+    const D3D11_BOX middle{descriptor.Width/2,descriptor.Height/2,0,descriptor.Width/2+1,descriptor.Height/2+1,1};
+    g_context->CopySubresourceRegion(g_desktopProbe,0,0,0,0,backbuffer,0,&middle);
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(g_context->Map(g_desktopProbe,0,D3D11_MAP_READ,0,&mapped))) return false;
+    memcpy(&texel,mapped.pData,sizeof(texel));
+    g_context->Unmap(g_desktopProbe,0);
+    return true;
 }
 
 bool CeDesktopViewport(const halo_ce::EyeCache::Completed& pair,
@@ -57,14 +87,12 @@ bool CeDesktopViewport(const halo_ce::EyeCache::Completed& pair,
         viewport.TopLeftX>=-32768&&viewport.TopLeftY>=-32768;
 }
 
-bool MirrorCeDesktop(const halo_ce::EyeCache::Completed& pair,
-    ID3D11Texture2D* backbuffer,const D3D11_TEXTURE2D_DESC& descriptor)
+// One finished eye into the backbuffer, as `viewport` places it.
+bool DrawEyeToDesktop(ID3D11Texture2D* eye,const D3D11_TEXTURE2D_DESC& eyeDescriptor,
+    ID3D11Texture2D* backbuffer,const D3D11_TEXTURE2D_DESC& descriptor,const D3D11_VIEWPORT& viewport)
 {
-    D3D11_VIEWPORT viewport{};
-    if (!g_device||!g_context||!backbuffer||backbuffer==pair.eyes[0]||
-        backbuffer==pair.eyes[1]||!CeDesktopViewport(pair,descriptor,viewport)||
-        !EnsureBlitPipeline()) return false;
-    auto* source=AcquireSrcSrv(pair.eyes[0],pair.descriptor);
+    if (!g_device||!g_context||!backbuffer||!eye||backbuffer==eye||!EnsureBlitPipeline()) return false;
+    auto* source=AcquireSrcSrv(eye,eyeDescriptor);
     if (!source) return false;
     // Use the real typed view format, including TYPELESS -> UNORM, rather
     // than the OpenXR target format assumed by the ordinary world upload.
@@ -145,5 +173,13 @@ float4 encode(Varying i) : SV_Target {
     g_context->HSSetShader(hull.shader,hull.classes,hull.count);
     g_context->DSSetShader(domain.shader,domain.classes,domain.count);
     return true;
+}
+
+bool MirrorCeDesktop(const halo_ce::EyeCache::Completed& pair,
+    ID3D11Texture2D* backbuffer,const D3D11_TEXTURE2D_DESC& descriptor)
+{
+    D3D11_VIEWPORT viewport{};
+    if (!backbuffer||backbuffer==pair.eyes[1]||!CeDesktopViewport(pair,descriptor,viewport)) return false;
+    return DrawEyeToDesktop(pair.eyes[0],pair.descriptor,backbuffer,descriptor,viewport);
 }
 }

@@ -1,3 +1,4 @@
+#include "../src/common/halo2_visual_aim.h"
 #include "../src/common/weapon_muzzle.h"
 #include "../src/common/halo2_render_logic.h"
 #include "../src/common/contact_melee_motion.h"
@@ -19,6 +20,8 @@ struct Halo2VisibleConsumerContext
     uint32_t muzzleGeneration=7;uint64_t muzzleSpace=3,muzzleSerial=11;
     int64_t muzzleTimeNs=1000000000;bool muzzleLeftHanded=false;
     contact_melee::Frame contactFrames[2]{};
+    bool muzzleVisualFrameValid=false;
+    Halo2CameraBasis muzzleNeutralCarrier[2]{},muzzleVisualCarrier[2]{},rightCarrier{},leftCarrier{};
 };
 static unsigned reticlePublications{};
 static void VR_PublishWeaponReticleRay(GameTitle title,uint8_t slot,
@@ -121,6 +124,28 @@ int main()
         Halo2PublishMuzzlePalette(changed,0,h2.identity,data,count);
         Check(!g_halo2Muzzles.Read(GameTitle::Halo2,7,context.unitObject,context.weaponObject,3,1050,1050000000,
             0,0,false,read),"invalid committed packet cannot retain previous muzzle authority");
+    }
+    {
+        context={};context.muzzleVisualFrameValid=true;
+        Halo2CameraBasis neutral{{2,3,4},{1,0,0},{0,0,1}},visual{};
+        Check(Halo2ApplyCarrierTrim(neutral,-11.5f,25,10,0,0,0,1,visual),"visual-only test frame");
+        context.muzzleNeutralCarrier[0]=neutral;context.muzzleVisualCarrier[0]=visual;
+        context.rightCarrier=visual;
+        Halo2FirstPersonTransform visible{};visible.scale=1;
+        for(int i=0;i<3;++i) {
+            visible.rotation[i]=visual.forward[i];visible.rotation[6+i]=visual.up[i];
+            int j=(i+1)%3,k=(i+2)%3;
+            visible.rotation[3+i]=visual.up[j]*visual.forward[k]-visual.up[k]*visual.forward[j];
+            visible.translation[i]=visual.position[i];
+        }
+        for(unsigned i=0;i<h2.nodeCount;++i) Halo2WriteFirstPersonTransform(visible,matrices+i*kHalo2FirstPersonNodeFloats);
+        Halo2PublishMuzzlePalette(context,0,h2.identity,matrices,h2.nodeCount);
+        Check(g_halo2Muzzles.Read(GameTitle::Halo2,7,context.unitObject,context.weaponObject,3,1050,1050000000,
+            0,0,false,read),"visual-adjusted H2 packet still publishes authoritative muzzle");
+        Ray expected{};
+        Check(Transform(h2,1,identity,neutral.position,expected),"neutral authored marker");
+        for(int i=0;i<3;++i) Check(Near(read.ray.position[i],expected.position[i])&&
+            Near(read.ray.direction[i],expected.direction[i]),"visual rotation does not move H2 barrel aim");
     }
     Store store;Palette pair{};pair.barrels[0]=receipt;
     Check(!store.Publish(GameTitle::Unknown,0,pair)&&!store.Publish(GameTitle::Halo3,2,pair),"invalid title/slot never indexes storage");

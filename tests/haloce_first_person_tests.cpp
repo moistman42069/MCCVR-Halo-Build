@@ -4,11 +4,195 @@
 #include <limits>
 #include <fstream>
 using namespace halo_ce;
+#include "ce_xam_nodes.inl"
+#include "ce_mercury_nodes.inl"
+#include "ce_cursed_nodes.inl"
 namespace
 {
 bool Near(Vec3 a,Vec3 b) { return Dot(a-b,a-b)<0.000001f; }
 void Name(AnimationNode& node,const char* name,int parent)
 { std::strcpy(node.name,name);node.parent=int16_t(parent); }
+// Separate functions: one giant main() made MSVC 19.42 emit a misaligned
+// movdqa for a NodeMatrix temporary (rbp+0x648) and crash the test.
+int CheckClassicAnimationReference()
+{
+    {
+        // The Classic producer can alternate native camera roots between
+        // preparations. Its local animation reference must still settle.
+        weapon_animation::Reference motionReference;
+        weapon_animation::Pose delta{};
+        NodeMatrix localGun{},localWrist{};localGun.position={.3f,.2f,.1f};
+        for(uint64_t t=0;t<=1600;t+=100)for(int eye=0;eye<3;++eye) {
+            NodeMatrix native{},gun{},wrist{};
+            native.position={float(eye)*2,0,0};
+            if(eye==1){native.forward={0,1,0};native.left={-1,0,0};}
+            CHECK(MoveNode(NodeMatrix{},native,localGun,gun));
+            CHECK(MoveNode(NodeMatrix{},native,localWrist,wrist));
+            weapon_animation::Pose local{};
+            CHECK(FirstPersonAnimationLocal(native,gun,wrist,local));
+            motionReference.Update({1,2,3,4},local,t,.33f,delta);
+        }
+        CHECK(motionReference.ready);
+        CHECK(std::fabs(delta.rotation[0]-1)<.00001f&&std::fabs(delta.rotation[4]-1)<.00001f);
+    }
+    return 0;
+}
+int CheckVisualMountAndModdedGraphs()
+{
+    {
+        ControllerRig rig{};
+        rig.gunForwardM=.12f;rig.supportForwardM=.03f;rig.gunRightM=.08f;rig.gunUpM=.04f;
+        rig.leftGunForwardM=.06f;rig.leftGunRightM=-.02f;rig.leftGunUpM=-.05f;
+        rig.visualPitchDeg=rig.visualYawDeg=rig.visualRollDeg=0;
+        rig.supportMountPitchDeg=rig.supportMountYawDeg=rig.supportMountRollDeg=0;
+        NodeMatrix right{},left{};
+        CHECK(ApplyVisualMount(rig,1,true,right)&&ApplyVisualMount(rig,1,false,left));
+        CHECK(Near(right.position,{.12f,-.08f,.04f}));
+        CHECK(Near(left.position,{.09f,.02f,-.05f}));
+        rig.gunForwardM=-.2f;rig.gunRightM=-.1f;rig.gunUpM=.2f;
+        NodeMatrix unchangedLeft{};
+        CHECK(ApplyVisualMount(rig,1,false,unchangedLeft));
+        CHECK(Near(unchangedLeft.position,left.position));
+    }
+    for(const auto& asset:ceXamGraphs) {
+        FirstPersonBinding binding{};
+        CHECK(BuildFirstPersonBinding(25,3,asset.nodes.data(),asset.count,binding));
+        CHECK(binding.rightWrist==6 && binding.leftWrist==5 && binding.gun>=0);
+        CHECK((binding.leftMask&binding.rightMask)==0 && binding.gunMask);
+        if(binding.nodeIdentity==0x0698859159826A29ull || binding.nodeIdentity==0xD822330265B09099ull) {
+            NodeMatrix authored[64]{};
+            // Deliberately rotate the native gun and wrist to catch coordinate
+            // space mistakes. The failed marker override remains disabled.
+            authored[binding.gun].forward={0,1,0};authored[binding.gun].left={-1,0,0};
+            authored[binding.rightWrist].position={.1f,.2f,.3f};
+            NodeMatrix aim{},supportAim{},primary{},support{},rendered{};
+            aim.forward={0,0,1};aim.left={0,1,0};aim.up={-1,0,0};
+            aim.position={4,5,6};
+            CHECK(BuildGripCarriers(binding,authored,binding.count,aim,supportAim,primary,support));
+            CHECK(MoveNode(authored[binding.rightWrist],primary,authored[binding.gun],rendered));
+            const auto muzzle=FirstPersonGunAimFrame(binding,rendered);
+            CHECK(Near(muzzle.forward,aim.forward) && Near(muzzle.up,aim.up));
+            CHECK(Near(primary.position,aim.position));
+            const auto raw=rendered;
+            auto unrelated=binding;unrelated.nodeIdentity=0;
+            const auto unchanged=FirstPersonGunAimFrame(unrelated,raw);
+            CHECK(Near(unchanged.forward,raw.forward) && Near(unchanged.up,raw.up));
+        }
+        if (binding.nodeIdentity==0x4C86902A3289986Eull) {
+            NodeMatrix native[64]{};
+            const uint64_t hidden=binding.leftMask|binding.armMask[0];
+            for (size_t i=0;i<binding.count;++i)
+                if (hidden&(uint64_t{1}<<i)) native[i].scale=0;
+            native[6].position={1,0,0};native[7].position={1.5f,0,0};
+            native[18].position={1.5f,0,.2f};
+            CHECK(HasHiddenXamLeftArm(binding,native));
+            NodeMatrix aim{};aim.position={2,3,4};aim.forward={0,1,0};aim.left={-1,0,0};
+            Camera camera{};ControllerRig rig{};rig.armIk=false;
+            std::array<NodeMatrix,kFirstPersonMaxNodes> staged{};
+            CHECK(BuildXamRightOnlyPalette(binding,native,aim,camera,rig,staged));
+            CHECK(Near(staged[6].position,aim.position));
+            CHECK(Near(staged[7].position,{2,3.5f,4}) && Near(staged[7].forward,aim.forward));
+            CHECK(Near(staged[18].position-staged[7].position,{0,0,.2f}));
+            for (size_t i=0;i<binding.count;++i) if (hidden&(uint64_t{1}<<i))
+                CHECK(std::memcmp(&native[i],&staged[i],sizeof(NodeMatrix))==0);
+            const auto saved=staged;
+            native[5].scale=1;
+            CHECK(!BuildXamRightOnlyPalette(binding,native,aim,camera,rig,staged));
+            CHECK(std::memcmp(&saved,&staged,sizeof(saved))==0);
+            native[5].scale=0;native[7].scale=0;
+            CHECK(!HasHiddenXamLeftArm(binding,native));
+            native[7].scale=1;native[5].position.x=std::numeric_limits<float>::quiet_NaN();
+            CHECK(!HasHiddenXamLeftArm(binding,native));
+            native[5].position.x=0;
+            auto other=binding;other.nodeIdentity=0;
+            CHECK(!HasHiddenXamLeftArm(other,native));
+        }
+        auto malformed=asset.nodes;
+        malformed[binding.gun].parent=-1;
+        CHECK(!BuildFirstPersonBinding(25,3,malformed.data(),asset.count,binding));
+        malformed=asset.nodes;
+        malformed[5].parent=5;
+        CHECK(!BuildFirstPersonBinding(25,3,malformed.data(),asset.count,binding));
+    }
+    for (const auto& asset:ceMercuryGraphs) {
+        FirstPersonBinding binding{};
+        CHECK(BuildFirstPersonBinding(25,3,asset.nodes.data(),asset.count,binding));
+        CHECK(binding.gun==1 && !(binding.gunMask&(binding.leftMask|binding.rightMask)));
+        NodeMatrix source[64]{};
+        source[binding.rightWrist].position={1,0,0};
+        source[binding.leftWrist].position={1,1,0};
+        source[binding.shoulder[0]].position={0,1,0};
+        source[binding.elbow[0]].position={.5f,1,-.1f};
+        source[binding.shoulder[1]].position={0,0,0};
+        source[binding.elbow[1]].position={.5f,0,-.1f};
+        source[1].position={1.5f,0,0};
+        for (size_t i=2;i<asset.count;++i) if (binding.gunMask&(uint64_t{1}<<i))
+            source[i].position={1.5f,0,.2f};
+        NodeMatrix primary{},support{},aim{},offhand{};
+        aim.position={2,3,4};aim.forward={0,1,0};aim.left={-1,0,0};
+        offhand.position={-2,3,4};
+        CHECK(BuildGripCarriers(binding,source,asset.count,aim,offhand,primary,support));
+        std::array<NodeMatrix,kFirstPersonMaxNodes> staged{};
+        CHECK(RelocateFirstPersonPalette(binding,25,3,source,asset.count,primary,support,false,staged));
+        CHECK(Near(staged[1].position,{2,3.5f,4}) && Near(staged[1].forward,aim.forward));
+        CHECK(Near(staged[binding.leftWrist].position,offhand.position));
+        CHECK(Near(staged[binding.rightWrist].position,aim.position));
+        for (size_t i=2;i<asset.count;++i) if (binding.gunMask&(uint64_t{1}<<i))
+            CHECK(Near(staged[i].position-staged[1].position,{0,0,.2f}));
+        Camera camera{};camera.forward={1,0,0};camera.up={0,0,1};
+        camera.verticalFov=1;camera.viewport={0,0,100,100};camera.window=camera.viewport;
+        camera.nearPlane=.01f;camera.farPlane=100;
+        Tracking tracking{};tracking.serial=1;tracking.generation=3;tracking.spaceEpoch=2;
+        Reference reference{};reference.generation=3;reference.spaceEpoch=2;
+        tracking.controllers.primaryAim.valid=tracking.controllers.support.valid=true;
+        tracking.controllers.primaryAim.position={.2f,0,-.6f};
+        tracking.controllers.support.position={-.2f,0,-.6f};
+        tracking.controllers.armIk=false;
+        tracking.controllers.controlsPresentationBlocked=false;
+        NodeMatrix expected{};
+        CHECK(BuildControllerMatrix(camera,tracking,reference,tracking.controllers.primaryAim,1,true,expected));
+        CHECK(ApplyVisualMount(tracking.controllers,1,true,expected));
+        for (bool floating:{false,true}) for (bool attached:{false,true}) {
+            tracking.controllers.floatingHands=floating;
+            tracking.controllers.supportGripAttached=attached;
+            uint32_t stage{};
+            const bool built=BuildTrackedFirstPersonPalette(binding,source,camera,tracking,reference,1,true,staged,&stage);
+            if (!built) std::fprintf(stderr,"Mercury %s floating=%d attached=%d stage=%u\n",asset.name,floating,attached,stage);
+            CHECK(built);
+            CHECK(Near(staged[1].forward,expected.forward));
+            CHECK(Near(staged[binding.rightWrist].position,expected.position));
+            CHECK(Valid(staged[1]));
+            for (size_t i=2;i<asset.count;++i) if (binding.gunMask&(uint64_t{1}<<i))
+                CHECK(Near(staged[i].position-staged[1].position,expected.up*(.2f*expected.scale)));
+        }
+        // Preserve native motion without moving the independent support hand.
+        tracking.controllers.floatingHands=false;tracking.controllers.supportGripAttached=false;
+        std::array<NodeMatrix,kFirstPersonMaxNodes> still{},animated{};
+        NodeMatrix motion{};motion.position={0,0,.025f};
+        CHECK(BuildTrackedFirstPersonPalette(binding,source,camera,tracking,reference,1,true,still));
+        CHECK(BuildTrackedFirstPersonPalette(binding,source,camera,tracking,reference,1,true,animated,nullptr,&motion));
+        CHECK(Near(animated[binding.rightWrist].position-still[binding.rightWrist].position,Vec3{}));
+        CHECK(Near(animated[binding.gun].position-still[binding.gun].position,Vec3{}));
+        CHECK(Near(animated[binding.leftWrist].position,still[binding.leftWrist].position));
+        motion.forward={.9800666f,0,.1986693f};motion.up={-.1986693f,0,.9800666f};
+        NodeMatrix expectedAnimated{};
+        CHECK(MoveNode(NodeMatrix{},expected,motion,expectedAnimated));
+        CHECK(BuildTrackedFirstPersonPalette(binding,source,camera,tracking,reference,1,true,animated,nullptr,&motion));
+        CHECK(Near(animated[binding.gun].forward,expectedAnimated.forward));
+        auto malformed=asset.nodes;
+        malformed[1].parent=binding.leftWrist;
+        CHECK(!BuildFirstPersonBinding(25,3,malformed.data(),asset.count,binding));
+        malformed=asset.nodes;
+        Name(malformed[4],"frame gun",0);
+        CHECK(!BuildFirstPersonBinding(25,3,malformed.data(),asset.count,binding));
+    }
+    // The rejected Cursed candidate must remain inactive while Mercury works.
+    for (const auto& asset:ceCursedGraphs) {
+        FirstPersonBinding binding{};
+        CHECK(!BuildFirstPersonBinding(25,3,asset.nodes.data(),asset.count,binding));
+    }
+    return 0;
+}
 }
 int main(int argc,char** argv)
 {
@@ -21,6 +205,7 @@ int main(int argc,char** argv)
         CHECK(output.write(reinterpret_cast<const char*>(constants),sizeof(constants)));
         return 0;
     }
+    if (const int failed=CheckClassicAnimationReference()) return failed;
     {
         std::array<float,201*4> constants{};constants.fill(7);
         for (size_t emitter=0;emitter<9;++emitter) constants[(21+emitter*20+10)*4]=emitter%2?0.0f:1.0f;
@@ -145,7 +330,7 @@ int main(int argc,char** argv)
         rig.controlsPresentationBlocked=false;rig.primaryAim.valid=rig.support.valid=true;
         rig.primaryAim.position={.3f,-.2f,-.6f};rig.support.position={-.3f,-.1f,-.4f};
         rig.gunScale=primaryScale;rig.supportScale=supportScale;
-        rig.gunForwardM=rig.supportForwardM=0;rig.primaryShoulderDrop=0;
+        rig.gunForwardM=rig.supportForwardM=0;rig.leftGunForwardM=rig.leftGunRightM=rig.leftGunUpM=0;rig.primaryShoulderDrop=0;
         rig.floatingHands=(flags&1)!=0;rig.leftHanded=(flags&2)!=0;
         rig.handAlignment=(flags&4)!=0;rig.twoHandAimActive=(flags&8)!=0;
         std::array<NodeMatrix,kFirstPersonMaxNodes> palette{};
@@ -262,6 +447,7 @@ int main(int argc,char** argv)
         CHECK((actual.armMask[0]|actual.armMask[1]|actual.leftMask|actual.rightMask|1)==
             (count==64?~uint64_t{}:(uint64_t{1}<<count)-1));
     }
+    if (const int failed=CheckVisualMountAndModdedGraphs()) return failed;
     AnimationNode nodes[9]{};
     Name(nodes[0],"frame bone24",0);
     Name(nodes[1],"frame r upperarm",0);
@@ -393,7 +579,7 @@ int main(int argc,char** argv)
     rig.controlsPresentationBlocked=false;
     rig.primaryAim.valid=rig.support.valid=true;
     rig.primaryAim.position={0.3f,0,-0.5f};rig.support.position={-0.3f,0,-0.3f};
-    rig.gunScale=rig.supportScale=1;rig.gunForwardM=rig.supportForwardM=0;
+    rig.gunScale=rig.supportScale=1;rig.gunForwardM=rig.supportForwardM=0;rig.leftGunForwardM=rig.leftGunRightM=rig.leftGunUpM=0;
     rig.primaryShoulderDrop=0;rig.floatingHands=false;
     CHECK(BuildTrackedFirstPersonPalette(binding,authored,camera,tracking,reference,1,true,palette));
     CHECK(Near(palette[6].position,{0.5f,-0.3f,0}));

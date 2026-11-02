@@ -530,6 +530,11 @@ void Sight_NoteSession(GameTitle title, int type, int players, int otherMachines
     g.lastNoteMs.store(now, std::memory_order_release);
 }
 
+int Sight_SessionType(GameTitle title)
+{
+    return g_stats[Slot(title)].sessionType.load(std::memory_order_relaxed);
+}
+
 bool Sight_FireTimeChangesAllowed()
 {
     const int mode = g_config.coop_safe_shots;

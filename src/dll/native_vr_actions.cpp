@@ -1,3 +1,4 @@
+#include "../common/manual_weapon_input.h"
 #include "native_vr_actions.h"
 #include "seat_exit_witness.h"
 #include "game.h"
@@ -20,6 +21,7 @@
 extern "C" {
 void NativeVrReaderThunkReach();
 void NativeVrReaderThunkHalo3();
+void NativeVrH3ActionEdgesThunk();
 void NativeVrReaderThunkOdst();
 void NativeVrReaderThunkHalo4();
 }
@@ -61,7 +63,7 @@ struct Runtime {
 uint32_t blockedGeneration{}; // worker-only: a fault is not retried every poll
 struct Publication {
     std::atomic<uint64_t> sequence{}, stamp{}, cancelEpoch{};
-    std::atomic<uint32_t> generation{}, actions{};
+    std::atomic<uint32_t> generation{}, actions{}, blocked{};
     std::atomic<bool> direct{};
     std::atomic<GameTitle> title{GameTitle::None};
 } publication;
@@ -70,6 +72,7 @@ struct ThreadState {
     uint32_t generation{};
     uint64_t publishedAt{}, converterAt{}, cancelEpoch{};
     uint32_t actions{};
+    uint32_t blocked{};
     bool direct{}, converted{};
     native_action_button::Record records[vr_mapping::Count]{};
     void Reset(uint32_t next) noexcept {
@@ -81,7 +84,7 @@ struct ThreadState {
 } thread_local local;
 bool Current() noexcept {
     return runtime.admitted.load(std::memory_order_acquire) &&
-        !runtime.faulted.load(std::memory_order_relaxed) && g_config.vr_action_mapping &&
+        !runtime.faulted.load(std::memory_order_relaxed) && (g_config.vr_action_mapping||Config_GestureOnlyWeaponInput()) &&
         TitleAdapter_GetActiveTitle()==title &&
         TitleAdapter_GetGeneration(title)==runtime.generation;
 }
@@ -89,7 +92,7 @@ bool Fresh(uint64_t stamp,uint64_t now) noexcept {
     return stamp && now>=stamp && now-stamp<=150;
 }
 bool ReadPublication(uint64_t now,uint32_t& actions,bool& direct,uint64_t* observedAt=nullptr,
-    GameTitle expectedTitle=title,uint32_t expectedGeneration=0) noexcept {
+    GameTitle expectedTitle=title,uint32_t expectedGeneration=0,uint32_t* blocked=nullptr) noexcept {
     // Every payload member is atomic; rejected/torn attempts never access
     // native memory. Writers claim an odd sequence with a bounded CAS.
     for(unsigned attempt=0;attempt<3;++attempt) {
@@ -98,12 +101,13 @@ bool ReadPublication(uint64_t now,uint32_t& actions,bool& direct,uint64_t* obser
         const auto stamp=publication.stamp.load(std::memory_order_relaxed);
         const auto generation=publication.generation.load(std::memory_order_relaxed);
         const auto bits=publication.actions.load(std::memory_order_relaxed);
+        const auto suppress=publication.blocked.load(std::memory_order_relaxed);
         const auto route=publication.direct.load(std::memory_order_relaxed);
         const auto publishedTitle=publication.title.load(std::memory_order_relaxed);
         if(before!=publication.sequence.load(std::memory_order_acquire)) continue;
         if(publishedTitle!=expectedTitle || generation!=(expectedGeneration?expectedGeneration:
             runtime.generation.load(std::memory_order_acquire))||!Fresh(stamp,now))return false;
-        actions=bits;direct=route;if(observedAt)*observedAt=stamp;return true;
+        actions=bits;direct=route;if(blocked)*blocked=suppress;if(observedAt)*observedAt=stamp;return true;
     }
     return false;
 }
@@ -117,20 +121,20 @@ void __fastcall ConverterHook(uintptr_t unused,int elapsedMs,const void* raw,
         reinterpret_cast<Convert>(runtime.original[0])(unused,elapsedMs,raw,output,axes,activity);
         const auto now=GetTickCount64();
         const auto cancelEpoch=publication.cancelEpoch.load(std::memory_order_acquire);
-        uint32_t actions=0;bool direct=false;uint64_t publishedAt=0;
+        uint32_t actions=0,blocked=0;bool direct=false;uint64_t publishedAt=0;
         // Both official input paths target raw-pad base + controller*0x3c:
         // direct XInput and the MCC host's copied gamepad packet. Output row
         // zero proves ownership even when XInput was polled on another thread.
         // RCX is unused by the optimized converter and is never an owner ID.
         if(Current() && reinterpret_cast<uintptr_t>(output)==runtime.padState &&
-            ReadPublication(now,actions,direct,&publishedAt) && elapsedMs>=0 && elapsedMs<=1000 &&
+            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(),&blocked) && elapsedMs>=0 && elapsedMs<=1000 &&
             cancelEpoch==publication.cancelEpoch.load(std::memory_order_acquire)) {
             if(local.generation!=runtime.generation) local.Reset(runtime.generation);
-            local.publishedAt=publishedAt;local.actions=actions;local.direct=direct;
+            local.publishedAt=publishedAt;local.actions=actions;local.direct=direct;local.blocked=blocked;
             local.cancelEpoch=cancelEpoch;
             local.converterAt=now;local.converted=true;
             for(unsigned i=0;i<vr_mapping::Count;++i)
-                local.records[i].Advance(local.direct && (local.actions&(1u<<i)),unsigned(elapsedMs));
+                local.records[i].Advance((local.direct||(local.blocked&(1u<<i))) && (local.actions&(1u<<i)),unsigned(elapsedMs));
             runtime.converted.fetch_add(1,std::memory_order_relaxed);
         } else if(reinterpret_cast<uintptr_t>(output)==runtime.padState) local.converted=false;
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
@@ -159,10 +163,14 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
             publication.generation.load(std::memory_order_acquire)!=local.generation ||
             local.cancelEpoch!=publication.cancelEpoch.load(std::memory_order_acquire)) return native;
         runtime.readerAt.store(now,std::memory_order_release);
-        if(!local.direct) return native;
         const int semantic=native_action_button::SemanticAction(title,action);
         if(semantic<0) return native;
         auto& record=local.records[semantic];
+        if(local.blocked&(1u<<semantic)) {
+            runtime.routed.fetch_add(1,std::memory_order_relaxed);
+            return record.bytes.data();
+        }
+        if(!local.direct) return native;
         const auto virtualState=record.ReadCounters();
         if(!virtualState.frames) return native;
         // Native keyboard/gamepad holds retain their own counters, amount and
@@ -175,12 +183,12 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
         runtime.routed.fetch_add(1,std::memory_order_relaxed);
         return record.bytes.data();
 }
-void* __fastcall ReaderHook(void* state,unsigned action) {
+void* __fastcall ReaderHook(void* state,unsigned action,uintptr_t caller) {
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
     void* result=nullptr;
     __try {
         result=reinterpret_cast<Read>(runtime.original[1])(state,action);
-        result=ReadOwned(state,action,result,reinterpret_cast<uintptr_t>(_ReturnAddress()));
+        result=ReadOwned(state,action,result,caller);
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
     return result;
 }
@@ -258,10 +266,11 @@ uint32_t GenerationForTitle(GameTitle requested) noexcept {
 }
 
 extern "C" {
-void* (*g_nativeVrReaderReach)(void*,unsigned)=&ReaderHook;
-void* (*g_nativeVrReaderHalo3)(void*,unsigned)=&native_h3::ReaderHook;
-void* (*g_nativeVrReaderOdst)(void*,unsigned)=&native_odst::ReaderHook;
-void* (*g_nativeVrReaderHalo4)(void*,unsigned)=&native_h4::ReaderHook;
+void* (*g_nativeVrReaderReach)(void*,unsigned,uintptr_t)=&ReaderHook;
+uintptr_t (*g_nativeVrH3ActionEdges)(uint32_t,void*,uintptr_t)=&native_h3::ActionEdgesHook;
+void* (*g_nativeVrReaderHalo3)(void*,unsigned,uintptr_t)=&native_h3::ReaderHook;
+void* (*g_nativeVrReaderOdst)(void*,unsigned,uintptr_t)=&native_odst::ReaderHook;
+void* (*g_nativeVrReaderHalo4)(void*,unsigned,uintptr_t)=&native_h4::ReaderHook;
 }
 void NativeVrActions_BeginPoll() noexcept {
     pollPublished=false;
@@ -283,7 +292,7 @@ bool NativeVrActions_CanRoute(GameTitle requested,uint64_t now) noexcept {
         Fresh(runtime.readerAt.load(std::memory_order_acquire),now);
 }
 void NativeVrActions_Publish(const void* raw,GameTitle requested,uint64_t now,
-    uint32_t actions,bool direct) noexcept {
+    uint32_t actions,bool direct,uint32_t blockedActions) noexcept {
     const auto generation=GenerationForTitle(requested);
     if(!generation || !CurrentForTitle(requested)) return;
     (void)raw; // converter ownership is the proven native output row, not an input address
@@ -300,6 +309,7 @@ void NativeVrActions_Publish(const void* raw,GameTitle requested,uint64_t now,
     publication.generation.store(generation,std::memory_order_relaxed);
     publication.title.store(requested,std::memory_order_relaxed);
     publication.actions.store(actions&((1u<<vr_mapping::Count)-1),std::memory_order_relaxed);
+    publication.blocked.store(blockedActions&manual_weapon_input::Blocked(true,true,true),std::memory_order_relaxed);
     publication.direct.store(direct,std::memory_order_relaxed);
     publication.stamp.store(now,std::memory_order_relaxed);
     publication.sequence.store(before+2,std::memory_order_release);
@@ -313,6 +323,9 @@ bool NativeVrActions_GestureRouting(GameTitle requested,uint64_t now) noexcept {
     if(requested==GameTitle::Halo2)return native_h2::GestureRouting(now);
     uint32_t actions=0;bool direct=false;
     return requested==title && Current() && ReadPublication(now,actions,direct) && direct;
+}
+void NativeVrActions_Halo3CoreRetired() {
+    native_h3::Poll();
 }
 void NativeVrActions_Poll() {
     native_ce::Poll();
@@ -329,7 +342,7 @@ void NativeVrActions_Poll() {
     }
     if(runtime.module && (active!=title || generation!=runtime.generation))
         if(!Retire()) return;
-    if(active!=title || !generation || generation==blockedGeneration || !g_config.vr_action_mapping) return;
+    if(active!=title || !generation || generation==blockedGeneration || !(g_config.vr_action_mapping||Config_GestureOnlyWeaponInput())) return;
     if(!runtime.attempted) {
         // The preexisting read-only transport resolver must verify the reader
         // before MinHook changes its prologue. Retain that cache so optional

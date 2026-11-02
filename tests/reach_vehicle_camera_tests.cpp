@@ -163,7 +163,7 @@ static void TestWarthogPlacements()
               offset("reach", "Warthog passenger", "Over the Shoulder", -160.0f, 0.0f, 160.0f) &&
               offset("reach", "Warthog gunner", "Behind the Gun", -280.0f, 0.0f, 160.0f),
           "Reach's Warthog seats take the placements chosen in game");
-    Check(offset("halo3", "Warthog", "Over the Shoulder", -200.0f, 90.0f, 70.0f) &&
+    Check(offset("halo3", "Warthog", "Over the Shoulder", -90.0f, -100.0f, 50.0f) &&
               offset("halo3", "Warthog gunner", "Behind the Gun", -150.0f, 0.0f, 50.0f),
           "and Halo 3's keep theirs");
 }

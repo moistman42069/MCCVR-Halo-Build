@@ -199,6 +199,7 @@ namespace
         CameraRestoreFailed,
         PairCompleteRefused,
         NotMainView,
+        ViewSlotsEmptied,
         Count
     };
     constexpr const char* kBailNames[] = {
@@ -210,7 +211,7 @@ namespace
         "coverFovInvalid", "finalRtvNull", "pairBeginRefused", "secondPassPreambleFaulted",
         "eyeApplyFailed", "eyeBeginRefused", "sceneRenderFaulted",
         "eyeCompleteRefused", "cameraRestoreFailed", "pairCompleteRefused",
-        "notMainView"};
+        "notMainView", "viewSlotsEmptied"};
     static_assert(sizeof(kBailNames) / sizeof(kBailNames[0]) ==
         static_cast<size_t>(Bail::Count));
     std::atomic<uint64_t> g_bails[static_cast<size_t>(Bail::Count)]{};
@@ -226,6 +227,9 @@ namespace
         g_bails[static_cast<size_t>(reason)].fetch_add(
             1, std::memory_order_relaxed);
     }
+    // The renderer's view slots seen filled since the level went live (ViewSlotsIntact); cleared while it is not.
+    std::atomic<uint32_t> g_viewSlotsSeen{0};
+    std::atomic<bool> g_viewSlotsLossLogged{false};
     uint64_t g_lastReportMs = 0;
     uint64_t g_lastPairsReported = UINT64_MAX;
     uint64_t g_lastCallbacksReported = UINT64_MAX;
@@ -413,6 +417,32 @@ namespace
         __except (GameFault(faultAnchor)) { return false; }
     }
 
+    // Whether an eye pass may run now: no view slot the scene render reads (kHalo2SaberViewSlotsRva) that was filled
+    // earlier this level is empty. A pass started after the game emptied one, on its way to a loading screen, faults
+    // in game code at halo2+0x107449. Slots that cannot be read count as empty only if they were once read filled.
+    bool ViewSlotsIntact(uintptr_t base) noexcept
+    {
+        uint32_t filled = 0;
+        for (uint32_t i = 0; i < kHalo2SaberViewSlotCount; ++i)
+        {
+            uintptr_t pointer = 0;
+            if (ReadGuarded(base + kHalo2SaberViewSlotsRva + i * kHalo2SaberViewSlotStride +
+                                kHalo2SaberViewSlotPointerOffset, pointer) && pointer)
+                filled |= 1u << i;
+        }
+        const uint32_t seen = g_viewSlotsSeen.load(std::memory_order_relaxed);
+        if (!Halo2SaberViewSlotsIntact(seen, filled))
+        {
+            if (!g_viewSlotsLossLogged.exchange(true, std::memory_order_relaxed))
+                LOG("Halo 2 Anniversary stereo: the game emptied a view target the scene render needs (slots 0x%03X "
+                    "of 0x%03X); the game draws these frames alone until the level is live again",
+                    seen & ~filled, seen);
+            return false;
+        }
+        g_viewSlotsSeen.store(seen | filled, std::memory_order_relaxed);
+        return true;
+    }
+
     void CallStock(
         SaberSceneFn original, void* ctx, void* rdx, uint32_t viewIndex) noexcept
     {
@@ -512,6 +542,8 @@ namespace
             bail = Bail::ObserverBasisInvalid;
         else if (!Halo2SaberCamera_ReadConstants(base, constants))
             bail = Bail::ConstantsUnreadable;
+        else if (!ViewSlotsIntact(base))
+            bail = Bail::ViewSlotsEmptied;
         if (bail != Bail::Count)
         {
             CountBail(bail);
@@ -863,6 +895,13 @@ namespace
         }
         for (int eye = 0; eye < passes && ok; ++eye)
         {
+            // The first pass can be the one in which the game empties a view slot; the next must not run after it.
+            if (eye != 0 && !ViewSlotsIntact(base))
+            {
+                CountBail(Bail::ViewSlotsEmptied);
+                ok = false;
+                break;
+            }
             if (eye != 0)
             {
                 // Reproduce the caller preamble the engine performs before every
@@ -1380,6 +1419,11 @@ namespace
                 "detour FIRED for the first time; the binding is live");
         }
 
+        if (!g_insideEyeLoop && !g_levelLive.load(std::memory_order_acquire))
+        {
+            g_viewSlotsSeen.store(0, std::memory_order_relaxed);
+            g_viewSlotsLossLogged.store(false, std::memory_order_relaxed);
+        }
         // Our own second pass re-enters this detour; it must run stock.
         if (g_insideEyeLoop || !g_armed.load(std::memory_order_acquire) ||
             !g_levelLive.load(std::memory_order_acquire) ||

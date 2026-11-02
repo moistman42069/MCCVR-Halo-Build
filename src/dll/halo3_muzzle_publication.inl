@@ -1,9 +1,9 @@
 // H3's own FP users/slots and weapon-handle member, independently established
 // in native reload-tail evidence. Capture before AND after interpolation, so
 // a later inventory lookup cannot attach an old palette to a replacement gun.
-bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept
+bool Halo3CaptureGripOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept
 {
-    if(!(Sight_GunBarrelAim()||Sight_ShotsFromMuzzle()) || !g_halo3MuzzleBindingsReady.load(std::memory_order_acquire) ||
+    if(!g_halo3GripOwnerReady.load(std::memory_order_acquire) ||
         player!=0 || slot<0 || slot>1 || !g_engineTlsIndex || !g_halo3PlayerUnitGetter ||
         !g_halo3UnitInVehicle)return false;
     __try
@@ -20,6 +20,12 @@ bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon
         unit=owner;weapon=weapons[slot];return true;
     }
     __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+
+bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept
+{
+    return (Sight_GunBarrelAim()||Sight_ShotsFromMuzzle()) && g_halo3MuzzleBindingsReady.load(std::memory_order_acquire) &&
+        Halo3CaptureGripOwner(player,slot,unit,weapon);
 }
 
 void Halo3PublishMuzzlePalette(uint16_t tag,const FpInterpolationContext& context,
@@ -51,6 +57,13 @@ void Halo3PublishMuzzlePalette(uint16_t tag,const FpInterpolationContext& contex
                 if(!marker || marker->nodeCount!=count || marker->node>=count)continue;
                 const auto& node=destination[marker->node];
                 if(!weapon_muzzle::Transform(*marker,node.scale,node.rotation,node.translation,ray))continue;
+                if ((g_config.barrel_pitch_deg!=0 ||
+                    g_config.barrel_yaw_deg!=0 || g_config.barrel_roll_deg!=0)) {
+                    BoneMatrix visual{},neutral{};float scale=1;
+                    if (!DesiredWristWorld(context.slot==1,visual,scale,nullptr,&neutral) ||
+                        !weapon_alignment::Reframe(visual.rotation,visual.translation,
+                            neutral.rotation,neutral.translation,ray)) continue;
+                }
                 palette.barrels[barrel]={GameTitle::Halo3,generation,unit,weapon,checksum,
                     tracking.referenceEpoch,tracking.serial,now,tracking.timeNs,uint8_t(context.slot),
                     barrel,g_config.left_handed,ray};

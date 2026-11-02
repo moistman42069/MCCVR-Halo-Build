@@ -3092,6 +3092,19 @@ inline constexpr uint32_t kHalo2SaberCameraCommitRvaAlias =
 // The scene render consumes a once-per-frame latch and clears it to -1, so a
 // second pass in the same frame must restore it or silently skip work.
 inline constexpr uint32_t kHalo2SaberSceneOnceLatchRva = 0x00E21D30;
+
+// The scene render's per-view target slots: 12 records of 0x4E0 bytes (3 x 2 x 2, built by 0x4715D0), each with a
+// pointer at +0x4A8 that the scene render reads without a null check (0x4719B0 -> 0x1073B0, faulting at 0x107449).
+// The game empties them as it goes to a loading screen; an eye pass started after that faults in game code.
+inline constexpr uint32_t kHalo2SaberViewSlotsRva = 0x01DFF3B0;
+inline constexpr uint32_t kHalo2SaberViewSlotStride = 0x4E0;
+inline constexpr uint32_t kHalo2SaberViewSlotCount = 12;
+inline constexpr uint32_t kHalo2SaberViewSlotPointerOffset = 0x4A8;
+// An eye pass may run while every slot seen filled since the level went live is still filled (bit i = slot i).
+constexpr bool Halo2SaberViewSlotsIntact(uint32_t seenFilled, uint32_t filledNow) noexcept
+{
+    return (seenFilled & ~filledNow) == 0;
+}
 // Its callers zero this span of the render context before every call.
 inline constexpr uint32_t kHalo2SaberSceneContextResetOffset = 0x10;
 inline constexpr uint32_t kHalo2SaberSceneContextResetBytes = 0xC8;

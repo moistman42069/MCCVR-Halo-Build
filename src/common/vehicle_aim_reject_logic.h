@@ -36,7 +36,7 @@ inline constexpr float kWuPerMetre = 1.0f / 3.048f;
 // Shorter than this, a flattened offset or direction names no heading (1 cm).
 inline constexpr float kNoHeadingWu = 0.01f * kWuPerMetre;
 // The config's defaults and bounds (vehicle_aim_reject_metres, vehicle_aim_reject_dot).
-inline constexpr float kDefaultMetres = 5.0f;
+inline constexpr float kDefaultMetres = 20.0f;
 inline constexpr float kMaxMetres = 20.0f;
 inline constexpr float kDefaultDot = -0.5f;
 

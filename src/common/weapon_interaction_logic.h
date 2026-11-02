@@ -26,6 +26,13 @@ inline constexpr uint32_t Button(int index) noexcept
 {
     return index >= 0 && index < 8 ? kButtons[index] : 0;
 }
+// The reload button a gesture presses from the per-title setting (weapon_reload_button_<title>), whose default
+// X is MCC's layout. Project Reclaimer's Halo 3 reloads on Right bumper and X does not reload there, so in
+// Reclaimer that default means Right bumper. Any other choice is the player's and is pressed as set.
+inline constexpr uint32_t ReloadButton(GameTitle title, int configured, bool projectReclaimer) noexcept
+{
+    return Button(projectReclaimer && title == GameTitle::Halo3 && configured == 0 ? 1 : configured);
+}
 struct Vec { float x{}, y{}, z{}; };
 struct Quat { float x{}, y{}, z{}, w{1}; };
 inline Vec operator+(Vec a, Vec b) noexcept { return {a.x+b.x,a.y+b.y,a.z+b.z}; }
@@ -83,6 +90,7 @@ struct Settings
 struct Sample
 {
     uint64_t now{}, space{};
+    uint64_t poseNow{}; // Predicted pose milliseconds; zero uses now for non-XR callers.
     uint32_t generation{};
     GameTitle title{GameTitle::None};
     bool ready{}, dualWield{};
@@ -220,7 +228,8 @@ public:
     {
         const float travel=Setting(stroke,0.06f,0.20f,0.10f);
         if(!Finite(relative)||!now) { Reset();return false; }
-        if(!last_||now<=last_||now-last_>100||travel_!=travel)
+        if(last_&&now==last_&&travel_==travel)return false;
+        if(!last_||now<last_||now-last_>100||travel_!=travel)
         { Seed(relative,now,travel);return false; }
         const uint64_t previousAt=last_;
         const Vec previous=previous_;
@@ -281,6 +290,10 @@ public:
     void Cancel() noexcept
     { phase_=0;pulseUntil_=0;pulse_=0;armedP_=armedS_=false;available_=false;last_=0;singleShake_.Reset(); }
     bool HasClaimedGrip() const noexcept { return ownedP_||ownedS_; }
+    // A fast hand here is on its way to a gesture, not a punch (gesture_melee_logic.h).
+    bool PrimaryNearHolster() const noexcept { return nearHolster_; }
+    bool SupportNearPouch() const noexcept { return nearPouch_; }
+    bool HoldingMagazine() const noexcept { return phase_==1; }
     Output Update(const Sample& s,const Settings& c) noexcept
     {
         Output out{};
@@ -305,6 +318,8 @@ public:
             validP&&validS;
         Vec pouch{},holster{};
         const bool poses=Zones(s,c,pouch,holster);
+        nearHolster_=poses&&c.holsters&&Near(s.primary,holster,Setting(c.holsterRadius,0.08f,0.40f,0.20f));
+        nearPouch_=poses&&c.reload&&Near(s.support,pouch,Setting(c.zoneRadius,0.08f,0.40f,0.20f));
         const bool resumed=ready&&poses&&!available_;
         if(identity||gap||!ready||!poses||resumed)
         {
@@ -449,7 +464,7 @@ public:
         if(c.reload&&c.needleShake&&c.reloadButton&&NeedleWeapon(s.title,s.weaponGraph)&&
            !s.otherAction&&!occupied&&!phase_&&!out.pickedMagazine&&!out.grabbedHolster)
         {
-            if(singleShake_.Update(s.primary-s.head,s.now,c.shakeTravel)&&s.now>=cooldown_)
+            if(singleShake_.Update(s.primary-s.head,s.poseNow?s.poseNow:s.now,c.shakeTravel)&&s.now>=cooldown_)
             {
                 pulse_=c.reloadButton;pulseUntil_=s.now+120;cooldown_=s.now+500;
                 out.reloadRequested=true;out.primaryHaptic=0.45f;
@@ -471,6 +486,7 @@ private:
     int phase_{},location_{},pouchLocation_{};
     Vec pouchOffset_{},holsterCustom_{};
     bool left_{},reload_{},holsters_{},armedP_{},armedS_{},ownedP_{},ownedS_{},leftPouch_{},available_{};
+    bool nearHolster_{},nearPouch_{};
     bool slide_{true},click_{};
     bool shake_{};
     uint64_t weaponGraph_{},shakeAt_{};

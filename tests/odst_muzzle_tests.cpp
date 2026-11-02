@@ -1,3 +1,5 @@
+#include "../src/common/legacy_weapon_visual_defaults.h"
+#include "../src/common/visual_aim.h"
 #include <Windows.h>
 #include <MinHook.h>
 #include <atomic>
@@ -18,7 +20,7 @@ static constexpr uintptr_t imageBase=0x180000000;
 static constexpr size_t kOdstTlsObjectTableOffset=0x20;
 static std::atomic<uint32_t> g_odstRuntimeGeneration{7};
 static std::atomic<bool> g_vrAim{true},g_enabled{true},g_odstMuzzleBindingsReady{true};
-static struct {bool gun_barrel_aim=true,left_handed=false,independent_dual_aim=false;
+static struct {float barrel_pitch_deg=0,barrel_yaw_deg=0,barrel_roll_deg=0;bool gun_barrel_aim=true,left_handed=false,independent_dual_aim=false;
     float crosshair_distance_m=10,gun_yaw_deg=0,gun_pitch_deg=0,gun_roll_deg=0;bool shots_from_muzzle=false;} g_config;
 // The three shot switches as they are in effect (sight_layer.h); here, the test's own config.
 [[maybe_unused]] static bool Sight_ShotsFromMuzzle(){return g_config.shots_from_muzzle;}
@@ -74,6 +76,8 @@ static bool VR_GetContactTrackingSnapshot(VrContactTrackingSnapshot& out){out=tr
 static int ResolveEquippedWeaponSlot(uint32_t weapon,uint32_t a,uint32_t b,bool,bool)
 {return weapon==a?0:weapon==b?1:-1;}
 struct BoneMatrix {float scale=1,rotation[9]{1,0,0,0,1,0,0,0,1},translation[3]{};};
+static bool DesiredWristWorld(bool,BoneMatrix& visual,float& scale,float*,BoneMatrix* neutral)
+{visual={};*neutral=visual;scale=1;return true;}
 struct FpInterpolationContext
 {bool valid=true;int player=0,slot=0;uint32_t generation=7,muzzleUnit=owner,muzzleWeapon=primary;};
 static struct {bool armed=true;VrContactTrackingSnapshot anatomicalTracking;} g_fpStereoSolveScope;
@@ -96,6 +100,9 @@ static int32_t LegacyCollisionIgnoredObject(GameTitle){return -1;}
 static thread_local int8_t t_odstFire=shot_lag::kFireNone;
 static thread_local uintptr_t caller{};
 #define _ReturnAddress() reinterpret_cast<void*>(::caller)
+// Aim Frame Zoom's record of the game's zoom level (game.cpp); the lane only reports it.
+static int g_notedZoomLevel=-2;
+static void NoteGameZoomLevel(GameTitle,int16_t level,uint32_t){g_notedZoomLevel=level;}
 #include "../src/dll/odst_muzzle_shots.inl"
 #include "../src/dll/odst_independent_publication.inl"
 #undef _ReturnAddress
@@ -246,6 +253,14 @@ static void ShotTests()
     Reset();float dir[3]{0,1,0},control[3]{};uint8_t nativeTarget[0x28]{};g_odstMuzzleQueryContext={};
     OdstMuzzleQueryDetour(2,0,dir,3,control,nativeTarget);Check(g_odstMuzzleQueryContext.unit==owner&&g_odstMuzzleQueryContext.inputUser==2,"ordinary native query captures its real owner and input user");
     g_odstMuzzleQueryContext={};OdstMuzzleQueryDetour(2,1,dir,3,control,nativeTarget);Check(!g_odstMuzzleQueryContext.sampleMs,"lead-only fallback does not replace ordinary context");
+    // Aim Frame Zoom: the local player's ordinary query reports the game's zoom level; nobody else's, and never ours.
+    g_notedZoomLevel=-2;OdstMuzzleQueryDetour(2,0,dir,3,control,nativeTarget);Check(g_notedZoomLevel==-2,"another player's query is not the zoom level");
+    g_odstMuzzle.queryOriginal=nullptr;   // the native stand-in insists on the owner's user and zoom
+    OdstMuzzleQueryDetour(0,1,dir,1,control,nativeTarget);Check(g_notedZoomLevel==-2,"a lead-only query is not the zoom level");
+    g_legacyCollisionOwnedQuery=true;OdstMuzzleQueryDetour(0,0,dir,1,control,nativeTarget);g_legacyCollisionOwnedQuery=false;Check(g_notedZoomLevel==-2,"our own query is not the zoom level");
+    OdstMuzzleQueryDetour(0,0,dir,1,control,nativeTarget);Check(g_notedZoomLevel==1,"the local player's query is");
+    OdstMuzzleQueryDetour(0,0,dir,-1,control,nativeTarget);Check(g_notedZoomLevel==-1,"not zoomed is -1");
+    g_odstMuzzle.queryOriginal=NativeQuery;g_odstMuzzleQueryContext={};
     Reset();std::thread isolated([]{Check(!g_odstMuzzleQueryContext.sampleMs&&!g_odstMuzzleRequest.lease,"native query and firing scope are thread local");});isolated.join();
 }
 static void PublicationTests()

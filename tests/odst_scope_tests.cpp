@@ -123,6 +123,8 @@ int main()
     Reset();converge=true;convergedForward[0]=1;convergedForward[1]=0;convergedForward[2]=0;
     expectForward[0]=1;expectForward[1]=0;expectForward[2]=0;
     RenderOdstScope(view);Check(draws==1&&copies==1,"a converged lens renders once");Restored();
-    ReportOdstScope();Check(logs==1,"fault details emitted only by worker report");
+    ReportOdstScope();Check(logs==2,"fault details and the pass's account emitted only by worker report");
+    ReportOdstScope();Check(logs==3,"a pass that went quiet is reported once");
+    ReportOdstScope();Check(logs==3,"an unchanged pass is not reported again");
     std::printf("PASS: %u production ODST scope checks (native renderer stubbed)\n",checks);
 }

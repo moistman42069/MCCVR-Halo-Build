@@ -65,6 +65,7 @@ static void LegacySightNoteCrosshairResult(GameTitle title,const float* a,const 
     Check(title==GameTitle::Halo3&&a==start&&r==&output,"the shot-line note gets the traced query's start and result");
     Check(nativeCalls==0||output==0xABCD1234,"and reads the result after the native wrote it");
 }
+#include "../src/dll/halo3_hook_watch_mark.h"
 #include "../src/dll/halo3_collision_dispatch.inl"
 static uint8_t __fastcall Original(uint64_t f,int32_t m,const float* a,const float* b,int32_t x,int32_t y,int32_t z,void* out)
 {

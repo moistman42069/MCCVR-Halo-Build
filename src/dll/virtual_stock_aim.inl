@@ -242,6 +242,27 @@
         inputs.primaryGripPosition = primaryGripPosition;
         inputs.supportGripValid = supportGripPositionValid;
         inputs.supportGripPosition = supportGripPosition;
+        // Shared by live and committed pose consumers, including native camera aim.
+        // This belongs in the pose-input constructor: the settings resolver has no
+        // controller sample, and must remain independent of per-frame tracking.
+        if (TitleAdapter_GetActiveTitle() != GameTitle::None &&
+            !g_config.left_handed && rightValid && leftValid) {
+            const auto p = primaryGripPositionValid
+                ? primaryGripPosition : right.position;
+            const auto q = supportGripPositionValid
+                ? supportGripPosition : left.position;
+            const XrQuaternionf inverse{
+                -right.orientation.x, -right.orientation.y,
+                -right.orientation.z, right.orientation.w};
+            const auto local = Rotate(
+                inverse, {q.x - p.x, q.y - p.y, q.z - p.z});
+            const int gripZone = g_config.two_hand_grip_zone_authority
+                ? g_gripZoneKind.load(std::memory_order_acquire) : 0;
+            const uint64_t gripZoneMs = g_gripZoneKindMs.load(std::memory_order_acquire);
+            inputs.closeGripAuthority = gripZone && GetTickCount64() - gripZoneMs <= 2000
+                ? authored_grab::GripZoneAuthority(gripZone == 2, {local.x, local.y, local.z})
+                : authored_grab::CloseHandAuthority({local.x, local.y, local.z}, g_config.two_hand_one_hand_range_m);
+        }
         // Persistent support grip (F14): qualify this invocation against the
         // durable relationship BEFORE the support-capable raw aim can be
         // selected, and resolve an unreadable relationship or a title-denied
@@ -307,7 +328,7 @@
             g_inverseNeckNeutralCapture.neutralOrientation.y,
             g_inverseNeckNeutralCapture.neutralOrientation.z,
             g_inverseNeckNeutralCapture.neutralOrientation.w};
-        return CurrentStockAimPoseInputsWithNeutralCapture(
+        auto result = CurrentStockAimPoseInputsWithNeutralCapture(
             rightValid, right, leftValid, left,
             coherentHeadValid, coherentHeadPosition, coherentHeadOrientation,
             supportGripPositionValid, supportGripPosition,
@@ -316,6 +337,7 @@
             inverseNeckNeutralOrientation,
             g_inverseNeckNeutralCapture.captureSerial,
             g_inverseNeckNeutralCapture.captureContactSpaceEpoch);
+        return result;
     }
 
     template <bool CaptureTrace>
@@ -406,6 +428,37 @@
                 sinf(pitch*0.5f), 0.0f, 0.0f, cosf(pitch*0.5f)};
             const XrQuaternionf qRoll{
                 0.0f, 0.0f, sinf(-roll*0.5f), cosf(roll*0.5f)};
+            // Keep the support attachment, but consume no support motion when
+            // hands are together. Reset position as well as orientation.
+            if(result.twoHandActive&&inputs.closeGripAuthority==0.f){
+                result.pose=inputs.right;
+                if constexpr(CaptureTrace)
+                    trace->finalDirection=trace->primaryDirection;
+            }
+            // Partial authority: the same two poses in proportion, so the aim
+            // comes to the main hand without a snap.
+            else if(result.twoHandActive&&inputs.closeGripAuthority<1.f){
+                const float steer=inputs.closeGripAuthority;
+                const XrPosef& primary=inputs.right;
+                const XrQuaternionf& steered=result.pose.orientation;
+                const float side=primary.orientation.x*steered.x+primary.orientation.y*steered.y+
+                    primary.orientation.z*steered.z+primary.orientation.w*steered.w<0.0f?-steer:steer;
+                const XrQuaternionf blend{
+                    primary.orientation.x*(1.0f-steer)+steered.x*side,
+                    primary.orientation.y*(1.0f-steer)+steered.y*side,
+                    primary.orientation.z*(1.0f-steer)+steered.z*side,
+                    primary.orientation.w*(1.0f-steer)+steered.w*side};
+                const float blendLength=sqrtf(blend.x*blend.x+blend.y*blend.y+blend.z*blend.z+blend.w*blend.w);
+                result.pose.position={
+                    primary.position.x+(result.pose.position.x-primary.position.x)*steer,
+                    primary.position.y+(result.pose.position.y-primary.position.y)*steer,
+                    primary.position.z+(result.pose.position.z-primary.position.z)*steer};
+                if(std::isfinite(blendLength)&&blendLength>=1e-5f)
+                    result.pose.orientation={blend.x/blendLength,blend.y/blendLength,
+                        blend.z/blendLength,blend.w/blendLength};
+                if constexpr(CaptureTrace)
+                    trace->finalDirection=traceXrVec(Rotate(result.pose.orientation,{0.0f,0.0f,-1.0f}));
+            }
             const XrQuaternionf corrected = multiply(
                 result.pose.orientation,
                 multiply(multiply(qYaw, qPitch), qRoll));

@@ -4,14 +4,16 @@
 // WHAT THIS DOES TO THE GAME: three `call rel32` instructions in the camera director (halo3+0x212074, +0x2127EF,
 // +0x212DCB) are pointed at a relay in memory of the mod's own, next to the module. The relay calls the function
 // those calls went to, unchanged, and for one unit -- the local player, seated, while the mod's own seat camera
-// owns the view -- answers "first person" where the game answered a settled "third person". No tag, no object
+// owns the view -- answers "first person" where the game answered a settled "third person"; and, the other way
+// round, for a seat that is first person in its own data while a chase camera of the mod's shows it, "third
+// person" where the game answered a settled "first person" (seat_view_logic.h, THE OTHER WAY ROUND). No tag, no object
 // field and no instruction on any path the simulation runs is written; the function itself is not hooked, so a
 // host that hooks it for its own camera modes keeps its hook and the relay calls through it.
 //
 // THREADS. Install, sync and remove run on the WaitThread and own g_halo3SeatView. A site's five bytes are
 // swapped with every other thread suspended and none of them inside the bytes (the freeze seat_aim_world_frame.inl
-// uses). The relay runs on whichever thread the director runs on; it reads one atomic (the armed unit), which the
-// camera thread writes from the seat sampler (halo3_native_seat_patch.inl).
+// uses). The relay runs on whichever thread the director runs on; it reads two atomics (the armed unit and the
+// chase unit), which the camera thread writes from the seat sampler (halo3_native_seat_patch.inl).
 //
 // LIFETIME. The relay holds the module's address, so it is built per module generation and retired with it. Two
 // rules hold on every path, teardown and a changed generation alike:
@@ -61,6 +63,8 @@ Halo3SeatViewState g_halo3SeatView;                     // WaitThread only
 Halo3SeatViewRetry g_halo3SeatViewRetry;                // WaitThread only
 std::atomic<bool> g_halo3SeatViewRedirected{false};     // every director site calls the relay
 std::atomic<int32_t> g_halo3SeatViewUnit{-1};           // the occupant the director is told is first person
+std::atomic<int32_t> g_halo3SeatViewChaseUnit{-1};      // ...and the one it is told is third person (a chase camera)
+std::atomic<uint32_t> g_halo3SeatViewChaseAnswered{0};  // how often that changed the game's answer (the log's witness)
 volatile LONG g_halo3SeatViewInside = 0;                // threads inside the relay or below it (the relay counts)
 #if HALOMCCVR_DEV_DIAGNOSTICS
 std::atomic<uint32_t> g_halo3SeatViewAsked{0}, g_halo3SeatViewAnswered{0};   // the dev SEAT VIEW line
@@ -69,13 +73,16 @@ std::atomic<uint32_t> g_halo3SeatViewAsked{0}, g_halo3SeatViewAnswered{0};   // 
 // The relay's second call, on the director's thread. Reads one atomic and the director's own local.
 int Halo3SeatViewAdjust(int unit, const int* state, int result) noexcept
 {
+    Halo3HookCalled(Halo3Hook::SeatView);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     g_halo3SeatViewAsked.fetch_add(1, std::memory_order_relaxed);
 #endif
-    if (result != seat_view::kThirdPerson || !state)
+    if ((result != seat_view::kThirdPerson && result != seat_view::kFirstPerson) || !state)
         return result;
-    const int answer =
-        seat_view::Decide(result, *state, unit, g_halo3SeatViewUnit.load(std::memory_order_acquire));
+    const int answer = seat_view::Decide(result, *state, unit, g_halo3SeatViewUnit.load(std::memory_order_acquire),
+                                         g_halo3SeatViewChaseUnit.load(std::memory_order_acquire));
+    if (answer == seat_view::kThirdPerson && result == seat_view::kFirstPerson)
+        g_halo3SeatViewChaseAnswered.fetch_add(1, std::memory_order_relaxed);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if (answer != result)
         g_halo3SeatViewAnswered.fetch_add(1, std::memory_order_relaxed);
@@ -211,6 +218,101 @@ Halo3SeatViewSwap Halo3SeatViewSwapBytes(uint8_t* at, const uint8_t* expected, c
     return result;
 }
 
+// Every site not yet redirected gets its redirect, under ONE freeze of the other threads. Halo3SeatViewSwapBytes
+// freezes the whole process for its one site, and an install redirects three, at a level's start, when a freeze is
+// slowest and the game stalls for its length. Each site's result is the one Halo3SeatViewSwapBytes would give it:
+// Done (redirected now, or already), Busy (no freeze, no write access, or a thread inside its bytes; nothing
+// written there), Foreign (neither the game's call nor the redirect). A site found Foreign before the freeze means
+// nothing is written at any site.
+void Halo3SeatViewRedirectSites(Halo3SeatViewState& s, Halo3SeatViewSwap (&results)[seat_view::kDirectorSiteCount])
+{
+    constexpr size_t n = seat_view::kCallBytes;
+    constexpr size_t count = seat_view::kDirectorSiteCount;
+    bool candidate[count]{};
+    bool writable[count]{};
+    DWORD previous[count]{};
+    bool foreign = false, any = false;
+    for (size_t i = 0; i < count; ++i)
+    {
+        Halo3SeatViewSite& site = s.sites[i];
+        results[i] = Halo3SeatViewSwap::Done;
+        if (site.patched)
+            continue;
+        uint8_t now[n];
+        if (!SeatAimFrameExecutable(site.call, n) || !Halo3SeatViewRead(site.call, now) ||
+            (memcmp(now, site.redirect, n) && memcmp(now, site.stock, n)))
+        {
+            results[i] = Halo3SeatViewSwap::Foreign;
+            foreign = true;
+        }
+        else if (memcmp(now, site.redirect, n))
+        {
+            results[i] = Halo3SeatViewSwap::Busy;
+            candidate[i] = true;
+        }
+    }
+    for (size_t i = 0; i < count && !foreign; ++i)
+    {
+        if (!candidate[i])
+            continue;
+        writable[i] = VirtualProtect(s.sites[i].call, n, PAGE_EXECUTE_READWRITE, &previous[i]) != FALSE;
+        any = any || writable[i];
+    }
+    if (any)
+    {
+        ReachThreadFreeze frozen;
+        if (frozen.Capture())
+        {
+            bool safe[count]{};
+            for (size_t i = 0; i < count; ++i)
+                safe[i] = writable[i];
+            for (const ReachFrozenThread& thread : frozen.Threads())
+            {
+                if (!thread.suspended)
+                    continue;
+                CONTEXT context{};
+                context.ContextFlags = CONTEXT_CONTROL;
+                if (!GetThreadContext(thread.handle, &context))
+                {
+                    // A live thread whose place is unknown could be inside any of them.
+                    if (WaitForSingleObject(thread.handle, 0) != WAIT_OBJECT_0)
+                        for (bool& one : safe)
+                            one = false;
+                    continue;
+                }
+                for (size_t i = 0; i < count; ++i)
+                {
+                    const auto at = reinterpret_cast<DWORD64>(s.sites[i].call);
+                    if (context.Rip > at && context.Rip < at + n)
+                        safe[i] = false;
+                }
+            }
+            for (size_t i = 0; i < count; ++i)
+            {
+                if (!safe[i])
+                    continue;
+                uint8_t* const at = s.sites[i].call;
+                uint8_t check[n];
+                if (!Halo3SeatViewRead(at, check) || memcmp(check, s.sites[i].stock, n))
+                    results[i] = Halo3SeatViewSwap::Foreign;
+                else if (Halo3SeatViewWrite(at, s.sites[i].redirect) && Halo3SeatViewRead(at, check) &&
+                         !memcmp(check, s.sites[i].redirect, n))
+                {
+                    FlushInstructionCache(GetCurrentProcess(), at, n);
+                    results[i] = Halo3SeatViewSwap::Done;
+                }
+            }
+            (void)frozen.Release();
+        }
+    }
+    for (size_t i = 0; i < count; ++i)
+    {
+        DWORD ignored = 0;
+        if (writable[i])
+            VirtualProtect(s.sites[i].call, n, previous[i], &ignored);
+    }
+}
+
 // No thread is inside the relay, and none can return into it: its own count is zero and, with every other thread
 // suspended, no instruction pointer lies in it. Only meaningful once every site is back to stock.
 bool Halo3SeatViewRelayQuiet(const Halo3SeatViewState& s)
@@ -260,7 +362,8 @@ void Halo3SeatViewReleaseRelay(Halo3SeatViewState& s)
 // key), the game answers first person by itself and the sites stay stock.
 bool Halo3SeatViewWanted()
 {
-    return g_config.vehicle_first_person && g_config.vehicle_hide_body && !Halo3SeatViewWritesTag();
+    return g_config.vehicle_first_person && (g_config.vehicle_hide_body || g_config.vehicle_cameras) &&
+        !Halo3SeatViewWritesTag();
 }
 
 // Put every site that still holds this relay's redirect back to the game's own call. A site whose bytes are no
@@ -370,12 +473,15 @@ void Halo3SeatViewApply(Halo3SeatViewState& s)
         return;
     }
     bool busy = false;
+    Halo3SeatViewSwap swaps[seat_view::kDirectorSiteCount];
+    Halo3SeatViewRedirectSites(s, swaps);
+    // Every site written is ours to put back, whatever another site turned out to be.
+    for (size_t i = 0; i < seat_view::kDirectorSiteCount; ++i)
+        if (swaps[i] == Halo3SeatViewSwap::Done)
+            s.sites[i].patched = true;
     for (size_t i = 0; i < seat_view::kDirectorSiteCount; ++i)
     {
-        Halo3SeatViewSite& site = s.sites[i];
-        if (site.patched)
-            continue;
-        const Halo3SeatViewSwap swap = Halo3SeatViewSwapBytes(site.call, site.stock, site.redirect);
+        const Halo3SeatViewSwap swap = swaps[i];
         if (swap == Halo3SeatViewSwap::Busy)
         {
             busy = true;
@@ -393,7 +499,6 @@ void Halo3SeatViewApply(Halo3SeatViewState& s)
             s.standDown = true;
             return;
         }
-        site.patched = true;
     }
     if (busy)
     {
@@ -422,6 +527,12 @@ void Halo3SeatViewArm(int32_t unit)
 void Halo3SeatViewDisarm()
 {
     g_halo3SeatViewUnit.store(-1, std::memory_order_release);
+    g_halo3SeatViewChaseUnit.store(-1, std::memory_order_release);
+}
+// The occupant a chase camera of the mod's shows: a "first person" answer becomes "third person" (-1 = nobody).
+void Halo3SeatViewArmChase(int32_t unit)
+{
+    g_halo3SeatViewChaseUnit.store(unit, std::memory_order_release);
 }
 // DEV BUILDS ONLY: seat_view_tag_write = 1 puts back the write to the seat's tag flag, for an A/B in the headset.
 // A player build never writes it.
@@ -592,6 +703,25 @@ void Halo3SeatViewSync()
         const Halo3SeatViewRetry retry = g_halo3SeatViewRetry;
         (void)Halo3SeatViewInstall(retry.base, retry.size, retry.generation);
     }
+    // One line each way, only once the game's own answer really was first person under a chase camera.
+    static int32_t s_chaseLogged = -1;
+    static uint32_t s_chaseAnswered = 0;
+    const int32_t chase = g_halo3SeatViewChaseUnit.load(std::memory_order_relaxed);
+    const uint32_t chaseAnswered = g_halo3SeatViewChaseAnswered.load(std::memory_order_relaxed);
+    if (chase != -1 && chase != s_chaseLogged && chaseAnswered != s_chaseAnswered)
+    {
+        LOG("Halo 3 seat view: a chase camera shows a seat the game draws first person, so the director is told third "
+            "person for unit 0x%08X: your character is drawn and the first-person arms and weapon are not",
+            static_cast<uint32_t>(chase));
+        s_chaseLogged = chase;
+    }
+    else if (chase == -1 && s_chaseLogged != -1)
+    {
+        LOG("Halo 3 seat view: the director has the game's own answer again for unit 0x%08X",
+            static_cast<uint32_t>(s_chaseLogged));
+        s_chaseLogged = -1;
+    }
+    s_chaseAnswered = chaseAnswered;
 #if HALOMCCVR_DEV_DIAGNOSTICS
     static uint64_t s_lastMs = 0;
     static uint32_t s_asked = 0, s_answered = 0;
@@ -602,9 +732,11 @@ void Halo3SeatViewSync()
     const uint32_t asked = g_halo3SeatViewAsked.load(std::memory_order_relaxed);
     const uint32_t answered = g_halo3SeatViewAnswered.load(std::memory_order_relaxed);
     if (answered != s_answered)
-        LOG("SEAT VIEW Halo 3 (dev): the director asked %u times in 5 s, %u answered first person for unit 0x%08X",
+        LOG("SEAT VIEW Halo 3 (dev): the director asked %u times in 5 s, %u answered otherwise than the game for "
+            "unit 0x%08X (first person) / 0x%08X (third person, a chase camera)",
             asked - s_asked, answered - s_answered,
-            static_cast<uint32_t>(g_halo3SeatViewUnit.load(std::memory_order_relaxed)));
+            static_cast<uint32_t>(g_halo3SeatViewUnit.load(std::memory_order_relaxed)),
+            static_cast<uint32_t>(g_halo3SeatViewChaseUnit.load(std::memory_order_relaxed)));
     s_asked = asked;
     s_answered = answered;
 #endif

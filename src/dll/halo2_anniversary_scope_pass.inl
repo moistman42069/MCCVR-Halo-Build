@@ -1,4 +1,4 @@
-        if(ok&&haveLatch&&g_zoomFaultGeneration.load()!=generation&&VR_ScopeShouldRenderThisFrame())
+        if(ok&&haveLatch&&g_zoomFaultGeneration.load()!=generation&&VR_ScopeShouldRenderThisFrame()&&ViewSlotsIntact(base))
         {
             VR_InvalidateScopeImage();
             Halo2CameraBasis lensCamera{};float aspect=1;

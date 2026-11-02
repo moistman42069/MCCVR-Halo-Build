@@ -44,8 +44,8 @@ static Verdict Point(const Limits& limits, const Ground& ground, float x, float 
 static void TestLimits()
 {
     const Limits defaults = LimitsFromConfig(kDefaultMetres, kDefaultDot);
-    Check(defaults.on() && Near(defaults.distanceWu, 5.0f / 3.048f) && Near(defaults.distanceWu, 1.6404f, 1.0e-4f),
-          "5 m is 500 cm, about 1.64 world units");
+    Check(defaults.on() && Near(defaults.distanceWu, 20.0f / 3.048f) && Near(defaults.distanceWu, 6.5617f, 1.0e-4f),
+          "20 m is 2000 cm, about 6.56 world units");
     Check(defaults.dot == -0.5f, "the default dot is -0.5");
     Check(!LimitsFromConfig(0.0f, -0.5f).on() && !LimitsFromConfig(-3.0f, -0.5f).on() &&
               !LimitsFromConfig(NAN, -0.5f).on(),

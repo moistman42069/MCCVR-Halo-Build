@@ -99,8 +99,10 @@ $forbiddenChud = [ordered]@{
         'ReachChudCrosshairAction::(?:Procedural|DrawProcedural|Fallback|Approximate)'
     'Reach projection queued before authored upload result' =
         'layers\.push_back\(\s*reinterpret_cast<XrCompositionLayerBaseHeader\*>\(\s*&projection\s*\)\s*\)[\s\S]{0,2200}?authoredUploadFailed'
+    # A Reclaimer-derived CHUD binding, by name. The bare word is not enough: Project Reclaimer, the standalone
+    # Halo 3 client the mod also runs in, is named in host code that has nothing to do with Reach's CHUD.
     'Reclaimer-derived Reach CHUD binding' =
-        'Reclaimer|kReachRetailChud'
+        '(?i)Reclaimer\w*Chud|Chud\w*Reclaimer|kReachRetailChud'
     'owned Reach transaction stock rerender helper' =
         'ReachScopedStock(?:Fallback|BeforeOwnership)'
     'failed claimed Reach transaction invokes the stock renderer' =
