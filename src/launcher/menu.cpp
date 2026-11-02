@@ -5,10 +5,12 @@
 #include <shobjidl.h>
 #include <shellapi.h>
 #include <uxtheme.h>
+#include <commctrl.h>
 #include <thread>
 #include <functional>
 #include <fstream>
 #pragma comment(lib, "uxtheme.lib")
+#pragma comment(lib, "comctl32.lib")
 
 namespace mcc_installer {
 namespace fs = std::filesystem;
@@ -184,7 +186,8 @@ void BrowseReclaimer(Menu& menu) {
 }
 void DrawButton(Menu& menu, const DRAWITEMSTRUCT& item) {
     const bool disabled = item.itemState & ODS_DISABLED, pressed = item.itemState & ODS_SELECTED;
-    const bool primary = item.CtlID == Launch || item.CtlID == ReclaimerLaunch;
+    // Install update joins them once a release has been found: it is enabled then, and it is the next step.
+    const bool primary = item.CtlID == Launch || item.CtlID == ReclaimerLaunch || item.CtlID == Update;
     const bool warm = item.CtlID == ReclaimerBrowse || item.CtlID == ReclaimerDetect || item.CtlID == ReclaimerLaunch;
     const COLORREF fill = warm
         ? (disabled ? RGB(36, 30, 20) : primary ? (pressed ? RGB(150, 104, 34) : RGB(116, 80, 26)) : (pressed ? RGB(84, 62, 28) : RGB(56, 43, 22)))
@@ -199,6 +202,51 @@ void DrawButton(Menu& menu, const DRAWITEMSTRUCT& item) {
     SetBkMode(item.hDC, TRANSPARENT); SetTextColor(item.hDC, disabled ? (warm ? RGB(120, 102, 76) : RGB(80, 105, 115)) : kText); SelectObject(item.hDC, menu.label);
     RECT rect = item.rcItem; DrawTextW(item.hDC, text, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     if (item.itemState & ODS_FOCUS) { InflateRect(&rect, -4, -4); DrawFocusRect(item.hDC, &rect); }
+}
+// The closed drop-down, drawn whole so it matches the buttons beside it; the open list stays the control's own. The
+// repository's reads as a sentence with its choice.
+void PaintCombo(Menu& menu, HWND combo, HDC dc) {
+    RECT client{}; GetClientRect(combo, &client);
+    const bool disabled = !IsWindowEnabled(combo), focused = GetFocus() == combo;
+    HBRUSH brush = CreateSolidBrush(disabled ? RGB(17, 29, 37) : kPanel); FillRect(dc, &client, brush); DeleteObject(brush);
+    HPEN pen = CreatePen(PS_SOLID, 1, disabled ? RGB(39, 58, 67) : focused ? kAccent : RGB(59, 107, 122));
+    const auto oldPen = SelectObject(dc, pen); const auto oldBrush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+    Rectangle(dc, client.left, client.top, client.right, client.bottom);
+    SelectObject(dc, oldBrush); SelectObject(dc, oldPen); DeleteObject(pen);
+    std::wstring text = GetDlgCtrlID(combo) == Games ? L"Select a detected MCC installation" : L"";
+    const auto index = SendMessageW(combo, CB_GETCURSEL, 0, 0);
+    if (index >= 0) {
+        const auto length = SendMessageW(combo, CB_GETLBTEXTLEN, index, 0);
+        if (length >= 0 && length < 32768) { text.resize(static_cast<size_t>(length) + 1); SendMessageW(combo, CB_GETLBTEXT, index, reinterpret_cast<LPARAM>(text.data())); text.resize(static_cast<size_t>(length)); }
+    }
+    if (GetDlgCtrlID(combo) == Channel) text = L"Update from repository: " + text;
+    const int arrowArea = menu.Px(32);
+    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, disabled ? RGB(80, 105, 115) : kText); SelectObject(dc, menu.body);
+    RECT rect = client; rect.left += menu.Px(12); rect.right -= arrowArea;
+    DrawTextW(dc, text.c_str(), -1, &rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    HPEN arrow = CreatePen(PS_SOLID, menu.Px(2), disabled ? RGB(80, 105, 115) : kAccent); const auto before = SelectObject(dc, arrow);
+    const int x = client.right - arrowArea / 2, y = (client.top + client.bottom) / 2, size = menu.Px(5);
+    MoveToEx(dc, x - size, y - size / 2, nullptr); LineTo(dc, x, y + size / 2 + 1); LineTo(dc, x + size + 1, y - size / 2 - 1);
+    SelectObject(dc, before); DeleteObject(arrow);
+}
+LRESULT CALLBACK ComboProc(HWND combo, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR data) {
+    switch (message) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT paint{}; HDC dc = BeginPaint(combo, &paint);
+        PaintCombo(*reinterpret_cast<Menu*>(data), combo, dc);
+        EndPaint(combo, &paint);
+        return 0;
+    }
+    case WM_SETFOCUS: case WM_KILLFOCUS: case WM_ENABLE: InvalidateRect(combo, nullptr, FALSE); break;
+    case WM_NCDESTROY: RemoveWindowSubclass(combo, ComboProc, 1); break;
+    }
+    return DefSubclassProc(combo, message, wParam, lParam);
+}
+void StyleCombo(Menu& menu, HWND combo) {
+    SendMessageW(combo, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), menu.Px(32));
+    SendMessageW(combo, CB_SETITEMHEIGHT, 0, menu.Px(29));
+    SetWindowSubclass(combo, ComboProc, 1, reinterpret_cast<DWORD_PTR>(&menu));
 }
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     auto* menu = reinterpret_cast<Menu*>(GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -216,9 +264,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         EnumFontFamiliesExW(dc, &query, FontExists, reinterpret_cast<LPARAM>(&found), 0); ReleaseDC(window, dc);
         menu->title = Font(*menu, 45, FW_NORMAL, found ? L"Halo" : menu->fontLoaded ? L"Oxanium" : L"Bahnschrift SemiCondensed");
         Label(*menu, L"01  /  GAME INSTALLATION", 38, 134, 470);
-        menu->games = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 163, 642, 230, Games);
-        SendMessageW(menu->games, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), menu->Px(25));
-        SendMessageW(menu->games, CB_SETITEMHEIGHT, 0, menu->Px(29));
+        menu->games = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 160, 642, 230, Games);
+        StyleCombo(*menu, menu->games);
         Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, 160, 122, 38, Browse);
         Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, 160, 110, 38, Scan);
         menu->path = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 214, 895, 77);
@@ -231,15 +278,14 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 540, 390, 234, 48, Launch);
         Control(*menu, L"BUTTON", L"MOD FOLDER", BS_OWNERDRAW | WS_TABSTOP, 796, 390, 146, 48, Folder);
         Label(*menu, L"03  /  RELEASE UPDATES", 38, 472, 570);
-        Label(*menu, L"Update from repository:", 38, 507, 280);
-        menu->channel = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 324, 501, 240, 140, Channel);
-        SendMessageW(menu->channel, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), menu->Px(25));
-        SendMessageW(menu->channel, CB_SETITEMHEIGHT, 0, menu->Px(29));
+        // The same columns as section 01: the drop-down under the installation's, the buttons out to the right margin.
+        menu->channel = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 498, 642, 140, Channel);
+        StyleCombo(*menu, menu->channel);
         for (const auto& source : kReleaseChannels) SendMessageW(menu->channel, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(source.label));
-        Control(*menu, L"BUTTON", L"LATEST", BS_OWNERDRAW | WS_TABSTOP, 580, 498, 175, 38, Latest);
-        Control(*menu, L"BUTTON", L"CHECK FOR UPDATES", BS_OWNERDRAW | WS_TABSTOP, 38, 547, 270, 40, Check);
-        Control(*menu, L"BUTTON", L"INSTALL UPDATE", BS_OWNERDRAW | WS_TABSTOP, 324, 547, 240, 40, Update);
-        Control(*menu, L"BUTTON", L"RELEASE PAGE", BS_OWNERDRAW | WS_TABSTOP, 580, 547, 175, 40, ReleasePage);
+        Control(*menu, L"BUTTON", L"LATEST", BS_OWNERDRAW | WS_TABSTOP, 696, 498, 246, 38, Latest);
+        Control(*menu, L"BUTTON", L"CHECK FOR UPDATES", BS_OWNERDRAW | WS_TABSTOP, 38, 548, 270, 38, Check);
+        Control(*menu, L"BUTTON", L"INSTALL UPDATE", BS_OWNERDRAW | WS_TABSTOP, 324, 548, 356, 38, Update);
+        Control(*menu, L"BUTTON", L"RELEASE PAGE", BS_OWNERDRAW | WS_TABSTOP, 696, 548, 246, 38, ReleasePage);
         menu->release = Control(*menu, L"STATIC", L"Updates are checked only when you choose. Steam and Xbox app use the same release.", SS_LEFT, 40, 599, 895, 38);
         SendMessageW(menu->release, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         // The section's heading is painted with its panel (WM_PAINT).
@@ -302,11 +348,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_DRAWITEM: {
         const auto& item = *reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
         if (item.CtlID == Games || item.CtlID == Channel) {
-            FillRect(item.hDC, &item.rcItem, menu->panel); SetBkMode(item.hDC, TRANSPARENT); SetTextColor(item.hDC, kText); SelectObject(item.hDC, menu->body);
+            // The closed box is painted whole (PaintCombo); a selection only asks it to paint again.
+            if (item.itemState & ODS_COMBOBOXEDIT) { InvalidateRect(item.hwndItem, nullptr, FALSE); return TRUE; }
+            HBRUSH row = CreateSolidBrush(item.itemState & ODS_SELECTED ? RGB(36, 71, 85) : kPanel); FillRect(item.hDC, &item.rcItem, row); DeleteObject(row); SetBkMode(item.hDC, TRANSPARENT); SetTextColor(item.hDC, kText); SelectObject(item.hDC, menu->body);
             std::wstring text = L"Select a detected MCC installation";
             if (item.itemID != static_cast<UINT>(-1)) { const auto length = SendMessageW(item.hwndItem, CB_GETLBTEXTLEN, item.itemID, 0); if (length >= 0 && length < 32768) { text.resize(static_cast<size_t>(length) + 1); SendMessageW(item.hwndItem, CB_GETLBTEXT, item.itemID, reinterpret_cast<LPARAM>(text.data())); text.resize(static_cast<size_t>(length)); } }
             RECT rect = item.rcItem; rect.left += menu->Px(8); rect.right -= menu->Px(4); DrawTextW(item.hDC, text.c_str(), -1, &rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-            if (item.itemState & ODS_FOCUS) DrawFocusRect(item.hDC, &item.rcItem);
         } else DrawButton(*menu, item);
         return TRUE;
     }
