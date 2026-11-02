@@ -135,6 +135,17 @@ inline ReleaseUpdate ReleaseFromJson(const ReleaseJson& json, const ReleaseChann
 inline ReleaseUpdate ParseReleaseUpdate(const std::string& text, const ReleaseChannel& channel = kReleaseChannels[0]) {
     return ReleaseFromJson(ReleaseJsonReader(text).Read(), channel);
 }
+// The installed build, as the launcher states it: its repository, the release it came from when that is known, and
+// its build. A package records only its repository and build; the release name and date are saved when the launcher's
+// own update installs it (the launcher's INSTALLED-RELEASE.txt).
+inline std::wstring InstalledText(const std::wstring& repository, const std::wstring& release, const std::wstring& published, const std::wstring& build) {
+    std::wstring text = L"Installed: ";
+    const auto add = [&](const std::wstring& part) { if (part.empty()) return; if (text.back() != L' ') text += L", "; text += part; };
+    add(repository); add(release);
+    if (!published.empty()) add(L"published " + published);
+    add(build);
+    return text;
+}
 // Which release is furthest ahead by date, or npos when none has a date. GitHub's published_at is UTC in one fixed
 // format (2026-11-02T18:05:54Z), so text order is date order; anything else counts as no date. On a tie the earlier
 // entry stays, which is the official repository.

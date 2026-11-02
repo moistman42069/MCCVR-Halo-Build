@@ -78,6 +78,8 @@ static void Policies() {
     Require(NewestPublished({"2026-11-02T00:00:00Z", "2026-11-02T00:00:00Z"}) == 0, "a tie stays with the earlier repository");
     Require(NewestPublished({"", "2026-11-02T00:00:00Z", "not a date"}) == 1, "a repository with no date is passed over");
     Require(NewestPublished({"", ""}) == std::string::npos, "no dates, no choice");
+    Require(InstalledText(L"Nitsujack", L"nitsujack-reclaimer-5", L"2026-11-01", L"RC-fd42f87") == L"Installed: Nitsujack, nitsujack-reclaimer-5, published 2026-11-01, RC-fd42f87", "an updated build says everything");
+    Require(InstalledText(L"Nitsujack", L"", L"", L"RC-983a98e") == L"Installed: Nitsujack, RC-983a98e", "a build from elsewhere says what it knows");
     const auto release = ParseReleaseUpdate(json);
     Require(release.bytes == 100 && release.tag == "MCC_VR_ALPHA_0.6.0", "release parser chooses player ZIP");
     for (const auto input : {R"({"tag_name":"x","draft":false,"prerelease":false,"assets":[]})", R"({"a":1,"a":2})", R"([1,])", R"({"a":"\uD800"})", R"({"a":01})"}) {
