@@ -78,12 +78,12 @@ static void TestWhatIsAdded()
           "the built-in Elephant entries are added, every seat's");
 
     // A mod map's own vehicle: one entry by its name, with the cameras of the default it was riding on.
-    const Vehicle* riding = Matched(builtIn, "halo3", "seraph_reach", driver);
+    const Vehicle* riding = Matched(builtIn, "halo3", "custom_rover", driver);
     Check(riding && riding->isDefault, "a mod vehicle rides on default");
-    const Addition seraph = For(builtIn, builtIn, "halo3", "seraph_reach", driver);
+    const Addition seraph = For(builtIn, builtIn, "halo3", "custom_rover", driver);
     Check(!seraph.fromBuiltIn && seraph.entries.size() == 1, "a mod vehicle gets one entry of its own");
     const Vehicle& own = seraph.entries[0];
-    Check(own.name == "seraph_reach" && own.match.size() == 1 && own.match[0] == "seraph_reach" && !own.isDefault &&
+    Check(own.name == "custom_rover" && own.match.size() == 1 && own.match[0] == "custom_rover" && !own.isDefault &&
               own.seats == 0,
           "named and matched by its own name, for every seat");
     Check(own.cameras.size() == riding->cameras.size() && own.defaultCamera == riding->defaultCamera &&
@@ -97,8 +97,8 @@ static void TestWhatIsAdded()
     for (Game& game : clash.games)
         if (game.key == "halo3")
             game.vehicles.insert(game.vehicles.begin(), gunnerOnly);
-    const Addition beside = For(clash, builtIn, "halo3", "seraph_reach", passenger);
-    Check(beside.entries.size() == 1 && beside.entries[0].name == "seraph_reach passenger" &&
+    const Addition beside = For(clash, builtIn, "halo3", "custom_rover", passenger);
+    Check(beside.entries.size() == 1 && beside.entries[0].name == "custom_rover passenger" &&
               beside.entries[0].seats == passenger,
           "a seat whose vehicle name is taken gets an entry for that seat");
 }
@@ -112,14 +112,14 @@ static void TestTheTextIsAddedTo()
         const std::string original = windows ? Crlf(ToJson(Without("Elephant"))) : ToJson(Without("Elephant"));
         Table file;
         Check(FromJson(original.data(), original.size(), file).ok, "the starting file reads");
-        const Addition addition = For(file, builtIn, "halo3", "seraph_reach", driver);
+        const Addition addition = For(file, builtIn, "halo3", "custom_rover", driver);
         std::string text = original;
         std::string why;
-        Check(Insert(text, addition, "halo3", "seraph_reach", driver, why), "the entry is spliced in");
+        Check(Insert(text, addition, "halo3", "custom_rover", driver, why), "the entry is spliced in");
         Table after;
         Check(FromJson(text.data(), text.size(), after).ok, "and the file still reads");
-        const Vehicle* now = Matched(after, "halo3", "seraph_reach", driver);
-        Check(now && now->name == "seraph_reach", "and gives the vehicle its own entry");
+        const Vehicle* now = Matched(after, "halo3", "custom_rover", driver);
+        Check(now && now->name == "custom_rover", "and gives the vehicle its own entry");
         Check(Has(text, "_readme") && Has(text, "\"Warthog\""), "everything that was there is still there");
         // Only added to: the original is the new text with the inserted part taken out.
         std::size_t same = 0;
@@ -142,16 +142,16 @@ static void TestTheTextIsAddedTo()
         "\"firstperson\" } ] } } }\n  }\n}\n";
     Table file;
     Check(FromJson(sparse.data(), sparse.size(), file).ok, "the sparse file reads");
-    const Addition addition = For(file, builtIn, "halo3", "seraph_reach", driver);
+    const Addition addition = For(file, builtIn, "halo3", "custom_rover", driver);
     Check(addition.sectionKey == "halo3" && addition.entries.size() == 1 && !addition.fromBuiltIn,
           "an empty section takes the vehicle");
     std::string text = sparse;
     std::string why;
-    Check(Insert(text, addition, "halo3", "seraph_reach", driver, why), "into an empty vehicles object");
+    Check(Insert(text, addition, "halo3", "custom_rover", driver, why), "into an empty vehicles object");
     Table after;
     Check(FromJson(text.data(), text.size(), after).ok && Has(text, "keep me"), "it reads, with the note kept");
-    const Vehicle* now = Matched(after, "halo3", "seraph_reach", driver);
-    Check(now && now->name == "seraph_reach", "and the vehicle has its entry");
+    const Vehicle* now = Matched(after, "halo3", "custom_rover", driver);
+    Check(now && now->name == "custom_rover", "and the vehicle has its entry");
 
     // A name the built-in table already claims ("space_banshee" holds "banshee", as the file's own matching reads
     // it): the built-in preset is what is added, as the built-in table would give it.
@@ -162,13 +162,13 @@ static void TestTheTextIsAddedTo()
     // Text that does not read is left alone.
     std::string broken = "{ \"games\": { \"halo3\": { \"vehicles\": { ";
     const std::string before = broken;
-    Check(!Insert(broken, addition, "halo3", "seraph_reach", driver, why) && broken == before && !why.empty(),
+    Check(!Insert(broken, addition, "halo3", "custom_rover", driver, why) && broken == before && !why.empty(),
           "a file that does not read is not touched");
     // So is one whose section is not where the addition says.
     Addition elsewhere = addition;
     elsewhere.sectionKey = "halo4";
     std::string other = sparse;
-    Check(!Insert(other, elsewhere, "halo3", "seraph_reach", driver, why) && other == sparse,
+    Check(!Insert(other, elsewhere, "halo3", "custom_rover", driver, why) && other == sparse,
           "nor one without the section");
 }
 

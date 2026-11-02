@@ -35,6 +35,8 @@ bool Halo2Observer6Dof_Poll(
     uintptr_t observerResultArray) noexcept;
 
 bool Halo2Observer6Dof_Installed() noexcept;
+// Game_SecondaryShotsOwnLine for Halo 2: its dual lane (and for barrel aim, its muzzle lane) live this generation.
+bool Halo2Observer6Dof_SecondaryShotsOwnLine() noexcept;
 // The core's own "teardown requested" flag, for the unload gate (host_unload_gate.h): never null.
 std::atomic<bool>* Halo2Observer6Dof_TeardownRequested() noexcept;
 // Management worker only. Runtime-failure latches are never cleared here.

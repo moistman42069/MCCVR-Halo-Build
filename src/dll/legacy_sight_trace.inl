@@ -418,9 +418,9 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
         }
         Sight_PublishCameraTrace(title, generation, cameraHit, cameraHit ? cameraRangeWu : 0.0f);
     }
-    // THE VEHICLE AIM RING RAY (vehicle_cameras.inl): from the game's own camera along the way the vehicle aims, while
-    // the ring is shown, for the depth it is drawn at. The same query, flags and ignores, so the player's own vehicle
-    // is looked past. Only while the camera thread published one.
+    // THE VEHICLE AIM RING RAY (vehicle_cameras.inl): from the eye the view is drawn from along the way the vehicle
+    // aims, while the ring is shown, for the depth it is drawn at. The same query, flags and ignores, so the player's
+    // own vehicle is looked past. Only while the camera thread published one.
     SightAuxRay markerRay{};
     if (Sight_ReadMarkerRay(title, generation, kSightRayFreshMs, markerRay))
     {

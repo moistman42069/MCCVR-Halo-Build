@@ -121,6 +121,7 @@ struct ControllerRig
     float visualPitchDeg{},visualYawDeg{},visualRollDeg{};
     float supportMountPitchDeg{},supportMountYawDeg{},supportMountRollDeg{};
     float gunForwardM{-0.14f},gunRightM{},gunUpM{};
+    float leftGunForwardM{-.16f},leftGunRightM{-.02f},leftGunUpM{-.05f};
     float supportForwardM{-0.063f};
     float visualLeftHandOffset[3]{},visualRightHandOffset[3]{};
     float shoulderBackM{},primaryShoulderDrop{0.06f};

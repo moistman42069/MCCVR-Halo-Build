@@ -382,6 +382,33 @@ constexpr SwitchZoneReentryStep StepSwitchZoneReentry(bool awaitZoneReentry,
     return step;
 }
 
+// `two_hand_switch_inherit` through a physical weapon gesture (a holster draw). The gesture ends the relationship, as
+// the primary hand is away from the aim; with the option on it does not arm release-before-reacquire, and the
+// relationship comes back when the gesture ends, wherever the support hand is, as an inherited button switch does.
+// The player's own release or a broken lifecycle ends the wait. The caller owns `pending`.
+struct GestureInheritStep
+{
+    bool pending = false;
+    bool keepsHold = false; // this update's teardown arms nothing
+    bool resume = false;    // an acquisition edge for this update
+};
+
+constexpr GestureInheritStep StepGestureInherit(bool pending,
+    bool inheritReplacement, bool engaged, bool gesture, bool broken,
+    bool holdMode, bool gripHeld, bool togglePress,
+    bool evidenceCoherent) noexcept
+{
+    GestureInheritStep step{};
+    if (!inheritReplacement || broken ||
+        (holdMode ? !gripHeld : togglePress))
+        return step;
+    step.keepsHold = engaged && gesture;
+    const bool waiting = pending || step.keepsHold;
+    step.resume = waiting && !gesture && !engaged;
+    step.pending = waiting && !(step.resume && evidenceCoherent);
+    return step;
+}
+
 // ---------------------------------------------------------------------------
 // F02 lifecycle identity: what the relationship may survive
 // ---------------------------------------------------------------------------

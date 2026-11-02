@@ -2,6 +2,7 @@ static bool muzzleHookExists=false,muzzleHookEnabled=false,muzzleIngress=false;
 static int muzzleLifecycleFailure=0,muzzleScan=0;
 static uintptr_t muzzleFixtureBase=0;
 static std::atomic<bool> g_halo3MuzzleBindingsReady{false};
+static std::atomic<bool> g_halo3GripOwnerReady{false};
 namespace MuzzleSig
 {
 static uintptr_t Find(uintptr_t base,size_t,const char*)
@@ -43,6 +44,7 @@ static bool MuzzleQuiescence(const void* const* functions,const void* const* ori
 #define WaitForNativeDetourQuiescence MuzzleQuiescence
 #define MH_CreateHook MuzzleCreate
 #define MH_EnableHook MuzzleEnable
+#define MCCVR_EnableHook MuzzleEnable
 #define MH_RemoveHook MuzzleRemove
 #define InstallHalo3Muzzle FixtureInstallMuzzle
 #define RemoveHalo3Muzzle FixtureRemoveMuzzle
@@ -53,6 +55,7 @@ static bool MuzzleQuiescence(const void* const* functions,const void* const* ori
 #undef WaitForNativeDetourQuiescence
 #undef MH_CreateHook
 #undef MH_EnableHook
+#undef MCCVR_EnableHook
 #undef MH_RemoveHook
 #undef InstallHalo3Muzzle
 #undef RemoveHalo3Muzzle

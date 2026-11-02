@@ -12,12 +12,16 @@ option casemap:none
 PUBLIC g_probeReturn
 PUBLIC g_clobberState
 PUBLIC g_clobberAction
+PUBLIC g_clobberCaller
+PUBLIC g_expectedCaller
 
 .data
 ALIGN 16
 g_probeReturn   QWORD 0
 g_clobberState  QWORD 0
 g_clobberAction QWORD 0
+g_clobberCaller QWORD 0
+g_expectedCaller QWORD 0
 
 .code
 ReaderThunkProbe PROC FRAME
@@ -53,7 +57,10 @@ ReaderThunkProbe PROC FRAME
     movq xmm4, rax
     mov rax, 0C5C5C5C5C5C5C5C5h
     movq xmm5, rax
+    lea rax, probeReturned
+    mov QWORD PTR [g_expectedCaller], rax
     call r12
+probeReturned:
     mov QWORD PTR [g_probeReturn], rax
     xor ebx, ebx
     cmp rcx, r13
@@ -119,6 +126,7 @@ ReaderThunkProbe PROC FRAME
 ReaderThunkProbe ENDP
 
 ClobberingReader PROC
+    mov QWORD PTR [g_clobberCaller], r8
     mov QWORD PTR [g_clobberState], rcx
     mov eax, edx
     mov QWORD PTR [g_clobberAction], rax

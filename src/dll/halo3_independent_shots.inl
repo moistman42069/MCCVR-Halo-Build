@@ -143,8 +143,13 @@ __declspec(noinline) void __fastcall Halo3IndependentQueryDetour(
     g_halo3QueryCapture.active=capture;
     const int32_t previousAcquisitionUser=t_halo3AcquisitionUser;
     t_halo3AcquisitionUser=inputUser;
-    if(inputUser==0 && !g_legacyCollisionOwnedQuery)
+    // Only while the lane itself is in: with the query hooked for the zoom level alone (InstallHalo3ZoomReader) the
+    // tick eye's acquisition reading stays what it is without this lane.
+    if(inputUser==0 && !g_legacyCollisionOwnedQuery && feature.enabled.load(std::memory_order_acquire))
         g_halo3AcquisitionUser0Us.store(Sight_NowUs(),std::memory_order_relaxed);
+    // The game's own zoom level for the local player (Aim Frame Zoom): the ordinary query only, never ours.
+    if(inputUser==0 && !(flags&1) && !g_legacyCollisionOwnedQuery)
+        NoteGameZoomLevel(GameTitle::Halo3,zoom,feature.generation);
     __try
     {
         if(!feature.queryOriginal)__leave;

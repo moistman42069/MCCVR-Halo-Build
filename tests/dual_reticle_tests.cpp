@@ -8,14 +8,16 @@ static void Check(bool pass,const char* why) {++checks;if(!pass){std::fprintf(st
 static bool Near(float a,float b){return std::abs(a-b)<.0001f;}
 int main() {
     for(auto title:{GameTitle::Halo2,GameTitle::Halo3}) {
-        Check(dual_reticle::Eligible(title,true,true,true,true,false,false),"supported dual pair");
-        Check(!dual_reticle::Eligible(title,false,true,true,true,false,false),"single gun retains ordinary art");
-        Check(!dual_reticle::Eligible(title,true,true,false,true,false,false),"secondary tracking loss");
-        Check(!dual_reticle::Eligible(title,true,true,true,false,false,false),"crosshair disabled");
-        Check(!dual_reticle::Eligible(title,true,true,true,true,true,false),"HUD hidden");
-        Check(!dual_reticle::Eligible(title,true,true,true,true,false,true),"theatre excludes gun reticles");
+        Check(dual_reticle::Eligible(title,true,true,true,true,false,false,true),"supported dual pair");
+        Check(!dual_reticle::Eligible(title,false,true,true,true,false,false,true),"single gun retains ordinary art");
+        Check(!dual_reticle::Eligible(title,true,true,false,true,false,false,true),"secondary tracking loss");
+        Check(!dual_reticle::Eligible(title,true,true,true,false,false,false,true),"crosshair disabled");
+        Check(!dual_reticle::Eligible(title,true,true,true,true,true,false,true),"HUD hidden");
+        Check(!dual_reticle::Eligible(title,true,true,true,true,false,true,true),"theatre excludes gun reticles");
+        Check(!dual_reticle::Eligible(title,true,true,true,true,false,false,false),
+            "both guns on the game's one aim show one reticle");
     }
-    Check(!dual_reticle::Eligible(GameTitle::HaloReach,true,true,true,true,false,false),"no unsupported native dual authority");
+    Check(!dual_reticle::Eligible(GameTitle::HaloReach,true,true,true,true,false,false,true),"no unsupported native dual authority");
     Check(dual_reticle::PhysicalHand(0,false)==1&&dual_reticle::PhysicalHand(1,false)==0,"ordinary physical roles");
     Check(dual_reticle::PhysicalHand(0,true)==0&&dual_reticle::PhysicalHand(1,true)==1,"left handed roles");
     const auto trim=dual_reticle::Mirror(11,22,33);

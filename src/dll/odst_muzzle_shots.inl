@@ -82,6 +82,9 @@ __declspec(noinline) void __fastcall OdstMuzzleQueryDetour(int32_t inputUser,uin
         (Sight_GunBarrelAim()||Sight_MuzzleShotsConverge()||(kEnableOdstIndependentAim&&Sight_IndependentDualAim()))&&
         inputUser>=0&&inputUser<4&&!(flags&1)&&direction&&control&&targeting;
     g_odstMuzzleCapture.active=capture;
+    // The game's own zoom level for the local player (Aim Frame Zoom): the ordinary query only, never ours.
+    if(inputUser==0&&!(flags&1)&&!g_legacyCollisionOwnedQuery)
+        NoteGameZoomLevel(GameTitle::Halo3ODST,zoom,feature.generation);
     __try
     {
         if(!feature.queryOriginal)__leave;

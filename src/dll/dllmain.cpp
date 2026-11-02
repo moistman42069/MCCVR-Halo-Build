@@ -14,6 +14,7 @@
 #include "native_fault_probe.h"
 #include "dev_pad.h"
 #include "drive_cascade.h"
+#include "install_search_cache.h"
 #include "title_adapter.h"
 #include "telemetry_recorder.h"
 
@@ -172,6 +173,8 @@ static DWORD WINAPI InitThread(LPVOID)
         NativeFaultProbe_Init(dir.c_str(),HALOMCCVR_BUILD_COMMIT)?"enabled":"unavailable");
     // The direct drives' address cache lives beside the log and the settings (drive_cascade.h).
     drive_cascade::SetCacheFolder(dir.c_str());
+    // A title install's searches, saved per build of its DLL, live there too (install_search_cache.h).
+    install_search_cache::SetFolder(dir.c_str());
     // What a drive resolved in a module is remembered for that image of it only: the title adapter's module
     // generation changes when MCC unloads a game DLL and loads it again, even at the same base.
     drive_cascade::SetModuleGenerationSource(&TitleAdapter_GetGeneration);
@@ -180,7 +183,7 @@ static DWORD WINAPI InitThread(LPVOID)
     ConfigLoadMigrating(primaryConfig.c_str(), legacyConfig.c_str());
     // Project Reclaimer draws the game at its own render resolution (config.h, g_hostOwnsRenderSize).
     if (reclaimer_host::IsClientExeName(reclaimer_host::Leaf(hostExe)))
-        g_hostOwnsRenderSize = true;
+        g_hostIsProjectReclaimer = g_hostOwnsRenderSize = true;
     if (!Telemetry_Init())
         LOG("telemetry: recorder unavailable; VR startup continues");
 #if HALOMCCVR_DEV_DIAGNOSTICS

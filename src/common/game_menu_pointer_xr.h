@@ -51,10 +51,12 @@ inline XrCompositionLayerQuad CursorQuad(const XrCompositionLayerQuad& screen,
     auto q=screen;
     q.subImage.swapchain=chain;q.subImage.imageRect={{0,0},{32,32}};
     q.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    // Later in composition order, and lifted toward the viewer (a quad's +Z) by half a percent of the screen's width:
+    // on the same plane a compositor that sorts by depth makes the ring fight the screen. From the panel's distance
+    // the lift moves the ring against what it points at by far less than the ring's own width.
     const auto offset=RotatePoint(screen.pose.orientation,
-        {(u-.5f)*screen.size.width,(.5f-v)*screen.size.height,0});
+        {(u-.5f)*screen.size.width,(.5f-v)*screen.size.height,screen.size.width*.005f});
     q.pose.position.x+=offset.x;q.pose.position.y+=offset.y;q.pose.position.z+=offset.z;
-    // Same plane and later composition order: exact pointer/hover alignment.
     q.size.width=q.size.height=screen.size.width*(pressed?.007f:.01f);
     return q;
 }

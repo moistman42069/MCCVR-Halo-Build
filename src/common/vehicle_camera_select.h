@@ -38,6 +38,9 @@ struct ActiveCamera
     float leashMaxCm[3]{};
     bool locYaw = false, locPitch = false, locRoll = false, locView = false;
     bool rotYaw = false, rotPitch = false, rotRoll = false;
+    // The file says how this camera turns the view (Camera::rotationSet): always so for a chase camera's use; a
+    // firstperson camera that does not say leaves it to the game's setting.
+    bool rotationSet = false;
     bool collide = false;
     float collideMarginCm = 0.0f;
     float lagSeconds = 0.0f; // vehicle_camera_file::LagSecondsOf: 0 = rigid

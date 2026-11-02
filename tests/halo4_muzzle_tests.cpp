@@ -1,3 +1,5 @@
+#include "../src/common/visual_aim.h"
+#include "../src/common/support_grip_logic.h"
 #include <Windows.h>
 #include <MinHook.h>
 #include <atomic>
@@ -62,7 +64,11 @@ static int ResolveEquippedWeaponSlot(uint32_t weapon,uint32_t a,uint32_t b,bool,
 struct BoneMatrix {float scale=1,rotation[9]{1,0,0,0,1,0,0,0,1},translation[3]{};};
 static constexpr int kHalo4FirstPersonBankTransforms=80;
 static bool pairCurrent=true;
+static bool VR_SupportGripWiredForTitle(GameTitle){return false;}
 static struct {uint32_t generation=7;uint64_t preparedSerial=11;
+    bool supportGripAttached=false,oneHandRightTargetValid=false,rightTargetValid=true,twoHandAimActive=false;
+    bool aimNeutralValid=true,oneHandAimNeutralValid=false;
+    BoneMatrix aimVisual{},aimNeutral{},oneHandAimVisual{},oneHandAimNeutral{},rightTargetWorld{},oneHandRightTargetWorld{};
     struct {uint64_t serial=11,referenceEpoch=3;int64_t timeNs=1000000000;} contactFrames[2];
 } g_halo4FloatingPair;
 static bool Halo4FloatingPairMatchesCurrent(){return pairCurrent;}

@@ -1,3 +1,46 @@
+# Native Reach/ODST shader toggles (current candidate)
+
+User requests the supplied ShaderToggler behavior without ReShade: Disable bloom
+for Reach and ODST; Disable autoexposure for ODST only. Picture -> Scene exposes
+these controls. Existing per-title bloom preferences are preserved. Exposure
+starts native and saves independently as disable_autoexposure_odst (strict 0/1).
+
+Evidence: user-supplied ShaderToggler reach.ini bloom group CRC32 2325652528
+(8A9EA430); ShaderToggler odst.ini bloom group 757649136 (2D28CEF0), exposure
+group 3197137760. No other groups, hotkeys or startup preferences are imported.
+Upstream https://github.com/FransBouma/ShaderToggler at
+983ae30ca560227c880abc69cd1da905a40075c7 hashes complete pixel-shader bytecode
+using standard CRC32 and suppresses matching draw calls (Main.cpp/crc32_hash.hpp).
+The implementation here is independent and has no ReShade dependency.
+
+The prior Reach/ODST substitution required cached SRVs, exact dimensions and
+an active VR eye raster. These are plausible reasons for missing the passes,
+not a measured unique cause. Replace that behavior with exact-hash draw omission
+on the observed real immediate context, including shared passes outside the eye
+scope. All seven D3D11 draw variants participate. Halo 3 keeps its existing
+consumer substitution. Other titles and unknown shader/context state stay native.
+Shader creation records identities; binds publish them. ClearState, command lists,
+context swaps, resize and title generation changes invalidate cached binding.
+Optional hook admission failure leaves these effects native and logs fallback;
+it never gates VR. Draw paths contain no COM calls, allocations or locks.
+
+Exposure suppression stops its update pass; it does not promise a calibrated
+fixed brightness. Native rendering resumes when unchecked. Hash changes in game
+updates, pre-existing unobserved shaders or deferred-context execution can miss
+suppression; periodic counters report matched draws, including zero matches.
+
+Validation: portable CRC and full title/hash/toggle matrix passed locally.
+Windows WARP fixtures cover identity invalidation, toggles and title isolation;
+extra-draw fixtures cover suppression/forwarding; config tests cover defaults,
+strict parsing and persistence. Windows tests/build require CI; no headset result
+yet. Test both switches separately and together, restore them, change scenes and
+check Halo 3 regression. Accepted release pointer unchanged.
+
+---
+
+Historical consumer-only implementation follows; Reach/ODST behavior below is
+superseded by the current candidate, with dormant helpers retained.
+
 # Optional native bloom consumer override
 
 This is implementation and offline verification evidence for an unaccepted

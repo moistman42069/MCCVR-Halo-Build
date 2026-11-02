@@ -3,6 +3,8 @@
 // Project Reclaimer (projectreclaimer.dev) is a standalone client that loads MCC's own halo3.dll without MCC's
 // shell. Its executable is one file run in several roles (measured on 0.9.8):
 //
+// (0.9.23 names it project-reclaimer-client-v0.9.23.exe; IsClientExeName takes both names.)
+//
 //   project-reclaimer-v0.9.8.exe                       what the player starts; it starts itself again and exits
 //     project-reclaimer-v0.9.8.exe                     the supervisor: menus' owner, no engine
 //       project-reclaimer-v0.9.8.exe probe-engine-worker "<...>\halo3\halo3.dll" --guardian-slayer
@@ -36,13 +38,14 @@ inline std::wstring_view Leaf(std::wstring_view path)
     return slash == std::wstring_view::npos ? path : path.substr(slash + 1);
 }
 
-// The game client's file name: project-reclaimer.exe or project-reclaimer-v<version>.exe. The dedicated server
-// (project-reclaimer-dedicated-v*.exe) and the remote console (reclaimer-rcon-v*.exe) are other programs and
-// never get the mod.
+// The game client's file name: project-reclaimer-client-v<version>.exe (0.9.23 on), project-reclaimer-v<version>.exe
+// (up to 0.9.12 at least), or either without its version. The dedicated server (project-reclaimer-dedicated-v*.exe)
+// and the remote console (reclaimer-rcon-v*.exe) are other programs and never get the mod.
 inline bool IsClientExeName(std::wstring_view leaf)
 {
     const std::wstring name = Lower(leaf);
     static constexpr std::wstring_view kPrefix = L"project-reclaimer";
+    static constexpr std::wstring_view kClient = L"-client";
     static constexpr std::wstring_view kSuffix = L".exe";
     if (name.size() < kPrefix.size() + kSuffix.size())
         return false;
@@ -50,7 +53,9 @@ inline bool IsClientExeName(std::wstring_view leaf)
         return false;
     if (name.compare(name.size() - kSuffix.size(), kSuffix.size(), kSuffix) != 0)
         return false;
-    const std::wstring_view middle(name.data() + kPrefix.size(), name.size() - kPrefix.size() - kSuffix.size());
+    std::wstring_view middle(name.data() + kPrefix.size(), name.size() - kPrefix.size() - kSuffix.size());
+    if (middle.substr(0, kClient.size()) == kClient)
+        middle.remove_prefix(kClient.size());
     if (middle.empty())
         return true;
     // "-v0.9.8" and nothing else: a name with another word in it is another program.
@@ -92,6 +97,142 @@ inline std::vector<std::wstring> Arguments(std::wstring_view commandLine)
     if (any)
         out.push_back(current);
     return out;
+}
+
+// THE CLIENT'S CENTERED CROSSHAIR. Project Reclaimer draws its crosshair below the screen's centre unless
+// "centered_crosshair" is true in its settings.json (Settings > HUD), and then pitches the camera above the aim; the
+// mod's direct drive waits for the camera and the aim to agree, so with it off the hand never takes over the
+// game's aim. The launcher turns it on before it starts the client, changing nothing else in the file.
+enum class CenteredCrosshairEdit
+{
+    AlreadyOn,  // nothing to write
+    TurnedOn,   // `out` is the file with the key set to true
+    Created,    // there was no file: `out` is a new one with only the version and the key
+    Unreadable, // the key's value is not a JSON boolean, or the file is not one object: left alone
+};
+inline CenteredCrosshairEdit WithCenteredCrosshair(const std::string& text, std::string& out)
+{
+    constexpr std::string_view kKey = "\"centered_crosshair\"";
+    const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+    size_t first = 0;
+    if (text.compare(0, 3, "\xEF\xBB\xBF") == 0)
+        first = 3;
+    while (first < text.size() && space(text[first]))
+        ++first;
+    if (first == text.size())
+    {
+        out = "{\n  \"version\": 1,\n  \"centered_crosshair\": true\n}\n";
+        return CenteredCrosshairEdit::Created;
+    }
+    if (text[first] != '{')
+        return CenteredCrosshairEdit::Unreadable;
+    const size_t key = text.find(kKey);
+    if (key != std::string::npos)
+    {
+        size_t at = key + kKey.size();
+        while (at < text.size() && space(text[at]))
+            ++at;
+        if (at >= text.size() || text[at] != ':')
+            return CenteredCrosshairEdit::Unreadable;
+        ++at;
+        while (at < text.size() && space(text[at]))
+            ++at;
+        if (text.compare(at, 4, "true") == 0)
+            return CenteredCrosshairEdit::AlreadyOn;
+        if (text.compare(at, 5, "false") != 0)
+            return CenteredCrosshairEdit::Unreadable;
+        out = text.substr(0, at) + "true" + text.substr(at + 5);
+        return CenteredCrosshairEdit::TurnedOn;
+    }
+    size_t next = first + 1;
+    while (next < text.size() && space(text[next]))
+        ++next;
+    const bool empty = next < text.size() && text[next] == '}';
+    out = text.substr(0, first + 1) + "\n  \"centered_crosshair\": true" + (empty ? "\n" : ",") +
+          text.substr(first + 1);
+    return CenteredCrosshairEdit::TurnedOn;
+}
+
+// THE CLIENT'S DISPLAY MODE. Started in exclusive fullscreen ("display_mode": "exclusive_fullscreen"), the client
+// has run at about 10 fps beside the headset's session from its first frame, and a few seconds later the graphics
+// card stopped answering and was reset (0x887A0006); started windowed or borderless it runs normally. The desktop
+// window is only a mirror of the headset's picture, so the launcher starts the client borderless instead, changing
+// nothing else in the file. A file without the key is left alone: borderless is the client's default.
+enum class DisplayModeEdit
+{
+    Kept,           // not exclusive fullscreen: nothing to write
+    MadeBorderless, // `out` is the file with the value set to "borderless"
+    Unreadable,     // the key's value is not a JSON string: left alone
+};
+// Where "display_mode"'s value starts in the file: its opening quote. Missing when the file has no such key,
+// NotAString when the value is anything but a JSON string.
+enum class DisplayModeValue
+{
+    Missing,
+    Found,
+    NotAString,
+};
+inline DisplayModeValue FindDisplayModeValue(const std::string& text, size_t& quote)
+{
+    constexpr std::string_view kKey = "\"display_mode\"";
+    const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+    const size_t key = text.find(kKey);
+    if (key == std::string::npos)
+        return DisplayModeValue::Missing;
+    size_t at = key + kKey.size();
+    while (at < text.size() && space(text[at]))
+        ++at;
+    if (at >= text.size() || text[at] != ':')
+        return DisplayModeValue::NotAString;
+    ++at;
+    while (at < text.size() && space(text[at]))
+        ++at;
+    if (at >= text.size() || text[at] != '"')
+        return DisplayModeValue::NotAString;
+    quote = at;
+    return DisplayModeValue::Found;
+}
+
+inline DisplayModeEdit WithoutExclusiveFullscreen(const std::string& text, std::string& out)
+{
+    constexpr std::string_view kExclusive = "\"exclusive_fullscreen\"";
+    size_t at = 0;
+    const DisplayModeValue value = FindDisplayModeValue(text, at);
+    if (value == DisplayModeValue::Missing)
+        return DisplayModeEdit::Kept;
+    if (value == DisplayModeValue::NotAString)
+        return DisplayModeEdit::Unreadable;
+    if (text.compare(at, kExclusive.size(), kExclusive) != 0)
+        return DisplayModeEdit::Kept;
+    out = text.substr(0, at) + "\"borderless\"" + text.substr(at + kExclusive.size());
+    return DisplayModeEdit::MadeBorderless;
+}
+
+// The client's display mode as its settings.json states it. A file without the key is borderless, the client's
+// default; a value that is not one of the three is Unknown.
+enum class ClientDisplayMode
+{
+    Unknown,
+    Windowed,
+    Borderless,
+    ExclusiveFullscreen,
+};
+inline ClientDisplayMode ReadClientDisplayMode(const std::string& text)
+{
+    size_t at = 0;
+    const DisplayModeValue value = FindDisplayModeValue(text, at);
+    if (value == DisplayModeValue::Missing)
+        return ClientDisplayMode::Borderless;
+    if (value == DisplayModeValue::NotAString)
+        return ClientDisplayMode::Unknown;
+    const auto is = [&](std::string_view quoted) { return text.compare(at, quoted.size(), quoted) == 0; };
+    if (is("\"windowed\""))
+        return ClientDisplayMode::Windowed;
+    if (is("\"borderless\""))
+        return ClientDisplayMode::Borderless;
+    if (is("\"exclusive_fullscreen\""))
+        return ClientDisplayMode::ExclusiveFullscreen;
+    return ClientDisplayMode::Unknown;
 }
 
 // A path as a person gives it: pasted with quotes round it, with spaces or a line end after it.
@@ -324,6 +465,9 @@ struct ScreenRule
 {
     static constexpr uint64_t kMenuOpensMs = 1500;
     static constexpr uint32_t kSmallPermille = 50, kNotSmallPermille = 80;
+    // Below this a press's screen has gone, whatever is left: the host's menus read about 1000 and its scoreboard 700 or
+    // more, and a vote's popup left under a closed menu reads 56 to 82, around the two thresholds above.
+    static constexpr uint32_t kOpenedFloorPermille = 300;
     struct In
     {
         bool hostDraws = false;
@@ -389,12 +533,17 @@ struct ScreenRule
         // drawing is small -- at once after a press that may have closed it, otherwise after the time a menu takes
         // to come (a press whose menu never came, or went leaving a name behind, must not flatten the picture
         // later). And a drawing that is more than an overlay is a menu that is up, whoever opened it.
-        if (small_ && byMenu_ && (closeAsked_ || in.nowMs - byMenuAtMs_ > kMenuOpensMs))
+        if (in.coveragePermille < kOpenedFloorPermille && byMenu_ &&
+            (closeAsked_ || in.nowMs - byMenuAtMs_ > kMenuOpensMs))
             byMenu_ = closeAsked_ = false;
         if (!small_)
             closeAsked_ = false;
         return !small_;
     }
+    // Whether the player's own press opened what is up. In play, only then may it take the controller: a popup
+    // nobody opened (a vote to kick can read 100% of the picture) is as large as a menu, and the player must go on
+    // walking under it.
+    bool OpenedByPress() const { return byMenu_; }
 
 private:
     uint32_t seenPress_ = 0;
@@ -474,5 +623,88 @@ inline uint32_t ChangedTexels(const uint8_t* before, size_t beforePitch, const u
                 ++changed;
     }
     return changed;
+}
+
+// THE SIZE PROJECT RECLAIMER RENDERS AT. Its Render resolution is a preset (720p to 2160p, all 16:9) or Native: the
+// current display mode of the window's monitor, read with EnumDisplaySettingsW(ENUM_CURRENT_SETTINGS) and accepted
+// from 640 x 480 to 7680 x 4320 (outside that it renders 1920 x 1080; measured on 0.9.8). The mod answers that
+// read with the size the Picture panel asks for, so with Native the game renders at the size it would in MCC.
+// `width` x `height` is fitted into the accepted range: scaled down to fit, its shape kept, both even. False when
+// no size in the range has that shape or a side is 0.
+inline constexpr unsigned kNativeRenderMinWidth = 640, kNativeRenderMinHeight = 480;
+inline constexpr unsigned kNativeRenderMaxWidth = 7680, kNativeRenderMaxHeight = 4320;
+inline bool FitNativeRenderSize(unsigned& width, unsigned& height) noexcept
+{
+    if (!width || !height)
+        return false;
+    double scale = 1.0;
+    if (width > kNativeRenderMaxWidth)
+        scale = static_cast<double>(kNativeRenderMaxWidth) / width;
+    if (height * scale > kNativeRenderMaxHeight)
+        scale = static_cast<double>(kNativeRenderMaxHeight) / height;
+    const unsigned w = static_cast<unsigned>(width * scale) & ~1u;
+    const unsigned h = static_cast<unsigned>(height * scale) & ~1u;
+    if (w < kNativeRenderMinWidth || h < kNativeRenderMinHeight || w > kNativeRenderMaxWidth ||
+        h > kNativeRenderMaxHeight)
+        return false;
+    width = w;
+    height = h;
+    return true;
+}
+
+// WHAT THE NATIVE READ IS ANSWERED. The one size Native reads becomes the client's render size AND its swapchain's
+// buffers, and in exclusive fullscreen the display mode DXGI switches to (the client asks for no mode of its own).
+// So a size larger than the real display is a buffer larger than the screen: in exclusive fullscreen a 2912 x 2100
+// buffer on a 2560 x 1440 display ran at about 10 fps from the first frame until the graphics card was reset, and
+// borderless also failed on that PC. Exclusive fullscreen is therefore told the real display mode. Any other mode
+// is given the Picture panel's size, scaled down with its shape kept until it fits inside the display when
+// `fitToDisplay` (the player's choice: a smaller picture is a softer one in the headset). Windowed ignores the
+// answer (it renders 1920 x 1080 on Native), so it is answered the same way as borderless.
+enum class NativeAnswer
+{
+    Panel,              // the Picture panel's size, as asked
+    PanelWithinDisplay, // the Picture panel's shape, scaled down to fit inside the display
+    Display,            // the real display mode, unchanged
+};
+inline NativeAnswer AnswerNativeRenderSize(unsigned wantWidth, unsigned wantHeight, unsigned displayWidth,
+                                           unsigned displayHeight, ClientDisplayMode mode, bool fitToDisplay,
+                                           unsigned& width, unsigned& height) noexcept
+{
+    width = displayWidth;
+    height = displayHeight;
+    if (mode == ClientDisplayMode::ExclusiveFullscreen || !wantWidth || !wantHeight || !displayWidth ||
+        !displayHeight)
+        return NativeAnswer::Display;
+    if (!fitToDisplay)
+    {
+        unsigned w = wantWidth, h = wantHeight;
+        if (!FitNativeRenderSize(w, h))
+            return NativeAnswer::Display;
+        width = w;
+        height = h;
+        return NativeAnswer::Panel;
+    }
+    // Whole numbers, so the side that meets the display meets it exactly.
+    uint64_t sw = wantWidth, sh = wantHeight;
+    if (sw > displayWidth || sh > displayHeight)
+    {
+        if (sw * displayHeight > sh * displayWidth)
+        {
+            sh = sh * displayWidth / sw;
+            sw = displayWidth;
+        }
+        else
+        {
+            sw = sw * displayHeight / sh;
+            sh = displayHeight;
+        }
+    }
+    unsigned w = static_cast<unsigned>(sw) & ~1u;
+    unsigned h = static_cast<unsigned>(sh) & ~1u;
+    if (w > displayWidth || h > displayHeight || !FitNativeRenderSize(w, h))
+        return NativeAnswer::Display;
+    width = w;
+    height = h;
+    return w == wantWidth && h == wantHeight ? NativeAnswer::Panel : NativeAnswer::PanelWithinDisplay;
 }
 } // namespace reclaimer_host

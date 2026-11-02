@@ -1497,7 +1497,7 @@ void InstallHalo3ImpactWitness(uintptr_t base, size_t size)
         return;
     }
     w.target = target;
-    if (MH_EnableHook(target) != MH_OK)
+    if (MCCVR_EnableHook(target) != MH_OK)
     {
         LOG("SHOT IMPACT Halo 3 witness: the hook did not enable; no impact line");
         (void)RemoveHalo3ImpactWitness();

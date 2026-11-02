@@ -19,6 +19,7 @@ option casemap:none
 
 EXTERN g_nativeVrReaderReach:QWORD
 EXTERN g_nativeVrReaderHalo3:QWORD
+EXTERN g_nativeVrH3ActionEdges:QWORD
 EXTERN g_nativeVrReaderOdst:QWORD
 EXTERN g_nativeVrReaderHalo4:QWORD
 
@@ -52,6 +53,9 @@ thunkName PROC FRAME
     .savexmm128 xmm5, 70h
     .endprolog
     ; rcx (state) and edx (action) still hold the native arguments.
+    ; Six saved registers (30h) plus locals (88h): original native return address.
+    ; Pass it explicitly; the C++ hook's own return address is inside this thunk.
+    mov r8, QWORD PTR [rsp+0B8h]
     call QWORD PTR [hookPointer]
     movdqa xmm0, XMMWORD PTR [rsp+20h]
     movdqa xmm1, XMMWORD PTR [rsp+30h]
@@ -73,6 +77,7 @@ ENDM
 .code
 PRESERVING_READER NativeVrReaderThunkReach, g_nativeVrReaderReach
 PRESERVING_READER NativeVrReaderThunkHalo3, g_nativeVrReaderHalo3
+PRESERVING_READER NativeVrH3ActionEdgesThunk, g_nativeVrH3ActionEdges
 PRESERVING_READER NativeVrReaderThunkOdst, g_nativeVrReaderOdst
 PRESERVING_READER NativeVrReaderThunkHalo4, g_nativeVrReaderHalo4
 END

@@ -139,7 +139,7 @@ bool InstallHalo3MeleeSelection(uintptr_t base,size_t size)
         reinterpret_cast<void**>(&feature.original))!=MH_OK)
     { LOG("Halo 3 melee selection StockFallback: hook creation failed"); return false; }
     feature.target=reinterpret_cast<void*>(hit);
-    if(MH_EnableHook(feature.target)!=MH_OK)
+    if(MCCVR_EnableHook(feature.target)!=MH_OK)
     {
         LOG("Halo 3 melee selection StockFallback: hook enable failed");
         (void)RemoveHalo3MeleeSelection();

@@ -1,0 +1,1180 @@
+{
+  "sha256": "92b81ddd01877bb6f62c79486d9b38d38900bcce81e5319165ee792184b4aa25",
+  "assets": [
+    {
+      "index": 3645,
+      "name": "weapons\\c bow\\fp\\fp",
+      "count": 38,
+      "nodes": [
+        {
+          "name": "frame bone24",
+          "parent": 0,
+          "child": 1,
+          "sibling": -1
+        },
+        {
+          "name": "frame bow",
+          "parent": 0,
+          "child": -1,
+          "sibling": 2
+        },
+        {
+          "name": "frame l upperarm",
+          "parent": 0,
+          "child": 4,
+          "sibling": 3
+        },
+        {
+          "name": "frame r upperarm",
+          "parent": 0,
+          "child": 5,
+          "sibling": -1
+        },
+        {
+          "name": "frame l forearm",
+          "parent": 2,
+          "child": 6,
+          "sibling": -1
+        },
+        {
+          "name": "frame r forearm",
+          "parent": 3,
+          "child": 7,
+          "sibling": -1
+        },
+        {
+          "name": "frame l wriste",
+          "parent": 4,
+          "child": 8,
+          "sibling": -1
+        },
+        {
+          "name": "frame r wriste",
+          "parent": 5,
+          "child": 13,
+          "sibling": -1
+        },
+        {
+          "name": "frame l index low",
+          "parent": 6,
+          "child": 18,
+          "sibling": 9
+        },
+        {
+          "name": "frame l middlelow",
+          "parent": 6,
+          "child": 19,
+          "sibling": 10
+        },
+        {
+          "name": "frame l pinky low",
+          "parent": 6,
+          "child": 20,
+          "sibling": 11
+        },
+        {
+          "name": "frame l ring low",
+          "parent": 6,
+          "child": 21,
+          "sibling": 12
+        },
+        {
+          "name": "frame l thumb low",
+          "parent": 6,
+          "child": 22,
+          "sibling": -1
+        },
+        {
+          "name": "frame r index low",
+          "parent": 7,
+          "child": 23,
+          "sibling": 14
+        },
+        {
+          "name": "frame r middle low",
+          "parent": 7,
+          "child": 24,
+          "sibling": 15
+        },
+        {
+          "name": "frame r pinky low",
+          "parent": 7,
+          "child": 25,
+          "sibling": 16
+        },
+        {
+          "name": "frame r ring low",
+          "parent": 7,
+          "child": 26,
+          "sibling": 17
+        },
+        {
+          "name": "frame r thumb low",
+          "parent": 7,
+          "child": 27,
+          "sibling": -1
+        },
+        {
+          "name": "frame l index mid",
+          "parent": 8,
+          "child": 28,
+          "sibling": -1
+        },
+        {
+          "name": "frame l middle mid",
+          "parent": 9,
+          "child": 29,
+          "sibling": -1
+        },
+        {
+          "name": "frame l pinky mid",
+          "parent": 10,
+          "child": 30,
+          "sibling": -1
+        },
+        {
+          "name": "frame l ring mid",
+          "parent": 11,
+          "child": 31,
+          "sibling": -1
+        },
+        {
+          "name": "frame l thumb mid",
+          "parent": 12,
+          "child": 32,
+          "sibling": -1
+        },
+        {
+          "name": "frame r index mid",
+          "parent": 13,
+          "child": 33,
+          "sibling": -1
+        },
+        {
+          "name": "frame r middle mid",
+          "parent": 14,
+          "child": 34,
+          "sibling": -1
+        },
+        {
+          "name": "frame r pinky mid",
+          "parent": 15,
+          "child": 35,
+          "sibling": -1
+        },
+        {
+          "name": "frame r ring mid",
+          "parent": 16,
+          "child": 36,
+          "sibling": -1
+        },
+        {
+          "name": "frame r thumb mid",
+          "parent": 17,
+          "child": 37,
+          "sibling": -1
+        },
+        {
+          "name": "frame l index tip",
+          "parent": 18,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l middle tip",
+          "parent": 19,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l pinky tip",
+          "parent": 20,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l ring tip",
+          "parent": 21,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l thumb tip",
+          "parent": 22,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r index tip",
+          "parent": 23,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r middle tip",
+          "parent": 24,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r pinky tip",
+          "parent": 25,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r ring tip",
+          "parent": 26,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r thumb tip",
+          "parent": 27,
+          "child": -1,
+          "sibling": -1
+        }
+      ]
+    },
+    {
+      "index": 3696,
+      "name": "weapons\\crossbow\\fp\\fp",
+      "count": 38,
+      "nodes": [
+        {
+          "name": "frame bone24",
+          "parent": 0,
+          "child": 1,
+          "sibling": -1
+        },
+        {
+          "name": "frame bow",
+          "parent": 0,
+          "child": -1,
+          "sibling": 2
+        },
+        {
+          "name": "frame l upperarm",
+          "parent": 0,
+          "child": 4,
+          "sibling": 3
+        },
+        {
+          "name": "frame r upperarm",
+          "parent": 0,
+          "child": 5,
+          "sibling": -1
+        },
+        {
+          "name": "frame l forearm",
+          "parent": 2,
+          "child": 6,
+          "sibling": -1
+        },
+        {
+          "name": "frame r forearm",
+          "parent": 3,
+          "child": 7,
+          "sibling": -1
+        },
+        {
+          "name": "frame l wriste",
+          "parent": 4,
+          "child": 8,
+          "sibling": -1
+        },
+        {
+          "name": "frame r wriste",
+          "parent": 5,
+          "child": 13,
+          "sibling": -1
+        },
+        {
+          "name": "frame l index low",
+          "parent": 6,
+          "child": 18,
+          "sibling": 9
+        },
+        {
+          "name": "frame l middlelow",
+          "parent": 6,
+          "child": 19,
+          "sibling": 10
+        },
+        {
+          "name": "frame l pinky low",
+          "parent": 6,
+          "child": 20,
+          "sibling": 11
+        },
+        {
+          "name": "frame l ring low",
+          "parent": 6,
+          "child": 21,
+          "sibling": 12
+        },
+        {
+          "name": "frame l thumb low",
+          "parent": 6,
+          "child": 22,
+          "sibling": -1
+        },
+        {
+          "name": "frame r index low",
+          "parent": 7,
+          "child": 23,
+          "sibling": 14
+        },
+        {
+          "name": "frame r middle low",
+          "parent": 7,
+          "child": 24,
+          "sibling": 15
+        },
+        {
+          "name": "frame r pinky low",
+          "parent": 7,
+          "child": 25,
+          "sibling": 16
+        },
+        {
+          "name": "frame r ring low",
+          "parent": 7,
+          "child": 26,
+          "sibling": 17
+        },
+        {
+          "name": "frame r thumb low",
+          "parent": 7,
+          "child": 27,
+          "sibling": -1
+        },
+        {
+          "name": "frame l index mid",
+          "parent": 8,
+          "child": 28,
+          "sibling": -1
+        },
+        {
+          "name": "frame l middle mid",
+          "parent": 9,
+          "child": 29,
+          "sibling": -1
+        },
+        {
+          "name": "frame l pinky mid",
+          "parent": 10,
+          "child": 30,
+          "sibling": -1
+        },
+        {
+          "name": "frame l ring mid",
+          "parent": 11,
+          "child": 31,
+          "sibling": -1
+        },
+        {
+          "name": "frame l thumb mid",
+          "parent": 12,
+          "child": 32,
+          "sibling": -1
+        },
+        {
+          "name": "frame r index mid",
+          "parent": 13,
+          "child": 33,
+          "sibling": -1
+        },
+        {
+          "name": "frame r middle mid",
+          "parent": 14,
+          "child": 34,
+          "sibling": -1
+        },
+        {
+          "name": "frame r pinky mid",
+          "parent": 15,
+          "child": 35,
+          "sibling": -1
+        },
+        {
+          "name": "frame r ring mid",
+          "parent": 16,
+          "child": 36,
+          "sibling": -1
+        },
+        {
+          "name": "frame r thumb mid",
+          "parent": 17,
+          "child": 37,
+          "sibling": -1
+        },
+        {
+          "name": "frame l index tip",
+          "parent": 18,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l middle tip",
+          "parent": 19,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l pinky tip",
+          "parent": 20,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l ring tip",
+          "parent": 21,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l thumb tip",
+          "parent": 22,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r index tip",
+          "parent": 23,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r middle tip",
+          "parent": 24,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r pinky tip",
+          "parent": 25,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r ring tip",
+          "parent": 26,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r thumb tip",
+          "parent": 27,
+          "child": -1,
+          "sibling": -1
+        }
+      ]
+    },
+    {
+      "index": 3720,
+      "name": "weapons\\splash potion\\fp\\fp",
+      "count": 38,
+      "nodes": [
+        {
+          "name": "frame bone24",
+          "parent": 0,
+          "child": 1,
+          "sibling": -1
+        },
+        {
+          "name": "frame bow",
+          "parent": 0,
+          "child": -1,
+          "sibling": 3
+        },
+        {
+          "name": "frame l upperarm",
+          "parent": 0,
+          "child": 4,
+          "sibling": -1
+        },
+        {
+          "name": "frame r upperarm",
+          "parent": 0,
+          "child": 5,
+          "sibling": 2
+        },
+        {
+          "name": "frame l forearm",
+          "parent": 2,
+          "child": 6,
+          "sibling": -1
+        },
+        {
+          "name": "frame r forearm",
+          "parent": 3,
+          "child": 7,
+          "sibling": -1
+        },
+        {
+          "name": "frame l wriste",
+          "parent": 4,
+          "child": 12,
+          "sibling": -1
+        },
+        {
+          "name": "frame r wriste",
+          "parent": 5,
+          "child": 17,
+          "sibling": -1
+        },
+        {
+          "name": "frame l index low",
+          "parent": 6,
+          "child": 18,
+          "sibling": -1
+        },
+        {
+          "name": "frame l middlelow",
+          "parent": 6,
+          "child": 19,
+          "sibling": 8
+        },
+        {
+          "name": "frame l pinky low",
+          "parent": 6,
+          "child": 20,
+          "sibling": 9
+        },
+        {
+          "name": "frame l ring low",
+          "parent": 6,
+          "child": 21,
+          "sibling": 10
+        },
+        {
+          "name": "frame l thumb low",
+          "parent": 6,
+          "child": 22,
+          "sibling": 11
+        },
+        {
+          "name": "frame r index low",
+          "parent": 7,
+          "child": 23,
+          "sibling": -1
+        },
+        {
+          "name": "frame r middle low",
+          "parent": 7,
+          "child": 24,
+          "sibling": 13
+        },
+        {
+          "name": "frame r pinky low",
+          "parent": 7,
+          "child": 25,
+          "sibling": 14
+        },
+        {
+          "name": "frame r ring low",
+          "parent": 7,
+          "child": 26,
+          "sibling": 15
+        },
+        {
+          "name": "frame r thumb low",
+          "parent": 7,
+          "child": 27,
+          "sibling": 16
+        },
+        {
+          "name": "frame l index mid",
+          "parent": 8,
+          "child": 28,
+          "sibling": -1
+        },
+        {
+          "name": "frame l middle mid",
+          "parent": 9,
+          "child": 29,
+          "sibling": -1
+        },
+        {
+          "name": "frame l pinky mid",
+          "parent": 10,
+          "child": 30,
+          "sibling": -1
+        },
+        {
+          "name": "frame l ring mid",
+          "parent": 11,
+          "child": 31,
+          "sibling": -1
+        },
+        {
+          "name": "frame l thumb mid",
+          "parent": 12,
+          "child": 32,
+          "sibling": -1
+        },
+        {
+          "name": "frame r index mid",
+          "parent": 13,
+          "child": 33,
+          "sibling": -1
+        },
+        {
+          "name": "frame r middle mid",
+          "parent": 14,
+          "child": 34,
+          "sibling": -1
+        },
+        {
+          "name": "frame r pinky mid",
+          "parent": 15,
+          "child": 35,
+          "sibling": -1
+        },
+        {
+          "name": "frame r ring mid",
+          "parent": 16,
+          "child": 36,
+          "sibling": -1
+        },
+        {
+          "name": "frame r thumb mid",
+          "parent": 17,
+          "child": 37,
+          "sibling": -1
+        },
+        {
+          "name": "frame l index tip",
+          "parent": 18,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l middle tip",
+          "parent": 19,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l pinky tip",
+          "parent": 20,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l ring tip",
+          "parent": 21,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l thumb tip",
+          "parent": 22,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r index tip",
+          "parent": 23,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r middle tip",
+          "parent": 24,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r pinky tip",
+          "parent": 25,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r ring tip",
+          "parent": 26,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r thumb tip",
+          "parent": 27,
+          "child": -1,
+          "sibling": -1
+        }
+      ]
+    },
+    {
+      "index": 3817,
+      "name": "weapons\\potion\\fp\\fp",
+      "count": 38,
+      "nodes": [
+        {
+          "name": "frame bone24",
+          "parent": 0,
+          "child": 1,
+          "sibling": -1
+        },
+        {
+          "name": "frame bow",
+          "parent": 0,
+          "child": -1,
+          "sibling": 3
+        },
+        {
+          "name": "frame l upperarm",
+          "parent": 0,
+          "child": 4,
+          "sibling": -1
+        },
+        {
+          "name": "frame r upperarm",
+          "parent": 0,
+          "child": 5,
+          "sibling": 2
+        },
+        {
+          "name": "frame l forearm",
+          "parent": 2,
+          "child": 6,
+          "sibling": -1
+        },
+        {
+          "name": "frame r forearm",
+          "parent": 3,
+          "child": 7,
+          "sibling": -1
+        },
+        {
+          "name": "frame l wriste",
+          "parent": 4,
+          "child": 12,
+          "sibling": -1
+        },
+        {
+          "name": "frame r wriste",
+          "parent": 5,
+          "child": 17,
+          "sibling": -1
+        },
+        {
+          "name": "frame l index low",
+          "parent": 6,
+          "child": 18,
+          "sibling": -1
+        },
+        {
+          "name": "frame l middlelow",
+          "parent": 6,
+          "child": 19,
+          "sibling": 8
+        },
+        {
+          "name": "frame l pinky low",
+          "parent": 6,
+          "child": 20,
+          "sibling": 9
+        },
+        {
+          "name": "frame l ring low",
+          "parent": 6,
+          "child": 21,
+          "sibling": 10
+        },
+        {
+          "name": "frame l thumb low",
+          "parent": 6,
+          "child": 22,
+          "sibling": 11
+        },
+        {
+          "name": "frame r index low",
+          "parent": 7,
+          "child": 23,
+          "sibling": -1
+        },
+        {
+          "name": "frame r middle low",
+          "parent": 7,
+          "child": 24,
+          "sibling": 13
+        },
+        {
+          "name": "frame r pinky low",
+          "parent": 7,
+          "child": 25,
+          "sibling": 14
+        },
+        {
+          "name": "frame r ring low",
+          "parent": 7,
+          "child": 26,
+          "sibling": 15
+        },
+        {
+          "name": "frame r thumb low",
+          "parent": 7,
+          "child": 27,
+          "sibling": 16
+        },
+        {
+          "name": "frame l index mid",
+          "parent": 8,
+          "child": 28,
+          "sibling": -1
+        },
+        {
+          "name": "frame l middle mid",
+          "parent": 9,
+          "child": 29,
+          "sibling": -1
+        },
+        {
+          "name": "frame l pinky mid",
+          "parent": 10,
+          "child": 30,
+          "sibling": -1
+        },
+        {
+          "name": "frame l ring mid",
+          "parent": 11,
+          "child": 31,
+          "sibling": -1
+        },
+        {
+          "name": "frame l thumb mid",
+          "parent": 12,
+          "child": 32,
+          "sibling": -1
+        },
+        {
+          "name": "frame r index mid",
+          "parent": 13,
+          "child": 33,
+          "sibling": -1
+        },
+        {
+          "name": "frame r middle mid",
+          "parent": 14,
+          "child": 34,
+          "sibling": -1
+        },
+        {
+          "name": "frame r pinky mid",
+          "parent": 15,
+          "child": 35,
+          "sibling": -1
+        },
+        {
+          "name": "frame r ring mid",
+          "parent": 16,
+          "child": 36,
+          "sibling": -1
+        },
+        {
+          "name": "frame r thumb mid",
+          "parent": 17,
+          "child": 37,
+          "sibling": -1
+        },
+        {
+          "name": "frame l index tip",
+          "parent": 18,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l middle tip",
+          "parent": 19,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l pinky tip",
+          "parent": 20,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l ring tip",
+          "parent": 21,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l thumb tip",
+          "parent": 22,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r index tip",
+          "parent": 23,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r middle tip",
+          "parent": 24,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r pinky tip",
+          "parent": 25,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r ring tip",
+          "parent": 26,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r thumb tip",
+          "parent": 27,
+          "child": -1,
+          "sibling": -1
+        }
+      ]
+    },
+    {
+      "index": 5322,
+      "name": "weapons\\c sword\\fp\\fp",
+      "count": 38,
+      "nodes": [
+        {
+          "name": "frame bone24",
+          "parent": 0,
+          "child": 1,
+          "sibling": -1
+        },
+        {
+          "name": "frame bow",
+          "parent": 0,
+          "child": -1,
+          "sibling": 2
+        },
+        {
+          "name": "frame l upperarm",
+          "parent": 0,
+          "child": 4,
+          "sibling": 3
+        },
+        {
+          "name": "frame r upperarm",
+          "parent": 0,
+          "child": 5,
+          "sibling": -1
+        },
+        {
+          "name": "frame l forearm",
+          "parent": 2,
+          "child": 6,
+          "sibling": -1
+        },
+        {
+          "name": "frame r forearm",
+          "parent": 3,
+          "child": 7,
+          "sibling": -1
+        },
+        {
+          "name": "frame l wriste",
+          "parent": 4,
+          "child": 8,
+          "sibling": -1
+        },
+        {
+          "name": "frame r wriste",
+          "parent": 5,
+          "child": 13,
+          "sibling": -1
+        },
+        {
+          "name": "frame l index low",
+          "parent": 6,
+          "child": 18,
+          "sibling": 9
+        },
+        {
+          "name": "frame l middlelow",
+          "parent": 6,
+          "child": 19,
+          "sibling": 10
+        },
+        {
+          "name": "frame l pinky low",
+          "parent": 6,
+          "child": 20,
+          "sibling": 11
+        },
+        {
+          "name": "frame l ring low",
+          "parent": 6,
+          "child": 21,
+          "sibling": 12
+        },
+        {
+          "name": "frame l thumb low",
+          "parent": 6,
+          "child": 22,
+          "sibling": -1
+        },
+        {
+          "name": "frame r index low",
+          "parent": 7,
+          "child": 23,
+          "sibling": 14
+        },
+        {
+          "name": "frame r middle low",
+          "parent": 7,
+          "child": 24,
+          "sibling": 15
+        },
+        {
+          "name": "frame r pinky low",
+          "parent": 7,
+          "child": 25,
+          "sibling": 16
+        },
+        {
+          "name": "frame r ring low",
+          "parent": 7,
+          "child": 26,
+          "sibling": 17
+        },
+        {
+          "name": "frame r thumb low",
+          "parent": 7,
+          "child": 27,
+          "sibling": -1
+        },
+        {
+          "name": "frame l index mid",
+          "parent": 8,
+          "child": 28,
+          "sibling": -1
+        },
+        {
+          "name": "frame l middle mid",
+          "parent": 9,
+          "child": 29,
+          "sibling": -1
+        },
+        {
+          "name": "frame l pinky mid",
+          "parent": 10,
+          "child": 30,
+          "sibling": -1
+        },
+        {
+          "name": "frame l ring mid",
+          "parent": 11,
+          "child": 31,
+          "sibling": -1
+        },
+        {
+          "name": "frame l thumb mid",
+          "parent": 12,
+          "child": 32,
+          "sibling": -1
+        },
+        {
+          "name": "frame r index mid",
+          "parent": 13,
+          "child": 33,
+          "sibling": -1
+        },
+        {
+          "name": "frame r middle mid",
+          "parent": 14,
+          "child": 34,
+          "sibling": -1
+        },
+        {
+          "name": "frame r pinky mid",
+          "parent": 15,
+          "child": 35,
+          "sibling": -1
+        },
+        {
+          "name": "frame r ring mid",
+          "parent": 16,
+          "child": 36,
+          "sibling": -1
+        },
+        {
+          "name": "frame r thumb mid",
+          "parent": 17,
+          "child": 37,
+          "sibling": -1
+        },
+        {
+          "name": "frame l index tip",
+          "parent": 18,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l middle tip",
+          "parent": 19,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l pinky tip",
+          "parent": 20,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l ring tip",
+          "parent": 21,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame l thumb tip",
+          "parent": 22,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r index tip",
+          "parent": 23,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r middle tip",
+          "parent": 24,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r pinky tip",
+          "parent": 25,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r ring tip",
+          "parent": 26,
+          "child": -1,
+          "sibling": -1
+        },
+        {
+          "name": "frame r thumb tip",
+          "parent": 27,
+          "child": -1,
+          "sibling": -1
+        }
+      ]
+    }
+  ]
+}

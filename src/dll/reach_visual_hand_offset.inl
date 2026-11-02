@@ -20,7 +20,8 @@ void ReachApplyVisualHandOffsets(uint16_t tag,const int32_t* boneMap,
             if((context.layout.rightHandSourceDescendants&bit)||
                 (staged[node].scale<.001f&&(context.layout.rightControllerOwnedSourceBranch&bit)))right|=uint64_t{1}<<node;
         }
-        if(ApplyBoneHandVisualOffsets(staged,count,left,right,palms.leftNode,palms.rightNode,kReachWorldUnitsPerMeter,
+        // The live world scale the hands themselves are placed with.
+        if(ApplyBoneHandVisualOffsets(staged,count,left,right,palms.leftNode,palms.rightNode,g_worldScale.load(),
                 g_config.left_handed,context.targets.handAlignment))
             (void)SafeWriteBytes(destination,staged,size_t(count)*sizeof(BoneMatrix));
     }

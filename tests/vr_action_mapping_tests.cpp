@@ -2,6 +2,7 @@
 #include "../src/common/vr_action_passthrough.h"
 #include "../src/dll/native_vr_actions.h"
 #include "../src/common/config.h"
+#include "../src/common/input_preset.h"
 #include "../src/common/weapon_interaction_logic.h"
 #include "../src/common/scope_action_input.h"
 #include "../src/common/physical_crouch_input.h"
@@ -11,12 +12,136 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <string>
 #include <limits>
 
 using namespace vr_mapping;
 unsigned checks{};
 void Check(bool ok,const char* why)
 {++checks;if(!ok){std::fprintf(stderr,"FAIL: %s\n",why);std::exit(1);}}
+void CheckInputPresets()
+{
+    using namespace vr_mapping;
+    Check(LayoutSource(0x1000)==A&&LayoutSource(0x100)==SupportGrip&&LayoutSource(1u<<16)==SupportTrigger&&
+        LayoutSource(0x4)==DpadLeft&&LayoutSource(0x10)==Unbound&&LayoutSource(0)==Unbound,"the unmapped route's buttons");
+    Overrides rows{};
+    rows[Fire]=Y;
+    Transports layout{};
+    layout[Fire]=1u<<17;layout[Jump]=0x1000;
+    const auto followed=EffectiveOverrides(rows,layout,true);
+    Check(followed[Fire]==Y&&followed[Jump]==A&&followed[Melee]==Unbound,"Automatic rows follow the game's layout, others stay");
+    Check(EffectiveOverrides(rows,layout,false)[Jump]==Automatic,"an unknown layout leaves a row Automatic");
+
+    Check(OneHandedGripOnGun(true,true,.25f*.25f),"a grip near a pistol's hand is on it");
+    Check(!OneHandedGripOnGun(true,true,.35f*.35f),"far from it, an air grip");
+    Check(!OneHandedGripOnGun(false,true,.1f*.1f)&&!OneHandedGripOnGun(true,false,.1f*.1f),"only a one-handed gun, only with the grip held");
+    SupportTriggerContext t;
+    Check(t.Step(false,false,false,false,false,true)==0,"no pull");
+    Check(t.Step(true,false,false,false,false,true)==Bit(SupportTriggerFree),"a free hand");
+    Check(t.Step(true,true,true,false,false,true)==Bit(SupportTriggerFree),"a pull keeps its meaning as the hand moves");
+    t.Step(false,false,false,false,false,true);
+    Check(t.Step(true,true,true,false,false,true)==Bit(SupportTriggerOnGun),"gripping the gun");
+    Check(t.Step(true,false,false,false,false,true)==0,"leaving the gun ends the zoom without a grenade");
+    Check(t.Step(true,false,false,false,false,true)==0,"for the rest of the pull");
+    t.Step(false,false,false,false,false,true);
+    Check(t.Step(true,false,true,false,false,true)==Bit(SupportTriggerOnGun),"a toggled two-hand hold counts with the grip up");
+    t.Step(false,false,false,false,false,true);
+    Check(t.Step(true,true,false,false,false,true)==Bit(SupportTriggerAir),"gripping air");
+    t.Step(false,false,false,false,false,true);
+    Check(t.Step(true,true,false,false,false,false)==Bit(SupportTriggerFree),"air off: a free hand");
+    t.Step(false,false,false,false,false,true);
+    Check(t.Step(true,false,false,true,false,true)==0,"a magazine or holster grip sends nothing");
+    t.Step(false,false,false,false,false,true);
+    Check(t.Step(true,true,true,false,true,true)==Bit(SupportTriggerFree),"dual wielding or a seat keeps the plain trigger");
+
+    {
+        // Letting go steps a two-level zoom all the way out, reading the game's level after each press.
+        ZoomExit z;
+        Check(!z.Step(true,true,false,true,0,1000),"on the gun: nothing");
+        Check(!z.Step(true,false,false,true,0,1010),"let go: it settles first");
+        Check(z.Step(true,false,false,true,0,1120),"then a press from the first level");
+        Check(z.Step(true,false,false,true,1,1150),"held its full length, whatever the game reads");
+        Check(!z.Step(true,false,false,true,1,1190),"let go");
+        Check(!z.Step(true,false,false,true,1,1200),"the level went deeper: the gap first");
+        Check(z.Step(true,false,false,true,1,1240),"then the next press");
+        z.Step(true,false,false,true,1,1300);
+        Check(!z.Step(true,false,false,true,-1,1320)&&z.phase==ZoomExit::Phase::Idle,"out: finished");
+        Check(!z.Step(true,false,false,true,-1,1500),"and it stays finished");
+    }
+    {
+        ZoomExit z;
+        z.Step(true,true,false,true,-1,1000);
+        z.Step(true,false,false,true,-1,1010);
+        Check(!z.Step(true,false,false,true,-1,1200)&&z.phase==ZoomExit::Phase::Idle,"not zoomed: never a press, so it cannot zoom in");
+    }
+    {
+        ZoomExit z;
+        z.Step(true,true,false,true,0,1000);
+        z.Step(true,false,false,true,0,1010);
+        z.Step(true,false,false,true,0,1120);
+        z.Step(true,false,false,true,0,1190);
+        Check(!z.Step(true,false,false,true,0,1300),"no answer yet: it waits");
+        Check(z.Step(true,false,false,true,0,1425),"a press the game did not see goes again");
+    }
+    {
+        ZoomExit z;
+        z.Step(true,true,false,true,0,1000);
+        z.Step(true,false,false,false,0,1010);
+        Check(!z.Step(true,false,false,false,0,1200)&&z.phase==ZoomExit::Phase::Idle,"a level not read: no press");
+        z.Step(true,true,false,true,0,2000);
+        z.Step(true,false,false,true,0,2010);
+        Check(!z.Step(true,false,true,true,0,2020)&&z.phase==ZoomExit::Phase::Idle,"a fresh pull of the trigger: the player's own");
+        z.Step(true,true,true,true,0,3000);
+        z.Step(true,false,true,true,0,3010);
+        Check(z.Step(true,false,true,true,0,3120),"a trigger still held from the zoom is not a fresh pull");
+        Check(!z.Step(true,true,true,true,0,3130)&&z.phase==ZoomExit::Phase::Idle,"the hand coming back ends it");
+        ZoomExit stuck;
+        stuck.Step(true,true,false,true,0,1000);
+        stuck.Step(true,false,false,true,0,1010);
+        int pressed=0;
+        bool was=false;
+        for(uint64_t t=1020;t<9000;t+=10)
+        {
+            const bool now=stuck.Step(true,false,false,true,0,t);
+            pressed+=now&&!was;
+            was=now;
+        }
+        Check(pressed==ZoomExit::kMostPresses,"a level that never moves gives up");
+    }
+
+    Config scheme{};
+    scheme.turn_smooth=false;scheme.vr_action_mapping=true;scheme.trigger_air_equipment=true;scheme.turn_snap_deg=45.f;
+    scheme.vr_bindings[3][Zoom]=SupportTriggerOnGun;scheme.world_scale=9.f;
+    Config loaded{};
+    input_preset::Parse(input_preset::Serialize(scheme).c_str(),loaded);
+    Check(input_preset::SameScheme(loaded,scheme),"a preset round trips");
+    Check(loaded.world_scale==Config{}.world_scale,"a preset carries no setting outside the scheme");
+    Config kept{};
+    kept.world_scale=2.f;
+    input_preset::CopyScheme(kept,scheme);
+    Check(kept.world_scale==2.f&&kept.vr_bindings[3][Zoom]==SupportTriggerOnGun,"applying a preset leaves the rest alone");
+    Config missing{};
+    input_preset::Parse("# only one key\nturn_snap_deg = 15\nvr_bind_halo3_fire = 999\n",missing);
+    Check(missing.turn_snap_deg==15.f&&missing.vr_bindings[0][Fire]==Automatic&&missing.turn_smooth==Config{}.turn_smooth,
+        "keys a preset omits take their default, and bad values are refused");
+    Check(input_preset::ParseDescription((input_preset::DescriptionLine(" For new\nplayers # one ")+input_preset::Serialize(scheme)).c_str())==
+        "For new players # one","a description survives a preset file, on one line");
+    Check(input_preset::DescriptionLine("  ").empty()&&input_preset::ParseDescription(input_preset::Serialize(scheme).c_str()).empty(),
+        "no description is no line");
+    Config described{};
+    input_preset::Parse((input_preset::DescriptionLine("turn_snap_deg = 99")+input_preset::Serialize(scheme)).c_str(),described);
+    Check(input_preset::SameScheme(described,scheme),"a description never reads as a setting");
+    Config def{},plain{};
+    input_preset::BuiltIn(0,def);
+    Check(input_preset::SameScheme(def,plain)&&!def.vr_action_mapping&&!def.trigger_air_equipment,"Default is the canon: nothing remapped");
+    Config vr{};
+    input_preset::BuiltIn(1,vr);
+    Check(vr.vr_action_mapping&&vr.vr_bindings[2][Jump]==kDefaults[Jump],"the VR layout is written out in full");
+    Check(input_preset::SafeName("  My: preset/1 ")=="My preset1"&&input_preset::SafeName("default").empty()&&
+        input_preset::SafeName("../..")=="","a preset name is a safe file name, and never a built-in's");
+}
+
 void CheckScopeAdmission()
 {
     // Exercise the production release detector, not a duplicate toggle model.
@@ -69,6 +194,14 @@ void CheckScopeAdmission()
             "head and exclusive thumb-rest D-pad release both toggle scope");
         scope.Update(true,bits,source,1,route,true,false);
         Check(!scope.Update(true,0,source,1,0,true,false).changed,"leaving D-pad gesture cancels rather than releases zoom");
+    }
+    {
+        // MCC polls the pad from more than one thread, and they share one detector (input.cpp g_scopeInput): the
+        // release one poll takes is not taken again by the next.
+        ScopeActionInput shared;
+        auto poll=[&](uint32_t bits){return shared.Update(true,bits,RightClick,1,0,true,false);};
+        poll(0);poll(0);poll(Bit(RightClick));poll(Bit(RightClick));
+        Check(poll(0).changed&&!poll(0).changed,"a second poller does not take the same zoom release again");
     }
     ScopeActionInput scope;
     scope.Update(true,0,A,1,0,true,false);
@@ -223,6 +356,7 @@ void CheckDirectContextPassthrough()
 }
 int main()
 {
+    CheckInputPresets();
     CheckDirectContextPassthrough();
     CheckScopeAdmission();
     CheckPhysicalCrouchInput();
@@ -309,9 +443,22 @@ int main()
     ConfigLoad(path.c_str());
     Check(g_config.vr_bindings[0][Fire]==Unbound&&g_config.vr_bindings[2][Fire]==PrimaryGrip,"per-game overrides load independently");
     Check(g_config.vr_bindings[5][Reload]==Automatic&&g_config.vr_bindings[4][Melee]==Automatic,"invalid file values retain defaults");
+    Check(!g_config.disable_autoexposure_odst,"ODST exposure is native by default");
+    {std::ofstream file(path);file<<"bloom_enabled_odst = 1\nbloom_enabled_reach = 1\n";}
+    ConfigLoad(path.c_str());
+    Check(g_config.bloom_enabled[1]&&g_config.bloom_enabled[2]&&!g_config.bloom_chosen[1]&&!g_config.bloom_chosen[2],
+        "a saved legacy bloom setting is kept as it was");
+    Check(!Config_BloomWanted(1)&&!Config_BloomWanted(2)&&Config_BloomWanted(0),
+        "ODST and Reach play without bloom in VR until the player chooses");
+    {std::ifstream file(path);const std::string text((std::istreambuf_iterator<char>(file)),std::istreambuf_iterator<char>());
+        Check(text=="bloom_enabled_odst = 1\nbloom_enabled_reach = 1\n","loading leaves the bloom file untouched");}
+    g_config.bloom_chosen[1]=g_config.bloom_chosen[2]=true;
+    ConfigSave();ConfigLoad(path.c_str());
+    Check(Config_BloomWanted(1)&&Config_BloomWanted(2),"a chosen bloom survives reload");
+    for(unsigned t=0;t<6;++t) g_config.bloom_chosen[t]=false;
     const bool defaultFlashes[6]{false,false,false,true,false,true};
     for(unsigned t=0;t<6;++t) Check(g_config.hide_muzzle_flash[t]==defaultFlashes[t],"muzzle-flash suppression defaults stay title-specific");
-    for(unsigned t=0;t<6;++t) Check(g_config.bloom_enabled[t],"all titles preserve native bloom by default");
+    for(unsigned t=0;t<6;++t) Check(Config{}.bloom_enabled[t]&&!Config{}.bloom_chosen[t],"saved bloom defaults to on and unchosen");
     {std::ofstream file(path);
         file<<"virtual_stock = 1\nvirtual_stock_rear_reference = 3\nvirtual_stock_strength = nan\n"
             "virtual_stock_shoulder_side_m = inf\nvirtual_stock_chest_back_m = garbage\n"
@@ -320,8 +467,10 @@ int main()
             "virtual_stock_adaptive_top_height_m = -.35\nvirtual_stock_adaptive_bottom_height_m = -.2\n"
             "weapon_pouch_location = 99\nweapon_pouch_offset_x_m = -999\nweapon_pouch_offset_y_m = 999\nweapon_pouch_offset_z_m = nan\n"
             "hide_muzzle_flash_halo3 = 1\nhide_muzzle_flash_odst = 7\nhide_muzzle_flash_halo4 = 0\nhide_muzzle_flash_halo2 = junk\n"
-            "bloom_enabled_halo3 = 0\nbloom_enabled_odst = junk\nbloom_enabled_reach = 7\n";}
+            "bloom_enabled_halo3 = 0\nbloom_enabled_odst = junk\nbloom_enabled_reach = 7\n"
+            "disable_autoexposure_odst = 1\ndisable_autoexposure_odst = junk\ndisable_autoexposure_odst = 7\n";}
     ConfigLoad(path.c_str());
+    Check(g_config.disable_autoexposure_odst,"exposure accepts one and rejects malformed boolean overrides");
     const Config defaults{};
     Check(g_config.virtual_stock&&g_config.virtual_stock_rear_reference==3,"stock activation and mode load independently of invalid geometry");
     Check(g_config.virtual_stock_standard_strength==defaults.virtual_stock_standard_strength&&
@@ -337,7 +486,7 @@ int main()
     Check(g_config.hide_muzzle_flash[0]&&!g_config.hide_muzzle_flash[1]&&!g_config.hide_muzzle_flash[3]&&g_config.hide_muzzle_flash[5],
         "per-game muzzle-flash values parse strictly and independently");
     Check(!g_config.bloom_enabled[0]&&g_config.bloom_enabled[1]&&g_config.bloom_enabled[2],
-        "bloom parses independently with strict boolean values");
+        "bloom parses independently with strict boolean values (malformed keeps the default)");
     Check(g_config.weapon_pouch_location==0&&g_config.weapon_pouch_offset_x_m==-.4f&&
         g_config.weapon_pouch_offset_y_m==.4f&&g_config.weapon_pouch_offset_z_m==0,
         "pouch location and offsets reject invalid or nonfinite values and clamp finite geometry");
@@ -364,12 +513,15 @@ int main()
     ConfigLoad(path.c_str());
     for(const auto& field:stockSettings) Check(std::fabs(g_config.*field.member-field.value)<.00001f,"each stock field loads from its public config key");
     for(unsigned t=0;t<6;++t) for(unsigned a=0;a<Count;++a) g_config.vr_bindings[t][a]=static_cast<int>((t+a)%SourceCount);
-    for(unsigned t=0;t<6;++t) g_config.bloom_enabled[t]=(t%2)==0;
+    for(unsigned t=0;t<6;++t) {g_config.bloom_enabled[t]=(t%2)==0;g_config.bloom_chosen[t]=(t%3)==0;}
+    g_config.disable_autoexposure_odst=true;
     const auto expected=g_config;
     ConfigSave();ConfigLoad(path.c_str());
+    Check(g_config.disable_autoexposure_odst==expected.disable_autoexposure_odst,"exposure survives save and reload");
     for(unsigned t=0;t<6;++t) Check(g_config.vr_bindings[t]==expected.vr_bindings[t],"all six per-game mappings survive round trip");
     for(unsigned t=0;t<6;++t) Check(g_config.hide_muzzle_flash[t]==expected.hide_muzzle_flash[t],"all six muzzle-flash settings survive round trip");
     for(unsigned t=0;t<6;++t) Check(g_config.bloom_enabled[t]==expected.bloom_enabled[t],"all six bloom settings survive round trip");
+    for(unsigned t=0;t<6;++t) Check(g_config.bloom_chosen[t]==expected.bloom_chosen[t],"all six bloom choices survive round trip");
     for(const auto& field:stockSettings) Check(std::fabs(g_config.*field.member-expected.*field.member)<.00001f,"each stock geometry field survives config save and reload");
     Check(g_config.virtual_stock&&g_config.virtual_stock_rear_reference==0&&!g_config.virtual_stock_proximity_release,
         "stock switches survive config save and reload (Chest is no longer a product selection)");

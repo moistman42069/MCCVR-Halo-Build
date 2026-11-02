@@ -16,6 +16,8 @@ void Menu_SetVrPointer(bool hit, float u, float v, bool pressed, float scrollY);
 void Menu_ClearVrPointer();
 void Menu_PostLiveResize(); // schedules admitted resize on MCC's window thread
 ID3D11Texture2D* Menu_Render(); // draws the current frame of UI; nullptr on failure
+// The desktop settings window (menu_mirror.h). Beat once per frame; while attached, the menu is drawn even when closed.
+bool Menu_MirrorBeat();
 
 // Panel dragging. The panel itself is locked -- nothing inside it moves -- and
 // the ONLY way to reposition it is the grab handle along the top edge. The menu
