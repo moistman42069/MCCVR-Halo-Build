@@ -67,16 +67,10 @@ struct Menu {
         const auto index = SendMessageW(channel, CB_GETCURSEL, 0, 0);
         return kReleaseChannels[index >= 0 && static_cast<size_t>(index) < std::size(kReleaseChannels) ? index : 0];
     }
-    // The release a check found, else the source's latest. GitHub's own "latest" skips prereleases, and a fork's newest
-    // release can be one, but its list has the newest first.
+    // The source's release list, newest first.
     std::wstring ReleasePageUrl() const {
         const auto& source = CurrentChannel();
-        const std::wstring releases = L"https://github.com/" + std::wstring(source.owner, source.owner + strlen(source.owner)) +
-            L"/MCCVR-Halo-Build/releases";
-        const bool plainTag = !latest.tag.empty() && std::all_of(latest.tag.begin(), latest.tag.end(), [](unsigned char c) {
-            return std::isalnum(c) || c == '_' || c == '-' || c == '.'; });
-        if (plainTag) return releases + L"/tag/" + std::wstring(latest.tag.begin(), latest.tag.end());
-        return source.prereleases ? releases : releases + L"/latest";
+        return L"https://github.com/" + std::wstring(source.owner, source.owner + strlen(source.owner)) + L"/MCCVR-Halo-Build/releases";
     }
     void Refresh() {
         auto* game = Selected();

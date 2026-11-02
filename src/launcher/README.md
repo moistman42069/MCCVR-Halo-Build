@@ -98,7 +98,7 @@ Nitsujack's or Godoy's fork. The menu starts on the source named by `release_cha
 package's `BUILD-IDENTITY.txt` (`tools/package-candidate.ps1` takes it from the `origin`
 remote), and on Moistman's for a package without one. It never uses the retired pancreations
 origin. Each download must come from the chosen source's own release URLs. **Release page** opens
-the release a check found, or else that source's latest. **Install update** downloads the
+that source's release list. **Install update** downloads the
 single player ZIP over HTTPS and verifies GitHub's asset size and SHA-256 digest.
 ZIP extraction rejects traversal, absolute paths, duplicate Windows names,
 reserved device names, symlinks and excessive expanded sizes before extracting.
