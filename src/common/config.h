@@ -1814,11 +1814,23 @@ struct Config
     bool physical_melee = false;
     bool gesture_melee = false;
     // What counts as a swing (gesture_melee_logic.h). A swing presses the game's own melee input, nothing more.
-    float gesture_melee_speed = 3.0f;      // m/s, relative to the head
+    float gesture_melee_speed = 1.5f;      // m/s, relative to the head
     float gesture_melee_extension = 1.5f;  // m/s the arm must be reaching away from the head
-    float gesture_melee_travel = 0.40f;    // m a held-grip chop must cover instead; 0 = extension only
+    float gesture_melee_travel = 0.40f;    // m an off-hand chop must cover instead; 0 = extension only
     float gesture_melee_reach = 0.30f;     // m the hand must be from the head
     bool gesture_melee_require_grip = false; // off: in the game's own layout the grips are buttons of their own
+    bool gesture_melee_off_hand = true;    // the hand without the gun punches too
+    bool gesture_melee_directional = true; // the aim follows the swing while it lands
+    int gesture_melee_aim_hold_ms = 250;
+    int gesture_melee_aim_ramp_ms = 150;
+    int gesture_melee_press_ms = 80;
+    int gesture_melee_cooldown_ms = 500;
+    int gesture_melee_holster_veto_ms = 400; // no swing this soon after a reload or holster gesture
+    float gesture_melee_smoothing_ms = 20.0f;
+    float gesture_melee_max_speed = 12.0f; // faster, or further than max_reach, is tracking jumping
+    float gesture_melee_max_reach = 1.2f;
+    bool gesture_melee_smoothed_hands = false; // read the hands after Hand smoothing instead of as they moved
+    bool gesture_melee_log = false;
     float physical_melee_swing_speed = kPhysicalMeleeSpeedDefault;
 
     // Lower the RIGHT (weapon) shoulder so Master Chief's arm doesn't clip up

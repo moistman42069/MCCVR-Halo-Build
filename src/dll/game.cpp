@@ -52764,6 +52764,11 @@ bool Game_Halo4PhysicalMeleePulseActive(uint64_t nowMs)
 
 bool Game_PhysicalMeleePulseActive(uint64_t) { return false; }
 
+// The swing a gesture melee just pressed for (gesture_melee::ApplyAimHold). Read by the aim steering, which is where the
+// hand's aim becomes the game's: it is still only the aim input, as if the player had pointed there.
+static std::atomic<uint64_t> g_gestureMeleeAimHoldUntilMs{0};
+static std::atomic<float> g_gestureMeleeAimSwing[3]{};
+
 uint32_t Game_GestureMeleeInput(uint64_t nowMs)
 {
     const GameTitle title = TitleAdapter_GetActiveTitle();
@@ -52891,11 +52896,19 @@ uint32_t Game_GestureMeleeInput(uint64_t nowMs)
         {
             telemetry.pulses.fetch_add(1,std::memory_order_relaxed);
             state.pulseUntilMs.store(
-                nowMs + gesture_melee::kPulseMs,
+                nowMs + static_cast<uint64_t>(g_config.gesture_melee_press_ms),
                 std::memory_order_release);
             state.cooldownUntilMs.store(
-                nowMs + gesture_melee::kCooldownMs,
+                nowMs + static_cast<uint64_t>(g_config.gesture_melee_cooldown_ms),
                 std::memory_order_release);
+            float swing[3];
+            if (g_config.gesture_melee_directional && VR_GestureMeleeSwingDirection(hand, swing))
+            {
+                for (int axis = 0; axis < 3; ++axis)
+                    g_gestureMeleeAimSwing[axis].store(swing[axis], std::memory_order_relaxed);
+                g_gestureMeleeAimHoldUntilMs.store(
+                    nowMs + static_cast<uint64_t>(g_config.gesture_melee_aim_hold_ms), std::memory_order_release);
+            }
         }
         else telemetry.cooldownBlocks.fetch_add(1,std::memory_order_relaxed);
     }
@@ -57723,6 +57736,16 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     const float localDir[3] = {0.0f, 0.0f, -1.0f};
     float f3[3];
     RotateByQuat(q, localDir, f3);
+    // A gesture melee in flight: the strike goes along the swing (see above). Only a swing on foot gets this far.
+    if (const uint64_t aimHoldUntil = g_gestureMeleeAimHoldUntilMs.load(std::memory_order_acquire))
+    {
+        const float swing[3]{g_gestureMeleeAimSwing[0].load(std::memory_order_relaxed),
+                             g_gestureMeleeAimSwing[1].load(std::memory_order_relaxed),
+                             g_gestureMeleeAimSwing[2].load(std::memory_order_relaxed)};
+        if (!gesture_melee::ApplyAimHold(f3, swing, GetTickCount64(), aimHoldUntil,
+                static_cast<uint64_t>(g_config.gesture_melee_aim_ramp_ms)))
+            g_gestureMeleeAimHoldUntilMs.store(0, std::memory_order_release);
+    }
     // The controller's own direction: the seated intent ray and the on-foot sight ray below run along it.
     const float fx = f3[0], fy = f3[1], fz = f3[2];
 

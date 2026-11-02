@@ -16275,20 +16275,26 @@ int main()
 
     {
         const Config d{};
-        Check(!d.gesture_melee_require_grip && d.gesture_melee_speed == 3.0f && d.gesture_melee_extension == 1.5f &&
-                  d.gesture_melee_travel == 0.40f && d.gesture_melee_reach == 0.30f,
+        Check(!d.gesture_melee_require_grip && d.gesture_melee_speed == 1.5f && d.gesture_melee_extension == 1.5f &&
+                  d.gesture_melee_travel == 0.40f && d.gesture_melee_reach == 0.30f && d.gesture_melee_off_hand &&
+                  d.gesture_melee_directional && d.gesture_melee_aim_hold_ms == 250 && d.gesture_melee_aim_ramp_ms == 150 &&
+                  d.gesture_melee_press_ms == 80 && d.gesture_melee_cooldown_ms == 500 &&
+                  d.gesture_melee_holster_veto_ms == 400 && !d.gesture_melee_smoothed_hands,
             "gesture melee's swing checks have their defaults");
         {
             std::ofstream file(primary);
             file << "gesture_melee_speed = 7.5\ngesture_melee_extension = 2.0\ngesture_melee_travel = 0\n"
-                    "gesture_melee_reach = 0.45\ngesture_melee_require_grip = 1\n";
+                    "gesture_melee_reach = 0.45\ngesture_melee_require_grip = 1\ngesture_melee_off_hand = 0\n"
+                    "gesture_melee_directional = 0\ngesture_melee_aim_hold_ms = 300\ngesture_melee_cooldown_ms = 700\n";
         }
         ConfigLoad(primary.c_str());
         ConfigSave();
         ConfigLoad(primary.c_str());
         Check(g_config.gesture_melee_speed == 7.5f && g_config.gesture_melee_extension == 2.0f &&
                   g_config.gesture_melee_travel == 0.0f && g_config.gesture_melee_reach == 0.45f &&
-                  g_config.gesture_melee_require_grip,
+                  g_config.gesture_melee_require_grip && !g_config.gesture_melee_off_hand &&
+                  !g_config.gesture_melee_directional && g_config.gesture_melee_aim_hold_ms == 300 &&
+                  g_config.gesture_melee_cooldown_ms == 700,
             "gesture melee's swing checks survive a save/load round trip");
         {
             std::ofstream file(primary);

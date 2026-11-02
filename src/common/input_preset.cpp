@@ -38,6 +38,8 @@ constexpr BoolField kBools[] = {
     {"physical_melee", &Config::physical_melee},
     {"gesture_melee", &Config::gesture_melee},
     {"gesture_melee_require_grip", &Config::gesture_melee_require_grip},
+    {"gesture_melee_off_hand", &Config::gesture_melee_off_hand},
+    {"gesture_melee_directional", &Config::gesture_melee_directional},
     {"two_hand_toggle", &Config::two_hand_toggle},
     {"manual_reload", &Config::manual_reload},
     {"weapon_holsters", &Config::weapon_holsters},

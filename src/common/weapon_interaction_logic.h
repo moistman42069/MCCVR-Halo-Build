@@ -290,6 +290,10 @@ public:
     void Cancel() noexcept
     { phase_=0;pulseUntil_=0;pulse_=0;armedP_=armedS_=false;available_=false;last_=0;singleShake_.Reset(); }
     bool HasClaimedGrip() const noexcept { return ownedP_||ownedS_; }
+    // A fast hand here is on its way to a gesture, not a punch (gesture_melee_logic.h).
+    bool PrimaryNearHolster() const noexcept { return nearHolster_; }
+    bool SupportNearPouch() const noexcept { return nearPouch_; }
+    bool HoldingMagazine() const noexcept { return phase_==1; }
     Output Update(const Sample& s,const Settings& c) noexcept
     {
         Output out{};
@@ -314,6 +318,8 @@ public:
             validP&&validS;
         Vec pouch{},holster{};
         const bool poses=Zones(s,c,pouch,holster);
+        nearHolster_=poses&&c.holsters&&Near(s.primary,holster,Setting(c.holsterRadius,0.08f,0.40f,0.20f));
+        nearPouch_=poses&&c.reload&&Near(s.support,pouch,Setting(c.zoneRadius,0.08f,0.40f,0.20f));
         const bool resumed=ready&&poses&&!available_;
         if(identity||gap||!ready||!poses||resumed)
         {
@@ -480,6 +486,7 @@ private:
     int phase_{},location_{},pouchLocation_{};
     Vec pouchOffset_{},holsterCustom_{};
     bool left_{},reload_{},holsters_{},armedP_{},armedS_{},ownedP_{},ownedS_{},leftPouch_{},available_{};
+    bool nearHolster_{},nearPouch_{};
     bool slide_{true},click_{};
     bool shake_{};
     uint64_t weaponGraph_{},shakeAt_{};
