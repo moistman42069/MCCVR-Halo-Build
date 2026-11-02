@@ -78,9 +78,6 @@ static void Policies() {
     Require(NewestPublished({"2026-11-02T00:00:00Z", "2026-11-02T00:00:00Z"}) == 0, "a tie stays with the earlier repository");
     Require(NewestPublished({"", "2026-11-02T00:00:00Z", "not a date"}) == 1, "a repository with no date is passed over");
     Require(NewestPublished({"", ""}) == std::string::npos, "no dates, no choice");
-    Require(ShortenedFolder(L"G:\\Short") == L"G:\\Short", "a short folder is left alone");
-    const auto shortened = ShortenedFolder(std::wstring(L"G:\\") + std::wstring(100, L'x') + L"\\VR_test");
-    Require(shortened.size() == 56 && shortened.starts_with(L"G:\\") && shortened.ends_with(L"\\VR_test") && shortened.find(L"...") != std::wstring::npos, "a long folder keeps its start and end");
     const auto release = ParseReleaseUpdate(json);
     Require(release.bytes == 100 && release.tag == "MCC_VR_ALPHA_0.6.0", "release parser chooses player ZIP");
     for (const auto input : {R"({"tag_name":"x","draft":false,"prerelease":false,"assets":[]})", R"({"a":1,"a":2})", R"([1,])", R"({"a":"\uD800"})", R"({"a":01})"}) {

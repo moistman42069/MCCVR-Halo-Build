@@ -135,12 +135,6 @@ inline ReleaseUpdate ReleaseFromJson(const ReleaseJson& json, const ReleaseChann
 inline ReleaseUpdate ParseReleaseUpdate(const std::string& text, const ReleaseChannel& channel = kReleaseChannels[0]) {
     return ReleaseFromJson(ReleaseJsonReader(text).Read(), channel);
 }
-// A long folder for one line of the launcher's note: its start and its end, which are what tell two copies apart.
-inline std::wstring ShortenedFolder(const std::wstring& folder, size_t most = 56) {
-    if (folder.size() <= most) return folder;
-    const size_t tail = most * 2 / 3;
-    return folder.substr(0, most - tail - 3) + L"..." + folder.substr(folder.size() - tail);
-}
 // Which release is furthest ahead by date, or npos when none has a date. GitHub's published_at is UTC in one fixed
 // format (2026-11-02T18:05:54Z), so text order is date order; anything else counts as no date. On a tie the earlier
 // entry stays, which is the official repository.

@@ -110,13 +110,11 @@ struct Menu {
         // is installed: running from an extracted ZIP is how it gets installed in the first place.
         std::error_code sameError;
         const bool outside = installed && !fs::equivalent(selfDir, game->root / L"Halo_MCC_VR", sameError);
-        Text(outsideNote, outside ? L"Running from a copy outside Halo_MCC_VR: " + ShortenedFolder(selfDir.wstring()) +
-            L"\nUpdates go to Halo_MCC_VR, not here. Project Reclaimer runs this copy." : L"");
         ShowWindow(outsideNote, outside ? SW_SHOW : SW_HIDE);
         const bool canOpen = outside && fs::is_regular_file(game->root / L"Halo_MCC_VR" / L"HaloMCCVRLauncher.exe");
         ShowWindow(openInstalled, canOpen ? SW_SHOW : SW_HIDE);
         EnableWindow(openInstalled, !busy);
-        SetWindowPos(path, nullptr, 0, 0, Px(canOpen ? 640 : 895), Px(77), SWP_NOMOVE | SWP_NOZORDER);
+        SetWindowPos(path, nullptr, 0, 0, Px(outside ? 640 : 895), Px(77), SWP_NOMOVE | SWP_NOZORDER);
         InvalidateRect(window, nullptr, FALSE);
     }
     void Populate(const fs::path& preferred = {}) {
@@ -283,9 +281,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, 160, 110, 38, Scan);
         menu->path = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 214, 895, 77);
         SendMessageW(menu->path, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
-        menu->outsideNote = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 440, 48, 502, 68);
+        // The reason, directly above the button it is the reason for.
+        menu->outsideNote = Control(*menu, L"STATIC", L"This is a copy outside Halo_MCC_VR. Updates go there, but Project Reclaimer runs this copy.", SS_LEFT | SS_NOPREFIX, 696, 201, 246, 56);
         SendMessageW(menu->outsideNote, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
-        menu->openInstalled = Control(*menu, L"BUTTON", L"OPEN INSTALLED LAUNCHER", BS_OWNERDRAW | WS_TABSTOP, 696, 240, 246, 38, OpenInstalled);
+        menu->openInstalled = Control(*menu, L"BUTTON", L"OPEN INSTALLED LAUNCHER", BS_OWNERDRAW | WS_TABSTOP, 696, 259, 246, 34, OpenInstalled);
         Label(*menu, L"02  /  YOUR VR SETUP", 38, 310, 570);
         menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_AUTOCHECKBOX | WS_TABSTOP, 38, 340, 850, 30, Retain);
         SendMessageW(menu->retain, BM_SETCHECK, BST_CHECKED, 0); SetWindowTheme(menu->retain, L"", L"");
