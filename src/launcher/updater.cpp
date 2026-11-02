@@ -130,6 +130,18 @@ ReleaseUpdate CheckForUpdate(const ReleaseChannel& channel) {
     if (channel.prereleases) return ParseNewestRelease(Request(repository + L"?per_page=10", {}, 2 * 1024 * 1024), channel);
     return ParseReleaseUpdate(Request(repository + L"/latest", {}, 2 * 1024 * 1024), channel);
 }
+ReleaseUpdate CheckLatestAcrossChannels(size_t& channel, std::wstring& passedOver) {
+    std::vector<ReleaseUpdate> releases(std::size(kReleaseChannels));
+    std::vector<std::string> dates(releases.size());
+    passedOver.clear();
+    for (size_t i = 0; i < releases.size(); ++i) {
+        try { releases[i] = CheckForUpdate(kReleaseChannels[i]); dates[i] = releases[i].published; }
+        catch (const std::exception&) { passedOver += (passedOver.empty() ? L"" : L", "); passedOver += kReleaseChannels[i].label; }
+    }
+    channel = NewestPublished(dates);
+    if (channel == std::string::npos) throw std::runtime_error("No repository could be read. Check your connection, or open a release page for manual installation.");
+    return releases[channel];
+}
 void ExtractUpdateArchive(const fs::path& archive, const fs::path& output) {
     if (fs::exists(output)) throw std::runtime_error("Update extraction folder must be new.");
     ExtractArchive(archive, output);

@@ -91,7 +91,7 @@ public:
     explicit ReleaseJsonReader(std::string_view text) : input(text) {}
     ReleaseJson Read() { if (input.size() > 2 * 1024 * 1024) Fail(); auto result = Value(0); Space(); if (at != input.size()) Fail(); return result; }
 };
-struct ReleaseUpdate { std::string tag, assetName, url, sha256; uint64_t bytes = 0; };
+struct ReleaseUpdate { std::string tag, assetName, url, sha256; uint64_t bytes = 0; std::string published; };
 // Where updates can come from. A package names its own in BUILD-IDENTITY.txt (release_channel), which is what the
 // launcher starts on. The test channels publish everything as prereleases or with their own asset names.
 struct ReleaseChannel { const char* key; const wchar_t* label; const char* owner; bool prereleases; };
@@ -127,12 +127,25 @@ inline ReleaseUpdate ReleaseFromJson(const ReleaseJson& json, const ReleaseChann
             throw std::runtime_error("Release asset size is invalid or exceeds the update limit.");
         result = {json.At("tag_name").text, name, url, digest.substr(7), bytes};
         std::transform(result.sha256.begin(), result.sha256.end(), result.sha256.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        result.published = json.At("published_at").text;
     }
     if (candidates != 1) throw std::runtime_error("A single compatible player ZIP was not found in the latest release. Open the release page for manual installation.");
     return result;
 }
 inline ReleaseUpdate ParseReleaseUpdate(const std::string& text, const ReleaseChannel& channel = kReleaseChannels[0]) {
     return ReleaseFromJson(ReleaseJsonReader(text).Read(), channel);
+}
+// Which release is furthest ahead by date, or npos when none has a date. GitHub's published_at is UTC in one fixed
+// format (2026-11-02T18:05:54Z), so text order is date order; anything else counts as no date. On a tie the earlier
+// entry stays, which is the official repository.
+inline size_t NewestPublished(const std::vector<std::string>& dates) {
+    size_t newest = std::string::npos;
+    for (size_t i = 0; i < dates.size(); ++i) {
+        const auto& date = dates[i];
+        if (date.size() != 20 || date[4] != '-' || date[10] != 'T' || date[19] != 'Z') continue;
+        if (newest == std::string::npos || date > dates[newest]) newest = i;
+    }
+    return newest;
 }
 // A channel with prereleases: GitHub's "latest" never names one, so the list is read, newest first. A release with
 // nothing a player can install is passed over; the tag shown before installing says which one was found.
