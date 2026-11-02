@@ -117,10 +117,11 @@ bool Game_IsStereoGeometryOnlyBringup();
 bool Game_UsesTitleOwnedHeadTracking();
 bool Game_IsCameraOnlyBringup(); // private ODST camera core; no gameplay features
 bool Game_HasScopeRenderer(); // optional title-local zoom view is available
-// Aim Frame Zoom has the zoom button in the active title (Halo 3 with aim_frame_zoom on): it reaches the game,
-// and the gun-mounted lens is not offered.
+// Aim Frame Zoom has the zoom button in the active title (with aim_frame_zoom on, where the title can read the game's
+// zoom level and draw the frame): it reaches the game, and the gun-mounted lens is not offered.
 bool Game_AimFrameZoomOwnsZoom();
-// The game's own zoom level for the local player (-1 not zoomed), Halo 3 and ODST. False: not read lately.
+// The game's own zoom level for the local player (-1 not zoomed), in the titles that read it (Halo 3, ODST, and Reach
+// and Halo 4 while their muzzle lanes are in). False: not read lately.
 bool Game_ReadZoomLevel(int& level);
 // Halo 3's HUD layout as it draws now: the one written (Game_GetAppliedHudSafeFrame), or, before it is written
 // for a customised layout, the title's own (MCC 0.87, Project Reclaimer 0.97) with the player's size. False: the

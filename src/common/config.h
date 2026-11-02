@@ -1451,7 +1451,7 @@ struct Config
     // (the hand's point lies past the stop the gun is held at). (default 1)
     int scope_converge = 1;
     float scope_zoom = 24.0f;
-    // AIM FRAME ZOOM (live; F1 > Scope; Halo 3, in MCC and in Project Reclaimer, and ODST). While the game itself is
+    // AIM FRAME ZOOM (live; F1 > Scope; Halo 3, in MCC and in Project Reclaimer, ODST, Reach and Halo 4). While the game itself is
     // zoomed -- its own zoom level, never the button -- the headset shows one flat picture the game draws along the
     // aim at its own zoomed field of view, as a frame centred on the aim, in place of the immersive view. The zoom
     // button then reaches the game, so the gun-mounted lens is not offered there while this is on. Per zoom

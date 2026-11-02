@@ -3427,7 +3427,7 @@ void ConfigSave()
     fprintf(f, "# converged_aim and the aim written (direct drive). Live in F1 > Scope. (default %d)\n",
             d.scope_converge);
     fprintf(f, "scope_converge = %d\n\n", g_config.scope_converge);
-    fprintf(f, "# Aim Frame Zoom (Halo 3, MCC and Project Reclaimer, and ODST): while the game is zoomed, the\n");
+    fprintf(f, "# Aim Frame Zoom (Halo 3, MCC and Project Reclaimer, ODST, Reach and Halo 4): while the game is zoomed, the\n");
     fprintf(f, "# headset shows the game's zoomed picture as a frame centred on your aim instead of the\n");
     fprintf(f, "# immersive view. The zoom button then reaches the game, so the lens above is not offered in\n");
     fprintf(f, "# those games while this is on. 1 = on. (default %d)\n", d.aim_frame_zoom ? 1 : 0);

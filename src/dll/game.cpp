@@ -15,6 +15,7 @@
 #include "../common/weapon_muzzle.h"
 #include "../common/visual_hand_config.h"
 #include "../common/vr_turn_mode.h"
+#include "../common/aim_frame_logic.h"
 #include "../common/camera_recovery_logic.h"
 #include "../common/dual_weapon_aim_logic.h"
 #include "../common/native_shot_target_lease.h"
@@ -680,10 +681,10 @@ namespace
     std::atomic<float> g_projectionTanX{1.091595f};
     std::atomic<float> g_projectionTanY{1.114286f};
     std::atomic<float> g_zoomFactor{1.0f}; // >1 while the player is zoomed (scope)
-    // AIM FRAME ZOOM (config.h aim_frame_zoom), Halo 3 and ODST. The zoom level the game hands its own aim-assist
-    // query for the local player -- the unit's current zoom level, -1 while not zoomed -- and when, written by
-    // Halo3IndependentQueryDetour or OdstMuzzleQueryDetour on the simulation thread (both titles' callers load it
-    // from the same field: halo3.dll +0xF4C9E, halo3odst.dll +0x1106F2). It is the game's own state: it follows
+    // AIM FRAME ZOOM (config.h aim_frame_zoom). The zoom level the game hands its own aim-assist query for the local
+    // player -- the unit's current zoom level, -1 while not zoomed -- and when, written by each title's query detour
+    // on the simulation thread (their callers load it from the player's control record: halo3.dll +0xF4C9E,
+    // halo3odst.dll +0x1106F2, haloreach.dll +0x5EF26, halo4.dll +0xA363D). It is the game's own state: it follows
     // toggles, cancels on a weapon switch and re-arms as the game decides, which the button cannot tell.
     std::atomic<int> g_gameZoomLevel{-1};
     std::atomic<int> g_gameZoomTitle{-1};
@@ -711,12 +712,25 @@ namespace
     std::atomic<uint32_t> g_halo3TitleSafeFrameBits{0};
     bool AimFrameAllowed(GameTitle title);
     bool GameZoomed(GameTitle title, int& level);
+    // The generation a title's zoom level is noted under (0: not read here), and whether a title that came later
+    // than Halo 3 and ODST can draw the frame now. Defined after every title's runtime, by Game_AimFrameZoomOwnsZoom.
+    uint32_t AimFrameZoomGeneration(GameTitle title);
+    bool AimFrameLaterTitleLive(GameTitle title);
     std::atomic<bool> g_aimFramePass{false};
     // What the frame's passes actually drew: HUD widgets, and how many of those were the crosshair's predicate asking.
     std::atomic<uint32_t> g_aimFrameWidgets{0}, g_aimFrameCrosshairAsks{0};
     std::atomic<uint64_t> g_gameZoomMs{0};
     std::atomic<uint32_t> g_gameZoomGeneration{0};
-    const char* AimFrameTitleName(GameTitle title) { return title == GameTitle::Halo3ODST ? "ODST" : "Halo 3"; }
+    const char* AimFrameTitleName(GameTitle title)
+    {
+        switch (title)
+        {
+        case GameTitle::Halo3ODST: return "ODST";
+        case GameTitle::HaloReach: return "Reach";
+        case GameTitle::Halo4: return "Halo 4";
+        default: return "Halo 3";
+        }
+    }
     void NoteGameZoomLevel(GameTitle title, int16_t level, uint32_t generation)
     {
         const int previous = g_gameZoomLevel.exchange(level, std::memory_order_relaxed);
@@ -13541,7 +13555,8 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         return g_config.aim_frame_zoom && g_enabled.load(std::memory_order_relaxed) && VR_IsStereoEnabled() &&
             TitleAdapter_GetActiveTitle() == title &&
             // ODST's own eye renderer draws the frame; that is its camera-only context, Halo 3's never.
-            (title == GameTitle::Halo3ODST || (title == GameTitle::Halo3 && !Game_IsCameraOnlyBringup())) &&
+            (title == GameTitle::Halo3ODST || (title == GameTitle::Halo3 && !Game_IsCameraOnlyBringup()) ||
+             AimFrameLaterTitleLive(title)) &&
             !VR_IsCutsceneTheaterActive() && !VR_IsPausePresentation() && !VR_IsPausePresentationTarget() &&
             // DLSS keeps a history per eye; a picture along another axis would be blended into it.
             !VR_DlssWantsEyeCamera();
@@ -13550,8 +13565,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     // The game's own zoom level for the local player, read within the last half second of this generation.
     bool GameZoomed(GameTitle title, int& level)
     {
-        const uint32_t generation = (title == GameTitle::Halo3ODST ? g_odstRuntimeGeneration : g_halo3RuntimeGeneration)
-            .load(std::memory_order_acquire);
+        const uint32_t generation = AimFrameZoomGeneration(title);
         const uint64_t ms = g_gameZoomMs.load(std::memory_order_acquire);
         const uint64_t now = GetTickCount64();
         level = g_gameZoomLevel.load(std::memory_order_relaxed);
@@ -13561,9 +13575,12 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     }
 
     // `native`: the game's own view this frame, its half-angle tangents, if the title's eye renderer could read
-    // them. `savedUp`: the game camera's up, the fallback for an aim straight along the world's.
+    // them. `savedUp`: the game camera's up, the fallback for an aim straight along the world's. `aimForward`: where
+    // the title knows the aim better than the shared ray and the aim feedback do; null reads those. `pictureShape`:
+    // the engine derives the picture's aspect itself (Reach, Halo 4), so the frame takes the shape of the game's own
+    // view instead of the flat game's 16:9.
     bool AimFrameThisFrame(GameTitle title, bool native, float nativeX, float nativeY, const float* savedUp,
-                           AimFrame& out)
+                           AimFrame& out, const float* aimForward = nullptr, bool pictureShape = false)
     {
         auto& s = g_aimFrameState;
         const uint64_t nowUs = Sight_NowUs();
@@ -13585,7 +13602,9 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             // The aim: the intent ray the converged aim and direct drive write the game's aim from (it starts at
             // this same rendered centre eye), else the game's own aim forward.
             SightRay ray{};
-            if (Sight_ReadRay(title, TitleAdapter_GetGeneration(title), kSightRayFreshMs, ray))
+            if (aimForward)
+                memcpy(forward, aimForward, sizeof(forward));
+            else if (Sight_ReadRay(title, TitleAdapter_GetGeneration(title), kSightRayFreshMs, ray))
                 memcpy(forward, ray.dir, sizeof(forward));
             else
             {
@@ -13660,20 +13679,24 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                     g_config.aim_frame_size_deg[s.level]);
             }
         }
-        out.tanY = out.tanX / kAimFrameAspect;
+        out.tanY = pictureShape ? out.tanX * nativeY / nativeX : out.tanX / kAimFrameAspect;
         memcpy(out.forward, forward, sizeof(forward));
         memcpy(out.up, up, sizeof(up));
         out.level = s.level;
         const float trueDeg = 2.0f * atanf(out.tanX) * 57.29578f;
         const float eased = s.t * s.t * (3.0f - 2.0f * s.t);
-        out.widthDeg = trueDeg + (g_config.aim_frame_size_deg[s.level] - trueDeg) * eased;
+        const float shownDeg = pictureShape
+            ? aim_frame::ShownWidthDeg(g_config.aim_frame_size_deg[s.level], out.tanX, out.tanY, kAimFrameAspect)
+            : g_config.aim_frame_size_deg[s.level];
+        out.widthDeg = trueDeg + (shownDeg - trueDeg) * eased;
         return true;
     }
 
     // 3D in the frame: the two eyes meet at the point the aim is on (the converged aim's smoothed range, from the
     // same centre eye): it and the game's crosshair, drawn alike in both, sit at the frame's own depth. The frame is
-    // narrow, so turning each eye in has no keystone to speak of. 0, no range: the eyes look parallel.
-    float AimFrameMeetWu(GameTitle title, bool stereo, float spacing)
+    // narrow, so turning each eye in has no keystone to speak of. 0, no range: the eyes look parallel. `titleRangeWu`:
+    // the range from a title's own trace (positive), where the shared one is not published.
+    float AimFrameMeetWu(GameTitle title, bool stereo, float spacing, float titleRangeWu = 0.0f)
     {
         static bool logged = false;   // the render thread
         if (!stereo)
@@ -13683,7 +13706,9 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         }
         float meetWu = 0.0f;
         SightTrace trace{};
-        if (Sight_ReadTrace(title, TitleAdapter_GetGeneration(title), kSightFreshMs, trace))
+        if (titleRangeWu > 0.3f && std::isfinite(titleRangeWu))
+            meetWu = std::min(titleRangeWu, 2000.0f);
+        else if (Sight_ReadTrace(title, TitleAdapter_GetGeneration(title), kSightFreshMs, trace))
         {
             const float range = trace.AimRangeWu();
             if (std::isfinite(range) && range > 0.3f)
@@ -53297,6 +53322,22 @@ bool Game_HasScopeRenderer()
 #endif
     return false;
 }
+namespace
+{
+    uint32_t AimFrameZoomGeneration(GameTitle title)
+    {
+        switch (title)
+        {
+        case GameTitle::Halo3ODST: return g_odstRuntimeGeneration.load(std::memory_order_acquire);
+        case GameTitle::Halo3: return g_halo3RuntimeGeneration.load(std::memory_order_acquire);
+        default: return 0;
+        }
+    }
+    bool AimFrameLaterTitleLive(GameTitle)
+    {
+        return false;
+    }
+}
 bool Game_AimFrameZoomOwnsZoom()
 {
     if (!g_config.aim_frame_zoom || !g_enabled.load())
@@ -53312,10 +53353,7 @@ bool Game_AimFrameZoomOwnsZoom()
 bool Game_ReadZoomLevel(int& level)
 {
     const GameTitle title = TitleAdapter_GetActiveTitle();
-    if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST)
-        return false;
-    const uint32_t generation = (title == GameTitle::Halo3ODST ? g_odstRuntimeGeneration : g_halo3RuntimeGeneration)
-        .load(std::memory_order_acquire);
+    const uint32_t generation = AimFrameZoomGeneration(title);
     const uint64_t ms = g_gameZoomMs.load(std::memory_order_acquire);
     const uint64_t now = GetTickCount64();
     level = g_gameZoomLevel.load(std::memory_order_relaxed);

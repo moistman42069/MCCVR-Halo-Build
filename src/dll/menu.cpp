@@ -2444,13 +2444,14 @@ namespace
 
         if (CategorySection section{Cat_Scope}; section.visible)
         {
-        if (ImGui::CollapsingHeader("Aim Frame Zoom (Halo 3 and ODST)##section", ImGuiTreeNodeFlags_None))
+        if (ImGui::CollapsingHeader("Aim Frame Zoom (Halo 3, ODST, Reach and Halo 4)##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Aim Frame Zoom##aimframe", &g_config.aim_frame_zoom);
         ImGui::TextDisabled("While the game is zoomed, the headset shows the game's zoomed picture as a frame\n"
                             "centred on your aim instead of the 3D view, like playing it on a flat screen. The\n"
                             "zoom button reaches the game, so the lens below is not offered there while this\n"
-                            "is on. Halo 3 (MCC and Project Reclaimer) and ODST. On by default. Live.");
+                            "is on. Halo 3 (MCC and Project Reclaimer), ODST, Reach and Halo 4; where one of\n"
+                            "them cannot draw it, the lens keeps the zoom. On by default. Live.");
         if (g_config.aim_frame_zoom)
         {
             ImGui::Indent();
