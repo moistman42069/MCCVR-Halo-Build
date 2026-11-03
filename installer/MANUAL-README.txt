@@ -6,6 +6,15 @@ modes in Halo CE and Halo 2. Steam and Microsoft Store / Xbox app are supported.
 Read RELEASE-NOTES.md for changes and open reports.
 Passing build checks do not mean every feature or co-op session has been tested.
 
+IF YOUR ANTIVIRUS FLAGS THE LAUNCHER
+------------------------------------
+Windows Defender or another antivirus may flag HaloMCCVRLauncher.exe, for
+example as Behavior:Win32/DefenseEvasion.A!ml. The launcher is not code-signed,
+it downloads files, and it loads the mod into MCC, which is the kind of behavior
+these tools watch for. Make sure your ZIP came from the project's release page
+and matches the SHA256 list published with it, then allow just that item rather
+than turning your antivirus off.
+
 INSTALL WITH THE LAUNCHER
 ------------------------
 1. Close MCC and extract the whole launcher ZIP.

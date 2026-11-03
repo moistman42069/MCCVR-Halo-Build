@@ -224,6 +224,19 @@ def check_manual(path: Path, build_path: Path) -> int:
         return len(files)
 
 
+def check_standalone(path: Path, build_path: Path) -> int:
+    with zipfile.ZipFile(path) as standalone, zipfile.ZipFile(build_path) as build:
+        files = zip_files(standalone)
+        require(set(files) == {"HaloMCCVRLauncher.exe", "README.txt", "LICENSE", "THIRD-PARTY-LICENSES.txt", "OFL-Oxanium.txt"},
+                "Standalone ZIP must contain exactly the launcher, its readme and its licenses")
+        require(standalone.read("HaloMCCVRLauncher.exe") == build.read("HaloMCCVRLauncher.exe"),
+                "Standalone launcher differs from the verified build's")
+        require(b"ANTIVIRUS" in standalone.read("README.txt"), "Standalone readme lacks the antivirus note")
+        require(standalone.read("LICENSE") == build.read("ModFiles/LICENSE"), "Standalone LICENSE differs from the build's")
+        require(b"SIL OPEN FONT LICENSE" in standalone.read("OFL-Oxanium.txt"), "Standalone ZIP lacks the Oxanium OFL license text")
+        return len(files)
+
+
 def git(repo: Path, *args: str) -> bytes:
     return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True).stdout
 
@@ -257,6 +270,7 @@ def main() -> int:
     parser.add_argument("build_zip", type=Path)
     parser.add_argument("source_zip", type=Path)
     parser.add_argument("--manual-zip", type=Path)
+    parser.add_argument("--standalone-zip", type=Path)
     parser.add_argument("--commit", default="HEAD")
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
@@ -269,6 +283,9 @@ def main() -> int:
         if args.manual_zip:
             report.update(manual_files=check_manual(args.manual_zip, args.build_zip),
                           manual_zip_sha256=file_sha256(args.manual_zip))
+        if args.standalone_zip:
+            report.update(standalone_files=check_standalone(args.standalone_zip, args.build_zip),
+                          standalone_zip_sha256=file_sha256(args.standalone_zip))
         print(json.dumps({"verified": True, **report}, indent=2))
         return 0
     except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:

@@ -97,7 +97,7 @@ updates** lists them again: Moistman's latest stable release, or the releases, p
 included, of Nitsujack's or Godoy's fork. The launcher checks nothing until one of these is
 chosen. The menu starts on the source named by `release_channel` in the
 package's `BUILD-IDENTITY.txt` (`tools/package-candidate.ps1` takes it from the `origin`
-remote), and on Moistman's for a package without one. It never uses the retired pancreations
+remote), then on the selected install's, then on the repository the launcher itself was built from. It never uses the retired pancreations
 origin. Each download must come from the chosen source's own release URLs. **Release page** opens
 the chosen version's page, or that source's release list when no release is chosen. **Install** downloads the
 single player ZIP over HTTPS and verifies GitHub's asset size and SHA-256 digest. Once the update is installed, the
@@ -127,9 +127,16 @@ with valid and malicious local archives. Neither test launches or writes to a
 real MCC installation. Native Steam/Store launch behavior still requires user
 runtime testing; those paths were preserved, not runtime-accepted by these tests.
 
+## On its own
+
+Packaging also makes a `Standalone-Launcher` ZIP: the launcher, a readme and its licenses, for pages that hand out the
+launcher rather than the full package. It works with no package beside it: the font and a copy of the credits are built
+in, and it installs the mod by downloading a release.
+
 ## Credits
 
-The credits column lists `CREDITS.txt` (`installer/CREDITS.txt` in the source), which ships in the mod folder. Each
+The credits column lists `CREDITS.txt` (`installer/CREDITS.txt` in the source), which ships in the mod folder. A launcher
+with none beside it reads the selected install's, then the copy built into it. Each
 person is a `name:` line and a `what:` line, plus any number of `link: Label https://address` lines that show as
 badges beside the name, a `section:` line heads the people after it, and `intro:` lines are text with no name, each starting a new line. Only `https` addresses count as links. Editing the installed copy shows on the next launcher start, and an update
 replaces it. Keys the launcher does not know are skipped, so later additions do not break older launchers.

@@ -404,8 +404,12 @@ add_executable(halo3xr_launcher WIN32 src/launcher/launcher.cpp
     src/launcher/installer.cpp src/launcher/menu.cpp src/launcher/updater.cpp)
 set_target_properties(halo3xr_launcher PROPERTIES
     OUTPUT_NAME "HaloMCCVRLauncher")
+# Where a launcher with no package and no install beside it starts looking for releases. The packaging script sets it.
+set(HALOMCCVR_RELEASE_CHANNEL "official" CACHE STRING "Release repository this build belongs to: official, nitsujack or godoy")
+target_include_directories(halo3xr_launcher PRIVATE "${HALOMCCVR_GENERATED_DIR}")
 target_compile_definitions(halo3xr_launcher PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+    HALOMCCVR_RELEASE_CHANNEL="${HALOMCCVR_RELEASE_CHANNEL}"
     # --headless, the unattended launch, is a headless-test hook: dev builds only.
     HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>)
 # IApplicationActivationManager: the Microsoft Store edition is a packaged app
@@ -564,6 +568,7 @@ if(BUILD_TESTING)
     add_test(NAME halomccvr_updater_archive_tests COMMAND halomccvr_updater_archive_tests)
     add_executable(halomccvr_installer_tests tests/installer_tests.cpp src/launcher/installer.cpp)
     target_compile_definitions(halomccvr_installer_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_include_directories(halomccvr_installer_tests PRIVATE "${HALOMCCVR_GENERATED_DIR}")
     target_link_libraries(halomccvr_installer_tests PRIVATE bcrypt advapi32)
     add_test(NAME halomccvr_installer_tests COMMAND halomccvr_installer_tests)
     add_executable(halomccvr_vr_mapping_tests tests/vr_action_mapping_tests.cpp src/common/config.cpp src/common/input_preset.cpp src/common/log.cpp src/common/scope_logic.cpp)

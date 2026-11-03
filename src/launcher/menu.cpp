@@ -3,6 +3,8 @@
 #include "reclaimer_menu.h"
 #include "../common/reclaimer_host_logic.h"
 #include "../common/credits_file.h"
+#include "menu_font.generated.h"
+#include "launcher_credits.generated.h"
 #include <shobjidl.h>
 #include <shellapi.h>
 #include <uxtheme.h>
@@ -84,7 +86,7 @@ struct Menu {
     // The download this launcher was opened from, when it holds a package that is not the install itself: the first of
     // the versions, and how a first install happens with nothing to check for.
     bool packageListed = false, packageChosen = false;
-    fs::path fontPath; bool fontLoaded = false;
+    HANDLE font{}; bool fontLoaded = false;
     bool busy = false, updateReady = false, helperStarted = false, keepSettings = true;
     std::thread worker; std::wstring operationMessage;
     ReleaseUpdate latest; std::vector<ReleaseUpdate> versions;
@@ -152,6 +154,7 @@ struct Menu {
         if (!channelChosen) {
             auto own = ReadIdentity(payload).channel;
             if (own.empty() && game) own = ReadIdentity(game->root / L"Halo_MCC_VR").channel;
+            if (own.empty()) own = HALOMCCVR_RELEASE_CHANNEL;
             SendMessageW(channel, CB_SETCURSEL, ReleaseChannelIndex(own), 0);
         }
         const bool installed = game && fs::is_regular_file(game->root / L"Halo_MCC_VR" / L"HaloMCCVR.dll");
@@ -296,16 +299,20 @@ void DrawCreditsHeart(HDC dc, int left, int top, int unit) {
     Polygon(dc, core, static_cast<int>(std::size(core)));
     SelectObject(dc, oldBrush); SelectObject(dc, oldPen); DeleteObject(edge); DeleteObject(fill); DeleteObject(glow);
 }
-// The list comes from CREDITS.txt so that it can change without a new launcher. With no file, there is just no list.
+// The list comes from CREDITS.txt so that it can change without a new launcher; the launcher carries a copy for when it
+// has none to read.
+std::vector<CreditEntry> ParseCreditsUtf8(std::string_view bytes) {
+    std::wstring text(bytes.size(), L'\0');
+    text.resize(static_cast<size_t>(MultiByteToWideChar(CP_UTF8, 0, bytes.data(), static_cast<int>(bytes.size()), text.data(), static_cast<int>(text.size()))));
+    return ParseCredits(text);
+}
 std::vector<CreditEntry> ReadCredits(const fs::path& file) {
     constexpr std::streamsize kLargest = 256 * 1024;
     std::ifstream input(file, std::ios::binary);
     std::string bytes(static_cast<size_t>(kLargest), '\0');
     input.read(bytes.data(), kLargest);
     bytes.resize(static_cast<size_t>(input.gcount()));
-    std::wstring text(bytes.size(), L'\0');
-    text.resize(static_cast<size_t>(MultiByteToWideChar(CP_UTF8, 0, bytes.data(), static_cast<int>(bytes.size()), text.data(), static_cast<int>(text.size()))));
-    return ParseCredits(text);
+    return ParseCreditsUtf8(bytes);
 }
 void DrawCreditsTitle(Menu& menu, HDC dc) {
     HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); const auto old = SelectObject(dc, pen);
@@ -731,9 +738,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 std::wstring ShowLauncherMenu(HINSTANCE instance, const fs::path& launcherDir, int showCommand, std::wstring* reclaimerDir, std::wstring* reclaimerExe) {
     Menu menu; menu.instance = instance; menu.selfDir = launcherDir;
     menu.payload = fs::is_regular_file(launcherDir / L"ModFiles" / L"INSTALL-MANIFEST.sha256") ? launcherDir / L"ModFiles" : launcherDir;
-    menu.fontPath = menu.payload / L"assets" / L"fonts" / L"Oxanium.ttf";
     menu.credits = ReadCredits(menu.payload / L"CREDITS.txt");
-    menu.fontLoaded = AddFontResourceExW(menu.fontPath.c_str(), FR_PRIVATE, nullptr) != 0;
+    DWORD fontsAdded = 0;
+    menu.font = AddFontMemResourceEx(const_cast<unsigned char*>(menu_assets::oxanium), sizeof(menu_assets::oxanium), nullptr, &fontsAdded);
+    menu.fontLoaded = menu.font != nullptr;
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     WNDCLASSEXW type{sizeof(type)}; type.lpfnWndProc = WindowProc; type.hInstance = instance; type.hCursor = LoadCursorW(nullptr, IDC_ARROW); type.hIcon = LoadIconW(nullptr, IDI_APPLICATION); type.lpszClassName = L"HaloMCCVRSetupMenu";
@@ -751,6 +759,8 @@ std::wstring ShowLauncherMenu(HINSTANCE instance, const fs::path& launcherDir, i
     HWND window = CreateWindowExW(0, type.lpszClassName, L"Halo MCC VR | Setup & Launch", style, CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, instance, &menu);
     if (window) {
         menu.installs = DetectInstalls(launcherDir); menu.Populate();
+        if (const auto* game = menu.Selected(); menu.credits.empty() && game) menu.credits = ReadCredits(game->root / L"Halo_MCC_VR" / L"CREDITS.txt");
+        if (menu.credits.empty()) menu.credits = ParseCreditsUtf8({reinterpret_cast<const char*>(menu_assets::credits), sizeof(menu_assets::credits)});
         // The kept Project Reclaimer program; with none kept, one that is found is offered and kept only once the
         // player uses it.
         {
@@ -767,7 +777,7 @@ std::wstring ShowLauncherMenu(HINSTANCE instance, const fs::path& launcherDir, i
     for (HFONT font : {menu.body, menu.smallFont, menu.title, menu.label, menu.creditsTitle, menu.creditsSection}) if (font) DeleteObject(font);
     if (menu.background) DeleteObject(menu.background); if (menu.panel) DeleteObject(menu.panel);
     if (menu.reclaimerPanel) DeleteObject(menu.reclaimerPanel); if (menu.reclaimerField) DeleteObject(menu.reclaimerField);
-    if (menu.fontLoaded) RemoveFontResourceExW(menu.fontPath.c_str(), FR_PRIVATE, nullptr);
+    if (menu.font) RemoveFontMemResourceEx(menu.font);
     if (SUCCEEDED(com)) CoUninitialize();
     if (reclaimerExe) *reclaimerExe = menu.reclaimerExe;
     if (reclaimerDir) *reclaimerDir = menu.reclaimerDir;
