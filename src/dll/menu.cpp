@@ -1179,8 +1179,8 @@ namespace
             for(unsigned action=0;action<vr_mapping::Count;++action)
             {
                 ImGui::PushID(static_cast<int>(action));
-                ImGui::TextUnformatted(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)));
                 SettingGap();
+                ImGui::TextUnformatted(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)));
                 ImGui::SetNextItemWidth(-1);
                 if(ImGui::Combo("##source",&g_config.vr_bindings[selectedTitle][action],
                     vr_mapping::kSourceNames,vr_mapping::SourceCount))
@@ -2089,8 +2089,8 @@ namespace
                                 "Off whenever the game leaves first person (vehicle seats, turrets,\n"
                                 "third-person, death and Monitor cameras, cutscenes): your main hand\n"
                                 "aims alone. A grip held through it needs a fresh grip in first person.");
-            ImGui::Text("When gripping, your support hand steers the aim:");
             SettingGap();
+            ImGui::Text("When gripping, your support hand steers the aim:");
             if (ImGui::RadioButton("Based on the weapon##twohandaimby", g_config.two_hand_grip_zone_authority))
             { g_config.two_hand_grip_zone_authority = true; changed = true; }
             ImGui::SameLine();
@@ -2126,8 +2126,8 @@ namespace
                     oneHandRangeCm * (0.16f / 0.24f), oneHandRangeCm, oneHandRangeCm * (0.14f / 0.24f),
                     oneHandRangeCm * (0.12f / 0.24f));
             ImGui::Spacing();
-            ImGui::Text("Grip mode");
             SettingGap();
+            ImGui::Text("Grip mode");
             if (ImGui::RadioButton("Toggle (click grip)", g_config.two_hand_toggle))
             { g_config.two_hand_toggle = true; changed = true; }
             ImGui::SameLine();
@@ -2185,8 +2185,8 @@ namespace
                 "0 = off; higher values apply more smoothing.\n"
                 "Applies to two-handed aiming, Virtual Stock on or off.");
             ImGui::Spacing();
-            ImGui::Text("Grip and grab-zone calibration");
             SettingGap();
+            ImGui::Text("Grip and grab-zone calibration");
             changed |= vr_menu::SliderFloat("Left hand forward offset (m)",
                                           &g_config.left_hand_forward_m,
                                           -0.15f, 0.30f, "%.3f");
