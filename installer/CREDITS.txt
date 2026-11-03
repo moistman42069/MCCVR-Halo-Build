@@ -61,3 +61,8 @@ what: Performance and HUD proposals.
 
 name: PurplePeanut
 what: The Provolver proposal.
+
+name: Elliotttate
+what: For hosting the Flat2VR discord community that this mod originated in.
+
+name: Early Playtesters in the Flat2VR Discord!
