@@ -71,6 +71,10 @@ struct Menu {
     // Project Reclaimer (reclaimer_menu.h): the kept path's field, what is known of it, and the launch asked for.
     HWND reclaimerPath{}, reclaimerInfo{}; std::wstring reclaimerExe, reclaimerDir; bool reclaimerStartable = false;
     std::vector<CreditEntry> credits;
+    // The link badges as last drawn, in the list's client coordinates.
+    struct CreditBadge { RECT box; const wchar_t* url; };
+    std::vector<CreditBadge> creditBadges;
+    int creditBadgeHover = -1, creditBadgePressed = -1;
     HWND creditsList{};
     int creditsScroll = 0, creditsContent = 0, creditsDragFrom = -1, creditsDragScroll = 0;
     HFONT body{}, smallFont{}, title{}, label{}, creditsTitle{}, creditsSection{}; HBRUSH background{}, panel{}, reclaimerPanel{}, reclaimerField{};
@@ -319,6 +323,32 @@ void DrawCreditsTitle(Menu& menu, HDC dc) {
 int DrawCreditsList(Menu& menu, HDC dc, int width, int top) {
     SetBkMode(dc, TRANSPARENT);
     int y = top;
+    menu.creditBadges.clear();
+    // The name, then its badges beside it, carrying on below when they run out of room.
+    const auto nameAndLinks = [&](const CreditEntry& credit) {
+        SelectObject(dc, menu.label); SetTextColor(dc, kAccent);
+        RECT name{0, y, width, y};
+        DrawTextW(dc, credit.name.c_str(), -1, &name, DT_WORDBREAK | DT_NOPREFIX | DT_CALCRECT);
+        DrawTextW(dc, credit.name.c_str(), -1, &name, DT_WORDBREAK | DT_NOPREFIX);
+        int bottom = name.bottom, x = name.right + menu.Px(10), row = y - menu.Px(1);
+        const int height = menu.Px(20), pad = menu.Px(7);
+        SelectObject(dc, menu.smallFont);
+        for (const auto& link : credit.links) {
+            SIZE text{}; GetTextExtentPoint32W(dc, link.label.c_str(), static_cast<int>(link.label.size()), &text);
+            const int badgeWidth = text.cx + 2 * pad;
+            if (x + badgeWidth > width && x > 0) { x = 0; row = bottom + menu.Px(4); }
+            RECT box{x, row, x + badgeWidth, row + height};
+            const bool hover = static_cast<int>(menu.creditBadges.size()) == menu.creditBadgeHover;
+            HBRUSH fill = CreateSolidBrush(hover ? RGB(36, 71, 85) : kPanel), edge = CreateSolidBrush(hover ? kAccent : RGB(59, 107, 122));
+            FillRect(dc, &box, fill); FrameRect(dc, &box, edge); DeleteObject(fill); DeleteObject(edge);
+            SetTextColor(dc, hover ? kAccent : kText);
+            DrawTextW(dc, link.label.c_str(), -1, &box, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            menu.creditBadges.push_back({box, link.url.c_str()});
+            x = box.right + menu.Px(6);
+            bottom = std::max(bottom, static_cast<int>(box.bottom));
+        }
+        y = bottom + menu.Px(3);
+    };
     const auto paragraph = [&](const wchar_t* text, HFONT font, COLORREF color, int after) {
         SelectObject(dc, font); SetTextColor(dc, color);
         RECT box{0, y, width, y};
@@ -329,7 +359,7 @@ int DrawCreditsList(Menu& menu, HDC dc, int width, int top) {
     paragraph(L"Halo MCC VR is a community effort with contributions from multiple dedicated Halo and VR fans.", menu.smallFont, kText, 18);
     for (const auto& credit : menu.credits) {
         if (!credit.section.empty()) { y += menu.Px(8); paragraph(credit.section.c_str(), menu.creditsSection, kMuted, 12); }
-        paragraph(credit.name.c_str(), menu.label, kAccent, 3);
+        nameAndLinks(credit);
         paragraph(credit.what.c_str(), menu.smallFont, kText, 14);
     }
     return y;
@@ -342,9 +372,15 @@ RECT CreditsThumb(const Menu& menu, const RECT& client) {
     const int top = MulDiv(menu.creditsScroll, view - height, range);
     return {client.right - menu.Px(6), top, client.right, top + height};
 }
+int CreditBadgeAt(const Menu& menu, LPARAM position) {
+    const POINT point{static_cast<short>(LOWORD(position)), static_cast<short>(HIWORD(position))};
+    for (size_t i = 0; i < menu.creditBadges.size(); ++i) if (PtInRect(&menu.creditBadges[i].box, point)) return static_cast<int>(i);
+    return -1;
+}
 void ScrollCredits(Menu& menu, int to) {
     RECT client{}; GetClientRect(menu.creditsList, &client);
     menu.creditsScroll = std::clamp(to, 0, std::max(0, menu.creditsContent - static_cast<int>(client.bottom)));
+    menu.creditBadgeHover = menu.creditBadgePressed = -1;
     InvalidateRect(menu.creditsList, nullptr, FALSE);
 }
 LRESULT CALLBACK CreditsProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -373,7 +409,14 @@ LRESULT CALLBACK CreditsProc(HWND window, UINT message, WPARAM wParam, LPARAM lP
         return 0;
     }
     case WM_MOUSEWHEEL: ScrollCredits(*menu, menu->creditsScroll - MulDiv(GET_WHEEL_DELTA_WPARAM(wParam), menu->Px(60), WHEEL_DELTA)); return 0;
+    case WM_SETCURSOR: {
+        POINT cursor{}; GetCursorPos(&cursor); ScreenToClient(window, &cursor);
+        if (LOWORD(lParam) == HTCLIENT && CreditBadgeAt(*menu, MAKELPARAM(cursor.x, cursor.y)) >= 0) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; }
+        break;
+    }
+    case WM_MOUSELEAVE: menu->creditBadgeHover = -1; InvalidateRect(window, nullptr, FALSE); return 0;
     case WM_LBUTTONDOWN: {
+        if (const int badge = CreditBadgeAt(*menu, lParam); badge >= 0) { menu->creditBadgePressed = badge; return 0; }
         const RECT thumb = CreditsThumb(*menu, client);
         const int x = static_cast<short>(LOWORD(lParam)), y = static_cast<short>(HIWORD(lParam));
         if (thumb.bottom <= thumb.top || x < thumb.left) return 0;
@@ -384,13 +427,23 @@ LRESULT CALLBACK CreditsProc(HWND window, UINT message, WPARAM wParam, LPARAM lP
         return 0;
     }
     case WM_MOUSEMOVE:
+        if (const int badge = CreditBadgeAt(*menu, lParam); menu->creditsDragFrom < 0 && badge != menu->creditBadgeHover) {
+            menu->creditBadgeHover = badge;
+            TRACKMOUSEEVENT leave{sizeof(leave), TME_LEAVE, window, 0}; TrackMouseEvent(&leave);
+            InvalidateRect(window, nullptr, FALSE);
+        }
         if (menu->creditsDragFrom >= 0) {
             const RECT thumb = CreditsThumb(*menu, client);
             const int travel = client.bottom - (thumb.bottom - thumb.top);
             if (travel > 0) ScrollCredits(*menu, menu->creditsDragScroll + MulDiv(static_cast<short>(HIWORD(lParam)) - menu->creditsDragFrom, menu->creditsContent - client.bottom, travel));
         }
         return 0;
-    case WM_LBUTTONUP: if (menu->creditsDragFrom >= 0) ReleaseCapture(); return 0;
+    case WM_LBUTTONUP:
+        if (menu->creditsDragFrom >= 0) ReleaseCapture();
+        // Pressed and released on the same badge.
+        if (const int badge = CreditBadgeAt(*menu, lParam); badge >= 0 && badge == menu->creditBadgePressed) ShellExecuteW(window, L"open", menu->creditBadges[static_cast<size_t>(badge)].url, nullptr, nullptr, SW_SHOWNORMAL);
+        menu->creditBadgePressed = -1;
+        return 0;
     case WM_CAPTURECHANGED: menu->creditsDragFrom = -1; InvalidateRect(window, nullptr, FALSE); return 0;
     }
     return DefWindowProcW(window, message, wParam, lParam);

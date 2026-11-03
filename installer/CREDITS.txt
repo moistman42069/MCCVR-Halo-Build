@@ -3,18 +3,25 @@
 # One block per person, in the order they should appear:
 #   name: how they are credited
 #   what: what they contributed
+#   link: Label https://address     (any number of these: each is a badge beside the name; https addresses only)
 #
 # Order: the project's line of succession first, then everyone else from most contributed to least.
 # "section: Also Thanks To" starts the people who helped without contributing code directly, ordered the same way.
 
 name: Pancreations
 what: Created the original Halo-MCC-VR and its DLSS foundation, the base everything here is built on.
+link: GitHub https://github.com/pancreations
+link: Instagram https://www.instagram.com/pancreations/
 
-name: MoistMan
+name: Moistman42069
 what: Continued the project as Halo MCC VR, maintaining it and extending it across all six games on Steam and the Xbox app, with physical crouch and melee, weapon handling and tracked body avatars.
+link: GoFundMe https://www.gofundme.com/f/help-8yearold-leia-fight-bilateral-wilms-tumor?attribution_id=sl%3A1c800fb4-b6b0-4573-b902-56328a51bd36&ts=1792093104&utm_campaign=natman_sharesheet_dash&utm_medium=customer&utm_source=copy_link&video_sharing=enabled&sfnsn=mo
+link: PayPal https://www.paypal.com/paypalme/moistman69
 
 name: NitsuJack
 what: Project Reclaimer support, multiplayer-compatible aim solution for improved responsiveness, co-op stability across all titles, Aim Frame Zoom, motion detector fixes, audio fixes, roomscale solution polish, vehicle cameras with converging aim ported from Halo Campaign Evolved VR, input presets, desktop settings window, launcher reorganization and multi-repository auto updating and version selection.
+link: Ko-fi https://ko-fi.com/nitsujack
+link: YouTube https://www.youtube.com/@nitsujack7720
 
 name: Godoy301
 what: Weapon alignment and per-game gun offsets, two-handed grip zones, restored hand and gun animations, modded weapon support, bloom and autoexposure controls, world scale and dual-wield shake reload.
