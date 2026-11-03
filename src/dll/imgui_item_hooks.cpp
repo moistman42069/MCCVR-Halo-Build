@@ -4,6 +4,7 @@
 
 void ImGuiTestEngineHook_ItemAdd(ImGuiContext*, ImGuiID id, const ImRect&, const ImGuiLastItemData*)
 {
+    if (imgui_item_hooks::g_itemAdded) imgui_item_hooks::g_itemAdded(id);
     if (imgui_item_hooks::g_itemInfo && imgui_item_hooks::g_dropdownLabel && id == imgui_item_hooks::g_dropdownId)
         imgui_item_hooks::g_itemInfo(id, imgui_item_hooks::g_dropdownLabel, 0);
 }
