@@ -82,7 +82,8 @@ VR Mappings, which detects the advertised controller profile and stores optional
 overrides separately per game, including Unbound. The current
 native transport still couples actions that share a native MCC button/action,
 so reload and use may not unbind independently.
-Reload & Holsters, Weapon & Aim, Vehicles, Picture and Subtitles group the options.
+Reload and holsters is a section of Controls. Weapon & Aim, Vehicles, Picture and
+Subtitles group the other options.
 Optional stock, physical crouch, reload and DLSS need runtime testing.
 
 DLSS uses compatible NVIDIA hardware. Missing/failed optional features preserve

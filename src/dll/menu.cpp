@@ -110,7 +110,6 @@ namespace
         Cat_Comfort,
         Cat_Theatre,
         Cat_Controls,
-        Cat_Reload,
         Cat_Vehicles,
         Cat_WeaponAim,
         Cat_VirtualStockLab,
@@ -142,7 +141,6 @@ namespace
         {"Comfort",       "The flat screen you see in menus, and how head motion feels."},
         {"3D Theatre",    "A room-fixed stereo screen used only when the game locks the cinematic camera."},
         {"Controls",      "Your control scheme: presets, button mappings, movement, turning and gestures."},
-        {"Reload & Holsters", "Magazine handling, weapon storage, and gesture zones."},
         {"Vehicles",      "First-person driving: sit in the seat instead of floating behind the vehicle."},
         {"Weapon & Aim",  "Gun placement, per-title calibration, muzzle alignment, and two-handed aiming."},
         {"Virtual Stock Lab", "Experimental virtual shoulder aiming and proximity release."},
@@ -1754,8 +1752,7 @@ namespace
         }
         }
 
-        // Also in Controls, because a preset saves these.
-        if (CategorySection section{Cat_Reload, Cat_Controls}; section.visible)
+        if (CategorySection section{Cat_Controls}; section.visible)
         {
         if (SectionHeader("Reload and holsters##section", ImGuiTreeNodeFlags_None))
         {

@@ -39,7 +39,7 @@ int wmain(int argc, wchar_t** argv) {
     ImGui::BeginChild("Navigation",ImVec2(300,-35),ImGuiChildFlags_Borders);
     ImGui::PushFont(heading);
     for(const char* label:{"Welcome","Status","Comfort","3D Theatre","Controls",
-        "Reload & Holsters","Vehicles","Weapon & Aim","Crosshair","Body & Hands","Picture",
+        "Vehicles","Weapon & Aim","Crosshair","Body & Hands","Picture",
         "HUD","Subtitles","Desktop","Scope","Telemetry Recorder","Advanced"})
         ImGui::Selectable(label,strcmp(label,"Body & Hands")==0);
     ImGui::PopFont();ImGui::EndChild();ImGui::SameLine();

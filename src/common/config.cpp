@@ -3608,7 +3608,7 @@ void ConfigSave()
     fprintf(f, "# Holster location: 0 = weapon-side shoulder, 1 = weapon-side hip, 2 = over the weapon-side\n");
     fprintf(f, "# shoulder (higher and further back: the Campaign Evolved mod's weapon-switch spot).\n");
     fprintf(f, "# 3 = your own spot, the three values below: metres from your head to the weapon side, up, and\n");
-    fprintf(f, "# forward. Set it by hand: F1 > Reload & Holsters > Calibrate Holster Location, close the menu,\n");
+    fprintf(f, "# forward. Set it by hand: F1 > Controls > Reload and holsters > Calibrate Holster Location, close the menu,\n");
     fprintf(f, "# then squeeze the weapon grip where the holster should be. (defaults 0.198, 0.085, -0.284)\n");
     fprintf(f, "# (default location %d)\n", d.weapon_holster_location);
     fprintf(f, "weapon_holster_location = %d\n",g_config.weapon_holster_location);

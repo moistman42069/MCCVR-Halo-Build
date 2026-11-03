@@ -1647,7 +1647,7 @@ struct Config
     // 0 shoulder, 1 hip, 2 over the shoulder (Campaign Evolved's spot), 3 custom (the three values below).
     int weapon_holster_location = 3;
     // THE CUSTOM HOLSTER SPOT (location 3): metres from the head, to the weapon side, up, forward, in the level
-    // frame of the way the head faces. Set by hand: F1 > Reload & Holsters > "Calibrate Holster Location"
+    // frame of the way the head faces. Set by hand: F1 > Controls > Reload and holsters > "Calibrate Holster Location"
     // arms it, and the next squeeze of the weapon grip records where that hand is. The default is a spot
     // behind the weapon-side shoulder: 20 cm to the side, 9 cm above the head, 28 cm behind it. Each within
     // 0.80.
