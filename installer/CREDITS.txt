@@ -1,6 +1,6 @@
 # The credits shown in the launcher. Edit this file and reopen the launcher to see the change.
 #
-# "intro:" lines are paragraphs with no name, shown where they appear in the file.
+# "intro:" lines are text with no name, each starting a new line, shown where they appear in the file.
 #
 # One block per person, in the order they should appear:
 #   name: how they are credited
