@@ -229,12 +229,6 @@ namespace
         return ImGui::CollapsingHeader(label,flags);
     }
 
-    // Names the item just drawn as a setting, for one whose control has no name of its own.
-    void ReportSetting(const char* name)
-    {
-        ImGuiContext& g=*GImGui;
-        if(g.TestEngineHookItems&&imgui_item_hooks::g_itemInfo) imgui_item_hooks::g_itemInfo(g.LastItemData.ID,name,0);
-    }
 
     // Dropdowns, named for the index and the search results (imgui_item_hooks.h).
     struct NamedDropdown
@@ -1297,10 +1291,9 @@ namespace
             {
                 ImGui::PushID(static_cast<int>(action));
                 SettingGap();
-                ImGui::TextUnformatted(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)));
-                ReportSetting(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)));
-                ImGui::SetNextItemWidth(-1);
-                if(Combo("##source",&g_config.vr_bindings[selectedTitle][action],
+                // Laid out like every other dropdown, its action named beside it, so it is one setting for search too.
+                if(Combo(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)),
+                    &g_config.vr_bindings[selectedTitle][action],
                     vr_mapping::kSourceNames,vr_mapping::SourceCount))
                 {
                     if(g_config.vr_bindings[selectedTitle][action]!=vr_mapping::Automatic)
