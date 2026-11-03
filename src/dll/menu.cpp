@@ -7,6 +7,7 @@
 #include <cmath>
 #include <iterator>
 #include <string>
+#include <utility>
 #include <vector>
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -164,7 +165,8 @@ namespace
     // Settings search (setting_search.h). The index lists every setting with its page and section. It is built by drawing
     // each page once, out of sight and with every section open, while Dear ImGui reports each item's name
     // (imgui_item_hooks.h). Settings that only appear once another is turned on are found while they are showing.
-    struct SettingEntry { int page; std::string section, label; };
+    // Controls side by side on one row are one result, found by any of their names.
+    struct SettingEntry { int page; std::string section, label; std::vector<std::string> alsoOnRow; float rowTop=0.0f; };
     std::vector<SettingEntry> g_settingIndex;
     bool g_indexing=false, g_indexBuilt=false;
     std::vector<int> g_sectionOwners; // the pages whose sections are being drawn, innermost last
@@ -224,6 +226,24 @@ namespace
         if(g.TestEngineHookItems&&imgui_item_hooks::g_itemInfo) imgui_item_hooks::g_itemInfo(g.LastItemData.ID,name,0);
     }
 
+    // Dropdowns, named for the index and the search results (imgui_item_hooks.h).
+    struct NamedDropdown
+    {
+        explicit NamedDropdown(const char* label)
+        {imgui_item_hooks::g_dropdownId=ImGui::GetID(label);imgui_item_hooks::g_dropdownLabel=label;}
+        ~NamedDropdown(){imgui_item_hooks::g_dropdownLabel=nullptr;}
+    };
+    template<class... Args> bool Combo(const char* label,Args&&... args)
+    {
+        NamedDropdown named(label);
+        return ImGui::Combo(label,std::forward<Args>(args)...);
+    }
+    bool BeginCombo(const char* label,const char* preview,ImGuiComboFlags flags=0)
+    {
+        NamedDropdown named(label);
+        return ImGui::BeginCombo(label,preview,flags);
+    }
+
     void IndexSetting(ImGuiID,const char* label,int flags)
     {
         if(flags&ImGuiItemStatusFlags_Openable) return; // a section header, which the section name already covers
@@ -232,7 +252,18 @@ namespace
         const int page=SettingPage();
         for(const auto& entry:g_settingIndex)
             if(entry.page==page&&entry.label==name&&entry.section==g_currentSection) return;
-        g_settingIndex.push_back({page,g_currentSection,name});
+        const ImGuiWindow* window=GImGui->CurrentWindow;
+        const float top=GImGui->LastItemData.Rect.Min.y-window->DC.CursorStartPos.y;
+        if(!g_settingIndex.empty())
+        {
+            SettingEntry& last=g_settingIndex.back();
+            if(last.page==page&&last.section==g_currentSection&&std::fabs(last.rowTop-top)<1.0f)
+            {
+                if(std::find(last.alsoOnRow.begin(),last.alsoOnRow.end(),name)==last.alsoOnRow.end()) last.alsoOnRow.push_back(name);
+                return;
+            }
+        }
+        g_settingIndex.push_back({page,g_currentSection,name,{},top});
     }
 
     void OutlineJumpTarget(ImGuiID,const char* label,int)
@@ -321,7 +352,7 @@ namespace
             changed=true;
         };
         ImGui::SetNextItemWidth(-140.0f);
-        if(ImGui::BeginCombo("Input preset",active.empty()?"(not saved)":active.c_str()))
+        if(BeginCombo("Input preset",active.empty()?"(not saved)":active.c_str()))
         {
             for(int i=0;i<input_preset::BuiltInCount();++i)
                 if(ImGui::Selectable(input_preset::BuiltInName(i),active==input_preset::BuiltInName(i)))
@@ -1187,7 +1218,7 @@ namespace
                 "Off, or in a game without equipment, that pull throws a grenade.");
             ImGui::EndDisabled();
             ImGui::Spacing();
-            ImGui::Combo("Settings for",&selectedTitle,weapon_interaction::kTitleNames,6);
+            Combo("Settings for",&selectedTitle,weapon_interaction::kTitleNames,6);
             ImGui::TextWrapped("All six games support separate actions while direct VR routing is available. "
                 "Games using the MCC layout fallback can link actions sharing a native button. "
                 "If the direct route is unavailable, Reload and Use may still share a button.");
@@ -1204,7 +1235,7 @@ namespace
                 ImGui::TextUnformatted(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)));
                 ReportSetting(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)));
                 ImGui::SetNextItemWidth(-1);
-                if(ImGui::Combo("##source",&g_config.vr_bindings[selectedTitle][action],
+                if(Combo("##source",&g_config.vr_bindings[selectedTitle][action],
                     vr_mapping::kSourceNames,vr_mapping::SourceCount))
                 {
                     if(g_config.vr_bindings[selectedTitle][action]!=vr_mapping::Automatic)
@@ -1264,7 +1295,7 @@ namespace
             if(activeIndex>=0)vehicleGame=activeIndex;
             previousVehicleTitle=activeVehicleTitle;
         }
-        ImGui::Combo("Game##vehicletrim",&vehicleGame,"Halo 3\0ODST\0Reach\0Halo 4\0Halo CE\0Halo 2\0");
+        Combo("Game##vehicletrim",&vehicleGame,"Halo 3\0ODST\0Reach\0Halo 4\0Halo CE\0Halo 2\0");
         const auto editVehicleTitle=static_cast<GameTitle>(vehicleGame+1);
         static bool editVehicleBase=false;
         ImGui::Checkbox("Edit this game's base position##vehicletrim",&editVehicleBase);
@@ -1605,7 +1636,7 @@ namespace
         }
         if (SectionHeader("How you control a seat (Halo 3, ODST, Reach)##section", ImGuiTreeNodeFlags_None))
         {
-        changed |= ImGui::Combo("Seat controls", &g_config.vehicle_control,
+        changed |= Combo("Seat controls", &g_config.vehicle_control,
                                 "As before\0Motion: your hand\0Stick\0Wheel\0");
         ImGui::TextDisabled(
             "Apart from how your view turns: each works with a view the world\n"
@@ -1657,7 +1688,7 @@ namespace
         ImGui::Text("Vehicle cameras (every title)");
         changed |= ImGui::Checkbox("Cameras from halomccvr_vehicle_cameras.json",
                                    &g_config.vehicle_cameras);
-        changed |= ImGui::Combo("Note when the camera changes", &g_config.vehicle_camera_note,
+        changed |= Combo("Note when the camera changes", &g_config.vehicle_camera_note,
                                 "Off\0In the game's HUD messages\0On the mod's panel\0");
         changed |= ImGui::Checkbox("Add new vehicles to the camera file", &g_config.vehicle_camera_autoadd);
         changed |= ImGui::Checkbox("Ring where the vehicle aims",
@@ -1735,7 +1766,7 @@ namespace
             changed |= vr_menu::SliderFloat("Third-person boom speed (deg/s)",
                 &g_config.vehicle_boom_rate_deg_s, 5.0f, 360.0f, "%.0f");
             int boomInvert = g_config.vehicle_boom_invert + 1;
-            if (ImGui::Combo("Third-person boom up and down", &boomInvert,
+            if (Combo("Third-person boom up and down", &boomInvert,
                              "As the game's look inversion\0Not inverted\0Inverted\0"))
             {
                 g_config.vehicle_boom_invert = boomInvert - 1;
@@ -1793,7 +1824,7 @@ namespace
             SettingGap();
             changed |= vr_menu::SliderFloat("Magazine grab radius (m)",
                 &g_config.weapon_body_zone_radius_m,0.08f,0.40f,"%.2f");
-            changed|=ImGui::Combo("Reserve magazine location",&g_config.weapon_pouch_location,
+            changed|=Combo("Reserve magazine location",&g_config.weapon_pouch_location,
                 "Support-side front hip\0Behind support shoulder\0");
             if(ImGui::TreeNode("Reserve magazine position"))
             {
@@ -1901,7 +1932,7 @@ namespace
         if (g_config.weapon_holsters)
         {
             SettingGap();
-            changed |= ImGui::Combo("Holster location", &g_config.weapon_holster_location,
+            changed |= Combo("Holster location", &g_config.weapon_holster_location,
                 "Weapon-side shoulder\0Weapon-side hip\0Over the weapon-side shoulder\0"
                 "Custom (set with your hand)\0");
             if (g_config.weapon_holster_location == 3)
@@ -2041,7 +2072,7 @@ namespace
                             "passes through. Swing melee and arm-swing running still read your raw motion. Live.");
         if (g_config.hand_smoothing)
         {
-            changed |= ImGui::Combo("Hands##handsmoothing", &g_config.hand_smoothing_hands,
+            changed |= Combo("Hands##handsmoothing", &g_config.hand_smoothing_hands,
                                     "Both hands\0Only the hand I aim with\0Only my other hand\0");
             ImGui::TextDisabled("\"Only my other hand\" steadies two-handed holds and the arms with no lag on your aim.");
             changed |= vr_menu::SliderFloat("Position steadiness (Hz)", &g_config.hand_smoothing_pos_min_hz,
@@ -2487,7 +2518,7 @@ namespace
                 static const char* const kAssess[] = {"Off", "On foot", "Everywhere"};
                 int assess = g_config.honest_reticle_assess < 0 ? 0 :
                     (g_config.honest_reticle_assess > 2 ? 2 : g_config.honest_reticle_assess);
-                if (ImGui::Combo("Assess: marker where the game's shot lands (dev)", &assess, kAssess, 3))
+                if (Combo("Assess: marker where the game's shot lands (dev)", &assess, kAssess, 3))
                 {
                     g_config.honest_reticle_assess = assess;
                     changed = true;
@@ -2975,11 +3006,11 @@ namespace
         }
         if (SectionHeader("Optional temporal upscaling##section", ImGuiTreeNodeFlags_None))
         {
-        changed|=ImGui::Combo("Upscaler",&g_config.upscaler,"Off\0NVIDIA DLSS (experimental)\0");
+        changed|=Combo("Upscaler",&g_config.upscaler,"Off\0NVIDIA DLSS (experimental)\0");
         if(g_config.upscaler)
         {
-            changed|=ImGui::Combo("DLSS quality",&g_config.dlss_mode,"DLAA\0Quality\0Balanced\0Performance\0Ultra Performance\0");
-            changed|=ImGui::Combo("DLSS model",&g_config.dlss_preset,"Runtime default\0F (CNN)\0J\0K\0L\0M\0E (CNN)\0");
+            changed|=Combo("DLSS quality",&g_config.dlss_mode,"DLAA\0Quality\0Balanced\0Performance\0Ultra Performance\0");
+            changed|=Combo("DLSS model",&g_config.dlss_preset,"Runtime default\0F (CNN)\0J\0K\0L\0M\0E (CNN)\0");
             changed|=ImGui::Checkbox("Temporal jitter",&g_config.dlss_jitter);
             char status[512]{};VR_GetDlssStatus(status,sizeof(status));
             ImGui::TextWrapped("%s",status);
@@ -2992,7 +3023,7 @@ namespace
         if (SectionHeader("Image quality (applies live, every title)##section", ImGuiTreeNodeFlags_None))
         {
         const char* upscaleItems[] = {"Linear (old)", "Sharp (strong bicubic)"};
-        changed |= ImGui::Combo("Upscale filter", &g_config.upscale_filter,
+        changed |= Combo("Upscale filter", &g_config.upscale_filter,
                                 upscaleItems, 2);
         ImGui::TextDisabled("How the game image is scaled to your headset. The game usually\n"
                             "renders BELOW your per-eye headset resolution, so this upscales it.\n"
@@ -3002,7 +3033,7 @@ namespace
                             "It uses the same five taps/pass; lower it if the top rings or clips.");
         const char* aaItems[] = {
             "Off", "FXAA", "FXAA Strong", "SMAA 1x", "SMAA 1x + FXAA Strong"};
-        changed |= ImGui::Combo("Anti-aliasing", &g_config.aa_mode, aaItems, 5);
+        changed |= Combo("Anti-aliasing", &g_config.aa_mode, aaItems, 5);
         ImGui::TextDisabled("Smooths jagged edges on the finished image, so a mid/low rig doesn't\n"
                             "need a huge render resolution. SMAA 1x is the real 3-stage filter;\n"
                             "the final option adds FXAA Strong for the most aggressive cleanup.\n"
@@ -3087,7 +3118,7 @@ namespace
                 changed|=vr_menu::SliderFloat("Gameplay text scale",&g_config.vr_gameplay_subtitle_scale,.5f,2.5f,"%.2fx");
                 changed|=vr_menu::SliderFloat("Gameplay horizontal position",&g_config.vr_gameplay_subtitle_x,-1.f,1.f,"%.2f");
                 changed|=vr_menu::SliderFloat("Gameplay vertical position",&g_config.vr_gameplay_subtitle_y,-1.f,1.f,"%.2f");
-                changed|=ImGui::Combo("Gameplay anchor",&g_config.vr_gameplay_subtitle_anchor,"Follow head\0Stay in world\0");
+                changed|=Combo("Gameplay anchor",&g_config.vr_gameplay_subtitle_anchor,"Follow head\0Stay in world\0");
             }
             }
             else ImGui::TextWrapped("Gameplay subtitle placement is available in Halo 2, Halo 3, ODST, Reach and Halo 4.");
@@ -3098,7 +3129,7 @@ namespace
                 changed|=vr_menu::SliderFloat("Theatre text scale",&g_config.vr_theatre_subtitle_scale,.5f,2.5f,"%.2fx");
                 changed|=vr_menu::SliderFloat("Theatre horizontal position",&g_config.vr_theatre_subtitle_x,-1.f,1.f,"%.2f");
                 changed|=vr_menu::SliderFloat("Theatre vertical position",&g_config.vr_theatre_subtitle_y,-1.f,1.f,"%.2f");
-                changed|=ImGui::Combo("Theatre anchor",&g_config.vr_theatre_subtitle_anchor,"Theatre screen\0Follow head\0");
+                changed|=Combo("Theatre anchor",&g_config.vr_theatre_subtitle_anchor,"Theatre screen\0Follow head\0");
             }
             else if(g_config.cutscene_theater_subtitles)
                 ImGui::TextWrapped("Halo CE keeps its existing subtitle view; native text placement is not yet available.");
@@ -3398,7 +3429,9 @@ namespace
         for(size_t i=0;i<g_settingIndex.size();++i)
         {
             const auto& entry=g_settingIndex[i];
-            if(!setting_search::Matches(query,{entry.label,entry.section,kCategories[entry.page].label})) continue;
+            const auto matches=[&](const std::string& label)
+                {return setting_search::Matches(query,{label,entry.section,kCategories[entry.page].label});};
+            if(!matches(entry.label)&&std::none_of(entry.alsoOnRow.begin(),entry.alsoOnRow.end(),matches)) continue;
             if(++found>kMostShown) continue;
             if(entry.page!=lastPage||!lastSection||*lastSection!=entry.section)
             {
