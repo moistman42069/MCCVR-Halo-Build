@@ -172,8 +172,13 @@ namespace
     std::vector<int> g_sectionOwners; // the pages whose sections are being drawn, innermost last
     std::string g_currentSection;
     char g_searchQuery[96]="";
-    // A setting chosen from the results: its page opens at it, and it is outlined for a moment.
-    struct SettingJump { int page=-1; std::string section, label; int frames=0; bool scrolled=false; } g_jump;
+    // A setting chosen from the results: its page opens scrolled to it, and the whole setting, from its row down to the
+    // next one so its notes come along, flashes a few times. Where it is on screen is measured each frame as it is drawn.
+    struct SettingJump
+    {
+        int page=-1; std::string section, label; bool active=false, scrolled=false; double start=0.0;
+        float top=-1.0f, bottom=0.0f, next=-1.0f;
+    } g_jump;
     // Each result shows its setting live: the setting's page, drawn in a small window scrolled to just that setting.
     // Where the setting sits on its page, and how tall it is up to the next item, are measured as it is drawn there.
     // Only the results in view are drawn, each with clipping off, since Dear ImGui does not report an item out of view.
@@ -214,7 +219,7 @@ namespace
     bool SectionHeader(const char* label,ImGuiTreeNodeFlags flags=0)
     {
         g_currentSection=VisibleName(label);
-        if(g_indexing||g_drawingResult||(g_jump.frames>0&&!g_jump.scrolled&&g_jump.page==SettingPage()&&g_jump.section==g_currentSection))
+        if(g_indexing||g_drawingResult||(g_jump.active&&!g_jump.scrolled&&g_jump.page==SettingPage()&&g_jump.section==g_currentSection))
             ImGui::SetNextItemOpen(true);
         return ImGui::CollapsingHeader(label,flags);
     }
@@ -266,13 +271,42 @@ namespace
         g_settingIndex.push_back({page,g_currentSection,name,{},top});
     }
 
-    void OutlineJumpTarget(ImGuiID,const char* label,int)
+    void MeasureJumpTarget(ImGuiID,const char* label,int)
     {
-        if(SettingPage()!=g_jump.page||g_currentSection!=g_jump.section||VisibleName(label)!=g_jump.label) return;
-        if(!g_jump.scrolled){ImGui::SetScrollHereY(0.35f);g_jump.scrolled=true;}
         const ImRect r=GImGui->LastItemData.Rect;
-        ImGui::GetWindowDrawList()->AddRect(ImVec2(r.Min.x-4.0f,r.Min.y-3.0f),ImVec2(r.Max.x+4.0f,r.Max.y+3.0f),
-            ImGui::GetColorU32(Rgb(kAccent)),3.0f,0,2.0f);
+        if(g_jump.top<0.0f)
+        {
+            if(SettingPage()!=g_jump.page||g_currentSection!=g_jump.section||VisibleName(label)!=g_jump.label) return;
+            if(!g_jump.scrolled){ImGui::SetScrollHereY(0.25f);g_jump.scrolled=true;g_jump.start=ImGui::GetTime();}
+            g_jump.top=r.Min.y;g_jump.bottom=r.Max.y;
+        }
+        else if(g_jump.next<0.0f&&r.Min.y>=g_jump.bottom-1.0f) g_jump.next=r.Min.y;
+    }
+
+    // Draws the jump's flash over the setting measured this frame, and ends the jump once it has flashed.
+    void FlashJumpTarget()
+    {
+        constexpr double kFlash=0.6; constexpr int kFlashes=3;
+        const double t=ImGui::GetTime()-g_jump.start;
+        if(g_jump.scrolled&&g_jump.top>=0.0f)
+        {
+            const ImGuiWindow* window=GImGui->CurrentWindow;
+            const float end=g_jump.next>=0.0f?g_jump.next-ImGui::GetStyle().ItemSpacing.y*0.5f:g_jump.bottom+3.0f;
+            const ImVec2 min(window->WorkRect.Min.x-4.0f,g_jump.top-3.0f),max(window->WorkRect.Max.x+4.0f,end);
+            const float glow=0.5f-0.5f*std::cos(static_cast<float>(t/kFlash)*6.2831853f);
+            ImVec4 fill=Rgb(kAccent),edge=fill;
+            fill.w=0.22f*glow;edge.w=glow;
+            ImDrawList* draw=ImGui::GetWindowDrawList();
+            draw->AddRectFilled(min,max,ImGui::GetColorU32(fill),3.0f);
+            draw->AddRect(min,max,ImGui::GetColorU32(edge),3.0f,0,2.0f);
+        }
+        // Ends once flashed, or after a while if the setting is not on its page just now.
+        if(g_jump.scrolled?t>=kFlash*kFlashes:ImGui::GetTime()-g_jump.start>2.0)
+        {
+            g_jump.active=false;
+            GImGui->TestEngineHookItems=false;
+            imgui_item_hooks::g_itemInfo=nullptr;
+        }
     }
 
     // Measures the setting a result shows: from its top to the next item below it, so its notes come along.
@@ -3444,9 +3478,9 @@ namespace
             if(GoToButton("##goto"))
             {
                 g_activeCategory=entry.page;
-                g_jump={entry.page,entry.section,entry.label,90,false};
+                g_jump={entry.page,entry.section,entry.label,true,false,ImGui::GetTime()};
                 g.TestEngineHookItems=true;
-                imgui_item_hooks::g_itemInfo=&OutlineJumpTarget;
+                imgui_item_hooks::g_itemInfo=&MeasureJumpTarget;
                 g_searchQuery[0]=0;
             }
             if(ImGui::IsItemHovered())
@@ -3467,6 +3501,7 @@ namespace
             ImGui::SetScrollY(layout.top);
             const int shownPage=g_activeCategory;
             const bool hooked=g.TestEngineHookItems,unclipped=g.ItemUnclipByLog;
+            const auto listener=imgui_item_hooks::g_itemInfo; // a jump just chosen keeps listening
             g_measure={&entry};
             g.TestEngineHookItems=true;imgui_item_hooks::g_itemInfo=&MeasureResult;g_drawingResult=true;
             g.ItemUnclipByLog=true;
@@ -3474,7 +3509,7 @@ namespace
             DrawPageContent(changed);
             g_activeCategory=shownPage;
             g.ItemUnclipByLog=unclipped;
-            g_drawingResult=false;imgui_item_hooks::g_itemInfo=nullptr;g.TestEngineHookItems=hooked;
+            g_drawingResult=false;imgui_item_hooks::g_itemInfo=listener;g.TestEngineHookItems=hooked;
             if(g_measure.top>=0.0f)
             {
                 layout.top=std::max(0.0f,g_measure.top-2.0f);
@@ -3571,12 +3606,18 @@ namespace
         ImGui::Spacing();
 
         if (g_searchQuery[0]) DrawSearchResults(changed);
-        else DrawPageContent(changed);
-        if (g_jump.frames > 0 && --g_jump.frames == 0)
+        else if (g_jump.active)
         {
-            GImGui->TestEngineHookItems = false;
-            imgui_item_hooks::g_itemInfo = nullptr;
+            // Out of view, a setting is not reported, so the page is drawn whole until the setting is found.
+            ImGuiContext& g = *GImGui;
+            const bool unclipped = g.ItemUnclipByLog;
+            g.ItemUnclipByLog = unclipped || !g_jump.scrolled;
+            g_jump.top = -1.0f; g_jump.next = -1.0f;
+            DrawPageContent(changed);
+            g.ItemUnclipByLog = unclipped;
+            FlashJumpTarget();
         }
+        else DrawPageContent(changed);
 
         ImGui::PopTextWrapPos();
         ImGui::EndChild(); // ##pane
