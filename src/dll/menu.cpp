@@ -3419,7 +3419,8 @@ namespace
                 imgui_item_hooks::g_itemInfo=&OutlineJumpTarget;
                 g_searchQuery[0]=0;
             }
-            if(ImGui::IsItemHovered()) ImGui::SetTooltip("Go to this setting on its page");
+            if(ImGui::IsItemHovered())
+                ImGui::SetTooltip("Go to %s%s%s",kCategories[entry.page].label,entry.section.empty()?"":" > ",entry.section.c_str());
             ImGui::SameLine();
             ResultLayout& layout=g_resultLayouts[i];
             if(layout.hidden) {ImGui::SameLine();ImGui::TextDisabled("%s (not showing on its page right now)",entry.label.c_str());}
