@@ -14,6 +14,7 @@ std::filesystem::path DownloadUpdate(const ReleaseUpdate& release);
 // exact extraction path without network access or an MCC installation.
 void ExtractUpdateArchive(const std::filesystem::path& archive, const std::filesystem::path& output);
 // Starts an installer helper outside the installation and waits for this
-// launcher to exit before replacing it. It never starts MCC automatically.
-bool StartUpdateHelper(const std::filesystem::path& payload, const GameInstall& game, bool retainConfig, std::wstring& error);
+// launcher to exit before replacing it. It never starts MCC automatically. `replaceThisLauncher` has it also bring this
+// launcher, wherever it is, up to the installed one.
+bool StartUpdateHelper(const std::filesystem::path& payload, const GameInstall& game, bool retainConfig, bool replaceThisLauncher, std::wstring& error);
 }

@@ -100,9 +100,10 @@ package's `BUILD-IDENTITY.txt` (`tools/package-candidate.ps1` takes it from the 
 remote), then on the selected install's, then on the repository the launcher itself was built from. It never uses the retired pancreations
 origin. Each download must come from the chosen source's own release URLs. **Release page** opens
 the chosen version's page, or that source's release list when no release is chosen. **Install** downloads the
-single player ZIP over HTTPS and verifies GitHub's asset size and SHA-256 digest. Once the update is installed, the
-launcher it was started from is updated where it is as well, along with `ModFiles` if that folder is a package. If that
-copy cannot be replaced, the launcher says so and the installed update stands.
+single player ZIP over HTTPS and verifies GitHub's asset size and SHA-256 digest. When it is the newest release of the repository the
+launcher was built for, the launcher it was started from is updated where it is as well, along with `ModFiles` if that
+folder is a package. Anything else leaves that copy alone, as the player's way forward. If it cannot be replaced, the
+launcher says so and the installed update stands.
 ZIP extraction rejects traversal, absolute paths, duplicate Windows names,
 reserved device names, symlinks and excessive expanded sizes before extracting.
 The downloaded package's `ModFiles` manifest is verified again during install.

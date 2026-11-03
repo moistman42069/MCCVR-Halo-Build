@@ -162,7 +162,7 @@ fs::path DownloadUpdate(const ReleaseUpdate& release) {
         throw std::runtime_error("This release predates automatic updates. The verified ZIP is in the local update cache; use its manual instructions.");
     return payload;
 }
-bool StartUpdateHelper(const fs::path& payload, const GameInstall& game, bool retainConfig, std::wstring& error) {
+bool StartUpdateHelper(const fs::path& payload, const GameInstall& game, bool retainConfig, bool replaceThisLauncher, std::wstring& error) {
     try {
         wchar_t self[32768]{}; GetModuleFileNameW(nullptr, self, static_cast<DWORD>(std::size(self)));
         // Run this already-trusted installer, not an arbitrary executable from
@@ -171,7 +171,7 @@ bool StartUpdateHelper(const fs::path& payload, const GameInstall& game, bool re
         fs::copy_file(self, helper, fs::copy_options::overwrite_existing);
         if (Sha256File(self) != Sha256File(helper)) throw std::runtime_error("Update helper verification failed.");
         auto command = QuoteArgument(helper.wstring()) + L" --apply-update " + QuoteArgument(payload.wstring()) + L" " + QuoteArgument(game.root.wstring()) +
-            (retainConfig ? L" 1 " : L" 0 ") + std::to_wstring(GetCurrentProcessId()) + L" " + QuoteArgument(std::wstring(self));
+            (retainConfig ? L" 1 " : L" 0 ") + std::to_wstring(GetCurrentProcessId()) + (replaceThisLauncher ? L" " + QuoteArgument(std::wstring(self)) : std::wstring{});
         STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
         if (!CreateProcessW(helper.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, helper.parent_path().c_str(), &startup, &process)) throw std::runtime_error("Could not start the update installer.");
         CloseHandle(process.hThread); CloseHandle(process.hProcess); return true;
