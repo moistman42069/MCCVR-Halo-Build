@@ -5,7 +5,8 @@
 
 // CREDITS.txt, which the launcher lists: a "name:" line starts a person, the "what:" line after it says what they
 // contributed and each "link: Label https://address" line is a badge beside their name; a "section:" line heads the
-// people after it. Keys this version does not know are skipped, so a file with later additions still reads.
+// people after it and an "intro:" line is a paragraph with no name, an entry whose name is empty. Keys this version
+// does not know are skipped, so a file with later additions still reads.
 struct CreditLink { std::wstring label, url; };
 struct CreditEntry { std::wstring section, name, what; std::vector<CreditLink> links; };
 
@@ -34,6 +35,7 @@ inline std::vector<CreditEntry> ParseCredits(std::wstring_view text) {
         if (line.empty() || line.front() == L'#' || colon == std::wstring_view::npos) continue;
         const auto key = line.substr(0, colon), value = trim(line.substr(colon + 1));
         if (key == L"section") section = value;
+        else if (key == L"intro" && !value.empty() && credits.size() < kMostPeople) credits.push_back({{}, {}, std::wstring(value)});
         else if (key == L"name" && !value.empty() && credits.size() < kMostPeople) { credits.push_back({std::move(section), std::wstring(value), {}}); section.clear(); }
         else if (key == L"what" && !credits.empty()) credits.back().what = value;
         else if (key == L"link" && !credits.empty()) {

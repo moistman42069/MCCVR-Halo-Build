@@ -1,5 +1,7 @@
 # The credits shown in the launcher. Edit this file and reopen the launcher to see the change.
 #
+# "intro:" lines are paragraphs with no name, shown where they appear in the file.
+#
 # One block per person, in the order they should appear:
 #   name: how they are credited
 #   what: what they contributed
@@ -7,6 +9,9 @@
 #
 # Order: the project's line of succession first, then everyone else from most contributed to least.
 # "section: Also Thanks To" starts the people who helped without contributing code directly, ordered the same way.
+
+intro: Halo MCC VR is a community effort with contributions from multiple dedicated Halo and VR fans.
+intro: Even with AI assistance, there's a lot of human work and cost required for iteration, playtesting, community support, feature design, organization, and more. Please consider lending them your support!
 
 name: Pancreations
 what: Created the original Halo-MCC-VR and its DLSS foundation, the base everything here is built on.
