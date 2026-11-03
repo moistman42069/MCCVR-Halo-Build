@@ -166,9 +166,14 @@ namespace
     // each page once, out of sight and with every section open, while Dear ImGui reports each item's name
     // (imgui_item_hooks.h). Settings that only appear once another is turned on are found while they are showing.
     // Controls side by side on one row are one result, found by any of their names.
-    struct SettingEntry { int page; std::string section, label; std::vector<std::string> alsoOnRow; float rowTop=0.0f; };
+    // Its notes, the text drawn under it, are searched too.
+    struct SettingEntry
+    {
+        int page; std::string section, label; std::vector<std::string> alsoOnRow; float rowTop=0.0f; std::string notes;
+    };
     std::vector<SettingEntry> g_settingIndex;
     bool g_indexing=false, g_indexBuilt=false;
+    int g_indexBuilds=0; // tells the results when the index was built again
     std::vector<int> g_sectionOwners; // the pages whose sections are being drawn, innermost last
     std::string g_currentSection;
     char g_searchQuery[96]="";
@@ -249,8 +254,31 @@ namespace
         return ImGui::BeginCombo(label,preview,flags);
     }
 
+    // While the index is built, Dear ImGui's log keeps the text it draws. A setting's notes are the text after it, up to
+    // the next item that is not plain text.
+    struct NoteCapture { int entry=-1, from=0, to=-1; } g_notes;
+    void NoteItemAdded(ImGuiID)
+    {
+        if(g_notes.entry>=0&&g_notes.to<0) g_notes.to=GImGui->LogBuffer.size();
+    }
+    void KeepNotes()
+    {
+        if(g_notes.entry<0) return;
+        const ImGuiTextBuffer& log=GImGui->LogBuffer;
+        std::string& notes=g_settingIndex[g_notes.entry].notes;
+        for(int i=g_notes.from,end=g_notes.to>=0?g_notes.to:log.size();i<end;++i)
+        {
+            const char c=log.begin()[i];
+            const bool space=c==' '||c=='\n'||c=='\r'||c=='\t';
+            if(!space) notes.push_back(c);
+            else if(!notes.empty()&&notes.back()!=' ') notes.push_back(' ');
+        }
+        g_notes.entry=-1;
+    }
+
     void IndexSetting(ImGuiID,const char* label,int flags)
     {
+        KeepNotes();
         if(flags&ImGuiItemStatusFlags_Openable) return; // a section header, which the section name already covers
         const std::string name=VisibleName(label);
         if(name.empty()||name=="decrease"||name=="increase") return; // a slider's arrow buttons
@@ -265,10 +293,12 @@ namespace
             if(last.page==page&&last.section==g_currentSection&&std::fabs(last.rowTop-top)<1.0f)
             {
                 if(std::find(last.alsoOnRow.begin(),last.alsoOnRow.end(),name)==last.alsoOnRow.end()) last.alsoOnRow.push_back(name);
+                g_notes={static_cast<int>(g_settingIndex.size())-1,GImGui->LogBuffer.size()};
                 return;
             }
         }
         g_settingIndex.push_back({page,g_currentSection,name,{},top});
+        g_notes={static_cast<int>(g_settingIndex.size())-1,GImGui->LogBuffer.size()};
     }
 
     void MeasureJumpTarget(ImGuiID,const char* label,int)
@@ -291,7 +321,8 @@ namespace
         if(g_jump.scrolled&&g_jump.top>=0.0f)
         {
             const ImGuiWindow* window=GImGui->CurrentWindow;
-            const float end=g_jump.next>=0.0f?g_jump.next-ImGui::GetStyle().ItemSpacing.y*0.5f:g_jump.bottom+3.0f;
+            // Nothing after it on the page: its notes run to the end of the page.
+            const float end=(g_jump.next>=0.0f?g_jump.next:window->DC.CursorPos.y)-ImGui::GetStyle().ItemSpacing.y*0.5f;
             const ImVec2 min(window->WorkRect.Min.x-4.0f,g_jump.top-3.0f),max(window->WorkRect.Max.x+4.0f,end);
             const float glow=0.5f-0.5f*std::cos(static_cast<float>(t/kFlash)*6.2831853f);
             ImVec4 fill=Rgb(kAccent),edge=fill;
@@ -3396,6 +3427,7 @@ namespace
         const bool unclipped=g.ItemUnclipByLog,hooked=g.TestEngineHookItems;
         const auto listener=imgui_item_hooks::g_itemInfo;
         g.ItemUnclipByLog=true;g.TestEngineHookItems=true;imgui_item_hooks::g_itemInfo=&IndexSetting;g_indexing=true;
+        ImGui::LogToBuffer();imgui_item_hooks::g_itemAdded=&NoteItemAdded;g_notes={};
         ImGui::PushTextWrapPos(0.0f);
         bool ignored=false;
         for(int page=0;page<Cat_Count;++page)
@@ -3405,13 +3437,16 @@ namespace
             g_activeCategory=page;
             ImGui::PushID(page);
             DrawPageContent(ignored);
+            KeepNotes();
             ImGui::PopID();
         }
+        ImGui::LogFinish();imgui_item_hooks::g_itemAdded=nullptr;
         ImGui::PopTextWrapPos();
         g_indexing=false;imgui_item_hooks::g_itemInfo=listener;g.TestEngineHookItems=hooked;g.ItemUnclipByLog=unclipped;
         ImGui::End();
         g_activeCategory=shownPage;
         g_indexBuilt=true;
+        ++g_indexBuilds;
     }
 
     // The button beside each result that goes to it: a box with an arrow leaving it, so it is not mistaken for the
@@ -3447,7 +3482,21 @@ namespace
     void DrawSearchResults(bool& changed)
     {
         constexpr int kMostShown=40; // each live result in view draws its page once
-        const auto query=setting_search::Parse(g_searchQuery);
+        // What matches is worked out once per query, not every frame: with the notes, the index is a long read.
+        static std::string matchedQuery; static int matchedBuild=-1; static std::vector<bool> matched;
+        if(matchedQuery!=g_searchQuery||matchedBuild!=g_indexBuilds)
+        {
+            matchedQuery=g_searchQuery;matchedBuild=g_indexBuilds;
+            const auto query=setting_search::Parse(g_searchQuery);
+            matched.assign(g_settingIndex.size(),false);
+            for(size_t i=0;i<g_settingIndex.size();++i)
+            {
+                const auto& entry=g_settingIndex[i];
+                const auto matches=[&](const std::string& label)
+                    {return setting_search::Matches(query,{label,entry.section,kCategories[entry.page].label,entry.notes});};
+                matched[i]=matches(entry.label)||std::any_of(entry.alsoOnRow.begin(),entry.alsoOnRow.end(),matches);
+            }
+        }
         g_resultLayouts.resize(g_settingIndex.size());
         int found=0,lastPage=-1;
         const std::string* lastSection=nullptr;
@@ -3455,9 +3504,7 @@ namespace
         for(size_t i=0;i<g_settingIndex.size();++i)
         {
             const auto& entry=g_settingIndex[i];
-            const auto matches=[&](const std::string& label)
-                {return setting_search::Matches(query,{label,entry.section,kCategories[entry.page].label});};
-            if(!matches(entry.label)&&std::none_of(entry.alsoOnRow.begin(),entry.alsoOnRow.end(),matches)) continue;
+            if(!matched[i]) continue;
             if(++found>kMostShown) continue;
             if(entry.page!=lastPage||!lastSection||*lastSection!=entry.section)
             {
@@ -3498,14 +3545,18 @@ namespace
             g.TestEngineHookItems=true;imgui_item_hooks::g_itemInfo=&MeasureResult;g_drawingResult=true;
             g.ItemUnclipByLog=true;
             g_activeCategory=entry.page;
+            ImGui::PushTextWrapPos(0.0f); // a window of its own: notes wrap at its edge, as on the page
             DrawPageContent(changed);
+            ImGui::PopTextWrapPos();
+            const ImGuiWindow* live=g.CurrentWindow;
+            const float pageEnd=live->DC.CursorPos.y-live->DC.CursorStartPos.y; // where nothing follows a setting
             g_activeCategory=shownPage;
             g.ItemUnclipByLog=unclipped;
             g_drawingResult=false;imgui_item_hooks::g_itemInfo=listener;g.TestEngineHookItems=hooked;
             if(g_measure.top>=0.0f)
             {
                 layout.top=std::max(0.0f,g_measure.top-2.0f);
-                const float end=g_measure.next>=0.0f?g_measure.next:g_measure.bottom+ImGui::GetStyle().ItemSpacing.y;
+                const float end=g_measure.next>=0.0f?g_measure.next:pageEnd; // nothing after it: its notes run to the end
                 layout.height=std::max(ImGui::GetFrameHeight(),end-layout.top);
                 layout.found=true;layout.hidden=false;
             }
