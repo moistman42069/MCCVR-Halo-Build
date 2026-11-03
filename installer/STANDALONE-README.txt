@@ -20,7 +20,10 @@ GET STARTED
 Use MCC with anti-cheat disabled, and do not use the mod in matchmaking.
 
 The mod installs into a Halo_MCC_VR folder inside your MCC folder, and a copy of
-the launcher goes there too. Later updates also update the launcher you opened.
+the launcher goes there too. With "Update this launcher from the selected
+release" ticked, an update also updates the launcher you opened, and keeps the
+one it replaces as HaloMCCVRLauncher.previous.exe. If a new launcher ever
+won't start, open that one instead.
 
 IF YOUR ANTIVIRUS FLAGS THE LAUNCHER
 ------------------------------------

@@ -349,7 +349,9 @@ bool RefreshLauncherCopy(const fs::path& installedLauncher, const fs::path& payl
             fs::remove_all(old, ignored);
         }
         const fs::path next = copy.wstring() + L".new-" + suffix;
+        auto previous = copy; previous.replace_extension(L".previous" + copy.extension().wstring());
         try {
+            fs::copy_file(copy, previous, fs::copy_options::overwrite_existing);
             fs::copy_file(installedLauncher, next);
             if (Sha256File(next) != Sha256File(installedLauncher)) throw std::runtime_error("The launcher copy could not be verified.");
             if (!MoveFileExW(next.c_str(), copy.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("The launcher could not be replaced.");

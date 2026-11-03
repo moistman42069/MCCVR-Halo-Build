@@ -24,12 +24,12 @@ constexpr COLORREF kBackground = RGB(7, 16, 25), kPanel = RGB(15, 32, 44), kText
 // own, warm where the rest of the menu is teal.
 constexpr COLORREF kReclaimerPanel = RGB(31, 24, 13), kReclaimerField = RGB(46, 35, 18), kReclaimerAccent = RGB(240, 178, 84), kReclaimerMuted = RGB(186, 156, 112);
 // The panel's box, at 96 dpi.
-constexpr int kReclaimerLeft = 26, kReclaimerTop = 626, kReclaimerRight = 954, kReclaimerBottom = 810;
+constexpr int kReclaimerLeft = 26, kReclaimerTop = 656, kReclaimerRight = 954, kReclaimerBottom = 840;
 constexpr UINT kDone = WM_APP + 20;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
-          ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version };
+          ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version, UpdateSelf };
 // The window's client size at 96 dpi.
-constexpr int kMenuWidth = 1350, kMenuHeight = 904;
+constexpr int kMenuWidth = 1350, kMenuHeight = 934;
 // The credits column, right of the divider, at 96 dpi: the title stays put and the list below it scrolls.
 constexpr int kCreditsDivider = 968, kCreditsLeft = 986, kCreditsListTop = 76, kCreditsListWidth = 352;
 struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel, built, release, published; bool candidate = true; };
@@ -68,7 +68,7 @@ BuildIdentity ReadIdentity(const fs::path& directory) {
     return identity;
 }
 struct Menu {
-    HINSTANCE instance{}; HWND window{}, games{}, path{}, retain{}, status{}, channel{};
+    HINSTANCE instance{}; HWND window{}, games{}, path{}, retain{}, updateSelf{}, status{}, channel{};
     bool channelChosen = false, channelChanged = false;
     // Project Reclaimer (reclaimer_menu.h): the kept path's field, what is known of it, and the launch asked for.
     HWND reclaimerPath{}, reclaimerInfo{}; std::wstring reclaimerExe, reclaimerDir; bool reclaimerStartable = false;
@@ -88,6 +88,8 @@ struct Menu {
     bool packageListed = false, packageChosen = false;
     HANDLE font{}; bool fontLoaded = false;
     bool busy = false, updateReady = false, helperStarted = false, keepSettings = true;
+    // Whether an update also replaces this launcher where it is. Each version chosen resets it to the usual answer.
+    bool updateThisLauncher = false;
     std::thread worker; std::wstring operationMessage;
     ReleaseUpdate latest; std::vector<ReleaseUpdate> versions;
     enum class Work { None, Install, Check, Latest, Download } work = Work::None;
@@ -124,8 +126,18 @@ struct Menu {
         const bool release = row >= first && row - first < versions.size();
         latest = release ? versions[row - first] : ReleaseUpdate{};
         updateReady = packageChosen || release;
+        updateThisLauncher = release && ReplacesOpenedLauncher(versions, latest, CurrentChannel().key, HALOMCCVR_RELEASE_CHANNEL);
         SendMessageW(version, CB_SETCURSEL, updateReady ? static_cast<WPARAM>(row) : static_cast<WPARAM>(-1), 0);
+        if (updateSelf) InvalidateRect(updateSelf, nullptr, FALSE);
     }
+    // This launcher is the selected install's own, which every install replaces: there is no choice to offer.
+    bool RunningFromInstall() {
+        const auto* game = Selected(); std::error_code ignored;
+        return game && fs::equivalent(selfDir, game->root / L"Halo_MCC_VR", ignored);
+    }
+    // What the update-this-launcher box shows: always ticked for the install's own launcher, and never for a download
+    // being installed as it is, since that download is the launcher.
+    bool UpdateSelfShown() { return RunningFromInstall() || (!packageChosen && updateThisLauncher); }
     void ListVersions() {
         const auto* game = Selected();
         const auto installed = game ? ReadIdentity(game->root / L"Halo_MCC_VR") : BuildIdentity{};
@@ -170,6 +182,7 @@ struct Menu {
         EnableWindow(GetDlgItem(window, Settings), !busy && game &&
             fs::is_regular_file(game->root / L"Halo_MCC_VR" / L"HaloMCCVRSettings.exe"));
         EnableWindow(GetDlgItem(window, Check), !busy);
+        EnableWindow(updateSelf, !busy && !RunningFromInstall() && !packageChosen);
         EnableWindow(GetDlgItem(window, Latest), !busy);
         const auto identity = game ? ReadIdentity(game->root / L"Halo_MCC_VR") : BuildIdentity{};
         const bool current = installed && (packageChosen ? !identity.tag.empty() && identity.tag == ReadIdentity(payload).tag
@@ -456,7 +469,7 @@ LRESULT CALLBACK CreditsProc(HWND window, UINT message, WPARAM wParam, LPARAM lP
     }
     return DefWindowProcW(window, message, wParam, lParam);
 }
-void DrawCheckbox(Menu& menu, const DRAWITEMSTRUCT& item) {
+void DrawCheckbox(Menu& menu, const DRAWITEMSTRUCT& item, bool checked) {
     const bool disabled = item.itemState & ODS_DISABLED;
     HBRUSH clear = CreateSolidBrush(kBackground); FillRect(item.hDC, &item.rcItem, clear); DeleteObject(clear);
     const int size = menu.Px(22), top = (item.rcItem.top + item.rcItem.bottom - size) / 2;
@@ -466,7 +479,7 @@ void DrawCheckbox(Menu& menu, const DRAWITEMSTRUCT& item) {
     const auto oldPen = SelectObject(item.hDC, edge); const auto oldBrush = SelectObject(item.hDC, GetStockObject(HOLLOW_BRUSH));
     Rectangle(item.hDC, box.left, box.top, box.right, box.bottom);
     SelectObject(item.hDC, oldBrush); SelectObject(item.hDC, oldPen); DeleteObject(edge);
-    if (menu.keepSettings) {
+    if (checked) {
         HPEN tick = CreatePen(PS_SOLID, menu.Px(2), disabled ? RGB(80, 105, 115) : kAccent); const auto before = SelectObject(item.hDC, tick);
         MoveToEx(item.hDC, box.left + size * 5 / 22, box.top + size * 11 / 22, nullptr);
         LineTo(item.hDC, box.left + size * 9 / 22, box.top + size * 15 / 22);
@@ -560,19 +573,21 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Control(*menu, L"BUTTON", L"CHECK FOR UPDATES", BS_OWNERDRAW | WS_TABSTOP, 696, 386, 246, 38, Check);
         Control(*menu, L"BUTTON", L"INSTALL", BS_OWNERDRAW | WS_TABSTOP, 38, 436, 642, 38, Update);
         Control(*menu, L"BUTTON", L"RELEASE PAGE", BS_OWNERDRAW | WS_TABSTOP, 696, 436, 246, 38, ReleasePage);
-        menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_OWNERDRAW | WS_TABSTOP, 38, 482, 850, 30, Retain);
-        Label(*menu, L"03  /  YOUR VR SETUP", 38, 531, 570);
-        Control(*menu, L"BUTTON", L"VR SETTINGS", BS_OWNERDRAW | WS_TABSTOP, 38, 560, 270, 48, Settings);
-        Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 324, 560, 618, 48, Launch);
+        // Above keep-settings, which then sits right over the settings button below it.
+        menu->updateSelf = Control(*menu, L"BUTTON", L"Update this launcher from the selected release", BS_OWNERDRAW | WS_TABSTOP, 38, 482, 850, 30, UpdateSelf);
+        menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_OWNERDRAW | WS_TABSTOP, 38, 512, 850, 30, Retain);
+        Label(*menu, L"03  /  YOUR VR SETUP", 38, 561, 570);
+        Control(*menu, L"BUTTON", L"VR SETTINGS", BS_OWNERDRAW | WS_TABSTOP, 38, 590, 270, 48, Settings);
+        Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 324, 590, 618, 48, Launch);
         // The section's heading is painted with its panel (WM_PAINT).
-        menu->reclaimerPath = Control(*menu, L"EDIT", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 46, 671, 634, 32, ReclaimerPath);
+        menu->reclaimerPath = Control(*menu, L"EDIT", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 46, 701, 634, 32, ReclaimerPath);
         SendMessageW(menu->reclaimerPath, EM_SETLIMITTEXT, 2000, 0);
-        Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, 668, 122, 38, ReclaimerBrowse);
-        Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, 668, 110, 38, ReclaimerDetect);
-        menu->reclaimerInfo = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 48, 712, 890, 38);
+        Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, 698, 122, 38, ReclaimerBrowse);
+        Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, 698, 110, 38, ReclaimerDetect);
+        menu->reclaimerInfo = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 48, 742, 890, 38);
         SendMessageW(menu->reclaimerInfo, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
-        Control(*menu, L"BUTTON", L"LAUNCH PROJECT RECLAIMER", BS_OWNERDRAW | WS_TABSTOP, 46, 756, 406, 42, ReclaimerLaunch);
-        menu->status = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 826, 895, 66);
+        Control(*menu, L"BUTTON", L"LAUNCH PROJECT RECLAIMER", BS_OWNERDRAW | WS_TABSTOP, 46, 786, 406, 42, ReclaimerLaunch);
+        menu->status = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 856, 895, 66);
         SendMessageW(menu->status, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         menu->creditsList = CreateWindowExW(0, L"HaloMCCVRCredits", L"", WS_CHILD | WS_VISIBLE, menu->Px(kCreditsLeft), menu->Px(kCreditsListTop),
             menu->Px(kCreditsListWidth), menu->Px(kMenuHeight - kCreditsListTop - 26), window, nullptr, menu->instance, menu);
@@ -586,7 +601,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SelectObject(dc, menu->label); SetTextColor(dc, kMuted); const wchar_t* subtitle = L"The Master Chief Collection in Virtual Reality";
         TextOutW(dc, menu->Px(41), menu->Px(93), subtitle, static_cast<int>(wcslen(subtitle)));
         HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); auto old = SelectObject(dc, pen);
-        for (int y : {121, 270, 520}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
+        for (int y : {121, 270, 550}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
         // Original geometric HUD accents; no extracted game art or assets.
         for (int x = 811; x < 943; x += 22) { MoveToEx(dc, menu->Px(x), menu->Px(43), nullptr); LineTo(dc, menu->Px(x + 18), menu->Px(25)); }
         SelectObject(dc, old); DeleteObject(pen);
@@ -633,7 +648,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             std::wstring text = L"Select a detected MCC installation";
             if (item.itemID != static_cast<UINT>(-1)) { const auto length = SendMessageW(item.hwndItem, CB_GETLBTEXTLEN, item.itemID, 0); if (length >= 0 && length < 32768) { text.resize(static_cast<size_t>(length) + 1); SendMessageW(item.hwndItem, CB_GETLBTEXT, item.itemID, reinterpret_cast<LPARAM>(text.data())); text.resize(static_cast<size_t>(length)); } }
             RECT rect = item.rcItem; rect.left += menu->Px(8); rect.right -= menu->Px(4); DrawTextW(item.hDC, text.c_str(), -1, &rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-        } else if (item.CtlID == Retain) DrawCheckbox(*menu, item);
+        } else if (item.CtlID == Retain) DrawCheckbox(*menu, item, menu->keepSettings);
+        else if (item.CtlID == UpdateSelf) DrawCheckbox(*menu, item, menu->UpdateSelfShown());
         else DrawButton(*menu, item);
         return TRUE;
     }
@@ -641,6 +657,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (menu->busy) return 0;
         switch (LOWORD(wParam)) {
         case Retain: menu->keepSettings = !menu->keepSettings; InvalidateRect(menu->retain, nullptr, FALSE); break;
+        case UpdateSelf: menu->updateThisLauncher = !menu->updateThisLauncher; InvalidateRect(menu->updateSelf, nullptr, FALSE); break;
         case Games: if (HIWORD(wParam) == CBN_SELCHANGE) { menu->Refresh(); ReclaimerShow(*menu, false); } break;
         case Channel:
             if (HIWORD(wParam) == CBN_SELCHANGE) {
@@ -717,8 +734,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 std::ofstream saved(menu->downloaded.parent_path() / L"INSTALLED-RELEASE.txt", std::ios::trunc);
                 saved << "release=" << menu->latest.tag << "\npublished=" << menu->latest.published.substr(0, 10) << "\nbuild=" << ReadIdentity(menu->downloaded).tag << "\n";
             }
-            const bool replaceThisLauncher = ReplacesOpenedLauncher(menu->versions, menu->latest, menu->CurrentChannel().key, HALOMCCVR_RELEASE_CHANNEL);
-            if (StartUpdateHelper(menu->downloaded, menu->operationGame, menu->operationRetain, replaceThisLauncher, menu->operationMessage)) {
+            if (StartUpdateHelper(menu->downloaded, menu->operationGame, menu->operationRetain, menu->updateThisLauncher, menu->operationMessage)) {
                 menu->helperStarted = true; DestroyWindow(window); return 0;
             }
         }
