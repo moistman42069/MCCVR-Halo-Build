@@ -65,4 +65,5 @@ what: The Provolver proposal.
 name: Elliotttate
 what: For hosting the Flat2VR discord community that this mod originated in.
 
-name: Early Playtesters in the Flat2VR Discord!
+name: Playtesters in the Flat2VR Discord!
+what: For all the valuable feedback and bug reporting!
