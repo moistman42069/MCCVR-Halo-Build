@@ -129,8 +129,9 @@ runtime testing; those paths were preserved, not runtime-accepted by these tests
 
 ## On its own
 
-Packaging also makes a `Standalone-Launcher` ZIP: the launcher, a readme and its licenses, for pages that hand out the
-launcher rather than the full package. It works with no package beside it: the font and a copy of the credits are built
+Packaging also makes a `Standalone` ZIP: the launcher, a readme and its licenses, for pages that hand out the launcher
+rather than the full package. If it is attached to a release, its name must not end in `-Launcher.zip`: launchers take
+that file as the update and refuse a release with two, and older launchers cannot be told otherwise. It works with no package beside it: the font and a copy of the credits are built
 in, and it installs the mod by downloading a release.
 
 ## Credits

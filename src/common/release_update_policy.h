@@ -111,7 +111,9 @@ inline ReleaseUpdate ReleaseFromJson(const ReleaseJson& json, const ReleaseChann
     for (const auto& asset : json.At("assets").array) {
         const auto name = asset.At("name").text;
         std::string lower = name; std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        // Explicit player archive naming. Never select sources, symbols or logs.
+        // Explicit player archive naming. Never select sources, symbols or logs, nor the launcher handed out on its own,
+        // which has no mod to install.
+        if (lower.find("standalone") != std::string::npos) continue;
         if (!(lower == "halo-mcc-vr.zip" || lower == "halomccvr.zip" || (lower.starts_with("halomccvr-") && lower.ends_with("-build.zip")) ||
             (lower.starts_with("halo-mcc-vr-") && (lower.ends_with("-launcher.zip") || lower.ends_with("-launcher.zip.zip"))))) continue;
         ++candidates;
