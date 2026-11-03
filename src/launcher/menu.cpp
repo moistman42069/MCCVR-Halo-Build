@@ -584,7 +584,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 324, 590, 618, 48, Launch);
         Label(*menu, L"04  /  EXTERNAL MODS", 38, kExternalTop + 11, 570);
         // The note under that heading, and the tab over the panel, are painted (WM_PAINT).
-        menu->reclaimerPath = Control(*menu, L"EDIT", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 54, kReclaimerTop + 18, 626, 32, ReclaimerPath);
+        // The path box is painted (WM_PAINT); the text box inside it is one line tall and centred, since a single-line
+        // edit control always draws its text at its top.
+        menu->reclaimerPath = Control(*menu, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, 58, kReclaimerTop + 22, 618, 22, ReclaimerPath);
         SendMessageW(menu->reclaimerPath, EM_SETLIMITTEXT, 2000, 0);
         Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, kReclaimerTop + 15, 118, 38, ReclaimerBrowse);
         Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 828, kReclaimerTop + 15, 98, 38, ReclaimerDetect);
@@ -620,6 +622,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             FillRect(dc, &box, menu->reclaimerPanel);
             HBRUSH edge = CreateSolidBrush(RGB(122, 90, 44)), bar = CreateSolidBrush(kReclaimerAccent);
             FrameRect(dc, &box, edge);
+            RECT field{menu->Px(54), menu->Px(kReclaimerTop + 18), menu->Px(680), menu->Px(kReclaimerTop + 50)};
+            HBRUSH fieldEdge = CreateSolidBrush(RGB(112, 92, 62));
+            FillRect(dc, &field, menu->reclaimerField); FrameRect(dc, &field, fieldEdge); DeleteObject(fieldEdge);
             // The tab, square at the left, in line with the panel, and slanted at the right like a folder's. Its name starts in line
             // with the panel's contents. The letter spacing also follows the last letter, so the name
             // is placed by its own width rather than centred.
