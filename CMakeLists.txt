@@ -257,7 +257,10 @@ add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp)
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+    src/dll/imgui_item_hooks.cpp)
+# Dear ImGui reports the items it draws (src/dll/imgui_item_hooks.h); the settings menu's search listens.
+target_compile_definitions(imgui_lib PUBLIC IMGUI_ENABLE_TEST_ENGINE)
 target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends)
@@ -513,6 +516,8 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_muzzle_suppression_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_muzzle_suppression_tests COMMAND halomccvr_muzzle_suppression_tests)
     add_executable(halomccvr_physical_crouch_tests tests/physical_crouch_tests.cpp)
+    add_executable(halomccvr_setting_search_tests tests/setting_search_tests.cpp)
+    add_test(NAME halomccvr_setting_search_tests COMMAND halomccvr_setting_search_tests)
     add_executable(halomccvr_hud_reveal_tests tests/hud_reveal_tests.cpp)
     add_test(NAME halomccvr_hud_reveal_tests COMMAND halomccvr_hud_reveal_tests)
     add_executable(body_visibility_switch_tests tests/body_visibility_switch_tests.cpp)

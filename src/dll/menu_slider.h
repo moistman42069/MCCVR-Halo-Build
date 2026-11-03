@@ -1,5 +1,6 @@
 #pragma once
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <algorithm>
 #include <cstring>
 #include <type_traits>
@@ -49,6 +50,10 @@ bool SliderWithArrows(const char* label, Value* value, Value minimum,
         ImGui::PopTextWrapPos();
     }
     ImGui::EndGroup();
+#ifdef IMGUI_ENABLE_TEST_ENGINE
+    // The slider itself is named "##value": its name is reported for the group, for the settings search.
+    if(ImGuiContext& g=*GImGui; g.TestEngineHookItems) ImGuiTestEngineHook_ItemInfo(&g,g.LastItemData.ID,label,0);
+#endif
     ImGui::PopID();
     return dragged || *value!=before;
 }
