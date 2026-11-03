@@ -443,7 +443,14 @@ try {
         throw 'All-title world-contact gate failed: H2 authored weapon bounds, title-native H3/ODST/Reach collision wrappers, Reach ABI isolation, or shared melee admission is missing.'
     }
 
-    Invoke-Tool { & cmake --preset $packagePreset }
+    # Which release page this package belongs to: the launcher's update source starts here. It follows the repository
+    # the package is built from, so each fork's own builds update from that fork.
+    $originUrl = (& git -C $repoRoot remote get-url origin 2>$null | Out-String).Trim()
+    $releaseChannel = if ($originUrl -match '[/:]MOTYSHIZ/') { 'nitsujack' }
+        elseif ($originUrl -match '[/:]Godoy301/') { 'godoy' }
+        else { 'official' }
+
+    Invoke-Tool { & cmake --preset $packagePreset "-DHALOMCCVR_RELEASE_CHANNEL=$releaseChannel" }
     if ($LASTEXITCODE -ne 0) {
         throw "CMake configure failed for preset $packagePreset."
     }
@@ -530,13 +537,6 @@ try {
         throw "Refusing to reuse candidate directory: $packageDir"
     }
     $payloadDir = Join-Path $packageDir 'ModFiles'
-    # Which release page this package belongs to: the launcher's update source starts here. It follows the repository
-    # the package is built from, so each fork's own builds update from that fork.
-    $originUrl = (& git -C $repoRoot remote get-url origin 2>$null | Out-String).Trim()
-    $releaseChannel = if ($originUrl -match '[/:]MOTYSHIZ/') { 'nitsujack' }
-        elseif ($originUrl -match '[/:]Godoy301/') { 'godoy' }
-        else { 'official' }
-
     Invoke-Tool { & cmake --install $packageBuildDir --config Release `
         --prefix $payloadDir --component dist }
     if ($LASTEXITCODE -ne 0) {
@@ -1499,19 +1499,30 @@ try {
 
     $buildZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Build.zip")
     $manualZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Manual-ModFiles.zip")
+    $standaloneZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Standalone-Launcher.zip")
     $sourceZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Source.zip")
     Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $buildZip
     New-ManualPayloadArchive $payloadDir $manualZip
+    # The launcher on its own, for pages that hand it out instead of the full package: it downloads the mod itself.
+    $standaloneDir = Join-Path $candidateRoot ("$packageId.standalone")
+    New-Item -ItemType Directory -Path $standaloneDir | Out-Null
+    Copy-Item -LiteralPath (Join-Path $packageDir 'HaloMCCVRLauncher.exe') -Destination $standaloneDir
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'installer/STANDALONE-README.txt') -Destination (Join-Path $standaloneDir 'README.txt')
+    Copy-Item -LiteralPath (Join-Path $payloadDir 'LICENSE') -Destination $standaloneDir
+    Copy-Item -LiteralPath (Join-Path $payloadDir 'THIRD-PARTY-LICENSES.txt') -Destination $standaloneDir
+    Copy-Item -LiteralPath (Join-Path $payloadDir 'assets/fonts/OFL-Oxanium.txt') -Destination $standaloneDir
+    Compress-Archive -Path (Join-Path $standaloneDir '*') -DestinationPath $standaloneZip
+    Remove-Item -LiteralPath $standaloneDir -Recurse -Force
     # Archive committed bytes, independent of this machine's Windows checkout
     # line-ending preference. This permits exact source/blob verification.
     Invoke-Tool { & git -c core.autocrlf=false -C $repoRoot archive --format=zip --prefix=Halo-MCC-VR/ `
         "--output=$sourceZip" $commit }
     if ($LASTEXITCODE -ne 0) { throw 'Matching source archive failed.' }
     Invoke-Tool { & $pythonPath (Join-Path $repoRoot 'tools/verify-qol-package.py') `
-        $buildZip $sourceZip --manual-zip $manualZip --commit $commit }
+        $buildZip $sourceZip --manual-zip $manualZip --standalone-zip $standaloneZip --commit $commit }
     if ($LASTEXITCODE -ne 0) { throw 'Build, manual payload and source ZIP verification failed.' }
     $hashLines = @("Source commit: $commit")
-    foreach ($archive in @($buildZip, $manualZip, $sourceZip)) {
+    foreach ($archive in @($buildZip, $manualZip, $standaloneZip, $sourceZip)) {
         $hashLines += (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash +
             '  ' + [IO.Path]::GetFileName($archive)
     }
@@ -1519,6 +1530,7 @@ try {
         $hashLines, [Text.UTF8Encoding]::new($false))
     Write-Host "Build ZIP:  $buildZip"
     Write-Host "Manual ZIP: $manualZip"
+    Write-Host "Standalone launcher ZIP: $standaloneZip"
     Write-Host "Source ZIP: $sourceZip"
 
     Write-Host "Created untested candidate: $packageDir"

@@ -1,6 +1,7 @@
 #include "../src/common/installer_policy.h"
 #include "../src/common/release_update_policy.h"
 #include "../src/common/credits_file.h"
+#include "launcher_credits.generated.h"
 #include "../src/launcher/installer.h"
 #include "../src/launcher/updater.h"
 #include <fstream>
@@ -85,6 +86,8 @@ static void Policies() {
         Require(credits[0].name == L"First" && credits[0].what == L"Did: this", "a person and what they did, colons and all");
         Require(credits[1].name == L"Second" && credits[1].what.empty(), "a person with no description");
         Require(ParseCredits(L"").empty(), "no file, no list");
+        const auto builtIn = ParseCredits(std::wstring(std::begin(menu_assets::credits), std::end(menu_assets::credits)));
+        Require(builtIn.size() > 10 && builtIn[0].name.empty() && std::any_of(builtIn.begin(), builtIn.end(), [](const CreditEntry& person) { return person.name == L"Pancreations" && person.links.size() == 2; }), "the launcher carries a readable copy of the credits");
         const auto intro = ParseCredits(L"intro: One.\nintro: Two: more.\nwhat: not for the intro\nname: A\n");
         Require(intro.size() == 3 && intro[0].name.empty() && intro[0].what == L"One." && intro[1].what == L"not for the intro" && intro[2].name == L"A", "intro lines are paragraphs with no name");
         Require(credits[0].links.size() == 1 && credits[0].links[0].label == L"Ko-fi" && credits[0].links[0].url == L"https://example.com", "a link is a label and an address");

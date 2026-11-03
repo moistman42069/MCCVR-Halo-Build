@@ -30,6 +30,8 @@ link: YouTube https://www.youtube.com/@nitsujack7720
 
 name: Godoy301
 what: Weapon alignment and per-game gun offsets, two-handed grip zones, restored hand and gun animations, modded weapon support, bloom and autoexposure controls, world scale and dual-wield shake reload.
+link: GitHub https://github.com/Godoy301
+link: PayPal https://www.paypal.com/donate/?hosted_button_id=BS53GT6374FRY
 
 name: Gab_dC / gabrieldch
 what: Virtual stock, two-hand and support handling, coherent aim and telemetry.
