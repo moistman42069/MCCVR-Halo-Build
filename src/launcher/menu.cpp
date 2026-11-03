@@ -27,7 +27,7 @@ constexpr COLORREF kReclaimerPanel = RGB(31, 24, 13), kReclaimerField = RGB(46, 
 // External Mods: a section of its own below the MCC setup, each mod on a tab over its panel. Project Reclaimer is the
 // first; more join it as tabs beside it.
 constexpr int kExternalTop = 656, kTabHeight = 30;
-constexpr int kReclaimerLeft = 26, kReclaimerTop = 754, kReclaimerRight = 954, kReclaimerBottom = 912;
+constexpr int kReclaimerLeft = 38, kReclaimerTop = 754, kReclaimerRight = 942, kReclaimerBottom = 912;
 constexpr UINT kDone = WM_APP + 20;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version, UpdateSelf };
@@ -584,13 +584,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 324, 590, 618, 48, Launch);
         Label(*menu, L"04  /  EXTERNAL MODS", 38, kExternalTop + 11, 570);
         // The note under that heading, and the tab over the panel, are painted (WM_PAINT).
-        menu->reclaimerPath = Control(*menu, L"EDIT", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 46, kReclaimerTop + 18, 634, 32, ReclaimerPath);
+        menu->reclaimerPath = Control(*menu, L"EDIT", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 54, kReclaimerTop + 18, 626, 32, ReclaimerPath);
         SendMessageW(menu->reclaimerPath, EM_SETLIMITTEXT, 2000, 0);
-        Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, kReclaimerTop + 15, 122, 38, ReclaimerBrowse);
-        Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, kReclaimerTop + 15, 110, 38, ReclaimerDetect);
-        menu->reclaimerInfo = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 48, kReclaimerTop + 58, 890, 38);
+        Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, kReclaimerTop + 15, 118, 38, ReclaimerBrowse);
+        Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 828, kReclaimerTop + 15, 98, 38, ReclaimerDetect);
+        menu->reclaimerInfo = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 56, kReclaimerTop + 58, 870, 38);
         SendMessageW(menu->reclaimerInfo, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
-        Control(*menu, L"BUTTON", L"LAUNCH PROJECT RECLAIMER", BS_OWNERDRAW | WS_TABSTOP, 46, kReclaimerTop + 100, 406, 42, ReclaimerLaunch);
+        Control(*menu, L"BUTTON", L"LAUNCH PROJECT RECLAIMER", BS_OWNERDRAW | WS_TABSTOP, 54, kReclaimerTop + 100, 398, 42, ReclaimerLaunch);
         menu->status = Control(*menu, L"STATIC", L"", SS_LEFT, 40, kReclaimerBottom + 16, 895, 52);
         SendMessageW(menu->status, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         menu->creditsList = CreateWindowExW(0, L"HaloMCCVRCredits", L"", WS_CHILD | WS_VISIBLE, menu->Px(kCreditsLeft), menu->Px(kCreditsListTop),
