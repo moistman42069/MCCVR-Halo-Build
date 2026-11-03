@@ -27,6 +27,7 @@ name: NitsuJack
 what: Project Reclaimer support, multiplayer-compatible aim solution for improved responsiveness, co-op stability across all titles, Aim Frame Zoom, motion detector fixes, audio fixes, roomscale solution polish, vehicle cameras with converging aim ported from Halo Campaign Evolved VR, input presets, desktop settings window, launcher reorganization and multi-repository auto updating and version selection.
 link: Ko-fi https://ko-fi.com/nitsujack
 link: YouTube https://www.youtube.com/@nitsujack7720
+link: GitHub https://github.com/MOTYSHIZ
 
 name: Godoy301
 what: Weapon alignment and per-game gun offsets, two-handed grip zones, restored hand and gun animations, modded weapon support, bloom and autoexposure controls, world scale and dual-wield shake reload.
