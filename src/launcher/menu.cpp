@@ -26,8 +26,8 @@ constexpr COLORREF kReclaimerPanel = RGB(31, 24, 13), kReclaimerField = RGB(46, 
 // The panel's box, at 96 dpi.
 // External Mods: a section of its own below the MCC setup, each mod on a tab over its panel. Project Reclaimer is the
 // first; more join it as tabs beside it.
-constexpr int kExternalTop = 654, kTabHeight = 30;
-constexpr int kReclaimerLeft = 38, kReclaimerTop = 752, kReclaimerRight = 942, kReclaimerBottom = 910;
+constexpr int kExternalTop = 608, kTabHeight = 30;
+constexpr int kReclaimerLeft = 38, kReclaimerTop = 706, kReclaimerRight = 942, kReclaimerBottom = 864;
 constexpr UINT kDone = WM_APP + 20;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version, UpdateSelf };
@@ -71,7 +71,7 @@ BuildIdentity ReadIdentity(const fs::path& directory) {
     return identity;
 }
 struct Menu {
-    HINSTANCE instance{}; HWND window{}, games{}, path{}, retain{}, updateSelf{}, status{}, channel{};
+    HINSTANCE instance{}; HWND window{}, games{}, retain{}, updateSelf{}, channel{};
     bool channelChosen = false, channelChanged = false;
     // Project Reclaimer (reclaimer_menu.h): the kept path's field, what is known of it, and the launch asked for.
     HWND reclaimerPath{}, reclaimerInfo{}; std::wstring reclaimerExe, reclaimerDir; bool reclaimerStartable = false;
@@ -94,6 +94,8 @@ struct Menu {
     // Whether an update also replaces this launcher where it is. Each version chosen resets it to the usual answer.
     bool updateThisLauncher = false;
     std::thread worker; std::wstring operationMessage;
+    // A problem to report, shown in the Installed line's place, in the warning colour, until the next action.
+    std::wstring notice;
     ReleaseUpdate latest; std::vector<ReleaseUpdate> versions;
     enum class Work { None, Install, Check, Latest, Download } work = Work::None;
     size_t latestChannel = 0; std::wstring latestPassedOver;
@@ -192,10 +194,11 @@ struct Menu {
                                                          : !identity.release.empty() && identity.release == latest.tag);
         EnableWindow(GetDlgItem(window, Update), !busy && game && updateReady);
         const bool older = !packageChosen && !versions.empty() && !latest.tag.empty() && latest.tag != versions.front().tag;
-        Text(GetDlgItem(window, Update), !installed ? L"INSTALL VR MOD" : current ? L"REINSTALL CURRENT VERSION" : packageChosen ? L"INSTALL THIS DOWNLOAD (Replaces Current Build)"
+        Text(GetDlgItem(window, Update), busy && work == Work::Download ? L"DOWNLOADING AND VERIFYING..." : busy && work == Work::Install ? L"INSTALLING..."
+            : !installed ? L"INSTALL VR MOD" : current ? L"REINSTALL CURRENT VERSION" : packageChosen ? L"INSTALL THIS DOWNLOAD (Replaces Current Build)"
             : older ? L"INSTALL OLDER VERSION (Replaces Current Build)" : L"INSTALL UPDATE (Replaces Current Build)");
-        Text(path, game ? L"" : L"No MCC installation found. Choose Browse and select the folder containing MCC, or the Xbox Content folder.");
-        if (installed) {
+        if (!notice.empty()) Text(installedLine, notice);
+        else if (installed) {
             const auto wide = [](const std::string& text) { return std::wstring(text.begin(), text.end()); };
             Text(installedLine, InstalledText(identity.channel.empty() ? L"" : kReleaseChannels[ReleaseChannelIndex(identity.channel)].label, wide(identity.release), wide(identity.published), identity.label, wide(identity.built)));
         } else Text(installedLine, game ? L"Installed: not installed" : L"");
@@ -213,7 +216,7 @@ struct Menu {
         Refresh();
     }
     void Start(Work kind, std::function<void()> operation) {
-        busy = true; work = kind; operationMessage.clear(); Refresh();
+        busy = true; work = kind; operationMessage.clear(); notice.clear(); Refresh();
         worker = std::thread([this, operation = std::move(operation)] {
             try { operation(); }
             catch (const std::exception& error) {
@@ -243,7 +246,7 @@ void BrowseFolder(Menu& menu) {
                 bool found = false; for (const auto& old : menu.installs) found |= !_wcsicmp(old.root.c_str(), game.root.c_str());
                 if (!found) menu.installs.push_back(game);
                 menu.Populate(game.root);
-            } else menu.Text(menu.path, L"This folder does not contain a Steam or Xbox MCC installation. Select its root or Content folder.");
+            } else { menu.notice = L"That folder does not contain a Steam or Xbox MCC installation. Choose its root or Content folder."; menu.Refresh(); }
         }
         if (path) CoTaskMemFree(path); if (item) item->Release();
     }
@@ -501,14 +504,16 @@ void PaintCombo(Menu& menu, HWND combo, HDC dc) {
     const auto oldPen = SelectObject(dc, pen); const auto oldBrush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
     Rectangle(dc, client.left, client.top, client.right, client.bottom);
     SelectObject(dc, oldBrush); SelectObject(dc, oldPen); DeleteObject(pen);
-    std::wstring text = GetDlgCtrlID(combo) == Games ? L"Select a detected MCC installation" : L"";
+    std::wstring text = GetDlgCtrlID(combo) == Games ? L"No MCC installation found: choose Browse or Detect" : L"";
     const auto index = SendMessageW(combo, CB_GETCURSEL, 0, 0);
     if (index >= 0) {
         const auto length = SendMessageW(combo, CB_GETLBTEXTLEN, index, 0);
         if (length >= 0 && length < 32768) { text.resize(static_cast<size_t>(length) + 1); SendMessageW(combo, CB_GETLBTEXT, index, reinterpret_cast<LPARAM>(text.data())); text.resize(static_cast<size_t>(length)); }
     }
     if (GetDlgCtrlID(combo) == Channel) text = L"Update from repository: " + text;
-    if (GetDlgCtrlID(combo) == Version) text = index >= 0 ? L"Version: " + text : L"Version: choose Check for updates to list them";
+    if (GetDlgCtrlID(combo) == Version) text = menu.busy && menu.work == Menu::Work::Check ? std::wstring(L"Version: listing the releases from ") + menu.CurrentChannel().label + L"..."
+        : menu.busy && menu.work == Menu::Work::Latest ? L"Version: comparing the newest release from each repository..."
+        : index >= 0 ? L"Version: " + text : L"Version: choose Check for updates to list them";
     const int arrowArea = menu.Px(32);
     SetBkMode(dc, TRANSPARENT); SetTextColor(dc, disabled ? RGB(80, 105, 115) : kText); SelectObject(dc, menu.body);
     RECT rect = client; rect.left += menu.Px(12); rect.right -= arrowArea;
@@ -557,28 +562,26 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         StyleCombo(*menu, menu->games);
         Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, 160, 122, 38, Browse);
         Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, 160, 110, 38, Scan);
-        menu->path = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 204, 902, 20);
-        SendMessageW(menu->path, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
-        Label(*menu, L"02  /  RELEASE UPDATES", 38, 239, 570);
-        menu->installedLine = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 40, 266, 895, 22);
+        Label(*menu, L"02  /  RELEASE UPDATES", 38, 233, 570);
+        menu->installedLine = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 40, 260, 895, 22);
         SendMessageW(menu->installedLine, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         // The same columns as section 01, and top to bottom in the order they are used: where from, which version, install.
-        menu->channel = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 294, 642, 140, Channel);
+        menu->channel = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 288, 642, 140, Channel);
         StyleCombo(*menu, menu->channel);
         for (const auto& source : kReleaseChannels) SendMessageW(menu->channel, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(source.label));
-        Control(*menu, L"BUTTON", L"LATEST", BS_OWNERDRAW | WS_TABSTOP, 696, 294, 246, 38, Latest);
-        menu->version = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 344, 642, 240, Version);
+        Control(*menu, L"BUTTON", L"LATEST", BS_OWNERDRAW | WS_TABSTOP, 696, 288, 246, 38, Latest);
+        menu->version = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 338, 642, 240, Version);
         StyleCombo(*menu, menu->version);
-        Control(*menu, L"BUTTON", L"CHECK FOR UPDATES", BS_OWNERDRAW | WS_TABSTOP, 696, 344, 246, 38, Check);
-        Control(*menu, L"BUTTON", L"INSTALL", BS_OWNERDRAW | WS_TABSTOP, 38, 394, 642, 38, Update);
-        Control(*menu, L"BUTTON", L"RELEASE PAGE", BS_OWNERDRAW | WS_TABSTOP, 696, 394, 246, 38, ReleasePage);
+        Control(*menu, L"BUTTON", L"CHECK FOR UPDATES", BS_OWNERDRAW | WS_TABSTOP, 696, 338, 246, 38, Check);
+        Control(*menu, L"BUTTON", L"INSTALL", BS_OWNERDRAW | WS_TABSTOP, 38, 388, 642, 38, Update);
+        Control(*menu, L"BUTTON", L"RELEASE PAGE", BS_OWNERDRAW | WS_TABSTOP, 696, 388, 246, 38, ReleasePage);
         // Above keep-settings, which then sits right over the settings button below it.
-        menu->updateSelf = Control(*menu, L"BUTTON", L"Update this launcher from the selected release", BS_OWNERDRAW | WS_TABSTOP, 38, 480, 850, 30, UpdateSelf);
-        menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_OWNERDRAW | WS_TABSTOP, 38, 510, 850, 30, Retain);
-        Label(*menu, L"03  /  YOUR VR SETUP", 38, 559, 570);
-        Control(*menu, L"BUTTON", L"VR SETTINGS", BS_OWNERDRAW | WS_TABSTOP, 38, 588, 270, 48, Settings);
-        Control(*menu, L"BUTTON", L"MOD FOLDER", BS_OWNERDRAW | WS_TABSTOP, 324, 588, 200, 48, Folder);
-        Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 540, 588, 402, 48, Launch);
+        menu->updateSelf = Control(*menu, L"BUTTON", L"Update this launcher from the selected release", BS_OWNERDRAW | WS_TABSTOP, 38, 434, 850, 30, UpdateSelf);
+        menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_OWNERDRAW | WS_TABSTOP, 38, 464, 850, 30, Retain);
+        Label(*menu, L"03  /  YOUR VR SETUP", 38, 513, 570);
+        Control(*menu, L"BUTTON", L"VR SETTINGS", BS_OWNERDRAW | WS_TABSTOP, 38, 542, 270, 48, Settings);
+        Control(*menu, L"BUTTON", L"MOD FOLDER", BS_OWNERDRAW | WS_TABSTOP, 324, 542, 200, 48, Folder);
+        Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 540, 542, 402, 48, Launch);
         Label(*menu, L"04  /  EXTERNAL MODS", 38, kExternalTop + 11, 570);
         // The note under that heading, and the tab over the panel, are painted (WM_PAINT).
         // The path box is painted (WM_PAINT); the text box inside it is one line tall and centred, since a single-line
@@ -590,8 +593,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         menu->reclaimerInfo = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 56, kReclaimerTop + 58, 870, 38);
         SendMessageW(menu->reclaimerInfo, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         Control(*menu, L"BUTTON", L"LAUNCH PROJECT RECLAIMER", BS_OWNERDRAW | WS_TABSTOP, 54, kReclaimerTop + 100, 398, 42, ReclaimerLaunch);
-        menu->status = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 440, 902, 38);
-        SendMessageW(menu->status, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         menu->creditsList = CreateWindowExW(0, L"HaloMCCVRCredits", L"", WS_CHILD | WS_VISIBLE, menu->Px(kCreditsLeft), menu->Px(kCreditsListTop),
             menu->Px(kCreditsListWidth), menu->Px(kMenuHeight - kCreditsListTop - 26), window, nullptr, menu->instance, menu);
         return 0;
@@ -604,7 +605,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SelectObject(dc, menu->label); SetTextColor(dc, kMuted); const wchar_t* subtitle = L"The Master Chief Collection in Virtual Reality";
         TextOutW(dc, menu->Px(41), menu->Px(93), subtitle, static_cast<int>(wcslen(subtitle)));
         HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); auto old = SelectObject(dc, pen);
-        for (int y : {121, 228, 548, kExternalTop}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
+        for (int y : {121, 222, 502, kExternalTop}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
         // Original geometric HUD accents; no extracted game art or assets.
         for (int x = 811; x < 943; x += 22) { MoveToEx(dc, menu->Px(x), menu->Px(43), nullptr); LineTo(dc, menu->Px(x + 18), menu->Px(25)); }
         SelectObject(dc, old); DeleteObject(pen);
@@ -649,6 +650,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: {
         HDC dc = reinterpret_cast<HDC>(wParam);
+        if (reinterpret_cast<HWND>(lParam) == menu->installedLine && !menu->notice.empty()) { SetTextColor(dc, kReclaimerAccent); SetBkColor(dc, kBackground); return reinterpret_cast<LRESULT>(menu->background); }
         if (reinterpret_cast<HWND>(lParam) == menu->reclaimerInfo) { SetTextColor(dc, kText); SetBkColor(dc, kReclaimerPanel); return reinterpret_cast<LRESULT>(menu->reclaimerPanel); }
         SetTextColor(dc, kText); SetBkColor(dc, kBackground); return reinterpret_cast<LRESULT>(menu->background);
     }
@@ -682,7 +684,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         case Games: if (HIWORD(wParam) == CBN_SELCHANGE) { menu->Refresh(); ReclaimerShow(*menu, false); } break;
         case Channel:
             if (HIWORD(wParam) == CBN_SELCHANGE) {
-                menu->channelChosen = true; menu->channelChanged = true; menu->versions.clear(); menu->ListVersions();
+                menu->notice.clear(); menu->channelChosen = true; menu->channelChanged = true; menu->versions.clear(); menu->ListVersions();
                 menu->Refresh();
             }
             // Choosing a repository lists its versions, once the list has closed: arrowing through an open list changes
@@ -693,6 +695,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             }
             break;
         case Version: if (HIWORD(wParam) == CBN_SELCHANGE) {
+            menu->notice.clear();
             menu->ChooseVersion(static_cast<size_t>(SendMessageW(menu->version, CB_GETCURSEL, 0, 0)));
             menu->Refresh();
         } break;
@@ -721,21 +724,20 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (menu->reclaimerStartable) { menu->reclaimerExe = ReclaimerField(*menu); menu->reclaimerDir = menu->ModFolder().wstring(); DestroyWindow(window); }
             break;
         case Check:
-            menu->updateReady = false; menu->Text(menu->status, std::wstring(L"Listing the releases from ") + menu->CurrentChannel().label + L"...");
+            menu->updateReady = false;
             menu->Start(Menu::Work::Check, [menu, source = &menu->CurrentChannel()] { menu->versions = ListReleases(*source); }); break;
         case Latest:
-            menu->updateReady = false; menu->Text(menu->status, L"Comparing the newest release from each repository...");
+            menu->updateReady = false;
             menu->Start(Menu::Work::Latest, [menu] { menu->versions = ListLatestAcrossChannels(menu->latestChannel, menu->latestPassedOver); }); break;
         case Update: if (auto* game = menu->Selected(); game && menu->packageChosen) {
             const auto target = *game; const auto payload = menu->payload; const bool retain = menu->keepSettings;
-            menu->Text(menu->status, L"Verifying files and installing. MCC will not start until you choose Launch MCC.");
             menu->Start(Menu::Work::Install, [menu, target, payload, retain] {
                 const auto result = InstallPayload(payload, target, retain);
-                menu->operationMessage = result.success ? L"Installed. The previous files are kept in Halo_MCC_VR\\backups." : result.message;
+                // Success needs no message: the Installed line shows the new build.
+                if (!result.success) menu->operationMessage = result.message;
             });
         } else if (game && menu->updateReady) {
             menu->operationGame = *game; menu->operationRetain = menu->keepSettings;
-            menu->Text(menu->status, L"Downloading and verifying the release. The launcher will reopen to install it. MCC will stay closed.");
             menu->Start(Menu::Work::Download, [menu] { menu->downloaded = DownloadUpdate(menu->latest); });
         } break;
         }
@@ -762,7 +764,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 menu->helperStarted = true; DestroyWindow(window); return 0;
             }
         }
-        menu->Text(menu->status, menu->operationMessage); menu->Refresh(); return 0;
+        menu->notice = menu->operationMessage; menu->Refresh(); return 0;
     case WM_CLOSE: if (!menu->busy) DestroyWindow(window); return 0;
     case WM_MOUSEWHEEL: {
         // A wheel turned over the list scrolls it, whichever control has the keyboard focus.
