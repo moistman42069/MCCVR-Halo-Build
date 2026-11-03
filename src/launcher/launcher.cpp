@@ -1423,13 +1423,13 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
     LPWSTR* args = CommandLineToArgvW(GetCommandLineW(), &count);
     if (args && count > 1 && !wcscmp(args[1], L"--apply-update"))
     {
-        if (count != 6 || (wcscmp(args[4], L"0") && wcscmp(args[4], L"1")))
+        if (count != 7 || (wcscmp(args[4], L"0") && wcscmp(args[4], L"1")))
         {
             LocalFree(args);
             ErrorBox(L"Invalid update request. Open the launcher and choose Check for updates.");
             return 1;
         }
-        const std::filesystem::path payload(args[2]), gameRoot(args[3]);
+        const std::filesystem::path payload(args[2]), gameRoot(args[3]), openedLauncher(args[6]);
         const bool retainConfig = args[4][0] == L'1';
         wchar_t* end = nullptr;
         const DWORD parentPid = wcstoul(args[5], &end, 10);
@@ -1460,6 +1460,9 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
         // Reopen the newly installed launcher's menu. The separate Launch MCC
         // button is still required; installing an update never starts MCC.
         const auto updated = game.root / L"Halo_MCC_VR" / L"HaloMCCVRLauncher.exe";
+        // The launcher the update was started from updates where it is, too.
+        if (std::wstring problem; !mcc_installer::RefreshLauncherCopy(updated, payload, openedLauncher, problem))
+            MessageBoxW(nullptr, (L"The update is installed, but the launcher at\n" + openedLauncher.wstring() + L"\ncould not be updated, so it stays at its old version.\n\n" + problem).c_str(), L"Halo MCC VR update", MB_OK | MB_ICONWARNING);
         std::wstring command = L"\"" + updated.wstring() + L"\"";
         STARTUPINFOW startup{sizeof(startup)};
         PROCESS_INFORMATION process{};
