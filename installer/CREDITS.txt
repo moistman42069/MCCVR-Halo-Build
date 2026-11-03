@@ -14,7 +14,7 @@ name: MoistMan
 what: Continued the project as Halo MCC VR, maintaining it and extending it across all six games on Steam and the Xbox app, with physical crouch and melee, weapon handling and tracked body avatars.
 
 name: NitsuJack
-what: Project Reclaimer Support, multiplayer-compatible aim Solution for improved responsiveness, co-op stability across all titles, Aim Frame Zoom, motion detector fixes, audio fixes, roomscale solution polish, vehicle cameras with converging aim ported from Halo Campaign Evolved VR, input presets, desktop settings window, launcher reorganization and multi-repository auto updating and version selection.
+what: Project Reclaimer support, multiplayer-compatible aim solution for improved responsiveness, co-op stability across all titles, Aim Frame Zoom, motion detector fixes, audio fixes, roomscale solution polish, vehicle cameras with converging aim ported from Halo Campaign Evolved VR, input presets, desktop settings window, launcher reorganization and multi-repository auto updating and version selection.
 
 name: Godoy301
 what: Weapon alignment and per-game gun offsets, two-handed grip zones, restored hand and gun animations, modded weapon support, bloom and autoexposure controls, world scale and dual-wield shake reload.
