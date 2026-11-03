@@ -184,12 +184,22 @@ namespace
         ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"(Singleplayer only) %s",what);
     }
 
+    // The next "User Preset N" after the highest one saved.
+    std::string NextUserPresetName(const std::vector<std::string>& saved)
+    {
+        constexpr std::string_view kStem="User Preset ";
+        int highest=0;
+        for(const auto& name:saved)
+            if(name.rfind(kStem,0)==0) highest=std::max(highest,atoi(name.c_str()+kStem.size()));
+        return std::string(kStem)+std::to_string(highest+1);
+    }
+
     // Choosing a preset applies it at once; the file or built-in stays as it was until the player saves over it.
     void DrawInputPresets(bool& changed)
     {
         static std::vector<std::string> saved;
         static bool listed=false;
-        static char newName[64]="";
+        static char name[64]="";
         static Config baseline;
         static std::string baselineName;
         static bool baselineFound=false;
@@ -197,23 +207,27 @@ namespace
         static std::string savedDescription;
         if(!listed){saved=input_preset::ListSaved();listed=true;}
         const std::string active=g_config.input_preset;
+        const auto builtIn=[](const std::string& candidate)
+        {
+            for(int i=0;i<input_preset::BuiltInCount();++i) if(candidate==input_preset::BuiltInName(i)) return true;
+            return false;
+        };
         if(!baselineFound||baselineName!=active)
         {
             baseline=Config{};
             baselineName=active;
             baselineFound=input_preset::Find(active,baseline);
-            // A built-in's description is shown, not edited: the box is for the player's own.
-            bool builtIn=false;
-            for(int i=0;i<input_preset::BuiltInCount();++i) builtIn=builtIn||active==input_preset::BuiltInName(i);
-            savedDescription=builtIn?std::string{}:input_preset::DescriptionOf(active);
+            // The name box starts on the chosen preset; a built-in's description is shown, not edited.
+            strncpy_s(name,active.c_str(),_TRUNCATE);
+            savedDescription=builtIn(active)?std::string{}:input_preset::DescriptionOf(active);
             strncpy_s(description,savedDescription.c_str(),_TRUNCATE);
         }
-        const auto apply=[&](const std::string& name)
+        const auto apply=[&](const std::string& chosen)
         {
             Config scheme{};
-            if(!input_preset::Find(name,scheme)) return;
+            if(!input_preset::Find(chosen,scheme)) return;
             input_preset::CopyScheme(g_config,scheme);
-            strncpy_s(g_config.input_preset,name.c_str(),_TRUNCATE);
+            strncpy_s(g_config.input_preset,chosen.c_str(),_TRUNCATE);
             baselineFound=false;
             changed=true;
         };
@@ -224,62 +238,55 @@ namespace
                 if(ImGui::Selectable(input_preset::BuiltInName(i),active==input_preset::BuiltInName(i)))
                     apply(input_preset::BuiltInName(i));
             std::string chosen;
-            for(const auto& name:saved)
-                if(ImGui::Selectable(name.c_str(),active==name)) chosen=name;
+            for(const auto& candidate:saved)
+                if(ImGui::Selectable(candidate.c_str(),active==candidate)) chosen=candidate;
             if(!chosen.empty()) apply(chosen);
             ImGui::EndCombo();
         }
-        const bool isSaved=std::find(saved.begin(),saved.end(),active)!=saved.end();
         const bool modified=baselineFound&&!input_preset::SameScheme(g_config,baseline);
         for(int i=0;i<input_preset::BuiltInCount();++i)
             if(active==input_preset::BuiltInName(i)) ImGui::TextWrapped("%s",input_preset::BuiltInDescription(i));
-        if(modified)
-        {
-            ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"Changed since you chose this preset.");
-            ImGui::SameLine();
-            if(ImGui::Button("Undo changes")) apply(active);
-        }
-        else if(!baselineFound&&isSaved==false&&!active.empty())
-            ImGui::TextDisabled("This preset's file is gone. Your settings stay as they are.");
+        // A built-in cannot be saved over: once its settings change, the name moves on to the player's own.
+        if(modified&&(builtIn(name)||name[0]==0)) strncpy_s(name,NextUserPresetName(saved).c_str(),_TRUNCATE);
         ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputTextWithHint("##presetdescription",isSaved?"Description (optional)":"Description for a new preset (optional)",
-            description,sizeof(description));
-        if(isSaved&&(modified||savedDescription!=description)&&ImGui::Button("Save over this preset"))
-        {
-            input_preset::Save(active,g_config,description);
-            baselineFound=false;
-        }
-        ImGui::SetNextItemWidth(320.0f);
-        ImGui::InputTextWithHint("##presetname","Name (optional)",newName,sizeof(newName));
+        ImGui::InputTextWithHint("##presetname","Name",name,sizeof(name));
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##presetdescription","Description (optional)",description,sizeof(description));
+        const std::string target=input_preset::SafeName(name);
+        const bool targetSaved=std::find(saved.begin(),saved.end(),target)!=saved.end();
+        const bool canSave=!target.empty()&&!builtIn(target)&&
+            (!targetSaved||target!=active||modified||savedDescription!=description);
+        ImGui::BeginDisabled(!modified);
+        if(ImGui::Button("Undo changes")) apply(active);
+        ImGui::EndDisabled();
         ImGui::SameLine();
-        if(ImGui::Button("Save as new preset"))
+        ImGui::BeginDisabled(!canSave);
+        if(ImGui::Button(targetSaved?"Save over preset":"Save as new preset")&&input_preset::Save(target,g_config,description))
         {
-            std::string name=input_preset::SafeName(newName);
-            for(int n=static_cast<int>(saved.size())+1;name.empty()||std::find(saved.begin(),saved.end(),name)!=saved.end();++n)
-                name="My preset "+std::to_string(n);
-            if(input_preset::Save(name,g_config,description))
-            {
-                strncpy_s(g_config.input_preset,name.c_str(),_TRUNCATE);
-                newName[0]=0;
-                listed=false;
-                baselineFound=false;
-                changed=true;
-            }
+            strncpy_s(g_config.input_preset,target.c_str(),_TRUNCATE);
+            listed=false;
+            baselineFound=false;
+            changed=true;
         }
-        if(isSaved)
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!targetSaved);
+        if(ImGui::Button("Delete preset"))
         {
-            ImGui::SameLine();
-            if(ImGui::Button("Delete this preset"))
-            {
-                input_preset::Delete(active);
-                g_config.input_preset[0]=0;
-                listed=false;
-                baselineFound=false;
-                changed=true;
-            }
+            input_preset::Delete(target);
+            if(active==target) g_config.input_preset[0]=0;
+            listed=false;
+            baselineFound=false;
+            changed=true;
         }
-        ImGui::TextDisabled("Saves your buttons, turning, movement, gestures, reload and holsters. Not your aim or\n"
-            "body fit. Presets are files in Input Presets beside halomccvr.cfg, so you can share them.");
+        ImGui::EndDisabled();
+        if(modified) ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"Changed since you chose this preset.");
+        else if(!baselineFound&&!active.empty()&&std::find(saved.begin(),saved.end(),active)==saved.end())
+            ImGui::TextDisabled("This preset's file is gone. Your settings stay as they are.");
+        ImGui::PushStyleColor(ImGuiCol_Text,ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        ImGui::TextWrapped("Saves your buttons, turning, movement, gestures, reload and holsters, but not your aim or body fit. "
+            "Presets are files in Input Presets beside halomccvr.cfg, so you can share them.");
+        ImGui::PopStyleColor();
     }
 
     // The one bar that moves the panel. Everything else is inert, which is the
@@ -1076,11 +1083,13 @@ namespace
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("A smaller radius requires the controller to be closer to your head.\n"
                               "Also sets how close the Project Reclaimer keys need it.");
-        changed |= ImGui::Checkbox("Keep walking when my hand comes up", &g_config.dpad_keep_moving);
+        changed |= ImGui::Checkbox("Keep walking until I let go of the stick", &g_config.dpad_keep_moving);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("If you're walking when your hand reaches your head, you keep walking.\n"
                               "Let the stick return to centre and it becomes the D-pad.\n"
                               "Off: the stick becomes the D-pad at once and you stop.");
+        ImGui::TextDisabled("In Project Reclaimer, at your head: X talks and Y shows the scoreboard (left controller);\n"
+                            "A and B vote yes and no (right controller).");
         changed |= ImGui::Checkbox("Quest 3 left thumb-rest D-pad",
                                    &g_config.quest_thumbrest_dpad);
         if (ImGui::IsItemHovered())
@@ -1093,25 +1102,6 @@ namespace
                                    &g_config.y_b_start_chord);
         ImGui::TextDisabled("On by default. Turn it off if you prefer Y and B to stay separate.");
         ImGui::TextDisabled("L3+R3 recenters and toggles this menu; the right trigger clicks the VR pointer.");
-        }
-        if (ImGui::CollapsingHeader("Project Reclaimer keys at your head##section", ImGuiTreeNodeFlags_None))
-        {
-        changed |= ImGui::Checkbox("X near my head talks in Project Reclaimer", &g_config.reclaimer_talk_gesture);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Hold your left controller to your head and press X for voice chat.\n"
-                              "It follows Reclaimer's talk mode (Audio): hold to talk, or press to start and stop.\n"
-                              "Uses the key V. If you rebound Push to talk, set reclaimer_talk_key in halomccvr.cfg.");
-        changed |= ImGui::Checkbox("Y near my head shows the scoreboard in Project Reclaimer",
-                                   &g_config.reclaimer_scoreboard_gesture);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Hold your left controller to your head and press Y for the scoreboard.\n"
-                              "Uses the key Tab. If you rebound it, set reclaimer_scoreboard_key in halomccvr.cfg.");
-        changed |= ImGui::Checkbox("A and B near my head vote in Project Reclaimer", &g_config.reclaimer_vote_gesture);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Hold your right controller to your head: A votes yes, B votes no.\n"
-                              "Uses the keys F5 and F6. If you rebound them, set reclaimer_vote_yes_key and\n"
-                              "reclaimer_vote_no_key in halomccvr.cfg.");
-        ImGui::TextDisabled("Within the head radius set in D-pad gesture.");
         }
         if (ImGui::CollapsingHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
         {
@@ -2578,7 +2568,7 @@ namespace
                                    &g_config.physical_melee);
         SingleplayerOnly("In co-op, a swing presses the game's melee instead, automatically. Halo CE: it does nothing.");
         ImGui::TextDisabled("Strike a target with either hand or its held gun. Works with world collision on or off.");
-        changed |= ImGui::Checkbox("Gesture melee (experimental)", &g_config.gesture_melee);
+        changed |= ImGui::Checkbox("Gesture melee", &g_config.gesture_melee);
         ImGui::TextDisabled("A punch away from your body presses the game's own melee.");
         ImGui::TextDisabled("True physical melee takes priority when both modes are selected.");
         if (g_config.physical_melee)

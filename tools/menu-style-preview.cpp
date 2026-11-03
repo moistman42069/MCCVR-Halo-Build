@@ -55,7 +55,7 @@ int wmain(int argc, wchar_t** argv) {
     ImGui::TextWrapped("Keep the tracked hands and weapons visible, with optional articulated arms. Turn off to hide the arms. Custom rigs need a recognized arm chain.");
     ImGui::Spacing();ImGui::Checkbox("World collision (experimental)",&disabled);
     ImGui::Checkbox("True physical melee (experimental)",&disabled);
-    ImGui::Checkbox("Gesture melee (experimental)",&disabled);
+    ImGui::Checkbox("Gesture melee",&disabled);
     ImGui::Spacing();ImGui::Checkbox("Show full body",&disabled);
     ImGui::TextWrapped("Experimental body visibility. The current Halo 3 switch can affect its first-person hands. Full-body support in the other games is still in development.");
     ImGui::Spacing();ImGui::TextColored(vr_menu_style::Rgb(vr_menu_style::kWarning),"Full-body avatar IK and finger posing are still in development.");
