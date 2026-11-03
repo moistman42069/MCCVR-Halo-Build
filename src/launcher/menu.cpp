@@ -9,12 +9,14 @@
 #include <shellapi.h>
 #include <uxtheme.h>
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <algorithm>
 #include <thread>
 #include <functional>
 #include <fstream>
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 namespace mcc_installer {
 namespace fs = std::filesystem;
@@ -604,12 +606,23 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         RECT client{}; GetClientRect(window, &client); FillRect(dc, &client, menu->background);
         SetBkMode(dc, TRANSPARENT); SetTextColor(dc, kAccent); SelectObject(dc, menu->title);
         SetTextCharacterExtra(dc, menu->Px(4)); TextOutW(dc, menu->Px(37), menu->Px(30), L"HALO MCC VR", 11); SetTextCharacterExtra(dc, 0);
+        // Where the title's capitals stand, for the accents beside it: from its baseline up to its capital height.
+        TEXTMETRICW titleMetrics{}; GetTextMetricsW(dc, &titleMetrics);
+        const int titleBaseline = menu->Px(30) + titleMetrics.tmAscent;
+        // The H as drawn, since a font's own capital height does not always match its letters.
+        int titleCapitals = titleMetrics.tmAscent - titleMetrics.tmInternalLeading;
+        GLYPHMETRICS letter{}; const MAT2 identity{{0, 1}, {0, 0}, {0, 0}, {0, 1}};
+        if (GetGlyphOutlineW(dc, L'H', GGO_METRICS, &letter, 0, nullptr, &identity) != GDI_ERROR && letter.gmptGlyphOrigin.y > 0) titleCapitals = letter.gmptGlyphOrigin.y;
         SelectObject(dc, menu->label); SetTextColor(dc, kMuted); const wchar_t* subtitle = L"The Master Chief Collection in Virtual Reality";
         TextOutW(dc, menu->Px(41), menu->Px(93), subtitle, static_cast<int>(wcslen(subtitle)));
         HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); auto old = SelectObject(dc, pen);
         for (int y : {121, 222, 502, kExternalTop}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
         // Original geometric HUD accents; no extracted game art or assets.
-        for (int x = 811; x < 943; x += 22) { MoveToEx(dc, menu->Px(x), menu->Px(43), nullptr); LineTo(dc, menu->Px(x + 18), menu->Px(25)); }
+        // Six slanted strokes as tall as the title's capitals, level with them, ending at the content's right edge.
+        for (int stroke = 0; stroke < 6; ++stroke) {
+            const int x = menu->Px(942) - titleCapitals - (5 - stroke) * menu->Px(22);
+            MoveToEx(dc, x, titleBaseline, nullptr); LineTo(dc, x + titleCapitals, titleBaseline - titleCapitals);
+        }
         SelectObject(dc, old); DeleteObject(pen);
         DrawCreditsTitle(*menu, dc);
         // External Mods: the note under its heading, then Project Reclaimer's tab and panel, in its own colour. The tab
@@ -803,6 +816,14 @@ std::wstring ShowLauncherMenu(HINSTANCE instance, const fs::path& launcherDir, i
     AdjustWindowRectExForDpi(&rect, style, FALSE, 0, dpi);
     HWND window = CreateWindowExW(0, type.lpszClassName, L"Halo MCC VR | Setup & Launch", style, CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, instance, &menu);
     if (window) {
+        // The title bar in the launcher's colours: dark on Windows 10 (attribute 20, or 19 before build 18985), and the
+        // launcher's own background and text colours on Windows 11, which ignores neither.
+        BOOL dark = TRUE;
+        if (FAILED(DwmSetWindowAttribute(window, 20, &dark, sizeof(dark)))) DwmSetWindowAttribute(window, 19, &dark, sizeof(dark));
+        const COLORREF caption = kBackground, captionText = kText, border = RGB(35, 75, 91);
+        DwmSetWindowAttribute(window, 35, &caption, sizeof(caption));
+        DwmSetWindowAttribute(window, 36, &captionText, sizeof(captionText));
+        DwmSetWindowAttribute(window, 34, &border, sizeof(border));
         menu.installs = DetectInstalls(launcherDir); menu.Populate();
         if (const auto* game = menu.Selected(); menu.credits.empty() && game) menu.credits = ReadCredits(game->root / L"Halo_MCC_VR" / L"CREDITS.txt");
         if (menu.credits.empty()) menu.credits = ParseCreditsUtf8({reinterpret_cast<const char*>(menu_assets::credits), sizeof(menu_assets::credits)});
