@@ -356,10 +356,9 @@ int DrawCreditsList(Menu& menu, HDC dc, int width, int top) {
         DrawTextW(dc, text, -1, &box, DT_WORDBREAK | DT_NOPREFIX);
         y = box.bottom + menu.Px(after);
     };
-    paragraph(L"Halo MCC VR is a community effort with contributions from multiple dedicated Halo and VR fans.", menu.smallFont, kText, 18);
     for (const auto& credit : menu.credits) {
         if (!credit.section.empty()) { y += menu.Px(8); paragraph(credit.section.c_str(), menu.creditsSection, kMuted, 12); }
-        nameAndLinks(credit);
+        if (!credit.name.empty()) nameAndLinks(credit);
         paragraph(credit.what.c_str(), menu.smallFont, kText, 14);
     }
     return y;

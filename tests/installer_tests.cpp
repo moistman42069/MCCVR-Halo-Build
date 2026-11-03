@@ -85,6 +85,8 @@ static void Policies() {
         Require(credits[0].name == L"First" && credits[0].what == L"Did: this", "a person and what they did, colons and all");
         Require(credits[1].name == L"Second" && credits[1].what.empty(), "a person with no description");
         Require(ParseCredits(L"").empty(), "no file, no list");
+        const auto intro = ParseCredits(L"intro: One.\nintro: Two: more.\nwhat: not for the intro\nname: A\n");
+        Require(intro.size() == 3 && intro[0].name.empty() && intro[0].what == L"One." && intro[1].what == L"not for the intro" && intro[2].name == L"A", "intro lines are paragraphs with no name");
         Require(credits[0].links.size() == 1 && credits[0].links[0].label == L"Ko-fi" && credits[0].links[0].url == L"https://example.com", "a link is a label and an address");
         const auto links = ParseCredits(L"link: Nobody https://example.com\nname: A\nlink: Two Words https://a.example/x?y=1&z=%20\nlink: Plain http://a.example\nlink: Script javascript:alert(1)\nlink: https://a.example\nlink: Quote https://a.example/\"x\nlink: Slash https://a.example\\x\n");
         Require(links.size() == 1 && links[0].links.size() == 1 && links[0].links[0].label == L"Two Words" && links[0].links[0].url == L"https://a.example/x?y=1&z=%20", "only labelled https addresses are links");
