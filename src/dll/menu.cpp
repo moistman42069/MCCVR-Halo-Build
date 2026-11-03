@@ -165,7 +165,7 @@ namespace
     // Settings search (setting_search.h). The index lists every setting with its page and section. It is built by drawing
     // each page once, out of sight and with every section open, while Dear ImGui reports each item's name
     // (imgui_item_hooks.h). Settings that only appear once another is turned on are found while they are showing.
-    // Controls side by side on one row are one result, found by any of their names.
+    // Controls side by side on one row are one result, found by any of their names, and so are a SettingGroup's.
     // Its notes, the text drawn under it, are searched too.
     struct SettingEntry
     {
@@ -255,20 +255,82 @@ namespace
     {
         if(g_notes.entry>=0&&g_notes.to<0) g_notes.to=GImGui->LogBuffer.size();
     }
-    void KeepNotes()
+    void AppendNotes(std::string& notes,int from,int to)
     {
-        if(g_notes.entry<0) return;
         const ImGuiTextBuffer& log=GImGui->LogBuffer;
-        std::string& notes=g_settingIndex[g_notes.entry].notes;
-        for(int i=g_notes.from,end=g_notes.to>=0?g_notes.to:log.size();i<end;++i)
+        for(int i=from;i<to;++i)
         {
             const char c=log.begin()[i];
             const bool space=c==' '||c=='\n'||c=='\r'||c=='\t';
             if(!space) notes.push_back(c);
             else if(!notes.empty()&&notes.back()!=' ') notes.push_back(' ');
         }
+    }
+    void KeepNotes()
+    {
+        if(g_notes.entry<0) return;
+        AppendNotes(g_settingIndex[g_notes.entry].notes,g_notes.from,g_notes.to>=0?g_notes.to:GImGui->LogBuffer.size());
         g_notes.entry=-1;
     }
+
+    // Several controls that one description covers, marked where the page draws them. Search finds them as one
+    // setting, named by the title the group draws above them and found by any of their names or the text inside, and a
+    // result or a jump shows and flashes the whole group. Groups do not nest.
+    struct SettingGroup
+    {
+        explicit SettingGroup(const char* title)
+        {
+            const ImGuiWindow* window=GImGui->CurrentWindow;
+            const float y=window->DC.CursorPos.y,top=y-window->DC.CursorStartPos.y;
+            const auto isThis=[&](int page,const std::string& section,const std::string& label)
+                {return SettingPage()==page&&g_currentSection==section&&label==title;};
+            if(g_indexing)
+            {
+                KeepNotes(); // the setting before ends where the group starts
+                const bool known=std::any_of(g_settingIndex.begin(),g_settingIndex.end(),
+                    [&](const SettingEntry& e){return isThis(e.page,e.section,e.label);});
+                if(!known)
+                {
+                    g_settingIndex.push_back({SettingPage(),g_currentSection,title,{},top});
+                    entry=static_cast<int>(g_settingIndex.size())-1;notesFrom=GImGui->LogBuffer.size();
+                }
+            }
+            else if(g_drawingResult)
+            {
+                const SettingEntry& e=*g_measure.entry;
+                if(g_measure.top<0.0f&&isThis(e.page,e.section,e.label))
+                {g_measure.top=top;g_measure.bottom=FLT_MAX;measured=true;}
+                else if(g_measure.top>=0.0f&&g_measure.next<0.0f&&top>=g_measure.bottom-1.0f) g_measure.next=top;
+            }
+            else if(g_jump.active)
+            {
+                if(g_jump.top<0.0f&&isThis(g_jump.page,g_jump.section,g_jump.label))
+                {
+                    if(!g_jump.scrolled)
+                    {ImGui::SetScrollFromPosY(y-window->Pos.y,0.25f);g_jump.scrolled=true;g_jump.start=ImGui::GetTime();}
+                    g_jump.top=y;g_jump.bottom=FLT_MAX;jumpedTo=true;
+                }
+                else if(g_jump.top>=0.0f&&g_jump.next<0.0f&&y>=g_jump.bottom-1.0f) g_jump.next=y;
+            }
+            g_openGroup=this;
+            ImGui::Text("%s:",title);
+        }
+        ~SettingGroup()
+        {
+            g_openGroup=nullptr;
+            const ImGuiWindow* window=GImGui->CurrentWindow;
+            const float y=window->DC.CursorPos.y;
+            if(entry>=0) AppendNotes(g_settingIndex[entry].notes,notesFrom,GImGui->LogBuffer.size());
+            if(measured) g_measure.next=y-window->DC.CursorStartPos.y;
+            if(jumpedTo) g_jump.next=y;
+        }
+        SettingGroup(const SettingGroup&)=delete;
+        SettingGroup& operator=(const SettingGroup&)=delete;
+
+        int entry=-1,notesFrom=0; // its index entry, while the index is built
+        bool measured=false,jumpedTo=false;
+        static inline SettingGroup* g_openGroup=nullptr;
+    };
 
     void IndexSetting(ImGuiID,const char* label,int flags)
     {
@@ -276,6 +338,15 @@ namespace
         if(flags&ImGuiItemStatusFlags_Openable) return; // a section header, which the section name already covers
         const std::string name=VisibleName(label);
         if(name.empty()||name=="decrease"||name=="increase") return; // a slider's arrow buttons
+        if(SettingGroup* group=SettingGroup::g_openGroup)
+        {
+            if(group->entry>=0)
+            {
+                auto& names=g_settingIndex[group->entry].alsoOnRow;
+                if(std::find(names.begin(),names.end(),name)==names.end()) names.push_back(name);
+            }
+            return;
+        }
         const int page=SettingPage();
         for(const auto& entry:g_settingIndex)
             if(entry.page==page&&entry.label==name&&entry.section==g_currentSection) return;
@@ -963,7 +1034,8 @@ namespace
                   "for comparison.");
             // The view recenter (roomscale_recenter_logic.h): three independent options, all on by default.
             ImGui::Spacing();
-            ImGui::Text("Bring the view back over your character (steadier aim):");
+            {
+            SettingGroup recenter("Bring the view back over your character (steadier aim)");
             changed |= ImGui::Checkbox("On a jump", &g_config.roomscale_recenter_jump);
             if (g_config.roomscale_recenter_jump)
                 changed |= vr_menu::SliderFloat("Jump slide time", &g_config.roomscale_recenter_jump_s,
@@ -984,6 +1056,7 @@ namespace
                 "On a jump / when you start moving: one quick slide, over the time you set.\n"
                 "Gradually while moving: a steady slide at the speed you set, for as long as the stick is\n"
                 "held. It need not finish: once you stand still, your legs walk to you as before.");
+            }
         }
         ImGui::Spacing();
         // Neither the checkbox nor the depth re-samples the standing height: it is learned all the time,
