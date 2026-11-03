@@ -32,10 +32,10 @@ constexpr UINT kDone = WM_APP + 20;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version, UpdateSelf };
 // The window's client size at 96 dpi.
-constexpr int kMenuWidth = 1384, kMenuHeight = kReclaimerBottom + 26;
+constexpr int kMenuWidth = 1400, kMenuHeight = kReclaimerBottom + 26;
 // The credits column, right of the divider, at 96 dpi: the title stays put and the list below it scrolls. It sits as
 // far from the divider as the main area does, with the main area's left margin on its right.
-constexpr int kCreditsDivider = 968, kCreditsLeft = 994, kCreditsListTop = 76, kCreditsListWidth = 352;
+constexpr int kCreditsDivider = 968, kCreditsLeft = 994, kCreditsListTop = 76, kCreditsListWidth = 368;
 struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel, built, release, published; bool candidate = true; };
 BuildIdentity ReadIdentity(const fs::path& directory) {
     BuildIdentity identity; std::ifstream file(directory / L"BUILD-IDENTITY.txt", std::ios::binary);
@@ -420,7 +420,8 @@ LRESULT CALLBACK CreditsProc(HWND window, UINT message, WPARAM wParam, LPARAM lP
         // Drawn off screen first, so that scrolling does not flicker.
         HDC dc = CreateCompatibleDC(target); HBITMAP bitmap = CreateCompatibleBitmap(target, client.right, client.bottom); const auto oldBitmap = SelectObject(dc, bitmap);
         FillRect(dc, &client, menu->background);
-        const int textWidth = client.right - menu->Px(16);
+        // The scroll bar is 6 wide; the text stops as far short of it as the list starts from the divider.
+        const int textWidth = client.right - menu->Px(32);
         menu->creditsContent = DrawCreditsList(*menu, dc, textWidth, -menu->creditsScroll) + menu->creditsScroll;
         if (const int limit = std::max(0, menu->creditsContent - static_cast<int>(client.bottom)); menu->creditsScroll > limit) { menu->creditsScroll = limit; InvalidateRect(window, nullptr, FALSE); }
         if (const RECT thumb = CreditsThumb(*menu, client); thumb.bottom > thumb.top) {
