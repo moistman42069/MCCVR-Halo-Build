@@ -24,12 +24,15 @@ constexpr COLORREF kBackground = RGB(7, 16, 25), kPanel = RGB(15, 32, 44), kText
 // own, warm where the rest of the menu is teal.
 constexpr COLORREF kReclaimerPanel = RGB(31, 24, 13), kReclaimerField = RGB(46, 35, 18), kReclaimerAccent = RGB(240, 178, 84), kReclaimerMuted = RGB(186, 156, 112);
 // The panel's box, at 96 dpi.
-constexpr int kReclaimerLeft = 26, kReclaimerTop = 656, kReclaimerRight = 954, kReclaimerBottom = 840;
+// External Mods: a section of its own below the MCC setup, each mod on a tab over its panel. Project Reclaimer is the
+// first; more join it as tabs beside it.
+constexpr int kExternalTop = 656, kTabHeight = 30;
+constexpr int kReclaimerLeft = 26, kReclaimerTop = 754, kReclaimerRight = 954, kReclaimerBottom = 912;
 constexpr UINT kDone = WM_APP + 20;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version, UpdateSelf };
 // The window's client size at 96 dpi.
-constexpr int kMenuWidth = 1350, kMenuHeight = 934;
+constexpr int kMenuWidth = 1350, kMenuHeight = 988;
 // The credits column, right of the divider, at 96 dpi: the title stays put and the list below it scrolls.
 constexpr int kCreditsDivider = 968, kCreditsLeft = 986, kCreditsListTop = 76, kCreditsListWidth = 352;
 struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel, built, release, published; bool candidate = true; };
@@ -579,15 +582,16 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Label(*menu, L"03  /  YOUR VR SETUP", 38, 561, 570);
         Control(*menu, L"BUTTON", L"VR SETTINGS", BS_OWNERDRAW | WS_TABSTOP, 38, 590, 270, 48, Settings);
         Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 324, 590, 618, 48, Launch);
-        // The section's heading is painted with its panel (WM_PAINT).
-        menu->reclaimerPath = Control(*menu, L"EDIT", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 46, 701, 634, 32, ReclaimerPath);
+        Label(*menu, L"04  /  EXTERNAL MODS", 38, kExternalTop + 11, 570);
+        // The note under that heading, and the tab over the panel, are painted (WM_PAINT).
+        menu->reclaimerPath = Control(*menu, L"EDIT", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 46, kReclaimerTop + 18, 634, 32, ReclaimerPath);
         SendMessageW(menu->reclaimerPath, EM_SETLIMITTEXT, 2000, 0);
-        Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, 698, 122, 38, ReclaimerBrowse);
-        Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, 698, 110, 38, ReclaimerDetect);
-        menu->reclaimerInfo = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 48, 742, 890, 38);
+        Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, kReclaimerTop + 15, 122, 38, ReclaimerBrowse);
+        Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, kReclaimerTop + 15, 110, 38, ReclaimerDetect);
+        menu->reclaimerInfo = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 48, kReclaimerTop + 58, 890, 38);
         SendMessageW(menu->reclaimerInfo, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
-        Control(*menu, L"BUTTON", L"LAUNCH PROJECT RECLAIMER", BS_OWNERDRAW | WS_TABSTOP, 46, 786, 406, 42, ReclaimerLaunch);
-        menu->status = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 856, 895, 66);
+        Control(*menu, L"BUTTON", L"LAUNCH PROJECT RECLAIMER", BS_OWNERDRAW | WS_TABSTOP, 46, kReclaimerTop + 100, 406, 42, ReclaimerLaunch);
+        menu->status = Control(*menu, L"STATIC", L"", SS_LEFT, 40, kReclaimerBottom + 16, 895, 52);
         SendMessageW(menu->status, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         menu->creditsList = CreateWindowExW(0, L"HaloMCCVRCredits", L"", WS_CHILD | WS_VISIBLE, menu->Px(kCreditsLeft), menu->Px(kCreditsListTop),
             menu->Px(kCreditsListWidth), menu->Px(kMenuHeight - kCreditsListTop - 26), window, nullptr, menu->instance, menu);
@@ -601,28 +605,33 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SelectObject(dc, menu->label); SetTextColor(dc, kMuted); const wchar_t* subtitle = L"The Master Chief Collection in Virtual Reality";
         TextOutW(dc, menu->Px(41), menu->Px(93), subtitle, static_cast<int>(wcslen(subtitle)));
         HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); auto old = SelectObject(dc, pen);
-        for (int y : {121, 270, 550}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
+        for (int y : {121, 270, 550, kExternalTop}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
         // Original geometric HUD accents; no extracted game art or assets.
         for (int x = 811; x < 943; x += 22) { MoveToEx(dc, menu->Px(x), menu->Px(43), nullptr); LineTo(dc, menu->Px(x + 18), menu->Px(25)); }
         SelectObject(dc, old); DeleteObject(pen);
         DrawCreditsTitle(*menu, dc);
-        // Project Reclaimer's panel: its own ground, an edge and a bar down its left side in its own colour, the
-        // heading on the left and what it is on the right.
+        // External Mods: the note under its heading, then Project Reclaimer's tab and panel, in its own colour, with a
+        // bar down the panel's left side. The tab opens into the panel below it.
         {
+            SetBkMode(dc, TRANSPARENT); SelectObject(dc, menu->smallFont); SetTextColor(dc, kMuted);
+            const wchar_t* note = L"External mods share the same VR settings as MCC VR itself.";
+            TextOutW(dc, menu->Px(40), menu->Px(kExternalTop + 38), note, static_cast<int>(wcslen(note)));
             RECT box{menu->Px(kReclaimerLeft), menu->Px(kReclaimerTop), menu->Px(kReclaimerRight), menu->Px(kReclaimerBottom)};
             FillRect(dc, &box, menu->reclaimerPanel);
             HBRUSH edge = CreateSolidBrush(RGB(122, 90, 44)), bar = CreateSolidBrush(kReclaimerAccent);
             FrameRect(dc, &box, edge);
             RECT stripe{box.left, box.top, box.left + menu->Px(5), box.bottom}; FillRect(dc, &stripe, bar);
+            SelectObject(dc, menu->label); SetTextCharacterExtra(dc, menu->Px(2));
+            const wchar_t* name = L"PROJECT RECLAIMER";
+            SIZE nameSize{}; GetTextExtentPoint32W(dc, name, static_cast<int>(wcslen(name)), &nameSize);
+            RECT tab{box.left, menu->Px(kReclaimerTop - kTabHeight), box.left + nameSize.cx + menu->Px(36), box.top + 1};
+            FillRect(dc, &tab, menu->reclaimerPanel); FrameRect(dc, &tab, edge);
+            RECT top{tab.left, tab.top, tab.right, tab.top + menu->Px(3)}; FillRect(dc, &top, bar);
+            RECT open{tab.left + menu->Px(5), box.top, tab.right - 1, box.top + 1}; FillRect(dc, &open, menu->reclaimerPanel);
             DeleteObject(edge); DeleteObject(bar);
-            SetBkMode(dc, TRANSPARENT); SelectObject(dc, menu->label); SetTextColor(dc, kReclaimerAccent);
-            SetTextCharacterExtra(dc, menu->Px(2));
-            const wchar_t* heading = L"PROJECT RECLAIMER";
-            TextOutW(dc, menu->Px(46), menu->Px(kReclaimerTop + 14), heading, static_cast<int>(wcslen(heading)));
+            SetTextColor(dc, kReclaimerAccent);
+            DrawTextW(dc, name, -1, &tab, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
             SetTextCharacterExtra(dc, 0);
-            SelectObject(dc, menu->smallFont); SetTextColor(dc, kReclaimerMuted);
-            RECT note{menu->Px(330), menu->Px(kReclaimerTop + 15), menu->Px(940), menu->Px(kReclaimerTop + 40)};
-            DrawTextW(dc, L"EXPERIMENTAL  /  A SEPARATE GAME CLIENT, NOT PART OF THE MCC SETUP ABOVE", -1, &note, DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX);
         }
         if (message == WM_PAINT) EndPaint(window, &paint); return 0;
     }

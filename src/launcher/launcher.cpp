@@ -1162,11 +1162,7 @@ ClientInfo Describe(const std::filesystem::path& launcherDir, const std::wstring
         return info;
     }
     const reclaimer_host::Version version = ReclaimerVersionOfFile(exe);
-    info.text = L"Project Reclaimer " + WideOf(ReclaimerVersionText(version)) +
-        (reclaimer_host::Proven(version)
-             ? L": the VR mod has been run with this version."
-             : L": the VR mod has NOT been run with this version (it has with " + WideOf(ReclaimerProvenText()) +
-                   L").");
+    info.text = L"Project Reclaimer " + WideOf(ReclaimerVersionText(version)) + L".";
     const std::filesystem::path modDir = ModDir(launcherDir);
     for (const wchar_t* needed : {L"HaloMCCVR.dll", kReclaimerRelayName})
     {
@@ -1176,7 +1172,6 @@ ClientInfo Describe(const std::filesystem::path& launcherDir, const std::wstring
             L", so this launcher cannot start it.";
         return info;
     }
-    info.text += L"\nVR files and settings: " + modDir.wstring();
     info.startable = true;
     return info;
 }
