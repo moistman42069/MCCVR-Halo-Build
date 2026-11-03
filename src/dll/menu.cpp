@@ -177,6 +177,13 @@ namespace
         CategorySection& operator=(const CategorySection&)=delete;
     };
 
+    // Room between one setting and the next, so they do not run together. A setting's own notes stay with it.
+    // Trial: the Controls page only.
+    void SettingGap()
+    {
+        if(g_activeCategory==Cat_Controls) ImGui::Dummy(ImVec2(0.0f,ImGui::GetTextLineHeight()*0.5f));
+    }
+
     // A setting that changes the game on this machine only (sight_layer.h: Sight_FireTimeChangesAllowed), which other
     // players' games would not follow. `what` says what becomes of it in co-op.
     void SingleplayerOnly(const char* what)
@@ -1026,13 +1033,16 @@ namespace
         {
         changed |= ImGui::Checkbox("Physical running", &g_config.physical_running);
         if(g_config.physical_running) {
+            SettingGap();
             changed |= vr_menu::SliderFloat("Running speed",&g_config.physical_running_speed,.1f,1.f,"%.2f");
+            SettingGap();
             changed |= vr_menu::SliderFloat("Running sensitivity",&g_config.physical_running_sensitivity,.25f,3.f,"%.2f");
             ImGui::TextWrapped("Alternate both arms to move forward while on foot. Speed is a fraction of the game's normal maximum. While running, arm motion takes over the movement stick. Menus and vehicles keep their normal controls.");
         }
         if(ImGui::Checkbox("Physical crouch",&g_config.physical_crouch))
             changed=true;
         ImGui::TextDisabled("Lower your head to crouch. Depth and calibration are in Comfort > Roomscale.");
+        SettingGap();
         changed |= ImGui::Checkbox("Right stick crouches", &g_config.right_stick_crouch);
         ImGui::TextDisabled("On foot: push the right stick down to crouch and up to stand. Needs MCC's\n"
             "hold-to-crouch setting. The game's own crouch button still works.");
@@ -1051,11 +1061,14 @@ namespace
             g_config.turn_smooth = true;
             changed = true;
         }
+        SettingGap();
         changed |= ImGui::Checkbox("Automatically smooth turn in vehicles", &g_config.vehicle_smooth_turn);
         ImGui::TextDisabled("Uses your smooth turn speed while seated. Exiting restores your normal turn mode.");
         if (g_config.turn_smooth || g_config.vehicle_smooth_turn)
+            SettingGap();
             changed |= vr_menu::SliderFloat("Turn speed (deg/s)", &g_config.turn_smooth_deg_s, 30.0f, 360.0f, "%.0f");
         if (!g_config.turn_smooth)
+            SettingGap();
             changed |= vr_menu::SliderFloat("Snap increment (deg)", &g_config.turn_snap_deg, 5.0f, 90.0f, "%.0f");
 
         ImGui::Spacing();
@@ -1074,6 +1087,7 @@ namespace
             changed = true;
         }
         float dpadHeadRadiusCm = g_config.dpad_head_radius * 100.0f;
+        SettingGap();
         if (vr_menu::SliderFloat("Head radius", &dpadHeadRadiusCm,
                                  10.0f, 50.0f, "%.0f cm"))
         {
@@ -1083,6 +1097,7 @@ namespace
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("A smaller radius requires the controller to be closer to your head.\n"
                               "Also sets how close the Project Reclaimer keys need it.");
+        SettingGap();
         changed |= ImGui::Checkbox("Keep walking until I let go of the stick", &g_config.dpad_keep_moving);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("If you're walking when your hand reaches your head, you keep walking.\n"
@@ -1090,6 +1105,7 @@ namespace
                               "Off: the stick becomes the D-pad at once and you stop.");
         ImGui::TextDisabled("In Project Reclaimer, at your head: X talks and Y shows the scoreboard (left controller);\n"
                             "A and B vote yes and no (right controller).");
+        SettingGap();
         changed |= ImGui::Checkbox("Quest 3 left thumb-rest D-pad",
                                    &g_config.quest_thumbrest_dpad);
         if (ImGui::IsItemHovered())
@@ -1135,6 +1151,7 @@ namespace
             ImGui::TextWrapped("Free hand: grenade. Gripping the gun: zoom. Sets those two rows for all six games, and "
                 "turning it off puts them back on Automatic. Reload and holster grips send nothing. Dual wielding and "
                 "vehicle seats keep the plain trigger.");
+            SettingGap();
             ImGui::BeginDisabled(!contextualTrigger);
             if(ImGui::Checkbox("Empty Grip + Trigger uses Equipment",&g_config.trigger_air_equipment))
             {
@@ -1163,6 +1180,7 @@ namespace
             {
                 ImGui::PushID(static_cast<int>(action));
                 ImGui::TextUnformatted(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)));
+                SettingGap();
                 ImGui::SetNextItemWidth(-1);
                 if(ImGui::Combo("##source",&g_config.vr_bindings[selectedTitle][action],
                     vr_mapping::kSourceNames,vr_mapping::SourceCount))
@@ -1714,12 +1732,14 @@ namespace
         ImGui::TextDisabled("shake to reload a weapon when dual wielding");
         if(g_config.dual_wield_shake_reload)
         {
+            SettingGap();
             changed |= vr_menu::SliderFloat("Minimum shake stroke (m)##dualreload",
                 &g_config.weapon_shake_travel_m,0.06f,0.20f,"%.2f");
             ImGui::TextDisabled("Shake a hand back and forth once: it presses that hand's reload button.\n"
                 "Halo 3: either hand. Halo 2: the right-hand gun only for now.\n"
                 "Let the hand settle before shaking again.");
         }
+        SettingGap();
         changed |= ImGui::Checkbox("Manual Reload", &g_config.manual_reload);
         if(g_config.manual_reload&&g_config.gesture_only_weapon_input)
             ImGui::TextDisabled("Gestures only: button and keyboard reload are off.");
@@ -1728,10 +1748,13 @@ namespace
             ImGui::TextDisabled("Hold your support grip at your hip to take a magazine.\n"
                 "Bring it below your weapon hand, then release to reload.\n"
                 "Native ammo and reserve limits still apply.");
+            SettingGap();
             changed |= ImGui::Checkbox("Disable automatic reload", &g_config.manual_reload_disable_auto);
             SingleplayerOnly("May break a co-op session. This one does NOT turn itself off.");
+            SettingGap();
             changed |= ImGui::Checkbox("Skip reload and weapon-ready animations", &g_config.manual_reload_skip_animations);
             SingleplayerOnly("May break a co-op session. This one does NOT turn itself off.");
+            SettingGap();
             changed |= ImGui::Checkbox("Shortened reload animation", &g_config.manual_reload_shortened_animation);
             SingleplayerOnly("May break a co-op session. This one does NOT turn itself off.");
             if(g_config.manual_reload_shortened_animation)
@@ -1739,6 +1762,7 @@ namespace
                     "Full animation skip takes precedence while both are enabled." :
                     "Skip to insertion, then play the weapon's chambering tail.\n"
                     "Weapons without a usable insertion keyframe keep their full reload.");
+            SettingGap();
             changed |= vr_menu::SliderFloat("Magazine grab radius (m)",
                 &g_config.weapon_body_zone_radius_m,0.08f,0.40f,"%.2f");
             changed|=ImGui::Combo("Reserve magazine location",&g_config.weapon_pouch_location,
@@ -1751,14 +1775,18 @@ namespace
                 ImGui::TextWrapped("Offsets follow your body direction. Positive side moves toward the weapon hand; left-handed mode mirrors it.");
                 ImGui::TreePop();
             }
+            SettingGap();
             changed |= vr_menu::SliderFloat("Magazine insertion radius (m)",
                 &g_config.weapon_insert_radius_m,0.06f,0.30f,"%.2f");
+            SettingGap();
             changed |= ImGui::Checkbox("Generic reload item for unknown weapons", &g_config.weapon_unknown_reload_visual);
             ImGui::TextDisabled("Detected unfamiliar weapons use a blue reload item.\n"
                 "Native ammo and reload rules still apply; it is not the mod's own mesh.");
+            SettingGap();
             changed |= ImGui::Checkbox("Shake to reload needle weapons", &g_config.weapon_needler_shake);
             if(g_config.weapon_needler_shake)
             {
+                SettingGap();
                 changed |= vr_menu::SliderFloat("Minimum shake stroke (m)",
                     &g_config.weapon_shake_travel_m,0.06f,0.20f,"%.2f");
                 ImGui::TextDisabled("Recognized Needlers in all titles, plus Reach's Needle Rifle.\n"
@@ -1767,11 +1795,13 @@ namespace
                     "Unrecognized weapon models keep regular controls.");
             }
         }
+        SettingGap();
         changed |= ImGui::Checkbox("Weapon Holsters", &g_config.weapon_holsters);
         if(g_config.weapon_holsters&&g_config.gesture_only_weapon_input)
             ImGui::TextDisabled("Gestures only: button and keyboard weapon switching are off.");
         if(g_config.manual_reload||g_config.weapon_holsters)
         {
+            SettingGap();
             changed |= ImGui::Checkbox("Gestures only (turn off the reload and switch buttons)",
                                        &g_config.gesture_only_weapon_input);
             ImGui::TextDisabled("Off (default): the gestures and the game's own buttons both work.\n"
@@ -1782,6 +1812,7 @@ namespace
         bool overShoulder = g_config.weapon_holsters && g_config.weapon_holster_location == 2 &&
             g_config.weapon_holster_click && !g_config.weapon_holster_slide &&
             fabsf(g_config.weapon_holster_radius_m - weapon_interaction::kOverShoulderRadius) < 0.001f;
+        SettingGap();
         if (ImGui::Checkbox("Over-the-shoulder weapon switch", &overShoulder))
         {
             const Config defaults{};
@@ -1841,23 +1872,31 @@ namespace
         }
         if (g_config.weapon_holsters)
         {
+            SettingGap();
             changed |= ImGui::Combo("Holster location", &g_config.weapon_holster_location,
                 "Weapon-side shoulder\0Weapon-side hip\0Over the weapon-side shoulder\0"
                 "Custom (set with your hand)\0");
             if (g_config.weapon_holster_location == 3)
             {
+                SettingGap();
                 changed |= vr_menu::SliderFloat("Custom spot: to the weapon side (m)",
                     &g_config.weapon_holster_custom_x_m, -0.80f, 0.80f, "%.2f");
+                SettingGap();
                 changed |= vr_menu::SliderFloat("Custom spot: up from the head (m)",
                     &g_config.weapon_holster_custom_y_m, -0.80f, 0.80f, "%.2f");
+                SettingGap();
                 changed |= vr_menu::SliderFloat("Custom spot: forward of the head (m)",
                     &g_config.weapon_holster_custom_z_m, -0.80f, 0.80f, "%.2f");
             }
+            SettingGap();
             changed |= ImGui::Checkbox("Holster slide / draw gesture", &g_config.weapon_holster_slide);
+            SettingGap();
             changed |= ImGui::Checkbox("Holster click gesture", &g_config.weapon_holster_click);
+            SettingGap();
             changed |= vr_menu::SliderFloat("Holster grab radius (m)",
                 &g_config.weapon_holster_radius_m,0.08f,0.40f,"%.2f");
             if(g_config.weapon_holster_slide&&!g_config.weapon_holster_click)
+                SettingGap();
                 changed |= vr_menu::SliderFloat("Minimum holster draw distance (m)",
                     &g_config.weapon_holster_draw_m,0.10f,0.50f,"%.2f");
             ImGui::TextDisabled("Click: squeeze your weapon grip inside the holster to switch.\n"
@@ -1870,6 +1909,7 @@ namespace
         }
         if (g_config.manual_reload || g_config.weapon_holsters)
         {
+            SettingGap();
             changed |= vr_menu::SliderFloat("Pouch / hip depth below head (m)",
                 &g_config.weapon_pouch_down_m,0.25f,0.85f,"%.2f");
             ImGui::TextWrapped("Reload and switch gestures follow the current game's action bindings automatically. "
@@ -2016,13 +2056,16 @@ namespace
         if (ImGui::CollapsingHeader(g_activeCategory == Cat_Controls ? "Two-handed grip##section" : "Two-handed aiming##section",
                                     ImGuiTreeNodeFlags_None))
         {
+        SettingGap();
         changed |= ImGui::Checkbox("Two-handed aiming", &g_config.two_handed_aim);
         ImGui::SameLine();
         ImGui::TextDisabled(VR_IsTwoHandAiming() ? "[engaged]" : "[one-handed]");
+        SettingGap();
         changed |= ImGui::Checkbox("Left-handed main weapon", &g_config.left_handed);
         if (g_config.left_handed)
         {
             ImGui::Indent();
+            SettingGap();
             changed |= ImGui::Checkbox("Fix Hand Alignment (Experimental)",
                 &g_config.experimental_hand_alignment);
             ImGui::TextDisabled("Off: released hand positioning. On: experimental hand/arm correction.\n"
@@ -2040,6 +2083,7 @@ namespace
                                 "third-person, death and Monitor cameras, cutscenes): your main hand\n"
                                 "aims alone. A grip held through it needs a fresh grip in first person.");
             ImGui::Text("When gripping, your support hand steers the aim:");
+            SettingGap();
             if (ImGui::RadioButton("Based on the weapon##twohandaimby", g_config.two_hand_grip_zone_authority))
             { g_config.two_hand_grip_zone_authority = true; changed = true; }
             ImGui::SameLine();
@@ -2057,6 +2101,7 @@ namespace
                     "Hands close together: it holds the gun, but your main hand aims alone.\n"
                     "A controller tracking drop-out can make your hands read as far apart and switch this for a moment.");
             float oneHandRangeCm = g_config.two_hand_one_hand_range_m * 100.0f;
+            SettingGap();
             if (vr_menu::SliderFloat("One-handed aim range", &oneHandRangeCm, 6.0f, 48.0f, "%.0f cm",
                                      ImGuiSliderFlags_None))
             {
@@ -2075,12 +2120,14 @@ namespace
                     oneHandRangeCm * (0.12f / 0.24f));
             ImGui::Spacing();
             ImGui::Text("Grip mode");
+            SettingGap();
             if (ImGui::RadioButton("Toggle (click grip)", g_config.two_hand_toggle))
             { g_config.two_hand_toggle = true; changed = true; }
             ImGui::SameLine();
             if (ImGui::RadioButton("Hold grip", !g_config.two_hand_toggle))
             { g_config.two_hand_toggle = false; changed = true; }
             ImGui::Spacing();
+            SettingGap();
             changed |= ImGui::Checkbox("Persistent support grip",
                 &g_config.persistent_support_grip);
             ImGui::TextDisabled(
@@ -2088,6 +2135,7 @@ namespace
                 "Hold mode: releasing the grip button ends it. Toggle mode: the toggle press ends it.\n"
                 "Also ends on an explicit release, or when the weapon, title or life state changes.");
             ImGui::Indent();
+            SettingGap();
             ImGui::BeginDisabled(!g_config.persistent_support_grip);
             changed |= ImGui::Checkbox("Switched weapons already two-handed",
                 &g_config.two_hand_switch_inherit);
@@ -2098,6 +2146,7 @@ namespace
                 "Off: grip the new weapon normally (no need to release the grip button).");
             ImGui::Unindent();
             ImGui::Spacing();
+            SettingGap();
             changed |= ImGui::Checkbox("Reduce Support-Hand Rotation",
                 &g_config.two_hand_support_grip_pose);
             ImGui::TextDisabled(
@@ -2106,6 +2155,7 @@ namespace
             ImGui::Spacing();
             float offhandInfluencePercent = MenuSliderPercentFromUnit(
                 g_config.two_hand_offhand_influence);
+            SettingGap();
             if (vr_menu::SliderFloat("Offhand influence",
                     &offhandInfluencePercent, 0.0f, 100.0f, "%.0f%%",
                     ImGuiSliderFlags_None))
@@ -2118,6 +2168,7 @@ namespace
                 "How strongly support-hand position steers free two-hand aim.\n"
                 "0%% = primary-hand orientation only; 100%% = full two-hand positional steering.\n"
                 "Applies when Virtual Stock is off.");
+            SettingGap();
             changed |= vr_menu::SliderFloat("Two-Hand Smoothing",
                 &g_config.two_hand_smoothing_strength,
                 kTwoHandSmoothingStrengthMinimum,
@@ -2128,6 +2179,7 @@ namespace
                 "Applies to two-handed aiming, Virtual Stock on or off.");
             ImGui::Spacing();
             ImGui::Text("Grip and grab-zone calibration");
+            SettingGap();
             changed |= vr_menu::SliderFloat("Left hand forward offset (m)",
                                           &g_config.left_hand_forward_m,
                                           -0.15f, 0.30f, "%.3f");
@@ -2142,6 +2194,7 @@ namespace
                 changed=true;
             }
             ImGui::TextDisabled("Slides the grip-click zone sideways (+ = right). Zero uses the default 0.080 m offset.");
+            SettingGap();
             changed |= vr_menu::SliderFloat("Left palm depth (m)",
                                           &g_config.left_grip_forward_m,
                                           -0.05f, 0.25f, "%.3f");
@@ -2560,11 +2613,13 @@ namespace
                                    &g_config.physical_melee);
         SingleplayerOnly("In co-op, a swing presses the game's melee instead, automatically. Halo CE: it does nothing.");
         ImGui::TextDisabled("Strike a target with either hand or its held gun. Works with world collision on or off.");
+        SettingGap();
         changed |= ImGui::Checkbox("Gesture melee", &g_config.gesture_melee);
         ImGui::TextDisabled("A punch away from your body presses the game's own melee.");
         ImGui::TextDisabled("True physical melee takes priority when both modes are selected.");
         if (g_config.physical_melee)
         {
+            SettingGap();
             changed |= vr_menu::SliderFloat(
                 "Required swing speed", &g_config.physical_melee_swing_speed,
                 kPhysicalMeleeSpeedMin, kPhysicalMeleeSpeedMax, "%.2f m/s");
@@ -2572,24 +2627,31 @@ namespace
         }
         if (g_config.gesture_melee || g_config.physical_melee)
         {
+            SettingGap();
             changed |= ImGui::Checkbox("Only while gripping (make a fist to punch)", &g_config.gesture_melee_require_grip);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Stops any fast reach from counting. The grip still does its own job in the game,\n"
                                   "so use this if your grips are not bound to anything a punch would set off.");
+            SettingGap();
             changed |= ImGui::Checkbox("Punch with the off hand too", &g_config.gesture_melee_off_hand);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Stands down while that hand is on the gun, reloading or at its pouch.");
+            SettingGap();
             changed |= ImGui::Checkbox("Strike along the swing", &g_config.gesture_melee_directional);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Your aim follows the swing for a moment, so the lunge goes where you punched.\n"
                                   "Off: it goes where the gun points. Halo 3, ODST and Reach; Halo 2 and Halo 4\n"
                                   "aim with your head on foot, so there the lunge goes where you look.");
+            SettingGap();
             changed |= vr_menu::SliderFloat("Gesture swing speed", &g_config.gesture_melee_speed,
                 kPhysicalMeleeSpeedMin, kPhysicalMeleeSpeedMax, "%.2f m/s");
+            SettingGap();
             changed |= vr_menu::SliderFloat("Gesture arm extension speed", &g_config.gesture_melee_extension,
                 0.0f, 6.0f, "%.2f m/s");
+            SettingGap();
             changed |= vr_menu::SliderFloat("Gesture reach from head", &g_config.gesture_melee_reach,
                 0.0f, 1.0f, "%.2f m");
+            SettingGap();
             changed |= vr_menu::SliderFloat("Gesture off-hand chop travel", &g_config.gesture_melee_travel,
                 0.0f, 1.2f, "%.2f m");
             ImGui::TextDisabled("Lower extension speed if punches are missed; raise it if aiming sets off a melee.\n"
