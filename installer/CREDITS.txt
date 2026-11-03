@@ -39,6 +39,9 @@ what: Virtual stock, two-hand and support handling, coherent aim and telemetry.
 name: martysl1
 what: Subtitle, UI and bloom work, and the Reach DLSS leads.
 
+name: UnsealedWings
+what: Performance and HUD proposals. Initial support grip on weapon visual fixes.
+
 name: blindcowboy24
 what: Initial Roomscale setup for Aim/multiplayer revamp, ported from Halo Campaign Evolved UEVR.
 
@@ -55,9 +58,6 @@ what: HaloCEVR, the VR mod for the original Halo CE, used here as a reference.
 
 name: SilentVortigaunt
 what: Early trailer for Project Reclaimer support.
-
-name: UnsealedWings
-what: Performance and HUD proposals.
 
 name: PurplePeanut
 what: The Provolver proposal.
