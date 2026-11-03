@@ -1414,36 +1414,36 @@ void Input_StepHeadKeys(VrPadState& pad)
     const bool rawX = pad.x, rawY = pad.y, rawA = pad.a, rawB = pad.b;
     static HeadKeyGesture talkGesture, scoreboardGesture;
     static WORD talkKey = 0, scoreboardKey = 0;
-    if (StepHeadKey(talkGesture, talkKey, g_config.reclaimer_talk_gesture, g_config.reclaimer_talk_key, "talk",
+    if (StepHeadKey(talkGesture, talkKey, true, g_config.reclaimer_talk_key, "talk",
                     pad.valid, pad.valid && rawX))
         pad.x = false;
     // Y + B stays the pause.
     static HeadYChord headY;
     const bool yDown = pad.valid && rawY;
     bool yAtHead = false;
-    if (yDown && g_hostOwnsRenderSize && g_config.reclaimer_scoreboard_gesture)
+    if (yDown && g_hostOwnsRenderSize)
         yAtHead = ControllerAtHead(0);
     // B at the right ear gives way to the same chord: Y held with it is the pause, not a vote.
     static HeadYChord headB;
     const bool bDown = pad.valid && rawB;
     bool bAtHead = false;
-    if (bDown && g_hostOwnsRenderSize && g_config.reclaimer_vote_gesture)
+    if (bDown && g_hostOwnsRenderSize)
         bAtHead = ControllerAtHead(1);
     const uint64_t chordNow = GetTickCount64();
     const HeadYChord::Y yRoute = headY.Step(yDown, yAtHead, rawB, g_config.y_b_start_chord, chordNow);
     const HeadYChord::Y bRoute = headB.Step(bDown, bAtHead, rawY, g_config.y_b_start_chord, chordNow);
     static HeadKeyGesture voteYesGesture, voteNoGesture;
     static WORD voteYesKey = 0, voteNoKey = 0;
-    if (StepHeadKey(voteYesGesture, voteYesKey, g_config.reclaimer_vote_gesture, g_config.reclaimer_vote_yes_key,
+    if (StepHeadKey(voteYesGesture, voteYesKey, true, g_config.reclaimer_vote_yes_key,
                     "vote yes", pad.valid, pad.valid && rawA, 1))
         pad.a = false;
     const bool voteOwnsB = StepHeadKey(voteNoGesture, voteNoKey,
-        g_config.reclaimer_vote_gesture && !headB.chord, g_config.reclaimer_vote_no_key, "vote no",
+        !headB.chord, g_config.reclaimer_vote_no_key, "vote no",
         pad.valid, bRoute == HeadYChord::Y::Key, 1);
     if (voteOwnsB || bRoute == HeadYChord::Y::Waiting)
         pad.b = false;
     const bool scoreboardOwnsY = StepHeadKey(scoreboardGesture, scoreboardKey,
-        g_config.reclaimer_scoreboard_gesture && !headY.chord, g_config.reclaimer_scoreboard_key,
+        !headY.chord, g_config.reclaimer_scoreboard_key,
         "scoreboard", pad.valid, yRoute == HeadYChord::Y::Key);
     if (scoreboardOwnsY || yRoute == HeadYChord::Y::Waiting)
         pad.y = false;
