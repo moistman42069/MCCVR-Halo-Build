@@ -32,9 +32,10 @@ constexpr UINT kDone = WM_APP + 20;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version, UpdateSelf };
 // The window's client size at 96 dpi.
-constexpr int kMenuWidth = 1350, kMenuHeight = kReclaimerBottom + 26;
-// The credits column, right of the divider, at 96 dpi: the title stays put and the list below it scrolls.
-constexpr int kCreditsDivider = 968, kCreditsLeft = 986, kCreditsListTop = 76, kCreditsListWidth = 352;
+constexpr int kMenuWidth = 1384, kMenuHeight = kReclaimerBottom + 26;
+// The credits column, right of the divider, at 96 dpi: the title stays put and the list below it scrolls. It sits as
+// far from the divider as the main area does, with the main area's left margin on its right.
+constexpr int kCreditsDivider = 968, kCreditsLeft = 994, kCreditsListTop = 76, kCreditsListWidth = 352;
 struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel, built, release, published; bool candidate = true; };
 BuildIdentity ReadIdentity(const fs::path& directory) {
     BuildIdentity identity; std::ifstream file(directory / L"BUILD-IDENTITY.txt", std::ios::binary);
