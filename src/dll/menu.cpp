@@ -174,6 +174,13 @@ namespace
     char g_searchQuery[96]="";
     // A setting chosen from the results: its page opens at it, and it is outlined for a moment.
     struct SettingJump { int page=-1; std::string section, label; int frames=0; bool scrolled=false; } g_jump;
+    // Each result shows its setting live: the setting's page, drawn in a small window scrolled to just that setting.
+    // Where the setting sits on its page, and how tall it is up to the next item, are measured as it is drawn there.
+    // Only the results in view are drawn, each with clipping off, since Dear ImGui does not report an item out of view.
+    struct ResultLayout { float top=0.0f, height=0.0f; bool found=false, hidden=false; };
+    std::vector<ResultLayout> g_resultLayouts; // one per index entry
+    struct ResultMeasure { const SettingEntry* entry=nullptr; float top=-1.0f, bottom=0.0f, next=-1.0f; } g_measure;
+    bool g_drawingResult=false;
 
     std::string VisibleName(const char* label)
     {
@@ -207,7 +214,7 @@ namespace
     bool SectionHeader(const char* label,ImGuiTreeNodeFlags flags=0)
     {
         g_currentSection=VisibleName(label);
-        if(g_indexing||(g_jump.frames>0&&!g_jump.scrolled&&g_jump.page==SettingPage()&&g_jump.section==g_currentSection))
+        if(g_indexing||g_drawingResult||(g_jump.frames>0&&!g_jump.scrolled&&g_jump.page==SettingPage()&&g_jump.section==g_currentSection))
             ImGui::SetNextItemOpen(true);
         return ImGui::CollapsingHeader(label,flags);
     }
@@ -237,6 +244,21 @@ namespace
         const ImRect r=GImGui->LastItemData.Rect;
         ImGui::GetWindowDrawList()->AddRect(ImVec2(r.Min.x-4.0f,r.Min.y-3.0f),ImVec2(r.Max.x+4.0f,r.Max.y+3.0f),
             ImGui::GetColorU32(Rgb(kAccent)),3.0f,0,2.0f);
+    }
+
+    // Measures the setting a result shows: from its top to the next item below it, so its notes come along.
+    void MeasureResult(ImGuiID,const char* label,int)
+    {
+        const ImGuiWindow* window=GImGui->CurrentWindow;
+        const ImRect r=GImGui->LastItemData.Rect;
+        const float top=r.Min.y-window->DC.CursorStartPos.y;
+        const SettingEntry& e=*g_measure.entry;
+        if(g_measure.top<0.0f)
+        {
+            if(SettingPage()==e.page&&g_currentSection==e.section&&VisibleName(label)==e.label)
+            {g_measure.top=top;g_measure.bottom=r.Max.y-window->DC.CursorStartPos.y;}
+        }
+        else if(g_measure.next<0.0f&&top>=g_measure.bottom-1.0f) g_measure.next=top;
     }
 
     // Room between one setting and the next, so they do not run together. A setting's own notes stay with it.
@@ -3330,38 +3352,103 @@ namespace
         g_indexBuilt=true;
     }
 
-    // The results: grouped under where each setting lives, page then section, so the way back is plain to see.
-    void DrawSearchResults()
+    // The button beside each result that goes to it: a box with an arrow leaving it, so it is not mistaken for the
+    // arrows the settings themselves use to step a value.
+    bool GoToButton(const char* id)
     {
+        const float size=ImGui::GetFrameHeight();
+        const bool pressed=ImGui::InvisibleButton(id,ImVec2(size,size));
+        const ImRect r(ImGui::GetItemRectMin(),ImGui::GetItemRectMax());
+        ImDrawList* draw=ImGui::GetWindowDrawList();
+        const ImGuiCol fill=ImGui::IsItemActive()?ImGuiCol_ButtonActive:ImGui::IsItemHovered()?ImGuiCol_ButtonHovered:ImGuiCol_Button;
+        draw->AddRectFilled(r.Min,r.Max,ImGui::GetColorU32(fill),ImGui::GetStyle().FrameRounding);
+        const ImU32 ink=ImGui::GetColorU32(ImGuiCol_Text);
+        const float pad=size*0.25f,thick=std::max(1.0f,size*0.07f);
+        const ImVec2 lo(r.Min.x+pad,r.Min.y+pad),hi(r.Max.x-pad,r.Max.y-pad);
+        const float gap=(hi.x-lo.x)*0.45f;
+        // The box, open at its top right corner where the arrow leaves.
+        draw->AddLine(ImVec2(hi.x-gap,lo.y),ImVec2(lo.x,lo.y),ink,thick);
+        draw->AddLine(ImVec2(lo.x,lo.y),ImVec2(lo.x,hi.y),ink,thick);
+        draw->AddLine(ImVec2(lo.x,hi.y),ImVec2(hi.x,hi.y),ink,thick);
+        draw->AddLine(ImVec2(hi.x,hi.y),ImVec2(hi.x,lo.y+gap),ink,thick);
+        // The arrow, from the middle out past the corner.
+        const ImVec2 tip(hi.x+pad*0.35f,lo.y-pad*0.35f),from((lo.x+hi.x)*0.5f,(lo.y+hi.y)*0.5f);
+        const float head=gap*0.8f;
+        draw->AddLine(from,tip,ink,thick);
+        draw->AddLine(tip,ImVec2(tip.x-head,tip.y),ink,thick);
+        draw->AddLine(tip,ImVec2(tip.x,tip.y+head),ink,thick);
+        return pressed;
+    }
+
+    // The results: grouped under where each setting lives, page then section, so the way back is plain to see. Each
+    // is the setting itself, live, so it can be changed here; the button beside it goes to it on its page.
+    void DrawSearchResults(bool& changed)
+    {
+        constexpr int kMostShown=40; // each live result in view draws its page once
         const auto query=setting_search::Parse(g_searchQuery);
+        g_resultLayouts.resize(g_settingIndex.size());
         int found=0,lastPage=-1;
         const std::string* lastSection=nullptr;
+        ImGuiContext& g=*GImGui;
         for(size_t i=0;i<g_settingIndex.size();++i)
         {
             const auto& entry=g_settingIndex[i];
             if(!setting_search::Matches(query,{entry.label,entry.section,kCategories[entry.page].label})) continue;
+            if(++found>kMostShown) continue;
             if(entry.page!=lastPage||!lastSection||*lastSection!=entry.section)
             {
-                if(found) ImGui::Spacing();
+                if(found>1) ImGui::Spacing();
                 ImGui::TextColored(Rgb(kAccent),"%s%s%s",kCategories[entry.page].label,entry.section.empty()?"":"  >  ",
                     entry.section.c_str());
                 lastPage=entry.page;lastSection=&entry.section;
             }
             ImGui::PushID(static_cast<int>(i));
-            ImGui::Indent();
-            if(ImGui::Selectable(entry.label.c_str()))
+            if(GoToButton("##goto"))
             {
                 g_activeCategory=entry.page;
                 g_jump={entry.page,entry.section,entry.label,90,false};
-                GImGui->TestEngineHookItems=true;
+                g.TestEngineHookItems=true;
                 imgui_item_hooks::g_itemInfo=&OutlineJumpTarget;
                 g_searchQuery[0]=0;
             }
-            ImGui::Unindent();
+            if(ImGui::IsItemHovered()) ImGui::SetTooltip("Go to this setting on its page");
+            ImGui::SameLine();
+            ResultLayout& layout=g_resultLayouts[i];
+            if(layout.hidden) {ImGui::SameLine();ImGui::TextDisabled("%s (not showing on its page right now)",entry.label.c_str());}
+            else ImGui::SameLine();
+            const float height=layout.found&&!layout.hidden?layout.height:1.0f;
+            if(!ImGui::IsRectVisible(ImVec2(ImGui::GetContentRegionAvail().x,height)))
+            {
+                ImGui::Dummy(ImVec2(0.0f,height));
+                ImGui::PopID();
+                continue;
+            }
+            ImGui::BeginChild("##live",ImVec2(0.0f,height),ImGuiChildFlags_None,
+                ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse|ImGuiWindowFlags_NoBackground);
+            ImGui::SetScrollY(layout.top);
+            const int shownPage=g_activeCategory;
+            const bool hooked=g.TestEngineHookItems,unclipped=g.ItemUnclipByLog;
+            g_measure={&entry};
+            g.TestEngineHookItems=true;imgui_item_hooks::g_itemInfo=&MeasureResult;g_drawingResult=true;
+            g.ItemUnclipByLog=true;
+            g_activeCategory=entry.page;
+            DrawPageContent(changed);
+            g_activeCategory=shownPage;
+            g.ItemUnclipByLog=unclipped;
+            g_drawingResult=false;imgui_item_hooks::g_itemInfo=nullptr;g.TestEngineHookItems=hooked;
+            if(g_measure.top>=0.0f)
+            {
+                layout.top=std::max(0.0f,g_measure.top-2.0f);
+                const float end=g_measure.next>=0.0f?g_measure.next:g_measure.bottom+ImGui::GetStyle().ItemSpacing.y;
+                layout.height=std::max(ImGui::GetFrameHeight(),end-layout.top);
+                layout.found=true;layout.hidden=false;
+            }
+            else layout.found=false,layout.hidden=true; // the setting is not on its page just now
+            ImGui::EndChild();
             ImGui::PopID();
-            ++found;
         }
         if(!found) ImGui::TextDisabled("No setting matches.");
+        else if(found>kMostShown) ImGui::TextDisabled("%d more match. Add a word to narrow the search.",found-kMostShown);
         ImGui::Spacing();
         ImGui::TextDisabled("Words can come in any order. \"Quotes\" keep words together, -word leaves one out, and OR finds either.");
     }
@@ -3386,6 +3473,11 @@ namespace
 
         DrawGrabHandle();
 
+        // Search, across the whole menu: results replace the page until the box is emptied or a page is chosen.
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##settingsearch", "Search settings", g_searchQuery, sizeof(g_searchQuery));
+        ImGui::Spacing();
+
         bool changed = false;
 
         // Leave room for the footer line below both columns.
@@ -3393,9 +3485,6 @@ namespace
             ImGui::GetStyle().ItemSpacing.y * 2.0f + 8.0f;
 
         ImGui::BeginChild("##sidebar", ImVec2(kSidebarWidth, -footerHeight), ImGuiChildFlags_Borders);
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputTextWithHint("##settingsearch", "Search settings", g_searchQuery, sizeof(g_searchQuery));
-        ImGui::Spacing();
         ImGui::PushFont(g_headingFont);
         for (int i = 0; i < Cat_Count; ++i)
         {
@@ -3437,12 +3526,12 @@ namespace
         const bool searching = g_searchQuery[0] != 0;
         ImGui::TextColored(Rgb(kAccent), "%s", searching ? "Search" : kCategories[g_activeCategory].label);
         ImGui::PopFont();
-        ImGui::TextDisabled("%s", searching ? "Settings whose name, section or page match. Choose one to go to it."
+        ImGui::TextDisabled("%s", searching ? "Settings whose name, section or page match. Change them here, or use the button on the left to go to one."
                                             : kCategories[g_activeCategory].blurb);
         ImGui::Separator();
         ImGui::Spacing();
 
-        if (g_searchQuery[0]) DrawSearchResults();
+        if (g_searchQuery[0]) DrawSearchResults(changed);
         else DrawPageContent(changed);
         if (g_jump.frames > 0 && --g_jump.frames == 0)
         {
