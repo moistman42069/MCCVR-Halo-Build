@@ -26,8 +26,8 @@ constexpr COLORREF kReclaimerPanel = RGB(31, 24, 13), kReclaimerField = RGB(46, 
 // The panel's box, at 96 dpi.
 // External Mods: a section of its own below the MCC setup, each mod on a tab over its panel. Project Reclaimer is the
 // first; more join it as tabs beside it.
-constexpr int kExternalTop = 696, kTabHeight = 30;
-constexpr int kReclaimerLeft = 38, kReclaimerTop = 794, kReclaimerRight = 942, kReclaimerBottom = 952;
+constexpr int kExternalTop = 654, kTabHeight = 30;
+constexpr int kReclaimerLeft = 38, kReclaimerTop = 752, kReclaimerRight = 942, kReclaimerBottom = 910;
 constexpr UINT kDone = WM_APP + 20;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version, UpdateSelf };
@@ -194,8 +194,7 @@ struct Menu {
         const bool older = !packageChosen && !versions.empty() && !latest.tag.empty() && latest.tag != versions.front().tag;
         Text(GetDlgItem(window, Update), !installed ? L"INSTALL VR MOD" : current ? L"REINSTALL CURRENT VERSION" : packageChosen ? L"INSTALL THIS DOWNLOAD (Replaces Current Build)"
             : older ? L"INSTALL OLDER VERSION (Replaces Current Build)" : L"INSTALL UPDATE (Replaces Current Build)");
-        if (game) Text(path, L"VR folder: " + (game->root / L"Halo_MCC_VR").wstring());
-        else Text(path, L"No MCC installation found. Choose Browse and select the folder containing MCC, or the Xbox Content folder.");
+        Text(path, game ? L"" : L"No MCC installation found. Choose Browse and select the folder containing MCC, or the Xbox Content folder.");
         if (installed) {
             const auto wide = [](const std::string& text) { return std::wstring(text.begin(), text.end()); };
             Text(installedLine, InstalledText(identity.channel.empty() ? L"" : kReleaseChannels[ReleaseChannelIndex(identity.channel)].label, wide(identity.release), wide(identity.published), identity.label, wide(identity.built)));
@@ -558,28 +557,28 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         StyleCombo(*menu, menu->games);
         Control(*menu, L"BUTTON", L"BROWSE", BS_OWNERDRAW | WS_TABSTOP, 696, 160, 122, 38, Browse);
         Control(*menu, L"BUTTON", L"DETECT", BS_OWNERDRAW | WS_TABSTOP, 832, 160, 110, 38, Scan);
-        menu->path = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 216, 640, 46);
+        menu->path = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 204, 902, 20);
         SendMessageW(menu->path, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
-        Control(*menu, L"BUTTON", L"MOD FOLDER", BS_OWNERDRAW | WS_TABSTOP, 696, 219, 246, 38, Folder);
-        Label(*menu, L"02  /  RELEASE UPDATES", 38, 281, 570);
-        menu->installedLine = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 40, 308, 895, 22);
+        Label(*menu, L"02  /  RELEASE UPDATES", 38, 239, 570);
+        menu->installedLine = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 40, 266, 895, 22);
         SendMessageW(menu->installedLine, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         // The same columns as section 01, and top to bottom in the order they are used: where from, which version, install.
-        menu->channel = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 336, 642, 140, Channel);
+        menu->channel = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 294, 642, 140, Channel);
         StyleCombo(*menu, menu->channel);
         for (const auto& source : kReleaseChannels) SendMessageW(menu->channel, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(source.label));
-        Control(*menu, L"BUTTON", L"LATEST", BS_OWNERDRAW | WS_TABSTOP, 696, 336, 246, 38, Latest);
-        menu->version = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 386, 642, 240, Version);
+        Control(*menu, L"BUTTON", L"LATEST", BS_OWNERDRAW | WS_TABSTOP, 696, 294, 246, 38, Latest);
+        menu->version = Control(*menu, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 38, 344, 642, 240, Version);
         StyleCombo(*menu, menu->version);
-        Control(*menu, L"BUTTON", L"CHECK FOR UPDATES", BS_OWNERDRAW | WS_TABSTOP, 696, 386, 246, 38, Check);
-        Control(*menu, L"BUTTON", L"INSTALL", BS_OWNERDRAW | WS_TABSTOP, 38, 436, 642, 38, Update);
-        Control(*menu, L"BUTTON", L"RELEASE PAGE", BS_OWNERDRAW | WS_TABSTOP, 696, 436, 246, 38, ReleasePage);
+        Control(*menu, L"BUTTON", L"CHECK FOR UPDATES", BS_OWNERDRAW | WS_TABSTOP, 696, 344, 246, 38, Check);
+        Control(*menu, L"BUTTON", L"INSTALL", BS_OWNERDRAW | WS_TABSTOP, 38, 394, 642, 38, Update);
+        Control(*menu, L"BUTTON", L"RELEASE PAGE", BS_OWNERDRAW | WS_TABSTOP, 696, 394, 246, 38, ReleasePage);
         // Above keep-settings, which then sits right over the settings button below it.
-        menu->updateSelf = Control(*menu, L"BUTTON", L"Update this launcher from the selected release", BS_OWNERDRAW | WS_TABSTOP, 38, 522, 850, 30, UpdateSelf);
-        menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_OWNERDRAW | WS_TABSTOP, 38, 552, 850, 30, Retain);
-        Label(*menu, L"03  /  YOUR VR SETUP", 38, 601, 570);
-        Control(*menu, L"BUTTON", L"VR SETTINGS", BS_OWNERDRAW | WS_TABSTOP, 38, 630, 270, 48, Settings);
-        Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 324, 630, 618, 48, Launch);
+        menu->updateSelf = Control(*menu, L"BUTTON", L"Update this launcher from the selected release", BS_OWNERDRAW | WS_TABSTOP, 38, 480, 850, 30, UpdateSelf);
+        menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_OWNERDRAW | WS_TABSTOP, 38, 510, 850, 30, Retain);
+        Label(*menu, L"03  /  YOUR VR SETUP", 38, 559, 570);
+        Control(*menu, L"BUTTON", L"VR SETTINGS", BS_OWNERDRAW | WS_TABSTOP, 38, 588, 270, 48, Settings);
+        Control(*menu, L"BUTTON", L"MOD FOLDER", BS_OWNERDRAW | WS_TABSTOP, 324, 588, 200, 48, Folder);
+        Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 540, 588, 402, 48, Launch);
         Label(*menu, L"04  /  EXTERNAL MODS", 38, kExternalTop + 11, 570);
         // The note under that heading, and the tab over the panel, are painted (WM_PAINT).
         // The path box is painted (WM_PAINT); the text box inside it is one line tall and centred, since a single-line
@@ -591,7 +590,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         menu->reclaimerInfo = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 56, kReclaimerTop + 58, 870, 38);
         SendMessageW(menu->reclaimerInfo, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         Control(*menu, L"BUTTON", L"LAUNCH PROJECT RECLAIMER", BS_OWNERDRAW | WS_TABSTOP, 54, kReclaimerTop + 100, 398, 42, ReclaimerLaunch);
-        menu->status = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 482, 902, 38);
+        menu->status = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 440, 902, 38);
         SendMessageW(menu->status, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         menu->creditsList = CreateWindowExW(0, L"HaloMCCVRCredits", L"", WS_CHILD | WS_VISIBLE, menu->Px(kCreditsLeft), menu->Px(kCreditsListTop),
             menu->Px(kCreditsListWidth), menu->Px(kMenuHeight - kCreditsListTop - 26), window, nullptr, menu->instance, menu);
@@ -605,7 +604,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SelectObject(dc, menu->label); SetTextColor(dc, kMuted); const wchar_t* subtitle = L"The Master Chief Collection in Virtual Reality";
         TextOutW(dc, menu->Px(41), menu->Px(93), subtitle, static_cast<int>(wcslen(subtitle)));
         HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); auto old = SelectObject(dc, pen);
-        for (int y : {121, 270, 590, kExternalTop}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
+        for (int y : {121, 228, 548, kExternalTop}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
         // Original geometric HUD accents; no extracted game art or assets.
         for (int x = 811; x < 943; x += 22) { MoveToEx(dc, menu->Px(x), menu->Px(43), nullptr); LineTo(dc, menu->Px(x + 18), menu->Px(25)); }
         SelectObject(dc, old); DeleteObject(pen);
