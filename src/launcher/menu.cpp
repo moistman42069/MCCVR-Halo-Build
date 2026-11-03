@@ -359,7 +359,9 @@ int DrawCreditsList(Menu& menu, HDC dc, int width, int top) {
     for (const auto& credit : menu.credits) {
         if (!credit.section.empty()) { y += menu.Px(8); paragraph(credit.section.c_str(), menu.creditsSection, kMuted, 12); }
         if (!credit.name.empty()) nameAndLinks(credit);
-        paragraph(credit.what.c_str(), menu.smallFont, kText, 14);
+        // Intro lines follow one another with no gap.
+        const bool nextIntro = &credit != &menu.credits.back() && (&credit + 1)->name.empty();
+        paragraph(credit.what.c_str(), menu.smallFont, kText, !credit.name.empty() ? 14 : nextIntro ? 0 : 18);
     }
     return y;
 }
