@@ -620,26 +620,26 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             FillRect(dc, &box, menu->reclaimerPanel);
             HBRUSH edge = CreateSolidBrush(RGB(122, 90, 44)), bar = CreateSolidBrush(kReclaimerAccent);
             FrameRect(dc, &box, edge);
-            // The tab, slanted at both ends like a folder's. The letter spacing also follows the last letter, so the name
+            // The tab, square at the left, in line with the panel, and slanted at the right like a folder's. The letter spacing also follows the last letter, so the name
             // is placed by its own width rather than centred.
             SelectObject(dc, menu->label); SetTextCharacterExtra(dc, menu->Px(2));
             const wchar_t* name = L"PROJECT RECLAIMER";
             SIZE nameSize{}; GetTextExtentPoint32W(dc, name, static_cast<int>(wcslen(name)), &nameSize);
             const int slant = menu->Px(12), pad = menu->Px(14), accent = menu->Px(3), top = menu->Px(kReclaimerTop - kTabHeight), height = box.top - top;
-            const int left = box.left, right = left + 2 * (slant + pad) + nameSize.cx - menu->Px(2);
+            const int left = box.left, right = left + slant + 2 * pad + nameSize.cx - menu->Px(2);
             HPEN outline = CreatePen(PS_SOLID, 1, RGB(122, 90, 44));
             const auto oldPen = SelectObject(dc, outline); const auto oldBrush = SelectObject(dc, menu->reclaimerPanel);
-            const POINT shape[]{{left, box.top}, {left + slant, top}, {right - slant, top}, {right, box.top}};
+            const POINT shape[]{{left, box.top}, {left, top}, {right - slant, top}, {right, box.top}};
             Polygon(dc, shape, static_cast<int>(std::size(shape)));
             const int inset = MulDiv(slant, accent, height);
-            const POINT strip[]{{left + slant, top}, {right - slant, top}, {right - slant + inset, top + accent}, {left + slant - inset, top + accent}};
+            const POINT strip[]{{left, top}, {right - slant, top}, {right - slant + inset, top + accent}, {left, top + accent}};
             SelectObject(dc, GetStockObject(NULL_PEN)); SelectObject(dc, bar);
             Polygon(dc, strip, static_cast<int>(std::size(strip)));
             SelectObject(dc, oldBrush); SelectObject(dc, oldPen); DeleteObject(outline);
             RECT open{left + 1, box.top, right, box.top + 1}; FillRect(dc, &open, menu->reclaimerPanel);
             DeleteObject(edge); DeleteObject(bar);
             SetTextColor(dc, kReclaimerAccent);
-            TextOutW(dc, left + slant + pad, top + accent + (height - accent - nameSize.cy) / 2, name, static_cast<int>(wcslen(name)));
+            TextOutW(dc, left + pad, top + accent + (height - accent - nameSize.cy) / 2, name, static_cast<int>(wcslen(name)));
             SetTextCharacterExtra(dc, 0);
         }
         if (message == WM_PAINT) EndPaint(window, &paint); return 0;
