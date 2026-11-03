@@ -610,8 +610,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         for (int x = 811; x < 943; x += 22) { MoveToEx(dc, menu->Px(x), menu->Px(43), nullptr); LineTo(dc, menu->Px(x + 18), menu->Px(25)); }
         SelectObject(dc, old); DeleteObject(pen);
         DrawCreditsTitle(*menu, dc);
-        // External Mods: the note under its heading, then Project Reclaimer's tab and panel, in its own colour, with a
-        // bar down the panel's left side. The tab opens into the panel below it.
+        // External Mods: the note under its heading, then Project Reclaimer's tab and panel, in its own colour. The tab
+        // opens into the panel below it.
         {
             SetBkMode(dc, TRANSPARENT); SelectObject(dc, menu->smallFont); SetTextColor(dc, kMuted);
             const wchar_t* note = L"External mods share the same VR settings as MCC VR itself.";
@@ -620,7 +620,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             FillRect(dc, &box, menu->reclaimerPanel);
             HBRUSH edge = CreateSolidBrush(RGB(122, 90, 44)), bar = CreateSolidBrush(kReclaimerAccent);
             FrameRect(dc, &box, edge);
-            RECT stripe{box.left, box.top, box.left + menu->Px(5), box.bottom}; FillRect(dc, &stripe, bar);
             // The tab, slanted at both ends like a folder's. The letter spacing also follows the last letter, so the name
             // is placed by its own width rather than centred.
             SelectObject(dc, menu->label); SetTextCharacterExtra(dc, menu->Px(2));
@@ -637,7 +636,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SelectObject(dc, GetStockObject(NULL_PEN)); SelectObject(dc, bar);
             Polygon(dc, strip, static_cast<int>(std::size(strip)));
             SelectObject(dc, oldBrush); SelectObject(dc, oldPen); DeleteObject(outline);
-            RECT open{left + menu->Px(5), box.top, right, box.top + 1}; FillRect(dc, &open, menu->reclaimerPanel);
+            RECT open{left + 1, box.top, right, box.top + 1}; FillRect(dc, &open, menu->reclaimerPanel);
             DeleteObject(edge); DeleteObject(bar);
             SetTextColor(dc, kReclaimerAccent);
             TextOutW(dc, left + slant + pad, top + accent + (height - accent - nameSize.cy) / 2, name, static_cast<int>(wcslen(name)));
