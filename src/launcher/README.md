@@ -145,7 +145,7 @@ person is a `name:` line and a `what:` line, plus any number of `link: Label htt
 badges beside the name, a `section:` line heads the people after it, and `intro:` lines are text with no name, each starting a new line. Only `https` addresses count as links. Editing the installed copy shows on the next launcher start, and an update
 replaces it. Keys the launcher does not know are skipped, so later additions do not break older launchers.
 
-## Project Reclaimer (experimental)
+## Project Reclaimer
 
 The menu's last section starts Project Reclaimer, a standalone client that runs MCC's `halo3.dll`, with the VR
 mod. It needs `HaloMCCVR.dll` and `HaloMCCVRReclaimerRelay.dll` beside the launcher (or in its `ModFiles`
