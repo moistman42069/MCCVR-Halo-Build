@@ -620,12 +620,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             FillRect(dc, &box, menu->reclaimerPanel);
             HBRUSH edge = CreateSolidBrush(RGB(122, 90, 44)), bar = CreateSolidBrush(kReclaimerAccent);
             FrameRect(dc, &box, edge);
-            // The tab, square at the left, in line with the panel, and slanted at the right like a folder's. The letter spacing also follows the last letter, so the name
+            // The tab, square at the left, in line with the panel, and slanted at the right like a folder's. Its name starts in line
+            // with the panel's contents. The letter spacing also follows the last letter, so the name
             // is placed by its own width rather than centred.
             SelectObject(dc, menu->label); SetTextCharacterExtra(dc, menu->Px(2));
             const wchar_t* name = L"PROJECT RECLAIMER";
             SIZE nameSize{}; GetTextExtentPoint32W(dc, name, static_cast<int>(wcslen(name)), &nameSize);
-            const int slant = menu->Px(12), pad = menu->Px(14), accent = menu->Px(3), top = menu->Px(kReclaimerTop - kTabHeight), height = box.top - top;
+            const int slant = menu->Px(12), pad = menu->Px(16), accent = menu->Px(3), top = menu->Px(kReclaimerTop - kTabHeight), height = box.top - top;
             const int left = box.left, right = left + slant + 2 * pad + nameSize.cx - menu->Px(2);
             HPEN outline = CreatePen(PS_SOLID, 1, RGB(122, 90, 44));
             const auto oldPen = SelectObject(dc, outline); const auto oldBrush = SelectObject(dc, menu->reclaimerPanel);
