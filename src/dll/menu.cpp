@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
 #include "menu.h"
@@ -18,6 +19,8 @@
 #include "host_unload_gate.h"
 #include "native_vehicle_first_person.h"
 #include "menu_slider.h"
+#include "imgui_item_hooks.h"
+#include "../common/setting_search.h"
 #include "vr.h"
 #include "game.h"
 #include "title_adapter.h"
@@ -160,6 +163,24 @@ namespace
     int g_activeCategory = Cat_Status;
     constexpr float kSidebarWidth = 300.0f;
 
+    // Settings search (setting_search.h). The index lists every setting with its page and section. It is built by drawing
+    // each page once, out of sight and with every section open, while Dear ImGui reports each item's name
+    // (imgui_item_hooks.h). Settings that only appear once another is turned on are found while they are showing.
+    struct SettingEntry { int page; std::string section, label; };
+    std::vector<SettingEntry> g_settingIndex;
+    bool g_indexing=false, g_indexBuilt=false;
+    std::vector<int> g_sectionOwners; // the pages whose sections are being drawn, innermost last
+    std::string g_currentSection;
+    char g_searchQuery[96]="";
+    // A setting chosen from the results: its page opens at it, and it is outlined for a moment.
+    struct SettingJump { int page=-1; std::string section, label; int frames=0; bool scrolled=false; } g_jump;
+
+    std::string VisibleName(const char* label)
+    {
+        const char* hidden=std::strstr(label,"##");
+        return hidden?std::string(label,hidden):std::string(label);
+    }
+
     // Render the original controls in either location, rather than creating
     // duplicate config values or a second implementation of their callbacks.
     // Each section has its own ID scope so expanded groups cannot collide.
@@ -171,11 +192,52 @@ namespace
             if(g_activeCategory!=category&&g_activeCategory!=alsoIn&&g_activeCategory!=Cat_QualityOfLife)return;
             ImGui::PushID(static_cast<int>(category));scoped=true;
             visible=true;
+            g_sectionOwners.push_back(category);
+            g_currentSection.clear();
         }
-        ~CategorySection(){if(scoped)ImGui::PopID();}
+        ~CategorySection(){if(scoped){ImGui::PopID();g_sectionOwners.pop_back();}}
         CategorySection(const CategorySection&)=delete;
         CategorySection& operator=(const CategorySection&)=delete;
     };
+
+    // The page a setting being drawn belongs to: its section's own page where it is shown on another.
+    int SettingPage(){return g_sectionOwners.empty()?g_activeCategory:g_sectionOwners.back();}
+
+    // Every section header: it names the section of the settings below it, and opens for the index or a jump to it.
+    bool SectionHeader(const char* label,ImGuiTreeNodeFlags flags=0)
+    {
+        g_currentSection=VisibleName(label);
+        if(g_indexing||(g_jump.frames>0&&!g_jump.scrolled&&g_jump.page==SettingPage()&&g_jump.section==g_currentSection))
+            ImGui::SetNextItemOpen(true);
+        return ImGui::CollapsingHeader(label,flags);
+    }
+
+    // Names the item just drawn as a setting, for one whose control has no name of its own.
+    void ReportSetting(const char* name)
+    {
+        ImGuiContext& g=*GImGui;
+        if(g.TestEngineHookItems&&imgui_item_hooks::g_itemInfo) imgui_item_hooks::g_itemInfo(g.LastItemData.ID,name,0);
+    }
+
+    void IndexSetting(ImGuiID,const char* label,int flags)
+    {
+        if(flags&ImGuiItemStatusFlags_Openable) return; // a section header, which the section name already covers
+        const std::string name=VisibleName(label);
+        if(name.empty()||name=="decrease"||name=="increase") return; // a slider's arrow buttons
+        const int page=SettingPage();
+        for(const auto& entry:g_settingIndex)
+            if(entry.page==page&&entry.label==name&&entry.section==g_currentSection) return;
+        g_settingIndex.push_back({page,g_currentSection,name});
+    }
+
+    void OutlineJumpTarget(ImGuiID,const char* label,int)
+    {
+        if(SettingPage()!=g_jump.page||g_currentSection!=g_jump.section||VisibleName(label)!=g_jump.label) return;
+        if(!g_jump.scrolled){ImGui::SetScrollHereY(0.35f);g_jump.scrolled=true;}
+        const ImRect r=GImGui->LastItemData.Rect;
+        ImGui::GetWindowDrawList()->AddRect(ImVec2(r.Min.x-4.0f,r.Min.y-3.0f),ImVec2(r.Max.x+4.0f,r.Max.y+3.0f),
+            ImGui::GetColorU32(Rgb(kAccent)),3.0f,0,2.0f);
+    }
 
     // Room between one setting and the next, so they do not run together. A setting's own notes stay with it.
     // Trial: the Controls page only.
@@ -614,73 +676,11 @@ namespace
         return CallWindowProcW(g_origWndProc, hwnd, msg, wp, lp);
     }
 
-    void DrawUI()
+    // The page chosen in the sidebar.
+    void DrawPageContent(bool& changed)
     {
-        // The window fills the whole panel texture and is completely locked.
-        // Cond_Always (not FirstUseEver) means ImGui cannot keep a position of
-        // its own, and NoMove/NoResize/NoTitleBar remove every drag target. The
-        // panel background now covers the entire quad, so there is no
-        // transparent surround for a smaller window to slide around inside.
-        ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(MENU_W, MENU_H), ImGuiCond_Always);
-        ImGui::Begin("HaloMCCVR Settings", nullptr,
-                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
-                         ImGuiWindowFlags_NoBringToFrontOnFocus |
-                         ImGuiWindowFlags_NoSavedSettings);
-
-        DrawGrabHandle();
-
-        bool changed = false;
-
-        // Leave room for the footer line below both columns.
-        const float footerHeight = ImGui::GetTextLineHeightWithSpacing() +
-            ImGui::GetStyle().ItemSpacing.y * 2.0f + 8.0f;
-
-        ImGui::BeginChild("##sidebar", ImVec2(kSidebarWidth, -footerHeight), ImGuiChildFlags_Borders);
-        ImGui::PushFont(g_headingFont);
-        for (int i = 0; i < Cat_Count; ++i)
-        {
-            // Virtual Stock Lab is intentionally excluded from normal navigation;
-            // product controls live in Weapon & Aim.
-            if (i == Cat_VirtualStockLab)
-                continue;
-            // Two-Handed Lab is runtime-only experimental infrastructure hidden
-            // the same way: no normal navigation entry. Its page block and state
-            // stay wired below; product two-hand controls live in Weapon & Aim.
-            if (i == Cat_TwoHandLab)
-                continue;
-            const bool selected = g_activeCategory == i;
-            if (ImGui::Selectable(kCategories[i].label, selected))
-            {
-                g_activeCategory = i;
-                g_virtualStockResetArmed = false;
-            }
-            // A cyan bar down the left edge of the selected row, so the
-            // current category reads at a glance from across the panel.
-            if (selected)
-            {
-                const ImVec2 min = ImGui::GetItemRectMin();
-                const ImVec2 max = ImGui::GetItemRectMax();
-                ImGui::GetWindowDrawList()->AddRectFilled(
-                    min, ImVec2(min.x + 4.0f, max.y),
-                    ImGui::GetColorU32(Rgb(kAccent)));
-            }
-        }
-        ImGui::PopFont();
-        ImGui::EndChild();
-
-        ImGui::SameLine();
-
-        ImGui::BeginChild("##pane", ImVec2(0, -footerHeight), ImGuiChildFlags_Borders);
-        ImGui::PushTextWrapPos(0.0f);
-        ImGui::PushFont(g_headingFont);
-        ImGui::TextColored(Rgb(kAccent), "%s", kCategories[g_activeCategory].label);
-        ImGui::PopFont();
-        ImGui::TextDisabled("%s", kCategories[g_activeCategory].blurb);
-        ImGui::Separator();
-        ImGui::Spacing();
-
+        g_sectionOwners.clear();
+        g_currentSection.clear();
         if (g_activeCategory == Cat_Welcome)
         {
         bool dontShow = !g_config.show_welcome;
@@ -769,7 +769,7 @@ namespace
 
         if (CategorySection section{Cat_Comfort}; section.visible)
         {
-        if (ImGui::CollapsingHeader("Virtual screen##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Virtual screen##section", ImGuiTreeNodeFlags_None))
         {
         // These two used to stop at 10 m even though the config file accepts 20,
         // so a value typed into halomccvr.cfg could not be reached or restored
@@ -798,7 +798,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("World scale##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("World scale##section", ImGuiTreeNodeFlags_None))
         {
             float worldScale=Game_GetWorldScale()/.33f*100.f;
             if (vr_menu::SliderFloat("World scale", &worldScale, 50.f, 150.f, "%.0f%%"))
@@ -812,7 +812,7 @@ namespace
             }
             ImGui::TextDisabled("100% is the original scale. Saved separately for each game.");
         }
-        if (ImGui::CollapsingHeader("Head motion##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Head motion##section", ImGuiTreeNodeFlags_None))
         {
         float headsetSmoothPercent = g_config.headset_smoothing * 100.0f;
         if (vr_menu::SliderFloat("Headset micro-smoothing", &headsetSmoothPercent,
@@ -831,7 +831,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Roomscale##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Roomscale##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Roomscale body movement", &g_config.roomscale_movement);
         ImGui::TextDisabled("Physical steps move your character while on foot. Walking follows your head.\n"
@@ -897,7 +897,7 @@ namespace
         if(!g_config.physical_crouch)
             ImGui::TextDisabled("Physical crouch is off (Controls > Movement).");
         }
-        if (ImGui::CollapsingHeader("Controller vibration##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Controller vibration##section", ImGuiTreeNodeFlags_None))
         {
         float hapticPercent = g_config.haptic_intensity * 100.0f;
         if (vr_menu::SliderFloat("Controller vibration", &hapticPercent,
@@ -913,7 +913,7 @@ namespace
                               "Supported weapon feedback follows the holding hand, sharing recoil while supporting the gun.\n"
                               "Damage and vehicle feedback can use both controllers.");
         }
-        if (ImGui::CollapsingHeader("Sound##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Sound##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Sound follows your head", &g_config.audio_follows_head);
         ImGui::TextDisabled("ON: you hear the world from the way your head faces.\n"
@@ -922,7 +922,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Startup##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Startup##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Auto-enter VR on level load", &g_config.auto_vr);
         ImGui::TextDisabled("Turns head tracking + stereo on when a level starts and off in the menu.");
@@ -940,7 +940,7 @@ namespace
             "Scripted gameplay, vehicles, death cameras, loading and pause stay immersive.");
         ImGui::Spacing();
         ImGui::Separator();
-        if (ImGui::CollapsingHeader("Stereo depth##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Stereo depth##section", ImGuiTreeNodeFlags_None))
         {
         float depthPercent = g_config.cutscene_theater_depth * 100.0f;
         if (vr_menu::SliderFloat(
@@ -958,7 +958,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Room-fixed screen##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Room-fixed screen##section", ImGuiTreeNodeFlags_None))
         {
         changed |= vr_menu::SliderFloat(
             "Screen width (m)##theatre",
@@ -972,7 +972,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Black cine bars##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Black cine bars##section", ImGuiTreeNodeFlags_None))
         {
         bool matteOn = g_config.cutscene_theater_matte_aspect > 0.0f;
         if (ImGui::Checkbox("Show cine bars", &matteOn))
@@ -997,7 +997,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Subtitles##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Subtitles##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox(
             "Show subtitles on the theatre screen",
@@ -1029,7 +1029,7 @@ namespace
         {
         DrawInputPresets(changed);
         ImGui::Spacing();
-        if (ImGui::CollapsingHeader("Movement##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Movement##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Physical running", &g_config.physical_running);
         if(g_config.physical_running) {
@@ -1048,7 +1048,7 @@ namespace
             "hold-to-crouch setting. The game's own crouch button still works.");
         ImGui::Spacing();
         }
-        if (ImGui::CollapsingHeader("VR turning (right controller stick)##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("VR turning (right controller stick)##section", ImGuiTreeNodeFlags_None))
         {
         if (ImGui::RadioButton("Snap turn", !g_config.turn_smooth))
         {
@@ -1073,7 +1073,7 @@ namespace
 
         ImGui::Spacing();
         }
-        if (ImGui::CollapsingHeader("D-pad gesture (hold controller next to head)##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("D-pad gesture (hold controller next to head)##section", ImGuiTreeNodeFlags_None))
         {
         if (ImGui::RadioButton("Left controller", g_config.dpad_hand == 0))
         {
@@ -1103,8 +1103,9 @@ namespace
             ImGui::SetTooltip("If you're walking when your hand reaches your head, you keep walking.\n"
                               "Let the stick return to centre and it becomes the D-pad.\n"
                               "Off: the stick becomes the D-pad at once and you stop.");
-        ImGui::TextDisabled("In Project Reclaimer, at your head: X talks and Y shows the scoreboard (left controller);\n"
-                            "A and B vote yes and no (right controller).");
+        ImGui::TextDisabled("In Project Reclaimer, at your head: X is voice chat (push to talk; hold or toggle as set in\n"
+                            "Reclaimer's audio settings) and Y shows the scoreboard, with the left controller.\n"
+                            "A and B vote yes and no, with the right controller.");
         SettingGap();
         changed |= ImGui::Checkbox("Quest 3 left thumb-rest D-pad",
                                    &g_config.quest_thumbrest_dpad);
@@ -1112,14 +1113,14 @@ namespace
             ImGui::SetTooltip("Touch the physical left controller's thumb rest, then move the physical right stick.\n"
                               "These controls stay on the same physical hands in left-handed mode.");
         }
-        if (ImGui::CollapsingHeader("Button combinations##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Button combinations##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Y + B sends Start (pause / resume)",
                                    &g_config.y_b_start_chord);
         ImGui::TextDisabled("On by default. Turn it off if you prefer Y and B to stay separate.");
         ImGui::TextDisabled("L3+R3 recenters and toggles this menu; the right trigger clicks the VR pointer.");
         }
-        if (ImGui::CollapsingHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
         {
             static int selectedTitle=0;
             static GameTitle previousTitle=GameTitle::None;
@@ -1181,6 +1182,7 @@ namespace
                 ImGui::PushID(static_cast<int>(action));
                 SettingGap();
                 ImGui::TextUnformatted(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)));
+                ReportSetting(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)));
                 ImGui::SetNextItemWidth(-1);
                 if(ImGui::Combo("##source",&g_config.vr_bindings[selectedTitle][action],
                     vr_mapping::kSourceNames,vr_mapping::SourceCount))
@@ -1212,7 +1214,7 @@ namespace
 
         if (CategorySection section{Cat_Vehicles}; section.visible)
         {
-        if (ImGui::CollapsingHeader("First-person vehicle camera##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("First-person vehicle camera##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Sit in the seat (first person)",
                                    &g_config.vehicle_first_person);
@@ -1462,7 +1464,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Aim in seats##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Aim in seats##section", ImGuiTreeNodeFlags_None))
         {
         ImGui::TextDisabled("Seats follow Converged aim and Direct drive in Weapon & Aim, as on foot.\n"
                             "Reach, Halo CE and Halo 2 fire a seat's weapon at what that seat's own crosshair\n"
@@ -1518,7 +1520,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Turning with the vehicle##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Turning with the vehicle##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("View follows the vehicle",
                                    &g_config.vehicle_view_follow);
@@ -1568,7 +1570,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("VR controls in seats (Halo CE, Halo 2)##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("VR controls in seats (Halo CE, Halo 2)##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("VR controls in Halo CE and Halo 2 vehicles",
                                    &g_config.vehicle_vr_controls);
@@ -1581,7 +1583,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("How you control a seat (Halo 3)##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("How you control a seat (Halo 3)##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Combo("Seat controls", &g_config.vehicle_control,
                                 "As before\0Motion: your hand\0Stick\0Wheel\0");
@@ -1612,7 +1614,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Motion steering (Halo 3, ODST, Reach)##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Motion steering (Halo 3, ODST, Reach)##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Virtual steering wheel",
                                    &g_config.vehicle_motion);
@@ -1726,7 +1728,7 @@ namespace
         // Also in Controls, because a preset saves these.
         if (CategorySection section{Cat_Reload, Cat_Controls}; section.visible)
         {
-        if (ImGui::CollapsingHeader("Reload and holsters##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Reload and holsters##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("dual wield shake reload", &g_config.dual_wield_shake_reload);
         ImGui::TextDisabled("shake to reload a weapon when dual wielding");
@@ -1920,7 +1922,7 @@ namespace
 
         if (CategorySection section{Cat_Advanced}; section.visible)
         {
-        if (ImGui::CollapsingHeader("Aim (every title)##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Aim (every title)##section", ImGuiTreeNodeFlags_None))
         {
         {
             bool converged = g_config.converged_aim != 0;
@@ -2005,7 +2007,7 @@ namespace
 
         if (CategorySection section{Cat_WeaponAim}; section.visible)
         {
-        if (ImGui::CollapsingHeader("Hand smoothing##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Hand smoothing##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Hand smoothing", &g_config.hand_smoothing);
         ImGui::TextDisabled("Steadies your tracked hands before anything reads them: aim and shots, the arms,\n"
@@ -2053,7 +2055,7 @@ namespace
         // Also in Controls, as the two-handed grip.
         if (CategorySection section{Cat_WeaponAim, Cat_Controls}; section.visible)
         {
-        if (ImGui::CollapsingHeader(g_activeCategory == Cat_Controls ? "Two-handed grip##section" : "Two-handed aiming##section",
+        if (SectionHeader(g_activeCategory == Cat_Controls ? "Two-handed grip##section" : "Two-handed aiming##section",
                                     ImGuiTreeNodeFlags_None))
         {
         SettingGap();
@@ -2211,7 +2213,7 @@ namespace
 
         ImGui::Spacing();
         ImGui::Separator();
-        if (ImGui::CollapsingHeader("Hand-held weapon##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Hand-held weapon##section", ImGuiTreeNodeFlags_None))
         {
         if(ImGui::Checkbox("Per-gun alignment",&g_config.per_gun_alignment))
         { Config_RefreshWeaponProfile();changed=true; }
@@ -2235,7 +2237,7 @@ namespace
                             "usually empty; use Match weapon for identical hands.\n"
                             "Its front/back position is \"Left hand forward offset\" below.");
         }
-        if (ImGui::CollapsingHeader("Visual gun alignment##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Visual gun alignment##section", ImGuiTreeNodeFlags_None))
         {
         changed |= vr_menu::SliderFloat("Gun alignment pitch (deg)", &g_config.barrel_pitch_deg, -180.0f, 180.0f, "%.1f");
         changed |= vr_menu::SliderFloat("Gun alignment yaw (deg)", &g_config.barrel_yaw_deg, -180.0f, 180.0f, "%.1f");
@@ -2300,7 +2302,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Visible hand positioning##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Visible hand positioning##section", ImGuiTreeNodeFlags_None))
         {
         ImGui::TextDisabled("Offsets follow each hand's local axes. Guns and interactions keep their positions.");
         changed |= vr_menu::SliderFloat("Left hand X (m)", &g_config.left_hand_mesh_x_m, -.20f, .20f, "%.3f");
@@ -2324,7 +2326,7 @@ namespace
 
         if (CategorySection section{Cat_Crosshair}; section.visible)
         {
-        if (ImGui::CollapsingHeader("Crosshair and bullet direction##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Crosshair and bullet direction##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Independent dual-wield trajectories", &g_config.independent_dual_aim);
         SingleplayerOnly("Turns off automatically in co-op.");
@@ -2350,7 +2352,7 @@ namespace
                             "Visual gun alignment and gun-stock offsets are in Weapon & Aim.");
         ImGui::Spacing();
         }
-        if (ImGui::CollapsingHeader("Authored weapon crosshair (stereo)##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Authored weapon crosshair (stereo)##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Show a crosshair where the weapon shoots", &g_config.crosshair);
         if (g_config.crosshair)
@@ -2480,7 +2482,7 @@ namespace
 
         if (CategorySection section{Cat_Scope}; section.visible)
         {
-        if (ImGui::CollapsingHeader("Aim Frame Zoom (Halo 3 and ODST)##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Aim Frame Zoom (Halo 3 and ODST)##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Aim Frame Zoom##aimframe", &g_config.aim_frame_zoom);
         ImGui::TextDisabled("While the game is zoomed, the headset shows the game's zoomed picture as a frame\n"
@@ -2516,7 +2518,7 @@ namespace
             ImGui::Unindent();
         }
         }
-        if (ImGui::CollapsingHeader("Gun-mounted circular zoom lens##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Gun-mounted circular zoom lens##section", ImGuiTreeNodeFlags_None))
         {
         ImGui::TextDisabled("Halo 2, Halo 3, ODST, Reach and Halo 4. CE uses native zoom.");
         if (ImGui::Checkbox("Enable R3 zoom lens", &g_config.scope_enabled))
@@ -2564,7 +2566,7 @@ namespace
 
         if (CategorySection section{Cat_BodyHands}; section.visible)
         {
-        if (ImGui::CollapsingHeader("Body (VRIK)##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Body (VRIK)##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Arm IK (bend arm to controller)", &g_config.arm_ik);
         ImGui::TextWrapped("Bend supported arm models toward the tracked hands. When a model cannot be solved, keep the working hands and weapons; some titles hide the unsupported arms.");
@@ -2607,7 +2609,7 @@ namespace
 
         if (CategorySection section{Cat_Controls}; section.visible)
         {
-        if (ImGui::CollapsingHeader("Melee##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Melee##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("True physical melee (experimental)",
                                    &g_config.physical_melee);
@@ -2662,7 +2664,7 @@ namespace
 
         if (CategorySection section{Cat_Hud}; section.visible)
         {
-        if (ImGui::CollapsingHeader("Motion tracker##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Motion tracker##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Motion tracker follows your head", &g_config.tracker_follows_head);
         ImGui::TextDisabled("ON: contacts are placed by where your head faces, so they match what you see:\n"
@@ -2684,7 +2686,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Waypoints##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Waypoints##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Markers use the headset's field of view", &g_config.nav_markers_on_target);
         ImGui::TextDisabled("ON: objective markers are projected with the field of view each eye is drawn with,\n"
@@ -2741,7 +2743,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("HUD layout##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("HUD layout##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Hide HUD completely", &g_config.hide_hud);
         if(g_config.hide_hud) {
@@ -2819,7 +2821,7 @@ namespace
 
         if (CategorySection section{Cat_Picture}; section.visible)
         {
-        if (ImGui::CollapsingHeader("Rendering##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Rendering##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Mono rendering: one picture for both eyes", &g_config.mono_rendering);
         if (ImGui::IsItemHovered())
@@ -2832,7 +2834,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Headset picture resolution##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Headset picture resolution##section", ImGuiTreeNodeFlags_None))
         {
         // In a host that draws the game at its own size (Project Reclaimer) the scale sets that size while the
         // host's own Render resolution is Native, from its next start (d3d11_hook.cpp, HostEnumDisplaySettingsShim).
@@ -2944,7 +2946,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Optional temporal upscaling##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Optional temporal upscaling##section", ImGuiTreeNodeFlags_None))
         {
         changed|=ImGui::Combo("Upscaler",&g_config.upscaler,"Off\0NVIDIA DLSS (experimental)\0");
         if(g_config.upscaler)
@@ -2960,7 +2962,7 @@ namespace
         }
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Image quality (applies live, every title)##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Image quality (applies live, every title)##section", ImGuiTreeNodeFlags_None))
         {
         const char* upscaleItems[] = {"Linear (old)", "Sharp (strong bicubic)"};
         changed |= ImGui::Combo("Upscale filter", &g_config.upscale_filter,
@@ -2981,7 +2983,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Scene##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Scene##section", ImGuiTreeNodeFlags_None))
         {
         const auto pictureTitle=TitleAdapter_GetActiveTitle();
         const int bloomTitle=pictureTitle==GameTitle::Halo3?0:
@@ -3030,7 +3032,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Weather (Halo: Reach honours these today)##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Weather (Halo: Reach honours these today)##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Rain", &g_config.rain);
         ImGui::TextDisabled("The rain streaks the game draws across your view. Off by default:\n"
@@ -3079,7 +3081,7 @@ namespace
 
         if (CategorySection section{Cat_Desktop}; section.visible)
         {
-        if (ImGui::CollapsingHeader("The window on your monitor##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("The window on your monitor##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Show the headset's picture on my monitor",&g_config.desktop_mirror);
         if(ImGui::IsItemHovered())
@@ -3102,7 +3104,7 @@ namespace
         }
 
         if (g_activeCategory == Cat_Telemetry &&
-            ImGui::CollapsingHeader("Telemetry Recorder##section", ImGuiTreeNodeFlags_None))
+            SectionHeader("Telemetry Recorder##section", ImGuiTreeNodeFlags_None))
         {
         const TelemetryStatusSnapshot telemetry = Telemetry_GetStatus();
         const bool active = telemetry.state == TelemetryRecorderState::Starting ||
@@ -3161,7 +3163,7 @@ namespace
 
         if (CategorySection section{Cat_Advanced}; section.visible)
         {
-        if (ImGui::CollapsingHeader("Co-op safe shots##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Co-op safe shots##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::RadioButton("Automatic##coopsafe", &g_config.coop_safe_shots, 2);
         ImGui::SameLine();
@@ -3192,7 +3194,7 @@ namespace
         // Alt+F4 on its exit path) kept inverting the controls mid-session, so
         // they are reachable only from this menu now.
         }
-        if (ImGui::CollapsingHeader("Tracking calibration##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Tracking calibration##section", ImGuiTreeNodeFlags_None))
         {
         ImGui::Text("Tracking calibration  (yaw %+.0f, pitch %+.0f, up-vector %s)",
                     Game_GetYawSign(), Game_GetPitchSign(), Game_GetWriteUp() ? "on" : "off");
@@ -3212,7 +3214,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Menu panel##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Menu panel##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Point at game menus", &g_config.game_menu_pointer);
         if (ImGui::IsItemHovered())
@@ -3254,7 +3256,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (ImGui::CollapsingHeader("Start over##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Start over##section", ImGuiTreeNodeFlags_None))
         {
         // Two clicks: a stray VR pointer click here would otherwise wipe a
         // headset-tuned weapon calibration with no undo. Closing the menu
@@ -3289,9 +3291,163 @@ namespace
         }
 
         if (g_activeCategory == Cat_TwoHandLab &&
-            ImGui::CollapsingHeader("Two-Handed Lab##section", ImGuiTreeNodeFlags_None))
+            SectionHeader("Two-Handed Lab##section", ImGuiTreeNodeFlags_None))
         {
 #include "two_hand_lab_menu.inl"
+        }
+    }
+
+    // Draws every page once out of sight, every section open, to learn each setting's name, page and section.
+    void BuildSettingIndex()
+    {
+        ImGuiContext& g=*GImGui;
+        const int shownPage=g_activeCategory;
+        g_settingIndex.clear();
+        ImGui::SetNextWindowPos(ImVec2(-100000.0f,-100000.0f),ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(MENU_W-kSidebarWidth,MENU_H),ImGuiCond_Always);
+        ImGui::Begin("##settingindex",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoInputs|ImGuiWindowFlags_NoNav|
+            ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoFocusOnAppearing|ImGuiWindowFlags_NoBringToFrontOnFocus|
+            ImGuiWindowFlags_NoBackground);
+        // Off the screen everything would be clipped and never reported; Dear ImGui's logging switch turns that off.
+        const bool unclipped=g.ItemUnclipByLog,hooked=g.TestEngineHookItems;
+        const auto listener=imgui_item_hooks::g_itemInfo;
+        g.ItemUnclipByLog=true;g.TestEngineHookItems=true;imgui_item_hooks::g_itemInfo=&IndexSetting;g_indexing=true;
+        ImGui::PushTextWrapPos(0.0f);
+        bool ignored=false;
+        for(int page=0;page<Cat_Count;++page)
+        {
+            // Quality of Life gathers other pages' sections, and the labs are not in the sidebar.
+            if(page==Cat_QualityOfLife||page==Cat_VirtualStockLab||page==Cat_TwoHandLab) continue;
+            g_activeCategory=page;
+            ImGui::PushID(page);
+            DrawPageContent(ignored);
+            ImGui::PopID();
+        }
+        ImGui::PopTextWrapPos();
+        g_indexing=false;imgui_item_hooks::g_itemInfo=listener;g.TestEngineHookItems=hooked;g.ItemUnclipByLog=unclipped;
+        ImGui::End();
+        g_activeCategory=shownPage;
+        g_indexBuilt=true;
+    }
+
+    // The results: grouped under where each setting lives, page then section, so the way back is plain to see.
+    void DrawSearchResults()
+    {
+        const auto query=setting_search::Parse(g_searchQuery);
+        int found=0,lastPage=-1;
+        const std::string* lastSection=nullptr;
+        for(size_t i=0;i<g_settingIndex.size();++i)
+        {
+            const auto& entry=g_settingIndex[i];
+            if(!setting_search::Matches(query,{entry.label,entry.section,kCategories[entry.page].label})) continue;
+            if(entry.page!=lastPage||!lastSection||*lastSection!=entry.section)
+            {
+                if(found) ImGui::Spacing();
+                ImGui::TextColored(Rgb(kAccent),"%s%s%s",kCategories[entry.page].label,entry.section.empty()?"":"  >  ",
+                    entry.section.c_str());
+                lastPage=entry.page;lastSection=&entry.section;
+            }
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::Indent();
+            if(ImGui::Selectable(entry.label.c_str()))
+            {
+                g_activeCategory=entry.page;
+                g_jump={entry.page,entry.section,entry.label,90,false};
+                GImGui->TestEngineHookItems=true;
+                imgui_item_hooks::g_itemInfo=&OutlineJumpTarget;
+                g_searchQuery[0]=0;
+            }
+            ImGui::Unindent();
+            ImGui::PopID();
+            ++found;
+        }
+        if(!found) ImGui::TextDisabled("No setting matches.");
+        ImGui::Spacing();
+        ImGui::TextDisabled("Words can come in any order. \"Quotes\" keep words together, -word leaves one out, and OR finds either.");
+    }
+
+    void DrawUI()
+    {
+        // The search index is built the first frame something is typed, and again each time searching starts over.
+        if (g_searchQuery[0] && !g_indexBuilt) BuildSettingIndex();
+        if (!g_searchQuery[0]) g_indexBuilt = false;
+        // The window fills the whole panel texture and is completely locked.
+        // Cond_Always (not FirstUseEver) means ImGui cannot keep a position of
+        // its own, and NoMove/NoResize/NoTitleBar remove every drag target. The
+        // panel background now covers the entire quad, so there is no
+        // transparent surround for a smaller window to slide around inside.
+        ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(MENU_W, MENU_H), ImGuiCond_Always);
+        ImGui::Begin("HaloMCCVR Settings", nullptr,
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                         ImGuiWindowFlags_NoBringToFrontOnFocus |
+                         ImGuiWindowFlags_NoSavedSettings);
+
+        DrawGrabHandle();
+
+        bool changed = false;
+
+        // Leave room for the footer line below both columns.
+        const float footerHeight = ImGui::GetTextLineHeightWithSpacing() +
+            ImGui::GetStyle().ItemSpacing.y * 2.0f + 8.0f;
+
+        ImGui::BeginChild("##sidebar", ImVec2(kSidebarWidth, -footerHeight), ImGuiChildFlags_Borders);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##settingsearch", "Search settings", g_searchQuery, sizeof(g_searchQuery));
+        ImGui::Spacing();
+        ImGui::PushFont(g_headingFont);
+        for (int i = 0; i < Cat_Count; ++i)
+        {
+            // Virtual Stock Lab is intentionally excluded from normal navigation;
+            // product controls live in Weapon & Aim.
+            if (i == Cat_VirtualStockLab)
+                continue;
+            // Two-Handed Lab is runtime-only experimental infrastructure hidden
+            // the same way: no normal navigation entry. Its page block and state
+            // stay wired below; product two-hand controls live in Weapon & Aim.
+            if (i == Cat_TwoHandLab)
+                continue;
+            const bool selected = g_activeCategory == i;
+            if (ImGui::Selectable(kCategories[i].label, selected))
+            {
+                g_activeCategory = i;
+                g_searchQuery[0] = 0;
+                g_virtualStockResetArmed = false;
+            }
+            // A cyan bar down the left edge of the selected row, so the
+            // current category reads at a glance from across the panel.
+            if (selected)
+            {
+                const ImVec2 min = ImGui::GetItemRectMin();
+                const ImVec2 max = ImGui::GetItemRectMax();
+                ImGui::GetWindowDrawList()->AddRectFilled(
+                    min, ImVec2(min.x + 4.0f, max.y),
+                    ImGui::GetColorU32(Rgb(kAccent)));
+            }
+        }
+        ImGui::PopFont();
+        ImGui::EndChild();
+
+        ImGui::SameLine();
+
+        ImGui::BeginChild("##pane", ImVec2(0, -footerHeight), ImGuiChildFlags_Borders);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::PushFont(g_headingFont);
+        const bool searching = g_searchQuery[0] != 0;
+        ImGui::TextColored(Rgb(kAccent), "%s", searching ? "Search" : kCategories[g_activeCategory].label);
+        ImGui::PopFont();
+        ImGui::TextDisabled("%s", searching ? "Settings whose name, section or page match. Choose one to go to it."
+                                            : kCategories[g_activeCategory].blurb);
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (g_searchQuery[0]) DrawSearchResults();
+        else DrawPageContent(changed);
+        if (g_jump.frames > 0 && --g_jump.frames == 0)
+        {
+            GImGui->TestEngineHookItems = false;
+            imgui_item_hooks::g_itemInfo = nullptr;
         }
 
         ImGui::PopTextWrapPos();
