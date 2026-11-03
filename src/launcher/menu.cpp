@@ -85,6 +85,8 @@ struct Menu {
     int creditBadgeHover = -1, creditBadgePressed = -1;
     HWND creditsList{};
     int creditsScroll = 0, creditsContent = 0, creditsDragFrom = -1, creditsDragScroll = 0;
+    // Where the Credits heading is drawn, in pixels: on the main title's baseline (MeasureCreditsTitle).
+    int creditsTitleTop = 0, creditsTitleCapitals = 0;
     HFONT body{}, smallFont{}, title{}, label{}, creditsTitle{}, creditsSection{}; HBRUSH background{}, panel{}, reclaimerPanel{}, reclaimerField{};
     std::vector<GameInstall> installs;
     fs::path selfDir, payload; std::wstring launchDir;
@@ -333,6 +335,22 @@ std::vector<CreditEntry> ReadCredits(const fs::path& file) {
     bytes.resize(static_cast<size_t>(input.gcount()));
     return ParseCreditsUtf8(bytes);
 }
+// The height of a font's capitals as drawn, from its H.
+int CapitalHeight(HDC dc) {
+    TEXTMETRICW metrics{}; GetTextMetricsW(dc, &metrics);
+    GLYPHMETRICS letter{}; const MAT2 identity{{0, 1}, {0, 0}, {0, 0}, {0, 1}};
+    if (GetGlyphOutlineW(dc, L'H', GGO_METRICS, &letter, 0, nullptr, &identity) != GDI_ERROR && letter.gmptGlyphOrigin.y > 0) return letter.gmptGlyphOrigin.y;
+    return metrics.tmAscent - metrics.tmInternalLeading;
+}
+// The Credits heading shares the main title's baseline, as headings side by side do.
+void MeasureCreditsTitle(Menu& menu) {
+    HDC dc = GetDC(menu.window);
+    TEXTMETRICW title{}, credits{};
+    const auto old = SelectObject(dc, menu.title); GetTextMetricsW(dc, &title);
+    SelectObject(dc, menu.creditsTitle); GetTextMetricsW(dc, &credits); menu.creditsTitleCapitals = CapitalHeight(dc);
+    SelectObject(dc, old); ReleaseDC(menu.window, dc);
+    menu.creditsTitleTop = menu.Px(30) + title.tmAscent - credits.tmAscent;
+}
 void DrawCreditsTitle(Menu& menu, HDC dc) {
     HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); const auto old = SelectObject(dc, pen);
     MoveToEx(dc, menu.Px(kCreditsDivider), menu.Px(26), nullptr); LineTo(dc, menu.Px(kCreditsDivider), menu.Px(kMenuHeight - 26));
@@ -341,9 +359,11 @@ void DrawCreditsTitle(Menu& menu, HDC dc) {
     SelectObject(dc, menu.creditsTitle); SetTextColor(dc, kAccent);
     const wchar_t* title = L"Credits"; const int titleLength = static_cast<int>(wcslen(title));
     SIZE titleSize{}; GetTextExtentPoint32W(dc, title, titleLength, &titleSize);
-    TextOutW(dc, menu.Px(kCreditsLeft), menu.Px(30), title, titleLength);
-    const int unit = std::max(1, menu.Px(2));
-    DrawCreditsHeart(dc, menu.Px(kCreditsLeft) + titleSize.cx + menu.Px(12), menu.Px(30) + (titleSize.cy - 11 * unit) / 2, unit);
+    TextOutW(dc, menu.Px(kCreditsLeft), menu.creditsTitleTop, title, titleLength);
+    // The heart is centred on the heading's capitals.
+    TEXTMETRICW metrics{}; GetTextMetricsW(dc, &metrics);
+    const int unit = std::max(1, menu.Px(2)), capitalsMiddle = menu.creditsTitleTop + metrics.tmAscent - menu.creditsTitleCapitals / 2;
+    DrawCreditsHeart(dc, menu.Px(kCreditsLeft) + titleSize.cx + menu.Px(12), capitalsMiddle - 11 * unit / 2, unit);
 }
 // Writes the list from the given height down, and returns where it ended.
 int DrawCreditsList(Menu& menu, HDC dc, int width, int top) {
@@ -597,8 +617,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         menu->reclaimerInfo = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 56, kReclaimerTop + 58, 870, 38);
         SendMessageW(menu->reclaimerInfo, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         Control(*menu, L"BUTTON", L"LAUNCH PROJECT RECLAIMER", BS_OWNERDRAW | WS_TABSTOP, 54, kReclaimerTop + 100, 398, 42, ReclaimerLaunch);
-        menu->creditsList = CreateWindowExW(0, L"HaloMCCVRCredits", L"", WS_CHILD | WS_VISIBLE, menu->Px(kCreditsLeft), menu->Px(kCreditsListTop),
-            menu->Px(kCreditsListWidth), menu->Px(kMenuHeight - kCreditsListTop - 26), window, nullptr, menu->instance, menu);
+        MeasureCreditsTitle(*menu);
+        const int listTop = menu->creditsTitleTop + menu->Px(kCreditsListTop - 30);
+        menu->creditsList = CreateWindowExW(0, L"HaloMCCVRCredits", L"", WS_CHILD | WS_VISIBLE, menu->Px(kCreditsLeft), listTop,
+            menu->Px(kCreditsListWidth), menu->Px(kMenuHeight - 26) - listTop, window, nullptr, menu->instance, menu);
         return 0;
     }
     case WM_PRINTCLIENT: case WM_PAINT: {
@@ -610,9 +632,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         TEXTMETRICW titleMetrics{}; GetTextMetricsW(dc, &titleMetrics);
         const int titleBaseline = menu->Px(30) + titleMetrics.tmAscent;
         // The H as drawn, since a font's own capital height does not always match its letters.
-        int titleCapitals = titleMetrics.tmAscent - titleMetrics.tmInternalLeading;
-        GLYPHMETRICS letter{}; const MAT2 identity{{0, 1}, {0, 0}, {0, 0}, {0, 1}};
-        if (GetGlyphOutlineW(dc, L'H', GGO_METRICS, &letter, 0, nullptr, &identity) != GDI_ERROR && letter.gmptGlyphOrigin.y > 0) titleCapitals = letter.gmptGlyphOrigin.y;
+        const int titleCapitals = CapitalHeight(dc);
         SelectObject(dc, menu->label); SetTextColor(dc, kMuted); const wchar_t* subtitle = L"The Master Chief Collection in Virtual Reality";
         TextOutW(dc, menu->Px(41), menu->Px(93), subtitle, static_cast<int>(wcslen(subtitle)));
         HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); auto old = SelectObject(dc, pen);
