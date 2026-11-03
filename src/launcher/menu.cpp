@@ -26,13 +26,13 @@ constexpr COLORREF kReclaimerPanel = RGB(31, 24, 13), kReclaimerField = RGB(46, 
 // The panel's box, at 96 dpi.
 // External Mods: a section of its own below the MCC setup, each mod on a tab over its panel. Project Reclaimer is the
 // first; more join it as tabs beside it.
-constexpr int kExternalTop = 656, kTabHeight = 30;
-constexpr int kReclaimerLeft = 38, kReclaimerTop = 754, kReclaimerRight = 942, kReclaimerBottom = 912;
+constexpr int kExternalTop = 696, kTabHeight = 30;
+constexpr int kReclaimerLeft = 38, kReclaimerTop = 794, kReclaimerRight = 942, kReclaimerBottom = 952;
 constexpr UINT kDone = WM_APP + 20;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version, UpdateSelf };
 // The window's client size at 96 dpi.
-constexpr int kMenuWidth = 1350, kMenuHeight = 988;
+constexpr int kMenuWidth = 1350, kMenuHeight = kReclaimerBottom + 26;
 // The credits column, right of the divider, at 96 dpi: the title stays put and the list below it scrolls.
 constexpr int kCreditsDivider = 968, kCreditsLeft = 986, kCreditsListTop = 76, kCreditsListWidth = 352;
 struct BuildIdentity { std::wstring label = L"older build (identity unavailable)"; std::string tag, channel, built, release, published; bool candidate = true; };
@@ -194,8 +194,7 @@ struct Menu {
         const bool older = !packageChosen && !versions.empty() && !latest.tag.empty() && latest.tag != versions.front().tag;
         Text(GetDlgItem(window, Update), !installed ? L"INSTALL VR MOD" : current ? L"REINSTALL CURRENT VERSION" : packageChosen ? L"INSTALL THIS DOWNLOAD (Replaces Current Build)"
             : older ? L"INSTALL OLDER VERSION (Replaces Current Build)" : L"INSTALL UPDATE (Replaces Current Build)");
-        if (game) Text(path, std::wstring(game->store ? L"Version: Xbox app / Microsoft Store" : L"Version: Steam") +
-            L"\nVR folder: " + (game->root / L"Halo_MCC_VR").wstring() );
+        if (game) Text(path, L"VR folder: " + (game->root / L"Halo_MCC_VR").wstring());
         else Text(path, L"No MCC installation found. Choose Browse and select the folder containing MCC, or the Xbox Content folder.");
         if (installed) {
             const auto wide = [](const std::string& text) { return std::wstring(text.begin(), text.end()); };
@@ -244,8 +243,8 @@ void BrowseFolder(Menu& menu) {
             if (ProbeInstall(path, game)) {
                 bool found = false; for (const auto& old : menu.installs) found |= !_wcsicmp(old.root.c_str(), game.root.c_str());
                 if (!found) menu.installs.push_back(game);
-                menu.Populate(game.root); menu.Text(menu.status, L"MCC installation selected. Install the mod, then choose Launch MCC when your headset is ready.");
-            } else menu.Text(menu.status, L"This folder does not contain a Steam or Xbox MCC installation. Select its root or Content folder.");
+                menu.Populate(game.root);
+            } else menu.Text(menu.path, L"This folder does not contain a Steam or Xbox MCC installation. Select its root or Content folder.");
         }
         if (path) CoTaskMemFree(path); if (item) item->Release();
     }
@@ -261,7 +260,7 @@ void ReclaimerShow(Menu& menu, bool keep) {
     const auto info = reclaimer_launch::Describe(menu.ModFolder(), exe);
     menu.reclaimerStartable = info.startable; menu.Text(menu.reclaimerInfo, info.text);
     if (keep && !reclaimer_launch::SaveClient(menu.ModFolder(), exe))
-        menu.Text(menu.status, L"The Project Reclaimer path could not be saved beside the launcher (reclaimer_client.txt). It is used for this launch only.");
+        menu.Text(menu.reclaimerInfo, info.text + L"\nThis path could not be saved (reclaimer_client.txt), so it is used for this launch only.");
     EnableWindow(GetDlgItem(menu.window, ReclaimerLaunch), !menu.busy && menu.reclaimerStartable);
 }
 void BrowseReclaimer(Menu& menu) {
@@ -275,7 +274,6 @@ void BrowseReclaimer(Menu& menu) {
         IShellItem* item = nullptr; PWSTR path = nullptr;
         if (SUCCEEDED(dialog->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
             SetWindowTextW(menu.reclaimerPath, path); ReclaimerShow(menu, true);
-            menu.Text(menu.status, menu.reclaimerStartable ? L"Project Reclaimer selected. Choose Launch Project Reclaimer when your headset is ready." : L"That file cannot be started with the VR mod: see the note under its path.");
         }
         if (path) CoTaskMemFree(path); if (item) item->Release();
     }
@@ -577,11 +575,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Control(*menu, L"BUTTON", L"INSTALL", BS_OWNERDRAW | WS_TABSTOP, 38, 436, 642, 38, Update);
         Control(*menu, L"BUTTON", L"RELEASE PAGE", BS_OWNERDRAW | WS_TABSTOP, 696, 436, 246, 38, ReleasePage);
         // Above keep-settings, which then sits right over the settings button below it.
-        menu->updateSelf = Control(*menu, L"BUTTON", L"Update this launcher from the selected release", BS_OWNERDRAW | WS_TABSTOP, 38, 482, 850, 30, UpdateSelf);
-        menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_OWNERDRAW | WS_TABSTOP, 38, 512, 850, 30, Retain);
-        Label(*menu, L"03  /  YOUR VR SETUP", 38, 561, 570);
-        Control(*menu, L"BUTTON", L"VR SETTINGS", BS_OWNERDRAW | WS_TABSTOP, 38, 590, 270, 48, Settings);
-        Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 324, 590, 618, 48, Launch);
+        menu->updateSelf = Control(*menu, L"BUTTON", L"Update this launcher from the selected release", BS_OWNERDRAW | WS_TABSTOP, 38, 522, 850, 30, UpdateSelf);
+        menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_OWNERDRAW | WS_TABSTOP, 38, 552, 850, 30, Retain);
+        Label(*menu, L"03  /  YOUR VR SETUP", 38, 601, 570);
+        Control(*menu, L"BUTTON", L"VR SETTINGS", BS_OWNERDRAW | WS_TABSTOP, 38, 630, 270, 48, Settings);
+        Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 324, 630, 618, 48, Launch);
         Label(*menu, L"04  /  EXTERNAL MODS", 38, kExternalTop + 11, 570);
         // The note under that heading, and the tab over the panel, are painted (WM_PAINT).
         // The path box is painted (WM_PAINT); the text box inside it is one line tall and centred, since a single-line
@@ -593,7 +591,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         menu->reclaimerInfo = Control(*menu, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 56, kReclaimerTop + 58, 870, 38);
         SendMessageW(menu->reclaimerInfo, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         Control(*menu, L"BUTTON", L"LAUNCH PROJECT RECLAIMER", BS_OWNERDRAW | WS_TABSTOP, 54, kReclaimerTop + 100, 398, 42, ReclaimerLaunch);
-        menu->status = Control(*menu, L"STATIC", L"", SS_LEFT, 40, kReclaimerBottom + 16, 895, 52);
+        menu->status = Control(*menu, L"STATIC", L"", SS_LEFT, 40, 482, 902, 38);
         SendMessageW(menu->status, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
         menu->creditsList = CreateWindowExW(0, L"HaloMCCVRCredits", L"", WS_CHILD | WS_VISIBLE, menu->Px(kCreditsLeft), menu->Px(kCreditsListTop),
             menu->Px(kCreditsListWidth), menu->Px(kMenuHeight - kCreditsListTop - 26), window, nullptr, menu->instance, menu);
@@ -607,7 +605,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SelectObject(dc, menu->label); SetTextColor(dc, kMuted); const wchar_t* subtitle = L"The Master Chief Collection in Virtual Reality";
         TextOutW(dc, menu->Px(41), menu->Px(93), subtitle, static_cast<int>(wcslen(subtitle)));
         HPEN pen = CreatePen(PS_SOLID, 1, RGB(35, 75, 91)); auto old = SelectObject(dc, pen);
-        for (int y : {121, 270, 550, kExternalTop}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
+        for (int y : {121, 270, 590, kExternalTop}) { MoveToEx(dc, menu->Px(38), menu->Px(y), nullptr); LineTo(dc, menu->Px(942), menu->Px(y)); }
         // Original geometric HUD accents; no extracted game art or assets.
         for (int x = 811; x < 943; x += 22) { MoveToEx(dc, menu->Px(x), menu->Px(43), nullptr); LineTo(dc, menu->Px(x + 18), menu->Px(25)); }
         SelectObject(dc, old); DeleteObject(pen);
@@ -700,7 +698,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             menu->Refresh();
         } break;
         case Browse: BrowseFolder(*menu); break;
-        case Scan: menu->installs = DetectInstalls(menu->selfDir); menu->Populate(); menu->Text(menu->status, L"Detection complete. Select the MCC installation you want to use."); break;
+        case Scan: menu->installs = DetectInstalls(menu->selfDir); menu->Populate(); break;
         case Folder: if (auto* game = menu->Selected()) { auto path = game->root / L"Halo_MCC_VR"; if (!fs::exists(path)) path = game->root; ShellExecuteW(window, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL); } break;
         case Settings: if (auto* game = menu->Selected()) {
             const auto folder = game->root / L"Halo_MCC_VR";
@@ -716,8 +714,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         case ReclaimerBrowse: BrowseReclaimer(*menu); break;
         case ReclaimerDetect: {
             std::wstring how; const auto found = reclaimer_launch::DetectClient(menu->selfDir, how);
-            if (found.empty()) menu->Text(menu->status, L"No Project Reclaimer was found. Run Project Reclaimer once so that Windows knows where it is, then choose Detect again; or choose Browse and pick its program (project-reclaimer-client-v*.exe).");
-            else { SetWindowTextW(menu->reclaimerPath, found.c_str()); ReclaimerShow(*menu, true); menu->Text(menu->status, how); }
+            if (found.empty()) menu->Text(menu->reclaimerInfo, L"No Project Reclaimer was found. Run it once so that Windows knows where it is, then choose Detect again, or choose Browse and pick its program (project-reclaimer-client-v*.exe).");
+            else { SetWindowTextW(menu->reclaimerPath, found.c_str()); ReclaimerShow(*menu, true); }
         } break;
         case ReclaimerLaunch:
             ReclaimerShow(*menu, true);
@@ -732,7 +730,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         case Update: if (auto* game = menu->Selected(); game && menu->packageChosen) {
             const auto target = *game; const auto payload = menu->payload; const bool retain = menu->keepSettings;
             menu->Text(menu->status, L"Verifying files and installing. MCC will not start until you choose Launch MCC.");
-            menu->Start(Menu::Work::Install, [menu, target, payload, retain] { menu->operationMessage = InstallPayload(payload, target, retain).message; });
+            menu->Start(Menu::Work::Install, [menu, target, payload, retain] {
+                const auto result = InstallPayload(payload, target, retain);
+                menu->operationMessage = result.success ? L"Installed. The previous files are kept in Halo_MCC_VR\\backups." : result.message;
+            });
         } else if (game && menu->updateReady) {
             menu->operationGame = *game; menu->operationRetain = menu->keepSettings;
             menu->Text(menu->status, L"Downloading and verifying the release. The launcher will reopen to install it. MCC will stay closed.");
