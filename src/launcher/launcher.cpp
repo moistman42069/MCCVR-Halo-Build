@@ -1162,7 +1162,7 @@ ClientInfo Describe(const std::filesystem::path& launcherDir, const std::wstring
         return info;
     }
     const reclaimer_host::Version version = ReclaimerVersionOfFile(exe);
-    info.text = L"Project Reclaimer " + WideOf(ReclaimerVersionText(version)) + L".";
+    info.text = L"Detected: Project Reclaimer " + WideOf(ReclaimerVersionText(version));
     const std::filesystem::path modDir = ModDir(launcherDir);
     for (const wchar_t* needed : {L"HaloMCCVR.dll", kReclaimerRelayName})
     {
