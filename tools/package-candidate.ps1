@@ -1499,11 +1499,13 @@ try {
 
     $buildZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Build.zip")
     $manualZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Manual-ModFiles.zip")
-    $standaloneZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Standalone-Launcher.zip")
+    $standaloneZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Standalone.zip")
     $sourceZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Source.zip")
     Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $buildZip
     New-ManualPayloadArchive $payloadDir $manualZip
     # The launcher on its own, for pages that hand it out instead of the full package: it downloads the mod itself.
+    # Its name must not end in -Launcher.zip: launchers take a release's one such file as the update, and refuse a
+    # release with two.
     $standaloneDir = Join-Path $candidateRoot ("$packageId.standalone")
     New-Item -ItemType Directory -Path $standaloneDir | Out-Null
     Copy-Item -LiteralPath (Join-Path $packageDir 'HaloMCCVRLauncher.exe') -Destination $standaloneDir
