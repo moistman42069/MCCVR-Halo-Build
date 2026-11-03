@@ -324,4 +324,37 @@ InstallResult InstallPayload(const fs::path& payload, const GameInstall& game, b
     }
     return result;
 }
+bool RefreshLauncherCopy(const fs::path& installedLauncher, const fs::path& payload, const fs::path& copy, std::wstring& error) {
+    try {
+        std::error_code ignored;
+        if (fs::equivalent(installedLauncher, copy, ignored)) return true;
+        if (!NoReparse(copy) || !IsFile(copy)) throw std::runtime_error("The launcher that was opened is no longer there.");
+        const auto directory = copy.parent_path();
+        const auto suffix = UniqueSuffix();
+        const auto modFiles = directory / L"ModFiles";
+        if (IsFile(modFiles / L"INSTALL-MANIFEST.sha256")) {
+            const auto fresh = directory / (L"ModFiles.new-" + suffix), old = directory / (L"ModFiles.old-" + suffix);
+            try {
+                fs::copy(payload, fresh, fs::copy_options::recursive);
+                std::vector<PayloadFile> files; std::string manifestError;
+                if (!ParseManifest(Read(fresh / L"INSTALL-MANIFEST.sha256"), files, manifestError)) throw std::runtime_error(manifestError);
+                for (const auto& file : files) {
+                    auto expected = file.sha256;
+                    std::transform(expected.begin(), expected.end(), expected.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    if (Sha256File(fresh / Wide(file.relative)) != expected) throw std::runtime_error("Payload SHA-256 mismatch.");
+                }
+                fs::rename(modFiles, old);
+                try { fs::rename(fresh, modFiles); } catch (...) { fs::rename(old, modFiles); throw; }
+            } catch (...) { fs::remove_all(fresh, ignored); throw; }
+            fs::remove_all(old, ignored);
+        }
+        const fs::path next = copy.wstring() + L".new-" + suffix;
+        try {
+            fs::copy_file(installedLauncher, next);
+            if (Sha256File(next) != Sha256File(installedLauncher)) throw std::runtime_error("The launcher copy could not be verified.");
+            if (!MoveFileExW(next.c_str(), copy.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("The launcher could not be replaced.");
+        } catch (...) { fs::remove(next, ignored); throw; }
+        return true;
+    } catch (const std::exception& exception) { error = Wide(exception.what()); return false; }
+}
 } // namespace mcc_installer

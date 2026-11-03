@@ -279,6 +279,29 @@ int wmain(int argc,wchar_t** argv) {
         Require(legacyInstall.success && Read(store / "Halo_MCC_VR/HaloMCCVRLauncher.exe") == "legacy launcher fixture",
             "new installer remains compatible with an old launcher-in-payload package");
         // This test owns only its unique directory directly under temp.
+        {
+            const auto fresh = sandbox / "fresh", freshPayload = fresh / "ModFiles", installedLauncher = fresh / "installed.exe";
+            for (const auto name : {"HaloMCCVR.dll", "halomccvr.cfg", "LICENSE", "assets/fixture.txt"}) Write(freshPayload / name, "new");
+            Manifest(freshPayload);
+            Write(installedLauncher, "new launcher");
+            std::wstring problem;
+            const auto plain = sandbox / "copies" / "plain" / "HaloMCCVRLauncher.exe";
+            Write(plain, "old launcher");
+            Require(RefreshLauncherCopy(installedLauncher, freshPayload, plain, problem) && Read(plain) == "new launcher", "a plain copy of the launcher updates where it is");
+            Require(!fs::exists(plain.parent_path() / "ModFiles") && std::distance(fs::directory_iterator(plain.parent_path()), fs::directory_iterator{}) == 1, "a plain copy gains nothing else");
+            const auto package = sandbox / "copies" / "package" / "HaloMCCVRLauncher.exe", packageMod = package.parent_path() / "ModFiles";
+            const auto oldPackage = [&] { Write(package, "old launcher"); Write(packageMod / "INSTALL-MANIFEST.sha256", "old"); Write(packageMod / "old.txt", "old"); };
+            oldPackage();
+            Require(RefreshLauncherCopy(installedLauncher, freshPayload, package, problem) && Read(package) == "new launcher" && Read(packageMod / "HaloMCCVR.dll") == "new", "a package folder updates as one version");
+            Require(!fs::exists(packageMod / "old.txt") && std::distance(fs::directory_iterator(package.parent_path()), fs::directory_iterator{}) == 2, "a package folder keeps nothing old or temporary");
+            Require(RefreshLauncherCopy(installedLauncher, freshPayload, installedLauncher, problem) && Read(installedLauncher) == "new launcher", "the installed launcher itself is left alone");
+            problem.clear();
+            Require(!RefreshLauncherCopy(installedLauncher, freshPayload, sandbox / "copies" / "gone" / "HaloMCCVRLauncher.exe", problem) && !problem.empty(), "a launcher no longer there is reported");
+            fs::remove_all(packageMod); oldPackage(); problem.clear();
+            Write(freshPayload / "LICENSE", "damaged");
+            Require(!RefreshLauncherCopy(installedLauncher, freshPayload, package, problem) && !problem.empty(), "a damaged payload is refused");
+            Require(Read(package) == "old launcher" && fs::exists(packageMod / "old.txt") && std::distance(fs::directory_iterator(package.parent_path()), fs::directory_iterator{}) == 2, "a refused refresh leaves the folder as it was");
+        }
         Require(fs::equivalent(sandbox.parent_path(), fs::temp_directory_path()) && sandbox.filename().wstring().starts_with(L"HaloMCCVR-installer-test-"), "safe fixture cleanup boundary");
         fs::remove_all(sandbox);
         std::cout << "Installer policy, release parsing, detection, SHA-256, cfg merge, backup and rollback tests passed.\n";
