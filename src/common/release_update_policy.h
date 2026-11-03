@@ -137,6 +137,12 @@ inline ReleaseUpdate ReleaseFromJson(const ReleaseJson& json, const ReleaseChann
 inline ReleaseUpdate ParseReleaseUpdate(const std::string& text, const ReleaseChannel& channel = kReleaseChannels[0]) {
     return ReleaseFromJson(ReleaseJsonReader(text).Read(), channel);
 }
+// Whether installing a release also replaces the launcher it was started from: only the newest release of the repository
+// that launcher was built for. Anything else, an older release or another repository's, could bring a launcher that
+// cannot find its way back, so the copy the player opened stays as their way forward.
+inline bool ReplacesOpenedLauncher(const std::vector<ReleaseUpdate>& listed, const ReleaseUpdate& chosen, std::string_view chosenChannel, std::string_view builtChannel) {
+    return chosenChannel == builtChannel && !listed.empty() && listed.front().tag == chosen.tag;
+}
 // The installed build, as the launcher states it, each part named. A package records its repository, build and build
 // date; the release name and publish date are saved when the launcher's own update installs it (the launcher's
 // INSTALLED-RELEASE.txt), so a build installed any other way has no release on record and gives its build date instead.

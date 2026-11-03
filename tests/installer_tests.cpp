@@ -125,6 +125,13 @@ static void Policies() {
             asset("MOTYSHIZ", "Halo-MCC-VR-reclaimer-5-Source.zip")) + "]";
         const auto newest = ParseNewestRelease(ours, nitsujack);
         Require(newest.tag == "nitsujack-reclaimer-5" && newest.assetName == "Halo-MCC-VR-reclaimer-5-Launcher.zip", "a prerelease's launcher ZIP is the one chosen");
+        {
+            const std::vector<ReleaseUpdate> listed{{"new"}, {"old"}};
+            Require(ReplacesOpenedLauncher(listed, listed[0], "nitsujack", "nitsujack"), "the newest release of the launcher's own repository replaces it");
+            Require(!ReplacesOpenedLauncher(listed, listed[1], "nitsujack", "nitsujack"), "an older release leaves the opened launcher alone");
+            Require(!ReplacesOpenedLauncher(listed, listed[0], "official", "nitsujack"), "another repository's release leaves the opened launcher alone");
+            Require(!ReplacesOpenedLauncher({}, listed[0], "nitsujack", "nitsujack"), "nothing listed, nothing replaced");
+        }
         const std::string withStandalone = "[" + release("r", true, asset("MOTYSHIZ", "Halo-MCC-VR-r-Launcher.zip") + "," + asset("MOTYSHIZ", "Halo-MCC-VR-r-Standalone-Launcher.zip") + "," + asset("MOTYSHIZ", "Halo-MCC-VR-r-Standalone.zip")) + "]";
         Require(ParseNewestRelease(withStandalone, kReleaseChannels[1]).assetName == "Halo-MCC-VR-r-Launcher.zip", "the launcher on its own is never the update");
         const std::string theirs = "[" + release("godoy-test-1", false, asset("Godoy301", "Halo-MCC-VR-godoy-test-1-Launcher.zip.zip")) + "]";

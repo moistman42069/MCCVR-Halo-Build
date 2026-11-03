@@ -717,7 +717,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 std::ofstream saved(menu->downloaded.parent_path() / L"INSTALLED-RELEASE.txt", std::ios::trunc);
                 saved << "release=" << menu->latest.tag << "\npublished=" << menu->latest.published.substr(0, 10) << "\nbuild=" << ReadIdentity(menu->downloaded).tag << "\n";
             }
-            if (StartUpdateHelper(menu->downloaded, menu->operationGame, menu->operationRetain, menu->operationMessage)) {
+            const bool replaceThisLauncher = ReplacesOpenedLauncher(menu->versions, menu->latest, menu->CurrentChannel().key, HALOMCCVR_RELEASE_CHANNEL);
+            if (StartUpdateHelper(menu->downloaded, menu->operationGame, menu->operationRetain, replaceThisLauncher, menu->operationMessage)) {
                 menu->helperStarted = true; DestroyWindow(window); return 0;
             }
         }
