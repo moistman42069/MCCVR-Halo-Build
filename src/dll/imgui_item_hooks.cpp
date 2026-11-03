@@ -2,7 +2,11 @@
 #include "imgui_item_hooks.h"
 #include <imgui_internal.h>
 
-void ImGuiTestEngineHook_ItemAdd(ImGuiContext*, ImGuiID, const ImRect&, const ImGuiLastItemData*) {}
+void ImGuiTestEngineHook_ItemAdd(ImGuiContext*, ImGuiID id, const ImRect&, const ImGuiLastItemData*)
+{
+    if (imgui_item_hooks::g_itemInfo && imgui_item_hooks::g_dropdownLabel && id == imgui_item_hooks::g_dropdownId)
+        imgui_item_hooks::g_itemInfo(id, imgui_item_hooks::g_dropdownLabel, 0);
+}
 void ImGuiTestEngineHook_ItemInfo(ImGuiContext*, ImGuiID id, const char* label, ImGuiItemStatusFlags flags)
 {
     if (imgui_item_hooks::g_itemInfo && label) imgui_item_hooks::g_itemInfo(id, label, flags);
