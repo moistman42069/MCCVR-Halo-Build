@@ -453,8 +453,10 @@ target_link_libraries(halomccvr_reclaimer_relay PRIVATE minhook)
 add_executable(halo3xr_reclaimer_launcher WIN32 src/launcher/launcher.cpp
     src/launcher/installer.cpp src/launcher/menu.cpp src/launcher/updater.cpp)
 set_target_properties(halo3xr_reclaimer_launcher PROPERTIES OUTPUT_NAME "HaloMCCVRReclaimerLauncher")
+target_include_directories(halo3xr_reclaimer_launcher PRIVATE "${HALOMCCVR_GENERATED_DIR}")
 target_compile_definitions(halo3xr_reclaimer_launcher PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+    HALOMCCVR_RELEASE_CHANNEL="${HALOMCCVR_RELEASE_CHANNEL}"
     HALOMCCVR_RECLAIMER_LAUNCHER=1
     HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>)
 target_link_libraries(halo3xr_reclaimer_launcher PRIVATE ole32 bcrypt advapi32 winhttp crypt32 shell32 uxtheme)
