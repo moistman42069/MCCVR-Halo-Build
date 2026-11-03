@@ -128,7 +128,8 @@ runtime testing; those paths were preserved, not runtime-accepted by these tests
 ## Credits
 
 The credits column lists `CREDITS.txt` (`installer/CREDITS.txt` in the source), which ships in the mod folder. Each
-person is a `name:` line and a `what:` line, and a `section:` line heads the people after it. Editing the installed copy shows on the next launcher start, and an update
+person is a `name:` line and a `what:` line, plus any number of `link: Label https://address` lines that show as
+badges beside the name, and a `section:` line heads the people after it. Only `https` addresses count as links. Editing the installed copy shows on the next launcher start, and an update
 replaces it. Keys the launcher does not know are skipped, so later additions do not break older launchers.
 
 ## Project Reclaimer (experimental)

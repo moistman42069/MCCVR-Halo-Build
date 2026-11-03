@@ -85,6 +85,9 @@ static void Policies() {
         Require(credits[0].name == L"First" && credits[0].what == L"Did: this", "a person and what they did, colons and all");
         Require(credits[1].name == L"Second" && credits[1].what.empty(), "a person with no description");
         Require(ParseCredits(L"").empty(), "no file, no list");
+        Require(credits[0].links.size() == 1 && credits[0].links[0].label == L"Ko-fi" && credits[0].links[0].url == L"https://example.com", "a link is a label and an address");
+        const auto links = ParseCredits(L"link: Nobody https://example.com\nname: A\nlink: Two Words https://a.example/x?y=1&z=%20\nlink: Plain http://a.example\nlink: Script javascript:alert(1)\nlink: https://a.example\nlink: Quote https://a.example/\"x\nlink: Slash https://a.example\\x\n");
+        Require(links.size() == 1 && links[0].links.size() == 1 && links[0].links[0].label == L"Two Words" && links[0].links[0].url == L"https://a.example/x?y=1&z=%20", "only labelled https addresses are links");
         const auto sections = ParseCredits(L"name: A\nsection: Also\nname: B\nname: C\n");
         Require(sections.size() == 3 && sections[0].section.empty() && sections[1].section == L"Also" && sections[2].section.empty(), "a section heads the next person only");
     }
