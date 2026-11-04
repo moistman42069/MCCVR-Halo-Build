@@ -1454,6 +1454,18 @@ namespace
             }
             if(ImGui::Button("Reset this game's mappings"))
             {g_config.vr_bindings[selectedTitle]={};changed=true;}
+            ImGui::SameLine();
+            const std::string copyLabel=std::string("Copy ")+weapon_interaction::kTitleNames[selectedTitle]+
+                "'s mappings to every game";
+            if(ImGui::Button(copyLabel.c_str()))
+            {
+                const auto source=g_config.vr_bindings[selectedTitle];
+                for(auto& title:g_config.vr_bindings) title=source;
+                for(int row:source) if(row!=vr_mapping::Automatic) g_config.vr_action_mapping=true;
+                changed=true;
+            }
+            ImGui::TextDisabled("Copy: the other five games take these rows as they are. A row for an action a game "
+                "does not have does nothing there.");
         }
         if (SectionHeader("Flashlight##section", ImGuiTreeNodeFlags_None))
         {
