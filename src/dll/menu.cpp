@@ -1724,8 +1724,9 @@ namespace
         {
         ImGui::TextDisabled("Seats follow Converged aim and Direct drive in Weapon & Aim, as on foot.\n"
                             "Reach, Halo CE and Halo 2 fire a seat's weapon at what that seat's own crosshair "
-                            "hits, so the aim is bent to put that crosshair on your target (Halo CE and Halo 2:\n"
-                            "in the first-person seat view; the gun then turns its shot onto it as far as its "
+                            "hits, so the aim is bent to put that crosshair on your target (Halo 2: in the "
+                            "first-person seat view; Halo CE: in the seat view or the game's own camera\n"
+                            "behind the vehicle; the gun then turns its shot onto it as far as its "
                             "own cone allows). A land vehicle seat's turning "
                             "limits still hold (a passenger's cone, a turret's or tank gun's up/down stop):\n"
                             "point past one and the crosshair stops at the edge, where the gun is held and "
@@ -2238,7 +2239,7 @@ namespace
                                 "follows the hand, the body follows the stick). Halo CE always writes its aim "
                                 "directly. Both switches are live.");
             ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3, ODST, "
-                                "Halo CE and Halo 2 in first-person seats; Reach and Halo 2 with Direct drive; "
+                                "Halo 2 in first-person seats; Halo CE in every seat; Reach and Halo 2 with Direct drive; "
                                 "Halo 4 seats with their switch on the Vehicles page). With Direct drive, seats have "
                                 "their aim written too (Vehicles > Aim in seats says which); a seat first checks "
                                 "its own aim, about a second after you sit down.");

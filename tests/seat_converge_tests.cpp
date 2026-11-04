@@ -70,7 +70,9 @@ void TestSeatEye()
     a.perspective = 1;
     eye[0] = 9.0f;
     Check(SeatEye(a, eye) == Why::ChaseCamera && eye[0] == 9.0f,
-          "the following camera orbits the aim: refused, never used as a fixed eye");
+          "the following camera orbits the aim: refused unless the title solves from it");
+    Check(SeatEye(a, eye, true) == Why::Converged && eye[0] == 1.0f && eye[1] == 2.0f,
+          "a title whose fire aims along the following camera's line solves from it");
     a.perspective = 0;
     a.position[1] = std::nanf("");
     Check(SeatEye(a, eye) == Why::EyeNonFinite, "a non-finite answer is refused");

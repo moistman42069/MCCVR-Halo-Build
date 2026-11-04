@@ -136,7 +136,12 @@ inline const char* WhyName(Why w)
 // THE ENGINE'S OWN CAMERA FOR THE SEAT, as its deterministic evaluator answered for the player's biped. The eye the
 // aim is bent from is the answer's position when the evaluator took its FIRST-PERSON path (perspective 0): that
 // position does not depend on the aim (the seat's camera marker, or the gun's own trigger marker), so one solve
-// settles. On the following path the camera orbits the aim it is built from; that is refused here (ChaseCamera).
+// settles. On the FOLLOWING path the camera orbits the aim it is built from, so a solve from it is a fixed point
+// (halo4_seat_converge_logic.h): each update aims from the camera the previous aim produced, and with the camera a
+// distance r behind what it orbits and the point a distance L beyond, an angular error e becomes e * r / (L + r) --
+// it shrinks at every range. A title whose fire aims along that camera's line passes `followingSolves` (Halo CE:
+// its crosshair line runs from the camera along the biped's aiming vector, which follows the bent aim); otherwise
+// the following path is refused (ChaseCamera).
 struct EyeAnswer
 {
     bool bound = false;     // the evaluator could be asked at all
@@ -145,7 +150,7 @@ struct EyeAnswer
     float position[3]{};
 };
 
-inline Why SeatEye(const EyeAnswer& a, float eye[3])
+inline Why SeatEye(const EyeAnswer& a, float eye[3], bool followingSolves = false)
 {
     if (!a.bound)
         return Why::NoEvaluator;
@@ -153,7 +158,7 @@ inline Why SeatEye(const EyeAnswer& a, float eye[3])
         return Why::EvaluatorFault;
     if (!std::isfinite(a.position[0]) || !std::isfinite(a.position[1]) || !std::isfinite(a.position[2]))
         return Why::EyeNonFinite;
-    if (a.perspective != 0)
+    if (a.perspective != 0 && !followingSolves)
         return Why::ChaseCamera;
     eye[0] = a.position[0];
     eye[1] = a.position[1];
