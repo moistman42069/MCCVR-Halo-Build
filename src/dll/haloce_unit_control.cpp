@@ -209,11 +209,15 @@ bool SeatAimBody(uint32_t unit,HaloCESeatAim& out,const bool* carrierDetached=nu
     if (!SeatSightBody(unit,out.sight,carrierDetached)) { out.why=Why::NoHand;return false; }
     if (!Sight_AimEnabled()) { out.why=Why::AimOff;return false; }
     if (!out.sight.role.known) { out.why=Why::NotIdentified;return false; }
-    // The seat's engine eye: CE's own deterministic camera for this biped, asked in this same update.
+    // The seat's engine eye: CE's own deterministic camera for this biped, asked in this same update. In a seat
+    // the game aims from its following camera (every seat with co-op safe shots on, where the first-person seat
+    // view stands down for the simulation, and any seat on a chase camera) that is the following camera: CE's
+    // crosshair line runs from it along the biped's aiming vector, so the aim is solved from it too, a fixed point
+    // that closes on the next updates (seat_converge::SeatEye).
     seat_converge::EyeAnswer answer{};
     const int asked=HaloCEFirstPerson_SeatEye(unit,answer.position,answer.perspective);
     answer.bound=asked!=0;answer.called=asked>0;
-    out.why=seat_converge::SeatEye(answer,out.eye);
+    out.why=seat_converge::SeatEye(answer,out.eye,true);
     if (out.why!=Why::Converged) return false;
     // Only a trace of THIS seat's ray (the biped tick sets the stance before it traces).
     if (Sight_Stance(GameTitle::HaloCE)!=out.sight.key) { out.why=Why::StanceSettling;return false; }

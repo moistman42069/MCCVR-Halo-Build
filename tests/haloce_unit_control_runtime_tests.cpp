@@ -620,8 +620,17 @@ int main()
             Check(consumedPointer!=&packet&&seatConvergedPackets.load()==before&&
                 Near(ReadUnitControl<Vec3>(consumed,0x28),{1,0,0}),message);
         };
-        Reset();Seated();separateVehicle=true;seatEyeResult=1;seatEyePerspective=1;seatedTrace(10.0f);
-        refused("a seat the engine aims from its chase camera keeps the hand's forward");
+        {
+            // A seat the engine aims from its following camera: solved from that camera through the point.
+            Reset();Seated();separateVehicle=true;seatEyeResult=1;seatEyePerspective=1;seatEye[1]=.5f;
+            seatedTrace(10.0f);
+            const auto before=seatConvergedPackets.load();
+            UnitControlBody(localPlayer.unit,&packet,47,moduleBase+0xad0d5b);
+            Check(consumedPointer!=&packet&&seatConvergedPackets.load()==before+1&&
+                Near(ReadUnitControl<Vec3>(consumed,0x28),{10*inverse,-.5f*inverse,0}),
+                "a seat the engine aims from its chase camera is bent from that camera through the traced point");
+            seatEyePerspective=0;
+        }
         Reset();Seated();separateVehicle=true;seatEyeResult=0;seatedTrace(10.0f);
         refused("an unbound camera evaluator keeps the hand's forward");
         Reset();Seated();separateVehicle=true;seatEyeResult=-1;seatedTrace(10.0f);
