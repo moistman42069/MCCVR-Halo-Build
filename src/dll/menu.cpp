@@ -1028,7 +1028,7 @@ namespace
             ImGui::SameLine();
             changed |= ImGui::RadioButton("Threshold (B)", &g_config.roomscale_follow_law, 0);
             ImGui::TextDisabled(g_config.roomscale_follow_law
-                ? "Hysteresis: a lean under 3 cm never walks, the body brakes by letting go instead of backing up,\n"
+                ? "Hysteresis: a lean under 3 cm never walks, the body brakes by letting go instead of backing up, "
                   "and a distance you walked away during a tracking gap is still caught up."
                 : "Threshold: walks from 1.5 cm and brakes by reversing. Kept as it shipped in Alpha 0.6.0, "
                   "for comparison.");
@@ -1049,12 +1049,12 @@ namespace
                 changed |= vr_menu::SliderFloat("Slide speed while moving", &g_config.roomscale_recenter_moving_speed,
                     roomscale_recenter::kMinSpeed, roomscale_recenter::kMaxSpeed, "%.2f m/s");
             ImGui::TextDisabled(
-                "In the air, and while the stick moves you, your character cannot step under your head,\n"
-                "so your view sits away from where the game aims and shoots from. These slide the view back\n"
-                "over the character while that motion hides it. They never turn the view or change your\n"
+                "In the air, and while the stick moves you, your character cannot step under your head, "
+                "so your view sits away from where the game aims and shoots from. These slide the view back "
+                "over the character while that motion hides it. They never turn the view or change your "
                 "height, and your hands and reticle move with it.\n"
                 "On a jump / when you start moving: one quick slide, over the time you set.\n"
-                "Gradually while moving: a steady slide at the speed you set, for as long as the stick is\n"
+                "Gradually while moving: a steady slide at the speed you set, for as long as the stick is "
                 "held. It need not finish: once you stand still, your legs walk to you as before.");
             }
         }
@@ -1136,7 +1136,7 @@ namespace
             "Flip Depth (swap left and right eyes)",
             &g_config.cutscene_theater_flip_depth);
         ImGui::TextDisabled(
-            "0%% is flat, 100%% uses your headset's natural eye spacing,\n"
+            "0%% is flat, 100%% uses your headset's natural eye spacing, "
             "and 200%% doubles the separation. Flip only if depth looks reversed.");
         ImGui::Spacing();
         ImGui::Separator();
@@ -1150,7 +1150,7 @@ namespace
             "Screen distance (m)##theatre",
             &g_config.cutscene_theater_distance_m, 0.3f, 20.0f, "%.1f");
         ImGui::TextDisabled(
-            "Defaults: 6.0 m wide at 4.0 m away. Height follows the authored\n"
+            "Defaults: 6.0 m wide at 4.0 m away. Height follows the authored "
             "cinematic projection.");
         ImGui::Spacing();
         ImGui::Separator();
@@ -1173,9 +1173,9 @@ namespace
                 &g_config.cutscene_theater_matte_offset, -0.25f, 0.25f, "%.2f");
         }
         ImGui::TextDisabled(
-            "The cutscene is drawn into the headset's shape, which is taller than a TV,\n"
+            "The cutscene is drawn into the headset's shape, which is taller than a TV, "
             "so without bars you see scene above and below the intended shot.\n"
-            "1.78 is a TV picture, 2.39 a wide cinema crop. The picture is never\n"
+            "1.78 is a TV picture, 2.39 a wide cinema crop. The picture is never "
             "resized, only covered. Slide moves what stays showing up or down.");
         ImGui::Spacing();
         ImGui::Separator();
@@ -1186,8 +1186,8 @@ namespace
             "Show subtitles on the theatre screen",
             &g_config.cutscene_theater_subtitles);
         ImGui::TextDisabled(
-            "The game draws subtitles after it hands us the two eye images, so they\n"
-            "reach your monitor but not your headset. This puts the text back on the\n"
+            "The game draws subtitles after it hands us the two eye images, so they "
+            "reach your monitor but not your headset. This puts the text back on the "
             "screen where the game placed it. MCC's own subtitle setting must be on.");
         if (g_config.cutscene_theater_subtitles)
         {
@@ -1201,7 +1201,7 @@ namespace
                 "Diagnostic: show the strip unfiltered",
                 &g_config.cutscene_theater_subtitle_debug);
             ImGui::TextDisabled(
-                "Paints the captured strip straight onto the screen with no text\n"
+                "Paints the captured strip straight onto the screen with no text "
                 "picking at all, so you can see exactly what the mod is reading.\n"
                 "Turn it off for normal play.");
         }
@@ -1227,7 +1227,7 @@ namespace
         ImGui::TextDisabled("Lower your head to crouch. Depth and calibration are in Comfort > Roomscale.");
         SettingGap();
         changed |= ImGui::Checkbox("Right stick crouches", &g_config.right_stick_crouch);
-        ImGui::TextDisabled("On foot: push the right stick down to crouch and up to stand. Needs MCC's\n"
+        ImGui::TextDisabled("On foot: push the right stick down to crouch and up to stand. Needs MCC's "
             "hold-to-crouch setting. The game's own crouch button still works.");
         ImGui::Spacing();
         }
@@ -1286,7 +1286,7 @@ namespace
             ImGui::SetTooltip("If you're walking when your hand reaches your head, you keep walking.\n"
                               "Let the stick return to centre and it becomes the D-pad.\n"
                               "Off: the stick becomes the D-pad at once and you stop.");
-        ImGui::TextDisabled("In Project Reclaimer, at your head: X is voice chat (push to talk; hold or toggle as set in\n"
+        ImGui::TextDisabled("In Project Reclaimer, at your head: X is voice chat (push to talk; hold or toggle as set in "
                             "Reclaimer's audio settings) and Y shows the scoreboard, with the left controller.\n"
                             "A and B vote yes and no, with the right controller.");
         SettingGap();
@@ -1635,12 +1635,12 @@ namespace
             }
         }
         ImGui::TextDisabled(
-            "Sit in a seat and these sliders adjust that seat alone —\n"
-            "a vehicle's driver, passengers and gunner each remember their\n"
-            "own. On foot they set this game's base every unadjusted seat\n"
-            "follows. In Reach the base is your Blender-authored point for\n"
-            "that seat and the slider travels the same distance either side\n"
-            "of it that Halo 3 and ODST travel; vehicle and occupant motion\n"
+            "Sit in a seat and these sliders adjust that seat alone — "
+            "a vehicle's driver, passengers and gunner each remember their "
+            "own. On foot they set this game's base every unadjusted seat "
+            "follows. In Reach the base is your Blender-authored point for "
+            "that seat and the slider travels the same distance either side "
+            "of it that Halo 3 and ODST travel; vehicle and occupant motion "
             "are parented around that baseline.\n"
             "Left/right: negative moves left, positive moves right.");
         ImGui::Spacing();
@@ -1649,23 +1649,23 @@ namespace
         if (SectionHeader("Aim in seats##section", ImGuiTreeNodeFlags_None))
         {
         ImGui::TextDisabled("Seats follow Converged aim and Direct drive in Weapon & Aim, as on foot.\n"
-                            "Reach, Halo CE and Halo 2 fire a seat's weapon at what that seat's own crosshair\n"
+                            "Reach, Halo CE and Halo 2 fire a seat's weapon at what that seat's own crosshair "
                             "hits, so the aim is bent to put that crosshair on your target (Halo CE and Halo 2:\n"
-                            "in the first-person seat view; the gun then turns its shot onto it as far as its\n"
-                            "own cone allows). A land vehicle seat's turning\n"
+                            "in the first-person seat view; the gun then turns its shot onto it as far as its "
+                            "own cone allows). A land vehicle seat's turning "
                             "limits still hold (a passenger's cone, a turret's or tank gun's up/down stop):\n"
-                            "point past one and the crosshair stops at the edge, where the gun is held and\n"
-                            "the shots go. A gun still turning toward your hand is not a limit: the\n"
+                            "point past one and the crosshair stops at the edge, where the gun is held and "
+                            "the shots go. A gun still turning toward your hand is not a limit: the "
                             "crosshair stays on your aim point. Aircraft have no limits.\n"
                             "A seat whose stick steers the vehicle keeps the stick.");
         {
             bool seats = g_config.seat_direct_drive != 0;
             if (ImGui::Checkbox("Direct drive in seats", &seats))
             { g_config.seat_direct_drive = seats ? 1 : 0; changed = true; }
-            ImGui::TextDisabled("ON (with Direct drive): a seat's aim is written as on foot, once the seat has\n"
-                                "checked its own aim (a moment after you sit down). Every title needs its\n"
-                                "first-person seat view: in Halo 3 and ODST with \"Hide my character in the seat\"\n"
-                                "on; in Halo 2 also with \"VR controls in Halo CE and Halo 2 vehicles\" on\n"
+            ImGui::TextDisabled("ON (with Direct drive): a seat's aim is written as on foot, once the seat has "
+                                "checked its own aim (a moment after you sit down). Every title needs its "
+                                "first-person seat view: in Halo 3 and ODST with \"Hide my character in the seat\" "
+                                "on; in Halo 2 also with \"VR controls in Halo CE and Halo 2 vehicles\" on "
                                 "and \"View follows the vehicle\" off. Halo 4 seats write the heading only.\n"
                                 "OFF: the stick steers the aim in every seat.");
             if (g_config.reach_vehicle_aim <= 0)
@@ -1680,23 +1680,23 @@ namespace
                 bool drivers = g_config.reach_vehicle_aim >= 2;
                 if (ImGui::Checkbox("Drivers aim with the hand", &drivers))
                 { g_config.reach_vehicle_aim = drivers ? 2 : 1; changed = true; }
-                ImGui::TextDisabled("ON: a driver whose vehicle turns toward the aim (Warthog, Ghost, Banshee) steers\n"
-                                    "with the hand. OFF: that driver keeps the stick; gunners and passengers still\n"
-                                    "aim with the hand -- except in Halo 4, which cannot yet tell a seat's role, so\n"
-                                    "OFF keeps every seat there on the stick. Halo 2 reads the role off the seat\n"
+                ImGui::TextDisabled("ON: a driver whose vehicle turns toward the aim (Warthog, Ghost, Banshee) steers "
+                                    "with the hand. OFF: that driver keeps the stick; gunners and passengers still "
+                                    "aim with the hand -- except in Halo 4, which cannot yet tell a seat's role, so "
+                                    "OFF keeps every seat there on the stick. Halo 2 reads the role off the seat "
                                     "itself. Halo CE's hand aims every seat either way.");
             }
             bool halo4Seats = g_config.halo4_seat_converge != 0;
             if (ImGui::Checkbox("Halo 4: converged aim in seats", &halo4Seats))
             { g_config.halo4_seat_converge = halo4Seats ? 1 : 0; changed = true; }
             SingleplayerOnly("In co-op, the seat keeps the game's own aim line, automatically.");
-            ImGui::TextDisabled("ON (default): in a Halo 4 seat the game traces your aim, and the seat's aim is\n"
-                                "bent so the line the game itself aims that seat along passes through the point\n"
-                                "you point at; the crosshair sits on that point. With Co-op safe shots on, that\n"
-                                "line starts at the game's own seat camera, as on every other player's game, and\n"
-                                "only the aim you send is changed. The gun turns its shot onto the point as far as\n"
-                                "the game lets it. Needs Converged aim and the first-person seat view. Halo 4\n"
-                                "seats write the heading; up/down still turns at the stick's rate. OFF: Halo 4\n"
+            ImGui::TextDisabled("ON (default): in a Halo 4 seat the game traces your aim, and the seat's aim is "
+                                "bent so the line the game itself aims that seat along passes through the point "
+                                "you point at; the crosshair sits on that point. With Co-op safe shots on, that "
+                                "line starts at the game's own seat camera, as on every other player's game, and "
+                                "only the aim you send is changed. The gun turns its shot onto the point as far as "
+                                "the game lets it. Needs Converged aim and the first-person seat view. Halo 4 "
+                                "seats write the heading; up/down still turns at the stick's rate. OFF: Halo 4 "
                                 "seats keep the fixed-distance aim. Live.");
         }
         ImGui::Spacing();
@@ -1712,41 +1712,41 @@ namespace
         changed |= ImGui::Checkbox("Match the rendered vehicle motion",
                                    &g_config.vehicle_cam_smoothing);
         ImGui::TextDisabled(
-            "ON (default) uses the exact seat/attachment node Halo renders\n"
-            "and adds occupant bounce relative to the settled seat pose. It\n"
+            "ON (default) uses the exact seat/attachment node Halo renders "
+            "and adds occupant bounce relative to the settled seat pose. It "
             "does not filter or shift your authored point. OFF is raw-node A/B.");
         changed |= ImGui::Checkbox("Hide my character in the seat",
                                    &g_config.vehicle_hide_body);
         ImGui::TextDisabled(
-            "ON (default) hides only your own seated world character from\n"
-            "your first-person camera. Other cameras still see it, and your\n"
+            "ON (default) hides only your own seated world character from "
+            "your first-person camera. Other cameras still see it, and your "
             "first-person arms and weapon remain. Game files are untouched.\n"
             "It applies with View follows the vehicle both OFF and ON.");
         changed |= ImGui::Checkbox("Arms ride the seat, not my head",
                                    &g_config.vehicle_hands_follow_body);
         ImGui::TextDisabled(
-            "ON (default) hangs your arms and gun off the seat, so they stay\n"
+            "ON (default) hangs your arms and gun off the seat, so they stay "
             "with the vehicle and your hands while your head turns freely.\n"
-            "OFF anchors them to Halo's seated camera - your character's own\n"
+            "OFF anchors them to Halo's seated camera - your character's own "
             "head - so looking around drags the gun with your face.");
         changed |= vr_menu::SliderFloat("Seat bounce", &g_config.vehicle_bounce,
                                       0.0f, 1.0f, "%.2f");
         ImGui::TextDisabled(
-            "How much of the seat's bounce reaches your view. 1 is the\n"
-            "engine's full travel (about 24 cm) and is a lot; 0 bolts your\n"
-            "view to the seat. Strength only - nothing is smoothed or\n"
+            "How much of the seat's bounce reaches your view. 1 is the "
+            "engine's full travel (about 24 cm) and is a lot; 0 bolts your "
+            "view to the seat. Strength only - nothing is smoothed or "
             "delayed at any setting.");
         changed |= ImGui::Checkbox("Re-centre when I get in and out",
                                    &g_config.vehicle_recenter_on_seat);
         changed |= ImGui::Checkbox("Steady brightness in the seat (ODST)",
                                    &g_config.vehicle_steady_exposure);
         ImGui::TextDisabled(
-            "Looking down at the dashboard fills the game's brightness\n"
-            "meter with a big dark surface, so its auto-exposure ramps the\n"
+            "Looking down at the dashboard fills the game's brightness "
+            "meter with a big dark surface, so its auto-exposure ramps the "
             "whole scene. This holds it steady while you are seated.");
         ImGui::TextDisabled(
-            "ON (default) re-centres your play space once you have settled\n"
-            "into a seat and again when you get out, so a step you took on\n"
+            "ON (default) re-centres your play space once you have settled "
+            "into a seat and again when you get out, so a step you took on "
             "foot is not carried in (or back out) as a standing lean.\n"
             "Position only - it never turns your view.");
         ImGui::Spacing();
@@ -1757,10 +1757,10 @@ namespace
         changed |= ImGui::Checkbox("VR controls in Halo CE and Halo 2 vehicles",
                                    &g_config.vehicle_vr_controls);
         ImGui::TextDisabled(
-            "ON (default): in Halo CE the right stick snap/smooth-turns your\n"
-            "seat view; in Halo 2 your hand aims, and the seat keeps a view of\n"
-            "its own that the aim does not swing. OFF: those two games' seats\n"
-            "use the plain right stick, as on a flat screen. Halo 3, ODST,\n"
+            "ON (default): in Halo CE the right stick snap/smooth-turns your "
+            "seat view; in Halo 2 your hand aims, and the seat keeps a view of "
+            "its own that the aim does not swing. OFF: those two games' seats "
+            "use the plain right stick, as on a flat screen. Halo 3, ODST, "
             "Reach and Halo 4 seats are not affected.");
         ImGui::Spacing();
         ImGui::Separator();
@@ -1770,31 +1770,31 @@ namespace
         changed |= Combo("Seat controls", &g_config.vehicle_control,
                                 "As before\0Motion: your hand\0Stick\0Wheel\0");
         ImGui::TextDisabled(
-            "Apart from how your view turns: each works with a view the world\n"
+            "Apart from how your view turns: each works with a view the world "
             "holds still and with one that turns with the vehicle.\n"
-            "Motion: your hand aims in every seat, and a Warthog, Mongoose,\n"
+            "Motion: your hand aims in every seat, and a Warthog, Mongoose, "
             "Ghost, Prowler, Chopper, Banshee or Hornet turns toward it.\n"
-            "Stick: the right stick aims and steers in every seat, as on a flat\n"
+            "Stick: the right stick aims and steers in every seat, as on a flat "
             "screen; your hand aims nothing and the stick no longer turns your view.\n"
-            "Wheel: in those ground vehicles the invisible wheel is in your hands\n"
+            "Wheel: in those ground vehicles the invisible wheel is in your hands "
             "from the moment you sit; every other seat is your hand's.\n"
-            "As before: your hand aims, except that the stick or wheel steers\n"
+            "As before: your hand aims, except that the stick or wheel steers "
             "those vehicles while the view turns with them.\n"
-            "With vehicle cameras on, the left stick click changes this for the\n"
+            "With vehicle cameras on, the left stick click changes this for the "
             "seat you are in, and each seat keeps its own choice.\n"
             "ODST: only with vehicle cameras on.\n"
-            "Reach: only with vehicle cameras on, and Motion or Wheel only (Stick\n"
+            "Reach: only with vehicle cameras on, and Motion or Wheel only (Stick "
             "keeps Reach's own rule there).");
         changed |= vr_menu::SliderFloat("Ignore aim behind, within (m)",
             &g_config.vehicle_aim_reject_metres, 0.0f, 20.0f, "%.1f");
         changed |= vr_menu::SliderFloat("Behind is a dot below",
             &g_config.vehicle_aim_reject_dot, -1.0f, 1.0f, "%.2f");
         ImGui::TextDisabled(
-            "While your hand steers one of those vehicles, a point you aim at\n"
+            "While your hand steers one of those vehicles, a point you aim at "
             "that is behind the vehicle and this close to it does not turn it:\n"
-            "it keeps its forward. With a camera outside the vehicle your hand\n"
-            "easily lands on the ground just behind it. Measured along the\n"
-            "vehicle's own floor; 0 m = off. Behind: -0.5 = more than 120\n"
+            "it keeps its forward. With a camera outside the vehicle your hand "
+            "easily lands on the ground just behind it. Measured along the "
+            "vehicle's own floor; 0 m = off. Behind: -0.5 = more than 120 "
             "degrees off the nose, 0 = more than 90, -1 = nothing.");
         ImGui::Spacing();
         ImGui::Separator();
@@ -1804,11 +1804,11 @@ namespace
         changed |= ImGui::Checkbox("Virtual steering wheel",
                                    &g_config.vehicle_motion);
         ImGui::TextDisabled(
-            "Warthog, Mongoose, Ghost, Prowler and Chopper: DOUBLE-CLICK both\n"
-            "grips to take an invisible wheel, then just hold your hands on it\n"
-            "and tilt - no squeezing. Double-click again to let go and the\n"
-            "right stick steers. A single right grip still gets you out of the\n"
-            "vehicle either way. Aircraft and the Scorpion/Wraith keep their\n"
+            "Warthog, Mongoose, Ghost, Prowler and Chopper: DOUBLE-CLICK both "
+            "grips to take an invisible wheel, then just hold your hands on it "
+            "and tilt - no squeezing. Double-click again to let go and the "
+            "right stick steers. A single right grip still gets you out of the "
+            "vehicle either way. Aircraft and the Scorpion/Wraith keep their "
             "own controls.");
         changed |= vr_menu::SliderFloat("Full lock at (deg)",
             &g_config.vehicle_wheel_max_deg, 30.0f, 180.0f, "%.0f");
@@ -1825,25 +1825,25 @@ namespace
         changed |= ImGui::Checkbox("Ring where the vehicle aims",
                                    &g_config.vehicle_aim_marker);
         ImGui::TextDisabled(
-            "A purple ring beside the crosshair, where the vehicle itself is\n"
-            "aiming. While your view turns with the vehicle (Tethered) it is\n"
-            "where the view comes to rest: aim at it to go straight without\n"
-            "turning. The file's \"aimMarker\" turns it on or off per seat,\n"
+            "A purple ring beside the crosshair, where the vehicle itself is "
+            "aiming. While your view turns with the vehicle (Tethered) it is "
+            "where the view comes to rest: aim at it to go straight without "
+            "turning. The file's \"aimMarker\" turns it on or off per seat, "
             "camera or mode; the built-in cameras show it when Tethered.");
         ImGui::TextDisabled(
-            "In a seat, step through the cameras that file lists for it. The\n"
-            "file is in the mod's folder, written the first time this is on;\n"
-            "edit it and it is read again when you save. Its first camera is\n"
-            "the seat view you already have; a vehicle the mod does not know\n"
+            "In a seat, step through the cameras that file lists for it. The "
+            "file is in the mod's folder, written the first time this is on; "
+            "edit it and it is read again when you save. Its first camera is "
+            "the seat view you already have; a vehicle the mod does not know "
             "starts where the game's own third-person camera sits.\n"
-            "In a seat: left Y = next camera, left X = next tethering mode,\n"
-            "either held a second = re-centre the view, left stick click = next\n"
-            "way to control the seat. Right B then uses, gets out and reloads,\n"
-            "and a passenger's support trigger switches weapon. Each seat keeps\n"
+            "In a seat: left Y = next camera, left X = next tethering mode, "
+            "either held a second = re-centre the view, left stick click = next "
+            "way to control the seat. Right B then uses, gets out and reloads, "
+            "and a passenger's support trigger switches weapon. Each seat keeps "
             "its last camera, mode and controls. Needs first-person vehicles on.\n"
-            "Reach: the note is on the mod's panel, and the glass and body keys\n"
+            "Reach: the note is on the mod's panel, and the glass and body keys "
             "are Halo 3's only for now.\n"
-            "Halo 4: the same, and its seats steer by your hand (no Stick or\n"
+            "Halo 4: the same, and its seats steer by your hand (no Stick or "
             "Wheel); a camera turns with the vehicle's heading only.");
         if (g_config.vehicle_cameras)
         {
@@ -1870,9 +1870,9 @@ namespace
                 if (lagTuned && ImGui::Button("Back to the camera file's lag"))
                     Game_VehicleCameraResetLag();
                 ImGui::TextDisabled(
-                    "For the camera you are in: seconds it takes to catch up\n"
-                    "with a turn or a bump (0 = rigid). Damping 1 settles\n"
-                    "without overshoot; lower swings past and back. Kept for\n"
+                    "For the camera you are in: seconds it takes to catch up "
+                    "with a turn or a bump (0 = rigid). Damping 1 settles "
+                    "without overshoot; lower swings past and back. Kept for "
                     "this camera in halomccvr_vehicle_cameras_tuning.txt.");
             }
             else
@@ -1889,9 +1889,9 @@ namespace
                 if (ImGui::Button("Back to the camera's start"))
                     Game_VehicleBoomRecenter();
                 ImGui::TextDisabled(boomTrack
-                    ? "Where the game's own third-person camera would stand at that\n"
+                    ? "Where the game's own third-person camera would stand at that "
                       "angle, from the game's camera track for this seat."
-                    : "The game's camera track could not be read for this seat, so\n"
+                    : "The game's camera track could not be read for this seat, so "
                       "the camera orbits the game's pivot at the game's distance.");
             }
             changed |= vr_menu::SliderFloat("Third-person boom speed (deg/s)",
@@ -1904,11 +1904,11 @@ namespace
                 changed = true;
             }
             ImGui::TextDisabled(
-                "A camera that stands where the game's own third-person camera\n"
-                "does: push the right stick up or down to lower or raise it, the\n"
-                "way the game's own stick moves its camera, in a seat where the\n"
-                "stick does not aim (your hand or the wheel does). It never\n"
-                "follows your aim. Each seat and camera keeps its angle; hold\n"
+                "A camera that stands where the game's own third-person camera "
+                "does: push the right stick up or down to lower or raise it, the "
+                "way the game's own stick moves its camera, in a seat where the "
+                "stick does not aim (your hand or the wheel does). It never "
+                "follows your aim. Each seat and camera keeps its angle; hold "
                 "left X or Y to put it back.");
         }
         }
@@ -2014,7 +2014,7 @@ namespace
                                                             : defaults.weapon_holster_radius_m;
             changed = true;
         }
-        ImGui::TextDisabled("Reach over your weapon-side shoulder and squeeze the weapon grip to switch weapons, in every\n"
+        ImGui::TextDisabled("Reach over your weapon-side shoulder and squeeze the weapon grip to switch weapons, in every "
                             "game. Off puts the holster back on its defaults. Your switch-weapon button still works.");
         {
             // The holster where the player's own hand goes: arm here, then squeeze the weapon grip there.
@@ -2042,8 +2042,8 @@ namespace
             const char* hand = g_config.left_handed ? "left" : "right";
             if (armed)
                 ImGui::TextDisabled("Armed. Close this menu. The next time you squeeze the grip of your %s (weapon)\n"
-                                    "controller in game, the holster is set where that hand is, measured from your\n"
-                                    "head. Let go of the grip first if you are holding it. Press the button again\n"
+                                    "controller in game, the holster is set where that hand is, measured from your "
+                                    "head. Let go of the grip first if you are holding it. Press the button again "
                                     "to cancel; it also lapses 30 seconds after the menu closes.", hand);
             else if (lastOutcome == 1)
                 ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f),
@@ -2056,8 +2056,8 @@ namespace
             else if (lastOutcome == 2)
                 ImGui::TextDisabled("No grip came within 30 seconds of closing the menu: nothing was changed.");
             else
-                ImGui::TextDisabled("Puts the holster where your own hand goes. Press it, close this menu, then squeeze\n"
-                                    "the grip of your %s (weapon) controller where the holster should be. Turns\n"
+                ImGui::TextDisabled("Puts the holster where your own hand goes. Press it, close this menu, then squeeze "
+                                    "the grip of your %s (weapon) controller where the holster should be. Turns "
                                     "holsters on. Every game.", hand);
         }
         if (g_config.weapon_holsters)
@@ -2116,55 +2116,55 @@ namespace
             bool converged = g_config.converged_aim != 0;
             if (ImGui::Checkbox("Converged aim", &converged))
             { g_config.converged_aim = converged ? 1 : 0; changed = true; }
-            ImGui::TextDisabled("ON: the shot passes through what you point at, at any distance: the game traces the\n"
-                                "ray from your eye along the controller and bends the aim so its shot line crosses\n"
-                                "that point, and the reticle sits on it. OFF: the earlier aim, which meets your\n"
-                                "pointing line at one fixed distance. In Reach it needs Direct drive (below);\n"
+            ImGui::TextDisabled("ON: the shot passes through what you point at, at any distance: the game traces the "
+                                "ray from your eye along the controller and bends the aim so its shot line crosses "
+                                "that point, and the reticle sits on it. OFF: the earlier aim, which meets your "
+                                "pointing line at one fixed distance. In Reach it needs Direct drive (below); "
                                 "without it Reach keeps its own convergence.");
             bool drive = g_config.aim_direct_drive != 0;
             if (ImGui::Checkbox("Direct drive", &drive))
             { g_config.aim_direct_drive = drive ? 1 : 0; Config_ApplyAimModes(); changed = true; }
-            ImGui::TextDisabled("ON (Reach, Halo 3, ODST, Halo 4): your aim writes the game's own aim, so it follows the\n"
-                                "controller at once instead of at the game's turn rate. It arms itself a moment after\n"
+            ImGui::TextDisabled("ON (Reach, Halo 3, ODST, Halo 4): your aim writes the game's own aim, so it follows the "
+                                "controller at once instead of at the game's turn rate. It arms itself a moment after "
                                 "you switch it on. OFF: the aim steers the game's look like a right stick.\n"
-                                "Halo 2 on foot: ON also writes the game's own aim, so your body faces where you aim\n"
-                                "and the right stick turns your view; OFF keeps the earlier Halo 2 aim (the shot\n"
-                                "follows the hand, the body follows the stick). Halo CE always writes its aim\n"
+                                "Halo 2 on foot: ON also writes the game's own aim, so your body faces where you aim "
+                                "and the right stick turns your view; OFF keeps the earlier Halo 2 aim (the shot "
+                                "follows the hand, the body follows the stick). Halo CE always writes its aim "
                                 "directly. Both switches are live.");
             changed |= ImGui::Checkbox("Shots leave the visible muzzle", &g_config.shots_from_muzzle);
             SingleplayerOnly("In co-op, shots leave your eye instead, automatically.");
-            ImGui::TextDisabled("ON: on foot, each shot starts at your gun's visible muzzle and flies through the\n"
-                                "point your converged aim is on (the reticle), so it lands where the shot from your\n"
-                                "eye would have while tracers and projectiles come out of the barrel. Needs Converged\n"
-                                "aim. If the muzzle is inside a wall your eye sees past, or the aim is not converged,\n"
-                                "the shot leaves your eye as before. \"Aim from the visible gun barrel\" (Crosshair\n"
+            ImGui::TextDisabled("ON: on foot, each shot starts at your gun's visible muzzle and flies through the "
+                                "point your converged aim is on (the reticle), so it lands where the shot from your "
+                                "eye would have while tracers and projectiles come out of the barrel. Needs Converged "
+                                "aim. If the muzzle is inside a wall your eye sees past, or the aim is not converged, "
+                                "the shot leaves your eye as before. \"Aim from the visible gun barrel\" (Crosshair "
                                 "page), when on, wins and keeps the barrel's own direction. Live.\n"
-                                "Only while Co-op safe shots (Advanced page) allows it: on Automatic, the default,\n"
-                                "that is when you play alone or in Firefight or a custom game. In a co-op session,\n"
+                                "Only while Co-op safe shots (Advanced page) allows it: on Automatic, the default, "
+                                "that is when you play alone or in Firefight or a custom game. In a co-op session, "
                                 "or with it on Always, shots leave your eye.");
-            ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3, ODST,\n"
-                                "Halo CE and Halo 2 in first-person seats; Reach and Halo 2 with Direct drive;\n"
-                                "Halo 4 seats with their switch on the Vehicles page). With Direct drive, seats have\n"
-                                "their aim written too (Vehicles > Aim in seats says which); a seat first checks\n"
+            ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3, ODST, "
+                                "Halo CE and Halo 2 in first-person seats; Reach and Halo 2 with Direct drive; "
+                                "Halo 4 seats with their switch on the Vehicles page). With Direct drive, seats have "
+                                "their aim written too (Vehicles > Aim in seats says which); a seat first checks "
                                 "its own aim, about a second after you sit down.");
             changed |= vr_menu::SliderFloat("Aim lead (game ticks)", &g_config.aim_lead_ticks, 0.0f, 3.0f, "%.2f");
-            ImGui::TextDisabled("On foot in Halo 3, ODST and Reach with Direct drive. The game fires each shot along\n"
-                                "the aim it was given about one game tick earlier, so a shot fired while you turn\n"
-                                "lands a little behind the reticle. This writes the aim that far ahead of your\n"
-                                "hand's own motion instead. Only the game's aim is led: the reticle, the gun and\n"
-                                "the scope do not move, and a snap turn or a hand at rest is never led. It works\n"
+            ImGui::TextDisabled("On foot in Halo 3, ODST and Reach with Direct drive. The game fires each shot along "
+                                "the aim it was given about one game tick earlier, so a shot fired while you turn "
+                                "lands a little behind the reticle. This writes the aim that far ahead of your "
+                                "hand's own motion instead. Only the game's aim is led: the reticle, the gun and "
+                                "the scope do not move, and a snap turn or a hand at rest is never led. It works "
                                 "the same in solo and co-op. 0 = off. Live.");
 #if HALOMCCVR_DEV_DIAGNOSTICS
             ImGui::Spacing();
             bool transport = g_config.shot_point_transport != 0;
             if (ImGui::Checkbox("Flat parity: move the shot point with your eye (A/B, dev)", &transport))
             { g_config.shot_point_transport = transport ? 1 : 0; changed = true; }
-            ImGui::TextDisabled("DEV BUILD ONLY (players always have it ON). On foot in Halo 3, ODST, Halo 2, CE,\n"
-                                "Halo 4 and Reach (Halo 2, Halo 4: shots from the muzzle; CE: those and its aim\n"
-                                "assist; Reach: only once its eye at the fire is measured). ON: a shot\n"
-                                "aims through the reticle's point moved with your eye since it was sampled -- what\n"
-                                "flat Halo fires with the crosshair held still on your body. OFF: through the point\n"
-                                "fixed in the world (rounds trail a strafe by one game tick). The reticle never\n"
+            ImGui::TextDisabled("DEV BUILD ONLY (players always have it ON). On foot in Halo 3, ODST, Halo 2, CE, "
+                                "Halo 4 and Reach (Halo 2, Halo 4: shots from the muzzle; CE: those and its aim "
+                                "assist; Reach: only once its eye at the fire is measured). ON: a shot "
+                                "aims through the reticle's point moved with your eye since it was sampled -- what "
+                                "flat Halo fires with the crosshair held still on your body. OFF: through the point "
+                                "fixed in the world (rounds trail a strafe by one game tick). The reticle never "
                                 "moves. Strafe past a wall and compare. Live.");
             if (g_config.shot_point_transport)
             {
@@ -2176,12 +2176,12 @@ namespace
                 bool measured = g_config.halo2_measured_fire_eye != 0;
                 if (ImGui::Checkbox("Halo 2: the game's own eye at the fire, once proven (dev)", &measured))
                 { g_config.halo2_measured_fire_eye = measured ? 1 : 0; changed = true; }
-                ImGui::TextDisabled("ON: a Halo 2 muzzle shot moves with the eye the game fires from (measured, once\n"
+                ImGui::TextDisabled("ON: a Halo 2 muzzle shot moves with the eye the game fires from (measured, once "
                                     "proven while you stand still). OFF: the view's eye carried one tick (A/B).");
                 bool measured4 = g_config.halo4_measured_fire_eye != 0;
                 if (ImGui::Checkbox("Halo 4: the game's own eye at the fire, once proven (dev)", &measured4))
                 { g_config.halo4_measured_fire_eye = measured4 ? 1 : 0; changed = true; }
-                ImGui::TextDisabled("ON: a Halo 4 muzzle shot moves with the eye the game fires from (measured, once\n"
+                ImGui::TextDisabled("ON: a Halo 4 muzzle shot moves with the eye the game fires from (measured, once "
                                     "proven while you stand still). OFF: the view's eye carried one tick (A/B).");
                 ImGui::Unindent();
             }
@@ -2198,8 +2198,8 @@ namespace
         if (SectionHeader("Hand smoothing##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Hand smoothing", &g_config.hand_smoothing);
-        ImGui::TextDisabled("Steadies your tracked hands before anything reads them: aim and shots, the arms,\n"
-                            "two-handed holds, reload and this pointer. A still hand is held steady; a fast move\n"
+        ImGui::TextDisabled("Steadies your tracked hands before anything reads them: aim and shots, the arms, "
+                            "two-handed holds, reload and this pointer. A still hand is held steady; a fast move "
                             "passes through. Swing melee and arm-swing running still read your raw motion. Live.");
         if (g_config.hand_smoothing)
         {
@@ -2210,13 +2210,13 @@ namespace
                                           0.0f, 10.0f, "%.2f");
             changed |= vr_menu::SliderFloat("Rotation steadiness (Hz)", &g_config.hand_smoothing_rot_min_hz,
                                           0.0f, 10.0f, "%.2f");
-            ImGui::TextDisabled("While the hand is still. Lower is steadier but slower to follow a slow move or a\n"
+            ImGui::TextDisabled("While the hand is still. Lower is steadier but slower to follow a slow move or a "
                                 "slow aim. 0 turns that half off.");
             changed |= vr_menu::SliderFloat("Position follow speed", &g_config.hand_smoothing_pos_beta,
                                           0.0f, 2000.0f, "%.0f");
             changed |= vr_menu::SliderFloat("Rotation follow speed", &g_config.hand_smoothing_rot_beta,
                                           0.0f, 50.0f, "%.1f");
-            ImGui::TextDisabled("How quickly smoothing lets go as the hand moves or turns faster. Raise it if slow\n"
+            ImGui::TextDisabled("How quickly smoothing lets go as the hand moves or turns faster. Raise it if slow "
                                 "moves feel laggy; lower it if a moving hand still shakes.");
             changed |= vr_menu::SliderFloat("Speed estimate smoothing (Hz)", &g_config.hand_smoothing_speed_cutoff_hz,
                                           0.1f, 100.0f, "%.1f");
@@ -2232,7 +2232,7 @@ namespace
                 changed = true;
             }
             ImGui::SameLine();
-            ImGui::TextDisabled("1.3 Hz, 500, 1.3 Hz, 5, 10 Hz. (The Campaign Evolved mod uses 1.0 Hz for both\n"
+            ImGui::TextDisabled("1.3 Hz, 500, 1.3 Hz, 5, 10 Hz. (The Campaign Evolved mod uses 1.0 Hz for both "
                                 "steadiness values: a little steadier, a little slower on a slow aim.)");
         }
         ImGui::Spacing();
@@ -2269,8 +2269,8 @@ namespace
             ImGui::Indent();
             ImGui::TextDisabled("Put your support hand on the front of the gun, click/hold its GRIP.\n"
                                 "Engages only when your hand is on the barrel line.\n"
-                                "Off whenever the game leaves first person (vehicle seats, turrets,\n"
-                                "third-person, death and Monitor cameras, cutscenes): your main hand\n"
+                                "Off whenever the game leaves first person (vehicle seats, turrets, "
+                                "third-person, death and Monitor cameras, cutscenes): your main hand "
                                 "aims alone. A grip held through it needs a fresh grip in first person.");
             SettingGap();
             ImGui::Text("When gripping, your support hand steers the aim:");
@@ -2304,7 +2304,7 @@ namespace
                     "Raise it if a compact gun should aim one-handed; lower it if one should aim two-handed.");
             else
                 ImGui::TextDisabled(
-                    "Your main hand aims alone when your hands are within %.0f cm of each other, or your\n"
+                    "Your main hand aims alone when your hands are within %.0f cm of each other, or your "
                     "support hand is within %.0f cm to the side, %.0f cm up or down and %.0f cm forward or back.",
                     oneHandRangeCm * (0.16f / 0.24f), oneHandRangeCm, oneHandRangeCm * (0.14f / 0.24f),
                     oneHandRangeCm * (0.12f / 0.24f));
@@ -2331,7 +2331,7 @@ namespace
                 &g_config.two_hand_switch_inherit);
             ImGui::EndDisabled();
             ImGui::TextDisabled(
-                "Needs Persistent support grip: switching weapons while you hold the grip\n"
+                "Needs Persistent support grip: switching weapons while you hold the grip "
                 "gives you the new weapon two-handed immediately.\n"
                 "Off: grip the new weapon normally (no need to release the grip button).");
             ImGui::Unindent();
@@ -2340,7 +2340,7 @@ namespace
             changed |= ImGui::Checkbox("Reduce Support-Hand Rotation",
                 &g_config.two_hand_support_grip_pose);
             ImGui::TextDisabled(
-                "Virtual Stock only: anchors the stock aim line to your support hand's grip position\n"
+                "Virtual Stock only: anchors the stock aim line to your support hand's grip position "
                 "instead of its aim point. Free two-handed aim always uses both grip positions.");
             ImGui::Spacing();
             float offhandInfluencePercent = MenuSliderPercentFromUnit(
@@ -2421,7 +2421,7 @@ namespace
         if (ImGui::SmallButton("Match weapon##lhs"))
         { g_config.left_hand_scale = g_config.gun_scale; changed = true; }
         ImGui::TextDisabled("Sizes the left hand, and the second gun when dual-wielding.\n"
-                            "1.00 = authored size. Separate because the left hand is\n"
+                            "1.00 = authored size. Separate because the left hand is "
                             "usually empty; use Match weapon for identical hands.\n"
                             "Its front/back position is \"Left hand forward offset\" below.");
         }
@@ -2437,7 +2437,7 @@ namespace
             g_config.barrel_roll_deg = 0.0f;
             changed = true;
         }
-        ImGui::TextDisabled("Align the visible barrel with the crosshair. These rotations\n"
+        ImGui::TextDisabled("Align the visible barrel with the crosshair. These rotations "
                             "move the gun and hands without changing the aiming ray.\n"
                             "Saved separately for each game; zero restores automatic alignment.");
         const auto gunBase=weapon_alignment::Baseline(Config_ActiveTitleProfile());
@@ -2593,7 +2593,7 @@ namespace
                     g_config.crosshair_brightness = defaultBrightness;
                     changed = true;
                 }
-                ImGui::TextDisabled("100%% is the crosshair as the game draws it. Opacity above 100%% makes a\n"
+                ImGui::TextDisabled("100%% is the crosshair as the game draws it. Opacity above 100%% makes a "
                                     "faint crosshair more solid; below, more see-through. Saved for this game.\n"
                                     "Live. (this game's defaults: %.0f%% and %.0f%%)",
                                     defaultOpacity * 100.0f, defaultBrightness * 100.0f);
@@ -2601,11 +2601,11 @@ namespace
             }
             changed |= vr_menu::SliderFloat("Crosshair distance (m)", &g_config.crosshair_distance_m,
                                           2.0f, 50.0f, "%.0f");
-            ImGui::TextDisabled("Where the crosshair floats when it is not traced (while the aim is\n"
+            ImGui::TextDisabled("Where the crosshair floats when it is not traced (while the aim is "
                                 "not converged, or no trace has resolved yet).");
             ImGui::Spacing();
             ImGui::Text("Traced crosshair (every game)");
-            ImGui::TextDisabled("While your aim converges, the crosshair sits on the surface you aim at,\n"
+            ImGui::TextDisabled("While your aim converges, the crosshair sits on the surface you aim at, "
                                 "on the line from your eye along the gun, as in Halo: Campaign Evolved.");
             changed |= vr_menu::SliderFloat("Max crosshair distance (m)", &g_config.reticle_max_dist_m,
                                           1.0f, 50.0f, "%.1f");
@@ -2618,8 +2618,8 @@ namespace
             // Keep the pair ordered live, as the loader's clamp does.
             if (g_config.reticle_min_scale_dist_m > g_config.reticle_max_dist_m - 0.1f)
                 g_config.reticle_min_scale_dist_m = std::max(0.0f, g_config.reticle_max_dist_m - 0.1f);
-            ImGui::TextDisabled("Beyond the max distance, and on sky, it parks there. Nearer than the\n"
-                                "shrink-away distance it scales down toward the smallest size, so it\n"
+            ImGui::TextDisabled("Beyond the max distance, and on sky, it parks there. Nearer than the "
+                                "shrink-away distance it scales down toward the smallest size, so it "
                                 "gets out of the way when the gun is against a wall.");
             // Halo 3's crosshair kicks on fire and turns red/green on a target.
             // Reading it back costs render time, so the rate is the player's
@@ -2636,7 +2636,7 @@ namespace
                 changed |= vr_menu::SliderInt(
                     "Refresh every N frames", &g_config.crosshair_animation_frames,
                     6, 60, "%d");
-                ImGui::TextDisabled("Lower = smoother shooting animation and faster\n"
+                ImGui::TextDisabled("Lower = smoother shooting animation and faster "
                                     "red/green target colors. Higher = cheaper.\n"
                                     "Turn it off if you feel any frame-rate cost.");
                 ImGui::Unindent();
@@ -2655,10 +2655,10 @@ namespace
                     changed = true;
                 }
             }
-            ImGui::TextDisabled("DEV BUILD ONLY. A second marker showing where the game's shot lands;\n"
-                                "your normal reticle is unchanged. The marker is a small magenta ring\n"
-                                "and dot, placed along the game's own aim from its own shot origin (Reach\n"
-                                "on foot: the unit's projectile aim, not the kicking camera), so you can\n"
+            ImGui::TextDisabled("DEV BUILD ONLY. A second marker showing where the game's shot lands; "
+                                "your normal reticle is unchanged. The marker is a small magenta ring "
+                                "and dot, placed along the game's own aim from its own shot origin (Reach "
+                                "on foot: the unit's projectile aim, not the kicking camera), so you can "
                                 "see how far the game trails your hand. Keep aiming with your reticle:\n"
                                 "shots, the aim and convergence are exactly the same. Off for normal play.");
 #endif
@@ -2673,22 +2673,22 @@ namespace
         if (SectionHeader("Aim Frame Zoom (Halo 3, ODST, Reach and Halo 4)##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Aim Frame Zoom##aimframe", &g_config.aim_frame_zoom);
-        ImGui::TextDisabled("While the game is zoomed, the headset shows the game's zoomed picture as a frame\n"
-                            "centred on your aim instead of the 3D view, like playing it on a flat screen. The\n"
-                            "zoom button reaches the game, so the lens below is not offered there while this\n"
-                            "is on. Halo 3 (MCC and Project Reclaimer), ODST, Reach and Halo 4; where one of\n"
+        ImGui::TextDisabled("While the game is zoomed, the headset shows the game's zoomed picture as a frame "
+                            "centred on your aim instead of the 3D view, like playing it on a flat screen. The "
+                            "zoom button reaches the game, so the lens below is not offered there while this "
+                            "is on. Halo 3 (MCC and Project Reclaimer), ODST, Reach and Halo 4; where one of "
                             "them cannot draw it, the lens keeps the zoom. On by default. Live.");
         if (g_config.aim_frame_zoom)
         {
             ImGui::Indent();
             changed |= ImGui::Checkbox("3D in the frame##aimframe", &g_config.aim_frame_stereo);
-            ImGui::TextDisabled("ON (default): each eye sees its own picture of the zoomed view. OFF: one flat\n"
+            ImGui::TextDisabled("ON (default): each eye sees its own picture of the zoomed view. OFF: one flat "
                                 "picture for both eyes, drawn once.");
             if (g_config.aim_frame_stereo)
             {
                 changed |= vr_menu::SliderFloat("3D strength##aimframe", &g_config.aim_frame_3d_strength,
                                               1.0f, 10.0f, "%.1fx");
-                ImGui::TextDisabled("The frame's eye spacing as a multiple of yours. Far targets show little depth\n"
+                ImGui::TextDisabled("The frame's eye spacing as a multiple of yours. Far targets show little depth "
                                     "at 1x; what you aim at stays at the frame's depth, with the crosshair.");
             }
             changed |= vr_menu::SliderFloat("Frame size, first zoom (deg)##aimframe",
@@ -2726,11 +2726,11 @@ namespace
             bool converge = g_config.scope_converge != 0;
             if (ImGui::Checkbox("Converge on the reticle", &converge))
             { g_config.scope_converge = converge ? 1 : 0; changed = true; }
-            ImGui::TextDisabled("ON: the lens looks from your eye along your aim line, through the point your\n"
-                                "shot converges on, so the reticle's point is its centre even when you stand\n"
+            ImGui::TextDisabled("ON: the lens looks from your eye along your aim line, through the point your "
+                                "shot converges on, so the reticle's point is its centre even when you stand "
                                 "away from the character. OFF: the earlier lens, along the game's aim.\n"
-                                "Needs Converged aim, and Direct drive in Reach, Halo 3, ODST and Halo 4\n"
-                                "(Weapon & Aim): with the stick aim the shot still trails your hand, so the\n"
+                                "Needs Converged aim, and Direct drive in Reach, Halo 3, ODST and Halo 4 "
+                                "(Weapon & Aim): with the stick aim the shot still trails your hand, so the "
                                 "lens keeps showing the game's aim. Live.");
             changed |= vr_menu::SliderFloat("Default scope zoom", &g_config.scope_zoom,
                                           6.0f, 24.0f, "%.2fx");
@@ -2860,16 +2860,16 @@ namespace
                             "sweeping the gun moves nothing, turning your head turns them.\n"
                             "OFF: by where your gun points, as the game draws it.\n"
                             "Halo: Reach, Halo 3, Halo 4, Halo 2 and Halo: CE (ODST has no motion tracker). Live.\n"
-                            "Halo 4 starts each level on the game's own tracker and changes over once it has\n"
-                            "checked that the heading it replaces follows your aim: a few seconds on foot with\n"
+                            "Halo 4 starts each level on the game's own tracker and changes over once it has "
+                            "checked that the heading it replaces follows your aim: a few seconds on foot with "
                             "Direct drive on (Weapon & Aim). Not yet seen in a headset.\n"
                             "Halo 2 does the same, at your first aim movement in a level. Not yet seen in a headset.\n"
-                            "Halo: CE follows your head from about a second into a level (CE's own tracker turns\n"
+                            "Halo: CE follows your head from about a second into a level (CE's own tracker turns "
                             "with the turn stick only, never with the gun). Not yet seen in a headset.");
         changed |= ImGui::Checkbox("Motion tracker dots follow HUD height",
                                    &g_config.tracker_blips_follow_hud_height);
         ImGui::TextDisabled("ON: the tracker's dots are drawn on the tracker wherever HUD height puts it.\n"
-                            "OFF: where the game draws them: below the tracker by the HUD height\n"
+                            "OFF: where the game draws them: below the tracker by the HUD height "
                             "(a quarter of the tracker's radius at the default height), your own dot included.\n"
                             "Halo 3 only. Live.");
         ImGui::Spacing();
@@ -2878,12 +2878,12 @@ namespace
         if (SectionHeader("Waypoints##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Markers use the headset's field of view", &g_config.nav_markers_on_target);
-        ImGui::TextDisabled("ON: objective markers are projected with the field of view each eye is drawn with,\n"
+        ImGui::TextDisabled("ON: objective markers are projected with the field of view each eye is drawn with, "
                             "so a marker stays on its point when you turn your head.\n"
                             "OFF: the game's flat-screen field of view, as before (about twice as far off-centre).\n"
                             "Halo: Reach only. Markers on other players are untested. Live.");
         changed |= ImGui::Checkbox("Off-screen arrows stay in view", &g_config.nav_marker_arrow_in_view);
-        ImGui::TextDisabled("ON: the arrow for an objective marker or a marked player you are not looking at is\n"
+        ImGui::TextDisabled("ON: the arrow for an objective marker or a marked player you are not looking at is "
                             "drawn within 30 degrees of where your head faces, in one place for both eyes.\n"
                             "OFF: the game's own ring, far enough out that only one eye sees the arrow.\n"
                             "Covers objective markers and the markers the HUD puts on objects and players.\n"
@@ -2898,14 +2898,14 @@ namespace
                 g_config.nav_marker_ring = ringPercent / 100.0f;
                 changed = true;
             }
-            ImGui::TextDisabled("How far from the middle of your view the arrows sit, as a share of what both eyes\n"
+            ImGui::TextDisabled("How far from the middle of your view the arrows sit, as a share of what both eyes "
                                 "see. Never more than 30 degrees, so the top of the slider may change nothing.\n"
                                 "Lower it until you can see them. Live. (default 75%%)");
         }
         ImGui::Spacing();
         ImGui::Text("Player tags");
         changed |= ImGui::Checkbox("Show player tags", &g_config.player_tags_show);
-        ImGui::TextDisabled("The service tag and arrow over each teammate. Objective markers and flag, ball and\n"
+        ImGui::TextDisabled("The service tag and arrow over each teammate. Objective markers and flag, ball and "
                             "bomb carriers are not changed. Halo 3 (MCC and Project Reclaimer) and ODST. Live.");
         if (g_config.player_tags_show)
         {
@@ -2981,7 +2981,7 @@ namespace
             g_config.hud_vertical_offset = hudDefaults.hud_vertical_offset;
             changed = true;
         }
-        ImGui::TextDisabled("Reset returns the four values above to the shipped defaults\n"
+        ImGui::TextDisabled("Reset returns the four values above to the shipped defaults "
                             "(%.2f / %.2f / %.2f / %+.0f). Lower size pulls HUD elements inward.",
                             Config{}.hud_size, Config{}.hud_aspect,
                             Config{}.hud_curvature, Config{}.hud_vertical_offset);
@@ -3002,7 +3002,7 @@ namespace
                 "Show Halo 4 helmet frame", &g_config.halo4_helmet);
             ImGui::TextDisabled(
                 "Keeps or hides only the authored Mjolnir helmet/visor shading; the rest of the HUD stays visible.\n"
-                "In the campaign the shading is a dark band above the HUD and a larger one below it, in the\n"
+                "In the campaign the shading is a dark band above the HUD and a larger one below it, in the "
                 "middle of your view. OFF (default) leaves the visor's thin outline. Live.");
         }
         }
@@ -3130,7 +3130,7 @@ namespace
         else ImGui::TextWrapped("Render size can update live; title loading defers the change. Lower values trade detail for speed; higher values supersample.");
         if (g_config.resolution_scale > kResolutionScaleHeavy)
             ImGui::TextColored(Rgb(kWarning),
-                               "[!] Very heavy (~5K and up): can crash weaker GPUs. Test in\n"
+                               "[!] Very heavy (~5K and up): can crash weaker GPUs. Test in "
                                "    short sessions and drop this if the game won't start.");
         ImGui::Spacing();
         ImGui::Separator();
@@ -3156,7 +3156,7 @@ namespace
         const char* upscaleItems[] = {"Linear (old)", "Sharp (strong bicubic)"};
         changed |= Combo("Upscale filter", &g_config.upscale_filter,
                                 upscaleItems, 2);
-        ImGui::TextDisabled("How the game image is scaled to your headset. The game usually\n"
+        ImGui::TextDisabled("How the game image is scaled to your headset. The game usually "
                             "renders BELOW your per-eye headset resolution, so this upscales it.\n"
                             "Sharp keeps edges crisp; Linear is the old soft/shimmery look.");
         changed |= vr_menu::SliderFloat("Sharpening", &g_config.sharpness, 0.0f, 1.0f, "%.2f");
@@ -3165,8 +3165,8 @@ namespace
         const char* aaItems[] = {
             "Off", "FXAA", "FXAA Strong", "SMAA 1x", "SMAA 1x + FXAA Strong"};
         changed |= Combo("Anti-aliasing", &g_config.aa_mode, aaItems, 5);
-        ImGui::TextDisabled("Smooths jagged edges on the finished image, so a mid/low rig doesn't\n"
-                            "need a huge render resolution. SMAA 1x is the real 3-stage filter;\n"
+        ImGui::TextDisabled("Smooths jagged edges on the finished image, so a mid/low rig doesn't "
+                            "need a huge render resolution. SMAA 1x is the real 3-stage filter; "
                             "the final option adds FXAA Strong for the most aggressive cleanup.\n"
                             "SMAA costs more GPU only when one of its modes is selected.");
         ImGui::Spacing();
@@ -3206,7 +3206,7 @@ namespace
         ImGui::TextDisabled("Brightens/darkens the whole game. 1.0 = the game's own brightness.\n"
                             "Saved separately for each game.");
         changed |= ImGui::Checkbox("Motion blur", &g_config.motion_blur);
-        ImGui::TextDisabled("Off is the VR standard. In stereo the game's blur is fed the wrong\n"
+        ImGui::TextDisabled("Off is the VR standard. In stereo the game's blur is fed the wrong "
                             "previous frame and smears bright edges into repeating echoes.");
         changed |= ImGui::Checkbox("Disable CE Anniversary lens flares",
                                    &g_config.ce_anniversary_disable_lens_flares);
@@ -3214,9 +3214,9 @@ namespace
                             "World lighting and CE Classic graphics stay unchanged.");
         changed |= vr_menu::SliderFloat("Draw distance", &g_config.draw_distance,
                                       kDrawDistanceMin, kDrawDistanceMax, "%.2f");
-        ImGui::TextDisabled("1.00 = full stock draw distance. Lower brings the far plane in toward\n"
-                            "you, culling distant terrain/objects (skybox goes first). Most levels\n"
-                            "only start culling below ~0.25; the lowest settings clip near geometry\n"
+        ImGui::TextDisabled("1.00 = full stock draw distance. Lower brings the far plane in toward "
+                            "you, culling distant terrain/objects (skybox goes first). Most levels "
+                            "only start culling below ~0.25; the lowest settings clip near geometry "
                             "(hard pop-in) for the most frames. Live, all three games.");
         ImGui::Spacing();
         ImGui::Separator();
@@ -3225,11 +3225,11 @@ namespace
         {
         changed |= ImGui::Checkbox("Rain", &g_config.rain);
         ImGui::TextDisabled("The rain streaks the game draws across your view. Off by default:\n"
-                            "in a headset they read as noise over the whole image. Live -- flip\n"
+                            "in a headset they read as noise over the whole image. Live -- flip "
                             "this while it's raining and you'll see it change immediately.");
         changed |= ImGui::Checkbox("Atmospheric fog", &g_config.atmospheric_fog);
         ImGui::TextDisabled("The distance haze that greys out far terrain and flattens contrast.\n"
-                            "Off by default and the bigger clarity win of the two. This is the\n"
+                            "Off by default and the bigger clarity win of the two. This is the "
                             "game's own fog switch, so hazy levels see much further. Live.\n"
                             "A game with no proven switch is left alone and says so in the log.");
         }
@@ -3282,11 +3282,11 @@ namespace
             if(D3D_FitActive()) PostMessageW(D3D_GameWindow(),kFitGameWindowMsg,0,0);
         }
         ImGui::TextDisabled(
-            "For monitors SMALLER than your render (e.g. a big headset resolution on\n"
-            "a 1080p screen), where MCC's window overflows and you can't click the\n"
-            "\"Halo 3\" tile or Quit. The headset keeps the full resolution above; only\n"
-            "the desktop window shrinks to fit and the GPU downscales into it (no\n"
-            "extra render pass). ON by default. Enabling it fits the current window;\n"
+            "For monitors SMALLER than your render (e.g. a big headset resolution on "
+            "a 1080p screen), where MCC's window overflows and you can't click the "
+            "\"Halo 3\" tile or Quit. The headset keeps the full resolution above; only "
+            "the desktop window shrinks to fit and the GPU downscales into it (no "
+            "extra render pass). ON by default. Enabling it fits the current window; "
             "disabling it stops further fitting to the monitor.\n"
             "Headset resolution changes work with either setting.");
         }
@@ -3359,16 +3359,16 @@ namespace
         changed |= ImGui::RadioButton("Always##coopsafe", &g_config.coop_safe_shots, 1);
         ImGui::SameLine();
         changed |= ImGui::RadioButton("Off##coopsafe", &g_config.coop_safe_shots, 0);
-        ImGui::TextDisabled("AUTOMATIC (default): as Always whenever anyone else is in your campaign session, and as Off\n"
-                            "when the game says you are alone, or in Firefight or a custom game (the log's CO-OP SAFE\n"
+        ImGui::TextDisabled("AUTOMATIC (default): as Always whenever anyone else is in your campaign session, and as Off "
+                            "when the game says you are alone, or in Firefight or a custom game (the log's CO-OP SAFE "
                             "SHOTS automatic line says which). Not Halo CE, where it stays as Always.\n"
-                            "ALWAYS: nothing the mod does changes a shot as it is fired, so every player's game\n"
-                            "fires it the same way and a campaign co-op or Spartan Ops session stays together. Your\n"
-                            "hand still aims; shots leave your eye. In Halo 2 your hand aims only with Direct drive\n"
-                            "on, True physical melee presses the game's melee instead of striking on contact (Halo\n"
-                            "CE: it does nothing), and seats in Halo CE and ODST and passenger seats in Reach keep\n"
+                            "ALWAYS: nothing the mod does changes a shot as it is fired, so every player's game "
+                            "fires it the same way and a campaign co-op or Spartan Ops session stays together. Your "
+                            "hand still aims; shots leave your eye. In Halo 2 your hand aims only with Direct drive "
+                            "on, True physical melee presses the game's melee instead of striking on contact (Halo "
+                            "CE: it does nothing), and seats in Halo CE and ODST and passenger seats in Reach keep "
                             "the game's own camera.\n"
-                            "OFF is for playing alone: shots can leave the visible muzzle and are re-aimed as they\n"
+                            "OFF is for playing alone: shots can leave the visible muzzle and are re-aimed as they "
                             "are fired. With it off, your first shot in a co-op session ends it for everyone. Live.");
         ImGui::Spacing();
         ImGui::Separator();
@@ -3438,8 +3438,8 @@ namespace
                                                kMenuWidthMin, kMenuWidthMax);
             changed = true;
         }
-        ImGui::TextDisabled("Grab the bar at the top of this panel with the right trigger to\n"
-                            "move it; push the right stick up/down while holding to change\n"
+        ImGui::TextDisabled("Grab the bar at the top of this panel with the right trigger to "
+                            "move it; push the right stick up/down while holding to change "
                             "how far away it sits. Your placement is saved automatically.");
 
         ImGui::Spacing();
@@ -3472,9 +3472,9 @@ namespace
             if (ImGui::Button("Cancel"))
                 g_resetArmed = false;
         }
-        ImGui::TextDisabled("Puts every setting back to the value halomccvr.cfg lists as its\n"
-                            "default, including your weapon calibration. The runtime Two-Handed\n"
-                            "Lab is also reset and disabled. Render resolution updates live\n"
+        ImGui::TextDisabled("Puts every setting back to the value halomccvr.cfg lists as its "
+                            "default, including your weapon calibration. The runtime Two-Handed "
+                            "Lab is also reset and disabled. Render resolution updates live "
                             "once its slider settles; loading defers the change.");
         }
         }
