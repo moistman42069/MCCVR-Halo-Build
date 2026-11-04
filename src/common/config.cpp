@@ -3668,7 +3668,7 @@ void ConfigSave()
         g_config.physical_running?1:0,g_config.physical_running_speed,g_config.physical_running_sensitivity);
     fprintf(f,"vr_action_mapping = %d\nflashlight_suppress_on_two_hand = %d\n",
         g_config.vr_action_mapping?1:0,g_config.flashlight_suppress_on_two_hand?1:0);
-    fprintf(f,"# The input preset last chosen in F1 > Controls. (default %s)\ninput_preset = %s\n",
+    fprintf(f,"# The controls preset last chosen in F1 > Controls. (default %s)\ninput_preset = %s\n",
         d.input_preset,g_config.input_preset);
     fprintf(f,"# The support trigger with the support grip held on nothing uses equipment. (default %d)\n"
               "trigger_air_equipment = %d\n",d.trigger_air_equipment?1:0,g_config.trigger_air_equipment?1:0);

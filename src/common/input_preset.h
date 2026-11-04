@@ -3,8 +3,8 @@
 #include <string>
 #include <vector>
 
-// Input presets: named sets of the settings that make up a control scheme, and nothing else (no aim tuning, no body
-// fit). The built-in ones are defined here; a player's own are one small text file each in "Input Presets" beside
+// Controls presets: named sets of the settings that make up a control scheme, and nothing else (no aim tuning, no
+// body fit). The built-in ones are defined here; a player's own are one small text file each in "Controls Presets" beside
 // halomccvr.cfg, so they can be copied to someone else. A key a file does not name takes the struct's default, so a
 // preset saved by an older build still means the same thing.
 namespace input_preset

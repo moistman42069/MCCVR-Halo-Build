@@ -517,7 +517,7 @@ namespace
             changed=true;
         };
         ImGui::SetNextItemWidth(-140.0f);
-        if(BeginCombo("Input preset",active.empty()?"(not saved)":active.c_str()))
+        if(BeginCombo("Controls preset",active.empty()?"(not saved)":active.c_str()))
         {
             for(int i=0;i<input_preset::BuiltInCount();++i)
                 if(ImGui::Selectable(input_preset::BuiltInName(i),active==input_preset::BuiltInName(i)))
@@ -571,7 +571,7 @@ namespace
         ImGui::PushStyleColor(ImGuiCol_Text,ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
         ImGui::TextWrapped("Saves your buttons, turning, movement, gestures, reload and holsters, but not your aim or body fit "
             "(left-handed play, or where your custom holster and reserve magazine sit). "
-            "Presets are files in Input Presets beside halomccvr.cfg, so you can share them.");
+            "Presets are files in Controls Presets beside halomccvr.cfg, so you can share them.");
         ImGui::PopStyleColor();
     }
 
@@ -2035,17 +2035,6 @@ namespace
                 &g_config.weapon_body_zone_radius_m,0.08f,0.40f,"%.2f");
             changed|=Combo("Reserve magazine location",&g_config.weapon_pouch_location,
                 "Support-side front hip\0Behind support shoulder\0");
-            if(SettingTreeNode("Reserve magazine position"))
-            {
-                {
-                SettingGroup reserveOffsets("Reserve magazine offsets", SettingGroup::kNameOnly);
-                changed|=vr_menu::SliderFloat("Reserve side offset (m)",&g_config.weapon_pouch_offset_x_m,-.40f,.40f,"%.3f");
-                changed|=vr_menu::SliderFloat("Reserve height offset (m)",&g_config.weapon_pouch_offset_y_m,-.40f,.40f,"%.3f");
-                changed|=vr_menu::SliderFloat("Reserve forward offset (m)",&g_config.weapon_pouch_offset_z_m,-.40f,.40f,"%.3f");
-                ImGui::TextWrapped("Offsets follow your body direction. Positive side moves toward the weapon hand; left-handed mode mirrors it.");
-                }
-                ImGui::TreePop();
-            }
             SettingGap();
             changed |= vr_menu::SliderFloat("Magazine insertion radius (m)",
                 &g_config.weapon_insert_radius_m,0.06f,0.30f,"%.2f");
@@ -2151,17 +2140,8 @@ namespace
                 "Weapon-side shoulder\0Weapon-side hip\0Over the weapon-side shoulder\0"
                 "Custom (set with your hand)\0");
             if (g_config.weapon_holster_location == 3)
-            {
-                SettingGap();
-                changed |= vr_menu::SliderFloat("Custom spot: to the weapon side (m)",
-                    &g_config.weapon_holster_custom_x_m, -0.80f, 0.80f, "%.2f");
-                SettingGap();
-                changed |= vr_menu::SliderFloat("Custom spot: up from the head (m)",
-                    &g_config.weapon_holster_custom_y_m, -0.80f, 0.80f, "%.2f");
-                SettingGap();
-                changed |= vr_menu::SliderFloat("Custom spot: forward of the head (m)",
-                    &g_config.weapon_holster_custom_z_m, -0.80f, 0.80f, "%.2f");
-            }
+                ImGui::TextDisabled("Calibrate Holster Location sets the spot; fine-tune it in Body & Hands > "
+                                    "Holster and magazine positions.");
             SettingGap();
             {
             SettingGroup holsterGestures("Holster gestures", SettingGroup::kNameOnly);
@@ -2188,9 +2168,6 @@ namespace
         }
         if (g_config.manual_reload || g_config.weapon_holsters)
         {
-            SettingGap();
-            changed |= vr_menu::SliderFloat("Pouch / hip depth below head (m)",
-                &g_config.weapon_pouch_down_m,0.25f,0.85f,"%.2f");
             ImGui::TextWrapped("Reload and switch gestures follow the current game's action bindings automatically. "
                 "Button choices are in Controls > VR Mappings. Release a claimed grip before starting another gesture.");
         }
@@ -2335,11 +2312,10 @@ namespace
         }
         }
 
-        // Also in Controls, as the two-handed grip.
-        if (CategorySection section{Cat_WeaponAim, Cat_Controls}; section.visible)
+        // The switches a controls preset saves are in Controls; the aim tuning, which it does not, is in Weapon & Aim.
+        if (CategorySection section{Cat_Controls}; section.visible)
         {
-        if (SectionHeader(g_activeCategory == Cat_Controls ? "Two-handed grip##section" : "Two-handed aiming##section",
-                                    ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Two-handed grip##section", ImGuiTreeNodeFlags_None))
         {
         SettingGap();
         changed |= ImGui::Checkbox("Two-handed aiming", &g_config.two_handed_aim);
@@ -2353,8 +2329,25 @@ namespace
                                 "Off whenever the game leaves first person (vehicle seats, turrets, "
                                 "third-person, death and Monitor cameras, cutscenes): your main hand "
                                 "aims alone. A grip held through it needs a fresh grip in first person.");
+            SettingGap();
+            {
+            SettingGroup gripMode("Grip mode", SettingGroup::kNameOnly);
+            ImGui::Text("Grip mode");
+            if (ImGui::RadioButton("Toggle (click grip)", g_config.two_hand_toggle))
+            { g_config.two_hand_toggle = true; changed = true; }
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Hold grip", !g_config.two_hand_toggle))
+            { g_config.two_hand_toggle = false; changed = true; }
+            }
             ImGui::Unindent();
         }
+        }
+        }
+
+        if (CategorySection section{Cat_WeaponAim}; section.visible)
+        {
+        if (SectionHeader("Two-handed aiming##section", ImGuiTreeNodeFlags_None))
+        {
         SettingGap();
         {
         SettingGroup leftHanded("Left-handed play", SettingGroup::kNameOnly);
@@ -2371,6 +2364,11 @@ namespace
         }
         ImGui::TextDisabled("Main weapon, aiming and trigger follow your left hand.\n"
                             "Your right hand supports the weapon or holds the second gun.");
+        }
+        if (!g_config.two_handed_aim)
+        {
+            SettingGap();
+            ImGui::TextDisabled("Two-handed aiming is off (Controls > Two-handed grip).");
         }
         if (g_config.two_handed_aim)
         {
@@ -2414,17 +2412,6 @@ namespace
                     "support hand is within %.0f cm to the side, %.0f cm up or down and %.0f cm forward or back.",
                     oneHandRangeCm * (0.16f / 0.24f), oneHandRangeCm, oneHandRangeCm * (0.14f / 0.24f),
                     oneHandRangeCm * (0.12f / 0.24f));
-            ImGui::Spacing();
-            SettingGap();
-            {
-            SettingGroup gripMode("Grip mode", SettingGroup::kNameOnly);
-            ImGui::Text("Grip mode");
-            if (ImGui::RadioButton("Toggle (click grip)", g_config.two_hand_toggle))
-            { g_config.two_hand_toggle = true; changed = true; }
-            ImGui::SameLine();
-            if (ImGui::RadioButton("Hold grip", !g_config.two_hand_toggle))
-            { g_config.two_hand_toggle = false; changed = true; }
-            }
             ImGui::Spacing();
             SettingGap();
             changed |= ImGui::Checkbox("Persistent support grip",
@@ -2920,6 +2907,35 @@ namespace
         {
             changed |= ImGui::Checkbox("Hide lower body", &g_config.body_ik_hide_lower);
             ImGui::TextWrapped("Lower-body hiding requires separate leg geometry. Unsupported rigs retain first-person hands. Halo 3 Elite/Arbiter full avatars currently require this option off.");
+        }
+        }
+        // Body fit, so no controls preset carries it; the holster and reserve magazine themselves are in Controls.
+        if (SectionHeader("Holster and magazine positions##section", ImGuiTreeNodeFlags_None))
+        {
+        ImGui::TextDisabled("Where the holster and the reserve magazine sit on your body. Turning them on and "
+                            "their gestures are in Controls > Reload and holsters.");
+        changed |= vr_menu::SliderFloat("Pouch / hip depth below head (m)",
+            &g_config.weapon_pouch_down_m,0.25f,0.85f,"%.2f");
+        ImGui::TextDisabled("How far below your head the hip holster and the front-hip reserve magazine sit.");
+        SettingGap();
+        {
+        SettingGroup holsterSpot("Custom holster spot", SettingGroup::kNameOnly);
+        changed |= vr_menu::SliderFloat("Custom spot: to the weapon side (m)",
+            &g_config.weapon_holster_custom_x_m, -0.80f, 0.80f, "%.2f");
+        changed |= vr_menu::SliderFloat("Custom spot: up from the head (m)",
+            &g_config.weapon_holster_custom_y_m, -0.80f, 0.80f, "%.2f");
+        changed |= vr_menu::SliderFloat("Custom spot: forward of the head (m)",
+            &g_config.weapon_holster_custom_z_m, -0.80f, 0.80f, "%.2f");
+        ImGui::TextDisabled("Used when the holster location is Custom. Calibrate Holster Location, in Controls > "
+                            "Reload and holsters, sets it with your hand.");
+        }
+        SettingGap();
+        {
+        SettingGroup reserveOffsets("Reserve magazine offsets", SettingGroup::kNameOnly);
+        changed|=vr_menu::SliderFloat("Reserve side offset (m)",&g_config.weapon_pouch_offset_x_m,-.40f,.40f,"%.3f");
+        changed|=vr_menu::SliderFloat("Reserve height offset (m)",&g_config.weapon_pouch_offset_y_m,-.40f,.40f,"%.3f");
+        changed|=vr_menu::SliderFloat("Reserve forward offset (m)",&g_config.weapon_pouch_offset_z_m,-.40f,.40f,"%.3f");
+        ImGui::TextWrapped("Offsets follow your body direction. Positive side moves toward the weapon hand; left-handed mode mirrors it.");
         }
         }
         }

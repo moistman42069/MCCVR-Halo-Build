@@ -78,7 +78,13 @@ constexpr FloatField kFloats[] = {
 
 std::filesystem::path Folder()
 {
-    return std::filesystem::path(Config_Path()).parent_path() / L"Input Presets";
+    const auto beside = std::filesystem::path(Config_Path()).parent_path();
+    const auto folder = beside / L"Controls Presets";
+    // Builds before the rename kept them in "Input Presets": moved the first time presets are looked for.
+    std::error_code error;
+    if (!std::filesystem::exists(folder, error) && std::filesystem::exists(beside / L"Input Presets", error))
+        std::filesystem::rename(beside / L"Input Presets", folder, error);
+    return folder;
 }
 std::filesystem::path FileFor(const std::string& name)
 {
@@ -108,7 +114,7 @@ bool SameScheme(const Config& a, const Config& b) noexcept
 
 std::string Serialize(const Config& scheme)
 {
-    std::string text = "# Halo MCC VR input preset\n";
+    std::string text = "# Halo MCC VR controls preset\n";
     char line[128];
     for (const auto& f : kBools)
     {
@@ -294,11 +300,11 @@ bool Save(const std::string& name, const Config& scheme, const std::string& desc
     std::ofstream file(FileFor(name), std::ios::trunc);
     if (!file)
     {
-        LOG("input preset: could not write '%s'", name.c_str());
+        LOG("controls preset: could not write '%s'", name.c_str());
         return false;
     }
     file << DescriptionLine(description) << Serialize(scheme);
-    LOG("input preset: saved '%s'", name.c_str());
+    LOG("controls preset: saved '%s'", name.c_str());
     return static_cast<bool>(file);
 }
 
