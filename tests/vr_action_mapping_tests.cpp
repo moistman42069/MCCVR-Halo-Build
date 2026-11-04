@@ -126,8 +126,8 @@ void CheckInputPresets()
     Check(shoulderLoaded.weapon_holster_radius_m==weapon_interaction::kOverShoulderRadius&&
         shoulderLoaded.manual_reload_skip_animations&&shoulderLoaded.weapon_pouch_location==1,
         "a preset keeps the over-the-shoulder switch and the reload options");
-    Check(shoulderLoaded.weapon_holster_custom_x_m==Config{}.weapon_holster_custom_x_m,
-        "where the holster sits on your body stays out of a preset");
+    Check(std::fabs(shoulderLoaded.weapon_holster_custom_x_m-.5f)<.002f,
+        "a preset keeps where the holster sits on you, so people sharing the mod each keep their own");
     Config twoHand{};
     twoHand.persistent_support_grip=false;twoHand.two_hand_offhand_influence=.25f;twoHand.left_grip_forward_m=.2f;
     twoHand.left_handed=true;twoHand.left_hand_forward_m=.1f;

@@ -80,13 +80,19 @@ constexpr FloatField kFloats[] = {
     {"two_hand_smoothing_strength", &Config::two_hand_smoothing_strength},
     {"two_hand_zone_right_m", &Config::two_hand_zone_right_m},
     {"left_grip_forward_m", &Config::left_grip_forward_m},
-    // How far the reload and holster gestures reach. Where the custom holster and the reserve magazine sit on the
-    // body is body fit, and stays out.
+    // How far the reload and holster gestures reach, and where the holster and the reserve magazine sit on you.
     {"weapon_holster_radius_m", &Config::weapon_holster_radius_m},
     {"weapon_holster_draw_m", &Config::weapon_holster_draw_m},
     {"weapon_shake_travel_m", &Config::weapon_shake_travel_m},
     {"weapon_body_zone_radius_m", &Config::weapon_body_zone_radius_m},
     {"weapon_insert_radius_m", &Config::weapon_insert_radius_m},
+    {"weapon_pouch_down_m", &Config::weapon_pouch_down_m},
+    {"weapon_holster_custom_x_m", &Config::weapon_holster_custom_x_m},
+    {"weapon_holster_custom_y_m", &Config::weapon_holster_custom_y_m},
+    {"weapon_holster_custom_z_m", &Config::weapon_holster_custom_z_m},
+    {"weapon_pouch_offset_x_m", &Config::weapon_pouch_offset_x_m},
+    {"weapon_pouch_offset_y_m", &Config::weapon_pouch_offset_y_m},
+    {"weapon_pouch_offset_z_m", &Config::weapon_pouch_offset_z_m},
 };
 
 std::filesystem::path Folder()
