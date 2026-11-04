@@ -2424,8 +2424,7 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
                 note.push_back(static_cast<wchar_t>(*c));
             while (!note.empty() && note.back() == L' ')
                 note.pop_back();
-            // Halo 3, ODST, Halo 4 and Halo CE post it in the game's own HUD messages where they can; Reach and Halo 2 on
-            // the mod's panel (no HUD message of their own is bound).
+            // Every game posts it in its own HUD messages where it can (the panel where it cannot).
             if (halo3)
                 Halo3VehicleNoteShow(note, kVehicleCameraNoteSeconds);
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
@@ -2438,6 +2437,10 @@ void VehicleCameras_ColdTick(uint64_t nowMs)
 #endif
             else if (ce)
                 HaloCEVehicleNoteShow(note, kVehicleCameraNoteSeconds);
+            else if (halo2)
+                Halo2VehicleNoteShow(note, kVehicleCameraNoteSeconds);
+            else if (reach)
+                ReachVehicleNoteShow(note, kVehicleCameraNoteSeconds);
             else
                 NativeNotice_Show(note.c_str(), kVehicleCameraNoteSeconds);
         }

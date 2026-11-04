@@ -2834,6 +2834,12 @@ namespace
     void HaloCEHudNotePoll(uintptr_t base, size_t size, uint32_t generation, bool active);
     void HaloCEHudNotePost();
     void HaloCEVehicleNoteShow(const std::wstring& text, float seconds);
+    // ...in Halo 2's, posted from the direct drive's control-update hook (Game_Halo2HudNotePost); and in Reach's,
+    // posted from the motion tracker's hook (reach_head_relative.inl).
+    void Halo2HudNotePoll(uintptr_t base, size_t size, uint32_t generation, bool active);
+    void Halo2HudNotePost();
+    void Halo2VehicleNoteShow(const std::wstring& text, float seconds);
+    void ReachVehicleNoteShow(const std::wstring& text, float seconds);
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
     // ...and in Halo 4's, posted from the sound listener hook (halo4_sound_listener.inl).
     bool InstallHalo4HudNote(uintptr_t base, size_t size, uint32_t generation, const uint32_t* tlsIndex,
@@ -52586,6 +52592,11 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 const bool halo2ObserverVrAvailable =
                     !g_vrRuntimeFailureLatched.load(
                         std::memory_order_acquire);
+                // The vehicle camera note in the game's HUD messages (halo3_hud_note.inl): withdrawn before the
+                // control-update hook it is posted from retires with the observer.
+                Halo2HudNotePoll(halo2GateBase, halo2GateSize, halo2ObserverGeneration,
+                                 halo2Active && halo2GateSampled && activeLevelRunning &&
+                                     Halo2ColdObservation_Passed(halo2ObserverGeneration));
                 (void)Halo2Observer6Dof_Poll(
                     halo2GateBase, halo2GateSize, halo2ObserverGeneration,
                     halo2Active && halo2GateSampled &&
@@ -53666,6 +53677,7 @@ bool Game_ReadZoomLevel(int& level)
         g_gameZoomGeneration.load(std::memory_order_relaxed) == generation && ms && now >= ms && now - ms <= 500;
 }
 void Game_HaloCEHudNotePost() { HaloCEHudNotePost(); }
+void Game_Halo2HudNotePost() { Halo2HudNotePost(); }
 void Game_SetAimFramePass(bool on) { g_aimFramePass.store(on, std::memory_order_release); }
 bool Game_IsAimFramePass() { return g_aimFramePass.load(std::memory_order_acquire); }
 void Game_AimFrameHudScale(float& horizontal, float& vertical)

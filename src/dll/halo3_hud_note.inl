@@ -79,22 +79,34 @@ inline constexpr size_t kHalo3TlsGameTime = 0xC8;
 inline constexpr size_t kHalo3TlsHudUsers = 0xF0;
 inline constexpr int32_t kHalo3HudMessageType = 3;
 // Halo 4's thread game state (its section below): the game time, and the player mapping whose +0xB8 is output user
-// 0's player; the post's 16 players.
+// 0's player; the post's 16 players. Reach's player mapping has the same +0xB8 and its post the same 16 players.
 inline constexpr size_t kHalo4TlsGameTime = 0x90;
 inline constexpr size_t kHalo4TlsPlayers = 0x138;
 inline constexpr size_t kHalo4PlayersOutputUser0 = 0xB8;
 inline constexpr uint32_t kHalo4HudPlayers = 16;
+// Reach's thread game state (its section below): the game time, the player mapping, and the HUD messages' base.
+inline constexpr size_t kReachTlsGameTime = 0xA0;
+inline constexpr size_t kReachTlsPlayers = 0x158;
+inline constexpr size_t kReachTlsHudMessages = 0x5B0;
 // Halo CE's players (its section below): the local count and local player 0.
 inline constexpr size_t kHaloCEPlayersLocalCount = 0xB4;
 inline constexpr size_t kHaloCEPlayersLocal0 = 0xB8;
+// Halo 2's globals (its section below): the game's "in progress" byte and game mode, the clock's ticks, user 0's player,
+// and the HUD flag that shows the messages.
+inline constexpr size_t kHalo2GameInProgress = 0x1808;
+inline constexpr size_t kHalo2GameMode = 0x08;
+inline constexpr size_t kHalo2ClockTicks = 0x08;
+inline constexpr size_t kHalo2PlayersUser0 = 0x0C;
+inline constexpr size_t kHalo2HudFlagsMessagesShown = 2;
 
 // ODST posts its HUD lines inline (no post function): the queue is called with the user's queue address, which its
 // callers make as [TLS + kOdstTlsHudUsers] + user * 0x3B88 + kOdstHudQueueOffset (user 0's: the HUD users' base
 // plus the offset).
 using Halo3HudQueueFn = void(__fastcall*)(void* queue, const wchar_t* text, int32_t type);
-// Halo 4 posts with the player and no type; Halo CE prints with the local player (their sections below).
+// Halo 4 posts with the player and no type; Halo CE and Halo 2 print with the local player (their sections below):
+// Halo CE reads it from cx, Halo 2 from ecx, so 0 is passed in all of ecx.
 using Halo4HudPostFn = void(__fastcall*)(uint32_t player, const wchar_t* text);
-using HaloCEHudPrintFn = void(__fastcall*)(int16_t localPlayer, const wchar_t* text);
+using HudPrintFn = void(__fastcall*)(int32_t localPlayer, const wchar_t* text);
 
 struct Halo3HudNote
 {
@@ -108,18 +120,26 @@ struct Halo3HudNote
     // Whether the thread's game mode is checked before a post (Halo 3: MCC's own caller checks it, at the offset that
     // proves it; ODST's caller does not show where, so a post there needs the game clock and the HUD block alone).
     bool checksGameMode = true;
+    // Where the thread's game state keeps the game time (Halo 3 and ODST's; Halo 4's and Reach's sections set theirs).
+    size_t tlsGameTime = kHalo3TlsGameTime;
+    // Reach: `post` takes output user 0's player (the thread's TLS block + tlsPlayers, at +0xB8), not the user.
+    bool postTakesPlayer = false;
     // Halo 4: the post takes output user 0's player (the thread's TLS block + tlsPlayers, at +0xB8), and is made only
     // from the listener update the game tick calls (it returns to tickReturn; its frame is updateFrameBytes deep).
     std::atomic<Halo4HudPostFn> playerPost{nullptr};
     size_t tlsPlayers = 0;
     uintptr_t tickReturn = 0;
     uint32_t updateFrameBytes = 0;
-    // Halo CE: the print takes local player 0; the image's own pointers to the messages, the game clock and the
-    // players say whether it may (no TLS block). Written before `print` is published.
-    std::atomic<HaloCEHudPrintFn> print{nullptr};
-    const uintptr_t* ceMessages = nullptr;
-    const uintptr_t* ceClock = nullptr;
-    const uintptr_t* cePlayers = nullptr;
+    // Halo CE and Halo 2: the print takes local player 0; the image's own pointers to the messages, the game clock,
+    // the players (and Halo 2's game and HUD flags) say whether it may (no TLS block), as `printReady` reads them.
+    // Written before `print` is published.
+    std::atomic<HudPrintFn> print{nullptr};
+    int (*printReady)(const Halo3HudNote& note) = nullptr;
+    const uintptr_t* printMessages = nullptr;
+    const uintptr_t* printClock = nullptr;
+    const uintptr_t* printPlayers = nullptr;
+    const uintptr_t* printGame = nullptr;
+    const uintptr_t* printHudFlags = nullptr;
     // How many characters the game's slot keeps, and whether the line may be posted whatever the session (Halo CE's
     // section says why).
     size_t maxChars = hud_note::kMaxChars;
@@ -200,7 +220,7 @@ bool Halo3HudNoteSessionAllows(const Halo3HudNote& note)
 
 // The calling thread holds the HUD block, the game clock and (where the note checks it) a campaign or multiplayer
 // game: 0. Otherwise the first thing missing (Halo3HudNoteNotReadyText). Guarded: no C++ object here.
-int Halo3HudNoteThreadReady(const uint32_t* tlsIndex, size_t tlsHudUsers, bool checksGameMode)
+int Halo3HudNoteThreadReady(const uint32_t* tlsIndex, size_t tlsGameTime, size_t tlsHudUsers, bool checksGameMode)
 {
     __try
     {
@@ -216,7 +236,7 @@ int Halo3HudNoteThreadReady(const uint32_t* tlsIndex, size_t tlsHudUsers, bool c
             if (game[0x10] != kHalo3GameModeCampaign && game[0x10] != kHalo3GameModeMultiplayer)
                 return 3;
         }
-        if (!*reinterpret_cast<void* const*>(block + kHalo3TlsGameTime))
+        if (!*reinterpret_cast<void* const*>(block + tlsGameTime))
             return 4;
         if (!*reinterpret_cast<void* const*>(block + tlsHudUsers))
             return 5;
@@ -241,15 +261,18 @@ const char* Halo3HudNoteNotReadyText(int why)
     case 7: return "no player mapping";
     case 8: return "no local player";
     case 9: return "no HUD messages";
+    case 10: return "no game in progress";
+    case 11: return "the HUD's messages are hidden";
     default: return "none";
     }
 }
 
-bool Halo3HudNoteCall(Halo3HudMessageFn post, const wchar_t* text)
+// `user`: the user (Halo 3), or the player (Reach).
+bool Halo3HudNoteCall(Halo3HudMessageFn post, int32_t user, const wchar_t* text)
 {
     __try
     {
-        CallNativeWithSpareSlots(post, 0, text, kHalo3HudMessageType);
+        CallNativeWithSpareSlots(post, user, text, kHalo3HudMessageType);
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -258,10 +281,10 @@ bool Halo3HudNoteCall(Halo3HudMessageFn post, const wchar_t* text)
     }
 }
 
-// Halo 4: output user 0's player in this thread's game state, as the game's own posters take it: 0 and `player`, or why
-// not (Halo3HudNoteNotReadyText). The post indexes its 16 players' messages by the handle's low word and must never be
-// handed one past them.
-int Halo4HudNotePlayer(const uint32_t* tlsIndex, size_t tlsPlayers, uint32_t& player)
+// Halo 4 and Reach: output user 0's player in this thread's game state, as the game's own posters take it: 0 and
+// `player`, or why not (Halo3HudNoteNotReadyText). The post indexes its 16 players' messages by the handle's low word
+// and must never be handed one past them.
+int Halo4HudNotePlayer(const uint32_t* tlsIndex, size_t tlsGameTime, size_t tlsPlayers, uint32_t& player)
 {
     __try
     {
@@ -269,7 +292,7 @@ int Halo4HudNotePlayer(const uint32_t* tlsIndex, size_t tlsPlayers, uint32_t& pl
         const uint8_t* block = slots ? slots[*tlsIndex] : nullptr;
         if (!block)
             return 1;
-        if (!*reinterpret_cast<void* const*>(block + kHalo4TlsGameTime))
+        if (!*reinterpret_cast<void* const*>(block + tlsGameTime))
             return 4;
         const uint8_t* players = *reinterpret_cast<const uint8_t* const*>(block + tlsPlayers);
         if (!players)
@@ -291,17 +314,52 @@ int HaloCEHudNoteReady(const Halo3HudNote& note)
 {
     __try
     {
-        const auto* clock = reinterpret_cast<const uint8_t*>(*note.ceClock);
+        const auto* clock = reinterpret_cast<const uint8_t*>(*note.printClock);
         if (!clock || !clock[0])
             return 4;
-        if (!*note.ceMessages)
+        if (!*note.printMessages)
             return 9;
-        const auto* players = reinterpret_cast<const uint8_t*>(*note.cePlayers);
+        const auto* players = reinterpret_cast<const uint8_t*>(*note.printPlayers);
         if (!players)
             return 7;
         if (*reinterpret_cast<const int16_t*>(players + kHaloCEPlayersLocalCount) < 1 ||
             *reinterpret_cast<const uint32_t*>(players + kHaloCEPlayersLocal0) == 0xFFFFFFFFu)
             return 8;
+        return 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 6;
+    }
+}
+
+// Halo 2: a campaign or multiplayer game in progress, its clock running, user 0 holding a player, the messages
+// allocated, and the HUD showing them (hidden, a line is neither drawn nor expired: the panel takes it).
+int Halo2HudNoteReady(const Halo3HudNote& note)
+{
+    __try
+    {
+        const auto* game = reinterpret_cast<const uint8_t*>(*note.printGame);
+        if (!game)
+            return 2;
+        if (!game[kHalo2GameInProgress])
+            return 10;
+        const int32_t mode = *reinterpret_cast<const int32_t*>(game + kHalo2GameMode);
+        if (mode != kHalo3GameModeCampaign && mode != kHalo3GameModeMultiplayer)
+            return 3;
+        const auto* clock = reinterpret_cast<const uint8_t*>(*note.printClock);
+        if (!clock || *reinterpret_cast<const int32_t*>(clock + kHalo2ClockTicks) < 1)
+            return 4;
+        const auto* players = reinterpret_cast<const uint8_t*>(*note.printPlayers);
+        if (!players)
+            return 7;
+        if (*reinterpret_cast<const uint32_t*>(players + kHalo2PlayersUser0) == 0xFFFFFFFFu)
+            return 8;
+        if (!*note.printMessages)
+            return 9;
+        const auto* flags = reinterpret_cast<const uint8_t*>(*note.printHudFlags);
+        if (!flags || !flags[kHalo2HudFlagsMessagesShown])
+            return 11;
         return 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -323,11 +381,11 @@ bool Halo4HudNoteCall(Halo4HudPostFn post, uint32_t player, const wchar_t* text)
     }
 }
 
-bool HaloCEHudNoteCall(HaloCEHudPrintFn print, const wchar_t* text)
+bool HudPrintCall(HudPrintFn print, const wchar_t* text)
 {
     __try
     {
-        CallNativeWithSpareSlots(print, static_cast<int16_t>(0), text);
+        CallNativeWithSpareSlots(print, int32_t{0}, text);
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -367,7 +425,7 @@ void HudNotePost(Halo3HudNote& note)
     const Halo3HudMessageFn post = note.post.load(std::memory_order_acquire);
     const Halo3HudQueueFn queue = note.queue.load(std::memory_order_acquire);
     const Halo4HudPostFn playerPost = note.playerPost.load(std::memory_order_acquire);
-    const HaloCEHudPrintFn print = note.print.load(std::memory_order_acquire);
+    const HudPrintFn print = note.print.load(std::memory_order_acquire);
     if ((!post && !queue && !playerPost && !print) || !Halo3HudNoteSessionAllows(note))
         return; // the cold worker's fallback shows it on the panel
     wchar_t text[hud_note::kMaxChars + 1];
@@ -382,10 +440,18 @@ void HudNotePost(Halo3HudNote& note)
     if (!hud_note::Due(serial, shown, now >= askedMs ? now - askedMs : 0))
         return;
     uint32_t player = 0;
-    if (const int why = print ? HaloCEHudNoteReady(note)
-                              : playerPost ? Halo4HudNotePlayer(note.tlsIndex, note.tlsPlayers, player)
-                                           : Halo3HudNoteThreadReady(note.tlsIndex, note.tlsHudUsers,
-                                                                     note.checksGameMode))
+    int why = 0;
+    if (print)
+        why = note.printReady ? note.printReady(note) : 9;
+    else if (playerPost)
+        why = Halo4HudNotePlayer(note.tlsIndex, note.tlsGameTime, note.tlsPlayers, player);
+    else
+    {
+        why = Halo3HudNoteThreadReady(note.tlsIndex, note.tlsGameTime, note.tlsHudUsers, note.checksGameMode);
+        if (!why && note.postTakesPlayer)
+            why = Halo4HudNotePlayer(note.tlsIndex, note.tlsGameTime, note.tlsPlayers, player);
+    }
+    if (why)
     {
         note.notReady.fetch_add(1, std::memory_order_relaxed);
         note.notReadyWhy.store(why, std::memory_order_relaxed);
@@ -395,10 +461,10 @@ void HudNotePost(Halo3HudNote& note)
     if (!note.shown.compare_exchange_strong(expected, serial, std::memory_order_acq_rel))
         return; // the panel took it
     text[note.maxChars] = L'\0';
-    const bool called = post ? Halo3HudNoteCall(post, text)
+    const bool called = post ? Halo3HudNoteCall(post, note.postTakesPlayer ? static_cast<int32_t>(player) : 0, text)
         : queue ? Halo3HudNoteQueueCall(queue, note.tlsIndex, note.tlsHudUsers, note.queueOffset, text)
         : playerPost ? Halo4HudNoteCall(playerPost, player, text)
-                     : HaloCEHudNoteCall(print, text);
+                     : HudPrintCall(print, text);
     if (called)
         note.posted.fetch_add(1, std::memory_order_relaxed);
     else
@@ -663,6 +729,7 @@ bool InstallHalo4HudNote(uintptr_t base, size_t size, uint32_t generation, const
         return false;
     }
     note.tlsIndex = tlsIndex;
+    note.tlsGameTime = kHalo4TlsGameTime;
     note.tlsPlayers = kHalo4TlsPlayers;
     note.tickReturn = tick + kHalo4HudTickReturn;
     note.updateFrameBytes = updateFrameBytes;
@@ -794,12 +861,13 @@ bool InstallHaloCEHudNote(uintptr_t base, size_t size, uint32_t generation)
         LOG("HUD NOTE Halo CE: not bound (%s did not prove); the vehicle camera note uses the mod's own panel", why);
         return false;
     }
-    note.ceMessages = reinterpret_cast<const uintptr_t*>(messages);
-    note.ceClock = reinterpret_cast<const uintptr_t*>(rip(print, kHaloCEHudPrintClockDisp));
-    note.cePlayers = reinterpret_cast<const uintptr_t*>(players);
+    note.printMessages = reinterpret_cast<const uintptr_t*>(messages);
+    note.printClock = reinterpret_cast<const uintptr_t*>(rip(print, kHaloCEHudPrintClockDisp));
+    note.printPlayers = reinterpret_cast<const uintptr_t*>(players);
+    note.printReady = &HaloCEHudNoteReady;
     note.maxChars = hud_note::kHaloCEMaxChars;
     note.anySession = true;
-    note.print.store(reinterpret_cast<HaloCEHudPrintFn>(print), std::memory_order_release);
+    note.print.store(reinterpret_cast<HudPrintFn>(print), std::memory_order_release);
     LOG("HUD NOTE Halo CE: bound (generation %u): print +0x%llX (as MCC's own +0x%llX and the checkpoint text print "
         "their lines), from the player's unit control update",
         generation, static_cast<unsigned long long>(print - base), static_cast<unsigned long long>(caller - base));
@@ -811,7 +879,7 @@ bool InstallHaloCEHudNote(uintptr_t base, size_t size, uint32_t generation)
 void HaloCEHudNotePoll(uintptr_t base, size_t size, uint32_t generation, bool active)
 {
     static uint32_t tried = 0;
-    static HaloCEHudPrintFn bound = nullptr;
+    static HudPrintFn bound = nullptr;
     auto& note = g_haloCEHudNote;
     if (!active || !base || !generation)
     {
@@ -842,6 +910,322 @@ void HaloCEVehicleNoteShow(const std::wstring& text, float seconds)
     VehicleNoteShowOn(g_haloCEHudNote, HudNoteSiteRunning(g_haloCEHudNote), text, seconds);
 }
 
+// ---- Halo 2 ----------------------------------------------------------------------------------------------------
+// Halo 2 prints a line as Halo CE does, +0x8246D0 print(user, text): the user in ecx (-1 does nothing; nothing else is
+// checked, so only 0 is passed); its messages are [+0x187C5E0] + user * 0x4D0, four slots of 0x8C; the chooser
+// +0x823580 takes a free one or the oldest; the copier +0x6A4AC0 is wcsncpy_s(63, truncate), so 62 characters at most
+// and always a terminator; the stamp is the game clock's ticks ([+0x15FE008]+8, read by +0x706860). It writes nothing
+// else and calls nothing else: no network, sound or host call. MCC's own "no navpoints" line (+0x832730, its call at
+// +0x832825) prints through it, and so does the checkpoint text (+0x8220D0, through the string-id print +0x824690 for
+// every user with a player, +0x6A4390). The HUD update (+0x8234F0, in the game tick) expires the lines; the draw
+// (+0x823A90) sorts them. Anniversary graphics draw the same lines with the same Blam draw.
+//
+// THREAD. MCC prints its line from the per-user control update (+0x6C05A0), the function whose call of the aim
+// accumulator the direct drive hooks (halo2_direct_drive.inl): this note is printed from that hook, for user 0, on the
+// game thread inside MCC's frame lock, before the frame's HUD update and render -- never during a draw.
+//
+// SESSION. The line is game-state memory; in a shared co-op simulation it is left as the game keeps it, as Halo 3's is
+// (Halo 2's session is read: Sight_NoteSession).
+//
+// PROOF (resolved + guarded): the print by a unique signature, whose two reads of the messages' pointer agree, whose
+// calls land on the chooser, the copier and the clock getter matched in place; MCC's own caller (unique) prints
+// through it at its post site, with the key it localizes, and its campaign check reads the game globals the
+// "in progress" getter (unique) reads; the checkpoint text (unique) prints through the string-id print, both matched
+// in place, and names the players' pointer; the HUD update (unique) names the HUD's flags. Any one missing or
+// disagreeing: not bound, the panel as before.
+inline constexpr char kHalo2HudPrintSig[] =
+    "83 F9 FF 0F 84 ?? ?? ?? ?? 56 48 83 EC 20 48 8B F2 48 85 D2 0F 84 ?? ?? ?? ?? 66 83 3A 00 0F 84 ?? ?? ?? ?? 48 "
+    "63 C1 45 33 C0 48 89 5C 24 30 33 D2 48 89 7C 24 38 48 69 F8 D0 04 00 00 48 03 3D ?? ?? ?? ?? 48 8B CF E8 ?? ?? "
+    "?? ?? 41 B8 3F 00 00 00 48 8B D6 48 8B D8 48 8D 48 04 E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 4C 8B 05 ?? ?? ?? ?? 89 03 "
+    "C6 83 84 00 00 00 01 66 C7 83 86 00 00 00 00 00 41 0F B6 90 45 13 00 00 8D 4A 01 41 88 88 45 13 00 00 88 93 85 "
+    "00 00 00 48 8B 5C 24 30 C6 87 3A 04 00 00 00 48 8B 7C 24 38 48 83 C4 20 5E C3";
+inline constexpr size_t kHalo2HudPrintMessagesDisp = 0x40, kHalo2HudPrintChooserRel = 0x48,
+                        kHalo2HudPrintCopierRel = 0x5D, kHalo2HudPrintClockRel = 0x62,
+                        kHalo2HudPrintMessagesAgainDisp = 0x69;
+inline constexpr char kHalo2HudChooserSig[] =
+    "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 54 41 56 41 57 48 83 EC 20 45 33 E4 49 8B E8 41 "
+    "0F B7 FC 4C 8B F2 4C 8B F9 B8 FF FF FF 7F 8B F0 48 0F BF C7 48 69 C8 8C 00 00 00 4A 8D 1C 39 80 BB 84 00 00 00 "
+    "00";
+inline constexpr char kHalo2HudCopierSig[] =
+    "40 53 48 83 EC 20 48 8B C2 49 C7 C1 FF FF FF FF 49 63 D0 48 8B D9 4C 8B C0 FF 15 ?? ?? ?? ?? 48 8B C3 48 83 C4 "
+    "20 5B C3";
+inline constexpr char kHalo2HudClockSig[] = "48 8B 05 ?? ?? ?? ?? 8B 40 08 C3";
+inline constexpr size_t kHalo2HudClockDisp = 3;
+inline constexpr char kHalo2HudNavpointCallerSig[] =
+    "40 53 48 81 EC B0 00 00 00 8B D9 E8 ?? ?? ?? ?? 84 C0 0F 84 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? "
+    "?? E8 ?? ?? ?? ?? 83 78 40 02 0F 85 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 33 "
+    "C0 C6 05 ?? ?? ?? ?? 01 48 8B 51 48 4C 8D 04 0A 48 85 D2 75 03 44 8B C0 0F B7 D3 48 69 CA 24 02 00 00 4A 0F BF "
+    "5C 01 28 83 FB FF 0F 84";
+inline constexpr size_t kHalo2HudNavpointCallerBytes = 0x103, kHalo2HudNavpointCampaignRel = 0x0C;
+inline constexpr char kHalo2HudCampaignSig[] = "48 8B 05 ?? ?? ?? ?? 83 78 08 01 0F 94 C0 C3";
+inline constexpr size_t kHalo2HudCampaignGameDisp = 3;
+inline constexpr char kHalo2HudNavpointPostSig[] =
+    "48 C7 44 24 28 3F 00 00 00 48 89 4C 24 20 45 33 C9 45 33 C0 48 8B C8 48 8B 10 4C 8B 92 D0 01 00 00 48 8D 15 ?? "
+    "?? ?? ?? 41 FF D2 84 C0 74 ?? 48 8D 54 24 30 8B CB E8";
+inline constexpr size_t kHalo2HudNavpointStringDisp = 0x24, kHalo2HudNavpointPostRel = 0x37;
+inline constexpr char kHalo2HudNavpointString[] = "ui\\hud\\hud_messages_no_navpoints";
+inline constexpr char kHalo2HudCheckpointSig[] =
+    "40 53 48 83 EC 20 0F B6 D9 E8 ?? ?? ?? ?? 84 C0 74 ?? 48 89 7C 24 30 B8 AC 06 00 12 84 DB BF AD 06 00 10 0F 45 "
+    "F8 E8 ?? ?? ?? ?? 84 DB 74 ?? 48 8B 05 ?? ?? ?? ?? 8B 88 94 03 00 00 83 F9 FF 74 ?? F3 0F 10 0D ?? ?? ?? ?? E8 "
+    "?? ?? ?? ?? 33 DB 8B CB E8 ?? ?? ?? ?? 84 C0 74 ?? 8B D7 8B CB E8";
+inline constexpr size_t kHalo2HudCheckpointPlayerRel = 0x53, kHalo2HudCheckpointPrintRel = 0x60;
+inline constexpr char kHalo2HudHasPlayerSig[] =
+    "83 F9 FF 74 ?? 48 8B 05 ?? ?? ?? ?? 48 63 C9 83 7C 88 0C FF 0F 95 C0 C3";
+inline constexpr size_t kHalo2HudHasPlayerPlayersDisp = 8;
+inline constexpr char kHalo2HudStringPrintSig[] =
+    "40 53 48 81 EC 20 04 00 00 8B D9 8B C2 33 C9 48 8D 54 24 20 66 89 4C 24 20 8B C8 E8 ?? ?? ?? ?? 48 8D 54 24 20 "
+    "8B CB E8";
+inline constexpr size_t kHalo2HudStringPrintRel = 0x28;
+inline constexpr char kHalo2HudInProgressSig[] =
+    "48 8B 0D ?? ?? ?? ?? 32 C0 48 85 C9 74 ?? 80 B9 08 18 00 00 00 BA 01 00 00 00 0F B6 C0 0F 45 C2 C3";
+inline constexpr size_t kHalo2HudInProgressGameDisp = 3;
+inline constexpr char kHalo2HudUpdateSig[] =
+    "40 53 48 83 EC 20 E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 33 DB 8B CB E8 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 80 "
+    "78 02 00 74 ?? 8B CB E8 ?? ?? ?? ?? FF C3 83 FB 04 7C ?? 48 83 C4 20 5B C3";
+inline constexpr size_t kHalo2HudUpdateFlagsDisp = 0x21;
+static_assert(Halo3HudPatternBytes(kHalo2HudPrintSig) == 174 && kHalo2HudPrintMessagesAgainDisp + 4 < 174);
+static_assert(Halo3HudPatternBytes(kHalo2HudNavpointPostSig) == kHalo2HudNavpointPostRel);
+static_assert(Halo3HudPatternBytes(kHalo2HudCheckpointSig) == kHalo2HudCheckpointPrintRel);
+static_assert(Halo3HudPatternBytes(kHalo2HudStringPrintSig) == kHalo2HudStringPrintRel);
+static_assert(kHalo2HudCheckpointPlayerRel + 4 <= kHalo2HudCheckpointPrintRel &&
+              kHalo2HudNavpointCampaignRel + 4 <= Halo3HudPatternBytes(kHalo2HudNavpointCallerSig) &&
+              kHalo2HudUpdateFlagsDisp + 4 <= Halo3HudPatternBytes(kHalo2HudUpdateSig));
+
+Halo3HudNote g_halo2HudNote{"Halo 2", GameTitle::Halo2};
+
+bool InstallHalo2HudNote(uintptr_t base, size_t size, uint32_t generation)
+{
+    auto& note = g_halo2HudNote;
+    note.print.store(nullptr, std::memory_order_release);
+    const auto rip = [](uintptr_t at, size_t disp) { return sig::RipTarget(at + disp, at + disp + 4); };
+    const auto inImage = [&](uintptr_t at) { return at >= base && at < base + size; };
+    const auto inPlace = [&](uintptr_t at, const char* pattern) {
+        return inImage(at) && sig::Find(at, Halo3HudPatternBytes(pattern), pattern) == at;
+    };
+    const char* why = nullptr;
+    uintptr_t print = 0, messages = 0, clockGetter = 0, caller = 0, site = 0, label = 0, campaign = 0, game = 0;
+    uintptr_t inProgress = 0, checkpoint = 0, hasPlayer = 0, stringPrint = 0, update = 0;
+    if (!(print = mcc_clock::FindUnique(base, size, kHalo2HudPrintSig)))
+        why = "the print function's signature";
+    else if (!inPlace(rip(print, kHalo2HudPrintChooserRel), kHalo2HudChooserSig) ||
+             !inPlace(rip(print, kHalo2HudPrintCopierRel), kHalo2HudCopierSig) ||
+             !inPlace(clockGetter = rip(print, kHalo2HudPrintClockRel), kHalo2HudClockSig))
+        why = "the chooser, the copier and the clock at the print's calls";
+    else if (!(messages = rip(print, kHalo2HudPrintMessagesDisp)) || !inImage(messages) ||
+             rip(print, kHalo2HudPrintMessagesAgainDisp) != messages ||
+             !inImage(rip(clockGetter, kHalo2HudClockDisp)))
+        why = "the messages' and the clock's pointers the print reads";
+    else if (!(caller = mcc_clock::FindUnique(base, size, kHalo2HudNavpointCallerSig)) ||
+             !(site = sig::Find(caller, kHalo2HudNavpointCallerBytes, kHalo2HudNavpointPostSig)) ||
+             rip(site, kHalo2HudNavpointPostRel) != print || !(label = rip(site, kHalo2HudNavpointStringDisp)) ||
+             !inImage(label) || label + sizeof(kHalo2HudNavpointString) > base + size ||
+             memcmp(reinterpret_cast<const void*>(label), kHalo2HudNavpointString, sizeof(kHalo2HudNavpointString)))
+        why = "MCC's own print";
+    else if (!inPlace(campaign = rip(caller, kHalo2HudNavpointCampaignRel), kHalo2HudCampaignSig) ||
+             !(game = rip(campaign, kHalo2HudCampaignGameDisp)) || !inImage(game) ||
+             !(inProgress = mcc_clock::FindUnique(base, size, kHalo2HudInProgressSig)) ||
+             rip(inProgress, kHalo2HudInProgressGameDisp) != game)
+        why = "the game globals MCC's caller and the in-progress getter read";
+    else if (!(checkpoint = mcc_clock::FindUnique(base, size, kHalo2HudCheckpointSig)) ||
+             !inPlace(hasPlayer = rip(checkpoint, kHalo2HudCheckpointPlayerRel), kHalo2HudHasPlayerSig) ||
+             !inImage(rip(hasPlayer, kHalo2HudHasPlayerPlayersDisp)) ||
+             !inPlace(stringPrint = rip(checkpoint, kHalo2HudCheckpointPrintRel), kHalo2HudStringPrintSig) ||
+             rip(stringPrint, kHalo2HudStringPrintRel) != print)
+        why = "the checkpoint text's print";
+    else if (!(update = mcc_clock::FindUnique(base, size, kHalo2HudUpdateSig)) ||
+             !inImage(rip(update, kHalo2HudUpdateFlagsDisp)))
+        why = "the HUD update's flags";
+    if (why)
+    {
+        LOG("HUD NOTE Halo 2: not bound (%s did not prove); the vehicle camera note uses the mod's own panel", why);
+        return false;
+    }
+    note.printMessages = reinterpret_cast<const uintptr_t*>(messages);
+    note.printClock = reinterpret_cast<const uintptr_t*>(rip(clockGetter, kHalo2HudClockDisp));
+    note.printPlayers = reinterpret_cast<const uintptr_t*>(rip(hasPlayer, kHalo2HudHasPlayerPlayersDisp));
+    note.printGame = reinterpret_cast<const uintptr_t*>(game);
+    note.printHudFlags = reinterpret_cast<const uintptr_t*>(rip(update, kHalo2HudUpdateFlagsDisp));
+    note.printReady = &Halo2HudNoteReady;
+    note.maxChars = hud_note::kHalo2MaxChars;
+    note.print.store(reinterpret_cast<HudPrintFn>(print), std::memory_order_release);
+    LOG("HUD NOTE Halo 2: bound (generation %u): print +0x%llX (as MCC's own +0x%llX and the checkpoint text print "
+        "their lines), from the player's control update",
+        generation, static_cast<unsigned long long>(print - base), static_cast<unsigned long long>(caller - base));
+    return true;
+}
+
+// The cold worker, each pass: bound once for each generation of halo2.dll, and published while the title is up;
+// withdrawn first when it goes (before the control-update hook it posts from is retired).
+void Halo2HudNotePoll(uintptr_t base, size_t size, uint32_t generation, bool active)
+{
+    static uint32_t tried = 0;
+    static HudPrintFn bound = nullptr;
+    auto& note = g_halo2HudNote;
+    if (!active || !base || !generation)
+    {
+        note.print.store(nullptr, std::memory_order_release);
+        return;
+    }
+    if (tried != generation)
+    {
+        tried = generation;
+        bound = InstallHalo2HudNote(base, size, generation) ? note.print.load(std::memory_order_acquire) : nullptr;
+    }
+    else if (bound && !note.print.load(std::memory_order_acquire))
+        note.print.store(bound, std::memory_order_release);
+}
+
+// The control-update hook (halo2_direct_drive.inl), for user 0's update.
+void Halo2HudNotePost()
+{
+    auto& note = g_halo2HudNote;
+    if (!note.print.load(std::memory_order_acquire))
+        return;
+    note.siteMs.store(GetTickCount64(), std::memory_order_release);
+    HudNotePost(note);
+}
+
+void Halo2VehicleNoteShow(const std::wstring& text, float seconds)
+{
+    VehicleNoteShowOn(g_halo2HudNote, HudNoteSiteRunning(g_halo2HudNote), text, seconds);
+}
+
+// ---- Reach -----------------------------------------------------------------------------------------------------
+// Reach posts as Halo 3 does, +0x2C44F0 post(player, text, type), except that it takes output user 0's PLAYER (the
+// player mapping [TLS+0x158] +0xB8; the handle's low word indexes 16 players' message blocks, unchecked), and the
+// queue +0x2C4FB8 is [TLS+0x5B0] + player * 0xC60 + 0x39C: five slots, the text copied (96 characters with the
+// terminator), stamped with the game time at [TLS+0xA0]+0xC; type 3 is the colour the game's own lines use. Nothing
+// under it calls sound or network code. MCC's own "no navpoints" line (+0x2CAD90, its call at +0x2CAE5E) and the
+// checkpoint text (+0x2C468C, through the string-id wrapper +0x2C4484) post through it.
+//
+// THREAD. Reach's simulation runs on its own thread and the render thread draws from a snapshot of its game state, so
+// the note is posted on the simulation thread only: from the motion tracker's hook (reach_head_relative.inl), for
+// output user 0's tracker, after the frame's HUD messages update (the HUD update +0x2C073C runs that, then each user's
+// CHUD update, which reaches the tracker) -- never during a draw. The line starts with the next update.
+//
+// SESSION. As Halo 3's: in a shared co-op simulation the line is left as the game keeps it.
+//
+// PROOF (resolved + guarded): the post by a unique signature that reads the engine's TLS index; its call lands on the
+// queue, matched in place, which reads the same index; MCC's own post site (unique) calls it with the key it
+// localizes; the checkpoint poster (unique) reads the same index and calls it through the string-id wrapper, matched
+// in place. Any one missing or disagreeing: not bound, the panel as before.
+inline constexpr char kReachHudPostSig[] =
+    "48 83 EC 28 83 F9 FF 74 ?? 44 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 0F B7 C9 48 69 C9 ?? ?? ?? ?? 4E 8B "
+    "14 C8 41 BB B0 05 00 00 4B 8B 04 1A 48 05 ?? ?? ?? ?? 48 03 C8 E8 ?? ?? ?? ?? 48 83 C4 28 C3";
+inline constexpr size_t kReachHudPostTlsDisp = 12, kReachHudPostQueueRel = 59;
+inline constexpr char kReachHudQueueSig[] =
+    "48 85 D2 0F 84 ?? ?? ?? ?? 48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 83 EC 20 45 33 F6 "
+    "41 8B E8 48 8B F2 48 8B F9 66 44 39 32 0F 84 ?? ?? ?? ?? 41 8B C6 45 8B CE 46 38 74 09 50 74 0D FF C0 49 FF C1 "
+    "49 83 F9 05 7C EE EB 05 83 F8 FF 75 0C 33 D2 E8 ?? ?? ?? ?? B8 04 00 00 00 48 98 48 8D 8F E4 00 00 00 48 6B D8 "
+    "1C C6 44 38 50 01 41 B8 60 00 00 00 48 8D 04 40 48 8B D6 48 C1 E0 06 48 03 C8 E8 ?? ?? ?? ?? 8B 0D ?? ?? ?? ?? "
+    "65 48 8B 04 25 58 00 00 00 BA A0 00 00 00";
+inline constexpr size_t kReachHudQueueTlsDisp = 0x90;
+inline constexpr char kReachHudNavpointPostSig[] =
+    "48 8B 0D ?? ?? ?? ?? 48 85 C9 74 3F 48 8B 01 48 8D 54 24 30 48 C7 44 24 28 00 04 00 00 45 33 C9 48 89 54 24 20 "
+    "45 33 C0 48 8D 15 ?? ?? ?? ?? FF 90 D0 01 00 00 84 C0 74 12 41 B8 03 00 00 00 48 8D 54 24 30 8B CF E8 ?? ?? ?? "
+    "??";
+inline constexpr size_t kReachHudNavpointStringDisp = 0x2B, kReachHudNavpointPostRel = 0x47;
+inline constexpr char kReachHudNavpointString[] = "ui\\hud\\hud_messages_no_navpoints";
+inline constexpr char kReachHudCheckpointSig[] =
+    "40 53 48 83 EC 40 65 48 8B 04 25 58 00 00 00 8B 15 ?? ?? ?? ?? 4C 8B 04 D0 B8 48 00 00 00 4A 8B 04 00 80 78 10 "
+    "01 75 ?? B8 18 00 00 00 0F B6 D9 83 F3 01 4A 8B 04 00 48 89 44 24 28 83 C8 FF 89 44 24 34 89 44 24 30 EB ?? 8B "
+    "4C 24 30 E8 ?? ?? ?? ?? 8B 4C 24 30 8D 93 CA 02 00 00 41 B8 03 00 00 00 E8 ?? ?? ?? ??";
+inline constexpr size_t kReachHudCheckpointTlsDisp = 0x11, kReachHudCheckpointWrapperRel = 0x63;
+inline constexpr char kReachHudWrapperSig[] =
+    "83 F9 FF 74 ?? 48 89 5C 24 18 57 48 81 EC 30 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 20 02 00 00 41 "
+    "8B F8 33 C0 4C 8D 44 24 20 66 89 44 24 20 8B D9 E8 ?? ?? ?? ?? 44 8B C7 48 8D 54 24 20 8B CB E8 ?? ?? ?? ??";
+inline constexpr size_t kReachHudWrapperPostRel = 0x45;
+static_assert(Halo3HudPatternBytes(kReachHudPostSig) == 68 && kReachHudPostQueueRel + 4 < 68);
+static_assert(Halo3HudPatternBytes(kReachHudQueueSig) == 162 && kReachHudQueueTlsDisp + 4 <= 162);
+static_assert(Halo3HudPatternBytes(kReachHudNavpointPostSig) == kReachHudNavpointPostRel + 4);
+static_assert(Halo3HudPatternBytes(kReachHudCheckpointSig) == kReachHudCheckpointWrapperRel + 4);
+static_assert(Halo3HudPatternBytes(kReachHudWrapperSig) == kReachHudWrapperPostRel + 4);
+
+Halo3HudNote g_reachHudNote{"Reach", GameTitle::HaloReach};
+
+// `tlsIndex`: the engine's TLS index variable. Called once the tracker hook it posts from is installed.
+bool InstallReachHudNote(uintptr_t base, size_t size, uint32_t generation, const uint32_t* tlsIndex)
+{
+    auto& note = g_reachHudNote;
+    note.post.store(nullptr, std::memory_order_release);
+    const auto rip = [](uintptr_t at, size_t disp) { return sig::RipTarget(at + disp, at + disp + 4); };
+    const auto inImage = [&](uintptr_t at) { return at >= base && at < base + size; };
+    const auto inPlace = [&](uintptr_t at, const char* pattern) {
+        return inImage(at) && sig::Find(at, Halo3HudPatternBytes(pattern), pattern) == at;
+    };
+    const uintptr_t tls = reinterpret_cast<uintptr_t>(tlsIndex);
+    const char* why = nullptr;
+    uintptr_t post = 0, queue = 0, site = 0, label = 0, checkpoint = 0, wrapper = 0;
+    if (!tlsIndex)
+        why = "the engine's TLS index";
+    else if (!(post = mcc_clock::FindUnique(base, size, kReachHudPostSig)))
+        why = "the post function's signature";
+    else if (rip(post, kReachHudPostTlsDisp) != tls)
+        why = "the TLS index the post reads against the engine's";
+    else if (!inPlace(queue = rip(post, kReachHudPostQueueRel), kReachHudQueueSig) ||
+             rip(queue, kReachHudQueueTlsDisp) != tls)
+        why = "the queue at the post's call";
+    else if (!(site = mcc_clock::FindUnique(base, size, kReachHudNavpointPostSig)) ||
+             rip(site, kReachHudNavpointPostRel) != post || !(label = rip(site, kReachHudNavpointStringDisp)) ||
+             !inImage(label) || label + sizeof(kReachHudNavpointString) > base + size ||
+             memcmp(reinterpret_cast<const void*>(label), kReachHudNavpointString, sizeof(kReachHudNavpointString)))
+        why = "MCC's own post";
+    else if (!(checkpoint = mcc_clock::FindUnique(base, size, kReachHudCheckpointSig)) ||
+             rip(checkpoint, kReachHudCheckpointTlsDisp) != tls ||
+             !inPlace(wrapper = rip(checkpoint, kReachHudCheckpointWrapperRel), kReachHudWrapperSig) ||
+             rip(wrapper, kReachHudWrapperPostRel) != post)
+        why = "the checkpoint text's post";
+    if (why)
+    {
+        LOG("HUD NOTE Reach: not bound (%s did not prove); the vehicle camera note uses the mod's own panel", why);
+        return false;
+    }
+    note.tlsIndex = tlsIndex;
+    note.tlsHudUsers = kReachTlsHudMessages;
+    note.tlsGameTime = kReachTlsGameTime;
+    note.tlsPlayers = kReachTlsPlayers;
+    note.checksGameMode = true;
+    note.postTakesPlayer = true;
+    note.post.store(reinterpret_cast<Halo3HudMessageFn>(post), std::memory_order_release);
+    LOG("HUD NOTE Reach: bound (generation %u): post +0x%llX -> queue +0x%llX (as MCC's own +0x%llX and the "
+        "checkpoint text post their lines), from the motion tracker's hook on the simulation thread",
+        generation, static_cast<unsigned long long>(post - base), static_cast<unsigned long long>(queue - base),
+        static_cast<unsigned long long>(site - base));
+    return true;
+}
+
+// Before the tracker hook is retired, so nothing is inside a post once that hook's calls have drained.
+void RemoveReachHudNote()
+{
+    g_reachHudNote.post.store(nullptr, std::memory_order_release);
+}
+
+// The tracker hook, after the game's tracker update: posted for output user 0's tracker (its user at `userOffset`).
+void ReachHudNoteFromTracker(const void* tracker, uint32_t userOffset)
+{
+    auto& note = g_reachHudNote;
+    if (!tracker || !note.post.load(std::memory_order_acquire))
+        return;
+    int32_t user = -1;
+    __try
+    {
+        memcpy(&user, static_cast<const uint8_t*>(tracker) + userOffset, sizeof(user));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return;
+    }
+    if (user != 0)
+        return;
+    note.siteMs.store(GetTickCount64(), std::memory_order_release);
+    HudNotePost(note);
+}
+
+void ReachVehicleNoteShow(const std::wstring& text, float seconds)
+{
+    VehicleNoteShowOn(g_reachHudNote, HudNoteSiteRunning(g_reachHudNote), text, seconds);
+}
+
 void Halo3VehicleNoteTick()
 {
     VehicleNoteTickOn(g_halo3HudNote);
@@ -852,4 +1236,6 @@ void Halo3VehicleNoteTick()
     VehicleNoteTickOn(g_halo4HudNote);
 #endif
     VehicleNoteTickOn(g_haloCEHudNote);
+    VehicleNoteTickOn(g_halo2HudNote);
+    VehicleNoteTickOn(g_reachHudNote);
 }

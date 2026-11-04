@@ -280,6 +280,8 @@ __declspec(noinline) void __fastcall ReachTrackerHeadDetour(void* tracker)
             ReachTrackerApplyHead(tracker);
         if (const auto original = reinterpret_cast<ReachTrackerReaderFn>(feature.original))
             CallNativeWithSpareSlots(original, tracker);
+        // The vehicle camera note in the game's HUD messages (halo3_hud_note.inl), for output user 0's tracker.
+        ReachHudNoteFromTracker(tracker, feature.userOffset);
     }
     __finally
     {
@@ -659,11 +661,16 @@ bool InstallReachHeadRelative(uintptr_t base, size_t size, uint32_t generation)
     }
     const bool tracker = InstallReachTrackerHead(base, size, generation);
     const bool listener = InstallReachListenerHead(base, size, generation);
+    // The vehicle camera note is posted from the tracker's hook (halo3_hud_note.inl).
+    if (tracker)
+        (void)InstallReachHudNote(base, size, generation,
+                                  reinterpret_cast<const uint32_t*>(base + kReachEngineTlsIndexRva));
     return tracker || listener;
 }
 // At title unload, before the camera core goes. False = a detour could not be retired yet; the caller retries.
 bool RemoveReachHeadRelative()
 {
+    RemoveReachHudNote();   // posted only from inside the tracker hook, drained below
     const bool tracker = RemoveReachTrackerHead();
     const bool listener = RemoveReachListenerHead();
     return tracker && listener;

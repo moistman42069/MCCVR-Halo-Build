@@ -151,6 +151,8 @@ void Game_Halo2AimFrameRefused();
 // Halo CE's unit control hook, after the local player's control is set by the control update: the vehicle camera note
 // is posted into the game's own HUD messages there (halo3_hud_note.inl).
 void Game_HaloCEHudNotePost();
+// Halo 2's control-update hook (halo2_direct_drive.inl), for user 0's update: the same, into Halo 2's.
+void Game_Halo2HudNotePost();
 // While a frame's picture is drawn: the game's own HUD layout and crosshair go into it (d3d11_hook.cpp, the HUD).
 void Game_SetAimFramePass(bool on);
 bool Game_IsAimFramePass();

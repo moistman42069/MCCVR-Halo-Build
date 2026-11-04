@@ -649,6 +649,9 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
             // The game ran the owned user's control update (it skips this call while the director holds the
             // player: a cinematic). One reader: the head-relative motion tracker (halo2_head_relative.inl).
             st.controlMs.store(GetTickCount64(), std::memory_order_release);
+            // The vehicle camera note in the game's HUD messages: printed from here, where MCC's control update
+            // prints its own line, whatever the drive's setting (halo3_hud_note.inl).
+            Game_Halo2HudNotePost();
             // AIM FRAME ZOOM (game.cpp): the player's zoom level, -1 not zoomed, from the record this update works on.
             // Read only; whatever the drive's own setting.
             if (st.zoomProven.load(std::memory_order_acquire) && st.slot)
