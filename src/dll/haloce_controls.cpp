@@ -674,6 +674,34 @@ static bool SeatHeadingBody(uint32_t expectedGeneration,halo_ce::Vec3& heading) 
 }
 bool HaloCEControls_SeatHeading(uint32_t expectedGeneration,halo_ce::Vec3& heading) noexcept
 { Callback callback;return SeatHeadingBody(expectedGeneration,heading); }
+// AIM FRAME ZOOM (game.cpp): the local player's zoom level from the same control record, the int16 at
+// control + 0x34 + N * 0x58. The control update (+0xA9915C) owns it: -1 on a weapon change and whenever the player
+// cannot act (paused, a cinematic, no unit), the weapon's next level when the zoom button asks; the aim-assist query
+// (+0xA97CF4) reads the game's zoom from it. ADDR-HYGIENE: guarded as the seat heading is (the record's unit handle
+// must be the local player's unit). The frame is drawn on foot only: in a seat this answers -1.
+static bool ZoomLevelBody(uint32_t expectedGeneration,int16_t& level) noexcept
+{
+    HaloCELocalPlayerState state{};
+    if (!ReadLocalPlayerState(state)||state.generation!=expectedGeneration||!state.hasControlledUnit||
+        state.inputUser<0||state.inputUser>=4)
+        return false;
+    int16_t value=-1;
+    __try
+    {
+        const uintptr_t control=*reinterpret_cast<const uintptr_t*>(moduleBase+0x2d8fe70);
+        if (!control) return false;
+        const uintptr_t record=control+size_t(state.inputUser)*0x58;
+        if (*reinterpret_cast<const uint32_t*>(record+0x10)!=state.unit) return false;
+        value=*reinterpret_cast<const int16_t*>(record+0x34);
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
+    if (!StateCurrent()||state.generation!=generation.load(std::memory_order_acquire)) return false;
+    level=state.onFoot&&value>=0?value:-1;
+    return true;
+}
+bool HaloCEControls_ZoomLevel(uint32_t expectedGeneration,int16_t& level) noexcept
+{ Callback callback;return ZoomLevelBody(expectedGeneration,level); }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t expectedGeneration,uint64_t epoch,
     float physicalDown,bool allowed) noexcept
 { Callback callback;return CrouchCameraBody(expectedGeneration,epoch,physicalDown,allowed); }

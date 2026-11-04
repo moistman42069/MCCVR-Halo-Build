@@ -120,32 +120,39 @@ bool Game_HasScopeRenderer(); // optional title-local zoom view is available
 // Aim Frame Zoom has the zoom button in the active title (with aim_frame_zoom on, where the title can read the game's
 // zoom level and draw the frame): it reaches the game, and the gun-mounted lens is not offered.
 bool Game_AimFrameZoomOwnsZoom();
-// The game's own zoom level for the local player (-1 not zoomed), in the titles that read it (Halo 3, ODST, and Reach
-// and Halo 4 while their muzzle lanes are in). False: not read lately.
+// The game's own zoom level for the local player (-1 not zoomed), in the titles that read it (Halo 3, ODST, Halo 2,
+// Halo CE, and Reach and Halo 4 while their muzzle lanes are in). False: not read lately.
 bool Game_ReadZoomLevel(int& level);
-// AIM FRAME ZOOM for Halo 2, whose two eye renderers (halo2_stereo_core.cpp, halo2_anniversary_stereo.cpp) live outside
-// this file. The control-update hook notes the player's zoom level (sim thread).
-void Game_NoteHalo2ZoomLevel(int16_t level);
-// Render thread, once for each frame a Halo 2 renderer is about to draw. `centre`: the rendered centre eye's camera
+// AIM FRAME ZOOM for the titles whose eye renderers live outside this file: Halo 2 (halo2_stereo_core.cpp,
+// halo2_anniversary_stereo.cpp) and Halo CE (haloce_stereo_core.cpp). Each notes the player's zoom level from its
+// control record: Halo 2's control-update hook (sim thread), Halo CE's renderer (render thread).
+void Game_NoteZoomLevel(GameTitle title, int16_t level);
+// Render thread, once for each frame such a renderer is about to draw. `centre`: the rendered centre eye's camera
 // position and up; `eyeOffset`: each eye's offset from the head (OpenXR view axes, metres); `nativeX`/`nativeY`: the
-// half-angle tangents of the game's own view (its zoom) in the shape this renderer draws. True: draw the frame
-// instead of the eyes -- one pass (as the first eye) or, in 3D, one per eye -- along `forward`/`up` from `position`
-// at the tangents `tanX` x `tanY`, and show it `widthDeg` wide (Game_Halo2AimFrameDrawn).
+// half-angle tangents of the game's own view (its zoom) in the shape this renderer draws; `aimForward`: where the
+// title knows the aim itself (Halo CE's intent ray), null for the converged aim where it is written, else the intent
+// ray. True: draw the frame instead of the eyes -- one pass (as the first eye) or, in 3D, one per eye -- along
+// `forward`/`up` from `position` at the tangents `tanX` x `tanY`, and show it `widthDeg` wide.
 struct GameAimFramePass
 {
     float position[2][3]{}, forward[2][3]{}, up[2][3]{};
     float tanX = 0.0f, tanY = 0.0f, widthDeg = 0.0f;
     bool stereo = false;
 };
-bool Game_Halo2AimFrame(const float centre[3], const float centreUp[3], const float eyeOffset[2][3], float nativeX,
-                        float nativeY, GameAimFramePass& out);
-// The frame's outcome: drawn (the engine's own tangents, for the present) or refused. A run of refusals gives the zoom
-// back to the lens for the rest of the level.
+bool Game_AimFrameForEyes(GameTitle title, const float centre[3], const float centreUp[3], const float eyeOffset[2][3],
+                          float nativeX, float nativeY, const float* aimForward, GameAimFramePass& out);
+// The frame's outcome: drawn or refused. A run of refusals gives the zoom back to the title for the rest of the level
+// (Halo 2's lens; Halo CE's own zoom in the immersive view).
+void Game_AimFrameOutcome(GameTitle title, bool refused);
+// Halo 2 publishes its frames through its own pair calls: the outcome and, before the picture is published, what it is
+// (the engine's own tangents, for the present).
 void Game_Halo2AimFrameDrawn(int eye, float tanX, float tanY, float widthDeg);
 void Game_Halo2AimFrameRefused();
 // While a frame's picture is drawn: the game's own HUD layout and crosshair go into it (d3d11_hook.cpp, the HUD).
 void Game_SetAimFramePass(bool on);
 bool Game_IsAimFramePass();
+// The HUD's scale in the frame's picture (aim_frame::HudScale of the player's frame HUD settings; 1 x 1 the game's own).
+void Game_AimFrameHudScale(float& horizontal, float& vertical);
 // The authored crosshair may be captured now: not while zoomed, nor just after the frame (game.cpp).
 bool Game_AimFrameCrosshairReadyForCapture(GameTitle title);
 // Halo 3's HUD layout as it draws now: the one written (Game_GetAppliedHudSafeFrame), or, before it is written

@@ -4,6 +4,7 @@
 #include "haloce_unit_control.h"
 #include "haloce_native_bindings.h"
 #include "haloce_stereo_core.h"
+#include "game.h"
 #include "hook_quiescence.h"
 #include "title_adapter.h"
 #include "vr.h"
@@ -83,6 +84,10 @@ void DrawBody(int32_t user,uint32_t weapon,uint32_t hud,const void* state)
     bool vehicle=false;
     if (drawing||user!=0)
     { original(user,weapon,hud,state); return; }
+    // AIM FRAME ZOOM: the frame is the flat game's picture, and the game draws its crosshair and zoom art into it.
+    // The art held from before the zoom stays the reticle's.
+    if (Game_IsAimFramePass())
+    { original(user,weapon,hud,state); return; }
     if (!Current()||!prepared.load())
     { InvalidateCapture(); original(user,weapon,hud,state); return; }
     if (!Context(context,vehicle))
@@ -102,7 +107,9 @@ void DrawBody(int32_t user,uint32_t weapon,uint32_t hud,const void* state)
     // Use the working titles' prepared phase redirect. Native crosshair logic
     // still runs on both eyes. A pending coverage query owns the source pixels;
     // even a new weapon's first phase must use discard until it completes.
-    const bool capture=first&&VR_ShouldCaptureAuthoredReticleThisFrame();
+    // Zoomed, or just after the frame, the crosshair is the zoom's art: it is hidden, not captured (game.cpp).
+    const bool capture=first&&Game_AimFrameCrosshairReadyForCapture(GameTitle::HaloCE)&&
+        VR_ShouldCaptureAuthoredReticleThisFrame();
     const uint64_t capturedKey=capture?key:previous.key;
     const bool began=capture?VR_BeginPreparedAuthoredReticleCapture():
         VR_BeginPreparedAuthoredReticleSuppression();

@@ -5,6 +5,7 @@
 #include "haloce_stereo_core.h"
 #include "hook_quiescence.h"
 #include "title_adapter.h"
+#include "game.h"
 #include "../common/haloce_hud_layout.h"
 #include "../common/minhook_lifecycle.h"
 #include "../common/log.h"
@@ -231,18 +232,31 @@ void MainLayoutBody()
     const auto& h=local.owner.tracking.hud;
     const auto& rect=local.owner.camera.viewport;
     const float gameAspect=float(rect.right-rect.left)/float(rect.bottom-rect.top);
+    // AIM FRAME ZOOM: the frame is the flat game's picture, so its HUD is the game's own layout at the frame's own HUD
+    // scale (aim_frame::HudScale, about the picture's centre; no larger than the game's own here), never the player's.
+    const bool aimFrame=Game_IsAimFramePass();
     if (!state||!state->viewportsKnown||!state->scissorsKnown||state->viewportCount!=1||
         state->viewports[0].TopLeftX!=float(rect.left)||
         state->viewports[0].TopLeftY!=float(rect.top)||
         state->viewports[0].Width!=float(rect.right-rect.left)||
         state->viewports[0].Height!=float(rect.bottom-rect.top)||
-        !ComputeHudLayoutAffine(h.size,h.aspect,h.verticalOffset,gameAspect,
-            local.owner.tracking.eyes[0].fov,View(state->viewports[0]),local.affine))
+        (!aimFrame&&!ComputeHudLayoutAffine(h.size,h.aspect,h.verticalOffset,gameAspect,
+            local.owner.tracking.eyes[0].fov,View(state->viewports[0]),local.affine)))
     { fallbacks.fetch_add(1,std::memory_order_relaxed); original(); return; }
+    if (aimFrame)
+    {
+        float horizontal=1.0f,vertical=1.0f;
+        Game_AimFrameHudScale(horizontal,vertical);
+        horizontal=std::clamp(horizontal,0.15f,1.0f);
+        vertical=std::clamp(vertical,0.15f,1.0f);
+        const auto& root=state->viewports[0];
+        local.affine={horizontal,vertical,(root.TopLeftX+root.Width*0.5f)*(1.0f-horizontal),
+            (root.TopLeftY+root.Height*0.5f)*(1.0f-vertical)};
+    }
     // Height is configured in output pixels. Preserve that distance for both
     // native half-height eyes and full-height VR eyes; only the former needs
     // its authored translation doubled before the final eye mapping.
-    if (eyeReplay.live&&eyeReplay.state==state)
+    else if (eyeReplay.live&&eyeReplay.state==state)
         local.affine.offsetY-=h.verticalOffset*(1.0f/eyeReplay.affine.vertical-1.0f);
     local.state=state;
     local.live=true;

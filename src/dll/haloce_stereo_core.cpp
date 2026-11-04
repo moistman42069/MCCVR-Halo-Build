@@ -3,6 +3,7 @@
 #include "haloce_vehicle_cameras.h"
 #include "../common/haloce_vehicle_leash_logic.h"
 #include "haloce_head_relative.h"
+#include "../common/haloce_first_person_logic.h"
 #include "physical_crouch_camera.h"
 uint64_t VR_PhysicalCrouchEpoch() noexcept;
 float VR_RecenterStandingLiftM(GameTitle title) noexcept;   // vr.h
@@ -334,6 +335,44 @@ void ApplyVehicleCameraLeash(const Camera& source,const Tracking& tracking,Refer
     if(haloce_vehicle_leash::LeashReference(source,tracking,scale,positional,carrier,box,frozen))
         Game_HaloCEVehicleCameraLeashHeld();
 }
+// AIM FRAME ZOOM (game.cpp Game_AimFrameForEyes), both renderers, once a frame: player control's zoom level is noted,
+// and the frame is asked for from the centre eye `centre`, along the intent ray the converged aim is written from (the
+// stock camera `stock`, this frame's tracking and its reference), at `stock`'s own vertical field of view in the shape
+// `shape` (the eye raster's). Without a centre (`haveCentre` false) the frame eases out. True: `out` holds its cameras.
+bool CeAimFrame(const Camera& stock,const Camera& centre,bool haveCentre,const Tracking& tracking,
+    const Reference& frozen,float scale,bool positional,float shape,AimFrameEyes& out) noexcept
+{
+    int16_t level=-1;
+    if (HaloCEControls_ZoomLevel(tracking.generation,level)) Game_NoteZoomLevel(GameTitle::HaloCE,level);
+    Vec3 head{},direction{},engineEye{};
+    const auto& aim=tracking.controllers.primaryAim;
+    const bool ready=haveCentre&&aim.valid&&!tracking.controllers.controlsPresentationBlocked&&
+        std::isfinite(shape)&&shape>0&&
+        BuildSightGeometry(stock,tracking,frozen,aim,scale,positional,head,direction,engineEye);
+    const float nativeY=std::tan(stock.verticalFov*0.5f);
+    const float c[3]{centre.position.x,centre.position.y,centre.position.z};
+    const float up[3]{centre.up.x,centre.up.y,centre.up.z};
+    const float forward[3]{direction.x,direction.y,direction.z};
+    float offsets[2][3]{};
+    for (int eye=0;eye<2;++eye)
+    {
+        const Vec3 offset=EyeOffsetInHead(tracking,eye);
+        offsets[eye][0]=offset.x; offsets[eye][1]=offset.y; offsets[eye][2]=offset.z;
+    }
+    GameAimFramePass pass{};
+    if (!Game_AimFrameForEyes(GameTitle::HaloCE,c,up,offsets,ready?nativeY*shape:0.0f,nativeY,forward,pass))
+        return false;
+    AimFrameEyes frame{};
+    for (int eye=0;eye<2;++eye)
+    {
+        frame.position[eye]={pass.position[eye][0],pass.position[eye][1],pass.position[eye][2]};
+        frame.forward[eye]={pass.forward[eye][0],pass.forward[eye][1],pass.forward[eye][2]};
+        frame.up[eye]={pass.up[eye][0],pass.up[eye][1],pass.up[eye][2]};
+    }
+    frame.tanX=pass.tanX; frame.tanY=pass.tanY; frame.widthDeg=pass.widthDeg; frame.stereo=pass.stereo;
+    out=frame;
+    return true;
+}
 #include "haloce_classic_runtime.inl"
 bool ReadAnniversaryNativeCenter(const SaberCamera& nativeCenter,Camera& center) noexcept
 {
@@ -375,6 +414,24 @@ void PrepareAnniversaryTrackingReference(BuildScope& scope,const SaberCamera& na
         ApplyVehicleCameraLeash(center,scope.views.tracking,scope.views.reference,
             scope.views.unitsPerMeter,scope.views.positional);
 }
+// AIM FRAME ZOOM (CeAimFrame): while the game is zoomed this frame's construction stages the frame's cameras instead of
+// the eyes, at the stock camera's own field of view in the eye raster's shape. Anniversary has no single pass: both eyes
+// draw the frame (one camera twice, or each eye's in 3D). Eye 0's append, once the frame's tracking reference is set;
+// the outcome is the construction's (BuilderHook).
+void AnniversaryAimFrame(BuildScope& scope,const SaberCamera& native) noexcept
+{
+    auto& views=scope.views;
+    views.aimFrame=false;
+    Camera stock{},centre{};
+    const bool haveCentre=views.CentreEye(native,stock,centre);
+    const float shape=views.height?static_cast<float>(views.width)/static_cast<float>(views.height):0.0f;
+    AimFrameEyes frame{};
+    if (!CeAimFrame(stock,centre,haveCentre,views.tracking,views.reference,views.unitsPerMeter,views.positional,
+            shape,frame)) return;
+    views.frame=frame;
+    views.centre=centre;
+    views.aimFrame=true;
+}
 uintptr_t AppendBody(uintptr_t list,const SaberCamera* source,uint32_t flags,int32_t index,
     uint64_t a5,uint64_t a6,uint64_t a7,uint64_t a8,uint64_t a9,uint64_t a10,
     uint64_t a11,uint64_t a12,uint64_t a13,uint64_t a14,uint64_t a15,uint64_t a16,uintptr_t caller)
@@ -392,6 +449,7 @@ uintptr_t AppendBody(uintptr_t list,const SaberCamera* source,uint32_t flags,int
             // The append input is still the unmodified center, in Saber units.
             // Recover the verified native bridge, never use an already tracked eye.
             PrepareAnniversaryTrackingReference(*scope,native);
+            AnniversaryAimFrame(*scope,native);
         }
         valid=valid&&scope->views.PrepareEye(eye,native,
                 [](SaberCamera& camera) { return RebuildNativeCamera(bindings,camera); });
@@ -473,6 +531,12 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
     if (!scoped) return nativeResult;
     Prepared result{address,gen,force,false,{}};
     result.referenceRevision=revisionBeforeBuild;
+    // AIM FRAME ZOOM: what the construction staged is what the receipt says this frame is; a frame asked for and not
+    // built (the rebuilt camera not the one asked for, the publication refused) is a refusal.
+    const bool aimFrame=force&&constructTrackedViews&&construction.views.aimFrame;
+    if (aimFrame)
+        tracking.aimFrame={true,construction.views.frame.tanX,construction.views.frame.tanY,
+            construction.views.frame.widthDeg};
     if (force)
     {
         SaberViewPair source{},rasterSource{},committed{}; StagedViewPair staged{};
@@ -513,6 +577,7 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
                 constructTrackedViews?construction.views.positional:Game_IsPositionalTracking());
         }
         else dropped.fetch_add(1,std::memory_order_relaxed);
+        if (aimFrame) Game_AimFrameOutcome(GameTitle::HaloCE,!result.valid);
     }
     preparedLists[slot].Publish(result);
     return nativeResult;
@@ -845,10 +910,14 @@ void FrameBody(uintptr_t arg,uint32_t flags)
     const bool previousMaterialMask=anniversaryMaterialMasked;
     if (previous) anniversaryMaterialMasked=true;
     if (!previous) frameScope=&scope;
+    // AIM FRAME ZOOM: the frame's passes draw the game's own HUD layout and crosshair (haloce_hud*.cpp).
+    const bool aimFrame=!previous&&scope.capture&&scope.prepared.receipt.tracking.aimFrame.active;
+    if (aimFrame) Game_SetAimFramePass(true);
     bool returned=false;
     __try { original(arg,flags); returned=true; }
     __finally
     {
+        if (aimFrame) Game_SetAimFramePass(false);
         if (!previous)
         {
             if (returned&&scope.capture&&Current()&&Anniversary()&&

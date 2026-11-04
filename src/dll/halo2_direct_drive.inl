@@ -655,7 +655,7 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
             {
                 const uintptr_t zoomGlobals = *reinterpret_cast<const uintptr_t*>(st.slot);
                 if (zoomGlobals)
-                    Game_NoteHalo2ZoomLevel(*reinterpret_cast<const int16_t*>(
+                    Game_NoteZoomLevel(GameTitle::Halo2, *reinterpret_cast<const int16_t*>(
                         zoomGlobals + static_cast<uintptr_t>(user) * kHalo2PcStride + kHalo2PcZoomLevel));
             }
             if (!g_config.aim_direct_drive || !st.installed.load(std::memory_order_acquire) || !st.slot ||

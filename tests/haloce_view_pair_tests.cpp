@@ -154,6 +154,44 @@ int main(int argc,char** argv)
         check(!construction.PrepareEye(1,native.views[1].camera,nativeRebuild),"out-of-order right construction rejected");
         check(!construction.Finish(native,nativeRebuild,constructed),"missing construction cannot inherit a receipt");
     }
+    {
+        // AIM FRAME ZOOM: with the frame set before eye 0, both eyes are staged as the frame's, from the centre eye, at
+        // the picture's angles in the raster's shape; the finished pair holds the rebuilt cameras to those angles.
+        ViewConstruction construction{};
+        construction.tracking=tracking; construction.reference=reference;
+        construction.unitsPerMeter=.33f; construction.positional=true;
+        construction.width=1920; construction.height=1080;
+        Camera stock{},centre{};
+        check(construction.CentreEye(native.views[0].camera,stock,centre)&&
+            near(centre.position.x,stock.position.x)&&near(centre.position.y,stock.position.y)&&
+            stock.viewport.right==1920&&stock.viewport.bottom==1080,
+            "the centre eye stands between the eyes, from the stock camera at the raster's size");
+        AimFrameEyes frame{};
+        frame.tanY=0.15f; frame.tanX=0.15f*1920.0f/1080.0f; frame.widthDeg=50.0f;
+        for (int eye=0;eye<2;++eye)
+        { frame.position[eye]=centre.position; frame.forward[eye]={0,1,0}; frame.up[eye]={0,0,1}; }
+        construction.aimFrame=true; construction.frame=frame; construction.centre=centre;
+        SaberViewPair builtViews=native;
+        const auto nativeRebuild=[](SaberCamera&) { return true; };
+        for (int eye=0;eye<2;++eye)
+        {
+            check(construction.PrepareEye(eye,native.views[eye].camera,nativeRebuild),"a frame eye stages");
+            builtViews.views[eye].camera=construction.staged.cameras[eye];
+        }
+        Camera staged{};
+        check(NativeCameraFromSaber(construction.staged.cameras[0],staged)&&near(staged.forward.y,1.0f)&&
+            near(staged.verticalFov,2*std::atan(0.15f))&&
+            near(construction.staged.cameras[1].horizontalFovDegrees,2*std::atan(frame.tanX)*57.29577951308232f)&&
+            near(construction.staged.covers[1].halfY,std::atan(0.15f))&&
+            std::memcmp(&construction.staged.cameras[0].pose,&construction.staged.cameras[1].pose,sizeof(SaberPose))==0,
+            "a flat frame draws one camera along the aim twice, at the picture's angles");
+        StagedViewPair constructed{};
+        check(construction.Finish(builtViews,nativeRebuild,constructed),"the frame pair finalizes");
+        builtViews.views[1].camera.verticalFovDegrees+=1.0f;
+        const auto widened=[](SaberCamera& camera) { camera.verticalFovDegrees+=1.0f; return true; };
+        check(!construction.Finish(builtViews,widened,constructed),
+            "a rebuilt camera that is not the picture asked for refuses the frame");
+    }
     SaberViewPair fullDesktop=savedNative,rasterSource{};
     for (auto& view:fullDesktop.views)
     { view.camera.viewportWidth=2912; view.camera.viewportHeight=2100; }

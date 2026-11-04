@@ -23,6 +23,12 @@ static void Check(bool ok,const char* message)
 { if (!ok) { ++failureCount;std::fprintf(stderr,"CE HUD layout: %s\n",message); } }
 static bool Near(float a,float b) { return std::fabs(a-b)<0.001f; }
 GameTitle TitleAdapter_GetActiveTitle() { return testTitle; }
+// Aim Frame Zoom (game.cpp): a frame's pass lays the HUD out at the frame's own scale.
+static bool aimFramePass{};
+static float aimFrameHudScale[2]{1.0f,1.0f};
+bool Game_IsAimFramePass() { return aimFramePass; }
+void Game_AimFrameHudScale(float& horizontal,float& vertical)
+{ horizontal=aimFrameHudScale[0]; vertical=aimFrameHudScale[1]; }
 uint32_t TitleAdapter_GetGeneration(GameTitle) { return testGeneration; }
 bool HaloCE_Armed() noexcept { return testTitle==GameTitle::HaloCE; }
 bool HaloCE_NativeHudResourcesReady(uintptr_t base,uint32_t gen) noexcept

@@ -32,6 +32,15 @@ uint64_t Sight_NowUs() { static uint64_t now=1000000; return now+=1000; }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
 // No seat in this fixture: the tracking frame keeps the native camera heading.
 bool HaloCEControls_SeatHeading(uint32_t,halo_ce::Vec3&) noexcept { return false; }
+// Aim Frame Zoom (game.cpp) is not linked here: the game is never zoomed in this fixture, so no frame is drawn.
+bool HaloCEControls_ZoomLevel(uint32_t,int16_t&) noexcept { return false; }
+void Game_NoteZoomLevel(GameTitle,int16_t) {}
+bool Game_AimFrameForEyes(GameTitle,const float*,const float*,const float (*)[3],float,float,const float*,GameAimFramePass&)
+{ return false; }
+void Game_AimFrameOutcome(GameTitle,bool) {}
+void Game_SetAimFramePass(bool) {}
+bool Game_IsAimFramePass() { return false; }
+void Game_AimFrameHudScale(float& horizontal,float& vertical) { horizontal=vertical=1.0f; }
 // The vehicle cameras' chase-camera leash (game.cpp): none placed in this fixture unless a test places one, a box of
 // no size around the camera's point in the world's own frame.
 static bool leashPlaced{};

@@ -25,6 +25,10 @@ static float nativeInk=1;
 bool HaloCE_HudTargetBindingsVerified(uintptr_t base,size_t size,uint32_t gen) noexcept
 { return coldTargetProof&&base==moduleBase&&size==halo_ce::contract::imageSize&&gen==testGeneration; }
 bool HaloCEFirstPerson_AimArmed() noexcept { return aimAvailable; }
+// Aim Frame Zoom (game.cpp): a frame's pass draws the game's crosshair as it is; the capture waits while zoomed.
+static bool aimFramePass{},crosshairReadyForCapture=true;
+bool Game_IsAimFramePass() { return aimFramePass; }
+bool Game_AimFrameCrosshairReadyForCapture(GameTitle) { return crosshairReadyForCapture; }
 bool HaloCEFirstPerson_GetLocalPlayerState(HaloCELocalPlayerState& state) noexcept
 {
     state.hasControlledUnit=playerEligible;

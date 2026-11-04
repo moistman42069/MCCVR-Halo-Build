@@ -17837,9 +17837,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             for(uint64_t drops=std::min<uint64_t>(HaloCE_TakeMonoDrops(),mono_view::kMonoDropsBeforeProbe);
                 drops;--drops)
                 VR_NoteMonoFrameRejected(GameTitle::HaloCE);
+            // AIM FRAME ZOOM: a pair CE drew as the frame says so itself (halo_ce::Tracking::aimFrame).
             if(ceImages&&ceLease.pair.key.serial!=monoReportedSerial) {
                 monoReportedSerial=ceLease.pair.key.serial;
-                if(ceLease.pair.monoEye>=0) VR_NoteMonoFrameRendered(GameTitle::HaloCE,ceLease.pair.monoEye);
+                const auto& frame=ceLease.pair.tracking.aimFrame;
+                if(frame.active) VR_NoteAimFrameRendered(GameTitle::HaloCE,ceLease.pair.monoEye,frame.tanX,frame.tanY,
+                    frame.widthDeg);
+                else if(ceLease.pair.monoEye>=0) VR_NoteMonoFrameRendered(GameTitle::HaloCE,ceLease.pair.monoEye);
                 else VR_NoteStereoFrameRendered(GameTitle::HaloCE);
             }
         }

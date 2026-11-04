@@ -88,6 +88,9 @@ bool HaloCEControls_GetLocalPlayerState(HaloCELocalPlayerState& state) noexcept;
 // angle the game's look update owns for the player's input user, which the turn stick moves and the hand's aim never
 // does. False on foot, with no controlled unit, or when the record does not read.
 bool HaloCEControls_SeatHeading(uint32_t expectedGeneration,halo_ce::Vec3& heading) noexcept;
+// The local player's own zoom level (-1 not zoomed, and in a seat), from the same control record (Aim Frame Zoom).
+// False when the record does not read.
+bool HaloCEControls_ZoomLevel(uint32_t expectedGeneration,int16_t& level) noexcept;
 // Reads the verified native clock independently of player/unit/weapon state,
 // which can be unavailable while the pause menu or restart screen is visible.
 // Optional input suppression is independent of unit/weapon lifetime and is

@@ -172,7 +172,7 @@ namespace
         uint8_t completedEyeMask = 0;
         // MONO RENDERING: this frame is one pass, as the eye drawn first, from the tracked centre.
         bool mono = false;
-        // AIM FRAME ZOOM (game.cpp Game_Halo2AimFrame): this frame is the game's zoomed picture along the aim, drawn
+        // AIM FRAME ZOOM (game.cpp Game_AimFrameForEyes): this frame is the game's zoomed picture along the aim, drawn
         // instead of the eyes: one pass as the first eye (then `mono` too) or, in 3D, one per eye.
         bool aimFrame = false;
         bool aimFrameStereo = false;
@@ -2696,7 +2696,7 @@ namespace
 
         scope.pairBegun = true;
         g_telemetry.claimedPairs.fetch_add(1, std::memory_order_relaxed);
-        // AIM FRAME ZOOM (game.cpp Game_Halo2AimFrame): while the game is zoomed, this frame is its zoomed picture along
+        // AIM FRAME ZOOM (game.cpp Game_AimFrameForEyes): while the game is zoomed, this frame is its zoomed picture along
         // the aim, at the game's own field of view (the observer's, before the headset's cover widened it) in this
         // window's shape. It wins over mono rendering. A single pass waits, as mono does, for the capture source to be
         // settled (learning it compares the two eyes' pictures).
@@ -2713,8 +2713,8 @@ namespace
             for (int eye = 0; eye < kHalo2EyeCount; ++eye)
                 std::memcpy(eyeOffset[eye], snapshot.eyes[eye].position, sizeof(eyeOffset[eye]));
             GameAimFramePass frame{};
-            if (Game_Halo2AimFrame(scope.renderCenter.position, scope.renderCenter.up, eyeOffset, nativeY * shape,
-                                   nativeY, frame))
+            if (Game_AimFrameForEyes(GameTitle::Halo2, scope.renderCenter.position, scope.renderCenter.up, eyeOffset,
+                                     nativeY * shape, nativeY, nullptr, frame))
             {
                 Halo2SymmetricHalfFovs frameHalfFovs{};
                 const float frameFov = 2.0f * std::atan(frame.tanY);

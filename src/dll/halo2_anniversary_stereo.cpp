@@ -878,7 +878,7 @@ namespace
         // from the tracked centre: the midpoint of the eyes, turned the head's way, under the same cover. Each eye
         // is still submitted at its own pose.
         bool mono = false;
-        // AIM FRAME ZOOM (game.cpp Game_Halo2AimFrame): while the game is zoomed, this frame is its zoomed picture along
+        // AIM FRAME ZOOM (game.cpp Game_AimFrameForEyes): while the game is zoomed, this frame is its zoomed picture along
         // the aim, at the game's own field of view (the observer's, before the headset's cover widened it), aspect-locked
         // to the camera's own +0x158 as every eye is. It wins over mono rendering, and a single pass waits, as mono
         // does, for the capture source to be settled.
@@ -897,8 +897,8 @@ namespace
                 if (eyeOffsetPosition[eye])
                     std::memcpy(offsets[eye], eyeOffsetPosition[eye], sizeof(offsets[eye]));
             GameAimFramePass frame{};
-            if (Game_Halo2AimFrame(tracked.position, tracked.up, offsets,
-                                   stockAspect > 1.0e-3f ? nativeY / stockAspect : 0.0f, nativeY, frame))
+            if (Game_AimFrameForEyes(GameTitle::Halo2, tracked.position, tracked.up, offsets,
+                                     stockAspect > 1.0e-3f ? nativeY / stockAspect : 0.0f, nativeY, nullptr, frame))
             {
                 Halo2SaberEyeCover frameCover{};
                 frameCover.halfVerticalRadians = std::atan(frame.tanY);

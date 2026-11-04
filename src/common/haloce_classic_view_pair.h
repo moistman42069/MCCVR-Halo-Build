@@ -78,6 +78,32 @@ inline ClassicPairResult StageClassicViewPair(const Window& source,
     return ClassicPairResult::Ready;
 }
 
+// AIM FRAME ZOOM: the staged pair becomes the frame's (BuildAimFrameCamera): each window's render and raster cameras
+// from the centre eye's, along the frame eye -- one pass, as eye 0, unless 3D -- the raster camera keeping its own
+// offset from the render camera; the cover is the picture's. The pair is untouched unless every window is a valid
+// primary one.
+inline bool StageClassicAimFrame(const AimFrameEyes& frame,const Camera& centreRender,const Camera& centreRaster,
+    ClassicViewPair& pair) noexcept
+{
+    ClassicViewPair staged=pair;
+    if (!AimFrameCover(frame,staged.cover)) return false;
+    staged.mono=!frame.stereo;
+    staged.tracking.mono=staged.mono;
+    const Vec3 rasterShift=centreRaster.position-centreRender.position;
+    for (int eye=0;eye<(staged.mono?1:2);++eye)
+    {
+        staged.eyes[eye]=pair.source;
+        if (!BuildAimFrameCamera(centreRender,frame,eye,{},staged.eyes[eye].render)||
+            !BuildAimFrameCamera(centreRaster,frame,eye,rasterShift,staged.eyes[eye].raster)||
+            !ValidPrimary(staged.eyes[eye]))
+            return false;
+    }
+    if (staged.mono) staged.eyes[1]=staged.eyes[0];
+    staged.tracking.aimFrame={true,frame.tanX,frame.tanY,frame.widthDeg};
+    pair=staged;
+    return true;
+}
+
 // Stock-camera bytes and all identity fields must still match before native
 // execution starts. Mode switches/recenter/title entry revoke the pair even
 // if the head is stationary and the camera happens to be bit-identical.

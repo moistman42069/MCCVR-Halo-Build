@@ -729,6 +729,7 @@ namespace
         case GameTitle::HaloReach: return "Reach";
         case GameTitle::Halo4: return "Halo 4";
         case GameTitle::Halo2: return "Halo 2";
+        case GameTitle::HaloCE: return "Halo CE";
         default: return "Halo 3";
         }
     }
@@ -5402,11 +5403,11 @@ namespace
         // No layout of ours in the game: the HUD draws at the game's own, which is what the capture expects then.
         if (g_safeFrameHitCount.load(std::memory_order_acquire) <= 0)
             return true;
-        // ODST, Reach, Halo 4 and Halo 2 (whose HUDs have no layout record of this kind): only the frame's own layout
-        // still in the game holds the capture, and only just after the frame: this runs for every crosshair there, Aim
-        // Frame Zoom or not, and must never leave one without its art.
+        // ODST, Reach, Halo 4, Halo 2 and Halo CE (whose HUDs have no layout record of this kind): only the frame's own
+        // layout still in the game holds the capture, and only just after the frame: this runs for every crosshair
+        // there, Aim Frame Zoom or not, and must never leave one without its art.
         if (title == GameTitle::Halo3ODST || title == GameTitle::HaloReach || title == GameTitle::Halo4 ||
-            title == GameTitle::Halo2)
+            title == GameTitle::Halo2 || title == GameTitle::HaloCE)
             return g_layoutAppliedForFrame.load(std::memory_order_acquire) != 1 ||
                 !down || GetTickCount64() - down >= 2000;
         return g_layoutAppliedForFrame.load(std::memory_order_acquire) ==
@@ -53553,13 +53554,19 @@ bool Game_HasScopeRenderer()
 }
 namespace
 {
-#if HALOMCCVR_HALO2_STEREO6DOF
-    // AIM FRAME ZOOM in Halo 2 (Game_Halo2AimFrame): the level on which its frame kept being refused, and a run of
-    // refusals (the render thread).
-    std::atomic<uint32_t> g_halo2AimFrameOffGeneration{0};
-    std::atomic<uint32_t> g_halo2AimFrameGivenBack{0};
-    aim_frame::RefusalRun g_halo2AimFrameRefusals;
-#endif
+    // AIM FRAME ZOOM in the titles whose renderers live outside this file (Game_AimFrameForEyes): the level on which a
+    // title's frame kept being refused, how often that happened, and the run of refusals (the render thread).
+    struct OutsideAimFrame
+    {
+        std::atomic<uint32_t> offGeneration{0};
+        std::atomic<uint32_t> givenBack{0};
+        aim_frame::RefusalRun refusals;
+    };
+    OutsideAimFrame g_halo2AimFrame, g_haloCEAimFrame;
+    OutsideAimFrame* OutsideAimFrameOf(GameTitle title)
+    {
+        return title == GameTitle::Halo2 ? &g_halo2AimFrame : title == GameTitle::HaloCE ? &g_haloCEAimFrame : nullptr;
+    }
     uint32_t AimFrameZoomGeneration(GameTitle title)
     {
         switch (title)
@@ -53578,6 +53585,8 @@ namespace
         case GameTitle::Halo2:
             return Halo2Observer6Dof_ZoomReaderInstalled() ? TitleAdapter_GetGeneration(GameTitle::Halo2) : 0;
 #endif
+        // Halo CE: its renderer reads the zoom level from player control each frame while it owns the eyes.
+        case GameTitle::HaloCE: return HaloCE_Armed() ? TitleAdapter_GetGeneration(GameTitle::HaloCE) : 0;
         default: return 0;
         }
     }
@@ -53600,10 +53609,14 @@ namespace
         if (title == GameTitle::Halo2)
             return Halo2Observer6Dof_ZoomReaderInstalled() &&
                 (Halo2Stereo_Armed() || Halo2AnniversaryStereo_Armed()) &&
-                g_halo2AimFrameOffGeneration.load(std::memory_order_acquire) !=
+                g_halo2AimFrame.offGeneration.load(std::memory_order_acquire) !=
                     TitleAdapter_GetGeneration(GameTitle::Halo2);
 #endif
-        (void)title;
+        // Halo CE: either renderer draws the frame while the stereo core owns the eyes.
+        if (title == GameTitle::HaloCE)
+            return HaloCE_Armed() &&
+                g_haloCEAimFrame.offGeneration.load(std::memory_order_acquire) !=
+                    TitleAdapter_GetGeneration(GameTitle::HaloCE);
         return false;
     }
 }
@@ -53632,35 +53645,40 @@ bool Game_ReadZoomLevel(int& level)
 }
 void Game_SetAimFramePass(bool on) { g_aimFramePass.store(on, std::memory_order_release); }
 bool Game_IsAimFramePass() { return g_aimFramePass.load(std::memory_order_acquire); }
-bool Game_AimFrameCrosshairReadyForCapture(GameTitle title) { return AimFrameCrosshairReadyForCapture(title); }
-#if HALOMCCVR_HALO2_STEREO6DOF
-// AIM FRAME ZOOM in Halo 2 (game.h). The zoom level is the player control record's own (halo2_direct_drive.inl).
-void Game_NoteHalo2ZoomLevel(int16_t level)
+void Game_AimFrameHudScale(float& horizontal, float& vertical)
 {
-    if (TitleAdapter_GetActiveTitle() == GameTitle::Halo2)
-        NoteGameZoomLevel(GameTitle::Halo2, level, TitleAdapter_GetGeneration(GameTitle::Halo2));
+    aim_frame::HudScale(g_config.aim_frame_hud_size, g_config.aim_frame_hud_width_scale,
+                        g_config.aim_frame_hud_height_scale, horizontal, vertical);
 }
-// Halo 2's renderers build their eyes from a tracked centre and each eye's offset, as Halo 4's does, so the frame's
-// cameras are built the same way: from the centre along the aim (the converged aim where it is written, else the intent
-// ray), upright to the world, at the game's own zoomed view over the level's strength; in 3D each eye stands at its own
-// offset (times the 3D strength) and turns in to meet at the aimed point.
-bool Game_Halo2AimFrame(const float centre[3], const float centreUp[3], const float eyeOffset[2][3], float nativeX,
-                        float nativeY, GameAimFramePass& out)
+bool Game_AimFrameCrosshairReadyForCapture(GameTitle title) { return AimFrameCrosshairReadyForCapture(title); }
+// AIM FRAME ZOOM in the titles whose renderers live outside this file (game.h). The zoom level is the player control
+// record's own: Halo 2's control-update hook (halo2_direct_drive.inl), Halo CE's renderer (haloce_stereo_core.cpp).
+void Game_NoteZoomLevel(GameTitle title, int16_t level)
 {
-    constexpr GameTitle kTitle = GameTitle::Halo2;
+    if (TitleAdapter_GetActiveTitle() == title)
+        NoteGameZoomLevel(title, level, TitleAdapter_GetGeneration(title));
+}
+// These renderers build their eyes from a tracked centre and each eye's offset, as Halo 4's does, so the frame's cameras
+// are built the same way: from the centre along the aim, upright to the world, at the game's own zoomed view over the
+// level's strength; in 3D each eye stands at its own offset (times the 3D strength) and turns in to meet at the aimed
+// point.
+bool Game_AimFrameForEyes(GameTitle title, const float centre[3], const float centreUp[3], const float eyeOffset[2][3],
+                          float nativeX, float nativeY, const float* aimForward, GameAimFramePass& out)
+{
     const bool native = std::isfinite(nativeX) && std::isfinite(nativeY) && nativeX > 1.0e-4f && nativeY > 1.0e-4f;
     float convergedForward[3]{};
-    const bool converged = g_config.aim_frame_zoom && Sight_ScopeConvergedDirection(kTitle, convergedForward);
+    const bool converged = !aimForward && g_config.aim_frame_zoom &&
+        Sight_ScopeConvergedDirection(title, convergedForward);
     AimFrame frame{};
-    if (!AimFrameThisFrame(kTitle, native, nativeX, nativeY, centreUp, frame, converged ? convergedForward : nullptr,
-                           true))
+    if (!AimFrameThisFrame(title, native, nativeX, nativeY, centreUp, frame,
+                           aimForward ? aimForward : converged ? convergedForward : nullptr, true))
     {
-        (void)AimFrameMeetWu(kTitle, false, 1.0f);
+        (void)AimFrameMeetWu(title, false, 1.0f);
         return false;
     }
     const bool stereo = g_config.aim_frame_stereo;
     const float spacing = stereo ? g_config.aim_frame_3d_strength : 1.0f;
-    const float meetWu = AimFrameMeetWu(kTitle, stereo, spacing);
+    const float meetWu = AimFrameMeetWu(title, stereo, spacing);
     const float right[3]{frame.forward[1] * frame.up[2] - frame.forward[2] * frame.up[1],
                          frame.forward[2] * frame.up[0] - frame.forward[0] * frame.up[2],
                          frame.forward[0] * frame.up[1] - frame.forward[1] * frame.up[0]};
@@ -53682,30 +53700,31 @@ bool Game_Halo2AimFrame(const float centre[3], const float centreUp[3], const fl
     out.stereo = stereo;
     return true;
 }
+void Game_AimFrameOutcome(GameTitle title, bool refused)
+{
+    OutsideAimFrame* state = OutsideAimFrameOf(title);
+    if (!state || !state->refusals.Note(refused))
+        return;
+    state->offGeneration.store(TitleAdapter_GetGeneration(title), std::memory_order_release);
+    state->givenBack.fetch_add(1, std::memory_order_relaxed);
+    if (title == GameTitle::Halo2)
+        LOG("Halo 2 Aim Frame Zoom StockFallback: the frame kept being refused; the lens has the zoom for this level "
+            "and the stereo core is retained");
+    else
+        LOG("%s Aim Frame Zoom StockFallback: the frame kept being refused; the game's zoom stays in the immersive "
+            "view for this level and the stereo core is retained", AimFrameTitleName(title));
+}
 // Before the frame's picture is published (the present must never show its narrow picture as the immersive view).
 void Game_Halo2AimFrameDrawn(int eye, float tanX, float tanY, float widthDeg)
 {
-    (void)g_halo2AimFrameRefusals.Note(false);
+    Game_AimFrameOutcome(GameTitle::Halo2, false);
     VR_PrepareAimFramePicture(GameTitle::Halo2, eye, tanX, tanY, widthDeg);
 }
 void Game_Halo2AimFrameRefused()
 {
     VR_PrepareAimFramePicture(GameTitle::Halo2, -1, 0.0f, 0.0f, 0.0f);
-    if (g_halo2AimFrameRefusals.Note(true))
-    {
-        g_halo2AimFrameOffGeneration.store(TitleAdapter_GetGeneration(GameTitle::Halo2), std::memory_order_release);
-        g_halo2AimFrameGivenBack.fetch_add(1, std::memory_order_relaxed);
-        LOG("Halo 2 Aim Frame Zoom StockFallback: the frame kept being refused; the lens has the zoom for this level "
-            "and the stereo core is retained");
-    }
+    Game_AimFrameOutcome(GameTitle::Halo2, true);
 }
-#else
-void Game_NoteHalo2ZoomLevel(int16_t) {}
-bool Game_Halo2AimFrame(const float*, const float*, const float (*)[3], float, float, GameAimFramePass&)
-{ return false; }
-void Game_Halo2AimFrameDrawn(int, float, float, float) {}
-void Game_Halo2AimFrameRefused() {}
-#endif
 bool Game_IsScopeRendering(){return g_scopeRenderActive.load(std::memory_order_acquire);}
 bool Game_SetScopeRendering(bool active){return g_scopeRenderActive.exchange(active,std::memory_order_acq_rel);}
 bool Game_IsCameraOnlyBringup()

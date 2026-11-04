@@ -365,6 +365,21 @@ int main()
         Check(HaloCEControls_SeatHeading(3,heading)&&!callbacks.load(),
             "seated again the heading reads, and no callback lease is left behind");
     }
+    // AIM FRAME ZOOM: the zoom level is the same control record's own int16 at +0x34, on foot only.
+    {
+        int16_t level=7;
+        Put(control+0x58+0x34,int16_t{1});
+        Check(HaloCEControls_ZoomLevel(3,level)&&level==-1,"in a seat the frame has no zoom level");
+        Put(unitAddress+0xd8,UINT32_MAX);
+        Check(HaloCEControls_ZoomLevel(3,level)&&level==1,"on foot the zoom level is player control's own");
+        Put(control+0x58+0x34,int16_t{-1});
+        Check(HaloCEControls_ZoomLevel(3,level)&&level==-1,"not zoomed reads -1");
+        Check(!HaloCEControls_ZoomLevel(4,level),"another title generation reads no zoom level");
+        Put(control+0x10+0x58,unitId+1);
+        Check(!HaloCEControls_ZoomLevel(3,level),"a record that is not the local unit's reads no zoom level");
+        Put(control+0x10+0x58,unitId);Put(unitAddress+0xd8,vehicleId);
+        Check(!callbacks.load(),"the zoom reader leaves no callback lease behind");
+    }
     for (int reject=0;reject<9;++reject)
     {
         switch(reject)

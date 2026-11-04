@@ -2807,15 +2807,15 @@ namespace
 
         if (CategorySection section{Cat_Scope}; section.visible)
         {
-        if (SectionHeader("Aim Frame Zoom (Halo 2, Halo 3, ODST, Reach and Halo 4)##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Aim Frame Zoom (every game)##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Aim Frame Zoom##aimframe", &g_config.aim_frame_zoom);
         ImGui::TextDisabled("While the game is zoomed, the headset shows the game's zoomed picture as a frame "
                             "centred on your aim instead of the 3D view, like playing it on a flat screen. The "
                             "zoom button reaches the game, so the lens below is not offered there while this "
-                            "is on. Halo 2 (Classic and Anniversary), Halo 3 (MCC and Project Reclaimer), ODST, "
-                            "Reach and Halo 4; where one of "
-                            "them cannot draw it, the lens keeps the zoom. On by default. Live.");
+                            "is on. Halo CE (on foot) and Halo 2, in Classic and Anniversary graphics; Halo 3 "
+                            "(MCC and Project Reclaimer), ODST, Reach and Halo 4. Where a game cannot draw it, its "
+                            "zoom works as it does without this (the lens, where there is one). On by default. Live.");
         if (g_config.aim_frame_zoom)
         {
             ImGui::Indent();
