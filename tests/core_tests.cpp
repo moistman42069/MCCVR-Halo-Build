@@ -14623,7 +14623,8 @@ int main()
             for (int i = 0; i < kTitleProfileCount; ++i) {
                 const auto& profile = g_config.title_profiles[i];
                 valid = valid && profile.gun_scale == (i == 0 ? .65f : .8f) &&
-                    profile.hud_size == .7f && profile.barrel_pitch_deg == 12.0f;
+                    profile.hud_size == (i == kTitleProfileReach ? kHudStarts[i].size : .7f) &&
+                    profile.barrel_pitch_deg == 12.0f;
             }
             return valid;
         }, "installer/runtime roundtrip inherits missing title calibrations and preserves explicit title override");
@@ -15643,6 +15644,12 @@ int main()
                   untouched.title_profiles[0].crosshair_size_deg == 6.0f,
               "crosshair per game: a fresh configuration has every game's own starting size and opacity, and the "
               "crosshair shrinks away within 0.7 m");
+        const TitleTunables& reachFresh = untouched.title_profiles[kTitleProfileReach];
+        Check(reachFresh.hud_size == 0.45f && reachFresh.hud_aspect == 0.80f && reachFresh.hud_curvature == 0.48f &&
+                  reachFresh.hud_vertical_offset == -202.0f && untouched.title_profiles[0].hud_size == 0.43f &&
+                  untouched.title_profiles[0].hud_aspect == 1.22f &&
+                  untouched.title_profiles[0].hud_vertical_offset == 16.0f,
+              "HUD per game: a fresh configuration starts Reach at the tester's layout and the rest at the shared one");
         // The HUD layout's four values follow the same rule: Reach's with no game running, never the shared
         // defaults, and an edit made then lands in Reach's profile.
         {
@@ -15654,7 +15661,8 @@ int main()
             file << "halo3_hud_aspect = 0.91\n";
         }
         ConfigLoad(crosshairPath.c_str());
-        Check(g_config.hud_size == 0.39f && g_config.hud_aspect == 1.10f &&
+        // Reach names its own size; its aspect starts at Reach's own start, not the shared key.
+        Check(g_config.hud_size == 0.39f && g_config.hud_aspect == kHudStarts[kTitleProfileReach].aspect &&
                   g_config.base_tunables.hud_size == 0.50f && g_config.title_profiles[0].hud_size == 0.50f &&
                   g_config.title_profiles[0].hud_aspect == 0.91f,
               "HUD per game: with no game running the live HUD layout is Reach's");
@@ -16865,15 +16873,17 @@ int main()
     }
     ConfigLoad(primary.c_str());
     const float migratedCurvature = (0.30f - 1.25f * 0.1f) / 0.60f;
-    Check(std::abs(g_config.hud_curvature - migratedCurvature) < 0.0001f &&
-          g_config.hud_aspect == 1.35f &&
-          g_config.hud_vertical_offset == -125.0f,
+    // Halo 3 starts from the shared HUD keys (Reach, the no-game profile, has a layout of its own).
+    const TitleTunables& sharedHud = g_config.title_profiles[0];
+    Check(std::abs(sharedHud.hud_curvature - migratedCurvature) < 0.0001f &&
+          sharedHud.hud_aspect == 1.35f &&
+          sharedHud.hud_vertical_offset == -125.0f,
         "Legacy HUD curvature, aspect trim, and height migrate exactly");
     ConfigSave();
     ConfigLoad(primary.c_str());
-    Check(std::abs(g_config.hud_curvature - migratedCurvature) < 0.01f &&
-          g_config.hud_aspect == 1.35f &&
-          g_config.hud_vertical_offset == -125.0f,
+    Check(std::abs(sharedHud.hud_curvature - migratedCurvature) < 0.01f &&
+          sharedHud.hud_aspect == 1.35f &&
+          sharedHud.hud_vertical_offset == -125.0f,
         "Normalized HUD curvature, aspect, and height survive save/reload");
     {
         std::ofstream file(primary);
@@ -16883,9 +16893,9 @@ int main()
         file << "hud_vertical_offset = -999\n";
     }
     ConfigLoad(primary.c_str());
-    Check(g_config.hud_curvature == kHudCurvatureMax &&
-          g_config.hud_aspect == kHudAspectMax &&
-          g_config.hud_vertical_offset == kHudHeightMin,
+    Check(g_config.title_profiles[0].hud_curvature == kHudCurvatureMax &&
+          g_config.title_profiles[0].hud_aspect == kHudAspectMax &&
+          g_config.title_profiles[0].hud_vertical_offset == kHudHeightMin,
         "Excessive HUD curvature, aspect, and height values are safely clamped");
 
     {
@@ -16949,10 +16959,11 @@ int main()
     const Config defaults{};
     Check(g_config.gun_scale == defaults.gun_scale &&
           g_config.resolution_scale == defaults.resolution_scale &&
-          g_config.hud_size == defaults.hud_size &&
-          g_config.hud_aspect == defaults.hud_aspect &&
-          g_config.hud_curvature == defaults.hud_curvature &&
-          g_config.hud_vertical_offset == defaults.hud_vertical_offset &&
+          // With no game running the live HUD layout is Reach's, which starts at its own.
+          g_config.hud_size == defaults.title_profiles[kTitleProfileReach].hud_size &&
+          g_config.hud_aspect == defaults.title_profiles[kTitleProfileReach].hud_aspect &&
+          g_config.hud_curvature == defaults.title_profiles[kTitleProfileReach].hud_curvature &&
+          g_config.hud_vertical_offset == defaults.title_profiles[kTitleProfileReach].hud_vertical_offset &&
           g_config.halo4_helmet == defaults.halo4_helmet &&
           g_config.scope_enabled &&
           g_config.scope_zoom == defaults.scope_zoom &&
