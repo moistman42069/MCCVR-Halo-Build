@@ -77,13 +77,14 @@ F1 opens settings; F3 recenters. L3+R3 together recenters and toggles F1.
 The launcher's VR SETTINGS button opens the same menu on your monitor, or run
 HaloMCCVRSettings.exe in this folder. It saves only while the game is closed.
 Point your main-hand controller at the VR settings panel and use its trigger.
-Controls holds input presets, which save your control scheme under a name, and
+Controls holds controls presets, which save your control scheme under a name, and
 VR Mappings, which detects the advertised controller profile and stores optional
 overrides separately per game, including Unbound. The current
 native transport still couples actions that share a native MCC button/action,
 so reload and use may not unbind independently.
-Reload and holsters is a section of Controls. Weapon & Aim, Vehicles, Picture and
-Subtitles group the other options.
+Controls holds only what a controls preset saves. Where the holster and reserve
+magazine sit on your body is in Body & Hands; two-handed aim tuning and left-handed
+play are in Weapon & Aim. Vehicles, Picture and Subtitles group the other options.
 Optional stock, physical crouch, reload and DLSS need runtime testing.
 
 DLSS uses compatible NVIDIA hardware. Missing/failed optional features preserve
