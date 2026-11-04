@@ -10,6 +10,8 @@
         if (g_config.virtual_stock)
         {
             const bool plusMode = VirtualStockUsesPlusMode(g_config);
+            {
+            SettingGroup stockMode("Virtual Stock mode", SettingGroup::kNameOnly);
             ImGui::Text("Mode");
             if (ImGui::RadioButton("Plus", plusMode))
             {
@@ -26,9 +28,12 @@
             }
             ImGui::TextDisabled(
                 "Keeps the gun more firmly anchored to the selected virtual stock point.");
+            }
 
             const bool shoulderReference =
                 VirtualStockUsesShoulderReference(g_config);
+            {
+            SettingGroup rearReference("Rear reference", SettingGroup::kNameOnly);
             ImGui::Text("Rear Reference");
             if (ImGui::RadioButton("Centre", !shoulderReference))
             {
@@ -44,6 +49,7 @@
             }
             ImGui::TextDisabled(
                 "Offsets the virtual stock point toward your firing shoulder.");
+            }
             float stockStrengthPercent =
                 VirtualStockActiveStrength(g_config) * 100.0f;
             if (vr_menu::SliderFloat("Virtual Stock Strength",
