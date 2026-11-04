@@ -470,15 +470,6 @@ namespace
         ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"(Singleplayer only) %s",what);
     }
 
-    // At the top of a section outside Controls whose settings all wait on one in Controls, and which is greyed out until
-    // it is on: what it needs, in the warning yellow.
-    void NeedsInControls(bool ready,const char* what)
-    {
-        if(ready) return;
-        ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1.f,.8f,.3f,1.f));
-        ImGui::TextWrapped("%s",what);
-        ImGui::PopStyleColor();
-    }
 
     // The next "User Preset N" after the highest one saved.
     std::string NextUserPresetName(const std::vector<std::string>& saved)
@@ -1115,31 +1106,6 @@ namespace
             }
         }
         }
-        // Neither the checkbox nor the depth re-samples the standing height: it is learned all the time,
-        // and only the Calibrate button takes the player's current height as their own word.
-        if (SectionHeader("Physical crouch depth##section", ImGuiTreeNodeFlags_None))
-        {
-            NeedsInControls(g_config.physical_crouch, "Needs Physical crouch on (Controls > Movement).");
-            ImGui::BeginDisabled(!g_config.physical_crouch);
-            {
-            SettingGroup crouchDepth("Physical crouch depth and calibration", SettingGroup::kNameOnly);
-            float crouchCm=g_config.physical_crouch_depth_m*100.f;
-            if(vr_menu::SliderFloat("Crouch activation depth",&crouchCm,8.f,65.f,"%.0f cm"))
-            {g_config.physical_crouch_depth_m=crouchCm*.01f;changed=true;}
-            SettingGap();
-            if(ImGui::Button("Calibrate crouch at my current height")) VR_RecalibratePhysicalCrouch();
-            ImGui::TextWrapped("Lower your head by the activation depth to crouch. Your standing height is learned "
-                "on its own: a few seconds standing normally sets it, and recentering, cutscenes and level loads "
-                "leave it alone. Playing seated? Press Calibrate while seated: the reference then stays at that "
-                "height, rising by at most a little under two thirds of the activation depth, so half-rising "
-                "never leaves you crouched. Smaller depths activate sooner. On foot only; button crouch remains "
-                "separate. Use MCC's hold-to-crouch setting; native toggle crouch is not overridden.");
-            if(Input_PhysicalCrouchRiseCapped())
-                ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"You stood taller than the reference learns on its own: "
-                    "press Calibrate while standing tall for the full crouch depth.");
-            }
-            ImGui::EndDisabled();
-        }
         if (SectionHeader("Controller vibration##section", ImGuiTreeNodeFlags_None))
         {
         float hapticPercent = g_config.haptic_intensity * 100.0f;
@@ -1296,7 +1262,32 @@ namespace
         }
         if(ImGui::Checkbox("Physical crouch",&g_config.physical_crouch))
             changed=true;
-        ImGui::TextDisabled("Lower your head to crouch. Depth and calibration are in Comfort > Roomscale.");
+        ImGui::TextDisabled("Lower your head to crouch.");
+        // Neither the checkbox nor the depth re-samples the standing height: it is learned all the time,
+        // and only the Calibrate button takes the player's current height as their own word.
+        if(g_config.physical_crouch)
+        {
+            ImGui::Indent();
+            SettingGap();
+            {
+            SettingGroup crouchDepth("Physical crouch depth and calibration", SettingGroup::kNameOnly);
+            float crouchCm=g_config.physical_crouch_depth_m*100.f;
+            if(vr_menu::SliderFloat("Crouch activation depth",&crouchCm,8.f,65.f,"%.0f cm"))
+            {g_config.physical_crouch_depth_m=crouchCm*.01f;changed=true;}
+            SettingGap();
+            if(ImGui::Button("Calibrate crouch at my current height")) VR_RecalibratePhysicalCrouch();
+            ImGui::TextWrapped("Lower your head by the activation depth to crouch. Your standing height is learned "
+                "on its own: a few seconds standing normally sets it, and recentering, cutscenes and level loads "
+                "leave it alone. Playing seated? Press Calibrate while seated: the reference then stays at that "
+                "height, rising by at most a little under two thirds of the activation depth, so half-rising "
+                "never leaves you crouched. Smaller depths activate sooner. On foot only; button crouch remains "
+                "separate. Use MCC's hold-to-crouch setting; native toggle crouch is not overridden.");
+            if(Input_PhysicalCrouchRiseCapped())
+                ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"You stood taller than the reference learns on its own: "
+                    "press Calibrate while standing tall for the full crouch depth.");
+            }
+            ImGui::Unindent();
+        }
         SettingGap();
         changed |= ImGui::Checkbox("Right stick crouches", &g_config.right_stick_crouch);
         ImGui::TextDisabled("On foot: push the right stick down to crouch and up to stand. Needs MCC's "

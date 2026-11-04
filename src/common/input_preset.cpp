@@ -72,6 +72,7 @@ constexpr FloatField kFloats[] = {
     {"dpad_head_radius", &Config::dpad_head_radius},
     {"physical_running_speed", &Config::physical_running_speed},
     {"physical_running_sensitivity", &Config::physical_running_sensitivity},
+    {"physical_crouch_depth_m", &Config::physical_crouch_depth_m},
     {"physical_melee_swing_speed", &Config::physical_melee_swing_speed},
     // Two-handed aiming, and where the support hand grabs the gun. The left hand's forward offset is saved for
     // each game with the gun position (Weapon & Aim), so it stays out.
