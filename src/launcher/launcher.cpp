@@ -1455,8 +1455,11 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
         // Reopen the newly installed launcher's menu. The separate Launch MCC
         // button is still required; installing an update never starts MCC.
         const auto updated = game.root / L"Halo_MCC_VR" / L"HaloMCCVRLauncher.exe";
-        // The launcher the update was started from updates where it is, too, when the menu asked for that.
-        if (std::wstring problem; !openedLauncher.empty() && !mcc_installer::RefreshLauncherCopy(updated, payload, openedLauncher, problem))
+        // The launcher the update was started from updates where it is, too, when the menu asked for that. Not the
+        // Project Reclaimer launcher (this helper is a copy of it then): no package carries one to update it from, and
+        // the MCC launcher in its place would open this menu instead of starting Project Reclaimer.
+        if (std::wstring problem; !HALOMCCVR_RECLAIMER_LAUNCHER && !openedLauncher.empty() &&
+            !mcc_installer::RefreshLauncherCopy(updated, payload, openedLauncher, problem))
             MessageBoxW(nullptr, (L"The update is installed, but the launcher at\n" + openedLauncher.wstring() + L"\ncould not be updated, so it stays at its old version.\n\n" + problem).c_str(), L"Halo MCC VR update", MB_OK | MB_ICONWARNING);
         std::wstring command = L"\"" + updated.wstring() + L"\"";
         STARTUPINFOW startup{sizeof(startup)};

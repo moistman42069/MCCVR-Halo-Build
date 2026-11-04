@@ -314,6 +314,21 @@ int wmain(int argc,wchar_t** argv) {
             Write(freshPayload / "LICENSE", "damaged");
             Require(!RefreshLauncherCopy(installedLauncher, freshPayload, package, problem) && !problem.empty(), "a damaged payload is refused");
             Require(Read(package) == "old launcher" && fs::exists(packageMod / "old.txt") && std::distance(fs::directory_iterator(package.parent_path()), fs::directory_iterator{}) == 2, "a refused refresh leaves the folder as it was");
+            Write(freshPayload / "LICENSE", "new"); problem.clear();
+            {
+                std::ifstream held(packageMod / "old.txt"); // a file in use: ModFiles cannot be moved aside
+                Require(!RefreshLauncherCopy(installedLauncher, freshPayload, package, problem) && !problem.empty(), "ModFiles that cannot be replaced are reported");
+            }
+            bool leftovers = false;
+            for (const auto& entry : fs::directory_iterator(package.parent_path()))
+                leftovers = leftovers || entry.path().filename().wstring().find(L".new-") != std::wstring::npos || entry.path().filename().wstring().find(L".old-") != std::wstring::npos;
+            Require(Read(package) == "old launcher" && fs::exists(packageMod / "old.txt") && !leftovers, "the launcher goes back to match ModFiles that could not follow");
+            problem.clear();
+            {
+                std::ifstream held(package); // the launcher in use: it cannot be replaced
+                Require(!RefreshLauncherCopy(installedLauncher, freshPayload, package, problem) && !problem.empty(), "a launcher that cannot be replaced is reported");
+            }
+            Require(Read(package) == "old launcher" && fs::exists(packageMod / "old.txt") && !fs::exists(packageMod / "HaloMCCVR.dll"), "ModFiles stay as they were when the launcher cannot be replaced");
         }
         Require(fs::equivalent(sandbox.parent_path(), fs::temp_directory_path()) && sandbox.filename().wstring().starts_with(L"HaloMCCVR-installer-test-"), "safe fixture cleanup boundary");
         fs::remove_all(sandbox);

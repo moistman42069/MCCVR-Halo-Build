@@ -4,12 +4,14 @@
 // Lab-only rows stay out of normal navigation.
         ImGui::Spacing();
         ImGui::Separator();
-        if (ImGui::CollapsingHeader("Virtual Stock##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Virtual Stock##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Virtual Stock", &g_config.virtual_stock);
         if (g_config.virtual_stock)
         {
             const bool plusMode = VirtualStockUsesPlusMode(g_config);
+            {
+            SettingGroup stockMode("Virtual Stock mode", SettingGroup::kNameOnly);
             ImGui::Text("Mode");
             if (ImGui::RadioButton("Plus", plusMode))
             {
@@ -26,9 +28,12 @@
             }
             ImGui::TextDisabled(
                 "Keeps the gun more firmly anchored to the selected virtual stock point.");
+            }
 
             const bool shoulderReference =
                 VirtualStockUsesShoulderReference(g_config);
+            {
+            SettingGroup rearReference("Rear reference", SettingGroup::kNameOnly);
             ImGui::Text("Rear Reference");
             if (ImGui::RadioButton("Centre", !shoulderReference))
             {
@@ -44,6 +49,7 @@
             }
             ImGui::TextDisabled(
                 "Offsets the virtual stock point toward your firing shoulder.");
+            }
             float stockStrengthPercent =
                 VirtualStockActiveStrength(g_config) * 100.0f;
             if (vr_menu::SliderFloat("Virtual Stock Strength",

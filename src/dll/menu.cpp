@@ -166,14 +166,16 @@ namespace
     // each page once, out of sight and with every section open, while Dear ImGui reports each item's name
     // (imgui_item_hooks.h). Settings that only appear once another is turned on are found while they are showing.
     // Controls side by side on one row are one result, found by any of their names, and so are a SettingGroup's.
-    // Its notes, the text drawn under it, are searched too.
+    // Its notes, the text drawn under it, are searched too. It is known by its whole Dear ImGui label (key), which tells
+    // apart controls of one name such as each hand's offsets, and shown by the visible part (label).
     struct SettingEntry
     {
-        int page; std::string section, label; std::vector<std::string> alsoOnRow; float rowTop=0.0f; std::string notes;
+        int page; std::string section, key, label; std::vector<std::string> alsoOnRow; float rowTop=0.0f; std::string notes;
     };
     std::vector<SettingEntry> g_settingIndex;
     bool g_indexing=false, g_indexBuilt=false;
-    int g_indexBuilds=0; // tells the results when the index was built again
+    int g_indexBuilds=0; // tells the results when the index has grown or was built again
+    int g_indexNextPage=0; // the index reads one page a frame, so starting a search never stalls a frame in the headset
     std::vector<int> g_sectionOwners; // the pages whose sections are being drawn, innermost last
     std::string g_currentSection;
     char g_searchQuery[96]="";
@@ -181,7 +183,7 @@ namespace
     // next one so its notes come along, flashes a few times. Where it is on screen is measured each frame as it is drawn.
     struct SettingJump
     {
-        int page=-1; std::string section, label; bool active=false, scrolled=false; double start=0.0;
+        int page=-1; std::string section, key; bool active=false, scrolled=false; double start=0.0;
         float top=-1.0f, bottom=0.0f, next=-1.0f;
     } g_jump;
     // Each result shows its setting live: the setting's page, drawn in a small window scrolled to just that setting.
@@ -220,13 +222,23 @@ namespace
     // The page a setting being drawn belongs to: its section's own page where it is shown on another.
     int SettingPage(){return g_sectionOwners.empty()?g_activeCategory:g_sectionOwners.back();}
 
+    // Whether what opens in the section being drawn must be open: for the index, a result, or a jump into the section.
+    bool OpenForSearch()
+    {
+        return g_indexing||g_drawingResult||(g_jump.active&&!g_jump.scrolled&&g_jump.page==SettingPage()&&g_jump.section==g_currentSection);
+    }
     // Every section header: it names the section of the settings below it, and opens for the index or a jump to it.
     bool SectionHeader(const char* label,ImGuiTreeNodeFlags flags=0)
     {
         g_currentSection=VisibleName(label);
-        if(g_indexing||g_drawingResult||(g_jump.active&&!g_jump.scrolled&&g_jump.page==SettingPage()&&g_jump.section==g_currentSection))
-            ImGui::SetNextItemOpen(true);
+        if(OpenForSearch()) ImGui::SetNextItemOpen(true);
         return ImGui::CollapsingHeader(label,flags);
+    }
+    // A tree node within a section, opened the same way so that the settings inside it are found.
+    bool SettingTreeNode(const char* label)
+    {
+        if(OpenForSearch()) ImGui::SetNextItemOpen(true);
+        return ImGui::TreeNode(label);
     }
 
 
@@ -250,10 +262,14 @@ namespace
 
     // While the index is built, Dear ImGui's log keeps the text it draws. A setting's notes are the text after it, up to
     // the next item that is not plain text.
+    // Text after a section header (or a group), before the first setting, introduces what follows: it is kept as a
+    // lead-in and goes to the next setting found.
+    constexpr int kLeadIn=-2;
     struct NoteCapture { int entry=-1, from=0, to=-1; } g_notes;
+    std::string g_leadIn;
     void NoteItemAdded(ImGuiID)
     {
-        if(g_notes.entry>=0&&g_notes.to<0) g_notes.to=GImGui->LogBuffer.size();
+        if(g_notes.entry!=-1&&g_notes.to<0) g_notes.to=GImGui->LogBuffer.size();
     }
     void AppendNotes(std::string& notes,int from,int to)
     {
@@ -268,43 +284,57 @@ namespace
     }
     void KeepNotes()
     {
-        if(g_notes.entry<0) return;
-        AppendNotes(g_settingIndex[g_notes.entry].notes,g_notes.from,g_notes.to>=0?g_notes.to:GImGui->LogBuffer.size());
+        if(g_notes.entry==-1) return;
+        AppendNotes(g_notes.entry==kLeadIn?g_leadIn:g_settingIndex[g_notes.entry].notes,g_notes.from,
+            g_notes.to>=0?g_notes.to:GImGui->LogBuffer.size());
         g_notes.entry=-1;
+    }
+    // A section shown on another page as well (CategorySection's alsoIn) may be named differently there; it is indexed
+    // as its own page draws it, which is where a result's button takes the player.
+    bool BorrowedSection(){return g_activeCategory!=SettingPage();}
+    void AddSetting(std::string key,std::string label,float top)
+    {
+        g_settingIndex.push_back({SettingPage(),g_currentSection,std::move(key),std::move(label),{},top,std::move(g_leadIn)});
+        g_leadIn.clear();
+    }
+    bool Indexed(int page,const std::string& section,const char* key)
+    {
+        return std::any_of(g_settingIndex.begin(),g_settingIndex.end(),
+            [&](const SettingEntry& e){return e.page==page&&e.key==key&&e.section==section;});
     }
 
     // Several controls that one description covers, marked where the page draws them. Search finds them as one
-    // setting, named by the title the group draws above them and found by any of their names or the text inside, and a
-    // result or a jump shows and flashes the whole group. Groups do not nest.
+    // setting, named by the group's title and found by any of their names or the text inside, and a result or a jump
+    // shows and flashes the whole group. The group draws its title above them, or with kNameOnly only names them for
+    // search (the page's own text then says what they are). Groups do not nest, and a title is unique in its section.
     struct SettingGroup
     {
-        explicit SettingGroup(const char* title)
+        static constexpr bool kNameOnly=false;
+        explicit SettingGroup(const char* title,bool drawTitle=true)
         {
             const ImGuiWindow* window=GImGui->CurrentWindow;
             const float y=window->DC.CursorPos.y,top=y-window->DC.CursorStartPos.y;
-            const auto isThis=[&](int page,const std::string& section,const std::string& label)
-                {return SettingPage()==page&&g_currentSection==section&&label==title;};
+            const auto isThis=[&](int page,const std::string& section,const std::string& key)
+                {return SettingPage()==page&&g_currentSection==section&&key==title;};
             if(g_indexing)
             {
                 KeepNotes(); // the setting before ends where the group starts
-                const bool known=std::any_of(g_settingIndex.begin(),g_settingIndex.end(),
-                    [&](const SettingEntry& e){return isThis(e.page,e.section,e.label);});
-                if(!known)
+                if(!BorrowedSection()&&!Indexed(SettingPage(),g_currentSection,title))
                 {
-                    g_settingIndex.push_back({SettingPage(),g_currentSection,title,{},top});
+                    AddSetting(title,title,top);
                     entry=static_cast<int>(g_settingIndex.size())-1;notesFrom=GImGui->LogBuffer.size();
                 }
             }
             else if(g_drawingResult)
             {
                 const SettingEntry& e=*g_measure.entry;
-                if(g_measure.top<0.0f&&isThis(e.page,e.section,e.label))
+                if(g_measure.top<0.0f&&isThis(e.page,e.section,e.key))
                 {g_measure.top=top;g_measure.bottom=FLT_MAX;measured=true;}
                 else if(g_measure.top>=0.0f&&g_measure.next<0.0f&&top>=g_measure.bottom-1.0f) g_measure.next=top;
             }
             else if(g_jump.active)
             {
-                if(g_jump.top<0.0f&&isThis(g_jump.page,g_jump.section,g_jump.label))
+                if(g_jump.top<0.0f&&isThis(g_jump.page,g_jump.section,g_jump.key))
                 {
                     if(!g_jump.scrolled)
                     {ImGui::SetScrollFromPosY(y-window->Pos.y,0.25f);g_jump.scrolled=true;g_jump.start=ImGui::GetTime();}
@@ -313,7 +343,7 @@ namespace
                 else if(g_jump.top>=0.0f&&g_jump.next<0.0f&&y>=g_jump.bottom-1.0f) g_jump.next=y;
             }
             g_openGroup=this;
-            ImGui::Text("%s:",title);
+            if(drawTitle) ImGui::Text("%s:",title);
         }
         ~SettingGroup()
         {
@@ -321,6 +351,7 @@ namespace
             const ImGuiWindow* window=GImGui->CurrentWindow;
             const float y=window->DC.CursorPos.y;
             if(entry>=0) AppendNotes(g_settingIndex[entry].notes,notesFrom,GImGui->LogBuffer.size());
+            if(g_indexing) {g_leadIn.clear();g_notes={kLeadIn,GImGui->LogBuffer.size()};}
             if(measured) g_measure.next=y-window->DC.CursorStartPos.y;
             if(jumpedTo) g_jump.next=y;
         }
@@ -335,7 +366,12 @@ namespace
     void IndexSetting(ImGuiID,const char* label,int flags)
     {
         KeepNotes();
-        if(flags&ImGuiItemStatusFlags_Openable) return; // a section header, which the section name already covers
+        if(flags&ImGuiItemStatusFlags_Openable) // a section header, which the section name already covers
+        {
+            g_leadIn.clear();
+            if(!SettingGroup::g_openGroup) g_notes={kLeadIn,GImGui->LogBuffer.size()}; // a group keeps its own text
+            return;
+        }
         const std::string name=VisibleName(label);
         if(name.empty()||name=="decrease"||name=="increase") return; // a slider's arrow buttons
         if(SettingGroup* group=SettingGroup::g_openGroup)
@@ -348,8 +384,7 @@ namespace
             return;
         }
         const int page=SettingPage();
-        for(const auto& entry:g_settingIndex)
-            if(entry.page==page&&entry.label==name&&entry.section==g_currentSection) return;
+        if(BorrowedSection()||Indexed(page,g_currentSection,label)) return;
         const ImGuiWindow* window=GImGui->CurrentWindow;
         const float top=GImGui->LastItemData.Rect.Min.y-window->DC.CursorStartPos.y;
         if(!g_settingIndex.empty())
@@ -362,7 +397,7 @@ namespace
                 return;
             }
         }
-        g_settingIndex.push_back({page,g_currentSection,name,{},top});
+        AddSetting(label,name,top);
         g_notes={static_cast<int>(g_settingIndex.size())-1,GImGui->LogBuffer.size()};
     }
 
@@ -371,7 +406,7 @@ namespace
         const ImRect r=GImGui->LastItemData.Rect;
         if(g_jump.top<0.0f)
         {
-            if(SettingPage()!=g_jump.page||g_currentSection!=g_jump.section||VisibleName(label)!=g_jump.label) return;
+            if(SettingPage()!=g_jump.page||g_jump.key!=label||g_currentSection!=g_jump.section) return;
             if(!g_jump.scrolled){ImGui::SetScrollHereY(0.25f);g_jump.scrolled=true;g_jump.start=ImGui::GetTime();}
             g_jump.top=r.Min.y;g_jump.bottom=r.Max.y;
         }
@@ -414,7 +449,7 @@ namespace
         const SettingEntry& e=*g_measure.entry;
         if(g_measure.top<0.0f)
         {
-            if(SettingPage()==e.page&&g_currentSection==e.section&&VisibleName(label)==e.label)
+            if(SettingPage()==e.page&&e.key==label&&g_currentSection==e.section)
             {g_measure.top=top;g_measure.bottom=r.Max.y-window->DC.CursorStartPos.y;}
         }
         else if(g_measure.next<0.0f&&top>=g_measure.bottom-1.0f) g_measure.next=top;
@@ -955,15 +990,20 @@ namespace
         // These two used to stop at 10 m even though the config file accepts 20,
         // so a value typed into halomccvr.cfg could not be reached or restored
         // from the menu. The slider now spans the file's own range.
+        {
+        SettingGroup flatScreen("Flat screen size and distance", SettingGroup::kNameOnly);
         changed |= vr_menu::SliderFloat("Screen width (m)", &g_config.screen_width_m, 0.5f, 20.0f, "%.1f");
         changed |= vr_menu::SliderFloat("Screen distance (m)", &g_config.screen_distance_m, 0.3f, 20.0f, "%.1f");
         ImGui::TextDisabled("The flat screen the game is shown on in menus and 2D mode.\n"
                             "This is NOT the F1 panel; that one lives under Advanced.");
+        }
         // A host that draws its own UI over the game's frame (Project Reclaimer): its menus, scoreboard and chat
         // as a panel in front of the 3D picture.
         if (g_hostOwnsRenderSize)
         {
             ImGui::Spacing();
+            {
+            SettingGroup hostPanel("Project Reclaimer's menus and on-screen items", SettingGroup::kNameOnly);
             ImGui::Text("Project Reclaimer's menus and on-screen items");
             changed |= ImGui::Checkbox("Show them as a panel over the 3D picture", &g_config.host_ui_panel);
             if (ImGui::IsItemHovered())
@@ -975,12 +1015,15 @@ namespace
             changed |= vr_menu::SliderFloat("Panel distance (m)", &g_config.host_ui_panel_distance_m, 0.3f, 20.0f,
                                             "%.1f");
             ImGui::EndDisabled();
+            }
         }
         ImGui::Spacing();
         ImGui::Separator();
         }
         if (SectionHeader("World scale##section", ImGuiTreeNodeFlags_None))
         {
+            {
+            SettingGroup scaleGroup("World scale", SettingGroup::kNameOnly);
             float worldScale=Game_GetWorldScale()/.33f*100.f;
             if (vr_menu::SliderFloat("World scale", &worldScale, 50.f, 150.f, "%.0f%%"))
             {
@@ -992,6 +1035,7 @@ namespace
                 changed=true;
             }
             ImGui::TextDisabled("100% is the original scale. Saved separately for each game.");
+            }
         }
         if (SectionHeader("Head motion##section", ImGuiTreeNodeFlags_None))
         {
@@ -1063,6 +1107,8 @@ namespace
         // and only the Calibrate button takes the player's current height as their own word.
         if(g_config.physical_crouch)
         {
+            {
+            SettingGroup crouchDepth("Physical crouch depth and calibration", SettingGroup::kNameOnly);
             float crouchCm=g_config.physical_crouch_depth_m*100.f;
             if(vr_menu::SliderFloat("Crouch activation depth",&crouchCm,8.f,65.f,"%.0f cm"))
             {g_config.physical_crouch_depth_m=crouchCm*.01f;changed=true;}
@@ -1076,6 +1122,7 @@ namespace
             if(Input_PhysicalCrouchRiseCapped())
                 ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"You stood taller than the reference learns on its own: "
                     "press Calibrate while standing tall for the full crouch depth.");
+            }
         }
         if(!g_config.physical_crouch)
             ImGui::TextDisabled("Physical crouch is off (Controls > Movement).");
@@ -1125,6 +1172,8 @@ namespace
         ImGui::Separator();
         if (SectionHeader("Stereo depth##section", ImGuiTreeNodeFlags_None))
         {
+        {
+        SettingGroup stereoDepth("Stereo depth", SettingGroup::kNameOnly);
         float depthPercent = g_config.cutscene_theater_depth * 100.0f;
         if (vr_menu::SliderFloat(
                 "Depth", &depthPercent, 0.0f, 200.0f, "%.0f%%"))
@@ -1138,11 +1187,14 @@ namespace
         ImGui::TextDisabled(
             "0%% is flat, 100%% uses your headset's natural eye spacing, "
             "and 200%% doubles the separation. Flip only if depth looks reversed.");
+        }
         ImGui::Spacing();
         ImGui::Separator();
         }
         if (SectionHeader("Room-fixed screen##section", ImGuiTreeNodeFlags_None))
         {
+        {
+        SettingGroup theatreScreen("Theatre screen size", SettingGroup::kNameOnly);
         changed |= vr_menu::SliderFloat(
             "Screen width (m)##theatre",
             &g_config.cutscene_theater_width_m, 0.5f, 20.0f, "%.1f");
@@ -1152,11 +1204,14 @@ namespace
         ImGui::TextDisabled(
             "Defaults: 6.0 m wide at 4.0 m away. Height follows the authored "
             "cinematic projection.");
+        }
         ImGui::Spacing();
         ImGui::Separator();
         }
         if (SectionHeader("Black cine bars##section", ImGuiTreeNodeFlags_None))
         {
+        {
+        SettingGroup cineBars("Cine bars", SettingGroup::kNameOnly);
         bool matteOn = g_config.cutscene_theater_matte_aspect > 0.0f;
         if (ImGui::Checkbox("Show cine bars", &matteOn))
         {
@@ -1177,6 +1232,7 @@ namespace
             "so without bars you see scene above and below the intended shot.\n"
             "1.78 is a TV picture, 2.39 a wide cinema crop. The picture is never "
             "resized, only covered. Slide moves what stays showing up or down.");
+        }
         ImGui::Spacing();
         ImGui::Separator();
         }
@@ -1214,6 +1270,8 @@ namespace
         ImGui::Spacing();
         if (SectionHeader("Movement##section", ImGuiTreeNodeFlags_None))
         {
+        {
+        SettingGroup running("Physical running", SettingGroup::kNameOnly);
         changed |= ImGui::Checkbox("Physical running", &g_config.physical_running);
         if(g_config.physical_running) {
             SettingGap();
@@ -1221,6 +1279,7 @@ namespace
             SettingGap();
             changed |= vr_menu::SliderFloat("Running sensitivity",&g_config.physical_running_sensitivity,.25f,3.f,"%.2f");
             ImGui::TextWrapped("Alternate both arms to move forward while on foot. Speed is a fraction of the game's normal maximum. While running, arm motion takes over the movement stick. Menus and vehicles keep their normal controls.");
+        }
         }
         if(ImGui::Checkbox("Physical crouch",&g_config.physical_crouch))
             changed=true;
@@ -1248,11 +1307,15 @@ namespace
         changed |= ImGui::Checkbox("Automatically smooth turn in vehicles", &g_config.vehicle_smooth_turn);
         ImGui::TextDisabled("Uses your smooth turn speed while seated. Exiting restores your normal turn mode.");
         if (g_config.turn_smooth || g_config.vehicle_smooth_turn)
+        {
             SettingGap();
             changed |= vr_menu::SliderFloat("Turn speed (deg/s)", &g_config.turn_smooth_deg_s, 30.0f, 360.0f, "%.0f");
+        }
         if (!g_config.turn_smooth)
+        {
             SettingGap();
             changed |= vr_menu::SliderFloat("Snap increment (deg)", &g_config.turn_snap_deg, 5.0f, 90.0f, "%.0f");
+        }
 
         ImGui::Spacing();
         }
@@ -1417,6 +1480,8 @@ namespace
             ImGui::TextDisabled("%s", Game_ReclaimerFlightStatus());
             ImGui::Spacing();
         }
+        {
+        SettingGroup seatCamera("Seat camera position", SettingGroup::kNameOnly);
         static int vehicleGame=0;
         static GameTitle previousVehicleTitle=GameTitle::None;
         const auto activeVehicleTitle=TitleAdapter_GetActiveTitle();
@@ -1643,6 +1708,7 @@ namespace
             "of it that Halo 3 and ODST travel; vehicle and occupant motion "
             "are parented around that baseline.\n"
             "Left/right: negative moves left, positive moves right.");
+        }
         ImGui::Spacing();
         ImGui::Separator();
         }
@@ -1785,6 +1851,8 @@ namespace
             "ODST: only with vehicle cameras on.\n"
             "Reach: only with vehicle cameras on, and Motion or Wheel only (Stick "
             "keeps Reach's own rule there).");
+        {
+        SettingGroup aimBehind("Ignore aim behind the vehicle", SettingGroup::kNameOnly);
         changed |= vr_menu::SliderFloat("Ignore aim behind, within (m)",
             &g_config.vehicle_aim_reject_metres, 0.0f, 20.0f, "%.1f");
         changed |= vr_menu::SliderFloat("Behind is a dot below",
@@ -1796,6 +1864,7 @@ namespace
             "easily lands on the ground just behind it. Measured along the "
             "vehicle's own floor; 0 m = off. Behind: -0.5 = more than 120 "
             "degrees off the nose, 0 = more than 90, -1 = nothing.");
+        }
         ImGui::Spacing();
         ImGui::Separator();
         }
@@ -1816,6 +1885,8 @@ namespace
             &g_config.vehicle_wheel_deadzone_deg, 0.0f, 30.0f, "%.0f");
         ImGui::Spacing();
         ImGui::Separator();
+        {
+        SettingGroup vehicleCameras("Vehicle cameras (every title)", SettingGroup::kNameOnly);
         ImGui::Text("Vehicle cameras (every title)");
         changed |= ImGui::Checkbox("Cameras from halomccvr_vehicle_cameras.json",
                                    &g_config.vehicle_cameras);
@@ -1845,6 +1916,7 @@ namespace
             "are Halo 3's only for now.\n"
             "Halo 4: the same, and its seats steer by your hand (no Stick or "
             "Wheel); a camera turns with the vehicle's heading only.");
+        }
         if (g_config.vehicle_cameras)
         {
             if (ImGui::Button("Next camera"))
@@ -1863,6 +1935,8 @@ namespace
             bool lagTuned = false;
             if (Game_VehicleCameraLag(lagSeconds, lagDamping, lagTuned))
             {
+                {
+                SettingGroup cameraLag("Camera lag (this camera)", SettingGroup::kNameOnly);
                 bool lagChanged = vr_menu::SliderFloat("Camera lag (s)", &lagSeconds, 0.0f, 2.0f, "%.2f");
                 lagChanged |= vr_menu::SliderFloat("Lag damping", &lagDamping, 0.1f, 2.0f, "%.2f");
                 if (lagChanged)
@@ -1874,6 +1948,7 @@ namespace
                     "with a turn or a bump (0 = rigid). Damping 1 settles "
                     "without overshoot; lower swings past and back. Kept for "
                     "this camera in halomccvr_vehicle_cameras_tuning.txt.");
+                }
             }
             else
             {
@@ -1894,6 +1969,8 @@ namespace
                     : "The game's camera track could not be read for this seat, so "
                       "the camera orbits the game's pivot at the game's distance.");
             }
+            {
+            SettingGroup boom("Third-person boom", SettingGroup::kNameOnly);
             changed |= vr_menu::SliderFloat("Third-person boom speed (deg/s)",
                 &g_config.vehicle_boom_rate_deg_s, 5.0f, 360.0f, "%.0f");
             int boomInvert = g_config.vehicle_boom_invert + 1;
@@ -1910,6 +1987,7 @@ namespace
                 "stick does not aim (your hand or the wheel does). It never "
                 "follows your aim. Each seat and camera keeps its angle; hold "
                 "left X or Y to put it back.");
+            }
         }
         }
         }
@@ -1918,6 +1996,8 @@ namespace
         {
         if (SectionHeader("Reload and holsters##section", ImGuiTreeNodeFlags_None))
         {
+        {
+        SettingGroup dualShake("Dual-wield shake reload", SettingGroup::kNameOnly);
         changed |= ImGui::Checkbox("dual wield shake reload", &g_config.dual_wield_shake_reload);
         ImGui::TextDisabled("shake to reload a weapon when dual wielding");
         if(g_config.dual_wield_shake_reload)
@@ -1928,6 +2008,7 @@ namespace
             ImGui::TextDisabled("Shake a hand back and forth once: it presses that hand's reload button.\n"
                 "Halo 3: either hand. Halo 2: the right-hand gun only for now.\n"
                 "Let the hand settle before shaking again.");
+        }
         }
         SettingGap();
         changed |= ImGui::Checkbox("Manual Reload", &g_config.manual_reload);
@@ -1957,12 +2038,15 @@ namespace
                 &g_config.weapon_body_zone_radius_m,0.08f,0.40f,"%.2f");
             changed|=Combo("Reserve magazine location",&g_config.weapon_pouch_location,
                 "Support-side front hip\0Behind support shoulder\0");
-            if(ImGui::TreeNode("Reserve magazine position"))
+            if(SettingTreeNode("Reserve magazine position"))
             {
+                {
+                SettingGroup reserveOffsets("Reserve magazine offsets", SettingGroup::kNameOnly);
                 changed|=vr_menu::SliderFloat("Reserve side offset (m)",&g_config.weapon_pouch_offset_x_m,-.40f,.40f,"%.3f");
                 changed|=vr_menu::SliderFloat("Reserve height offset (m)",&g_config.weapon_pouch_offset_y_m,-.40f,.40f,"%.3f");
                 changed|=vr_menu::SliderFloat("Reserve forward offset (m)",&g_config.weapon_pouch_offset_z_m,-.40f,.40f,"%.3f");
                 ImGui::TextWrapped("Offsets follow your body direction. Positive side moves toward the weapon hand; left-handed mode mirrors it.");
+                }
                 ImGui::TreePop();
             }
             SettingGap();
@@ -1973,6 +2057,8 @@ namespace
             ImGui::TextDisabled("Detected unfamiliar weapons use a blue reload item.\n"
                 "Native ammo and reload rules still apply; it is not the mod's own mesh.");
             SettingGap();
+            {
+            SettingGroup needleShake("Needle shake reload", SettingGroup::kNameOnly);
             changed |= ImGui::Checkbox("Shake to reload needle weapons", &g_config.weapon_needler_shake);
             if(g_config.weapon_needler_shake)
             {
@@ -1983,6 +2069,7 @@ namespace
                     "Quickly shake the gun hand back and forth once in any direction.\n"
                     "No grip needed. Let your hand settle before another shake.\n"
                     "Unrecognized weapon models keep regular controls.");
+            }
             }
         }
         SettingGap();
@@ -2079,6 +2166,8 @@ namespace
                     &g_config.weapon_holster_custom_z_m, -0.80f, 0.80f, "%.2f");
             }
             SettingGap();
+            {
+            SettingGroup holsterGestures("Holster gestures", SettingGroup::kNameOnly);
             changed |= ImGui::Checkbox("Holster slide / draw gesture", &g_config.weapon_holster_slide);
             SettingGap();
             changed |= ImGui::Checkbox("Holster click gesture", &g_config.weapon_holster_click);
@@ -2086,9 +2175,11 @@ namespace
             changed |= vr_menu::SliderFloat("Holster grab radius (m)",
                 &g_config.weapon_holster_radius_m,0.08f,0.40f,"%.2f");
             if(g_config.weapon_holster_slide&&!g_config.weapon_holster_click)
+            {
                 SettingGap();
                 changed |= vr_menu::SliderFloat("Minimum holster draw distance (m)",
                     &g_config.weapon_holster_draw_m,0.10f,0.50f,"%.2f");
+            }
             ImGui::TextDisabled("Click: squeeze your weapon grip inside the holster to switch.\n"
                 "Slide: hold that grip and draw out of the zone to switch.\n"
                 "With both enabled, click switches immediately. Release before repeating.\n"
@@ -2096,6 +2187,7 @@ namespace
                 "The holster is a gesture zone; no extra weapon model is shown.");
             if(!g_config.weapon_holster_slide&&!g_config.weapon_holster_click)
                 ImGui::TextDisabled("Choose a gesture to enable holster switching.");
+            }
         }
         if (g_config.manual_reload || g_config.weapon_holsters)
         {
@@ -2206,18 +2298,24 @@ namespace
             changed |= Combo("Hands##handsmoothing", &g_config.hand_smoothing_hands,
                                     "Both hands\0Only the hand I aim with\0Only my other hand\0");
             ImGui::TextDisabled("\"Only my other hand\" steadies two-handed holds and the arms with no lag on your aim.");
+            {
+            SettingGroup steadiness("Steadiness while the hand is still", SettingGroup::kNameOnly);
             changed |= vr_menu::SliderFloat("Position steadiness (Hz)", &g_config.hand_smoothing_pos_min_hz,
                                           0.0f, 10.0f, "%.2f");
             changed |= vr_menu::SliderFloat("Rotation steadiness (Hz)", &g_config.hand_smoothing_rot_min_hz,
                                           0.0f, 10.0f, "%.2f");
             ImGui::TextDisabled("While the hand is still. Lower is steadier but slower to follow a slow move or a "
                                 "slow aim. 0 turns that half off.");
+            }
+            {
+            SettingGroup followSpeed("Follow speed", SettingGroup::kNameOnly);
             changed |= vr_menu::SliderFloat("Position follow speed", &g_config.hand_smoothing_pos_beta,
                                           0.0f, 2000.0f, "%.0f");
             changed |= vr_menu::SliderFloat("Rotation follow speed", &g_config.hand_smoothing_rot_beta,
                                           0.0f, 50.0f, "%.1f");
             ImGui::TextDisabled("How quickly smoothing lets go as the hand moves or turns faster. Raise it if slow "
                                 "moves feel laggy; lower it if a moving hand still shakes.");
+            }
             changed |= vr_menu::SliderFloat("Speed estimate smoothing (Hz)", &g_config.hand_smoothing_speed_cutoff_hz,
                                           0.1f, 100.0f, "%.1f");
             if (ImGui::Button("Defaults##handsmoothing"))
@@ -2251,6 +2349,8 @@ namespace
         ImGui::SameLine();
         ImGui::TextDisabled(VR_IsTwoHandAiming() ? "[engaged]" : "[one-handed]");
         SettingGap();
+        {
+        SettingGroup leftHanded("Left-handed play", SettingGroup::kNameOnly);
         changed |= ImGui::Checkbox("Left-handed main weapon", &g_config.left_handed);
         if (g_config.left_handed)
         {
@@ -2264,6 +2364,7 @@ namespace
         }
         ImGui::TextDisabled("Main weapon, aiming and trigger follow your left hand.\n"
                             "Your right hand supports the weapon or holds the second gun.");
+        }
         if (g_config.two_handed_aim)
         {
             ImGui::Indent();
@@ -2273,6 +2374,8 @@ namespace
                                 "third-person, death and Monitor cameras, cutscenes): your main hand "
                                 "aims alone. A grip held through it needs a fresh grip in first person.");
             SettingGap();
+            {
+            SettingGroup steersBy("When gripping, your support hand steers the aim", SettingGroup::kNameOnly);
             ImGui::Text("When gripping, your support hand steers the aim:");
             if (ImGui::RadioButton("Based on the weapon##twohandaimby", g_config.two_hand_grip_zone_authority))
             { g_config.two_hand_grip_zone_authority = true; changed = true; }
@@ -2290,6 +2393,7 @@ namespace
                     "Hands far apart: your support hand steers the aim.\n"
                     "Hands close together: it holds the gun, but your main hand aims alone.\n"
                     "A controller tracking drop-out can make your hands read as far apart and switch this for a moment.");
+            }
             float oneHandRangeCm = g_config.two_hand_one_hand_range_m * 100.0f;
             SettingGap();
             if (vr_menu::SliderFloat("One-handed aim range", &oneHandRangeCm, 6.0f, 48.0f, "%.0f cm",
@@ -2310,12 +2414,15 @@ namespace
                     oneHandRangeCm * (0.12f / 0.24f));
             ImGui::Spacing();
             SettingGap();
+            {
+            SettingGroup gripMode("Grip mode", SettingGroup::kNameOnly);
             ImGui::Text("Grip mode");
             if (ImGui::RadioButton("Toggle (click grip)", g_config.two_hand_toggle))
             { g_config.two_hand_toggle = true; changed = true; }
             ImGui::SameLine();
             if (ImGui::RadioButton("Hold grip", !g_config.two_hand_toggle))
             { g_config.two_hand_toggle = false; changed = true; }
+            }
             ImGui::Spacing();
             SettingGap();
             changed |= ImGui::Checkbox("Persistent support grip",
@@ -2427,6 +2534,8 @@ namespace
         }
         if (SectionHeader("Visual gun alignment##section", ImGuiTreeNodeFlags_None))
         {
+        {
+        SettingGroup rotation("Visual gun rotation", SettingGroup::kNameOnly);
         changed |= vr_menu::SliderFloat("Gun alignment pitch (deg)", &g_config.barrel_pitch_deg, -180.0f, 180.0f, "%.1f");
         changed |= vr_menu::SliderFloat("Gun alignment yaw (deg)", &g_config.barrel_yaw_deg, -180.0f, 180.0f, "%.1f");
         changed |= vr_menu::SliderFloat("Gun alignment roll (deg)", &g_config.barrel_roll_deg, -180.0f, 180.0f, "%.1f");
@@ -2440,6 +2549,12 @@ namespace
         ImGui::TextDisabled("Align the visible barrel with the crosshair. These rotations "
                             "move the gun and hands without changing the aiming ray.\n"
                             "Saved separately for each game; zero restores automatic alignment.");
+        ImGui::TextDisabled("Visual rotations are separate from barrel aiming in all supported VR titles.");
+        ImGui::TextDisabled("Halo 2 Classic includes a fixed -9.5 pitch and -1 yaw visual correction.");
+        }
+        ImGui::Spacing();
+        {
+        SettingGroup offsets("Gun position offsets (each hand)", SettingGroup::kNameOnly);
         const auto gunBase=weapon_alignment::Baseline(Config_ActiveTitleProfile());
         const auto offsetSlider=[&](const char* label,float& value,float baseline) {
             float delta=value-baseline;
@@ -2467,10 +2582,8 @@ namespace
             changed=true;
         }
         ImGui::TextDisabled("Zero uses this game's calibrated position. Each hand is adjusted independently.");
-
-        ImGui::TextDisabled("Visual rotations are separate from barrel aiming in all supported VR titles.");
+        }
         ImGui::Spacing();
-        ImGui::TextDisabled("Halo 2 Classic includes a fixed -9.5 pitch and -1 yaw visual correction.");
         changed |= vr_menu::SliderFloat("Muzzle height (m)", &g_config.muzzle_height_m, -0.3f, 0.3f, "%.2f");
         ImGui::TextDisabled("Reach: adjusts secondary muzzle placement; H3/ODST marker effects follow the gun. H2 Classic does not read this slider.");
         ImGui::TextDisabled("Raises supported muzzle/effect placement along the gun's own axis.");
@@ -2492,6 +2605,7 @@ namespace
         }
         if (SectionHeader("Visible hand positioning##section", ImGuiTreeNodeFlags_None))
         {
+        SettingGroup handOffsets("Visible hand offsets", SettingGroup::kNameOnly);
         ImGui::TextDisabled("Offsets follow each hand's local axes. Guns and interactions keep their positions.");
         changed |= vr_menu::SliderFloat("Left hand X (m)", &g_config.left_hand_mesh_x_m, -.20f, .20f, "%.3f");
         changed |= vr_menu::SliderFloat("Left hand Y (m)", &g_config.left_hand_mesh_y_m, -.20f, .20f, "%.3f");
@@ -2523,6 +2637,8 @@ namespace
         SingleplayerOnly("In co-op, shots leave your eye instead, automatically.");
         ImGui::TextDisabled("Uses the visible muzzle position and direction when available.\n"
                             "Gun alignment determines shot direction while this is enabled.");
+        {
+        SettingGroup direction("Crosshair direction", SettingGroup::kNameOnly);
         changed |= vr_menu::SliderFloat("Crosshair vertical angle (deg)",
             &g_config.gun_pitch_deg, -180.0f, 180.0f, "%.1f");
         changed |= vr_menu::SliderFloat("Crosshair horizontal angle (deg)",
@@ -2538,6 +2654,7 @@ namespace
         }
         ImGui::TextDisabled("Adjusts the aiming ray used by shots and the reticle, even when hidden.\n"
                             "Visual gun alignment and gun-stock offsets are in Weapon & Aim.");
+        }
         ImGui::Spacing();
         }
         if (SectionHeader("Authored weapon crosshair (stereo)##section", ImGuiTreeNodeFlags_None))
@@ -2555,6 +2672,7 @@ namespace
             {
                 // Size, opacity and brightness are each game's own: say whose are on the sliders.
                 ImGui::Spacing();
+                SettingGroup look("Crosshair size, opacity and brightness", SettingGroup::kNameOnly);
                 ImGui::Text("Adjusting crosshair size, opacity and brightness for: %s",
                             Config_TitleProfileName(Config_ShownTitleProfile()));
                 if (Config_ActiveTitleProfile() < 0)
@@ -2604,6 +2722,8 @@ namespace
             ImGui::TextDisabled("Where the crosshair floats when it is not traced (while the aim is "
                                 "not converged, or no trace has resolved yet).");
             ImGui::Spacing();
+            {
+            SettingGroup traced("Traced crosshair (every game)", SettingGroup::kNameOnly);
             ImGui::Text("Traced crosshair (every game)");
             ImGui::TextDisabled("While your aim converges, the crosshair sits on the surface you aim at, "
                                 "on the line from your eye along the gun, as in Halo: Campaign Evolved.");
@@ -2621,6 +2741,7 @@ namespace
             ImGui::TextDisabled("Beyond the max distance, and on sky, it parks there. Nearer than the "
                                 "shrink-away distance it scales down toward the smallest size, so it "
                                 "gets out of the way when the gun is against a wall.");
+            }
             // Halo 3's crosshair kicks on fire and turns red/green on a target.
             // Reading it back costs render time, so the rate is the player's
             // call: drag it live and keep whatever still feels smooth.
@@ -2691,6 +2812,8 @@ namespace
                 ImGui::TextDisabled("The frame's eye spacing as a multiple of yours. Far targets show little depth "
                                     "at 1x; what you aim at stays at the frame's depth, with the crosshair.");
             }
+            {
+            SettingGroup frameZoom("Frame size and zoom strength", SettingGroup::kNameOnly);
             changed |= vr_menu::SliderFloat("Frame size, first zoom (deg)##aimframe",
                                           &g_config.aim_frame_size_deg[0], 10.0f, 120.0f, "%.0f");
             changed |= vr_menu::SliderFloat("Frame size, second zoom (deg)##aimframe",
@@ -2701,6 +2824,7 @@ namespace
                                           &g_config.aim_frame_strength[1], 0.5f, 4.0f, "%.2fx");
             ImGui::TextDisabled("Strength 1.00 shows the game's own zoom; higher narrows it further.\n"
                                 "A frame smaller than the game's zoomed view makes the zoom feel stronger.");
+            }
             changed |= vr_menu::SliderFloat("Move time (s)##aimframe", &g_config.aim_frame_move_s,
                                           0.0f, 1.0f, "%.2f");
             ImGui::TextDisabled("How long the frame takes to grow out of the view and back. 0 = at once.");
@@ -2737,6 +2861,8 @@ namespace
             changed |= vr_menu::SliderFloat("Lens diameter (m)##scope",
                                           &g_config.scope_screen_width_m,
                                           0.04f, 0.25f, "%.3f");
+            {
+            SettingGroup lensOffsets("Lens position offsets", SettingGroup::kNameOnly);
             changed |= vr_menu::SliderFloat("Screen right offset (m)",
                                           &g_config.scope_screen_right_m,
                                           -0.30f, 0.30f, "%.3f");
@@ -2747,6 +2873,7 @@ namespace
                                           &g_config.scope_screen_forward_m,
                                           0.05f, 0.80f, "%.3f");
             ImGui::TextDisabled("Offsets are direct gun-local meters with no hidden added distance.");
+            }
             ImGui::TextDisabled("The lens refreshes every frame for a consistent render workload.");
             ImGui::Unindent();
         }
@@ -2834,6 +2961,8 @@ namespace
                                   "Off: it goes where the gun points. Halo 3, ODST and Reach; Halo 2 and Halo 4\n"
                                   "aim with your head on foot, so there the lunge goes where you look.");
             SettingGap();
+            {
+            SettingGroup punchDetection("Gesture punch detection", SettingGroup::kNameOnly);
             changed |= vr_menu::SliderFloat("Gesture swing speed", &g_config.gesture_melee_speed,
                 kPhysicalMeleeSpeedMin, kPhysicalMeleeSpeedMax, "%.2f m/s");
             SettingGap();
@@ -2847,6 +2976,7 @@ namespace
                 0.0f, 1.2f, "%.2f m");
             ImGui::TextDisabled("Lower extension speed if punches are missed; raise it if aiming sets off a melee.\n"
                                 "An off-hand chop barely extends, so its travel counts instead. 0 turns that off.");
+            }
         }
         }
         }
@@ -2903,6 +3033,8 @@ namespace
                                 "Lower it until you can see them. Live. (default 75%%)");
         }
         ImGui::Spacing();
+        {
+        SettingGroup tags("Player tags", SettingGroup::kNameOnly);
         ImGui::Text("Player tags");
         changed |= ImGui::Checkbox("Show player tags", &g_config.player_tags_show);
         ImGui::TextDisabled("The service tag and arrow over each teammate. Objective markers and flag, ball and "
@@ -2929,11 +3061,14 @@ namespace
             ImGui::TextDisabled("Tags farther away than the distance fade out over the last 5 m. 0 = no limit.\n"
                                 "(defaults 100%%, 100%%, no limit)");
         }
+        }
         ImGui::Spacing();
         ImGui::Separator();
         }
         if (SectionHeader("HUD layout##section", ImGuiTreeNodeFlags_None))
         {
+        {
+        SettingGroup hide("Hide the HUD", SettingGroup::kNameOnly);
         changed |= ImGui::Checkbox("Hide HUD completely", &g_config.hide_hud);
         if(g_config.hide_hud) {
             changed|=ImGui::Checkbox("Reveal with hand near head",&g_config.hud_reveal_near_head);
@@ -2942,8 +3077,11 @@ namespace
                 ImGui::TextWrapped("Bring your empty support hand near your headset for a moment. Move it away to hide the HUD again. Gripping, dual wielding, reloading and menus cancel the gesture.");
             }
         }
+        }
         // Size, width, curvature and height are each game's own: say whose are on the sliders.
         ImGui::Spacing();
+        {
+        SettingGroup shape("HUD size, width, curvature and height", SettingGroup::kNameOnly);
         ImGui::Text("Adjusting HUD size, width, curvature and height for: %s",
                     Config_TitleProfileName(Config_ShownTitleProfile()));
         if (Config_ActiveTitleProfile() < 0)
@@ -2995,6 +3133,7 @@ namespace
         else
             ImGui::TextDisabled("Curvature: 0.00 = flat (+0.30), 1.00 = curved (-0.30); 0.50 is authored.");
         ImGui::TextDisabled("Height: positive raises the HUD, negative lowers it; the aiming reticle stays fixed.");
+        }
         if (TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
         {
             ImGui::Spacing();
@@ -3027,6 +3166,10 @@ namespace
         {
         // In a host that draws the game at its own size (Project Reclaimer) the scale sets that size while the
         // host's own Render resolution is Native, from its next start (d3d11_hook.cpp, HostEnumDisplaySettingsShim).
+        int nextWidth=0,nextHeight=0;
+        VrDlssRenderPlan renderPlan{};
+        {
+        SettingGroup scale("Resolution scale and presets", SettingGroup::kNameOnly);
         if (g_hostOwnsRenderSize)
             ImGui::TextWrapped("In Project Reclaimer this sets the game's size while Project Reclaimer's own "
                                "Settings > Graphics > Render resolution is Native. Its other choices keep "
@@ -3062,8 +3205,8 @@ namespace
                 changed = true;
             }
         }
-        int nextWidth=scaleEven(kNativeRenderWidth,g_config.resolution_scale);
-        int nextHeight=scaleEven(kNativeRenderHeight,g_config.resolution_scale);
+        nextWidth=scaleEven(kNativeRenderWidth,g_config.resolution_scale);
+        nextHeight=scaleEven(kNativeRenderHeight,g_config.resolution_scale);
         // Project Reclaimer is given the size fitted into what it accepts (d3d11_hook.cpp, HostWantRenderSize).
         if(g_hostOwnsRenderSize)
         {
@@ -3071,12 +3214,12 @@ namespace
             if(reclaimer_host::FitNativeRenderSize(fitW,fitH)) {nextWidth=(int)fitW;nextHeight=(int)fitH;}
         }
         ImGui::TextDisabled("Requested picture: %d x %d per eye",nextWidth,nextHeight);
-        VrDlssRenderPlan renderPlan{};
         if(VR_GetDlssRenderPlan(renderPlan))
         {
             ImGui::TextDisabled("Current game render: %u x %u",renderPlan.liveRenderW,renderPlan.liveRenderH);
             ImGui::TextDisabled("Planned game render: %u x %u | Output: %u x %u",
                 renderPlan.plannedRenderW,renderPlan.plannedRenderH,renderPlan.outputW,renderPlan.outputH);
+        }
         }
         unsigned actualW=0,actualH=0;
         const int resizeState=D3D_LiveResizeState(actualW,actualH);
@@ -3486,12 +3629,17 @@ namespace
         }
     }
 
-    // Draws every page once out of sight, every section open, to learn each setting's name, page and section.
-    void BuildSettingIndex()
+    // Draws the next page out of sight, every section open, to learn each setting's name, page and section: one page a
+    // frame, until every page has been read.
+    void BuildSettingIndexStep()
     {
         ImGuiContext& g=*GImGui;
-        const int shownPage=g_activeCategory;
-        g_settingIndex.clear();
+        if(g_indexNextPage==0) {g_settingIndex.clear();g_resultLayouts.clear();}
+        // Quality of Life gathers other pages' sections, and the labs are not in the sidebar.
+        const auto skipped=[](int page){return page==Cat_QualityOfLife||page==Cat_VirtualStockLab||page==Cat_TwoHandLab;};
+        while(g_indexNextPage<Cat_Count&&skipped(g_indexNextPage)) ++g_indexNextPage;
+        if(g_indexNextPage>=Cat_Count) {g_indexBuilt=true;return;}
+        const int page=g_indexNextPage++,shownPage=g_activeCategory;
         ImGui::SetNextWindowPos(ImVec2(-100000.0f,-100000.0f),ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(MENU_W-kSidebarWidth,MENU_H),ImGuiCond_Always);
         ImGui::Begin("##settingindex",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoInputs|ImGuiWindowFlags_NoNav|
@@ -3501,25 +3649,19 @@ namespace
         const bool unclipped=g.ItemUnclipByLog,hooked=g.TestEngineHookItems;
         const auto listener=imgui_item_hooks::g_itemInfo;
         g.ItemUnclipByLog=true;g.TestEngineHookItems=true;imgui_item_hooks::g_itemInfo=&IndexSetting;g_indexing=true;
-        ImGui::LogToBuffer();imgui_item_hooks::g_itemAdded=&NoteItemAdded;g_notes={};
+        ImGui::LogToBuffer();imgui_item_hooks::g_itemAdded=&NoteItemAdded;g_notes={};g_leadIn.clear();
         ImGui::PushTextWrapPos(0.0f);
         bool ignored=false;
-        for(int page=0;page<Cat_Count;++page)
-        {
-            // Quality of Life gathers other pages' sections, and the labs are not in the sidebar.
-            if(page==Cat_QualityOfLife||page==Cat_VirtualStockLab||page==Cat_TwoHandLab) continue;
-            g_activeCategory=page;
-            ImGui::PushID(page);
-            DrawPageContent(ignored);
-            KeepNotes();
-            ImGui::PopID();
-        }
+        g_activeCategory=page;
+        ImGui::PushID(page);
+        DrawPageContent(ignored);
+        KeepNotes();
+        ImGui::PopID();
         ImGui::LogFinish();imgui_item_hooks::g_itemAdded=nullptr;
         ImGui::PopTextWrapPos();
         g_indexing=false;imgui_item_hooks::g_itemInfo=listener;g.TestEngineHookItems=hooked;g.ItemUnclipByLog=unclipped;
         ImGui::End();
         g_activeCategory=shownPage;
-        g_indexBuilt=true;
         ++g_indexBuilds;
     }
 
@@ -3591,7 +3733,7 @@ namespace
             if(GoToButton("##goto"))
             {
                 g_activeCategory=entry.page;
-                g_jump={entry.page,entry.section,entry.label,true,false,ImGui::GetTime()};
+                g_jump={entry.page,entry.section,entry.key,true,false,ImGui::GetTime()};
                 g.TestEngineHookItems=true;
                 imgui_item_hooks::g_itemInfo=&MeasureJumpTarget;
                 g_searchQuery[0]=0;
@@ -3617,7 +3759,10 @@ namespace
             const auto listener=imgui_item_hooks::g_itemInfo; // a jump just chosen keeps listening
             g_measure={&entry};
             g.TestEngineHookItems=true;imgui_item_hooks::g_itemInfo=&MeasureResult;g_drawingResult=true;
-            g.ItemUnclipByLog=true;
+            // Until it is found, the page is drawn whole, since Dear ImGui reports no item out of view. Once found, the
+            // setting is in view at the top of its window and the rest of the page is clipped away.
+            const bool measuring=!layout.found;
+            g.ItemUnclipByLog=measuring;
             g_activeCategory=entry.page;
             ImGui::PushTextWrapPos(0.0f); // a window of its own: notes wrap at its edge, as on the page
             DrawPageContent(changed);
@@ -3630,15 +3775,20 @@ namespace
             if(g_measure.top>=0.0f)
             {
                 layout.top=std::max(0.0f,g_measure.top-2.0f);
-                const float end=g_measure.next>=0.0f?g_measure.next:pageEnd; // nothing after it: its notes run to the end
-                layout.height=std::max(ImGui::GetFrameHeight(),end-layout.top);
+                // Clipped, the item after it is out of view and unreported: the height then stays as measured.
+                if(measuring||g_measure.next>=0.0f)
+                {
+                    const float end=g_measure.next>=0.0f?g_measure.next:pageEnd; // nothing after it: notes run to the end
+                    layout.height=std::max(ImGui::GetFrameHeight(),end-layout.top);
+                }
                 layout.found=true;layout.hidden=false;
             }
-            else layout.found=false,layout.hidden=true; // the setting is not on its page just now
+            else if(measuring) layout.hidden=true; // the setting is not on its page just now
+            else layout.found=false; // moved out of view (the page above it changed): measured afresh next frame
             ImGui::EndChild();
             ImGui::PopID();
         }
-        if(!found) ImGui::TextDisabled("No setting matches.");
+        if(!found) ImGui::TextDisabled("%s",g_indexBuilt?"No setting matches.":"Searching...");
         else if(found>kMostShown) ImGui::TextDisabled("%d more match. Add a word to narrow the search.",found-kMostShown);
         ImGui::Spacing();
         ImGui::TextDisabled("Words can come in any order. \"Quotes\" keep words together, -word leaves one out, and OR finds either.");
@@ -3646,9 +3796,9 @@ namespace
 
     void DrawUI()
     {
-        // The search index is built the first frame something is typed, and again each time searching starts over.
-        if (g_searchQuery[0] && !g_indexBuilt) BuildSettingIndex();
-        if (!g_searchQuery[0]) g_indexBuilt = false;
+        // The search index is built from the first frame something is typed, and again each time searching starts over.
+        if (g_searchQuery[0] && !g_indexBuilt) BuildSettingIndexStep();
+        if (!g_searchQuery[0]) { g_indexBuilt = false; g_indexNextPage = 0; }
         // The window fills the whole panel texture and is completely locked.
         // Cond_Always (not FirstUseEver) means ImGui cannot keep a position of
         // its own, and NoMove/NoResize/NoTitleBar remove every drag target. The
