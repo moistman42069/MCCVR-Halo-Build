@@ -20,13 +20,33 @@ constexpr const char* consumerEntryPattern=
 constexpr const char* consumerReloadPattern=
     "BA 31 00 00 00 49 8B CD E8 5B A3 09 00 48 8B C8 E8 7B C3 FF FF 44 8A C0 BA 12 00 00 00 "
     "48 8B CB E8 57 02 FF FF BA 31 00 00 00 49 8B CD E8 36 A3 09 00";
+// THE BUILDER'S ABILITY HELPER. The builder decides the armor ability (action 4, for unit+0x664) and sprint (0x28) in
+// a helper of its own (its own unwind entry), which reads those buttons itself -- with jump for MCC's "double press
+// jump to jetpack" -- so its reads are admitted as the builder's are: the helper by its entry (unique), its action
+// select (unique) and its unwind bounds, and the builder's two calls of it (unique; the equipment call and the sprint
+// call, both inside the builder) landing on it. Optional: unproven, only the builder's own reads are admitted (both
+// abilities then stay the game's own buttons).
+constexpr uintptr_t abilityBegin=0xA21D0,abilityEnd=0xA266E,abilitySelectRva=0xA2323;
+constexpr uintptr_t abilityEquipmentSiteRva=0xA4124,abilitySprintSiteRva=0xA417A;
+constexpr const char* abilityEntryPattern=
+    "48 89 5C 24 20 89 54 24 10 48 89 4C 24 08 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 40 4C 8B 15 ?? ?? ?? ?? "
+    "48 8D 15";
+constexpr const char* abilitySelectPattern=
+    "41 83 FC 04 74 09 41 8B 86 A4 01 00 00 EB 10 41 8B 86 9C 01 00 00 EB 07 41 8B 86 94 01 00 00 83 F8 04";
+constexpr const char* abilityEquipmentSitePattern=
+    "C7 44 24 40 04 00 00 00 33 C9 88 4C 24 38 4C 89 64 24 30 4C 89 6C 24 28 48 8B 4D 90 48 89 4C 24 20 4D 8B CF "
+    "4C 8B 40 10 8B 54 24 58 48 8B 4C 24 78 E8";
+constexpr const char* abilitySprintSitePattern=
+    "F6 D8 1B D2 F7 D2 83 E2 28 89 54 24 40 B8 01 00 00 00 88 44 24 38 4C 89 64 24 30 4C 89 6C 24 28 48 8B 45 90 "
+    "48 89 44 24 20 4D 8B CF 8B 54 24 58 48 8B 4C 24 78 E8";
+constexpr uintptr_t abilityEquipmentCallRel=50,abilitySprintCallRel=53; // each pattern ends at its call's rel32
 struct Runtime {
     HMODULE module{};
     uintptr_t base{}, state{}, padState{};
     std::atomic<uint32_t> generation{};
     void* target[2]{}, *original[2]{};
     bool enabled[2]{}, attempted{};
-    std::atomic<bool> admitted{}, faulted{};
+    std::atomic<bool> admitted{}, faulted{}, abilityAdmitted{};
     std::atomic<uint32_t> callbacks{};
     std::atomic<uint64_t> converted{}, routed{}, readerAt{};
     uint64_t reportAt{};
@@ -91,8 +111,10 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
         // The abstraction updater also calls the reader to WRITE keyboard
         // counters. It must never receive a private VR record. Admit only the
         // independently matched native player-control builder's read calls.
-        if(!Current() || caller<runtime.base+consumerBegin || caller>=runtime.base+consumerEnd ||
-            reinterpret_cast<uintptr_t>(state)!=runtime.state)return native;
+        const bool builder=caller>=runtime.base+consumerBegin && caller<runtime.base+consumerEnd;
+        const bool ability=runtime.abilityAdmitted.load(std::memory_order_acquire) &&
+            caller>=runtime.base+abilityBegin && caller<runtime.base+abilityEnd;
+        if(!Current() || !(builder||ability) || reinterpret_cast<uintptr_t>(state)!=runtime.state)return native;
         unsigned controller=0;
         if(!ReadController(runtime.state,controller)){runtime.faulted=true;return native;}
         if(controller!=0 ||
@@ -138,8 +160,26 @@ bool ProveConsumerBounds(uintptr_t base) {
     const auto* entry=RtlLookupFunctionEntry(base+consumerBegin,&imageBase,nullptr);
     return entry && imageBase==base && entry->BeginAddress==consumerBegin && entry->EndAddress==consumerEnd;
 }
+// The ability helper (above), proven on the image the builder was proven on.
+bool CallLands(uintptr_t base,uintptr_t siteRva,uintptr_t rel,uintptr_t targetRva) {
+    int32_t displacement=0;
+    std::memcpy(&displacement,reinterpret_cast<const void*>(base+siteRva+rel),sizeof(displacement));
+    return base+siteRva+rel+4+displacement==base+targetRva;
+}
+bool ProveAbilityHelper(uintptr_t base,size_t size) {
+    DWORD64 imageBase=0;
+    const auto* entry=RtlLookupFunctionEntry(base+abilityBegin,&imageBase,nullptr);
+    return entry && imageBase==base && entry->BeginAddress==abilityBegin && entry->EndAddress==abilityEnd &&
+        Prove(base,size,abilityBegin,abilityEntryPattern) && Prove(base,size,abilitySelectRva,abilitySelectPattern) &&
+        Prove(base,size,abilityEquipmentSiteRva,abilityEquipmentSitePattern) &&
+        Prove(base,size,abilitySprintSiteRva,abilitySprintSitePattern) &&
+        abilityEquipmentSiteRva>=consumerBegin && abilitySprintSiteRva+abilitySprintCallRel+4<=consumerEnd &&
+        CallLands(base,abilityEquipmentSiteRva,abilityEquipmentCallRel,abilityBegin) &&
+        CallLands(base,abilitySprintSiteRva,abilitySprintCallRel,abilityBegin);
+}
 bool Retire() {
     runtime.admitted.store(false,std::memory_order_release);
+    runtime.abilityAdmitted.store(false,std::memory_order_release);
     runtime.readerAt.store(0,std::memory_order_release);
     publication.stamp.store(0,std::memory_order_release);
     publication.cancelEpoch.fetch_add(1,std::memory_order_acq_rel);
@@ -214,6 +254,7 @@ void Poll() {
             Prove(base,size,consumerReloadRva,consumerReloadPattern) &&
             Prove(base,size,padProofRva,padProofPattern) &&
             Prove(base,size,controllerLoopRva,controllerLoopPattern) && ProveConsumerBounds(base);
+        const bool abilityProved=proved && ProveAbilityHelper(base,size);
         if(proved) {
             runtime.state=sig::RipTarget(base+d.stateLoadRva+10,base+d.stateLoadRva+14);
             proved=runtime.state>=base && runtime.state-base<size && size-(runtime.state-base)>=4*d.stride;
@@ -231,9 +272,15 @@ void Poll() {
             }
         }
         runtime.readerAt.store(0,std::memory_order_release);
+        runtime.abilityAdmitted.store(proved && abilityProved,std::memory_order_release);
         runtime.admitted.store(proved,std::memory_order_release);
         LOG("Native VR action bridge H4: %s; requires observed owned input cadence; runtime validation pending",
             proved?"verified hooks installed":"transport fallback (proof/hook failure)");
+        if(proved)
+            LOG("Native VR action bridge H4: the builder's ability helper +0x%llX %s",
+                static_cast<unsigned long long>(abilityBegin),
+                abilityProved?"proven: the armor ability and sprint take the VR buttons"
+                             :"NOT proven: the armor ability and sprint stay the game's own buttons");
         if(!proved) {
             blockedGeneration=generation;
             runtime.faulted.store(true,std::memory_order_release);
