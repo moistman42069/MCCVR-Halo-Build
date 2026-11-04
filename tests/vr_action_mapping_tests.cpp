@@ -117,6 +117,17 @@ void CheckInputPresets()
     input_preset::Parse(input_preset::Serialize(scheme).c_str(),loaded);
     Check(input_preset::SameScheme(loaded,scheme),"a preset round trips");
     Check(loaded.world_scale==Config{}.world_scale,"a preset carries no setting outside the scheme");
+    Config shoulder{};
+    shoulder.weapon_holsters=true;shoulder.weapon_holster_location=2;shoulder.weapon_holster_click=true;
+    shoulder.weapon_holster_slide=false;shoulder.weapon_holster_radius_m=weapon_interaction::kOverShoulderRadius;
+    shoulder.manual_reload_skip_animations=true;shoulder.weapon_pouch_location=1;shoulder.weapon_holster_custom_x_m=.5f;
+    Config shoulderLoaded{};
+    input_preset::Parse(input_preset::Serialize(shoulder).c_str(),shoulderLoaded);
+    Check(shoulderLoaded.weapon_holster_radius_m==weapon_interaction::kOverShoulderRadius&&
+        shoulderLoaded.manual_reload_skip_animations&&shoulderLoaded.weapon_pouch_location==1,
+        "a preset keeps the over-the-shoulder switch and the reload options");
+    Check(shoulderLoaded.weapon_holster_custom_x_m==Config{}.weapon_holster_custom_x_m,
+        "where the holster sits on your body stays out of a preset");
     Config kept{};
     kept.world_scale=2.f;
     input_preset::CopyScheme(kept,scheme);

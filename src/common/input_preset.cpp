@@ -40,6 +40,10 @@ constexpr BoolField kBools[] = {
     {"gesture_melee_directional", &Config::gesture_melee_directional},
     {"two_hand_toggle", &Config::two_hand_toggle},
     {"manual_reload", &Config::manual_reload},
+    {"manual_reload_disable_auto", &Config::manual_reload_disable_auto},
+    {"manual_reload_skip_animations", &Config::manual_reload_skip_animations},
+    {"manual_reload_shortened_animation", &Config::manual_reload_shortened_animation},
+    {"weapon_unknown_reload_visual", &Config::weapon_unknown_reload_visual},
     {"weapon_holsters", &Config::weapon_holsters},
     {"weapon_holster_slide", &Config::weapon_holster_slide},
     {"weapon_holster_click", &Config::weapon_holster_click},
@@ -50,6 +54,7 @@ constexpr BoolField kBools[] = {
 constexpr IntField kInts[] = {
     {"dpad_hand", &Config::dpad_hand},
     {"weapon_holster_location", &Config::weapon_holster_location},
+    {"weapon_pouch_location", &Config::weapon_pouch_location},
 };
 constexpr FloatField kFloats[] = {
     {"gesture_melee_speed", &Config::gesture_melee_speed},
@@ -62,6 +67,13 @@ constexpr FloatField kFloats[] = {
     {"physical_running_speed", &Config::physical_running_speed},
     {"physical_running_sensitivity", &Config::physical_running_sensitivity},
     {"physical_melee_swing_speed", &Config::physical_melee_swing_speed},
+    // How far the reload and holster gestures reach. Where the custom holster and the reserve magazine sit on the
+    // body is body fit, and stays out.
+    {"weapon_holster_radius_m", &Config::weapon_holster_radius_m},
+    {"weapon_holster_draw_m", &Config::weapon_holster_draw_m},
+    {"weapon_shake_travel_m", &Config::weapon_shake_travel_m},
+    {"weapon_body_zone_radius_m", &Config::weapon_body_zone_radius_m},
+    {"weapon_insert_radius_m", &Config::weapon_insert_radius_m},
 };
 
 std::filesystem::path Folder()
