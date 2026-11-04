@@ -15656,6 +15656,26 @@ int main()
                   untouched.title_profiles[0].hud_vertical_offset == 16.0f,
               "HUD per game: a fresh configuration starts Reach and both Halo 2s at the tester's layouts and the rest "
               "at the shared one");
+        Check(untouched.title_profiles[kTitleProfileHalo4].hud_size == 0.41f &&
+                  untouched.title_profiles[kTitleProfileHalo4].hud_aspect == 1.00f &&
+                  untouched.title_profiles[kTitleProfileHalo4].hud_vertical_offset == -200.0f,
+              "HUD per game: a fresh configuration starts Halo 4 at the tester's layout");
+        // Halo 4's HUD height once ran the other way: a file written before the correction is turned over once,
+        // and one written since is not.
+        {
+            std::ofstream file(crosshairPath);
+            file << "config_version = 6\n";
+            file << "halo4_hud_vertical_offset = 200\n";
+            file << "reach_hud_vertical_offset = 50\n";
+        }
+        ConfigLoad(crosshairPath.c_str());
+        Check(g_config.title_profiles[kTitleProfileHalo4].hud_vertical_offset == -200.0f &&
+                  g_config.title_profiles[kTitleProfileReach].hud_vertical_offset == 50.0f,
+              "HUD per game: an older file's Halo 4 height is turned over so the HUD stays put; other games' are not");
+        ConfigSave();
+        ConfigLoad(crosshairPath.c_str());
+        Check(g_config.title_profiles[kTitleProfileHalo4].hud_vertical_offset == -200.0f,
+              "HUD per game: a file written since keeps its Halo 4 height as it is");
         // The HUD layout's four values follow the same rule: Reach's with no game running, never the shared
         // defaults, and an edit made then lands in Reach's profile.
         {
