@@ -19391,6 +19391,15 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     layers.push_back(
                                         reinterpret_cast<XrCompositionLayerBaseHeader*>(
                                             &aimFrameQuads[i]));
+#if HALOMCCVR_EXPERIMENTAL_HALO2_TEMPORAL_STEREO || \
+    HALOMCCVR_HALO2_STEREO6DOF
+                                // The frame shows this generation's Halo 2 pair as the projection layer would, so it
+                                // earns the same accepted-pair heartbeat and gameplay mode after xrEndFrame. Without
+                                // them Halo 2 read as loading half a second into a zoom: its capabilities, the hand's
+                                // aim and the support grip all stood down.
+                                if (halo2Title)
+                                    halo2ProjectionQueued = true;
+#endif
                                 static int loggedAimFrame = 0;
                                 if (loggedAimFrame != aimFrameQuadCount)
                                 {

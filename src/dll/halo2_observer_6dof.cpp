@@ -371,6 +371,9 @@ namespace
     std::atomic<uint64_t> g_packetBuilderStock{0};
     std::atomic<uint64_t> g_packetBuilderGunNodes{0};
     std::atomic<uint64_t> g_packetBuilderLastAppliedMs{0};
+    // AIM FRAME ZOOM: when the player's current zoom began (0 while not zoomed), from the drive's control update
+    // (halo2_direct_drive.inl). Halo 2 hides the first-person gun while zoomed (Halo2Observer6Dof_FinalPaletteArmed).
+    std::atomic<uint64_t> g_zoomedSinceMs{0};
     std::atomic<uint64_t> g_packetBuilderEligible{0};
     std::atomic<uint64_t> g_packetBuilderChiefContexts{0};
     std::atomic<uint64_t> g_packetBuilderEliteContexts{0};
@@ -7322,10 +7325,16 @@ bool Halo2Observer6Dof_FinalPaletteArmed() noexcept
     const uint64_t appliedAt =
         g_packetBuilderLastAppliedMs.load(std::memory_order_acquire);
     const uint64_t now = GetTickCount64();
+    // AIM FRAME ZOOM: zoomed, the game hides the first-person gun and the palette stops being applied. A palette that
+    // was fresh when the zoom began holds for as long as the game stays zoomed in the frame, so the hand keeps the aim.
+    const uint64_t zoomedSince = g_zoomedSinceMs.load(std::memory_order_acquire);
+    int zoom = -1;
+    const bool heldThroughZoom = zoomedSince && appliedAt + 250 >= zoomedSince &&
+        Game_AimFrameZoomOwnsZoom() && Game_ReadZoomLevel(zoom) && zoom >= 0;
     return g_finalPaletteReady.load(std::memory_order_acquire) &&
         g_packetBuilderOriginal.load(std::memory_order_acquire) != 0 &&
         g_visibleConsumerOriginal.load(std::memory_order_acquire) != 0 &&
-        appliedAt && appliedAt <= now && now - appliedAt <= 250 &&
+        appliedAt && appliedAt <= now && (now - appliedAt <= 250 || heldThroughZoom) &&
         g_armed.load(std::memory_order_acquire) &&
         g_levelLive.load(std::memory_order_acquire) &&
         !g_teardownRequested.load(std::memory_order_acquire);
