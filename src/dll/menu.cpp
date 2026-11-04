@@ -888,11 +888,11 @@ namespace
                 !(msg == WM_SYSKEYDOWN && wp == VK_F4))
                 return 0;
         }
-        // Keep native mouse messages in MCC's stock physical client domain. The
-        // prior fit scaled only this path while its separately polled cursor stayed
-        // physical. This candidate tests whether restoring one coordinate domain
-        // stops mouse hover from displacing keyboard/controller menu focus.
-        return CallWindowProcW(g_origWndProc, hwnd, msg, wp, lp);
+        // A press in the space MCC's hover is in: with the window fitted to the monitor MCC's cursor reads are scaled
+        // to the render size (d3d11_hook.cpp GetCursorPosHook), and a button or wheel message carries its own
+        // position, which MCC takes for the press. Left physical, a press landed nearer the window's top-left than the
+        // item hovered, and the menu dropped it (the VR pointer's clicks and the desktop mouse's alike).
+        return CallWindowProcW(g_origWndProc, hwnd, msg, wp, D3D_MapMouseMessageToRender(msg, lp));
     }
 
     // The page chosen in the sidebar.

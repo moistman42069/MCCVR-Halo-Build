@@ -1,4 +1,5 @@
 #include "../src/common/weapon_alignment.h"
+#include "../src/common/fit_mouse_logic.h"
 #include "../src/common/reach_wind_replay.h"
 int RunRoomscaleInputTests();
 int RunRoomscaleRecenterTests();
@@ -217,6 +218,26 @@ namespace
 
 int main()
 {
+    {
+        // The fitted window (2657 x 1916 shown, 2912 x 2100 drawn): a press is scaled as the cursor read is.
+        long x = 0, y = 0;
+        Check(fit_mouse::MapClientOffset(1328, 958, 2657, 1916, 2912, 2100, x, y) && x == 1455 && y == 1050,
+              "fit mouse: a press at the window's middle lands at the render's middle");
+        Check(fit_mouse::MapClientOffset(0, 0, 2657, 1916, 2912, 2100, x, y) && x == 0 && y == 0,
+              "fit mouse: the window's corner is the render's corner");
+        Check(fit_mouse::MapClientOffset(400, 1100, 2657, 1916, 2912, 2100, x, y) && x == 438 && y == 1206,
+              "fit mouse: a press is scaled about the window's top-left, as the cursor read is");
+        x = y = 7;
+        Check(!fit_mouse::MapClientOffset(2657, 10, 2657, 1916, 2912, 2100, x, y) &&
+                  !fit_mouse::MapClientOffset(-1, 10, 2657, 1916, 2912, 2100, x, y) &&
+                  !fit_mouse::MapClientOffset(10, 1916, 2657, 1916, 2912, 2100, x, y) && x == 7 && y == 7,
+              "fit mouse: a point outside the window is left as it is");
+        Check(!fit_mouse::MapClientOffset(10, 10, 0, 1916, 2912, 2100, x, y) &&
+                  !fit_mouse::MapClientOffset(10, 10, 2657, 1916, 0, 2100, x, y),
+              "fit mouse: no window or no render size maps nothing");
+        Check(fit_mouse::MapClientOffset(500, 400, 2912, 2100, 2912, 2100, x, y) && x == 500 && y == 400,
+              "fit mouse: a window the render's size leaves the point where it is");
+    }
     {
         using namespace halo4_reticle_alpha;
         const uint8_t all = 15, rgb = 7;

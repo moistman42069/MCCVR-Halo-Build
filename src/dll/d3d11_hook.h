@@ -17,6 +17,9 @@ void D3D_NoteDeviceLoss(const char* where, long result, ID3D11Device* device);
 uint32_t D3D_TakeFrameDrawCalls(uint32_t& smallDraws);
 // A host that owns the render size, and no frame for a second has drawn like a game engine: what it presents is its
 // own screen, with no eye pass to show. Always false in MCC.
+// A mouse message for MCC's window in the space its cursor reads are given: with the window fitted to the monitor, a
+// button or wheel message's position scaled up to the render size (fit_mouse_logic.h); otherwise as it came.
+intptr_t D3D_MapMouseMessageToRender(unsigned msg, intptr_t lp);
 bool D3D_HostEngineQuiet();
 // True while the host itself is drawing over the game's frame: a screen of its own (a menu, a loading screen)
 // or an overlay during play. Always false in MCC. See HostScreenNoteBind in d3d11_hook.cpp; which of the two it

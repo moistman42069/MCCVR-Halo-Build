@@ -1,5 +1,6 @@
 #include "../common/hud_visibility.h"
 #include <windows.h>
+#include <windowsx.h>
 #include <shlobj.h>
 #include <d3d11.h>
 #include <d3d11_1.h>
@@ -31,6 +32,7 @@
 #include "../common/halo2_hud_logic.h"
 #include "../common/halo2_hud_shader_logic.h"
 #include "../common/aim_frame_logic.h"
+#include "../common/fit_mouse_logic.h"
 #endif
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
 #include "../common/halo4_helmet_shader_logic.h"
@@ -1680,6 +1682,35 @@ static BOOL WINAPI GetCursorPosHook(LPPOINT p)
             phys.x, phys.y, mapped.x, mapped.y, cw, ch);
     }
     return ok;
+}
+
+// A mouse message for MCC's window, in the space MCC's cursor reads are given (GetCursorPosHook): with the window
+// fitted to the monitor, a button message's client point and a wheel message's screen point are scaled up to the
+// render size as the cursor is (fit_mouse_logic.h), so MCC's press and its hover name the same item. Otherwise, or
+// outside the window, the message is MCC's as it came.
+LPARAM D3D_MapMouseMessageToRender(UINT msg, LPARAM lp)
+{
+    const bool button = (msg >= WM_LBUTTONDOWN && msg <= WM_MBUTTONDBLCLK) ||
+                        (msg >= WM_XBUTTONDOWN && msg <= WM_XBUTTONDBLCLK);
+    const bool wheel = msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL;
+    if ((!button && !wheel) || !g_renderSizeActive || !g_forcedRenderW || !g_forcedRenderH)
+        return lp;
+    POINT origin{};
+    LONG cw = 0, ch = 0;
+    if (!FitClientMetrics(origin, cw, ch))
+        return lp;
+    // Button messages carry the client point, wheel messages the screen point.
+    const LONG x = GET_X_LPARAM(lp) - (wheel ? origin.x : 0);
+    const LONG y = GET_Y_LPARAM(lp) - (wheel ? origin.y : 0);
+    long mappedX = 0, mappedY = 0;
+    if (!fit_mouse::MapClientOffset(x, y, cw, ch, g_forcedRenderW, g_forcedRenderH, mappedX, mappedY))
+        return lp;
+    if (wheel)
+    {
+        mappedX += origin.x;
+        mappedY += origin.y;
+    }
+    return MAKELPARAM(static_cast<WORD>(static_cast<short>(mappedX)), static_cast<WORD>(static_cast<short>(mappedY)));
 }
 
 static BOOL WINAPI SetCursorPosHook(int X, int Y)
