@@ -82,9 +82,10 @@ VR Mappings, which detects the advertised controller profile and stores optional
 overrides separately per game, including Unbound. The current
 native transport still couples actions that share a native MCC button/action,
 so reload and use may not unbind independently.
-Controls holds only what a controls preset saves. Where the holster and reserve
-magazine sit on your body is in Body & Hands; two-handed aim tuning and left-handed
-play are in Weapon & Aim. Vehicles, Picture and Subtitles group the other options.
+Controls holds only what a controls preset saves, two-handed aiming included.
+Where the holster and reserve magazine sit on your body, and the two-handed grip
+calibration, are in Body & Hands; left-handed play is in Weapon & Aim. Vehicles,
+Picture and Subtitles group the other options.
 Optional stock, physical crouch, reload and DLSS need runtime testing.
 
 DLSS uses compatible NVIDIA hardware. Missing/failed optional features preserve
