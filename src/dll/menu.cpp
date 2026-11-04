@@ -2844,6 +2844,21 @@ namespace
             changed |= vr_menu::SliderFloat("Move time (s)##aimframe", &g_config.aim_frame_move_s,
                                           0.0f, 1.0f, "%.2f");
             ImGui::TextDisabled("How long the frame takes to grow out of the view and back. 0 = at once.");
+            {
+            SettingGroup frameHud("HUD in the frame", SettingGroup::kNameOnly);
+            changed |= vr_menu::SliderFloat("HUD size in the frame##aimframe", &g_config.aim_frame_hud_size,
+                                          0.5f, 1.25f, "%.2f");
+            changed |= vr_menu::SliderFloat("HUD width in the frame##aimframe", &g_config.aim_frame_hud_width_scale,
+                                          0.5f, 1.5f, "%.2f");
+            changed |= vr_menu::SliderFloat("HUD height in the frame##aimframe", &g_config.aim_frame_hud_height_scale,
+                                          0.5f, 1.5f, "%.2f");
+            ImGui::TextDisabled("Only while the frame is up. Your HUD layout (HUD tab) and the Halo 4 helmet frame "
+                                "are separate and stay as they are.\n"
+                                "1.00 = the game's own HUD, as on a flat screen: its blue edge art at the frame's "
+                                "edges. Lower pulls it in from the edges, higher pushes it out. Size changes both "
+                                "ways; width only side to side; height only top to bottom. The game's crosshair "
+                                "and zoom art in the frame change with it. Live.");
+            }
             ImGui::Unindent();
         }
         }

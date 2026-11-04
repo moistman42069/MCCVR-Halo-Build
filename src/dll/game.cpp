@@ -4696,8 +4696,8 @@ namespace
 
     // The layout the HUD should have now: the player's (hud_size, hud_aspect, hud_curvature, with the headset's
     // correction), or, while the title's aim frame is up, the flat game's own -- stock size, square aspect, the
-    // authored curvature and no headset correction, because the frame's picture has the game's own proportions.
-    // `aimFrameUsed`: whether this is the aim frame's layout (the frame read once, here).
+    // authored curvature and no headset correction, because the frame's picture has the game's own proportions;
+    // only the frame's own HUD settings (aim_frame_hud_*) scale it. `aimFrameUsed`: whether this is the aim frame's layout (the frame read once, here).
     static void HudLayoutWanted(HudLayoutProfile profile, float& size, float& aspect, float& curvature,
                                 float& horizontal, float& vertical, bool* aimFrameUsed = nullptr)
     {
@@ -4711,6 +4711,17 @@ namespace
              g_aimFrameUp.load(std::memory_order_acquire));
         if (aimFrameUsed)
             *aimFrameUsed = aimFrame;
+        // The frame's own HUD settings (aim_frame_logic.h HudScale) scale the frame's layout; at 1 it is as below.
+        const auto frameHudScale = [&]
+        {
+            float scaleH = 1.0f, scaleV = 1.0f;
+            aim_frame::HudScale(g_config.aim_frame_hud_size, g_config.aim_frame_hud_width_scale,
+                                g_config.aim_frame_hud_height_scale, scaleH, scaleV);
+            if (scaleH != 1.0f)
+                horizontal = fmaxf(0.15f, fminf(horizontal * scaleH, 1.05f));
+            if (scaleV != 1.0f)
+                vertical = fmaxf(0.15f, fminf(vertical * scaleV, 1.05f));
+        };
         if (reachFrame)
         {
             // The picture has the render surface's own shape, so no correction: the record as the title authored it.
@@ -4719,6 +4730,7 @@ namespace
             curvature = 0.5f;
             horizontal = reachStockH;
             vertical = reachStockV;
+            frameHudScale();
             return;
         }
         if (aimFrame)
@@ -4745,6 +4757,7 @@ namespace
             // width was set by eye in a headset. MCC's are right without it.
             if (g_hostIsProjectReclaimer)
                 horizontal *= kAimFrameReclaimerHudWidth;
+            frameHudScale();
             return;
         }
         size = g_config.hud_size;
@@ -47652,8 +47665,13 @@ static constexpr bool kOdstMappedFpEnabled = false;
         for (const size_t index : kTouched)
             if (!std::isfinite(transform[index]))
                 return;
+        // AIM FRAME ZOOM: the frame's picture is the flat game's, so its HUD is the game's own layout (scaled only by
+        // the frame's HUD settings), with its edge art at the picture's edges. The player's layout is for the headset.
         Halo4HudAffine affine{};
-        if (!Halo4ComputeNativeHudAffine(
+        if (g_aimFramePass.load(std::memory_order_acquire))
+            aim_frame::HudScale(g_config.aim_frame_hud_size, g_config.aim_frame_hud_width_scale,
+                                g_config.aim_frame_hud_height_scale, affine.horizontal, affine.vertical);
+        else if (!Halo4ComputeNativeHudAffine(
                 g_config.hud_size, g_config.hud_aspect,
                 g_config.hud_vertical_offset, affine))
             return;
