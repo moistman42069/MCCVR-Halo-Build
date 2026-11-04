@@ -580,9 +580,8 @@ namespace
         else if(!baselineFound&&!active.empty()&&std::find(saved.begin(),saved.end(),active)==saved.end())
             ImGui::TextDisabled("This preset's file is gone. Your settings stay as they are.");
         ImGui::PushStyleColor(ImGuiCol_Text,ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-        ImGui::TextWrapped("Saves your buttons, turning, movement, two-handed aiming, gestures, reload and holsters, but not "
-            "your weapon aim or body fit (left-handed play, two-handed grip calibration, or where your custom holster "
-            "and reserve magazine sit). "
+        ImGui::TextWrapped("Saves your buttons, turning, movement, left-handed play, two-handed aiming, gestures, reload and "
+            "holsters, but not your weapon aim or where your holster and reserve magazine sit. "
             "Presets are files in Controls Presets beside halomccvr.cfg, so you can share them.");
         ImGui::PopStyleColor();
     }
@@ -2281,9 +2280,29 @@ namespace
         }
         }
 
-        // Two-handed aiming is a controls preset's; how the grip sits on your hand is body fit, in Body & Hands.
+        // Which hand holds the gun, and how two hands hold it, are a controls preset's: people sharing the mod each
+        // keep their own.
         if (CategorySection section{Cat_Controls}; section.visible)
         {
+        if (SectionHeader("Left-handed play##section", ImGuiTreeNodeFlags_None))
+        {
+        {
+        SettingGroup leftHanded("Left-handed play", SettingGroup::kNameOnly);
+        changed |= ImGui::Checkbox("Left-handed main weapon", &g_config.left_handed);
+        if (g_config.left_handed)
+        {
+            ImGui::Indent();
+            SettingGap();
+            changed |= ImGui::Checkbox("Fix Hand Alignment (Experimental)",
+                &g_config.experimental_hand_alignment);
+            ImGui::TextDisabled("Off: released hand positioning. On: experimental hand/arm correction.\n"
+                                "Leave off if hands become misaligned.");
+            ImGui::Unindent();
+        }
+        ImGui::TextDisabled("Main weapon, aiming and trigger follow your left hand.\n"
+                            "Your right hand supports the weapon or holds the second gun.");
+        }
+        }
         if (SectionHeader("Two-handed aiming##section", ImGuiTreeNodeFlags_None))
         {
         SettingGap();
@@ -2398,30 +2417,24 @@ namespace
                 "Reduces small tracking jitter in free two-hand aim.\n"
                 "0 = off; higher values apply more smoothing.\n"
                 "Applies to two-handed aiming, Virtual Stock on or off.");
-            ImGui::Unindent();
-        }
-        }
-        }
-
-        if (CategorySection section{Cat_WeaponAim}; section.visible)
-        {
-        if (SectionHeader("Left-handed play##section", ImGuiTreeNodeFlags_None))
-        {
-        {
-        SettingGroup leftHanded("Left-handed play", SettingGroup::kNameOnly);
-        changed |= ImGui::Checkbox("Left-handed main weapon", &g_config.left_handed);
-        if (g_config.left_handed)
-        {
-            ImGui::Indent();
             SettingGap();
-            changed |= ImGui::Checkbox("Fix Hand Alignment (Experimental)",
-                &g_config.experimental_hand_alignment);
-            ImGui::TextDisabled("Off: released hand positioning. On: experimental hand/arm correction.\n"
-                                "Leave off if hands become misaligned.");
+            ImGui::SeparatorText("Where your support hand grabs the gun");
+            // Store absolute metres for compatibility with existing configurations.
+            constexpr float grabSideBaseline=0.080f;
+            float grabSideAdjustment=g_config.two_hand_zone_right_m-grabSideBaseline;
+            if(vr_menu::SliderFloat("Grab zone side offset (m)",
+                                   &grabSideAdjustment,
+                                   -0.10f,0.10f,"%.3f")) {
+                g_config.two_hand_zone_right_m=grabSideAdjustment+grabSideBaseline;
+                changed=true;
+            }
+            ImGui::TextDisabled("Slides the grip-click zone sideways (+ = right). Zero uses the default 0.080 m offset.");
+            SettingGap();
+            changed |= vr_menu::SliderFloat("Left palm depth (m)",
+                                          &g_config.left_grip_forward_m,
+                                          -0.05f, 0.25f, "%.3f");
+            ImGui::TextDisabled("Moves the support-hand grab sample forward from the tracked controller toward the visible palm.");
             ImGui::Unindent();
-        }
-        ImGui::TextDisabled("Main weapon, aiming and trigger follow your left hand.\n"
-                            "Your right hand supports the weapon or holds the second gun.");
         }
         }
         }
@@ -2456,6 +2469,11 @@ namespace
                             "1.00 = authored size. Separate because the left hand is "
                             "usually empty; use Match weapon for identical hands.\n"
                             "Its front/back position is \"Left hand forward offset\" below.");
+        SettingGap();
+        changed |= vr_menu::SliderFloat("Left hand forward offset (m)",
+                                      &g_config.left_hand_forward_m,
+                                      -0.15f, 0.30f, "%.3f");
+        ImGui::TextDisabled("Additional left-hand adjustment on top of the shared gun forward offset.");
         }
         if (SectionHeader("Visual gun alignment##section", ImGuiTreeNodeFlags_None))
         {
@@ -2844,34 +2862,6 @@ namespace
             changed |= ImGui::Checkbox("Hide lower body", &g_config.body_ik_hide_lower);
             ImGui::TextWrapped("Lower-body hiding requires separate leg geometry. Unsupported rigs retain first-person hands. Halo 3 Elite/Arbiter full avatars currently require this option off.");
         }
-        }
-        if (SectionHeader("Two-handed grip calibration##section", ImGuiTreeNodeFlags_None))
-        {
-        NeedsInControls(g_config.two_handed_aim, "Needs Two-handed aiming on (Controls > Two-handed aiming).");
-        ImGui::BeginDisabled(!g_config.two_handed_aim);
-        ImGui::TextDisabled("Where your support hand grabs the gun. Two-handed aiming itself is in Controls.");
-        SettingGap();
-        changed |= vr_menu::SliderFloat("Left hand forward offset (m)",
-                                      &g_config.left_hand_forward_m,
-                                      -0.15f, 0.30f, "%.3f");
-        ImGui::TextDisabled("Additional left-hand adjustment on top of the shared gun forward offset.");
-        SettingGap();
-        // Store absolute metres for compatibility with existing configurations.
-        constexpr float grabSideBaseline=0.080f;
-        float grabSideAdjustment=g_config.two_hand_zone_right_m-grabSideBaseline;
-        if(vr_menu::SliderFloat("Grab zone side offset (m)",
-                               &grabSideAdjustment,
-                               -0.10f,0.10f,"%.3f")) {
-            g_config.two_hand_zone_right_m=grabSideAdjustment+grabSideBaseline;
-            changed=true;
-        }
-        ImGui::TextDisabled("Slides the grip-click zone sideways (+ = right). Zero uses the default 0.080 m offset.");
-        SettingGap();
-        changed |= vr_menu::SliderFloat("Left palm depth (m)",
-                                      &g_config.left_grip_forward_m,
-                                      -0.05f, 0.25f, "%.3f");
-        ImGui::TextDisabled("Moves the support-hand grab sample forward from the tracked controller toward the visible palm.");
-        ImGui::EndDisabled();
         }
         // Where the holster and reserve magazine sit is body fit, so no controls preset carries it; turning them on and
         // their gestures are in Controls.

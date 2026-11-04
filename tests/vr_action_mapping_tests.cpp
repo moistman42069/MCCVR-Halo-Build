@@ -130,11 +130,14 @@ void CheckInputPresets()
         "where the holster sits on your body stays out of a preset");
     Config twoHand{};
     twoHand.persistent_support_grip=false;twoHand.two_hand_offhand_influence=.25f;twoHand.left_grip_forward_m=.2f;
+    twoHand.left_handed=true;twoHand.left_hand_forward_m=.1f;
     Config twoHandLoaded{};
     input_preset::Parse(input_preset::Serialize(twoHand).c_str(),twoHandLoaded);
     Check(!twoHandLoaded.persistent_support_grip&&std::fabs(twoHandLoaded.two_hand_offhand_influence-.25f)<.002f&&
-        twoHandLoaded.left_grip_forward_m==Config{}.left_grip_forward_m,
-        "a preset keeps two-handed aiming, but not where the support hand grabs the gun");
+        std::fabs(twoHandLoaded.left_grip_forward_m-.2f)<.002f&&twoHandLoaded.left_handed,
+        "a preset keeps left-handed play, two-handed aiming and where the support hand grabs the gun");
+    Check(twoHandLoaded.left_hand_forward_m==Config{}.left_hand_forward_m,
+        "the left hand's forward offset, saved for each game, stays out of a preset");
     Config kept{};
     kept.world_scale=2.f;
     input_preset::CopyScheme(kept,scheme);

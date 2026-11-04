@@ -35,6 +35,8 @@ constexpr BoolField kBools[] = {
     {"physical_melee", &Config::physical_melee},
     {"gesture_melee", &Config::gesture_melee},
     {"two_handed_aim", &Config::two_handed_aim},
+    {"left_handed", &Config::left_handed},
+    {"experimental_hand_alignment", &Config::experimental_hand_alignment},
     {"gesture_melee_require_grip", &Config::gesture_melee_require_grip},
     {"gesture_melee_off_hand", &Config::gesture_melee_off_hand},
     {"gesture_melee_directional", &Config::gesture_melee_directional},
@@ -71,10 +73,13 @@ constexpr FloatField kFloats[] = {
     {"physical_running_speed", &Config::physical_running_speed},
     {"physical_running_sensitivity", &Config::physical_running_sensitivity},
     {"physical_melee_swing_speed", &Config::physical_melee_swing_speed},
-    // Two-handed aiming. Where the support hand grabs the gun is body fit, and stays out.
+    // Two-handed aiming, and where the support hand grabs the gun. The left hand's forward offset is saved for
+    // each game with the gun position (Weapon & Aim), so it stays out.
     {"two_hand_one_hand_range_m", &Config::two_hand_one_hand_range_m},
     {"two_hand_offhand_influence", &Config::two_hand_offhand_influence},
     {"two_hand_smoothing_strength", &Config::two_hand_smoothing_strength},
+    {"two_hand_zone_right_m", &Config::two_hand_zone_right_m},
+    {"left_grip_forward_m", &Config::left_grip_forward_m},
     // How far the reload and holster gestures reach. Where the custom holster and the reserve magazine sit on the
     // body is body fit, and stays out.
     {"weapon_holster_radius_m", &Config::weapon_holster_radius_m},
