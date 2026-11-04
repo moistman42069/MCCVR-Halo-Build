@@ -14623,7 +14623,7 @@ int main()
             for (int i = 0; i < kTitleProfileCount; ++i) {
                 const auto& profile = g_config.title_profiles[i];
                 valid = valid && profile.gun_scale == (i == 0 ? .65f : .8f) &&
-                    profile.hud_size == (i == kTitleProfileReach ? kHudStarts[i].size : .7f) &&
+                    profile.hud_size == (kHudStarts[i].size != 0.43f ? kHudStarts[i].size : .7f) &&
                     profile.barrel_pitch_deg == 12.0f;
             }
             return valid;
@@ -15646,10 +15646,16 @@ int main()
               "crosshair shrinks away within 0.7 m");
         const TitleTunables& reachFresh = untouched.title_profiles[kTitleProfileReach];
         Check(reachFresh.hud_size == 0.45f && reachFresh.hud_aspect == 0.80f && reachFresh.hud_curvature == 0.48f &&
-                  reachFresh.hud_vertical_offset == -202.0f && untouched.title_profiles[0].hud_size == 0.43f &&
+                  reachFresh.hud_vertical_offset == -202.0f && untouched.title_profiles[4].hud_size == 0.34f &&
+                  untouched.title_profiles[4].hud_aspect == 1.00f &&
+                  untouched.title_profiles[4].hud_vertical_offset == -200.0f &&
+                  untouched.title_profiles[5].hud_size == 0.34f &&
+                  untouched.title_profiles[5].hud_vertical_offset == -200.0f &&
+                  untouched.title_profiles[0].hud_size == 0.43f &&
                   untouched.title_profiles[0].hud_aspect == 1.22f &&
                   untouched.title_profiles[0].hud_vertical_offset == 16.0f,
-              "HUD per game: a fresh configuration starts Reach at the tester's layout and the rest at the shared one");
+              "HUD per game: a fresh configuration starts Reach and both Halo 2s at the tester's layouts and the rest "
+              "at the shared one");
         // The HUD layout's four values follow the same rule: Reach's with no game running, never the shared
         // defaults, and an edit made then lands in Reach's profile.
         {
