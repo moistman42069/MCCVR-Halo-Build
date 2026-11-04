@@ -1073,6 +1073,7 @@ void ConfigLoad(const wchar_t* path)
     bool flashlightMappingV2 = false;
     bool loadedInputPreset = false;
     bool leftHandForwardResetV1 = false;
+    bool halo4HudHeightV2 = false;   // halo4_hud_height_version >= 2: Halo 4's HUD height is already up = positive
     bool loadedSharedLeftHandForward = false;
     bool twoHandZoneBaselineV1 = false;
     bool loadedTwoHandZoneRight = false;
@@ -1119,6 +1120,7 @@ void ConfigLoad(const wchar_t* path)
         // Legacy key, no longer read: bloom_chosen_<game> records the player's own bloom choice.
         if (!strcmp(key,"bloom_defaults_version")) continue;
         if (!strcmp(key,"left_hand_forward_reset_version")) {leftHandForwardResetV1=atoi(val)>=1;continue;}
+        if (!strcmp(key,"halo4_hud_height_version")) {halo4HudHeightV2=atoi(val)>=2;continue;}
         if (!strcmp(key,"left_hand_forward_m")) loadedSharedLeftHandForward=true;
         if (!strcmp(key,"two_hand_zone_baseline_version")) {twoHandZoneBaselineV1=atoi(val)>=1;continue;}
         if (!strcmp(key,"two_hand_zone_right_m")) loadedTwoHandZoneRight=true;
@@ -2333,6 +2335,16 @@ void ConfigLoad(const wchar_t* path)
                 for (int profile=0;profile<kTitleProfileCount;++profile)
                     if (g_profileFieldSet[profile][field])
                         g_config.title_profiles[profile].left_hand_forward_m-=kLegacyLeftHandForward;
+    }
+    if (!halo4HudHeightV2) {
+        // Halo 4's HUD height ran the other way until it was corrected (a positive value lowered the HUD), so a
+        // saved Halo 4 height is turned over once: the HUD stays exactly where the player put it. In memory only:
+        // the next save writes it with halo4_hud_height_version = 2.
+        for (int field=0;field<kTunableFieldCount;++field)
+            if (kTunableFields[field].member==&TitleTunables::hud_vertical_offset&&
+                g_profileFieldSet[kTitleProfileHalo4][field])
+                g_config.title_profiles[kTitleProfileHalo4].hud_vertical_offset=
+                    -g_config.title_profiles[kTitleProfileHalo4].hud_vertical_offset;
     }
     ResolveTitleProfiles();
     LOG("config: loaded (screen %.2fm wide at %.2fm)", g_config.screen_width_m, g_config.screen_distance_m);
@@ -3895,6 +3907,8 @@ void ConfigSave()
     fprintf(f, "left_gun_up_m = %.3f\n", g_config.base_tunables.left_gun_up_m);
     fprintf(f, "# 1 = left_hand_forward_m below is the extra on top of the left-gun offsets.\n");
     fprintf(f, "left_hand_forward_reset_version = 1\n");
+    // Halo 4's HUD height runs the same way as every game's (positive raises it); see ConfigLoad.
+    fprintf(f, "halo4_hud_height_version = 2\n");
     fprintf(f, "left_hand_forward_m = %.3f\n\n", g_config.base_tunables.left_hand_forward_m);
     fprintf(f, "# Sideways nudge of the two-hand grab zone (+ = player's right), so the\n");
     fprintf(f, "# grab line sits on the visible barrel, in meters (absolute; menu zero = 0.080 m).\n");

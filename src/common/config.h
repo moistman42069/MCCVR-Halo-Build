@@ -368,6 +368,7 @@ inline constexpr int kTitleProfileCount = 7;
 // Reach's slot among the profiles (cfg prefix reach_). The crosshair's three tunables and the HUD layout's four
 // follow and edit this profile while no game is running, so the menu always shows one game's own values.
 inline constexpr int kTitleProfileReach = 2;
+inline constexpr int kTitleProfileHalo4 = 3;
 // Each game draws its own crosshair art, which fills more or less of the crosshair's quad than the next game's
 // (Reach's ring about half as much as Halo 3's), so one size shows it larger in one game than in another. These
 // are each game's starting size and opacity, headset-tuned so the games' crosshairs look alike; the shared
@@ -390,9 +391,9 @@ inline constexpr CrosshairStart kCrosshairStarts[kTitleProfileCount] = {
     {7.20f, 1.25f},  // Halo: Combat Evolved
 };
 // Each game's starting HUD layout (size, width / aspect, curvature, height), the same way: where it differs from
-// TitleTunables' shared default, a profile that names none starts at its game's own. Reach's and Halo 2's are the
-// tester's, headset-tuned (Halo 2's Anniversary layout, used for Classic too): laid out narrower or smaller, and
-// well below the shared height.
+// TitleTunables' shared default, a profile that names none starts at its game's own. Reach's, Halo 4's and Halo 2's
+// are the tester's, headset-tuned (Halo 2's Anniversary layout, used for Classic too): laid out narrower or smaller,
+// and well below the shared height.
 struct HudStart
 {
     float size;
@@ -404,7 +405,7 @@ inline constexpr HudStart kHudStarts[kTitleProfileCount] = {
     {0.43f, 1.22f, 0.48f, 16.0f},   // Halo 3
     {0.43f, 1.22f, 0.48f, 16.0f},   // Halo 3: ODST
     {0.45f, 0.80f, 0.48f, -202.0f}, // Halo: Reach
-    {0.43f, 1.22f, 0.48f, 16.0f},   // Halo 4
+    {0.41f, 1.00f, 0.48f, -200.0f}, // Halo 4
     {0.34f, 1.00f, 0.48f, -200.0f}, // Halo 2 Anniversary
     {0.34f, 1.00f, 0.48f, -200.0f}, // Halo 2 Classic
     {0.43f, 1.22f, 0.48f, 16.0f},   // Halo: Combat Evolved

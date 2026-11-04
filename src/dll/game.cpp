@@ -47661,7 +47661,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
             transform[index] *= affine.horizontal;
         for (const size_t index : {size_t{2},size_t{5},size_t{8},size_t{11}})
             transform[index] *= affine.vertical;
-        transform[11] -= affine.heightPixels;
+        // The CUI's y runs UP: adding raises the HUD, as a positive HUD height does in every other game.
+        // (Subtracting, as this did, lowered it: the tester's +200 sat where Reach's -202 does.)
+        transform[11] += affine.heightPixels;
         if (Halo4SafeWrite(entry, transform.data(), 0x34))
             g_halo4Restoration.hudTransforms.fetch_add(
                 1, std::memory_order_relaxed);
