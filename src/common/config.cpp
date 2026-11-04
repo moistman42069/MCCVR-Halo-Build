@@ -3661,7 +3661,8 @@ void ConfigSave()
     fprintf(f,"# (Halo 3, ODST, Reach, Halo 4; on foot). 0 = as before. No menu control (log: VIEW HEIGHT).\n");
     fprintf(f,"# (default %d)\n",d.view_follows_standing_height?1:0);
     fprintf(f,"view_follows_standing_height = %d\n",g_config.view_follows_standing_height?1:0);
-    fprintf(f,"# Right stick down crouches and up stands, on foot. It needs MCC's hold-to-crouch setting. (default %d)\n"
+    fprintf(f,"# On foot, right stick down toggles crouch and held up sprints (Reach: armor ability). It needs MCC's\n"
+              "# hold-to-crouch setting. (default %d)\n"
               "right_stick_crouch = %d\n",d.right_stick_crouch?1:0,g_config.right_stick_crouch?1:0);
     fprintf(f,"# Arm-swing locomotion: speed is a fraction of native maximum movement.\n");
     fprintf(f,"physical_running = %d\nphysical_running_speed = %.3f\nphysical_running_sensitivity = %.3f\n",
