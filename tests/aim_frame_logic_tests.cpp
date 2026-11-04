@@ -1,7 +1,7 @@
 // Aim Frame Zoom in the titles that derive their picture's aspect (src/common/aim_frame_logic.h): the width a squarer
 // picture is shown at keeps the flat frame's height, a wide picture keeps the setting; what the engine built agrees
 // with what was asked within the tolerance; an eye stands along the aim's basis; Halo 4's observer field of view maps
-// to tangents and back; and a run of refused frames gives the zoom back once, cleared by a frame that goes through.
+// to tangents and back; the HUD's scale in the frame is the game's own by default; and a run of refused frames gives the zoom back once, cleared by a frame that goes through.
 #include "aim_frame_logic.h"
 
 #include <cmath>
@@ -108,6 +108,24 @@ void Halo4Mapping()
     Check(!Halo4ObserverFovFor(kNaN, kGain, observer), "a NaN tangent");
 }
 
+void HudInTheFrame()
+{
+    float h = 0.0f, v = 0.0f;
+    HudScale(1.0f, 1.0f, 1.0f, h, v);
+    Check(h == 1.0f && v == 1.0f, "the defaults are the game's own HUD layout");
+    HudScale(0.8f, 1.0f, 1.0f, h, v);
+    Check(Near(h, 0.8f, 1e-6f) && Near(v, 0.8f, 1e-6f), "size scales both axes");
+    HudScale(1.0f, 1.2f, 0.9f, h, v);
+    Check(Near(h, 1.2f, 1e-6f) && Near(v, 0.9f, 1e-6f), "width and height scale one axis each");
+    HudScale(1.1f, 1.2f, 0.9f, h, v);
+    Check(Near(h, 1.32f, 1e-5f) && Near(v, 0.99f, 1e-5f), "size and stretch multiply");
+    HudScale(9.0f, 9.0f, 0.0f, h, v);
+    Check(Near(h, kHudSizeMax * kHudStretchMax, 1e-5f) && Near(v, kHudSizeMax * kHudStretchMin, 1e-5f),
+          "settings out of range are held to it");
+    HudScale(kNaN, kNaN, kNaN, h, v);
+    Check(h == 1.0f && v == 1.0f, "a setting that is not a number is the game's own");
+}
+
 void Refusals()
 {
     RefusalRun run;
@@ -131,6 +149,7 @@ int main()
     Readback();
     EyeAlongTheAim();
     Halo4Mapping();
+    HudInTheFrame();
     Refusals();
     std::printf("aim_frame_logic_tests: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;

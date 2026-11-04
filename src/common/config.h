@@ -1490,6 +1490,13 @@ struct Config
     float aim_frame_size_deg[2]{100.0f, 100.0f};
     float aim_frame_strength[2]{1.0f, 1.0f};
     float aim_frame_move_s = 0.12f;
+    // The HUD inside the frame, apart from the HUD layout (hud_size and the rest) and the Halo 4 helmet frame: 1 =
+    // the game's own layout, as on a flat screen, its edge art at the frame's edges. Size scales it whole (0.5 to
+    // 1.25); width and height stretch one axis each (0.5 to 1.5). The game's crosshair and zoom art scale with it.
+    // aim_frame_logic.h HudScale; game.cpp HudLayoutWanted and Halo4ApplyNativeHudAffine.
+    float aim_frame_hud_size = 1.0f;
+    float aim_frame_hud_width_scale = 1.0f;
+    float aim_frame_hud_height_scale = 1.0f;
     float scope_screen_width_m = 0.159f;
     float scope_screen_right_m = -0.058f;
     float scope_screen_up_m = 0.216f;

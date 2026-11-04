@@ -1,7 +1,8 @@
 // AIM FRAME ZOOM (config.h aim_frame_zoom): the pure parts of showing the game's zoomed picture as a frame on the
 // aim that a title with a fixed render aspect needs (Halo: Reach and Halo 4; game.cpp AimFrameThisFrame). Halo 3 and
 // ODST write both projection terms themselves and always draw at the flat game's 16:9; these two engines derive the
-// horizontal extent from the vertical one and the render surface, so the picture has the surface's shape.
+// horizontal extent from the vertical one and the render surface, so the picture has the surface's shape. The HUD's
+// scale in the frame (HudScale) is every title's.
 #pragma once
 
 #include <cmath>
@@ -69,6 +70,23 @@ namespace aim_frame
         tanY = std::tan(halfY);
         tanX = tanY * ratio;
         return std::isfinite(tanX) && std::isfinite(tanY);
+    }
+
+    // The HUD's scale in the frame's picture, apart from the player's HUD layout (config.h aim_frame_hud_size,
+    // aim_frame_hud_width_scale, aim_frame_hud_height_scale): 1 x 1 is the game's own layout, as on a flat screen,
+    // whose edge art lines the picture's edges. Size scales both axes, width and height one each. A setting out of
+    // range is held to it; one that is not a number is the game's own.
+    inline constexpr float kHudSizeMin = 0.5f, kHudSizeMax = 1.25f;
+    inline constexpr float kHudStretchMin = 0.5f, kHudStretchMax = 1.5f;
+    inline void HudScale(float size, float width, float height, float& horizontal, float& vertical) noexcept
+    {
+        const auto held = [](float value, float lo, float hi)
+        {
+            return std::isfinite(value) ? (value < lo ? lo : value > hi ? hi : value) : 1.0f;
+        };
+        const float s = held(size, kHudSizeMin, kHudSizeMax);
+        horizontal = s * held(width, kHudStretchMin, kHudStretchMax);
+        vertical = s * held(height, kHudStretchMin, kHudStretchMax);
     }
 
     // ...and the observer field of view that asks for `tanY`.

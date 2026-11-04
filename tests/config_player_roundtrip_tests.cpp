@@ -77,6 +77,9 @@ int main()
     g_config.aim_frame_size_deg[1] = 70.0f;
     g_config.aim_frame_strength[0] = 2.0f;
     g_config.aim_frame_move_s = 0.3f;
+    g_config.aim_frame_hud_size = 0.75f;
+    g_config.aim_frame_hud_width_scale = 1.2f;
+    g_config.aim_frame_hud_height_scale = 0.9f;
     g_config.reclaimer_share_device = false;
     g_config.desktop_mirror = false;
     g_config.two_hand_one_hand_range_m = 0.30f;
@@ -111,6 +114,12 @@ int main()
           "aim_frame_strength_1 is remembered");
     Check(g_config.aim_frame_move_s > 0.29f && g_config.aim_frame_move_s < 0.31f,
           "aim_frame_move_s is remembered");
+    Check(g_config.aim_frame_hud_size > 0.74f && g_config.aim_frame_hud_size < 0.76f,
+          "aim_frame_hud_size is remembered");
+    Check(g_config.aim_frame_hud_width_scale > 1.19f && g_config.aim_frame_hud_width_scale < 1.21f,
+          "aim_frame_hud_width_scale is remembered");
+    Check(g_config.aim_frame_hud_height_scale > 0.89f && g_config.aim_frame_hud_height_scale < 0.91f,
+          "aim_frame_hud_height_scale is remembered");
     Check(!g_config.reclaimer_share_device, "reclaimer_share_device is remembered");
     Check(!g_config.desktop_mirror, "desktop_mirror is remembered");
     Check(g_config.two_hand_one_hand_range_m > 0.29f && g_config.two_hand_one_hand_range_m < 0.31f,
