@@ -5,6 +5,7 @@
 #include "title_adapter.h"
 #include "sigscan.h"
 #include "hook_quiescence.h"
+#include "host_unload_gate.h"
 #include "../common/native_action_button.h"
 #include "../common/config.h"
 #include "../common/log.h"

@@ -45,6 +45,15 @@ static bool supportPickupBlocked=false;
 bool Game_BlockHalo3SupportPickup() noexcept {return supportPickupBlocked;}
 static bool halo3CoreIn=true;
 bool Game_IsHooked() {return halo3CoreIn;}
+// Halo 4's and Halo 2's camera cores as the bridges are told them (game.h GameTitleCoreState): no title says, unless
+// a test does.
+static bool coreSays=false,coreInstalled=false;
+static std::atomic<bool> coreTearingDown{false};
+static unsigned pinned=0,unpinned=0;
+bool Game_TitleCoreState(GameTitle,GameTitleCoreState& out) noexcept
+{out={};if(!coreSays)return false;out.installed=coreInstalled;out.tearingDown=&coreTearingDown;return true;}
+void HostUnloadGate_Pin(HMODULE,std::atomic<bool>*,const std::atomic<uint64_t>*,const char*,bool) {++pinned;}
+void HostUnloadGate_Unpin(HMODULE) {++unpinned;}
 void Logf(const char*,...){}
 bool Game_ReadVrActionBindings(vr_mapping::Transports& out,uint64_t,unsigned){out.fill(0x4000);return fallbackVerified;}
 GameTitle TitleAdapter_GetActiveTitle(){
@@ -533,7 +542,22 @@ static void TestH4(){
     quiescent=true;NativeVrActions_Poll();Check(!native_h4::runtime.module,"H4 fault retirement frees only after quiescence");
     ++testGeneration;creates=0;failCreate=2;NativeVrActions_Poll();
     Check(!native_h4::runtime.module&&!native_h4::runtime.admitted,"H4 partial hook failure leaves transport fallback");
-    failCreate=0;testTitle=GameTitle::None;
+    // halo4.dll is held only while the Halo 4 core is installed: a game's end lets it go in the same title and
+    // generation, and the unload gate is told, so MCC's reload gives the next game a fresh image.
+    failCreate=0;++testGeneration;coreSays=coreInstalled=true;coreTearingDown=false;
+    const unsigned pinnedBefore=pinned,unpinnedBefore=unpinned,freedBefore=frees;
+    NativeVrActions_Poll();
+    Check(native_h4::runtime.module&&native_h4::runtime.admitted&&pinned==pinnedBefore+1,
+        "H4 installs while the core is in, its reference registered with the unload gate");
+    coreInstalled=false;NativeVrActions_Poll();
+    Check(!native_h4::runtime.module&&frees==freedBefore+1&&unpinned==unpinnedBefore+1,
+        "H4 lets go of halo4.dll when the core is out, and tells the unload gate");
+    NativeVrActions_Poll();
+    Check(!native_h4::runtime.module&&frees==freedBefore+1,"H4 takes no reference while the core is out");
+    coreInstalled=true;NativeVrActions_Poll();
+    Check(native_h4::runtime.module&&native_h4::runtime.admitted,"H4 installs again with the next core");
+    coreSays=false;testTitle=GameTitle::None;NativeVrActions_Poll();
+    Check(!native_h4::runtime.module,"H4 lets go when another title is active");
 }
 static void H2Poll(uint32_t actions,bool direct,uint32_t blocked=0){
     ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);
