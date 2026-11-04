@@ -389,6 +389,25 @@ inline constexpr CrosshairStart kCrosshairStarts[kTitleProfileCount] = {
     {8.00f, 1.25f},  // Halo 2 Classic
     {7.20f, 1.25f},  // Halo: Combat Evolved
 };
+// Each game's starting HUD layout (size, width / aspect, curvature, height), the same way: where it differs from
+// TitleTunables' shared default, a profile that names none starts at its game's own. Reach's is the tester's,
+// headset-tuned: its HUD laid out narrower and well below the shared height.
+struct HudStart
+{
+    float size;
+    float aspect;
+    float curvature;
+    float vertical_offset;
+};
+inline constexpr HudStart kHudStarts[kTitleProfileCount] = {
+    {0.43f, 1.22f, 0.48f, 16.0f},   // Halo 3
+    {0.43f, 1.22f, 0.48f, 16.0f},   // Halo 3: ODST
+    {0.45f, 0.80f, 0.48f, -202.0f}, // Halo: Reach
+    {0.43f, 1.22f, 0.48f, 16.0f},   // Halo 4
+    {0.43f, 1.22f, 0.48f, 16.0f},   // Halo 2 Anniversary
+    {0.43f, 1.22f, 0.48f, 16.0f},   // Halo 2 Classic
+    {0.43f, 1.22f, 0.48f, 16.0f},   // Halo: Combat Evolved
+};
 
 struct TitleTunables
 {

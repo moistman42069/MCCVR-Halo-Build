@@ -3125,19 +3125,20 @@ namespace
         // This used to write 0.87 / 1.0 / 0.5 / 0, none of which are the
         // defaults, so "reset" left the HUD somewhere the config file could not
         // describe and disagreed with the global "Reset ALL settings".
+        // The shown game's own defaults (kHudStarts): what Reset restores.
+        const HudStart& hudDefaults = kHudStarts[Config_ShownTitleProfile()];
         if (ImGui::SmallButton("Reset HUD layout##sf"))
         {
-            const Config hudDefaults{};
-            g_config.hud_size = hudDefaults.hud_size;
-            g_config.hud_aspect = hudDefaults.hud_aspect;
-            g_config.hud_curvature = hudDefaults.hud_curvature;
-            g_config.hud_vertical_offset = hudDefaults.hud_vertical_offset;
+            g_config.hud_size = hudDefaults.size;
+            g_config.hud_aspect = hudDefaults.aspect;
+            g_config.hud_curvature = hudDefaults.curvature;
+            g_config.hud_vertical_offset = hudDefaults.vertical_offset;
             changed = true;
         }
-        ImGui::TextDisabled("Reset returns the four values above to the shipped defaults "
+        ImGui::TextDisabled("Reset returns the four values above to this game's defaults "
                             "(%.2f / %.2f / %.2f / %+.0f). Lower size pulls HUD elements inward.",
-                            Config{}.hud_size, Config{}.hud_aspect,
-                            Config{}.hud_curvature, Config{}.hud_vertical_offset);
+                            hudDefaults.size, hudDefaults.aspect,
+                            hudDefaults.curvature, hudDefaults.vertical_offset);
         ImGui::TextDisabled("Width corrects squeeze separately from size; 1.00 uses automatic correction.");
         if (halo2NativeHud)
             ImGui::TextDisabled("Halo 2 uses its native per-eye HUD path and has no separate curvature basis here.");

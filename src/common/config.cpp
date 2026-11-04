@@ -36,6 +36,10 @@ Config::Config()
     {
         title_profiles[profile].crosshair_size_deg = kCrosshairStarts[profile].size_deg;
         title_profiles[profile].crosshair_opacity = kCrosshairStarts[profile].opacity;
+        title_profiles[profile].hud_size = kHudStarts[profile].size;
+        title_profiles[profile].hud_aspect = kHudStarts[profile].aspect;
+        title_profiles[profile].hud_curvature = kHudStarts[profile].curvature;
+        title_profiles[profile].hud_vertical_offset = kHudStarts[profile].vertical_offset;
     }
     for (const ConfigShippedSeatTrim& trim : kConfigShippedSeatTrims)
     {
@@ -837,9 +841,9 @@ const char* const kTitleProfileTitles[kTitleProfileCount] = {
 bool g_profileFieldSet[kTitleProfileCount][kTunableFieldCount]{};
 std::atomic<int> g_activeTitleProfile{-1};
 
-// What a profile field the cfg did not name starts from: the shared value, but for a crosshair size or opacity
-// of a game whose own start is not the shared default (kCrosshairStarts), which starts there whatever the shared
-// key holds.
+// What a profile field the cfg did not name starts from: the shared value, but for a crosshair size or opacity,
+// or a HUD layout value, of a game whose own start is not the shared default (kCrosshairStarts, kHudStarts),
+// which starts there whatever the shared key holds.
 float ProfileSeed(int profile, const TunableField& descriptor, float shared)
 {
     // Each game's calibrated gun position. A shared value the player moved away from the old single
@@ -859,6 +863,15 @@ float ProfileSeed(int profile, const TunableField& descriptor, float shared)
         return own.size_deg;
     if (descriptor.member == &TitleTunables::crosshair_opacity && own.opacity != defaults.crosshair_opacity)
         return own.opacity;
+    const HudStart& hud = kHudStarts[profile];
+    if (descriptor.member == &TitleTunables::hud_size && hud.size != defaults.hud_size)
+        return hud.size;
+    if (descriptor.member == &TitleTunables::hud_aspect && hud.aspect != defaults.hud_aspect)
+        return hud.aspect;
+    if (descriptor.member == &TitleTunables::hud_curvature && hud.curvature != defaults.hud_curvature)
+        return hud.curvature;
+    if (descriptor.member == &TitleTunables::hud_vertical_offset && hud.vertical_offset != defaults.hud_vertical_offset)
+        return hud.vertical_offset;
     return shared;
 }
 
