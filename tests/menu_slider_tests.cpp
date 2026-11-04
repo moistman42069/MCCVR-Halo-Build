@@ -41,7 +41,7 @@ int main()
     frame(-100,-100,false);
     auto click=[&](int row,bool increase) {
         const float x=origins[row].x+(increase ? 300-button*0.5f : button*0.5f);
-        const float y=origins[row].y+button*0.5f;
+        const float y=origins[row].y+ImGui::GetTextLineHeightWithSpacing()+button*0.5f; // below the name
         frame(x,y,false); frame(x,y,true); frame(x,y,false);
     };
     click(0,true);
@@ -57,7 +57,7 @@ int main()
     integer=1;
     click(1,false);
     check(integer==1 && !changed[1],"lower endpoint arrow is disabled");
-    const float x=origins[0].x+150, y=origins[0].y+button*0.5f;
+    const float x=origins[0].x+150, y=origins[0].y+ImGui::GetTextLineHeightWithSpacing()+button*0.5f;
     frame(x,y,false); frame(x,y,true); frame(x,y,false);
     check(fractional>0.4f && fractional<0.6f,"the original slider remains draggable between its arrows");
     check(ImGui::GetDrawData()->TotalVtxCount>0,"the complete slider controls produce renderable draw data");
@@ -71,7 +71,7 @@ int main()
         &fractional,0.f,1.f,"%.2f");
     check(ImGui::GetItemRectMax().x<=start.x+ImGui::GetContentRegionAvail().x+1,
         "long slider label stays within the available pane width");
-    check(ImGui::GetItemRectSize().y>button*1.5f,"long slider label wraps below the controls");
+    check(ImGui::GetItemRectSize().y>button*1.5f,"a long slider name wraps, above the controls");
     ImGui::End();ImGui::Render();
     ImGui::DestroyContext();
     if(!failures) std::puts("VR menu slider input tests passed");

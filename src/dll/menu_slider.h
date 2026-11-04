@@ -9,14 +9,24 @@
 namespace vr_menu
 {
 // Keep the whole slider+arrows within the original item width. Labels retain
-// ImGui's ##/### identity rules, and grouping preserves callers' SameLine use.
+// ImGui's ##/### identity rules, and grouping preserves callers' SameLine use (beside the name).
+// The name goes above the slider, whatever its length, so every setting reads the same way: its name, the
+// control, then the text that describes it.
 template<class Value, class Draw>
 bool SliderWithArrows(const char* label, Value* value, Value minimum,
     Value maximum, double step, Draw draw)
 {
     ImGui::PushID(label);
     ImGui::BeginGroup();
+    // Before the name is drawn, which would use up a caller's SetNextItemWidth.
     const float width=ImGui::CalcItemWidth();
+    const char* hidden=std::strstr(label,"##");
+    if(!hidden || hidden!=label)
+    {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(label,hidden);
+        ImGui::PopTextWrapPos();
+    }
     const float button=ImGui::GetFrameHeight();
     const float gap=ImGui::GetStyle().ItemInnerSpacing.x;
     const Value before=*value;
@@ -36,19 +46,6 @@ bool SliderWithArrows(const char* label, Value* value, Value minimum,
     ImGui::BeginDisabled(*value>=maximum);
     if(ImGui::ArrowButton("increase",ImGuiDir_Right)) nudge(1);
     ImGui::EndDisabled();
-    const char* hidden=std::strstr(label,"##");
-    if(!hidden || hidden!=label)
-    {
-        // Long labels must not make the settings child horizontally scroll or
-        // disappear outside the headset panel. Short labels retain one row.
-        const float labelWidth=ImGui::CalcTextSize(label,hidden).x;
-        const float used=ImGui::GetItemRectMax().x-ImGui::GetWindowPos().x;
-        if(used+gap+labelWidth<=ImGui::GetWindowContentRegionMax().x)
-            ImGui::SameLine(0,gap);
-        ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextUnformatted(label,hidden);
-        ImGui::PopTextWrapPos();
-    }
     ImGui::EndGroup();
 #ifdef IMGUI_ENABLE_TEST_ENGINE
     // The slider itself is named "##value": its name is reported for the group, for the settings search.
