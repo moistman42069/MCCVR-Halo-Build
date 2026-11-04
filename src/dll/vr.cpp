@@ -15643,11 +15643,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 {
                     g_config.weapon_holster_custom_x_m=spot.x;
                     g_config.weapon_holster_custom_y_m=spot.y;
+                    // The spot only: turning holsters on and choosing Custom are a controls preset's, in Controls.
                     g_config.weapon_holster_custom_z_m=spot.z;
-                    g_config.weapon_holster_location=3;
-                    g_config.weapon_holsters=true;
-                    if(!g_config.weapon_holster_slide&&!g_config.weapon_holster_click)
-                        g_config.weapon_holster_click=true;
                     VR_PulseContactHaptics(false,0.6f);
                     g_holsterCaptureCount.fetch_add(1,std::memory_order_relaxed);
                     // The save and the log line: the cold worker's (VR_ReportHolsterCapture).
@@ -22970,7 +22967,7 @@ void VR_ReportHolsterCapture() noexcept
     const float x = g_config.weapon_holster_custom_x_m, y = g_config.weapon_holster_custom_y_m,
                 z = g_config.weapon_holster_custom_z_m;
     LOG("HOLSTER SPOT set by hand: %.0f cm to the weapon side, %.0f cm %s the head, %.0f cm %s it "
-        "(weapon_holster_location = 3; %s-handed); saved",
+        "(%s-handed); saved",
         x * 100.0f, std::fabs(y) * 100.0f, y < 0 ? "below" : "above", std::fabs(z) * 100.0f,
         z < 0 ? "behind" : "in front of",
         g_holsterCaptureLeftHanded.load(std::memory_order_relaxed) ? "left" : "right");
