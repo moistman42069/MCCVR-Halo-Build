@@ -332,9 +332,13 @@ bool RefreshLauncherCopy(const fs::path& installedLauncher, const fs::path& payl
         const auto directory = copy.parent_path();
         const auto suffix = UniqueSuffix();
         const auto modFiles = directory / L"ModFiles";
-        if (IsFile(modFiles / L"INSTALL-MANIFEST.sha256")) {
-            const auto fresh = directory / (L"ModFiles.new-" + suffix), old = directory / (L"ModFiles.old-" + suffix);
-            try {
+        const bool package = IsFile(modFiles / L"INSTALL-MANIFEST.sha256");
+        const auto fresh = directory / (L"ModFiles.new-" + suffix), old = directory / (L"ModFiles.old-" + suffix);
+        const fs::path next = copy.wstring() + L".new-" + suffix;
+        auto previous = copy; previous.replace_extension(L".previous" + copy.extension().wstring());
+        // Everything is staged and verified first, so that a failure leaves the folder one version: the old one.
+        try {
+            if (package) {
                 fs::copy(payload, fresh, fs::copy_options::recursive);
                 std::vector<PayloadFile> files; std::string manifestError;
                 if (!ParseManifest(Read(fresh / L"INSTALL-MANIFEST.sha256"), files, manifestError)) throw std::runtime_error(manifestError);
@@ -343,19 +347,23 @@ bool RefreshLauncherCopy(const fs::path& installedLauncher, const fs::path& payl
                     std::transform(expected.begin(), expected.end(), expected.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                     if (Sha256File(fresh / Wide(file.relative)) != expected) throw std::runtime_error("Payload SHA-256 mismatch.");
                 }
-                fs::rename(modFiles, old);
-                try { fs::rename(fresh, modFiles); } catch (...) { fs::rename(old, modFiles); throw; }
-            } catch (...) { fs::remove_all(fresh, ignored); throw; }
-            fs::remove_all(old, ignored);
-        }
-        const fs::path next = copy.wstring() + L".new-" + suffix;
-        auto previous = copy; previous.replace_extension(L".previous" + copy.extension().wstring());
-        try {
+            }
             fs::copy_file(copy, previous, fs::copy_options::overwrite_existing);
             fs::copy_file(installedLauncher, next);
             if (Sha256File(next) != Sha256File(installedLauncher)) throw std::runtime_error("The launcher copy could not be verified.");
             if (!MoveFileExW(next.c_str(), copy.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("The launcher could not be replaced.");
-        } catch (...) { fs::remove(next, ignored); throw; }
+            if (package) {
+                try {
+                    fs::rename(modFiles, old);
+                    try { fs::rename(fresh, modFiles); } catch (...) { fs::rename(old, modFiles); throw; }
+                } catch (...) {
+                    // The launcher is new but its ModFiles could not follow: the launcher goes back to match them.
+                    fs::copy_file(previous, copy, fs::copy_options::overwrite_existing, ignored);
+                    throw std::runtime_error("The ModFiles folder beside it could not be replaced.");
+                }
+            }
+        } catch (...) { fs::remove(next, ignored); fs::remove_all(fresh, ignored); throw; }
+        fs::remove_all(old, ignored);
         return true;
     } catch (const std::exception& exception) { error = Wide(exception.what()); return false; }
 }
