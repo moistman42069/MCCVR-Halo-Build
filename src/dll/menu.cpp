@@ -1289,9 +1289,10 @@ namespace
             ImGui::Unindent();
         }
         SettingGap();
-        changed |= ImGui::Checkbox("Right stick crouches", &g_config.right_stick_crouch);
-        ImGui::TextDisabled("On foot: push the right stick down to crouch and up to stand. Needs MCC's "
-            "hold-to-crouch setting. The game's own crouch button still works.");
+        changed |= ImGui::Checkbox("Right stick crouches and sprints", &g_config.right_stick_crouch);
+        ImGui::TextDisabled("On foot: push the right stick down to crouch, and down again to stand. Hold it up to "
+            "sprint; in Reach, where sprint is an armor ability, that uses your armor ability. Needs MCC's "
+            "hold-to-crouch setting. The game's own crouch and sprint buttons still work.");
         ImGui::Spacing();
         }
         if (SectionHeader("VR turning (right controller stick)##section", ImGuiTreeNodeFlags_None))

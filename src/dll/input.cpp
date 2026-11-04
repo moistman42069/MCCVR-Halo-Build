@@ -667,19 +667,25 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         PhysicalCrouchCamera_Publish(currentTitle,TitleAdapter_GetGeneration(currentTitle),
             crouchEpoch,inputNow,physicalCrouchEnabled&&crouchTracking&&nativeReady,
             physicalCrouchButtons!=0);
-        // Crouching with the right stick, only where the headset owns the view's pitch and nothing else wants the axis.
-        // A pause keeps the crouch; every thread that polls the pad shares the one state.
-        bool stickCrouched=false;
+        // Crouching and sprinting with the right stick, only where the headset owns the view's pitch. The scope and the
+        // thumb-rest D-pad want the axis: they keep a crouch but read nothing. A pause keeps the crouch; every thread
+        // that polls the pad shares the one state.
+        bool stickCrouched=false,stickSprinting=false;
         {
             static std::mutex stickCrouchLock;
             static StickCrouch stickCrouch;
             std::lock_guard<std::mutex> lock(stickCrouchLock);
             if(gameplayMode)
                 stickCrouch.Step(pad.turnX,pad.turnY,g_config.right_stick_crouch&&inputMode==RuntimeMode::Gameplay&&
-                    crouchOnFoot&&!inSeat&&Game_IsHeadTracking()&&!VR_IsScopeActive()&&!pad.thumbrestDpad);
+                    crouchOnFoot&&!inSeat&&Game_IsHeadTracking(),!VR_IsScopeActive()&&!pad.thumbrestDpad);
             stickCrouched=stickCrouch.crouched&&nativeReady;
+            stickSprinting=stickCrouch.sprinting&&nativeReady;
         }
         const uint32_t crouchButtons=physicalCrouchButtons|(stickCrouched?crouchTransport:0u);
+        // Reach's sprint is an armor ability, so there the stick holds the armor ability.
+        const auto sprintAction=currentTitle==GameTitle::HaloReach?vr_mapping::Equipment:vr_mapping::Sprint;
+        const uint32_t heldButtons=crouchButtons|(stickSprinting?
+            (directActions?NativeVrActions_GestureBit(sprintAction):nativeActions[sprintAction]):0u);
         if(crouchSample.reference)
             g_physicalCrouchRiseCapped.store(physicalCrouchEnabled&&crouchSample.riseCapped,
                 std::memory_order_relaxed);
@@ -735,7 +741,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         g_witness.mapper = static_cast<uint32_t>(btn & ~witnessBase) |
             (semanticButtons & seat_witness::kTransportMask);
 #endif
-        btn|=static_cast<WORD>(crouchButtons);
+        btn|=static_cast<WORD>(heldButtons);
         static bool previousMenu = false;
         const bool menuEdge = pad.menu && !previousMenu;
         if (menuEdge)
@@ -782,7 +788,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             // A dual-wield shake is pressing a reload binding: let Reload through for its 120 ms
             // (Halo 3's left-reload edge is otherwise cleared under a blocked Reload).
             ~(pad.weaponDualReloadPulse?(1u<<vr_mapping::Reload):0u);
-        const uint32_t gestureActions=((crouchButtons|gestureMelee)>>18)|
+        const uint32_t gestureActions=((heldButtons|gestureMelee)>>18)|
             manual_weapon_input::Gestures(pad.weaponButtons,pad.weaponReloadBinding,pad.weaponSwitchBinding);
         if(semanticMode||blockedWeaponActions||(currentTitle==GameTitle::Halo3&&g_config.two_handed_aim)) NativeVrActions_Publish(state,currentTitle,inputNow,
             manual_weapon_input::Publish(routedActions.published,gestureActions,blockedWeaponActions),
@@ -800,7 +806,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             w.gesture = gestureMelee & kTransportMask;
             if (semanticMode)
             {
-                w.actions = semanticActions.actions | ((crouchButtons|gestureMelee|pad.weaponButtons)>>18);
+                w.actions = semanticActions.actions | ((heldButtons|gestureMelee|pad.weaponButtons)>>18);
                 w.flags |= FlagSemantic | FlagPublished;
             }
             if (directActions) w.flags |= FlagDirect;
@@ -814,8 +820,8 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         const BYTE tr = semanticMode?((semanticButtons&(1u<<17))?255:0):(BYTE)(pad.trigR*255.0f);
         if (tl > state->Gamepad.bLeftTrigger) state->Gamepad.bLeftTrigger = tl;
         if (tr > state->Gamepad.bRightTrigger) state->Gamepad.bRightTrigger = tr;
-        if (crouchButtons & (1u<<16)) state->Gamepad.bLeftTrigger = 255;
-        if (crouchButtons & (1u<<17)) state->Gamepad.bRightTrigger = 255;
+        if (heldButtons & (1u<<16)) state->Gamepad.bLeftTrigger = 255;
+        if (heldButtons & (1u<<17)) state->Gamepad.bRightTrigger = 255;
         if (gestureMelee & (1u<<16)) state->Gamepad.bLeftTrigger = 255;
         if (gestureMelee & (1u<<17)) state->Gamepad.bRightTrigger = 255;
         if (pad.weaponButtons & (1u<<16)) state->Gamepad.bLeftTrigger = 255;
