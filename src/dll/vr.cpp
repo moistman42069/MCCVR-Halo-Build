@@ -26697,6 +26697,24 @@ void VR_NoteAimFrameRendered(GameTitle title, int eye, float tanX, float tanY, f
     g_aimFramePicture.title.store(static_cast<int>(title), std::memory_order_relaxed);
     g_aimFramePicture.eye.store(pictureEye, std::memory_order_release);
 }
+// AIM FRAME ZOOM for a title that publishes its frames through its own pair calls (Halo 2): what the picture about to
+// be published is, said BEFORE it is published. `eye`: -1 not the frame's; 0 or 1 the one pass's eye; 2 a pair (3D),
+// which is no mono picture either.
+void VR_PrepareAimFramePicture(GameTitle title, int eye, float tanX, float tanY, float widthDeg)
+{
+    if (eye < 0 || eye > 2)
+    {
+        g_aimFramePicture.eye.store(-1, std::memory_order_release);
+        return;
+    }
+    if (eye == 2)
+        g_monoPictureEye.store(-1, std::memory_order_release);
+    g_aimFramePicture.tanX.store(tanX, std::memory_order_relaxed);
+    g_aimFramePicture.tanY.store(tanY, std::memory_order_relaxed);
+    g_aimFramePicture.widthDeg.store(widthDeg, std::memory_order_relaxed);
+    g_aimFramePicture.title.store(static_cast<int>(title), std::memory_order_relaxed);
+    g_aimFramePicture.eye.store(eye, std::memory_order_release);
+}
 void VR_NoteStereoFrameRendered(GameTitle title)
 {
     g_aimFramePicture.eye.store(-1, std::memory_order_release);

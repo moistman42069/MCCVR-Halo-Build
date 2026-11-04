@@ -30,6 +30,7 @@
 #include "halo2_stereo_core.h"
 #include "../common/halo2_hud_logic.h"
 #include "../common/halo2_hud_shader_logic.h"
+#include "../common/aim_frame_logic.h"
 #endif
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
 #include "../common/halo4_helmet_shader_logic.h"
@@ -344,9 +345,21 @@ static Halo2HudDrawMutation BeginHalo2HudDraw(
     if((Game_IsScopeRendering()||(VR_HudHidden()&&Game_IsHeadTracking()&&Game_MoveStickIsLocomotion()))&&
         (role==halo2_hud_shader::Role::Crosshair||role==halo2_hud_shader::Role::GameplayHud))
     { mutation.kind=Halo2HudDrawMutation::Kind::Hidden;return mutation; }
+    // AIM FRAME ZOOM: the frame is the flat game's picture. The game draws its crosshair into it where it always does
+    // (crosshair 0 still means none), and the HUD keeps the game's layout, scaled only by the frame's own settings.
+    const bool aimFramePass = Game_IsAimFramePass();
     if (role == halo2_hud_shader::Role::Crosshair)
     {
-        if (VR_BeginAuthoredReticleCapture())
+        if (aimFramePass)
+        {
+            if (!g_config.crosshair)
+                mutation.kind = Halo2HudDrawMutation::Kind::Hidden;
+            return mutation;
+        }
+        // Zoomed, or just out of the frame, the crosshair is still the zoom's: the art from before it stays up.
+        if (!Game_AimFrameCrosshairReadyForCapture(GameTitle::Halo2))
+            mutation.kind = Halo2HudDrawMutation::Kind::Hidden;
+        else if (VR_BeginAuthoredReticleCapture())
             mutation.kind = Halo2HudDrawMutation::Kind::NativeCrosshair;
         return mutation;
     }
@@ -371,18 +384,24 @@ static Halo2HudDrawMutation BeginHalo2HudDraw(
 
     std::array<D3D11_VIEWPORT,
         D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE> adjusted{};
-    const float scaleY = std::clamp(
+    float scaleY = std::clamp(
         g_config.hud_size,
         halo2_hud::kMinimumLayoutFraction,
         halo2_hud::kMaximumLayoutFraction);
-    const float scaleX = std::clamp(
+    float scaleX = std::clamp(
         g_config.hud_size * g_config.hud_aspect,
         halo2_hud::kMinimumLayoutFraction,
         halo2_hud::kMaximumLayoutFraction);
-    const float verticalOffset = std::clamp(
+    float verticalOffset = std::clamp(
         g_config.hud_vertical_offset,
         -halo2_hud::kMaximumVerticalOffset,
         halo2_hud::kMaximumVerticalOffset);
+    if (aimFramePass)
+    {
+        aim_frame::HudScale(g_config.aim_frame_hud_size, g_config.aim_frame_hud_width_scale,
+                            g_config.aim_frame_hud_height_scale, scaleX, scaleY);
+        verticalOffset = 0.0f;
+    }
     for (UINT index = 0; index < mutation.viewportCount; ++index)
     {
         adjusted[index] = mutation.viewports[index];

@@ -649,6 +649,15 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
             // The game ran the owned user's control update (it skips this call while the director holds the
             // player: a cinematic). One reader: the head-relative motion tracker (halo2_head_relative.inl).
             st.controlMs.store(GetTickCount64(), std::memory_order_release);
+            // AIM FRAME ZOOM (game.cpp): the player's zoom level, -1 not zoomed, from the record this update works on.
+            // Read only; whatever the drive's own setting.
+            if (st.zoomProven.load(std::memory_order_acquire) && st.slot)
+            {
+                const uintptr_t zoomGlobals = *reinterpret_cast<const uintptr_t*>(st.slot);
+                if (zoomGlobals)
+                    Game_NoteHalo2ZoomLevel(*reinterpret_cast<const int16_t*>(
+                        zoomGlobals + static_cast<uintptr_t>(user) * kHalo2PcStride + kHalo2PcZoomLevel));
+            }
             if (!g_config.aim_direct_drive || !st.installed.load(std::memory_order_acquire) || !st.slot ||
                 !g_armed.load(std::memory_order_acquire) || !g_levelLive.load(std::memory_order_acquire) ||
                 g_teardownRequested.load(std::memory_order_acquire))
@@ -1129,6 +1138,37 @@ bool InstallHalo2Drive(uintptr_t base, size_t size) noexcept
     st.controlMs.store(0, std::memory_order_release);
     st.slot = slot;
     st.controlReturn = call + 5;
+    // AIM FRAME ZOOM: the game's own zoom getter (player_control_get_zoom_level, +0x6C3C10: -1 for no user, else the
+    // record's +0x56 as a word; its unzoom +0x6C4C60 writes -1 there), found once in the module and loading THIS slot.
+    {
+        static constexpr char kZoomGetter[] =
+            "B8 FF FF FF FF 3B C8 74 16 48 63 C1 48 69 C8 B8 00 00 00 48 8B 05 ?? ?? ?? ?? 0F B7 44 01 56 C3";
+        constexpr size_t kSlotLoad = 19;   // the mov rax,[rip+disp32]
+        uintptr_t getter = 0;
+        uint32_t matches = 0;
+        bool proven = false;
+        if (CountPatternMatches(base, size, kZoomGetter, getter, matches) && matches == 1)
+        {
+            __try
+            {
+                int32_t disp = 0;
+                std::memcpy(&disp, reinterpret_cast<const void*>(getter + kSlotLoad + 3), sizeof(disp));
+                proven = getter + kSlotLoad + 7 + static_cast<intptr_t>(disp) == slot;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                proven = false;
+            }
+        }
+        st.zoomProven.store(proven, std::memory_order_release);
+        if (proven)
+            LOG("Halo 2 DRIVE: the zoom level is read from player control +0x%X (the game's own getter at +0x%llX "
+                "loads this slot)", static_cast<unsigned>(kHalo2PcZoomLevel),
+                static_cast<unsigned long long>(getter - base));
+        else
+            LOG("Halo 2 DRIVE: the game's zoom getter was not proven (%u match(es)); Aim Frame Zoom is off in Halo 2 "
+                "and the zoom stays with the lens", matches);
+    }
     // The seat's frame: the vehicle-tilt rebase 0x8F0D20's gate and up getter, proven here (seat_frame_reader.h).
     const char* frameWhy = nullptr;
     bool frameBound = seat_frame_rt::Bind(g_halo2SeatFrame, seat_frame::kHalo2Reader, base, size, frameWhy);
@@ -1202,6 +1242,7 @@ bool RemoveHalo2Drive() noexcept
     g_halo2PcOrig = nullptr;
     st.slot = 0;
     st.controlReturn = 0;
+    st.zoomProven.store(false, std::memory_order_release);
     seat_frame_rt::Unbind(g_halo2SeatFrame);
     return true;
 }

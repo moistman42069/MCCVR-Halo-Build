@@ -120,6 +120,12 @@ void Halo2Observer6Dof_SetFirstPersonPassCameras(
 // a predicted one. Ignored when no core has named a pass.
 struct Halo2CameraBasis;
 bool Halo2Observer6Dof_BuildScopeCamera(Halo2CameraBasis& camera) noexcept;
+
+// AIM FRAME ZOOM (game.cpp Game_Halo2AimFrame). The vertical field of view (radians) the game's own camera asked for
+// within the last quarter second, before the headset's visibility cover widens it: zoomed, the game's own zoom. And
+// whether the player's zoom level is read (the control-update hook, with the game's zoom getter proven against it).
+bool Halo2Observer6Dof_ReadStockVerticalFov(float& radians) noexcept;
+bool Halo2Observer6Dof_ZoomReaderInstalled() noexcept;
 void Halo2Observer6Dof_SetMeasuredFirstPersonViewingCamera(
     const Halo2CameraBasis& viewing, bool admitCompensation) noexcept;
 

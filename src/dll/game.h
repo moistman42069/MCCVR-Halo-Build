@@ -123,6 +123,31 @@ bool Game_AimFrameZoomOwnsZoom();
 // The game's own zoom level for the local player (-1 not zoomed), in the titles that read it (Halo 3, ODST, and Reach
 // and Halo 4 while their muzzle lanes are in). False: not read lately.
 bool Game_ReadZoomLevel(int& level);
+// AIM FRAME ZOOM for Halo 2, whose two eye renderers (halo2_stereo_core.cpp, halo2_anniversary_stereo.cpp) live outside
+// this file. The control-update hook notes the player's zoom level (sim thread).
+void Game_NoteHalo2ZoomLevel(int16_t level);
+// Render thread, once for each frame a Halo 2 renderer is about to draw. `centre`: the rendered centre eye's camera
+// position and up; `eyeOffset`: each eye's offset from the head (OpenXR view axes, metres); `nativeX`/`nativeY`: the
+// half-angle tangents of the game's own view (its zoom) in the shape this renderer draws. True: draw the frame
+// instead of the eyes -- one pass (as the first eye) or, in 3D, one per eye -- along `forward`/`up` from `position`
+// at the tangents `tanX` x `tanY`, and show it `widthDeg` wide (Game_Halo2AimFrameDrawn).
+struct GameAimFramePass
+{
+    float position[2][3]{}, forward[2][3]{}, up[2][3]{};
+    float tanX = 0.0f, tanY = 0.0f, widthDeg = 0.0f;
+    bool stereo = false;
+};
+bool Game_Halo2AimFrame(const float centre[3], const float centreUp[3], const float eyeOffset[2][3], float nativeX,
+                        float nativeY, GameAimFramePass& out);
+// The frame's outcome: drawn (the engine's own tangents, for the present) or refused. A run of refusals gives the zoom
+// back to the lens for the rest of the level.
+void Game_Halo2AimFrameDrawn(int eye, float tanX, float tanY, float widthDeg);
+void Game_Halo2AimFrameRefused();
+// While a frame's picture is drawn: the game's own HUD layout and crosshair go into it (d3d11_hook.cpp, the HUD).
+void Game_SetAimFramePass(bool on);
+bool Game_IsAimFramePass();
+// The authored crosshair may be captured now: not while zoomed, nor just after the frame (game.cpp).
+bool Game_AimFrameCrosshairReadyForCapture(GameTitle title);
 // Halo 3's HUD layout as it draws now: the one written (Game_GetAppliedHudSafeFrame), or, before it is written
 // for a customised layout, the title's own (MCC 0.87, Project Reclaimer 0.97) with the player's size. False: the
 // title's own layout.

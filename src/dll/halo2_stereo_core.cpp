@@ -16,6 +16,7 @@
 
 #include "../common/config.h"
 #include "../common/scope_logic.h"
+#include "../common/aim_frame_logic.h"
 #include "../common/halo2_hud_logic.h"
 #include "../common/halo2_render_logic.h"
 #include "../common/log.h"
@@ -171,6 +172,14 @@ namespace
         uint8_t completedEyeMask = 0;
         // MONO RENDERING: this frame is one pass, as the eye drawn first, from the tracked centre.
         bool mono = false;
+        // AIM FRAME ZOOM (game.cpp Game_Halo2AimFrame): this frame is the game's zoomed picture along the aim, drawn
+        // instead of the eyes: one pass as the first eye (then `mono` too) or, in 3D, one per eye.
+        bool aimFrame = false;
+        bool aimFrameStereo = false;
+        float aimFrameTanY = 0.0f;
+        float aimFrameWidthDeg = 0.0f;
+        // The raster window, whose shape the engine draws every pass in (Halo2DeriveSymmetricHalfFovs).
+        Halo2CameraRectangle rasterViewport{};
         void* window = nullptr;
         void* renderCamera = nullptr;
         void* rasterCamera = nullptr;
@@ -411,7 +420,7 @@ namespace
         {
             Halo2CameraRectangle source{};
             Halo2CameraRectangle layout{};
-            if (g_nativeHudEyeContext.active &&
+            if (g_nativeHudEyeContext.active && !Game_IsAimFramePass() &&
                 g_nativeHudArmed.load(std::memory_order_acquire) &&
                 !g_nativeHudTeardown.load(std::memory_order_acquire) &&
                 drawSelector == -1 &&
@@ -2237,7 +2246,11 @@ namespace
                             ++scope->renderViewCalls;
                             __try
                             {
-                                Halo2NativeHud_BeginEye(scope->halfFovs);
+                                // AIM FRAME ZOOM: the frame is the flat game's picture, so its HUD keeps the game's
+                                // own layout and the game draws its crosshair into it (d3d11_hook.cpp).
+                                if (!scope->aimFrame)
+                                    Halo2NativeHud_BeginEye(scope->halfFovs);
+                                Game_SetAimFramePass(scope->aimFrame);
                                 __try
                                 {
                                     original(
@@ -2251,6 +2264,7 @@ namespace
                                 }
                                 __finally
                                 {
+                                    Game_SetAimFramePass(false);
                                     Halo2NativeHud_EndEye();
                                 }
                             }
@@ -2311,8 +2325,14 @@ namespace
                     spansRestored = RestoreOwnedSpans(*scope);
                 }
 
+                // AIM FRAME ZOOM: the frame shows what the engine built; a picture far from the one asked for is not the
+                // game's zoom (the zoom itself may move a little between the read and the build).
+                const bool aimFrameAsAsked = !scope->aimFrame ||
+                    (scope->engineHalfFovsValid[eye] &&
+                     aim_frame::TangentsAgree(scope->aimFrameTanY, std::tan(scope->engineHalfFovs[eye].vertical),
+                                              0.05f));
                 if (!rasterEyeBegun || !originalReturned || !rasterEyeEnded ||
-                    !spansRestored || scope->invalidated ||
+                    !spansRestored || !aimFrameAsAsked || scope->invalidated ||
                     !HeadReferenceIsCurrent(*scope) ||
                     !SnapshotTokenIsCurrent(
                         scope->generation, scope->serial) ||
@@ -2500,6 +2520,7 @@ namespace
         candidate.rasterCenter = rasterCenter;
         candidate.renderCenter = renderCenter;
         candidate.rasterCenterValid = true;
+        candidate.rasterViewport = raster.viewport;
         candidate.savedRender = render.basis;
         candidate.savedRaster = raster.basis;
         candidate.savedRenderVerticalFov = render.verticalFov;
@@ -2675,6 +2696,60 @@ namespace
 
         scope.pairBegun = true;
         g_telemetry.claimedPairs.fetch_add(1, std::memory_order_relaxed);
+        // AIM FRAME ZOOM (game.cpp Game_Halo2AimFrame): while the game is zoomed, this frame is its zoomed picture along
+        // the aim, at the game's own field of view (the observer's, before the headset's cover widened it) in this
+        // window's shape. It wins over mono rendering. A single pass waits, as mono does, for the capture source to be
+        // settled (learning it compares the two eyes' pictures).
+        const int frameFirstEye = scope.rightEyeFirst ? kHalo2RightEye : kHalo2LeftEye;
+        if (g_config.aim_frame_stereo || VR_Halo2CaptureSourceSettled())
+        {
+            float stockVerticalFov = 0.0f;
+            const float nativeY = Halo2Observer6Dof_ReadStockVerticalFov(stockVerticalFov)
+                ? std::tan(stockVerticalFov * 0.5f) : 0.0f;
+            const int width = static_cast<int>(scope.rasterViewport.x1) - scope.rasterViewport.x0;
+            const int height = static_cast<int>(scope.rasterViewport.y1) - scope.rasterViewport.y0;
+            const float shape = width > 0 && height > 0 ? static_cast<float>(width) / static_cast<float>(height) : 0.0f;
+            float eyeOffset[kHalo2EyeCount][3]{};
+            for (int eye = 0; eye < kHalo2EyeCount; ++eye)
+                std::memcpy(eyeOffset[eye], snapshot.eyes[eye].position, sizeof(eyeOffset[eye]));
+            GameAimFramePass frame{};
+            if (Game_Halo2AimFrame(scope.renderCenter.position, scope.renderCenter.up, eyeOffset, nativeY * shape,
+                                   nativeY, frame))
+            {
+                Halo2SymmetricHalfFovs frameHalfFovs{};
+                const float frameFov = 2.0f * std::atan(frame.tanY);
+                if (Halo2DeriveSymmetricHalfFovs(frameFov, scope.rasterViewport, frameHalfFovs))
+                {
+                    scope.aimFrame = true;
+                    scope.aimFrameStereo = frame.stereo;
+                    scope.mono = !frame.stereo;
+                    scope.aimFrameTanY = frame.tanY;
+                    scope.aimFrameWidthDeg = frame.widthDeg;
+                    scope.renderCoverVerticalFov = frameFov;
+                    scope.rasterCoverVerticalFov = frameFov;
+                    scope.halfFovs = frameHalfFovs;
+                    for (int eye = 0; eye < kHalo2EyeCount; ++eye)
+                    {
+                        const int from = frame.stereo ? eye : frameFirstEye;
+                        EyeCameraPair& cameras = scope.eyes[eye];
+                        for (int axis = 0; axis < 3; ++axis)
+                        {
+                            cameras.render.position[axis] = frame.position[from][axis];
+                            cameras.raster.position[axis] = scope.rasterCenter.position[axis] +
+                                (frame.position[from][axis] - scope.renderCenter.position[axis]);
+                        }
+                        std::memcpy(cameras.render.forward, frame.forward[from], sizeof(cameras.render.forward));
+                        std::memcpy(cameras.render.up, frame.up[from], sizeof(cameras.render.up));
+                        std::memcpy(cameras.raster.forward, frame.forward[from], sizeof(cameras.raster.forward));
+                        std::memcpy(cameras.raster.up, frame.up[from], sizeof(cameras.raster.up));
+                    }
+                }
+                else
+                {
+                    Game_Halo2AimFrameRefused();
+                }
+            }
+        }
         if (!WriteOuterCoverFovs(scope))
         {
             const bool restored = RestoreOwnedSpans(scope);
@@ -2699,8 +2774,8 @@ namespace
         // MONO RENDERING (mono_view_logic.h): asked once for this claimed frame, and only once the capture source
         // is settled (learning it compares the two eyes' pictures). One pass, as the eye drawn first, from the
         // tracked centre: the midpoint of the eyes, turned the head's way, under the same cover.
-        const int firstEye = scope.rightEyeFirst ? kHalo2RightEye : kHalo2LeftEye;
-        if (VR_Halo2CaptureSourceSettled())
+        const int firstEye = frameFirstEye;
+        if (!scope.aimFrame && VR_Halo2CaptureSourceSettled())
         {
             float monoCover[4]{};
             scope.mono = VR_MonoRenderThisFrame(GameTitle::Halo2, monoCover);
@@ -2737,6 +2812,13 @@ namespace
                 scope.mono, firstEye, scope.renderViewCalls,
                 scope.renderViewReturns, scope.completedEyeMask) &&
             SnapshotTokenIsCurrent(generation, snapshot.preparedSerial);
+        // AIM FRAME ZOOM: what this picture is, said before it is published; a mono picture is not the frame's.
+        if (completeShape && scope.aimFrame)
+            Game_Halo2AimFrameDrawn(scope.aimFrameStereo ? 2 : firstEye,
+                std::tan(scope.engineHalfFovs[firstEye].horizontal),
+                std::tan(scope.engineHalfFovs[firstEye].vertical), scope.aimFrameWidthDeg);
+        else if (completeShape && scope.mono)
+            VR_PrepareAimFramePicture(GameTitle::Halo2, -1, 0.0f, 0.0f, 0.0f);
         if (completeShape &&
             (scope.mono
                 ? GuardedCompleteMonoPair(
@@ -2749,7 +2831,11 @@ namespace
             g_telemetry.completedPairs.fetch_add(
                 1, std::memory_order_relaxed);
             g_lastCompletedMonoEye.store(scope.mono ? firstEye : -1, std::memory_order_relaxed);
-            if (scope.mono)
+            if (scope.aimFrame)
+            {
+                // the frame's own: neither a mono frame nor an immersive pair
+            }
+            else if (scope.mono)
                 g_monoFrames.fetch_add(1, std::memory_order_relaxed);
             else
                 VR_NoteStereoFrameRendered(GameTitle::Halo2);
@@ -2774,7 +2860,9 @@ namespace
         }
         RejectToken(generation, snapshot.preparedSerial);
         g_telemetry.droppedPairs.fetch_add(1, std::memory_order_relaxed);
-        if (scope.mono)
+        if (scope.aimFrame)
+            Game_Halo2AimFrameRefused();
+        else if (scope.mono)
         {
             g_monoDrops.fetch_add(1, std::memory_order_relaxed);
             VR_NoteMonoFrameRejected(GameTitle::Halo2);

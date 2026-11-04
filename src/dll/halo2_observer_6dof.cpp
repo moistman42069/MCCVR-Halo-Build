@@ -246,6 +246,10 @@ namespace
     std::atomic<uint32_t> g_visibilityCoverStockBits{0};
     std::atomic<uint32_t> g_visibilityCoverRequiredBits{0};
     std::atomic<uint32_t> g_visibilityCoverWrittenBits{0};
+    // AIM FRAME ZOOM (game.cpp): the vertical field of view the game's own camera asked for, before the cover above
+    // widens it (zoomed, it is the game's zoom), and when it was read.
+    std::atomic<uint32_t> g_stockVerticalFovBits{0};
+    std::atomic<uint64_t> g_stockVerticalFovMs{0};
     std::atomic<uint64_t> g_weaponsSlotResets{0};
     std::atomic<uint64_t> g_weaponsResetsBypassedForFloaty{0};
     std::atomic<uint64_t> g_floatyApplied{0};
@@ -928,6 +932,8 @@ namespace
     constexpr uintptr_t kHalo2PcStride = 0xB8;
     constexpr uintptr_t kHalo2PcDesiredYaw = 0x38, kHalo2PcDesiredPitch = 0x3C;
     constexpr uintptr_t kHalo2PcPitchLow = 0xA8, kHalo2PcPitchHigh = 0xAC;
+    // The player's zoom level (int16, -1 not zoomed): proven at install from the game's own getter (InstallHalo2Drive).
+    constexpr uintptr_t kHalo2PcZoomLevel = 0x56;
     struct Halo2DriveState
     {
         void* target = nullptr;
@@ -947,6 +953,8 @@ namespace
         // game skips that call while the director holds the player, so a stale stamp is a cinematic. One reader:
         // the head-relative motion tracker (halo2_head_relative.inl).
         std::atomic<uint64_t> controlMs{0};
+        // AIM FRAME ZOOM: the game's zoom getter reads this record's +0x56 through this same slot (InstallHalo2Drive).
+        std::atomic<bool> zoomProven{false};
         std::atomic<uint32_t> callbacks{0};
         std::atomic<uint32_t> calls{0}, kicks{0}, writes{0}, convergedWrites{0}, waits{0}, arms{0},
             disarms{0}, seated{0}, faults{0};
@@ -1180,8 +1188,16 @@ namespace
         }
         float stock = 0.0f;
         float cover = 0.0f;
-        if (!ReadFloats(
-                result + kHalo2ObserverResultVerticalFovOffset, &stock, 1) ||
+        const bool stockRead = ReadFloats(
+            result + kHalo2ObserverResultVerticalFovOffset, &stock, 1);
+        if (stockRead)
+        {
+            uint32_t stockBits = 0;
+            std::memcpy(&stockBits, &stock, sizeof(stockBits));
+            g_stockVerticalFovBits.store(stockBits, std::memory_order_relaxed);
+            g_stockVerticalFovMs.store(GetTickCount64(), std::memory_order_release);
+        }
+        if (!stockRead ||
             !Halo2DeriveObserverVisibilityVerticalFov(
                 snapshot.eyes[0].fov, snapshot.eyes[1].fov, stock, cover,true))
         {
@@ -7488,6 +7504,23 @@ void Halo2Observer6Dof_SetFirstPersonPassCameras(
 // hold at draw time, replacing whichever camera the core predicted. Only
 // the viewing term changes; the frame/correct cameras the owning core
 // named stand.
+bool Halo2Observer6Dof_ReadStockVerticalFov(float& radians) noexcept
+{
+    const uint64_t at = g_stockVerticalFovMs.load(std::memory_order_acquire);
+    const uint64_t now = GetTickCount64();
+    if (!at || now < at || now - at > 250)
+        return false;
+    const uint32_t bits = g_stockVerticalFovBits.load(std::memory_order_relaxed);
+    std::memcpy(&radians, &bits, sizeof(radians));
+    return std::isfinite(radians) && radians > 1.0e-3f && radians < 3.1f;
+}
+
+bool Halo2Observer6Dof_ZoomReaderInstalled() noexcept
+{
+    return g_halo2Drive.installed.load(std::memory_order_acquire) &&
+        g_halo2Drive.zoomProven.load(std::memory_order_acquire);
+}
+
 bool Halo2Observer6Dof_BuildScopeCamera(Halo2CameraBasis& camera) noexcept
 {
     Halo2ObserverPosePublication p{};Halo2CameraBasis primary{},secondary{};
@@ -7857,6 +7890,8 @@ bool Halo2Observer6Dof_DirectWeaponAimArmed() noexcept { return false; }
 bool Halo2Observer6Dof_FinalPaletteArmed() noexcept { return false; }
 uint8_t Halo2Observer6Dof_FirstPersonCamera() noexcept { return 0; }   // fp_view::Signal::Unavailable
 bool Halo2Observer6Dof_BuildScopeCamera(Halo2CameraBasis&) noexcept { return false; }
+bool Halo2Observer6Dof_ReadStockVerticalFov(float&) noexcept { return false; }
+bool Halo2Observer6Dof_ZoomReaderInstalled() noexcept { return false; }
 bool Halo2Observer6Dof_OnFootFresh() noexcept { return false; }
 void* Halo2Observer6Dof_ReloadWeapon(uint32_t) noexcept { return nullptr; }
 bool Halo2Observer6Dof_WorldCollisionActive() noexcept { return false; }
