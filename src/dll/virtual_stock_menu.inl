@@ -4,7 +4,7 @@
 // Lab-only rows stay out of normal navigation.
         ImGui::Spacing();
         ImGui::Separator();
-        if (ImGui::CollapsingHeader("Virtual Stock##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Virtual Stock##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Virtual Stock", &g_config.virtual_stock);
         if (g_config.virtual_stock)

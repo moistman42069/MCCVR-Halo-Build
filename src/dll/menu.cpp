@@ -166,14 +166,16 @@ namespace
     // each page once, out of sight and with every section open, while Dear ImGui reports each item's name
     // (imgui_item_hooks.h). Settings that only appear once another is turned on are found while they are showing.
     // Controls side by side on one row are one result, found by any of their names, and so are a SettingGroup's.
-    // Its notes, the text drawn under it, are searched too.
+    // Its notes, the text drawn under it, are searched too. It is known by its whole Dear ImGui label (key), which tells
+    // apart controls of one name such as each hand's offsets, and shown by the visible part (label).
     struct SettingEntry
     {
-        int page; std::string section, label; std::vector<std::string> alsoOnRow; float rowTop=0.0f; std::string notes;
+        int page; std::string section, key, label; std::vector<std::string> alsoOnRow; float rowTop=0.0f; std::string notes;
     };
     std::vector<SettingEntry> g_settingIndex;
     bool g_indexing=false, g_indexBuilt=false;
-    int g_indexBuilds=0; // tells the results when the index was built again
+    int g_indexBuilds=0; // tells the results when the index has grown or was built again
+    int g_indexNextPage=0; // the index reads one page a frame, so starting a search never stalls a frame in the headset
     std::vector<int> g_sectionOwners; // the pages whose sections are being drawn, innermost last
     std::string g_currentSection;
     char g_searchQuery[96]="";
@@ -181,7 +183,7 @@ namespace
     // next one so its notes come along, flashes a few times. Where it is on screen is measured each frame as it is drawn.
     struct SettingJump
     {
-        int page=-1; std::string section, label; bool active=false, scrolled=false; double start=0.0;
+        int page=-1; std::string section, key; bool active=false, scrolled=false; double start=0.0;
         float top=-1.0f, bottom=0.0f, next=-1.0f;
     } g_jump;
     // Each result shows its setting live: the setting's page, drawn in a small window scrolled to just that setting.
@@ -220,13 +222,23 @@ namespace
     // The page a setting being drawn belongs to: its section's own page where it is shown on another.
     int SettingPage(){return g_sectionOwners.empty()?g_activeCategory:g_sectionOwners.back();}
 
+    // Whether what opens in the section being drawn must be open: for the index, a result, or a jump into the section.
+    bool OpenForSearch()
+    {
+        return g_indexing||g_drawingResult||(g_jump.active&&!g_jump.scrolled&&g_jump.page==SettingPage()&&g_jump.section==g_currentSection);
+    }
     // Every section header: it names the section of the settings below it, and opens for the index or a jump to it.
     bool SectionHeader(const char* label,ImGuiTreeNodeFlags flags=0)
     {
         g_currentSection=VisibleName(label);
-        if(g_indexing||g_drawingResult||(g_jump.active&&!g_jump.scrolled&&g_jump.page==SettingPage()&&g_jump.section==g_currentSection))
-            ImGui::SetNextItemOpen(true);
+        if(OpenForSearch()) ImGui::SetNextItemOpen(true);
         return ImGui::CollapsingHeader(label,flags);
+    }
+    // A tree node within a section, opened the same way so that the settings inside it are found.
+    bool SettingTreeNode(const char* label)
+    {
+        if(OpenForSearch()) ImGui::SetNextItemOpen(true);
+        return ImGui::TreeNode(label);
     }
 
 
@@ -250,10 +262,14 @@ namespace
 
     // While the index is built, Dear ImGui's log keeps the text it draws. A setting's notes are the text after it, up to
     // the next item that is not plain text.
+    // Text after a section header (or a group), before the first setting, introduces what follows: it is kept as a
+    // lead-in and goes to the next setting found.
+    constexpr int kLeadIn=-2;
     struct NoteCapture { int entry=-1, from=0, to=-1; } g_notes;
+    std::string g_leadIn;
     void NoteItemAdded(ImGuiID)
     {
-        if(g_notes.entry>=0&&g_notes.to<0) g_notes.to=GImGui->LogBuffer.size();
+        if(g_notes.entry!=-1&&g_notes.to<0) g_notes.to=GImGui->LogBuffer.size();
     }
     void AppendNotes(std::string& notes,int from,int to)
     {
@@ -268,43 +284,54 @@ namespace
     }
     void KeepNotes()
     {
-        if(g_notes.entry<0) return;
-        AppendNotes(g_settingIndex[g_notes.entry].notes,g_notes.from,g_notes.to>=0?g_notes.to:GImGui->LogBuffer.size());
+        if(g_notes.entry==-1) return;
+        AppendNotes(g_notes.entry==kLeadIn?g_leadIn:g_settingIndex[g_notes.entry].notes,g_notes.from,
+            g_notes.to>=0?g_notes.to:GImGui->LogBuffer.size());
         g_notes.entry=-1;
+    }
+    void AddSetting(std::string key,std::string label,float top)
+    {
+        g_settingIndex.push_back({SettingPage(),g_currentSection,std::move(key),std::move(label),{},top,std::move(g_leadIn)});
+        g_leadIn.clear();
+    }
+    bool Indexed(int page,const std::string& section,const char* key)
+    {
+        return std::any_of(g_settingIndex.begin(),g_settingIndex.end(),
+            [&](const SettingEntry& e){return e.page==page&&e.key==key&&e.section==section;});
     }
 
     // Several controls that one description covers, marked where the page draws them. Search finds them as one
-    // setting, named by the title the group draws above them and found by any of their names or the text inside, and a
-    // result or a jump shows and flashes the whole group. Groups do not nest.
+    // setting, named by the group's title and found by any of their names or the text inside, and a result or a jump
+    // shows and flashes the whole group. The group draws its title above them, or with kNameOnly only names them for
+    // search (the page's own text then says what they are). Groups do not nest, and a title is unique in its section.
     struct SettingGroup
     {
-        explicit SettingGroup(const char* title)
+        static constexpr bool kNameOnly=false;
+        explicit SettingGroup(const char* title,bool drawTitle=true)
         {
             const ImGuiWindow* window=GImGui->CurrentWindow;
             const float y=window->DC.CursorPos.y,top=y-window->DC.CursorStartPos.y;
-            const auto isThis=[&](int page,const std::string& section,const std::string& label)
-                {return SettingPage()==page&&g_currentSection==section&&label==title;};
+            const auto isThis=[&](int page,const std::string& section,const std::string& key)
+                {return SettingPage()==page&&g_currentSection==section&&key==title;};
             if(g_indexing)
             {
                 KeepNotes(); // the setting before ends where the group starts
-                const bool known=std::any_of(g_settingIndex.begin(),g_settingIndex.end(),
-                    [&](const SettingEntry& e){return isThis(e.page,e.section,e.label);});
-                if(!known)
+                if(!Indexed(SettingPage(),g_currentSection,title))
                 {
-                    g_settingIndex.push_back({SettingPage(),g_currentSection,title,{},top});
+                    AddSetting(title,title,top);
                     entry=static_cast<int>(g_settingIndex.size())-1;notesFrom=GImGui->LogBuffer.size();
                 }
             }
             else if(g_drawingResult)
             {
                 const SettingEntry& e=*g_measure.entry;
-                if(g_measure.top<0.0f&&isThis(e.page,e.section,e.label))
+                if(g_measure.top<0.0f&&isThis(e.page,e.section,e.key))
                 {g_measure.top=top;g_measure.bottom=FLT_MAX;measured=true;}
                 else if(g_measure.top>=0.0f&&g_measure.next<0.0f&&top>=g_measure.bottom-1.0f) g_measure.next=top;
             }
             else if(g_jump.active)
             {
-                if(g_jump.top<0.0f&&isThis(g_jump.page,g_jump.section,g_jump.label))
+                if(g_jump.top<0.0f&&isThis(g_jump.page,g_jump.section,g_jump.key))
                 {
                     if(!g_jump.scrolled)
                     {ImGui::SetScrollFromPosY(y-window->Pos.y,0.25f);g_jump.scrolled=true;g_jump.start=ImGui::GetTime();}
@@ -313,7 +340,7 @@ namespace
                 else if(g_jump.top>=0.0f&&g_jump.next<0.0f&&y>=g_jump.bottom-1.0f) g_jump.next=y;
             }
             g_openGroup=this;
-            ImGui::Text("%s:",title);
+            if(drawTitle) ImGui::Text("%s:",title);
         }
         ~SettingGroup()
         {
@@ -321,6 +348,7 @@ namespace
             const ImGuiWindow* window=GImGui->CurrentWindow;
             const float y=window->DC.CursorPos.y;
             if(entry>=0) AppendNotes(g_settingIndex[entry].notes,notesFrom,GImGui->LogBuffer.size());
+            if(g_indexing) {g_leadIn.clear();g_notes={kLeadIn,GImGui->LogBuffer.size()};}
             if(measured) g_measure.next=y-window->DC.CursorStartPos.y;
             if(jumpedTo) g_jump.next=y;
         }
@@ -335,7 +363,12 @@ namespace
     void IndexSetting(ImGuiID,const char* label,int flags)
     {
         KeepNotes();
-        if(flags&ImGuiItemStatusFlags_Openable) return; // a section header, which the section name already covers
+        if(flags&ImGuiItemStatusFlags_Openable) // a section header, which the section name already covers
+        {
+            g_leadIn.clear();
+            if(!SettingGroup::g_openGroup) g_notes={kLeadIn,GImGui->LogBuffer.size()}; // a group keeps its own text
+            return;
+        }
         const std::string name=VisibleName(label);
         if(name.empty()||name=="decrease"||name=="increase") return; // a slider's arrow buttons
         if(SettingGroup* group=SettingGroup::g_openGroup)
@@ -348,8 +381,7 @@ namespace
             return;
         }
         const int page=SettingPage();
-        for(const auto& entry:g_settingIndex)
-            if(entry.page==page&&entry.label==name&&entry.section==g_currentSection) return;
+        if(Indexed(page,g_currentSection,label)) return;
         const ImGuiWindow* window=GImGui->CurrentWindow;
         const float top=GImGui->LastItemData.Rect.Min.y-window->DC.CursorStartPos.y;
         if(!g_settingIndex.empty())
@@ -362,7 +394,7 @@ namespace
                 return;
             }
         }
-        g_settingIndex.push_back({page,g_currentSection,name,{},top});
+        AddSetting(label,name,top);
         g_notes={static_cast<int>(g_settingIndex.size())-1,GImGui->LogBuffer.size()};
     }
 
@@ -371,7 +403,7 @@ namespace
         const ImRect r=GImGui->LastItemData.Rect;
         if(g_jump.top<0.0f)
         {
-            if(SettingPage()!=g_jump.page||g_currentSection!=g_jump.section||VisibleName(label)!=g_jump.label) return;
+            if(SettingPage()!=g_jump.page||g_jump.key!=label||g_currentSection!=g_jump.section) return;
             if(!g_jump.scrolled){ImGui::SetScrollHereY(0.25f);g_jump.scrolled=true;g_jump.start=ImGui::GetTime();}
             g_jump.top=r.Min.y;g_jump.bottom=r.Max.y;
         }
@@ -414,7 +446,7 @@ namespace
         const SettingEntry& e=*g_measure.entry;
         if(g_measure.top<0.0f)
         {
-            if(SettingPage()==e.page&&g_currentSection==e.section&&VisibleName(label)==e.label)
+            if(SettingPage()==e.page&&e.key==label&&g_currentSection==e.section)
             {g_measure.top=top;g_measure.bottom=r.Max.y-window->DC.CursorStartPos.y;}
         }
         else if(g_measure.next<0.0f&&top>=g_measure.bottom-1.0f) g_measure.next=top;
@@ -1950,7 +1982,7 @@ namespace
                 &g_config.weapon_body_zone_radius_m,0.08f,0.40f,"%.2f");
             changed|=Combo("Reserve magazine location",&g_config.weapon_pouch_location,
                 "Support-side front hip\0Behind support shoulder\0");
-            if(ImGui::TreeNode("Reserve magazine position"))
+            if(SettingTreeNode("Reserve magazine position"))
             {
                 changed|=vr_menu::SliderFloat("Reserve side offset (m)",&g_config.weapon_pouch_offset_x_m,-.40f,.40f,"%.3f");
                 changed|=vr_menu::SliderFloat("Reserve height offset (m)",&g_config.weapon_pouch_offset_y_m,-.40f,.40f,"%.3f");
@@ -3478,12 +3510,17 @@ namespace
         }
     }
 
-    // Draws every page once out of sight, every section open, to learn each setting's name, page and section.
-    void BuildSettingIndex()
+    // Draws the next page out of sight, every section open, to learn each setting's name, page and section: one page a
+    // frame, until every page has been read.
+    void BuildSettingIndexStep()
     {
         ImGuiContext& g=*GImGui;
-        const int shownPage=g_activeCategory;
-        g_settingIndex.clear();
+        if(g_indexNextPage==0) {g_settingIndex.clear();g_resultLayouts.clear();}
+        // Quality of Life gathers other pages' sections, and the labs are not in the sidebar.
+        const auto skipped=[](int page){return page==Cat_QualityOfLife||page==Cat_VirtualStockLab||page==Cat_TwoHandLab;};
+        while(g_indexNextPage<Cat_Count&&skipped(g_indexNextPage)) ++g_indexNextPage;
+        if(g_indexNextPage>=Cat_Count) {g_indexBuilt=true;return;}
+        const int page=g_indexNextPage++,shownPage=g_activeCategory;
         ImGui::SetNextWindowPos(ImVec2(-100000.0f,-100000.0f),ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(MENU_W-kSidebarWidth,MENU_H),ImGuiCond_Always);
         ImGui::Begin("##settingindex",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoInputs|ImGuiWindowFlags_NoNav|
@@ -3493,25 +3530,19 @@ namespace
         const bool unclipped=g.ItemUnclipByLog,hooked=g.TestEngineHookItems;
         const auto listener=imgui_item_hooks::g_itemInfo;
         g.ItemUnclipByLog=true;g.TestEngineHookItems=true;imgui_item_hooks::g_itemInfo=&IndexSetting;g_indexing=true;
-        ImGui::LogToBuffer();imgui_item_hooks::g_itemAdded=&NoteItemAdded;g_notes={};
+        ImGui::LogToBuffer();imgui_item_hooks::g_itemAdded=&NoteItemAdded;g_notes={};g_leadIn.clear();
         ImGui::PushTextWrapPos(0.0f);
         bool ignored=false;
-        for(int page=0;page<Cat_Count;++page)
-        {
-            // Quality of Life gathers other pages' sections, and the labs are not in the sidebar.
-            if(page==Cat_QualityOfLife||page==Cat_VirtualStockLab||page==Cat_TwoHandLab) continue;
-            g_activeCategory=page;
-            ImGui::PushID(page);
-            DrawPageContent(ignored);
-            KeepNotes();
-            ImGui::PopID();
-        }
+        g_activeCategory=page;
+        ImGui::PushID(page);
+        DrawPageContent(ignored);
+        KeepNotes();
+        ImGui::PopID();
         ImGui::LogFinish();imgui_item_hooks::g_itemAdded=nullptr;
         ImGui::PopTextWrapPos();
         g_indexing=false;imgui_item_hooks::g_itemInfo=listener;g.TestEngineHookItems=hooked;g.ItemUnclipByLog=unclipped;
         ImGui::End();
         g_activeCategory=shownPage;
-        g_indexBuilt=true;
         ++g_indexBuilds;
     }
 
@@ -3583,7 +3614,7 @@ namespace
             if(GoToButton("##goto"))
             {
                 g_activeCategory=entry.page;
-                g_jump={entry.page,entry.section,entry.label,true,false,ImGui::GetTime()};
+                g_jump={entry.page,entry.section,entry.key,true,false,ImGui::GetTime()};
                 g.TestEngineHookItems=true;
                 imgui_item_hooks::g_itemInfo=&MeasureJumpTarget;
                 g_searchQuery[0]=0;
@@ -3609,7 +3640,10 @@ namespace
             const auto listener=imgui_item_hooks::g_itemInfo; // a jump just chosen keeps listening
             g_measure={&entry};
             g.TestEngineHookItems=true;imgui_item_hooks::g_itemInfo=&MeasureResult;g_drawingResult=true;
-            g.ItemUnclipByLog=true;
+            // Until it is found, the page is drawn whole, since Dear ImGui reports no item out of view. Once found, the
+            // setting is in view at the top of its window and the rest of the page is clipped away.
+            const bool measuring=!layout.found;
+            g.ItemUnclipByLog=measuring;
             g_activeCategory=entry.page;
             ImGui::PushTextWrapPos(0.0f); // a window of its own: notes wrap at its edge, as on the page
             DrawPageContent(changed);
@@ -3622,15 +3656,20 @@ namespace
             if(g_measure.top>=0.0f)
             {
                 layout.top=std::max(0.0f,g_measure.top-2.0f);
-                const float end=g_measure.next>=0.0f?g_measure.next:pageEnd; // nothing after it: its notes run to the end
-                layout.height=std::max(ImGui::GetFrameHeight(),end-layout.top);
+                // Clipped, the item after it is out of view and unreported: the height then stays as measured.
+                if(measuring||g_measure.next>=0.0f)
+                {
+                    const float end=g_measure.next>=0.0f?g_measure.next:pageEnd; // nothing after it: notes run to the end
+                    layout.height=std::max(ImGui::GetFrameHeight(),end-layout.top);
+                }
                 layout.found=true;layout.hidden=false;
             }
-            else layout.found=false,layout.hidden=true; // the setting is not on its page just now
+            else if(measuring) layout.hidden=true; // the setting is not on its page just now
+            else layout.found=false; // moved out of view (the page above it changed): measured afresh next frame
             ImGui::EndChild();
             ImGui::PopID();
         }
-        if(!found) ImGui::TextDisabled("No setting matches.");
+        if(!found) ImGui::TextDisabled("%s",g_indexBuilt?"No setting matches.":"Searching...");
         else if(found>kMostShown) ImGui::TextDisabled("%d more match. Add a word to narrow the search.",found-kMostShown);
         ImGui::Spacing();
         ImGui::TextDisabled("Words can come in any order. \"Quotes\" keep words together, -word leaves one out, and OR finds either.");
@@ -3638,9 +3677,9 @@ namespace
 
     void DrawUI()
     {
-        // The search index is built the first frame something is typed, and again each time searching starts over.
-        if (g_searchQuery[0] && !g_indexBuilt) BuildSettingIndex();
-        if (!g_searchQuery[0]) g_indexBuilt = false;
+        // The search index is built from the first frame something is typed, and again each time searching starts over.
+        if (g_searchQuery[0] && !g_indexBuilt) BuildSettingIndexStep();
+        if (!g_searchQuery[0]) { g_indexBuilt = false; g_indexNextPage = 0; }
         // The window fills the whole panel texture and is completely locked.
         // Cond_Always (not FirstUseEver) means ImGui cannot keep a position of
         // its own, and NoMove/NoResize/NoTitleBar remove every drag target. The

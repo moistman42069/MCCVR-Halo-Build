@@ -60,7 +60,7 @@ inline Query Parse(std::string_view text)
             if (term.compare == Compare::Partial && word.size() > 3)
             {
                 if (word.rfind("...", 0) == 0) { term.compare = Compare::EndsWith; word.erase(0, 3); }
-                else if (word.size() >= 3 && word.compare(word.size() - 3, 3, "...") == 0) { term.compare = Compare::StartsWith; word.resize(word.size() - 3); }
+                else if (word.compare(word.size() - 3, 3, "...") == 0) { term.compare = Compare::StartsWith; word.resize(word.size() - 3); }
             }
         }
         if (word.empty()) continue;
