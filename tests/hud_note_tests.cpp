@@ -53,6 +53,10 @@ static void TestText()
     Check(spacedCut.size() <= kMaxChars && spacedCut.find(L" ...") == std::wstring::npos,
           "a cut does not leave a space before the dots");
     Check(ForGameHud(std::wstring(kMaxChars, L'c')).size() == kMaxChars, "exactly the limit is kept whole");
+    const std::wstring ce = ForGameHud(longNote, kHaloCEMaxChars);
+    Check(ce.size() == kHaloCEMaxChars && ce.substr(ce.size() - 3) == L"...", "Halo CE's note ends in ... at its limit");
+    Check(ForGameHud(std::wstring(kHaloCEMaxChars, L'c'), kHaloCEMaxChars).size() == kHaloCEMaxChars,
+          "exactly Halo CE's limit is kept whole");
 }
 
 static void TestPacing()

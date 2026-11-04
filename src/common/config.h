@@ -864,7 +864,8 @@ struct Config
     bool vehicle_cameras = true;
     // A short note when the vehicle camera, its tethering mode or the seat's controls change, and on getting in:
     // "Warthog - Third Person, Tethered - Motion". 0 = none; 1 = in the game's own HUD messages, in the HUD's font
-    // (Halo 3; the mod's panel when the game's HUD cannot take it, and in a shared co-op simulation);
+    // (Halo CE, Halo 3, ODST and Halo 4; the mod's panel in Halo 2 and Reach, when the game's HUD cannot take it, and
+    // in a shared co-op simulation);
     // 2 = on the mod's own panel in the headset.
     int vehicle_camera_note = 1;
     // With vehicle cameras on: the first time you sit in a vehicle the camera file has no entry of its own for (it

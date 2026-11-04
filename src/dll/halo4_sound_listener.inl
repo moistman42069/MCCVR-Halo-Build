@@ -331,11 +331,7 @@ __declspec(noinline) const float* Halo4ListenerApplyHead(const float* nine, int3
 __declspec(noinline) uint64_t __fastcall Halo4ListenerHandOffDetour(const float* nine, int32_t user)
 {
     const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
-#if HALOMCCVR_DEV_DIAGNOSTICS
     const uint8_t* entry = reinterpret_cast<const uint8_t*>(_AddressOfReturnAddress());
-#else
-    const uint8_t* entry = nullptr;
-#endif
     auto& feature = g_halo4ListenerHead;
     feature.callbacks.fetch_add(1, std::memory_order_acq_rel);
     uint64_t answer = 0;
@@ -349,6 +345,10 @@ __declspec(noinline) uint64_t __fastcall Halo4ListenerHandOffDetour(const float*
             pass = Halo4ListenerApplyHead(nine, user, caller, entry, handed);
         if (const auto original = reinterpret_cast<Halo4ListenerHandOffFn>(feature.original))
             answer = CallNativeWithSpareSlots(original, pass, user);
+        // The vehicle camera note (halo3_hud_note.inl): user 0's hand-off from the listener update, after the game's;
+        // posted only when the tick called that update, right after its HUD message update.
+        if (user == 0 && caller == feature.updateReturn)
+            Halo4HudNotePost(entry);
     }
     __finally
     {

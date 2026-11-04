@@ -2829,6 +2829,19 @@ namespace
     void ReportOdstPlayerTags();
     void Halo3VehicleNoteShow(const std::wstring& text, float seconds);
     void Halo3VehicleNoteTick();
+    // The vehicle camera note in Halo CE's own HUD messages (halo3_hud_note.inl): bound by the cold worker, posted from
+    // the unit control hook (Game_HaloCEHudNotePost).
+    void HaloCEHudNotePoll(uintptr_t base, size_t size, uint32_t generation, bool active);
+    void HaloCEHudNotePost();
+    void HaloCEVehicleNoteShow(const std::wstring& text, float seconds);
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    // ...and in Halo 4's, posted from the sound listener hook (halo4_sound_listener.inl).
+    bool InstallHalo4HudNote(uintptr_t base, size_t size, uint32_t generation, const uint32_t* tlsIndex,
+                             uintptr_t listenerUpdate, uint32_t updateFrameBytes);
+    void RemoveHalo4HudNote();
+    void Halo4HudNotePost(const uint8_t* entry);
+    void Halo4VehicleNoteShow(const std::wstring& text, float seconds);
+#endif
     // The tracker's blips move with the HUD height (halo3_tracker_hud_height.inl): one hook on the blip draw.
     bool InstallHalo3TrackerHudHeight(uintptr_t base, size_t size, uint32_t generation);
     bool RemoveHalo3TrackerHudHeight();
@@ -50713,6 +50726,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         { LOG("Halo 4 teardown: optional muzzle hooks need cleanup retry; retaining native dependencies");return false; }
         if(!RemoveHalo4HeadRelative())
         { LOG("Halo 4 teardown: the head-relative tracker hook needs cleanup retry; retaining native dependencies");return false; }
+        RemoveHalo4HudNote();   // posted only from inside the listener hook, drained below
         if(!RemoveHalo4SoundListener())
         { LOG("Halo 4 teardown: the head-relative sound listener hook needs cleanup retry; retaining native dependencies");return false; }
         const uint32_t generation =
@@ -51161,6 +51175,11 @@ static constexpr bool kOdstMappedFpEnabled = false;
         (void)InstallHalo4HeadRelative(base,size,generation);
         // The same for the sound listener: it binds or refuses on its own, and neither gates the other.
         (void)InstallHalo4SoundListener(base,size,generation);
+        // The vehicle camera note in the game's HUD messages (halo3_hud_note.inl): no hook of its own, it is posted
+        // from the listener hook above; not bound, the note uses the mod's panel.
+        (void)InstallHalo4HudNote(base,size,generation,g_halo4EngineTlsIndex,
+            g_halo4ListenerHead.target?base+static_cast<uintptr_t>(g_halo4ListenerHead.sites.updateRva):0,
+            g_halo4ListenerHead.sites.updateFrameBytes);
         InstallHalo4FireEye(base,size,generation);   // flat parity's measured fire eye (halo4_fire_eye.inl)
         InstallHalo4SeatConverge(base,size,generation);   // after the muzzle lane: its view detour carries the sample
         // The vehicle cameras' "eyeAdjust": Halo 4's render_exposure_lock, from two signatures that must agree
@@ -52549,6 +52568,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 // reads the local player's state through them.
                 (void)HaloCEHeadRelative_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCENetworkInput_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
+                // The vehicle camera note in the game's HUD messages (halo3_hud_note.inl): withdrawn before the unit
+                // control hook it is posted from retires.
+                HaloCEHudNotePoll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCEUnitControl_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 // The vehicle cameras' chase cameras (haloce_vehicle_cameras.cpp): installed only while they are on.
                 (void)HaloCEVehicleCameras_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
@@ -53643,6 +53665,7 @@ bool Game_ReadZoomLevel(int& level)
     return generation && g_gameZoomTitle.load(std::memory_order_relaxed) == static_cast<int>(title) &&
         g_gameZoomGeneration.load(std::memory_order_relaxed) == generation && ms && now >= ms && now - ms <= 500;
 }
+void Game_HaloCEHudNotePost() { HaloCEHudNotePost(); }
 void Game_SetAimFramePass(bool on) { g_aimFramePass.store(on, std::memory_order_release); }
 bool Game_IsAimFramePass() { return g_aimFramePass.load(std::memory_order_acquire); }
 void Game_AimFrameHudScale(float& horizontal, float& vertical)
