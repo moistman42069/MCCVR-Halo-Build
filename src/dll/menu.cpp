@@ -469,6 +469,18 @@ namespace
         ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"(Singleplayer only) %s",what);
     }
 
+    // Under a setting outside Controls that waits on one in Controls, and is greyed out (BeginDisabled) until it is on:
+    // what it needs, in the warning yellow at full strength.
+    void NeedsInControls(bool ready,const char* what)
+    {
+        if(ready) return;
+        ImGui::BeginDisabledOverrideReenable();
+        ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1.f,.8f,.3f,1.f));
+        ImGui::TextWrapped("%s",what);
+        ImGui::PopStyleColor();
+        ImGui::EndDisabledOverrideReenable();
+    }
+
     // The next "User Preset N" after the highest one saved.
     std::string NextUserPresetName(const std::vector<std::string>& saved)
     {
@@ -1106,13 +1118,14 @@ namespace
         ImGui::Spacing();
         // Neither the checkbox nor the depth re-samples the standing height: it is learned all the time,
         // and only the Calibrate button takes the player's current height as their own word.
-        if(g_config.physical_crouch)
         {
+            ImGui::BeginDisabled(!g_config.physical_crouch);
             {
             SettingGroup crouchDepth("Physical crouch depth and calibration", SettingGroup::kNameOnly);
             float crouchCm=g_config.physical_crouch_depth_m*100.f;
             if(vr_menu::SliderFloat("Crouch activation depth",&crouchCm,8.f,65.f,"%.0f cm"))
             {g_config.physical_crouch_depth_m=crouchCm*.01f;changed=true;}
+            NeedsInControls(g_config.physical_crouch, "Needs Physical crouch on (Controls > Movement).");
             if(ImGui::Button("Calibrate crouch at my current height")) VR_RecalibratePhysicalCrouch();
             ImGui::TextWrapped("Lower your head by the activation depth to crouch. Your standing height is learned "
                 "on its own: a few seconds standing normally sets it, and recentering, cutscenes and level loads "
@@ -1124,9 +1137,8 @@ namespace
                 ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"You stood taller than the reference learns on its own: "
                     "press Calibrate while standing tall for the full crouch depth.");
             }
+            ImGui::EndDisabled();
         }
-        if(!g_config.physical_crouch)
-            ImGui::TextDisabled("Physical crouch is off (Controls > Movement).");
         }
         if (SectionHeader("Controller vibration##section", ImGuiTreeNodeFlags_None))
         {
@@ -2096,50 +2108,6 @@ namespace
         }
         ImGui::TextDisabled("Reach over your weapon-side shoulder and squeeze the weapon grip to switch weapons, in every "
                             "game. Off puts the holster back on its defaults. Your switch-weapon button still works.");
-        {
-            // The holster where the player's own hand goes: arm here, then squeeze the weapon grip there.
-            static uint32_t shownCount = VR_HolsterCaptureCount();
-            static uint32_t shownTimedOut = VR_HolsterCaptureTimedOut();
-            static int lastOutcome = 0;  // 1 set, 2 lapsed
-            if (VR_HolsterCaptureCount() != shownCount)
-            {
-                shownCount = VR_HolsterCaptureCount();
-                lastOutcome = 1;
-            }
-            if (VR_HolsterCaptureTimedOut() != shownTimedOut)
-            {
-                shownTimedOut = VR_HolsterCaptureTimedOut();
-                lastOutcome = 2;
-            }
-            const bool armed = VR_HolsterCaptureArmed();
-            // One button; its label says when it is armed (the ### keeps its identity through the change).
-            if (ImGui::Button(armed ? "Calibrate Holster Location (Armed)###holstercapture"
-                                    : "Calibrate Holster Location###holstercapture"))
-            {
-                VR_HolsterCaptureArm(!armed);
-                lastOutcome = 0;
-            }
-            const char* hand = g_config.left_handed ? "left" : "right";
-            if (armed)
-                ImGui::TextDisabled("Armed. Close this menu. The next time you squeeze the grip of your %s (weapon)\n"
-                                    "controller in game, the holster is set where that hand is, measured from your "
-                                    "head. Let go of the grip first if you are holding it. Press the button again "
-                                    "to cancel; it also lapses 30 seconds after the menu closes.", hand);
-            else if (lastOutcome == 1)
-                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f),
-                                   "Set: %.0f cm to the weapon side, %.0f cm %s your head, %.0f cm %s it.",
-                                   g_config.weapon_holster_custom_x_m * 100.0f,
-                                   fabsf(g_config.weapon_holster_custom_y_m) * 100.0f,
-                                   g_config.weapon_holster_custom_y_m < 0 ? "below" : "above",
-                                   fabsf(g_config.weapon_holster_custom_z_m) * 100.0f,
-                                   g_config.weapon_holster_custom_z_m < 0 ? "behind" : "in front of");
-            else if (lastOutcome == 2)
-                ImGui::TextDisabled("No grip came within 30 seconds of closing the menu: nothing was changed.");
-            else
-                ImGui::TextDisabled("Puts the holster where your own hand goes. Press it, close this menu, then squeeze "
-                                    "the grip of your %s (weapon) controller where the holster should be. Turns "
-                                    "holsters on. Every game.", hand);
-        }
         if (g_config.weapon_holsters)
         {
             SettingGap();
@@ -2147,7 +2115,7 @@ namespace
                 "Weapon-side shoulder\0Weapon-side hip\0Over the weapon-side shoulder\0"
                 "Custom (set with your hand)\0");
             if (g_config.weapon_holster_location == 3)
-                ImGui::TextDisabled("Calibrate Holster Location sets the spot; fine-tune it in Body & Hands > "
+                ImGui::TextDisabled("Set the spot with your hand, or by its sliders, in Body & Hands > "
                                     "Holster and magazine positions.");
             SettingGap();
             {
@@ -2372,14 +2340,9 @@ namespace
         ImGui::TextDisabled("Main weapon, aiming and trigger follow your left hand.\n"
                             "Your right hand supports the weapon or holds the second gun.");
         }
-        if (!g_config.two_handed_aim)
-        {
-            SettingGap();
-            ImGui::TextDisabled("Two-handed aiming is off (Controls > Two-handed grip).");
-        }
-        if (g_config.two_handed_aim)
         {
             ImGui::Indent();
+            ImGui::BeginDisabled(!g_config.two_handed_aim);
             SettingGap();
             {
             SettingGroup steersBy("When gripping, your support hand steers the aim", SettingGroup::kNameOnly);
@@ -2390,6 +2353,7 @@ namespace
             if (ImGui::RadioButton("Based on how far apart your hands are##twohandaimby",
                                    !g_config.two_hand_grip_zone_authority))
             { g_config.two_hand_grip_zone_authority = false; changed = true; }
+            NeedsInControls(g_config.two_handed_aim, "Needs Two-handed aiming on (Controls > Two-handed grip).");
             if (g_config.two_hand_grip_zone_authority)
                 ImGui::TextDisabled(
                     "Long guns: your support hand steers the aim.\n"
@@ -2492,6 +2456,7 @@ namespace
                                           &g_config.left_grip_forward_m,
                                           -0.05f, 0.25f, "%.3f");
             ImGui::TextDisabled("Moves the support-hand grab sample forward from the tracked controller toward the visible palm.");
+            ImGui::EndDisabled();
             ImGui::Unindent();
         }
         }
@@ -2922,28 +2887,83 @@ namespace
         {
         ImGui::TextDisabled("Where the holster and the reserve magazine sit on your body. Turning them on and "
                             "their gestures are in Controls > Reload and holsters.");
+        const bool pouchUsed = g_config.manual_reload || g_config.weapon_holsters;
+        ImGui::BeginDisabled(!pouchUsed);
         changed |= vr_menu::SliderFloat("Pouch / hip depth below head (m)",
             &g_config.weapon_pouch_down_m,0.25f,0.85f,"%.2f");
+        NeedsInControls(pouchUsed, "Needs Manual Reload or Weapon Holsters on (Controls > Reload and holsters).");
         ImGui::TextDisabled("How far below your head the hip holster and the front-hip reserve magazine sit.");
+        ImGui::EndDisabled();
         SettingGap();
         {
         SettingGroup holsterSpot("Custom holster spot", SettingGroup::kNameOnly);
+        const bool customHolster = g_config.weapon_holsters && g_config.weapon_holster_location == 3;
+        ImGui::BeginDisabled(!customHolster);
+        // The holster where the player's own hand goes: arm here, then squeeze the weapon grip there.
+        static uint32_t shownCount = VR_HolsterCaptureCount();
+        static uint32_t shownTimedOut = VR_HolsterCaptureTimedOut();
+        static int lastOutcome = 0;  // 1 set, 2 lapsed
+        if (VR_HolsterCaptureCount() != shownCount)
+        {
+            shownCount = VR_HolsterCaptureCount();
+            lastOutcome = 1;
+        }
+        if (VR_HolsterCaptureTimedOut() != shownTimedOut)
+        {
+            shownTimedOut = VR_HolsterCaptureTimedOut();
+            lastOutcome = 2;
+        }
+        // Turned off in Controls while armed: the button can no longer cancel it, so it is cancelled here.
+        if (!customHolster && VR_HolsterCaptureArmed()) VR_HolsterCaptureArm(false);
+        const bool armed = VR_HolsterCaptureArmed();
+        // One button; its label says when it is armed (the ### keeps its identity through the change).
+        if (ImGui::Button(armed ? "Calibrate Holster Location (Armed)###holstercapture"
+                                : "Calibrate Holster Location###holstercapture"))
+        {
+            VR_HolsterCaptureArm(!armed);
+            lastOutcome = 0;
+        }
+        NeedsInControls(customHolster, !g_config.weapon_holsters
+            ? "Needs Weapon Holsters on, with Holster location set to Custom (Controls > Reload and holsters)."
+            : "Needs Holster location set to Custom (Controls > Reload and holsters).");
+        const char* hand = g_config.left_handed ? "left" : "right";
+        if (armed)
+            ImGui::TextDisabled("Armed. Close this menu. The next time you squeeze the grip of your %s (weapon)\n"
+                                "controller in game, the holster is set where that hand is, measured from your "
+                                "head. Let go of the grip first if you are holding it. Press the button again "
+                                "to cancel; it also lapses 30 seconds after the menu closes.", hand);
+        else if (lastOutcome == 1)
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f),
+                               "Set: %.0f cm to the weapon side, %.0f cm %s your head, %.0f cm %s it.",
+                               g_config.weapon_holster_custom_x_m * 100.0f,
+                               fabsf(g_config.weapon_holster_custom_y_m) * 100.0f,
+                               g_config.weapon_holster_custom_y_m < 0 ? "below" : "above",
+                               fabsf(g_config.weapon_holster_custom_z_m) * 100.0f,
+                               g_config.weapon_holster_custom_z_m < 0 ? "behind" : "in front of");
+        else if (lastOutcome == 2)
+            ImGui::TextDisabled("No grip came within 30 seconds of closing the menu: nothing was changed.");
+        else
+            ImGui::TextDisabled("Puts the holster where your own hand goes. Press it, close this menu, then squeeze "
+                                "the grip of your %s (weapon) controller where the holster should be. Every "
+                                "game.", hand);
         changed |= vr_menu::SliderFloat("Custom spot: to the weapon side (m)",
             &g_config.weapon_holster_custom_x_m, -0.80f, 0.80f, "%.2f");
         changed |= vr_menu::SliderFloat("Custom spot: up from the head (m)",
             &g_config.weapon_holster_custom_y_m, -0.80f, 0.80f, "%.2f");
         changed |= vr_menu::SliderFloat("Custom spot: forward of the head (m)",
             &g_config.weapon_holster_custom_z_m, -0.80f, 0.80f, "%.2f");
-        ImGui::TextDisabled("Used when the holster location is Custom. Calibrate Holster Location, in Controls > "
-                            "Reload and holsters, sets it with your hand.");
+        ImGui::EndDisabled();
         }
         SettingGap();
         {
         SettingGroup reserveOffsets("Reserve magazine offsets", SettingGroup::kNameOnly);
+        ImGui::BeginDisabled(!g_config.manual_reload);
         changed|=vr_menu::SliderFloat("Reserve side offset (m)",&g_config.weapon_pouch_offset_x_m,-.40f,.40f,"%.3f");
+        NeedsInControls(g_config.manual_reload, "Needs Manual Reload on (Controls > Reload and holsters).");
         changed|=vr_menu::SliderFloat("Reserve height offset (m)",&g_config.weapon_pouch_offset_y_m,-.40f,.40f,"%.3f");
         changed|=vr_menu::SliderFloat("Reserve forward offset (m)",&g_config.weapon_pouch_offset_z_m,-.40f,.40f,"%.3f");
         ImGui::TextWrapped("Offsets follow your body direction. Positive side moves toward the weapon hand; left-handed mode mirrors it.");
+        ImGui::EndDisabled();
         }
         }
         }
