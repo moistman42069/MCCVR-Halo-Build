@@ -1804,17 +1804,17 @@ namespace
             "delayed at any setting.");
         changed |= ImGui::Checkbox("Re-centre when I get in and out",
                                    &g_config.vehicle_recenter_on_seat);
+        ImGui::TextDisabled(
+            "ON (default) re-centres your play space once you have settled "
+            "into a seat and again when you get out, so a step you took on "
+            "foot is not carried in (or back out) as a standing lean.\n"
+            "Position only - it never turns your view.");
         changed |= ImGui::Checkbox("Steady brightness in the seat (ODST)",
                                    &g_config.vehicle_steady_exposure);
         ImGui::TextDisabled(
             "Looking down at the dashboard fills the game's brightness "
             "meter with a big dark surface, so its auto-exposure ramps the "
             "whole scene. This holds it steady while you are seated.");
-        ImGui::TextDisabled(
-            "ON (default) re-centres your play space once you have settled "
-            "into a seat and again when you get out, so a step you took on "
-            "foot is not carried in (or back out) as a standing lean.\n"
-            "Position only - it never turns your view.");
         ImGui::Spacing();
         ImGui::Separator();
         }
@@ -2223,6 +2223,11 @@ namespace
                                 "and the right stick turns your view; OFF keeps the earlier Halo 2 aim (the shot "
                                 "follows the hand, the body follows the stick). Halo CE always writes its aim "
                                 "directly. Both switches are live.");
+            ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3, ODST, "
+                                "Halo CE and Halo 2 in first-person seats; Reach and Halo 2 with Direct drive; "
+                                "Halo 4 seats with their switch on the Vehicles page). With Direct drive, seats have "
+                                "their aim written too (Vehicles > Aim in seats says which); a seat first checks "
+                                "its own aim, about a second after you sit down.");
             changed |= ImGui::Checkbox("Shots leave the visible muzzle", &g_config.shots_from_muzzle);
             SingleplayerOnly("In co-op, shots leave your eye instead, automatically.");
             ImGui::TextDisabled("ON: on foot, each shot starts at your gun's visible muzzle and flies through the "
@@ -2234,11 +2239,6 @@ namespace
                                 "Only while Co-op safe shots (Advanced page) allows it: on Automatic, the default, "
                                 "that is when you play alone or in Firefight or a custom game. In a co-op session, "
                                 "or with it on Always, shots leave your eye.");
-            ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3, ODST, "
-                                "Halo CE and Halo 2 in first-person seats; Reach and Halo 2 with Direct drive; "
-                                "Halo 4 seats with their switch on the Vehicles page). With Direct drive, seats have "
-                                "their aim written too (Vehicles > Aim in seats says which); a seat first checks "
-                                "its own aim, about a second after you sit down.");
             changed |= vr_menu::SliderFloat("Aim lead (game ticks)", &g_config.aim_lead_ticks, 0.0f, 3.0f, "%.2f");
             ImGui::TextDisabled("On foot in Halo 3, ODST and Reach with Direct drive. The game fires each shot along "
                                 "the aim it was given about one game tick earlier, so a shot fired while you turn "
@@ -2348,6 +2348,16 @@ namespace
         changed |= ImGui::Checkbox("Two-handed aiming", &g_config.two_handed_aim);
         ImGui::SameLine();
         ImGui::TextDisabled(VR_IsTwoHandAiming() ? "[engaged]" : "[one-handed]");
+        if (g_config.two_handed_aim)
+        {
+            ImGui::Indent();
+            ImGui::TextDisabled("Put your support hand on the front of the gun, click/hold its GRIP.\n"
+                                "Engages only when your hand is on the barrel line.\n"
+                                "Off whenever the game leaves first person (vehicle seats, turrets, "
+                                "third-person, death and Monitor cameras, cutscenes): your main hand "
+                                "aims alone. A grip held through it needs a fresh grip in first person.");
+            ImGui::Unindent();
+        }
         SettingGap();
         {
         SettingGroup leftHanded("Left-handed play", SettingGroup::kNameOnly);
@@ -2368,11 +2378,6 @@ namespace
         if (g_config.two_handed_aim)
         {
             ImGui::Indent();
-            ImGui::TextDisabled("Put your support hand on the front of the gun, click/hold its GRIP.\n"
-                                "Engages only when your hand is on the barrel line.\n"
-                                "Off whenever the game leaves first person (vehicle seats, turrets, "
-                                "third-person, death and Monitor cameras, cutscenes): your main hand "
-                                "aims alone. A grip held through it needs a fresh grip in first person.");
             SettingGap();
             {
             SettingGroup steersBy("When gripping, your support hand steers the aim", SettingGroup::kNameOnly);
@@ -2662,6 +2667,8 @@ namespace
         changed |= ImGui::Checkbox("Show a crosshair where the weapon shoots", &g_config.crosshair);
         if (g_config.crosshair)
         {
+            ImGui::TextWrapped("Single weapons use their authored crosshair where available. "
+                "Halo 2 and Halo 3 dual wield use two separate aim marks, one for each weapon.");
             float crosshairSmoothPercent = g_config.aim_stabilization * 100.0f;
             if (vr_menu::SliderFloat("Crosshair smoothing", &crosshairSmoothPercent,
                                    0.0f, 95.0f, "%.0f%%", ImGuiSliderFlags_None))
@@ -2669,6 +2676,8 @@ namespace
                 g_config.aim_stabilization = crosshairSmoothPercent / 100.0f;
                 changed = true;
             }
+            ImGui::TextDisabled("Crosshair smoothing is visual only; bullets keep the current controller ray.\n"
+                                "Set it to 0%% for exact raw tracking.");
             {
                 // Size, opacity and brightness are each game's own: say whose are on the sliders.
                 ImGui::Spacing();
@@ -2762,8 +2771,6 @@ namespace
                                     "Turn it off if you feel any frame-rate cost.");
                 ImGui::Unindent();
             }
-            ImGui::TextWrapped("Single weapons use their authored crosshair where available. "
-                "Halo 2 and Halo 3 dual wield use two separate aim marks, one for each weapon.");
 #if HALOMCCVR_DEV_DIAGNOSTICS
             ImGui::Spacing();
             {
@@ -2784,8 +2791,6 @@ namespace
                                 "shots, the aim and convergence are exactly the same. Off for normal play.");
 #endif
         }
-        ImGui::TextDisabled("Crosshair smoothing is visual only; bullets keep the current controller ray.\n"
-                            "Set it to 0%% for exact raw tracking.");
         }
         }
 
