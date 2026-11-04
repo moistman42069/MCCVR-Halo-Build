@@ -128,6 +128,13 @@ void CheckInputPresets()
         "a preset keeps the over-the-shoulder switch and the reload options");
     Check(shoulderLoaded.weapon_holster_custom_x_m==Config{}.weapon_holster_custom_x_m,
         "where the holster sits on your body stays out of a preset");
+    Config twoHand{};
+    twoHand.persistent_support_grip=false;twoHand.two_hand_offhand_influence=.25f;twoHand.left_grip_forward_m=.2f;
+    Config twoHandLoaded{};
+    input_preset::Parse(input_preset::Serialize(twoHand).c_str(),twoHandLoaded);
+    Check(!twoHandLoaded.persistent_support_grip&&std::fabs(twoHandLoaded.two_hand_offhand_influence-.25f)<.002f&&
+        twoHandLoaded.left_grip_forward_m==Config{}.left_grip_forward_m,
+        "a preset keeps two-handed aiming, but not where the support hand grabs the gun");
     Config kept{};
     kept.world_scale=2.f;
     input_preset::CopyScheme(kept,scheme);
