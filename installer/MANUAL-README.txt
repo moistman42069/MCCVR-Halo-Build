@@ -82,10 +82,10 @@ VR Mappings, which detects the advertised controller profile and stores optional
 overrides separately per game, including Unbound. The current
 native transport still couples actions that share a native MCC button/action,
 so reload and use may not unbind independently.
-Controls holds only what a controls preset saves, left-handed play and two-handed
-aiming included, so people sharing the mod can each keep their own. Where the
-holster and reserve magazine sit on your body is in Body & Hands. Vehicles,
-Picture and Subtitles group the other options.
+Controls holds only what a controls preset saves, left-handed play, two-handed
+aiming and where the holster and reserve magazine sit on you included, so people
+sharing the mod can each keep their own. Vehicles, Picture and Subtitles group
+the other options.
 Optional stock, physical crouch, reload and DLSS need runtime testing.
 
 DLSS uses compatible NVIDIA hardware. Missing/failed optional features preserve
