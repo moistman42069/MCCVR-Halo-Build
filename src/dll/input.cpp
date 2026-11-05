@@ -78,7 +78,23 @@ namespace
     // on a press, and each press must be seen once.
     vr_mapping::Mapper g_vrActionMapper;
     std::mutex g_vrActionMapperLock;
-    void SuspendActionMapper() { std::lock_guard<std::mutex> lock(g_vrActionMapperLock); g_vrActionMapper.ready=false; }
+    // Zoom as the mapper last pressed it, chords and all: the lens toggles on its release (a poll later).
+    std::atomic<bool> g_zoomInputDown{false};
+    void SuspendActionMapper()
+    {
+        std::lock_guard<std::mutex> lock(g_vrActionMapperLock);
+        g_vrActionMapper.ready=false;
+        g_zoomInputDown.store(false,std::memory_order_relaxed);
+    }
+    // The actions a game has none of (vr_mapping::PollOptions::absent).
+    uint32_t AbsentActions(GameTitle title) noexcept
+    {
+        uint32_t absent=0;
+        for(unsigned action=0;action<vr_mapping::Count;++action)
+            if(vr_mapping::NativeAction(title,static_cast<vr_mapping::Action>(action))==vr_mapping::kNoAction)
+                absent|=1u<<action;
+        return absent;
+    }
     std::atomic<uint64_t> g_startPulseUntilMs{0};
 std::atomic<uint32_t> g_menuPressSerial{0};
 
@@ -557,13 +573,16 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         const bool handOnGun=pad.supportAimActive||pad.supportOnOneHandedGun;
         if(handOnGun) collectedSources|=vr_mapping::Bit(vr_mapping::HandOnGun);
         const bool triggerDown=(collectedSources&vr_mapping::Bit(vr_mapping::SupportTrigger))!=0;
-        // A support trigger pulled while that hand's grip holds a magazine or a holster presses nothing until let go.
+        // Where the support trigger has chords (the gun grip's zoom, the empty grip's equipment), a pull begun while that
+        // hand's grip holds a magazine or a holster presses nothing until let go. A seat or two guns keep it plain.
         {
+            const bool chorded=rowInputs&&g_config.vr_action_mapping&&!pad.dualWield&&!inSeat&&
+                vr_mapping::ChordPresses(effectiveBindings,*rowInputs,vr_mapping::SupportTrigger);
             static std::mutex claimLock;
             static bool triggerWasDown=false,triggerClaimed=false;
             std::lock_guard<std::mutex> lock(claimLock);
             if(!triggerDown) triggerClaimed=false;
-            else if(!triggerWasDown) triggerClaimed=pad.weaponConsumeSupport;
+            else if(!triggerWasDown) triggerClaimed=chorded&&pad.weaponConsumeSupport;
             triggerWasDown=triggerDown;
             if(triggerClaimed) collectedSources&=~vr_mapping::Bit(vr_mapping::SupportTrigger);
         }
@@ -602,12 +621,11 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         // unaffected by entering the optional head D-pad gesture.
         const unsigned scopeRoute=zoomSource>=vr_mapping::DpadUp&&zoomSource<=vr_mapping::DpadRight?
             (pad.thumbrestDpad?2u:(dpadMode?1u:0u)):0u;
-        // The lens follows Zoom's inputs: any of them down (what it holds first and its press) is Zoom's control down.
+        // The lens follows Zoom as the mapper presses it, chords and their rules included (g_zoomInputDown, a poll late).
         const int scopeSource=vr_mapping::Bit(zoomSource)?zoomSource:vr_mapping::RightClick;
         const uint32_t scopeSources=rowInputs&&g_config.vr_action_mapping?
             (collectedSources&~vr_mapping::Bit(scopeSource))|
-            (vr_mapping::InputsDown(vr_mapping::Zoom,collectedSources,effectiveBindings,rowInputs)?
-                vr_mapping::Bit(scopeSource):0u):collectedSources;
+            (g_zoomInputDown.load(std::memory_order_relaxed)?vr_mapping::Bit(scopeSource):0u):collectedSources;
         ScopeToggleUpdate scope{};
         {
             std::lock_guard<std::mutex> lock(g_scopeInputLock);
@@ -688,6 +706,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                     if(scopeAvailable) native[vr_mapping::Zoom]=0;
                     vr_mapping::PollOptions poll;
                     poll.heldOk=heldOk;
+                    poll.absent=AbsentActions(title);
                     vr_mapping::MappedActions actions;
                     {
                         std::lock_guard<std::mutex> lock(g_vrActionMapperLock);
@@ -697,6 +716,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                             ready,g_config.disable_flashlight_input||
                                 (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive),nullptr,
                             &g_config.vr_inputs[index],poll);
+                        g_zoomInputDown.store(actions.Has(vr_mapping::Zoom),std::memory_order_relaxed);
                     }
                     // Halo 2 context actions keep their real MCC button; see
                     // vr_action_passthrough.h. Every other action is unchanged.
@@ -845,16 +865,22 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         vr_mapping::PollOptions poll;
         poll.heldOk=heldOk;
         poll.forced=zoomPressedOut?1u<<vr_mapping::Zoom:0u;
+        poll.absent=AbsentActions(currentTitle);
         poll.ownOnly=!g_config.vr_action_mapping;
-        poll.standUp=gameplayMode&&!stickOnFoot;
         vr_mapping::MappedActions semanticActions;
         {
             std::lock_guard<std::mutex> lock(g_vrActionMapperLock);
+            // Toggles end as the player leaves their feet (a seat, the Monitor, the headset losing the view), once: a
+            // toggle set in a seat lasts there.
+            static bool wasOnFoot=true;
+            poll.standUp=gameplayMode&&wasOnFoot&&!stickOnFoot;
+            if(gameplayMode) wasOnFoot=stickOnFoot;
             semanticActions=g_vrActionMapper.ApplyDetailed(actionSources,
                 mappingTitle>=0?effectiveBindings:emptyMappings,mappingTransports,
                 (uint64_t(TitleAdapter_GetGeneration(currentTitle))<<32)|(uint64_t(currentTitle)<<24)|pad.profileEpoch,
                 nativeMapping||(ownInputs&&nativeReady),g_config.disable_flashlight_input||
                     (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive),nullptr,rowInputs,poll);
+            g_zoomInputDown.store(semanticActions.Has(vr_mapping::Zoom)&&!zoomPressedOut,std::memory_order_relaxed);
         }
         if(scopeAvailable) semanticActions.actions&=~(1u<<vr_mapping::Zoom);
         // Direct routing withholds native transports, except Halo 2's context

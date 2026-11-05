@@ -315,6 +315,11 @@ inline bool RemoveInput(RowInputs& row,const Input& input) noexcept
 inline void ConvertSettingsToInputs(Inputs& inputs,GameTitle title,bool stick,bool gunZoom,bool airEquipment) noexcept
 {
     if(!stick) for(auto& row:inputs) {RemoveInput(row,kStickCrouch);RemoveInput(row,kStickUp);}
+    else
+    {
+        AddInput(inputs[Crouch],kStickCrouch);
+        if(StickUpAction(title)<Count) AddInput(inputs[StickUpAction(title)],kStickUp);
+    }
     if(gunZoom) AddInput(inputs[Zoom],kGunZoom);
     if(airEquipment&&NativeAction(title,Equipment)!=kNoAction) AddInput(inputs[Equipment],kAirEquipment);
 }
@@ -409,18 +414,31 @@ template<unsigned N> struct ChordState
     }
 };
 
-// Every control an action's inputs use, held first or pressed.
+// Every control an action's inputs use, held first or pressed. An input with no press uses none, whatever it holds.
 inline uint32_t ControlBits(Action action,const Overrides& bindings,const Inputs* inputs) noexcept
 {
     if(action>=Count) return 0;
-    uint32_t bits=Bit(Resolve(action,bindings[action]));
+    const uint32_t own=Bit(Resolve(action,bindings[action]));
+    uint32_t bits=own;
     if(inputs)
     {
         const auto& row=(*inputs)[action];
-        bits|=HeldBits(row.held);
-        for(const auto& more:row.more) if(ListedSource(more.press)) bits|=Bit(more.press)|HeldBits(more.held);
+        if(own) bits|=HeldBits(row.held);
+        for(const auto& more:row.more)
+            if(ListedSource(more.press)&&Bit(more.press)) bits|=Bit(more.press)|HeldBits(more.held);
     }
     return bits;
+}
+// True if an input of a row is a chord pressed by `source` (something held first): the claimed-trigger rule needs one.
+inline bool ChordPresses(const Overrides& bindings,const Inputs& inputs,int source) noexcept
+{
+    for(unsigned a=0;a<Count;++a)
+    {
+        const auto& row=inputs[a];
+        if(Resolve(static_cast<Action>(a),bindings[a])==source&&HeldBits(row.held)) return true;
+        for(const auto& more:row.more) if(more.press==source&&HeldBits(more.held)) return true;
+    }
+    return false;
 }
 // What presses an action, as one number: its inputs in any order. Two actions with the same number are pressed by the
 // same inputs.
@@ -433,9 +451,10 @@ inline uint64_t InputsSignature(Action action,const Overrides& bindings,const In
     { return (uint64_t(held)<<32)|press|(mode==InputMode::Toggle?1ull<<63:0); };
     const RowInputs none{};
     const auto& row=inputs?(*inputs)[action]:none;
-    codes[count++]=code(HeldBits(row.held),Bit(Resolve(action,bindings[action])),row.mode);
+    const uint32_t own=Bit(Resolve(action,bindings[action]));
+    codes[count++]=code(own?HeldBits(row.held):0u,own,row.mode);
     for(const auto& more:row.more)
-        if(ListedSource(more.press)&&more.press!=Unbound) codes[count++]=code(HeldBits(more.held),Bit(more.press),more.mode);
+        if(ListedSource(more.press)&&Bit(more.press)) codes[count++]=code(HeldBits(more.held),Bit(more.press),more.mode);
     for(unsigned i=1;i<count;++i)
         for(unsigned j=i;j>0&&codes[j-1]>codes[j];--j) {const uint64_t swap=codes[j];codes[j]=codes[j-1];codes[j-1]=swap;}
     uint64_t value=14695981039346656037ull;
@@ -467,19 +486,6 @@ inline bool UsesControls(const Overrides& bindings,const Inputs& inputs,uint32_t
 // True if an action's inputs, its own or a further one, hold the support hand on the gun (the gun grip's zoom).
 inline bool HoldsHandOnGun(Action action,const Overrides& bindings,const Inputs& inputs) noexcept
 { return (ControlBits(action,bindings,&inputs)&Bit(HandOnGun))!=0; }
-// True if a row's inputs are all down (held first and pressed), ignoring claims: the lens follows Zoom by this.
-inline bool InputsDown(Action action,uint32_t sources,const Overrides& bindings,const Inputs* inputs) noexcept
-{
-    if(action>=Count) return false;
-    const RowInputs none{};
-    const auto& row=inputs?(*inputs)[action]:none;
-    const uint32_t own=Bit(Resolve(action,bindings[action]));
-    if(own&&(sources&own)&&(sources&HeldBits(row.held))==HeldBits(row.held)) return true;
-    for(const auto& more:row.more)
-        if(ListedSource(more.press)&&Bit(more.press)&&(sources&Bit(more.press))&&
-           (sources&HeldBits(more.held))==HeldBits(more.held)) return true;
-    return false;
-}
 
 // THE SEAT'S ROWS (VR Mappings, under the actions): a vehicle's own actions, which no on-foot row names. Each has inputs
 // as a row does (none Automatic); any of them presses the action's own MCC button beside whatever the action rows press,
@@ -513,7 +519,7 @@ inline constexpr unsigned NativeVehicleAction(GameTitle title,VehicleAction acti
 inline uint32_t VehicleControlBits(const VehicleRow& row) noexcept
 {
     uint32_t bits=0;
-    for(const auto& input:row) if(ListedSource(input.press)) bits|=Bit(input.press)|HeldBits(input.held);
+    for(const auto& input:row) if(ListedSource(input.press)&&Bit(input.press)) bits|=Bit(input.press)|HeldBits(input.held);
     return bits;
 }
 struct VehicleMapper
@@ -547,8 +553,9 @@ struct PollOptions
 {
     uint32_t heldOk=~0u;      // controls that may be held first (a seat or two guns keep the support trigger plain)
     uint32_t forced=0;        // actions pressed whatever the controls (Zoom, pressed out as the hand leaves the gun)
+    uint32_t absent=0;        // actions the game has none of: their inputs press and claim nothing
     bool ownOnly=false;       // only inputs made of the mod's own controls (kOwnControls): remapping is off
-    bool standUp=false;       // toggles end: a seat, or off foot
+    bool standUp=false;       // toggles end: the player has just left their feet
 };
 
 // Reconfiguration, pause, reconnect and title changes must wait for held
@@ -566,18 +573,23 @@ struct Mapper
         uint64_t epoch,bool available,bool disableFlashlight=false,const Overrides* also=nullptr,
         const Inputs* inputs=nullptr,const PollOptions& poll={}) noexcept
     {
-        const uint64_t nextSetup=Fingerprint(bindings,Transports{})^epoch^(also?Fingerprint(*also,Transports{})*31u:0u)^
+        // Toggles start over when what the rows say changes, not when the game's layout is read again: Automatic rows
+        // follow that read, and a read that fails for a moment must not stand a crouched player up.
+        const uint64_t nextSetup=epoch^(also?Fingerprint(*also,Transports{})*31u:0u)^
             (inputs?Fingerprint(*inputs)*37u:0u)^(poll.ownOnly?0x9E3779B97F4A7C15ull:0u);
-        const uint64_t next=nextSetup^Fingerprint(Overrides{},native);
+        const uint64_t next=nextSetup^Fingerprint(bindings,native);
         if(!available||!ready||identity!=next) {relatched+=(sources&~blocked)!=0;blocked|=sources;}
         if(identity!=next) chords.Reset(setup!=nextSetup);
         if(poll.standUp) chords.toggled.fill(false);
         blocked&=sources; identity=next; setup=nextSetup; ready=available;
         std::array<ResolvedInput,Count*kSlots> list{};
-        uint32_t flashlightSource=0;
+        // Flashlight suppression is for the gamepad's controls: an input made only of the mod's own (ODST's VISR on the
+        // right stick) is never a flashlight button pressed by mistake.
+        uint32_t flashlightSource=0,flashlightOwnSlots=0;
         const RowInputs none{};
         for(unsigned a=0;a<Count;++a)
         {
+            if((poll.absent>>a)&1u) continue;
             const auto& row=inputs?(*inputs)[a]:none;
             ResolvedInput* slot=&list[a*kSlots];
             slot[0]={HeldBits(row.held),Bit(Resolve(static_cast<Action>(a),bindings[a])),row.mode};
@@ -587,20 +599,25 @@ struct Mapper
                     slot[2+i]={HeldBits(row.more[i].held),Bit(row.more[i].press),row.more[i].mode};
             for(unsigned i=0;i<kSlots;++i)
             {
-                if(poll.ownOnly&&((slot[i].held|slot[i].press)&~kOwnControls)) slot[i]={};
-                if(a==Flashlight) flashlightSource|=slot[i].press;
+                const bool own=slot[i].press&&!((slot[i].held|slot[i].press)&~kOwnControls);
+                if(poll.ownOnly&&!own) slot[i]={};
+                if(a==Flashlight&&own) flashlightOwnSlots|=1u<<i;
+                else if(a==Flashlight) flashlightSource|=slot[i].press;
             }
         }
         const auto presses=chords.Step(list,sources,sources&~blocked,poll.heldOk);
         flashlightHeld&=sources;
         if(disableFlashlight) flashlightHeld|=sources&flashlightSource;
         if(!available) return {};
+        const bool flashlightSuppressed=disableFlashlight||(flashlightHeld&flashlightSource);
         MappedActions result{};
         for(unsigned a=0;a<Count;++a)
         {
             bool pressed=(poll.forced>>a)&1u;
-            for(unsigned i=0;i<kSlots;++i) pressed=pressed||presses[a*kSlots+i];
-            if(pressed&&!(a==Flashlight&&(disableFlashlight||(flashlightHeld&flashlightSource))))
+            for(unsigned i=0;i<kSlots;++i)
+                pressed=pressed||(presses[a*kSlots+i]&&
+                    !(a==Flashlight&&flashlightSuppressed&&!((flashlightOwnSlots>>i)&1u)));
+            if(pressed)
             {
                 result.actions |= 1u << a;
                 result.transports |= native[a];

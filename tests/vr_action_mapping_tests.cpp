@@ -73,6 +73,16 @@ void CheckInputPresets()
         step(0);
         PollOptions out;out.forced=1u<<Zoom;
         Check(step(0,out).Has(Zoom),"a forced action (zoom pressed out) presses whatever the controls");
+        PollOptions withoutEquipment;withoutEquipment.absent=1u<<Equipment;
+        step(Bit(SupportGrip),withoutEquipment);
+        auto absent=step(Bit(SupportGrip)|Bit(SupportTrigger),withoutEquipment);
+        Check(absent.Has(Grenade)&&!absent.Has(Equipment),"a game without equipment: its chord claims nothing, the pull is a grenade");
+        step(0);
+        Check(ChordPresses(rows,inputs,SupportTrigger)&&!ChordPresses(rows,inputs,A)&&
+            !ChordPresses(rows,Inputs{},SupportTrigger),"the support trigger has chords only where an input holds something first");
+        Inputs emptied{};emptied[Zoom].more[0]=Input{{HandOnGun,Unbound},Unbound,InputMode::Hold};
+        Check(!HoldsHandOnGun(Zoom,rows,emptied)&&ControlBits(Zoom,rows,&emptied)==Bit(RightClick),
+            "an input with no press holds nothing, whatever it once held first");
         // TOGGLE: the right stick down crouches, and down again stands; leaving the feet stands the player up.
         Inputs stick=DefaultInputs(GameTitle::Halo3);
         Mapper t;
@@ -86,6 +96,17 @@ void CheckInputPresets()
         Check(stepStick(0).Has(Crouch),"and the crouch stays with the stick back");
         t.ApplyDetailed(0,Overrides{},native,1,false,false,nullptr,&stick);
         Check(stepStick(0).Has(Crouch),"a pause keeps the crouch");
+        Overrides layoutRead{};layoutRead[Fire]=PrimaryTrigger;layoutRead[Jump]=A;
+        Check(t.ApplyDetailed(0,layoutRead,native,1,true,false,nullptr,&stick).Has(Crouch)&&stepStick(0).Has(Crouch),
+            "the game's layout read again (Automatic rows filled in, then not) keeps the crouch");
+        Inputs odst=DefaultInputs(GameTitle::Halo3ODST);
+        Mapper visr;
+        visr.ApplyDetailed(0,Overrides{},native,1,true,true,nullptr,&odst);
+        const auto twoHanded=visr.ApplyDetailed(Bit(RightStickUp),Overrides{},native,1,true,true,nullptr,&odst);
+        Check(twoHanded.Has(Flashlight),"flashlight suppression leaves ODST's VISR on the right stick alone");
+        visr.ApplyDetailed(0,Overrides{},native,1,true,true,nullptr,&odst);
+        Check(!visr.ApplyDetailed(Bit(DpadUp),Overrides{},native,1,true,true,nullptr,&odst).Has(Flashlight),
+            "and still suppresses the flashlight's own button");
         Check(!stepStick(Bit(RightStickDown)).Has(Crouch),"down again stands");
         stepStick(0);
         Check(stepStick(Bit(RightStickUp)).Has(Equipment)&&!stepStick(0).Has(Equipment),
@@ -125,6 +146,11 @@ void CheckInputPresets()
         Check(noEquipment==Inputs{},"right stick off takes its inputs away, and a game without equipment adds none");
         ConvertSettingsToInputs(converted,GameTitle::HaloReach,true,true,true);
         Check(converted[Zoom].more[1]==Input{},"converting twice adds nothing twice");
+        Inputs crowded=DefaultInputs(GameTitle::Halo4);
+        crowded[Crouch].more[0]=Input{kNoneHeld,DpadDown};
+        ConvertSettingsToInputs(crowded,GameTitle::Halo4,true,false,false);
+        Check(crowded[Crouch].more[1]==kStickCrouch&&crowded[Sprint].more[0]==kStickUp,
+            "right stick on puts the stick's inputs back where something took their place");
         // An input's text in a file.
         char text[32];
         FormatInput(text,kAirEquipment.held,kAirEquipment.press,kAirEquipment.mode);

@@ -305,6 +305,7 @@ namespace
         ImGui::SameLine();
         if(ImGui::RadioButton("Toggle",mode==vr_mapping::InputMode::Toggle)) {mode=vr_mapping::InputMode::Toggle;changed=true;}
         unsigned listed=0;
+        ImGui::PushID("held");
         for(unsigned i=0;i<vr_mapping::kHeld;++i)
         {
             if(held[i]==vr_mapping::Unbound) continue;
@@ -316,6 +317,7 @@ namespace
             ImGui::PopID();
             ++listed;
         }
+        ImGui::PopID();
         if(listed<vr_mapping::kHeld&&ImGui::SmallButton("Hold a control first"))
         {
             for(auto& source:held) if(source==vr_mapping::Unbound) {source=vr_mapping::SupportGrip;break;}
@@ -340,7 +342,12 @@ namespace
         {
             ImGui::PushID(static_cast<int>(i+1));
             const std::string label=std::string(name)+", input "+std::to_string(i+2);
-            changed|=MappingCombo(label.c_str(),inputs[i].press,false);
+            if(MappingCombo(label.c_str(),inputs[i].press,false))
+            {
+                // No press, no input: what it held first goes too.
+                if(inputs[i].press==vr_mapping::Unbound) {inputs[i]=vr_mapping::Input{};optionsOpen[i]=false;}
+                changed=true;
+            }
             ImGui::SameLine();
             if(ImGui::SmallButton("Remove"))
             {
@@ -356,9 +363,19 @@ namespace
             ImGui::PopID();
         }
         if(shown<count&&ImGui::SmallButton("Add an input")) open=static_cast<int>(shown)+1;
-        // An input emptied before a listed one closes up.
+        // An input emptied before a listed one closes up, its options panel with it.
         if(changed)
-            std::stable_partition(inputs,inputs+count,[](const vr_mapping::Input& input){return input.press!=vr_mapping::Unbound;});
+        {
+            unsigned kept=0;
+            for(unsigned i=0;i<count;++i)
+            {
+                if(inputs[i].press==vr_mapping::Unbound) continue;
+                inputs[kept]=inputs[i];
+                optionsOpen[kept]=optionsOpen[i];
+                ++kept;
+            }
+            for(;kept<count;++kept) {inputs[kept]=vr_mapping::Input{};optionsOpen[kept]=false;}
+        }
         return changed;
     }
 
@@ -1570,6 +1587,7 @@ namespace
                 auto& row=g_config.vr_vehicle_bindings[selectedTitle][action];
                 bool* open=optionsOpen[selectedTitle][vr_mapping::Count+action];
                 bool seatChanged=MappingCombo(name,row[0].press,false);
+                if(seatChanged&&row[0].press==vr_mapping::Unbound) {row[0]=vr_mapping::Input{};open[0]=false;}
                 seatChanged|=InputOptions(name,row[0].held,row[0].mode,open[0]);
                 seatChanged|=MoreInputsList(name,row.data()+1,vr_mapping::kMoreInputs,
                     moreOpen[selectedTitle][vr_mapping::Count+action],open+1);
