@@ -3706,7 +3706,7 @@ void ConfigSave()
     fprintf(f,"# (default %d)\n",d.view_follows_standing_height?1:0);
     fprintf(f,"view_follows_standing_height = %d\n",g_config.view_follows_standing_height?1:0);
     fprintf(f,"# On foot, right stick down toggles crouch and held up sprints (Reach: armor ability; Halo 3:\n"
-              "# equipment). It needs MCC's hold-to-crouch setting. (default %d)\n"
+              "# equipment; ODST: VISR). It needs MCC's hold-to-crouch setting. (default %d)\n"
               "right_stick_crouch = %d\n",d.right_stick_crouch?1:0,g_config.right_stick_crouch?1:0);
     fprintf(f,"# Arm-swing locomotion: speed is a fraction of native maximum movement.\n");
     fprintf(f,"physical_running = %d\nphysical_running_speed = %.3f\nphysical_running_sensitivity = %.3f\n",
