@@ -9,6 +9,7 @@ of them fits, see [Asking for help](#asking-for-help) at the end.
 - [The game crashes a few seconds after the headset picture appears](#the-game-crashes-a-few-seconds-after-the-headset-picture-appears)
 - [Project Reclaimer closes as soon as it starts (NVIDIA)](#project-reclaimer-closes-as-soon-as-it-starts-nvidia)
 - [Project Reclaimer is very slow or crashes in fullscreen](#project-reclaimer-is-very-slow-or-crashes-in-fullscreen)
+- [You can't choose Yes in a menu, or a menu won't scroll (more than one monitor)](#you-cant-choose-yes-in-a-menu-or-a-menu-wont-scroll-more-than-one-monitor)
 - [I updated, but nothing changed](#i-updated-but-nothing-changed)
 - [Asking for help](#asking-for-help): where the logs are, and what to send
 
@@ -74,6 +75,15 @@ picture`. That line on its own is normal: it means the mod set that window aside
 - Use **Borderless** in Project Reclaimer's own display settings, not exclusive fullscreen. The launcher
   switches exclusive fullscreen to borderless each time it starts Project Reclaimer. Don't switch it back while
   you play in VR.
+
+## You can't choose Yes in a menu, or a menu won't scroll (more than one monitor)
+
+In MCC's menus, a choice such as **Yes** when MCC asks you to confirm can't be selected, or a list won't scroll. It
+happens on PCs with more than one monitor.
+
+**Try:** play with only your main monitor on. Press **Windows key + P** and choose **PC screen only**, then launch.
+Afterwards, press **Windows key + P** again and choose **Extend** to get your other monitors back. Turning the other
+monitors off works too.
 
 ## I updated, but nothing changed
 

@@ -1224,8 +1224,21 @@ HWND D3D_GameWindow()
     return g_gameHwnd;
 }
 
+// The desktop's monitors, once, so a report from a PC with more than one shows how they are arranged.
+static BOOL CALLBACK LogMonitor(HMONITOR monitor, HDC, LPRECT rect, LPARAM)
+{
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    const bool main = GetMonitorInfoW(monitor, &mi) && (mi.dwFlags & MONITORINFOF_PRIMARY);
+    LOG("display: monitor (%ld,%ld)-(%ld,%ld)%s", rect->left, rect->top, rect->right, rect->bottom,
+        main ? " main" : "");
+    return TRUE;
+}
+
 static void InitForcedRenderSize()
 {
+    LOG("display: %d monitor(s)", GetSystemMetrics(SM_CMONITORS));
+    EnumDisplayMonitors(nullptr, nullptr, LogMonitor, 0);
     // The plan already folded in the launcher's exact numbers when present
     // and otherwise replicated the launcher's arithmetic, so the two can never
     // disagree. Config is loaded before this (dllmain InitThread order).
@@ -1819,6 +1832,57 @@ static HWND WINAPI WindowFromPointHook(POINT pt)
     return g_origWindowFromPoint(pt);
 }
 
+// MORE THAN ONE MONITOR. The hooks below tell MCC that the game's monitor is as large as the picture it draws, from
+// its real top-left. Players with more than one monitor reported menu choices they could not select and lists that
+// would not scroll, which went away with the other monitors off. With one monitor nothing else on the desktop can
+// disagree with the enlarged monitor; with more, two answers did:
+//   * the virtual desktop. UE4's display metrics read SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN and then its width and
+//     height in a row. Only the size was replaced, so with a monitor left of or above the main one the desktop no
+//     longer covered the game's window;
+//   * which monitor a point is on. A point of the enlarged monitor that is really on a neighbour was answered with
+//     the neighbour.
+// Both now agree with the enlarged monitor, and each answer is the same as before when there is one monitor.
+typedef HMONITOR(WINAPI* MonitorFromPointFn)(POINT, DWORD);
+typedef HMONITOR(WINAPI* MonitorFromRectFn)(LPCRECT, DWORD);
+static MonitorFromPointFn g_origMonitorFromPoint = nullptr;
+static MonitorFromRectFn g_origMonitorFromRect = nullptr;
+
+// The game's monitor and the rectangle MCC is told it covers (GetMonitorInfoWHook). Before the game's window exists,
+// the main monitor, where it opens.
+static bool FittedGameMonitor(HMONITOR& game, RECT& fitted)
+{
+    if (!g_forcedRenderW || !g_forcedRenderH || !g_origGetMonitorInfoW)
+        return false;
+    game = g_gameHwnd ? MonitorFromWindow(g_gameHwnd, MONITOR_DEFAULTTONEAREST)
+                      : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!game || !g_origGetMonitorInfoW(game, &mi))
+        return false;
+    fitted = {mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.left + (LONG)g_forcedRenderW,
+              mi.rcMonitor.top + (LONG)g_forcedRenderH};
+    return true;
+}
+
+struct FittedDesktopScan { HMONITOR game; RECT desktop; };
+static BOOL CALLBACK AddOtherMonitor(HMONITOR monitor, HDC, LPRECT rect, LPARAM data)
+{
+    auto& scan = *reinterpret_cast<FittedDesktopScan*>(data);
+    if (monitor != scan.game)
+        UnionRect(&scan.desktop, &scan.desktop, rect);
+    return TRUE;
+}
+// The virtual desktop MCC is told of: every monitor, the game's enlarged.
+static bool FittedDesktop(RECT& desktop)
+{
+    FittedDesktopScan scan{};
+    if (!FittedGameMonitor(scan.game, scan.desktop) ||
+        !EnumDisplayMonitors(nullptr, nullptr, AddOtherMonitor, reinterpret_cast<LPARAM>(&scan)))
+        return false;
+    desktop = scan.desktop;
+    return true;
+}
+
 // THE root cause of the "menu items are drawn but dead below a certain row"
 // symptom (which happens with the fit ON *or* OFF, because it is driven by the
 // desktop resolution, not our window): MCC lays out and clips its native shell /
@@ -1841,11 +1905,22 @@ static int WINAPI GetSystemMetricsHook(int index)
     const int real = g_origGetSystemMetrics(index);
     if (!g_forcedRenderW || !g_forcedRenderH || !CallerInExe(caller))
         return real;
-    // Only the primary-screen extent metrics; every other index passes through.
+    // Only the screen and virtual-desktop extent metrics; every other index passes through.
     int lied = real;
-    if (index == SM_CXSCREEN || index == SM_CXFULLSCREEN || index == SM_CXVIRTUALSCREEN)
+    RECT desktop{};
+    if (index == SM_CXSCREEN || index == SM_CXFULLSCREEN)
         lied = (int)g_forcedRenderW;
-    else if (index == SM_CYSCREEN || index == SM_CYFULLSCREEN || index == SM_CYVIRTUALSCREEN)
+    else if (index == SM_CYSCREEN || index == SM_CYFULLSCREEN)
+        lied = (int)g_forcedRenderH;
+    else if (index >= SM_XVIRTUALSCREEN && index <= SM_CYVIRTUALSCREEN && FittedDesktop(desktop))
+        lied = index == SM_XVIRTUALSCREEN ? desktop.left
+             : index == SM_YVIRTUALSCREEN ? desktop.top
+             : index == SM_CXVIRTUALSCREEN ? desktop.right - desktop.left
+             : desktop.bottom - desktop.top;
+    // Without the monitor's real place, the size alone as before.
+    else if (index == SM_CXVIRTUALSCREEN)
+        lied = (int)g_forcedRenderW;
+    else if (index == SM_CYVIRTUALSCREEN)
         lied = (int)g_forcedRenderH;
     else
         return real;
@@ -1893,6 +1968,39 @@ static BOOL WINAPI GetMonitorInfoWHook(HMONITOR mon, LPMONITORINFO mi)
             mi->rcWork.bottom - mi->rcWork.top);
     }
     return ok;
+}
+
+// A neighbour's answer for a point of the enlarged game monitor becomes the game's monitor. No monitor stays no
+// monitor, so a single monitor is answered as before.
+static HMONITOR FittedMonitorAnswer(HMONITOR real, POINT pt, const char* call, const void* caller)
+{
+    HMONITOR game{};
+    RECT fitted{};
+    if (!real || !CallerInExe(caller) || !FittedGameMonitor(game, fitted) || real == game || !PtInRect(&fitted, pt))
+        return real;
+    static int s_log = 0;
+    static const void* s_lastCaller = nullptr;
+    if (s_log < 16 && caller != s_lastCaller && g_exeBase)
+    {
+        ++s_log;
+        s_lastCaller = caller;
+        LOG("fit: %s game-side +0x%llX (%ld,%ld) -> the game's monitor, not its neighbour", call,
+            (unsigned long long)((const BYTE*)caller - g_exeBase), pt.x, pt.y);
+    }
+    return game;
+}
+static HMONITOR WINAPI MonitorFromPointHook(POINT pt, DWORD flags)
+{
+    return FittedMonitorAnswer(g_origMonitorFromPoint(pt, flags), pt, "MonitorFromPoint", _ReturnAddress());
+}
+// A rectangle belongs to the monitor that holds its centre.
+static HMONITOR WINAPI MonitorFromRectHook(LPCRECT rc, DWORD flags)
+{
+    const HMONITOR real = g_origMonitorFromRect(rc, flags);
+    if (!rc)
+        return real;
+    const POINT centre{rc->left + (rc->right - rc->left) / 2, rc->top + (rc->bottom - rc->top) / 2};
+    return FittedMonitorAnswer(real, centre, "MonitorFromRect", _ReturnAddress());
 }
 
 // WHICH PRESENTS CARRY THE GAME'S PICTURE (present_owner_logic.h says why). A present or a resize of any other
@@ -4228,6 +4336,16 @@ bool InstallD3D11Hooks()
                     LOG("warning: GetMonitorInfoW hook failed; the native menu may "
                         "still clip layout to the real monitor size");
             }
+            // Which monitor holds a point of the enlarged game monitor, with more than one monitor. Warn-only.
+            void* pMonitorFromPoint = (void*)GetProcAddress(user32, "MonitorFromPoint");
+            void* pMonitorFromRect = (void*)GetProcAddress(user32, "MonitorFromRect");
+            if (!pMonitorFromPoint || !pMonitorFromRect ||
+                MH_CreateHook(pMonitorFromPoint, (void*)&MonitorFromPointHook,
+                              (void**)&g_origMonitorFromPoint) != MH_OK ||
+                MH_CreateHook(pMonitorFromRect, (void*)&MonitorFromRectHook,
+                              (void**)&g_origMonitorFromRect) != MH_OK)
+                LOG("warning: MonitorFromPoint/MonitorFromRect hook failed; with more than one "
+                    "monitor, a menu item may still be taken for a neighbouring monitor's");
         }
 
         // The desktop fit only engages if BOTH levers that keep MCC drawing full
