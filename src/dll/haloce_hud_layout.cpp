@@ -293,8 +293,8 @@ void MainBody()
     const UINT nativeHeight=static_cast<UINT>(native.bottom-native.top);
     __try
     {
-        complete=true;
-        for (UINT eye=0;eye<2;++eye)
+        complete=HaloCE_RunAnniversaryScreenEffect(context);
+        for (UINT eye=0;complete&&eye<2;++eye)
         {
             bool restored=true;
             if (!HaloCEHudLayout_BeginEyeReplay(context,nativeWidth,nativeHeight,width,height/2,&restored,eye*(height/2),true))

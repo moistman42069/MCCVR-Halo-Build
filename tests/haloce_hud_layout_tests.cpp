@@ -37,6 +37,7 @@ bool HaloCE_NativeHudResourcesReady(uintptr_t base,uint32_t gen) noexcept
     return nativeResourcesReady;
 }
 bool HaloCE_BeginAnniversaryHudGameplay(ID3D11DeviceContext*,UINT&,UINT&) noexcept { return false; }
+bool HaloCE_RunAnniversaryScreenEffect(ID3D11DeviceContext*) noexcept { return true; }
 void HaloCE_CaptureClassicDlssDepth(uintptr_t) noexcept {}
 void HaloCE_EndAnniversaryHudGameplay(bool) noexcept {}
 bool HaloCEHud_HasCrosshairScope() noexcept { return crosshairScopeAvailable; }

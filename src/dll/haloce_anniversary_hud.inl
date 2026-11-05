@@ -96,6 +96,9 @@ struct AnniversaryNaturalHud
     std::array<uint8_t,0x48> preparedDescriptor{};
     uint64_t nativeDepthRevision{};
     ID3D11DeviceContext* context{};
+    // The frame pass's deferred zoom art (AnniversaryHud_ScreenEffect): 0xB31D88's own parameter block, live while
+    // its gameplay HUD call runs.
+    const void* screenEffect{};
     bool entered{},complete{},targetPrepared{};
 };
 thread_local AnniversaryNaturalHud* anniversaryNaturalHud{};
@@ -273,8 +276,293 @@ void __fastcall AnniversaryHudCallbackHook()
     __finally { callbacks.fetch_sub(1,std::memory_order_release); }
 }
 
+// AIM FRAME ZOOM, ANNIVERSARY: THE ZOOM ART. A weapon's zoom art (its scope mask and blur) is the screen effect
+// 0xAC7EF0, which 0xB31D88 draws just before the gameplay HUD. Classic draws it in the frame's own pass. Here the late
+// callback runs once over the packed eyes, two eyes high, while the effect frames the native rectangle (one eye, at the
+// top) and scales each sampled picture by that rectangle, not by the texture: over the packed target it would sample
+// both eyes as one. So a frame pass's call waits for the gameplay HUD's prepared target (AnniversaryHud_ScreenEffect)
+// and runs once per eye, each run sampling that eye's own picture through the kind-1 entry of the native view table.
+// It composites into the top eye; eye 1's run borrows the top and hands it back. Every other call is the game's own.
+using ScreenEffectFn=void(__fastcall*)(const void*);
+Hook screenEffectHook;
+std::atomic<bool> screenEffectInstalled{},screenEffectFaulted{};
+std::atomic<uint64_t> screenEffectRuns{},screenEffectRefusals{};
+std::atomic<uint32_t> screenEffectFailure{};
+std::atomic<int32_t> screenEffectRefusedRect[4]{};
+std::atomic<uint32_t> screenEffectRefusedEye[2]{};
+const char* ScreenEffectFailureName(uint32_t value) noexcept
+{
+    switch (value)
+    {
+    case 0:return "none";
+    case 1:return "scratch-pending";
+    case 2:return "native-bound-kind";
+    case 3:return "native-rectangle";
+    case 4:return "native-scene-view";
+    case 5:return "native-secondary-size";
+    case 6:return "native-view-table-changed";
+    case 7:return "native-target-or-stack-changed";
+    case 8:return "native-fault";
+    default:return "unknown";
+    }
+}
+// One eye in the packed target's format; the views match the native kind-1 view.
+struct ScreenEffectShape
+{
+    UINT width{},height{};
+    DXGI_FORMAT format{},viewFormat{};
+    uint32_t generation{};
+    bool operator==(const ScreenEffectShape&) const=default;
+};
+Snapshot<ScreenEffectShape> screenEffectWanted;
+struct ScreenEffectScratch
+{
+    ID3D11Texture2D* eyes[2]{};
+    ID3D11ShaderResourceView* views[2]{};
+    ScreenEffectShape shape,refused;
+};
+// Allocated at present time; the render path and present share it under the busy flag, never both at once.
+ScreenEffectScratch screenEffectScratch;
+std::atomic<bool> screenEffectScratchBusy{};
+void ScreenEffect_ReleaseScratch(ScreenEffectScratch& scratch) noexcept
+{
+    for (auto*& view:scratch.views) { if (view) view->Release(); view=nullptr; }
+    for (auto*& eye:scratch.eyes) { if (eye) eye->Release(); eye=nullptr; }
+    scratch.shape={};
+}
+void AnniversaryHud_PresentResources(ID3D11Device* device) noexcept
+{
+    ScreenEffectShape want{};
+    if (!device||!screenEffectWanted.Read(want)||!want.width||want.generation!=generation.load()) return;
+    if (screenEffectScratchBusy.exchange(true,std::memory_order_acq_rel)) return;
+    auto& scratch=screenEffectScratch;
+    if (!(scratch.shape==want)&&!(scratch.refused==want))
+    {
+        ScreenEffect_ReleaseScratch(scratch);
+        D3D11_TEXTURE2D_DESC texture{};
+        texture.Width=want.width;texture.Height=want.height;texture.MipLevels=1;texture.ArraySize=1;
+        texture.Format=want.format;texture.SampleDesc.Count=1;texture.Usage=D3D11_USAGE_DEFAULT;
+        texture.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+        view.Format=want.viewFormat;view.ViewDimension=D3D11_SRV_DIMENSION_TEXTURE2D;view.Texture2D.MipLevels=1;
+        bool made=true;
+        for (int eye=0;eye<2&&made;++eye)
+            made=SUCCEEDED(device->CreateTexture2D(&texture,nullptr,&scratch.eyes[eye]))&&
+                SUCCEEDED(device->CreateShaderResourceView(scratch.eyes[eye],&view,&scratch.views[eye]));
+        if (made) scratch.shape=want;
+        else { ScreenEffect_ReleaseScratch(scratch);scratch.refused=want; }
+        LOG("CE Anniversary zoom art: per-eye pictures %s (%ux%u format=%u view=%u)",
+            made?"prepared":"unavailable",want.width,want.height,want.format,want.viewFormat);
+    }
+    screenEffectScratchBusy.store(false,std::memory_order_release);
+}
+bool ScreenEffect_SceneView(ID3D11ShaderResourceView* view,ID3D11Resource* expected,
+    D3D11_SHADER_RESOURCE_VIEW_DESC& desc) noexcept
+{
+    __try
+    {
+        ID3D11Resource* resource{};
+        view->GetResource(&resource);
+        if (resource) resource->Release();
+        if (resource!=expected) return false;
+        view->GetDesc(&desc);
+        return desc.ViewDimension==D3D11_SRV_DIMENSION_TEXTURE2D&&desc.Texture2D.MostDetailedMip==0;
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool ScreenEffect_TargetSize(ID3D11RenderTargetView* view,UINT width,UINT height) noexcept
+{
+    __try
+    {
+        ID3D11Resource* resource{};
+        view->GetResource(&resource);
+        if (!resource) return false;
+        D3D11_RESOURCE_DIMENSION dimension{};
+        D3D11_TEXTURE2D_DESC desc{};
+        resource->GetType(&dimension);
+        if (dimension==D3D11_RESOURCE_DIMENSION_TEXTURE2D) static_cast<ID3D11Texture2D*>(resource)->GetDesc(&desc);
+        resource->Release();
+        return dimension==D3D11_RESOURCE_DIMENSION_TEXTURE2D&&desc.Width==width&&desc.Height==height;
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+// One native run with `eyeView` as the kind-1 picture; the table entry is the native view again afterwards. The table
+// owns a reference to its entry, so the lent view carries one: a native refresh during the run releases that one.
+bool ScreenEffect_Run(const void* parameters,ID3D11ShaderResourceView** slot,ID3D11ShaderResourceView* nativeView,
+    ID3D11ShaderResourceView* eyeView,bool& tableIntact) noexcept
+{
+    const auto original=reinterpret_cast<ScreenEffectFn>(screenEffectHook.original);
+    bool returned=false;
+    __try
+    {
+        eyeView->AddRef();
+        __try { *slot=eyeView;original(parameters);returned=true; }
+        __finally
+        {
+            tableIntact=*slot==eyeView;
+            if (tableIntact) { *slot=nativeView;eyeView->Release(); }
+        }
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) { returned=false; }
+    return returned;
+}
+void ScreenEffect_Refuse(uint32_t failure) noexcept
+{
+    screenEffectFailure.store(failure,std::memory_order_relaxed);
+    screenEffectRefusals.fetch_add(1,std::memory_order_relaxed);
+}
+// The gameplay HUD's prepared target is bound (AnniversaryHud_BeginGameplay). False only when the effect did not leave
+// that target and the native target stack as it found them: the HUD must not draw into the packed eyes then.
+bool AnniversaryHud_ScreenEffect(ID3D11DeviceContext* context) noexcept
+{
+    auto* hud=anniversaryNaturalHud;
+    if (!hud||!hud->entered||!hud->screenEffect) return true;
+    const void* parameters=hud->screenEffect;
+    hud->screenEffect=nullptr;
+    if (!screenEffectInstalled.load(std::memory_order_acquire)||screenEffectFaulted.load()||
+        context!=hud->context||!AnniversaryHud_NaturalCurrent(*hud)) return true;
+    const auto& packedDescriptor=hud->frame->packedDescriptor;
+    auto* packed=reinterpret_cast<ID3D11Resource*>(hud->frame->packedResource);
+    const UINT width=packedDescriptor.Width,height=packedDescriptor.Height/2;
+    namespace effect=contract::anniversary_screen_effect;
+    // The view table holds each target kind's render target view, then its shader resource view, 0x30 apart.
+    const uintptr_t views=bindings.base+effect::native_target_shader_views;
+    auto** sceneSlot=reinterpret_cast<ID3D11ShaderResourceView**>(views+0x30);
+    int16_t kind{},rect[4]{};
+    ID3D11ShaderResourceView* sceneView{};
+    ID3D11RenderTargetView* secondary{};
+    D3D11_SHADER_RESOURCE_VIEW_DESC sceneDesc{};
+    uintptr_t backend{};
+    int32_t stackBefore{},stackAfter{};
+    if (!Read(bindings.base+effect::native_bound_target_kind,kind)||kind!=1)
+    { ScreenEffect_Refuse(2);return true; }
+    // rectangle2d: top, left, bottom, right
+    if (!Read(bindings.base+effect::native_screen_rectangle,rect)||rect[0]||rect[1]||
+        rect[2]!=static_cast<int32_t>(height)||rect[3]!=static_cast<int32_t>(width))
+    {
+        for (int i=0;i<4;++i) screenEffectRefusedRect[i].store(rect[i],std::memory_order_relaxed);
+        screenEffectRefusedEye[0].store(width,std::memory_order_relaxed);
+        screenEffectRefusedEye[1].store(height,std::memory_order_relaxed);
+        ScreenEffect_Refuse(3);return true;
+    }
+    if (packedDescriptor.SampleDesc.Count!=1||!Read(reinterpret_cast<uintptr_t>(sceneSlot),sceneView)||!sceneView||
+        !ScreenEffect_SceneView(sceneView,packed,sceneDesc))
+    { ScreenEffect_Refuse(4);return true; }
+    // The effect binds its secondary target with the one-eye native depth and fills it whole.
+    if (!Read(views+0x58,secondary)||!secondary||!ScreenEffect_TargetSize(secondary,width,height))
+    { ScreenEffect_Refuse(5);return true; }
+    if (!Read(bindings.base+0x2e3bde0,backend)||!backend||!Read(backend+0x10,stackBefore))
+    { ScreenEffect_Refuse(7);return true; }
+    const ScreenEffectShape shape{width,height,packedDescriptor.Format,sceneDesc.Format,generation.load()};
+    if (screenEffectScratchBusy.exchange(true,std::memory_order_acq_rel)) { ScreenEffect_Refuse(1);return true; }
+    auto& scratch=screenEffectScratch;
+    if (!(scratch.shape==shape))
+    {
+        screenEffectScratchBusy.store(false,std::memory_order_release);
+        screenEffectWanted.Publish(shape);
+        ScreenEffect_Refuse(1);return true;
+    }
+    // The zoom art belongs to the picture, not the HUD: a hidden HUD still shows it, as Classic does.
+    const unsigned hidden=hud_visibility::depth;
+    hud_visibility::depth=0;
+    HaloCEHudLayout_BeginPrivateRaster();
+    const D3D11_BOX top{0,0,0,width,height,1},bottom{0,height,0,width,2*height,1};
+    context->CopySubresourceRegion(scratch.eyes[0],0,0,0,0,packed,0,&top);
+    context->CopySubresourceRegion(scratch.eyes[1],0,0,0,0,packed,0,&bottom);
+    context->CopySubresourceRegion(packed,0,0,0,0,scratch.eyes[1],0,nullptr);
+    bool intact=true;
+    bool ran=ScreenEffect_Run(parameters,sceneSlot,sceneView,scratch.views[1],intact);
+    if (ran&&intact)
+    {
+        context->CopySubresourceRegion(scratch.eyes[1],0,0,0,0,packed,0,&top);
+        context->CopySubresourceRegion(packed,0,0,height,0,scratch.eyes[1],0,nullptr);
+        context->CopySubresourceRegion(packed,0,0,0,0,scratch.eyes[0],0,nullptr);
+        ran=ScreenEffect_Run(parameters,sceneSlot,sceneView,scratch.views[0],intact);
+    }
+    if (!ran||!intact) context->CopySubresourceRegion(packed,0,0,0,0,scratch.eyes[0],0,nullptr);
+    // The effect's own viewports were never the HUD's: the observed native raster is the bound one again.
+    context->RSSetViewports(hud->nativeRaster.viewCount,hud->nativeRaster.views);
+    context->RSSetScissorRects(hud->nativeRaster.scissorCount,hud->nativeRaster.scissors);
+    HaloCEHudLayout_EndPrivateRaster();
+    hud_visibility::depth=hidden;
+    screenEffectScratchBusy.store(false,std::memory_order_release);
+    CeHudTargetSnapshot after{};
+    const bool kept=HaloCEHudTarget_Read(bindings.base,context,after)&&
+        after.backend==hud->target.backend&&after.descriptor==hud->target.descriptor&&
+        after.count==hud->target.count&&after.resources[0]==hud->target.resources[0]&&
+        after.rtvs[0]==hud->target.rtvs[0]&&after.dsv==hud->target.dsv&&
+        Read(backend+0x10,stackAfter)&&stackAfter==stackBefore;
+    if (!ran) { screenEffectFaulted=true;ScreenEffect_Refuse(8); }
+    else if (!intact) { screenEffectFaulted=true;ScreenEffect_Refuse(6); }
+    else if (kept) { screenEffectFailure.store(0,std::memory_order_relaxed);screenEffectRuns.fetch_add(1,std::memory_order_relaxed); }
+    if (!kept) { ScreenEffect_Refuse(7);hud->complete=false; }
+    return kept;
+}
+void ScreenEffectBody(const void* parameters,uintptr_t caller)
+{
+    namespace effect=contract::anniversary_screen_effect;
+    auto* hud=anniversaryNaturalHud;
+    // The call at 0xB32101, inside an owned late callback of a frame pass: it waits for the gameplay HUD it precedes.
+    static_assert(effect::relatives[0].target==effect::native_screen_effect_draw);
+    constexpr uint32_t afterCall=effect::relatives[0].rva+effect::relatives[0].size;
+    if (hud&&!hud->entered&&!hud->screenEffect&&parameters&&caller==bindings.base+afterCall&&
+        screenEffectInstalled.load(std::memory_order_acquire)&&!screenEffectFaulted.load()&&
+        Game_IsAimFramePass()&&AnniversaryHud_NaturalCurrent(*hud))
+    { hud->screenEffect=parameters;return; }
+    reinterpret_cast<ScreenEffectFn>(screenEffectHook.original)(parameters);
+}
+void __fastcall ScreenEffectHook(const void* parameters)
+{
+    callbacks.fetch_add(1,std::memory_order_acq_rel);
+    __try { ScreenEffectBody(parameters,reinterpret_cast<uintptr_t>(_ReturnAddress())); }
+    __finally { callbacks.fetch_sub(1,std::memory_order_release); }
+}
+bool AnniversaryHud_RemoveScreenEffect() noexcept
+{
+    screenEffectInstalled=false;
+    if (screenEffectHook.enabled)
+    {
+        const auto result=MCCVR_DisableHookForRetirement(screenEffectHook.target);
+        if (result!=MH_OK&&result!=MH_ERROR_DISABLED) return false;
+        screenEffectHook.enabled=false;
+    }
+    if (screenEffectHook.target)
+    {
+        const void* detours[]{reinterpret_cast<void*>(&ScreenEffectHook)};
+        const void* originals[]{screenEffectHook.original};
+        if (!WaitForNativeDetourQuiescence(detours,originals,1,callbacks)) return false;
+        const auto result=MH_RemoveHook(screenEffectHook.target);
+        if (result!=MH_OK&&result!=MH_ERROR_NOT_CREATED) return false;
+        screenEffectHook={};
+    }
+    if (screenEffectScratchBusy.exchange(true,std::memory_order_acq_rel)) return false;
+    ScreenEffect_ReleaseScratch(screenEffectScratch);
+    screenEffectScratch.refused={};
+    screenEffectWanted.Publish({});
+    screenEffectFaulted=false;
+    screenEffectScratchBusy.store(false,std::memory_order_release);
+    return true;
+}
+void AnniversaryHud_InstallScreenEffect() noexcept
+{
+    namespace effect=contract::anniversary_screen_effect;
+    const NativeContractSet set{effect::entries,effect::witnesses,effect::relatives,effect::pointers};
+    const char* failure{};
+    if (!VerifyNativeFeatureBindings(bindings.base,bindings.size,generation.load(),set,failure))
+    { LOG("CE Anniversary zoom art stock fallback: %s",failure?failure:"binding verification");return; }
+    auto* target=reinterpret_cast<void*>(bindings.base+effect::native_screen_effect_draw);
+    if (MH_CreateHook(target,reinterpret_cast<void*>(&ScreenEffectHook),&screenEffectHook.original)!=MH_OK)
+    { LOG("CE Anniversary zoom art stock fallback: hook creation failed");return; }
+    screenEffectHook.target=target;
+    if (MH_EnableHook(target)!=MH_OK)
+    { (void)AnniversaryHud_RemoveScreenEffect();LOG("CE Anniversary zoom art stock fallback: hook enable failed");return; }
+    screenEffectHook.enabled=true;screenEffectInstalled=true;
+    LOG("CE Anniversary zoom art installed: a zoomed frame's scope mask and blur run once per eye before its HUD");
+}
+
 bool AnniversaryHud_Remove() noexcept
 {
+    if (!AnniversaryHud_RemoveScreenEffect()) return false;
     anniversaryHudInstalled=false;
     anniversaryHudNaturalInstalled=false;
     if (anniversaryHudHook.enabled)
@@ -331,6 +619,7 @@ bool AnniversaryHud_InstallNatural() noexcept
     if (MH_EnableHook(target)!=MH_OK) { (void)AnniversaryHud_Remove();return false; }
     anniversaryHudHook.enabled=true;anniversaryHudNaturalInstalled=true;
     LOG("CE Anniversary HUD installed: native target preparation and restoration, compatible packed-eye attachments; manual callback replay remains disabled");
+    AnniversaryHud_InstallScreenEffect();
     return true;
 }
 

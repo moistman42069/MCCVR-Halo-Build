@@ -18,6 +18,7 @@ uint64_t Sight_NowUs();   // sight_layer.h: the one sight clock the gameplay con
 #include "../common/haloce_classic_view_pair.h"
 #include "../common/haloce_dlss_logic.h"
 #include "../common/haloce_dlss_contract.h"
+#include "../common/hud_visibility.h"
 #include "../common/log.h"
 #include "../common/shot_lag_logic.h"
 #include "game.h"
@@ -1338,6 +1339,15 @@ bool HaloCE_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActive,bool allo
             gen,anniversaryHudNaturalInstalled.load(),anniversaryHudDraws.load(),
             anniversaryHudFallbacks.load(),hudFailure,AnniversaryHudFailureName(hudFailure),
             anniversaryHudTargetPreparations.load(),anniversaryHudDepthDetachments.load());
+        if (screenEffectInstalled.load()||screenEffectRuns.load()||screenEffectRefusals.load())
+        {
+            const uint32_t effectFailure=screenEffectFailure.load();
+            LOG("CE Anniversary zoom art gen=%u installed=%d runs=%llu refused=%llu reason=%s rect=%d,%d,%d,%d eye=%ux%u",
+                gen,screenEffectInstalled.load(),screenEffectRuns.load(),screenEffectRefusals.load(),
+                ScreenEffectFailureName(effectFailure),screenEffectRefusedRect[0].load(),screenEffectRefusedRect[1].load(),
+                screenEffectRefusedRect[2].load(),screenEffectRefusedRect[3].load(),
+                screenEffectRefusedEye[0].load(),screenEffectRefusedEye[1].load());
+        }
         FrameDiagnostic diagnostic{};
         if (frameDiagnostic.Read(diagnostic))
         {
@@ -1401,6 +1411,7 @@ void HaloCE_PresentResources(ID3D11Device* device,ID3D11DeviceContext* context) 
     if (!device||!context) return;
     copyTarget.store(reinterpret_cast<uintptr_t>((*reinterpret_cast<void***>(context))[46]),std::memory_order_release);
     if (!HaloCE_Armed()) return;
+    AnniversaryHud_PresentResources(device);
     Wanted next{};
     if (!wanted.Read(next)||!next.generation||next.generation!=generation.load()||
         next.context!=reinterpret_cast<uintptr_t>(context)) return;
@@ -1657,6 +1668,8 @@ bool HaloCE_BeginAnniversaryHudGameplay(ID3D11DeviceContext* context,UINT& width
 { return AnniversaryHud_BeginGameplay(context,width,height); }
 void HaloCE_EndAnniversaryHudGameplay(bool complete) noexcept
 { AnniversaryHud_EndGameplay(complete); }
+bool HaloCE_RunAnniversaryScreenEffect(ID3D11DeviceContext* context) noexcept
+{ Callback callback; return AnniversaryHud_ScreenEffect(context); }
 void HaloCE_RecordTextureCreated(ID3D11Texture2D* texture,
     const D3D11_TEXTURE2D_DESC& descriptor) noexcept
 {

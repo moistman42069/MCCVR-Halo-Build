@@ -474,6 +474,40 @@ inline constexpr uint32_t resolution_legacy_hud_screen=0x1b7d1d0;
 inline constexpr uint32_t resolution_legacy_hud_meter=0x1b7d1f0;
 inline constexpr uint32_t resolution_legacy_hud_meter_background=0x1b7d210;
 }
+namespace anniversary_screen_effect {
+inline constexpr std::array<Entry,1> entries={{
+    {"native_screen_effect_draw",0xac7ef0,"48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20 55 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC 90 00 00 00 0F 29 70 C8 48 8B 05 F2 D0",true},
+}};
+inline constexpr std::array<Witness,11> witnesses={{
+    {0xb516d9,"48 8B BC CA 78 5E B8 01"},
+    {0xb519c5,"4C 8D 04 40 4D 03 C0 4A 8B 1C C3"},
+    {0xb51a05,"FF 50 40"},
+    {0xb32101,"E8 EA 5D F9 FF"},
+    {0xb32106,"E8 FD 09 FE FF"},
+    {0xb519be,"48 8D 1D BB 44 03 01"},
+    {0xb519d0,"66 3B 15 81 44 03 01"},
+    {0xac8098,"44 0F BF 05 14 85 F1 01"},
+    {0xac80ad,"0F BF 0D 02 85 F1 01"},
+    {0xac808d,"44 0F BF 0D 23 85 F1 01"},
+    {0xac80a3,"0F BF 15 10 85 F1 01"},
+}};
+inline constexpr std::array<Relative,8> relatives={{
+    {0xb32101,5,1,0xac7ef0},
+    {0xb32106,5,1,0xb12b08},
+    {0xb519be,7,3,0x1b85e80},
+    {0xb519d0,7,3,0x1b85e58},
+    {0xac8098,8,4,0x29e05b4},
+    {0xac80ad,7,3,0x29e05b6},
+    {0xac808d,8,4,0x29e05b8},
+    {0xac80a3,7,3,0x29e05ba},
+}};
+inline constexpr std::array<Pointer,0> pointers={{
+}};
+inline constexpr uint32_t native_screen_effect_draw=0xac7ef0;
+inline constexpr uint32_t native_target_shader_views=0x1b85e80;
+inline constexpr uint32_t native_bound_target_kind=0x1b85e58;
+inline constexpr uint32_t native_screen_rectangle=0x29e05b4;
+}
 namespace audio_listener {
 inline constexpr std::array<Entry,3> entries={{
     {"audio_listener_submit",0xabcc54,"48 8B C4 48 89 58 18 55 56 57 48 8D 68 D8 48 81 EC 10 01 00 00 0F 29 70 D8 0F 29 78 C8 44 0F 29 40 B8 44 0F 29 48 A8",true},

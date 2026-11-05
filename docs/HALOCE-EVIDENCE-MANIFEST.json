@@ -4805,6 +4805,92 @@
       ]
     },
     {
+      "name": "native_screen_effect_draw",
+      "rva": "0xac7ef0",
+      "signature": "48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20 55 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC 90 00 00 00 0F 29 70 C8 48 8B 05 F2 D0",
+      "function_entry": true,
+      "runtime_group": "anniversary_screen_effect",
+      "evidence": "Weapon HUD screen effect (zoom mask and convolution). 0xb31d88 calls it at 0xb32101, just before the gameplay HUD 0xb12b08 at 0xb32106. Each pass samples a target kind through the kind-indexed view table 0x1b85e80 (stride 0x30: render target view, then shader resource view) and frames it with the native rectangle 0x29e05b4 (top, left, bottom, right); 0x1b85e58 is the bound kind its target binder 0xb51670 compares.",
+      "relative_operands": [
+        {
+          "instruction_rva": "0xb32101",
+          "target_rva": "0xac7ef0",
+          "instruction_bytes": 5,
+          "displacement_offset": 1,
+          "instruction_signature": "E8 EA 5D F9 FF"
+        },
+        {
+          "instruction_rva": "0xb32106",
+          "target_rva": "0xb12b08",
+          "instruction_bytes": 5,
+          "displacement_offset": 1,
+          "instruction_signature": "E8 FD 09 FE FF"
+        },
+        {
+          "instruction_rva": "0xb519be",
+          "target_rva": "0x1b85e80",
+          "instruction_bytes": 7,
+          "displacement_offset": 3,
+          "instruction_signature": "48 8D 1D BB 44 03 01",
+          "target_name": "native_target_shader_views"
+        },
+        {
+          "instruction_rva": "0xb519d0",
+          "target_rva": "0x1b85e58",
+          "instruction_bytes": 7,
+          "displacement_offset": 3,
+          "instruction_signature": "66 3B 15 81 44 03 01",
+          "target_name": "native_bound_target_kind"
+        },
+        {
+          "instruction_rva": "0xac8098",
+          "target_rva": "0x29e05b4",
+          "instruction_bytes": 8,
+          "displacement_offset": 4,
+          "instruction_signature": "44 0F BF 05 14 85 F1 01",
+          "target_name": "native_screen_rectangle"
+        },
+        {
+          "instruction_rva": "0xac80ad",
+          "target_rva": "0x29e05b6",
+          "instruction_bytes": 7,
+          "displacement_offset": 3,
+          "instruction_signature": "0F BF 0D 02 85 F1 01"
+        },
+        {
+          "instruction_rva": "0xac808d",
+          "target_rva": "0x29e05b8",
+          "instruction_bytes": 8,
+          "displacement_offset": 4,
+          "instruction_signature": "44 0F BF 0D 23 85 F1 01"
+        },
+        {
+          "instruction_rva": "0xac80a3",
+          "target_rva": "0x29e05ba",
+          "instruction_bytes": 7,
+          "displacement_offset": 3,
+          "instruction_signature": "0F BF 15 10 85 F1 01"
+        }
+      ],
+      "instruction_witnesses": [
+        {
+          "rva": "0xb516d9",
+          "signature": "48 8B BC CA 78 5E B8 01",
+          "meaning": "mov rdi, qword ptr [rdx + rcx*8 + 0x1b85e78] (the kind's render target view, image-base relative)"
+        },
+        {
+          "rva": "0xb519c5",
+          "signature": "4C 8D 04 40 4D 03 C0 4A 8B 1C C3",
+          "meaning": "r8 = kind * 6; mov rbx, qword ptr [rbx + r8*8] (the kind's shader resource view)"
+        },
+        {
+          "rva": "0xb51a05",
+          "signature": "FF 50 40",
+          "meaning": "call qword ptr [rax + 0x40] (PSSetShaderResources)"
+        }
+      ]
+    },
+    {
       "name": "contact_biped_tick",
       "rva": "0xbaf258",
       "signature": "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 41 54 41 55 41 56 41 57 48 83 EC 20 4C 8B 05 CD 2F 09 01",
