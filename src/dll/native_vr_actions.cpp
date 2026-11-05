@@ -50,15 +50,21 @@ constexpr const char* consumerEntryPattern=
     "48 8B C4 55 53 56 57 41 54 41 55 41 56 41 57 48 8D A8 E8 FD FF FF 48 81 EC D8 02 00 00";
 constexpr const char* consumerReloadPattern=
     "BB 3E 00 00 00 48 8B CE 8B D3 E8 DC 03 07 00 48 8B C8 E8 9C C6 FF FF 44 8A C0 8D 53 D2 49 8B CC";
+// MCC's jump-in-the-air jetpack: the builder reads jump (action 0) here only after the profile's jump-to-jetpack byte
+// (+0x69) and its armor-ability checks pass, and a held jump then fires the jetpack while airborne. Counted only, by
+// the read's return address: whether the game ran that check, and whether it saw jump held.
+constexpr uintptr_t jetpackJumpRva=0x5FD2D,jetpackJumpReturn=0x5FD43;
+constexpr const char* jetpackJumpPattern=
+    "38 88 8E 00 00 00 0F 85 A0 00 00 00 33 D2 48 8B CE E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? 41 8B 0E 84 C0 0F 95 44 24 31";
 struct Runtime {
     HMODULE module{};
     uintptr_t base{}, state{}, padState{};
     std::atomic<uint32_t> generation{};
     void* target[2]{}, *original[2]{};
-    bool enabled[2]{}, attempted{};
+    bool enabled[2]{}, attempted{}, jetpackCounted{};
     std::atomic<bool> admitted{}, faulted{};
     std::atomic<uint32_t> callbacks{};
-    std::atomic<uint64_t> converted{}, routed{}, readerAt{};
+    std::atomic<uint64_t> converted{}, routed{}, readerAt{}, jetpackChecks{}, jetpackHeld{};
     uint64_t reportAt{};
 } runtime;
 uint32_t blockedGeneration{}; // worker-only: a fault is not retried every poll
@@ -184,12 +190,25 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
         runtime.routed.fetch_add(1,std::memory_order_relaxed);
         return record.bytes.data();
 }
+// The game's own test of the record it was given (+0x5D31C): not consumed (+3 bit 0), its owner (+0xC) open (0x7F) or
+// this context's (+8), then held frames (+2).
+__declspec(noinline) void NoteJetpackJump(const void* record) noexcept {
+    runtime.jetpackChecks.fetch_add(1,std::memory_order_relaxed);
+    if(!record) return;
+    __try {
+        const auto* bytes=reinterpret_cast<const volatile uint8_t*>(record);
+        const int32_t owner=*reinterpret_cast<const volatile int32_t*>(bytes+0xC);
+        if(!(bytes[3]&1)&&(owner==0x7F||owner==*reinterpret_cast<const volatile int32_t*>(bytes+8))&&bytes[2])
+            runtime.jetpackHeld.fetch_add(1,std::memory_order_relaxed);
+    } __except(EXCEPTION_EXECUTE_HANDLER){}
+}
 void* __fastcall ReaderHook(void* state,unsigned action,uintptr_t caller) {
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
     void* result=nullptr;
     __try {
         result=reinterpret_cast<Read>(runtime.original[1])(state,action);
         result=ReadOwned(state,action,result,caller);
+        if(runtime.jetpackCounted&&caller==runtime.base+jetpackJumpReturn) NoteJetpackJump(result);
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
     return result;
 }
@@ -215,9 +234,10 @@ bool Retire() {
         runtime.enabled[i]=false;
     }
     const void* functions[]{hooks[0],hooks[1],reinterpret_cast<void*>(&ReaderHook),reinterpret_cast<void*>(&ReadOwned),
-        reinterpret_cast<void*>(&Current),reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames)};
-    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr,nullptr};
-    if(!WaitForNativeDetourQuiescence(functions,trampolines,7,runtime.callbacks)) return false;
+        reinterpret_cast<void*>(&Current),reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames),
+        reinterpret_cast<void*>(&NoteJetpackJump)};
+    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
+    if(!WaitForNativeDetourQuiescence(functions,trampolines,8,runtime.callbacks)) return false;
     for(unsigned i=0;i<2;++i) if(runtime.target[i]) {
         if(MH_RemoveHook(runtime.target[i])!=MH_OK) return false;
         runtime.target[i]=runtime.original[i]=nullptr;
@@ -225,7 +245,7 @@ bool Retire() {
     if(runtime.module) FreeLibrary(runtime.module);
     runtime.module=nullptr;runtime.base=runtime.state=runtime.padState=0;runtime.generation=0;
     runtime.readerAt.store(0,std::memory_order_release);
-    runtime.attempted=false;runtime.faulted=false;
+    runtime.attempted=false;runtime.faulted=false;runtime.jetpackCounted=false;
     return true;
 }
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -368,6 +388,7 @@ void NativeVrActions_Poll() {
             runtime.padState=sig::RipTarget(base+padProofRva+10,base+padProofRva+14);
             proved=proved && runtime.padState>=base && runtime.padState-base<size && size-(runtime.padState-base)>=4*0x3c;
         }
+        runtime.jetpackCounted=proved&&Prove(base,size,jetpackJumpRva,jetpackJumpPattern);
         const uintptr_t rvas[]{converterRva,d.readerRva};
         for(unsigned i=0;proved&&i<2;++i) {
             auto* target=reinterpret_cast<void*>(base+rvas[i]);
@@ -392,7 +413,9 @@ void NativeVrActions_Poll() {
     const auto now=GetTickCount64();
     if(now>=runtime.reportAt) {
         runtime.reportAt=now+5000;
-        LOG("Native VR action bridge Reach: converter=%llu directReads=%llu%s",
-            runtime.converted.load(),runtime.routed.load(),runtime.faulted.load()?" TRANSPORT FALLBACK (guarded access fault)":"");
+        LOG("Native VR action bridge Reach: converter=%llu directReads=%llu%s; jump-in-the-air jetpack check %s: ran %llu, "
+            "saw jump held %llu",
+            runtime.converted.load(),runtime.routed.load(),runtime.faulted.load()?" TRANSPORT FALLBACK (guarded access fault)":"",
+            runtime.jetpackCounted?"counted":"not proven",runtime.jetpackChecks.load(),runtime.jetpackHeld.load());
     }
 }
