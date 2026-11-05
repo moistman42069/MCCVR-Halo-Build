@@ -84,31 +84,32 @@ int main()
             "radius preserves strict boundary, limits and invalid-setting fallback");
     }
     {
-        StickCrouch stick;
-        Check(!stick.Step(0.0f, -0.5f, true), "a part push does nothing");
-        Check(stick.Step(0.1f, -0.9f, true), "down crouches");
-        Check(stick.Step(0.0f, -0.9f, true), "held down, it stays one push");
-        Check(stick.Step(0.0f, 0.0f, true), "and the crouch stays with the stick let go");
-        Check(!stick.Step(0.0f, -0.9f, true), "down again stands");
-        Check(!stick.Step(0.0f, 0.0f, true), "and stays standing");
-        Check(!stick.Step(0.9f, -0.75f, true), "a mostly sideways push is a turn");
-        stick.Step(0.0f, 0.0f, true);
-        Check(!stick.Step(0.0f, 0.9f, true) && stick.sprinting, "up sprints without crouching");
-        stick.Step(0.0f, 0.5f, true);
-        Check(stick.sprinting, "a sprint lasts while the stick is still up");
+        StickDirections stick;
+        stick.Step(0.0f, -0.5f, true);
+        Check(!stick.down && !stick.up, "a part push does nothing");
+        stick.Step(0.1f, -0.9f, true);
+        Check(stick.down && !stick.up, "down is down");
+        stick.Step(0.0f, -0.5f, true);
+        Check(stick.down, "it stays down while the stick is still pushed");
         stick.Step(0.0f, 0.1f, true);
-        Check(!stick.sprinting, "and ends when it comes back");
-        Check(stick.Step(0.0f, -0.9f, true), "down again");
+        Check(!stick.down, "and lets go when it comes back");
+        stick.Step(0.9f, -0.75f, true);
+        Check(!stick.down, "a mostly sideways push is a turn");
         stick.Step(0.0f, 0.0f, true);
-        Check(stick.Step(0.0f, 0.9f, true) && stick.sprinting, "sprinting keeps a crouch the stick set");
+        stick.Step(0.0f, 0.9f, true);
+        Check(stick.up && !stick.down, "up is up");
+        stick.Step(0.0f, -0.9f, true);
+        Check(stick.up && !stick.down, "swinging straight through without coming back is still the first push");
         stick.Step(0.0f, 0.0f, true);
-        Check(stick.Step(0.0f, -0.9f, true, false) && !stick.sprinting, "a scope keeps the crouch and reads nothing");
+        stick.Step(0.0f, -0.9f, false);
+        Check(!stick.down, "not free (off foot, a lens, the thumb-rest D-pad): nothing");
+        stick.Step(0.0f, -0.9f, true);
+        Check(!stick.down, "a stick still held down when it is free again does not count");
         stick.Step(0.0f, 0.0f, true);
-        Check(stick.crouched, "and the stick coming back changes nothing");
-        Check(!stick.Step(0.0f, -0.9f, false), "a seat stands the player");
-        Check(!stick.Step(0.0f, -0.9f, true), "a stick still held down on the way out does not crouch");
-        stick.Step(0.0f, 0.0f, true);
-        Check(stick.Step(0.0f, -0.9f, true), "until it comes back");
+        stick.Step(0.0f, -0.9f, true);
+        Check(stick.down, "until it comes back");
+        stick.Step(NAN, NAN, true);
+        Check(!stick.down && !stick.up, "a broken reading is a stick at rest");
     }
     {
         using Key = HeadKeyGesture::Key;

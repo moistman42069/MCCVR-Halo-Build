@@ -1078,6 +1078,7 @@ void ConfigLoad(const wchar_t* path)
     bool loadedHolsterRadius = false;
     bool flashlightMappingV2 = false;
     bool loadedInputPreset = false;
+    int inputsVersion = 0; // vr_inputs_version: 0, a file from before the rows held inputs
     bool leftHandForwardResetV1 = false;
     bool halo4HudHeightV2 = false;   // halo4_hud_height_version >= 2: Halo 4's HUD height is already up = positive
     bool loadedSharedLeftHandForward = false;
@@ -1132,50 +1133,41 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key,"two_hand_zone_right_m")) loadedTwoHandZoneRight=true;
         if (ParseWeaponAlignmentKey(key,val)||ParseTitleProfileKey(key, val))
             continue;
+        if(!strcmp(key,"vr_inputs_version")) {inputsVersion=atoi(val);continue;}
+        // A row's inputs (vr_mapping::ParseInput): its own (the key alone, which may be Automatic) and further ones (_2
+        // on), and the seat's rows' (never Automatic).
         bool vrBindingKey=false;
         for(unsigned title=0;title<weapon_interaction::kTitleCount&&!vrBindingKey;++title)
-            for(unsigned action=0;action<vr_mapping::Count;++action)
+            for(unsigned action=0;action<vr_mapping::Count+vr_mapping::VehicleCount&&!vrBindingKey;++action)
             {
-                char bindingKey[96]{};
-                sprintf_s(bindingKey,"vr_bind_%s_%s",weapon_interaction::kTitleKeys[title],vr_mapping::kKeys[action]);
-                if(strcmp(key,bindingKey)) continue;
-                char* end=nullptr;
-                const long value=strtol(val,&end,10);
-                if(end!=val&&end&&*end==0&&value>=0&&value<vr_mapping::SourceCount)
-                    g_config.vr_bindings[title][action]=static_cast<int>(value);
-                else LOG("config: invalid VR binding '%s' ignored",key);
-                vrBindingKey=true;break;
+                const bool seat=action>=vr_mapping::Count;
+                const char* row=seat?vr_mapping::kVehicleKeys[action-vr_mapping::Count]:vr_mapping::kKeys[action];
+                for(unsigned slot=0;slot<vr_mapping::kRowInputs&&!vrBindingKey;++slot)
+                {
+                    char bindingKey[96]{};
+                    sprintf_s(bindingKey,"vr_bind_%s_%s%s",weapon_interaction::kTitleKeys[title],row,
+                        vr_mapping::kControlSuffix[slot]);
+                    if(strcmp(key,bindingKey)) continue;
+                    vrBindingKey=true;
+                    bool read=false;
+                    if(seat)
+                    {
+                        auto& input=g_config.vr_vehicle_bindings[title][action-vr_mapping::Count][slot];
+                        read=vr_mapping::ParseInput(val,input.held,input.press,input.mode,false);
+                    }
+                    else if(slot==0)
+                    {
+                        auto& inputs=g_config.vr_inputs[title][action];
+                        read=vr_mapping::ParseInput(val,inputs.held,g_config.vr_bindings[title][action],inputs.mode,true);
+                    }
+                    else
+                    {
+                        auto& input=g_config.vr_inputs[title][action].more[slot-1];
+                        read=vr_mapping::ParseInput(val,input.held,input.press,input.mode,false);
+                    }
+                    if(!read) LOG("config: invalid VR binding '%s' ignored",key);
+                }
             }
-        // A row's further controls (_2 on) and the seat's rows: listed controls, never Automatic.
-        const auto listedKeyTitle=[&](const char* row,unsigned control)
-        {
-            for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
-            {
-                char bindingKey[96]{};
-                sprintf_s(bindingKey,"vr_bind_%s_%s%s",weapon_interaction::kTitleKeys[title],row,
-                    vr_mapping::kControlSuffix[control]);
-                if(!strcmp(key,bindingKey)) return static_cast<int>(title);
-            }
-            return -1;
-        };
-        for(unsigned action=0;action<vr_mapping::Count+vr_mapping::VehicleCount&&!vrBindingKey;++action)
-        {
-            const bool seat=action>=vr_mapping::Count;
-            const char* row=seat?vr_mapping::kVehicleKeys[action-vr_mapping::Count]:vr_mapping::kKeys[action];
-            for(unsigned control=seat?0:1;control<=vr_mapping::kMoreControls&&!vrBindingKey;++control)
-            {
-                const int title=listedKeyTitle(row,control);
-                if(title<0) continue;
-                int& slot=seat?g_config.vr_vehicle_bindings[title][action-vr_mapping::Count][control]:
-                    g_config.vr_more_controls[title][action][control-1];
-                char* end=nullptr;
-                const long value=strtol(val,&end,10);
-                if(end!=val&&end&&*end==0&&vr_mapping::ListedSource(static_cast<int>(value)))
-                    slot=static_cast<int>(value);
-                else LOG("config: invalid VR binding '%s' ignored",key);
-                vrBindingKey=true;
-            }
-        }
         if(vrBindingKey) continue;
         if(!strcmp(key,"experimental_body_ik")) {g_config.experimental_body_ik=atoi(val)!=0;continue;}
         if(!strcmp(key,"body_ik_hide_lower")) {g_config.body_ik_hide_lower=atoi(val)!=0;continue;}
@@ -2384,6 +2376,17 @@ void ConfigLoad(const wchar_t* path)
         if(converted)
             LOG("config: VR Mappings rows on the support trigger by hand became Input combinations (gun zooms %d, "
                 "air uses equipment %d)",g_config.grip_contextual_trigger?1:0,g_config.trigger_air_equipment?1:0);
+    }
+    // A file from before the rows held inputs: the right stick's crouch and sprint and the two Input combinations become
+    // the inputs they stood for, in every game's rows (vr_mapping::ConvertSettingsToInputs). The settings are not read again.
+    if(inputsVersion<1)
+    {
+        for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+            vr_mapping::ConvertSettingsToInputs(g_config.vr_inputs[title],static_cast<GameTitle>(title+1),
+                g_config.right_stick_crouch,g_config.grip_contextual_trigger,g_config.trigger_air_equipment);
+        LOG("config: VR Mappings rows now hold the right stick (crouch and sprint %d), the gun grip's zoom (%d) and the "
+            "empty grip's equipment (%d) as inputs",g_config.right_stick_crouch?1:0,
+            g_config.grip_contextual_trigger?1:0,g_config.trigger_air_equipment?1:0);
     }
     if (!halo4HudHeightV2) {
         // Halo 4's HUD height ran the other way until it was corrected (a positive value lowered the HUD), so a
@@ -3745,9 +3748,6 @@ void ConfigSave()
     fprintf(f,"# (Halo 3, ODST, Reach, Halo 4; on foot). 0 = as before. No menu control (log: VIEW HEIGHT).\n");
     fprintf(f,"# (default %d)\n",d.view_follows_standing_height?1:0);
     fprintf(f,"view_follows_standing_height = %d\n",g_config.view_follows_standing_height?1:0);
-    fprintf(f,"# On foot, right stick down toggles crouch and held up sprints (Reach: armor ability; Halo 3:\n"
-              "# equipment; ODST: VISR). It needs MCC's hold-to-crouch setting. (default %d)\n"
-              "right_stick_crouch = %d\n",d.right_stick_crouch?1:0,g_config.right_stick_crouch?1:0);
     fprintf(f,"# Arm-swing locomotion: speed is a fraction of native maximum movement.\n");
     fprintf(f,"physical_running = %d\nphysical_running_speed = %.3f\nphysical_running_sensitivity = %.3f\n",
         g_config.physical_running?1:0,g_config.physical_running_speed,g_config.physical_running_sensitivity);
@@ -3755,27 +3755,39 @@ void ConfigSave()
         g_config.vr_action_mapping?1:0,g_config.flashlight_suppress_on_two_hand?1:0);
     fprintf(f,"# The controls preset last chosen in F1 > Controls. (default %s)\ninput_preset = %s\n",
         d.input_preset,g_config.input_preset);
-    fprintf(f,"# The support trigger with the support grip held on nothing uses equipment. (default %d)\n"
-              "trigger_air_equipment = %d\n",d.trigger_air_equipment?1:0,g_config.trigger_air_equipment?1:0);
-    fprintf(f,"# The support trigger with the support hand on the gun zooms. (default %d)\n"
-              "grip_contextual_trigger = %d\n",d.grip_contextual_trigger?1:0,g_config.grip_contextual_trigger?1:0);
+    fprintf(f,"# VR Mappings: each row's inputs. An input is its held controls and its press joined by '+', the press\n"
+              "# last, then \" toggle\" for a toggle. A row's own input is its key alone (0 = Automatic); its further\n"
+              "# ones are _2 to _4 (%d = none), written for a row that differs from its game's start.\n"
+              "vr_inputs_version = 1\n",vr_mapping::Unbound);
+    char input[32];
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+    {
+        const auto start=vr_mapping::DefaultInputs(static_cast<GameTitle>(title+1));
         for(unsigned action=0;action<vr_mapping::Count;++action)
-            fprintf(f,"vr_bind_%s_%s = %d\n",weapon_interaction::kTitleKeys[title],
-                vr_mapping::kKeys[action],g_config.vr_bindings[title][action]);
-    fprintf(f,"# A row's further controls (_2 to _4), only those listed; Unbound is %d.\n",vr_mapping::Unbound);
-    for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
-        for(unsigned action=0;action<vr_mapping::Count;++action)
-            for(unsigned control=1;control<=vr_mapping::kMoreControls;++control)
-                if(g_config.vr_more_controls[title][action][control-1]!=vr_mapping::Unbound)
-                    fprintf(f,"vr_bind_%s_%s%s = %d\n",weapon_interaction::kTitleKeys[title],vr_mapping::kKeys[action],
-                        vr_mapping::kControlSuffix[control],g_config.vr_more_controls[title][action][control-1]);
-    fprintf(f,"# The seat's rows: each game's Banshee bomb and trick, its controls (_2 to _4 further ones), only in a seat.\n");
+        {
+            const auto& row=g_config.vr_inputs[title][action];
+            vr_mapping::FormatInput(input,row.held,g_config.vr_bindings[title][action],row.mode);
+            fprintf(f,"vr_bind_%s_%s = %s\n",weapon_interaction::kTitleKeys[title],vr_mapping::kKeys[action],input);
+            if(row.more==start[action].more) continue;
+            for(unsigned slot=1;slot<vr_mapping::kRowInputs;++slot)
+            {
+                const auto& more=row.more[slot-1];
+                vr_mapping::FormatInput(input,more.held,more.press,more.mode);
+                fprintf(f,"vr_bind_%s_%s%s = %s\n",weapon_interaction::kTitleKeys[title],vr_mapping::kKeys[action],
+                    vr_mapping::kControlSuffix[slot],input);
+            }
+        }
+    }
+    fprintf(f,"# The seat's rows: each game's Banshee bomb and trick, its inputs (_2 to _4 further ones), only in a seat.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
         for(unsigned action=0;action<vr_mapping::VehicleCount;++action)
-            for(unsigned control=0;control<vr_mapping::kVehicleControls;++control)
-                fprintf(f,"vr_bind_%s_%s%s = %d\n",weapon_interaction::kTitleKeys[title],vr_mapping::kVehicleKeys[action],
-                    vr_mapping::kControlSuffix[control],g_config.vr_vehicle_bindings[title][action][control]);
+            for(unsigned slot=0;slot<vr_mapping::kRowInputs;++slot)
+            {
+                const auto& seat=g_config.vr_vehicle_bindings[title][action][slot];
+                vr_mapping::FormatInput(input,seat.held,seat.press,seat.mode);
+                fprintf(f,"vr_bind_%s_%s%s = %s\n",weapon_interaction::kTitleKeys[title],vr_mapping::kVehicleKeys[action],
+                    vr_mapping::kControlSuffix[slot],input);
+            }
     fprintf(f,"\n# Native localized subtitles: independent gameplay and theatre placement.\n");
     fprintf(f,"# Per-game muzzle-flash hiding. Supported paths: H2 Original and H4.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)

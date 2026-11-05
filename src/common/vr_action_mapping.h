@@ -3,15 +3,20 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace vr_mapping
 {
 enum Action : unsigned { Fire, Grenade, Jump, Melee, Reload, Interact, SwitchWeapon,
     SwitchGrenade, Equipment, Crouch, Zoom, Flashlight, Sprint, Count };
+// Files keep these numbers: a new control goes at the end. The last three are the mod's own: the support hand holding the
+// gun (a state, held while it lasts), and the right stick pushed up or down on foot.
 enum Source : int { Automatic, Unbound, PrimaryTrigger, SupportTrigger, PrimaryGrip,
     SupportGrip, A, B, X, Y, LeftClick, RightClick, DpadUp, DpadDown, DpadLeft,
-    DpadRight, SupportTriggerFree, SupportTriggerOnGun, SupportTriggerAir, SourceCount };
+    DpadRight, SupportTriggerFree, SupportTriggerOnGun, SupportTriggerAir, HandOnGun, RightStickUp, RightStickDown,
+    SourceCount };
 enum class Profile : unsigned { Unknown, Touch, Index, Vive, Wmr, Simple };
 inline constexpr const char* kKeys[Count]{"fire","grenade","jump","melee","reload",
     "interact","switch_weapon","switch_grenade","equipment","crouch","zoom","flashlight","sprint"};
@@ -22,19 +27,22 @@ inline constexpr const char* kSourceNames[SourceCount]{"Automatic","Unbound","We
     "Support trigger","Weapon grip","Support grip","Right A / lower face","Right B / upper face",
     "Left X / lower face","Left Y / upper face","Left stick / pad click","Right stick / pad click",
     "D-pad gesture up","D-pad gesture down","D-pad gesture left","D-pad gesture right",
-    "Support trigger, hand free","Support trigger, gripping the gun","Support trigger, gripping air"};
+    "Support trigger, hand free","Support trigger, gripping the gun","Support trigger, gripping air",
+    "Support hand on the gun","Right stick up","Right stick down"};
 using Overrides = std::array<int, Count>;
 using Transports = std::array<uint32_t, Count>;
 inline constexpr int kDefaults[Count]{PrimaryTrigger,SupportTrigger,A,PrimaryGrip,X,X,
     Y,DpadLeft,SupportGrip,LeftClick,RightClick,DpadUp,Unbound};
 inline constexpr unsigned kNoAction=0xFF;
-// The support trigger by what the support hand is doing (SupportTriggerContext) belongs to the Input combinations, not
-// to a row: gripping the gun zooms (grip_contextual_trigger) and gripping air uses equipment (trigger_air_equipment),
-// beside whatever Zoom's and Equipment's own rows press. The three sources stay at the end of the list, out of the rows'
-// choices (kRowSourceCount).
+// The support trigger by what the support hand is doing was a row's choice once, then two settings (Grip-contextual
+// Trigger, Empty Grip + Trigger), and is now a chord on a row: Support hand on the gun + Support trigger, Support grip +
+// Support trigger (kGunZoom, kAirEquipment). Files from before keep the three context numbers, read only to convert.
 inline constexpr int kRowSourceCount=SupportTriggerFree;
 inline constexpr bool ContextSource(int source) noexcept
 { return source==SupportTriggerFree||source==SupportTriggerOnGun||source==SupportTriggerAir; }
+// A control a row may list: every one but Automatic and the old contexts. Unbound is no control.
+inline constexpr bool ListedSource(int source) noexcept
+{ return (source>Automatic&&source<kRowSourceCount)||source==HandOnGun||source==RightStickUp||source==RightStickDown; }
 // A row saved while the context sources were rows' choices: Zoom on the gun turns the grip-contextual trigger on, and
 // Equipment on air the empty-grip equipment, each row going back to Automatic; a free hand is the plain support trigger;
 // any other row on one goes back to Automatic. True if a row changed.
@@ -51,15 +59,6 @@ inline bool ConvertContextRows(std::array<int,Count>& row,bool& contextualZoom,b
         changed=true;
     }
     return changed;
-}
-// Each action's second source for Mapper::ApplyDetailed: the Input combinations' contexts.
-inline std::array<int,Count> ContextSources(bool contextualZoom,bool airEquipment) noexcept
-{
-    std::array<int,Count> also{};
-    also.fill(Unbound);
-    if(contextualZoom) also[Zoom]=SupportTriggerOnGun;
-    if(airEquipment) also[Equipment]=SupportTriggerAir;
-    return also;
 }
 // The control that presses a gamepad button when nothing is remapped: what the unmapped route in input.cpp copies.
 // Start and Back have no row. Zero is a button the game gives this action none of.
@@ -170,29 +169,6 @@ inline uint64_t Fingerprint(const Overrides& bindings,const Transports& native) 
 inline constexpr float kOneHandedGripRangeMetres=.30f;
 inline constexpr bool OneHandedGripOnGun(bool oneHanded,bool gripDown,float distanceSquared) noexcept
 { return oneHanded&&gripDown&&distanceSquared<=kOneHandedGripRangeMetres*kOneHandedGripRangeMetres; }
-// The support trigger by what the support hand is doing as it is pulled: free, on the gun, or gripping air. The pull
-// keeps its meaning until it is let go, so moving the hand cannot throw a grenade halfway through a zoom. The one
-// exception is the gun: when the hand leaves it the zoom ends, and that pull does nothing more.
-// `plain` is a hand with no such meaning (dual wielding, where the trigger fires the other gun, or a vehicle seat).
-// `claimed` is a grip the mod is using for a magazine or a holster: the pull does nothing.
-// `gunUsable` false makes a hand on the gun a free hand; `airUsable` false does the same for an air grip.
-struct SupportTriggerContext
-{
-    bool down{}; int latched=Unbound;
-    uint32_t Step(bool triggerDown,bool gripDown,bool onGun,bool claimed,bool plain,bool gunUsable,
-        bool airUsable) noexcept
-    {
-        if(!triggerDown) {down=false;latched=Unbound;return 0;}
-        if(!down)
-        {
-            down=true;
-            latched=plain?SupportTriggerFree:claimed?Unbound:onGun&&gunUsable?SupportTriggerOnGun:
-                onGun||!gripDown||!airUsable?SupportTriggerFree:SupportTriggerAir;
-        }
-        else if(latched==SupportTriggerOnGun&&!onGun) latched=Unbound;
-        return Bit(latched);
-    }
-};
 // Out of the game's zoom when the support hand leaves the gun. Zoom is one button stepping through a weapon's levels (a
 // sniper: first level, second, out), so the way out is pressed like any other, and the game's own zoom level says what
 // each press did: lower or the same level is judged afresh, deeper presses again, and not zoomed ends it. A press only
@@ -259,44 +235,265 @@ struct MappedActions
     { return action < Count && (actions & (1u << action)) != 0; }
 };
 
-// A ROW'S FURTHER CONTROLS (VR Mappings, "Add a control"): beside its own, each row lists a few more, any of which
-// presses its action too. Unbound where none; never Automatic, which only a row's own control follows the game's layout
-// with. A few, so a poll stays allocation-free. A file names them with the row's key and _2, _3, _4.
-inline constexpr unsigned kMoreControls=3;
-inline constexpr const char* kControlSuffix[1+kMoreControls]{"","_2","_3","_4"};
-using MoreRow=std::array<int,kMoreControls>;
-using MoreControls=std::array<MoreRow,Count>;
-inline constexpr MoreRow kNoMore{Unbound,Unbound,Unbound};
-inline constexpr MoreControls NoMoreControls() noexcept { MoreControls more{}; more.fill(kNoMore); return more; }
-// A control a row lists beside its own: any a row may take but Automatic.
-inline constexpr bool ListedSource(int source) noexcept { return source>Automatic&&source<kRowSourceCount; }
-// Every control that presses an action: its row's own (Automatic as the game's layout has it) and the further ones.
-inline uint32_t ControlBits(Action action,const Overrides& bindings,const MoreControls* more) noexcept
+// A ROW'S INPUTS (VR Mappings). A row presses its action from its own input -- its own control (Automatic: where the
+// game's layout has the action), pressed while any controls listed to hold first are down -- and from up to three
+// further inputs. Every input is a chord of up to three controls: up to two held first, then its press. It presses its
+// action while they are all down (Hold), or each press turns the action on or off (Toggle). A chord starts only on its
+// press, with the rest already down, and it CLAIMS that press: the control presses nothing else until it is let go, so
+// Support grip + Support trigger uses equipment without the trigger's own grenade. Plain controls never wait for a chord.
+//
+// A file names a row's own input with the row's key and its further ones with _2, _3, _4, each as its held controls and
+// its press joined by '+', the press last, then " toggle" for a toggle: "5+3", "21 toggle", "7".
+inline constexpr unsigned kHeld=2,kMoreInputs=3,kRowInputs=1+kMoreInputs;
+enum class InputMode : int { Hold, Toggle };
+inline constexpr const char* kModeNames[2]{"Hold","Toggle"};
+inline constexpr const char* kControlSuffix[kRowInputs]{"","_2","_3","_4"};
+using HeldControls=std::array<int,kHeld>;
+inline constexpr HeldControls kNoneHeld{Unbound,Unbound};
+struct Input
+{
+    HeldControls held=kNoneHeld;
+    int press=Unbound;
+    InputMode mode=InputMode::Hold;
+    constexpr bool operator==(const Input&) const=default;
+};
+struct RowInputs
+{
+    HeldControls held=kNoneHeld;       // held before the row's own control
+    InputMode mode=InputMode::Hold;    // of the row's own input
+    std::array<Input,kMoreInputs> more{};
+    constexpr bool operator==(const RowInputs&) const=default;
+};
+using Inputs=std::array<RowInputs,Count>;
+// The mod's own controls: no gamepad button stands for them, so they act with remapping off too.
+inline constexpr uint32_t kOwnControls=Bit(HandOnGun)|Bit(RightStickUp)|Bit(RightStickDown);
+inline constexpr uint32_t HeldBits(const HeldControls& held) noexcept
+{ uint32_t bits=0; for(const int source:held) if(ListedSource(source)) bits|=Bit(source); return bits; }
+
+// The right stick on foot, as every game starts: down toggles a crouch, and held up sprints -- in Reach, where sprint is
+// an armor ability, the armor ability; in Halo 3, which has no sprint, the equipment; in ODST, which has neither, VISR.
+// Halo CE and Halo 2 have no sprint. Crouch needs MCC's hold-to-crouch setting.
+inline constexpr Input kStickCrouch{kNoneHeld,RightStickDown,InputMode::Toggle};
+inline constexpr Input kStickUp{kNoneHeld,RightStickUp,InputMode::Hold};
+// The support trigger with the support hand on the gun zooms; with the grip closed on nothing, it uses equipment.
+inline constexpr Input kGunZoom{{HandOnGun,Unbound},SupportTrigger,InputMode::Hold};
+inline constexpr Input kAirEquipment{{SupportGrip,Unbound},SupportTrigger,InputMode::Hold};
+inline constexpr Action StickUpAction(GameTitle title) noexcept
+{
+    return title==GameTitle::HaloReach||title==GameTitle::Halo3?Equipment:title==GameTitle::Halo3ODST?Flashlight:
+        title==GameTitle::Halo4?Sprint:Count;
+}
+inline constexpr Inputs DefaultInputs(GameTitle title) noexcept
+{
+    Inputs inputs{};
+    inputs[Crouch].more[0]=kStickCrouch;
+    if(StickUpAction(title)<Count) inputs[StickUpAction(title)].more[0]=kStickUp;
+    return inputs;
+}
+// Adds an input in a row's first free place; false if the row has it already or no place is free.
+inline bool AddInput(RowInputs& row,const Input& input) noexcept
+{
+    for(const auto& more:row.more) if(more==input) return false;
+    for(auto& more:row.more) if(more.press==Unbound) {more=input;return true;}
+    return false;
+}
+// Removes an input from a row, closing the gap.
+inline bool RemoveInput(RowInputs& row,const Input& input) noexcept
+{
+    bool removed=false;
+    unsigned kept=0;
+    for(unsigned i=0;i<kMoreInputs;++i)
+    {
+        if(row.more[i]==input) {removed=true;continue;}
+        row.more[kept++]=row.more[i];
+    }
+    while(kept<kMoreInputs) row.more[kept++]=Input{};
+    return removed;
+}
+// A file from before rows held inputs: the settings that stood for these become the inputs they meant. Right stick
+// crouch off takes the stick's inputs away.
+inline void ConvertSettingsToInputs(Inputs& inputs,GameTitle title,bool stick,bool gunZoom,bool airEquipment) noexcept
+{
+    if(!stick) for(auto& row:inputs) {RemoveInput(row,kStickCrouch);RemoveInput(row,kStickUp);}
+    if(gunZoom) AddInput(inputs[Zoom],kGunZoom);
+    if(airEquipment&&NativeAction(title,Equipment)!=kNoAction) AddInput(inputs[Equipment],kAirEquipment);
+}
+
+// An input's text in a file (see above). `out` takes at most 32 characters.
+inline void FormatInput(char (&out)[32],const HeldControls& held,int press,InputMode mode) noexcept
+{
+    int used=0;
+    for(const int source:held)
+        if(source!=Unbound) used+=std::snprintf(out+used,sizeof(out)-used,"%d+",source);
+    std::snprintf(out+used,sizeof(out)-used,"%d%s",press,mode==InputMode::Toggle?" toggle":"");
+}
+// Reads FormatInput's text. A row's own press (`own`) may be Automatic or an old context number, which the caller
+// converts; every other control must be one a row may list. False leaves the outputs as they were.
+inline bool ParseInput(const char* text,HeldControls& held,int& press,InputMode& mode,bool own) noexcept
+{
+    int values[kHeld+1]{};
+    unsigned count=0;
+    const char* at=text?text:"";
+    for(;;)
+    {
+        while(*at==' '||*at=='\t') ++at;
+        char* end=nullptr;
+        const long value=std::strtol(at,&end,10);
+        if(end==at||count==kHeld+1||value<0||value>=SourceCount) return false;
+        values[count++]=static_cast<int>(value);
+        at=end;
+        while(*at==' '||*at=='\t') ++at;
+        if(*at!='+') break;
+        ++at;
+    }
+    InputMode readMode=InputMode::Hold;
+    if(!std::strncmp(at,"toggle",6)) {readMode=InputMode::Toggle;at+=6;}
+    else if(!std::strncmp(at,"hold",4)) at+=4;
+    while(*at==' '||*at=='\t'||*at=='\r'||*at=='\n') ++at;
+    if(*at) return false;
+    const int readPress=values[count-1];
+    if(own?false:!ListedSource(readPress)) return false;
+    HeldControls readHeld=kNoneHeld;
+    for(unsigned i=0;i+1<count;++i)
+    {
+        if(!ListedSource(values[i])||values[i]==Unbound) return false;
+        readHeld[i]=values[i];
+    }
+    held=readHeld;press=readPress;mode=readMode;
+    return true;
+}
+
+// ONE INPUT AS A POLL READS IT: what is held first and the press, as control bits.
+struct ResolvedInput { uint32_t held=0,press=0; InputMode mode=InputMode::Hold; };
+// What turns inputs on, shared by every poll of the pad: keep ONE instance and step it under a lock, so each press is
+// seen once. `usable` is what is down and may act (not held across a change); `heldOk` the controls that may be held
+// first this poll. Returns, per input, whether it presses its action.
+template<unsigned N> struct ChordState
+{
+    uint32_t previous{},claimed{};
+    std::array<bool,N> on{},toggled{};
+    void Reset(bool toggles) noexcept
+    {
+        on.fill(false);claimed=0;
+        if(toggles) toggled.fill(false);
+    }
+    std::array<bool,N> Step(const std::array<ResolvedInput,N>& inputs,uint32_t sources,uint32_t usable,
+        uint32_t heldOk) noexcept
+    {
+        const uint32_t pressed=sources&~previous;
+        previous=sources;
+        claimed&=sources;
+        const auto was=on;
+        // Chords first: one starts on its press with the rest down, claims the press, and lasts while all stay down.
+        for(unsigned i=0;i<N;++i)
+        {
+            const auto& input=inputs[i];
+            if(!input.press||!input.held) continue;
+            const bool down=(usable&input.press)&&(sources&input.held)==input.held&&(heldOk&input.held)==input.held;
+            const bool starts=down&&!on[i]&&(pressed&input.press);
+            on[i]=on[i]?down:starts;
+            if(starts) claimed|=input.press;
+        }
+        // Plain controls: down, and their press not claimed by a chord.
+        for(unsigned i=0;i<N;++i)
+            if(inputs[i].press&&!inputs[i].held)
+                on[i]=(usable&inputs[i].press)&&!(claimed&inputs[i].press);
+        std::array<bool,N> presses{};
+        for(unsigned i=0;i<N;++i)
+        {
+            if(inputs[i].mode==InputMode::Toggle&&on[i]&&!was[i]) toggled[i]=!toggled[i];
+            if(!inputs[i].press) toggled[i]=false;
+            presses[i]=inputs[i].mode==InputMode::Toggle?toggled[i]:on[i];
+        }
+        return presses;
+    }
+};
+
+// Every control an action's inputs use, held first or pressed.
+inline uint32_t ControlBits(Action action,const Overrides& bindings,const Inputs* inputs) noexcept
 {
     if(action>=Count) return 0;
     uint32_t bits=Bit(Resolve(action,bindings[action]));
-    if(more) for(const int source:(*more)[action]) if(ListedSource(source)) bits|=Bit(source);
+    if(inputs)
+    {
+        const auto& row=(*inputs)[action];
+        bits|=HeldBits(row.held);
+        for(const auto& more:row.more) if(ListedSource(more.press)) bits|=Bit(more.press)|HeldBits(more.held);
+    }
     return bits;
 }
-inline uint64_t Fingerprint(const MoreControls& more) noexcept
+// What presses an action, as one number: its inputs in any order. Two actions with the same number are pressed by the
+// same inputs.
+inline uint64_t InputsSignature(Action action,const Overrides& bindings,const Inputs* inputs) noexcept
 {
+    if(action>=Count) return 0;
+    uint64_t codes[kRowInputs]{};
+    unsigned count=0;
+    const auto code=[](uint32_t held,uint32_t press,InputMode mode)
+    { return (uint64_t(held)<<32)|press|(mode==InputMode::Toggle?1ull<<63:0); };
+    const RowInputs none{};
+    const auto& row=inputs?(*inputs)[action]:none;
+    codes[count++]=code(HeldBits(row.held),Bit(Resolve(action,bindings[action])),row.mode);
+    for(const auto& more:row.more)
+        if(ListedSource(more.press)&&more.press!=Unbound) codes[count++]=code(HeldBits(more.held),Bit(more.press),more.mode);
+    for(unsigned i=1;i<count;++i)
+        for(unsigned j=i;j>0&&codes[j-1]>codes[j];--j) {const uint64_t swap=codes[j];codes[j]=codes[j-1];codes[j-1]=swap;}
     uint64_t value=14695981039346656037ull;
-    for(const auto& row:more) for(const int source:row) {value^=uint64_t(source);value*=1099511628211ull;}
+    for(unsigned i=0;i<count;++i) {value^=codes[i];value*=1099511628211ull;}
     return value;
 }
+inline uint64_t Fingerprint(const Inputs& inputs) noexcept
+{
+    uint64_t value=14695981039346656037ull;
+    const auto mix=[&](uint64_t part) {value^=part;value*=1099511628211ull;};
+    for(const auto& row:inputs)
+    {
+        for(const int source:row.held) mix(uint64_t(source));
+        mix(uint64_t(row.mode));
+        for(const auto& more:row.more)
+        {
+            for(const int source:more.held) mix(uint64_t(source));
+            mix(uint64_t(more.press));mix(uint64_t(more.mode));
+        }
+    }
+    return value;
+}
+// True if a game's rows use any of `controls`.
+inline bool UsesControls(const Overrides& bindings,const Inputs& inputs,uint32_t controls) noexcept
+{
+    for(unsigned a=0;a<Count;++a) if(ControlBits(static_cast<Action>(a),bindings,&inputs)&controls) return true;
+    return false;
+}
+// True if an action's inputs, its own or a further one, hold the support hand on the gun (the gun grip's zoom).
+inline bool HoldsHandOnGun(Action action,const Overrides& bindings,const Inputs& inputs) noexcept
+{ return (ControlBits(action,bindings,&inputs)&Bit(HandOnGun))!=0; }
+// True if a row's inputs are all down (held first and pressed), ignoring claims: the lens follows Zoom by this.
+inline bool InputsDown(Action action,uint32_t sources,const Overrides& bindings,const Inputs* inputs) noexcept
+{
+    if(action>=Count) return false;
+    const RowInputs none{};
+    const auto& row=inputs?(*inputs)[action]:none;
+    const uint32_t own=Bit(Resolve(action,bindings[action]));
+    if(own&&(sources&own)&&(sources&HeldBits(row.held))==HeldBits(row.held)) return true;
+    for(const auto& more:row.more)
+        if(ListedSource(more.press)&&Bit(more.press)&&(sources&Bit(more.press))&&
+           (sources&HeldBits(more.held))==HeldBits(more.held)) return true;
+    return false;
+}
 
-// THE SEAT'S ROWS (VR Mappings, under the actions): a vehicle's own actions, which no on-foot row names. Each lists
-// controls as a row does (its own first; none Automatic); any of them presses the action's own MCC button beside
-// whatever the action rows press, and only in a seat. A control already down as the seat comes up waits for its
-// release, so the press that boarded presses nothing.
+// THE SEAT'S ROWS (VR Mappings, under the actions): a vehicle's own actions, which no on-foot row names. Each has inputs
+// as a row does (none Automatic); any of them presses the action's own MCC button beside whatever the action rows press,
+// and only in a seat. A control already down as the seat comes up waits for its release, so the press that boarded
+// presses nothing.
 enum VehicleAction : unsigned { BansheeBomb, BansheeTrick, VehicleCount };
-inline constexpr unsigned kVehicleControls=1+kMoreControls;
 inline constexpr const char* kVehicleKeys[VehicleCount]{"banshee_bomb","banshee_trick"};
 inline constexpr const char* kVehicleNames[VehicleCount]{"Banshee bomb","Banshee trick"};
-using VehicleRow=std::array<int,kVehicleControls>;
+using VehicleRow=std::array<Input,kRowInputs>;
 using VehicleBindings=std::array<VehicleRow,VehicleCount>;
 using VehicleTransports=std::array<uint32_t,VehicleCount>;
-inline constexpr VehicleBindings kVehicleDefaults{{{PrimaryGrip,RightClick,Unbound,Unbound},{A,Unbound,Unbound,Unbound}}};
+inline constexpr VehicleBindings kVehicleDefaults{{
+    {Input{kNoneHeld,PrimaryGrip},Input{kNoneHeld,RightClick},Input{},Input{}},
+    {Input{kNoneHeld,A},Input{},Input{},Input{}}}};
 // Each game's own action for a seat row, as NativeAction names the rows' (kNoAction: the game has none): the actions
 // each game's control builder reads while seated. See BANSHEE-SEAT-ACTIONS-EVIDENCE-2026-11-05.md. Reach and Halo 4
 // have no bomb of their own: a Banshee's bomb is its secondary trigger. Halo 3's and ODST's trick is the seat's jump.
@@ -313,53 +510,102 @@ inline constexpr unsigned NativeVehicleAction(GameTitle title,VehicleAction acti
     default:return kNoAction;
     }
 }
+inline uint32_t VehicleControlBits(const VehicleRow& row) noexcept
+{
+    uint32_t bits=0;
+    for(const auto& input:row) if(ListedSource(input.press)) bits|=Bit(input.press)|HeldBits(input.held);
+    return bits;
+}
 struct VehicleMapper
 {
     uint32_t blocked{}; bool seated{};
-    uint32_t Apply(uint32_t sources,bool inSeat,const VehicleBindings& bindings,const VehicleTransports& native) noexcept
+    ChordState<VehicleCount*kRowInputs> chords;
+    uint32_t Apply(uint32_t sources,bool inSeat,const VehicleBindings& bindings,const VehicleTransports& native,
+        uint32_t heldOk=~0u) noexcept
     {
-        if(!inSeat) {seated=false;blocked=0;return 0;}
+        if(!inSeat) {seated=false;blocked=0;chords.Reset(true);return 0;}
         if(!seated) {seated=true;blocked=sources;}
         blocked&=sources;
-        const uint32_t active=sources&~blocked;
+        std::array<ResolvedInput,VehicleCount*kRowInputs> inputs{};
+        for(unsigned a=0;a<VehicleCount;++a)
+            for(unsigned i=0;i<kRowInputs;++i)
+            {
+                const auto& input=bindings[a][i];
+                if(ListedSource(input.press)) inputs[a*kRowInputs+i]={HeldBits(input.held),Bit(input.press),input.mode};
+            }
+        const auto presses=chords.Step(inputs,sources,sources&~blocked,heldOk);
         uint32_t buttons=0;
         for(unsigned a=0;a<VehicleCount;++a)
-            for(const int source:bindings[a])
-                if(ListedSource(source)&&(active&Bit(source))) buttons|=native[a];
+            for(unsigned i=0;i<kRowInputs;++i)
+                if(presses[a*kRowInputs+i]) buttons|=native[a];
         return buttons;
     }
+};
+
+// What one poll adds to the rows.
+struct PollOptions
+{
+    uint32_t heldOk=~0u;      // controls that may be held first (a seat or two guns keep the support trigger plain)
+    uint32_t forced=0;        // actions pressed whatever the controls (Zoom, pressed out as the hand leaves the gun)
+    bool ownOnly=false;       // only inputs made of the mod's own controls (kOwnControls): remapping is off
+    bool standUp=false;       // toggles end: a seat, or off foot
 };
 
 // Reconfiguration, pause, reconnect and title changes must wait for held
 // controls to release. A held trigger cannot become a new action on resume.
 struct Mapper
 {
-    uint64_t identity{}; uint32_t blocked{}, flashlightHeld{}; bool ready{};
+    static constexpr unsigned kSlots=kRowInputs+1; // a row's inputs, and `also`
+    uint64_t identity{},setup{}; uint32_t blocked{}, flashlightHeld{}; bool ready{};
     // Times a held control was latched by a change (a held press then reaches the game as a tap at most).
     uint32_t relatched{};
-    // `also`: a second source for each action (Unbound for none), beside its row's: ContextSources.
-    // `more`: each row's further controls (MoreControls).
+    ChordState<Count*kSlots> chords;
+    // `also`: one more control for each action (Unbound for none), beside its row's. `inputs`: each row's held-first
+    // controls, mode and further inputs (RowInputs).
     MappedActions ApplyDetailed(uint32_t sources,const Overrides& bindings,const Transports& native,
         uint64_t epoch,bool available,bool disableFlashlight=false,const Overrides* also=nullptr,
-        const MoreControls* more=nullptr) noexcept
+        const Inputs* inputs=nullptr,const PollOptions& poll={}) noexcept
     {
-        const uint64_t next=Fingerprint(bindings,native)^epoch^(also?Fingerprint(*also,Transports{})*31u:0u)^
-            (more?Fingerprint(*more)*37u:0u);
+        const uint64_t nextSetup=Fingerprint(bindings,Transports{})^epoch^(also?Fingerprint(*also,Transports{})*31u:0u)^
+            (inputs?Fingerprint(*inputs)*37u:0u)^(poll.ownOnly?0x9E3779B97F4A7C15ull:0u);
+        const uint64_t next=nextSetup^Fingerprint(Overrides{},native);
         if(!available||!ready||identity!=next) {relatched+=(sources&~blocked)!=0;blocked|=sources;}
-        blocked&=sources; identity=next; ready=available;
-        const uint32_t flashlightSource=ControlBits(Flashlight,bindings,more);
+        if(identity!=next) chords.Reset(setup!=nextSetup);
+        if(poll.standUp) chords.toggled.fill(false);
+        blocked&=sources; identity=next; setup=nextSetup; ready=available;
+        std::array<ResolvedInput,Count*kSlots> list{};
+        uint32_t flashlightSource=0;
+        const RowInputs none{};
+        for(unsigned a=0;a<Count;++a)
+        {
+            const auto& row=inputs?(*inputs)[a]:none;
+            ResolvedInput* slot=&list[a*kSlots];
+            slot[0]={HeldBits(row.held),Bit(Resolve(static_cast<Action>(a),bindings[a])),row.mode};
+            if(also) slot[1]={0,Bit((*also)[a]),InputMode::Hold};
+            for(unsigned i=0;i<kMoreInputs;++i)
+                if(ListedSource(row.more[i].press))
+                    slot[2+i]={HeldBits(row.more[i].held),Bit(row.more[i].press),row.more[i].mode};
+            for(unsigned i=0;i<kSlots;++i)
+            {
+                if(poll.ownOnly&&((slot[i].held|slot[i].press)&~kOwnControls)) slot[i]={};
+                if(a==Flashlight) flashlightSource|=slot[i].press;
+            }
+        }
+        const auto presses=chords.Step(list,sources,sources&~blocked,poll.heldOk);
         flashlightHeld&=sources;
         if(disableFlashlight) flashlightHeld|=sources&flashlightSource;
         if(!available) return {};
-        const uint32_t active=sources&~blocked;
         MappedActions result{};
         for(unsigned a=0;a<Count;++a)
-            if(!(a==Flashlight&&(disableFlashlight||(flashlightHeld&flashlightSource)))&&
-               (active&(ControlBits(static_cast<Action>(a),bindings,more)|(also?Bit((*also)[a]):0u))))
+        {
+            bool pressed=(poll.forced>>a)&1u;
+            for(unsigned i=0;i<kSlots;++i) pressed=pressed||presses[a*kSlots+i];
+            if(pressed&&!(a==Flashlight&&(disableFlashlight||(flashlightHeld&flashlightSource))))
             {
                 result.actions |= 1u << a;
                 result.transports |= native[a];
             }
+        }
         return result;
     }
     uint32_t Apply(uint32_t sources,const Overrides& bindings,const Transports& native,

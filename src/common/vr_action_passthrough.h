@@ -41,21 +41,21 @@ struct DirectRoute
 };
 
 // The actions only the bridge can carry: one the game has no button for, or one whose button the game also gives another
-// action that is on different VR controls (Reload and Use apart on one native button: the bridge's reason to be). A row's
-// further controls count: two actions are on the same controls only when every control of one is the other's too.
+// action that is on different VR controls (Reload and Use apart on one native button: the bridge's reason to be). Every
+// input of a row counts: two actions are on the same controls only when their inputs are the same (InputsSignature).
 // Every other action's real button carries it whole, to every reader in the game -- not only the player-control builder
 // the bridge serves, but Forge, a vehicle's boost, MCC's jetpack jump, Halo 2's held context buttons. An action blocked
 // for gesture-only weapon input stays masked by the bridge at its reads, real button or not.
 inline uint32_t BridgeOnlyActions(const Transports& native,const Overrides& bindings,
-    const MoreControls* more=nullptr) noexcept
+    const Inputs* more=nullptr) noexcept
 {
     uint32_t only=0;
     for(unsigned a=0;a<Count;++a)
     {
         if(!native[a]) {only|=1u<<a;continue;}
-        const uint32_t controls=ControlBits(static_cast<Action>(a),bindings,more);
+        const uint64_t inputs=InputsSignature(static_cast<Action>(a),bindings,more);
         for(unsigned b=0;b<Count;++b)
-            if(b!=a&&(native[b]&native[a])&&ControlBits(static_cast<Action>(b),bindings,more)!=controls)
+            if(b!=a&&(native[b]&native[a])&&InputsSignature(static_cast<Action>(b),bindings,more)!=inputs)
             {only|=1u<<a;break;}
     }
     return only;
@@ -67,11 +67,11 @@ inline uint32_t BridgeOnlyActions(const Transports& native,const Overrides& bind
 // held B from picking up or boarding (Y, which the bridge does not carry, held fine). Use on a control of its own
 // keeps the bridge, its only route then.
 inline Transports CarryingTransports(GameTitle title,const Transports& native,const Overrides* bindings,
-    const MoreControls* more=nullptr) noexcept
+    const Inputs* more=nullptr) noexcept
 {
     Transports carrying=native;
     if(title==GameTitle::Halo2&&bindings&&!carrying[Interact]&&
-       ControlBits(Interact,*bindings,more)==ControlBits(Reload,*bindings,more))
+       InputsSignature(Interact,*bindings,more)==InputsSignature(Reload,*bindings,more))
         carrying[Interact]=carrying[Reload];
     return carrying;
 }
@@ -81,11 +81,10 @@ inline Transports CarryingTransports(GameTitle title,const Transports& native,co
 // gesture bits). An action with no native binding stays on the bridge, which
 // is the only route that can deliver it at all. Outside direct routing the
 // existing transport route already carries every action, so nothing changes.
-// `bindings` (the effective rows) adds every action BridgeOnlyActions leaves to its real button; `more`, the rows' further
-// controls.
+// `bindings` (the effective rows) adds every action BridgeOnlyActions leaves to its real button; `more`, the rows' inputs.
 inline DirectRoute SplitDirectRoute(GameTitle title,bool direct,uint32_t actions,
     const Transports& native,bool seated=false,const Overrides* bindings=nullptr,
-    const MoreControls* more=nullptr) noexcept
+    const Inputs* more=nullptr) noexcept
 {
     DirectRoute route{};
     if(!direct) return route;
@@ -113,7 +112,7 @@ struct RoutedActions
 };
 inline RoutedActions RouteActions(GameTitle title,bool direct,const MappedActions& mapped,
     const Transports& native,bool seated=false,const Overrides* bindings=nullptr,
-    const MoreControls* more=nullptr) noexcept
+    const Inputs* more=nullptr) noexcept
 {
     const DirectRoute route=SplitDirectRoute(title,direct,mapped.actions,native,seated,bindings,more);
     return {direct?route.transports:mapped.transports,mapped.actions&route.bridgeMask};

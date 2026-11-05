@@ -259,38 +259,106 @@ namespace
         NamedDropdown named(label);
         return ImGui::BeginCombo(label,preview,flags);
     }
-    // A row's further controls (VR Mappings): each listed with Remove, then "Add a control" while a slot is free. Listed
-    // controls stay first; `open` counts the slots shown, one just added still empty among them.
-    bool MoreControlsList(const char* name,int* slots,unsigned count,int& open)
+    // VR Mappings' controls in a dropdown's order: Automatic (a row's own press only), Unbound, then every control a row
+    // may list (vr_mapping::ListedSource).
+    struct MappingChoices
+    {
+        int sources[vr_mapping::SourceCount]{};
+        const char* names[vr_mapping::SourceCount]{};
+        int count=0;
+        explicit MappingChoices(bool automatic)
+        {
+            for(int source=automatic?vr_mapping::Automatic:vr_mapping::Unbound;source<vr_mapping::SourceCount;++source)
+                if(source==vr_mapping::Automatic||vr_mapping::ListedSource(source))
+                {sources[count]=source;names[count]=vr_mapping::kSourceNames[source];++count;}
+        }
+    };
+    bool MappingCombo(const char* label,int& source,bool automatic)
+    {
+        static const MappingChoices withAutomatic(true),listed(false);
+        const auto& choices=automatic?withAutomatic:listed;
+        int index=0;
+        for(int i=0;i<choices.count;++i) if(choices.sources[i]==source) index=i;
+        if(!Combo(label,&index,choices.names,choices.count)) return false;
+        source=choices.sources[index];
+        return true;
+    }
+    // An input's options beside its dropdown: Hold or Toggle, and the controls held before its press (up to two, each with
+    // Remove, then "Hold a control first" while there is room). Behind "Options"; a summary while closed.
+    bool InputOptions(const char* name,vr_mapping::HeldControls& held,vr_mapping::InputMode& mode,bool& open)
+    {
+        bool changed=false;
+        ImGui::SameLine();
+        if(ImGui::SmallButton(open?"Close options":"Options")) open=!open;
+        if(!open)
+        {
+            std::string summary;
+            for(const int source:held)
+                if(source!=vr_mapping::Unbound)
+                    summary+=std::string(summary.empty()?"Held first: ":" + ")+vr_mapping::kSourceNames[source];
+            if(mode==vr_mapping::InputMode::Toggle) summary+=summary.empty()?"Toggles":"; toggles";
+            if(!summary.empty()) ImGui::TextDisabled("%s",summary.c_str());
+            return false;
+        }
+        ImGui::Indent();
+        if(ImGui::RadioButton("Hold",mode==vr_mapping::InputMode::Hold)) {mode=vr_mapping::InputMode::Hold;changed=true;}
+        ImGui::SameLine();
+        if(ImGui::RadioButton("Toggle",mode==vr_mapping::InputMode::Toggle)) {mode=vr_mapping::InputMode::Toggle;changed=true;}
+        unsigned listed=0;
+        for(unsigned i=0;i<vr_mapping::kHeld;++i)
+        {
+            if(held[i]==vr_mapping::Unbound) continue;
+            ImGui::PushID(static_cast<int>(i));
+            const std::string label=std::string(name)+", held first";
+            changed|=MappingCombo(label.c_str(),held[i],false);
+            ImGui::SameLine();
+            if(ImGui::SmallButton("Remove")) {held[i]=vr_mapping::Unbound;changed=true;}
+            ImGui::PopID();
+            ++listed;
+        }
+        if(listed<vr_mapping::kHeld&&ImGui::SmallButton("Hold a control first"))
+        {
+            for(auto& source:held) if(source==vr_mapping::Unbound) {source=vr_mapping::SupportGrip;break;}
+            changed=true;
+        }
+        ImGui::TextDisabled("Hold: the action lasts while the controls are down. Toggle: each press turns it on or off. "
+            "Controls held first must be down before the press, and that press does nothing else until let go.");
+        // Held controls stay first.
+        if(held[0]==vr_mapping::Unbound&&held[1]!=vr_mapping::Unbound) std::swap(held[0],held[1]);
+        ImGui::Unindent();
+        return changed;
+    }
+    // A row's further inputs (VR Mappings): each with its dropdown, Remove and its options, then "Add an input" while there
+    // is room. Inputs stay first; `open` counts the ones shown, one just added still empty among them.
+    bool MoreInputsList(const char* name,vr_mapping::Input* inputs,unsigned count,int& open,bool* optionsOpen)
     {
         bool changed=false;
         unsigned listed=0;
-        while(listed<count&&slots[listed]!=vr_mapping::Unbound) ++listed;
+        while(listed<count&&inputs[listed].press!=vr_mapping::Unbound) ++listed;
         const unsigned shown=std::min(count,std::max(listed,static_cast<unsigned>(std::max(open,0))));
         for(unsigned i=0;i<shown;++i)
         {
-            ImGui::PushID(static_cast<int>(i));
-            const std::string label=std::string(name)+", control "+std::to_string(i+2);
-            int choice=slots[i]-vr_mapping::Unbound;
-            if(Combo(label.c_str(),&choice,vr_mapping::kSourceNames+vr_mapping::Unbound,
-                vr_mapping::kRowSourceCount-vr_mapping::Unbound))
-            {
-                slots[i]=choice+vr_mapping::Unbound;
-                changed=true;
-            }
+            ImGui::PushID(static_cast<int>(i+1));
+            const std::string label=std::string(name)+", input "+std::to_string(i+2);
+            changed|=MappingCombo(label.c_str(),inputs[i].press,false);
             ImGui::SameLine();
             if(ImGui::SmallButton("Remove"))
             {
-                for(unsigned j=i;j+1<count;++j) slots[j]=slots[j+1];
-                slots[count-1]=vr_mapping::Unbound;
+                for(unsigned j=i;j+1<count;++j) {inputs[j]=inputs[j+1];optionsOpen[j]=optionsOpen[j+1];}
+                inputs[count-1]=vr_mapping::Input{};
+                optionsOpen[count-1]=false;
                 open=static_cast<int>(shown)-1;
                 changed=true;
+                ImGui::PopID();
+                continue;
             }
+            changed|=InputOptions(label.c_str(),inputs[i].held,inputs[i].mode,optionsOpen[i]);
             ImGui::PopID();
         }
-        if(shown<count&&ImGui::SmallButton("Add a control")) open=static_cast<int>(shown)+1;
-        // A slot emptied before a listed one closes up.
-        if(changed) std::stable_partition(slots,slots+count,[](int slot){return slot!=vr_mapping::Unbound;});
+        if(shown<count&&ImGui::SmallButton("Add an input")) open=static_cast<int>(shown)+1;
+        // An input emptied before a listed one closes up.
+        if(changed)
+            std::stable_partition(inputs,inputs+count,[](const vr_mapping::Input& input){return input.press!=vr_mapping::Unbound;});
         return changed;
     }
 
@@ -1323,11 +1391,9 @@ namespace
             ImGui::Unindent();
         }
         SettingGap();
-        changed |= ImGui::Checkbox("Right stick crouches and sprints", &g_config.right_stick_crouch);
-        ImGui::TextDisabled("On foot: push the right stick down to crouch, and down again to stand. Hold it up to "
-            "sprint; in Reach, where sprint is an armor ability, that uses your armor ability, in Halo 3, "
-            "which has no sprint, your equipment, and in ODST, which has neither, it toggles VISR. Needs MCC's "
-            "hold-to-crouch setting. The game's own crouch and sprint buttons still work.");
+        ImGui::TextDisabled("The right stick's crouch and sprint are inputs under VR Mappings: every game starts with "
+            "right stick down toggling Crouch, and right stick up held for Sprint (Reach: your armor ability; Halo 3: "
+            "your equipment; ODST: VISR). Needs MCC's hold-to-crouch setting.");
         ImGui::Spacing();
         }
         if (SectionHeader("VR turning (right controller stick)##section", ImGuiTreeNodeFlags_None))
@@ -1405,29 +1471,13 @@ namespace
                                    &g_config.y_b_start_chord);
         ImGui::TextDisabled("On by default. Turn it off if you prefer Y and B to stay separate.");
         ImGui::TextDisabled("L3+R3 recenters and toggles this menu; the right trigger clicks the VR pointer.");
-        SettingGap();
-        if(ImGui::Checkbox("Grip-contextual Trigger",&g_config.grip_contextual_trigger))
-        {
-            if(g_config.grip_contextual_trigger) g_config.vr_action_mapping=true;
-            changed=true;
-        }
-        ImGui::TextWrapped("With your support hand on the gun, the support trigger zooms. With the hand free, it is the "
-            "support trigger as mapped under VR Mappings (Grenade, unless you change it). Zoom keeps its own button "
-            "too. Reload and holster grips send nothing. Dual wielding and vehicle seats keep the plain trigger.");
-        SettingGap();
-        if(ImGui::Checkbox("Empty Grip + Trigger uses Equipment",&g_config.trigger_air_equipment))
-        {
-            if(g_config.trigger_air_equipment) g_config.vr_action_mapping=true;
-            changed=true;
-        }
-        ImGui::TextWrapped("Squeeze the grip with nothing in that hand, then pull the trigger, to use your equipment. "
-            "Equipment keeps its own button under VR Mappings too. Off, or in a game without equipment, that pull is the "
-            "support trigger as mapped.");
+        ImGui::TextDisabled("Grip + trigger combinations are inputs under VR Mappings: an input can hold controls first.");
         }
         if (SectionHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
         {
             static int selectedTitle=0;
             static int moreOpen[6][vr_mapping::Count+vr_mapping::VehicleCount]{};
+            static bool optionsOpen[6][vr_mapping::Count+vr_mapping::VehicleCount][vr_mapping::kRowInputs]{};
             static GameTitle previousTitle=GameTitle::None;
             const auto active=TitleAdapter_GetActiveTitle();
             const int activeIndex=weapon_interaction::TitleIndex(active);
@@ -1436,8 +1486,11 @@ namespace
             ImGui::Text("Detected left: %s",VR_ControllerProfileName(true));
             ImGui::Text("Detected right: %s",VR_ControllerProfileName(false));
             changed|=ImGui::Checkbox("Remap buttons (off: every button is the game's own)",&g_config.vr_action_mapping);
-            ImGui::TextWrapped("Automatic keeps an action where the game's own button layout has it. Choosing anything "
-                "else for a row turns remapping on. Physical gestures remain separate.");
+            ImGui::TextWrapped("Each action has its own input and up to three more. An input is a control, or a chord: "
+                "up to two controls held first, then the press. Options sets an input to hold or toggle and adds the "
+                "controls held first. Automatic keeps an action where the game's own button layout has it. Choosing "
+                "anything else turns remapping on; inputs that use only the right stick or the support hand on the gun "
+                "work with it off too. Physical gestures remain separate.");
             ImGui::Spacing();
             Combo("Settings for",&selectedTitle,weapon_interaction::kTitleNames,6);
             ImGui::TextWrapped("All six games support separate actions while direct VR routing is available. "
@@ -1456,6 +1509,8 @@ namespace
             if(selectedGame==GameTitle::Halo3||selectedGame==GameTitle::HaloReach||selectedGame==GameTitle::Halo4)
                 ImGui::TextWrapped("Forge: as the Monitor the controllers are a plain gamepad (A, B, X and Y as themselves, "
                     "the grips as the bumpers), so B backs out of Forge's menus. In Halo 3 the grips turn their pages.");
+            ImGui::TextWrapped("Right stick up and down count on foot only. Crouch on a toggled input needs MCC's "
+                "hold-to-crouch setting.");
             vr_mapping::Transports bindings{};
             const bool haveBindings=activeIndex==selectedTitle&&Game_ReadVrActionBindings(bindings,GetTickCount64());
             for(unsigned action=0;action<vr_mapping::Count;++action)
@@ -1463,13 +1518,17 @@ namespace
                 ImGui::PushID(static_cast<int>(action));
                 SettingGap();
                 // Laid out like every other dropdown, its action named beside it, so it is one setting for search too.
-                // The support trigger by hand is the Input combinations' (vr_mapping::kRowSourceCount).
-                if(Combo(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)),
-                    &g_config.vr_bindings[selectedTitle][action],
-                    vr_mapping::kSourceNames,vr_mapping::kRowSourceCount))
+                const char* name=vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action));
+                auto& row=g_config.vr_inputs[selectedTitle][action];
+                if(MappingCombo(name,g_config.vr_bindings[selectedTitle][action],true))
                 {
                     if(g_config.vr_bindings[selectedTitle][action]!=vr_mapping::Automatic)
                         g_config.vr_action_mapping=true;
+                    changed=true;
+                }
+                if(InputOptions(name,row.held,row.mode,optionsOpen[selectedTitle][action][0]))
+                {
+                    g_config.vr_action_mapping=true;
                     changed=true;
                 }
                 if(g_config.vr_bindings[selectedTitle][action]==vr_mapping::Automatic)
@@ -1481,17 +1540,18 @@ namespace
                         ImGui::TextDisabled("Follows the game's own layout.");
                 }
                 if(haveBindings&&!bindings[action]) ImGui::TextDisabled("No native action binding available in this title.");
-                // Further controls, any of which presses the action too.
-                auto& more=g_config.vr_more_controls[selectedTitle][action];
-                if(MoreControlsList(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)),
-                    more.data(),vr_mapping::kMoreControls,moreOpen[selectedTitle][action]))
+                if(MoreInputsList(name,row.more.data(),vr_mapping::kMoreInputs,moreOpen[selectedTitle][action],
+                    &optionsOpen[selectedTitle][action][1]))
                 {
-                    if(more[0]!=vr_mapping::Unbound) g_config.vr_action_mapping=true;
+                    for(const auto& more:row.more)
+                        if(more.press!=vr_mapping::Unbound&&
+                           ((vr_mapping::Bit(more.press)|vr_mapping::HeldBits(more.held))&~vr_mapping::kOwnControls))
+                            g_config.vr_action_mapping=true;
                     changed=true;
                 }
                 ImGui::PopID();
             }
-            // The seat's rows: a control of their own (Unbound or any a row may take, no Automatic), then further ones.
+            // The seat's rows: inputs as a row has, none Automatic.
             SettingGap();
             ImGui::TextWrapped("In a vehicle seat: these press the game's own button for the action, beside whatever "
                 "the rows above press. Left X, left Y and the left stick click stay the vehicle cameras' in a seat, so "
@@ -1506,19 +1566,16 @@ namespace
                 }
                 ImGui::PushID(static_cast<int>(100+action));
                 SettingGap();
+                const char* name=vr_mapping::kVehicleNames[action];
                 auto& row=g_config.vr_vehicle_bindings[selectedTitle][action];
-                int choice=row[0]-vr_mapping::Unbound;
-                if(Combo(vr_mapping::kVehicleNames[action],&choice,vr_mapping::kSourceNames+vr_mapping::Unbound,
-                    vr_mapping::kRowSourceCount-vr_mapping::Unbound))
+                bool* open=optionsOpen[selectedTitle][vr_mapping::Count+action];
+                bool seatChanged=MappingCombo(name,row[0].press,false);
+                seatChanged|=InputOptions(name,row[0].held,row[0].mode,open[0]);
+                seatChanged|=MoreInputsList(name,row.data()+1,vr_mapping::kMoreInputs,
+                    moreOpen[selectedTitle][vr_mapping::Count+action],open+1);
+                if(seatChanged)
                 {
-                    row[0]=choice+vr_mapping::Unbound;
-                    if(row[0]!=vr_mapping::Unbound) g_config.vr_action_mapping=true;
-                    changed=true;
-                }
-                if(MoreControlsList(vr_mapping::kVehicleNames[action],row.data()+1,vr_mapping::kMoreControls,
-                    moreOpen[selectedTitle][vr_mapping::Count+action]))
-                {
-                    if(row[1]!=vr_mapping::Unbound) g_config.vr_action_mapping=true;
+                    if(vr_mapping::VehicleControlBits(row)) g_config.vr_action_mapping=true;
                     changed=true;
                 }
                 ImGui::PopID();
@@ -1526,7 +1583,7 @@ namespace
             if(ImGui::Button("Reset this game's mappings"))
             {
                 g_config.vr_bindings[selectedTitle]={};
-                g_config.vr_more_controls[selectedTitle]=vr_mapping::NoMoreControls();
+                g_config.vr_inputs[selectedTitle]=vr_mapping::DefaultInputs(selectedGame);
                 g_config.vr_vehicle_bindings[selectedTitle]=vr_mapping::kVehicleDefaults;
                 changed=true;
             }
@@ -1537,16 +1594,15 @@ namespace
             {
                 const auto source=g_config.vr_bindings[selectedTitle];
                 for(auto& title:g_config.vr_bindings) title=source;
-                const auto more=g_config.vr_more_controls[selectedTitle];
-                for(auto& title:g_config.vr_more_controls) title=more;
+                const auto inputs=g_config.vr_inputs[selectedTitle];
+                for(auto& title:g_config.vr_inputs) title=inputs;
                 const auto seat=g_config.vr_vehicle_bindings[selectedTitle];
                 for(auto& title:g_config.vr_vehicle_bindings) title=seat;
                 for(int row:source) if(row!=vr_mapping::Automatic) g_config.vr_action_mapping=true;
-                for(const auto& row:more) if(row[0]!=vr_mapping::Unbound) g_config.vr_action_mapping=true;
                 changed=true;
             }
             ImGui::TextDisabled("Copy: the other five games take these rows as they are. A row for an action a game "
-                "does not have does nothing there.");
+                "does not have does nothing there. Reset brings back the game's own layout and its right stick.");
         }
         if (SectionHeader("Flashlight##section", ImGuiTreeNodeFlags_None))
         {

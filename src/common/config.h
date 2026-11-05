@@ -610,7 +610,9 @@ struct Config
     // Lowering the head by the depth crouches, on foot. It holds MCC's crouch while the head is down, so it
     // needs MCC's hold-to-crouch setting: toggle crouch is not overridden.
     bool physical_crouch = true;
-    bool right_stick_crouch = true; // right stick down toggles crouch, held up sprints (input_logic.h, StickCrouch)
+    // The right stick's crouch and sprint, now inputs on the rows (vr_mapping::kStickCrouch, kStickUp): read only from a
+    // file or preset written before them, to convert.
+    bool right_stick_crouch = true;
     float physical_crouch_depth_m = 0.22f;
     // AUTOMATED TESTING ONLY (default 0): let roomscale and physical crouch accept a head pose OpenXR reports
     // VALID but not TRACKED. A simulated runtime can report an overridden head exactly that way, so
@@ -734,10 +736,12 @@ struct Config
     // Match each campaign's MCC layout; same title order as gesture buttons.
     int flashlight_button[6]{15,15,15,15,15,15}; // legacy migration / unverified-title fallback
     vr_mapping::Overrides vr_bindings[6]{};
-    // Each row's further controls (VR Mappings, "Add a control"), per game.
-    vr_mapping::MoreControls vr_more_controls[6]{vr_mapping::NoMoreControls(),vr_mapping::NoMoreControls(),
-        vr_mapping::NoMoreControls(),vr_mapping::NoMoreControls(),vr_mapping::NoMoreControls(),vr_mapping::NoMoreControls()};
-    // The seat's rows (VR Mappings): each game's Banshee bomb and trick, a list of controls each.
+    // Each row's held-first controls, mode and further inputs (VR Mappings), per game, in the games' order above.
+    vr_mapping::Inputs vr_inputs[6]{vr_mapping::DefaultInputs(GameTitle::Halo3),
+        vr_mapping::DefaultInputs(GameTitle::Halo3ODST),vr_mapping::DefaultInputs(GameTitle::HaloReach),
+        vr_mapping::DefaultInputs(GameTitle::Halo4),vr_mapping::DefaultInputs(GameTitle::HaloCE),
+        vr_mapping::DefaultInputs(GameTitle::Halo2)};
+    // The seat's rows (VR Mappings): each game's Banshee bomb and trick, inputs as a row has.
     vr_mapping::VehicleBindings vr_vehicle_bindings[6]{vr_mapping::kVehicleDefaults,vr_mapping::kVehicleDefaults,
         vr_mapping::kVehicleDefaults,vr_mapping::kVehicleDefaults,vr_mapping::kVehicleDefaults,vr_mapping::kVehicleDefaults};
     // Automatic VR action routing (F1 > Controls): a VR button reaches the game as the action bound to it. Off by
@@ -745,10 +749,9 @@ struct Config
     // the automatic one has known faults.
     bool vr_action_mapping = false;
     char input_preset[64] = "Default"; // input_preset.h; empty: a scheme no preset named
-    // The support trigger with the support grip held on nothing uses equipment. Off: that pull is a free hand's.
+    // Settings the rows' inputs took over (vr_mapping::ConvertSettingsToInputs), read only from a file or preset written
+    // before them: the support trigger gripping air used equipment, and with the hand on the gun zoomed.
     bool trigger_air_equipment = false;
-    // The support trigger with the support hand on the gun zooms (F1 > Controls > Input combinations). Off: that pull is
-    // a free hand's. Beside Zoom's own row, as the one above is beside Equipment's (vr_mapping::ContextSources).
     bool grip_contextual_trigger = false;
     bool flashlight_suppress_on_two_hand = true;
     // Optional temporal upscaler; ordinary eye resolve remains the default.

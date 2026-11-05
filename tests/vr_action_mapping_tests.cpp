@@ -36,47 +36,70 @@ void CheckInputPresets()
     Check(OneHandedGripOnGun(true,true,.25f*.25f),"a grip near a pistol's hand is on it");
     Check(!OneHandedGripOnGun(true,true,.35f*.35f),"far from it, an air grip");
     Check(!OneHandedGripOnGun(false,true,.1f*.1f)&&!OneHandedGripOnGun(true,false,.1f*.1f),"only a one-handed gun, only with the grip held");
-    SupportTriggerContext t;
-    Check(t.Step(false,false,false,false,false,true,true)==0,"no pull");
-    Check(t.Step(true,false,false,false,false,true,true)==Bit(SupportTriggerFree),"a free hand");
-    Check(t.Step(true,true,true,false,false,true,true)==Bit(SupportTriggerFree),"a pull keeps its meaning as the hand moves");
-    t.Step(false,false,false,false,false,true,true);
-    Check(t.Step(true,true,true,false,false,true,true)==Bit(SupportTriggerOnGun),"gripping the gun");
-    Check(t.Step(true,false,false,false,false,true,true)==0,"leaving the gun ends the zoom without a grenade");
-    Check(t.Step(true,false,false,false,false,true,true)==0,"for the rest of the pull");
-    t.Step(false,false,false,false,false,true,true);
-    Check(t.Step(true,false,true,false,false,true,true)==Bit(SupportTriggerOnGun),"a toggled two-hand hold counts with the grip up");
-    t.Step(false,false,false,false,false,true,true);
-    Check(t.Step(true,true,false,false,false,true,true)==Bit(SupportTriggerAir),"gripping air");
-    t.Step(false,false,false,false,false,true,true);
-    Check(t.Step(true,true,false,false,false,true,false)==Bit(SupportTriggerFree),"air off: a free hand");
-    t.Step(false,false,false,false,false,true,true);
-    Check(t.Step(true,false,false,true,false,true,true)==0,"a magazine or holster grip sends nothing");
-    t.Step(false,false,false,false,false,true,true);
-    Check(t.Step(true,true,true,false,true,true,true)==Bit(SupportTriggerFree),"dual wielding or a seat keeps the plain trigger");
-    t.Step(false,false,false,false,false,true,true);
-    Check(t.Step(true,true,true,false,false,false,true)==Bit(SupportTriggerFree),
-        "the gun grip's zoom off: a hand on the gun is a free hand, never an air grip");
     {
-        // The Input combinations beside the rows: Equipment on X still lets an air grip's pull use equipment, and the
-        // gun grip zooms whatever Zoom's own row is.
-        Overrides rows{};rows[Equipment]=X;rows[Zoom]=RightClick;
+        // CHORDS: the gun grip's zoom (hand on the gun + support trigger) and the empty grip's equipment (support grip +
+        // support trigger), as every game's rows hold them, beside Grenade on the plain support trigger.
+        Overrides rows{};rows[Grenade]=SupportTrigger;rows[Equipment]=X;rows[Zoom]=RightClick;
         Transports native{};for(unsigned a=0;a<Count;++a) native[a]=1u<<a;
-        const auto also=ContextSources(true,true);
+        Inputs inputs{};
+        inputs[Zoom].more[0]=kGunZoom;inputs[Equipment].more[0]=kAirEquipment;
         Mapper m;
-        m.ApplyDetailed(0,rows,native,1,true,false,&also);
-        Check(m.ApplyDetailed(Bit(X),rows,native,1,true,false,&also).Has(Equipment),"X is Equipment's own button");
-        m.ApplyDetailed(0,rows,native,1,true,false,&also);
-        Check(m.ApplyDetailed(Bit(SupportTriggerAir),rows,native,1,true,false,&also).Has(Equipment),
-            "and an air grip's pull uses equipment beside it");
-        m.ApplyDetailed(0,rows,native,1,true,false,&also);
-        const auto gun=m.ApplyDetailed(Bit(SupportTriggerOnGun),rows,native,1,true,false,&also);
-        Check(gun.Has(Zoom)&&!gun.Has(Equipment),"the gun grip zooms, beside the stick click");
-        const auto none=ContextSources(false,false);
-        Mapper off;
-        off.ApplyDetailed(0,rows,native,1,true,false,&none);
-        Check(!off.ApplyDetailed(Bit(SupportTriggerAir)|Bit(SupportTriggerOnGun),rows,native,1,true,false,&none).actions,
-            "both off: the contexts press nothing");
+        const auto step=[&](uint32_t sources,const PollOptions& poll={})
+        { return m.ApplyDetailed(sources,rows,native,1,true,false,nullptr,&inputs,poll); };
+        step(0);
+        Check(step(Bit(SupportTrigger)).Has(Grenade),"a free hand's pull is the plain trigger");
+        Check(!step(Bit(SupportTrigger)|Bit(HandOnGun)).Has(Zoom),"a hand arriving on the gun mid-pull starts nothing");
+        step(0);
+        step(Bit(HandOnGun));
+        auto gun=step(Bit(HandOnGun)|Bit(SupportTrigger));
+        Check(gun.Has(Zoom)&&!gun.Has(Grenade),"on the gun, the pull zooms and throws no grenade");
+        gun=step(Bit(SupportTrigger));
+        Check(!gun.Has(Zoom)&&!gun.Has(Grenade),"leaving the gun ends the zoom, and that pull throws nothing either");
+        step(0);
+        step(Bit(SupportGrip));
+        auto air=step(Bit(SupportGrip)|Bit(SupportTrigger));
+        Check(air.Has(Equipment)&&!air.Has(Grenade),"gripping air, the pull uses equipment");
+        Check(step(Bit(X)|Bit(SupportGrip)|Bit(SupportTrigger)).Has(Equipment),"and X is still Equipment's own");
+        step(0);
+        PollOptions plain;plain.heldOk=~(Bit(SupportGrip)|Bit(HandOnGun));
+        step(Bit(SupportGrip)|Bit(HandOnGun),plain);
+        auto seat=step(Bit(SupportGrip)|Bit(HandOnGun)|Bit(SupportTrigger),plain);
+        Check(seat.Has(Grenade)&&!seat.Has(Equipment)&&!seat.Has(Zoom),"a seat or two guns keep the plain trigger");
+        step(0);
+        PollOptions onGun;onGun.heldOk=~Bit(SupportGrip);
+        step(Bit(SupportGrip)|Bit(HandOnGun),onGun);
+        auto pistol=step(Bit(SupportGrip)|Bit(HandOnGun)|Bit(SupportTrigger),onGun);
+        Check(pistol.Has(Zoom)&&!pistol.Has(Equipment),"a grip on the gun is no air grip");
+        step(0);
+        PollOptions out;out.forced=1u<<Zoom;
+        Check(step(0,out).Has(Zoom),"a forced action (zoom pressed out) presses whatever the controls");
+        // TOGGLE: the right stick down crouches, and down again stands; leaving the feet stands the player up.
+        Inputs stick=DefaultInputs(GameTitle::Halo3);
+        Mapper t;
+        const auto stepStick=[&](uint32_t sources,bool standUp=false)
+        {
+            PollOptions poll;poll.standUp=standUp;
+            return t.ApplyDetailed(sources,Overrides{},native,1,true,false,nullptr,&stick,poll);
+        };
+        stepStick(0);
+        Check(stepStick(Bit(RightStickDown)).Has(Crouch),"down crouches");
+        Check(stepStick(0).Has(Crouch),"and the crouch stays with the stick back");
+        t.ApplyDetailed(0,Overrides{},native,1,false,false,nullptr,&stick);
+        Check(stepStick(0).Has(Crouch),"a pause keeps the crouch");
+        Check(!stepStick(Bit(RightStickDown)).Has(Crouch),"down again stands");
+        stepStick(0);
+        Check(stepStick(Bit(RightStickUp)).Has(Equipment)&&!stepStick(0).Has(Equipment),
+            "Halo 3's stick up holds the equipment while up");
+        stepStick(Bit(RightStickDown));stepStick(0);
+        Check(!stepStick(0,true).Has(Crouch),"leaving the feet stands the player up");
+        Mapper own;
+        PollOptions ownOnly;ownOnly.ownOnly=true;
+        own.ApplyDetailed(0,rows,native,1,true,false,nullptr,&inputs,ownOnly);
+        Check(!own.ApplyDetailed(Bit(SupportTrigger)|Bit(X),rows,native,1,true,false,nullptr,&inputs,ownOnly).actions,
+            "remapping off: no row's gamepad controls act");
+        own.ApplyDetailed(0,Overrides{},native,1,true,false,nullptr,&stick,ownOnly);
+        Check(own.ApplyDetailed(Bit(RightStickDown),Overrides{},native,1,true,false,nullptr,&stick,ownOnly).Has(Crouch),
+            "but the stick's inputs do");
         // Rows saved while the contexts were rows' choices become the settings they stood for.
         Overrides old{};old[Zoom]=SupportTriggerOnGun;old[Equipment]=SupportTriggerAir;old[Grenade]=SupportTriggerFree;
         old[Fire]=SupportTriggerAir;
@@ -86,7 +109,40 @@ void CheckInputPresets()
             "old context rows: gun zoom and air equipment on, the rows Automatic, a free hand the plain trigger");
         Check(!ConvertContextRows(old,gunZoom,airEquipment),"converted rows stay as they are");
         for(int source=Automatic;source<SourceCount;++source)
-            Check(ContextSource(source)==(source>=kRowSourceCount),"the context sources are the ones past the rows' choices");
+        {
+            Check(ContextSource(source)==(source>=kRowSourceCount&&source<HandOnGun),
+                "the context sources are the three past the rows' first choices");
+            Check(ListedSource(source)==(source!=Automatic&&!ContextSource(source)),"a row lists every other but Automatic");
+        }
+        // A file from before the rows held inputs: the settings become the inputs they stood for.
+        Inputs converted=DefaultInputs(GameTitle::HaloReach);
+        ConvertSettingsToInputs(converted,GameTitle::HaloReach,true,true,true);
+        Check(converted[Zoom].more[0]==kGunZoom&&converted[Equipment].more[1]==kAirEquipment&&
+            converted[Equipment].more[0]==kStickUp&&converted[Crouch].more[0]==kStickCrouch,
+            "Reach's stick, gun zoom and empty-grip equipment, as inputs");
+        Inputs noEquipment=DefaultInputs(GameTitle::Halo2);
+        ConvertSettingsToInputs(noEquipment,GameTitle::Halo2,false,false,true);
+        Check(noEquipment==Inputs{},"right stick off takes its inputs away, and a game without equipment adds none");
+        ConvertSettingsToInputs(converted,GameTitle::HaloReach,true,true,true);
+        Check(converted[Zoom].more[1]==Input{},"converting twice adds nothing twice");
+        // An input's text in a file.
+        char text[32];
+        FormatInput(text,kAirEquipment.held,kAirEquipment.press,kAirEquipment.mode);
+        Check(!std::strcmp(text,"5+3"),"held controls, then the press");
+        FormatInput(text,kStickCrouch.held,kStickCrouch.press,kStickCrouch.mode);
+        Check(!std::strcmp(text,"21 toggle"),"a toggle says so");
+        HeldControls held=kNoneHeld;int press=Unbound;InputMode mode=InputMode::Hold;
+        Check(ParseInput("19+3",held,press,mode,false)&&held[0]==HandOnGun&&press==SupportTrigger&&mode==InputMode::Hold,
+            "a chord reads back");
+        Check(ParseInput(" 5 + 19 + 3 toggle\r\n",held,press,mode,false)&&held[1]==HandOnGun&&mode==InputMode::Toggle,
+            "with spaces and a toggle");
+        Check(!ParseInput("5+19+3+4",held,press,mode,false)&&!ParseInput("0",held,press,mode,false)&&
+            !ParseInput("17",held,press,mode,false)&&!ParseInput("1+3",held,press,mode,false)&&
+            !ParseInput("3 sometimes",held,press,mode,false)&&!ParseInput("",held,press,mode,false),
+            "too many, Automatic, an old context, an empty held control or a strange word is refused");
+        Check(press==SupportTrigger&&held[1]==HandOnGun,"and a refusal leaves what was there");
+        Check(ParseInput("0",held,press,mode,true)&&press==Automatic&&ParseInput("17",held,press,mode,true)&&press==17,
+            "a row's own press may be Automatic or an old context, to convert");
     }
 
     {
@@ -145,8 +201,9 @@ void CheckInputPresets()
     }
 
     Config scheme{};
-    scheme.turn_smooth=false;scheme.vr_action_mapping=true;scheme.trigger_air_equipment=true;scheme.turn_snap_deg=45.f;
-    scheme.grip_contextual_trigger=true;scheme.vr_bindings[3][Zoom]=RightClick;scheme.world_scale=9.f;
+    scheme.turn_smooth=false;scheme.vr_action_mapping=true;scheme.turn_snap_deg=45.f;
+    scheme.vr_bindings[3][Zoom]=RightClick;scheme.world_scale=9.f;
+    AddInput(scheme.vr_inputs[3][Zoom],kGunZoom);
     Config loaded{};
     input_preset::Parse(input_preset::Serialize(scheme).c_str(),loaded);
     Check(input_preset::SameScheme(loaded,scheme),"a preset round trips");
@@ -176,25 +233,27 @@ void CheckInputPresets()
     Config kept{};
     kept.world_scale=2.f;
     input_preset::CopyScheme(kept,scheme);
-    Check(kept.world_scale==2.f&&kept.vr_bindings[3][Zoom]==RightClick&&kept.grip_contextual_trigger,
+    Check(kept.world_scale==2.f&&kept.vr_bindings[3][Zoom]==RightClick&&kept.vr_inputs[3][Zoom].more[0]==kGunZoom,
         "applying a preset leaves the rest alone");
-    // The seat's rows: two controls each, kept in a preset; a control held as the seat comes up waits for its release.
+    // The seat's rows: inputs as a row has, kept in a preset; a control held as the seat comes up waits for its release.
     {
         Config seat{};
-        Check(seat.vr_vehicle_bindings[0][BansheeBomb][0]==PrimaryGrip&&seat.vr_vehicle_bindings[0][BansheeBomb][1]==RightClick&&
-            seat.vr_vehicle_bindings[5][BansheeTrick][0]==A&&seat.vr_vehicle_bindings[5][BansheeTrick][1]==Unbound,
+        Check(seat.vr_vehicle_bindings[0][BansheeBomb][0].press==PrimaryGrip&&
+            seat.vr_vehicle_bindings[0][BansheeBomb][1].press==RightClick&&
+            seat.vr_vehicle_bindings[5][BansheeTrick][0].press==A&&seat.vr_vehicle_bindings[5][BansheeTrick][1]==Input{},
             "the Banshee bomb starts on the weapon grip and the right stick click, its trick on A");
-        seat.vr_vehicle_bindings[5][BansheeTrick][1]=DpadUp;
+        seat.vr_vehicle_bindings[5][BansheeTrick][1]=Input{{SupportGrip,Unbound},DpadUp,InputMode::Toggle};
         Config seatLoaded{};
         input_preset::Parse(input_preset::Serialize(seat).c_str(),seatLoaded);
-        Check(input_preset::SameScheme(seatLoaded,seat)&&seatLoaded.vr_vehicle_bindings[5][BansheeTrick][1]==DpadUp,
-            "a seat row's second control round trips in a preset");
+        Check(input_preset::SameScheme(seatLoaded,seat)&&
+            seatLoaded.vr_vehicle_bindings[5][BansheeTrick][1]==seat.vr_vehicle_bindings[5][BansheeTrick][1],
+            "a seat row's chord round trips in a preset");
         Check(!input_preset::SameScheme(seatLoaded,Config{}),"a moved seat row is another scheme");
         Config copied{};
         input_preset::CopyScheme(copied,seat);
-        Check(copied.vr_vehicle_bindings[5][BansheeTrick][1]==DpadUp,"applying a preset moves the seat rows too");
+        Check(copied.vr_vehicle_bindings[5][BansheeTrick][1].press==DpadUp,"applying a preset moves the seat rows too");
         Config refused{};
-        input_preset::Parse("vr_bind_halo3_banshee_bomb = 0\nvr_bind_halo3_banshee_bomb_2 = 17\n",refused);
+        input_preset::Parse("vr_inputs_version = 1\nvr_bind_halo3_banshee_bomb = 0\nvr_bind_halo3_banshee_bomb_2 = 17\n",refused);
         Check(refused.vr_vehicle_bindings[0][BansheeBomb]==kVehicleDefaults[BansheeBomb],
             "a seat row takes neither Automatic nor the support trigger's contexts");
         Check(NativeVehicleAction(GameTitle::Halo3,BansheeBomb)==0x0A&&NativeVehicleAction(GameTitle::Halo3,BansheeTrick)==0x1E&&
@@ -202,7 +261,7 @@ void CheckInputPresets()
             NativeVehicleAction(GameTitle::HaloReach,BansheeBomb)==0x0A&&NativeVehicleAction(GameTitle::Halo4,BansheeTrick)==0x0D&&
             NativeVehicleAction(GameTitle::HaloCE,BansheeBomb)==kNoAction&&NativeVehicleAction(GameTitle::None,BansheeTrick)==kNoAction,
             "each game's own seat actions, and none where a game has no Banshee row");
-        const VehicleBindings rows=kVehicleDefaults;
+        VehicleBindings rows=kVehicleDefaults;
         VehicleTransports native{};
         native[BansheeBomb]=0x2000;native[BansheeTrick]=1u<<16;
         VehicleMapper m;
@@ -210,20 +269,27 @@ void CheckInputPresets()
         Check(m.Apply(Bit(PrimaryGrip),true,rows,native)==0,"a grip held as the seat comes up drops nothing");
         Check(m.Apply(0,true,rows,native)==0&&m.Apply(Bit(PrimaryGrip),true,rows,native)==0x2000,
             "squeezed again in the seat, it drops the bomb");
-        Check(m.Apply(Bit(RightClick),true,rows,native)==0x2000,"so does the bomb's second control");
+        Check(m.Apply(Bit(RightClick),true,rows,native)==0x2000,"so does the bomb's second input");
         Check(m.Apply(Bit(RightClick)|Bit(A),true,rows,native)==(0x2000|(1u<<16)),"the bomb and the trick together");
         Check(m.Apply(Bit(B),true,rows,native)==0,"a control no seat row takes presses nothing");
         Check(m.Apply(Bit(A),true,rows,VehicleTransports{})==0,"a game without the action presses nothing for it");
         Check(m.Apply(Bit(A),false,rows,native)==0&&m.Apply(Bit(A),true,rows,native)==0,
             "leaving the seat arms the held-control check again");
+        rows[BansheeBomb][0]=Input{{SupportGrip,Unbound},SupportTrigger,InputMode::Hold};
+        VehicleMapper chord;
+        chord.Apply(0,true,rows,native);
+        chord.Apply(Bit(SupportGrip),true,rows,native);
+        Check(chord.Apply(Bit(SupportGrip)|Bit(SupportTrigger),true,rows,native)==0x2000,"a seat row's chord drops the bomb");
+        Check(VehicleControlBits(rows[BansheeBomb])==(Bit(SupportGrip)|Bit(SupportTrigger)|Bit(RightClick)),
+            "a seat row's controls, held first and pressed");
     }
-    // A row's further controls: any of them presses the action; they count for flashlight suppression, the bridge's
-    // split and Halo 2's Use, and are kept in presets and the config.
+    // A row's further inputs: any of them presses the action; they count for flashlight suppression, the bridge's split
+    // and Halo 2's Use, and are kept in presets and the config.
     {
         Overrides rows{};
         rows[Fire]=PrimaryTrigger;rows[Flashlight]=DpadUp;rows[Reload]=X;rows[Interact]=X;
-        MoreControls more=NoMoreControls();
-        more[Fire][0]=A;more[Flashlight][0]=SupportGrip;
+        Inputs more{};
+        more[Fire].more[0]=Input{kNoneHeld,A};more[Flashlight].more[0]=Input{kNoneHeld,SupportGrip};
         Check(ControlBits(Fire,rows,&more)==(Bit(PrimaryTrigger)|Bit(A))&&ControlBits(Fire,rows,nullptr)==Bit(PrimaryTrigger)&&
             ControlBits(Jump,rows,&more)==Bit(A),"an action's controls are its own (Automatic its default) and its further ones");
         Transports native{};
@@ -231,44 +297,62 @@ void CheckInputPresets()
         native[Interact]=0x4000;
         Mapper mapper;
         mapper.ApplyDetailed(0,rows,native,1,true,false,nullptr,&more);
-        Check(mapper.ApplyDetailed(Bit(A),rows,native,1,true,false,nullptr,&more).Has(Fire),"a further control fires");
+        Check(mapper.ApplyDetailed(Bit(A),rows,native,1,true,false,nullptr,&more).Has(Fire),"a further input fires");
         Check(mapper.ApplyDetailed(Bit(PrimaryTrigger),rows,native,1,true,false,nullptr,&more).Has(Fire),
             "and the row's own still does");
         mapper.ApplyDetailed(0,rows,native,1,true,true,nullptr,&more);
         Check(!mapper.ApplyDetailed(Bit(SupportGrip),rows,native,1,true,true,nullptr,&more).Has(Flashlight),
-            "flashlight suppression covers a further control");
-        MoreControls changed=more;changed[Jump][0]=B;
+            "flashlight suppression covers a further input");
+        Inputs changed=more;changed[Jump].more[0]=Input{kNoneHeld,B};
         Check(!mapper.ApplyDetailed(Bit(A),rows,native,1,true,false,nullptr,&changed).Has(Fire),
-            "changing a further control latches what is held");
-        Check(!(BridgeOnlyActions(native,rows,&more)&(1u<<Reload)),"Reload and Use on the same controls share the button");
-        MoreControls apart=more;apart[Interact][0]=B;
+            "changing an input latches what is held");
+        Check(!(BridgeOnlyActions(native,rows,&more)&(1u<<Reload)),"Reload and Use on the same inputs share the button");
+        Inputs apart=more;apart[Interact].more[0]=Input{kNoneHeld,B};
         Check((BridgeOnlyActions(native,rows,&apart)&(1u<<Reload))!=0,
-            "a further control on Use alone puts Reload and Use on different controls: the bridge");
+            "a further input on Use alone puts Reload and Use on different inputs: the bridge");
+        Inputs held=more;held[Interact].held={SupportGrip,Unbound};
+        Check((BridgeOnlyActions(native,rows,&held)&(1u<<Reload))!=0,"a control held first makes another input too");
         Transports h2{};h2[Reload]=0x2000;
         Check(CarryingTransports(GameTitle::Halo2,h2,&rows,&more)[Interact]==0x2000&&
             !CarryingTransports(GameTitle::Halo2,h2,&rows,&apart)[Interact],
-            "Halo 2's Use rides Reload's button only while every control of theirs is shared");
+            "Halo 2's Use rides Reload's button only while their inputs are the same");
         Config scheme{};
-        scheme.vr_more_controls[2][Jump]={DpadDown,B,Unbound};
+        scheme.vr_inputs[2][Jump].more={Input{kNoneHeld,DpadDown},Input{{HandOnGun,Unbound},B,InputMode::Toggle},Input{}};
+        scheme.vr_inputs[2][Fire].held={SupportGrip,Unbound};scheme.vr_inputs[2][Fire].mode=InputMode::Toggle;
         Config loaded{};
         input_preset::Parse(input_preset::Serialize(scheme).c_str(),loaded);
-        Check(input_preset::SameScheme(loaded,scheme)&&loaded.vr_more_controls[2][Jump][1]==B&&
-            loaded.vr_more_controls[0][Jump]==kNoMore,"further controls round trip in a preset");
-        Check(!input_preset::SameScheme(loaded,Config{}),"a further control is another scheme");
+        Check(input_preset::SameScheme(loaded,scheme)&&loaded.vr_inputs[2][Jump].more[1].held[0]==HandOnGun&&
+            loaded.vr_inputs[2][Fire].mode==InputMode::Toggle&&loaded.vr_inputs[0]==DefaultInputs(GameTitle::Halo3),
+            "inputs round trip in a preset, a row's own held controls and mode too");
+        Check(!input_preset::SameScheme(loaded,Config{}),"a further input is another scheme");
+        Config cleared{};
+        cleared.vr_inputs[3][Sprint].more[0]=Input{};
+        Config clearedLoaded{};
+        input_preset::Parse(input_preset::Serialize(cleared).c_str(),clearedLoaded);
+        Check(clearedLoaded.vr_inputs[3][Sprint].more[0]==Input{},"a removed starting input stays removed");
         Config refused{};
-        input_preset::Parse("vr_bind_halo3_fire_2 = 0\nvr_bind_halo3_fire_3 = 17\nvr_bind_halo3_fire_4 = 6\n",refused);
-        Check(refused.vr_more_controls[0][Fire][0]==Unbound&&refused.vr_more_controls[0][Fire][1]==Unbound&&
-            refused.vr_more_controls[0][Fire][2]==A,"a further control takes neither Automatic nor a context");
+        input_preset::Parse("vr_inputs_version = 1\nvr_bind_halo3_fire_2 = 0\nvr_bind_halo3_fire_3 = 17\n"
+            "vr_bind_halo3_fire_4 = 6\n",refused);
+        Check(refused.vr_inputs[0][Fire].more[0].press==Unbound&&refused.vr_inputs[0][Fire].more[1].press==Unbound&&
+            refused.vr_inputs[0][Fire].more[2].press==A,"a further input takes neither Automatic nor a context");
     }
-    Config legacy{};legacy.grip_contextual_trigger=true;
+    // Presets from before the rows held inputs: old context rows, then the settings that followed them, become inputs.
+    Config legacy{};
     input_preset::Parse("trigger_air_equipment = 0\nvr_bind_halo3_zoom = 17\nvr_bind_reach_equipment = 18\n"
-        "vr_bind_halo4_grenade = 16\n",legacy);
-    Check(legacy.grip_contextual_trigger&&legacy.trigger_air_equipment&&legacy.vr_bindings[0][Zoom]==Automatic&&
-        legacy.vr_bindings[2][Equipment]==Automatic&&legacy.vr_bindings[3][Grenade]==SupportTrigger,
-        "an older preset's context rows become its Input combinations");
-    Config legacyPlain{};legacyPlain.grip_contextual_trigger=true;
+        "vr_bind_halo4_grenade = 16\nright_stick_crouch = 1\n",legacy);
+    Check(legacy.vr_bindings[0][Zoom]==Automatic&&legacy.vr_bindings[2][Equipment]==Automatic&&
+        legacy.vr_bindings[3][Grenade]==SupportTrigger&&legacy.vr_inputs[0][Zoom].more[0]==kGunZoom&&
+        legacy.vr_inputs[2][Equipment].more[1]==kAirEquipment&&legacy.vr_inputs[2][Equipment].more[0]==kStickUp,
+        "an older preset's context rows become the inputs they stood for");
+    Config legacySettings{};
+    input_preset::Parse("grip_contextual_trigger = 1\ntrigger_air_equipment = 1\nright_stick_crouch = 0\n",legacySettings);
+    Check(legacySettings.vr_inputs[3][Zoom].more[0]==kGunZoom&&legacySettings.vr_inputs[3][Equipment].more[0]==kAirEquipment&&
+        legacySettings.vr_inputs[3][Crouch].more[0]==Input{}&&legacySettings.vr_inputs[3][Sprint].more[0]==Input{},
+        "the settings that followed them become inputs, right stick off taking its inputs away");
+    Config legacyPlain{};
     input_preset::Parse("vr_bind_halo3_zoom = 11\n",legacyPlain);
-    Check(!legacyPlain.grip_contextual_trigger,"an older preset without the gun zoom row has it off");
+    Check(legacyPlain.vr_inputs[0][Zoom].more[0]==Input{}&&legacyPlain.vr_inputs[0]==DefaultInputs(GameTitle::Halo3),
+        "an older preset without the gun zoom has none");
     Config missing{};
     input_preset::Parse("# only one key\nturn_snap_deg = 15\nvr_bind_halo3_fire = 999\n",missing);
     Check(missing.turn_snap_deg==15.f&&missing.vr_bindings[0][Fire]==Automatic&&missing.turn_smooth==Config{}.turn_smooth,
@@ -282,7 +366,7 @@ void CheckInputPresets()
     Check(input_preset::SameScheme(described,scheme),"a description never reads as a setting");
     Config def{},plain{};
     input_preset::BuiltIn(0,def);
-    Check(input_preset::SameScheme(def,plain)&&!def.vr_action_mapping&&!def.trigger_air_equipment,"Default is the canon: nothing remapped");
+    Check(input_preset::SameScheme(def,plain)&&!def.vr_action_mapping&&def.vr_inputs[0]==DefaultInputs(GameTitle::Halo3),"Default is the canon: nothing remapped, the stick as every game starts");
     Config vr{};
     input_preset::BuiltIn(1,vr);
     Check(vr.vr_action_mapping&&vr.vr_bindings[2][Jump]==kDefaults[Jump],"the VR layout is written out in full");
@@ -686,18 +770,36 @@ int main()
     Check(!g_config.disable_autoexposure_odst,"ODST exposure is native by default");
     {std::ofstream file(path);file<<"vr_bind_halo3_banshee_bomb_2 = 12\nvr_bind_halo2_banshee_trick = 0\n";}
     ConfigLoad(path.c_str());
-    Check(g_config.vr_vehicle_bindings[0][BansheeBomb][0]==PrimaryGrip&&g_config.vr_vehicle_bindings[0][BansheeBomb][1]==DpadUp&&
-        g_config.vr_vehicle_bindings[5][BansheeTrick][0]==A,"a seat row's second control loads, and Automatic is refused");
+    Check(g_config.vr_vehicle_bindings[0][BansheeBomb][0].press==PrimaryGrip&&
+        g_config.vr_vehicle_bindings[0][BansheeBomb][1].press==DpadUp&&g_config.vr_vehicle_bindings[5][BansheeTrick][0].press==A,
+        "a seat row's second input loads, and Automatic is refused");
     ConfigSave();ConfigLoad(path.c_str());
-    Check(g_config.vr_vehicle_bindings[0][BansheeBomb][1]==DpadUp&&g_config.vr_vehicle_bindings[1][BansheeBomb]==kVehicleDefaults[BansheeBomb],
-        "the seat rows survive save and reload");
-    {std::ofstream file(path);file<<"vr_bind_reach_jump_2 = 7\nvr_bind_reach_jump_4 = 12\nvr_bind_ce_melee_3 = 0\n";}
+    Check(g_config.vr_vehicle_bindings[0][BansheeBomb][1].press==DpadUp&&
+        g_config.vr_vehicle_bindings[1][BansheeBomb]==kVehicleDefaults[BansheeBomb],"the seat rows survive save and reload");
+    {std::ofstream file(path);file<<"vr_inputs_version = 1\nvr_bind_reach_jump_2 = 7\nvr_bind_reach_jump_4 = 19+12 toggle\n"
+        "vr_bind_ce_melee_3 = 0\nvr_bind_reach_fire = 5+2\n";}
     ConfigLoad(path.c_str());
-    Check(g_config.vr_more_controls[2][Jump][0]==B&&g_config.vr_more_controls[2][Jump][2]==DpadUp&&
-        g_config.vr_more_controls[4][Melee][1]==Unbound,"a row's further controls load, and Automatic is refused");
+    const RowInputs jump=g_config.vr_inputs[2][Jump];
+    Check(jump.more[0].press==B&&jump.more[2].press==DpadUp&&jump.more[2].held[0]==HandOnGun&&
+        jump.more[2].mode==InputMode::Toggle&&g_config.vr_inputs[4][Melee].more[1].press==Unbound&&
+        g_config.vr_bindings[2][Fire]==PrimaryTrigger&&g_config.vr_inputs[2][Fire].held[0]==SupportGrip,
+        "a row's inputs load, chords and toggles too, and Automatic is refused");
     ConfigSave();ConfigLoad(path.c_str());
-    Check(g_config.vr_more_controls[2][Jump][0]==B&&g_config.vr_more_controls[2][Jump][2]==DpadUp&&
-        g_config.vr_more_controls[0][Jump]==kNoMore,"a row's further controls survive save and reload");
+    Check(g_config.vr_inputs[2][Jump]==jump&&g_config.vr_inputs[2][Fire].held[0]==SupportGrip&&
+        g_config.vr_inputs[0]==DefaultInputs(GameTitle::Halo3),"a row's inputs survive save and reload");
+    // A file from before the rows held inputs: the right stick and the two Input combinations become inputs, once.
+    {std::ofstream file(path);file<<"right_stick_crouch = 1\ngrip_contextual_trigger = 1\ntrigger_air_equipment = 1\n";}
+    ConfigLoad(path.c_str());
+    Check(g_config.vr_inputs[0][Zoom].more[0]==kGunZoom&&g_config.vr_inputs[0][Equipment].more[0]==kStickUp&&
+        g_config.vr_inputs[0][Equipment].more[1]==kAirEquipment&&g_config.vr_inputs[5][Equipment].more[0]==Input{},
+        "the old settings become inputs: Halo 3's stick, gun zoom and empty-grip equipment; Halo 2 has no equipment");
+    ConfigSave();ConfigLoad(path.c_str());
+    Check(g_config.vr_inputs[0][Zoom].more[0]==kGunZoom&&g_config.vr_inputs[0][Zoom].more[1]==Input{}&&
+        g_config.vr_inputs[0][Equipment].more[2]==Input{},"and saved once converted, they convert no more");
+    {std::ofstream file(path);file<<"right_stick_crouch = 0\n";}
+    ConfigLoad(path.c_str());
+    Check(g_config.vr_inputs[3][Crouch].more[0]==Input{}&&g_config.vr_inputs[3][Sprint].more[0]==Input{},
+        "right stick off in an old file takes the stick's inputs away");
     {std::ofstream file(path);file<<"bloom_enabled_odst = 1\nbloom_enabled_reach = 1\n";}
     ConfigLoad(path.c_str());
     Check(g_config.bloom_enabled[1]&&g_config.bloom_enabled[2]&&!g_config.bloom_chosen[1]&&!g_config.bloom_chosen[2],
