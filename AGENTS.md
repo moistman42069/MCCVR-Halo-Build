@@ -183,3 +183,22 @@ explicit headset acceptance.
 When a runtime failure is being diagnosed, compare the new log against the
 preserved log in `out/deploy-backups/<hash>-before-<hash>/HaloMCCVR.log`. Do not
 theorize past a log that disagrees.
+
+## Releasing
+
+Before a build is published (a GitHub release, its notes, or a PR that changes
+what players see), check the player-facing documents against that exact build,
+and fix what is wrong in the same release:
+
+- `README.md`, `TROUBLESHOOTING.md`, `src/launcher/README.md` and the release
+  notes.
+- Every setting, button and menu named still exists under that name and path
+  (F1 tab › section › control, launcher buttons), and every default given is
+  the build's own.
+- Every file, log line and config key quoted is one the build writes or reads.
+- Each troubleshooting entry still applies. Reword or drop an entry the build
+  fixes, and add any problem players reported since the last release that has
+  a known workaround.
+- Players open `TROUBLESHOOTING.md` on GitHub from the launcher's
+  Troubleshooting link, not from the ZIP, so push its corrections with the
+  release.
