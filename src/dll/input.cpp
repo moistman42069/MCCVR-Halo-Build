@@ -541,12 +541,20 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             (void)Game_GestureMeleeInput(GetTickCount64()); // drains a pending gesture pulse
             g_pauseChord.Reset();
             g_startPulseUntilMs.store(0);
-            const WORD confirm=pointerConfirm&&
-                (pad.a||(state->Gamepad.wButtons&XINPUT_GAMEPAD_A))?XINPUT_GAMEPAD_A:0;
+            // The native menu pointer's face buttons (ExclusiveInputHolds): the menu's own A, B, X and Y.
+            WORD face=0;
+            if(pointerConfirm)
+            {
+                face=state->Gamepad.wButtons&(XINPUT_GAMEPAD_A|XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_X|XINPUT_GAMEPAD_Y);
+                if(pad.a) face|=XINPUT_GAMEPAD_A;
+                if(pad.b) face|=XINPUT_GAMEPAD_B;
+                if(pad.x) face|=XINPUT_GAMEPAD_X;
+                if(pad.y) face|=XINPUT_GAMEPAD_Y;
+            }
             state->Gamepad={};
-            state->Gamepad.wButtons=confirm;
+            state->Gamepad.wButtons=face;
 #if HALOMCCVR_DEV_DIAGNOSTICS
-            g_witness.mapper = confirm;   // native menu pointer's A confirm
+            g_witness.mapper = face;   // native menu pointer's face buttons
 #endif
             if(pad.thumbrestDpad)
             {

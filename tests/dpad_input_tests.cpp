@@ -260,8 +260,8 @@ int main()
         p.thumbrestDpad=!pointer;p.dpadY=.9f;
         holds.ApplyVr(p,true,pointer);
         Check(p.valid&&!p.moveY&&!p.turnX&&!p.trigR&&!p.gripL&&p.a==pointer&&
-            !p.b&&!p.x&&!p.y&&!p.clickL&&!p.clickR&&!p.menu&&!p.weaponButtons,
-            "pointer preserves A only; D-pad suppresses all other gameplay without disconnecting controllers");
+            p.b==pointer&&p.x==pointer&&p.y==pointer&&!p.clickL&&!p.clickR&&!p.menu&&!p.weaponButtons,
+            "pointer preserves A, B, X and Y only; D-pad suppresses all other gameplay without disconnecting controllers");
         Check(p.dpadY==.9f,"D-pad direction survives exclusive filtering");
         p.moveY=1;p.turnX=.8f;p.trigR=1;p.gripL=1;p.a=p.menu=true;
         holds.ApplyVr(p,false);
@@ -272,8 +272,9 @@ int main()
         Check(p.moveY==1&&p.trigR==1&&p.a,"release then fresh input resumes normally");
         XINPUT_GAMEPAD raw{};raw.wButtons=0xffff;raw.sThumbLX=31000;raw.sThumbRY=-29000;
         raw.bLeftTrigger=raw.bRightTrigger=255;physical.ApplyPhysical(raw,true,pointer);
-        Check(raw.wButtons==(pointer?XINPUT_GAMEPAD_A:0)&&!raw.sThumbLX&&!raw.sThumbRY&&!raw.bLeftTrigger&&!raw.bRightTrigger,
-            "physical pointer confirmation passes A only; D-pad still suppresses it");
+        constexpr WORD face=XINPUT_GAMEPAD_A|XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_X|XINPUT_GAMEPAD_Y;
+        Check(raw.wButtons==(pointer?face:0)&&!raw.sThumbLX&&!raw.sThumbRY&&!raw.bLeftTrigger&&!raw.bRightTrigger,
+            "physical pointer passes A, B, X and Y only; D-pad still suppresses them");
         raw.wButtons=0xffff;raw.sThumbLX=31000;raw.bRightTrigger=255;physical.ApplyPhysical(raw,false);
         Check(!raw.wButtons&&!raw.sThumbLX&&!raw.bRightTrigger,"physical holds drain independently");
     }
