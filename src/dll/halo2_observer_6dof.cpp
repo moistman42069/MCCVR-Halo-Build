@@ -7530,6 +7530,18 @@ bool Halo2Observer6Dof_ZoomReaderInstalled() noexcept
         g_halo2Drive.zoomProven.load(std::memory_order_acquire);
 }
 
+bool Halo2Observer6Dof_AimFrameForward(float forward[3]) noexcept
+{
+    Halo2ObserverPosePublication publication{};
+    Halo2CameraBasis rightCarrier{}, leftCarrier{};
+    float head[3]{}, eye[3]{};
+    const uint32_t generation = g_generation.load(std::memory_order_acquire);
+    return forward && generation && Halo2Observer6Dof_ReadPublishedPose(publication) &&
+        BuildStableFirstPersonCarriers(publication, generation, rightCarrier, leftCarrier,
+                                       Halo2SupportCarrierMustDetach(publication)) &&
+        Halo2SightGeometry(publication, rightCarrier, head, forward, eye);
+}
+
 bool Halo2Observer6Dof_BuildScopeCamera(Halo2CameraBasis& camera) noexcept
 {
     Halo2ObserverPosePublication p{};Halo2CameraBasis primary{},secondary{};
@@ -7901,6 +7913,7 @@ uint8_t Halo2Observer6Dof_FirstPersonCamera() noexcept { return 0; }   // fp_vie
 bool Halo2Observer6Dof_BuildScopeCamera(Halo2CameraBasis&) noexcept { return false; }
 bool Halo2Observer6Dof_ReadStockVerticalFov(float&) noexcept { return false; }
 bool Halo2Observer6Dof_ZoomReaderInstalled() noexcept { return false; }
+bool Halo2Observer6Dof_AimFrameForward(float[3]) noexcept { return false; }
 bool Halo2Observer6Dof_OnFootFresh() noexcept { return false; }
 void* Halo2Observer6Dof_ReloadWeapon(uint32_t) noexcept { return nullptr; }
 bool Halo2Observer6Dof_WorldCollisionActive() noexcept { return false; }

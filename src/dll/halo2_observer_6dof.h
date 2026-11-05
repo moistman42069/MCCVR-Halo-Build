@@ -126,6 +126,9 @@ bool Halo2Observer6Dof_BuildScopeCamera(Halo2CameraBasis& camera) noexcept;
 // whether the player's zoom level is read (the control-update hook, with the game's zoom getter proven against it).
 bool Halo2Observer6Dof_ReadStockVerticalFov(float& radians) noexcept;
 bool Halo2Observer6Dof_ZoomReaderInstalled() noexcept;
+// The frame's aim: the eye-anchored intent ray the drive writes the game's aim from, with the carrier the aim uses.
+// Halo 2 publishes no shared sight ray, so without this the frame would look along another title's last aim.
+bool Halo2Observer6Dof_AimFrameForward(float forward[3]) noexcept;
 void Halo2Observer6Dof_SetMeasuredFirstPersonViewingCamera(
     const Halo2CameraBasis& viewing, bool admitCompensation) noexcept;
 

@@ -2701,7 +2701,10 @@ namespace
         // window's shape. It wins over mono rendering. A single pass waits, as mono does, for the capture source to be
         // settled (learning it compares the two eyes' pictures).
         const int frameFirstEye = scope.rightEyeFirst ? kHalo2RightEye : kHalo2LeftEye;
-        if (g_config.aim_frame_stereo || VR_Halo2CaptureSourceSettled())
+        // The frame looks along the hand's aim; without it this frame is the immersive view, never another aim's frame.
+        float aimFrameForward[3]{};
+        if ((g_config.aim_frame_stereo || VR_Halo2CaptureSourceSettled()) &&
+            Halo2Observer6Dof_AimFrameForward(aimFrameForward))
         {
             float stockVerticalFov = 0.0f;
             const float nativeY = Halo2Observer6Dof_ReadStockVerticalFov(stockVerticalFov)
@@ -2714,7 +2717,7 @@ namespace
                 std::memcpy(eyeOffset[eye], snapshot.eyes[eye].position, sizeof(eyeOffset[eye]));
             GameAimFramePass frame{};
             if (Game_AimFrameForEyes(GameTitle::Halo2, scope.renderCenter.position, scope.renderCenter.up, eyeOffset,
-                                     nativeY * shape, nativeY, nullptr, frame))
+                                     nativeY * shape, nativeY, aimFrameForward, frame))
             {
                 Halo2SymmetricHalfFovs frameHalfFovs{};
                 const float frameFov = 2.0f * std::atan(frame.tanY);

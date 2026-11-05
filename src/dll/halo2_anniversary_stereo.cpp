@@ -887,7 +887,10 @@ namespace
         float aimFrameTanY = 0.0f;
         float aimFrameWidthDeg = 0.0f;
         float aimFramePictureTan[2]{};
-        if (g_config.aim_frame_stereo || VR_Halo2CaptureSourceSettled())
+        // The frame looks along the hand's aim; without it this frame is the immersive view, never another aim's frame.
+        float aimFrameForward[3]{};
+        if ((g_config.aim_frame_stereo || VR_Halo2CaptureSourceSettled()) &&
+            Halo2Observer6Dof_AimFrameForward(aimFrameForward))
         {
             float stockVerticalFov = 0.0f;
             const float nativeY = Halo2Observer6Dof_ReadStockVerticalFov(stockVerticalFov)
@@ -898,7 +901,8 @@ namespace
                     std::memcpy(offsets[eye], eyeOffsetPosition[eye], sizeof(offsets[eye]));
             GameAimFramePass frame{};
             if (Game_AimFrameForEyes(GameTitle::Halo2, tracked.position, tracked.up, offsets,
-                                     stockAspect > 1.0e-3f ? nativeY / stockAspect : 0.0f, nativeY, nullptr, frame))
+                                     stockAspect > 1.0e-3f ? nativeY / stockAspect : 0.0f, nativeY, aimFrameForward,
+                                     frame))
             {
                 Halo2SaberEyeCover frameCover{};
                 frameCover.halfVerticalRadians = std::atan(frame.tanY);

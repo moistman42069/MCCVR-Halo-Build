@@ -486,6 +486,15 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             int zoomLevel=-1;
             const bool zoomLevelKnown=Game_ReadZoomLevel(zoomLevel);
             std::lock_guard<std::mutex> lock(zoomExitLock);
+            // Each let-go while the game reads zoomed, and whether it is pressed out, to set beside what the player saw.
+            if(lensHandWasOn&&!handOnGun&&zoomLevelKnown&&zoomLevel>=0)
+                LOG("Zoom exit: the support hand left the gun at the game's zoom level %d; %s",zoomLevel,
+                    scopeFeatureAvailable?"the lens closes instead":
+                    !g_config.vr_action_mapping||zoomSource!=vr_mapping::SupportTriggerOnGun?
+                        "not pressed out (zoom is not on the support trigger on the gun)":
+                    !gameplayMode?"not pressed out (the game is not in gameplay)":
+                    menuOpen||pad.exclusiveInput?"not pressed out (a menu owns the controls)":
+                    pad.dualWield||inSeat?"not pressed out (dual wielding or seated)":"pressing zoom out");
             const bool pressOut=zoomExit.Step(contextualZoom&&!scopeFeatureAvailable,handOnGun,
                 (collectedSources&vr_mapping::Bit(vr_mapping::SupportTrigger))!=0,zoomLevelKnown,zoomLevel,GetTickCount64());
             if(pressOut) collectedSources|=vr_mapping::Bit(vr_mapping::SupportTriggerOnGun);
