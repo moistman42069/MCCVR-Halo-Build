@@ -56,6 +56,9 @@ struct Runtime {
     std::atomic<bool> admitted{}, faulted{}, abilityAdmitted{};
     std::atomic<uint32_t> callbacks{};
     std::atomic<uint64_t> converted{}, routed{}, readerAt{};
+    // Sprint, to set beside what the player saw: converted samples that carried it, the game's reads of it, and the
+    // reads that got the VR hold.
+    std::atomic<uint64_t> sprintPublished{}, sprintReads{}, sprintHeld{};
     uint64_t reportAt{};
 } runtime;
 uint32_t blockedGeneration{}; // worker-only: a fault is not retried every poll
@@ -102,6 +105,7 @@ void __fastcall ConverterHook(uintptr_t unused,int elapsedMs,const void* raw,
             for(unsigned i=0;i<vr_mapping::Count;++i)
                 local.records[i].Advance((local.direct||(local.blocked&(1u<<i))) && (local.actions&(1u<<i)),unsigned(elapsedMs));
             runtime.converted.fetch_add(1,std::memory_order_relaxed);
+            if(local.actions&(1u<<vr_mapping::Sprint)) runtime.sprintPublished.fetch_add(1,std::memory_order_relaxed);
         } else if(reinterpret_cast<uintptr_t>(output)==runtime.padState) local.converted=false;
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
 }
@@ -133,9 +137,12 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
         runtime.readerAt.store(now,std::memory_order_release);
         const int semantic=native_action_button::SemanticAction(title,action);
         if(semantic<0) return native;
+        const bool sprint=semantic==vr_mapping::Sprint;
+        if(sprint) runtime.sprintReads.fetch_add(1,std::memory_order_relaxed);
         auto& record=local.records[semantic];
         if(local.blocked&(1u<<semantic)) {
             runtime.routed.fetch_add(1,std::memory_order_relaxed);
+            if(sprint && record.ReadCounters().frames) runtime.sprintHeld.fetch_add(1,std::memory_order_relaxed);
             return record.bytes.data();
         }
         if(!local.direct) return native;
@@ -149,6 +156,7 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
             if(frames)return native;
         }
         runtime.routed.fetch_add(1,std::memory_order_relaxed);
+        if(sprint) runtime.sprintHeld.fetch_add(1,std::memory_order_relaxed);
         return record.bytes.data();
 }
 void* __fastcall ReaderHook(void* state,unsigned action,uintptr_t caller) {
@@ -298,8 +306,9 @@ void Poll() {
     const auto now=GetTickCount64();
     if(now>=runtime.reportAt) {
         runtime.reportAt=now+5000;
-        LOG("Native VR action bridge H4: converter=%llu directReads=%llu%s",
-            runtime.converted.load(),runtime.routed.load(),runtime.faulted.load()?" TRANSPORT FALLBACK (guarded access fault)":"");
+        LOG("Native VR action bridge H4: converter=%llu directReads=%llu sprint published=%llu read=%llu held=%llu%s",
+            runtime.converted.load(),runtime.routed.load(),runtime.sprintPublished.load(),runtime.sprintReads.load(),
+            runtime.sprintHeld.load(),runtime.faulted.load()?" TRANSPORT FALLBACK (guarded access fault)":"");
     }
 }
 
