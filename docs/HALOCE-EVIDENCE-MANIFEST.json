@@ -1040,6 +1040,72 @@
       ]
     },
     {
+      "name": "hud_static_element_draw",
+      "rva": "0xb5808c",
+      "signature": "48 8B C4 48 89 58 20 55 56 57 41 54 41 55 41 56 41 57 48 8D 68 B1 48 81 EC D0 00 00 00 0F 29 70 B8 0F 29 78 A8 48 8B 05 58 CF 01 01",
+      "function_entry": true,
+      "runtime_group": "hud_seat_reticle",
+      "evidence": "Generic HUD static-element draw. The unit HUD 0xc5093c (reached from the gameplay HUD 0xb12b08 at 0xb12df0) draws each listed unit HUD's background through it from one call, 0xc50e27: rdx the unit HUD interface, r8 its background element at +0x24, cx the local user. Stock content's only background is the Warthog driver seat's centre-anchored chevron (ui\\hud\\warthog driver); a seat without the gunner bit (0xb3ee67) never reaches the weapon crosshair 0xb3ffa0.",
+      "relative_operands": [
+        {
+          "instruction_rva": "0xc50e27",
+          "target_rva": "0xb5808c",
+          "instruction_bytes": 5,
+          "displacement_offset": 1,
+          "instruction_signature": "E8 60 72 F0 FF"
+        },
+        {
+          "instruction_rva": "0xb12df0",
+          "target_rva": "0xc5093c",
+          "instruction_bytes": 5,
+          "displacement_offset": 1,
+          "instruction_signature": "E8 47 DB 13 00"
+        }
+      ],
+      "instruction_witnesses": [
+        {
+          "rva": "0xc50de7",
+          "signature": "39 70 54 74 43",
+          "meaning": "cmp dword ptr [rax + 0x54], esi; je (no background bitmap: no call)"
+        },
+        {
+          "rva": "0xc50e17",
+          "signature": "4C 8D 40 24",
+          "meaning": "lea r8, [rax + 0x24] (the background element)"
+        },
+        {
+          "rva": "0xc50e20",
+          "signature": "48 8B D7",
+          "meaning": "mov rdx, rdi (the unit HUD interface)"
+        },
+        {
+          "rva": "0xc50e23",
+          "signature": "89 74 24 20",
+          "meaning": "mov dword ptr [rsp + 0x20], esi"
+        },
+        {
+          "rva": "0xc50bba",
+          "signature": "42 F6 04 1A 04",
+          "meaning": "test byte ptr [rdx + r11], 4 (the player's seat drives: seat HUDs are listed)"
+        },
+        {
+          "rva": "0xb3ee67",
+          "signature": "F6 04 0A 08",
+          "meaning": "test byte ptr [rdx + rcx], 8 (gunner seat: weapon crosshair)"
+        },
+        {
+          "rva": "0xb58197",
+          "signature": "66 41 83 7D 00 04",
+          "meaning": "cmp word ptr [r13], 4 (centre anchor)"
+        },
+        {
+          "rva": "0xb580c7",
+          "signature": "49 8D 48 24",
+          "meaning": "lea rcx, [r8 + 0x24]"
+        }
+      ]
+    },
+    {
       "name": "classic_view_render",
       "rva": "0xbbcf30",
       "signature": "40 55 53 56 57 41 54 41 56 41 57 48 8D AC 24 70 FE FF FF 48 81 EC 90 02 00 00 48 8B 05 BF 80 FB 00 48 33 C4 48 89 85 80 01 00 00 48 8B BD F0 01",

@@ -865,6 +865,8 @@ AuthoredReticlePreparationResult VR_PrepareAuthoredReticleResources();
 // an authored no-crosshair state cannot inherit an earlier attempt's texture.
 void VR_InvalidatePreparedAuthoredReticleCapture();
 bool VR_BeginPreparedAuthoredReticleCapture();
+// CE: the next capture's art draws this fraction of the HUD's height above its centre (0: centred).
+void VR_SetCeAuthoredReticleLift(float heightFraction);
 // CE's native HUD must draw on the shared immediate context and the same XR
 // serial before borrowing prepared capture resources; no context discovery.
 bool VR_CeAuthoredReticleFrameMatches(ID3D11DeviceContext* context,uint64_t serial);

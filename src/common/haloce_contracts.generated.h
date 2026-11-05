@@ -1349,6 +1349,30 @@ inline constexpr std::array<Pointer,0> pointers={{
 }};
 inline constexpr uint32_t hud_gameplay_draw=0xb12b08;
 }
+namespace hud_seat_reticle {
+inline constexpr std::array<Entry,1> entries={{
+    {"hud_static_element_draw",0xb5808c,"48 8B C4 48 89 58 20 55 56 57 41 54 41 55 41 56 41 57 48 8D 68 B1 48 81 EC D0 00 00 00 0F 29 70 B8 0F 29 78 A8 48 8B 05 58 CF 01 01",true},
+}};
+inline constexpr std::array<Witness,10> witnesses={{
+    {0xc50de7,"39 70 54 74 43"},
+    {0xc50e17,"4C 8D 40 24"},
+    {0xc50e20,"48 8B D7"},
+    {0xc50e23,"89 74 24 20"},
+    {0xc50bba,"42 F6 04 1A 04"},
+    {0xb3ee67,"F6 04 0A 08"},
+    {0xb58197,"66 41 83 7D 00 04"},
+    {0xb580c7,"49 8D 48 24"},
+    {0xc50e27,"E8 60 72 F0 FF"},
+    {0xb12df0,"E8 47 DB 13 00"},
+}};
+inline constexpr std::array<Relative,2> relatives={{
+    {0xc50e27,5,1,0xb5808c},
+    {0xb12df0,5,1,0xc5093c},
+}};
+inline constexpr std::array<Pointer,0> pointers={{
+}};
+inline constexpr uint32_t hud_static_element_draw=0xb5808c;
+}
 namespace hud_target {
 inline constexpr std::array<Entry,9> entries={{
     {"hud_target_bind",0x205e40,"40 53 56 57 41 56 41 57 48 83 EC 40 0F 10 02 4C 8B FA 45 33 C0 48 8B D9 0F 11 41 18 0F 10 4A 10",true},

@@ -455,6 +455,9 @@ namespace
     // stepped where the centre is measured; the capture, on the thread that draws the HUD, reads the pair below.
     ReticleCaptureFollow g_halo2ReticleFollow{};
     std::atomic<float> g_halo2ReticleWindowX{0.0f}, g_halo2ReticleWindowY{0.0f};
+    // CE: how far above the HUD's centre the art being captured draws, as a fraction of the HUD's height (a
+    // Warthog driver's chevron, haloce_hud.cpp). Its window is lowered by that much: the art's centre is the ray's.
+    std::atomic<float> g_ceReticleLift{0.0f};
     // What the last capture was narrowed by, across and down, to give HUD art its authored shape back
     // (AuthoredReticleFitForCapture); 1 / 1 for a title whose capture is not fitted. For the art-centre log line.
     std::atomic<float> g_authoredReticleFitAcross{1.0f}, g_authoredReticleFitDown{1.0f};
@@ -25921,6 +25924,8 @@ static bool BeginAuthoredReticleCaptureInternal(
         captureViewport.TopLeftX -= g_halo2ReticleWindowX.load(std::memory_order_relaxed);
         captureViewport.TopLeftY -= g_halo2ReticleWindowY.load(std::memory_order_relaxed);
     }
+    if (ceCapture)
+        captureViewport.TopLeftY += captureViewport.Height * g_ceReticleLift.load(std::memory_order_relaxed);
     const D3D11_RECT captureScissor{
         0, 0, static_cast<LONG>(kReticleSize),
         static_cast<LONG>(kReticleSize)};
@@ -26025,6 +26030,10 @@ bool VR_BeginAuthoredReticleRedirect()
 bool VR_BeginPreparedAuthoredReticleCapture()
 {
     return BeginAuthoredReticleCaptureInternal(true, false, true);
+}
+void VR_SetCeAuthoredReticleLift(float heightFraction)
+{
+    g_ceReticleLift.store(heightFraction, std::memory_order_relaxed);
 }
 bool VR_CeAuthoredReticleFrameMatches(ID3D11DeviceContext* context,uint64_t serial)
 {
