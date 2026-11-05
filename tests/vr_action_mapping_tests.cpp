@@ -178,6 +178,45 @@ void CheckInputPresets()
     input_preset::CopyScheme(kept,scheme);
     Check(kept.world_scale==2.f&&kept.vr_bindings[3][Zoom]==RightClick&&kept.grip_contextual_trigger,
         "applying a preset leaves the rest alone");
+    // The seat's rows: two controls each, kept in a preset; a control held as the seat comes up waits for its release.
+    {
+        Config seat{};
+        Check(seat.vr_vehicle_bindings[0][BansheeBomb][0]==PrimaryGrip&&seat.vr_vehicle_bindings[0][BansheeBomb][1]==RightClick&&
+            seat.vr_vehicle_bindings[5][BansheeTrick][0]==A&&seat.vr_vehicle_bindings[5][BansheeTrick][1]==Unbound,
+            "the Banshee bomb starts on the weapon grip and the right stick click, its trick on A");
+        seat.vr_vehicle_bindings[5][BansheeTrick][1]=DpadUp;
+        Config seatLoaded{};
+        input_preset::Parse(input_preset::Serialize(seat).c_str(),seatLoaded);
+        Check(input_preset::SameScheme(seatLoaded,seat)&&seatLoaded.vr_vehicle_bindings[5][BansheeTrick][1]==DpadUp,
+            "a seat row's second control round trips in a preset");
+        Check(!input_preset::SameScheme(seatLoaded,Config{}),"a moved seat row is another scheme");
+        Config copied{};
+        input_preset::CopyScheme(copied,seat);
+        Check(copied.vr_vehicle_bindings[5][BansheeTrick][1]==DpadUp,"applying a preset moves the seat rows too");
+        Config refused{};
+        input_preset::Parse("vr_bind_halo3_banshee_bomb = 0\nvr_bind_halo3_banshee_bomb_2 = 17\n",refused);
+        Check(refused.vr_vehicle_bindings[0][BansheeBomb]==kVehicleDefaults[BansheeBomb],
+            "a seat row takes neither Automatic nor the support trigger's contexts");
+        Check(NativeVehicleAction(GameTitle::Halo3,BansheeBomb)==0x0A&&NativeVehicleAction(GameTitle::Halo3,BansheeTrick)==0x1E&&
+            NativeVehicleAction(GameTitle::Halo3ODST,BansheeTrick)==0x1F&&NativeVehicleAction(GameTitle::Halo2,BansheeBomb)==0x15&&
+            NativeVehicleAction(GameTitle::HaloReach,BansheeBomb)==0x0A&&NativeVehicleAction(GameTitle::Halo4,BansheeTrick)==0x0D&&
+            NativeVehicleAction(GameTitle::HaloCE,BansheeBomb)==kNoAction&&NativeVehicleAction(GameTitle::None,BansheeTrick)==kNoAction,
+            "each game's own seat actions, and none where a game has no Banshee row");
+        const VehicleBindings rows=kVehicleDefaults;
+        VehicleTransports native{};
+        native[BansheeBomb]=0x2000;native[BansheeTrick]=1u<<16;
+        VehicleMapper m;
+        Check(m.Apply(Bit(PrimaryGrip),false,rows,native)==0,"on foot the seat rows press nothing");
+        Check(m.Apply(Bit(PrimaryGrip),true,rows,native)==0,"a grip held as the seat comes up drops nothing");
+        Check(m.Apply(0,true,rows,native)==0&&m.Apply(Bit(PrimaryGrip),true,rows,native)==0x2000,
+            "squeezed again in the seat, it drops the bomb");
+        Check(m.Apply(Bit(RightClick),true,rows,native)==0x2000,"so does the bomb's second control");
+        Check(m.Apply(Bit(RightClick)|Bit(A),true,rows,native)==(0x2000|(1u<<16)),"the bomb and the trick together");
+        Check(m.Apply(Bit(B),true,rows,native)==0,"a control no seat row takes presses nothing");
+        Check(m.Apply(Bit(A),true,rows,VehicleTransports{})==0,"a game without the action presses nothing for it");
+        Check(m.Apply(Bit(A),false,rows,native)==0&&m.Apply(Bit(A),true,rows,native)==0,
+            "leaving the seat arms the held-control check again");
+    }
     Config legacy{};legacy.grip_contextual_trigger=true;
     input_preset::Parse("trigger_air_equipment = 0\nvr_bind_halo3_zoom = 17\nvr_bind_reach_equipment = 18\n"
         "vr_bind_halo4_grenade = 16\n",legacy);
@@ -602,6 +641,13 @@ int main()
     Check(g_config.vr_bindings[0][Fire]==Unbound&&g_config.vr_bindings[2][Fire]==PrimaryGrip,"per-game overrides load independently");
     Check(g_config.vr_bindings[5][Reload]==Automatic&&g_config.vr_bindings[4][Melee]==Automatic,"invalid file values retain defaults");
     Check(!g_config.disable_autoexposure_odst,"ODST exposure is native by default");
+    {std::ofstream file(path);file<<"vr_bind_halo3_banshee_bomb_2 = 12\nvr_bind_halo2_banshee_trick = 0\n";}
+    ConfigLoad(path.c_str());
+    Check(g_config.vr_vehicle_bindings[0][BansheeBomb][0]==PrimaryGrip&&g_config.vr_vehicle_bindings[0][BansheeBomb][1]==DpadUp&&
+        g_config.vr_vehicle_bindings[5][BansheeTrick][0]==A,"a seat row's second control loads, and Automatic is refused");
+    ConfigSave();ConfigLoad(path.c_str());
+    Check(g_config.vr_vehicle_bindings[0][BansheeBomb][1]==DpadUp&&g_config.vr_vehicle_bindings[1][BansheeBomb]==kVehicleDefaults[BansheeBomb],
+        "the seat rows survive save and reload");
     {std::ofstream file(path);file<<"bloom_enabled_odst = 1\nbloom_enabled_reach = 1\n";}
     ConfigLoad(path.c_str());
     Check(g_config.bloom_enabled[1]&&g_config.bloom_enabled[2]&&!g_config.bloom_chosen[1]&&!g_config.bloom_chosen[2],

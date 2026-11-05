@@ -1448,8 +1448,42 @@ namespace
                 if(haveBindings&&!bindings[action]) ImGui::TextDisabled("No native action binding available in this title.");
                 ImGui::PopID();
             }
+            // The seat's rows: two controls each, Unbound or any control a row may take (no Automatic).
+            SettingGap();
+            ImGui::TextWrapped("In a vehicle seat: these press the game's own button for the action, beside whatever "
+                "the rows above press. Each takes a second control. Left X, left Y and the left stick click stay the "
+                "vehicle cameras' in a seat, so a row on one of them does nothing there.");
+            for(unsigned action=0;action<vr_mapping::VehicleCount;++action)
+            {
+                const auto vehicleAction=static_cast<vr_mapping::VehicleAction>(action);
+                if(vr_mapping::NativeVehicleAction(selectedGame,vehicleAction)==vr_mapping::kNoAction)
+                {
+                    ImGui::TextDisabled("%s: not in this game.",vr_mapping::kVehicleNames[action]);
+                    continue;
+                }
+                for(unsigned control=0;control<vr_mapping::kVehicleControls;++control)
+                {
+                    ImGui::PushID(static_cast<int>(100+action*vr_mapping::kVehicleControls+control));
+                    SettingGap();
+                    const std::string label=std::string(vr_mapping::kVehicleNames[action])+(control?", second control":"");
+                    int& row=g_config.vr_vehicle_bindings[selectedTitle][action][control];
+                    int choice=row-vr_mapping::Unbound;
+                    if(Combo(label.c_str(),&choice,vr_mapping::kSourceNames+vr_mapping::Unbound,
+                        vr_mapping::kRowSourceCount-vr_mapping::Unbound))
+                    {
+                        row=choice+vr_mapping::Unbound;
+                        if(row!=vr_mapping::Unbound) g_config.vr_action_mapping=true;
+                        changed=true;
+                    }
+                    ImGui::PopID();
+                }
+            }
             if(ImGui::Button("Reset this game's mappings"))
-            {g_config.vr_bindings[selectedTitle]={};changed=true;}
+            {
+                g_config.vr_bindings[selectedTitle]={};
+                g_config.vr_vehicle_bindings[selectedTitle]=vr_mapping::kVehicleDefaults;
+                changed=true;
+            }
             ImGui::SameLine();
             const std::string copyLabel=std::string("Copy ")+weapon_interaction::kTitleNames[selectedTitle]+
                 "'s mappings to every game";
@@ -1457,6 +1491,8 @@ namespace
             {
                 const auto source=g_config.vr_bindings[selectedTitle];
                 for(auto& title:g_config.vr_bindings) title=source;
+                const auto seat=g_config.vr_vehicle_bindings[selectedTitle];
+                for(auto& title:g_config.vr_vehicle_bindings) title=seat;
                 for(int row:source) if(row!=vr_mapping::Automatic) g_config.vr_action_mapping=true;
                 changed=true;
             }

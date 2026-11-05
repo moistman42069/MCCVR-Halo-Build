@@ -259,6 +259,52 @@ struct MappedActions
     { return action < Count && (actions & (1u << action)) != 0; }
 };
 
+// THE SEAT'S ROWS (VR Mappings, under the actions): a vehicle's own actions, which no on-foot row names. Each takes two
+// controls; either presses the action's own MCC button beside whatever the action rows press, and only in a seat. A
+// control already down as the seat comes up waits for its release, so the press that boarded presses nothing.
+enum VehicleAction : unsigned { BansheeBomb, BansheeTrick, VehicleCount };
+inline constexpr unsigned kVehicleControls=2;
+inline constexpr const char* kVehicleKeys[VehicleCount]{"banshee_bomb","banshee_trick"};
+inline constexpr const char* kVehicleNames[VehicleCount]{"Banshee bomb","Banshee trick"};
+using VehicleRow=std::array<int,kVehicleControls>;
+using VehicleBindings=std::array<VehicleRow,VehicleCount>;
+using VehicleTransports=std::array<uint32_t,VehicleCount>;
+inline constexpr VehicleBindings kVehicleDefaults{{{PrimaryGrip,RightClick},{A,Unbound}}};
+// Each game's own action for a seat row, as NativeAction names the rows' (kNoAction: the game has none): the actions
+// each game's control builder reads while seated. See BANSHEE-SEAT-ACTIONS-EVIDENCE-2026-11-05.md. Reach and Halo 4
+// have no bomb of their own: a Banshee's bomb is its secondary trigger. Halo 3's and ODST's trick is the seat's jump.
+inline constexpr unsigned NativeVehicleAction(GameTitle title,VehicleAction action) noexcept
+{
+    if(action>=VehicleCount) return kNoAction;
+    const bool bomb=action==BansheeBomb;
+    switch(title) {
+    case GameTitle::Halo3:return bomb?0x0A:0x1E;
+    case GameTitle::Halo3ODST:return bomb?0x0A:0x1F;
+    case GameTitle::HaloReach:return bomb?0x0A:0x0C;
+    case GameTitle::Halo4:return bomb?0x0B:0x0D;
+    case GameTitle::Halo2:return bomb?0x15:0x01;
+    default:return kNoAction;
+    }
+}
+// A seat row's control: any a row may take but Automatic (a seat row has no game layout of its own to follow).
+inline constexpr bool VehicleSource(int source) noexcept { return source>Automatic&&source<kRowSourceCount; }
+struct VehicleMapper
+{
+    uint32_t blocked{}; bool seated{};
+    uint32_t Apply(uint32_t sources,bool inSeat,const VehicleBindings& bindings,const VehicleTransports& native) noexcept
+    {
+        if(!inSeat) {seated=false;blocked=0;return 0;}
+        if(!seated) {seated=true;blocked=sources;}
+        blocked&=sources;
+        const uint32_t active=sources&~blocked;
+        uint32_t buttons=0;
+        for(unsigned a=0;a<VehicleCount;++a)
+            for(const int source:bindings[a])
+                if(VehicleSource(source)&&(active&Bit(source))) buttons|=native[a];
+        return buttons;
+    }
+};
+
 // Reconfiguration, pause, reconnect and title changes must wait for held
 // controls to release. A held trigger cannot become a new action on resume.
 struct Mapper

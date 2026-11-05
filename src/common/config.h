@@ -734,6 +734,9 @@ struct Config
     // Match each campaign's MCC layout; same title order as gesture buttons.
     int flashlight_button[6]{15,15,15,15,15,15}; // legacy migration / unverified-title fallback
     vr_mapping::Overrides vr_bindings[6]{};
+    // The seat's rows (VR Mappings): each game's Banshee bomb and trick, two controls each.
+    vr_mapping::VehicleBindings vr_vehicle_bindings[6]{vr_mapping::kVehicleDefaults,vr_mapping::kVehicleDefaults,
+        vr_mapping::kVehicleDefaults,vr_mapping::kVehicleDefaults,vr_mapping::kVehicleDefaults,vr_mapping::kVehicleDefaults};
     // Automatic VR action routing (F1 > Controls): a VR button reaches the game as the action bound to it. Off by
     // default for now -- the plain route, each VR button as the gamepad button it stands for, is the one that works;
     // the automatic one has known faults.

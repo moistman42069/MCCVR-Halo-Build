@@ -1146,6 +1146,21 @@ void ConfigLoad(const wchar_t* path)
                 else LOG("config: invalid VR binding '%s' ignored",key);
                 vrBindingKey=true;break;
             }
+        for(unsigned title=0;title<weapon_interaction::kTitleCount&&!vrBindingKey;++title)
+            for(unsigned action=0;action<vr_mapping::VehicleCount&&!vrBindingKey;++action)
+                for(unsigned control=0;control<vr_mapping::kVehicleControls;++control)
+                {
+                    char bindingKey[96]{};
+                    sprintf_s(bindingKey,"vr_bind_%s_%s%s",weapon_interaction::kTitleKeys[title],
+                        vr_mapping::kVehicleKeys[action],control?"_2":"");
+                    if(strcmp(key,bindingKey)) continue;
+                    char* end=nullptr;
+                    const long value=strtol(val,&end,10);
+                    if(end!=val&&end&&*end==0&&vr_mapping::VehicleSource(static_cast<int>(value)))
+                        g_config.vr_vehicle_bindings[title][action][control]=static_cast<int>(value);
+                    else LOG("config: invalid VR binding '%s' ignored",key);
+                    vrBindingKey=true;break;
+                }
         if(vrBindingKey) continue;
         if(!strcmp(key,"experimental_body_ik")) {g_config.experimental_body_ik=atoi(val)!=0;continue;}
         if(!strcmp(key,"body_ik_hide_lower")) {g_config.body_ik_hide_lower=atoi(val)!=0;continue;}
@@ -3733,6 +3748,12 @@ void ConfigSave()
         for(unsigned action=0;action<vr_mapping::Count;++action)
             fprintf(f,"vr_bind_%s_%s = %d\n",weapon_interaction::kTitleKeys[title],
                 vr_mapping::kKeys[action],g_config.vr_bindings[title][action]);
+    fprintf(f,"# The seat's rows: each game's Banshee bomb and trick, a control and a second control (_2), only in a seat.\n");
+    for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+        for(unsigned action=0;action<vr_mapping::VehicleCount;++action)
+            for(unsigned control=0;control<vr_mapping::kVehicleControls;++control)
+                fprintf(f,"vr_bind_%s_%s%s = %d\n",weapon_interaction::kTitleKeys[title],vr_mapping::kVehicleKeys[action],
+                    control?"_2":"",g_config.vr_vehicle_bindings[title][action][control]);
     fprintf(f,"\n# Native localized subtitles: independent gameplay and theatre placement.\n");
     fprintf(f,"# Per-game muzzle-flash hiding. Supported paths: H2 Original and H4.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)

@@ -6,6 +6,7 @@
 #include <cstring>
 #include <vector>
 #include "../src/common/runtime_types.h"
+#include "../src/common/vr_action_mapping.h"
 
 namespace {
 #include "../src/dll/gesture_binding_reader.inl"
@@ -77,6 +78,12 @@ int main()
             Check(GestureReadNativeBindings(d,reinterpret_cast<uintptr_t>(memory.data()),
                 transport,d.action),"unbound/malformed binding has no memory fault");
             for(auto value:transport) Check(value==0,"unbound/malformed binding emits no input");
+        }
+        // The seat's rows read the same table: each game's Banshee bomb and trick lie inside it.
+        for(unsigned a=0;a<vr_mapping::VehicleCount;++a) {
+            const unsigned native=vr_mapping::NativeVehicleAction(d.title,static_cast<vr_mapping::VehicleAction>(a));
+            Check(d.title==GameTitle::HaloCE?native==vr_mapping::kNoAction:native<d.actionCount,
+                "a seat row's action lies inside its game's binding table (Halo CE has none)");
         }
         uint32_t unavailable[4]{};
         Check(GestureReadNativeBindings(d,0,unavailable,d.actionCount),

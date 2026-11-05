@@ -119,7 +119,10 @@ void CopyScheme(Config& to, const Config& from) noexcept
     for (const auto& f : kInts) to.*f.member = from.*f.member;
     for (const auto& f : kFloats) to.*f.member = from.*f.member;
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
+    {
         to.vr_bindings[title] = from.vr_bindings[title];
+        to.vr_vehicle_bindings[title] = from.vr_vehicle_bindings[title];
+    }
 }
 
 bool SameScheme(const Config& a, const Config& b) noexcept
@@ -129,7 +132,8 @@ bool SameScheme(const Config& a, const Config& b) noexcept
     // A file keeps three decimals, so a loaded preset can differ from what was saved by rounding alone.
     for (const auto& f : kFloats) if (std::fabs(a.*f.member - b.*f.member) > 0.002f) return false;
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
-        if (a.vr_bindings[title] != b.vr_bindings[title]) return false;
+        if (a.vr_bindings[title] != b.vr_bindings[title] ||
+            a.vr_vehicle_bindings[title] != b.vr_vehicle_bindings[title]) return false;
     return true;
 }
 
@@ -159,6 +163,15 @@ std::string Serialize(const Config& scheme)
                       scheme.vr_bindings[title][action]);
             text += line;
         }
+    for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
+        for (unsigned action = 0; action < vr_mapping::VehicleCount; ++action)
+            for (unsigned control = 0; control < vr_mapping::kVehicleControls; ++control)
+            {
+                sprintf_s(line, "vr_bind_%s_%s%s = %d\n", weapon_interaction::kTitleKeys[title],
+                          vr_mapping::kVehicleKeys[action], control ? "_2" : "",
+                          scheme.vr_vehicle_bindings[title][action][control]);
+                text += line;
+            }
     return text;
 }
 
@@ -205,6 +218,19 @@ void Parse(const char* text, Config& out)
                 done = true;
                 break;
             }
+        for (unsigned title = 0; title < weapon_interaction::kTitleCount && !done; ++title)
+            for (unsigned action = 0; action < vr_mapping::VehicleCount && !done; ++action)
+                for (unsigned control = 0; control < vr_mapping::kVehicleControls; ++control)
+                {
+                    sprintf_s(expected, "vr_bind_%s_%s%s", weapon_interaction::kTitleKeys[title],
+                              vr_mapping::kVehicleKeys[action], control ? "_2" : "");
+                    if (key != expected) continue;
+                    const int source = atoi(value);
+                    if (vr_mapping::VehicleSource(source))
+                        out.vr_vehicle_bindings[title][action][control] = source;
+                    done = true;
+                    break;
+                }
     }
     // A preset saved while the support trigger's contexts were rows' choices: its gun zoom was its rows alone.
     if (!namedContextualTrigger) out.grip_contextual_trigger = false;

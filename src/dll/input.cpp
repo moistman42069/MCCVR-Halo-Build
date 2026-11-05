@@ -358,6 +358,12 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 for (unsigned action = 0; action < vr_mapping::Count; ++action)
                     bBound = bBound || vr_mapping::Resolve(static_cast<vr_mapping::Action>(action),
                                                            effective[action]) == vr_mapping::B;
+                // A seat row on B keeps right B its own, or the seat would turn it into use and exit the vehicle.
+                for (unsigned action = 0; action < vr_mapping::VehicleCount; ++action)
+                    for (const int source : g_config.vr_vehicle_bindings[seatTitle][action])
+                        bBound = bBound || (source == vr_mapping::B &&
+                            vr_mapping::NativeVehicleAction(TitleAdapter_GetActiveTitle(),
+                                static_cast<vr_mapping::VehicleAction>(action)) != vr_mapping::kNoAction);
             }
             const vehicle_seat_buttons::RightB rightB =
                 vehicle_seat_buttons::RightBFor(g_config.vr_action_mapping, bBound);
@@ -810,6 +816,40 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret||!crouchOnFoot,
             mappingTitle>=0?&effectiveBindings:nullptr);
         const uint32_t semanticButtons=routedActions.buttons;
+        // THE SEAT'S ROWS (vr_mapping::VehicleMapper): the Banshee's bomb and trick on controls of their own, pressing
+        // the game's own button for each beside the rows, only in a seat. One state for every thread that polls the pad.
+        uint32_t seatButtons=0;
+        {
+            const bool seated=nativeMapping&&
+                (inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret||!crouchOnFoot);
+            vr_mapping::VehicleTransports seatTransports{};
+            const bool seatLayoutKnown=mappingTitle>=0&&Game_ReadVrVehicleBindings(seatTransports,inputNow);
+            static std::mutex seatRowsLock;
+            static vr_mapping::VehicleMapper seatRows;
+            std::lock_guard<std::mutex> lock(seatRowsLock);
+            seatButtons=seatRows.Apply(actionSources,seated&&mappingTitle>=0,
+                mappingTitle>=0?g_config.vr_vehicle_bindings[mappingTitle]:vr_mapping::kVehicleDefaults,seatTransports);
+            // What the seat's rows press in this game, and the game's own button behind each: once each time it changes.
+            static uint64_t shownSeatRows=0;
+            uint64_t shown=uint64_t(currentTitle)<<56;
+            for(unsigned action=0;mappingTitle>=0&&action<vr_mapping::VehicleCount;++action)
+                shown=(shown^seatTransports[action]^(uint64_t(g_config.vr_vehicle_bindings[mappingTitle][action][0])<<20)^
+                    (uint64_t(g_config.vr_vehicle_bindings[mappingTitle][action][1])<<26))*1099511628211ull;
+            if(nativeMapping&&seatLayoutKnown&&shown!=shownSeatRows)
+            {
+                shownSeatRows=shown;
+                std::string rows;
+                char native[16];
+                for(unsigned action=0;action<vr_mapping::VehicleCount;++action)
+                {
+                    const auto& row=g_config.vr_vehicle_bindings[mappingTitle][action];
+                    sprintf_s(native," (0x%X)",seatTransports[action]);
+                    rows+=std::string(action?", ":"")+vr_mapping::kVehicleKeys[action]+" = "+
+                        vr_mapping::kSourceNames[row[0]]+" + "+vr_mapping::kSourceNames[row[1]]+native;
+                }
+                LOG("VR Mappings %s, in a seat: %s",weapon_interaction::kTitleNames[mappingTitle],rows.c_str());
+            }
+        }
 #if HALOMCCVR_DEV_DIAGNOSTICS
         {
             static uint32_t shownSources=0,shownActions=0,shownButtons=0,shownPublished=0;
@@ -841,7 +881,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         if (!semanticMode&&pad.clickL && !chord.consumeClicks) btn |= XINPUT_GAMEPAD_LEFT_THUMB;
         if (!semanticMode&&pad.clickR && !chord.consumeClicks && !scopeAvailable)
             btn |= XINPUT_GAMEPAD_RIGHT_THUMB;
-        btn|=static_cast<WORD>(semanticButtons);
+        btn|=static_cast<WORD>(semanticButtons|seatButtons);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         g_witness.mapper = static_cast<uint32_t>(btn & ~witnessBase) |
             (semanticButtons & seat_witness::kTransportMask);
@@ -925,8 +965,8 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         const BYTE tr = semanticMode?((semanticButtons&(1u<<17))?255:0):(BYTE)(pad.trigR*255.0f);
         if (tl > state->Gamepad.bLeftTrigger) state->Gamepad.bLeftTrigger = tl;
         if (tr > state->Gamepad.bRightTrigger) state->Gamepad.bRightTrigger = tr;
-        if (heldButtons & (1u<<16)) state->Gamepad.bLeftTrigger = 255;
-        if (heldButtons & (1u<<17)) state->Gamepad.bRightTrigger = 255;
+        if ((heldButtons|seatButtons) & (1u<<16)) state->Gamepad.bLeftTrigger = 255;
+        if ((heldButtons|seatButtons) & (1u<<17)) state->Gamepad.bRightTrigger = 255;
         if (gestureMelee & (1u<<16)) state->Gamepad.bLeftTrigger = 255;
         if (gestureMelee & (1u<<17)) state->Gamepad.bRightTrigger = 255;
         if (pad.weaponButtons & (1u<<16)) state->Gamepad.bLeftTrigger = 255;
