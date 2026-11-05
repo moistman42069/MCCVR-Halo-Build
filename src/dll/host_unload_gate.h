@@ -19,7 +19,9 @@ bool HostUnloadGate_Install();
 // the gate never sets `tearingDown` (for a core whose game end has not been measured: ODST).
 void HostUnloadGate_Pin(HMODULE module, std::atomic<bool>* tearingDown,
                         const std::atomic<uint64_t>* lastFrameMs, const char* title, bool mayAsk);
-// Worker, AFTER the core's own FreeLibrary of that reference: a waiting load may go on.
+// Several lanes may register the same DLL; each registration is counted.
+// Worker, AFTER the lane's own FreeLibrary of that reference: once the last registered lane has let go, a waiting
+// load may go on.
 void HostUnloadGate_Unpin(HMODULE module);
 // Worker: the core cannot let go without the title's own thread (a restore that only that thread can make), so a
 // load waiting for it stops waiting now instead of at the time-out. The reference stays registered.

@@ -131,6 +131,11 @@ int main()
         Check(waited == 1, "a stuck teardown costs one wait, not one per reload");
     }
 
+    // HOLDERS. Two lanes hold Halo 4's DLL: the first to let go leaves the other's hold registered.
+    Check(HoldersAfterRelease(2) == 1, "one of two lanes let go: the DLL is still held, the load still waits");
+    Check(HoldersAfterRelease(1) == 0, "the last lane let go: the load may go on");
+    Check(HoldersAfterRelease(0) == 0 && HoldersAfterRelease(-1) == 0, "a release with nothing registered stays at zero");
+
     // THE TITLE ADAPTER'S GAP.
     Check(ReloadedUnseen(true, 0x7FF800000000, 0x7FF800000000),
           "unloaded since the last poll and here again at the same base: loaded again in between");

@@ -98,6 +98,16 @@ inline bool GivesUp(Wait outcome) noexcept
     return outcome == Wait::TimedOut || outcome == Wait::Abandoned;
 }
 
+// HOLDERS. More than one lane of this mod may hold the same DLL and register it (Halo 4 and Halo 2: the VR action
+// bridge and the first-person seat view). The registration counts them, and the core lets go only when the LAST
+// one has: counting one slot per DLL, the first lane to let go ended the wait while the other still held the
+// image, MCC's reload took it, and the next Halo 4 game started in it and crashed. `before` is the count before
+// one lane lets go; never below zero (a lane whose registration did not take cannot release another's).
+inline int HoldersAfterRelease(int before) noexcept
+{
+    return before > 1 ? before - 1 : 0;
+}
+
 // THE TITLE ADAPTER'S GAP. A game DLL the loader unmapped since the last module poll (`unloadCounted`: the unload
 // notification counted one for the base that poll saw) and that is present again at that same base was unloaded
 // and loaded again between the two polls. The poll cannot see it (same base, still there), so the adapter

@@ -51,6 +51,8 @@
 //     while that core's own teardown is already under way, and the gate never starts one. ODST's second
 //     game is not confirmed in game. Halo 3's and Halo 4's cores hold no owning reference. Halo CE's eleven
 //     feature lanes each hold one and are not registered: whether CE's second game bounces is not measured.
+//   * LANES. Halo 4's and Halo 2's VR action bridge and first-person seat view each hold the DLL while the core is
+//     installed and register it here. A registration is counted: the wait ends when the last of them lets go.
 //   * The decisions are host_unload_gate_logic.h (tests/host_unload_gate_tests.cpp); this file is the loader,
 //     the clock and the hook around them.
 //   * title_unload_wait = 0: no wait; every load takes whatever image is there.
@@ -82,6 +84,7 @@ using LdrLoadDllFn = LONG(NTAPI*)(PWSTR, PULONG, LoaderString*, PVOID*);
 struct Pin
 {
     std::atomic<HMODULE> module{nullptr};
+    std::atomic<int> holders{0};   // lanes of this mod that registered `module` (logic::HoldersAfterRelease)
     std::atomic<std::atomic<bool>*> tearingDown{nullptr};   // the core's own "teardown requested"
     std::atomic<const std::atomic<uint64_t>*> lastFrameMs{nullptr};   // GetTickCount64 of the title's last frame
     std::atomic<uint32_t> abandoned{0};   // counts the core's "I cannot let go" notices
@@ -428,7 +431,11 @@ void HostUnloadGate_Pin(HMODULE module, std::atomic<bool>* tearingDown,
     for (Pin& pin : g_gate.pins)
     {
         if (pin.module.load(std::memory_order_acquire) == module)
+        {
+            // Another lane holds the same DLL: the wait lasts until both have let go.
+            pin.holders.fetch_add(1, std::memory_order_acq_rel);
             return;
+        }
         if (!pin.module.load(std::memory_order_acquire))
         {
             // Everything else first: a hook that sees the module must see the rest. One thread registers (the
@@ -440,6 +447,7 @@ void HostUnloadGate_Pin(HMODULE module, std::atomic<bool>* tearingDown,
             pin.tearingDown.store(tearingDown, std::memory_order_release);
             pin.mayAsk.store(mayAsk, std::memory_order_release);
             pin.gaveUp.store(false, std::memory_order_release);
+            pin.holders.store(1, std::memory_order_release);
             pin.lastFrameMs.store(lastFrameMs, std::memory_order_release);
             pin.title.store(title, std::memory_order_release);
             pin.module.store(module, std::memory_order_release);
@@ -454,6 +462,15 @@ void HostUnloadGate_Unpin(HMODULE module)
         return;
     for (Pin& pin : g_gate.pins)
     {
+        if (pin.module.load(std::memory_order_acquire) != module)
+            continue;
+        int before = pin.holders.load(std::memory_order_acquire);
+        while (!pin.holders.compare_exchange_weak(before, logic::HoldersAfterRelease(before),
+                                                  std::memory_order_acq_rel))
+        {
+        }
+        if (logic::HoldersAfterRelease(before) != 0)
+            continue;   // another lane still holds the DLL: a waiting load goes on waiting
         HMODULE held = module;
         (void)pin.module.compare_exchange_strong(held, nullptr, std::memory_order_acq_rel);
     }
