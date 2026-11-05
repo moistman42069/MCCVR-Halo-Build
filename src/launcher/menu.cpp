@@ -30,12 +30,10 @@ constexpr COLORREF kReclaimerPanel = RGB(31, 24, 13), kReclaimerField = RGB(46, 
 // first; more join it as tabs beside it.
 constexpr int kExternalTop = 608, kTabHeight = 30;
 constexpr int kReclaimerLeft = 38, kReclaimerTop = 706, kReclaimerRight = 942, kReclaimerBottom = 864;
-constexpr UINT kDone = WM_APP + 20;
+constexpr UINT kDone = WM_APP + 20, kTroubleshootingFound = WM_APP + 21;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version, UpdateSelf,
           Troubleshooting };
-// On a branch that only ever moves forward, so the page can change without a new launcher.
-constexpr const wchar_t* kTroubleshootingUrl = L"https://github.com/MOTYSHIZ/MCCVR-Halo-Build/blob/nitsujack-development/TROUBLESHOOTING.md";
 // The window's client size at 96 dpi.
 constexpr int kMenuWidth = 1400, kMenuHeight = kReclaimerBottom + 26;
 // The credits column, right of the divider, at 96 dpi: the title stays put and the list below it scrolls. It sits as
@@ -99,6 +97,8 @@ struct Menu {
     bool packageListed = false, packageChosen = false;
     HANDLE font{}; bool fontLoaded = false;
     bool busy = false, updateReady = false, helperStarted = false, keepSettings = true;
+    // GitHub is being asked whether this launcher's repository has its own troubleshooting page.
+    bool troubleshootingAsked = false;
     // Whether an update also replaces this launcher where it is. Each version chosen resets it to the usual answer.
     bool updateThisLauncher = false;
     std::thread worker; std::wstring operationMessage;
@@ -743,8 +743,17 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (reinterpret_cast<HWND>(wParam) == GetDlgItem(window, Troubleshooting)) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; }
         break;
     case WM_COMMAND: {
-        // Opening the page changes nothing, so it works during a download or install too.
-        if (LOWORD(wParam) == Troubleshooting) { ShellExecuteW(window, L"open", kTroubleshootingUrl, nullptr, nullptr, SW_SHOWNORMAL); return 0; }
+        // Opening the page changes nothing, so it works during a download or install too. GitHub is asked only when the
+        // link is pressed, off this thread, and the answer opens the page (kTroubleshootingFound).
+        if (LOWORD(wParam) == Troubleshooting) {
+            const auto& own = kReleaseChannels[ReleaseChannelIndex(HALOMCCVR_RELEASE_CHANNEL)];
+            if (!AsksForTroubleshootingPage(own)) ShellExecuteW(window, L"open", kFallbackTroubleshootingPage, nullptr, nullptr, SW_SHOWNORMAL);
+            else if (!menu->troubleshootingAsked) {
+                menu->troubleshootingAsked = true;
+                std::thread([window, &own] { PostMessageW(window, kTroubleshootingFound, HasTroubleshootingPage(own), 0); }).detach();
+            }
+            return 0;
+        }
         if (menu->busy) return 0;
         switch (LOWORD(wParam)) {
         case Retain: menu->keepSettings = !menu->keepSettings; InvalidateRect(menu->retain, nullptr, FALSE); break;
@@ -811,6 +820,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         return 0;
     }
+    case kTroubleshootingFound:
+        menu->troubleshootingAsked = false;
+        ShellExecuteW(window, L"open", TroubleshootingPage(kReleaseChannels[ReleaseChannelIndex(HALOMCCVR_RELEASE_CHANNEL)], wParam != 0).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return 0;
     case kDone:
         if (menu->worker.joinable()) menu->worker.join();
         menu->busy = false;

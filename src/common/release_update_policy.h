@@ -104,6 +104,16 @@ inline size_t ReleaseChannelIndex(std::string_view key) {
     for (size_t i = 0; i < std::size(kReleaseChannels); ++i) if (key == kReleaseChannels[i].key) return i;
     return 0;
 }
+// The launcher's troubleshooting link: the page on the default branch of the repository the launcher was built from,
+// when that repository has one, otherwise Nitsujack's, on a branch that only ever moves forward. A launcher built from
+// Nitsujack's repository opens that page without asking GitHub.
+inline constexpr const wchar_t* kFallbackTroubleshootingPage = L"https://github.com/MOTYSHIZ/MCCVR-Halo-Build/blob/nitsujack-development/TROUBLESHOOTING.md";
+inline bool AsksForTroubleshootingPage(const ReleaseChannel& channel) { return std::string_view(channel.owner) != "MOTYSHIZ"; }
+inline std::wstring TroubleshootingPage(const ReleaseChannel& channel, bool hasOwnPage) {
+    if (!hasOwnPage || !AsksForTroubleshootingPage(channel)) return kFallbackTroubleshootingPage;
+    const std::string_view owner = channel.owner;
+    return L"https://github.com/" + std::wstring(owner.begin(), owner.end()) + L"/MCCVR-Halo-Build/blob/HEAD/TROUBLESHOOTING.md";
+}
 inline ReleaseUpdate ReleaseFromJson(const ReleaseJson& json, const ReleaseChannel& channel) {
     if (json.kind != ReleaseJson::Kind::Object || json.At("draft").kind != ReleaseJson::Kind::Boolean || json.At("draft").text != "false" || json.At("prerelease").kind != ReleaseJson::Kind::Boolean || (!channel.prereleases && json.At("prerelease").text != "false") || json.At("tag_name").kind != ReleaseJson::Kind::String)
         throw std::runtime_error("The latest release is unavailable or is not a stable release.");

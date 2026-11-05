@@ -17,7 +17,7 @@ std::wstring Widen(const std::string& value) {
     std::wstring text(size, 0); MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), text.data(), size); return text;
 }
 struct HttpHandle { HINTERNET value{}; ~HttpHandle() { if (value) WinHttpCloseHandle(value); } };
-std::string Request(const std::wstring& url, const fs::path& destination, uint64_t limit) {
+std::string Request(const std::wstring& url, const fs::path& destination, uint64_t limit, int seconds = 30) {
     URL_COMPONENTS components{sizeof(components)};
     components.dwHostNameLength = components.dwUrlPathLength = components.dwExtraInfoLength = static_cast<DWORD>(-1);
     if (!WinHttpCrackUrl(url.c_str(), 0, 0, &components) || components.nScheme != INTERNET_SCHEME_HTTPS) throw std::runtime_error("Update URL must use HTTPS.");
@@ -26,7 +26,7 @@ std::string Request(const std::wstring& url, const fs::path& destination, uint64
     if (components.dwExtraInfoLength) path.append(components.lpszExtraInfo, components.dwExtraInfoLength);
     HttpHandle session{WinHttpOpen(L"HaloMCCVRLauncher/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)};
     if (!session.value) throw std::runtime_error("Windows could not open the update connection.");
-    WinHttpSetTimeouts(session.value, 10000, 10000, 30000, 30000);
+    WinHttpSetTimeouts(session.value, std::min(seconds, 10) * 1000, std::min(seconds, 10) * 1000, seconds * 1000, seconds * 1000);
     HttpHandle connection{WinHttpConnect(session.value, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0)};
     HttpHandle request{connection.value ? WinHttpOpenRequest(connection.value, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : nullptr};
     if (!request.value) throw std::runtime_error("Cannot create update request.");
@@ -128,6 +128,10 @@ try {
 std::vector<ReleaseUpdate> ListReleases(const ReleaseChannel& channel) {
     const std::wstring repository = L"https://api.github.com/repos/" + Widen(channel.owner) + L"/MCCVR-Halo-Build/releases";
     return ParseReleaseList(Request(repository + L"?per_page=30", {}, 2 * 1024 * 1024), channel);
+}
+bool HasTroubleshootingPage(const ReleaseChannel& channel) {
+    try { Request(L"https://api.github.com/repos/" + Widen(channel.owner) + L"/MCCVR-Halo-Build/contents/TROUBLESHOOTING.md", {}, 2 * 1024 * 1024, 5); return true; }
+    catch (const std::exception&) { return false; }
 }
 std::vector<ReleaseUpdate> ListLatestAcrossChannels(size_t& channel, std::wstring& passedOver) {
     std::vector<std::vector<ReleaseUpdate>> lists(std::size(kReleaseChannels));
