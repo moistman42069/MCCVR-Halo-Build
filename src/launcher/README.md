@@ -8,6 +8,10 @@ Installation and update discovery do not start MCC.
 **VR SETTINGS.** Opens `HaloMCCVRSettings.exe` from the selected install's `Halo_MCC_VR` folder: the VR menu's own code on
 the desktop (`src/settings`), editing that folder's `halomccvr.cfg`. It does not save while the game is open.
 
+**Troubleshooting.** The link at the right of the "03 / YOUR VR SETUP" heading opens `TROUBLESHOOTING.md` on the
+fork's `nitsujack-development` branch, which only moves forward, so the page can change without a new launcher. It
+works during a download or install too.
+
 **Unattended launch (`--headless`, dev builds only).** A launcher built with
 `HALOMCCVR_DEV_DIAGNOSTICS` (the `dev` preset) accepts
 `HaloMCCVRLauncher.exe --headless`: it skips the menu and launches the mod in

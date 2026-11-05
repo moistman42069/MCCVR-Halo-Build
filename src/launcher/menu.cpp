@@ -32,7 +32,10 @@ constexpr int kExternalTop = 608, kTabHeight = 30;
 constexpr int kReclaimerLeft = 38, kReclaimerTop = 706, kReclaimerRight = 942, kReclaimerBottom = 864;
 constexpr UINT kDone = WM_APP + 20;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
-          ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version, UpdateSelf };
+          ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version, UpdateSelf,
+          Troubleshooting };
+// On a branch that only ever moves forward, so the page can change without a new launcher.
+constexpr const wchar_t* kTroubleshootingUrl = L"https://github.com/MOTYSHIZ/MCCVR-Halo-Build/blob/nitsujack-development/TROUBLESHOOTING.md";
 // The window's client size at 96 dpi.
 constexpr int kMenuWidth = 1400, kMenuHeight = kReclaimerBottom + 26;
 // The credits column, right of the divider, at 96 dpi: the title stays put and the list below it scrolls. It sits as
@@ -304,6 +307,19 @@ void DrawButton(Menu& menu, const DRAWITEMSTRUCT& item) {
     SetBkMode(item.hDC, TRANSPARENT); SetTextColor(item.hDC, disabled ? (warm ? RGB(120, 102, 76) : RGB(80, 105, 115)) : kText); SelectObject(item.hDC, menu.label);
     RECT rect = item.rcItem; DrawTextW(item.hDC, text, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     if (item.itemState & ODS_FOCUS) { InflateRect(&rect, -4, -4); DrawFocusRect(item.hDC, &rect); }
+}
+// A text link on the page: its words in the accent colour, underlined, the line brighter while pressed or focused.
+void DrawLink(Menu& menu, const DRAWITEMSTRUCT& item) {
+    FillRect(item.hDC, &item.rcItem, menu.background);
+    wchar_t text[64]{}; GetWindowTextW(item.hwndItem, text, 64);
+    SetBkMode(item.hDC, TRANSPARENT); SetTextColor(item.hDC, kAccent); SelectObject(item.hDC, menu.smallFont);
+    RECT rect = item.rcItem; DrawTextW(item.hDC, text, -1, &rect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    TEXTMETRICW metrics{}; GetTextMetricsW(item.hDC, &metrics);
+    const int underline = (rect.top + rect.bottom - metrics.tmHeight) / 2 + metrics.tmAscent + menu.Px(2);
+    HPEN pen = CreatePen(PS_SOLID, 1, item.itemState & (ODS_SELECTED | ODS_FOCUS) ? kAccent : RGB(59, 107, 122));
+    const auto old = SelectObject(item.hDC, pen);
+    MoveToEx(item.hDC, rect.left, underline, nullptr); LineTo(item.hDC, rect.right, underline);
+    SelectObject(item.hDC, old); DeleteObject(pen);
 }
 // The heart beside the Credits title: faceted like the menu's other geometric accents, with a glowing core.
 void DrawCreditsHeart(HDC dc, int left, int top, int unit) {
@@ -603,6 +619,17 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         menu->updateSelf = Control(*menu, L"BUTTON", L"Update this launcher from the selected release", BS_OWNERDRAW | WS_TABSTOP, 38, 434, 850, 30, UpdateSelf);
         menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_OWNERDRAW | WS_TABSTOP, 38, 464, 850, 30, Retain);
         Label(*menu, L"03  /  YOUR VR SETUP", 38, 513, 570);
+        // At the right of the heading, over LAUNCH MCC, and as wide as its words, so only they open the page.
+        {
+            const wchar_t* words = L"Troubleshooting";
+            HDC dc = GetDC(window); const auto before = SelectObject(dc, menu->smallFont);
+            SIZE size{}; GetTextExtentPoint32W(dc, words, static_cast<int>(wcslen(words)), &size);
+            SelectObject(dc, before); ReleaseDC(window, dc);
+            const auto link = CreateWindowExW(0, L"BUTTON", words, WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
+                menu->Px(942) - size.cx, menu->Px(513), size.cx, menu->Px(22), window,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(Troubleshooting)), menu->instance, nullptr);
+            SendMessageW(link, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
+        }
         Control(*menu, L"BUTTON", L"VR SETTINGS", BS_OWNERDRAW | WS_TABSTOP, 38, 542, 270, 48, Settings);
         Control(*menu, L"BUTTON", L"MOD FOLDER", BS_OWNERDRAW | WS_TABSTOP, 324, 542, 200, 48, Folder);
         Control(*menu, L"BUTTON", L"LAUNCH MCC", BS_OWNERDRAW | WS_TABSTOP, 540, 542, 402, 48, Launch);
@@ -708,10 +735,16 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             RECT rect = item.rcItem; rect.left += menu->Px(8); rect.right -= menu->Px(4); DrawTextW(item.hDC, text.c_str(), -1, &rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         } else if (item.CtlID == Retain) DrawCheckbox(*menu, item, menu->keepSettings);
         else if (item.CtlID == UpdateSelf) DrawCheckbox(*menu, item, menu->UpdateSelfShown());
+        else if (item.CtlID == Troubleshooting) DrawLink(*menu, item);
         else DrawButton(*menu, item);
         return TRUE;
     }
+    case WM_SETCURSOR:
+        if (reinterpret_cast<HWND>(wParam) == GetDlgItem(window, Troubleshooting)) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; }
+        break;
     case WM_COMMAND: {
+        // Opening the page changes nothing, so it works during a download or install too.
+        if (LOWORD(wParam) == Troubleshooting) { ShellExecuteW(window, L"open", kTroubleshootingUrl, nullptr, nullptr, SW_SHOWNORMAL); return 0; }
         if (menu->busy) return 0;
         switch (LOWORD(wParam)) {
         case Retain: menu->keepSettings = !menu->keepSettings; InvalidateRect(menu->retain, nullptr, FALSE); break;
