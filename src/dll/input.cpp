@@ -463,20 +463,39 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             EffectiveBindings(mappingTitle,gameLayout,gameLayoutKnown):vr_mapping::Overrides{};
         const int zoomSource=mappingTitle>=0&&g_config.vr_action_mapping?
             vr_mapping::Resolve(vr_mapping::Zoom,effectiveBindings[vr_mapping::Zoom]):vr_mapping::RightClick;
-        // What every row presses in this game, Automatic read from the game's own layout: once each time it changes.
-        if(mappingTitle>=0&&g_config.vr_action_mapping)
+        // What every row presses in this game, Automatic read from the game's own layout, and the game's own button
+        // behind each action (0: none): once each time it changes, and only once the layout is read.
+        if(mappingTitle>=0&&g_config.vr_action_mapping&&gameLayoutKnown)
         {
             static std::atomic<uint64_t> logged{0};
-            const uint64_t shown=vr_mapping::Fingerprint(effectiveBindings,{})^(uint64_t(currentTitle)<<56)^
-                (gameLayoutKnown?1u:0u);
+            const uint64_t shown=vr_mapping::Fingerprint(effectiveBindings,gameLayout)^(uint64_t(currentTitle)<<56);
             if(logged.exchange(shown,std::memory_order_relaxed)!=shown)
             {
                 std::string rows;
+                char native[16];
                 for(unsigned action=0;action<vr_mapping::Count;++action)
+                {
+                    sprintf_s(native," (0x%X)",gameLayout[action]);
                     rows+=std::string(action?", ":"")+vr_mapping::kKeys[action]+" = "+vr_mapping::kSourceNames[
-                        vr_mapping::Resolve(static_cast<vr_mapping::Action>(action),effectiveBindings[action])];
-                LOG("VR Mappings %s%s: %s",weapon_interaction::kTitleNames[mappingTitle],
-                    gameLayoutKnown?"":" (the game's own layout not read yet)",rows.c_str());
+                        vr_mapping::Resolve(static_cast<vr_mapping::Action>(action),effectiveBindings[action])]+native;
+                }
+                LOG("VR Mappings %s: %s",weapon_interaction::kTitleNames[mappingTitle],rows.c_str());
+            }
+        }
+        // Held controls the mapper latched on a change, reported every 5 s while it grows: each one a held press that
+        // reached the game as a tap at most.
+        {
+            static std::atomic<uint32_t> reportedRelatches{0};
+            static std::atomic<uint64_t> reportedAt{0};
+            const uint32_t relatched=g_vrActionMapper.relatched;
+            const uint64_t now=GetTickCount64();
+            uint64_t at=reportedAt.load(std::memory_order_relaxed);
+            if(relatched!=reportedRelatches.load(std::memory_order_relaxed)&&now-at>=5000&&
+                reportedAt.compare_exchange_strong(at,now))
+            {
+                reportedRelatches.store(relatched,std::memory_order_relaxed);
+                LOG("VR Mappings: held controls latched on a change %u times so far (a held press reaches the game "
+                    "as a tap at most)",relatched);
             }
         }
         uint32_t collectedSources=ScopeAndActionSources(pad,dpadMode);
@@ -577,15 +596,19 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             (void)Game_GestureMeleeInput(GetTickCount64()); // drains a pending gesture pulse
             g_pauseChord.Reset();
             g_startPulseUntilMs.store(0);
-            // The native menu pointer's face buttons (ExclusiveInputHolds): the menu's own A, B, X and Y.
+            // The native menu pointer's face buttons and bumpers (ExclusiveInputHolds): the menu's own A, B, X and Y,
+            // and the grips as its tab bumpers.
             WORD face=0;
             if(pointerConfirm)
             {
-                face=state->Gamepad.wButtons&(XINPUT_GAMEPAD_A|XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_X|XINPUT_GAMEPAD_Y);
+                face=state->Gamepad.wButtons&(XINPUT_GAMEPAD_A|XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_X|XINPUT_GAMEPAD_Y|
+                    XINPUT_GAMEPAD_LEFT_SHOULDER|XINPUT_GAMEPAD_RIGHT_SHOULDER);
                 if(pad.a) face|=XINPUT_GAMEPAD_A;
                 if(pad.b) face|=XINPUT_GAMEPAD_B;
                 if(pad.x) face|=XINPUT_GAMEPAD_X;
                 if(pad.y) face|=XINPUT_GAMEPAD_Y;
+                if(pad.gripL>0.6f) face|=XINPUT_GAMEPAD_LEFT_SHOULDER;
+                if(pad.gripR>0.6f) face|=XINPUT_GAMEPAD_RIGHT_SHOULDER;
             }
             state->Gamepad={};
             state->Gamepad.wButtons=face;
@@ -615,7 +638,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                     // Halo 2 context actions keep their real MCC button; see
                     // vr_action_passthrough.h. Every other action is unchanged.
                     const auto routed=vr_mapping::RouteActions(title,direct,actions,realNative,
-                        inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret);
+                        inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret,&effectiveBindings);
                     const uint32_t mapped=routed.buttons;
                     NativeVrActions_Publish(state,title,now,routed.published&
                         ~(scopeAvailable?(1u<<vr_mapping::Zoom):0u),direct);
@@ -765,7 +788,8 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         // A seat: Halo 2 and Halo 4 publish Gameplay in one (crouchOnFoot is each one's own on-foot state).
         const auto routedActions=vr_mapping::RouteActions(currentTitle,directActions,
             semanticActions,nativeActions,
-            inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret||!crouchOnFoot);
+            inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret||!crouchOnFoot,
+            mappingTitle>=0?&effectiveBindings:nullptr);
         const uint32_t semanticButtons=routedActions.buttons;
         const bool xPressed=pad.x;
         const float leftTrigger=pad.trigL;

@@ -264,12 +264,14 @@ struct MappedActions
 struct Mapper
 {
     uint64_t identity{}; uint32_t blocked{}, flashlightHeld{}; bool ready{};
+    // Times a held control was latched by a change (a held press then reaches the game as a tap at most).
+    uint32_t relatched{};
     // `also`: a second source for each action (Unbound for none), beside its row's: ContextSources.
     MappedActions ApplyDetailed(uint32_t sources,const Overrides& bindings,const Transports& native,
         uint64_t epoch,bool available,bool disableFlashlight=false,const Overrides* also=nullptr) noexcept
     {
         const uint64_t next=Fingerprint(bindings,native)^epoch^(also?Fingerprint(*also,Transports{})*31u:0u);
-        if(!available||!ready||identity!=next) blocked|=sources;
+        if(!available||!ready||identity!=next) {relatched+=(sources&~blocked)!=0;blocked|=sources;}
         blocked&=sources; identity=next; ready=available;
         const uint32_t flashlightSource=Bit(Resolve(Flashlight,bindings[Flashlight]));
         flashlightHeld&=sources;

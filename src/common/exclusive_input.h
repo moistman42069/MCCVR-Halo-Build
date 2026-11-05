@@ -30,8 +30,9 @@ struct ExclusiveInputHolds
         else if (consume) analog[index]=true;
         return consume||analog[index] ? 0 : value;
     }
-    // `allowFaceButtons`: the native menu pointer owns the pad. A, B, X and Y pass to the menu, which acts on them
-    // without moving its focus; the sticks, D-pad and clicks would move it under the pointer, so they stay consumed.
+    // `allowFaceButtons`: the native menu pointer owns the pad. A, B, X and Y, and the grips as the bumpers (a menu's
+    // tabs), pass to the menu, which acts on them without moving its focus; the sticks, D-pad and clicks would move it
+    // under the pointer, and the triggers are the pointer's, so they stay consumed.
     template<class Pad> void ApplyVr(Pad& p, bool consume, bool allowFaceButtons=false) noexcept
     {
         const uint32_t bits=(p.a?1u:0)|(p.b?2u:0)|(p.x?4u:0)|(p.y?8u:0)|
@@ -46,12 +47,16 @@ struct ExclusiveInputHolds
         const float t=Axis(std::hypot(p.turnX,p.turnY),1,consume,.2f);
         if (!t) p.turnX=p.turnY=0;
         p.trigL=Axis(p.trigL,2,consume,.15f);p.trigR=Axis(p.trigR,3,consume,.15f);
+        // The grips latch as the buttons do, and pass while the pointer lets them.
+        const float gripL=p.gripL,gripR=p.gripR;
         p.gripL=Axis(p.gripL,4,consume,.15f);p.gripR=Axis(p.gripR,5,consume,.15f);
+        if(consume&&allowFaceButtons) {p.gripL=gripL;p.gripR=gripR;}
         if (consume) p.weaponButtons=0;
     }
     template<class Pad> void ApplyPhysical(Pad& p, bool consume, bool allowFaceButtons=false) noexcept
     {
-        const uint32_t face=consume&&allowFaceButtons?(p.wButtons&0xF000u):0u; // XINPUT_GAMEPAD_A, B, X and Y
+        // XINPUT_GAMEPAD_A, B, X, Y and the shoulders
+        const uint32_t face=consume&&allowFaceButtons?(p.wButtons&0xF300u):0u;
         p.wButtons=static_cast<uint16_t>(Buttons(p.wButtons,consume)|face);
         if (!Axis(std::hypot(float(p.sThumbLX),float(p.sThumbLY)),0,consume,7849))
             p.sThumbLX=p.sThumbLY=0;

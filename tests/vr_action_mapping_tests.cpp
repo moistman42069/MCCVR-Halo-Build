@@ -361,8 +361,8 @@ void CheckDirectContextPassthrough()
         Check(p.routed.buttons==0&&p.routed.published==(1u<<Fire),"H2 direct: Fire stays on the bridge, real trigger withheld");
         RunPoll(mapper,GameTitle::Halo2,true,0,automatic,layout);
         p=RunPoll(mapper,GameTitle::Halo2,true,Bit(X)|Bit(Y),automatic,layout);
-        Check(p.routed.buttons==padX&&p.routed.published==(1u<<SwitchWeapon),
-            "H2 direct: X passes through while Y (switch weapon) stays bridged in the same poll");
+        Check(p.routed.buttons==(padX|layout[SwitchWeapon])&&p.routed.published==0,
+            "H2 direct: X and Y (switch weapon, held to dual wield) both reach the game as their real buttons");
     }
     {
         // Transport fallback (no direct route) is byte-identical to before.
@@ -381,7 +381,8 @@ void CheckDirectContextPassthrough()
         Mapper mapper;
         RunPoll(mapper,GameTitle::Halo2,true,0,bindings,split);
         auto p=RunPoll(mapper,GameTitle::Halo2,true,Bit(Y),bindings,split);
-        Check(p.routed.buttons==padB&&!(p.routed.published&context),"H2 direct: Use sends its own real MCC button");
+        Check(p.routed.buttons==(padB|split[SwitchWeapon])&&!(p.routed.published&context),
+            "H2 direct: Use sends its own real MCC button (beside Y's own switch weapon)");
         RunPoll(mapper,GameTitle::Halo2,true,0,bindings,split);
         p=RunPoll(mapper,GameTitle::Halo2,true,Bit(X),bindings,split);
         Check(p.routed.buttons==padX&&!(p.routed.published&context),"H2 direct: Reload sends only the real reload button");
@@ -400,7 +401,8 @@ void CheckDirectContextPassthrough()
     }
     for(const auto title:{GameTitle::Halo3,GameTitle::Halo3ODST,GameTitle::HaloReach,GameTitle::Halo4,GameTitle::HaloCE})
     {
-        Check(DirectPassthroughActions(title)==0,"only Halo 2 passes context actions through");
+        Check(DirectPassthroughActions(title)==(title==GameTitle::HaloReach?1u<<Jump:0u),
+            "only Halo 2 passes context actions through; Reach passes Jump for the jetpack");
         Mapper direct,fallback;
         RunPoll(direct,title,true,0,automatic,layout);RunPoll(fallback,title,false,0,automatic,layout);
         for(unsigned poll=0;poll<40;++poll)
@@ -430,6 +432,44 @@ void CheckDirectContextPassthrough()
             "seated direct: the support trigger is the real left trigger, not the bridge's grenade");
         Check(!(onFoot.buttons&(1u<<16))&&(onFoot.published&(1u<<Grenade)),
             "on foot direct: the grenade stays on the bridge, the real trigger withheld");
+    }
+    {
+        // Reach: Jump is its real button, for MCC's jump-in-the-air jetpack, and the bridge leaves it alone.
+        Mapper mapper;
+        RunPoll(mapper,GameTitle::HaloReach,true,0,automatic,layout);
+        const auto p=RunPoll(mapper,GameTitle::HaloReach,true,Bit(A),automatic,layout);
+        Check(p.routed.buttons==padA&&!(p.routed.published&(1u<<Jump)),"Reach direct: A is the real jump button");
+    }
+    {
+        // Every action whose real button carries it whole reaches the game as that button (Forge, a vehicle's boost,
+        // MCC's jetpack jump read it outside the builder); only actions split across one native button stay bridged.
+        Transports roles=layout;roles[Sprint]=0;           // this fixture's 1<<a puts Sprint on A beside Jump
+        Overrides together=automatic;                       // Reload and Use both on X, as the game has them
+        Overrides apart=automatic;apart[Interact]=B;         // Use moved to B: X is Reload alone
+        Check(!(BridgeOnlyActions(roles,together)&context),"Reload and Use on one VR control: their real button carries both");
+        const uint32_t only=BridgeOnlyActions(roles,apart);
+        Check((only&context)==context&&!(only&(1u<<Jump)),"apart on two VR controls: both bridged, the rest real");
+        Transports noMelee=roles;noMelee[Melee]=0;
+        Check((BridgeOnlyActions(noMelee,together)&(1u<<Melee))!=0,"no native button: the bridge");
+        Transports gesture{};
+        for(unsigned a=0;a<Count;++a) gesture[a]=NativeVrActions_GestureBit(static_cast<Action>(a));
+        for(const auto title:{GameTitle::Halo3,GameTitle::Halo4,GameTitle::HaloCE})
+        {
+            Mapper mapper;
+            mapper.ApplyDetailed(0,together,gesture,(uint64_t(title)<<24)|1,true);
+            auto mapped=mapper.ApplyDetailed(Bit(A),together,gesture,(uint64_t(title)<<24)|1,true);
+            auto routed=RouteActions(title,true,mapped,roles,false,&together);
+            Check(routed.buttons==padA&&!(routed.published&(1u<<Jump)),"direct: Jump reaches the game as the real A");
+            mapper.ApplyDetailed(0,together,gesture,(uint64_t(title)<<24)|1,true);
+            mapped=mapper.ApplyDetailed(Bit(X),together,gesture,(uint64_t(title)<<24)|1,true);
+            routed=RouteActions(title,true,mapped,roles,false,&together);
+            Check(routed.buttons==padX&&!(routed.published&context),"direct: Reload and Use together are the real X");
+            Mapper split;
+            split.ApplyDetailed(0,apart,gesture,(uint64_t(title)<<24)|1,true);
+            mapped=split.ApplyDetailed(Bit(X),apart,gesture,(uint64_t(title)<<24)|1,true);
+            routed=RouteActions(title,true,mapped,roles,false,&apart);
+            Check(routed.buttons==0&&routed.published==(1u<<Reload),"direct: Reload apart from Use stays on the bridge");
+        }
     }
     Check(std::strcmp(ActionName(GameTitle::Halo2,Interact),kNames[Interact])!=0,
         "Halo 2 index 5 is labelled as touch_device, not pick up");

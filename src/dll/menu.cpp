@@ -1409,9 +1409,12 @@ namespace
                 "Games using the MCC layout fallback can link actions sharing a native button. "
                 "If the direct route is unavailable, Reload and Use may still share a button.");
             const auto selectedGame=static_cast<GameTitle>(selectedTitle+1);
-            if(vr_mapping::DirectPassthroughActions(selectedGame))
-                ImGui::TextWrapped("Halo 2: Reload and Use device always send their MCC button, so the game's "
-                    "own tap and hold choose reload, pick up, board or use.");
+            if(selectedGame==GameTitle::Halo2)
+                ImGui::TextWrapped("Halo 2: Reload, Use device and Switch weapon always send their MCC button, so the "
+                    "game's own tap and hold choose reload, pick up, board, use or dual wield.");
+            else if(selectedGame==GameTitle::HaloReach)
+                ImGui::TextWrapped("Reach: Jump always sends its MCC button, so jumping again in the air fires the "
+                    "jetpack when MCC's own setting for it is on.");
             vr_mapping::Transports bindings{};
             const bool haveBindings=activeIndex==selectedTitle&&Game_ReadVrActionBindings(bindings,GetTickCount64());
             for(unsigned action=0;action<vr_mapping::Count;++action)
