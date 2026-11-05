@@ -56,15 +56,26 @@ constexpr const char* consumerReloadPattern=
 constexpr uintptr_t jetpackJumpRva=0x5FD2D,jetpackJumpReturn=0x5FD43;
 constexpr const char* jetpackJumpPattern=
     "38 88 8E 00 00 00 0F 85 A0 00 00 00 33 D2 48 8B CE E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? 41 8B 0E 84 C0 0F 95 44 24 31";
+// Before that check the builder reads the ability button (action 5) on one of two paths, chosen by the held ability's
+// own definition: the jetpack's path (which then tests the profile's byte) or every other ability's plain press.
+constexpr uintptr_t jetpackAbilityRva=0x5FCB3,jetpackAbilityReturn=0x5FCBE,plainAbilityRva=0x5FDF8,plainAbilityReturn=0x5FE05;
+constexpr const char* jetpackAbilityPattern=
+    "8D 57 05 48 8B CE E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? 84 C0 48 8B 44 24 78 0F 95 C3 40 38 78 69 0F 84";
+constexpr const char* plainAbilityPattern=
+    "BA 05 00 00 00 48 8B CE E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? BB 01 00 00 00 3A C3";
+// The consumer's profile: controller c's at +0x2A03C58 + c*0xAB8 while that profile is in use, else the default one.
+constexpr uintptr_t profileLoadRva=0x5E0B6;
+constexpr const char* profileLoadPattern=
+    "48 69 CE B8 0A 00 00 48 8D 05 ?? ?? ?? ?? 48 8D 98 ?? ?? ?? ?? 48 03 D9 48 8D 3D ?? ?? ?? ?? 48 8B CB E8";
 struct Runtime {
     HMODULE module{};
-    uintptr_t base{}, state{}, padState{};
+    uintptr_t base{}, state{}, padState{}, profiles{}, defaultProfile{};
     std::atomic<uint32_t> generation{};
     void* target[2]{}, *original[2]{};
     bool enabled[2]{}, attempted{}, jetpackCounted{};
     std::atomic<bool> admitted{}, faulted{};
     std::atomic<uint32_t> callbacks{};
-    std::atomic<uint64_t> converted{}, routed{}, readerAt{}, jetpackChecks{}, jetpackHeld{};
+    std::atomic<uint64_t> converted{}, routed{}, readerAt{}, jetpackChecks{}, jetpackHeld{}, jetpackAbility{}, plainAbility{};
     uint64_t reportAt{};
 } runtime;
 uint32_t blockedGeneration{}; // worker-only: a fault is not retried every poll
@@ -202,13 +213,23 @@ __declspec(noinline) void NoteJetpackJump(const void* record) noexcept {
             runtime.jetpackHeld.fetch_add(1,std::memory_order_relaxed);
     } __except(EXCEPTION_EXECUTE_HANDLER){}
 }
+// The double-press jump-to-jetpack byte (+0x69) the jetpack's path tests; -1 when unknown or unreadable.
+int ProfileByte(uintptr_t profile) noexcept {
+    if(!profile) return -1;
+    __try { return *reinterpret_cast<const volatile uint8_t*>(profile+0x69); }
+    __except(EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
 void* __fastcall ReaderHook(void* state,unsigned action,uintptr_t caller) {
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
     void* result=nullptr;
     __try {
         result=reinterpret_cast<Read>(runtime.original[1])(state,action);
         result=ReadOwned(state,action,result,caller);
-        if(runtime.jetpackCounted&&caller==runtime.base+jetpackJumpReturn) NoteJetpackJump(result);
+        if(runtime.jetpackCounted) {
+            if(caller==runtime.base+jetpackJumpReturn) NoteJetpackJump(result);
+            else if(caller==runtime.base+jetpackAbilityReturn) runtime.jetpackAbility.fetch_add(1,std::memory_order_relaxed);
+            else if(caller==runtime.base+plainAbilityReturn) runtime.plainAbility.fetch_add(1,std::memory_order_relaxed);
+        }
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
     return result;
 }
@@ -243,7 +264,8 @@ bool Retire() {
         runtime.target[i]=runtime.original[i]=nullptr;
     }
     if(runtime.module) FreeLibrary(runtime.module);
-    runtime.module=nullptr;runtime.base=runtime.state=runtime.padState=0;runtime.generation=0;
+    runtime.module=nullptr;runtime.base=runtime.state=runtime.padState=runtime.profiles=runtime.defaultProfile=0;
+    runtime.generation=0;
     runtime.readerAt.store(0,std::memory_order_release);
     runtime.attempted=false;runtime.faulted=false;runtime.jetpackCounted=false;
     return true;
@@ -388,7 +410,15 @@ void NativeVrActions_Poll() {
             runtime.padState=sig::RipTarget(base+padProofRva+10,base+padProofRva+14);
             proved=proved && runtime.padState>=base && runtime.padState-base<size && size-(runtime.padState-base)>=4*0x3c;
         }
-        runtime.jetpackCounted=proved&&Prove(base,size,jetpackJumpRva,jetpackJumpPattern);
+        runtime.jetpackCounted=proved&&Prove(base,size,jetpackJumpRva,jetpackJumpPattern)&&
+            Prove(base,size,jetpackAbilityRva,jetpackAbilityPattern)&&Prove(base,size,plainAbilityRva,plainAbilityPattern);
+        if(runtime.jetpackCounted&&Prove(base,size,profileLoadRva,profileLoadPattern)) {
+            const uintptr_t profiles=sig::RipTarget(base+profileLoadRva+10,base+profileLoadRva+14)+
+                *reinterpret_cast<const int32_t*>(base+profileLoadRva+17);
+            const uintptr_t fallback=sig::RipTarget(base+profileLoadRva+27,base+profileLoadRva+31);
+            if(profiles>=base&&profiles-base<size&&size-(profiles-base)>=4*0xAB8) runtime.profiles=profiles;
+            if(fallback>=base&&fallback-base<size&&size-(fallback-base)>=0xAB8) runtime.defaultProfile=fallback;
+        }
         const uintptr_t rvas[]{converterRva,d.readerRva};
         for(unsigned i=0;proved&&i<2;++i) {
             auto* target=reinterpret_cast<void*>(base+rvas[i]);
@@ -414,8 +444,11 @@ void NativeVrActions_Poll() {
     if(now>=runtime.reportAt) {
         runtime.reportAt=now+5000;
         LOG("Native VR action bridge Reach: converter=%llu directReads=%llu%s; jump-in-the-air jetpack check %s: ran %llu, "
-            "saw jump held %llu",
+            "saw jump held %llu; ability button read on the jetpack's path %llu, on any other ability's %llu; "
+            "double-press jump to jetpack byte: player 1's profile %d, default profile %d (-1 unread)",
             runtime.converted.load(),runtime.routed.load(),runtime.faulted.load()?" TRANSPORT FALLBACK (guarded access fault)":"",
-            runtime.jetpackCounted?"counted":"not proven",runtime.jetpackChecks.load(),runtime.jetpackHeld.load());
+            runtime.jetpackCounted?"counted":"not proven",runtime.jetpackChecks.load(),runtime.jetpackHeld.load(),
+            runtime.jetpackAbility.load(),runtime.plainAbility.load(),ProfileByte(runtime.profiles),
+            ProfileByte(runtime.defaultProfile));
     }
 }
