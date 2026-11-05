@@ -15691,8 +15691,9 @@ int main()
                   untouched.title_profiles[0].hud_size == 0.40f &&
                   untouched.title_profiles[0].hud_aspect == 1.22f &&
                   untouched.title_profiles[0].hud_vertical_offset == -200.0f &&
-                  untouched.title_profiles[1].hud_size == 0.40f &&
-                  untouched.title_profiles[1].hud_vertical_offset == -200.0f &&
+                  untouched.title_profiles[1].hud_size == 0.46f &&
+                  untouched.title_profiles[1].hud_aspect == 1.22f &&
+                  untouched.title_profiles[1].hud_vertical_offset == -150.0f &&
                   untouched.title_profiles[6].hud_size == 0.43f &&
                   untouched.title_profiles[6].hud_aspect == 1.22f &&
                   untouched.title_profiles[6].hud_vertical_offset == 16.0f,
@@ -15700,7 +15701,7 @@ int main()
               "and Halo CE at the shared one");
         Check(untouched.title_profiles[kTitleProfileHalo4].hud_size == 0.41f &&
                   untouched.title_profiles[kTitleProfileHalo4].hud_aspect == 1.00f &&
-                  untouched.title_profiles[kTitleProfileHalo4].hud_vertical_offset == -200.0f,
+                  untouched.title_profiles[kTitleProfileHalo4].hud_vertical_offset == -117.0f,
               "HUD per game: a fresh configuration starts Halo 4 at the tester's layout");
         // Halo 4's HUD height once ran the other way: a file written before the correction is turned over once,
         // and one written since is not.
