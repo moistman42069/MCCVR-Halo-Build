@@ -290,6 +290,7 @@ std::atomic<uint64_t> screenEffectRuns{},screenEffectRefusals{};
 std::atomic<uint32_t> screenEffectFailure{};
 std::atomic<int32_t> screenEffectRefusedRect[4]{};
 std::atomic<uint32_t> screenEffectRefusedEye[2]{};
+std::atomic<int32_t> screenEffectRefusedKind{};
 const char* ScreenEffectFailureName(uint32_t value) noexcept
 {
     switch (value)
@@ -303,6 +304,7 @@ const char* ScreenEffectFailureName(uint32_t value) noexcept
     case 6:return "native-view-table-changed";
     case 7:return "native-target-or-stack-changed";
     case 8:return "native-fault";
+    case 9:return "native-default-target";
     default:return "unknown";
     }
 }
@@ -429,13 +431,19 @@ bool AnniversaryHud_ScreenEffect(ID3D11DeviceContext* context) noexcept
     const uintptr_t views=bindings.base+effect::native_target_shader_views;
     auto** sceneSlot=reinterpret_cast<ID3D11ShaderResourceView**>(views+0x30);
     int16_t kind{},rect[4]{};
+    int32_t defaultKindOne{};
     ID3D11ShaderResourceView* sceneView{};
     ID3D11RenderTargetView* secondary{};
     D3D11_SHADER_RESOURCE_VIEW_DESC sceneDesc{};
     uintptr_t backend{};
     int32_t stackBefore{},stackAfter{};
-    if (!Read(bindings.base+effect::native_bound_target_kind,kind)||kind!=1)
-    { ScreenEffect_Refuse(2);return true; }
+    // The binder pushes the bound target when it leaves kind -1 or the default kind 1, and pops back to it when it binds
+    // 1 again. The effect binds 2, 1, 1: only from -1 (the late callback's reset, 0xB29438) or 1 does it leave the stack,
+    // and so the prepared target, as it found them.
+    if (!Read(bindings.base+effect::native_bound_target_kind,kind)||(kind!=-1&&kind!=1))
+    { screenEffectRefusedKind.store(kind,std::memory_order_relaxed);ScreenEffect_Refuse(2);return true; }
+    if (!Read(bindings.base+effect::native_default_target_flag,defaultKindOne)||!defaultKindOne)
+    { ScreenEffect_Refuse(9);return true; }
     // rectangle2d: top, left, bottom, right
     if (!Read(bindings.base+effect::native_screen_rectangle,rect)||rect[0]||rect[1]||
         rect[2]!=static_cast<int32_t>(height)||rect[3]!=static_cast<int32_t>(width))
@@ -495,7 +503,8 @@ bool AnniversaryHud_ScreenEffect(ID3D11DeviceContext* context) noexcept
     if (!ran) { screenEffectFaulted=true;ScreenEffect_Refuse(8); }
     else if (!intact) { screenEffectFaulted=true;ScreenEffect_Refuse(6); }
     else if (kept) { screenEffectFailure.store(0,std::memory_order_relaxed);screenEffectRuns.fetch_add(1,std::memory_order_relaxed); }
-    if (!kept) { ScreenEffect_Refuse(7);hud->complete=false; }
+    // A target or stack the effect did not hand back means the binder is not the one described above: stop deferring.
+    if (!kept) { screenEffectFaulted=true;ScreenEffect_Refuse(7);hud->complete=false; }
     return kept;
 }
 void ScreenEffectBody(const void* parameters,uintptr_t caller)

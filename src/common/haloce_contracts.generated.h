@@ -478,10 +478,19 @@ namespace anniversary_screen_effect {
 inline constexpr std::array<Entry,1> entries={{
     {"native_screen_effect_draw",0xac7ef0,"48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20 55 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC 90 00 00 00 0F 29 70 C8 48 8B 05 F2 D0",true},
 }};
-inline constexpr std::array<Witness,11> witnesses={{
+inline constexpr std::array<Witness,21> witnesses={{
     {0xb516d9,"48 8B BC CA 78 5E B8 01"},
     {0xb519c5,"4C 8D 04 40 4D 03 C0 4A 8B 1C C3"},
     {0xb51a05,"FF 50 40"},
+    {0xb516ef,"66 89 1D 62 47 03 01"},
+    {0xaeb32,"40 0F 95 C7"},
+    {0xaeb58,"E8 83 D6 12 00"},
+    {0xaebe7,"E9 04 D7 12 00"},
+    {0xac7f88,"66 44 39 35 F0 85 F1 01"},
+    {0xac87b1,"0F B7 0D C8 7D F1 01"},
+    {0xb29472,"66 44 89 05 DE C9 05 01"},
+    {0xb29488,"66 89 3D F1 70 EB 01"},
+    {0x74332,"E8 01 51 AB 00"},
     {0xb32101,"E8 EA 5D F9 FF"},
     {0xb32106,"E8 FD 09 FE FF"},
     {0xb519be,"48 8D 1D BB 44 03 01"},
@@ -490,8 +499,9 @@ inline constexpr std::array<Witness,11> witnesses={{
     {0xac80ad,"0F BF 0D 02 85 F1 01"},
     {0xac808d,"44 0F BF 0D 23 85 F1 01"},
     {0xac80a3,"0F BF 15 10 85 F1 01"},
+    {0xaeb29,"39 3D 55 BF AC 01"},
 }};
-inline constexpr std::array<Relative,8> relatives={{
+inline constexpr std::array<Relative,9> relatives={{
     {0xb32101,5,1,0xac7ef0},
     {0xb32106,5,1,0xb12b08},
     {0xb519be,7,3,0x1b85e80},
@@ -500,6 +510,7 @@ inline constexpr std::array<Relative,8> relatives={{
     {0xac80ad,7,3,0x29e05b6},
     {0xac808d,8,4,0x29e05b8},
     {0xac80a3,7,3,0x29e05ba},
+    {0xaeb29,6,2,0x1b7aa84},
 }};
 inline constexpr std::array<Pointer,0> pointers={{
 }};
@@ -507,6 +518,7 @@ inline constexpr uint32_t native_screen_effect_draw=0xac7ef0;
 inline constexpr uint32_t native_target_shader_views=0x1b85e80;
 inline constexpr uint32_t native_bound_target_kind=0x1b85e58;
 inline constexpr uint32_t native_screen_rectangle=0x29e05b4;
+inline constexpr uint32_t native_default_target_flag=0x1b7aa84;
 }
 namespace audio_listener {
 inline constexpr std::array<Entry,3> entries={{

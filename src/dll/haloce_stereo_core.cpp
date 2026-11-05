@@ -1342,9 +1342,10 @@ bool HaloCE_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActive,bool allo
         if (screenEffectInstalled.load()||screenEffectRuns.load()||screenEffectRefusals.load())
         {
             const uint32_t effectFailure=screenEffectFailure.load();
-            LOG("CE Anniversary zoom art gen=%u installed=%d runs=%llu refused=%llu reason=%s rect=%d,%d,%d,%d eye=%ux%u",
-                gen,screenEffectInstalled.load(),screenEffectRuns.load(),screenEffectRefusals.load(),
-                ScreenEffectFailureName(effectFailure),screenEffectRefusedRect[0].load(),screenEffectRefusedRect[1].load(),
+            LOG("CE Anniversary zoom art gen=%u installed=%d faulted=%d runs=%llu refused=%llu reason=%s kind=%d rect=%d,%d,%d,%d eye=%ux%u",
+                gen,screenEffectInstalled.load(),screenEffectFaulted.load(),screenEffectRuns.load(),screenEffectRefusals.load(),
+                ScreenEffectFailureName(effectFailure),screenEffectRefusedKind.load(),
+                screenEffectRefusedRect[0].load(),screenEffectRefusedRect[1].load(),
                 screenEffectRefusedRect[2].load(),screenEffectRefusedRect[3].load(),
                 screenEffectRefusedEye[0].load(),screenEffectRefusedEye[1].load());
         }

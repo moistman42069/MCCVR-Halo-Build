@@ -4876,7 +4876,7 @@
       "signature": "48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20 55 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC 90 00 00 00 0F 29 70 C8 48 8B 05 F2 D0",
       "function_entry": true,
       "runtime_group": "anniversary_screen_effect",
-      "evidence": "Weapon HUD screen effect (zoom mask and convolution). 0xb31d88 calls it at 0xb32101, just before the gameplay HUD 0xb12b08 at 0xb32106. Each pass samples a target kind through the kind-indexed view table 0x1b85e80 (stride 0x30: render target view, then shader resource view) and frames it with the native rectangle 0x29e05b4 (top, left, bottom, right); 0x1b85e58 is the bound kind its target binder 0xb51670 compares.",
+      "evidence": "Weapon HUD screen effect (zoom mask and convolution). 0xb31d88 calls it at 0xb32101, just before the gameplay HUD 0xb12b08 at 0xb32106. Each pass samples a target kind through the kind-indexed view table 0x1b85e80 (stride 0x30: render target view, then shader resource view) and frames it with the native rectangle 0x29e05b4 (top, left, bottom, right). Its binder 0xb51670 stores the new kind in 0x1b85e58 and hands the previous one to 0xaeb00, which pushes the bound target (0x1dc1e0) when the previous kind is -1 or the default kind, and pops back (0x1dc2f0) when the new kind is the default kind; the default kind is 1 while 0x1b7aa84 is non-zero. The effect binds 2, then 1, then the window kind 0x29e0580 (which it requires to be 1), so it leaves the stack and the bound target as it found them only from a previous kind of -1 or 1. The late HUD callback 0x740b0 calls 0xb29438 (bound kind -1, window kind 1) right before 0xb31d88, and nothing 0xb31d88 calls before 0xb32101 binds a target.",
       "relative_operands": [
         {
           "instruction_rva": "0xb32101",
@@ -4936,6 +4936,14 @@
           "instruction_bytes": 7,
           "displacement_offset": 3,
           "instruction_signature": "0F BF 15 10 85 F1 01"
+        },
+        {
+          "instruction_rva": "0xaeb29",
+          "target_rva": "0x1b7aa84",
+          "instruction_bytes": 6,
+          "displacement_offset": 2,
+          "instruction_signature": "39 3D 55 BF AC 01",
+          "target_name": "native_default_target_flag"
         }
       ],
       "instruction_witnesses": [
@@ -4953,6 +4961,51 @@
           "rva": "0xb51a05",
           "signature": "FF 50 40",
           "meaning": "call qword ptr [rax + 0x40] (PSSetShaderResources)"
+        },
+        {
+          "rva": "0xb516ef",
+          "signature": "66 89 1D 62 47 03 01",
+          "meaning": "mov word ptr [0x1b85e58], bx (the binder stores the new kind before 0xaeb00)"
+        },
+        {
+          "rva": "0xaeb32",
+          "signature": "40 0F 95 C7",
+          "meaning": "setne dil (default kind = 0x1b7aa84 != 0)"
+        },
+        {
+          "rva": "0xaeb58",
+          "signature": "E8 83 D6 12 00",
+          "meaning": "call 0x1dc1e0 (push: previous kind -1 or default)"
+        },
+        {
+          "rva": "0xaebe7",
+          "signature": "E9 04 D7 12 00",
+          "meaning": "jmp 0x1dc2f0 (pop: new kind is the default)"
+        },
+        {
+          "rva": "0xac7f88",
+          "signature": "66 44 39 35 F0 85 F1 01",
+          "meaning": "cmp word ptr [0x29e0580], r14w (the effect runs only for window kind 1)"
+        },
+        {
+          "rva": "0xac87b1",
+          "signature": "0F B7 0D C8 7D F1 01",
+          "meaning": "movzx ecx, word ptr [0x29e0580] (the effect ends by binding the window kind)"
+        },
+        {
+          "rva": "0xb29472",
+          "signature": "66 44 89 05 DE C9 05 01",
+          "meaning": "mov word ptr [0x1b85e58], r8w (-1: no kind bound)"
+        },
+        {
+          "rva": "0xb29488",
+          "signature": "66 89 3D F1 70 EB 01",
+          "meaning": "mov word ptr [0x29e0580], di (window kind 1)"
+        },
+        {
+          "rva": "0x74332",
+          "signature": "E8 01 51 AB 00",
+          "meaning": "call 0xb29438 (single-view window parameters) right before 0xb31d88 at 0x74345"
         }
       ]
     },
