@@ -58,6 +58,20 @@ inline uint32_t BridgeOnlyActions(const Transports& native,const Overrides& bind
     return only;
 }
 
+// The real button that carries each action whole. Halo 2's layout gives Use (touch_device) no button of its own: its
+// updater derives it, as it derives picking up a weapon and boarding, from how long the reload/action button is held.
+// With Use on Reload's VR control that real button carries it; the bridge's own touch_device on the same press kept a
+// held B from picking up or boarding (Y, which the bridge does not carry, held fine). Use on a control of its own
+// keeps the bridge, its only route then.
+inline Transports CarryingTransports(GameTitle title,const Transports& native,const Overrides* bindings) noexcept
+{
+    Transports carrying=native;
+    if(title==GameTitle::Halo2&&bindings&&!carrying[Interact]&&
+       Resolve(Interact,(*bindings)[Interact])==Resolve(Reload,(*bindings)[Reload]))
+        carrying[Interact]=carrying[Reload];
+    return carrying;
+}
+
 // `actions` is the mapper's semantic output for this poll; `native` holds the
 // REAL native transports read from the game's layout (never the bridge's
 // gesture bits). An action with no native binding stays on the bridge, which
@@ -69,14 +83,15 @@ inline DirectRoute SplitDirectRoute(GameTitle title,bool direct,uint32_t actions
 {
     DirectRoute route{};
     if(!direct) return route;
+    const Transports carrying=CarryingTransports(title,native,bindings);
     const uint32_t passthrough=DirectPassthroughActions(title,seated)|
-        (bindings?~BridgeOnlyActions(native,*bindings):0u);
+        (bindings?~BridgeOnlyActions(carrying,*bindings):0u);
     for(unsigned a=0;a<Count;++a)
     {
         const uint32_t bit=1u<<a;
-        if(!(passthrough&bit)||!native[a]) continue;
+        if(!(passthrough&bit)||!carrying[a]) continue;
         route.bridgeMask&=~bit;
-        if(actions&bit) route.transports|=native[a];
+        if(actions&bit) route.transports|=carrying[a];
     }
     return route;
 }

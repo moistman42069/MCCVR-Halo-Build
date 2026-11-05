@@ -399,6 +399,40 @@ void CheckDirectContextPassthrough()
         Check(p.routed.buttons==0&&(p.routed.published&context)==context,
             "H2 direct with no readable layout keeps the bridge route");
     }
+    {
+        // Halo 2's layout as MCC reads it: Use (touch_device) has no button of its own; the game derives it, beside
+        // picking up and boarding, from the reload button's hold. On Reload's VR control that real button carries it.
+        Transports noUse=layout;noUse[Interact]=0;
+        Transports gesture{};
+        for(unsigned a=0;a<Count;++a) gesture[a]=NativeVrActions_GestureBit(static_cast<Action>(a));
+        const uint64_t epoch=(uint64_t(GameTitle::Halo2)<<24)|1;
+        Mapper mapper;
+        mapper.ApplyDetailed(0,automatic,gesture,epoch,true);
+        for(unsigned poll=0;poll<40;++poll) // a held X, well past H2's hold threshold
+        {
+            const auto mapped=mapper.ApplyDetailed(Bit(X),automatic,gesture,epoch,true);
+            const auto routed=RouteActions(GameTitle::Halo2,true,mapped,noUse,false,&automatic);
+            Check(mapped.Has(Reload)&&mapped.Has(Interact)&&routed.buttons==padX&&!(routed.published&context),
+                "H2 direct: Use with no button of its own rides Reload's real button, and the bridge leaves it alone");
+        }
+        Overrides apart=automatic;apart[Interact]=B;
+        Mapper split;
+        split.ApplyDetailed(0,apart,gesture,epoch,true);
+        auto mapped=split.ApplyDetailed(Bit(B),apart,gesture,epoch,true);
+        auto routed=RouteActions(GameTitle::Halo2,true,mapped,noUse,false,&apart);
+        Check(routed.buttons==0&&routed.published==(1u<<Interact),"H2 direct: Use on a control of its own keeps the bridge");
+        split.ApplyDetailed(0,apart,gesture,epoch,true);
+        mapped=split.ApplyDetailed(Bit(X),apart,gesture,epoch,true);
+        routed=RouteActions(GameTitle::Halo2,true,mapped,noUse,false,&apart);
+        Check(routed.buttons==padX&&!(routed.published&context),"H2 direct: Reload apart from Use is still its real button");
+        const uint64_t h4=(uint64_t(GameTitle::Halo4)<<24)|1;
+        Mapper other;
+        other.ApplyDetailed(0,automatic,gesture,h4,true);
+        mapped=other.ApplyDetailed(Bit(X),automatic,gesture,h4,true);
+        routed=RouteActions(GameTitle::Halo4,true,mapped,noUse,false,&automatic);
+        Check(routed.buttons==padX&&(routed.published&context)==(1u<<Interact),
+            "other titles: Use with no button stays on the bridge beside Reload's real button");
+    }
     for(const auto title:{GameTitle::Halo3,GameTitle::Halo3ODST,GameTitle::HaloReach,GameTitle::Halo4,GameTitle::HaloCE})
     {
         Check(DirectPassthroughActions(title)==(title==GameTitle::HaloReach?1u<<Jump:0u),
