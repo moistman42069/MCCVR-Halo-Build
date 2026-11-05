@@ -91,6 +91,22 @@ int main()
                 transport,d.action)&&transport[0]==0&&transport[1]!=0,
                 "mismatched preference owner rejects only that controller");
         }
+        {
+            // A level's end: the player's row reads all zero, every action on button 0 (LT).
+            std::vector<uint8_t> row(4*d.stride+0x200,0);
+            for(unsigned c=0;c<4;++c) SetBinding(d,row,c,0,0);
+            const auto at=reinterpret_cast<uintptr_t>(row.data());
+            const bool dword=d.title!=GameTitle::HaloCE&&d.title!=GameTitle::Halo2;
+            Check(GestureRowCleared(d,at,0)==dword&&GestureRowCleared(d,at,1)==dword,
+                "an all-zero row is cleared where the layout is a dword table, never guessed elsewhere");
+            SetBinding(d,row,0,d.actionCount-1,10);
+            Check(!GestureRowCleared(d,at,0)&&GestureRowCleared(d,at,1)==dword,"one bound action is a real row");
+            if(dword) {
+                Put<uint32_t>(row,1*d.stride+d.controllerOffset,3);
+                Check(!GestureRowCleared(d,at,1),"a row another controller owns is not this one's");
+            }
+            Check(!GestureRowCleared(d,0,0),"an unreadable row is not called cleared");
+        }
         if(d.title==GameTitle::Halo2) {
             for(int badCount:{-1,0,9}) {
                 Put<int32_t>(memory,d.action*100+0x1C,badCount);

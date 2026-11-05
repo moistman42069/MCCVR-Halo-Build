@@ -16,6 +16,7 @@ struct GestureBindingCache
     uint32_t attemptedGeneration=0;
     GameTitle attemptedTitle=GameTitle::None;
     uint32_t lastTransport[4]{UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+    bool rowCleared=false;
 } g_gestureBinding;
 
 bool GestureUniqueAt(uintptr_t base,size_t size,uintptr_t rva,const char* pattern)
@@ -61,7 +62,16 @@ void RefreshGestureMeleeBinding(const TitleDescriptor* title,bool levelRunning,u
         LOG("Gesture melee %s: active binding reader %s; generation %u",title->displayName,
             g_gestureBinding.state ? "verified (read only)" : "unavailable; gesture stays stock",generation);
     }
-    readable=readable && g_gestureBinding.state && GestureReadNativeBindings(d,g_gestureBinding.state,transport,d.action);
+    // The player's row cleared at a level's end is no layout: unread until it is back, never every action on LT.
+    const bool cleared=readable && g_gestureBinding.state && GestureRowCleared(d,g_gestureBinding.state,0);
+    if(cleared!=g_gestureBinding.rowCleared)
+    {
+        g_gestureBinding.rowCleared=cleared;
+        LOG(cleared?"Gesture melee %s: the player's button layout reads all zero (a level ending); unread until it is back":
+            "Gesture melee %s: the player's button layout reads again",title->displayName);
+    }
+    readable=readable && g_gestureBinding.state && !cleared &&
+        GestureReadNativeBindings(d,g_gestureBinding.state,transport,d.action);
     uint32_t actions[vr_mapping::Count][4]{};
     for(unsigned action=0;readable&&action<vr_mapping::Count;++action)
         readable=GestureReadNativeBindings(d,g_gestureBinding.state,actions[action],
