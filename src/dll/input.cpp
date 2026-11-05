@@ -810,6 +810,19 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret||!crouchOnFoot,
             mappingTitle>=0?&effectiveBindings:nullptr);
         const uint32_t semanticButtons=routedActions.buttons;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        {
+            static uint32_t shownSources=0,shownActions=0,shownButtons=0,shownPublished=0;
+            if(semanticMode&&(actionSources!=shownSources||semanticActions.actions!=shownActions||
+                semanticButtons!=shownButtons||routedActions.published!=shownPublished))
+            {
+                shownSources=actionSources;shownActions=semanticActions.actions;
+                shownButtons=semanticButtons;shownPublished=routedActions.published;
+                LOG("VR Mappings (dev): sources 0x%X -> actions 0x%X -> buttons 0x%X, bridge 0x%X",
+                    actionSources,semanticActions.actions,semanticButtons,routedActions.published);
+            }
+        }
+#endif
         const bool xPressed=pad.x;
         const float leftTrigger=pad.trigL;
 

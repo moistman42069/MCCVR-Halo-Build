@@ -15476,6 +15476,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if (pad.x && !previousPad.x) LOG("controller edge: X");
         if (pad.y && !previousPad.y) LOG("controller edge: Y");
 #if HALOMCCVR_DEV_DIAGNOSTICS
+        if ((pad.trigR > 0.5f) != (previousPad.trigR > 0.5f) || (pad.trigL > 0.5f) != (previousPad.trigL > 0.5f) ||
+            pad.a != previousPad.a)
+            LOG("controller state (dev): A=%d right trigger %.2f, left trigger %.2f", pad.a ? 1 : 0, pad.trigR, pad.trigL);
         {
             // SEATEXIT witness: the remaining raw edges, rate-limited per kind (thumb-rest touch can
             // chatter). Menu/Start is already logged above.
