@@ -22,6 +22,7 @@ struct FloatField { const char* key; float Config::*member; };
 constexpr BoolField kBools[] = {
     {"vr_action_mapping", &Config::vr_action_mapping},
     {"trigger_air_equipment", &Config::trigger_air_equipment},
+    {"grip_contextual_trigger", &Config::grip_contextual_trigger},
     {"disable_flashlight_input", &Config::disable_flashlight_input},
     {"flashlight_suppress_on_two_hand", &Config::flashlight_suppress_on_two_hand},
     {"y_b_start_chord", &Config::y_b_start_chord},
@@ -165,6 +166,7 @@ void Parse(const char* text, Config& out)
 {
     std::istringstream lines(text ? text : "");
     std::string line;
+    bool namedContextualTrigger = false;
     while (std::getline(lines, line))
     {
         const auto hash = line.find('#');
@@ -174,6 +176,7 @@ void Parse(const char* text, Config& out)
         std::string key = line.substr(0, eq);
         key.erase(std::remove_if(key.begin(), key.end(), [](unsigned char c) { return std::isspace(c) != 0; }), key.end());
         const char* value = line.c_str() + eq + 1;
+        namedContextualTrigger = namedContextualTrigger || key == "grip_contextual_trigger";
         bool done = false;
         for (const auto& f : kBools)
             if (key == f.key) { out.*f.member = atoi(value) != 0; done = true; break; }
@@ -203,6 +206,10 @@ void Parse(const char* text, Config& out)
                 break;
             }
     }
+    // A preset saved while the support trigger's contexts were rows' choices: its gun zoom was its rows alone.
+    if (!namedContextualTrigger) out.grip_contextual_trigger = false;
+    for (auto& row : out.vr_bindings)
+        vr_mapping::ConvertContextRows(row, out.grip_contextual_trigger, out.trigger_air_equipment);
 }
 
 std::string DescriptionLine(const std::string& description)

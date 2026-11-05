@@ -1230,6 +1230,7 @@ void ConfigLoad(const wchar_t* path)
         if(!strcmp(key,"gesture_melee_max_reach")) {ParseFloatSetting(key,val,g_config.gesture_melee_max_reach);continue;}
         if(!strcmp(key,"input_preset")) {strncpy_s(g_config.input_preset,val,_TRUNCATE);loadedInputPreset=true;continue;}
         if(!strcmp(key,"trigger_air_equipment")) {g_config.trigger_air_equipment=atoi(val)!=0;continue;}
+        if(!strcmp(key,"grip_contextual_trigger")) {g_config.grip_contextual_trigger=atoi(val)!=0;continue;}
         if(!strcmp(key,"right_stick_crouch")) {g_config.right_stick_crouch=atoi(val)!=0;continue;}
         if(!strcmp(key,"flashlight_suppress_on_two_hand")) {g_config.flashlight_suppress_on_two_hand=atoi(val)!=0;continue;}
         if(!strcmp(key,"upscaler")) {g_config.upscaler=atoi(val)==1?1:0;continue;}
@@ -2344,6 +2345,15 @@ void ConfigLoad(const wchar_t* path)
                 for (int profile=0;profile<kTitleProfileCount;++profile)
                     if (g_profileFieldSet[profile][field])
                         g_config.title_profiles[profile].left_hand_forward_m-=kLegacyLeftHandForward;
+    }
+    // Rows saved while the support trigger's contexts were rows' choices become the Input combinations they stood for.
+    {
+        bool converted=false;
+        for(auto& row:g_config.vr_bindings)
+            converted|=vr_mapping::ConvertContextRows(row,g_config.grip_contextual_trigger,g_config.trigger_air_equipment);
+        if(converted)
+            LOG("config: VR Mappings rows on the support trigger by hand became Input combinations (gun zooms %d, "
+                "air uses equipment %d)",g_config.grip_contextual_trigger?1:0,g_config.trigger_air_equipment?1:0);
     }
     if (!halo4HudHeightV2) {
         // Halo 4's HUD height ran the other way until it was corrected (a positive value lowered the HUD), so a
@@ -3717,6 +3727,8 @@ void ConfigSave()
         d.input_preset,g_config.input_preset);
     fprintf(f,"# The support trigger with the support grip held on nothing uses equipment. (default %d)\n"
               "trigger_air_equipment = %d\n",d.trigger_air_equipment?1:0,g_config.trigger_air_equipment?1:0);
+    fprintf(f,"# The support trigger with the support hand on the gun zooms. (default %d)\n"
+              "grip_contextual_trigger = %d\n",d.grip_contextual_trigger?1:0,g_config.grip_contextual_trigger?1:0);
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
         for(unsigned action=0;action<vr_mapping::Count;++action)
             fprintf(f,"vr_bind_%s_%s = %d\n",weapon_interaction::kTitleKeys[title],

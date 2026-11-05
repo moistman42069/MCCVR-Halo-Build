@@ -37,23 +37,57 @@ void CheckInputPresets()
     Check(!OneHandedGripOnGun(true,true,.35f*.35f),"far from it, an air grip");
     Check(!OneHandedGripOnGun(false,true,.1f*.1f)&&!OneHandedGripOnGun(true,false,.1f*.1f),"only a one-handed gun, only with the grip held");
     SupportTriggerContext t;
-    Check(t.Step(false,false,false,false,false,true)==0,"no pull");
-    Check(t.Step(true,false,false,false,false,true)==Bit(SupportTriggerFree),"a free hand");
-    Check(t.Step(true,true,true,false,false,true)==Bit(SupportTriggerFree),"a pull keeps its meaning as the hand moves");
-    t.Step(false,false,false,false,false,true);
-    Check(t.Step(true,true,true,false,false,true)==Bit(SupportTriggerOnGun),"gripping the gun");
-    Check(t.Step(true,false,false,false,false,true)==0,"leaving the gun ends the zoom without a grenade");
-    Check(t.Step(true,false,false,false,false,true)==0,"for the rest of the pull");
-    t.Step(false,false,false,false,false,true);
-    Check(t.Step(true,false,true,false,false,true)==Bit(SupportTriggerOnGun),"a toggled two-hand hold counts with the grip up");
-    t.Step(false,false,false,false,false,true);
-    Check(t.Step(true,true,false,false,false,true)==Bit(SupportTriggerAir),"gripping air");
-    t.Step(false,false,false,false,false,true);
-    Check(t.Step(true,true,false,false,false,false)==Bit(SupportTriggerFree),"air off: a free hand");
-    t.Step(false,false,false,false,false,true);
-    Check(t.Step(true,false,false,true,false,true)==0,"a magazine or holster grip sends nothing");
-    t.Step(false,false,false,false,false,true);
-    Check(t.Step(true,true,true,false,true,true)==Bit(SupportTriggerFree),"dual wielding or a seat keeps the plain trigger");
+    Check(t.Step(false,false,false,false,false,true,true)==0,"no pull");
+    Check(t.Step(true,false,false,false,false,true,true)==Bit(SupportTriggerFree),"a free hand");
+    Check(t.Step(true,true,true,false,false,true,true)==Bit(SupportTriggerFree),"a pull keeps its meaning as the hand moves");
+    t.Step(false,false,false,false,false,true,true);
+    Check(t.Step(true,true,true,false,false,true,true)==Bit(SupportTriggerOnGun),"gripping the gun");
+    Check(t.Step(true,false,false,false,false,true,true)==0,"leaving the gun ends the zoom without a grenade");
+    Check(t.Step(true,false,false,false,false,true,true)==0,"for the rest of the pull");
+    t.Step(false,false,false,false,false,true,true);
+    Check(t.Step(true,false,true,false,false,true,true)==Bit(SupportTriggerOnGun),"a toggled two-hand hold counts with the grip up");
+    t.Step(false,false,false,false,false,true,true);
+    Check(t.Step(true,true,false,false,false,true,true)==Bit(SupportTriggerAir),"gripping air");
+    t.Step(false,false,false,false,false,true,true);
+    Check(t.Step(true,true,false,false,false,true,false)==Bit(SupportTriggerFree),"air off: a free hand");
+    t.Step(false,false,false,false,false,true,true);
+    Check(t.Step(true,false,false,true,false,true,true)==0,"a magazine or holster grip sends nothing");
+    t.Step(false,false,false,false,false,true,true);
+    Check(t.Step(true,true,true,false,true,true,true)==Bit(SupportTriggerFree),"dual wielding or a seat keeps the plain trigger");
+    t.Step(false,false,false,false,false,true,true);
+    Check(t.Step(true,true,true,false,false,false,true)==Bit(SupportTriggerFree),
+        "the gun grip's zoom off: a hand on the gun is a free hand, never an air grip");
+    {
+        // The Input combinations beside the rows: Equipment on X still lets an air grip's pull use equipment, and the
+        // gun grip zooms whatever Zoom's own row is.
+        Overrides rows{};rows[Equipment]=X;rows[Zoom]=RightClick;
+        Transports native{};for(unsigned a=0;a<Count;++a) native[a]=1u<<a;
+        const auto also=ContextSources(true,true);
+        Mapper m;
+        m.ApplyDetailed(0,rows,native,1,true,false,&also);
+        Check(m.ApplyDetailed(Bit(X),rows,native,1,true,false,&also).Has(Equipment),"X is Equipment's own button");
+        m.ApplyDetailed(0,rows,native,1,true,false,&also);
+        Check(m.ApplyDetailed(Bit(SupportTriggerAir),rows,native,1,true,false,&also).Has(Equipment),
+            "and an air grip's pull uses equipment beside it");
+        m.ApplyDetailed(0,rows,native,1,true,false,&also);
+        const auto gun=m.ApplyDetailed(Bit(SupportTriggerOnGun),rows,native,1,true,false,&also);
+        Check(gun.Has(Zoom)&&!gun.Has(Equipment),"the gun grip zooms, beside the stick click");
+        const auto none=ContextSources(false,false);
+        Mapper off;
+        off.ApplyDetailed(0,rows,native,1,true,false,&none);
+        Check(!off.ApplyDetailed(Bit(SupportTriggerAir)|Bit(SupportTriggerOnGun),rows,native,1,true,false,&none).actions,
+            "both off: the contexts press nothing");
+        // Rows saved while the contexts were rows' choices become the settings they stood for.
+        Overrides old{};old[Zoom]=SupportTriggerOnGun;old[Equipment]=SupportTriggerAir;old[Grenade]=SupportTriggerFree;
+        old[Fire]=SupportTriggerAir;
+        bool gunZoom=false,airEquipment=false;
+        Check(ConvertContextRows(old,gunZoom,airEquipment)&&gunZoom&&airEquipment&&old[Zoom]==Automatic&&
+            old[Equipment]==Automatic&&old[Grenade]==SupportTrigger&&old[Fire]==Automatic,
+            "old context rows: gun zoom and air equipment on, the rows Automatic, a free hand the plain trigger");
+        Check(!ConvertContextRows(old,gunZoom,airEquipment),"converted rows stay as they are");
+        for(int source=Automatic;source<SourceCount;++source)
+            Check(ContextSource(source)==(source>=kRowSourceCount),"the context sources are the ones past the rows' choices");
+    }
 
     {
         // Letting go steps a two-level zoom all the way out, reading the game's level after each press.
@@ -112,7 +146,7 @@ void CheckInputPresets()
 
     Config scheme{};
     scheme.turn_smooth=false;scheme.vr_action_mapping=true;scheme.trigger_air_equipment=true;scheme.turn_snap_deg=45.f;
-    scheme.vr_bindings[3][Zoom]=SupportTriggerOnGun;scheme.world_scale=9.f;
+    scheme.grip_contextual_trigger=true;scheme.vr_bindings[3][Zoom]=RightClick;scheme.world_scale=9.f;
     Config loaded{};
     input_preset::Parse(input_preset::Serialize(scheme).c_str(),loaded);
     Check(input_preset::SameScheme(loaded,scheme),"a preset round trips");
@@ -142,7 +176,17 @@ void CheckInputPresets()
     Config kept{};
     kept.world_scale=2.f;
     input_preset::CopyScheme(kept,scheme);
-    Check(kept.world_scale==2.f&&kept.vr_bindings[3][Zoom]==SupportTriggerOnGun,"applying a preset leaves the rest alone");
+    Check(kept.world_scale==2.f&&kept.vr_bindings[3][Zoom]==RightClick&&kept.grip_contextual_trigger,
+        "applying a preset leaves the rest alone");
+    Config legacy{};legacy.grip_contextual_trigger=true;
+    input_preset::Parse("trigger_air_equipment = 0\nvr_bind_halo3_zoom = 17\nvr_bind_reach_equipment = 18\n"
+        "vr_bind_halo4_grenade = 16\n",legacy);
+    Check(legacy.grip_contextual_trigger&&legacy.trigger_air_equipment&&legacy.vr_bindings[0][Zoom]==Automatic&&
+        legacy.vr_bindings[2][Equipment]==Automatic&&legacy.vr_bindings[3][Grenade]==SupportTrigger,
+        "an older preset's context rows become its Input combinations");
+    Config legacyPlain{};legacyPlain.grip_contextual_trigger=true;
+    input_preset::Parse("vr_bind_halo3_zoom = 11\n",legacyPlain);
+    Check(!legacyPlain.grip_contextual_trigger,"an older preset without the gun zoom row has it off");
     Config missing{};
     input_preset::Parse("# only one key\nturn_snap_deg = 15\nvr_bind_halo3_fire = 999\n",missing);
     Check(missing.turn_snap_deg==15.f&&missing.vr_bindings[0][Fire]==Automatic&&missing.turn_smooth==Config{}.turn_smooth,
@@ -552,7 +596,7 @@ int main()
         for(unsigned t=0;t<6;++t) file<<"hide_muzzle_flash_"<<weapon_interaction::kTitleKeys[t]<<" = "<<(t%2?0:1)<<'\n';}
     ConfigLoad(path.c_str());
     for(const auto& field:stockSettings) Check(std::fabs(g_config.*field.member-field.value)<.00001f,"each stock field loads from its public config key");
-    for(unsigned t=0;t<6;++t) for(unsigned a=0;a<Count;++a) g_config.vr_bindings[t][a]=static_cast<int>((t+a)%SourceCount);
+    for(unsigned t=0;t<6;++t) for(unsigned a=0;a<Count;++a) g_config.vr_bindings[t][a]=static_cast<int>((t+a)%kRowSourceCount);
     for(unsigned t=0;t<6;++t) {g_config.bloom_enabled[t]=(t%2)==0;g_config.bloom_chosen[t]=(t%3)==0;}
     g_config.disable_autoexposure_odst=true;
     const auto expected=g_config;

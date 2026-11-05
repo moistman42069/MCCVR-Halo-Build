@@ -741,6 +741,9 @@ struct Config
     char input_preset[64] = "Default"; // input_preset.h; empty: a scheme no preset named
     // The support trigger with the support grip held on nothing uses equipment. Off: that pull is a free hand's.
     bool trigger_air_equipment = false;
+    // The support trigger with the support hand on the gun zooms (F1 > Controls > Input combinations). Off: that pull is
+    // a free hand's. Beside Zoom's own row, as the one above is beside Equipment's (vr_mapping::ContextSources).
+    bool grip_contextual_trigger = false;
     bool flashlight_suppress_on_two_hand = true;
     // Optional temporal upscaler; ordinary eye resolve remains the default.
     int upscaler = 0;

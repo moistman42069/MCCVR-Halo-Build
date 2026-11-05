@@ -28,6 +28,39 @@ using Transports = std::array<uint32_t, Count>;
 inline constexpr int kDefaults[Count]{PrimaryTrigger,SupportTrigger,A,PrimaryGrip,X,X,
     Y,DpadLeft,SupportGrip,LeftClick,RightClick,DpadUp,Unbound};
 inline constexpr unsigned kNoAction=0xFF;
+// The support trigger by what the support hand is doing (SupportTriggerContext) belongs to the Input combinations, not
+// to a row: gripping the gun zooms (grip_contextual_trigger) and gripping air uses equipment (trigger_air_equipment),
+// beside whatever Zoom's and Equipment's own rows press. The three sources stay at the end of the list, out of the rows'
+// choices (kRowSourceCount).
+inline constexpr int kRowSourceCount=SupportTriggerFree;
+inline constexpr bool ContextSource(int source) noexcept
+{ return source==SupportTriggerFree||source==SupportTriggerOnGun||source==SupportTriggerAir; }
+// A row saved while the context sources were rows' choices: Zoom on the gun turns the grip-contextual trigger on, and
+// Equipment on air the empty-grip equipment, each row going back to Automatic; a free hand is the plain support trigger;
+// any other row on one goes back to Automatic. True if a row changed.
+inline bool ConvertContextRows(std::array<int,Count>& row,bool& contextualZoom,bool& airEquipment) noexcept
+{
+    bool changed=false;
+    for(unsigned a=0;a<Count;++a)
+    {
+        const int source=row[a];
+        if(!ContextSource(source)) continue;
+        if(source==SupportTriggerOnGun&&a==Zoom) contextualZoom=true;
+        if(source==SupportTriggerAir&&a==Equipment) airEquipment=true;
+        row[a]=source==SupportTriggerFree?SupportTrigger:Automatic;
+        changed=true;
+    }
+    return changed;
+}
+// Each action's second source for Mapper::ApplyDetailed: the Input combinations' contexts.
+inline std::array<int,Count> ContextSources(bool contextualZoom,bool airEquipment) noexcept
+{
+    std::array<int,Count> also{};
+    also.fill(Unbound);
+    if(contextualZoom) also[Zoom]=SupportTriggerOnGun;
+    if(airEquipment) also[Equipment]=SupportTriggerAir;
+    return also;
+}
 // The control that presses a gamepad button when nothing is remapped: what the unmapped route in input.cpp copies.
 // Start and Back have no row. Zero is a button the game gives this action none of.
 inline constexpr int LayoutSource(uint32_t transport) noexcept
@@ -142,18 +175,19 @@ inline constexpr bool OneHandedGripOnGun(bool oneHanded,bool gripDown,float dist
 // exception is the gun: when the hand leaves it the zoom ends, and that pull does nothing more.
 // `plain` is a hand with no such meaning (dual wielding, where the trigger fires the other gun, or a vehicle seat).
 // `claimed` is a grip the mod is using for a magazine or a holster: the pull does nothing.
-// `airUsable` false makes an air grip a free hand.
+// `gunUsable` false makes a hand on the gun a free hand; `airUsable` false does the same for an air grip.
 struct SupportTriggerContext
 {
     bool down{}; int latched=Unbound;
-    uint32_t Step(bool triggerDown,bool gripDown,bool onGun,bool claimed,bool plain,bool airUsable) noexcept
+    uint32_t Step(bool triggerDown,bool gripDown,bool onGun,bool claimed,bool plain,bool gunUsable,
+        bool airUsable) noexcept
     {
         if(!triggerDown) {down=false;latched=Unbound;return 0;}
         if(!down)
         {
             down=true;
-            latched=plain?SupportTriggerFree:claimed?Unbound:onGun?SupportTriggerOnGun:
-                !gripDown||!airUsable?SupportTriggerFree:SupportTriggerAir;
+            latched=plain?SupportTriggerFree:claimed?Unbound:onGun&&gunUsable?SupportTriggerOnGun:
+                onGun||!gripDown||!airUsable?SupportTriggerFree:SupportTriggerAir;
         }
         else if(latched==SupportTriggerOnGun&&!onGun) latched=Unbound;
         return Bit(latched);
@@ -230,10 +264,11 @@ struct MappedActions
 struct Mapper
 {
     uint64_t identity{}; uint32_t blocked{}, flashlightHeld{}; bool ready{};
+    // `also`: a second source for each action (Unbound for none), beside its row's: ContextSources.
     MappedActions ApplyDetailed(uint32_t sources,const Overrides& bindings,const Transports& native,
-        uint64_t epoch,bool available,bool disableFlashlight=false) noexcept
+        uint64_t epoch,bool available,bool disableFlashlight=false,const Overrides* also=nullptr) noexcept
     {
-        const uint64_t next=Fingerprint(bindings,native)^epoch;
+        const uint64_t next=Fingerprint(bindings,native)^epoch^(also?Fingerprint(*also,Transports{})*31u:0u);
         if(!available||!ready||identity!=next) blocked|=sources;
         blocked&=sources; identity=next; ready=available;
         const uint32_t flashlightSource=Bit(Resolve(Flashlight,bindings[Flashlight]));
@@ -244,7 +279,7 @@ struct Mapper
         MappedActions result{};
         for(unsigned a=0;a<Count;++a)
             if(!(a==Flashlight&&(disableFlashlight||(flashlightHeld&flashlightSource)))&&
-               (active&Bit(Resolve(static_cast<Action>(a),bindings[a]))))
+               (active&(Bit(Resolve(static_cast<Action>(a),bindings[a]))|(also?Bit((*also)[a]):0u))))
             {
                 result.actions |= 1u << a;
                 result.transports |= native[a];

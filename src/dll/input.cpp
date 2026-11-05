@@ -484,21 +484,25 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         // for a grip off the gun. Held, it pressed that action all through the hold, and a held action stops a game's
         // sprint (Halo 4's right stick up).
         if(pad.supportAimActive) collectedSources&=~vr_mapping::Bit(vr_mapping::SupportGrip);
+        // THE SUPPORT TRIGGER BY HAND (Input combinations, vr_mapping::ContextSources): gripping the gun zooms and
+        // gripping air uses equipment, each beside its action's own row, and a pull one of them takes is not also the
+        // trigger's own row's. An air grip in a game without equipment is a free hand.
+        const bool gunZoom=g_config.vr_action_mapping&&g_config.grip_contextual_trigger;
+        const bool airEquipment=g_config.vr_action_mapping&&g_config.trigger_air_equipment&&
+            vr_mapping::NativeAction(currentTitle,vr_mapping::Equipment)!=vr_mapping::kNoAction;
+        const vr_mapping::Overrides contextSources=vr_mapping::ContextSources(gunZoom,airEquipment);
         {
-            // An air grip means nothing while its setting is off, or where no action this game has is bound to it.
-            bool airUsable=false;
-            for(unsigned action=0;g_config.trigger_air_equipment&&action<vr_mapping::Count;++action)
-                airUsable=airUsable||(effectiveBindings[action]==vr_mapping::SupportTriggerAir&&
-                    vr_mapping::NativeAction(currentTitle,static_cast<vr_mapping::Action>(action))!=vr_mapping::kNoAction);
+            const bool triggerDown=(collectedSources&vr_mapping::Bit(vr_mapping::SupportTrigger))!=0;
             static thread_local vr_mapping::SupportTriggerContext supportTrigger;
-            collectedSources|=supportTrigger.Step(
-                !menuOpen&&!pad.exclusiveInput&&(collectedSources&vr_mapping::Bit(vr_mapping::SupportTrigger))!=0,
+            const uint32_t context=supportTrigger.Step(!menuOpen&&!pad.exclusiveInput&&triggerDown,
                 pad.gripL>0.6f,pad.supportAimActive||pad.supportOnOneHandedGun,pad.weaponConsumeSupport,
-                pad.dualWield||inSeat,airUsable);
-            // The contextual trigger's zoom ends when the hand leaves the gun. The lens has a state of its own to close;
-            // the game's zoom is pressed out, through the same source the trigger uses.
-            const bool contextualZoom=g_config.vr_action_mapping&&zoomSource==vr_mapping::SupportTriggerOnGun&&
-                gameplayMode&&!menuOpen&&!pad.exclusiveInput&&!pad.dualWield&&!inSeat;
+                pad.dualWield||inSeat,gunZoom,airEquipment);
+            collectedSources|=context;
+            if((gunZoom||airEquipment)&&context!=vr_mapping::Bit(vr_mapping::SupportTriggerFree))
+                collectedSources&=~vr_mapping::Bit(vr_mapping::SupportTrigger);
+            // The gun grip's zoom ends when the hand leaves the gun. The lens has a state of its own to close; the game's
+            // zoom is pressed out, through the same source the trigger uses.
+            const bool contextualZoom=gunZoom&&gameplayMode&&!menuOpen&&!pad.exclusiveInput&&!pad.dualWield&&!inSeat;
             const bool handOnGun=pad.supportAimActive||pad.supportOnOneHandedGun;
             static std::mutex zoomExitLock;
             static vr_mapping::ZoomExit zoomExit;
@@ -510,13 +514,12 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             if(lensHandWasOn&&!handOnGun&&zoomLevelKnown&&zoomLevel>=0)
                 LOG("Zoom exit: the support hand left the gun at the game's zoom level %d; %s",zoomLevel,
                     scopeFeatureAvailable?"the lens closes instead":
-                    !g_config.vr_action_mapping||zoomSource!=vr_mapping::SupportTriggerOnGun?
-                        "not pressed out (zoom is not on the support trigger on the gun)":
+                    !gunZoom?"not pressed out (the support trigger on the gun does not zoom: Input combinations)":
                     !gameplayMode?"not pressed out (the game is not in gameplay)":
                     menuOpen||pad.exclusiveInput?"not pressed out (a menu owns the controls)":
                     pad.dualWield||inSeat?"not pressed out (dual wielding or seated)":"pressing zoom out");
             const bool pressOut=zoomExit.Step(contextualZoom&&!scopeFeatureAvailable,handOnGun,
-                (collectedSources&vr_mapping::Bit(vr_mapping::SupportTrigger))!=0,zoomLevelKnown,zoomLevel,GetTickCount64());
+                triggerDown,zoomLevelKnown,zoomLevel,GetTickCount64());
             if(pressOut) collectedSources|=vr_mapping::Bit(vr_mapping::SupportTriggerOnGun);
             if(contextualZoom&&scopeFeatureAvailable&&lensHandWasOn&&!handOnGun) VR_SetScopeActive(false);
             lensHandWasOn=handOnGun;
@@ -524,13 +527,17 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         // Changing D-pad gesture routes while the stick is held is cancellation,
         // not the release edge that toggles a scope. Face/trigger bindings are
         // unaffected by entering the optional head D-pad gesture.
-        const unsigned scopeRoute=zoomSource>=vr_mapping::DpadUp?
+        const unsigned scopeRoute=zoomSource>=vr_mapping::DpadUp&&zoomSource<=vr_mapping::DpadRight?
             (pad.thumbrestDpad?2u:(dpadMode?1u:0u)):0u;
+        // The gun grip's zoom toggles the lens as Zoom's own control does (that control, or the grip's when none).
+        const int scopeSource=gunZoom&&!vr_mapping::Bit(zoomSource)?vr_mapping::SupportTriggerOnGun:zoomSource;
+        const uint32_t scopeSources=collectedSources|
+            (gunZoom&&(collectedSources&vr_mapping::Bit(vr_mapping::SupportTriggerOnGun))?vr_mapping::Bit(scopeSource):0u);
         ScopeToggleUpdate scope{};
         {
             std::lock_guard<std::mutex> lock(g_scopeInputLock);
-            scope=g_scopeInput.Update(scopeFeatureAvailable,collectedSources,
-                zoomSource,mappingEpoch,scopeRoute,
+            scope=g_scopeInput.Update(scopeFeatureAvailable,scopeSources,
+                scopeSource,mappingEpoch,scopeRoute,
                 scopeAvailable&&!menuOpen&&(!pad.exclusiveInput||pad.thumbrestDpad),
                 chord.consumeClicks||pauseChord.consumeClicks);
         }
@@ -604,7 +611,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                         effectiveBindings,native,
                         (uint64_t(TitleAdapter_GetGeneration(title))<<32)|(uint64_t(title)<<24)|pad.profileEpoch,
                         ready,g_config.disable_flashlight_input||
-                            (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive));
+                            (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive),&contextSources);
                     // Halo 2 context actions keep their real MCC button; see
                     // vr_action_passthrough.h. Every other action is unchanged.
                     const auto routed=vr_mapping::RouteActions(title,direct,actions,realNative,
@@ -750,7 +757,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             mappingTitle>=0?effectiveBindings:emptyMappings,mappingTransports,
             (uint64_t(TitleAdapter_GetGeneration(currentTitle))<<32)|(uint64_t(currentTitle)<<24)|pad.profileEpoch,
             nativeMapping,g_config.disable_flashlight_input||
-                (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive));
+                (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive),&contextSources);
         if(scopeAvailable) semanticActions.actions&=~(1u<<vr_mapping::Zoom);
         // Direct routing withholds native transports, except Halo 2's context
         // actions, whose real button is their only complete transport (tap

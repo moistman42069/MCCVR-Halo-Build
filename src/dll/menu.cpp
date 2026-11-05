@@ -1372,38 +1372,23 @@ namespace
         ImGui::TextDisabled("On by default. Turn it off if you prefer Y and B to stay separate.");
         ImGui::TextDisabled("L3+R3 recenters and toggles this menu; the right trigger clicks the VR pointer.");
         SettingGap();
-        // Read from the rows themselves, so the box can't disagree with them: on only while all six games use it.
-        bool contextualTrigger=true;
-        for(const auto& title:g_config.vr_bindings)
-            contextualTrigger=contextualTrigger&&title[vr_mapping::Grenade]==vr_mapping::SupportTriggerFree&&
-                title[vr_mapping::Zoom]==vr_mapping::SupportTriggerOnGun;
-        if(ImGui::Checkbox("Grip-contextual Trigger",&contextualTrigger))
+        if(ImGui::Checkbox("Grip-contextual Trigger",&g_config.grip_contextual_trigger))
         {
-            for(auto& title:g_config.vr_bindings)
-            {
-                title[vr_mapping::Grenade]=contextualTrigger?vr_mapping::SupportTriggerFree:vr_mapping::Automatic;
-                title[vr_mapping::Zoom]=contextualTrigger?vr_mapping::SupportTriggerOnGun:vr_mapping::Automatic;
-            }
-            if(contextualTrigger) g_config.vr_action_mapping=true;
+            if(g_config.grip_contextual_trigger) g_config.vr_action_mapping=true;
             changed=true;
         }
-        ImGui::TextWrapped("Free hand: grenade. Gripping the gun: zoom. Sets the Grenade and Zoom rows under VR Mappings "
-            "for all six games, and turning it off puts them back on Automatic. Reload and holster grips send nothing. "
-            "Dual wielding and vehicle seats keep the plain trigger.");
+        ImGui::TextWrapped("With your support hand on the gun, the support trigger zooms. With the hand free, it is the "
+            "support trigger as mapped under VR Mappings (Grenade, unless you change it). Zoom keeps its own button "
+            "too. Reload and holster grips send nothing. Dual wielding and vehicle seats keep the plain trigger.");
         SettingGap();
-        ImGui::BeginDisabled(!contextualTrigger);
         if(ImGui::Checkbox("Empty Grip + Trigger uses Equipment",&g_config.trigger_air_equipment))
         {
-            for(auto& title:g_config.vr_bindings)
-                if(g_config.trigger_air_equipment) title[vr_mapping::Equipment]=vr_mapping::SupportTriggerAir;
-                else if(title[vr_mapping::Equipment]==vr_mapping::SupportTriggerAir)
-                    title[vr_mapping::Equipment]=vr_mapping::Automatic;
             if(g_config.trigger_air_equipment) g_config.vr_action_mapping=true;
             changed=true;
         }
         ImGui::TextWrapped("Squeeze the grip with nothing in that hand, then pull the trigger, to use your equipment. "
-            "Off, or in a game without equipment, that pull throws a grenade. Sets the Equipment row under VR Mappings.");
-        ImGui::EndDisabled();
+            "Equipment keeps its own button under VR Mappings too. Off, or in a game without equipment, that pull is the "
+            "support trigger as mapped.");
         }
         if (SectionHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
         {
@@ -1434,9 +1419,10 @@ namespace
                 ImGui::PushID(static_cast<int>(action));
                 SettingGap();
                 // Laid out like every other dropdown, its action named beside it, so it is one setting for search too.
+                // The support trigger by hand is the Input combinations' (vr_mapping::kRowSourceCount).
                 if(Combo(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)),
                     &g_config.vr_bindings[selectedTitle][action],
-                    vr_mapping::kSourceNames,vr_mapping::SourceCount))
+                    vr_mapping::kSourceNames,vr_mapping::kRowSourceCount))
                 {
                     if(g_config.vr_bindings[selectedTitle][action]!=vr_mapping::Automatic)
                         g_config.vr_action_mapping=true;
