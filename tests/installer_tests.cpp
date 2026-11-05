@@ -120,6 +120,11 @@ static void Policies() {
         const auto& official = kReleaseChannels[ReleaseChannelIndex("official")];
         Require(ReleaseChannelIndex("unknown") == ReleaseChannelIndex("official") && ReleaseChannelIndex("") == ReleaseChannelIndex("official"),
             "a package with no known channel starts on the official source");
+        Require(TroubleshootingPage(official, true) == L"https://github.com/moistman42069/MCCVR-Halo-Build/blob/HEAD/TROUBLESHOOTING.md",
+            "a launcher's repository with its own troubleshooting page opens that page");
+        Require(TroubleshootingPage(godoy, false) == kFallbackTroubleshootingPage, "a repository with no troubleshooting page falls back to Nitsujack's");
+        Require(!AsksForTroubleshootingPage(nitsujack) && TroubleshootingPage(nitsujack, true) == kFallbackTroubleshootingPage,
+            "Nitsujack's launcher opens Nitsujack's page without asking GitHub");
         const std::string ours = "[" + release("nitsujack-reclaimer-5", true,
             asset("MOTYSHIZ", "Halo-MCC-VR-reclaimer-5-Launcher.zip") + "," + asset("MOTYSHIZ", "Halo-MCC-VR-reclaimer-5-Manual.zip") + "," +
             asset("MOTYSHIZ", "Halo-MCC-VR-reclaimer-5-Source.zip")) + "]";
