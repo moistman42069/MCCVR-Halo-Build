@@ -1415,6 +1415,9 @@ namespace
             else if(selectedGame==GameTitle::HaloReach)
                 ImGui::TextWrapped("Reach: Jump always sends its MCC button, so jumping again in the air fires the "
                     "jetpack when MCC's own setting for it is on.");
+            if(selectedGame==GameTitle::Halo3||selectedGame==GameTitle::HaloReach||selectedGame==GameTitle::Halo4)
+                ImGui::TextWrapped("Forge: as the Monitor the controllers are a plain gamepad (A, B, X and Y as themselves, "
+                    "the grips as the bumpers), so B backs out of Forge's menus and the grips turn their pages.");
             vr_mapping::Transports bindings{};
             const bool haveBindings=activeIndex==selectedTitle&&Game_ReadVrActionBindings(bindings,GetTickCount64());
             for(unsigned action=0;action<vr_mapping::Count;++action)

@@ -274,6 +274,23 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         return vr_mapping::EffectiveOverrides(g_config.vr_bindings[title],layout,layoutKnown);
     }
 
+    // Forge's Monitor answers to the controller as a gamepad: its object menus back out on B and turn their pages with
+    // the bumpers, buttons no gameplay action may hold. While the game says the player is the Monitor (Halo 3, Reach,
+    // Halo 4: the sandbox-editor answer two-handed aim already reads), the VR controllers are that gamepad, as with VR
+    // Mappings off. Unknown is not the Monitor.
+    bool ForgeMonitor(GameTitle title) noexcept
+    {
+        fp_view::Signal camera{},monitor{};
+        int32_t mode=-1,perspective=-1;
+        const bool yes=Game_FirstPersonCameraSample(title,camera,mode,perspective,monitor)&&
+            monitor==fp_view::Signal::Yes;
+        static std::atomic<bool> said{false};
+        if(said.exchange(yes,std::memory_order_relaxed)!=yes)
+            LOG(yes?"VR Mappings: Forge Monitor: the VR controllers are the gamepad (A, B, X, Y as themselves, grips as the bumpers)":
+                "VR Mappings: Forge Monitor left: the rows map the controls again");
+        return yes;
+    }
+
     void MergeVrPad(XINPUT_STATE* state)
     {
         VrPadState pad;
@@ -682,7 +699,8 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         // reads the current MCC layout; Reach no longer trades LT and X.
         const uint64_t inputNow=GetTickCount64();
         vr_mapping::Transports nativeActions{};
-        const bool semanticMode=g_config.vr_action_mapping&&mappingTitle>=0&&gameplayMode;
+        const bool forgeMonitor=gameplayMode&&ForgeMonitor(currentTitle);
+        const bool semanticMode=g_config.vr_action_mapping&&mappingTitle>=0&&gameplayMode&&!forgeMonitor;
         // Never reinterpret an old transport-encoded weapon pulse as a named
         // action. A transition sample keeps the previous route until it drains.
         const bool directActions=semanticMode&&NativeVrActions_CanRoute(currentTitle,inputNow)&&
@@ -735,9 +753,10 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         PhysicalCrouchCamera_Publish(currentTitle,TitleAdapter_GetGeneration(currentTitle),
             crouchEpoch,inputNow,physicalCrouchEnabled&&crouchTracking&&nativeReady,
             physicalCrouchButtons!=0);
-        // Crouching and sprinting with the right stick, only where the headset owns the view's pitch. The scope and the
-        // thumb-rest D-pad want the axis: they keep a crouch but read nothing. A pause keeps the crouch; every thread
-        // that polls the pad shares the one state.
+        // Crouching and sprinting with the right stick, only where the headset owns the view's pitch and never as Forge's
+        // Monitor, who has neither (the buttons they press mean other things to it). The scope and the thumb-rest D-pad
+        // want the axis: they keep a crouch but read nothing. A pause keeps the crouch; every thread that polls the pad
+        // shares the one state.
         bool stickCrouched=false,stickSprinting=false;
         {
             static std::mutex stickCrouchLock;
@@ -745,7 +764,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             std::lock_guard<std::mutex> lock(stickCrouchLock);
             if(gameplayMode)
                 stickCrouch.Step(pad.turnX,pad.turnY,g_config.right_stick_crouch&&inputMode==RuntimeMode::Gameplay&&
-                    crouchOnFoot&&!inSeat&&Game_IsHeadTracking(),!VR_IsScopeActive()&&!pad.thumbrestDpad);
+                    crouchOnFoot&&!inSeat&&!forgeMonitor&&Game_IsHeadTracking(),!VR_IsScopeActive()&&!pad.thumbrestDpad);
             stickCrouched=stickCrouch.crouched&&nativeReady;
             stickSprinting=stickCrouch.sprinting&&nativeReady;
         }
