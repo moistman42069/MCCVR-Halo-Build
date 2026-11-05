@@ -259,17 +259,44 @@ struct MappedActions
     { return action < Count && (actions & (1u << action)) != 0; }
 };
 
-// THE SEAT'S ROWS (VR Mappings, under the actions): a vehicle's own actions, which no on-foot row names. Each takes two
-// controls; either presses the action's own MCC button beside whatever the action rows press, and only in a seat. A
-// control already down as the seat comes up waits for its release, so the press that boarded presses nothing.
+// A ROW'S FURTHER CONTROLS (VR Mappings, "Add a control"): beside its own, each row lists a few more, any of which
+// presses its action too. Unbound where none; never Automatic, which only a row's own control follows the game's layout
+// with. A few, so a poll stays allocation-free. A file names them with the row's key and _2, _3, _4.
+inline constexpr unsigned kMoreControls=3;
+inline constexpr const char* kControlSuffix[1+kMoreControls]{"","_2","_3","_4"};
+using MoreRow=std::array<int,kMoreControls>;
+using MoreControls=std::array<MoreRow,Count>;
+inline constexpr MoreRow kNoMore{Unbound,Unbound,Unbound};
+inline constexpr MoreControls NoMoreControls() noexcept { MoreControls more{}; more.fill(kNoMore); return more; }
+// A control a row lists beside its own: any a row may take but Automatic.
+inline constexpr bool ListedSource(int source) noexcept { return source>Automatic&&source<kRowSourceCount; }
+// Every control that presses an action: its row's own (Automatic as the game's layout has it) and the further ones.
+inline uint32_t ControlBits(Action action,const Overrides& bindings,const MoreControls* more) noexcept
+{
+    if(action>=Count) return 0;
+    uint32_t bits=Bit(Resolve(action,bindings[action]));
+    if(more) for(const int source:(*more)[action]) if(ListedSource(source)) bits|=Bit(source);
+    return bits;
+}
+inline uint64_t Fingerprint(const MoreControls& more) noexcept
+{
+    uint64_t value=14695981039346656037ull;
+    for(const auto& row:more) for(const int source:row) {value^=uint64_t(source);value*=1099511628211ull;}
+    return value;
+}
+
+// THE SEAT'S ROWS (VR Mappings, under the actions): a vehicle's own actions, which no on-foot row names. Each lists
+// controls as a row does (its own first; none Automatic); any of them presses the action's own MCC button beside
+// whatever the action rows press, and only in a seat. A control already down as the seat comes up waits for its
+// release, so the press that boarded presses nothing.
 enum VehicleAction : unsigned { BansheeBomb, BansheeTrick, VehicleCount };
-inline constexpr unsigned kVehicleControls=2;
+inline constexpr unsigned kVehicleControls=1+kMoreControls;
 inline constexpr const char* kVehicleKeys[VehicleCount]{"banshee_bomb","banshee_trick"};
 inline constexpr const char* kVehicleNames[VehicleCount]{"Banshee bomb","Banshee trick"};
 using VehicleRow=std::array<int,kVehicleControls>;
 using VehicleBindings=std::array<VehicleRow,VehicleCount>;
 using VehicleTransports=std::array<uint32_t,VehicleCount>;
-inline constexpr VehicleBindings kVehicleDefaults{{{PrimaryGrip,RightClick},{A,Unbound}}};
+inline constexpr VehicleBindings kVehicleDefaults{{{PrimaryGrip,RightClick,Unbound,Unbound},{A,Unbound,Unbound,Unbound}}};
 // Each game's own action for a seat row, as NativeAction names the rows' (kNoAction: the game has none): the actions
 // each game's control builder reads while seated. See BANSHEE-SEAT-ACTIONS-EVIDENCE-2026-11-05.md. Reach and Halo 4
 // have no bomb of their own: a Banshee's bomb is its secondary trigger. Halo 3's and ODST's trick is the seat's jump.
@@ -286,8 +313,6 @@ inline constexpr unsigned NativeVehicleAction(GameTitle title,VehicleAction acti
     default:return kNoAction;
     }
 }
-// A seat row's control: any a row may take but Automatic (a seat row has no game layout of its own to follow).
-inline constexpr bool VehicleSource(int source) noexcept { return source>Automatic&&source<kRowSourceCount; }
 struct VehicleMapper
 {
     uint32_t blocked{}; bool seated{};
@@ -300,7 +325,7 @@ struct VehicleMapper
         uint32_t buttons=0;
         for(unsigned a=0;a<VehicleCount;++a)
             for(const int source:bindings[a])
-                if(VehicleSource(source)&&(active&Bit(source))) buttons|=native[a];
+                if(ListedSource(source)&&(active&Bit(source))) buttons|=native[a];
         return buttons;
     }
 };
@@ -313,13 +338,16 @@ struct Mapper
     // Times a held control was latched by a change (a held press then reaches the game as a tap at most).
     uint32_t relatched{};
     // `also`: a second source for each action (Unbound for none), beside its row's: ContextSources.
+    // `more`: each row's further controls (MoreControls).
     MappedActions ApplyDetailed(uint32_t sources,const Overrides& bindings,const Transports& native,
-        uint64_t epoch,bool available,bool disableFlashlight=false,const Overrides* also=nullptr) noexcept
+        uint64_t epoch,bool available,bool disableFlashlight=false,const Overrides* also=nullptr,
+        const MoreControls* more=nullptr) noexcept
     {
-        const uint64_t next=Fingerprint(bindings,native)^epoch^(also?Fingerprint(*also,Transports{})*31u:0u);
+        const uint64_t next=Fingerprint(bindings,native)^epoch^(also?Fingerprint(*also,Transports{})*31u:0u)^
+            (more?Fingerprint(*more)*37u:0u);
         if(!available||!ready||identity!=next) {relatched+=(sources&~blocked)!=0;blocked|=sources;}
         blocked&=sources; identity=next; ready=available;
-        const uint32_t flashlightSource=Bit(Resolve(Flashlight,bindings[Flashlight]));
+        const uint32_t flashlightSource=ControlBits(Flashlight,bindings,more);
         flashlightHeld&=sources;
         if(disableFlashlight) flashlightHeld|=sources&flashlightSource;
         if(!available) return {};
@@ -327,7 +355,7 @@ struct Mapper
         MappedActions result{};
         for(unsigned a=0;a<Count;++a)
             if(!(a==Flashlight&&(disableFlashlight||(flashlightHeld&flashlightSource)))&&
-               (active&(Bit(Resolve(static_cast<Action>(a),bindings[a]))|(also?Bit((*also)[a]):0u))))
+               (active&(ControlBits(static_cast<Action>(a),bindings,more)|(also?Bit((*also)[a]):0u))))
             {
                 result.actions |= 1u << a;
                 result.transports |= native[a];

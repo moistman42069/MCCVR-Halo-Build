@@ -121,6 +121,7 @@ void CopyScheme(Config& to, const Config& from) noexcept
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
     {
         to.vr_bindings[title] = from.vr_bindings[title];
+        to.vr_more_controls[title] = from.vr_more_controls[title];
         to.vr_vehicle_bindings[title] = from.vr_vehicle_bindings[title];
     }
 }
@@ -132,7 +133,7 @@ bool SameScheme(const Config& a, const Config& b) noexcept
     // A file keeps three decimals, so a loaded preset can differ from what was saved by rounding alone.
     for (const auto& f : kFloats) if (std::fabs(a.*f.member - b.*f.member) > 0.002f) return false;
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
-        if (a.vr_bindings[title] != b.vr_bindings[title] ||
+        if (a.vr_bindings[title] != b.vr_bindings[title] || a.vr_more_controls[title] != b.vr_more_controls[title] ||
             a.vr_vehicle_bindings[title] != b.vr_vehicle_bindings[title]) return false;
     return true;
 }
@@ -163,12 +164,23 @@ std::string Serialize(const Config& scheme)
                       scheme.vr_bindings[title][action]);
             text += line;
         }
+    // A row's further controls, only those listed (Parse starts from none).
+    for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
+        for (unsigned action = 0; action < vr_mapping::Count; ++action)
+            for (unsigned control = 1; control <= vr_mapping::kMoreControls; ++control)
+                if (scheme.vr_more_controls[title][action][control - 1] != vr_mapping::Unbound)
+                {
+                    sprintf_s(line, "vr_bind_%s_%s%s = %d\n", weapon_interaction::kTitleKeys[title],
+                              vr_mapping::kKeys[action], vr_mapping::kControlSuffix[control],
+                              scheme.vr_more_controls[title][action][control - 1]);
+                    text += line;
+                }
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
         for (unsigned action = 0; action < vr_mapping::VehicleCount; ++action)
             for (unsigned control = 0; control < vr_mapping::kVehicleControls; ++control)
             {
                 sprintf_s(line, "vr_bind_%s_%s%s = %d\n", weapon_interaction::kTitleKeys[title],
-                          vr_mapping::kVehicleKeys[action], control ? "_2" : "",
+                          vr_mapping::kVehicleKeys[action], vr_mapping::kControlSuffix[control],
                           scheme.vr_vehicle_bindings[title][action][control]);
                 text += line;
             }
@@ -218,19 +230,24 @@ void Parse(const char* text, Config& out)
                 done = true;
                 break;
             }
+        // A row's further controls (_2 on) and the seat's rows: listed controls, never Automatic.
         for (unsigned title = 0; title < weapon_interaction::kTitleCount && !done; ++title)
-            for (unsigned action = 0; action < vr_mapping::VehicleCount && !done; ++action)
-                for (unsigned control = 0; control < vr_mapping::kVehicleControls; ++control)
+            for (unsigned action = 0; action < vr_mapping::Count + vr_mapping::VehicleCount && !done; ++action)
+            {
+                const bool seat = action >= vr_mapping::Count;
+                for (unsigned control = seat ? 0 : 1; control <= vr_mapping::kMoreControls && !done; ++control)
                 {
                     sprintf_s(expected, "vr_bind_%s_%s%s", weapon_interaction::kTitleKeys[title],
-                              vr_mapping::kVehicleKeys[action], control ? "_2" : "");
+                              seat ? vr_mapping::kVehicleKeys[action - vr_mapping::Count] : vr_mapping::kKeys[action],
+                              vr_mapping::kControlSuffix[control]);
                     if (key != expected) continue;
                     const int source = atoi(value);
-                    if (vr_mapping::VehicleSource(source))
-                        out.vr_vehicle_bindings[title][action][control] = source;
+                    if (vr_mapping::ListedSource(source))
+                        (seat ? out.vr_vehicle_bindings[title][action - vr_mapping::Count][control]
+                              : out.vr_more_controls[title][action][control - 1]) = source;
                     done = true;
-                    break;
                 }
+            }
     }
     // A preset saved while the support trigger's contexts were rows' choices: its gun zoom was its rows alone.
     if (!namedContextualTrigger) out.grip_contextual_trigger = false;

@@ -217,6 +217,49 @@ void CheckInputPresets()
         Check(m.Apply(Bit(A),false,rows,native)==0&&m.Apply(Bit(A),true,rows,native)==0,
             "leaving the seat arms the held-control check again");
     }
+    // A row's further controls: any of them presses the action; they count for flashlight suppression, the bridge's
+    // split and Halo 2's Use, and are kept in presets and the config.
+    {
+        Overrides rows{};
+        rows[Fire]=PrimaryTrigger;rows[Flashlight]=DpadUp;rows[Reload]=X;rows[Interact]=X;
+        MoreControls more=NoMoreControls();
+        more[Fire][0]=A;more[Flashlight][0]=SupportGrip;
+        Check(ControlBits(Fire,rows,&more)==(Bit(PrimaryTrigger)|Bit(A))&&ControlBits(Fire,rows,nullptr)==Bit(PrimaryTrigger)&&
+            ControlBits(Jump,rows,&more)==Bit(A),"an action's controls are its own (Automatic its default) and its further ones");
+        Transports native{};
+        native[Fire]=1u<<17;native[Flashlight]=0x1;native[Reload]=0x4000;
+        native[Interact]=0x4000;
+        Mapper mapper;
+        mapper.ApplyDetailed(0,rows,native,1,true,false,nullptr,&more);
+        Check(mapper.ApplyDetailed(Bit(A),rows,native,1,true,false,nullptr,&more).Has(Fire),"a further control fires");
+        Check(mapper.ApplyDetailed(Bit(PrimaryTrigger),rows,native,1,true,false,nullptr,&more).Has(Fire),
+            "and the row's own still does");
+        mapper.ApplyDetailed(0,rows,native,1,true,true,nullptr,&more);
+        Check(!mapper.ApplyDetailed(Bit(SupportGrip),rows,native,1,true,true,nullptr,&more).Has(Flashlight),
+            "flashlight suppression covers a further control");
+        MoreControls changed=more;changed[Jump][0]=B;
+        Check(!mapper.ApplyDetailed(Bit(A),rows,native,1,true,false,nullptr,&changed).Has(Fire),
+            "changing a further control latches what is held");
+        Check(!(BridgeOnlyActions(native,rows,&more)&(1u<<Reload)),"Reload and Use on the same controls share the button");
+        MoreControls apart=more;apart[Interact][0]=B;
+        Check((BridgeOnlyActions(native,rows,&apart)&(1u<<Reload))!=0,
+            "a further control on Use alone puts Reload and Use on different controls: the bridge");
+        Transports h2{};h2[Reload]=0x2000;
+        Check(CarryingTransports(GameTitle::Halo2,h2,&rows,&more)[Interact]==0x2000&&
+            !CarryingTransports(GameTitle::Halo2,h2,&rows,&apart)[Interact],
+            "Halo 2's Use rides Reload's button only while every control of theirs is shared");
+        Config scheme{};
+        scheme.vr_more_controls[2][Jump]={DpadDown,B,Unbound};
+        Config loaded{};
+        input_preset::Parse(input_preset::Serialize(scheme).c_str(),loaded);
+        Check(input_preset::SameScheme(loaded,scheme)&&loaded.vr_more_controls[2][Jump][1]==B&&
+            loaded.vr_more_controls[0][Jump]==kNoMore,"further controls round trip in a preset");
+        Check(!input_preset::SameScheme(loaded,Config{}),"a further control is another scheme");
+        Config refused{};
+        input_preset::Parse("vr_bind_halo3_fire_2 = 0\nvr_bind_halo3_fire_3 = 17\nvr_bind_halo3_fire_4 = 6\n",refused);
+        Check(refused.vr_more_controls[0][Fire][0]==Unbound&&refused.vr_more_controls[0][Fire][1]==Unbound&&
+            refused.vr_more_controls[0][Fire][2]==A,"a further control takes neither Automatic nor a context");
+    }
     Config legacy{};legacy.grip_contextual_trigger=true;
     input_preset::Parse("trigger_air_equipment = 0\nvr_bind_halo3_zoom = 17\nvr_bind_reach_equipment = 18\n"
         "vr_bind_halo4_grenade = 16\n",legacy);
@@ -648,6 +691,13 @@ int main()
     ConfigSave();ConfigLoad(path.c_str());
     Check(g_config.vr_vehicle_bindings[0][BansheeBomb][1]==DpadUp&&g_config.vr_vehicle_bindings[1][BansheeBomb]==kVehicleDefaults[BansheeBomb],
         "the seat rows survive save and reload");
+    {std::ofstream file(path);file<<"vr_bind_reach_jump_2 = 7\nvr_bind_reach_jump_4 = 12\nvr_bind_ce_melee_3 = 0\n";}
+    ConfigLoad(path.c_str());
+    Check(g_config.vr_more_controls[2][Jump][0]==B&&g_config.vr_more_controls[2][Jump][2]==DpadUp&&
+        g_config.vr_more_controls[4][Melee][1]==Unbound,"a row's further controls load, and Automatic is refused");
+    ConfigSave();ConfigLoad(path.c_str());
+    Check(g_config.vr_more_controls[2][Jump][0]==B&&g_config.vr_more_controls[2][Jump][2]==DpadUp&&
+        g_config.vr_more_controls[0][Jump]==kNoMore,"a row's further controls survive save and reload");
     {std::ofstream file(path);file<<"bloom_enabled_odst = 1\nbloom_enabled_reach = 1\n";}
     ConfigLoad(path.c_str());
     Check(g_config.bloom_enabled[1]&&g_config.bloom_enabled[2]&&!g_config.bloom_chosen[1]&&!g_config.bloom_chosen[2],

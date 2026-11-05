@@ -356,8 +356,8 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 const bool layoutKnown = Game_ReadVrActionBindings(layout, GetTickCount64());
                 const auto effective = EffectiveBindings(seatTitle, layout, layoutKnown);
                 for (unsigned action = 0; action < vr_mapping::Count; ++action)
-                    bBound = bBound || vr_mapping::Resolve(static_cast<vr_mapping::Action>(action),
-                                                           effective[action]) == vr_mapping::B;
+                    bBound = bBound || (vr_mapping::ControlBits(static_cast<vr_mapping::Action>(action), effective,
+                        &g_config.vr_more_controls[seatTitle]) & vr_mapping::Bit(vr_mapping::B)) != 0;
                 // A seat row on B keeps right B its own, or the seat would turn it into use and exit the vehicle.
                 for (unsigned action = 0; action < vr_mapping::VehicleCount; ++action)
                     for (const int source : g_config.vr_vehicle_bindings[seatTitle][action])
@@ -484,14 +484,23 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             Game_ReadVrActionBindings(gameLayout,GetTickCount64());
         const vr_mapping::Overrides effectiveBindings=mappingTitle>=0?
             EffectiveBindings(mappingTitle,gameLayout,gameLayoutKnown):vr_mapping::Overrides{};
-        const int zoomSource=mappingTitle>=0&&g_config.vr_action_mapping?
+        const vr_mapping::MoreControls* moreControls=mappingTitle>=0?&g_config.vr_more_controls[mappingTitle]:nullptr;
+        // Zoom's own control for the lens: its row's, or its first further control where the row has none.
+        int zoomSource=mappingTitle>=0&&g_config.vr_action_mapping?
             vr_mapping::Resolve(vr_mapping::Zoom,effectiveBindings[vr_mapping::Zoom]):vr_mapping::RightClick;
+        if(!vr_mapping::Bit(zoomSource)&&moreControls&&g_config.vr_action_mapping)
+            for(const int source:(*moreControls)[vr_mapping::Zoom])
+                if(vr_mapping::ListedSource(source)&&vr_mapping::Bit(source)) {zoomSource=source;break;}
+        // Every further control of Zoom's toggles the lens as its own does.
+        const uint32_t zoomMoreBits=moreControls&&g_config.vr_action_mapping?
+            vr_mapping::ControlBits(vr_mapping::Zoom,effectiveBindings,moreControls)&~vr_mapping::Bit(zoomSource):0u;
         // What every row presses in this game, Automatic read from the game's own layout, and the game's own button
         // behind each action (0: none): once each time it changes, and only once the layout is read.
         if(mappingTitle>=0&&g_config.vr_action_mapping&&gameLayoutKnown)
         {
             static std::atomic<uint64_t> logged{0};
-            const uint64_t shown=vr_mapping::Fingerprint(effectiveBindings,gameLayout)^(uint64_t(currentTitle)<<56);
+            const uint64_t shown=vr_mapping::Fingerprint(effectiveBindings,gameLayout)^(uint64_t(currentTitle)<<56)^
+                vr_mapping::Fingerprint(*moreControls)*37u;
             if(logged.exchange(shown,std::memory_order_relaxed)!=shown)
             {
                 std::string rows;
@@ -500,7 +509,11 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 {
                     sprintf_s(native," (0x%X)",gameLayout[action]);
                     rows+=std::string(action?", ":"")+vr_mapping::kKeys[action]+" = "+vr_mapping::kSourceNames[
-                        vr_mapping::Resolve(static_cast<vr_mapping::Action>(action),effectiveBindings[action])]+native;
+                        vr_mapping::Resolve(static_cast<vr_mapping::Action>(action),effectiveBindings[action])];
+                    for(const int source:(*moreControls)[action])
+                        if(vr_mapping::ListedSource(source)&&source!=vr_mapping::Unbound)
+                            rows+=std::string(" + ")+vr_mapping::kSourceNames[source];
+                    rows+=native;
                 }
                 LOG("VR Mappings %s: %s",weapon_interaction::kTitleNames[mappingTitle],rows.c_str());
             }
@@ -574,7 +587,8 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         // The gun grip's zoom toggles the lens as Zoom's own control does (that control, or the grip's when none).
         const int scopeSource=gunZoom&&!vr_mapping::Bit(zoomSource)?vr_mapping::SupportTriggerOnGun:zoomSource;
         const uint32_t scopeSources=collectedSources|
-            (gunZoom&&(collectedSources&vr_mapping::Bit(vr_mapping::SupportTriggerOnGun))?vr_mapping::Bit(scopeSource):0u);
+            (gunZoom&&(collectedSources&vr_mapping::Bit(vr_mapping::SupportTriggerOnGun))?vr_mapping::Bit(scopeSource):0u)|
+            ((collectedSources&zoomMoreBits)?vr_mapping::Bit(scopeSource):0u);
         ScopeToggleUpdate scope{};
         {
             std::lock_guard<std::mutex> lock(g_scopeInputLock);
@@ -657,11 +671,13 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                         effectiveBindings,native,
                         (uint64_t(TitleAdapter_GetGeneration(title))<<32)|(uint64_t(title)<<24)|pad.profileEpoch,
                         ready,g_config.disable_flashlight_input||
-                            (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive),&contextSources);
+                            (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive),&contextSources,
+                        &g_config.vr_more_controls[index]);
                     // Halo 2 context actions keep their real MCC button; see
                     // vr_action_passthrough.h. Every other action is unchanged.
                     const auto routed=vr_mapping::RouteActions(title,direct,actions,realNative,
-                        inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret,&effectiveBindings);
+                        inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret,&effectiveBindings,
+                        &g_config.vr_more_controls[index]);
                     const uint32_t mapped=routed.buttons;
                     NativeVrActions_Publish(state,title,now,routed.published&
                         ~(scopeAvailable?(1u<<vr_mapping::Zoom):0u),direct);
@@ -805,7 +821,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             mappingTitle>=0?effectiveBindings:emptyMappings,mappingTransports,
             (uint64_t(TitleAdapter_GetGeneration(currentTitle))<<32)|(uint64_t(currentTitle)<<24)|pad.profileEpoch,
             nativeMapping,g_config.disable_flashlight_input||
-                (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive),&contextSources);
+                (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive),&contextSources,moreControls);
         if(scopeAvailable) semanticActions.actions&=~(1u<<vr_mapping::Zoom);
         // Direct routing withholds native transports, except Halo 2's context
         // actions, whose real button is their only complete transport (tap
@@ -814,7 +830,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         const auto routedActions=vr_mapping::RouteActions(currentTitle,directActions,
             semanticActions,nativeActions,
             inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret||!crouchOnFoot,
-            mappingTitle>=0?&effectiveBindings:nullptr);
+            mappingTitle>=0?&effectiveBindings:nullptr,moreControls);
         const uint32_t semanticButtons=routedActions.buttons;
         // THE SEAT'S ROWS (vr_mapping::VehicleMapper): the Banshee's bomb and trick on controls of their own, pressing
         // the game's own button for each beside the rows, only in a seat. One state for every thread that polls the pad.
@@ -833,8 +849,11 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             static uint64_t shownSeatRows=0;
             uint64_t shown=uint64_t(currentTitle)<<56;
             for(unsigned action=0;mappingTitle>=0&&action<vr_mapping::VehicleCount;++action)
-                shown=(shown^seatTransports[action]^(uint64_t(g_config.vr_vehicle_bindings[mappingTitle][action][0])<<20)^
-                    (uint64_t(g_config.vr_vehicle_bindings[mappingTitle][action][1])<<26))*1099511628211ull;
+            {
+                shown=(shown^seatTransports[action])*1099511628211ull;
+                for(const int source:g_config.vr_vehicle_bindings[mappingTitle][action])
+                    shown=(shown^uint64_t(source))*1099511628211ull;
+            }
             if(nativeMapping&&seatLayoutKnown&&shown!=shownSeatRows)
             {
                 shownSeatRows=shown;
@@ -844,8 +863,10 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 {
                     const auto& row=g_config.vr_vehicle_bindings[mappingTitle][action];
                     sprintf_s(native," (0x%X)",seatTransports[action]);
-                    rows+=std::string(action?", ":"")+vr_mapping::kVehicleKeys[action]+" = "+
-                        vr_mapping::kSourceNames[row[0]]+" + "+vr_mapping::kSourceNames[row[1]]+native;
+                    rows+=std::string(action?", ":"")+vr_mapping::kVehicleKeys[action]+" = "+vr_mapping::kSourceNames[row[0]];
+                    for(unsigned control=1;control<vr_mapping::kVehicleControls;++control)
+                        if(row[control]!=vr_mapping::Unbound) rows+=std::string(" + ")+vr_mapping::kSourceNames[row[control]];
+                    rows+=native;
                 }
                 LOG("VR Mappings %s, in a seat: %s",weapon_interaction::kTitleNames[mappingTitle],rows.c_str());
             }
@@ -1041,12 +1062,15 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 if (pad.moveX < -0.5f) raw |= XINPUT_GAMEPAD_DPAD_LEFT;
                 for (unsigned action = 0; raw && mappingTitle >= 0 && gameLayoutKnown && action < vr_mapping::Count; ++action)
                 {
-                    const int source = vr_mapping::Resolve(static_cast<vr_mapping::Action>(action), effectiveBindings[action]);
-                    const WORD direction = source == vr_mapping::DpadUp ? XINPUT_GAMEPAD_DPAD_UP :
-                        source == vr_mapping::DpadDown ? XINPUT_GAMEPAD_DPAD_DOWN :
-                        source == vr_mapping::DpadLeft ? XINPUT_GAMEPAD_DPAD_LEFT :
-                        source == vr_mapping::DpadRight ? XINPUT_GAMEPAD_DPAD_RIGHT : 0;
-                    if (direction && !(gameLayout[action] & direction)) raw &= ~direction;
+                    // Every control of the row, its own and its further ones.
+                    const uint32_t controls = vr_mapping::ControlBits(static_cast<vr_mapping::Action>(action),
+                        effectiveBindings, moreControls);
+                    const WORD directions =
+                        ((controls & vr_mapping::Bit(vr_mapping::DpadUp)) ? XINPUT_GAMEPAD_DPAD_UP : 0) |
+                        ((controls & vr_mapping::Bit(vr_mapping::DpadDown)) ? XINPUT_GAMEPAD_DPAD_DOWN : 0) |
+                        ((controls & vr_mapping::Bit(vr_mapping::DpadLeft)) ? XINPUT_GAMEPAD_DPAD_LEFT : 0) |
+                        ((controls & vr_mapping::Bit(vr_mapping::DpadRight)) ? XINPUT_GAMEPAD_DPAD_RIGHT : 0);
+                    raw &= ~(directions & ~static_cast<WORD>(gameLayout[action]));
                 }
                 btn |= raw;
             }

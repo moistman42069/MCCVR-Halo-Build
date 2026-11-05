@@ -259,6 +259,40 @@ namespace
         NamedDropdown named(label);
         return ImGui::BeginCombo(label,preview,flags);
     }
+    // A row's further controls (VR Mappings): each listed with Remove, then "Add a control" while a slot is free. Listed
+    // controls stay first; `open` counts the slots shown, one just added still empty among them.
+    bool MoreControlsList(const char* name,int* slots,unsigned count,int& open)
+    {
+        bool changed=false;
+        unsigned listed=0;
+        while(listed<count&&slots[listed]!=vr_mapping::Unbound) ++listed;
+        const unsigned shown=std::min(count,std::max(listed,static_cast<unsigned>(std::max(open,0))));
+        for(unsigned i=0;i<shown;++i)
+        {
+            ImGui::PushID(static_cast<int>(i));
+            const std::string label=std::string(name)+", control "+std::to_string(i+2);
+            int choice=slots[i]-vr_mapping::Unbound;
+            if(Combo(label.c_str(),&choice,vr_mapping::kSourceNames+vr_mapping::Unbound,
+                vr_mapping::kRowSourceCount-vr_mapping::Unbound))
+            {
+                slots[i]=choice+vr_mapping::Unbound;
+                changed=true;
+            }
+            ImGui::SameLine();
+            if(ImGui::SmallButton("Remove"))
+            {
+                for(unsigned j=i;j+1<count;++j) slots[j]=slots[j+1];
+                slots[count-1]=vr_mapping::Unbound;
+                open=static_cast<int>(shown)-1;
+                changed=true;
+            }
+            ImGui::PopID();
+        }
+        if(shown<count&&ImGui::SmallButton("Add a control")) open=static_cast<int>(shown)+1;
+        // A slot emptied before a listed one closes up.
+        if(changed) std::stable_partition(slots,slots+count,[](int slot){return slot!=vr_mapping::Unbound;});
+        return changed;
+    }
 
     // While the index is built, Dear ImGui's log keeps the text it draws. A setting's notes are the text after it, up to
     // the next item that is not plain text.
@@ -1393,6 +1427,7 @@ namespace
         if (SectionHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
         {
             static int selectedTitle=0;
+            static int moreOpen[6][vr_mapping::Count+vr_mapping::VehicleCount]{};
             static GameTitle previousTitle=GameTitle::None;
             const auto active=TitleAdapter_GetActiveTitle();
             const int activeIndex=weapon_interaction::TitleIndex(active);
@@ -1446,13 +1481,21 @@ namespace
                         ImGui::TextDisabled("Follows the game's own layout.");
                 }
                 if(haveBindings&&!bindings[action]) ImGui::TextDisabled("No native action binding available in this title.");
+                // Further controls, any of which presses the action too.
+                auto& more=g_config.vr_more_controls[selectedTitle][action];
+                if(MoreControlsList(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)),
+                    more.data(),vr_mapping::kMoreControls,moreOpen[selectedTitle][action]))
+                {
+                    if(more[0]!=vr_mapping::Unbound) g_config.vr_action_mapping=true;
+                    changed=true;
+                }
                 ImGui::PopID();
             }
-            // The seat's rows: two controls each, Unbound or any control a row may take (no Automatic).
+            // The seat's rows: a control of their own (Unbound or any a row may take, no Automatic), then further ones.
             SettingGap();
             ImGui::TextWrapped("In a vehicle seat: these press the game's own button for the action, beside whatever "
-                "the rows above press. Each takes a second control. Left X, left Y and the left stick click stay the "
-                "vehicle cameras' in a seat, so a row on one of them does nothing there.");
+                "the rows above press. Left X, left Y and the left stick click stay the vehicle cameras' in a seat, so "
+                "a control on one of them does nothing there.");
             for(unsigned action=0;action<vr_mapping::VehicleCount;++action)
             {
                 const auto vehicleAction=static_cast<vr_mapping::VehicleAction>(action);
@@ -1461,26 +1504,29 @@ namespace
                     ImGui::TextDisabled("%s: not in this game.",vr_mapping::kVehicleNames[action]);
                     continue;
                 }
-                for(unsigned control=0;control<vr_mapping::kVehicleControls;++control)
+                ImGui::PushID(static_cast<int>(100+action));
+                SettingGap();
+                auto& row=g_config.vr_vehicle_bindings[selectedTitle][action];
+                int choice=row[0]-vr_mapping::Unbound;
+                if(Combo(vr_mapping::kVehicleNames[action],&choice,vr_mapping::kSourceNames+vr_mapping::Unbound,
+                    vr_mapping::kRowSourceCount-vr_mapping::Unbound))
                 {
-                    ImGui::PushID(static_cast<int>(100+action*vr_mapping::kVehicleControls+control));
-                    SettingGap();
-                    const std::string label=std::string(vr_mapping::kVehicleNames[action])+(control?", second control":"");
-                    int& row=g_config.vr_vehicle_bindings[selectedTitle][action][control];
-                    int choice=row-vr_mapping::Unbound;
-                    if(Combo(label.c_str(),&choice,vr_mapping::kSourceNames+vr_mapping::Unbound,
-                        vr_mapping::kRowSourceCount-vr_mapping::Unbound))
-                    {
-                        row=choice+vr_mapping::Unbound;
-                        if(row!=vr_mapping::Unbound) g_config.vr_action_mapping=true;
-                        changed=true;
-                    }
-                    ImGui::PopID();
+                    row[0]=choice+vr_mapping::Unbound;
+                    if(row[0]!=vr_mapping::Unbound) g_config.vr_action_mapping=true;
+                    changed=true;
                 }
+                if(MoreControlsList(vr_mapping::kVehicleNames[action],row.data()+1,vr_mapping::kMoreControls,
+                    moreOpen[selectedTitle][vr_mapping::Count+action]))
+                {
+                    if(row[1]!=vr_mapping::Unbound) g_config.vr_action_mapping=true;
+                    changed=true;
+                }
+                ImGui::PopID();
             }
             if(ImGui::Button("Reset this game's mappings"))
             {
                 g_config.vr_bindings[selectedTitle]={};
+                g_config.vr_more_controls[selectedTitle]=vr_mapping::NoMoreControls();
                 g_config.vr_vehicle_bindings[selectedTitle]=vr_mapping::kVehicleDefaults;
                 changed=true;
             }
@@ -1491,9 +1537,12 @@ namespace
             {
                 const auto source=g_config.vr_bindings[selectedTitle];
                 for(auto& title:g_config.vr_bindings) title=source;
+                const auto more=g_config.vr_more_controls[selectedTitle];
+                for(auto& title:g_config.vr_more_controls) title=more;
                 const auto seat=g_config.vr_vehicle_bindings[selectedTitle];
                 for(auto& title:g_config.vr_vehicle_bindings) title=seat;
                 for(int row:source) if(row!=vr_mapping::Automatic) g_config.vr_action_mapping=true;
+                for(const auto& row:more) if(row[0]!=vr_mapping::Unbound) g_config.vr_action_mapping=true;
                 changed=true;
             }
             ImGui::TextDisabled("Copy: the other five games take these rows as they are. A row for an action a game "

@@ -1146,21 +1146,36 @@ void ConfigLoad(const wchar_t* path)
                 else LOG("config: invalid VR binding '%s' ignored",key);
                 vrBindingKey=true;break;
             }
-        for(unsigned title=0;title<weapon_interaction::kTitleCount&&!vrBindingKey;++title)
-            for(unsigned action=0;action<vr_mapping::VehicleCount&&!vrBindingKey;++action)
-                for(unsigned control=0;control<vr_mapping::kVehicleControls;++control)
-                {
-                    char bindingKey[96]{};
-                    sprintf_s(bindingKey,"vr_bind_%s_%s%s",weapon_interaction::kTitleKeys[title],
-                        vr_mapping::kVehicleKeys[action],control?"_2":"");
-                    if(strcmp(key,bindingKey)) continue;
-                    char* end=nullptr;
-                    const long value=strtol(val,&end,10);
-                    if(end!=val&&end&&*end==0&&vr_mapping::VehicleSource(static_cast<int>(value)))
-                        g_config.vr_vehicle_bindings[title][action][control]=static_cast<int>(value);
-                    else LOG("config: invalid VR binding '%s' ignored",key);
-                    vrBindingKey=true;break;
-                }
+        // A row's further controls (_2 on) and the seat's rows: listed controls, never Automatic.
+        const auto listedKeyTitle=[&](const char* row,unsigned control)
+        {
+            for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+            {
+                char bindingKey[96]{};
+                sprintf_s(bindingKey,"vr_bind_%s_%s%s",weapon_interaction::kTitleKeys[title],row,
+                    vr_mapping::kControlSuffix[control]);
+                if(!strcmp(key,bindingKey)) return static_cast<int>(title);
+            }
+            return -1;
+        };
+        for(unsigned action=0;action<vr_mapping::Count+vr_mapping::VehicleCount&&!vrBindingKey;++action)
+        {
+            const bool seat=action>=vr_mapping::Count;
+            const char* row=seat?vr_mapping::kVehicleKeys[action-vr_mapping::Count]:vr_mapping::kKeys[action];
+            for(unsigned control=seat?0:1;control<=vr_mapping::kMoreControls&&!vrBindingKey;++control)
+            {
+                const int title=listedKeyTitle(row,control);
+                if(title<0) continue;
+                int& slot=seat?g_config.vr_vehicle_bindings[title][action-vr_mapping::Count][control]:
+                    g_config.vr_more_controls[title][action][control-1];
+                char* end=nullptr;
+                const long value=strtol(val,&end,10);
+                if(end!=val&&end&&*end==0&&vr_mapping::ListedSource(static_cast<int>(value)))
+                    slot=static_cast<int>(value);
+                else LOG("config: invalid VR binding '%s' ignored",key);
+                vrBindingKey=true;
+            }
+        }
         if(vrBindingKey) continue;
         if(!strcmp(key,"experimental_body_ik")) {g_config.experimental_body_ik=atoi(val)!=0;continue;}
         if(!strcmp(key,"body_ik_hide_lower")) {g_config.body_ik_hide_lower=atoi(val)!=0;continue;}
@@ -3748,12 +3763,19 @@ void ConfigSave()
         for(unsigned action=0;action<vr_mapping::Count;++action)
             fprintf(f,"vr_bind_%s_%s = %d\n",weapon_interaction::kTitleKeys[title],
                 vr_mapping::kKeys[action],g_config.vr_bindings[title][action]);
-    fprintf(f,"# The seat's rows: each game's Banshee bomb and trick, a control and a second control (_2), only in a seat.\n");
+    fprintf(f,"# A row's further controls (_2 to _4), only those listed; Unbound is %d.\n",vr_mapping::Unbound);
+    for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+        for(unsigned action=0;action<vr_mapping::Count;++action)
+            for(unsigned control=1;control<=vr_mapping::kMoreControls;++control)
+                if(g_config.vr_more_controls[title][action][control-1]!=vr_mapping::Unbound)
+                    fprintf(f,"vr_bind_%s_%s%s = %d\n",weapon_interaction::kTitleKeys[title],vr_mapping::kKeys[action],
+                        vr_mapping::kControlSuffix[control],g_config.vr_more_controls[title][action][control-1]);
+    fprintf(f,"# The seat's rows: each game's Banshee bomb and trick, its controls (_2 to _4 further ones), only in a seat.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
         for(unsigned action=0;action<vr_mapping::VehicleCount;++action)
             for(unsigned control=0;control<vr_mapping::kVehicleControls;++control)
                 fprintf(f,"vr_bind_%s_%s%s = %d\n",weapon_interaction::kTitleKeys[title],vr_mapping::kVehicleKeys[action],
-                    control?"_2":"",g_config.vr_vehicle_bindings[title][action][control]);
+                    vr_mapping::kControlSuffix[control],g_config.vr_vehicle_bindings[title][action][control]);
     fprintf(f,"\n# Native localized subtitles: independent gameplay and theatre placement.\n");
     fprintf(f,"# Per-game muzzle-flash hiding. Supported paths: H2 Original and H4.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
