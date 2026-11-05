@@ -39,7 +39,14 @@ constexpr const char* abilityEquipmentSitePattern=
 constexpr const char* abilitySprintSitePattern=
     "F6 D8 1B D2 F7 D2 83 E2 28 89 54 24 40 B8 01 00 00 00 88 44 24 38 4C 89 64 24 30 4C 89 6C 24 28 48 8B 45 90 "
     "48 89 44 24 20 4D 8B CF 8B 54 24 58 48 8B 4C 24 78 E8";
-constexpr uintptr_t abilityEquipmentCallRel=50,abilitySprintCallRel=53; // each pattern ends at its call's rel32
+constexpr uintptr_t abilityEquipmentCallRel=50,abilitySprintCallRel=54; // each pattern ends at its call's rel32
+constexpr uintptr_t PatternBytes(const char* pattern) {
+    uintptr_t bytes=0;bool inToken=false;
+    for(;*pattern;++pattern) {if(*pattern==' ') inToken=false; else if(!inToken) {inToken=true;++bytes;}}
+    return bytes;
+}
+static_assert(PatternBytes(abilityEquipmentSitePattern)==abilityEquipmentCallRel&&
+              PatternBytes(abilitySprintSitePattern)==abilitySprintCallRel,"each pattern ends at its call's rel32");
 struct Runtime {
     HMODULE module{};
     uintptr_t base{}, state{}, padState{};
