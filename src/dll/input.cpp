@@ -463,7 +463,27 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             EffectiveBindings(mappingTitle,gameLayout,gameLayoutKnown):vr_mapping::Overrides{};
         const int zoomSource=mappingTitle>=0&&g_config.vr_action_mapping?
             vr_mapping::Resolve(vr_mapping::Zoom,effectiveBindings[vr_mapping::Zoom]):vr_mapping::RightClick;
+        // What every row presses in this game, Automatic read from the game's own layout: once each time it changes.
+        if(mappingTitle>=0&&g_config.vr_action_mapping)
+        {
+            static std::atomic<uint64_t> logged{0};
+            const uint64_t shown=vr_mapping::Fingerprint(effectiveBindings,{})^(uint64_t(currentTitle)<<56)^
+                (gameLayoutKnown?1u:0u);
+            if(logged.exchange(shown,std::memory_order_relaxed)!=shown)
+            {
+                std::string rows;
+                for(unsigned action=0;action<vr_mapping::Count;++action)
+                    rows+=std::string(action?", ":"")+vr_mapping::kKeys[action]+" = "+vr_mapping::kSourceNames[
+                        vr_mapping::Resolve(static_cast<vr_mapping::Action>(action),effectiveBindings[action])];
+                LOG("VR Mappings %s%s: %s",weapon_interaction::kTitleNames[mappingTitle],
+                    gameLayoutKnown?"":" (the game's own layout not read yet)",rows.c_str());
+            }
+        }
         uint32_t collectedSources=ScopeAndActionSources(pad,dpadMode);
+        // The support hand holding the gun is the two-handed hold, not a button: what the support grip is mapped to waits
+        // for a grip off the gun. Held, it pressed that action all through the hold, and a held action stops a game's
+        // sprint (Halo 4's right stick up).
+        if(pad.supportAimActive) collectedSources&=~vr_mapping::Bit(vr_mapping::SupportGrip);
         {
             // An air grip means nothing while its setting is off, or where no action this game has is bound to it.
             bool airUsable=false;
@@ -587,7 +607,8 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                             (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive));
                     // Halo 2 context actions keep their real MCC button; see
                     // vr_action_passthrough.h. Every other action is unchanged.
-                    const auto routed=vr_mapping::RouteActions(title,direct,actions,realNative);
+                    const auto routed=vr_mapping::RouteActions(title,direct,actions,realNative,
+                        inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret);
                     const uint32_t mapped=routed.buttons;
                     NativeVrActions_Publish(state,title,now,routed.published&
                         ~(scopeAvailable?(1u<<vr_mapping::Zoom):0u),direct);
@@ -734,8 +755,10 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         // Direct routing withholds native transports, except Halo 2's context
         // actions, whose real button is their only complete transport (tap
         // reload / hold pick up or board). See vr_action_passthrough.h.
+        // A seat: Halo 2 and Halo 4 publish Gameplay in one (crouchOnFoot is each one's own on-foot state).
         const auto routedActions=vr_mapping::RouteActions(currentTitle,directActions,
-            semanticActions,nativeActions);
+            semanticActions,nativeActions,
+            inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret||!crouchOnFoot);
         const uint32_t semanticButtons=routedActions.buttons;
         const bool xPressed=pad.x;
         const float leftTrigger=pad.trigL;
@@ -904,6 +927,26 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             if (!semanticMode&&pad.moveY < -0.5f) btn |= XINPUT_GAMEPAD_DPAD_DOWN;
             if (!semanticMode&&pad.moveX > 0.5f) btn |= XINPUT_GAMEPAD_DPAD_RIGHT;
             if (!semanticMode&&pad.moveX < -0.5f) btn |= XINPUT_GAMEPAD_DPAD_LEFT;
+            // Remapping, the D-pad still reaches the game as its own for what no row can name (Halo 4 Forge's
+            // monitor mode); only a direction a row gives to an action the game has elsewhere stays with that row.
+            if (semanticMode)
+            {
+                WORD raw = 0;
+                if (pad.moveY > 0.5f) raw |= XINPUT_GAMEPAD_DPAD_UP;
+                if (pad.moveY < -0.5f) raw |= XINPUT_GAMEPAD_DPAD_DOWN;
+                if (pad.moveX > 0.5f) raw |= XINPUT_GAMEPAD_DPAD_RIGHT;
+                if (pad.moveX < -0.5f) raw |= XINPUT_GAMEPAD_DPAD_LEFT;
+                for (unsigned action = 0; raw && mappingTitle >= 0 && gameLayoutKnown && action < vr_mapping::Count; ++action)
+                {
+                    const int source = vr_mapping::Resolve(static_cast<vr_mapping::Action>(action), effectiveBindings[action]);
+                    const WORD direction = source == vr_mapping::DpadUp ? XINPUT_GAMEPAD_DPAD_UP :
+                        source == vr_mapping::DpadDown ? XINPUT_GAMEPAD_DPAD_DOWN :
+                        source == vr_mapping::DpadLeft ? XINPUT_GAMEPAD_DPAD_LEFT :
+                        source == vr_mapping::DpadRight ? XINPUT_GAMEPAD_DPAD_RIGHT : 0;
+                    if (direction && !(gameLayout[action] & direction)) raw &= ~direction;
+                }
+                btn |= raw;
+            }
             // Left stick CLICK becomes the controller's left centre button
             // (Back/View) while the D-pad gesture is held. ODST puts its map
             // and objectives screen behind that button and VR players had no

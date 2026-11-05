@@ -17,12 +17,16 @@
 // the only complete transport, so it keeps reaching the game and the bridge
 // leaves the action alone.
 //
-// Every other title, and every other Halo 2 action, is unchanged.
+// In a vehicle seat, Grenade's real button (the left trigger) reaches the game too: a seat throws no grenade, and the
+// vehicle reads that button for itself -- Halo 4's boost is read for the seat's vehicle by the builder's ability helper
+// (0xA21D0), not as the bridge's grenade.
+//
+// Every other title, and every other action, is unchanged.
 namespace vr_mapping
 {
-inline constexpr uint32_t DirectPassthroughActions(GameTitle title) noexcept
+inline constexpr uint32_t DirectPassthroughActions(GameTitle title,bool seated=false) noexcept
 {
-    return title==GameTitle::Halo2 ? (1u<<Reload)|(1u<<Interact) : 0u;
+    return (title==GameTitle::Halo2 ? (1u<<Reload)|(1u<<Interact) : 0u)|(seated ? 1u<<Grenade : 0u);
 }
 
 struct DirectRoute
@@ -37,11 +41,11 @@ struct DirectRoute
 // is the only route that can deliver it at all. Outside direct routing the
 // existing transport route already carries every action, so nothing changes.
 inline DirectRoute SplitDirectRoute(GameTitle title,bool direct,uint32_t actions,
-    const Transports& native) noexcept
+    const Transports& native,bool seated=false) noexcept
 {
     DirectRoute route{};
     if(!direct) return route;
-    const uint32_t passthrough=DirectPassthroughActions(title);
+    const uint32_t passthrough=DirectPassthroughActions(title,seated);
     for(unsigned a=0;a<Count;++a)
     {
         const uint32_t bit=1u<<a;
@@ -62,9 +66,9 @@ struct RoutedActions
     uint32_t published = 0; // semantic actions for NativeVrActions_Publish
 };
 inline RoutedActions RouteActions(GameTitle title,bool direct,const MappedActions& mapped,
-    const Transports& native) noexcept
+    const Transports& native,bool seated=false) noexcept
 {
-    const DirectRoute route=SplitDirectRoute(title,direct,mapped.actions,native);
+    const DirectRoute route=SplitDirectRoute(title,direct,mapped.actions,native,seated);
     return {direct?route.transports:mapped.transports,mapped.actions&route.bridgeMask};
 }
 

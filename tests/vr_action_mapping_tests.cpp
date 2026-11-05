@@ -369,6 +369,24 @@ void CheckDirectContextPassthrough()
                 "other titles transport fallback unchanged");
         }
     }
+    for(const auto title:{GameTitle::Halo3,GameTitle::Halo3ODST,GameTitle::HaloReach,GameTitle::Halo4,GameTitle::HaloCE,GameTitle::Halo2})
+    {
+        // A seat: Grenade's real button (the left trigger) reaches the game, where a vehicle reads it (Halo 4's boost),
+        // and the bridge leaves it alone; everything else is routed as on foot.
+        Check((DirectPassthroughActions(title,true)&(1u<<Grenade))!=0,"a seat passes Grenade's real button through");
+        Mapper mapper;
+        const Transports layoutWithGrenade=[&]{Transports t=layout;t[Grenade]=1u<<16;return t;}();
+        RunPoll(mapper,title,true,0,automatic,layoutWithGrenade);
+        const MappedActions grenade=mapper.ApplyDetailed(Bit(SupportTrigger),automatic,
+            [&]{Transports t{};for(unsigned a=0;a<Count;++a) t[a]=NativeVrActions_GestureBit(static_cast<Action>(a));return t;}(),
+            (uint64_t(title)<<24)|1,true);
+        const auto seated=RouteActions(title,true,grenade,layoutWithGrenade,true);
+        const auto onFoot=RouteActions(title,true,grenade,layoutWithGrenade,false);
+        Check(grenade.Has(Grenade)&&(seated.buttons&(1u<<16))&&!(seated.published&(1u<<Grenade)),
+            "seated direct: the support trigger is the real left trigger, not the bridge's grenade");
+        Check(!(onFoot.buttons&(1u<<16))&&(onFoot.published&(1u<<Grenade)),
+            "on foot direct: the grenade stays on the bridge, the real trigger withheld");
+    }
     Check(std::strcmp(ActionName(GameTitle::Halo2,Interact),kNames[Interact])!=0,
         "Halo 2 index 5 is labelled as touch_device, not pick up");
     for(const auto title:{GameTitle::Halo3,GameTitle::Halo3ODST,GameTitle::HaloReach,GameTitle::Halo4,GameTitle::HaloCE,GameTitle::Halo2})
