@@ -1291,7 +1291,8 @@ namespace
         SettingGap();
         changed |= ImGui::Checkbox("Right stick crouches and sprints", &g_config.right_stick_crouch);
         ImGui::TextDisabled("On foot: push the right stick down to crouch, and down again to stand. Hold it up to "
-            "sprint; in Reach, where sprint is an armor ability, that uses your armor ability. Needs MCC's "
+            "sprint; in Reach, where sprint is an armor ability, that uses your armor ability, and in Halo 3, "
+            "which has no sprint, your equipment. Needs MCC's "
             "hold-to-crouch setting. The game's own crouch and sprint buttons still work.");
         ImGui::Spacing();
         }

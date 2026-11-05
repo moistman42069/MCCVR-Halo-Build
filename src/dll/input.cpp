@@ -690,8 +690,10 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             stickSprinting=stickCrouch.sprinting&&nativeReady;
         }
         const uint32_t crouchButtons=physicalCrouchButtons|(stickCrouched?crouchTransport:0u);
-        // Reach's sprint is an armor ability, so there the stick holds the armor ability.
-        const auto sprintAction=currentTitle==GameTitle::HaloReach?vr_mapping::Equipment:vr_mapping::Sprint;
+        // Reach's sprint is an armor ability, so there the stick holds the armor ability; Halo 3 has no sprint, so
+        // there it uses the equipment.
+        const auto sprintAction=currentTitle==GameTitle::HaloReach||currentTitle==GameTitle::Halo3?
+            vr_mapping::Equipment:vr_mapping::Sprint;
         const uint32_t heldButtons=crouchButtons|(stickSprinting?
             (directActions?NativeVrActions_GestureBit(sprintAction):nativeActions[sprintAction]):0u);
         if(crouchSample.reference)
