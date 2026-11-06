@@ -7,7 +7,7 @@
 // headset is on the desktop in the next frame. The game creates this block with the menu; a window that cannot open it
 // (another GPU's texture, a sandboxed edition) falls back to showing the settings without saving them.
 inline constexpr wchar_t kMenuMirrorMapping[] = L"Local\\HaloMCCVRMenuMirror";
-inline constexpr uint32_t kMenuMirrorVersion = 1;
+inline constexpr uint32_t kMenuMirrorVersion = 2;
 inline constexpr uint64_t kMenuMirrorAttachedMs = 1500; // the game draws the closed menu only for a window this recent
 inline constexpr uint64_t kMenuMirrorGoneMs = 10000;    // long enough for a level load, when the game stops presenting
 inline constexpr uint32_t kMenuMirrorChars = 64;
@@ -26,5 +26,6 @@ struct MenuMirrorShared
     std::atomic<int32_t> scrollMilli;   // adds up until the game takes it
     std::atomic<uint32_t> charsWritten; // typed characters, a ring; only the desktop writes it
     std::atomic<uint16_t> chars[kMenuMirrorChars];
+    std::atomic<uint32_t> sidePanel;    // the menu's side panel shows (Menu_SidePanelShown): the window widens for it
 };
 static_assert(std::atomic<uint64_t>::is_always_lock_free && std::atomic<float>::is_always_lock_free);

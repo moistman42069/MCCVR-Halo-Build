@@ -15923,7 +15923,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     // the menu's quad, so the pointer and the picture agree.
     XrCompositionLayerQuad MenuSideQuad(bool headLocked)
     {
-        constexpr float kGapM = 0.03f, kTurn = 0.35f;   // about 20 degrees
+        constexpr float kGapM = 0.01f, kTurn = 0.35f;   // about 20 degrees
         const float width = g_config.menu_width_m * MENU_SIDE_W / MENU_W;
         XrCompositionLayerQuad q = MakeQuad(g_menuChain, MENU_SIDE_W, MENU_H, width, g_config.menu_distance_m,
             g_config.menu_height_m, XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |

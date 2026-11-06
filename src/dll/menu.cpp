@@ -4496,6 +4496,10 @@ ID3D11Texture2D* Menu_Render()
     ImGui::NewFrame();
     DrawUI();
     ImGui::Render();
+#if !HALOMCCVR_SETTINGS_WINDOW
+    if (g_mirror)
+        g_mirror->sidePanel.store(g_sidePanelShown ? 1u : 0u, std::memory_order_relaxed);
+#endif
 
     D3DStateBackup backup;
     backup.Capture(g_ctx);

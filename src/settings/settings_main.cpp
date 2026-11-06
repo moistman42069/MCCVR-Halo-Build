@@ -120,13 +120,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
     windowClass.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&windowClass);
 
-    // The menu's own shape with its side panel beside it, as large as the screen allows: the picture is stretched, so a
-    // click still lands by fraction.
+    // The menu's own shape, as large as the screen allows with room for its side panel: the picture is stretched, so a
+    // click still lands by fraction. The window widens for the side panel only while it shows (below).
     RECT work{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     const float fit = (std::min)(1.0f, (std::min)((work.right - work.left) * 0.95f / MENU_TEX_W,
                                                   (work.bottom - work.top) * 0.9f / MENU_H));
-    RECT frame{0, 0, static_cast<LONG>(MENU_TEX_W * fit), static_cast<LONG>(MENU_H * fit)};
+    int shownWidth = MENU_W;   // how much of the menu's texture the window shows: the menu, or the menu and side panel
+    RECT frame{0, 0, static_cast<LONG>(MENU_W * fit), static_cast<LONG>(MENU_H * fit)};
     const DWORD style = WS_OVERLAPPEDWINDOW;
     AdjustWindowRect(&frame, style, FALSE);
     const HWND window = CreateWindowW(windowClass.lpszClassName, gameOpen ? kTitleGameOpen : kTitle, style, CW_USEDEFAULT,
@@ -135,7 +136,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
 
     DXGI_SWAP_CHAIN_DESC swap{};
     swap.BufferCount = 2;
-    swap.BufferDesc.Width = MENU_TEX_W;
+    swap.BufferDesc.Width = MENU_W;
     swap.BufferDesc.Height = MENU_H;
     swap.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     swap.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -158,9 +159,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
     ULONGLONG checkedGame = GetTickCount64();
     bool running = true;
     LiveMenu live;
+    DXGI_FORMAT shownFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
     const auto bufferFormat = [&](DXGI_FORMAT format)
     {
-        return SUCCEEDED(chain->ResizeBuffers(2, MENU_TEX_W, MENU_H, format, 0));
+        shownFormat = format;
+        return SUCCEEDED(chain->ResizeBuffers(2, shownWidth, MENU_H, format, 0));
+    };
+    // The part of the texture the window shows, copied to its picture.
+    const auto present = [&](ID3D11Texture2D* picture)
+    {
+        ComPtr<ID3D11Texture2D> backBuffer;
+        const D3D11_BOX shown{0, 0, 0, static_cast<UINT>(shownWidth), static_cast<UINT>(MENU_H), 1};
+        if (SUCCEEDED(chain->GetBuffer(0, IID_PPV_ARGS(&backBuffer))))
+            context->CopySubresourceRegion(backBuffer.Get(), 0, 0, 0, 0, picture, 0, &shown);
+        chain->Present(1, 0);
     };
     while (running)
     {
@@ -212,6 +224,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
             }
         }
 
+        // The side panel, beside the menu while the page has one: the window widens for it and narrows again after,
+        // keeping its height.
+        const bool sidePanel = live.connected() ? live.block->sidePanel.load(std::memory_order_relaxed) != 0
+                                                : Menu_SidePanelShown();
+        const int wantWidth = sidePanel ? MENU_TEX_W : MENU_W;
+        if (wantWidth != shownWidth)
+        {
+            RECT now{};
+            GetClientRect(window, &now);
+            const float scale = now.bottom > 0 ? static_cast<float>(now.bottom) / MENU_H : fit;
+            shownWidth = wantWidth;
+            bufferFormat(shownFormat);
+            RECT resized{0, 0, static_cast<LONG>(wantWidth * scale), static_cast<LONG>(MENU_H * scale)};
+            AdjustWindowRect(&resized, style, FALSE);
+            SetWindowPos(window, nullptr, 0, 0, resized.right - resized.left, resized.bottom - resized.top,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        // Across the window, as a place across the whole texture.
+        const float widthShare = static_cast<float>(shownWidth) / MENU_TEX_W;
+
         POINT cursor{};
         RECT client{};
         GetCursorPos(&cursor);
@@ -223,31 +255,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
         {
             MenuMirrorShared& block = *live.block;
             block.desktopBeatMs.store(now, std::memory_order_relaxed);
-            block.pointerU.store(hit ? static_cast<float>(cursor.x) / client.right : 0.0f, std::memory_order_relaxed);
+            block.pointerU.store(hit ? static_cast<float>(cursor.x) / client.right * widthShare : 0.0f,
+                std::memory_order_relaxed);
             block.pointerV.store(hit ? static_cast<float>(cursor.y) / client.bottom : 0.0f, std::memory_order_relaxed);
             block.pointerPressed.store(hit && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, std::memory_order_relaxed);
             block.pointerHit.store(hit, std::memory_order_relaxed);
             if (hit && scroll != 0.0f)
                 block.scrollMilli.fetch_add(static_cast<int32_t>(scroll * 1000.0f), std::memory_order_relaxed);
-            ComPtr<ID3D11Texture2D> backBuffer;
-            if (SUCCEEDED(chain->GetBuffer(0, IID_PPV_ARGS(&backBuffer))))
-                context->CopyResource(backBuffer.Get(), live.picture.Get());
-            chain->Present(1, 0);
+            present(live.picture.Get());
             continue;
         }
         if (hit)
-            Menu_SetVrPointer(true, static_cast<float>(cursor.x) / client.right,
+            Menu_SetVrPointer(true, static_cast<float>(cursor.x) / client.right * widthShare,
                 static_cast<float>(cursor.y) / client.bottom, (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, scroll);
         else
             Menu_ClearVrPointer();
 
         if (ID3D11Texture2D* picture = Menu_Render())
-        {
-            ComPtr<ID3D11Texture2D> backBuffer;
-            if (SUCCEEDED(chain->GetBuffer(0, IID_PPV_ARGS(&backBuffer))))
-                context->CopyResource(backBuffer.Get(), picture);
-        }
-        chain->Present(1, 0);
+            present(picture);
+        else
+            chain->Present(1, 0);
     }
     return 0;
 }

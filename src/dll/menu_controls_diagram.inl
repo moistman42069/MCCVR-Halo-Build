@@ -310,6 +310,11 @@ void DrawControlsDiagram()
 
 void DrawSidePanel()
 {
+    if (!g_sidePanelShown)
+    {
+        g_controlsDiagram.hot = -1;
+        return;
+    }
     ImGui::SetNextWindowPos(ImVec2(static_cast<float>(MENU_W), 0.0f), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(static_cast<float>(MENU_SIDE_W), static_cast<float>(MENU_H)), ImGuiCond_Always);
     ImGui::Begin("##sidepanel", nullptr,
@@ -317,13 +322,6 @@ void DrawSidePanel()
                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar |
                      ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus |
                      ImGuiWindowFlags_NoSavedSettings);
-    if (g_sidePanelShown)
-        DrawControlsDiagram();
-    else
-    {
-        // Only the desktop settings window shows the strip off the Controls page.
-        g_controlsDiagram.hot = -1;
-        ImGui::TextDisabled("The Controls page shows your controller layout here.");
-    }
+    DrawControlsDiagram();
     ImGui::End();
 }
