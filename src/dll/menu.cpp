@@ -41,6 +41,8 @@
 #include "../common/weapon_interaction_logic.h"
 #include "../common/vr_action_passthrough.h"
 #include "../common/controls_diagram_logic.h"
+#include "../common/credits_file.h"
+#include "launcher_credits.generated.h"
 #include "../common/halo2_vehicle_identity.h"
 #include "../common/window_focus_policy.h"
 
@@ -4237,7 +4239,8 @@ namespace
 
         // The side panel, to the right of the menu in the same picture: shown in the headset only while it has
         // something for the page (Menu_SidePanelShown).
-        g_sidePanelShown = g_activeCategory == Cat_Controls && !searching && !g_jump.active;
+        g_sidePanelShown = (g_activeCategory == Cat_Controls || g_activeCategory == Cat_Welcome) && !searching &&
+            !g_jump.active;
         DrawSidePanel();
     }
 } // namespace

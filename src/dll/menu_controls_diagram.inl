@@ -1,6 +1,6 @@
 // THE SIDE PANEL (menu.cpp, inside its namespace): drawn to the right of the menu in the same texture, and shown in the
-// headset as a panel of its own beside the menu while Menu_SidePanelShown. On the Controls page it is the controls
-// diagram: both Touch controllers, drawn here, with what each control does in the game chosen under VR Mappings
+// headset as a panel of its own beside the menu while Menu_SidePanelShown. On the Welcome page it is the credits, as
+// the launcher lists them; on the Controls page it is the controls diagram: both Touch controllers, drawn here, with what each control does in the game chosen under VR Mappings
 // (controls_diagram_logic.h), for one context at a time. Pointing at a control or its label picks both out; the same
 // highlight is what an interactive mode would drive from a pressed button.
 
@@ -308,6 +308,70 @@ void DrawControlsDiagram()
     ImGui::PopFont();
 }
 
+// The credits, from the copy of CREDITS.txt built into the mod (the launcher's own fallback): read once, as UTF-8 for
+// Dear ImGui. Links are shown by their labels only: opening a browser mid-game is the launcher's job.
+struct MenuCredit { std::string section, name, what, links; };
+const std::vector<MenuCredit>& MenuCredits()
+{
+    static const std::vector<MenuCredit> credits = [] {
+        const auto utf8 = [](const std::wstring& text) {
+            std::string out(text.size() * 3, '\0');
+            out.resize(static_cast<size_t>(WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                out.data(), static_cast<int>(out.size()), nullptr, nullptr)));
+            return out;
+        };
+        const auto* bytes = reinterpret_cast<const char*>(menu_assets::credits);
+        const int size = static_cast<int>(sizeof(menu_assets::credits));
+        std::wstring text(static_cast<size_t>(size), L'\0');
+        text.resize(static_cast<size_t>(MultiByteToWideChar(CP_UTF8, 0, bytes, size, text.data(), size)));
+        std::vector<MenuCredit> list;
+        for (const auto& entry : ParseCredits(text))
+        {
+            MenuCredit credit{utf8(entry.section), utf8(entry.name), utf8(entry.what), {}};
+            for (const auto& link : entry.links)
+                credit.links += (credit.links.empty() ? "" : "  |  ") + utf8(link.label);
+            list.push_back(std::move(credit));
+        }
+        return list;
+    }();
+    return credits;
+}
+
+void DrawCreditsPanel()
+{
+    ImGui::PushFont(g_headingFont);
+    ImGui::TextColored(Rgb(kAccent), "Credits");
+    ImGui::PopFont();
+    ImGui::TextDisabled("The people behind Halo MCC VR. Their links are in the launcher's Credits.");
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::BeginChild("##credits", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
+    ImGui::PushTextWrapPos(0.0f);
+    for (const auto& credit : MenuCredits())
+    {
+        if (!credit.section.empty())
+        {
+            ImGui::Spacing();
+            ImGui::PushFont(g_headingFont);
+            ImGui::TextColored(Rgb(kAccent), "%s", credit.section.c_str());
+            ImGui::PopFont();
+            ImGui::Separator();
+        }
+        if (credit.name.empty())
+        {
+            ImGui::TextUnformatted(credit.what.c_str());
+            ImGui::Spacing();
+            continue;
+        }
+        ImGui::Spacing();
+        ImGui::TextColored(Rgb(kAccentHot), "%s", credit.name.c_str());
+        if (!credit.what.empty()) ImGui::TextUnformatted(credit.what.c_str());
+        if (!credit.links.empty()) ImGui::TextDisabled("%s", credit.links.c_str());
+    }
+    ImGui::PopTextWrapPos();
+    ImGui::EndChild();
+}
+
 void DrawSidePanel()
 {
     if (!g_sidePanelShown)
@@ -322,6 +386,12 @@ void DrawSidePanel()
                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar |
                      ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus |
                      ImGuiWindowFlags_NoSavedSettings);
-    DrawControlsDiagram();
+    if (g_activeCategory == Cat_Welcome)
+    {
+        g_controlsDiagram.hot = -1;
+        DrawCreditsPanel();
+    }
+    else
+        DrawControlsDiagram();
     ImGui::End();
 }
