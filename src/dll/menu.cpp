@@ -260,25 +260,31 @@ namespace
         return ImGui::BeginCombo(label,preview,flags);
     }
     // VR Mappings' controls in a dropdown's order: Automatic (a row's own press only), Unbound, then every control a row
-    // may list (vr_mapping::ListedSource).
+    // may list (vr_mapping::ListedSource). A required held input calls Unbound "None".
+    enum class MappingList { Own, Listed, Held };
     struct MappingChoices
     {
         int sources[vr_mapping::SourceCount]{};
         const char* names[vr_mapping::SourceCount]{};
         int count=0;
-        explicit MappingChoices(bool automatic)
+        explicit MappingChoices(MappingList list)
         {
-            for(int source=automatic?vr_mapping::Automatic:vr_mapping::Unbound;source<vr_mapping::SourceCount;++source)
+            for(int source=list==MappingList::Own?vr_mapping::Automatic:vr_mapping::Unbound;
+                source<vr_mapping::SourceCount;++source)
                 if(source==vr_mapping::Automatic||vr_mapping::ListedSource(source))
-                {sources[count]=source;names[count]=vr_mapping::kSourceNames[source];++count;}
+                {
+                    sources[count]=source;
+                    names[count]=list==MappingList::Held&&source==vr_mapping::Unbound?"None":vr_mapping::kSourceNames[source];
+                    ++count;
+                }
         }
     };
     // Two thirds of the width, so the buttons beside it stay in reach. The action names the group the dropdown is in, so the
     // label is usually hidden ("##...").
-    bool MappingCombo(const char* label,int& source,bool automatic)
+    bool MappingCombo(const char* label,int& source,MappingList list)
     {
-        static const MappingChoices withAutomatic(true),listed(false);
-        const auto& choices=automatic?withAutomatic:listed;
+        static const MappingChoices own(MappingList::Own),listed(MappingList::Listed),held(MappingList::Held);
+        const auto& choices=list==MappingList::Own?own:list==MappingList::Listed?listed:held;
         int index=0;
         for(int i=0;i<choices.count;++i) if(choices.sources[i]==source) index=i;
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x*2.0f/3.0f);
@@ -286,8 +292,16 @@ namespace
         source=choices.sources[index];
         return true;
     }
-    // An input's options beside its dropdown: Hold or Toggle, and the controls held before its press (up to two, each with
-    // Remove, then "Hold a control first" while there is room). Behind "Options"; a summary while closed.
+    void SettingGap();
+    // A setting's description under it, greyed and wrapped to the panel.
+    void OptionNote(const char* text)
+    {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("%s",text);
+        ImGui::PopTextWrapPos();
+    }
+    // An input's options under its dropdown, each titled above and described below: the inputs required held first (a
+    // second appears once the first is chosen) and Hold or Toggle. Behind "Options"; a summary while closed.
     bool InputOptions(vr_mapping::HeldControls& held,vr_mapping::InputMode& mode,bool& open)
     {
         bool changed=false;
@@ -298,39 +312,33 @@ namespace
             std::string summary;
             for(const int source:held)
                 if(source!=vr_mapping::Unbound)
-                    summary+=std::string(summary.empty()?"Held first: ":" + ")+vr_mapping::kSourceNames[source];
-            if(mode==vr_mapping::InputMode::Toggle) summary+=summary.empty()?"Toggles":"; toggles";
+                    summary+=std::string(summary.empty()?"Requires holding: ":" + ")+vr_mapping::kSourceNames[source];
+            if(mode==vr_mapping::InputMode::Toggle) summary+=summary.empty()?"Toggle":"; toggle";
             if(!summary.empty()) ImGui::TextDisabled("%s",summary.c_str());
             return false;
         }
         ImGui::Indent();
+        ImGui::PushID("held");
+        ImGui::TextUnformatted("Required Held Input");
+        changed|=MappingCombo("##first",held[0],MappingList::Held);
+        OptionNote("Other input that needs to be held down first for this input to register.");
+        if(held[0]!=vr_mapping::Unbound||held[1]!=vr_mapping::Unbound)
+        {
+            SettingGap();
+            ImGui::TextUnformatted("Second Required Held Input");
+            changed|=MappingCombo("##second",held[1],MappingList::Held);
+            OptionNote("Optional: another input that must also be held down first.");
+        }
+        ImGui::PopID();
+        // Held inputs stay first.
+        if(held[0]==vr_mapping::Unbound&&held[1]!=vr_mapping::Unbound) std::swap(held[0],held[1]);
+        SettingGap();
+        ImGui::TextUnformatted("Activation Mode");
         if(ImGui::RadioButton("Hold",mode==vr_mapping::InputMode::Hold)) {mode=vr_mapping::InputMode::Hold;changed=true;}
         ImGui::SameLine();
         if(ImGui::RadioButton("Toggle",mode==vr_mapping::InputMode::Toggle)) {mode=vr_mapping::InputMode::Toggle;changed=true;}
-        unsigned listed=0;
-        ImGui::PushID("held");
-        for(unsigned i=0;i<vr_mapping::kHeld;++i)
-        {
-            if(held[i]==vr_mapping::Unbound) continue;
-            ImGui::PushID(static_cast<int>(i));
-            ImGui::TextDisabled("Held first:");
-            ImGui::SameLine();
-            changed|=MappingCombo("##held",held[i],false);
-            ImGui::SameLine();
-            if(ImGui::SmallButton("Remove")) {held[i]=vr_mapping::Unbound;changed=true;}
-            ImGui::PopID();
-            ++listed;
-        }
-        ImGui::PopID();
-        if(listed<vr_mapping::kHeld&&ImGui::SmallButton("Hold a control first"))
-        {
-            for(auto& source:held) if(source==vr_mapping::Unbound) {source=vr_mapping::SupportGrip;break;}
-            changed=true;
-        }
-        ImGui::TextDisabled("Hold: the action lasts while the controls are down. Toggle: each press turns it on or off. "
-            "Controls held first must be down before the press, and that press does nothing else until let go.");
-        // Held controls stay first.
-        if(held[0]==vr_mapping::Unbound&&held[1]!=vr_mapping::Unbound) std::swap(held[0],held[1]);
+        OptionNote("Hold: the action lasts while you hold the input. Toggle: one press turns the action on, and the next "
+            "press turns it off.");
         ImGui::Unindent();
         return changed;
     }
@@ -346,7 +354,7 @@ namespace
         for(unsigned i=0;i<shown;++i)
         {
             ImGui::PushID(static_cast<int>(i+1));
-            if(MappingCombo("##input",inputs[i].press,false))
+            if(MappingCombo("##input",inputs[i].press,MappingList::Listed))
             {
                 // No press, no input: what it held first goes too.
                 if(inputs[i].press==vr_mapping::Unbound) {inputs[i]=vr_mapping::Input{};optionsOpen[i]=false;}
@@ -1507,11 +1515,12 @@ namespace
             ImGui::Text("Detected left: %s",VR_ControllerProfileName(true));
             ImGui::Text("Detected right: %s",VR_ControllerProfileName(false));
             changed|=ImGui::Checkbox("Remap buttons (off: every button is the game's own)",&g_config.vr_action_mapping);
-            ImGui::TextWrapped("Each action has its own input and up to three more. An input is a control, or a chord: "
-                "up to two controls held first, then the press. Options sets an input to hold or toggle and adds the "
-                "controls held first. Automatic keeps an action where the game's own button layout has it. Choosing "
-                "anything else turns remapping on; inputs that use only the right stick or the support hand on the gun "
-                "work with it off too. Physical gestures remain separate.");
+            ImGui::TextWrapped("Each action has its own input and up to three more. An input's Options set a Required "
+                "Held Input (held down first, then the input: grip, then trigger) and its Activation Mode (Hold or "
+                "Toggle). The input that completes a held combination does nothing else until let go. Automatic keeps "
+                "an action where the game's own button layout has it. Choosing anything else turns remapping on; inputs "
+                "that use only the right stick or the support hand on the gun work with it off too. Physical gestures "
+                "remain separate.");
             ImGui::Spacing();
             Combo("Settings for",&selectedTitle,weapon_interaction::kTitleNames,6);
             ImGui::TextWrapped("All six games support separate actions while direct VR routing is available. "
@@ -1542,7 +1551,7 @@ namespace
                 const char* name=vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action));
                 SettingGroup group(name);
                 auto& row=g_config.vr_inputs[selectedTitle][action];
-                if(MappingCombo("##own",g_config.vr_bindings[selectedTitle][action],true))
+                if(MappingCombo("##own",g_config.vr_bindings[selectedTitle][action],MappingList::Own))
                 {
                     if(g_config.vr_bindings[selectedTitle][action]!=vr_mapping::Automatic)
                         g_config.vr_action_mapping=true;
@@ -1591,7 +1600,7 @@ namespace
                 SettingGroup group(vr_mapping::kVehicleNames[action]);
                 auto& row=g_config.vr_vehicle_bindings[selectedTitle][action];
                 bool* open=optionsOpen[selectedTitle][vr_mapping::Count+action];
-                bool seatChanged=MappingCombo("##own",row[0].press,false);
+                bool seatChanged=MappingCombo("##own",row[0].press,MappingList::Listed);
                 if(seatChanged&&row[0].press==vr_mapping::Unbound) {row[0]=vr_mapping::Input{};open[0]=false;}
                 seatChanged|=InputOptions(row[0].held,row[0].mode,open[0]);
                 seatChanged|=MoreInputsList(row.data()+1,vr_mapping::kMoreInputs,
