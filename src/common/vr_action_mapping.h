@@ -24,7 +24,7 @@ inline constexpr const char* kNames[Count]{"Fire","Grenade / secondary fire","Ju
     "Reload","Use / pick up","Switch weapon","Switch grenade","Equipment / ability",
     "Crouch","Zoom","Flashlight / night vision","Sprint"};
 inline constexpr const char* kSourceNames[SourceCount]{"Automatic","Unbound","Weapon trigger",
-    "Support trigger","Weapon grip","Support grip","Right A / lower face","Right B / upper face",
+    "Support trigger","Primary grip","Support grip","Right A / lower face","Right B / upper face",
     "Left X / lower face","Left Y / upper face","Left stick / pad click","Right stick / pad click",
     "D-pad gesture up","D-pad gesture down","D-pad gesture left","D-pad gesture right",
     "Support trigger, hand free","Support trigger, gripping the gun","Support trigger, gripping air",

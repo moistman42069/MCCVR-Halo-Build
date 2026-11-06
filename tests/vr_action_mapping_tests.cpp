@@ -267,7 +267,7 @@ void CheckInputPresets()
         Check(seat.vr_vehicle_bindings[0][BansheeBomb][0].press==PrimaryGrip&&
             seat.vr_vehicle_bindings[0][BansheeBomb][1].press==RightClick&&
             seat.vr_vehicle_bindings[5][BansheeTrick][0].press==A&&seat.vr_vehicle_bindings[5][BansheeTrick][1]==Input{},
-            "the Banshee bomb starts on the weapon grip and the right stick click, its trick on A");
+            "the Banshee bomb starts on the primary grip and the right stick click, its trick on A");
         seat.vr_vehicle_bindings[5][BansheeTrick][1]=Input{{SupportGrip,Unbound},DpadUp,InputMode::Toggle};
         Config seatLoaded{};
         input_preset::Parse(input_preset::Serialize(seat).c_str(),seatLoaded);
