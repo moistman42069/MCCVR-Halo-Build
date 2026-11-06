@@ -613,6 +613,37 @@ namespace
     }
 
     // Choosing a preset applies it at once; the file or built-in stays as it was until the player saves over it.
+    // The VR Mappings page's open state: per game and row, how many further inputs are shown (one just added may still be
+    // empty) and which inputs have their options open. An empty input shown counts as a change to the controls preset,
+    // so Undo changes takes it away with the rest; saving or choosing a preset closes it, as a file keeps none.
+    struct MappingPageState
+    {
+        static constexpr unsigned kRows=vr_mapping::Count+vr_mapping::VehicleCount;
+        int moreOpen[6][kRows]{};
+        bool optionsOpen[6][kRows][vr_mapping::kRowInputs]{};
+    } g_mappingPage;
+    bool EmptyInputShown()
+    {
+        for(unsigned title=0;title<6;++title)
+            for(unsigned row=0;row<MappingPageState::kRows;++row)
+            {
+                const bool seat=row>=vr_mapping::Count;
+                unsigned listed=0;
+                for(unsigned i=0;i<vr_mapping::kMoreInputs;++i)
+                {
+                    const int press=seat?g_config.vr_vehicle_bindings[title][row-vr_mapping::Count][1+i].press:
+                        g_config.vr_inputs[title][row].more[i].press;
+                    if(press!=vr_mapping::Unbound) ++listed;
+                }
+                if(g_mappingPage.moreOpen[title][row]>static_cast<int>(listed)) return true;
+            }
+        return false;
+    }
+    void CloseEmptyInputs()
+    {
+        for(auto& title:g_mappingPage.moreOpen) for(int& open:title) open=0;
+    }
+
     void DrawInputPresets(bool& changed)
     {
         static std::vector<std::string> saved;
@@ -646,6 +677,7 @@ namespace
             if(!input_preset::Find(chosen,scheme)) return;
             input_preset::CopyScheme(g_config,scheme);
             strncpy_s(g_config.input_preset,chosen.c_str(),_TRUNCATE);
+            CloseEmptyInputs();
             baselineFound=false;
             changed=true;
         };
@@ -661,7 +693,7 @@ namespace
             if(!chosen.empty()) apply(chosen);
             ImGui::EndCombo();
         }
-        const bool modified=baselineFound&&!input_preset::SameScheme(g_config,baseline);
+        const bool modified=baselineFound&&(!input_preset::SameScheme(g_config,baseline)||EmptyInputShown());
         for(int i=0;i<input_preset::BuiltInCount();++i)
             if(active==input_preset::BuiltInName(i)) ImGui::TextWrapped("%s",input_preset::BuiltInDescription(i));
         // A built-in cannot be saved over: once its settings change, the name moves on to the player's own.
@@ -682,6 +714,7 @@ namespace
         if(ImGui::Button(targetSaved?"Save over preset":"Save as new preset")&&input_preset::Save(target,g_config,description))
         {
             strncpy_s(g_config.input_preset,target.c_str(),_TRUNCATE);
+            CloseEmptyInputs();
             listed=false;
             baselineFound=false;
             changed=true;
@@ -1505,8 +1538,8 @@ namespace
         if (SectionHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
         {
             static int selectedTitle=0;
-            static int moreOpen[6][vr_mapping::Count+vr_mapping::VehicleCount]{};
-            static bool optionsOpen[6][vr_mapping::Count+vr_mapping::VehicleCount][vr_mapping::kRowInputs]{};
+            auto& moreOpen=g_mappingPage.moreOpen;
+            auto& optionsOpen=g_mappingPage.optionsOpen;
             static GameTitle previousTitle=GameTitle::None;
             const auto active=TitleAdapter_GetActiveTitle();
             const int activeIndex=weapon_interaction::TitleIndex(active);
@@ -1617,6 +1650,7 @@ namespace
                 g_config.vr_bindings[selectedTitle]={};
                 g_config.vr_inputs[selectedTitle]=vr_mapping::DefaultInputs(selectedGame);
                 g_config.vr_vehicle_bindings[selectedTitle]=vr_mapping::kVehicleDefaults;
+                for(int& open:moreOpen[selectedTitle]) open=0;
                 changed=true;
             }
             ImGui::SameLine();
