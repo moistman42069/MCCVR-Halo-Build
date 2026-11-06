@@ -49,10 +49,12 @@ inline bool PlaceOf(int source,bool leftHanded,bool thumbrestDpad,Place& out) no
     case RightClick: out={RightStickClick,nullptr}; return true;
     case RightStickUp: out={RightStick,"Up"}; return true;
     case RightStickDown: out={RightStick,"Down"}; return true;
-    case DpadUp: out={RightStick,thumbrestDpad?"Thumbrest + up":"D-pad up"}; return true;
-    case DpadDown: out={RightStick,thumbrestDpad?"Thumbrest + down":"D-pad down"}; return true;
-    case DpadLeft: out={RightStick,thumbrestDpad?"Thumbrest + left":"D-pad left"}; return true;
-    case DpadRight: out={RightStick,thumbrestDpad?"Thumbrest + right":"D-pad right"}; return true;
+    // The D-pad: the right stick with the left thumb on its rest, or else the left stick with a controller held at the
+    // head (the D-pad gesture).
+    case DpadUp: out={thumbrestDpad?RightStick:LeftStick,thumbrestDpad?"Thumbrest + up":"D-pad up"}; return true;
+    case DpadDown: out={thumbrestDpad?RightStick:LeftStick,thumbrestDpad?"Thumbrest + down":"D-pad down"}; return true;
+    case DpadLeft: out={thumbrestDpad?RightStick:LeftStick,thumbrestDpad?"Thumbrest + left":"D-pad left"}; return true;
+    case DpadRight: out={thumbrestDpad?RightStick:LeftStick,thumbrestDpad?"Thumbrest + right":"D-pad right"}; return true;
     default: return false;
     }
 }

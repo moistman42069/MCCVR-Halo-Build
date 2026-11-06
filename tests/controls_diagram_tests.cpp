@@ -114,6 +114,9 @@ void CheckLayout()
     setup.layout=nullptr;
     setup.context=Context::OnFoot;
     Check(Has(Build(setup),RightStick,"Thumbrest + up: Flashlight / night vision"),"the D-pad as the thumbrest gives it");
+    setup.thumbrestDpad=false;
+    Check(Has(Build(setup),LeftStick,"D-pad up: Flashlight / night vision")&&
+        !Mentions(Build(setup),RightStick,"Flashlight"),"the D-pad gesture's D-pad is the left stick");
 }
 }
 
