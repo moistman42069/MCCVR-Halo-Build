@@ -29879,7 +29879,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         std::atomic<uint32_t> polls{0}, unavailable{0}, invalidVelocity{0};
         std::atomic<uint32_t> crossings{0}, pulses{0}, cooldownBlocks{0}, peakCmPerSecond{0};
     };
-    SharedMeleeTelemetry g_sharedMeleeTelemetry[5];
+    SharedMeleeTelemetry g_sharedMeleeTelemetry[6];
 
     SharedMeleeTelemetry* SharedMeleeForTitle(GameTitle title)
     {
@@ -29890,6 +29890,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         case GameTitle::Halo3ODST: return &g_sharedMeleeTelemetry[2];
         case GameTitle::HaloReach: return &g_sharedMeleeTelemetry[3];
         case GameTitle::Halo4: return &g_sharedMeleeTelemetry[4];
+        case GameTitle::HaloCE: return &g_sharedMeleeTelemetry[5];
         default: return nullptr;
         }
     }
@@ -54091,8 +54092,8 @@ static std::atomic<float> g_gestureMeleeAimSwing[3]{};
 uint32_t Game_GestureMeleeInput(uint64_t nowMs)
 {
     const GameTitle title = TitleAdapter_GetActiveTitle();
-    if (title != GameTitle::Halo2 && title != GameTitle::Halo3 &&
-        title != GameTitle::Halo3ODST && title != GameTitle::HaloReach && title != GameTitle::Halo4)
+    if (title != GameTitle::Halo2 && title != GameTitle::Halo3 && title != GameTitle::Halo3ODST &&
+        title != GameTitle::HaloReach && title != GameTitle::Halo4 && title != GameTitle::HaloCE)
         return 0;
     // XInput's VR transport owns slot zero. Binding snapshots are read by the
     // cold worker and expire across title/generation changes and load gates.
@@ -54143,11 +54144,14 @@ uint32_t Game_GestureMeleeInput(uint64_t nowMs)
         return false;
     }
 
-    // In a seat the swing is not a melee. Halo 3 and ODST have left RuntimeMode::Gameplay by then; these three report
-    // Gameplay in a seat too, so each asks its own on-foot state, as the physical crouch does.
+    // In a seat the swing is not a melee. Halo 3, ODST and Halo CE have left RuntimeMode::Gameplay by then; these three
+    // report Gameplay in a seat too, so each asks its own on-foot state, as the physical crouch does.
     bool titleArmed = false;
     switch (title)
     {
+    case GameTitle::HaloCE:
+        titleArmed = HaloCE_Armed();
+        break;
     case GameTitle::Halo2:
 #if HALOMCCVR_HALO2_STEREO6DOF
         titleArmed = Halo2Observer6Dof_Armed() &&

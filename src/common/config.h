@@ -964,8 +964,7 @@ struct Config
     // from the eye. In Halo 2 the character's aim and the aim-assist target are also left to the game.
     // A campaign co-op session runs one simulation on every machine from shared input. The written aim is part
     // of that input; a change made inside one machine's simulation is not, and the machines then disagree.
-    // Contact melee (physical_melee) does not apply its own damage either: its swing presses the game's melee
-    // (Halo CE has no such lane; there it does nothing).
+    // Contact melee (physical_melee) does not apply its own damage either: its swing presses the game's melee.
     // Never off by default because nothing tells a player his session is shared before his first shot ends it:
     // 0 is for solo play, and brings back what the switch stands down in every session, co-op included.
     // 2 = AUTOMATIC: stood down unless the game itself says nothing can disagree -- the player is alone in the

@@ -2836,7 +2836,7 @@ void ConfigSave()
                "# 1 = ALWAYS: nothing changes a shot as it is fired (no muzzle or barrel origin, no fire-time re-aim, no\n"
                "# separate dual-wield aim, no seat redirect), so every player's game fires it the same way.\n"
                "# Your hand still aims; shots leave the eye. True physical melee presses the game's melee\n"
-               "# instead of striking on contact (Halo CE: it does nothing), in Halo 2 your hand aims only with\n"
+               "# instead of striking on contact, in Halo 2 your hand aims only with\n"
                "# direct drive on, and seats in Halo CE and ODST and passenger seats in Reach keep the game's\n"
                "# own camera.\n"
                "# 0 = OFF, for playing alone only: with it off, your first shot in a campaign co-op or Spartan Ops\n"

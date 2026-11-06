@@ -3249,7 +3249,7 @@ namespace
         {
         changed |= ImGui::Checkbox("True physical melee (experimental)",
                                    &g_config.physical_melee);
-        SingleplayerOnly("In co-op, a swing presses the game's melee instead, automatically. Halo CE: it does nothing.");
+        SingleplayerOnly("In co-op, a swing presses the game's melee instead, automatically.");
         ImGui::TextDisabled("Strike a target with either hand or its held gun. Works with world collision on or off.");
         SettingGap();
         changed |= ImGui::Checkbox("Gesture melee", &g_config.gesture_melee);
@@ -3829,8 +3829,8 @@ namespace
                             "ALWAYS: nothing the mod does changes a shot as it is fired, so every player's game "
                             "fires it the same way and a campaign co-op or Spartan Ops session stays together. Your "
                             "hand still aims; shots leave your eye. In Halo 2 your hand aims only with Direct drive "
-                            "on, True physical melee presses the game's melee instead of striking on contact (Halo "
-                            "CE: it does nothing), and seats in Halo CE and ODST and passenger seats in Reach keep "
+                            "on, True physical melee presses the game's melee instead of striking on contact, and "
+                            "seats in Halo CE and ODST and passenger seats in Reach keep "
                             "the game's own camera.\n"
                             "OFF is for playing alone: shots can leave the visible muzzle and are re-aimed as they "
                             "are fired. With it off, your first shot in a co-op session ends it for everyone. Live.");
