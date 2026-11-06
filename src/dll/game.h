@@ -30,7 +30,7 @@ bool Game_ReadVrActionBindings(vr_mapping::Transports& out, uint64_t nowMs,
     unsigned controller = 0);
 uint32_t Game_VrActionTransport(vr_mapping::Action action, uint64_t nowMs);
 // The seat's rows' own buttons in the active game, from the same snapshot (0 for an action the game has none of).
-bool Game_ReadVrVehicleBindings(vr_mapping::VehicleTransports& out, uint64_t nowMs);
+bool Game_ReadVrExtraBindings(vr_mapping::ExtraTransports& out, uint64_t nowMs);
 
 // Camera-thread admission (roomscale_admission_logic.h): on foot, in control, first person -- by the game's own
 // camera where the title has it bound (every title; Reach, Halo 4 and Halo 2 since director_camera_logic.h), else

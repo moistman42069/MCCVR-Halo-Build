@@ -264,49 +264,59 @@ void CheckInputPresets()
     // The seat's rows: inputs as a row has, kept in a preset; a control held as the seat comes up waits for its release.
     {
         Config seat{};
-        Check(seat.vr_vehicle_bindings[0][BansheeBomb][0].press==PrimaryGrip&&
-            seat.vr_vehicle_bindings[0][BansheeBomb][1].press==RightClick&&
-            seat.vr_vehicle_bindings[5][BansheeTrick][0].press==A&&seat.vr_vehicle_bindings[5][BansheeTrick][1]==Input{},
+        Check(seat.vr_extra_bindings[0][BansheeBomb][0].press==PrimaryGrip&&
+            seat.vr_extra_bindings[0][BansheeBomb][1].press==RightClick&&
+            seat.vr_extra_bindings[5][BansheeTrick][0].press==A&&seat.vr_extra_bindings[5][BansheeTrick][1]==Input{},
             "the Banshee bomb starts on the primary grip and the right stick click, its trick on A");
-        seat.vr_vehicle_bindings[5][BansheeTrick][1]=Input{{SupportGrip,Unbound},DpadUp,InputMode::Toggle};
+        seat.vr_extra_bindings[5][BansheeTrick][1]=Input{{SupportGrip,Unbound},DpadUp,InputMode::Toggle};
         Config seatLoaded{};
         input_preset::Parse(input_preset::Serialize(seat).c_str(),seatLoaded);
         Check(input_preset::SameScheme(seatLoaded,seat)&&
-            seatLoaded.vr_vehicle_bindings[5][BansheeTrick][1]==seat.vr_vehicle_bindings[5][BansheeTrick][1],
+            seatLoaded.vr_extra_bindings[5][BansheeTrick][1]==seat.vr_extra_bindings[5][BansheeTrick][1],
             "a seat row's chord round trips in a preset");
         Check(!input_preset::SameScheme(seatLoaded,Config{}),"a moved seat row is another scheme");
         Config copied{};
         input_preset::CopyScheme(copied,seat);
-        Check(copied.vr_vehicle_bindings[5][BansheeTrick][1].press==DpadUp,"applying a preset moves the seat rows too");
+        Check(copied.vr_extra_bindings[5][BansheeTrick][1].press==DpadUp,"applying a preset moves the seat rows too");
         Config refused{};
-        input_preset::Parse("vr_inputs_version = 1\nvr_bind_halo3_banshee_bomb = 0\nvr_bind_halo3_banshee_bomb_2 = 17\n",refused);
-        Check(refused.vr_vehicle_bindings[0][BansheeBomb]==kVehicleDefaults[BansheeBomb],
-            "a seat row takes neither Automatic nor the support trigger's contexts");
-        Check(NativeVehicleAction(GameTitle::Halo3,BansheeBomb)==0x0A&&NativeVehicleAction(GameTitle::Halo3,BansheeTrick)==0x1E&&
-            NativeVehicleAction(GameTitle::Halo3ODST,BansheeTrick)==0x1F&&NativeVehicleAction(GameTitle::Halo2,BansheeBomb)==0x15&&
-            NativeVehicleAction(GameTitle::HaloReach,BansheeBomb)==0x0A&&NativeVehicleAction(GameTitle::Halo4,BansheeTrick)==0x0D&&
-            NativeVehicleAction(GameTitle::HaloCE,BansheeBomb)==kNoAction&&NativeVehicleAction(GameTitle::None,BansheeTrick)==kNoAction,
+        input_preset::Parse("vr_inputs_version = 2\nvr_bind_halo3_banshee_bomb = 0\nvr_bind_halo3_banshee_bomb_2 = 17\n"
+            "vr_bind_halo3_banshee_bomb_2 = 0\nvr_bind_halo3_banshee_trick = 17\n",refused);
+        Check(refused.vr_extra_bindings[0][BansheeBomb][0].press==Automatic&&
+            refused.vr_extra_bindings[0][BansheeBomb][1]==kExtraDefaults[BansheeBomb][1]&&
+            refused.vr_extra_bindings[0][BansheeTrick]==kExtraDefaults[BansheeTrick],
+            "an extra row's own input may be Automatic; a further one may not, nor any the support trigger's contexts");
+        Check(NativeExtraAction(GameTitle::Halo3,BansheeBomb)==0x0A&&NativeExtraAction(GameTitle::Halo3,BansheeTrick)==0x1E&&
+            NativeExtraAction(GameTitle::Halo3ODST,BansheeTrick)==0x1F&&NativeExtraAction(GameTitle::Halo2,BansheeBomb)==0x15&&
+            NativeExtraAction(GameTitle::HaloReach,BansheeBomb)==0x0A&&NativeExtraAction(GameTitle::Halo4,BansheeTrick)==0x0D&&
+            NativeExtraAction(GameTitle::HaloCE,BansheeBomb)==kNoAction&&NativeExtraAction(GameTitle::None,BansheeTrick)==kNoAction,
             "each game's own seat actions, and none where a game has no Banshee row");
-        VehicleBindings rows=kVehicleDefaults;
-        VehicleTransports native{};
+        ExtraBindings rows=kExtraDefaults;
+        ExtraTransports native{};
         native[BansheeBomb]=0x2000;native[BansheeTrick]=1u<<16;
-        VehicleMapper m;
-        Check(m.Apply(Bit(PrimaryGrip),false,rows,native)==0,"on foot the seat rows press nothing");
-        Check(m.Apply(Bit(PrimaryGrip),true,rows,native)==0,"a grip held as the seat comes up drops nothing");
-        Check(m.Apply(0,true,rows,native)==0&&m.Apply(Bit(PrimaryGrip),true,rows,native)==0x2000,
+        const unsigned seated=ContextBit(ExtraContext::Seat);
+        ExtraMapper m;
+        Check(m.Apply(Bit(PrimaryGrip),ContextBit(ExtraContext::OnFoot),rows,native)==0,"on foot the seat rows press nothing");
+        Check(m.Apply(Bit(PrimaryGrip),seated,rows,native)==0,"a grip held as the seat comes up drops nothing");
+        Check(m.Apply(0,seated,rows,native)==0&&m.Apply(Bit(PrimaryGrip),seated,rows,native)==0x2000,
             "squeezed again in the seat, it drops the bomb");
-        Check(m.Apply(Bit(RightClick),true,rows,native)==0x2000,"so does the bomb's second input");
-        Check(m.Apply(Bit(RightClick)|Bit(A),true,rows,native)==(0x2000|(1u<<16)),"the bomb and the trick together");
-        Check(m.Apply(Bit(B),true,rows,native)==0,"a control no seat row takes presses nothing");
-        Check(m.Apply(Bit(A),true,rows,VehicleTransports{})==0,"a game without the action presses nothing for it");
-        Check(m.Apply(Bit(A),false,rows,native)==0&&m.Apply(Bit(A),true,rows,native)==0,
+        Check(m.Apply(Bit(RightClick),seated,rows,native)==0x2000,"so does the bomb's second input");
+        Check(m.Apply(Bit(RightClick)|Bit(A),seated,rows,native)==(0x2000|(1u<<16)),"the bomb and the trick together");
+        Check(m.Apply(Bit(B),seated,rows,native)==0,"a control no seat row takes presses nothing");
+        Check(m.Apply(Bit(A),seated,rows,ExtraTransports{})==0,"a game without the action presses nothing for it");
+        Check(m.Apply(Bit(A),0,rows,native)==0&&m.Apply(Bit(A),seated,rows,native)==0,
             "leaving the seat arms the held-control check again");
+        ExtraBindings automatic{};
+        automatic.fill(kAutomaticRow);
+        ExtraMapper riding;
+        riding.Apply(0,seated,automatic,native);
+        Check(riding.Apply(Bit(PrimaryGrip)|Bit(A)|Bit(RightClick),seated,automatic,native)==0&&
+            ExtraControlBits(kAutomaticRow)==0,"an Automatic row presses nothing of its own and takes no control");
         rows[BansheeBomb][0]=Input{{SupportGrip,Unbound},SupportTrigger,InputMode::Hold};
-        VehicleMapper chord;
-        chord.Apply(0,true,rows,native);
-        chord.Apply(Bit(SupportGrip),true,rows,native);
-        Check(chord.Apply(Bit(SupportGrip)|Bit(SupportTrigger),true,rows,native)==0x2000,"a seat row's chord drops the bomb");
-        Check(VehicleControlBits(rows[BansheeBomb])==(Bit(SupportGrip)|Bit(SupportTrigger)|Bit(RightClick)),
+        ExtraMapper chord;
+        chord.Apply(0,seated,rows,native);
+        chord.Apply(Bit(SupportGrip),seated,rows,native);
+        Check(chord.Apply(Bit(SupportGrip)|Bit(SupportTrigger),seated,rows,native)==0x2000,"a seat row's chord drops the bomb");
+        Check(ExtraControlBits(rows[BansheeBomb])==(Bit(SupportGrip)|Bit(SupportTrigger)|Bit(RightClick)),
             "a seat row's controls, held first and pressed");
     }
     // The mod's own rows: Pause starts on Y held and B pressed, or B held and Y pressed, and holds both until let go.
@@ -829,12 +839,14 @@ int main()
     Check(!g_config.disable_autoexposure_odst,"ODST exposure is native by default");
     {std::ofstream file(path);file<<"vr_bind_halo3_banshee_bomb_2 = 12\nvr_bind_halo2_banshee_trick = 0\n";}
     ConfigLoad(path.c_str());
-    Check(g_config.vr_vehicle_bindings[0][BansheeBomb][0].press==PrimaryGrip&&
-        g_config.vr_vehicle_bindings[0][BansheeBomb][1].press==DpadUp&&g_config.vr_vehicle_bindings[5][BansheeTrick][0].press==A,
-        "a seat row's second input loads, and Automatic is refused");
+    Check(g_config.vr_extra_bindings[0][BansheeBomb][0].press==PrimaryGrip&&
+        g_config.vr_extra_bindings[0][BansheeBomb][1].press==DpadUp&&
+        g_config.vr_extra_bindings[5][BansheeTrick][0].press==Automatic,
+        "an extra row's second input loads, and its own may be Automatic");
     ConfigSave();ConfigLoad(path.c_str());
-    Check(g_config.vr_vehicle_bindings[0][BansheeBomb][1].press==DpadUp&&
-        g_config.vr_vehicle_bindings[1][BansheeBomb]==kVehicleDefaults[BansheeBomb],"the seat rows survive save and reload");
+    Check(g_config.vr_extra_bindings[0][BansheeBomb][1].press==DpadUp&&
+        g_config.vr_extra_bindings[5][BansheeTrick][0].press==Automatic&&
+        g_config.vr_extra_bindings[1][BansheeBomb]==kExtraDefaults[BansheeBomb],"the extra rows survive save and reload");
     {std::ofstream file(path);file<<"vr_inputs_version = 1\nvr_bind_reach_jump_2 = 7\nvr_bind_reach_jump_4 = 19+12 toggle\n"
         "vr_bind_ce_melee_3 = 0\nvr_bind_reach_fire = 5+2\n";}
     ConfigLoad(path.c_str());

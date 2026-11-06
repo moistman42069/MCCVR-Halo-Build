@@ -384,11 +384,13 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 for (unsigned action = 0; action < vr_mapping::Count; ++action)
                     bBound = bBound || (vr_mapping::ControlBits(static_cast<vr_mapping::Action>(action), effective,
                         &g_config.vr_inputs[seatTitle]) & vr_mapping::Bit(vr_mapping::B)) != 0;
-                // A seat row on B keeps right B its own, or the seat would turn it into use and exit the vehicle.
-                for (unsigned action = 0; action < vr_mapping::VehicleCount; ++action)
-                    bBound = bBound || ((vr_mapping::VehicleControlBits(g_config.vr_vehicle_bindings[seatTitle][action]) &
-                        vr_mapping::Bit(vr_mapping::B)) && vr_mapping::NativeVehicleAction(TitleAdapter_GetActiveTitle(),
-                            static_cast<vr_mapping::VehicleAction>(action)) != vr_mapping::kNoAction);
+                // An extra row live in a seat on B keeps right B its own, or the seat would turn it into use and exit the
+                // vehicle.
+                for (unsigned action = 0; action < vr_mapping::ExtraCount; ++action)
+                    bBound = bBound || (vr_mapping::kExtraContexts[action] != vr_mapping::ExtraContext::OnFoot &&
+                        (vr_mapping::ExtraControlBits(g_config.vr_extra_bindings[seatTitle][action]) &
+                        vr_mapping::Bit(vr_mapping::B)) && vr_mapping::NativeExtraAction(TitleAdapter_GetActiveTitle(),
+                            static_cast<vr_mapping::ExtraAction>(action)) != vr_mapping::kNoAction);
             }
             const vehicle_seat_buttons::RightB rightB =
                 vehicle_seat_buttons::RightBFor(g_config.vr_action_mapping, bBound);
@@ -902,27 +904,31 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret||!crouchOnFoot,
             mappingTitle>=0?&effectiveBindings:nullptr,rowInputs);
         const uint32_t semanticButtons=routedActions.buttons;
-        // THE SEAT'S ROWS (vr_mapping::VehicleMapper): the Banshee's bomb and trick on controls of their own, pressing
-        // the game's own button for each beside the rows, only in a seat. One state for every thread that polls the pad.
+        // THE EXTRA ROWS (vr_mapping::ExtraMapper): the game's actions no action row names, on controls of their own,
+        // pressing the game's own button for each beside the rows, each in its context (a seat, on foot, anywhere in
+        // play). One state for every thread that polls the pad.
         uint32_t seatButtons=0;
         {
-            const bool seated=nativeMapping&&
-                (inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret||!crouchOnFoot);
-            vr_mapping::VehicleTransports seatTransports{};
-            const bool seatLayoutKnown=mappingTitle>=0&&Game_ReadVrVehicleBindings(seatTransports,inputNow);
+            const bool seated=inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret||!crouchOnFoot;
+            const unsigned contexts=nativeMapping&&mappingTitle>=0?
+                (seated?vr_mapping::ContextBit(vr_mapping::ExtraContext::Seat):
+                    vr_mapping::ContextBit(vr_mapping::ExtraContext::OnFoot))|
+                vr_mapping::ContextBit(vr_mapping::ExtraContext::Anywhere):0u;
+            vr_mapping::ExtraTransports seatTransports{};
+            const bool seatLayoutKnown=mappingTitle>=0&&Game_ReadVrExtraBindings(seatTransports,inputNow);
             static std::mutex seatRowsLock;
-            static vr_mapping::VehicleMapper seatRows;
+            static vr_mapping::ExtraMapper seatRows;
             std::lock_guard<std::mutex> lock(seatRowsLock);
-            seatButtons=seatRows.Apply(actionSources,seated&&mappingTitle>=0,
-                mappingTitle>=0?g_config.vr_vehicle_bindings[mappingTitle]:vr_mapping::kVehicleDefaults,seatTransports);
-            // What the seat's rows press in this game, and the game's own button behind each: once each time it changes.
+            seatButtons=seatRows.Apply(actionSources,contexts,
+                mappingTitle>=0?g_config.vr_extra_bindings[mappingTitle]:vr_mapping::kExtraDefaults,seatTransports);
+            // What the extra rows press in this game, and the game's own button behind each: once each time it changes.
             static uint64_t shownSeatRows=0;
             uint64_t shown=uint64_t(currentTitle)<<56;
             char input[32];
-            for(unsigned action=0;mappingTitle>=0&&action<vr_mapping::VehicleCount;++action)
+            for(unsigned action=0;mappingTitle>=0&&action<vr_mapping::ExtraCount;++action)
             {
                 shown=(shown^seatTransports[action])*1099511628211ull;
-                for(const auto& seat:g_config.vr_vehicle_bindings[mappingTitle][action])
+                for(const auto& seat:g_config.vr_extra_bindings[mappingTitle][action])
                     shown=(shown^(uint64_t(seat.press)|(uint64_t(seat.held[0])<<8)|(uint64_t(seat.held[1])<<16)|
                         (uint64_t(seat.mode)<<24)))*1099511628211ull;
             }
@@ -931,12 +937,12 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 shownSeatRows=shown;
                 std::string rows;
                 char native[16];
-                for(unsigned action=0;action<vr_mapping::VehicleCount;++action)
+                for(unsigned action=0;action<vr_mapping::ExtraCount;++action)
                 {
                     sprintf_s(native," (0x%X)",seatTransports[action]);
-                    rows+=std::string(action?", ":"")+vr_mapping::kVehicleKeys[action]+" =";
+                    rows+=std::string(action?", ":"")+vr_mapping::kExtraKeys[action]+" =";
                     // Each input as the file has it (vr_mapping::FormatInput), the empty ones left out.
-                    for(const auto& seat:g_config.vr_vehicle_bindings[mappingTitle][action])
+                    for(const auto& seat:g_config.vr_extra_bindings[mappingTitle][action])
                         if(seat.press!=vr_mapping::Unbound)
                         {
                             vr_mapping::FormatInput(input,seat.held,seat.press,seat.mode);
@@ -944,7 +950,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                         }
                     rows+=native;
                 }
-                LOG("VR Mappings %s, in a seat: %s",weapon_interaction::kTitleNames[mappingTitle],rows.c_str());
+                LOG("VR Mappings %s, extra rows: %s",weapon_interaction::kTitleNames[mappingTitle],rows.c_str());
             }
         }
 #if HALOMCCVR_DEV_DIAGNOSTICS

@@ -1135,13 +1135,13 @@ void ConfigLoad(const wchar_t* path)
             continue;
         if(!strcmp(key,"vr_inputs_version")) {inputsVersion=atoi(val);continue;}
         // A row's inputs (vr_mapping::ParseInput): its own (the key alone, which may be Automatic) and further ones (_2
-        // on), and the seat's rows' (never Automatic).
+        // on), and the extra rows' (their own may be Automatic too).
         bool vrBindingKey=false;
         for(unsigned title=0;title<weapon_interaction::kTitleCount&&!vrBindingKey;++title)
-            for(unsigned action=0;action<vr_mapping::Count+vr_mapping::VehicleCount&&!vrBindingKey;++action)
+            for(unsigned action=0;action<vr_mapping::Count+vr_mapping::ExtraCount&&!vrBindingKey;++action)
             {
                 const bool seat=action>=vr_mapping::Count;
-                const char* row=seat?vr_mapping::kVehicleKeys[action-vr_mapping::Count]:vr_mapping::kKeys[action];
+                const char* row=seat?vr_mapping::kExtraKeys[action-vr_mapping::Count]:vr_mapping::kKeys[action];
                 for(unsigned slot=0;slot<vr_mapping::kRowInputs&&!vrBindingKey;++slot)
                 {
                     char bindingKey[96]{};
@@ -1152,8 +1152,8 @@ void ConfigLoad(const wchar_t* path)
                     bool read=false;
                     if(seat)
                     {
-                        auto& input=g_config.vr_vehicle_bindings[title][action-vr_mapping::Count][slot];
-                        read=vr_mapping::ParseInput(val,input.held,input.press,input.mode,false);
+                        auto& input=g_config.vr_extra_bindings[title][action-vr_mapping::Count][slot];
+                        read=vr_mapping::ParseExtraInput(val,input,slot==0);
                     }
                     else if(slot==0)
                     {
@@ -3793,14 +3793,16 @@ void ConfigSave()
             }
         }
     }
-    fprintf(f,"# The seat's rows: each game's Banshee bomb and trick, its inputs (_2 to _4 further ones), only in a seat.\n");
+    fprintf(f,"# The extra rows: each game's actions no row above names, their inputs (_2 to _4 further ones), each in its\n"
+        "# context; only those that differ from their default.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
-        for(unsigned action=0;action<vr_mapping::VehicleCount;++action)
-            for(unsigned slot=0;slot<vr_mapping::kRowInputs;++slot)
+        for(unsigned action=0;action<vr_mapping::ExtraCount;++action)
+            for(unsigned slot=0;slot<vr_mapping::kRowInputs&&
+                g_config.vr_extra_bindings[title][action]!=vr_mapping::kExtraDefaults[action];++slot)
             {
-                const auto& seat=g_config.vr_vehicle_bindings[title][action][slot];
+                const auto& seat=g_config.vr_extra_bindings[title][action][slot];
                 vr_mapping::FormatInput(input,seat.held,seat.press,seat.mode);
-                fprintf(f,"vr_bind_%s_%s%s = %s\n",weapon_interaction::kTitleKeys[title],vr_mapping::kVehicleKeys[action],
+                fprintf(f,"vr_bind_%s_%s%s = %s\n",weapon_interaction::kTitleKeys[title],vr_mapping::kExtraKeys[action],
                     vr_mapping::kControlSuffix[slot],input);
             }
     fprintf(f,"# The mod's own rows, every game's: Pause (the pause view and Start), its inputs (_2 to _4 further ones).\n");

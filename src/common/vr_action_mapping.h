@@ -399,10 +399,11 @@ template<unsigned N> struct ChordState
             on[i]=on[i]?down:starts;
             if(starts) claimed|=input.press;
         }
-        // Plain controls: down, and their press not claimed by a chord.
+        // Plain controls: down, and their press not claimed by a chord. An input with no press (gone, or out of its
+        // context) is off.
         for(unsigned i=0;i<N;++i)
-            if(inputs[i].press&&!inputs[i].held)
-                on[i]=(usable&inputs[i].press)&&!(claimed&inputs[i].press);
+            if(!inputs[i].press) on[i]=false;
+            else if(!inputs[i].held) on[i]=(usable&inputs[i].press)&&!(claimed&inputs[i].press);
         std::array<bool,N> presses{};
         for(unsigned i=0;i<N;++i)
         {
@@ -487,61 +488,82 @@ inline bool UsesControls(const Overrides& bindings,const Inputs& inputs,uint32_t
 inline bool HoldsHandOnGun(Action action,const Overrides& bindings,const Inputs& inputs) noexcept
 { return (ControlBits(action,bindings,&inputs)&Bit(HandOnGun))!=0; }
 
-// THE SEAT'S ROWS (VR Mappings, under the actions): a vehicle's own actions, which no on-foot row names. Each has inputs
-// as a row does (none Automatic); any of them presses the action's own MCC button beside whatever the action rows press,
-// and only in a seat. A control already down as the seat comes up waits for its release, so the press that boarded
+// THE EXTRA ROWS (VR Mappings, under the actions): the game's actions no action row names, each read in one context -- a
+// vehicle seat, on foot, or anywhere in play. Each has inputs as a row does; any of them presses the action's own MCC
+// button beside whatever the action rows press, only in its context. Its own input may be Automatic: it then presses
+// nothing of its own, and the action stays on the game's button, pressed whenever another row sends that button, as
+// before it had a row. A control already down as a context comes up waits for its release, so the press that boarded
 // presses nothing.
-enum VehicleAction : unsigned { BansheeBomb, BansheeTrick, VehicleCount };
-inline constexpr const char* kVehicleKeys[VehicleCount]{"banshee_bomb","banshee_trick"};
-inline constexpr const char* kVehicleNames[VehicleCount]{"Banshee bomb","Banshee trick"};
-using VehicleRow=std::array<Input,kRowInputs>;
-using VehicleBindings=std::array<VehicleRow,VehicleCount>;
-using VehicleTransports=std::array<uint32_t,VehicleCount>;
-inline constexpr VehicleBindings kVehicleDefaults{{
+enum class ExtraContext : unsigned { Seat, OnFoot, Anywhere, Count };
+enum ExtraAction : unsigned { BansheeBomb, BansheeTrick, ExtraCount };
+inline constexpr const char* kExtraKeys[ExtraCount]{"banshee_bomb","banshee_trick"};
+inline constexpr const char* kExtraNames[ExtraCount]{"Banshee bomb","Banshee trick"};
+inline constexpr ExtraContext kExtraContexts[ExtraCount]{ExtraContext::Seat,ExtraContext::Seat};
+using ExtraRow=std::array<Input,kRowInputs>;
+using ExtraBindings=std::array<ExtraRow,ExtraCount>;
+using ExtraTransports=std::array<uint32_t,ExtraCount>;
+inline constexpr ExtraRow kAutomaticRow{Input{kNoneHeld,Automatic},Input{},Input{},Input{}};
+inline constexpr ExtraBindings kExtraDefaults{{
     {Input{kNoneHeld,PrimaryGrip},Input{kNoneHeld,RightClick},Input{},Input{}},
     {Input{kNoneHeld,A},Input{},Input{},Input{}}}};
-// Each game's own action for a seat row, as NativeAction names the rows' (kNoAction: the game has none): the actions
-// each game's control builder reads while seated. See BANSHEE-SEAT-ACTIONS-EVIDENCE-2026-11-05.md. Reach and Halo 4
-// have no bomb of their own: a Banshee's bomb is its secondary trigger. Halo 3's and ODST's trick is the seat's jump.
-inline constexpr unsigned NativeVehicleAction(GameTitle title,VehicleAction action) noexcept
+// Each game's own action for an extra row, as NativeAction names the rows' (kNoAction: the game has none), in the games'
+// order Halo 3, ODST, Reach, Halo 4, Halo CE, Halo 2: the actions each game's control builder reads in the row's
+// context. See BANSHEE-SEAT-ACTIONS-EVIDENCE-2026-11-05.md. Reach and Halo 4 have no bomb of their own: a Banshee's bomb
+// is its secondary trigger. Halo 3's and ODST's trick is the seat's jump.
+inline constexpr unsigned kExtraNative[ExtraCount][6]{
+    {0x0A,0x0A,0x0A,0x0B,kNoAction,0x15},
+    {0x1E,0x1F,0x0C,0x0D,kNoAction,0x01}};
+inline constexpr unsigned NativeExtraAction(GameTitle title,ExtraAction action) noexcept
 {
-    if(action>=VehicleCount) return kNoAction;
-    const bool bomb=action==BansheeBomb;
-    switch(title) {
-    case GameTitle::Halo3:return bomb?0x0A:0x1E;
-    case GameTitle::Halo3ODST:return bomb?0x0A:0x1F;
-    case GameTitle::HaloReach:return bomb?0x0A:0x0C;
-    case GameTitle::Halo4:return bomb?0x0B:0x0D;
-    case GameTitle::Halo2:return bomb?0x15:0x01;
-    default:return kNoAction;
-    }
+    const int game=static_cast<int>(title)-1;
+    return action<ExtraCount&&game>=0&&game<6?kExtraNative[action][game]:kNoAction;
 }
-inline uint32_t VehicleControlBits(const VehicleRow& row) noexcept
+// An extra row's input in a file: its own may be Automatic, no input an old context.
+inline bool ParseExtraInput(const char* text,Input& input,bool own) noexcept
+{
+    Input read=input;
+    if(!ParseInput(text,read.held,read.press,read.mode,own)||ContextSource(read.press)) return false;
+    input=read;
+    return true;
+}
+inline uint32_t ExtraControlBits(const ExtraRow& row) noexcept
 {
     uint32_t bits=0;
     for(const auto& input:row) if(ListedSource(input.press)&&Bit(input.press)) bits|=Bit(input.press)|HeldBits(input.held);
     return bits;
 }
-struct VehicleMapper
+inline constexpr unsigned ContextBit(ExtraContext context) noexcept { return 1u<<static_cast<unsigned>(context); }
+struct ExtraMapper
 {
-    uint32_t blocked{}; bool seated{};
-    ChordState<VehicleCount*kRowInputs> chords;
-    uint32_t Apply(uint32_t sources,bool inSeat,const VehicleBindings& bindings,const VehicleTransports& native,
+    static constexpr unsigned kContexts=static_cast<unsigned>(ExtraContext::Count);
+    std::array<bool,kContexts> live{};
+    std::array<uint32_t,kContexts> blocked{};
+    ChordState<ExtraCount*kRowInputs> chords;
+    // `contexts`: the contexts live this poll (ContextBit).
+    uint32_t Apply(uint32_t sources,unsigned contexts,const ExtraBindings& bindings,const ExtraTransports& native,
         uint32_t heldOk=~0u) noexcept
     {
-        if(!inSeat) {seated=false;blocked=0;chords.Reset(true);return 0;}
-        if(!seated) {seated=true;blocked=sources;}
-        blocked&=sources;
-        std::array<ResolvedInput,VehicleCount*kRowInputs> inputs{};
-        for(unsigned a=0;a<VehicleCount;++a)
+        for(unsigned c=0;c<kContexts;++c)
+        {
+            if(!((contexts>>c)&1u)) {live[c]=false;blocked[c]=0;continue;}
+            if(!live[c]) {live[c]=true;blocked[c]=sources;}
+            blocked[c]&=sources;
+        }
+        std::array<ResolvedInput,ExtraCount*kRowInputs> inputs{};
+        for(unsigned a=0;a<ExtraCount;++a)
+        {
+            const unsigned c=static_cast<unsigned>(kExtraContexts[a]);
+            if(!live[c]) continue;
             for(unsigned i=0;i<kRowInputs;++i)
             {
                 const auto& input=bindings[a][i];
-                if(ListedSource(input.press)) inputs[a*kRowInputs+i]={HeldBits(input.held),Bit(input.press),input.mode};
+                if(ListedSource(input.press)&&!(Bit(input.press)&blocked[c]))
+                    inputs[a*kRowInputs+i]={HeldBits(input.held),Bit(input.press),input.mode};
             }
-        const auto presses=chords.Step(inputs,sources,sources&~blocked,heldOk);
+        }
+        const auto presses=chords.Step(inputs,sources,sources,heldOk);
         uint32_t buttons=0;
-        for(unsigned a=0;a<VehicleCount;++a)
+        for(unsigned a=0;a<ExtraCount;++a)
             for(unsigned i=0;i<kRowInputs;++i)
                 if(presses[a*kRowInputs+i]) buttons|=native[a];
         return buttons;
@@ -554,12 +576,12 @@ struct VehicleMapper
 enum ModAction : unsigned { Pause, ModCount };
 inline constexpr const char* kModKeys[ModCount]{"pause"};
 inline constexpr const char* kModNames[ModCount]{"Pause (Start)"};
-using ModBindings=std::array<VehicleRow,ModCount>;
+using ModBindings=std::array<ExtraRow,ModCount>;
 inline constexpr ModBindings kModDefaults{{
     {Input{{Y,Unbound},B},Input{{B,Unbound},Y},Input{},Input{}}}};
 // True if a row presses one control while the other is held, either way round (the Y + B pause, as Reclaimer's keys
 // and the physical pad's pause read it).
-inline bool HoldsTogether(const VehicleRow& row,int one,int other) noexcept
+inline bool HoldsTogether(const ExtraRow& row,int one,int other) noexcept
 {
     for(const auto& input:row)
         if((input.press==one&&(HeldBits(input.held)&Bit(other)))||(input.press==other&&(HeldBits(input.held)&Bit(one))))

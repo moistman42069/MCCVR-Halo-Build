@@ -80,8 +80,8 @@ int main()
             for(auto value:transport) Check(value==0,"unbound/malformed binding emits no input");
         }
         // The seat's rows read the same table: each game's Banshee bomb and trick lie inside it.
-        for(unsigned a=0;a<vr_mapping::VehicleCount;++a) {
-            const unsigned native=vr_mapping::NativeVehicleAction(d.title,static_cast<vr_mapping::VehicleAction>(a));
+        for(unsigned a=0;a<vr_mapping::ExtraCount;++a) {
+            const unsigned native=vr_mapping::NativeExtraAction(d.title,static_cast<vr_mapping::ExtraAction>(a));
             Check(d.title==GameTitle::HaloCE?native==vr_mapping::kNoAction:native<d.actionCount,
                 "a seat row's action lies inside its game's binding table (Halo CE has none)");
         }

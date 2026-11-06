@@ -618,7 +618,7 @@ namespace
     // so Undo changes takes it away with the rest; saving or choosing a preset closes it, as a file keeps none.
     struct MappingPageState
     {
-        static constexpr unsigned kRows=vr_mapping::Count+vr_mapping::VehicleCount;
+        static constexpr unsigned kRows=vr_mapping::Count+vr_mapping::ExtraCount;
         int moreOpen[6][kRows]{};
         bool optionsOpen[6][kRows][vr_mapping::kRowInputs]{};
         // The mod's own rows, every game's.
@@ -634,7 +634,7 @@ namespace
                 unsigned listed=0;
                 for(unsigned i=0;i<vr_mapping::kMoreInputs;++i)
                 {
-                    const int press=seat?g_config.vr_vehicle_bindings[title][row-vr_mapping::Count][1+i].press:
+                    const int press=seat?g_config.vr_extra_bindings[title][row-vr_mapping::Count][1+i].press:
                         g_config.vr_inputs[title][row].more[i].press;
                     if(press!=vr_mapping::Unbound) ++listed;
                 }
@@ -1618,41 +1618,66 @@ namespace
                 }
                 ImGui::PopID();
             }
-            // The seat's rows: inputs as a row has, none Automatic.
-            SettingGap();
-            ImGui::TextWrapped("In a vehicle seat: these press the game's own button for the action, beside whatever "
-                "the rows above press. Left X, left Y and the left stick click stay the vehicle cameras' in a seat, so "
-                "a control on one of them does nothing there.");
-            for(unsigned action=0;action<vr_mapping::VehicleCount;++action)
+            // The extra rows, under where each counts: inputs as a row has. Automatic leaves the action on the game's
+            // own button, pressed whenever another row sends that button.
+            static constexpr const char* kContextNotes[static_cast<unsigned>(vr_mapping::ExtraContext::Count)]{
+                "In a vehicle seat: these press the game's own button for the action, beside whatever the rows above "
+                "press. Left X, left Y and the left stick click stay the vehicle cameras' in a seat, so a control on one "
+                "of them does nothing there.",
+                "On foot: these press the game's own button for the action, beside whatever the rows above press.",
+                "Anywhere in play, on foot or in a seat: these press the game's own button for the action, beside "
+                "whatever the rows above press."};
+            vr_mapping::ExtraTransports extraBindings{};
+            const bool haveExtra=activeIndex==selectedTitle&&Game_ReadVrExtraBindings(extraBindings,GetTickCount64());
+            for(unsigned context=0;context<static_cast<unsigned>(vr_mapping::ExtraContext::Count);++context)
             {
-                const auto vehicleAction=static_cast<vr_mapping::VehicleAction>(action);
-                if(vr_mapping::NativeVehicleAction(selectedGame,vehicleAction)==vr_mapping::kNoAction)
+                bool noted=false;
+                for(unsigned action=0;action<vr_mapping::ExtraCount;++action)
                 {
-                    ImGui::TextDisabled("%s: not in this game.",vr_mapping::kVehicleNames[action]);
-                    continue;
+                    if(static_cast<unsigned>(vr_mapping::kExtraContexts[action])!=context) continue;
+                    if(!noted) {SettingGap();ImGui::TextWrapped("%s",kContextNotes[context]);noted=true;}
+                    const auto extraAction=static_cast<vr_mapping::ExtraAction>(action);
+                    if(vr_mapping::NativeExtraAction(selectedGame,extraAction)==vr_mapping::kNoAction)
+                    {
+                        ImGui::TextDisabled("%s: not in this game.",vr_mapping::kExtraNames[action]);
+                        continue;
+                    }
+                    ImGui::PushID(static_cast<int>(100+action));
+                    SettingGap();
+                    SettingGroup group(vr_mapping::kExtraNames[action]);
+                    auto& row=g_config.vr_extra_bindings[selectedTitle][action];
+                    bool* open=optionsOpen[selectedTitle][vr_mapping::Count+action];
+                    bool extraChanged=MappingCombo("##own",row[0].press,MappingList::Own);
+                    if(extraChanged&&(row[0].press==vr_mapping::Unbound||row[0].press==vr_mapping::Automatic))
+                    {
+                        row[0]=vr_mapping::Input{vr_mapping::kNoneHeld,row[0].press};
+                        open[0]=false;
+                    }
+                    if(row[0].press==vr_mapping::Automatic)
+                    {
+                        if(haveExtra&&extraBindings[action])
+                            ImGui::TextDisabled("The game has this on: %s",
+                                vr_mapping::kSourceNames[vr_mapping::LayoutSource(extraBindings[action])]);
+                        else
+                            ImGui::TextDisabled("Stays on the game's own button.");
+                    }
+                    else
+                        extraChanged|=InputOptions(row[0].held,row[0].mode,open[0]);
+                    extraChanged|=MoreInputsList(row.data()+1,vr_mapping::kMoreInputs,
+                        moreOpen[selectedTitle][vr_mapping::Count+action],open+1);
+                    if(extraChanged)
+                    {
+                        if(vr_mapping::ExtraControlBits(row)) g_config.vr_action_mapping=true;
+                        changed=true;
+                    }
+                    ImGui::PopID();
                 }
-                ImGui::PushID(static_cast<int>(100+action));
-                SettingGap();
-                SettingGroup group(vr_mapping::kVehicleNames[action]);
-                auto& row=g_config.vr_vehicle_bindings[selectedTitle][action];
-                bool* open=optionsOpen[selectedTitle][vr_mapping::Count+action];
-                bool seatChanged=MappingCombo("##own",row[0].press,MappingList::Listed);
-                if(seatChanged&&row[0].press==vr_mapping::Unbound) {row[0]=vr_mapping::Input{};open[0]=false;}
-                seatChanged|=InputOptions(row[0].held,row[0].mode,open[0]);
-                seatChanged|=MoreInputsList(row.data()+1,vr_mapping::kMoreInputs,
-                    moreOpen[selectedTitle][vr_mapping::Count+action],open+1);
-                if(seatChanged)
-                {
-                    if(vr_mapping::VehicleControlBits(row)) g_config.vr_action_mapping=true;
-                    changed=true;
-                }
-                ImGui::PopID();
             }
             if(ImGui::Button("Reset this game's mappings"))
             {
                 g_config.vr_bindings[selectedTitle]={};
                 g_config.vr_inputs[selectedTitle]=vr_mapping::DefaultInputs(selectedGame);
-                g_config.vr_vehicle_bindings[selectedTitle]=vr_mapping::kVehicleDefaults;
+                g_config.vr_extra_bindings[selectedTitle]=vr_mapping::kExtraDefaults;
                 for(int& open:moreOpen[selectedTitle]) open=0;
                 changed=true;
             }
@@ -1665,8 +1690,8 @@ namespace
                 for(auto& title:g_config.vr_bindings) title=source;
                 const auto inputs=g_config.vr_inputs[selectedTitle];
                 for(auto& title:g_config.vr_inputs) title=inputs;
-                const auto seat=g_config.vr_vehicle_bindings[selectedTitle];
-                for(auto& title:g_config.vr_vehicle_bindings) title=seat;
+                const auto seat=g_config.vr_extra_bindings[selectedTitle];
+                for(auto& title:g_config.vr_extra_bindings) title=seat;
                 for(int row:source) if(row!=vr_mapping::Automatic) g_config.vr_action_mapping=true;
                 changed=true;
             }

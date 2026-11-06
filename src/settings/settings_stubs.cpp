@@ -43,6 +43,7 @@ bool Game_ReadZoomLevel(int&) { return false; }
 bool Game_IsHeadTrackingApplied() { return false; }
 bool Game_IsStereoGeometryOnlyBringup() { return false; }
 bool Game_ReadVrActionBindings(vr_mapping::Transports&, uint64_t, unsigned) { return false; }
+bool Game_ReadVrExtraBindings(vr_mapping::ExtraTransports&, uint64_t) { return false; }
 bool Game_UsesHalo2NativeHudLayout() { return false; }
 bool Game_VehicleBoom(float&, float&, float&, bool&, bool&) { return false; }
 bool Game_VehicleCameraLag(float&, float&, bool&) { return false; }

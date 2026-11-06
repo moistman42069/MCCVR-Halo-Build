@@ -10,7 +10,7 @@ struct GestureBindingCache
     std::atomic<uint64_t> value[4]{};
     std::atomic<uint64_t> actions[4][vr_mapping::Count]{};
     std::atomic<uint64_t> secondaryReload[4]{};
-    std::atomic<uint64_t> vehicle[4][vr_mapping::VehicleCount]{};
+    std::atomic<uint64_t> vehicle[4][vr_mapping::ExtraCount]{};
     std::atomic<uint64_t> observedMs{0};
     std::atomic<uint64_t> sequence{0};
     uintptr_t attemptedBase=0, state=0;
@@ -92,11 +92,11 @@ void RefreshGestureMeleeBinding(const TitleDescriptor* title,bool levelRunning,u
             for(unsigned controller=0;controller<4;++controller)
                 if(!secondaryReload[controller]) secondaryReload[controller]=alias[controller];
     }
-    // The seat's rows: each game's own Banshee bomb and trick (vr_mapping::NativeVehicleAction); 0 where it has none.
-    uint32_t vehicle[vr_mapping::VehicleCount][4]{};
-    for(unsigned action=0;readable&&action<vr_mapping::VehicleCount;++action)
+    // The extra rows: each game's own action for each (vr_mapping::NativeExtraAction); 0 where it has none.
+    uint32_t vehicle[vr_mapping::ExtraCount][4]{};
+    for(unsigned action=0;readable&&action<vr_mapping::ExtraCount;++action)
     {
-        const unsigned native=vr_mapping::NativeVehicleAction(d.title,static_cast<vr_mapping::VehicleAction>(action));
+        const unsigned native=vr_mapping::NativeExtraAction(d.title,static_cast<vr_mapping::ExtraAction>(action));
         if(native!=vr_mapping::kNoAction&&!GestureReadNativeBindings(d,g_gestureBinding.state,vehicle[action],native))
             for(auto& transport:vehicle[action]) transport=0;
     }
@@ -120,7 +120,7 @@ void RefreshGestureMeleeBinding(const TitleDescriptor* title,bool levelRunning,u
             g_gestureBinding.actions[controller][action].store(
                 (uint64_t(generation)<<32)|(uint64_t(title->title)<<24)|actions[action][controller],
                 std::memory_order_release);
-        for(unsigned action=0;action<vr_mapping::VehicleCount;++action)
+        for(unsigned action=0;action<vr_mapping::ExtraCount;++action)
             g_gestureBinding.vehicle[controller][action].store(
                 (uint64_t(generation)<<32)|(uint64_t(title->title)<<24)|vehicle[action][controller],
                 std::memory_order_release);
@@ -172,7 +172,7 @@ uint32_t Game_SecondaryReloadTransport(GameTitle title,uint64_t now)
     return uint32_t(value)&0x3FFFF;
 }
 
-bool Game_ReadVrVehicleBindings(vr_mapping::VehicleTransports& out,uint64_t now)
+bool Game_ReadVrExtraBindings(vr_mapping::ExtraTransports& out,uint64_t now)
 {
     out={};
     const GameTitle title=TitleAdapter_GetActiveTitle();
@@ -180,7 +180,7 @@ bool Game_ReadVrVehicleBindings(vr_mapping::VehicleTransports& out,uint64_t now)
     if(!observed||now<observed||now-observed>150) return false;
     const auto sequence=g_gestureBinding.sequence.load(std::memory_order_acquire);
     if(sequence&1) return false;
-    for(unsigned action=0;action<vr_mapping::VehicleCount;++action)
+    for(unsigned action=0;action<vr_mapping::ExtraCount;++action)
     {
         const uint64_t value=g_gestureBinding.vehicle[0][action].load(std::memory_order_acquire);
         if(uint32_t(value>>32)!=TitleAdapter_GetGeneration(title)||((value>>24)&0xFF)!=uint64_t(title)) {out={};return false;}

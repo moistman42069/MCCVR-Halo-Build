@@ -118,7 +118,7 @@ void CopyScheme(Config& to, const Config& from) noexcept
     {
         to.vr_bindings[title] = from.vr_bindings[title];
         to.vr_inputs[title] = from.vr_inputs[title];
-        to.vr_vehicle_bindings[title] = from.vr_vehicle_bindings[title];
+        to.vr_extra_bindings[title] = from.vr_extra_bindings[title];
     }
     to.vr_mod_bindings = from.vr_mod_bindings;
 }
@@ -131,7 +131,7 @@ bool SameScheme(const Config& a, const Config& b) noexcept
     for (const auto& f : kFloats) if (std::fabs(a.*f.member - b.*f.member) > 0.002f) return false;
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
         if (a.vr_bindings[title] != b.vr_bindings[title] || a.vr_inputs[title] != b.vr_inputs[title] ||
-            a.vr_vehicle_bindings[title] != b.vr_vehicle_bindings[title]) return false;
+            a.vr_extra_bindings[title] != b.vr_extra_bindings[title]) return false;
     return a.vr_mod_bindings == b.vr_mod_bindings;
 }
 
@@ -178,14 +178,16 @@ std::string Serialize(const Config& scheme)
             }
         }
     }
+    // An extra row only where it differs from its default, then all its inputs.
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
-        for (unsigned action = 0; action < vr_mapping::VehicleCount; ++action)
-            for (unsigned slot = 0; slot < vr_mapping::kRowInputs; ++slot)
+        for (unsigned action = 0; action < vr_mapping::ExtraCount; ++action)
+            for (unsigned slot = 0; slot < vr_mapping::kRowInputs &&
+                 scheme.vr_extra_bindings[title][action] != vr_mapping::kExtraDefaults[action]; ++slot)
             {
-                const auto& seat = scheme.vr_vehicle_bindings[title][action][slot];
+                const auto& seat = scheme.vr_extra_bindings[title][action][slot];
                 vr_mapping::FormatInput(input, seat.held, seat.press, seat.mode);
                 sprintf_s(line, "vr_bind_%s_%s%s = %s\n", weapon_interaction::kTitleKeys[title],
-                          vr_mapping::kVehicleKeys[action], vr_mapping::kControlSuffix[slot], input);
+                          vr_mapping::kExtraKeys[action], vr_mapping::kControlSuffix[slot], input);
                 text += line;
             }
     for (unsigned action = 0; action < vr_mapping::ModCount; ++action)
@@ -236,23 +238,23 @@ void Parse(const char* text, Config& out)
                 break;
             }
         if (done) continue;
-        // A row's inputs (vr_mapping::ParseInput): its own (may be Automatic) and further ones, and the seat's rows'.
+        // A row's inputs (vr_mapping::ParseInput): its own (may be Automatic) and further ones, and the extra rows'.
         char expected[96];
         for (unsigned title = 0; title < weapon_interaction::kTitleCount && !done; ++title)
-            for (unsigned action = 0; action < vr_mapping::Count + vr_mapping::VehicleCount && !done; ++action)
+            for (unsigned action = 0; action < vr_mapping::Count + vr_mapping::ExtraCount && !done; ++action)
             {
                 const bool seat = action >= vr_mapping::Count;
                 for (unsigned slot = 0; slot < vr_mapping::kRowInputs && !done; ++slot)
                 {
                     sprintf_s(expected, "vr_bind_%s_%s%s", weapon_interaction::kTitleKeys[title],
-                              seat ? vr_mapping::kVehicleKeys[action - vr_mapping::Count] : vr_mapping::kKeys[action],
+                              seat ? vr_mapping::kExtraKeys[action - vr_mapping::Count] : vr_mapping::kKeys[action],
                               vr_mapping::kControlSuffix[slot]);
                     if (key != expected) continue;
                     done = true;
                     if (seat)
                     {
-                        auto& input = out.vr_vehicle_bindings[title][action - vr_mapping::Count][slot];
-                        vr_mapping::ParseInput(value, input.held, input.press, input.mode, false);
+                        auto& input = out.vr_extra_bindings[title][action - vr_mapping::Count][slot];
+                        vr_mapping::ParseExtraInput(value, input, slot == 0);
                     }
                     else if (slot == 0)
                     {
