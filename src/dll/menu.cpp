@@ -1538,12 +1538,6 @@ namespace
             ImGui::SetTooltip("Touch the physical left controller's thumb rest, then move the physical right stick.\n"
                               "These controls stay on the same physical hands in left-handed mode.");
         }
-        if (SectionHeader("Input combinations##section", ImGuiTreeNodeFlags_None))
-        {
-        ImGui::TextDisabled("L3+R3 recenters and toggles this menu; the right trigger clicks the VR pointer.");
-        ImGui::TextDisabled("Grip + trigger combinations and the Y + B pause are inputs under VR Mappings: an input can "
-            "require another held first.");
-        }
         if (SectionHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
         {
             static int selectedTitle=0;
