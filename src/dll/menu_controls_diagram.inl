@@ -12,22 +12,24 @@ struct ControlsDiagramState
     int hot = -1;   // the control picked out, or -1
 } g_controlsDiagram;
 
-// One controller's drawing, in a 120 x 280 box for the RIGHT controller (the left one is its mirror image): the face
-// with its stick and two buttons, the tracking ring over it, the trigger in front and the grip on the handle's inner
-// side.
+// One controller's drawing, in a 120 x 280 box for the RIGHT controller (the left one is its mirror image), seen from
+// above with the front at the top: the tracking ring looping over the face toward the inner side, the stick at the face's
+// front, the two face buttons side by side behind it (B / Y inner, A / X outer), the system / menu button on the outer
+// edge beside the stick, the trigger under the front and the grip on the handle's inner side. A generic Touch-style
+// controller, laid out as Quest 2's are.
 namespace touch_drawing
 {
 constexpr float kWidth = 120.0f, kHeight = 280.0f;
-constexpr ImVec2 kStick{46.0f, 92.0f};
-constexpr float kStickRadius = 17.0f;
-constexpr ImVec2 kUpperButton{84.0f, 80.0f}, kLowerButton{76.0f, 108.0f};
-constexpr float kButtonRadius = 10.0f;
-constexpr ImVec2 kSystemButton{54.0f, 124.0f};
-constexpr ImVec2 kTriggerMin{40.0f, 34.0f}, kTriggerMax{76.0f, 58.0f};
-constexpr ImVec2 kGripMin{20.0f, 146.0f}, kGripMax{36.0f, 222.0f};
-constexpr ImVec2 kHandleMin{30.0f, 118.0f}, kHandleMax{78.0f, 270.0f};
-constexpr ImVec2 kFace{60.0f, 100.0f}, kFaceRadius{46.0f, 42.0f};
-constexpr ImVec2 kRing{64.0f, 76.0f}, kRingRadius{54.0f, 58.0f};
+constexpr ImVec2 kStick{68.0f, 84.0f};
+constexpr float kStickRadius = 15.0f;
+constexpr ImVec2 kInnerButton{46.0f, 114.0f}, kOuterButton{69.0f, 118.0f};
+constexpr float kButtonRadius = 9.5f;
+constexpr ImVec2 kSystemButton{94.0f, 92.0f};
+constexpr ImVec2 kTriggerMin{40.0f, 48.0f}, kTriggerMax{74.0f, 68.0f};
+constexpr ImVec2 kGripMin{20.0f, 150.0f}, kGripMax{36.0f, 224.0f};
+constexpr ImVec2 kHandleMin{32.0f, 120.0f}, kHandleMax{80.0f, 272.0f};
+constexpr ImVec2 kFace{60.0f, 102.0f}, kFaceRadius{46.0f, 40.0f};
+constexpr ImVec2 kRing{48.0f, 60.0f}, kRingRadius{46.0f, 50.0f};
 }
 
 // The anchor of a control on the drawing: where its leader line starts.
@@ -41,8 +43,8 @@ ImVec2 TouchAnchor(controls_diagram::Control control, ImVec2 origin, float scale
     {
     case LeftTrigger: case RightTrigger: at = {(kTriggerMin.x + kTriggerMax.x) * 0.5f, kTriggerMin.y + 6.0f}; break;
     case LeftGrip: case RightGrip: at = {(kGripMin.x + kGripMax.x) * 0.5f, (kGripMin.y + kGripMax.y) * 0.5f}; break;
-    case Y: case B: at = kUpperButton; break;
-    case X: case A: at = kLowerButton; break;
+    case Y: case B: at = kInnerButton; break;
+    case X: case A: at = kOuterButton; break;
     case LeftStick: case RightStick: at = {kStick.x, kStick.y - kStickRadius + 4.0f}; break;
     case LeftStickClick: case RightStickClick: at = kStick; break;
     case LeftMenu: at = kSystemButton; break;
@@ -72,12 +74,9 @@ void DrawTouchController(ImDrawList* draw, bool left, ImVec2 origin, float scale
     const ImU32 label = ImGui::GetColorU32(Rgb(kTextMain));
     const auto isHot = [&](Control a, Control b) { return hot == static_cast<int>(left ? a : b); };
 
-    // The tracking ring, behind everything: the arc over the top and down the outer side.
-    // Screen angles (y down): the right controller's arc runs from its left, over the top, to low on its right; the
-    // left controller's is its mirror image.
-    draw->PathEllipticalArcTo(P(kRing), ImVec2(kRingRadius.x * scale, kRingRadius.y * scale), 0.0f,
-                              left ? IM_PI * 0.70f : IM_PI * -0.95f, left ? IM_PI * 1.95f : IM_PI * 0.30f, 40);
-    draw->PathStroke(edge, ImDrawFlags_None, 9.0f * scale);
+    // The tracking ring, behind everything: a loop over the front of the face, leaning to the inner side. The face and
+    // the trigger, drawn after it, cover where it meets the body.
+    draw->AddEllipse(P(kRing), ImVec2(kRingRadius.x * scale, kRingRadius.y * scale), edge, 0.0f, 48, 9.0f * scale);
     // The trigger, in front of the face.
     {
         ImVec2 a, b;
@@ -114,9 +113,9 @@ void DrawTouchController(ImDrawList* draw, bool left, ImVec2 origin, float scale
         const ImVec2 size = ImGui::CalcTextSize(letter);
         draw->AddText(ImVec2(P(at).x - size.x * 0.5f, P(at).y - size.y * 0.5f), label, letter);
     };
-    button(kUpperButton, left ? "Y" : "B", isHot(Y, B));
-    button(kLowerButton, left ? "X" : "A", isHot(X, A));
-    // The small button under the stick: the menu button on the left, the system button on the right (no callout).
+    button(kInnerButton, left ? "Y" : "B", isHot(Y, B));
+    button(kOuterButton, left ? "X" : "A", isHot(X, A));
+    // The small button on the outer edge: the menu button on the left, the system button on the right (no callout).
     {
         const bool on = left && hot == static_cast<int>(LeftMenu);
         draw->AddCircleFilled(P(kSystemButton), 5.0f * scale, on ? lit : part);
