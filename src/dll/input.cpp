@@ -80,6 +80,12 @@ namespace
     std::mutex g_vrActionMapperLock;
     // Zoom as the mapper last pressed it, chords and all: the lens toggles on its release (a poll later).
     std::atomic<bool> g_zoomInputDown{false};
+    // The Pause row presses Y with B held, or B with Y held: the physical pad without VR controllers and Project
+    // Reclaimer's head keys still read that chord their own way.
+    bool PauseUsesYB()
+    {
+        return vr_mapping::HoldsTogether(g_config.vr_mod_bindings[vr_mapping::Pause],vr_mapping::Y,vr_mapping::B);
+    }
     void SuspendActionMapper()
     {
         std::lock_guard<std::mutex> lock(g_vrActionMapperLock);
@@ -470,22 +476,26 @@ std::atomic<uint32_t> g_menuPressSerial{0};
 #endif
 
 
-        // The physical pad's own Y/B count for the pause chord too, so a
-        // Steam Controller pauses the same way the VR controllers do.
+        // THE MOD'S OWN ROWS (vr_mapping::ModMapper): Pause on its inputs (Y + B either way round), read from the controls
+        // as the controllers gave them (before the seat's buttons) and the physical pad's Y and B, so a Steam Controller
+        // pauses the same way. While one of its inputs is on, the controls it uses press nothing else (pauseConsumed).
         const WORD physicalButtons = state->Gamepad.wButtons;
-        MenuChordResult pauseChord{};
-        if (!menuOpen && !pad.exclusiveInput && g_config.y_b_start_chord && Game_AllowsPauseToggleInput())
+        uint32_t pauseConsumed = 0;
         {
-            pauseChord = g_pauseChord.Update(
-                GetTickCount64(),
-                rawPadY || (physicalButtons & XINPUT_GAMEPAD_Y) != 0,
-                rawPadB || (physicalButtons & XINPUT_GAMEPAD_B) != 0);
-            if (pauseChord.toggled)
+            VrPadState rawPad = pad;
+            rawPad.y = rawPadY;
+            rawPad.b = rawPadB;
+            uint32_t modSources = ScopeAndActionSources(rawPad, dpadMode);
+            if (physicalButtons & XINPUT_GAMEPAD_Y) modSources |= vr_mapping::Bit(vr_mapping::Y);
+            if (physicalButtons & XINPUT_GAMEPAD_B) modSources |= vr_mapping::Bit(vr_mapping::B);
+            static std::mutex modRowsLock;
+            static vr_mapping::ModMapper modRows;
+            std::lock_guard<std::mutex> lock(modRowsLock);
+            const uint32_t started = modRows.Step(modSources,
+                !menuOpen && !pad.exclusiveInput && Game_AllowsPauseToggleInput(), g_config.vr_mod_bindings);
+            if (started & (1u << vr_mapping::Pause))
                 Input_RequestPauseToggle();
-        }
-        else
-        {
-            g_pauseChord.Reset();
+            pauseConsumed = modRows.consumed;
         }
 
         const auto currentTitle=TitleAdapter_GetActiveTitle();
@@ -632,7 +642,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             scope=g_scopeInput.Update(scopeFeatureAvailable,scopeSources,
                 scopeSource,mappingEpoch,scopeRoute,
                 scopeAvailable&&!menuOpen&&(!pad.exclusiveInput||pad.thumbrestDpad),
-                chord.consumeClicks||pauseChord.consumeClicks);
+                chord.consumeClicks||pauseConsumed!=0);
         }
         if(scope.changed&&scopeAvailable)
         {
@@ -852,7 +862,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         (void)crouchOnFootWhy;
 #endif
         uint32_t actionSources=collectedSources|stickSources;
-        if(pauseChord.consumeClicks) actionSources&=~(vr_mapping::Bit(vr_mapping::B)|vr_mapping::Bit(vr_mapping::Y));
+        actionSources&=~pauseConsumed;
         if(chord.consumeClicks) actionSources&=~(vr_mapping::Bit(vr_mapping::LeftClick)|vr_mapping::Bit(vr_mapping::RightClick));
         if(scopeAvailable) nativeActions[vr_mapping::Zoom]=0;
         if(wheelGesture) actionSources&=~(vr_mapping::Bit(vr_mapping::PrimaryGrip)|vr_mapping::Bit(vr_mapping::SupportGrip));
@@ -954,17 +964,18 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         const float leftTrigger=pad.trigL;
 
         WORD btn = state->Gamepad.wButtons;
-        if (pauseChord.consumeClicks)
-            btn &= ~(XINPUT_GAMEPAD_Y | XINPUT_GAMEPAD_B);
+        // The physical pad's Y and B, while the Pause row holds them.
+        if (pauseConsumed & vr_mapping::Bit(vr_mapping::Y)) btn &= ~XINPUT_GAMEPAD_Y;
+        if (pauseConsumed & vr_mapping::Bit(vr_mapping::B)) btn &= ~XINPUT_GAMEPAD_B;
         if (scopeAvailable)
             btn &= ~XINPUT_GAMEPAD_RIGHT_THUMB;
 #if HALOMCCVR_DEV_DIAGNOSTICS
         const WORD witnessBase = btn;
 #endif
         if (!semanticMode&&pad.a) btn |= XINPUT_GAMEPAD_A;
-        if (!semanticMode&&pad.b && !pauseChord.consumeClicks) btn |= XINPUT_GAMEPAD_B;
+        if (!semanticMode&&pad.b && !(pauseConsumed&vr_mapping::Bit(vr_mapping::B))) btn |= XINPUT_GAMEPAD_B;
         if (!semanticMode&&xPressed) btn |= XINPUT_GAMEPAD_X;
-        if (!semanticMode&&pad.y && !pauseChord.consumeClicks) btn |= XINPUT_GAMEPAD_Y;
+        if (!semanticMode&&pad.y && !(pauseConsumed&vr_mapping::Bit(vr_mapping::Y))) btn |= XINPUT_GAMEPAD_Y;
         if (!semanticMode&&pad.clickL && !chord.consumeClicks) btn |= XINPUT_GAMEPAD_LEFT_THUMB;
         if (!semanticMode&&pad.clickR && !chord.consumeClicks && !scopeAvailable)
             btn |= XINPUT_GAMEPAD_RIGHT_THUMB;
@@ -1043,7 +1054,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             }
             if (directActions) w.flags |= FlagDirect;
             if (wheelGesture) w.flags |= FlagWheel;
-            if (chord.consumeClicks || pauseChord.consumeClicks) w.flags |= FlagChord;
+            if (chord.consumeClicks || pauseConsumed) w.flags |= FlagChord;
             if (gameplayMode) w.flags |= FlagGameplay;
         }
 #endif
@@ -1461,7 +1472,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             Roomscale_Input(false, 0, 0);
             // No VR controllers: the physical pad still gets the Y+B pause
             // chord and the Start pulse it produces.
-            if (!ownVirtualSlot && g_config.y_b_start_chord &&
+            if (!ownVirtualSlot && PauseUsesYB() &&
                 Game_AllowsPauseToggleInput())
             {
                 const uint64_t now = GetTickCount64();
@@ -1696,8 +1707,8 @@ void Input_StepHeadKeys(VrPadState& pad)
     if (bDown && g_hostOwnsRenderSize)
         bAtHead = ControllerAtHead(1);
     const uint64_t chordNow = GetTickCount64();
-    const HeadYChord::Y yRoute = headY.Step(yDown, yAtHead, rawB, g_config.y_b_start_chord, chordNow);
-    const HeadYChord::Y bRoute = headB.Step(bDown, bAtHead, rawY, g_config.y_b_start_chord, chordNow);
+    const HeadYChord::Y yRoute = headY.Step(yDown, yAtHead, rawB, PauseUsesYB(), chordNow);
+    const HeadYChord::Y bRoute = headB.Step(bDown, bAtHead, rawY, PauseUsesYB(), chordNow);
     static HeadKeyGesture voteYesGesture, voteNoGesture;
     static WORD voteYesKey = 0, voteNoKey = 0;
     if (StepHeadKey(voteYesGesture, voteYesKey, true, g_config.reclaimer_vote_yes_key,

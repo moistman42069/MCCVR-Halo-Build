@@ -15834,7 +15834,7 @@ int main()
         "cutscene_theater_enabled", "cutscene_theater_depth",
         "cutscene_theater_flip_depth", "cutscene_theater_width_m",
         "cutscene_theater_distance_m",
-        "turn_smooth", "vehicle_smooth_turn", "turn_snap_deg", "turn_smooth_deg_s", "y_b_start_chord", "dpad_hand",
+        "turn_smooth", "vehicle_smooth_turn", "turn_snap_deg", "turn_smooth_deg_s", "vr_bind_pause", "dpad_hand",
         "dpad_head_radius", "quest_thumbrest_dpad",
         "vehicle_first_person", "vehicle_cam_forward_m", "vehicle_cam_up_m",
         "vehicle_cam_right_m",
@@ -16128,8 +16128,8 @@ int main()
     Check(!g_config.physical_melee && !g_config.gesture_melee &&
               g_config.physical_melee_swing_speed == 5.0f,
         "legacy configs inherit the opt-in physical-melee defaults");
-    Check(g_config.y_b_start_chord,
-        "legacy configs inherit the enabled Y+B Start chord default");
+    Check(g_config.vr_mod_bindings == vr_mapping::kModDefaults,
+        "legacy configs inherit the Pause row: Y + B either way round");
 
     {
         {
@@ -16390,12 +16390,13 @@ int main()
         file << "y_b_start_chord = 0\n";
     }
     ConfigLoad(primary.c_str());
-    Check(!g_config.y_b_start_chord,
-        "The Y+B Start chord can be disabled in the config");
+    Check(!vr_mapping::HoldsTogether(g_config.vr_mod_bindings[vr_mapping::Pause], vr_mapping::Y, vr_mapping::B) &&
+              g_config.vr_mod_bindings[vr_mapping::Pause][0].press == vr_mapping::Unbound,
+        "Y+B Start turned off in an older config leaves the Pause row empty");
     ConfigSave();
     ConfigLoad(primary.c_str());
-    Check(!g_config.y_b_start_chord,
-        "The Y+B Start chord setting survives a save/load round trip");
+    Check(g_config.vr_mod_bindings[vr_mapping::Pause][0].press == vr_mapping::Unbound,
+        "The emptied Pause row survives a save/load round trip");
 
     // C13 per-SEAT trim. An override exists only for the axis and SEAT
     // actually written; every other axis, seat, vehicle and on-foot read

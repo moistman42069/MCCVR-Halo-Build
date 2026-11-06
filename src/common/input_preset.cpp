@@ -23,7 +23,6 @@ constexpr BoolField kBools[] = {
     {"vr_action_mapping", &Config::vr_action_mapping},
     {"disable_flashlight_input", &Config::disable_flashlight_input},
     {"flashlight_suppress_on_two_hand", &Config::flashlight_suppress_on_two_hand},
-    {"y_b_start_chord", &Config::y_b_start_chord},
     {"turn_smooth", &Config::turn_smooth},
     {"vehicle_smooth_turn", &Config::vehicle_smooth_turn},
     {"dpad_keep_moving", &Config::dpad_keep_moving},
@@ -121,6 +120,7 @@ void CopyScheme(Config& to, const Config& from) noexcept
         to.vr_inputs[title] = from.vr_inputs[title];
         to.vr_vehicle_bindings[title] = from.vr_vehicle_bindings[title];
     }
+    to.vr_mod_bindings = from.vr_mod_bindings;
 }
 
 bool SameScheme(const Config& a, const Config& b) noexcept
@@ -132,7 +132,7 @@ bool SameScheme(const Config& a, const Config& b) noexcept
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
         if (a.vr_bindings[title] != b.vr_bindings[title] || a.vr_inputs[title] != b.vr_inputs[title] ||
             a.vr_vehicle_bindings[title] != b.vr_vehicle_bindings[title]) return false;
-    return true;
+    return a.vr_mod_bindings == b.vr_mod_bindings;
 }
 
 std::string Serialize(const Config& scheme)
@@ -156,7 +156,7 @@ std::string Serialize(const Config& scheme)
     }
     // The rows' inputs (vr_mapping::FormatInput): a row's further ones only where they differ from its game's start, all
     // three then (Parse starts from that start).
-    text += "vr_inputs_version = 1\n";
+    text += "vr_inputs_version = 2\n";
     char input[32];
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
     {
@@ -188,6 +188,14 @@ std::string Serialize(const Config& scheme)
                           vr_mapping::kVehicleKeys[action], vr_mapping::kControlSuffix[slot], input);
                 text += line;
             }
+    for (unsigned action = 0; action < vr_mapping::ModCount; ++action)
+        for (unsigned slot = 0; slot < vr_mapping::kRowInputs; ++slot)
+        {
+            const auto& mod = scheme.vr_mod_bindings[action][slot];
+            vr_mapping::FormatInput(input, mod.held, mod.press, mod.mode);
+            sprintf_s(line, "vr_bind_%s%s = %s\n", vr_mapping::kModKeys[action], vr_mapping::kControlSuffix[slot], input);
+            text += line;
+        }
     return text;
 }
 
@@ -197,7 +205,7 @@ void Parse(const char* text, Config& out)
     std::string line;
     // A preset from before the rows held inputs names the settings they took over; read only to convert.
     int inputsVersion = 0;
-    bool stick = Config{}.right_stick_crouch, gunZoom = false, airEquipment = false;
+    bool stick = Config{}.right_stick_crouch, gunZoom = false, airEquipment = false, yb = Config{}.y_b_start_chord;
     while (std::getline(lines, line))
     {
         const auto hash = line.find('#');
@@ -211,6 +219,7 @@ void Parse(const char* text, Config& out)
         if (key == "right_stick_crouch") { stick = atoi(value) != 0; continue; }
         if (key == "grip_contextual_trigger") { gunZoom = atoi(value) != 0; continue; }
         if (key == "trigger_air_equipment") { airEquipment = atoi(value) != 0; continue; }
+        if (key == "y_b_start_chord") { yb = atoi(value) != 0; continue; }
         bool done = false;
         for (const auto& f : kBools)
             if (key == f.key) { out.*f.member = atoi(value) != 0; done = true; break; }
@@ -257,6 +266,16 @@ void Parse(const char* text, Config& out)
                     }
                 }
             }
+        // The mod's own rows, every game's.
+        for (unsigned action = 0; action < vr_mapping::ModCount && !done; ++action)
+            for (unsigned slot = 0; slot < vr_mapping::kRowInputs && !done; ++slot)
+            {
+                sprintf_s(expected, "vr_bind_%s%s", vr_mapping::kModKeys[action], vr_mapping::kControlSuffix[slot]);
+                if (key != expected) continue;
+                done = true;
+                auto& input = out.vr_mod_bindings[action][slot];
+                vr_mapping::ParseInput(value, input.held, input.press, input.mode, false);
+            }
     }
     // Rows saved while the support trigger's contexts were rows' choices, then the settings that followed them, become
     // the inputs they stood for.
@@ -266,6 +285,7 @@ void Parse(const char* text, Config& out)
         for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
             vr_mapping::ConvertSettingsToInputs(out.vr_inputs[title], static_cast<GameTitle>(title + 1), stick, gunZoom,
                                                 airEquipment);
+    if (inputsVersion < 2 && !yb) out.vr_mod_bindings[vr_mapping::Pause] = {};
 }
 
 std::string DescriptionLine(const std::string& description)

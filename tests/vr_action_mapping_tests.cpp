@@ -309,6 +309,39 @@ void CheckInputPresets()
         Check(VehicleControlBits(rows[BansheeBomb])==(Bit(SupportGrip)|Bit(SupportTrigger)|Bit(RightClick)),
             "a seat row's controls, held first and pressed");
     }
+    // The mod's own rows: Pause starts on Y held and B pressed, or B held and Y pressed, and holds both until let go.
+    {
+        ModBindings rows=kModDefaults;
+        Check(HoldsTogether(rows[Pause],Y,B)&&HoldsTogether(rows[Pause],B,Y),"Pause holds Y and B together");
+        ModMapper m;
+        m.Step(0,true,rows);
+        Check(!m.Step(Bit(Y),true,rows)&&!m.consumed,"Y alone starts nothing and holds nothing");
+        Check(m.Step(Bit(Y)|Bit(B),true,rows)==(1u<<Pause)&&m.consumed==(Bit(Y)|Bit(B)),"Y held, then B: the pause");
+        Check(!m.Step(Bit(Y)|Bit(B),true,rows)&&m.consumed==(Bit(Y)|Bit(B)),"held, once, and both stay held");
+        m.Step(Bit(Y),true,rows);
+        Check(m.consumed==Bit(Y),"B let go is B's again; Y stays held until let go");
+        m.Step(0,true,rows);
+        m.Step(Bit(B),true,rows);
+        Check(m.Step(Bit(B)|Bit(Y),true,rows)==(1u<<Pause),"B held, then Y: the pause too");
+        m.Step(0,true,rows);
+        Check(!m.Step(Bit(Y)|Bit(B),false,rows)&&!m.consumed,"not live (a menu, the pointer): nothing");
+        Check(!m.Step(Bit(Y)|Bit(B),true,rows),"and buttons held across it start nothing");
+        rows[Pause]={};
+        Check(!HoldsTogether(rows[Pause],Y,B),"an emptied Pause row holds nothing together");
+        Config off{};
+        input_preset::Parse("y_b_start_chord = 0\n",off);
+        Check(off.vr_mod_bindings[Pause][0]==Input{}&&off.vr_mod_bindings[Pause][1]==Input{},
+            "an older preset with Y + B off has an empty Pause row");
+        Config on{};
+        input_preset::Parse("vr_inputs_version = 2\ny_b_start_chord = 0\n",on);
+        Check(on.vr_mod_bindings==kModDefaults,"a newer preset's old key is not read again");
+        Config moved{};
+        moved.vr_mod_bindings[Pause][2]=Input{{SupportGrip,Unbound},A,InputMode::Hold};
+        Config movedLoaded{};
+        input_preset::Parse(input_preset::Serialize(moved).c_str(),movedLoaded);
+        Check(input_preset::SameScheme(movedLoaded,moved)&&!input_preset::SameScheme(movedLoaded,Config{}),
+            "the Pause row round trips in a preset, and a change to it is another scheme");
+    }
     // A row's further inputs: any of them presses the action; they count for flashlight suppression, the bridge's split
     // and Halo 2's Use, and are kept in presets and the config.
     {

@@ -707,9 +707,11 @@ struct Config
     float turn_snap_deg = 30.0f;       // degrees per snap
     float turn_smooth_deg_s = 120.0f;  // smooth turn speed, degrees/second
 
-    // Send Start when Y and B are pressed together. This is the pause fallback
-    // for titles whose controller Menu button is reserved by the OpenXR runtime.
+    // Y and B together sent Start, the pause fallback for titles whose controller Menu button the OpenXR runtime keeps.
+    // Now the Pause row's inputs (vr_mod_bindings): read only from a file or preset written before them, to convert.
     bool y_b_start_chord = true;
+    // The mod's own rows (VR Mappings, every game): Pause, Y + B either way round to start.
+    vr_mapping::ModBindings vr_mod_bindings = vr_mapping::kModDefaults;
 
     // Halo 2 only: the gamepad's Back/View button is MCC's instant
     // Classic <-> Anniversary graphics switch. 0 = the mod swallows that

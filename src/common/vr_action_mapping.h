@@ -548,6 +548,56 @@ struct VehicleMapper
     }
 };
 
+// THE MOD'S OWN ROWS (VR Mappings, every game): actions of the mod's, not the game's. Pause: the pause view and Start, as
+// the controller's menu button gives them; it starts on Y held and B pressed, or B held and Y pressed. While one of its
+// inputs is on, the controls it uses press nothing else, until each is let go.
+enum ModAction : unsigned { Pause, ModCount };
+inline constexpr const char* kModKeys[ModCount]{"pause"};
+inline constexpr const char* kModNames[ModCount]{"Pause (Start)"};
+using ModBindings=std::array<VehicleRow,ModCount>;
+inline constexpr ModBindings kModDefaults{{
+    {Input{{Y,Unbound},B},Input{{B,Unbound},Y},Input{},Input{}}}};
+// True if a row presses one control while the other is held, either way round (the Y + B pause, as Reclaimer's keys
+// and the physical pad's pause read it).
+inline bool HoldsTogether(const VehicleRow& row,int one,int other) noexcept
+{
+    for(const auto& input:row)
+        if((input.press==one&&(HeldBits(input.held)&Bit(other)))||(input.press==other&&(HeldBits(input.held)&Bit(one))))
+            return true;
+    return false;
+}
+struct ModMapper
+{
+    ChordState<ModCount*kRowInputs> chords;
+    std::array<bool,ModCount> was{};
+    uint32_t consumed{};
+    // One poll: the actions that start on it (a bit per ModAction). `live` false (a menu, the pointer, or no pause to
+    // give) starts nothing and lets every control go.
+    uint32_t Step(uint32_t sources,bool live,const ModBindings& bindings) noexcept
+    {
+        if(!live) {chords.Reset(true);chords.previous=sources;was={};consumed=0;return 0;}
+        std::array<ResolvedInput,ModCount*kRowInputs> inputs{};
+        for(unsigned a=0;a<ModCount;++a)
+            for(unsigned i=0;i<kRowInputs;++i)
+            {
+                const auto& input=bindings[a][i];
+                if(ListedSource(input.press)) inputs[a*kRowInputs+i]={HeldBits(input.held),Bit(input.press),input.mode};
+            }
+        const auto presses=chords.Step(inputs,sources,sources,~0u);
+        consumed&=sources;
+        uint32_t started=0;
+        for(unsigned a=0;a<ModCount;++a)
+        {
+            bool on=false;
+            for(unsigned i=0;i<kRowInputs;++i)
+                if(presses[a*kRowInputs+i]) {on=true;consumed|=inputs[a*kRowInputs+i].held|inputs[a*kRowInputs+i].press;}
+            if(on&&!was[a]) started|=1u<<a;
+            was[a]=on;
+        }
+        return started;
+    }
+};
+
 // What one poll adds to the rows.
 struct PollOptions
 {

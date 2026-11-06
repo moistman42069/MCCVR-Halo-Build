@@ -1168,6 +1168,18 @@ void ConfigLoad(const wchar_t* path)
                     if(!read) LOG("config: invalid VR binding '%s' ignored",key);
                 }
             }
+        // The mod's own rows, every game's: vr_bind_pause and _2 on.
+        for(unsigned action=0;action<vr_mapping::ModCount&&!vrBindingKey;++action)
+            for(unsigned slot=0;slot<vr_mapping::kRowInputs&&!vrBindingKey;++slot)
+            {
+                char bindingKey[96]{};
+                sprintf_s(bindingKey,"vr_bind_%s%s",vr_mapping::kModKeys[action],vr_mapping::kControlSuffix[slot]);
+                if(strcmp(key,bindingKey)) continue;
+                vrBindingKey=true;
+                auto& input=g_config.vr_mod_bindings[action][slot];
+                if(!vr_mapping::ParseInput(val,input.held,input.press,input.mode,false))
+                    LOG("config: invalid VR binding '%s' ignored",key);
+            }
         if(vrBindingKey) continue;
         if(!strcmp(key,"experimental_body_ik")) {g_config.experimental_body_ik=atoi(val)!=0;continue;}
         if(!strcmp(key,"body_ik_hide_lower")) {g_config.body_ik_hide_lower=atoi(val)!=0;continue;}
@@ -2388,6 +2400,12 @@ void ConfigLoad(const wchar_t* path)
             "empty grip's equipment (%d) as inputs",g_config.right_stick_crouch?1:0,
             g_config.grip_contextual_trigger?1:0,g_config.trigger_air_equipment?1:0);
     }
+    // A file from before the Pause row: Y + B sending Start turned off leaves the row empty.
+    if(inputsVersion<2&&!g_config.y_b_start_chord)
+    {
+        g_config.vr_mod_bindings[vr_mapping::Pause]={};
+        LOG("config: Y + B sending Start was off, so the Pause row has no inputs");
+    }
     if (!halo4HudHeightV2) {
         // Halo 4's HUD height ran the other way until it was corrected (a positive value lowered the HUD), so a
         // saved Halo 4 height is turned over once: the HUD stays exactly where the player put it. In memory only:
@@ -2730,9 +2748,6 @@ void ConfigSave()
     fprintf(f, "# Smooth turn speed in degrees per second.\n");
     fprintf(f, "# (default %.0f, range 30 to 360)\n", d.turn_smooth_deg_s);
     fprintf(f, "turn_smooth_deg_s = %.0f\n\n", g_config.turn_smooth_deg_s);
-    fprintf(f, "# Press Y+B together to send Start (pause/resume) in supported titles.\n");
-    fprintf(f, "# (default %d)\n", d.y_b_start_chord ? 1 : 0);
-    fprintf(f, "y_b_start_chord = %d\n\n", g_config.y_b_start_chord ? 1 : 0);
     fprintf(f, "# Halo 2 only: the gamepad's Back/View button is MCC's instant\n");
     fprintf(f, "# Classic <-> Anniversary graphics switch. 0 = the mod swallows that\n");
     fprintf(f, "# button in Halo 2 so a physical pad (Steam Controller) cannot flip the\n");
@@ -3758,7 +3773,7 @@ void ConfigSave()
     fprintf(f,"# VR Mappings: each row's inputs. An input is its held controls and its press joined by '+', the press\n"
               "# last, then \" toggle\" for a toggle. A row's own input is its key alone (0 = Automatic); its further\n"
               "# ones are _2 to _4 (%d = none), written for a row that differs from its game's start.\n"
-              "vr_inputs_version = 1\n",vr_mapping::Unbound);
+              "vr_inputs_version = 2\n",vr_mapping::Unbound);
     char input[32];
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
     {
@@ -3788,6 +3803,14 @@ void ConfigSave()
                 fprintf(f,"vr_bind_%s_%s%s = %s\n",weapon_interaction::kTitleKeys[title],vr_mapping::kVehicleKeys[action],
                     vr_mapping::kControlSuffix[slot],input);
             }
+    fprintf(f,"# The mod's own rows, every game's: Pause (the pause view and Start), its inputs (_2 to _4 further ones).\n");
+    for(unsigned action=0;action<vr_mapping::ModCount;++action)
+        for(unsigned slot=0;slot<vr_mapping::kRowInputs;++slot)
+        {
+            const auto& mod=g_config.vr_mod_bindings[action][slot];
+            vr_mapping::FormatInput(input,mod.held,mod.press,mod.mode);
+            fprintf(f,"vr_bind_%s%s = %s\n",vr_mapping::kModKeys[action],vr_mapping::kControlSuffix[slot],input);
+        }
     fprintf(f,"\n# Native localized subtitles: independent gameplay and theatre placement.\n");
     fprintf(f,"# Per-game muzzle-flash hiding. Supported paths: H2 Original and H4.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)

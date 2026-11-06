@@ -621,6 +621,9 @@ namespace
         static constexpr unsigned kRows=vr_mapping::Count+vr_mapping::VehicleCount;
         int moreOpen[6][kRows]{};
         bool optionsOpen[6][kRows][vr_mapping::kRowInputs]{};
+        // The mod's own rows, every game's.
+        int modMoreOpen[vr_mapping::ModCount]{};
+        bool modOptionsOpen[vr_mapping::ModCount][vr_mapping::kRowInputs]{};
     } g_mappingPage;
     bool EmptyInputShown()
     {
@@ -637,11 +640,19 @@ namespace
                 }
                 if(g_mappingPage.moreOpen[title][row]>static_cast<int>(listed)) return true;
             }
+        for(unsigned row=0;row<vr_mapping::ModCount;++row)
+        {
+            unsigned listed=0;
+            for(unsigned i=0;i<vr_mapping::kMoreInputs;++i)
+                if(g_config.vr_mod_bindings[row][1+i].press!=vr_mapping::Unbound) ++listed;
+            if(g_mappingPage.modMoreOpen[row]>static_cast<int>(listed)) return true;
+        }
         return false;
     }
     void CloseEmptyInputs()
     {
         for(auto& title:g_mappingPage.moreOpen) for(int& open:title) open=0;
+        for(int& open:g_mappingPage.modMoreOpen) open=0;
     }
 
     void DrawInputPresets(bool& changed)
@@ -1529,11 +1540,9 @@ namespace
         }
         if (SectionHeader("Input combinations##section", ImGuiTreeNodeFlags_None))
         {
-        changed |= ImGui::Checkbox("Y + B sends Start (pause / resume)",
-                                   &g_config.y_b_start_chord);
-        ImGui::TextDisabled("On by default. Turn it off if you prefer Y and B to stay separate.");
         ImGui::TextDisabled("L3+R3 recenters and toggles this menu; the right trigger clicks the VR pointer.");
-        ImGui::TextDisabled("Grip + trigger combinations are inputs under VR Mappings: an input can hold controls first.");
+        ImGui::TextDisabled("Grip + trigger combinations and the Y + B pause are inputs under VR Mappings: an input can "
+            "require another held first.");
         }
         if (SectionHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
         {
@@ -1669,6 +1678,32 @@ namespace
             }
             ImGui::TextDisabled("Copy: the other five games take these rows as they are. A row for an action a game "
                 "does not have does nothing there. Reset brings back the game's own layout and its right stick.");
+            // The mod's own rows: every game's, so neither Reset nor Copy above touches them.
+            SettingGap();
+            ImGui::TextWrapped("In every game: these are the mod's own, the same whichever game is chosen above.");
+            for(unsigned action=0;action<vr_mapping::ModCount;++action)
+            {
+                ImGui::PushID(static_cast<int>(200+action));
+                SettingGap();
+                SettingGroup group(vr_mapping::kModNames[action]);
+                auto& row=g_config.vr_mod_bindings[action];
+                bool* open=g_mappingPage.modOptionsOpen[action];
+                bool modChanged=MappingCombo("##own",row[0].press,MappingList::Listed);
+                if(modChanged&&row[0].press==vr_mapping::Unbound) {row[0]=vr_mapping::Input{};open[0]=false;}
+                modChanged|=InputOptions(row[0].held,row[0].mode,open[0]);
+                modChanged|=MoreInputsList(row.data()+1,vr_mapping::kMoreInputs,g_mappingPage.modMoreOpen[action],open+1);
+                if(action==vr_mapping::Pause)
+                    OptionNote("The pause view and Start, as the controller's menu button gives them. It starts with Y "
+                        "held and B pressed, or B held and Y pressed; while it is on, those two press nothing else.");
+                if(modChanged) changed=true;
+                ImGui::PopID();
+            }
+            if(ImGui::Button("Reset the mod's own rows"))
+            {
+                g_config.vr_mod_bindings=vr_mapping::kModDefaults;
+                for(int& more:g_mappingPage.modMoreOpen) more=0;
+                changed=true;
+            }
         }
         if (SectionHeader("Flashlight##section", ImGuiTreeNodeFlags_None))
         {
