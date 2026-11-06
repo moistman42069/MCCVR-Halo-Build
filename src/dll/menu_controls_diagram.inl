@@ -13,8 +13,7 @@ struct ControlsDiagramState
 } g_controlsDiagram;
 
 // One controller's drawing, in a 120 x 280 box for the RIGHT controller (the left one is its mirror image), seen from
-// above with the front at the top: the tracking ring looping over the face toward the inner side, the stick resting near
-// the outer edge, the system / menu button below it and a little in, the face buttons on the inner side beside the stick
+// above with the front at the top, with no tracking ring (as Quest 3's Touch Plus): the stick resting near the outer edge, the system / menu button below it and a little in, the face buttons on the inner side beside the stick
 // (B / Y just below the stick's height, A / X lower and a little nearer the stick), the trigger under the front and the
 // grip on the handle's inner side. A generic Touch-style controller, laid out as Quest 2's are.
 namespace touch_drawing
@@ -29,7 +28,6 @@ constexpr ImVec2 kTriggerMin{40.0f, 48.0f}, kTriggerMax{74.0f, 68.0f};
 constexpr ImVec2 kGripMin{20.0f, 150.0f}, kGripMax{36.0f, 224.0f};
 constexpr ImVec2 kHandleMin{32.0f, 120.0f}, kHandleMax{80.0f, 272.0f};
 constexpr ImVec2 kFace{60.0f, 102.0f}, kFaceRadius{46.0f, 40.0f};
-constexpr ImVec2 kRing{48.0f, 60.0f}, kRingRadius{46.0f, 50.0f};
 }
 
 // The anchor of a control on the drawing: where its leader line starts.
@@ -73,10 +71,6 @@ void DrawTouchController(ImDrawList* draw, bool left, ImVec2 origin, float scale
     const ImU32 litFill = ImGui::GetColorU32(Rgb(kAccentDown));
     const ImU32 label = ImGui::GetColorU32(Rgb(kTextMain));
     const auto isHot = [&](Control a, Control b) { return hot == static_cast<int>(left ? a : b); };
-
-    // The tracking ring, behind everything: a loop over the front of the face, leaning to the inner side. The face and
-    // the trigger, drawn after it, cover where it meets the body.
-    draw->AddEllipse(P(kRing), ImVec2(kRingRadius.x * scale, kRingRadius.y * scale), edge, 0.0f, 48, 9.0f * scale);
 
     // The trigger, in front of the face.
     {
