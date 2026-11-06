@@ -90,6 +90,19 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
     return DefWindowProcW(window, message, wp, lp);
 }
 
+// The side panel's window, docked against the menu window's right edge while the page has one. It never takes focus,
+// so the menu window keeps the keyboard and the clicks go through the one pointer.
+LRESULT CALLBACK SidePanelProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
+{
+    if (message == WM_SETCURSOR && LOWORD(lp) == HTCLIENT)
+    {
+        SetCursor(nullptr);
+        return TRUE;
+    }
+    if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+    return DefWindowProcW(window, message, wp, lp);
+}
+
 std::wstring BesideThisProgram(const wchar_t* name)
 {
     wchar_t path[MAX_PATH]{};
@@ -120,19 +133,28 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
     windowClass.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&windowClass);
 
-    // The menu's own shape, as large as the screen allows with room for its side panel: the picture is stretched, so a
-    // click still lands by fraction. The window widens for the side panel only while it shows (below).
+    // The menu's own shape, as large as the screen allows with room for its side panel beside it: the picture is
+    // stretched, so a click still lands by fraction. The side panel has a window of its own (below).
     RECT work{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     const float fit = (std::min)(1.0f, (std::min)((work.right - work.left) * 0.95f / MENU_TEX_W,
                                                   (work.bottom - work.top) * 0.9f / MENU_H));
-    int shownWidth = MENU_W;   // how much of the menu's texture the window shows: the menu, or the menu and side panel
     RECT frame{0, 0, static_cast<LONG>(MENU_W * fit), static_cast<LONG>(MENU_H * fit)};
     const DWORD style = WS_OVERLAPPEDWINDOW;
     AdjustWindowRect(&frame, style, FALSE);
     const HWND window = CreateWindowW(windowClass.lpszClassName, gameOpen ? kTitleGameOpen : kTitle, style, CW_USEDEFAULT,
         CW_USEDEFAULT, frame.right - frame.left, frame.bottom - frame.top, nullptr, nullptr, instance, nullptr);
     if (!window) return 1;
+    WNDCLASSW sideClass{};
+    sideClass.lpfnWndProc = SidePanelProc;
+    sideClass.hInstance = instance;
+    sideClass.lpszClassName = L"HaloMCCVRSettingsSidePanel";
+    sideClass.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+    RegisterClassW(&sideClass);
+    const HWND sideWindow = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, sideClass.lpszClassName, nullptr,
+        WS_POPUP | WS_BORDER, 0, 0, static_cast<int>(MENU_SIDE_W * fit), static_cast<int>(MENU_H * fit), window, nullptr,
+        instance, nullptr);
+    if (!sideWindow) return 1;
 
     DXGI_SWAP_CHAIN_DESC swap{};
     swap.BufferCount = 2;
@@ -153,26 +175,43 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
         result = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
             &swap, &chain, &device, nullptr, &context);
     if (FAILED(result) || !Menu_Init(window, device.Get(), context.Get(), DXGI_FORMAT_R8G8B8A8_UNORM)) return 2;
+    ComPtr<IDXGISwapChain> sideChain;
+    {
+        ComPtr<IDXGIDevice> dxgiDevice;
+        ComPtr<IDXGIAdapter> adapter;
+        ComPtr<IDXGIFactory> factory;
+        DXGI_SWAP_CHAIN_DESC side = swap;
+        side.BufferDesc.Width = MENU_SIDE_W;
+        side.OutputWindow = sideWindow;
+        if (FAILED(device.As(&dxgiDevice)) || FAILED(dxgiDevice->GetAdapter(&adapter)) ||
+            FAILED(adapter->GetParent(IID_PPV_ARGS(&factory))) ||
+            FAILED(factory->CreateSwapChain(device.Get(), &side, &sideChain))) return 2;
+    }
     Menu_Toggle();
     ShowWindow(window, show);
 
     ULONGLONG checkedGame = GetTickCount64();
     bool running = true;
     LiveMenu live;
-    DXGI_FORMAT shownFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+    bool sideShown = false;
     const auto bufferFormat = [&](DXGI_FORMAT format)
     {
-        shownFormat = format;
-        return SUCCEEDED(chain->ResizeBuffers(2, shownWidth, MENU_H, format, 0));
+        return SUCCEEDED(chain->ResizeBuffers(2, MENU_W, MENU_H, format, 0)) &&
+            SUCCEEDED(sideChain->ResizeBuffers(2, MENU_SIDE_W, MENU_H, format, 0));
     };
-    // The part of the texture the window shows, copied to its picture.
+    // Each window's part of the menu's texture: the menu, and the side panel's strip while it shows. The side panel
+    // presents first without waiting, so both change in the same frame.
     const auto present = [&](ID3D11Texture2D* picture)
     {
-        ComPtr<ID3D11Texture2D> backBuffer;
-        const D3D11_BOX shown{0, 0, 0, static_cast<UINT>(shownWidth), static_cast<UINT>(MENU_H), 1};
-        if (SUCCEEDED(chain->GetBuffer(0, IID_PPV_ARGS(&backBuffer))))
-            context->CopySubresourceRegion(backBuffer.Get(), 0, 0, 0, 0, picture, 0, &shown);
-        chain->Present(1, 0);
+        const auto copy = [&](IDXGISwapChain* target, UINT left, UINT right, UINT interval) {
+            ComPtr<ID3D11Texture2D> backBuffer;
+            const D3D11_BOX part{left, 0, 0, right, static_cast<UINT>(MENU_H), 1};
+            if (SUCCEEDED(target->GetBuffer(0, IID_PPV_ARGS(&backBuffer))))
+                context->CopySubresourceRegion(backBuffer.Get(), 0, 0, 0, 0, picture, 0, &part);
+            target->Present(interval, 0);
+        };
+        if (sideShown) copy(sideChain.Get(), MENU_W, MENU_TEX_W, 0);
+        copy(chain.Get(), 0, MENU_W, 1);
     };
     while (running)
     {
@@ -224,40 +263,56 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
             }
         }
 
-        // The side panel, beside the menu while the page has one: the window widens for it and narrows again after,
-        // keeping its height.
-        const bool sidePanel = live.connected() ? live.block->sidePanel.load(std::memory_order_relaxed) != 0
-                                                : Menu_SidePanelShown();
-        const int wantWidth = sidePanel ? MENU_TEX_W : MENU_W;
-        if (wantWidth != shownWidth)
-        {
-            RECT now{};
-            GetClientRect(window, &now);
-            const float scale = now.bottom > 0 ? static_cast<float>(now.bottom) / MENU_H : fit;
-            shownWidth = wantWidth;
-            bufferFormat(shownFormat);
-            RECT resized{0, 0, static_cast<LONG>(wantWidth * scale), static_cast<LONG>(MENU_H * scale)};
-            AdjustWindowRect(&resized, style, FALSE);
-            SetWindowPos(window, nullptr, 0, 0, resized.right - resized.left, resized.bottom - resized.top,
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-        }
-        // Across the window, as a place across the whole texture.
-        const float widthShare = static_cast<float>(shownWidth) / MENU_TEX_W;
-
-        POINT cursor{};
+        // The side panel, its own window against the menu window's right edge while the page has one, as tall as the
+        // menu and at its scale. The menu window never changes for it.
         RECT client{};
-        GetCursorPos(&cursor);
-        ScreenToClient(window, &cursor);
         GetClientRect(window, &client);
-        const bool hit = GetForegroundWindow() == window && client.right > 0 && client.bottom > 0 &&
-            PtInRect(&client, cursor);
+        const bool sidePanel = !IsIconic(window) && client.bottom > 0 &&
+            (live.connected() ? live.block->sidePanel.load(std::memory_order_relaxed) != 0 : Menu_SidePanelShown());
+        if (sidePanel)
+        {
+            POINT corner{client.right, 0};
+            ClientToScreen(window, &corner);
+            const int width = static_cast<int>(static_cast<float>(MENU_SIDE_W) * client.bottom / MENU_H + 0.5f);
+            RECT placed{};
+            GetWindowRect(sideWindow, &placed);
+            if (!sideShown || placed.left != corner.x || placed.top != corner.y || placed.right - placed.left != width ||
+                placed.bottom - placed.top != client.bottom)
+                SetWindowPos(sideWindow, nullptr, corner.x, corner.y, width, client.bottom,
+                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
+        }
+        else if (sideShown)
+            ShowWindow(sideWindow, SW_HIDE);
+        sideShown = sidePanel;
+
+        // The pointer, on either window, as a place across the whole texture.
+        const bool focused = GetForegroundWindow() == window;
+        POINT screen{};
+        GetCursorPos(&screen);
+        POINT cursor = screen;
+        ScreenToClient(window, &cursor);
+        bool hit = focused && client.right > 0 && client.bottom > 0 && PtInRect(&client, cursor);
+        float pointerU = hit ? static_cast<float>(cursor.x) / client.right * MENU_W / MENU_TEX_W : 0.0f;
+        float pointerV = hit ? static_cast<float>(cursor.y) / client.bottom : 0.0f;
+        if (!hit && focused && sideShown)
+        {
+            RECT side{};
+            POINT onSide = screen;
+            ScreenToClient(sideWindow, &onSide);
+            GetClientRect(sideWindow, &side);
+            if (side.right > 0 && side.bottom > 0 && PtInRect(&side, onSide))
+            {
+                hit = true;
+                pointerU = (MENU_W + static_cast<float>(onSide.x) / side.right * MENU_SIDE_W) / MENU_TEX_W;
+                pointerV = static_cast<float>(onSide.y) / side.bottom;
+            }
+        }
         if (live.connected())
         {
             MenuMirrorShared& block = *live.block;
             block.desktopBeatMs.store(now, std::memory_order_relaxed);
-            block.pointerU.store(hit ? static_cast<float>(cursor.x) / client.right * widthShare : 0.0f,
-                std::memory_order_relaxed);
-            block.pointerV.store(hit ? static_cast<float>(cursor.y) / client.bottom : 0.0f, std::memory_order_relaxed);
+            block.pointerU.store(pointerU, std::memory_order_relaxed);
+            block.pointerV.store(pointerV, std::memory_order_relaxed);
             block.pointerPressed.store(hit && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, std::memory_order_relaxed);
             block.pointerHit.store(hit, std::memory_order_relaxed);
             if (hit && scroll != 0.0f)
@@ -266,8 +321,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
             continue;
         }
         if (hit)
-            Menu_SetVrPointer(true, static_cast<float>(cursor.x) / client.right * widthShare,
-                static_cast<float>(cursor.y) / client.bottom, (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, scroll);
+            Menu_SetVrPointer(true, pointerU, pointerV, (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0, scroll);
         else
             Menu_ClearVrPointer();
 
