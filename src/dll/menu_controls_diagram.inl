@@ -309,8 +309,8 @@ void DrawControlsDiagram()
 }
 
 // The credits, from the copy of CREDITS.txt built into the mod (the launcher's own fallback): read once, as UTF-8 for
-// Dear ImGui. Links are shown by their labels only: opening a browser mid-game is the launcher's job.
-struct MenuCredit { std::string section, name, what, links; };
+// Dear ImGui. The links are left out: opening a browser mid-game is the launcher's job.
+struct MenuCredit { std::string section, name, what; };
 const std::vector<MenuCredit>& MenuCredits()
 {
     static const std::vector<MenuCredit> credits = [] {
@@ -327,10 +327,7 @@ const std::vector<MenuCredit>& MenuCredits()
         std::vector<MenuCredit> list;
         for (const auto& entry : ParseCredits(text))
         {
-            MenuCredit credit{utf8(entry.section), utf8(entry.name), utf8(entry.what), {}};
-            for (const auto& link : entry.links)
-                credit.links += (credit.links.empty() ? "" : "  |  ") + utf8(link.label);
-            list.push_back(std::move(credit));
+            list.push_back({utf8(entry.section), utf8(entry.name), utf8(entry.what)});
         }
         return list;
     }();
@@ -366,7 +363,6 @@ void DrawCreditsPanel()
         ImGui::Spacing();
         ImGui::TextColored(Rgb(kAccentHot), "%s", credit.name.c_str());
         if (!credit.what.empty()) ImGui::TextUnformatted(credit.what.c_str());
-        if (!credit.links.empty()) ImGui::TextDisabled("%s", credit.links.c_str());
     }
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
