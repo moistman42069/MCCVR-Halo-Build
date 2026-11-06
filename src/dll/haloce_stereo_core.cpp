@@ -24,6 +24,7 @@ uint64_t Sight_NowUs();   // sight_layer.h: the one sight clock the gameplay con
 #include "game.h"
 #include "title_adapter.h"
 #include "hook_quiescence.h"
+#include "host_unload_gate.h"
 #include "roomscale.h"
 #include "../common/minhook_lifecycle.h"
 #include <windows.h>
@@ -81,6 +82,12 @@ std::array<Hook,Count> hooks;
 NativeBindings bindings;
 HMODULE moduleReference{};
 std::atomic<bool> installed{},active{},armed{},retiring{},trackingEnabled{};
+// THE GAME'S END (host_unload_gate.h). Set by the unload gate when MCC loads halo1.dll by name after the camera has
+// been still for half a second: the game has ended and MCC is loading the DLL again for its menus. The core then
+// tears down and lets go of the DLL, so it unloads and the next game starts in a fresh image. Held past the game's
+// end, the old image was taken again: the next game's startup ran in a module whose shutdown had already run, and
+// crashed a second into the load (halo1.dll keeps engine state in statics that only a fresh image resets).
+std::atomic<bool> teardownRequested{};
 std::atomic<bool> gameplayBridgeVerified{};
 std::atomic<bool> hudTargetBindingsVerified{};
 std::atomic<uint32_t> callbacks{},generation{};
@@ -1154,7 +1161,9 @@ bool Remove() noexcept
     // Keep copy protection installed until native reset/stock preparation has
     // retired every manufactured list. An inactive title may retain these
     // dormant hooks until its next reset; never remove them under a queued eye.
-    if (installed.load()&&(callbacks.load()||HasSyntheticLists())) return false;
+    // At the game's end no reset comes and no queued list is drawn again: the
+    // renderer has stopped and its DLL is being loaded again for MCC's menus.
+    if (installed.load()&&(callbacks.load()||(HasSyntheticLists()&&!teardownRequested.load()))) return false;
     for (auto& hook:hooks) if (hook.enabled)
     {
         const auto status=MCCVR_DisableHookForRetirement(hook.target);
@@ -1182,7 +1191,10 @@ bool Remove() noexcept
     }
     if (!cache.Reset()) return false;
     resources.InvalidateAll();
-    if (moduleReference) { FreeLibrary(moduleReference); moduleReference=nullptr; }
+    // The reference goes last, and the unload gate is told after it has gone: a load of halo1.dll waiting for this
+    // teardown may go on, and finds the old image unloaded.
+    if (moduleReference)
+    { const HMODULE held=moduleReference; FreeLibrary(held); moduleReference=nullptr; HostUnloadGate_Unpin(held); }
     bindings={}; installed=false; generation=0; allocated.Publish({});
     frameDiagnostic.Publish({});
     completedFrame.Publish({}); renderReady.Publish({}); wanted.Publish({});
@@ -1195,6 +1207,10 @@ bool Install(uintptr_t base,size_t size,uint32_t gen) noexcept
 {
     const char* failure="module retention";
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,reinterpret_cast<LPCWSTR>(base),&moduleReference)) return false;
+    // MCC's reload of halo1.dll at the game's end waits for this teardown; the gate asks for it once the camera
+    // (lastCameraMs, both renderers, a pause included) has been still for half a second.
+    teardownRequested.store(false,std::memory_order_release);
+    HostUnloadGate_Pin(moduleReference,&teardownRequested,&lastCameraMs,"Halo CE",true);
     if (!ResolveNativeBindings(base,size,gen,bindings,failure))
     { LOG("CE core stock fallback: %s",failure); Remove(); return false; }
     const NativeContractSet gameplayContracts{contract::gameplay_bridge::entries,
@@ -1275,8 +1291,12 @@ void HaloCE_RequestRecovery(uint32_t gen) noexcept
 bool HaloCE_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActive,bool allowInitialInstall) noexcept
 {
     active.store(isActive,std::memory_order_release);
-    if (moduleReference&&(!isActive||gen!=generation.load()||base!=bindings.base||retiring.load()))
+    if (moduleReference&&(!isActive||gen!=generation.load()||base!=bindings.base||retiring.load()||
+        teardownRequested.load(std::memory_order_acquire)))
     {
+        if (teardownRequested.load(std::memory_order_acquire)&&!retiring.load(std::memory_order_acquire))
+            LOG("CE core: MCC is loading halo1.dll again after the game stopped drawing (the game ended); tearing "
+                "down so the next game starts in a fresh image");
         if (armed.exchange(false)) LOG("CE core disarmed by HaloCE_Poll: title/generation retirement");
         TitleAdapter_PublishLifecycle(GameTitle::HaloCE,generation.load(),{installed.load(),false,true,0});
         if (!Remove()) return false;
@@ -1388,6 +1408,9 @@ bool HaloCE_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActive,bool allo
     return armed.load();
 }
 bool HaloCE_Armed() noexcept { return Current()&&armed.load(std::memory_order_acquire); }
+bool HaloCE_Installed() noexcept { return installed.load(std::memory_order_acquire); }
+std::atomic<bool>* HaloCE_TeardownRequested() noexcept { return &teardownRequested; }
+const std::atomic<uint64_t>* HaloCE_LastFrameMs() noexcept { return &lastCameraMs; }
 void HaloCE_Recenter() noexcept
 {
     referenceRevision.fetch_add(1,std::memory_order_acq_rel);

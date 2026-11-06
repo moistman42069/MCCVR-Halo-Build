@@ -178,7 +178,9 @@ bool Retire() {
         if(MH_RemoveHook(runtime.target[i])!=MH_OK)return false;
         runtime.target[i]=runtime.original[i]=nullptr;
     }
-    if(runtime.module)FreeLibrary(runtime.module);
+    // The reference goes last, and the unload gate is told after it has gone: a load of this DLL that was waiting for
+    // this teardown may go on, and finds the old image unloaded.
+    if(runtime.module) { const HMODULE held=runtime.module;FreeLibrary(held);HostUnloadGate_Unpin(held); }
     runtime.module=nullptr;runtime.base=runtime.state=0;runtime.generation=0;runtime.consumerAt=0;runtime.faulted=false;
     return true;
 }
@@ -199,14 +201,25 @@ void Poll() {
         if(!Retire())return;
         LOG("Native VR action bridge CE: retired faulted optional hooks; transport routing retained");
     }
-    if(runtime.module&&(active!=title||generation!=runtime.generation.load(std::memory_order_acquire)))
+    // THE REFERENCE ON THE GAME DLL IS HELD ONLY WHILE THE TITLE'S CAMERA CORE IS INSTALLED (game.h GameTitleCoreState),
+    // as Halo 4's and Halo 2's are. Held until another title started, it kept halo1.dll past the game's end: MCC's
+    // reload for its menus took the old image, and the next Halo CE game crashed a second into its load.
+    GameTitleCoreState core{};
+    const bool coreSays=Game_TitleCoreState(title,core);
+    if(runtime.module&&(active!=title||generation!=runtime.generation.load(std::memory_order_acquire)||
+        (coreSays&&!core.installed)))
         if(!Retire())return;
-    if(active!=title||!generation||generation==blockedGeneration||!(g_config.vr_action_mapping||Config_GestureOnlyWeaponInput()))return;
+    if(active!=title||!generation||(coreSays&&!core.installed)||generation==blockedGeneration||
+        !(g_config.vr_action_mapping||Config_GestureOnlyWeaponInput()))return;
     if(!runtime.module) {
         vr_mapping::Transports fallback{};
         if(!Game_ReadVrActionBindings(fallback,GetTickCount64()))return;
         const auto* descriptor=TitleRegistry_Find(title);
         if(!descriptor||!GetModuleHandleExW(0,descriptor->moduleName,&runtime.module))return;
+        // MCC's reload of this DLL at the game's end waits for the core's teardown and this lane's.
+        if(coreSays&&core.tearingDown)
+            HostUnloadGate_Pin(runtime.module,core.tearingDown,core.lastFrameMs,descriptor->displayName,
+                               core.lastFrameMs!=nullptr);
         runtime.base=reinterpret_cast<uintptr_t>(runtime.module);runtime.generation=generation;
         uintptr_t base=0;size_t size=0;DWORD64 imageBase=0;
         bool proved=sig::ModuleRange(descriptor->moduleName,base,size)&&base==runtime.base&&

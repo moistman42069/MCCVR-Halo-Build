@@ -303,7 +303,24 @@ static void TestCe(){
     quiescent=true;NativeVrActions_Poll();Check(!native_ce::runtime.module,"CE optional fault cleans up independently");
     ++testGeneration;creates=0;failCreate=2;NativeVrActions_Poll();
     Check(!native_ce::runtime.module&&!native_ce::runtime.admitted,"CE partial install failure leaves transport fallback");
-    failCreate=0;testTitle=GameTitle::None;
+    // halo1.dll is held only while the Halo CE core is installed: a game's end lets it go in the same title and
+    // generation, and the unload gate is told, so MCC's reload gives the next game a fresh image.
+    failCreate=0;++testGeneration;coreSays=coreInstalled=true;coreTearingDown=false;
+    const unsigned pinnedBefore=pinned;
+    NativeVrActions_Poll();
+    Check(native_ce::runtime.module&&native_ce::runtime.admitted&&pinned==pinnedBefore+1,
+        "CE installs while the core is in, its reference registered with the unload gate");
+    const unsigned freedBefore=frees,unpinnedBefore=unpinned;
+    coreInstalled=false;NativeVrActions_Poll();
+    Check(!native_ce::runtime.module&&frees==freedBefore+1&&unpinned==unpinnedBefore+1,
+        "CE lets go of halo1.dll when the core is out, and tells the unload gate");
+    NativeVrActions_Poll();
+    Check(!native_ce::runtime.module&&frees==freedBefore+1,"CE takes no reference while the core is out");
+    coreInstalled=true;NativeVrActions_Poll();
+    Check(native_ce::runtime.module&&native_ce::runtime.admitted,"CE installs again with the next core");
+    coreSays=false;testTitle=GameTitle::None;NativeVrActions_Poll();
+    Check(!native_ce::runtime.module,"CE lets go when another title is active");
+    failCreate=0;
 }
 static void H3Poll(uint32_t actions,bool direct,uint32_t blocked=0){
     ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);

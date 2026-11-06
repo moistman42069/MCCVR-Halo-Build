@@ -61774,6 +61774,15 @@ bool Game_TitleCoreState(GameTitle title, GameTitleCoreState& out) noexcept
         out.tearingDown = Halo2Observer6Dof_TeardownRequested();
         return true;
     }
+    if (title == GameTitle::HaloCE)
+    {
+        // Halo CE's camera keeps stamping through a pause; the gate asks for the teardown when MCC loads halo1.dll
+        // by name after it has been still for half a second (haloce_stereo_core.cpp teardownRequested).
+        out.installed = HaloCE_Installed();
+        out.tearingDown = HaloCE_TeardownRequested();
+        out.lastFrameMs = HaloCE_LastFrameMs();
+        return true;
+    }
     return false;
 }
 

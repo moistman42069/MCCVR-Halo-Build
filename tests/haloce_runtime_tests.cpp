@@ -19,6 +19,10 @@ static TitleRuntimeLifecycle publishedLifecycle{};
 bool TitleAdapter_PublishLifecycle(GameTitle,uint32_t,const TitleRuntimeLifecycle& value)
 { publishedLifecycle=value; return true; }
 bool TitleAdapter_PublishHeartbeat(GameTitle,uint32_t,uint64_t) { return true; }
+// The unload gate (host_unload_gate.cpp is not linked here): the core's releases of its halo1.dll reference.
+static unsigned gateUnpins{};
+void HostUnloadGate_Pin(HMODULE,std::atomic<bool>*,const std::atomic<uint64_t>*,const char*,bool) {}
+void HostUnloadGate_Unpin(HMODULE) { ++gateUnpins; }
 float Game_GetWorldScale() { return 1.0f/3.048f; }
 bool Game_IsPositionalTracking() { return true; }
 static bool roomscaleAllowed=false;
@@ -1961,6 +1965,22 @@ int main()
     ResetListHook(rendererAddress+0xb0);
     check(!HasSyntheticLists(),"native reset retires synthetic source and active lists");
     check(Remove(),"drained adapter resources retire without touching another title");
+    // THE GAME'S END (the unload gate asked): no native reset comes, so a queued synthetic list no longer holds the
+    // retirement back, and the DLL reference goes last, the gate told after it.
+    check(HaloCE_TeardownRequested()==&teardownRequested&&HaloCE_LastFrameMs()==&lastCameraMs,
+        "the unload gate reads the core's own teardown flag and its camera's last frame");
+    HMODULE self{};
+    check(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,reinterpret_cast<LPCWSTR>(&HaloCE_Installed),&self),
+        "fixture module reference");
+    moduleReference=self;installed=true;
+    Prepared queued{};queued.synthetic=true;queued.valid=true;preparedLists[0].Publish(queued);
+    const unsigned unpinsBefore=gateUnpins;
+    check(HasSyntheticLists()&&!Remove()&&installed.load()&&moduleReference==self&&gateUnpins==unpinsBefore,
+        "before the game's end a queued synthetic list still holds the retirement and the DLL");
+    teardownRequested=true;
+    check(Remove()&&!HaloCE_Installed()&&!moduleReference&&gateUnpins==unpinsBefore+1,
+        "at the game's end the retirement goes past the queued list, lets go of the DLL last and tells the gate");
+    teardownRequested=false;
     check(!resources.Read(reinterpret_cast<uintptr_t>(testSource),reinterpret_cast<uintptr_t>(testSource),recorded),
         "module retirement invalidates previous pointer identities");
     return failures?1:0;

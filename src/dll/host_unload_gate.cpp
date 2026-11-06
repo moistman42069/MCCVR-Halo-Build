@@ -49,10 +49,14 @@
 //   * OTHER CORES. Reach's game end is measured and its core may be ASKED to tear down (the rule above).
 //     ODST's core holds halo3odst.dll the same way and registers a WAIT-ONLY reference: a load waits only
 //     while that core's own teardown is already under way, and the gate never starts one. ODST's second
-//     game is not confirmed in game. Halo 3's and Halo 4's cores hold no owning reference. Halo CE's eleven
-//     feature lanes each hold one and are not registered: whether CE's second game bounces is not measured.
-//   * LANES. Halo 4's and Halo 2's VR action bridge and first-person seat view each hold the DLL while the core is
-//     installed and register it here. A registration is counted: the wait ends when the last of them lets go.
+//     game is not confirmed in game. Halo 3's and Halo 4's cores hold no owning reference. Halo CE's camera
+//     core holds halo1.dll and may be ASKED, as Reach's (its camera stamps through a pause): held past the game's
+//     end, the next CE game crashed a second into its load. CE's feature lanes hold references of their own and
+//     are not registered: they let go when the core disarms, half a second after the last frame, before MCC's
+//     reload comes.
+//   * LANES. Halo 4's, Halo 2's and Halo CE's VR action bridge and first-person seat view each hold the DLL while
+//     the core is installed and register it here. A registration is counted: the wait ends when the last of them
+//     lets go.
 //   * The decisions are host_unload_gate_logic.h (tests/host_unload_gate_tests.cpp); this file is the loader,
 //     the clock and the hook around them.
 //   * title_unload_wait = 0: no wait; every load takes whatever image is there.
@@ -71,7 +75,7 @@ namespace
 namespace logic = host_unload_gate;
 using logic::kStillMs;
 using logic::kWaitMs;
-constexpr int kPins = 4;             // one per title core that holds its DLL
+constexpr int kPins = 6;             // one per game DLL a title core holds
 constexpr int kNameChars = 40;
 
 struct LoaderString   // ntdll's UNICODE_STRING
