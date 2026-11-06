@@ -13,18 +13,18 @@ struct ControlsDiagramState
 } g_controlsDiagram;
 
 // One controller's drawing, in a 120 x 280 box for the RIGHT controller (the left one is its mirror image), seen from
-// above with the front at the top: the tracking ring looping over the face toward the inner side, the stick at the face's
-// front, the two face buttons side by side behind it (B / Y inner, A / X outer), the system / menu button on the outer
-// edge beside the stick, the trigger under the front and the grip on the handle's inner side. A generic Touch-style
-// controller, laid out as Quest 2's are.
+// above with the front at the top: the tracking ring looping over the face toward the inner side, the stick resting near
+// the outer edge, the system / menu button below it and a little in, the face buttons on the inner side beside the stick
+// (B / Y just below the stick's height, A / X lower and a little nearer the stick), the trigger under the front and the
+// grip on the handle's inner side. A generic Touch-style controller, laid out as Quest 2's are.
 namespace touch_drawing
 {
 constexpr float kWidth = 120.0f, kHeight = 280.0f;
-constexpr ImVec2 kStick{68.0f, 84.0f};
+constexpr ImVec2 kStick{80.0f, 90.0f};
 constexpr float kStickRadius = 15.0f;
-constexpr ImVec2 kInnerButton{46.0f, 114.0f}, kOuterButton{69.0f, 118.0f};
+constexpr ImVec2 kUpperButton{45.0f, 97.0f}, kLowerButton{55.0f, 120.0f};
 constexpr float kButtonRadius = 9.5f;
-constexpr ImVec2 kSystemButton{94.0f, 92.0f};
+constexpr ImVec2 kSystemButton{75.0f, 123.0f};
 constexpr ImVec2 kTriggerMin{40.0f, 48.0f}, kTriggerMax{74.0f, 68.0f};
 constexpr ImVec2 kGripMin{20.0f, 150.0f}, kGripMax{36.0f, 224.0f};
 constexpr ImVec2 kHandleMin{32.0f, 120.0f}, kHandleMax{80.0f, 272.0f};
@@ -43,8 +43,8 @@ ImVec2 TouchAnchor(controls_diagram::Control control, ImVec2 origin, float scale
     {
     case LeftTrigger: case RightTrigger: at = {(kTriggerMin.x + kTriggerMax.x) * 0.5f, kTriggerMin.y + 6.0f}; break;
     case LeftGrip: case RightGrip: at = {(kGripMin.x + kGripMax.x) * 0.5f, (kGripMin.y + kGripMax.y) * 0.5f}; break;
-    case Y: case B: at = kInnerButton; break;
-    case X: case A: at = kOuterButton; break;
+    case Y: case B: at = kUpperButton; break;
+    case X: case A: at = kLowerButton; break;
     case LeftStick: case RightStick: at = {kStick.x, kStick.y - kStickRadius + 4.0f}; break;
     case LeftStickClick: case RightStickClick: at = kStick; break;
     case LeftMenu: at = kSystemButton; break;
@@ -77,6 +77,7 @@ void DrawTouchController(ImDrawList* draw, bool left, ImVec2 origin, float scale
     // The tracking ring, behind everything: a loop over the front of the face, leaning to the inner side. The face and
     // the trigger, drawn after it, cover where it meets the body.
     draw->AddEllipse(P(kRing), ImVec2(kRingRadius.x * scale, kRingRadius.y * scale), edge, 0.0f, 48, 9.0f * scale);
+
     // The trigger, in front of the face.
     {
         ImVec2 a, b;
@@ -113,9 +114,9 @@ void DrawTouchController(ImDrawList* draw, bool left, ImVec2 origin, float scale
         const ImVec2 size = ImGui::CalcTextSize(letter);
         draw->AddText(ImVec2(P(at).x - size.x * 0.5f, P(at).y - size.y * 0.5f), label, letter);
     };
-    button(kInnerButton, left ? "Y" : "B", isHot(Y, B));
-    button(kOuterButton, left ? "X" : "A", isHot(X, A));
-    // The small button on the outer edge: the menu button on the left, the system button on the right (no callout).
+    button(kUpperButton, left ? "Y" : "B", isHot(Y, B));
+    button(kLowerButton, left ? "X" : "A", isHot(X, A));
+    // The small button under the stick: the menu button on the left, the system button on the right (no callout).
     {
         const bool on = left && hot == static_cast<int>(LeftMenu);
         draw->AddCircleFilled(P(kSystemButton), 5.0f * scale, on ? lit : part);
