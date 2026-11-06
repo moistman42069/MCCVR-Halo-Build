@@ -40,6 +40,7 @@
 #include "../common/reclaimer_host_logic.h"
 #include "../common/weapon_interaction_logic.h"
 #include "../common/vr_action_passthrough.h"
+#include "../common/controls_diagram_logic.h"
 #include "../common/halo2_vehicle_identity.h"
 #include "../common/window_focus_policy.h"
 
@@ -624,7 +625,19 @@ namespace
         // The mod's own rows, every game's.
         int modMoreOpen[vr_mapping::ModCount]{};
         bool modOptionsOpen[vr_mapping::ModCount][vr_mapping::kRowInputs]{};
+        // "Settings for": the game whose rows are shown, here and in the controls diagram. It follows the game that
+        // starts, and stays where the player puts it until another does.
+        int selectedTitle=0;
+        GameTitle previousTitle=GameTitle::None;
     } g_mappingPage;
+    int MappingTitle()
+    {
+        const auto active=TitleAdapter_GetActiveTitle();
+        const int activeIndex=weapon_interaction::TitleIndex(active);
+        if(active!=g_mappingPage.previousTitle&&activeIndex>=0) g_mappingPage.selectedTitle=activeIndex;
+        g_mappingPage.previousTitle=active;
+        return g_mappingPage.selectedTitle;
+    }
     bool EmptyInputShown()
     {
         for(unsigned title=0;title<6;++title)
@@ -1054,7 +1067,7 @@ namespace
                 GetClientRect(hwnd, &rc);
                 const float cw = (float)(rc.right > 0 ? rc.right : 1);
                 const float ch = (float)(rc.bottom > 0 ? rc.bottom : 1);
-                ImGui::GetIO().AddMousePosEvent(GET_X_LPARAM(lp) * MENU_W / cw,
+                ImGui::GetIO().AddMousePosEvent(GET_X_LPARAM(lp) * MENU_TEX_W / cw,
                                                 GET_Y_LPARAM(lp) * MENU_H / ch);
             }
             else
@@ -1547,14 +1560,11 @@ namespace
         }
         if (SectionHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
         {
-            static int selectedTitle=0;
+            MappingTitle();
+            int& selectedTitle=g_mappingPage.selectedTitle;
             auto& moreOpen=g_mappingPage.moreOpen;
             auto& optionsOpen=g_mappingPage.optionsOpen;
-            static GameTitle previousTitle=GameTitle::None;
-            const auto active=TitleAdapter_GetActiveTitle();
-            const int activeIndex=weapon_interaction::TitleIndex(active);
-            if(active!=previousTitle&&activeIndex>=0) selectedTitle=activeIndex;
-            previousTitle=active;
+            const int activeIndex=weapon_interaction::TitleIndex(TitleAdapter_GetActiveTitle());
             ImGui::Text("Detected left: %s",VR_ControllerProfileName(true));
             ImGui::Text("Detected right: %s",VR_ControllerProfileName(false));
             changed|=ImGui::Checkbox("Remap buttons (off: every button is the game's own)",&g_config.vr_action_mapping);
@@ -4115,6 +4125,8 @@ namespace
         ImGui::TextDisabled("Words can come in any order. \"Quotes\" keep words together, -word leaves one out, and OR finds either.");
     }
 
+#include "menu_controls_diagram.inl"
+
     void DrawUI()
     {
         // The search index is built from the first frame something is typed, and again each time searching starts over.
@@ -4222,8 +4234,18 @@ namespace
         ImGui::Separator();
         ImGui::TextDisabled("L3+R3 recenters and closes this menu; F1 only closes it. Settings save automatically.");
         ImGui::End();
+
+        // The side panel, to the right of the menu in the same picture: shown in the headset only while it has
+        // something for the page (Menu_SidePanelShown).
+        g_sidePanelShown = g_activeCategory == Cat_Controls && !searching && !g_jump.active;
+        DrawSidePanel();
     }
 } // namespace
+
+bool Menu_SidePanelShown()
+{
+    return g_ready && g_open && g_sidePanelShown;
+}
 
 void Menu_PostLiveResize()
 {
@@ -4282,7 +4304,7 @@ bool Menu_Init(HWND gameWindow, ID3D11Device* device, ID3D11DeviceContext* conte
     InitializeCriticalSection(&g_cs);
 
     D3D11_TEXTURE2D_DESC td{};
-    td.Width = MENU_W;
+    td.Width = MENU_TEX_W;
     td.Height = MENU_H;
     td.MipLevels = 1;
     td.ArraySize = 1;
@@ -4422,7 +4444,7 @@ ID3D11Texture2D* Menu_Render()
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
-    ImGui::GetIO().DisplaySize = ImVec2((float)MENU_W, (float)MENU_H); // our texture, not the window
+    ImGui::GetIO().DisplaySize = ImVec2((float)MENU_TEX_W, (float)MENU_H); // our texture, not the window
     // The Win32 backend updates the desktop mouse during NewFrame. Apply the
     // VR ray afterward so it is the final pointer sample ImGui consumes.
     ImGuiIO& io = ImGui::GetIO();
@@ -4459,7 +4481,7 @@ ID3D11Texture2D* Menu_Render()
     }
 #endif
     if (pointerHit)
-        io.AddMousePosEvent(pointerU * MENU_W, pointerV * MENU_H);
+        io.AddMousePosEvent(pointerU * MENU_TEX_W, pointerV * MENU_H);
     else
         io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     static bool previousVrPressed = false;
@@ -4480,7 +4502,7 @@ ID3D11Texture2D* Menu_Render()
     const float clear[4] = {0, 0, 0, 0}; // transparent: only the window itself shows on the panel
     g_ctx->OMSetRenderTargets(1, &g_rtv, nullptr);
     g_ctx->ClearRenderTargetView(g_rtv, clear);
-    D3D11_VIEWPORT vp{0, 0, (float)MENU_W, (float)MENU_H, 0, 1};
+    D3D11_VIEWPORT vp{0, 0, (float)MENU_TEX_W, (float)MENU_H, 0, 1};
     g_ctx->RSSetViewports(1, &vp);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     backup.Restore(g_ctx);

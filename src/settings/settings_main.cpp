@@ -120,12 +120,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
     windowClass.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&windowClass);
 
-    // The menu's own shape, as large as the screen allows: the picture is stretched, so a click still lands by fraction.
+    // The menu's own shape with its side panel beside it, as large as the screen allows: the picture is stretched, so a
+    // click still lands by fraction.
     RECT work{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-    const float fit = (std::min)(1.0f, (std::min)((work.right - work.left) * 0.95f / MENU_W,
+    const float fit = (std::min)(1.0f, (std::min)((work.right - work.left) * 0.95f / MENU_TEX_W,
                                                   (work.bottom - work.top) * 0.9f / MENU_H));
-    RECT frame{0, 0, static_cast<LONG>(MENU_W * fit), static_cast<LONG>(MENU_H * fit)};
+    RECT frame{0, 0, static_cast<LONG>(MENU_TEX_W * fit), static_cast<LONG>(MENU_H * fit)};
     const DWORD style = WS_OVERLAPPEDWINDOW;
     AdjustWindowRect(&frame, style, FALSE);
     const HWND window = CreateWindowW(windowClass.lpszClassName, gameOpen ? kTitleGameOpen : kTitle, style, CW_USEDEFAULT,
@@ -134,7 +135,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
 
     DXGI_SWAP_CHAIN_DESC swap{};
     swap.BufferCount = 2;
-    swap.BufferDesc.Width = MENU_W;
+    swap.BufferDesc.Width = MENU_TEX_W;
     swap.BufferDesc.Height = MENU_H;
     swap.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     swap.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -159,7 +160,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
     LiveMenu live;
     const auto bufferFormat = [&](DXGI_FORMAT format)
     {
-        return SUCCEEDED(chain->ResizeBuffers(2, MENU_W, MENU_H, format, 0));
+        return SUCCEEDED(chain->ResizeBuffers(2, MENU_TEX_W, MENU_H, format, 0));
     };
     while (running)
     {

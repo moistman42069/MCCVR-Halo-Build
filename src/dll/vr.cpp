@@ -15918,10 +15918,38 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         NativeMenuPointer_FrameStatus(hit ? "hit" : "ray-miss");
     }
 
+    // The menu's side panel (Menu_SidePanelShown): the strip right of the menu in the same texture, on a quad of its
+    // own hinged a little way off the menu's right edge and turned toward the player. Built from the same config as
+    // the menu's quad, so the pointer and the picture agree.
+    XrCompositionLayerQuad MenuSideQuad(bool headLocked)
+    {
+        constexpr float kGapM = 0.03f, kTurn = 0.35f;   // about 20 degrees
+        const float width = g_config.menu_width_m * MENU_SIDE_W / MENU_W;
+        XrCompositionLayerQuad q = MakeQuad(g_menuChain, MENU_SIDE_W, MENU_H, width, g_config.menu_distance_m,
+            g_config.menu_height_m, XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
+                XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT, headLocked, g_config.menu_side_m);
+        q.subImage.imageRect.offset.x = MENU_W;
+        const float c = std::cos(kTurn), s = std::sin(kTurn);
+        const float hingeX = g_config.menu_side_m + g_config.menu_width_m * 0.5f + kGapM;
+        const XrVector3f local{hingeX + c * width * 0.5f, g_config.menu_height_m,
+                               -g_config.menu_distance_m + s * width * 0.5f};
+        const XrQuaternionf base = headLocked ? XrQuaternionf{0, 0, 0, 1} : g_centerRot;
+        q.pose.orientation = QuatFromAxes(Rotate(base, {c, 0, s}), Rotate(base, {0, 1, 0}), Rotate(base, {-s, 0, c}));
+        if (headLocked)
+            q.pose.position = local;
+        else
+        {
+            const XrVector3f off = Rotate(base, local);
+            q.pose.position = {g_centerPos.x + off.x, g_centerPos.y + off.y, g_centerPos.z + off.z};
+        }
+        return q;
+    }
+
     void UpdateMenuPointer(bool headLocked)
     {
         static bool triggerPressed = false;
         static bool hadHit = false;
+        static bool hadSide = false;
         static float smoothU = 0.5f, smoothV = 0.5f;
         static uint64_t lastDiagMs = 0;
         static bool dragging = false;
@@ -15964,20 +15992,35 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             g_config.menu_width_m * MENU_H / MENU_W,
             g_config.menu_height_m, g_config.menu_side_m);
 
-        if (hit.hit)
+        // Off the menu, the side panel while it shows. The pointer goes to the menu as a place across the whole
+        // texture: the menu, then the side panel's strip.
+        bool anyHit = hit.hit, onSide = false;
+        float textureU = hit.u * MENU_W / MENU_TEX_W, textureV = hit.v;
+        if (!hit.hit && Menu_SidePanelShown())
         {
-            if (!hadHit)
+            float u = 0.0f, v = 0.0f;
+            if (game_menu_pointer::RayHit(MenuSideQuad(headLocked), g_rightAimPose, g_headPose, headLocked, u, v))
             {
-                smoothU = hit.u;
-                smoothV = hit.v;
+                anyHit = onSide = true;
+                textureU = (MENU_W + u * MENU_SIDE_W) / static_cast<float>(MENU_TEX_W);
+                textureV = v;
+            }
+        }
+        if (anyHit)
+        {
+            if (!hadHit || onSide != hadSide)
+            {
+                smoothU = textureU;
+                smoothV = textureV;
             }
             else
             {
-                smoothU += (hit.u - smoothU) * 0.35f;
-                smoothV += (hit.v - smoothV) * 0.35f;
+                smoothU += (textureU - smoothU) * 0.35f;
+                smoothV += (textureV - smoothV) * 0.35f;
             }
         }
-        hadHit = hit.hit;
+        hadHit = anyHit;
+        hadSide = onSide;
 
         const bool wasTriggerPressed = triggerPressed;
         if (!triggerPressed && g_padState.trigR >= 0.65f)
@@ -16049,12 +16092,12 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             }
             // Swallow the click and the scroll so dragging never also drives a
             // widget underneath the handle.
-            Menu_SetVrPointer(hit.hit, smoothU, smoothV, false, 0.0f);
+            Menu_SetVrPointer(anyHit, smoothU, smoothV, false, 0.0f);
             return;
         }
 
         const float scroll = stickY * 0.12f;
-        Menu_SetVrPointer(hit.hit, smoothU, smoothV, triggerPressed, scroll);
+        Menu_SetVrPointer(anyHit, smoothU, smoothV, triggerPressed, scroll);
 
         const uint64_t now = GetTickCount64();
         if (now - lastDiagMs >= 2000)
@@ -16208,7 +16251,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 
         // Menu: fixed-size texture on its own quad. Its render target uses the
         // non-sRGB sibling format so a raw GPU copy lands with correct gamma.
-        if (!CreateChain(MENU_W, MENU_H, g_menuChain, g_menuImages, g_menuRtvs, "menu"))
+        if (!CreateChain(MENU_TEX_W, MENU_H, g_menuChain, g_menuImages, g_menuRtvs, "menu"))
         {
             Fail("Could not create the menu swapchain");
             return false;
@@ -17890,7 +17933,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             }
         }
 
-        XrCompositionLayerQuad screenQuad, menuQuad, reticleQuad, secondaryReticleQuad, scopeQuad, fadeQuad, nativeCursorQuad, nativeSubtitleQuad, noticeQuad;
+        XrCompositionLayerQuad screenQuad, menuQuad, menuSideQuad, reticleQuad, secondaryReticleQuad, scopeQuad, fadeQuad, nativeCursorQuad, nativeSubtitleQuad, noticeQuad;
         // A host's own UI of this frame, shown over the stereo picture (vr_host_ui_panel.inl).
         XrCompositionLayerQuad hostUiQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
         bool hostUiPanelQueued = false;
@@ -20622,7 +20665,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_menuChain, &ai, &idx)) &&
                             XR_SUCCEEDED(xrWaitSwapchainImage(g_menuChain, &wi2)))
                         {
-                            Blit(menuTex, md, g_menuImages[idx], MENU_W, MENU_H,
+                            Blit(menuTex, md, g_menuImages[idx], MENU_TEX_W, MENU_H,
                                  GetRtv(g_menuImages, g_menuRtvs, idx));
                             xrReleaseSwapchainImage(g_menuChain, &ri);
                             // Placement comes from the config, which the grab
@@ -20638,6 +20681,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                                 menuHeadLocked,
                                                 g_config.menu_side_m);
                             layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&menuQuad));
+                            if (Menu_SidePanelShown())
+                            {
+                                menuSideQuad = MenuSideQuad(menuHeadLocked);
+                                layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&menuSideQuad));
+                            }
                         }
                     }
                 }
