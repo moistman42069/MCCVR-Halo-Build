@@ -273,19 +273,22 @@ namespace
                 {sources[count]=source;names[count]=vr_mapping::kSourceNames[source];++count;}
         }
     };
+    // Two thirds of the width, so the buttons beside it stay in reach. The action names the group the dropdown is in, so the
+    // label is usually hidden ("##...").
     bool MappingCombo(const char* label,int& source,bool automatic)
     {
         static const MappingChoices withAutomatic(true),listed(false);
         const auto& choices=automatic?withAutomatic:listed;
         int index=0;
         for(int i=0;i<choices.count;++i) if(choices.sources[i]==source) index=i;
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x*2.0f/3.0f);
         if(!Combo(label,&index,choices.names,choices.count)) return false;
         source=choices.sources[index];
         return true;
     }
     // An input's options beside its dropdown: Hold or Toggle, and the controls held before its press (up to two, each with
     // Remove, then "Hold a control first" while there is room). Behind "Options"; a summary while closed.
-    bool InputOptions(const char* name,vr_mapping::HeldControls& held,vr_mapping::InputMode& mode,bool& open)
+    bool InputOptions(vr_mapping::HeldControls& held,vr_mapping::InputMode& mode,bool& open)
     {
         bool changed=false;
         ImGui::SameLine();
@@ -310,8 +313,9 @@ namespace
         {
             if(held[i]==vr_mapping::Unbound) continue;
             ImGui::PushID(static_cast<int>(i));
-            const std::string label=std::string(name)+", held first";
-            changed|=MappingCombo(label.c_str(),held[i],false);
+            ImGui::TextDisabled("Held first:");
+            ImGui::SameLine();
+            changed|=MappingCombo("##held",held[i],false);
             ImGui::SameLine();
             if(ImGui::SmallButton("Remove")) {held[i]=vr_mapping::Unbound;changed=true;}
             ImGui::PopID();
@@ -330,9 +334,10 @@ namespace
         ImGui::Unindent();
         return changed;
     }
-    // A row's further inputs (VR Mappings): each with its dropdown, Remove and its options, then "Add an input" while there
-    // is room. Inputs stay first; `open` counts the ones shown, one just added still empty among them.
-    bool MoreInputsList(const char* name,vr_mapping::Input* inputs,unsigned count,int& open,bool* optionsOpen)
+    // A row's further inputs (VR Mappings), under its own in the action's group: each with its dropdown, Remove and its
+    // options, then "Add an input" while there is room. Inputs stay first; `open` counts the ones shown, one just added
+    // still empty among them.
+    bool MoreInputsList(vr_mapping::Input* inputs,unsigned count,int& open,bool* optionsOpen)
     {
         bool changed=false;
         unsigned listed=0;
@@ -341,8 +346,7 @@ namespace
         for(unsigned i=0;i<shown;++i)
         {
             ImGui::PushID(static_cast<int>(i+1));
-            const std::string label=std::string(name)+", input "+std::to_string(i+2);
-            if(MappingCombo(label.c_str(),inputs[i].press,false))
+            if(MappingCombo("##input",inputs[i].press,false))
             {
                 // No press, no input: what it held first goes too.
                 if(inputs[i].press==vr_mapping::Unbound) {inputs[i]=vr_mapping::Input{};optionsOpen[i]=false;}
@@ -359,7 +363,7 @@ namespace
                 ImGui::PopID();
                 continue;
             }
-            changed|=InputOptions(label.c_str(),inputs[i].held,inputs[i].mode,optionsOpen[i]);
+            changed|=InputOptions(inputs[i].held,inputs[i].mode,optionsOpen[i]);
             ImGui::PopID();
         }
         if(shown<count&&ImGui::SmallButton("Add an input")) open=static_cast<int>(shown)+1;
@@ -1534,16 +1538,17 @@ namespace
             {
                 ImGui::PushID(static_cast<int>(action));
                 SettingGap();
-                // Laid out like every other dropdown, its action named beside it, so it is one setting for search too.
+                // Each action is a group named for it, its inputs under it: one setting for search, found by its name.
                 const char* name=vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action));
+                SettingGroup group(name);
                 auto& row=g_config.vr_inputs[selectedTitle][action];
-                if(MappingCombo(name,g_config.vr_bindings[selectedTitle][action],true))
+                if(MappingCombo("##own",g_config.vr_bindings[selectedTitle][action],true))
                 {
                     if(g_config.vr_bindings[selectedTitle][action]!=vr_mapping::Automatic)
                         g_config.vr_action_mapping=true;
                     changed=true;
                 }
-                if(InputOptions(name,row.held,row.mode,optionsOpen[selectedTitle][action][0]))
+                if(InputOptions(row.held,row.mode,optionsOpen[selectedTitle][action][0]))
                 {
                     g_config.vr_action_mapping=true;
                     changed=true;
@@ -1557,7 +1562,7 @@ namespace
                         ImGui::TextDisabled("Follows the game's own layout.");
                 }
                 if(haveBindings&&!bindings[action]) ImGui::TextDisabled("No native action binding available in this title.");
-                if(MoreInputsList(name,row.more.data(),vr_mapping::kMoreInputs,moreOpen[selectedTitle][action],
+                if(MoreInputsList(row.more.data(),vr_mapping::kMoreInputs,moreOpen[selectedTitle][action],
                     &optionsOpen[selectedTitle][action][1]))
                 {
                     for(const auto& more:row.more)
@@ -1583,13 +1588,13 @@ namespace
                 }
                 ImGui::PushID(static_cast<int>(100+action));
                 SettingGap();
-                const char* name=vr_mapping::kVehicleNames[action];
+                SettingGroup group(vr_mapping::kVehicleNames[action]);
                 auto& row=g_config.vr_vehicle_bindings[selectedTitle][action];
                 bool* open=optionsOpen[selectedTitle][vr_mapping::Count+action];
-                bool seatChanged=MappingCombo(name,row[0].press,false);
+                bool seatChanged=MappingCombo("##own",row[0].press,false);
                 if(seatChanged&&row[0].press==vr_mapping::Unbound) {row[0]=vr_mapping::Input{};open[0]=false;}
-                seatChanged|=InputOptions(name,row[0].held,row[0].mode,open[0]);
-                seatChanged|=MoreInputsList(name,row.data()+1,vr_mapping::kMoreInputs,
+                seatChanged|=InputOptions(row[0].held,row[0].mode,open[0]);
+                seatChanged|=MoreInputsList(row.data()+1,vr_mapping::kMoreInputs,
                     moreOpen[selectedTitle][vr_mapping::Count+action],open+1);
                 if(seatChanged)
                 {
