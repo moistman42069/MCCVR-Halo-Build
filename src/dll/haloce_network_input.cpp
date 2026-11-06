@@ -136,15 +136,21 @@ bool Adapt(const void* source,PlayerAction* output) noexcept
     // SEAT CONVERGENCE, upstream of replication (seat_converge_logic.h): the action's one direction is what the host
     // receives and what CE's crosshair test then runs along from the seat's own camera, so in a seat it is the aim
     // bent from that camera through the point the hand's ray hits. CE's network action has ONE direction for facing,
-    // aim and look alike, so a seat that DRIVES keeps the hand's own forward (its heading steers the hull); the
-    // fire's local re-aim still serves it. A refusal keeps the forward too, counted by the seat's own line.
+    // aim and look alike. A seat that drives and fires (the Banshee, the Ghost, the Scorpion) takes it like a
+    // gunner's: nothing else brings its shots to the point (CE's fire-time re-aim stands down unless co-op safe shots
+    // is off: no reader tells it a session is solo), and the hull then steers along the line from the seat's camera
+    // through that point, which
+    // differs from the hand's by the camera's height above the vehicle. A seat that only DRIVES keeps the hand's
+    // own forward: it fires nothing, and its heading steers the hull. A refusal keeps the forward too, counted by the
+    // seat's own line.
     HaloCESeatAim seatAim{};
     bool seatConverged=false;
-    if (!player.onFoot&&HaloCEUnitControl_SeatAim(player.unit,seatAim)&&!seatAim.sight.role.driver&&
+    if (!player.onFoot&&HaloCEUnitControl_SeatAim(player.unit,seatAim)&&
+        (!seatAim.sight.role.driver||seatAim.sight.role.gunner)&&
         seatAim.sight.parent==player.parent&&seatAim.sight.seat==seat)
     { direction={seatAim.aim[0],seatAim.aim[1],seatAim.aim[2]};seatConverged=true; }
     else if (!player.onFoot&&seatAim.why==seat_converge::Why::Converged)
-        seatAim.why=seat_converge::Why::PolicyOff;   // a driver's one direction steers
+        seatAim.why=seat_converge::Why::PolicyOff;   // a seat that only drives: its one direction steers
     __try
     {
         before=*output;
