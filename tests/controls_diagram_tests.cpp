@@ -58,8 +58,8 @@ void CheckDefaults()
         "the right stick's up and down count on foot only");
     Check(Has(seat,RightGrip,"Banshee bomb")&&Has(seat,RightStickClick,"Banshee bomb")&&Has(seat,A,"Banshee trick"),
         "the Banshee's seat rows");
-    Check(!Mentions(seat,X,"Reload")&&Has(seat,X,"Camera tethering mode (hold: recentre the view)")&&
-        Has(seat,Y,"Next vehicle camera (hold: recentre the view)"),"left X and Y are the vehicle cameras' in a seat");
+    Check(!Mentions(seat,X,"Reload")&&Has(seat,X,"Camera tether (hold: recentre view)")&&
+        Has(seat,Y,"Next camera (hold: recentre view)"),"left X and Y are the vehicle cameras' in a seat");
     Check(Has(seat,Y,"Pause (B held)"),"the pause still reads left Y in a seat");
 }
 
@@ -118,6 +118,29 @@ void CheckLayout()
     Check(Has(Build(setup),LeftStick,"D-pad up: Flashlight / night vision")&&
         !Mentions(Build(setup),RightStick,"Flashlight"),"the D-pad gesture's D-pad is the left stick");
 }
+
+void CheckOtherRoles()
+{
+    Rows rows;
+    Setup setup=rows.Make(Context::OnFoot);
+    Gestures gestures{};
+    gestures.twoHanded=gestures.holsters=gestures.gestureMelee=gestures.physicalCrouch=true;
+    gestures.holsterLocation=1;
+    auto lines=OtherRoles(setup,gestures);
+    const auto has=[&](const char* line) { return std::find(lines.begin(),lines.end(),std::string(line))!=lines.end(); };
+    Check(has("Left grip on the front of the gun: aim with both hands.")&&
+        has("Right grip at your weapon-side hip: switch weapons.")&&has("Punch away from your body: melee.")&&
+        has("Lower your head: crouch.")&&
+        has("D-pad: hold the left controller next to your head, then push the left stick."),
+        "the grips' and the body's jobs, as set");
+    Check(!has("Swing both arms: run.")&&!has("Strike with a hand or the gun: melee."),"only what is turned on");
+    setup.leftHanded=true;
+    lines=OtherRoles(setup,gestures);
+    Check(has("Right grip on the front of the gun: aim with both hands."),"left-handed play swaps the grips");
+    setup.context=Context::Vehicle;
+    lines=OtherRoles(setup,gestures);
+    Check(lines.size()==1,"in a vehicle only the D-pad is said");
+}
 }
 
 int main()
@@ -125,6 +148,7 @@ int main()
     CheckDefaults();
     CheckHandsAndChords();
     CheckLayout();
+    CheckOtherRoles();
     std::printf("Controls diagram: %u checks passed\n",checks);
     return 0;
 }

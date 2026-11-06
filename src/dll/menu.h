@@ -10,7 +10,7 @@ inline constexpr int MENU_W = 1280;
 inline constexpr int MENU_H = 900;
 // The side panel's strip, to the right of the menu in the same texture: while Menu_SidePanelShown the headset shows it as
 // a panel of its own against the menu's right edge, and the desktop settings window widens to show it.
-inline constexpr int MENU_SIDE_W = 860;
+inline constexpr int MENU_SIDE_W = 1160;
 inline constexpr int MENU_TEX_W = MENU_W + MENU_SIDE_W;
 
 bool Menu_Init(HWND gameWindow, ID3D11Device* device, ID3D11DeviceContext* context, DXGI_FORMAT rtFormat);

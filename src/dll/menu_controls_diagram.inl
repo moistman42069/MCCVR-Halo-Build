@@ -148,51 +148,64 @@ void DrawControlsDiagram()
     ImGui::PushFont(g_headingFont);
     ImGui::TextColored(Rgb(kAccent), "Your controls");
     ImGui::PopFont();
-    ImGui::TextDisabled("%s, %s. Change the game under VR Mappings' Settings for.",
-                        weapon_interaction::kTitleNames[title],
-                        kContextNames[static_cast<unsigned>(g_controlsDiagram.context)]);
+    ImGui::TextDisabled("%s. Change the game under VR Mappings' Settings for.", weapon_interaction::kTitleNames[title]);
     if (!g_config.vr_action_mapping)
         ImGui::TextDisabled("Remap buttons is off: buttons are the game's own.");
     else if (!layoutKnown)
         ImGui::TextDisabled("Automatic actions show the usual layout until the game is running.");
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    // The contexts, down the left side.
-    const float columnWidth = 160.0f;
-    const ImVec2 areaMin = ImGui::GetCursorScreenPos();
-    const ImVec2 areaMax(ImGui::GetWindowPos().x + ImGui::GetWindowSize().x - ImGui::GetStyle().WindowPadding.x,
-                         ImGui::GetWindowPos().y + ImGui::GetWindowSize().y - ImGui::GetStyle().WindowPadding.y);
-    ImGui::BeginGroup();
-    ImGui::TextDisabled("Show");
+    // The contexts, side by side under the heading.
     for (unsigned c = 0; c < static_cast<unsigned>(Context::Count); ++c)
     {
+        if (c) ImGui::SameLine();
         const bool selected = g_controlsDiagram.context == static_cast<Context>(c);
         if (selected) ImGui::PushStyleColor(ImGuiCol_Button, Rgb(kSelected));
-        if (ImGui::Button(kContextNames[c], ImVec2(columnWidth - 12.0f, 0.0f)))
+        if (ImGui::Button(kContextNames[c], ImVec2(190.0f, 0.0f)))
             g_controlsDiagram.context = static_cast<Context>(c);
         if (selected) ImGui::PopStyleColor();
     }
-    ImGui::EndGroup();
-    // The left controller's callouts run under the context buttons, so the controllers get the width.
-    const float leftTop = ImGui::GetItemRectMax().y + 12.0f;
+    ImGui::Separator();
+    ImGui::Spacing();
 
-    // The diagram: the two controllers side by side, each control's callout on its own controller's outer side.
     ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.82f);
+    const ImVec2 areaMin = ImGui::GetCursorScreenPos();
+    const ImVec2 areaMax(ImGui::GetWindowPos().x + ImGui::GetWindowSize().x - ImGui::GetStyle().WindowPadding.x,
+                         ImGui::GetWindowPos().y + ImGui::GetWindowSize().y - ImGui::GetStyle().WindowPadding.y);
     const float x0 = areaMin.x, x1 = areaMax.x;
-    const float top = areaMin.y, bottom = areaMax.y;
-    const float calloutWidth = 196.0f, pad = 8.0f;
+
+    // Under the diagram: what the grips and the body do that no callout shows, as set (OtherRoles).
+    Gestures gestures{};
+    gestures.twoHanded = g_config.two_handed_aim;
+    gestures.holsters = g_config.weapon_holsters;
+    gestures.holsterLocation = g_config.weapon_holster_location;
+    gestures.manualReload = g_config.manual_reload;
+    gestures.gestureMelee = g_config.gesture_melee;
+    gestures.physicalMelee = g_config.physical_melee;
+    gestures.shakeReload = g_config.dual_wield_shake_reload;
+    gestures.physicalCrouch = g_config.physical_crouch;
+    gestures.physicalRunning = g_config.physical_running;
+    gestures.dpadHand = g_config.dpad_hand;
+    const auto roles = OtherRoles(setup, gestures);
+    const float bullet = ImGui::GetFontSize();
+    const float notesWrap = (x1 - x0) - bullet;
+    float notesHeight = ImGui::GetFontSize() + 6.0f;
+    for (const auto& line : roles)
+        notesHeight += ImGui::CalcTextSize(line.c_str(), nullptr, false, notesWrap).y + 3.0f;
+
+    // The diagram: the two controllers side by side, each control's callout on its own controller's outer side, and
+    // each action in a callout a box of its own.
+    const float top = areaMin.y, bottom = areaMax.y - notesHeight - 14.0f;
+    const float calloutWidth = 360.0f, pad = 6.0f, chipPad = 3.0f, chipGap = 3.0f;
     const float scale = std::min(1.8f, ((x1 - x0) - 2.0f * calloutWidth - 56.0f) / (2.0f * touch_drawing::kWidth));
     const float drawWidth = touch_drawing::kWidth * scale, drawHeight = touch_drawing::kHeight * scale;
     const float midX = (x0 + x1) * 0.5f;
-    const float drawTop = leftTop + std::max(0.0f, ((bottom - leftTop) - drawHeight) * 0.3f);
+    const float drawTop = top + std::max(0.0f, ((bottom - top) - drawHeight) * 0.15f);
     const ImVec2 leftOrigin(midX - 8.0f - drawWidth, drawTop), rightOrigin(midX + 8.0f, drawTop);
 
     // Lay each side's callouts out by its anchors' heights, one under another, inside the area.
     struct Callout { Control control; ImVec2 anchor; ImVec2 min, max; float titleHeight; };
     Callout callouts[ControlCount]{};
-    const float wrap = calloutWidth - 2.0f * pad;
-    const float lineGap = 2.0f;
+    const float chipWrap = calloutWidth - 2.0f * pad - 2.0f * chipPad;
+    float lowest = drawTop + drawHeight;
     for (int side = 0; side < 2; ++side)
     {
         const bool left = side == 0;
@@ -208,9 +221,9 @@ void DrawControlsDiagram()
             callout.titleHeight = ImGui::GetFontSize();
             float height = pad + callout.titleHeight;
             if (labels[c].empty())
-                height += lineGap + ImGui::GetFontSize();
+                height += chipGap + ImGui::GetFontSize();
             for (const auto& line : labels[c])
-                height += lineGap + ImGui::CalcTextSize(line.c_str(), nullptr, false, wrap).y;
+                height += chipGap + ImGui::CalcTextSize(line.c_str(), nullptr, false, chipWrap).y + 2.0f * chipPad;
             height += pad;
             const float x = left ? x0 : x1 - calloutWidth;
             callout.min = {x, callout.anchor.y - height * 0.5f};
@@ -218,9 +231,8 @@ void DrawControlsDiagram()
             list[count++] = &callout;
         }
         std::sort(list, list + count, [](const Callout* a, const Callout* b) { return a->anchor.y < b->anchor.y; });
-        const float gap = 8.0f;
-        const float sideTop = left ? leftTop : top;
-        float floor = sideTop;
+        const float gap = 6.0f;
+        float floor = top;
         for (int i = 0; i < count; ++i)
         {
             const float height = list[i]->max.y - list[i]->min.y;
@@ -237,11 +249,21 @@ void DrawControlsDiagram()
             {
                 const float height = list[i]->max.y - list[i]->min.y;
                 list[i]->max.y = std::min(list[i]->max.y, ceiling);
-                list[i]->min.y = std::max(sideTop, list[i]->max.y - height);
+                list[i]->min.y = std::max(top, list[i]->max.y - height);
                 list[i]->max.y = list[i]->min.y + height;
                 ceiling = list[i]->min.y - gap;
             }
+            // Taller than the area: one under another from the top, never overlapping; the notes go below them.
+            floor = top;
+            for (int i = 0; i < count; ++i)
+            {
+                const float height = list[i]->max.y - list[i]->min.y;
+                list[i]->min.y = std::max(list[i]->min.y, floor);
+                list[i]->max.y = list[i]->min.y + height;
+                floor = list[i]->max.y + gap;
+            }
         }
+        lowest = std::max(lowest, count ? list[count - 1]->max.y : top);
     }
 
     // What the pointer is on: a callout, or a control on the drawing.
@@ -294,16 +316,33 @@ void DrawControlsDiagram()
         at.y += callout.titleHeight;
         if (labels[c].empty())
         {
-            at.y += lineGap;
-            draw->AddText(at, ImGui::GetColorU32(Rgb(kTextDim)), "Nothing");
+            at.y += chipGap;
+            draw->AddText(at, ImGui::GetColorU32(Rgb(kTextDim)), "No mapping");
         }
+        // Each action in its own box, so one never runs into the next.
         for (const auto& line : labels[c])
         {
-            at.y += lineGap;
-            draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), at, ImGui::GetColorU32(Rgb(kTextMain)),
-                          line.c_str(), nullptr, wrap);
-            at.y += ImGui::CalcTextSize(line.c_str(), nullptr, false, wrap).y;
+            at.y += chipGap;
+            const float textHeight = ImGui::CalcTextSize(line.c_str(), nullptr, false, chipWrap).y;
+            const ImVec2 chipMax(callout.max.x - pad, at.y + textHeight + 2.0f * chipPad);
+            draw->AddRectFilled(at, chipMax, ImGui::GetColorU32(Rgb(on ? kSelected : kRaised)), 4.0f);
+            draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(at.x + chipPad, at.y + chipPad),
+                          ImGui::GetColorU32(Rgb(kTextMain)), line.c_str(), nullptr, chipWrap);
+            at.y = chipMax.y;
         }
+    }
+
+    // The other jobs, under the diagram and the callouts.
+    ImVec2 at(x0, std::max(areaMax.y - notesHeight, lowest + 14.0f));
+    draw->AddLine(ImVec2(x0, at.y - 6.0f), ImVec2(x1, at.y - 6.0f), ImGui::GetColorU32(Rgb(kSeparator)));
+    draw->AddText(at, ImGui::GetColorU32(Rgb(kAccent)), "Not shown above");
+    at.y += ImGui::GetFontSize() + 6.0f;
+    for (const auto& line : roles)
+    {
+        draw->AddCircleFilled(ImVec2(at.x + bullet * 0.35f, at.y + bullet * 0.5f), 2.5f, ImGui::GetColorU32(Rgb(kTextDim)));
+        draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(at.x + bullet, at.y),
+                      ImGui::GetColorU32(Rgb(kTextMain)), line.c_str(), nullptr, notesWrap);
+        at.y += ImGui::CalcTextSize(line.c_str(), nullptr, false, notesWrap).y + 3.0f;
     }
     ImGui::PopFont();
 }
