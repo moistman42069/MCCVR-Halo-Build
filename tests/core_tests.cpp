@@ -15694,11 +15694,11 @@ int main()
                   untouched.title_profiles[1].hud_size == 0.46f &&
                   untouched.title_profiles[1].hud_aspect == 1.22f &&
                   untouched.title_profiles[1].hud_vertical_offset == -150.0f &&
-                  untouched.title_profiles[6].hud_size == 0.43f &&
-                  untouched.title_profiles[6].hud_aspect == 1.22f &&
-                  untouched.title_profiles[6].hud_vertical_offset == 16.0f,
-              "HUD per game: a fresh configuration starts Halo 3, ODST, Reach and both Halo 2s at the tester's layouts "
-              "and Halo CE at the shared one");
+                  untouched.title_profiles[6].hud_size == 0.50f &&
+                  untouched.title_profiles[6].hud_aspect == 0.75f &&
+                  untouched.title_profiles[6].hud_vertical_offset == -125.0f,
+              "HUD per game: a fresh configuration starts Halo 3, ODST, Reach, both Halo 2s and Halo CE at the "
+              "tester's layouts");
         Check(untouched.title_profiles[kTitleProfileHalo4].hud_size == 0.41f &&
                   untouched.title_profiles[kTitleProfileHalo4].hud_aspect == 1.00f &&
                   untouched.title_profiles[kTitleProfileHalo4].hud_vertical_offset == -117.0f,
@@ -15724,17 +15724,20 @@ int main()
         {
             std::ofstream file(crosshairPath);
             file << "config_version = 6\n";
-            file << "hud_size = 0.50\n";
+            file << "hud_size = 0.55\n";
             file << "hud_aspect = 1.10\n";
+            file << "hud_curvature = 0.40\n";
             file << "reach_hud_size = 0.39\n";
             file << "halo3_hud_aspect = 0.91\n";
         }
         ConfigLoad(crosshairPath.c_str());
-        // Reach names its own size; its aspect starts at Reach's own start, not the shared key. Halo 3's size starts at
-        // its own start; Halo CE, which has none, at the shared key.
+        // Reach names its own size; its aspect starts at Reach's own start, not the shared key. Halo 3's and Halo CE's
+        // sizes start at their own starts; a curvature no game has a start of its own for, at the shared key.
         Check(g_config.hud_size == 0.39f && g_config.hud_aspect == kHudStarts[kTitleProfileReach].aspect &&
-                  g_config.base_tunables.hud_size == 0.50f && g_config.title_profiles[0].hud_size == 0.40f &&
-                  g_config.title_profiles[0].hud_aspect == 0.91f && g_config.title_profiles[6].hud_size == 0.50f,
+                  g_config.base_tunables.hud_size == 0.55f && g_config.title_profiles[0].hud_size == 0.40f &&
+                  g_config.title_profiles[0].hud_aspect == 0.91f && g_config.title_profiles[6].hud_size == 0.50f &&
+                  g_config.title_profiles[6].hud_aspect == 0.75f &&
+                  std::abs(g_config.title_profiles[6].hud_curvature - 0.40f) < .0001f,
               "HUD per game: with no game running the live HUD layout is Reach's");
         Config_ApplyTitleProfile(0);
         Check(g_config.hud_size == 0.40f && g_config.hud_aspect == 0.91f,
@@ -15745,10 +15748,10 @@ int main()
         ConfigSave();
         Check(g_config.title_profiles[kTitleProfileReach].hud_size == 0.60f &&
                   g_config.title_profiles[kTitleProfileReach].hud_vertical_offset == -8.0f &&
-                  g_config.base_tunables.hud_size == 0.50f && g_config.title_profiles[6].hud_size == 0.50f,
+                  g_config.base_tunables.hud_size == 0.55f && g_config.title_profiles[6].hud_size == 0.50f,
               "HUD per game: an edit with no game running lands in Reach's profile, not the shared key");
         const std::string hudSaved = ReadTextFile(crosshairPath);
-        Check(CountText(hudSaved, "\nhud_size = 0.50") == 1 &&
+        Check(CountText(hudSaved, "\nhud_size = 0.55") == 1 &&
                   CountText(hudSaved, "\nreach_hud_size = 0.6000") == 1 &&
                   CountText(hudSaved, "\nhalo3_hud_size = 0.4000") == 1 &&
                   CountText(hudSaved, "\nhalo1_hud_size = 0.5000") == 1,
@@ -16945,9 +16948,8 @@ int main()
     }
     ConfigLoad(primary.c_str());
     const float migratedCurvature = (0.30f - 1.25f * 0.1f) / 0.60f;
-    // Halo CE starts from the shared HUD keys (the other games, Reach the no-game profile among them, have layouts of
-    // their own).
-    const TitleTunables& sharedHud = g_config.title_profiles[6];
+    // The shared HUD keys themselves: every game has a layout of its own (Reach's is the no-game profile's).
+    const TitleTunables& sharedHud = g_config.base_tunables;
     Check(std::abs(sharedHud.hud_curvature - migratedCurvature) < 0.0001f &&
           sharedHud.hud_aspect == 1.35f &&
           sharedHud.hud_vertical_offset == -125.0f,
@@ -16966,9 +16968,11 @@ int main()
         file << "hud_vertical_offset = -999\n";
     }
     ConfigLoad(primary.c_str());
-    Check(g_config.title_profiles[6].hud_curvature == kHudCurvatureMax &&
-          g_config.title_profiles[6].hud_aspect == kHudAspectMax &&
-          g_config.title_profiles[6].hud_vertical_offset == kHudHeightMin,
+    // Halo CE's curvature, like every game's, starts from the shared key.
+    Check(g_config.base_tunables.hud_curvature == kHudCurvatureMax &&
+          g_config.base_tunables.hud_aspect == kHudAspectMax &&
+          g_config.base_tunables.hud_vertical_offset == kHudHeightMin &&
+          g_config.title_profiles[6].hud_curvature == kHudCurvatureMax,
         "Excessive HUD curvature, aspect, and height values are safely clamped");
 
     {
