@@ -79,11 +79,11 @@ int main()
                 transport,d.action),"unbound/malformed binding has no memory fault");
             for(auto value:transport) Check(value==0,"unbound/malformed binding emits no input");
         }
-        // The seat's rows read the same table: each game's Banshee bomb and trick lie inside it.
+        // The extra rows read the same table: each game's action for each lies inside it, where the game has one.
         for(unsigned a=0;a<vr_mapping::ExtraCount;++a) {
             const unsigned native=vr_mapping::NativeExtraAction(d.title,static_cast<vr_mapping::ExtraAction>(a));
-            Check(d.title==GameTitle::HaloCE?native==vr_mapping::kNoAction:native<d.actionCount,
-                "a seat row's action lies inside its game's binding table (Halo CE has none)");
+            Check(native==vr_mapping::kNoAction||native<d.actionCount,
+                "an extra row's action lies inside its game's binding table");
         }
         uint32_t unavailable[4]{};
         Check(GestureReadNativeBindings(d,0,unavailable,d.actionCount),

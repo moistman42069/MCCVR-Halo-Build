@@ -1,6 +1,6 @@
 # Banshee bomb and trick: native seat actions (2026-11-05)
 
-`vr_mapping::NativeVehicleAction` names, for each game, the native action the VR Mappings seat rows read from the
+`vr_mapping::NativeExtraAction` names, for each game, the native action the VR Mappings seat rows read from the
 player's binding table (`gesture_binding_reader.inl`, the same table and reader as every action row). Each index
 below is one a game's own control builder reads while the player is seated, through the reader the mod already
 signature-matches (`readerRva`). Every index is below that title's `actionCount` (checked in
@@ -50,5 +50,5 @@ Binaries (SHA-256):
   Banshee.
 - The seat rows press whatever button the player's layout gives the action, so a button shared with another action
   presses that one too.
-- Not headset verified. The log line `VR Mappings <game>, in a seat:` names each seat row's controls and the button
+- Not headset verified. The log line `VR Mappings <game>, extra rows:` names each extra row's controls and the button
   the game has for it.

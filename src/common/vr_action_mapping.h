@@ -495,24 +495,56 @@ inline bool HoldsHandOnGun(Action action,const Overrides& bindings,const Inputs&
 // before it had a row. A control already down as a context comes up waits for its release, so the press that boarded
 // presses nothing.
 enum class ExtraContext : unsigned { Seat, OnFoot, Anywhere, Count };
-enum ExtraAction : unsigned { BansheeBomb, BansheeTrick, ExtraCount };
-inline constexpr const char* kExtraKeys[ExtraCount]{"banshee_bomb","banshee_trick"};
-inline constexpr const char* kExtraNames[ExtraCount]{"Banshee bomb","Banshee trick"};
-inline constexpr ExtraContext kExtraContexts[ExtraCount]{ExtraContext::Seat,ExtraContext::Seat};
+// Files keep these keys: a new row goes at the end.
+enum ExtraAction : unsigned { BansheeBomb, BansheeTrick, FireLeft, ReloadLeft, DualWield, PreviousGrenade,
+    ActivateWaypoint, VehicleSecondary, VehicleTrick2, FlyUp, FlyDown, Scoreboard, SpecialAction, ExtraCount };
+inline constexpr const char* kExtraKeys[ExtraCount]{"banshee_bomb","banshee_trick","fire_left","reload_left",
+    "dual_wield","previous_grenade","activate_waypoint","vehicle_secondary","vehicle_trick_2","fly_up","fly_down",
+    "scoreboard","special_action"};
+inline constexpr const char* kExtraNames[ExtraCount]{"Banshee bomb","Banshee trick","Fire left weapon (dual wielding)",
+    "Reload left weapon (dual wielding)","Dual wield (pick up a second weapon)","Previous grenade","Activate waypoint",
+    "Vehicle secondary fire / boost","Second vehicle trick / brake","Fly up","Fly down","Scoreboard",
+    "Special action (some missions)"};
+inline constexpr ExtraContext kExtraContexts[ExtraCount]{ExtraContext::Seat,ExtraContext::Seat,ExtraContext::OnFoot,
+    ExtraContext::OnFoot,ExtraContext::OnFoot,ExtraContext::OnFoot,ExtraContext::OnFoot,ExtraContext::Seat,
+    ExtraContext::Seat,ExtraContext::Seat,ExtraContext::Seat,ExtraContext::Anywhere,ExtraContext::Anywhere};
 using ExtraRow=std::array<Input,kRowInputs>;
 using ExtraBindings=std::array<ExtraRow,ExtraCount>;
 using ExtraTransports=std::array<uint32_t,ExtraCount>;
 inline constexpr ExtraRow kAutomaticRow{Input{kNoneHeld,Automatic},Input{},Input{},Input{}};
 inline constexpr ExtraBindings kExtraDefaults{{
     {Input{kNoneHeld,PrimaryGrip},Input{kNoneHeld,RightClick},Input{},Input{}},
-    {Input{kNoneHeld,A},Input{},Input{},Input{}}}};
+    {Input{kNoneHeld,A},Input{},Input{},Input{}},
+    kAutomaticRow,kAutomaticRow,kAutomaticRow,kAutomaticRow,kAutomaticRow,kAutomaticRow,kAutomaticRow,kAutomaticRow,
+    kAutomaticRow,kAutomaticRow,kAutomaticRow}};
 // Each game's own action for an extra row, as NativeAction names the rows' (kNoAction: the game has none), in the games'
-// order Halo 3, ODST, Reach, Halo 4, Halo CE, Halo 2: the actions each game's control builder reads in the row's
-// context. See BANSHEE-SEAT-ACTIONS-EVIDENCE-2026-11-05.md. Reach and Halo 4 have no bomb of their own: a Banshee's bomb
-// is its secondary trigger. Halo 3's and ODST's trick is the seat's jump.
+// order Halo 3, ODST, Reach, Halo 4, Halo CE, Halo 2: what each game's converter makes of MCC's own control for it. See
+// BANSHEE-SEAT-ACTIONS-EVIDENCE-2026-11-05.md and EXTRA-ACTIONS-EVIDENCE-2026-11-05.md. Reach and Halo 4 have no bomb of
+// their own: a Banshee's bomb is the vehicle's secondary fire. Halo 3's and ODST's trick is the seat's jump; Halo 4's and
+// Halo 2's second trick is the Banshee's brake. ODST keeps Halo 3's dual-wield actions but has no dual wielding; Halo 2's
+// dual-wield pickup is a held binding the reader leaves alone; Back is Halo 2's and Halo CE's graphics switch, so neither
+// has a Scoreboard row.
 inline constexpr unsigned kExtraNative[ExtraCount][6]{
     {0x0A,0x0A,0x0A,0x0B,kNoAction,0x15},
-    {0x1E,0x1F,0x0C,0x0D,kNoAction,0x01}};
+    {0x1E,0x1F,0x0C,0x0D,kNoAction,0x01},
+    {0x41,kNoAction,kNoAction,kNoAction,kNoAction,0x17},
+    {0x42,kNoAction,kNoAction,kNoAction,kNoAction,kNoAction},
+    {0x1F,kNoAction,kNoAction,kNoAction,kNoAction,kNoAction},
+    {0x20,0x21,0x48,0x09,0x17,0x03},
+    {kNoAction,0x25,kNoAction,kNoAction,kNoAction,kNoAction},
+    {0x09,0x09,0x0A,0x0B,0x12,0x19},
+    {0x27,0x2B,0x0D,0x0E,kNoAction,0x02},
+    {0x22,0x23,0x0E,0x10,kNoAction,kNoAction},
+    {0x23,0x24,0x0F,0x11,kNoAction,kNoAction},
+    {0x1D,0x0C,0x3B,0x25,kNoAction,kNoAction},
+    {kNoAction,kNoAction,kNoAction,0x54,kNoAction,kNoAction}};
+// The name an extra row shows in a game: ODST's Back brings up its map as well as the scores.
+inline constexpr const char* ExtraName(GameTitle title,ExtraAction action) noexcept
+{
+    if(action>=ExtraCount) return "";
+    if(title==GameTitle::Halo3ODST&&action==Scoreboard) return "Map / scoreboard";
+    return kExtraNames[action];
+}
 inline constexpr unsigned NativeExtraAction(GameTitle title,ExtraAction action) noexcept
 {
     const int game=static_cast<int>(title)-1;

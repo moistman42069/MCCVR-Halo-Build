@@ -580,6 +580,11 @@ if(BUILD_TESTING)
     add_test(NAME halomccvr_installer_tests COMMAND halomccvr_installer_tests)
     add_executable(halomccvr_vr_mapping_tests tests/vr_action_mapping_tests.cpp src/common/config.cpp src/common/input_preset.cpp src/common/log.cpp src/common/scope_logic.cpp)
     target_compile_definitions(halomccvr_vr_mapping_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    # The preset checks keep three dozen Configs (about 28 KiB each, most of it the VR Mappings rows) in one frame,
+    # past the 1 MiB MSVC default reserve. Give the harness headroom; no assertions change.
+    if(MSVC)
+        target_link_options(halomccvr_vr_mapping_tests PRIVATE "/STACK:4194304")
+    endif()
     add_test(NAME halomccvr_vr_mapping_tests COMMAND halomccvr_vr_mapping_tests)
     add_executable(halomccvr_halo4_pause_lifetime_tests tests/halo4_pause_lifetime_tests.cpp)
     target_compile_definitions(halomccvr_halo4_pause_lifetime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

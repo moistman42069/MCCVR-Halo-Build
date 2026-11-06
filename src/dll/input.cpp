@@ -939,8 +939,11 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 char native[16];
                 for(unsigned action=0;action<vr_mapping::ExtraCount;++action)
                 {
+                    // Only the rows this game has.
+                    if(vr_mapping::NativeExtraAction(currentTitle,static_cast<vr_mapping::ExtraAction>(action))==
+                       vr_mapping::kNoAction) continue;
                     sprintf_s(native," (0x%X)",seatTransports[action]);
-                    rows+=std::string(action?", ":"")+vr_mapping::kExtraKeys[action]+" =";
+                    rows+=std::string(rows.empty()?"":", ")+vr_mapping::kExtraKeys[action]+" =";
                     // Each input as the file has it (vr_mapping::FormatInput), the empty ones left out.
                     for(const auto& seat:g_config.vr_extra_bindings[mappingTitle][action])
                         if(seat.press!=vr_mapping::Unbound)

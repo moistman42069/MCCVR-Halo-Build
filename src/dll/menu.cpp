@@ -655,6 +655,13 @@ namespace
         for(int& open:g_mappingPage.modMoreOpen) open=0;
     }
 
+    // The settings as they start, built once: a Config is large, and the page draws on the game's render thread.
+    const Config& DefaultConfig()
+    {
+        static const Config defaults{};
+        return defaults;
+    }
+
     void DrawInputPresets(bool& changed)
     {
         static std::vector<std::string> saved;
@@ -1637,14 +1644,26 @@ namespace
                     if(static_cast<unsigned>(vr_mapping::kExtraContexts[action])!=context) continue;
                     if(!noted) {SettingGap();ImGui::TextWrapped("%s",kContextNotes[context]);noted=true;}
                     const auto extraAction=static_cast<vr_mapping::ExtraAction>(action);
-                    if(vr_mapping::NativeExtraAction(selectedGame,extraAction)==vr_mapping::kNoAction)
+                    const char* name=vr_mapping::ExtraName(selectedGame,extraAction);
+                    const unsigned native=vr_mapping::NativeExtraAction(selectedGame,extraAction);
+                    if(native==vr_mapping::kNoAction)
                     {
-                        ImGui::TextDisabled("%s: not in this game.",vr_mapping::kExtraNames[action]);
+                        ImGui::TextDisabled("%s: not in this game.",name);
                         continue;
                     }
+                    // The game's own action may be one another row already names here (Reach's Banshee bomb is its
+                    // vehicles' secondary fire): say so, and keep the row.
+                    const char* sameAs=nullptr;
+                    for(unsigned other=0;other<vr_mapping::Count&&!sameAs;++other)
+                        if(vr_mapping::NativeAction(selectedGame,static_cast<vr_mapping::Action>(other))==native)
+                            sameAs=vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(other));
+                    for(unsigned other=0;other<action&&!sameAs;++other)
+                        if(vr_mapping::NativeExtraAction(selectedGame,static_cast<vr_mapping::ExtraAction>(other))==native)
+                            sameAs=vr_mapping::ExtraName(selectedGame,static_cast<vr_mapping::ExtraAction>(other));
                     ImGui::PushID(static_cast<int>(100+action));
                     SettingGap();
-                    SettingGroup group(vr_mapping::kExtraNames[action]);
+                    SettingGroup group(name);
+                    if(sameAs) ImGui::TextDisabled("In this game this is the same action as %s.",sameAs);
                     auto& row=g_config.vr_extra_bindings[selectedTitle][action];
                     bool* open=optionsOpen[selectedTitle][vr_mapping::Count+action];
                     bool extraChanged=MappingCombo("##own",row[0].press,MappingList::Own);
@@ -2370,7 +2389,7 @@ namespace
         SettingGap();
         if (ImGui::Checkbox("Over-the-shoulder weapon switch", &overShoulder))
         {
-            const Config defaults{};
+            const Config& defaults=DefaultConfig();
             g_config.weapon_holsters = true;
             g_config.weapon_holster_location = overShoulder ? 2 : defaults.weapon_holster_location;
             g_config.weapon_holster_click = overShoulder ? true : defaults.weapon_holster_click;
@@ -2604,7 +2623,7 @@ namespace
                                           0.1f, 100.0f, "%.1f");
             if (ImGui::Button("Defaults##handsmoothing"))
             {
-                const Config defaults{};
+                const Config& defaults=DefaultConfig();
                 g_config.hand_smoothing_hands = defaults.hand_smoothing_hands;
                 g_config.hand_smoothing_pos_min_hz = defaults.hand_smoothing_pos_min_hz;
                 g_config.hand_smoothing_pos_beta = defaults.hand_smoothing_pos_beta;
@@ -3860,7 +3879,7 @@ namespace
                             g_config.menu_height_m, g_config.menu_side_m);
         if (ImGui::Button("Reset panel position"))
         {
-            const Config defaults{};
+            const Config& defaults=DefaultConfig();
             g_config.menu_distance_m = defaults.menu_distance_m;
             g_config.menu_width_m = defaults.menu_width_m;
             g_config.menu_height_m = defaults.menu_height_m;

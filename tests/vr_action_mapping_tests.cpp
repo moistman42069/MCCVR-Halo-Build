@@ -311,6 +311,44 @@ void CheckInputPresets()
         riding.Apply(0,seated,automatic,native);
         Check(riding.Apply(Bit(PrimaryGrip)|Bit(A)|Bit(RightClick),seated,automatic,native)==0&&
             ExtraControlBits(kAutomaticRow)==0,"an Automatic row presses nothing of its own and takes no control");
+        // The other extra rows start Automatic, and each counts in its own context.
+        bool automaticRows=true;
+        for(unsigned a=BansheeTrick+1;a<ExtraCount;++a) automaticRows=automaticRows&&kExtraDefaults[a]==kAutomaticRow;
+        Check(automaticRows,"every extra row past the Banshee's starts Automatic");
+        Check(NativeExtraAction(GameTitle::Halo3,FireLeft)==0x41&&NativeExtraAction(GameTitle::Halo2,FireLeft)==0x17&&
+            NativeExtraAction(GameTitle::Halo3ODST,FireLeft)==kNoAction&&NativeExtraAction(GameTitle::Halo3,ReloadLeft)==0x42&&
+            NativeExtraAction(GameTitle::Halo3,DualWield)==0x1F&&NativeExtraAction(GameTitle::Halo2,DualWield)==kNoAction&&
+            NativeExtraAction(GameTitle::HaloReach,PreviousGrenade)==0x48&&NativeExtraAction(GameTitle::Halo4,PreviousGrenade)==0x09&&
+            NativeExtraAction(GameTitle::HaloCE,PreviousGrenade)==0x17&&NativeExtraAction(GameTitle::Halo3ODST,ActivateWaypoint)==0x25&&
+            NativeExtraAction(GameTitle::Halo2,VehicleSecondary)==0x19&&NativeExtraAction(GameTitle::HaloCE,VehicleSecondary)==0x12&&
+            NativeExtraAction(GameTitle::Halo4,VehicleTrick2)==0x0E&&NativeExtraAction(GameTitle::Halo2,VehicleTrick2)==0x02&&NativeExtraAction(GameTitle::HaloReach,FlyUp)==0x0E&&
+            NativeExtraAction(GameTitle::Halo3ODST,FlyDown)==0x24&&NativeExtraAction(GameTitle::Halo4,Scoreboard)==0x25&&
+            NativeExtraAction(GameTitle::Halo2,Scoreboard)==kNoAction&&NativeExtraAction(GameTitle::HaloCE,Scoreboard)==kNoAction&&
+            NativeExtraAction(GameTitle::Halo4,SpecialAction)==0x54&&NativeExtraAction(GameTitle::Halo3,SpecialAction)==kNoAction,
+            "each game's own action for the other extra rows, and none where a game lacks it");
+        Check(NativeExtraAction(GameTitle::HaloReach,VehicleSecondary)==NativeExtraAction(GameTitle::HaloReach,BansheeBomb)&&
+            NativeExtraAction(GameTitle::Halo2,PreviousGrenade)==NativeAction(GameTitle::Halo2,SwitchGrenade),
+            "Reach's vehicle secondary fire is its Banshee bomb, Halo 2's previous grenade its grenade switch");
+        Check(std::strcmp(ExtraName(GameTitle::Halo3ODST,Scoreboard),"Map / scoreboard")==0&&
+            std::strcmp(ExtraName(GameTitle::Halo3,Scoreboard),"Scoreboard")==0,"ODST's Back is its map");
+        {
+            ExtraBindings own=kExtraDefaults;
+            own[PreviousGrenade][0]=Input{kNoneHeld,DpadUp};
+            own[Scoreboard][0]=Input{kNoneHeld,X};
+            ExtraTransports games{};
+            games[PreviousGrenade]=0x4;games[Scoreboard]=0x20;
+            const unsigned onFoot=ContextBit(ExtraContext::OnFoot)|ContextBit(ExtraContext::Anywhere);
+            const unsigned inSeat=seated|ContextBit(ExtraContext::Anywhere);
+            ExtraMapper contexts;
+            contexts.Apply(0,onFoot,own,games);
+            Check(contexts.Apply(Bit(DpadUp),onFoot,own,games)==0x4,"an on-foot row presses on foot");
+            Check(contexts.Apply(Bit(DpadUp),inSeat,own,games)==0,"and not in a seat");
+            Check(contexts.Apply(Bit(DpadUp)|Bit(X),inSeat,own,games)==0x20,"a row for anywhere presses in a seat");
+            Check(contexts.Apply(Bit(DpadUp)|Bit(X),onFoot,own,games)==0x20,
+                "it keeps pressing on leaving the seat, while an on-foot control held through it waits");
+            Check(contexts.Apply(Bit(X),onFoot,own,games)==0x20&&
+                contexts.Apply(Bit(DpadUp)|Bit(X),onFoot,own,games)==(0x20u|0x4u),"pressed again, the on-foot row presses");
+        }
         rows[BansheeBomb][0]=Input{{SupportGrip,Unbound},SupportTrigger,InputMode::Hold};
         ExtraMapper chord;
         chord.Apply(0,seated,rows,native);
