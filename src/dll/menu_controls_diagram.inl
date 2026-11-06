@@ -19,15 +19,15 @@ struct ControlsDiagramState
 namespace touch_drawing
 {
 constexpr float kWidth = 120.0f, kHeight = 280.0f;
-constexpr ImVec2 kStick{80.0f, 90.0f};
-constexpr float kStickRadius = 15.0f;
-constexpr ImVec2 kUpperButton{45.0f, 97.0f}, kLowerButton{55.0f, 120.0f};
-constexpr float kButtonRadius = 9.5f;
-constexpr ImVec2 kSystemButton{75.0f, 123.0f};
-constexpr ImVec2 kTriggerMin{40.0f, 48.0f}, kTriggerMax{74.0f, 68.0f};
-constexpr ImVec2 kGripMin{20.0f, 150.0f}, kGripMax{36.0f, 224.0f};
-constexpr ImVec2 kHandleMin{32.0f, 120.0f}, kHandleMax{80.0f, 272.0f};
-constexpr ImVec2 kFace{60.0f, 102.0f}, kFaceRadius{46.0f, 40.0f};
+constexpr ImVec2 kStick{86.0f, 92.0f};
+constexpr float kStickRadius = 16.0f;
+constexpr ImVec2 kUpperButton{40.0f, 98.0f}, kLowerButton{56.0f, 123.0f};
+constexpr float kButtonRadius = 10.5f;
+constexpr ImVec2 kSystemButton{92.0f, 127.0f};
+constexpr ImVec2 kTriggerMin{42.0f, 48.0f}, kTriggerMax{76.0f, 68.0f};
+constexpr ImVec2 kGripMin{24.0f, 156.0f}, kGripMax{40.0f, 228.0f};
+constexpr ImVec2 kHandleMin{36.0f, 128.0f}, kHandleMax{80.0f, 272.0f};
+constexpr ImVec2 kFace{60.0f, 104.0f}, kFaceRadius{55.0f, 45.0f};
 }
 
 // The anchor of a control on the drawing: where its leader line starts.
@@ -181,12 +181,12 @@ void DrawControlsDiagram()
     ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.82f);
     const float x0 = areaMin.x, x1 = areaMax.x;
     const float top = areaMin.y, bottom = areaMax.y;
-    const float calloutWidth = 210.0f, pad = 8.0f;
-    const float scale = std::min(1.6f, ((x1 - x0) - 2.0f * calloutWidth - 70.0f) / (2.0f * touch_drawing::kWidth));
+    const float calloutWidth = 196.0f, pad = 8.0f;
+    const float scale = std::min(1.8f, ((x1 - x0) - 2.0f * calloutWidth - 56.0f) / (2.0f * touch_drawing::kWidth));
     const float drawWidth = touch_drawing::kWidth * scale, drawHeight = touch_drawing::kHeight * scale;
     const float midX = (x0 + x1) * 0.5f;
-    const float drawTop = leftTop + std::max(0.0f, ((bottom - leftTop) - drawHeight) * 0.4f);
-    const ImVec2 leftOrigin(midX - 14.0f - drawWidth, drawTop), rightOrigin(midX + 14.0f, drawTop);
+    const float drawTop = leftTop + std::max(0.0f, ((bottom - leftTop) - drawHeight) * 0.3f);
+    const ImVec2 leftOrigin(midX - 8.0f - drawWidth, drawTop), rightOrigin(midX + 8.0f, drawTop);
 
     // Lay each side's callouts out by its anchors' heights, one under another, inside the area.
     struct Callout { Control control; ImVec2 anchor; ImVec2 min, max; float titleHeight; };
