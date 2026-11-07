@@ -1757,7 +1757,7 @@ namespace
 
         if (CategorySection section{Cat_Vehicles}; section.visible)
         {
-        if (SectionHeader("First-person vehicle camera##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Vehicle Seat View##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Sit in the seat (first person)",
                                    &g_config.vehicle_first_person);
