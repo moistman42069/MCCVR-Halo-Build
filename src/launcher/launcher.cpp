@@ -1164,11 +1164,8 @@ ClientInfo Describe(const std::filesystem::path& launcherDir, const std::wstring
     const reclaimer_host::Version version = ReclaimerVersionOfFile(exe);
     info.text = L"Detected: Project Reclaimer " + WideOf(ReclaimerVersionText(version));
     if (reclaimer_host::RunsRecompiledEngine(version))
-    {
-        info.text += L"\nThe VR mod cannot run in this version. From 0.10.0, Project Reclaimer runs its own rebuilt "
-                     L"copy of Halo 3 instead of MCC's game file, which is what the VR mod works with.";
-        return info;
-    }
+        info.text += L"\nExperimental: from 0.10.0 Project Reclaimer runs its own rebuilt copy of Halo 3. The VR view "
+                     L"works on it; the mod's other Halo 3 features stay as in the flat game for now.";
     const std::filesystem::path modDir = ModDir(launcherDir);
     for (const wchar_t* needed : {L"HaloMCCVR.dll", kReclaimerRelayName})
     {
@@ -1287,36 +1284,22 @@ static int LaunchReclaimer(const std::wstring& dir, const ReclaimerClient& clien
             LauncherLog("the client's file is named for %s and is %s: it has updated itself in place",
                         ReclaimerVersionText(inName).c_str(), ReclaimerVersionText(client.version).c_str());
     }
-    // 0.10.0 on runs a recompiled engine in its own process: no halo3.dll for the mod's hooks and no engine worker
-    // for the relay (reclaimer_host::RunsRecompiledEngine). Nothing is started rather than the game without VR.
-    if (reclaimer_host::RunsRecompiledEngine(client.version))
-    {
-        LauncherLog("NOT STARTED: Project Reclaimer %s runs its own recompiled Halo 3 in the process the player "
-                    "starts, not MCC's halo3.dll in an engine worker. The VR mod's hooks are in halo3.dll's code, which "
-                    "never runs there, so it cannot run in this version",
+    // 0.10.0 on runs a recompiled engine in the client itself (reclaimer_host::RunsRecompiledEngine): the mod goes
+    // straight into the process started here, and its Halo 3 hooks go on the translated functions.
+    const bool recompiled = reclaimer_host::RunsRecompiledEngine(client.version);
+    if (recompiled)
+        LauncherLog("Project Reclaimer %s runs a recompiled Halo 3 in the process started here, with no engine "
+                    "worker: HaloMCCVR.dll goes into that process (EXPERIMENTAL: the VR view is ported; Halo 3's "
+                    "other VR features stay as in the flat game for now)",
                     ReclaimerVersionText(client.version).c_str());
-        ErrorBox(L"This Project Reclaimer is version " + WideOf(ReclaimerVersionText(client.version)) +
-                 L", and the VR mod cannot run in it.\n\n"
-                 L"From version 0.10.0, Project Reclaimer runs its own rebuilt copy of Halo 3 instead of the game "
-                 L"file from MCC that the VR mod works with. Until the VR mod supports that, VR works only with "
-                 L"Project Reclaimer 0.9 versions.\n\n"
-                 L"Nothing was started. To play without VR, start Project Reclaimer as usual.");
-        return kExitFailed;
-    }
     if (!reclaimer_host::Proven(client.version))
         LauncherLog("WARNING: the VR mod has not been run with this Project Reclaimer version (it has with: %s). "
                     "What it reads of the client may not hold there; if the game misbehaves, that is the first "
                     "thing to rule out", ReclaimerProvenText().c_str());
     if (!client.passedOver.empty())
-    {
-        if (reclaimer_host::RunsRecompiledEngine(ReclaimerVersionOfFile(client.passedOver)))
-            LauncherLog("a newer Project Reclaimer is here too and was NOT started: %ls. It is 0.10.0 or later, "
-                        "which runs its own recompiled Halo 3 and cannot take the VR mod", client.passedOver.c_str());
-        else
-            LauncherLog("a newer Project Reclaimer is here too and was NOT started: %ls. The VR mod has not been "
-                        "run with it. To start it all the same, put its full path as the one line of "
-                        "reclaimer_client.txt beside this launcher", client.passedOver.c_str());
-    }
+        LauncherLog("a newer Project Reclaimer is here too and was NOT started: %ls. The VR mod has not been run "
+                    "with it. To start it all the same, put its full path as the one line of reclaimer_client.txt "
+                    "beside this launcher", client.passedOver.c_str());
     // A game started by an elevated launcher is elevated, and the OpenXR loader ignores XR_RUNTIME_JSON in an
     // elevated process: a player who picks their headset's runtime with that variable gets the machine's
     // registered runtime instead (the mod's log then names that runtime and waits for a headset while the
@@ -1392,6 +1375,32 @@ static int LaunchReclaimer(const std::wstring& dir, const ReclaimerClient& clien
         CloseHandle(pi.hProcess);
         ErrorBox(L"Could not load the VR relay into Project Reclaimer, so it was closed.\n\nReason: " + failWhy);
         return kExitFailed;
+    }
+    if (recompiled)
+    {
+        // As the relay does for 0.9's engine worker: the client stays suspended until the mod says its render-size
+        // and D3D11 hooks are in (dllmain.cpp sets the event), or eight seconds pass.
+        wchar_t eventName[64]{};
+        reclaimer_host::EarlyHooksEventName(eventName, std::size(eventName), pi.dwProcessId);
+        const HANDLE hooksReady = CreateEventW(nullptr, TRUE, FALSE, eventName);
+        if (!InjectDll(pi.hProcess, dllPath, failWhy))
+        {
+            LauncherLog("HaloMCCVR.dll was NOT loaded: %ls", failWhy.c_str());
+            if (hooksReady)
+                CloseHandle(hooksReady);
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            ErrorBox(L"Could not load the VR mod into Project Reclaimer, so it was closed.\n\nReason: " + failWhy);
+            return kExitFailed;
+        }
+        const ULONGLONG waitStart = GetTickCount64();
+        const DWORD waited = hooksReady ? WaitForSingleObject(hooksReady, 8000) : WAIT_FAILED;
+        LauncherLog("HaloMCCVR.dll loaded before the client's first instruction; its early hooks %s after %llu ms",
+                    waited == WAIT_OBJECT_0 ? "were in" : "were NOT reported in (the client runs anyway)",
+                    static_cast<unsigned long long>(GetTickCount64() - waitStart));
+        if (hooksReady)
+            CloseHandle(hooksReady);
     }
     LauncherLog("relay loaded; resuming Project Reclaimer");
     ResumeThread(pi.hThread);
