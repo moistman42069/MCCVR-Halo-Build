@@ -1,0 +1,62 @@
+# Update resilience: what to make survive the next host or game update
+
+A running list, not work for the current release. Each entry names a fact the mod takes as fixed, what broke (or
+would break) when a host changed it, and how the mod could learn it at run time instead, the way the direct drive
+resolves its addresses and proves them before it writes (drive_cascade.h).
+
+Started 2026-11-07 from the Project Reclaimer 0.10 port, where the client recompiled Halo 3, replaced about 730 of its
+functions with its own versions, and enlarged several of its tables.
+
+## Layouts the mod hard-codes
+
+1. **Halo 3's first-person weapon record.** The mod reads the per-player first-person block (engine TLS +0x568) as two
+   weapon slots of 0x11BC bytes, a bone array at +0x4A4, the selected node at +0x11A4, a player stride of 0x2430 and
+   a cached render root at +0x23F0 (game.cpp FindFirstPersonWeapon, LoadCachedRenderRoot; halo3_muzzle_publication.inl;
+   native_reload_tail.inl). Reclaimer 0.10 raises the first-person node limit from 64 to 128 (its log:
+   `fp_nodes=128`), so every field after the bone array moves: the left-hand (dual-wield) weapon was never found, and
+   the cached render root read empty. *Resilient form:* take the slot stride from the engine itself, as the difference
+   between the bone pointers the first-person interpolator hands back for slot 0 and slot 1, or from the node
+   capacity the composer is given, and derive the later fields from it; prove it by the weapon handle at +0x3C
+   matching the owner's weapon. *Done for Halo 3 (2026-11-07):* the node capacity is now proven on the first composed
+   primary weapon (the selected node must be one of its nodes, the render root a real transform) and every later
+   field is derived from it. The same block exists in ODST, Reach and Halo 4 with their own constants.
+2. **Reclaimer's other enlarged tables.** Its log lists them (`[capacity]` lines): player_control 0x80 -> 0x400 bytes,
+   input mapping users and controllers, HUD markers, simulation players and views, entity counts. Any mod read of
+   one of these structures by a fixed stride or field offset is at risk. *Action:* audit the mod's reads against that
+   list on each Reclaimer release, and prefer strides read from the engine's own code (an imul or lea in a proven
+   function) over constants.
+
+## Behaviour the mod assumes of its host
+
+3. **Window focus.** The mod's MCC keep-alive (a faked WM_ACTIVATE, a swallowed WM_KILLFOCUS) left Reclaimer 0.10
+   ignoring every input after pause, Alt+Tab and unpause. *Resilient form:* apply a host behaviour only to the host
+   it was proven on, and log the focus messages the host receives when a new host version is first seen.
+4. **The cursor lives on the monitor.** The menu pointer moved the real cursor; Reclaimer 0.10's window is larger than
+   the monitor. *Resilient form:* check, at run time, whether the window fits its monitor, and pick the delivery that
+   reaches every point of it (now done for Reclaimer).
+5. **Per-host tuning constants.** The Aim Frame's Reclaimer HUD width (1.25) and the Halo 3 HUD layout a host reads
+   before the mod's (0.97 vs 0.87) were set for one host version. *Resilient form:* read the layout the host actually
+   uses (the SAFEFRAME scan already reads it) and derive the correction from it, instead of keying on the host's name.
+
+## Hooks and calls
+
+6. **Functions the host replaces.** A hook on a function the client runs its own version of never fires unless the
+   stub that calls that version is hooked too (lifted_engine.cpp). *Resilient form, mostly in place:* the 30 s
+   "hook calls / not called" line. Add: a hook that has never fired a minute into play is logged as such, with the
+   feature it serves, so a new client version shows at once which features went quiet.
+7a. **What a replaced function does with what the mod hands it.** Shots from the muzzle answer the fire routine's
+   barrel-marker query with the muzzle's position and the line to the target. Reclaimer 0.10's own fire routine takes
+   the direction from that answer but starts the round at the eye, so rounds flew the muzzle's line from the eye
+   (0.9 m off with the head 0.4 m from the body). *Now:* under 0.10 the shot is aimed from the eye. *Resilient form:*
+   a witness on each fire that compares where the round spawned with the origin the mod handed over (the dev SHOT
+   IMPACT witness already measures it), and that falls back to the eye's line by itself when they disagree; and,
+   longer term, a hook on the host's own fire routine so the muzzle origin is honoured again.
+7. **Calling a hooked function from outside its hook.** The lifted layer ran a hook's original only inside that hook,
+   so the aim's ray trace silently returned "miss". *Done:* it now runs as any game call. *Keep:* every refused call
+   is logged with the function's address.
+
+## Recognising the host
+
+8. **Window class and executable names.** Reclaimer's window class changed (ReclaimerStandaloneClient ->
+   H3RecompHost) and its 0.10 build ships under a 0.9-style file name. *Resilient form:* recognise the host by its
+   version resource and by behaviour, not by names; keep the FA scripts' window lookups in one place.
