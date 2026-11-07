@@ -47743,6 +47743,17 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 1, std::memory_order_relaxed);
     }
 
+    // halo4_nav_markers.inl: markers placed while this thread draws the CUI get
+    // the affine above undone only when the root is applying it now.
+    bool Halo4NavHudAffineAdmittedNow() noexcept
+    {
+        return g_halo4Restoration.hudInstalled.load(std::memory_order_acquire) &&
+            Halo4NativeHudAdmitsCuiRoot(
+                g_halo4CuiFrontendCallbackDepth,
+                g_halo4CuiReticleEyeScope.captureReplay,
+                VR_IsPausePresentationTarget());
+    }
+
     void __fastcall Halo4HudRootDetour(void* renderer)
     {
         g_halo4Camera.activeCallbacks.fetch_add(1, std::memory_order_acq_rel);

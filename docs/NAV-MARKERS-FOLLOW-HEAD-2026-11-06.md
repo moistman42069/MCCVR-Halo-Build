@@ -135,3 +135,16 @@ Headset check, round 2 (both games, campaign, an objective in view):
    arrow there.
 3. Look up and down at it: it stays on the objective, not above or below.
 4. Turn away: the arrow shows on the objective's side; turn back and it becomes the marker again.
+
+## Round 3: Halo 4's object-anchored markers (build 2ba664f4, 2026-11-06 night)
+
+Report: Reach "looked great". Halo 4: the marker "moves with my head within certain bounds before it turns into an
+off-screen arrow" -- a marker shown at 0.41 (hud_size) of its distance from the centre. Not a lag.
+
+Halo 4 places world widgets in two families. Round 2 undid the HUD affine for the per-user layout (`+0x4CF2C4`,
+outside the eye passes). The object-anchored family (`+0x3F25BC` under `+0x3F3808`, which also calls the HUD root
+`+0x3F313C` where the affine is applied) places its widgets while each eye is drawn, with the stack element's
+camera, the eye's own: its direction and its marker-against-arrow choice were right, its place still scaled. The
+projector's detour skipped every eye-pass call (`18601570`). Now an eye-pass call gets the same undo when the root
+applies the affine on that thread. New once-per-load line: `NAV MARKERS Halo 4: world markers placed inside an
+eye's render (the object-anchored family) have the HUD's size and height undone too`.
