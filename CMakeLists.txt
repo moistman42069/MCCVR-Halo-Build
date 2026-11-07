@@ -303,6 +303,8 @@ add_library(halo3xr SHARED
     src/dll/sight_layer.cpp
     src/dll/dev_pad.cpp
     src/dll/title_adapter.cpp
+    src/dll/lifted_engine.cpp
+    src/dll/lifted_engine_thunks.asm
     src/dll/title_image_guard.cpp
     src/dll/title_reentry_probe.cpp
     src/dll/reach_adapter.cpp

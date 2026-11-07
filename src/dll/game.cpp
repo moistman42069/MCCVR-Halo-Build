@@ -71,6 +71,7 @@
 #include <string>
 #include <vector>
 #include <MinHook.h>
+#include "lifted_minhook.h"
 #include "game.h"
 #include "native_fault_probe.h"
 #include "haloce_network_input.h"
@@ -1206,7 +1207,7 @@ namespace
         int32_t m = -1, p = -1;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             const uint32_t index = *b.tlsIndex;
             const auto* tls = slots && index < 0x200 ? static_cast<const uint8_t*>(slots[index]) : nullptr;
             const auto* block = tls ? *reinterpret_cast<const uint8_t* const*>(tls + b.blockOffset) : nullptr;
@@ -1300,8 +1301,8 @@ namespace
                 SandboxEditorBindName(result));
             return false;
         }
-        b.playerGetter = reinterpret_cast<Halo3OutputUserPlayerFn>(base + static_cast<uintptr_t>(sites.playerGetterRva));
-        b.predicate = reinterpret_cast<Halo3SandboxEditorFn>(base + static_cast<uintptr_t>(sites.predicateRva));
+        b.playerGetter = lifted::Callable(reinterpret_cast<Halo3OutputUserPlayerFn>(base + static_cast<uintptr_t>(sites.playerGetterRva)));
+        b.predicate = lifted::Callable(reinterpret_cast<Halo3SandboxEditorFn>(base + static_cast<uintptr_t>(sites.predicateRva)));
         b.generation.store(generation, std::memory_order_release);
         b.bound.store(true, std::memory_order_release);
         LOG("Roomscale admission Halo 3: Forge Monitor check bound: the game's own sandbox-editor predicate +0x%llX "
@@ -1414,7 +1415,7 @@ namespace
             return false;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             const uint32_t index = *b.tlsIndex;
             const auto* tls = slots && index < 0x200 ? static_cast<const uint8_t*>(slots[index]) : nullptr;
             const auto* block = tls ? *reinterpret_cast<const uint8_t* const*>(tls + b.blockOffset) : nullptr;
@@ -1558,8 +1559,8 @@ namespace
                 "model is drawn, as before", title, EditorBindName(editorResult));
             return true;
         }
-        editor.playerGetter = reinterpret_cast<Halo3OutputUserPlayerFn>(base + static_cast<uintptr_t>(sites.playerGetterRva));
-        editor.predicate = reinterpret_cast<Halo3SandboxEditorFn>(base + static_cast<uintptr_t>(sites.predicateRva));
+        editor.playerGetter = lifted::Callable(reinterpret_cast<Halo3OutputUserPlayerFn>(base + static_cast<uintptr_t>(sites.playerGetterRva)));
+        editor.predicate = lifted::Callable(reinterpret_cast<Halo3SandboxEditorFn>(base + static_cast<uintptr_t>(sites.predicateRva)));
         editor.generation.store(generation, std::memory_order_release);
         editor.bound.store(true, std::memory_order_release);
         LOG("First-person camera %s: Forge Monitor check bound: the game's own sandbox-editor predicate +0x%llX "
@@ -5687,7 +5688,7 @@ namespace
     bool FindFirstPersonWeapon(BoneMatrix* bones, int& outSlot, unsigned char*& outWeapon)
     {
         if (!bones || !g_engineTlsIndex) return false;
-        auto** slots=reinterpret_cast<void**>(__readgsqword(0x58));
+        auto** slots=reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
         if (!slots) return false;
         auto* tls=reinterpret_cast<unsigned char*>(slots[*g_engineTlsIndex]);
         if (!tls) return false;
@@ -6371,7 +6372,7 @@ namespace
         // midway between head and hand â€” the reported "weird in-between
         // state". Write the sibling half too (banks at TLS+0x560, one 0x1000
         // bank per slot, two 0x800 halves of 64 records each).
-        auto** tlsSlots=reinterpret_cast<void**>(__readgsqword(0x58));
+        auto** tlsSlots=reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
         auto* tls2=tlsSlots?reinterpret_cast<unsigned char*>(tlsSlots[*g_engineTlsIndex]):nullptr;
         auto* banks=tls2?*reinterpret_cast<unsigned char**>(tls2+0x560):nullptr;
         if (banks)
@@ -6422,7 +6423,7 @@ namespace
         if (g_fpInterpolatorHooked.load(std::memory_order_acquire)) return false;
         if (!model || !bones || !g_engineTlsIndex || !g_animationTagData || !*g_animationTagData)
             return false;
-        auto** slots=reinterpret_cast<void**>(__readgsqword(0x58));
+        auto** slots=reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
         if (!slots) return false;
         auto* tls=reinterpret_cast<unsigned char*>(slots[*g_engineTlsIndex]);
         if (!tls) return false;
@@ -6568,7 +6569,7 @@ namespace
     bool LoadCachedRenderRoot(int player, BoneMatrix& root)
     {
         if (player<0 || player>=4 || !g_engineTlsIndex) return false;
-        auto** tlsSlots=reinterpret_cast<void**>(__readgsqword(0x58));
+        auto** tlsSlots=reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
         if (!tlsSlots) return false;
         auto* tls=reinterpret_cast<unsigned char*>(tlsSlots[*g_engineTlsIndex]);
         if (!tls) return false;
@@ -8844,7 +8845,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     void ChudProbe()
     {
         if (!g_config.hud_probe || !g_engineTlsIndex) return;
-        auto** slots=reinterpret_cast<void**>(__readgsqword(0x58));
+        auto** slots=reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
         if (!slots) return;
         auto* tls=reinterpret_cast<unsigned char*>(slots[*g_engineTlsIndex]);
         if (!tls) return;
@@ -9229,7 +9230,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             return CinematicControlState::Unknown;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             if (!slots)
                 return CinematicControlState::Unknown;
             auto* tls = reinterpret_cast<unsigned char*>(
@@ -9272,7 +9273,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             g_odstCamera.cinematicCameraTlsMemberOffset;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             if (slots && g_cinematicTlsIndex &&
                 *g_cinematicTlsIndex < 256 && cameraMemberOffset)
             {
@@ -10749,7 +10750,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             if (unit != -1)
             {
                 auto** slots =
-                    reinterpret_cast<void**>(__readgsqword(0x58));
+                    reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
                 auto* tls = slots ? reinterpret_cast<unsigned char*>(
                     slots[*g_engineTlsIndex]) : nullptr;
                 unsigned char* table = tls
@@ -11645,7 +11646,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         bool faulted = false;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             auto* tls = slots ? reinterpret_cast<unsigned char*>(
                 slots[*g_engineTlsIndex]) : nullptr;
             unsigned char* observer = tls
@@ -15905,7 +15906,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         bool unseatedProven = false;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             auto* tls = slots ? reinterpret_cast<unsigned char*>(
                 slots[*g_odstEngineTlsIndex]) : nullptr;
             unsigned char* table = tls
@@ -16684,7 +16685,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         bool faulted = false;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             auto* tls = slots ? reinterpret_cast<unsigned char*>(
                 slots[*g_odstEngineTlsIndex]) : nullptr;
             unsigned char* table = tls
@@ -16877,7 +16878,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         bool faulted = false;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             auto* tls = slots ? reinterpret_cast<unsigned char*>(
                 slots[*g_odstEngineTlsIndex]) : nullptr;
             unsigned char* table = tls
@@ -17299,7 +17300,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         bool faulted = false;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             auto* tls = slots ? reinterpret_cast<unsigned char*>(slots[*g_odstEngineTlsIndex]) : nullptr;
             unsigned char* observer = tls ? *reinterpret_cast<unsigned char**>(tls + slot) : nullptr;
             if (observer)
@@ -19329,7 +19330,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
     halo3_live_hud::Record g_h3HudRecordCopies[4][32]{};
     __declspec(noinline) const halo3_live_hud::Record* __fastcall H3HudRecordHook(int user,int resolution)
     {
-        const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
+        const auto caller=HALOMCCVR_GAME_RETURN_ADDRESS();
         g_halo3CoreCallbacks.fetch_add(1,std::memory_order_acq_rel);
         __try {
             const auto* native=g_realH3HudRecord(user,resolution);
@@ -20372,7 +20373,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         RememberInstalledGameHook(reinterpret_cast<void*>(fpCamHit));
         if (fpCameraOk)
         {
-            g_fpCameraUpload=reinterpret_cast<FpCameraUploadFn>(fpUploadHit);
+            g_fpCameraUpload=lifted::Callable(reinterpret_cast<FpCameraUploadFn>(fpUploadHit));
             Halo3HookWatchInstalled(Halo3Hook::FpCameraRebuild, fpCamHit);
             LOG("M3: FP camera rebuild hooked at halo3.dll+0x%llX (uploader +0x%llX); "
                 "gun/HUD layer renders per-eye",
@@ -20672,7 +20673,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 LOG("Halo 3 call-site already redirected; retaining native callee instead of chaining a relay");
             else
             {
-            g_realFpRoot = reinterpret_cast<FpRootFn>(callInstr + 5 + origRel);
+            g_realFpRoot = lifted::Callable(reinterpret_cast<FpRootFn>(callInstr + 5 + origRel));
             // 12-byte trampoline (mov rax, imm64; jmp rax) within rel32 range
             // of the call site, since our DLL may sit >2GB away.
             unsigned char* tramp = nullptr;
@@ -20730,7 +20731,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 LOG("Halo 3 call-site already redirected; retaining native callee instead of chaining a relay");
             else
             {
-            g_realSwayApply = reinterpret_cast<SwayApplyFn>(callInstr + 5 + origRel);
+            g_realSwayApply = lifted::Callable(reinterpret_cast<SwayApplyFn>(callInstr + 5 + origRel));
             unsigned char* tramp = nullptr;
             for (uintptr_t probe = callInstr & ~0xFFFFull;
                  probe > callInstr - 0x40000000ull && !tramp; probe -= 0x100000)
@@ -20856,77 +20857,87 @@ static constexpr bool kOdstMappedFpEnabled = false;
         }
 
         InstallSteps::Mark("core hooks");
-        if (InstallLegacyWorldCollision(
-                g_halo3WorldCollision, GameTitle::Halo3, base, size,
-                runtimeGeneration,
-                reinterpret_cast<void*>(&Halo3CollisionResolveDetour),
-                0x001FFD18,nullptr,false,0x001FD748,
-                kHalo3CollisionVectorSignature))
+        // Project Reclaimer 0.10 (lifted_engine.h): only the core above is in. Each feature below is its own
+        // transaction and goes in there once it has been run on the translated engine; until then it stays stock.
+        if (lifted::Active())
+            LOG("RECLAIMER 0.10: Halo 3's optional features (world collision, contact melee and sight, direct drive, "
+                "seat aim frame and view, weapon haptics, avatar, dual aim, the chase camera, eye and Forge binds, gun "
+                "band, head-relative tracker and listener, HUD note, player tags, tag names, string ids, part draw, "
+                "boom, tracker HUD height) are not yet ported to the translated engine: each stays stock");
+        else
         {
-            RememberInstalledGameHook(g_halo3WorldCollision.target);
-            Halo3HookWatchInstalled(Halo3Hook::WorldCollision,
-                                    reinterpret_cast<uintptr_t>(g_halo3WorldCollision.target));
-        }
-        InstallSteps::Mark("world collision");
-        (void)InstallHalo3ContactMelee(base,size,runtimeGeneration);
-        InstallSteps::Mark("contact melee and sight");
-        (void)LegacyDriveInstall(GameTitle::Halo3,base,size);
-        InstallSteps::Mark("direct drive");
-        (void)SeatAimFrameInstall(GameTitle::Halo3,base,size,runtimeGeneration);
-        InstallSteps::Mark("seat aim frame");
-        (void)Halo3SeatViewInstall(base,size,runtimeGeneration);
-        InstallSteps::Mark("seat view");
-        (void)InstallHalo3WeaponHaptics(base,size,runtimeGeneration);
-        InstallSteps::Mark("weapon haptics");
-        (void)InstallHalo3Avatar(base,size,runtimeGeneration);
-        InstallSteps::Mark("avatar");
-        // The rejected early-helper-only detours remain inert. The new optional
-        // path owns acquisition and downstream assist together, with its own
-        // default-off setting and feature-only failure isolation.
-        if(!InstallHalo3DualAim(base,size,runtimeGeneration))
-            (void)InstallHalo3ZoomReader(base,size,runtimeGeneration);
-        BindHalo3GripOwner(base,size);
-        InstallSteps::Mark("dual aim");
-        // The evaluator's chase path, the start of a stock seat's crosshair line (seat_upstream_logic.h 4b): no hook,
-        // so it is bound whether or not the lane above installed.
-        BindHalo3ChaseCamera(base,size,runtimeGeneration);
-        // The record recomposition's first-person eye identity (shot_lag_logic.h 4d): two sites, no hook.
-        (void)BindHalo3DirectorCamera(base,size,runtimeGeneration,g_engineTlsIndex);
-        // Roomscale's Forge Monitor check (roomscale_admission_logic.h): two sites, two reader calls, no hook.
-        (void)BindHalo3SandboxEditor(base,size,runtimeGeneration,g_engineTlsIndex,
-            reinterpret_cast<uintptr_t>(g_halo3PlayerUnitGetter));
-        InstallSteps::Mark("chase camera, eye and Forge binds");
-        // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook; fails closed alone.
-        (void)InstallHalo3GunBand(base,size,runtimeGeneration);
-        InstallSteps::Mark("gun band");
-        // The motion tracker by the head's heading (halo3_head_relative.inl): its own transaction, fails closed alone.
-        (void)InstallHalo3HeadRelative(base,size,runtimeGeneration);
-        InstallSteps::Mark("head-relative tracker and listener");
-        // The vehicle camera note in the game's HUD messages (halo3_hud_note.inl): no hook of its own, it is posted
-        // from the listener hook above; not bound, the note uses the mod's panel.
-        (void)InstallHalo3HudNote(base,size,runtimeGeneration);
-        // Teammates' service tags and arrows (halo3_player_tags.inl): one hook on the navpoint draw; fails closed alone.
-        (void)InstallHalo3PlayerTags(base,size,runtimeGeneration);
-        // The loaded map's tag names (halo3_tag_names.inl): two sites, no hook, read-only; not bound, vehicles are
-        // identified by their physics alone, as before.
-        (void)InstallHalo3TagNames(base,size,runtimeGeneration);
-        // The loaded map's string ids (halo3_string_ids.inl): three sites, no hook, read-only; not bound, a vehicle
-        // camera's hideRegions is not applied.
-        (void)InstallHalo3StringIds(base,size,runtimeGeneration);
-        // A camera's hideParts (halo3_part_draw.inl): its one hook goes in only while a camera asks for it.
-        BindHalo3PartDraw(base,size,runtimeGeneration);
-        // The third-person boom's game side (halo3_vehicle_boom.inl): anchors and tag reads only, no hook; each part
-        // unbound alone leaves the boom on its own fallback.
-        BindHalo3VehicleBoom(base,size,runtimeGeneration);
-        InstallSteps::Mark("HUD note, tag names, string ids, part draw, boom");
-        // The tracker's blips move with the HUD height (halo3_tracker_hud_height.inl): its own transaction too.
-        (void)InstallHalo3TrackerHudHeight(base,size,runtimeGeneration);
-        InstallSteps::Mark("tracker HUD height");
+            if (InstallLegacyWorldCollision(
+                    g_halo3WorldCollision, GameTitle::Halo3, base, size,
+                    runtimeGeneration,
+                    reinterpret_cast<void*>(&Halo3CollisionResolveDetour),
+                    0x001FFD18,nullptr,false,0x001FD748,
+                    kHalo3CollisionVectorSignature))
+            {
+                RememberInstalledGameHook(g_halo3WorldCollision.target);
+                Halo3HookWatchInstalled(Halo3Hook::WorldCollision,
+                                        reinterpret_cast<uintptr_t>(g_halo3WorldCollision.target));
+            }
+            InstallSteps::Mark("world collision");
+            (void)InstallHalo3ContactMelee(base,size,runtimeGeneration);
+            InstallSteps::Mark("contact melee and sight");
+            (void)LegacyDriveInstall(GameTitle::Halo3,base,size);
+            InstallSteps::Mark("direct drive");
+            (void)SeatAimFrameInstall(GameTitle::Halo3,base,size,runtimeGeneration);
+            InstallSteps::Mark("seat aim frame");
+            (void)Halo3SeatViewInstall(base,size,runtimeGeneration);
+            InstallSteps::Mark("seat view");
+            (void)InstallHalo3WeaponHaptics(base,size,runtimeGeneration);
+            InstallSteps::Mark("weapon haptics");
+            (void)InstallHalo3Avatar(base,size,runtimeGeneration);
+            InstallSteps::Mark("avatar");
+            // The rejected early-helper-only detours remain inert. The new optional
+            // path owns acquisition and downstream assist together, with its own
+            // default-off setting and feature-only failure isolation.
+            if(!InstallHalo3DualAim(base,size,runtimeGeneration))
+                (void)InstallHalo3ZoomReader(base,size,runtimeGeneration);
+            BindHalo3GripOwner(base,size);
+            InstallSteps::Mark("dual aim");
+            // The evaluator's chase path, the start of a stock seat's crosshair line (seat_upstream_logic.h 4b): no hook,
+            // so it is bound whether or not the lane above installed.
+            BindHalo3ChaseCamera(base,size,runtimeGeneration);
+            // The record recomposition's first-person eye identity (shot_lag_logic.h 4d): two sites, no hook.
+            (void)BindHalo3DirectorCamera(base,size,runtimeGeneration,g_engineTlsIndex);
+            // Roomscale's Forge Monitor check (roomscale_admission_logic.h): two sites, two reader calls, no hook.
+            (void)BindHalo3SandboxEditor(base,size,runtimeGeneration,g_engineTlsIndex,
+                reinterpret_cast<uintptr_t>(g_halo3PlayerUnitGetter));
+            InstallSteps::Mark("chase camera, eye and Forge binds");
+            // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook; fails closed alone.
+            (void)InstallHalo3GunBand(base,size,runtimeGeneration);
+            InstallSteps::Mark("gun band");
+            // The motion tracker by the head's heading (halo3_head_relative.inl): its own transaction, fails closed alone.
+            (void)InstallHalo3HeadRelative(base,size,runtimeGeneration);
+            InstallSteps::Mark("head-relative tracker and listener");
+            // The vehicle camera note in the game's HUD messages (halo3_hud_note.inl): no hook of its own, it is posted
+            // from the listener hook above; not bound, the note uses the mod's panel.
+            (void)InstallHalo3HudNote(base,size,runtimeGeneration);
+            // Teammates' service tags and arrows (halo3_player_tags.inl): one hook on the navpoint draw; fails closed alone.
+            (void)InstallHalo3PlayerTags(base,size,runtimeGeneration);
+            // The loaded map's tag names (halo3_tag_names.inl): two sites, no hook, read-only; not bound, vehicles are
+            // identified by their physics alone, as before.
+            (void)InstallHalo3TagNames(base,size,runtimeGeneration);
+            // The loaded map's string ids (halo3_string_ids.inl): three sites, no hook, read-only; not bound, a vehicle
+            // camera's hideRegions is not applied.
+            (void)InstallHalo3StringIds(base,size,runtimeGeneration);
+            // A camera's hideParts (halo3_part_draw.inl): its one hook goes in only while a camera asks for it.
+            BindHalo3PartDraw(base,size,runtimeGeneration);
+            // The third-person boom's game side (halo3_vehicle_boom.inl): anchors and tag reads only, no hook; each part
+            // unbound alone leaves the boom on its own fallback.
+            BindHalo3VehicleBoom(base,size,runtimeGeneration);
+            InstallSteps::Mark("HUD note, tag names, string ids, part draw, boom");
+            // The tracker's blips move with the HUD height (halo3_tracker_hud_height.inl): its own transaction too.
+            (void)InstallHalo3TrackerHudHeight(base,size,runtimeGeneration);
+            InstallSteps::Mark("tracker HUD height");
 #if HALOMCCVR_DEV_DIAGNOSTICS
-        InstallHalo3AssistWitness(base,size);   // SHOT Halo 3 assist (dev): the turn, cap hits, residual
-        InstallHalo3ImpactWitness(base,size);   // SHOT IMPACT / SHOT RETICLE Halo 3 (dev): where rounds really go
-        InstallSteps::Mark("dev witnesses");
+            InstallHalo3AssistWitness(base,size);   // SHOT Halo 3 assist (dev): the turn, cap hits, residual
+            InstallHalo3ImpactWitness(base,size);   // SHOT IMPACT / SHOT RETICLE Halo 3 (dev): where rounds really go
+            InstallSteps::Mark("dev witnesses");
 #endif
+        }
 
         uintptr_t renderHit = sig::Find(base, size, kRenderViewSig);
         uintptr_t prepareHit = sig::Find(base, size, kPrepareViewSig);
@@ -20953,9 +20964,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 !matricesHit ? "missing" : ambiguous(matricesHit, kBuildMatricesSig) ? "ambiguous" : "ok");
             return true;
         }
-        g_prepareView = reinterpret_cast<PrepareViewFn>(prepareHit);
-        g_buildViewport = reinterpret_cast<BuildViewportFn>(viewportHit);
-        g_buildMatrices = reinterpret_cast<BuildMatricesFn>(matricesHit);
+        g_prepareView = lifted::Callable(reinterpret_cast<PrepareViewFn>(prepareHit));
+        g_buildViewport = lifted::Callable(reinterpret_cast<BuildViewportFn>(viewportHit));
+        g_buildMatrices = lifted::Callable(reinterpret_cast<BuildMatricesFn>(matricesHit));
         if (MH_CreateHook(reinterpret_cast<void*>(renderHit), reinterpret_cast<void*>(&GuardedRenderViewHook),
                           reinterpret_cast<void**>(&g_origRenderView)) != MH_OK ||
             MH_QueueEnableHook(reinterpret_cast<void*>(renderHit)) != MH_OK)
@@ -25161,7 +25172,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             const uint32_t index = *indexSlot;
             if (index >= kReachRenderTlsIndexLimit)
                 return nullptr;
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             if (!slots)
                 return nullptr;
             auto* block = reinterpret_cast<unsigned char*>(slots[index]);
@@ -27730,7 +27741,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             return;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             if (!slots)
             {
                 g_reachCineProbe.sampleFailures.fetch_add(
@@ -28261,7 +28272,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             const uint32_t tlsIndex = *g_reachChudTlsIndex;
             if (tlsIndex >= 1088)
                 return;
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             if (!slots)
                 return;
             auto* tls = reinterpret_cast<unsigned char*>(slots[tlsIndex]);
@@ -31383,7 +31394,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         const int16_t wantedSalt = static_cast<int16_t>(handle >> 16);
         if (!wantedSalt)
             return nullptr;
-        auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+        auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
         const auto* tlsIndex = reinterpret_cast<const uint32_t*>(
             g_reachCamera.base + kReachEngineTlsIndexRva);
         if (!slots || !tlsIndex || *tlsIndex >= 0x200)
@@ -33423,7 +33434,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         pc = 0;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             const uint32_t index = *reinterpret_cast<const uint32_t*>(g_reachCamera.base + kReachEngineTlsIndexRva);
             auto* tls = (slots && index < 0x200) ? reinterpret_cast<unsigned char*>(slots[index]) : nullptr;
             const uintptr_t globals = tls ? *reinterpret_cast<const uintptr_t*>(tls + kReachPlayerControlTlsOffset) : 0;
@@ -42378,7 +42389,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             if (slot >= 1088)
                 return false;
             auto** slots = reinterpret_cast<unsigned char**>(
-                __readgsqword(0x58));
+                HALOMCCVR_GAME_TLS_ARRAY());
             if (!slots)
                 return false;
             unsigned char* tls = slots[slot];
@@ -47109,7 +47120,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             return CinematicControlState::Unknown;
         }
 
-        auto** const slots = reinterpret_cast<uint8_t**>(__readgsqword(0x58));
+        auto** const slots = reinterpret_cast<uint8_t**>(HALOMCCVR_GAME_TLS_ARRAY());
         uintptr_t tls = 0;
         if (!slots || !Halo4SafeRead(
                 slots + slot, &tls, sizeof(tls)) || !tls)
@@ -57355,7 +57366,7 @@ static void ReachPcApply(int user, const uint8_t* entryRsp, const ReachApplySite
         unsigned char* tls = nullptr;
         if (user == 0 && g_reachCamera.base)
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             const uint32_t index = *reinterpret_cast<const uint32_t*>(g_reachCamera.base + kReachEngineTlsIndexRva);
             tls = (slots && index < 0x200) ? reinterpret_cast<unsigned char*>(slots[index]) : nullptr;
             const uintptr_t globals = tls ? *reinterpret_cast<const uintptr_t*>(tls + kReachPlayerControlTlsOffset) : 0;
@@ -61846,7 +61857,7 @@ bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& owner
         Halo4VehicleInputState seat{};
         if (!Halo4ReadVehicleInput(seat)) {MCCVR_H4_OWNER_WHY(2);return false;}
         if (!seat.seated) {MCCVR_H4_OWNER_WHY(3);return false;}
-        const auto** slots=reinterpret_cast<const uint8_t**>(__readgsqword(0x58));
+        const auto** slots=reinterpret_cast<const uint8_t**>(HALOMCCVR_GAME_TLS_ARRAY());
         const auto* tls=slots?slots[*g_halo4EngineTlsIndex]:nullptr;
         if (!tls) {MCCVR_H4_OWNER_WHY(4);return false;}
         const auto* table=Halo4VehicleRead<const uint8_t*>(tls,0x18);
@@ -62072,7 +62083,7 @@ namespace
         // raw; the FP commit requires it.
         if (g_engineTlsIndex && *g_engineTlsIndex < 0x200)
         {
-            auto** slots = reinterpret_cast<uint8_t**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<uint8_t**>(HALOMCCVR_GAME_TLS_ARRAY());
             const auto* tls = slots ? slots[*g_engineTlsIndex] : nullptr;
             const auto* users = tls ?
                 *reinterpret_cast<const uint8_t* const*>(tls + 0x568) :
@@ -62119,7 +62130,7 @@ namespace
         detailOut = (weapons[1] != UINT32_MAX) ? 1u : 0u;
         if (g_odstEngineTlsIndex && *g_odstEngineTlsIndex < 0x200)
         {
-            auto** slots = reinterpret_cast<uint8_t**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<uint8_t**>(HALOMCCVR_GAME_TLS_ARRAY());
             const auto* tls = slots ? slots[*g_odstEngineTlsIndex] : nullptr;
             const auto* users = tls ?
                 *reinterpret_cast<const uint8_t* const*>(tls + 0x598) :
@@ -62164,7 +62175,7 @@ namespace
         detailOut = (weapons[1] != UINT32_MAX) ? 1u : 0u;
         if (g_reachCamera.base)
         {
-            auto** slots = reinterpret_cast<uint8_t**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<uint8_t**>(HALOMCCVR_GAME_TLS_ARRAY());
             const uint32_t index = *reinterpret_cast<const uint32_t*>(
                 g_reachCamera.base + kReachEngineTlsIndexRva);
             const auto* tls =

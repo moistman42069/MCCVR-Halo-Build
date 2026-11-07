@@ -77,6 +77,10 @@ namespace sig
 
     // Base address and size of a loaded module's image, for bounding a scan.
     bool ModuleRange(const wchar_t* moduleName, uintptr_t& base, size_t& size);
+    // Asked by ModuleRange for a module Windows does not have loaded: an image that stands in for it (Project
+    // Reclaimer 0.10 keeps halo3.dll's image without loading the DLL; lifted_engine.h). None by default.
+    using ModuleRangeFallback = bool (*)(const wchar_t* moduleName, uintptr_t& base, size_t& size);
+    void SetModuleRangeFallback(ModuleRangeFallback fallback);
 
     // Base address and size of the module containing this code, resolved by
     // address rather than file name, so it survives the DLL being renamed.

@@ -224,7 +224,7 @@ int Halo3HudNoteThreadReady(const uint32_t* tlsIndex, size_t tlsGameTime, size_t
 {
     __try
     {
-        const auto* slots = reinterpret_cast<const uint8_t* const*>(__readgsqword(0x58));
+        const auto* slots = reinterpret_cast<const uint8_t* const*>(HALOMCCVR_GAME_TLS_ARRAY());
         const uint8_t* block = slots ? slots[*tlsIndex] : nullptr;
         if (!block)
             return 1;
@@ -288,7 +288,7 @@ int Halo4HudNotePlayer(const uint32_t* tlsIndex, size_t tlsGameTime, size_t tlsP
 {
     __try
     {
-        const auto* slots = reinterpret_cast<const uint8_t* const*>(__readgsqword(0x58));
+        const auto* slots = reinterpret_cast<const uint8_t* const*>(HALOMCCVR_GAME_TLS_ARRAY());
         const uint8_t* block = slots ? slots[*tlsIndex] : nullptr;
         if (!block)
             return 1;
@@ -400,7 +400,7 @@ bool Halo3HudNoteQueueCall(Halo3HudQueueFn queue, const uint32_t* tlsIndex, size
 {
     __try
     {
-        const auto* slots = reinterpret_cast<uint8_t* const*>(__readgsqword(0x58));
+        const auto* slots = reinterpret_cast<uint8_t* const*>(HALOMCCVR_GAME_TLS_ARRAY());
         uint8_t* block = slots ? slots[*tlsIndex] : nullptr;
         uint8_t* users = block ? *reinterpret_cast<uint8_t* const*>(block + tlsHudUsers) : nullptr;
         if (!users)
