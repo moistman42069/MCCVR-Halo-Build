@@ -830,6 +830,39 @@ void HoldingProbe()
         g_holding = INVALID_HANDLE_VALUE;
     }
 }
+
+// A virus scanner that opens the cache's file just as a save writes it, sharing nothing, and lets go of it on its
+// own g_scanHoldMs later. A dev build calls the probe before each open: the save's write is its third.
+DWORD g_scanHoldMs = 0;
+int g_scanOpens = 0;
+HANDLE g_scanner = nullptr;
+DWORD WINAPI ScannerLetsGo(void* held)
+{
+    Sleep(g_scanHoldMs);
+    CloseHandle(static_cast<HANDLE>(held));
+    return 0;
+}
+void ScannerProbe()
+{
+    if (++g_scanOpens != 3)
+        return;
+    const HANDLE held = CreateFileW(g_holdPath, GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (held == INVALID_HANDLE_VALUE)
+        return;
+    g_scanner = CreateThread(nullptr, 0, &ScannerLetsGo, held, 0, nullptr);
+    if (!g_scanner)
+        CloseHandle(held);
+}
+// Waits until the scanner has let go of the file.
+void ScannerGone()
+{
+    if (g_scanner)
+    {
+        WaitForSingleObject(g_scanner, INFINITE);
+        CloseHandle(g_scanner);
+        g_scanner = nullptr;
+    }
+}
 #endif
 
 void TestUnreadCacheFileIsNotReplaced()
@@ -895,6 +928,41 @@ void TestUnreadCacheFileIsNotReplaced()
               "dev build: a file held only while it is read before a save: nothing is saved, and no write is tried");
         Check(ReadAll(cache) == before && !Exists(temporary),
               "dev build: EVERY ENTRY IS STILL IN THE FILE, though a write would have gone through");
+    }
+
+    // HELD FOR A MOMENT JUST AS IT IS SAVED, as a virus scanner does with a file just written: the save waits it
+    // out. It used to fail now and then, on this machine as in the tests.
+    {
+        g_holdPath = cache.c_str();
+        g_scanHoldMs = 60;
+        g_scanOpens = 0;
+        drive_cascade::SetCacheProbe(&ScannerProbe);
+        Resolved r;
+        const bool resolved = Resolve(r, kHalo3, markerRva + 0x10);   // other tables: searched, and worth saving
+        drive_cascade::SetCacheProbe(nullptr);
+        ScannerGone();
+        const std::string after = ReadAll(cache);
+        Check(resolved && Whole(r) && r.rungs.outcome.rung == Rung::Search && r.rungs.saved && g_scanOpens == 3 &&
+                  after != before && after.find("entry halo4.dll ") != std::string::npos && !Exists(temporary),
+              "dev build: a file held for a moment as it is saved: the save waits, and every other entry is kept");
+    }
+
+    // HELD LONGER THAN THAT: the save gives up after a quarter of a second, and the file is left as it was.
+    {
+        const std::string held = ReadAll(cache);
+        g_scanHoldMs = 700;
+        g_scanOpens = 0;
+        drive_cascade::SetCacheProbe(&ScannerProbe);
+        Resolved r;
+        const DWORD start = GetTickCount();
+        const bool resolved = Resolve(r, kHalo3, markerRva + 0x20);
+        const DWORD took = GetTickCount() - start;
+        drive_cascade::SetCacheProbe(nullptr);
+        ScannerGone();
+        Check(resolved && Whole(r) && !r.rungs.saved && r.rungs.notSaved &&
+                  !std::strcmp(r.rungs.notSaved, "the file could not be written") && took < 600,
+              "dev build: a file held longer is not waited on for long: the drive is resolved, and NOT saved");
+        Check(ReadAll(cache) == held && !Exists(temporary), "dev build: the file is as it was, and no temporary is left");
     }
 #endif
 
