@@ -15954,7 +15954,6 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         static uint64_t lastDiagMs = 0;
         static bool dragging = false;
         static float grabOffsetX = 0.0f, grabOffsetY = 0.0f;
-        static game_menu_pointer::StickWheel stickWheel;
         if (!g_rightAimPoseValid || (headLocked && !g_headPoseValid) ||
             (!headLocked && !g_haveCenter))
         {
@@ -16093,17 +16092,16 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             }
             // Swallow the click and the scroll so dragging never also drives a
             // widget underneath the handle.
-            stickWheel.Reset();
             Menu_SetVrPointer(anyHit, smoothU, smoothV, false, 0.0f);
+            Menu_SetVrStickScroll(0.0f);
             return;
         }
 
-        // Whole notches, as on the game's own menus. Dear ImGui handles a move
-        // and a wheel turn queued in the same frame on separate frames, so a
-        // fraction of a notch every frame built a backlog that held the pointer
-        // and the scroll behind for as long as the stick had been pushed.
-        const float scroll = float(stickWheel.Step(g_padState.turnY, uint32_t(GetTickCount64())));
-        Menu_SetVrPointer(anyHit, smoothU, smoothV, triggerPressed, scroll);
+        // The stick scrolls the panel under the pointer smoothly, as far as it
+        // is pushed, straight to its scroll rather than as wheel turns
+        // (menu_stick_scroll.h).
+        Menu_SetVrPointer(anyHit, smoothU, smoothV, triggerPressed, 0.0f);
+        Menu_SetVrStickScroll(anyHit ? g_padState.turnY : 0.0f);
 
         const uint64_t now = GetTickCount64();
         if (now - lastDiagMs >= 2000)

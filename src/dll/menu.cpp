@@ -32,6 +32,7 @@
 #include "two_hand_lab_runtime.h"
 #include "menu_font.generated.h"
 #include "menu_style.h"
+#include "menu_stick_scroll.h"
 #include "../common/log.h"
 #include "../common/config.h"
 #include "../common/input_preset.h"
@@ -64,8 +65,10 @@ namespace
         float u = 0.0f;
         float v = 0.0f;
         float scrollY = 0.0f;
+        float stick = 0.0f;   // the right stick's push, scrolling smoothly (Menu_SetVrStickScroll)
     };
     VrPointerInput g_vrPointer;
+    menu_stick_scroll::Scroller g_stickScroll;
     bool g_resetArmed = false; // "reset all settings" needs a second click
     bool g_virtualStockResetArmed = false;
     // Panel drag state. The panel is otherwise completely locked; the grab
@@ -4440,6 +4443,16 @@ void Menu_SetVrPointer(bool hit, float u, float v, bool pressed, float scrollY)
 void Menu_ClearVrPointer()
 {
     Menu_SetVrPointer(false, 0.0f, 0.0f, false, 0.0f);
+    Menu_SetVrStickScroll(0.0f);
+}
+
+void Menu_SetVrStickScroll(float stick)
+{
+    if (!g_ready)
+        return;
+    EnterCriticalSection(&g_cs);
+    g_vrPointer.stick = stick;
+    LeaveCriticalSection(&g_cs);
 }
 
 ID3D11Texture2D* Menu_Render()
@@ -4500,6 +4513,11 @@ ID3D11Texture2D* Menu_Render()
         io.AddMouseWheelEvent(0.0f, pointerScroll);
     g_vrPointer.scrollY = 0.0f;
     ImGui::NewFrame();
+    // The right stick scrolls the panel under the VR pointer, straight to its scroll (menu_stick_scroll.h).
+    if (g_vrPointer.hit && g_vrPointer.stick != 0.0f)
+        g_stickScroll.Apply(g_vrPointer.stick, io.DeltaTime);
+    else
+        g_stickScroll.Reset();
     DrawUI();
     ImGui::Render();
 #if !HALOMCCVR_SETTINGS_WINDOW

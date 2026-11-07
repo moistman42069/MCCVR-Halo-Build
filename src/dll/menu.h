@@ -19,6 +19,9 @@ bool Menu_Toggle();
 // u and v run across the whole texture (MENU_TEX_W x MENU_H): the menu, then the side panel's strip.
 void Menu_SetVrPointer(bool hit, float u, float v, bool pressed, float scrollY);
 void Menu_ClearVrPointer();
+// The right stick's push in the headset, -1 to 1 (up positive): the panel under the VR pointer scrolls smoothly, as far
+// as it is pushed (menu_stick_scroll.h). 0 stops it.
+void Menu_SetVrStickScroll(float stick);
 void Menu_PostLiveResize(); // schedules admitted resize on MCC's window thread
 ID3D11Texture2D* Menu_Render(); // draws the current frame of UI; nullptr on failure
 // True while the page shown has a side panel (the Controls page's controller diagram), as of the last Menu_Render.
