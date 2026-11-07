@@ -1,3 +1,4 @@
+#include "game_tls.h"
 // Included in game.cpp at file scope, just before Game_ComputeAimStick.
 //
 // HALO 3 / ODST / HALO 4 DIRECT DRIVE (legacy_direct_drive = 1, derived from aim_direct_drive, default 1).
@@ -1087,7 +1088,7 @@ void LegacyDriveNoteSession(GameTitle title, const uint8_t* tls)
 // This (sim) thread's TLS -> the record the native update just wrote. 0 when any link is missing.
 uintptr_t LegacyDriveRecord(const LegacyDriveState& st, const LegacyDriveSite& site, int user, const uint8_t** tlsOut)
 {
-    auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+    auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
     const uint32_t index = *reinterpret_cast<const uint32_t*>(st.tlsIndexAddress);
     auto* tls = (slots && index < 0x200) ? reinterpret_cast<uint8_t*>(slots[index]) : nullptr;
     if (tlsOut)

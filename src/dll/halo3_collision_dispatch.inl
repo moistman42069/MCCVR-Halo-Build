@@ -1,3 +1,4 @@
+#include "game_tls.h"
     uint8_t LegacyCollisionSchedulerDetourBody(
         LegacyWorldCollisionFeature& feature, uint64_t flags, int32_t mode,
         const float* start, const float* desired, int32_t ignoredObjectA,
@@ -34,7 +35,7 @@
         g_halo3WorldCollision.callbacks.fetch_add(
             1,std::memory_order_acq_rel);
         uint8_t nativeResult=0;
-        const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
+        const uintptr_t caller=HALOMCCVR_GAME_RETURN_ADDRESS();
         __try {
             // The crosshair / firing-assist query traces through the intent point from its own start
             // (LegacySightReaimCrosshairQuery: every build, fail closed). The engine-crosshair witness sees the

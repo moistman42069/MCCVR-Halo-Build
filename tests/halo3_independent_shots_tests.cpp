@@ -142,6 +142,8 @@ static constexpr uint32_t hookRvas[]{0x3683A0,0x3524B0,0x13B08C,0x212198};
 static bool chaseScan=false;
 static unsigned chaseScans{};
 static uintptr_t chaseFirst{},chaseSecond{};
+// The DLL's lifted_engine.h: outside Project Reclaimer 0.10 a game function is called where it is.
+namespace lifted { template <typename Fn> Fn Callable(Fn target) { return target; } }
 namespace sig
 {
 uintptr_t Find(uintptr_t base,size_t,const char*)

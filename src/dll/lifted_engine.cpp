@@ -684,6 +684,35 @@ BOOL GuardedVirtualProtect(LPVOID address, SIZE_T size, DWORD protect, PDWORD pr
     return FALSE;
 }
 
+PRUNTIME_FUNCTION LookupFunctionEntry(DWORD64 address, PDWORD64 imageBase, PUNWIND_HISTORY_TABLE history)
+{
+    if (!InGuestCode(static_cast<uintptr_t>(address)))
+        return RtlLookupFunctionEntry(address, imageBase, history);
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(g_guestBase);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(g_guestBase + dos->e_lfanew);
+    const IMAGE_DATA_DIRECTORY& directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+    if (!directory.VirtualAddress || directory.Size < sizeof(RUNTIME_FUNCTION) ||
+        directory.VirtualAddress + directory.Size > g_guestSize)
+        return nullptr;
+    auto* table = reinterpret_cast<RUNTIME_FUNCTION*>(g_guestBase + directory.VirtualAddress);
+    const size_t count = directory.Size / sizeof(RUNTIME_FUNCTION);
+    const auto rva = static_cast<DWORD>(address - g_guestBase);
+    size_t lo = 0, hi = count;
+    while (lo < hi)
+    {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (table[mid].EndAddress <= rva)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (lo == count || table[lo].BeginAddress > rva)
+        return nullptr;
+    if (imageBase)
+        *imageBase = g_guestBase;
+    return &table[lo];
+}
+
 void** GuestTlsSlots()
 {
     if (!t_depth)

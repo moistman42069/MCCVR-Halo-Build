@@ -1,4 +1,5 @@
 #pragma once
+#include "game_tls.h"
 
 // MCC's frame clock in Halo Reach and Halo 4, read at runtime (dev measurement only). The layout -- which
 // TLS block slots hold game_time_globals and the frame interpolator's state, where the tick counter and the blend factor
@@ -131,7 +132,7 @@ struct Clock
         __try
         {
             const uint32_t index = *reinterpret_cast<const uint32_t*>(base + layout.tlsIndexRva);
-            const auto* slots = reinterpret_cast<const uintptr_t*>(__readgsqword(0x58));
+            const auto* slots = reinterpret_cast<const uintptr_t*>(HALOMCCVR_GAME_TLS_ARRAY());
             if (!slots || index > 0x400)
                 return false;
             const uintptr_t block = slots[index];

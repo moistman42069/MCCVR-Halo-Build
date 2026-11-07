@@ -67,14 +67,14 @@ void** GuestTlsSlots();
 // VirtualProtect, except that the guest image's code (which never runs) is refused: a byte patch there would report
 // success and change nothing. The refusal is logged once per address and fails as VirtualProtect fails.
 BOOL GuardedVirtualProtect(LPVOID address, SIZE_T size, DWORD protect, PDWORD previous);
+// RtlLookupFunctionEntry, except for an address in the guest image's code: Windows finds the client's executable
+// there (the image lies inside it) and none of halo3.dll's functions, so the entry comes from the image's own
+// exception directory, with the image's base.
+PRUNTIME_FUNCTION LookupFunctionEntry(DWORD64 address, PDWORD64 imageBase, PUNWIND_HISTORY_TABLE history);
 // The guest return address of the innermost hooked game call on this thread (what _ReturnAddress() gives in the
 // detour in MCC); 0 outside one.
 uintptr_t GuestReturnAddress();
 } // namespace lifted
 
-// In the mod's game code: the TLS array (as an address) and the caller of the game call a detour is in, in MCC and in
-// Project Reclaimer. Outside Project Reclaimer 0.10 they are exactly __readgsqword(0x58) and _ReturnAddress().
-#define HALOMCCVR_GAME_TLS_ARRAY() \
-    (lifted::Active() ? reinterpret_cast<uintptr_t>(lifted::GuestTlsSlots()) : static_cast<uintptr_t>(__readgsqword(0x58)))
-#define HALOMCCVR_GAME_RETURN_ADDRESS() \
-    (lifted::Active() ? lifted::GuestReturnAddress() : reinterpret_cast<uintptr_t>(_ReturnAddress()))
+// HALOMCCVR_GAME_TLS_ARRAY() and HALOMCCVR_GAME_RETURN_ADDRESS(), for the mod's game code.
+#include "game_tls.h"

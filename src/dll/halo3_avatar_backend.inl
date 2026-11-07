@@ -1,3 +1,4 @@
+#include "game_tls.h"
 // Optional H3 full-world avatar. Native cached palettes are never modified.
 // The only skinning replacement is the exact mesh upload's private Map buffer.
 #include "../common/halo3_avatar_logic.h"
@@ -217,7 +218,7 @@ uint64_t __fastcall ExcludeHook(int32_t user,uint32_t object) {
         result=runtime.exclude(user,object);
         // Preserve every other predicate caller, all attached weapons and all
         // remote/split-screen users. Full object salt was validated at Begin.
-        if(result&&reinterpret_cast<uintptr_t>(_ReturnAddress())==runtime.base+0x252C7A&&user==0&&
+        if(result&&HALOMCCVR_GAME_RETURN_ADDRESS()==runtime.base+0x252C7A&&user==0&&
            ((object==pair.unit&&PairCurrent())||(object==pair.seatUnit&&SeatBodyCurrent())))result=0;
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_acq_rel);}
     return result;
@@ -352,7 +353,7 @@ void* __fastcall MapHook(int32_t slot,uint32_t bytes,uint32_t* output) {
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);void* result=nullptr;
     __try {
         result=runtime.map(slot,bytes,output);
-        if(reinterpret_cast<uintptr_t>(_ReturnAddress())==runtime.base+0x2B5512&&
+        if(HALOMCCVR_GAME_RETURN_ADDRESS()==runtime.base+0x2B5512&&
            slot==0&&uploadScope.candidate&&PairCurrent()&&bytes==uploadScope.count*0x30) {
             uploadScope.mapped=result;uploadScope.bytes=bytes;
         }
@@ -382,7 +383,7 @@ __declspec(noinline) bool CopyPrivate() {
 void __fastcall CommitHook(int32_t slot,uint32_t baseRegister) {
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
     __try {
-        if(reinterpret_cast<uintptr_t>(_ReturnAddress())==runtime.base+0x2B5538&&
+        if(HALOMCCVR_GAME_RETURN_ADDRESS()==runtime.base+0x2B5538&&
            slot==0&&baseRegister==12&&uploadScope.candidate&&PairCurrent()) {
             if(CopyPrivate())runtime.uploads.fetch_add(1,std::memory_order_relaxed);
             uploadScope.mapped=nullptr; // one private copy for this Map/Unmap

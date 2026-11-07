@@ -1,4 +1,5 @@
 #pragma once
+#include "game_tls.h"
 // THE SIMULATION'S IN-TICK BYTE (Halo Reach, Halo 4). Each thread's engine TLS block points, at one slot, to the
 // frame interpolator's state. The tick loop sets one byte of that state before every tick and the post-tick record
 // clears it: while it is set the game's own object readers answer the tick's raw state, and the interpolated state
@@ -62,7 +63,7 @@ __declspec(noinline) inline int InTick(const Reader& reader) noexcept
     __try
     {
         const uint32_t index = *reader.tlsIndex;
-        const auto* slots = reinterpret_cast<const uintptr_t*>(__readgsqword(0x58));
+        const auto* slots = reinterpret_cast<const uintptr_t*>(HALOMCCVR_GAME_TLS_ARRAY());
         if (!slots || index >= 0x400 || !slots[index])
             return -1;
         const auto* state = *reinterpret_cast<const uint8_t* const*>(slots[index] + reader.slot);

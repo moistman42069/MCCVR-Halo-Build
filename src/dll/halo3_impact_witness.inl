@@ -1,3 +1,4 @@
+#include "game_tls.h"
 // Included in game.cpp (inside its anonymous namespace) right after halo3_assist_witness.inl: it reads the fire lane's
 // thread state (t_halo3Fire, t_legacyFirePredicted, g_halo3FiringWeapon, g_halo3IndependentShot) and object access
 // (Halo3MeleeSelectionObject), and is fed from halo3_independent_shots.inl, halo3_collision_dispatch.inl,
@@ -847,7 +848,7 @@ __declspec(noinline) int32_t __fastcall Halo3ImpactObjectNewDetour(void* placeme
     __try
     {
         const auto& fire = t_halo3ImpactFire;
-        const bool ours = reinterpret_cast<uintptr_t>(_ReturnAddress()) == w.fireReturn && fire.open &&
+        const bool ours = HALOMCCVR_GAME_RETURN_ADDRESS() == w.fireReturn && fire.open &&
                           fire.local && placement && w.ready.load(std::memory_order_acquire);
         float placementPos[3]{}, placementFwd[3]{}, placementVel[3]{};
         const bool placed = ours && Halo3ImpactCopy3(static_cast<const uint8_t*>(placement) + w.placePos, placementPos) &&

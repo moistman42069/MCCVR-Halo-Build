@@ -1,3 +1,4 @@
+#include "game_tls.h"
 // Optional physical-strike response selection. H3EK A5DE20 and its separately
 // verified retail 35A9A4 select primary inventory +262/+268 and return early
 // without a weapon. Read the striking role's own weapon; never swap inventory.
@@ -76,7 +77,7 @@ __declspec(noinline) void __fastcall Halo3MeleeSelectionDetour(uint32_t unit,int
         if(!feature.original) __leave;
         feature.original(unit,state,material,damage,effect,clashDamage,clashEffect);
         const auto& scope=g_halo3ContactScope;
-        const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
+        const auto caller=HALOMCCVR_GAME_RETURN_ADDRESS();
         if(!scope.active || !Halo3ContactMeleeReady() || !feature.enabled.load() ||
             feature.faulted.load() || state!=0x79 || uint16_t(unit)!=uint16_t(scope.owner) ||
             (caller!=g_halo3Contact.base+0x35B751 && caller!=g_halo3Contact.base+0x35E883)) __leave;
