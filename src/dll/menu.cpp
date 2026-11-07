@@ -96,11 +96,12 @@ namespace
     //  readable rather than being cut off.
     // ===================================================================
     constexpr const char* kWelcomeMessage =
-        "Hi everyone, pancreations here!\n"
-        "Thank you for taking the time to get this up and running.\n"
-        "If you have any issues please reach out and let me know.\n"
-        "Expect the rest of the collection to be added over time.\n\n"
+        "Original Halo MCC VR mod created by Pancreations, with the community building on top of it to give you the "
+        "version you are playing today.\n"
         "Pass-on/community build maintained by @MeWhenINameMyself.\n"
+        "Multiplayer support for Project Reclaimer maintained by Nitsujack.\n"
+        "This mod is an effort by many contributors, please see the Credits section to the right and consider "
+        "supporting them through their links present in the launcher.\n"
         "Join the Flat2VR Discord to report bugs or share feedback.";
 
     constexpr const char* kWelcomeCloseHint =
