@@ -40,8 +40,15 @@ struct Halo3PlayerTagsLane
     std::atomic<uint32_t> appliedFingerprint{0};
     uint32_t reportedFingerprint = 0;
     std::atomic<uint32_t> lastPlayerTags{0}, lastHidden{0};
+    // What the last draw held besides the teammates' tags (left as the game draws them), and the highest entry in use.
+    std::atomic<uint32_t> lastOthers{0};
+    std::atomic<int> lastHighest{-1};
+    uint32_t reportedCounts = ~0u;
+    uint64_t reportedCountsMs = 0;
     // The census: each navpoint kind (KindKey) a level showed while the settings were applied, a line per new one.
-    static constexpr int kKinds = 8;
+    // Eight filled with teammates' kinds alone in a co-op game of nine (2026-11-07), so a kind the settings skipped
+    // went unseen.
+    static constexpr int kKinds = 32;
     std::atomic<uint64_t> kinds[kKinds]{};
     int reportedKinds = 0;
 };
@@ -152,7 +159,8 @@ void Halo3PlayerTagsApply(Halo3PlayerTagsLane& lane, uint8_t* navpoints, const h
                           Halo3PlayerTagsSaved& saved)
 {
     using namespace halo3_player_tags;
-    uint32_t players = 0, hidden = 0;
+    uint32_t players = 0, hidden = 0, others = 0;
+    int highest = -1;
     __try
     {
         float eye[3]{};
@@ -174,13 +182,17 @@ void Halo3PlayerTagsApply(Halo3PlayerTagsLane& lane, uint8_t* navpoints, const h
             saved.scanned = i + 1;
             if (!entry[kValidOffset])
                 continue;
+            highest = i;
             int32_t icon = 0;
             uint32_t flags = 0;
             std::memcpy(&icon, entry + kIconOffset, sizeof(icon));
             std::memcpy(&flags, entry + kFlagsOffset, sizeof(flags));
             Halo3PlayerTagsCensus(lane, KindKey(icon, flags));
             if (!IsPlayerTag(icon, flags))
+            {
+                ++others;
                 continue;
+            }
             ++players;
             float distanceM = -1.0f;
             if (haveEye)
@@ -210,6 +222,8 @@ void Halo3PlayerTagsApply(Halo3PlayerTagsLane& lane, uint8_t* navpoints, const h
     }
     lane.lastPlayerTags.store(players, std::memory_order_relaxed);
     lane.lastHidden.store(hidden, std::memory_order_relaxed);
+    lane.lastOthers.store(others, std::memory_order_relaxed);
+    lane.lastHighest.store(highest, std::memory_order_relaxed);
 }
 
 // Puts back each written field that still holds what was written. Guarded: no C++ object here.
@@ -395,6 +409,21 @@ void ReportPlayerTags(Halo3PlayerTagsLane& lane)
         LOG("PLAYER TAGS %s: navpoint kind icon %d flags 0x%X: %s", lane.profile->title, icon, flags,
             halo3_player_tags::IsPlayerTag(icon, flags) ? "a teammate's tag (the settings apply)"
                                                          : "an objective or carrier (left as the game draws it)");
+    }
+    // What the draws hold, when that changes (at most every 10 s): which markers the settings reach and which not.
+    const uint32_t players = lane.lastPlayerTags.load(std::memory_order_relaxed);
+    const uint32_t others = lane.lastOthers.load(std::memory_order_relaxed);
+    const int highest = lane.lastHighest.load(std::memory_order_relaxed);
+    const uint32_t counts = (players & 0xFF) | (others & 0xFF) << 8 | static_cast<uint32_t>(highest & 0xFFFF) << 16;
+    const uint64_t now = GetTickCount64();
+    if (lane.appliedFingerprint.load(std::memory_order_relaxed) && counts != lane.reportedCounts &&
+        now - lane.reportedCountsMs >= 10000)
+    {
+        lane.reportedCounts = counts;
+        lane.reportedCountsMs = now;
+        LOG("PLAYER TAGS %s: the last draw held %u teammate tag(s) set by the settings and %u other marker(s) left as "
+            "the game draws them; the highest entry in use %d of %d",
+            lane.profile->title, players, others, highest, lane.count.load(std::memory_order_relaxed));
     }
     const uint32_t applied = lane.appliedFingerprint.load(std::memory_order_relaxed);
     if (!applied || applied == lane.reportedFingerprint)
