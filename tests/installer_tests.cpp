@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 
+namespace mcc_installer { extern bool g_testGameRunning; }
 using namespace mcc_installer;
 namespace fs = std::filesystem;
 static void Require(bool condition, const char* reason) { if (!condition) throw std::runtime_error(reason); }
@@ -238,6 +239,10 @@ int wmain(int argc,wchar_t** argv) {
         Require(!missingLauncher.success && !fs::exists(steam / "Halo_MCC_VR"),
             "separated payload without its launcher package root fails before any install write");
         Write(launcherPath, launcherBytes);
+        g_testGameRunning = true;
+        auto running = InstallPayload(source, game, true);
+        g_testGameRunning = false;
+        Require(!running.success && !fs::exists(steam / "Halo_MCC_VR"), "a running MCC refuses the install before any write");
         auto first = InstallPayload(source, game, true);
         if (!first.success) std::wcerr << L"Synthetic installer result: " << first.message << L'\n';
         Require(first.success, "first synthetic install");
