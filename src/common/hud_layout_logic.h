@@ -43,6 +43,8 @@ struct HudLayoutAltAnchor
     std::array<uint8_t, kHudLayoutMaxAnchor> mask;
     int anchorLength;
     int safeFrameOffset;
+    // Named in the scan's log when a record of this shape is found; null: the adapter's own name.
+    const char* name = nullptr;
 };
 
 struct HudLayoutAdapter
@@ -140,17 +142,6 @@ inline constexpr HudLayoutAdapter kHalo3HudLayoutAdapter = [] {
     return adapter;
 }();
 
-// Project Reclaimer 0.10's merged maps: the engine's own tag data holds two maps' tags at once (an ODST level on
-// Halo 3's base map, the menus' scenery merged with the multiplayer characters), so it holds Halo 3's three layout
-// records twice. Exactly three rejected all six on every scan, for as long as such a map was loaded: the HUD stayed
-// at the game's own size and the crosshair's capture was fitted for a layout the HUD did not use (2026-11-07). Up to
-// two sets are taken there, each record proven as before, and the layout is written to every one: the set the engine
-// draws from has it, whichever it is.
-inline constexpr HudLayoutAdapter kHalo3MergedHudLayoutAdapter = [] {
-    auto adapter=kHalo3HudLayoutAdapter;
-    adapter.maxBlocks=6;
-    return adapter;
-}();
 
 inline constexpr HudLayoutAdapter kOdstHudLayoutAdapter = {
     HudLayoutProfile::Halo3ODST,
@@ -175,6 +166,27 @@ inline constexpr HudLayoutAdapter kOdstHudLayoutAdapter = {
     0,
     false,
 };
+
+// Project Reclaimer 0.10's merged maps: the engine's own tag data holds two maps' tags at once (an ODST level on
+// Halo 3's base map, the menus' scenery merged with the multiplayer characters), so it holds Halo 3's three layout
+// records twice. Exactly three rejected all six on every scan, for as long as such a map was loaded: the HUD stayed
+// at the game's own size and the crosshair's capture was fitted for a layout the HUD did not use (2026-11-07). Up to
+// two sets are taken there, each record proven as before, and the layout is written to every one: the set the engine
+// draws from has it, whichever it is.
+// ODST's levels there are ODST's tags converted into the engine's, and their HUD is drawn as ODST's engine draws it,
+// from ODST's own record: its motion sensor sits at 2000,2000 where Halo 3's is at 55,661 (halo3odst/maps/sc100.map,
+// 0xE778A88). With only Halo 3's six written, ODST's HUD stayed at the game's size, its grenade display past the edge
+// of the view and the crosshair's capture fitted for a layout it did not use (2026-11-07). ODST's 1280x720 record, the
+// one the ODST adapter writes in MCC, is a second shape here: two sets of Halo 3's three and up to two of ODST's one.
+inline constexpr HudLayoutAdapter kHalo3MergedHudLayoutAdapter = [] {
+    auto adapter=kHalo3HudLayoutAdapter;
+    adapter.maxBlocks=8;
+    adapter.altAnchors={};
+    adapter.altAnchors[0]={kOdstHudLayoutAdapter.anchor, kOdstHudLayoutAdapter.mask,
+                           kOdstHudLayoutAdapter.anchorLength, kOdstHudLayoutAdapter.safeFrameOffset, "ODST"};
+    adapter.altAnchorCount=1;
+    return adapter;
+}();
 
 // Halo: Reach's own record, from official HREK evidence only. The block's
 // load-time postprocess function (reach_tag_test.exe 0x8E7170, the code behind
@@ -397,6 +409,7 @@ inline constexpr int HudLayoutScanSpan(const HudLayoutAnchorView& view)
 }
 
 static_assert(HudLayoutAdapterWellFormed(kHalo3HudLayoutAdapter));
+static_assert(HudLayoutAdapterWellFormed(kHalo3MergedHudLayoutAdapter));
 static_assert(HudLayoutAdapterWellFormed(kOdstHudLayoutAdapter));
 static_assert(HudLayoutAdapterWellFormed(kReachHudLayoutAdapter));
 

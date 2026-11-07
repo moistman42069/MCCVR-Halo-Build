@@ -4416,7 +4416,7 @@ namespace
     // engine picks by aspect, so the widescreen record alone is not enough.
     static int SafeFrameScanRegion(
         uintptr_t regionBase, size_t len, const HudLayoutAdapter& adapter,
-        uintptr_t* out, int maxOut)
+        uintptr_t* out, int maxOut, const char** outShape = nullptr)
     {
         // The region is COPIED OUT through ReadProcessMemory, a window at a time,
         // and the copy is scanned. The game can decommit a region between
@@ -4486,6 +4486,8 @@ namespace
                         HudLayoutAnchorAt(adapter, a);
                     if (!SafeFrameAnchorEquals(s_window + i, view))
                         continue;
+                    if (outShape)
+                        outShape[found] = a > 0 ? adapter.altAnchors[a - 1].name : nullptr;
                     out[found++] = regionBase + pos + i +
                         static_cast<size_t>(view.safeFrameOffset);
                     // Skip the matched identity only: two curvature records
@@ -4942,9 +4944,10 @@ namespace
                 if (candidate && !self)
                 {
                     uintptr_t hits[kMaxSafeFrameHits]{};
+                    const char* shapes[kMaxSafeFrameHits]{};
                     const int n = SafeFrameScanRegion(
                         regionBase, mbi.RegionSize, *adapter,
-                        hits, kMaxSafeFrameHits);
+                        hits, kMaxSafeFrameHits, shapes);
                     for (int k = 0; k < n; ++k)
                     {
                         ++rawHits;
@@ -4955,9 +4958,11 @@ namespace
                         const bool payloadOk =
                             SafeFramePairPlausible(h, v) &&
                             HudDestinationPlausible(destinationZ);
-                        LOG("SAFEFRAME [%s]: anchor at %p (type 0x%X protect "
+                        LOG("SAFEFRAME [%s]: anchor at %p%s%s%s (type 0x%X protect "
                             "0x%X) destination-Z %08X, safe frame %08X/%08X -> %s",
                             adapter->name, reinterpret_cast<void*>(hits[k]),
+                            shapes[k] ? " (" : "", shapes[k] ? shapes[k] : "",
+                            shapes[k] ? "'s record)" : "",
                             static_cast<unsigned>(mbi.Type),
                             static_cast<unsigned>(mbi.Protect),
                             destinationZ, h, v,
