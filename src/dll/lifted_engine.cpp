@@ -87,6 +87,7 @@ std::vector<Record*> g_allRecords;
 // The stub slots of the client's own versions of guest functions, by guest RVA; built on the first hook.
 std::unordered_map<uint32_t, volatile uint64_t*> g_replacements;
 bool g_replacementsBuilt = false;
+size_t g_codeReadable = 0; // how much from g_code is readable: the code and the stubs past it (BuildReplacements)
 // The guest image's code section as halo3.dll has it: what signature searches read (sig::SetScanShadow).
 std::vector<uint8_t> g_shadow;
 std::atomic<bool> g_shadowReady{false};
@@ -382,6 +383,7 @@ void BuildReplacements()
         at = reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;
         size = (std::min)(static_cast<size_t>(at - g_code), limit);
     }
+    g_codeReadable = size;
     if (size <= g_table.codeLength + lifted_engine::kStubSize)
     {
         LOG("RECLAIMER 0.10: nothing readable past the translated code: the client's own versions of game functions "
@@ -1078,7 +1080,18 @@ static uint64_t CallerAt(const Frame& frame, const uint64_t* at, uintptr_t& firs
         return 0;
     int32_t rel = 0;
     std::memcpy(&rel, call + 1, 4);
-    const uint64_t paired = PairCallSite(value, *caller, value + static_cast<int64_t>(rel), frame.record->guestTarget);
+    const uint64_t target = value + static_cast<int64_t>(rel);
+    // A call through a stub past the code, to the client's own version of a function that ran the hooked body: the
+    // guest return address the caller formed for that call (lifted_engine_logic.h, ForEachStubCall).
+    if (target >= g_code + g_table.codeLength && target + lifted_engine::kStubSize <= g_code + g_codeReadable &&
+        lifted_engine::IsStub(reinterpret_cast<const uint8_t*>(target)))
+    {
+        if (const uint32_t returnRva = lifted_engine::GuestReturnBeforeCall(
+                reinterpret_cast<const uint8_t*>(g_code), value - 5 - g_code,
+                static_cast<uint32_t>(g_guestCodeStart - g_guestBase), static_cast<uint32_t>(g_guestCodeEnd - g_guestBase + 5)))
+            return g_guestBase + returnRva;
+    }
+    const uint64_t paired = PairCallSite(value, *caller, target, frame.record->guestTarget);
     if (paired != kNoPair)
         return paired;
     if (!first)
@@ -1097,11 +1110,13 @@ uintptr_t GuestReturnAddress()
         return 0; // a call the mod made itself
     auto* record = const_cast<Record*>(frame.record);
     // Entered through the hooked function's own adapter: an indirect call's dispatcher, which stores the guest return
-    // address on the guest stack, as real hardware does.
+    // address on the guest stack, as real hardware does. The client's own version of a function that runs the body
+    // (a wrapper) gives it a frame of its own with 0 there: its caller is found up the host stack, as below.
     const uint64_t returned = *frame.hostReturnSlot;
     if (const lifted_engine::Record* own = RecordOfHost(returned);
         own && own->guestRva == record->rva && returned - g_code < own->hostOffset + own->bodyOffset)
-        return *reinterpret_cast<const uintptr_t*>(frame.guestRsp);
+        if (const uintptr_t onStack = *reinterpret_cast<const uintptr_t*>(frame.guestRsp))
+            return onStack;
     // The caller's translated code: the return address itself for a direct call; when the client's own code called
     // the body for it (it intercepts some of the game's input functions through stubs past the code), the first
     // return address further up the host stack that follows a call in a translated body and pairs. The depth that
