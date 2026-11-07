@@ -261,6 +261,15 @@ int main()
         putCall(0x1F0, 0x210); // a stub call with no lea in reach
         CHECK(GuestReturnBeforeCall(code, 0x63, 0x1000, 0x700000) == 0x283786);
         CHECK(GuestReturnBeforeCall(code, 0x63, 0x300000, 0x700000) == 0); // outside the guest code
+        // The other form, as the client's code calls the HUD widget draw (its caller at RVA 0x2D289C): the image base
+        // loaded, then `add rdx, 0x2D2A3B` (mov rdx, [rsp + 0x90]; add rdx, imm32; mov [rbx - 8], rdx).
+        {
+            uint8_t added[0x40]{};
+            const uint8_t bytes[] = {0x48, 0x8B, 0x94, 0x24, 0x90, 0x00, 0x00, 0x00, 0x48, 0x81, 0xC2, 0x3B,
+                                     0x2A, 0x2D, 0x00, 0x48, 0x89, 0x53, 0xF8};
+            std::memcpy(added + 0x10, bytes, sizeof(bytes));
+            CHECK(GuestReturnBeforeCall(added, 0x30, 0x1000, 0x700000) == 0x2D2A3B);
+        }
         struct Found { size_t stub; uint32_t returnRva; };
         std::vector<Found> found;
         ForEachStubCall(code, 0x200, sizeof(code), 0x1000, 0x700000,

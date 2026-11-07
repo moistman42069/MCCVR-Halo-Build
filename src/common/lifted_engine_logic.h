@@ -475,24 +475,26 @@ inline bool IsStub(const uint8_t* stub)
     return std::memcmp(stub, kStubPrefix, sizeof(kStubPrefix)) == 0;
 }
 
-// The guest return RVA the translated code formed before the call at `call` (an offset in `code`): the disp32 of the
-// last `lea r64, [r64 + disp32]` (base register not rsp) in the window before it that lies in [lowRva, highRva); 0 if
-// there is none.
+// The guest return RVA the translated code formed before the call at `call` (an offset in `code`): the constant of the
+// last `lea r64, [r64 + disp32]` (base register not rsp) or `add r64, imm32` in the window before it that lies in
+// [lowRva, highRva); 0 if there is none. Both forms add the RVA to the guest image's base held in a register.
 inline uint32_t GuestReturnBeforeCall(const uint8_t* code, size_t call, uint32_t lowRva, uint32_t highRva)
 {
     const size_t from = call > kStubLeaWindow ? call - kStubLeaWindow : 0;
     uint32_t found = 0;
     for (size_t at = from; at + 7 <= call; ++at)
     {
-        if ((code[at] != 0x48 && code[at] != 0x4C) || code[at + 1] != 0x8D)
+        if ((code[at] & 0xF8) != 0x48) // REX.W
             continue;
-        const uint8_t modrm = code[at + 2];
-        if ((modrm & 0xC0) != 0x80 || (modrm & 7) == 4)
+        const uint8_t opcode = code[at + 1], modrm = code[at + 2];
+        const bool lea = opcode == 0x8D && (modrm & 0xC0) == 0x80 && (modrm & 7) != 4;
+        const bool add = opcode == 0x81 && (modrm & 0xF8) == 0xC0;
+        if (!lea && !add)
             continue;
-        int32_t disp = 0;
-        std::memcpy(&disp, code + at + 3, 4);
-        if (disp >= static_cast<int64_t>(lowRva) && disp < static_cast<int64_t>(highRva))
-            found = static_cast<uint32_t>(disp);
+        int32_t value = 0;
+        std::memcpy(&value, code + at + 3, 4);
+        if (value >= static_cast<int64_t>(lowRva) && value < static_cast<int64_t>(highRva))
+            found = static_cast<uint32_t>(value);
     }
     return found;
 }
