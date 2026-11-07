@@ -118,6 +118,21 @@ inline constexpr size_t kOdstDrawBodyBytes = 0xC88; // the draw's extent in .pda
 inline constexpr char kOdstViewReadPattern[] = "48 8B 05 ?? ?? ?? ?? F3 0F 10 49 08 48 8D 78 08";
 inline constexpr int kOdstViewReadDisp = 3;
 
+// ---- Project Reclaimer 0.10's own draw (its client executable, 0.10.0; each matches exactly once where searched) ----
+// 0.10 keeps 212 navpoints a HUD ([capacity] hud.markers: 0x14 -> 0xd4). The game's callers reach the client's own
+// version of chud_draw_navpoints (lifted::ClientVersion), which first calls a draw of the client's: it draws every
+// entry up to a count it keeps in a global, reading each entry's alpha (+0x14) and fade but sizing them itself (it never
+// reads +0x38), and says whether it drew. Only when it did not does the 20-entry translated body run.
+//   The version: mov rbx,[rcx+8] (the navpoints); mov rdi,[rcx+0x10] (the user); mov rcx,rbx; mov edx,edi;
+//   call <its own draw>; test al,al; jnz. The call's rel32 at +14. Searched in its first kReclaimerVersionBytes.
+inline constexpr char kReclaimerVersionPattern[] = "48 8B 59 08 48 8B 79 10 48 89 D9 89 FA E8 ?? ?? ?? ?? 84 C0 75";
+inline constexpr int kReclaimerVersionCallRel = 14;
+inline constexpr size_t kReclaimerVersionBytes = 0x40;
+//   In its own draw: mov rdi,[rip+<count block>]; test rdi,rdi; jz; imul rax,[rdi],0x74 (the block's first word, times
+//   the entry stride). Its disp32 at +3. Searched in the draw's extent in .pdata.
+inline constexpr char kReclaimerCountPattern[] = "48 8B 3D ?? ?? ?? ?? 48 85 FF 0F 84 ?? ?? ?? ?? 48 6B 07 74";
+inline constexpr int kReclaimerCountDisp = 3;
+
 // ---- the entry (ADDR-HYGIENE: structural; proven in place by the patterns above, see the header) ----
 inline constexpr int kStockEntryCount = 20;
 inline constexpr int kMaxEntryCount = 256;           // more than this is refused, not adjusted
@@ -151,6 +166,15 @@ inline int EntryCountFromLayout(uint32_t gamertagDisp, uint32_t focusIndexDisp,
     const uint32_t count = end / static_cast<uint32_t>(kEntryStride);
     return (count >= static_cast<uint32_t>(kStockEntryCount) && count <= static_cast<uint32_t>(kMaxEntryCount))
                ? static_cast<int>(count)
+               : 0;
+}
+
+// The count Project Reclaimer's own draw walks, as read from its block: believed from twenty to kMaxEntryCount, 0
+// otherwise.
+inline int HostEntryCount(uint64_t value) noexcept
+{
+    return value >= static_cast<uint64_t>(kStockEntryCount) && value <= static_cast<uint64_t>(kMaxEntryCount)
+               ? static_cast<int>(value)
                : 0;
 }
 
