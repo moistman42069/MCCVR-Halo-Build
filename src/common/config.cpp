@@ -2631,7 +2631,9 @@ void ConfigSave()
     fprintf(f, "# Project Reclaimer: keep its picture no larger than your monitor (Display\n");
     fprintf(f, "# mode Borderless, Render resolution Native). A picture larger than the\n");
     fprintf(f, "# screen is suspected of stopping the graphics card on some PCs; 0 gives it\n");
-    fprintf(f, "# the Picture panel's full size. Applies at Project Reclaimer's next start.\n");
+    fprintf(f, "# the Picture panel's full size. From 0.10 the picture keeps the full size\n");
+    fprintf(f, "# and only the window is fitted inside your monitor (0 leaves the window\n");
+    fprintf(f, "# larger than the monitor). Applies at Project Reclaimer's next start.\n");
     fprintf(f, "reclaimer_fit_to_display = %d\n\n", g_config.reclaimer_fit_to_display ? 1 : 0);
     fprintf(f, "# Project Reclaimer: show a game it starts after the first (ODST, after Halo 3's menu) in the\n");
     fprintf(f, "# headset, by giving it the headset's graphics device. 0 = that game freezes in the headset.\n");

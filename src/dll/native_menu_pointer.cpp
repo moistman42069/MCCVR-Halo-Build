@@ -35,7 +35,8 @@ UINT_PTR timer = 0;
 bool mouseDown = false;
 bool mouseDownPosted = false; // the down went to the window as a message (PostsMessages), so its release does too
 LPARAM lastClientPoint = 0;   // where the last posted move was, in client coordinates
-bool pointPosted = false;     // lastClientPoint has been sent since the pointer last started
+bool pointPosted = false;     // a point has been sent (posted, or the cursor set) since the pointer last started
+bool pointsPosted = false;    // and it was posted (PostsMessages), so the window's own moves can be told apart
 int lastX = 0, lastY = 0;     // lastClientPoint's coordinates
 // A move closer than this to the last one sent is not sent (posted delivery).
 constexpr int kRestPixels = 3;
@@ -129,22 +130,21 @@ void Apply()
     }
     if (!timer) timer = SetTimer(nullptr, 0, 50, Watchdog);
     if (!timer) { Cancel(); Fault(); return; }
-    if (posted) {
-        // A mouse at rest sends no moves, and the window acts on each one it is sent. Project Reclaimer's menus, sent
-        // one every frame by a pointer held on an item, played their cursor sound every second or two. So a hand
-        // that rests sends none either: a move goes only once the point is kRestPixels from the last one sent. A
-        // press goes to that point.
-        if (!pointPosted || std::abs(result.x - lastX) >= kRestPixels || std::abs(result.y - lastY) >= kRestPixels) {
-            lastClientPoint = MAKELPARAM(static_cast<WORD>(result.x), static_cast<WORD>(result.y));
-            if (!PostMessageW(window, WM_MOUSEMOVE, mouseDown ? MK_LBUTTON : 0, lastClientPoint)) {
-                Cancel(); Fault(); return;
-            }
-            lastX = result.x;
-            lastY = result.y;
-            pointPosted = true;
-            sentPoints[sentNext++ % std::size(sentPoints)] = lastClientPoint;
-        } else
-            restingCount.fetch_add(1, std::memory_order_relaxed);
+    // A mouse at rest sends no moves, and the window acts on each one it is sent. Project Reclaimer's menus, sent one
+    // every frame by a pointer held on an item, played their cursor sound every second or two. So a hand that rests
+    // sends none either: a move goes only once the point is kRestPixels from the last one sent. A posted press goes to
+    // that point. The cursor rests the same way for Project Reclaimer (its fitted window, D3D_HostFitWindow), and
+    // is set again for a press or a release, which goes where the cursor is; MCC's is set every frame, as before.
+    const bool resting = pointPosted && std::abs(result.x - lastX) < kRestPixels &&
+        std::abs(result.y - lastY) < kRestPixels && (posted || (g_hostIsProjectReclaimer && result.pressed == mouseDown));
+    if (resting)
+        restingCount.fetch_add(1, std::memory_order_relaxed);
+    else if (posted) {
+        lastClientPoint = MAKELPARAM(static_cast<WORD>(result.x), static_cast<WORD>(result.y));
+        if (!PostMessageW(window, WM_MOUSEMOVE, mouseDown ? MK_LBUTTON : 0, lastClientPoint)) {
+            Cancel(); Fault(); return;
+        }
+        sentPoints[sentNext++ % std::size(sentPoints)] = lastClientPoint;
     } else {
         // Our DLL caller bypasses MCC's fitted-window coordinate remap. Send
         // physical client coordinates once; the existing MCC read hook scales them.
@@ -153,6 +153,12 @@ void Apply()
             std::abs(actual.x-target.x)>2 || std::abs(actual.y-target.y)>2) {
             Cancel(); Fault(); return;
         }
+    }
+    if (!resting) {
+        lastX = result.x;
+        lastY = result.y;
+        pointPosted = true;
+        pointsPosted = posted;
     }
     const bool wasDown = mouseDown;
     if (!Button(result.pressed, posted)) { Cancel(); Fault(); }
@@ -280,8 +286,8 @@ bool NativeMenuPointer_Message(UINT msg, LPARAM lParam)
         Apply();
         return true;
     }
-    if (msg == WM_MOUSEMOVE && pointPosted && std::find(std::begin(sentPoints), std::end(sentPoints), lParam) ==
-            std::end(sentPoints))
+    if (msg == WM_MOUSEMOVE && pointPosted && pointsPosted &&
+        std::find(std::begin(sentPoints), std::end(sentPoints), lParam) == std::end(sentPoints))
         foreignMoves.fetch_add(1, std::memory_order_relaxed);
     if (msg == WM_KILLFOCUS || msg == WM_DESTROY) {
         sample.store(0, std::memory_order_release);

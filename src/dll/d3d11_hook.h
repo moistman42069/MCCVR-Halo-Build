@@ -91,6 +91,9 @@ void D3D_GetForcedRenderSize(unsigned& width, unsigned& height);
 // Window fitting remains optional; headset render sizing works independently.
 bool D3D_FitActive();
 bool D3D_CanLiveResize();
+// Project Reclaimer 0.10's window is fitted inside the monitor while its picture keeps the forced size
+// (reclaimer_fit_to_display; d3d11_hook.cpp says how).
+bool D3D_HostFitWindow();
 
 // menu.cpp brackets the game's own WM_SIZE handling with this. While set, our
 // GetClientRect hook returns the full render size to the game's resize code on
