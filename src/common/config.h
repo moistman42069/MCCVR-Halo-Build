@@ -685,7 +685,7 @@ struct Config
     // Read live, every HUD draw.
     bool player_tags_show = true;
     float player_tags_scale = 0.45f;           // 0.25 to 2
-    float player_tags_opacity = 0.15f;         // 0 to 1
+    float player_tags_opacity = 0.25f;         // 0 to 1
     float player_tags_max_distance_m = 0.0f;   // 0 to 300
     // DEV BUILDS ONLY (parsed and saved there; a player build always has the default).
     // nav_marker_witness: 1 = report the pixel the game puts each marker on against the pixel the eye's own
