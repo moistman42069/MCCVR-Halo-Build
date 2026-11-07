@@ -194,7 +194,8 @@ std::string Serialize(const Config& scheme)
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
         for (unsigned action = 0; action < vr_mapping::ExtraCount; ++action)
             for (unsigned slot = 0; slot < vr_mapping::kRowInputs &&
-                 scheme.vr_extra_bindings[title][action] != vr_mapping::kExtraDefaults[action]; ++slot)
+                 scheme.vr_extra_bindings[title][action] !=
+                     vr_mapping::ExtraDefaults(static_cast<GameTitle>(title + 1))[action]; ++slot)
             {
                 const auto& seat = scheme.vr_extra_bindings[title][action][slot];
                 vr_mapping::FormatInput(input, seat.held, seat.press, seat.mode);

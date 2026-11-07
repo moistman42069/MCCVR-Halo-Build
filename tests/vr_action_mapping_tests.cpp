@@ -334,6 +334,21 @@ void CheckInputPresets()
         bool automaticRows=true;
         for(unsigned a=BansheeTrick+1;a<ExtraCount;++a) automaticRows=automaticRows&&kExtraDefaults[a]==kAutomaticRow;
         Check(automaticRows,"every extra row past the Banshee's starts Automatic");
+        // Switch weapon in a seat: left Y is the cameras' there. In Reach and Halo 4, which have no bomb button, it takes
+        // the bomb's controls; the other games keep their bomb there and start it Automatic.
+        Check(ExtraDefaults(GameTitle::Halo4)[SeatSwitchWeapon]==kExtraDefaults[BansheeBomb]&&
+            ExtraDefaults(GameTitle::HaloReach)[SeatSwitchWeapon]==kExtraDefaults[BansheeBomb]&&
+            ExtraDefaults(GameTitle::Halo4)[BansheeBomb]==kAutomaticRow&&
+            ExtraDefaults(GameTitle::HaloReach)[BansheeBomb]==kAutomaticRow&&
+            ExtraDefaults(GameTitle::Halo3)==kExtraDefaults&&ExtraDefaults(GameTitle::Halo2)==kExtraDefaults&&
+            ExtraDefaults(GameTitle::HaloCE)==kExtraDefaults&&ExtraDefaults(GameTitle::Halo3ODST)==kExtraDefaults&&
+            kExtraContexts[SeatSwitchWeapon]==ExtraContext::Seat,
+            "a seat's Switch weapon starts on the bomb's controls in Reach and Halo 4 alone");
+        bool sameSwitch=true;
+        for(const auto game:{GameTitle::Halo3,GameTitle::Halo3ODST,GameTitle::HaloReach,GameTitle::Halo4,GameTitle::HaloCE,
+                GameTitle::Halo2})
+            sameSwitch=sameSwitch&&NativeExtraAction(game,SeatSwitchWeapon)==NativeAction(game,SwitchWeapon);
+        Check(sameSwitch,"a seat's Switch weapon is each game's own Switch weapon");
         Check(NativeExtraAction(GameTitle::Halo3,FireLeft)==0x41&&NativeExtraAction(GameTitle::Halo2,FireLeft)==0x17&&
             NativeExtraAction(GameTitle::Halo3ODST,FireLeft)==kNoAction&&NativeExtraAction(GameTitle::Halo3,ReloadLeft)==0x42&&
             NativeExtraAction(GameTitle::Halo3,DualWield)==0x1F&&NativeExtraAction(GameTitle::Halo2,DualWield)==kNoAction&&

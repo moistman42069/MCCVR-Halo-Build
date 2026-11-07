@@ -752,8 +752,10 @@ struct Config
         vr_mapping::DefaultInputs(GameTitle::Halo4),vr_mapping::DefaultInputs(GameTitle::HaloCE),
         vr_mapping::DefaultInputs(GameTitle::Halo2)};
     // The seat's rows (VR Mappings): each game's Banshee bomb and trick, inputs as a row has.
-    vr_mapping::ExtraBindings vr_extra_bindings[6]{vr_mapping::kExtraDefaults,vr_mapping::kExtraDefaults,
-        vr_mapping::kExtraDefaults,vr_mapping::kExtraDefaults,vr_mapping::kExtraDefaults,vr_mapping::kExtraDefaults};
+    vr_mapping::ExtraBindings vr_extra_bindings[6]{vr_mapping::ExtraDefaults(GameTitle::Halo3),
+        vr_mapping::ExtraDefaults(GameTitle::Halo3ODST),vr_mapping::ExtraDefaults(GameTitle::HaloReach),
+        vr_mapping::ExtraDefaults(GameTitle::Halo4),vr_mapping::ExtraDefaults(GameTitle::HaloCE),
+        vr_mapping::ExtraDefaults(GameTitle::Halo2)};
     // Automatic VR action routing (F1 > Controls): a VR button reaches the game as the action bound to it. Off by
     // default for now -- the plain route, each VR button as the gamepad button it stands for, is the one that works;
     // the automatic one has known faults.

@@ -497,17 +497,19 @@ inline bool HoldsHandOnGun(Action action,const Overrides& bindings,const Inputs&
 enum class ExtraContext : unsigned { Seat, OnFoot, Anywhere, Count };
 // Files keep these keys: a new row goes at the end.
 enum ExtraAction : unsigned { BansheeBomb, BansheeTrick, FireLeft, ReloadLeft, DualWield, PreviousGrenade,
-    ActivateWaypoint, VehicleSecondary, VehicleTrick2, FlyUp, FlyDown, Scoreboard, SpecialAction, ExtraCount };
+    ActivateWaypoint, VehicleSecondary, VehicleTrick2, FlyUp, FlyDown, Scoreboard, SpecialAction, SeatSwitchWeapon,
+    ExtraCount };
 inline constexpr const char* kExtraKeys[ExtraCount]{"banshee_bomb","banshee_trick","fire_left","reload_left",
     "dual_wield","previous_grenade","activate_waypoint","vehicle_secondary","vehicle_trick_2","fly_up","fly_down",
-    "scoreboard","special_action"};
+    "scoreboard","special_action","seat_switch_weapon"};
 inline constexpr const char* kExtraNames[ExtraCount]{"Banshee bomb","Banshee trick","Fire left weapon (dual wielding)",
     "Reload left weapon (dual wielding)","Dual wield (pick up a second weapon)","Previous grenade","Activate waypoint",
     "Vehicle secondary fire / boost","Second vehicle trick / brake","Fly up","Fly down","Scoreboard",
-    "Special action (some missions)"};
+    "Special action (some missions)","Switch weapon (in a seat)"};
 inline constexpr ExtraContext kExtraContexts[ExtraCount]{ExtraContext::Seat,ExtraContext::Seat,ExtraContext::OnFoot,
     ExtraContext::OnFoot,ExtraContext::OnFoot,ExtraContext::OnFoot,ExtraContext::OnFoot,ExtraContext::Seat,
-    ExtraContext::Seat,ExtraContext::Seat,ExtraContext::Seat,ExtraContext::Anywhere,ExtraContext::Anywhere};
+    ExtraContext::Seat,ExtraContext::Seat,ExtraContext::Seat,ExtraContext::Anywhere,ExtraContext::Anywhere,
+    ExtraContext::Seat};
 using ExtraRow=std::array<Input,kRowInputs>;
 using ExtraBindings=std::array<ExtraRow,ExtraCount>;
 using ExtraTransports=std::array<uint32_t,ExtraCount>;
@@ -516,7 +518,7 @@ inline constexpr ExtraBindings kExtraDefaults{{
     {Input{kNoneHeld,PrimaryGrip},Input{kNoneHeld,RightClick},Input{},Input{}},
     {Input{kNoneHeld,A},Input{},Input{},Input{}},
     kAutomaticRow,kAutomaticRow,kAutomaticRow,kAutomaticRow,kAutomaticRow,kAutomaticRow,kAutomaticRow,kAutomaticRow,
-    kAutomaticRow,kAutomaticRow,kAutomaticRow}};
+    kAutomaticRow,kAutomaticRow,kAutomaticRow,kAutomaticRow}};
 // Each game's own action for an extra row, as NativeAction names the rows' (kNoAction: the game has none), in the games'
 // order Halo 3, ODST, Reach, Halo 4, Halo CE, Halo 2: what each game's converter makes of MCC's own control for it. See
 // BANSHEE-SEAT-ACTIONS-EVIDENCE-2026-11-05.md and EXTRA-ACTIONS-EVIDENCE-2026-11-05.md. Reach and Halo 4 have no bomb
@@ -539,7 +541,8 @@ inline constexpr unsigned kExtraNative[ExtraCount][6]{
     {0x22,0x23,0x0E,0x10,kNoAction,kNoAction},
     {0x23,0x24,0x0F,0x11,kNoAction,kNoAction},
     {0x1D,0x0C,0x3B,0x25,kNoAction,kNoAction},
-    {kNoAction,kNoAction,kNoAction,0x54,kNoAction,kNoAction}};
+    {kNoAction,kNoAction,kNoAction,0x54,kNoAction,kNoAction},
+    {0x02,0x02,0x02,0x01,0x03,0x04}};
 // The name an extra row shows in a game: ODST's Back brings up its map as well as the scores.
 inline constexpr const char* ExtraName(GameTitle title,ExtraAction action) noexcept
 {
@@ -551,6 +554,19 @@ inline constexpr unsigned NativeExtraAction(GameTitle title,ExtraAction action) 
 {
     const int game=static_cast<int>(title)-1;
     return action<ExtraCount&&game>=0&&game<6?kExtraNative[action][game]:kNoAction;
+}
+// A game's extra rows as they start. In a seat left Y is the vehicle cameras', so Switch weapon has a seat row of its
+// own: in Reach and Halo 4 it picks a Banshee's fuel rod or a Pelican's missiles, which have no bomb button, and it starts
+// on the controls the Banshee bomb starts on in the other games. There the bomb row, not in the game, gives them up.
+inline constexpr ExtraBindings ExtraDefaults(GameTitle title) noexcept
+{
+    ExtraBindings defaults=kExtraDefaults;
+    if(title==GameTitle::HaloReach||title==GameTitle::Halo4)
+    {
+        defaults[SeatSwitchWeapon]=kExtraDefaults[BansheeBomb];
+        defaults[BansheeBomb]=kAutomaticRow;
+    }
+    return defaults;
 }
 // An extra row's input in a file: its own may be Automatic, no input an old context.
 inline bool ParseExtraInput(const char* text,Input& input,bool own) noexcept
