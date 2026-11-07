@@ -6573,6 +6573,12 @@ namespace
         return true;
     }
 
+    // Project Reclaimer 0.10 draws the first-person view with its own version of the render (0x1854C8), which never
+    // fills the cache LoadCachedRenderRoot reads (its writer +0x2C0D20 is below it). Every caller takes the root's
+    // pose from the live camera and only its scale from the cache: there the scale of the root the visible palette
+    // was last drawn with (FpVisiblePaletteHook) stands in, per player.
+    std::atomic<float> g_paletteRootScale[4]{};
+
     bool LoadCachedRenderRoot(int player, BoneMatrix& root)
     {
         if (player<0 || player>=4 || !g_engineTlsIndex) return false;
@@ -6584,7 +6590,18 @@ namespace
         if (!renderPlayers) return false;
         root=*reinterpret_cast<const BoneMatrix*>(
             renderPlayers+static_cast<uintptr_t>(player)*0x2430+0x23F0);
-        return isfinite(root.scale) && fabsf(root.scale)>0.001f;
+        if (isfinite(root.scale) && fabsf(root.scale)>0.001f) return true;
+        const float scale=g_paletteRootScale[player].load(std::memory_order_relaxed);
+        float camera[9];
+        if (!lifted::Active() || !isfinite(scale) || fabsf(scale)<=0.001f ||
+            !g_camValid.load() || !LoadCameraBasis(camera))
+            return false;
+        root.scale=scale;
+        memcpy(root.rotation,camera,sizeof(camera));
+        root.translation[0]=g_camX.load();
+        root.translation[1]=g_camY.load();
+        root.translation[2]=g_camZ.load();
+        return true;
     }
 
     // AUTO BARREL ALIGNMENT source data. In the authored first-person pose the
@@ -8666,6 +8683,9 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                 break;
             }
         H3SecondaryVisualScope secondaryMotionScope(context);
+        if (root && context.valid && context.player>=0 && context.player<4 &&
+            isfinite(root->scale) && fabsf(root->scale)>0.001f)
+            g_paletteRootScale[context.player].store(root->scale,std::memory_order_relaxed);
         // A modded gun can be parented to base instead of either wrist.
         // Resolve its actual model outputs before IK, scaling and visibility.
         if (context.valid)
