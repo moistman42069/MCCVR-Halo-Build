@@ -227,7 +227,7 @@ bool Retire() {
         if(MH_RemoveHook(runtime.target[i])!=MH_OK) return false;
         runtime.target[i]=runtime.original[i]=nullptr;
     }
-    if(runtime.module) FreeLibrary(runtime.module);
+    if(runtime.module && runtime.module!=lifted::Halo3Module()) FreeLibrary(runtime.module);
     runtime.module=nullptr;runtime.base=runtime.state=0;runtime.generation=0;
     runtime.readerAt.store(0,std::memory_order_release);
     runtime.attempted=false;runtime.faulted=false;
@@ -266,7 +266,10 @@ void Poll() {
         vr_mapping::Transports fallback{};
         if(!Game_ReadVrActionBindings(fallback,GetTickCount64())) return;
         const auto* descriptor=TitleRegistry_Find(title);
-        if(!descriptor || !GetModuleHandleExW(0,descriptor->moduleName,&runtime.module)) return;
+        if(!descriptor) return;
+        // Project Reclaimer 0.10 loads no halo3.dll: its image inside the client stands in (lifted_engine.h).
+        if(!GetModuleHandleExW(0,descriptor->moduleName,&runtime.module) && !(runtime.module=lifted::Halo3Module()))
+            return;
         runtime.attempted=true;runtime.base=reinterpret_cast<uintptr_t>(runtime.module);
         runtime.generation=generation;
         const auto& d=kGestureBindings[readerIndex];

@@ -17,12 +17,15 @@ static PRUNTIME_FUNCTION WINAPI MockLookup(DWORD64,PDWORD64,PUNWIND_HISTORY_TABL
 #define FreeLibrary MockFree
 #define _ReturnAddress MockReturnAddress
 #define RtlLookupFunctionEntry MockLookup
+#define HALOMCCVR_LIFTED_SHIM_OFF
 #include "../src/dll/native_vr_actions.cpp"
 #undef GetTickCount64
 #undef GetModuleHandleExW
 #undef FreeLibrary
 #undef _ReturnAddress
 #undef RtlLookupFunctionEntry
+// lifted_engine.h's: no Project Reclaimer 0.10 engine in this test.
+HMODULE lifted::Halo3Module() { return nullptr; }
 
 Config::Config()=default;
 Config g_config{};
