@@ -96,6 +96,8 @@ struct Setup
     bool leftHanded=false;
     bool remap=false;            // VR Mappings' Remap buttons
     bool thumbrestDpad=false;    // the D-pad is the left thumb on its rest and the right stick
+    uint32_t blocked=0;          // actions (a bit per vr_mapping::Action) whose buttons do nothing on foot
+    uint32_t blockedAlways=0;    // and those whose buttons do nothing anywhere
     const vr_mapping::Overrides* bindings=nullptr;
     const vr_mapping::Inputs* inputs=nullptr;
     const vr_mapping::ExtraBindings* extra=nullptr;
@@ -127,6 +129,8 @@ inline void AddInput(Labels& labels,const Setup& setup,const char* action,const 
     if(setup.context!=Context::OnFoot&&(uses&(Bit(RightStickUp)|Bit(RightStickDown)))) return;
     // In a seat left X, left Y and the left stick click are the vehicle cameras' (the pause still reads them).
     if(seatCameras&&setup.context==Context::Vehicle&&(uses&(Bit(vr_mapping::X)|Bit(vr_mapping::Y)|Bit(LeftClick)))) return;
+    // In a seat (and with two guns) the empty grip and the hand on the gun are never held first.
+    if(setup.context==Context::Vehicle&&(HeldBits(held)&(Bit(SupportGrip)|Bit(HandOnGun)))) return;
     std::string line;
     if(place.part) {line+=place.part;line+=": ";}
     line+=action;
@@ -169,6 +173,7 @@ inline Labels Build(const Setup& setup)
     {
         const auto action=static_cast<Action>(a);
         if(NativeAction(setup.game,action)==kNoAction) continue;
+        if(((setup.blockedAlways>>a)&1u)||(!vehicle&&((setup.blocked>>a)&1u))) continue;   // its buttons are off
         if(setup.layout&&!(*setup.layout)[a]) continue;   // the game has no button for it
         const char* name=ActionName(setup.game,action);
         const auto& row=(*setup.inputs)[a];
@@ -217,6 +222,9 @@ inline Labels Build(const Setup& setup)
 // the setting that turns it on is on.
 struct Gestures
 {
+    bool smoothTurn=true;          // turn_smooth: smooth, else snap turning
+    float snapDegrees=30.0f;       // turn_snap_deg
+    bool vehicleSmoothTurn=false;  // vehicle_smooth_turn: smooth turning while seated
     bool twoHanded=false;          // weapon gripping
     bool holsters=false;
     int holsterLocation=0;         // weapon_holster_location: shoulder, hip, over the shoulder, the player's own place
@@ -237,7 +245,9 @@ inline Labels BuiltIns(const Setup& setup,const Gestures& gestures)
     Labels labels{};
     const bool vehicle=setup.context==Context::Vehicle;
     detail::Add(labels,LeftStick,vehicle?"Drive":"Move");
-    detail::Add(labels,RightStick,"Turn");
+    if(gestures.smoothTurn||(vehicle&&gestures.vehicleSmoothTurn)) detail::Add(labels,RightStick,"Smooth turn");
+    else detail::Add(labels,RightStick,"Snap turn ("+std::to_string(static_cast<int>(gestures.snapDegrees+0.5f))+
+        " degrees)");
     detail::Add(labels,LeftMenu,"Pause (Start)");
     detail::Add(labels,LeftStickClick,"Both stick clicks: recentre, open menu");
     detail::Add(labels,RightStickClick,"Both stick clicks: recentre, open menu");
@@ -246,6 +256,7 @@ inline Labels BuiltIns(const Setup& setup,const Gestures& gestures)
         detail::Add(labels,Y,"Next camera (hold: recentre view)");
         detail::Add(labels,X,"Camera tether (hold: recentre view)");
         detail::Add(labels,LeftStickClick,"Cycle through vehicle control methods");
+        detail::Add(labels,setup.leftHanded?RightTrigger:LeftTrigger,"Switch weapon (passenger seat)");
         return labels;
     }
     for(const Control grip:{LeftGrip,RightGrip})

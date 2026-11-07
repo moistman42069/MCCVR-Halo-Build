@@ -143,6 +143,11 @@ void DrawControlsDiagram()
     setup.mod = &g_config.vr_mod_bindings;
     setup.layout = layoutKnown ? &layout : nullptr;
     setup.extraLayout = extraKnown ? &extraLayout : nullptr;
+    // Buttons the settings turn off: the flashlight's anywhere, and on foot with "Gestures only" reload and weapon
+    // switching while their gestures are on (manual_weapon_input::Blocked).
+    if (g_config.disable_flashlight_input) setup.blockedAlways |= 1u << vr_mapping::Flashlight;
+    if (g_config.gesture_only_weapon_input && g_config.manual_reload) setup.blocked |= 1u << vr_mapping::Reload;
+    if (g_config.gesture_only_weapon_input && g_config.weapon_holsters) setup.blocked |= 1u << vr_mapping::SwitchWeapon;
     const Labels labels = Build(setup);
 
     ImGui::PushFont(g_headingFont);
@@ -178,6 +183,9 @@ void DrawControlsDiagram()
     // What no row maps, as the settings have it: each control's built-in jobs in grey boxes, the gestures under the
     // diagram.
     Gestures gestures{};
+    gestures.smoothTurn = g_config.turn_smooth;
+    gestures.snapDegrees = g_config.turn_snap_deg;
+    gestures.vehicleSmoothTurn = g_config.vehicle_smooth_turn;
     gestures.twoHanded = g_config.two_handed_aim;
     gestures.holsters = g_config.weapon_holsters;
     gestures.holsterLocation = g_config.weapon_holster_location;

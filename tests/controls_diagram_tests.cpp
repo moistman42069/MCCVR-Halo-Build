@@ -48,7 +48,7 @@ void CheckDefaults()
     Check(Has(foot,RightStick,"Down: Crouch (toggle)")&&Has(foot,RightStick,"Up: Equipment / ability"),
         "the right stick's crouch and Halo 3's stick-up equipment, on foot");
     const Labels fixed=BuiltIns(rows.Make(Context::OnFoot),Gestures{});
-    Check(Has(fixed,LeftStick,"Move")&&Has(fixed,RightStick,"Turn")&&Has(fixed,LeftMenu,"Pause (Start)")&&
+    Check(Has(fixed,LeftStick,"Move")&&Has(fixed,RightStick,"Smooth turn")&&Has(fixed,LeftMenu,"Pause (Start)")&&
         !Mentions(foot,LeftStick,"Move"),"the fixed controls are built in, not mapped");
     Check(Has(foot,B,"Pause (while Y held)")&&Has(foot,Y,"Pause (while B held)"),"the mod's Y + B pause on both buttons");
     Check(!Mentions(foot,RightGrip,"Banshee"),"seat rows are not on foot");
@@ -121,6 +121,34 @@ void CheckLayout()
         !Mentions(Build(setup),RightStick,"Flashlight"),"the D-pad gesture's D-pad is the left stick");
 }
 
+void CheckSettingsFollowed()
+{
+    Rows rows;
+    rows.inputs[vr_mapping::Zoom].more[0]=vr_mapping::kGunZoom;
+    rows.inputs[vr_mapping::Equipment].more[1]=vr_mapping::kAirEquipment;
+    const Labels seat=Build(rows.Make(Context::Vehicle));
+    Check(!Mentions(seat,LeftTrigger,"Zoom")&&!Mentions(seat,LeftTrigger,"empty grip"),
+        "a seat never holds the empty grip or the hand on the gun first");
+    rows.bindings[vr_mapping::Reload]=vr_mapping::B;
+    Setup setup=rows.Make(Context::OnFoot);
+    setup.blocked=1u<<vr_mapping::Reload;
+    setup.blockedAlways=1u<<vr_mapping::Flashlight;
+    Check(!Mentions(Build(setup),B,"Reload")&&Has(Build(setup),X,"Use / pick up")&&
+        !Mentions(Build(setup),LeftStick,"Flashlight"),"actions whose buttons are off are left out on foot");
+    setup.context=Context::Vehicle;
+    Check(Has(Build(setup),B,"Reload")&&!Mentions(Build(setup),LeftStick,"Flashlight"),
+        "the gesture-only buttons still work in a seat, the flashlight's stays off");
+    Gestures gestures{};
+    gestures.smoothTurn=false;
+    gestures.snapDegrees=45.0f;
+    Check(Has(BuiltIns(rows.Make(Context::OnFoot),gestures),RightStick,"Snap turn (45 degrees)"),"snap turning, by its step");
+    gestures.vehicleSmoothTurn=true;
+    Check(Has(BuiltIns(rows.Make(Context::Vehicle),gestures),RightStick,"Smooth turn")&&
+        Has(BuiltIns(rows.Make(Context::Vehicle),gestures),LeftTrigger,"Switch weapon (passenger seat)")&&
+        Has(BuiltIns(rows.Make(Context::Vehicle),gestures),LeftStickClick,"Cycle through vehicle control methods"),
+        "smooth turning in a seat, and the seat's own controls");
+}
+
 void CheckBuiltInsAndGestures()
 {
     Rows rows;
@@ -171,6 +199,7 @@ int main()
     CheckHandsAndChords();
     CheckLayout();
     CheckBuiltInsAndGestures();
+    CheckSettingsFollowed();
     std::printf("Controls diagram: %u checks passed\n",checks);
     return 0;
 }
