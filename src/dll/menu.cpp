@@ -3329,7 +3329,7 @@ namespace
         ImGui::TextDisabled("ON: an objective marker shows when you look toward it, and its off-screen arrow "
                             "when you look away, wherever the gun points.\n"
                             "OFF: as before: the marker shows only while the gun points near the objective.\n"
-                            "Halo: Reach. Live.");
+                            "Halo: Reach and Halo 4. Live.");
         changed |= ImGui::Checkbox("Markers use the headset's field of view", &g_config.nav_markers_on_target);
         ImGui::TextDisabled("ON: objective markers are projected with the field of view each eye is drawn with, "
                             "so a marker stays on its point when you turn your head.\n"

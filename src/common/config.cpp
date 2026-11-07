@@ -2720,7 +2720,7 @@ void ConfigSave()
     fprintf(f, "nav_markers_on_target = %d\n", g_config.nav_markers_on_target ? 1 : 0);
     fprintf(f, "# Markers follow your head, not your gun. 1 = whether an objective marker shows, or its\n");
     fprintf(f, "# off-screen arrow does, depends on where you look. 0 = on where the gun points, as before.\n");
-    fprintf(f, "# Halo: Reach (log: NAV MARKERS <game>). Live in F1 > HUD > Waypoints. (default %d)\n",
+    fprintf(f, "# Halo: Reach and Halo 4 (log: NAV MARKERS <game>). Live in F1 > HUD > Waypoints. (default %d)\n",
         d.nav_markers_follow_head ? 1 : 0);
     fprintf(f, "nav_markers_follow_head = %d\n", g_config.nav_markers_follow_head ? 1 : 0);
     fprintf(f, "# Off-screen arrows stay in view. 1 = when an objective marker or a marked player is out of\n");
