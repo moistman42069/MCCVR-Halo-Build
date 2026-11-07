@@ -288,11 +288,11 @@ inline std::vector<GestureLine> GestureLines(const Setup& setup,const Gestures& 
             lines.push_back({"Gesture melee",gestures.meleeNeedsGrip?"Grip "+hand+" and punch away from your body.":
                 "Punch away from your body with "+hand+"."});
         }
-        // Only Halo 3 and Halo 2 dual wield; Halo 2's shake reloads its right-hand gun for now.
+        // Only Halo 3 and Halo 2 dual wield; Halo 2's one reload button reloads both guns.
         if(gestures.shakeReload&&setup.game==GameTitle::Halo3)
             lines.push_back({"Dual-wield reload","Shake a hand: reload that hand's gun."});
         else if(gestures.shakeReload&&setup.game==GameTitle::Halo2)
-            lines.push_back({"Dual-wield reload","Shake a hand: reload the right-hand gun."});
+            lines.push_back({"Dual-wield reload","Shake either hand: reload both guns."});
         if(gestures.physicalCrouch) lines.push_back({"Physical crouch","Physically duck your head in real space to crouch."});
         if(gestures.physicalRunning) lines.push_back({"Physical running","Swing both arms to run."});
     }
