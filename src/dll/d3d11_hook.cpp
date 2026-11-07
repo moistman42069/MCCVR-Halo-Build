@@ -1322,16 +1322,32 @@ using EnumDisplaySettingsWFn = BOOL(WINAPI*)(LPCWSTR, DWORD, DEVMODEW*);
 static EnumDisplaySettingsWFn g_hostPrevEnumDisplaySettingsW = nullptr;
 static std::atomic<uint32_t> g_hostAnswers{0};
 
-// The client's display mode as its settings.json (Documents\My Games\Project Reclaimer) states it now. Read only when
-// the client reads its display mode, which it does as it starts and when its own settings change.
+// The client's display mode as its settings.json (reclaimer_host::SettingsFolder: Documents\My Games\Project Reclaimer
+// up to 0.9, %LOCALAPPDATA%\ProjectReclaimer from 0.10) states it now. Read only when the client reads its display
+// mode, which it does as it starts and when its own settings change.
+static std::wstring HostKnownFolder(REFKNOWNFOLDERID id)
+{
+    PWSTR path = nullptr;
+    std::wstring out;
+    if (SUCCEEDED(SHGetKnownFolderPath(id, 0, nullptr, &path)) && path)
+        out = path;
+    CoTaskMemFree(path);
+    return out;
+}
 static reclaimer_host::ClientDisplayMode ReadHostClientDisplayMode()
 {
-    PWSTR documents = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &documents)) || !documents)
+    // The client's own version, from its version resource.
+    const HMODULE exe = GetModuleHandleW(nullptr);
+    const HRSRC found = FindResourceW(exe, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(16)); // RT_VERSION
+    const HGLOBAL loaded = found ? LoadResource(exe, found) : nullptr;
+    const void* resource = loaded ? LockResource(loaded) : nullptr;
+    const bool recompiled = reclaimer_host::RunsRecompiledEngine(reclaimer_host::VersionFromVersionResource(
+        static_cast<const uint8_t*>(resource), resource ? SizeofResource(exe, found) : 0));
+    const std::wstring folder = reclaimer_host::SettingsFolder(
+        recompiled, HostKnownFolder(FOLDERID_Documents), HostKnownFolder(FOLDERID_LocalAppData));
+    if (folder.empty())
         return reclaimer_host::ClientDisplayMode::Unknown;
-    std::wstring path = documents;
-    CoTaskMemFree(documents);
-    path += L"\\My Games\\Project Reclaimer\\settings.json";
+    const std::wstring path = folder + L"\\settings.json";
     const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                     nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE)

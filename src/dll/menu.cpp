@@ -1700,7 +1700,7 @@ namespace
             {
                 g_config.vr_bindings[selectedTitle]={};
                 g_config.vr_inputs[selectedTitle]=vr_mapping::DefaultInputs(selectedGame);
-                g_config.vr_extra_bindings[selectedTitle]=vr_mapping::kExtraDefaults;
+                g_config.vr_extra_bindings[selectedTitle]=vr_mapping::ExtraDefaults(selectedGame);
                 for(int& open:moreOpen[selectedTitle]) open=0;
                 changed=true;
             }

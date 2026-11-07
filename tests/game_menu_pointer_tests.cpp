@@ -195,6 +195,18 @@ int main()
         Check(wheel.Step(1.f,t+=50)==1,"after a reset it starts afresh");
     }
     {
+        // MCC's lists: eighths of a notch, 10 notches a second, so they glide at the speed whole notches had.
+        game_menu_pointer::StickWheel wheel{10.f,8};
+        Check(wheel.Step(.5f,1000)==8,"a flick still moves one whole notch at once");
+        int steps=0,largest=0;uint32_t t=1000;
+        for(int i=0;i<90;++i){const int s=wheel.Step(1.f,t+=11);steps+=s;largest=std::max(largest,s);}
+        Check(steps>=74&&steps<=84,"held fully: about ten notches a second");
+        Check(largest<=2,"held, it goes a little at a time, not in whole notches");
+        int half=0;game_menu_pointer::StickWheel slow{10.f,8};slow.Step(-.5f,t);
+        for(int i=0;i<90;++i)half+=slow.Step(-.5f,t+=11);
+        Check(half<0&&-half<steps,"pushed a little: slower");
+    }
+    {
         // Sideways lists: right goes down the list, left back up; the further push is the wheel.
         using game_menu_pointer::StickWheelAxis;
         Check(StickWheelAxis(0.f,1.f)==1.f&&StickWheelAxis(0.f,-1.f)==-1.f,"up and down are the wheel as before");

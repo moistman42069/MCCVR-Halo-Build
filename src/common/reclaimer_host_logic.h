@@ -4,7 +4,7 @@
 // shell. Its executable is one file run in several roles (measured on 0.9.8):
 //
 // (0.9.23 names it project-reclaimer-client-v0.9.23.exe; IsClientExeName takes both names.)
-// (0.10.0 runs no halo3.dll and no engine worker at all, and cannot take the mod: RunsRecompiledEngine.)
+// (0.10.0 runs no halo3.dll and no engine worker at all: RunsRecompiledEngine, TakesMod.)
 //
 //   project-reclaimer-v0.9.8.exe                       what the player starts; it starts itself again and exits
 //     project-reclaimer-v0.9.8.exe                     the supervisor: menus' owner, no engine
@@ -284,7 +284,7 @@ inline const char* RoleName(Role role)
 
 inline Role RoleOf(std::wstring_view commandLine)
 {
-    bool worker = false, window = false;
+    bool worker = false, window = false, server = false;
     const std::vector<std::wstring> arguments = Arguments(commandLine);
     for (size_t i = 1; i < arguments.size(); ++i) // [0] is the program
     {
@@ -292,7 +292,12 @@ inline Role RoleOf(std::wstring_view commandLine)
             worker = true;
         else if (arguments[i] == L"--client-window")
             window = true;
+        // 0.10's own server processes (strings in its executable: --server-worker, --headless).
+        else if (arguments[i] == L"--server-worker" || arguments[i] == L"--headless")
+            server = true;
     }
+    if (server)
+        return Role::OtherWorker;
     if (!worker)
         return Role::Supervisor;
     return window ? Role::ClientWorker : Role::OtherWorker;
@@ -363,19 +368,61 @@ inline bool Proven(const Version& version)
     return false;
 }
 
-// 0.10.0 AND LATER CANNOT TAKE THE MOD. 0.10.0 ("rcl-engine") no longer runs MCC's halo3.dll. On its first start it
-// translates the DLL's x86-64 code into code of its own (Cache\native\retail-engine\engine.code; its client.log says
-// "the engine's code is 25% made" up to 100%) and runs that inside the process the player sees: "[host] linked
-// recompiled engine, image at ...", then "[host] engine thread started", and no engine worker is ever started. Its
-// release build refuses the original DLL ("the retail DLL runs only in a development build"). Every Halo 3 hook the
-// mod places is found in, and patches, halo3.dll's own code, which never runs there, and the relay waits for an
-// engine worker that never comes. So the launcher does not start such a client with the mod and says why, and of
-// several clients it prefers one that runs halo3.dll. Measured on 0.10.0; a later version is taken to be the same
-// until one is shown not to be.
+// 0.10.0 AND LATER RUN A RECOMPILED HALO 3 (docs/RECLAIMER-0.10-ENGINE-EVIDENCE.md). 0.10.0 ("rcl-engine") no longer
+// runs MCC's halo3.dll: it translates the DLL's code into its own once (Cache\native\retail-engine\engine.code) and
+// runs that inside the client the player starts ("[host] linked recompiled engine, image at ...", "[host] engine
+// thread started"), with no engine worker. So the mod goes into the client itself, and its Halo 3 hooks go on the
+// translated functions (src/dll/lifted_engine.h). Measured on 0.10.0; a later version is taken to be the same until
+// one is shown not to be.
 inline constexpr Version kFirstRecompiledEngine{{0, 10, 0}, true};
 inline bool RunsRecompiledEngine(const Version& version)
 {
     return version.known && !Newer(kFirstRecompiledEngine, version);
+}
+
+// The folder that holds the client's settings.json. Up to 0.9: Documents\My Games\Project Reclaimer. 0.10 moves the
+// player's files to %LOCALAPPDATA%\ProjectReclaimer on its first start and no longer reads the old folder (its note
+// "Your files moved.txt" there says so; 0.9 goes on using the old one). Empty when the base folder is unknown.
+inline std::wstring SettingsFolder(bool recompiledEngine, const std::wstring& documents,
+                                   const std::wstring& localAppData)
+{
+    if (recompiledEngine)
+        return localAppData.empty() ? std::wstring() : localAppData + L"\\ProjectReclaimer";
+    return documents.empty() ? std::wstring() : documents + L"\\My Games\\Project Reclaimer";
+}
+
+// Which client process gets the mod: up to 0.9, the engine worker with the player's window; from 0.10, the client
+// itself (a process started without a worker's or a server's arguments).
+inline bool TakesMod(Role role, bool recompiledEngine)
+{
+    return recompiledEngine ? role == Role::Supervisor : role == Role::ClientWorker;
+}
+
+// A program's version from its version resource (VS_VERSIONINFO, as FindResource/LoadResource give it), without
+// version.dll: its VS_FIXEDFILEINFO is found by its signature. Unknown when there is none.
+inline Version VersionFromVersionResource(const uint8_t* data, size_t size)
+{
+    Version version;
+    if (!data)
+        return version;
+    for (size_t at = 0; at + 52 <= size; at += 4)
+    {
+        uint32_t signature = 0;
+        std::memcpy(&signature, data + at, 4);
+        if (signature != 0xFEEF04BD)
+            continue;
+        uint32_t ms = 0, ls = 0;
+        std::memcpy(&ms, data + at + 8, 4);
+        std::memcpy(&ls, data + at + 12, 4);
+        if (!ms && !ls)
+            return version;
+        version.part[0] = static_cast<int>(ms >> 16);
+        version.part[1] = static_cast<int>(ms & 0xFFFF);
+        version.part[2] = static_cast<int>(ls >> 16);
+        version.known = true;
+        return version;
+    }
+    return version;
 }
 
 // One client found on disk. `time` is its file time in any unit that orders (the newer file is the larger).
@@ -385,8 +432,7 @@ struct ClientCandidate
     Version version;
     int64_t time = 0;
 };
-// Which of them to start: one that runs halo3.dll before one that cannot take the mod (RunsRecompiledEngine), then a
-// proven version before an unproven one, then the higher version, then the newer file.
+// Which of them to start: a proven version before an unproven one, then the higher version, then the newer file.
 // `passedOver` is the newest client that is NEWER than the chosen one and was not chosen (so the log can name it);
 // -1 when there is none. Both are indexes into `candidates`; `chosen` is -1 for an empty list.
 struct ClientChoice
@@ -400,8 +446,6 @@ inline ClientChoice ChooseClient(const std::vector<ClientCandidate>& candidates)
     const auto better = [&candidates](int a, int b) {   // true when a should replace b
         const ClientCandidate& x = candidates[static_cast<size_t>(a)];
         const ClientCandidate& y = candidates[static_cast<size_t>(b)];
-        if (RunsRecompiledEngine(x.version) != RunsRecompiledEngine(y.version))
-            return !RunsRecompiledEngine(x.version);
         if (Proven(x.version) != Proven(y.version))
             return Proven(x.version);
         if (Newer(x.version, y.version))

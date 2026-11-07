@@ -303,6 +303,8 @@ add_library(halo3xr SHARED
     src/dll/sight_layer.cpp
     src/dll/dev_pad.cpp
     src/dll/title_adapter.cpp
+    src/dll/lifted_engine.cpp
+    src/dll/lifted_engine_thunks.asm
     src/dll/title_image_guard.cpp
     src/dll/title_reentry_probe.cpp
     src/dll/reach_adapter.cpp
@@ -574,7 +576,8 @@ if(BUILD_TESTING)
     target_link_libraries(halomccvr_updater_archive_tests PRIVATE ole32 bcrypt advapi32 winhttp crypt32 shell32)
     add_test(NAME halomccvr_updater_archive_tests COMMAND halomccvr_updater_archive_tests)
     add_executable(halomccvr_installer_tests tests/installer_tests.cpp src/launcher/installer.cpp)
-    target_compile_definitions(halomccvr_installer_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_compile_definitions(halomccvr_installer_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE
+        HALOMCCVR_INSTALLER_TESTS)
     target_include_directories(halomccvr_installer_tests PRIVATE "${HALOMCCVR_GENERATED_DIR}")
     target_link_libraries(halomccvr_installer_tests PRIVATE bcrypt advapi32)
     add_test(NAME halomccvr_installer_tests COMMAND halomccvr_installer_tests)
@@ -604,6 +607,10 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_proof_after_hook_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_proof_after_hook_tests PRIVATE minhook)
     add_test(NAME halomccvr_proof_after_hook_tests COMMAND halomccvr_proof_after_hook_tests)
+    # Searches that read a copy of part of an image (sigscan.h, SetScanShadow: Project Reclaimer 0.10's traps).
+    add_executable(halomccvr_sigscan_shadow_tests tests/sigscan_shadow_tests.cpp src/dll/sigscan.cpp)
+    target_compile_definitions(halomccvr_sigscan_shadow_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_sigscan_shadow_tests COMMAND halomccvr_sigscan_shadow_tests)
     # The scanner's memory of one loaded image (sigscan.h, ImageMemoScope): the same answers as the search.
     add_executable(halomccvr_sigscan_memo_tests tests/sigscan_memo_tests.cpp src/dll/sigscan.cpp)
     target_compile_definitions(halomccvr_sigscan_memo_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -626,6 +633,12 @@ if(BUILD_TESTING)
     add_test(NAME halomccvr_title_build_identity_tests COMMAND halomccvr_title_build_identity_tests)
     add_executable(halomccvr_reclaimer_host_logic_tests tests/reclaimer_host_logic_tests.cpp)
     add_test(NAME halomccvr_reclaimer_host_logic_tests COMMAND halomccvr_reclaimer_host_logic_tests)
+    add_executable(halomccvr_lifted_engine_logic_tests tests/lifted_engine_logic_tests.cpp)
+    add_test(NAME halomccvr_lifted_engine_logic_tests COMMAND halomccvr_lifted_engine_logic_tests)
+    # Project Reclaimer 0.10's own engine.code, where this machine has one (skipped otherwise).
+    add_executable(halomccvr_lifted_engine_file_check tests/lifted_engine_file_check.cpp)
+    add_test(NAME halomccvr_lifted_engine_file_check COMMAND halomccvr_lifted_engine_file_check)
+    set_tests_properties(halomccvr_lifted_engine_file_check PROPERTIES SKIP_RETURN_CODE 77)
     # Packaging runs this tiny program against a nonexistent path to generate
     # the current source tree's exact default config. It is intentionally not
     # installed by CMake: package-candidate stages and hashes its output while

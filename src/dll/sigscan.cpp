@@ -135,11 +135,38 @@ namespace sig
         g_proofThroughHookObserver.store(observer, std::memory_order_release);
     }
 
+    namespace
+    {
+        std::atomic<ScanShadow> g_scanShadow{nullptr};
+
+        // [address, address + size) as the searches read it: the image, with the scan shadow's copy where it
+        // has one.
+        void ReadShadowed(uintptr_t address, void* out, size_t size)
+        {
+            memcpy(out, reinterpret_cast<const void*>(address), size);
+            const ScanShadow shadow = g_scanShadow.load(std::memory_order_acquire);
+            uintptr_t start = 0;
+            size_t length = 0;
+            const uint8_t* copy = nullptr;
+            if (!shadow || !shadow(start, length, copy) || !copy)
+                return;
+            const uintptr_t from = address > start ? address : start;
+            const uintptr_t to = (address + size < start + length) ? address + size : start + length;
+            if (from < to)
+                memcpy(static_cast<uint8_t*>(out) + (from - address), copy + (from - start), to - from);
+        }
+    }
+
+    void SetScanShadow(ScanShadow shadow)
+    {
+        g_scanShadow.store(shadow, std::memory_order_release);
+    }
+
     uint32_t CopyUnhooked(uintptr_t address, void* out, size_t size)
     {
         if (!address || !out || !size)
             return 0;
-        memcpy(out, reinterpret_cast<const void*>(address), size);
+        ReadShadowed(address, out, size);
         std::vector<HookPatch> patches;
         EnabledPatches(address, size, patches);
         uint32_t undone = 0;
@@ -271,6 +298,40 @@ namespace sig
         EnabledPatches(base, size, patches);
         if (patches.empty())
         {
+            // The scan shadow's copy stands for its part of the image (SetScanShadow): windows inside it are read
+            // there, the others in the image, in order.
+            const ScanShadow shadow = g_scanShadow.load(std::memory_order_acquire);
+            uintptr_t start = 0;
+            size_t length = 0;
+            const uint8_t* copy = nullptr;
+            if (shadow && shadow(start, length, copy) && copy && length >= n && start < base + size &&
+                start + length > base)
+            {
+                const size_t s0 = start > base ? static_cast<size_t>(start - base) : 0;
+                const size_t s1 = static_cast<size_t>((start + length < base + size ? start + length : base + size) -
+                                                      base);
+                const auto* view = reinterpret_cast<const uint8_t*>(
+                    reinterpret_cast<uintptr_t>(copy) + base - start); // view[i] is image offset i, for i in [s0, s1)
+                if (s0 > 0)
+                {
+                    const size_t lastBefore = s0 - 1 < last ? s0 - 1 : last;
+                    const size_t i = FindLive(data, 0, lastBefore, bytes, wild, anchor);
+                    if (i <= lastBefore)
+                        return base + i;
+                }
+                if (s1 - s0 >= n)
+                {
+                    const size_t lastInside = s1 - n < last ? s1 - n : last;
+                    const size_t i = FindLive(view, s0, lastInside, bytes, wild, anchor);
+                    if (i <= lastInside)
+                        return base + i;
+                }
+                const size_t after = s1 >= n ? s1 - n + 1 : 0;
+                if (after > last)
+                    return 0;
+                const size_t i = FindLive(data, after < s0 ? s0 : after, last, bytes, wild, anchor);
+                return i <= last ? base + i : 0;
+            }
             const size_t i = FindLive(data, 0, last, bytes, wild, anchor);
             return i <= last ? base + i : 0;
         }
@@ -557,11 +618,21 @@ namespace sig
         return Search(base, size, pattern);
     }
 
+    std::atomic<ModuleRangeFallback> g_moduleRangeFallback{nullptr};
+
+    void SetModuleRangeFallback(ModuleRangeFallback fallback)
+    {
+        g_moduleRangeFallback.store(fallback, std::memory_order_release);
+    }
+
     bool ModuleRange(const wchar_t* moduleName, uintptr_t& base, size_t& size)
     {
         HMODULE mod = GetModuleHandleW(moduleName);
         if (!mod)
-            return false;
+        {
+            const ModuleRangeFallback fallback = g_moduleRangeFallback.load(std::memory_order_acquire);
+            return fallback && fallback(moduleName, base, size);
+        }
         MODULEINFO mi{};
         if (!GetModuleInformation(GetCurrentProcess(), mod, &mi, sizeof(mi)))
             return false;
@@ -597,7 +668,8 @@ namespace sig
 
     uintptr_t RipTarget(uintptr_t dispAddr, uintptr_t nextInstr)
     {
-        const int32_t disp = *reinterpret_cast<const int32_t*>(dispAddr);
+        int32_t disp = 0;
+        ReadShadowed(dispAddr, &disp, sizeof(disp));
         return nextInstr + disp;
     }
 }

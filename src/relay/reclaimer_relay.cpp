@@ -35,6 +35,22 @@ HMODULE g_self = nullptr;
 wchar_t g_dir[1024]{};      // this DLL's folder, with the trailing backslash
 wchar_t g_selfPath[1024]{}; // this DLL
 wchar_t g_modPath[1024]{};  // HaloMCCVR.dll beside it
+// The client runs 0.10's recompiled engine in itself (reclaimer_host::RunsRecompiledEngine): its own restart gets the
+// mod, not an engine worker (reclaimer_host::TakesMod).
+bool g_recompiled = false;
+reclaimer_host::Version g_hostVersion;
+
+// This process's version, from its own version resource: no version.dll, which may not be loaded under the loader
+// lock this runs in.
+reclaimer_host::Version HostVersion()
+{
+    const HMODULE exe = GetModuleHandleW(nullptr);
+    const HRSRC found = FindResourceW(exe, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(16)); // RT_VERSION
+    const HGLOBAL loaded = found ? LoadResource(exe, found) : nullptr;
+    const void* data = loaded ? LockResource(loaded) : nullptr;
+    return reclaimer_host::VersionFromVersionResource(static_cast<const uint8_t*>(data),
+                                                      data ? SizeofResource(exe, found) : 0);
+}
 
 using CreateProcessWFn = BOOL(WINAPI*)(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD,
                                        LPVOID, LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION);
@@ -193,7 +209,7 @@ BOOL WINAPI CreateProcessWHook(LPCWSTR application, LPWSTR commandLine, LPSECURI
         RelayLog("child pid %lu: the relay was NOT loaded (%s, error %lu); what it starts will not be followed",
                  information->dwProcessId, step, error);
 
-    if (plan.role == reclaimer_host::Role::ClientWorker)
+    if (reclaimer_host::TakesMod(plan.role, g_recompiled))
     {
         if (!FileExists(g_modPath))
             RelayLog("child pid %lu: HaloMCCVR.dll is missing beside the relay; the game runs flat",
@@ -281,8 +297,13 @@ void Attach(HMODULE module)
                  "not be followed", hostLeaf, reclaimer_host::RoleName(role));
         return;
     }
-    RelayLog("in %ls (%s): following the Project Reclaimer processes it starts", hostLeaf,
-             reclaimer_host::RoleName(role));
+    g_hostVersion = HostVersion();
+    g_recompiled = reclaimer_host::RunsRecompiledEngine(g_hostVersion);
+    RelayLog("in %ls (%s, version %d.%d.%d%s): following the Project Reclaimer processes it starts; %s", hostLeaf,
+             reclaimer_host::RoleName(role), g_hostVersion.part[0], g_hostVersion.part[1], g_hostVersion.part[2],
+             g_hostVersion.known ? "" : " unknown",
+             g_recompiled ? "it runs the recompiled engine itself, so a client it starts again gets HaloMCCVR.dll"
+                          : "the engine worker with the player's window gets HaloMCCVR.dll");
 }
 } // namespace
 

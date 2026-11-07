@@ -236,8 +236,8 @@ int main()
         CHECK(ChooseClient(unnamed).chosen == 1);
     }
 
-    // 0.10.0 and later run their own recompiled engine, not halo3.dll: the mod cannot go in, and of several clients
-    // one that runs halo3.dll is started, however much newer the other is.
+    // 0.10.0 and later run their own recompiled engine in the client itself: the mod goes into the client, never
+    // into a server process it starts.
     {
         const Version v0100 = {{0, 10, 0}, true};   // what the file's version resource says after an in-place update
         CHECK(RunsRecompiledEngine(v0100));
@@ -248,15 +248,49 @@ int main()
         CHECK(!RunsRecompiledEngine(VersionOf(L"project-reclaimer-client-v0.9.23.exe")));
         CHECK(!RunsRecompiledEngine(vNotRun));       // 0.9.99
         CHECK(!RunsRecompiledEngine(v098));
-        CHECK(!RunsRecompiledEngine(none));          // no version known: not ruled out
+        CHECK(!RunsRecompiledEngine(none));
         CHECK(!Proven(v0100));
+        // Of several, the proven rule alone decides: 0.10.0 is a client like any other the mod has not been run with.
         const std::vector<ClientCandidate> updated{{L"0.10", v0100, 9}, {L"0.9.23", VersionOf(L"x-v0.9.23.exe"), 1}};
-        const ClientChoice older = ChooseClient(updated);
-        CHECK(older.chosen == 1 && older.passedOver == 0);   // 0.9.23, and 0.10.0 named in the log
-        const std::vector<ClientCandidate> mixed{{L"1.0", v1, 9}, {L"none", none, 1}, {L"0.10", v0100, 5}};
-        CHECK(ChooseClient(mixed).chosen == 1);              // even a client of no known version comes first
-        const std::vector<ClientCandidate> onlyNew{{L"0.10", v0100, 9}};
-        CHECK(ChooseClient(onlyNew).chosen == 0);            // the only one is still found; the launcher refuses it
+        CHECK(ChooseClient(updated).chosen == 0);
+
+        const wchar_t* client = L"\"G:\\Games\\Project Reclaimer\\0.9.23\\project-reclaimer-client-v0.9.23.exe\"";
+        CHECK(RoleOf(client) == Role::Supervisor);
+        CHECK(TakesMod(RoleOf(client), true));        // 0.10: the client itself
+        CHECK(!TakesMod(RoleOf(client), false));      // 0.9: never the supervisor
+        const std::wstring server = std::wstring(client) + L" --server-worker --name \"Reclaimer Slayer\"";
+        CHECK(RoleOf(server) == Role::OtherWorker && !TakesMod(RoleOf(server), true));
+        CHECK(!TakesMod(RoleOf(std::wstring(client) + L" --headless"), true));
+        const std::wstring worker = std::wstring(client) +
+            L" probe-engine-worker \"D:\\MCC\\halo3\\halo3.dll\" --guardian-slayer --client-window --startup";
+        CHECK(TakesMod(RoleOf(worker), false) && !TakesMod(RoleOf(worker), true));
+        // "--headless" inside a quoted path is not the argument.
+        CHECK(RoleOf(L"\"D:\\a --headless b\\project-reclaimer-client.exe\"") == Role::Supervisor);
+    }
+
+    // Where the settings are: 0.9 in Documents, 0.10 in the local app data folder it moved them to.
+    CHECK(SettingsFolder(false, L"F:\\OneDrive\\Documents", L"C:\\Users\\p\\AppData\\Local") ==
+          L"F:\\OneDrive\\Documents\\My Games\\Project Reclaimer");
+    CHECK(SettingsFolder(true, L"F:\\OneDrive\\Documents", L"C:\\Users\\p\\AppData\\Local") ==
+          L"C:\\Users\\p\\AppData\\Local\\ProjectReclaimer");
+    CHECK(SettingsFolder(true, L"F:\\Docs", L"").empty() && SettingsFolder(false, L"", L"C:\\L").empty());
+
+    // The version resource, read without version.dll: VS_FIXEDFILEINFO by its signature.
+    {
+        uint8_t resource[160]{};
+        const uint32_t signature = 0xFEEF04BD, structVersion = 0x10000, ms = (0u << 16) | 10u, ls = (2u << 16) | 7u;
+        std::memcpy(resource + 40, &signature, 4);
+        std::memcpy(resource + 44, &structVersion, 4);
+        std::memcpy(resource + 48, &ms, 4);
+        std::memcpy(resource + 52, &ls, 4);
+        const Version v = VersionFromVersionResource(resource, sizeof(resource));
+        CHECK(v.known && v.part[0] == 0 && v.part[1] == 10 && v.part[2] == 2);
+        CHECK(RunsRecompiledEngine(v));
+        CHECK(!VersionFromVersionResource(resource, 60).known);    // cut short before the fixed part ends
+        CHECK(!VersionFromVersionResource(nullptr, 0).known);
+        uint8_t blank[160]{};
+        std::memcpy(blank + 40, &signature, 4);
+        CHECK(!VersionFromVersionResource(blank, sizeof(blank)).known);   // a zero version is no version
     }
 
     // The early-hooks event's name: the same for the relay and the mod, bounded by the buffer.
