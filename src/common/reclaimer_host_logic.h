@@ -4,6 +4,7 @@
 // shell. Its executable is one file run in several roles (measured on 0.9.8):
 //
 // (0.9.23 names it project-reclaimer-client-v0.9.23.exe; IsClientExeName takes both names.)
+// (0.10.0 runs no halo3.dll and no engine worker at all, and cannot take the mod: RunsRecompiledEngine.)
 //
 //   project-reclaimer-v0.9.8.exe                       what the player starts; it starts itself again and exits
 //     project-reclaimer-v0.9.8.exe                     the supervisor: menus' owner, no engine
@@ -362,6 +363,21 @@ inline bool Proven(const Version& version)
     return false;
 }
 
+// 0.10.0 AND LATER CANNOT TAKE THE MOD. 0.10.0 ("rcl-engine") no longer runs MCC's halo3.dll. On its first start it
+// translates the DLL's x86-64 code into code of its own (Cache\native\retail-engine\engine.code; its client.log says
+// "the engine's code is 25% made" up to 100%) and runs that inside the process the player sees: "[host] linked
+// recompiled engine, image at ...", then "[host] engine thread started", and no engine worker is ever started. Its
+// release build refuses the original DLL ("the retail DLL runs only in a development build"). Every Halo 3 hook the
+// mod places is found in, and patches, halo3.dll's own code, which never runs there, and the relay waits for an
+// engine worker that never comes. So the launcher does not start such a client with the mod and says why, and of
+// several clients it prefers one that runs halo3.dll. Measured on 0.10.0; a later version is taken to be the same
+// until one is shown not to be.
+inline constexpr Version kFirstRecompiledEngine{{0, 10, 0}, true};
+inline bool RunsRecompiledEngine(const Version& version)
+{
+    return version.known && !Newer(kFirstRecompiledEngine, version);
+}
+
 // One client found on disk. `time` is its file time in any unit that orders (the newer file is the larger).
 struct ClientCandidate
 {
@@ -369,7 +385,8 @@ struct ClientCandidate
     Version version;
     int64_t time = 0;
 };
-// Which of them to start: a proven version before an unproven one, then the higher version, then the newer file.
+// Which of them to start: one that runs halo3.dll before one that cannot take the mod (RunsRecompiledEngine), then a
+// proven version before an unproven one, then the higher version, then the newer file.
 // `passedOver` is the newest client that is NEWER than the chosen one and was not chosen (so the log can name it);
 // -1 when there is none. Both are indexes into `candidates`; `chosen` is -1 for an empty list.
 struct ClientChoice
@@ -383,6 +400,8 @@ inline ClientChoice ChooseClient(const std::vector<ClientCandidate>& candidates)
     const auto better = [&candidates](int a, int b) {   // true when a should replace b
         const ClientCandidate& x = candidates[static_cast<size_t>(a)];
         const ClientCandidate& y = candidates[static_cast<size_t>(b)];
+        if (RunsRecompiledEngine(x.version) != RunsRecompiledEngine(y.version))
+            return !RunsRecompiledEngine(x.version);
         if (Proven(x.version) != Proven(y.version))
             return Proven(x.version);
         if (Newer(x.version, y.version))
