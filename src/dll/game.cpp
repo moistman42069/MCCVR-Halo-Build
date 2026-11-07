@@ -19450,6 +19450,28 @@ static constexpr bool kOdstMappedFpEnabled = false;
         }
     }
 
+    // Project Reclaimer 0.10: the native weapon-IK decision (the two-byte patch in the install) cannot be patched in
+    // code that never runs. The mode call it leads to is hooked instead, and from that one call site it gets the
+    // no-weapon-IK branch's arguments (mode 1, 3, the branch's blend constant), which is what the patch does.
+    using WeaponIkModeFn = uint64_t(__fastcall*)(void*, int, int, float);
+    WeaponIkModeFn g_realWeaponIkMode = nullptr;
+    uintptr_t g_weaponIkModeReturn = 0;   // the decision's mode call's guest return address
+    float g_weaponIkNoIkBlend = 0.0f;
+    __declspec(noinline) uint64_t __fastcall GuardedWeaponIkModeHook(void* state, int mode, int mode2, float blend)
+    {
+        g_halo3CoreCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        __try
+        {
+            if (g_weaponIkModeReturn && HALOMCCVR_GAME_RETURN_ADDRESS() == g_weaponIkModeReturn)
+                return g_realWeaponIkMode(state, 1, 3, g_weaponIkNoIkBlend);
+            return g_realWeaponIkMode(state, mode, mode2, blend);
+        }
+        __finally
+        {
+            g_halo3CoreCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+        }
+    }
+
     // Project Reclaimer 0.10's class gate (g_halo3LiftedClassGate): the widget draw's first ask answered yes.
     __declspec(noinline) bool __fastcall GuardedGameIsPlaybackGateHook()
     {
@@ -19524,6 +19546,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
     {
         g_halo3InstallReady.store(false, std::memory_order_release);
         g_halo3LiftedClassGate = false;
+        g_weaponIkModeReturn = 0;
         g_halo3WorldCollision.runtimeBoundsProven.store(false,std::memory_order_release);
         g_halo3WorldCollision.installed.store(false, std::memory_order_release);
         bool disabled = true;
@@ -19570,6 +19593,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 reinterpret_cast<const void*>(&GuardedHudCrosshairVisibleHook),
                 reinterpret_cast<const void*>(&GuardedHudDrawWidgetHook),
                 reinterpret_cast<const void*>(&GuardedGameIsPlaybackGateHook),
+                reinterpret_cast<const void*>(&GuardedWeaponIkModeHook),
                 reinterpret_cast<const void*>(&GuardedFpDriverHook),
                 reinterpret_cast<const void*>(&GuardedRenderViewHook)};
             const void* originals[]{reinterpret_cast<const void*>(g_realH3HudRecord),
@@ -19579,6 +19603,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 reinterpret_cast<const void*>(g_realHudCrosshairVisible),
                 reinterpret_cast<const void*>(g_realHudDrawWidget),
                 reinterpret_cast<const void*>(g_realGameIsPlaybackGate),
+                reinterpret_cast<const void*>(g_realWeaponIkMode),
                 reinterpret_cast<const void*>(g_origFpDriver),
                 reinterpret_cast<const void*>(g_origRenderView)};
             if (!WaitForNativeDetourQuiescence(functions, originals,
@@ -20380,7 +20405,38 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 if (branch[0]==0x74 && branch[1]==0x05)
                 {
                     DWORD oldProtect=0;
-                    if (VirtualProtect(branch,2,PAGE_EXECUTE_READWRITE,&oldProtect))
+                    // Project Reclaimer 0.10 (GuardedWeaponIkModeHook): the decision's mode call at +0x38 and the
+                    // no-weapon-IK branch's blend load (movss xmm3, [rip+disp]) at +0x1D are read, not patched.
+                    const auto* bytes=reinterpret_cast<const unsigned char*>(decision);
+                    if (lifted::Active())
+                    {
+                        const bool shape=bytes[0x38]==0xE8 && bytes[0x1D]==0xF3 && bytes[0x1E]==0x0F &&
+                            bytes[0x1F]==0x10 && bytes[0x20]==0x1D;
+                        const uintptr_t mode=shape ? sig::RipTarget(decision+0x39,decision+0x3D) : 0;
+                        const uintptr_t blend=shape ? sig::RipTarget(decision+0x21,decision+0x25) : 0;
+                        // The blend is its fourth argument, a float the detour replaces (lifted_engine.h).
+                        if (mode)
+                            lifted::SetFloatArguments(reinterpret_cast<void*>(mode), 1u << 3);
+                        bool hooked=mode>=base && mode<base+size && blend>=base && blend+4<=base+size &&
+                            MH_CreateHook(reinterpret_cast<void*>(mode),
+                                          reinterpret_cast<void*>(&GuardedWeaponIkModeHook),
+                                          reinterpret_cast<void**>(&g_realWeaponIkMode))==MH_OK;
+                        if (hooked)
+                        {
+                            RememberInstalledGameHook(reinterpret_cast<void*>(mode));
+                            g_weaponIkNoIkBlend=*reinterpret_cast<const float*>(blend);
+                            g_weaponIkModeReturn=decision+0x3D;
+                            hooked=MH_QueueEnableHook(reinterpret_cast<void*>(mode))==MH_OK;
+                        }
+                        if (!hooked)
+                            g_weaponIkModeReturn=0;
+                        LOG(hooked ? "M3 VRIK: native first-person weapon IK disabled through its mode call "
+                                     "halo3.dll+0x%llX (Project Reclaimer 0.10); controller solver owns support arms"
+                                   : "M3 VRIK: native weapon-IK mode call could not be hooked (Project Reclaimer "
+                                     "0.10, halo3.dll+0x%llX); shotgun support hand may stay attached to pump",
+                            (unsigned long long)(mode ? mode-base : decision-base));
+                    }
+                    else if (VirtualProtect(branch,2,PAGE_EXECUTE_READWRITE,&oldProtect))
                     {
                         // JE +5 (conditional native-IK decision) -> JMP +0x18
                         // (the stock no-weapon-IK branch at halo3+0x2C3959).
