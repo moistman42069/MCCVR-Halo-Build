@@ -134,6 +134,18 @@ int main()
         CHECK(Parse(nullptr, 0, table) == ParseResult::NotEngineCode);
     }
 
+    // A window with no relocation in it: no 0 byte.
+    {
+        const uint8_t body[] = {0x55, 0x48, 0x89, 0xE5, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x83, 0xEC, 0x20, 0x49,
+                                0x89, 0xCD, 0x4C, 0x89, 0xE6, 0x00, 0x48, 0x8B, 0x51, 0x08};
+        size_t at = 99;
+        CHECK(RelocationFreeWindow(body, sizeof(body), 4, at) && at == 0);   // push rbp; mov rbp, rsp
+        CHECK(RelocationFreeWindow(body, sizeof(body), 8, at) && at == 9);   // after the call's rel32
+        CHECK(!RelocationFreeWindow(body, sizeof(body), 11, at));
+        CHECK(RelocationFreeWindow(body, sizeof(body), 10, at) && at == 9);
+        CHECK(!RelocationFreeWindow(body, 0, 4, at));
+    }
+
     // Adapters
     {
         Adapter a;
