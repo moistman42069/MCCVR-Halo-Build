@@ -99,6 +99,8 @@ void AdvanceController0(int elapsedMs) {
     } else local.converted=false;
 }
 
+thread_local bool t_controller0Converted=false; // the converter ran for controller 0 inside this input update
+
 void __fastcall ConverterHook(uintptr_t controller,int elapsedMs,const void* raw,
     void* output,void* axes,void* activity) {
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
@@ -106,20 +108,25 @@ void __fastcall ConverterHook(uintptr_t controller,int elapsedMs,const void* raw
         reinterpret_cast<Convert>(runtime.original[0])(controller,elapsedMs,raw,output,axes,activity);
         // H3 preserves the real controller argument and uses it to select
         // native preferences, in both direct and copied gamepad routes.
-        if(controller==0) AdvanceController0(elapsedMs);
+        if(controller==0) {
+            AdvanceController0(elapsedMs);
+            t_controller0Converted=true;
+        }
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
 }
-// Project Reclaimer 0.10 only (see inputUpdateRva): the update's elapsed time is measured here, clamped as the game
+// Project Reclaimer 0.10 only (see inputUpdateRva). Its update calls the converter only for a gamepad it sees; an
+// update that did not advances the records here, once, with its elapsed time measured here and clamped as the game
 // clamps its own (0-100 ms).
 void __fastcall InputUpdateHook() {
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
     __try {
+        t_controller0Converted=false;
         reinterpret_cast<InputUpdate>(runtime.original[3])();
         static thread_local uint64_t lastUpdate=0;
         const uint64_t now=GetTickCount64();
         const int elapsedMs=lastUpdate?static_cast<int>((std::min)(now-lastUpdate,uint64_t{100})):0;
         lastUpdate=now;
-        AdvanceController0(elapsedMs);
+        if(!t_controller0Converted) AdvanceController0(elapsedMs);
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
 }
 __declspec(noinline) bool ReadController(uintptr_t state,unsigned& value) noexcept {
