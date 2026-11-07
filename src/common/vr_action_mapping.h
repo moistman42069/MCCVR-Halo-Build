@@ -520,20 +520,21 @@ inline constexpr ExtraBindings kExtraDefaults{{
 // Each game's own action for an extra row, as NativeAction names the rows' (kNoAction: the game has none), in the games'
 // order Halo 3, ODST, Reach, Halo 4, Halo CE, Halo 2: what each game's converter makes of MCC's own control for it. See
 // BANSHEE-SEAT-ACTIONS-EVIDENCE-2026-11-05.md and EXTRA-ACTIONS-EVIDENCE-2026-11-05.md. Reach and Halo 4 have no bomb of
-// their own: a Banshee's bomb is the vehicle's secondary fire. Halo 3's and ODST's trick is the seat's jump; Halo 4's and
-// Halo 2's second trick is the Banshee's brake. ODST keeps Halo 3's dual-wield actions but has no dual wielding; Halo 2's
+// their own: a Banshee's bomb is the vehicle's secondary fire. Halo 3's and ODST's trick is the seat's jump; the second
+// trick is the Banshee's brake in Halo 2, Reach and Halo 4. In Reach and Halo 4 the brake is the lower of the two
+// (seated control bit 2), the trick the higher (bit 0x14 / 0x15): in the headset Halo 4's were the other way round. ODST keeps Halo 3's dual-wield actions but has no dual wielding; Halo 2's
 // dual-wield pickup is a held binding the reader leaves alone; Back is Halo 2's and Halo CE's graphics switch, so neither
 // has a Scoreboard row.
 inline constexpr unsigned kExtraNative[ExtraCount][6]{
     {0x0A,0x0A,0x0A,0x0B,kNoAction,0x15},
-    {0x1E,0x1F,0x0C,0x0D,kNoAction,0x01},
+    {0x1E,0x1F,0x0D,0x0E,kNoAction,0x01},
     {0x41,kNoAction,kNoAction,kNoAction,kNoAction,0x17},
     {0x42,kNoAction,kNoAction,kNoAction,kNoAction,kNoAction},
     {0x1F,kNoAction,kNoAction,kNoAction,kNoAction,kNoAction},
     {0x20,0x21,0x48,0x09,0x17,0x03},
     {kNoAction,0x25,kNoAction,kNoAction,kNoAction,kNoAction},
     {0x09,0x09,0x0A,0x0B,0x12,0x19},
-    {0x27,0x2B,0x0D,0x0E,kNoAction,0x02},
+    {0x27,0x2B,0x0C,0x0D,kNoAction,0x02},
     {0x22,0x23,0x0E,0x10,kNoAction,kNoAction},
     {0x23,0x24,0x0F,0x11,kNoAction,kNoAction},
     {0x1D,0x0C,0x3B,0x25,kNoAction,kNoAction},

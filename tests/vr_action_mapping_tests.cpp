@@ -304,7 +304,8 @@ void CheckInputPresets()
             "an extra row's own input may be Automatic; a further one may not, nor any the support trigger's contexts");
         Check(NativeExtraAction(GameTitle::Halo3,BansheeBomb)==0x0A&&NativeExtraAction(GameTitle::Halo3,BansheeTrick)==0x1E&&
             NativeExtraAction(GameTitle::Halo3ODST,BansheeTrick)==0x1F&&NativeExtraAction(GameTitle::Halo2,BansheeBomb)==0x15&&
-            NativeExtraAction(GameTitle::HaloReach,BansheeBomb)==0x0A&&NativeExtraAction(GameTitle::Halo4,BansheeTrick)==0x0D&&
+            NativeExtraAction(GameTitle::HaloReach,BansheeBomb)==0x0A&&NativeExtraAction(GameTitle::Halo4,BansheeTrick)==0x0E&&
+            NativeExtraAction(GameTitle::HaloReach,BansheeTrick)==0x0D&&
             NativeExtraAction(GameTitle::HaloCE,BansheeBomb)==kNoAction&&NativeExtraAction(GameTitle::None,BansheeTrick)==kNoAction,
             "each game's own seat actions, and none where a game has no Banshee row");
         ExtraBindings rows=kExtraDefaults;
@@ -338,7 +339,8 @@ void CheckInputPresets()
             NativeExtraAction(GameTitle::HaloReach,PreviousGrenade)==0x48&&NativeExtraAction(GameTitle::Halo4,PreviousGrenade)==0x09&&
             NativeExtraAction(GameTitle::HaloCE,PreviousGrenade)==0x17&&NativeExtraAction(GameTitle::Halo3ODST,ActivateWaypoint)==0x25&&
             NativeExtraAction(GameTitle::Halo2,VehicleSecondary)==0x19&&NativeExtraAction(GameTitle::HaloCE,VehicleSecondary)==0x12&&
-            NativeExtraAction(GameTitle::Halo4,VehicleTrick2)==0x0E&&NativeExtraAction(GameTitle::Halo2,VehicleTrick2)==0x02&&NativeExtraAction(GameTitle::HaloReach,FlyUp)==0x0E&&
+            NativeExtraAction(GameTitle::Halo4,VehicleTrick2)==0x0D&&
+            NativeExtraAction(GameTitle::HaloReach,VehicleTrick2)==0x0C&&NativeExtraAction(GameTitle::Halo2,VehicleTrick2)==0x02&&NativeExtraAction(GameTitle::HaloReach,FlyUp)==0x0E&&
             NativeExtraAction(GameTitle::Halo3ODST,FlyDown)==0x24&&NativeExtraAction(GameTitle::Halo4,Scoreboard)==0x25&&
             NativeExtraAction(GameTitle::Halo2,Scoreboard)==kNoAction&&NativeExtraAction(GameTitle::HaloCE,Scoreboard)==kNoAction&&
             NativeExtraAction(GameTitle::Halo4,SpecialAction)==0x54&&NativeExtraAction(GameTitle::Halo3,SpecialAction)==kNoAction,

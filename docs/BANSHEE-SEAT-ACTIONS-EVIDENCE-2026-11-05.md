@@ -11,8 +11,8 @@ signature-matches (`readerRva`). Every index is below that title's `actionCount`
 | Halo 3 | 0x0A | 0x1E | H3EK kit glyphs and builder; retail matches |
 | ODST | 0x0A | 0x1F | retail |
 | Halo 2 | 0x15 | 0x01 | retail (halo2.dll carries its own glyph names) |
-| Reach | 0x0A (secondary trigger) | 0x0C | retail, structural |
-| Halo 4 | 0x0B (secondary trigger) | 0x0D | retail |
+| Reach | 0x0A (secondary trigger) | 0x0D | retail, structural; corrected 2026-11-06 |
+| Halo 4 | 0x0B (secondary trigger) | 0x0E | retail; corrected in the headset 2026-11-06 |
 | Halo CE | none | none | no Banshee bomb or trick action |
 
 Binaries (SHA-256):
@@ -41,6 +41,11 @@ Binaries (SHA-256):
 - **Halo 4.** The retail DLL holds the training line "Use <U+E453> and <U+E462> to perform Banshee tricks"; its glyph
   jump table answers E453 with 0x0D. The builder (+0xA2670, reader +0x13F5CC), seated and not in the Mantis, sets
   control bit 2 from 0x0D and bit 0x15 from 0x0E. The analogue secondary trigger is 0x0B.
+
+**Correction, 2026-11-06.** In the headset, Halo 4's trick and brake rows were the wrong way round: the row on 0x0D
+braked and the row on 0x0E tricked (MCC's `ControllerBansheeTrickButtonsSwapped[3]` was 0, so not the invert setting).
+Seated control bit 2 is the Banshee's brake and bit 0x15 its trick. Reach's trick had been chosen as the action that
+drives Halo 4's "trick" bit, so it moves with it: Reach's brake is 0x0C (bit 2) and its trick 0x0D (bit 0x14).
 
 ## Limits
 

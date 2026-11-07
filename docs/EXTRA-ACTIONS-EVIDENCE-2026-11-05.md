@@ -36,7 +36,7 @@ reader. Halo CE's and Halo 2's read sites were not traced; their rows rest on th
 | Previous grenade (PreviousGrenade) | 0x20 | 0x21 | 0x48 | 0x09 | 0x17 | 0x03 | on foot |
 | Activate waypoint (ActivateWaypoint) | - | 0x25 | - | - | - | - | on foot |
 | Vehicle secondary fire (SecondaryFire) | 0x09 | 0x09 | 0x0A | 0x0B | 0x12 | 0x19 | seat |
-| Second vehicle trick / brake | 0x27 | 0x2B | 0x0D | 0x0E | - | 0x02 | seat |
+| Second vehicle trick / brake | 0x27 | 0x2B | 0x0C | 0x0D | - | 0x02 | seat |
 | Fly up (RaiseHornet) | 0x22 | 0x23 | 0x0E | 0x10 | - | - | seat |
 | Fly down (LowerHornet) | 0x23 | 0x24 | 0x0F | 0x11 | - | - | seat |
 | Scoreboard (ShowScores) | 0x1D | 0x0C | 0x3B | 0x25 | - | - | anywhere |
@@ -46,9 +46,10 @@ reader. Halo CE's and Halo 2's read sites were not traced; their rows rest on th
   the left-reload bit; a long hold of 0x1F (or 4) sets the pickup bit; 0x20 is the previous grenade; 0x27 sets bit
   0x40000 only while seated; 0x22/0x23 are analogue amounts, read only while the Hornet-joystick setting is off. ODST:
   0x21 previous grenade; 0x2B seated bit 0x40000; 0x25 or 0x26 (ActivateWaypointAlt) sets bit 0x800; 0x0C is read by
-  its UI. Reach: 0x48 previous grenade; 0x0D seated bit 0x14; 0x0E/0x0F drive bits 4/0x14 for another flying
-  vehicle's driver; 0x3B read at +0x7F45C. Halo 4: 0x09 previous grenade; 0x0E seated bit 0x15 (the Banshee's brake,
-  swapped with 0x0D by "Invert Banshee Actions"); 0x10/0x11 for vehicle type 2's driver; 0x25 read at +0xCBC2C; 0x54
+  its UI. Reach: 0x48 previous grenade; 0x0C seated bit 2 (the Banshee's brake; 0x0D, bit 0x14, is its trick);
+  0x0E/0x0F drive bits 4/0x14 for another flying vehicle's driver; 0x3B read at +0x7F45C. Halo 4: 0x09 previous
+  grenade; 0x0D seated bit 2 (the Banshee's brake; 0x0E, bit 0x15, is its trick, swapped by "Invert Banshee Actions";
+  corrected in the headset 2026-11-06); 0x10/0x11 for vehicle type 2's driver; 0x25 read at +0xCBC2C; 0x54
   sets action-test bit 34, which the mission-script test `player_action_test_special_action` checks.
 - **Second trick.** MCC's two vehicle-trick controls are each game's trick and brake, not in the same order: Halo 2's
   Banshee trick is MCC's SecondaryVehicleTrick (0x01) and its PrimaryVehicleTrick is 0x02, `button_brake` in halo2.dll's
