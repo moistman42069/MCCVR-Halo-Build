@@ -380,6 +380,17 @@ inline bool RunsRecompiledEngine(const Version& version)
     return version.known && !Newer(kFirstRecompiledEngine, version);
 }
 
+// The folder that holds the client's settings.json. Up to 0.9: Documents\My Games\Project Reclaimer. 0.10 moves the
+// player's files to %LOCALAPPDATA%\ProjectReclaimer on its first start and no longer reads the old folder (its note
+// "Your files moved.txt" there says so; 0.9 goes on using the old one). Empty when the base folder is unknown.
+inline std::wstring SettingsFolder(bool recompiledEngine, const std::wstring& documents,
+                                   const std::wstring& localAppData)
+{
+    if (recompiledEngine)
+        return localAppData.empty() ? std::wstring() : localAppData + L"\\ProjectReclaimer";
+    return documents.empty() ? std::wstring() : documents + L"\\My Games\\Project Reclaimer";
+}
+
 // Which client process gets the mod: up to 0.9, the engine worker with the player's window; from 0.10, the client
 // itself (a process started without a worker's or a server's arguments).
 inline bool TakesMod(Role role, bool recompiledEngine)
