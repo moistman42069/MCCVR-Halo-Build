@@ -1510,6 +1510,15 @@ namespace
 
         ImGui::Spacing();
         }
+        // Project Reclaimer only: how its flyers climb and dive (game.cpp, reclaimer_flight.inl). Saved in presets.
+        if (g_hostIsProjectReclaimer && SectionHeader("Project Reclaimer flying##section", ImGuiTreeNodeFlags_None))
+        {
+            changed |= ImGui::Checkbox("Climb and dive with buttons", &g_config.reclaimer_flight_buttons);
+            ImGui::TextDisabled("On: Hornet-class flyers climb and dive with Ascend and Descend, as in MCC.\n"
+                                "Off: Project Reclaimer's classic Halo 3 controls: aim up or down to climb or dive.");
+            ImGui::TextDisabled("%s", Game_ReclaimerFlightStatus());
+            ImGui::Spacing();
+        }
         if (SectionHeader("D-pad gesture (hold controller next to head)##section", ImGuiTreeNodeFlags_None))
         {
         if (ImGui::RadioButton("Left controller", g_config.dpad_hand == 0))
@@ -1767,17 +1776,6 @@ namespace
         ImGui::TextDisabled(
             "OFF restores the stock behind-the-vehicle view instantly.");
         ImGui::Spacing();
-        // Project Reclaimer only: how its flyers climb and dive (game.cpp, reclaimer_flight.inl).
-        if (g_hostIsProjectReclaimer)
-        {
-            ImGui::Text("Project Reclaimer flying");
-            changed |= ImGui::Checkbox("Climb and dive with buttons", &g_config.reclaimer_flight_buttons);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("On: Hornet-class flyers climb and dive with Ascend and Descend, as in MCC.\n"
-                                  "Off: Project Reclaimer's classic Halo 3 controls: aim up or down to climb or dive.");
-            ImGui::TextDisabled("%s", Game_ReclaimerFlightStatus());
-            ImGui::Spacing();
-        }
         {
         SettingGroup seatCamera("Seat camera position", SettingGroup::kNameOnly);
         static int vehicleGame=0;

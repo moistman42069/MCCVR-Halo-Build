@@ -53,6 +53,7 @@ constexpr BoolField kBools[] = {
     {"gesture_only_weapon_input", &Config::gesture_only_weapon_input},
     {"dual_wield_shake_reload", &Config::dual_wield_shake_reload},
     {"weapon_needler_shake", &Config::weapon_needler_shake},
+    {"reclaimer_flight_buttons", &Config::reclaimer_flight_buttons},
 };
 constexpr IntField kInts[] = {
     {"dpad_hand", &Config::dpad_hand},
