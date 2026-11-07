@@ -3149,6 +3149,11 @@ namespace
         }
         if (SectionHeader("Gun-mounted circular zoom lens##section", ImGuiTreeNodeFlags_None))
         {
+        // Aim Frame Zoom takes the zoom button to the game's own zoom: the lens is not offered while it is on.
+        if (g_config.aim_frame_zoom)
+            ImGui::TextColored(Rgb(kWarning), "Not used while Aim Frame Zoom is on (Scope > Aim Frame Zoom (every game)): "
+                "the zoom button goes to the game's own zoom, shown as a frame. Turn Aim Frame Zoom off to use the lens.");
+        ImGui::BeginDisabled(g_config.aim_frame_zoom);
         ImGui::TextDisabled("Halo 2, Halo 3, ODST, Reach and Halo 4. CE uses native zoom.");
         if (ImGui::Checkbox("Enable R3 zoom lens", &g_config.scope_enabled))
         {
@@ -3193,6 +3198,7 @@ namespace
             ImGui::TextDisabled("The lens refreshes every frame for a consistent render workload.");
             ImGui::Unindent();
         }
+        ImGui::EndDisabled();
         }
         }
 
