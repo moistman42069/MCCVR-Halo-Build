@@ -304,7 +304,8 @@ void CheckInputPresets()
             "an extra row's own input may be Automatic; a further one may not, nor any the support trigger's contexts");
         Check(NativeExtraAction(GameTitle::Halo3,BansheeBomb)==0x0A&&NativeExtraAction(GameTitle::Halo3,BansheeTrick)==0x1E&&
             NativeExtraAction(GameTitle::Halo3ODST,BansheeTrick)==0x1F&&NativeExtraAction(GameTitle::Halo2,BansheeBomb)==0x15&&
-            NativeExtraAction(GameTitle::HaloReach,BansheeBomb)==0x0A&&NativeExtraAction(GameTitle::Halo4,BansheeTrick)==0x0E&&
+            NativeExtraAction(GameTitle::HaloReach,BansheeBomb)==kNoAction&&
+            NativeExtraAction(GameTitle::Halo4,BansheeBomb)==kNoAction&&NativeExtraAction(GameTitle::Halo4,BansheeTrick)==0x0E&&
             NativeExtraAction(GameTitle::HaloReach,BansheeTrick)==0x0D&&
             NativeExtraAction(GameTitle::HaloCE,BansheeBomb)==kNoAction&&NativeExtraAction(GameTitle::None,BansheeTrick)==kNoAction,
             "each game's own seat actions, and none where a game has no Banshee row");
@@ -345,9 +346,9 @@ void CheckInputPresets()
             NativeExtraAction(GameTitle::Halo2,Scoreboard)==kNoAction&&NativeExtraAction(GameTitle::HaloCE,Scoreboard)==kNoAction&&
             NativeExtraAction(GameTitle::Halo4,SpecialAction)==0x54&&NativeExtraAction(GameTitle::Halo3,SpecialAction)==kNoAction,
             "each game's own action for the other extra rows, and none where a game lacks it");
-        Check(NativeExtraAction(GameTitle::HaloReach,VehicleSecondary)==NativeExtraAction(GameTitle::HaloReach,BansheeBomb)&&
+        Check(NativeExtraAction(GameTitle::HaloReach,VehicleSecondary)==0x0A&&
             NativeExtraAction(GameTitle::Halo2,PreviousGrenade)==NativeAction(GameTitle::Halo2,SwitchGrenade),
-            "Reach's vehicle secondary fire is its Banshee bomb, Halo 2's previous grenade its grenade switch");
+            "Reach's vehicle secondary fire is its boost, Halo 2's previous grenade its grenade switch");
         Check(std::strcmp(ExtraName(GameTitle::Halo3ODST,Scoreboard),"Map / scoreboard")==0&&
             std::strcmp(ExtraName(GameTitle::Halo3,Scoreboard),"Scoreboard")==0,"ODST's Back is its map");
         {

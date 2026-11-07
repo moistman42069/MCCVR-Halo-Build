@@ -11,8 +11,8 @@ signature-matches (`readerRva`). Every index is below that title's `actionCount`
 | Halo 3 | 0x0A | 0x1E | H3EK kit glyphs and builder; retail matches |
 | ODST | 0x0A | 0x1F | retail |
 | Halo 2 | 0x15 | 0x01 | retail (halo2.dll carries its own glyph names) |
-| Reach | 0x0A (secondary trigger) | 0x0D | retail, structural; corrected 2026-11-06 |
-| Halo 4 | 0x0B (secondary trigger) | 0x0E | retail; corrected in the headset 2026-11-06 |
+| Reach | none (0x0A, the secondary trigger, is the boost) | 0x0D | retail, structural; corrected 2026-11-06 |
+| Halo 4 | none (0x0B, the secondary trigger, is the boost) | 0x0E | retail; corrected in the headset 2026-11-06 |
 | Halo CE | none | none | no Banshee bomb or trick action |
 
 Binaries (SHA-256):

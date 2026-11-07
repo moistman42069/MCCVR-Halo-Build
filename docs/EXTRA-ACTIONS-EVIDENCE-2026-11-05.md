@@ -54,8 +54,11 @@ reader. Halo CE's and Halo 2's read sites were not traced; their rows rest on th
 - **Second trick.** MCC's two vehicle-trick controls are each game's trick and brake, not in the same order: Halo 2's
   Banshee trick is MCC's SecondaryVehicleTrick (0x01) and its PrimaryVehicleTrick is 0x02, `button_brake` in halo2.dll's
   glyph names. The row takes whichever one the Banshee trick row does not.
-- **Same action twice.** Reach's and Halo 4's vehicle secondary fire is their Banshee bomb (0x0A, 0x0B), and Halo 2's
-  previous grenade is its Switch grenade (0x03). The menu says so under the row.
+- **Same action twice.** Halo 2's previous grenade is its Switch grenade (0x03). The menu says so under the row.
+- **No bomb button in Reach or Halo 4 (corrected 2026-11-06).** Their vehicle secondary fire (0x0A, 0x0B) is the boost:
+  in the headset Halo 4's Banshee bomb row and the Pelican's secondary fire only boosted. A Banshee's fuel rod and a
+  Pelican's missiles are a weapon picked with Switch weapon and fired with Fire, so the Banshee bomb row is not in either
+  game.
 
 ## Left out
 

@@ -519,14 +519,15 @@ inline constexpr ExtraBindings kExtraDefaults{{
     kAutomaticRow,kAutomaticRow,kAutomaticRow}};
 // Each game's own action for an extra row, as NativeAction names the rows' (kNoAction: the game has none), in the games'
 // order Halo 3, ODST, Reach, Halo 4, Halo CE, Halo 2: what each game's converter makes of MCC's own control for it. See
-// BANSHEE-SEAT-ACTIONS-EVIDENCE-2026-11-05.md and EXTRA-ACTIONS-EVIDENCE-2026-11-05.md. Reach and Halo 4 have no bomb of
-// their own: a Banshee's bomb is the vehicle's secondary fire. Halo 3's and ODST's trick is the seat's jump; the second
+// BANSHEE-SEAT-ACTIONS-EVIDENCE-2026-11-05.md and EXTRA-ACTIONS-EVIDENCE-2026-11-05.md. Reach and Halo 4 have no bomb
+// button: their vehicle secondary fire (0x0A, 0x0B, the secondary trigger) is the boost, and a Banshee's fuel rod or a
+// Pelican's missiles are a weapon picked with Switch weapon and fired with Fire -- in the headset a bomb row there boosted. Halo 3's and ODST's trick is the seat's jump; the second
 // trick is the Banshee's brake in Halo 2, Reach and Halo 4. In Reach and Halo 4 the brake is the lower of the two
 // (seated control bit 2), the trick the higher (bit 0x14 / 0x15): in the headset Halo 4's were the other way round. ODST keeps Halo 3's dual-wield actions but has no dual wielding; Halo 2's
 // dual-wield pickup is a held binding the reader leaves alone; Back is Halo 2's and Halo CE's graphics switch, so neither
 // has a Scoreboard row.
 inline constexpr unsigned kExtraNative[ExtraCount][6]{
-    {0x0A,0x0A,0x0A,0x0B,kNoAction,0x15},
+    {0x0A,0x0A,kNoAction,kNoAction,kNoAction,0x15},
     {0x1E,0x1F,0x0D,0x0E,kNoAction,0x01},
     {0x41,kNoAction,kNoAction,kNoAction,kNoAction,0x17},
     {0x42,kNoAction,kNoAction,kNoAction,kNoAction,kNoAction},
