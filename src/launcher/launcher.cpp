@@ -1180,20 +1180,32 @@ ClientInfo Describe(const std::filesystem::path& launcherDir, const std::wstring
 }
 } // namespace reclaimer_launch
 
-// Prepare the client's settings.json, under Documents\My Games\Project Reclaimer, before it starts and reads it:
-// Centered crosshair on (reclaimer_host::WithCenteredCrosshair) and exclusive fullscreen made borderless
+// A known folder's path, or empty.
+static std::wstring KnownFolder(REFKNOWNFOLDERID id)
+{
+    PWSTR path = nullptr;
+    std::wstring out;
+    if (SUCCEEDED(SHGetKnownFolderPath(id, 0, nullptr, &path)) && path)
+        out = path;
+    CoTaskMemFree(path);
+    return out;
+}
+
+// Prepare the client's settings.json (reclaimer_host::SettingsFolder: Documents\My Games\Project Reclaimer up to 0.9,
+// %LOCALAPPDATA%\ProjectReclaimer from 0.10) before it starts and reads it: Centered crosshair on
+// (reclaimer_host::WithCenteredCrosshair) and exclusive fullscreen made borderless
 // (reclaimer_host::WithoutExclusiveFullscreen). Written through a temporary file, so the player's settings are
 // never left half written.
-static void ReclaimerPrepareSettings()
+static void ReclaimerPrepareSettings(bool recompiled)
 {
-    PWSTR documents = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &documents)) || !documents)
+    const std::wstring settingsFolder = reclaimer_host::SettingsFolder(
+        recompiled, KnownFolder(FOLDERID_Documents), KnownFolder(FOLDERID_LocalAppData));
+    if (settingsFolder.empty())
     {
-        LauncherLog("Project Reclaimer's settings: the Documents folder is unknown; left as they are");
+        LauncherLog("Project Reclaimer's settings: its folder is unknown; left as they are");
         return;
     }
-    const std::filesystem::path folder = std::filesystem::path(documents) / L"My Games" / L"Project Reclaimer";
-    CoTaskMemFree(documents);
+    const std::filesystem::path folder = settingsFolder;
     const std::filesystem::path file = folder / L"settings.json";
     std::string text;
     {
@@ -1334,7 +1346,7 @@ static int LaunchReclaimer(const std::wstring& dir, const ReclaimerClient& clien
                  L"starts.");
         return kExitFailed;
     }
-    ReclaimerPrepareSettings();
+    ReclaimerPrepareSettings(recompiled);
     // The relay's log is this launch's: several processes append to it.
     {
         FILE* f = nullptr;
@@ -1407,41 +1419,54 @@ static int LaunchReclaimer(const std::wstring& dir, const ReclaimerClient& clien
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 
-    // The process just started is not the game: it starts a supervisor, which starts the engine worker. Success
-    // is an engine worker that has the mod and is still there twelve seconds later.
+    // Up to 0.9 the process just started is not the game: it starts a supervisor, which starts the engine worker.
+    // From 0.10 it is, but it may start itself again and exit at once (seen when the launcher starts it: the relay
+    // then gives the mod to the new one). Success is a process that has the mod and is still there twelve seconds
+    // later; one that ends cleanly while another has the mod was a restart, and the other is followed.
     DWORD worker = 0;
-    for (const ULONGLONG deadline = GetTickCount64() + 45000; !worker && GetTickCount64() < deadline;)
+    for (int handOvers = 0;; ++handOvers)
     {
-        worker = FindReclaimerProcess(L"HaloMCCVR.dll");
+        worker = 0;
+        for (const ULONGLONG deadline = GetTickCount64() + (handOvers ? 10000 : 45000);
+             !worker && GetTickCount64() < deadline;)
+        {
+            worker = FindReclaimerProcess(L"HaloMCCVR.dll");
+            if (!worker)
+                Sleep(100);
+        }
         if (!worker)
-            Sleep(100);
-    }
-    if (!worker)
-    {
-        LauncherLog("no Project Reclaimer process holds HaloMCCVR.dll after 45 s (see HaloMCCVRReclaimerRelay.log)");
-        ErrorBox(L"Project Reclaimer started, but the VR mod did not reach its game process.\n\n"
-                 L"The game, if it is open, is running without VR.\n"
-                 L"Details are in HaloMCCVRReclaimerRelay.log and HaloMCCVRLauncher.log.");
-        return kExitFailed;
-    }
-    LauncherLog("engine worker pid %lu holds HaloMCCVR.dll", worker);
-    HANDLE process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, worker);
-    if (process)
-    {
+        {
+            LauncherLog("no Project Reclaimer process holds HaloMCCVR.dll after %d s (see "
+                        "HaloMCCVRReclaimerRelay.log)", handOvers ? 10 : 45);
+            ErrorBox(L"Project Reclaimer started, but the VR mod did not reach its game process.\n\n"
+                     L"The game, if it is open, is running without VR.\n"
+                     L"Details are in HaloMCCVRReclaimerRelay.log and HaloMCCVRLauncher.log.");
+            return kExitFailed;
+        }
+        LauncherLog("game process pid %lu holds HaloMCCVR.dll", worker);
+        HANDLE process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, worker);
+        if (!process)
+            break;
         const DWORD waited = WaitForSingleObject(process, 12000);
         DWORD code = 0;
         if (waited == WAIT_OBJECT_0)
             GetExitCodeProcess(process, &code);
         CloseHandle(process);
-        if (waited == WAIT_OBJECT_0)
+        if (waited != WAIT_OBJECT_0)
+            break;
+        const DWORD next = code == 0 && handOvers < 3 ? FindReclaimerProcess(L"HaloMCCVR.dll") : 0;
+        if (next && next != worker)
         {
-            LauncherLog("the engine worker EXITED within 12 s, exit code %lu (0x%08X)", code, code);
-            ErrorBox(L"Project Reclaimer's game process closed right after starting with the VR mod (exit code " +
-                     std::to_wstring(code) + L").\n\nDetails are in HaloMCCVR.log and HaloMCCVRLauncher.log.");
-            return kExitFailed;
+            LauncherLog("pid %lu ended cleanly within 12 s and pid %lu has the mod: Project Reclaimer started itself "
+                        "again; following it", worker, next);
+            continue;
         }
+        LauncherLog("the game process EXITED within 12 s, exit code %lu (0x%08X)", code, code);
+        ErrorBox(L"Project Reclaimer's game process closed right after starting with the VR mod (exit code " +
+                 std::to_wstring(code) + L").\n\nDetails are in HaloMCCVR.log and HaloMCCVRLauncher.log.");
+        return kExitFailed;
     }
-    LauncherLog("engine worker still running after 12 s - launch looks good");
+    LauncherLog("game process pid %lu still running after 12 s - launch looks good", worker);
     return kExitOk;
 }
 
