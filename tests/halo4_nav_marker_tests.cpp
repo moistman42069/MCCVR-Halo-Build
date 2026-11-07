@@ -50,7 +50,15 @@ std::vector<uint8_t> PatternBytes(const char* pattern)
 void PutI32(std::vector<uint8_t>& bytes, size_t at, int32_t value) { std::memcpy(bytes.data() + at, &value, 4); }
 
 // Retail halo4.dll (offsets from the module base).
-constexpr int64_t kProjectorRva = 0x40B5F4, kBuildRva = 0x40B0B8, kBuilderRva = 0x38F658;
+constexpr int64_t kProjectorRva = 0x40B5F4, kBuildRva = 0x40B0B8, kBuilderRva = 0x38F658, kPointRva = 0x40B180;
+
+std::vector<uint8_t> RetailProjector()
+{
+    std::vector<uint8_t> projector = PatternBytes(kProjectorPattern);
+    PutI32(projector, kProjectorPointCall + 1,
+           static_cast<int32_t>(kPointRva - (kProjectorRva + static_cast<int64_t>(kProjectorPointCall) + 5)));
+    return projector;
+}
 
 std::vector<uint8_t> RetailBuild()
 {
@@ -60,7 +68,7 @@ std::vector<uint8_t> RetailBuild()
     PutI32(build, kCameraBuildConverterCall + 1, 0x12345);
     return build;
 }
-auto IsBuilder = [](int64_t rva) { return rva == kBuilderRva; };
+auto IsBuilder = [](int64_t rva) { return rva == kBuilderRva || rva == kPointRva; };
 
 void Decoding()
 {
@@ -83,13 +91,22 @@ void Decoding()
         Check(has(tls, sizeof(tls)) && has(stride, sizeof(stride)) && has(start, sizeof(start)),
               "the build reads the user's observer camera from engine TLS +0x680, 0x428 apart, +0x15C");
     }
-    const std::vector<uint8_t> projector = PatternBytes(kProjectorPattern);
+    const std::vector<uint8_t> projector = RetailProjector();
     const std::vector<uint8_t> build = RetailBuild();
     Sites sites;
     Check(DecodeSites(projector.data(), kProjectorRva, true, build.data(), kBuildRva, true, IsBuilder, sites) ==
                   Bind::Bound &&
-              sites.projectorRva == kProjectorRva && sites.projectionRva == kBuilderRva,
-          "retail decodes: the projector at +0x40B5F4, the projection builder at +0x38F658");
+              sites.projectorRva == kProjectorRva && sites.projectionRva == kBuilderRva && sites.pointRva == kPointRva,
+          "retail decodes: the projector at +0x40B5F4, the projection builder at +0x38F658, the point projection at "
+          "+0x40B180");
+    {
+        std::vector<uint8_t> wrong = projector;
+        PutI32(wrong, kProjectorPointCall + 1, 0x777);
+        Sites none;
+        Check(DecodeSites(wrong.data(), kProjectorRva, true, build.data(), kBuildRva, true, IsBuilder, none) ==
+                      Bind::PointNotFunction && none.pointRva == 0,
+              "a point projection that does not begin a function binds nothing");
+    }
     Sites untouched;
     Check(DecodeSites(nullptr, kProjectorRva, true, build.data(), kBuildRva, true, IsBuilder, untouched) ==
                   Bind::ProjectorMissing &&
@@ -266,6 +283,68 @@ bool OnScreen(const float forward[3], float halfYawDeg, float targetYawDeg)
         return false;
     return std::fabs(WrapPi(targetYawDeg * kDegToRad - yaw)) <= halfYawDeg * kDegToRad;
 }
+// THE HUD'S AFFINE undone: a marker laid out at the undone place is SHOWN on its target by the affine the HUD
+// applies (x' = h x, y' = v y + height); outside the HUD's own area it becomes an edge arrow toward the target.
+void Show(const HudAffine& a, const float uv[2], float& x, float& y)
+{
+    const float lx = uv[0] * 2.0f - 1.0f, ly = 1.0f - uv[1] * 2.0f;
+    x = a.horizontal * lx;
+    y = a.vertical * ly + a.heightNdc;
+}
+void Affine()
+{
+    HudAffine affine;
+    Check(!MakeHudAffine(0.41f, 0.41f, -117.0f, 0.0f, affine) && !MakeHudAffine(0.0f, 0.41f, 0.0f, 1080.0f, affine) &&
+              !MakeHudAffine(0.41f, std::numeric_limits<float>::quiet_NaN(), 0.0f, 1080.0f, affine),
+          "an unusable affine is refused");
+    // The report's settings: hud_size 0.41, aspect 1, -117 px on a 1080-pixel-high picture.
+    Check(MakeHudAffine(0.41f, 0.41f, -117.0f, 1080.0f, affine) && std::fabs(affine.heightNdc + 117.0f / 540.0f) < 1e-6f,
+          "the height in half-picture units");
+    for (float tx : {-0.3f, -0.1f, 0.0f, 0.2f, 0.35f})
+        for (float ty : {-0.5f, -0.3f, 0.0f, 0.1f})
+        {
+            // A target at (tx, ty) of the picture (y up); the projection's place for it.
+            float uv[2]{(tx + 1.0f) * 0.5f, (1.0f - ty) * 0.5f};
+            bool on = true;
+            Check(UndoHudAffine(affine, on, uv), "an on-screen point is laid out again");
+            if (!on)
+                continue;
+            float x = 0.0f, y = 0.0f;
+            Show(affine, uv, x, y);
+            Check(std::fabs(x - tx) < 1e-5f && std::fabs(y - ty) < 1e-5f,
+                  "laid out at the undone place, the HUD shows the marker on its target");
+        }
+    {
+        // Before: laid out at its own place, the marker was shown at 0.41 of its distance and 117 px low.
+        const float uv[2]{(0.3f + 1.0f) * 0.5f, (1.0f - 0.2f) * 0.5f};
+        float x = 0.0f, y = 0.0f;
+        Show(affine, uv, x, y);
+        Check(std::fabs(x - 0.3f) > 0.15f && y < 0.0f, "without the undo the marker was far off its target");
+    }
+    {
+        // Beyond the HUD's own area (here 0.6 of the picture to the right: the HUD spans 0.41 of it): an edge arrow.
+        float uv[2]{(0.6f + 1.0f) * 0.5f, 0.5f};
+        bool on = true;
+        Check(UndoHudAffine(affine, on, uv) && !on, "outside the HUD's area the point is off screen");
+        Check(uv[0] > 0.999f && std::fabs(uv[0] - 1.0f) < 1e-5f && uv[1] > 0.0f && uv[1] < 1.0f,
+              "its place is on the area's edge, on the target's side");
+    }
+    {
+        float uv[2]{0.2f, 0.7f};
+        bool on = false;
+        Check(!UndoHudAffine(affine, on, uv) && uv[0] == 0.2f && uv[1] == 0.7f,
+              "a point the projection had off screen keeps the game's own edge direction");
+    }
+    {
+        HudAffine identity;
+        float uv[2]{0.83f, 0.21f};
+        bool on = true;
+        Check(UndoHudAffine(identity, on, uv) && on && std::fabs(uv[0] - 0.83f) < 1e-6f &&
+                  std::fabs(uv[1] - 0.21f) < 1e-6f,
+              "with the stock HUD nothing moves");
+    }
+}
+
 void Report()
 {
     // The objective straight ahead of the head (yaw 0), the gun swung 60 degrees to the right.
@@ -287,6 +366,7 @@ int main()
     Decoding();
     Proof();
     Verdicts();
+    Affine();
     Report();
     std::printf("Halo 4 navigation markers: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
