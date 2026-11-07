@@ -4,7 +4,6 @@ Find your problem below. Each entry says what to try, and what the logs show whe
 of them fits, see [Asking for help](#asking-for-help) at the end.
 
 - [Project Reclaimer stays flat, with no error message](#project-reclaimer-stays-flat-with-no-error-message)
-- [The launcher says the VR mod cannot run in Project Reclaimer 0.10](#the-launcher-says-the-vr-mod-cannot-run-in-project-reclaimer-010)
 - [The picture judders on Virtual Desktop](#the-picture-judders-on-virtual-desktop)
 - [VR does not start, or the wrong VR software starts](#vr-does-not-start-or-the-wrong-vr-software-starts)
 - [The game crashes a few seconds after the headset picture appears](#the-game-crashes-a-few-seconds-after-the-headset-picture-appears)
@@ -26,18 +25,6 @@ Other overlays that draw over games can do the same. If you use one, exit it and
 
 **In the logs:** `HaloMCCVR.log` finds your headset (`headset found on runtime ...`) but never says
 `creating VR session`. The launcher log still ends with `launch looks good`, because the game itself is running.
-
-## The launcher says the VR mod cannot run in Project Reclaimer 0.10
-
-Project Reclaimer updates itself, and keeps its old file name when it does: a file named
-`project-reclaimer-client-v0.9.23.exe` can be version 0.10.0 inside. From 0.10.0 it runs its own rebuilt copy of
-Halo 3 instead of MCC's game file, and the VR mod works only with MCC's. The launcher does not start it.
-
-**Try:** nothing in the mod's settings changes this. VR works with Project Reclaimer 0.9 versions until the mod
-supports 0.10. To play 0.10 without VR, start Project Reclaimer as usual.
-
-**In the logs:** `HaloMCCVRLauncher.log` says `NOT STARTED: Project Reclaimer 0.10.0 runs its own recompiled
-Halo 3`. Before this check, the launcher waited 45 seconds and said the VR mod did not reach its game process.
 
 ## The picture judders on Virtual Desktop
 

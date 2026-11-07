@@ -303,6 +303,8 @@ add_library(halo3xr SHARED
     src/dll/sight_layer.cpp
     src/dll/dev_pad.cpp
     src/dll/title_adapter.cpp
+    src/dll/lifted_engine.cpp
+    src/dll/lifted_engine_thunks.asm
     src/dll/title_image_guard.cpp
     src/dll/title_reentry_probe.cpp
     src/dll/reach_adapter.cpp
@@ -626,6 +628,12 @@ if(BUILD_TESTING)
     add_test(NAME halomccvr_title_build_identity_tests COMMAND halomccvr_title_build_identity_tests)
     add_executable(halomccvr_reclaimer_host_logic_tests tests/reclaimer_host_logic_tests.cpp)
     add_test(NAME halomccvr_reclaimer_host_logic_tests COMMAND halomccvr_reclaimer_host_logic_tests)
+    add_executable(halomccvr_lifted_engine_logic_tests tests/lifted_engine_logic_tests.cpp)
+    add_test(NAME halomccvr_lifted_engine_logic_tests COMMAND halomccvr_lifted_engine_logic_tests)
+    # Project Reclaimer 0.10's own engine.code, where this machine has one (skipped otherwise).
+    add_executable(halomccvr_lifted_engine_file_check tests/lifted_engine_file_check.cpp)
+    add_test(NAME halomccvr_lifted_engine_file_check COMMAND halomccvr_lifted_engine_file_check)
+    set_tests_properties(halomccvr_lifted_engine_file_check PROPERTIES SKIP_RETURN_CODE 77)
     # Packaging runs this tiny program against a nonexistent path to generate
     # the current source tree's exact default config. It is intentionally not
     # installed by CMake: package-candidate stages and hashes its output while

@@ -13,6 +13,7 @@
 #include "d3d11_hook.h"
 #include "halo2_adapter.h"
 #include "halo4_adapter.h"
+#include "lifted_engine.h"
 #include "reach_adapter.h"
 #include "title_reentry_probe.h"
 #include "seat_exit_witness.h"
@@ -562,7 +563,11 @@ const TitleDescriptor* TitleAdapter_PollLoaded(uint64_t observedAtMs)
     size_t detectedCount = 0;
     for (size_t i = 0; i < count; ++i)
     {
-        const HMODULE module = GetModuleHandleW(titles[i].moduleName);
+        HMODULE module = GetModuleHandleW(titles[i].moduleName);
+        // Project Reclaimer 0.10 runs no halo3.dll: halo3.dll's image inside the client stands in for it, its code
+        // run as translated functions (lifted_engine.h).
+        if (!module && titles[i].title == GameTitle::Halo3 && lifted::Poll())
+            module = lifted::Halo3Module();
         if (!module)
             continue;
         const size_t slot = TitleRuntimeSlotIndex(titles[i].title);

@@ -109,6 +109,12 @@ four identical crashes.
   already explained: to locate the homologous function, confirm a layout, or
   check uniqueness before hooking. Never to invent a binding.
 - Never derive bindings from Reclaimer or archived console binaries at all.
+  **One exception (owner's decision, 2026-11-06):** Project Reclaimer 0.10 and
+  later run a recompiled copy of MCC's `halo3.dll`
+  (`docs/RECLAIMER-0.10-ENGINE-EVIDENCE.md`). Its function table and memory may
+  be read only to find **where** the recompiled copy of a function or global
+  already identified in `halo3.dll` sits. What it means, its layout and its
+  behaviour still come from `halo3.dll` and H3EK.
 - Never write a theory into an evidence document as a finding. Ship a probe, or
   write down the negative result.
 

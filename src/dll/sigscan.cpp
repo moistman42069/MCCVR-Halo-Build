@@ -557,11 +557,21 @@ namespace sig
         return Search(base, size, pattern);
     }
 
+    std::atomic<ModuleRangeFallback> g_moduleRangeFallback{nullptr};
+
+    void SetModuleRangeFallback(ModuleRangeFallback fallback)
+    {
+        g_moduleRangeFallback.store(fallback, std::memory_order_release);
+    }
+
     bool ModuleRange(const wchar_t* moduleName, uintptr_t& base, size_t& size)
     {
         HMODULE mod = GetModuleHandleW(moduleName);
         if (!mod)
-            return false;
+        {
+            const ModuleRangeFallback fallback = g_moduleRangeFallback.load(std::memory_order_acquire);
+            return fallback && fallback(moduleName, base, size);
+        }
         MODULEINFO mi{};
         if (!GetModuleInformation(GetCurrentProcess(), mod, &mi, sizeof(mi)))
             return false;
