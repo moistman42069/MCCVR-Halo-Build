@@ -122,7 +122,6 @@ namespace
         Cat_Picture,
         Cat_Hud,
         Cat_Subtitles,
-        Cat_Desktop,
         Cat_Scope,
         Cat_Telemetry,
         Cat_Advanced,
@@ -151,7 +150,6 @@ namespace
         {"Picture",       "Render resolution, sharpening, anti-aliasing and brightness."},
         {"HUD",           "Size and position of the active game's HUD."},
         {"Subtitles",     "Localized dialogue in gameplay and 3D theatre."},
-        {"Desktop",       "The window on your monitor, not the headset."},
         {"Scope",         "Experimental gun-mounted zoom screen."},
         {"Telemetry Recorder", "Records controller, headset and aim-solver data for troubleshooting."},
         {"Advanced",      "Aim internals, tracking calibration, panel placement, and starting over."},
@@ -3732,9 +3730,10 @@ namespace
                 "Unsupported native feeds retain the existing subtitle view.");
         }
 
-        if (CategorySection section{Cat_Desktop}; section.visible)
+        // The window on the monitor, last on the Picture page.
+        if (CategorySection section{Cat_Picture}; section.visible)
         {
-        if (SectionHeader("The window on your monitor##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Desktop Spectator View##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Show the headset's picture on my monitor",&g_config.desktop_mirror);
         if(ImGui::IsItemHovered())
