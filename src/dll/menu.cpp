@@ -2303,7 +2303,8 @@ namespace
             changed |= vr_menu::SliderFloat("Minimum shake stroke (m)##dualreload",
                 &g_config.weapon_shake_travel_m,0.06f,0.20f,"%.2f");
             ImGui::TextDisabled("Shake a hand back and forth once: it presses that hand's reload button.\n"
-                "Halo 3: either hand. Halo 2: the right-hand gun only for now.\n"
+                "Halo 3: each hand reloads its own gun.\n"
+                "Halo 2: either hand presses Reload, which reloads both guns.\n"
                 "Let the hand settle before shaking again.");
         }
         }

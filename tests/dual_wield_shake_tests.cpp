@@ -114,5 +114,31 @@ int main() {
     }
     Check(dual_wield_shake::PoseMilliseconds(0)==0 && dual_wield_shake::PoseMilliseconds(-1)==0,
         "missing pose time cannot start a gesture");
+    {
+        using dual_wield_shake::ReloadButtons;
+        constexpr uint32_t reload=0x4000,left=0x100;
+        for(auto title:{GameTitle::Halo2,GameTitle::Halo3}) {
+            const auto none=ReloadButtons(title,0,reload,left);
+            Check(!none.buttons&&!none.secondaryUnbound,"no shake presses nothing");
+            const auto right=ReloadButtons(title,1,reload,left);
+            Check(right.buttons==reload&&!right.secondaryUnbound,"right shake presses Reload");
+            const auto rightUnbound=ReloadButtons(title,1,0,left);
+            Check(!rightUnbound.buttons&&!rightUnbound.secondaryUnbound,"unbound Reload presses nothing");
+        }
+        const auto h3Left=ReloadButtons(GameTitle::Halo3,2,reload,left);
+        Check(h3Left.buttons==left&&!h3Left.secondaryUnbound,"Halo 3 left shake presses its left-weapon reload");
+        const auto h3Both=ReloadButtons(GameTitle::Halo3,3,reload,left);
+        Check(h3Both.buttons==(reload|left),"Halo 3 shakes press both hands' own reloads");
+        const auto h3Unbound=ReloadButtons(GameTitle::Halo3,2,reload,0);
+        Check(!h3Unbound.buttons&&h3Unbound.secondaryUnbound,"Halo 3 unbound left reload is counted, never Reload");
+        for(uint32_t secondary:{left,0u}) {
+            const auto h2Left=ReloadButtons(GameTitle::Halo2,2,reload,secondary);
+            Check(h2Left.buttons==reload&&!h2Left.secondaryUnbound,"Halo 2 left shake presses Reload (both guns)");
+            Check(ReloadButtons(GameTitle::Halo2,3,reload,secondary).buttons==reload,
+                "Halo 2 shakes of both hands press Reload once");
+        }
+        const auto h2Unbound=ReloadButtons(GameTitle::Halo2,2,0,left);
+        Check(!h2Unbound.buttons&&h2Unbound.secondaryUnbound,"Halo 2 left shake with Reload unbound presses nothing");
+    }
     std::printf("Dual-wield shake detector: %u checks passed\n",checks);
 }
