@@ -118,7 +118,6 @@ namespace
         Cat_WeaponAim,
         Cat_VirtualStockLab,
         Cat_TwoHandLab,
-        Cat_Crosshair,
         Cat_BodyHands,
         Cat_Picture,
         Cat_Hud,
@@ -148,7 +147,6 @@ namespace
         {"Weapon & Aim",  "Gun placement, per-title calibration, muzzle alignment, and two-handed aiming."},
         {"Virtual Stock Lab", "Experimental virtual shoulder aiming and proximity release."},
         {"Two-Handed Lab", "Experimental two-hand anchor, authority and damping rig (runtime-only)."},
-        {"Crosshair & Trajectory",     "The floating reticle that shows where the weapon really shoots."},
         {"Body & Hands",  "Arms, shoulders, and how much of Chief you can see."},
         {"Picture",       "Render resolution, sharpening, anti-aliasing and brightness."},
         {"HUD",           "Size and position of the active game's HUD."},
@@ -2930,7 +2928,8 @@ namespace
         }
         }
 
-        if (CategorySection section{Cat_Crosshair}; section.visible)
+        // The crosshair and the shot's direction, after the rest of Weapon & Aim.
+        if (CategorySection section{Cat_WeaponAim}; section.visible)
         {
         if (SectionHeader("Crosshair and bullet direction##section", ImGuiTreeNodeFlags_None))
         {
@@ -2957,12 +2956,13 @@ namespace
             changed = true;
         }
         ImGui::TextDisabled("Adjusts the aiming ray used by shots and the reticle, even when hidden.\n"
-                            "Visual gun alignment and gun-stock offsets are in Weapon & Aim.");
+                            "Visual gun alignment and gun-stock offsets have their own sections above.");
         }
         ImGui::Spacing();
         }
         if (SectionHeader("Authored weapon crosshair (stereo)##section", ImGuiTreeNodeFlags_None))
         {
+        ImGui::TextDisabled("The floating reticle that shows where the weapon really shoots.");
         changed |= ImGui::Checkbox("Show a crosshair where the weapon shoots", &g_config.crosshair);
         if (g_config.crosshair)
         {
