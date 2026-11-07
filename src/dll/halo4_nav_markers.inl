@@ -40,6 +40,7 @@ struct Halo4NavMarkersRuntime
     // The HUD's affine undone (the point hook): points laid out where the affine shows them on target, and of
     // those, points that fall outside the HUD's own area and became its edge arrows. The last affine used.
     std::atomic<uint32_t> affineUndone{0}, affineOffArea{0};
+    std::atomic<uint32_t> affineInEye{0};  // placements inside an eye's render given the undo (the second family)
     std::atomic<float> lastAffineScale{1.0f}, lastAffineHeight{0.0f};
     std::atomic<bool> enabled{false};
     std::atomic<uint32_t> callbacks{0};
@@ -54,7 +55,7 @@ struct Halo4NavMarkersRuntime
     std::atomic<float> lastTurnDeg{0.0f};  // the last call given the head: the head's forward from the camera's
     // The report's thread only.
     uint32_t reportedProven = 0, reportedWithdrawn = 0;
-    bool reportedFirstUse = false;
+    bool reportedFirstUse = false, reportedFirstInEye = false;
 } g_halo4NavMarkers;
 
 // What the projector's detour hands its own call of the point projection: whether to undo the HUD's affine, and
@@ -81,6 +82,32 @@ bool Halo4NavHudAffine(const uint8_t* camera, halo4_nav_markers::HudAffine& out)
     memcpy(window, camera + 0x30, sizeof(window));
     return halo4_nav_markers::MakeHudAffine(affine.horizontal, affine.vertical, affine.heightPixels,
                                             static_cast<float>(window[2] - window[0]), out);
+}
+
+// game.cpp, after Halo4ApplyNativeHudAffine: whether the HUD root applies the affine to the CUI being drawn on this
+// thread now (the same admission it uses).
+bool Halo4NavHudAffineAdmittedNow() noexcept;
+
+// Inside an eye's render. The second family of world widgets (+0x3F25BC, under +0x3F3808, the function that also
+// calls the HUD root +0x3F313C) places them there, with the player-view stack element's camera: the eye's own, so
+// the direction is right, but the HUD's affine then scaled and lowered what it placed (headset report,
+// 2026-11-06: the marker "moves with my head within certain bounds before it turns into an off-screen arrow" --
+// shown at 0.41 of its distance from the centre). Undo it the same way. `camera` is the game's; a fault reading
+// its window leaves the call stock.
+__declspec(noinline) bool Halo4NavInEyeAffine(const void* camera, Halo4NavAffineCall& affine) noexcept
+{
+    __try
+    {
+        affine.active = g_config.nav_markers_follow_head && Halo4NavHudAffineAdmittedNow() &&
+                        Halo4NavHudAffine(static_cast<const uint8_t*>(camera), affine.affine);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        affine.active = false;
+    }
+    if (affine.active)
+        g_halo4NavMarkers.affineInEye.fetch_add(1, std::memory_order_relaxed);
+    return affine.active;
 }
 
 // One call, outside the detour's own frame so a fault in it is caught here. Fills `camera` and `projection` (the
@@ -160,12 +187,17 @@ __declspec(noinline) uint64_t __fastcall Halo4MarkerProjectorDetour(void* point,
         void* useCamera = camera;
         void* useProjection = projection;
         Halo4NavAffineCall affine;
-        if (camera && projection && feature.enabled.load(std::memory_order_acquire) &&
-            Halo4NavMarkerHead(camera, projection, headCamera, headProjection, affine) ==
-                halo4_nav_markers::Use::Used)
+        if (camera && projection && feature.enabled.load(std::memory_order_acquire))
         {
-            useCamera = headCamera;
-            useProjection = headProjection;
+            const halo4_nav_markers::Use use =
+                Halo4NavMarkerHead(camera, projection, headCamera, headProjection, affine);
+            if (use == halo4_nav_markers::Use::Used)
+            {
+                useCamera = headCamera;
+                useProjection = headProjection;
+            }
+            else if (use == halo4_nav_markers::Use::InEyePass)
+                (void)Halo4NavInEyeAffine(camera, affine);
         }
         // The point projection inside this call undoes the HUD's affine (Halo4MarkerPointDetour).
         g_halo4NavAffineCall = affine;
@@ -324,7 +356,8 @@ bool InstallHalo4NavMarkers(uintptr_t base, size_t size, uint32_t generation)
     for (auto& count : feature.steps)
         count.store(0, std::memory_order_relaxed);
     feature.reportedProven = feature.reportedWithdrawn = 0;
-    feature.reportedFirstUse = false;
+    feature.reportedFirstUse = feature.reportedFirstInEye = false;
+    feature.affineInEye.store(0, std::memory_order_relaxed);
     feature.affineUndone.store(0, std::memory_order_relaxed);
     feature.affineOffArea.store(0, std::memory_order_relaxed);
     void* target = reinterpret_cast<void*>(projector);
@@ -404,6 +437,13 @@ void ReportHalo4NavMarkers()
     }
     const uint32_t used = uses[static_cast<size_t>(Use::Used)];
     const uint32_t undone = feature.affineUndone.exchange(0, std::memory_order_relaxed);
+    const uint32_t inEye = feature.affineInEye.exchange(0, std::memory_order_relaxed);
+    if (inEye && !feature.reportedFirstInEye)
+    {
+        feature.reportedFirstInEye = true;
+        LOG("NAV MARKERS Halo 4: world markers placed inside an eye's render (the object-anchored family) have the "
+            "HUD's size and height undone too (%u in the last two seconds)", inEye);
+    }
     const uint32_t offArea = feature.affineOffArea.exchange(0, std::memory_order_relaxed);
     if (used && !feature.reportedFirstUse)
     {
