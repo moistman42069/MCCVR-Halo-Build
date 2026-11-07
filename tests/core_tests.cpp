@@ -21,6 +21,7 @@ int RunDirectorCameraTests();
 #include "../src/common/contact_melee_motion.h"
 #include "../src/common/session_read_logic.h"
 #include "../src/common/log_archive_logic.h"
+#include "../src/common/camera_copy_logic.h"
 #include "../src/dll/contact_melee_queue.h"
 #include <array>
 #include <cstdlib>
@@ -21288,6 +21289,17 @@ int main()
         Check(std::strcmp(TypeName(3), "sync-server") == 0 && std::strcmp(TypeName(2), "sync-client") == 0 &&
             std::strcmp(TypeName(4), "dist-client") == 0 && std::strcmp(TypeName(9), "unknown") == 0,
             "session: the type names are the game's own");
+    }
+    {
+        // A camera copy that is not a view is left to the game: no direction, or exactly the default +X.
+        using camera_copy::ForwardIsView;
+        Check(ForwardIsView(0.6f, -0.8f, 0.0f) && ForwardIsView(0.0f, 0.0f, 1.0f) && ForwardIsView(1.0f, 0.001f, 0.0f),
+              "camera copy: a view's unit forward is a view");
+        Check(!ForwardIsView(0.0f, 0.0f, 0.0f) && !ForwardIsView(1.0f, 0.0f, 0.0f) && !ForwardIsView(-1.0f, 0.0f, 0.0f),
+              "camera copy: no direction, or exactly the default axis, is not a view");
+        Check(!ForwardIsView(0.3f, 0.3f, 0.0f) && !ForwardIsView(2.0f, 1.0f, 0.0f) &&
+                  !ForwardIsView(std::numeric_limits<float>::quiet_NaN(), 0.0f, 1.0f),
+              "camera copy: a forward that is not a unit vector is not a view");
     }
     {
         // The last runs' logs: named for when each run started, the newest few kept.
