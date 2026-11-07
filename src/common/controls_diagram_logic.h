@@ -154,22 +154,12 @@ inline bool ActsUnmapped(const vr_mapping::Input& input) noexcept
 }
 }
 
+// The mapped actions on each control: what VR Mappings' rows put there.
 inline Labels Build(const Setup& setup)
 {
     using namespace vr_mapping;
     Labels labels{};
     const bool vehicle=setup.context==Context::Vehicle;
-    detail::Add(labels,LeftStick,vehicle?"Drive":"Move");
-    detail::Add(labels,RightStick,"Turn");
-    detail::Add(labels,LeftMenu,"Pause (Start)");
-    detail::Add(labels,LeftStickClick,"Both stick clicks: recentre, open menu");
-    detail::Add(labels,RightStickClick,"Both stick clicks: recentre, open menu");
-    if(vehicle)
-    {
-        detail::Add(labels,Y,"Next camera (hold: recentre view)");
-        detail::Add(labels,X,"Camera tether (hold: recentre view)");
-        detail::Add(labels,LeftStickClick,"Next way of controlling the seat");
-    }
     const int game=static_cast<int>(setup.game)-1;
     if(game<0||game>=6||!setup.bindings||!setup.inputs) return labels;
 
@@ -222,46 +212,88 @@ inline Labels Build(const Setup& setup)
     return labels;
 }
 
-// WHAT THE CALLOUTS CANNOT SHOW: the grips' and the body's own jobs, as the player has them set, said once under the
-// diagram. Each is a line naming the hand by its side.
+// WHAT NO ROW MAPS: the jobs a control has whatever the rows say (built in), and the gestures, each shown only while
+// the setting that turns it on is on.
 struct Gestures
 {
-    bool twoHanded=false;
+    bool twoHanded=false;          // weapon gripping
     bool holsters=false;
-    int holsterLocation=0;     // weapon_holster_location: shoulder, hip, over the shoulder, the player's own place
+    int holsterLocation=0;         // weapon_holster_location: shoulder, hip, over the shoulder, the player's own place
     bool manualReload=false;
     bool gestureMelee=false;
+    bool meleeNeedsGrip=false;     // gesture_melee_require_grip
+    bool meleeOffHand=false;       // gesture_melee_off_hand
     bool physicalMelee=false;
     bool shakeReload=false;
     bool physicalCrouch=false;
     bool physicalRunning=false;
-    int dpadHand=0;            // dpad_hand: the controller held at the head for the D-pad, left or right
+    int dpadHand=0;                // dpad_hand: the controller held at the head for the D-pad, left or right
 };
-inline std::vector<std::string> OtherRoles(const Setup& setup,const Gestures& gestures)
+
+// Each control's built-in jobs. The grips' are on both grips: either hand may come to hold the gun.
+inline Labels BuiltIns(const Setup& setup,const Gestures& gestures)
 {
-    std::vector<std::string> lines;
-    const std::string support=setup.leftHanded?"Right grip":"Left grip", weapon=setup.leftHanded?"Left grip":"Right grip";
-    if(setup.context==Context::OnFoot)
+    Labels labels{};
+    const bool vehicle=setup.context==Context::Vehicle;
+    detail::Add(labels,LeftStick,vehicle?"Drive":"Move");
+    detail::Add(labels,RightStick,"Turn");
+    detail::Add(labels,LeftMenu,"Pause (Start)");
+    detail::Add(labels,LeftStickClick,"Both stick clicks: recentre, open menu");
+    detail::Add(labels,RightStickClick,"Both stick clicks: recentre, open menu");
+    if(vehicle)
     {
-        if(gestures.twoHanded) lines.push_back(support+" on the front of the gun: aim with both hands.");
+        detail::Add(labels,Y,"Next camera (hold: recentre view)");
+        detail::Add(labels,X,"Camera tether (hold: recentre view)");
+        detail::Add(labels,LeftStickClick,"Next way of controlling the seat");
+        return labels;
+    }
+    for(const Control grip:{LeftGrip,RightGrip})
+    {
+        if(gestures.twoHanded) detail::Add(labels,grip,"Weapon gripping");
         if(gestures.holsters)
         {
-            constexpr const char* kPlaces[]{"at your weapon-side shoulder","at your weapon-side hip",
-                "over your weapon-side shoulder","at the holster you set"};
-            const int place=gestures.holsterLocation>=0&&gestures.holsterLocation<4?gestures.holsterLocation:0;
-            lines.push_back(weapon+" "+kPlaces[place]+": switch weapons.");
+            constexpr const char* kSwitching[]{"Grip-at-shoulder weapon switching","Grip-at-hip weapon switching",
+                "Grip-over-shoulder weapon switching","Grip-at-holster weapon switching"};
+            detail::Add(labels,grip,kSwitching[gestures.holsterLocation>=0&&gestures.holsterLocation<4?
+                gestures.holsterLocation:0]);
         }
-        if(gestures.manualReload)
-            lines.push_back(support+" at your hip takes a magazine; let go of it below the gun to reload.");
-        if(gestures.physicalMelee) lines.push_back("Strike with a hand or the gun: melee.");
-        else if(gestures.gestureMelee) lines.push_back("Punch away from your body: melee.");
-        if(gestures.shakeReload) lines.push_back("Dual wielding, shake a hand: reload that hand's gun.");
-        if(gestures.physicalCrouch) lines.push_back("Lower your head: crouch.");
-        if(gestures.physicalRunning) lines.push_back("Swing both arms: run.");
+        if(gestures.manualReload) detail::Add(labels,grip,"Grip-at-hip magazine reload");
     }
-    if(setup.thumbrestDpad) lines.push_back("D-pad: left thumb on its rest, then push the right stick.");
-    else lines.push_back(std::string("D-pad: hold the ")+(gestures.dpadHand==1?"right":"left")+
-        " controller next to your head, then push the left stick.");
+    return labels;
+}
+
+// The gestures, under the diagram: a name and what to do.
+struct GestureLine { std::string name, how; };
+inline std::vector<GestureLine> GestureLines(const Setup& setup,const Gestures& gestures)
+{
+    std::vector<GestureLine> lines;
+    if(setup.context==Context::OnFoot)
+    {
+        if(gestures.physicalMelee) lines.push_back({"Physical melee","Strike with a hand or the gun."});
+        else if(gestures.gestureMelee)
+        {
+            const std::string hand=gestures.meleeOffHand?"either controller":"your primary controller";
+            lines.push_back({"Gesture melee",gestures.meleeNeedsGrip?"Grip "+hand+" and punch away from your body.":
+                "Punch away from your body with "+hand+"."});
+        }
+        // Only Halo 3 and Halo 2 dual wield; Halo 2's shake reloads its right-hand gun for now.
+        if(gestures.shakeReload&&setup.game==GameTitle::Halo3)
+            lines.push_back({"Dual-wield reload","Shake a hand: reload that hand's gun."});
+        else if(gestures.shakeReload&&setup.game==GameTitle::Halo2)
+            lines.push_back({"Dual-wield reload","Shake a hand: reload the right-hand gun."});
+        if(gestures.physicalCrouch) lines.push_back({"Physical crouch","Physically duck your head in real space to crouch."});
+        if(gestures.physicalRunning) lines.push_back({"Physical running","Swing both arms to run."});
+    }
+    if(setup.thumbrestDpad)
+        lines.push_back({"D-pad","Rest your left thumb on its thumb rest and push the right thumbstick the way you want the "
+            "D-pad pressed."});
+    else
+    {
+        // Halo CE always takes the left hand.
+        const bool right=gestures.dpadHand==1&&setup.game!=GameTitle::HaloCE;
+        lines.push_back({"D-pad",std::string("Hold the ")+(right?"right controller to your head and push the left":
+            "left controller to your head and push its")+" thumbstick the way you want the D-pad pressed."});
+    }
     return lines;
 }
 }

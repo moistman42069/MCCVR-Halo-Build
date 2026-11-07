@@ -47,19 +47,21 @@ void CheckDefaults()
     Check(Has(foot,X,"Reload")&&Has(foot,X,"Use / pick up"),"two actions on one control are both listed");
     Check(Has(foot,RightStick,"Down: Crouch (toggle)")&&Has(foot,RightStick,"Up: Equipment / ability"),
         "the right stick's crouch and Halo 3's stick-up equipment, on foot");
-    Check(Has(foot,LeftStick,"Move")&&Has(foot,RightStick,"Turn")&&Has(foot,LeftMenu,"Pause (Start)"),
-        "the fixed controls");
+    const Labels fixed=BuiltIns(rows.Make(Context::OnFoot),Gestures{});
+    Check(Has(fixed,LeftStick,"Move")&&Has(fixed,RightStick,"Turn")&&Has(fixed,LeftMenu,"Pause (Start)")&&
+        !Mentions(foot,LeftStick,"Move"),"the fixed controls are built in, not mapped");
     Check(Has(foot,B,"Pause (Y held)")&&Has(foot,Y,"Pause (B held)"),"the mod's Y + B pause on both buttons");
     Check(!Mentions(foot,RightGrip,"Banshee"),"seat rows are not on foot");
 
     const Labels seat=Build(rows.Make(Context::Vehicle));
-    Check(Has(seat,LeftStick,"Drive"),"the left stick drives in a vehicle");
+    const Labels seatFixed=BuiltIns(rows.Make(Context::Vehicle),Gestures{});
+    Check(Has(seatFixed,LeftStick,"Drive"),"the left stick drives in a vehicle");
     Check(!Mentions(seat,RightStick,"Crouch")&&!Mentions(seat,RightStick,"Equipment"),
         "the right stick's up and down count on foot only");
     Check(Has(seat,RightGrip,"Banshee bomb")&&Has(seat,RightStickClick,"Banshee bomb")&&Has(seat,A,"Banshee trick"),
         "the Banshee's seat rows");
-    Check(!Mentions(seat,X,"Reload")&&Has(seat,X,"Camera tether (hold: recentre view)")&&
-        Has(seat,Y,"Next camera (hold: recentre view)"),"left X and Y are the vehicle cameras' in a seat");
+    Check(!Mentions(seat,X,"Reload")&&Has(seatFixed,X,"Camera tether (hold: recentre view)")&&
+        Has(seatFixed,Y,"Next camera (hold: recentre view)"),"left X and Y are the vehicle cameras' in a seat");
     Check(Has(seat,Y,"Pause (B held)"),"the pause still reads left Y in a seat");
 }
 
@@ -119,27 +121,47 @@ void CheckLayout()
         !Mentions(Build(setup),RightStick,"Flashlight"),"the D-pad gesture's D-pad is the left stick");
 }
 
-void CheckOtherRoles()
+void CheckBuiltInsAndGestures()
 {
     Rows rows;
     Setup setup=rows.Make(Context::OnFoot);
     Gestures gestures{};
-    gestures.twoHanded=gestures.holsters=gestures.gestureMelee=gestures.physicalCrouch=true;
-    gestures.holsterLocation=1;
-    auto lines=OtherRoles(setup,gestures);
-    const auto has=[&](const char* line) { return std::find(lines.begin(),lines.end(),std::string(line))!=lines.end(); };
-    Check(has("Left grip on the front of the gun: aim with both hands.")&&
-        has("Right grip at your weapon-side hip: switch weapons.")&&has("Punch away from your body: melee.")&&
-        has("Lower your head: crouch.")&&
-        has("D-pad: hold the left controller next to your head, then push the left stick."),
-        "the grips' and the body's jobs, as set");
-    Check(!has("Swing both arms: run.")&&!has("Strike with a hand or the gun: melee."),"only what is turned on");
-    setup.leftHanded=true;
-    lines=OtherRoles(setup,gestures);
-    Check(has("Right grip on the front of the gun: aim with both hands."),"left-handed play swaps the grips");
-    setup.context=Context::Vehicle;
-    lines=OtherRoles(setup,gestures);
-    Check(lines.size()==1,"in a vehicle only the D-pad is said");
+    gestures.twoHanded=gestures.holsters=gestures.gestureMelee=gestures.physicalCrouch=gestures.shakeReload=true;
+    gestures.holsterLocation=2;
+    const Labels fixed=BuiltIns(setup,gestures);
+    Check(Has(fixed,LeftGrip,"Weapon gripping")&&Has(fixed,RightGrip,"Weapon gripping")&&
+        Has(fixed,LeftGrip,"Grip-over-shoulder weapon switching")&&Has(fixed,RightGrip,"Grip-over-shoulder weapon switching"),
+        "both grips grip the gun and switch weapons at the holster");
+    gestures.holsters=false;
+    Check(!Mentions(BuiltIns(setup,gestures),LeftGrip,"switching"),"no holster switching while holsters are off");
+    Check(!Mentions(BuiltIns(rows.Make(Context::Vehicle),gestures),LeftGrip,"Weapon gripping"),"no weapon grip in a seat");
+
+    auto lines=GestureLines(setup,gestures);
+    const auto how=[&](const char* name) {
+        for(const auto& line:lines) if(line.name==name) return line.how;
+        return std::string("(none)");
+    };
+    Check(how("Gesture melee")=="Punch away from your body with your primary controller."&&
+        how("Dual-wield reload")=="Shake a hand: reload that hand's gun."&&
+        how("Physical crouch")=="Physically duck your head in real space to crouch."&&
+        how("D-pad")=="Hold the left controller to your head and push its thumbstick the way you want the D-pad pressed.",
+        "the gestures, as set");
+    gestures.meleeNeedsGrip=gestures.meleeOffHand=true;
+    gestures.dpadHand=1;
+    lines=GestureLines(setup,gestures);
+    Check(how("Gesture melee")=="Grip either controller and punch away from your body."&&
+        how("D-pad")=="Hold the right controller to your head and push the left thumbstick the way you want the D-pad pressed.",
+        "melee by either hand with a grip, and the D-pad at the right hand");
+    setup.game=GameTitle::HaloReach;
+    lines=GestureLines(setup,gestures);
+    Check(how("Dual-wield reload")=="(none)","no dual-wield reload where the game has no dual wielding");
+    setup.game=GameTitle::HaloCE;
+    lines=GestureLines(setup,gestures);
+    Check(how("D-pad").find("left controller")!=std::string::npos,"Halo CE takes the left hand for the D-pad");
+    setup.game=GameTitle::Halo3;
+    gestures.physicalCrouch=false;
+    lines=GestureLines(setup,gestures);
+    Check(how("Physical crouch")=="(none)","a gesture that is off is not listed");
 }
 }
 
@@ -148,7 +170,7 @@ int main()
     CheckDefaults();
     CheckHandsAndChords();
     CheckLayout();
-    CheckOtherRoles();
+    CheckBuiltInsAndGestures();
     std::printf("Controls diagram: %u checks passed\n",checks);
     return 0;
 }

@@ -172,24 +172,32 @@ void DrawControlsDiagram()
                          ImGui::GetWindowPos().y + ImGui::GetWindowSize().y - ImGui::GetStyle().WindowPadding.y);
     const float x0 = areaMin.x, x1 = areaMax.x;
 
-    // Under the diagram: what the grips and the body do that no callout shows, as set (OtherRoles).
+    // What no row maps, as the settings have it: each control's built-in jobs in grey boxes, the gestures under the
+    // diagram.
     Gestures gestures{};
     gestures.twoHanded = g_config.two_handed_aim;
     gestures.holsters = g_config.weapon_holsters;
     gestures.holsterLocation = g_config.weapon_holster_location;
     gestures.manualReload = g_config.manual_reload;
     gestures.gestureMelee = g_config.gesture_melee;
+    gestures.meleeNeedsGrip = g_config.gesture_melee_require_grip;
+    gestures.meleeOffHand = g_config.gesture_melee_off_hand;
     gestures.physicalMelee = g_config.physical_melee;
     gestures.shakeReload = g_config.dual_wield_shake_reload;
     gestures.physicalCrouch = g_config.physical_crouch;
     gestures.physicalRunning = g_config.physical_running;
     gestures.dpadHand = g_config.dpad_hand;
-    const auto roles = OtherRoles(setup, gestures);
+    const Labels builtIns = BuiltIns(setup, gestures);
+    const auto gestureLines = GestureLines(setup, gestures);
     const float bullet = ImGui::GetFontSize();
-    const float notesWrap = (x1 - x0) - bullet;
+    // Each gesture: its name, then what to do, wrapped beside the name.
+    const auto gestureName = [](const GestureLine& line) { return line.name + " - "; };
+    const auto gestureWrap = [&](const GestureLine& line) {
+        return (x1 - x0) - bullet - ImGui::CalcTextSize(gestureName(line).c_str()).x;
+    };
     float notesHeight = ImGui::GetFontSize() + 6.0f;
-    for (const auto& line : roles)
-        notesHeight += ImGui::CalcTextSize(line.c_str(), nullptr, false, notesWrap).y + 3.0f;
+    for (const auto& line : gestureLines)
+        notesHeight += ImGui::CalcTextSize(line.how.c_str(), nullptr, false, gestureWrap(line)).y + 3.0f;
 
     // The diagram: the two controllers side by side, each control's callout on its own controller's outer side, and
     // each action in a callout a box of its own.
@@ -220,10 +228,11 @@ void DrawControlsDiagram()
             callout.anchor = TouchAnchor(control, left ? leftOrigin : rightOrigin, scale);
             callout.titleHeight = ImGui::GetFontSize();
             float height = pad + callout.titleHeight;
-            if (labels[c].empty())
+            if (labels[c].empty() && builtIns[c].empty())
                 height += chipGap + ImGui::GetFontSize();
-            for (const auto& line : labels[c])
-                height += chipGap + ImGui::CalcTextSize(line.c_str(), nullptr, false, chipWrap).y + 2.0f * chipPad;
+            for (const auto* lines : {&builtIns[c], &labels[c]})
+                for (const auto& line : *lines)
+                    height += chipGap + ImGui::CalcTextSize(line.c_str(), nullptr, false, chipWrap).y + 2.0f * chipPad;
             height += pad;
             const float x = left ? x0 : x1 - calloutWidth;
             callout.min = {x, callout.anchor.y - height * 0.5f};
@@ -314,35 +323,41 @@ void DrawControlsDiagram()
         ImVec2 at(callout.min.x + pad, callout.min.y + pad);
         draw->AddText(at, ImGui::GetColorU32(Rgb(kAccent)), kControlNames[c]);
         at.y += callout.titleHeight;
-        if (labels[c].empty())
+        if (labels[c].empty() && builtIns[c].empty())
         {
             at.y += chipGap;
             draw->AddText(at, ImGui::GetColorU32(Rgb(kTextDim)), "No mapping");
         }
-        // Each action in its own box, so one never runs into the next.
-        for (const auto& line : labels[c])
-        {
+        // Each action in its own box, so one never runs into the next: the built-in jobs first, in grey, then the
+        // mapped actions.
+        const auto chip = [&](const std::string& line, bool builtIn) {
             at.y += chipGap;
             const float textHeight = ImGui::CalcTextSize(line.c_str(), nullptr, false, chipWrap).y;
             const ImVec2 chipMax(callout.max.x - pad, at.y + textHeight + 2.0f * chipPad);
-            draw->AddRectFilled(at, chipMax, ImGui::GetColorU32(Rgb(on ? kSelected : kRaised)), 4.0f);
+            const ImVec4 fill = builtIn ? Rgb(0x2C3439) : Rgb(on ? kSelected : kRaised);
+            draw->AddRectFilled(at, chipMax, ImGui::GetColorU32(fill), 4.0f);
             draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(at.x + chipPad, at.y + chipPad),
-                          ImGui::GetColorU32(Rgb(kTextMain)), line.c_str(), nullptr, chipWrap);
+                          ImGui::GetColorU32(builtIn ? Rgb(0xB9C4C9) : Rgb(kTextMain)), line.c_str(), nullptr, chipWrap);
             at.y = chipMax.y;
-        }
+        };
+        for (const auto& line : builtIns[c]) chip(line, true);
+        for (const auto& line : labels[c]) chip(line, false);
     }
 
-    // The other jobs, under the diagram and the callouts.
+    // The gestures, under the diagram and the callouts.
     ImVec2 at(x0, std::max(areaMax.y - notesHeight, lowest + 14.0f));
     draw->AddLine(ImVec2(x0, at.y - 6.0f), ImVec2(x1, at.y - 6.0f), ImGui::GetColorU32(Rgb(kSeparator)));
-    draw->AddText(at, ImGui::GetColorU32(Rgb(kAccent)), "Not shown above");
+    draw->AddText(at, ImGui::GetColorU32(Rgb(kAccent)), "Gestures");
     at.y += ImGui::GetFontSize() + 6.0f;
-    for (const auto& line : roles)
+    for (const auto& line : gestureLines)
     {
+        const std::string name = gestureName(line);
+        const float nameWidth = ImGui::CalcTextSize(name.c_str()).x;
         draw->AddCircleFilled(ImVec2(at.x + bullet * 0.35f, at.y + bullet * 0.5f), 2.5f, ImGui::GetColorU32(Rgb(kTextDim)));
-        draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(at.x + bullet, at.y),
-                      ImGui::GetColorU32(Rgb(kTextMain)), line.c_str(), nullptr, notesWrap);
-        at.y += ImGui::CalcTextSize(line.c_str(), nullptr, false, notesWrap).y + 3.0f;
+        draw->AddText(ImVec2(at.x + bullet, at.y), ImGui::GetColorU32(Rgb(kAccentHot)), name.c_str());
+        draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(at.x + bullet + nameWidth, at.y),
+                      ImGui::GetColorU32(Rgb(kTextMain)), line.how.c_str(), nullptr, gestureWrap(line));
+        at.y += ImGui::CalcTextSize(line.how.c_str(), nullptr, false, gestureWrap(line)).y + 3.0f;
     }
     ImGui::PopFont();
 }
