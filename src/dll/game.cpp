@@ -3149,6 +3149,12 @@ namespace
     HudDrawWidgetFn g_realHudDrawWidget = nullptr;
     HudPlaceFn g_realHudPlace = nullptr;
     thread_local bool g_insideHudDrawWidget = false;
+    // Project Reclaimer 0.10 opens the class gate (the install below) without its byte patch: halo3.dll's own code never
+    // runs there. The client's version of the widget draw asks the playback check once, first, and uses the answer only
+    // for the crosshair's class. Inside a widget draw that one call is answered yes, which is what the opened gate does.
+    GameIsPlaybackFn g_realGameIsPlaybackGate = nullptr;
+    bool g_halo3LiftedClassGate = false;
+    thread_local bool t_halo3ClassGateAsk = false;
     // Identity of the crosshair art most recently captured, for ANY title.
     // The compositor re-uploads the authored reticle only when this changes, so
     // a static crosshair costs no swapchain work at all.
@@ -3309,9 +3315,10 @@ namespace
         const bool hideHud=VR_HudHidden()&&g_enabled.load()&&VR_IsStereoEnabled()&&
             Game_MoveStickIsLocomotion();
         if(hideHud) ++hud_visibility::depth;
+        t_halo3ClassGateAsk = g_halo3LiftedClassGate;
         __try { g_realHudDrawWidget(userIndex, descriptor, widgetIndex,
                             useAlternatePath, drawState); }
-        __finally { if(hideHud) --hud_visibility::depth; }
+        __finally { if(hideHud) --hud_visibility::depth; t_halo3ClassGateAsk = false; }
         if (g_authoredReticleCaptureStarted)
         {
             // This widget's art was redirected into the authored texture, so
@@ -19418,6 +19425,25 @@ static constexpr bool kOdstMappedFpEnabled = false;
         }
     }
 
+    // Project Reclaimer 0.10's class gate (g_halo3LiftedClassGate): the widget draw's first ask answered yes.
+    __declspec(noinline) bool __fastcall GuardedGameIsPlaybackGateHook()
+    {
+        g_halo3CoreCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        __try
+        {
+            if (t_halo3ClassGateAsk)
+            {
+                t_halo3ClassGateAsk = false;
+                return true;
+            }
+            return g_realGameIsPlaybackGate();
+        }
+        __finally
+        {
+            g_halo3CoreCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+        }
+    }
+
     __declspec(noinline) void __fastcall GuardedHudDrawWidgetHook(int userIndex, void* descriptor,
                                       unsigned short widgetIndex,
                                       unsigned char useAlternatePath,
@@ -19472,6 +19498,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
     bool RemoveInstalledGameHooks()
     {
         g_halo3InstallReady.store(false, std::memory_order_release);
+        g_halo3LiftedClassGate = false;
         g_halo3WorldCollision.runtimeBoundsProven.store(false,std::memory_order_release);
         g_halo3WorldCollision.installed.store(false, std::memory_order_release);
         bool disabled = true;
@@ -19517,6 +19544,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 reinterpret_cast<const void*>(&GuardedHudPlaceHook),
                 reinterpret_cast<const void*>(&GuardedHudCrosshairVisibleHook),
                 reinterpret_cast<const void*>(&GuardedHudDrawWidgetHook),
+                reinterpret_cast<const void*>(&GuardedGameIsPlaybackGateHook),
                 reinterpret_cast<const void*>(&GuardedFpDriverHook),
                 reinterpret_cast<const void*>(&GuardedRenderViewHook)};
             const void* originals[]{reinterpret_cast<const void*>(g_realH3HudRecord),
@@ -19525,6 +19553,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 reinterpret_cast<const void*>(g_realHudPlace),
                 reinterpret_cast<const void*>(g_realHudCrosshairVisible),
                 reinterpret_cast<const void*>(g_realHudDrawWidget),
+                reinterpret_cast<const void*>(g_realGameIsPlaybackGate),
                 reinterpret_cast<const void*>(g_origFpDriver),
                 reinterpret_cast<const void*>(g_origRenderView)};
             if (!WaitForNativeDetourQuiescence(functions, originals,
@@ -20593,8 +20622,24 @@ static constexpr bool kOdstMappedFpEnabled = false;
                         if (hookReady)
                         {
                             DWORD oldProtect = 0;
-                            if (VirtualProtect(classGate, 2, PAGE_EXECUTE_READWRITE,
-                                               &oldProtect))
+                            // Project Reclaimer 0.10: the gate is opened by the playback check's hook instead
+                            // (g_halo3LiftedClassGate), which needs the draw hook to say when it asks.
+                            bool gateOpen = false;
+                            if (lifted::Active())
+                            {
+                                gateOpen = drawHookReady &&
+                                    MH_CreateHook(reinterpret_cast<void*>(playbackTarget),
+                                                  reinterpret_cast<void*>(&GuardedGameIsPlaybackGateHook),
+                                                  reinterpret_cast<void**>(&g_realGameIsPlaybackGate)) == MH_OK;
+                                if (gateOpen)
+                                {
+                                    RememberInstalledGameHook(reinterpret_cast<void*>(playbackTarget));
+                                    gateOpen = MH_QueueEnableHook(reinterpret_cast<void*>(playbackTarget)) == MH_OK;
+                                }
+                                g_halo3LiftedClassGate = gateOpen;
+                            }
+                            else if (VirtualProtect(classGate, 2, PAGE_EXECUTE_READWRITE,
+                                                    &oldProtect))
                             {
                                 classGate[0] = 0x90;
                                 classGate[1] = 0x90;
@@ -20603,20 +20648,32 @@ static constexpr bool kOdstMappedFpEnabled = false;
                                                       classGate, 2);
                                 DWORD ignored = 0;
                                 VirtualProtect(classGate, 2, oldProtect, &ignored);
+                                gateOpen = true;
+                            }
+                            if (gateOpen)
+                            {
                                 // The predicate is reached only with the gate open: watched from here on.
                                 Halo3HookWatchInstalled(Halo3Hook::HudCrosshairVisible, visibleTarget);
                                 if (drawHookReady)
                                     Halo3HookWatchInstalled(Halo3Hook::HudDrawWidget, hudElem);
                                 if (drawHookReady)
                                     LOG("M3: authored CHUD crosshair redirect active "
-                                        "at halo3.dll+0x%llX",
-                                        (unsigned long long)(hudElem - base));
+                                        "at halo3.dll+0x%llX%s",
+                                        (unsigned long long)(hudElem - base),
+                                        g_halo3LiftedClassGate ? " (Project Reclaimer 0.10: its class gate is "
+                                                                 "opened by the playback check's hook)" : "");
                                 else
                                     LOG("M3: CHUD class hider active but authored "
                                         "draw wrapper unavailable; using VR fallback");
                             }
                             else
                             {
+                                if (g_realGameIsPlaybackGate)
+                                {
+                                    MH_DisableHook(reinterpret_cast<void*>(playbackTarget));
+                                    MH_RemoveHook(reinterpret_cast<void*>(playbackTarget));
+                                    g_realGameIsPlaybackGate = nullptr;
+                                }
                                 if (drawHookReady)
                                 {
                                     MH_DisableHook(reinterpret_cast<void*>(hudElem));
