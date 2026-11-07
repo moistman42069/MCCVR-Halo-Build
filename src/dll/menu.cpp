@@ -143,7 +143,7 @@ namespace
         {"Status",        "What the mod is doing right now, and the switches you reach for mid-game."},
         {"Comfort",       "The flat screen you see in menus, and how head motion feels."},
         {"3D Theatre",    "A room-fixed stereo screen used only when the game locks the cinematic camera."},
-        {"Controls",      "Your control scheme: presets, button mappings, movement, turning and gestures."},
+        {"Controls",      "Your control scheme: presets, button mappings, movement, roomscale, turning, gestures and vibration."},
         {"Vehicles",      "First-person driving: sit in the seat instead of floating behind the vehicle."},
         {"Weapon & Aim",  "Gun placement, per-title calibration, muzzle alignment, and two-handed aiming."},
         {"Virtual Stock Lab", "Experimental virtual shoulder aiming and proximity release."},
@@ -767,8 +767,8 @@ namespace
         else if(!baselineFound&&!active.empty()&&std::find(saved.begin(),saved.end(),active)==saved.end())
             ImGui::TextDisabled("This preset's file is gone. Your settings stay as they are.");
         ImGui::PushStyleColor(ImGuiCol_Text,ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-        ImGui::TextWrapped("Saves your buttons, turning, movement, left-handed play, two-handed aiming, gestures, reload and "
-            "holsters (where they sit on you too), but not your weapon aim. "
+        ImGui::TextWrapped("Saves your buttons, turning, movement, roomscale, controller vibration, left-handed play, "
+            "two-handed aiming, gestures, reload and holsters (where they sit on you too), but not your weapon aim. "
             "Presets are files in Controls Presets beside halomccvr.cfg, so you can share them.");
         ImGui::PopStyleColor();
     }
@@ -1246,69 +1246,6 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (SectionHeader("Roomscale##section", ImGuiTreeNodeFlags_None))
-        {
-        changed |= ImGui::Checkbox("Roomscale body movement", &g_config.roomscale_movement);
-        ImGui::TextDisabled("Physical steps move your character while on foot. Walking follows your head.\n"
-            "Controller aiming is preserved. Enable head tracking and positional tracking.\n"
-            "The movement stick takes priority. Physical steps are retained and the body catches up once movement settles. "
-            "Recenter with F3 when needed.");
-        if (g_config.roomscale_movement)
-        {
-            // A/B: switches live; each switch starts the follow afresh from where you stand.
-            ImGui::Text("Follow:");
-            ImGui::SameLine();
-            changed |= ImGui::RadioButton("Hysteresis (A)", &g_config.roomscale_follow_law, 1);
-            ImGui::SameLine();
-            changed |= ImGui::RadioButton("Threshold (B)", &g_config.roomscale_follow_law, 0);
-            ImGui::TextDisabled(g_config.roomscale_follow_law
-                ? "Hysteresis: a lean under 3 cm never walks, the body brakes by letting go instead of backing up, "
-                  "and a distance you walked away during a tracking gap is still caught up."
-                : "Threshold: walks from 1.5 cm and brakes by reversing. Kept as it shipped in Alpha 0.6.0, "
-                  "for comparison.");
-            // The view recenter (roomscale_recenter_logic.h): three independent options, all on by default.
-            ImGui::Spacing();
-            {
-            SettingGroup recenter("Bring the view back over your character (steadier aim)");
-            changed |= ImGui::Checkbox("On a jump", &g_config.roomscale_recenter_jump);
-            if (g_config.roomscale_recenter_jump)
-                changed |= vr_menu::SliderFloat("Jump slide time", &g_config.roomscale_recenter_jump_s,
-                    roomscale_recenter::kMinSeconds, roomscale_recenter::kMaxSeconds, "%.2f s");
-            changed |= ImGui::Checkbox("When you start moving with the stick", &g_config.roomscale_recenter_move_start);
-            if (g_config.roomscale_recenter_move_start)
-                changed |= vr_menu::SliderFloat("Start-moving slide time", &g_config.roomscale_recenter_move_start_s,
-                    roomscale_recenter::kMinSeconds, roomscale_recenter::kMaxSeconds, "%.2f s");
-            changed |= ImGui::Checkbox("Gradually while moving with the stick", &g_config.roomscale_recenter_moving);
-            if (g_config.roomscale_recenter_moving)
-                changed |= vr_menu::SliderFloat("Slide speed while moving", &g_config.roomscale_recenter_moving_speed,
-                    roomscale_recenter::kMinSpeed, roomscale_recenter::kMaxSpeed, "%.2f m/s");
-            ImGui::TextDisabled(
-                "In the air, and while the stick moves you, your character cannot step under your head, "
-                "so your view sits away from where the game aims and shoots from. These slide the view back "
-                "over the character while that motion hides it. They never turn the view or change your "
-                "height, and your hands and reticle move with it.\n"
-                "On a jump / when you start moving: one quick slide, over the time you set.\n"
-                "Gradually while moving: a steady slide at the speed you set, for as long as the stick is "
-                "held. It need not finish: once you stand still, your legs walk to you as before.");
-            }
-        }
-        }
-        if (SectionHeader("Controller vibration##section", ImGuiTreeNodeFlags_None))
-        {
-        float hapticPercent = g_config.haptic_intensity * 100.0f;
-        if (vr_menu::SliderFloat("Controller vibration", &hapticPercent,
-                               0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_None))
-        {
-            g_config.haptic_intensity = hapticPercent / 100.0f;
-            if (g_config.haptic_intensity <= 0.0f)
-                VR_SetGameHaptics(0.0f);
-            changed = true;
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Adjust vibration strength; 0%% disables it.\n"
-                              "Supported weapon feedback follows the holding hand, sharing recoil while supporting the gun.\n"
-                              "Damage and vehicle feedback can use both controllers.");
-        }
         if (SectionHeader("Sound##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Sound follows your head", &g_config.audio_follows_head);
@@ -1480,6 +1417,69 @@ namespace
             "right stick down toggling Crouch, and right stick up held for Sprint (Reach: your armor ability; Halo 3: "
             "your equipment; ODST: VISR). Needs MCC's hold-to-crouch setting.");
         ImGui::Spacing();
+        }
+        if (SectionHeader("Roomscale##section", ImGuiTreeNodeFlags_None))
+        {
+        changed |= ImGui::Checkbox("Roomscale body movement", &g_config.roomscale_movement);
+        ImGui::TextDisabled("Physical steps move your character while on foot. Walking follows your head.\n"
+            "Controller aiming is preserved. Enable head tracking and positional tracking.\n"
+            "The movement stick takes priority. Physical steps are retained and the body catches up once movement settles. "
+            "Recenter with F3 when needed.");
+        if (g_config.roomscale_movement)
+        {
+            // A/B: switches live; each switch starts the follow afresh from where you stand.
+            ImGui::Text("Follow:");
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("Hysteresis (A)", &g_config.roomscale_follow_law, 1);
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("Threshold (B)", &g_config.roomscale_follow_law, 0);
+            ImGui::TextDisabled(g_config.roomscale_follow_law
+                ? "Hysteresis: a lean under 3 cm never walks, the body brakes by letting go instead of backing up, "
+                  "and a distance you walked away during a tracking gap is still caught up."
+                : "Threshold: walks from 1.5 cm and brakes by reversing. Kept as it shipped in Alpha 0.6.0, "
+                  "for comparison.");
+            // The view recenter (roomscale_recenter_logic.h): three independent options, all on by default.
+            ImGui::Spacing();
+            {
+            SettingGroup recenter("Bring the view back over your character (steadier aim)");
+            changed |= ImGui::Checkbox("On a jump", &g_config.roomscale_recenter_jump);
+            if (g_config.roomscale_recenter_jump)
+                changed |= vr_menu::SliderFloat("Jump slide time", &g_config.roomscale_recenter_jump_s,
+                    roomscale_recenter::kMinSeconds, roomscale_recenter::kMaxSeconds, "%.2f s");
+            changed |= ImGui::Checkbox("When you start moving with the stick", &g_config.roomscale_recenter_move_start);
+            if (g_config.roomscale_recenter_move_start)
+                changed |= vr_menu::SliderFloat("Start-moving slide time", &g_config.roomscale_recenter_move_start_s,
+                    roomscale_recenter::kMinSeconds, roomscale_recenter::kMaxSeconds, "%.2f s");
+            changed |= ImGui::Checkbox("Gradually while moving with the stick", &g_config.roomscale_recenter_moving);
+            if (g_config.roomscale_recenter_moving)
+                changed |= vr_menu::SliderFloat("Slide speed while moving", &g_config.roomscale_recenter_moving_speed,
+                    roomscale_recenter::kMinSpeed, roomscale_recenter::kMaxSpeed, "%.2f m/s");
+            ImGui::TextDisabled(
+                "In the air, and while the stick moves you, your character cannot step under your head, "
+                "so your view sits away from where the game aims and shoots from. These slide the view back "
+                "over the character while that motion hides it. They never turn the view or change your "
+                "height, and your hands and reticle move with it.\n"
+                "On a jump / when you start moving: one quick slide, over the time you set.\n"
+                "Gradually while moving: a steady slide at the speed you set, for as long as the stick is "
+                "held. It need not finish: once you stand still, your legs walk to you as before.");
+            }
+        }
+        }
+        if (SectionHeader("Controller vibration##section", ImGuiTreeNodeFlags_None))
+        {
+        float hapticPercent = g_config.haptic_intensity * 100.0f;
+        if (vr_menu::SliderFloat("Controller vibration", &hapticPercent,
+                               0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_None))
+        {
+            g_config.haptic_intensity = hapticPercent / 100.0f;
+            if (g_config.haptic_intensity <= 0.0f)
+                VR_SetGameHaptics(0.0f);
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Adjust vibration strength; 0%% disables it.\n"
+                              "Supported weapon feedback follows the holding hand, sharing recoil while supporting the gun.\n"
+                              "Damage and vehicle feedback can use both controllers.");
         }
         if (SectionHeader("VR turning (right controller stick)##section", ImGuiTreeNodeFlags_None))
         {

@@ -3,6 +3,7 @@
 #include "../src/dll/native_vr_actions.h"
 #include "../src/common/config.h"
 #include "../src/common/input_preset.h"
+#include "../src/common/roomscale_recenter_logic.h"
 #include "../src/common/weapon_interaction_logic.h"
 #include "../src/common/scope_action_input.h"
 #include "../src/common/physical_crouch_input.h"
@@ -256,6 +257,22 @@ void CheckInputPresets()
         "a preset keeps left-handed play, two-handed aiming, the support hand's grip and the crouch depth");
     Check(twoHandLoaded.left_hand_forward_m==Config{}.left_hand_forward_m,
         "the left hand's forward offset, saved for each game, stays out of a preset");
+    Config body{};
+    body.roomscale_movement=!body.roomscale_movement;body.roomscale_follow_law=0;body.roomscale_recenter_moving=false;
+    body.roomscale_recenter_jump_s=.5f;body.haptic_intensity=.3f;body.reclaimer_flight_buttons=false;
+    Config bodyLoaded{};
+    input_preset::Parse(input_preset::Serialize(body).c_str(),bodyLoaded);
+    Check(bodyLoaded.roomscale_movement==body.roomscale_movement&&bodyLoaded.roomscale_follow_law==0&&
+        !bodyLoaded.roomscale_recenter_moving&&std::fabs(bodyLoaded.roomscale_recenter_jump_s-.5f)<.002f&&
+        std::fabs(bodyLoaded.haptic_intensity-.3f)<.002f&&!bodyLoaded.reclaimer_flight_buttons,
+        "a preset keeps roomscale, controller vibration and Project Reclaimer flying");
+    Config wild{};
+    input_preset::Parse("roomscale_follow_law = 7\nhaptic_intensity = 5\nroomscale_recenter_jump_s = 90\n"
+        "roomscale_recenter_moving_speed = -4\n",wild);
+    Check(wild.roomscale_follow_law==1&&wild.haptic_intensity==1.f&&
+        wild.roomscale_recenter_jump_s==roomscale_recenter::kMaxSeconds&&
+        wild.roomscale_recenter_moving_speed==roomscale_recenter::kMinSpeed,
+        "a preset's roomscale and vibration values are kept within their ranges");
     Config kept{};
     kept.world_scale=2.f;
     input_preset::CopyScheme(kept,scheme);

@@ -1,6 +1,7 @@
 #include "input_preset.h"
 #include "log.h"
 #include "weapon_interaction_logic.h"
+#include "roomscale_recenter_logic.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -54,11 +55,17 @@ constexpr BoolField kBools[] = {
     {"dual_wield_shake_reload", &Config::dual_wield_shake_reload},
     {"weapon_needler_shake", &Config::weapon_needler_shake},
     {"reclaimer_flight_buttons", &Config::reclaimer_flight_buttons},
+    // Roomscale body movement and how the view is brought back over the character.
+    {"roomscale_movement", &Config::roomscale_movement},
+    {"roomscale_recenter_jump", &Config::roomscale_recenter_jump},
+    {"roomscale_recenter_move_start", &Config::roomscale_recenter_move_start},
+    {"roomscale_recenter_moving", &Config::roomscale_recenter_moving},
 };
 constexpr IntField kInts[] = {
     {"dpad_hand", &Config::dpad_hand},
     {"weapon_holster_location", &Config::weapon_holster_location},
     {"weapon_pouch_location", &Config::weapon_pouch_location},
+    {"roomscale_follow_law", &Config::roomscale_follow_law},
 };
 constexpr FloatField kFloats[] = {
     {"gesture_melee_speed", &Config::gesture_melee_speed},
@@ -92,6 +99,10 @@ constexpr FloatField kFloats[] = {
     {"weapon_pouch_offset_x_m", &Config::weapon_pouch_offset_x_m},
     {"weapon_pouch_offset_y_m", &Config::weapon_pouch_offset_y_m},
     {"weapon_pouch_offset_z_m", &Config::weapon_pouch_offset_z_m},
+    {"roomscale_recenter_jump_s", &Config::roomscale_recenter_jump_s},
+    {"roomscale_recenter_move_start_s", &Config::roomscale_recenter_move_start_s},
+    {"roomscale_recenter_moving_speed", &Config::roomscale_recenter_moving_speed},
+    {"haptic_intensity", &Config::haptic_intensity},
 };
 
 std::filesystem::path Folder()
@@ -289,6 +300,16 @@ void Parse(const char* text, Config& out)
             vr_mapping::ConvertSettingsToInputs(out.vr_inputs[title], static_cast<GameTitle>(title + 1), stick, gunZoom,
                                                 airEquipment);
     if (inputsVersion < 2 && !yb) out.vr_mod_bindings[vr_mapping::Pause] = {};
+    // Within the ranges halomccvr.cfg keeps them in.
+    const Config defaults{};
+    out.roomscale_follow_law = out.roomscale_follow_law != 0 ? 1 : 0;
+    out.roomscale_recenter_jump_s = roomscale_recenter::ClampSeconds(out.roomscale_recenter_jump_s,
+        defaults.roomscale_recenter_jump_s);
+    out.roomscale_recenter_move_start_s = roomscale_recenter::ClampSeconds(out.roomscale_recenter_move_start_s,
+        defaults.roomscale_recenter_move_start_s);
+    out.roomscale_recenter_moving_speed = roomscale_recenter::ClampSpeed(out.roomscale_recenter_moving_speed,
+        defaults.roomscale_recenter_moving_speed);
+    out.haptic_intensity = std::clamp(out.haptic_intensity, 0.0f, 1.0f);
 }
 
 std::string DescriptionLine(const std::string& description)
