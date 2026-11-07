@@ -154,8 +154,8 @@ void DrawControlsDiagram()
     ImGui::TextColored(Rgb(kAccent), "Control Configuration Summary");
     ImGui::PopFont();
     ImGui::PushTextWrapPos(0.0f);
-    ImGui::TextDisabled("Visual summary of your current configuration for: %s. Updates live as you change control options "
-                        "in the main panel.", weapon_interaction::kTitleNames[title]);
+    ImGui::TextDisabled("Visual summary of your current configuration for: %s.", weapon_interaction::kTitleNames[title]);
+    ImGui::TextDisabled("Updates live as you change control options in the main panel.");
     ImGui::PopTextWrapPos();
     if (!g_config.vr_action_mapping)
         ImGui::TextDisabled("Remap buttons is off: buttons are the game's own.");
