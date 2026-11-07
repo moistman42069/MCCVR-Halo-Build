@@ -16,6 +16,10 @@
 //     site is not found, only the navpoint list's acts. The projection's other callers (aim points, damage
 //     indicators, name tags and the rest: reach_nav_marker_logic.h) keep the game's own ring and are counted
 //     by reason;
+//   * OUTSIDE AN EYE'S RENDER (part 3): the HUD update's off-screen tests. When the CHUD site gives their camera
+//     the head (reach_nav_markers.inl), the object markers' call and the world-point test's call get the head's
+//     ring as well (the field both eyes see, as the last eye render worked it out), so a test says "off screen"
+//     exactly where the draw puts the arrow;
 //   * what is written: twelve bytes of the caller's record before the call and the same twelve after it (the
 //     game's own point again, in a __finally), plus the record's off-screen float. Nothing else;
 //   * every projection lands in exactly one counted verdict (reach_nav_markers::Ring); only Moved writes.
@@ -47,6 +51,12 @@ struct ReachNavProjectionRuntime
     // Where the object markers' call of the projection returns (the anchor producer's wrapper); 0 = not found
     // on this image, and those markers keep the game's own ring. Decoded at install, before the hook is enabled.
     uintptr_t objectMarkerReturn = 0;
+    // Where the HUD update's world-point off-screen test calls the projection (part 3); 0 = not found on this
+    // image, and that test keeps the game's ring about the head's axis. Decoded at install.
+    uintptr_t offscreenTestReturn = 0;
+    // The field both eyes see, as the last eye render worked it out (radians; 0 = none yet): the head's ring for
+    // the off-screen tests, which run outside an eye's render.
+    std::atomic<float> sharedYaw{0.0f}, sharedPitch{0.0f};
     std::atomic<bool> enabled{false};
     std::atomic<uint32_t> callbacks{0};
     // The window the report drains: every projection lands in exactly one of these. The render thread.
@@ -157,19 +167,40 @@ __declspec(noinline) reach_nav_markers::Ring ReachNavRingBefore(void* record, in
                               g_reachOwnerScope.active;
         auto* bytes = static_cast<uint8_t*>(record);
         const bool valid = bytes[0] != 0;
+        // Part 3: outside an eye's render, an off-screen test whose camera is getting the head this call
+        // (reach_nav_markers.inl) gets the head's ring too, so it says "off screen" where the draw puts the arrow.
+        const ReachNavTestHead& test = g_reachNavTestHead;
+        const bool testHead = !eyeScope && test.decided && test.use == head_relative::Use::Ok;
         Camera head;
         RingField ring, shared;
         bool haveField = false;
         float point[3]{};
-        if (switchOn && eyeScope && user == 0 && valid && wantsRing && fromNavpoints && !worldPitch)
+        if (switchOn && (eyeScope || testHead) && user == 0 && valid && wantsRing && fromNavpoints && !worldPitch)
         {
             memcpy(point, bytes + feature.sites.recordPoint, sizeof(point));
-            ReachNavHeadCamera(head);
-            haveField = ReachNavHeadRing(fraction, ring, shared);
+            if (eyeScope)
+            {
+                ReachNavHeadCamera(head);
+                haveField = ReachNavHeadRing(fraction, ring, shared);
+                if (haveField)
+                {
+                    feature.sharedYaw.store(shared.halfYaw, std::memory_order_relaxed);
+                    feature.sharedPitch.store(shared.halfPitch, std::memory_order_relaxed);
+                }
+            }
+            else
+            {
+                head = test.head;
+                shared.halfYaw = feature.sharedYaw.load(std::memory_order_relaxed);
+                shared.halfPitch = feature.sharedPitch.load(std::memory_order_relaxed);
+                haveField = shared.halfYaw > 0.0f && shared.halfPitch > 0.0f;
+                if (haveField)
+                    ring = HeadRing(shared, fraction);
+            }
         }
         RingMove move;
-        what = RingPoint(switchOn, eyeScope, user, valid, wantsRing != 0, fromNavpoints, worldPitch != 0, head,
-                         haveField, ring, point, move);
+        what = RingPoint(switchOn, eyeScope || testHead, user, valid, wantsRing != 0, fromNavpoints,
+                         worldPitch != 0, head, haveField, ring, point, move);
         if (what == Ring::Moved)
         {
             memcpy(call.point, point, sizeof(call.point));
@@ -415,26 +446,41 @@ __declspec(noinline) void __fastcall ReachNavProjectionDetour(void* record, int 
             return;
         ReachNavRingCall call;
         const bool enabled = record && feature.enabled.load(std::memory_order_acquire);
-        if (enabled)
-        {
-#if HALOMCCVR_DEV_DIAGNOSTICS
-            ReachNavNoteCaller(caller, ring != 0);
-#endif
-            (void)ReachNavRingBefore(record, user, ring, worldPitch,
-                                     caller == feature.navpointReturn ||
-                                         (feature.objectMarkerReturn && caller == feature.objectMarkerReturn),
-                                     call);
-        }
+        // Part 3: outside an eye's render, the head this call's camera will get is decided once, here, so the
+        // ring below and the CHUD site's camera agree.
+        const bool offEye = enabled && !ReachNavInEye();
+        if (offEye)
+            ReachNavTestHeadBegin();
         bool completed = false;
         __try
         {
-            CallNativeWithSpareSlots(original, record, user, ring, behind, worldPitch);
-            completed = true;
+            if (enabled)
+            {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                ReachNavNoteCaller(caller, ring != 0);
+#endif
+                (void)ReachNavRingBefore(
+                    record, user, ring, worldPitch,
+                    caller == feature.navpointReturn ||
+                        (feature.objectMarkerReturn && caller == feature.objectMarkerReturn) ||
+                        (feature.offscreenTestReturn && caller == feature.offscreenTestReturn),
+                    call);
+            }
+            __try
+            {
+                CallNativeWithSpareSlots(original, record, user, ring, behind, worldPitch);
+                completed = true;
+            }
+            __finally
+            {
+                if (call.moved)
+                    ReachNavRingAfter(record, call, completed);
+            }
         }
         __finally
         {
-            if (call.moved)
-                ReachNavRingAfter(record, call, completed);
+            if (offEye)
+                ReachNavTestHeadEnd();
         }
 #if HALOMCCVR_DEV_DIAGNOSTICS
         // What the game drew: a point where it stands (its pixel against the eye's own picture), or an arrow
@@ -585,7 +631,25 @@ bool InstallReachNavProjection(uintptr_t base, size_t size, uint32_t generation)
                 "only: their call of the projection was %s on this image, so their arrows keep the game's own "
                 "ring; the navpoint list's stand-in is unaffected",
                 objectCall ? "not a call that lands on the projection" : "not found or ambiguous");
+        // Part 3: the HUD update's world-point off-screen test. Optional, its own pattern, the same proof.
+        const uintptr_t testCall = ReachHeadRelativeUnique(base, size, kOffscreenTestCallPattern);
+        uint8_t testBytes[kOffscreenTestCallBytes]{};
+        const bool testRead = ReachHeadRelativeRead(base, size, testCall, testBytes, kOffscreenTestCallBytes);
+        const int64_t testReturnRva = DecodeOffscreenTestCall(
+            testRead ? testBytes : nullptr, static_cast<int64_t>(testCall - base),
+            testRead ? ReachHeadRelativeFunctionRva(base, testCall) : -1, sites);
+        feature.offscreenTestReturn = testReturnRva > 0 ? base + static_cast<uintptr_t>(testReturnRva) : 0;
+        if (feature.offscreenTestReturn)
+            LOG("NAV MARKERS Reach (the off-screen ring): the HUD update's world-point off-screen test gets the head's "
+                "ring too: its call of the projection returns to haloreach.dll+0x%llX",
+                static_cast<unsigned long long>(testReturnRva));
+        else
+            LOG("NAV MARKERS Reach (the off-screen ring): the HUD update's world-point off-screen test keeps the "
+                "game's ring (its call was %s on this image); it still looks from the head",
+                testCall ? "not a call that lands on the projection" : "not found or ambiguous");
     }
+    feature.sharedYaw.store(0.0f, std::memory_order_relaxed);
+    feature.sharedPitch.store(0.0f, std::memory_order_relaxed);
     feature.reportedFirstMove = false;
     for (auto& count : feature.ring)
         count.store(0, std::memory_order_relaxed);
@@ -726,7 +790,8 @@ void ReportReachNavProjection()
             callersLength ? "; " : "", known ? "returning to haloreach.dll" : "another caller ",
             static_cast<unsigned long long>(known ? returns - feature.base : 0),
             known && returns == feature.navpointReturn ? " (the navpoint list)"
-                : known && returns == feature.objectMarkerReturn ? " (object markers)" : "", asked, plain);
+                : known && returns == feature.objectMarkerReturn ? " (object markers)"
+                : known && returns == feature.offscreenTestReturn ? " (off-screen test)" : "", asked, plain);
         if (wrote > 0)
             callersLength += wrote;
     }

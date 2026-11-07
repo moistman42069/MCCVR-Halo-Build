@@ -660,6 +660,14 @@ struct Config
     // Exercised in game with one marker only (a King of the Hill hill marker); marked players and name tags
     // are not. A title that has not bound this keeps its own behaviour (log: NAV MARKERS <title>).
     bool nav_markers_on_target = true;
+    // MARKERS FOLLOW THE HEAD, NOT THE GUN (reach_nav_marker_logic.h, part 3). Whether an objective marker is on
+    // screen (its marker) or off it (its arrow) is decided by the game outside the picture each eye is drawn
+    // with, from the game's own camera, which this mod points down the controller: a marker then showed only
+    // while the gun pointed at its objective. 1 = those decisions are made from the head of the last frame.
+    // 0 = the game's own camera, as before. Halo: Reach; Halo 4 (halo4_nav_marker_logic.h: its HUD places markers
+    // in its interface pass with the aim camera, and the head's is used there once that camera is proven to be
+    // the aim's at run time). Read live.
+    bool nav_markers_follow_head = true;
     // THE OFF-SCREEN ARROW STAYS IN VIEW (reach_nav_projection.inl). 1 = when a navpoint's target (an objective
     // marker, a marked player: by a static read) is out of view, the game's arrow for it is drawn on a ring about
     // the HEAD's axis, at most 30 degrees out, as one point in the world for both eyes. 0 = the game's own ring,

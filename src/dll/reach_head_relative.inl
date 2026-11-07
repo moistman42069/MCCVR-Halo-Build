@@ -21,6 +21,7 @@ struct ReachHeadPublication
 {
     std::atomic<uint32_t> sequence{0};
     std::atomic<float> forward[3]{}, up[3]{};
+    std::atomic<float> position[3]{};  // where the head camera was: the HUD's off-screen tests (reach_nav_markers.inl)
     std::atomic<uint64_t> stampUs{0};
     std::atomic<uint32_t> generation{0};
     std::atomic<uint32_t> flags{0};  // bit 0: the mod's head view was live; bit 1: a cinematic held the camera
@@ -28,12 +29,13 @@ struct ReachHeadPublication
 } g_reachHeadPublication;
 constexpr uint32_t kReachHeadLive = 1u, kReachHeadCinematic = 2u;
 
-// The render thread, once per committed head camera. `headCenter` is the committed compact camera (forward at
-// +0x0C, up at +0x18, in the game's world); `headLookApplied` is false in the cutscene theater, where the
-// camera is the authored one and the head did not steer it.
+// The render thread, once per committed head camera. `headCenter` is the committed compact camera (position at
+// +0x00, forward at +0x0C, up at +0x18, in the game's world); `headLookApplied` is false in the cutscene theater,
+// where the camera is the authored one and the head did not steer it.
 void ReachPublishHeadSample(const unsigned char* headCenter, bool headLookApplied, uint32_t generation) noexcept
 {
     auto& published = g_reachHeadPublication;
+    const float* position = reinterpret_cast<const float*>(headCenter + 0x00);
     const float* forward = reinterpret_cast<const float*>(headCenter + 0x0C);
     const float* up = reinterpret_cast<const float*>(headCenter + 0x18);
     const bool live = headLookApplied && generation && head_relative::Finite3(forward) && head_relative::Finite3(up);
@@ -46,6 +48,7 @@ void ReachPublishHeadSample(const unsigned char* headCenter, bool headLookApplie
     {
         published.forward[i].store(forward[i]);
         published.up[i].store(up[i]);
+        published.position[i].store(position[i]);
     }
     published.stampUs.store(nowUs);
     published.generation.store(generation);
@@ -56,7 +59,8 @@ void ReachPublishHeadSample(const unsigned char* headCenter, bool headLookApplie
 #endif
 }
 // Any thread. False = nothing coherent could be read (the writer was mid-write four times running).
-bool ReachReadHeadSample(head_relative::HeadSample& sample, bool& cinematic) noexcept
+// `position` (optional): where that head camera was.
+bool ReachReadHeadSample(head_relative::HeadSample& sample, bool& cinematic, float* position) noexcept
 {
     auto& published = g_reachHeadPublication;
     for (int attempt = 0; attempt < 4; ++attempt)
@@ -68,6 +72,8 @@ bool ReachReadHeadSample(head_relative::HeadSample& sample, bool& cinematic) noe
         {
             sample.forward[i] = published.forward[i].load();
             sample.up[i] = published.up[i].load();
+            if (position)
+                position[i] = published.position[i].load();
         }
         sample.stampUs = published.stampUs.load();
         sample.generation = published.generation.load();

@@ -1744,6 +1744,7 @@ void ConfigLoad(const wchar_t* path)
             continue;
         }
         if (!strcmp(key, "nav_markers_on_target")) { g_config.nav_markers_on_target = atoi(val) != 0; continue; }
+        if (!strcmp(key, "nav_markers_follow_head")) { g_config.nav_markers_follow_head = atoi(val) != 0; continue; }
         if (!strcmp(key, "nav_marker_arrow_in_view")) { g_config.nav_marker_arrow_in_view = atoi(val) != 0; continue; }
         if (!strcmp(key, "nav_marker_ring"))
         {
@@ -2717,6 +2718,11 @@ void ConfigSave()
     fprintf(f, "# untested (log: NAV MARKERS <game>). Live in F1 > HUD. (default %d)\n",
         d.nav_markers_on_target ? 1 : 0);
     fprintf(f, "nav_markers_on_target = %d\n", g_config.nav_markers_on_target ? 1 : 0);
+    fprintf(f, "# Markers follow your head, not your gun. 1 = whether an objective marker shows, or its\n");
+    fprintf(f, "# off-screen arrow does, depends on where you look. 0 = on where the gun points, as before.\n");
+    fprintf(f, "# Halo: Reach and Halo 4 (log: NAV MARKERS <game>). Live in F1 > HUD > Waypoints. (default %d)\n",
+        d.nav_markers_follow_head ? 1 : 0);
+    fprintf(f, "nav_markers_follow_head = %d\n", g_config.nav_markers_follow_head ? 1 : 0);
     fprintf(f, "# Off-screen arrows stay in view. 1 = when an objective marker or a marked player is out of\n");
     fprintf(f, "# view, its arrow is drawn on a ring around where your head faces, at most 30 degrees out, in\n");
     fprintf(f, "# one place for both eyes. 0 = the game's own ring, which is far enough out that only one eye\n");

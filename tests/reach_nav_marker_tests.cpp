@@ -611,9 +611,161 @@ void Sites()
           "an object-marker call in no function, or inside the projection itself, gives no caller");
     Check(DecodeObjectMarkerCall(objectCall.data(), kObjectCallRva, kObjectFunctionRva, ProjectionSites{}) == 0,
           "without a bound projection there is nothing for the object-marker call to land on");
+    // PART 3: THE HUD UPDATE'S WORLD-POINT OFF-SCREEN TEST (retail +0x2DB10F in +0x2DB0D8, returning to +0x2DB139).
+    Check(PatternBytes(kOffscreenTestCallPattern).size() == kOffscreenTestCallBytes &&
+              kOffscreenTestReturn == kOffscreenTestCallBytes && kOffscreenTestCall + 5 == kOffscreenTestReturn,
+          "the off-screen test's call is its pattern's last instruction");
+    Check(std::strcmp(kOffscreenTestCallPattern, kObjectMarkerCallPattern) != 0 &&
+              std::strcmp(kOffscreenTestCallPattern, kNavpointCallPattern) != 0,
+          "the off-screen test's call is its own pattern");
+    constexpr int64_t kTestCallRva = 0x2DB10F, kTestFunctionRva = 0x2DB0D8, kTestReturnRva = 0x2DB139;
+    std::vector<uint8_t> testCall = PatternBytes(kOffscreenTestCallPattern);
+    PutI32(testCall, kOffscreenTestCall + 1,
+           static_cast<int32_t>(kHeadRva - (kTestCallRva + static_cast<int64_t>(kOffscreenTestReturn))));
+    Check(DecodeOffscreenTestCall(testCall.data(), kTestCallRva, kTestFunctionRva, bound) == kTestReturnRva,
+          "retail's off-screen test call lands on the projection and returns to +0x2DB139");
+    Check(DecodeOffscreenTestCall(nullptr, kTestCallRva, kTestFunctionRva, bound) == 0 &&
+              DecodeOffscreenTestCall(testCall.data(), 0, kTestFunctionRva, bound) == 0,
+          "a missing or ambiguous off-screen test call gives no caller");
+    {
+        std::vector<uint8_t> wrong = testCall;
+        wrong[kOffscreenTestCall] = 0xE9;
+        Check(DecodeOffscreenTestCall(wrong.data(), kTestCallRva, kTestFunctionRva, bound) == 0,
+              "an off-screen test site that jumps instead of calling gives no caller");
+        for (int32_t off : {-5, -1, 1, 0x10})
+        {
+            wrong = testCall;
+            PutI32(wrong, kOffscreenTestCall + 1,
+                   static_cast<int32_t>(kHeadRva + off - (kTestCallRva + static_cast<int64_t>(kOffscreenTestReturn))));
+            Check(DecodeOffscreenTestCall(wrong.data(), kTestCallRva, kTestFunctionRva, bound) == 0,
+                  "an off-screen test call that lands anywhere but the projection's head gives no caller");
+        }
+    }
+    Check(DecodeOffscreenTestCall(testCall.data(), kTestCallRva, -1, bound) == 0 &&
+              DecodeOffscreenTestCall(testCall.data(), kTestCallRva, kHeadRva, bound) == 0 &&
+              DecodeOffscreenTestCall(testCall.data(), kTestCallRva, kTestFunctionRva, ProjectionSites{}) == 0,
+          "an off-screen test call in no function, inside the projection, or with nothing bound gives no caller");
     for (int why = 0; why < static_cast<int>(ProjectionBind::Count); ++why)
         Check(ProjectionBindName(static_cast<ProjectionBind>(why))[0] != '?', "every refusal has a name for the log");
     Check(kRingFraction == 0.3f && kOffscreenFloor == 0.0001f, "the game's own ring numbers");
+}
+
+void SessionEyes(EyeField eyes[2], float cantDeg);
+
+// PART 3: the HUD update's off-screen tests look from the head. The verdict on using the head, and what the camera
+// written at the CHUD site makes of a test.
+void OffscreenTests()
+{
+    const uint32_t generation = 7;
+    const uint64_t now = 10'000'000;
+    head_relative::HeadSample sample;
+    sample.valid = true;
+    sample.generation = generation;
+    sample.stampUs = now - 20'000;
+    const Camera live = Head(30.0f, 0.0f, 0.0f, 1.0f, 2.0f, 3.0f, kGameFov);
+    for (int i = 0; i < 3; ++i)
+    {
+        sample.forward[i] = live.forward[i];
+        sample.up[i] = live.up[i];
+    }
+    using head_relative::Use;
+    Check(TestHeadUse(true, true, true, false, sample, live.position, generation, now) == Use::Ok,
+          "a live, fresh head of this load is used");
+    Check(TestHeadUse(false, true, true, false, sample, live.position, generation, now) == Use::SwitchOff,
+          "the switch off: the game's own camera");
+    Check(TestHeadUse(true, false, true, false, sample, live.position, generation, now) == Use::NotGameplay &&
+              TestHeadUse(true, true, false, false, sample, live.position, generation, now) == Use::NotGameplay &&
+              TestHeadUse(true, true, true, true, sample, live.position, generation, now) == Use::NotGameplay,
+          "no stereo core, no coherent read, or a cutscene: the game's own camera");
+    {
+        head_relative::HeadSample stale = sample;
+        stale.stampUs = now - head_relative::kMaxSampleAgeUs - 1;
+        Check(TestHeadUse(true, true, true, false, stale, live.position, generation, now) == Use::Stale,
+              "a head older than the age limit is not this frame's");
+        head_relative::HeadSample other = sample;
+        other.generation = generation + 1;
+        Check(TestHeadUse(true, true, true, false, other, live.position, generation, now) == Use::OtherGeneration,
+              "a head from another load of the title is refused");
+        head_relative::HeadSample dead = sample;
+        dead.valid = false;
+        Check(TestHeadUse(true, true, true, false, dead, live.position, generation, now) == Use::NoSample,
+              "a frame whose head view was not live gives no head");
+        const float nowhere[3]{std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f};
+        Check(TestHeadUse(true, true, true, false, sample, nowhere, generation, now) == Use::NoHeading,
+              "a head with no finite position is refused");
+    }
+    const Camera head = HeadCamera(sample, live.position);
+    Check(std::memcmp(head.position, live.position, sizeof(head.position)) == 0 &&
+              std::memcmp(head.forward, live.forward, sizeof(head.forward)) == 0 &&
+              std::memcmp(head.up, live.up, sizeof(head.up)) == 0,
+          "the head camera is the published position, forward and up");
+
+    // What the CHUD site writes: the compact layout, and the field of view only when it is one.
+    uint8_t camera[0x40];
+    std::memset(camera, 0xCD, sizeof(camera));
+    const float gameFov = kGameFov;
+    std::memcpy(camera + kCameraVerticalFovOffset, &gameFov, sizeof(gameFov));
+    WriteHeadCamera(camera, head, 0.0f);
+    float fov = 0.0f, forward[3]{}, position[3]{}, up[3]{};
+    std::memcpy(&fov, camera + kCameraVerticalFovOffset, sizeof(fov));
+    std::memcpy(position, camera + 0x00, sizeof(position));
+    std::memcpy(forward, camera + 0x0C, sizeof(forward));
+    std::memcpy(up, camera + 0x18, sizeof(up));
+    Check(fov == gameFov && std::memcmp(position, head.position, sizeof(position)) == 0 &&
+              std::memcmp(forward, head.forward, sizeof(forward)) == 0 && std::memcmp(up, head.up, sizeof(up)) == 0,
+          "with no usable field of view the game's stands; the head's pose is written");
+    Check(camera[0x24] == 0xCD && camera[0x2C] == 0xCD, "nothing beside the four fields is written");
+    WriteHeadCamera(camera, head, kEyeFov);
+    std::memcpy(&fov, camera + kCameraVerticalFovOffset, sizeof(fov));
+    Check(fov == kEyeFov, "with part 1's switch on, the eye's field of view");
+
+    // THE REPORT ON THE MODEL. The head faces 30 degrees to the left of the gun (yaw 30 against 0), the objective
+    // straight ahead of the head, 40 m away. The game's off-screen test with ITS camera (the aim) put it 30
+    // degrees to the side: past the game's own ring sideways at the flat field of view (0.3 of the vertical field
+    // times the aspect), so the HUD showed the off-screen arrow while the player looked straight at it, and only
+    // pointing the gun at it brought the marker back. With the head it is on its point.
+    const Camera gun = Head(0.0f, 0.0f, 0.0f, 1.0f, 2.0f, 3.0f, kGameFov);
+    float objective[3];
+    PointAt(live, 0.0f, 0.0f, 40.0f / 0.3048f, objective);
+    const float aspect = kWidth / kHeight;
+    float yaw = 0.0f, pitch = 0.0f;
+    Check(RingAngles(gun, objective, yaw, pitch) && RingRatio(GameRing(kGameFov, aspect), yaw, pitch) > 1.0f,
+          "from the gun, an objective the head looks straight at is off screen");
+    Check(RingAngles(head, objective, yaw, pitch) && RingRatio(GameRing(kGameFov, aspect), yaw, pitch) < 1.0e-3f,
+          "from the head, it is in the middle of the view");
+    // And the other way round: the gun on the objective, the head 90 degrees away. From the gun the marker was on
+    // screen (drawn where the head cannot see it); from the head it is off screen, so the arrow is drawn.
+    const Camera away = Head(120.0f, 0.0f, 0.0f, 1.0f, 2.0f, 3.0f, kGameFov);
+    float ahead[3];
+    PointAt(live, 0.0f, 0.0f, 40.0f / 0.3048f, ahead);
+    Camera gunOnIt = live;
+    Check(RingAngles(gunOnIt, ahead, yaw, pitch) && RingRatio(GameRing(kGameFov, aspect), yaw, pitch) < 1.0f,
+          "from a gun pointed at it, the objective is on screen");
+    Check(RingAngles(away, ahead, yaw, pitch) && RingRatio(GameRing(kEyeFov, aspect), yaw, pitch) > 1.0f,
+          "from a head turned 90 degrees away it is off screen, even with the eye's wider field");
+
+    // With part 2's switch on, a test outside an eye's render is answered on the head's ring, the same verdict the
+    // draw reaches for the same head and point: off screen exactly where the arrow is drawn.
+    EyeField eyes[2];
+    SessionEyes(eyes, 0.0f);
+    RingField shared;
+    Check(SharedField(eyes, shared), "the session's eyes have a shared field");
+    const RingField ring = HeadRing(shared);
+    for (float side : {10.0f, 20.0f, 25.0f, 35.0f, 60.0f, 150.0f})
+    {
+        float target[3];
+        Camera turned = live;
+        Rotate(turned.forward, turned.up, -side * kDegToRad);
+        PointAt(turned, 0.0f, 0.0f, 40.0f / 0.3048f, target);
+        RingMove tested;
+        const Ring test = RingPoint(true, true, 0, true, true, true, false, head, true, ring, target, tested);
+        Check((side > ring.halfYaw * kRadToDeg) == (test == Ring::Moved),
+              "the test says off screen exactly beyond the head's ring");
+        if (test == Ring::Moved)
+            Check(tested.offscreen > 0.0f, "an off-screen test reads back an arrow's off-screen value");
+        else
+            Check(test == Ring::OnTarget, "inside the head's ring the test says on screen");
+    }
 }
 
 // The witness's arithmetic: the eye's own picture by its projection matrix agrees with the model by field of view.
@@ -1031,6 +1183,7 @@ int main()
     RingVerdicts();
     RingGeometry();
     RingNumbers();
+    OffscreenTests();
     FieldOfView();
     Magnified();
     Projection();

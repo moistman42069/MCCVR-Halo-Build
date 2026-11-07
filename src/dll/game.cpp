@@ -418,6 +418,7 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
 #include "halo4_cold_observation.h"
 #include "../common/halo4_head_relative_logic.h"
 #include "../common/halo4_sound_listener_logic.h"
+#include "../common/halo4_nav_marker_logic.h"
 #include "../common/odst_bringup_logic.h"
 #include "../common/odst_modded_fp_logic.h"
 #include "../common/odst_fp_map_probe.h"
@@ -2570,6 +2571,9 @@ namespace
     void ReportReachMuzzle();
     void ReportReachHeadRelative();  // reach_head_relative.inl: the motion tracker follows the head
     void ReportReachNavProjection(); // reach_nav_projection.inl: the marker projection's own hook
+    // reach_head_relative.inl: the head of the last committed frame, any thread; also read by the HUD's off-screen
+    // tests (reach_nav_markers.inl), which are defined before it.
+    bool ReachReadHeadSample(head_relative::HeadSample& sample, bool& cinematic, float* position = nullptr) noexcept;
     // Weapon-order diagnostic tranche: read-only semantic-primary
     // observations reusing the title readers below. Defined after those
     // readers; called from the FP interpolate/palette hooks above them.
@@ -26298,14 +26302,16 @@ static constexpr bool kOdstMappedFpEnabled = false;
             // accepted Reach 3D at risk, so it is never corrected.
             if (site == kReachObserverCameraWorldSite)
                 return;
-            if (!ReachOwnsHudStereoTransaction())
-                return;
-            const ReachFpCameraEyeScope& scope = g_reachFpCameraEyeScope;
-            if (!scope.active ||
-                scope.generation != g_reachCamera.generation)
+            if (!ReachNavInEye())
             {
+                // Outside an eye's render the marker projection serves the
+                // HUD update's on/off-screen tests: they get the head of the
+                // last committed frame instead of the aim (reach_nav_markers.inl).
+                if (site == kReachObserverCameraChudSite)
+                    ReachNavOffEyeCamera(static_cast<unsigned char*>(dst));
                 return;
             }
+            const ReachFpCameraEyeScope& scope = g_reachFpCameraEyeScope;
             // Destination and the cached head camera share the compact layout
             // exactly (proven by this function's own copy block), so this is a
             // straight three-field copy: position, forward, up. Field of view
@@ -45506,6 +45512,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
     #include "halo4_head_relative.inl"
     // The sound listener follows the head instead of the aim (the same evidence class, the same head sample).
     #include "halo4_sound_listener.inl"
+    // Objective markers and their arrows are placed from the head instead of the aim (the same evidence class).
+    #include "halo4_nav_markers.inl"
     // A Halo 4 seat's view is the mod's: the first-person seat override placed its camera, or a chase camera of the
     // vehicle camera file stood the eye at its own place (halo4_vehicle_cameras.inl, later). Either way the seat's
     // aim is the hand's as in the seat view: the game's own camera for the seat, which a write would swing round the
@@ -50736,6 +50744,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
         RemoveHalo4HudNote();   // posted only from inside the listener hook, drained below
         if(!RemoveHalo4SoundListener())
         { LOG("Halo 4 teardown: the head-relative sound listener hook needs cleanup retry; retaining native dependencies");return false; }
+        if(!RemoveHalo4NavMarkers())
+        { LOG("Halo 4 teardown: the head-relative marker hook needs cleanup retry; retaining native dependencies");return false; }
         const uint32_t generation =
             g_halo4Camera.generation.load(std::memory_order_acquire);
         // The module can stay resident across levels, so capability withdrawal
@@ -51182,6 +51192,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
         (void)InstallHalo4HeadRelative(base,size,generation);
         // The same for the sound listener: it binds or refuses on its own, and neither gates the other.
         (void)InstallHalo4SoundListener(base,size,generation);
+        // And for the HUD's objective markers: a refusal leaves the game's own placement.
+        (void)InstallHalo4NavMarkers(base,size,generation);
         // The vehicle camera note in the game's HUD messages (halo3_hud_note.inl): no hook of its own, it is posted
         // from the listener hook above; not bound, the note uses the mod's panel.
         (void)InstallHalo4HudNote(base,size,generation,g_halo4EngineTlsIndex,
@@ -51585,6 +51597,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         ReportHalo4Muzzle();
         ReportHalo4HeadRelative();
         ReportHalo4SoundListener();
+        ReportHalo4NavMarkers();
         ReportHalo4FireEye();
 #if HALOMCCVR_DEV_DIAGNOSTICS
         ReportHalo4AsSeen();

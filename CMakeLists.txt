@@ -1172,6 +1172,12 @@ if(BUILD_TESTING)
     add_executable(halomccvr_halo4_head_relative_tests tests/halo4_head_relative_tests.cpp)
     target_include_directories(halomccvr_halo4_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_halo4_head_relative_tests COMMAND halomccvr_halo4_head_relative_tests)
+    # Halo 4's objective markers are placed from the head (src/common/halo4_nav_marker_logic.h; a retail-derived
+    # lead, not H4EK-verified): the two sites' decoding and every refusal, the run-time proof that the HUD's marker
+    # camera is the aim, the verdicts, and the report on a pinhole model.
+    add_executable(halomccvr_halo4_nav_marker_tests tests/halo4_nav_marker_tests.cpp)
+    target_include_directories(halomccvr_halo4_nav_marker_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo4_nav_marker_tests COMMAND halomccvr_halo4_nav_marker_tests)
     # Halo 4's sound listener follows the head (src/common/halo4_sound_listener_logic.h; a retail-derived lead, not
     # H4EK-verified): the decode of the four sites and its refusals, the value agreement and the proof the hook
     # takes at run time before it changes anything, what the listener is given on the game's own builder,
