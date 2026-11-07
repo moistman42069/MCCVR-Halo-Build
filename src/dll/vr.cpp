@@ -448,6 +448,15 @@ namespace
     // Two texels of the 512 capture: below it a centroid change is noise.
     constexpr float kAuthoredReticleCentreDeadband = 2.0f / 512.0f;
     bool g_authoredReticleCentreQueued = false;
+    // Halo 4 publishes every frame where the floor allows it: a capture is copied aside when its readback is
+    // queued, so the next frame's capture can be drawn while that readback is in flight, and the copy is what
+    // publishes once the readback has judged it. Optional: without it Halo 4 waits out each readback before it
+    // captures again, as it did.
+    ID3D11Texture2D* g_authoredReticleSnapshot = nullptr;
+    bool g_authoredReticleSnapshotQueued = false;   // the readback in flight is of the snapshot
+    uint64_t g_authoredReticleSnapshotSerial = 0;
+    float g_authoredReticleSnapshotZoom = 1.0f;
+    uint32_t g_authoredReticleReadbackLate = 0;     // polls that found the readback not done, for the log
     // The prepared-frame serial of the capture the queued centre readback copied.
     uint64_t g_authoredReticleCentreSerial = 0;
     AuthoredReticleArtCentre g_authoredReticleMeasuredCentre{};
@@ -479,6 +488,14 @@ namespace
     // The upload floor in force, from the last window's measured cost (AuthoredReticleUploadGapForCost): read by
     // the capture cadence on the thread that draws the HUD and by the publish decision.
     std::atomic<uint64_t> g_authoredReticleUploadGap{kMinimumUploadGapFrames};
+
+    // Halo 4 captures while a readback is in flight only where a publish may run every frame; elsewhere it keeps
+    // the cadence it had.
+    bool AuthoredReticlePipelined()
+    {
+        return TitleAdapter_GetActiveTitle() == GameTitle::Halo4 && g_authoredReticleSnapshot &&
+            g_authoredReticleUploadGap.load(std::memory_order_relaxed) <= 1;
+    }
     // CE: how far above the HUD's centre the art being captured draws, as a fraction of the HUD's height (a
     // Warthog driver's chevron, haloce_hud.cpp). Its window is lowered by that much: the art's centre is the ray's.
     std::atomic<float> g_ceReticleLift{0.0f};
@@ -9316,6 +9333,12 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             g_authoredReticleCentreStaging->Release();
             g_authoredReticleCentreStaging = nullptr;
         }
+        if (g_authoredReticleSnapshot)
+        {
+            g_authoredReticleSnapshot->Release();
+            g_authoredReticleSnapshot = nullptr;
+        }
+        g_authoredReticleSnapshotQueued = false;
         if (g_authoredReticleProbeFence)
         {
             g_authoredReticleProbeFence->Release();
@@ -9452,6 +9475,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             if (FAILED(g_device->CreateTexture2D(
                     &centreDesc, nullptr, &g_authoredReticleCentreStaging)))
                 g_authoredReticleCentreStaging = nullptr;
+            // Optional too: without it Halo 4 captures only between readbacks.
+            if (FAILED(g_device->CreateTexture2D(&goodDesc, nullptr, &g_authoredReticleSnapshot)))
+                g_authoredReticleSnapshot = nullptr;
         }
         LOG("M3: authored crosshair capture target ready (%ux%u); blank-art "
             "guard %s; art-centre readback %s",
@@ -9565,6 +9591,15 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             if (!g_authoredReticleProbePending)
             {
                 queueReadback();
+                // Halo 4: the capture as judged goes aside, and the capture target is free for the next frame.
+                g_authoredReticleSnapshotQueued = AuthoredReticlePipelined();
+                if (g_authoredReticleSnapshotQueued)
+                {
+                    g_context->CopySubresourceRegion(g_authoredReticleSnapshot, 0, 0, 0, 0,
+                                                     g_authoredReticleTexture, 0, nullptr);
+                    g_authoredReticleSnapshotSerial = g_authoredReticleSerial;
+                    g_authoredReticleSnapshotZoom = g_authoredReticleCaptureZoom.load(std::memory_order_relaxed);
+                }
                 g_context->End(g_authoredReticleProbeFence);
                 g_authoredReticleProbePending = true;
                 return kAuthoredReticleCoveragePending;
@@ -9576,6 +9611,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                    D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
                 !complete)
             {
+                ++g_authoredReticleReadbackLate;
                 return kAuthoredReticleCoveragePending;
             }
             g_authoredReticleProbePending = false;
@@ -9584,6 +9620,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         {
             // Bootstrap once so the player receives art before the defer policy
             // has a known-good image to hold.
+            g_authoredReticleSnapshotQueued = false;
             queueReadback();
         }
 
@@ -9878,6 +9915,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // Where this art sits in its texture, when its readback measured it;
         // art nobody measured publishes no centre.
         AuthoredReticleArtCentre publishedCentre{};
+        // The capture this publish is of: the one in the capture target, or Halo 4's copy of an earlier one
+        // whose readback has just come back (g_authoredReticleSnapshot).
+        ID3D11Texture2D* judged = g_authoredReticleTexture;
+        uint64_t judgedSerial = g_authoredReticleSerial;
+        float judgedZoom = g_authoredReticleCaptureZoom.load(std::memory_order_relaxed);
         if (g_authoredReticleProbeUsable && g_authoredReticleGoodTexture)
         {
             const uint32_t ink = MeasureAuthoredReticleCoverage();
@@ -9887,6 +9929,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 // failure and must never let a blank capture replace it.
                 g_authoredReticleHeldBlank = true;
                 return false;
+            }
+            if (g_authoredReticleSnapshotQueued)
+            {
+                g_authoredReticleSnapshotQueued = false;
+                judged = g_authoredReticleSnapshot;
+                judgedSerial = g_authoredReticleSnapshotSerial;
+                judgedZoom = g_authoredReticleSnapshotZoom;
             }
             g_authoredReticleLastCoverage = ink;
             // The bar to clear: something at all, and at least half the ink of
@@ -9955,7 +10004,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             // the check and the swapchain image does not.
             g_context->CopySubresourceRegion(
                 g_authoredReticleGoodTexture, 0, 0, 0, 0,
-                g_authoredReticleTexture, 0, nullptr);
+                judged, 0, nullptr);
             g_authoredReticleConsecutiveHolds = 0;
             if (ink >= kAuthoredReticleArtAlphaThreshold)
             {
@@ -10059,10 +10108,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if (!copied || ((requireSuccessfulRelease ||
                          TitleAdapter_GetActiveTitle() == GameTitle::HaloCE) && !released))
             return false;
-        g_authoredReticleUploadedSerial = g_authoredReticleSerial;
+        g_authoredReticleUploadedSerial = judgedSerial;
         g_reticleContainsAuthored = true;
         g_authoredReticlePublishedCentre = publishedCentre;
-        g_authoredReticlePublishedZoom = g_authoredReticleCaptureZoom.load(std::memory_order_relaxed);
+        g_authoredReticlePublishedZoom = judgedZoom;
         return true;
     }
 
@@ -19243,6 +19292,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     "reticle is showing its procedural art "
                                     "this frame instead of the game's widget");
                         }
+                        // Halo 4: the readback that just came back published the previous frame's capture; this
+                        // frame's goes to its readback now, so the next frame publishes it. A frame behind the
+                        // game, every frame.
+                        if (shouldUploadAuthoredReticle && AuthoredReticlePipelined() &&
+                            !g_authoredReticleProbePending && g_authoredReticleReady &&
+                            g_authoredReticleSerial == g_preparedFrame.serial &&
+                            g_authoredReticleUploadedSerial != g_authoredReticleSerial)
+                            (void)UploadAuthoredReticle(false, authoredIdentityChanged);
                         // A crosshair slider moved and nothing new was published this frame.
                         if (reticleUploadAdmitted)
                             RetintReticleIfChanged();
@@ -19309,13 +19366,19 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     if (cost.timed)
                                         LOG("reticle upload cost: %u timed; swapchain acquire+wait "
                                             "%.3f ms mean, %.3f max; copy+release %.3f ms mean, %.3f max; "
-                                            "publishes at most every %llu frame(s)%s",
+                                            "publishes at most every %llu frame(s)%s; %s; readback not back yet "
+                                            "on %u polls",
                                             cost.timed, QpcMs(cost.acquireWait) / cost.timed,
                                             QpcMs(cost.acquireWaitMax), QpcMs(cost.copyRelease) / cost.timed,
                                             QpcMs(cost.copyReleaseMax),
                                             static_cast<unsigned long long>(gapAfter),
-                                            gapAfter != gapBefore ? " from now" : "");
+                                            gapAfter != gapBefore ? " from now" : "",
+                                            AuthoredReticlePipelined()
+                                                ? "captures while each readback is in flight"
+                                                : "captures between readbacks",
+                                            g_authoredReticleReadbackLate);
                                     cost = {};
+                                    g_authoredReticleReadbackLate = 0;
                                 }
                                 // Where the art sits in its texture, as a
                                 // fraction of it: the quad is shifted by this
@@ -23215,6 +23278,7 @@ void VR_DetachGamePresentation()
     // measure its own before anything is held on its behalf.
     g_authoredReticleGoodValid = false;
     g_authoredReticleProbePending = false;
+    g_authoredReticleSnapshotQueued = false;
     g_authoredReticleHeldBlank = false;
     g_authoredReticleGoodInk = 0;
     g_authoredReticleConsecutiveHolds = 0;
@@ -26127,8 +26191,10 @@ bool VR_ShouldCaptureAuthoredReticleThisFrame()
         return true;
 
     // Do not overwrite the captured source while its prior coverage request is
-    // in flight; SubmitPreparedFrame will poll it without blocking.
-    if (g_authoredReticleProbePending)
+    // in flight; SubmitPreparedFrame will poll it without blocking. Halo 4 has
+    // copied that capture aside (g_authoredReticleSnapshot) where it publishes
+    // every frame, so its next capture is drawn meanwhile.
+    if (g_authoredReticleProbePending && !g_authoredReticleSnapshotQueued)
         return false;
 
     // ODST's captured quad is static between weapon and state changes, so it
