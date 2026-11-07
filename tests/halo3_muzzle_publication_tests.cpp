@@ -41,6 +41,8 @@ static auto g_halo3PlayerUnitGetter=&Player;
 static auto g_halo3UnitInVehicle=&Seated;
 static bool Halo3ReadOwnedWeapons(uint32_t unit,uint32_t* weapons,bool requireDual)
 {weapons[0]=primary;weapons[1]=secondary;return owned&&unit==owner&&!requireDual;}
+struct Halo3FpLayout {uint32_t slotStride;};
+static Halo3FpLayout Halo3FpLayoutNow() {return {0x11BC};} // retail's 64-node slots
 struct BoneMatrix {float scale=1,rotation[9]{1,0,0,0,1,0,0,0,1},translation[3]{};};
 static bool DesiredWristWorld(bool,BoneMatrix& visual,float& scale,float*,BoneMatrix* neutral)
 {visual={};*neutral=visual;scale=1;return true;}

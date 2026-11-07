@@ -63,6 +63,17 @@ bool ApplyHalo3MuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t
     __finally {g_legacyCollisionOwnedQuery=previousCollisionQuery;}
     for(int axis=0;axis<3;++axis)
         if(!std::isfinite(muzzle.ray.position[axis])||!std::isfinite(direction[axis]))return false;
+    // Project Reclaimer 0.10 fires from its own version of the fire routine, which takes the round's direction from
+    // this marker but starts the round at the eye the game aims from, not at the marker: in FA, with the head 0.4 m
+    // off the body (roomscale off), rounds flew the muzzle's line from the eye and missed the point by 0.9 m. There
+    // the shot is aimed from that eye (the evaluator's, which is the engine camera) through the converged point.
+    if(lifted::Active() && !Sight_GunBarrelAim()) {
+        float eye[3]{},eyeVelocity[3]{};bool eyeVelocityValid=false;uint64_t eyeStampUs=0;int32_t eyeUnit=-1;
+        if(!ReadHalo3TickEye(g_halo3RuntimeGeneration.load(),100000,eye,eyeVelocity,eyeVelocityValid,eyeStampUs,
+            &eyeUnit) || eyeUnit!=static_cast<int32_t>(context.unit))return false;
+        std::memcpy(before,eye,12);
+        std::memcpy(muzzle.ray.position,eye,12);
+    }
     // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
     // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
     // The second gun under independent dual aim follows its own controller (the shot that lane prepared).
