@@ -9,8 +9,30 @@ void* g_reachHudAnchorBasisTarget = nullptr;
 std::atomic<bool> g_reachHudHeightEnabled{false};
 std::atomic<uint64_t> g_reachHudHeightApplied{0};
 std::atomic<uint64_t> g_reachHudHeightRefused{0};
+std::atomic<uint64_t> g_reachHudHeightWorldAnchored{0};
 thread_local bool g_reachHudHeightRedirected = false;
 thread_local uint32_t g_reachHudAnchorDepth = 0;
+// Set while one outermost anchor is composed when it, or a parent it recurses
+// through, is placed on a world point.
+thread_local bool g_reachHudAnchorOnWorld = false;
+
+// THE ANCHORS PLACED ON A POINT IN THE WORLD keep the game's own place: the HUD
+// height moves the HUD, not the world. By the anchor enum's HREK names (HREK
+// reach_tag_test.exe 0x91C490's jump table; retail 0x2DB54C's compare tree
+// follows the same set, tools/verify-reach-nav-markers.py in git history), these
+// are the cases that call the marker projection, the object path or the
+// projected-basis helper: 15 tracked target, 16 tracking object, 21 weapon
+// target, 22 ghost reticule, 23 hologram target, 24 airstrike target, 25
+// player, 26 scripted object (campaign objectives), 40-49 fireteam and
+// objective objects. Shifting them put an objective's marker or arrow
+// hud_vertical_offset virtual pixels away from its target (headset report,
+// 2026-11-06: at -202 the arrow sat near the floor).
+constexpr bool ReachHudAnchorOnWorld(int anchorType) noexcept
+{
+    return anchorType == 15 || anchorType == 16 ||
+        (anchorType >= 21 && anchorType <= 26) ||
+        (anchorType >= 40 && anchorType <= 49);
+}
 
 constexpr uintptr_t kReachHudAnchorBasisRva = 0x2DB54C;
 constexpr uintptr_t kReachHudAnchorBasisEndRva = 0x2DC1BE;
@@ -88,6 +110,10 @@ __declspec(noinline) bool __fastcall ReachHudAnchorBasisDetour(
 {
     g_reachCamera.activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
     const bool outermost = g_reachHudAnchorDepth++ == 0;
+    if (outermost)
+        g_reachHudAnchorOnWorld = false;
+    if (ReachHudAnchorOnWorld(anchorType))
+        g_reachHudAnchorOnWorld = true;
     bool result = false;
     __try
     {
@@ -99,8 +125,16 @@ __declspec(noinline) bool __fastcall ReachHudAnchorBasisDetour(
             // Anchor 0 (parent) recurses through +0x2DA818 -> +0x2DA8BA.
             // Translate the fully composed outer result once; shifting both
             // parent and child would compound height with authored scale.
+            // A widget placed on a world point, itself or through its
+            // parent, stays on that point.
             if (result && outermost)
-                ReachAdjustHudAnchorHeight(basis);
+            {
+                if (g_reachHudAnchorOnWorld)
+                    g_reachHudHeightWorldAnchored.fetch_add(
+                        1, std::memory_order_relaxed);
+                else
+                    ReachAdjustHudAnchorHeight(basis);
+            }
         }
     }
     __finally

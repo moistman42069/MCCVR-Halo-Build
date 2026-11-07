@@ -31,6 +31,7 @@ unsigned calls = 0, checks = 0;
 bool nativeResult = true, throwNative = false, revokeDuringNative = false;
 bool nativeFlag = false;
 bool recurseParent = false;
+int recurseChildType = 1;
 std::array<float, 13> nativeBasis{};
 int seenUser = 0, seenAnchor = 0;
 void* seenFlags = nullptr;
@@ -50,7 +51,7 @@ bool __fastcall NativeAnchor(int user, int anchor, void* flags, void* data,
         g_reachCamera.teardownRequested.store(true);
     if (recurseParent && anchor == 0)
     {
-        const bool result = ReachHudAnchorBasisDetour(user,1,flags,data,basis,nativeAnchorFlag);
+        const bool result = ReachHudAnchorBasisDetour(user,recurseChildType,flags,data,basis,nativeAnchorFlag);
         // Native parent composition may scale the child's basis. Height must
         // be applied after that composition, once, in final virtual pixels.
         static_cast<float*>(basis)[11] *= 2.0f;
@@ -77,11 +78,12 @@ void Reset()
     g_reachHudHeightApplied=0; g_reachHudHeightRefused=0;
     g_reachOrigHudAnchorBasis=&NativeAnchor; g_config.hud_vertical_offset=16;
     calls=0; nativeResult=true; throwNative=false; revokeDuringNative=false;
-    recurseParent=false; nativeFlag=false;
+    recurseParent=false; recurseChildType=1; nativeFlag=false;
+    g_reachHudHeightWorldAnchored=0;
     for (size_t i=0;i<nativeBasis.size();++i) nativeBasis[i]=float(i*17+3);
 }
 
-void Run(bool translated, const char* name)
+void Run(bool translated, const char* name, int anchorType = 0x1234ABCD)
 {
     std::array<float,13> output{};
     std::array<uint64_t,8> drawData{};
@@ -89,11 +91,11 @@ void Run(bool translated, const char* name)
     uint32_t placementFlags=0xFEDCBA98;
     bool nativeAnchorFlag=!nativeFlag;
     const auto beforeCalls=calls;
-    const bool returned=ReachHudAnchorBasisDetour(2, 0x1234ABCD,
+    const bool returned=ReachHudAnchorBasisDetour(2, anchorType,
         &placementFlags, drawData.data(), output.data(), &nativeAnchorFlag);
     Check(calls==beforeCalls+1,"native called exactly once");
     Check(returned==nativeResult,"native success/failure preserved");
-    Check(seenUser==2 && seenAnchor==0x1234ABCD &&
+    Check(seenUser==2 && seenAnchor==anchorType &&
         seenFlags==&placementFlags && seenDrawData==drawData.data() &&
         seenBasis==output.data() && seenNativeFlag==&nativeAnchorFlag,
         "six full arguments forwarded without narrowing");
@@ -154,6 +156,32 @@ int main()
     Check(calls==2 && g_reachHudHeightApplied==1 && g_reachHudAnchorDepth==0 &&
         composed[11]==nativeBasis[11]*2.0f-16.0f,
         "parent anchor translates once after complete native composition");
+    // Widgets placed on a world point keep the game's own place: the HUD height
+    // moves the HUD, not the world (an objective's marker or arrow).
+    for (int anchor : {15,16,21,22,23,24,25,26,40,45,49})
+    { Reset(); Run(false,"a world-anchored widget is not moved by the HUD height",anchor);
+      Check(g_reachHudHeightWorldAnchored==1 && g_reachHudHeightApplied==0,
+          "a kept world anchor is counted, not translated"); }
+    for (int anchor : {0,1,14,17,20,27,39,50})
+    { Reset(); Run(true,"a screen-anchored widget follows the HUD height",anchor); }
+    Check(!ReachHudAnchorOnWorld(-1) && ReachHudAnchorOnWorld(26) && !ReachHudAnchorOnWorld(0x1234ABCD),
+        "the world-anchor set");
+    Reset(); recurseParent=true; recurseChildType=26;
+    {
+        std::array<float,13> composed{};
+        Check(ReachHudAnchorBasisDetour(0,0,nullptr,nullptr,composed.data(),nullptr),
+            "parent of a world anchor preserves nested native result");
+        Check(calls==2 && g_reachHudHeightApplied==0 && g_reachHudHeightWorldAnchored==1 &&
+            composed[11]==nativeBasis[11]*2.0f && g_reachHudAnchorDepth==0,
+            "a widget whose parent is placed on a world point stays on it");
+    }
+    Reset(); recurseParent=true;
+    {
+        std::array<float,13> composed{};
+        (void)ReachHudAnchorBasisDetour(0,0,nullptr,nullptr,composed.data(),nullptr);
+        Check(composed[11]==nativeBasis[11]*2.0f-16.0f,
+            "the world flag of the previous widget does not leak into the next");
+    }
     Reset(); g_reachOrigHudAnchorBasis=nullptr;
     Check(!ReachHudAnchorBasisDetour(0,1,nullptr,nullptr,nullptr,nullptr) &&
         g_reachCamera.activeCallbacks==0,"absent original safely refuses");

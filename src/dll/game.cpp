@@ -39643,6 +39643,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         g_reachHudHeightEnabled.store(false, std::memory_order_release);
         g_reachHudHeightApplied.store(0, std::memory_order_relaxed);
         g_reachHudHeightRefused.store(0, std::memory_order_relaxed);
+        g_reachHudHeightWorldAnchored.store(0, std::memory_order_relaxed);
         {
             DWORD64 functionBase = 0;
             const PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(
@@ -41331,11 +41332,16 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 0, std::memory_order_relaxed);
             const auto refused = g_reachHudHeightRefused.exchange(
                 0, std::memory_order_relaxed);
+            const auto onWorld = g_reachHudHeightWorldAnchored.exchange(
+                0, std::memory_order_relaxed);
             LOG("Reach HUD height: %.1f virtual px, %llu native anchors "
-                "translated / %llu local stock refusals; camera core unaffected",
+                "translated / %llu local stock refusals; %llu placed on a "
+                "world point (objective markers and the like) kept on it; "
+                "camera core unaffected",
                 g_config.hud_vertical_offset,
                 static_cast<unsigned long long>(applied),
-                static_cast<unsigned long long>(refused));
+                static_cast<unsigned long long>(refused),
+                static_cast<unsigned long long>(onWorld));
         }
 
         const uint64_t lastClass2 =
