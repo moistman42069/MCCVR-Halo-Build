@@ -414,6 +414,7 @@ std::atomic<uint32_t> g_halo4VehicleCameraNoRootFrames{0};  // a chosen camera w
 std::atomic<uint32_t> g_halo4VehicleCameraLagTrailCm{0};
 std::atomic<uint32_t> g_halo4VehicleCameraTurnFrames{0};    // frames the view's heading turned with the hull
 std::atomic<float> g_halo4VehicleCameraRestWu{0.0f};    // the game's camera's resting distance in use (0 = none yet)
+std::atomic<float> g_halo4VehicleCameraBeyondReachWu{0.0f}; // furthest it stood out of reach in this seat (0 = never)
 std::atomic<float> g_halo4VehicleCameraRestRiseWu{0.0f}; // of it, the height above its pivot
 std::atomic<float> g_halo4VehicleCameraRestPitchDeg{0.0f};
 std::atomic<uint32_t> g_halo4VehicleCameraPivotSolved{0}; // 1: the pivot is where the game's camera lines met
@@ -522,12 +523,16 @@ struct Halo4VehicleCameraRest
     bool level = false;
     // Until the lines cross: the height, over the vehicle's origin, at which the game's camera line passes it.
     float standInHeight = 0.0f;
+    float beyondReach = 0.0f; // the furthest the following camera stood past kHalo4RestFurthestWu, for the log
     uint32_t seen = 0;   // frames the game's following camera has been up in this seat, since it last was not
     uint32_t waited = 0; // frames placed while the game's camera was not its following one
 };
 Halo4VehicleCameraRest g_halo4VehicleCameraRest;
 inline constexpr float kHalo4RestKnownWu = 0.25f;     // nearer than this the game's camera is not its following one
-inline constexpr float kHalo4RestFurthestWu = 8.0f;
+// Further than this the game's camera is not following the seat. The Pelican's own camera rests 7 to 8 world units out,
+// and past 8 when a save resumes in its seat (Shutdown): a limit of 8 never took it, and the stand-in stood inside the
+// hull. 20 (61 m) leaves room for the largest vehicles.
+inline constexpr float kHalo4RestFurthestWu = 20.0f;
 inline constexpr uint32_t kHalo4RestSettleFrames = 30; // the director's own change of view, after the camera is chosen
 inline constexpr uint32_t kHalo4RestWaitFrames = 45;
 // The following camera up this long, its distance still not taken (it stood out of reach the whole time): the
@@ -551,6 +556,7 @@ bool Halo4VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, const vehicle
     {
         rest = Halo4VehicleCameraRest{};
         rest.seat = seat;
+        g_halo4VehicleCameraBeyondReachWu.store(0.0f, std::memory_order_relaxed);
         Halo4VehicleCameraLevelStore(seat, vehicle_boom::kBoomPitchUnset);
         g_halo4VehicleCameraPivotSolved.store(0, std::memory_order_relaxed);
     }
@@ -617,6 +623,11 @@ bool Halo4VehicleCameraRestPlace(const VehicleCameraSeatKey& seat, const vehicle
             const float distance = sqrtf(vehicle_camera_frame::Dot(stood, stood));
             const float lookUp = look[2];
             const bool level = std::fabs(lookUp) <= kHalo4RestLevelSin;
+            if (std::isfinite(distance) && distance > kHalo4RestFurthestWu && distance > rest.beyondReach)
+            {
+                rest.beyondReach = distance;
+                g_halo4VehicleCameraBeyondReachWu.store(distance, std::memory_order_relaxed);
+            }
             const bool take = std::isfinite(distance) && distance >= kHalo4RestKnownWu &&
                               distance <= kHalo4RestFurthestWu &&
                               (level ? (!rest.level || distance > rest.distance)
@@ -1464,12 +1475,17 @@ void Halo4VehicleCamerasColdLog(bool seated)
         standInLogged = true;
         float behindCm = 0.0f, aboveCm = 0.0f;
         vehicle_camera_place::StandInOffsetCm(0.0f, behindCm, aboveCm);
+        const float beyondWu = g_halo4VehicleCameraBeyondReachWu.load(std::memory_order_relaxed);
+        char beyond[96] = "";
+        if (beyondWu > 0.0f)
+            sprintf_s(beyond, "; it stood as far as %.1f world units out, past the %.0f taken", static_cast<double>(beyondWu),
+                      static_cast<double>(kHalo4RestFurthestWu));
         LOG("Vehicle cameras (Halo 4): where the game's own third-person camera rests could not be read for this seat "
-            "(%s), so the camera stands %.0f cm behind and %.0f cm above the vehicle's origin instead",
+            "(%s%s), so the camera stands %.0f cm behind and %.0f cm above the vehicle's origin instead",
             g_halo4VehicleCameraStandInFollowing.load(std::memory_order_relaxed)
                 ? "its following camera never stood within reach to be measured"
                 : "the game's own camera there is not its following camera",
-            static_cast<double>(behindCm), static_cast<double>(aboveCm));
+            beyond, static_cast<double>(behindCm), static_cast<double>(aboveCm));
     }
     const float restWu = g_halo4VehicleCameraRestWu.load(std::memory_order_relaxed);
     const bool settled = restWu == restSeenWu;
