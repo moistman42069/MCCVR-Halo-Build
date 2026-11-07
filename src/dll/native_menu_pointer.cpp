@@ -22,9 +22,10 @@ std::atomic<const char*> frameStatus{"no-screen"}, deliveryStatus{"idle"};
 std::atomic<float> scrollStick{0.0f};
 // All remaining state belongs exclusively to MCC's window thread.
 game_menu_pointer::Pointer pointer;
-// Eighths of a notch, many a second, so MCC's lists glide rather than jump; 15 notches a second when pushed fully.
+// Eighths of a notch, many a second, so MCC's lists glide rather than jump; 10 notches a second when pushed fully, the
+// speed whole notches had (15 was too sensitive in the headset).
 constexpr int kWheelStepsPerNotch = 8;
-game_menu_pointer::StickWheel stickWheel{15.0f, kWheelStepsPerNotch};
+game_menu_pointer::StickWheel stickWheel{10.0f, kWheelStepsPerNotch};
 UINT_PTR timer = 0;
 bool mouseDown = false;
 bool faultLogged = false;
