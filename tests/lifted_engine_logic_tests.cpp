@@ -202,6 +202,37 @@ int main()
         CHECK(v == 0);   // not an argument of this body: left alone
         CHECK(HostArgSlot(kR10) == -1);
     }
+    // The guest call site of a direct call: the n-th host call to the body is the n-th guest call to the function.
+    {
+        // Host block at 0x10000: calls to the body 0x50000 at +0x10 and +0x40, one to another body at +0x28.
+        uint8_t host[0x60]{};
+        const auto putCall = [](uint8_t* code, uint64_t base, size_t at, uint64_t target) {
+            code[at] = 0xE8;
+            const int32_t rel = static_cast<int32_t>(static_cast<int64_t>(target) - static_cast<int64_t>(base + at + 5));
+            std::memcpy(code + at + 1, &rel, 4);
+        };
+        putCall(host, 0x10000, 0x10, 0x50000);
+        putCall(host, 0x10000, 0x28, 0x60000);
+        putCall(host, 0x10000, 0x40, 0x50000);
+        // Guest function at 0x180001000: calls to the hooked function 0x180009000 at +0x08 and +0x30.
+        uint8_t guest[0x50]{};
+        putCall(guest, 0x180001000, 0x08, 0x180009000);
+        putCall(guest, 0x180001000, 0x30, 0x180009000);
+        size_t sites[kMaxCallSites];
+        CHECK(CallSitesTo(host, sizeof(host), 0x10000, 0x50000, sites) == 2 && sites[0] == 0x10 && sites[1] == 0x40);
+        CHECK(GuestReturnOfCall(host, sizeof(host), 0x10000, 0x10010, 0x50000, guest, sizeof(guest), 0x180001000,
+                                0x180009000) == 0x180001000 + 0x08 + 5);
+        CHECK(GuestReturnOfCall(host, sizeof(host), 0x10000, 0x10040, 0x50000, guest, sizeof(guest), 0x180001000,
+                                0x180009000) == 0x180001000 + 0x30 + 5);
+        // Not a call to the body, or a count that does not pair: no answer.
+        CHECK(GuestReturnOfCall(host, sizeof(host), 0x10000, 0x10028, 0x50000, guest, sizeof(guest), 0x180001000,
+                                0x180009000) == 0);
+        putCall(guest, 0x180001000, 0x40, 0x180009000);
+        CHECK(GuestReturnOfCall(host, sizeof(host), 0x10000, 0x10010, 0x50000, guest, sizeof(guest), 0x180001000,
+                                0x180009000) == 0);
+        CHECK(GuestReturnOfCall(host, 0, 0x10000, 0x10010, 0x50000, guest, sizeof(guest), 0x180001000,
+                                0x180009000) == 0);
+    }
     std::printf("lifted engine logic: all checks passed\n");
     return 0;
 }

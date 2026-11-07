@@ -22,23 +22,30 @@ EXTERN LiftedCallGame:PROC
 .code
 
 ; Entered from translated code: entry rsp = 8 (mod 16). rdi = ctx, rsi = guest rsp, r10 = record.
-; LiftedDispatch(record, ctx, guestRsp, hostArgs[4] = rdx, rcx, r8, r9) returns the value for rax.
+; LiftedDispatch(record, ctx, guestRsp, hostArgs[4] = rdx, rcx, r8, r9, hostReturnSlot) returns the value for rax.
+; hostReturnSlot is where this call's return address sits on the host stack: in the caller's translated code for a
+; direct call, which stores no guest return address (lifted_engine_logic.h, GuestReturnOfCall), or in the client's
+; own code when it called the body for the caller, with the caller's return address further up.
+; entry rsp = 8; push rbp and 50h leave it 16-aligned: home +00h, fifth argument +20h, the block +28h..+47h, and the
+; return address at +58h.
 LiftedHookEntry PROC FRAME
     push rbp
     .pushreg rbp
-    sub rsp, 40h
-    .allocstack 40h
+    sub rsp, 50h
+    .allocstack 50h
     .endprolog
-    mov [rsp+20h], rdx
-    mov [rsp+28h], rcx
-    mov [rsp+30h], r8
-    mov [rsp+38h], r9
+    mov [rsp+28h], rdx
+    mov [rsp+30h], rcx
+    mov [rsp+38h], r8
+    mov [rsp+40h], r9
+    lea rax, [rsp+58h]
+    mov [rsp+20h], rax
     mov rcx, r10
     mov rdx, rdi
     mov r8, rsi
-    lea r9, [rsp+20h]
+    lea r9, [rsp+28h]
     call LiftedDispatch
-    add rsp, 40h
+    add rsp, 50h
     pop rbp
     ret
 LiftedHookEntry ENDP

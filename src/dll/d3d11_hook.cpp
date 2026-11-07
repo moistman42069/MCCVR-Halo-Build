@@ -1235,6 +1235,19 @@ static BOOL CALLBACK LogMonitor(HMONITOR monitor, HDC, LPRECT rect, LPARAM)
     return TRUE;
 }
 
+// A Project Reclaimer client of 0.10 or later (its version resource): its swapchain is sized by the mod, as MCC's is.
+static bool HostSwapchainForced()
+{
+    if (!g_hostOwnsRenderSize)
+        return false;
+    const HMODULE exe = GetModuleHandleW(nullptr);
+    const HRSRC found = FindResourceW(exe, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(16)); // RT_VERSION
+    const HGLOBAL loaded = found ? LoadResource(exe, found) : nullptr;
+    const void* resource = loaded ? LockResource(loaded) : nullptr;
+    return reclaimer_host::RunsRecompiledEngine(reclaimer_host::VersionFromVersionResource(
+        static_cast<const uint8_t*>(resource), resource ? SizeofResource(exe, found) : 0));
+}
+
 static void InitForcedRenderSize()
 {
     LOG("display: %d monitor(s)", GetSystemMetrics(SM_CMONITORS));
@@ -1242,6 +1255,18 @@ static void InitForcedRenderSize()
     // The plan already folded in the launcher's exact numbers when present
     // and otherwise replicated the launcher's arithmetic, so the two can never
     // disagree. Config is loaded before this (dllmain InitThread order).
+    if (HostSwapchainForced())
+    {
+        // Project Reclaimer 0.10 takes Native from its window, not the display mode the mod answers (it reads only
+        // the refresh rate there), so it drew a 16:9 picture the headset showed stretched: its swapchain is created
+        // and resized at the Picture panel's size, as MCC's is. Its screens and menus stay the host's own.
+        g_forcedRenderW = g_planRenderW.load();
+        g_forcedRenderH = g_planRenderH.load();
+        LOG("Live render sizing: Project Reclaimer 0.10 or later: its swapchain is sized to the Picture panel's "
+            "%ux%u, as MCC's is (its Native render resolution follows its window, not the display mode)",
+            g_forcedRenderW.load(), g_forcedRenderH.load());
+        return;
+    }
     if (g_hostOwnsRenderSize)
     {
         // The forced size stays 0, which is this file's pass-through: the swapchain is created and resized as
@@ -1492,72 +1517,6 @@ static void ClaimHostDisplayModeImport()
         }
     }
     LOG("render size: the host imports no EnumDisplaySettingsW by name; its render resolution stays its own");
-}
-
-// WITNESS (observe only): Project Reclaimer 0.10 renders at 1920x1080 with Render resolution Native although it is
-// given the Picture panel's size by EnumDisplaySettingsW, and the mod measures its monitor as 1920x1080 where MCC's is
-// 3840x2160. This says what the host's own GetMonitorInfoW calls return and from where, and the DPI awareness it runs
-// with, for the first calls only. Nothing is changed.
-using GetMonitorInfoWFn = BOOL(WINAPI*)(HMONITOR, LPMONITORINFO);
-static GetMonitorInfoWFn g_hostPrevGetMonitorInfoW = nullptr;
-static std::atomic<uint32_t> g_hostMonitorInfoCalls{0};
-static BOOL WINAPI HostGetMonitorInfoWitness(HMONITOR monitor, LPMONITORINFO info)
-{
-    const GetMonitorInfoWFn real = g_hostPrevGetMonitorInfoW ? g_hostPrevGetMonitorInfoW : &GetMonitorInfoW;
-    const BOOL ok = real(monitor, info);
-    const uint32_t call = g_hostMonitorInfoCalls.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (call <= 8 && ok && info)
-    {
-        const auto exe = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-        const auto caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
-        LOG("render size witness: Project Reclaimer's GetMonitorInfoW #%u from exe+0x%llX: monitor %ldx%ld at "
-            "(%ld,%ld), work area %ldx%ld; thread DPI awareness %d", call,
-            static_cast<unsigned long long>(caller - exe), info->rcMonitor.right - info->rcMonitor.left,
-            info->rcMonitor.bottom - info->rcMonitor.top, info->rcMonitor.left, info->rcMonitor.top,
-            info->rcWork.right - info->rcWork.left, info->rcWork.bottom - info->rcWork.top,
-            static_cast<int>(GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext())));
-    }
-    return ok;
-}
-
-static void ClaimHostMonitorInfoWitness()
-{
-    const BYTE* base = reinterpret_cast<const BYTE*>(GetModuleHandleW(nullptr));
-    if (!base)
-        return;
-    const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-    const auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
-    const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-    for (auto desc = dir.VirtualAddress ? reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(base + dir.VirtualAddress)
-                                        : nullptr;
-         desc && desc->Name; ++desc)
-    {
-        if (_stricmp(reinterpret_cast<const char*>(base + desc->Name), "user32.dll") != 0 ||
-            !desc->OriginalFirstThunk)
-            continue;
-        auto names = reinterpret_cast<const IMAGE_THUNK_DATA*>(base + desc->OriginalFirstThunk);
-        auto iat = reinterpret_cast<IMAGE_THUNK_DATA*>(const_cast<BYTE*>(base) + desc->FirstThunk);
-        for (; names->u1.AddressOfData; ++names, ++iat)
-        {
-            if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal))
-                continue;
-            const auto imp = reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(base + names->u1.AddressOfData);
-            if (strcmp(imp->Name, "GetMonitorInfoW") != 0)
-                continue;
-            void** slot = reinterpret_cast<void**>(&iat->u1.Function);
-            if (*slot == reinterpret_cast<void*>(&HostGetMonitorInfoWitness))
-                return;
-            DWORD oldProtect = 0;
-            if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtect))
-                return;
-            g_hostPrevGetMonitorInfoW = reinterpret_cast<GetMonitorInfoWFn>(*slot);
-            *slot = reinterpret_cast<void*>(&HostGetMonitorInfoWitness);
-            VirtualProtect(slot, sizeof(void*), oldProtect, &oldProtect);
-            LOG("render size witness: watching the host's first GetMonitorInfoW calls (observe only); process DPI "
-                "awareness %d", static_cast<int>(GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext())));
-            return;
-        }
-    }
 }
 
 static void HostWantRenderSize(UINT width, UINT height, bool atStart)
@@ -4047,11 +4006,8 @@ bool InstallD3D11Hooks()
     // Install the complete size/metrics transaction for either window preference.
     InitRenderPlan();
     InitForcedRenderSize();
-    if (g_hostOwnsRenderSize)
-    {
+    if (g_hostOwnsRenderSize && !g_forcedRenderW)
         ClaimHostDisplayModeImport();
-        ClaimHostMonitorInfoWitness();
-    }
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
