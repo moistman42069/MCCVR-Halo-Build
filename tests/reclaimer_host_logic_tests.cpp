@@ -226,13 +226,37 @@ int main()
         const std::vector<ClientCandidate> proven{{L"older", v098, 9}, {L"newer", v0910, 1}, {L"new", vNotRun, 5}};
         const ClientChoice higher = ChooseClient(proven);
         CHECK(higher.chosen == 1 && higher.passedOver == 2);    // of two proven clients, the higher version
-        const std::vector<ClientCandidate> unproven{{L"a", vNotRun, 1}, {L"b", v1, 1}, {L"c", none, 9}};
+        const Version v0923 = VersionOf(L"project-reclaimer-client-v0.9.23.exe");
+        const std::vector<ClientCandidate> unproven{{L"a", v0923, 1}, {L"b", vNotRun, 1}, {L"c", none, 9}};
         const ClientChoice newest = ChooseClient(unproven);
         CHECK(newest.chosen == 1 && newest.passedOver == -1);   // none proven: the highest version
         const std::vector<ClientCandidate> copies{{L"old copy", v098, 1}, {L"new copy", v098, 7}};
         CHECK(ChooseClient(copies).chosen == 1 && ChooseClient(copies).passedOver == -1);   // the newer file
         const std::vector<ClientCandidate> unnamed{{L"x", none, 1}, {L"y", none, 3}};
         CHECK(ChooseClient(unnamed).chosen == 1);
+    }
+
+    // 0.10.0 and later run their own recompiled engine, not halo3.dll: the mod cannot go in, and of several clients
+    // one that runs halo3.dll is started, however much newer the other is.
+    {
+        const Version v0100 = {{0, 10, 0}, true};   // what the file's version resource says after an in-place update
+        CHECK(RunsRecompiledEngine(v0100));
+        CHECK(RunsRecompiledEngine(VersionOf(L"project-reclaimer-client-v0.10.0.exe")));
+        CHECK(RunsRecompiledEngine(VersionOf(L"project-reclaimer-client-v0.10.3.exe")));
+        CHECK(RunsRecompiledEngine(VersionOf(L"project-reclaimer-client-v0.11.0.exe")));
+        CHECK(RunsRecompiledEngine(v1));
+        CHECK(!RunsRecompiledEngine(VersionOf(L"project-reclaimer-client-v0.9.23.exe")));
+        CHECK(!RunsRecompiledEngine(vNotRun));       // 0.9.99
+        CHECK(!RunsRecompiledEngine(v098));
+        CHECK(!RunsRecompiledEngine(none));          // no version known: not ruled out
+        CHECK(!Proven(v0100));
+        const std::vector<ClientCandidate> updated{{L"0.10", v0100, 9}, {L"0.9.23", VersionOf(L"x-v0.9.23.exe"), 1}};
+        const ClientChoice older = ChooseClient(updated);
+        CHECK(older.chosen == 1 && older.passedOver == 0);   // 0.9.23, and 0.10.0 named in the log
+        const std::vector<ClientCandidate> mixed{{L"1.0", v1, 9}, {L"none", none, 1}, {L"0.10", v0100, 5}};
+        CHECK(ChooseClient(mixed).chosen == 1);              // even a client of no known version comes first
+        const std::vector<ClientCandidate> onlyNew{{L"0.10", v0100, 9}};
+        CHECK(ChooseClient(onlyNew).chosen == 0);            // the only one is still found; the launcher refuses it
     }
 
     // The early-hooks event's name: the same for the relay and the mod, bounded by the buffer.
