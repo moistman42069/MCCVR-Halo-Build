@@ -109,7 +109,7 @@ Read from outside with `ReadProcessMemory` (`_reclaimer-0.10-re\tools\probe_live
 - **The guest return address** is on the guest stack at the body's `rsi` (`[rsi]`), as on real hardware.
 
 - **Traps over every function's start.** Read from a client running with the mod (2026-11-06 21:13, pid 249440,
-  `_reclaimer-0.10-re	ools\compare_text.py`): the image's `.text` equals halo3.dll relocated to `G` except that
+  `_reclaimer-0.10-re\tools\compare_text.py`): the image's `.text` equals halo3.dll relocated to `G` except that
   the first five bytes of each function are `E8 rel32` calling `G + SizeOfImage`, just past the image (22855 of
   them; 80 other bytes differ from the raw file, all relocations). A signature that starts a function does not
   match the image; it matches a copy with halo3.dll's own bytes put back, which is what the mod's searches read
