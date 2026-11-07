@@ -2335,6 +2335,33 @@ int main()
                   ResolveAuthoredAnimationGapFrames(0) == 0 &&
                   ResolveAuthoredAnimationGapFrames(-4) == 0,
               "authored animation cadence clamp");
+        Check(ResolveAuthoredAnimationGapFrames(1, 1) == 1 && ResolveAuthoredAnimationGapFrames(3, 1) == 3 &&
+                  ResolveAuthoredAnimationGapFrames(1, 6) == 6 && ResolveAuthoredAnimationGapFrames(0, 1) == 0 &&
+                  ResolveAuthoredAnimationGapFrames(2, 0) == 2,
+              "authored animation cadence follows the upload floor in force");
+
+        // The upload floor follows what a publish was measured to cost (2026-11-06 Quest numbers, and Halo 3's
+        // 4-5 ms).
+        Check(AuthoredReticleUploadGapForCost(6, 24, 0.007, 0.11) == 1,
+              "a window of cheap publishes lets the next one publish every frame");
+        Check(AuthoredReticleUploadGapForCost(1, 72, 4.5, 6.0) == kMinimumUploadGapFrames &&
+                  AuthoredReticleUploadGapForCost(1, 72, 0.1, 3.0) == kMinimumUploadGapFrames,
+              "a costly mean or a costly spike restores the six-frame floor");
+        Check(AuthoredReticleUploadGapForCost(6, 0, 0.0, 0.0) == 6 && AuthoredReticleUploadGapForCost(1, 0, 9.0, 9.0) == 1 &&
+                  AuthoredReticleUploadGapForCost(6, 3, 0.007, 0.01) == 6,
+              "no publishes, or too few, change nothing");
+        {
+            AuthoredReticleRefreshState everyFrame{};
+            int count = 0;
+            for (uint64_t serial = 1; serial <= 72; ++serial)
+                if (ShouldUploadAuthoredReticle(AuthoredReticleRefreshPolicy::BoundedAnimation, true, true, 1, 0, 0,
+                                                serial, 1, everyFrame, 1))
+                {
+                    MarkAuthoredReticleUploaded(everyFrame, 1, 0, 0, serial);
+                    ++count;
+                }
+            Check(count == 72, "a one-frame floor publishes every frame");
+        }
 
         // A Halo 3 sample publishes on the frame it was captured on, every
         // time, so the animation cadence the player sets is the cadence they

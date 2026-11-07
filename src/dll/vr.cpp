@@ -476,6 +476,9 @@ namespace
         LONGLONG acquireWait = 0, acquireWaitMax = 0, copyRelease = 0, copyReleaseMax = 0;
     };
     AuthoredReticleUploadCost g_authoredReticleUploadCost{};
+    // The upload floor in force, from the last window's measured cost (AuthoredReticleUploadGapForCost): read by
+    // the capture cadence on the thread that draws the HUD and by the publish decision.
+    std::atomic<uint64_t> g_authoredReticleUploadGap{kMinimumUploadGapFrames};
     // CE: how far above the HUD's centre the art being captured draws, as a fraction of the HUD's height (a
     // Warthog driver's chevron, haloce_hud.cpp). Its window is lowered by that much: the art's centre is the ray's.
     std::atomic<float> g_ceReticleLift{0.0f};
@@ -19147,6 +19150,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             reticleTitle == GameTitle::Halo3 &&
                             ResolveAuthoredAnimationGapFrames(
                                 g_config.crosshair_animation_frames) != 0;
+                        const uint64_t authoredUploadGap =
+                            g_authoredReticleUploadGap.load(std::memory_order_relaxed);
                         const AuthoredReticleRefreshPolicy refreshPolicy =
                             reticleTitle == GameTitle::HaloReach ||
                             reticleTitle == GameTitle::Halo4 ||
@@ -19183,7 +19188,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 authoredCrosshairDraws,
                                 g_preparedFrame.serial,
                                 reticleOwnerEpoch,
-                                s_refreshState);
+                                s_refreshState,
+                                authoredUploadGap);
                         const bool authoredArtAlreadyPublished =
                             authoredReticleThisFrame && reticleUploadAdmitted &&
                             !shouldUploadAuthoredReticle;
@@ -19291,12 +19297,24 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     g_authoredReticleBlankHeld);
                                 {
                                     AuthoredReticleUploadCost& cost = g_authoredReticleUploadCost;
+                                    // The next window's floor: every frame while a publish is measured cheap.
+                                    const uint64_t gapBefore = authoredUploadGap;
+                                    const uint64_t gapAfter = cost.timed
+                                        ? AuthoredReticleUploadGapForCost(
+                                              gapBefore, cost.timed,
+                                              QpcMs(cost.acquireWait + cost.copyRelease) / cost.timed,
+                                              QpcMs(cost.acquireWaitMax) + QpcMs(cost.copyReleaseMax))
+                                        : gapBefore;
+                                    g_authoredReticleUploadGap.store(gapAfter, std::memory_order_relaxed);
                                     if (cost.timed)
                                         LOG("reticle upload cost: %u timed; swapchain acquire+wait "
-                                            "%.3f ms mean, %.3f max; copy+release %.3f ms mean, %.3f max",
+                                            "%.3f ms mean, %.3f max; copy+release %.3f ms mean, %.3f max; "
+                                            "publishes at most every %llu frame(s)%s",
                                             cost.timed, QpcMs(cost.acquireWait) / cost.timed,
                                             QpcMs(cost.acquireWaitMax), QpcMs(cost.copyRelease) / cost.timed,
-                                            QpcMs(cost.copyReleaseMax));
+                                            QpcMs(cost.copyReleaseMax),
+                                            static_cast<unsigned long long>(gapAfter),
+                                            gapAfter != gapBefore ? " from now" : "");
                                     cost = {};
                                 }
                                 // Where the art sits in its texture, as a
@@ -26123,7 +26141,8 @@ bool VR_ShouldCaptureAuthoredReticleThisFrame()
     {
     case GameTitle::Halo3:
         gapFrames = ResolveAuthoredAnimationGapFrames(
-            g_config.crosshair_animation_frames);
+            g_config.crosshair_animation_frames,
+            g_authoredReticleUploadGap.load(std::memory_order_relaxed));
         // Holding one image still needs a slow re-sample so a weapon swap is
         // eventually noticed; it just never animates between those.
         if (gapFrames == 0)
@@ -26131,7 +26150,8 @@ bool VR_ShouldCaptureAuthoredReticleThisFrame()
         break;
     case GameTitle::Halo4:
         gapFrames = ResolveAuthoredAnimationGapFrames(
-            g_config.crosshair_animation_frames);
+            g_config.crosshair_animation_frames,
+            g_authoredReticleUploadGap.load(std::memory_order_relaxed));
         // H4EK's transform ID is not proven art identity. With animation off,
         // retain only a slow sample so a weapon swap can still replace art.
         if (gapFrames == 0)

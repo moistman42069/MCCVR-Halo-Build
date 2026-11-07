@@ -3058,9 +3058,11 @@ namespace
                 ImGui::Indent();
                 changed |= vr_menu::SliderInt(
                     "Refresh every N frames", &g_config.crosshair_animation_frames,
-                    6, 60, "%d");
+                    1, 60, "%d");
                 ImGui::TextDisabled("Lower = smoother shooting animation and faster "
                                     "red/green target colors. Higher = cheaper.\n"
+                                    "1 = every frame. Below 6 applies only where your headset\n"
+                                    "makes an update cheap; otherwise the crosshair keeps to 6.\n"
                                     "Turn it off if you feel any frame-rate cost.");
                 ImGui::Unindent();
             }
