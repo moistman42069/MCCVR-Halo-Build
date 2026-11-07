@@ -40,6 +40,13 @@ functions with its own versions, and enlarged several of its tables.
    a host that takes the call would leave every tag as the game draws it. *Resilient form:* hook the host's own
    version of a replaced function where there is one (its entry is in the "client's own version" log line) and read
    the count from the host's capacity.
+2c. **Which HUD layout record a level draws from.** Under Reclaimer the HUD size and width are written to every
+   layout record of an expected shape: Halo 3's (motion sensor at 55,661) and, for ODST's levels, ODST's (2000,2000),
+   because Reclaimer converts ODST's tags and draws their HUD from ODST's own record. A Reclaimer that rewrites
+   ODST's record into Halo 3's values, or merges a third map, finds a different count or shape and the HUD silently
+   stays at the game's size (the scan's log then has no "ODST's record" line, or rejects the count). *Resilient
+   form:* follow the engine's own HUD globals reference from the loaded scenario to the record it actually uses,
+   instead of searching memory for known shapes.
 
 ## Behaviour the mod assumes of its host
 
