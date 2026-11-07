@@ -20,6 +20,7 @@
 #define MH_QueueEnableHook(target) lifted::QueueEnableHook(target)
 #define MH_QueueDisableHook(target) lifted::QueueDisableHook(target)
 #define MCCVR_DisableHookForRetirement(target) MCCVR_DisableHookForRetirement(lifted::PatchedAddress(target))
+#define MCCVR_EnableHook(target) MCCVR_EnableHook(lifted::PatchedAddress(target))
 #define VirtualProtect(address, size, protect, previous) \
     lifted::GuardedVirtualProtect((address), (size), (protect), (previous))
 #define RtlLookupFunctionEntry(address, imageBase, history) \

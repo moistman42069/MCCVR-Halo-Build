@@ -170,6 +170,7 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
         return record.bytes.data();
 }
 void* __fastcall ReaderHook(void* state,unsigned action,uintptr_t caller) {
+    caller=HALOMCCVR_GAME_CALLER(caller); // Project Reclaimer 0.10: the thunk's own return is the lifted bridge
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
     void* result=nullptr;
     __try {
@@ -181,6 +182,7 @@ void* __fastcall ReaderHook(void* state,unsigned action,uintptr_t caller) {
 // Preserve held/long-held aliases for dual pickup. Only the derived reload
 // edge is removed, after native processing, for the exact local player.
 uintptr_t __fastcall ActionEdgesHook(uint32_t player,void* packet,uintptr_t caller) {
+    caller=HALOMCCVR_GAME_CALLER(caller); // Project Reclaimer 0.10: the thunk's own return is the lifted bridge
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
     uintptr_t result=0;
     __try {

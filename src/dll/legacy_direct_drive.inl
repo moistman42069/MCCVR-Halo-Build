@@ -1842,7 +1842,8 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
     const auto& site = kLegacyDriveSites[slot];
     st.callbacks.fetch_add(1, std::memory_order_acq_rel);
     // WHICH CALLER (aim_caller_logic.h). The stick call is the update; until the stick site is proven every
-    // call is.
+    // call is. In Project Reclaimer 0.10 the thunk's own return address is the lifted bridge (game_tls.h).
+    ret = HALOMCCVR_GAME_CALLER(ret);
     uintptr_t dispatcherRet = 0;
     const aim_caller::Caller caller = LegacyDriveClassify(st, ret, entryRsp, dispatcherRet);
     const aim_caller::Action action = aim_caller::ActionFor(st.callers, caller);
