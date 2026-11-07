@@ -2570,6 +2570,9 @@ namespace
     void ReportReachMuzzle();
     void ReportReachHeadRelative();  // reach_head_relative.inl: the motion tracker follows the head
     void ReportReachNavProjection(); // reach_nav_projection.inl: the marker projection's own hook
+    // reach_head_relative.inl: the head of the last committed frame, any thread; also read by the HUD's off-screen
+    // tests (reach_nav_markers.inl), which are defined before it.
+    bool ReachReadHeadSample(head_relative::HeadSample& sample, bool& cinematic, float* position = nullptr) noexcept;
     // Weapon-order diagnostic tranche: read-only semantic-primary
     // observations reusing the title readers below. Defined after those
     // readers; called from the FP interpolate/palette hooks above them.
@@ -26298,14 +26301,16 @@ static constexpr bool kOdstMappedFpEnabled = false;
             // accepted Reach 3D at risk, so it is never corrected.
             if (site == kReachObserverCameraWorldSite)
                 return;
-            if (!ReachOwnsHudStereoTransaction())
-                return;
-            const ReachFpCameraEyeScope& scope = g_reachFpCameraEyeScope;
-            if (!scope.active ||
-                scope.generation != g_reachCamera.generation)
+            if (!ReachNavInEye())
             {
+                // Outside an eye's render the marker projection serves the
+                // HUD update's on/off-screen tests: they get the head of the
+                // last committed frame instead of the aim (reach_nav_markers.inl).
+                if (site == kReachObserverCameraChudSite)
+                    ReachNavOffEyeCamera(static_cast<unsigned char*>(dst));
                 return;
             }
+            const ReachFpCameraEyeScope& scope = g_reachFpCameraEyeScope;
             // Destination and the cached head camera share the compact layout
             // exactly (proven by this function's own copy block), so this is a
             // straight three-field copy: position, forward, up. Field of view

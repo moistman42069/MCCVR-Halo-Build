@@ -62,6 +62,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "head_relative_logic.h"
+
 namespace reach_nav_markers
 {
 inline constexpr float kPi = 3.14159265358979323846f;
@@ -847,5 +849,100 @@ inline Ring RingPoint(bool switchOn, bool eyeScope, int user, bool valid, bool w
     move.ratio = ratio;
     out = move;
     return Ring::Moved;
+}
+
+// ====================================================================================================================
+// PART 3: THE HUD'S OFF-SCREEN TESTS FOLLOW THE HEAD
+//
+// WHAT THE GAME DOES (read statically, retail haloreach.dll, names from HREK reach_tag_test.exe). Whether a HUD
+// widget shows its marker or its off-screen variant is not decided where the marker is drawn. The per-user HUD
+// update (+0x2BF11C, reached from the game's update +0x2C073C, not from player_view_render +0x26C6DC) fills the
+// widgets' state bits, among them HREK's "<scripted object> offscreen" (the campaign objectives that
+// chud_track_object / chud_track_flag put up), "tracked target is offscreen" and the fireteam "... offscreen" ones.
+// Each is answered by projecting the point with the same function the draw uses (+0x2E1430) and reading the
+// record's off-screen value back:
+//     +0x2DB0D8  a world point (scripted flags, tracked target): off-screen value > 0 after the projection
+//     +0x2DB034  a cutscene flag, no ring: behind the camera
+//     +0x2DB158  an object, through the object markers' wrapper +0x2DAE98 (the same call as part 2's)
+// The projection builds its camera from the observer camera at the observer-camera hook's CHUD site. The hook
+// gives that camera the eye's pose only inside an eye's render; the update runs outside it, so the tests were
+// answered with the game's own camera, which this mod's aim steering points down the CONTROLLER: an objective
+// counted as on screen only while the gun pointed near it, and its marker showed only then. The update's other
+// marker input, the navpoint list's choice of which navpoint shows its distance (+0x2CB01C, a dot product with the
+// observer camera's forward), reads the observer directly and is not changed here.
+//
+// THE SEAM. Outside an eye's render, the CHUD site's camera is given the head's pose of the last committed frame
+// (and the eye's vertical field of view, under part 1's switch), so the tests answer for where the player looks.
+// With part 2's switch on, the object markers' call and the world-point test also get the head's ring, so a test
+// says "off screen" exactly where the draw puts the arrow.
+// ====================================================================================================================
+
+// THE WORLD-POINT TEST'S CALL (retail +0x2DB134 in +0x2DB0D8): the record built on the stack (valid byte 1, the
+// point), the user, the ring when the HUD's setting asks for it, no "behind", pitch in the camera's own frame.
+//   xor r9d, r9d / mov byte [rbp - 0x30], 1 / test al, al / mov byte [rsp + 0x20], 0 / mov eax, [rdi + 8] /
+//   mov edx, ebx / mov [rbp - 0x24], eax / movsd [rbp - 0x2C], xmm0 / je +5 / mov r8b, 1 / jmp +3 /
+//   xor r8d, r8d / call PROJECTION
+// ADDR-HYGIENE: resolved. One match in the pinned image (+0x2DB10F); the call must land on the projection bound by
+// part 2 from another function, and the detour compares its return address with the decoded one. Optional: when
+// it does not prove, the world-point tests keep the game's ring about the head's axis (the camera is still the
+// head's).
+inline constexpr const char* kOffscreenTestCallPattern =
+    "45 33 C9 C6 45 D0 01 84 C0 C6 44 24 20 00 8B 47 08 8B D3 89 45 DC F2 0F 11 45 D4 74 05 41 B0 01 EB 03 "
+    "45 33 C0 E8 ?? ?? ?? ??";
+inline constexpr size_t kOffscreenTestCallBytes = 42;
+inline constexpr size_t kOffscreenTestCall = 37, kOffscreenTestReturn = 42;
+
+// The place the world-point test's call of the projection returns to, as an offset from the image; 0 = it is not a
+// call that lands on the projection bound in `sites` from another function.
+inline int64_t DecodeOffscreenTestCall(const uint8_t* call, int64_t callRva, int64_t callFunctionRva,
+                                       const ProjectionSites& sites)
+{
+    if (!call || callRva <= 0)
+        return 0;
+    const int64_t returnRva = callRva + static_cast<int64_t>(kOffscreenTestReturn);
+    if (call[kOffscreenTestCall] != 0xE8 || sites.headRva <= 0 || callFunctionRva < 0 ||
+        callFunctionRva == sites.headRva || returnRva + ReadI32(call + kOffscreenTestCall + 1) != sites.headRva)
+        return 0;
+    return returnRva;
+}
+
+// The verdict on handing an off-eye projection the head. `owner`: Reach's stereo core owns this load and is
+// armed. `read`: a coherent sample was read. `cinematic`: a cutscene held the camera in that frame. The sample's
+// own half (live, generation, age, finite) is head_relative::SampleUse.
+inline head_relative::Use TestHeadUse(bool switchOn, bool owner, bool read, bool cinematic,
+                                      const head_relative::HeadSample& sample, const float position[3],
+                                      uint32_t generation, uint64_t nowUs)
+{
+    if (!switchOn)
+        return head_relative::Use::SwitchOff;
+    if (!owner || !read || cinematic)
+        return head_relative::Use::NotGameplay;
+    const head_relative::Use use = head_relative::SampleUse(sample, generation, nowUs);
+    if (use != head_relative::Use::Ok)
+        return use;
+    return head_relative::Finite3(position) ? head_relative::Use::Ok : head_relative::Use::NoHeading;
+}
+// The head as a camera: the published position, forward and up.
+inline Camera HeadCamera(const head_relative::HeadSample& sample, const float position[3])
+{
+    Camera head;
+    for (int i = 0; i < 3; ++i)
+    {
+        head.position[i] = position[i];
+        head.forward[i] = sample.forward[i];
+        head.up[i] = sample.up[i];
+    }
+    return head;
+}
+// What the CHUD site writes into the camera the game built: the head's position (+0x00), forward (+0x0C) and up
+// (+0x18), the compact layout the observer-camera hook already copies, and the vertical field of view when
+// `fov` is a usable angle (part 1's switch decides that; 0 leaves the game's).
+inline void WriteHeadCamera(uint8_t* camera, const Camera& head, float fov)
+{
+    std::memcpy(camera + 0x00, head.position, sizeof(head.position));
+    std::memcpy(camera + 0x0C, head.forward, sizeof(head.forward));
+    std::memcpy(camera + 0x18, head.up, sizeof(head.up));
+    if (FovPlausible(fov))
+        std::memcpy(camera + kCameraVerticalFovOffset, &fov, sizeof(fov));
 }
 } // namespace reach_nav_markers
