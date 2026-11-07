@@ -1,3 +1,4 @@
+#include "game_tls.h"
 // Halo 3 native contact adapter. Included after the title-owned native getters.
 // H3EK mappings and native ABI proof: PHYSICAL-CONTACT-MELEE-WORK.md.
 using Halo3ContactUpdateFn=uint8_t(__fastcall*)(uint32_t);
@@ -163,7 +164,7 @@ __declspec(noinline) void __fastcall Halo3ContactDamageDetour(void* event,uint32
     {
         auto& scope=g_halo3ContactScope;
         auto* bytes=static_cast<uint8_t*>(event);
-        const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
+        const uintptr_t caller=HALOMCCVR_GAME_RETURN_ADDRESS();
         const bool own=scope.active && caller==g_halo3Contact.base+0x35C102;
         if(!own || (bytes && *reinterpret_cast<const uint32_t*>(bytes+0x18)==scope.owner &&
             target==scope.target && Halo3ContactObject(target)))

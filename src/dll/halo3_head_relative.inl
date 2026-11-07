@@ -547,7 +547,7 @@ bool InstallHeadRelativeTracker(Halo3HeadRelativeLane& lane, uintptr_t base, siz
     }
     lane.objectTarget = object;
     lane.ownUnitProven = proof.unitGetterAgrees && proof.slotEntryAgrees && lane.unitGetter != nullptr;
-    lane.provenUnitGetter.store(lane.ownUnitProven ? reinterpret_cast<int (__fastcall*)(int)>(unitGetter) : nullptr,
+    lane.provenUnitGetter.store(lane.ownUnitProven ? lifted::Callable(reinterpret_cast<int (__fastcall*)(int)>(unitGetter)) : nullptr,
                                 std::memory_order_release);
     lane.ready.store(true, std::memory_order_release);
     if (MCCVR_EnableHook(point) != MH_OK || MCCVR_EnableHook(object) != MH_OK)

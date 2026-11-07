@@ -1,3 +1,4 @@
+#include "game_tls.h"
 // H3EK A3ABE0 and retail 343D74 independently establish this six-argument
 // resolver and its 0x70 marker/world-matrix layout. It is not H2's wrapper ABI.
 using Halo3MuzzleMarkersFn=uint64_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t,uint8_t,uint8_t);
@@ -93,7 +94,7 @@ __declspec(noinline) uint64_t __fastcall Halo3MuzzleMarkersDetour(
     {
         if(!feature.original)__leave;
         result=feature.original(object,name,markers,capacity,originalObject,interpolated);
-        if(reinterpret_cast<uintptr_t>(_ReturnAddress())!=feature.base+0x368651 ||
+        if(HALOMCCVR_GAME_RETURN_ADDRESS()!=feature.base+0x368651 ||
             !g_halo3MuzzleRequest.lease)__leave;
         const auto previous=g_halo3IndependentShot;
         bool applied=false;

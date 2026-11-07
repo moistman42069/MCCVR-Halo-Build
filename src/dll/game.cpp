@@ -6937,11 +6937,11 @@ namespace
                 {
                     if(feature.fourArgumentResolver)
                         resolved=reinterpret_cast<ReachCollisionResolveFn>(
-                            feature.resolver)(worker.accepted[sample],
+                            lifted::Callable(feature.resolver))(worker.accepted[sample],
                                 desired[sample],accepted,ignoredObject)!=0;
                     else
                         resolved=reinterpret_cast<LegacyCollisionResolveFn>(
-                            feature.resolver)(worker.accepted[sample],
+                            lifted::Callable(feature.resolver))(worker.accepted[sample],
                                 desired[sample],accepted,ignoredObject,-1);
                 }
                 __except(EXCEPTION_EXECUTE_HANDLER)
@@ -20056,11 +20056,11 @@ static constexpr bool kOdstMappedFpEnabled = false;
             if (nativeUnique && getterUnique && typeUnique)
             {
                 g_halo3UnitInVehicle =
-                    reinterpret_cast<Halo3UnitInVehicleFn>(nativeHit);
+                    lifted::Callable(reinterpret_cast<Halo3UnitInVehicleFn>(nativeHit));
                 g_halo3PlayerUnitGetter =
-                    reinterpret_cast<Halo3PlayerUnitGetterFn>(getterHit);
+                    lifted::Callable(reinterpret_cast<Halo3PlayerUnitGetterFn>(getterHit));
                 g_halo3VehicleTypeAccessor =
-                    reinterpret_cast<Halo3VehicleTypeFn>(typeHit);
+                    lifted::Callable(reinterpret_cast<Halo3VehicleTypeFn>(typeHit));
                 // C7: decode the two rip-relative globals from the matched
                 // accessor body (E4 instruction layout: mov rax,[rip+d] at
                 // +0 ends +7 = tag instance table; mov rax,[rip+d] at +22
@@ -20117,7 +20117,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             if (nodeUnique)
             {
                 g_halo3InterpolatedNodes =
-                    reinterpret_cast<Halo3InterpolatedNodesFn>(nodeHit);
+                    lifted::Callable(reinterpret_cast<Halo3InterpolatedNodesFn>(nodeHit));
                 g_halo3NodeBinding.store(
                     static_cast<uint8_t>(Halo3NodeBindingState::Installed),
                     std::memory_order_release);
@@ -20151,7 +20151,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             if (markerUnique)
             {
                 g_halo3MarkersInternal =
-                    reinterpret_cast<Halo3MarkersInternalFn>(markerHit);
+                    lifted::Callable(reinterpret_cast<Halo3MarkersInternalFn>(markerHit));
                 g_halo3HeadBinding.store(
                     static_cast<uint8_t>(Halo3NodeBindingState::Installed),
                     std::memory_order_release);
@@ -20568,7 +20568,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                         RememberInstalledGameHook(
                             reinterpret_cast<void*>(hudElem));
                         g_gameIsPlayback =
-                            reinterpret_cast<GameIsPlaybackFn>(playbackTarget);
+                            lifted::Callable(reinterpret_cast<GameIsPlaybackFn>(playbackTarget));
                         const MH_STATUS createStatus = MH_CreateHook(
                             reinterpret_cast<void*>(visibleTarget),
                             reinterpret_cast<void*>(&GuardedHudCrosshairVisibleHook),
@@ -20861,87 +20861,77 @@ static constexpr bool kOdstMappedFpEnabled = false;
         }
 
         InstallSteps::Mark("core hooks");
-        // Project Reclaimer 0.10 (lifted_engine.h): only the core above is in. Each feature below is its own
-        // transaction and goes in there once it has been run on the translated engine; until then it stays stock.
-        if (lifted::Active())
-            LOG("RECLAIMER 0.10: Halo 3's optional features (world collision, contact melee and sight, direct drive, "
-                "seat aim frame and view, weapon haptics, avatar, dual aim, the chase camera, eye and Forge binds, gun "
-                "band, head-relative tracker and listener, HUD note, player tags, tag names, string ids, part draw, "
-                "boom, tracker HUD height) are not yet ported to the translated engine: each stays stock");
-        else
+        if (InstallLegacyWorldCollision(
+                g_halo3WorldCollision, GameTitle::Halo3, base, size,
+                runtimeGeneration,
+                reinterpret_cast<void*>(&Halo3CollisionResolveDetour),
+                0x001FFD18,nullptr,false,0x001FD748,
+                kHalo3CollisionVectorSignature))
         {
-            if (InstallLegacyWorldCollision(
-                    g_halo3WorldCollision, GameTitle::Halo3, base, size,
-                    runtimeGeneration,
-                    reinterpret_cast<void*>(&Halo3CollisionResolveDetour),
-                    0x001FFD18,nullptr,false,0x001FD748,
-                    kHalo3CollisionVectorSignature))
-            {
-                RememberInstalledGameHook(g_halo3WorldCollision.target);
-                Halo3HookWatchInstalled(Halo3Hook::WorldCollision,
-                                        reinterpret_cast<uintptr_t>(g_halo3WorldCollision.target));
-            }
-            InstallSteps::Mark("world collision");
-            (void)InstallHalo3ContactMelee(base,size,runtimeGeneration);
-            InstallSteps::Mark("contact melee and sight");
-            (void)LegacyDriveInstall(GameTitle::Halo3,base,size);
-            InstallSteps::Mark("direct drive");
-            (void)SeatAimFrameInstall(GameTitle::Halo3,base,size,runtimeGeneration);
-            InstallSteps::Mark("seat aim frame");
-            (void)Halo3SeatViewInstall(base,size,runtimeGeneration);
-            InstallSteps::Mark("seat view");
-            (void)InstallHalo3WeaponHaptics(base,size,runtimeGeneration);
-            InstallSteps::Mark("weapon haptics");
-            (void)InstallHalo3Avatar(base,size,runtimeGeneration);
-            InstallSteps::Mark("avatar");
-            // The rejected early-helper-only detours remain inert. The new optional
-            // path owns acquisition and downstream assist together, with its own
-            // default-off setting and feature-only failure isolation.
-            if(!InstallHalo3DualAim(base,size,runtimeGeneration))
-                (void)InstallHalo3ZoomReader(base,size,runtimeGeneration);
-            BindHalo3GripOwner(base,size);
-            InstallSteps::Mark("dual aim");
-            // The evaluator's chase path, the start of a stock seat's crosshair line (seat_upstream_logic.h 4b): no hook,
-            // so it is bound whether or not the lane above installed.
-            BindHalo3ChaseCamera(base,size,runtimeGeneration);
-            // The record recomposition's first-person eye identity (shot_lag_logic.h 4d): two sites, no hook.
-            (void)BindHalo3DirectorCamera(base,size,runtimeGeneration,g_engineTlsIndex);
-            // Roomscale's Forge Monitor check (roomscale_admission_logic.h): two sites, two reader calls, no hook.
-            (void)BindHalo3SandboxEditor(base,size,runtimeGeneration,g_engineTlsIndex,
-                reinterpret_cast<uintptr_t>(g_halo3PlayerUnitGetter));
-            InstallSteps::Mark("chase camera, eye and Forge binds");
-            // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook; fails closed alone.
-            (void)InstallHalo3GunBand(base,size,runtimeGeneration);
-            InstallSteps::Mark("gun band");
-            // The motion tracker by the head's heading (halo3_head_relative.inl): its own transaction, fails closed alone.
-            (void)InstallHalo3HeadRelative(base,size,runtimeGeneration);
-            InstallSteps::Mark("head-relative tracker and listener");
-            // The vehicle camera note in the game's HUD messages (halo3_hud_note.inl): no hook of its own, it is posted
-            // from the listener hook above; not bound, the note uses the mod's panel.
-            (void)InstallHalo3HudNote(base,size,runtimeGeneration);
-            // Teammates' service tags and arrows (halo3_player_tags.inl): one hook on the navpoint draw; fails closed alone.
-            (void)InstallHalo3PlayerTags(base,size,runtimeGeneration);
-            // The loaded map's tag names (halo3_tag_names.inl): two sites, no hook, read-only; not bound, vehicles are
-            // identified by their physics alone, as before.
-            (void)InstallHalo3TagNames(base,size,runtimeGeneration);
-            // The loaded map's string ids (halo3_string_ids.inl): three sites, no hook, read-only; not bound, a vehicle
-            // camera's hideRegions is not applied.
-            (void)InstallHalo3StringIds(base,size,runtimeGeneration);
-            // A camera's hideParts (halo3_part_draw.inl): its one hook goes in only while a camera asks for it.
-            BindHalo3PartDraw(base,size,runtimeGeneration);
-            // The third-person boom's game side (halo3_vehicle_boom.inl): anchors and tag reads only, no hook; each part
-            // unbound alone leaves the boom on its own fallback.
-            BindHalo3VehicleBoom(base,size,runtimeGeneration);
-            InstallSteps::Mark("HUD note, tag names, string ids, part draw, boom");
-            // The tracker's blips move with the HUD height (halo3_tracker_hud_height.inl): its own transaction too.
-            (void)InstallHalo3TrackerHudHeight(base,size,runtimeGeneration);
-            InstallSteps::Mark("tracker HUD height");
-#if HALOMCCVR_DEV_DIAGNOSTICS
-            InstallHalo3AssistWitness(base,size);   // SHOT Halo 3 assist (dev): the turn, cap hits, residual
-            InstallHalo3ImpactWitness(base,size);   // SHOT IMPACT / SHOT RETICLE Halo 3 (dev): where rounds really go
-            InstallSteps::Mark("dev witnesses");
-#endif
+            RememberInstalledGameHook(g_halo3WorldCollision.target);
+            Halo3HookWatchInstalled(Halo3Hook::WorldCollision,
+                                    reinterpret_cast<uintptr_t>(g_halo3WorldCollision.target));
         }
+        InstallSteps::Mark("world collision");
+        (void)InstallHalo3ContactMelee(base,size,runtimeGeneration);
+        InstallSteps::Mark("contact melee and sight");
+        (void)LegacyDriveInstall(GameTitle::Halo3,base,size);
+        InstallSteps::Mark("direct drive");
+        (void)SeatAimFrameInstall(GameTitle::Halo3,base,size,runtimeGeneration);
+        InstallSteps::Mark("seat aim frame");
+        (void)Halo3SeatViewInstall(base,size,runtimeGeneration);
+        InstallSteps::Mark("seat view");
+        (void)InstallHalo3WeaponHaptics(base,size,runtimeGeneration);
+        InstallSteps::Mark("weapon haptics");
+        (void)InstallHalo3Avatar(base,size,runtimeGeneration);
+        InstallSteps::Mark("avatar");
+        // The rejected early-helper-only detours remain inert. The new optional
+        // path owns acquisition and downstream assist together, with its own
+        // default-off setting and feature-only failure isolation.
+        if(!InstallHalo3DualAim(base,size,runtimeGeneration))
+            (void)InstallHalo3ZoomReader(base,size,runtimeGeneration);
+        BindHalo3GripOwner(base,size);
+        InstallSteps::Mark("dual aim");
+        // The evaluator's chase path, the start of a stock seat's crosshair line (seat_upstream_logic.h 4b): no hook,
+        // so it is bound whether or not the lane above installed.
+        BindHalo3ChaseCamera(base,size,runtimeGeneration);
+        // The record recomposition's first-person eye identity (shot_lag_logic.h 4d): two sites, no hook.
+        (void)BindHalo3DirectorCamera(base,size,runtimeGeneration,g_engineTlsIndex);
+        // Roomscale's Forge Monitor check (roomscale_admission_logic.h): two sites, two reader calls, no hook.
+        (void)BindHalo3SandboxEditor(base,size,runtimeGeneration,g_engineTlsIndex,
+            reinterpret_cast<uintptr_t>(g_halo3PlayerUnitGetter));
+        InstallSteps::Mark("chase camera, eye and Forge binds");
+        // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook; fails closed alone.
+        (void)InstallHalo3GunBand(base,size,runtimeGeneration);
+        InstallSteps::Mark("gun band");
+        // The motion tracker by the head's heading (halo3_head_relative.inl): its own transaction, fails closed alone.
+        (void)InstallHalo3HeadRelative(base,size,runtimeGeneration);
+        InstallSteps::Mark("head-relative tracker and listener");
+        // The vehicle camera note in the game's HUD messages (halo3_hud_note.inl): no hook of its own, it is posted
+        // from the listener hook above; not bound, the note uses the mod's panel.
+        (void)InstallHalo3HudNote(base,size,runtimeGeneration);
+        // Teammates' service tags and arrows (halo3_player_tags.inl): one hook on the navpoint draw; fails closed alone.
+        (void)InstallHalo3PlayerTags(base,size,runtimeGeneration);
+        // The loaded map's tag names (halo3_tag_names.inl): two sites, no hook, read-only; not bound, vehicles are
+        // identified by their physics alone, as before.
+        (void)InstallHalo3TagNames(base,size,runtimeGeneration);
+        // The loaded map's string ids (halo3_string_ids.inl): three sites, no hook, read-only; not bound, a vehicle
+        // camera's hideRegions is not applied.
+        (void)InstallHalo3StringIds(base,size,runtimeGeneration);
+        // A camera's hideParts (halo3_part_draw.inl): its one hook goes in only while a camera asks for it.
+        BindHalo3PartDraw(base,size,runtimeGeneration);
+        // The third-person boom's game side (halo3_vehicle_boom.inl): anchors and tag reads only, no hook; each part
+        // unbound alone leaves the boom on its own fallback.
+        BindHalo3VehicleBoom(base,size,runtimeGeneration);
+        InstallSteps::Mark("HUD note, tag names, string ids, part draw, boom");
+        // The tracker's blips move with the HUD height (halo3_tracker_hud_height.inl): its own transaction too.
+        (void)InstallHalo3TrackerHudHeight(base,size,runtimeGeneration);
+        InstallSteps::Mark("tracker HUD height");
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        InstallHalo3AssistWitness(base,size);   // SHOT Halo 3 assist (dev): the turn, cap hits, residual
+        InstallHalo3ImpactWitness(base,size);   // SHOT IMPACT / SHOT RETICLE Halo 3 (dev): where rounds really go
+        InstallSteps::Mark("dev witnesses");
+#endif
 
         uintptr_t renderHit = sig::Find(base, size, kRenderViewSig);
         uintptr_t prepareHit = sig::Find(base, size, kPrepareViewSig);
@@ -21451,7 +21441,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         }
 
         g_gameIsPlayback =
-            reinterpret_cast<GameIsPlaybackFn>(playbackTarget);
+            lifted::Callable(reinterpret_cast<GameIsPlaybackFn>(playbackTarget));
         const MH_STATUS visibleQueue =
             MH_QueueEnableHook(
                 reinterpret_cast<void*>(visibleTarget));

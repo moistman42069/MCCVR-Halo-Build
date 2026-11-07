@@ -39,6 +39,8 @@ int MCCVR_EnableHook(void*) { return MH_OK; }
 bool WaitForNativeDetourQuiescence(const void* const*,const void* const*,size_t,std::atomic<uint32_t>&){return true;}
 #define LOG(...) ((void)0)
 namespace sig { uintptr_t Find(uintptr_t,size_t,const char*) { return 0; } }
+// The DLL's lifted_engine.h: outside Project Reclaimer 0.10 a game function is called where it is.
+namespace lifted { template <typename Fn> Fn Callable(Fn target) { return target; } }
 
 uint64_t tlsSlots[8]{};
 uint64_t MockReadGs(unsigned long) { return reinterpret_cast<uint64_t>(tlsSlots); }

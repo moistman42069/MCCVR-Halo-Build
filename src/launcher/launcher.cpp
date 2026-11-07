@@ -1164,8 +1164,8 @@ ClientInfo Describe(const std::filesystem::path& launcherDir, const std::wstring
     const reclaimer_host::Version version = ReclaimerVersionOfFile(exe);
     info.text = L"Detected: Project Reclaimer " + WideOf(ReclaimerVersionText(version));
     if (reclaimer_host::RunsRecompiledEngine(version))
-        info.text += L"\nExperimental: from 0.10.0 Project Reclaimer runs its own rebuilt copy of Halo 3. The VR view "
-                     L"works on it; the mod's other Halo 3 features stay as in the flat game for now.";
+        info.text += L"\nExperimental: from 0.10.0 Project Reclaimer runs its own rebuilt copy of Halo 3, and the VR "
+                     L"mod is being ported to it. Some of its features may not work there yet.";
     const std::filesystem::path modDir = ModDir(launcherDir);
     for (const wchar_t* needed : {L"HaloMCCVR.dll", kReclaimerRelayName})
     {
@@ -1301,8 +1301,8 @@ static int LaunchReclaimer(const std::wstring& dir, const ReclaimerClient& clien
     const bool recompiled = reclaimer_host::RunsRecompiledEngine(client.version);
     if (recompiled)
         LauncherLog("Project Reclaimer %s runs a recompiled Halo 3 in the process started here, with no engine "
-                    "worker: HaloMCCVR.dll goes into that process (EXPERIMENTAL: the VR view is ported; Halo 3's "
-                    "other VR features stay as in the flat game for now)",
+                    "worker: HaloMCCVR.dll goes into that process (EXPERIMENTAL: the port to the recompiled engine "
+                    "is in progress; HaloMCCVR.log's RECLAIMER 0.10 lines say what went in and what did not)",
                     ReclaimerVersionText(client.version).c_str());
     if (!reclaimer_host::Proven(client.version))
         LauncherLog("WARNING: the VR mod has not been run with this Project Reclaimer version (it has with: %s). "

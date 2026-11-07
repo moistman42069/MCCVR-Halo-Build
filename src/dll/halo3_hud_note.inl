@@ -193,7 +193,7 @@ bool InstallHalo3HudNote(uintptr_t base, size_t size, uint32_t generation)
         return false;
     }
     note.tlsIndex = reinterpret_cast<const uint32_t*>(tls);
-    note.post.store(reinterpret_cast<Halo3HudMessageFn>(fn), std::memory_order_release);
+    note.post.store(lifted::Callable(reinterpret_cast<Halo3HudMessageFn>(fn)), std::memory_order_release);
     LOG("HUD NOTE Halo 3: bound (generation %u): post +0x%llX -> queue +0x%llX, the way MCC's own +0x%llX posts its "
         "type-3 line; posted from the sound listener update's hook, after the HUD update, on the HUD's thread",
         generation, static_cast<unsigned long long>(fn - base), static_cast<unsigned long long>(queue - base),
@@ -601,7 +601,7 @@ bool InstallOdstHudNote(uintptr_t base, size_t size, uint32_t generation)
     note.tlsHudUsers = kOdstTlsHudUsers;
     note.queueOffset = kOdstHudQueueOffset;
     note.checksGameMode = false;
-    note.queue.store(reinterpret_cast<Halo3HudQueueFn>(queue), std::memory_order_release);
+    note.queue.store(lifted::Callable(reinterpret_cast<Halo3HudQueueFn>(queue)), std::memory_order_release);
     LOG("HUD NOTE ODST: bound (generation %u): queue +0x%llX, posted as MCC's own +0x%llX posts its type-3 line, from "
         "the sound listener update's hook",
         generation, static_cast<unsigned long long>(queue - base), static_cast<unsigned long long>(site - base));
@@ -867,7 +867,7 @@ bool InstallHaloCEHudNote(uintptr_t base, size_t size, uint32_t generation)
     note.printReady = &HaloCEHudNoteReady;
     note.maxChars = hud_note::kHaloCEMaxChars;
     note.anySession = true;
-    note.print.store(reinterpret_cast<HudPrintFn>(print), std::memory_order_release);
+    note.print.store(lifted::Callable(reinterpret_cast<HudPrintFn>(print)), std::memory_order_release);
     LOG("HUD NOTE Halo CE: bound (generation %u): print +0x%llX (as MCC's own +0x%llX and the checkpoint text print "
         "their lines), from the player's unit control update",
         generation, static_cast<unsigned long long>(print - base), static_cast<unsigned long long>(caller - base));
@@ -1047,7 +1047,7 @@ bool InstallHalo2HudNote(uintptr_t base, size_t size, uint32_t generation)
     note.printHudFlags = reinterpret_cast<const uintptr_t*>(rip(update, kHalo2HudUpdateFlagsDisp));
     note.printReady = &Halo2HudNoteReady;
     note.maxChars = hud_note::kHalo2MaxChars;
-    note.print.store(reinterpret_cast<HudPrintFn>(print), std::memory_order_release);
+    note.print.store(lifted::Callable(reinterpret_cast<HudPrintFn>(print)), std::memory_order_release);
     LOG("HUD NOTE Halo 2: bound (generation %u): print +0x%llX (as MCC's own +0x%llX and the checkpoint text print "
         "their lines), from the player's control update",
         generation, static_cast<unsigned long long>(print - base), static_cast<unsigned long long>(caller - base));
@@ -1186,7 +1186,7 @@ bool InstallReachHudNote(uintptr_t base, size_t size, uint32_t generation, const
     note.tlsPlayers = kReachTlsPlayers;
     note.checksGameMode = true;
     note.postTakesPlayer = true;
-    note.post.store(reinterpret_cast<Halo3HudMessageFn>(post), std::memory_order_release);
+    note.post.store(lifted::Callable(reinterpret_cast<Halo3HudMessageFn>(post)), std::memory_order_release);
     LOG("HUD NOTE Reach: bound (generation %u): post +0x%llX -> queue +0x%llX (as MCC's own +0x%llX and the "
         "checkpoint text post their lines), from the motion tracker's hook on the simulation thread",
         generation, static_cast<unsigned long long>(post - base), static_cast<unsigned long long>(queue - base),

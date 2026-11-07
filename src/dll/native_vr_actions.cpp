@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <intrin.h>
 #include <MinHook.h>
+#include "lifted_minhook.h"
 #include <atomic>
 
 // The hooked native READERS are leaves whose LTCG callers keep volatile registers live across the call
