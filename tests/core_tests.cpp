@@ -2360,6 +2360,37 @@ int main()
         }
         Check(published == 20, "every animated sample publishes");
 
+        // The coverage readback publishes a capture on a later frame than it was taken. The floor counts from the
+        // capture, so every sample still publishes; counted from the publish frame, only every other one did.
+        const auto pipelined = [gap](uint64_t readbackFrames, bool markCaptureFrame) {
+            AuthoredReticleRefreshState state{};
+            uint64_t lastSampled = 0, pendingCapture = 0, publishAt = 0;
+            int count = 0;
+            for (uint64_t serial = 1; serial <= 144; ++serial)
+            {
+                if (pendingCapture && serial == publishAt)
+                {
+                    MarkAuthoredReticleUploaded(state, 1, 0, 0, markCaptureFrame ? pendingCapture : serial);
+                    pendingCapture = 0;
+                    ++count;
+                }
+                // No capture while its readback is in flight, as VR_ShouldCaptureAuthoredReticleThisFrame.
+                if (pendingCapture || !ShouldSampleAuthoredCapture(gap, lastSampled, serial))
+                    continue;
+                lastSampled = serial;
+                if (ShouldUploadAuthoredReticle(AuthoredReticleRefreshPolicy::BoundedAnimation, true, true, 1, 0, 0,
+                                                serial, 1, state))
+                {
+                    pendingCapture = serial;
+                    publishAt = serial + readbackFrames;
+                }
+            }
+            return count;
+        };
+        Check(pipelined(1, true) == 24 && pipelined(2, true) == 24,
+              "a capture published after its readback keeps the one-in-six cadence");
+        Check(pipelined(1, false) == 12, "counted from the publish frame, every other capture was refused");
+
         // Halo 4 has no proven stable weapon-art identity, so animation=0
         // holds the fixed key between slow probes rather than freezing it for
         // the rest of the level. Every 30-frame sample must still publish.

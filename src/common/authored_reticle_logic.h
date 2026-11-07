@@ -195,6 +195,11 @@ inline bool ShouldUploadAuthoredReticle(
     return AuthoredReticleIdentitySettled(capturedKey, frameSerial, state);
 }
 
+// `frameSerial` is the frame the published CAPTURE was taken on, not the frame it reached the swapchain. The
+// coverage readback publishes a capture a frame or more after it was taken; a floor counted from that later frame
+// refused the next capture `kMinimumUploadGapFrames` after this one, so only every other one published (headset
+// logs: "12 uploaded, 12 skipped" every 2 s at 72 Hz for Halo 4 and "10 uploaded, 10 skipped" for Halo 3, half
+// the one-in-six the setting asks for), and the refused capture's work was thrown away.
 inline void MarkAuthoredReticleUploaded(
     AuthoredReticleRefreshState& state,
     uint64_t capturedKey,

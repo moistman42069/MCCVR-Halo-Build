@@ -19184,10 +19184,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         {
                             if (authoredCrosshairKey != 0)
                             {
+                                // The frame the published capture was taken on: the
+                                // cadence is the captures', not the readback's.
                                 MarkAuthoredReticleUploaded(
                                     s_refreshState, authoredCrosshairKey,
                                     authoredColorState, authoredCrosshairDraws,
-                                    g_preparedFrame.serial);
+                                    g_authoredReticleUploadedSerial
+                                        ? g_authoredReticleUploadedSerial
+                                        : g_preparedFrame.serial);
                             }
                             ++s_uploadsDone;
                         }
