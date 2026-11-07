@@ -27,9 +27,10 @@
 //   entries) and replaces the draw's own count check. So the count is never assumed: it is read from those two
 //   displacements in the running code, which must agree with each other and with the stride.
 //
-//   A PLAYER navpoint (a teammate's service tag and arrow) has icon #1 0, 1 or none and none of flags 0x01 / 0x40.
-//   Objectives write icon #1 = 2 and flags 0x41 / 0xC1; a flag, ball or bomb carrier sets 0x01 and keeps its
-//   marker, so carriers are left as the game draws them.
+//   A PLAYER navpoint (a teammate's service tag and arrow) has icon #1 0, 1 or none and not the radar flag 0x40.
+//   Objectives write icon #1 = 2 and flags 0x41 / 0xC1. A player on the off-screen ring (0x01: a flag, ball or bomb
+//   carrier, and the players an Infection game of about a hundred marks so, 3 or 4 a draw) keeps a player's icon and
+//   is a player's tag too: left as the game draws them, they were the tags the settings did not reach (2026-11-07).
 //
 // THE SEAM: chud_draw_navpoints. Around the original, each player entry's alpha multiplier and distance scale are
 // set from the player's settings and put back afterwards (only where they still hold what was written, so an update
@@ -145,7 +146,7 @@ inline constexpr size_t kAlphaOffset = 0x14;
 inline constexpr size_t kPositionOffset = 0x24;
 inline constexpr size_t kValidOffset = 0x30;
 inline constexpr size_t kScaleOffset = 0x38;
-inline constexpr uint32_t kObjectiveFlags = 0x41; // the off-screen ring and the radar: objectives and carriers
+inline constexpr uint32_t kRadarFlag = 0x40;       // the radar: objectives (with the off-screen ring, 0x41)
 inline constexpr int32_t kObjectiveIcon = 2;
 // The view the projection reads: the camera's position, three floats at +8.
 inline constexpr size_t kViewPositionOffset = 0x08;
@@ -178,10 +179,10 @@ inline int HostEntryCount(uint64_t value) noexcept
                : 0;
 }
 
-// A teammate's service tag and arrow, not an objective or a carrier.
+// A player's service tag and arrow, not an objective.
 inline bool IsPlayerTag(int32_t icon, uint32_t flags) noexcept
 {
-    return icon != kObjectiveIcon && (flags & kObjectiveFlags) == 0;
+    return icon != kObjectiveIcon && (flags & kRadarFlag) == 0;
 }
 
 struct Settings

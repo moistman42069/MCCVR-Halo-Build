@@ -3414,8 +3414,8 @@ namespace
         SettingGroup tags("Player tags", SettingGroup::kNameOnly);
         ImGui::Text("Player tags");
         changed |= ImGui::Checkbox("Show player tags", &g_config.player_tags_show);
-        ImGui::TextDisabled("The service tag and arrow over each teammate. Objective markers and flag, ball and "
-                            "bomb carriers are not changed. Halo 3 (MCC and Project Reclaimer) and ODST. Live.");
+        ImGui::TextDisabled("The service tag and arrow over each player, a flag, ball or bomb carrier's too. Objective "
+                            "markers are not changed. Halo 3 (MCC and Project Reclaimer) and ODST. Live.");
         if (g_config.player_tags_show)
         {
             float tagScalePercent = g_config.player_tags_scale * 100.0f;
