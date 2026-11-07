@@ -269,6 +269,17 @@ int main()
                                      0x2A, 0x2D, 0x00, 0x48, 0x89, 0x53, 0xF8};
             std::memcpy(added + 0x10, bytes, sizeof(bytes));
             CHECK(GuestReturnBeforeCall(added, 0x30, 0x1000, 0x700000) == 0x2D2A3B);
+            // A call after it: the address was that call's, not this one's.
+            const uint8_t call[] = {0xE8, 0x10, 0x20, 0x00, 0x00};
+            std::memcpy(added + 0x28, call, sizeof(call));
+            CHECK(GuestReturnBeforeCall(added, 0x38, 0x1000, 0x700000) == 0);
+        }
+        // Far before the call (the muzzle composer's caller at RVA 0x2C3B28 forms it 0xBA bytes ahead).
+        {
+            uint8_t far[0x100]{};
+            const uint8_t lea[] = {0x4C, 0x8D, 0x88, 0x38, 0x46, 0x2C, 0x00}; // lea r9, [rax + 0x2C4638]
+            std::memcpy(far + 0x20, lea, sizeof(lea));
+            CHECK(GuestReturnBeforeCall(far, 0x20 + 0xBA, 0x1000, 0x700000) == 0x2C4638);
         }
         struct Found { size_t stub; uint32_t returnRva; };
         std::vector<Found> found;

@@ -467,7 +467,7 @@ inline uint64_t GuestReturnOfCall(const uint8_t* host, size_t hostLength, uint64
 // holds the guest image's base) and stored. The client's version pops it (ctx rsp + 8) and leaves its result in ctx.
 inline constexpr uint8_t kStubPrefix[8] = {0xFF, 0x25, 0x02, 0x00, 0x00, 0x00, 0xCC, 0xCC};
 inline constexpr size_t kStubSize = 16;
-inline constexpr size_t kStubLeaWindow = 0x90; // how far before the call the lea is looked for
+inline constexpr size_t kStubLeaWindow = 0x200; // how far before the call the lea is looked for
 
 // Whether `stub` (kStubSize bytes) is such a stub.
 inline bool IsStub(const uint8_t* stub)
@@ -477,13 +477,23 @@ inline bool IsStub(const uint8_t* stub)
 
 // The guest return RVA the translated code formed before the call at `call` (an offset in `code`): the constant of the
 // last `lea r64, [r64 + disp32]` (base register not rsp) or `add r64, imm32` in the window before it that lies in
-// [lowRva, highRva); 0 if there is none. Both forms add the RVA to the guest image's base held in a register.
+// [lowRva, highRva) and follows every other call in that window; 0 if there is none. Both forms add the RVA to the
+// guest image's base held in a register. A call between belongs to the address formed before it, never to this one
+// (a byte that only looks like a call loses this call its name, never gives it a wrong one).
 inline uint32_t GuestReturnBeforeCall(const uint8_t* code, size_t call, uint32_t lowRva, uint32_t highRva)
 {
     const size_t from = call > kStubLeaWindow ? call - kStubLeaWindow : 0;
     uint32_t found = 0;
     for (size_t at = from; at + 7 <= call; ++at)
     {
+        if (code[at] == 0xE8 && at + 5 <= call)
+        {
+            int32_t rel = 0;
+            std::memcpy(&rel, code + at + 1, 4);
+            if (rel > -0x4000000 && rel < 0x4000000) // a near call, as the translated code's are
+                found = 0;
+            continue;
+        }
         if ((code[at] & 0xF8) != 0x48) // REX.W
             continue;
         const uint8_t opcode = code[at + 1], modrm = code[at + 2];
