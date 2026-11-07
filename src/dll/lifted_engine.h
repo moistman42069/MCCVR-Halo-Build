@@ -54,6 +54,12 @@ MH_STATUS AfterDisable(LPVOID target, MH_STATUS status);
 // A detour that changes its stack arguments (the fifth on) must say how many before its hook is created, so the call
 // to the original writes them back; by default none is written back.
 void SetStackArguments(LPVOID target, unsigned count);
+// A hook leaves the guest's volatile registers as the original left them (halo3.dll's whole-program-optimised callers
+// read some of them after a call). The original gets the detour's integer arguments, and its floating-point ones only
+// where said here (bit n: argument n, 0-3), before the hook is created; the others reach it as the caller passed
+// them. The detour's float result reaches the caller only for a function said to return one.
+void SetFloatArguments(LPVOID target, uint32_t mask);
+void SetFloatResult(LPVOID target);
 
 // What to call for a game function at `target` (an address in the guest image). `target` itself otherwise. The call
 // works only from inside a hooked game call on the same thread (it runs on that call's guest registers and stack);

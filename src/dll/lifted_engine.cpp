@@ -53,7 +53,14 @@ struct Record
     volatile uint64_t* replacementSlot = nullptr;
     void* replacement = nullptr;
     void* replacementEntry = nullptr;
+    // Hooks: which of the first four arguments are floating-point (bit n: the guest's xmm n), and whether the function
+    // returns one in xmm0 (SetFloatArguments, SetFloatResult).
+    uint32_t floatArgs = 0;
+    bool floatResult = false;
 };
+
+// The guest's volatile registers in ctx (rcx, rdx, r8-r11, xmm0-xmm5): 0x10 + 0x20 + 0x60 bytes.
+constexpr size_t kVolatileBytes = 0x90;
 
 struct Frame
 {
@@ -64,6 +71,10 @@ struct Frame
                                     // mod's own calls
     bool viaReplacement;            // entered through the client's version: the guest return address is at guestRsp
     bool inOriginal;                // ... and that version is running now, as the detour's original
+    bool originalRan;               // hooks: the original ran, and left volatilesAfter
+    // Hooks: the guest's volatile registers as the caller left them, and as the original left them (FinishFrame).
+    uint8_t volatilesEntry[kVolatileBytes];
+    uint8_t volatilesAfter[kVolatileBytes];
 };
 constexpr int kMaxFrames = 64;
 thread_local Frame t_frames[kMaxFrames];
@@ -71,6 +82,47 @@ thread_local int t_depth = 0;
 
 // Below a hooked call's guest stack pointer, where a game function the mod calls gets its own frame.
 constexpr uint64_t kCallGap = 0x2000;
+
+Frame& PushFrame(uint8_t* ctx, uint64_t guestRsp, const Record* record, const uint64_t* hostReturnSlot,
+                 bool viaReplacement)
+{
+    Frame& frame = t_frames[t_depth++];
+    frame.ctx = ctx;
+    frame.guestRsp = guestRsp;
+    frame.record = record;
+    frame.hostReturnSlot = hostReturnSlot;
+    frame.viaReplacement = viaReplacement;
+    frame.inOriginal = false;
+    frame.originalRan = false;
+    return frame;
+}
+
+void SaveVolatiles(const uint8_t* ctx, uint8_t* out)
+{
+    std::memcpy(out, ctx + 0x08, 0x10);
+    std::memcpy(out + 0x10, ctx + 0x40, 0x20);
+    std::memcpy(out + 0x30, ctx + 0x90, 0x60);
+}
+void RestoreVolatiles(uint8_t* ctx, const uint8_t* in)
+{
+    std::memcpy(ctx + 0x08, in, 0x10);
+    std::memcpy(ctx + 0x40, in + 0x10, 0x20);
+    std::memcpy(ctx + 0x90, in + 0x30, 0x60);
+}
+
+// halo3.dll is built with whole-program optimisation, and its translation keeps that: a caller may read guest registers
+// the called function leaves alone, or the ones it leaves behind, right after the call (seen for the playback check
+// 0xF01A0 and the weapon-IK mode setter 0x26DD98). So a hook is transparent to the guest's volatile registers: after
+// the detour they are as the original left them (as the caller left them, when the detour did not run it), the
+// detour's own xmm0 only for a function that returns a float.
+void FinishFrame(const Record* record, uint8_t* ctx, const Frame& frame)
+{
+    uint8_t result[16];
+    std::memcpy(result, ctx + lifted_engine::kCtxXmm0, sizeof(result)); // the detour's, as LiftedCallNative left it
+    RestoreVolatiles(ctx, frame.originalRan ? frame.volatilesAfter : frame.volatilesEntry);
+    if (record->floatResult)
+        std::memcpy(ctx + lifted_engine::kCtxXmm0, result, sizeof(result));
+}
 
 SRWLOCK g_lock = SRWLOCK_INIT;
 std::atomic<bool> g_active{false};
@@ -83,6 +135,8 @@ lifted_engine::Table g_table;
 std::unordered_map<uintptr_t, Record*> g_hooks;     // by guest target
 std::unordered_map<uintptr_t, Record*> g_callables; // by guest target
 std::unordered_map<uintptr_t, unsigned> g_stackArgs;
+std::unordered_map<uintptr_t, uint32_t> g_floatArgs;
+std::unordered_map<uintptr_t, bool> g_floatResults;
 std::vector<Record*> g_allRecords;
 // The stub slots of the client's own versions of guest functions, by guest RVA; built on the first hook.
 std::unordered_map<uint32_t, volatile uint64_t*> g_replacements;
@@ -554,16 +608,18 @@ uint64_t PairCallSite(uint64_t hostReturn, const lifted_engine::Record& caller, 
 extern "C" uint64_t LiftedDispatch(Record* record, uint8_t* ctx, uint64_t guestRsp, const uint64_t hostArgs[4],
                                    const uint64_t* hostReturnSlot)
 {
-    lifted_engine::CtxFromHostArgs(record->adapter, hostArgs, ctx);
     // Too deep to track, or the client's own version of this function, run as this hook's original, running the body
     // itself: the original alone.
     if (t_depth >= kMaxFrames || (t_depth && t_frames[t_depth - 1].record == record && t_frames[t_depth - 1].inOriginal))
         return LiftedCallBody(record->trampoline, ctx, guestRsp, hostArgs);
     record->entered.fetch_add(1, std::memory_order_relaxed);
-    t_frames[t_depth++] = Frame{ctx, guestRsp, record, hostReturnSlot};
+    Frame& frame = PushFrame(ctx, guestRsp, record, hostReturnSlot, false);
+    SaveVolatiles(ctx, frame.volatilesEntry); // as the caller left them, before the arguments are written in
+    lifted_engine::CtxFromHostArgs(record->adapter, hostArgs, ctx);
     uint64_t stack[8];
     std::memcpy(stack, reinterpret_cast<const void*>(guestRsp + 0x28), sizeof(stack));
     const uint64_t result = LiftedCallNative(record->detour, ctx, stack);
+    FinishFrame(record, ctx, frame);
     --t_depth;
     return result;
 }
@@ -590,10 +646,12 @@ extern "C" uint64_t LiftedReplacementDispatch(Record* record, uint8_t* ctx, cons
     else
     {
         record->entered.fetch_add(1, std::memory_order_relaxed);
-        t_frames[t_depth++] = Frame{ctx, guestRsp, record, hostReturnSlot, true, false};
+        Frame& frame = PushFrame(ctx, guestRsp, record, hostReturnSlot, true);
+        SaveVolatiles(ctx, frame.volatilesEntry);
         uint64_t stack[8];
         std::memcpy(stack, reinterpret_cast<const void*>(guestRsp + 0x28), sizeof(stack));
         result = LiftedCallNative(record->detour, ctx, stack);
+        FinishFrame(record, ctx, frame);
         --t_depth;
         *reinterpret_cast<uint64_t*>(ctx + lifted_engine::kCtxRax) = result;
     }
@@ -604,12 +662,27 @@ extern "C" uint64_t LiftedReplacementDispatch(Record* record, uint8_t* ctx, cons
 
 namespace
 {
-// The block the Windows-side entries fill: rcx, rdx, r8, r9, then xmm0-xmm3.
+// The block the Windows-side entries fill: rcx, rdx, r8, r9, then xmm0-xmm3. Every one of them, for a game function the
+// mod calls (its signature is not known here).
 void ArgsToCtx(const uint8_t* block, uint8_t* ctx)
 {
     for (int i = 0; i < 4; ++i)
         std::memcpy(ctx + lifted_engine::kGuestArgOffsets[i], block + 8 * i, 8);
     std::memcpy(ctx + lifted_engine::kCtxXmm0, block + 0x20, 0x40);
+}
+
+// Only the hooked function's own arguments: the integer ones its body takes (its adapter), the floating-point ones it
+// was declared to take. The rest of the guest's registers stay as the caller left them (FinishFrame).
+void HookArgsToCtx(const Record& record, const uint8_t* block, uint8_t* ctx)
+{
+    for (int i = 0; i < 4; ++i)
+    {
+        if (record.floatArgs & (1u << i))
+            std::memcpy(ctx + lifted_engine::kCtxXmm0 + lifted_engine::kCtxXmmStride * i, block + 0x20 + 0x10 * i,
+                        0x10);
+        else if (record.adapter.hostRegOfGuestArg[i] != lifted_engine::kNoReg)
+            std::memcpy(ctx + lifted_engine::kGuestArgOffsets[i], block + 8 * i, 8);
+    }
 }
 } // namespace
 
@@ -624,17 +697,18 @@ extern "C" uint64_t LiftedCallOriginal(Record* record, uint8_t* block, const uin
         std::memset(block + 0x20, 0, 16);
         return 0;
     }
-    const Frame frame = t_frames[at];
-    ArgsToCtx(block, frame.ctx);
+    Frame& frame = t_frames[at];
+    RestoreVolatiles(frame.ctx, frame.volatilesEntry); // as the caller left them...
+    HookArgsToCtx(*record, block, frame.ctx);          // ...with the detour's arguments
     if (record->stackArgs)
         std::memcpy(reinterpret_cast<void*>(frame.guestRsp + 0x28), callerStack,
                     8 * (std::min)(record->stackArgs, 8u));
     uint64_t result = 0;
     if (frame.viaReplacement)
     {
-        t_frames[at].inOriginal = true;
+        frame.inOriginal = true;
         result = CallReplacement(record, frame.ctx, frame.guestRsp);
-        t_frames[at].inOriginal = false;
+        frame.inOriginal = false;
     }
     else
     {
@@ -642,6 +716,8 @@ extern "C" uint64_t LiftedCallOriginal(Record* record, uint8_t* block, const uin
         lifted_engine::HostArgsFromCtx(record->adapter, frame.ctx, host);
         result = LiftedCallBody(record->trampoline, frame.ctx, frame.guestRsp, host);
     }
+    frame.originalRan = true;
+    SaveVolatiles(frame.ctx, frame.volatilesAfter);
     std::memcpy(block + 0x20, frame.ctx + lifted_engine::kCtxXmm0, 16);
     return result;
 }
@@ -663,7 +739,7 @@ extern "C" uint64_t LiftedCallGame(Record* record, uint8_t* block, const uint64_
     uint64_t host[4]{};
     lifted_engine::HostArgsFromCtx(record->adapter, top.ctx, host);
     uint8_t* const ctx = top.ctx;
-    t_frames[t_depth++] = Frame{ctx, guestRsp, record, nullptr};
+    PushFrame(ctx, guestRsp, record, nullptr, false);
     const uint64_t result = LiftedCallBody(record->trampoline, ctx, guestRsp, host);
     --t_depth;
     std::memcpy(block + 0x20, ctx + lifted_engine::kCtxXmm0, 16);
@@ -875,6 +951,9 @@ MH_STATUS CreateHook(LPVOID target, LPVOID detour, LPVOID* original)
         record->detour = detour;
         const auto args = g_stackArgs.find(address);
         record->stackArgs = args == g_stackArgs.end() ? 0 : args->second;
+        const auto floats = g_floatArgs.find(address);
+        record->floatArgs = floats == g_floatArgs.end() ? 0 : floats->second;
+        record->floatResult = g_floatResults.count(address) != 0;
         record->entryStub = MakeStub(record, &LiftedHookEntry);
         record->origStub = MakeStub(record, &LiftedOrigEntry);
         status = record->entryStub && record->origStub
@@ -970,6 +1049,20 @@ MH_STATUS RemoveHook(LPVOID target)
     }
     ReleaseSRWLockExclusive(&g_lock);
     return status;
+}
+
+void SetFloatArguments(LPVOID target, uint32_t mask)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    g_floatArgs[reinterpret_cast<uintptr_t>(target)] = mask & 0xF;
+    ReleaseSRWLockExclusive(&g_lock);
+}
+
+void SetFloatResult(LPVOID target)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    g_floatResults[reinterpret_cast<uintptr_t>(target)] = true;
+    ReleaseSRWLockExclusive(&g_lock);
 }
 
 void SetStackArguments(LPVOID target, unsigned count)

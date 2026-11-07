@@ -20456,6 +20456,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
             RememberInstalledGameHook(reinterpret_cast<void*>(hudXform));
             if (hudXform && !sig::Find(hudXform+1, base+size-hudXform-1, kHudXformSig))
             {
+                // Its three arguments are floats, and the detour scales two of them (lifted_engine.h).
+                lifted::SetFloatArguments(reinterpret_cast<void*>(hudXform), 0x7);
                 if (MH_CreateHook(reinterpret_cast<void*>(hudXform),
                                   reinterpret_cast<void*>(&GuardedHudXformHook),
                                   reinterpret_cast<void**>(&g_realHudXform)) == MH_OK &&
