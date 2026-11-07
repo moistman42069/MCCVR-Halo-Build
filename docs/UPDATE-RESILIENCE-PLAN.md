@@ -26,6 +26,21 @@ functions with its own versions, and enlarged several of its tables.
    list on each Reclaimer release, and prefer strides read from the engine's own code (an imul or lea in a proven
    function) over constants.
 
+2a. **The session reader (Co-op safe, automatic).** It believes the player count and machine mask only when the
+   players array proves Halo 3's layout, with a maximum of 16 players. Reclaimer 0.10 raises players to 128 and
+   machines to 128 (`[capacity] players.count: 0x10 -> 0x80`), so every read says "not read" and Co-op safe stays on
+   for the whole session, solo levels included (2026-11-07 log: "The session as last read: not read"). That fails
+   safe, but every one-machine feature is then off in solo play too. *Resilient form:* take the array's maximum
+   and the mask's width from the array header and the host's own capacity, not from constants, and keep the
+   simulation type (which still reads) as the floor: sync-client is always shared.
+2b. **The navpoint count.** The player tag settings read how many navpoints a HUD keeps from the draw's own
+   displacements in halo3.dll's code: 20. Reclaimer 0.10 keeps 212 (`hud.markers: 0x14 -> 0xd4`) and runs a version
+   of the draw of its own (exe+0x2E636C0) that draws all 212 itself when it takes the call, and only otherwise runs the
+   20-entry translated body the mod hooks. In the co-op games of 2026-11-07 the translated body ran every frame, but
+   a host that takes the call would leave every tag as the game draws it. *Resilient form:* hook the host's own
+   version of a replaced function where there is one (its entry is in the "client's own version" log line) and read
+   the count from the host's capacity.
+
 ## Behaviour the mod assumes of its host
 
 3. **Window focus.** The mod's MCC keep-alive (a faked WM_ACTIVATE, a swallowed WM_KILLFOCUS) left Reclaimer 0.10
