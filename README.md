@@ -76,6 +76,9 @@ the mod into the game. Check your ZIP against the release's `SHA256.txt` and all
 
 ## Project Reclaimer
 
+The VR mod works with Project Reclaimer 0.9 versions. **Project Reclaimer 0.10.0 and later can't run it yet:** they
+run their own rebuilt copy of Halo 3 instead of MCC's, and the launcher says so instead of starting them.
+
 1. Install as above, and run Project Reclaimer once on its own first.
 2. In the launcher's **Project Reclaimer** section, press **Detect** (it picks the version you ran last), or
    **Browse** to `project-reclaimer-client-v<version>.exe`.
