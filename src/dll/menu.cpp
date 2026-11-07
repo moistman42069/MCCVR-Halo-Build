@@ -2188,11 +2188,11 @@ namespace
             &g_config.vehicle_wheel_max_deg, 30.0f, 180.0f, "%.0f");
         changed |= vr_menu::SliderFloat("Wheel deadzone (deg)",
             &g_config.vehicle_wheel_deadzone_deg, 0.0f, 30.0f, "%.0f");
-        ImGui::Spacing();
-        ImGui::Separator();
+        }
+        if (SectionHeader("Vehicle cameras (every title)##section", ImGuiTreeNodeFlags_None))
         {
-        SettingGroup vehicleCameras("Vehicle cameras (every title)", SettingGroup::kNameOnly);
-        ImGui::Text("Vehicle cameras (every title)");
+        {
+        SettingGroup vehicleCameras("Vehicle cameras", SettingGroup::kNameOnly);
         changed |= ImGui::Checkbox("Cameras from halomccvr_vehicle_cameras.json",
                                    &g_config.vehicle_cameras);
         changed |= Combo("Note when the camera changes", &g_config.vehicle_camera_note,
