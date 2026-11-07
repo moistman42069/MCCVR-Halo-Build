@@ -7538,10 +7538,31 @@ int main()
             "Halo 3 rejects the failed two-record alternate layout candidate");
         const HudLayoutAdapter* mergedHud = HudLayoutAdapterFor(HudLayoutProfile::Halo3, true);
         Check(mergedHud != halo3Hud && HudLayoutAcceptedCountOk(*mergedHud, 3) &&
-                  HudLayoutAcceptedCountOk(*mergedHud, 6) && !HudLayoutAcceptedCountOk(*mergedHud, 2) &&
-                  !HudLayoutAcceptedCountOk(*mergedHud, 7) && !mergedHud->scanMappedRegions &&
+                  HudLayoutAcceptedCountOk(*mergedHud, 6) && HudLayoutAcceptedCountOk(*mergedHud, 8) &&
+                  !HudLayoutAcceptedCountOk(*mergedHud, 2) && !HudLayoutAcceptedCountOk(*mergedHud, 9) &&
+                  !mergedHud->scanMappedRegions && HudLayoutAdapterWellFormed(*mergedHud) &&
                   HudLayoutAdapterFor(HudLayoutProfile::Halo3ODST, true) == odstHud,
-            "Project Reclaimer's merged maps: Halo 3 takes both sets of its three records, never fewer than one set");
+            "Project Reclaimer's merged maps: Halo 3 takes both sets of its three records and up to two of ODST's, "
+            "never fewer than one set");
+        {
+            // ODST's levels there draw their HUD from ODST's own record, which differs from Halo 3's only in where
+            // the motion sensor sits: both shapes are searched for, each compared in full.
+            Check(HudLayoutAnchorCount(*mergedHud) == 2 && HudLayoutAnchorCount(*halo3Hud) == 1,
+                "Project Reclaimer's Halo 3 search also takes ODST's record; MCC's Halo 3 search does not");
+            const HudLayoutAnchorView odstShape = HudLayoutAnchorAt(*mergedHud, 1);
+            bool sameAsOdst = odstShape.anchorLength == odstHud->anchorLength &&
+                odstShape.safeFrameOffset == odstHud->safeFrameOffset &&
+                mergedHud->depthFromSlot == odstHud->depthFromSlot;
+            for (int i = 0; sameAsOdst && i < odstShape.anchorLength; ++i)
+                sameAsOdst = odstShape.anchor[i] == odstHud->anchor[i] && odstShape.mask[i] == 0xFF;
+            Check(sameAsOdst && std::strcmp(mergedHud->altAnchors[0].name, "ODST") == 0,
+                "ODST's shape is MCC's ODST record exactly, fully compared, and named in the log");
+            float sensorX = 0.0f;
+            std::memcpy(&sensorX, odstShape.anchor + 8, sizeof(sensorX));
+            Check(sensorX == 2000.0f && std::memcmp(odstShape.anchor, mergedHud->anchor.data(), 8) == 0 &&
+                      std::memcmp(odstShape.anchor + 8, mergedHud->anchor.data() + 8, 4) != 0,
+                "the two shapes share the 1280x720 prefix and differ at the motion sensor (2000 vs 55)");
+        }
         Check(HudLayoutAcceptedCountOk(*odstHud, 1) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 0) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 2),
