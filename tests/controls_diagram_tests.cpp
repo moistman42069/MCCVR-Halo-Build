@@ -50,7 +50,7 @@ void CheckDefaults()
     const Labels fixed=BuiltIns(rows.Make(Context::OnFoot),Gestures{});
     Check(Has(fixed,LeftStick,"Move")&&Has(fixed,RightStick,"Turn")&&Has(fixed,LeftMenu,"Pause (Start)")&&
         !Mentions(foot,LeftStick,"Move"),"the fixed controls are built in, not mapped");
-    Check(Has(foot,B,"Pause (Y held)")&&Has(foot,Y,"Pause (B held)"),"the mod's Y + B pause on both buttons");
+    Check(Has(foot,B,"Pause (while Y held)")&&Has(foot,Y,"Pause (while B held)"),"the mod's Y + B pause on both buttons");
     Check(!Mentions(foot,RightGrip,"Banshee"),"seat rows are not on foot");
 
     const Labels seat=Build(rows.Make(Context::Vehicle));
@@ -62,7 +62,7 @@ void CheckDefaults()
         "the Banshee's seat rows");
     Check(!Mentions(seat,X,"Reload")&&Has(seatFixed,X,"Camera tether (hold: recentre view)")&&
         Has(seatFixed,Y,"Next camera (hold: recentre view)"),"left X and Y are the vehicle cameras' in a seat");
-    Check(Has(seat,Y,"Pause (B held)"),"the pause still reads left Y in a seat");
+    Check(Has(seat,Y,"Pause (while B held)"),"the pause still reads left Y in a seat");
 }
 
 void CheckHandsAndChords()
@@ -72,12 +72,12 @@ void CheckHandsAndChords()
     rows.inputs[vr_mapping::Equipment].more[1]=vr_mapping::kAirEquipment;
     Setup setup=rows.Make(Context::OnFoot);
     Labels labels=Build(setup);
-    Check(Has(labels,LeftTrigger,"Zoom (support hand on the gun)")&&
-        Has(labels,LeftTrigger,"Equipment / ability (left grip held)"),"chords name what is held first");
+    Check(Has(labels,LeftTrigger,"Zoom (while support hand on the gun)")&&
+        Has(labels,LeftTrigger,"Equipment / ability (while empty grip held)"),"chords name what is held first");
     setup.leftHanded=true;
     labels=Build(setup);
-    Check(Has(labels,LeftTrigger,"Fire")&&Has(labels,RightTrigger,"Zoom (support hand on the gun)")&&
-        Has(labels,RightTrigger,"Equipment / ability (right grip held)")&&Has(labels,LeftGrip,"Melee"),
+    Check(Has(labels,LeftTrigger,"Fire")&&Has(labels,RightTrigger,"Zoom (while support hand on the gun)")&&
+        Has(labels,RightTrigger,"Equipment / ability (while empty grip held)")&&Has(labels,LeftGrip,"Melee"),
         "left-handed play swaps the triggers and grips");
     Check(Has(labels,A,"Jump")&&Has(labels,X,"Reload"),"left-handed play leaves the face buttons where they are");
 
@@ -85,12 +85,12 @@ void CheckHandsAndChords()
     rows.inputs[vr_mapping::Jump].mode=vr_mapping::InputMode::Toggle;
     rows.inputs[vr_mapping::Jump].held={vr_mapping::PrimaryGrip,vr_mapping::Unbound};
     labels=Build(rows.Make(Context::OnFoot));
-    Check(Has(labels,B,"Jump (right grip held, toggle)")&&!Has(labels,A,"Jump"),"a remapped row with options");
+    Check(Has(labels,B,"Jump (while right grip held, toggle)")&&!Has(labels,A,"Jump"),"a remapped row with options");
     labels=Build(rows.Make(Context::OnFoot,false));
     Check(Has(labels,A,"Jump")&&!Mentions(labels,B,"Jump"),"with remapping off every button is the game's own");
     Check(Has(labels,RightStick,"Down: Crouch (toggle)"),"the mod's own controls act with remapping off");
-    Check(!Mentions(labels,LeftTrigger,"Equipment / ability (left grip held)")&&
-        !Mentions(labels,LeftTrigger,"Zoom (support hand on the gun)"),"an input on a game button needs remapping on");
+    Check(!Mentions(labels,LeftTrigger,"Equipment / ability (while empty grip held)")&&
+        !Mentions(labels,LeftTrigger,"Zoom (while support hand on the gun)"),"an input on a game button needs remapping on");
     Check(!Mentions(Build(rows.Make(Context::Vehicle,false)),RightGrip,"Banshee"),"the extra rows need remapping on");
 }
 

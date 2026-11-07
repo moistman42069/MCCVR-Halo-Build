@@ -68,7 +68,8 @@ inline const char* HeldName(int source,bool leftHanded) noexcept
     case PrimaryTrigger: return leftHanded?"left trigger":"right trigger";
     case SupportTrigger: return leftHanded?"right trigger":"left trigger";
     case PrimaryGrip: return leftHanded?"left grip":"right grip";
-    case SupportGrip: return leftHanded?"right grip":"left grip";
+    // As something held first the support grip counts only off the gun (input.cpp's heldOk): an empty grip.
+    case SupportGrip: return "empty grip";
     case vr_mapping::A: return "A";
     case vr_mapping::B: return "B";
     case vr_mapping::X: return "X";
@@ -133,7 +134,7 @@ inline void AddInput(Labels& labels,const Setup& setup,const char* action,const 
     for(const int source:held)
     {
         if(source==Unbound||!ListedSource(source)) continue;
-        if(!with.empty()) with+=" and ";
+        with+=with.empty()?"while ":" and ";
         with+=HeldName(source,setup.leftHanded);
         if(source!=HandOnGun) with+=" held";
     }
@@ -244,7 +245,7 @@ inline Labels BuiltIns(const Setup& setup,const Gestures& gestures)
     {
         detail::Add(labels,Y,"Next camera (hold: recentre view)");
         detail::Add(labels,X,"Camera tether (hold: recentre view)");
-        detail::Add(labels,LeftStickClick,"Next way of controlling the seat");
+        detail::Add(labels,LeftStickClick,"Cycle through vehicle control methods");
         return labels;
     }
     for(const Control grip:{LeftGrip,RightGrip})

@@ -146,9 +146,12 @@ void DrawControlsDiagram()
     const Labels labels = Build(setup);
 
     ImGui::PushFont(g_headingFont);
-    ImGui::TextColored(Rgb(kAccent), "Your controls");
+    ImGui::TextColored(Rgb(kAccent), "Control Configuration Summary");
     ImGui::PopFont();
-    ImGui::TextDisabled("%s. Change the game under VR Mappings' Settings for.", weapon_interaction::kTitleNames[title]);
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("Visual summary of your current configuration for: %s. Updates live as you change control options "
+                        "in the main panel.", weapon_interaction::kTitleNames[title]);
+    ImGui::PopTextWrapPos();
     if (!g_config.vr_action_mapping)
         ImGui::TextDisabled("Remap buttons is off: buttons are the game's own.");
     else if (!layoutKnown)
