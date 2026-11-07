@@ -20,6 +20,7 @@ int RunDirectorCameraTests();
 #include "../src/common/weapon_order_diagnostic_logic.h"
 #include "../src/common/contact_melee_motion.h"
 #include "../src/common/session_read_logic.h"
+#include "../src/common/log_archive_logic.h"
 #include "../src/dll/contact_melee_queue.h"
 #include <array>
 #include <cstdlib>
@@ -21281,6 +21282,36 @@ int main()
         Check(std::strcmp(TypeName(3), "sync-server") == 0 && std::strcmp(TypeName(2), "sync-client") == 0 &&
             std::strcmp(TypeName(4), "dist-client") == 0 && std::strcmp(TypeName(9), "unknown") == 0,
             "session: the type names are the game's own");
+    }
+    {
+        // The last runs' logs: named for when each run started, the newest few kept.
+        using namespace log_archive;
+        const Stamp ended{2026, 11, 7, 13, 24, 36};
+        Stamp start{};
+        const char line[] = "[13:15:21.282] HaloMCCVR loaded into pid 252608";
+        Check(RunStart(line, sizeof(line) - 1, ended, start) && start.year == 2026 && start.month == 11 &&
+                  start.day == 7 && start.hour == 13 && start.minute == 15 && start.second == 21,
+              "log archive: a run starts at its first line's time, on its last write's day");
+        const char lateLine[] = "[23:50:02.000] HaloMCCVR loaded";
+        Check(RunStart(lateLine, sizeof(lateLine) - 1, Stamp{2026, 3, 1, 0, 20, 0}, start) && start.year == 2026 &&
+                  start.month == 2 && start.day == 28 && start.hour == 23,
+              "log archive: a run past midnight started the day before");
+        Check(RunStart(lateLine, sizeof(lateLine) - 1, Stamp{2025, 1, 1, 0, 5, 0}, start) && start.year == 2024 &&
+                  start.month == 12 && start.day == 31,
+              "log archive: and the year before on New Year's Day");
+        Check(!RunStart("HaloMCCVR", 9, ended, start) && !RunStart("[1x:15:21", 9, ended, start) &&
+                  !RunStart("[13:15", 6, ended, start) && !RunStart(nullptr, 0, ended, start),
+              "log archive: a first line without a time gives no start");
+        Check(ArchiveName(L"HaloMCCVR", Stamp{2026, 11, 7, 9, 5, 1}) == L"HaloMCCVR 2026-11-07 09-05-01.log",
+              "log archive: the name sorts by time");
+        const std::vector<std::wstring> prune =
+            ToPrune({L"HaloMCCVR 2026-11-07 13-24-36.log", L"HaloMCCVR 2026-11-06 22-00-00.log",
+                     L"HaloMCCVR 2026-11-07 13-15-21.log", L"HaloMCCVR 2026-11-07 09-00-00.log"},
+                    2);
+        Check(prune.size() == 2 && prune[0] == L"HaloMCCVR 2026-11-06 22-00-00.log" &&
+                  prune[1] == L"HaloMCCVR 2026-11-07 09-00-00.log",
+              "log archive: the oldest go, the newest stay");
+        Check(ToPrune({L"HaloMCCVR 2026-11-07 13-24-36.log"}, 10).empty(), "log archive: nothing goes under the limit");
     }
     g_failures += RunRoomscaleInputTests();
     g_failures += RunRoomscaleRecenterTests();

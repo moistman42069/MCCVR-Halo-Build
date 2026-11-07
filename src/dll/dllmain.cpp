@@ -158,7 +158,8 @@ static DWORD WINAPI InitThread(LPVOID)
     std::wstring dir(path);
     dir.resize(dir.find_last_of(L'\\') + 1);
 
-    LogInit((dir + L"HaloMCCVR.log").c_str());
+    // The last ten runs' logs stay in Logs\ beside it, named for when each run started.
+    LogInit((dir + L"HaloMCCVR.log").c_str(), 10);
     // Commit + compile option identify source/configuration. The timestamp is
     // context only; verify the installed DLL's SHA-256 separately.
     LOG("HaloMCCVR loaded into pid %lu (source %s, ODST %s, Reach %s, "
