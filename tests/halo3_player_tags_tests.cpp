@@ -56,14 +56,15 @@ int main()
 {
     using namespace halo3_player_tags;
 
-    // Teammates' tags against objectives and carriers, as the producers write them.
+    // Players' tags against objectives, as the producers write them.
     Check(IsPlayerTag(0, 0x00), "a teammate, no state");
     Check(IsPlayerTag(1, 0x04), "a teammate firing");
     Check(IsPlayerTag(-1, 0x10), "a teammate speaking, no icon");
     Check(IsPlayerTag(0, 0x3C), "every player state flag");
     Check(!IsPlayerTag(2, 0x41), "a CTF objective");
     Check(!IsPlayerTag(2, 0xC1), "an objective with its distance text");
-    Check(!IsPlayerTag(0, 0x01), "a carrier on the off-screen ring");
+    Check(IsPlayerTag(0, 0x01), "a carrier on the off-screen ring is a player's tag");
+    Check(IsPlayerTag(0, 0x09) && IsPlayerTag(0, 0x21), "players an Infection game puts on the off-screen ring");
     Check(!IsPlayerTag(1, 0x40), "a radar entry");
 
     // Settings into range.

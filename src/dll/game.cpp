@@ -91,6 +91,7 @@
 #include "roomscale.h"
 #include "sight_layer.h"
 #include "../common/session_read_logic.h"
+#include "../common/camera_copy_logic.h"
 #include "seat_limit_publication.h"
 #include "telemetry_recorder.h"
 #include "../common/support_diagnostics.h"
@@ -13473,6 +13474,33 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         }
     }
 
+    // Camera copies left to the game (camera_copy_logic.h): the first of a level with what it held, then a count every
+    // 10 s while they keep coming. The camera thread only.
+    void NoteHalo3NonViewCameraCopy(const void* dst, const void* src, const float* forward, uint64_t nowMs)
+    {
+        static uint32_t loggedGeneration = 0, skipped = 0;
+        static uint64_t windowStartMs = 0;
+        const uint32_t generation = g_halo3RuntimeGeneration.load(std::memory_order_relaxed);
+        if (generation != loggedGeneration)
+        {
+            loggedGeneration = generation;
+            const float* pos = reinterpret_cast<const float*>(static_cast<const char*>(src) + kSrcPos);
+            LOG("Halo 3 camera: a copy of a camera that is not a view (to %p from %p: forward %.3f %.3f %.3f, at %.1f "
+                "%.1f %.1f) is left to the game; the aim, head look, zoom and motion tracker come from the view's "
+                "copy only", dst, src, forward[0], forward[1], forward[2], pos[0], pos[1], pos[2]);
+        }
+        ++skipped;
+        if (!windowStartMs)
+            windowStartMs = nowMs;
+        if (nowMs - windowStartMs >= 10000)
+        {
+            LOG("Halo 3 camera: %u copies of cameras that are not views left to the game in the last %llu ms", skipped,
+                static_cast<unsigned long long>(nowMs - windowStartMs));
+            skipped = 0;
+            windowStartMs = nowMs;
+        }
+    }
+
     void* __fastcall CamCopyHook(void* dst, void* src)
     {
         VR_NotifyCameraTransform();
@@ -13511,6 +13539,16 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         ApplyMotionBlurSetting();
         ProbeBulletOrigin();
         ApplyBodySetting();
+        // A copy of a camera that is not a view (camera_copy_logic.h): the game's own, with nothing taken from it.
+        if (src)
+        {
+            const float* forward = reinterpret_cast<const float*>(static_cast<const char*>(src) + kSrcFwd);
+            if (!camera_copy::ForwardIsView(forward[0], forward[1], forward[2]))
+            {
+                NoteHalo3NonViewCameraCopy(dst, src, forward, cameraNowMs);
+                return g_origCamCopy(dst, src);
+            }
+        }
         // M2 tracing: this function copies src+0x68/+0x6C into the compact
         // render camera at dst+0x28/+0x2C. Record only the first few calls so
         // we can distinguish world, weapon, and other camera passes without

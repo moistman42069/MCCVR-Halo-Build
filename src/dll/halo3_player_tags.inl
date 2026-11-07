@@ -587,7 +587,7 @@ void ReportPlayerTags(Halo3PlayerTagsLane& lane)
         const uint32_t flags = halo3_player_tags::KindFlags(key);
         LOG("PLAYER TAGS %s: navpoint kind icon %d flags 0x%X: %s", lane.profile->title, icon, flags,
             halo3_player_tags::IsPlayerTag(icon, flags) ? "a teammate's tag (the settings apply)"
-                                                         : "an objective or carrier (left as the game draws it)");
+                                                         : "an objective (left as the game draws it)");
     }
     // What the draws hold, when that changes (at most every 10 s): which markers the settings reach and which not.
     const uint32_t players = lane.lastPlayerTags.load(std::memory_order_relaxed);

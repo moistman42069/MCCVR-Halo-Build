@@ -2739,7 +2739,8 @@ void ConfigSave()
     fprintf(f, "# Live in F1 > HUD > Waypoints. (default %.2f, range 0 to 1)\n", d.nav_marker_ring);
     fprintf(f, "nav_marker_ring = %.2f\n\n", g_config.nav_marker_ring);
     fprintf(f, "# Player tags: the service tag and arrow over each teammate. Halo 3 (MCC and Project\n");
-    fprintf(f, "# Reclaimer) and ODST. Objective markers and flag, ball and bomb carriers are not changed.\n");
+    fprintf(f, "# Reclaimer) and ODST. Objective markers are not changed; a flag, ball or bomb carrier's\n");
+    fprintf(f, "# tag is a player's tag and is.\n");
     fprintf(f, "# Live in F1 > HUD > Waypoints.\n");
     fprintf(f, "# Show them at all. (default %d)\n", d.player_tags_show ? 1 : 0);
     fprintf(f, "player_tags_show = %d\n", g_config.player_tags_show ? 1 : 0);
