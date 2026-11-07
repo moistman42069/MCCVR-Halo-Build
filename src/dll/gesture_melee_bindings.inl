@@ -37,7 +37,9 @@ void RefreshGestureMeleeBinding(const TitleDescriptor* title,bool levelRunning,u
     // Pin only while this cold read/verification runs. No module pointer is
     // exposed to the input hook and no reference survives the worker tick.
     HMODULE pinned=nullptr;
-    if(!GetModuleHandleExW(0,title->moduleName,&pinned))
+    // Project Reclaimer 0.10 loads no halo3.dll: its image inside the client stands in (lifted_engine.h).
+    if(!GetModuleHandleExW(0,title->moduleName,&pinned) &&
+       !(title->title==GameTitle::Halo3 && (pinned=lifted::Halo3Module())))
     { g_gestureBinding.observedMs.store(0,std::memory_order_release); return; }
     uintptr_t base=0; size_t size=0;
     const uint32_t generation=TitleAdapter_GetGeneration(title->title);
@@ -100,7 +102,7 @@ void RefreshGestureMeleeBinding(const TitleDescriptor* title,bool levelRunning,u
         if(native!=vr_mapping::kNoAction&&!GestureReadNativeBindings(d,g_gestureBinding.state,vehicle[action],native))
             for(auto& transport:vehicle[action]) transport=0;
     }
-    FreeLibrary(pinned);
+    if(pinned!=lifted::Halo3Module()) FreeLibrary(pinned);
     if(!readable) { g_gestureBinding.observedMs.store(0,std::memory_order_release); return; }
     g_gestureBinding.sequence.fetch_add(1,std::memory_order_acq_rel);
     for(unsigned controller=0;controller<4;++controller)
