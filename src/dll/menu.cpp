@@ -3873,7 +3873,8 @@ namespace
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Aim your primary controller at MCC's main or pause menu, then pull its trigger to click.\n"
                               "A white ring marks the cursor and shrinks when clicked. MCC must have desktop focus.\n"
-                              "Push the right stick up or down to scroll the list it points at, like a mouse wheel.\n"
+                              "The right stick scrolls the list it points at like a mouse wheel: up or left goes back,\n"
+                              "down or right goes on (map and game type lists run sideways).\n"
                               "Release the trigger before your first click. Off preserves normal menu controls.");
         ImGui::TextDisabled("Currently %.2f m away, %.2f m wide, %+.2f m high, %+.2f m across.",
                             g_config.menu_distance_m, g_config.menu_width_m,

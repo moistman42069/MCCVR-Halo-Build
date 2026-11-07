@@ -195,6 +195,16 @@ int main()
         Check(wheel.Step(1.f,t+=50)==1,"after a reset it starts afresh");
     }
     {
+        // Sideways lists: right goes down the list, left back up; the further push is the wheel.
+        using game_menu_pointer::StickWheelAxis;
+        Check(StickWheelAxis(0.f,1.f)==1.f&&StickWheelAxis(0.f,-1.f)==-1.f,"up and down are the wheel as before");
+        Check(StickWheelAxis(1.f,0.f)==-1.f,"right scrolls down");
+        Check(StickWheelAxis(-1.f,0.f)==1.f,"left scrolls up");
+        Check(StickWheelAxis(.8f,.3f)==-.8f,"mostly right is right");
+        Check(StickWheelAxis(.3f,-.8f)==-.8f,"mostly down is down");
+        Check(StickWheelAxis(0.f,0.f)==0.f,"centred: no wheel");
+    }
+    {
         // A click holds where it was aimed; a hand that goes on moving is a drag.
         game_menu_pointer::ClickLock lock;
         float u=.5f,v=.5f;lock.Apply(.1f,u,v);
