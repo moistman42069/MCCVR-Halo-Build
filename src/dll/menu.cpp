@@ -4141,7 +4141,12 @@ namespace
 
         // Search, across the whole menu: results replace the page until the box is emptied or a page is chosen.
         ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputTextWithHint("##settingsearch", "Search settings", g_searchQuery, sizeof(g_searchQuery));
+        // A touch smaller than the menu's text, so the whole hint fits the box.
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.9f);
+        ImGui::InputTextWithHint("##settingsearch",
+            "Search settings - Fuzzy search supported (spaces between search terms), quotations for \"exact phrase\", "
+            "\"-\" excludes", g_searchQuery, sizeof(g_searchQuery));
+        ImGui::PopFont();
         ImGui::Spacing();
 
         bool changed = false;
