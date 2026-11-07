@@ -2,8 +2,6 @@
 // Donor final product surface: Plus first, Standard second, the selected
 // product mode's strength, rear reference, and the reset confirmation.
 // Lab-only rows stay out of normal navigation.
-        ImGui::Spacing();
-        ImGui::Separator();
         if (SectionHeader("Virtual Stock##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Virtual Stock", &g_config.virtual_stock);

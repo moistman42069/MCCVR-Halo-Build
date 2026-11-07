@@ -2801,8 +2801,6 @@ namespace
 
 #include "virtual_stock_menu.inl"
 
-        ImGui::Spacing();
-        ImGui::Separator();
         if (SectionHeader("Hand-held weapon##section", ImGuiTreeNodeFlags_None))
         {
         if(ImGui::Checkbox("Per-gun alignment",&g_config.per_gun_alignment))
