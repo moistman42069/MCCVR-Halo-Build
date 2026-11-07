@@ -9725,6 +9725,9 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     std::atomic<uint8_t> g_halo3VehicleBinding{
         static_cast<uint8_t>(Halo3VehicleBindingState::NotInstalled)};
     Halo3PlayerUnitGetterFn g_halo3PlayerUnitGetter = nullptr;
+    // Its address in the image, for checks that read its code (Project Reclaimer 0.10's lifted::Callable gives the
+    // pointer above an entry of its own).
+    uintptr_t g_halo3PlayerUnitGetterAt = 0;
     Halo3UnitInVehicleFn g_halo3UnitInVehicle = nullptr;
     Halo3VehicleTypeFn g_halo3VehicleTypeAccessor = nullptr;
     Halo3InterpolatedNodesFn g_halo3InterpolatedNodes = nullptr;
@@ -19106,14 +19109,12 @@ static constexpr bool kOdstMappedFpEnabled = false;
             return;
         }
 
-        const int32_t getterDisp =
-            *reinterpret_cast<const int32_t*>(getter + 2);
-        const int32_t setterDisp =
-            *reinterpret_cast<const int32_t*>(setter + 0x1B);
+        // Through sig::RipTarget: the getter's displacement lies in its first five bytes, which Project Reclaimer
+        // 0.10 overwrites in the image with a call to its trap (the scan shadow keeps halo3.dll's own bytes).
         auto* getterIndex =
-            reinterpret_cast<uint32_t*>(getter + 6 + getterDisp);
+            reinterpret_cast<uint32_t*>(sig::RipTarget(getter + 2, getter + 6));
         auto* setterIndex =
-            reinterpret_cast<uint32_t*>(setter + 0x1F + setterDisp);
+            reinterpret_cast<uint32_t*>(sig::RipTarget(setter + 0x1B, setter + 0x1F));
         const uintptr_t getterAddress =
             reinterpret_cast<uintptr_t>(getterIndex);
         const uintptr_t setterAddress =
@@ -20080,6 +20081,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 std::memory_order_release);
             g_halo3VehicleSnapshot.store(0, std::memory_order_release);
             g_halo3PlayerUnitGetter = nullptr;
+            g_halo3PlayerUnitGetterAt = 0;
             g_halo3UnitInVehicle = nullptr;
             g_halo3VehicleTypeAccessor = nullptr;
             g_halo3InterpolatedNodes = nullptr;
@@ -20108,19 +20110,21 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     lifted::Callable(reinterpret_cast<Halo3UnitInVehicleFn>(nativeHit));
                 g_halo3PlayerUnitGetter =
                     lifted::Callable(reinterpret_cast<Halo3PlayerUnitGetterFn>(getterHit));
+                g_halo3PlayerUnitGetterAt = getterHit;
                 g_halo3VehicleTypeAccessor =
                     lifted::Callable(reinterpret_cast<Halo3VehicleTypeFn>(typeHit));
                 // C7: decode the two rip-relative globals from the matched
                 // accessor body (E4 instruction layout: mov rax,[rip+d] at
                 // +0 ends +7 = tag instance table; mov rax,[rip+d] at +22
                 // ends +29 = tag data base). Self-anchoring, no absolute
-                // address is shipped.
+                // address is shipped. Through sig::RipTarget: the first
+                // displacement lies in the body's first five bytes, which
+                // Project Reclaimer 0.10 overwrites in the image with a call to
+                // its trap (the scan shadow keeps halo3.dll's own bytes).
                 g_halo3TagInstanceTable = reinterpret_cast<void**>(
-                    typeHit + 7 +
-                    *reinterpret_cast<const int32_t*>(typeHit + 3));
+                    sig::RipTarget(typeHit + 3, typeHit + 7));
                 g_halo3TagDataBase = reinterpret_cast<void**>(
-                    typeHit + 29 +
-                    *reinterpret_cast<const int32_t*>(typeHit + 25));
+                    sig::RipTarget(typeHit + 25, typeHit + 29));
                 g_halo3VehicleProbeKey.store(~0ull, std::memory_order_relaxed);
                 g_halo3VehicleBinding.store(
                     static_cast<uint8_t>(Halo3VehicleBindingState::Installed),
@@ -20978,8 +20982,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // The record recomposition's first-person eye identity (shot_lag_logic.h 4d): two sites, no hook.
         (void)BindHalo3DirectorCamera(base,size,runtimeGeneration,g_engineTlsIndex);
         // Roomscale's Forge Monitor check (roomscale_admission_logic.h): two sites, two reader calls, no hook.
-        (void)BindHalo3SandboxEditor(base,size,runtimeGeneration,g_engineTlsIndex,
-            reinterpret_cast<uintptr_t>(g_halo3PlayerUnitGetter));
+        (void)BindHalo3SandboxEditor(base,size,runtimeGeneration,g_engineTlsIndex,g_halo3PlayerUnitGetterAt);
         InstallSteps::Mark("chase camera, eye and Forge binds");
         // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook; fails closed alone.
         (void)InstallHalo3GunBand(base,size,runtimeGeneration);
