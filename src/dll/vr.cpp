@@ -20801,6 +20801,31 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&hostUiQuad));
                     hostUiPanelQueued = true;
                 }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                {
+                    // DEV (panel flicker): frames the host's picture was fresh but the panel was not queued, and why.
+                    static uint32_t usableFrames = 0, notStereo = 0, notPrepared = 0, screenFrames = 0;
+                    static uint64_t reportMs = 0;
+                    if (D3D_HostUiPanelUsable())
+                    {
+                        ++usableFrames;
+                        if (D3D_HostUiPanelIsScreen()) ++screenFrames;
+                        if (!stereoWorldFrame) ++notStereo;
+                        else if (!hostUiPanelQueued) ++notPrepared;
+                    }
+                    const uint64_t nowMs = GetTickCount64();
+                    if (nowMs - reportMs >= 2000)
+                    {
+                        reportMs = nowMs;
+                        if (usableFrames)
+                            LOG("PANEL (dev): %u frames with a fresh host picture (%u of them a screen on the panel): "
+                                "panel missing %u (not a stereo frame), %u (not prepared); the last picture shown "
+                                "again %u", usableFrames, screenFrames, notStereo, notPrepared, g_hostUiHeldFramesDev);
+                        usableFrames = notStereo = notPrepared = screenFrames = 0;
+                        g_hostUiHeldFramesDev = 0;
+                    }
+                }
+#endif
 
                 // One-shot welcome page for this launch. The latch is a
                 // process-lifetime static that is never cleared, so quitting a

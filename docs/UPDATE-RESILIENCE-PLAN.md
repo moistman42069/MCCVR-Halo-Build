@@ -55,6 +55,13 @@ functions with its own versions, and enlarged several of its tables.
    so the aim's ray trace silently returned "miss". *Done:* it now runs as any game call. *Keep:* every refused call
    is logged with the function's address.
 
+## Evidence the host keeps
+
+9. **The host's own log is overwritten on every launch.** Reclaimer's `client.log` (when it hands input to the game or
+   to its menus, which device it reads, its pause menu) explained the dead controls, but the next launch replaced it,
+   so a later report (a few seconds without controls after Alt+Tab) had no client side to read. *Resilient form:* at
+   the mod's teardown, copy the host's log beside HaloMCCVR.log under the run's start time, keeping the last few.
+
 ## Recognising the host
 
 8. **Window class and executable names.** Reclaimer's window class changed (ReclaimerStandaloneClient ->
