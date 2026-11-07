@@ -84,7 +84,7 @@ The body's convention:
 
 ## Measured in a running client (2026-11-06, 0.10.0 started directly, no mod)
 
-Read from outside with `ReadProcessMemory` (`_reclaimer-0.10-re	ools\probe_live.py`, output and dumps in
+Read from outside with `ReadProcessMemory` (`_reclaimer-0.10-re\tools\probe_live.py`, output and dumps in
 `_reclaimer-0.10-re\live1`).
 
 - **One process.** Started directly, the client ran as a single process, and it ran the engine. (Started by the
