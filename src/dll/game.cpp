@@ -20260,6 +20260,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
         bool visiblePathOk=false;
         if (uniqueInterpolate && uniqueVisiblePalette)
         {
+            // The palette detour hands the original a source of its own, the fifth argument: in Project Reclaimer
+            // 0.10 that reaches the game only as a stack argument written back (lifted_engine.h).
+            lifted::SetStackArguments(reinterpret_cast<void*>(visiblePaletteHit), 2);
             const MH_STATUS createInterpolate=MH_CreateHook(
                 reinterpret_cast<void*>(interpolateHit),
                 reinterpret_cast<void*>(&GuardedFpInterpolateHook),
