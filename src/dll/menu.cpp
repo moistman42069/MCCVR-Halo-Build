@@ -892,7 +892,7 @@ namespace
     LRESULT CALLBACK WndProcHook(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     {
         if(msg==WM_SIZE&&g_liveResizeBatch.SuppressesSize(hwnd)) return 0;
-        if (NativeMenuPointer_Message(msg)) return 0;
+        if (NativeMenuPointer_Message(msg, lp)) return 0;
         // MCC is closing: nothing may hold its shutdown back (host_unload_gate.cpp).
         if (msg == WM_CLOSE || msg == WM_DESTROY) HostUnloadGate_HostClosing(msg == WM_DESTROY);
         if(msg==kLiveResizeMsg)

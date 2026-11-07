@@ -7,7 +7,9 @@
 #include "menu.h"
 #include "title_adapter.h"
 #include "vr.h"
+#include <algorithm>
 #include <atomic>
+#include <iterator>
 
 namespace {
 HWND window = nullptr;
@@ -18,6 +20,8 @@ std::atomic<bool> delivered{false};
 std::atomic<unsigned> postFailures{0};
 std::atomic<uint64_t> visual{0};
 std::atomic<unsigned> moveCount{0}, clickCount{0};
+// Posted delivery: moves not sent because the hand rested, and moves the window was sent by anything but the pointer.
+std::atomic<unsigned> restingCount{0}, foreignMoves{0};
 std::atomic<unsigned> cursorFailures{0};
 std::atomic<const char*> frameStatus{"no-screen"}, deliveryStatus{"idle"};
 std::atomic<float> scrollStick{0.0f};
@@ -28,6 +32,12 @@ UINT_PTR timer = 0;
 bool mouseDown = false;
 bool mouseDownPosted = false; // the down went to the window as a message (PostsMessages), so its release does too
 LPARAM lastClientPoint = 0;   // where the last posted move was, in client coordinates
+bool pointPosted = false;     // lastClientPoint has been sent since the pointer last started
+int lastX = 0, lastY = 0;     // lastClientPoint's coordinates
+// A move closer than this to the last one sent is not sent (posted delivery).
+constexpr int kRestPixels = 3;
+LPARAM sentPoints[8]{};       // the last moves posted, to tell them from the window's other moves
+unsigned sentNext = 0;
 bool faultLogged = false;
 
 bool Allowed()
@@ -87,6 +97,7 @@ void Cancel()
     pointer.Reset();
     stickWheel.Reset();
     if (!Button(false)) Fault();
+    pointPosted = false;
     // Retry a failed release on the existing timer. Never forget a sent down.
     if (timer && !mouseDown) { KillTimer(nullptr, timer); timer = 0; }
 }
@@ -116,10 +127,21 @@ void Apply()
     if (!timer) timer = SetTimer(nullptr, 0, 50, Watchdog);
     if (!timer) { Cancel(); Fault(); return; }
     if (posted) {
-        lastClientPoint = MAKELPARAM(static_cast<WORD>(result.x), static_cast<WORD>(result.y));
-        if (!PostMessageW(window, WM_MOUSEMOVE, mouseDown ? MK_LBUTTON : 0, lastClientPoint)) {
-            Cancel(); Fault(); return;
-        }
+        // A mouse at rest sends no moves, and the window acts on each one it is sent. Project Reclaimer's menus, sent
+        // one every frame by a pointer held on an item, played their cursor sound every second or two. So a hand
+        // that rests sends none either: a move goes only once the point is kRestPixels from the last one sent. A
+        // press goes to that point.
+        if (!pointPosted || std::abs(result.x - lastX) >= kRestPixels || std::abs(result.y - lastY) >= kRestPixels) {
+            lastClientPoint = MAKELPARAM(static_cast<WORD>(result.x), static_cast<WORD>(result.y));
+            if (!PostMessageW(window, WM_MOUSEMOVE, mouseDown ? MK_LBUTTON : 0, lastClientPoint)) {
+                Cancel(); Fault(); return;
+            }
+            lastX = result.x;
+            lastY = result.y;
+            pointPosted = true;
+            sentPoints[sentNext++ % std::size(sentPoints)] = lastClientPoint;
+        } else
+            restingCount.fetch_add(1, std::memory_order_relaxed);
     } else {
         // Our DLL caller bypasses MCC's fitted-window coordinate remap. Send
         // physical client coordinates once; the existing MCC read hook scales them.
@@ -225,11 +247,14 @@ void NativeMenuPointer_ReportFailures()
     if (lastEnabled != enabled || (enabled && DWORD(now-lastReport) >= 2000)) {
         lastReport = now; lastEnabled = enabled;
         // withheld: the game's pad is blank but for the menu's buttons (a menu or the pointer owns the controls).
+        // resting / foreign (posted delivery): moves not sent while the hand rested; moves the window got from
+        // anything but the pointer while it pointed.
         LOG("game menu pointer: enabled=%d hand=%s mode=%u frame=%s delivery=%s active=%d moves=%u clicks=%u "
-            "withheld=%d", enabled, g_config.left_handed ? "left" : "right", unsigned(TitleAdapter_GetRuntimeMode()),
-            frameStatus.load(), deliveryStatus.load(),
+            "withheld=%d resting=%u foreign=%u", enabled, g_config.left_handed ? "left" : "right",
+            unsigned(TitleAdapter_GetRuntimeMode()), frameStatus.load(), deliveryStatus.load(),
             int(game_menu_pointer::FreshActive(visual.load(), now)), moveCount.load(), clickCount.load(),
-            int(exclusive_input::Active()));
+            int(exclusive_input::Active()), restingCount.load(std::memory_order_relaxed),
+            foreignMoves.load(std::memory_order_relaxed));
     }
 }
 void NativeMenuPointer_FrameStatus(const char* status) { frameStatus.store(status, std::memory_order_relaxed); }
@@ -244,13 +269,16 @@ bool NativeMenuPointer_ReadVisual(float& u, float& v, bool& pressed)
     pressed = (packet & (1ull << 30)) != 0;
     return true;
 }
-bool NativeMenuPointer_Message(UINT msg)
+bool NativeMenuPointer_Message(UINT msg, LPARAM lParam)
 {
     if (messageId && msg == messageId) {
         queued.store(false, std::memory_order_release);
         Apply();
         return true;
     }
+    if (msg == WM_MOUSEMOVE && pointPosted && std::find(std::begin(sentPoints), std::end(sentPoints), lParam) ==
+            std::end(sentPoints))
+        foreignMoves.fetch_add(1, std::memory_order_relaxed);
     if (msg == WM_KILLFOCUS || msg == WM_DESTROY) {
         sample.store(0, std::memory_order_release);
         Cancel();

@@ -75,7 +75,7 @@ void Game_VehicleCameraStep(int, int) {}
 
 bool Input_PhysicalCrouchRiseCapped() { return false; }
 void Input_RequestPauseToggle() {}
-bool NativeMenuPointer_Message(UINT) { return false; }
+bool NativeMenuPointer_Message(UINT, LPARAM) { return false; }
 void NativeMenuPointer_Init(HWND) {}
 bool NativeVehicleFirstPerson_TrimTarget(GameTitle, uint64_t&, int&) noexcept { return false; }
 void HostUnloadGate_HostClosing(bool) noexcept {}
