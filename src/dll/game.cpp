@@ -3153,6 +3153,12 @@ namespace
     HudDrawWidgetFn g_realHudDrawWidget = nullptr;
     HudPlaceFn g_realHudPlace = nullptr;
     thread_local bool g_insideHudDrawWidget = false;
+    // Project Reclaimer 0.10 opens the class gate (the install below) without its byte patch: halo3.dll's own code never
+    // runs there. The client's version of the widget draw asks the playback check once, first, and uses the answer only
+    // for the crosshair's class. Inside a widget draw that one call is answered yes, which is what the opened gate does.
+    GameIsPlaybackFn g_realGameIsPlaybackGate = nullptr;
+    bool g_halo3LiftedClassGate = false;
+    thread_local bool t_halo3ClassGateAsk = false;
     // Identity of the crosshair art most recently captured, for ANY title.
     // The compositor re-uploads the authored reticle only when this changes, so
     // a static crosshair costs no swapchain work at all.
@@ -3313,9 +3319,10 @@ namespace
         const bool hideHud=VR_HudHidden()&&g_enabled.load()&&VR_IsStereoEnabled()&&
             Game_MoveStickIsLocomotion();
         if(hideHud) ++hud_visibility::depth;
+        t_halo3ClassGateAsk = g_halo3LiftedClassGate;
         __try { g_realHudDrawWidget(userIndex, descriptor, widgetIndex,
                             useAlternatePath, drawState); }
-        __finally { if(hideHud) --hud_visibility::depth; }
+        __finally { if(hideHud) --hud_visibility::depth; t_halo3ClassGateAsk = false; }
         if (g_authoredReticleCaptureStarted)
         {
             // This widget's art was redirected into the authored texture, so
@@ -3538,7 +3545,7 @@ namespace
     // often, with which flag. Phase A then invokes it per eye ourselves.
     FpDriverFn g_origFpDriver = nullptr;
     int32_t* g_fpDriverGuard = nullptr; // zero-init global gating call site 1
-    constexpr size_t kMaxInstalledGameHooks = 16;
+    constexpr size_t kMaxInstalledGameHooks = 32;
     void* g_installedGameHooks[kMaxInstalledGameHooks]{};
     size_t g_installedGameHookCount = 0;
     unsigned char* g_halo3OwnedClassGate = nullptr;
@@ -3552,6 +3559,10 @@ namespace
                 return;
         if (g_installedGameHookCount < kMaxInstalledGameHooks)
             g_installedGameHooks[g_installedGameHookCount++] = target;
+        else
+            // Never silent: a hook left out here is never taken out at teardown, and its next install fails.
+            LOG("Halo 3 core: more than %zu hooks to retire; the hook at %p is not retired with the core",
+                kMaxInstalledGameHooks, target);
     }
 
     bool RemoveInstalledGameHooks();
@@ -6570,6 +6581,12 @@ namespace
         return true;
     }
 
+    // Project Reclaimer 0.10 draws the first-person view with its own version of the render (0x1854C8), which never
+    // fills the cache LoadCachedRenderRoot reads (its writer +0x2C0D20 is below it). Every caller takes the root's
+    // pose from the live camera and only its scale from the cache: there the scale of the root the visible palette
+    // was last drawn with (FpVisiblePaletteHook) stands in, per player.
+    std::atomic<float> g_paletteRootScale[4]{};
+
     bool LoadCachedRenderRoot(int player, BoneMatrix& root)
     {
         if (player<0 || player>=4 || !g_engineTlsIndex) return false;
@@ -6581,7 +6598,18 @@ namespace
         if (!renderPlayers) return false;
         root=*reinterpret_cast<const BoneMatrix*>(
             renderPlayers+static_cast<uintptr_t>(player)*0x2430+0x23F0);
-        return isfinite(root.scale) && fabsf(root.scale)>0.001f;
+        if (isfinite(root.scale) && fabsf(root.scale)>0.001f) return true;
+        const float scale=g_paletteRootScale[player].load(std::memory_order_relaxed);
+        float camera[9];
+        if (!lifted::Active() || !isfinite(scale) || fabsf(scale)<=0.001f ||
+            !g_camValid.load() || !LoadCameraBasis(camera))
+            return false;
+        root.scale=scale;
+        memcpy(root.rotation,camera,sizeof(camera));
+        root.translation[0]=g_camX.load();
+        root.translation[1]=g_camY.load();
+        root.translation[2]=g_camZ.load();
+        return true;
     }
 
     // AUTO BARREL ALIGNMENT source data. In the authored first-person pose the
@@ -8663,6 +8691,9 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                 break;
             }
         H3SecondaryVisualScope secondaryMotionScope(context);
+        if (root && context.valid && context.player>=0 && context.player<4 &&
+            isfinite(root->scale) && fabsf(root->scale)>0.001f)
+            g_paletteRootScale[context.player].store(root->scale,std::memory_order_relaxed);
         // A modded gun can be parented to base instead of either wrist.
         // Resolve its actual model outputs before IK, scaling and visibility.
         if (context.valid)
@@ -9698,6 +9729,9 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     std::atomic<uint8_t> g_halo3VehicleBinding{
         static_cast<uint8_t>(Halo3VehicleBindingState::NotInstalled)};
     Halo3PlayerUnitGetterFn g_halo3PlayerUnitGetter = nullptr;
+    // Its address in the image, for checks that read its code (Project Reclaimer 0.10's lifted::Callable gives the
+    // pointer above an entry of its own).
+    uintptr_t g_halo3PlayerUnitGetterAt = 0;
     Halo3UnitInVehicleFn g_halo3UnitInVehicle = nullptr;
     Halo3VehicleTypeFn g_halo3VehicleTypeAccessor = nullptr;
     Halo3InterpolatedNodesFn g_halo3InterpolatedNodes = nullptr;
@@ -19079,14 +19113,12 @@ static constexpr bool kOdstMappedFpEnabled = false;
             return;
         }
 
-        const int32_t getterDisp =
-            *reinterpret_cast<const int32_t*>(getter + 2);
-        const int32_t setterDisp =
-            *reinterpret_cast<const int32_t*>(setter + 0x1B);
+        // Through sig::RipTarget: the getter's displacement lies in its first five bytes, which Project Reclaimer
+        // 0.10 overwrites in the image with a call to its trap (the scan shadow keeps halo3.dll's own bytes).
         auto* getterIndex =
-            reinterpret_cast<uint32_t*>(getter + 6 + getterDisp);
+            reinterpret_cast<uint32_t*>(sig::RipTarget(getter + 2, getter + 6));
         auto* setterIndex =
-            reinterpret_cast<uint32_t*>(setter + 0x1F + setterDisp);
+            reinterpret_cast<uint32_t*>(sig::RipTarget(setter + 0x1B, setter + 0x1F));
         const uintptr_t getterAddress =
             reinterpret_cast<uintptr_t>(getterIndex);
         const uintptr_t setterAddress =
@@ -19422,6 +19454,47 @@ static constexpr bool kOdstMappedFpEnabled = false;
         }
     }
 
+    // Project Reclaimer 0.10: the native weapon-IK decision (the two-byte patch in the install) cannot be patched in
+    // code that never runs. The mode call it leads to is hooked instead, and from that one call site it gets the
+    // no-weapon-IK branch's arguments (mode 1, 3, the branch's blend constant), which is what the patch does.
+    using WeaponIkModeFn = uint64_t(__fastcall*)(void*, int, int, float);
+    WeaponIkModeFn g_realWeaponIkMode = nullptr;
+    uintptr_t g_weaponIkModeReturn = 0;   // the decision's mode call's guest return address
+    float g_weaponIkNoIkBlend = 0.0f;
+    __declspec(noinline) uint64_t __fastcall GuardedWeaponIkModeHook(void* state, int mode, int mode2, float blend)
+    {
+        g_halo3CoreCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        __try
+        {
+            if (g_weaponIkModeReturn && HALOMCCVR_GAME_RETURN_ADDRESS() == g_weaponIkModeReturn)
+                return g_realWeaponIkMode(state, 1, 3, g_weaponIkNoIkBlend);
+            return g_realWeaponIkMode(state, mode, mode2, blend);
+        }
+        __finally
+        {
+            g_halo3CoreCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+        }
+    }
+
+    // Project Reclaimer 0.10's class gate (g_halo3LiftedClassGate): the widget draw's first ask answered yes.
+    __declspec(noinline) bool __fastcall GuardedGameIsPlaybackGateHook()
+    {
+        g_halo3CoreCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        __try
+        {
+            if (t_halo3ClassGateAsk)
+            {
+                t_halo3ClassGateAsk = false;
+                return true;
+            }
+            return g_realGameIsPlaybackGate();
+        }
+        __finally
+        {
+            g_halo3CoreCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+        }
+    }
+
     __declspec(noinline) void __fastcall GuardedHudDrawWidgetHook(int userIndex, void* descriptor,
                                       unsigned short widgetIndex,
                                       unsigned char useAlternatePath,
@@ -19476,6 +19549,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
     bool RemoveInstalledGameHooks()
     {
         g_halo3InstallReady.store(false, std::memory_order_release);
+        g_halo3LiftedClassGate = false;
+        g_weaponIkModeReturn = 0;
         g_halo3WorldCollision.runtimeBoundsProven.store(false,std::memory_order_release);
         g_halo3WorldCollision.installed.store(false, std::memory_order_release);
         bool disabled = true;
@@ -19521,6 +19596,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 reinterpret_cast<const void*>(&GuardedHudPlaceHook),
                 reinterpret_cast<const void*>(&GuardedHudCrosshairVisibleHook),
                 reinterpret_cast<const void*>(&GuardedHudDrawWidgetHook),
+                reinterpret_cast<const void*>(&GuardedGameIsPlaybackGateHook),
+                reinterpret_cast<const void*>(&GuardedWeaponIkModeHook),
                 reinterpret_cast<const void*>(&GuardedFpDriverHook),
                 reinterpret_cast<const void*>(&GuardedRenderViewHook)};
             const void* originals[]{reinterpret_cast<const void*>(g_realH3HudRecord),
@@ -19529,6 +19606,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 reinterpret_cast<const void*>(g_realHudPlace),
                 reinterpret_cast<const void*>(g_realHudCrosshairVisible),
                 reinterpret_cast<const void*>(g_realHudDrawWidget),
+                reinterpret_cast<const void*>(g_realGameIsPlaybackGate),
+                reinterpret_cast<const void*>(g_realWeaponIkMode),
                 reinterpret_cast<const void*>(g_origFpDriver),
                 reinterpret_cast<const void*>(g_origRenderView)};
             if (!WaitForNativeDetourQuiescence(functions, originals,
@@ -20031,6 +20110,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 std::memory_order_release);
             g_halo3VehicleSnapshot.store(0, std::memory_order_release);
             g_halo3PlayerUnitGetter = nullptr;
+            g_halo3PlayerUnitGetterAt = 0;
             g_halo3UnitInVehicle = nullptr;
             g_halo3VehicleTypeAccessor = nullptr;
             g_halo3InterpolatedNodes = nullptr;
@@ -20059,19 +20139,21 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     lifted::Callable(reinterpret_cast<Halo3UnitInVehicleFn>(nativeHit));
                 g_halo3PlayerUnitGetter =
                     lifted::Callable(reinterpret_cast<Halo3PlayerUnitGetterFn>(getterHit));
+                g_halo3PlayerUnitGetterAt = getterHit;
                 g_halo3VehicleTypeAccessor =
                     lifted::Callable(reinterpret_cast<Halo3VehicleTypeFn>(typeHit));
                 // C7: decode the two rip-relative globals from the matched
                 // accessor body (E4 instruction layout: mov rax,[rip+d] at
                 // +0 ends +7 = tag instance table; mov rax,[rip+d] at +22
                 // ends +29 = tag data base). Self-anchoring, no absolute
-                // address is shipped.
+                // address is shipped. Through sig::RipTarget: the first
+                // displacement lies in the body's first five bytes, which
+                // Project Reclaimer 0.10 overwrites in the image with a call to
+                // its trap (the scan shadow keeps halo3.dll's own bytes).
                 g_halo3TagInstanceTable = reinterpret_cast<void**>(
-                    typeHit + 7 +
-                    *reinterpret_cast<const int32_t*>(typeHit + 3));
+                    sig::RipTarget(typeHit + 3, typeHit + 7));
                 g_halo3TagDataBase = reinterpret_cast<void**>(
-                    typeHit + 29 +
-                    *reinterpret_cast<const int32_t*>(typeHit + 25));
+                    sig::RipTarget(typeHit + 25, typeHit + 29));
                 g_halo3VehicleProbeKey.store(~0ull, std::memory_order_relaxed);
                 g_halo3VehicleBinding.store(
                     static_cast<uint8_t>(Halo3VehicleBindingState::Installed),
@@ -20264,6 +20346,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
         bool visiblePathOk=false;
         if (uniqueInterpolate && uniqueVisiblePalette)
         {
+            // The palette detour hands the original a source of its own, the fifth argument: in Project Reclaimer
+            // 0.10 that reaches the game only as a stack argument written back (lifted_engine.h).
+            lifted::SetStackArguments(reinterpret_cast<void*>(visiblePaletteHit), 2);
             const MH_STATUS createInterpolate=MH_CreateHook(
                 reinterpret_cast<void*>(interpolateHit),
                 reinterpret_cast<void*>(&GuardedFpInterpolateHook),
@@ -20324,7 +20409,38 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 if (branch[0]==0x74 && branch[1]==0x05)
                 {
                     DWORD oldProtect=0;
-                    if (VirtualProtect(branch,2,PAGE_EXECUTE_READWRITE,&oldProtect))
+                    // Project Reclaimer 0.10 (GuardedWeaponIkModeHook): the decision's mode call at +0x38 and the
+                    // no-weapon-IK branch's blend load (movss xmm3, [rip+disp]) at +0x1D are read, not patched.
+                    const auto* bytes=reinterpret_cast<const unsigned char*>(decision);
+                    if (lifted::Active())
+                    {
+                        const bool shape=bytes[0x38]==0xE8 && bytes[0x1D]==0xF3 && bytes[0x1E]==0x0F &&
+                            bytes[0x1F]==0x10 && bytes[0x20]==0x1D;
+                        const uintptr_t mode=shape ? sig::RipTarget(decision+0x39,decision+0x3D) : 0;
+                        const uintptr_t blend=shape ? sig::RipTarget(decision+0x21,decision+0x25) : 0;
+                        // The blend is its fourth argument, a float the detour replaces (lifted_engine.h).
+                        if (mode)
+                            lifted::SetFloatArguments(reinterpret_cast<void*>(mode), 1u << 3);
+                        bool hooked=mode>=base && mode<base+size && blend>=base && blend+4<=base+size &&
+                            MH_CreateHook(reinterpret_cast<void*>(mode),
+                                          reinterpret_cast<void*>(&GuardedWeaponIkModeHook),
+                                          reinterpret_cast<void**>(&g_realWeaponIkMode))==MH_OK;
+                        if (hooked)
+                        {
+                            RememberInstalledGameHook(reinterpret_cast<void*>(mode));
+                            g_weaponIkNoIkBlend=*reinterpret_cast<const float*>(blend);
+                            g_weaponIkModeReturn=decision+0x3D;
+                            hooked=MH_QueueEnableHook(reinterpret_cast<void*>(mode))==MH_OK;
+                        }
+                        if (!hooked)
+                            g_weaponIkModeReturn=0;
+                        LOG(hooked ? "M3 VRIK: native first-person weapon IK disabled through its mode call "
+                                     "halo3.dll+0x%llX (Project Reclaimer 0.10); controller solver owns support arms"
+                                   : "M3 VRIK: native weapon-IK mode call could not be hooked (Project Reclaimer "
+                                     "0.10, halo3.dll+0x%llX); shotgun support hand may stay attached to pump",
+                            (unsigned long long)(mode ? mode-base : decision-base));
+                    }
+                    else if (VirtualProtect(branch,2,PAGE_EXECUTE_READWRITE,&oldProtect))
                     {
                         // JE +5 (conditional native-IK decision) -> JMP +0x18
                         // (the stock no-weapon-IK branch at halo3+0x2C3959).
@@ -20400,6 +20516,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
             RememberInstalledGameHook(reinterpret_cast<void*>(hudXform));
             if (hudXform && !sig::Find(hudXform+1, base+size-hudXform-1, kHudXformSig))
             {
+                // Its three arguments are floats, and the detour scales two of them (lifted_engine.h).
+                lifted::SetFloatArguments(reinterpret_cast<void*>(hudXform), 0x7);
                 if (MH_CreateHook(reinterpret_cast<void*>(hudXform),
                                   reinterpret_cast<void*>(&GuardedHudXformHook),
                                   reinterpret_cast<void**>(&g_realHudXform)) == MH_OK &&
@@ -20594,8 +20712,24 @@ static constexpr bool kOdstMappedFpEnabled = false;
                         if (hookReady)
                         {
                             DWORD oldProtect = 0;
-                            if (VirtualProtect(classGate, 2, PAGE_EXECUTE_READWRITE,
-                                               &oldProtect))
+                            // Project Reclaimer 0.10: the gate is opened by the playback check's hook instead
+                            // (g_halo3LiftedClassGate), which needs the draw hook to say when it asks.
+                            bool gateOpen = false;
+                            if (lifted::Active())
+                            {
+                                gateOpen = drawHookReady &&
+                                    MH_CreateHook(reinterpret_cast<void*>(playbackTarget),
+                                                  reinterpret_cast<void*>(&GuardedGameIsPlaybackGateHook),
+                                                  reinterpret_cast<void**>(&g_realGameIsPlaybackGate)) == MH_OK;
+                                if (gateOpen)
+                                {
+                                    RememberInstalledGameHook(reinterpret_cast<void*>(playbackTarget));
+                                    gateOpen = MH_QueueEnableHook(reinterpret_cast<void*>(playbackTarget)) == MH_OK;
+                                }
+                                g_halo3LiftedClassGate = gateOpen;
+                            }
+                            else if (VirtualProtect(classGate, 2, PAGE_EXECUTE_READWRITE,
+                                                    &oldProtect))
                             {
                                 classGate[0] = 0x90;
                                 classGate[1] = 0x90;
@@ -20604,20 +20738,32 @@ static constexpr bool kOdstMappedFpEnabled = false;
                                                       classGate, 2);
                                 DWORD ignored = 0;
                                 VirtualProtect(classGate, 2, oldProtect, &ignored);
+                                gateOpen = true;
+                            }
+                            if (gateOpen)
+                            {
                                 // The predicate is reached only with the gate open: watched from here on.
                                 Halo3HookWatchInstalled(Halo3Hook::HudCrosshairVisible, visibleTarget);
                                 if (drawHookReady)
                                     Halo3HookWatchInstalled(Halo3Hook::HudDrawWidget, hudElem);
                                 if (drawHookReady)
                                     LOG("M3: authored CHUD crosshair redirect active "
-                                        "at halo3.dll+0x%llX",
-                                        (unsigned long long)(hudElem - base));
+                                        "at halo3.dll+0x%llX%s",
+                                        (unsigned long long)(hudElem - base),
+                                        g_halo3LiftedClassGate ? " (Project Reclaimer 0.10: its class gate is "
+                                                                 "opened by the playback check's hook)" : "");
                                 else
                                     LOG("M3: CHUD class hider active but authored "
                                         "draw wrapper unavailable; using VR fallback");
                             }
                             else
                             {
+                                if (g_realGameIsPlaybackGate)
+                                {
+                                    MH_DisableHook(reinterpret_cast<void*>(playbackTarget));
+                                    MH_RemoveHook(reinterpret_cast<void*>(playbackTarget));
+                                    g_realGameIsPlaybackGate = nullptr;
+                                }
                                 if (drawHookReady)
                                 {
                                     MH_DisableHook(reinterpret_cast<void*>(hudElem));
@@ -20898,8 +21044,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // The record recomposition's first-person eye identity (shot_lag_logic.h 4d): two sites, no hook.
         (void)BindHalo3DirectorCamera(base,size,runtimeGeneration,g_engineTlsIndex);
         // Roomscale's Forge Monitor check (roomscale_admission_logic.h): two sites, two reader calls, no hook.
-        (void)BindHalo3SandboxEditor(base,size,runtimeGeneration,g_engineTlsIndex,
-            reinterpret_cast<uintptr_t>(g_halo3PlayerUnitGetter));
+        (void)BindHalo3SandboxEditor(base,size,runtimeGeneration,g_engineTlsIndex,g_halo3PlayerUnitGetterAt);
         InstallSteps::Mark("chase camera, eye and Forge binds");
         // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook; fails closed alone.
         (void)InstallHalo3GunBand(base,size,runtimeGeneration);

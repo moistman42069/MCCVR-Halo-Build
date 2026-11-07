@@ -227,11 +227,14 @@ bool InstallHalo3TrackerHudHeight(uintptr_t base, size_t size, uint32_t generati
     }
     float* const origin = reinterpret_cast<float*>(base + static_cast<uintptr_t>(sites.originRva));
     // The centre and its scale pair must be the title's own committed, writable data before anything is written.
+    // Project Reclaimer 0.10 keeps halo3.dll's image inside its own executable's mapping (lifted_engine.h): there the
+    // mapping starts at the executable, not at the image.
     MEMORY_BASIC_INFORMATION page{};
     const DWORD writable = PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    const bool liftedImage = lifted::Active() && reinterpret_cast<uintptr_t>(lifted::Halo3Module()) == base;
     if (VirtualQuery(origin, &page, sizeof(page)) != sizeof(page) || page.State != MEM_COMMIT ||
         (page.Protect & (PAGE_GUARD | PAGE_NOACCESS)) || !(page.Protect & writable) ||
-        page.AllocationBase != reinterpret_cast<void*>(base) ||
+        (page.AllocationBase != reinterpret_cast<void*>(base) && !liftedImage) ||
         reinterpret_cast<uintptr_t>(page.BaseAddress) + page.RegionSize < reinterpret_cast<uintptr_t>(origin) + 16)
     {
         LOG("TRACKER HUD HEIGHT Halo 3: StockFallback: the tracker's centre (+0x%llX) is not the title's own writable "

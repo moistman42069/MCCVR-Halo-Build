@@ -457,4 +457,100 @@ inline uint64_t GuestReturnOfCall(const uint8_t* host, size_t hostLength, uint64
             return guestBase + guestSites[i] + 5;
     return 0;
 }
+
+// ---- the client's own versions of guest functions -------------------------------------------------------------------
+
+// The client replaces some guest functions with versions of its own, in its executable. Translated code reaches one
+// through a stub past the end of the code (`jmp [rip+2]`, two int3, the target's address) with an ordinary Windows x64
+// call: rcx = ctx, the guest's arguments in ctx, and its stack pointer at the guest return address, which the
+// translated code formed just before as `lea r64, [r64 + disp32]` (disp32 = the guest return RVA; the base register
+// holds the guest image's base) and stored. The client's version pops it (ctx rsp + 8) and leaves its result in ctx.
+inline constexpr uint8_t kStubPrefix[8] = {0xFF, 0x25, 0x02, 0x00, 0x00, 0x00, 0xCC, 0xCC};
+inline constexpr size_t kStubSize = 16;
+inline constexpr size_t kStubLeaWindow = 0x200; // how far before the call the lea is looked for
+
+// Whether `stub` (kStubSize bytes) is such a stub.
+inline bool IsStub(const uint8_t* stub)
+{
+    return std::memcmp(stub, kStubPrefix, sizeof(kStubPrefix)) == 0;
+}
+
+// The guest return RVA the translated code formed before the call at `call` (an offset in `code`): the constant of the
+// last `lea r64, [r64 + disp32]` (base register not rsp) or `add r64, imm32` in the window before it that lies in
+// [lowRva, highRva) and follows every other call in that window; 0 if there is none. Both forms add the RVA to the
+// guest image's base held in a register. A call between belongs to the address formed before it, never to this one
+// (a byte that only looks like a call loses this call its name, never gives it a wrong one).
+inline uint32_t GuestReturnBeforeCall(const uint8_t* code, size_t call, uint32_t lowRva, uint32_t highRva)
+{
+    const size_t from = call > kStubLeaWindow ? call - kStubLeaWindow : 0;
+    uint32_t found = 0;
+    for (size_t at = from; at + 7 <= call; ++at)
+    {
+        if (code[at] == 0xE8 && at + 5 <= call)
+        {
+            int32_t rel = 0;
+            std::memcpy(&rel, code + at + 1, 4);
+            if (rel > -0x4000000 && rel < 0x4000000) // a near call, as the translated code's are
+                found = 0;
+            continue;
+        }
+        if ((code[at] & 0xF8) != 0x48) // REX.W
+            continue;
+        const uint8_t opcode = code[at + 1], modrm = code[at + 2];
+        const bool lea = opcode == 0x8D && (modrm & 0xC0) == 0x80 && (modrm & 7) != 4;
+        const bool add = opcode == 0x81 && (modrm & 0xF8) == 0xC0;
+        if (!lea && !add)
+            continue;
+        int32_t value = 0;
+        std::memcpy(&value, code + at + 3, 4);
+        if (value >= static_cast<int64_t>(lowRva) && value < static_cast<int64_t>(highRva))
+            found = static_cast<uint32_t>(value);
+    }
+    return found;
+}
+
+// Every `call rel32` in code[0, codeLength) to a stub in code[codeLength, size): `found(stubOffset, guestReturnRva)`,
+// the RVA 0 when no lea names it.
+template <typename Found>
+inline void ForEachStubCall(const uint8_t* code, size_t codeLength, size_t size, uint32_t lowRva, uint32_t highRva,
+                            Found found)
+{
+    for (size_t at = 0; at + 5 <= codeLength; ++at)
+    {
+        if (code[at] != 0xE8)
+            continue;
+        int32_t rel = 0;
+        std::memcpy(&rel, code + at + 1, 4);
+        const int64_t target = static_cast<int64_t>(at) + 5 + rel;
+        if (target < static_cast<int64_t>(codeLength) || target + static_cast<int64_t>(kStubSize) > static_cast<int64_t>(size) ||
+            !IsStub(code + target))
+            continue;
+        found(static_cast<size_t>(target), GuestReturnBeforeCall(code, at, lowRva, highRva));
+    }
+}
+
+// Whether the client's version at `function` (its first `length` bytes) calls the translated function itself, through
+// an address it loads from its own data (`mov r64, [rip + disp32]` or `call [rip + disp32]`) that `readQword` reads
+// as `adapter` or `body`. Such a version wraps the translated function, so a hook on the body already runs inside it.
+template <typename ReadQword>
+inline bool CallsTranslatedFunction(const uint8_t* function, size_t length, uint64_t address, uint64_t adapter,
+                                    uint64_t body, ReadQword readQword)
+{
+    for (size_t at = 0; at + 7 <= length; ++at)
+    {
+        size_t dispAt = 0, next = 0;
+        if ((function[at] == 0x48 || function[at] == 0x4C) && function[at + 1] == 0x8B && (function[at + 2] & 0xC7) == 0x05)
+            dispAt = at + 3, next = at + 7;
+        else if (function[at] == 0xFF && function[at + 1] == 0x15)
+            dispAt = at + 2, next = at + 6;
+        else
+            continue;
+        int32_t disp = 0;
+        std::memcpy(&disp, function + dispAt, 4);
+        uint64_t value = 0;
+        if (readQword(address + next + static_cast<int64_t>(disp), value) && (value == adapter || value == body))
+            return true;
+    }
+    return false;
+}
 } // namespace lifted_engine

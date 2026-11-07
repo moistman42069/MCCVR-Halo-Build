@@ -357,8 +357,10 @@ void BindHalo3VehicleBoom(uintptr_t base, size_t size, uint32_t generation)
             const uintptr_t pilot = rip(choice, 7, 11);
             if (!here(pilot, kBoomPilotSig))
                 pilotWhy = "its signature";
+            // The mod's accessor is what lifted::Callable gave for it (in Project Reclaimer 0.10 an entry of its own).
             else if (!g_halo3VehicleTypeAccessor ||
-                     rip(pilot, 197, 201) != reinterpret_cast<uintptr_t>(g_halo3VehicleTypeAccessor))
+                     lifted::Callable(reinterpret_cast<Halo3VehicleTypeFn>(rip(pilot, 197, 201))) !=
+                         g_halo3VehicleTypeAccessor)
                 pilotWhy = "its type accessor against the mod's";
             else
                 boom.pilot = true;

@@ -400,14 +400,22 @@ const char* Halo3TrackerProve(uintptr_t base, size_t size, uintptr_t unitGetter,
     const auto inside = [&](uintptr_t address, size_t bytes) {
         return address >= base && address <= base + size && bytes <= base + size - address;
     };
+    // Code is read through sig::CopyUnhooked: in Project Reclaimer 0.10 the first five bytes of each function in the
+    // image are the client's call to its trap (the scan shadow keeps halo3.dll's own), and an import thunk is all
+    // first bytes.
     const auto i32 = [](uintptr_t at) {
         int32_t v = 0;
-        memcpy(&v, reinterpret_cast<const void*>(at), sizeof(v));
+        sig::CopyUnhooked(at, &v, sizeof(v));
+        return v;
+    };
+    const auto u8 = [](uintptr_t at) {
+        uint8_t v = 0;
+        sig::CopyUnhooked(at, &v, sizeof(v));
         return v;
     };
     // The target of the E8 at `at` (a matched byte), or 0.
     const auto callTarget = [&](uintptr_t at) -> uintptr_t {
-        if (*reinterpret_cast<const uint8_t*>(at) != 0xE8)
+        if (u8(at) != 0xE8)
             return 0;
         const uintptr_t target = at + 5 + i32(at + 1);
         return inside(target, 16) ? target : 0;
@@ -460,8 +468,7 @@ const char* Halo3TrackerProve(uintptr_t base, size_t size, uintptr_t unitGetter,
     for (int i = 0; i < 2; ++i)
     {
         const uintptr_t thunk = callTarget(trig + callAt[i]);
-        if (!thunk || !inside(thunk, 6) || *reinterpret_cast<const uint8_t*>(thunk) != 0xFF ||
-            *reinterpret_cast<const uint8_t*>(thunk + 1) != 0x25)
+        if (!thunk || !inside(thunk, 6) || u8(thunk) != 0xFF || u8(thunk + 1) != 0x25)
             return "the heading's trig calls are not import thunks";
         const uintptr_t slot = thunk + 6 + i32(thunk + 2);
         if (!inside(slot, sizeof(void*)))
@@ -894,7 +901,7 @@ bool InstallHalo3HeadRelative(uintptr_t base, size_t size, uint32_t generation)
     lane.runtimeGeneration = &g_halo3RuntimeGeneration;
     lane.unitGetter = &g_halo3PlayerUnitGetter;
     const bool tracker = InstallHeadRelativeTracker(lane, base, size, generation,
-                                                    reinterpret_cast<uintptr_t>(g_halo3PlayerUnitGetter),
+                                                    g_halo3PlayerUnitGetterAt,
                                                     reinterpret_cast<void*>(&Halo3TrackerPointDetour),
                                                     reinterpret_cast<void*>(&Halo3TrackerObjectDetour));
     auto& audio = g_halo3HeadAudio;

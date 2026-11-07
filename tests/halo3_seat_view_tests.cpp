@@ -83,6 +83,15 @@ bool SeatAimFrameExecutable(const void* address, size_t bytes)
         protection == PAGE_EXECUTE_READWRITE || protection == PAGE_EXECUTE_WRITECOPY;
 }
 
+// Project Reclaimer 0.10's path (lifted_engine.h, MinHook): not taken here, there is no recompiled engine.
+namespace lifted { inline bool Active() { return false; } }
+enum MH_STATUS { MH_OK = 0, MH_ERROR_DISABLED = 4 };
+inline MH_STATUS MH_CreateHook(void*, void*, void**) { return MH_OK; }
+inline MH_STATUS MH_EnableHook(void*) { return MH_OK; }
+inline MH_STATUS MH_DisableHook(void*) { return MH_OK; }
+inline MH_STATUS MH_RemoveHook(void*) { return MH_OK; }
+#define HALOMCCVR_GAME_RETURN_ADDRESS() uintptr_t{0}
+
 bool Halo3SeatViewInstall(uintptr_t base, size_t size, uint32_t generation);
 bool Halo3SeatViewRemove();
 void Halo3SeatViewSync();

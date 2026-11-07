@@ -47,6 +47,7 @@ struct Halo3SeatViewState
     bool retired = false;                // torn down but not yet released: sites are only ever put back
     bool pendingLogged = false;
     uint32_t removeFailures = 0;
+    void* hooked = nullptr;              // Project Reclaimer 0.10: the hooked function (HALO3 SEAT VIEW IN 0.10 below)
 };
 // An install that had to wait for another generation's relay to be retired: taken up again by the poll.
 struct Halo3SeatViewRetry
@@ -88,6 +89,39 @@ int Halo3SeatViewAdjust(int unit, const int* state, int result) noexcept
         g_halo3SeatViewAnswered.fetch_add(1, std::memory_order_relaxed);
 #endif
     return answer;
+}
+
+// HALO 3 SEAT VIEW IN PROJECT RECLAIMER 0.10: halo3.dll's code never runs there, so the three call sites cannot be
+// pointed at the relay. The function they call is hooked instead (on the client's own version of it, which its
+// callers call: lifted_engine.h). The hook knows the exact guest call site it was called from, and answers through
+// Halo3SeatViewAdjust only for the three director sites; every other caller (the simulation's +0x2121B8 among them)
+// gets the game's own answer, as with the relay.
+using Halo3SeatViewThirdPersonFn = int(__fastcall*)(int, int*);
+Halo3SeatViewThirdPersonFn g_halo3SeatViewOriginal = nullptr;
+uintptr_t g_halo3SeatViewReturns[seat_view::kDirectorSiteCount]{};   // each site's guest return address
+int __fastcall Halo3SeatViewLiftedHook(int unit, int* state)
+{
+    InterlockedIncrement(&g_halo3SeatViewInside);
+    int result = 0;
+    __try
+    {
+        result = g_halo3SeatViewOriginal(unit, state);
+        if (g_halo3SeatViewRedirected.load(std::memory_order_acquire))
+        {
+            const uintptr_t caller = HALOMCCVR_GAME_RETURN_ADDRESS();
+            for (const uintptr_t site : g_halo3SeatViewReturns)
+                if (caller == site)
+                {
+                    result = Halo3SeatViewAdjust(unit, state, result);
+                    break;
+                }
+        }
+    }
+    __finally
+    {
+        InterlockedDecrement(&g_halo3SeatViewInside);
+    }
+    return result;
 }
 
 bool Halo3SeatViewRead(const uint8_t* at, uint8_t out[seat_view::kCallBytes])
@@ -400,6 +434,16 @@ void Halo3SeatViewNotePending(Halo3SeatViewState& s, const char* what)
 // WaitThread: bring the three sites in line with the setting. Cheap when nothing changes.
 void Halo3SeatViewApply(Halo3SeatViewState& s)
 {
+    if (s.hooked)
+    {
+        // Project Reclaimer 0.10: the hook stays for its generation (teardown takes it out); the answer follows the
+        // setting.
+        const bool want = Halo3SeatViewWanted();
+        if (g_halo3SeatViewRedirected.exchange(want, std::memory_order_acq_rel) != want)
+            LOG("Halo 3 seat view (Project Reclaimer 0.10): the director's three calls are %s",
+                want ? "answered first person for the seat the mod's camera owns" : "back to the game's own answer");
+        return;
+    }
     if (!s.relay)
         return;
     if (TitleAdapter_GetGeneration(GameTitle::Halo3) != s.generation)
@@ -547,10 +591,25 @@ bool Halo3SeatViewWritesTag()
 
 // WaitThread, at title install: verify the three director sites and build the relay. False = the seat keeps the
 // game's third-person view (and its drawn character); nothing was written.
+bool Halo3SeatViewRemove();
 bool Halo3SeatViewInstall(uintptr_t base, size_t size, uint32_t generation)
 {
     Halo3SeatViewState& s = g_halo3SeatView;
     g_halo3SeatViewRetry = {};
+    if (s.hooked)
+    {
+        // Project Reclaimer 0.10: the same generation keeps its hook; another one's goes first.
+        if (s.base == base && s.generation == generation)
+        {
+            Halo3SeatViewApply(s);
+            return true;
+        }
+        if (!Halo3SeatViewRemove())
+        {
+            g_halo3SeatViewRetry = {base, size, generation};
+            return false;
+        }
+    }
     if (s.relay && s.base == base && s.generation == generation)
     {
         // The same module again (a teardown that could not finish, then a new install): the relay is taken up.
@@ -590,6 +649,34 @@ bool Halo3SeatViewInstall(uintptr_t base, size_t size, uint32_t generation)
             why = "a call site no longer calls the seat's third-person test";
         else
             s.sites[i].call = call;
+    }
+    if (!why && lifted::Active())
+    {
+        // HALO 3 SEAT VIEW IN PROJECT RECLAIMER 0.10 (above): the function is hooked, not the sites.
+        failed = nullptr;
+        for (size_t i = 0; i < seat_view::kDirectorSiteCount; ++i)
+            g_halo3SeatViewReturns[i] = reinterpret_cast<uintptr_t>(s.sites[i].call) + seat_view::kCallBytes;
+        void* const target = reinterpret_cast<void*>(function);
+        if (MH_CreateHook(target, reinterpret_cast<void*>(&Halo3SeatViewLiftedHook),
+                          reinterpret_cast<void**>(&g_halo3SeatViewOriginal)) != MH_OK)
+            why = "the seat's third-person test could not be hooked";
+        else if (MH_EnableHook(target) != MH_OK)
+        {
+            MH_RemoveHook(target);
+            why = "the seat's third-person test's hook could not be enabled";
+        }
+        else
+        {
+            s.hooked = target;
+            s.base = base;
+            s.generation = generation;
+            LOG("Halo 3 seat view (Project Reclaimer 0.10): the seat's third-person test +0x%X is hooked; the camera "
+                "director's three calls (+0x212074, +0x2127EF, +0x212DCB) are answered through it, every other caller "
+                "(the simulation's +0x%X among them) gets the game's own answer",
+                seat_view::kHalo3ThirdPersonRva, seat_view::kHalo3EvaluatorCallRva);
+            Halo3SeatViewApply(s);
+            return true;
+        }
     }
     if (!why)
     {
@@ -665,6 +752,20 @@ bool Halo3SeatViewRemove()
     Halo3SeatViewDisarm();
     g_halo3SeatViewRedirected.store(false, std::memory_order_release);
     g_halo3SeatViewRetry = {};
+    if (s.hooked)
+    {
+        // Project Reclaimer 0.10: out once no thread is inside the hook. A hook that cannot be taken out in time is
+        // left disabled (its detour is the mod's own code and stays; nothing of it is released).
+        const MH_STATUS disabled = MH_DisableHook(s.hooked);
+        const bool quiet = (disabled == MH_OK || disabled == MH_ERROR_DISABLED) &&
+                           InterlockedCompareExchange(&g_halo3SeatViewInside, 0, 0) == 0;
+        if (!quiet && ++s.removeFailures < kHalo3SeatViewRemoveTries)
+            return false;
+        if (quiet)
+            MH_RemoveHook(s.hooked);
+        s = {};
+        return true;
+    }
     if (!s.relay)
     {
         s = {};

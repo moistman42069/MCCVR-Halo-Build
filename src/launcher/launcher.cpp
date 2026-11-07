@@ -1422,7 +1422,9 @@ static int LaunchReclaimer(const std::wstring& dir, const ReclaimerClient& clien
     // Up to 0.9 the process just started is not the game: it starts a supervisor, which starts the engine worker.
     // From 0.10 it is, but it may start itself again and exit at once (seen when the launcher starts it: the relay
     // then gives the mod to the new one). Success is a process that has the mod and is still there twelve seconds
-    // later; one that ends cleanly while another has the mod was a restart, and the other is followed.
+    // later; one that ends while another has the mod was a restart, and the other is followed. The first one does
+    // not always end cleanly (0xC0000409 seen in unattended launches, the new one running on with the mod): its exit
+    // code is logged, and only a game that is gone is an error.
     DWORD worker = 0;
     for (int handOvers = 0;; ++handOvers)
     {
@@ -1454,11 +1456,15 @@ static int LaunchReclaimer(const std::wstring& dir, const ReclaimerClient& clien
         CloseHandle(process);
         if (waited != WAIT_OBJECT_0)
             break;
-        const DWORD next = code == 0 && handOvers < 3 ? FindReclaimerProcess(L"HaloMCCVR.dll") : 0;
+        const DWORD next = handOvers < 3 ? FindReclaimerProcess(L"HaloMCCVR.dll") : 0;
         if (next && next != worker)
         {
-            LauncherLog("pid %lu ended cleanly within 12 s and pid %lu has the mod: Project Reclaimer started itself "
-                        "again; following it", worker, next);
+            if (code == 0)
+                LauncherLog("pid %lu ended cleanly within 12 s and pid %lu has the mod: Project Reclaimer started "
+                            "itself again; following it", worker, next);
+            else
+                LauncherLog("pid %lu ended within 12 s with exit code %lu (0x%08X) and pid %lu has the mod: "
+                            "following it", worker, code, code, next);
             continue;
         }
         LauncherLog("the game process EXITED within 12 s, exit code %lu (0x%08X)", code, code);

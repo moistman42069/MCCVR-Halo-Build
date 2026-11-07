@@ -7,6 +7,12 @@ constexpr uintptr_t converterRva=0x172434;
 constexpr const char* converterPattern=
     "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 57 41 54 41 55 41 56 41 57 48 81 EC 70 02 00 00 "
     "49 8B D8 0F 29 70 C8 4C 8B 84 24 C8 02 00 00 45 33 E4 0F 29 78 B8 49 8B F9 8B EA 4C 63 F1";
+// The per-tick input update that calls the converter for each controller. Project Reclaimer 0.10 runs a version of
+// its own in its place, which never calls the converter; there the records advance after the update instead.
+constexpr uintptr_t inputUpdateRva=0xA78C0;
+constexpr const char* inputUpdatePattern=
+    "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 C8 FB FF FF 48 81 EC 38 05 00 00 FF 15 ?? ?? ?? ?? "
+    "33 FF B9 01 00 00 00 48 39 05";
 constexpr uintptr_t controllerProofRva=0x1725EB;
 constexpr const char* controllerProofPattern=
     "49 69 CE 1C 02 00 00 48 8D 05 C7 65 0B 02 BA 80 00 00 00 48 03 C1 48 8D 4C 24 30";
@@ -36,8 +42,8 @@ struct Runtime {
     HMODULE module{};
     uintptr_t base{}, state{};
     std::atomic<uint32_t> generation{};
-    void* target[3]{}, *original[3]{};
-    bool enabled[3]{}, attempted{};
+    void* target[4]{}, *original[4]{};
+    bool enabled[4]{}, attempted{};
     std::atomic<bool> secondaryEdgesReady{};
     uint32_t(__fastcall* localPlayer)(int){};
     std::atomic<bool> admitted{}, faulted{},secondaryReloadProved{};
@@ -71,30 +77,56 @@ bool Current() noexcept {
 }
 using Convert = void(__fastcall*)(uintptr_t,int,const void*,void*,void*,void*);
 using Read = void*(__fastcall*)(void*,unsigned);
+using InputUpdate = void(__fastcall*)();
+
+// Controller 0's input was converted, elapsedMs after the last: the VR records advance with it.
+void AdvanceController0(int elapsedMs) {
+    const auto now=GetTickCount64();
+    const auto cancelEpoch=publication.cancelEpoch.load(std::memory_order_acquire);
+    uint32_t actions=0,blocked=0,extras=0,extrasServed=0;bool direct=false;uint64_t publishedAt=0;
+    if(Current() &&
+        ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(std::memory_order_acquire),&blocked,
+            &extras,&extrasServed) && elapsedMs>=0 && elapsedMs<=1000 &&
+        cancelEpoch==publication.cancelEpoch.load(std::memory_order_acquire)) {
+        if(local.generation!=runtime.generation) local.Reset(runtime.generation);
+        local.publishedAt=publishedAt;local.actions=actions;local.direct=direct;local.blocked=blocked;
+        local.cancelEpoch=cancelEpoch;
+        local.converterAt=now;local.converted=true;
+        for(unsigned i=0;i<vr_mapping::Count;++i)
+            local.records[i].Advance((local.direct||(local.blocked&(1u<<i))) && (local.actions&(1u<<i)),unsigned(elapsedMs));
+        local.extra.Advance(local.direct,extras,extrasServed,unsigned(elapsedMs));
+        runtime.converted.fetch_add(1,std::memory_order_relaxed);
+    } else local.converted=false;
+}
+
+thread_local bool t_controller0Converted=false; // the converter ran for controller 0 inside this input update
 
 void __fastcall ConverterHook(uintptr_t controller,int elapsedMs,const void* raw,
     void* output,void* axes,void* activity) {
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
     __try {
         reinterpret_cast<Convert>(runtime.original[0])(controller,elapsedMs,raw,output,axes,activity);
-        const auto now=GetTickCount64();
-        const auto cancelEpoch=publication.cancelEpoch.load(std::memory_order_acquire);
-        uint32_t actions=0,blocked=0,extras=0,extrasServed=0;bool direct=false;uint64_t publishedAt=0;
         // H3 preserves the real controller argument and uses it to select
         // native preferences, in both direct and copied gamepad routes.
-        if(Current() && controller==0 &&
-            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(std::memory_order_acquire),&blocked,
-                &extras,&extrasServed) && elapsedMs>=0 && elapsedMs<=1000 &&
-            cancelEpoch==publication.cancelEpoch.load(std::memory_order_acquire)) {
-            if(local.generation!=runtime.generation) local.Reset(runtime.generation);
-            local.publishedAt=publishedAt;local.actions=actions;local.direct=direct;local.blocked=blocked;
-            local.cancelEpoch=cancelEpoch;
-            local.converterAt=now;local.converted=true;
-            for(unsigned i=0;i<vr_mapping::Count;++i)
-                local.records[i].Advance((local.direct||(local.blocked&(1u<<i))) && (local.actions&(1u<<i)),unsigned(elapsedMs));
-            local.extra.Advance(local.direct,extras,extrasServed,unsigned(elapsedMs));
-            runtime.converted.fetch_add(1,std::memory_order_relaxed);
-        } else if(controller==0) local.converted=false;
+        if(controller==0) {
+            AdvanceController0(elapsedMs);
+            t_controller0Converted=true;
+        }
+    } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
+}
+// Project Reclaimer 0.10 only (see inputUpdateRva). Its update calls the converter only for a gamepad it sees; an
+// update that did not advances the records here, once, with its elapsed time measured here and clamped as the game
+// clamps its own (0-100 ms).
+void __fastcall InputUpdateHook() {
+    runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
+    __try {
+        t_controller0Converted=false;
+        reinterpret_cast<InputUpdate>(runtime.original[3])();
+        static thread_local uint64_t lastUpdate=0;
+        const uint64_t now=GetTickCount64();
+        const int elapsedMs=lastUpdate?static_cast<int>((std::min)(now-lastUpdate,uint64_t{100})):0;
+        lastUpdate=now;
+        if(!t_controller0Converted) AdvanceController0(elapsedMs);
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
 }
 __declspec(noinline) bool ReadController(uintptr_t state,unsigned& value) noexcept {
@@ -204,7 +236,8 @@ uintptr_t __fastcall ActionEdgesHook(uint32_t player,void* packet,uintptr_t call
     return result;
 }
 // The reader is entered through a register-preserving asm thunk (native_vr_reader_thunks.asm).
-void* const hooks[]{reinterpret_cast<void*>(&ConverterHook),reinterpret_cast<void*>(&NativeVrReaderThunkHalo3),reinterpret_cast<void*>(&NativeVrH3ActionEdgesThunk)};
+void* const hooks[]{reinterpret_cast<void*>(&ConverterHook),reinterpret_cast<void*>(&NativeVrReaderThunkHalo3),reinterpret_cast<void*>(&NativeVrH3ActionEdgesThunk),
+    reinterpret_cast<void*>(&InputUpdateHook)};
 bool ProveConsumerBounds(uintptr_t base) {
     DWORD64 imageBase=0;
     const auto* entry=RtlLookupFunctionEntry(base+consumerBegin,&imageBase,nullptr);
@@ -215,17 +248,18 @@ bool Retire() {
     runtime.readerAt.store(0,std::memory_order_release);
     publication.stamp.store(0,std::memory_order_release);
     publication.cancelEpoch.fetch_add(1,std::memory_order_acq_rel);
-    for(unsigned i=0;i<3;++i) if(runtime.enabled[i]) {
+    for(unsigned i=0;i<4;++i) if(runtime.enabled[i]) {
         const auto status=MCCVR_DisableHookForRetirement(runtime.target[i]);
         if(status!=MH_OK && status!=MH_ERROR_DISABLED) return false;
         runtime.enabled[i]=false;
     }
     const void* functions[]{hooks[0],hooks[1],reinterpret_cast<void*>(&ReaderHook),reinterpret_cast<void*>(&ReadOwned),
         reinterpret_cast<void*>(&Current),reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames),
-        hooks[2],reinterpret_cast<void*>(&ActionEdgesHook)};
-    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr,nullptr,runtime.original[2],nullptr};
-    if(!WaitForNativeDetourQuiescence(functions,trampolines,9,runtime.callbacks)) return false;
-    for(unsigned i=0;i<3;++i) if(runtime.target[i]) {
+        hooks[2],reinterpret_cast<void*>(&ActionEdgesHook),hooks[3],reinterpret_cast<void*>(&AdvanceController0)};
+    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr,nullptr,runtime.original[2],nullptr,
+        runtime.original[3],nullptr};
+    if(!WaitForNativeDetourQuiescence(functions,trampolines,11,runtime.callbacks)) return false;
+    for(unsigned i=0;i<4;++i) if(runtime.target[i]) {
         if(MH_RemoveHook(runtime.target[i])!=MH_OK) return false;
         runtime.target[i]=runtime.original[i]=nullptr;
     }
@@ -303,7 +337,7 @@ void Poll() {
         bool edgeReady=proved && Prove(base,size,actionEdgesRva,actionEdgesPattern) &&
             Prove(base,size,localPlayerRva,localPlayerPattern) &&
             Prove(base,size,0xE4CD7,edgeCallerPattern) && Prove(base,size,0xE7D8B,edgeFlagsPattern);
-        runtime.localPlayer=edgeReady?reinterpret_cast<uint32_t(__fastcall*)(int)>(base+localPlayerRva):nullptr;
+        runtime.localPlayer=edgeReady?lifted::Callable(reinterpret_cast<uint32_t(__fastcall*)(int)>(base+localPlayerRva)):nullptr;
         if(edgeReady) {
             auto* target=reinterpret_cast<void*>(base+actionEdgesRva);
             edgeReady=MH_CreateHook(target,hooks[2],&runtime.original[2])==MH_OK;
@@ -316,6 +350,19 @@ void Poll() {
         runtime.secondaryEdgesReady.store(edgeReady,std::memory_order_release);
         LOG("H3 secondary reload edge suppression: %s; dual pickup input preserved",
             edgeReady?"installed":"StockFallback (proof/hook failure)");
+        // Project Reclaimer 0.10 never calls the converter (inputUpdateRva): the records advance after its update.
+        if(proved && lifted::Active()) {
+            auto* target=reinterpret_cast<void*>(base+inputUpdateRva);
+            proved=Prove(base,size,inputUpdateRva,inputUpdatePattern) &&
+                MH_CreateHook(target,hooks[3],&runtime.original[3])==MH_OK;
+            if(proved) {
+                runtime.target[3]=target;
+                proved=MH_EnableHook(target)==MH_OK;
+                runtime.enabled[3]=proved;
+            }
+            LOG("Native VR action bridge H3: Project Reclaimer 0.10's own input update %s",
+                proved?"hooked: the VR records advance after it":"could not be hooked");
+        }
         runtime.readerAt.store(0,std::memory_order_release);
         runtime.admitted.store(proved,std::memory_order_release);
         LOG("Native VR action bridge H3: %s; requires observed owned input cadence; runtime validation pending",

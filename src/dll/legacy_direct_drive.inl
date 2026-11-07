@@ -1845,7 +1845,9 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
     // call is. In Project Reclaimer 0.10 the thunk's own return address is the lifted bridge (game_tls.h).
     ret = HALOMCCVR_GAME_CALLER(ret);
     uintptr_t dispatcherRet = 0;
-    const aim_caller::Caller caller = LegacyDriveClassify(st, ret, entryRsp, dispatcherRet);
+    // A caller the lifted layer could not name (0) is taken for the update, as every call was before the caller map.
+    const aim_caller::Caller caller = HALOMCCVR_GAME_CALLER_UNKNOWN(ret) ? aim_caller::Caller::Stick
+                                                                          : LegacyDriveClassify(st, ret, entryRsp, dispatcherRet);
     const aim_caller::Action action = aim_caller::ActionFor(st.callers, caller);
     st.byRole[static_cast<int>(caller)].fetch_add(1, std::memory_order_relaxed);
     if (caller == aim_caller::Caller::Unknown && st.callers.stick_proven())

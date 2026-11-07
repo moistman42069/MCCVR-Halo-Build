@@ -20,6 +20,7 @@
 extern "C" uint64_t LiftedCallNative(void* function, uint8_t* ctx, const uint64_t* stackArgs);
 extern "C" uint64_t LiftedCallBody(void* body, uint8_t* ctx, uint64_t guestRsp, const uint64_t hostArgs[4]);
 extern "C" void LiftedHookEntry();
+extern "C" void LiftedReplacementEntry();
 extern "C" void LiftedOrigEntry();
 extern "C" void LiftedCallEntry();
 
@@ -39,7 +40,27 @@ struct Record
     uint32_t stackArgs = 0;     // stack arguments written back on the call to the original
     std::atomic<uint32_t> unrunnable{0};  // calls refused for want of a guest call on the thread
     uint32_t unrunnableReported = 0;
+    // Hooks: how their game caller was found (GuestReturnAddress), for the report in Poll.
+    std::atomic<uint32_t> callersNamed{0}, callersUnnamed{0}, callerDepth{0};
+    std::atomic<uint64_t> unnamedEnteredFrom{0}, namedExample{0};
+    bool callerReported = false;
+    // Hooks: calls to the detour, for Poll's report of which hooks the translated game reaches.
+    std::atomic<uint32_t> entered{0};
+    uint32_t enteredReported = 0;
+    // Hooks on a function the client replaced with a version of its own that never runs the translated body: the slot
+    // of the stub its callers reach that version through, the version, and the entry the slot holds while the hook is
+    // enabled (lifted_engine_logic.h, ForEachStubCall).
+    volatile uint64_t* replacementSlot = nullptr;
+    void* replacement = nullptr;
+    void* replacementEntry = nullptr;
+    // Hooks: which of the first four arguments are floating-point (bit n: the guest's xmm n), and whether the function
+    // returns one in xmm0 (SetFloatArguments, SetFloatResult).
+    uint32_t floatArgs = 0;
+    bool floatResult = false;
 };
+
+// The guest's volatile registers in ctx (rcx, rdx, r8-r11, xmm0-xmm5): 0x10 + 0x20 + 0x60 bytes.
+constexpr size_t kVolatileBytes = 0x90;
 
 struct Frame
 {
@@ -48,6 +69,12 @@ struct Frame
     const Record* record;
     const uint64_t* hostReturnSlot; // hooks: where the call's return address sits on the host stack; null for the
                                     // mod's own calls
+    bool viaReplacement;            // entered through the client's version: the guest return address is at guestRsp
+    bool inOriginal;                // ... and that version is running now, as the detour's original
+    bool originalRan;               // hooks: the original ran, and left volatilesAfter
+    // Hooks: the guest's volatile registers as the caller left them, and as the original left them (FinishFrame).
+    uint8_t volatilesEntry[kVolatileBytes];
+    uint8_t volatilesAfter[kVolatileBytes];
 };
 constexpr int kMaxFrames = 64;
 thread_local Frame t_frames[kMaxFrames];
@@ -55,6 +82,47 @@ thread_local int t_depth = 0;
 
 // Below a hooked call's guest stack pointer, where a game function the mod calls gets its own frame.
 constexpr uint64_t kCallGap = 0x2000;
+
+Frame& PushFrame(uint8_t* ctx, uint64_t guestRsp, const Record* record, const uint64_t* hostReturnSlot,
+                 bool viaReplacement)
+{
+    Frame& frame = t_frames[t_depth++];
+    frame.ctx = ctx;
+    frame.guestRsp = guestRsp;
+    frame.record = record;
+    frame.hostReturnSlot = hostReturnSlot;
+    frame.viaReplacement = viaReplacement;
+    frame.inOriginal = false;
+    frame.originalRan = false;
+    return frame;
+}
+
+void SaveVolatiles(const uint8_t* ctx, uint8_t* out)
+{
+    std::memcpy(out, ctx + 0x08, 0x10);
+    std::memcpy(out + 0x10, ctx + 0x40, 0x20);
+    std::memcpy(out + 0x30, ctx + 0x90, 0x60);
+}
+void RestoreVolatiles(uint8_t* ctx, const uint8_t* in)
+{
+    std::memcpy(ctx + 0x08, in, 0x10);
+    std::memcpy(ctx + 0x40, in + 0x10, 0x20);
+    std::memcpy(ctx + 0x90, in + 0x30, 0x60);
+}
+
+// halo3.dll is built with whole-program optimisation, and its translation keeps that: a caller may read guest registers
+// the called function leaves alone, or the ones it leaves behind, right after the call (seen for the playback check
+// 0xF01A0 and the weapon-IK mode setter 0x26DD98). So a hook is transparent to the guest's volatile registers: after
+// the detour they are as the original left them (as the caller left them, when the detour did not run it), the
+// detour's own xmm0 only for a function that returns a float.
+void FinishFrame(const Record* record, uint8_t* ctx, const Frame& frame)
+{
+    uint8_t result[16];
+    std::memcpy(result, ctx + lifted_engine::kCtxXmm0, sizeof(result)); // the detour's, as LiftedCallNative left it
+    RestoreVolatiles(ctx, frame.originalRan ? frame.volatilesAfter : frame.volatilesEntry);
+    if (record->floatResult)
+        std::memcpy(ctx + lifted_engine::kCtxXmm0, result, sizeof(result));
+}
 
 SRWLOCK g_lock = SRWLOCK_INIT;
 std::atomic<bool> g_active{false};
@@ -67,7 +135,13 @@ lifted_engine::Table g_table;
 std::unordered_map<uintptr_t, Record*> g_hooks;     // by guest target
 std::unordered_map<uintptr_t, Record*> g_callables; // by guest target
 std::unordered_map<uintptr_t, unsigned> g_stackArgs;
+std::unordered_map<uintptr_t, uint32_t> g_floatArgs;
+std::unordered_map<uintptr_t, bool> g_floatResults;
 std::vector<Record*> g_allRecords;
+// The stub slots of the client's own versions of guest functions, by guest RVA; built on the first hook.
+std::unordered_map<uint32_t, volatile uint64_t*> g_replacements;
+bool g_replacementsBuilt = false;
+size_t g_codeReadable = 0; // how much from g_code is readable: the code and the stubs past it (BuildReplacements)
 // The guest image's code section as halo3.dll has it: what signature searches read (sig::SetScanShadow).
 std::vector<uint8_t> g_shadow;
 std::atomic<bool> g_shadowReady{false};
@@ -324,6 +398,143 @@ Record* NewRecord(uintptr_t target, const char* what)
     g_allRecords.push_back(record);
     return record;
 }
+
+// The function a guest `call rel32` returning to `returnRva` calls, read from halo3.dll's own bytes.
+bool GuestCallTarget(uint32_t returnRva, uint32_t& target)
+{
+    const uintptr_t site = g_guestBase + returnRva - 5;
+    if (site < g_guestCodeStart || site + 5 > g_guestCodeEnd)
+        return false;
+    uint8_t bytes[5];
+    if (g_shadowReady.load(std::memory_order_acquire) && site + 5 - g_guestCodeStart <= g_shadow.size())
+        std::memcpy(bytes, g_shadow.data() + (site - g_guestCodeStart), 5);
+    else if (Readable(reinterpret_cast<const void*>(site), 5))
+        std::memcpy(bytes, reinterpret_cast<const void*>(site), 5);
+    else
+        return false;
+    if (bytes[0] != 0xE8)
+        return false;
+    int32_t rel = 0;
+    std::memcpy(&rel, bytes + 1, 4);
+    target = static_cast<uint32_t>(static_cast<int64_t>(returnRva) + rel);
+    return true;
+}
+
+// Which guest functions the client replaced with versions of its own, from the stubs its translated code calls them
+// through (lifted_engine_logic.h, ForEachStubCall). A stub named for two functions, or a function with two stubs, is
+// left out.
+void BuildReplacements()
+{
+    g_replacementsBuilt = true;
+    const size_t limit = g_table.codeLength + 0x100000;
+    size_t size = 0;
+    for (uintptr_t at = g_code; at - g_code < limit;)
+    {
+        MEMORY_BASIC_INFORMATION info{};
+        if (!VirtualQuery(reinterpret_cast<void*>(at), &info, sizeof(info)) || info.State != MEM_COMMIT ||
+            (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) || !(info.Protect & 0xEE))
+            break;
+        at = reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;
+        size = (std::min)(static_cast<size_t>(at - g_code), limit);
+    }
+    g_codeReadable = size;
+    if (size <= g_table.codeLength + lifted_engine::kStubSize)
+    {
+        LOG("RECLAIMER 0.10: nothing readable past the translated code: the client's own versions of game functions "
+            "are not looked for");
+        return;
+    }
+    constexpr uint32_t kAmbiguous = UINT32_MAX;
+    std::unordered_map<size_t, uint32_t> stubFunction;
+    size_t named = 0;
+    lifted_engine::ForEachStubCall(
+        reinterpret_cast<const uint8_t*>(g_code), g_table.codeLength, size,
+        static_cast<uint32_t>(g_guestCodeStart - g_guestBase), static_cast<uint32_t>(g_guestCodeEnd - g_guestBase + 5),
+        [&](size_t stub, uint32_t returnRva) {
+            uint32_t target = 0;
+            if (!returnRva || !GuestCallTarget(returnRva, target))
+                return;
+            ++named;
+            const auto [found, inserted] = stubFunction.emplace(stub, target);
+            if (!inserted && found->second != target)
+                found->second = kAmbiguous;
+        });
+    for (const auto& [stub, rva] : stubFunction)
+    {
+        if (rva == kAmbiguous)
+            continue;
+        auto* slot = reinterpret_cast<volatile uint64_t*>(g_code + stub + 8);
+        const auto [found, inserted] = g_replacements.emplace(rva, slot);
+        if (!inserted && found->second != slot)
+            found->second = nullptr;
+    }
+    LOG("RECLAIMER 0.10: the client calls %zu game functions' own versions of it through stubs past the translated "
+        "code (%zu calls named the function)", g_replacements.size(), named);
+}
+
+// Gives a new hook the client's own version of its function, when its callers reach that instead of the translated
+// body and it never runs the body itself (a version that does is a wrapper, and the hook on the body runs inside it).
+void AttachReplacement(Record* record)
+{
+    if (!g_replacementsBuilt)
+        BuildReplacements();
+    const auto found = g_replacements.find(record->rva);
+    if (found == g_replacements.end() || !found->second)
+        return;
+    volatile uint64_t* slot = found->second;
+    void* version = reinterpret_cast<void*>(*slot);
+    const auto* function = static_cast<const uint8_t*>(version);
+    if (Readable(function, 5) && function[0] == 0xE9) // a jump table's entry
+    {
+        int32_t rel = 0;
+        std::memcpy(&rel, function + 1, 4);
+        function += 5 + static_cast<int64_t>(rel);
+    }
+    constexpr size_t kLook = 0xA0;
+    if (!Readable(function, kLook))
+        return;
+    const lifted_engine::Record* entry = lifted_engine::FindStart(g_table, record->rva);
+    const bool wraps = lifted_engine::CallsTranslatedFunction(
+        function, kLook, reinterpret_cast<uint64_t>(function), g_code + entry->hostOffset, record->body,
+        [](uint64_t address, uint64_t& value) {
+            if (!Readable(reinterpret_cast<const void*>(address), 8))
+                return false;
+            std::memcpy(&value, reinterpret_cast<const void*>(address), 8);
+            return true;
+        });
+    const auto exe = reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr));
+    if (wraps)
+    {
+        LOG("RECLAIMER 0.10: halo3.dll+0x%X: the client's own version of it (exe+0x%llX) runs the translated body, "
+            "where the hook is", record->rva, static_cast<unsigned long long>(reinterpret_cast<uint64_t>(function) - exe));
+        return;
+    }
+    record->replacementEntry = MakeStub(record, &LiftedReplacementEntry);
+    if (!record->replacementEntry)
+        return;
+    record->replacementSlot = slot;
+    record->replacement = version;
+    LOG("RECLAIMER 0.10: halo3.dll+0x%X: its callers call the client's own version of it (exe+0x%llX), which never "
+        "runs the translated body: the hook is placed on that call as well",
+        record->rva, static_cast<unsigned long long>(reinterpret_cast<uint64_t>(function) - exe));
+}
+
+// Points the stub at the hook's entry (on) or back at the client's version.
+void SetReplacement(Record* record, bool on)
+{
+    if (!record->replacementSlot)
+        return;
+    const auto value = static_cast<LONG64>(reinterpret_cast<uint64_t>(on ? record->replacementEntry : record->replacement));
+    MEMORY_BASIC_INFORMATION info{};
+    const bool writable = VirtualQuery(const_cast<uint64_t*>(record->replacementSlot), &info, sizeof(info)) &&
+                          (info.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE));
+    DWORD old = 0;
+    if (!writable && !::VirtualProtect(const_cast<uint64_t*>(record->replacementSlot), 8, PAGE_EXECUTE_READWRITE, &old))
+        return;
+    InterlockedExchange64(reinterpret_cast<volatile LONG64*>(record->replacementSlot), value);
+    if (!writable)
+        ::VirtualProtect(const_cast<uint64_t*>(record->replacementSlot), 8, old, &old);
+}
 } // namespace
 
 // ---- the bridges ---------------------------------------------------------------------------------------------------
@@ -339,7 +550,7 @@ constexpr size_t kCallSiteSlots = 512;
 constexpr uint64_t kNoPair = 1;
 CallSite g_callSites[kCallSiteSlots];
 // How far up the host stack a caller is looked for when the client's own code called the hooked body for it.
-constexpr int kCallerScanSlots = 512;
+constexpr int kCallerScanSlots = 4096;
 
 // The record whose host block holds `address` in the translated code, or null.
 const lifted_engine::Record* RecordOfHost(uint64_t address)
@@ -397,25 +608,81 @@ uint64_t PairCallSite(uint64_t hostReturn, const lifted_engine::Record& caller, 
 extern "C" uint64_t LiftedDispatch(Record* record, uint8_t* ctx, uint64_t guestRsp, const uint64_t hostArgs[4],
                                    const uint64_t* hostReturnSlot)
 {
+    // Too deep to track, or the client's own version of this function, run as this hook's original, running the body
+    // itself: the original alone.
+    if (t_depth >= kMaxFrames || (t_depth && t_frames[t_depth - 1].record == record && t_frames[t_depth - 1].inOriginal))
+        return LiftedCallBody(record->trampoline, ctx, guestRsp, hostArgs);
+    record->entered.fetch_add(1, std::memory_order_relaxed);
+    Frame& frame = PushFrame(ctx, guestRsp, record, hostReturnSlot, false);
+    SaveVolatiles(ctx, frame.volatilesEntry); // as the caller left them, before the arguments are written in
     lifted_engine::CtxFromHostArgs(record->adapter, hostArgs, ctx);
-    if (t_depth >= kMaxFrames)
-        return LiftedCallBody(record->trampoline, ctx, guestRsp, hostArgs); // too deep to track: the original alone
-    t_frames[t_depth++] = Frame{ctx, guestRsp, record, hostReturnSlot};
     uint64_t stack[8];
     std::memcpy(stack, reinterpret_cast<const void*>(guestRsp + 0x28), sizeof(stack));
     const uint64_t result = LiftedCallNative(record->detour, ctx, stack);
+    FinishFrame(record, ctx, frame);
     --t_depth;
     return result;
 }
 
 namespace
 {
-// The block the Windows-side entries fill: rcx, rdx, r8, r9, then xmm0-xmm3.
+// Runs the client's own version of a hooked function on `ctx`, its stack pointer back at the guest return address.
+uint64_t CallReplacement(const Record* record, uint8_t* ctx, uint64_t guestRsp)
+{
+    *reinterpret_cast<uint64_t*>(ctx + lifted_engine::kCtxRsp) = guestRsp;
+    reinterpret_cast<void(__fastcall*)(uint8_t*)>(record->replacement)(ctx);
+    return *reinterpret_cast<const uint64_t*>(ctx + lifted_engine::kCtxRax);
+}
+} // namespace
+
+// The stub of a function the client replaced, while its hook is enabled (LiftedReplacementEntry): the call that would
+// have run the client's version runs the detour, whose original is that version.
+extern "C" uint64_t LiftedReplacementDispatch(Record* record, uint8_t* ctx, const uint64_t* hostReturnSlot)
+{
+    const uint64_t guestRsp = *reinterpret_cast<const uint64_t*>(ctx + lifted_engine::kCtxRsp);
+    uint64_t result = 0;
+    if (t_depth >= kMaxFrames)
+        result = CallReplacement(record, ctx, guestRsp);
+    else
+    {
+        record->entered.fetch_add(1, std::memory_order_relaxed);
+        Frame& frame = PushFrame(ctx, guestRsp, record, hostReturnSlot, true);
+        SaveVolatiles(ctx, frame.volatilesEntry);
+        uint64_t stack[8];
+        std::memcpy(stack, reinterpret_cast<const void*>(guestRsp + 0x28), sizeof(stack));
+        result = LiftedCallNative(record->detour, ctx, stack);
+        FinishFrame(record, ctx, frame);
+        --t_depth;
+        *reinterpret_cast<uint64_t*>(ctx + lifted_engine::kCtxRax) = result;
+    }
+    // As the client's version leaves it, whether the detour ran that version or not: the guest return address popped.
+    *reinterpret_cast<uint64_t*>(ctx + lifted_engine::kCtxRsp) = guestRsp + 8;
+    return result;
+}
+
+namespace
+{
+// The block the Windows-side entries fill: rcx, rdx, r8, r9, then xmm0-xmm3. Every one of them, for a game function the
+// mod calls (its signature is not known here).
 void ArgsToCtx(const uint8_t* block, uint8_t* ctx)
 {
     for (int i = 0; i < 4; ++i)
         std::memcpy(ctx + lifted_engine::kGuestArgOffsets[i], block + 8 * i, 8);
     std::memcpy(ctx + lifted_engine::kCtxXmm0, block + 0x20, 0x40);
+}
+
+// Only the hooked function's own arguments: the integer ones its body takes (its adapter), the floating-point ones it
+// was declared to take. The rest of the guest's registers stay as the caller left them (FinishFrame).
+void HookArgsToCtx(const Record& record, const uint8_t* block, uint8_t* ctx)
+{
+    for (int i = 0; i < 4; ++i)
+    {
+        if (record.floatArgs & (1u << i))
+            std::memcpy(ctx + lifted_engine::kCtxXmm0 + lifted_engine::kCtxXmmStride * i, block + 0x20 + 0x10 * i,
+                        0x10);
+        else if (record.adapter.hostRegOfGuestArg[i] != lifted_engine::kNoReg)
+            std::memcpy(ctx + lifted_engine::kGuestArgOffsets[i], block + 8 * i, 8);
+    }
 }
 } // namespace
 
@@ -430,14 +697,27 @@ extern "C" uint64_t LiftedCallOriginal(Record* record, uint8_t* block, const uin
         std::memset(block + 0x20, 0, 16);
         return 0;
     }
-    const Frame frame = t_frames[at];
-    ArgsToCtx(block, frame.ctx);
+    Frame& frame = t_frames[at];
+    RestoreVolatiles(frame.ctx, frame.volatilesEntry); // as the caller left them...
+    HookArgsToCtx(*record, block, frame.ctx);          // ...with the detour's arguments
     if (record->stackArgs)
         std::memcpy(reinterpret_cast<void*>(frame.guestRsp + 0x28), callerStack,
                     8 * (std::min)(record->stackArgs, 8u));
-    uint64_t host[4]{};
-    lifted_engine::HostArgsFromCtx(record->adapter, frame.ctx, host);
-    const uint64_t result = LiftedCallBody(record->trampoline, frame.ctx, frame.guestRsp, host);
+    uint64_t result = 0;
+    if (frame.viaReplacement)
+    {
+        frame.inOriginal = true;
+        result = CallReplacement(record, frame.ctx, frame.guestRsp);
+        frame.inOriginal = false;
+    }
+    else
+    {
+        uint64_t host[4]{};
+        lifted_engine::HostArgsFromCtx(record->adapter, frame.ctx, host);
+        result = LiftedCallBody(record->trampoline, frame.ctx, frame.guestRsp, host);
+    }
+    frame.originalRan = true;
+    SaveVolatiles(frame.ctx, frame.volatilesAfter);
     std::memcpy(block + 0x20, frame.ctx + lifted_engine::kCtxXmm0, 16);
     return result;
 }
@@ -459,7 +739,7 @@ extern "C" uint64_t LiftedCallGame(Record* record, uint8_t* block, const uint64_
     uint64_t host[4]{};
     lifted_engine::HostArgsFromCtx(record->adapter, top.ctx, host);
     uint8_t* const ctx = top.ctx;
-    t_frames[t_depth++] = Frame{ctx, guestRsp, record, nullptr};
+    PushFrame(ctx, guestRsp, record, nullptr, false);
     const uint64_t result = LiftedCallBody(record->trampoline, ctx, guestRsp, host);
     --t_depth;
     std::memcpy(block + 0x20, ctx + lifted_engine::kCtxXmm0, 16);
@@ -510,8 +790,25 @@ bool Poll()
     {
         // Calls the mod could not run (no hooked game call on their thread), reported here, off the game's threads.
         AcquireSRWLockExclusive(&g_lock);
+        const auto exe = reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr));
         for (Record* record : g_allRecords)
         {
+            const uint32_t named = record->callersNamed.load(std::memory_order_relaxed);
+            const uint32_t unnamed = record->callersUnnamed.load(std::memory_order_relaxed);
+            if (!record->callerReported && named + unnamed >= 100)
+            {
+                record->callerReported = true;
+                const uint64_t from = record->unnamedEnteredFrom.load(std::memory_order_relaxed);
+                const uint64_t example = record->namedExample.load(std::memory_order_relaxed);
+                LOG("RECLAIMER 0.10: hook halo3.dll+0x%X: of its first %u calls, %u named their game caller (e.g. "
+                    "+0x%llX, found %u stack slots up) and %u did not%s%s+0x%llX)", record->rva, named + unnamed,
+                    named, static_cast<unsigned long long>(example ? example - g_guestBase : 0),
+                    record->callerDepth.load(std::memory_order_relaxed), unnamed,
+                    unnamed ? " (the first entered from " : "",
+                    !unnamed ? "" : from >= g_code && from - g_code < g_table.codeLength ? "translated code" : "exe",
+                    static_cast<unsigned long long>(!unnamed ? 0 : from >= g_code && from - g_code < g_table.codeLength
+                                                                       ? from - g_code : from - exe));
+            }
             const uint32_t count = record->unrunnable.load(std::memory_order_relaxed);
             if (count != record->unrunnableReported)
             {
@@ -521,6 +818,31 @@ bool Poll()
                                        : "it is not the start of a translated function");
                 record->unrunnableReported = count;
             }
+        }
+        // Every 30 s: how often each hook's detour ran, and the hooks the translated game never reached.
+        static ULONGLONG nextCallReportMs = 0;
+        const ULONGLONG nowMs = GetTickCount64();
+        if (!g_hooks.empty() && nowMs >= nextCallReportMs)
+        {
+            const bool first = !nextCallReportMs;
+            nextCallReportMs = nowMs + 30000;
+            std::vector<Record*> hooks;
+            for (const auto& entry : g_hooks)
+                hooks.push_back(entry.second);
+            std::sort(hooks.begin(), hooks.end(), [](const Record* a, const Record* b) { return a->rva < b->rva; });
+            std::string called, idle;
+            char item[48];
+            for (Record* record : hooks)
+            {
+                const uint32_t total = record->entered.load(std::memory_order_relaxed);
+                const uint32_t calls = total - record->enteredReported;
+                record->enteredReported = total;
+                std::snprintf(item, sizeof(item), calls ? " +0x%X %u" : " +0x%X", record->rva, calls);
+                (calls ? called : idle) += item;
+            }
+            if (!first)
+                LOG("RECLAIMER 0.10: hook calls in the last 30 s:%s; not called:%s", called.empty() ? " none" : called.c_str(),
+                    idle.empty() ? " none" : idle.c_str());
         }
         ReleaseSRWLockExclusive(&g_lock);
         return true;
@@ -629,6 +951,9 @@ MH_STATUS CreateHook(LPVOID target, LPVOID detour, LPVOID* original)
         record->detour = detour;
         const auto args = g_stackArgs.find(address);
         record->stackArgs = args == g_stackArgs.end() ? 0 : args->second;
+        const auto floats = g_floatArgs.find(address);
+        record->floatArgs = floats == g_floatArgs.end() ? 0 : floats->second;
+        record->floatResult = g_floatResults.count(address) != 0;
         record->entryStub = MakeStub(record, &LiftedHookEntry);
         record->origStub = MakeStub(record, &LiftedOrigEntry);
         status = record->entryStub && record->origStub
@@ -641,10 +966,12 @@ MH_STATUS CreateHook(LPVOID target, LPVOID detour, LPVOID* original)
                 *original = record->origStub;
         }
     }
-    ReleaseSRWLockExclusive(&g_lock);
     if (status == MH_OK)
         LOG("RECLAIMER 0.10: hook for halo3.dll+0x%X placed on its translated body %p", record->rva,
             reinterpret_cast<void*>(record->body));
+    if (status == MH_OK)
+        AttachReplacement(record);
+    ReleaseSRWLockExclusive(&g_lock);
     return status;
 }
 
@@ -660,21 +987,50 @@ LPVOID PatchedAddress(LPVOID target)
     return body;
 }
 
+// The stubs of the hooks on functions the client replaced follow their hooks' state.
+static void SetReplacements(LPVOID target, bool on)
+{
+    if (!Active() || (target != MH_ALL_HOOKS && !InGuestCode(reinterpret_cast<uintptr_t>(target))))
+        return;
+    AcquireSRWLockShared(&g_lock);
+    if (target == MH_ALL_HOOKS)
+    {
+        for (const auto& entry : g_hooks)
+            SetReplacement(entry.second, on);
+    }
+    else if (const auto found = g_hooks.find(reinterpret_cast<uintptr_t>(target)); found != g_hooks.end())
+        SetReplacement(found->second, on);
+    ReleaseSRWLockShared(&g_lock);
+}
+
+MH_STATUS AfterEnable(LPVOID target, MH_STATUS status)
+{
+    if (status == MH_OK || status == MH_ERROR_ENABLED)
+        SetReplacements(target, true);
+    return status;
+}
+MH_STATUS AfterDisable(LPVOID target, MH_STATUS status)
+{
+    if (status == MH_OK || status == MH_ERROR_DISABLED)
+        SetReplacements(target, false);
+    return status;
+}
+
 MH_STATUS EnableHook(LPVOID target)
 {
-    return MH_EnableHook(target == MH_ALL_HOOKS ? target : PatchedAddress(target));
+    return AfterEnable(target, MH_EnableHook(target == MH_ALL_HOOKS ? target : PatchedAddress(target)));
 }
 MH_STATUS DisableHook(LPVOID target)
 {
-    return MH_DisableHook(target == MH_ALL_HOOKS ? target : PatchedAddress(target));
+    return AfterDisable(target, MH_DisableHook(target == MH_ALL_HOOKS ? target : PatchedAddress(target)));
 }
 MH_STATUS QueueEnableHook(LPVOID target)
 {
-    return MH_QueueEnableHook(target == MH_ALL_HOOKS ? target : PatchedAddress(target));
+    return AfterEnable(target, MH_QueueEnableHook(target == MH_ALL_HOOKS ? target : PatchedAddress(target)));
 }
 MH_STATUS QueueDisableHook(LPVOID target)
 {
-    return MH_QueueDisableHook(target == MH_ALL_HOOKS ? target : PatchedAddress(target));
+    return AfterDisable(target, MH_QueueDisableHook(target == MH_ALL_HOOKS ? target : PatchedAddress(target)));
 }
 MH_STATUS RemoveHook(LPVOID target)
 {
@@ -686,12 +1042,27 @@ MH_STATUS RemoveHook(LPVOID target)
     MH_STATUS status = MH_ERROR_NOT_CREATED;
     if (found != g_hooks.end())
     {
+        SetReplacement(found->second, false);
         status = MH_RemoveHook(reinterpret_cast<LPVOID>(found->second->body));
         if (status == MH_OK)
             g_hooks.erase(found); // the record stays: a stub may still be running
     }
     ReleaseSRWLockExclusive(&g_lock);
     return status;
+}
+
+void SetFloatArguments(LPVOID target, uint32_t mask)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    g_floatArgs[reinterpret_cast<uintptr_t>(target)] = mask & 0xF;
+    ReleaseSRWLockExclusive(&g_lock);
+}
+
+void SetFloatResult(LPVOID target)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    g_floatResults[reinterpret_cast<uintptr_t>(target)] = true;
+    ReleaseSRWLockExclusive(&g_lock);
 }
 
 void SetStackArguments(LPVOID target, unsigned count)
@@ -789,44 +1160,85 @@ void** GuestTlsSlots()
     return *reinterpret_cast<void***>(t_frames[t_depth - 1].ctx + 0x2D8);
 }
 
+// The caller found `depth` slots above the return slot, or 0: a return address in a translated body that follows a
+// call and pairs (PairCallSite). `first` is set to the first such caller's function start.
+static uint64_t CallerAt(const Frame& frame, const uint64_t* at, uintptr_t& first)
+{
+    const uint64_t value = *at;
+    const lifted_engine::Record* caller = RecordOfHost(value);
+    if (!caller || value - 5 < g_code + caller->hostOffset + caller->bodyOffset)
+        return 0;
+    const auto* call = reinterpret_cast<const uint8_t*>(value - 5);
+    if (*call != 0xE8)
+        return 0;
+    int32_t rel = 0;
+    std::memcpy(&rel, call + 1, 4);
+    const uint64_t target = value + static_cast<int64_t>(rel);
+    // A call through a stub past the code, to the client's own version of a function that ran the hooked body: the
+    // guest return address the caller formed for that call (lifted_engine_logic.h, ForEachStubCall).
+    if (target >= g_code + g_table.codeLength && target + lifted_engine::kStubSize <= g_code + g_codeReadable &&
+        lifted_engine::IsStub(reinterpret_cast<const uint8_t*>(target)))
+    {
+        if (const uint32_t returnRva = lifted_engine::GuestReturnBeforeCall(
+                reinterpret_cast<const uint8_t*>(g_code), value - 5 - g_code,
+                static_cast<uint32_t>(g_guestCodeStart - g_guestBase), static_cast<uint32_t>(g_guestCodeEnd - g_guestBase + 5)))
+            return g_guestBase + returnRva;
+    }
+    const uint64_t paired = PairCallSite(value, *caller, target, frame.record->guestTarget);
+    if (paired != kNoPair)
+        return paired;
+    if (!first)
+        first = g_guestBase + caller->guestRva;
+    return 0;
+}
+
 uintptr_t GuestReturnAddress()
 {
     if (!t_depth)
         return 0;
     const Frame& frame = t_frames[t_depth - 1];
+    if (frame.viaReplacement)
+        return *reinterpret_cast<const uintptr_t*>(frame.guestRsp); // the caller stored it, as real hardware does
     if (!frame.hostReturnSlot)
         return 0; // a call the mod made itself
+    auto* record = const_cast<Record*>(frame.record);
     // Entered through the hooked function's own adapter: an indirect call's dispatcher, which stores the guest return
-    // address on the guest stack, as real hardware does.
+    // address on the guest stack, as real hardware does. The client's own version of a function that runs the body
+    // (a wrapper) gives it a frame of its own with 0 there: its caller is found up the host stack, as below.
     const uint64_t returned = *frame.hostReturnSlot;
     if (const lifted_engine::Record* own = RecordOfHost(returned);
-        own && own->guestRva == frame.record->rva && returned - g_code < own->hostOffset + own->bodyOffset)
-        return *reinterpret_cast<const uintptr_t*>(frame.guestRsp);
+        own && own->guestRva == record->rva && returned - g_code < own->hostOffset + own->bodyOffset)
+        if (const uintptr_t onStack = *reinterpret_cast<const uintptr_t*>(frame.guestRsp))
+            return onStack;
     // The caller's translated code: the return address itself for a direct call; when the client's own code called
     // the body for it (it intercepts some of the game's input functions through stubs past the code), the first
-    // return address further up the host stack that follows a call in a translated body and pairs.
+    // return address further up the host stack that follows a call in a translated body and pairs. The depth that
+    // worked last is tried first.
     const auto* tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
     const auto* stackEnd = reinterpret_cast<const uint64_t*>(tib->StackBase);
     uintptr_t callerStart = 0;
-    const uint64_t* at = frame.hostReturnSlot;
-    for (int n = 0; n < kCallerScanSlots && at < stackEnd; ++n, ++at)
-    {
-        const uint64_t value = *at;
-        const lifted_engine::Record* caller = RecordOfHost(value);
-        if (!caller || value - 5 < g_code + caller->hostOffset + caller->bodyOffset)
-            continue;
-        const auto* call = reinterpret_cast<const uint8_t*>(value - 5);
-        if (*call != 0xE8)
-            continue;
-        int32_t rel = 0;
-        std::memcpy(&rel, call + 1, 4);
-        const uint64_t paired =
-            PairCallSite(value, *caller, value + static_cast<int64_t>(rel), frame.record->guestTarget);
-        if (paired != kNoPair)
+    const uint32_t hint = record->callerDepth.load(std::memory_order_relaxed);
+    if (hint && frame.hostReturnSlot + hint < stackEnd)
+        if (const uint64_t paired = CallerAt(frame, frame.hostReturnSlot + hint, callerStart))
+        {
+            record->callersNamed.fetch_add(1, std::memory_order_relaxed);
             return paired;
-        if (!callerStart && n == 0)
-            callerStart = g_guestBase + caller->guestRva; // a range check still sees which function called
+        }
+    const uint64_t* at = frame.hostReturnSlot;
+    for (uint32_t n = 0; n < kCallerScanSlots && at < stackEnd; ++n, ++at)
+    {
+        if (const uint64_t paired = CallerAt(frame, at, callerStart))
+        {
+            record->callerDepth.store(n, std::memory_order_relaxed);
+            record->callersNamed.fetch_add(1, std::memory_order_relaxed);
+            uint64_t none = 0;
+            record->namedExample.compare_exchange_strong(none, paired, std::memory_order_relaxed);
+            return paired;
+        }
     }
+    record->callersUnnamed.fetch_add(1, std::memory_order_relaxed);
+    uint64_t none = 0;
+    record->unnamedEnteredFrom.compare_exchange_strong(none, returned, std::memory_order_relaxed);
     return callerStart;
 }
 } // namespace lifted
