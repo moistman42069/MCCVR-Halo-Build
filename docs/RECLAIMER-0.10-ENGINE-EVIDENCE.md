@@ -115,6 +115,30 @@ Read from outside with `ReadProcessMemory` (`_reclaimer-0.10-re\tools\probe_live
   match the image; it matches a copy with halo3.dll's own bytes put back, which is what the mod's searches read
   (`sig::SetScanShadow`, `lifted_engine.cpp`).
 
+## The client's own versions of game functions (2026-11-07, 0.10.0 with the mod)
+
+Read from a running client (`_reclaimer-0.10-re\tools\callsites_live.py`, `align_calls.py`, `stub_map.py`; dump in
+`_reclaimer-0.10-re\live3`).
+
+- **Some calls never reach the translated body.** The mod logs, every 30 s, how often each hook ran. With the game
+  in a level, hooks on functions the game calls every frame ran 0 times: the first-person camera rebuild (RVA
+  0x279BEC) and the final first-person palette (0x2C561C). Their bodies have no direct callers in the code.
+- **Stubs past the code.** At those call sites the translated code calls a 16-byte stub just past the end of the
+  code (`jmp [rip+2]`, two `int3`, an address): a jump table entry in the executable, then the client's own
+  function. 790 stubs are called from the code. A call through a stub is an ordinary Windows x64 call with
+  `rcx = ctx`. The guest arguments are in `ctx`. Just before the call, the translated code forms the guest return
+  address as `lea r64, [r64 + disp32]` (the guest return RVA, on the guest image base) and stores it at the new
+  guest stack pointer, `ctx+0x20`. The function pops it on its way out (`add qword [ctx+0x20], 8`), and its result
+  is in `ctx`. Naming each stub by the guest call its lea points at: 536 functions.
+- **Wrappers and replacements.** Some of the client's versions take a second `ctx` from a helper and call the
+  translated function through a pointer in their data, then do more of their own: the input reader (0x187028,
+  exe+0x2F39510) and the camera-constant uploader (0x2770F0, exe+0x2D45830). A hook on the body runs inside those.
+  The rest never run the body: the camera rebuild (exe+0x32C5510) is the client's own code for it, reading the
+  view through `ctx+0x08` and the guest image's globals, and it ends by calling the uploader's version.
+- **The mod's hooks on replaced functions** are also placed on their stub: while the hook is enabled, the stub's
+  address points at an entry of the mod's (`LiftedReplacementEntry`), and the detour's original is the client's
+  version. With that, the camera rebuild ran 43845 times in 30 s and the gun follows the controller again.
+
 ## Still unverified
 
 - That the dispatcher enters through the adapter (expected: it has only `ctx`), so a hook at a body's first

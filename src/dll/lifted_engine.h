@@ -46,6 +46,11 @@ MH_STATUS QueueEnableHook(LPVOID target);
 MH_STATUS QueueDisableHook(LPVOID target);
 // The address MinHook itself patched for `target` (the translated body), or `target` when it is not a lifted hook.
 LPVOID PatchedAddress(LPVOID target);
+// What the hook calls above do after MinHook's own, for the enable and disable paths that call MinHook through
+// PatchedAddress themselves (minhook_lifecycle.h): a hook on a function the client replaced with a version of its own
+// is also placed on the calls to that version, and taken off them again. They return `status`.
+MH_STATUS AfterEnable(LPVOID target, MH_STATUS status);
+MH_STATUS AfterDisable(LPVOID target, MH_STATUS status);
 // A detour that changes its stack arguments (the fifth on) must say how many before its hook is created, so the call
 // to the original writes them back; by default none is written back.
 void SetStackArguments(LPVOID target, unsigned count);

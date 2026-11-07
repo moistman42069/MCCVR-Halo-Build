@@ -8,6 +8,7 @@
 ;
 ;   LiftedHookEntry   a hooked body's first instruction jumps here (r10 = the hook's record): the host argument
 ;                     registers are handed to LiftedDispatch, which runs the mod's detour.
+;   LiftedReplacementEntry  the same for a call to the client's own version of a hooked function (ctx in rcx).
 ;   LiftedOrigEntry   the detour's "original" pointer (r10 = the record): an ordinary Windows x64 call whose
 ;                     arguments LiftedCallOriginal writes into ctx before it runs the body.
 ;   LiftedCallEntry   a game function the mod calls (r10 = the record): the same, through LiftedCallGame.
@@ -16,6 +17,7 @@
 option casemap:none
 
 EXTERN LiftedDispatch:PROC
+EXTERN LiftedReplacementDispatch:PROC
 EXTERN LiftedCallOriginal:PROC
 EXTERN LiftedCallGame:PROC
 
@@ -49,6 +51,23 @@ LiftedHookEntry PROC FRAME
     pop rbp
     ret
 LiftedHookEntry ENDP
+
+; Entered from translated code through the stub of a function the client replaced with a version of its own, while
+; that function's hook is enabled: an ordinary Windows x64 call, rcx = ctx (the guest arguments are in it and its
+; stack pointer is at the guest return address), r10 = record.
+; LiftedReplacementDispatch(record, ctx, hostReturnSlot) returns rax (and leaves it in ctx).
+; entry rsp = 8; 28h leaves it 16-aligned with home space, and the return address at +28h.
+LiftedReplacementEntry PROC FRAME
+    sub rsp, 28h
+    .allocstack 28h
+    .endprolog
+    mov rdx, rcx
+    mov rcx, r10
+    lea r8, [rsp+28h]
+    call LiftedReplacementDispatch
+    add rsp, 28h
+    ret
+LiftedReplacementEntry ENDP
 
 ; Shared by LiftedOrigEntry and LiftedCallEntry: an ordinary Windows x64 call, r10 = record. The four integer
 ; and four vector argument registers go to a block (+20h rcx, rdx, r8, r9; +40h xmm0-xmm3), the caller's stack

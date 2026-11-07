@@ -457,4 +457,88 @@ inline uint64_t GuestReturnOfCall(const uint8_t* host, size_t hostLength, uint64
             return guestBase + guestSites[i] + 5;
     return 0;
 }
+
+// ---- the client's own versions of guest functions -------------------------------------------------------------------
+
+// The client replaces some guest functions with versions of its own, in its executable. Translated code reaches one
+// through a stub past the end of the code (`jmp [rip+2]`, two int3, the target's address) with an ordinary Windows x64
+// call: rcx = ctx, the guest's arguments in ctx, and its stack pointer at the guest return address, which the
+// translated code formed just before as `lea r64, [r64 + disp32]` (disp32 = the guest return RVA; the base register
+// holds the guest image's base) and stored. The client's version pops it (ctx rsp + 8) and leaves its result in ctx.
+inline constexpr uint8_t kStubPrefix[8] = {0xFF, 0x25, 0x02, 0x00, 0x00, 0x00, 0xCC, 0xCC};
+inline constexpr size_t kStubSize = 16;
+inline constexpr size_t kStubLeaWindow = 0x90; // how far before the call the lea is looked for
+
+// Whether `stub` (kStubSize bytes) is such a stub.
+inline bool IsStub(const uint8_t* stub)
+{
+    return std::memcmp(stub, kStubPrefix, sizeof(kStubPrefix)) == 0;
+}
+
+// The guest return RVA the translated code formed before the call at `call` (an offset in `code`): the disp32 of the
+// last `lea r64, [r64 + disp32]` (base register not rsp) in the window before it that lies in [lowRva, highRva); 0 if
+// there is none.
+inline uint32_t GuestReturnBeforeCall(const uint8_t* code, size_t call, uint32_t lowRva, uint32_t highRva)
+{
+    const size_t from = call > kStubLeaWindow ? call - kStubLeaWindow : 0;
+    uint32_t found = 0;
+    for (size_t at = from; at + 7 <= call; ++at)
+    {
+        if ((code[at] != 0x48 && code[at] != 0x4C) || code[at + 1] != 0x8D)
+            continue;
+        const uint8_t modrm = code[at + 2];
+        if ((modrm & 0xC0) != 0x80 || (modrm & 7) == 4)
+            continue;
+        int32_t disp = 0;
+        std::memcpy(&disp, code + at + 3, 4);
+        if (disp >= static_cast<int64_t>(lowRva) && disp < static_cast<int64_t>(highRva))
+            found = static_cast<uint32_t>(disp);
+    }
+    return found;
+}
+
+// Every `call rel32` in code[0, codeLength) to a stub in code[codeLength, size): `found(stubOffset, guestReturnRva)`,
+// the RVA 0 when no lea names it.
+template <typename Found>
+inline void ForEachStubCall(const uint8_t* code, size_t codeLength, size_t size, uint32_t lowRva, uint32_t highRva,
+                            Found found)
+{
+    for (size_t at = 0; at + 5 <= codeLength; ++at)
+    {
+        if (code[at] != 0xE8)
+            continue;
+        int32_t rel = 0;
+        std::memcpy(&rel, code + at + 1, 4);
+        const int64_t target = static_cast<int64_t>(at) + 5 + rel;
+        if (target < static_cast<int64_t>(codeLength) || target + static_cast<int64_t>(kStubSize) > static_cast<int64_t>(size) ||
+            !IsStub(code + target))
+            continue;
+        found(static_cast<size_t>(target), GuestReturnBeforeCall(code, at, lowRva, highRva));
+    }
+}
+
+// Whether the client's version at `function` (its first `length` bytes) calls the translated function itself, through
+// an address it loads from its own data (`mov r64, [rip + disp32]` or `call [rip + disp32]`) that `readQword` reads
+// as `adapter` or `body`. Such a version wraps the translated function, so a hook on the body already runs inside it.
+template <typename ReadQword>
+inline bool CallsTranslatedFunction(const uint8_t* function, size_t length, uint64_t address, uint64_t adapter,
+                                    uint64_t body, ReadQword readQword)
+{
+    for (size_t at = 0; at + 7 <= length; ++at)
+    {
+        size_t dispAt = 0, next = 0;
+        if ((function[at] == 0x48 || function[at] == 0x4C) && function[at + 1] == 0x8B && (function[at + 2] & 0xC7) == 0x05)
+            dispAt = at + 3, next = at + 7;
+        else if (function[at] == 0xFF && function[at + 1] == 0x15)
+            dispAt = at + 2, next = at + 6;
+        else
+            continue;
+        int32_t disp = 0;
+        std::memcpy(&disp, function + dispAt, 4);
+        uint64_t value = 0;
+        if (readQword(address + next + static_cast<int64_t>(disp), value) && (value == adapter || value == body))
+            return true;
+    }
+    return false;
+}
 } // namespace lifted_engine

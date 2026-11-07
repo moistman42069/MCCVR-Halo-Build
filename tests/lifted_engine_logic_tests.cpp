@@ -233,6 +233,70 @@ int main()
         CHECK(GuestReturnOfCall(host, 0, 0x10000, 0x10010, 0x50000, guest, sizeof(guest), 0x180001000,
                                 0x180009000) == 0);
     }
+    // Calls to the client's own versions of guest functions, through stubs past the code.
+    {
+        // 0x200 bytes of translated code, a stub at 0x200 (the code's end) and one at 0x210.
+        uint8_t code[0x220]{};
+        const auto putBytes = [&](size_t at, std::initializer_list<uint8_t> bytes) {
+            for (const uint8_t b : bytes)
+                code[at++] = b;
+        };
+        const auto putCall = [&](size_t at, size_t target) {
+            code[at] = 0xE8;
+            const int32_t rel = static_cast<int32_t>(static_cast<int64_t>(target) - static_cast<int64_t>(at + 5));
+            std::memcpy(code + at + 1, &rel, 4);
+        };
+        putBytes(0x200, {0xFF, 0x25, 0x02, 0x00, 0x00, 0x00, 0xCC, 0xCC, 1, 2, 3, 4, 5, 6, 7, 8});
+        putBytes(0x210, {0xFF, 0x25, 0x02, 0x00, 0x00, 0x00, 0xCC, 0xCC, 8, 7, 6, 5, 4, 3, 2, 1});
+        CHECK(IsStub(code + 0x200) && IsStub(code + 0x210) && !IsStub(code));
+        // As the client's code calls the first-person camera rebuild (0.10.0, its caller at RVA 0x2835D4): the guest
+        // return address formed (lea rsi, [rax + 0x283786]), a lea of another kind (lea rsi, [r15 + 0x6C8]) and one
+        // on rsp, then `mov rcx, rbx; call stub`.
+        putBytes(0x40, {0x48, 0x8D, 0xB0, 0x86, 0x37, 0x28, 0x00});
+        putBytes(0x50, {0x49, 0x8D, 0xB7, 0xC8, 0x06, 0x00, 0x00});
+        putBytes(0x58, {0x48, 0x8D, 0x84, 0x24, 0x00, 0x10, 0x00, 0x00});
+        putBytes(0x60, {0x48, 0x89, 0xD9});
+        putCall(0x63, 0x200);
+        putCall(0x80, 0x20);   // a call inside the code: not a stub call
+        putCall(0x1F0, 0x210); // a stub call with no lea in reach
+        CHECK(GuestReturnBeforeCall(code, 0x63, 0x1000, 0x700000) == 0x283786);
+        CHECK(GuestReturnBeforeCall(code, 0x63, 0x300000, 0x700000) == 0); // outside the guest code
+        struct Found { size_t stub; uint32_t returnRva; };
+        std::vector<Found> found;
+        ForEachStubCall(code, 0x200, sizeof(code), 0x1000, 0x700000,
+                        [&](size_t stub, uint32_t returnRva) { found.push_back({stub, returnRva}); });
+        CHECK(found.size() == 2);
+        CHECK(found[0].stub == 0x200 && found[0].returnRva == 0x283786);
+        CHECK(found[1].stub == 0x210 && found[1].returnRva == 0);
+        // A stub cut off by the end of what was read is not one.
+        found.clear();
+        ForEachStubCall(code, 0x200, 0x218, 0x1000, 0x700000,
+                        [&](size_t stub, uint32_t returnRva) { found.push_back({stub, returnRva}); });
+        CHECK(found.size() == 1 && found[0].stub == 0x200);
+    }
+    // A version of the client's own that wraps the translated function loads its adapter from its data.
+    {
+        uint8_t function[0x40]{};
+        const uint64_t at = 0x140001000, adapter = 0x24000010000, body = 0x24000010120;
+        // mov rax, [rip + 0x100] at +0x10 (the address 0x140001117), and call [rip + 0x200] at +0x20 (0x140001226).
+        const uint8_t load[] = {0x48, 0x8B, 0x05, 0x00, 0x01, 0x00, 0x00};
+        const uint8_t call[] = {0xFF, 0x15, 0x00, 0x02, 0x00, 0x00};
+        std::memcpy(function + 0x10, load, sizeof(load));
+        std::memcpy(function + 0x20, call, sizeof(call));
+        uint64_t atLoad = 0, atCall = 0;
+        const auto read = [&](uint64_t address, uint64_t& value) {
+            if (address == 0x140001117) { value = atLoad; return true; }
+            if (address == 0x140001226) { value = atCall; return true; }
+            return false;
+        };
+        CHECK(!CallsTranslatedFunction(function, sizeof(function), at, adapter, body, read));
+        atLoad = adapter;
+        CHECK(CallsTranslatedFunction(function, sizeof(function), at, adapter, body, read));
+        atLoad = 0x12345;
+        atCall = body;
+        CHECK(CallsTranslatedFunction(function, sizeof(function), at, adapter, body, read));
+        CHECK(!CallsTranslatedFunction(function, 0x20, at, adapter, body, read)); // the call lies past what is read
+    }
     std::printf("lifted engine logic: all checks passed\n");
     return 0;
 }
