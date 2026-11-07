@@ -156,11 +156,15 @@ Read from a running client (`_reclaimer-0.10-re\tools\callsites_live.py`, `align
   sees. The VR action bridge advances its records after that update when the converter did not run.
 - **halo3.dll is built with whole-program optimisation, and the translation keeps that.** Callers of
   `0x26DD98` (the first-person weapon-IK mode setter) read the xmm0-xmm2, rdx and r9 it leaves after the call
-  (seen in the translated callers: `vmovdqu xmm0, [ctx+0x90]` right after the call). Any detour on it, even one
-  that passes everything through, crashed the animation code within seconds: 0x169D8C read an animation index
-  out of its table. Putting back the guest's volatile registers after the detour did not help. The native
-  weapon-IK branch patch therefore has no 0.10 equivalent yet: the shotgun's support hand may stay on the pump.
-  The same holds natively: functions like this one are patched in MCC, never detoured.
+  (seen in the translated callers: `vmovdqu xmm0, [ctx+0x90]` right after the call); 72 of the 181 callers of the
+  playback check `0xF01A0` read r8 or rdx back. Any detour on 0x26DD98, even one that passes everything through,
+  crashed the animation code within seconds (0x169D8C read an animation index out of its table): the lifted
+  layer wrote every argument register and xmm0-xmm3 from the C++ detour into the guest registers, garbage where
+  the function takes no argument. A hook is now transparent to the guest's volatile registers
+  (`lifted_engine.cpp`, `FinishFrame`): the original gets only the integer arguments its body takes and the float
+  arguments declared for it (`lifted::SetFloatArguments`), and after the detour the registers are as the original
+  left them. With that, the weapon-IK mode setter is hooked (the 0.10 form of the native branch patch) and runs
+  without fault. Natively, functions like this one are patched in MCC, never detoured.
 
 ## Still unverified
 
