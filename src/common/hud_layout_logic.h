@@ -458,3 +458,27 @@ inline constexpr bool HudLayoutCanReacquireFromRemembered(
 {
     return HudLayoutAcceptedCountOk(adapter, rememberedCount);
 }
+
+// RECORDS LEFT FROM AN EARLIER LEVEL (Project Reclaimer). A level loads its layout records holding the title's own
+// pair. One the mod found at an earlier level that still holds a pair other than the one it was first found with was
+// not loaded again with this level: its memory kept the old map's copy, with the layout written there. After an ODST
+// level the next Halo 3 level took the ODST level's six from memory without a search, all still matching, and wrote
+// those while the level drew from its own three elsewhere: Halo 3's HUD stayed at the game's size (2026-11-07).
+inline constexpr bool HudLayoutRecordLeftOver(
+    uint32_t horizontal, uint32_t vertical, uint32_t loadedHorizontal, uint32_t loadedVertical)
+{
+    return horizontal != loadedHorizontal || vertical != loadedVertical;
+}
+
+// Whether a scan's left-over records are written along with the level's own. As before whenever the level's own are
+// not a whole set by themselves (a level that did not load its records again keeps them where they were) or both
+// together are still no more than the title can hold; otherwise only the level's own.
+inline constexpr bool HudLayoutTakeLeftOvers(
+    const HudLayoutAdapter& adapter, int own, int leftOver)
+{
+    if (leftOver <= 0)
+        return false;
+    if (!HudLayoutAcceptedCountOk(adapter, own))
+        return true;
+    return own + leftOver <= adapter.maxBlocks;
+}

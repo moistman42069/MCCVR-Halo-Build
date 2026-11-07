@@ -4841,6 +4841,13 @@ namespace
         uint32_t acceptedBaseH[kMaxSafeFrameHits]{};
         uint32_t acceptedBaseV[kMaxSafeFrameHits]{};
         int accepted = 0;
+        // Project Reclaimer: records left from an earlier level (HudLayoutRecordLeftOver), kept apart from the
+        // level's own until the count is settled.
+        uintptr_t leftOverSlots[kMaxSafeFrameHits]{};
+        uint32_t leftOverBaselines[kMaxSafeFrameHits]{};
+        uint32_t leftOverBaseH[kMaxSafeFrameHits]{};
+        uint32_t leftOverBaseV[kMaxSafeFrameHits]{};
+        int leftOvers = 0;
         int rawHits = 0;
         bool cancelled = false;
         SYSTEM_INFO si;
@@ -4954,8 +4961,13 @@ namespace
                         const bool payloadOk =
                             SafeFramePairPlausible(h, v) &&
                             HudDestinationPlausible(destinationZ);
+                        uint32_t loadedH = h, loadedV = v;
+                        if (payloadOk)
+                            RememberedHudSafeFrameBaseline(profile, hits[k], loadedH, loadedV);
+                        const bool leftOver = payloadOk && g_hostIsProjectReclaimer &&
+                            HudLayoutRecordLeftOver(h, v, loadedH, loadedV);
                         LOG("SAFEFRAME [%s]: anchor at %p%s%s%s (type 0x%X protect "
-                            "0x%X) destination-Z %08X, safe frame %08X/%08X -> %s",
+                            "0x%X) destination-Z %08X, safe frame %08X/%08X -> %s%s",
                             adapter->name, reinterpret_cast<void*>(hits[k]),
                             shapes[k] ? " (" : "", shapes[k] ? shapes[k] : "",
                             shapes[k] ? "'s record)" : "",
@@ -4963,16 +4975,28 @@ namespace
                             static_cast<unsigned>(mbi.Protect),
                             destinationZ, h, v,
                             payloadOk ? "VERIFIED" :
-                                "payload implausible, REJECTED");
-                        if (payloadOk && accepted < kMaxSafeFrameHits)
+                                "payload implausible, REJECTED",
+                            leftOver ? ", left from an earlier level (it holds the layout written there, not the "
+                                       "one it was loaded with)" : "");
+                        if (leftOver)
+                        {
+                            if (leftOvers < kMaxSafeFrameHits)
+                            {
+                                leftOverSlots[leftOvers] = hits[k];
+                                leftOverBaselines[leftOvers] =
+                                    RememberedHudCurvatureBaseline(profile, hits[k], destinationZ);
+                                leftOverBaseH[leftOvers] = loadedH;
+                                leftOverBaseV[leftOvers] = loadedV;
+                                ++leftOvers;
+                            }
+                        }
+                        else if (payloadOk && accepted < kMaxSafeFrameHits)
                         {
                             acceptedSlots[accepted] = hits[k];
                             acceptedBaselines[accepted] =
                                 RememberedHudCurvatureBaseline(profile, hits[k], destinationZ);
-                            acceptedBaseH[accepted] = h;
-                            acceptedBaseV[accepted] = v;
-                            RememberedHudSafeFrameBaseline(profile, hits[k], acceptedBaseH[accepted],
-                                                           acceptedBaseV[accepted]);
+                            acceptedBaseH[accepted] = loadedH;
+                            acceptedBaseV[accepted] = loadedV;
                             ++accepted;
                         }
                     }
@@ -4989,7 +5013,8 @@ namespace
             }
             if (cancelled || !tagSpanPass)
                 break;
-            if (HudLayoutAcceptedCountOk(*adapter, accepted))
+            if (HudLayoutAcceptedCountOk(*adapter, accepted) ||
+                HudLayoutAcceptedCountOk(*adapter, accepted + leftOvers))
             {
                 LOG("SAFEFRAME [%s]: %d record(s) found in the engine's tag data in %llu ms", adapter->name,
                     accepted, static_cast<unsigned long long>(GetTickCount64() - t0));
@@ -4999,6 +5024,7 @@ namespace
                 adapter->name, accepted, adapter->expectedBlocks);
             tagSpanPass = false;
             accepted = 0;
+            leftOvers = 0;
             rawHits = 0;
             addr = addrMin;
             scanEnd = addrMax;
@@ -5010,6 +5036,22 @@ namespace
                 "cancelling before the next memory region", adapter->name);
             g_safeFrameScanInFlight.store(false, std::memory_order_release);
             return 0;
+        }
+
+        if (leftOvers > 0)
+        {
+            const bool take = HudLayoutTakeLeftOvers(*adapter, accepted, leftOvers);
+            LOG("SAFEFRAME [%s]: %d record(s) loaded with this level and %d left from an earlier level -> %s",
+                adapter->name, accepted, leftOvers,
+                take ? "all written, as before" : "only this level's own are written");
+            for (int i = 0; take && i < leftOvers && accepted < kMaxSafeFrameHits; ++i)
+            {
+                acceptedSlots[accepted] = leftOverSlots[i];
+                acceptedBaselines[accepted] = leftOverBaselines[i];
+                acceptedBaseH[accepted] = leftOverBaseH[i];
+                acceptedBaseV[accepted] = leftOverBaseV[i];
+                ++accepted;
+            }
         }
 
         // MORE RECORDS THAN THE TITLE HAS (Halo 3). A host can hold a second copy of the level's tag data in
@@ -5390,6 +5432,23 @@ namespace
                 HudDestinationPlausible(destinationZ) &&
                 HudDestinationPlausible(baseline))
             {
+                // Project Reclaimer: a record not loaded again with this level is a copy left from an earlier one;
+                // the level's own are elsewhere, so it is searched for (HudLayoutRecordLeftOver).
+                if (g_hostIsProjectReclaimer &&
+                    HudLayoutRecordLeftOver(
+                        h, v, remembered->baseHorizontalBits[i].load(std::memory_order_relaxed),
+                        remembered->baseVerticalBits[i].load(std::memory_order_relaxed)))
+                {
+                    static uint32_t s_loggedGeneration = 0;
+                    if (s_loggedGeneration != generation)
+                    {
+                        s_loggedGeneration = generation;
+                        LOG("SAFEFRAME [%s]: the record remembered at %p still holds the layout written at an "
+                            "earlier level, not the one it was loaded with: this level's records are elsewhere; "
+                            "searching", adapter->name, reinterpret_cast<void*>(slot));
+                    }
+                    return false;
+                }
                 slots[accepted] = slot;
                 baselines[accepted] = baseline;
                 ++accepted;

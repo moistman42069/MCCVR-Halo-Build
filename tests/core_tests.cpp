@@ -7563,6 +7563,24 @@ int main()
                       std::memcmp(odstShape.anchor + 8, mergedHud->anchor.data() + 8, 4) != 0,
                 "the two shapes share the 1280x720 prefix and differ at the motion sensor (2000 vs 55)");
         }
+        {
+            // Records left from an earlier level (Project Reclaimer, 2026-11-07): the ODST level's six still held
+            // the layout written there when Halo 3's Ark loaded its own three elsewhere.
+            constexpr uint32_t kTitleOwn = 0x3F5EB852;   // 0.87, as loaded
+            constexpr uint32_t kWrittenH = 0x3EF9DB23;   // 0.488, the player's layout
+            constexpr uint32_t kWrittenV = 0x3E8E56C3;   // 0.278
+            Check(HudLayoutRecordLeftOver(kWrittenH, kWrittenV, kTitleOwn, kTitleOwn) &&
+                      HudLayoutRecordLeftOver(kTitleOwn, kWrittenV, kTitleOwn, kTitleOwn) &&
+                      !HudLayoutRecordLeftOver(kTitleOwn, kTitleOwn, kTitleOwn, kTitleOwn),
+                "a record holding a layout other than the one it was loaded with is left from an earlier level; "
+                "one loaded again holds the title's own");
+            Check(!HudLayoutTakeLeftOvers(*mergedHud, 3, 6) && !HudLayoutTakeLeftOvers(*mergedHud, 6, 7),
+                "after an ODST level, Halo 3 writes only the records its level loaded when both sets together are "
+                "more than the title holds");
+            Check(HudLayoutTakeLeftOvers(*mergedHud, 3, 3) && HudLayoutTakeLeftOvers(*mergedHud, 0, 6) &&
+                      HudLayoutTakeLeftOvers(*mergedHud, 2, 3) && !HudLayoutTakeLeftOvers(*mergedHud, 3, 0),
+                "as before when there is room for both, or when the level did not load a whole set of its own");
+        }
         Check(HudLayoutAcceptedCountOk(*odstHud, 1) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 0) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 2),
