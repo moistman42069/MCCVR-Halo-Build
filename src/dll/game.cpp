@@ -25394,7 +25394,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
     // whether the authored reticle actually needs re-uploading this frame.
     std::atomic<uint64_t> g_reachAuthoredCrosshairKey{0};
 
-    bool ReachOwnsHudStereoTransaction()
+    // Reach's stereo core owns this load and is armed: any thread, inside an
+    // eye's render or not (the HUD update's off-screen tests run outside it).
+    bool ReachStereoCoreOwned()
     {
         if (TitleAdapter_GetActiveTitle() != GameTitle::HaloReach)
             return false;
@@ -25407,8 +25409,14 @@ static constexpr bool kOdstMappedFpEnabled = false;
             g_reachCamera.armed.load(std::memory_order_acquire) &&
             !g_reachCamera.teardownRequested.load(std::memory_order_acquire) &&
             g_enabled.load(std::memory_order_relaxed) &&
-            VR_IsStereoEnabled() && g_reachFpCameraEyeScope.active &&
-            g_reachFpCameraEyeScope.generation == cameraGeneration;
+            VR_IsStereoEnabled();
+    }
+
+    bool ReachOwnsHudStereoTransaction()
+    {
+        return ReachStereoCoreOwned() && g_reachFpCameraEyeScope.active &&
+            g_reachFpCameraEyeScope.generation ==
+                g_reachCamera.generation.load(std::memory_order_acquire);
     }
 
     #include "reach_hud_height.inl"
