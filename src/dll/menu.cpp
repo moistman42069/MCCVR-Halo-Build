@@ -97,8 +97,8 @@ namespace
     // ===================================================================
     constexpr const char* kWelcomeMessage =
         "Original Halo MCC VR mod created by Pancreations, with the community building on top of it to give you the "
-        "version you are playing today.\n"
-        "Pass-on/community build maintained by @MeWhenINameMyself.\n"
+        "version you are playing today.\n\n"
+        "Pass-on/community build maintained by @MeWhenINameMyself (Moistman42069).\n\n"
         "Multiplayer support for Project Reclaimer maintained by Nitsujack.\n\n"
         "This mod is an effort by many contributors, please see the Credits section to the right and consider "
         "supporting them through their links present in the launcher.\n\n"
