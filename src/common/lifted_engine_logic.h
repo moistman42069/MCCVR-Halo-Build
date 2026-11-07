@@ -411,4 +411,50 @@ inline void CtxFromHostArgs(const Adapter& adapter, const uint64_t hostArgs[4], 
             std::memcpy(ctx + kGuestArgOffsets[arg], &hostArgs[slot], 8);
     }
 }
+
+// ---- the guest caller of a direct call ------------------------------------------------------------------------------
+
+// A translated DIRECT call stores no guest return address (only an indirect call does, for the dispatcher), so a hook
+// on a body knows its caller only by the host return address: inside the caller's translated block. The translation
+// keeps a function's calls in order, so the n-th `call rel32` to the hooked body in the caller's host block is the
+// n-th `call rel32` to the hooked function in the caller's guest code. Both sides are scanned as bytes: a false E8
+// would have to name exactly the target.
+inline constexpr size_t kMaxCallSites = 64;
+inline size_t CallSitesTo(const uint8_t* code, size_t length, uint64_t base, uint64_t target, size_t sites[kMaxCallSites])
+{
+    size_t count = 0;
+    for (size_t at = 0; at + 5 <= length; ++at)
+    {
+        if (code[at] != 0xE8)
+            continue;
+        int32_t rel = 0;
+        std::memcpy(&rel, code + at + 1, 4);
+        if (base + at + 5 + static_cast<int64_t>(rel) != target)
+            continue;
+        if (count == kMaxCallSites)
+            return kMaxCallSites + 1; // too many to pair
+        sites[count++] = at;
+    }
+    return count;
+}
+
+// The guest return address of the call at `hostCall` (the host return address - 5) in the caller's host block (`host`,
+// `hostLength` bytes at `hostBase`) to the hooked body `hostTarget`, from the caller's guest code (`guest`,
+// `guestLength` bytes at `guestBase`, halo3.dll's own bytes) and the hooked function's guest start `guestTarget`.
+// 0 when that is no `call rel32` to the body, or the two sides do not hold the same number of such calls (then the
+// order cannot be trusted).
+inline uint64_t GuestReturnOfCall(const uint8_t* host, size_t hostLength, uint64_t hostBase, uint64_t hostCall,
+                                  uint64_t hostTarget, const uint8_t* guest, size_t guestLength, uint64_t guestBase,
+                                  uint64_t guestTarget)
+{
+    size_t hostSites[kMaxCallSites], guestSites[kMaxCallSites];
+    const size_t hosts = CallSitesTo(host, hostLength, hostBase, hostTarget, hostSites);
+    const size_t guests = CallSitesTo(guest, guestLength, guestBase, guestTarget, guestSites);
+    if (!hosts || hosts != guests || hosts > kMaxCallSites)
+        return 0;
+    for (size_t i = 0; i < hosts; ++i)
+        if (hostBase + hostSites[i] == hostCall)
+            return guestBase + guestSites[i] + 5;
+    return 0;
+}
 } // namespace lifted_engine

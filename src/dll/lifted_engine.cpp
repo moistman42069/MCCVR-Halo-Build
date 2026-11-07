@@ -46,6 +46,8 @@ struct Frame
     uint8_t* ctx;
     uint64_t guestRsp;
     const Record* record;
+    const uint64_t* hostReturnSlot; // hooks: where the call's return address sits on the host stack; null for the
+                                    // mod's own calls
 };
 constexpr int kMaxFrames = 64;
 thread_local Frame t_frames[kMaxFrames];
@@ -326,12 +328,79 @@ Record* NewRecord(uintptr_t target, const char* what)
 
 // ---- the bridges ---------------------------------------------------------------------------------------------------
 
-extern "C" uint64_t LiftedDispatch(Record* record, uint8_t* ctx, uint64_t guestRsp, const uint64_t hostArgs[4])
+// Callers already paired with their guest call site (GuestReturnAddress), per host return address and hooked function.
+// kNoPair marks one that could not be paired.
+struct CallSite
+{
+    std::atomic<uint64_t> key{0};
+    std::atomic<uint64_t> guestReturn{0};
+};
+constexpr size_t kCallSiteSlots = 512;
+constexpr uint64_t kNoPair = 1;
+CallSite g_callSites[kCallSiteSlots];
+// How far up the host stack a caller is looked for when the client's own code called the hooked body for it.
+constexpr int kCallerScanSlots = 512;
+
+// The record whose host block holds `address` in the translated code, or null.
+const lifted_engine::Record* RecordOfHost(uint64_t address)
+{
+    if (address < g_code || address - g_code >= g_table.codeLength)
+        return nullptr;
+    const uint64_t offset = address - g_code;
+    size_t lo = 0, hi = g_table.records.size();
+    while (lo < hi)
+    {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (g_table.records[mid].hostOffset + g_table.records[mid].hostSize <= offset)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo < g_table.records.size() && g_table.records[lo].hostOffset <= offset ? &g_table.records[lo] : nullptr;
+}
+
+// The guest return address of the call that returns to `hostReturn` in `caller`'s body, made to `hostTarget` (the
+// hooked body, or the client's stub in front of it), paired by order with `caller`'s guest calls to `guestTarget`;
+// kNoPair when the two sides do not pair. Remembered per call site.
+uint64_t PairCallSite(uint64_t hostReturn, const lifted_engine::Record& caller, uint64_t hostTarget,
+                      uint64_t guestTarget)
+{
+    const uint64_t key = hostReturn ^ (guestTarget << 1);
+    const size_t first = static_cast<size_t>((key >> 4) * 0x9E3779B97F4A7C15ull >> 55) % kCallSiteSlots;
+    CallSite* free = nullptr;
+    for (size_t probe = 0; probe < 8; ++probe)
+    {
+        CallSite& site = g_callSites[(first + probe) % kCallSiteSlots];
+        const uint64_t held = site.key.load(std::memory_order_acquire);
+        if (held == key)
+        {
+            const uint64_t known = site.guestReturn.load(std::memory_order_acquire);
+            if (known)
+                return known;
+            break;
+        }
+        if (!held && !free)
+            free = &site;
+    }
+    uint64_t paired = lifted_engine::GuestReturnOfCall(
+        reinterpret_cast<const uint8_t*>(g_code + caller.hostOffset), caller.hostSize, g_code + caller.hostOffset,
+        hostReturn - 5, hostTarget, reinterpret_cast<const uint8_t*>(g_guestBase + caller.guestRva), caller.guestSize,
+        g_guestBase + caller.guestRva, guestTarget);
+    if (!paired)
+        paired = kNoPair;
+    uint64_t expected = 0;
+    if (free && free->key.compare_exchange_strong(expected, key, std::memory_order_acq_rel))
+        free->guestReturn.store(paired, std::memory_order_release);
+    return paired;
+}
+
+extern "C" uint64_t LiftedDispatch(Record* record, uint8_t* ctx, uint64_t guestRsp, const uint64_t hostArgs[4],
+                                   const uint64_t* hostReturnSlot)
 {
     lifted_engine::CtxFromHostArgs(record->adapter, hostArgs, ctx);
     if (t_depth >= kMaxFrames)
         return LiftedCallBody(record->trampoline, ctx, guestRsp, hostArgs); // too deep to track: the original alone
-    t_frames[t_depth++] = Frame{ctx, guestRsp, record};
+    t_frames[t_depth++] = Frame{ctx, guestRsp, record, hostReturnSlot};
     uint64_t stack[8];
     std::memcpy(stack, reinterpret_cast<const void*>(guestRsp + 0x28), sizeof(stack));
     const uint64_t result = LiftedCallNative(record->detour, ctx, stack);
@@ -390,7 +459,7 @@ extern "C" uint64_t LiftedCallGame(Record* record, uint8_t* block, const uint64_
     uint64_t host[4]{};
     lifted_engine::HostArgsFromCtx(record->adapter, top.ctx, host);
     uint8_t* const ctx = top.ctx;
-    t_frames[t_depth++] = Frame{ctx, guestRsp, record};
+    t_frames[t_depth++] = Frame{ctx, guestRsp, record, nullptr};
     const uint64_t result = LiftedCallBody(record->trampoline, ctx, guestRsp, host);
     --t_depth;
     std::memcpy(block + 0x20, ctx + lifted_engine::kCtxXmm0, 16);
@@ -724,6 +793,40 @@ uintptr_t GuestReturnAddress()
 {
     if (!t_depth)
         return 0;
-    return *reinterpret_cast<const uintptr_t*>(t_frames[t_depth - 1].guestRsp);
+    const Frame& frame = t_frames[t_depth - 1];
+    if (!frame.hostReturnSlot)
+        return 0; // a call the mod made itself
+    // Entered through the hooked function's own adapter: an indirect call's dispatcher, which stores the guest return
+    // address on the guest stack, as real hardware does.
+    const uint64_t returned = *frame.hostReturnSlot;
+    if (const lifted_engine::Record* own = RecordOfHost(returned);
+        own && own->guestRva == frame.record->rva && returned - g_code < own->hostOffset + own->bodyOffset)
+        return *reinterpret_cast<const uintptr_t*>(frame.guestRsp);
+    // The caller's translated code: the return address itself for a direct call; when the client's own code called
+    // the body for it (it intercepts some of the game's input functions through stubs past the code), the first
+    // return address further up the host stack that follows a call in a translated body and pairs.
+    const auto* tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
+    const auto* stackEnd = reinterpret_cast<const uint64_t*>(tib->StackBase);
+    uintptr_t callerStart = 0;
+    const uint64_t* at = frame.hostReturnSlot;
+    for (int n = 0; n < kCallerScanSlots && at < stackEnd; ++n, ++at)
+    {
+        const uint64_t value = *at;
+        const lifted_engine::Record* caller = RecordOfHost(value);
+        if (!caller || value - 5 < g_code + caller->hostOffset + caller->bodyOffset)
+            continue;
+        const auto* call = reinterpret_cast<const uint8_t*>(value - 5);
+        if (*call != 0xE8)
+            continue;
+        int32_t rel = 0;
+        std::memcpy(&rel, call + 1, 4);
+        const uint64_t paired =
+            PairCallSite(value, *caller, value + static_cast<int64_t>(rel), frame.record->guestTarget);
+        if (paired != kNoPair)
+            return paired;
+        if (!callerStart && n == 0)
+            callerStart = g_guestBase + caller->guestRva; // a range check still sees which function called
+    }
+    return callerStart;
 }
 } // namespace lifted
