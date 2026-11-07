@@ -111,7 +111,6 @@ namespace
     {
         Cat_Welcome = 0,
         Cat_Status,
-        Cat_QualityOfLife,
         Cat_Comfort,
         Cat_Theatre,
         Cat_Controls,
@@ -142,7 +141,6 @@ namespace
     constexpr CategoryRow kCategories[Cat_Count] = {
         {"Welcome",       "Read me first."},
         {"Status",        "What the mod is doing right now, and the switches you reach for mid-game."},
-        {"Quality of Life", "VR comfort and immersion settings, collected here from their usual sections."},
         {"Comfort",       "The flat screen you see in menus, and how head motion feels."},
         {"3D Theatre",    "A room-fixed stereo screen used only when the game locks the cinematic camera."},
         {"Controls",      "Your control scheme: presets, button mappings, movement, turning and gestures."},
@@ -212,7 +210,7 @@ namespace
         bool visible=false,scoped=false;
         explicit CategorySection(MenuCategory category,MenuCategory alsoIn=Cat_Count)
         {
-            if(g_activeCategory!=category&&g_activeCategory!=alsoIn&&g_activeCategory!=Cat_QualityOfLife)return;
+            if(g_activeCategory!=category&&g_activeCategory!=alsoIn)return;
             ImGui::PushID(static_cast<int>(category));scoped=true;
             visible=true;
             g_sectionOwners.push_back(category);
@@ -1180,9 +1178,6 @@ namespace
         ImGui::Spacing();
         ImGui::TextDisabled("L3+R3 recenters and closes this menu; F1 only closes it.");
         }
-
-        if (g_activeCategory == Cat_QualityOfLife)
-            ImGui::TextWrapped("Expand a section to adjust its settings. These are the same controls as their individual pages.");
 
         if (CategorySection section{Cat_Comfort}; section.visible)
         {
@@ -3969,8 +3964,8 @@ namespace
     {
         ImGuiContext& g=*GImGui;
         if(g_indexNextPage==0) {g_settingIndex.clear();g_resultLayouts.clear();}
-        // Quality of Life gathers other pages' sections, and the labs are not in the sidebar.
-        const auto skipped=[](int page){return page==Cat_QualityOfLife||page==Cat_VirtualStockLab||page==Cat_TwoHandLab;};
+        // The labs are not in the sidebar.
+        const auto skipped=[](int page){return page==Cat_VirtualStockLab||page==Cat_TwoHandLab;};
         while(g_indexNextPage<Cat_Count&&skipped(g_indexNextPage)) ++g_indexNextPage;
         if(g_indexNextPage>=Cat_Count) {g_indexBuilt=true;return;}
         const int page=g_indexNextPage++,shownPage=g_activeCategory;
