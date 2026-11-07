@@ -139,6 +139,29 @@ Read from a running client (`_reclaimer-0.10-re\tools\callsites_live.py`, `align
   address points at an entry of the mod's (`LiftedReplacementEntry`), and the detour's original is the client's
   version. With that, the camera rebuild ran 43845 times in 30 s and the gun follows the controller again.
 
+## What else differs for the mod's Halo 3 code (2026-11-07, 0.10.0 with the mod)
+
+- **The traps are in the image the mod reads.** A proof that finds a function by signature (the scan shadow)
+  and then reads one of its first five bytes from the image reads the client's `E8` instead. The vehicle type
+  accessor's tag instance table decoded as +0xA471C8 instead of +0xA49018 this way, and the cutscene shot proof
+  failed. Such reads go through `sig::RipTarget` or `sig::CopyUnhooked`, which read the shadow.
+- **`lifted::Callable` gives an entry of its own.** A proof that compares a call target in the image with a
+  function pointer the mod stored through `lifted::Callable` never matches in 0.10 (the boom's pilot test, the
+  roomscale Forge Monitor check, the tracker heading). Such a proof compares through `lifted::Callable` or keeps
+  the image address beside the pointer (`g_halo3PlayerUnitGetterAt`).
+- **The client draws first person with its own version of the render (0x1854C8).** Its version never fills the
+  render-root cache the game's +0x2C0D20 writes (TLS +0x568, players 0x2430 apart, root +0x23F0). The mod reads
+  only that root's scale. In 0.10 it takes the scale of the root the visible palette was drawn with.
+- **The client's input update (0xA78C0) is its own.** It calls the gamepad converter only for a gamepad it
+  sees. The VR action bridge advances its records after that update when the converter did not run.
+- **halo3.dll is built with whole-program optimisation, and the translation keeps that.** Callers of
+  `0x26DD98` (the first-person weapon-IK mode setter) read the xmm0-xmm2, rdx and r9 it leaves after the call
+  (seen in the translated callers: `vmovdqu xmm0, [ctx+0x90]` right after the call). Any detour on it, even one
+  that passes everything through, crashed the animation code within seconds: 0x169D8C read an animation index
+  out of its table. Putting back the guest's volatile registers after the detour did not help. The native
+  weapon-IK branch patch therefore has no 0.10 equivalent yet: the shotgun's support hand may stay on the pump.
+  The same holds natively: functions like this one are patched in MCC, never detoured.
+
 ## Still unverified
 
 - That the dispatcher enters through the adapter (expected: it has only `ctx`), so a hook at a body's first
