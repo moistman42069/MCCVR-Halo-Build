@@ -250,7 +250,13 @@ void DrawControlsDiagram()
             callout.max = {x + calloutWidth, callout.anchor.y + height * 0.5f};
             list[count++] = &callout;
         }
-        std::sort(list, list + count, [](const Callout* a, const Callout* b) { return a->anchor.y < b->anchor.y; });
+        // By height, except the menu button: it sits on the outer edge, nearest its callouts, so its callout goes above
+        // X's and Y's (further in) to keep their lines from crossing its own.
+        const float faceButtons = std::min(callouts[Y].anchor.y, callouts[X].anchor.y);
+        const auto order = [&](const Callout* c) {
+            return c->control == LeftMenu ? std::min(c->anchor.y, faceButtons - 1.0f) : c->anchor.y;
+        };
+        std::sort(list, list + count, [&](const Callout* a, const Callout* b) { return order(a) < order(b); });
         const float gap = 6.0f;
         float floor = top;
         for (int i = 0; i < count; ++i)
