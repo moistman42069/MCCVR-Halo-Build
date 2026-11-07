@@ -467,6 +467,15 @@ namespace
     // The unmagnified framing (1 / kHalo4CuiCaptureScale): Stage 3BQ captured whole art at it (73 of 512 texels).
     constexpr float kHalo4ReticleMinimumZoom = 1.0f / kHalo4CuiCaptureScale;
     constexpr uint32_t kHalo4ReticleFitConfirm = 2;
+    // What a publish of the authored crosshair costs the render thread, for the 2 s upload line: the swapchain's
+    // acquire and blocking wait, then the copy and release. The upload floor exists for this cost (4-5 ms measured
+    // once on Halo 3); per-frame publishing waits on its measurement.
+    struct AuthoredReticleUploadCost
+    {
+        uint32_t timed = 0;
+        LONGLONG acquireWait = 0, acquireWaitMax = 0, copyRelease = 0, copyReleaseMax = 0;
+    };
+    AuthoredReticleUploadCost g_authoredReticleUploadCost{};
     // CE: how far above the HUD's centre the art being captured draws, as a fraction of the HUD's height (a
     // Warthog driver's chevron, haloce_hud.cpp). Its window is lowered by that much: the art's centre is the ray's.
     std::atomic<float> g_ceReticleLift{0.0f};
@@ -9962,6 +9971,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
         wait.timeout = 1000000000;
         XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        LARGE_INTEGER costStart{}, costWaited{}, costReleased{};
+        QueryPerformanceCounter(&costStart);
         const XrResult acquireResult =
             xrAcquireSwapchainImage(g_reticleChain, &acquire, &index);
         if (requireSuccessfulRelease && acquireResult != XR_SUCCESS)
@@ -9989,6 +10000,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         }
         else if (XR_FAILED(waitResult))
             return false;
+        QueryPerformanceCounter(&costWaited);
 
         D3D11_TEXTURE2D_DESC sourceDesc{};
         source->GetDesc(&sourceDesc);
@@ -10025,6 +10037,17 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             FinishReticleImage(index);
         const XrResult releaseResult =
             xrReleaseSwapchainImage(g_reticleChain, &release);
+        QueryPerformanceCounter(&costReleased);
+        {
+            AuthoredReticleUploadCost& cost = g_authoredReticleUploadCost;
+            const LONGLONG acquireWait = costWaited.QuadPart - costStart.QuadPart;
+            const LONGLONG copyRelease = costReleased.QuadPart - costWaited.QuadPart;
+            ++cost.timed;
+            cost.acquireWait += acquireWait;
+            cost.copyRelease += copyRelease;
+            cost.acquireWaitMax = std::max(cost.acquireWaitMax, acquireWait);
+            cost.copyReleaseMax = std::max(cost.copyReleaseMax, copyRelease);
+        }
         const bool released = requireSuccessfulRelease
             ? RequireExactSwapchainCompletion(
                   releaseResult,
@@ -19266,6 +19289,16 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     s_refreshState.lastPublishedDraws,
                                     g_authoredReticleLastCoverage,
                                     g_authoredReticleBlankHeld);
+                                {
+                                    AuthoredReticleUploadCost& cost = g_authoredReticleUploadCost;
+                                    if (cost.timed)
+                                        LOG("reticle upload cost: %u timed; swapchain acquire+wait "
+                                            "%.3f ms mean, %.3f max; copy+release %.3f ms mean, %.3f max",
+                                            cost.timed, QpcMs(cost.acquireWait) / cost.timed,
+                                            QpcMs(cost.acquireWaitMax), QpcMs(cost.copyRelease) / cost.timed,
+                                            QpcMs(cost.copyReleaseMax));
+                                    cost = {};
+                                }
                                 // Where the art sits in its texture, as a
                                 // fraction of it: the quad is shifted by this
                                 // so the art's centre is on the aim point.
@@ -19326,7 +19359,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                         "texture centre = %+.2f deg right, %+.2f deg down of the aim point "
                                         "for a %.2f deg crosshair (ink %llu); the quad is centred on the "
                                         "texture, not on the art; the latest capture's art is %.2f times as "
-                                        "wide as it is tall (ink %llu, spread %.3f across, %.3f down); capture "
+                                        "wide as it is tall (ink %llu, spread %.3f across, %.3f down) and reaches "
+                                        "%.0f%% of the way to the texture's edge%s; capture "
                                         "fitted x%.3f across, x%.3f down for the HUD's own scale, magnified x%.2f",
                                         static_cast<int>(reticleTitle),
                                         g_authoredReticlePublishedCentre.u - 0.5f,
@@ -19342,6 +19376,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                         static_cast<unsigned long long>(g_authoredReticleLatestMeasured.ink),
                                         g_authoredReticleLatestMeasured.spreadU,
                                         g_authoredReticleLatestMeasured.spreadV,
+                                        g_authoredReticleLatestMeasured.reach * 100.0f,
+                                        g_authoredReticleLatestMeasured.touchesEdge ? " (cut off by it)" : "",
                                         g_authoredReticleFitAcross.load(std::memory_order_relaxed),
                                         g_authoredReticleFitDown.load(std::memory_order_relaxed),
                                         g_authoredReticleCaptureScale.load(std::memory_order_relaxed));
