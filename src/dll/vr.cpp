@@ -10700,7 +10700,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     VrPadState g_padState{};
     ControllerFingerSample g_controllerFingerSample{};
     float g_nativePointerTrigger = 0;
-    float g_nativePointerStickY = 0.0f; // beside the trigger: the pointer's input consumes the stick
+    float g_nativePointerStickX = 0.0f, g_nativePointerStickY = 0.0f; // beside the trigger: the pointer's input consumes the stick
 
     bool CreateControllerActions()
     {
@@ -15507,6 +15507,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // Keep the pointer click private while suppressing all gameplay
         // consumers (including camera snapshots that bypass XInput).
         g_nativePointerTrigger=pad.trigR;
+        g_nativePointerStickX=pad.turnX;
         g_nativePointerStickY=pad.turnY;
         Input_StepHeadKeys(pad);
         pad.dualWield=SecondaryWeaponPresentationActive();
@@ -15913,7 +15914,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if (hit) clickLock.Apply(g_nativePointerTrigger,u,v);
         else clickLock.Reset();
         g_nativePointerFrame = {hit, pressed, u, v};
-        NativeMenuPointer_PublishScroll(hit ? g_nativePointerStickY : 0.0f);
+        NativeMenuPointer_PublishScroll(hit ?
+            game_menu_pointer::StickWheelAxis(g_nativePointerStickX, g_nativePointerStickY) : 0.0f);
         NativeMenuPointer_FrameStatus(hit ? "hit" : "ray-miss");
     }
 

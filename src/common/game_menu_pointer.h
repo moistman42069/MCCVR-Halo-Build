@@ -35,6 +35,13 @@ struct StickWheel
     void Reset() noexcept { pending = 0.0f; lastMs = 0; }
 };
 
+// MCC's map and game type lists run sideways: right goes on down the list, left back up it. Whichever way the stick
+// is pushed further is the wheel.
+inline float StickWheelAxis(float x, float y) noexcept
+{
+    return std::fabs(x) > std::fabs(y) ? -x : y;
+}
+
 inline bool MenuMode(RuntimeMode mode, bool pauseScreen) noexcept
 {
     // MCC's shell preloads all six modules. The camera-owner resolver calls
