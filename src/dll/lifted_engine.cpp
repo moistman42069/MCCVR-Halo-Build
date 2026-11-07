@@ -686,17 +686,17 @@ void HookArgsToCtx(const Record& record, const uint8_t* block, uint8_t* ctx)
 }
 } // namespace
 
+extern "C" uint64_t LiftedCallGame(Record* record, uint8_t* block, const uint64_t* callerStack);
+
 extern "C" uint64_t LiftedCallOriginal(Record* record, uint8_t* block, const uint64_t* callerStack)
 {
     int at = t_depth - 1;
     while (at >= 0 && t_frames[at].record != record)
         --at;
+    // Not inside its own hook: the mod's own query of a hooked function (the aim trace's collision_test_vector, from
+    // inside the unit update's hook). It runs as any game function the mod calls, as MinHook's trampoline would.
     if (at < 0)
-    {
-        record->unrunnable.fetch_add(1, std::memory_order_relaxed);
-        std::memset(block + 0x20, 0, 16);
-        return 0;
-    }
+        return LiftedCallGame(record, block, callerStack);
     Frame& frame = t_frames[at];
     RestoreVolatiles(frame.ctx, frame.volatilesEntry); // as the caller left them...
     HookArgsToCtx(*record, block, frame.ctx);          // ...with the detour's arguments
