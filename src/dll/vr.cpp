@@ -1025,6 +1025,11 @@ namespace
     // captured once at start (and again on "re-center").
     XrQuaternionf g_centerRot{0, 0, 0, 1};
     XrVector3f g_centerPos{0, 0, 0};
+    // The VR menu's own place: where the head stood, facing level, when the menu last opened. The menu stays there in
+    // the room, in gameplay as in the main menu, and comes back in front of the player each time it opens -- head-locked,
+    // its side panel did not fit in view.
+    XrPosef g_menuCenter{{0, 0, 0, 1}, {0, 0, 0}};
+    bool g_haveMenuCenter = false;
     bool g_haveCenter = false;
     // Recenter requests can originate on the input/game camera threads. Only
     // Present owns g_haveCenter and the OpenXR locate used to replace it.
@@ -8641,6 +8646,20 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         return true;
     }
 
+    // Puts the menu in front of the head, level (g_menuCenter); false until the head is tracked.
+    bool PlaceMenuInFront()
+    {
+        if (!g_headPoseValid)
+            return false;
+        const XrVector3f fwd = Rotate(g_headPose.orientation, {0, 0, -1});
+        float yaw = 0.0f;
+        if (fabsf(fwd.x) > 1e-4f || fabsf(fwd.z) > 1e-4f)
+            yaw = atan2f(-fwd.x, -fwd.z);
+        g_menuCenter = {{0, sinf(yaw * 0.5f), 0, cosf(yaw * 0.5f)}, g_headPose.position};
+        g_haveMenuCenter = true;
+        return true;
+    }
+
     // Store the head pose for the game camera hook to read. Called once near
     // the end of Present with the NEXT frame's predicted display time, so Halo
     // renders the upcoming image from its matching pose instead of a stale one.
@@ -10063,10 +10082,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         return true;
     }
 
+    // Not head-locked, the quad stands at `anchor` (the screen's centre if none).
     XrCompositionLayerQuad MakeQuad(XrSwapchain chain, int32_t imgW, int32_t imgH,
                                     float widthMeters, float distMeters, float yOffset,
                                     XrCompositionLayerFlags flags, bool headLocked,
-                                    float xOffset = 0.0f);
+                                    float xOffset = 0.0f, const XrPosef* anchor = nullptr);
 
     // A rotation whose +X, +Y and +Z are the given unit axes (a right-handed, orthonormal basis).
     XrQuaternionf QuatFromAxes(const XrVector3f& x, const XrVector3f& y, const XrVector3f& z)
@@ -10176,7 +10196,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     XrCompositionLayerQuad MakeQuad(XrSwapchain chain, int32_t imgW, int32_t imgH,
                                     float widthMeters, float distMeters, float yOffset,
                                     XrCompositionLayerFlags flags, bool headLocked,
-                                    float xOffset)
+                                    float xOffset, const XrPosef* anchor)
     {
         XrCompositionLayerQuad q{XR_TYPE_COMPOSITION_LAYER_QUAD};
         q.layerFlags = flags;
@@ -10194,9 +10214,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         else
         {
             q.space = g_localSpace;
-            q.pose.orientation = g_centerRot;
-            const XrVector3f off = Rotate(g_centerRot, {xOffset, yOffset, -distMeters});
-            q.pose.position = {g_centerPos.x + off.x, g_centerPos.y + off.y, g_centerPos.z + off.z};
+            const XrPosef at = anchor ? *anchor : XrPosef{g_centerRot, g_centerPos};
+            q.pose.orientation = at.orientation;
+            const XrVector3f off = Rotate(at.orientation, {xOffset, yOffset, -distMeters});
+            q.pose.position = {at.position.x + off.x, at.position.y + off.y, at.position.z + off.z};
         }
         q.size = {widthMeters, widthMeters * (float)imgH / (float)imgW};
         return q;
@@ -15971,31 +15992,27 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     // The menu's side panel (Menu_SidePanelShown): the strip right of the menu in the same texture, on a quad of its
     // own hinged a little way off the menu's right edge and turned toward the player. Built from the same config as
     // the menu's quad, so the pointer and the picture agree.
-    XrCompositionLayerQuad MenuSideQuad(bool headLocked)
+    XrCompositionLayerQuad MenuSideQuad()
     {
         constexpr float kGapM = 0.01f, kTurn = 0.35f;   // about 20 degrees
         const float width = g_config.menu_width_m * MENU_SIDE_W / MENU_W;
         XrCompositionLayerQuad q = MakeQuad(g_menuChain, MENU_SIDE_W, MENU_H, width, g_config.menu_distance_m,
             g_config.menu_height_m, XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
-                XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT, headLocked, g_config.menu_side_m);
+                XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT, false, g_config.menu_side_m, &g_menuCenter);
         q.subImage.imageRect.offset.x = MENU_W;
         const float c = std::cos(kTurn), s = std::sin(kTurn);
         const float hingeX = g_config.menu_side_m + g_config.menu_width_m * 0.5f + kGapM;
         const XrVector3f local{hingeX + c * width * 0.5f, g_config.menu_height_m,
                                -g_config.menu_distance_m + s * width * 0.5f};
-        const XrQuaternionf base = headLocked ? XrQuaternionf{0, 0, 0, 1} : g_centerRot;
+        const XrQuaternionf base = g_menuCenter.orientation;
         q.pose.orientation = QuatFromAxes(Rotate(base, {c, 0, s}), Rotate(base, {0, 1, 0}), Rotate(base, {-s, 0, c}));
-        if (headLocked)
-            q.pose.position = local;
-        else
-        {
-            const XrVector3f off = Rotate(base, local);
-            q.pose.position = {g_centerPos.x + off.x, g_centerPos.y + off.y, g_centerPos.z + off.z};
-        }
+        const XrVector3f off = Rotate(base, local);
+        q.pose.position = {g_menuCenter.position.x + off.x, g_menuCenter.position.y + off.y,
+                           g_menuCenter.position.z + off.z};
         return q;
     }
 
-    void UpdateMenuPointer(bool headLocked)
+    void UpdateMenuPointer()
     {
         static bool triggerPressed = false;
         static bool hadHit = false;
@@ -16004,8 +16021,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         static uint64_t lastDiagMs = 0;
         static bool dragging = false;
         static float grabOffsetX = 0.0f, grabOffsetY = 0.0f;
-        if (!g_rightAimPoseValid || (headLocked && !g_headPoseValid) ||
-            (!headLocked && !g_haveCenter))
+        if (!g_rightAimPoseValid || !g_haveMenuCenter)
         {
             triggerPressed = false;
             hadHit = false;
@@ -16021,9 +16037,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             return;
         }
 
-        const XrPosef anchor = headLocked
-            ? g_headPose
-            : XrPosef{g_centerRot, g_centerPos};
+        const XrPosef anchor = g_menuCenter;
         const XrQuaternionf inverseAnchor{
             -anchor.orientation.x, -anchor.orientation.y,
             -anchor.orientation.z, anchor.orientation.w};
@@ -16049,7 +16063,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if (!hit.hit && Menu_SidePanelShown())
         {
             float u = 0.0f, v = 0.0f;
-            if (game_menu_pointer::RayHit(MenuSideQuad(headLocked), g_rightAimPose, g_headPose, headLocked, u, v))
+            if (game_menu_pointer::RayHit(MenuSideQuad(), g_rightAimPose, g_headPose, false, u, v))
             {
                 anyHit = onSide = true;
                 textureU = (MENU_W + u * MENU_SIDE_W) / static_cast<float>(MENU_TEX_W);
@@ -16158,10 +16172,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         {
             lastDiagMs = now;
             LOG("menu pointer: hit=%d uv=(%.3f,%.3f) origin=(%.2f,%.2f,%.2f) "
-                "dir=(%.2f,%.2f,%.2f) trigger=%.2f stickY=%.2f headLocked=%d",
+                "dir=(%.2f,%.2f,%.2f) trigger=%.2f stickY=%.2f",
                 hit.hit ? 1 : 0, hit.u, hit.v,
                 origin[0], origin[1], origin[2], direction[0], direction[1], direction[2],
-                g_padState.trigR, g_padState.turnY, headLocked ? 1 : 0);
+                g_padState.trigR, g_padState.turnY);
         }
     }
 
@@ -20731,14 +20745,17 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 
                 // The menu is submitted in BOTH modes (it used to live only in
                 // the mono-screen branch, which made F1 invisible in stereo).
-                // In stereo it head-locks so it is always in front of you.
+                // It stands in the room where it opened, in front of the head (PlaceMenuInFront).
                 const bool mirrorAttached = Menu_MirrorBeat();
+                static bool menuWasOpen = false;
                 if (Menu_IsOpen())
                 {
-                    const bool menuHeadLocked =
-                        pausedPresentation || stereo ||
-                        (g_screenFollow.load() && Game_IsHeadTracking());
-                    UpdateMenuPointer(menuHeadLocked);
+                    if (!menuWasOpen)
+                        g_haveMenuCenter = false;
+                    menuWasOpen = true;
+                    if (!g_haveMenuCenter)
+                        PlaceMenuInFront();
+                    UpdateMenuPointer();
                     if (ID3D11Texture2D* menuTex = Menu_Render())
                     {
                         uint32_t idx = 0;
@@ -20764,12 +20781,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                                 g_config.menu_height_m,
                                                 XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
                                                     XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT,
-                                                menuHeadLocked,
-                                                g_config.menu_side_m);
-                            layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&menuQuad));
-                            if (Menu_SidePanelShown())
+                                                false,
+                                                g_config.menu_side_m, &g_menuCenter);
+                            // Until the head is tracked the menu has no place in front of it yet.
+                            if (g_haveMenuCenter)
+                                layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&menuQuad));
+                            if (g_haveMenuCenter && Menu_SidePanelShown())
                             {
-                                menuSideQuad = MenuSideQuad(menuHeadLocked);
+                                menuSideQuad = MenuSideQuad();
                                 layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&menuSideQuad));
                             }
                         }
@@ -20777,6 +20796,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 }
                 else
                 {
+                    menuWasOpen = false;
                     Menu_ClearVrPointer();
                     if (mirrorAttached)
                         Menu_Render();
