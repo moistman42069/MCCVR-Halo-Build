@@ -39,6 +39,10 @@ struct Record
     uint32_t stackArgs = 0;     // stack arguments written back on the call to the original
     std::atomic<uint32_t> unrunnable{0};  // calls refused for want of a guest call on the thread
     uint32_t unrunnableReported = 0;
+    // Hooks: how their game caller was found (GuestReturnAddress), for the report in Poll.
+    std::atomic<uint32_t> callersNamed{0}, callersUnnamed{0}, callerDepth{0};
+    std::atomic<uint64_t> unnamedEnteredFrom{0}, namedExample{0};
+    bool callerReported = false;
 };
 
 struct Frame
@@ -339,7 +343,7 @@ constexpr size_t kCallSiteSlots = 512;
 constexpr uint64_t kNoPair = 1;
 CallSite g_callSites[kCallSiteSlots];
 // How far up the host stack a caller is looked for when the client's own code called the hooked body for it.
-constexpr int kCallerScanSlots = 512;
+constexpr int kCallerScanSlots = 4096;
 
 // The record whose host block holds `address` in the translated code, or null.
 const lifted_engine::Record* RecordOfHost(uint64_t address)
@@ -510,8 +514,25 @@ bool Poll()
     {
         // Calls the mod could not run (no hooked game call on their thread), reported here, off the game's threads.
         AcquireSRWLockExclusive(&g_lock);
+        const auto exe = reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr));
         for (Record* record : g_allRecords)
         {
+            const uint32_t named = record->callersNamed.load(std::memory_order_relaxed);
+            const uint32_t unnamed = record->callersUnnamed.load(std::memory_order_relaxed);
+            if (!record->callerReported && named + unnamed >= 100)
+            {
+                record->callerReported = true;
+                const uint64_t from = record->unnamedEnteredFrom.load(std::memory_order_relaxed);
+                const uint64_t example = record->namedExample.load(std::memory_order_relaxed);
+                LOG("RECLAIMER 0.10: hook halo3.dll+0x%X: of its first %u calls, %u named their game caller (e.g. "
+                    "+0x%llX, found %u stack slots up) and %u did not%s%s+0x%llX)", record->rva, named + unnamed,
+                    named, static_cast<unsigned long long>(example ? example - g_guestBase : 0),
+                    record->callerDepth.load(std::memory_order_relaxed), unnamed,
+                    unnamed ? " (the first entered from " : "",
+                    !unnamed ? "" : from >= g_code && from - g_code < g_table.codeLength ? "translated code" : "exe",
+                    static_cast<unsigned long long>(!unnamed ? 0 : from >= g_code && from - g_code < g_table.codeLength
+                                                                       ? from - g_code : from - exe));
+            }
             const uint32_t count = record->unrunnable.load(std::memory_order_relaxed);
             if (count != record->unrunnableReported)
             {
@@ -789,6 +810,27 @@ void** GuestTlsSlots()
     return *reinterpret_cast<void***>(t_frames[t_depth - 1].ctx + 0x2D8);
 }
 
+// The caller found `depth` slots above the return slot, or 0: a return address in a translated body that follows a
+// call and pairs (PairCallSite). `first` is set to the first such caller's function start.
+static uint64_t CallerAt(const Frame& frame, const uint64_t* at, uintptr_t& first)
+{
+    const uint64_t value = *at;
+    const lifted_engine::Record* caller = RecordOfHost(value);
+    if (!caller || value - 5 < g_code + caller->hostOffset + caller->bodyOffset)
+        return 0;
+    const auto* call = reinterpret_cast<const uint8_t*>(value - 5);
+    if (*call != 0xE8)
+        return 0;
+    int32_t rel = 0;
+    std::memcpy(&rel, call + 1, 4);
+    const uint64_t paired = PairCallSite(value, *caller, value + static_cast<int64_t>(rel), frame.record->guestTarget);
+    if (paired != kNoPair)
+        return paired;
+    if (!first)
+        first = g_guestBase + caller->guestRva;
+    return 0;
+}
+
 uintptr_t GuestReturnAddress()
 {
     if (!t_depth)
@@ -796,37 +838,42 @@ uintptr_t GuestReturnAddress()
     const Frame& frame = t_frames[t_depth - 1];
     if (!frame.hostReturnSlot)
         return 0; // a call the mod made itself
+    auto* record = const_cast<Record*>(frame.record);
     // Entered through the hooked function's own adapter: an indirect call's dispatcher, which stores the guest return
     // address on the guest stack, as real hardware does.
     const uint64_t returned = *frame.hostReturnSlot;
     if (const lifted_engine::Record* own = RecordOfHost(returned);
-        own && own->guestRva == frame.record->rva && returned - g_code < own->hostOffset + own->bodyOffset)
+        own && own->guestRva == record->rva && returned - g_code < own->hostOffset + own->bodyOffset)
         return *reinterpret_cast<const uintptr_t*>(frame.guestRsp);
     // The caller's translated code: the return address itself for a direct call; when the client's own code called
     // the body for it (it intercepts some of the game's input functions through stubs past the code), the first
-    // return address further up the host stack that follows a call in a translated body and pairs.
+    // return address further up the host stack that follows a call in a translated body and pairs. The depth that
+    // worked last is tried first.
     const auto* tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
     const auto* stackEnd = reinterpret_cast<const uint64_t*>(tib->StackBase);
     uintptr_t callerStart = 0;
-    const uint64_t* at = frame.hostReturnSlot;
-    for (int n = 0; n < kCallerScanSlots && at < stackEnd; ++n, ++at)
-    {
-        const uint64_t value = *at;
-        const lifted_engine::Record* caller = RecordOfHost(value);
-        if (!caller || value - 5 < g_code + caller->hostOffset + caller->bodyOffset)
-            continue;
-        const auto* call = reinterpret_cast<const uint8_t*>(value - 5);
-        if (*call != 0xE8)
-            continue;
-        int32_t rel = 0;
-        std::memcpy(&rel, call + 1, 4);
-        const uint64_t paired =
-            PairCallSite(value, *caller, value + static_cast<int64_t>(rel), frame.record->guestTarget);
-        if (paired != kNoPair)
+    const uint32_t hint = record->callerDepth.load(std::memory_order_relaxed);
+    if (hint && frame.hostReturnSlot + hint < stackEnd)
+        if (const uint64_t paired = CallerAt(frame, frame.hostReturnSlot + hint, callerStart))
+        {
+            record->callersNamed.fetch_add(1, std::memory_order_relaxed);
             return paired;
-        if (!callerStart && n == 0)
-            callerStart = g_guestBase + caller->guestRva; // a range check still sees which function called
+        }
+    const uint64_t* at = frame.hostReturnSlot;
+    for (uint32_t n = 0; n < kCallerScanSlots && at < stackEnd; ++n, ++at)
+    {
+        if (const uint64_t paired = CallerAt(frame, at, callerStart))
+        {
+            record->callerDepth.store(n, std::memory_order_relaxed);
+            record->callersNamed.fetch_add(1, std::memory_order_relaxed);
+            uint64_t none = 0;
+            record->namedExample.compare_exchange_strong(none, paired, std::memory_order_relaxed);
+            return paired;
+        }
     }
+    record->callersUnnamed.fetch_add(1, std::memory_order_relaxed);
+    uint64_t none = 0;
+    record->unnamedEnteredFrom.compare_exchange_strong(none, returned, std::memory_order_relaxed);
     return callerStart;
 }
 } // namespace lifted

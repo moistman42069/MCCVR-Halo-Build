@@ -20,8 +20,11 @@
 // A caller an assembly detour read from its own stack (`ret`): in Project Reclaimer 0.10 that is the lifted bridge,
 // and the game's caller is the guest return address.
 #define HALOMCCVR_GAME_CALLER(ret) (lifted::Active() ? lifted::GuestReturnAddress() : (ret))
+// True where the game's caller could not be named (Project Reclaimer 0.10, a call its own code made); never in MCC.
+#define HALOMCCVR_GAME_CALLER_UNKNOWN(caller) (lifted::Active() && !(caller))
 #else
 #define HALOMCCVR_GAME_TLS_ARRAY() static_cast<uintptr_t>(__readgsqword(0x58))
 #define HALOMCCVR_GAME_RETURN_ADDRESS() reinterpret_cast<uintptr_t>(_ReturnAddress())
 #define HALOMCCVR_GAME_CALLER(ret) (ret)
+#define HALOMCCVR_GAME_CALLER_UNKNOWN(caller) false
 #endif

@@ -4393,8 +4393,11 @@ bool InstallD3D11Hooks()
         // are in place. If either failed, we leave the window at full size (the
         // previous overflow behavior) rather than risk shrinking it into a crop.
         g_renderSizeActive = forceHookOk && clientRectHookOk && !g_hostOwnsRenderSize;
-        if (g_hostOwnsRenderSize) {
+        if (g_hostOwnsRenderSize && !HostSwapchainForced()) {
             g_forcedRenderW=0;g_forcedRenderH=0;
+        } else if (g_hostOwnsRenderSize) {
+            // Project Reclaimer 0.10: the swapchain keeps the Picture panel's size (InitForcedRenderSize); its window
+            // and client rectangle stay the client's own.
         } else if (!g_renderSizeActive) {
             g_forcedRenderW=0;g_forcedRenderH=0;
             LOG("Live render sizing unavailable: a required hook is missing; native window and render sizes retained");
