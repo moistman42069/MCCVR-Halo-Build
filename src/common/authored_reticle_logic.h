@@ -195,6 +195,11 @@ inline bool ShouldUploadAuthoredReticle(
     return AuthoredReticleIdentitySettled(capturedKey, frameSerial, state);
 }
 
+// `frameSerial` is the frame the published CAPTURE was taken on, not the frame it reached the swapchain. The
+// coverage readback publishes a capture a frame or more after it was taken; a floor counted from that later frame
+// refused the next capture `kMinimumUploadGapFrames` after this one, so only every other one published (headset
+// logs: "12 uploaded, 12 skipped" every 2 s at 72 Hz for Halo 4 and "10 uploaded, 10 skipped" for Halo 3, half
+// the one-in-six the setting asks for), and the refused capture's work was thrown away.
 inline void MarkAuthoredReticleUploaded(
     AuthoredReticleRefreshState& state,
     uint64_t capturedKey,
@@ -293,6 +298,10 @@ struct AuthoredReticleArtCentre
     // tall the captured art is, whatever its outline.
     float spreadU = 0.0f;
     float spreadV = 0.0f;
+    // How far the art reaches from the texture's centre: the farthest side of its bounding box, as a fraction of
+    // the half-texture (1 = the edge). Art that touches the edge was cut by it, and reaches farther than measured.
+    float reach = 0.0f;
+    bool touchesEdge = false;
     uint64_t ink = 0;
     bool valid = false;
 };
@@ -397,6 +406,7 @@ inline AuthoredReticleArtCentre MeasureAuthoredReticleArtCentre(
         return out;
     double sumX = 0.0, sumY = 0.0, sumXX = 0.0, sumYY = 0.0;
     uint64_t ink = 0;
+    uint32_t minX = size, minY = size, maxX = 0, maxY = 0;
     for (uint32_t y = 0; y < size; ++y)
     {
         const uint8_t* texel = rows + static_cast<size_t>(y) * rowPitch;
@@ -412,11 +422,18 @@ inline AuthoredReticleArtCentre MeasureAuthoredReticleArtCentre(
             sumXX += (x + 0.5) * (x + 0.5) * weight;
             sumYY += (y + 0.5) * (y + 0.5) * weight;
             ink += weight;
+            minX = std::min(minX, x);
+            maxX = std::max(maxX, x);
+            minY = std::min(minY, y);
+            maxY = std::max(maxY, y);
         }
     }
     out.ink = ink;
     if (ink == 0 || ink < minimumInk)
         return out;
+    const float half = static_cast<float>(size) * 0.5f;
+    out.reach = std::max(std::max(half - minX, maxX + 1.0f - half), std::max(half - minY, maxY + 1.0f - half)) / half;
+    out.touchesEdge = minX == 0 || minY == 0 || maxX + 1 == size || maxY + 1 == size;
     const double total = static_cast<double>(ink);
     const double meanX = sumX / total, meanY = sumY / total;
     out.u = static_cast<float>(meanX / size);
@@ -532,6 +549,46 @@ struct ReticleCaptureFollow
         y = nextY;
         movedSerial = nowSerial;
         ++moves;
+        return true;
+    }
+};
+
+// HOW MUCH OF THE VIEW A CAPTURE TAKES IN. A capture magnified for a small crosshair cuts a large one off at the
+// texture's edge: Halo 4's 2.5x framing holds its precision reticles, but in the headset the SAW's, the Spartan
+// Laser's, the Fuel Rod Cannon's and others' art, and any reticle its bloom spreads under sustained fire, ran off
+// the texture. Its layouts also leave art well off the texture's centre (headset logs measured art centres from
+// 0.12 of the texture above it to 0.29 below), which leaves less room on that side still. What is cut off is
+// missing from the art's measured centre too, which the quad puts on the aim point, so the rest is off the aim.
+// The capture is drawn less magnified instead (`zoom` < 1, about the texture's centre) whenever the art reaches
+// past `fill` of the way to the edge, by as much as brings it back to `fill`; the quad is drawn 1 / `zoom` as wide,
+// so the art keeps its size in the headset. The zoom only ever widens: bloom shrinks back and spreads again with
+// every burst, and a framing that followed it in would cut the next burst off. Art that touches the edge reaches
+// farther than measured, so it is taken in again on the next capture until it no longer does. `confirm`
+// consecutive measured captures must reach past `fill` first, so one stray capture does not widen it.
+struct ReticleCaptureFit
+{
+    float zoom = 1.0f;
+    uint32_t over = 0;   // consecutive measured captures whose art reached past `fill`
+    uint32_t widenings = 0;
+
+    // `centre`: the measurement of a capture drawn at `captureZoom`. True when `zoom` widened.
+    bool Step(const AuthoredReticleArtCentre& centre, float captureZoom, float fill, float minimumZoom,
+              uint32_t confirm) noexcept
+    {
+        if (!centre.valid || !std::isfinite(centre.reach) || !std::isfinite(captureZoom) || captureZoom <= 0.0f ||
+            !(fill > 0.0f) || centre.reach <= fill)
+        {
+            over = 0;
+            return false;
+        }
+        if (++over < confirm)
+            return false;
+        // The art's reach at the framing's own magnification; the zoom that holds it at `fill`.
+        const float wanted = std::max(fill * captureZoom / centre.reach, minimumZoom);
+        if (!std::isfinite(wanted) || wanted >= zoom)
+            return false;
+        zoom = wanted;
+        ++widenings;
         return true;
     }
 };

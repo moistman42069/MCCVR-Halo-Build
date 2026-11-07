@@ -2002,6 +2002,67 @@ int main()
               "capture follow: the window stops at its limit");
     }
     {
+        // How far a capture's art reaches, and how much of the view the next capture takes in to hold it.
+        constexpr uint32_t size = 64;
+        constexpr size_t pitch = size * 4;
+        const auto ring = [&](uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1) {
+            std::array<uint8_t, pitch * size> rows{};
+            for (uint32_t y = y0; y <= y1; ++y)
+                for (uint32_t x = x0; x <= x1; ++x)
+                    if (y == y0 || y == y1 || x == x0 || x == x1)
+                        rows[y * pitch + x * 4 + 1] = 200;
+            return MeasureAuthoredReticleArtCentre(rows.data(), pitch, size, true, 2);
+        };
+        // Rows 24..39 of 64: the ring's bounding box spans 24..40, eight texels either side of 32.
+        const AuthoredReticleArtCentre inside = ring(24, 24, 39, 39);
+        Check(inside.valid && std::fabs(inside.reach - 0.25f) < 1.0e-6f && !inside.touchesEdge,
+              "art reach: a centred ring a quarter of the texture across reaches a quarter of the way out");
+        // The same ring well below the centre: its far side sets the reach.
+        const AuthoredReticleArtCentre low = ring(24, 40, 39, 55);
+        Check(low.valid && std::fabs(low.reach - 0.75f) < 1.0e-6f && !low.touchesEdge,
+              "art reach: art off the centre reaches as far as its farthest side");
+        const AuthoredReticleArtCentre cut = ring(4, 0, 59, 63);
+        Check(cut.valid && cut.reach == 1.0f && cut.touchesEdge, "art reach: art at the edge was cut by it");
+
+        const auto reaching = [](float reach, bool touches) {
+            AuthoredReticleArtCentre c{};
+            c.u = c.v = 0.5f;
+            c.reach = reach;
+            c.touchesEdge = touches;
+            c.ink = 1000;
+            c.valid = true;
+            return c;
+        };
+        ReticleCaptureFit fit{};
+        Check(!fit.Step(inside, 1.0f, 0.75f, 0.25f, 2) && !fit.Step(inside, 1.0f, 0.75f, 0.25f, 2) && fit.zoom == 1.0f,
+              "capture fit: art well inside the capture keeps the framing");
+        Check(!fit.Step(reaching(0.9f, false), 1.0f, 0.75f, 0.25f, 2) && fit.zoom == 1.0f,
+              "capture fit: one capture reaching past the fill does not widen it");
+        Check(!fit.Step(inside, 1.0f, 0.75f, 0.25f, 2) && !fit.Step(reaching(0.9f, false), 1.0f, 0.75f, 0.25f, 2) &&
+                  fit.zoom == 1.0f,
+              "capture fit: reaching past the fill must hold over consecutive captures");
+        Check(fit.Step(reaching(0.9f, false), 1.0f, 0.75f, 0.25f, 2) && std::fabs(fit.zoom - 0.75f / 0.9f) < 1.0e-6f,
+              "capture fit: art reaching 90% widens the capture to hold it at 75%");
+        // Bloom spreading further, measured in a capture drawn at the new zoom, cut by the edge.
+        const float before = fit.zoom;
+        Check(fit.Step(reaching(1.0f, true), before, 0.75f, 0.25f, 2) &&
+                  std::fabs(fit.zoom - before * 0.75f) < 1.0e-6f,
+              "capture fit: art cut off by the edge widens it again on the next capture");
+        // The bloom shrinking back, or a capture still drawn at the old zoom, never narrows it.
+        const float widened = fit.zoom;
+        Check(!fit.Step(inside, widened, 0.75f, 0.25f, 2) && !fit.Step(reaching(0.9f, false), 1.0f, 0.75f, 0.25f, 2) &&
+                  !fit.Step(reaching(0.9f, false), 1.0f, 0.75f, 0.25f, 2) && fit.zoom == widened && fit.widenings == 2,
+              "capture fit: the framing never narrows again, whatever is measured");
+        ReticleCaptureFit floored{};
+        (void)floored.Step(reaching(1.0f, true), 0.3f, 0.75f, 0.25f, 1);
+        Check(floored.zoom == 0.25f && !floored.Step(reaching(1.0f, true), 0.25f, 0.75f, 0.25f, 1),
+              "capture fit: the capture is never drawn smaller than its floor");
+        ReticleCaptureFit none{};
+        Check(!none.Step({}, 1.0f, 0.75f, 0.25f, 1) && !none.Step(reaching(0.9f, false), 0.0f, 0.75f, 0.25f, 1) &&
+                  none.zoom == 1.0f,
+              "capture fit: no measurement, or no zoom to measure it against, changes nothing");
+    }
+    {
         // A seat camera's point is carried from the vehicle as simulated to the vehicle as drawn.
         using seat_camera_ride::CarryPoint;
         const auto frame = [](float x, float y, float z, float yawDeg) {
@@ -2298,6 +2359,37 @@ int main()
             }
         }
         Check(published == 20, "every animated sample publishes");
+
+        // The coverage readback publishes a capture on a later frame than it was taken. The floor counts from the
+        // capture, so every sample still publishes; counted from the publish frame, only every other one did.
+        const auto pipelined = [gap](uint64_t readbackFrames, bool markCaptureFrame) {
+            AuthoredReticleRefreshState state{};
+            uint64_t lastSampled = 0, pendingCapture = 0, publishAt = 0;
+            int count = 0;
+            for (uint64_t serial = 1; serial <= 144; ++serial)
+            {
+                if (pendingCapture && serial == publishAt)
+                {
+                    MarkAuthoredReticleUploaded(state, 1, 0, 0, markCaptureFrame ? pendingCapture : serial);
+                    pendingCapture = 0;
+                    ++count;
+                }
+                // No capture while its readback is in flight, as VR_ShouldCaptureAuthoredReticleThisFrame.
+                if (pendingCapture || !ShouldSampleAuthoredCapture(gap, lastSampled, serial))
+                    continue;
+                lastSampled = serial;
+                if (ShouldUploadAuthoredReticle(AuthoredReticleRefreshPolicy::BoundedAnimation, true, true, 1, 0, 0,
+                                                serial, 1, state))
+                {
+                    pendingCapture = serial;
+                    publishAt = serial + readbackFrames;
+                }
+            }
+            return count;
+        };
+        Check(pipelined(1, true) == 24 && pipelined(2, true) == 24,
+              "a capture published after its readback keeps the one-in-six cadence");
+        Check(pipelined(1, false) == 12, "counted from the publish frame, every other capture was refused");
 
         // Halo 4 has no proven stable weapon-art identity, so animation=0
         // holds the fixed key between slow probes rather than freezing it for

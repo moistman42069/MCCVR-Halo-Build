@@ -455,6 +455,27 @@ namespace
     // stepped where the centre is measured; the capture, on the thread that draws the HUD, reads the pair below.
     ReticleCaptureFollow g_halo2ReticleFollow{};
     std::atomic<float> g_halo2ReticleWindowX{0.0f}, g_halo2ReticleWindowY{0.0f};
+    // Halo 4's capture takes in as much of the view as its art reaches (authored_reticle_logic.h,
+    // ReticleCaptureFit), stepped where the centre is measured. `g_halo4ReticleZoom` is what the next capture is
+    // drawn at; each capture keeps the zoom it was drawn at, the readback and the published art theirs.
+    ReticleCaptureFit g_halo4ReticleFit{};
+    std::atomic<float> g_halo4ReticleZoom{1.0f};
+    std::atomic<float> g_authoredReticleCaptureZoom{1.0f};
+    float g_authoredReticleCentreZoom = 1.0f;
+    float g_authoredReticlePublishedZoom = 1.0f;
+    constexpr float kHalo4ReticleFill = 0.75f;          // of the way from the texture's centre to its edge
+    // The unmagnified framing (1 / kHalo4CuiCaptureScale): Stage 3BQ captured whole art at it (73 of 512 texels).
+    constexpr float kHalo4ReticleMinimumZoom = 1.0f / kHalo4CuiCaptureScale;
+    constexpr uint32_t kHalo4ReticleFitConfirm = 2;
+    // What a publish of the authored crosshair costs the render thread, for the 2 s upload line: the swapchain's
+    // acquire and blocking wait, then the copy and release. The upload floor exists for this cost (4-5 ms measured
+    // once on Halo 3); per-frame publishing waits on its measurement.
+    struct AuthoredReticleUploadCost
+    {
+        uint32_t timed = 0;
+        LONGLONG acquireWait = 0, acquireWaitMax = 0, copyRelease = 0, copyReleaseMax = 0;
+    };
+    AuthoredReticleUploadCost g_authoredReticleUploadCost{};
     // CE: how far above the HUD's centre the art being captured draws, as a fraction of the HUD's height (a
     // Warthog driver's chevron, haloce_hud.cpp). Its window is lowered by that much: the art's centre is the ray's.
     std::atomic<float> g_ceReticleLift{0.0f};
@@ -9532,6 +9553,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     g_authoredReticleCentreStaging, 0, 0, 0, 0,
                     g_authoredReticleTexture, centreMip, nullptr);
                 g_authoredReticleCentreSerial = g_authoredReticleSerial;
+                g_authoredReticleCentreZoom = g_authoredReticleCaptureZoom.load(std::memory_order_relaxed);
             }
         };
 
@@ -9651,6 +9673,18 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 g_context->Unmap(g_authoredReticleCentreStaging, 0);
                 if (g_authoredReticleMeasuredCentre.valid)
                     g_authoredReticleLatestMeasured = g_authoredReticleMeasuredCentre;
+                // Halo 4: the next capture takes in as much as this one's art reached.
+                if (TitleAdapter_GetActiveTitle() == GameTitle::Halo4 &&
+                    g_halo4ReticleFit.Step(g_authoredReticleMeasuredCentre, g_authoredReticleCentreZoom,
+                                           kHalo4ReticleFill, kHalo4ReticleMinimumZoom, kHalo4ReticleFitConfirm))
+                {
+                    g_halo4ReticleZoom.store(g_halo4ReticleFit.zoom, std::memory_order_relaxed);
+                    LOG("Halo 4 reticle: the art reached %.0f%% of the way to the capture's edge%s at zoom x%.2f; "
+                        "captures are now drawn at x%.2f of the layout's magnification (widened %u times)",
+                        g_authoredReticleMeasuredCentre.reach * 100.0f,
+                        g_authoredReticleMeasuredCentre.touchesEdge ? " and was cut off by it" : "",
+                        g_authoredReticleCentreZoom, g_halo4ReticleFit.zoom, g_halo4ReticleFit.widenings);
+                }
                 // Halo 2: the capture window follows the art it has just been shown.
                 if (TitleAdapter_GetActiveTitle() == GameTitle::Halo2 &&
                     g_halo2ReticleFollow.Step(g_authoredReticleMeasuredCentre, g_authoredReticleCentreSerial,
@@ -9937,6 +9971,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
         wait.timeout = 1000000000;
         XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        LARGE_INTEGER costStart{}, costWaited{}, costReleased{};
+        QueryPerformanceCounter(&costStart);
         const XrResult acquireResult =
             xrAcquireSwapchainImage(g_reticleChain, &acquire, &index);
         if (requireSuccessfulRelease && acquireResult != XR_SUCCESS)
@@ -9964,6 +10000,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         }
         else if (XR_FAILED(waitResult))
             return false;
+        QueryPerformanceCounter(&costWaited);
 
         D3D11_TEXTURE2D_DESC sourceDesc{};
         source->GetDesc(&sourceDesc);
@@ -10000,6 +10037,17 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             FinishReticleImage(index);
         const XrResult releaseResult =
             xrReleaseSwapchainImage(g_reticleChain, &release);
+        QueryPerformanceCounter(&costReleased);
+        {
+            AuthoredReticleUploadCost& cost = g_authoredReticleUploadCost;
+            const LONGLONG acquireWait = costWaited.QuadPart - costStart.QuadPart;
+            const LONGLONG copyRelease = costReleased.QuadPart - costWaited.QuadPart;
+            ++cost.timed;
+            cost.acquireWait += acquireWait;
+            cost.copyRelease += copyRelease;
+            cost.acquireWaitMax = std::max(cost.acquireWaitMax, acquireWait);
+            cost.copyReleaseMax = std::max(cost.copyReleaseMax, copyRelease);
+        }
         const bool released = requireSuccessfulRelease
             ? RequireExactSwapchainCompletion(
                   releaseResult,
@@ -10011,6 +10059,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         g_authoredReticleUploadedSerial = g_authoredReticleSerial;
         g_reticleContainsAuthored = true;
         g_authoredReticlePublishedCentre = publishedCentre;
+        g_authoredReticlePublishedZoom = g_authoredReticleCaptureZoom.load(std::memory_order_relaxed);
         return true;
     }
 
@@ -19158,10 +19207,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         {
                             if (authoredCrosshairKey != 0)
                             {
+                                // The frame the published capture was taken on: the
+                                // cadence is the captures', not the readback's.
                                 MarkAuthoredReticleUploaded(
                                     s_refreshState, authoredCrosshairKey,
                                     authoredColorState, authoredCrosshairDraws,
-                                    g_preparedFrame.serial);
+                                    g_authoredReticleUploadedSerial
+                                        ? g_authoredReticleUploadedSerial
+                                        : g_preparedFrame.serial);
                             }
                             ++s_uploadsDone;
                         }
@@ -19236,6 +19289,16 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     s_refreshState.lastPublishedDraws,
                                     g_authoredReticleLastCoverage,
                                     g_authoredReticleBlankHeld);
+                                {
+                                    AuthoredReticleUploadCost& cost = g_authoredReticleUploadCost;
+                                    if (cost.timed)
+                                        LOG("reticle upload cost: %u timed; swapchain acquire+wait "
+                                            "%.3f ms mean, %.3f max; copy+release %.3f ms mean, %.3f max",
+                                            cost.timed, QpcMs(cost.acquireWait) / cost.timed,
+                                            QpcMs(cost.acquireWaitMax), QpcMs(cost.copyRelease) / cost.timed,
+                                            QpcMs(cost.copyReleaseMax));
+                                    cost = {};
+                                }
                                 // Where the art sits in its texture, as a
                                 // fraction of it: the quad is shifted by this
                                 // so the art's centre is on the aim point.
@@ -19244,11 +19307,19 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     if (g_authoredReticlePublishedCentre.valid)
                                         LOG("Halo 4 reticle art centre: %+.3f right, %+.3f down "
                                             "of the texture centre (ink %llu); the quad puts it on "
-                                            "the aim point",
+                                            "the aim point; drawn at x%.2f of the layout's "
+                                            "magnification on a quad x%.2f as wide; the latest "
+                                            "capture's art reaches %.0f%% of the way to its edge%s",
                                             g_authoredReticlePublishedCentre.u - 0.5f,
                                             g_authoredReticlePublishedCentre.v - 0.5f,
                                             static_cast<unsigned long long>(
-                                                g_authoredReticlePublishedCentre.ink));
+                                                g_authoredReticlePublishedCentre.ink),
+                                            g_authoredReticlePublishedZoom,
+                                            g_authoredReticlePublishedZoom > 0.0f
+                                                ? 1.0f / g_authoredReticlePublishedZoom : 1.0f,
+                                            g_authoredReticleLatestMeasured.reach * 100.0f,
+                                            g_authoredReticleLatestMeasured.touchesEdge
+                                                ? " (cut off by it)" : "");
                                     else
                                         LOG("Halo 4 reticle art centre: not measured (%s); the "
                                             "quad is centred on the texture",
@@ -19288,7 +19359,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                         "texture centre = %+.2f deg right, %+.2f deg down of the aim point "
                                         "for a %.2f deg crosshair (ink %llu); the quad is centred on the "
                                         "texture, not on the art; the latest capture's art is %.2f times as "
-                                        "wide as it is tall (ink %llu, spread %.3f across, %.3f down); capture "
+                                        "wide as it is tall (ink %llu, spread %.3f across, %.3f down) and reaches "
+                                        "%.0f%% of the way to the texture's edge%s; capture "
                                         "fitted x%.3f across, x%.3f down for the HUD's own scale, magnified x%.2f",
                                         static_cast<int>(reticleTitle),
                                         g_authoredReticlePublishedCentre.u - 0.5f,
@@ -19304,6 +19376,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                         static_cast<unsigned long long>(g_authoredReticleLatestMeasured.ink),
                                         g_authoredReticleLatestMeasured.spreadU,
                                         g_authoredReticleLatestMeasured.spreadV,
+                                        g_authoredReticleLatestMeasured.reach * 100.0f,
+                                        g_authoredReticleLatestMeasured.touchesEdge ? " (cut off by it)" : "",
                                         g_authoredReticleFitAcross.load(std::memory_order_relaxed),
                                         g_authoredReticleFitDown.load(std::memory_order_relaxed),
                                         g_authoredReticleCaptureScale.load(std::memory_order_relaxed));
@@ -20052,11 +20126,18 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 }
                             }
 #endif
-                            const float w = tracedReticle
+                            const float sizedWidth = tracedReticle
                                 ? tracedPlacement.width_m
                                 : limitFromEye ? limitPlacement.width_m
                                 : 2.0f * dist *
                                   tanf(g_config.crosshair_size_deg * 0.5f * 0.0174533f);
+                            // Halo 4 art captured less magnified to fit it whole (ReticleCaptureFit) is shown
+                            // on a quad as much wider, at the size the setting gives it.
+                            const float publishedZoom = g_authoredReticlePublishedZoom;
+                            const float w = reticleTitle == GameTitle::Halo4 && g_reticleContainsAuthored &&
+                                    !dualReticles && publishedZoom > 0.0f && publishedZoom < 1.0f
+                                ? sizedWidth / publishedZoom
+                                : sizedWidth;
                             reticleQuad.size = {w, w};
                             // Halo 4's capture does not centre its art in the
                             // texture (the framing is fitted per HUD layout),
@@ -23107,6 +23188,11 @@ void VR_DetachGamePresentation()
     g_halo2ReticleFollow = {};
     g_halo2ReticleWindowX.store(0.0f, std::memory_order_relaxed);
     g_halo2ReticleWindowY.store(0.0f, std::memory_order_relaxed);
+    g_halo4ReticleFit = {};
+    g_halo4ReticleZoom.store(1.0f, std::memory_order_relaxed);
+    g_authoredReticleCaptureZoom.store(1.0f, std::memory_order_relaxed);
+    g_authoredReticleCentreZoom = 1.0f;
+    g_authoredReticlePublishedZoom = 1.0f;
     // Known-good art belongs to the title that captured it; a new title must
     // measure its own before anything is held on its behalf.
     g_authoredReticleGoodValid = false;
@@ -24661,10 +24747,13 @@ static void Halo4FrameAuthoredReticleDraw(ID3D11DeviceContext* context)
     float liveBaseY = 0.0f;
     float liveHideShift = 0.0f;
     (void)Game_Halo4LiveCuiCanvas(liveBaseY, liveHideShift);
+    // ...less magnified when the art has reached past what that framing holds (ReticleCaptureFit).
     if (!Halo4BuildCuiCaptureDrawViewport(
             input, backbufferWidth, backbufferHeight,
             Halo4CuiLiveVerticalBiasRatio(liveBaseY),
-            Halo4CuiLiveCaptureScale(liveHideShift), framed))
+            Halo4CuiLiveCaptureScale(liveHideShift) *
+                g_authoredReticleCaptureZoom.load(std::memory_order_relaxed),
+            framed))
     {
         return;
     }
@@ -25869,6 +25958,10 @@ static bool BeginAuthoredReticleCaptureInternal(
         g_context->ClearRenderTargetView(g_authoredReticleRtv, clear);
         g_authoredReticleSerial = serial;
         g_authoredReticleReady = false;
+        // Every draw of this capture is framed at one zoom (Halo4FrameAuthoredReticleDraw), the one its art keeps.
+        g_authoredReticleCaptureZoom.store(
+            captureTitle == GameTitle::Halo4 ? g_halo4ReticleZoom.load(std::memory_order_relaxed) : 1.0f,
+            std::memory_order_relaxed);
         // New displayed frame: start the art-identity accumulation clean so a
         // static crosshair produces the same key every frame.
         Game_ResetAuthoredCrosshairKey();
