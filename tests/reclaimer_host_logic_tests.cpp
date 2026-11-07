@@ -522,6 +522,17 @@ int main()
         CHECK(!ScreenShownAsPanel(true, false, true));      // the host's own menu: no frame of the game under it
         CHECK(!ScreenShownAsPanel(true, true, false));      // no panel: the flat picture, as before
         CHECK(!ScreenShownAsPanel(false, true, true));
+        // A frame that lost a piece of the host's drawing shows the last picture again, for at most three frames.
+        FewerDrawsHold hold;
+        CHECK(!hold.Hold(9));                    // the first picture is shown
+        CHECK(hold.Hold(8));                     // a piece missing: the last one again
+        CHECK(!hold.Hold(9));                    // whole again
+        CHECK(!hold.Hold(10));                   // more pieces are shown at once
+        CHECK(hold.Hold(7) && hold.Hold(7) && hold.Hold(7));
+        CHECK(!hold.Hold(7));                    // a menu that really lost pieces shows it three frames late
+        CHECK(!hold.Hold(7));
+        hold.Reset();
+        CHECK(!hold.Hold(3));                    // nothing shown yet: whatever comes is shown
     }
 
     {

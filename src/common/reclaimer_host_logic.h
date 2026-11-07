@@ -665,6 +665,32 @@ inline bool ScreenShownAsPanel(bool screen, bool gameFrame, bool panelUsable)
 {
     return screen && gameFrame && panelUsable;
 }
+// A FRAME THAT LOST A PIECE OF THE HOST'S DRAWING. Measured on 0.10 (2026-11-07): a menu drawn in 9 pieces a frame
+// averaged 8.95, one piece missing from about one frame in twenty, and in the headset parts of the menu blinked out,
+// each at its own times. A picture with fewer of the host's draws than the one shown keeps the one shown instead, for
+// at most kFrames frames in a row; a menu that really lost a piece (a list closed, a highlight gone) shows it that
+// many frames late. Hold() is asked once a frame with that frame's draws; Reset() when nothing has been shown yet.
+class FewerDrawsHold
+{
+public:
+    static constexpr uint32_t kFrames = 3;
+    // True: show the last picture again instead of this one.
+    bool Hold(uint32_t draws) noexcept
+    {
+        if (shown_ && draws < shown_ && held_ < kFrames)
+        {
+            ++held_;
+            return true;
+        }
+        shown_ = draws;
+        held_ = 0;
+        return false;
+    }
+    void Reset() noexcept { shown_ = held_ = 0; }
+
+private:
+    uint32_t shown_ = 0, held_ = 0;
+};
 
 // How many texels differ between two readbacks of the same size (rows `beforePitch` / `afterPitch` bytes apart,
 // `bytesPerTexel` each). The two are the same rows of the frame just before the host drew into it and just
