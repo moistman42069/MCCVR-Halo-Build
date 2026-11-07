@@ -25,6 +25,8 @@ game_menu_pointer::Pointer pointer;
 game_menu_pointer::StickWheel stickWheel;
 UINT_PTR timer = 0;
 bool mouseDown = false;
+bool mouseDownPosted = false; // the down went to the window as a message (PostsMessages), so its release does too
+LPARAM lastClientPoint = 0;   // where the last posted move was, in client coordinates
 bool faultLogged = false;
 
 bool Allowed()
@@ -36,14 +38,36 @@ bool Allowed()
         !VR_IsCutsceneTheaterActive() && window &&
         GetForegroundWindow() == window && !IsIconic(window);
 }
-bool Button(bool down)
+// Project Reclaimer reads its screens' mouse from the window's own messages, and its window can be larger than the
+// monitor (0.10's is the Picture panel's size), where the real cursor cannot go: only the window's top-left part was
+// reachable. For such a window the pointer posts the messages, at the client point itself, instead of moving the
+// cursor. MCC reads the cursor itself (d3d11_hook.cpp GetCursorPosHook) and keeps the cursor.
+bool PostsMessages()
+{
+    if (!g_hostIsProjectReclaimer) return false;
+    RECT client{};
+    if (!GetClientRect(window, &client)) return false;
+    POINT first{client.left, client.top}, last{client.right - 1, client.bottom - 1};
+    MONITORINFO monitor{sizeof(monitor)};
+    if (!ClientToScreen(window, &first) || !ClientToScreen(window, &last) ||
+        !GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor)) return false;
+    return first.x < monitor.rcMonitor.left || first.y < monitor.rcMonitor.top ||
+        last.x >= monitor.rcMonitor.right || last.y >= monitor.rcMonitor.bottom;
+}
+bool Button(bool down, bool posted = false)
 {
     if (mouseDown == down) return true;
-    INPUT input{};
-    input.type = INPUT_MOUSE;
-    input.mi.dwFlags = down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
-    if (SendInput(1, &input, sizeof(input)) != 1) return false;
+    if (down ? posted : mouseDownPosted) {
+        if (!PostMessageW(window, down ? WM_LBUTTONDOWN : WM_LBUTTONUP, down ? MK_LBUTTON : 0, lastClientPoint))
+            return false;
+    } else {
+        INPUT input{};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+        if (SendInput(1, &input, sizeof(input)) != 1) return false;
+    }
     mouseDown = down;
+    mouseDownPosted = down && posted;
     if (down) clickCount.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
@@ -82,19 +106,30 @@ void Apply()
     if (!mouseDown && (GetAsyncKeyState(VK_LBUTTON) & 0x8000)) { deliveryStatus.store("physical-drag"); Cancel(); return; }
     POINT target{result.x, result.y};
     if (!ClientToScreen(window, &target)) { Cancel(); Fault(); return; }
-    const HWND under = WindowFromPoint(target);
-    if (under != window && !IsChild(window, under)) { deliveryStatus.store("window-covered"); Cancel(); return; }
+    const bool posted = PostsMessages();
+    if (!posted) {
+        // A message goes to the window whatever covers it; the cursor's click goes to what is under it.
+        const HWND under = WindowFromPoint(target);
+        if (under != window && !IsChild(window, under)) { deliveryStatus.store("window-covered"); Cancel(); return; }
+    }
     if (!timer) timer = SetTimer(nullptr, 0, 50, Watchdog);
     if (!timer) { Cancel(); Fault(); return; }
-    // Our DLL caller bypasses MCC's fitted-window coordinate remap. Send
-    // physical client coordinates once; the existing MCC read hook scales them.
-    POINT actual{};
-    if (!SetCursorPos(target.x, target.y) || !GetCursorPos(&actual) ||
-        std::abs(actual.x-target.x)>2 || std::abs(actual.y-target.y)>2) {
-        Cancel(); Fault(); return;
+    if (posted) {
+        lastClientPoint = MAKELPARAM(static_cast<WORD>(result.x), static_cast<WORD>(result.y));
+        if (!PostMessageW(window, WM_MOUSEMOVE, mouseDown ? MK_LBUTTON : 0, lastClientPoint)) {
+            Cancel(); Fault(); return;
+        }
+    } else {
+        // Our DLL caller bypasses MCC's fitted-window coordinate remap. Send
+        // physical client coordinates once; the existing MCC read hook scales them.
+        POINT actual{};
+        if (!SetCursorPos(target.x, target.y) || !GetCursorPos(&actual) ||
+            std::abs(actual.x-target.x)>2 || std::abs(actual.y-target.y)>2) {
+            Cancel(); Fault(); return;
+        }
     }
     const bool wasDown = mouseDown;
-    if (!Button(result.pressed)) { Cancel(); Fault(); }
+    if (!Button(result.pressed, posted)) { Cancel(); Fault(); }
     else {
         // Each click and where it landed, to set beside what the player says it did not press.
         if (mouseDown != wasDown)
@@ -108,7 +143,10 @@ void Apply()
             wheel.type = INPUT_MOUSE;
             wheel.mi.dwFlags = MOUSEEVENTF_WHEEL;
             wheel.mi.mouseData = static_cast<DWORD>(notches * WHEEL_DELTA);
-            if (SendInput(1, &wheel, sizeof(wheel)) != 1) Fault();
+            // A posted wheel message carries the screen point.
+            if (posted ? !PostMessageW(window, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(notches * WHEEL_DELTA)),
+                                       MAKELPARAM(static_cast<WORD>(target.x), static_cast<WORD>(target.y)))
+                       : SendInput(1, &wheel, sizeof(wheel)) != 1) Fault();
             // What a screen that does not scroll was sent, to set beside the report.
             static unsigned wheelLogs = 0;
             if (wheelLogs < 24 && ++wheelLogs)
