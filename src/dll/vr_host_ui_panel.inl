@@ -16,6 +16,11 @@ uint32_t g_hostUiImageMisses = 0;
 uint64_t g_hostUiShownMs = 0;
 // A frame of the host's with no picture of its own may show the last one for this long.
 constexpr uint64_t kHostUiPanelHoldMs = 250;
+// A frame whose picture lost a piece of the host's drawing shows the last one (reclaimer_host::FewerDrawsHold); the
+// frames it did so since the last report (the present's thread).
+reclaimer_host::FewerDrawsHold g_hostUiFewerDraws;
+uint32_t g_hostUiFewerDrawsHeld = 0;
+uint64_t g_hostUiFewerDrawsReportMs = 0;
 #if HALOMCCVR_DEV_DIAGNOSTICS
 uint32_t g_hostUiHeldFramesDev = 0; // frames that showed the last picture again (the PANEL dev line)
 #endif
@@ -149,6 +154,24 @@ bool PrepareHostUiPanel(XrCompositionLayerQuad& quad)
         }
         g_hostUiImageW = width;
         g_hostUiImageH = height;
+    }
+    if (!g_hostUiShownMs)
+        g_hostUiFewerDraws.Reset();
+    if (g_hostUiFewerDraws.Hold(picture.draws))
+    {
+        ++g_hostUiFewerDrawsHeld;
+        quad = MakeQuad(g_hostUiChain, static_cast<int32_t>(width), static_cast<int32_t>(height),
+                        g_config.host_ui_panel_width_m, g_config.host_ui_panel_distance_m, 0.0f,
+                        XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT, true);
+        return true;
+    }
+    const uint64_t reportNow = GetTickCount64();
+    if (g_hostUiFewerDrawsHeld && reportNow - g_hostUiFewerDrawsReportMs >= 10000)
+    {
+        LOG("host UI panel: %u frame(s) in the last 10 s had fewer of the host's draws than the picture shown; it "
+            "was shown again for them", g_hostUiFewerDrawsHeld);
+        g_hostUiFewerDrawsHeld = 0;
+        g_hostUiFewerDrawsReportMs = reportNow;
     }
     uint32_t index = 0;
     XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};

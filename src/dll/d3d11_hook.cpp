@@ -3292,6 +3292,7 @@ bool D3D_HostUiPicture(D3DHostUiPicture& out)
     out.texture = layer.texture;
     out.width = layer.width;
     out.height = layer.height;
+    out.draws = layer.readyDraws;
     uint32_t permille = 0;
     const bool measured = D3D_HostUiCoverage(permille);
     out.opaque = reclaimer_host::PanelAlphaFor(layer.readyDraws, layer.readyUnblended, measured, permille) ==

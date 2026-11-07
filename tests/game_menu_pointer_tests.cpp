@@ -34,8 +34,17 @@ static UINT FakeSend(UINT count, INPUT* input, int) {
 static UINT_PTR FakeTimer(HWND, UINT_PTR, UINT, TIMERPROC) { return timerOk ? 42 : 0; }
 static BOOL FakeKill(HWND, UINT_PTR) { return TRUE; }
 static UINT FakeRegister(const wchar_t*) { return 0xC123; }
-static BOOL FakePost(HWND, UINT, WPARAM, LPARAM) { ++posts; return postOk; }
+static std::vector<LPARAM> postedMoves;
+static BOOL FakePost(HWND, UINT message, WPARAM, LPARAM lParam) {
+    ++posts;
+    if (postOk && message == WM_MOUSEMOVE) postedMoves.push_back(lParam);
+    return postOk;
+}
 static DWORD FakeTick() { return now; }
+// The window's monitor: by default it holds the whole window (the cursor is moved); smaller, moves are posted.
+static RECT monitorRect{0, 0, 4000, 4000};
+static HMONITOR FakeMonitorFrom(HWND, DWORD) { return reinterpret_cast<HMONITOR>(uintptr_t{1}); }
+static BOOL FakeMonitorInfo(HMONITOR, LPMONITORINFO info) { info->rcMonitor = monitorRect; return TRUE; }
 #define GetForegroundWindow FakeForeground
 #define IsIconic FakeIconic
 #define GetClientRect FakeRect
@@ -51,6 +60,8 @@ static DWORD FakeTick() { return now; }
 #define RegisterWindowMessageW FakeRegister
 #define PostMessageW FakePost
 #define GetTickCount FakeTick
+#define MonitorFromWindow FakeMonitorFrom
+#define GetMonitorInfoW FakeMonitorInfo
 #include "../src/dll/native_menu_pointer.cpp"
 
 void Logf(const char*, ...) { ++logs; }
@@ -177,6 +188,34 @@ int main()
     Check(!queued.load(),"retry drains normally");
     Frame(true,true); g_config.game_menu_pointer=false; Watchdog(nullptr,0,0,0);
     Check(!mouseDown,"toggle off releases");
+    {
+        // Project Reclaimer's window, larger than its monitor: the moves are posted, and a hand at rest posts none.
+        g_config.game_menu_pointer=true; mode=RuntimeMode::Shell;
+        g_hostIsProjectReclaimer=true; monitorRect={0,0,800,400};
+        Frame(false); postedMoves.clear();
+        Frame(true,false,.5f,.5f);
+        Check(postedMoves.size()==1&&std::abs(LOWORD(postedMoves.back())-500)<=1&&
+            std::abs(HIWORD(postedMoves.back())-250)<=1,"posted delivery sends the first move, at the client point");
+        Frame(true,false,.5f,.5f); Frame(true,false,.501f,.5f);
+        Check(postedMoves.size()==1,"a resting hand sends no more moves");
+        for(int i=0;i<10;++i) Frame(true,false,.6f,.5f);
+        Check(postedMoves.size()>2,"a moving hand sends its moves");
+        const size_t beforeClick=postedMoves.size(); const unsigned clicks=clickCount.load();
+        Frame(true,true,.6f,.5f); Frame(true,false,.6f,.5f);
+        Check(clickCount.load()==clicks+1&&!mouseDown&&postedMoves.size()==beforeClick,
+            "a click at rest goes to the point last sent, with no move");
+        const unsigned foreign=foreignMoves.load();
+        NativeMenuPointer_Message(WM_MOUSEMOVE,postedMoves.back());
+        Check(foreignMoves.load()==foreign,"the pointer's own move is not another's");
+        NativeMenuPointer_Message(WM_MOUSEMOVE,MAKELPARAM(1,1));
+        Check(foreignMoves.load()==foreign+1,"a move from anything else is counted");
+        Frame(false); const size_t afterMiss=postedMoves.size();
+        NativeMenuPointer_Message(WM_MOUSEMOVE,MAKELPARAM(1,1));
+        Check(foreignMoves.load()==foreign+1,"not while the pointer is off the window");
+        Frame(true,false,.6f,.5f);
+        Check(postedMoves.size()==afterMiss+1,"back on the window, its first move is sent at once");
+        g_hostIsProjectReclaimer=false; monitorRect={0,0,4000,4000};
+    }
     {
         // The right stick as a wheel: a flick moves one notch, a hold repeats, faster when pushed further.
         game_menu_pointer::StickWheel wheel;

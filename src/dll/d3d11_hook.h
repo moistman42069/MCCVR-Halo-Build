@@ -38,6 +38,7 @@ struct D3DHostUiPicture
     ID3D11Texture2D* texture = nullptr;
     uint32_t width = 0, height = 0;
     bool opaque = false;
+    uint32_t draws = 0;   // the host's draws in it
 };
 bool D3D_HostUiPicture(D3DHostUiPicture& out);
 // Any thread: a frame was presented with such a picture in the last 300 ms, and the panel has not been given up.
