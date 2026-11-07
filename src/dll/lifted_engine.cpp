@@ -66,6 +66,9 @@ std::unordered_map<uintptr_t, Record*> g_hooks;     // by guest target
 std::unordered_map<uintptr_t, Record*> g_callables; // by guest target
 std::unordered_map<uintptr_t, unsigned> g_stackArgs;
 std::vector<Record*> g_allRecords;
+// The guest image's code section as halo3.dll has it: what signature searches read (sig::SetScanShadow).
+std::vector<uint8_t> g_shadow;
+std::atomic<bool> g_shadowReady{false};
 uint8_t* g_stubPage = nullptr;
 size_t g_stubUsed = 0, g_stubCapacity = 0;
 
@@ -202,6 +205,92 @@ uintptr_t FindCode(const std::vector<std::pair<uint64_t, std::vector<uint8_t>>>&
     return 0;
 }
 
+// halo3.dll on disk: the MCC folder the client uses (its mcc-folder.txt) + halo3\halo3.dll, or
+// HALOMCCVR_RECLAIMER_HALO3_DLL.
+std::wstring Halo3DllPath()
+{
+    wchar_t buffer[1024]{};
+    if (GetEnvironmentVariableW(L"HALOMCCVR_RECLAIMER_HALO3_DLL", buffer, 1024) && buffer[0])
+        return buffer;
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, 1024))
+        return {};
+    std::vector<uint8_t> text;
+    if (!LoadFile(std::wstring(buffer) + L"\\ProjectReclaimer\\mcc-folder.txt", text) || text.empty())
+        return {};
+    std::string folder(text.begin(), text.end());
+    if (folder.compare(0, 3, "\xEF\xBB\xBF") == 0)
+        folder.erase(0, 3);
+    while (!folder.empty() && (folder.back() == '\r' || folder.back() == '\n' || folder.back() == ' ' ||
+                               folder.back() == '\\' || folder.back() == '/'))
+        folder.pop_back();
+    const int wide = MultiByteToWideChar(CP_UTF8, 0, folder.data(), static_cast<int>(folder.size()), nullptr, 0);
+    std::wstring path(static_cast<size_t>(wide > 0 ? wide : 0), L'\0');
+    if (wide > 0)
+        MultiByteToWideChar(CP_UTF8, 0, folder.data(), static_cast<int>(folder.size()), path.data(), wide);
+    return path.empty() ? std::wstring() : path + L"\\halo3\\halo3.dll";
+}
+
+// THE SCAN SHADOW. In the guest image the client has replaced the first five bytes of every function with a call to
+// its trap just past the image (E8 rel32 to G + SizeOfImage; measured on 0.10.0: 22423 of them), and every signature
+// that starts a function then fails. The copy has the image's code section with each such call put back from
+// halo3.dll on disk (the same build: its timestamp and image size are checked against the image's header).
+bool BuildShadow(uintptr_t guest, const IMAGE_NT_HEADERS64* nt, uint32_t textRva, uint32_t textSize,
+                 std::wstring& why, size_t& restored)
+{
+    const std::wstring path = Halo3DllPath();
+    std::vector<uint8_t> file;
+    if (path.empty() || !LoadFile(path, file))
+    {
+        why = L"halo3.dll was not found (" + path + L")";
+        return false;
+    }
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(file.data());
+    if (file.size() < 0x400 || dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 ||
+        static_cast<size_t>(dos->e_lfanew) + sizeof(IMAGE_NT_HEADERS64) > file.size())
+    {
+        why = path + L" is not a PE file";
+        return false;
+    }
+    const auto* fileNt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(file.data() + dos->e_lfanew);
+    if (fileNt->FileHeader.TimeDateStamp != nt->FileHeader.TimeDateStamp ||
+        fileNt->OptionalHeader.SizeOfImage != nt->OptionalHeader.SizeOfImage)
+    {
+        why = path + L" is another build than the client's image";
+        return false;
+    }
+    const auto* section = IMAGE_FIRST_SECTION(fileNt);
+    const IMAGE_SECTION_HEADER* text = nullptr;
+    for (unsigned i = 0; i < fileNt->FileHeader.NumberOfSections; ++i, ++section)
+        if (section->VirtualAddress == textRva)
+            text = section;
+    if (!text || static_cast<size_t>(text->PointerToRawData) + text->SizeOfRawData > file.size())
+    {
+        why = path + L" has no code section where the image has it";
+        return false;
+    }
+    const uint8_t* raw = file.data() + text->PointerToRawData;
+    const size_t rawSize = (std::min)(static_cast<size_t>(text->SizeOfRawData), static_cast<size_t>(textSize));
+    std::vector<uint8_t> shadow(textSize);
+    std::memcpy(shadow.data(), reinterpret_cast<const void*>(guest + textRva), textSize);
+    const uint64_t trap = guest + nt->OptionalHeader.SizeOfImage;
+    restored = 0;
+    for (size_t i = 0; i + 5 <= rawSize;)
+    {
+        int32_t rel = 0;
+        std::memcpy(&rel, shadow.data() + i + 1, 4);
+        if (shadow[i] == 0xE8 && guest + textRva + i + 5 + static_cast<int64_t>(rel) == trap)
+        {
+            std::memcpy(shadow.data() + i, raw + i, 5);
+            ++restored;
+            i += 5;
+        }
+        else
+            ++i;
+    }
+    g_shadow = std::move(shadow);
+    return true;
+}
+
 bool InGuestCodeUnlocked(uintptr_t address)
 {
     return g_guestCodeStart && address >= g_guestCodeStart && address < g_guestCodeEnd;
@@ -327,6 +416,16 @@ bool InGuestCode(uintptr_t address)
     return Active() && InGuestCodeUnlocked(address);
 }
 
+bool ScanShadow(uintptr_t& start, size_t& size, const uint8_t*& copy)
+{
+    if (!g_shadowReady.load(std::memory_order_acquire))
+        return false;
+    start = g_guestCodeStart;
+    size = g_shadow.size();
+    copy = g_shadow.data();
+    return true;
+}
+
 bool ModuleRangeFallback(const wchar_t* moduleName, uintptr_t& base, size_t& size)
 {
     if (!Active() || !moduleName || _wcsicmp(moduleName, L"halo3.dll") != 0)
@@ -417,12 +516,25 @@ bool Poll()
             g_guestCodeStart = guest + section->VirtualAddress;
             g_guestCodeEnd = g_guestCodeStart + section->Misc.VirtualSize;
         }
+    std::wstring shadowWhy;
+    size_t restored = 0;
+    const bool shadowed = g_guestCodeStart &&
+        BuildShadow(guest, nt, static_cast<uint32_t>(g_guestCodeStart - guest),
+                    static_cast<uint32_t>(g_guestCodeEnd - g_guestCodeStart), shadowWhy, restored);
+    if (shadowed)
+        g_shadowReady.store(true, std::memory_order_release);
     g_guestBase = guest;
     g_guestSize = nt->OptionalHeader.SizeOfImage;
     g_code = code;
     g_table = std::move(table);
     g_active.store(true, std::memory_order_release);
     ReleaseSRWLockExclusive(&g_lock);
+    if (shadowed)
+        LOG("RECLAIMER 0.10: the client has put a call to its trap over the start of %zu functions in halo3.dll's "
+            "image; signature searches read a copy with halo3.dll's own bytes there", restored);
+    else
+        LOG("RECLAIMER 0.10: signature searches read the image as the client left it (%ls): every signature that "
+            "starts a function will fail", shadowWhy.c_str());
     LOG("RECLAIMER 0.10: the client runs a recompiled Halo 3: halo3.dll's image at %p (code section %p-%p, none of "
         "it runs), its %zu translated functions at %p (table %ls). The mod's Halo 3 hooks go on the translated "
         "functions", reinterpret_cast<void*>(guest), reinterpret_cast<void*>(g_guestCodeStart),
