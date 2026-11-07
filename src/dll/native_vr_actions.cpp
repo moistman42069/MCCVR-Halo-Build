@@ -86,6 +86,29 @@ struct Publication {
     std::atomic<GameTitle> title{GameTitle::None};
 } publication;
 thread_local bool pollPublished{};
+// THE EXTRA ROWS A TITLE'S BRIDGE CARRIES (vr_mapping::ExtraBridgeOnly, NativeVrActions_RoutesExtras): a record per row,
+// advanced at the converter with the action rows, and returned at the player-control builder's read of the row's own
+// action while it is pressed -- and the game's own button is not held, as the direct route does for an action row.
+struct ExtraRecords {
+    uint32_t served{};
+    native_action_button::Record records[vr_mapping::ExtraCount]{};
+    void Reset(GameTitle game) noexcept {
+        served=0;
+        for(unsigned i=0;i<vr_mapping::ExtraCount;++i)
+            records[i].Reset(game,vr_mapping::NativeExtraAction(game,static_cast<vr_mapping::ExtraAction>(i)));
+    }
+    void Advance(bool direct,uint32_t pressed,uint32_t extrasServed,unsigned elapsedMs) noexcept {
+        served=direct?extrasServed:0u;
+        for(unsigned i=0;i<vr_mapping::ExtraCount;++i) records[i].Advance(((pressed&served)>>i)&1u,elapsedMs);
+    }
+    // The record for the builder's read of `action` while its row is pressed, or nullptr: the game's own.
+    native_action_button::Record* Pressed(GameTitle game,unsigned action) noexcept {
+        for(unsigned i=0;i<vr_mapping::ExtraCount;++i)
+            if(((served>>i)&1u)&&vr_mapping::NativeExtraAction(game,static_cast<vr_mapping::ExtraAction>(i))==action)
+                return records[i].ReadCounters().frames?&records[i]:nullptr;
+        return nullptr;
+    }
+};
 struct ThreadState {
     uint32_t generation{};
     uint64_t publishedAt{}, converterAt{}, cancelEpoch{};
@@ -93,11 +116,13 @@ struct ThreadState {
     uint32_t blocked{};
     bool direct{}, converted{};
     native_action_button::Record records[vr_mapping::Count]{};
+    ExtraRecords extra;
     void Reset(uint32_t next) noexcept {
         generation=next; publishedAt=converterAt=cancelEpoch=0;
         actions=0;direct=converted=false;
         for(unsigned i=0;i<vr_mapping::Count;++i)
             records[i].Reset(title,vr_mapping::NativeAction(title,static_cast<vr_mapping::Action>(i)));
+        extra.Reset(title);
     }
 } thread_local local;
 bool Current() noexcept {
@@ -144,13 +169,14 @@ void __fastcall ConverterHook(uintptr_t unused,int elapsedMs,const void* raw,
         reinterpret_cast<Convert>(runtime.original[0])(unused,elapsedMs,raw,output,axes,activity);
         const auto now=GetTickCount64();
         const auto cancelEpoch=publication.cancelEpoch.load(std::memory_order_acquire);
-        uint32_t actions=0,blocked=0;bool direct=false;uint64_t publishedAt=0;
+        uint32_t actions=0,blocked=0,extras=0,extrasServed=0;bool direct=false;uint64_t publishedAt=0;
         // Both official input paths target raw-pad base + controller*0x3c:
         // direct XInput and the MCC host's copied gamepad packet. Output row
         // zero proves ownership even when XInput was polled on another thread.
         // RCX is unused by the optimized converter and is never an owner ID.
         if(Current() && reinterpret_cast<uintptr_t>(output)==runtime.padState &&
-            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(),&blocked) && elapsedMs>=0 && elapsedMs<=1000 &&
+            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(),&blocked,&extras,&extrasServed) &&
+            elapsedMs>=0 && elapsedMs<=1000 &&
             cancelEpoch==publication.cancelEpoch.load(std::memory_order_acquire)) {
             if(local.generation!=runtime.generation) local.Reset(runtime.generation);
             local.publishedAt=publishedAt;local.actions=actions;local.direct=direct;local.blocked=blocked;
@@ -158,6 +184,7 @@ void __fastcall ConverterHook(uintptr_t unused,int elapsedMs,const void* raw,
             local.converterAt=now;local.converted=true;
             for(unsigned i=0;i<vr_mapping::Count;++i)
                 local.records[i].Advance((local.direct||(local.blocked&(1u<<i))) && (local.actions&(1u<<i)),unsigned(elapsedMs));
+            local.extra.Advance(local.direct,extras,extrasServed,unsigned(elapsedMs));
             runtime.converted.fetch_add(1,std::memory_order_relaxed);
         } else if(reinterpret_cast<uintptr_t>(output)==runtime.padState) local.converted=false;
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
@@ -186,6 +213,15 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
             publication.generation.load(std::memory_order_acquire)!=local.generation ||
             local.cancelEpoch!=publication.cancelEpoch.load(std::memory_order_acquire)) return native;
         runtime.readerAt.store(now,std::memory_order_release);
+        if(auto* extra=local.direct?local.extra.Pressed(title,action):nullptr) {
+            if(native) {
+                uint8_t frames=0;
+                if(!ReadFrames(native,frames)){runtime.faulted=true;return native;}
+                if(frames)return native;
+            }
+            runtime.routed.fetch_add(1,std::memory_order_relaxed);
+            return extra->bytes.data();
+        }
         const int semantic=native_action_button::SemanticAction(title,action);
         if(semantic<0) return native;
         auto& record=local.records[semantic];

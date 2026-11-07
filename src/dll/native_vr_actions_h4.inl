@@ -69,11 +69,13 @@ struct ThreadState {
     uint32_t blocked{};
     bool direct{}, converted{};
     native_action_button::Record records[vr_mapping::Count]{};
+    ExtraRecords extra;
     void Reset(uint32_t next) noexcept {
         generation=next; publishedAt=converterAt=cancelEpoch=0;
         actions=0;direct=converted=false;
         for(unsigned i=0;i<vr_mapping::Count;++i)
             records[i].Reset(title,native_action_button::ConsumerAction(title,static_cast<vr_mapping::Action>(i)));
+        extra.Reset(title);
     }
 } thread_local local;
 bool Current() noexcept {
@@ -92,11 +94,12 @@ void __fastcall ConverterHook(uintptr_t unused,int elapsedMs,const void* raw,
         reinterpret_cast<Convert>(runtime.original[0])(unused,elapsedMs,raw,output,axes,activity);
         const auto now=GetTickCount64();
         const auto cancelEpoch=publication.cancelEpoch.load(std::memory_order_acquire);
-        uint32_t actions=0,blocked=0;bool direct=false;uint64_t publishedAt=0;
+        uint32_t actions=0,blocked=0,extras=0,extrasServed=0;bool direct=false;uint64_t publishedAt=0;
         // Both direct and copied native routes write base + controller*0x3c.
         // H4 does not preserve RCX as a controller ID in this converter.
         if(Current() && reinterpret_cast<uintptr_t>(output)==runtime.padState &&
-            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(std::memory_order_acquire),&blocked) && elapsedMs>=0 && elapsedMs<=1000 &&
+            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(std::memory_order_acquire),&blocked,
+                &extras,&extrasServed) && elapsedMs>=0 && elapsedMs<=1000 &&
             cancelEpoch==publication.cancelEpoch.load(std::memory_order_acquire)) {
             if(local.generation!=runtime.generation) local.Reset(runtime.generation);
             local.publishedAt=publishedAt;local.actions=actions;local.direct=direct;local.blocked=blocked;
@@ -104,6 +107,7 @@ void __fastcall ConverterHook(uintptr_t unused,int elapsedMs,const void* raw,
             local.converterAt=now;local.converted=true;
             for(unsigned i=0;i<vr_mapping::Count;++i)
                 local.records[i].Advance((local.direct||(local.blocked&(1u<<i))) && (local.actions&(1u<<i)),unsigned(elapsedMs));
+            local.extra.Advance(local.direct,extras,extrasServed,unsigned(elapsedMs));
             runtime.converted.fetch_add(1,std::memory_order_relaxed);
             if(local.actions&(1u<<vr_mapping::Sprint)) runtime.sprintPublished.fetch_add(1,std::memory_order_relaxed);
         } else if(reinterpret_cast<uintptr_t>(output)==runtime.padState) local.converted=false;
@@ -135,6 +139,15 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
             publication.generation.load(std::memory_order_acquire)!=local.generation ||
             local.cancelEpoch!=publication.cancelEpoch.load(std::memory_order_acquire)) return native;
         runtime.readerAt.store(now,std::memory_order_release);
+        if(auto* extra=(local.direct&&builder)?local.extra.Pressed(title,action):nullptr) {
+            if(native) {
+                uint8_t frames=0;
+                if(!ReadFrames(native,frames)){runtime.faulted=true;return native;}
+                if(frames)return native;
+            }
+            runtime.routed.fetch_add(1,std::memory_order_relaxed);
+            return extra->bytes.data();
+        }
         const int semantic=native_action_button::SemanticAction(title,action);
         if(semantic<0) return native;
         const bool sprint=semantic==vr_mapping::Sprint;
