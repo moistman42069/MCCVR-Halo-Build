@@ -13,6 +13,7 @@
 #include "../dll/native_menu_pointer.h"
 #include "../dll/host_unload_gate.h"
 #include "../dll/native_vehicle_first_person.h"
+#include "../dll/lifted_engine.h"
 #include "../common/config.h"
 
 static void Blank(char* out, size_t size)
@@ -107,6 +108,11 @@ void VR_SetGameHaptics(float) {}
 void VR_SetScopeActive(bool) {}
 void VR_ToggleScreenFollow() {}
 void VR_ToggleStereo() {}
+
+namespace lifted
+{
+bool Active() { return false; }
+}
 
 namespace two_hand_lab_runtime
 {
