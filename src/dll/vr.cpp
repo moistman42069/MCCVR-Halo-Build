@@ -15681,14 +15681,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             // A shake presses that hand's reload exactly as the game binds it: the same shared input a
             // flat player's button makes, never a call into the simulation (co-op is one simulation).
             // Slot 0 is the primary weapon (the game's Reload); slot 1 the secondary, Halo 3's own
-            // left-weapon reload binding. Halo 2's is not established, so its left shake does nothing.
+            // left-weapon reload binding. Halo 2 has only Reload, which reloads both guns.
             uint32_t dualPress=0;bool secondaryUnbound=false;
             if(dual.enabled&&dual.ready&&reloadSlots) {
-                if(reloadSlots&1u) dualPress|=WeaponGestureBinding(sample.title,vr_mapping::Reload,inputNow);
-                if(reloadSlots&2u) {
-                    const uint32_t secondary=Game_SecondaryReloadTransport(sample.title,inputNow);
-                    if(secondary) dualPress|=secondary; else secondaryUnbound=true;
-                }
+                const auto press=dual_wield_shake::ReloadButtons(sample.title,reloadSlots,
+                    WeaponGestureBinding(sample.title,vr_mapping::Reload,inputNow),
+                    Game_SecondaryReloadTransport(sample.title,inputNow));
+                dualPress=press.buttons;secondaryUnbound=press.secondaryUnbound;
             }
             if(!dual.enabled||!dual.ready) g_dualReloadPulse=0;
             if(dualPress) {g_dualReloadPulse=dualPress;g_dualReloadPulseUntil=inputNow+120;}
@@ -26973,7 +26972,8 @@ void VR_ReportDualWieldReloadInput(GameTitle title)
     const auto& s=g_dualReloadInputStats[title==GameTitle::Halo2?0:1];
     LOG("Dual shake reload game=%s samples=%llu ready=%llu gestures=%llu buttonPresses=%llu leftReloadUnbound=%llu "
         "coarseClockRepeats=%llu trackingBlocked=%llu ownerBlocked=%llu actionsBlocked=%llu busyHandSamples=%llu "
-        "(presses the game's own reload binding per hand; gesture clock=OpenXR pose)",
+        "(presses the game's own reload binding per hand; Halo 2's one Reload reloads both guns; "
+        "gesture clock=OpenXR pose)",
         title==GameTitle::Halo2?"Halo 2":"Halo 3",s.samples.load(),s.ready.load(),s.gestures.load(),s.pressed.load(),
         s.secondaryUnbound.load(),s.coarseRepeats.load(),s.trackingBlocked.load(),s.ownerBlocked.load(),
         s.actionsBlocked.load(),s.busyHands.load());

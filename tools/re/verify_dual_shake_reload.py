@@ -40,6 +40,28 @@ PROOFS = {
         0x35f125: 'lea eax, [rdx - 2]', 0x35f13d: 'cmove edx, eax',
         0x35f140: 'call 0x379c08', 0x35f151: 'call 0x1ffb0'}),
 }
+# Halo 2 retail has one reload input for both guns (HALO2-DUAL-SHAKE-RELOAD-2026-11-06.md): Reload (action 2E) sets
+# player-action bit 0x200000; a fresh press (bit 4) of it, with a gun in either slot, sets unit control bit 30; the
+# unit update starts unit actions 0 (right gun) and A (left gun) together on that bit.
+H2_RELOAD_BOTH = (
+    (0x6c36c1, 0x6c36d0, {0x6c36c5: 'bts eax, 0x15', 0x6c36c9: 'cmp byte ptr [rbp - 0x48], r14b'}),
+    (0x69f0d0, 0x69f170, {
+        0x69f0d0: 'test byte ptr [rsi + 0x20], 4',
+        0x69f108: 'movsx edx, byte ptr [rax + 0x226]', 0x69f13c: 'movsx edx, byte ptr [rax + 0x227]',
+        0x69f150: 'bt eax, 0x15', 0x69f156: 'or qword ptr [rsi], 0x40000000'}),
+    (0x8ffea9, 0x8ffecb, {
+        0x8ffea9: 'mov eax, dword ptr [rbx + 0x150]', 0x8ffeaf: 'bt rax, 0x1e',
+        0x8ffeb6: 'xor edx, edx', 0x8ffeba: 'call 0x93b750',
+        0x8ffebf: 'mov edx, 0xa', 0x8ffec6: 'call 0x93b750'}),
+)
+
+def verify_halo2_reload_both(data):
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
+    for start, end, proofs in H2_RELOAD_BOTH:
+        instructions = {i.address: f'{i.mnemonic} {i.op_str}' for i in md.disasm(data[start:end], start)}
+        for rva, expected in proofs.items():
+            if instructions.get(rva) != expected:
+                raise ValueError(f'halo2.dll+{rva:x}: expected {expected}')
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -64,6 +86,8 @@ def main():
             signature = bytes.fromhex(pattern)
             if data.find(signature) != start or data.find(signature, start + 1) != -1:
                 raise ValueError(f'{name}: reload signature is not unique at expected RVA')
+        if name == 'halo2.dll':
+            verify_halo2_reload_both(data)
         if name == 'halo2_tag_test.exe':
             for index, label in ((0x2e, b'reload\0'), (0x2f, b'exit_vehicle\0')):
                 pointer = struct.unpack_from('<I', data, 0xa447f8 + (index - 0x2e) * 4)[0]
