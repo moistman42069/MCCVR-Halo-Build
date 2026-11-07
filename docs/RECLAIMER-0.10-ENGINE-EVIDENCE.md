@@ -82,12 +82,36 @@ The body's convention:
   update: `movabs r8, <helper>; mov rcx, rdi; call r8; mov rax, [rax + index*8]`).
 - Calls between lifted functions are direct `call rel32` (unrelocated in the file).
 
-## Unverified until a running client is read
+## Measured in a running client (2026-11-06, 0.10.0 started directly, no mod)
 
-- Where the code and the guest image sit in memory, and whether the guest image holds `.text`'s bytes.
-- Whether relocated direct calls target bodies (expected) and how indirect calls and vtables dispatch.
-- `ctx`'s full layout (guest gs base, rip, flags) and the TLS helper's address.
-- Which process runs the engine when the launcher starts the client (expected: the child the first process
-  starts).
-- What Reclaimer itself patches in guest data and code (its log lists capacity changes, e.g. players
+Read from outside with `ReadProcessMemory` (`_reclaimer-0.10-re	ools\probe_live.py`, output and dumps in
+`_reclaimer-0.10-re\live1`).
+
+- **One process.** Started directly, the client ran as a single process, and it ran the engine. (Started by the
+  VR launcher on 2026-11-06 18:53, the first process started a second and exited; that run also moved the player's
+  folder first.)
+- **The guest image is inside the client's own image.** `G` (the `image at` address in `client.log`, randomised
+  each run: 0x7FF69EDD5000 here) is exe base + 0x4E05000, part of the executable's own mapping (MEM_IMAGE,
+  PAGE_EXECUTE_READWRITE). It starts with halo3.dll's PE header ("MZ") and holds every section at its RVA, relocated
+  to `G`: 63344 of the first 65536 bytes of `.text` equal the file (the rest are relocations). `halo3.dll` is not a
+  loaded module.
+- **The code is a private RWX allocation** (0x182A000 bytes here), the file's code at its start: 604583 of
+  0x17D040A bytes differ from the file (relocations). The first 16 bytes of the bodies of 14 of the mod's hook
+  points equal the file's: the client has not patched them.
+- **Relocations.** `movabs` with 0 in the file become `G` (image base) or addresses in the executable's code
+  (runtime helpers). Direct calls land on bodies (`+0`), never on adapters. Bodies also tail-call with `jmp`.
+- **Indirect calls.** Vtables in the guest image hold guest addresses (`G + RVA`). A translated indirect call
+  stores the guest registers into `ctx`, pushes the guest return address on the guest stack, sets `ctx+0x20`, and
+  calls a dispatcher in the executable (exe+0x3E6B4A0) with `rcx = ctx, rdx = guest target`. Results come back in
+  `ctx` (`xmm0` at `ctx+0x90`).
+- **TLS.** The helper (exe+0x3E67230) returns `[ctx+0x2D8]`, allocating it on first use: the guest TLS array is
+  cached in `ctx` at +0x2D8.
+- **The guest return address** is on the guest stack at the body's `rsi` (`[rsi]`), as on real hardware.
+
+## Still unverified
+
+- That the dispatcher enters through the adapter (expected: it has only `ctx`), so a hook at a body's first
+  instruction sees every call.
+- Where a thread outside the mod's hooks (a Present hook, say) can find its own `ctx`.
+- What the client itself patches in guest data and code (its log lists capacity changes, e.g. players
   0x10 -> 0x80).
