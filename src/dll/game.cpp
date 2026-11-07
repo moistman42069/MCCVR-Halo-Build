@@ -5696,6 +5696,67 @@ namespace
         }
     }
 
+    // HALO 3'S FIRST-PERSON BLOCK (engine TLS +0x568): per player, two weapon slots, then the player's render root. A
+    // slot is a 0x4A4-byte header (the node count at +0x49C), a bone array of the build's node capacity (0x34 bytes a
+    // node) and 0x18 bytes more, the first of them the selected node. Retail Halo 3 holds 64 nodes; Project Reclaimer
+    // 0.10 holds 128 (its log: fp_nodes=128), which moves every field after the bone array: the left-hand weapon of
+    // a dual wield was never found there, and the render root read empty. The capacity is proven on the composed
+    // primary weapon (Halo3ProveFpLayout); until it is, retail's stands.
+    struct Halo3FpLayout { uint32_t nodes, slotStride, selectedNode, userStride, renderRoot; };
+    constexpr Halo3FpLayout Halo3FpLayoutFor(uint32_t nodes)
+    {
+        const uint32_t slot = 0x4A4 + nodes * 0x34 + 0x18;
+        return {nodes, slot, 0x4A4 + nodes * 0x34, 2 * slot + 0xB8, 2 * slot + 0x78};
+    }
+    static_assert(Halo3FpLayoutFor(64).slotStride == 0x11BC && Halo3FpLayoutFor(64).selectedNode == 0x11A4 &&
+                  Halo3FpLayoutFor(64).userStride == 0x2430 && Halo3FpLayoutFor(64).renderRoot == 0x23F0);
+    std::atomic<uint32_t> g_halo3FpNodes{0}; // proven node capacity; 0 until proven (retail's 64 stands)
+    Halo3FpLayout Halo3FpLayoutNow()
+    {
+        const uint32_t nodes = g_halo3FpNodes.load(std::memory_order_acquire);
+        return Halo3FpLayoutFor(nodes ? nodes : 64);
+    }
+    // Game thread, on the composed primary weapon of player 0 (`users` is the block's start). A capacity holds when the
+    // slot's selected node is one of its nodes (or none) and the render root after the two slots is a real
+    // transform. Retail's 64 is tried first; at 64 nodes Reclaimer 0.10's root reads all zero.
+    __declspec(noinline) void Halo3ProveFpLayout(const uint8_t* users)
+    {
+        if (g_halo3FpNodes.load(std::memory_order_acquire))
+            return;
+        static uint64_t nextMs = 0;
+        const uint64_t now = GetTickCount64();
+        if (now < nextMs)
+            return;
+        nextMs = now + 1000;
+        for (const uint32_t nodes : {64u, 128u})
+        {
+            const Halo3FpLayout layout = Halo3FpLayoutFor(nodes);
+            int32_t count = 0, selected = 0;
+            float root[13]{};
+            __try
+            {
+                memcpy(&count, users + 0x49C, sizeof(count));
+                memcpy(&selected, users + layout.selectedNode, sizeof(selected));
+                memcpy(root, users + layout.renderRoot, sizeof(root));
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                continue;
+            }
+            bool finite = true;
+            for (const float value : root)
+                finite = finite && std::isfinite(value);
+            if (count <= 0 || count > static_cast<int32_t>(nodes) || selected < -1 || selected >= count || !finite ||
+                !(root[0] > 0.01f && root[0] < 100.0f))
+                continue;
+            g_halo3FpNodes.store(nodes, std::memory_order_release);
+            LOG("Halo 3 first-person block: %u nodes a weapon (selected node %d of %d; render root scale %.3f): weapon "
+                "slots 0x%X apart, players 0x%X", nodes, selected, count, root[0], layout.slotStride,
+                layout.userStride);
+            return;
+        }
+    }
+
     // Locate the first-person weapon slot that owns a composed bone array.
     // Pointer compares only, so it is safe to call before composition too.
     bool FindFirstPersonWeapon(BoneMatrix* bones, int& outSlot, unsigned char*& outWeapon)
@@ -5707,9 +5768,10 @@ namespace
         if (!tls) return false;
         auto* weapons=*reinterpret_cast<unsigned char**>(tls+0x568);
         if (!weapons) return false;
+        const uint32_t slotStride=Halo3FpLayoutNow().slotStride;
         for(int candidate=0;candidate<2;++candidate)
         {
-            auto* w=weapons+candidate*0x11BC;
+            auto* w=weapons+candidate*slotStride;
             if (reinterpret_cast<BoneMatrix*>(w+0x4A4)==bones)
             { outSlot=candidate; outWeapon=w; return true; }
         }
@@ -6153,7 +6215,7 @@ namespace
         // Cache the authored alignment nodes for the render-thread
         // interpolator. Publish the count last so an acquiring reader never
         // observes indices from a half-updated skeleton.
-        const int selectedIndex=*reinterpret_cast<int*>(weapon+0x11A4);
+        const int selectedIndex=*reinterpret_cast<int*>(weapon+Halo3FpLayoutNow().selectedNode);
         const int orientationIndex=
             selectedIndex>=0&&selectedIndex<count?selectedIndex:wristIndex;
         // Arm-IK chain: elbow = parent(wrist), shoulder = parent(elbow).
@@ -6444,9 +6506,10 @@ namespace
         if (!weapons) return false;
         int slot=-1;
         unsigned char* weapon=nullptr;
+        const uint32_t slotStride=Halo3FpLayoutNow().slotStride;
         for(int candidate=0;candidate<2;++candidate)
         {
-            auto* w=weapons+candidate*0x11BC;
+            auto* w=weapons+candidate*slotStride;
             if (reinterpret_cast<BoneMatrix*>(w+0x4A4)==bones) { slot=candidate; weapon=w; break; }
         }
         if (!weapon) return false;
@@ -6487,7 +6550,7 @@ namespace
         // itself and stores its bone index here. Unlike a guessed `gun` name,
         // this exists in the live 43-node skeleton and follows each weapon's
         // authored barrel orientation.
-        const int selectedIndex=*reinterpret_cast<int*>(weapon+0x11A4);
+        const int selectedIndex=*reinterpret_cast<int*>(weapon+Halo3FpLayoutNow().selectedNode);
         const int orientationIndex=selectedIndex>=0&&selectedIndex<count?selectedIndex:wristIndex;
 
         // Proven offline (2026-07-15): the root transform handed to the composer
@@ -6594,8 +6657,9 @@ namespace
         if (!tls) return false;
         auto* renderPlayers=*reinterpret_cast<unsigned char**>(tls+0x568);
         if (!renderPlayers) return false;
+        const Halo3FpLayout layout=Halo3FpLayoutNow();
         root=*reinterpret_cast<const BoneMatrix*>(
-            renderPlayers+static_cast<uintptr_t>(player)*0x2430+0x23F0);
+            renderPlayers+static_cast<uintptr_t>(player)*layout.userStride+layout.renderRoot);
         if (isfinite(root.scale) && fabsf(root.scale)>0.001f) return true;
         const float scale=g_paletteRootScale[player].load(std::memory_order_relaxed);
         float camera[9];
@@ -9202,6 +9266,12 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     void __fastcall ComposeBonesHook(void* model, int start, int count, BoneMatrix* output,
                                      void* source, void* defaults)
     {
+        if (!g_halo3FpNodes.load(std::memory_order_acquire))
+        {
+            int proveSlot = -1; unsigned char* proveWeapon = nullptr;
+            if (FindFirstPersonWeapon(output, proveSlot, proveWeapon) && proveSlot == 0)
+                Halo3ProveFpLayout(proveWeapon);
+        }
         if (!g_insideSpecialCompose)
         {
             g_fpSkipBounds[0]=g_fpSkipBounds[1]=g_fpSkipBounds[2]=g_fpSkipBounds[3]=0;
@@ -62024,6 +62094,13 @@ bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& owner
 
 // Called on the title's native weapon/action thread (engine TLS is valid here).
 // Unknown owner/cinematic evidence disables this optional feature only.
+void Game_Halo3FpStrides(uint32_t& userStride, uint32_t& slotStride)
+{
+    const Halo3FpLayout layout = Halo3FpLayoutNow();
+    userStride = layout.userStride;
+    slotStride = layout.slotStride;
+}
+
 void* Game_ReloadPolicyWeapon(GameTitle title, uint32_t weapon)
 {
     if (weapon==UINT32_MAX || !(weapon>>16) || title!=TitleAdapter_GetActiveTitle() ||

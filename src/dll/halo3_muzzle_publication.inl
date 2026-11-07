@@ -17,7 +17,7 @@ bool Halo3CaptureGripOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) 
         uint32_t weapons[2]{};
         if(owner==UINT32_MAX || g_halo3UnitInVehicle(int32_t(owner)) ||
             !Halo3ReadOwnedWeapons(owner,weapons,false) || weapons[slot]==UINT32_MAX ||
-            *reinterpret_cast<const uint32_t*>(users+slot*0x11BC+0x3C)!=weapons[slot])return false;
+            *reinterpret_cast<const uint32_t*>(users+slot*Halo3FpLayoutNow().slotStride+0x3C)!=weapons[slot])return false;
         unit=owner;weapon=weapons[slot];return true;
     }
     __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
