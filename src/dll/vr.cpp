@@ -22620,6 +22620,7 @@ void VR_AfterPresent(IDXGISwapChain* sc, int64_t presentStartQpc,
 void VR_FramePacingWorkerPoll()
 {
     NativeMenuPointer_ReportFailures();
+    Input_ReportGamePolls();
     // Keep exceptional pipeline reporting off the game's render path. Packet
     // misses are counted there with one atomic increment and summarized here.
     static uint64_t reportedPacketMisses = 0;

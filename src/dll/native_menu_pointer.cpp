@@ -1,6 +1,7 @@
 #include "native_menu_pointer.h"
 #include "../common/game_menu_pointer.h"
 #include "../common/config.h"
+#include "../common/exclusive_input.h"
 #include "../common/log.h"
 #include "d3d11_hook.h"
 #include "menu.h"
@@ -197,16 +198,38 @@ void NativeMenuPointer_ReportFailures()
         LOG("game menu cursor: frame submission rejected; optional ring disabled for this session, native input and core VR retained");
     const unsigned failures = postFailures.exchange(0, std::memory_order_relaxed);
     if (failures) LOG("game menu pointer: %u window-message delivery failures; native controls retained", failures);
+    // Whether the game's window is in front, each time that changes, and what is in front instead: to set beside a
+    // report of the controls going dead around a switch to another window.
+    if (window) {
+        static HWND lastFront = reinterpret_cast<HWND>(-1);
+        const HWND front = GetForegroundWindow();
+        if (front != lastFront) {
+            lastFront = front;
+            if (front == window) LOG("game window: in front");
+            else {
+                wchar_t name[64] = L"no window";
+                DWORD pid = 0;
+                if (front) {
+                    GetClassNameW(front, name, 64);
+                    GetWindowThreadProcessId(front, &pid);
+                }
+                LOG("game window: not in front (%ls, process %lu%s)", name, static_cast<unsigned long>(pid),
+                    pid == GetCurrentProcessId() ? ", this game's" : "");
+            }
+        }
+    }
     static DWORD lastReport = 0;
     static int lastEnabled = -1;
     const int enabled = g_config.game_menu_pointer ? 1 : 0;
     const DWORD now = GetTickCount();
     if (lastEnabled != enabled || (enabled && DWORD(now-lastReport) >= 2000)) {
         lastReport = now; lastEnabled = enabled;
-        LOG("game menu pointer: enabled=%d hand=%s mode=%u frame=%s delivery=%s active=%d moves=%u clicks=%u",
-            enabled, g_config.left_handed ? "left" : "right", unsigned(TitleAdapter_GetRuntimeMode()),
+        // withheld: the game's pad is blank but for the menu's buttons (a menu or the pointer owns the controls).
+        LOG("game menu pointer: enabled=%d hand=%s mode=%u frame=%s delivery=%s active=%d moves=%u clicks=%u "
+            "withheld=%d", enabled, g_config.left_handed ? "left" : "right", unsigned(TitleAdapter_GetRuntimeMode()),
             frameStatus.load(), deliveryStatus.load(),
-            int(game_menu_pointer::FreshActive(visual.load(), now)), moveCount.load(), clickCount.load());
+            int(game_menu_pointer::FreshActive(visual.load(), now)), moveCount.load(), clickCount.load(),
+            int(exclusive_input::Active()));
     }
 }
 void NativeMenuPointer_FrameStatus(const char* status) { frameStatus.store(status, std::memory_order_relaxed); }
