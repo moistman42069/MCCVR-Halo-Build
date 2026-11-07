@@ -3541,7 +3541,7 @@ namespace
     // often, with which flag. Phase A then invokes it per eye ourselves.
     FpDriverFn g_origFpDriver = nullptr;
     int32_t* g_fpDriverGuard = nullptr; // zero-init global gating call site 1
-    constexpr size_t kMaxInstalledGameHooks = 16;
+    constexpr size_t kMaxInstalledGameHooks = 32;
     void* g_installedGameHooks[kMaxInstalledGameHooks]{};
     size_t g_installedGameHookCount = 0;
     unsigned char* g_halo3OwnedClassGate = nullptr;
@@ -3555,6 +3555,10 @@ namespace
                 return;
         if (g_installedGameHookCount < kMaxInstalledGameHooks)
             g_installedGameHooks[g_installedGameHookCount++] = target;
+        else
+            // Never silent: a hook left out here is never taken out at teardown, and its next install fails.
+            LOG("Halo 3 core: more than %zu hooks to retire; the hook at %p is not retired with the core",
+                kMaxInstalledGameHooks, target);
     }
 
     bool RemoveInstalledGameHooks();
