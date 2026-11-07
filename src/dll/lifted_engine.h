@@ -46,6 +46,9 @@ MH_STATUS QueueEnableHook(LPVOID target);
 MH_STATUS QueueDisableHook(LPVOID target);
 // The address MinHook itself patched for `target` (the translated body), or `target` when it is not a lifted hook.
 LPVOID PatchedAddress(LPVOID target);
+// For a hooked `target`: the client's own version of it that the game's callers reach (in the client's executable),
+// whether it runs the translated body or not; null when there is none or `target` is not hooked.
+void* ClientVersion(LPVOID target);
 // What the hook calls above do after MinHook's own, for the enable and disable paths that call MinHook through
 // PatchedAddress themselves (minhook_lifecycle.h): a hook on a function the client replaced with a version of its own
 // is also placed on the calls to that version, and taken off them again. They return `status`.

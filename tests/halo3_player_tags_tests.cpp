@@ -173,6 +173,19 @@ int main()
               kOdstDraw.gamertagPastEntries == kOdstGamertagPastEntries && kHalo3Draw.gamertagPastEntries == 0xC,
           "each title's profile names its own fields");
 
+    // Project Reclaimer 0.10's own draw: found from its version's call, its count read from its own global.
+    const auto version = Tokens(kReclaimerVersionPattern);
+    Check(version[kReclaimerVersionCallRel - 1] == 0xE8 && Wild(version, kReclaimerVersionCallRel, 4) &&
+              version[kReclaimerVersionCallRel + 4] == 0x84 && version[kReclaimerVersionCallRel + 5] == 0xC0,
+          "Reclaimer: its version calls its own draw and tests what it says");
+    const auto countRead = Tokens(kReclaimerCountPattern);
+    Check(countRead[0] == 0x48 && countRead[1] == 0x8B && countRead[2] == 0x3D &&
+              Wild(countRead, kReclaimerCountDisp, 4) && countRead.back() == static_cast<int>(kEntryStride),
+          "Reclaimer: the count is read rip-relative and multiplied by the entry stride");
+    Check(HostEntryCount(212) == 212 && HostEntryCount(20) == 20 && HostEntryCount(19) == 0 &&
+              HostEntryCount(257) == 0 && HostEntryCount(0x1000000D4ull) == 0,
+          "Reclaimer: its count is believed from twenty to the maximum");
+
     // The census key round-trips, and a teammate with no flags is never an empty slot.
     Check(KindKey(0, 0) != 0, "a kind is never an empty census slot");
     Check(KindIcon(KindKey(-1, 0x10)) == -1 && KindFlags(KindKey(-1, 0x10)) == 0x10, "no icon, speaking");

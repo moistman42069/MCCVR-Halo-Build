@@ -53,6 +53,9 @@ struct Record
     volatile uint64_t* replacementSlot = nullptr;
     void* replacement = nullptr;
     void* replacementEntry = nullptr;
+    // Hooks: the client's own version of the function its callers reach, whether or not it runs the translated body
+    // (ClientVersion); null when there is none.
+    void* clientVersion = nullptr;
     // Hooks: which of the first four arguments are floating-point (bit n: the guest's xmm n), and whether the function
     // returns one in xmm0 (SetFloatArguments, SetFloatResult).
     uint32_t floatArgs = 0;
@@ -503,6 +506,7 @@ void AttachReplacement(Record* record)
             return true;
         });
     const auto exe = reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr));
+    record->clientVersion = const_cast<uint8_t*>(function);
     if (wraps)
     {
         LOG("RECLAIMER 0.10: halo3.dll+0x%X: the client's own version of it (exe+0x%llX) runs the translated body, "
@@ -985,6 +989,18 @@ LPVOID PatchedAddress(LPVOID target)
     const LPVOID body = found == g_hooks.end() ? target : reinterpret_cast<LPVOID>(found->second->body);
     ReleaseSRWLockShared(&g_lock);
     return body;
+}
+
+void* ClientVersion(LPVOID target)
+{
+    const auto address = reinterpret_cast<uintptr_t>(target);
+    if (!InGuestCode(address))
+        return nullptr;
+    AcquireSRWLockShared(&g_lock);
+    const auto found = g_hooks.find(address);
+    void* const version = found == g_hooks.end() ? nullptr : found->second->clientVersion;
+    ReleaseSRWLockShared(&g_lock);
+    return version;
 }
 
 // The stubs of the hooks on functions the client replaced follow their hooks' state.
