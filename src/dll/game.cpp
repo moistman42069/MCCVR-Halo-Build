@@ -4787,8 +4787,10 @@ namespace
                 }
             }
             // Project Reclaimer's HUD and zoom art come out narrower in the frame under that correction; this
-            // width was set by eye in a headset. MCC's are right without it.
-            if (g_hostIsProjectReclaimer)
+            // width was set by eye in a headset. MCC's are right without it, and so are those of Reclaimer 0.10's
+            // recompiled engine, which lays its HUD out as MCC's does (its own layout reads 0.87, not 0.9's 0.97):
+            // there the width stretched the frame's crosshair.
+            if (g_hostIsProjectReclaimer && !lifted::Active())
                 horizontal *= kAimFrameReclaimerHudWidth;
             frameHudScale();
             return;
