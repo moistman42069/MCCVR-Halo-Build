@@ -95,3 +95,43 @@ and `38F658:4:v` clean.
 - Reach's navpoint distance pick (`+0x2CB01C`) still follows the gun.
 - Halo 4's second widget family (`+0x3F25BC`) reads the stack element; it goes through the same detour, but which
   widgets it carries was not established.
+
+## Round 2: the first headset run (source 512674f2, 2026-11-06 evening)
+
+Report: Reach still showed the marker only while the gun pointed at the objective, and its arrow sat low near
+the floor, nowhere near the objective (the Falcons to the left). Halo 4: marker against arrow now right, but the
+marker "floats around" its objective, too high or low depending on how the head moved. Reach floats too, further
+off. The tester's settings: Reach `hud_size 0.45`, `hud_vertical_offset -202`; Halo 4 `hud_size 0.41`,
+`hud_vertical_offset -117`.
+
+1. **Reach's head path never switched on** (`3fdfd041`). The log has Halo 4's "placed from the head" line and not
+   Reach's "tests now look from the head" line. The off-eye verdict asked `ReachOwnsHudStereoTransaction()`, which
+   also requires the thread to be inside an eye's render; the HUD update never is. Now
+   `ReachStereoCoreOwned()` (the same checks without the eye scope).
+2. **Reach's HUD height moved world markers** (`600ac141`). The HUD-height hook on the anchor producer
+   (`+0x2DB54C`) shifted every anchored widget, objective markers included (anchor 26, scripted objects): at -202
+   virtual px the arrow sat near the floor. Anchors 15, 16, 21-26 and 40-49 (placed on a world point), directly
+   or through their parent, now keep the game's place. Reach's HUD size: read statically, the projection inverts
+   the HUD warp that the game rebuilds every frame (`+0x2D846C`, inverse `+0x2D8A04`), and the object path's basis
+   (`+0x2DA9E8`) uses that inverted place, so the size should not move markers. That the safe frame the setting
+   writes feeds that warp is a reading, not a measurement: if Reach markers still drift toward the centre as the
+   head turns, that is the next lead.
+3. **Halo 4's HUD affine moved markers** (`d5ebab8f`). The mod scales and lowers the whole gameplay HUD at the CUI
+   root (`+0x3F313C`): shown at `h` of the distance from the centre and `height` px off. For markers placed from
+   the head, the point projection (`+0x40B180`) now lays them out where that affine shows them on target. Outside
+   the HUD's own area (with size 0.41, about the middle 41% of the view) a marker cannot be drawn on its target and
+   becomes the HUD's edge arrow. Assumed, not measured: the affine's pixels are the camera window's pixels, about
+   the picture's centre.
+
+Log lines for round 2: Reach `Reach HUD height: ... N placed on a world point (objective markers and the like)
+kept on it`, and once `NAV MARKERS Reach: the HUD's on/off-screen tests ... now look from the head`; Halo 4
+`... placed from the head, not the gun ...; the HUD's size and height are undone for them: yes (vertical scale
+0.41, height -0.217 of the half picture)` (the height figure depends on the render size).
+
+Headset check, round 2 (both games, campaign, an objective in view):
+1. Look at the objective with the gun pointed away: the marker shows, on the objective.
+2. Turn your head slowly so the objective moves from the middle toward the edge of the view: the marker stays on
+   it (it should not lag behind or slide toward the middle) until it reaches the edge of the HUD, then becomes an
+   arrow there.
+3. Look up and down at it: it stays on the objective, not above or below.
+4. Turn away: the arrow shows on the objective's side; turn back and it becomes the marker again.
