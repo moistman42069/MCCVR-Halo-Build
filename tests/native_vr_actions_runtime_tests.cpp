@@ -26,6 +26,8 @@ static PRUNTIME_FUNCTION WINAPI MockLookup(DWORD64,PDWORD64,PUNWIND_HISTORY_TABL
 #undef RtlLookupFunctionEntry
 // lifted_engine.h's: no Project Reclaimer 0.10 engine in this test.
 HMODULE lifted::Halo3Module() { return nullptr; }
+bool lifted::Active() { return false; }
+void* lifted::Callable(void* target) { return target; }
 
 Config::Config()=default;
 Config g_config{};
