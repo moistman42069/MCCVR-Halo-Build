@@ -1010,6 +1010,18 @@ void Config_StoreLiveTunables()
     }
 }
 
+void Config_RefreshLiveTunables()
+{
+    const std::lock_guard lock(g_profileMutex);
+    const int active = g_activeTitleProfile.load(std::memory_order_acquire);
+    for (int field = 0; field < kTunableFieldCount; ++field)
+    {
+        const TunableField& descriptor = kTunableFields[field];
+        if(g_activeWeaponProfile>=0&&WeaponAlignmentFieldIndex(descriptor.live)>=0) continue;
+        g_config.*descriptor.live = ProfileFor(active, descriptor).*descriptor.member;
+    }
+}
+
 const char* Config_ActiveWeaponProfileName()
 { return g_activeWeaponName.load(std::memory_order_acquire); }
 

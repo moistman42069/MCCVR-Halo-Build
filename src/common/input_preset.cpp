@@ -55,6 +55,9 @@ constexpr BoolField kBools[] = {
     {"dual_wield_shake_reload", &Config::dual_wield_shake_reload},
     {"weapon_needler_shake", &Config::weapon_needler_shake},
     {"reclaimer_flight_buttons", &Config::reclaimer_flight_buttons},
+    // Crosshair and bullet direction.
+    {"independent_dual_aim", &Config::independent_dual_aim},
+    {"gun_barrel_aim", &Config::gun_barrel_aim},
     // Roomscale body movement and how the view is brought back over the character.
     {"roomscale_movement", &Config::roomscale_movement},
     {"roomscale_recenter_jump", &Config::roomscale_recenter_jump},
@@ -104,6 +107,17 @@ constexpr FloatField kFloats[] = {
     {"roomscale_recenter_moving_speed", &Config::roomscale_recenter_moving_speed},
     {"haptic_intensity", &Config::haptic_intensity},
 };
+// The crosshair's direction against the controller, kept for each game (title_profiles): halo3_gun_pitch_deg and so
+// on, the same keys halomccvr.cfg uses. The live copies follow the running game (Config_RefreshLiveTunables).
+struct TitleFloatField { const char* suffix; float TitleTunables::*member; };
+constexpr TitleFloatField kTitleFloats[] = {
+    {"gun_pitch_deg", &TitleTunables::gun_pitch_deg},
+    {"gun_yaw_deg", &TitleTunables::gun_yaw_deg},
+    {"gun_roll_deg", &TitleTunables::gun_roll_deg},
+};
+constexpr const char* kProfilePrefixes[] = {"halo3_", "odst_", "reach_", "halo4_", "halo2a_", "halo2c_", "halo1_"};
+static_assert(sizeof(kProfilePrefixes) / sizeof(kProfilePrefixes[0]) == kTitleProfileCount,
+              "one prefix for each game's profile, as in halomccvr.cfg");
 
 std::filesystem::path Folder()
 {
@@ -126,6 +140,9 @@ void CopyScheme(Config& to, const Config& from) noexcept
     for (const auto& f : kBools) to.*f.member = from.*f.member;
     for (const auto& f : kInts) to.*f.member = from.*f.member;
     for (const auto& f : kFloats) to.*f.member = from.*f.member;
+    for (int profile = 0; profile < kTitleProfileCount; ++profile)
+        for (const auto& f : kTitleFloats)
+            to.title_profiles[profile].*f.member = from.title_profiles[profile].*f.member;
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
     {
         to.vr_bindings[title] = from.vr_bindings[title];
@@ -141,6 +158,10 @@ bool SameScheme(const Config& a, const Config& b) noexcept
     for (const auto& f : kInts) if (a.*f.member != b.*f.member) return false;
     // A file keeps three decimals, so a loaded preset can differ from what was saved by rounding alone.
     for (const auto& f : kFloats) if (std::fabs(a.*f.member - b.*f.member) > 0.002f) return false;
+    for (int profile = 0; profile < kTitleProfileCount; ++profile)
+        for (const auto& f : kTitleFloats)
+            if (std::fabs(a.title_profiles[profile].*f.member - b.title_profiles[profile].*f.member) > 0.002f)
+                return false;
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
         if (a.vr_bindings[title] != b.vr_bindings[title] || a.vr_inputs[title] != b.vr_inputs[title] ||
             a.vr_extra_bindings[title] != b.vr_extra_bindings[title]) return false;
@@ -166,6 +187,12 @@ std::string Serialize(const Config& scheme)
         sprintf_s(line, "%s = %.3f\n", f.key, scheme.*f.member);
         text += line;
     }
+    for (int profile = 0; profile < kTitleProfileCount; ++profile)
+        for (const auto& f : kTitleFloats)
+        {
+            sprintf_s(line, "%s%s = %.3f\n", kProfilePrefixes[profile], f.suffix, scheme.title_profiles[profile].*f.member);
+            text += line;
+        }
     // The rows' inputs (vr_mapping::FormatInput): a row's further ones only where they differ from its game's start, all
     // three then (Parse starts from that start).
     text += "vr_inputs_version = 2\n";
@@ -250,6 +277,15 @@ void Parse(const char* text, Config& out)
                 done = true;
                 break;
             }
+        for (int profile = 0; profile < kTitleProfileCount && !done; ++profile)
+            for (const auto& f : kTitleFloats)
+                if (key == std::string(kProfilePrefixes[profile]) + f.suffix)
+                {
+                    const float parsed = static_cast<float>(atof(value));
+                    if (std::isfinite(parsed)) out.title_profiles[profile].*f.member = std::clamp(parsed, -180.0f, 180.0f);
+                    done = true;
+                    break;
+                }
         if (done) continue;
         // A row's inputs (vr_mapping::ParseInput): its own (may be Automatic) and further ones, and the extra rows'.
         char expected[96];

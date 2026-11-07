@@ -2205,6 +2205,8 @@ int Config_ActiveTitleProfile();
 int Config_ShownTitleProfile();
 void Config_ApplyTitleProfile(int profile);
 void Config_StoreLiveTunables();
+// The other way: the live fields take the active game's profile again, after something (a controls preset) wrote it.
+void Config_RefreshLiveTunables();
 // Cold config/UI path only. Identity comes from the admitted primary weapon
 // palette, never a native object/tag handle. Unknown models use title settings.
 void Config_ApplyWeaponProfile(uint64_t identity);

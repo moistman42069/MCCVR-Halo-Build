@@ -705,7 +705,10 @@ namespace
         {
             Config scheme{};
             if(!input_preset::Find(chosen,scheme)) return;
+            // The running game's aim angles are live copies of its profile: kept first, taken from the preset after.
+            Config_StoreLiveTunables();
             input_preset::CopyScheme(g_config,scheme);
+            Config_RefreshLiveTunables();
             strncpy_s(g_config.input_preset,chosen.c_str(),_TRUNCATE);
             CloseEmptyInputs();
             baselineFound=false;
@@ -723,6 +726,8 @@ namespace
             if(!chosen.empty()) apply(chosen);
             ImGui::EndCombo();
         }
+        // A slider just moved edits the live copy of the running game's aim angles; its profile is what presets hold.
+        Config_StoreLiveTunables();
         const bool modified=baselineFound&&(!input_preset::SameScheme(g_config,baseline)||EmptyInputShown());
         for(int i=0;i<input_preset::BuiltInCount();++i)
             if(active==input_preset::BuiltInName(i)) ImGui::TextWrapped("%s",input_preset::BuiltInDescription(i));
@@ -766,7 +771,8 @@ namespace
             ImGui::TextDisabled("This preset's file is gone. Your settings stay as they are.");
         ImGui::PushStyleColor(ImGuiCol_Text,ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
         ImGui::TextWrapped("Saves your buttons, turning, movement, roomscale, controller vibration, left-handed play, "
-            "two-handed aiming, gestures, reload and holsters (where they sit on you too), but not your weapon aim. "
+            "two-handed aiming, gestures, reload and holsters (where they sit on you too), and each game's crosshair "
+            "and bullet direction, but not where the gun sits in your hand. "
             "Presets are files in Controls Presets beside halomccvr.cfg, so you can share them.");
         ImGui::PopStyleColor();
     }
@@ -2980,8 +2986,9 @@ namespace
         }
         }
 
-        // The crosshair and the shot's direction, after the rest of Weapon & Aim.
-        if (CategorySection section{Cat_WeaponAim}; section.visible)
+        // The crosshair and the shot's direction against the controller are how the player aims: a controls preset's,
+        // each game's own angles included.
+        if (CategorySection section{Cat_Controls}; section.visible)
         {
         if (SectionHeader("Crosshair and bullet direction##section", ImGuiTreeNodeFlags_None))
         {
@@ -3007,11 +3014,15 @@ namespace
             g_config.gun_roll_deg = 0.0f;
             changed = true;
         }
-        ImGui::TextDisabled("Adjusts the aiming ray used by shots and the reticle, even when hidden.\n"
-                            "Visual gun alignment and gun-stock offsets have their own sections above.");
+        ImGui::TextDisabled("Adjusts the aiming ray used by shots and the reticle, even when hidden. Saved separately\n"
+                            "for each game. Visual gun alignment and gun-stock offsets are on Weapon & Aim.");
         }
         ImGui::Spacing();
         }
+        }
+
+        if (CategorySection section{Cat_WeaponAim}; section.visible)
+        {
         if (SectionHeader("Authored weapon crosshair (stereo)##section", ImGuiTreeNodeFlags_None))
         {
         ImGui::TextDisabled("The floating reticle that shows where the weapon really shoots.");

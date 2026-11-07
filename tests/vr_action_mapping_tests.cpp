@@ -266,6 +266,24 @@ void CheckInputPresets()
         !bodyLoaded.roomscale_recenter_moving&&std::fabs(bodyLoaded.roomscale_recenter_jump_s-.5f)<.002f&&
         std::fabs(bodyLoaded.haptic_intensity-.3f)<.002f&&!bodyLoaded.reclaimer_flight_buttons,
         "a preset keeps roomscale, controller vibration and Project Reclaimer flying");
+    Config aim{};
+    aim.independent_dual_aim=!aim.independent_dual_aim;aim.gun_barrel_aim=!aim.gun_barrel_aim;
+    for(int profile=0;profile<kTitleProfileCount;++profile) aim.title_profiles[profile].gun_pitch_deg=-13.f-profile;
+    aim.title_profiles[kTitleProfileReach].gun_yaw_deg=2.f;aim.title_profiles[kTitleProfileHalo4].gun_roll_deg=-4.f;
+    Config aimLoaded{};
+    input_preset::Parse(input_preset::Serialize(aim).c_str(),aimLoaded);
+    bool aimKept=aimLoaded.independent_dual_aim==aim.independent_dual_aim&&aimLoaded.gun_barrel_aim==aim.gun_barrel_aim&&
+        std::fabs(aimLoaded.title_profiles[kTitleProfileReach].gun_yaw_deg-2.f)<.002f&&
+        std::fabs(aimLoaded.title_profiles[kTitleProfileHalo4].gun_roll_deg+4.f)<.002f;
+    for(int profile=0;profile<kTitleProfileCount;++profile)
+        aimKept=aimKept&&std::fabs(aimLoaded.title_profiles[profile].gun_pitch_deg-(-13.f-profile))<.002f;
+    Check(aimKept&&input_preset::SameScheme(aim,aimLoaded)&&!input_preset::SameScheme(aim,Config{}),
+        "a preset keeps the crosshair and bullet direction, each game's angles its own");
+    Config aimApplied{};
+    input_preset::CopyScheme(aimApplied,aimLoaded);
+    Check(aimApplied.title_profiles[0].gun_pitch_deg==aimLoaded.title_profiles[0].gun_pitch_deg&&
+        aimApplied.title_profiles[0].gun_scale==Config{}.title_profiles[0].gun_scale,
+        "choosing it sets each game's aim angles, and leaves the gun's other placement alone");
     Config wild{};
     input_preset::Parse("roomscale_follow_law = 7\nhaptic_intensity = 5\nroomscale_recenter_jump_s = 90\n"
         "roomscale_recenter_moving_speed = -4\n",wild);
