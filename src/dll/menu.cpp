@@ -123,7 +123,6 @@ namespace
         Cat_Hud,
         Cat_Subtitles,
         Cat_Scope,
-        Cat_Telemetry,
         Cat_Advanced,
         Cat_Count
     };
@@ -151,7 +150,6 @@ namespace
         {"HUD",           "Size and position of the active game's HUD."},
         {"Subtitles",     "Localized dialogue in gameplay and 3D theatre."},
         {"Scope",         "Experimental gun-mounted zoom screen."},
-        {"Telemetry Recorder", "Records controller, headset and aim-solver data for troubleshooting."},
         {"Advanced",      "Aim internals, tracking calibration, panel placement, and starting over."},
     };
     static_assert(sizeof(kCategories) / sizeof(kCategories[0]) == Cat_Count,
@@ -3759,9 +3757,10 @@ namespace
         }
         }
 
-        if (g_activeCategory == Cat_Telemetry &&
+        if (g_activeCategory == Cat_Advanced &&
             SectionHeader("Telemetry Recorder##section", ImGuiTreeNodeFlags_None))
         {
+        ImGui::TextDisabled("Records controller, headset and aim-solver data for troubleshooting.");
         const TelemetryStatusSnapshot telemetry = Telemetry_GetStatus();
         const bool active = telemetry.state == TelemetryRecorderState::Starting ||
             telemetry.state == TelemetryRecorderState::Recording;
