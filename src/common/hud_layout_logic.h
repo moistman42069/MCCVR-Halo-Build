@@ -140,6 +140,18 @@ inline constexpr HudLayoutAdapter kHalo3HudLayoutAdapter = [] {
     return adapter;
 }();
 
+// Project Reclaimer 0.10's merged maps: the engine's own tag data holds two maps' tags at once (an ODST level on
+// Halo 3's base map, the menus' scenery merged with the multiplayer characters), so it holds Halo 3's three layout
+// records twice. Exactly three rejected all six on every scan, for as long as such a map was loaded: the HUD stayed
+// at the game's own size and the crosshair's capture was fitted for a layout the HUD did not use (2026-11-07). Up to
+// two sets are taken there, each record proven as before, and the layout is written to every one: the set the engine
+// draws from has it, whichever it is.
+inline constexpr HudLayoutAdapter kHalo3MergedHudLayoutAdapter = [] {
+    auto adapter=kHalo3HudLayoutAdapter;
+    adapter.maxBlocks=6;
+    return adapter;
+}();
+
 inline constexpr HudLayoutAdapter kOdstHudLayoutAdapter = {
     HudLayoutProfile::Halo3ODST,
     "Halo 3: ODST",
@@ -267,13 +279,14 @@ inline constexpr HudLayoutAdapter kReachHudLayoutAdapter = {
     true,
 };
 
+// `mergedMaps`: the host keeps merged maps (Project Reclaimer; kHalo3MergedHudLayoutAdapter).
 inline constexpr const HudLayoutAdapter* HudLayoutAdapterFor(
-    HudLayoutProfile profile)
+    HudLayoutProfile profile, bool mergedMaps = false)
 {
     switch (profile)
     {
     case HudLayoutProfile::Halo3:
-        return &kHalo3HudLayoutAdapter;
+        return mergedMaps ? &kHalo3MergedHudLayoutAdapter : &kHalo3HudLayoutAdapter;
     case HudLayoutProfile::Halo3ODST:
         return &kOdstHudLayoutAdapter;
     case HudLayoutProfile::HaloReach:

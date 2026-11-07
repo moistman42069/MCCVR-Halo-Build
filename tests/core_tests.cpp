@@ -7654,6 +7654,12 @@ int main()
                   !HudLayoutAcceptedCountOk(*halo3Hud, 2) &&
                   !HudLayoutAcceptedCountOk(*halo3Hud, 4),
             "Halo 3 rejects the failed two-record alternate layout candidate");
+        const HudLayoutAdapter* mergedHud = HudLayoutAdapterFor(HudLayoutProfile::Halo3, true);
+        Check(mergedHud != halo3Hud && HudLayoutAcceptedCountOk(*mergedHud, 3) &&
+                  HudLayoutAcceptedCountOk(*mergedHud, 6) && !HudLayoutAcceptedCountOk(*mergedHud, 2) &&
+                  !HudLayoutAcceptedCountOk(*mergedHud, 7) && !mergedHud->scanMappedRegions &&
+                  HudLayoutAdapterFor(HudLayoutProfile::Halo3ODST, true) == odstHud,
+            "Project Reclaimer's merged maps: Halo 3 takes both sets of its three records, never fewer than one set");
         Check(HudLayoutAcceptedCountOk(*odstHud, 1) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 0) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 2),

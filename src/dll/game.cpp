@@ -4340,7 +4340,7 @@ namespace
 
     static uint32_t EnsureHudLayoutProfile(HudLayoutProfile profile)
     {
-        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
+        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile, g_hostIsProjectReclaimer);
         if (!adapter)
             return 0;
         if (g_hudLayoutOwner.load(std::memory_order_acquire) == profile)
@@ -4820,7 +4820,7 @@ namespace
         const auto profile =
             static_cast<HudLayoutProfile>(static_cast<uint32_t>(token));
         const uint32_t generation = static_cast<uint32_t>(token >> 32);
-        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
+        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile, g_hostIsProjectReclaimer);
         if (!adapter)
         {
             g_safeFrameScanInFlight.store(false, std::memory_order_release);
@@ -5142,7 +5142,7 @@ namespace
 
     void LaunchSafeFrameScan(HudLayoutProfile profile, const char* why)
     {
-        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
+        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile, g_hostIsProjectReclaimer);
         const uint32_t generation = EnsureHudLayoutProfile(profile);
         if (!adapter || !generation)
             return;
@@ -5186,7 +5186,7 @@ namespace
     // Present and verified slots are rechecked once per second for map reloads.
     void ApplyHudLayoutOnce(HudLayoutProfile profile)
     {
-        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
+        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile, g_hostIsProjectReclaimer);
         const uint32_t generation =
             g_hudLayoutGeneration.load(std::memory_order_acquire);
         if (!adapter || !HudLayoutContextMatches(profile, generation) ||
@@ -5358,7 +5358,7 @@ namespace
 
     bool TryReacquireSafeFrames(HudLayoutProfile profile)
     {
-        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
+        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile, g_hostIsProjectReclaimer);
         HudLayoutRememberedCache* remembered =
             HudLayoutRememberedFor(profile);
         const uint32_t generation =
@@ -5468,7 +5468,7 @@ namespace
             if(profile==HudLayoutProfile::Halo3&&(adjusted||native))LOG("H3 live HUD layout: selected-record adjusted=%llu native=%llu; stock scanner independent",adjusted,native);
         }
 
-        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
+        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile, g_hostIsProjectReclaimer);
         const uint32_t generation = EnsureHudLayoutProfile(profile);
         if (!adapter || !generation)
             return;
@@ -55099,7 +55099,7 @@ void Game_LocateHudSafeFrames()
     if (profile == HudLayoutProfile::None &&
         Game_AllowsSharedGameplayFeatures())
         profile = HudLayoutProfile::Halo3;
-    const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
+    const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile, g_hostIsProjectReclaimer);
     if (!adapter)
     {
         LOG("SAFEFRAME: manual rescan skipped; no title-owned HUD layout adapter");
