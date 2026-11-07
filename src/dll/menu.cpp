@@ -99,13 +99,13 @@ namespace
         "Original Halo MCC VR mod created by Pancreations, with the community building on top of it to give you the "
         "version you are playing today.\n"
         "Pass-on/community build maintained by @MeWhenINameMyself.\n"
-        "Multiplayer support for Project Reclaimer maintained by Nitsujack.\n"
+        "Multiplayer support for Project Reclaimer maintained by Nitsujack.\n\n"
         "This mod is an effort by many contributors, please see the Credits section to the right and consider "
-        "supporting them through their links present in the launcher.\n"
+        "supporting them through their links present in the launcher.\n\n"
         "Join the Flat2VR Discord to report bugs or share feedback.";
 
     constexpr const char* kWelcomeCloseHint =
-        "Press L3+R3 (both analog sticks) to recenter and close the menu";
+        "Press L3+R3 (both analog sticks) to recenter and toggle this menu's visibility.";
 
     enum MenuCategory
     {
@@ -1104,12 +1104,6 @@ namespace
             g_config.show_welcome = !dontShow;
             changed = true;
         }
-        changed |= ImGui::Checkbox(
-            "Stereo 3D Theatre for cutscenes",
-            &g_config.cutscene_theater_enabled);
-        ImGui::TextDisabled(
-            "On by default. Player-controlled cameras always stay immersive.\n"
-            "Open 3D Theatre in the left column for depth and screen controls.");
         ImGui::Spacing();
         ImGui::TextUnformatted(kWelcomeCloseHint);
         ImGui::Separator();
