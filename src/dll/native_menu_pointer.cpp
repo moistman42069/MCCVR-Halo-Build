@@ -22,7 +22,9 @@ std::atomic<const char*> frameStatus{"no-screen"}, deliveryStatus{"idle"};
 std::atomic<float> scrollStick{0.0f};
 // All remaining state belongs exclusively to MCC's window thread.
 game_menu_pointer::Pointer pointer;
-game_menu_pointer::StickWheel stickWheel;
+// Eighths of a notch, many a second, so MCC's lists glide rather than jump; 15 notches a second when pushed fully.
+constexpr int kWheelStepsPerNotch = 8;
+game_menu_pointer::StickWheel stickWheel{15.0f, kWheelStepsPerNotch};
 UINT_PTR timer = 0;
 bool mouseDown = false;
 bool faultLogged = false;
@@ -102,18 +104,18 @@ void Apply()
                 int(result.y), int(client.right-client.left), int(client.bottom-client.top));
         moveCount.fetch_add(1, std::memory_order_relaxed);
         // The cursor is on the target now, so the wheel goes to what is under it. Not during a drag.
-        const int notches = stickWheel.Step(scrollStick.load(std::memory_order_acquire), GetTickCount());
-        if (notches && !mouseDown) {
+        const int steps = stickWheel.Step(scrollStick.load(std::memory_order_acquire), GetTickCount());
+        if (steps && !mouseDown) {
             INPUT wheel{};
             wheel.type = INPUT_MOUSE;
             wheel.mi.dwFlags = MOUSEEVENTF_WHEEL;
-            wheel.mi.mouseData = static_cast<DWORD>(notches * WHEEL_DELTA);
+            wheel.mi.mouseData = static_cast<DWORD>(steps * (WHEEL_DELTA / kWheelStepsPerNotch));
             if (SendInput(1, &wheel, sizeof(wheel)) != 1) Fault();
             // What a screen that does not scroll was sent, to set beside the report.
             static unsigned wheelLogs = 0;
             if (wheelLogs < 24 && ++wheelLogs)
-                LOG("game menu pointer: wheel %d notch(es) at %d,%d of %dx%d", notches, int(result.x), int(result.y),
-                    int(client.right-client.left), int(client.bottom-client.top));
+                LOG("game menu pointer: wheel %d/%d notch at %d,%d of %dx%d", steps, kWheelStepsPerNotch,
+                    int(result.x), int(result.y), int(client.right-client.left), int(client.bottom-client.top));
         }
         deliveryStatus.store("delivered");
         visual.store(game_menu_pointer::Pack(GetTickCount(), true,
