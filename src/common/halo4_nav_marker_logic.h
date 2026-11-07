@@ -82,6 +82,7 @@ struct Sites
 {
     int64_t projectorRva = 0;   // the hook
     int64_t projectionRva = 0;  // the projection builder the camera build calls last
+    int64_t pointRva = 0;       // the point projection the projector calls (the second hook: the HUD's affine)
 };
 enum class Bind : uint8_t
 {
@@ -90,6 +91,7 @@ enum class Bind : uint8_t
     CameraBuildMissing,   // the same, for the camera build
     NotACall,             // a decoded site is not a call
     BuilderNotFunction,   // the projection builder does not begin a function
+    PointNotFunction,     // the point projection the projector calls does not begin a function
     Count
 };
 inline const char* BindName(Bind why)
@@ -101,14 +103,16 @@ inline const char* BindName(Bind why)
     case Bind::CameraBuildMissing: return "the per-user camera build is missing, ambiguous or not a function";
     case Bind::NotACall: return "a decoded site is not a call";
     case Bind::BuilderNotFunction: return "the projection builder does not begin a function";
+    case Bind::PointNotFunction: return "the point projection does not begin a function";
     default: return "?";
     }
 }
 // Each pointer: the bytes at that pattern's unique match (null = missing or ambiguous). `*IsFunction`: the image's
-// function table begins a function there. `builderIsFunction(rva)` is asked about the decoded projection builder.
+// function table begins a function there. `isFunction(rva)` is asked about the two decoded call targets (the
+// projection builder, the point projection).
 template <typename IsFunction>
 inline Bind DecodeSites(const uint8_t* projector, int64_t projectorRva, bool projectorIsFunction,
-                        const uint8_t* build, int64_t buildRva, bool buildIsFunction, IsFunction builderIsFunction,
+                        const uint8_t* build, int64_t buildRva, bool buildIsFunction, IsFunction isFunction,
                         Sites& out)
 {
     if (!projector || projectorRva <= 0 || !projectorIsFunction)
@@ -120,11 +124,69 @@ inline Bind DecodeSites(const uint8_t* projector, int64_t projectorRva, bool pro
         return Bind::NotACall;
     const int64_t builder = buildRva + static_cast<int64_t>(kCameraBuildProjectionCall) + 5 +
                             ReadI32(build + kCameraBuildProjectionCall + 1);
-    if (builder <= 0 || !builderIsFunction(builder))
+    if (builder <= 0 || !isFunction(builder))
         return Bind::BuilderNotFunction;
+    const int64_t point = projectorRva + static_cast<int64_t>(kProjectorPointCall) + 5 +
+                          ReadI32(projector + kProjectorPointCall + 1);
+    if (point <= 0 || point == projectorRva || !isFunction(point))
+        return Bind::PointNotFunction;
     out.projectorRva = projectorRva;
     out.projectionRva = builder;
+    out.pointRva = point;
     return Bind::Bound;
+}
+
+// ---- THE HUD'S AFFINE ------------------------------------------------------------------------------------------
+// This mod scales and lowers Halo 4's gameplay HUD for the headset (game.cpp Halo4ApplyNativeHudAffine, after the
+// HUD root +0x3F313C): in the root's output, centred and y up, x' = horizontal * x and y' = vertical * y + height
+// pixels. The markers are part of that HUD, so a marker laid out on its target was SHOWN at `horizontal` of its
+// distance from the centre and `height` pixels off (headset report, 2026-11-06: hud_size 0.41 and -117 px; the
+// marker "floats around" its objective, too high or low depending on how the head moved). The point projection
+// (+0x40B180) gives the marker's place as a fraction of the picture (u right, v down) and whether it is on screen
+// (in front and inside); the layout then works in those fractions. Undoing the affine there lays the marker out
+// where the affine will SHOW it on its target. What then falls outside the HUD's own area is off screen for the
+// game, and is drawn as its arrow at that area's edge.
+struct HudAffine
+{
+    float horizontal = 1.0f, vertical = 1.0f;
+    float heightNdc = 0.0f;  // the height in the picture's half-heights (y up)
+};
+// `heightPixels` against the picture's height in the same pixels. False (out untouched) when it is not usable.
+inline bool MakeHudAffine(float horizontal, float vertical, float heightPixels, float pictureHeight, HudAffine& out)
+{
+    if (!std::isfinite(horizontal) || !std::isfinite(vertical) || !std::isfinite(heightPixels) ||
+        !std::isfinite(pictureHeight) || !(horizontal >= 0.1f) || !(vertical >= 0.1f) || horizontal > 4.0f ||
+        vertical > 4.0f || !(pictureHeight >= 16.0f))
+        return false;
+    out.horizontal = horizontal;
+    out.vertical = vertical;
+    out.heightNdc = heightPixels / (pictureHeight * 0.5f);
+    return std::isfinite(out.heightNdc);
+}
+// One point's result. `onScreen` / `uv`: the projection's own. Only a point the projection put on the picture is
+// changed: one behind the head or off the picture keeps the game's own edge direction (the affine only narrows
+// what is on screen). Returns true when anything was written.
+inline bool UndoHudAffine(const HudAffine& affine, bool& onScreen, float uv[2])
+{
+    if (!onScreen || !std::isfinite(uv[0]) || !std::isfinite(uv[1]))
+        return false;
+    const float x = (uv[0] * 2.0f - 1.0f) / affine.horizontal;
+    const float y = ((1.0f - uv[1] * 2.0f) - affine.heightNdc) / affine.vertical;
+    if (!std::isfinite(x) || !std::isfinite(y))
+        return false;
+    const float reach = std::fabs(x) > std::fabs(y) ? std::fabs(x) : std::fabs(y);
+    if (reach <= 1.0f)
+    {
+        uv[0] = (x + 1.0f) * 0.5f;
+        uv[1] = (1.0f - y) * 0.5f;
+        return true;
+    }
+    // Outside the HUD's own area: off screen, toward the target, on that area's edge (as the game's own edge
+    // direction for an off-screen point is).
+    onScreen = false;
+    uv[0] = (x / reach + 1.0f) * 0.5f;
+    uv[1] = (1.0f - y / reach) * 0.5f;
+    return true;
 }
 
 // ---- THE PROOF TAKEN AT RUN TIME -------------------------------------------------------------------------------

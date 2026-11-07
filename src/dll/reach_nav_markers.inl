@@ -63,8 +63,9 @@ head_relative::Use ReachNavDecideTestHead(reach_nav_markers::Camera& head) noexc
     bool cinematic = false;
     float position[3]{};
     const bool read = ReachReadHeadSample(sample, cinematic, position);
+    // Not ReachOwnsHudStereoTransaction: that one also asks for an eye's render, which these calls are outside of.
     const head_relative::Use use = reach_nav_markers::TestHeadUse(
-        g_config.nav_markers_follow_head, ReachOwnsHudStereoTransaction(), read, cinematic, sample, position,
+        g_config.nav_markers_follow_head, ReachStereoCoreOwned(), read, cinematic, sample, position,
         g_reachCamera.generation.load(std::memory_order_acquire), Sight_NowUs());
     if (use == head_relative::Use::Ok)
         head = reach_nav_markers::HeadCamera(sample, position);

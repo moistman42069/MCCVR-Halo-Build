@@ -25405,7 +25405,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
     // whether the authored reticle actually needs re-uploading this frame.
     std::atomic<uint64_t> g_reachAuthoredCrosshairKey{0};
 
-    bool ReachOwnsHudStereoTransaction()
+    // Reach's stereo core owns this load and is armed: any thread, inside an
+    // eye's render or not (the HUD update's off-screen tests run outside it).
+    bool ReachStereoCoreOwned()
     {
         if (TitleAdapter_GetActiveTitle() != GameTitle::HaloReach)
             return false;
@@ -25418,8 +25420,14 @@ static constexpr bool kOdstMappedFpEnabled = false;
             g_reachCamera.armed.load(std::memory_order_acquire) &&
             !g_reachCamera.teardownRequested.load(std::memory_order_acquire) &&
             g_enabled.load(std::memory_order_relaxed) &&
-            VR_IsStereoEnabled() && g_reachFpCameraEyeScope.active &&
-            g_reachFpCameraEyeScope.generation == cameraGeneration;
+            VR_IsStereoEnabled();
+    }
+
+    bool ReachOwnsHudStereoTransaction()
+    {
+        return ReachStereoCoreOwned() && g_reachFpCameraEyeScope.active &&
+            g_reachFpCameraEyeScope.generation ==
+                g_reachCamera.generation.load(std::memory_order_acquire);
     }
 
     #include "reach_hud_height.inl"
@@ -39646,6 +39654,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         g_reachHudHeightEnabled.store(false, std::memory_order_release);
         g_reachHudHeightApplied.store(0, std::memory_order_relaxed);
         g_reachHudHeightRefused.store(0, std::memory_order_relaxed);
+        g_reachHudHeightWorldAnchored.store(0, std::memory_order_relaxed);
         {
             DWORD64 functionBase = 0;
             const PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(
@@ -41334,11 +41343,16 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 0, std::memory_order_relaxed);
             const auto refused = g_reachHudHeightRefused.exchange(
                 0, std::memory_order_relaxed);
+            const auto onWorld = g_reachHudHeightWorldAnchored.exchange(
+                0, std::memory_order_relaxed);
             LOG("Reach HUD height: %.1f virtual px, %llu native anchors "
-                "translated / %llu local stock refusals; camera core unaffected",
+                "translated / %llu local stock refusals; %llu placed on a "
+                "world point (objective markers and the like) kept on it; "
+                "camera core unaffected",
                 g_config.hud_vertical_offset,
                 static_cast<unsigned long long>(applied),
-                static_cast<unsigned long long>(refused));
+                static_cast<unsigned long long>(refused),
+                static_cast<unsigned long long>(onWorld));
         }
 
         const uint64_t lastClass2 =
