@@ -486,11 +486,11 @@ static void Clamp()
     g_config.reticle_min_scale_dist_m =
         std::clamp(g_config.reticle_min_scale_dist_m, 0.0f, g_config.reticle_max_dist_m - 0.1f);
     g_config.reticle_min_scale = std::clamp(g_config.reticle_min_scale, 0.001f, 1.0f);
-    // 0 stays 0 (hold one image); every other value is clamped into the range
-    // the publish floor can actually honour.
+    // 0 stays 0 (hold one image). Below 6 is honoured only where a publish is
+    // measured cheap (authored_reticle_logic.h, AuthoredReticleUploadGapForCost).
     if (g_config.crosshair_animation_frames != 0)
         g_config.crosshair_animation_frames =
-            std::clamp(g_config.crosshair_animation_frames, 6, 60);
+            std::clamp(g_config.crosshair_animation_frames, 1, 60);
     g_config.reticle_r = std::clamp(g_config.reticle_r, 0.0f, 1.0f);
     g_config.reticle_g = std::clamp(g_config.reticle_g, 0.0f, 1.0f);
     g_config.reticle_b = std::clamp(g_config.reticle_b, 0.0f, 1.0f);
@@ -2924,8 +2924,9 @@ void ConfigSave()
     fprintf(f, "# How often the VR crosshair re-reads the game's own crosshair art,\n");
     fprintf(f, "# in frames. This makes Halo 3 and Halo 4 authored crosshairs animate:\n");
     fprintf(f, "# when you shoot, and the red/green target colors. Lower is more\n");
-    fprintf(f, "# responsive, higher is cheaper. 0 holds animation.\n");
-    fprintf(f, "# Halo 3 and Halo 4. (default %d, 0 or 6 to 60)\n",
+    fprintf(f, "# responsive, higher is cheaper. 0 holds animation. Below 6 only where\n");
+    fprintf(f, "# the headset runtime makes an update cheap; otherwise 6 is used.\n");
+    fprintf(f, "# Halo 3 and Halo 4. (default %d, 0 or 1 to 60)\n",
              d.crosshair_animation_frames);
     fprintf(f, "crosshair_animation_frames = %d\n\n",
              g_config.crosshair_animation_frames);

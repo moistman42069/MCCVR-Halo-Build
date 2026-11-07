@@ -66,6 +66,25 @@ enum class AuthoredReticleRefreshPolicy : uint8_t
 // a 120 Hz budget (8.33 ms) and missing it, so it must never run every frame.
 inline constexpr uint64_t kMinimumUploadGapFrames = 6;
 
+// ...on a runtime where it does cost that. The cost is the runtime's, not the game's: a Quest headset session on
+// 2026-11-06 measured the same publish at 0.002-0.006 ms (acquire+wait) and 0.005-0.02 ms (copy+release) on average
+// over every 2 s window, never above 0.11 ms. Each window's measurement sets the next window's floor: one frame
+// while publishes are measured cheap, `kMinimumUploadGapFrames` until they are, and again as soon as they are not.
+inline constexpr double kCheapUploadMeanMs = 0.5;
+inline constexpr double kCheapUploadMaxMs = 2.0;
+inline constexpr uint32_t kCheapUploadMinimumSamples = 4;
+
+inline uint64_t AuthoredReticleUploadGapForCost(uint64_t currentGap, uint32_t timed, double meanMs, double maxMs)
+{
+    if (timed == 0)
+        return currentGap;   // nothing published this window: nothing measured
+    if (timed < kCheapUploadMinimumSamples && currentGap > 1)
+        return currentGap;   // too few to call it cheap yet
+    return std::isfinite(meanMs) && std::isfinite(maxMs) && meanMs <= kCheapUploadMeanMs && maxMs <= kCheapUploadMaxMs
+        ? 1
+        : kMinimumUploadGapFrames;
+}
+
 struct AuthoredReticleRefreshState
 {
     uint64_t ownerEpoch = 0;
@@ -133,7 +152,8 @@ inline bool ShouldUploadAuthoredReticle(
     uint32_t capturedDraws,
     uint64_t frameSerial,
     uint64_t ownerEpoch,
-    AuthoredReticleRefreshState& state)
+    AuthoredReticleRefreshState& state,
+    uint64_t minimumGapFrames = kMinimumUploadGapFrames)
 {
     if (state.ownerEpoch != ownerEpoch)
         ResetAuthoredReticleRefreshState(state, ownerEpoch);
@@ -142,7 +162,7 @@ inline bool ShouldUploadAuthoredReticle(
         return false;
 
     if (state.lastUploadFrame != 0 && frameSerial >= state.lastUploadFrame &&
-        frameSerial - state.lastUploadFrame < kMinimumUploadGapFrames)
+        frameSerial - state.lastUploadFrame < std::max<uint64_t>(minimumGapFrames, 1))
         return false;
 
     if (policy == AuthoredReticleRefreshPolicy::BoundedAnimation)
@@ -266,16 +286,18 @@ inline bool ShouldSampleAuthoredCapture(
 //
 // 0 disables the animation entirely and holds one captured image, which is
 // the cheapest possible behavior. Anything else is clamped to at least
-// `kMinimumUploadGapFrames`, because a shorter gap cannot produce extra
-// publishes anyway - it would only spend capture work that the upload floor
-// then throws away.
-inline uint64_t ResolveAuthoredAnimationGapFrames(int configuredFrames)
+// the upload floor in force (`uploadGapFrames`), because a shorter gap cannot
+// produce extra publishes anyway - it would only spend capture work that the
+// upload floor then throws away.
+inline uint64_t ResolveAuthoredAnimationGapFrames(int configuredFrames,
+                                                  uint64_t uploadGapFrames = kMinimumUploadGapFrames)
 {
     constexpr int kMaximumAnimationGapFrames = 60;
     if (configuredFrames <= 0)
         return 0;
-    if (configuredFrames < static_cast<int>(kMinimumUploadGapFrames))
-        return kMinimumUploadGapFrames;
+    const uint64_t minimum = std::clamp<uint64_t>(uploadGapFrames, 1, kMinimumUploadGapFrames);
+    if (static_cast<uint64_t>(configuredFrames) < minimum)
+        return minimum;
     if (configuredFrames > kMaximumAnimationGapFrames)
         return static_cast<uint64_t>(kMaximumAnimationGapFrames);
     return static_cast<uint64_t>(configuredFrames);
