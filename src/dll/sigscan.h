@@ -82,6 +82,14 @@ namespace sig
     using ModuleRangeFallback = bool (*)(const wchar_t* moduleName, uintptr_t& base, size_t& size);
     void SetModuleRangeFallback(ModuleRangeFallback fallback);
 
+    // A copy of part of an image that Find, CopyUnhooked and RipTarget read instead of the image itself: `size`
+    // bytes standing for [start, start + size). Project Reclaimer 0.10 has put a call to its trap over the first
+    // five bytes of every function in halo3.dll's image (none of that code runs); the copy has halo3.dll's own bytes
+    // there (lifted_engine.h). Asked at each read; none by default. A match of a pattern that runs over the copy's
+    // edge reads the image for its outside part.
+    using ScanShadow = bool (*)(uintptr_t& start, size_t& size, const uint8_t*& copy);
+    void SetScanShadow(ScanShadow shadow);
+
     // Base address and size of the module containing this code, resolved by
     // address rather than file name, so it survives the DLL being renamed.
     bool SelfModuleRange(uintptr_t& base, size_t& size);

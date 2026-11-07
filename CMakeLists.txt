@@ -606,6 +606,10 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_proof_after_hook_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_proof_after_hook_tests PRIVATE minhook)
     add_test(NAME halomccvr_proof_after_hook_tests COMMAND halomccvr_proof_after_hook_tests)
+    # Searches that read a copy of part of an image (sigscan.h, SetScanShadow: Project Reclaimer 0.10's traps).
+    add_executable(halomccvr_sigscan_shadow_tests tests/sigscan_shadow_tests.cpp src/dll/sigscan.cpp)
+    target_compile_definitions(halomccvr_sigscan_shadow_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_sigscan_shadow_tests COMMAND halomccvr_sigscan_shadow_tests)
     # The scanner's memory of one loaded image (sigscan.h, ImageMemoScope): the same answers as the search.
     add_executable(halomccvr_sigscan_memo_tests tests/sigscan_memo_tests.cpp src/dll/sigscan.cpp)
     target_compile_definitions(halomccvr_sigscan_memo_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

@@ -33,6 +33,9 @@ HMODULE Halo3Module();
 bool InGuestCode(uintptr_t address);
 // sig::ModuleRange's fallback (dllmain.cpp registers it): the guest image for "halo3.dll" while in use.
 bool ModuleRangeFallback(const wchar_t* moduleName, uintptr_t& base, size_t& size);
+// sig::SetScanShadow's source (dllmain.cpp registers it): the guest image's code section with the client's traps
+// over each function's start replaced by halo3.dll's own bytes, while in use.
+bool ScanShadow(uintptr_t& start, size_t& size, const uint8_t*& copy);
 
 // The hook calls lifted_minhook.h routes here. A target that is not in the guest image's code goes to MinHook.
 MH_STATUS CreateHook(LPVOID target, LPVOID detour, LPVOID* original);
