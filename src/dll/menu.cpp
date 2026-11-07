@@ -1092,12 +1092,6 @@ namespace
         g_currentSection.clear();
         if (g_activeCategory == Cat_Welcome)
         {
-        bool dontShow = !g_config.show_welcome;
-        if (ImGui::Checkbox("Never show again", &dontShow))
-        {
-            g_config.show_welcome = !dontShow;
-            changed = true;
-        }
         ImGui::Spacing();
         ImGui::TextUnformatted(kWelcomeCloseHint);
         ImGui::Separator();
@@ -4197,6 +4191,20 @@ namespace
         const bool searching = g_searchQuery[0] != 0;
         ImGui::TextColored(Rgb(kAccent), "%s", searching ? "Search" : kCategories[g_activeCategory].label);
         ImGui::PopFont();
+        if (!searching && g_activeCategory == Cat_Welcome)
+        {
+            // On the heading's line, at the right of the page.
+            const char* label = "Never show again";
+            const float width = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x +
+                ImGui::CalcTextSize(label).x;
+            ImGui::SameLine(ImGui::GetContentRegionMax().x - width);
+            bool dontShow = !g_config.show_welcome;
+            if (ImGui::Checkbox(label, &dontShow))
+            {
+                g_config.show_welcome = !dontShow;
+                changed = true;
+            }
+        }
         ImGui::TextDisabled("%s", searching ? "Settings whose name, section or page match. Change them here, or use the button on the left to go to one."
                                             : kCategories[g_activeCategory].blurb);
         ImGui::Separator();
