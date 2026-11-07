@@ -1375,10 +1375,24 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 g_diagGateIdle.load());
     }
 
+    // Project Reclaimer: how its game polls the pad, for Input_ReportGamePolls. [0] slot 0 (the pad the mod presents),
+    // [1] the polls of it that carried the controllers' input, [2] any other slot.
+    std::atomic<uint32_t> g_gamePolls[3]{};
+
     DWORD ProcessGetState(DWORD r, DWORD user, XINPUT_STATE* state)
     {
+        g_gamePolls[user == 0 ? 0 : 2].fetch_add(1, std::memory_order_relaxed);
         if (user != 0 || !state)
             return r;
+        struct GamePollScope {
+            const XINPUT_STATE* state;
+            ~GamePollScope() noexcept {
+                const XINPUT_GAMEPAD& pad = state->Gamepad;
+                if (pad.wButtons || pad.bLeftTrigger || pad.bRightTrigger || pad.sThumbLX || pad.sThumbLY ||
+                    pad.sThumbRX || pad.sThumbRY)
+                    g_gamePolls[1].fetch_add(1, std::memory_order_relaxed);
+            }
+        } gamePollScope{state};
         NativeVrActions_BeginPoll();
         struct NativeActionPollScope {
             ~NativeActionPollScope() noexcept {NativeVrActions_EndPoll();}
@@ -1742,6 +1756,22 @@ void Input_StepHeadKeys(VrPadState& pad)
         "scoreboard", pad.valid, yRoute == HeadYChord::Y::Key);
     if (scoreboardOwnsY || yRoute == HeadYChord::Y::Waiting)
         pad.y = false;
+}
+
+void Input_ReportGamePolls()
+{
+    // Project Reclaimer reads its controllers its own way: whether it still polls the mod's pad, and whether the polls
+    // carried input, to set beside a report of the controls going dead.
+    static uint64_t lastMs = 0;
+    const uint64_t now = GetTickCount64();
+    if (!g_hostIsProjectReclaimer || now - lastMs < 10000)
+        return;
+    lastMs = now;
+    const uint32_t polls = g_gamePolls[0].exchange(0, std::memory_order_relaxed);
+    const uint32_t carried = g_gamePolls[1].exchange(0, std::memory_order_relaxed);
+    const uint32_t others = g_gamePolls[2].exchange(0, std::memory_order_relaxed);
+    LOG("game pad: the game polled the mod's pad %u times in the last 10 s (%u of them carried controller input); "
+        "other slots %u", polls, carried, others);
 }
 
 uint32_t Input_MenuPressSerial()

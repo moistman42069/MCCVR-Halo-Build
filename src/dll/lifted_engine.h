@@ -10,7 +10,7 @@
 //   Halo3Module()   the guest image, which stands in for GetModuleHandle(L"halo3.dll").
 //   Hooks           MinHook calls aimed at a function start in the guest image (lifted_minhook.h routes them
 //                   here) hook its translated body instead, and the detour and its "original" pointer keep their
-//                   ordinary Windows x64 signatures.
+//                   ordinary Windows x64 signatures. The original called outside its own hook runs as Callable's.
 //   Callable()      a game function the mod calls itself: the address to call instead of the guest image's.
 //   GuestTlsSlots() and GuestReturnAddress(): what __readgsqword(0x58) and _ReturnAddress() give in MCC, for the
 //                   game call the mod's code is running inside.

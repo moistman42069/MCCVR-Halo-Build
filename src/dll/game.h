@@ -539,6 +539,8 @@ int Input_ClaimXInputIat();
 void Input_RequestPauseToggle();
 // How many times the player has asked for the game's menu from the controller (wraps; compare for change only).
 uint32_t Input_MenuPressSerial();
+// Project Reclaimer: every 10 s, how often its game polled the mod's pad (diagnostics worker).
+void Input_ReportGamePolls();
 struct VrPadState;
 void Input_StepHeadKeys(VrPadState& pad);
 // MCC's crouch-lock (toggle crouch) settings, read from its GameUserSettings.ini by the cold worker

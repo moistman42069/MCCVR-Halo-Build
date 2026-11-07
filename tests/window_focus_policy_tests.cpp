@@ -21,5 +21,8 @@ int main(){
     }
     for(auto title:{GameTitle::None,GameTitle::Unknown})for(auto mode:{RuntimeMode::Shell,RuntimeMode::Gameplay,RuntimeMode::Loading})
         for(auto message:focusMessages)Check(DecideWindowFocus(title,mode,message)==WindowFocusAction::PassThrough,"unknown title cannot force focus");
+    for(auto mode:{RuntimeMode::Gameplay,RuntimeMode::Paused,RuntimeMode::Vehicle})for(auto message:focusMessages)
+        Check(DecideWindowFocus(GameTitle::Halo3,mode,message,true)==WindowFocusAction::PassThrough,
+              "a host that tracks focus itself receives genuine focus transitions in play");
     std::printf("PASS: %u window focus policy checks\n",checks);
 }

@@ -13,6 +13,7 @@
 #include <imgui_internal.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
+#include "lifted_engine.h"
 #include "menu.h"
 #include "../common/hotkey_logic.h"
 #include "../common/flashlight_input.h"
@@ -926,7 +927,7 @@ namespace
         // Shell/authentication keeps genuine focus so native text dialogs can
         // acquire/release keyboard input normally.
         const auto focusAction=DecideWindowFocus(TitleAdapter_GetActiveTitle(),
-            TitleAdapter_GetRuntimeMode(),msg);
+            TitleAdapter_GetRuntimeMode(),msg,g_hostIsProjectReclaimer&&lifted::Active());
         switch (msg)
         {
         case WM_ACTIVATEAPP:
