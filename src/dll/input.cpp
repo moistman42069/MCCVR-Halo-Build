@@ -907,7 +907,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         // THE EXTRA ROWS (vr_mapping::ExtraMapper): the game's actions no action row names, on controls of their own,
         // pressing the game's own button for each beside the rows, each in its context (a seat, on foot, anywhere in
         // play). One state for every thread that polls the pad.
-        uint32_t seatButtons=0;
+        uint32_t seatButtons=0,extraPublished=0,extraServed=0;
         {
             const bool seated=inSeat||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret||!crouchOnFoot;
             const unsigned contexts=nativeMapping&&mappingTitle>=0?
@@ -919,8 +919,17 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             static std::mutex seatRowsLock;
             static vr_mapping::ExtraMapper seatRows;
             std::lock_guard<std::mutex> lock(seatRowsLock);
+            // Where the bridge carries them (vr_mapping::ExtraBridgeOnly), the rows that share their game button with an
+            // action on other controls press their own action alone, and no button.
+            const bool extraDirect=directActions&&NativeVrActions_RoutesExtras(currentTitle)&&seatLayoutKnown&&
+                gameLayoutKnown&&mappingTitle>=0;
+            extraServed=extraDirect?vr_mapping::ExtraBridgeOnly(g_config.vr_extra_bindings[mappingTitle],seatTransports,
+                gameLayout,effectiveBindings,rowInputs):0u;
+            uint32_t extraPressed=0;
             seatButtons=seatRows.Apply(actionSources,contexts,
-                mappingTitle>=0?g_config.vr_extra_bindings[mappingTitle]:vr_mapping::kExtraDefaults,seatTransports);
+                mappingTitle>=0?g_config.vr_extra_bindings[mappingTitle]:vr_mapping::kExtraDefaults,seatTransports,
+                ~0u,&extraPressed,extraServed);
+            extraPublished=extraPressed&extraServed;
             // What the extra rows press in this game, and the game's own button behind each: once each time it changes.
             static uint64_t shownSeatRows=0;
             uint64_t shown=uint64_t(currentTitle)<<56;
@@ -1044,7 +1053,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             manual_weapon_input::Gestures(pad.weaponButtons,pad.weaponReloadBinding,pad.weaponSwitchBinding);
         if(semanticMode||blockedWeaponActions||(currentTitle==GameTitle::Halo3&&g_config.two_handed_aim)) NativeVrActions_Publish(state,currentTitle,inputNow,
             manual_weapon_input::Publish(semanticMode?routedActions.published:0u,gestureActions,blockedWeaponActions),
-            directActions,blockedWeaponActions);
+            directActions,blockedWeaponActions,extraPublished,extraServed);
         btn |= static_cast<WORD>(gestureMelee & 0xFFFF);
         btn |= static_cast<WORD>(pad.weaponButtons & 0xFFFF);
         state->Gamepad.wButtons = btn;

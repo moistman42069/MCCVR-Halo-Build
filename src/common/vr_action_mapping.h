@@ -572,8 +572,9 @@ struct ExtraMapper
     std::array<uint32_t,kContexts> blocked{};
     ChordState<ExtraCount*kRowInputs> chords;
     // `contexts`: the contexts live this poll (ContextBit).
+    // `bridged` (ExtraBridgeOnly): rows the bridge carries, which press no button; `pressed` takes every row pressed.
     uint32_t Apply(uint32_t sources,unsigned contexts,const ExtraBindings& bindings,const ExtraTransports& native,
-        uint32_t heldOk=~0u) noexcept
+        uint32_t heldOk=~0u,uint32_t* pressed=nullptr,uint32_t bridged=0) noexcept
     {
         for(unsigned c=0;c<kContexts;++c)
         {
@@ -594,13 +595,57 @@ struct ExtraMapper
             }
         }
         const auto presses=chords.Step(inputs,sources,sources,heldOk);
-        uint32_t buttons=0;
+        uint32_t buttons=0,on=0;
         for(unsigned a=0;a<ExtraCount;++a)
             for(unsigned i=0;i<kRowInputs;++i)
-                if(presses[a*kRowInputs+i]) buttons|=native[a];
+                if(presses[a*kRowInputs+i])
+                {
+                    on|=1u<<a;
+                    if(!((bridged>>a)&1u)) buttons|=native[a];
+                }
+        if(pressed) *pressed=on;
         return buttons;
     }
 };
+
+// An extra row's inputs as one number, the way InputsSignature numbers an action row's: an Automatic own input is none.
+inline uint64_t ExtraInputsSignature(const ExtraRow& row) noexcept
+{
+    uint64_t codes[kRowInputs]{};
+    unsigned count=0;
+    for(const auto& input:row)
+        if(ListedSource(input.press)&&Bit(input.press))
+            codes[count++]=(uint64_t(HeldBits(input.held))<<32)|Bit(input.press)|
+                (input.mode==InputMode::Toggle?1ull<<63:0);
+    for(unsigned i=1;i<count;++i)
+        for(unsigned j=i;j>0&&codes[j-1]>codes[j];--j) {const uint64_t swap=codes[j];codes[j]=codes[j-1];codes[j-1]=swap;}
+    uint64_t value=14695981039346656037ull;
+    for(unsigned i=0;i<count;++i) {value^=codes[i];value*=1099511628211ull;}
+    return value;
+}
+// THE EXTRA ROWS ONLY THE BRIDGE CAN CARRY, as BridgeOnlyActions finds them among the action rows: a row with inputs of
+// its own whose game button also carries an action on other controls -- an action row, or another extra row with inputs
+// of its own. Halo 3's A is Jump, a flyer's climb, the Banshee's trick and its brake at once: a brake on the support grip
+// pressing A climbed a Hornet too. Through the bridge the row presses its own action alone, and presses no button.
+inline uint32_t ExtraBridgeOnly(const ExtraBindings& extra,const ExtraTransports& extraNative,const Transports& native,
+    const Overrides& bindings,const Inputs* inputs) noexcept
+{
+    uint32_t only=0;
+    for(unsigned x=0;x<ExtraCount;++x)
+    {
+        if(!ExtraControlBits(extra[x])) continue;   // Automatic, or nothing: the game's own button
+        const uint32_t button=extraNative[x];
+        if(!button) continue;
+        const uint64_t own=ExtraInputsSignature(extra[x]);
+        bool shared=false;
+        for(unsigned a=0;a<Count&&!shared;++a)
+            shared=(native[a]&button)&&InputsSignature(static_cast<Action>(a),bindings,inputs)!=own;
+        for(unsigned y=0;y<ExtraCount&&!shared;++y)
+            shared=y!=x&&(extraNative[y]&button)&&ExtraControlBits(extra[y])&&ExtraInputsSignature(extra[y])!=own;
+        if(shared) only|=1u<<x;
+    }
+    return only;
+}
 
 // THE MOD'S OWN ROWS (VR Mappings, every game): actions of the mod's, not the game's. Pause: the pause view and Start, as
 // the controller's menu button gives them; it starts on Y held and B pressed, or B held and Y pressed. While one of its

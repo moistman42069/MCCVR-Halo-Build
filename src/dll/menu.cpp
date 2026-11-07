@@ -1631,8 +1631,9 @@ namespace
             // own button, pressed whenever another row sends that button.
             static constexpr const char* kContextNotes[static_cast<unsigned>(vr_mapping::ExtraContext::Count)]{
                 "In a vehicle seat: these press the game's own button for the action, beside whatever the rows above "
-                "press. Left X, left Y and the left stick click stay the vehicle cameras' in a seat, so a control on one "
-                "of them does nothing there.",
+                "press. In Halo 3, where that button also carries an action on other controls (A is Jump, a flyer's "
+                "climb and the Banshee's brake), the row presses its own action alone. Left X, left Y and the left stick "
+                "click stay the vehicle cameras' in a seat, so a control on one of them does nothing there.",
                 "On foot: these press the game's own button for the action, beside whatever the rows above press.",
                 "Anywhere in play, on foot or in a seat: these press the game's own button for the action, beside "
                 "whatever the rows above press."};

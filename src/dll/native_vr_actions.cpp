@@ -81,7 +81,7 @@ struct Runtime {
 uint32_t blockedGeneration{}; // worker-only: a fault is not retried every poll
 struct Publication {
     std::atomic<uint64_t> sequence{}, stamp{}, cancelEpoch{};
-    std::atomic<uint32_t> generation{}, actions{}, blocked{};
+    std::atomic<uint32_t> generation{}, actions{}, blocked{}, extras{}, extrasServed{};
     std::atomic<bool> direct{};
     std::atomic<GameTitle> title{GameTitle::None};
 } publication;
@@ -110,7 +110,8 @@ bool Fresh(uint64_t stamp,uint64_t now) noexcept {
     return stamp && now>=stamp && now-stamp<=150;
 }
 bool ReadPublication(uint64_t now,uint32_t& actions,bool& direct,uint64_t* observedAt=nullptr,
-    GameTitle expectedTitle=title,uint32_t expectedGeneration=0,uint32_t* blocked=nullptr) noexcept {
+    GameTitle expectedTitle=title,uint32_t expectedGeneration=0,uint32_t* blocked=nullptr,
+    uint32_t* extras=nullptr,uint32_t* extrasServed=nullptr) noexcept {
     // Every payload member is atomic; rejected/torn attempts never access
     // native memory. Writers claim an odd sequence with a bounded CAS.
     for(unsigned attempt=0;attempt<3;++attempt) {
@@ -122,10 +123,14 @@ bool ReadPublication(uint64_t now,uint32_t& actions,bool& direct,uint64_t* obser
         const auto suppress=publication.blocked.load(std::memory_order_relaxed);
         const auto route=publication.direct.load(std::memory_order_relaxed);
         const auto publishedTitle=publication.title.load(std::memory_order_relaxed);
+        const auto extraBits=publication.extras.load(std::memory_order_relaxed);
+        const auto served=publication.extrasServed.load(std::memory_order_relaxed);
         if(before!=publication.sequence.load(std::memory_order_acquire)) continue;
         if(publishedTitle!=expectedTitle || generation!=(expectedGeneration?expectedGeneration:
             runtime.generation.load(std::memory_order_acquire))||!Fresh(stamp,now))return false;
-        actions=bits;direct=route;if(blocked)*blocked=suppress;if(observedAt)*observedAt=stamp;return true;
+        actions=bits;direct=route;if(blocked)*blocked=suppress;if(observedAt)*observedAt=stamp;
+        if(extras)*extras=extraBits;if(extrasServed)*extrasServed=served;
+        return true;
     }
     return false;
 }
@@ -335,7 +340,7 @@ bool NativeVrActions_CanRoute(GameTitle requested,uint64_t now) noexcept {
         Fresh(runtime.readerAt.load(std::memory_order_acquire),now);
 }
 void NativeVrActions_Publish(const void* raw,GameTitle requested,uint64_t now,
-    uint32_t actions,bool direct,uint32_t blockedActions) noexcept {
+    uint32_t actions,bool direct,uint32_t blockedActions,uint32_t extras,uint32_t extrasServed) noexcept {
     const auto generation=GenerationForTitle(requested);
     if(!generation || !CurrentForTitle(requested)) return;
     (void)raw; // converter ownership is the proven native output row, not an input address
@@ -354,6 +359,9 @@ void NativeVrActions_Publish(const void* raw,GameTitle requested,uint64_t now,
     publication.actions.store(actions&((1u<<vr_mapping::Count)-1),std::memory_order_relaxed);
     publication.blocked.store(blockedActions&manual_weapon_input::Blocked(true,true,true),std::memory_order_relaxed);
     publication.direct.store(direct,std::memory_order_relaxed);
+    const uint32_t served=NativeVrActions_RoutesExtras(requested)&&direct?extrasServed&((1u<<vr_mapping::ExtraCount)-1):0u;
+    publication.extrasServed.store(served,std::memory_order_relaxed);
+    publication.extras.store(extras&served,std::memory_order_relaxed);
     publication.stamp.store(now,std::memory_order_relaxed);
     publication.sequence.store(before+2,std::memory_order_release);
     pollPublished=true;

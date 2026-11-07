@@ -374,6 +374,38 @@ void CheckInputPresets()
         Check(ExtraControlBits(rows[BansheeBomb])==(Bit(SupportGrip)|Bit(SupportTrigger)|Bit(RightClick)),
             "a seat row's controls, held first and pressed");
     }
+    // The extra rows only the bridge can carry. Halo 3 has its brake, a flyer's climb and the Banshee's trick all on A,
+    // Jump's button: the player puts the brake on the support grip and, beside it, the climb's opposite.
+    {
+        ExtraBindings rows=kExtraDefaults;
+        rows[VehicleTrick2]={Input{kNoneHeld,SupportGrip},Input{},Input{},Input{}};
+        rows[FlyDown]={Input{kNoneHeld,SupportGrip},Input{},Input{},Input{}};
+        ExtraTransports buttons{};
+        buttons[BansheeTrick]=buttons[VehicleTrick2]=buttons[FlyUp]=0x1000;   // A
+        buttons[FlyDown]=0x100;                                                // the left bumper
+        Transports layout{};
+        layout[Jump]=0x1000;
+        layout[Equipment]=0x100;
+        Overrides effective{};
+        effective[Jump]=A;effective[Equipment]=SupportGrip;
+        const Inputs inputs{};
+        const uint32_t only=ExtraBridgeOnly(rows,buttons,layout,effective,&inputs);
+        Check((only>>VehicleTrick2)&1u,"a brake on a control of its own shares A with Jump on A: the bridge carries it");
+        Check(!((only>>FlyDown)&1u),"a climb's opposite on the support grip, the left bumper's own control: its button");
+        Check(!((only>>FlyUp)&1u),"an Automatic row stays on the game's own button");
+        Check((only>>BansheeTrick)&1u,
+            "the Banshee's trick, also on A, shares it with the brake on other controls: the bridge carries it too");
+        effective[Equipment]=X;
+        Check((ExtraBridgeOnly(rows,buttons,layout,effective,&inputs)>>FlyDown)&1u,
+            "with the left bumper's own action on another control, the climb's opposite goes through the bridge too");
+        ExtraMapper m;
+        const unsigned seated=ContextBit(ExtraContext::Seat)|ContextBit(ExtraContext::Anywhere);
+        uint32_t pressed=0;
+        m.Apply(0,seated,rows,buttons,~0u,&pressed,only);
+        const uint32_t sent=m.Apply(Bit(SupportGrip),seated,rows,buttons,~0u,&pressed,only);
+        Check(!(sent&0x1000)&&(sent&0x100),"the support grip no longer presses A, so a Hornet does not climb");
+        Check(((pressed>>VehicleTrick2)&1u)&&((pressed>>FlyDown)&1u),"and both rows are pressed, for the bridge and the button");
+    }
     // The mod's own rows: Pause starts on Y held and B pressed, or B held and Y pressed, and holds both until let go.
     {
         ModBindings rows=kModDefaults;

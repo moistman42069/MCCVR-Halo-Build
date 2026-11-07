@@ -54,11 +54,16 @@ struct ThreadState {
     bool direct{}, converted{};
     native_action_button::Record records[vr_mapping::Count]{};
     native_action_button::Record secondaryReleased[3]{};
+    // The extra rows the bridge carries (vr_mapping::ExtraBridgeOnly), each at its own action.
+    uint32_t extras{}, extrasServed{};
+    native_action_button::Record extraRecords[vr_mapping::ExtraCount]{};
     void Reset(uint32_t next) noexcept {
         generation=next; publishedAt=converterAt=cancelEpoch=0;
-        actions=0;direct=converted=false;
+        actions=0;direct=converted=false;extras=extrasServed=0;
         for(unsigned i=0;i<vr_mapping::Count;++i)
             records[i].Reset(title,native_action_button::ConsumerAction(title,static_cast<vr_mapping::Action>(i)));
+        for(unsigned i=0;i<vr_mapping::ExtraCount;++i)
+            extraRecords[i].Reset(title,vr_mapping::NativeExtraAction(title,static_cast<vr_mapping::ExtraAction>(i)));
     }
 } thread_local local;
 bool Current() noexcept {
@@ -77,11 +82,12 @@ void __fastcall ConverterHook(uintptr_t controller,int elapsedMs,const void* raw
         reinterpret_cast<Convert>(runtime.original[0])(controller,elapsedMs,raw,output,axes,activity);
         const auto now=GetTickCount64();
         const auto cancelEpoch=publication.cancelEpoch.load(std::memory_order_acquire);
-        uint32_t actions=0,blocked=0;bool direct=false;uint64_t publishedAt=0;
+        uint32_t actions=0,blocked=0,extras=0,extrasServed=0;bool direct=false;uint64_t publishedAt=0;
         // H3 preserves the real controller argument and uses it to select
         // native preferences, in both direct and copied gamepad routes.
         if(Current() && controller==0 &&
-            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(std::memory_order_acquire),&blocked) && elapsedMs>=0 && elapsedMs<=1000 &&
+            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(std::memory_order_acquire),&blocked,
+                &extras,&extrasServed) && elapsedMs>=0 && elapsedMs<=1000 &&
             cancelEpoch==publication.cancelEpoch.load(std::memory_order_acquire)) {
             if(local.generation!=runtime.generation) local.Reset(runtime.generation);
             local.publishedAt=publishedAt;local.actions=actions;local.direct=direct;local.blocked=blocked;
@@ -89,6 +95,9 @@ void __fastcall ConverterHook(uintptr_t controller,int elapsedMs,const void* raw
             local.converterAt=now;local.converted=true;
             for(unsigned i=0;i<vr_mapping::Count;++i)
                 local.records[i].Advance((local.direct||(local.blocked&(1u<<i))) && (local.actions&(1u<<i)),unsigned(elapsedMs));
+            local.extras=extras;local.extrasServed=extrasServed;
+            for(unsigned i=0;i<vr_mapping::ExtraCount;++i)
+                local.extraRecords[i].Advance(local.direct && ((extras&extrasServed)>>i&1u),unsigned(elapsedMs));
             runtime.converted.fetch_add(1,std::memory_order_relaxed);
         } else if(controller==0) local.converted=false;
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
@@ -135,6 +144,22 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
             auto& released=local.secondaryReleased[secondary];released.Reset(title,action);
             runtime.routed.fetch_add(1,std::memory_order_relaxed);
             return released.bytes.data();
+        }
+        // An extra row the bridge carries: its own record while it is pressed and the game's own button is not held,
+        // as the direct route below does for an action row.
+        for(unsigned i=0;local.direct&&i<vr_mapping::ExtraCount;++i)
+        {
+            if(!((local.extrasServed>>i)&1u)||
+               vr_mapping::NativeExtraAction(title,static_cast<vr_mapping::ExtraAction>(i))!=action) continue;
+            auto& extra=local.extraRecords[i];
+            if(!extra.ReadCounters().frames) return native;
+            if(native) {
+                uint8_t frames=0;
+                if(!ReadFrames(native,frames)){runtime.faulted=true;return native;}
+                if(frames)return native;
+            }
+            runtime.routed.fetch_add(1,std::memory_order_relaxed);
+            return extra.bytes.data();
         }
         const int semantic=native_action_button::SemanticAction(title,action);
         if(semantic<0) return native;
