@@ -188,14 +188,11 @@ uintptr_t FindCode(const std::vector<std::pair<uint64_t, std::vector<uint8_t>>>&
         if (info.State == MEM_COMMIT && info.Type == MEM_PRIVATE && (info.Protect & executable) &&
             info.RegionSize >= codeLength)
         {
-            bool all = true;
+            // Nine in ten: a function the client itself patched must not hide the rest.
+            size_t matched = 0;
             for (const auto& [offset, bytes] : samples)
-                if (std::memcmp(reinterpret_cast<const void*>(base + offset), bytes.data(), bytes.size()) != 0)
-                {
-                    all = false;
-                    break;
-                }
-            if (all)
+                matched += std::memcmp(reinterpret_cast<const void*>(base + offset), bytes.data(), bytes.size()) == 0;
+            if (samples.size() >= 32 && matched * 10 >= samples.size() * 9)
                 return base;
         }
         if (next <= at)
@@ -386,21 +383,28 @@ bool Poll()
         ReleaseSRWLockExclusive(&g_lock);
         return false;
     }
-    // The first 16 bytes of 64 bodies spread over the table (a body's prologue carries no relocation).
+    // 16 bytes from each of 64 bodies spread over the table, where they hold no relocation (the client fills those
+    // in, so they differ from the file; a body's first bytes can be one).
     std::vector<std::pair<uint64_t, std::vector<uint8_t>>> samples;
     for (size_t i = 0; i < 64; ++i)
     {
         const lifted_engine::Record& r = table.records[i * (table.records.size() - 1) / 63];
-        if (!lifted_engine::HasBody(r) || r.hostSize - r.bodyOffset < 16)
+        if (!lifted_engine::HasBody(r))
             continue;
-        const uint8_t* at = file.data() + table.codeOffset + r.hostOffset + r.bodyOffset;
-        samples.emplace_back(r.hostOffset + r.bodyOffset, std::vector<uint8_t>(at, at + 16));
+        const uint8_t* body = file.data() + table.codeOffset + r.hostOffset + r.bodyOffset;
+        size_t window = 0;
+        if (lifted_engine::RelocationFreeWindow(body, r.hostSize - r.bodyOffset, 16, window))
+            samples.emplace_back(r.hostOffset + r.bodyOffset + window,
+                                 std::vector<uint8_t>(body + window, body + window + 16));
     }
     const uintptr_t code = FindCode(samples, table.codeLength);
     if (!code)
     {
-        LOG("RECLAIMER 0.10: halo3.dll's image is at %p, but no translated code matching %ls is in memory yet",
-            reinterpret_cast<void*>(guest), path.c_str());
+        static bool reported = false;
+        if (!reported)
+            LOG("RECLAIMER 0.10: halo3.dll's image is at %p, but no translated code matching %ls is in memory yet "
+                "(looked for every second; said once)", reinterpret_cast<void*>(guest), path.c_str());
+        reported = true;
         ReleaseSRWLockExclusive(&g_lock);
         return false;
     }

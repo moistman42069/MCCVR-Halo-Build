@@ -268,6 +268,13 @@ int main()
         CHECK(RoleOf(L"\"D:\\a --headless b\\project-reclaimer-client.exe\"") == Role::Supervisor);
     }
 
+    // Where the settings are: 0.9 in Documents, 0.10 in the local app data folder it moved them to.
+    CHECK(SettingsFolder(false, L"F:\\OneDrive\\Documents", L"C:\\Users\\p\\AppData\\Local") ==
+          L"F:\\OneDrive\\Documents\\My Games\\Project Reclaimer");
+    CHECK(SettingsFolder(true, L"F:\\OneDrive\\Documents", L"C:\\Users\\p\\AppData\\Local") ==
+          L"C:\\Users\\p\\AppData\\Local\\ProjectReclaimer");
+    CHECK(SettingsFolder(true, L"F:\\Docs", L"").empty() && SettingsFolder(false, L"", L"C:\\L").empty());
+
     // The version resource, read without version.dll: VS_FIXEDFILEINFO by its signature.
     {
         uint8_t resource[160]{};

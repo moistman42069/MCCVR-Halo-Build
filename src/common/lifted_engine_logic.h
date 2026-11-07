@@ -169,6 +169,24 @@ inline bool HasBody(const Record& record)
     return record.bodyOffset < record.hostSize;
 }
 
+// Where in `code` (a body) the first `window` bytes with no 0 byte start: bytes that are the same in the file and in
+// memory. The client fills every relocation in when it loads the code, and in the file each one is 0 (a call's
+// rel32, a movabs's imm64), so a window without a 0 holds none. False when the body has no such window.
+inline bool RelocationFreeWindow(const uint8_t* code, size_t length, size_t window, size_t& at)
+{
+    size_t run = 0;
+    for (size_t i = 0; i < length; ++i)
+    {
+        run = code[i] ? run + 1 : 0;
+        if (run == window)
+        {
+            at = i + 1 - window;
+            return true;
+        }
+    }
+    return false;
+}
+
 // The record that starts exactly at `rva`, or null (a hook has to be on a whole function).
 inline const Record* FindStart(const Table& table, uint32_t rva)
 {
