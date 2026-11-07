@@ -125,6 +125,9 @@ static int32_t LegacyCollisionIgnoredObject(GameTitle){return localPlayerUnit;}
 // its shot line, restored at its exit.
 #include "../src/common/shot_lag_logic.h"
 static thread_local int8_t t_halo3Fire=shot_lag::kFireNone;
+// The DLL's lifted_engine.h and game.cpp: not Project Reclaimer 0.10, so the game's eye is never asked for here.
+namespace lifted { inline bool Active() { return false; } }
+static bool ReadHalo3TickEye(uint32_t,uint64_t,float*,float*,bool&,uint64_t&,int32_t* =nullptr) { return false; }
 #include "../src/dll/halo3_independent_shots.inl"
 #undef _ReturnAddress
 
