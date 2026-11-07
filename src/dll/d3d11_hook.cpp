@@ -47,6 +47,7 @@
 #include "../common/host_ui_layer_blend.h"
 #include "../common/hook_cost_scope.h"
 #include "../common/present_owner_logic.h"
+#include "lifted_engine.h"
 
 // THE MOD'S OWN COST IN THE CALLS IT HOOKS (hook_cost_logic.h; hook_cost_frames in the settings file). One frame
 // in N, every context hook below reads the processor's cycle counter around itself and around the game's real
@@ -915,6 +916,38 @@ bool D3D_FitActive()
 
 bool D3D_CanLiveResize() { return g_renderSizeActive; }
 
+// PROJECT RECLAIMER 0.10'S WINDOW, FITTED. 0.10 takes its picture's size from the WM_SIZE it is sent and sizes its
+// window from the monitor it is told of, the Picture panel's size (GetMonitorInfoWHook), so its window was larger than
+// the monitor: hard to record or stream, and the desktop mouse reached only part of it. With reclaimer_fit_to_display
+// on, menu.cpp fits the window inside the monitor at the picture's shape and keeps telling the client through WM_SIZE
+// that it is the picture's size. Its own size reads already say so (GetClientRectHook, GetWindowRectHook), the swapchain
+// keeps that size (ResizeBuffersBody) and the present stretches it into the window, as MCC's fit does. The cursor's
+// reads and moves, its clip and the mouse messages are mapped between window and picture as for MCC
+// (CursorRemapActive). Decided once a launch, when the recompiled engine is first found: the setting applies at
+// Project Reclaimer's next start, and a window that stopped being answered with the picture's size mid-game would
+// shrink the picture with it.
+bool D3D_HostFitWindow()
+{
+    static std::atomic<int> decided{0}; // 0 not yet, 1 fitted, 2 not
+    const int state = decided.load(std::memory_order_acquire);
+    if (state)
+        return state == 1;
+    if (!g_hostOwnsRenderSize || !g_hostIsProjectReclaimer || !lifted::Active())
+        return false; // not yet known: asked again later
+    const bool fit = g_config.reclaimer_fit_to_display && g_forcedRenderW && g_forcedRenderH;
+    int expected = 0;
+    if (decided.compare_exchange_strong(expected, fit ? 1 : 2, std::memory_order_acq_rel))
+        LOG("fit: Project Reclaimer 0.10's window %s (reclaimer_fit_to_display = %d)",
+            fit ? "is fitted inside the monitor; its picture keeps the forced size" : "keeps the picture's size",
+            g_config.reclaimer_fit_to_display ? 1 : 0);
+    return decided.load(std::memory_order_acquire) == 1;
+}
+// The cursor and mouse-message mapping of a window smaller than its picture: MCC's fit, and Project Reclaimer's.
+static bool CursorRemapActive()
+{
+    return g_renderSizeActive || D3D_HostFitWindow();
+}
+
 void D3D_SetForcedClientLie(bool on)
 {
     g_lieClientToGame = on;
@@ -1702,7 +1735,7 @@ static BOOL WINAPI GetCursorPosHook(LPPOINT p)
 {
     const void* caller = _ReturnAddress();
     const BOOL ok = g_origGetCursorPos(p);
-    if (!ok || !p || !g_renderSizeActive || !g_forcedRenderW || !g_forcedRenderH ||
+    if (!ok || !p || !CursorRemapActive() || !g_forcedRenderW || !g_forcedRenderH ||
         !CallerInExe(caller))
         return ok;
     POINT origin{};
@@ -1741,13 +1774,15 @@ static BOOL WINAPI GetCursorPosHook(LPPOINT p)
 // A mouse message for MCC's window, in the space MCC's cursor reads are given (GetCursorPosHook): with the window
 // fitted to the monitor, a button message's client point and a wheel message's screen point are scaled up to the
 // render size as the cursor is (fit_mouse_logic.h), so MCC's press and its hover name the same item. Otherwise, or
-// outside the window, the message is MCC's as it came.
+// outside the window, the message is MCC's as it came. Project Reclaimer's fitted window (D3D_HostFitWindow): its
+// menus hover by the move message's own point, not by the cursor, so moves are scaled too.
 LPARAM D3D_MapMouseMessageToRender(UINT msg, LPARAM lp)
 {
     const bool button = (msg >= WM_LBUTTONDOWN && msg <= WM_MBUTTONDBLCLK) ||
                         (msg >= WM_XBUTTONDOWN && msg <= WM_XBUTTONDBLCLK);
     const bool wheel = msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL;
-    if ((!button && !wheel) || !g_renderSizeActive || !g_forcedRenderW || !g_forcedRenderH)
+    const bool hostMove = msg == WM_MOUSEMOVE && D3D_HostFitWindow();
+    if ((!button && !wheel && !hostMove) || !CursorRemapActive() || !g_forcedRenderW || !g_forcedRenderH)
         return lp;
     POINT origin{};
     LONG cw = 0, ch = 0;
@@ -1770,7 +1805,7 @@ LPARAM D3D_MapMouseMessageToRender(UINT msg, LPARAM lp)
 static BOOL WINAPI SetCursorPosHook(int X, int Y)
 {
     const void* caller = _ReturnAddress();
-    if (!g_renderSizeActive || !g_forcedRenderW || !g_forcedRenderH ||
+    if (!CursorRemapActive() || !g_forcedRenderW || !g_forcedRenderH ||
         !CallerInExe(caller))
         return g_origSetCursorPos(X, Y);
     POINT origin{};
@@ -1809,7 +1844,7 @@ static BOOL WINAPI SetCursorPosHook(int X, int Y)
 // unexpected we pass the request through untouched.
 static BOOL WINAPI ClipCursorHook(const RECT* rc)
 {
-    if (!g_renderSizeActive || !g_forcedRenderW || !g_forcedRenderH || !rc)
+    if (!CursorRemapActive() || !g_forcedRenderW || !g_forcedRenderH || !rc)
         return g_origClipCursor(rc);
     POINT origin{};
     LONG cw = 0, ch = 0;
@@ -1852,7 +1887,7 @@ static HWND WINAPI WindowFromPointHook(POINT pt)
     // to still land on the small top-left slice work. Map ANY point inside the
     // render rectangle back down into the real window client before the OS
     // answers, so every menu item resolves to the game window like it should.
-    if (g_renderSizeActive && g_forcedRenderW && g_forcedRenderH)
+    if (CursorRemapActive() && g_forcedRenderW && g_forcedRenderH)
     {
         POINT origin{};
         LONG cw = 0, ch = 0;

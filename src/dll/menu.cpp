@@ -828,6 +828,49 @@ namespace
         D3D_GetRenderPlan(rw,rh,ow,oh,dlss,runtime);
         return rw&&rh?float(rw)/float(rh):float(kNativeRenderWidth)/float(kNativeRenderHeight);
     }
+    // The shape a fitted window keeps: Project Reclaimer's that of the picture it is told it has, MCC's the render's.
+    float FitAspect()
+    {
+        unsigned fw=0,fh=0;
+        if(D3D_HostFitWindow()) D3D_GetForcedRenderSize(fw,fh);
+        return fw&&fh?float(fw)/float(fh):RenderAspect();
+    }
+
+    // Project Reclaimer 0.10's window inside the monitor's work area at its picture's shape (D3D_HostFitWindow). Its
+    // own style is left as it is: only the visible window changes, and the WM_SIZE this sends is answered with the
+    // picture's size (WndProcHook). Runs on the UI thread.
+    void FitHostWindow(HWND hwnd)
+    {
+        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO mi{sizeof(mi)};
+        if (!GetMonitorInfo(mon, &mi))
+            return;
+        const int workW = mi.rcWork.right - mi.rcWork.left;
+        const int workH = mi.rcWork.bottom - mi.rcWork.top;
+        if (workW <= 0 || workH <= 0)
+            return;
+        const float aspect = FitAspect();
+        int w = workW;
+        int h = (int)((float)w / aspect + 0.5f);
+        if (h > workH)
+        {
+            h = workH;
+            w = (int)((float)h * aspect + 0.5f);
+        }
+        const int x = mi.rcWork.left + (workW - w) / 2;
+        const int y = mi.rcWork.top + (workH - h) / 2;
+        if (!SetWindowPos(hwnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE))
+        {
+            LOG("fit: Project Reclaimer's window was not fitted to the monitor (SetWindowPos %lu)",
+                static_cast<unsigned long>(GetLastError()));
+            return;
+        }
+        unsigned fw = 0, fh = 0;
+        D3D_GetForcedRenderSize(fw, fh);
+        LOG("fit: Project Reclaimer's window fitted inside the monitor: %dx%d at (%d,%d); it is still told it is %ux%u "
+            "and draws that, stretched into the window (reclaimer_fit_to_display = 0 leaves the window that size)",
+            w, h, x, y, fw, fh);
+    }
 
     // Fit the game window inside the primary monitor's work area, preserving the
     // render aspect (kNativeRenderWidth:kNativeRenderHeight, constant because
@@ -916,7 +959,10 @@ namespace
         // Fit request (posted from Menu_Init) -- run it here on the UI thread.
         if (msg == kFitGameWindowMsg)
         {
-            FitGameWindow(hwnd);
+            if (D3D_HostFitWindow())
+                FitHostWindow(hwnd);
+            else
+                FitGameWindow(hwnd);
             return 0;
         }
         // Keep the game rendering and processing input while the user is in the
@@ -950,12 +996,14 @@ namespace
             if(focusAction==WindowFocusAction::ActivateMouse)return MA_ACTIVATE;
             break;
         case WM_WINDOWPOSCHANGING:
-            if (D3D_FitActive())
+            if (D3D_FitActive() || D3D_HostFitWindow())
             {
                 // MCC believes its client is full-size (we tell it so), so it may
                 // try to size the WINDOW to match and grow it back off-screen.
                 // Clamp any oversize request to a monitor fit. Genuine size
                 // changes only (user drags with SWP_NOSIZE are left alone).
+                // Project Reclaimer sizes its window to the monitor it is told
+                // of, the picture's size: the same clamp keeps it fitted.
                 WINDOWPOS* pos = (WINDOWPOS*)lp;
                 if (pos && !(pos->flags & SWP_NOSIZE))
                 {
@@ -967,7 +1015,7 @@ namespace
                         const int workH = mi.rcWork.bottom - mi.rcWork.top;
                         if (workW > 0 && workH > 0 && (pos->cx > workW || pos->cy > workH))
                         {
-                            const float aspect = RenderAspect();
+                            const float aspect = FitAspect();
                             int w = workW;
                             int h = (int)((float)w / aspect + 0.5f);
                             if (h > workH) { h = workH; w = (int)((float)h * aspect + 0.5f); }
@@ -982,6 +1030,15 @@ namespace
             }
             break;
         case WM_SIZE:
+            if (D3D_HostFitWindow() && wp != SIZE_MINIMIZED)
+            {
+                // Project Reclaimer takes its picture's size from this message's
+                // own numbers: its fitted window is answered with the picture's.
+                unsigned fw = 0, fh = 0;
+                D3D_GetForcedRenderSize(fw, fh);
+                if (fw && fh)
+                    return CallWindowProcW(g_origWndProc, hwnd, msg, wp, MAKELPARAM((WORD)fw, (WORD)fh));
+            }
             if (D3D_CanLiveResize() && wp != SIZE_MINIMIZED)
             {
                 // The window is smaller than the render. Tell MCC its client is
@@ -3558,6 +3615,8 @@ namespace
                 ImGui::SetTooltip("Keeps Project Reclaimer's picture no larger than your monitor. A picture larger\n"
                                   "than the screen is suspected of stopping the graphics card on some PCs. Off gives\n"
                                   "the full size above, which is sharper in the headset when your monitor is smaller.\n"
+                                  "From Project Reclaimer 0.10 the picture keeps the full size and only its window is\n"
+                                  "fitted inside your monitor, for recording and streaming; off leaves it larger.\n"
                                   "Applies at Project Reclaimer's next start.");
             unsigned hostW=(unsigned)nextWidth,hostH=(unsigned)nextHeight;
             int clientModeValue=0;
@@ -4369,7 +4428,7 @@ bool Menu_Init(HWND gameWindow, ID3D11Device* device, ID3D11DeviceContext* conte
     // small monitors and put the menu off-screen); the shrink keeps MCC drawing
     // the full-size backbuffer while only the visible window fits. Posted so it
     // runs on the UI thread.
-    if (D3D_FitActive())
+    if (D3D_FitActive() || D3D_HostFitWindow())
         PostMessageW(gameWindow, kFitGameWindowMsg, 0, 0);
 
     NativeMenuPointer_Init(gameWindow);

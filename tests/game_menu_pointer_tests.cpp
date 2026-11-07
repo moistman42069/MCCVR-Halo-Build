@@ -214,7 +214,24 @@ int main()
         Check(foreignMoves.load()==foreign+1,"not while the pointer is off the window");
         Frame(true,false,.6f,.5f);
         Check(postedMoves.size()==afterMiss+1,"back on the window, its first move is sent at once");
-        g_hostIsProjectReclaimer=false; monitorRect={0,0,4000,4000};
+        // Its window fitted inside the monitor: the cursor is moved, and rests as the posted moves do.
+        monitorRect={0,0,4000,4000};
+        Frame(false); const int setBefore=moves;
+        Frame(true,false,.5f,.5f);
+        Check(moves==setBefore+1,"the fitted window's pointer sets the cursor");
+        Frame(true,false,.5f,.5f); Frame(true,false,.501f,.5f);
+        Check(moves==setBefore+1,"and a resting hand leaves it where it is");
+        const unsigned foreignCursor=foreignMoves.load();
+        NativeMenuPointer_Message(WM_MOUSEMOVE,MAKELPARAM(7,7));
+        Check(foreignMoves.load()==foreignCursor,"the cursor's own moves are not counted as another's");
+        Frame(true,true,.5f,.5f);
+        Check(moves==setBefore+2&&mouseDown,"a press sets the cursor again, where the press goes");
+        Frame(true,false,.5f,.5f);
+        Check(!mouseDown,"and so does the release");
+        g_hostIsProjectReclaimer=false;
+        Frame(false); const int mccBefore=moves;
+        Frame(true,false,.5f,.5f); Frame(true,false,.5f,.5f);
+        Check(moves==mccBefore+2,"MCC's cursor is set every frame, as before");
     }
     {
         // The right stick as a wheel: a flick moves one notch, a hold repeats, faster when pushed further.

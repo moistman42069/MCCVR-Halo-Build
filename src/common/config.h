@@ -572,6 +572,8 @@ struct Config
     // Project Reclaimer: its Native render resolution is never given a size larger than the monitor
     // (reclaimer_host::AnswerNativeRenderSize). A picture larger than the screen is suspected of stopping the graphics
     // card on some PCs; off gives it the Picture panel's full size. Exclusive fullscreen always gets the real size.
+    // From 0.10, which sizes its picture from its window, the picture keeps the Picture panel's size and the window is
+    // fitted inside the monitor instead (d3d11_hook.cpp, D3D_HostFitWindow); off leaves the window that size.
     bool reclaimer_fit_to_display = true;
     // Project Reclaimer: a title it starts after the first (ODST, after Halo 3's menu) gets the headset session's D3D11
     // device instead of a new one, which the headset could not show (present_owner_logic.h DecideDeviceShare).

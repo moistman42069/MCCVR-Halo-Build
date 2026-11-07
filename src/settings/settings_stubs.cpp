@@ -24,6 +24,7 @@ static void Blank(char* out, size_t size)
 bool D3D_BeginLiveResize(unsigned&, unsigned&) { return false; }
 bool D3D_CanLiveResize() { return false; }
 bool D3D_FitActive() { return false; }
+bool D3D_HostFitWindow() { return false; }
 intptr_t D3D_MapMouseMessageToRender(unsigned, intptr_t lp) { return lp; }
 bool D3D_HostNativeRenderAnswer(unsigned, unsigned, unsigned&, unsigned&, int&) { return false; }
 int D3D_LiveResizeState(unsigned& width, unsigned& height) { width = height = 0; return 0; }
