@@ -22,6 +22,7 @@ int RunDirectorCameraTests();
 #include "../src/common/session_read_logic.h"
 #include "../src/common/log_archive_logic.h"
 #include "../src/common/camera_copy_logic.h"
+#include "../src/common/halo3_dll_locate_logic.h"
 #include "../src/common/reclaimer_odst_hud_logic.h"
 #include "../src/common/zoom_pull_audit_logic.h"
 #include "../src/dll/contact_melee_queue.h"
@@ -7664,6 +7665,28 @@ int main()
                       !reclaimer_odst_hud::IsOdstScenarioPath("levels\\atla") &&
                       !reclaimer_odst_hud::IsOdstScenarioPath(""),
                 "ODST's scenarios lie under levels\\atlas\\; Halo 3's do not");
+        }
+        {
+            // Where halo3.dll lies for Project Reclaimer 0.10 (halo3_dll_locate_logic.h): a fresh 0.10.x install
+            // writes no mcc-folder.txt, and the player's game ran flat (2026-11-07).
+            using namespace halo3_dll_locate;
+            const std::string mcc = R"(G:\SteamLibrary\steamapps\common\Halo The Master Chief Collection)";
+            Check(FolderFromText("\xEF\xBB\xBF" + mcc + "\\\r\n") == mcc &&
+                      FolderFromText(R"(  D:\MCC/ )" "\nsecond line") == R"(D:\MCC)" && FolderFromText("").empty(),
+                "mcc-folder.txt: its first line, without a byte-order mark, spaces or trailing slashes");
+            const std::string dll = mcc + R"(\halo3\halo3.dll)";
+            const std::string log = std::string(R"([engine] halo3.dll: C:\Old\halo3\halo3.dll, the build lifted (1))") +
+                "\r\n[shell] something\r\n[engine] halo3.dll: " + dll +
+                ", the build lifted (b209d8454b12dc77)\r\n[engine] next\r\n";
+            Check(LiftedDllFromClientLog(log) == dll && LiftedDllFromClientLog("[engine] nothing here\n").empty(),
+                "the client's log: the last halo3.dll it lifted");
+            const std::string vdf = std::string("\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"") +
+                R"(C:\\Program Files (x86)\\Steam)" + "\"\n\t\t\"label\"\t\t\"\"\n\t}\n\t\"1\"\n\t{\n\t\t\"path\"\t\t\"" +
+                R"(G:\\SteamLibrary)" + "\"\n\t}\n}\n";
+            const auto libraries = SteamLibraryPaths(vdf);
+            Check(libraries.size() == 2 && libraries[0] == R"(C:\Program Files (x86)\Steam)" &&
+                      libraries[1] == R"(G:\SteamLibrary)" && SteamLibraryPaths("").empty(),
+                "Steam's libraryfolders.vdf: every library path, its backslashes made single");
         }
         {
             // Each support-trigger pull, one report (zoom_pull_audit_logic.h).

@@ -9,9 +9,13 @@
 #include <cstring>
 #include <string>
 #include <unordered_map>
+#include <tuple>
 #include <vector>
+#include <windows.h>
+#include <appmodel.h>
 
 #include "../common/config.h"
+#include "../common/halo3_dll_locate_logic.h"
 #include "../common/lifted_engine_logic.h"
 #include "../common/log.h"
 #include "../common/reclaimer_host_logic.h"
@@ -284,59 +288,159 @@ uintptr_t FindCode(const std::vector<std::pair<uint64_t, std::vector<uint8_t>>>&
     return 0;
 }
 
-// halo3.dll on disk: the MCC folder the client uses (its mcc-folder.txt) + halo3\halo3.dll, or
-// HALOMCCVR_RECLAIMER_HALO3_DLL.
-std::wstring Halo3DllPath()
+std::wstring Widen(const std::string& text)
 {
+    const int wide = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    std::wstring out(static_cast<size_t>(wide > 0 ? wide : 0), L'\0');
+    if (wide > 0)
+        MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), wide);
+    return out;
+}
+
+std::string LoadText(const std::wstring& path)
+{
+    std::vector<uint8_t> data;
+    return LoadFile(path, data) ? std::string(data.begin(), data.end()) : std::string();
+}
+
+// One place halo3.dll may lie, and what said so.
+struct Halo3DllCandidate
+{
+    std::wstring path;
+    const wchar_t* source;
+};
+
+// Every place halo3.dll may lie, the likeliest first (halo3_dll_locate_logic.h); each is checked against the client's
+// build before it is used. HALOMCCVR_RECLAIMER_HALO3_DLL names the file outright.
+std::vector<Halo3DllCandidate> Halo3DllCandidates()
+{
+    std::vector<Halo3DllCandidate> list;
+    const auto add = [&](std::wstring path, const wchar_t* source) {
+        if (path.empty())
+            return;
+        for (const auto& had : list)
+            if (_wcsicmp(had.path.c_str(), path.c_str()) == 0)
+                return;
+        list.push_back({std::move(path), source});
+    };
+    const auto inMcc = [](const std::wstring& root) {
+        return root.empty() ? std::wstring() : root + L"\\halo3\\halo3.dll";
+    };
     wchar_t buffer[1024]{};
     if (GetEnvironmentVariableW(L"HALOMCCVR_RECLAIMER_HALO3_DLL", buffer, 1024) && buffer[0])
-        return buffer;
-    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, 1024))
-        return {};
-    std::vector<uint8_t> text;
-    if (!LoadFile(std::wstring(buffer) + L"\\ProjectReclaimer\\mcc-folder.txt", text) || text.empty())
-        return {};
-    std::string folder(text.begin(), text.end());
-    if (folder.compare(0, 3, "\xEF\xBB\xBF") == 0)
-        folder.erase(0, 3);
-    while (!folder.empty() && (folder.back() == '\r' || folder.back() == '\n' || folder.back() == ' ' ||
-                               folder.back() == '\\' || folder.back() == '/'))
-        folder.pop_back();
-    const int wide = MultiByteToWideChar(CP_UTF8, 0, folder.data(), static_cast<int>(folder.size()), nullptr, 0);
-    std::wstring path(static_cast<size_t>(wide > 0 ? wide : 0), L'\0');
-    if (wide > 0)
-        MultiByteToWideChar(CP_UTF8, 0, folder.data(), static_cast<int>(folder.size()), path.data(), wide);
-    return path.empty() ? std::wstring() : path + L"\\halo3\\halo3.dll";
+        add(buffer, L"HALOMCCVR_RECLAIMER_HALO3_DLL");
+    std::wstring localAppData;
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, 1024) && buffer[0])
+        localAppData = buffer;
+    const std::wstring reclaimer = localAppData.empty() ? std::wstring() : localAppData + L"\\ProjectReclaimer";
+    if (!reclaimer.empty())
+        add(inMcc(Widen(halo3_dll_locate::FolderFromText(LoadText(reclaimer + L"\\mcc-folder.txt")))),
+            L"the client's mcc-folder.txt");
+    // The mod's own folder: the release installs it in MCC's (<MCC>\Halo_MCC_VR).
+    HMODULE self = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&Halo3DllCandidates), &self) &&
+        GetModuleFileNameW(self, buffer, 1024))
+    {
+        std::wstring folder = buffer;
+        for (int up = 0; up < 2; ++up)
+        {
+            const size_t slash = folder.find_last_of(L"\\/");
+            if (slash == std::wstring::npos)
+                break;
+            folder.erase(slash);
+            if (up == 1)
+                add(inMcc(folder), L"the folder the mod is installed in");
+        }
+    }
+    if (!reclaimer.empty())
+        for (const wchar_t* log : {L"\\Logs\\client.log", L"\\Logs\\client.previous.log"})
+            add(Widen(halo3_dll_locate::LiftedDllFromClientLog(LoadText(reclaimer + log))), L"the client's log");
+    // Steam's libraries.
+    for (const auto& [root, key, value] :
+         {std::tuple{HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath"},
+          std::tuple{HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Valve\\Steam", L"InstallPath"}})
+    {
+        DWORD size = sizeof(buffer);
+        buffer[0] = 0;
+        if (RegGetValueW(root, key, value, RRF_RT_REG_SZ, nullptr, buffer, &size) != ERROR_SUCCESS || !buffer[0])
+            continue;
+        std::vector<std::wstring> libraries{buffer};
+        for (const auto& library :
+             halo3_dll_locate::SteamLibraryPaths(LoadText(std::wstring(buffer) + L"\\steamapps\\libraryfolders.vdf")))
+            libraries.push_back(Widen(library));
+        for (const auto& library : libraries)
+            add(inMcc(library + L"\\steamapps\\common\\Halo The Master Chief Collection"), L"Steam's libraries");
+    }
+    // The Microsoft Store edition: its package, then the Xbox app's folders on each fixed drive.
+    UINT32 count = 0, length = 0;
+    if (GetPackagesByPackageFamily(L"Microsoft.Chelan_8wekyb3d8bbwe", &count, nullptr, &length, nullptr) ==
+            ERROR_INSUFFICIENT_BUFFER && count < 64 && length < 65536)
+    {
+        std::vector<PWSTR> names(count);
+        std::vector<wchar_t> nameBuffer(length);
+        if (GetPackagesByPackageFamily(L"Microsoft.Chelan_8wekyb3d8bbwe", &count, names.data(), &length,
+                                       nameBuffer.data()) == ERROR_SUCCESS)
+            for (UINT32 i = 0; i < count; ++i)
+            {
+                UINT32 pathLength = 1024;
+                if (GetPackagePathByFullName(names[i], &pathLength, buffer) == ERROR_SUCCESS)
+                    add(inMcc(buffer), L"the Microsoft Store package");
+            }
+    }
+    wchar_t drives[512]{};
+    GetLogicalDriveStringsW(static_cast<DWORD>(std::size(drives)), drives);
+    for (const wchar_t* drive = drives; *drive; drive += wcslen(drive) + 1)
+        if (GetDriveTypeW(drive) == DRIVE_FIXED)
+            add(inMcc(std::wstring(drive) + L"XboxGames\\Halo The Master Chief Collection\\Content"),
+                L"the Xbox app's folders");
+    return list;
 }
 
 // THE SCAN SHADOW. In the guest image the client has replaced the first five bytes of every function with a call to
 // its trap just past the image (E8 rel32 to G + SizeOfImage; measured on 0.10.0: 22423 of them), and every signature
 // that starts a function then fails. The copy has the image's code section with each such call put back from
 // halo3.dll on disk (the same build: its timestamp and image size are checked against the image's header).
-bool BuildShadow(uintptr_t guest, const IMAGE_NT_HEADERS64* nt, uint32_t textRva, uint32_t textSize,
-                 std::wstring& why, size_t& restored)
+// Why `file` (at `path`) is not halo3.dll of the client's build, or empty when it is.
+std::wstring Halo3DllMismatch(const std::vector<uint8_t>& file, const IMAGE_NT_HEADERS64* nt)
 {
-    const std::wstring path = Halo3DllPath();
-    std::vector<uint8_t> file;
-    if (path.empty() || !LoadFile(path, file))
-    {
-        why = L"halo3.dll was not found (" + path + L")";
-        return false;
-    }
     const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(file.data());
     if (file.size() < 0x400 || dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 ||
         static_cast<size_t>(dos->e_lfanew) + sizeof(IMAGE_NT_HEADERS64) > file.size())
-    {
-        why = path + L" is not a PE file";
-        return false;
-    }
+        return L"not a PE file";
     const auto* fileNt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(file.data() + dos->e_lfanew);
     if (fileNt->FileHeader.TimeDateStamp != nt->FileHeader.TimeDateStamp ||
         fileNt->OptionalHeader.SizeOfImage != nt->OptionalHeader.SizeOfImage)
+        return L"another build than the client's image";
+    return {};
+}
+
+bool BuildShadow(uintptr_t guest, const IMAGE_NT_HEADERS64* nt, uint32_t textRva, uint32_t textSize,
+                 std::wstring& why, size_t& restored, std::wstring& used)
+{
+    std::vector<uint8_t> file;
+    std::wstring path, tried;
+    for (const auto& candidate : Halo3DllCandidates())
     {
-        why = path + L" is another build than the client's image";
+        std::wstring mismatch = L"no file";
+        if (LoadFile(candidate.path, file))
+            mismatch = Halo3DllMismatch(file, nt);
+        if (mismatch.empty())
+        {
+            path = candidate.path;
+            used = std::wstring(candidate.source) + L": " + candidate.path;
+            break;
+        }
+        tried += (tried.empty() ? L"" : L"; ") + std::wstring(candidate.source) + L": " + candidate.path + L" (" +
+            mismatch + L")";
+    }
+    if (path.empty())
+    {
+        why = L"halo3.dll of the client's build was not found; tried " + (tried.empty() ? L"nowhere" : tried);
         return false;
     }
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(file.data());
+    const auto* fileNt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(file.data() + dos->e_lfanew);
     const auto* section = IMAGE_FIRST_SECTION(fileNt);
     const IMAGE_SECTION_HEADER* text = nullptr;
     for (unsigned i = 0; i < fileNt->FileHeader.NumberOfSections; ++i, ++section)
@@ -911,11 +1015,11 @@ bool Poll()
             g_guestCodeStart = guest + section->VirtualAddress;
             g_guestCodeEnd = g_guestCodeStart + section->Misc.VirtualSize;
         }
-    std::wstring shadowWhy;
+    std::wstring shadowWhy, shadowFrom;
     size_t restored = 0;
     const bool shadowed = g_guestCodeStart &&
         BuildShadow(guest, nt, static_cast<uint32_t>(g_guestCodeStart - guest),
-                    static_cast<uint32_t>(g_guestCodeEnd - g_guestCodeStart), shadowWhy, restored);
+                    static_cast<uint32_t>(g_guestCodeEnd - g_guestCodeStart), shadowWhy, restored, shadowFrom);
     if (shadowed)
         g_shadowReady.store(true, std::memory_order_release);
     g_guestBase = guest;
@@ -926,7 +1030,8 @@ bool Poll()
     ReleaseSRWLockExclusive(&g_lock);
     if (shadowed)
         LOG("RECLAIMER 0.10: the client has put a call to its trap over the start of %zu functions in halo3.dll's "
-            "image; signature searches read a copy with halo3.dll's own bytes there", restored);
+            "image; signature searches read a copy with halo3.dll's own bytes there (%ls)", restored,
+            shadowFrom.c_str());
     else
         LOG("RECLAIMER 0.10: signature searches read the image as the client left it (%ls): every signature that "
             "starts a function will fail", shadowWhy.c_str());
