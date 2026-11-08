@@ -4952,11 +4952,14 @@ namespace
                     regionBase < selfBase + selfSize;
                 if (candidate && !self)
                 {
-                    uintptr_t hits[kMaxSafeFrameHits]{};
-                    int shapes[kMaxSafeFrameHits]{};
+                    // More than a title's records: on Project Reclaimer one region of tag data also holds the
+                    // copies left from earlier levels, which a cap of 16 could put ahead of the level's own.
+                    constexpr int kRegionHits = 64;
+                    uintptr_t hits[kRegionHits]{};
+                    int shapes[kRegionHits]{};
                     const int n = SafeFrameScanRegion(
                         regionBase, mbi.RegionSize, *adapter,
-                        hits, kMaxSafeFrameHits, shapes);
+                        hits, kRegionHits, shapes);
                     for (int k = 0; k < n; ++k)
                     {
                         ++rawHits;
