@@ -904,7 +904,8 @@ static std::string ReclaimerVersionText(const reclaimer_host::Version& version)
 }
 // A client's version. The client updates itself in place and keeps its file name, so the name says which version
 // was first installed, not which one runs: the file's own version resource is read, and the name is the fallback
-// for a file without one. `fromName` (optional) says which it was.
+// for a file without one. `fromName` (optional) says which it was. The resource's FileVersion text comes first:
+// 0.10.1's says 0.10.1 while its numeric version still says 0.10.0.
 static reclaimer_host::Version ReclaimerVersionOfFile(const std::wstring& path, bool* fromName = nullptr)
 {
     reclaimer_host::Version version;
@@ -915,9 +916,29 @@ static reclaimer_host::Version ReclaimerVersionOfFile(const std::wstring& path, 
     if (size)
     {
         std::vector<BYTE> block(size);
+        if (!GetFileVersionInfoW(path.c_str(), 0, size, block.data()))
+            block.clear();
+        struct Translation { WORD language, codePage; }* translations = nullptr;
+        UINT translationsSize = 0;
+        if (!block.empty() &&
+            VerQueryValueW(block.data(), L"\\VarFileInfo\\Translation", reinterpret_cast<void**>(&translations),
+                           &translationsSize) && translations && translationsSize >= sizeof(Translation))
+        {
+            wchar_t query[64]{};
+            swprintf_s(query, L"\\StringFileInfo\\%04x%04x\\FileVersion", translations->language,
+                       translations->codePage);
+            wchar_t* text = nullptr;
+            UINT textSize = 0;
+            if (VerQueryValueW(block.data(), query, reinterpret_cast<void**>(&text), &textSize) && text && textSize)
+            {
+                version = reclaimer_host::VersionOfText(std::wstring_view(text, wcsnlen(text, textSize)));
+                if (version.known)
+                    return version;
+            }
+        }
         VS_FIXEDFILEINFO* fixed = nullptr;
         UINT fixedSize = 0;
-        if (GetFileVersionInfoW(path.c_str(), 0, size, block.data()) &&
+        if (!block.empty() &&
             VerQueryValueW(block.data(), L"\\", reinterpret_cast<void**>(&fixed), &fixedSize) && fixed &&
             fixedSize >= sizeof(VS_FIXEDFILEINFO) && fixed->dwSignature == VS_FFI_SIGNATURE &&
             (fixed->dwFileVersionMS || fixed->dwFileVersionLS))

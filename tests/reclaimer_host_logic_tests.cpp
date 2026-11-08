@@ -157,6 +157,14 @@ int main()
     CHECK(!IsClientExeName(L"project-reclaimer-clientx-v0.9.23.exe"));
     CHECK(!IsClientExeName(L"project-reclaimer-client-dedicated-v0.9.23.exe"));
     CHECK(VersionOf(L"project-reclaimer-client-v0.9.23.exe").part[2] == 23);
+    {
+        // A version resource's FileVersion text (0.10.1's numeric version still says 0.10.0).
+        const Version text = VersionOfText(L"0.10.1");
+        CHECK(text.known && text.part[0] == 0 && text.part[1] == 10 && text.part[2] == 1);
+        CHECK(VersionOfText(L"0.10.1.0").part[2] == 1);
+        CHECK(!VersionOfText(L"").known);
+        CHECK(!VersionOfText(L"v0.10.1").known);
+    }
     CHECK(!IsClientExeName(L"project-reclaimer-dedicated-v0.9.8.exe"));
     CHECK(!IsClientExeName(L"reclaimer-rcon-v0.9.8.exe"));
     CHECK(!IsClientExeName(L"project-reclaimer-v0.9.8.exe.bak"));

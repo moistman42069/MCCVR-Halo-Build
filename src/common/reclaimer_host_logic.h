@@ -310,32 +310,38 @@ struct Version
 };
 
 // project-reclaimer-v0.9.8.exe -> 0.9.8. A name without a version is "unknown" and loses to any known one.
-inline Version VersionOf(std::wstring_view leaf)
+// "0.10.1" -> 0.10.1: up to three numbers joined by dots, from the start of `text`. Unknown when it starts with none.
+inline Version VersionOfText(std::wstring_view text)
 {
     Version version;
-    const std::wstring name = Lower(leaf);
-    const size_t at = name.rfind(L"-v");
-    if (at == std::wstring::npos)
-        return version;
-    size_t i = at + 2;
+    size_t i = 0;
     int parts = 0;
-    while (parts < 3 && i < name.size() && name[i] >= L'0' && name[i] <= L'9')
+    while (parts < 3 && i < text.size() && text[i] >= L'0' && text[i] <= L'9')
     {
         int value = 0;
-        while (i < name.size() && name[i] >= L'0' && name[i] <= L'9')
+        while (i < text.size() && text[i] >= L'0' && text[i] <= L'9')
         {
             if (value > 100000)
                 return Version{};
-            value = value * 10 + (name[i++] - L'0');
+            value = value * 10 + (text[i++] - L'0');
         }
         version.part[parts++] = value;
-        if (i < name.size() && name[i] == L'.' && i + 1 < name.size() && name[i + 1] >= L'0' && name[i + 1] <= L'9')
+        if (i < text.size() && text[i] == L'.' && i + 1 < text.size() && text[i + 1] >= L'0' && text[i + 1] <= L'9')
             ++i;
         else
             break;
     }
     version.known = parts > 0;
     return version;
+}
+
+inline Version VersionOf(std::wstring_view leaf)
+{
+    const std::wstring name = Lower(leaf);
+    const size_t at = name.rfind(L"-v");
+    if (at == std::wstring::npos)
+        return Version{};
+    return VersionOfText(std::wstring_view(name).substr(at + 2));
 }
 
 // True when `candidate` should replace `best`.
