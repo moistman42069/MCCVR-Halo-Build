@@ -5,6 +5,8 @@
 // the converter and owned abstract-state reader have both been observed on
 // the input thread for the current title generation.
 void NativeVrActions_Poll();
+// Halo 3: the game zoomed in at `inMs` and back out at `outMs` (GetTickCount64): log the bridge's last second of zoom.
+void NativeVrActions_Halo3ZoomBounced(uint64_t inMs, uint64_t outMs);
 // Worker, right after the Halo 3 core retired its hooks: the Halo 3 bridge lets go of halo3.dll in the same pass,
 // while MCC still owns the DLL, so the next game gets a fresh image.
 void NativeVrActions_Halo3CoreRetired();

@@ -744,6 +744,18 @@ namespace
         if (previous != level && g_config.aim_frame_zoom)
             LOG("%s zoom: the game's zoom level is %d%s", AimFrameTitleName(title), static_cast<int>(level),
                 level < 0 ? " (not zoomed)" : "");
+        // Zoomed in and straight back out (Project Reclaimer, one pull in six): what the action bridge gave the game.
+        static uint64_t s_zoomedInMs = 0;
+        static uint32_t s_bounces = 0;
+        const uint64_t now = GetTickCount64();
+        if (previous < 0 && level >= 0)
+            s_zoomedInMs = now;
+        else if (previous >= 0 && level < 0 && s_zoomedInMs && now - s_zoomedInMs <= 600 &&
+                 title == GameTitle::Halo3 && g_hostIsProjectReclaimer && s_bounces < 40)
+        {
+            ++s_bounces;
+            NativeVrActions_Halo3ZoomBounced(s_zoomedInMs, now);
+        }
     }
     // The compact cameras CamCopy completed, and the tangents the game gave each BEFORE the headset's visibility
     // cover widens them: while zoomed, the game's own zoomed field of view (the eye renderer's saved +0x28 is the

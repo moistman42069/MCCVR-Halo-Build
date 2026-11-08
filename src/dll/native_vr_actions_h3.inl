@@ -79,6 +79,26 @@ using Convert = void(__fastcall*)(uintptr_t,int,const void*,void*,void*,void*);
 using Read = void*(__fastcall*)(void*,unsigned);
 using InputUpdate = void(__fastcall*)();
 
+// ZOOM, TICK BY TICK (Project Reclaimer 0.10). About one zoom pull in six zoomed in and straight back out within
+// 0.05-0.36 s, the mod pressing zoom once and the hand on the gun throughout (2026-11-07 18:20, 24 of 137 pulls): a
+// second press arose between the mod's press and the game. Each record advance and each read of zoom by the game's
+// player-control builder is kept here, with its thread (this bridge's records are per thread), and the last second
+// is written to the log when the game zooms in and back out within 0.6 s (NativeVrActions_Halo3ZoomBounced).
+struct ZoomTick {
+    uint64_t ms; uint32_t thread;
+    uint8_t kind;       // 0 advance, 1 advance refused, 2 read gave the VR record, 3 read gave the game's own record
+    uint8_t pressed;    // advance: zoom published as held; read: this thread's records were advanced
+    uint8_t frames;     // the VR record's held frames
+    uint8_t gameFrames; // read: the frames of the record the game got
+};
+constexpr unsigned kZoomTicks=256;
+ZoomTick zoomTicks[kZoomTicks];
+std::atomic<uint32_t> zoomTickNext{0};
+void NoteZoomTick(uint8_t kind,bool pressed,uint8_t frames,uint8_t gameFrames) noexcept {
+    const uint32_t i=zoomTickNext.fetch_add(1,std::memory_order_relaxed)%kZoomTicks;
+    zoomTicks[i]={GetTickCount64(),GetCurrentThreadId(),kind,static_cast<uint8_t>(pressed?1:0),frames,gameFrames};
+}
+
 // Controller 0's input was converted, elapsedMs after the last: the VR records advance with it.
 void AdvanceController0(int elapsedMs) {
     const auto now=GetTickCount64();
@@ -96,7 +116,11 @@ void AdvanceController0(int elapsedMs) {
             local.records[i].Advance((local.direct||(local.blocked&(1u<<i))) && (local.actions&(1u<<i)),unsigned(elapsedMs));
         local.extra.Advance(local.direct,extras,extrasServed,unsigned(elapsedMs));
         runtime.converted.fetch_add(1,std::memory_order_relaxed);
-    } else local.converted=false;
+        NoteZoomTick(0,(actions>>vr_mapping::Zoom)&1u,local.records[vr_mapping::Zoom].ReadCounters().frames,0);
+    } else {
+        local.converted=false;
+        NoteZoomTick(1,false,local.records[vr_mapping::Zoom].ReadCounters().frames,0);
+    }
 }
 
 thread_local bool t_controller0Converted=false; // the converter ran for controller 0 inside this input update
@@ -208,6 +232,13 @@ void* __fastcall ReaderHook(void* state,unsigned action,uintptr_t caller) {
     __try {
         result=reinterpret_cast<Read>(runtime.original[1])(state,action);
         result=ReadOwned(state,action,result,caller);
+        if(native_action_button::SemanticAction(title,action)==static_cast<int>(vr_mapping::Zoom) &&
+           caller>=runtime.base+consumerBegin && caller<runtime.base+consumerEnd) {
+            uint8_t gameFrames=0;
+            if(result) ReadFrames(result,gameFrames);
+            NoteZoomTick(result==local.records[vr_mapping::Zoom].bytes.data()?2:3,local.converted,
+                local.records[vr_mapping::Zoom].ReadCounters().frames,gameFrames);
+        }
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
     return result;
 }
