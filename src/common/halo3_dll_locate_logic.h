@@ -9,6 +9,7 @@
 // still checked against the client's build before it is used.
 // Pure parsing; unit-tested in tests/core_tests.cpp.
 
+#include <cwctype>
 #include <string>
 #include <vector>
 
@@ -74,5 +75,20 @@ inline std::vector<std::string> SteamLibraryPaths(const std::string& vdf)
             paths.push_back(value);
     }
     return paths;
+}
+
+// The Xbox app's library folders a drive may hold (XboxGames, or XBOX as on this project's own Store install).
+inline constexpr const wchar_t* kXboxLibraryFolders[] = {L"XboxGames", L"XBOX"};
+// At most this many entries of one such folder are looked at; nothing below them is searched.
+inline constexpr unsigned kXboxLibraryEntries = 512;
+
+// Whether an entry of an Xbox library folder may be MCC's: the app names it "Halo- The Master Chief Collection"
+// (docs/MCC-EDITIONS-EVIDENCE.md), its package "Microsoft.Chelan_...", as the launcher's installer looks for.
+inline bool MayBeMccFolder(const std::wstring& name)
+{
+    std::wstring lower = name;
+    for (auto& c : lower)
+        c = static_cast<wchar_t>(std::towlower(c));
+    return lower.find(L"halo") != std::wstring::npos || lower.find(L"chelan") != std::wstring::npos;
 }
 } // namespace halo3_dll_locate

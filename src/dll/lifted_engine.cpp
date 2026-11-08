@@ -391,9 +391,27 @@ std::vector<Halo3DllCandidate> Halo3DllCandidates()
     wchar_t drives[512]{};
     GetLogicalDriveStringsW(static_cast<DWORD>(std::size(drives)), drives);
     for (const wchar_t* drive = drives; *drive; drive += wcslen(drive) + 1)
-        if (GetDriveTypeW(drive) == DRIVE_FIXED)
-            add(inMcc(std::wstring(drive) + L"XboxGames\\Halo The Master Chief Collection\\Content"),
-                L"the Xbox app's folders");
+    {
+        if (GetDriveTypeW(drive) != DRIVE_FIXED)
+            continue;
+        for (const wchar_t* folder : halo3_dll_locate::kXboxLibraryFolders)
+        {
+            const std::wstring library = std::wstring(drive) + folder;
+            WIN32_FIND_DATAW entry{};
+            const HANDLE find = FindFirstFileExW((library + L"\\*").c_str(), FindExInfoBasic, &entry,
+                                                 FindExSearchLimitToDirectories, nullptr, 0);
+            if (find == INVALID_HANDLE_VALUE)
+                continue;
+            unsigned seen = 0;
+            do
+            {
+                if ((entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                    halo3_dll_locate::MayBeMccFolder(entry.cFileName))
+                    add(inMcc(library + L"\\" + entry.cFileName + L"\\Content"), L"the Xbox app's folders");
+            } while (++seen < halo3_dll_locate::kXboxLibraryEntries && FindNextFileW(find, &entry));
+            FindClose(find);
+        }
+    }
     return list;
 }
 

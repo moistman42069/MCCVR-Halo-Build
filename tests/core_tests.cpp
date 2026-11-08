@@ -7687,6 +7687,11 @@ int main()
             Check(libraries.size() == 2 && libraries[0] == R"(C:\Program Files (x86)\Steam)" &&
                       libraries[1] == R"(G:\SteamLibrary)" && SteamLibraryPaths("").empty(),
                 "Steam's libraryfolders.vdf: every library path, its backslashes made single");
+            Check(MayBeMccFolder(L"Halo- The Master Chief Collection") &&
+                      MayBeMccFolder(L"Microsoft.Chelan_1.3528.0.0_x64__8wekyb3d8bbwe") &&
+                      MayBeMccFolder(L"HALO THE MASTER CHIEF COLLECTION") && !MayBeMccFolder(L"Forza Horizon 5") &&
+                      !MayBeMccFolder(L""),
+                "the Xbox app's folders: any entry named for Halo or for MCC's package, as the launcher looks");
         }
         {
             // Each support-trigger pull, one report (zoom_pull_audit_logic.h).
