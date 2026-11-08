@@ -564,6 +564,7 @@ try {
     foreach ($requiredPath in @(
             $dllPath,
             (Join-Path $payloadDir 'HaloMCCVRReclaimerRelay.dll'),
+            (Join-Path $payloadDir 'HaloMCCVRInject.exe'),
             (Join-Path $payloadDir 'HaloMCCVRSettings.exe'),
             $launcherPath,
             $configPath,

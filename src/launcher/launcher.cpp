@@ -28,8 +28,9 @@
 // entry runs, so EAC is never started — and loads HaloMCCVR.dll into it before
 // the game's first instruction runs.
 //
-// Injection method: classic CreateRemoteThread + LoadLibraryW. The process is
-// created suspended, a remote thread loads our DLL, then the game resumes.
+// Injection method: classic CreateRemoteThread + LoadLibraryW, done by
+// HaloMCCVRInject.exe beside the DLL. The process is created suspended, the
+// injector's remote thread loads our DLL, then the game resumes.
 //
 // Two editions ship the same game with different shipping executables:
 //
@@ -335,48 +336,70 @@ static bool ModuleLoadedIn(DWORD pid, const wchar_t* moduleName)
     return found;
 }
 
-// Write the DLL path into the game process and make it call LoadLibraryW on it.
-// LoadLibraryW lives at the same address in every 64-bit process.
-static bool InjectDll(HANDLE process, const std::wstring& dllPath, std::wstring& failWhy)
+// The mod is loaded by HaloMCCVRInject.exe, beside the DLL (src/injector/injector.cpp). This launcher, which also
+// downloads and installs updates, has no code that writes into another process: antivirus scores a program that does
+// both as a trojan. The injector's reason for a failure comes back on its standard error.
+static bool InjectDll(DWORD pid, const std::wstring& dllPath, std::wstring& failWhy)
 {
-    const SIZE_T bytes = (dllPath.size() + 1) * sizeof(wchar_t);
-    void* remoteMem = VirtualAllocEx(process, nullptr, bytes,
-                                     MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!remoteMem)
+    const std::filesystem::path injector = std::filesystem::path(dllPath).parent_path() / L"HaloMCCVRInject.exe";
+    if (!FileExists(injector.wstring()))
     {
-        failWhy = L"VirtualAllocEx: " + WinErr(GetLastError());
+        failWhy = L"HaloMCCVRInject.exe is missing from " + injector.parent_path().wstring() + L". Install the mod again.";
         return false;
     }
-    bool injected = false;
-    if (!WriteProcessMemory(process, remoteMem, dllPath.c_str(), bytes, nullptr))
-        failWhy = L"WriteProcessMemory: " + WinErr(GetLastError());
-    else
+    SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
+    HANDLE readEnd = nullptr, writeEnd = nullptr;
+    if (!CreatePipe(&readEnd, &writeEnd, &inherit, 0))
     {
-        auto loadLibrary = reinterpret_cast<LPTHREAD_START_ROUTINE>(
-            GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW"));
-        HANDLE thread = CreateRemoteThread(process, nullptr, 0, loadLibrary,
-                                           remoteMem, 0, nullptr);
-        if (!thread)
-            failWhy = L"CreateRemoteThread: " + WinErr(GetLastError());
-        else
-        {
-            if (WaitForSingleObject(thread, 15000) == WAIT_OBJECT_0)
-            {
-                DWORD exitCode = 0;
-                GetExitCodeThread(thread, &exitCode);
-                if (exitCode != 0) // LoadLibrary returns the module handle; 0 means it failed
-                    injected = true;
-                else
-                    failWhy = L"LoadLibraryW returned NULL inside the game "
-                              L"(missing dependency or blocked DLL?)";
-            }
-            else
-                failWhy = L"the injection thread timed out";
-            CloseHandle(thread);
-        }
+        failWhy = L"CreatePipe: " + WinErr(GetLastError());
+        return false;
     }
-    VirtualFreeEx(process, remoteMem, 0, MEM_RELEASE);
-    return injected;
+    SetHandleInformation(readEnd, HANDLE_FLAG_INHERIT, 0);
+    STARTUPINFOW si{sizeof(si)};
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = writeEnd;
+    si.hStdError = writeEnd;
+    std::wstring command = L"\"" + injector.wstring() + L"\" " + std::to_wstring(pid) + L" \"" + dllPath + L"\"";
+    PROCESS_INFORMATION pi{};
+    const BOOL started = CreateProcessW(injector.c_str(), command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
+                                        nullptr, injector.parent_path().c_str(), &si, &pi);
+    const DWORD startError = started ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(writeEnd);
+    if (!started)
+    {
+        CloseHandle(readEnd);
+        failWhy = startError == ERROR_VIRUS_INFECTED || startError == ERROR_VIRUS_DELETED
+            ? L"Windows Security (or your antivirus) blocked HaloMCCVRInject.exe, the part of the mod that loads it into "
+              L"the game. The launcher's Troubleshooting page explains how to let it through "
+              L"(\"Antivirus flags the launcher\")."
+            : L"Could not start HaloMCCVRInject.exe: " + WinErr(startError);
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    const bool finished = WaitForSingleObject(pi.hProcess, 30000) == WAIT_OBJECT_0;
+    if (!finished)
+        TerminateProcess(pi.hProcess, 1);
+    DWORD exitCode = 1;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hProcess);
+    std::string said;
+    char buffer[1024];
+    DWORD read = 0;
+    while (said.size() < 8192 && ReadFile(readEnd, buffer, sizeof(buffer), &read, nullptr) && read)
+        said.append(buffer, read);
+    CloseHandle(readEnd);
+    while (!said.empty() && (said.back() == '\n' || said.back() == '\r'))
+        said.pop_back();
+    if (finished && exitCode == 0)
+        return true;
+    const int length = MultiByteToWideChar(CP_UTF8, 0, said.data(), static_cast<int>(said.size()), nullptr, 0);
+    std::wstring reason(length > 0 ? length : 0, L'\0');
+    if (length > 0)
+        MultiByteToWideChar(CP_UTF8, 0, said.data(), static_cast<int>(said.size()), reason.data(), length);
+    failWhy = !finished ? L"HaloMCCVRInject.exe did not finish within 30 seconds"
+            : reason.empty() ? L"HaloMCCVRInject.exe failed (exit code " + std::to_wstring(exitCode) + L")"
+            : reason;
+    return false;
 }
 
 // A packaged app cannot be started with CreateProcess: the process would have
@@ -675,7 +698,7 @@ static int LaunchInstalledMod(const std::wstring& dir)
         }
         LauncherLog("game process created, pid %lu", pi.dwProcessId);
 
-        injected = InjectDll(pi.hProcess, dllPath, failWhy);
+        injected = InjectDll(pi.dwProcessId, dllPath, failWhy);
         if (!injected)
         {
             LauncherLog("injection FAILED: %ls", failWhy.c_str());
@@ -793,10 +816,8 @@ static int LaunchInstalledMod(const std::wstring& dir)
             return 1;
         }
 
-        pi.hProcess = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
-                                      PROCESS_VM_OPERATION | PROCESS_VM_WRITE |
-                                      PROCESS_VM_READ | SYNCHRONIZE,
-                                  FALSE, gamePid);
+        // Only to watch it: HaloMCCVRInject.exe opens it for the injection.
+        pi.hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, gamePid);
         if (!pi.hProcess)
         {
             const DWORD e = GetLastError();
@@ -808,7 +829,7 @@ static int LaunchInstalledMod(const std::wstring& dir)
         }
         pi.dwProcessId = gamePid;
 
-        injected = InjectDll(pi.hProcess, dllPath, failWhy);
+        injected = InjectDll(pi.dwProcessId, dllPath, failWhy);
         if (coOwned)
             CoUninitialize();
         if (!injected)
@@ -1188,7 +1209,7 @@ ClientInfo Describe(const std::filesystem::path& launcherDir, const std::wstring
         info.text += L"\nExperimental: from 0.10.0 Project Reclaimer runs its own rebuilt copy of Halo 3, and the VR "
                      L"mod is being ported to it. Some of its features may not work there yet.";
     const std::filesystem::path modDir = ModDir(launcherDir);
-    for (const wchar_t* needed : {L"HaloMCCVR.dll", kReclaimerRelayName})
+    for (const wchar_t* needed : {L"HaloMCCVR.dll", kReclaimerRelayName, L"HaloMCCVRInject.exe"})
     {
         if (FileExists((modDir / needed).wstring()))
             continue;
@@ -1400,7 +1421,7 @@ static int LaunchReclaimer(const std::wstring& dir, const ReclaimerClient& clien
     }
     LauncherLog("Project Reclaimer created (suspended), pid %lu", pi.dwProcessId);
     std::wstring failWhy;
-    if (!InjectDll(pi.hProcess, relayPath, failWhy))
+    if (!InjectDll(pi.dwProcessId, relayPath, failWhy))
     {
         LauncherLog("the relay was NOT loaded: %ls", failWhy.c_str());
         TerminateProcess(pi.hProcess, 1);
@@ -1416,7 +1437,7 @@ static int LaunchReclaimer(const std::wstring& dir, const ReclaimerClient& clien
         wchar_t eventName[64]{};
         reclaimer_host::EarlyHooksEventName(eventName, std::size(eventName), pi.dwProcessId);
         const HANDLE hooksReady = CreateEventW(nullptr, TRUE, FALSE, eventName);
-        if (!InjectDll(pi.hProcess, dllPath, failWhy))
+        if (!InjectDll(pi.dwProcessId, dllPath, failWhy))
         {
             LauncherLog("HaloMCCVR.dll was NOT loaded: %ls", failWhy.c_str());
             if (hooksReady)
