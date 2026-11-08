@@ -257,9 +257,11 @@ int main()
         CHECK(!RunsRecompiledEngine(vNotRun));       // 0.9.99
         CHECK(!RunsRecompiledEngine(v098));
         CHECK(!RunsRecompiledEngine(none));
-        CHECK(!Proven(v0100));
-        // Of several, the proven rule alone decides: 0.10.0 is a client like any other the mod has not been run with.
-        const std::vector<ClientCandidate> updated{{L"0.10", v0100, 9}, {L"0.9.23", VersionOf(L"x-v0.9.23.exe"), 1}};
+        CHECK(Proven(v0100));
+        CHECK(Proven(VersionOfText(L"0.10.1")));
+        CHECK(!Proven(VersionOfText(L"0.10.2")));
+        // Of several, the proven rule decides: the mod has been run with 0.10.0, not with 0.9.23.
+        const std::vector<ClientCandidate> updated{{L"0.10", v0100, 1}, {L"0.9.23", VersionOf(L"x-v0.9.23.exe"), 9}};
         CHECK(ChooseClient(updated).chosen == 0);
 
         const wchar_t* client = L"\"G:\\Games\\Project Reclaimer\\0.9.23\\project-reclaimer-client-v0.9.23.exe\"";

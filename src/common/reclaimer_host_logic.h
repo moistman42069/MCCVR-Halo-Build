@@ -362,7 +362,7 @@ inline bool Newer(const Version& candidate, const Version& best)
 // launcher's log says so either way. A client named in reclaimer_client.txt is the player's own choice and is
 // started whatever its version.
 inline constexpr Version kProvenVersions[] = {{{0, 9, 8}, true}, {{0, 9, 10}, true}, {{0, 9, 11}, true},
-                                              {{0, 9, 12}, true}};
+                                              {{0, 9, 12}, true}, {{0, 10, 0}, true}, {{0, 10, 1}, true}};
 inline bool Proven(const Version& version)
 {
     if (!version.known)
