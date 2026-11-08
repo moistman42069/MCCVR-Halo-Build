@@ -7624,6 +7624,25 @@ int main()
             Check(HudLayoutTakeLeftOvers(*mergedHud, 3, 3) && HudLayoutTakeLeftOvers(*mergedHud, 0, 6) &&
                       HudLayoutTakeLeftOvers(*mergedHud, 2, 3) && !HudLayoutTakeLeftOvers(*mergedHud, 3, 0),
                 "as before when there is room for both, or when the level did not load a whole set of its own");
+            // Two levels back (ODST, the menu, then the Ark, 2026-11-07 16:57): the ODST level's records are no
+            // longer remembered, but they hold a pair the mod wrote.
+            constexpr uint32_t kFrameH = 0x3F2DB8BBu;    // 0.6786, the Aim Frame's
+            uint64_t pairs[kHudLayoutWrittenPairs]{};
+            int pairCount = HudLayoutNotePairWritten(pairs, 0, kWrittenH, kWrittenV);
+            pairCount = HudLayoutNotePairWritten(pairs, pairCount, kFrameH, kTitleOwn);
+            pairCount = HudLayoutNotePairWritten(pairs, pairCount, kWrittenH, kWrittenV);
+            Check(pairCount == 2 && HudLayoutPairWritten(pairs, pairCount, kWrittenH, kWrittenV) &&
+                      HudLayoutPairWritten(pairs, pairCount, kFrameH, kTitleOwn) &&
+                      !HudLayoutPairWritten(pairs, pairCount, kTitleOwn, kTitleOwn) &&
+                      !HudLayoutPairWritten(pairs, pairCount, kWrittenV, kWrittenH),
+                "a record holding a pair written this session, either way round only as written, is left over; "
+                "one holding the title's own is not");
+            constexpr uint32_t kLast = 0x3F000000u + static_cast<uint32_t>(kHudLayoutWrittenPairs) - 1;
+            for (int i = 0; i < kHudLayoutWrittenPairs; ++i)
+                pairCount = HudLayoutNotePairWritten(pairs, pairCount, 0x3F000000u + static_cast<uint32_t>(i), kTitleOwn);
+            Check(pairCount == kHudLayoutWrittenPairs && !HudLayoutPairWritten(pairs, pairCount, kWrittenH, kWrittenV) &&
+                      HudLayoutPairWritten(pairs, pairCount, kLast, kTitleOwn),
+                "a full history drops its oldest pair and keeps the newest");
         }
         Check(HudLayoutAcceptedCountOk(*odstHud, 1) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 0) &&

@@ -472,6 +472,45 @@ inline constexpr bool HudLayoutRecordLeftOver(
     return horizontal != loadedHorizontal || vertical != loadedVertical;
 }
 
+// A record left from two levels back is not among the ones remembered, so the pair it was found with is the one it
+// holds: after ODST, the menu, then the Ark, the ODST level's six counted as the Ark's own, nine in all, and the
+// search of all memory that followed wrote the ODST level's copies instead of the Ark's (2026-11-07 16:57). A record
+// holding exactly a pair the mod wrote this session, the player's layout or the Aim Frame's, was not loaded with the
+// level it is found in either. The session's pairs, newest last; a full list drops its oldest.
+inline constexpr int kHudLayoutWrittenPairs = 32;
+
+inline constexpr uint64_t HudLayoutPairKey(uint32_t horizontal, uint32_t vertical)
+{
+    return (static_cast<uint64_t>(horizontal) << 32) | vertical;
+}
+
+inline constexpr bool HudLayoutPairWritten(
+    const uint64_t* pairs, int count, uint32_t horizontal, uint32_t vertical)
+{
+    for (int i = 0; i < count && i < kHudLayoutWrittenPairs; ++i)
+    {
+        if (pairs[i] == HudLayoutPairKey(horizontal, vertical))
+            return true;
+    }
+    return false;
+}
+
+// Adds a written pair unless it is there already. Returns the new count.
+inline constexpr int HudLayoutNotePairWritten(
+    uint64_t* pairs, int count, uint32_t horizontal, uint32_t vertical)
+{
+    if (HudLayoutPairWritten(pairs, count, horizontal, vertical))
+        return count;
+    if (count >= kHudLayoutWrittenPairs)
+    {
+        for (int i = 1; i < kHudLayoutWrittenPairs; ++i)
+            pairs[i - 1] = pairs[i];
+        count = kHudLayoutWrittenPairs - 1;
+    }
+    pairs[count] = HudLayoutPairKey(horizontal, vertical);
+    return count + 1;
+}
+
 // Whether a scan's left-over records are written along with the level's own. As before whenever the level's own are
 // not a whole set by themselves (a level that did not load its records again keeps them where they were) or both
 // together are still no more than the title can hold; otherwise only the level's own.

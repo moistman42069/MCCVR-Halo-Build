@@ -4299,6 +4299,33 @@ namespace
     // the title has been settled for a while.
     std::atomic<uint64_t> g_hudLayoutOwnerSinceMs{0};
 
+    // The safe-frame pairs written this session (HudLayoutPairWritten): written on the Present thread, read by the
+    // scan's, under their lock.
+    uint64_t g_hudWrittenPairs[kHudLayoutWrittenPairs]{};
+    std::atomic<int> g_hudWrittenPairCount{0};
+    SRWLOCK g_hudWrittenPairsLock = SRWLOCK_INIT;
+
+    static void NoteHudLayoutPairWritten(float horizontal, float vertical)
+    {
+        uint32_t h = 0, v = 0;
+        memcpy(&h, &horizontal, sizeof(h));
+        memcpy(&v, &vertical, sizeof(v));
+        AcquireSRWLockExclusive(&g_hudWrittenPairsLock);
+        g_hudWrittenPairCount.store(
+            HudLayoutNotePairWritten(g_hudWrittenPairs, g_hudWrittenPairCount.load(std::memory_order_relaxed), h, v),
+            std::memory_order_relaxed);
+        ReleaseSRWLockExclusive(&g_hudWrittenPairsLock);
+    }
+
+    static bool HudLayoutPairWrittenThisSession(uint32_t horizontal, uint32_t vertical)
+    {
+        AcquireSRWLockShared(&g_hudWrittenPairsLock);
+        const bool written = HudLayoutPairWritten(
+            g_hudWrittenPairs, g_hudWrittenPairCount.load(std::memory_order_relaxed), horizontal, vertical);
+        ReleaseSRWLockShared(&g_hudWrittenPairsLock);
+        return written;
+    }
+
     static void ClearHudLayoutSlots()
     {
         for (int i = 0; i < kMaxSafeFrameHits; ++i)
@@ -4983,7 +5010,8 @@ namespace
                         if (payloadOk)
                             RememberedHudSafeFrameBaseline(profile, hits[k], loadedH, loadedV);
                         const bool leftOver = payloadOk && g_hostIsProjectReclaimer &&
-                            HudLayoutRecordLeftOver(h, v, loadedH, loadedV);
+                            (HudLayoutRecordLeftOver(h, v, loadedH, loadedV) ||
+                             HudLayoutPairWrittenThisSession(h, v));
                         LOG("SAFEFRAME [%s]: anchor at %p (type 0x%X protect "
                             "0x%X) destination-Z %08X, safe frame %08X/%08X -> %s%s",
                             adapter->name, reinterpret_cast<void*>(hits[k]),
@@ -5383,6 +5411,8 @@ namespace
                 SafeFrameWriteLayout(
                     slot, *adapter, targetDestinationZ, slotH, slotV);
             ReleaseSRWLockShared(&g_hudLayoutWriteLock);
+            if (wrote)
+                NoteHudLayoutPairWritten(slotH, slotV);
             if (!stillOwned)
                 return;
             if (wrote)
