@@ -203,6 +203,13 @@ int wmain(int argc,wchar_t** argv) {
         Policies();
         sandbox = fs::temp_directory_path() / (L"HaloMCCVR-installer-test-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
         Require(!fs::exists(sandbox), "unique synthetic fixture directory");
+        if(argc==4&&std::wstring(argv[1])==L"--install-over-self") {
+            GameInstall game;
+            if(!ProbeInstall(argv[3],game)) return 2;
+            const auto installed=InstallPayload(argv[2],game,true);
+            if(!installed.success) std::wcerr<<installed.message<<std::endl;
+            return installed.success?0:1;
+        }
         if(argc==3&&std::wstring(argv[1])==L"--verify-payload") {
             VerifyPackagedPayload(fs::path(argv[2]),sandbox);
             Require(fs::equivalent(sandbox.parent_path(),fs::temp_directory_path())&&sandbox.filename().wstring().starts_with(L"HaloMCCVR-installer-test-"),"owned packaged fixture cleanup");
@@ -339,6 +346,39 @@ int wmain(int argc,wchar_t** argv) {
                 Require(!RefreshLauncherCopy(installedLauncher, freshPayload, package, problem) && !problem.empty(), "a launcher that cannot be replaced is reported");
             }
             Require(Read(package) == "old launcher" && fs::exists(packageMod / "old.txt") && !fs::exists(packageMod / "HaloMCCVR.dll"), "ModFiles stay as they were when the launcher cannot be replaced");
+        }
+        {
+            // AN UPDATE STARTED FROM THE INSTALLED LAUNCHER replaces that launcher while it runs, with no second program:
+            // a copy of this test, run as the installed launcher, installs over its own file. Windows refuses to
+            // overwrite a running program but lets it be renamed, so it steps aside to <name>.old-<suffix>.
+            const auto self = sandbox / "self", selfGame = self / "Steam MCC", selfMod = selfGame / "Halo_MCC_VR";
+            const auto selfSource = self / "package" / "ModFiles";
+            Write(selfGame / "MCC/Binaries/Win64/MCC-Win64-Shipping.exe", "fake game, never executed");
+            wchar_t running[32768]{}; GetModuleFileNameW(nullptr, running, static_cast<DWORD>(std::size(running)));
+            fs::create_directories(selfMod);
+            const auto selfLauncher = selfMod / "HaloMCCVRLauncher.exe";
+            fs::copy_file(running, selfLauncher);
+            Write(selfSource / "HaloMCCVR.dll", "self DLL fixture"); Write(selfSource / "halomccvr.cfg", "config_version=6\n");
+            Write(selfSource / "LICENSE", "license fixture"); Write(selfSource / "assets/fixture.txt", "asset fixture");
+            Write(selfSource.parent_path() / "HaloMCCVRLauncher.exe", "updated self launcher"); Manifest(selfSource);
+            std::wstring command = L"\"" + selfLauncher.wstring() + L"\" --install-over-self \"" + selfSource.wstring() + L"\" \"" +
+                selfGame.wstring() + L"\"";
+            STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
+            Require(CreateProcessW(selfLauncher.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, selfMod.c_str(),
+                                   &startup, &process) != FALSE, "start the installed launcher copy");
+            WaitForSingleObject(process.hProcess, 60000);
+            DWORD code = 99; GetExitCodeProcess(process.hProcess, &code);
+            CloseHandle(process.hThread); CloseHandle(process.hProcess);
+            Require(code == 0, "the running launcher installs an update over its own file");
+            Require(Read(selfLauncher) == "updated self launcher" && Read(selfMod / "HaloMCCVR.dll") == "self DLL fixture",
+                "the installed launcher is the update's after it ran");
+            size_t aside = 0;
+            for (const auto& item : fs::directory_iterator(selfMod))
+                if (item.path().filename().wstring().starts_with(L"HaloMCCVRLauncher.exe.old-")) ++aside;
+            Require(aside == 1, "the launcher that ran stepped aside, once");
+            RemoveSteppedAside(selfMod);
+            for (const auto& item : fs::directory_iterator(selfMod))
+                Require(!item.path().filename().wstring().starts_with(L"HaloMCCVRLauncher.exe.old-"), "a later start removes it");
         }
         Require(fs::equivalent(sandbox.parent_path(), fs::temp_directory_path()) && sandbox.filename().wstring().starts_with(L"HaloMCCVR-installer-test-"), "safe fixture cleanup boundary");
         fs::remove_all(sandbox);
