@@ -11,6 +11,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Static CRT so users do not need a separate Visual C++ redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# Reproducible builds: no build time stamped into the files, so the same sources build to the same files. An
+# unchanged program then stays the file antivirus has already come to trust, release after release.
+if(MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/Brepro>)
+    add_link_options(/Brepro)
+endif()
+
 include(FetchContent)
 include(CTest)
 
