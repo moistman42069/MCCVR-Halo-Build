@@ -9,7 +9,7 @@ running client yet: every runtime claim below is marked **unverified**.
 | `%LOCALAPPDATA%\ProjectReclaimer\Cache\native\retail-engine\engine.code` | `2461fde9255041b198545a6160bce72f27855bd152f11f2bee9f48052ab6f36f` |
 | MCC Steam `halo3\halo3.dll` (the build the client says it lifted: `b209d8454b12dc77`) | `b209d8454b12dc77e54ccd2c9924ec8d44b8619d21cf98e36ffaf601e67efb63` |
 
-Pinned copies: `N:\MyP4_All\UE\TheScienceTeam\_reclaimer-0.10-re\pinned`.
+Pinned copies of these files are kept outside the repository, by the hashes above.
 
 ## What changed from 0.9
 
