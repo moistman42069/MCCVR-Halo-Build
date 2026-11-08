@@ -32,6 +32,7 @@
 #include "dev_pad.h"
 #include "halo2_observer_6dof.h"
 #include "seat_exit_witness.h"
+#include "../common/zoom_pull_audit_logic.h"
 
 // M3 VR input. MCC reads gamepads through XInputGetState; hooking it lets the
 // mod present the Sense controllers as a gamepad the game already understands
@@ -893,6 +894,31 @@ std::atomic<uint32_t> g_menuPressSerial{0};
                 nativeMapping||(ownInputs&&nativeReady),g_config.disable_flashlight_input||
                     (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive),nullptr,rowInputs,poll);
             g_zoomInputDown.store(semanticActions.Has(vr_mapping::Zoom)&&!zoomPressedOut,std::memory_order_relaxed);
+        }
+        // Each pull of the support trigger on foot, and what came of it (zoom_pull_audit_logic.h).
+        {
+            static std::mutex auditLock;
+            static zoom_pull_audit::Audit audit;
+            int level=-1;
+            const bool levelKnown=Game_ReadZoomLevel(level);
+            zoom_pull_audit::Report report{};
+            bool due=false;
+            {
+                std::lock_guard<std::mutex> lock(auditLock);
+                due=audit.Step(GetTickCount64(),triggerDown&&gameplayMode&&!menuOpen&&!inSeat&&!pad.dualWield,
+                    handOnGun,pad.supportAimActive,pad.supportOnOneHandedGun,
+                    semanticActions.Has(vr_mapping::Zoom)&&!zoomPressedOut,semanticActions.Has(vr_mapping::Grenade),
+                    semanticActions.Has(vr_mapping::Equipment),levelKnown,level,report);
+            }
+            if(due)
+                LOG("Support trigger pull (%llu ms): the hand %s the gun (two-handed %d, near a one-handed gun %d); "
+                    "pressed %s%s%s%s; the game's zoom level %d -> %d%s",
+                    static_cast<unsigned long long>(report.heldMs),report.handOnGun?"on":"off",
+                    report.twoHanded?1:0,report.oneHandedGun?1:0,report.zoom?"zoom ":"",
+                    report.grenade?"grenade ":"",report.equipment?"equipment ":"",
+                    report.zoom||report.grenade||report.equipment?"":"nothing ",
+                    report.levelKnownBefore?report.levelBefore:-9,report.levelKnownAfter?report.levelAfter:-9,
+                    zoom_pull_audit::Audit::Unanswered(report)?" - ZOOM PRESSED, NOT ANSWERED":"");
         }
         if(scopeAvailable) semanticActions.actions&=~(1u<<vr_mapping::Zoom);
         // Direct routing withholds native transports, except Halo 2's context

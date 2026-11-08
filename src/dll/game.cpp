@@ -4718,6 +4718,21 @@ namespace
         return fallback;
     }
 
+    // Whether `slot` is among the records the last whole scan proved.
+    static bool RememberedHudSlot(HudLayoutProfile profile, uintptr_t slot)
+    {
+        HudLayoutRememberedCache* remembered = HudLayoutRememberedFor(profile);
+        if (!remembered)
+            return false;
+        const int count = remembered->count.load(std::memory_order_acquire);
+        for (int i = 0; i < count && i < kMaxSafeFrameHits; ++i)
+        {
+            if (remembered->slots[i].load(std::memory_order_relaxed) == slot)
+                return true;
+        }
+        return false;
+    }
+
     // The safe-frame pair `slot` held when first scanned, before any write of ours; a record not yet remembered keeps
     // what the scan has just read.
     static void RememberedHudSafeFrameBaseline(
@@ -4914,7 +4929,8 @@ namespace
         uint32_t leftOverBaselines[kMaxSafeFrameHits]{};
         uint32_t leftOverBaseH[kMaxSafeFrameHits]{};
         uint32_t leftOverBaseV[kMaxSafeFrameHits]{};
-        int leftOvers = 0;
+        bool leftOverRemembered[kMaxSafeFrameHits]{};
+        int leftOvers = 0, rememberedLeftOvers = 0;
         // Project Reclaimer: an ODST level's converted record in the engine's tag data (kHalo3MergedHudLayoutAdapter).
         bool odstLevel = false;
         int rawHits = 0;
@@ -5067,6 +5083,8 @@ namespace
                                     RememberedHudCurvatureBaseline(profile, hits[k], destinationZ);
                                 leftOverBaseH[leftOvers] = loadedH;
                                 leftOverBaseV[leftOvers] = loadedV;
+                                leftOverRemembered[leftOvers] = RememberedHudSlot(profile, hits[k]);
+                                rememberedLeftOvers += leftOverRemembered[leftOvers] ? 1 : 0;
                                 ++leftOvers;
                             }
                         }
@@ -5094,10 +5112,20 @@ namespace
             if (cancelled || !tagSpanPass)
                 break;
             if (HudLayoutAcceptedCountOk(*adapter, accepted) ||
-                HudLayoutAcceptedCountOk(*adapter, accepted + leftOvers))
+                HudLayoutAcceptedCountOk(*adapter, accepted + leftOvers) ||
+                HudLayoutTakeRememberedLeftOvers(*adapter, accepted, rememberedLeftOvers))
             {
                 LOG("SAFEFRAME [%s]: %d record(s) found in the engine's tag data in %llu ms", adapter->name,
                     accepted, static_cast<unsigned long long>(GetTickCount64() - t0));
+                break;
+            }
+            // Project Reclaimer: the engine's records all lie in its tag data; what memory holds elsewhere is the
+            // client's copies (hundreds of ODST's, a dozen of Halo 3's), and a search there wrote the wrong ones.
+            if (g_hostIsProjectReclaimer)
+            {
+                LOG("SAFEFRAME [%s]: the engine's tag data held %d record(s) of this level's and %d left from an "
+                    "earlier level (%d remembered), not the title's %d; not searching the client's copies",
+                    adapter->name, accepted, leftOvers, rememberedLeftOvers, adapter->expectedBlocks);
                 break;
             }
             LOG("SAFEFRAME [%s]: the engine's tag data held %d record(s), not the title's %d; searching all memory",
@@ -5105,6 +5133,7 @@ namespace
             tagSpanPass = false;
             accepted = 0;
             leftOvers = 0;
+            rememberedLeftOvers = 0;
             rawHits = 0;
             addr = addrMin;
             scanEnd = addrMax;
@@ -5120,12 +5149,16 @@ namespace
 
         if (leftOvers > 0)
         {
-            const bool take = HudLayoutTakeLeftOvers(*adapter, accepted, leftOvers);
+            const bool rememberedOnly = HudLayoutTakeRememberedLeftOvers(*adapter, accepted, rememberedLeftOvers);
+            const bool take = rememberedOnly || HudLayoutTakeLeftOvers(*adapter, accepted, leftOvers);
             LOG("SAFEFRAME [%s]: %d record(s) loaded with this level and %d left from an earlier level -> %s",
                 adapter->name, accepted, leftOvers,
-                take ? "all written, as before" : "only this level's own are written");
+                rememberedOnly ? "the ones the last scan proved are written: the level was found while it loaded"
+                               : take ? "all written, as before" : "only this level's own are written");
             for (int i = 0; take && i < leftOvers && accepted < kMaxSafeFrameHits; ++i)
             {
+                if (rememberedOnly && !leftOverRemembered[i])
+                    continue;
                 acceptedSlots[accepted] = leftOverSlots[i];
                 acceptedBaselines[accepted] = leftOverBaselines[i];
                 acceptedBaseH[accepted] = leftOverBaseH[i];

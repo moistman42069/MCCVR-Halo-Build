@@ -523,3 +523,15 @@ inline constexpr bool HudLayoutTakeLeftOvers(
         return true;
     return own + leftOver <= adapter.maxBlocks;
 }
+
+// A LEVEL FOUND WHILE IT LOADED. Reclaimer starts loading the next level while the last one's generation still owns
+// the layout: the scan of that generation found the Ark's three records and wrote them, so by the Ark's own generation
+// they held the mod's layout and counted as left over. None of its own, nine left over: the search of all memory that
+// followed chose the ODST level's copies, which took the Aim Frame's layout while the Ark's records kept the player's,
+// and the Aim Frame's HUD came out squashed (2026-11-07 17:52). With none of the level's own, the left-over records the
+// last scan proved, when they are a whole set, are taken alone: they are the level's.
+inline constexpr bool HudLayoutTakeRememberedLeftOvers(
+    const HudLayoutAdapter& adapter, int own, int rememberedLeftOver)
+{
+    return own == 0 && HudLayoutAcceptedCountOk(adapter, rememberedLeftOver);
+}
