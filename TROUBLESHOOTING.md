@@ -119,11 +119,14 @@ source of every release is published on the same page.
    and choose **Actions > Allow on device** (or **Restore**).
 2. **You may need to do this a couple of times.** Defender can flag the same launcher again under a different name (for
    example `Wacatac.H!ml`, then `Wacatac.C!ml`). Allow each entry that names a Halo MCC VR file.
-3. Allowing goes by the detection's name, so it also lets other files with that name through. To allow only the mod
+3. **If files are missing afterwards, extract the ZIP again.** When Windows Security quarantined a file, allowing it
+   doesn't always put it back in the folder. Once you've allowed the entries, extract the release ZIP again (or
+   reinstall) so every file is there.
+4. Allowing goes by the detection's name, so it also lets other files with that name through. To allow only the mod
    instead, add folder exclusions: **Virus & threat protection > Manage settings > Exclusions > Add an exclusion >
    Folder**, for the folder you extracted the launcher to and for your `Halo_MCC_VR` folder. Then restore the file from
    Protection history.
-4. Report it to Microsoft as wrongly detected at <https://www.microsoft.com/wdsi/filesubmission>. Each report helps
+5. Report it to Microsoft as wrongly detected at <https://www.microsoft.com/wdsi/filesubmission>. Each report helps
    clear that file for everyone.
 
 **It isn't only this mod.** Defender's machine learning regularly flags VR mods that load into games, Wacatac in
