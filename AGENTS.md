@@ -144,6 +144,22 @@ four identical crashes.
 - `camscan` is opt-in and has process-memory write modes. Never build or run a
   write mode without explicit approval.
 
+## The mod loader (HaloMCCVRInject.exe)
+
+- Microsoft has been asked to clear this exact file as a Windows Defender false
+  positive. A clearance covers one file's exact bytes, so a release with a
+  different injector loses it, and players may see Defender warnings again.
+  `tools/injector-cleared.sha256` holds the cleared file's SHA-256.
+- Its bytes come from `src/injector/`, `src/common/injector_policy.h`, what it
+  uses of `src/common/reclaimer_host_logic.h`, its CMake target (settings,
+  version resource, `1.0.0`) and the compiler. Change these only for a reason
+  the user has agreed to, say so loudly when a change touches them, and keep
+  such a change in its own commit.
+- `tools/package-candidate.ps1` refuses to package a different injector. For an
+  intended change, package with `-AcceptInjectorChange`, say so in that
+  release's notes, submit the new file to Microsoft, and then record its
+  SHA-256 in `tools/injector-cleared.sha256`.
+
 ## Deployment
 
 - `tools/package-candidate.ps1` builds, tests, packages into ignored `out/`, and
