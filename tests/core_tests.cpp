@@ -7624,6 +7624,16 @@ int main()
             Check(HudLayoutTakeLeftOvers(*mergedHud, 3, 3) && HudLayoutTakeLeftOvers(*mergedHud, 0, 6) &&
                       HudLayoutTakeLeftOvers(*mergedHud, 2, 3) && !HudLayoutTakeLeftOvers(*mergedHud, 3, 0),
                 "as before when there is room for both, or when the level did not load a whole set of its own");
+            // The Ark found while it loaded (2026-11-07 17:52): none of its own, its three remembered, six of the ODST
+            // level's beside them.
+            Check(HudLayoutTakeRememberedLeftOvers(*mergedHud, 0, 3) &&
+                      HudLayoutTakeRememberedLeftOvers(*mergedHud, 0, 6),
+                "a level with none of its own takes the left-over records the last scan proved, when they are a set");
+            Check(!HudLayoutTakeRememberedLeftOvers(*mergedHud, 3, 3) &&
+                      !HudLayoutTakeRememberedLeftOvers(*mergedHud, 0, 2) &&
+                      !HudLayoutTakeRememberedLeftOvers(*mergedHud, 0, 7) &&
+                      !HudLayoutTakeRememberedLeftOvers(*mergedHud, 0, 0),
+                "not when the level has its own, nor when the remembered ones are no whole set");
             // Two levels back (ODST, the menu, then the Ark, 2026-11-07 16:57): the ODST level's records are no
             // longer remembered, but they hold a pair the mod wrote.
             constexpr uint32_t kFrameH = 0x3F2DB8BBu;    // 0.6786, the Aim Frame's
