@@ -8,7 +8,12 @@ param(
 
     # Retained only to reject obsolete callers explicitly. The new complete
     # ModFiles payload is installed by the bundled verified launcher.
-    [switch]$Install
+    [switch]$Install,
+
+    # Package although HaloMCCVRInject.exe differs from the one Microsoft was
+    # asked to clear (tools/injector-cleared.sha256). Only for an intended
+    # change to the injector; that release needs a new submission.
+    [switch]$AcceptInjectorChange
 )
 
 # Halo MCC VR is one cumulative build: Halo 3 + ODST + Halo: Reach + Halo 4,
@@ -518,6 +523,35 @@ try {
     }
     if ($LASTEXITCODE -ne 0) {
         throw 'Reach consistency check failed.'
+    }
+
+    # HaloMCCVRInject.exe is meant to stay byte-identical from release to
+    # release, so that Microsoft's clearance of it as a false positive keeps
+    # applying. A different file is never packaged by accident.
+    $injectorPinPath = Join-Path $repoRoot 'tools\injector-cleared.sha256'
+    $injectorPin = @(Get-Content -LiteralPath $injectorPinPath |
+        Where-Object { $_ -match '^[0-9A-Fa-f]{64}\s' })
+    if ($injectorPin.Count -ne 1) {
+        throw "Could not read the cleared injector's SHA-256 from $injectorPinPath."
+    }
+    $injectorCleared = $injectorPin[0].Substring(0, 64).ToUpperInvariant()
+    $injectorBuilt = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $repoRoot `
+        "$packageBuildDir\Release\HaloMCCVRInject.exe")).Hash
+    if ($injectorBuilt -ne $injectorCleared) {
+        $injectorNotice = "HaloMCCVRInject.exe HAS CHANGED. Built $injectorBuilt; " +
+            "Microsoft was asked to clear $injectorCleared. Windows Defender may flag " +
+            'this release until the new file is submitted and cleared.'
+        Write-Host ''
+        Write-Host ('!' * 78) -ForegroundColor Red
+        Write-Host $injectorNotice -ForegroundColor Red
+        Write-Host ('!' * 78) -ForegroundColor Red
+        Write-Host ''
+        if (-not $AcceptInjectorChange) {
+            throw ($injectorNotice + ' If the change is intended, package with ' +
+                '-AcceptInjectorChange, submit the new file to Microsoft, and ' +
+                'record its SHA-256 in tools\injector-cleared.sha256.')
+        }
+        Write-Warning 'Packaging a changed HaloMCCVRInject.exe (-AcceptInjectorChange).'
     }
 
     $finalCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
