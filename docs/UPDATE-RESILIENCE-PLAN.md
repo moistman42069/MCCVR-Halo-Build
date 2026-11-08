@@ -46,7 +46,7 @@ functions with its own versions, and enlarged several of its tables.
    globals, a list of five 0x110-byte buffers ({capacity, pointer, length} each), and the mod writes the 1280x720
    buffer of the one list that names all five in ODST's order (FA 2026-11-07; hundreds of freed copies sit beside it).
    A Reclaimer that stores that block differently (another element layout, a struct instead of byte buffers, records
-   merged into one buffer) leaves ODST's HUD at the game's size; the log then says "no list names ODST's whole block"
+   merged into one buffer) leaves ODST's HUD at the game's size; the log then says "0 list(s) name ODST's whole block"
    instead of "the client draws its HUD from its own copy". *Resilient form:* find the client's ODST HUD globals
    from the code that reads them (the client's draw of ODST's HUD) rather than by the shape of its heap data, or ask
    Reclaimer's developers for a HUD safe-area setting the mod can set.
