@@ -16,6 +16,9 @@
 #include <fstream>
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "comctl32.lib")
+#ifndef HALOMCCVR_RECLAIMER_LAUNCHER
+#define HALOMCCVR_RECLAIMER_LAUNCHER 0
+#endif
 #pragma comment(lib, "dwmapi.lib")
 
 namespace mcc_installer {
@@ -98,7 +101,7 @@ struct Menu {
     // the versions, and how a first install happens with nothing to check for.
     bool packageListed = false, packageChosen = false;
     HANDLE font{}; bool fontLoaded = false;
-    bool busy = false, updateReady = false, helperStarted = false, keepSettings = true;
+    bool busy = false, updateReady = false, keepSettings = true;
     // GitHub is being asked whether this launcher's repository has its own troubleshooting page.
     bool troubleshootingAsked = false;
     // Whether an update also replaces this launcher where it is. Each version chosen resets it to the usual answer.
@@ -110,7 +113,8 @@ struct Menu {
     enum class Work { None, Install, Check, Latest, Download } work = Work::None;
     size_t latestChannel = 0; std::wstring latestPassedOver;
     fs::path downloaded;
-    GameInstall operationGame; bool operationRetain = true;
+    // After an update: the launcher it installed, to start in this one's place, and what to tell the player first.
+    fs::path updatedLauncher; std::wstring updateResult;
     int dpi = 96;
     int Px(int value) const { return MulDiv(value, dpi, 96); }
     GameInstall* Selected() { const auto index = SendMessageW(games, CB_GETCURSEL, 0, 0); return index >= 0 && static_cast<size_t>(index) < installs.size() ? &installs[static_cast<size_t>(index)] : nullptr; }
@@ -830,8 +834,32 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 if (!result.success) menu->operationMessage = result.message;
             });
         } else if (game && menu->updateReady) {
-            menu->operationGame = *game; menu->operationRetain = menu->keepSettings;
-            menu->Start(Menu::Work::Download, [menu] { menu->downloaded = DownloadUpdate(menu->latest); });
+            // All in this launcher, no other program started: download and check the release, install it, and bring this
+            // launcher up to it where it is (installer.cpp renames the running one out of the way). Installing an update
+            // never starts MCC.
+            const auto target = *game; const auto release = menu->latest;
+            const bool retain = menu->keepSettings, replaceSelf = menu->updateThisLauncher;
+            menu->Start(Menu::Work::Download, [menu, target, release, retain, replaceSelf] {
+                menu->downloaded = DownloadUpdate(release);
+                const auto installedRelease = menu->downloaded.parent_path() / L"INSTALLED-RELEASE.txt";
+                {
+                    // For the install to keep: the package itself does not know its release's name or date.
+                    std::ofstream saved(installedRelease, std::ios::trunc);
+                    saved << "release=" << release.tag << "\npublished=" << release.published.substr(0, 10) << "\nbuild=" << ReadIdentity(menu->downloaded).tag << "\n";
+                }
+                const auto installed = InstallPayload(menu->downloaded, target, retain);
+                if (!installed.success) { menu->operationMessage = installed.message; return; }
+                std::error_code savedError;
+                fs::copy_file(installedRelease, target.root / L"Halo_MCC_VR" / L"INSTALLED-RELEASE.txt", fs::copy_options::overwrite_existing, savedError);
+                menu->updatedLauncher = target.root / L"Halo_MCC_VR" / L"HaloMCCVRLauncher.exe";
+                menu->updateResult = installed.message;
+                // Not the Project Reclaimer launcher: no package carries one to update it from, and the MCC launcher in its
+                // place would open this menu instead of starting Project Reclaimer.
+                wchar_t self[32768]{}; GetModuleFileNameW(nullptr, self, static_cast<DWORD>(std::size(self)));
+                if (std::wstring problem; !HALOMCCVR_RECLAIMER_LAUNCHER && replaceSelf &&
+                    !RefreshLauncherCopy(menu->updatedLauncher, menu->downloaded, self, problem))
+                    menu->updateResult += L"\n\nThe launcher at\n" + std::wstring(self) + L"\ncould not be updated, so it stays at its old version.\n\n" + problem;
+            });
         } break;
         }
         return 0;
@@ -852,14 +880,16 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             menu->ListVersions();
             if (!menu->latestPassedOver.empty()) menu->operationMessage = L"Could not read: " + menu->latestPassedOver + L".";
         } else if (menu->operationMessage.empty() && menu->work == Menu::Work::Download) {
-            // For the install to keep: the package itself does not know its release's name or date.
-            {
-                std::ofstream saved(menu->downloaded.parent_path() / L"INSTALLED-RELEASE.txt", std::ios::trunc);
-                saved << "release=" << menu->latest.tag << "\npublished=" << menu->latest.published.substr(0, 10) << "\nbuild=" << ReadIdentity(menu->downloaded).tag << "\n";
+            MessageBoxW(window, menu->updateResult.c_str(), L"Halo MCC VR update", MB_OK | MB_ICONINFORMATION);
+            // The installed launcher's menu opens in this one's place.
+            std::wstring command = L"\"" + menu->updatedLauncher.wstring() + L"\"";
+            STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
+            if (CreateProcessW(menu->updatedLauncher.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                               menu->updatedLauncher.parent_path().c_str(), &startup, &process)) {
+                CloseHandle(process.hThread); CloseHandle(process.hProcess);
+                DestroyWindow(window); return 0;
             }
-            if (StartUpdateHelper(menu->downloaded, menu->operationGame, menu->operationRetain, menu->updateThisLauncher, menu->operationMessage)) {
-                menu->helperStarted = true; DestroyWindow(window); return 0;
-            }
+            menu->operationMessage = L"The update is installed. Open HaloMCCVRLauncher.exe in Halo_MCC_VR.";
         }
         menu->notice = menu->operationMessage; menu->Refresh(); return 0;
     case WM_CLOSE: if (!menu->busy) DestroyWindow(window); return 0;

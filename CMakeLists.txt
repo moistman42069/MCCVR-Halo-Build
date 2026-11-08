@@ -172,7 +172,13 @@ FetchContent_Declare(imgui
     GIT_TAG 8936b58fe26e8c3da834b8f60b06511d537b4c63
     GIT_SHALLOW TRUE)
 
-FetchContent_MakeAvailable(openxr minhook imgui)
+# The launcher's updater reads release ZIPs with miniz (MIT), in its own process (src/launcher/updater.cpp).
+FetchContent_Declare(miniz
+    GIT_REPOSITORY https://github.com/richgel999/miniz.git
+    GIT_TAG d10b03cc73475af673df40f06e5cefd1d5f940d9 # 3.1.1
+    GIT_SHALLOW TRUE)
+
+FetchContent_MakeAvailable(openxr minhook imgui miniz)
 
 # vr.h exposes the sampled OpenXR head pose in aim receipts. Keep that public
 # header usable by the DLL's focused fixtures as well as the runtime target.
@@ -421,7 +427,7 @@ target_compile_definitions(halo3xr_launcher PRIVATE
     HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>)
 # IApplicationActivationManager: the Microsoft Store edition is a packaged app
 # and can only be started through packaged activation.
-target_link_libraries(halo3xr_launcher PRIVATE ole32 bcrypt advapi32 winhttp crypt32 shell32 uxtheme)
+target_link_libraries(halo3xr_launcher PRIVATE ole32 bcrypt advapi32 winhttp shell32 uxtheme miniz)
 # The launcher runs with the user's own rights. The game it starts inherits its token, and in an elevated game
 # the OpenXR loader ignores XR_RUNTIME_JSON: a headset runtime chosen with that variable is replaced by the
 # machine's registered one and VR never starts. An install into a folder the user cannot write to says so and
@@ -466,7 +472,7 @@ target_compile_definitions(halo3xr_reclaimer_launcher PRIVATE
     HALOMCCVR_RELEASE_CHANNEL="${HALOMCCVR_RELEASE_CHANNEL}"
     HALOMCCVR_RECLAIMER_LAUNCHER=1
     HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>)
-target_link_libraries(halo3xr_reclaimer_launcher PRIVATE ole32 bcrypt advapi32 winhttp crypt32 shell32 uxtheme)
+target_link_libraries(halo3xr_reclaimer_launcher PRIVATE ole32 bcrypt advapi32 winhttp shell32 uxtheme miniz)
 
 # THE FLAT PROBE (dev preset only; never packaged -- package-candidate.ps1 refuses a dev cache and copies named
 # files only). HaloMCCFlatProbe.dll is the AS SEEN control arm: stock flat Halo 3 measured with the same code as the
@@ -575,7 +581,7 @@ if(BUILD_TESTING)
     add_executable(halomccvr_updater_archive_tests tests/updater_archive_tests.cpp
         src/launcher/installer.cpp src/launcher/updater.cpp)
     target_compile_definitions(halomccvr_updater_archive_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
-    target_link_libraries(halomccvr_updater_archive_tests PRIVATE ole32 bcrypt advapi32 winhttp crypt32 shell32)
+    target_link_libraries(halomccvr_updater_archive_tests PRIVATE ole32 bcrypt advapi32 winhttp shell32 miniz)
     add_test(NAME halomccvr_updater_archive_tests COMMAND halomccvr_updater_archive_tests)
     add_executable(halomccvr_installer_tests tests/installer_tests.cpp src/launcher/installer.cpp)
     target_compile_definitions(halomccvr_installer_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE

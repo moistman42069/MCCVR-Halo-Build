@@ -15,6 +15,9 @@ InstallResult InstallPayload(const std::filesystem::path& payload, const GameIns
 // as <name>.previous.exe, a way back from a launcher that will not start. The update has already succeeded by this point,
 // so a failure here only leaves that copy as it was, and is the caller's to report.
 bool RefreshLauncherCopy(const std::filesystem::path& installedLauncher, const std::filesystem::path& payload, const std::filesystem::path& copy, std::wstring& error);
+// Both replace the launcher that is running by renaming it to <name>.old-<suffix> first. This removes those from
+// `folder`; one still in use stays until a later start.
+void RemoveSteppedAside(const std::filesystem::path& folder);
 // Empty on cancellation. Returning a directory only requests the existing
 // native launch path; installing never starts the game. `reclaimerExe`, when given, receives the Project
 // Reclaimer game program the player chose to start instead (the menu's last section); empty otherwise.
