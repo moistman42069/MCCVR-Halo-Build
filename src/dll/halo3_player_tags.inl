@@ -45,6 +45,7 @@ struct Halo3PlayerTagsLane
     // What the last draw held besides the teammates' tags (left as the game draws them), and the highest entry in use.
     std::atomic<uint32_t> lastOthers{0};
     std::atomic<int> lastHighest{-1};
+    std::atomic<int> lastCount{0};       // the entries the last draw's settings were applied to
     uint32_t reportedCounts = ~0u;
     uint64_t reportedCountsMs = 0;
     // The census: each navpoint kind (KindKey) a level showed while the settings were applied, a line per new one.
@@ -225,6 +226,7 @@ void Halo3PlayerTagsApply(Halo3PlayerTagsLane& lane, uint8_t* navpoints, const h
     lane.lastHidden.store(hidden, std::memory_order_relaxed);
     lane.lastOthers.store(others, std::memory_order_relaxed);
     lane.lastHighest.store(highest, std::memory_order_relaxed);
+    lane.lastCount.store(count, std::memory_order_relaxed);
 }
 
 // Puts back each written field that still holds what was written. Guarded: no C++ object here.
@@ -257,6 +259,14 @@ void Halo3PlayerTagsRestore(Halo3PlayerTagsLane& lane, uint8_t* navpoints, const
 // The hook itself, one instantiation per title's lane. It must be a function with a stack frame: retiring the hook asks
 // the unwind data where the detour's code lies, and a forwarding stub that only jumps here has none, so that check could
 // never pass and the title's whole teardown would retry for good (InstallPlayerTags refuses such a detour).
+// Project Reclaimer: the entries its HUD keeps a user, 0 elsewhere (defined with its own draw's hook below).
+int ReclaimerPlayerTagsCount();
+
+// PROJECT RECLAIMER'S 212 ENTRIES. Reclaimer 0.10 grows each user's navpoints from 20 to 212 (its log's [capacity]
+// hud.markers: 0x14 -> 0xd4), and the game's draw it runs walks all of them, while the count read from halo3.dll's code
+// is the stock 20. In a game of about 100 players the draw held 20 of 20 entries in use and every tag past the first 20
+// went unset (2026-11-07 18:05): its own draw sets all 212 and then hands them back, unset, to this one. Here the
+// greater count is taken.
 template <Halo3PlayerTagsLane& Lane>
 __declspec(noinline) void __fastcall PlayerTagsDetour(uint8_t* navpoints, int user)
 {
@@ -269,7 +279,8 @@ __declspec(noinline) void __fastcall PlayerTagsDetour(uint8_t* navpoints, int us
         Halo3PlayerTagsSaved saved;
         if (apply)
         {
-            Halo3PlayerTagsApply(Lane, navpoints, settings, saved, Lane.count.load(std::memory_order_relaxed));
+            Halo3PlayerTagsApply(Lane, navpoints, settings, saved,
+                                 (std::max)(Lane.count.load(std::memory_order_relaxed), ReclaimerPlayerTagsCount()));
             Lane.appliedFingerprint.store(halo3_player_tags::Fingerprint(settings), std::memory_order_relaxed);
         }
         if (Lane.original)
@@ -602,7 +613,7 @@ void ReportPlayerTags(Halo3PlayerTagsLane& lane)
         lane.reportedCountsMs = now;
         LOG("PLAYER TAGS %s: the last draw held %u teammate tag(s) set by the settings and %u other marker(s) left as "
             "the game draws them; the highest entry in use %d of %d",
-            lane.profile->title, players, others, highest, lane.count.load(std::memory_order_relaxed));
+            lane.profile->title, players, others, highest, lane.lastCount.load(std::memory_order_relaxed));
     }
     const uint32_t applied = lane.appliedFingerprint.load(std::memory_order_relaxed);
     if (!applied || applied == lane.reportedFingerprint)
