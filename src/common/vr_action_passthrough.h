@@ -61,6 +61,17 @@ inline uint32_t BridgeOnlyActions(const Transports& native,const Overrides& bind
     return only;
 }
 
+// PROJECT RECLAIMER'S MENU BUTTONS. Reclaimer runs an input update of its own in place of the game's, and the binding
+// table the mod reads the layout from is not what its pad follows: there Halo 3's switch grenade read Start (0x10) in
+// every run, where MCC's reads D-pad right, so the left stick click that switches grenades paused the game
+// (2026-11-07). Start and Back are the client's own (its pause and its scoreboard); an action read on either has no
+// button there, and the bridge, which delivers an action with no button, carries it.
+inline constexpr uint32_t kHostMenuButtons = 0x10 | 0x20;
+inline constexpr uint32_t WithoutHostMenuButton(uint32_t transport) noexcept
+{
+    return (transport & kHostMenuButtons) ? 0u : transport;
+}
+
 // The real button that carries each action whole. Halo 2's layout gives Use (touch_device) no button of its own: its
 // updater derives it, as it derives picking up a weapon and boarding, from how long the reload/action button is held.
 // With Use on Reload's VR control that real button carries it; the bridge's own touch_device on the same press kept a

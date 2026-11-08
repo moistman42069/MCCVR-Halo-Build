@@ -15,6 +15,7 @@
 #include <MinHook.h>
 #include "lifted_minhook.h"
 #include <atomic>
+#include <cstdio>
 
 // The hooked native READERS are leaves whose LTCG callers keep volatile registers live across the call
 // (tools/audit_caller_area.py), which a C++ detour clobbers: Halo 3 then wrote through r10 = 0 at every
@@ -332,6 +333,39 @@ __declspec(noinline) void WitnessNativeRecord(GameTitle requested,unsigned actio
 #include "native_vr_actions_odst.inl"
 #include "native_vr_actions_h4.inl"
 #include "native_vr_actions_h2.inl"
+}
+
+// The last second of zoom ticks (native_h3::ZoomTick), as runs of equal ticks, after the game zoomed in and out.
+void NativeVrActions_Halo3ZoomBounced(uint64_t inMs,uint64_t outMs) {
+    using namespace native_h3;
+    constexpr const char* kKinds[]{"adv","adv-refused","read-vr","read-game"};
+    const uint64_t now=GetTickCount64();
+    const uint32_t next=zoomTickNext.load(std::memory_order_relaxed);
+    char line[900];
+    int used=std::snprintf(line,sizeof(line),"ZOOM TICKS Halo 3: zoomed in at -%llu ms, out at -%llu ms; t(ms) thread kind "
+        "pressed/frames/gameFrames xN:",static_cast<unsigned long long>(now-inMs),static_cast<unsigned long long>(now-outMs));
+    ZoomTick run{};
+    unsigned count=0;
+    const auto flush=[&](bool last) {
+        if(count) {
+            const int n=std::snprintf(line+used,sizeof(line)-used," [%lld %u %s %u/%u/%u x%u]",
+                static_cast<long long>(run.ms)-static_cast<long long>(now),run.thread,kKinds[run.kind&3],run.pressed,
+                run.frames,run.gameFrames,count);
+            if(n>0) used+=n;
+        }
+        if(last||used>760) {LOG("%s",line);used=std::snprintf(line,sizeof(line),"ZOOM TICKS Halo 3 (cont.):");}
+    };
+    for(uint32_t k=0;k<kZoomTicks;++k) {
+        const ZoomTick t=zoomTicks[(next+k)%kZoomTicks];
+        if(!t.ms||t.ms+1200<now) continue;
+        if(count&&t.thread==run.thread&&t.kind==run.kind&&t.pressed==run.pressed&&t.frames==run.frames&&
+           t.gameFrames==run.gameFrames) {++count;continue;}
+        flush(false);
+        run=t;count=1;
+    }
+    flush(true);
+}
+namespace {
 bool CurrentForTitle(GameTitle requested) noexcept {
     if(requested==GameTitle::HaloCE)return native_ce::Current();
     if(requested==GameTitle::Halo3)return native_h3::Current();
