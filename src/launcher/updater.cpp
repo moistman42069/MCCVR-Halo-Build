@@ -137,9 +137,25 @@ void ExtractArchive(const fs::path& archive, const fs::path& output) {
         if (!file) { ThrowIfAntivirus(entry.target); throw std::runtime_error("Cannot finish an extracted file."); }
     }
 }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// DEV BUILDS ONLY, never packaged. HALOMCCVR_DEV_RELEASES names a folder that stands in for GitHub, so an update can be
+// rehearsed end to end without a public release: its releases.json is read as every repository's release list, and an
+// asset is copied from the file of its name there instead of downloaded. Everything after is the real update.
+fs::path DevReleases() {
+    wchar_t value[MAX_PATH]{};
+    const DWORD length = GetEnvironmentVariableW(L"HALOMCCVR_DEV_RELEASES", value, MAX_PATH);
+    return length && length < MAX_PATH ? fs::path(value) : fs::path{};
+}
+#endif
 }
 
 std::vector<ReleaseUpdate> ListReleases(const ReleaseChannel& channel) {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (const auto dev = DevReleases(); !dev.empty()) {
+        std::ifstream file(dev / L"releases.json", std::ios::binary);
+        return ParseReleaseList({std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()}, channel);
+    }
+#endif
     const std::wstring repository = L"https://api.github.com/repos/" + Widen(channel.owner) + L"/MCCVR-Halo-Build/releases";
     return ParseReleaseList(Request(repository + L"?per_page=30", {}, 2 * 1024 * 1024), channel);
 }
@@ -171,6 +187,10 @@ fs::path DownloadUpdate(const ReleaseUpdate& release) {
     if (fs::exists(cache)) throw std::runtime_error("Update cache already exists; retry.");
     fs::create_directories(cache);
     const auto archive = cache / L"release.zip";
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (const auto dev = DevReleases(); !dev.empty()) fs::copy_file(dev / Widen(release.assetName), archive);
+    else
+#endif
     Request(Widen(release.url), archive, release.bytes);
     if (fs::file_size(archive) != release.bytes || Sha256File(archive) != release.sha256) throw std::runtime_error("Downloaded ZIP did not match GitHub's SHA-256/size. It will not be installed.");
     const auto unpacked = cache / L"package";
