@@ -126,15 +126,17 @@ source of every release is published on the same page.
 4. Report it to Microsoft as wrongly detected at <https://www.microsoft.com/wdsi/filesubmission>. Each report helps
    clear that file for everyone.
 
-**It isn't only this mod.** Defender's machine-learning detections regularly flag mods and modding tools, Wacatac in
+**It isn't only this mod.** Defender's machine learning regularly flags VR mods that load into games, Wacatac in
 particular:
 
-- **UEVR**, the injector at the heart of Flat2VR, has been flagged with the same `Trojan:Win32/Wacatac.H!ml`
-  ([UEVR issue #79](https://github.com/praydog/UEVR/issues/79)), and the
-  [Custom UEVR Injector](https://github.com/mirudo2/Custom-UEVR-Injector) notes antivirus false positives in its README.
-- **JkGfxMod** ([Wacatac.D5!ml](https://github.com/jdmclark/jkgfxmod/issues/64)), the **SA-MP masterlist fix**
-  ([Wacatac.B!ml, false positive](https://github.com/spmn/sa-mp_masterlist_fix/issues/9)) and the Minecraft mod
-  **Collective** ([Wacatac.B!ml, "a false positive"](https://modrinth.com/project/e0M1UDsY/version/X5xn9Kl9)).
+- **UEVR**: Defender has flagged its `uevrinjector.exe` as `Trojan:Win32/Wacatac.H!ml`, the same name we see
+  ([UEVR issue #79](https://github.com/praydog/UEVR/issues/79)).
+- **REFramework**, praydog's framework behind his RE Engine VR mods: its `dinput8.dll` has been flagged as
+  `Trojan:Win32/Wacatac.B!ml`
+  ([Steam discussion](https://steamcommunity.com/app/2246340/discussions/0/599646477861552433)).
+- **FS25VR**, the Farming Simulator 25 VR mod: its author calls its Wacatac warning "a false positive from Microsoft's
+  machine-learning scanner, which distrusts VR injectors in general"
+  ([release notes](https://github.com/nick10180/FS25VR/releases/tag/v0.1.2)).
 - Microsoft explains false positives and how to report them:
   [Address false positives in Microsoft Defender](https://learn.microsoft.com/en-us/defender-endpoint/defender-endpoint-false-positives-negatives)
   and [how Defender names detections](https://learn.microsoft.com/en-us/defender-xdr/malware-naming).
