@@ -23,6 +23,7 @@ int RunDirectorCameraTests();
 #include "../src/common/log_archive_logic.h"
 #include "../src/common/camera_copy_logic.h"
 #include "../src/common/reclaimer_odst_hud_logic.h"
+#include "../src/common/zoom_pull_audit_logic.h"
 #include "../src/dll/contact_melee_queue.h"
 #include <array>
 #include <cstdlib>
@@ -7663,6 +7664,39 @@ int main()
                       !reclaimer_odst_hud::IsOdstScenarioPath("levels\\atla") &&
                       !reclaimer_odst_hud::IsOdstScenarioPath(""),
                 "ODST's scenarios lie under levels\\atlas\\; Halo 3's do not");
+        }
+        {
+            // Each support-trigger pull, one report (zoom_pull_audit_logic.h).
+            zoom_pull_audit::Audit audit;
+            zoom_pull_audit::Report report{};
+            // A zoom pulled on the gun, answered: the level goes from -1 to 0.
+            bool due = audit.Step(1000, true, true, true, false, true, false, false, true, -1, report);
+            due = due || audit.Step(1100, true, true, true, false, true, false, false, true, -1, report);
+            due = due || audit.Step(1200, false, true, true, false, false, false, false, true, 0, report);
+            Check(!due && !audit.Step(1400, false, true, true, false, false, false, false, true, 0, report),
+                "a pull reports only once its answer time has passed");
+            Check(audit.Step(1500, false, true, true, false, false, false, false, true, 0, report) && report.zoom &&
+                      report.handOnGun && report.levelBefore == -1 && report.levelAfter == 0 && report.heldMs == 200 &&
+                      !zoom_pull_audit::Audit::Unanswered(report),
+                "an answered zoom: pressed, the level changed, held 200 ms");
+            // A zoom pressed and never answered.
+            audit.Step(2000, true, true, true, false, true, false, false, true, 0, report);
+            audit.Step(2100, false, true, true, false, false, false, false, true, 0, report);
+            Check(audit.Step(2600, false, true, true, false, false, false, false, true, 0, report) &&
+                      zoom_pull_audit::Audit::Unanswered(report),
+                "a zoom the game's level never answered is reported as such");
+            // The hand not counted on the gun: a grenade.
+            audit.Step(3000, true, false, false, false, false, true, false, true, -1, report);
+            audit.Step(3100, false, false, false, false, false, false, false, true, -1, report);
+            Check(audit.Step(3600, false, false, false, false, false, false, false, true, -1, report) &&
+                      !report.handOnGun && report.grenade && !report.zoom && !zoom_pull_audit::Audit::Unanswered(report),
+                "a pull with the hand off the gun reports the grenade it pressed");
+            // A pull held past the answer time reports at its release.
+            audit.Step(4000, true, true, true, false, true, false, false, true, -1, report);
+            Check(!audit.Step(4700, true, true, true, false, true, false, false, true, 0, report) &&
+                      audit.Step(4800, false, true, true, false, false, false, false, true, 0, report) &&
+                      report.heldMs == 800,
+                "a long pull reports when it ends");
         }
         Check(HudLayoutAcceptedCountOk(*odstHud, 1) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 0) &&
