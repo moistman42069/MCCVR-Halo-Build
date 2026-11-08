@@ -4412,7 +4412,7 @@ namespace
     // engine picks by aspect, so the widescreen record alone is not enough.
     static int SafeFrameScanRegion(
         uintptr_t regionBase, size_t len, const HudLayoutAdapter& adapter,
-        uintptr_t* out, int maxOut, const char** outShape = nullptr)
+        uintptr_t* out, int maxOut, int* outAnchor = nullptr)
     {
         // The region is COPIED OUT through ReadProcessMemory, a window at a time,
         // and the copy is scanned. The game can decommit a region between
@@ -4482,8 +4482,8 @@ namespace
                         HudLayoutAnchorAt(adapter, a);
                     if (!SafeFrameAnchorEquals(s_window + i, view))
                         continue;
-                    if (outShape)
-                        outShape[found] = a > 0 ? adapter.altAnchors[a - 1].name : nullptr;
+                    if (outAnchor)
+                        outAnchor[found] = a;
                     out[found++] = regionBase + pos + i +
                         static_cast<size_t>(view.safeFrameOffset);
                     // Skip the matched identity only: two curvature records
@@ -4595,6 +4595,8 @@ namespace
             for (int a = 0; a < anchorCount && !matched; ++a)
             {
                 const HudLayoutAnchorView view = HudLayoutAnchorAt(adapter, a);
+                if (view.markerOnly)
+                    continue;
                 const uintptr_t anchorAddress =
                     slot - static_cast<uintptr_t>(view.safeFrameOffset);
                 if (memcmp(reinterpret_cast<const void*>(anchorAddress),
@@ -4813,6 +4815,8 @@ namespace
             static_cast<uint32_t>(profile);
     }
 
+#include "reclaimer_odst_hud_record.inl"
+
     DWORD WINAPI SafeFrameScanThread(LPVOID parameter)
     {
         const uintptr_t token = reinterpret_cast<uintptr_t>(parameter);
@@ -4848,6 +4852,8 @@ namespace
         uint32_t leftOverBaseH[kMaxSafeFrameHits]{};
         uint32_t leftOverBaseV[kMaxSafeFrameHits]{};
         int leftOvers = 0;
+        // Project Reclaimer: an ODST level's converted record in the engine's tag data (kHalo3MergedHudLayoutAdapter).
+        bool odstLevel = false;
         int rawHits = 0;
         bool cancelled = false;
         SYSTEM_INFO si;
@@ -4947,13 +4953,22 @@ namespace
                 if (candidate && !self)
                 {
                     uintptr_t hits[kMaxSafeFrameHits]{};
-                    const char* shapes[kMaxSafeFrameHits]{};
+                    int shapes[kMaxSafeFrameHits]{};
                     const int n = SafeFrameScanRegion(
                         regionBase, mbi.RegionSize, *adapter,
                         hits, kMaxSafeFrameHits, shapes);
                     for (int k = 0; k < n; ++k)
                     {
                         ++rawHits;
+                        if (shapes[k] > 0 && adapter->altAnchors[shapes[k] - 1].markerOnly)
+                        {
+                            if (tagSpanPass && !odstLevel)
+                                LOG("SAFEFRAME [%s]: %s's layout record in the engine's tag data at %p: an %s level "
+                                    "is loaded", adapter->name, adapter->altAnchors[shapes[k] - 1].name,
+                                    reinterpret_cast<void*>(hits[k]), adapter->altAnchors[shapes[k] - 1].name);
+                            odstLevel = odstLevel || tagSpanPass;
+                            continue;
+                        }
                         uint32_t destinationZ = 0, h = 0, v = 0;
                         if (!SafeFrameReadLayout(
                                 hits[k], *adapter, &destinationZ, &h, &v))
@@ -4966,11 +4981,9 @@ namespace
                             RememberedHudSafeFrameBaseline(profile, hits[k], loadedH, loadedV);
                         const bool leftOver = payloadOk && g_hostIsProjectReclaimer &&
                             HudLayoutRecordLeftOver(h, v, loadedH, loadedV);
-                        LOG("SAFEFRAME [%s]: anchor at %p%s%s%s (type 0x%X protect "
+                        LOG("SAFEFRAME [%s]: anchor at %p (type 0x%X protect "
                             "0x%X) destination-Z %08X, safe frame %08X/%08X -> %s%s",
                             adapter->name, reinterpret_cast<void*>(hits[k]),
-                            shapes[k] ? " (" : "", shapes[k] ? shapes[k] : "",
-                            shapes[k] ? "'s record)" : "",
                             static_cast<unsigned>(mbi.Type),
                             static_cast<unsigned>(mbi.Protect),
                             destinationZ, h, v,
@@ -5174,6 +5187,13 @@ namespace
                           "engine: its curvature is folded into a derived "
                           "basis when the tag block loads, so the slider is "
                           "deliberately not written");
+            if (g_hostIsProjectReclaimer && profile == HudLayoutProfile::Halo3)
+            {
+                if (!odstLevel)
+                    g_reclaimerOdstHud.record.store(0, std::memory_order_relaxed);
+                else if (accepted)
+                    FindReclaimerOdstHudRecord(generation);
+            }
         }
         else
         {
@@ -5366,6 +5386,9 @@ namespace
                 ++live;
         }
 
+        if (profile == HudLayoutProfile::Halo3 && g_hostIsProjectReclaimer)
+            ApplyReclaimerOdstHudRecord(generation, wantH, wantV, wantCurvature, reportReadback);
+
         if (live == n)
         {
             if (profile == HudLayoutProfile::Halo3 || profile == HudLayoutProfile::Halo3ODST ||
@@ -5409,6 +5432,10 @@ namespace
             g_hudLayoutGeneration.load(std::memory_order_acquire);
         if (!adapter || !remembered ||
             !HudLayoutContextMatches(profile, generation))
+            return false;
+        // Project Reclaimer: an ODST level's own record is found only by a search (reclaimer_odst_hud_record.inl).
+        if (g_hostIsProjectReclaimer && g_reclaimerOdstHud.record.load(std::memory_order_relaxed) &&
+            g_reclaimerOdstHud.generation.load(std::memory_order_relaxed) != generation)
             return false;
 
         const int count = remembered->count.load(std::memory_order_acquire);
