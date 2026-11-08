@@ -96,6 +96,7 @@ struct Setup
     bool leftHanded=false;
     bool remap=false;            // VR Mappings' Remap buttons
     bool thumbrestDpad=false;    // the D-pad is the left thumb on its rest and the right stick
+    bool reclaimerHeadKeys=false; // Project Reclaimer: X, Y, A and B at the head press its talk, scoreboard and vote keys
     uint32_t blocked=0;          // actions (a bit per vr_mapping::Action) whose buttons do nothing on foot
     uint32_t blockedAlways=0;    // and those whose buttons do nothing anywhere
     const vr_mapping::Overrides* bindings=nullptr;
@@ -305,6 +306,11 @@ inline std::vector<GestureLine> GestureLines(const Setup& setup,const Gestures& 
         const bool right=gestures.dpadHand==1&&setup.game!=GameTitle::HaloCE;
         lines.push_back({"D-pad",std::string("Hold the ")+(right?"right controller to your head and push the left":
             "left controller to your head and push its")+" thumbstick the way you want the D-pad pressed."});
+    }
+    if(setup.reclaimerHeadKeys)
+    {
+        lines.push_back({"Vote","A or B near head to vote yes or no."});
+        lines.push_back({"Scoreboard and voice","Y near head for scoreboard, X near head for voice input."});
     }
     return lines;
 }
