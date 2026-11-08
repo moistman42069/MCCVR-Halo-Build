@@ -26,8 +26,11 @@ inline bool Odst(const uint8_t* unit,const uint8_t* definition,float& reduction)
        (Read<uint32_t>(unit,0x104)&4)||unit[0x96]!=0)return false;
     // Physics modes 7/8 use a tilted up-vector. Do not cancel world Z using
     // a vertical-only formula in those alternate camera modes.
+    // +0x15A is the offset half of an object block reference: the block lives inside the object, past
+    // its fixed fields, and retail reads it unchecked. No ceiling: Halo 3's live biped (same engine)
+    // keeps its block at 0x2310, so a cap such as 0x1000 would refuse every Halo 3 read.
     const auto physics=Read<int16_t>(unit,0x15A);
-    if(physics<0||physics>0x2000)return false;
+    if(physics<0x520)return false;   // absent (-1), or overlapping the fields read here (to +0x520)
     const auto mode=Read<int32_t>(unit,unsigned(physics));
     if(mode==7||mode==8)return false;
     const bool forcedStanding=unit[0x516]==6&&(Read<uint32_t>(unit,0x51C)&0x10);

@@ -18,11 +18,17 @@ bool RemoveHalo2WeaponHaptics(){return hapticReady;}
 bool RemoveHalo2ContactMelee(){return optionalReady;}
 bool RemoveHalo2DualAim(){return optionalReady;}
 bool RemoveHalo2WorldCollision(){return optionalReady;}
+unsigned retireSequence{};
+bool driveReady=true;unsigned driveRemoves{},driveAt{};
+bool RemoveHalo2Drive() noexcept {++driveRemoves;driveAt=++retireSequence;return driveReady;}
+bool trackerReady=true;unsigned trackerRemoves{},trackerAt{};
+bool RemoveHalo2HeadRelative() noexcept {++trackerRemoves;trackerAt=++retireSequence;return trackerReady;}
 std::atomic<bool> g_armed{},g_teardownRequested{},g_finalPaletteReady{},g_vehicleSeatVerified{},
     g_vehicleFrameVerified{},g_passCamerasSet{},g_installed{},g_referenceValid{},g_recenterRequested{};
 std::atomic<uintptr_t> g_objectDatumAccessor{},g_interpolatorResetAddress{},g_observerResult{},g_moduleBase{};
 std::atomic<uint32_t> g_weaponTickIndex{},g_weaponTickPreviousIndex{},g_weaponTickGeneration{},g_generation{};
-std::atomic<uint64_t> g_packetBuilderLastAppliedMs{},g_vehicleSeatSample{};
+std::atomic<uint64_t> g_packetBuilderLastAppliedMs{},g_vehicleSeatSample{},g_footViewEngagedMs{},g_seatViewEngagedMs{},
+    g_zoomedSinceMs{};
 struct Context { bool valid{}; };
 Context g_visibleConsumerContext{},g_finalPaletteContext{},g_aimAssistControllerRayScope{};
 std::array<Context,4> g_slotCache{};
@@ -100,7 +106,8 @@ void Reset()
         *counters[i]=0;enabled[i]=exists[i]=true;quiesced[i]=false;}
     g_coreState=CoreState::Installed;g_armed=true;g_teardownRequested=false;g_finalPaletteReady=true;
     g_generation=7;g_moduleBase=0x123000;g_installed=true;g_moduleReference=reinterpret_cast<HMODULE>(0x123000);
-    g_objectDatumAccessor=0x456000;g_referenceValid=true;optionalReady=true;hapticReady=true;
+    g_objectDatumAccessor=0x456000;g_referenceValid=true;optionalReady=true;hapticReady=true;driveReady=true;
+    trackerReady=true;
     failDisable=failRemove=ingress=-1;removes=0;
 }
 }
@@ -132,6 +139,22 @@ int main()
     Check(!RemoveCore("haptic ingress busy")&&g_generation==7&&g_objectDatumAccessor==0x456000,
         "haptic retirement preserves weapon-reader and module dependencies until drained");
     hapticReady=true;Check(RemoveCore("haptic retry"),"haptic retirement retry completes before core teardown");
+    // The direct-drive hook retires with the live cleanup (it outlived the module before), ahead of the
+    // unit-aim hook it reads through; a drive that cannot retire yet keeps the core.
+    Reset();driveReady=false;g_footViewEngagedMs=5;g_seatViewEngagedMs=5;g_zoomedSinceMs=5;
+    Check(!RemoveCore("drive still busy")&&g_target&&g_nativeAimTarget&&g_footViewEngagedMs==5,
+        "a drive refusal retains the core");
+    driveReady=true;{const unsigned before=driveRemoves;
+    Check(RemoveCore("drive retry")&&driveRemoves>before&&g_footViewEngagedMs==0&&g_seatViewEngagedMs==0&&g_zoomedSinceMs==0&&!g_nativeAimTarget,
+        "the live cleanup retires the drive and drops the foot view's engagement");}
+    // The head-relative tracker's hook (halo2_head_relative.inl) retires with the live cleanup too, ahead of the
+    // drive whose state it reads; while it cannot retire, the drive and the core stay.
+    Reset();trackerReady=false;{const unsigned drivesBefore=driveRemoves;
+    Check(!RemoveCore("tracker hook still busy")&&g_target&&g_nativeAimTarget&&driveRemoves==drivesBefore,
+        "a tracker-hook refusal retains the drive and the core");}
+    trackerReady=true;{const unsigned before=trackerRemoves;
+    Check(RemoveCore("tracker retry")&&trackerRemoves>before&&trackerAt<driveAt&&!g_target,
+        "the live cleanup retires the tracker hook ahead of the drive");}
     Reset();for(int i=0;i<12;++i){enabled[i]=false;exists[i]=false;}
     Check(RemoveCore("already removed")&&g_generation==0,"absent entries converge safely");
     std::printf("PASS: %u Halo 2 production cleanup checks\n",checks);

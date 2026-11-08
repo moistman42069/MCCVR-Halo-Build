@@ -250,7 +250,7 @@ if (-not (Test-ExactInt32 $manifest.schema_version 42) -or
         $manifest.halo4_candidate.effect_cave_restored_on_cleanup -ne $true -or
         [string]$manifest.halo4_candidate.effect_policy -cne
             'stage3ai-selected-local-first-person-finite-far' -or
-        $manifest.halo4_candidate.helmet_default_visible -ne $true -or
+        $manifest.halo4_candidate.helmet_default_visible -ne $false -or
         [string]$manifest.halo4_candidate.helmet_control -cne
             'halo4_helmet' -or
         [string]$manifest.halo4_candidate.helmet_binding -cne

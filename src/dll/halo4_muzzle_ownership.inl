@@ -48,7 +48,7 @@ void* Halo4MuzzleTargetStorage(uint32_t owner)
 }
 bool Halo4CaptureMuzzleOwner(uint32_t weapon,uint32_t& owner,uint8_t& slot)
 {
-    if(!g_config.gun_barrel_aim||!g_halo4BarrelBindingsReady.load(std::memory_order_acquire))return false;
+    if(!(Sight_GunBarrelAim()||Sight_ShotsFromMuzzle())||!g_halo4BarrelBindingsReady.load(std::memory_order_acquire))return false;
     Halo4VehicleInputState seat{};uint32_t weapons[2]{};
     if(!Halo4ReadVehicleInput(seat)||seat.seated||!Halo4MuzzleTargetStorage(seat.unit)||
         !Halo4ReadMuzzleWeapons(seat.unit,weapons))return false;

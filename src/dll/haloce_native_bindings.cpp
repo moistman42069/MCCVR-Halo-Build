@@ -9,9 +9,12 @@ namespace halo_ce
 {
 namespace
 {
+// Room for the longest pinned pattern with margin. It was 96: the crouch camera's 118-byte entry and a
+// 110-byte witness could never parse, so that whole contract read as unverified and CE's crouch camera
+// stayed on StockFallback on every build ("CE physical crouch camera: StockFallback; crouch_interpolation").
 struct Pattern
 {
-    uint8_t bytes[96]{},mask[96]{};
+    uint8_t bytes[256]{},mask[256]{};
     size_t size{};
 };
 int Hex(char c) noexcept

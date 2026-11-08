@@ -1,0 +1,1391 @@
+{
+  "map_name": "firefight_shrine",
+  "sha256": "55382adaef39d0e1508256135d0ba028147fc1af1d561389a6fd8be0547a827c",
+  "size": 2211516416,
+  "weapons": [
+    {
+      "weapon": {
+        "index": 16609,
+        "salt": 41559,
+        "address": 1922338986,
+        "name": "aaaaweaverports\\objects\\weapons\\autoshotgun\\autoshotgun",
+        "group": "weap"
+      },
+      "model": {
+        "index": 16611,
+        "salt": 41561,
+        "address": 1942265824,
+        "name": "hi\\objects\\weapons\\rifle\\cqs48\\cqs48",
+        "group": "mode"
+      },
+      "animation": {
+        "index": 16648,
+        "salt": 41598,
+        "address": 1942270801,
+        "name": "hi\\objects\\weapons\\rifle\\cqs48\\cqs48",
+        "group": "jmad"
+      },
+      "graph": [
+        {
+          "index": 0,
+          "string_id": 2672,
+          "name": "base",
+          "parent": -1
+        },
+        {
+          "index": 1,
+          "string_id": 498,
+          "name": "l_upperarm",
+          "parent": 0
+        },
+        {
+          "index": 2,
+          "string_id": 6419,
+          "name": "r_upperarm",
+          "parent": 0
+        },
+        {
+          "index": 3,
+          "string_id": 6420,
+          "name": "l_forearm",
+          "parent": 1
+        },
+        {
+          "index": 4,
+          "string_id": 6421,
+          "name": "r_forearm",
+          "parent": 2
+        },
+        {
+          "index": 5,
+          "string_id": 162,
+          "name": "l_hand",
+          "parent": 3
+        },
+        {
+          "index": 6,
+          "string_id": 166,
+          "name": "r_hand",
+          "parent": 4
+        },
+        {
+          "index": 7,
+          "string_id": 6422,
+          "name": "l_index_low",
+          "parent": 5
+        },
+        {
+          "index": 8,
+          "string_id": 6423,
+          "name": "l_middle_low",
+          "parent": 5
+        },
+        {
+          "index": 9,
+          "string_id": 6424,
+          "name": "l_pinky_low",
+          "parent": 5
+        },
+        {
+          "index": 10,
+          "string_id": 6425,
+          "name": "l_ring_low",
+          "parent": 5
+        },
+        {
+          "index": 11,
+          "string_id": 6426,
+          "name": "l_thumb_low",
+          "parent": 5
+        },
+        {
+          "index": 12,
+          "string_id": 6427,
+          "name": "r_index_low",
+          "parent": 6
+        },
+        {
+          "index": 13,
+          "string_id": 6428,
+          "name": "r_middle_low",
+          "parent": 6
+        },
+        {
+          "index": 14,
+          "string_id": 6429,
+          "name": "r_pinky_low",
+          "parent": 6
+        },
+        {
+          "index": 15,
+          "string_id": 6430,
+          "name": "r_ring_low",
+          "parent": 6
+        },
+        {
+          "index": 16,
+          "string_id": 6431,
+          "name": "r_thumb_low",
+          "parent": 6
+        },
+        {
+          "index": 17,
+          "string_id": 6432,
+          "name": "l_index_mid",
+          "parent": 7
+        },
+        {
+          "index": 18,
+          "string_id": 6433,
+          "name": "l_middle_mid",
+          "parent": 8
+        },
+        {
+          "index": 19,
+          "string_id": 6434,
+          "name": "l_pinky_mid",
+          "parent": 9
+        },
+        {
+          "index": 20,
+          "string_id": 6435,
+          "name": "l_ring_mid",
+          "parent": 10
+        },
+        {
+          "index": 21,
+          "string_id": 6436,
+          "name": "l_thumb_mid",
+          "parent": 11
+        },
+        {
+          "index": 22,
+          "string_id": 6437,
+          "name": "r_index_mid",
+          "parent": 12
+        },
+        {
+          "index": 23,
+          "string_id": 6438,
+          "name": "r_middle_mid",
+          "parent": 13
+        },
+        {
+          "index": 24,
+          "string_id": 6439,
+          "name": "r_pinky_mid",
+          "parent": 14
+        },
+        {
+          "index": 25,
+          "string_id": 6440,
+          "name": "r_ring_mid",
+          "parent": 15
+        },
+        {
+          "index": 26,
+          "string_id": 6441,
+          "name": "r_thumb_mid",
+          "parent": 16
+        },
+        {
+          "index": 27,
+          "string_id": 6442,
+          "name": "l_index_tip",
+          "parent": 17
+        },
+        {
+          "index": 28,
+          "string_id": 6443,
+          "name": "l_middle_tip",
+          "parent": 18
+        },
+        {
+          "index": 29,
+          "string_id": 6444,
+          "name": "l_pinky_tip",
+          "parent": 19
+        },
+        {
+          "index": 30,
+          "string_id": 6445,
+          "name": "l_ring_tip",
+          "parent": 20
+        },
+        {
+          "index": 31,
+          "string_id": 6446,
+          "name": "l_thumb_tip",
+          "parent": 21
+        },
+        {
+          "index": 32,
+          "string_id": 6447,
+          "name": "r_index_tip",
+          "parent": 22
+        },
+        {
+          "index": 33,
+          "string_id": 6448,
+          "name": "r_middle_tip",
+          "parent": 23
+        },
+        {
+          "index": 34,
+          "string_id": 6449,
+          "name": "r_pinky_tip",
+          "parent": 24
+        },
+        {
+          "index": 35,
+          "string_id": 6450,
+          "name": "r_ring_tip",
+          "parent": 25
+        },
+        {
+          "index": 36,
+          "string_id": 6451,
+          "name": "r_thumb_tip",
+          "parent": 26
+        },
+        {
+          "index": 37,
+          "string_id": 4582,
+          "name": "gun",
+          "parent": 0
+        },
+        {
+          "index": 38,
+          "string_id": 503,
+          "name": "root",
+          "parent": 37
+        },
+        {
+          "index": 39,
+          "string_id": 17890,
+          "name": "magazine",
+          "parent": 38
+        },
+        {
+          "index": 40,
+          "string_id": 18234,
+          "name": "pump",
+          "parent": 38
+        },
+        {
+          "index": 41,
+          "string_id": 217,
+          "name": "camera_control",
+          "parent": 0
+        }
+      ],
+      "model_nodes": [
+        {
+          "index": 0,
+          "string_id": 4582,
+          "name": "gun",
+          "parent": -1
+        },
+        {
+          "index": 1,
+          "string_id": 503,
+          "name": "root",
+          "parent": 0
+        },
+        {
+          "index": 2,
+          "string_id": 17890,
+          "name": "magazine",
+          "parent": 1
+        },
+        {
+          "index": 3,
+          "string_id": 18234,
+          "name": "pump",
+          "parent": 1
+        }
+      ],
+      "pickup": {
+        "string_id": "0x6c3d",
+        "identifier": "autoshotgun_pickup",
+        "record_offset": "0x7c3b8b70",
+        "text_offset": "0x7c3cab1c",
+        "text": "Hold \ue45e to pick up|nBulldog"
+      }
+    },
+    {
+      "weapon": {
+        "index": 17017,
+        "salt": 41967,
+        "address": 1922350422,
+        "name": "hi\\objects\\weapons\\rifle\\ravager\\ravager",
+        "group": "weap"
+      },
+      "model": {
+        "index": 17019,
+        "salt": 41969,
+        "address": 1942590336,
+        "name": "hi\\objects\\weapons\\rifle\\ravager\\ravager",
+        "group": "mode"
+      },
+      "animation": {
+        "index": 17062,
+        "salt": 42012,
+        "address": 1942600520,
+        "name": "hi\\objects\\weapons\\rifle\\ravager\\ravager",
+        "group": "jmad"
+      },
+      "graph": [
+        {
+          "index": 0,
+          "string_id": 2672,
+          "name": "base",
+          "parent": -1
+        },
+        {
+          "index": 1,
+          "string_id": 498,
+          "name": "l_upperarm",
+          "parent": 0
+        },
+        {
+          "index": 2,
+          "string_id": 6419,
+          "name": "r_upperarm",
+          "parent": 0
+        },
+        {
+          "index": 3,
+          "string_id": 6420,
+          "name": "l_forearm",
+          "parent": 1
+        },
+        {
+          "index": 4,
+          "string_id": 6421,
+          "name": "r_forearm",
+          "parent": 2
+        },
+        {
+          "index": 5,
+          "string_id": 162,
+          "name": "l_hand",
+          "parent": 3
+        },
+        {
+          "index": 6,
+          "string_id": 166,
+          "name": "r_hand",
+          "parent": 4
+        },
+        {
+          "index": 7,
+          "string_id": 6422,
+          "name": "l_index_low",
+          "parent": 5
+        },
+        {
+          "index": 8,
+          "string_id": 6423,
+          "name": "l_middle_low",
+          "parent": 5
+        },
+        {
+          "index": 9,
+          "string_id": 6424,
+          "name": "l_pinky_low",
+          "parent": 5
+        },
+        {
+          "index": 10,
+          "string_id": 6425,
+          "name": "l_ring_low",
+          "parent": 5
+        },
+        {
+          "index": 11,
+          "string_id": 6426,
+          "name": "l_thumb_low",
+          "parent": 5
+        },
+        {
+          "index": 12,
+          "string_id": 6427,
+          "name": "r_index_low",
+          "parent": 6
+        },
+        {
+          "index": 13,
+          "string_id": 6428,
+          "name": "r_middle_low",
+          "parent": 6
+        },
+        {
+          "index": 14,
+          "string_id": 6429,
+          "name": "r_pinky_low",
+          "parent": 6
+        },
+        {
+          "index": 15,
+          "string_id": 6430,
+          "name": "r_ring_low",
+          "parent": 6
+        },
+        {
+          "index": 16,
+          "string_id": 6431,
+          "name": "r_thumb_low",
+          "parent": 6
+        },
+        {
+          "index": 17,
+          "string_id": 6432,
+          "name": "l_index_mid",
+          "parent": 7
+        },
+        {
+          "index": 18,
+          "string_id": 6433,
+          "name": "l_middle_mid",
+          "parent": 8
+        },
+        {
+          "index": 19,
+          "string_id": 6434,
+          "name": "l_pinky_mid",
+          "parent": 9
+        },
+        {
+          "index": 20,
+          "string_id": 6435,
+          "name": "l_ring_mid",
+          "parent": 10
+        },
+        {
+          "index": 21,
+          "string_id": 6436,
+          "name": "l_thumb_mid",
+          "parent": 11
+        },
+        {
+          "index": 22,
+          "string_id": 6437,
+          "name": "r_index_mid",
+          "parent": 12
+        },
+        {
+          "index": 23,
+          "string_id": 6438,
+          "name": "r_middle_mid",
+          "parent": 13
+        },
+        {
+          "index": 24,
+          "string_id": 6439,
+          "name": "r_pinky_mid",
+          "parent": 14
+        },
+        {
+          "index": 25,
+          "string_id": 6440,
+          "name": "r_ring_mid",
+          "parent": 15
+        },
+        {
+          "index": 26,
+          "string_id": 6441,
+          "name": "r_thumb_mid",
+          "parent": 16
+        },
+        {
+          "index": 27,
+          "string_id": 6442,
+          "name": "l_index_tip",
+          "parent": 17
+        },
+        {
+          "index": 28,
+          "string_id": 6443,
+          "name": "l_middle_tip",
+          "parent": 18
+        },
+        {
+          "index": 29,
+          "string_id": 6444,
+          "name": "l_pinky_tip",
+          "parent": 19
+        },
+        {
+          "index": 30,
+          "string_id": 6445,
+          "name": "l_ring_tip",
+          "parent": 20
+        },
+        {
+          "index": 31,
+          "string_id": 6446,
+          "name": "l_thumb_tip",
+          "parent": 21
+        },
+        {
+          "index": 32,
+          "string_id": 6447,
+          "name": "r_index_tip",
+          "parent": 22
+        },
+        {
+          "index": 33,
+          "string_id": 6448,
+          "name": "r_middle_tip",
+          "parent": 23
+        },
+        {
+          "index": 34,
+          "string_id": 6449,
+          "name": "r_pinky_tip",
+          "parent": 24
+        },
+        {
+          "index": 35,
+          "string_id": 6450,
+          "name": "r_ring_tip",
+          "parent": 25
+        },
+        {
+          "index": 36,
+          "string_id": 6451,
+          "name": "r_thumb_tip",
+          "parent": 26
+        },
+        {
+          "index": 37,
+          "string_id": 4582,
+          "name": "gun",
+          "parent": 0
+        },
+        {
+          "index": 38,
+          "string_id": 503,
+          "name": "root",
+          "parent": 37
+        },
+        {
+          "index": 39,
+          "string_id": 27839,
+          "name": "handguard",
+          "parent": 38
+        },
+        {
+          "index": 40,
+          "string_id": 27772,
+          "name": "trigger",
+          "parent": 38
+        },
+        {
+          "index": 41,
+          "string_id": 27395,
+          "name": "vent_1",
+          "parent": 38
+        },
+        {
+          "index": 42,
+          "string_id": 27396,
+          "name": "vent_2",
+          "parent": 38
+        },
+        {
+          "index": 43,
+          "string_id": 27397,
+          "name": "vent_3",
+          "parent": 38
+        },
+        {
+          "index": 44,
+          "string_id": 27398,
+          "name": "vent_4",
+          "parent": 38
+        },
+        {
+          "index": 45,
+          "string_id": 27822,
+          "name": "vent_5",
+          "parent": 38
+        },
+        {
+          "index": 46,
+          "string_id": 27823,
+          "name": "vent_6",
+          "parent": 38
+        },
+        {
+          "index": 47,
+          "string_id": 27840,
+          "name": "latch_1",
+          "parent": 39
+        },
+        {
+          "index": 48,
+          "string_id": 27841,
+          "name": "latch_2",
+          "parent": 39
+        },
+        {
+          "index": 49,
+          "string_id": 27842,
+          "name": "latch_3",
+          "parent": 39
+        },
+        {
+          "index": 50,
+          "string_id": 27843,
+          "name": "latch_4",
+          "parent": 39
+        },
+        {
+          "index": 51,
+          "string_id": 217,
+          "name": "camera_control",
+          "parent": 0
+        }
+      ],
+      "model_nodes": [
+        {
+          "index": 0,
+          "string_id": 4582,
+          "name": "gun",
+          "parent": -1
+        },
+        {
+          "index": 1,
+          "string_id": 503,
+          "name": "root",
+          "parent": 0
+        },
+        {
+          "index": 2,
+          "string_id": 27839,
+          "name": "handguard",
+          "parent": 1
+        },
+        {
+          "index": 3,
+          "string_id": 27772,
+          "name": "trigger",
+          "parent": 1
+        },
+        {
+          "index": 4,
+          "string_id": 27395,
+          "name": "vent_1",
+          "parent": 1
+        },
+        {
+          "index": 5,
+          "string_id": 27396,
+          "name": "vent_2",
+          "parent": 1
+        },
+        {
+          "index": 6,
+          "string_id": 27397,
+          "name": "vent_3",
+          "parent": 1
+        },
+        {
+          "index": 7,
+          "string_id": 27398,
+          "name": "vent_4",
+          "parent": 1
+        },
+        {
+          "index": 8,
+          "string_id": 27822,
+          "name": "vent_5",
+          "parent": 1
+        },
+        {
+          "index": 9,
+          "string_id": 27823,
+          "name": "vent_6",
+          "parent": 1
+        },
+        {
+          "index": 10,
+          "string_id": 27840,
+          "name": "latch_1",
+          "parent": 2
+        },
+        {
+          "index": 11,
+          "string_id": 27841,
+          "name": "latch_2",
+          "parent": 2
+        },
+        {
+          "index": 12,
+          "string_id": 27842,
+          "name": "latch_3",
+          "parent": 2
+        },
+        {
+          "index": 13,
+          "string_id": 27843,
+          "name": "latch_4",
+          "parent": 2
+        }
+      ],
+      "pickup": null
+    },
+    {
+      "weapon": {
+        "index": 16933,
+        "salt": 41883,
+        "address": 1922348214,
+        "name": "aaaaweaverports\\custom_content\\glitch5970\\glitch_skewer\\glitch_skewer",
+        "group": "weap"
+      },
+      "model": {
+        "index": 16901,
+        "salt": 41851,
+        "address": 1942495728,
+        "name": "hi\\objects\\weapons\\support_high\\skewer\\skewer",
+        "group": "mode"
+      },
+      "animation": {
+        "index": 16959,
+        "salt": 41909,
+        "address": 1942558690,
+        "name": "hi\\objects\\weapons\\support_high\\skewer\\skewer",
+        "group": "jmad"
+      },
+      "graph": [
+        {
+          "index": 0,
+          "string_id": 2672,
+          "name": "base",
+          "parent": -1
+        },
+        {
+          "index": 1,
+          "string_id": 498,
+          "name": "l_upperarm",
+          "parent": 0
+        },
+        {
+          "index": 2,
+          "string_id": 6419,
+          "name": "r_upperarm",
+          "parent": 0
+        },
+        {
+          "index": 3,
+          "string_id": 6420,
+          "name": "l_forearm",
+          "parent": 1
+        },
+        {
+          "index": 4,
+          "string_id": 6421,
+          "name": "r_forearm",
+          "parent": 2
+        },
+        {
+          "index": 5,
+          "string_id": 162,
+          "name": "l_hand",
+          "parent": 3
+        },
+        {
+          "index": 6,
+          "string_id": 166,
+          "name": "r_hand",
+          "parent": 4
+        },
+        {
+          "index": 7,
+          "string_id": 6422,
+          "name": "l_index_low",
+          "parent": 5
+        },
+        {
+          "index": 8,
+          "string_id": 6423,
+          "name": "l_middle_low",
+          "parent": 5
+        },
+        {
+          "index": 9,
+          "string_id": 6424,
+          "name": "l_pinky_low",
+          "parent": 5
+        },
+        {
+          "index": 10,
+          "string_id": 6425,
+          "name": "l_ring_low",
+          "parent": 5
+        },
+        {
+          "index": 11,
+          "string_id": 6426,
+          "name": "l_thumb_low",
+          "parent": 5
+        },
+        {
+          "index": 12,
+          "string_id": 6427,
+          "name": "r_index_low",
+          "parent": 6
+        },
+        {
+          "index": 13,
+          "string_id": 6428,
+          "name": "r_middle_low",
+          "parent": 6
+        },
+        {
+          "index": 14,
+          "string_id": 6429,
+          "name": "r_pinky_low",
+          "parent": 6
+        },
+        {
+          "index": 15,
+          "string_id": 6430,
+          "name": "r_ring_low",
+          "parent": 6
+        },
+        {
+          "index": 16,
+          "string_id": 6431,
+          "name": "r_thumb_low",
+          "parent": 6
+        },
+        {
+          "index": 17,
+          "string_id": 6432,
+          "name": "l_index_mid",
+          "parent": 7
+        },
+        {
+          "index": 18,
+          "string_id": 6433,
+          "name": "l_middle_mid",
+          "parent": 8
+        },
+        {
+          "index": 19,
+          "string_id": 6434,
+          "name": "l_pinky_mid",
+          "parent": 9
+        },
+        {
+          "index": 20,
+          "string_id": 6435,
+          "name": "l_ring_mid",
+          "parent": 10
+        },
+        {
+          "index": 21,
+          "string_id": 6436,
+          "name": "l_thumb_mid",
+          "parent": 11
+        },
+        {
+          "index": 22,
+          "string_id": 6437,
+          "name": "r_index_mid",
+          "parent": 12
+        },
+        {
+          "index": 23,
+          "string_id": 6438,
+          "name": "r_middle_mid",
+          "parent": 13
+        },
+        {
+          "index": 24,
+          "string_id": 6439,
+          "name": "r_pinky_mid",
+          "parent": 14
+        },
+        {
+          "index": 25,
+          "string_id": 6440,
+          "name": "r_ring_mid",
+          "parent": 15
+        },
+        {
+          "index": 26,
+          "string_id": 6441,
+          "name": "r_thumb_mid",
+          "parent": 16
+        },
+        {
+          "index": 27,
+          "string_id": 6442,
+          "name": "l_index_tip",
+          "parent": 17
+        },
+        {
+          "index": 28,
+          "string_id": 6443,
+          "name": "l_middle_tip",
+          "parent": 18
+        },
+        {
+          "index": 29,
+          "string_id": 6444,
+          "name": "l_pinky_tip",
+          "parent": 19
+        },
+        {
+          "index": 30,
+          "string_id": 6445,
+          "name": "l_ring_tip",
+          "parent": 20
+        },
+        {
+          "index": 31,
+          "string_id": 6446,
+          "name": "l_thumb_tip",
+          "parent": 21
+        },
+        {
+          "index": 32,
+          "string_id": 6447,
+          "name": "r_index_tip",
+          "parent": 22
+        },
+        {
+          "index": 33,
+          "string_id": 6448,
+          "name": "r_middle_tip",
+          "parent": 23
+        },
+        {
+          "index": 34,
+          "string_id": 6449,
+          "name": "r_pinky_tip",
+          "parent": 24
+        },
+        {
+          "index": 35,
+          "string_id": 6450,
+          "name": "r_ring_tip",
+          "parent": 25
+        },
+        {
+          "index": 36,
+          "string_id": 6451,
+          "name": "r_thumb_tip",
+          "parent": 26
+        },
+        {
+          "index": 37,
+          "string_id": 4582,
+          "name": "gun",
+          "parent": 0
+        },
+        {
+          "index": 38,
+          "string_id": 503,
+          "name": "root",
+          "parent": 37
+        },
+        {
+          "index": 39,
+          "string_id": 3227,
+          "name": "handle",
+          "parent": 38
+        },
+        {
+          "index": 40,
+          "string_id": 27805,
+          "name": "spike_ik",
+          "parent": 38
+        },
+        {
+          "index": 41,
+          "string_id": 27772,
+          "name": "trigger",
+          "parent": 38
+        },
+        {
+          "index": 42,
+          "string_id": 19923,
+          "name": "spike",
+          "parent": 40
+        },
+        {
+          "index": 43,
+          "string_id": 217,
+          "name": "camera_control",
+          "parent": 0
+        }
+      ],
+      "model_nodes": [
+        {
+          "index": 0,
+          "string_id": 4582,
+          "name": "gun",
+          "parent": -1
+        },
+        {
+          "index": 1,
+          "string_id": 503,
+          "name": "root",
+          "parent": 0
+        },
+        {
+          "index": 2,
+          "string_id": 3227,
+          "name": "handle",
+          "parent": 1
+        },
+        {
+          "index": 3,
+          "string_id": 27805,
+          "name": "spike_ik",
+          "parent": 1
+        },
+        {
+          "index": 4,
+          "string_id": 27772,
+          "name": "trigger",
+          "parent": 1
+        },
+        {
+          "index": 5,
+          "string_id": 19923,
+          "name": "spike",
+          "parent": 3
+        }
+      ],
+      "pickup": null
+    },
+    {
+      "weapon": {
+        "index": 7921,
+        "salt": 32871,
+        "address": 1922108936,
+        "name": "aaaaweaverports\\objects\\weapons\\reach_shotgun\\reach_shotgun",
+        "group": "weap"
+      },
+      "model": {
+        "index": 7923,
+        "salt": 32873,
+        "address": 1930461060,
+        "name": "aaaaweaverports\\objects\\weapons\\reach_shotgun\\reach_shotgun",
+        "group": "mode"
+      },
+      "animation": {
+        "index": 8066,
+        "salt": 33016,
+        "address": 1930557214,
+        "name": "aaaaweaverports\\objects\\weapons\\reach_shotgun\\reach_shotgun",
+        "group": "jmad"
+      },
+      "graph": [
+        {
+          "index": 0,
+          "string_id": 2672,
+          "name": "base",
+          "parent": -1
+        },
+        {
+          "index": 1,
+          "string_id": 217,
+          "name": "camera_control",
+          "parent": 0
+        },
+        {
+          "index": 2,
+          "string_id": 498,
+          "name": "l_upperarm",
+          "parent": 0
+        },
+        {
+          "index": 3,
+          "string_id": 6419,
+          "name": "r_upperarm",
+          "parent": 0
+        },
+        {
+          "index": 4,
+          "string_id": 6420,
+          "name": "l_forearm",
+          "parent": 2
+        },
+        {
+          "index": 5,
+          "string_id": 6421,
+          "name": "r_forearm",
+          "parent": 3
+        },
+        {
+          "index": 6,
+          "string_id": 162,
+          "name": "l_hand",
+          "parent": 4
+        },
+        {
+          "index": 7,
+          "string_id": 166,
+          "name": "r_hand",
+          "parent": 5
+        },
+        {
+          "index": 8,
+          "string_id": 6422,
+          "name": "l_index_low",
+          "parent": 6
+        },
+        {
+          "index": 9,
+          "string_id": 6423,
+          "name": "l_middle_low",
+          "parent": 6
+        },
+        {
+          "index": 10,
+          "string_id": 6424,
+          "name": "l_pinky_low",
+          "parent": 6
+        },
+        {
+          "index": 11,
+          "string_id": 6425,
+          "name": "l_ring_low",
+          "parent": 6
+        },
+        {
+          "index": 12,
+          "string_id": 6426,
+          "name": "l_thumb_low",
+          "parent": 6
+        },
+        {
+          "index": 13,
+          "string_id": 6427,
+          "name": "r_index_low",
+          "parent": 7
+        },
+        {
+          "index": 14,
+          "string_id": 6428,
+          "name": "r_middle_low",
+          "parent": 7
+        },
+        {
+          "index": 15,
+          "string_id": 6429,
+          "name": "r_pinky_low",
+          "parent": 7
+        },
+        {
+          "index": 16,
+          "string_id": 6430,
+          "name": "r_ring_low",
+          "parent": 7
+        },
+        {
+          "index": 17,
+          "string_id": 6431,
+          "name": "r_thumb_low",
+          "parent": 7
+        },
+        {
+          "index": 18,
+          "string_id": 6432,
+          "name": "l_index_mid",
+          "parent": 8
+        },
+        {
+          "index": 19,
+          "string_id": 6433,
+          "name": "l_middle_mid",
+          "parent": 9
+        },
+        {
+          "index": 20,
+          "string_id": 6434,
+          "name": "l_pinky_mid",
+          "parent": 10
+        },
+        {
+          "index": 21,
+          "string_id": 6435,
+          "name": "l_ring_mid",
+          "parent": 11
+        },
+        {
+          "index": 22,
+          "string_id": 6436,
+          "name": "l_thumb_mid",
+          "parent": 12
+        },
+        {
+          "index": 23,
+          "string_id": 6437,
+          "name": "r_index_mid",
+          "parent": 13
+        },
+        {
+          "index": 24,
+          "string_id": 6438,
+          "name": "r_middle_mid",
+          "parent": 14
+        },
+        {
+          "index": 25,
+          "string_id": 6439,
+          "name": "r_pinky_mid",
+          "parent": 15
+        },
+        {
+          "index": 26,
+          "string_id": 6440,
+          "name": "r_ring_mid",
+          "parent": 16
+        },
+        {
+          "index": 27,
+          "string_id": 6441,
+          "name": "r_thumb_mid",
+          "parent": 17
+        },
+        {
+          "index": 28,
+          "string_id": 6442,
+          "name": "l_index_tip",
+          "parent": 18
+        },
+        {
+          "index": 29,
+          "string_id": 6443,
+          "name": "l_middle_tip",
+          "parent": 19
+        },
+        {
+          "index": 30,
+          "string_id": 6444,
+          "name": "l_pinky_tip",
+          "parent": 20
+        },
+        {
+          "index": 31,
+          "string_id": 6445,
+          "name": "l_ring_tip",
+          "parent": 21
+        },
+        {
+          "index": 32,
+          "string_id": 6446,
+          "name": "l_thumb_tip",
+          "parent": 22
+        },
+        {
+          "index": 33,
+          "string_id": 6447,
+          "name": "r_index_tip",
+          "parent": 23
+        },
+        {
+          "index": 34,
+          "string_id": 6448,
+          "name": "r_middle_tip",
+          "parent": 24
+        },
+        {
+          "index": 35,
+          "string_id": 6449,
+          "name": "r_pinky_tip",
+          "parent": 25
+        },
+        {
+          "index": 36,
+          "string_id": 6450,
+          "name": "r_ring_tip",
+          "parent": 26
+        },
+        {
+          "index": 37,
+          "string_id": 6451,
+          "name": "r_thumb_tip",
+          "parent": 27
+        },
+        {
+          "index": 38,
+          "string_id": 4582,
+          "name": "gun",
+          "parent": 7
+        },
+        {
+          "index": 39,
+          "string_id": 18179,
+          "name": "bullet",
+          "parent": 38
+        },
+        {
+          "index": 40,
+          "string_id": 18233,
+          "name": "button",
+          "parent": 38
+        },
+        {
+          "index": 41,
+          "string_id": 17890,
+          "name": "magazine",
+          "parent": 38
+        },
+        {
+          "index": 42,
+          "string_id": 18234,
+          "name": "pump",
+          "parent": 38
+        }
+      ],
+      "model_nodes": [
+        {
+          "index": 0,
+          "string_id": 4582,
+          "name": "gun",
+          "parent": -1
+        },
+        {
+          "index": 1,
+          "string_id": 18179,
+          "name": "bullet",
+          "parent": 0
+        },
+        {
+          "index": 2,
+          "string_id": 18233,
+          "name": "button",
+          "parent": 0
+        },
+        {
+          "index": 3,
+          "string_id": 17890,
+          "name": "magazine",
+          "parent": 0
+        },
+        {
+          "index": 4,
+          "string_id": 18234,
+          "name": "pump",
+          "parent": 0
+        }
+      ],
+      "pickup": {
+        "string_id": "0x4734",
+        "identifier": "sg_pickup",
+        "record_offset": "0x7c3b7a78",
+        "text_offset": "0x7c3c6927",
+        "text": "Hold \ue45e to pick up|nShotgun"
+      }
+    }
+  ]
+}

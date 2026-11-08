@@ -11,6 +11,11 @@ struct TitleAdapterRuntimeSnapshot
 };
 
 const TitleDescriptor* TitleAdapter_PollLoaded(uint64_t observedAtMs);
+// The loader is unmapping the DLL at `base` (the loader's unload notification: LOADER LOCK HELD, atomic stores
+// only). MCC loads a game DLL again the moment the old image is gone, and a reload gets the same base, so a
+// poll can find the same base on both sides of an unload. The next poll publishes the gap it did not see, and
+// the title starts a new generation in its new image.
+void TitleAdapter_NoteImageUnloading(uintptr_t base) noexcept;
 const TitleDescriptor* TitleAdapter_GetActive();
 GameTitle TitleAdapter_GetActiveTitle();
 uint64_t TitleAdapter_GetActiveTitleEpochMs();

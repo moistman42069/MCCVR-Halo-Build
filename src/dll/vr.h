@@ -4,6 +4,7 @@
 #include <openxr/openxr.h>
 #include <cstdint>
 #include "../common/virtual_stock_test_profiles.h"
+#include "../common/standing_height_follow.h"
 // The durable persistent-support-grip relationship publication carries the
 // shared pure owner identity (title + title generation + unit + weapon).
 #include "../common/support_grip_logic.h"
@@ -98,14 +99,42 @@ constexpr bool VrBlitNeedsHalo4ReticleAlphaRepair(
     return halo4Title && destinationWidth == 512 && destinationHeight == 512;
 }
 
+// Reach's authored crosshair capture holds PREMULTIPLIED colour (the game drew
+// its translucent widget over a transparent-black target), but the aim quad is
+// composited as UNPREMULTIPLIED. A direct copy therefore applied the game's own
+// fade twice, which is why Reach's DMR crosshair read far fainter in the
+// headset than flat. The authored upload takes the shader path, whose fix()
+// converts to straight alpha (src/common/authored_reticle_logic.h explains and
+// tests the arithmetic). Only that exact 512-square authored upload: Reach's
+// eye, menu and every other blit stay byte-preserving.
+constexpr bool VrBlitNeedsReachReticleStraightAlpha(
+    bool reachTitle, bool authoredUpload, uint32_t sourceWidth,
+    uint32_t sourceHeight, uint32_t destinationWidth,
+    uint32_t destinationHeight) noexcept
+{
+    return reachTitle && authoredUpload && sourceWidth == 512 &&
+        sourceHeight == 512 && destinationWidth == 512 &&
+        destinationHeight == 512;
+}
+
 // Stage 3BQ's explicit typed RTV retry is also selected by CE's verified RGB
-// authored upload. Other swapchain consumers retain their established default-
-// descriptor behavior even if their first view creation fails.
+// authored upload. Every other swapchain consumer keeps the default descriptor
+// for a typed image; a TYPELESS image (VrImageFormatIsTypeless) is given the
+// negotiated XR format from the start, since a default view of it is invalid.
 constexpr bool VrHalo4ReticleRtvNeedsTypedFallback(
     bool halo4ReticleUpload, bool defaultCreationFailed,
     bool viewStillMissing) noexcept
 {
     return halo4ReticleUpload && defaultCreationFailed && viewStillMissing;
+}
+
+// The colour formats a runtime may hand out as an XR image with no type of its
+// own (SteamVR does): such an image has no default render target view.
+constexpr bool VrImageFormatIsTypeless(DXGI_FORMAT format) noexcept
+{
+    return format == DXGI_FORMAT_R8G8B8A8_TYPELESS || format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+           format == DXGI_FORMAT_B8G8R8X8_TYPELESS || format == DXGI_FORMAT_R10G10B10A2_TYPELESS ||
+           format == DXGI_FORMAT_R16G16B16A16_TYPELESS;
 }
 
 // Stage 3BL keeps the accepted alpha-only metric for every other title. Halo
@@ -426,6 +455,11 @@ struct Halo4VrRenderSnapshot
     bool leftControllerValid = false;
     float leftControllerOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float leftControllerPosition[3]{};
+    // MONO RENDERING (src/common/mono_view_logic.h): this frame is one pass. Both `eyes` are then the one camera:
+    // no offset, no cant, and the frustum that covers either eye. Last, so the offsets asserted below stand.
+    bool mono = false;
+    // The eyes' real offsets whatever `eyes` holds in a mono frame: Aim Frame Zoom's 3D stands the eyes along the aim.
+    float stereoEyePosition[2][3]{};
 };
 
 static_assert(sizeof(Halo4VrEyeSnapshot) == 0x30);
@@ -512,6 +546,15 @@ bool VR_Halo2RestoreEyeToFinalTarget(
     uint32_t generation, uint64_t preparedSerial, int eye);
 bool VR_Halo2CompleteSynchronousPair(
     uint32_t generation, uint64_t preparedSerial);
+// MONO RENDERING (mono_view_logic.h): complete a frame drawn as ONE pass, as `eye`. Its stamps (serial, capture,
+// half-angles, image) answer for the other eye too; when the core owns poses the other eye keeps its own submitted
+// pose (`otherPosition`/`otherOrientation`), so each eye is still shown where it is. The picture is marked mono
+// before the frame can be presented. Reports the mono frame (VR_NoteMonoFrameRendered) on success.
+bool VR_Halo2CompleteSynchronousMonoPair(
+    uint32_t generation, uint64_t preparedSerial, int eye,
+    const float* otherPosition = nullptr, const float* otherOrientation = nullptr);
+// The eye capture's source is settled: learning it compares the two eyes' pictures, so a mono frame waits for it.
+bool VR_Halo2CaptureSourceSettled();
 // Claim immediately before the first original eye render_view call. A failed
 // publication must take the zero-eye pre-stereo screen path; once published,
 // this
@@ -549,6 +592,12 @@ void VR_AfterPresent(IDXGISwapChain* swapchain, int64_t presentStartQpc,
                      int64_t presentEndQpc, HRESULT presentResult);
 bool VR_OnResizeBuffers(IDXGISwapChain* swapchain);
 void VR_AfterResizeBuffers(IDXGISwapChain* swapchain);
+// A host's next engine was given the session's device: forget what was learned of the last engine's targets, at the next
+// present (on the present's thread).
+void VR_ForgetEngineTargets();
+void VR_ReleaseSwapchainHolds();
+// The D3D11 device the headset's session was made on, as an identity (null until there is a session). Any thread.
+ID3D11Device* VR_SessionDevice();
 
 // Existing title worker only: drains and formats completed transition traces.
 // Render, camera, and palette hooks only publish fixed-size POD records.
@@ -610,6 +659,10 @@ void VR_ToggleScreenFollow();
 // submits the two retained images as an OpenXR projection layer.
 void VR_ToggleStereo();
 bool VR_IsStereoEnabled();
+// How crosshair_opacity / crosshair_brightness act: 1 = the OpenXR runtime offers layer colour scaling and the
+// compositor applies them; 0 = it does not, and the mod applies them to the crosshair's own image; -1 = no
+// OpenXR instance yet.
+int VR_CrosshairTintSupport() noexcept;
 // True only while the shared compositor is presenting a proven authored,
 // player-locked cinematic on its room-fixed stereo theatre screen.
 bool VR_IsCutsceneTheaterActive();
@@ -706,7 +759,56 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
 void VR_Halo4NoteBoundRenderTargets(
     ID3D11DeviceContext* context, UINT count,
     ID3D11RenderTargetView* const* rtvs);
-void VR_Halo4PrepareAuthoredReticleDraw(ID3D11DeviceContext* context);
+// One Draw / DrawIndexed, seen from the D3D hooks. If the draw goes into Halo 4's reticle capture it gets the
+// capture's framing, and unless its blend writes coverage it is made without its alpha write
+// (halo4_reticle_alpha_logic.h); the game's own blend state is bound again when the scope ends. Any other draw
+// is not touched.
+// The scope is made around EVERY draw of every title, so the draw that is not touched pays one call and one
+// store: the end of the scope is tested here, and only a draw whose blend state was changed calls out again.
+class VrHalo4ReticleDrawScope
+{
+public:
+    explicit VrHalo4ReticleDrawScope(ID3D11DeviceContext* context);
+    ~VrHalo4ReticleDrawScope()
+    {
+        if (context_)
+            Restore();
+    }
+    VrHalo4ReticleDrawScope(const VrHalo4ReticleDrawScope&) = delete;
+    VrHalo4ReticleDrawScope& operator=(const VrHalo4ReticleDrawScope&) = delete;
+
+private:
+    void Restore();
+    // Set only by a draw whose blend state was changed; the rest are read only then.
+    ID3D11DeviceContext* context_ = nullptr;
+    ID3D11BlendState* saved_;
+    FLOAT factor_[4];
+    UINT sampleMask_;
+};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Dev A/B of the rule above: 0 the capture as the game draws it, 1 the rule, 2 no draw writes alpha.
+void VR_DevSetHalo4ReticleAlphaMode(int mode);
+#endif
+// Halo 4 (halo4_scene_copy_logic.h): the source a whole-resource copy is to read. While an eye is drawn, a copy
+// out of the game's scene colour texture reads that eye's image; any other copy reads what it named. Called from
+// the CopyResource hook, on whichever thread copies.
+ID3D11Resource* VR_RedirectSceneCopySource(ID3D11DeviceContext* context, ID3D11Resource* destination,
+                                           ID3D11Resource* source);
+// How many copies were given an eye's image since the last call (the worker's status line).
+uint64_t VR_TakeHalo4SceneCopyCount();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Dev A/B: false leaves every copy as the game made it (the stock, blacked-out behaviour).
+void VR_DevSetHalo4SceneCopy(bool on);
+#endif
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// For the pixel shader census (dev_ps_census.inl). What a resource is to this mod: 0 other, 1 the game's scene
+// colour (the target the eyes are drawn in place of), 2 / 3 the image of eye 0 / 1, 4 the crosshair capture.
+int VR_DevResourceRole(ID3D11Resource* resource);
+// That role's name, the resource's address and its shape, as text.
+void VR_DevDescribeResource(ID3D11Resource* resource, char* out, size_t outSize);
+// The eye being drawn now, or -1.
+int VR_DevRasterEye();
+#endif
 // The optional H4 hooks pass through completely after a fatal reticle-resource
 // failure, leaving the stock CUI reticle visible without affecting camera,
 // theatre, stereo, or OpenXR ownership.
@@ -730,6 +832,9 @@ bool VR_GetLeftControllerPose(float outQuat[4], float outPos[3]);
 bool VR_GetControllerLinearVelocity(bool left, float outVelocity[3]);
 // Melee-only 60 ms tracked peak; ordinary motion velocity stays instantaneous.
 bool VR_GetPhysicalMeleeSpeed(bool left,float& speed);
+// Swings detected so far by a physical hand (0 left, 1 right): gesture_melee_logic.h, stepped once per frame.
+uint32_t VR_GestureMeleeSwings(int hand);
+bool VR_GestureMeleeSwingDirection(int hand, float outDirection[3]); // of that hand's latest swing
 // Called only from Halo's already-validated class-2 CHUD path. The active
 // weapon reticle is redirected into the controller-ray quad texture instead
 // of being drawn at the center of either VR eye.
@@ -760,6 +865,8 @@ AuthoredReticlePreparationResult VR_PrepareAuthoredReticleResources();
 // an authored no-crosshair state cannot inherit an earlier attempt's texture.
 void VR_InvalidatePreparedAuthoredReticleCapture();
 bool VR_BeginPreparedAuthoredReticleCapture();
+// CE: the next capture's art draws this fraction of the HUD's height above its centre (0: centred).
+void VR_SetCeAuthoredReticleLift(float heightFraction);
 // CE's native HUD must draw on the shared immediate context and the same XR
 // serial before borrowing prepared capture resources; no context discovery.
 bool VR_CeAuthoredReticleFrameMatches(ID3D11DeviceContext* context,uint64_t serial);
@@ -971,6 +1078,23 @@ bool VR_SupportInvocationReceiptTrustedForReticle(GameTitle title,
 
 // Latest OpenXR per-eye FOV angles: left, right, up, down (radians).
 bool VR_GetEyeFov(int eye, float outFov[4]);
+// MONO RENDERING (src/common/mono_view_logic.h). Whoever builds a frame's eye cameras for `title` asks once,
+// before its eye passes. True: draw the world ONCE, as the eye the eye-order setting draws first, from the
+// midpoint of the eyes (no eye offset, no cant) with the symmetric frustum `coverFov` (left, right, up, down;
+// radians), capture it, and call VR_NoteMonoFrameRendered with that eye. False: both eyes as usual.
+bool VR_MonoRenderThisFrame(GameTitle title, float coverFov[4]);
+void VR_NoteMonoFrameRendered(GameTitle title, int eye);
+// `title` drew a pair: the latest picture is two eyes' again.
+void VR_NoteStereoFrameRendered(GameTitle title);
+// Aim Frame Zoom: `title`'s frame was drawn along the aim at the half-angle tangents `tanX` and `tanY`, as one
+// pass captured as `eye`, or (eye -1) as a pair; the present shows it as a frame `widthDeg` wide on the aim.
+void VR_NoteAimFrameRendered(GameTitle title, int eye, float tanX, float tanY, float widthDeg);
+// ...for a title that publishes its frames through its own pair calls (Halo 2), before the frame is published: eye -1
+// not the frame's, 0 or 1 the one pass's eye, 2 a pair (3D).
+void VR_PrepareAimFramePicture(GameTitle title, int eye, float tanX, float tanY, float widthDeg);
+// `title`'s renderer turned a single pass down (its own checks on the frame failed, or it faulted). A run of them
+// is answered with a probe pair; single passes dropped where pairs are drawn leave the title in stereo.
+void VR_NoteMonoFrameRejected(GameTitle title);
 // Pixel aspect of Halo's main render surface. Halo lays native 2D HUD geometry
 // out for this shape, which can differ substantially from the headset's
 // tangent-space view aspect.
@@ -993,6 +1117,8 @@ struct VrPadState
     // of weapon handedness. These axes have already been removed from turn.
     bool thumbrestDpad = false;
     bool exclusiveInput = false;
+    bool dualWield = false; // the support trigger fires the other gun
+    bool supportOnOneHandedGun = false; // vr_mapping::OneHandedGripOnGun
     float dpadX = 0.0f, dpadY = 0.0f;
     // Optional body-gesture output, validated again before XInput delivery.
     uint32_t weaponButtons = 0;
@@ -1005,16 +1131,29 @@ struct VrPadState
     uint32_t weaponReloadBinding = 0, weaponSwitchBinding = 0;
     GameTitle weaponTitle{};
     bool weaponConsumePrimary = false, weaponConsumeSupport = false;
+    // A dual-wield shake's own reload press is in weaponButtons (input.cpp lets it through
+    // gesture-only suppression for its 120 ms).
+    bool weaponDualReloadPulse = false;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // SEATEXIT witness only: capacitive touch, bit 0 left thumb rest, 1 right thumb rest, 2 left
+    // thumbstick, 3 right thumbstick. Read for the log; nothing acts on it.
+    uint8_t devTouch = 0;
+#endif
 };
 void VR_GetPadState(VrPadState& out);
 const char* VR_ControllerProfileName(bool left);
 // Cold worker only: optional gesture status/counters, never render-hook logs.
 void VR_ReportWeaponInteractions(uint64_t nowMs);
+void VR_ReachDefaultVisualAngles(float& yaw,float& pitch,float& roll) noexcept;
+void VR_ObserveSecondaryWeaponModel(GameTitle title,uint32_t generation,uint64_t identity) noexcept;
+void VR_LegacyDefaultVisualAngles(bool secondary,bool classic,float& yaw,float& pitch,float& roll) noexcept;
+float VR_DefaultWeaponVisualYaw() noexcept;
 void VR_UpdateWeaponAlignment(); // cold title worker, after title-profile selection
 namespace contact_melee { struct TrackingToWorld; }
 void VR_PublishReloadTarget(GameTitle title,uint32_t generation,uint64_t identity,uint64_t serial,
     const contact_melee::TrackingToWorld& trackingToWorld,const float world[3]) noexcept;
 // Optional, read-only equipped-model observations. No inventory or animation writes.
+void VR_ObserveHalo2VisualModel(bool secondary,uint32_t generation,uint64_t identity) noexcept;
 void VR_ObserveWeaponModel(GameTitle title,uint32_t generation,uint64_t identity) noexcept;
 uint64_t VR_GetWeaponModelIdentity(GameTitle title,uint32_t generation,uint64_t space,uint64_t now) noexcept;
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
@@ -1025,6 +1164,8 @@ uint64_t VR_GetWeaponModelIdentity(GameTitle title,uint32_t generation,uint64_t 
 struct ReachVrEyeSnapshot
 {
     float position[3]{};
+    // The eye's real offset whatever `position` holds in a mono frame: Aim Frame Zoom's 3D stands the eyes along the aim.
+    float stereoPosition[3]{};
     float orientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float fov[4]{}; // left, right, up, down
 };
@@ -1053,6 +1194,9 @@ struct ReachVrRenderSnapshot
     float leftControllerPosition[3]{};
     VrPadState pad{};
     ReachVrEyeSnapshot eyes[2]{};
+    // MONO RENDERING (src/common/mono_view_logic.h): this frame is one pass. Both `eyes` are then the one camera:
+    // no offset, no cant, and the frustum that covers either eye.
+    bool mono = false;
     int64_t predictedDisplayTimeNs = 0;
     uint64_t trackingSpaceEpoch = 0;
 };
@@ -1099,9 +1243,24 @@ void VR_RequestScopeToggle();
 // Receives Halo's blended XInput rumble level (0..1). The render thread maps
 // it to portable OpenXR feedback on both hands and owns all stop conditions.
 void VR_SetGameHaptics(float amplitude);
+// One blip of the mod's own on both hands (a camera switched, the wheel taken), felt for a fixed short time and
+// then gone. It never touches the held level VR_SetGameHaptics sets for the game: a host that sends no vibration
+// of its own until something changes (Project Reclaimer) would otherwise keep that level.
+void VR_PulseGameHaptics(float amplitude);
 // Adds a lock-free, one-shot collision pulse for one OpenXR hand. It is merged
 // with (and never replaces) the title's ordinary XInput rumble.
 void VR_PulseContactHaptics(bool left, float amplitude);
+// SETTING THE HOLSTER SPOT WITH A HAND (weapon_interaction::HolsterCapture). Arm: the next fresh squeeze of the
+// weapon grip records where that hand is relative to the head as the custom holster spot, switches the
+// holster to it and saves the config. false cancels. Armed: still waiting for that squeeze. Count: how many
+// spots have been recorded this session; TimedOut: how many armings lapsed with no squeeze.
+void VR_HolsterCaptureArm(bool arm) noexcept;
+bool VR_HolsterCaptureArmed() noexcept;
+uint32_t VR_HolsterCaptureCount() noexcept;
+uint32_t VR_HolsterCaptureTimedOut() noexcept;
+// Cold worker: a capture's config save and its HOLSTER SPOT log line (the capture itself happens in the frame
+// function, which does neither).
+void VR_ReportHolsterCapture() noexcept;
 // Authored recoil whose native source/owner has been proven by its title.
 // Secondary is a weapon role; coupled support is rechecked on the XR frame.
 uint64_t VR_WeaponHapticToken(GameTitle title,uint32_t generation,bool secondary) noexcept;
@@ -1126,8 +1285,54 @@ void VR_GetStatus(VrStatus& out);
 
 // Lock-free physical tracking/focus freshness for optional native walking.
 bool VR_RoomscaleTrackingFresh() noexcept;
+// The physical crouch's standing-reference sample count (0 = none yet): the epoch the input side
+// publishes its crouch request in, and every title's crouch camera correction checks it against.
 uint64_t VR_PhysicalCrouchEpoch() noexcept;
+// The menu's Calibrate button: take the player's current head height as their own standing (or seated)
+// height. Nothing else re-samples it -- not a recenter, a level load or a title change.
 void VR_RecalibratePhysicalCrouch() noexcept;
+// What the physical crouch reads, published by the OpenXR frame thread with every head pose: the head
+// height and the standing reference, both in one frame that runtime recenters do not move
+// (physical_crouch_logic.h). valid = a tracked head in a focused session, sampled in the last 100 ms.
+// reference = the reference's sample count (VR_PhysicalCrouchEpoch). calibrated = the player pressed
+// Calibrate (otherwise the reference is learned); riseCapped = a calibrated reference saw them stand
+// taller than it learns on its own.
+struct VrPhysicalCrouchSample
+{
+    float height=0.0f,baseline=0.0f;
+    uint64_t reference=0;
+    bool valid=false,calibrated=false,riseCapped=false;
+    bool confirmed=false;   // PhysicalCrouchReference::Confirmed: calibrated, or a minute of standing near it
+};
+bool VR_GetPhysicalCrouchSample(VrPhysicalCrouchSample& out) noexcept;
+// For a recenter capturing the head as the view's neutral position: how far (room metres, >= 0) the head is
+// below the player's STANDING height now, to add to the captured height. With the physical crouch on, the
+// view's neutral height is then the standing height the crouch itself measures from, wherever the head was
+// when the recenter landed -- most recenters are automatic (an unpause, a cutscene's end, a level load) and
+// catch the player crouched or leaning, and the view would keep that height as "standing" until the next manual
+// recenter. 0 -- the head as it is -- with the physical crouch off; with no standing height CONFIRMED yet
+// (a learned one may still fall back, and the lift would outlive it); and in a vehicle seat (Game_TitleSeated):
+// a seat composes its own view, the player may well be sitting in it, and nothing there pairs with the lift.
+float VR_RecenterStandingLiftM(GameTitle title) noexcept;
+// The same rule, late (standing_height_follow.h): VR_RecenterStandingLiftM gives no lift until the standing height
+// is confirmed, so a recenter in a session's first minute (the automatic one at a level's start among them) that
+// catches the player low leaves the view's neutral height that low. Call once per camera frame, on foot or not,
+// with the head height the reference is compared against and the reference itself: once the standing height is
+// confirmed, a reference more than 5 cm under it glides up to it (30 cm a second; up only; never in a seat;
+// view_follows_standing_height). True when it moved `referenceY`. `state` is the caller's, one per reference.
+// It is called from the per-frame camera hooks: it takes no lock and writes no log (it reads a lock-free copy
+// of the crouch sample, and a glide's start is said by VR_ReportStandingFollow).
+using VrStandingFollow = standing_follow::State;
+bool VR_FollowStandingHeight(GameTitle title, float headY, float& referenceY, VrStandingFollow& state) noexcept;
+// Cold worker: the VIEW HEIGHT line for a glide that began since the last call.
+void VR_ReportStandingFollow() noexcept;
+// Diagnostics (the CROUCH line): the continuous frame's carry (m) and how each discontinuity was met.
+struct VrCrouchContinuityStats
+{
+    float carry=0.0f;
+    uint32_t announced=0,unannounced=0,applied=0,unseen=0,late=0,breaks=0;
+};
+void VR_GetCrouchContinuityStats(VrCrouchContinuityStats& out) noexcept;
 
 // --- Optional NVIDIA DLSS eye resolve (config.upscaler = 1) ---------------
 // A title's eye render hook publishes the exact camera it rasterized with:
@@ -1182,3 +1387,12 @@ struct VrDlssRenderPlan
 bool VR_GetDlssRenderPlan(VrDlssRenderPlan& out);
 
 void VR_ObserveReachAlternateDepthBind(ID3D11DeviceContext* context, UINT renderTargetCount, ID3D11DepthStencilView* depth);
+
+// Native simulation thread, read only: the local player's current dual pair, so the input thread
+// knows which hand holds what. A shake then presses that hand's reload button (shared input);
+// nothing is requested of the simulation.
+void VR_DualWieldObserveOwner(GameTitle title,uint32_t generation,uint32_t unit,
+    const uint32_t weapons[2]) noexcept;
+
+// Cold-worker input admission and clock diagnostics (self-throttled to every 5 s).
+void VR_ReportDualWieldReloadInput(GameTitle title);

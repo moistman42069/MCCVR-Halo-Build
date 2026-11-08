@@ -78,7 +78,18 @@ static void ResetCeMuzzle()
     testContext.tracking.predictedDisplayTimeNs=1000000000;
     testContext.tracking.controllers.controlsPresentationBlocked=false;
     testContext.tracking.controllers.gunBarrelAim=true;testContext.tracking.controllers.leftHanded=false;
-    testContext.tracking.controllers.primaryAim.valid=true;gameplayContext=testContext;
+    // Muzzle publication reconstructs the visual and neutral controller frames.
+    // Supply a complete, matching frame instead of inheriting earlier test state.
+    testContext.camera={};testContext.camera.forward={1,0,0};testContext.camera.up={0,0,1};
+    testContext.camera.viewport={0,0,800,1000};testContext.camera.window=testContext.camera.viewport;
+    testContext.camera.verticalFov=1;testContext.camera.nearPlane=.01f;testContext.camera.farPlane=1000;
+    testContext.reference={};testContext.reference.generation=testGeneration;testContext.reference.spaceEpoch=4;
+    testContext.unitsPerMeter=1;testContext.positional=true;testContext.tracking.headPosition={};
+    testContext.tracking.controllers.primaryAim={true,{.3f,1.2f,-.6f},{}};
+    testContext.tracking.controllers.visualPitchDeg=0;
+    testContext.tracking.controllers.visualYawDeg=0;
+    testContext.tracking.controllers.visualRollDeg=0;
+    gameplayContext=testContext;
     targetPlayer={};targetPlayerValid=true;targetPlayer.generation=testGeneration;targetPlayer.unit=ceOwner;targetPlayer.weapon=ceWeapon;
     targetPlayer.inputUser=2;targetPlayer.hasControlledUnit=targetPlayer.onFoot=targetPlayer.nativePreparesFirstPerson=true;
     targetPlayer.nativeInputBlocked=targetPlayer.nativeLookBlocked=false;

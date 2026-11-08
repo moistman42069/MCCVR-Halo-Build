@@ -1040,6 +1040,72 @@
       ]
     },
     {
+      "name": "hud_static_element_draw",
+      "rva": "0xb5808c",
+      "signature": "48 8B C4 48 89 58 20 55 56 57 41 54 41 55 41 56 41 57 48 8D 68 B1 48 81 EC D0 00 00 00 0F 29 70 B8 0F 29 78 A8 48 8B 05 58 CF 01 01",
+      "function_entry": true,
+      "runtime_group": "hud_seat_reticle",
+      "evidence": "Generic HUD static-element draw. The unit HUD 0xc5093c (reached from the gameplay HUD 0xb12b08 at 0xb12df0) draws each listed unit HUD's background through it from one call, 0xc50e27: rdx the unit HUD interface, r8 its background element at +0x24, cx the local user. Stock content's only background is the Warthog driver seat's centre-anchored chevron (ui\\hud\\warthog driver); a seat without the gunner bit (0xb3ee67) never reaches the weapon crosshair 0xb3ffa0.",
+      "relative_operands": [
+        {
+          "instruction_rva": "0xc50e27",
+          "target_rva": "0xb5808c",
+          "instruction_bytes": 5,
+          "displacement_offset": 1,
+          "instruction_signature": "E8 60 72 F0 FF"
+        },
+        {
+          "instruction_rva": "0xb12df0",
+          "target_rva": "0xc5093c",
+          "instruction_bytes": 5,
+          "displacement_offset": 1,
+          "instruction_signature": "E8 47 DB 13 00"
+        }
+      ],
+      "instruction_witnesses": [
+        {
+          "rva": "0xc50de7",
+          "signature": "39 70 54 74 43",
+          "meaning": "cmp dword ptr [rax + 0x54], esi; je (no background bitmap: no call)"
+        },
+        {
+          "rva": "0xc50e17",
+          "signature": "4C 8D 40 24",
+          "meaning": "lea r8, [rax + 0x24] (the background element)"
+        },
+        {
+          "rva": "0xc50e20",
+          "signature": "48 8B D7",
+          "meaning": "mov rdx, rdi (the unit HUD interface)"
+        },
+        {
+          "rva": "0xc50e23",
+          "signature": "89 74 24 20",
+          "meaning": "mov dword ptr [rsp + 0x20], esi"
+        },
+        {
+          "rva": "0xc50bba",
+          "signature": "42 F6 04 1A 04",
+          "meaning": "test byte ptr [rdx + r11], 4 (the player's seat drives: seat HUDs are listed)"
+        },
+        {
+          "rva": "0xb3ee67",
+          "signature": "F6 04 0A 08",
+          "meaning": "test byte ptr [rdx + rcx], 8 (gunner seat: weapon crosshair)"
+        },
+        {
+          "rva": "0xb58197",
+          "signature": "66 41 83 7D 00 04",
+          "meaning": "cmp word ptr [r13], 4 (centre anchor)"
+        },
+        {
+          "rva": "0xb580c7",
+          "signature": "49 8D 48 24",
+          "meaning": "lea rcx, [r8 + 0x24]"
+        }
+      ]
+    },
+    {
       "name": "classic_view_render",
       "rva": "0xbbcf30",
       "signature": "40 55 53 56 57 41 54 41 56 41 57 48 8D AC 24 70 FE FF FF 48 81 EC 90 02 00 00 48 8B 05 BF 80 FB 00 48 33 C4 48 89 85 80 01 00 00 48 8B BD F0 01",
@@ -4801,6 +4867,145 @@
           "rva": "0x20443e",
           "signature": "E9 1D 77 FD FF",
           "meaning": "jmp 0x1dbb60"
+        }
+      ]
+    },
+    {
+      "name": "native_screen_effect_draw",
+      "rva": "0xac7ef0",
+      "signature": "48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20 55 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC 90 00 00 00 0F 29 70 C8 48 8B 05 F2 D0",
+      "function_entry": true,
+      "runtime_group": "anniversary_screen_effect",
+      "evidence": "Weapon HUD screen effect (zoom mask and convolution). 0xb31d88 calls it at 0xb32101, just before the gameplay HUD 0xb12b08 at 0xb32106. Each pass samples a target kind through the kind-indexed view table 0x1b85e80 (stride 0x30: render target view, then shader resource view) and frames it with the native rectangle 0x29e05b4 (top, left, bottom, right). Its binder 0xb51670 stores the new kind in 0x1b85e58 and hands the previous one to 0xaeb00, which pushes the bound target (0x1dc1e0) when the previous kind is -1 or the default kind, and pops back (0x1dc2f0) when the new kind is the default kind; the default kind is 1 while 0x1b7aa84 is non-zero. The effect binds 2, then 1, then the window kind 0x29e0580 (which it requires to be 1), so it leaves the stack and the bound target as it found them only from a previous kind of -1 or 1. The late HUD callback 0x740b0 calls 0xb29438 (bound kind -1, window kind 1) right before 0xb31d88, and nothing 0xb31d88 calls before 0xb32101 binds a target.",
+      "relative_operands": [
+        {
+          "instruction_rva": "0xb32101",
+          "target_rva": "0xac7ef0",
+          "instruction_bytes": 5,
+          "displacement_offset": 1,
+          "instruction_signature": "E8 EA 5D F9 FF"
+        },
+        {
+          "instruction_rva": "0xb32106",
+          "target_rva": "0xb12b08",
+          "instruction_bytes": 5,
+          "displacement_offset": 1,
+          "instruction_signature": "E8 FD 09 FE FF"
+        },
+        {
+          "instruction_rva": "0xb519be",
+          "target_rva": "0x1b85e80",
+          "instruction_bytes": 7,
+          "displacement_offset": 3,
+          "instruction_signature": "48 8D 1D BB 44 03 01",
+          "target_name": "native_target_shader_views"
+        },
+        {
+          "instruction_rva": "0xb519d0",
+          "target_rva": "0x1b85e58",
+          "instruction_bytes": 7,
+          "displacement_offset": 3,
+          "instruction_signature": "66 3B 15 81 44 03 01",
+          "target_name": "native_bound_target_kind"
+        },
+        {
+          "instruction_rva": "0xac8098",
+          "target_rva": "0x29e05b4",
+          "instruction_bytes": 8,
+          "displacement_offset": 4,
+          "instruction_signature": "44 0F BF 05 14 85 F1 01",
+          "target_name": "native_screen_rectangle"
+        },
+        {
+          "instruction_rva": "0xac80ad",
+          "target_rva": "0x29e05b6",
+          "instruction_bytes": 7,
+          "displacement_offset": 3,
+          "instruction_signature": "0F BF 0D 02 85 F1 01"
+        },
+        {
+          "instruction_rva": "0xac808d",
+          "target_rva": "0x29e05b8",
+          "instruction_bytes": 8,
+          "displacement_offset": 4,
+          "instruction_signature": "44 0F BF 0D 23 85 F1 01"
+        },
+        {
+          "instruction_rva": "0xac80a3",
+          "target_rva": "0x29e05ba",
+          "instruction_bytes": 7,
+          "displacement_offset": 3,
+          "instruction_signature": "0F BF 15 10 85 F1 01"
+        },
+        {
+          "instruction_rva": "0xaeb29",
+          "target_rva": "0x1b7aa84",
+          "instruction_bytes": 6,
+          "displacement_offset": 2,
+          "instruction_signature": "39 3D 55 BF AC 01",
+          "target_name": "native_default_target_flag"
+        }
+      ],
+      "instruction_witnesses": [
+        {
+          "rva": "0xb516d9",
+          "signature": "48 8B BC CA 78 5E B8 01",
+          "meaning": "mov rdi, qword ptr [rdx + rcx*8 + 0x1b85e78] (the kind's render target view, image-base relative)"
+        },
+        {
+          "rva": "0xb519c5",
+          "signature": "4C 8D 04 40 4D 03 C0 4A 8B 1C C3",
+          "meaning": "r8 = kind * 6; mov rbx, qword ptr [rbx + r8*8] (the kind's shader resource view)"
+        },
+        {
+          "rva": "0xb51a05",
+          "signature": "FF 50 40",
+          "meaning": "call qword ptr [rax + 0x40] (PSSetShaderResources)"
+        },
+        {
+          "rva": "0xb516ef",
+          "signature": "66 89 1D 62 47 03 01",
+          "meaning": "mov word ptr [0x1b85e58], bx (the binder stores the new kind before 0xaeb00)"
+        },
+        {
+          "rva": "0xaeb32",
+          "signature": "40 0F 95 C7",
+          "meaning": "setne dil (default kind = 0x1b7aa84 != 0)"
+        },
+        {
+          "rva": "0xaeb58",
+          "signature": "E8 83 D6 12 00",
+          "meaning": "call 0x1dc1e0 (push: previous kind -1 or default)"
+        },
+        {
+          "rva": "0xaebe7",
+          "signature": "E9 04 D7 12 00",
+          "meaning": "jmp 0x1dc2f0 (pop: new kind is the default)"
+        },
+        {
+          "rva": "0xac7f88",
+          "signature": "66 44 39 35 F0 85 F1 01",
+          "meaning": "cmp word ptr [0x29e0580], r14w (the effect runs only for window kind 1)"
+        },
+        {
+          "rva": "0xac87b1",
+          "signature": "0F B7 0D C8 7D F1 01",
+          "meaning": "movzx ecx, word ptr [0x29e0580] (the effect ends by binding the window kind)"
+        },
+        {
+          "rva": "0xb29472",
+          "signature": "66 44 89 05 DE C9 05 01",
+          "meaning": "mov word ptr [0x1b85e58], r8w (-1: no kind bound)"
+        },
+        {
+          "rva": "0xb29488",
+          "signature": "66 89 3D F1 70 EB 01",
+          "meaning": "mov word ptr [0x29e0580], di (window kind 1)"
+        },
+        {
+          "rva": "0x74332",
+          "signature": "E8 01 51 AB 00",
+          "meaning": "call 0xb29438 (single-view window parameters) right before 0xb31d88 at 0x74345"
         }
       ]
     },

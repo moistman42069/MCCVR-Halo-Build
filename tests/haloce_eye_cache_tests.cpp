@@ -263,6 +263,51 @@ int main()
             }
         }
     }
+    {
+        // MONO (ClassicViewPair::mono): one capture, as eye 0, completes the frame, and its picture is handed out
+        // for both eyes. The next stereo frame uses both banks again; a stereo frame never finishes on one eye.
+        ClassicViewPair pair{};
+        pair.source.player=0;
+        Camera camera{};
+        camera.position={1,2,3}; camera.forward={1,0,0}; camera.up={0,0,1}; camera.verticalFov=1.2f;
+        camera.viewport=camera.window={0,0,static_cast<int16_t>(d.Height),static_cast<int16_t>(d.Width)};
+        camera.nearPlane=0.01f; camera.farPlane=100;
+        pair.source.render=pair.source.raster=camera;
+        pair.eyes[0]=pair.eyes[1]=pair.source;
+        pair.tracking.serial=300; pair.tracking.generation=3; pair.tracking.spaceEpoch=7;
+        pair.rendererEpoch=1; pair.cover={1.8f,1.0f,0.9f}; pair.mono=true;
+        check(cache.Begin(pair,key),"mono Classic frame begins");
+        paint(0xff708090);
+        check(cache.Capture(key,0,context.Get(),source.Get(),d)&&cache.Finish(key),
+            "one capture completes a mono frame");
+        borrowed=cache.AcquireCompleted(key,context.Get(),complete);
+        check(borrowed&&complete.monoEye==0&&complete.eyes[0]&&complete.eyes[0]==complete.eyes[1]&&
+            !complete.depthViews[0]&&!complete.depthViews[1],"the mono picture is handed out for both eyes");
+        if (borrowed)
+        {
+            check(Pixels(device.Get(),context.Get(),complete.eyes[1],complete.descriptor,0xff708090),
+                "both eyes show the one pass");
+            check(cache.ReleaseCompleted(complete.borrowId),"release mono borrow");
+        }
+        pair.mono=false; pair.tracking.serial=301;
+        check(cache.Begin(pair,key),"stereo Classic frame after mono");
+        paint(0xff111111);
+        check(cache.Capture(key,0,context.Get(),source.Get(),d),"stereo left after mono");
+        paint(0xff222222);
+        check(cache.Capture(key,1,context.Get(),source.Get(),d)&&cache.Finish(key),"stereo pair after mono");
+        borrowed=cache.AcquireCompleted(key,context.Get(),complete);
+        check(borrowed&&complete.monoEye==-1&&complete.eyes[0]!=complete.eyes[1],"a pair is two pictures again");
+        if (borrowed)
+        {
+            check(Pixels(device.Get(),context.Get(),complete.eyes[0],complete.descriptor,0xff111111)&&
+                Pixels(device.Get(),context.Get(),complete.eyes[1],complete.descriptor,0xff222222),
+                "each eye of the pair after mono holds its own pass");
+            check(cache.ReleaseCompleted(complete.borrowId),"release pair borrow");
+        }
+        pair.tracking.serial=302;
+        check(cache.Begin(pair,key)&&cache.Capture(key,0,context.Get(),source.Get(),d)&&!cache.Finish(key),
+            "a stereo frame never finishes on one eye");
+    }
     changed=d; changed.SampleDesc.Count=2;
     check(!cache.Prepare(device.Get(),context.Get(),changed,3,3),"MSAA needs a separate verified resolve path");
     check(!cache.Begin(Receipt(107,d.Width,d.Height),key),"failed preparation retains no old admission");

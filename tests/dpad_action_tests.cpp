@@ -16,6 +16,9 @@
 #include <vector>
 
 static bool fixtureNativeRouting=false;
+static bool fixtureNativeCanRoute=false;
+bool NativeVrActions_CanRoute(GameTitle,uint64_t) noexcept
+{ return fixtureNativeCanRoute; }
 bool NativeVrActions_GestureRouting(GameTitle,uint64_t) noexcept
 { return fixtureNativeRouting; }
 
@@ -320,6 +323,10 @@ int main()
         fixtureTitle=static_cast<GameTitle>(title);
         const int index=title-1;
         g_config.manual_reload=g_config.weapon_holsters=true;
+        g_config.dual_wield_shake_reload=false;
+        // The publication below (options 3) is one made with reload and holsters on, the slide gesture on and the
+        // click gesture off; the click gesture is on by default, so the fixture states both.
+        g_config.weapon_holster_slide=true;g_config.weapon_holster_click=false;
         g_padState.weaponTitle=fixtureTitle;g_padState.weaponGeneration=fixtureGeneration;
         g_padState.weaponSpace=1;g_padState.weaponOptions=3;
         g_padState.weaponSampleMs=fixtureNow;g_padState.weaponPulseUntilMs=fixtureNow+120;
@@ -352,6 +359,14 @@ int main()
         g_config.weapon_holster_slide=false;gestureRead(false);g_config.weapon_holster_slide=true;
         g_config.weapon_needler_shake=true;gestureRead(false);g_config.weapon_needler_shake=false;
         ++g_config.weapon_reload_button[index];gestureRead(false);--g_config.weapon_reload_button[index];
+        {
+            // Project Reclaimer: Halo 3's default reload is Right bumper; every other title keeps its setting.
+            g_hostIsProjectReclaimer=true;
+            gestureRead(fixtureTitle!=GameTitle::Halo3);
+            const auto mccReload=g_padState.weaponReloadBinding;
+            g_padState.weaponReloadBinding=0x0200;gestureRead(fixtureTitle==GameTitle::Halo3);
+            g_padState.weaponReloadBinding=mccReload;g_hostIsProjectReclaimer=false;gestureRead(true);
+        }
         g_config.vr_action_mapping=true;
         fixtureNativeBindings[vr_mapping::Reload]=g_padState.weaponReloadBinding;
         fixtureNativeBindings[vr_mapping::SwitchWeapon]=g_padState.weaponSwitchBinding;
@@ -366,6 +381,17 @@ int main()
         g_padState.weaponSwitchBinding=NativeVrActions_GestureBit(vr_mapping::SwitchWeapon);
         gestureRead(true);
         fixtureNativeRouting=false;gestureRead(false);
+        // Gesture-only mode (opt-in) uses verified native routing even with mapping off.
+        g_config.vr_action_mapping=false;g_config.gesture_only_weapon_input=true;
+        fixtureNativeCanRoute=true;gestureRead(true);
+        g_padState.weaponReloadBinding=savedReload;gestureRead(false);
+        g_padState.weaponReloadBinding=NativeVrActions_GestureBit(vr_mapping::Reload);
+        fixtureNativeCanRoute=false;gestureRead(false);
+        // Without the opt-in a routable bridge changes nothing: the plain button route stays.
+        g_config.gesture_only_weapon_input=false;fixtureNativeCanRoute=true;
+        g_padState.weaponReloadBinding=savedReload;g_padState.weaponSwitchBinding=savedSwitch;
+        gestureRead(true);
+        fixtureNativeCanRoute=false;
         g_padState.weaponReloadBinding=savedReload;
         g_padState.weaponSwitchBinding=savedSwitch;
         g_config.vr_action_mapping=false;gestureRead(true);

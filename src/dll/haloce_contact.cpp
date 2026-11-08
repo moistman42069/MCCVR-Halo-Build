@@ -3,8 +3,10 @@
 #include "haloce_controls.h"
 #include "haloce_stereo_core.h"
 #include "haloce_native_bindings.h"
+#include "haloce_unit_control.h"
 #include "contact_melee_queue.h"
 #include "hook_quiescence.h"
+#include "sight_layer.h"
 #include "title_adapter.h"
 #include "vr.h"
 #include "../common/haloce_contact_logic.h"
@@ -373,7 +375,7 @@ void ContactTick(uint32_t unit)
                     packet.publishedAtMs>now||now-packet.publishedAtMs>150||!packet.frame.Valid())
                 { meleeHands[side].Reset();workers[side].seeded=false;continue; }
                 latest=packet;found=true;
-                if (!exclusive_input::Active()&&g_config.physical_melee&&meleeReady.load()&&!meleeFault.load()) ProcessMelee(side,packet.frame);
+                if (!exclusive_input::Active()&&Sight_PhysicalMelee()&&meleeReady.load()&&!meleeFault.load()) ProcessMelee(side,packet.frame);
                 else meleeHands[side].Reset();
             }
             if (found&&g_config.world_collision&&worldReady.load()&&!worldFault.load())
@@ -384,6 +386,118 @@ void ContactTick(uint32_t unit)
     }
     __finally { processing.store(false,std::memory_order_release); }
 }
+// SIGHT (trace-and-reaim, sight_layer.h). The local player's intent ray -- from the rendered centre eye
+// along the controller -- traced with CE's OWN crosshair flags: player_aim_projectile traces its director
+// ray with 0x1000E9 (HCEEK collisions.h: _collision_test_for_projectiles_flags -- structure, media, front
+// faces, ignore invisible, and objects of every type), ignoring the player's unit. It is the query and the
+// thread the physical-melee backend above already uses. The aim path bends its aim through the point.
+//
+// WHAT THE FLAGS HIT (sight_hit_class_logic.h; static read of halo1.dll): bits 0, 3, 5, 6, 7, 20 =
+// front faces, ignore invisible, structure, media, OBJECTS, try-to-keep-location-valid. The objects bit with no
+// type bit is widened to all 12 object types by the collision function itself (0xB91854), so bipeds, vehicles,
+// scenery and machines all stop the ray; the ignored unit is skipped WITH its children (its held weapon). Seven
+// retail call sites pass this same immediate to the collision function -- one of them the seated crosshair test
+// itself (0xB67DA2). Used on foot and in a seat (SightTick below).
+// ADDR-HYGIENE: structural (an engine enum value, HCEEK-named, not an address; decoded and unit-tested in
+// sight_hit_class_logic.h, and the install line states what it hits).
+constexpr uint32_t kSightProjectileFlags=0x1000e9;
+static_assert(sight_hit::HitsUnitsAndVehicles(sight_hit::DecodeTraceFlags(sight_hit::Engine::HaloCE,kSightProjectileFlags)));
+uint8_t GuardedSightTrace(const float* start,const float* displacement,uint32_t unit,
+    CollisionResult& result,bool& faulted) noexcept
+{
+    faulted=false;
+    __try
+    {
+        return reinterpret_cast<CollisionFn>(moduleBase+contract::contact::contact_collision)(
+            kSightProjectileFlags,start,displacement,unit,&result);
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) { faulted=true;return 0; }
+}
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// The type of an object a trace hit (dev: the SIGHT HITS line), through the native accessor's own type mask
+// (bit = type; the lane's Object(handle,1) is "a biped"). -1: the table no longer holds the handle. Guarded.
+int SightObjectType(uint32_t handle) noexcept
+{
+    __try
+    {
+        if (!Object(handle,UINT32_MAX)) return -1;
+        for (int type=0;type<12;++type)
+            if (Object(handle,1u<<type)) return type;
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+    return -1;
+}
+#endif
+// IN A SEAT (seat_converge_logic.h) the same trace runs for the seat's intent ray -- the seat view's
+// rendered eye along the aiming hand, as the seated packet path admits it (HaloCEUnitControl_SeatSight) -- with the
+// vehicle hierarchy's ULTIMATE PARENT in the ignore slot: what CE's own crosshair test passes there (0xB38BA8 at
+// 0xB67D92), and CE skips an ignored object with everything attached to it (the occupants, their weapons, a
+// turret), so the ray starts inside our vehicle and still stops on another vehicle or a biped. `updated`: the
+// biped update's own result; the on-foot ray keeps requiring it, the seat is admitted by its own ownership reads.
+void SightTick(uint32_t unit,bool updated) noexcept
+{
+    constexpr GameTitle kTitle=GameTitle::HaloCE;
+    if (!Current()||Sight_TraceFaulted(kTitle)) return;
+    // Every biped comes through this hook every tick: find the local one through a 100 ms cache.
+    static uint64_t s_localAtMs=0;static uint32_t s_local=UINT32_MAX;
+    const uint64_t now=GetTickCount64();
+    if (!s_localAtMs||now<s_localAtMs||now-s_localAtMs>100)
+    {
+        HaloCELocalPlayerState local{};
+        s_local=HaloCEControls_GetLocalPlayerState(local)&&local.hasControlledUnit?local.unit:UINT32_MAX;
+        s_localAtMs=now;
+    }
+    if (unit==UINT32_MAX||unit!=s_local||!Sight_TraceDue(kTitle,Sight_NowMs())) return;
+    HaloCELocalPlayerState state{};RenderContext context{};
+    Vec3 head{},dir{},eye{};
+    uint32_t ignored=unit,stance=0;
+    bool seated=false;
+    if (updated&&Admitted(unit,state,context))
+    {
+        // The carrier the aim itself uses (ControllerShotDirection): with the persistent support grip detached, the
+        // independent one-hand pose, or the trace measures a ray nothing aims along.
+        const CeSupportInvocation support=CeEvaluateSupportInvocation(
+            VR_SupportGripWiredForTitle(GameTitle::HaloCE),state,
+            context.tracking.controllers.primaryAimSupportDerived);
+        if (support.detach&&!context.tracking.controllers.independentPrimaryAim.valid) return;
+        const ControllerPose& carrier=support.detach?context.tracking.controllers.independentPrimaryAim:
+            context.tracking.controllers.primaryAim;
+        if (!BuildSightGeometry(context.camera,context.tracking,context.reference,
+            carrier,context.unitsPerMeter,context.positional,head,dir,eye)) return;
+    }
+    else
+    {
+        HaloCESeatSight seat{};
+        if (!HaloCEUnitControl_SeatSight(unit,seat)||seat.root==UINT32_MAX||!Current()) return;
+        head={seat.head[0],seat.head[1],seat.head[2]};dir={seat.dir[0],seat.dir[1],seat.dir[2]};
+        ignored=seat.root;stance=seat.key;seated=true;
+    }
+    // A range measured on foot never bends a seat's aim, nor a seat's the walk after it (Sight_SetStance).
+    Sight_SetStance(kTitle,stance);
+    const float length=kSightTraceLengthWu;
+    const float start[3]{head.x+dir.x*kSightTraceSkipWu,head.y+dir.y*kSightTraceSkipWu,head.z+dir.z*kSightTraceSkipWu};
+    const float displacement[3]{dir.x*length,dir.y*length,dir.z*length};
+    CollisionResult result{};bool faulted=false;
+    LARGE_INTEGER q0{},q1{};QueryPerformanceCounter(&q0);
+    const uint8_t returned=GuardedSightTrace(start,displacement,ignored,result,faulted);
+    QueryPerformanceCounter(&q1);
+    if (faulted) { Sight_NoteTraceFault(kTitle);exceptions.fetch_add(1,std::memory_order_relaxed);return; }
+    const bool hit=returned&&std::isfinite(result.fraction)&&result.fraction>=0&&result.fraction<=1;
+    Sight_PublishTrace(kTitle,generation.load(std::memory_order_acquire),hit,
+        hit?kSightTraceSkipWu+result.fraction*length:0.0f,static_cast<uint64_t>(q1.QuadPart-q0.QuadPart));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // SIGHT HITS (dev): what the ray stopped on, by class (CE's result type 3 is an object, its handle at +0x38)
+    // -- after the cost was taken, so the trace's time is its own.
+    {
+        const bool objectHit=hit&&result.type==3&&result.object!=UINT32_MAX;
+        const int type=objectHit?SightObjectType(result.object):-1;
+        Sight_NoteTraceHit(kTitle,sight_hit::ClassifyHit(hit,objectHit,type),type,
+            hit?kSightTraceSkipWu+result.fraction*length:0.0f,seated);
+    }
+#else
+    (void)seated;
+#endif
+}
 __declspec(noinline) uint8_t __fastcall TickHook(uint32_t unit)
 {
     callbacks.fetch_add(1,std::memory_order_acq_rel);uint8_t result{};
@@ -392,6 +506,7 @@ __declspec(noinline) uint8_t __fastcall TickHook(uint32_t unit)
         const auto original=reinterpret_cast<TickFn>(tickHook.original);
         if (original) result=original(unit);
         if (result) ContactTick(unit);
+        SightTick(unit,result!=0);
     }
     __finally { callbacks.fetch_sub(1,std::memory_order_release); }
     return result;
@@ -413,11 +528,11 @@ bool Remove() noexcept
         reinterpret_cast<const void*>(&BreakableHook),reinterpret_cast<const void*>(&BreakableBody),
         reinterpret_cast<const void*>(&HapticEnqueueHook),reinterpret_cast<const void*>(&HapticEnqueueBody),
         reinterpret_cast<const void*>(&HapticUpdateHook),reinterpret_cast<const void*>(&UpdateRecoilEnvelopes),
-        reinterpret_cast<const void*>(&HapticTriggerHook)};
+        reinterpret_cast<const void*>(&HapticTriggerHook),reinterpret_cast<const void*>(&HaloCEContact_TraceSegment)};
     const void* trampolines[]{tickHook.original,nullptr,damageHook.original,nullptr,nullptr,nullptr,
         fanHook.original,nullptr,breakableHook.original,nullptr,hapticEnqueueHook.original,nullptr,
-        hapticUpdateHook.original,nullptr,hapticTriggerHook.original};
-    if (!WaitForNativeDetourQuiescence(functions,trampolines,15,callbacks)) return false;
+        hapticUpdateHook.original,nullptr,hapticTriggerHook.original,nullptr};
+    if (!WaitForNativeDetourQuiescence(functions,trampolines,16,callbacks)) return false;
     for (auto* hook:{&tickHook,&damageHook,&fanHook,&breakableHook,&hapticEnqueueHook,&hapticUpdateHook,&hapticTriggerHook})
     {
         if (hook->target&&MH_RemoveHook(hook->target)!=MH_OK) return false;
@@ -432,6 +547,8 @@ bool Remove() noexcept
 }
 bool Install(uintptr_t base,size_t size,uint32_t gen) noexcept
 {
+    // A new install: forget the last one's trace fault and range before the biped hook can trace.
+    Sight_ResetTitle(GameTitle::HaloCE);
     // Keep the shared simulation/query admission separate from each optional
     // consumer. A missing melee/damage hook must leave world contact usable;
     // a missing world resolver must leave physical melee usable.
@@ -504,12 +621,38 @@ bool Install(uintptr_t base,size_t size,uint32_t gen) noexcept
         } else LOG("CE weapon haptics stock fallback: %s",failure?failure:"native envelope verification");
     }
     installed=true;active=true;
+    // What the sight trace's flags let the intent ray stop on, decoded with CE's own layout.
+    Sight_AnnounceTraceQuery(GameTitle::HaloCE,sight_hit::Engine::HaloCE,kSightProjectileFlags,
+        "the collision test the biped tick hook already calls",
+        "the engine's own projectile flags (HCEEK _collision_test_for_projectiles_flags)",
+        "on foot it ignores the unit (the engine skips the held weapon with it); in a seat the vehicle's ultimate "
+        "parent, as the engine's own crosshair test does (everything attached to it is skipped with it)");
     LOG("CE contact installed: native biped update, world clamp=%d physical melee=%d; 12 stock CE authored weapon envelopes in both renderers, exact custom/Anniversary replacement surfaces unproven",worldReady.load(),meleeReady.load());
     LOG("CE physical melee reach: %.0f cm along speed-qualified physical swing; native first obstruction, exact target/material requery and per-hand retraction retained",kPhysicalMeleeReachMetres*100);
     LOG("CE environment melee: native surface/material path %s; exact BSP/feature revalidation, native authored breakable damage",worldMeleeReady.load()?"installed":"unavailable");
     LOG("CE weapon haptics: %s; exact local firing-damage envelope, native curves, independent hand output; general damage/vehicle rumble unchanged",hapticReady.load()?"installed":"stock fallback");
     return true;
 }
+}
+
+bool HaloCEContact_TraceSegment(const float start[3],const float displacement[3],uint32_t ignore,bool& hit,
+    float& fraction) noexcept
+{
+    constexpr GameTitle kTitle=GameTitle::HaloCE;
+    callbacks.fetch_add(1,std::memory_order_acq_rel);
+    bool traced=false;
+    __try
+    {
+        if (!Current()||Sight_TraceFaulted(kTitle)||!start||!displacement) __leave;
+        CollisionResult result{};bool faulted=false;
+        const uint8_t returned=GuardedSightTrace(start,displacement,ignore,result,faulted);
+        if (faulted) { Sight_NoteTraceFault(kTitle);exceptions.fetch_add(1,std::memory_order_relaxed);__leave; }
+        hit=returned&&std::isfinite(result.fraction)&&result.fraction>=0&&result.fraction<=1;
+        fraction=hit?result.fraction:1.0f;
+        traced=true;
+    }
+    __finally { callbacks.fetch_sub(1,std::memory_order_release); }
+    return traced;
 }
 
 bool HaloCEContact_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActive) noexcept
@@ -525,7 +668,7 @@ bool HaloCEContact_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActive) n
     {
         lastReport=now;
         LOG("CE contact gen=%u armed=%d world=%d/%d melee=%d/%d worldFault=%d meleeFault=%d publish=%llu ticks=%llu queries=%llu contacts=%llu corrections=%llu meleeQueries=%llu meleeContacts=%llu applied=%llu/%llu drops=%llu exceptions=%llu",
-            gen,Current(),g_config.world_collision,worldReady.load(),g_config.physical_melee,meleeReady.load(),worldFault.load(),meleeFault.load(),publications.load(),ticks.load(),
+            gen,Current(),g_config.world_collision,worldReady.load(),Sight_PhysicalMelee(),meleeReady.load(),worldFault.load(),meleeFault.load(),publications.load(),ticks.load(),
             worldQueries.load(),worldContacts.load(),corrections.load(),meleeQueries.load(),meleeContacts.load(),
             meleeApplied[0].load(),meleeApplied[1].load(),dropped.load(),exceptions.load());
         LOG("CE weapon contact stock-envelope=%llu node-only-fallback=%llu graph=%llX; 14 surface probes plus up to 7 node probes for held hand, unknown graph keeps nodes only",
@@ -545,7 +688,7 @@ void HaloCEContact_ApplyPalette(const halo_ce::RenderContext& context,
     callbacks.fetch_add(1,std::memory_order_acq_rel);
     __try
     {
-        if (!Current()||(!g_config.world_collision&&!g_config.physical_melee)) __leave;
+        if (!Current()||(!g_config.world_collision&&!Sight_PhysicalMelee())) __leave;
         HaloCELocalPlayerState state{};
         if (!HaloCEControls_GetLocalPlayerState(state)||state.generation!=context.tracking.generation||
             !state.hasControlledUnit||!state.onFoot||!state.nativePreparesFirstPerson||
@@ -584,7 +727,7 @@ void HaloCEContact_CommitPalette(const halo_ce::RenderContext& context,
     __try
     {
         if (!publication.generation||publication.generation!=context.tracking.generation||
-            !Current()||(!g_config.world_collision&&!g_config.physical_melee)||
+            !Current()||(!g_config.world_collision&&!Sight_PhysicalMelee())||
             !HaloCE_RenderContextCurrent(context)) __leave;
         const uint64_t now=GetTickCount64();
         for (int side=0;side<2;++side)

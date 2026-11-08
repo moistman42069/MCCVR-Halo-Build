@@ -31,8 +31,10 @@ void __fastcall NativeUpload(void*,uint8_t) {
     auto* dst=MapHook(0,2*0x30,&output);std::memset(dst,0x17,2*0x30);
     testReturnAddress=runtime.base+0x2B5538;CommitHook(0,12);testReturnAddress=before;
 }
+void* submitModel=nullptr; // the render model the region routine is handed (a seat's body reads it)
+bool seatGate=true;
 void SubmitBody(void* info) {
-    ++stockSubmit;RegionsHook(nullptr,info);
+    ++stockSubmit;RegionsHook(submitModel,info);
     drawRegionCount=Get<uint32_t>(info);drawHead=Get<int16_t>(info,0x12);
     if(drawRegionCount)UploadHook(info,0);
     if(identityReplace) *reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(info)+0x48)=0xDEAD0004;
@@ -67,6 +69,7 @@ bool NativeSubmitThrows() {
 }
 namespace halo3_avatar_native {
 bool Current() noexcept{return live&&runtime.enabled.load()&&!runtime.faulted.load();}
+bool SeatBodyGate() noexcept{return seatGate&&runtime.enabled.load()&&!runtime.faulted.load();}
 bool Capture(uint32_t unit,void* info,Candidate& out) {
     if(sourceFault){volatile auto ignored=*reinterpret_cast<volatile uint32_t*>(uintptr_t(1));(void)ignored;}
     if(!sourceResult)return false;
@@ -165,5 +168,60 @@ int main() {
         RestoreRegions();Check(std::memcmp(info,body.data(),body.size())==0,"later finally preserves already-restored row");
         VirtualFree(memory,0,MEM_RELEASE);
     }
+    // A SEAT'S BODY (a vehicle camera's "showHeadlessBody"): the avatar is off in a seat; the occupant's own world row is
+    // drawn as the game poses it, without its head, and its first-person legs are left out once that body is drawn.
+    std::array<uint8_t,0xC0> chief{},legs{},unknown{};
+    const auto PutAt=[](std::array<uint8_t,0xC0>& data,size_t at,uint32_t value){std::memcpy(data.data()+at,&value,4);};
+    PutAt(chief,8,0x17121B0D);PutAt(chief,0x30,51);
+    PutAt(legs,8,353376263u);PutAt(legs,0x30,51);
+    PutAt(unknown,8,0x12345678);PutAt(unknown,0x30,51);
+    const auto SeatReset=[] {
+        Reset();pair.active=false;pair.unit=UINT32_MAX;
+        pair.seatBody=true;pair.seatUnit=0xAA000005;pair.seatGeneration=7;seatGate=true;seatMemory={};
+    };
+    SeatReset();
+    Check(ExcludeHook(0,0xAA000005)==0,"a seat's body: the occupant's own world row is produced");
+    Check(ExcludeHook(0,0xBB000005)==1&&ExcludeHook(1,0xAA000005)==1,"nobody else's, and for no other user");
+    testReturnAddress=runtime.base+0x252C79;Check(ExcludeHook(0,0xAA000005)==1,"at no other caller of the predicate");
+    SeatReset();seatGate=false;Check(ExcludeHook(0,0xAA000005)==1,"never outside a VR gameplay frame");
+    SeatReset();pair.seatGeneration=6;Check(ExcludeHook(0,0xAA000005)==1,"never for another hook generation");
+    SeatReset();pair.seatBody=false;Check(ExcludeHook(0,0xAA000005)==1,"never without a camera asking for it");
+    SeatReset();const auto seatRow=body;const uint64_t drawnBefore=runtime.seatDrawn.load();submitModel=chief.data();
+    SubmitAHook(0,body.data(),0,0,0,0);
+    Check(drawRegionCount==6&&drawHead==-1&&body==seatRow,"the seated body is drawn without its head, then restored");
+    Check(runtime.seatDrawn.load()==drawnBefore+1&&submitted[0]==0x17,"counted, and posed by the game itself");
+    submitModel=legs.data();const auto seatLegs=fp;SubmitBHook(0,fp.data(),0,0);
+    Check(drawRegionCount==0&&fp==seatLegs,"its first-person legs are left out once the body is drawn, then restored");
+    SeatReset();submitModel=legs.data();SubmitBHook(0,fp.data(),0,0);
+    Check(drawRegionCount==6,"first-person legs before any seated body is drawn are left as they are");
+    SeatReset();submitModel=unknown.data();const uint64_t refusedBefore=runtime.seatRefused.load();
+    SubmitAHook(0,body.data(),0,0,0,0);
+    Check(drawRegionCount==0&&body==seatRow&&runtime.seatRefused.load()==refusedBefore+1,
+        "a model whose head the mod does not know is not drawn at all");
+    submitModel=legs.data();SubmitBHook(0,fp.data(),0,0);
+    Check(drawRegionCount==6,"and the seat keeps the game's first-person legs");
+    SeatReset();submitModel=chief.data();const auto otherRow=other;SubmitAHook(0,other.data(),0,0,0,0);
+    Check(drawRegionCount==6&&drawHead==2&&other==otherRow,"another unit's body is drawn as the game has it");
+    SeatReset();pair.seatBody=false;submitModel=chief.data();SubmitAHook(0,body.data(),0,0,0,0);
+    Check(drawRegionCount==6&&drawHead==2,"without the camera asking, the seat is stock");
+    SeatReset();submitModel=chief.data();stockThrow=true;
+    Check(NativeSubmitThrows()&&body==seatRow&&!regionScope.info,"a native exception still restores the seated row");
+    // The multiplayer Spartan: eight regions, its helmet the fifth.
+    std::array<uint8_t,0xC0> spartan{};PutAt(spartan,8,0x1708080E);PutAt(spartan,0x30,51);
+    SeatReset();Put(body,0,uint32_t(8));for(unsigned i=0;i<8;++i)Put(body,0xE+2*i,int16_t(i));
+    const auto spartanRow=body;submitModel=spartan.data();SubmitAHook(0,body.data(),0,0,0,0);
+    Check(drawRegionCount==8&&Get<int16_t>(body.data(),0xE+2*4)==4&&body==spartanRow,
+        "the multiplayer Spartan's seated row is restored after its submit");
+    SeatReset();Put(body,0,uint32_t(8));for(unsigned i=0;i<8;++i)Put(body,0xE+2*i,int16_t(i));
+    submitModel=spartan.data();runtime.regions=[](void*,void* info){
+        ++stockRegions;Check(Get<int16_t>(info,0xE+2*4)==4,"the native routine writes the row first");};
+    RegionsHook(spartan.data(),body.data());
+    Check(Get<int16_t>(body.data(),0xE+2*4)==4,"outside a submit nothing is written");
+    regionScope={};regionScope.info=body.data();RegionsHook(spartan.data(),body.data());
+    Check(Get<int16_t>(body.data(),0xE+2*4)==-1&&Get<int16_t>(body.data(),0xE+2*3)==3&&Get<int16_t>(body.data(),0xE+2*5)==5,
+        "inside its submit only its helmet region is left out");
+    RestoreRegions();Check(Get<int16_t>(body.data(),0xE+2*4)==4,"and put back when the submit returns");
+    regionScope={};runtime.regions=NativeRegions;
+    submitModel=nullptr;
     std::printf("H3 avatar runtime: %u checks, %u failures\n",checks,failures);return failures?1:0;
 }

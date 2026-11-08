@@ -31,6 +31,7 @@ struct Runtime {
 uint32_t blockedGeneration{};
 struct ThreadState {
     uint32_t generation{};uint64_t publishedAt{},converterAt{},cancelEpoch{};
+    uint32_t blocked{};
     bool direct{},converted{};
     native_action_button::Counters counters[vr_mapping::Count]{};
     void Reset(uint32_t next) noexcept {
@@ -40,7 +41,7 @@ struct ThreadState {
 } thread_local local;
 bool Current() noexcept {
     return runtime.admitted.load(std::memory_order_acquire) && !runtime.faulted.load(std::memory_order_relaxed) &&
-        g_config.vr_action_mapping && TitleAdapter_GetActiveTitle()==title &&
+        (g_config.vr_action_mapping||Config_GestureOnlyWeaponInput()) && TitleAdapter_GetActiveTitle()==title &&
         TitleAdapter_GetGeneration(title)==runtime.generation;
 }
 __declspec(noinline) bool ReadElapsed(unsigned& value) noexcept {
@@ -54,17 +55,17 @@ void __fastcall ConverterHook(unsigned controller,void* prefs,void* raw,void* ax
     __try {
         reinterpret_cast<Convert>(runtime.original[0])(controller,prefs,raw,axes,look,output);
         const auto now=GetTickCount64();const auto epoch=publication.cancelEpoch.load(std::memory_order_acquire);
-        uint32_t actions=0;bool direct=false;uint64_t publishedAt=0;unsigned elapsed=0;
+        uint32_t actions=0,blocked=0;bool direct=false;uint64_t publishedAt=0;unsigned elapsed=0;
         if(Current() && controller==0 && reinterpret_cast<uintptr_t>(output)==runtime.state &&
-            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(std::memory_order_acquire)) &&
+            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(std::memory_order_acquire),&blocked) &&
             epoch==publication.cancelEpoch.load(std::memory_order_acquire)) {
             if(!ReadElapsed(elapsed)){runtime.faulted=true;local.converted=false;}
             else if(elapsed<=1000){
                 if(local.generation!=runtime.generation)local.Reset(runtime.generation);
                 local.publishedAt=publishedAt;local.converterAt=now;local.cancelEpoch=epoch;
-                local.direct=direct;local.converted=true;
+                local.direct=direct;local.blocked=blocked;local.converted=true;
                 for(unsigned i=0;i<vr_mapping::Count;++i)
-                    native_action_button::Advance(local.counters[i],direct&&(actions&(1u<<i)),elapsed);
+                    native_action_button::Advance(local.counters[i],(direct||(blocked&(1u<<i)))&&(actions&(1u<<i)),elapsed);
                 runtime.converted.fetch_add(1,std::memory_order_relaxed);
             } else local.converted=false;
         } else if(controller==0)local.converted=false;
@@ -76,7 +77,9 @@ __declspec(noinline) bool MergeCopy(void* output) noexcept {
     __try {
         auto* bytes=reinterpret_cast<volatile uint8_t*>(output);
         for(unsigned semantic=0;semantic<vr_mapping::Count;++semantic){
-            const auto& counter=local.counters[semantic];if(!counter.frames)continue;
+            const auto& counter=local.counters[semantic];
+            const bool suppress=(local.blocked&(1u<<semantic))!=0;
+            if(!counter.frames&&!suppress)continue;
             const unsigned action=vr_mapping::NativeAction(title,static_cast<vr_mapping::Action>(semantic));
             if(action>=0x30)continue;
             unsigned ids[3]{action,0xff,0xff};
@@ -84,7 +87,7 @@ __declspec(noinline) bool MergeCopy(void* output) noexcept {
             // primary 0A/16/18; secondary 17/19. Grenade is independently 7.
             if(semantic==vr_mapping::Fire){ids[1]=0x16;ids[2]=0x18;}
             if(semantic==vr_mapping::Grenade){ids[1]=0x17;ids[2]=0x19;}
-            for(const auto id:ids)if(id<0x30 && bytes[id]==0){
+            for(const auto id:ids)if(id<0x30 && (suppress||bytes[id]==0)){
                 bytes[id]=counter.frames;
                 *reinterpret_cast<volatile uint16_t*>(bytes+0x30+id*2)=counter.milliseconds;
             }
@@ -109,7 +112,7 @@ void __fastcall CopierHook(unsigned controller,void* output) {
             publication.generation.load(std::memory_order_acquire)==local.generation &&
             publication.cancelEpoch.load(std::memory_order_acquire)==local.cancelEpoch){
             runtime.readerAt.store(now,std::memory_order_release);
-            if(local.direct){
+            if(local.direct||local.blocked){
                 if(MergeCopy(output))runtime.routed.fetch_add(1,std::memory_order_relaxed);
                 else runtime.faulted=true;
             }
@@ -139,7 +142,9 @@ bool Retire() {
         if(MH_RemoveHook(runtime.target[i])!=MH_OK) return false;
         runtime.target[i]=runtime.original[i]=nullptr;
     }
-    if(runtime.module) FreeLibrary(runtime.module);
+    // The reference goes last, and the unload gate is told after it has gone: a load of this DLL that was waiting for
+    // this teardown may go on, and finds the old image unloaded.
+    if(runtime.module) { const HMODULE held=runtime.module;FreeLibrary(held);HostUnloadGate_Unpin(held); }
     runtime.module=nullptr;runtime.base=runtime.state=runtime.elapsed=0;runtime.generation=0;
     runtime.readerAt.store(0,std::memory_order_release);
     runtime.attempted=false;runtime.faulted=false;
@@ -162,9 +167,16 @@ void Poll() {
         if(!Retire()) return;
         LOG("Native VR action bridge H2: retired faulted optional hooks; transport routing retained");
     }
-    if(runtime.module && (active!=title || generation!=runtime.generation))
+    // THE REFERENCE ON THE GAME DLL IS HELD ONLY WHILE THE TITLE'S CAMERA CORE IS INSTALLED (game.h GameTitleCoreState),
+    // as the first-person seat view's is. Held until another title started, it kept a game's DLL past the game's end:
+    // MCC's reload for its menus took the old image, and the next game of the same title started in a module whose
+    // shutdown had already run (the unload gate's "the old image was STILL LOADED"; Halo 4 crashed on the next start).
+    GameTitleCoreState core{};
+    const bool coreSays=Game_TitleCoreState(title,core);
+    if(runtime.module && (active!=title || generation!=runtime.generation || (coreSays&&!core.installed)))
         if(!Retire()) return;
-    if(active!=title || !generation || generation==blockedGeneration || !g_config.vr_action_mapping) return;
+    if(active!=title || !generation || (coreSays&&!core.installed) || generation==blockedGeneration ||
+        !(g_config.vr_action_mapping||Config_GestureOnlyWeaponInput())) return;
     if(!runtime.attempted) {
         // The preexisting read-only transport resolver must verify the reader
         // before MinHook changes its prologue. Retain that cache so optional
@@ -173,6 +185,10 @@ void Poll() {
         if(!Game_ReadVrActionBindings(fallback,GetTickCount64())) return;
         const auto* descriptor=TitleRegistry_Find(title);
         if(!descriptor || !GetModuleHandleExW(0,descriptor->moduleName,&runtime.module)) return;
+        // MCC's reload of this DLL at the game's end waits for the core's teardown and this lane's.
+        if(coreSays&&core.tearingDown)
+            HostUnloadGate_Pin(runtime.module,core.tearingDown,core.lastFrameMs,descriptor->displayName,
+                               core.lastFrameMs!=nullptr);
         runtime.attempted=true;runtime.base=reinterpret_cast<uintptr_t>(runtime.module);
         runtime.generation=generation;
         uintptr_t base=0;size_t size=0;

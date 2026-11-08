@@ -9,13 +9,16 @@ the wiring rather than in the state machine.
 
 The check is deliberately narrow. It asserts only:
 
-      1. the identifier ``InvalidateAimContinuityLayer(`` occurs exactly ten
-      times in ``src/dll/vr.cpp``: its definition plus exactly nine call sites
+      1. the identifier ``InvalidateAimContinuityLayer(`` occurs exactly eleven
+      times in ``src/dll/vr.cpp``: its definition plus exactly ten call sites
       (EndPreparedFrameWithoutLayers, EnterFrameWaitFatalDrain, the LOCAL
       reference-space change, session EXITING/LOSS_PENDING, instance loss, the
       seam title/generation/epoch change, the seam !applicable branch, the
-      handedness change, and the persistent-support-grip owner break /
-      generation replacement). That owner break normally invalidates prior
+      handedness change, the persistent-support-grip owner break /
+      generation replacement, and the not-first-person two-hand drop - a seat,
+      a turret, a third-person camera, death or a cinematic - which must land
+      on the primary controller with no release blend). That owner
+      break normally invalidates prior
       geometry. The narrowly qualified VS-OFF product-release bridge instead
       preserves an already-presented latch release to raw one-hand aim, but
       never across title/generation identity loss;
@@ -38,7 +41,7 @@ from pathlib import Path
 INVALIDATE = "InvalidateAimContinuityLayer"
 RESET = "ResetAimContinuity"
 ROUTINE_FUNCTION = "ResetPreparedFrame"
-EXPECTED_REFERENCES = 10
+EXPECTED_REFERENCES = 11
 FORBIDDEN_IN_ROUTINE = (INVALIDATE, RESET)
 DEFAULT_SOURCE = (
     Path(__file__).resolve().parent.parent / "src" / "dll" / "vr.cpp"
@@ -117,7 +120,8 @@ def check_source(text: str) -> list[str]:
         lines = ", ".join(str(line_number(text, offset)) for offset in references)
         violations.append(
             f"{INVALIDATE}( occurs {len(references)} times, expected exactly "
-            f"{EXPECTED_REFERENCES} (definition plus 9 call sites); found on "
+            f"{EXPECTED_REFERENCES} (definition plus {EXPECTED_REFERENCES - 1} call "
+            f"sites); found on "
             f"line(s): {lines or 'none'}"
         )
 
@@ -155,6 +159,7 @@ SELF_TEST_CALL_SITES = (
     "seamNotApplicable",
     "handednessChanged",
     "persistentGripOwnerBreak",
+    "seatedTwoHandDrop",
 )
 
 

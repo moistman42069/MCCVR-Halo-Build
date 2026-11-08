@@ -1,10 +1,13 @@
 #include "../src/common/installer_policy.h"
 #include "../src/common/release_update_policy.h"
+#include "../src/common/credits_file.h"
+#include "launcher_credits.generated.h"
 #include "../src/launcher/installer.h"
 #include "../src/launcher/updater.h"
 #include <fstream>
 #include <iostream>
 
+namespace mcc_installer { extern bool g_testGameRunning; }
 using namespace mcc_installer;
 namespace fs = std::filesystem;
 static void Require(bool condition, const char* reason) { if (!condition) throw std::runtime_error(reason); }
@@ -74,6 +77,29 @@ static void Policies() {
     const auto libraries = VdfValues("\"libraryfolders\" { \"0\" { \"path\" \"C:\\\\Steam\" } \"1\" { \"path\" \"D:\\\\Steam Library\" } }", "path");
     Require(libraries.size() == 2 && libraries[1] == "D:\\Steam Library", "Valve library escaping");
     const auto json = R"({"tag_name":"MCC_VR_ALPHA_0.6.0","draft":false,"prerelease":false,"assets":[{"name":"HaloMCCVR-abcdef0-Build.zip","browser_download_url":"https://github.com/moistman42069/MCCVR-Halo-Build/releases/download/0.6/build.zip","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":100},{"name":"source.zip","size":99}]})";
+    Require(NewestPublished({"2026-10-01T00:00:00Z", "2026-11-02T18:05:54Z", "2026-11-02T18:05:53Z"}) == 1, "the newest date wins across repositories");
+    Require(NewestPublished({"2026-11-02T00:00:00Z", "2026-11-02T00:00:00Z"}) == 0, "a tie stays with the earlier repository");
+    Require(NewestPublished({"", "2026-11-02T00:00:00Z", "not a date"}) == 1, "a repository with no date is passed over");
+    Require(NewestPublished({"", ""}) == std::string::npos, "no dates, no choice");
+    {
+        const auto credits = ParseCredits(L"\xFEFF# a comment: skipped\r\nwhat: nobody to credit yet\r\n\r\nname: First\r\nwhat: Did: this\r\nlink: Ko-fi https://example.com\r\n\nname:   Second  \nname:\nnot a key\n");
+        Require(credits.size() == 2, "each named person is listed");
+        Require(credits[0].name == L"First" && credits[0].what == L"Did: this", "a person and what they did, colons and all");
+        Require(credits[1].name == L"Second" && credits[1].what.empty(), "a person with no description");
+        Require(ParseCredits(L"").empty(), "no file, no list");
+        const auto builtIn = ParseCredits(std::wstring(std::begin(menu_assets::credits), std::end(menu_assets::credits)));
+        Require(builtIn.size() > 10 && builtIn[0].name.empty() && std::any_of(builtIn.begin(), builtIn.end(), [](const CreditEntry& person) { return person.name == L"Pancreations" && person.links.size() == 2; }), "the launcher carries a readable copy of the credits");
+        const auto intro = ParseCredits(L"intro: One.\nintro: Two: more.\nwhat: not for the intro\nname: A\n");
+        Require(intro.size() == 3 && intro[0].name.empty() && intro[0].what == L"One." && intro[1].what == L"not for the intro" && intro[2].name == L"A", "intro lines are paragraphs with no name");
+        Require(credits[0].links.size() == 1 && credits[0].links[0].label == L"Ko-fi" && credits[0].links[0].url == L"https://example.com", "a link is a label and an address");
+        const auto links = ParseCredits(L"link: Nobody https://example.com\nname: A\nlink: Two Words https://a.example/x?y=1&z=%20\nlink: Plain http://a.example\nlink: Script javascript:alert(1)\nlink: https://a.example\nlink: Quote https://a.example/\"x\nlink: Slash https://a.example\\x\n");
+        Require(links.size() == 1 && links[0].links.size() == 1 && links[0].links[0].label == L"Two Words" && links[0].links[0].url == L"https://a.example/x?y=1&z=%20", "only labelled https addresses are links");
+        const auto sections = ParseCredits(L"name: A\nsection: Also\nname: B\nname: C\n");
+        Require(sections.size() == 3 && sections[0].section.empty() && sections[1].section == L"Also" && sections[2].section.empty(), "a section heads the next person only");
+    }
+    Require(InstalledText(L"Nitsujack", L"nitsujack-reclaimer-5", L"2026-11-01", L"RC-fd42f87", L"2026-10-31") == L"Installed:  Repository: Nitsujack  |  Release: nitsujack-reclaimer-5  |  Build: RC-fd42f87  |  Published: 2026-11-01", "an updated build names its release and when it was published");
+    Require(InstalledText(L"Nitsujack", L"", L"", L"RC-983a98e", L"2026-11-02") == L"Installed:  Repository: Nitsujack  |  Release: not recorded  |  Build: RC-983a98e  |  Built: 2026-11-02", "a build from elsewhere says what it knows");
+    Require(InstalledText(L"", L"", L"", L"RC-983a98e", L"") == L"Installed:  Release: not recorded  |  Build: RC-983a98e", "an older package has no repository or date");
     const auto release = ParseReleaseUpdate(json);
     Require(release.bytes == 100 && release.tag == "MCC_VR_ALPHA_0.6.0", "release parser chooses player ZIP");
     for (const auto input : {R"({"tag_name":"x","draft":false,"prerelease":false,"assets":[]})", R"({"a":1,"a":2})", R"([1,])", R"({"a":"\uD800"})", R"({"a":01})"}) {
@@ -81,6 +107,60 @@ static void Policies() {
     }
     auto badDigest = std::string(json); badDigest.replace(badDigest.find("sha256:"), 7, "sha512:");
     bool threw = false; try { ParseReleaseUpdate(badDigest); } catch (...) { threw = true; } Require(threw, "unknown digest rejected");
+    {
+        const std::string digestOk(64, 'a');
+        const auto asset = [&](const std::string& owner, const std::string& name) {
+            return "{\"name\":\"" + name + "\",\"browser_download_url\":\"https://github.com/" + owner +
+                "/MCCVR-Halo-Build/releases/download/t/" + name + "\",\"digest\":\"sha256:" + digestOk + "\",\"size\":1024}";
+        };
+        const auto release = [](const std::string& tag, bool pre, const std::string& assets) {
+            return "{\"draft\":false,\"prerelease\":" + std::string(pre ? "true" : "false") + ",\"tag_name\":\"" + tag + "\",\"assets\":[" + assets + "]}";
+        };
+        const auto& nitsujack = kReleaseChannels[ReleaseChannelIndex("nitsujack")];
+        const auto& godoy = kReleaseChannels[ReleaseChannelIndex("godoy")];
+        const auto& official = kReleaseChannels[ReleaseChannelIndex("official")];
+        Require(ReleaseChannelIndex("unknown") == ReleaseChannelIndex("official") && ReleaseChannelIndex("") == ReleaseChannelIndex("official"),
+            "a package with no known channel starts on the official source");
+        Require(TroubleshootingPage(official, true) == L"https://github.com/moistman42069/MCCVR-Halo-Build/blob/HEAD/TROUBLESHOOTING.md",
+            "a launcher's repository with its own troubleshooting page opens that page");
+        Require(TroubleshootingPage(godoy, false) == kFallbackTroubleshootingPage, "a repository with no troubleshooting page falls back to Nitsujack's");
+        Require(!AsksForTroubleshootingPage(nitsujack) && TroubleshootingPage(nitsujack, true) == kFallbackTroubleshootingPage,
+            "Nitsujack's launcher opens Nitsujack's page without asking GitHub");
+        const std::string ours = "[" + release("nitsujack-reclaimer-5", true,
+            asset("MOTYSHIZ", "Halo-MCC-VR-reclaimer-5-Launcher.zip") + "," + asset("MOTYSHIZ", "Halo-MCC-VR-reclaimer-5-Manual.zip") + "," +
+            asset("MOTYSHIZ", "Halo-MCC-VR-reclaimer-5-Source.zip")) + "]";
+        const auto newest = ParseNewestRelease(ours, nitsujack);
+        Require(newest.tag == "nitsujack-reclaimer-5" && newest.assetName == "Halo-MCC-VR-reclaimer-5-Launcher.zip", "a prerelease's launcher ZIP is the one chosen");
+        {
+            const std::vector<ReleaseUpdate> listed{{"new"}, {"old"}};
+            Require(ReplacesOpenedLauncher(listed, listed[0], "nitsujack", "nitsujack"), "the newest release of the launcher's own repository replaces it");
+            Require(!ReplacesOpenedLauncher(listed, listed[1], "nitsujack", "nitsujack"), "an older release leaves the opened launcher alone");
+            Require(!ReplacesOpenedLauncher(listed, listed[0], "official", "nitsujack"), "another repository's release leaves the opened launcher alone");
+            Require(!ReplacesOpenedLauncher({}, listed[0], "nitsujack", "nitsujack"), "nothing listed, nothing replaced");
+        }
+        const std::string withStandalone = "[" + release("r", true, asset("MOTYSHIZ", "Halo-MCC-VR-r-Launcher.zip") + "," + asset("MOTYSHIZ", "Halo-MCC-VR-r-Standalone-Launcher.zip") + "," + asset("MOTYSHIZ", "Halo-MCC-VR-r-Standalone.zip")) + "]";
+        Require(ParseNewestRelease(withStandalone, kReleaseChannels[1]).assetName == "Halo-MCC-VR-r-Launcher.zip", "the launcher on its own is never the update");
+        const std::string theirs = "[" + release("godoy-test-1", false, asset("Godoy301", "Halo-MCC-VR-godoy-test-1-Launcher.zip.zip")) + "]";
+        Require(ParseNewestRelease(theirs, godoy).assetName == "Halo-MCC-VR-godoy-test-1-Launcher.zip.zip", "a double-extension launcher ZIP is accepted");
+        const std::string skips = "[" + release("newest", true, asset("MOTYSHIZ", "Halo-MCC-VR-x-Source.zip")) + "," +
+            release("older", true, asset("MOTYSHIZ", "Halo-MCC-VR-y-Launcher.zip")) + "]";
+        Require(ParseNewestRelease(skips, nitsujack).tag == "older", "a release with nothing to install is passed over");
+        const std::string several = "[" + release("first", true, asset("MOTYSHIZ", "Halo-MCC-VR-a-Launcher.zip")) + "," +
+            release("second", true, asset("MOTYSHIZ", "Halo-MCC-VR-b-Source.zip")) + "," +
+            release("third", false, asset("MOTYSHIZ", "Halo-MCC-VR-c-Launcher.zip")) + "]";
+        const auto listed = ParseReleaseList(several, nitsujack);
+        Require(listed.size() == 2 && listed[0].tag == "first" && listed[1].tag == "third", "the version list keeps every installable release");
+        std::string dated = "[" + release("older", true, asset("MOTYSHIZ", "Halo-MCC-VR-a-Launcher.zip")) + "," + release("newer", true, asset("MOTYSHIZ", "Halo-MCC-VR-b-Launcher.zip")) + "]";
+        dated.insert(dated.find("\"tag_name\":\"older\""), "\"published_at\":\"2026-01-01T00:00:00Z\",");
+        dated.insert(dated.find("\"tag_name\":\"newer\""), "\"published_at\":\"2026-02-01T00:00:00Z\",");
+        Require(ParseReleaseList(dated, nitsujack).front().tag == "newer", "the version list is newest first by date");
+        threw = false; try { ParseNewestRelease(ours, godoy); } catch (...) { threw = true; }
+        Require(threw, "one source's list can't supply another's download");
+        threw = false; try { ParseReleaseUpdate(release("x", true, asset("moistman42069", "Halo-MCC-VR.zip")), official); } catch (...) { threw = true; }
+        Require(threw, "the official source still takes stable releases only");
+        threw = false; try { ParseNewestRelease("{}", nitsujack); } catch (...) { threw = true; }
+        Require(threw, "a list that is not a list is refused");
+    }
     auto foreign = std::string(json); foreign.replace(foreign.find("github.com/moistman42069"), 22, "github.com/another-user");
     threw = false; try { ParseReleaseUpdate(foreign); } catch (...) { threw = true; } Require(threw, "foreign release URL rejected");
 }
@@ -123,6 +203,13 @@ int wmain(int argc,wchar_t** argv) {
         Policies();
         sandbox = fs::temp_directory_path() / (L"HaloMCCVR-installer-test-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
         Require(!fs::exists(sandbox), "unique synthetic fixture directory");
+        if(argc==4&&std::wstring(argv[1])==L"--install-over-self") {
+            GameInstall game;
+            if(!ProbeInstall(argv[3],game)) return 2;
+            const auto installed=InstallPayload(argv[2],game,true);
+            if(!installed.success) std::wcerr<<installed.message<<std::endl;
+            return installed.success?0:1;
+        }
         if(argc==3&&std::wstring(argv[1])==L"--verify-payload") {
             VerifyPackagedPayload(fs::path(argv[2]),sandbox);
             Require(fs::equivalent(sandbox.parent_path(),fs::temp_directory_path())&&sandbox.filename().wstring().starts_with(L"HaloMCCVR-installer-test-"),"owned packaged fixture cleanup");
@@ -136,17 +223,18 @@ int wmain(int argc,wchar_t** argv) {
         Write(store / "MicrosoftGame.config", "fixture");
         GameInstall game, xbox;
         Require(ProbeInstall(steam, game) && !game.store, "Steam layout detection");
-        Require(ProbeInstall(store.parent_path(), xbox) && xbox.store && xbox.root == store, "Xbox Content layout detection");
+        Require(ProbeInstall(store.parent_path(), xbox) && xbox.store && fs::equivalent(xbox.root, store), "Xbox Content layout detection");
         GameInstall nested;
-        Require(ProbeInstall(steam / "MCC/Binaries/Win64", nested) && nested.root == steam, "browse a child folder");
+        Require(ProbeInstall(steam / "MCC/Binaries/Win64", nested) && fs::equivalent(nested.root, steam), "browse a child folder");
         for(const auto& gameRoot:{steam,store}) {
             for(const auto& browse:{gameRoot,gameRoot/"MCC",gameRoot/"MCC/Binaries",gameRoot/"MCC/Binaries/Win64",
                 gameRoot/"Halo_MCC_VR",gameRoot/"Halo_MCC_VR/ModFiles"}) {
                 GameInstall resolved;
-                Require(ProbeInstall(browse,resolved)&&resolved.root==gameRoot,
+                Require(ProbeInstall(browse,resolved)&&fs::equivalent(resolved.root, gameRoot),
                     "root/bin/already-installed-folder browsing always resolves to actual game root");
-                Require((resolved.root/"Halo_MCC_VR").parent_path()==gameRoot,
-                    "VR destination is a direct child of game root for either edition");
+                const auto vrTarget = (resolved.root / L"Halo_MCC_VR").lexically_normal();
+                Require(vrTarget.parent_path() == resolved.root.lexically_normal(),
+                    "VR destination is a direct child of the normalized game root for either edition");
             }
         }
         Write(source / "HaloMCCVR.dll", "new DLL fixture"); Write(source.parent_path() / "HaloMCCVRLauncher.exe", "new launcher fixture");
@@ -158,6 +246,10 @@ int wmain(int argc,wchar_t** argv) {
         Require(!missingLauncher.success && !fs::exists(steam / "Halo_MCC_VR"),
             "separated payload without its launcher package root fails before any install write");
         Write(launcherPath, launcherBytes);
+        g_testGameRunning = true;
+        auto running = InstallPayload(source, game, true);
+        g_testGameRunning = false;
+        Require(!running.success && !fs::exists(steam / "Halo_MCC_VR"), "a running MCC refuses the install before any write");
         auto first = InstallPayload(source, game, true);
         if (!first.success) std::wcerr << L"Synthetic installer result: " << first.message << L'\n';
         Require(first.success, "first synthetic install");
@@ -216,6 +308,78 @@ int wmain(int argc,wchar_t** argv) {
         Require(legacyInstall.success && Read(store / "Halo_MCC_VR/HaloMCCVRLauncher.exe") == "legacy launcher fixture",
             "new installer remains compatible with an old launcher-in-payload package");
         // This test owns only its unique directory directly under temp.
+        {
+            const auto fresh = sandbox / "fresh", freshPayload = fresh / "ModFiles", installedLauncher = fresh / "installed.exe";
+            for (const auto name : {"HaloMCCVR.dll", "halomccvr.cfg", "LICENSE", "assets/fixture.txt"}) Write(freshPayload / name, "new");
+            Manifest(freshPayload);
+            Write(installedLauncher, "new launcher");
+            std::wstring problem;
+            const auto plain = sandbox / "copies" / "plain" / "HaloMCCVRLauncher.exe";
+            Write(plain, "old launcher");
+            Require(RefreshLauncherCopy(installedLauncher, freshPayload, plain, problem) && Read(plain) == "new launcher", "a plain copy of the launcher updates where it is");
+            Require(Read(plain.parent_path() / "HaloMCCVRLauncher.previous.exe") == "old launcher", "the launcher it replaces is kept as a way back");
+            Require(!fs::exists(plain.parent_path() / "ModFiles") && std::distance(fs::directory_iterator(plain.parent_path()), fs::directory_iterator{}) == 2, "a plain copy gains nothing else");
+            const auto package = sandbox / "copies" / "package" / "HaloMCCVRLauncher.exe", packageMod = package.parent_path() / "ModFiles";
+            const auto oldPackage = [&] { Write(package, "old launcher"); Write(packageMod / "INSTALL-MANIFEST.sha256", "old"); Write(packageMod / "old.txt", "old"); };
+            oldPackage();
+            Require(RefreshLauncherCopy(installedLauncher, freshPayload, package, problem) && Read(package) == "new launcher" && Read(packageMod / "HaloMCCVR.dll") == "new", "a package folder updates as one version");
+            Require(!fs::exists(packageMod / "old.txt") && std::distance(fs::directory_iterator(package.parent_path()), fs::directory_iterator{}) == 3, "a package folder keeps nothing old or temporary but the previous launcher");
+            Require(RefreshLauncherCopy(installedLauncher, freshPayload, installedLauncher, problem) && Read(installedLauncher) == "new launcher", "the installed launcher itself is left alone");
+            problem.clear();
+            Require(!RefreshLauncherCopy(installedLauncher, freshPayload, sandbox / "copies" / "gone" / "HaloMCCVRLauncher.exe", problem) && !problem.empty(), "a launcher no longer there is reported");
+            fs::remove_all(packageMod); fs::remove(package.parent_path() / "HaloMCCVRLauncher.previous.exe"); oldPackage(); problem.clear();
+            Write(freshPayload / "LICENSE", "damaged");
+            Require(!RefreshLauncherCopy(installedLauncher, freshPayload, package, problem) && !problem.empty(), "a damaged payload is refused");
+            Require(Read(package) == "old launcher" && fs::exists(packageMod / "old.txt") && std::distance(fs::directory_iterator(package.parent_path()), fs::directory_iterator{}) == 2, "a refused refresh leaves the folder as it was");
+            Write(freshPayload / "LICENSE", "new"); problem.clear();
+            {
+                std::ifstream held(packageMod / "old.txt"); // a file in use: ModFiles cannot be moved aside
+                Require(!RefreshLauncherCopy(installedLauncher, freshPayload, package, problem) && !problem.empty(), "ModFiles that cannot be replaced are reported");
+            }
+            bool leftovers = false;
+            for (const auto& entry : fs::directory_iterator(package.parent_path()))
+                leftovers = leftovers || entry.path().filename().wstring().find(L".new-") != std::wstring::npos || entry.path().filename().wstring().find(L".old-") != std::wstring::npos;
+            Require(Read(package) == "old launcher" && fs::exists(packageMod / "old.txt") && !leftovers, "the launcher goes back to match ModFiles that could not follow");
+            problem.clear();
+            {
+                std::ifstream held(package); // the launcher in use: it cannot be replaced
+                Require(!RefreshLauncherCopy(installedLauncher, freshPayload, package, problem) && !problem.empty(), "a launcher that cannot be replaced is reported");
+            }
+            Require(Read(package) == "old launcher" && fs::exists(packageMod / "old.txt") && !fs::exists(packageMod / "HaloMCCVR.dll"), "ModFiles stay as they were when the launcher cannot be replaced");
+        }
+        {
+            // AN UPDATE STARTED FROM THE INSTALLED LAUNCHER replaces that launcher while it runs, with no second program:
+            // a copy of this test, run as the installed launcher, installs over its own file. Windows refuses to
+            // overwrite a running program but lets it be renamed, so it steps aside to <name>.old-<suffix>.
+            const auto self = sandbox / "self", selfGame = self / "Steam MCC", selfMod = selfGame / "Halo_MCC_VR";
+            const auto selfSource = self / "package" / "ModFiles";
+            Write(selfGame / "MCC/Binaries/Win64/MCC-Win64-Shipping.exe", "fake game, never executed");
+            wchar_t running[32768]{}; GetModuleFileNameW(nullptr, running, static_cast<DWORD>(std::size(running)));
+            fs::create_directories(selfMod);
+            const auto selfLauncher = selfMod / "HaloMCCVRLauncher.exe";
+            fs::copy_file(running, selfLauncher);
+            Write(selfSource / "HaloMCCVR.dll", "self DLL fixture"); Write(selfSource / "halomccvr.cfg", "config_version=6\n");
+            Write(selfSource / "LICENSE", "license fixture"); Write(selfSource / "assets/fixture.txt", "asset fixture");
+            Write(selfSource.parent_path() / "HaloMCCVRLauncher.exe", "updated self launcher"); Manifest(selfSource);
+            std::wstring command = L"\"" + selfLauncher.wstring() + L"\" --install-over-self \"" + selfSource.wstring() + L"\" \"" +
+                selfGame.wstring() + L"\"";
+            STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
+            Require(CreateProcessW(selfLauncher.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, selfMod.c_str(),
+                                   &startup, &process) != FALSE, "start the installed launcher copy");
+            WaitForSingleObject(process.hProcess, 60000);
+            DWORD code = 99; GetExitCodeProcess(process.hProcess, &code);
+            CloseHandle(process.hThread); CloseHandle(process.hProcess);
+            Require(code == 0, "the running launcher installs an update over its own file");
+            Require(Read(selfLauncher) == "updated self launcher" && Read(selfMod / "HaloMCCVR.dll") == "self DLL fixture",
+                "the installed launcher is the update's after it ran");
+            size_t aside = 0;
+            for (const auto& item : fs::directory_iterator(selfMod))
+                if (item.path().filename().wstring().starts_with(L"HaloMCCVRLauncher.exe.old-")) ++aside;
+            Require(aside == 1, "the launcher that ran stepped aside, once");
+            RemoveSteppedAside(selfMod);
+            for (const auto& item : fs::directory_iterator(selfMod))
+                Require(!item.path().filename().wstring().starts_with(L"HaloMCCVRLauncher.exe.old-"), "a later start removes it");
+        }
         Require(fs::equivalent(sandbox.parent_path(), fs::temp_directory_path()) && sandbox.filename().wstring().starts_with(L"HaloMCCVR-installer-test-"), "safe fixture cleanup boundary");
         fs::remove_all(sandbox);
         std::cout << "Installer policy, release parsing, detection, SHA-256, cfg merge, backup and rollback tests passed.\n";

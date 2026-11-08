@@ -7,6 +7,17 @@
 namespace bloom_override {
 inline constexpr uint32_t kReachConsumer=0x8A9EA430u;
 inline constexpr uint32_t kHalo3OdstConsumer=0x2D28CEF0u;
+// User-supplied ShaderToggler ODST group 2; CRC32 of complete pixel bytecode.
+inline constexpr uint32_t kOdstAutoExposure=3197137760u;
+enum class TogglePass { None, Bloom, AutoExposure };
+inline TogglePass DisabledPass(GameTitle title,uint32_t shader,bool disableBloom,bool disableExposure) noexcept
+{
+    if(disableBloom && ((title==GameTitle::HaloReach && shader==kReachConsumer) ||
+        (title==GameTitle::Halo3ODST && shader==kHalo3OdstConsumer)))return TogglePass::Bloom;
+    if(disableExposure && title==GameTitle::Halo3ODST && shader==kOdstAutoExposure)
+        return TogglePass::AutoExposure;
+    return TogglePass::None;
+}
 inline constexpr uint64_t kCacheBudget=64ull*1024*1024;
 struct View {uint32_t width{},height{},format{},bytesPerPixel{};};
 inline uint32_t Crc32(const void* data,size_t size) noexcept

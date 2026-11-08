@@ -109,6 +109,12 @@ four identical crashes.
   already explained: to locate the homologous function, confirm a layout, or
   check uniqueness before hooking. Never to invent a binding.
 - Never derive bindings from Reclaimer or archived console binaries at all.
+  **One exception (owner's decision, 2026-11-06):** Project Reclaimer 0.10 and
+  later run a recompiled copy of MCC's `halo3.dll`
+  (`docs/RECLAIMER-0.10-ENGINE-EVIDENCE.md`). Its function table and memory may
+  be read only to find **where** the recompiled copy of a function or global
+  already identified in `halo3.dll` sits. What it means, its layout and its
+  behaviour still come from `halo3.dll` and H3EK.
 - Never write a theory into an evidence document as a finding. Ship a probe, or
   write down the negative result.
 
@@ -137,6 +143,22 @@ four identical crashes.
 - Preserve finite-value, bounds, index, count, and teardown guards.
 - `camscan` is opt-in and has process-memory write modes. Never build or run a
   write mode without explicit approval.
+
+## The mod loader (HaloMCCVRInject.exe)
+
+- Microsoft has been asked to clear this exact file as a Windows Defender false
+  positive. A clearance covers one file's exact bytes, so a release with a
+  different injector loses it, and players may see Defender warnings again.
+  `tools/injector-cleared.sha256` holds the cleared file's SHA-256.
+- Its bytes come from `src/injector/`, `src/common/injector_policy.h`, what it
+  uses of `src/common/reclaimer_host_logic.h`, its CMake target (settings,
+  version resource, `1.0.0`) and the compiler. Change these only for a reason
+  the user has agreed to, say so loudly when a change touches them, and keep
+  such a change in its own commit.
+- `tools/package-candidate.ps1` refuses to package a different injector. For an
+  intended change, package with `-AcceptInjectorChange`, say so in that
+  release's notes, submit the new file to Microsoft, and then record its
+  SHA-256 in `tools/injector-cleared.sha256`.
 
 ## Deployment
 
@@ -183,3 +205,22 @@ explicit headset acceptance.
 When a runtime failure is being diagnosed, compare the new log against the
 preserved log in `out/deploy-backups/<hash>-before-<hash>/HaloMCCVR.log`. Do not
 theorize past a log that disagrees.
+
+## Releasing
+
+Before a build is published (a GitHub release, its notes, or a PR that changes
+what players see), check the player-facing documents against that exact build,
+and fix what is wrong in the same release:
+
+- `README.md`, `TROUBLESHOOTING.md`, `src/launcher/README.md` and the release
+  notes.
+- Every setting, button and menu named still exists under that name and path
+  (F1 tab › section › control, launcher buttons), and every default given is
+  the build's own.
+- Every file, log line and config key quoted is one the build writes or reads.
+- Each troubleshooting entry still applies. Reword or drop an entry the build
+  fixes, and add any problem players reported since the last release that has
+  a known workaround.
+- Players open `TROUBLESHOOTING.md` on GitHub from the launcher's
+  Troubleshooting link, not from the ZIP, so push its corrections with the
+  release.

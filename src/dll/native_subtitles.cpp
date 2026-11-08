@@ -48,6 +48,14 @@ std::atomic<uint64_t> g_sequence{0}, g_dropped{0};
 std::shared_ptr<const NativeSubtitleImage> g_image;
 uint64_t g_consumed = 0, g_revision = 0;
 RasterCaption g_lastRasterized{};
+// The notice (NativeNotice_Show): its text under the lock, its image published like a caption's.
+constexpr uint32_t kNoticeCapacity = 256;
+SRWLOCK g_noticeLock = SRWLOCK_INIT;
+wchar_t g_noticeText[kNoticeCapacity]{};
+uint32_t g_noticeLength = 0;
+uint64_t g_noticeExpires = 0, g_noticeSerial = 0;
+uint64_t g_noticeRasterized = 0; // worker
+std::shared_ptr<const NativeSubtitleImage> g_noticeImage;
 
 bool CopyText(const wchar_t* source, Event& event) noexcept {
     if (!source || (reinterpret_cast<uintptr_t>(source) & 1)) return false;
@@ -164,7 +172,8 @@ void InstallHostObserver() {
         static_cast<unsigned long long>(wrapper-base));
 }
 
-std::shared_ptr<const NativeSubtitleImage> Rasterize(const RasterCaption& event) {
+// `largestPx`: the font's largest size; it shrinks from there until the text fits.
+std::shared_ptr<const NativeSubtitleImage> Rasterize(const RasterCaption& event, int largestPx = 66) {
     const wchar_t* normalized=event.text;
     if(!event.length) return {};
     constexpr int w = NativeSubtitleImage::width, h = NativeSubtitleImage::height;
@@ -184,7 +193,7 @@ std::shared_ptr<const NativeSubtitleImage> Rasterize(const RasterCaption& event)
     HFONT font = nullptr;
     HGDIOBJ previousFont = nullptr;
     RECT measured{48,24,w-48,h-24};
-    for (int px = 66; px >= 18; px -= 4) {
+    for (int px = largestPx; px >= 18; px -= 4) {
         font = CreateFontW(-px, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Segoe UI");
@@ -259,6 +268,23 @@ std::shared_ptr<const NativeSubtitleImage> NativeSubtitles_Read() {
     return std::atomic_load_explicit(&g_image,std::memory_order_acquire);
 }
 
+void NativeNotice_Show(const wchar_t* text, float seconds) noexcept {
+    const uint32_t duration = subtitles::DurationMs(seconds);
+    if (!text || !duration) return;
+    AcquireSRWLockExclusive(&g_noticeLock);
+    uint32_t length = 0;
+    while (length + 1 < kNoticeCapacity && text[length]) { g_noticeText[length] = text[length]; ++length; }
+    g_noticeText[length] = 0;
+    g_noticeLength = length;
+    g_noticeExpires = GetTickCount64() + duration;
+    ++g_noticeSerial;
+    ReleaseSRWLockExclusive(&g_noticeLock);
+}
+
+std::shared_ptr<const NativeSubtitleImage> NativeNotice_Read() {
+    return std::atomic_load_explicit(&g_noticeImage,std::memory_order_acquire);
+}
+
 void NativeSubtitles_SetReachSources(uint32_t generation,
     uintptr_t gameplayReturn,uintptr_t theatreReturn) noexcept {
     const SubtitleSource sources[]={{gameplayReturn,0,false},{theatreReturn,0,true}};
@@ -302,6 +328,28 @@ void NativeSubtitles_Poll(bool levelRunning) {
             if(image) g_lastRasterized=caption;
         }
         if(image) std::atomic_store_explicit(&g_image,image,std::memory_order_release);
+    }
+    // The notice: rasterized when its text changes, dropped when it has expired.
+    {
+        RasterCaption notice{};
+        uint64_t serial = 0;
+        AcquireSRWLockShared(&g_noticeLock);
+        serial = g_noticeSerial;
+        notice.length = g_noticeLength;
+        notice.expires = g_noticeExpires;
+        memcpy(notice.text, g_noticeText, sizeof(wchar_t) * (g_noticeLength + 1));
+        ReleaseSRWLockShared(&g_noticeLock);
+        if (!notice.length || now >= notice.expires) {
+            if (NativeNotice_Read())
+                std::atomic_store_explicit(&g_noticeImage,std::shared_ptr<const NativeSubtitleImage>{},
+                    std::memory_order_release);
+        } else if (serial != g_noticeRasterized) {
+            g_noticeRasterized = serial;
+            // Twice a caption's size: a short line, read at a glance while driving.
+            if (auto image = Rasterize(notice, 132))
+                std::atomic_store_explicit(&g_noticeImage,
+                    std::shared_ptr<const NativeSubtitleImage>(std::move(image)),std::memory_order_release);
+        }
     }
     const auto dropped=g_dropped.exchange(0,std::memory_order_relaxed);
     if (dropped) LOG("Native subtitles: bounded queue dropped %llu captions; native UI unchanged",

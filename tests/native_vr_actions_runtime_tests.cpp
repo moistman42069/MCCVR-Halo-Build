@@ -17,12 +17,17 @@ static PRUNTIME_FUNCTION WINAPI MockLookup(DWORD64,PDWORD64,PUNWIND_HISTORY_TABL
 #define FreeLibrary MockFree
 #define _ReturnAddress MockReturnAddress
 #define RtlLookupFunctionEntry MockLookup
+#define HALOMCCVR_LIFTED_SHIM_OFF
 #include "../src/dll/native_vr_actions.cpp"
 #undef GetTickCount64
 #undef GetModuleHandleExW
 #undef FreeLibrary
 #undef _ReturnAddress
 #undef RtlLookupFunctionEntry
+// lifted_engine.h's: no Project Reclaimer 0.10 engine in this test.
+HMODULE lifted::Halo3Module() { return nullptr; }
+bool lifted::Active() { return false; }
+void* lifted::Callable(void* target) { return target; }
 
 Config::Config()=default;
 Config g_config{};
@@ -41,6 +46,19 @@ static unsigned char raw[16]{}, wrongRaw[16]{};
 static void Check(bool value,const char* why) {
     ++checks;if(!value){std::fprintf(stderr,"FAIL: %s\n",why);std::exit(1);}
 }
+static bool supportPickupBlocked=false;
+bool Game_BlockHalo3SupportPickup() noexcept {return supportPickupBlocked;}
+static bool halo3CoreIn=true;
+bool Game_IsHooked() {return halo3CoreIn;}
+// Halo 4's and Halo 2's camera cores as the bridges are told them (game.h GameTitleCoreState): no title says, unless
+// a test does.
+static bool coreSays=false,coreInstalled=false;
+static std::atomic<bool> coreTearingDown{false};
+static unsigned pinned=0,unpinned=0;
+bool Game_TitleCoreState(GameTitle,GameTitleCoreState& out) noexcept
+{out={};if(!coreSays)return false;out.installed=coreInstalled;out.tearingDown=&coreTearingDown;return true;}
+void HostUnloadGate_Pin(HMODULE,std::atomic<bool>*,const std::atomic<uint64_t>*,const char*,bool) {++pinned;}
+void HostUnloadGate_Unpin(HMODULE) {++unpinned;}
 void Logf(const char*,...){}
 bool Game_ReadVrActionBindings(vr_mapping::Transports& out,uint64_t,unsigned){out.fill(0x4000);return fallbackVerified;}
 GameTitle TitleAdapter_GetActiveTitle(){
@@ -64,6 +82,8 @@ static PRUNTIME_FUNCTION WINAPI MockLookup(DWORD64 address,PDWORD64 base,PUNWIND
     if(address==*base+native_odst::consumerBegin)return &odst;
     static RUNTIME_FUNCTION h4{static_cast<DWORD>(native_h4::consumerBegin),static_cast<DWORD>(native_h4::consumerEnd),0};
     if(address==*base+native_h4::consumerBegin)return &h4;
+    static RUNTIME_FUNCTION h4Ability{static_cast<DWORD>(native_h4::abilityBegin),static_cast<DWORD>(native_h4::abilityEnd),0};
+    if(address==*base+native_h4::abilityBegin)return &h4Ability;
     static RUNTIME_FUNCTION h2{static_cast<DWORD>(native_h2::consumerBegin),static_cast<DWORD>(native_h2::consumerEnd),0};
     if(address==*base+native_h2::consumerBegin)return &h2;
     return address==*base+native_ce::consumerRva?&ce:&function;
@@ -86,6 +106,10 @@ uintptr_t Find(uintptr_t base,size_t,const char* pattern){
         if(pattern==native_h4::controllerLoopPattern)return base+native_h4::controllerLoopRva;
         if(pattern==native_h4::consumerEntryPattern)return base+native_h4::consumerBegin;
         if(pattern==native_h4::consumerReloadPattern)return base+native_h4::consumerReloadRva;
+        if(pattern==native_h4::abilityEntryPattern)return base+native_h4::abilityBegin;
+        if(pattern==native_h4::abilitySelectPattern)return base+native_h4::abilitySelectRva;
+        if(pattern==native_h4::abilityEquipmentSitePattern)return base+native_h4::abilityEquipmentSiteRva;
+        if(pattern==native_h4::abilitySprintSitePattern)return base+native_h4::abilitySprintSiteRva;
         const auto& d=kGestureBindings[native_h4::readerIndex];
         if(pattern==d.readerPattern)return base+d.readerRva;
         if(pattern==d.statePattern)return base+d.stateLoadRva;
@@ -102,6 +126,11 @@ uintptr_t Find(uintptr_t base,size_t,const char* pattern){
     if(pattern==native_ce::callerPattern)return base+native_ce::callerProofRva;
     if(pattern==native_h3::converterPattern)return base+native_h3::converterRva;
     if(pattern==native_h3::consumerEntryPattern)return base+native_h3::consumerBegin;
+    if(pattern==native_h3::edgeCallerPattern)return base+0xE4CD7;
+    if(pattern==native_h3::edgeFlagsPattern)return base+0xE7D8B;
+    if(pattern==native_h3::actionEdgesPattern)return base+native_h3::actionEdgesRva;
+    if(pattern==native_h3::localPlayerPattern)return base+native_h3::localPlayerRva;
+    if(pattern==native_h3::secondaryReloadPattern)return base+native_h3::secondaryReloadRva;
     if(pattern==native_h3::consumerReloadPattern)return base+native_h3::consumerReloadRva;
     if(pattern==native_h3::controllerProofPattern)return base+native_h3::controllerProofRva;
     const auto& h3=kGestureBindings[native_h3::readerIndex];
@@ -181,8 +210,12 @@ static void __fastcall OriginalCeConsumer(int user,unsigned controller,float del
         Check(CeState()[8]!=0,"outer VR overlay resumes after nested stock consumer");
     }
 }
+static unsigned h3EdgesCalls=0;
+static uintptr_t __fastcall OriginalH3Edges(uint32_t,void*){++h3EdgesCalls;return 0x1234;}
+static uint32_t __fastcall H3LocalPlayer(int user){return user==0?0xABCD0002:UINT32_MAX;}
 MH_STATUS WINAPI MH_CreateHook(LPVOID target,LPVOID,LPVOID* original){
     ++creates;if(creates==failCreate)return MH_ERROR_UNSUPPORTED_FUNCTION;
+    if(target==image.data()+native_h3::actionEdgesRva){*original=reinterpret_cast<void*>(&OriginalH3Edges);return MH_OK;}
     if(target==image.data()+native_h3::converterRva){*original=reinterpret_cast<void*>(&OriginalH3Convert);return MH_OK;}
     if(target==image.data()+kGestureBindings[native_h3::readerIndex].readerRva){*original=reinterpret_cast<void*>(&OriginalH3Read);return MH_OK;}
     if(target==image.data()+native_odst::converterRva){*original=reinterpret_cast<void*>(&OriginalOdstConvert);return MH_OK;}
@@ -207,19 +240,19 @@ bool WaitForNativeDetourQuiescence(const void* const*,const void* const*,size_t,
 }
 static void* State(){return image.data()+0xF0000;}
 static void ConvertPoll(){ConverterHook(0x12345678,16,raw,image.data()+0xE0000,nullptr,nullptr);}
-static void Poll(uint32_t actions,bool direct){
-    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct);
+static void Poll(uint32_t actions,bool direct,uint32_t blocked=0){
+    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);
     NativeVrActions_EndPoll();ConvertPoll();
 }
 static native_action_button::LaterRecord* ReadAction(vr_mapping::Action action){
-    return static_cast<native_action_button::LaterRecord*>(ReaderHook(State(),vr_mapping::NativeAction(testTitle,action)));
+    return static_cast<native_action_button::LaterRecord*>(ReaderHook(State(),vr_mapping::NativeAction(testTitle,action),reinterpret_cast<uintptr_t>(MockReturnAddress())));
 }
 static void Install(){
     *reinterpret_cast<unsigned*>(image.data()+0xF0000+0x6FC)=0;
     NativeVrActions_Poll();Check(runtime.admitted,"production worker admits unique fixture proofs and both hooks");
 }
-static void CePoll(uint32_t actions,bool direct){
-    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct);
+static void CePoll(uint32_t actions,bool direct,uint32_t blocked=0){
+    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);
     NativeVrActions_EndPoll();native_ce::ConverterHook(0,16,raw,wrongRaw);
 }
 static void CeConsume(unsigned controller=0){native_ce::ConsumerHook(0,controller,.016f,wrongRaw);}
@@ -234,6 +267,12 @@ static void TestCe(){
     Check(native_ce::runtime.admitted,"CE separately admits its own converter/consumer and layout proofs");
     CePoll(1u<<vr_mapping::Fire,false);CeConsume();
     Check(!observedCe[8]&&NativeVrActions_CanRoute(testTitle,clockNow),"CE warmup keeps legacy state and observes owned cadence");
+    CeState()[14]=9;CeState()[3]=7;
+    CePoll(0,false,1u<<vr_mapping::Reload);CeConsume();
+    Check(observedCe[14]==0&&observedCe[3]==7&&CeState()[14]==9,"CE suppresses reload, preserves Use and restores physical history");
+    CePoll(1u<<vr_mapping::Reload,false,1u<<vr_mapping::Reload);CeConsume();
+    Check(observedCe[14]==1&&CeState()[14]==9,"CE gesture bypasses button suppression");
+    CeState()[14]=0;CeState()[3]=0;CePoll(0,false);
     CeState()[0x4C]=0xAB;CeState()[0x5D]=0xCD;
     CePoll(1u<<vr_mapping::Fire,true);CeConsume();
     Check(observedCe[8]==1&&*reinterpret_cast<uint16_t*>(observedCe+0x28)==16,"CE direct fire has native converter frame/ms counters");
@@ -269,15 +308,32 @@ static void TestCe(){
     quiescent=true;NativeVrActions_Poll();Check(!native_ce::runtime.module,"CE optional fault cleans up independently");
     ++testGeneration;creates=0;failCreate=2;NativeVrActions_Poll();
     Check(!native_ce::runtime.module&&!native_ce::runtime.admitted,"CE partial install failure leaves transport fallback");
-    failCreate=0;testTitle=GameTitle::None;
+    // halo1.dll is held only while the Halo CE core is installed: a game's end lets it go in the same title and
+    // generation, and the unload gate is told, so MCC's reload gives the next game a fresh image.
+    failCreate=0;++testGeneration;coreSays=coreInstalled=true;coreTearingDown=false;
+    const unsigned pinnedBefore=pinned;
+    NativeVrActions_Poll();
+    Check(native_ce::runtime.module&&native_ce::runtime.admitted&&pinned==pinnedBefore+1,
+        "CE installs while the core is in, its reference registered with the unload gate");
+    const unsigned freedBefore=frees,unpinnedBefore=unpinned;
+    coreInstalled=false;NativeVrActions_Poll();
+    Check(!native_ce::runtime.module&&frees==freedBefore+1&&unpinned==unpinnedBefore+1,
+        "CE lets go of halo1.dll when the core is out, and tells the unload gate");
+    NativeVrActions_Poll();
+    Check(!native_ce::runtime.module&&frees==freedBefore+1,"CE takes no reference while the core is out");
+    coreInstalled=true;NativeVrActions_Poll();
+    Check(native_ce::runtime.module&&native_ce::runtime.admitted,"CE installs again with the next core");
+    coreSays=false;testTitle=GameTitle::None;NativeVrActions_Poll();
+    Check(!native_ce::runtime.module,"CE lets go when another title is active");
+    failCreate=0;
 }
-static void H3Poll(uint32_t actions,bool direct){
-    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct);
+static void H3Poll(uint32_t actions,bool direct,uint32_t blocked=0){
+    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);
     NativeVrActions_EndPoll();native_h3::ConverterHook(0,16,raw,wrongRaw,nullptr,nullptr);
 }
 static native_action_button::Gen3Record* H3Read(vr_mapping::Action action){
     return static_cast<native_action_button::Gen3Record*>(native_h3::ReaderHook(image.data()+0x100000,
-        native_action_button::ConsumerAction(GameTitle::Halo3,action)));
+        native_action_button::ConsumerAction(GameTitle::Halo3,action),reinterpret_cast<uintptr_t>(MockReturnAddress())));
 }
 static void TestH3(){
     testTitle=GameTitle::Halo3;++testGeneration;creates=0;failCreate=failEnable=0;
@@ -286,6 +342,61 @@ static void TestH3(){
     Check(native_h3::runtime.admitted,"H3 admits independent converter/controller/consumer proofs");
     H3Poll(1u<<vr_mapping::Reload,false);
     Check(H3Read(vr_mapping::Reload)==&h3Physical&&NativeVrActions_CanRoute(testTitle,clockNow),"H3 warmup retains native state before direct routing");
+    // Suppression is semantic, leaves Use alone, and admits gesture pulses.
+    h3Physical.state.frames=9;
+    g_config.vr_action_mapping=false;g_config.manual_reload=true;g_config.gesture_only_weapon_input=true;
+    H3Poll(0,false,1u<<vr_mapping::Reload);
+    Check(H3Read(vr_mapping::Reload)->state.frames==0&&h3Physical.state.frames==9,"manual reload suppresses only the consumed record");
+    Check(H3Read(vr_mapping::Interact)==&h3Physical,"manual reload preserves context interaction");
+    const unsigned secondaryIds[]{4,0x42,0x1F,4};
+    const uintptr_t secondaryCallers[]{0xF6159,0xF6172,0xF61B2,0xF6196};
+    for(unsigned i=0;i<4;++i)
+        Check(native_h3::ReaderHook(image.data()+0x100000,secondaryIds[i],
+            reinterpret_cast<uintptr_t>(image.data())+secondaryCallers[i])==&h3Physical,
+            "manual reload preserves all native dual-pickup alias records");
+    supportPickupBlocked=true;
+    for(unsigned i=0;i<4;++i) {
+        auto* result=static_cast<native_action_button::Gen3Record*>(native_h3::ReaderHook(
+            image.data()+0x100000,secondaryIds[i],reinterpret_cast<uintptr_t>(image.data())+secondaryCallers[i]));
+        Check(result!=&h3Physical&&result->state.frames==0&&h3Physical.state.frames==9,
+            "occupied support hand blocks every pickup alias without modifying native state");
+    }
+    Check(H3Read(vr_mapping::Interact)==&h3Physical,"support grip preserves ordinary interaction");
+    Check(native_h3::ReaderHook(image.data()+0x100000,4,
+        reinterpret_cast<uintptr_t>(image.data())+native_h3::consumerBegin+0x10)==&h3Physical,
+        "occupied support hand does not suppress unrelated readers of the same action");
+    supportPickupBlocked=false;
+    Check(native_h3::ReaderHook(image.data()+0x100000,4,
+        reinterpret_cast<uintptr_t>(image.data())+0xF6159)==&h3Physical,
+        "releasing support grip immediately restores dual pickup");
+    Check(native_h3::runtime.secondaryEdgesReady,"optional H3 edge hook installed");
+    native_h3::runtime.localPlayer=&H3LocalPlayer;
+    alignas(8) uint8_t packet[0x48]{};
+    auto& edgeFlags=*reinterpret_cast<uint32_t*>(packet+0x40);
+    const auto edgeCall=[&](uint32_t player,uintptr_t caller) {
+        const unsigned before=h3EdgesCalls;
+        Check(native_h3::ActionEdgesHook(player,packet,reinterpret_cast<uintptr_t>(image.data())+caller)==0x1234 &&
+            h3EdgesCalls==before+1,"edge hook calls native exactly once and preserves result");
+    };
+    edgeFlags=0xFFFFFFFF;edgeCall(0xABCD0002,0xE4CE4);
+    Check(edgeFlags==0xFFFFFFBF,"only secondary reload pressed bit changes; pickup and held flags survive");
+    edgeFlags=0xFFFFFFFF;edgeCall(0xABCD0003,0xE4CE4);
+    Check(edgeFlags==0xFFFFFFFF,"other player action packet stays native");
+    edgeCall(0xABCD0002,0);Check(edgeFlags==0xFFFFFFFF,"unrelated native caller stays native");
+    native_h3::runtime.secondaryEdgesReady=false;
+    edgeCall(0xABCD0002,0xE4CE4);Check(edgeFlags==0xFFFFFFFF,"optional edge failure preserves pickup and native actions");
+    native_h3::runtime.secondaryEdgesReady=true;
+    H3Poll(1u<<vr_mapping::Reload,false,1u<<vr_mapping::Reload);
+    Check(H3Read(vr_mapping::Reload)->state.frames==1,"manual gesture reload works with mapper disabled");
+    g_config.manual_reload=false;g_config.gesture_only_weapon_input=false;g_config.vr_action_mapping=true;
+    H3Poll(0,false);
+    Check(H3Read(vr_mapping::Reload)==&h3Physical,"disabling manual reload restores native buttons");
+    edgeFlags=0xFFFFFFFF;edgeCall(0xABCD0002,0xE4CE4);
+    Check(edgeFlags==0xFFFFFFFF,"manual reload off restores secondary reload edge");
+    Check(native_h3::ReaderHook(image.data()+0x100000,4,
+        reinterpret_cast<uintptr_t>(image.data())+0xF6159)==&h3Physical,
+        "disabling manual reload restores the secondary button too");
+    h3Physical.state={};
     H3Poll(1u<<vr_mapping::Reload,true);
     auto* reload=H3Read(vr_mapping::Reload);
     Check(reload!=&h3Physical&&reload->action==0x26&&reload->owner==0xff&&reload->state.frames==1&&reload->state.milliseconds==16,
@@ -304,7 +415,7 @@ static void TestH3(){
     h3Physical.state={};mockCallerRva=0;
     Check(H3Read(vr_mapping::Interact)==&h3Physical,"H3 abstraction updater never receives writable virtual record");
     mockCallerRva=native_h3::consumerBegin+0x10;
-    Check(native_h3::ReaderHook(image.data()+0x100518,3)==&h3Physical,"H3 other controller record is untouched");
+    Check(native_h3::ReaderHook(image.data()+0x100518,3,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&h3Physical,"H3 other controller record is untouched");
     NativeVrActions_BeginPoll();NativeVrActions_EndPoll();
     Check(H3Read(vr_mapping::Interact)==&h3Physical,"H3 menu cancellation ends virtual hold immediately");
     NativeVrActions_Publish(raw,testTitle,clockNow,1u<<vr_mapping::Interact,true);
@@ -315,20 +426,33 @@ static void TestH3(){
     Check(H3Read(vr_mapping::Interact)!=&h3Physical,"H3 copied native input route uses proven controller zero");
     clockNow+=151;Check(H3Read(vr_mapping::Interact)==&h3Physical&&!NativeVrActions_CanRoute(testTitle,clockNow),"H3 expired publication falls back");
     H3Poll(1u<<vr_mapping::Fire,true);native_h3::runtime.state=1;
-    Check(native_h3::ReaderHook(reinterpret_cast<void*>(1),8)==&h3Physical&&native_h3::runtime.faulted,"H3 guarded state fault returns native and isolates optional feature");
+    Check(native_h3::ReaderHook(reinterpret_cast<void*>(1),8,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&h3Physical&&native_h3::runtime.faulted,"H3 guarded state fault returns native and isolates optional feature");
     quiescent=false;NativeVrActions_Poll();Check(native_h3::runtime.module&&!native_h3::runtime.admitted,"H3 pending callbacks retain disabled trampolines");
     quiescent=true;NativeVrActions_Poll();Check(!native_h3::runtime.module,"H3 fault retirement frees only after quiescence");
     ++testGeneration;creates=0;failCreate=2;NativeVrActions_Poll();
     Check(!native_h3::runtime.module&&!native_h3::runtime.admitted,"H3 partial hook failure leaves transport fallback");
-    failCreate=0;testTitle=GameTitle::None;
+    // halo3.dll is held only while the Halo 3 core is installed: a level's end lets it go in the same title and
+    // generation, so MCC's reload gives the next game a fresh image.
+    failCreate=0;++testGeneration;NativeVrActions_Poll();
+    Check(native_h3::runtime.module&&native_h3::runtime.admitted,"H3 installs while the core is in");
+    const unsigned freedBefore=frees;
+    halo3CoreIn=false;NativeVrActions_Halo3CoreRetired();
+    Check(!native_h3::runtime.module&&frees==freedBefore+1,"H3 lets go of halo3.dll when the core retires");
+    NativeVrActions_Poll();
+    Check(!native_h3::runtime.module&&frees==freedBefore+1,"H3 takes no reference while the core is out");
+    halo3CoreIn=true;NativeVrActions_Poll();
+    Check(native_h3::runtime.module&&native_h3::runtime.admitted,"H3 installs again with the next core");
+    quiescent=true;testTitle=GameTitle::None;NativeVrActions_Poll();
+    Check(!native_h3::runtime.module,"H3 lets go when another title is active");
+    testTitle=GameTitle::None;
 }
-static void OdstPoll(uint32_t actions,bool direct){
-    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct);
+static void OdstPoll(uint32_t actions,bool direct,uint32_t blocked=0){
+    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);
     NativeVrActions_EndPoll();native_odst::ConverterHook(0,16,raw,wrongRaw,nullptr,nullptr);
 }
 static native_action_button::Gen3Record* OdstRead(vr_mapping::Action action){
     return static_cast<native_action_button::Gen3Record*>(native_odst::ReaderHook(image.data()+0x110000,
-        native_action_button::ConsumerAction(GameTitle::Halo3ODST,action)));
+        native_action_button::ConsumerAction(GameTitle::Halo3ODST,action),reinterpret_cast<uintptr_t>(MockReturnAddress())));
 }
 static void TestOdst(){
     testTitle=GameTitle::Halo3ODST;++testGeneration;creates=0;failCreate=failEnable=0;
@@ -337,6 +461,18 @@ static void TestOdst(){
     Check(native_odst::runtime.admitted,"ODST admits independent converter/controller/consumer proofs");
     OdstPoll(1u<<vr_mapping::Reload,false);
     Check(OdstRead(vr_mapping::Reload)==&odstPhysical&&NativeVrActions_CanRoute(testTitle,clockNow),"ODST warmup retains native state before direct routing");
+    // Suppression is semantic, leaves Use alone, and admits gesture pulses.
+    odstPhysical.state.frames=9;
+    g_config.vr_action_mapping=false;g_config.manual_reload=true;g_config.gesture_only_weapon_input=true;
+    OdstPoll(0,false,1u<<vr_mapping::Reload);
+    Check(OdstRead(vr_mapping::Reload)->state.frames==0&&odstPhysical.state.frames==9,"manual reload suppresses only the consumed record");
+    Check(OdstRead(vr_mapping::Interact)==&odstPhysical,"manual reload preserves context interaction");
+    OdstPoll(1u<<vr_mapping::Reload,false,1u<<vr_mapping::Reload);
+    Check(OdstRead(vr_mapping::Reload)->state.frames==1,"manual gesture reload works with mapper disabled");
+    g_config.manual_reload=false;g_config.gesture_only_weapon_input=false;g_config.vr_action_mapping=true;
+    OdstPoll(0,false);
+    Check(OdstRead(vr_mapping::Reload)==&odstPhysical,"disabling manual reload restores native buttons");
+    odstPhysical.state={};
     OdstPoll(1u<<vr_mapping::Reload,true);
     auto* reload=OdstRead(vr_mapping::Reload);
     Check(reload!=&odstPhysical&&reload->action==0x2A&&reload->owner==0xff&&reload->state.frames==1&&reload->state.milliseconds==16,
@@ -355,7 +491,7 @@ static void TestOdst(){
     odstPhysical.state={};mockCallerRva=0;
     Check(OdstRead(vr_mapping::Interact)==&odstPhysical,"ODST abstraction updater never receives writable virtual record");
     mockCallerRva=native_odst::consumerBegin+0x10;
-    Check(native_odst::ReaderHook(image.data()+0x110558,3)==&odstPhysical,"ODST other controller record is untouched");
+    Check(native_odst::ReaderHook(image.data()+0x110558,3,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&odstPhysical,"ODST other controller record is untouched");
     NativeVrActions_BeginPoll();NativeVrActions_EndPoll();
     Check(OdstRead(vr_mapping::Interact)==&odstPhysical,"ODST menu cancellation ends virtual hold immediately");
     NativeVrActions_Publish(raw,testTitle,clockNow,1u<<vr_mapping::Interact,true);
@@ -366,28 +502,50 @@ static void TestOdst(){
     Check(OdstRead(vr_mapping::Interact)!=&odstPhysical,"ODST copied native input route uses proven controller zero");
     clockNow+=151;Check(OdstRead(vr_mapping::Interact)==&odstPhysical&&!NativeVrActions_CanRoute(testTitle,clockNow),"ODST expired publication falls back");
     OdstPoll(1u<<vr_mapping::Fire,true);native_odst::runtime.state=1;
-    Check(native_odst::ReaderHook(reinterpret_cast<void*>(1),8)==&odstPhysical&&native_odst::runtime.faulted,"ODST guarded state fault returns native and isolates optional feature");
+    Check(native_odst::ReaderHook(reinterpret_cast<void*>(1),8,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&odstPhysical&&native_odst::runtime.faulted,"ODST guarded state fault returns native and isolates optional feature");
     quiescent=false;NativeVrActions_Poll();Check(native_odst::runtime.module&&!native_odst::runtime.admitted,"ODST pending callbacks retain disabled trampolines");
     quiescent=true;NativeVrActions_Poll();Check(!native_odst::runtime.module,"ODST fault retirement frees only after quiescence");
     ++testGeneration;creates=0;failCreate=2;NativeVrActions_Poll();
     Check(!native_odst::runtime.module&&!native_odst::runtime.admitted,"ODST partial hook failure leaves transport fallback");
     failCreate=0;testTitle=GameTitle::None;
 }
-static void H4Poll(uint32_t actions,bool direct){
-    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct);
+static void H4Poll(uint32_t actions,bool direct,uint32_t blocked=0){
+    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);
     NativeVrActions_EndPoll();native_h4::ConverterHook(0x87654321,16,raw,image.data()+0x130000,nullptr,nullptr);
 }
 static native_action_button::LaterRecord* H4Read(vr_mapping::Action action){
     return static_cast<native_action_button::LaterRecord*>(native_h4::ReaderHook(image.data()+0x120000,
-        native_action_button::ConsumerAction(GameTitle::Halo4,action)));
+        native_action_button::ConsumerAction(GameTitle::Halo4,action),reinterpret_cast<uintptr_t>(MockReturnAddress())));
+}
+// The builder's two calls of its ability helper, as the image holds them: each rel32 lands on the helper.
+static void WriteH4AbilityCalls(int32_t skew=0){
+    for(const auto site:{std::pair<uintptr_t,uintptr_t>{native_h4::abilityEquipmentSiteRva,native_h4::abilityEquipmentCallRel},
+                         std::pair<uintptr_t,uintptr_t>{native_h4::abilitySprintSiteRva,native_h4::abilitySprintCallRel}}){
+        const int32_t rel=static_cast<int32_t>(native_h4::abilityBegin)-static_cast<int32_t>(site.first+site.second+4)+skew;
+        std::memcpy(image.data()+site.first+site.second,&rel,sizeof(rel));
+    }
 }
 static void TestH4(){
     testTitle=GameTitle::Halo4;++testGeneration;creates=0;failCreate=failEnable=0;
+    WriteH4AbilityCalls();
     *reinterpret_cast<unsigned*>(image.data()+0x120000+0x7E4)=0;
     NativeVrActions_Poll();mockCallerRva=native_h4::consumerBegin+0x10;
     Check(native_h4::runtime.admitted,"H4 admits independent converter/output-row/consumer proofs");
+    Check(native_h4::runtime.abilityAdmitted,"H4 admits the builder's ability helper once its calls and bounds prove");
     H4Poll(1u<<vr_mapping::Reload,false);
     Check(H4Read(vr_mapping::Reload)==&h4Physical&&NativeVrActions_CanRoute(testTitle,clockNow),"H4 warmup retains native state before direct routing");
+    // Suppression is semantic, leaves Use alone, and admits gesture pulses.
+    h4Physical.state.frames=9;
+    g_config.vr_action_mapping=false;g_config.manual_reload=true;g_config.gesture_only_weapon_input=true;
+    H4Poll(0,false,1u<<vr_mapping::Reload);
+    Check(H4Read(vr_mapping::Reload)->state.frames==0&&h4Physical.state.frames==9,"manual reload suppresses only the consumed record");
+    Check(H4Read(vr_mapping::Interact)==&h4Physical,"manual reload preserves context interaction");
+    H4Poll(1u<<vr_mapping::Reload,false,1u<<vr_mapping::Reload);
+    Check(H4Read(vr_mapping::Reload)->state.frames==1,"manual gesture reload works with mapper disabled");
+    g_config.manual_reload=false;g_config.gesture_only_weapon_input=false;g_config.vr_action_mapping=true;
+    H4Poll(0,false);
+    Check(H4Read(vr_mapping::Reload)==&h4Physical,"disabling manual reload restores native buttons");
+    h4Physical.state={};
     H4Poll(1u<<vr_mapping::Reload,true);
     auto* reload=H4Read(vr_mapping::Reload);
     Check(reload!=&h4Physical&&reload->action==0x31&&reload->owner==0x7f&&reload->state.frames==1&&reload->state.milliseconds==16,
@@ -401,12 +559,22 @@ static void TestH4(){
     Check(reload->state.flags==0&&reload->state.frames==1,"H4 release clears consumed flag before a new press");
     H4Poll(1u<<vr_mapping::Interact,true);
     Check(H4Read(vr_mapping::Interact)!=&h4Physical&&H4Read(vr_mapping::Reload)==&h4Physical,"H4 Use and Reload remain separately bindable");
+    // The armor ability and sprint are read by the builder's helper: its reads take the VR records too, and a
+    // caller past its end does not.
+    H4Poll((1u<<vr_mapping::Equipment)|(1u<<vr_mapping::Sprint),true);
+    mockCallerRva=native_h4::abilityBegin+0x185;
+    Check(H4Read(vr_mapping::Equipment)!=&h4Physical&&H4Read(vr_mapping::Sprint)!=&h4Physical,
+        "H4 the ability helper's reads of the armor ability and sprint take the VR records");
+    mockCallerRva=native_h4::abilityEnd;
+    Check(H4Read(vr_mapping::Equipment)==&h4Physical,"H4 a caller past the ability helper keeps the native record");
+    mockCallerRva=native_h4::consumerBegin+0x10;
+    H4Poll(1u<<vr_mapping::Interact,true);
     h4Physical.state.frames=7;h4Physical.state.amount=.5f;
     Check(H4Read(vr_mapping::Interact)==&h4Physical&&h4Physical.state.amount==.5f,"H4 physical input retains native analog and consumption record");
     h4Physical.state={};mockCallerRva=0;
     Check(H4Read(vr_mapping::Interact)==&h4Physical,"H4 abstraction updater never receives writable virtual record");
     mockCallerRva=native_h4::consumerBegin+0x10;
-    Check(native_h4::ReaderHook(image.data()+0x1207E8,2)==&h4Physical,"H4 other controller record is untouched");
+    Check(native_h4::ReaderHook(image.data()+0x1207E8,2,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&h4Physical,"H4 other controller record is untouched");
     NativeVrActions_BeginPoll();NativeVrActions_EndPoll();
     Check(H4Read(vr_mapping::Interact)==&h4Physical,"H4 menu cancellation ends virtual hold immediately");
     NativeVrActions_Publish(raw,testTitle,clockNow,1u<<vr_mapping::Interact,true);
@@ -417,15 +585,37 @@ static void TestH4(){
     Check(H4Read(vr_mapping::Interact)!=&h4Physical,"H4 copied native input route uses proven output row zero");
     clockNow+=151;Check(H4Read(vr_mapping::Interact)==&h4Physical&&!NativeVrActions_CanRoute(testTitle,clockNow),"H4 expired publication falls back");
     H4Poll(1u<<vr_mapping::Fire,true);native_h4::runtime.state=1;
-    Check(native_h4::ReaderHook(reinterpret_cast<void*>(1),8)==&h4Physical&&native_h4::runtime.faulted,"H4 guarded state fault returns native and isolates optional feature");
+    Check(native_h4::ReaderHook(reinterpret_cast<void*>(1),8,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&h4Physical&&native_h4::runtime.faulted,"H4 guarded state fault returns native and isolates optional feature");
     quiescent=false;NativeVrActions_Poll();Check(native_h4::runtime.module&&!native_h4::runtime.admitted,"H4 pending callbacks retain disabled trampolines");
     quiescent=true;NativeVrActions_Poll();Check(!native_h4::runtime.module,"H4 fault retirement frees only after quiescence");
     ++testGeneration;creates=0;failCreate=2;NativeVrActions_Poll();
     Check(!native_h4::runtime.module&&!native_h4::runtime.admitted,"H4 partial hook failure leaves transport fallback");
-    failCreate=0;testTitle=GameTitle::None;
+    // A helper whose call does not land on it is not admitted; the builder still is.
+    failCreate=0;++testGeneration;WriteH4AbilityCalls(1);NativeVrActions_Poll();
+    mockCallerRva=native_h4::abilityBegin+0x185;
+    Check(native_h4::runtime.admitted&&!native_h4::runtime.abilityAdmitted&&H4Read(vr_mapping::Equipment)==&h4Physical,
+        "H4 an unproven ability helper keeps the game's own record; the builder stays admitted");
+    WriteH4AbilityCalls();mockCallerRva=native_h4::consumerBegin+0x10;
+    // halo4.dll is held only while the Halo 4 core is installed: a game's end lets it go in the same title and
+    // generation, and the unload gate is told, so MCC's reload gives the next game a fresh image.
+    failCreate=0;++testGeneration;coreSays=coreInstalled=true;coreTearingDown=false;
+    const unsigned pinnedBefore=pinned;
+    NativeVrActions_Poll();
+    Check(native_h4::runtime.module&&native_h4::runtime.admitted&&pinned==pinnedBefore+1,
+        "H4 installs while the core is in, its reference registered with the unload gate");
+    const unsigned freedBefore=frees,unpinnedBefore=unpinned;
+    coreInstalled=false;NativeVrActions_Poll();
+    Check(!native_h4::runtime.module&&frees==freedBefore+1&&unpinned==unpinnedBefore+1,
+        "H4 lets go of halo4.dll when the core is out, and tells the unload gate");
+    NativeVrActions_Poll();
+    Check(!native_h4::runtime.module&&frees==freedBefore+1,"H4 takes no reference while the core is out");
+    coreInstalled=true;NativeVrActions_Poll();
+    Check(native_h4::runtime.module&&native_h4::runtime.admitted,"H4 installs again with the next core");
+    coreSays=false;testTitle=GameTitle::None;NativeVrActions_Poll();
+    Check(!native_h4::runtime.module,"H4 lets go when another title is active");
 }
-static void H2Poll(uint32_t actions,bool direct){
-    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct);
+static void H2Poll(uint32_t actions,bool direct,uint32_t blocked=0){
+    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);
     NativeVrActions_EndPoll();native_h2::ConverterHook(0,wrongRaw,raw,nullptr,nullptr,image.data()+0x140000);
 }
 static void H2Copy(){native_h2::CopierHook(0,h2Output);}
@@ -439,6 +629,12 @@ static void TestH2(){
     Check(native_h2::runtime.admitted,"H2 owns unique abstraction/copy/cadence proofs");
     H2Poll(1u<<vr_mapping::Reload,false);H2Copy();
     Check(!h2Output[0x2E]&&NativeVrActions_CanRoute(testTitle,clockNow),"H2 observed owned cadence warms up without injecting");
+    image[0x140000+0x2E]=9;image[0x140000+0x23]=7;image[0x140000+4]=5;
+    H2Poll(0,false,(1u<<vr_mapping::Reload)|(1u<<vr_mapping::SwitchWeapon));H2Copy();
+    Check(h2Output[0x2E]==0&&h2Output[4]==0&&h2Output[0x23]==7&&image[0x140000+0x2E]==9,"H2 private copy suppresses reload/swap but preserves context button and source");
+    H2Poll(1u<<vr_mapping::SwitchWeapon,false,1u<<vr_mapping::SwitchWeapon);H2Copy();
+    Check(h2Output[4]==1,"H2 holster gesture remains available");
+    image[0x140000+0x2E]=image[0x140000+0x23]=image[0x140000+4]=0;H2Poll(0,false);
     H2Poll(1u<<vr_mapping::Reload,true);H2Copy();
     Check(h2Output[0x2E]==1&&*reinterpret_cast<uint16_t*>(h2Output+0x8C)==16&&!h2Output[0x23],"H2 native private copy separates Reload2E from Use23");
     Check(!image[0x140000+0x2E],"H2 global abstraction remains untouched");
@@ -478,6 +674,16 @@ static void TestH2(){
     NativeVrActions_Poll();testTitle=GameTitle::None;
 }
 int main(){
+    const auto blocked=manual_weapon_input::Blocked(true,true,true);
+    Check(!manual_weapon_input::Blocked(false,true,true),"menus never request gameplay suppression");
+    for(unsigned bit=0;bit<18;++bit) {
+        const uint32_t transport=1u<<bit;
+        Check(manual_weapon_input::Gestures(transport,transport,0)==(1u<<vr_mapping::Reload),"gesture reload decodes every native controller transport");
+        Check(manual_weapon_input::Gestures(0,transport,transport)==0,"physical buttons cannot synthesize a gesture exception");
+    }
+    Check(manual_weapon_input::Publish(blocked|(1u<<vr_mapping::Interact),0,blocked)==(1u<<vr_mapping::Interact),"shared-button interaction survives semantic filtering");
+    Check(manual_weapon_input::Publish(blocked,1u<<vr_mapping::SwitchWeapon,blocked)==(1u<<vr_mapping::SwitchWeapon),"holster pulse bypasses only its own policy");
+
     g_config.vr_action_mapping=true;NativeVrActions_Poll();
     Check(creates==0&&!runtime.module,"transport reader must be verified before optional reader prologue is patched");
     fallbackVerified=true;Install();
@@ -495,6 +701,13 @@ int main(){
     ConvertPoll();
     Check(producerReady&&ReadAction(vr_mapping::Grenade)!=&physical,
         "MCC polling thread publishes coherently to a different native converter/reader thread");
+
+    physical.state.frames=9;
+    Poll(0,false,1u<<vr_mapping::Reload);
+    Check(ReadAction(vr_mapping::Reload)->state.frames==0&&physical.state.frames==9,"Reach suppresses manual reload without mutating native record");
+    Poll(1u<<vr_mapping::Reload,false,1u<<vr_mapping::Reload);
+    Check(ReadAction(vr_mapping::Reload)->state.frames==1,"Reach manual gesture survives suppression");
+    physical.state={};Poll(0,false);
 
     vr_mapping::Mapper mapper;vr_mapping::Overrides overrides{};vr_mapping::Transports transports{};
     transports.fill(0x4000); // every native action intentionally aliases X
@@ -564,7 +777,7 @@ int main(){
     ConverterHook(0x12345678,16,wrongRaw,image.data()+0xE0000,nullptr,nullptr);
     Check(ReadAction(vr_mapping::Fire)!=&physical,"MCC copied-input buffer admits only through proven output row zero");
     Poll(1u<<vr_mapping::Fire,true);
-    Check(ReaderHook(image.data()+0xF0700,7)==&physical,"another local controller state stays native");
+    Check(ReaderHook(image.data()+0xF0700,7,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&physical,"another local controller state stays native");
     *reinterpret_cast<unsigned*>(image.data()+0xF0000+0x6FC)=1;
     Check(ReadAction(vr_mapping::Fire)==&physical,"owned-state controller field is verified live");
     *reinterpret_cast<unsigned*>(image.data()+0xF0000+0x6FC)=0;
@@ -584,7 +797,7 @@ int main(){
     Check(!runtime.module&&removes==5&&frees==3,"enable failure also removes created inactive trampoline");
     ++testGeneration;creates=0;failEnable=0;Install();Poll(1u<<vr_mapping::Fire,true);
     runtime.state=1;
-    Check(ReaderHook(reinterpret_cast<void*>(1),7)==&physical&&runtime.faulted,
+    Check(ReaderHook(reinterpret_cast<void*>(1),7,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&physical&&runtime.faulted,
         "Reach guarded state access fault returns native record and marks optional bridge faulted");
     quiescent=false;NativeVrActions_Poll();
     Check(runtime.module&&!runtime.admitted&&removes==5,"failed quiescence retains trampolines with admission closed");

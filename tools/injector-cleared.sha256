@@ -1,0 +1,4 @@
+# HaloMCCVRInject.exe as submitted to Microsoft as a Defender false positive. Microsoft clears a file by its exact
+# bytes, so a release whose injector differs loses that clearance: tools/package-candidate.ps1 refuses to package a
+# different one unless told the change is intended (-AcceptInjectorChange). See AGENTS.md, "The mod loader".
+9E6F8F86404B5025BC8F1C4518A771639ED1A8EB66DEDE3DD412678DF985773F  HaloMCCVRInject.exe

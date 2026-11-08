@@ -12,6 +12,9 @@ std::atomic<bool> classicInstalled{};
 std::atomic<int32_t> ceObservedRenderer{-1};
 std::atomic<uint64_t> ceRendererEpoch{1};
 std::atomic<uint64_t> classicPairs{},classicDrops{},classicStock{},classicOutputs{},classicSourceMiss{};
+// Mono rendering: frames published as one pass, mono frames dropped, the native passes run inside a frame scope
+// (2 a frame in stereo, 1 in mono), and the mono drops the present has not yet reported (HaloCE_TakeMonoDrops).
+std::atomic<uint64_t> classicMonoFrames{},classicMonoDrops{},classicPasses{},classicMonoDropsUnreported{};
 enum class ClassicFailure : uint32_t { None,ScopeChanged,WindowCount,PairChanged,
     PairPreparation,CameraState,Consumer,Source,SourceChanged,OutputShape,IncompletePair };
 std::atomic<ClassicFailure> classicLastFailure{};
@@ -110,6 +113,8 @@ struct ClassicFrameScope
     dlss::CameraSample dlssCamera[2]{};
     halo_ce::Rectangle outputRectangle{};
     ClassicFailure failure{};
+    bool mono{};   // asked for this frame (Tracking::mono): one native pass, captured as eye 0
+    bool aimFrame{};   // the pair is the aim frame's (ClassicAimFrame); its passes are the frame's
     void Fail(ClassicFailure reason) noexcept
     { failed=true; if (failure==ClassicFailure::None) failure=reason; }
 };
@@ -250,6 +255,33 @@ bool ClassicStockFrustum(const Camera& source,std::array<float,99>& frustum) noe
     __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+// AIM FRAME ZOOM (CeAimFrame): while the game is zoomed this frame's pair is the frame's (StageClassicAimFrame), at the
+// window camera's own field of view in the window's shape: one native pass unless 3D, mono rendering or not. Eye 0's
+// window, after the gameplay context is published from the real eyes and before the cache is told what this frame is.
+// The frame's passes draw the game's own HUD layout and crosshair (Game_SetAimFramePass, until the frame scope ends).
+void ClassicAimFrame(ClassicFrameScope& scope,const Window& source) noexcept
+{
+    const Tracking centreTracking=CentreEyeTracking(scope.pair.tracking);
+    Camera centreRender{},centreRaster{};
+    const bool haveCentre=BuildEye(source.render,centreTracking,scope.reference,0,scope.scale,scope.positional,
+            scope.pair.cover,centreRender)&&
+        BuildEye(source.raster,centreTracking,scope.reference,0,scope.scale,scope.positional,
+            scope.pair.cover,centreRaster);
+    const auto& rect=source.raster.viewport;
+    const float shape=static_cast<float>(rect.right-rect.left)/static_cast<float>(rect.bottom-rect.top);
+    AimFrameEyes frame{};
+    if (!CeAimFrame(source.render,centreRender,haveCentre,scope.pair.tracking,scope.reference,scope.scale,
+            scope.positional,shape,frame)) return;
+    if (!StageClassicAimFrame(frame,centreRender,centreRaster,scope.pair))
+    {
+        Game_AimFrameOutcome(GameTitle::HaloCE,true);
+        return;
+    }
+    scope.mono=scope.pair.mono;
+    scope.aimFrame=true;
+    Game_SetAimFramePass(true);
+}
+
 void ClassicWindowBody(Window* window,uintptr_t caller)
 {
     const auto original=reinterpret_cast<ClassicWindowFn>(classicHooks[ClassicPlayerWindow].original);
@@ -282,6 +314,7 @@ void ClassicWindowBody(Window* window,uintptr_t caller)
         FollowRoomscale(source.render,scope->pair.tracking,scope->reference,
             scope->scale,scope->positional,scope->revision);
         ApplyPhysicalCrouchReference(scope->pair.tracking,scope->reference,scope->scale,scope->positional);
+        ApplyVehicleCameraLeash(source.render,scope->pair.tracking,scope->reference,scope->scale,scope->positional);
         publishedReference.Publish({scope->reference,scope->revision});
         const auto stage=StageClassicViewPair(source,scope->pair.tracking,scope->reference,
             scope->epoch,scope->scale,scope->positional,scope->pair);
@@ -292,6 +325,7 @@ void ClassicWindowBody(Window* window,uintptr_t caller)
         if (scope->prepared)
             PublishGameplayContext({scope->pair.tracking,scope->reference,scope->pair.source.render,
                 scope->scale,scope->positional,scope->revision,scope->epoch});
+        if (scope->prepared) ClassicAimFrame(*scope,source);
         if (scope->prepared) scope->capture=cache.Begin(scope->pair,scope->key);
         classicCacheBegan.store(scope->capture,std::memory_order_relaxed);
     }
@@ -413,12 +447,17 @@ void ClassicGameRenderBody(float delta,float interpolation)
     scope.revision=referenceRevision.load();
     if (recenter.exchange(false)||reference.generation!=scope.generation||
         reference.spaceEpoch!=tracking.spaceEpoch)
+    {
         reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,scope.generation};
+        reference.position.y+=VR_RecenterStandingLiftM(GameTitle::HaloCE);   // the standing height, not a caught crouch
+    }
+    ApplySeatHeading(reference);   // before this frame's publication and both eyes
     scope.reference=reference;
     if (scope.revision==referenceRevision.load())
         publishedReference.Publish({reference,scope.revision});
     scope.scale=Game_GetWorldScale(); scope.positional=Game_IsPositionalTracking();
     scope.pair.tracking=tracking;
+    scope.mono=tracking.mono;
     classicFrameScope=&scope;
     bool returned=false;
     __try
@@ -426,11 +465,14 @@ void ClassicGameRenderBody(float delta,float interpolation)
         // AC47C0 is the native render-only path. Each invocation rebuilds its
         // cameras, visibility and output; the game update AB0D10 is not called.
         // Anniversary's full-frame renderer/worker completion is not replayed.
+        // A mono frame is the first call alone: the stock count of render calls.
+        classicPasses.fetch_add(1,std::memory_order_relaxed);
         original(delta,interpolation);
-        if (!scope.failed&&scope.prepared&&scope.capture&&scope.outputs[0]==1&&
+        if (!scope.mono&&!scope.failed&&scope.prepared&&scope.capture&&scope.outputs[0]==1&&
             ClassicScopeCurrent(scope))
         {
             scope.eye=1;
+            classicPasses.fetch_add(1,std::memory_order_relaxed);
             original(delta,interpolation);
         }
         returned=true;
@@ -438,7 +480,7 @@ void ClassicGameRenderBody(float delta,float interpolation)
     __finally
     {
         if (returned&&!scope.failed&&scope.prepared&&scope.capture&&
-            scope.outputs[0]==1&&scope.outputs[1]==1&&ClassicScopeCurrent(scope)&&
+            scope.outputs[0]==1&&(scope.mono||scope.outputs[1]==1)&&ClassicScopeCurrent(scope)&&
             cache.Finish(scope.key))
         {
             completedFrame.Publish({scope.key,scope.revision,GetTickCount64()});
@@ -446,6 +488,8 @@ void ClassicGameRenderBody(float delta,float interpolation)
             captured.fetch_add(1,std::memory_order_relaxed);
             built.fetch_add(1,std::memory_order_relaxed);
             classicPairs.fetch_add(1,std::memory_order_relaxed);
+            if (scope.aimFrame) Game_AimFrameOutcome(GameTitle::HaloCE,false);
+            else if (scope.mono) classicMonoFrames.fetch_add(1,std::memory_order_relaxed);
             classicLastFailure.store(ClassicFailure::None,std::memory_order_relaxed);
         }
         else
@@ -453,9 +497,16 @@ void ClassicGameRenderBody(float delta,float interpolation)
             cache.Drop(scope.key);
             dropped.fetch_add(1,std::memory_order_relaxed);
             classicDrops.fetch_add(1,std::memory_order_relaxed);
+            if (scope.aimFrame) Game_AimFrameOutcome(GameTitle::HaloCE,true);
+            else if (scope.mono)
+            {
+                classicMonoDrops.fetch_add(1,std::memory_order_relaxed);
+                classicMonoDropsUnreported.fetch_add(1,std::memory_order_relaxed);
+            }
             classicLastFailure.store(scope.failure==ClassicFailure::None?
                 ClassicFailure::IncompletePair:scope.failure,std::memory_order_relaxed);
         }
+        if (scope.aimFrame) Game_SetAimFramePass(false);
         classicFrameScope=nullptr;
         preparationBusy.clear(std::memory_order_release);
     }

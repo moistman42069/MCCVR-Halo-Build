@@ -23,10 +23,14 @@ static bool interpolationAvailable=true;
 static uintptr_t vehicleDefinition{},vehicleModel{};
 static uint32_t vehicleDefinitionTag=0x12340001,vehicleModelTag=0x23450002;
 static bool replaceSeatOnTagRead{};
+// The seat camera's tracks (the vehicle cameras' boom): the seat's own, and the game globals' default.
+static uintptr_t seatTrack{},defaultTrack{};
+static uint32_t seatTrackTag=0x34560003,defaultTrackTag=0x45670004;
 static uintptr_t __fastcall VehicleTagService(uint32_t tag)
 {
     if(replaceSeatOnTagRead)*reinterpret_cast<int16_t*>(unitAddress+0x2d0)=1;
-    return tag==vehicleDefinitionTag?vehicleDefinition:tag==vehicleModelTag?vehicleModel:0;
+    return tag==vehicleDefinitionTag?vehicleDefinition:tag==vehicleModelTag?vehicleModel:
+        tag==seatTrackTag?seatTrack:tag==defaultTrackTag?defaultTrack:0;
 }
 static const uint8_t* __fastcall CrouchTagService(uint32_t) {return crouchDefinition;}
 static int __fastcall CrouchUserService(uint32_t unit) {return unit==unitId?0:-1;}
@@ -91,6 +95,8 @@ bool HaloCE_RenderContextCurrent(const halo_ce::RenderContext& value) noexcept
 { return contextCurrent&&value.tracking.generation==testGeneration&&
     value.referenceRevision==gameplay.referenceRevision&&value.rendererEpoch==gameplay.rendererEpoch; }
 void Logf(const char*,...) {}
+// The vehicle cameras' answer for a seat (game.cpp): no chase camera is chosen in this fixture.
+bool Game_HaloCEVehicleCameraFollow(uint32_t,uint32_t,int16_t,bool&) noexcept { return false; }
 bool WaitForNativeDetourQuiescence(const void* const* functions,const void* const* trampolines,
     size_t count,const std::atomic<uint32_t>& pending)
 {
@@ -304,7 +310,7 @@ int main()
     perspective=1;Put(unitAddress+0xd8,vehicleId);Put(unitAddress+0x2d0,int16_t(0));
     Put(vehicleAddress+0xd8,UINT32_MAX);
     Put(vehicleAddress+0x30,halo_ce::Vec3{1,0,0});Put(vehicleAddress+0x3c,halo_ce::Vec3{0,0,1});
-    vehicleViewReady=true;rig.vehicleMotion=true;rig.vehicleViewFollow=true;
+    vehicleViewReady=true;rig.vehicleControls=true;rig.vehicleViewFollow=true;
     rig.turnX=0;++gameplay.tracking.serial;vehicleFollow={};
     TurnDispatch(1,.25f,.5f,moduleBase+0xa99660);
     Check(lastYaw==0&&lastPitch==0&&HaloCEControls_OwnsLookStick(),
@@ -337,12 +343,49 @@ int main()
     rig.vehicleViewFollow=true;++gameplay.tracking.serial;
     TurnDispatch(1,.25f,.5f,moduleBase+0xa99660);
     Check(lastYaw==0,"enabling view-follow cannot replay the off-period rotation");
+    // THE SEAT'S VIEW HEADING (Reference::seatHeading): the production reader on this fixture's seated player
+    // (input user 1: the control record at control + 0x14 + 0x58, its yaw / pitch at +8 / +0xC).
+    {
+        halo_ce::Vec3 heading{9,9,9};
+        Put(control+0x14+0x58+8,1.2f);Put(control+0x14+0x58+0xc,-.3f);
+        Check(HaloCEControls_SeatHeading(3,heading)&&Near(heading.x,std::cos(1.2f))&&
+            Near(heading.y,std::sin(1.2f))&&heading.z==0,
+            "a seated player's view heading is the control record's own yaw, flat");
+        Check(!HaloCEControls_SeatHeading(4,heading),"another title generation gets no seat heading");
+        Put(control+0x14+0x58+8,std::nanf(""));
+        Check(!HaloCEControls_SeatHeading(3,heading),"a non-finite control yaw is no heading");
+        Put(control+0x14+0x58+8,40.0f);
+        Check(!HaloCEControls_SeatHeading(3,heading),"a control yaw outside the game's range is no heading");
+        Put(control+0x14+0x58+8,1.2f);Put(control+0x10+0x58,unitId+1);
+        Check(!HaloCEControls_SeatHeading(3,heading),"a record that is not the local unit's is no heading");
+        Put(control+0x10+0x58,unitId);Put(unitAddress+0xd8,UINT32_MAX);
+        Check(!HaloCEControls_SeatHeading(3,heading),
+            "on foot there is no seat heading: the native camera's heading is the control yaw already");
+        Put(unitAddress+0xd8,vehicleId);
+        Check(HaloCEControls_SeatHeading(3,heading)&&!callbacks.load(),
+            "seated again the heading reads, and no callback lease is left behind");
+    }
+    // AIM FRAME ZOOM: the zoom level is the same control record's own int16 at +0x34, on foot only.
+    {
+        int16_t level=7;
+        Put(control+0x58+0x34,int16_t{1});
+        Check(HaloCEControls_ZoomLevel(3,level)&&level==-1,"in a seat the frame has no zoom level");
+        Put(unitAddress+0xd8,UINT32_MAX);
+        Check(HaloCEControls_ZoomLevel(3,level)&&level==1,"on foot the zoom level is player control's own");
+        Put(control+0x58+0x34,int16_t{-1});
+        Check(HaloCEControls_ZoomLevel(3,level)&&level==-1,"not zoomed reads -1");
+        Check(!HaloCEControls_ZoomLevel(4,level),"another title generation reads no zoom level");
+        Put(control+0x10+0x58,unitId+1);
+        Check(!HaloCEControls_ZoomLevel(3,level),"a record that is not the local unit's reads no zoom level");
+        Put(control+0x10+0x58,unitId);Put(unitAddress+0xd8,vehicleId);
+        Check(!callbacks.load(),"the zoom reader leaves no callback lease behind");
+    }
     for (int reject=0;reject<9;++reject)
     {
         switch(reject)
         {
         case 0:vehicleViewReady=false;break;
-        case 1:rig.vehicleMotion=false;break;
+        case 1:rig.vehicleControls=false;break;
         case 2:Put(unitAddress+0x2d0,int16_t(-1));break;
         case 3:Put(vehicleAddress+0xd8,uint32_t(0x6789000a));break;
         case 4:Put(vehicleAddress+0x30,halo_ce::Vec3{0,0,1});break;
@@ -354,7 +397,7 @@ int main()
         ++gameplay.tracking.serial;TurnDispatch(1,.25f,.5f,moduleBase+0xa99660);
         Check(Near(lastYaw,.25f)&&Near(lastPitch,.5f)&&!HaloCEControls_OwnsLookStick(),
             "unproven, disabled, nested, stale or unreadable vehicle view retains original native input");
-        vehicleViewReady=true;rig.vehicleMotion=true;vehicleAddress=arena+0xc000;
+        vehicleViewReady=true;rig.vehicleControls=true;vehicleAddress=arena+0xc000;
         Put(unitAddress+0x2d0,int16_t(0));Put(unitAddress+0xd8,vehicleId);
         Put(vehicleAddress+0xd8,UINT32_MAX);Put(vehicleAddress+0x30,halo_ce::Vec3{0,1,0});
         Put(vehicleAddress+0x3c,halo_ce::Vec3{0,0,1});contextCurrent=true;
@@ -411,6 +454,60 @@ int main()
     replaceSeatOnTagRead=true;
     Check(!HaloCEControls_ReadVehicleCameraOwner(cameraOwner),"seat change during model read revokes whole owner receipt");
     replaceSeatOnTagRead=false;Put(unitAddress+0x2d0,int16_t(0));
+    {
+        // THE SEAT CAMERA'S TRACK (the vehicle cameras' boom): the seat's camera at +0x84 of its seat in the vehicle
+        // definition's seat block; its look limits; its first track, else the game globals' default; the control
+        // points, at most 32 of them copied. Cache pointers are relocated as the engine relocates them.
+        const intptr_t virtualBase=*reinterpret_cast<const intptr_t*>(moduleBase+halo_ce::vehicle_camera_contract::cacheVirtualBase);
+        const intptr_t mappedBase=*reinterpret_cast<const intptr_t*>(moduleBase+halo_ce::vehicle_camera_contract::cacheMappedBase);
+        const auto cache=[&](uintptr_t host){ return int32_t(intptr_t(host)-mappedBase+virtualBase); };
+        const uintptr_t seats=arena+0xe800,tracks=arena+0xeb00,points=arena+0xec40,defaultPoints=arena+0xee40,
+            defaultReference=arena+0xef80,globalsData=arena+0xf000;
+        seatTrack=arena+0xec00;defaultTrack=arena+0xee00;
+        Put(vehicleDefinition+0x2e4,int32_t(2));Put(vehicleDefinition+0x2e8,cache(seats));
+        const uintptr_t camera0=seats+0x84,camera1=seats+0x11c+0x84;
+        Put(camera0+0x44,-0.5f);Put(camera0+0x48,0.6f);
+        Put(camera0+0x4c,int32_t(1));Put(camera0+0x50,cache(tracks));Put(tracks+0xc,seatTrackTag);
+        Put(camera1+0x4c,int32_t(0));Put(camera1+0x50,int32_t(0));
+        Put(seatTrack+4,int32_t(4));Put(seatTrack+8,cache(points));
+        for (int i=0;i<4;++i)
+        {
+            Put(points+size_t(i)*0x3c,halo_ce::Vec3{-1.0f-float(i),0.25f,0.5f*float(i)});
+            Put(points+size_t(i)*0x3c+0xc,float(0));Put(points+size_t(i)*0x3c+0x18,float(1));
+        }
+        Put(defaultTrack+4,int32_t(5));Put(defaultTrack+8,cache(defaultPoints));
+        for (int i=0;i<5;++i) Put(defaultPoints+size_t(i)*0x3c,halo_ce::Vec3{-2.0f,0,float(i)});
+        Put(defaultReference+0xc,defaultTrackTag);
+        Put(globalsData+0x108,cache(defaultReference));
+        Put(moduleBase+halo_ce::vehicle_camera_contract::globals,globalsData);
+        vehicleCameraFactsReady=true;
+        HaloCEVehicleSeatTrack track{};
+        Check(HaloCEControls_ReadVehicleSeatTrack(testGeneration,vehicleId,0,track)&&track.tracks==1&&
+            !track.defaultTrack&&track.points==4&&track.track.count==4&&Near(track.pitchMin,-0.5f)&&
+            Near(track.pitchMax,0.6f)&&Near(track.track.points[3].position[0],-4.0f)&&
+            Near(track.track.points[3].position[2],1.5f)&&Near(track.track.points[2].orientation[3],1.0f),
+            "a seat's own first track and look limits read through the relocated cache");
+        Check(HaloCEControls_ReadVehicleSeatTrack(testGeneration,vehicleId,1,track)&&track.tracks==0&&
+            track.defaultTrack&&track.points==5&&track.track.count==5&&Near(track.track.points[4].position[2],4.0f),
+            "a seat that lists no track takes the game globals' default");
+        Put(tracks+0xc,UINT32_MAX);
+        Check(HaloCEControls_ReadVehicleSeatTrack(testGeneration,vehicleId,0,track)&&track.tracks==1&&
+            track.defaultTrack&&track.points==5,"a first track that names nothing falls back to the default");
+        Put(tracks+0xc,seatTrackTag);Put(seatTrack+4,int32_t(40));
+        Check(HaloCEControls_ReadVehicleSeatTrack(testGeneration,vehicleId,0,track)&&track.points==40&&
+            track.track.count==0,"a track of more points than are copied is read as none to evaluate");
+        Put(seatTrack+4,int32_t(4));
+        Check(!HaloCEControls_ReadVehicleSeatTrack(testGeneration,vehicleId,2,track)&&
+            !HaloCEControls_ReadVehicleSeatTrack(testGeneration+1,vehicleId,0,track)&&
+            !HaloCEControls_ReadVehicleSeatTrack(testGeneration,vehicleId+1,0,track),
+            "a seat past the block, another generation or another vehicle is not read");
+        Put(moduleBase+halo_ce::vehicle_camera_contract::globals,uintptr_t(0));
+        Check(!HaloCEControls_ReadVehicleSeatTrack(testGeneration,vehicleId,1,track),
+            "a seat with no track of its own and no globals has nothing to read");
+        vehicleCameraFactsReady=false;
+        Check(!HaloCEControls_ReadVehicleSeatTrack(testGeneration,vehicleId,0,track)&&!callbacks.load(),
+            "nothing is read before the contract proves the bindings, and no callback lease is left behind");
+    }
     perspective=0;Put(unitAddress+0xd8,UINT32_MAX);rig.turnX=0;
     TurnDispatch(0,.25f,.5f,moduleBase+0xa99660);
     Check(lastUser==0&&Near(lastYaw,.25f)&&Near(lastPitch,.5f),"another native input user retains both deltas");
@@ -446,8 +543,8 @@ int main()
         "pending callback preserves native dependency pointers while retiring controls");
     callbacks=0;
     Check(Remove()&&!moduleBase&&!retiring.load()&&!stateReady.load()&&!turnReady.load(),
-        "all ten actual compiled retirement ranges resolve and controls finish cleanup after draining");
-    Check(unwindChecks==20&&!unwindFailures,
+        "all fourteen actual compiled retirement ranges resolve and controls finish cleanup after draining");
+    Check(unwindChecks==28&&!unwindFailures,
         "both complete retirement attempts validate every production function's actual unwind metadata");
     // A same-generation camera re-entry can now publish native state again.
     // Contract installation remains covered separately by the pinned binding suite.

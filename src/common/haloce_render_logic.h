@@ -121,6 +121,7 @@ struct ControllerRig
     float visualPitchDeg{},visualYawDeg{},visualRollDeg{};
     float supportMountPitchDeg{},supportMountYawDeg{},supportMountRollDeg{};
     float gunForwardM{-0.14f},gunRightM{},gunUpM{};
+    float leftGunForwardM{-.16f},leftGunRightM{-.02f},leftGunUpM{-.05f};
     float supportForwardM{-0.063f};
     float visualLeftHandOffset[3]{},visualRightHandOffset[3]{};
     float shoulderBackM{},primaryShoulderDrop{0.06f};
@@ -128,9 +129,13 @@ struct ControllerRig
     bool turnSmooth{true},controlsPresentationBlocked{true};
     bool vehicleSmoothTurn{};
     bool gunBarrelAim{};
+    // Shots from the muzzle (shots_from_muzzle, and the barrel aim off): the barrel shot keeps the muzzle
+    // origin but flies through the converged point. Its own flag, because gunBarrelAim also moves CE's
+    // continuous target acquisition onto the barrel, which this mode must not.
+    bool muzzleShots{};
     bool roomscaleEnabled{};
     bool physicalRunningEnabled{};
-    bool vehicleMotion{true},vehicleViewFollow{};
+    bool vehicleControls{true},vehicleViewFollow{};
     float turnSnapDeg{30.0f},turnSmoothDegS{120.0f};
 };
 struct HudSettings
@@ -153,6 +158,14 @@ struct Tracking
     HudSettings hud;
     bool motionBlur{};
     bool disableAnniversaryLensFlares{};
+    // MONO RENDERING (mono_view_logic.h): this frame's world is drawn once, from the midpoint of the eyes looking
+    // the way the head looks, and shown to both. Only Classic draws it (StageClassicViewPair); the eyes above stay
+    // the real ones, for everything that is submitted or laid into the picture.
+    bool mono{};
+    // AIM FRAME ZOOM (game.cpp Game_AimFrameForEyes): this frame is the game's zoomed picture along the aim, drawn
+    // instead of the eyes (one pass with `mono`, else a pair), at the half-angle tangents tanX x tanY, to be shown as a
+    // frame widthDeg wide. The renderer that draws it says so; the present shows such a pair as the frame.
+    struct AimFramePicture { bool active{}; float tanX{},tanY{},widthDeg{}; } aimFrame;
 };
 struct Reference
 {
@@ -160,6 +173,19 @@ struct Reference
     Quat orientation;
     uint64_t spaceEpoch{};
     uint32_t generation{};
+    // THE SEAT'S VIEW HEADING (BuildTrackingFrame). On foot the room is mapped into the world through the native
+    // camera's heading, which there IS the player's own control yaw: nothing the mod writes moves it. In a seat the
+    // native camera can take its direction from the unit's or the vehicle's AIM instead (a Warthog gunner's camera
+    // is the gun; a seat's first-person camera runs along the biped's aiming vector) -- and that aim is what the
+    // hand writes. Mapping the hand through a frame that follows the hand's own output turns its offset from
+    // "forward" into a turn RATE: measured in Halo CE's Warthog gunner seat, a hand held 10 deg to one side turns
+    // the gun, the camera and the whole VR view at ~80 deg/s for as long as it is held, and only a hand held
+    // exactly along the frame's forward stands still. So in a seat the frame's heading is the player's control
+    // yaw itself, read from the control record the game's look update owns (HaloCEControls_SeatHeading): the turn
+    // stick and "view follows the vehicle" still move it, the aim does not. Invalid = on foot, or not readable:
+    // the native camera's heading is used.
+    Vec3 seatHeading{};
+    bool seatHeadingValid{};
 };
 struct Cover { float verticalFov{}, halfX{}, halfY{}; };
 
@@ -202,7 +228,15 @@ inline bool BuildTrackingFrame(const Camera& native,const Reference& reference,
     if (!Valid(native)||!Valid(reference.orientation)) return false;
     Vec3 forward{native.forward.x,native.forward.y,0};
     float length=std::sqrt(Dot(forward,forward));
-    if (length<0.0001f)
+    // A seat: the player's own control heading, never a camera that follows the aim (Reference::seatHeading).
+    bool seat=false;
+    if (reference.seatHeadingValid)
+    {
+        const Vec3 heading{reference.seatHeading.x,reference.seatHeading.y,0};
+        const float headingLength=std::sqrt(Dot(heading,heading));
+        if (std::isfinite(headingLength)&&headingLength>=0.0001f) { forward=heading;length=headingLength;seat=true; }
+    }
+    if (!seat&&length<0.0001f)
     {
         // At the native pitch pole its up axis still records the heading.
         const float direction=native.forward.z>=0?-1.0f:1.0f;
@@ -260,6 +294,55 @@ inline bool BuildEye(const Camera& native,const Tracking& tracking,
         Rotate(inverse,delta+tracking.eyes[eye].offset))*unitsPerMeter;
     candidate.forward=ToNative(frame,Rotate(orientation,{0,0,-1}));
     candidate.up=ToNative(frame,Rotate(orientation,{0,1,0}));
+    candidate.verticalFov=cover.verticalFov;
+    if (!Valid(candidate)) return false;
+    out=candidate;
+    return true;
+}
+// AIM FRAME ZOOM (game.cpp Game_AimFrameForEyes). The centre eye mono rendering draws from -- the midpoint of the
+// eyes, looking the way the head looks -- as eye 0 of a copy of `tracking`: the frame is laid along the aim from it.
+inline Tracking CentreEyeTracking(const Tracking& tracking)
+{
+    Tracking centre=tracking;
+    centre.eyes[0].offset=(tracking.eyes[0].offset+tracking.eyes[1].offset)*0.5f;
+    centre.eyes[0].orientation=tracking.headOrientation;
+    return centre;
+}
+// An eye's offset from the head in the head's own axes (OpenXR view axes: +X right, +Y up, -Z forward), as the frame
+// lays it along the aim (aim_frame::EyePosition).
+inline Vec3 EyeOffsetInHead(const Tracking& tracking,int eye)
+{
+    return Rotate(Conjugate(tracking.headOrientation),tracking.eyes[eye].offset);
+}
+// The frame's cameras in the native camera's space: each eye's position, forward and up (eye 0's alone unless
+// `stereo`), the picture's half-angle tangents, and the width it is shown at.
+struct AimFrameEyes
+{
+    Vec3 position[2],forward[2],up[2];
+    float tanX{},tanY{},widthDeg{};
+    bool stereo{};
+};
+// The picture's own angles, as a cover (the eye cache and the present read covers).
+inline bool AimFrameCover(const AimFrameEyes& frame,Cover& out)
+{
+    if (!std::isfinite(frame.tanX)||!std::isfinite(frame.tanY)||frame.tanX<=0||frame.tanY<=0) return false;
+    const Cover candidate{2*std::atan(frame.tanY),std::atan(frame.tanX),std::atan(frame.tanY)};
+    if (candidate.halfX>=1.55f||candidate.halfY>=1.55f) return false;
+    out=candidate;
+    return true;
+}
+// An eye of the frame from the centre eye's camera: at the frame eye's position (plus `shift`, a second camera's own
+// offset from the first), turned along the aim, at the picture's vertical angle. Rectangles, flags and planes keep
+// their bits. Output untouched on refusal.
+inline bool BuildAimFrameCamera(const Camera& centre,const AimFrameEyes& frame,int eye,Vec3 shift,Camera& out)
+{
+    Cover cover{};
+    if (eye<0||eye>1||!AimFrameCover(frame,cover)||!Finite(shift)) return false;
+    const int from=frame.stereo?eye:0;
+    Camera candidate=centre;
+    candidate.position=frame.position[from]+shift;
+    candidate.forward=frame.forward[from];
+    candidate.up=frame.up[from];
     candidate.verticalFov=cover.verticalFov;
     if (!Valid(candidate)) return false;
     out=candidate;

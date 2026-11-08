@@ -26,8 +26,9 @@ void ApplyVrTurn(const VrPadState& pad)
     // the QPC clock warm across both states so taking the wheel cannot
     // inherit a capped 100 ms turn step.
     const float x = pad.turnX; // stick right = turn right = yaw decreases
-    const bool turnOwnsStick = Halo3VrTurnOwnsStick(
-        Halo3SeatAuthorsSteeringNow(), Game_Halo3VehicleWheelActive());
+    // A seat the stick aims outright (vehicle_control = stick) keeps it too, in any seat.
+    const bool turnOwnsStick = !vehicle_control::StickBusy(
+        Halo3SeatAuthorsSteeringNow(), Halo3SeatStickAimsNow(), Game_Halo3VehicleWheelActive());
     static bool snapLatched = false;
     if (!turnOwnsStick)
     {

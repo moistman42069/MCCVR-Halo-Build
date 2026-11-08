@@ -1,5 +1,5 @@
 // H2 publishes its committed render-model palette, after carrier trimming and
-// collision correction. Never substitute the controller or an unclamped node.
+// collision correction. Remove the recorded visual frame before aim publication.
 weapon_muzzle::Store g_halo2Muzzles;
 void Halo2PublishMuzzlePalette(const Halo2VisibleConsumerContext& context,uint8_t slot,
     uint64_t identity,const float* matrices,uint32_t count) noexcept
@@ -21,6 +21,14 @@ void Halo2PublishMuzzlePalette(const Halo2VisibleConsumerContext& context,uint8_
             if(!marker || marker->nodeCount!=count || marker->node>=count ||
                 !Halo2ReadFirstPersonTransform(matrices+marker->node*kHalo2FirstPersonNodeFloats,node) ||
                 !weapon_muzzle::Transform(*marker,node.scale,node.rotation,node.translation,ray))continue;
+            if (context.muzzleVisualFrameValid) {
+                const auto& committed=slot==0?context.rightCarrier:context.leftCarrier;
+                float collisionDelta[3]{};
+                for (int i=0;i<3;++i)
+                    collisionDelta[i]=committed.position[i]-context.muzzleVisualCarrier[slot].position[i];
+                if (!Halo2RemoveVisualFrame(context.muzzleVisualCarrier[slot],
+                    context.muzzleNeutralCarrier[slot],collisionDelta,ray)) continue;
+            }
             palette.barrels[barrel]={GameTitle::Halo2,context.muzzleGeneration,context.unitObject,
                 weapon,identity,context.muzzleSpace,context.muzzleSerial,now,context.muzzleTimeNs,
                 slot,barrel,context.muzzleLeftHanded,ray};

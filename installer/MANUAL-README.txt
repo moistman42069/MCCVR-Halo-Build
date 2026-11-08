@@ -3,14 +3,24 @@ HALO MCC VR - QoL TEST CANDIDATE
 
 This is an unaccepted test build for all six MCC titles, with both graphics
 modes in Halo CE and Halo 2. Steam and Microsoft Store / Xbox app are supported.
-Read RELEASE-NOTES.md and IMPLEMENTATION-STATUS.md for changes and open reports.
+Read RELEASE-NOTES.md for changes and open reports.
 Passing build checks do not mean every feature or co-op session has been tested.
+
+IF YOUR ANTIVIRUS FLAGS THE LAUNCHER
+------------------------------------
+Windows Defender or another antivirus may flag HaloMCCVRLauncher.exe, for
+example as Behavior:Win32/DefenseEvasion.A!ml. The launcher is not code-signed,
+it downloads files, and it loads the mod into MCC, which is the kind of behavior
+these tools watch for. Make sure your ZIP came from the project's release page
+and matches the SHA256 list published with it, then allow just that item rather
+than turning your antivirus off.
 
 INSTALL WITH THE LAUNCHER
 ------------------------
 1. Close MCC and extract the whole launcher ZIP.
-2. Open HaloMCCVRLauncher.exe beside the ModFiles folder. Windows requests
-   administrator access by default so installation can write protected folders.
+2. Open HaloMCCVRLauncher.exe beside the ModFiles folder. It does not ask for
+   administrator access. If Windows refuses the install folder, run it once as
+   administrator to install, then open it normally to launch.
 3. Select the detected Steam or Store installation, or Browse to the MCC root.
 4. Leave Keep my settings selected to preserve your configuration and append
    newly available settings. Install / Update writes to Halo_MCC_VR in that root.
@@ -64,13 +74,19 @@ root launcher once. The new installer can still read legacy payload layouts.
 SETTINGS AND CONTROLS
 ---------------------
 F1 opens settings; F3 recenters. L3+R3 together recenters and toggles F1.
+The launcher's VR SETTINGS button opens the same menu on your monitor, or run
+HaloMCCVRSettings.exe in this folder. It saves only while the game is closed.
 Point your main-hand controller at the VR settings panel and use its trigger.
-The dedicated VR Mappings page detects the advertised controller profile and
-stores optional overrides separately per game, including Unbound. The current
-native transport still couples actions that share a native MCC button/action;
-see IMPLEMENTATION-STATUS.md before relying on independent reload/use unbinding.
-Reload & Holsters, Weapon & Aim, Vehicles, Picture and Subtitles group the options.
-Optional stock, physical crouch, roomscale, reload and DLSS need runtime testing.
+Controls holds controls presets, which save your control scheme under a name, and
+VR Mappings, which detects the advertised controller profile and stores optional
+overrides separately per game, including Unbound. The current
+native transport still couples actions that share a native MCC button/action,
+so reload and use may not unbind independently.
+Controls holds only what a controls preset saves, left-handed play, two-handed
+aiming and where the holster and reserve magazine sit on you included, so people
+sharing the mod can each keep their own. Vehicles, Picture and Subtitles group
+the other options.
+Optional stock, physical crouch, reload and DLSS need runtime testing.
 
 DLSS uses compatible NVIDIA hardware. Missing/failed optional features preserve
 the ordinary renderer. Actual title/renderer support and limits are documented

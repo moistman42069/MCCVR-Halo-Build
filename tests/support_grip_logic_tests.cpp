@@ -37,6 +37,7 @@
 #include <thread>
 #include "input_logic.h"
 #include "weapon_hand_logic.h"
+#include "first_person_view_logic.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -773,6 +774,36 @@ void TestDefaultSwitchZoneReentry(TestContext& test)
               DurableWriterAction::Invalidated, differentOwnerClaim, false,
               /*switchInherit=*/true),
         "zone re-entry: the inherit option never arms the crossing requirement");
+
+    // A holster draw with the inherit option: the teardown arms nothing, the
+    // hold waits out the gesture and comes back once owner evidence can bind.
+    {
+        auto step = StepGestureInherit(false, true, true, true, false, true, true, false, true);
+        test.Check(step.keepsHold && step.pending && !step.resume,
+            "gesture inherit: the gesture's teardown keeps the hold and arms nothing");
+        step = StepGestureInherit(step.pending, true, false, true, false, true, true, false, true);
+        test.Check(!step.keepsHold && step.pending && !step.resume,
+            "gesture inherit: it waits while the gesture lasts");
+        step = StepGestureInherit(step.pending, true, false, false, false, true, true, false, false);
+        test.Check(step.resume && step.pending,
+            "gesture inherit: unreadable evidence keeps the wait for a later update");
+        step = StepGestureInherit(step.pending, true, false, false, false, true, true, false, true);
+        test.Check(step.resume && !step.pending,
+            "gesture inherit: the hold comes back after the gesture, once");
+        test.Check(!StepGestureInherit(false, true, true, false, false, true, true, false, true).pending,
+            "gesture inherit: no gesture, nothing to do");
+        test.Check(!StepGestureInherit(false, false, true, true, false, true, true, false, true).keepsHold,
+            "gesture inherit: option off keeps release-before-reacquire");
+        test.Check(!StepGestureInherit(true, true, false, true, false, true, false, false, true).pending,
+            "gesture inherit: letting go of the grip ends the wait");
+        test.Check(!StepGestureInherit(true, true, false, true, false, false, false, true, true).pending,
+            "gesture inherit: a toggle press ends the wait");
+        test.Check(!StepGestureInherit(true, true, false, false, true, true, true, false, true).resume,
+            "gesture inherit: a broken lifecycle ends the wait");
+        const auto toggled = StepGestureInherit(true, true, false, false, false, false, false, false, true);
+        test.Check(toggled.resume && !toggled.pending,
+            "gesture inherit: toggle mode comes back with no grip held");
+    }
 
     // The requirement survives a zone reading that stays TRUE, so the held Grip
     // that never left the replacement's grab zone cannot acquire - the installed
@@ -1784,6 +1815,433 @@ void TestPersistentSupportGripApplicability(TestContext& test)
         "an unclassified title is never a wired persistent-grip title");
 }
 
+// Two-handed aim is off in every vehicle seat and walk-up turret. Rehearses
+// vr.cpp's UpdateTwoHandLatch seam: SeatedSupportGate feeds the seat into the
+// shared SupportGripAdmission as a blocker (beside dual wield), the base latch
+// or the durable writer steps on that admission, and DropPresentationHistory
+// decides when the release blend is skipped.
+struct SeatedLatchRig
+{
+    SeatedSupportGate gate;
+    SupportGripAdmission admission;
+    bool latched = false;
+    bool prevGrip = false;
+    bool toggleMode = false;
+    bool lastDrop = false;
+    SeatedSupportGate::Step lastStep{};
+
+    bool Frame(bool seated, bool gripHeld, bool inZone, bool dualWield = false)
+    {
+        const bool rising = gripHeld && !prevGrip;
+        prevGrip = gripHeld;
+        lastStep = gate.Observe(seated);
+        const bool before = latched;
+        const bool allowed = admission.Observe(gripHeld,
+            dualWield || lastStep.blocksSupport, false);
+        if (!allowed)
+            latched = false;
+        else if (toggleMode)
+        {
+            if (rising) latched = latched ? false : inZone;
+        }
+        else
+            latched = UpdateTwoHandHold(latched, gripHeld, inZone);
+        lastDrop = SeatedSupportGate::DropPresentationHistory(
+            lastStep, before, latched);
+        return latched;
+    }
+};
+
+void TestSeatedTwoHandGate(TestContext& test)
+{
+    // Hold mode: sprinting two-handed, then boarding.
+    SeatedLatchRig hold;
+    test.Check(hold.Frame(false, true, true) && !hold.lastDrop,
+        "seat: on foot, a grip in the zone engages two-handed aim");
+    test.Check(!hold.Frame(true, true, true) && hold.lastStep.enteredSeat &&
+            hold.lastDrop,
+        "seat: boarding with the hold engaged drops it and skips the release blend");
+    test.Check(!hold.Frame(true, true, true) && !hold.lastStep.enteredSeat &&
+            !hold.lastDrop,
+        "seat: a held grip in the zone never engages while seated; nothing is re-dropped");
+    test.Check(!hold.Frame(true, false, true) && !hold.Frame(true, true, true),
+        "seat: a fresh grip while seated still cannot engage");
+    test.Check(!hold.Frame(false, true, true) && !hold.lastDrop,
+        "seat: leaving the seat with the grip still held does not re-engage");
+    test.Check(!hold.Frame(false, true, true),
+        "seat: the still-held grip stays one-handed on foot");
+    test.Check(!hold.Frame(false, false, true) && hold.Frame(false, true, true),
+        "seat: release and grip again on foot re-engages");
+
+    // Boarding without a hold: the entry edge still drops presentation
+    // history once (a release blend begun just before boarding).
+    SeatedLatchRig idle;
+    (void)idle.Frame(false, false, false);
+    test.Check(!idle.Frame(true, false, false) && idle.lastDrop,
+        "seat: the entry edge drops presentation history even without a hold");
+    test.Check(!idle.Frame(true, false, false) && !idle.lastDrop,
+        "seat: a steady seat drops nothing further");
+    test.Check(idle.Frame(false, true, true),
+        "seat: a grip squeezed as or after the player leaves is a new grip and engages");
+
+    // An ordinary on-foot release keeps its blend: only seated drops skip it.
+    SeatedLatchRig onFoot;
+    (void)onFoot.Frame(false, true, true);
+    test.Check(!onFoot.Frame(false, false, true) && !onFoot.lastDrop,
+        "seat: an on-foot release keeps the release blend");
+
+    // A pose outage defers the durable drop until tracking returns; that
+    // later, still-seated drop skips the blend too.
+    const SeatedSupportGate::Step seatedSteady{true, false};
+    test.Check(SeatedSupportGate::DropPresentationHistory(seatedSteady, true, false),
+        "seat: a hold that drops later while seated still skips the blend");
+    test.Check(!SeatedSupportGate::DropPresentationHistory(seatedSteady, true, true) &&
+            !SeatedSupportGate::DropPresentationHistory(seatedSteady, false, false),
+        "seat: no drop without a released hold or an entry edge");
+    const SeatedSupportGate::Step onFootStep{false, false};
+    test.Check(!SeatedSupportGate::DropPresentationHistory(onFootStep, true, false),
+        "seat: an on-foot release is never a seated drop");
+
+    // Toggle mode: boarding releases; a press made in the seat and still held
+    // on exit is not a new grab; the next press on foot toggles on.
+    SeatedLatchRig toggle;
+    toggle.toggleMode = true;
+    (void)toggle.Frame(false, true, true);
+    test.Check(toggle.latched, "seat: toggle engages on foot");
+    (void)toggle.Frame(false, false, true);
+    test.Check(!toggle.Frame(true, false, true) && toggle.lastDrop,
+        "seat: boarding releases a toggled hold");
+    test.Check(!toggle.Frame(true, true, true),
+        "seat: a toggle press in the seat does nothing");
+    test.Check(!toggle.Frame(false, true, true),
+        "seat: that press still held on exit does not engage");
+    (void)toggle.Frame(false, false, true);
+    test.Check(toggle.Frame(false, true, true),
+        "seat: the next toggle press on foot engages");
+
+    // On-foot parity: with no seat ever seen the latch is the pre-change
+    // admission exactly, dual wield included.
+    SeatedLatchRig gated;
+    SupportGripAdmission reference;
+    bool referenceLatched = false;
+    bool parity = true;
+    for (unsigned i = 0; i < 64; ++i)
+    {
+        const bool grip = (i * 7u + 3u) % 5u < 3u;
+        const bool zone = (i * 11u + 1u) % 3u != 0u;
+        const bool dual = (i % 13u) == 6u;
+        const bool allowed = reference.Observe(grip, dual, false);
+        referenceLatched = allowed &&
+            UpdateTwoHandHold(referenceLatched, grip, zone);
+        parity = parity && gated.Frame(false, grip, zone, dual) ==
+            referenceLatched && !gated.lastDrop &&
+            gated.admission.requiresRelease == reference.requiresRelease;
+    }
+    test.Check(parity, "seat: on foot the latch is exactly the pre-change one");
+
+    // Persistent support grip: the seat closes the durable writer's hard gate,
+    // which releases an engaged relationship; held across the exit, the armed
+    // admission keeps the gate closed until the Grip is released.
+    SupportGripAdmission pgAdmission;
+    SeatedSupportGate pgGate;
+    DurableWriterState writer;
+    const auto pgFrame = [&](bool seated, bool grip)
+    {
+        const SeatedSupportGate::Step step = pgGate.Observe(seated);
+        const bool allowed = pgAdmission.Observe(grip, step.blocksSupport, false);
+        writer.requiresRelease = pgAdmission.requiresRelease;
+        return DurableWriterStep(writer, allowed, allowed && grip,
+            OwnerEvidence::KnownPresent, kOwnerA, kGeneration);
+    };
+    test.Check(pgFrame(false, true) == DurableWriterAction::Bind && writer.engaged,
+        "seat: the durable writer binds on foot");
+    test.Check(pgFrame(true, true) == DurableWriterAction::Released && !writer.engaged,
+        "seat: boarding releases the durable relationship");
+    test.Check(pgFrame(false, true) != DurableWriterAction::Bind && !writer.engaged,
+        "seat: a grip held across the exit does not rebind");
+    (void)pgFrame(false, false);
+    test.Check(pgFrame(false, true) == DurableWriterAction::Bind && writer.engaged,
+        "seat: a fresh grip on foot rebinds");
+}
+
+// Two-handed aim's exit condition: the game is not showing the player's own
+// first-person view (first_person_view_logic.h). Classify is each title's
+// evidence ladder; Gate turns verdicts into the admission blocker
+// SeatedSupportGate already applies.
+void TestFirstPersonViewClassify(TestContext& test)
+{
+    using fp_view::Classify;
+    using fp_view::Evidence;
+    using fp_view::Why;
+    constexpr auto U = fp_view::Signal::Unavailable;
+    constexpr auto R = fp_view::Signal::Unread;
+    constexpr auto Y = fp_view::Signal::Yes;
+    constexpr auto N = fp_view::Signal::No;
+    // `monitor` defaults to No: the game said "not Forge's Monitor", or the title has no Forge (CE, ODST, Halo 2).
+    const auto ev = [](fp_view::Signal cinematic, fp_view::Signal unit, fp_view::Signal seated,
+                       fp_view::Signal camera, fp_view::Signal viewModel,
+                       fp_view::Signal monitor = fp_view::Signal::No) {
+        Evidence e;
+        e.cinematic = cinematic;
+        e.unit = unit;
+        e.seated = seated;
+        e.camera = camera;
+        e.viewModel = viewModel;
+        e.monitor = monitor;
+        return e;
+    };
+
+    // Halo 3 / ODST: the director's first-person camera on foot.
+    test.Check(Classify(ev(U, Y, N, Y, Y)) == Why::FirstPerson, "view: director first person on foot");
+    // The camera outranks the view-model witness: a native zoom or an unarmed
+    // player may stop the view model while the camera is still first person.
+    test.Check(Classify(ev(U, Y, N, Y, N)) == Why::FirstPerson, "view: the camera rung outranks a quiet witness");
+    // A turret or seat: the unit's own parent link -- even when the mod has
+    // told Halo 3's seat to be first person (the director then says FP).
+    test.Check(Classify(ev(U, Y, Y, Y, U)) == Why::Seated, "view: a seat leaves even with a first-person camera");
+    test.Check(Classify(ev(U, Y, Y, U, Y)) == Why::Seated, "view: a seat leaves even with the view model drawn");
+    // A carried turret / chase / orbit / Monitor camera on foot.
+    test.Check(Classify(ev(U, Y, N, N, Y)) == Why::Camera, "view: a third-person camera on foot leaves");
+    // Death: no unit, whatever the camera says.
+    test.Check(Classify(ev(U, N, U, Y, U)) == Why::NoUnit, "view: no unit (death) leaves");
+    // A cinematic vetoes everything.
+    test.Check(Classify(ev(Y, Y, N, Y, Y)) == Why::Cinematic, "view: a cinematic leaves");
+    // Fail toward one hand.
+    test.Check(Classify(ev(U, Y, N, R, Y)) == Why::Unread, "view: an unreadable camera is no answer");
+    test.Check(Classify(ev(U, Y, R, Y, Y)) == Why::Unread,
+        "view: a first-person camera beside an unreadable seat is no answer");
+    test.Check(Classify(ev(U, U, U, U, U)) == Why::Unread, "view: no evidence at all is no answer");
+    test.Check(Classify(ev(U, U, U, U, R)) == Why::Unread, "view: an unreadable witness is no answer");
+    // Reach / Halo 4 (no camera rung): the view-model witness decides.
+    test.Check(Classify(ev(U, U, N, U, Y)) == Why::FirstPerson, "view: witness drawn on foot is first person");
+    test.Check(Classify(ev(U, U, U, U, Y)) == Why::FirstPerson,
+        "view: witness drawn, seat unknown (Reach's fallback sampler) is first person");
+    test.Check(Classify(ev(U, U, N, U, N)) == Why::NoFirstPersonView, "view: witness quiet on foot leaves");
+    test.Check(Classify(ev(U, U, R, U, Y)) == Why::Unread, "view: witness drawn beside an unreadable seat");
+    // A title with only its parent link.
+    test.Check(Classify(ev(U, U, N, U, U)) == Why::FirstPerson, "view: only the parent link, on foot");
+    test.Check(Classify(ev(U, U, R, U, U)) == Why::Unread, "view: only the parent link, unreadable");
+    // CE: the native perspective is the camera rung.
+    test.Check(Classify(ev(N, Y, N, N, U)) == Why::Camera, "view: CE third-person perspective leaves");
+    test.Check(Classify(ev(N, Y, N, Y, U)) == Why::FirstPerson, "view: CE first-person perspective on foot");
+
+    // Forge's Monitor (Halo 3, Reach, Halo 4): an idle Monitor has the game's first-person camera, so the
+    // camera rung alone read it as first person. The game's own editor answer is a veto.
+    test.Check(Classify(ev(U, Y, N, Y, N, Y)) == Why::Monitor, "view: an idle Monitor (first-person camera) leaves");
+    test.Check(Classify(ev(U, Y, N, Y, Y, Y)) == Why::Monitor, "view: the Monitor leaves whatever is drawn");
+    test.Check(Classify(ev(U, Y, N, N, N, Y)) == Why::Monitor, "view: the Monitor holding an object leaves");
+    test.Check(fp_view::HardReason(Why::Monitor), "view: the Monitor is positive evidence: no grace");
+    test.Check(Classify(ev(Y, Y, N, Y, N, Y)) == Why::Cinematic && Classify(ev(U, N, U, Y, U, Y)) == Why::NoUnit &&
+            Classify(ev(U, Y, Y, Y, U, Y)) == Why::Seated,
+        "view: a cinematic, death and a seat are still named first");
+    // Back to a Spartan: the game says no again, and a zoom or an empty hand needs no view model.
+    test.Check(Classify(ev(U, Y, N, Y, N, N)) == Why::FirstPerson, "view: not the Monitor, unarmed or zoomed: first person");
+    // The Monitor answer unknown (not bound, unread, faulted): only the view model can vouch for the camera.
+    test.Check(Classify(ev(U, Y, N, Y, N, U)) == Why::NoFirstPersonView,
+        "view: first-person camera, no view model, Monitor check unbound: leaves (after the grace)");
+    test.Check(Classify(ev(U, Y, N, Y, N, R)) == Why::NoFirstPersonView, "view: ... or unread");
+    test.Check(!fp_view::HardReason(Why::NoFirstPersonView), "view: that is a soft reason (a single long frame)");
+    test.Check(Classify(ev(U, Y, N, Y, Y, U)) == Why::FirstPerson, "view: Monitor check unknown, view model drawn: first person");
+    test.Check(Classify(ev(U, Y, N, Y, U, U)) == Why::FirstPerson,
+        "view: Monitor check unknown and no witness on this build: first person, as before the witnesses");
+    test.Check(Classify(ev(U, Y, N, Y, R, U)) == Why::Unread, "view: Monitor check unknown, witness unreadable: no answer");
+    // Reach / Halo 4 with their camera rung: Armor Lock / Hardlight Shield / an assassination is the following
+    // camera; a zoom is still the first-person camera.
+    test.Check(Classify(ev(U, U, N, N, Y, N)) == Why::Camera, "view: Reach in Armor Lock (following camera) leaves at once");
+    test.Check(Classify(ev(U, U, N, Y, N, N)) == Why::FirstPerson, "view: Reach zoomed or unarmed: first person by the camera");
+    test.Check(Classify(ev(U, U, U, Y, N, N)) == Why::FirstPerson,
+        "view: Reach's fallback seat sampler (no seat answer) with a first-person camera: first person");
+    // Halo 2: the director's first-person update; the witness is its on-foot unit sample.
+    test.Check(Classify(ev(U, U, N, N, Y, N)) == Why::Camera, "view: Halo 2's following / dead / scripted camera leaves");
+    test.Check(Classify(ev(U, U, N, Y, Y, N)) == Why::FirstPerson, "view: Halo 2 first person on foot");
+    // The rung unbound or condemned: the titles' evidence is what it was (the witness decides).
+    test.Check(Classify(ev(U, U, N, U, N, U)) == Why::NoFirstPersonView, "view: no camera rung, witness quiet: leaves");
+    test.Check(Classify(ev(U, U, N, U, Y, U)) == Why::FirstPerson, "view: no camera rung, witness drawn: first person");
+
+    // The director record as the gate reads it.
+    test.Check(fp_view::DirectorCameraSignal(true, true, 3, 0) == Y, "director: mode 3 perspective 0 is first person");
+    test.Check(fp_view::DirectorCameraSignal(true, true, 3, 1) == N, "director: first-person camera, third perspective");
+    test.Check(fp_view::DirectorCameraSignal(true, true, 0, 1) == N, "director: following camera");
+    test.Check(fp_view::DirectorCameraSignal(true, true, 4, 1) == N, "director: dead camera");
+    test.Check(fp_view::DirectorCameraSignal(true, true, 8, 0) == N,
+        "director: the default (type-8) camera is not first person, though out of the record's range");
+    test.Check(fp_view::DirectorCameraSignal(true, true, -1, -1) == N, "director: garbage is not first person");
+    test.Check(fp_view::DirectorCameraSignal(true, false, 3, 0) == R, "director: bound but unread");
+    test.Check(fp_view::DirectorCameraSignal(false, false, 3, 0) == U, "director: not bound");
+
+    for (size_t i = 0; i < static_cast<size_t>(Why::Count); ++i)
+        test.Check(std::strcmp(fp_view::WhyName(static_cast<Why>(i)), "?") != 0, "view: every reason has a name");
+}
+
+void TestDirectorGateSiteDecode(TestContext& test)
+{
+    // ODST's two sites, as the pinned module lays them out (offline:
+    // tools/verify-odst-director-camera.py): the first-person gate
+    // (+0x2A7150) and set_camera_mode's store (+0x152A90).
+    const uint8_t gate[fp_view::kDirectorGateSiteBytes] = {
+        0x4C, 0x63, 0xCA, 0x41, 0x83, 0xF9, 0xFF, 0x74, 0x41, 0x8B, 0x0D, 0xBD, 0x89, 0x7E, 0x00,
+        0x65, 0x48, 0x8B, 0x04, 0x25, 0x58, 0x00, 0x00, 0x00, 0xBA, 0x90, 0x01, 0x00, 0x00,
+        0x4C, 0x8B, 0x04, 0xC8, 0x4B, 0x8D, 0x0C, 0x49, 0x49, 0x8B, 0x04, 0x10,
+        0x83, 0xBC, 0x88, 0x04, 0x06, 0x00, 0x00, 0x00, 0x75, 0x17, 0x41, 0x8B, 0xC9, 0xE8};
+    uint8_t setMode[shot_lag::kDirectorSetModeSiteBytes] = {
+        0x65, 0x48, 0x8B, 0x0C, 0x25, 0x58, 0x00, 0x00, 0x00, 0x41, 0xB8, 0x90, 0x01, 0x00, 0x00,
+        0x4A, 0x8B, 0x0C, 0xF9, 0x49, 0x8B, 0x14, 0x08, 0x48, 0x63, 0x8E, 0x58, 0x01, 0x00, 0x00,
+        0x4C, 0x8D, 0x04, 0x49, 0x42, 0x39, 0x84, 0x82, 0x04, 0x06, 0x00, 0x00, 0x75, 0x0A,
+        0x42, 0x39, 0xAC, 0x82, 0x08, 0x06, 0x00, 0x00, 0x74, 0x32,
+        0x42, 0x89, 0x84, 0x82, 0x04, 0x06, 0x00, 0x00};
+    shot_lag::DirectorCameraSites sites{};
+    test.Check(fp_view::DecodeDirectorGateSites(gate, setMode, sites) && sites.blockOffset == 0x190 &&
+            sites.perspectiveOffset == 0x604 && sites.modeOffset == 0x608 &&
+            0x2A7150 + fp_view::kDirectorGateTlsNext + sites.tlsIndexDisp == 0xA8FB1C,
+        "director gate: ODST's two sites decode to its record and engine TLS index");
+    setMode[shot_lag::kDirectorSetModeBlock] = 0x88;
+    test.Check(!fp_view::DecodeDirectorGateSites(gate, setMode, sites),
+        "director gate: sites that disagree on the block bind nothing");
+    setMode[shot_lag::kDirectorSetModeBlock] = 0x90;
+    setMode[shot_lag::kDirectorSetModeMode] = 0x0C;
+    test.Check(!fp_view::DecodeDirectorGateSites(gate, setMode, sites),
+        "director gate: a mode field not right after the perspective binds nothing");
+    test.Check(!fp_view::DecodeDirectorGateSites(nullptr, setMode, sites), "director gate: no site, no binding");
+}
+
+// The seam vr.cpp runs on the frame thread: verdict -> fp_view::Gate ->
+// SeatedSupportGate -> SupportGripAdmission -> the latch.
+struct ViewLatchRig
+{
+    fp_view::Gate view;
+    SeatedSupportGate edge;
+    SupportGripAdmission admission;
+    bool latched = false;
+    bool prevGrip = false;
+    bool toggleMode = false;
+    bool lastDrop = false;
+    fp_view::Gate::Step lastView{};
+    uint64_t now = 1000;
+
+    bool Frame(fp_view::Why why, bool gripHeld, bool inZone, bool hold = false, uint64_t stepMs = 11)
+    {
+        now += stepMs;
+        const bool rising = gripHeld && !prevGrip;
+        prevGrip = gripHeld;
+        lastView = view.Observe(why, hold, now);
+        const SeatedSupportGate::Step block = edge.Observe(lastView.blocksSupport);
+        const bool before = latched;
+        const bool allowed = admission.Observe(gripHeld, block.blocksSupport, false);
+        if (!allowed)
+            latched = false;
+        else if (toggleMode)
+        {
+            if (rising) latched = latched ? false : inZone;
+        }
+        else
+            latched = UpdateTwoHandHold(latched, gripHeld, inZone);
+        lastDrop = SeatedSupportGate::DropPresentationHistory(block, before, latched);
+        return latched;
+    }
+};
+
+void TestFirstPersonViewGate(TestContext& test)
+{
+    using fp_view::Why;
+    // Hold mode: two-handed on foot, then a turret that puts the player in
+    // third person.
+    ViewLatchRig hold;
+    test.Check(hold.Frame(Why::FirstPerson, true, true) && !hold.lastDrop,
+        "view gate: first person engages two-handed aim");
+    test.Check(!hold.Frame(Why::Seated, true, true) && hold.lastView.entered && hold.lastDrop &&
+            hold.lastView.reason == Why::Seated,
+        "view gate: a turret leaves at once, skips the release blend and names the seat");
+    test.Check(!hold.Frame(Why::Camera, true, true) && !hold.lastDrop && hold.lastView.reason == Why::Seated,
+        "view gate: still out; the reason that closed it stands");
+    test.Check(!hold.Frame(Why::FirstPerson, true, true),
+        "view gate: back in first person, the grip held through it does not re-engage");
+    test.Check(!hold.Frame(Why::FirstPerson, false, true) && hold.Frame(Why::FirstPerson, true, true),
+        "view gate: release and grip again in first person re-engages");
+
+    // A third-person camera on foot (Halo 3's carried turret, Forge's
+    // Monitor): hard, at once.
+    ViewLatchRig camera;
+    (void)camera.Frame(Why::FirstPerson, true, true);
+    test.Check(!camera.Frame(Why::Camera, true, true) && camera.lastDrop,
+        "view gate: a third-person camera leaves at once");
+
+    // Death: no unit.
+    ViewLatchRig death;
+    (void)death.Frame(Why::FirstPerson, true, true);
+    test.Check(!death.Frame(Why::NoUnit, true, true) && death.lastView.reason == Why::NoUnit,
+        "view gate: death leaves at once");
+
+    // Soft reasons wait out a long frame, then leave.
+    ViewLatchRig soft;
+    (void)soft.Frame(Why::FirstPerson, true, true);
+    test.Check(soft.Frame(Why::NoFirstPersonView, true, true, false, 100),
+        "view gate: a quiet witness for one long frame is not yet an exit");
+    test.Check(soft.Frame(Why::FirstPerson, true, true, false, 100),
+        "view gate: the witness back within the grace keeps two-hand");
+    (void)soft.Frame(Why::Unread, true, true, false, 100);   // grace starts
+    (void)soft.Frame(Why::Unread, true, true, false, 100);   // 100 ms
+    test.Check(soft.Frame(Why::Unread, true, true, false, 100),   // 200 ms
+        "view gate: an unreadable view inside the grace keeps two-hand");
+    test.Check(!soft.Frame(Why::Unread, true, true, false, 100) && soft.lastView.entered &&   // 300 ms
+            soft.lastView.reason == Why::Unread,
+        "view gate: an unreadable view for the grace leaves (fail toward one hand)");
+    // A soft run that turns hard leaves at once.
+    ViewLatchRig mixed;
+    (void)mixed.Frame(Why::FirstPerson, true, true);
+    (void)mixed.Frame(Why::NoFirstPersonView, true, true);
+    test.Check(!mixed.Frame(Why::Camera, true, true) && mixed.lastView.reason == Why::Camera,
+        "view gate: positive third-person evidence ends the grace");
+
+    // A pause freezes the gate both ways, and its stale samples are no evidence.
+    ViewLatchRig paused;
+    (void)paused.Frame(Why::FirstPerson, true, true);
+    test.Check(paused.Frame(Why::Unread, true, true, true, 2000),
+        "view gate: a pause keeps two-hand engaged however long it is");
+    test.Check(paused.Frame(Why::FirstPerson, true, true),
+        "view gate: resuming in first person keeps it");
+    (void)paused.Frame(Why::Seated, true, true);
+    test.Check(!paused.Frame(Why::FirstPerson, true, true, true) && paused.lastView.blocksSupport,
+        "view gate: a pause does not reopen a closed gate");
+    // Grace restarts after a pause: a soft run split by a pause is two runs.
+    ViewLatchRig split;
+    (void)split.Frame(Why::FirstPerson, true, true);
+    (void)split.Frame(Why::Unread, true, true, false, 200);
+    (void)split.Frame(Why::Unread, true, true, true, 200);
+    test.Check(split.Frame(Why::Unread, true, true, false, 100),
+        "view gate: the grace restarts after a pause");
+
+    // Toggle mode: the third-person exit releases a toggled hold; a press in
+    // third person does nothing; the next press in first person engages.
+    ViewLatchRig toggle;
+    toggle.toggleMode = true;
+    (void)toggle.Frame(Why::FirstPerson, true, true);
+    (void)toggle.Frame(Why::FirstPerson, false, true);
+    test.Check(toggle.latched, "view gate: toggle engages in first person");
+    test.Check(!toggle.Frame(Why::Cinematic, false, true) && toggle.lastDrop,
+        "view gate: a cinematic releases a toggled hold");
+    test.Check(!toggle.Frame(Why::Cinematic, true, true), "view gate: a toggle press in a cinematic does nothing");
+    test.Check(!toggle.Frame(Why::FirstPerson, true, true), "view gate: that press held back into first person");
+    (void)toggle.Frame(Why::FirstPerson, false, true);
+    test.Check(toggle.Frame(Why::FirstPerson, true, true), "view gate: the next press in first person engages");
+
+    // First-person parity: with first person throughout, the latch is the
+    // pre-change admission exactly, dual wield included.
+    ViewLatchRig gated;
+    SupportGripAdmission reference;
+    bool referenceLatched = false;
+    bool parity = true;
+    for (unsigned i = 0; i < 64; ++i)
+    {
+        const bool grip = (i * 7u + 3u) % 5u < 3u;
+        const bool zone = (i * 11u + 1u) % 3u != 0u;
+        const bool allowed = reference.Observe(grip, false, false);
+        referenceLatched = allowed && UpdateTwoHandHold(referenceLatched, grip, zone);
+        parity = parity && gated.Frame(Why::FirstPerson, grip, zone) == referenceLatched && !gated.lastDrop &&
+            gated.admission.requiresRelease == reference.requiresRelease;
+    }
+    test.Check(parity, "view gate: in first person the latch is exactly the pre-change one");
+}
+
 } // namespace
 
 int main()
@@ -1824,5 +2282,9 @@ int main()
     TestSolveSupportQualification(test);
     TestPresentedRayConsumption(test);
     TestPersistentSupportGripApplicability(test);
+    TestSeatedTwoHandGate(test);
+    TestFirstPersonViewClassify(test);
+    TestDirectorGateSiteDecode(test);
+    TestFirstPersonViewGate(test);
     return test.Finish();
 }

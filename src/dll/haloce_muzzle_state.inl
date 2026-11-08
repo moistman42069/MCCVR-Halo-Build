@@ -32,7 +32,8 @@ void PublishMuzzlePalette(const Scope& owner,const FirstPersonBinding& binding,
     const NodeMatrix* nodes,uint64_t now) noexcept
 {
     MuzzlePalette pending{};const auto& context=owner.context;
-    if(muzzleInstalled.load()&&!muzzleFaulted.load()&&context.tracking.controllers.gunBarrelAim&&
+    if(muzzleInstalled.load()&&!muzzleFaulted.load()&&
+        (context.tracking.controllers.gunBarrelAim||context.tracking.controllers.muzzleShots)&&
         nodes&&binding.count&&MuzzleOwner(owner.muzzleUnit,owner.muzzleWeapon))
     {
         pending.context=context;pending.unit=owner.muzzleUnit;pending.weapon=owner.muzzleWeapon;
@@ -44,6 +45,19 @@ void PublishMuzzlePalette(const Scope& owner,const FirstPersonBinding& binding,
             const float basis[]{node.forward.x,node.forward.y,node.forward.z,
                 node.left.x,node.left.y,node.left.z,node.up.x,node.up.y,node.up.z};
             if(!weapon_muzzle::Transform(*marker,node.scale,basis,&node.position.x,ray))continue;
+            NodeMatrix visual{},neutral{};
+            if (!BuildControllerMatrix(context.camera,context.tracking,context.reference,
+                    context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,visual)) continue;
+            neutral=visual;auto neutralRig=context.tracking.controllers;
+            neutralRig.visualPitchDeg=neutralRig.visualYawDeg=neutralRig.visualRollDeg=0;
+            if (!ApplyVisualMount(context.tracking.controllers,context.unitsPerMeter,true,visual) ||
+                !ApplyVisualMount(neutralRig,context.unitsPerMeter,true,neutral)) continue;
+            const float visualBasis[]{visual.forward.x,visual.forward.y,visual.forward.z,
+                visual.left.x,visual.left.y,visual.left.z,visual.up.x,visual.up.y,visual.up.z};
+            const float neutralBasis[]{neutral.forward.x,neutral.forward.y,neutral.forward.z,
+                neutral.left.x,neutral.left.y,neutral.left.z,neutral.up.x,neutral.up.y,neutral.up.z};
+            if (!weapon_alignment::Reframe(visualBasis,&visual.position.x,
+                    neutralBasis,&neutral.position.x,ray)) continue;
             pending.palette.barrels[barrel]={GameTitle::HaloCE,context.tracking.generation,pending.unit,pending.weapon,
                 binding.nodeIdentity,context.tracking.spaceEpoch,context.tracking.serial,now,
                 context.tracking.predictedDisplayTimeNs,0,barrel,context.tracking.controllers.leftHanded,ray};
@@ -51,12 +65,15 @@ void PublishMuzzlePalette(const Scope& owner,const FirstPersonBinding& binding,
     }
     (void)muzzlePalette.Publish(pending);
 }
-bool ReadMuzzle(uint32_t unit,uint32_t weapon,int16_t barrel,weapon_muzzle::Receipt& out) noexcept
+// forShot: a barrel SHOT may also use the muzzle for shots from the muzzle; continuous target acquisition
+// (TargetQueryBody) follows the barrel only under the barrel aim itself.
+bool ReadMuzzle(uint32_t unit,uint32_t weapon,int16_t barrel,weapon_muzzle::Receipt& out,bool forShot=false) noexcept
 {
     MuzzlePalette sample{};RenderContext live{},committed{};
     if(barrel<0||barrel>=2||!muzzleInstalled.load()||muzzleFaulted.load()||!AimCurrent()||
         !CurrentPaletteContext(committed)||!HaloCE_GetGameplayContext(live)||
-        !live.tracking.controllers.gunBarrelAim||live.tracking.controllers.controlsPresentationBlocked||
+        !(live.tracking.controllers.gunBarrelAim||(forShot&&live.tracking.controllers.muzzleShots))||
+        live.tracking.controllers.controlsPresentationBlocked||
         !live.tracking.controllers.primaryAim.valid||!MuzzleOwner(unit,weapon)||!muzzlePalette.Read(sample)||
         sample.unit!=unit||sample.weapon!=weapon||!HaloCE_RenderContextCurrent(sample.context)||
         sample.context.rendererEpoch!=live.rendererEpoch||sample.context.referenceRevision!=live.referenceRevision)

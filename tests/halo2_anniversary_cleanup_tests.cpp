@@ -92,6 +92,7 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,
 }
 GameTitle TitleAdapter_GetActiveTitle() { return activeTitle; }
 void Report() {}
+void ReportPropagatedGameFaults(uintptr_t, size_t) {}
 
 #define Sleep FixtureSleep
 #define MH_DisableHook FixtureDisableHook

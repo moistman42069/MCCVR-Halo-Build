@@ -10,6 +10,10 @@ enum class GameTitle { Halo3ODST };
 static uint32_t generation=7;
 uint32_t TitleAdapter_GetGeneration(GameTitle) {return generation;}
 static struct {bool vehicle_first_person=true,vehicle_hide_body=true;} g_config;
+// One-machine changes allowed (co-op safe shots off) unless a test says otherwise.
+static bool fireTimeAllowed=true;
+static bool Sight_FireTimeChangesAllowed(){return fireTimeAllowed;}
+#define LOG(...) ((void)0)
 static void* tagBaseSlot{},*instanceSlot{};
 static void** g_odstTagDataBase=&tagBaseSlot,**g_odstTagInstanceTable=&instanceSlot;
 static unsigned char* liveDefinition{};
@@ -94,8 +98,26 @@ int main()
     Check(!g_odstNativeSeatPatch.active&&g_odstNativeSeatState==0,"fault isolated during cleanup");
     Check(VirtualProtect(memory+0x1000,0x1000,PAGE_READWRITE,&previous)!=0,"restore fixture page");
     Check(*word==0x120,"unreadable storage untouched");
+    // A seat whose ORIGINAL flags lack bit 4 (custom or modded): refused, and published for the world-angle
+    // rebase skip, which stands down there because stock rebases that seat too.
+    reset();Check(g_odstSeatNativeNoThirdPerson==0,"a stock seat is not reported as natively lacking bit 4");
+    OdstRestoreNativeSeatPatch();*word=0x120;
+    Check(!OdstEnsureFirstPersonSeatFlag(4,1,generation)&&*word==0x120,"a seat natively lacking bit 4 is refused");
+    Check(g_odstSeatNativeNoThirdPerson==OdstSeatNativeNoThirdPersonKey(4,1),"...and published with its definition and seat");
+    Check(!OdstEnsureFirstPersonSeatFlag(4,1,generation)&&g_odstSeatNativeNoThirdPerson==OdstSeatNativeNoThirdPersonKey(4,1),
+        "...and stays published while the same seat is occupied");
+    OdstRestoreNativeSeatPatch();Check(g_odstSeatNativeNoThirdPerson==0,"...and is cleared when the seat is left");
+    *word=0x130;
     reset();g_config.vehicle_hide_body=false;
     Check(!OdstEnsureFirstPersonSeatFlag(4,1,generation)&&*word==0x130,"config off restores live seat");
+    // Co-op safe: a seat already taken is handed back, and no seat is taken while the switch is on.
+    reset();fireTimeAllowed=false;
+    Check(!OdstEnsureFirstPersonSeatFlag(4,1,generation)&&*word==0x130&&g_odstNativeSeatState==0,
+        "co-op safe restores the live seat and leaves it stock");
+    Check(!OdstEnsureFirstPersonSeatFlag(4,1,generation)&&*word==0x130,"...and never edits it while the switch is on");
+    fireTimeAllowed=true;
+    Check(OdstEnsureFirstPersonSeatFlag(4,1,generation)&&*word==0x120,"...and takes it again once changes are allowed");
+    OdstRestoreNativeSeatPatch();
     Check(VirtualFree(memory,0,MEM_RELEASE)!=0,"fixture freed");
     std::printf("PASS: %u production ODST seat lifetime checks\n",checks);
 }

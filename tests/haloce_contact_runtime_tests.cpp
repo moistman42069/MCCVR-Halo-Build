@@ -171,12 +171,21 @@ bool VR_PulseWeaponHaptics(GameTitle title,uint32_t gen,bool secondary,bool supp
 bool VR_GetSupportGripRelationship(SupportGripRelationshipSnapshot& out) noexcept
 { out={GameTitle::HaloCE,testGeneration,testOwner,0x5678000b,1,testSupport};return true; }
 bool VR_IsTwoHandAiming() { return testSupport; }
+bool VR_SupportGripWiredForTitle(GameTitle) noexcept { return false; }   // the sight trace's carrier choice
+// Seat convergence: the seated intent ray comes from the unit-control lane (its own fixture covers the solve).
+HaloCESeatSight testSeatSight{};
+bool testSeated{};
+bool HaloCEUnitControl_SeatSight(uint32_t unit,HaloCESeatSight& out) noexcept
+{ if (!testSeated||unit!=testSeatSight.unit) return false;out=testSeatSight;return true; }
 void Logf(const char*,...) {}
 bool WaitForNativeDetourQuiescence(const void* const*,const void* const*,size_t,const std::atomic<uint32_t>& count)
 { return count.load()==0; }
 
 int main()
 {
+    // The contact strike applies its own damage only while one-machine changes are allowed (co-op safe shots
+    // off): these are that mode's paths.
+    g_config.coop_safe_shots=false;
     auto* image=VirtualAlloc(nullptr,contract::imageSize,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
     if (!image) return 2;moduleBase=reinterpret_cast<uintptr_t>(image);
     if (!InstallService(contract::contact::contact_resolver,&TestResolver)||

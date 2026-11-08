@@ -15,6 +15,29 @@ struct ViewConstruction
     uint32_t width{},height{},mask{};
     SaberCamera stock[2];
     StagedViewPair staged;
+    // AIM FRAME ZOOM (game.cpp Game_AimFrameForEyes): set before eye 0, every eye is staged as the frame's, from the
+    // centre eye `centre` (CentreEye).
+    bool aimFrame{};
+    AimFrameEyes frame;
+    Camera centre;
+
+    // The stock camera `source` at this construction's raster size, as PrepareEye stages it: its native camera and
+    // the centre eye's (CentreEyeTracking) in the same space. False: no camera to lay a frame from.
+    bool CentreEye(const SaberCamera& source,Camera& stockNative,Camera& centreEye) const
+    {
+        if (!width||width>16384||!height||height>16384) return false;
+        SaberCamera raster=source;
+        raster.viewportWidth=static_cast<float>(width);
+        raster.viewportHeight=static_cast<float>(height);
+        Camera native{},candidate{};
+        Cover cover{};
+        if (!NativeCameraFromSaber(raster,native)||!BuildCover(tracking,native.viewport,cover)||
+            !BuildEye(native,CentreEyeTracking(tracking),reference,0,unitsPerMeter,positional,cover,candidate))
+            return false;
+        stockNative=native;
+        centreEye=candidate;
+        return true;
+    }
 
     template<class Rebuild>
     bool PrepareEye(int eye,const SaberCamera& source,Rebuild&& rebuild)
@@ -28,7 +51,8 @@ struct ViewConstruction
         raster.viewportWidth=static_cast<float>(width);
         raster.viewportHeight=static_cast<float>(height);
         SaberCamera camera{}; Cover cover{};
-        if (!StageSaberEye(raster,tracking,reference,eye,unitsPerMeter,positional,camera,cover)) return false;
+        if (!(aimFrame?StageSaberAimFrameEye(raster,centre,frame,eye,camera,cover):
+                StageSaberEye(raster,tracking,reference,eye,unitsPerMeter,positional,camera,cover))) return false;
         const SaberPose requested=camera.pose;
         if (!rebuild(camera)||!NativeCameraFromSaber(camera,checked)||
             !FiniteSaberDerivedCamera(camera)||!SamePose(camera.pose,requested)) return false;

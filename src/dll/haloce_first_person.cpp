@@ -1,3 +1,5 @@
+#include "game.h"
+#include "../common/visual_aim.h"
 #include "haloce_first_person.h"
 #include "../common/config.h"
 #include "haloce_contact.h"
@@ -9,7 +11,9 @@
 #include "../common/native_shot_target_lease.h"
 #include "haloce_stereo_core.h"
 #include "haloce_native_bindings.h"
+#include "haloce_unit_control.h"
 #include "hook_quiescence.h"
+#include "sight_layer.h"
 #include "title_adapter.h"
 #include "../common/haloce_first_person_logic.h"
 #include "../common/haloce_snapshot.h"
@@ -71,6 +75,7 @@ std::atomic<uint64_t> observed{},applied{},refused{},exceptions{},lastApplied{};
 std::atomic<uint64_t> alignmentKnownGraph{},alignmentUnknownGraph{};
 std::atomic<uint64_t> aimObserved{},aimApplied{},aimRefused{};
 std::atomic<uint64_t> assistApplied{};
+std::atomic<uint64_t> convergedAims{},parallelAims{};
 std::atomic<uint64_t> skinApplied{},skinRefused{};
 std::atomic<uint64_t> projectionApplied{},projectionRefused{};
 std::atomic<uint64_t> projectionPolicyRefused{},projectionSelectorRefused{},projectionChangedRefused{};
@@ -100,6 +105,18 @@ struct PaletteReceipt
     uint64_t weaponGraph{};
 };
 Snapshot<PaletteReceipt> paletteReceipt;
+struct FpOrientationProbe {
+    uint32_t generation{},graph{};uint64_t identity{};
+    int count{},gun{},right{},left{};
+    NodeMatrix before{},after{},expected{};
+};
+Snapshot<FpOrientationProbe> fpOrientationProbe;
+struct FpRefusalProbe {
+    uint32_t generation{},graph{},stage{},count{};
+    uint64_t identity{},invalidNodes{},zeroScaleNodes{};
+    float leftUpper{},leftLower{},rightUpper{},rightLower{};
+};
+Snapshot<FpRefusalProbe> fpRefusalProbe;
 thread_local Scope* scope{};
 struct ParticleScope { const SaberCamera* camera{};Tracking eye{}; };
 thread_local const ParticleScope* particleScope{};
@@ -159,9 +176,21 @@ bool LocalOnFootShooter(uint32_t shooter,HaloCELocalPlayerState* outState=nullpt
         !state.nativeInputBlocked&&!state.nativeLookBlocked&&!state.nativePaused&&
         !state.nativeCinematicFlag;
 }
-bool ControllerShotDirection(uint32_t shooter,Vec3& direction) noexcept
+// The direction CE's player shots are aimed along. TRACE-AND-REAIM whenever it can resolve (sight_layer.h):
+// the line from the engine eye through the point the eye-anchored intent ray hits, so the shot converges
+// on what the controller points at, at any range and however far the head is from the character. The
+// engine eye is CE's own director eye when the caller has it (`engineEye`), else the stock centre camera.
+// Only when there is no fresh trace does it fall back to the controller's own direction, which runs
+// parallel to the hand ray from the engine eye (the unconverged aim).
+// FLAT PARITY (sight_layer.h): P is a world point fixed at the gameplay context's camera, and the player
+// aim-assist ray's own eye (`engineEye`) is CE's eye AT THE FIRE, a tick of travel or more past it. Bent from that eye
+// through P, the assist's line trails a strafe; flat traces along its crosshair DIRECTION from that eye. So with the
+// transport wanted the bend is solved from the context's camera eye E_P -- the eye P was built from -- and applied at
+// the assist's eye: the line through P' = P + (E_fire - E_P), what flat traces. Counted as a measured transport (E_fire
+// is the ray's own eye). The native shot's direction (no `engineEye`) is solved from E_P already: flat parity as is.
+bool ControllerShotDirection(uint32_t shooter,Vec3& direction,const Vec3* engineEye=nullptr) noexcept
 {
-    RenderContext context{};NodeMatrix aim{};
+    RenderContext context{};Vec3 head{},dir{},eye{};
     HaloCELocalPlayerState state{};
     if (!AimCurrent()||!LocalOnFootShooter(shooter,&state)||
         !HaloCE_GetGameplayContext(context)||
@@ -184,10 +213,34 @@ bool ControllerShotDirection(uint32_t shooter,Vec3& direction) noexcept
         return false;
     const ControllerPose& carrier=detach?context.tracking.controllers.independentPrimaryAim:
         context.tracking.controllers.primaryAim;
-    if (!BuildControllerMatrix(context.camera,context.tracking,context.reference,
-        carrier,context.unitsPerMeter,context.positional,aim)||
+    // The selected carrier drives the trace-and-reaim geometry below: the intent ray runs along the
+    // carrier's aim, so a detached invocation converges along the independent one-hand pose.
+    if (!BuildSightGeometry(context.camera,context.tracking,context.reference,
+        carrier,context.unitsPerMeter,context.positional,head,dir,eye)||
         !HaloCE_RenderContextCurrent(context)||!AimCurrent()) return false;
-    direction=aim.forward;
+    const bool fireEye=engineEye&&Finite(*engineEye);
+    const bool parity=fireEye&&Sight_TransportWanted(GameTitle::HaloCE,false);
+    const Vec3 pointEye=eye;   // E_P: the context's camera, the eye P is built from
+    if (fireEye&&!parity) eye=*engineEye;
+    const float h[3]{head.x,head.y,head.z},d[3]{dir.x,dir.y,dir.z},e[3]{eye.x,eye.y,eye.z};
+    float bent[3]{};
+    if (Sight_ConvergedDirection(GameTitle::HaloCE,TitleAdapter_GetGeneration(GameTitle::HaloCE),h,d,e,bent))
+    {
+        direction={bent[0],bent[1],bent[2]};
+        convergedAims.fetch_add(1,std::memory_order_relaxed);
+        if (parity)
+        {
+            const float shift[3]{engineEye->x-pointEye.x,engineEye->y-pointEye.y,engineEye->z-pointEye.z};
+            const float vel[3]{context.cameraVel.x,context.cameraVel.y,context.cameraVel.z};
+            const uint64_t nowUs=Sight_NowUs();
+            Sight_NoteTransport(GameTitle::HaloCE,SightTransportSite::CrosshairAssist,shot_lag::Transport::Measured,
+                shot_lag::FireEye::Measured,shift,d,context.cameraVelValid?vel:nullptr,0.0f,
+                context.cameraStampUs&&nowUs>=context.cameraStampUs?float(nowUs-context.cameraStampUs)/1000.0f:-1.0f);
+        }
+        return true;
+    }
+    direction=dir;
+    parallelAims.fetch_add(1,std::memory_order_relaxed);
     return true;
 }
 bool WriteDirection(Vec3* destination,const Vec3& value) noexcept
@@ -197,8 +250,114 @@ bool WriteDirection(Vec3* destination,const Vec3& value) noexcept
     __except(EXCEPTION_EXECUTE_HANDLER)
     { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
 }
+// FLAT PARITY, CE on foot (sight_layer.h SightFireEyeFn; shot_lag_logic.h 4e). A muzzle shot flies through
+// P' = P + (E_fire - E_P): E_P the gameplay context's camera eye P was built from, E_fire the eye after the fire tick's
+// move. Its source is CE's player aim-assist ray -- the director ray (assistRayHook; the assist's call returns to
+// 0xB67BE4, AssistRayBody) -- asked for our unit inside the fire. Its answer counts only once PROVEN (shot_lag::EvaluatorEyeProof:
+// at rest within 5 cm of E_P for a streak, on the perspective latched while agreeing); samples come from every
+// assist call for our unit (the game's own) and from the muzzle shot's own ask. Until then E_fire is E_P carried one
+// measured tick (CE simulates at 30 Hz). Fire thread only.
+struct CeFireEyeState
+{
+    SRWLOCK lock=SRWLOCK_INIT;
+    shot_lag::EvaluatorEyeProof proof{};
+    shot_lag::EyeProof::State reportedState=shot_lag::EyeProof::State::Unproven;
+    bool reportedPath=false;
+} ceFireEye;
+
+void CeNoteFireEyeProof(uint32_t unit,const Vec3* position,int32_t path)
+{
+    RenderContext context{};
+    const uint32_t current=TitleAdapter_GetGeneration(GameTitle::HaloCE);
+    const uint64_t nowUs=Sight_NowUs();
+    const bool read=current&&HaloCE_GetGameplayContext(context)&&context.cameraStampUs&&nowUs>=context.cameraStampUs&&
+        nowUs-context.cameraStampUs<=100000;
+    const bool atRest=read&&context.cameraVelValid&&
+        std::sqrt(Dot(context.cameraVel,context.cameraVel))*shot_lag::kMetresPerWu<0.25f;
+    float offsetMm=std::numeric_limits<float>::quiet_NaN();
+    if (position&&Finite(*position)&&Finite(context.camera.position))
+    {
+        const Vec3 d=*position-context.camera.position;
+        offsetMm=std::sqrt(Dot(d,d))*shot_lag::kMmPerWu;
+    }
+    const bool eligible=read&&AimCurrent()&&LocalOnFootShooter(unit)&&
+        !context.tracking.controllers.controlsPresentationBlocked;
+    auto& state=ceFireEye;
+    AcquireSRWLockExclusive(&state.lock);
+    state.proof.Note(current,static_cast<int32_t>(unit),eligible,atRest,offsetMm,path);
+    const auto now=state.proof.proof.state;
+    const bool pathKnown=state.proof.pathKnown;
+    const int32_t latched=state.proof.path;
+    const bool changed=now!=state.reportedState||pathKnown!=state.reportedPath;
+    state.reportedState=now;state.reportedPath=pathKnown;
+    ReleaseSRWLockExclusive(&state.lock);
+    if (changed)
+        LOG("CE fire eye (flat parity): the player aim-assist ray's eye is %s%s (perspective %s%d); a muzzle shot's eye "
+            "at the fire is %s",now==shot_lag::EyeProof::State::Proven?"PROVEN":
+            now==shot_lag::EyeProof::State::Disproven?"DISPROVEN":"unproven",
+            now==shot_lag::EyeProof::State::Proven?" to be the camera eye at rest":"",
+            pathKnown?"":"not yet latched, last ",pathKnown?latched:path,
+            now==shot_lag::EyeProof::State::Proven?"measured (that ray asked at the fire)":
+            "the context camera's eye carried one tick");
+}
+bool CeCallFireEyeEvaluator(uint32_t unit,Vec3& position,int32_t& path) noexcept
+{
+    const auto evaluator=reinterpret_cast<PlayerRayFn>(assistRayHook.original);
+    if (!evaluator||!AimCurrent()) return false;
+    __try { Vec3 direction{};path=evaluator(unit,&position,&direction);return true; }
+    __except(EXCEPTION_EXECUTE_HANDLER) { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
+}
+shot_lag::FireEye CeFireEyeForShot(const float* siteEye,bool askEvaluator,const SightPointSample& sample,
+    float eye[3],float& ageMs)
+{
+    (void)siteEye;
+    ageMs=-1.0f;
+    if (TitleAdapter_GetActiveTitle()!=GameTitle::HaloCE) return shot_lag::FireEye::NoSource;
+    float measured[3]{};
+    shot_lag::FireEye asked=shot_lag::FireEye::Count;
+    HaloCELocalPlayerState state{};
+    if (askEvaluator)
+    {
+        // Inside the muzzle shot's fire (MuzzleFireHook holds this module's callback count): our unit only.
+        Vec3 position{};int32_t path=0;
+        if (!HaloCEControls_GetLocalPlayerState(state)||!LocalOnFootShooter(state.unit)) asked=shot_lag::FireEye::OtherUnit;
+        else if (!CeCallFireEyeEvaluator(state.unit,position,path)) asked=shot_lag::FireEye::Faulted;
+        else
+        {
+            const bool finite=Finite(position);
+            CeNoteFireEyeProof(state.unit,finite?&position:nullptr,path);   // our own ask is a sample too
+            AcquireSRWLockShared(&ceFireEye.lock);
+            asked=ceFireEye.proof.Verdict(path,finite);
+            ReleaseSRWLockShared(&ceFireEye.lock);
+            measured[0]=position.x;measured[1]=position.y;measured[2]=position.z;
+        }
+    }
+    // 30 Hz while unmeasured: CE's simulation tick.
+    const float tickS=float(Sight_TickPeriodUs(GameTitle::HaloCE,33333))*1.0e-6f;
+    const uint64_t nowUs=Sight_NowUs();
+    const shot_lag::FireEye verdict=shot_lag::ChooseSampleFireEye(asked,measured,sample.camera.valid,sample.camera.eye,
+        sample.camera.velValid?sample.camera.vel:nullptr,
+        shot_lag::SampleCarrySeconds(sample.camera.stampUs,nowUs,tickS,kSightTransportMaxAgeUs),eye);
+    if (verdict==shot_lag::FireEye::Measured) ageMs=0.0f;
+    else if (verdict==shot_lag::FireEye::CarriedTick&&sample.camera.stampUs&&nowUs>=sample.camera.stampUs)
+        ageMs=float(nowUs-sample.camera.stampUs)/1000.0f;
+    return verdict;
+}
+const bool ceFireEyeRegistered=(Sight_SetFireEyeSource(GameTitle::HaloCE,&CeFireEyeForShot),true);
+// The gameplay context as the camera sample a shot site built its point from.
+SightCameraSample CeContextCameraSample(const RenderContext& context) noexcept
+{
+    SightCameraSample camera{};
+    camera.eye[0]=context.camera.position.x;camera.eye[1]=context.camera.position.y;camera.eye[2]=context.camera.position.z;
+    camera.stampUs=context.cameraStampUs;
+    camera.valid=context.cameraStampUs!=0&&Finite(context.camera.position);
+    camera.velValid=context.cameraVelValid;
+    camera.vel[0]=context.cameraVel.x;camera.vel[1]=context.cameraVel.y;camera.vel[2]=context.cameraVel.z;
+    return camera;
+}
 #include "haloce_muzzle_state.inl"
 #include "haloce_muzzle_shots.inl"
+void SeatNoteFireLine(uint32_t owner,const Vec3* position,const Vec3* direction) noexcept;   // seat convergence, below
 void ModernRayBody(uint32_t unit,Vec3* position,Vec3* direction,Vec3* inheritedVelocity,const Vec3* offset,bool projectOrigin,bool useUnitAim,uintptr_t caller)
 {
     const auto original=reinterpret_cast<ModernRayFn>(modernRayHook.original);
@@ -217,7 +376,11 @@ void ModernRayBody(uint32_t unit,Vec3* position,Vec3* direction,Vec3* inheritedV
     if (!callsite||!ControllerShotDirection(unit,controller)||!direction)
     {
         if (callsite&&AimCurrent()) aimRefused.fetch_add(1,std::memory_order_relaxed);
-        original(unit,position,direction,inheritedVelocity,offset,projectOrigin,useUnitAim);return;
+        original(unit,position,direction,inheritedVelocity,offset,projectOrigin,useUnitAim);
+        // A local seat's shot stays exactly as the engine built it here (the barrel, or the unit's own aim: its
+        // natural limits live in this direction); the dev witness only measures it against the traced point.
+        if (callsite) SeatNoteFireLine(unit,position,direction);
+        return;
     }
     // The stock native helper still projects/clamps the authored muzzle and
     // computes inherited velocity. Only its optional unit-facing overwrite is
@@ -249,7 +412,9 @@ void LegacyRayBody(uint32_t unit,Vec3* position,Vec3* direction,float* inherited
     if (!callsite||!ControllerShotDirection(unit,controller)||!direction)
     {
         if (callsite&&AimCurrent()) aimRefused.fetch_add(1,std::memory_order_relaxed);
-        original(unit,position,direction,inheritedSpeed,projectOrigin,useUnitAim);return;
+        original(unit,position,direction,inheritedSpeed,projectOrigin,useUnitAim);
+        if (callsite) SeatNoteFireLine(unit,position,direction);   // dev: as in the modern helper
+        return;
     }
     original(unit,position,&controller,inheritedSpeed,projectOrigin,false);
     if (WriteDirection(direction,controller)) aimApplied.fetch_add(1,std::memory_order_relaxed);
@@ -261,11 +426,72 @@ __declspec(noinline) void __fastcall LegacyRayHook(uint32_t unit,Vec3* position,
     __try{LegacyRayBody(unit,position,direction,inheritedSpeed,projectOrigin,useUnitAim,reinterpret_cast<uintptr_t>(_ReturnAddress()));}
     __finally{callbacks.fetch_sub(1,std::memory_order_release);}
 }
+// SEAT CONVERGENCE, the fire's half (seat_converge_logic.h). In a seat the unit-control packet already carries the
+// aim bent from this very camera through the traced point; the biped's aiming vector -- the direction the director
+// answers here -- follows it at the game's own aiming rate. So the answer is re-aimed, from its own position,
+// through the point: CE's crosshair test then runs to the point whatever that rate, and the shot it turns is still
+// pinned by the engine inside the weapon's deviation cone about the barrel (0xB67E34..0xB67E97, seats only). How far
+// the engine's own line was off the point is counted (the SHOT REAIM line's seated part: what an unmodded host,
+// tracing along the packet's aim alone, would miss by). Only the local player's seated biped, only while the seat's
+// last packet converged; anything else leaves the director's answer untouched.
+std::atomic<uint64_t> seatAssistApplied{},seatAssistThrough{},seatAssistSkipped{};
+bool LocalSeatedShooter(uint32_t shooter) noexcept
+{
+    if (shooter==0xffffffffu) return false;
+    HaloCELocalPlayerState state{};
+    return HaloCEControls_GetLocalPlayerState(state)&&state.hasControlledUnit&&state.unit==shooter&&
+        !state.onFoot&&!state.nativeInputBlocked&&!state.nativeLookBlocked&&!state.nativePaused&&
+        !state.nativeCinematicFlag;
+}
+// The local seat's converged point, while its aim is converged. `seat` receives the solve.
+bool SeatShotPoint(uint32_t unit,HaloCESeatAim& seat) noexcept
+{
+    return AimCurrent()&&LocalSeatedShooter(unit)&&HaloCEUnitControl_SeatAim(unit,seat)&&
+        Sight_SeatConvergedLive(GameTitle::HaloCE,seat.sight.key,kSightFreshMs)&&AimCurrent();
+}
+void SeatAssistRay(uint32_t unit,Vec3* position,Vec3* direction) noexcept
+{
+    HaloCESeatAim seat{};
+    if (!SeatShotPoint(unit,seat)||!Finite(*position)||!Finite(*direction))
+    { seatAssistSkipped.fetch_add(1,std::memory_order_relaxed);return; }
+    const float start[3]{position->x,position->y,position->z};
+    float line[3]{direction->x,direction->y,direction->z};
+    // The engine's own crosshair line against the point, before anything moves it (dev).
+    Sight_NoteSeatShot(GameTitle::HaloCE,SightSeatLine::Crosshair,start,line,seat.point);
+    if (!Sight_ReaimThroughPoint(GameTitle::HaloCE,SightShotSite::CrosshairAssist,start,line,seat.point,true))
+    { seatAssistThrough.fetch_add(1,std::memory_order_relaxed);return; }   // already through it, or counted refused
+    if (WriteDirection(direction,{line[0],line[1],line[2]})) seatAssistApplied.fetch_add(1,std::memory_order_relaxed);
+}
+// The shot as the fire routine took it for a local seat -- the barrel marker for a vehicle gun (its owner is the
+// vehicle), the unit's aim for a passenger's own weapon -- against the traced point (dev only; nothing is changed:
+// this line is the centre of the cone the engine pins the seated shot to, the seat's natural limit).
+void SeatNoteFireLine(uint32_t owner,const Vec3* position,const Vec3* direction) noexcept
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (!position||!direction||!AimCurrent()) return;
+    HaloCELocalPlayerState state{};
+    if (!HaloCEControls_GetLocalPlayerState(state)||!state.hasControlledUnit||state.onFoot||
+        (owner!=state.unit&&owner!=state.parent)) return;
+    HaloCESeatAim seat{};
+    if (!SeatShotPoint(state.unit,seat)||!Finite(*position)||!Finite(*direction)) return;
+    const float start[3]{position->x,position->y,position->z},line[3]{direction->x,direction->y,direction->z};
+    Sight_NoteSeatShot(GameTitle::HaloCE,SightSeatLine::Barrel,start,line,seat.point);
+#else
+    (void)owner;(void)position;(void)direction;
+#endif
+}
 int16_t AssistRayBody(uint32_t unit,Vec3* position,Vec3* direction,uintptr_t caller)
 {
     const auto original=reinterpret_cast<PlayerRayFn>(assistRayHook.original);
     if (!original) return -1;
     const int16_t perspective=original(unit,position,direction);
+    // A local SEAT's fire: re-aim the engine's own crosshair line through the seat's converged point.
+    if(caller==moduleBase+0xb67be4&&position&&direction&&LocalSeatedShooter(unit))
+    { SeatAssistRay(unit,position,direction);return perspective; }
+    // Flat parity (CeFireEyeForShot): the player assist's own call for our unit, before anything below replaces its
+    // outputs, is a free sample of the director ray against the context camera.
+    if(caller==moduleBase+0xb67be4&&position&&LocalOnFootShooter(unit))
+        CeNoteFireEyeProof(unit,Finite(*position)?position:nullptr,perspective);
     if(caller==moduleBase+0xb67be4&&
         MuzzleShotMatches(unit)&&position&&direction)
     {
@@ -274,8 +500,10 @@ int16_t AssistRayBody(uint32_t unit,Vec3* position,Vec3* direction,uintptr_t cal
     Vec3 controller{};
     // This is the downstream PLAYER aim-assist ray, after shot adjustment.
     // Other uses of the director ray (camera, AI, scopes) remain untouched.
+    // CE traces its crosshair from this ray's own position (its director eye), so converge from THAT eye:
+    // the engine's trace then finds the point the intent ray hit, and the muzzle is aimed at it.
     if (caller==moduleBase+0xb67be4&&
-        ControllerShotDirection(unit,controller)&&WriteDirection(direction,controller))
+        ControllerShotDirection(unit,controller,position)&&WriteDirection(direction,controller))
         assistApplied.fetch_add(1,std::memory_order_relaxed);
     return perspective;
 }
@@ -379,7 +607,13 @@ bool ScaleConvertedSkin(const NodeMatrix* source,SaberBoneMatrix* destination) n
     __except(EXCEPTION_EXECUTE_HANDLER)
     { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
 }
-__declspec(noinline) void __fastcall SkinConvertHook(const NodeMatrix* source,SaberBoneMatrix* destination)
+// first_person_saber_bone_convert (0x77E70) writes only eax and xmm0-xmm5, and halo1.dll's LTCG callers
+// keep rcx, rdx and r8-r11 live across it (0xABCCA3: a global in r10, r10+0x138 in r11). MinHook therefore
+// enters through a thunk that preserves them (haloce_skin_convert_thunk.asm); the thunk calls this entry
+// with the NATIVE return address, since this function's own _ReturnAddress() would be the thunk.
+extern "C" void HaloCeSkinConvertThunk(const NodeMatrix* source,SaberBoneMatrix* destination);
+extern "C" __declspec(noinline) void HaloCeSkinConvertEnter(const NodeMatrix* source,SaberBoneMatrix* destination,
+    uintptr_t caller)
 {
     Callback callback;
     const auto original=reinterpret_cast<SkinConvertFn>(skinConvertHook.original);
@@ -387,7 +621,7 @@ __declspec(noinline) void __fastcall SkinConvertHook(const NodeMatrix* source,Sa
     original(source,destination);
     // Only the native first-person skin subclass's proven conversion call.
     // Object carrier conversion and all world-object matrices remain native.
-    if (reinterpret_cast<uintptr_t>(_ReturnAddress())!=moduleBase+0x8b982||
+    if (caller!=moduleBase+0x8b982||
         !skinInstalled.load(std::memory_order_acquire)||!Current()) return;
     if (ScaleConvertedSkin(source,destination)) skinApplied.fetch_add(1,std::memory_order_relaxed);
     else skinRefused.fetch_add(1,std::memory_order_relaxed);
@@ -464,7 +698,7 @@ __declspec(noinline) void __fastcall ProjectionHook(uintptr_t material,float* co
     // The native writer is GLT-specific. Only its proven first-person flag
     // and exact four-lane selector can authorize the optional correction.
     uint32_t flags{};
-    if (!Read(model+0x28,flags)||!(flags&0x10000000u)) return;
+    if (!model||!Read(model+0x28,flags)||!(flags&0x10000000u)) return;   // a null model: no SEH round trip
     if (ApplyTrackedProjection(constants,model)) projectionApplied.fetch_add(1,std::memory_order_relaxed);
     else projectionRefused.fetch_add(1,std::memory_order_relaxed);
 }
@@ -477,7 +711,7 @@ __declspec(noinline) void __fastcall ZfillProjectionHook(uintptr_t material,floa
     original(material,constants,model,variants,a5,a6,a7,a8);
     if (!projectionInstalled.load(std::memory_order_acquire)||!Current()) return;
     uint32_t flags{};
-    if (!Read(model+0x28,flags)||!(flags&0x10000000u)) return;
+    if (!model||!Read(model+0x28,flags)||!(flags&0x10000000u)) return;   // a null model: no SEH round trip
     if (ApplyTrackedProjection(constants,model,0x20)) projectionApplied.fetch_add(1,std::memory_order_relaxed);
     else projectionRefused.fetch_add(1,std::memory_order_relaxed);
 }
@@ -490,7 +724,7 @@ __declspec(noinline) void __fastcall SfxProjectionHook(uintptr_t material,float*
     original(material,constants,model,variants,a5,a6,a7,a8);
     if (!projectionInstalled.load(std::memory_order_acquire)||!Current()) return;
     uint32_t flags{};
-    if (!Read(model+0x28,flags)||!(flags&0x10000000u)) return;
+    if (!model||!Read(model+0x28,flags)||!(flags&0x10000000u)) return;   // a null model: no SEH round trip
     if (ApplyTrackedProjection(constants,model,0x70)) projectionApplied.fetch_add(1,std::memory_order_relaxed);
     else projectionRefused.fetch_add(1,std::memory_order_relaxed);
 }
@@ -594,14 +828,27 @@ __declspec(noinline) void __fastcall ParticleDrawHook(const SaberCamera* camera,
     __try { if (original) original(camera,texture,pass,batch); }
     __finally { particleScope=previous;callbacks.fetch_sub(1,std::memory_order_release); }
 }
-bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner) noexcept
+thread_local weapon_animation::Reference animationReference;
+thread_local weapon_animation::ReferenceCache animationReferenceCache;
+std::atomic<uint64_t> animationApplied{},animationSettling{};
+bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner,const NodeMatrix* animationRoot) noexcept
 {
     AnimationNode nodes[kFirstPersonMaxNodes]{};
     uint32_t count{};
-    if (!ReadGraph(graph,nodes,count)) return false;
+    if (!ReadGraph(graph,nodes,count)) {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        (void)fpRefusalProbe.Publish({owner.context.tracking.generation,graph,10});
+#endif
+        return false;
+    }
     FirstPersonBinding binding{};
     const auto& context=owner.context;
-    if (!BuildFirstPersonBinding(graph,context.tracking.generation,nodes,count,binding)) return false;
+    if (!BuildFirstPersonBinding(graph,context.tracking.generation,nodes,count,binding)) {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        (void)fpRefusalProbe.Publish({context.tracking.generation,graph,11,count});
+#endif
+        return false;
+    }
     // The optional pose applies only to the official CE first-person hand
     // graph whose five three-joint chains were bound by exact node names and
     // parent links. Unknown/custom graphs retain the normal tracked-hand path.
@@ -613,8 +860,73 @@ bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner) noexce
     }
     std::array<NodeMatrix,kFirstPersonMaxNodes> source{},staged{};
     if (!CopyPalette(matrices,source.data(),count)) return false;
+    NodeMatrix animationDelta{};bool haveAnimation=false;
+    if(animationRoot&&Valid(*animationRoot)&&binding.gun>=0&&binding.gun<int(count)&&binding.rightWrist>=0&&binding.rightWrist<int(count)&&owner.muzzleUnit!=UINT32_MAX&&owner.muzzleWeapon!=UINT32_MAX&&MuzzleOwner(owner.muzzleUnit,owner.muzzleWeapon)) {
+        // E-CE-FP-1: the palette composes through these invocation arguments.
+        // Classic can prepare multiple cameras between outer prepare receipts.
+        const NodeMatrix& camera=*animationRoot;
+        // The solver already retains gun-to-wrist translation. Observe the
+        // wrist position, not the gun position, to avoid adding that motion twice.
+        const auto anchor=FirstPersonGunAimFrame(binding,source[binding.gun]);
+        weapon_animation::Pose local{},delta{};
+        const bool localValid=FirstPersonAnimationLocal(camera,anchor,source[binding.rightWrist],local);
+        if(!localValid)animationReference={};
+        haveAnimation=localValid&&animationReference.Update({binding.generation,
+            (uint64_t(owner.muzzleUnit)<<32)|owner.muzzleWeapon,binding.nodeIdentity,context.rendererEpoch},
+            local,GetTickCount64(),context.unitsPerMeter,delta,true,&animationReferenceCache);
+        if(haveAnimation) {animationDelta=AnimationMatrix(delta);++animationApplied;}
+        else ++animationSettling;
+    } else animationReference={};
+    uint32_t refusalStage=0;
     if (!BuildTrackedFirstPersonPalette(binding,source.data(),context.camera,context.tracking,
-            context.reference,context.unitsPerMeter,context.positional,staged)) return false;
+            context.reference,context.unitsPerMeter,context.positional,staged,&refusalStage,haveAnimation?&animationDelta:nullptr)) {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        FpRefusalProbe failure{};
+        failure.generation=binding.generation;failure.graph=graph;failure.stage=refusalStage;
+        failure.count=count;failure.identity=binding.nodeIdentity;
+        for(uint32_t i=0;i<count;++i) {
+            if(!Valid(source[i]))failure.invalidNodes|=uint64_t{1}<<i;
+            if(source[i].scale==0)failure.zeroScaleNodes|=uint64_t{1}<<i;
+        }
+        const auto distance=[&](int a,int b) {
+            if(a<0 || b<0 || a>=int(count) || b>=int(count))return -1.0f;
+            const Vec3 delta=source[a].position-source[b].position;return std::sqrt(Dot(delta,delta));
+        };
+        failure.leftUpper=distance(binding.shoulder[0],binding.elbow[0]);
+        failure.leftLower=distance(binding.elbow[0],binding.leftWrist);
+        failure.rightUpper=distance(binding.shoulder[1],binding.elbow[1]);
+        failure.rightLower=distance(binding.elbow[1],binding.rightWrist);
+        (void)fpRefusalProbe.Publish(failure);
+#endif
+        return false;
+    }
+    if(!context.tracking.controllers.leftHanded&&MuzzleOwner(owner.muzzleUnit,owner.muzzleWeapon)) {
+        NodeMatrix primary{};
+        if(BuildControllerMatrix(context.camera,context.tracking,context.reference,
+                context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,primary)) {
+            const float basis[9]{primary.forward.x,primary.forward.y,primary.forward.z,
+                primary.left.x,primary.left.y,primary.left.z,primary.up.x,primary.up.y,primary.up.z};
+            Game_PublishAuthoredGrip(GameTitle::HaloCE,binding.generation,owner.muzzleUnit,owner.muzzleWeapon,
+                &source[binding.rightWrist],&source[binding.leftWrist],&staged[binding.rightWrist],
+                basis,context.unitsPerMeter,context.tracking.controllers.supportGripAttached);
+        }
+    }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Passive pose evidence (dev builds: it rebuilds the controller matrix a
+    // second time per palette); formatting and logging stay in the cold poll.
+    (void)fpRefusalProbe.Publish({binding.generation,graph,0,count,binding.nodeIdentity});
+    FpOrientationProbe probe{};
+    probe.generation=binding.generation;probe.graph=graph;probe.identity=binding.nodeIdentity;
+    probe.count=int(count);probe.gun=binding.gun;probe.right=binding.rightWrist;probe.left=binding.leftWrist;
+    probe.before=FirstPersonGunAimFrame(binding,source[binding.gun]);
+    probe.after=FirstPersonGunAimFrame(binding,staged[binding.gun]);
+    if(BuildControllerMatrix(context.camera,context.tracking,context.reference,
+            context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,probe.expected) &&
+        ApplyVisualMount(context.tracking.controllers,context.unitsPerMeter,true,probe.expected))
+        (void)fpOrientationProbe.Publish(probe);
+#else
+    (void)refusalStage;
+#endif
     HaloCEContactPublication contact{};
     HaloCEContact_ApplyPalette(context,binding,source.data(),staged.data(),contact);
     (void)ApplyVisibleFirstPersonHandOffsets(binding,context.unitsPerMeter,context.tracking.controllers,staged.data());
@@ -673,11 +985,18 @@ __declspec(noinline) void __fastcall PaletteHook(uint32_t graph,NodeMatrix* matr
     Callback callback;
     auto original=reinterpret_cast<PaletteFn>(paletteHook.original);
     if (!original) return;
+    NodeMatrix animationRoot{};
+    const bool haveAnimationRoot=Current()&&scope&&scope->valid&&scope->output==matrices&&
+        reinterpret_cast<uintptr_t>(_ReturnAddress())==moduleBase+0xb29d8d&&
+        Read(reinterpret_cast<uintptr_t>(position),animationRoot.position)&&
+        Read(reinterpret_cast<uintptr_t>(forward),animationRoot.forward)&&
+        Read(reinterpret_cast<uintptr_t>(up),animationRoot.up);
+    animationRoot.left=Cross(animationRoot.up,animationRoot.forward);
     original(graph,matrices,animation,position,forward,up);
     if (!Current()||!scope||!scope->valid||scope->output!=matrices||
         reinterpret_cast<uintptr_t>(_ReturnAddress())!=moduleBase+0xb29d8d) return;
     observed.fetch_add(1,std::memory_order_relaxed);
-    if (ApplyPalette(graph,matrices,*scope))
+    if (ApplyPalette(graph,matrices,*scope,haveAnimationRoot?&animationRoot:nullptr))
     { applied.fetch_add(1,std::memory_order_relaxed); }
     else refused.fetch_add(1,std::memory_order_relaxed);
 }
@@ -783,8 +1102,7 @@ __declspec(noinline) void __fastcall PrepareHook(int16_t user)
         local.output=reinterpret_cast<NodeMatrix*>(users+0x1088);
         local.valid=true;
         HaloCELocalPlayerState state{};
-        if(local.context.tracking.controllers.gunBarrelAim&&
-            HaloCEControls_GetLocalPlayerState(state)&&LocalOnFootShooter(state.unit))
+        if(HaloCEControls_GetLocalPlayerState(state)&&LocalOnFootShooter(state.unit))
         {local.muzzleUnit=state.unit;local.muzzleWeapon=state.weapon;}
         if (supportOutermostPrepare)
         {
@@ -860,19 +1178,24 @@ bool Remove() noexcept
         if (result!=MH_OK&&result!=MH_ERROR_DISABLED) return false;
         hook->enabled=false;
     }
+    // The skin hook's asm entry and the C++ entry it calls sit side by side, in the SAME batch: each batch
+    // is its own freeze and checks only RIP, so a thread moving from the thunk into the entry's uncounted
+    // prologue between two freezes would pass both if they were checked apart.
     const void* functions[]={reinterpret_cast<const void*>(&PrepareHook),reinterpret_cast<const void*>(&PaletteHook),
         reinterpret_cast<const void*>(&ModernRayHook),reinterpret_cast<const void*>(&LegacyRayHook),
-        reinterpret_cast<const void*>(&AssistRayHook),reinterpret_cast<const void*>(&SkinConvertHook),
-        reinterpret_cast<const void*>(&ProjectionHook),reinterpret_cast<const void*>(&ZfillProjectionHook),
-        reinterpret_cast<const void*>(&SfxProjectionHook),reinterpret_cast<const void*>(&ClassicLensHook),
-        reinterpret_cast<const void*>(&ParticleDrawHook),reinterpret_cast<const void*>(&ParticleCommitHook),
-        reinterpret_cast<const void*>(&VisibilityPrepareHook),reinterpret_cast<const void*>(&VisibilitySubmitHook),reinterpret_cast<const void*>(&TargetQueryHook)};
-    const void* trampolines[]={prepareHook.original,paletteHook.original,modernRayHook.original,legacyRayHook.original,assistRayHook.original,skinConvertHook.original,projectionHook.original,zfillProjectionHook.original,sfxProjectionHook.original,classicLensHook.original,particleDrawHook.original,particleCommitHook.original,visibilityPrepareHook.original,visibilitySubmitHook.original,targetQueryHook.original};
+        reinterpret_cast<const void*>(&AssistRayHook),reinterpret_cast<const void*>(&HaloCeSkinConvertEnter),
+        reinterpret_cast<const void*>(&HaloCeSkinConvertThunk),reinterpret_cast<const void*>(&ProjectionHook),
+        reinterpret_cast<const void*>(&ZfillProjectionHook),reinterpret_cast<const void*>(&SfxProjectionHook),
+        reinterpret_cast<const void*>(&ClassicLensHook),reinterpret_cast<const void*>(&ParticleDrawHook),
+        reinterpret_cast<const void*>(&ParticleCommitHook),reinterpret_cast<const void*>(&VisibilityPrepareHook),
+        reinterpret_cast<const void*>(&VisibilitySubmitHook),reinterpret_cast<const void*>(&TargetQueryHook)};
+    const void* trampolines[]={prepareHook.original,paletteHook.original,modernRayHook.original,legacyRayHook.original,assistRayHook.original,skinConvertHook.original,skinConvertHook.original,projectionHook.original,zfillProjectionHook.original,sfxProjectionHook.original,classicLensHook.original,particleDrawHook.original,particleCommitHook.original,visibilityPrepareHook.original,visibilitySubmitHook.original,targetQueryHook.original};
+    static_assert(_countof(functions)==16 && _countof(trampolines)==16);
     // The shared native stack verifier admits at most eight detour ranges.
-    // All fifteen entries above are disabled before either batch is checked;
+    // All sixteen entries above are disabled before either batch is checked;
     // keep every trampoline/module alive until both batches are quiescent.
     if (!WaitForNativeDetourQuiescence(functions,trampolines,8,callbacks)||
-        !WaitForNativeDetourQuiescence(functions+8,trampolines+8,7,callbacks)) return false;
+        !WaitForNativeDetourQuiescence(functions+8,trampolines+8,8,callbacks)) return false;
     for (Hook* hook:{&prepareHook,&paletteHook,&modernRayHook,&legacyRayHook,&assistRayHook,&skinConvertHook,&projectionHook,&zfillProjectionHook,&sfxProjectionHook,&classicLensHook,&particleDrawHook,&particleCommitHook,&visibilityPrepareHook,&visibilitySubmitHook,&targetQueryHook})
     {
         if (hook->target&&MH_RemoveHook(hook->target)!=MH_OK) return false;
@@ -891,9 +1214,10 @@ bool RemoveSkin() noexcept
         if (result!=MH_OK&&result!=MH_ERROR_DISABLED) return false;
         skinConvertHook.enabled=false;
     }
-    const void* functions[]={reinterpret_cast<const void*>(&SkinConvertHook)};
-    const void* trampolines[]={skinConvertHook.original};
-    if (!WaitForNativeDetourQuiescence(functions,trampolines,1,callbacks)) return false;
+    const void* functions[]={reinterpret_cast<const void*>(&HaloCeSkinConvertThunk),
+        reinterpret_cast<const void*>(&HaloCeSkinConvertEnter)};
+    const void* trampolines[]={skinConvertHook.original,skinConvertHook.original};
+    if (!WaitForNativeDetourQuiescence(functions,trampolines,2,callbacks)) return false;
     if (skinConvertHook.target&&MH_RemoveHook(skinConvertHook.target)!=MH_OK) return false;
     skinConvertHook={};skinRetiring=false;return true;
 }
@@ -905,7 +1229,7 @@ bool InstallSkin(uintptr_t base,size_t size,uint32_t gen) noexcept
     if (!VerifyNativeFeatureBindings(base,size,gen,contracts,failure))
     { LOG("CE Anniversary hand scale stock fallback: binding verification failed: %s",failure?failure:"unknown");return false; }
     void* target=reinterpret_cast<void*>(base+contract::first_person_skin::first_person_saber_bone_convert);
-    auto result=MH_CreateHook(target,reinterpret_cast<void*>(&SkinConvertHook),&skinConvertHook.original);
+    auto result=MH_CreateHook(target,reinterpret_cast<void*>(&HaloCeSkinConvertThunk),&skinConvertHook.original);
     if (result!=MH_OK)
     { LOG("CE Anniversary hand scale stock fallback: create hook status %d",result);return false; }
     skinConvertHook.target=target;
@@ -1225,11 +1549,38 @@ bool HaloCEFirstPerson_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActiv
             gen,muzzleInstalled.load(),muzzleFaulted.load(),muzzleApplied.load(),muzzleRefused.load(),muzzleRestoreRefused.load());
         LOG("CE FP gen=%u installed=%d observed=%llu applied=%llu stock=%llu exceptions=%llu",
             gen,installed.load(),observed.load(),applied.load(),refused.load(),exceptions.load());
+        LOG("CE weapon animation: applied=%llu settling=%llu",
+            static_cast<unsigned long long>(animationApplied.load()),
+            static_cast<unsigned long long>(animationSettling.load()));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        FpRefusalProbe failure{};
+        if(fpRefusalProbe.Read(failure) && failure.generation==gen)
+            LOG("CE FP stage graph=%08X identity=%llX count=%u stage=%u invalidNodes=%llX zeroScale=%llX armLengths=%.6f/%.6f/%.6f/%.6f (0=staged 1=input 2=controller 3=grip 4=hand 5=nodes 6=left-arm 7=right-arm 8=floating 10=read 11=binding)",
+                failure.graph,failure.identity,failure.count,failure.stage,failure.invalidNodes,failure.zeroScaleNodes,
+                failure.leftUpper,failure.leftLower,failure.rightUpper,failure.rightLower);
+        FpOrientationProbe probe{};
+        if(fpOrientationProbe.Read(probe) && probe.generation==gen) {
+            LOG("CE FP orientation graph=%08X identity=%llX count=%d gun=%d wrists=%d/%d beforeF=%.4f/%.4f/%.4f afterF=%.4f/%.4f/%.4f aimF=%.4f/%.4f/%.4f afterUp=%.4f/%.4f/%.4f aimUp=%.4f/%.4f/%.4f",
+                probe.graph,probe.identity,probe.count,probe.gun,probe.left,probe.right,
+                probe.before.forward.x,probe.before.forward.y,probe.before.forward.z,
+                probe.after.forward.x,probe.after.forward.y,probe.after.forward.z,
+                probe.expected.forward.x,probe.expected.forward.y,probe.expected.forward.z,
+                probe.after.up.x,probe.after.up.y,probe.after.up.z,
+                probe.expected.up.x,probe.expected.up.y,probe.expected.up.z);
+        }
+#endif
         if (alignmentKnownGraph.load() || alignmentUnknownGraph.load())
             LOG("CE hand alignment gen=%u verifiedGripGraph=%llu unknownGraphPriorMount=%llu; unknown graphs retain prior hand placement",
                 gen,alignmentKnownGraph.load(),alignmentUnknownGraph.load());
-        LOG("CE aim gen=%u installed=%d observed=%llu applied=%llu stock=%llu assist=%llu",
-            gen,aimInstalled.load(),aimObserved.load(),aimApplied.load(),aimRefused.load(),assistApplied.load());
+        LOG("CE aim gen=%u installed=%d observed=%llu applied=%llu stock=%llu assist=%llu; shot directions "
+            "converged on the traced point %llu / parallel to the hand ray (no fresh trace) %llu",
+            gen,aimInstalled.load(),aimObserved.load(),aimApplied.load(),aimRefused.load(),assistApplied.load(),
+            convergedAims.load(),parallelAims.load());
+        if (seatAssistApplied.load()||seatAssistThrough.load()||seatAssistSkipped.load())
+            LOG("CE seat fire gen=%u: the engine's crosshair line at a seated fire re-aimed through the traced point %llu, "
+                "already through it or geometrically refused (SHOT REAIM names which) %llu, left as the game built it "
+                "(the seat's aim was not converged) %llu",
+                gen,seatAssistApplied.load(),seatAssistThrough.load(),seatAssistSkipped.load());
         LOG("CE continuous targeting gen=%u installed=%d observed=%llu controller=%llu stock=%llu",
             gen,targetInstalled.load(),targetObserved.load(),targetApplied.load(),targetRefused.load());
         LOG("CE Anniversary hand scale gen=%u installed=%d applied=%llu stock=%llu",
@@ -1263,6 +1614,17 @@ bool HaloCEFirstPerson_GetLocalPlayerState(HaloCELocalPlayerState& state) noexce
 {
     Callback callback;
     return HaloCEControls_GetLocalPlayerState(state);
+}
+
+int HaloCEFirstPerson_SeatEye(uint32_t unit,float position[3],int& perspective) noexcept
+{
+    // The callback count keeps the director hook's trampoline alive across the call (Remove's quiescence).
+    Callback callback;
+    if (!position||unit==0xffffffffu||!AimCurrent()||!assistRayHook.original) return 0;
+    Vec3 eye{};int32_t path=-1;
+    if (!CeCallFireEyeEvaluator(unit,eye,path)) return AimCurrent()?-1:0;
+    position[0]=eye.x;position[1]=eye.y;position[2]=eye.z;perspective=path;
+    return 1;
 }
 
 uint64_t HaloCEFirstPerson_WeaponGraph(uint32_t gen,uint64_t space,uint64_t now) noexcept

@@ -106,7 +106,15 @@ uint32_t TitleAdapter_GetGeneration(GameTitle) { return currentGeneration; }
 bool HaloCEControls_GetLocomotionFrame(HaloCELocalPlayerState& state,RenderContext& context) noexcept
 { if (!hasGameplay) return false;state=localPlayer;context=gameplay;return true; }
 bool HaloCE_RenderContextCurrent(const RenderContext&) noexcept { return contextCurrent; }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// The dev sound listener witness asks for the last gameplay context when the hook did not admit the packet.
+bool witnessContext{};unsigned witnessLines{};
+bool HaloCE_GetGameplayContext(RenderContext& context) noexcept
+{ if (!witnessContext) return false;context=gameplay;return true; }
+void Logf(const char* format,...) { if (format&&std::strstr(format,"SOUND LISTENER Halo CE (dev witness)")) ++witnessLines; }
+#else
 void Logf(const char*,...) {}
+#endif
 bool WaitForNativeDetourQuiescence(const void* const* entries,const void* const*,size_t count,
     const std::atomic<uint32_t>& pending)
 {
@@ -228,6 +236,58 @@ int main(int argc,char** argv)
         "audio hook exception propagates and releases callback ownership");
     Reset();source=SourcePacket();AudioBody(0,&source,moduleBase+0xb4cefe);
     Check(passedPacket!=&source,"audio recovers after native exception");
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // THE DEV SOUND LISTENER WITNESS samples inside this same detour. It must measure the game's own packet and
+    // the handed one against the head, and change nothing that is handed on.
+    {
+        using namespace listener_witness;
+        auto& w=listenerWitness;
+        Reset();source=SourcePacket();const auto untouched=source;
+        w.open=listener_witness::Window{};w.lastPacketMs=0;w.sampling=false;
+        gameplay.unitsPerMeter=1.0f/3.048f;gameplay.positional=true;
+        gameplay.tracking.headOrientation={0,std::sin(halfPi),0,std::cos(halfPi)};   // the head 90 degrees left
+        AudioBody(0,&source,moduleBase+0xb4cefe);
+        Check(passedPacket!=&source&&Near(heardPacket.forward,{0,1,0})&&!std::memcmp(&source,&untouched,sizeof(source)),
+            "witness: the hook still hands on the head packet, and the game's packet is untouched");
+        Check(w.open.taken==1&&w.open.handedHead==1&&w.open.handedStock==0&&!w.open.Refused()&&!w.sampling.load(),
+            "witness: one packet taken, handed on by the hook, nothing refused, the flag released");
+        Check(std::fabs(w.open[M::HeadForward].max-90.0f)<0.01f&&w.open[M::HandedHeadForward].max<0.001f&&
+            w.open[M::HandedHeadUp].max<0.001f&&w.open[M::CameraForward].max<0.001f,
+            "witness: the game's own listener is 90 degrees off the head and on the stock camera; the handed one is the head");
+        // Not admitted (a seat, a cinematic): the game's packet goes on, and the witness finds the head itself.
+        hasGameplay=false;witnessContext=true;
+        AudioBody(0,&source,moduleBase+0xb4cefe);
+        Check(passedPacket==&source&&w.open.taken==2&&w.open.handedStock==1&&
+            std::fabs(w.open[M::HandedHeadForward].max-90.0f)<0.01f,
+            "witness: a packet handed on as the game built it is measured 90 degrees off the head");
+        // No gameplay context at all: counted, with no head.
+        witnessContext=false;
+        AudioBody(0,&source,moduleBase+0xb4cefe);
+        Check(passedPacket==&source&&w.open.taken==3&&w.open.HeadMissing()==1,
+            "witness: with no gameplay context the packet is counted with no head");
+        // Another listener and another caller are not the producer's call for listener 0: not sampled.
+        AudioBody(1,&source,moduleBase+0xb4cefe);AudioBody(0,&source,moduleBase+0xb4cefe+1);
+        Check(w.open.taken==3&&!w.open.Refused(),"witness: only the producer's call for listener 0 is sampled");
+        // An unreadable packet is a refusal, and the null still goes on to the native exactly as before.
+        const auto calls=audioCalls;AudioBody(0,nullptr,moduleBase+0xb4cefe);
+        Check(audioCalls==calls+1&&passedPacket==nullptr&&w.open.taken==3&&
+            w.open.refused[static_cast<size_t>(Refusal::Unreadable)]==1,
+            "witness: an unreadable packet is refused by name and forwarded unchanged");
+        // A sample in progress elsewhere is never waited for.
+        w.sampling=true;AudioBody(0,&source,moduleBase+0xb4cefe);
+        Check(w.open.taken==3&&w.overlapped.load()==1&&passedPacket==&source,
+            "witness: an overlapping call is counted and forwarded, never waited for");
+        w.sampling=false;
+        // A finished window crosses to the worker and is printed once.
+        w.open.openedMs=GetTickCount64()-kWindowMs-1;witnessLines=0;
+        AudioBody(0,&source,moduleBase+0xb4cefe);
+        Check(w.open.taken==0&&w.published.serial==1&&w.published.taken==4&&!(w.version.load()&1u),
+            "witness: a window two seconds old is published and a new one opened");
+        ReportListenerWitness(GetTickCount64());ReportListenerWitness(GetTickCount64());
+        Check(witnessLines==1&&w.reportedSerial==1,"witness: the worker prints a published window exactly once");
+        witnessContext=false;
+    }
+#endif
 
     // Fault-injected platform operations exercise the actual management state
     // machine without patching any executable memory or launching the game.

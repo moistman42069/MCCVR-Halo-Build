@@ -328,13 +328,92 @@ inline constexpr int kConfigReachShippedSeatTrimCount =
     sizeof(kConfigReachShippedSeatTrims) /
     sizeof(kConfigReachShippedSeatTrims[0]);
 
-// C-TITLE-1: the thirteen weapon/hand/HUD tunables every title keeps its
+// Seats named by the vehicle's stable model identity (ConfigVehicleModelTrim): the games whose seats have no
+// named bank above. A row is that seat's built-in camera offset from its occupant's head, in metres, all three
+// axes set. The seat's sliders start from it and its reset returns to it.
+//
+// Halo 4's Mantis. The pilot's head is inside a closed cockpit: a camera there sees the cockpit's walls and the
+// dashboard, and nothing of the world (the game's own camera for the seat is third person). The cockpit roof is
+// cleared at about 0.4 m above the head. The row puts the eye above the roof and a little forward, with the
+// roof and both weapon arms below it. Seen headless on one multiplayer map; not seen in a headset.
+struct ConfigShippedVehicleModelTrim
+{
+    GameTitle title;
+    uint64_t identity;
+    int16_t seat;
+    float forward;
+    float up;
+    float right;
+    const char* name;
+};
+
+inline constexpr ConfigShippedVehicleModelTrim kConfigShippedVehicleModelTrims[] = {
+    // game,            model identity,        seat, forward, up,    right, name
+    {GameTitle::Halo4, 0x000000551b05181eull, 0,    0.30f,   0.80f, 0.00f, "Mantis"},
+};
+
+inline const ConfigShippedVehicleModelTrim* ConfigShippedVehicleModelTrimFor(
+    GameTitle title, uint64_t identity, int seat)
+{
+    for (const ConfigShippedVehicleModelTrim& trim : kConfigShippedVehicleModelTrims)
+        if (trim.title == title && trim.identity == identity && trim.seat == seat)
+            return &trim;
+    return nullptr;
+}
+
+// C-TITLE-1: the weapon/hand/HUD/crosshair tunables every title keeps its
 // own copy of - one struct so a profile is copied whole. Defaults mirror
 // the shared fields' defaults so an untouched profile behaves identically.
 inline constexpr int kTitleProfileCount = 7;
+// Reach's slot among the profiles (cfg prefix reach_). The crosshair's three tunables and the HUD layout's four
+// follow and edit this profile while no game is running, so the menu always shows one game's own values.
+inline constexpr int kTitleProfileReach = 2;
+inline constexpr int kTitleProfileHalo4 = 3;
+// Each game draws its own crosshair art, which fills more or less of the crosshair's quad than the next game's
+// (Reach's ring about half as much as Halo 3's), so one size shows it larger in one game than in another. These
+// are each game's starting size and opacity, headset-tuned so the games' crosshairs look alike; the shared
+// defaults are TitleTunables' (4 degrees, 1.25). A profile that names no size or opacity starts at its game's
+// own start where that differs from the shared default, and from the shared key otherwise: a config written
+// before the games had their own holds one size for every game (10.1 degrees by default in older builds), and
+// no multiple of one size suits them all.
+struct CrosshairStart
+{
+    float size_deg;
+    float opacity;
+};
+inline constexpr CrosshairStart kCrosshairStarts[kTitleProfileCount] = {
+    {6.00f, 1.25f},  // Halo 3
+    {6.00f, 1.25f},  // Halo 3: ODST
+    {10.30f, 0.69f}, // Halo: Reach
+    {4.00f, 1.25f},  // Halo 4
+    {8.00f, 1.25f},  // Halo 2 Anniversary
+    {8.00f, 1.25f},  // Halo 2 Classic
+    {7.20f, 1.25f},  // Halo: Combat Evolved
+};
+// Each game's starting HUD layout (size, width / aspect, curvature, height), the same way: where it differs from
+// TitleTunables' shared default, a profile that names none starts at its game's own. Every game's is the tester's,
+// headset-tuned (Halo 2's Anniversary layout used for Classic too): laid out narrower or smaller, and well below the
+// shared height.
+struct HudStart
+{
+    float size;
+    float aspect;
+    float curvature;
+    float vertical_offset;
+};
+inline constexpr HudStart kHudStarts[kTitleProfileCount] = {
+    {0.40f, 1.22f, 0.48f, -200.0f}, // Halo 3
+    {0.46f, 1.22f, 0.48f, -150.0f}, // Halo 3: ODST
+    {0.45f, 0.80f, 0.48f, -202.0f}, // Halo: Reach
+    {0.41f, 1.00f, 0.48f, -117.0f}, // Halo 4
+    {0.34f, 1.00f, 0.48f, -200.0f}, // Halo 2 Anniversary
+    {0.34f, 1.00f, 0.48f, -200.0f}, // Halo 2 Classic
+    {0.50f, 0.75f, 0.48f, -125.0f}, // Halo: Combat Evolved
+};
 
 struct TitleTunables
 {
+    float world_scale = .33f;
     float gun_scale = 0.96f;
     float left_hand_scale = 0.96f;
     // Visible hand meshes only, in each hand's local frame (metres).
@@ -351,7 +430,12 @@ struct TitleTunables
     float gun_forward_m = -0.14f;
     float gun_right_m = 0.0f;
     float gun_up_m = 0.0f;
-    float left_hand_forward_m = -0.063f;
+    float left_gun_forward_m = -0.16f;
+    float left_gun_right_m = 0.04f;
+    float left_gun_up_m = -0.06f;
+    float left_hand_forward_m = 0.0f;
+    // The HUD layout. With no game running these four follow and edit Reach's profile rather than the shared
+    // defaults (kTitleProfileReach), like the crosshair's below.
     float hud_size = 0.43f;
     float hud_aspect = 1.22f;
     float hud_curvature = 0.48f;
@@ -362,29 +446,88 @@ struct TitleTunables
     float barrel_pitch_deg = 0.0f;
     float barrel_yaw_deg = 0.0f;
     float barrel_roll_deg = 0.0f;
+    // The crosshair's size, opacity and brightness (Config::crosshair_size_deg, _opacity, _brightness). Each game
+    // draws its own crosshair art, larger, fainter or brighter than the next game's. With no game running these
+    // three follow and edit Reach's profile rather than the shared defaults (kTitleProfileReach).
+    float crosshair_size_deg = 4.00f;
+    float crosshair_opacity = 1.25f;
+    float crosshair_brightness = 1.25f;
+    // Whole-game brightness is stored independently for each title.
+    float game_brightness = 1.11f;
 };
 
 struct Config
 {
+    float world_scale = .33f;
     // Stamps the Halo 3, ODST and Reach shipped seat tables into their
     // independent per-seat arrays. Every other member keeps its default member
     // initializer, so Config{} remains the one description of a fresh
     // configuration.
     Config();
 
-    int config_version = 6;
+    int config_version = 7;
 
     // Portable OpenXR feedback and pose stabilization. Headset smoothing is a
     // deliberately tiny previous-frame blend (0.03 shipped default, 10% hard maximum)
     // so users may remove micro-jitter without turning head motion into a laggy camera.
     // Aim stabilization affects only the floating VR crosshair; weapon aim and
-    // bullets continue to use the current raw controller pose.
+    // bullets continue to use the current controller pose (the steadied one when
+    // hand_smoothing is on).
     float haptic_intensity = 0.86f;
     float headset_smoothing = 0.03f;
     float aim_stabilization = 0.48f;
+    // HAND SMOOTHING (hand_smoothing.h; ported from the Halo: Campaign Evolved VR mod; its defaults but for the
+    // two steadiness cutoffs: 1.3 Hz here, 1.0 Hz there). A 1 Euro
+    // filter on the tracked controllers where their poses enter the mod, so aim and shots, the arms, two-handed
+    // holds, holsters, reload and the menu pointer all read the same steadied hands. A still hand is held
+    // steady; a fast move passes through with little lag. Swing melee and arm-swing running read the raw
+    // controller velocities, as before. The headset is not touched (headset_smoothing is its own).
+    //   hand_smoothing            1 = on, 0 = the hands exactly as the headset tracks them.
+    //   hand_smoothing_hands      0 both, 1 only the hand that aims, 2 only the other hand.
+    //   ..._pos_min_hz / ..._rot_min_hz   steadiness while still: lower is steadier and slower to follow a slow
+    //                             move. 0 = that half is not smoothed.
+    //   ..._pos_beta / ..._rot_beta       how quickly the smoothing lets go as the hand moves (per m/s) or
+    //                             turns (per rad/s) faster.
+    //   ..._speed_cutoff_hz       smoothing of the speed estimate itself; rarely needs changing.
+    // All read live.
+    bool hand_smoothing = true;
+    int hand_smoothing_hands = 0;
+    float hand_smoothing_pos_min_hz = 1.3f;
+    float hand_smoothing_pos_beta = 500.0f;
+    float hand_smoothing_rot_min_hz = 1.3f;
+    float hand_smoothing_rot_beta = 5.0f;
+    float hand_smoothing_speed_cutoff_hz = 10.0f;
 
     float screen_width_m = 4.0f;    // width of the virtual screen, in meters
     float screen_distance_m = 2.4f; // how far away the screen floats, in meters
+
+    // MONO RENDERING (mono_view_logic.h; every title, Halo CE on its Classic graphics only): 1 = the world is drawn
+    // once a frame, from between the eyes, and shown to both: no depth between the eyes, one pass of drawing instead
+    // of two. For maps with so much in view that two passes do not fit the headset's frame. Refused, with a log
+    // line, on canted displays, in the cutscene theatre, while DLSS is on, and in a title whose renderer turns
+    // single passes down. Halo CE's Anniversary graphics have no single-pass path and are drawn in stereo; Halo 2
+    // waits until it has learned where the game leaves each eye's picture, which compares two eyes. Followed live.
+    // (default 0)
+    bool mono_rendering = false;
+    // HOOK COST (hook_cost_logic.h). N = one presented frame in N is timed: every Direct3D call the mod hooks
+    // reads the cycle counter around the mod's own work and around the game's real call, and every ten seconds a
+    // `timing:` line gives the mod's own work a frame, by call. The timed frame itself is slower by the timer's
+    // readings (milliseconds in a scene with much in it). 0 = off; then a hook pays one flag test. Least 8.
+    // Followed live. (default 0)
+    int hook_cost_frames = 0;
+
+    // A host that draws its own UI over the game's frame (Project Reclaimer; reclaimer_host_logic.h, "the host's UI
+    // as a panel"): 1 = that UI is shown as a panel in front of the stereo picture, where the flat screen would
+    // be; 0 = the picture goes flat while one of the host's screens is up, and its overlays during play are not
+    // seen. Nothing in MCC. Followed live.
+    bool host_ui_panel = true;
+    float host_ui_panel_width_m = 2.8f;    // the panel's width, in meters (16:9 at 2.4 m: about 60 degrees across)
+    float host_ui_panel_distance_m = 2.4f; // how far in front of the eyes it floats, in meters
+    // Project Reclaimer only: how its Hornet-class flyers (a Sparrowhawk, Falcon or Vulture on a mod map too)
+    // change height. Halo 3 reads that from a player preference MCC fills in and Reclaimer leaves at Halo 3's
+    // default, classic (aim up or down to climb or dive; the buttons do nothing). 1 = MCC's Ascend and Descend
+    // buttons (right A and the left grip); 0 = classic. Nothing in MCC. Followed live. (reclaimer_flight.inl)
+    bool reclaimer_flight_buttons = true;
 
     // Universal cutscene-only stereo theatre. A title enters it only after its
     // adapter proves the engine owns an authored camera and player camera
@@ -422,7 +565,20 @@ struct Config
     float menu_width_m = 1.1f;      // panel width; height follows the 4:3 texture
     float menu_height_m = -0.08f;   // vertical offset, negative = below eye line
     float menu_side_m = 0.0f;       // sideways offset, positive = to your right
-    bool game_menu_pointer = false; // optional controller mouse in native menus
+    bool game_menu_pointer = true; // controller mouse in native menus
+    // OFXR Bridge, an OpenXR frame-generation layer, has crashed the mod; off, the mod sets OFXR's own off switch
+    // (XRFG_DISABLE_OFXR_BRIDGE) in the game's process before OpenXR starts, so OFXR stays out of this game only.
+    bool allow_ofxr_bridge = false;
+    // Project Reclaimer: its Native render resolution is never given a size larger than the monitor
+    // (reclaimer_host::AnswerNativeRenderSize). A picture larger than the screen is suspected of stopping the graphics
+    // card on some PCs; off gives it the Picture panel's full size. Exclusive fullscreen always gets the real size.
+    // From 0.10, which sizes its picture from its window, the picture keeps the Picture panel's size and the window is
+    // fitted inside the monitor instead (d3d11_hook.cpp, D3D_HostFitWindow); off leaves the window that size.
+    bool reclaimer_fit_to_display = true;
+    // Project Reclaimer: a title it starts after the first (ODST, after Halo 3's menu) gets the headset session's D3D11
+    // device instead of a new one, which the headset could not show (present_owner_logic.h DecideDeviceShare).
+    // Off: that title freezes in the headset, as before.
+    bool reclaimer_share_device = true;
 
     // Show the welcome page automatically, once, at the start of each launch.
     // The mod has no other way to tell a player anything before they play: the
@@ -433,20 +589,140 @@ struct Config
     bool show_welcome = true;
 
     // M3 VR controller turning (right Sense stick).
-    bool roomscale_movement = false; // physical horizontal steps drive native walking
+    bool roomscale_movement = true; // physical horizontal steps drive native walking
+    // Roomscale A/B, live from F1: 1 = hysteresis (3 cm start / 1.5 cm stop, brake by release, owed distance
+    // kept through interruptions), 0 = threshold (walks from 1.5 cm,
+    // brakes by reversing), verbatim as it shipped in Alpha 0.6.0. (default 1)
+    int roomscale_follow_law = 1;
+    // ROOMSCALE VIEW RECENTER (roomscale_recenter_logic.h). In the air and while the stick moves the
+    // character, the body cannot be walked under the head, so the view sits away from the game's own
+    // camera -- the eye the shot is solved from. Each option slides the play area (position only,
+    // horizontal: never a turn, never the height) so the view comes back over the character while that
+    // motion hides it; what is left afterwards the body follow walks as before. All on by default.
+    // They need roomscale_movement.
+    bool roomscale_recenter_jump = true;           // a quick linear blend when a jump leaves the ground
+    float roomscale_recenter_jump_s = 0.20f;       // its duration, seconds (0.05 to 1.0)
+    bool roomscale_recenter_move_start = true;     // the same blend when the movement stick is first pushed
+    float roomscale_recenter_move_start_s = 0.20f; // its duration, seconds (0.05 to 1.0)
+    bool roomscale_recenter_moving = true;         // while the stick is held: close the offset at a constant speed
+    float roomscale_recenter_moving_speed = 0.25f; // metres of offset closed per second (0.1 to 3.0)
     bool physical_running = false;
     float physical_running_speed = 1.0f; // fraction of native maximum locomotion
     float physical_running_sensitivity = 1.0f;
-    bool physical_crouch = false;
+    // Lowering the head by the depth crouches, on foot. It holds MCC's crouch while the head is down, so it
+    // needs MCC's hold-to-crouch setting: toggle crouch is not overridden.
+    bool physical_crouch = true;
+    // The right stick's crouch and sprint, now inputs on the rows (vr_mapping::kStickCrouch, kStickUp): read only from a
+    // file or preset written before them, to convert.
+    bool right_stick_crouch = true;
     float physical_crouch_depth_m = 0.22f;
+    // AUTOMATED TESTING ONLY (default 0): let roomscale and physical crouch accept a head pose OpenXR reports
+    // VALID but not TRACKED. A simulated runtime can report an overridden head exactly that way, so
+    // without this neither feature can be exercised without a headset. Never enable it in a
+    // headset: an untracked (inertial) head is precisely what both features must ignore.
+    bool test_accept_untracked_head = false;
+    // THE LEASH BELOW THE CHARACTER'S EYE (Halo: Campaign Evolved's heightleash; on foot in Reach, Halo 3, ODST, Halo 4 and Halo 2): the
+    // most the view may drop below the game camera -- the character's own eye -- so a deep physical
+    // duck cannot take it inside his chest and legs. Game-space metres. It rides the camera: when the
+    // character crouches his eye drops, and the limit drops with him. The hands and the reticle ray are
+    // lifted with the view, so holding the view does not make them sink away from your eyes. <0 = off.
+    float head_leash_below_eye_m = 0.10f;
+    // THE VIEW'S NEUTRAL HEIGHT FOLLOWS YOUR STANDING HEIGHT UP (standing_height_follow.h). With the physical
+    // crouch on, a recenter that catches the player low before their standing height is known (the automatic
+    // one at a level's start, for instance) leaves them standing that much above their character.
+    // 1 = once the standing height is confirmed, the neutral height glides up to it (Halo 3, ODST, Reach and
+    // Halo 4; on foot). 0 = it stays where the recenter put it until the next recenter. Read live.
+    bool view_follows_standing_height = true;
+    // HEAD-RELATIVE HUD AND SOUND (head_relative_logic.h). The player aims with the hand and looks with the
+    // head, so the game's own camera heading -- the aim -- is the wrong one for anything read against where
+    // the player LOOKS. tracker_follows_head: the motion tracker places its contacts by the head's heading
+    // (yaw only) instead of the aim's, so sweeping the gun moves nothing and turning the head turns them.
+    // audio_follows_head: the sound listener takes the head's orientation. Both are read live. A title that
+    // has not bound its seam keeps the game's own behaviour (log: TRACKER HEAD / AUDIO HEAD <title>).
+    bool tracker_follows_head = true;
+    bool audio_follows_head = true;
+    // THE MOTION TRACKER'S BLIPS MOVE WITH THE HUD HEIGHT (halo3_tracker_hud_height_logic.h). Halo 3's HUD height
+    // raises the tracker's art (by hud_vertical_offset, like every HUD element) and cannot reach the blips,
+    // which the game draws around a centre it keeps elsewhere: every dot, the player's own included, sat below
+    // the tracker (a quarter of its radius at the default height). 1 = for the length of the blip draw that
+    // centre gets the art's move. 0 = the game's own centre. Read live. Halo 3 only. A title that has not
+    // bound this keeps its own behaviour (log: TRACKER HUD HEIGHT <title>).
+    bool tracker_blips_follow_hud_height = true;
+    // MCC'S RELOAD OF A GAME DLL WAITS FOR OUR TEARDOWN (host_unload_gate.cpp). A game's DLL unloads when the
+    // game ends and MCC loads a fresh one for its menus. A title core that keeps its own reference on that DLL
+    // while its hooks are in it (Halo: Reach) keeps it loaded past that reload, and the next game of the title,
+    // started in the old image, bounces back to the lobby once. 1 = the reload waits (6 s at most) for the
+    // core to tear down and let go, so the old image unloads first. 0 = no wait. Read live.
+    bool title_unload_wait = true;
+    // NAVIGATION MARKERS ARE PROJECTED WITH THE EYE'S FIELD OF VIEW (reach_nav_marker_logic.h). Halo: Reach's
+    // HUD projects a world point to the screen with a camera it builds itself; 1 = that camera gets the vertical
+    // field of view the eye was rendered with (it already gets the eye's position, forward and up). 0 = the
+    // game's own flat-screen field of view: a marker is then drawn too far from the eye's axis by the
+    // ratio of the two (2.155 measured). Read live. Nothing else changes: the HUD height is not involved.
+    // Exercised in game with one marker only (a King of the Hill hill marker); marked players and name tags
+    // are not. A title that has not bound this keeps its own behaviour (log: NAV MARKERS <title>).
+    bool nav_markers_on_target = true;
+    // MARKERS FOLLOW THE HEAD, NOT THE GUN (reach_nav_marker_logic.h, part 3). Whether an objective marker is on
+    // screen (its marker) or off it (its arrow) is decided by the game outside the picture each eye is drawn
+    // with, from the game's own camera, which this mod points down the controller: a marker then showed only
+    // while the gun pointed at its objective. 1 = those decisions are made from the head of the last frame.
+    // 0 = the game's own camera, as before. Halo: Reach; Halo 4 (halo4_nav_marker_logic.h: its HUD places markers
+    // in its interface pass with the aim camera, and the head's is used there once that camera is proven to be
+    // the aim's at run time). Read live.
+    bool nav_markers_follow_head = true;
+    // THE OFF-SCREEN ARROW STAYS IN VIEW (reach_nav_projection.inl). 1 = when a navpoint's target (an objective
+    // marker, a marked player: by a static read) is out of view, the game's arrow for it is drawn on a ring about
+    // the HEAD's axis, at most 30 degrees out, as one point in the world for both eyes. 0 = the game's own ring,
+    // which with the eye's field of view lies past what the eye on the other side of the nose sees: the arrow is
+    // then in one eye only.
+    // NOT TOUCHED: name tags, fireteam markers, vehicle / lock-on reticles, damage arrows (the projection's
+    // other callers keep the game's own ring). Needs nav_markers_on_target. Read when a level loads.
+    // Default 1. Exercised in game with a King of the Hill hill marker; the other marker kinds are not.
+    bool nav_marker_arrow_in_view = true;
+    // HOW FAR OUT THE OFF-SCREEN ARROWS SIT: the ring about the head, as a fraction of the field both eyes see
+    // (0.6 = the game's own 0.3 of the whole field), never more than 30 degrees. Lower brings the arrows
+    // closer to the centre of the view. A player setting. The default is 0.75; on a headset whose shared
+    // field is wide enough that is the 30 degree cap (log: "ring 30.0 x 30.0 deg"). It acts on the
+    // object-anchored markers' arrows. Read live, every projection.
+    // Acts only with nav_marker_arrow_in_view = 1.
+    float nav_marker_ring = 0.75f;
+    // PLAYER TAGS: the service tag and arrow Halo 3 draws over each teammate (halo3_player_tags.inl). show 0 =
+    // none; scale and opacity multiply the game's own size and alpha; max_distance_m hides tags farther than that
+    // from your eye (fading over the last fifth, at most 5 m), 0 = no limit. Objective markers keep the game's own;
+    // every player's tag follows them, a flag, ball or bomb carrier's too. Halo 3, in MCC and in Project Reclaimer.
+    // Read live, every HUD draw.
+    bool player_tags_show = true;
+    float player_tags_scale = 0.45f;           // 0.25 to 2
+    float player_tags_opacity = 0.25f;         // 0 to 1
+    float player_tags_max_distance_m = 0.0f;   // 0 to 300
+    // DEV BUILDS ONLY (parsed and saved there; a player build always has the default).
+    // nav_marker_witness: 1 = report the pixel the game puts each marker on against the pixel the eye's own
+    // picture shows its target at. Live.
+    int nav_marker_witness = 0;
+    // Live safety values for the tracker's yaw correction. Parsed and saved in DEV BUILDS ONLY; every build
+    // runs with them, so a player build always has these defaults. sign: 1, or -1 if a title's seam turns
+    // out mirrored. offset: degrees added after the sign.
+    int tracker_head_sign = 1;
+    float tracker_head_offset_deg = 0.0f;
+    // Halo 4's head-relative sound (halo4_sound_listener_logic.h), which of its writes are made while
+    // audio_follows_head is on: 1 = the copy handed to the audio middleware, 2 = the game's own listener record,
+    // 4 = the listener is also moved to the head. Parsed and saved in DEV BUILDS ONLY (a listening test can then
+    // say which of them the ear follows); every build runs with it, so a player build always has the default.
+    // THE DEFAULT IS 3: turned to the head, NOT moved, which is what Reach's and Halo 3's lanes do. 7 is
+    // measured to move the listener (0 cm from the head; the game's own sits 10 cm away) but is not confirmed
+    // by ear, and a moved listener changes the direction of every sound the game keeps at the player's own
+    // position. Live.
+    int audio_head_halo4_parts = 3;
     bool turn_smooth = true;           // false = snap turn, true = smooth turn
     bool vehicle_smooth_turn = false; // temporary smooth VR turning while seated
     float turn_snap_deg = 30.0f;       // degrees per snap
     float turn_smooth_deg_s = 120.0f;  // smooth turn speed, degrees/second
 
-    // Send Start when Y and B are pressed together. This is the pause fallback
-    // for titles whose controller Menu button is reserved by the OpenXR runtime.
+    // Y and B together sent Start, the pause fallback for titles whose controller Menu button the OpenXR runtime keeps.
+    // Now the Pause row's inputs (vr_mod_bindings): read only from a file or preset written before them, to convert.
     bool y_b_start_chord = true;
+    // The mod's own rows (VR Mappings, every game): Pause, Y + B either way round to start.
+    vr_mapping::ModBindings vr_mod_bindings = vr_mapping::kModDefaults;
 
     // Halo 2 only: the gamepad's Back/View button is MCC's instant
     // Classic <-> Anniversary graphics switch. 0 = the mod swallows that
@@ -458,7 +734,14 @@ struct Config
     // D-pad (UEVR-style gesture): 0 = left controller, 1 = right controller.
     int dpad_hand = 0;
     // Head-gesture activation radius in metres; the existing reach is 30 cm.
-    float dpad_head_radius = 0.30f;
+    float dpad_head_radius = 0.20f;
+    bool dpad_keep_moving = true; // a hand raised while walking leaves the stick walking until it centres
+    // Project Reclaimer's keys at the head, always on: X with the left controller presses the talk key, Y the
+    // scoreboard key, and A and B with the right controller the vote keys.
+    int reclaimer_talk_key = 0x56; // its Windows virtual-key code: V, the host's default for Push to talk
+    int reclaimer_scoreboard_key = 0x09; // its Windows virtual-key code: Tab, the host's default
+    int reclaimer_vote_yes_key = 0x74; // Windows virtual-key codes: F5 and F6, the host's defaults
+    int reclaimer_vote_no_key = 0x75;
     // Quest 3 alternate D-pad: touch the physical left thumb rest, then use
     // the physical right stick. Handedness never swaps these controls.
     bool quest_thumbrest_dpad = false;
@@ -466,7 +749,27 @@ struct Config
     // Match each campaign's MCC layout; same title order as gesture buttons.
     int flashlight_button[6]{15,15,15,15,15,15}; // legacy migration / unverified-title fallback
     vr_mapping::Overrides vr_bindings[6]{};
-    bool vr_action_mapping = true;
+    // Each row's held-first controls, mode and further inputs (VR Mappings), per game, in the games' order above.
+    vr_mapping::Inputs vr_inputs[6]{vr_mapping::DefaultInputs(GameTitle::Halo3),
+        vr_mapping::DefaultInputs(GameTitle::Halo3ODST),vr_mapping::DefaultInputs(GameTitle::HaloReach),
+        vr_mapping::DefaultInputs(GameTitle::Halo4),vr_mapping::DefaultInputs(GameTitle::HaloCE),
+        vr_mapping::DefaultInputs(GameTitle::Halo2)};
+    // The seat's rows (VR Mappings): each game's Banshee bomb and trick, inputs as a row has.
+    vr_mapping::ExtraBindings vr_extra_bindings[6]{vr_mapping::ExtraDefaults(GameTitle::Halo3),
+        vr_mapping::ExtraDefaults(GameTitle::Halo3ODST),vr_mapping::ExtraDefaults(GameTitle::HaloReach),
+        vr_mapping::ExtraDefaults(GameTitle::Halo4),vr_mapping::ExtraDefaults(GameTitle::HaloCE),
+        vr_mapping::ExtraDefaults(GameTitle::Halo2)};
+    // Automatic VR action routing (F1 > Controls): a VR button reaches the game as the action bound to it. Off by
+    // default for now -- the plain route, each VR button as the gamepad button it stands for, is the one that works;
+    // the automatic one has known faults.
+    bool vr_action_mapping = false;
+    // input_preset.h; empty: a scheme no preset named. The struct's scheme is Legacy Default; a new player starts on
+    // Default (default_controls.h).
+    char input_preset[64] = "Legacy Default";
+    // Settings the rows' inputs took over (vr_mapping::ConvertSettingsToInputs), read only from a file or preset written
+    // before them: the support trigger gripping air used equipment, and with the hand on the gun zoomed.
+    bool trigger_air_equipment = false;
+    bool grip_contextual_trigger = false;
     bool flashlight_suppress_on_two_hand = true;
     // Optional temporal upscaler; ordinary eye resolve remains the default.
     int upscaler = 0;
@@ -569,9 +872,70 @@ struct Config
     // authored cinematic exposure changes still work. ODST for now.
     bool vehicle_steady_exposure = true;
 
-    // Motion steering in look-steered ground driver seats: grab an invisible
-    // wheel with both grips and turn it. 0 = the right stick steers.
+    // Motion steering in look-steered ground driver seats (Halo 3, ODST and
+    // Reach): grab an invisible wheel with both grips and turn it. 0 = the
+    // right stick steers. The wheel and nothing else: Halo CE's and Halo 2's
+    // VR seat controls have their own key, vehicle_vr_controls.
     bool vehicle_motion = true;
+    // VR controls in Halo CE and Halo 2 vehicle seats. Halo CE: the right
+    // stick snap/smooth-turns the seat view (pitch is the head's), and the
+    // view follows the hull with vehicle_view_follow. Halo 2: the hand aims the
+    // seat, and the seat keeps a view of its own that the aim does not swing.
+    // 0 = both games' seats keep the plain right stick, as on a flat screen.
+    // The other games' seats are not affected (their aim settings govern them).
+    bool vehicle_vr_controls = true;
+    // Vehicle cameras: in a vehicle seat, step through the cameras listed for that seat in
+    // halomccvr_vehicle_cameras.json (the mod's folder: written on first use, the player's to edit, read
+    // again when it changes). The built-in list starts with the seat view itself, so switching this on
+    // changes nothing until another camera is chosen (F1 > Vehicles). A camera the mod places shows the
+    // seat from outside, with the player's character drawn in it. Halo 3 for now, and only with
+    // vehicle_first_person on.
+    bool vehicle_cameras = true;
+    // A short note when the vehicle camera, its tethering mode or the seat's controls change, and on getting in:
+    // "Warthog - Third Person, Tethered - Motion". 0 = none; 1 = in the game's own HUD messages, in the HUD's font
+    // (every game; the mod's panel when the game's HUD cannot take it, and in a shared co-op simulation);
+    // 2 = on the mod's own panel in the headset.
+    int vehicle_camera_note = 1;
+    // With vehicle cameras on: the first time you sit in a vehicle the camera file has no entry of its own for (it
+    // rides on "default" -- a mod map's own vehicle, or a stock one the file is older than), entries for it are
+    // added to the file: the built-in ones where there are any, else one by the vehicle's name with the default
+    // entry's cameras, so nothing changes until you edit it. Only added to, never rewritten; the file as it was is
+    // kept once as halomccvr_vehicle_cameras.json.before-autoadd. false = the file is never written to.
+    bool vehicle_camera_autoadd = true;
+    // With vehicle cameras on, in a chase camera whose "aimMarker" in the camera file asks for it (the built-in
+    // cameras: their Tethered modes; a file that never says: the modes whose view turns with the vehicle): a purple
+    // ring where the VEHICLE is aiming, beside the crosshair that shows where the hand points -- Halo Campaign
+    // Evolved's vehicle aim marker. In a mode that turns the view with the vehicle it is where the view comes to
+    // rest: aim at it to keep going straight. 0 = never shown, whatever the file says.
+    bool vehicle_aim_marker = true;
+    // How a vehicle seat is controlled, apart from how the view turns (vehicle_control_logic.h):
+    // 1 = Motion, the hand aims every seat, and a look-steered vehicle (Warthog, Mongoose, Ghost, Prowler,
+    // Chopper, Banshee, Hornet) turns toward it; 2 = Stick, the right stick aims and steers in every seat, as
+    // on a flat screen, and the hand aims nothing; 3 = Wheel, the invisible wheel is in your hands from the
+    // moment you sit in a look-steered ground vehicle (an aircraft takes the stick for its heading), and every
+    // other seat is the hand's. 0 = as before this choice existed: the hand aims every seat, except that the
+    // stick or wheel steers a look-steered driver whose view turns with the vehicle. Halo 3; ODST and Reach with
+    // the vehicle cameras on (Reach: not Stick); in the other games the stick or wheel still steers only a view that
+    // follows the vehicle.
+    int vehicle_control = 1;
+    // Where the hand steers a look-steered driver's heading (Motion, or 0 with a view the world holds still), a
+    // point the aim resolves to that is BEHIND the vehicle and NEAR it turns nothing: the vehicle keeps its forward,
+    // and the aim's pitch is left as it is (vehicle_aim_reject_logic.h). Measured in the vehicle's own ground plane:
+    // near = no further from its origin than vehicle_aim_reject_metres (0 = off, at most 20), behind = the 2D dot of
+    // the point's direction with the vehicle's forward below vehicle_aim_reject_dot (-0.5: more than 120 deg off the
+    // nose; -1 refuses nothing). For a camera placed outside the vehicle, whose hand ray easily lands on the ground
+    // just behind it. Every camera, the seat view included. Halo 3 for now. Live.
+    float vehicle_aim_reject_metres = 20.0f;
+    float vehicle_aim_reject_dot = -0.5f;
+    // THE THIRD-PERSON BOOM (vehicle_boom_logic.h): a vehicle camera that stands where the game's own third-person
+    // camera does ("origin": "thirdperson") is raised and lowered by the right stick's Y in a seat where that axis
+    // aims nothing (Motion, the wheel), the way the flat game's stick moves its camera, inside the range the game
+    // gives the look. vehicle_boom_rate_deg_s: degrees of look a second at full push (5 to 360). vehicle_boom_invert:
+    // -1 = as the game's own look inversion (its flight inversion for an aircraft's pilot; not inverted where it
+    // cannot be read), 0 = not inverted, 1 = inverted. Halo 3, ODST and Reach (Reach's own inversion is not read).
+    // Live.
+    float vehicle_boom_rate_deg_s = 60.0f;
+    int vehicle_boom_invert = -1;
     float vehicle_wheel_max_deg = 75.0f;      // wheel angle at full lock
     float vehicle_wheel_deadzone_deg = 6.0f;  // slack around centre
 
@@ -589,7 +953,11 @@ struct Config
     // Halo 4's authored Mjolnir helmet/visor overlay. This is deliberately
     // separate from HUD scale/curvature so players can keep the complete HUD
     // while hiding only the helmet frame.
-    bool halo4_helmet = true;
+    // Off by default. The frame is opaque art the game lights like a model, authored to sit at the edges of a
+    // flat screen. The HUD's scale brings it into the middle of the view with the rest of the HUD: in the
+    // campaign it covers a band above the HUD and a larger one below it, and each eye sees it cut off at a
+    // different place. The visor's thin outline is drawn by another shader and stays.
+    bool halo4_helmet = false;
     bool hide_hud = false;
     bool hud_reveal_near_head = false;
     float hud_reveal_radius_m = .22f;
@@ -598,12 +966,410 @@ struct Config
     // Optional per-controller firing for an owned native dual-wield pair.
     bool independent_dual_aim = false;
     bool gun_barrel_aim = false;
+    // SHOTS FROM THE MUZZLE (default on, live): each on-foot barrel shot leaves the visible muzzle, as the
+    // barrel aim's does, but flies through the point the converged aim is bent through (the reticle's
+    // point) instead of along the barrel: it lands where the shot from the eye would have, and its tracer
+    // and projectile come out of the gun. Only while the converged aim is in effect; a muzzle the game's
+    // own obstruction check pulls back (the gun through a wall the eye sees past) and every other refusal
+    // leave from the eye as before. gun_barrel_aim, when on, wins. sight_layer.h: Sight_AimMuzzleShot.
+    bool shots_from_muzzle = true;
+    // CO-OP SAFE SHOTS (default 2 = AUTOMATIC, live; F1 > Advanced): 1 = ALWAYS: nothing changes a shot as it is fired. It leaves as the game
+    // builds it from the aim the hand writes: not from the muzzle or along the barrel, not re-aimed through the
+    // newest intent point, not from a second gun's own controller and, in a seat, not redirected or restarted
+    // from the eye. In Halo 2 the character's aim and the aim-assist target are also left to the game.
+    // A campaign co-op session runs one simulation on every machine from shared input. The written aim is part
+    // of that input; a change made inside one machine's simulation is not, and the machines then disagree.
+    // Contact melee (physical_melee) does not apply its own damage either: its swing presses the game's melee.
+    // Never off by default because nothing tells a player his session is shared before his first shot ends it:
+    // 0 is for solo play, and brings back what the switch stands down in every session, co-op included.
+    // 2 = AUTOMATIC: stood down unless the game itself says nothing can disagree -- the player is alone in the
+    // session, or the session is host-authoritative (Firefight, custom games) -- as the title's simulation thread
+    // reads it (session_read_logic.h); anything unread counts as shared. Halo 3, ODST, Reach, Halo 4 and Halo 2;
+    // Halo CE's session is not read, so there 2 behaves as 1. The default. A file without
+    // coop_safe_shots_version = 2 was written when 1 was the only "on" and the default, not a choice between always
+    // and automatic, so its 1 is read as 2 (config.cpp); its 0 stays 0, and a 1 written since is a chosen "always".
+    // sight_layer.h: Sight_FireTimeChangesAllowed.
+    int coop_safe_shots = 2;
+    // AIM LEAD (default 1 tick, live; 0 = off, up to 3): the aim written into the game's record on foot (Halo 3,
+    // ODST, Reach) is carried ahead by the setpoint's own rate times this many simulation ticks. A record
+    // written at one control pass is first used by the next tick, so a shot leaves along a hand sample about a
+    // tick old; the lead writes where the aim will be then. Only the record is led -- the reticle, the gun and
+    // the scope are drawn from the hand as before -- and the record is shared input, so every machine of a
+    // co-op session fires the same shot. A snap turn, a recentre, a stop and an aim at rest are written
+    // unchanged (aim_lead_logic.h). The default is the tick the record recomposition already carries the game's
+    // eye by, not a measured optimum: the "AIM LEAD" and "CO-OP SAFE SHOTS" / "SHOT REAIM" log lines say what it
+    // did and what is left. Seats are not led. sight_layer.h: Sight_LeadWrittenAim.
+    float aim_lead_ticks = 1.0f;
+
+    // EXPERIMENTAL (dev): route this title's aim through the game-agnostic aim-solve core + per-game
+    // provider (src/common/aim_solve_logic.h, aim_provider.h). 0 = off (shipped path untouched).
+    // Reach only. The provider's StickLoop rung IS the shipped servo (Game_ComputeAimStick), so on its
+    // own this aims exactly as before and logs the provider's decisions (AIMPROVIDER ...); its
+    // WriteState rung is the direct drive, enabled separately by reach_direct_drive=3 (which routes
+    // Reach through the provider by itself).
+    int aim_provider = 0;
+
+    // DEV BUILDS ONLY (not parsed, saved or compiled into a player build): the Reach direct-drive
+    // research tools below -- the aim probe, the write tests (reach_direct_drive 1, 2 and 4) and the
+    // watchpoint locator. A player build accepts reach_direct_drive 0 or 3 and nothing else.
+    // EXPERIMENTAL (Halo Reach, READ-ONLY diagnostic): confirm the desired-aiming struct offset for
+    // the future direct-drive rung, WITHOUT writing anything and WITHOUT needing co-op. When on, a
+    // value-agreement probe logs the candidate DESIRED aim vector (unit+reach_desired_aim_offset)
+    // against the known CURRENT aim (unit+0x214): they match at rest and the desired LEADS while you
+    // turn. Does not change aim. 0 = off.
+    int reach_aim_probe = 0;
+    // Candidate byte offset of Reach's unit DESIRED-aiming vec3 (x,y,z floats). 0x208 is the
+    // reverse-engineered value: the desired->current integrator (retail 0x480280) reads unit+0x208
+    // and writes current aim unit+0x214. Config-settable so the offset can be swept in-headset;
+    // parsed as hex (0x...) or decimal. Only consulted by reach_aim_probe.
+    int reach_desired_aim_offset = 0x208;
+
+    // EXPERIMENTAL (Halo Reach) direct-drive MECHANISM TEST. The read-only probe shows 0x208 holds a
+    // valid aim vector but on foot cannot tell the desired input from a copy; this writes it to learn
+    // whether it STEERS aim. Engine thread, on foot, SEH + value-agreement guarded; suppresses the aim
+    // stick while active so the write is the only aim influence. 0 = off.
+    //   1 = on activation, capture the current aim and a target = that aim swung reach_dd_test_deg
+    //       degrees about world-up, then write that FIXED target into unit+reach_desired_aim_offset
+    //       every tick. If the field drives aim, the current aim (unit+0x214) converges on the target
+    //       -- the view swings by that angle and holds, and the log's err falls to ~0. If it is only a
+    //       copy, nothing moves and err stays at the swing angle. Toggle off then on to re-arm.
+    //   2 = LIVE OFFSET (no stick suppression): each tick, write the current look (unit+0x214) rotated
+    //       reach_dd_test_deg degrees about world-up into the desired-aim field, while you aim
+    //       normally. If that field drives the SHOT, bullets land reach_dd_test_deg off your reticle
+    //       (proof with no suppression confound); if not, shots go to the reticle as usual.
+    //   3 = ACTIVE DIRECT DRIVE (the real thing): hooks the per-user control update haloreach+0x6375C
+    //       (the desired_angles ACCUMULATOR) and, on the sim thread, writes the aim
+    //       into player_control.desired_angles (yaw/pitch) -- upstream of the derived aim vector and,
+    //       by its position, of replication (co-op host-follow not confirmed). Requires a relaunch to
+    //       install the hook. Actuated ONLY by the aim provider's WriteState rung (Reach is routed
+    //       through the provider automatically): writes start once an arm-gate validates player_control
+    //       (render TLS -> ring A master == sim TLS, plus ValueAgreement with the unit aim; policy in
+    //       aim_write::ArmGate), on foot and player-controlled only, with the aim stick held neutral
+    //       while it drives. Vehicles, cinematics and menus keep the stick servo.
+    //       (reach_dd_test_deg is ignored in mode 3.)
+    // Modes 1/2 do not test co-op host-follow (whether the write REPLICATES).
+    //   4 = PERSISTENCE TEST of the sim's MASTER player_control.desired_angles (ring A master
+    //       +0x2417C, found by reach_dd_watchpoint=3): holds the aim stick neutral, checks the pair
+    //       against the master unit aim (no write if they disagree), writes yaw+reach_dd_test_deg and
+    //       pitch+-10deg ONCE, logs whether it persisted and steered the aim (REACHDDP ...), then
+    //       writes the original back and releases the stick. One-shot per session.
+    int reach_direct_drive = 0;
+    // Halo 3, ODST and Halo 4, ON FOOT: DIRECT DRIVE (1), the same as reach_direct_drive = 3 for the three
+    // sibling engines. Your aim writes the game's own control angles instead of steering the right stick
+    // (the stick can only turn the view at the game's turn rate). Installs on the next title load, then
+    // arms itself once the angles it found agree with the game's aim (log: DRIVE ... armed=1). Vehicles,
+    // cutscenes and menus keep the stick. 0 = off: the stick servo aims. Derived from aim_direct_drive by
+    // Config_ApplyAimModes. (default 1, as aim_direct_drive)
+    int legacy_direct_drive = 1;
+    // EVERY TITLE THAT HAS IT (Reach, Halo 3, ODST, Halo 4), live from F1 > Weapon & aim: 1 = DIRECT DRIVE,
+    // your aim writes the game's own aim instead of steering the right stick; 0 = the stick aims. Halo 2 on
+    // foot: 1 also writes player control's desired angles (the body faces the aim, the network carries it,
+    // and the right stick turns the view's own heading; halo2_direct_drive.inl); 0 keeps Halo 2's earlier
+    // aim, written into the unit only. Halo CE always writes its aim directly. The per-lane fields
+    // reach_direct_drive (3/0) and legacy_direct_drive (1/0) are DERIVED from this by Config_ApplyAimModes;
+    // old files that set those are still read, as aliases that can only turn it on. (default 1: direct drive is
+    // the aim path everything else builds on; no release ever shipped this key, so no saved file holds an old 0)
+    int aim_direct_drive = 1;
+    // EVERY TITLE WITH DIRECT DRIVE: 1 = the address cache (src/common/drive_known.h). When a drive had to search
+    // its game DLL for its code -- a game build the mod's tables were not measured on -- what it found is written
+    // to HaloMCCVR-drive-addresses.txt in the mod's folder, and the next launch on that build verifies those
+    // addresses instead of searching again. The file is a cache, not a setting: every address is verified
+    // before it is used, another game build or another version of the mod's tables makes an entry dead, and
+    // deleting it costs one search. 0 = the file is neither read nor written. (default 1)
+    int drive_address_cache = 1;
+    // EVERY TITLE, live from F1 > Weapon & aim > "Converged aim" (Reach's also needs direct drive; with it off
+    // Reach keeps its own convergence), on foot and in Halo 3, ODST and Reach seats (reach_vehicle_aim):
+    // CONVERGED AIM (1). The game traces the ray from your eye along the controller and bends the aim so the
+    // shot, which leaves from the character's eye, passes through the point that ray hits; the reticle is
+    // drawn on that point. 0 = the fixed-distance aim: the controller's ray converges on one fixed distance
+    // (crosshair_distance_m), and no trace runs. (default 1)
+    int converged_aim = 1;
+    // Swing angle in degrees for the reach_direct_drive=1 test (about world-up). (default 45)
+    int reach_dd_test_deg = 45;
+    // DEV write-watchpoint locator (default 0 = off). Hardware write-watchpoints armed across all threads;
+    // logs the writing instruction + x64 unwind chain. Read-only diagnostic: it never changes aim.
+    //   1 = watch unit+0x214 as the render thread sees it. Finds only the sim's snapshot-publish memcpy:
+    //       the render thread reads a SNAPSHOT copy of the game state, not the sim's live block.
+    //   2 = watch player_control at haloreach+0xC026F0 (+i*0xB8+0x94). REFUTED: reads all-zero in play.
+    //   3 = VALUE-SCAN (use this): finds desired_angles by value in the sim's MASTER game state (then
+    //       everywhere else), narrows it across 2-3 still aims >=3 deg apart, then watches the survivors
+    //       with DR0-DR3 in batches and logs each one's writer -- the direct-drive hook target.
+    // Leave at 0 for play.
+    int reach_dd_watchpoint = 0;
+
+    // Halo Reach, ON FOOT, direct drive (reach_direct_drive = 3): TRACE-AND-REAIM CONVERGENCE, the
+    // Halo: Campaign Evolved aim. The shot keeps leaving from where Reach fires it; the intent ray (the
+    // controller/reticle ray the player points) is traced into the world with the game's own
+    // collision_test_vector and the game's own crosshair-trace flags (resolved from the build and
+    // value-checked against HREK at install; see src/dll/reach_sight_trace.inl), and the aim is bent so
+    // the engine's crosshair ray passes through the point the intent ray hits:
+    // aim = normalize((ray origin - engine eye) + range * ray direction). The ray is traced 1 km; a miss
+    // converges on its far end; range is smoothed. It converges whenever it can
+    // resolve; the older on-foot hand shot ray (which MOVED the projectile origin to the hand) is only
+    // the worst-case fallback and stands down while it is live. No key enables it: it follows direct
+    // drive.
+    // DEV BUILDS ONLY, test-only (never saved): trace length override in metres for a cost A/B.
+    // 0 = the shipped 1 km.
+    float reach_sight_trace_length_m = 0.0f;
+    // DEV BUILDS ONLY (not parsed otherwise): where the trace is made, for an A/B. -1 = by the rule (inside the
+    // unit's update when alone in the game, at the control pass when the simulation is shared); 0 = always inside
+    // the unit's update; 1 = always at the control pass.
+    int reach_sight_trace_site = -1;
+    // DEV BUILDS ONLY (not parsed otherwise): when Reach moves an effect's place onto the gun, for an A/B. -1 = by
+    // the rule (always when alone in the game; only outside a simulation tick when the simulation is shared);
+    // 0 = always; 1 = only outside a tick; 2 = never; 3 = only the player's own first-person weapon effects.
+    int reach_effect_move_rule = -1;
+    // DEV BUILDS ONLY (not parsed otherwise): replace the resolved flags for an experiment. 0 = use them.
+    unsigned long long reach_sight_trace_flags = 0;
+    int reach_sight_trace_mode = 0;
+    // DEV BUILDS ONLY (compiled out otherwise): fault injection proving the trace's fallbacks run, each
+    // through the real path. Bit 0 = raise inside the guarded native call (the genuine fault handler);
+    // bit 1 = withhold the resolved flags; bit 2 = the resolver's value check refuses at install;
+    // bit 3 = the cold worker's periodic re-check withdraws the flags.
+    int reach_sight_fault = 0;
+    // DEV BUILDS ONLY (not parsed and compiled out otherwise): fault injection proving each rung of the
+    // first-person ladder (roomscale's admission, two-handed aim's exit) takes over through the real path,
+    // in every title. Bit 0 = the first-person view model reads "not drawn" (an unarmed player, without
+    // one: Reach has no unarmed state an automated run can reach); bit 1 = the game camera rung reads "not
+    // bound" (as if the title had no such rung); bit 2 = the Forge Monitor answer reads "unknown"; bit 3 =
+    // a first-person game camera reads "not first person" (the value agreement with the view model must
+    // then withdraw the rung). Read at launch; 0 for every other run.
+    int first_person_rung_fault = 0;
+    // DEV BUILDS ONLY (not parsed and compiled out otherwise; never saved): fault injection for the direct drives'
+    // address resolution, every title (src/common/drive_resolve.h, src/dll/drive_cascade.cpp). Each bit forces one
+    // thing that only happens on a game build the tables were not measured on, so the rung below it -- or the
+    // refusal -- can be watched working through the real install path. Bit 0 (0x01) = every signature search
+    // finds nothing: no drive is hooked, each says what was not found. Bit 1 (0x02) = every signature search
+    // finds one match too many: each is taken at its recorded address, and says so. Bit 2 (0x04) = every recorded
+    // RVA is wrong: the search must win, and each address is reported MOVED. Bits 1 and 2 together = ambiguous
+    // with no record to settle it: no drive is hooked. Bit 3 (0x08) = the module's PE TLS directory disagrees
+    // with the instruction a drive anchors on: no drive that reads the engine TLS index is hooked. Bit 4 (0x10)
+    // = a hook's watchdog is told the hook never ran: it must say so once, after its ten seconds of possible
+    // time. Bit 5 (0x20) = no short field anchor stands at its recorded offset in its function: each must be the
+    // one match inside that function. Bit 6 (0x40) = the addresses saved from an earlier launch are stale: the
+    // resolution behaves as on a build that is not the recorded one, verifying them fails, and the search must
+    // find everything. Bit 7 (0x80) = a self-test, not a fault: where the known addresses verified, the search
+    // is run as well and the log says whether the two agree; what is used does not change. With bits 0, 1, 2
+    // or 5 the known addresses fail first, so the whole path shows: not verified, searched, reported. While
+    // ANY bit is set the address cache's file is neither read nor written, so nothing a launch with this key
+    // in it found can reach a later launch (with bit 7 the self-test is therefore of the recorded addresses,
+    // the only known ones left). Read when a drive is installed; 0 for every other run.
+    int drive_fault = 0;
+    // Diagnostic: log the distinct (caller, flags, mode) of Reach's own collision_test_vector calls,
+    // to identify the flags a bullet's flight test uses. Leave at 0 for play.
+    int reach_collision_census = 0;
+    // Diagnostic: bin the active title's own collision queries by caller and flag the ones that start at the
+    // engine eye and run along the converged aim (the crosshair / shot query candidates; Halo 4 and Halo 2).
+    // Leave at 0 for play.
+    int sight_ray_census = 0;
+    // Halo 4 SEATED CONVERGENCE (every build; F1 > Vehicles): 1 = a Halo 4 seat converges -- its
+    // intent ray is traced, and the aim is bent so the line the SIMULATION aims the seat along passes through the
+    // point that ray hits; the reticle sits on that point. The line is sampled from the game's own aim-view call
+    // for the seat: with coop_safe_shots on that is the game's own seat camera (the following camera in a seat the
+    // game aims in third person), on every machine, and nothing in the simulation is changed -- only the aim
+    // written into the control record and the stick. Converged is then claimed as on foot and in a Halo 3 seat:
+    // the native assist's cap, a seat's stop and a gun still turning are natural and never switch it off. Needs
+    // converged_aim, reach_vehicle_aim > 0 and the first-person seat view. 0 = Halo 4 seats keep the
+    // fixed-distance aim. (src/dll/halo4_seat_converge.inl; default 1)
+    int halo4_seat_converge = 1;
+    // DEV BUILD ONLY (parsed and saved only in dev builds): 1 = a Halo 3 SEATED local shot whose round will inherit
+    // its vehicle's velocity (the fire routine's body-velocity branch, 0x369419) re-aims its crosshair query through
+    // P' -- the point that makes the round's own velocity, d * Vp + the inherited sideways velocity, point at P --
+    // instead of through P (shot_impact::SolveInheritedAim; game.cpp halo3_impact_witness.inl). Needs the round's
+    // speed, learned and value-proven from the weapon's earlier rounds, so the first shots of a weapon are not
+    // compensated. 0 = re-aim through P. An A/B switch. (default 0)
+    int seated_inherit_compensation = 0;
+    // DEV BUILD ONLY (parsed, saved and in the menu only in dev builds; a player build always uses 1): FLAT PARITY --
+    // THE SHOT POINT MOVED WITH THE EYE (shot_lag_logic.h 4a; sight_layer.h Sight_ShotPoint). 1 = an on-foot local
+    // shot that aims through a world point -- Halo 3 / ODST: the crosshair-assist re-aim, the muzzle shot and Halo 3's
+    // on-foot record; Halo 2, CE and Halo 4: the muzzle shot; CE: the player assist ray; Reach: the unit-adjust and
+    // crosshair-query re-aims and the muzzle shot, ONLY with its measured fire eye (shot_lag_logic.h 4f) -- aims through
+    // P' = P + (the eye at the fire - the eye of P's camera sample) instead of the world point P: what stock flat Halo
+    // fires, one tick of strafe ahead of the crosshair the player aimed with (measured with the flat probe: impacts land
+    // ON the crosshair of the frame that shows them). 0 = through P as published (the A/B: rounds trail a strafe by one
+    // tick). The reticle stays on P either way. Live (read per shot). (default 1)
+    int shot_point_transport = 1;
+    // DEV BUILD ONLY (parsed, saved and in the menu only in dev builds; a player build always uses 1): with
+    // shot_point_transport on, 1 = seated shots too (extrapolated from the eye's velocity; a seat has no fire-tick
+    // eye). 0 = seats keep P, the A/B (a seated round also inherits its vehicle's velocity:
+    // seated_inherit_compensation). A Halo 3 seat whose shots follow the game's own crosshair line is not re-aimed at
+    // the fire at all, so the key changes nothing there. (default 1)
+    int shot_point_transport_seated = 1;
+    // DEV BUILD ONLY (a player build always uses 1), Halo 2 on foot, with shot_point_transport on: 1 = once the
+    // firing assist's camera evaluator is PROVEN to be the engine eye (halo2_fire_eye.inl; its proof is fed at rest
+    // from the unit's own tick), a muzzle shot's eye at the fire is that evaluator asked inside the fire --
+    // the raw post-move eye, (2 - interpolation factor) ticks past the publication P was built from. 0 = always the
+    // publication's eye carried one measured tick (the A/B: short by the observer's interpolation lag). The dev
+    // HALO 2 FIRE EYE line measures both on every shot either way. Live. (default 1)
+    int halo2_measured_fire_eye = 1;
+    // DEV BUILD ONLY (a player build always uses 1), Halo 4 on foot, with shot_point_transport on: 1 = once the unit
+    // camera position the fire itself asks is PROVEN to be the engine eye at rest (halo4_fire_eye.inl; fed from the
+    // unit's own tick while it stands still), a muzzle shot's eye at the fire is that evaluator asked inside the fire --
+    // the raw post-move eye, (2 - interpolation factor) ticks past the controller root P was built from. 0 = always the
+    // controller root's eye carried one measured tick (the A/B: short by Halo 4's camera interpolation, as Halo 2's).
+    // The dev HALO 4 FIRE EYE line measures both on every shot either way. Live. (default 1)
+    int halo4_measured_fire_eye = 1;
+    // DEV BUILD ONLY (parsed and saved only in dev builds; a player build always uses 1), Halo 3 SEATS: 1 = the seat's
+    // record (the angles a multiplayer host fires from) is chosen at the stick call so the game's OWN crosshair query
+    // at the fire tick -- from this pass's camera, along the occupant's aim with the seat's learned velocity term --
+    // passes through the point, and the host computes the same shot (src/common/seat_upstream_logic.h). The fire-site
+    // re-aim stays as the local backstop. Gun-slaved seats (turret, Gauss) keep their own gun-offset path.
+    // 2 = the same, solved for the camera an UNMODDED host queries the seat from: in a seat whose stock tag is third
+    // person its CHASE camera (this machine's first-person seat patch clears that bit locally), asked of the
+    // evaluator's own chase path; this machine's own stock line then sits off the point by the chase offset and the
+    // fire-site re-aim carries the local shot. For multiplayer A/B (the dev SHOT UPSTREAM line measures both lines).
+    // 0 = the record keeps the render-time solve, as before: the A/B arm for the dev SHOT UPSTREAM line. (default 1)
+    int seat_upstream_aim = 1;
+    // DEV BUILD ONLY (parsed and saved only in dev builds; the hooks are compiled out of player builds): 1 = log
+    // the type-13 pilot controllers, Reach's Sabre/Seraph (haloreach+0x64828) and Halo 4's Broadsword
+    // (halo4+0xAA524) -- src/dll/type13_flight_log.inl, docs/TYPE13-FLIGHT-CONTROLLERS-2026-10-01.md Phase B.
+    // The hooks write nothing to the game; at 0 they are not installed at all (no detour: a true control run).
+    // Read at startup. Leave at 0 for play.
+    int type13_log = 0;
+    // DEV BUILD ONLY (parsed and saved only in dev builds; a player build always uses 1), Halo 3 / ODST / Reach
+    // seats (in Reach: R-V27's `allows weapons` passenger seats): 1 = skip the game's vehicle-tilt
+    // rebase of a player's aim (halo3+0x355EFA / halo3odst+0x39A6C4 / haloreach+0x48AE8F) while the
+    // first-person seat patch is enabled, so seats aim in world angles as in stock (src/dll/seat_aim_world_frame.inl).
+    // 0 = leave the game's rebase in place: the A/B arm for the dev "frame check" line. Followed live. (default 1)
+    int seat_aim_world_frame = 1;
+    // DEV BUILD ONLY (a player build always uses 0), Halo 3 seats: how the game is made to treat the occupied seat
+    // as first person. 0 = the camera director alone is answered (src/dll/halo3_seat_view.inl): the vehicle's
+    // loaded data and everything the simulation reads stay stock. 1 = the earlier way, for an A/B: clear the seat's
+    // `third person camera` flag in the loaded vehicle definition while seated (C20), which the simulation reads
+    // too -- a co-op campaign client goes out of step with its host in a seat. Followed live. (default 0)
+    int seat_view_tag_write = 0;
+    // DEV BUILD ONLY, for automated tests: 1 = the synthetic gamepad. Scripts dropped as halomccvr_pad.txt in the
+    // mod folder press its buttons (tools/Send-MccPad.ps1; the language is src/common/dev_pad_script.h).
+    // Read once at startup. Leave at 0 to play.
+    int dev_synthetic_pad = 0;
+    // DEV BUILD ONLY (not parsed otherwise), for automated tests: 1 = every Halo 3 vehicle is taken as one the mod
+    // cannot name -- no identity, so no tuned eye point and no built-in camera preset -- the way a mod map's own
+    // vehicles are, so that path can be run on a stock map. Its control class (Halo3ControlClass) is kept. Takes
+    // effect for each vehicle the first time it is resolved on a map. Not written to the file.
+    int dev_vehicle_unnamed = 0;
+    // DEV BUILD ONLY (not parsed otherwise): 1 = in a seat whose camera shows the headless body, a model whose head the
+    // mod does not know has its regions hidden one at a time, about 6 s each, each logged ("DEV seat body probe"), so
+    // a picture taken in each window shows which region is the head. Not written to the file.
+    int dev_seat_body_probe = 0;
+    // DEV BUILD ONLY (not parsed and compiled out otherwise), Halo: Reach (src/dll/reach_sim_trace.inl).
+    // dev_sim_trace: 1 = every object's state at each simulation tick goes to HaloMCCVR-simtrace-<stamp>.bin beside
+    // the log (about 35 MB a minute), to compare two replays of one saved film, or a game with its own film.
+    // dev_sim_probe: make one of the mod's own calls while a film replays. Bit 0 = the aim trace inside the tick (a
+    // 1 km collision test along the unit's aim, once a tick, in the unit's own update); bit 1 = the unit
+    // camera-position evaluator alone, inside the tick; bit 2 = that aim trace between ticks instead (when the game
+    // builds the unit's camera); bit 3 = the collision test alone, inside the tick (no evaluator). Both keys can be
+    // set live with the dev pad (`set dev_sim_probe 1`).
+    // dev_sim_minimal (needs dev_sim_trace, read at startup): the reference. Nothing of the mod is installed in
+    // Reach but the recorder -- no VR view, no aim, no other hook -- so the trace is the game's own.
+    // dev_sim_bisect: each bit makes one group of the mod's Reach detours a plain pass-through (the game's own
+    // function and nothing else): 1 the per-unit update, 2 the collision test, 4 the unit camera position, 8 the
+    // unit adjust, 16 the effect location, 32 the muzzle lane's four, 64 the melee damage, 128 the weapon haptics'
+    // five, 256 the tracker and the sound listener. For finding which one changes a replay.
+    int dev_sim_trace = 0;
+    int dev_sim_probe = 0;
+    int dev_sim_minimal = 0;
+    int dev_sim_bisect = 0;
+    // Dev builds: the pixel shader census (src/dll/dev_ps_census.inl). 1 = in Halo 4, each pixel shader's first
+    // small draw (a full-screen pass or a HUD quad) is logged with its target, blend state and textures, its
+    // disassembly is written beside the log, and once a second the log says which of them drew and which copies
+    // touched the game's scene colour or an eye's image. Read at startup (it creates three more hooks); the pad's
+    // `set dev_ps_census` pauses and resumes it. (default 0)
+    int dev_ps_census = 0;
+
+    // Halo Reach, SEATED, direct drive (reach_direct_drive = 3): the same trace-and-reaim aim in vehicles.
+    // The write drives the seat's look (desired_angles), and Reach aims every seat's weapon from it: it
+    // traces its crosshair from its OWN camera along that look and fires the barrel at what the trace
+    // hits (HREK aim_assist). So the aim is bent to put that camera line through the point the intent ray
+    // hits. A seat's own limits (a turret's pitch stop, a passenger's cone) are respected: the write holds
+    // at the limit and the converged aim stays claimed, so the barrel fires along its stop as in flat Reach
+    // (the fixed-distance shot redirect does not take over there), and the reticle stops at
+    // the edge with it (seat_limit_reticle_logic.h; air vehicles have none). A seat whose stick is
+    // steering (a vehicle_view_follow driver) always keeps the stick.
+    //   0 = off: vehicles keep the stick servo and the fixed-distance shot redirect.
+    //   1 = gunner and passenger seats, and drivers whose gun turns apart from the hull (Scorpion,
+    //       Wraith); a driver whose look steers the vehicle (Warthog, Ghost, Banshee ...) keeps the stick.
+    //   2 = every seat the hand aims, drivers included. (default)
+    // Every title's seated direct drive follows the same rule (Halo 3, ODST and Halo 4 too:
+    // seat_drive::Decide); Halo 3 and ODST's seated converged aim uses it as well (0 = their old seat aim).
+    // F1 > Vehicles > Aim in seats > "Drivers aim with the hand" switches it between 2 and 1.
+    int reach_vehicle_aim = 2;
+    // SEATED DIRECT DRIVE, every title with direct drive (Reach, Halo 3, ODST, Halo 4, Halo 2): 1 = with
+    // aim_direct_drive = 1, a seat's aim is written as on foot -- in the seats reach_vehicle_aim names, axis by
+    // axis once that seat's own aim record has checked out -- instead of the stick steering it at the game's
+    // turn rate. The seat's limits (a passenger's cone, a gun's pitch stop) still hold: the write stops at the
+    // limit and the gun fires where it can, as in flat Halo (a natural limit never switches
+    // convergence or direct drive off), and the reticle stops at the edge where the gun is held
+    // (seat_limit_reticle_logic.h; a gun still slewing toward the hand, or an air vehicle, keeps it on the
+    // converged point). A driver whose stick or wheel steers
+    // keeps it for the heading. Every
+    // title needs its first-person seat view (vehicle_first_person; Halo 3 / ODST also vehicle_hide_body, whose
+    // native seat patch holds the camera; Halo 2 also vehicle_vr_controls, and nothing is written there with
+    // vehicle_view_follow on). Halo 4 and Halo 2 seat roles are not mapped, so every seat there counts as a
+    // driver whose look steers (written at 2, the stick at 1), and Halo 4 writes the heading only. 0 keeps
+    // every seat on the stick.
+    // F1 > Vehicles > Aim in seats > "Direct drive in seats". (default 1)
+    int seat_direct_drive = 1;
+    // A SEAT'S GUN IS AIMED THROUGH THE POINT BY ITS BARREL (Halo 2; seat_barrel_logic.h). A vehicle gun's shot
+    // leaves its muzzle and the engine turns it at the crosshair's point only inside the weapon's deviation angle
+    // about the barrel, so a seat aimed from its camera through the point lands its shots beside a NEAR point, by
+    // the barrel's distance from the camera (a Scorpion's barrel is two metres above its driver: under some 25 m).
+    // 1 = the aim written for the seat is the one for which the barrel's line runs through the point; the
+    // barrel's place is learned from the seat's own fires and remembered for that kind of vehicle (a Scorpion's is
+    // known beforehand). 0 = the camera's line always. Only the written aim changes (what the title replicates).
+    // Needs seat_direct_drive and converged_aim. Read live.
+    bool seat_aim_through_barrel = true;
+    // A SEATED FIRE'S CROSSHAIR TEST RUNS ALONG THE PLAYER'S LINE (Halo 2, halo2_seat_fire.inl; Halo 3, the stock
+    // seat's crosshair query, legacy_sight_trace.inl LegacySightSeatLineFromEye: its camera is the seat's third-person
+    // camera metres behind the vehicle, so anything behind the player could take his shot). The engine traces
+    // the crosshair from the seat's own camera, which is not where a player's eye is (a head anywhere in the room
+    // but at the seat's camera): aiming over a low obstacle, the seat camera's line can hit the obstacle, and the
+    // engine then turns the shot at it. 1 = at a local seated fire that test starts at the rendered eye the
+    // crosshair's point was traced from and runs through that point. 0 = from the seat's camera through the
+    // point. Local to the fire (as the re-aim it replaces is), and only where fire-time changes are allowed (never
+    // in co-op). Needs converged_aim. Read live.
+    bool seat_fire_from_eye = true;
 
     // rendering. The game's own HUD reticle sits at head-center and is wrong
     // whenever hand aim is on; this one is the truth.
     bool crosshair = true;
-    float crosshair_distance_m = 41.0f; // how far along the aim ray it floats
-    float crosshair_size_deg = 10.10f;  // apparent (angular) size
+    float crosshair_distance_m = 50.0f; // how far along the aim ray it floats
+    float crosshair_size_deg = 4.00f;   // apparent (angular) size; saved per game (title_profiles)
+    // The crosshair's opacity and brightness, as a scale on its own headset layer (1 = as the game draws it).
+    // Opacity scales the art's alpha: below 1 it is more see-through, above 1 a faint crosshair becomes more
+    // solid. Brightness scales its colour: below 1 dimmer, above 1 brighter (towards white). 0 to 2 each.
+    // Every title's crosshair, the game's own art and the mod's. Where the OpenXR runtime offers layer colour
+    // scaling (XR_KHR_composition_layer_color_scale_bias) the compositor applies them; where it does not
+    // (SteamVR) the mod applies them to the crosshair's own image. Log: CROSSHAIR TINT. Read live.
+    // The defaults are 1.25 and 1.25: a little more solid and a little brighter than the game draws it.
+    // Saved per game (title_profiles).
+    float crosshair_opacity = 1.25f;
+    float crosshair_brightness = 1.25f;
+
+    // EVERY TITLE, while the aim converges (Reach through its own trace, the others through the sight
+    // layer -- vr.cpp's traced_reticle_placement): Halo: Campaign Evolved's reticle placement
+    // (its aimreticulemaxdist / surfaceoff / minscale knobs; its defaults but for the maximum distance,
+    // which is 50 m here so the crosshair stays on a far target). The crosshair sits on the
+    // surface the aim ray hits, pulled back reticle_surface_offset_m; it parks at reticle_max_dist_m
+    // beyond that and on a miss; and it shrinks away as the surface comes closer than
+    // reticle_min_scale_dist_m (to reticle_min_scale there). The ray starts at the player's eye, so
+    // parking it short never moves it off the thing being aimed at. It holds crosshair_size_deg at the
+    // cap. crosshair_distance_m still applies whenever the aim is not converged (the fallback aim).
+    float reticle_max_dist_m = 50.0f;
+    float reticle_surface_offset_m = 0.5f;
+    float reticle_min_scale_dist_m = 0.7f;
+    float reticle_min_scale = 0.001f;
+
+    // DEV BUILD ONLY (parsed, saved and in the F1 menu only in dev builds): an ASSESSMENT aid -- a second marker
+    // showing where the game's shot lands; your normal reticle is unchanged. A small magenta ring and dot, where the
+    // game's shot lands, traced from the game's own shot origin along its aim, not from the controller
+    // (src/common/assess_reticle_logic.h; Reach on foot: the unit's projectile aim, unit +0x214, not the kicking
+    // camera) -- to judge by eye how far the game trails the hand. 0 = off, 1 = on foot only, 2 = everywhere
+    // (seats and turrets too). It draws that marker and nothing else: the player's reticle, the converged mark,
+    // the shots, the aim write and the drive mode never read it (converge::AssessDrawsGameAim;
+    // tools/check_assess_isolation.py). The retired key honest_reticle_onfoot is ignored with a log line:
+    // its player-facing honest reticle was a cue for judging the stick drive, and with convergence and
+    // direct drive in place the game's own tracers do that job. (default 0)
+    int honest_reticle_assess = 0;
 
     // How often the VR crosshair re-reads the game's own animated crosshair
     // art, in displayed frames. Halo 3's authored crosshair kicks when the
@@ -673,6 +1439,9 @@ struct Config
     // controller ray. 0 = previous placement.
     float gun_right_m = 0.0f;
     float gun_up_m = 0.0f;
+    float left_gun_forward_m = -0.16f;
+    float left_gun_right_m = 0.04f;
+    float left_gun_up_m = -0.06f;
 
     // Halo 2 CLASSIC ONLY: extra rotation and offset applied to the visible
     // gun AND hands together, so Classic can be lined up with what
@@ -710,12 +1479,53 @@ struct Config
     bool hide_muzzle_flash[6]{false,false,false,true,false,true};
     // Per-game stock bloom. Verified optional suppression: H3, ODST, Reach.
     bool bloom_enabled[6]{true,true,true,true,true,true};
+    // Set once the player picks bloom for that game in the menu. Until then ODST and Reach draw
+    // without bloom while VR is on, and bloom_enabled above keeps whatever the file held: nothing
+    // is rewritten, so outside VR (or without the mod) the player's own setting stands.
+    bool bloom_chosen[6]{};
+    bool disable_autoexposure_odst = false;
 
     // Experimental gun-mounted VR zoom screen. R3 is isolated from Halo's
     // native zoom so the full VR gun/body remain visible; scope_zoom is the
     // fixed 4:3 lens restored on every activation before right-stick adjustment.
     bool scope_enabled = true;
+    // SCOPE CONVERGENCE, live (F1 > Scope): 1 = the zoom camera LOOKS AT the point your converged aim sends
+    // the shot to (Halo: Campaign Evolved's scope rule), from your eye, so its centre is the reticle's point
+    // however far you stand from the character. 0 = each title's earlier zoom camera, which looks along the
+    // game's aim and so runs parallel to your sight line, off by the distance between you and the character.
+    // Needs Converged aim, and the aim WRITTEN (direct drive; in a seat, both axes): with Converged aim off, no
+    // fresh trace, or the stick servo turning the aim, the zoom is the earlier one either way. A seat whose
+    // reticle is clamped at a land vehicle's angular stop shows the game's own (clamped) aim instead
+    // (the hand's point lies past the stop the gun is held at). (default 1)
+    int scope_converge = 1;
     float scope_zoom = 24.0f;
+    // AIM FRAME ZOOM (live; F1 > Scope; Halo 3, in MCC and in Project Reclaimer, ODST, Reach and Halo 4). While the game itself is
+    // zoomed -- its own zoom level, never the button -- the headset shows one flat picture the game draws along the
+    // aim at its own zoomed field of view, as a frame centred on the aim, in place of the immersive view. The zoom
+    // button then reaches the game, so the gun-mounted lens is not offered there while this is on. Per zoom
+    // level (index 0: the first; 1: the second and higher): the frame's width in degrees, and a strength that
+    // narrows the game's zoomed view further (1 = the game's own). The move time eases the frame in from, and back
+    // out to, the game's own angles (0 = at once). game.cpp: AimFrameThisFrame; vr.cpp: the aim frame quad.
+    // On by default, with a 100 degree frame at strength 1 for both levels (the game's own zoomed view, which the tester
+    // found feels like the flat game's): the tester's settings (2026-10-30).
+    bool aim_frame_zoom = true;
+    // 3D inside the frame: the two eye passes are drawn along the aim and each eye sees its own picture in the
+    // frame (the cost of the ordinary 3D view). 0 = one flat picture for both eyes.
+    bool aim_frame_stereo = true;
+    // How far apart the frame's two eyes are, as a multiple of your own eye spacing (binoculars set their lenses
+    // wider for the same reason): far targets show little depth at real spacing. The two pictures meet at the
+    // point you aim at, so it and the game's crosshair sit at the frame's own depth. 1 to 10.
+    float aim_frame_3d_strength = 6.0f;
+    float aim_frame_size_deg[2]{100.0f, 100.0f};
+    float aim_frame_strength[2]{1.0f, 1.0f};
+    float aim_frame_move_s = 0.12f;
+    // The HUD inside the frame, apart from the HUD layout (hud_size and the rest) and the Halo 4 helmet frame: 1 =
+    // the game's own layout, as on a flat screen, its edge art at the frame's edges. Size scales it whole (0.5 to
+    // 1.25); width and height stretch one axis each (0.5 to 1.5). The game's crosshair and zoom art scale with it.
+    // aim_frame_logic.h HudScale; game.cpp HudLayoutWanted and Halo4ApplyNativeHudAffine.
+    float aim_frame_hud_size = 1.0f;
+    float aim_frame_hud_width_scale = 1.0f;
+    float aim_frame_hud_height_scale = 1.0f;
     float scope_screen_width_m = 0.159f;
     float scope_screen_right_m = -0.058f;
     float scope_screen_up_m = 0.216f;
@@ -736,7 +1546,7 @@ struct Config
     // publishes: halo3+0x278EE0, halo3odst+0x2A6308, haloreach+0x252E28. 1.0 =
     // the game's own brightness; higher = brighter, lower = darker. NOT a HUD
     // control — the function once thought to size the HUD adjusts brightness.
-    // One value for all three titles, so a change is felt everywhere.
+    // Live value follows the selected title profile; the shared key seeds older configs.
     float game_brightness = 1.11f;
 
     // Halo's internal raster scale, applied by the launcher on the next game
@@ -757,6 +1567,9 @@ struct Config
     // disabled the desktop window behaves exactly as it always has. Like
     // resolution_scale, this takes effect on the next game start.
     bool fit_desktop_window = true;
+    // Halo 3 and ODST: one eye of the headset's picture on the monitor while in VR, which otherwise stays on its last
+    // flat frame (for anyone watching or streaming the window). One extra full-screen draw a frame.
+    bool desktop_mirror = true;
 
     // The VR frame is submitted inside MCC's desktop Present, so MCC's own
     // V-Sync would pace the HEADSET at the DESKTOP monitor's refresh -- a 60 Hz
@@ -864,26 +1677,41 @@ struct Config
 
     // Optional body gestures; each title keeps its own MCC controller layout.
     bool manual_reload = false;
+    // Opt-in: while manual_reload or weapon_holsters is on, withhold the game's own reload and
+    // weapon-switch bindings (buttons and keyboard) so only the gestures do them. Off keeps
+    // every native binding working beside the gestures. Needs the native VR action bridge.
+    bool gesture_only_weapon_input = false;
     bool manual_reload_disable_auto = false;
     bool manual_reload_skip_animations = false;
     bool manual_reload_shortened_animation = false;
-    bool weapon_holsters = false;
+    bool weapon_holsters = true;
     float weapon_pouch_down_m = 0.50f;
     int weapon_pouch_location = 0; // 0 support-side front hip, 1 behind support shoulder
     float weapon_pouch_offset_x_m = 0.0f;
     float weapon_pouch_offset_y_m = 0.0f;
     float weapon_pouch_offset_z_m = 0.0f;
     float weapon_body_zone_radius_m = 0.20f;
-    float weapon_holster_radius_m = 0.20f;
+    float weapon_holster_radius_m = 0.30f;
     float weapon_insert_radius_m = 0.18f;
     float weapon_holster_draw_m = 0.25f;
     bool weapon_holster_slide = true;
-    bool weapon_holster_click = false;
+    bool weapon_holster_click = true;
     bool weapon_needler_shake = false;
+    bool dual_wield_shake_reload = true;
     bool weapon_unknown_reload_visual = true;
     float weapon_shake_travel_m = 0.10f;
-    int weapon_holster_location = 0; // 0 shoulder, 1 hip
-    // X, RB, LB, B, Y, A, LT, RT. H3, ODST, Reach, H4, CE, H2.
+    // 0 shoulder, 1 hip, 2 over the shoulder (Campaign Evolved's spot), 3 custom (the three values below).
+    int weapon_holster_location = 3;
+    // THE CUSTOM HOLSTER SPOT (location 3): metres from the head, to the weapon side, up, forward, in the level
+    // frame of the way the head faces. Set by hand: F1 > Controls > Reload and holsters > "Calibrate Holster Location"
+    // arms it, and the next squeeze of the weapon grip records where that hand is. The default is a spot
+    // behind the weapon-side shoulder: 20 cm to the side, 9 cm above the head, 28 cm behind it. Each within
+    // 0.80.
+    float weapon_holster_custom_x_m = 0.198f;
+    float weapon_holster_custom_y_m = 0.085f;
+    float weapon_holster_custom_z_m = -0.284f;
+    // X, RB, LB, B, Y, A, LT, RT. H3, ODST, Reach, H4, CE, H2. In Project Reclaimer, Halo 3's X means RB
+    // (weapon_interaction::ReloadButton).
     int weapon_reload_button[6]{0,0,0,0,0,0};
     int weapon_switch_button[6]{4,4,4,4,4,4};
 
@@ -981,6 +1809,13 @@ struct Config
     // becomes grippable again through the normal spatial admission without
     // releasing the grip button.
     bool two_hand_switch_inherit = false;
+    // Two-handed aim follows the weapon's grip zone instead of how far apart the hands read each frame, so it does not
+    // switch during play (authored_grab::GripZoneAuthority). Weapons with no grip zone keep the distance test.
+    bool two_hand_grip_zone_authority = true;
+    // One-handed aim range, metres. With the grip zone deciding: a weapon whose grip is within this of the main hand
+    // is pistol-style (authored_grab::GripZoneKindMemory). With the distance deciding: the side measure of the volume in
+    // which the hands count as close (authored_grab::CloseHandAuthority), the others scaling with it.
+    float two_hand_one_hand_range_m = 0.24f;
     // Two-hand engage style: true = toggle (click left grip on/off), false =
     // hold (engaged only while the left grip is held).
     bool two_hand_toggle = true;
@@ -988,12 +1823,12 @@ struct Config
     // (IK/hand placement). Excluded from the two-hand aim line, which uses
     // raw tracked controller points. Negative seats the hand back toward the
     // wrist; -0.063 is the headset-tuned release default.
-    float left_hand_forward_m = -0.063f;
+    float left_hand_forward_m = 0.0f;
     // Sideways nudge of the two-hand grab zone along the right controller's +X
     // (positive = toward the player's right) so the grab line sits on the
     // visible barrel. Headset request 2026-07-19: the AR's barrel sat right of
     // the zone and the left hand reached past it.
-    float two_hand_zone_right_m = 0.03f;
+    float two_hand_zone_right_m = 0.08f; // Menu zero represents this physical baseline.
     // Support-controller-to-palm depth for two-hand grab acquisition only,
     // along support forward. Moves the grab sample from the tracked
     // controller toward the visible palm. Never enters aim geometry,
@@ -1035,6 +1870,24 @@ struct Config
     // Higher required speed makes both less sensitive; existing saves persist.
     bool physical_melee = false;
     bool gesture_melee = false;
+    // What counts as a swing (gesture_melee_logic.h). A swing presses the game's own melee input, nothing more.
+    float gesture_melee_speed = 1.5f;      // m/s, relative to the head
+    float gesture_melee_extension = 1.5f;  // m/s the arm must be reaching away from the head
+    float gesture_melee_travel = 0.40f;    // m an off-hand chop must cover instead; 0 = extension only
+    float gesture_melee_reach = 0.30f;     // m the hand must be from the head
+    bool gesture_melee_require_grip = false; // off: in the game's own layout the grips are buttons of their own
+    bool gesture_melee_off_hand = true;    // the hand without the gun punches too
+    bool gesture_melee_directional = true; // the aim follows the swing while it lands
+    int gesture_melee_aim_hold_ms = 250;
+    int gesture_melee_aim_ramp_ms = 150;
+    int gesture_melee_press_ms = 80;
+    int gesture_melee_cooldown_ms = 500;
+    int gesture_melee_holster_veto_ms = 400; // no swing this soon after a reload or holster gesture
+    float gesture_melee_smoothing_ms = 20.0f;
+    float gesture_melee_max_speed = 12.0f; // faster, or further than max_reach, is tracking jumping
+    float gesture_melee_max_reach = 1.2f;
+    bool gesture_melee_smoothed_hands = false; // read the hands after Hand smoothing instead of as they moved
+    bool gesture_melee_log = false;
     float physical_melee_swing_speed = kPhysicalMeleeSpeedDefault;
 
     // Lower the RIGHT (weapon) shoulder so Master Chief's arm doesn't clip up
@@ -1101,10 +1954,33 @@ struct Config
     // move to the right lens. See docs/CONTINUATION.md "KNOWN MAJOR BUG".
     bool right_eye_first = false;
 
-    // C-TITLE-1: per-title weapon/hand/HUD profiles. Every supported game -
-    // and Halo 2's Anniversary and Classic renderers separately - keeps its
-    // OWN copy of the thirteen tunables below, exactly like the per-vehicle
-    // seat trims. The gun_*/left_hand_*/hud_* fields ABOVE are the live
+    // INSTALL SEARCH MEMORY (sigscan.h, ImageMemoScope; Halo 3): 1 = within one load of the game's DLL, an install
+    // of the hooks answers the searches an earlier install already made from what that one found, and searches
+    // only for what is new. Halo 3's hooks are installed again at each new level in one load of the DLL, and an
+    // install asks over two hundred searches of it (measured: 226, about 2 s of the worker thread). 0 = every
+    // install searches again. Read when an install begins. (default 1)
+    int install_search_memory = 1;
+    // Dev builds: every remembered answer is searched for as well, and the install's line counts the ones the
+    // search did not confirm. The proof of the memory against a running game; it costs every search. (default 0)
+    int dev_install_search_check = 0;
+    // INSTALL SEARCH CACHE (install_search_cache.h; Halo 3): 1 = what an install's searches found is also saved,
+    // per build of the game's DLL, to HaloMCCVR-install-searches.bin beside this file, and the first install of the
+    // next launch starts from it: every saved match is compared again in place before it is used, and searched for
+    // again where it no longer stands. A game patch, another store's DLL or Project Reclaimer's each get their own
+    // entry. 0 = nothing is read or saved; every launch's first install searches. Needs install_search_memory = 1.
+    // Read when an install begins. (default 1)
+    int install_search_cache = 1;
+    // INSTALL HOOKS TOGETHER (minhook_lifecycle.h, MCCVR_EnableHook; Halo 3): 1 = the optional features' hooks an
+    // install enables go live together with the core's, in the one pass the core already makes. Each separate enable
+    // suspends every thread of the game in turn; one install made about twenty of them, each 0.3-1 s at a level's
+    // start, which was most of the wait for VR. 0 = each feature enables its hooks on its own, as before. Read when
+    // an install begins. (default 1)
+    int install_hooks_together = 1;
+
+    // C-TITLE-1: per-title weapon/hand/HUD/crosshair profiles. Every supported
+    // game - and Halo 2's Anniversary and Classic renderers separately - keeps
+    // its OWN copy of the tunables in TitleTunables, exactly like the per-vehicle
+    // seat trims. The gun_*/left_hand_*/hud_*/crosshair_* fields ABOVE are the live
     // values the engine reads; the title worker copies the active game's
     // profile into them when the game (or Halo 2 renderer) changes, and the
     // F1 sliders edit the active game's profile. `base_tunables` holds the
@@ -1294,6 +2170,31 @@ inline VirtualStockAimSettings VirtualStockAimSettingsFromConfig(
 
 extern Config g_config;
 
+// Gesture-only weapon input is in force: chosen, and something it applies to is on.
+inline bool Config_GestureOnlyWeaponInput() noexcept
+{ return g_config.gesture_only_weapon_input && (g_config.manual_reload || g_config.weapon_holsters); }
+
+// Bloom wanted in VR for a game (weapon_interaction title index: 0 H3, 1 ODST, 2 Reach): the player's
+// own choice once made; until then ODST and Reach default to no bloom, every other game to its value.
+inline bool Config_BloomWanted(unsigned title) noexcept
+{
+    if (title >= 6) return true;
+    if (g_config.bloom_chosen[title]) return g_config.bloom_enabled[title];
+    return (title == 1 || title == 2) ? false : g_config.bloom_enabled[title];
+}
+
+// True when the HOST decides the size the game is drawn at and the mod cannot move it. False in MCC, where
+// the game draws at its swapchain's size and the mod sets that from resolution_scale. Project Reclaimer draws
+// the game through a viewport of its own "render resolution" setting whatever the swapchain's size: a larger
+// swapchain shows the game in its top-left corner, and a smaller one shows only the top-left part of the game's
+// frame, stretched over each eye like a wrong field of view (the dev SCENEPROBE line then reads a render target
+// smaller than its viewport, "RT 2970x2142 ... viewport 3840x2160"). So there the mod forces nothing and takes
+// the game's own swapchain as the VR raster; resolution_scale does nothing.
+// Set once at start (dllmain.cpp), before the D3D11 hooks are installed.
+extern bool g_hostOwnsRenderSize;
+// The game runs in Project Reclaimer (dllmain.cpp): what is Reclaimer's alone keys on this, not on the render size.
+extern bool g_hostIsProjectReclaimer;
+
 // C-TITLE-1 profile control. `profile` is 0..5 (Halo 3, ODST, Reach,
 // Halo 4, Halo 2 Anniversary, Halo 2 Classic) or -1 for the shared
 // defaults. Apply copies that profile into the live tunables (no-op when
@@ -1301,8 +2202,13 @@ extern Config g_config;
 // profile (the F1 save path). Both are cheap and safe on any thread.
 const char* Config_TitleProfileName(int profile);
 int Config_ActiveTitleProfile();
+// The profile whose crosshair and HUD layout tunables are live now, and which the menu names beside them: the
+// running game's, or Reach's while no game is running.
+int Config_ShownTitleProfile();
 void Config_ApplyTitleProfile(int profile);
 void Config_StoreLiveTunables();
+// The other way: the live fields take the active game's profile again, after something (a controls preset) wrote it.
+void Config_RefreshLiveTunables();
 // Cold config/UI path only. Identity comes from the admitted primary weapon
 // palette, never a native object/tag handle. Unknown models use title settings.
 void Config_ApplyWeaponProfile(uint64_t identity);
@@ -1336,6 +2242,16 @@ inline int ConfigEnsureVehicleModelTrim(Config& c,GameTitle title,uint64_t ident
     for(unsigned i=0;i<kVehicleModelTrimCapacity;++i)if(!c.vehicle_model_trims[i].identity)
     {c.vehicle_model_trims[i]={title,identity,static_cast<int16_t>(seat)};return static_cast<int>(i);}
     return -1;
+}
+// Hands a seat back: to its built-in offset where one ships, and to its game's base otherwise.
+inline void ConfigResetVehicleModelTrim(Config& c,int slot)
+{
+    if(slot<0||slot>=static_cast<int>(kVehicleModelTrimCapacity))return;
+    ConfigVehicleModelTrim& trim=c.vehicle_model_trims[slot];
+    const ConfigShippedVehicleModelTrim* shipped=ConfigShippedVehicleModelTrimFor(trim.title,trim.identity,trim.seat);
+    if(!shipped){trim={};return;}
+    trim.value[0]=shipped->forward;trim.value[1]=shipped->up;trim.value[2]=shipped->right;
+    for(bool& axis:trim.set)axis=true;
 }
 inline float ConfigVehicleModelCam(const Config& c,GameTitle title,uint64_t identity,int seat,unsigned axis)
 {
@@ -1498,6 +2414,10 @@ inline void ConfigReachSeatBeginTrimEdit(Config& c, int slot)
     c.reach_vehicle_cam_use_universal[slot] = false;
 }
 
-void ConfigLoad(const wchar_t* path); // missing file -> file is created with defaults
+void ConfigLoad(const wchar_t* path);
+// Derive each lane's own direct-drive field from aim_direct_drive (call after changing it live).
+void Config_ApplyAimModes(); // missing file -> file is created with defaults
 void ConfigLoadMigrating(const wchar_t* primaryPath, const wchar_t* legacyPath);
 void ConfigSave();
+const wchar_t* Config_Path();
+void Config_SetReadOnly(bool readOnly); // the desktop settings window, while the game owns the file

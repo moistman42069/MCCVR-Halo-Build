@@ -26,6 +26,13 @@ __declspec(noinline) void __fastcall ReachContactDamageDetour(uint32_t unit,int3
     g_reachCamera.activeCallbacks.fetch_add(1,std::memory_order_acq_rel);
     __try
     {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if(g_config.dev_sim_bisect&64)
+        {
+            if(g_reachContact.damageOriginal) g_reachContact.damageOriginal(unit,damage,definition,impact,direction);
+            __leave;
+        }
+#endif
         auto& scope=g_reachContactDamage;
         const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
         const bool own=scope.active &&

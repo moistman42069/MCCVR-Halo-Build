@@ -1,4 +1,6 @@
 #pragma once
+#include <atomic>
+#include <cstdint>
 #include "haloce_eye_cache.h"
 #include "../common/haloce_frame_context.h"
 
@@ -16,6 +18,11 @@ bool HaloCE_HudTargetBindingsVerified(uintptr_t base,size_t size,uint32_t genera
 // to restore its effects. This check does not depend on camera heartbeats.
 bool HaloCE_NativeHudResourcesReady(uintptr_t expectedBase,uint32_t expectedGeneration) noexcept;
 bool HaloCE_Armed() noexcept;
+// For the unload gate and the lanes that hold halo1.dll while the core does (game.h GameTitleCoreState): the core's
+// hooks are in; its "teardown requested" (the game ended); the GetTickCount64 of its last camera frame.
+bool HaloCE_Installed() noexcept;
+std::atomic<bool>* HaloCE_TeardownRequested() noexcept;
+const std::atomic<uint64_t>* HaloCE_LastFrameMs() noexcept;
 void HaloCE_Recenter() noexcept;
 void HaloCE_PublishTracking(const halo_ce::Tracking& tracking,bool enabled) noexcept;
 void HaloCE_PresentResources(ID3D11Device* device,ID3D11DeviceContext* context) noexcept;
@@ -24,6 +31,11 @@ void HaloCE_CaptureClassicDlssDepth(uintptr_t caller) noexcept;
 bool HaloCE_AcquirePair(ID3D11DeviceContext* context,uint64_t currentSerial,
     uint64_t spaceEpoch,halo_ce::EyeCache::Completed& pair) noexcept;
 void HaloCE_ReleasePair(uint64_t borrowId) noexcept;
+// MONO RENDERING: CE's last observed renderer (-1 not read yet, 0 Classic: the one with a single-pass path,
+// 1 Anniversary), and the number of mono frames Classic dropped since the last call (the present reports them,
+// VR_NoteMonoFrameRejected).
+int32_t HaloCE_ObservedRenderer() noexcept;
+uint64_t HaloCE_TakeMonoDrops() noexcept;
 bool HaloCE_OwnsPresentation() noexcept;
 // Optional native features receive one coherent tracking/reference/context.
 // Native first-person callers supply the current STOCK center camera before
@@ -44,6 +56,9 @@ bool HaloCE_RenderContextCurrent(const halo_ce::RenderContext& context) noexcept
 bool HaloCE_BeginAnniversaryHudGameplay(ID3D11DeviceContext* context,
     UINT& packedWidth,UINT& packedHeight) noexcept;
 void HaloCE_EndAnniversaryHudGameplay(bool complete) noexcept;
+// AIM FRAME ZOOM: a zoomed frame's weapon zoom art (its scope mask and blur), deferred from just before the gameplay
+// HUD, drawn on each packed eye while that HUD's prepared target is bound. False: the target did not survive it.
+bool HaloCE_RunAnniversaryScreenEffect(ID3D11DeviceContext* context) noexcept;
 // Native per-eye post effects may use the exact rendered frame's immutable
 // settings only while its primary camera still owns the current scene.
 bool HaloCE_GetAnniversaryEyeTracking(const halo_ce::SaberCamera* camera,

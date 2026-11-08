@@ -5,6 +5,46 @@
 #include <cstdint>
 
 namespace game_menu_pointer {
+// The right stick as a mouse wheel over what the pointer is on, faster the further it is pushed, from the time it was
+// held. Positive is up, away from the player. Step answers in steps of 1/stepsPerNotch of a notch; more of them, each
+// smaller, scroll more smoothly where the receiver takes part notches.
+struct StickWheel
+{
+    float notchesPerSecond = 10.0f;
+    int stepsPerNotch = 1;
+    float pending = 0.0f;
+    uint32_t lastMs = 0;
+    int Step(float stick, uint32_t now) noexcept
+    {
+        constexpr float kDeadzone = 0.25f;
+        const uint32_t elapsed = lastMs ? std::min<uint32_t>(now - lastMs, 100u) : 0u;
+        lastMs = now;
+        if (!std::isfinite(stick) || std::fabs(stick) < kDeadzone)
+        {
+            pending = 0.0f;
+            return 0;
+        }
+        // The first touch moves one whole notch at once, so a flick always scrolls.
+        if (pending == 0.0f)
+            pending = float(stick > 0.0f ? stepsPerNotch : -stepsPerNotch);
+        else
+            pending += stick * notchesPerSecond * float(stepsPerNotch) * float(elapsed) * 0.001f;
+        const int steps = int(pending);
+        pending -= float(steps);
+        if (pending == 0.0f)
+            pending = stick > 0.0f ? 1e-4f : -1e-4f;
+        return steps;
+    }
+    void Reset() noexcept { pending = 0.0f; lastMs = 0; }
+};
+
+// MCC's map and game type lists run sideways: right goes on down the list, left back up it. Whichever way the stick
+// is pushed further is the wheel.
+inline float StickWheelAxis(float x, float y) noexcept
+{
+    return std::fabs(x) > std::fabs(y) ? -x : y;
+}
+
 inline bool MenuMode(RuntimeMode mode, bool pauseScreen) noexcept
 {
     // MCC's shell preloads all six modules. The camera-owner resolver calls
@@ -29,6 +69,25 @@ inline bool FreshActive(uint64_t packet, uint32_t now) noexcept
 {
     return (packet & (1ull << 31)) && uint32_t(now - uint32_t(packet >> 32)) <= 200;
 }
+
+// A trigger pull moves the hand: measured in play, a click's press and release landed up to 35 pixels apart on a
+// 3840-wide window, and buttons took several clicks. From the first of the pull the point holds where it was aimed,
+// until the trigger is let go. A hand that goes on moving means a drag (a slider, a scrollbar), and then it follows.
+class ClickLock {
+    bool locked = false, dragging = false;
+    float u = 0, v = 0;
+public:
+    static constexpr float kPullStarted = 0.15f, kDragDistance = 0.03f;
+    void Reset() noexcept { locked = dragging = false; }
+    void Apply(float trigger, float& pointU, float& pointV) noexcept
+    {
+        if (trigger < kPullStarted) { Reset(); return; }
+        if (!locked) { locked = true; u = pointU; v = pointV; }
+        const float du = pointU - u, dv = pointV - v;
+        dragging = dragging || du*du + dv*dv > kDragDistance*kDragDistance;
+        if (!dragging) { pointU = u; pointV = v; }
+    }
+};
 
 struct Result { bool move = false, pressed = false; int x = 0, y = 0; };
 class Pointer {

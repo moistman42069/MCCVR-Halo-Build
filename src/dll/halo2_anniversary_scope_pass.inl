@@ -1,4 +1,4 @@
-        if(ok&&haveLatch&&g_zoomFaultGeneration.load()!=generation&&VR_ScopeShouldRenderThisFrame())
+        if(ok&&haveLatch&&g_zoomFaultGeneration.load()!=generation&&VR_ScopeShouldRenderThisFrame()&&ViewSlotsIntact(base))
         {
             VR_InvalidateScopeImage();
             Halo2CameraBasis lensCamera{};float aspect=1;
@@ -44,7 +44,7 @@
                         __finally {Game_SetScopeRendering(previousScope);VR_EndHalo2Scope(rendered&&!AbnormalTermination());}
                     }
                 }
-                __except(EXCEPTION_EXECUTE_HANDLER)
+                __except(GameFault(faultAnchor)) // the scene render is the game's code
                 {g_zoomFaultGeneration.store(generation);g_zoomFaults.fetch_add(1);VR_InvalidateScopeImage();}
             }
         }

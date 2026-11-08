@@ -34,8 +34,17 @@ static UINT FakeSend(UINT count, INPUT* input, int) {
 static UINT_PTR FakeTimer(HWND, UINT_PTR, UINT, TIMERPROC) { return timerOk ? 42 : 0; }
 static BOOL FakeKill(HWND, UINT_PTR) { return TRUE; }
 static UINT FakeRegister(const wchar_t*) { return 0xC123; }
-static BOOL FakePost(HWND, UINT, WPARAM, LPARAM) { ++posts; return postOk; }
+static std::vector<LPARAM> postedMoves;
+static BOOL FakePost(HWND, UINT message, WPARAM, LPARAM lParam) {
+    ++posts;
+    if (postOk && message == WM_MOUSEMOVE) postedMoves.push_back(lParam);
+    return postOk;
+}
 static DWORD FakeTick() { return now; }
+// The window's monitor: by default it holds the whole window (the cursor is moved); smaller, moves are posted.
+static RECT monitorRect{0, 0, 4000, 4000};
+static HMONITOR FakeMonitorFrom(HWND, DWORD) { return reinterpret_cast<HMONITOR>(uintptr_t{1}); }
+static BOOL FakeMonitorInfo(HMONITOR, LPMONITORINFO info) { info->rcMonitor = monitorRect; return TRUE; }
 #define GetForegroundWindow FakeForeground
 #define IsIconic FakeIconic
 #define GetClientRect FakeRect
@@ -51,6 +60,8 @@ static DWORD FakeTick() { return now; }
 #define RegisterWindowMessageW FakeRegister
 #define PostMessageW FakePost
 #define GetTickCount FakeTick
+#define MonitorFromWindow FakeMonitorFrom
+#define GetMonitorInfoW FakeMonitorInfo
 #include "../src/dll/native_menu_pointer.cpp"
 
 void Logf(const char*, ...) { ++logs; }
@@ -60,6 +71,8 @@ RuntimeMode TitleAdapter_GetRuntimeMode() { return mode; }
 bool VR_IsPausePresentation() { return pauseScreen; }
 bool VR_IsPausePresentationTarget() { return pauseScreen; }
 bool VR_IsCutsceneTheaterActive() { return false; }
+static bool hostPanelScreen = false;
+bool D3D_HostUiPanelIsScreen() { return hostPanelScreen; }
 
 static int checks = 0, failures = 0;
 static void Check(bool ok, const char* name) {
@@ -122,7 +135,8 @@ int main()
     Check(!p.Update(Pack(now,true,.5f,.5f,true),now,true,0,500).move,"zero client rejects");
 
     NativeMenuPointer_Init(fakeWindow);
-    Frame(true); Check(moves==0&&buttons.empty(),"disabled default never moves or clicks");
+    g_config.game_menu_pointer=false;
+    Frame(true); Check(moves==0&&buttons.empty(),"disabled never moves or clicks");
     g_config.game_menu_pointer=true;
     Frame(true,true); Check(buttons.empty(),"held trigger at activation never clicks");
     Frame(true); Check(cursor.x>=599&&cursor.x<=600&&cursor.y>=299&&cursor.y<=300,"UV maps physical client plus screen origin");
@@ -146,6 +160,10 @@ int main()
     Frame(true); Frame(true,true); mode=RuntimeMode::Gameplay;
     Watchdog(nullptr,0,0,0); Check(!mouseDown,"gameplay transition releases");
     Frame(true); Check(!NativeMenuPointer_ConsumesTrigger(),"gameplay never consumes trigger");
+    hostPanelScreen=true; Frame(true);
+    Check(NativeMenuPointer_ConsumesTrigger(),"a host's screen shown as a panel is a menu during gameplay");
+    hostPanelScreen=false; Watchdog(nullptr,0,0,0); Frame(true);
+    Check(!NativeMenuPointer_ConsumesTrigger(),"and the pointer goes with that screen");
     mode=RuntimeMode::Paused; Frame(true);
     Check(NativeMenuPointer_ConsumesTrigger(),"pause hover consumes VR trigger only");
     mode=RuntimeMode::Unsupported; Frame(true); Frame(true,true);
@@ -170,6 +188,107 @@ int main()
     Check(!queued.load(),"retry drains normally");
     Frame(true,true); g_config.game_menu_pointer=false; Watchdog(nullptr,0,0,0);
     Check(!mouseDown,"toggle off releases");
+    {
+        // Project Reclaimer's window, larger than its monitor: the moves are posted, and a hand at rest posts none.
+        g_config.game_menu_pointer=true; mode=RuntimeMode::Shell;
+        g_hostIsProjectReclaimer=true; monitorRect={0,0,800,400};
+        Frame(false); postedMoves.clear();
+        Frame(true,false,.5f,.5f);
+        Check(postedMoves.size()==1&&std::abs(LOWORD(postedMoves.back())-500)<=1&&
+            std::abs(HIWORD(postedMoves.back())-250)<=1,"posted delivery sends the first move, at the client point");
+        Frame(true,false,.5f,.5f); Frame(true,false,.501f,.5f);
+        Check(postedMoves.size()==1,"a resting hand sends no more moves");
+        for(int i=0;i<10;++i) Frame(true,false,.6f,.5f);
+        Check(postedMoves.size()>2,"a moving hand sends its moves");
+        const size_t beforeClick=postedMoves.size(); const unsigned clicks=clickCount.load();
+        Frame(true,true,.6f,.5f); Frame(true,false,.6f,.5f);
+        Check(clickCount.load()==clicks+1&&!mouseDown&&postedMoves.size()==beforeClick,
+            "a click at rest goes to the point last sent, with no move");
+        const unsigned foreign=foreignMoves.load();
+        NativeMenuPointer_Message(WM_MOUSEMOVE,postedMoves.back());
+        Check(foreignMoves.load()==foreign,"the pointer's own move is not another's");
+        NativeMenuPointer_Message(WM_MOUSEMOVE,MAKELPARAM(1,1));
+        Check(foreignMoves.load()==foreign+1,"a move from anything else is counted");
+        Frame(false); const size_t afterMiss=postedMoves.size();
+        NativeMenuPointer_Message(WM_MOUSEMOVE,MAKELPARAM(1,1));
+        Check(foreignMoves.load()==foreign+1,"not while the pointer is off the window");
+        Frame(true,false,.6f,.5f);
+        Check(postedMoves.size()==afterMiss+1,"back on the window, its first move is sent at once");
+        // Its window fitted inside the monitor: the cursor is moved, and rests as the posted moves do.
+        monitorRect={0,0,4000,4000};
+        Frame(false); const int setBefore=moves;
+        Frame(true,false,.5f,.5f);
+        Check(moves==setBefore+1,"the fitted window's pointer sets the cursor");
+        Frame(true,false,.5f,.5f); Frame(true,false,.501f,.5f);
+        Check(moves==setBefore+1,"and a resting hand leaves it where it is");
+        const unsigned foreignCursor=foreignMoves.load();
+        NativeMenuPointer_Message(WM_MOUSEMOVE,MAKELPARAM(7,7));
+        Check(foreignMoves.load()==foreignCursor,"the cursor's own moves are not counted as another's");
+        Frame(true,true,.5f,.5f);
+        Check(moves==setBefore+2&&mouseDown,"a press sets the cursor again, where the press goes");
+        Frame(true,false,.5f,.5f);
+        Check(!mouseDown,"and so does the release");
+        g_hostIsProjectReclaimer=false;
+        Frame(false); const int mccBefore=moves;
+        Frame(true,false,.5f,.5f); Frame(true,false,.5f,.5f);
+        Check(moves==mccBefore+2,"MCC's cursor is set every frame, as before");
+    }
+    {
+        // The right stick as a wheel: a flick moves one notch, a hold repeats, faster when pushed further.
+        game_menu_pointer::StickWheel wheel;
+        Check(wheel.Step(0.f,1000)==0,"centred stick: no wheel");
+        Check(wheel.Step(.2f,1050)==0,"inside the deadzone: no wheel");
+        Check(wheel.Step(.5f,1100)==1,"a flick up moves one notch at once");
+        int upward=0;uint32_t t=1100;
+        for(int i=0;i<20;++i)upward+=wheel.Step(1.f,t+=50);
+        Check(upward>=9&&upward<=11,"held fully: about ten notches a second");
+        wheel.Step(0.f,t+=50);
+        Check(wheel.Step(-.5f,t+=50)==-1,"released, then a flick down moves one notch down");
+        int slow=0;
+        for(int i=0;i<20;++i)slow+=wheel.Step(-.3f,t+=50);
+        Check(slow<0&&slow>-upward,"pushed a little: slower");
+        wheel.Reset();
+        Check(wheel.Step(1.f,t+=50)==1,"after a reset it starts afresh");
+    }
+    {
+        // MCC's lists: eighths of a notch, 10 notches a second, so they glide at the speed whole notches had.
+        game_menu_pointer::StickWheel wheel{10.f,8};
+        Check(wheel.Step(.5f,1000)==8,"a flick still moves one whole notch at once");
+        int steps=0,largest=0;uint32_t t=1000;
+        for(int i=0;i<90;++i){const int s=wheel.Step(1.f,t+=11);steps+=s;largest=std::max(largest,s);}
+        Check(steps>=74&&steps<=84,"held fully: about ten notches a second");
+        Check(largest<=2,"held, it goes a little at a time, not in whole notches");
+        int half=0;game_menu_pointer::StickWheel slow{10.f,8};slow.Step(-.5f,t);
+        for(int i=0;i<90;++i)half+=slow.Step(-.5f,t+=11);
+        Check(half<0&&-half<steps,"pushed a little: slower");
+    }
+    {
+        // Sideways lists: right goes down the list, left back up; the further push is the wheel.
+        using game_menu_pointer::StickWheelAxis;
+        Check(StickWheelAxis(0.f,1.f)==1.f&&StickWheelAxis(0.f,-1.f)==-1.f,"up and down are the wheel as before");
+        Check(StickWheelAxis(1.f,0.f)==-1.f,"right scrolls down");
+        Check(StickWheelAxis(-1.f,0.f)==1.f,"left scrolls up");
+        Check(StickWheelAxis(.8f,.3f)==-.8f,"mostly right is right");
+        Check(StickWheelAxis(.3f,-.8f)==-.8f,"mostly down is down");
+        Check(StickWheelAxis(0.f,0.f)==0.f,"centred: no wheel");
+    }
+    {
+        // A click holds where it was aimed; a hand that goes on moving is a drag.
+        game_menu_pointer::ClickLock lock;
+        float u=.5f,v=.5f;lock.Apply(.1f,u,v);
+        Check(u==.5f&&v==.5f,"no pull: the point is the ray's");
+        u=.5f;v=.5f;lock.Apply(.2f,u,v);
+        u=.51f;v=.49f;lock.Apply(.7f,u,v);
+        Check(u==.5f&&v==.5f,"a pull's jolt does not move the point");
+        u=.6f;v=.5f;lock.Apply(.7f,u,v);
+        Check(u==.6f,"past the drag distance the point follows");
+        u=.5f;v=.5f;lock.Apply(.7f,u,v);
+        Check(u==.5f,"and keeps following for the rest of the pull");
+        lock.Apply(0.f,u,v);
+        u=.7f;v=.7f;lock.Apply(.2f,u,v);
+        u=.71f;lock.Apply(.2f,u,v);
+        Check(u==.7f,"the next pull locks afresh");
+    }
     std::printf("%d checks, %d failures\n",checks,failures);
     return failures ? 1 : 0;
 }

@@ -12,13 +12,52 @@ GameTitle TitleAdapter_GetActiveTitle() { return testTitle; }
 uint32_t TitleAdapter_GetGeneration(GameTitle) { return testGeneration; }
 bool TitleAdapter_PublishLifecycle(GameTitle,uint32_t,const TitleRuntimeLifecycle&) { return true; }
 bool TitleAdapter_PublishHeartbeat(GameTitle,uint32_t,uint64_t) { return true; }
+// The unload gate (host_unload_gate.cpp is not linked here).
+void HostUnloadGate_Pin(HMODULE,std::atomic<bool>*,const std::atomic<uint64_t>*,const char*,bool) {}
+void HostUnloadGate_Unpin(HMODULE) {}
 float Game_GetWorldScale() { return 1.0f/3.048f; }
 bool Game_IsPositionalTracking() { return true; }
 bool Game_RoomscaleCameraAllowed(GameTitle) { return false; }
 uint64_t VR_PhysicalCrouchEpoch() noexcept { return 1; }
+float VR_RecenterStandingLiftM(GameTitle) noexcept { return 0.0f; }
+// The sight clock (sight_layer.cpp is not linked here): the gameplay context's camera stamp.
+uint64_t Sight_NowUs() { static uint64_t now=1000000; return now+=1000; }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
+// No seat in this fixture: the tracking frame keeps the native camera heading.
+bool HaloCEControls_SeatHeading(uint32_t,halo_ce::Vec3&) noexcept { return false; }
+// Aim Frame Zoom (game.cpp) is not linked here: the game is never zoomed in this fixture, so no frame is drawn.
+bool HaloCEControls_ZoomLevel(uint32_t,int16_t&) noexcept { return false; }
+void Game_NoteZoomLevel(GameTitle,int16_t) {}
+bool Game_AimFrameForEyes(GameTitle,const float*,const float*,const float (*)[3],float,float,const float*,GameAimFramePass&)
+{ return false; }
+void Game_AimFrameOutcome(GameTitle,bool) {}
+void Game_SetAimFramePass(bool) {}
+bool Game_IsAimFramePass() { return false; }
+void Game_AimFrameHudScale(float& horizontal,float& vertical) { horizontal=vertical=1.0f; }
+// The vehicle cameras' chase-camera leash (game.cpp): none placed in this fixture unless a test places one, a box of
+// no size around the camera's point in the world's own frame.
+static bool leashPlaced{};
+static unsigned leashReads{};
+bool Game_HaloCEVehicleCameraLeash(uint32_t,vehicle_camera_frame::Basis& carrier,vehicle_camera_frame::LeashBox& box) noexcept
+{
+    ++leashReads;
+    if (!leashPlaced) return false;
+    carrier=vehicle_camera_frame::FromAngles(0,0,0);
+    box=vehicle_camera_frame::LeashBox{};
+    return true;
+}
+static unsigned leashHeld{};
+void Game_HaloCEVehicleCameraLeashHeld() noexcept { ++leashHeld; }
+// The motion tracker's lane (haloce_head_relative.cpp) is not linked here: the gameplay publication hands it
+// the frame's head, counted so the Classic publication is seen to reach it.
+static unsigned headPublications{};
+static bool headPublicationAnniversary{};
+static halo_ce::RenderContext headPublication{};
+void HaloCEHeadRelative_PublishHead(const halo_ce::RenderContext& context,bool anniversary) noexcept
+{ ++headPublications;headPublication=context;headPublicationAnniversary=anniversary; }
 bool HaloCEHud_HasCrosshairScope() noexcept { return false; }
-void Roomscale_Camera(GameTitle,bool,const float*,const float*,const float*,const float*,float*,float) noexcept {}
+roomscale_admission::Verdict Game_RoomscaleCameraVerdict(GameTitle) { return roomscale_admission::Verdict{}; }
+void Roomscale_Camera(GameTitle,const roomscale_admission::Verdict&,const float*,const float*,const float*,const float*,float*,float) noexcept {}
 void Logf(const char*,...) { }
 bool WaitForNativeDetourQuiescence(const void* const*,const void* const*,size_t,
     const std::atomic<uint32_t>& count) { return !count.load(); }
@@ -359,6 +398,46 @@ int main()
             "owned eyes contain final-blit pixels and remain distinct after the reused source is overwritten");
         HaloCE_ReleasePair(pair.borrowId); pair={};
     }
+    {
+        // MONO (Tracking::mono): one native render pass, from the midpoint of the eyes, one output captured and
+        // published as one picture for both eyes; the next frame without it is a pair again.
+        const Camera stereoLeft=observedViews[0],stereoRight=observedViews[1];
+        const auto monoBefore=classicMonoFrames.load(),passesBefore=classicPasses.load();
+        nativeFrames=nativeViews=nativeBlits=0;
+        tracking.mono=true;
+        run(Fault::None);
+        tracking.mono=false;
+        check(nativeFrames==1&&nativeViews==1&&nativeBlits==1&&classicMonoFrames.load()==monoBefore+1&&
+            classicPasses.load()==passesBefore+1,"a mono frame is one native render pass");
+        const auto midway=[](float a,float b,float m) { return std::fabs(m-(a+b)*0.5f)<0.0001f; };
+        check(midway(stereoLeft.position.x,stereoRight.position.x,observedViews[0].position.x)&&
+            midway(stereoLeft.position.y,stereoRight.position.y,observedViews[0].position.y)&&
+            midway(stereoLeft.position.z,stereoRight.position.z,observedViews[0].position.z),
+            "the mono pass draws from the midpoint of the eyes");
+        check(HaloCE_AcquirePair(context.Get(),serial,7,pair)&&pair.monoEye==0&&pair.eyes[0]==pair.eyes[1],
+            "the mono frame is published as one picture for both eyes");
+        if (pair.borrowId)
+        {
+            check(Pixels(device.Get(),pair.eyes[1],leftColor),"both eyes show the one pass's output");
+            HaloCE_ReleasePair(pair.borrowId); pair={};
+        }
+        check(HaloCE_TakeMonoDrops()==0,"a drawn mono frame is not reported as a drop");
+        tracking.mono=true;
+        run(Fault::MissingView);
+        tracking.mono=false;
+        check(HaloCE_TakeMonoDrops()==0,"a mono frame has no second pass to miss");
+        const auto dropsBefore=classicMonoDrops.load();
+        tracking.mono=true;
+        run(Fault::ChangedTick);
+        tracking.mono=false;
+        check(classicMonoDrops.load()==dropsBefore+1&&HaloCE_TakeMonoDrops()==1&&HaloCE_TakeMonoDrops()==0,
+            "a dropped mono frame is counted and reported to the present once");
+        nativeFrames=nativeViews=nativeBlits=0;
+        run(Fault::None);
+        check(nativeFrames==2&&HaloCE_AcquirePair(context.Get(),serial,7,pair)&&pair.monoEye==-1&&
+            pair.eyes[0]!=pair.eyes[1],"the next frame without mono is a pair again");
+        if (pair.borrowId) { HaloCE_ReleasePair(pair.borrowId); pair={}; }
+    }
     *reinterpret_cast<int32_t*>(mapped.data()+0x1b7aa84)=1;
     check(!HaloCE_AcquirePair(context.Get(),serial,7,pair),
         "graphics mode change before submission immediately revokes the Classic pair");
@@ -455,6 +534,28 @@ int main()
         check(!nearVector(before[0].forward,stockWindow.render.forward)&&
             !nearVector(before[0].position,stockWindow.render.position),
             "toggle regression starts with actual nonzero head rotation and room translation");
+        {
+            // A CHASE CAMERA'S LEASH: the frame's reference is moved before the frame is built and published, so a box
+            // of no size stands both eyes about the camera's own point, and the reference kept for later frames is not
+            // touched.
+            const Reference kept=reference;
+            const unsigned readsBefore=leashReads,heldBefore=leashHeld;
+            leashPlaced=true;
+            tracking.serial=++serial; HaloCE_PublishTracking(tracking,true);
+            ClassicGameRenderBody(.125f,.75f);
+            leashPlaced=false;
+            const Vec3 middle=(observedViews[0].position+observedViews[1].position)*0.5f;
+            RenderContext leashedContext{};
+            check(leashReads>readsBefore&&leashHeld>heldBefore&&nearVector(middle,stockWindow.render.position),
+                "a leashed frame stands the eyes about the camera's point, the head's room translation held back");
+            check(HaloCE_GetGameplayContext(leashedContext)&&
+                !nearVector(leashedContext.reference.position,kept.position)&&
+                std::memcmp(&reference,&kept,sizeof(reference))==0,
+                "the gameplay context carries the frame's leashed reference; the kept reference is unchanged");
+            tracking.serial=++serial; HaloCE_PublishTracking(tracking,true);
+            ClassicGameRenderBody(.125f,.75f);
+            check(nearVector(observedViews[0].position,before[0].position),"the next frame without a leash is as before");
+        }
         const uint64_t previousEpoch=ceRendererEpoch.load(),previousRevision=referenceRevision.load();
         *reinterpret_cast<int32_t*>(mapped.data()+0x1b7aa84)=1;
         check(CeObserveRendererMode()==1&&!recenter.load()&&
@@ -521,6 +622,11 @@ int main()
     check(HaloCE_GetGameplayContext(gameplay)&&
         std::memcmp(&gameplay.camera,&stockWindow.render,sizeof(Camera))==0,
         "gameplay-thread context receives the exact saved stock center after the render scope exits");
+    check(headPublications&&!headPublicationAnniversary&&
+        std::memcmp(&headPublication.camera,&stockWindow.render,sizeof(Camera))==0&&
+        headPublication.cameraStampUs!=0&&headPublication.cameraStampUs==gameplay.cameraStampUs&&
+        headPublication.tracking.generation==gameplay.tracking.generation,
+        "the Classic publication hands the motion tracker's lane the same stock center and sight stamp, marked Classic");
     const auto savedGameplay=gameplay;
     std::memset(mapped.data()+0x29af2c4,0x7f,sizeof(Camera));
     check(HaloCE_GetGameplayContext(gameplay)&&

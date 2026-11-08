@@ -101,6 +101,27 @@ constexpr uint64_t TitleRuntimeHeartbeatWindowMs(GameTitle title)
     }
 }
 
+// Whether a title's heartbeat has been missing long enough, outside a pause, to mean the title no
+// longer owns the frame (Save & Quit, the shell, an equivalent bypass). A pause holds the sim, so no
+// heartbeat arrives during one, and the sim resumes a moment AFTER the pause flag clears; an unpause
+// therefore gets resumeGraceMs before staleness counts. Measured in Reach, in a Falcon: the sim's
+// first per-user control update comes ~1.5 s after the flag clears.
+// With no grace the camera core tears down at the 1 s mark and VR drops to the flat view for
+// ~8 s. On foot the camera evaluator stamps every frame and hides this; in a third-person seat nothing
+// stamps until the sim runs.
+constexpr uint64_t kTitlePauseResumeGraceMs = 3000;
+
+constexpr bool TitleHeartbeatLost(uint64_t nowMs, uint64_t lastHeartbeatMs, bool paused,
+    uint64_t pauseExitMs, uint64_t staleMs,
+    uint64_t resumeGraceMs = kTitlePauseResumeGraceMs) noexcept
+{
+    if (!lastHeartbeatMs || paused || nowMs < lastHeartbeatMs)
+        return false;
+    if (pauseExitMs && nowMs >= pauseExitMs && nowMs - pauseExitMs <= resumeGraceMs)
+        return false;
+    return nowMs - lastHeartbeatMs > staleMs;
+}
+
 struct TitleRuntimeCandidate
 {
     GameTitle title = GameTitle::None;

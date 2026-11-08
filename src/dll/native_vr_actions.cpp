@@ -1,8 +1,11 @@
+#include "../common/manual_weapon_input.h"
 #include "native_vr_actions.h"
+#include "seat_exit_witness.h"
 #include "game.h"
 #include "title_adapter.h"
 #include "sigscan.h"
 #include "hook_quiescence.h"
+#include "host_unload_gate.h"
 #include "../common/native_action_button.h"
 #include "../common/config.h"
 #include "../common/log.h"
@@ -10,7 +13,21 @@
 #include <windows.h>
 #include <intrin.h>
 #include <MinHook.h>
+#include "lifted_minhook.h"
 #include <atomic>
+#include <cstdio>
+
+// The hooked native READERS are leaves whose LTCG callers keep volatile registers live across the call
+// (tools/audit_caller_area.py), which a C++ detour clobbers: Halo 3 then wrote through r10 = 0 at every
+// level load. Each reader hook is therefore entered through native_vr_reader_thunks.asm, which saves every
+// volatile register but rax and calls the C++ hook through these pointers (defined below).
+extern "C" {
+void NativeVrReaderThunkReach();
+void NativeVrReaderThunkHalo3();
+void NativeVrH3ActionEdgesThunk();
+void NativeVrReaderThunkOdst();
+void NativeVrReaderThunkHalo4();
+}
 
 namespace {
 #include "gesture_binding_reader.inl"
@@ -35,41 +52,84 @@ constexpr const char* consumerEntryPattern=
     "48 8B C4 55 53 56 57 41 54 41 55 41 56 41 57 48 8D A8 E8 FD FF FF 48 81 EC D8 02 00 00";
 constexpr const char* consumerReloadPattern=
     "BB 3E 00 00 00 48 8B CE 8B D3 E8 DC 03 07 00 48 8B C8 E8 9C C6 FF FF 44 8A C0 8D 53 D2 49 8B CC";
+// MCC's jump-in-the-air jetpack: the builder reads jump (action 0) here only after the profile's jump-to-jetpack byte
+// (+0x69) and its armor-ability checks pass, and a held jump then fires the jetpack while airborne. Counted only, by
+// the read's return address: whether the game ran that check, and whether it saw jump held.
+constexpr uintptr_t jetpackJumpRva=0x5FD2D,jetpackJumpReturn=0x5FD43;
+constexpr const char* jetpackJumpPattern=
+    "38 88 8E 00 00 00 0F 85 A0 00 00 00 33 D2 48 8B CE E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? 41 8B 0E 84 C0 0F 95 44 24 31";
+// Before that check the builder reads the ability button (action 5) on one of two paths, chosen by the held ability's
+// own definition: the jetpack's path (which then tests the profile's byte) or every other ability's plain press.
+constexpr uintptr_t jetpackAbilityRva=0x5FCB3,jetpackAbilityReturn=0x5FCBE,plainAbilityRva=0x5FDF8,plainAbilityReturn=0x5FE05;
+constexpr const char* jetpackAbilityPattern=
+    "8D 57 05 48 8B CE E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? 84 C0 48 8B 44 24 78 0F 95 C3 40 38 78 69 0F 84";
+constexpr const char* plainAbilityPattern=
+    "BA 05 00 00 00 48 8B CE E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? BB 01 00 00 00 3A C3";
+// The consumer's profile: controller c's at +0x2A03C58 + c*0xAB8 while that profile is in use, else the default one.
+constexpr uintptr_t profileLoadRva=0x5E0B6;
+constexpr const char* profileLoadPattern=
+    "48 69 CE B8 0A 00 00 48 8D 05 ?? ?? ?? ?? 48 8D 98 ?? ?? ?? ?? 48 03 D9 48 8D 3D ?? ?? ?? ?? 48 8B CB E8";
 struct Runtime {
     HMODULE module{};
-    uintptr_t base{}, state{}, padState{};
+    uintptr_t base{}, state{}, padState{}, profiles{}, defaultProfile{};
     std::atomic<uint32_t> generation{};
     void* target[2]{}, *original[2]{};
-    bool enabled[2]{}, attempted{};
+    bool enabled[2]{}, attempted{}, jetpackCounted{};
     std::atomic<bool> admitted{}, faulted{};
     std::atomic<uint32_t> callbacks{};
-    std::atomic<uint64_t> converted{}, routed{}, readerAt{};
+    std::atomic<uint64_t> converted{}, routed{}, readerAt{}, jetpackChecks{}, jetpackHeld{}, jetpackAbility{}, plainAbility{};
     uint64_t reportAt{};
 } runtime;
 uint32_t blockedGeneration{}; // worker-only: a fault is not retried every poll
 struct Publication {
     std::atomic<uint64_t> sequence{}, stamp{}, cancelEpoch{};
-    std::atomic<uint32_t> generation{}, actions{};
+    std::atomic<uint32_t> generation{}, actions{}, blocked{}, extras{}, extrasServed{};
     std::atomic<bool> direct{};
     std::atomic<GameTitle> title{GameTitle::None};
 } publication;
 thread_local bool pollPublished{};
+// THE EXTRA ROWS A TITLE'S BRIDGE CARRIES (vr_mapping::ExtraBridgeOnly, NativeVrActions_RoutesExtras): a record per row,
+// advanced at the converter with the action rows, and returned at the player-control builder's read of the row's own
+// action while it is pressed -- and the game's own button is not held, as the direct route does for an action row.
+struct ExtraRecords {
+    uint32_t served{};
+    native_action_button::Record records[vr_mapping::ExtraCount]{};
+    void Reset(GameTitle game) noexcept {
+        served=0;
+        for(unsigned i=0;i<vr_mapping::ExtraCount;++i)
+            records[i].Reset(game,vr_mapping::NativeExtraAction(game,static_cast<vr_mapping::ExtraAction>(i)));
+    }
+    void Advance(bool direct,uint32_t pressed,uint32_t extrasServed,unsigned elapsedMs) noexcept {
+        served=direct?extrasServed:0u;
+        for(unsigned i=0;i<vr_mapping::ExtraCount;++i) records[i].Advance(((pressed&served)>>i)&1u,elapsedMs);
+    }
+    // The record for the builder's read of `action` while its row is pressed, or nullptr: the game's own.
+    native_action_button::Record* Pressed(GameTitle game,unsigned action) noexcept {
+        for(unsigned i=0;i<vr_mapping::ExtraCount;++i)
+            if(((served>>i)&1u)&&vr_mapping::NativeExtraAction(game,static_cast<vr_mapping::ExtraAction>(i))==action)
+                return records[i].ReadCounters().frames?&records[i]:nullptr;
+        return nullptr;
+    }
+};
 struct ThreadState {
     uint32_t generation{};
     uint64_t publishedAt{}, converterAt{}, cancelEpoch{};
     uint32_t actions{};
+    uint32_t blocked{};
     bool direct{}, converted{};
     native_action_button::Record records[vr_mapping::Count]{};
+    ExtraRecords extra;
     void Reset(uint32_t next) noexcept {
         generation=next; publishedAt=converterAt=cancelEpoch=0;
         actions=0;direct=converted=false;
         for(unsigned i=0;i<vr_mapping::Count;++i)
             records[i].Reset(title,vr_mapping::NativeAction(title,static_cast<vr_mapping::Action>(i)));
+        extra.Reset(title);
     }
 } thread_local local;
 bool Current() noexcept {
     return runtime.admitted.load(std::memory_order_acquire) &&
-        !runtime.faulted.load(std::memory_order_relaxed) && g_config.vr_action_mapping &&
+        !runtime.faulted.load(std::memory_order_relaxed) && (g_config.vr_action_mapping||Config_GestureOnlyWeaponInput()) &&
         TitleAdapter_GetActiveTitle()==title &&
         TitleAdapter_GetGeneration(title)==runtime.generation;
 }
@@ -77,7 +137,8 @@ bool Fresh(uint64_t stamp,uint64_t now) noexcept {
     return stamp && now>=stamp && now-stamp<=150;
 }
 bool ReadPublication(uint64_t now,uint32_t& actions,bool& direct,uint64_t* observedAt=nullptr,
-    GameTitle expectedTitle=title,uint32_t expectedGeneration=0) noexcept {
+    GameTitle expectedTitle=title,uint32_t expectedGeneration=0,uint32_t* blocked=nullptr,
+    uint32_t* extras=nullptr,uint32_t* extrasServed=nullptr) noexcept {
     // Every payload member is atomic; rejected/torn attempts never access
     // native memory. Writers claim an odd sequence with a bounded CAS.
     for(unsigned attempt=0;attempt<3;++attempt) {
@@ -86,12 +147,17 @@ bool ReadPublication(uint64_t now,uint32_t& actions,bool& direct,uint64_t* obser
         const auto stamp=publication.stamp.load(std::memory_order_relaxed);
         const auto generation=publication.generation.load(std::memory_order_relaxed);
         const auto bits=publication.actions.load(std::memory_order_relaxed);
+        const auto suppress=publication.blocked.load(std::memory_order_relaxed);
         const auto route=publication.direct.load(std::memory_order_relaxed);
         const auto publishedTitle=publication.title.load(std::memory_order_relaxed);
+        const auto extraBits=publication.extras.load(std::memory_order_relaxed);
+        const auto served=publication.extrasServed.load(std::memory_order_relaxed);
         if(before!=publication.sequence.load(std::memory_order_acquire)) continue;
         if(publishedTitle!=expectedTitle || generation!=(expectedGeneration?expectedGeneration:
             runtime.generation.load(std::memory_order_acquire))||!Fresh(stamp,now))return false;
-        actions=bits;direct=route;if(observedAt)*observedAt=stamp;return true;
+        actions=bits;direct=route;if(blocked)*blocked=suppress;if(observedAt)*observedAt=stamp;
+        if(extras)*extras=extraBits;if(extrasServed)*extrasServed=served;
+        return true;
     }
     return false;
 }
@@ -105,20 +171,22 @@ void __fastcall ConverterHook(uintptr_t unused,int elapsedMs,const void* raw,
         reinterpret_cast<Convert>(runtime.original[0])(unused,elapsedMs,raw,output,axes,activity);
         const auto now=GetTickCount64();
         const auto cancelEpoch=publication.cancelEpoch.load(std::memory_order_acquire);
-        uint32_t actions=0;bool direct=false;uint64_t publishedAt=0;
+        uint32_t actions=0,blocked=0,extras=0,extrasServed=0;bool direct=false;uint64_t publishedAt=0;
         // Both official input paths target raw-pad base + controller*0x3c:
         // direct XInput and the MCC host's copied gamepad packet. Output row
         // zero proves ownership even when XInput was polled on another thread.
         // RCX is unused by the optimized converter and is never an owner ID.
         if(Current() && reinterpret_cast<uintptr_t>(output)==runtime.padState &&
-            ReadPublication(now,actions,direct,&publishedAt) && elapsedMs>=0 && elapsedMs<=1000 &&
+            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(),&blocked,&extras,&extrasServed) &&
+            elapsedMs>=0 && elapsedMs<=1000 &&
             cancelEpoch==publication.cancelEpoch.load(std::memory_order_acquire)) {
             if(local.generation!=runtime.generation) local.Reset(runtime.generation);
-            local.publishedAt=publishedAt;local.actions=actions;local.direct=direct;
+            local.publishedAt=publishedAt;local.actions=actions;local.direct=direct;local.blocked=blocked;
             local.cancelEpoch=cancelEpoch;
             local.converterAt=now;local.converted=true;
             for(unsigned i=0;i<vr_mapping::Count;++i)
-                local.records[i].Advance(local.direct && (local.actions&(1u<<i)),unsigned(elapsedMs));
+                local.records[i].Advance((local.direct||(local.blocked&(1u<<i))) && (local.actions&(1u<<i)),unsigned(elapsedMs));
+            local.extra.Advance(local.direct,extras,extrasServed,unsigned(elapsedMs));
             runtime.converted.fetch_add(1,std::memory_order_relaxed);
         } else if(reinterpret_cast<uintptr_t>(output)==runtime.padState) local.converted=false;
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
@@ -147,10 +215,23 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
             publication.generation.load(std::memory_order_acquire)!=local.generation ||
             local.cancelEpoch!=publication.cancelEpoch.load(std::memory_order_acquire)) return native;
         runtime.readerAt.store(now,std::memory_order_release);
-        if(!local.direct) return native;
+        if(auto* extra=local.direct?local.extra.Pressed(title,action):nullptr) {
+            if(native) {
+                uint8_t frames=0;
+                if(!ReadFrames(native,frames)){runtime.faulted=true;return native;}
+                if(frames)return native;
+            }
+            runtime.routed.fetch_add(1,std::memory_order_relaxed);
+            return extra->bytes.data();
+        }
         const int semantic=native_action_button::SemanticAction(title,action);
         if(semantic<0) return native;
         auto& record=local.records[semantic];
+        if(local.blocked&(1u<<semantic)) {
+            runtime.routed.fetch_add(1,std::memory_order_relaxed);
+            return record.bytes.data();
+        }
+        if(!local.direct) return native;
         const auto virtualState=record.ReadCounters();
         if(!virtualState.frames) return native;
         // Native keyboard/gamepad holds retain their own counters, amount and
@@ -163,16 +244,40 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
         runtime.routed.fetch_add(1,std::memory_order_relaxed);
         return record.bytes.data();
 }
-void* __fastcall ReaderHook(void* state,unsigned action) {
+// The game's own test of the record it was given (+0x5D31C): not consumed (+3 bit 0), its owner (+0xC) open (0x7F) or
+// this context's (+8), then held frames (+2).
+__declspec(noinline) void NoteJetpackJump(const void* record) noexcept {
+    runtime.jetpackChecks.fetch_add(1,std::memory_order_relaxed);
+    if(!record) return;
+    __try {
+        const auto* bytes=reinterpret_cast<const volatile uint8_t*>(record);
+        const int32_t owner=*reinterpret_cast<const volatile int32_t*>(bytes+0xC);
+        if(!(bytes[3]&1)&&(owner==0x7F||owner==*reinterpret_cast<const volatile int32_t*>(bytes+8))&&bytes[2])
+            runtime.jetpackHeld.fetch_add(1,std::memory_order_relaxed);
+    } __except(EXCEPTION_EXECUTE_HANDLER){}
+}
+// The double-press jump-to-jetpack byte (+0x69) the jetpack's path tests; -1 when unknown or unreadable.
+int ProfileByte(uintptr_t profile) noexcept {
+    if(!profile) return -1;
+    __try { return *reinterpret_cast<const volatile uint8_t*>(profile+0x69); }
+    __except(EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
+void* __fastcall ReaderHook(void* state,unsigned action,uintptr_t caller) {
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
     void* result=nullptr;
     __try {
         result=reinterpret_cast<Read>(runtime.original[1])(state,action);
-        result=ReadOwned(state,action,result,reinterpret_cast<uintptr_t>(_ReturnAddress()));
+        result=ReadOwned(state,action,result,caller);
+        if(runtime.jetpackCounted) {
+            if(caller==runtime.base+jetpackJumpReturn) NoteJetpackJump(result);
+            else if(caller==runtime.base+jetpackAbilityReturn) runtime.jetpackAbility.fetch_add(1,std::memory_order_relaxed);
+            else if(caller==runtime.base+plainAbilityReturn) runtime.plainAbility.fetch_add(1,std::memory_order_relaxed);
+        }
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
     return result;
 }
-void* const hooks[]{reinterpret_cast<void*>(&ConverterHook),reinterpret_cast<void*>(&ReaderHook)};
+// The reader is entered through a register-preserving asm thunk (native_vr_reader_thunks.asm).
+void* const hooks[]{reinterpret_cast<void*>(&ConverterHook),reinterpret_cast<void*>(&NativeVrReaderThunkReach)};
 bool Prove(uintptr_t base,size_t size,uintptr_t rva,const char* pattern) {
     const auto found=sig::Find(base,size,pattern);
     return rva<size && found==base+rva && !sig::Find(found+1,size-(found+1-base),pattern);
@@ -192,25 +297,82 @@ bool Retire() {
         if(status!=MH_OK && status!=MH_ERROR_DISABLED) return false;
         runtime.enabled[i]=false;
     }
-    const void* functions[]{hooks[0],hooks[1],reinterpret_cast<void*>(&ReadOwned),reinterpret_cast<void*>(&Current),
-        reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames)};
-    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr};
-    if(!WaitForNativeDetourQuiescence(functions,trampolines,6,runtime.callbacks)) return false;
+    const void* functions[]{hooks[0],hooks[1],reinterpret_cast<void*>(&ReaderHook),reinterpret_cast<void*>(&ReadOwned),
+        reinterpret_cast<void*>(&Current),reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames),
+        reinterpret_cast<void*>(&NoteJetpackJump)};
+    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
+    if(!WaitForNativeDetourQuiescence(functions,trampolines,8,runtime.callbacks)) return false;
     for(unsigned i=0;i<2;++i) if(runtime.target[i]) {
         if(MH_RemoveHook(runtime.target[i])!=MH_OK) return false;
         runtime.target[i]=runtime.original[i]=nullptr;
     }
     if(runtime.module) FreeLibrary(runtime.module);
-    runtime.module=nullptr;runtime.base=runtime.state=runtime.padState=0;runtime.generation=0;
+    runtime.module=nullptr;runtime.base=runtime.state=runtime.padState=runtime.profiles=runtime.defaultProfile=0;
+    runtime.generation=0;
     runtime.readerAt.store(0,std::memory_order_release);
-    runtime.attempted=false;runtime.faulted=false;
+    runtime.attempted=false;runtime.faulted=false;runtime.jetpackCounted=false;
     return true;
 }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// SEATEXIT witness: one native action record's held counters (native_action_button::Counters: milliseconds at
+// +0, frames at +2), read under SEH. Dev builds only.
+__declspec(noinline) void WitnessNativeRecord(GameTitle requested,unsigned action,const void* record) noexcept {
+    uint16_t milliseconds=0;uint8_t frames=0;bool present=false;
+    if(record) {
+        __try {
+            milliseconds=*reinterpret_cast<const volatile uint16_t*>(record);
+            frames=*(reinterpret_cast<const volatile uint8_t*>(record)+2);
+            present=true;
+        } __except(EXCEPTION_EXECUTE_HANDLER) {present=false;}
+    }
+    SeatWitness_NoteNativeAction(requested,action,present,frames,milliseconds);
+}
+#endif
 #include "native_vr_actions_ce.inl"
 #include "native_vr_actions_h3.inl"
 #include "native_vr_actions_odst.inl"
 #include "native_vr_actions_h4.inl"
 #include "native_vr_actions_h2.inl"
+}
+
+void NativeVrActions_NoteZoomInput(unsigned kind,bool down) {
+    using namespace native_h3;
+    const uint8_t which=kind==0?kPadButton:kind==1?kMapperZoom:kTrigger;
+    if(which==kTrigger&&down) zoomTriggerDownMs.store(GetTickCount64(),std::memory_order_relaxed);
+    NoteZoomTick(which,down,0,0);
+}
+
+// The last 1.5 s of zoom changes (native_h3::ZoomTick), when the game's zoom changed with no pull just before it, or
+// zoomed in and back out within 0.6 s.
+void NativeVrActions_Halo3ZoomChanged(int previous,int level) {
+    using namespace native_h3;
+    static uint64_t zoomedInMs=0;
+    static uint32_t written=0;
+    const uint64_t now=GetTickCount64();
+    const uint64_t pulled=zoomTriggerDownMs.load(std::memory_order_relaxed);
+    const bool unprompted=!pulled||now-pulled>150;
+    const bool bounced=previous>=0&&level<0&&zoomedInMs&&now-zoomedInMs<=600;
+    if(previous<0&&level>=0) zoomedInMs=now;
+    if(!(unprompted||bounced)||written>=40) return;
+    ++written;
+    constexpr const char* kKinds[]{"adv","adv-refused","read-vr","read-game","pad-zoom","mapper-zoom","trigger"};
+    const uint32_t next=zoomTickNext.load(std::memory_order_relaxed);
+    char line[900];
+    int used=std::snprintf(line,sizeof(line),"ZOOM TICKS Halo 3: the game's zoom %d -> %d, %s (the trigger last pulled "
+        "%lld ms ago); t(ms) thread kind pressed/frames/gameFrames:",previous,level,
+        unprompted?"with no pull just before":"zoomed in and back out",pulled?static_cast<long long>(now-pulled):-1ll);
+    for(uint32_t k=0;k<kZoomTicks;++k) {
+        const ZoomTick t=zoomTicks[(next+k)%kZoomTicks];
+        if(!t.ms||t.ms+1500<now) continue;
+        const int n=std::snprintf(line+used,sizeof(line)-used," [%lld %u %s %u/%u/%u]",
+            static_cast<long long>(t.ms)-static_cast<long long>(now),t.thread,kKinds[t.kind<7?t.kind:0],t.pressed,
+            t.frames,t.gameFrames);
+        if(n>0) used+=n;
+        if(used>780) {LOG("%s",line);used=std::snprintf(line,sizeof(line),"ZOOM TICKS Halo 3 (cont.):");}
+    }
+    LOG("%s",line);
+}
+namespace {
 bool CurrentForTitle(GameTitle requested) noexcept {
     if(requested==GameTitle::HaloCE)return native_ce::Current();
     if(requested==GameTitle::Halo3)return native_h3::Current();
@@ -229,6 +391,13 @@ uint32_t GenerationForTitle(GameTitle requested) noexcept {
 }
 }
 
+extern "C" {
+void* (*g_nativeVrReaderReach)(void*,unsigned,uintptr_t)=&ReaderHook;
+uintptr_t (*g_nativeVrH3ActionEdges)(uint32_t,void*,uintptr_t)=&native_h3::ActionEdgesHook;
+void* (*g_nativeVrReaderHalo3)(void*,unsigned,uintptr_t)=&native_h3::ReaderHook;
+void* (*g_nativeVrReaderOdst)(void*,unsigned,uintptr_t)=&native_odst::ReaderHook;
+void* (*g_nativeVrReaderHalo4)(void*,unsigned,uintptr_t)=&native_h4::ReaderHook;
+}
 void NativeVrActions_BeginPoll() noexcept {
     pollPublished=false;
 }
@@ -249,7 +418,7 @@ bool NativeVrActions_CanRoute(GameTitle requested,uint64_t now) noexcept {
         Fresh(runtime.readerAt.load(std::memory_order_acquire),now);
 }
 void NativeVrActions_Publish(const void* raw,GameTitle requested,uint64_t now,
-    uint32_t actions,bool direct) noexcept {
+    uint32_t actions,bool direct,uint32_t blockedActions,uint32_t extras,uint32_t extrasServed) noexcept {
     const auto generation=GenerationForTitle(requested);
     if(!generation || !CurrentForTitle(requested)) return;
     (void)raw; // converter ownership is the proven native output row, not an input address
@@ -266,7 +435,11 @@ void NativeVrActions_Publish(const void* raw,GameTitle requested,uint64_t now,
     publication.generation.store(generation,std::memory_order_relaxed);
     publication.title.store(requested,std::memory_order_relaxed);
     publication.actions.store(actions&((1u<<vr_mapping::Count)-1),std::memory_order_relaxed);
+    publication.blocked.store(blockedActions&manual_weapon_input::Blocked(true,true,true),std::memory_order_relaxed);
     publication.direct.store(direct,std::memory_order_relaxed);
+    const uint32_t served=NativeVrActions_RoutesExtras(requested)&&direct?extrasServed&((1u<<vr_mapping::ExtraCount)-1):0u;
+    publication.extrasServed.store(served,std::memory_order_relaxed);
+    publication.extras.store(extras&served,std::memory_order_relaxed);
     publication.stamp.store(now,std::memory_order_relaxed);
     publication.sequence.store(before+2,std::memory_order_release);
     pollPublished=true;
@@ -279,6 +452,9 @@ bool NativeVrActions_GestureRouting(GameTitle requested,uint64_t now) noexcept {
     if(requested==GameTitle::Halo2)return native_h2::GestureRouting(now);
     uint32_t actions=0;bool direct=false;
     return requested==title && Current() && ReadPublication(now,actions,direct) && direct;
+}
+void NativeVrActions_Halo3CoreRetired() {
+    native_h3::Poll();
 }
 void NativeVrActions_Poll() {
     native_ce::Poll();
@@ -295,7 +471,7 @@ void NativeVrActions_Poll() {
     }
     if(runtime.module && (active!=title || generation!=runtime.generation))
         if(!Retire()) return;
-    if(active!=title || !generation || generation==blockedGeneration || !g_config.vr_action_mapping) return;
+    if(active!=title || !generation || generation==blockedGeneration || !(g_config.vr_action_mapping||Config_GestureOnlyWeaponInput())) return;
     if(!runtime.attempted) {
         // The preexisting read-only transport resolver must verify the reader
         // before MinHook changes its prologue. Retain that cache so optional
@@ -319,6 +495,15 @@ void NativeVrActions_Poll() {
             proved=runtime.state>=base && runtime.state-base<size && size-(runtime.state-base)>=4*d.stride;
             runtime.padState=sig::RipTarget(base+padProofRva+10,base+padProofRva+14);
             proved=proved && runtime.padState>=base && runtime.padState-base<size && size-(runtime.padState-base)>=4*0x3c;
+        }
+        runtime.jetpackCounted=proved&&Prove(base,size,jetpackJumpRva,jetpackJumpPattern)&&
+            Prove(base,size,jetpackAbilityRva,jetpackAbilityPattern)&&Prove(base,size,plainAbilityRva,plainAbilityPattern);
+        if(runtime.jetpackCounted&&Prove(base,size,profileLoadRva,profileLoadPattern)) {
+            const uintptr_t profiles=sig::RipTarget(base+profileLoadRva+10,base+profileLoadRva+14)+
+                *reinterpret_cast<const int32_t*>(base+profileLoadRva+17);
+            const uintptr_t fallback=sig::RipTarget(base+profileLoadRva+27,base+profileLoadRva+31);
+            if(profiles>=base&&profiles-base<size&&size-(profiles-base)>=4*0xAB8) runtime.profiles=profiles;
+            if(fallback>=base&&fallback-base<size&&size-(fallback-base)>=0xAB8) runtime.defaultProfile=fallback;
         }
         const uintptr_t rvas[]{converterRva,d.readerRva};
         for(unsigned i=0;proved&&i<2;++i) {
@@ -344,7 +529,12 @@ void NativeVrActions_Poll() {
     const auto now=GetTickCount64();
     if(now>=runtime.reportAt) {
         runtime.reportAt=now+5000;
-        LOG("Native VR action bridge Reach: converter=%llu directReads=%llu%s",
-            runtime.converted.load(),runtime.routed.load(),runtime.faulted.load()?" TRANSPORT FALLBACK (guarded access fault)":"");
+        LOG("Native VR action bridge Reach: converter=%llu directReads=%llu%s; jump-in-the-air jetpack check %s: ran %llu, "
+            "saw jump held %llu; ability button read on the jetpack's path %llu, on any other ability's %llu; "
+            "double-press jump to jetpack byte: player 1's profile %d, default profile %d (-1 unread)",
+            runtime.converted.load(),runtime.routed.load(),runtime.faulted.load()?" TRANSPORT FALLBACK (guarded access fault)":"",
+            runtime.jetpackCounted?"counted":"not proven",runtime.jetpackChecks.load(),runtime.jetpackHeld.load(),
+            runtime.jetpackAbility.load(),runtime.plainAbility.load(),ProfileByte(runtime.profiles),
+            ProfileByte(runtime.defaultProfile));
     }
 }
