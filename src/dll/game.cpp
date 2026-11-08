@@ -4441,9 +4441,12 @@ namespace
     // Matches every resolution-class anchor the adapter carries, not only the
     // primary one. Reach authors one curvature record per screen shape and the
     // engine picks by aspect, so the widescreen record alone is not enough.
+    // With a generation, it stops between windows once that level is gone: one region of tag data takes seconds,
+    // and a scan left from the level before held up the next level's own by 3 s (Project Reclaimer, 2026-11-07).
     static int SafeFrameScanRegion(
         uintptr_t regionBase, size_t len, const HudLayoutAdapter& adapter,
-        uintptr_t* out, int maxOut, int* outAnchor = nullptr)
+        uintptr_t* out, int maxOut, int* outAnchor = nullptr,
+        HudLayoutProfile profile = HudLayoutProfile::None, uint32_t generation = 0)
     {
         // The region is COPIED OUT through ReadProcessMemory, a window at a time,
         // and the copy is scanned. The game can decommit a region between
@@ -4479,10 +4482,29 @@ namespace
                 static_cast<size_t>(view.anchorLength));
             maxNeed = (std::max)(maxNeed, needs[a]);
         }
+        // Every shape starting with the same eight bytes (Halo 3's, ODST's, both on Project Reclaimer): only the
+        // places one of their rarer bytes appears are compared, found by memchr instead of a compare at every byte.
+        bool sharedPrefix = true;
+        for (int a = 1; a < anchorCount; ++a)
+            sharedPrefix = sharedPrefix && prefixes[a] == prefixes[0];
+        size_t probe = 0;
+        unsigned char probeByte = 0;
+        for (size_t b = 0; b < 8; ++b)
+        {
+            const unsigned char value = static_cast<unsigned char>(prefixes[0] >> (8 * b));
+            if (value != 0xFF && value > probeByte)
+            {
+                probeByte = value;
+                probe = b;
+            }
+        }
+        sharedPrefix = sharedPrefix && probeByte != 0;
         const HANDLE self = GetCurrentProcess();
         size_t pos = 0; // the next candidate's offset in the region
         while (pos + 8 <= len && found < maxOut)
         {
+            if (generation && !HudLayoutContextMatches(profile, generation))
+                return found;
             const size_t want = (std::min)(len - pos, kWindow);
             SIZE_T got = 0;
             ReadProcessMemory(self, p + pos, s_window, want, &got);
@@ -4503,6 +4525,16 @@ namespace
             size_t i = 0;
             for (; i < limit && found < maxOut; ++i)
             {
+                if (sharedPrefix)
+                {
+                    const void* next = memchr(s_window + i + probe, probeByte, limit - i);
+                    if (!next)
+                    {
+                        i = limit;
+                        break;
+                    }
+                    i = static_cast<size_t>(static_cast<const unsigned char*>(next) - s_window) - probe;
+                }
                 uint64_t here;
                 memcpy(&here, s_window + i, sizeof(here));
                 for (int a = 0; a < anchorCount; ++a)
@@ -4990,7 +5022,7 @@ namespace
                     int shapes[kRegionHits]{};
                     const int n = SafeFrameScanRegion(
                         regionBase, mbi.RegionSize, *adapter,
-                        hits, kRegionHits, shapes);
+                        hits, kRegionHits, shapes, profile, generation);
                     for (int k = 0; k < n; ++k)
                     {
                         ++rawHits;

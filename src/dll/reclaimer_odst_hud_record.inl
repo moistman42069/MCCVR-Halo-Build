@@ -124,6 +124,8 @@ static void FindReclaimerOdstHudRecord(uint32_t generation, int attempt)
             size_t pos = 0;
             while (pos + kEntryWords * 8 <= size)
             {
+                if (!HudLayoutContextMatches(HudLayoutProfile::Halo3, generation))
+                    return;
                 const size_t want = (std::min)(size - pos, kWindowWords * 8);
                 SIZE_T got = 0;
                 ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(base + pos), s_window, want, &got);
