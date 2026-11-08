@@ -327,9 +327,12 @@ InstallResult InstallPayload(const fs::path& payload, const GameInstall& game, b
                 if (Sha256File(destination) != Sha256File(backup / relative)) throw std::runtime_error("Backup verification failed; installation stopped.");
             }
             fs::create_directories(destination.parent_path());
-            if (existed) StepAsideIfRunning(destination, suffix);
-            if (!MoveFileExW((stage / relative).c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            const auto aside = existed ? StepAsideIfRunning(destination, suffix) : fs::path{};
+            if (!MoveFileExW((stage / relative).c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                // Not yet among the written files the rollback restores: the launcher that stepped aside goes back.
+                if (!aside.empty()) MoveFileExW(aside.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH);
                 throw std::runtime_error("Cannot replace a mod file. Close other launchers and check folder write permissions.");
+            }
             written.push_back({relative, existed});
         }
         // User logs and custom files stay intact. The manifest describes the
