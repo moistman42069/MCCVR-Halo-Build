@@ -99,14 +99,15 @@ you now have.
 
 ## Antivirus flags the launcher
 
-Windows Security or another antivirus reports `HaloMCCVRLauncher.exe` as a threat, for example
-`Trojan:Win32/Bearfoos.A!ml` or `Behavior:Win32/DefenseEvasion.A!ml`, and removes it or blocks it. An update can
-stop with a message from the launcher saying your antivirus blocked a file, or with
-`Cannot read file for SHA-256`.
+Windows Security (Microsoft Defender) or another antivirus reports `HaloMCCVRLauncher.exe` as a "Trojan" and removes
+or blocks it. The names seen so far are `Trojan:Script/Wacatac.H!ml`, `Trojan:Win32/Wacatac.C!ml`,
+`Trojan:Win32/Bearfoos.A!ml`, `Trojan:Win32/Bearfoos.B!ml` and `Behavior:Win32/DefenseEvasion.A!ml`. An update can
+stop with a message from the launcher saying your antivirus blocked a file, or with `Cannot read file for SHA-256`.
 
-**Why it happens:** the launcher isn't code-signed, and it does things malware also does: it downloads updates,
-replaces itself with the new version, and loads the VR mod into the game. Antivirus that guesses with machine learning
-can flag a program like that. The `!ml` at the end of the name means it is such a guess, not a known virus.
+**Why it happens:** these are false alarms. The launcher isn't code-signed, and it does things malware also does: it
+downloads updates, replaces itself with the new version, and loads the VR mod into the game. Antivirus that guesses with
+machine learning can flag a program like that. The `!ml` at the end of the name means it is such a guess, not a known
+virus.
 
 **Check that your copy is genuine:** download it only from the release page. On that page, `SHA256.txt` lists the
 checksum of each ZIP. In PowerShell, `Get-FileHash <the ZIP>` shows your download's checksum; it must match. The full
@@ -115,12 +116,32 @@ source of every release is published on the same page.
 **Try:**
 
 1. Open **Windows Security > Virus & threat protection > Protection history**, open the entry for the Halo MCC VR file,
-   and choose **Actions > Restore** (or **Allow on device**). Allowing goes by the detection's name, so it also lets
-   other files with the same name through.
-2. To allow only the mod, add a folder exclusion instead: **Virus & threat protection > Manage settings > Exclusions >
-   Add an exclusion > Folder**, then choose your `Halo_MCC_VR` folder, and restore the file from Protection history.
-3. Report it to Microsoft as wrongly detected at <https://www.microsoft.com/wdsi/filesubmission>. Each report
-   helps clear that file for everyone.
+   and choose **Actions > Allow on device** (or **Restore**).
+2. **You may need to do this a couple of times.** Defender can flag the same launcher again under a different name (for
+   example `Wacatac.H!ml`, then `Wacatac.C!ml`). Allow each entry that names a Halo MCC VR file.
+3. Allowing goes by the detection's name, so it also lets other files with that name through. To allow only the mod
+   instead, add folder exclusions: **Virus & threat protection > Manage settings > Exclusions > Add an exclusion >
+   Folder**, for the folder you extracted the launcher to and for your `Halo_MCC_VR` folder. Then restore the file from
+   Protection history.
+4. Report it to Microsoft as wrongly detected at <https://www.microsoft.com/wdsi/filesubmission>. Each report helps
+   clear that file for everyone.
+
+**It isn't only this mod.** Defender's machine-learning detections regularly flag mods and modding tools, Wacatac in
+particular:
+
+- **UEVR**, the injector at the heart of Flat2VR, has been flagged with the same `Trojan:Win32/Wacatac.H!ml`
+  ([UEVR issue #79](https://github.com/praydog/UEVR/issues/79)), and the
+  [Custom UEVR Injector](https://github.com/mirudo2/Custom-UEVR-Injector) notes antivirus false positives in its README.
+- **JkGfxMod** ([Wacatac.D5!ml](https://github.com/jdmclark/jkgfxmod/issues/64)), the **SA-MP masterlist fix**
+  ([Wacatac.B!ml, false positive](https://github.com/spmn/sa-mp_masterlist_fix/issues/9)) and the Minecraft mod
+  **Collective** ([Wacatac.B!ml, "a false positive"](https://modrinth.com/project/e0M1UDsY/version/X5xn9Kl9)).
+- Microsoft explains false positives and how to report them:
+  [Address false positives in Microsoft Defender](https://learn.microsoft.com/en-us/defender-endpoint/defender-endpoint-false-positives-negatives)
+  and [how Defender names detections](https://learn.microsoft.com/en-us/defender-xdr/malware-naming).
+
+**What we're doing:** reporting these files to Microsoft, and working on ways to get Defender's machine learning to
+treat the mod's files as safe, such as code signing and keeping the part that loads the mod in a separate, unchanging
+file. That takes a bit of time.
 
 **In the logs:** Windows Security's Protection history names the file and the threat. The launcher's own message names
 the file it couldn't use.
