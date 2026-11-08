@@ -834,8 +834,26 @@ void CheckDirectContextPassthrough()
             if(!(title==GameTitle::Halo2&&a==Interact))
                 Check(std::strcmp(ActionName(title,static_cast<Action>(a)),kNames[a])==0,"other labels unchanged");
 }
+// Project Reclaimer: Start and Back are the client's; an action read on either goes to the bridge (2026-11-07: Halo 3's
+// switch grenade read Start there, and the left stick click paused the game).
+void CheckHostMenuButtons()
+{
+    Check(WithoutHostMenuButton(0x10)==0&&WithoutHostMenuButton(0x20)==0&&WithoutHostMenuButton(0x30)==0,
+        "Start and Back carry no action on Project Reclaimer");
+    Check(WithoutHostMenuButton(0x8)==0x8&&WithoutHostMenuButton(0x100)==0x100&&WithoutHostMenuButton(1u<<16)==(1u<<16)&&
+          WithoutHostMenuButton(0)==0,
+        "every other button, and none, stay as read");
+    Transports native{};
+    native[SwitchGrenade]=WithoutHostMenuButton(0x10);
+    native[Reload]=0x200;
+    const Overrides automatic{};
+    Check((BridgeOnlyActions(native,automatic)>>SwitchGrenade)&1u,
+        "an action left with no button is the bridge's to carry");
+}
+
 int main()
 {
+    CheckHostMenuButtons();
     CheckInputPresets();
     CheckDirectContextPassthrough();
     CheckScopeAdmission();

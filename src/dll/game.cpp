@@ -73,6 +73,7 @@
 #include <MinHook.h>
 #include "lifted_minhook.h"
 #include "game.h"
+#include "../common/vr_action_passthrough.h"
 #include "native_fault_probe.h"
 #include "haloce_network_input.h"
 #include "haloce_stereo_core.h"
