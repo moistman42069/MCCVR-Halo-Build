@@ -7644,6 +7644,16 @@ int main()
                       HudLayoutPairWritten(pairs, pairCount, kLast, kTitleOwn),
                 "a full history drops its oldest pair and keeps the newest");
         }
+        {
+            // ODST's levels on Project Reclaimer are named by their scenario: the header of the map Reclaimer serves
+            // read levels\atlas\sc100\sc100 on Tayari Plaza (2026-11-07).
+            Check(reclaimer_odst_hud::IsOdstScenarioPath("levels\\atlas\\sc100\\sc100") &&
+                      reclaimer_odst_hud::IsOdstScenarioPath("Levels\\Atlas\\c100\\c100") &&
+                      !reclaimer_odst_hud::IsOdstScenarioPath("levels\\solo\\070_waste\\070_waste") &&
+                      !reclaimer_odst_hud::IsOdstScenarioPath("levels\\atla") &&
+                      !reclaimer_odst_hud::IsOdstScenarioPath(""),
+                "ODST's scenarios lie under levels\\atlas\\; Halo 3's do not");
+        }
         Check(HudLayoutAcceptedCountOk(*odstHud, 1) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 0) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 2),

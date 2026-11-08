@@ -51,6 +51,22 @@ inline constexpr bool ListsBlock(const uint64_t* words, const RecordShape* shape
     return true;
 }
 
+// Whether a loaded scenario's path is one of ODST's: Reclaimer runs ODST's levels as Halo 3 maps, and the header of
+// the map it serves names ODST's scenario (levels\atlas\sc100\sc100, 2026-11-07).
+inline bool IsOdstScenarioPath(const char* path) noexcept
+{
+    constexpr char kPrefix[] = "levels\\atlas\\";
+    if (!path)
+        return false;
+    for (size_t i = 0; i + 1 < sizeof(kPrefix); ++i)
+    {
+        const char c = path[i] >= 'A' && path[i] <= 'Z' ? static_cast<char>(path[i] - 'A' + 'a') : path[i];
+        if (c != kPrefix[i])
+            return false;
+    }
+    return true;
+}
+
 // Whether `value` is one of the `count` candidate records, sorted ascending.
 inline bool IsCandidate(const uintptr_t* sorted, size_t count, uint64_t value) noexcept
 {

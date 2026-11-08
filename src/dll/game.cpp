@@ -5218,12 +5218,13 @@ namespace
                           "engine: its curvature is folded into a derived "
                           "basis when the tag block loads, so the slider is "
                           "deliberately not written");
+            // Project Reclaimer: an ODST level, should its scenario not have said so (ReclaimerOdstHudTick).
             if (g_hostIsProjectReclaimer && profile == HudLayoutProfile::Halo3)
             {
-                if (!odstLevel)
+                if (odstLevel)
+                    g_reclaimerOdstHudMarkerGeneration.store(generation, std::memory_order_relaxed);
+                else if (g_reclaimerOdstHud.generation.load(std::memory_order_relaxed) != generation)
                     g_reclaimerOdstHud.record.store(0, std::memory_order_relaxed);
-                else if (accepted)
-                    FindReclaimerOdstHudRecord(generation);
             }
         }
         else
@@ -5418,9 +5419,6 @@ namespace
             if (wrote)
                 ++live;
         }
-
-        if (profile == HudLayoutProfile::Halo3 && g_hostIsProjectReclaimer)
-            ApplyReclaimerOdstHudRecord(generation, wantH, wantV, wantCurvature, reportReadback);
 
         if (live == n)
         {
@@ -5641,6 +5639,8 @@ namespace
 #endif
         if (!HudLayoutTitleFrameLive(lastCam, now))
             return;
+        if (profile == HudLayoutProfile::Halo3 && g_hostIsProjectReclaimer)
+            ReclaimerOdstHudTick(generation, now, wantH, wantV, wantCurvature);
         if (count > 0)
         {
             const uint64_t lastVerify =
