@@ -118,6 +118,9 @@ void DrawTouchController(ImDrawList* draw, bool left, ImVec2 origin, float scale
     }
 }
 
+bool DrawDiagramArea(ImDrawList* draw, const controls_diagram::Setup& setup, const controls_diagram::Labels& labels,
+                     float fit, bool force);
+
 void DrawControlsDiagram()
 {
     using namespace controls_diagram;
@@ -174,7 +177,21 @@ void DrawControlsDiagram()
     ImGui::Separator();
     ImGui::Spacing();
 
-    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.82f);
+    // The whole preview, drawing and text alike, shrinks until the gestures under it fit in the panel: many mapped
+    // actions stack the callouts taller than it.
+    constexpr float kSmallestFit = 0.6f;
+    float fit = 1.0f;
+    while (!DrawDiagramArea(draw, setup, labels, fit, fit <= kSmallestFit))
+        fit = std::max(kSmallestFit, fit - 0.1f);
+}
+
+// The diagram and the gestures under it, everything `fit` times its full size. False, with nothing drawn, when they do
+// not fit in the panel and `force` is not set.
+bool DrawDiagramArea(ImDrawList* draw, const controls_diagram::Setup& setup, const controls_diagram::Labels& labels,
+                     float fit, bool force)
+{
+    using namespace controls_diagram;
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.82f * fit);
     const ImVec2 areaMin = ImGui::GetCursorScreenPos();
     const ImVec2 areaMax(ImGui::GetWindowPos().x + ImGui::GetWindowSize().x - ImGui::GetStyle().WindowPadding.x,
                          ImGui::GetWindowPos().y + ImGui::GetWindowSize().y - ImGui::GetStyle().WindowPadding.y);
@@ -212,13 +229,13 @@ void DrawControlsDiagram()
 
     // The diagram: the two controllers side by side, each control's callout on its own controller's outer side, and
     // each action in a callout a box of its own.
-    const float top = areaMin.y, bottom = areaMax.y - notesHeight - 14.0f;
-    const float calloutWidth = 360.0f, pad = 6.0f, chipPad = 3.0f, chipGap = 3.0f;
-    const float scale = std::min(1.8f, ((x1 - x0) - 2.0f * calloutWidth - 56.0f) / (2.0f * touch_drawing::kWidth));
+    const float top = areaMin.y, bottom = areaMax.y - notesHeight - 14.0f * fit;
+    const float calloutWidth = 360.0f * fit, pad = 6.0f * fit, chipPad = 3.0f * fit, chipGap = 3.0f * fit;
+    const float scale = fit * std::min(1.8f, ((x1 - x0) - 2.0f * 360.0f - 56.0f) / (2.0f * touch_drawing::kWidth));
     const float drawWidth = touch_drawing::kWidth * scale, drawHeight = touch_drawing::kHeight * scale;
     const float midX = (x0 + x1) * 0.5f;
     const float drawTop = top + std::max(0.0f, ((bottom - top) - drawHeight) * 0.15f);
-    const ImVec2 leftOrigin(midX - 8.0f - drawWidth, drawTop), rightOrigin(midX + 8.0f, drawTop);
+    const ImVec2 leftOrigin(midX - 8.0f * fit - drawWidth, drawTop), rightOrigin(midX + 8.0f * fit, drawTop);
 
     // Lay each side's callouts out by its anchors' heights, one under another, inside the area.
     struct Callout { Control control; ImVec2 anchor; ImVec2 min, max; float titleHeight; };
@@ -257,7 +274,7 @@ void DrawControlsDiagram()
             return c->control == LeftMenu ? std::min(c->anchor.y, faceButtons - 1.0f) : c->anchor.y;
         };
         std::sort(list, list + count, [&](const Callout* a, const Callout* b) { return order(a) < order(b); });
-        const float gap = 6.0f;
+        const float gap = 6.0f * fit;
         float floor = top;
         for (int i = 0; i < count; ++i)
         {
@@ -290,6 +307,12 @@ void DrawControlsDiagram()
             }
         }
         lowest = std::max(lowest, count ? list[count - 1]->max.y : top);
+    }
+
+    if (!force && lowest + 14.0f * fit + notesHeight > areaMax.y)
+    {
+        ImGui::PopFont();
+        return false;
     }
 
     // What the pointer is on: a callout, or a control on the drawing.
@@ -362,7 +385,7 @@ void DrawControlsDiagram()
     }
 
     // The gestures, under the diagram and the callouts.
-    ImVec2 at(x0, std::max(areaMax.y - notesHeight, lowest + 14.0f));
+    ImVec2 at(x0, std::max(areaMax.y - notesHeight, lowest + 14.0f * fit));
     draw->AddLine(ImVec2(x0, at.y - 6.0f), ImVec2(x1, at.y - 6.0f), ImGui::GetColorU32(Rgb(kSeparator)));
     draw->AddText(at, ImGui::GetColorU32(Rgb(kAccent)), "Gestures");
     at.y += ImGui::GetFontSize() + 6.0f;
@@ -377,6 +400,7 @@ void DrawControlsDiagram()
         at.y += ImGui::CalcTextSize(line.how.c_str(), nullptr, false, gestureWrap(line)).y + 3.0f;
     }
     ImGui::PopFont();
+    return true;
 }
 
 // The credits, from the copy of CREDITS.txt built into the mod (the launcher's own fallback): read once, as UTF-8 for
