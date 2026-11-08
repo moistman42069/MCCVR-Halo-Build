@@ -83,12 +83,39 @@ std::wstring UniqueSuffix() {
         time.wHour, time.wMinute, time.wSecond, time.wMilliseconds, GetCurrentProcessId(), GetTickCount64());
     return suffix;
 }
+// The program running now, which Windows does not let be overwritten but does let be renamed.
+bool IsRunningProgram(const fs::path& path) {
+    wchar_t self[32768]{};
+    const DWORD length = GetModuleFileNameW(nullptr, self, static_cast<DWORD>(std::size(self)));
+    std::error_code ignored;
+    return length && length < std::size(self) && fs::equivalent(path, self, ignored);
+}
+// Moves the running program out of `path`'s way, to <name>.old-<suffix> beside it, for the next launcher started there
+// to remove (RemoveSteppedAside). Empty, and nothing done, for any other file. An update thus replaces the launcher it
+// runs in itself, without a second program started to do it.
+fs::path StepAsideIfRunning(const fs::path& path, const std::wstring& suffix) {
+    if (!IsRunningProgram(path)) return {};
+    const fs::path aside = path.wstring() + L".old-" + suffix;
+    if (!MoveFileExW(path.c_str(), aside.c_str(), MOVEFILE_WRITE_THROUGH))
+        throw std::runtime_error("The running launcher could not make way for its update.");
+    return aside;
+}
 struct InstallMutex {
     HANDLE handle = CreateMutexW(nullptr, FALSE, L"Local\\HaloMCCVRInstaller");
     bool owned = false;
     InstallMutex() { if (handle) { auto result = WaitForSingleObject(handle, 0); owned = result == WAIT_OBJECT_0 || result == WAIT_ABANDONED; } }
     ~InstallMutex() { if (owned) ReleaseMutex(handle); if (handle) CloseHandle(handle); }
 };
+}
+
+void ThrowIfAntivirus(const fs::path& path, bool write) {
+    // Opened again only to ask Windows why it refused: the answer from the failed stream is not kept.
+    const bool existed = IsFile(path);
+    const HANDLE handle = CreateFileW(path.c_str(), write ? GENERIC_WRITE : GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                      write && !existed ? CREATE_NEW : OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    const DWORD error = handle == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+    if (handle != INVALID_HANDLE_VALUE) { CloseHandle(handle); if (!existed) DeleteFileW(path.c_str()); }
+    if (IsAntivirusError(error)) throw AntivirusBlocked(path);
 }
 
 // Shared with updater: digest check is against GitHub's asset digest as well
@@ -100,7 +127,7 @@ std::string Sha256File(const fs::path& path) {
     std::array<unsigned char, 32> digest{};
     try {
         std::ifstream file(path, std::ios::binary);
-        if (!file) throw std::runtime_error("Cannot read file for SHA-256.");
+        if (!file) { ThrowIfAntivirus(path); throw std::runtime_error("Cannot read file for SHA-256."); }
         std::array<char, 65536> buffer{};
         while (file) {
             file.read(buffer.data(), buffer.size());
@@ -219,9 +246,10 @@ InstallResult InstallPayload(const fs::path& payload, const GameInstall& game, b
         if (GameRunning()) throw std::runtime_error("Close both editions of MCC before installing or updating.");
         target = game.root / L"Halo_MCC_VR";
         if (!NoReparse(target) || !NoReparse(payload)) throw std::runtime_error("Installation through a junction or symbolic link is not supported. Choose the actual folder.");
-        wchar_t self[32768]{}; GetModuleFileNameW(nullptr, self, static_cast<DWORD>(std::size(self)));
-        if (!_wcsicmp(fs::absolute(self).parent_path().c_str(), fs::absolute(target).c_str()))
-            throw std::runtime_error("For an update, run the launcher from the extracted release package, outside Halo_MCC_VR.");
+        // The launcher may run from the install it updates: it steps aside for its own replacement (StepAsideIfRunning).
+        // The package must not be the install itself.
+        if (std::error_code same; fs::equivalent(payload, target, same))
+            throw std::runtime_error("This package is the installed copy itself. Install from a downloaded release.");
         std::vector<PayloadFile> files; std::string error;
         if (!ParseManifest(Read(payload / L"INSTALL-MANIFEST.sha256"), files, error)) throw std::runtime_error(error);
         // The installer is distributed beside ModFiles, never inside it. This
@@ -300,8 +328,14 @@ InstallResult InstallPayload(const fs::path& payload, const GameInstall& game, b
                 if (Sha256File(destination) != Sha256File(backup / relative)) throw std::runtime_error("Backup verification failed; installation stopped.");
             }
             fs::create_directories(destination.parent_path());
-            if (!MoveFileExW((stage / relative).c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            const auto aside = existed ? StepAsideIfRunning(destination, suffix) : fs::path{};
+            if (!MoveFileExW((stage / relative).c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                // Not yet among the written files the rollback restores: the launcher that stepped aside goes back.
+                if (!aside.empty() && !MoveFileExW(aside.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH))
+                    throw std::runtime_error("Cannot replace the launcher, and it could not be put back: it is " + aside.string() +
+                                             ". Rename it to " + destination.filename().string() + ".");
                 throw std::runtime_error("Cannot replace a mod file. Close other launchers and check folder write permissions.");
+            }
             written.push_back({relative, existed});
         }
         // User logs and custom files stay intact. The manifest describes the
@@ -318,6 +352,10 @@ InstallResult InstallPayload(const fs::path& payload, const GameInstall& game, b
             } else if (!DeleteFileW((target / it->relative).c_str())) restored = false;
         }
         result.message = Wide(error.what());
+        if (const auto* blocked = dynamic_cast<const AntivirusBlocked*>(&error)) result.antivirusBlocked = blocked->file;
+        else if (const auto* failed = dynamic_cast<const fs::filesystem_error*>(&error);
+                 failed && IsAntivirusError(static_cast<DWORD>(failed->code().value())))
+            result.antivirusBlocked = failed->path1();
         // The launcher does not ask for administrator rights, so a folder Windows protects refuses the first
         // write. Say what gets past it, and that the game should not be started from that elevated launcher.
         if (const auto* refused = dynamic_cast<const fs::filesystem_error*>(&error);
@@ -360,7 +398,13 @@ bool RefreshLauncherCopy(const fs::path& installedLauncher, const fs::path& payl
             fs::copy_file(copy, previous, fs::copy_options::overwrite_existing);
             fs::copy_file(installedLauncher, next);
             if (Sha256File(next) != Sha256File(installedLauncher)) throw std::runtime_error("The launcher copy could not be verified.");
-            if (!MoveFileExW(next.c_str(), copy.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("The launcher could not be replaced.");
+            const auto aside = StepAsideIfRunning(copy, suffix);
+            if (!MoveFileExW(next.c_str(), copy.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                if (!aside.empty() && !MoveFileExW(aside.c_str(), copy.c_str(), MOVEFILE_WRITE_THROUGH))
+                    throw std::runtime_error("The launcher could not be replaced, nor put back: it is " + aside.string() +
+                                             ". Rename it to " + copy.filename().string() + ".");
+                throw std::runtime_error("The launcher could not be replaced.");
+            }
             if (package) {
                 try {
                     fs::rename(modFiles, old);
@@ -375,5 +419,13 @@ bool RefreshLauncherCopy(const fs::path& installedLauncher, const fs::path& payl
         fs::remove_all(old, ignored);
         return true;
     } catch (const std::exception& exception) { error = Wide(exception.what()); return false; }
+}
+void RemoveSteppedAside(const fs::path& folder) {
+    std::error_code error;
+    for (fs::directory_iterator it(folder, error), end; !error && it != end; it.increment(error)) {
+        const auto name = it->path().filename().wstring();
+        if (name.starts_with(L"HaloMCCVR") && name.find(L".exe.old-") != std::wstring::npos && IsFile(it->path()))
+            DeleteFileW(it->path().c_str());   // a launcher still running from it keeps it until the next start
+    }
 }
 } // namespace mcc_installer

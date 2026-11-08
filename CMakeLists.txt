@@ -11,6 +11,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Static CRT so users do not need a separate Visual C++ redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# Reproducible builds: no build time stamped into the files, so the same sources build to the same files. An
+# unchanged program then stays the file antivirus has already come to trust, release after release.
+if(MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/Brepro>)
+    add_link_options(/Brepro)
+endif()
+
 include(FetchContent)
 include(CTest)
 
@@ -172,7 +179,13 @@ FetchContent_Declare(imgui
     GIT_TAG 8936b58fe26e8c3da834b8f60b06511d537b4c63
     GIT_SHALLOW TRUE)
 
-FetchContent_MakeAvailable(openxr minhook imgui)
+# The launcher's updater reads release ZIPs with miniz (MIT), in its own process (src/launcher/updater.cpp).
+FetchContent_Declare(miniz
+    GIT_REPOSITORY https://github.com/richgel999/miniz.git
+    GIT_TAG d10b03cc73475af673df40f06e5cefd1d5f940d9 # 3.1.1
+    GIT_SHALLOW TRUE)
+
+FetchContent_MakeAvailable(openxr minhook imgui miniz)
 
 # vr.h exposes the sampled OpenXR head pose in aim receipts. Keep that public
 # header usable by the DLL's focused fixtures as well as the runtime target.
@@ -421,7 +434,7 @@ target_compile_definitions(halo3xr_launcher PRIVATE
     HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>)
 # IApplicationActivationManager: the Microsoft Store edition is a packaged app
 # and can only be started through packaged activation.
-target_link_libraries(halo3xr_launcher PRIVATE ole32 bcrypt advapi32 winhttp crypt32 shell32 uxtheme)
+target_link_libraries(halo3xr_launcher PRIVATE ole32 bcrypt advapi32 winhttp shell32 uxtheme miniz)
 # The launcher runs with the user's own rights. The game it starts inherits its token, and in an elevated game
 # the OpenXR loader ignores XR_RUNTIME_JSON: a headset runtime chosen with that variable is replaced by the
 # machine's registered one and VR never starts. An install into a folder the user cannot write to says so and
@@ -466,7 +479,31 @@ target_compile_definitions(halo3xr_reclaimer_launcher PRIVATE
     HALOMCCVR_RELEASE_CHANNEL="${HALOMCCVR_RELEASE_CHANNEL}"
     HALOMCCVR_RECLAIMER_LAUNCHER=1
     HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>)
-target_link_libraries(halo3xr_reclaimer_launcher PRIVATE ole32 bcrypt advapi32 winhttp crypt32 shell32 uxtheme)
+target_link_libraries(halo3xr_reclaimer_launcher PRIVATE ole32 bcrypt advapi32 winhttp shell32 uxtheme miniz)
+
+# Version information for each program and DLL the mod ships (src/common/version.rc.in): the details Windows shows,
+# and what tells antivirus who a program is. Major.minor.patch only, never the commit, so that an unchanged program
+# builds to the same file from one release to the next.
+set(HALOMCCVR_VERSION "0.7.0" CACHE STRING "The version the mod's programs and DLLs carry: major.minor.patch")
+string(REPLACE "." ";" halomccvr_version_parts "${HALOMCCVR_VERSION}")
+list(GET halomccvr_version_parts 0 HALOMCCVR_VERSION_MAJOR)
+list(GET halomccvr_version_parts 1 HALOMCCVR_VERSION_MINOR)
+list(GET halomccvr_version_parts 2 HALOMCCVR_VERSION_PATCH)
+function(halomccvr_version_resource target file_name description file_type)
+    set(HALOMCCVR_RC_FILE_NAME "${file_name}")
+    set(HALOMCCVR_RC_DESCRIPTION "${description}")
+    set(HALOMCCVR_RC_FILE_TYPE "${file_type}")
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/common/version.rc.in"
+        "${HALOMCCVR_GENERATED_DIR}/version_${target}.rc" @ONLY)
+    target_sources(${target} PRIVATE "${HALOMCCVR_GENERATED_DIR}/version_${target}.rc")
+endfunction()
+halomccvr_version_resource(halo3xr "HaloMCCVR.dll" "Halo MCC VR mod" VFT_DLL)
+halomccvr_version_resource(halo3xr_launcher "HaloMCCVRLauncher.exe" "Halo MCC VR launcher" VFT_APP)
+halomccvr_version_resource(halo3xr_reclaimer_launcher "HaloMCCVRReclaimerLauncher.exe"
+    "Halo MCC VR launcher for Project Reclaimer" VFT_APP)
+halomccvr_version_resource(halomccvr_settings "HaloMCCVRSettings.exe" "Halo MCC VR settings" VFT_APP)
+halomccvr_version_resource(halomccvr_reclaimer_relay "HaloMCCVRReclaimerRelay.dll"
+    "Halo MCC VR relay for Project Reclaimer" VFT_DLL)
 
 # THE FLAT PROBE (dev preset only; never packaged -- package-candidate.ps1 refuses a dev cache and copies named
 # files only). HaloMCCFlatProbe.dll is the AS SEEN control arm: stock flat Halo 3 measured with the same code as the
@@ -575,7 +612,7 @@ if(BUILD_TESTING)
     add_executable(halomccvr_updater_archive_tests tests/updater_archive_tests.cpp
         src/launcher/installer.cpp src/launcher/updater.cpp)
     target_compile_definitions(halomccvr_updater_archive_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
-    target_link_libraries(halomccvr_updater_archive_tests PRIVATE ole32 bcrypt advapi32 winhttp crypt32 shell32)
+    target_link_libraries(halomccvr_updater_archive_tests PRIVATE ole32 bcrypt advapi32 winhttp shell32 miniz)
     add_test(NAME halomccvr_updater_archive_tests COMMAND halomccvr_updater_archive_tests)
     add_executable(halomccvr_installer_tests tests/installer_tests.cpp src/launcher/installer.cpp)
     target_compile_definitions(halomccvr_installer_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE

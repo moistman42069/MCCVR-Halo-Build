@@ -198,6 +198,8 @@ std::atomic<uint32_t> g_menuPressSerial{0};
 
     void NoteFedButtons(WORD mask) noexcept
     {
+        if (g_hostIsProjectReclaimer)
+            NativeVrActions_NoteZoomInput(0, (mask & XINPUT_GAMEPAD_RIGHT_THUMB) != 0);
         if (g_fedLastMask.load(std::memory_order_relaxed) == mask)
             return;
         g_fedLastMask.store(mask, std::memory_order_relaxed);
@@ -896,6 +898,11 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             g_zoomInputDown.store(semanticActions.Has(vr_mapping::Zoom)&&!zoomPressedOut,std::memory_order_relaxed);
         }
         // Each pull of the support trigger on foot, and what came of it (zoom_pull_audit_logic.h).
+        if(g_hostIsProjectReclaimer)
+        {
+            NativeVrActions_NoteZoomInput(1,semanticActions.Has(vr_mapping::Zoom));
+            NativeVrActions_NoteZoomInput(2,triggerDown);
+        }
         {
             static std::mutex auditLock;
             static zoom_pull_audit::Audit audit;
