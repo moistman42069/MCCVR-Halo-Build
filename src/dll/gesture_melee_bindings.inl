@@ -157,6 +157,7 @@ bool Game_ReadVrActionBindings(vr_mapping::Transports& out,uint64_t now,unsigned
         const uint64_t value=g_gestureBinding.actions[controller][action].load(std::memory_order_acquire);
         if(uint32_t(value>>32)!=generation||((value>>24)&0xFF)!=uint64_t(title)) {out={};return false;}
         out[action]=uint32_t(value)&0x3FFFF;
+        if(g_hostIsProjectReclaimer) out[action]=vr_mapping::WithoutHostMenuButton(out[action]);
     }
     // Missing individual actions remain unavailable without discarding the
     // other verified actions (Fire/Jump can legitimately be native-unbound).
@@ -187,6 +188,7 @@ bool Game_ReadVrExtraBindings(vr_mapping::ExtraTransports& out,uint64_t now)
         const uint64_t value=g_gestureBinding.vehicle[0][action].load(std::memory_order_acquire);
         if(uint32_t(value>>32)!=TitleAdapter_GetGeneration(title)||((value>>24)&0xFF)!=uint64_t(title)) {out={};return false;}
         out[action]=uint32_t(value)&0x3FFFF;
+        if(g_hostIsProjectReclaimer) out[action]=vr_mapping::WithoutHostMenuButton(out[action]);
     }
     if(sequence!=g_gestureBinding.sequence.load(std::memory_order_acquire)) {out={};return false;}
     return true;
