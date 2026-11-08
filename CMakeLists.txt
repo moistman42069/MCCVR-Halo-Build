@@ -481,6 +481,16 @@ target_compile_definitions(halo3xr_reclaimer_launcher PRIVATE
     HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>)
 target_link_libraries(halo3xr_reclaimer_launcher PRIVATE ole32 bcrypt advapi32 winhttp shell32 uxtheme miniz)
 
+# THE INJECTOR: the only program that loads code into another process (src/injector/injector.cpp). The launchers start
+# the game and run it to load the mod; they themselves download and install updates and hold no injection code, which
+# antivirus scores as a trojan when one program does both. Kept small and unchanging, with a version of its own, so
+# that it stays the same file from one release to the next and keeps any trust it has earned.
+add_executable(halomccvr_injector src/injector/injector.cpp)
+set_target_properties(halomccvr_injector PROPERTIES OUTPUT_NAME "HaloMCCVRInject")
+target_include_directories(halomccvr_injector PRIVATE src/common)
+target_compile_definitions(halomccvr_injector PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+    HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>)
+
 # Version information for each program and DLL the mod ships (src/common/version.rc.in): the details Windows shows,
 # and what tells antivirus who a program is. Major.minor.patch only, never the commit, so that an unchanged program
 # builds to the same file from one release to the next.
@@ -490,6 +500,13 @@ list(GET halomccvr_version_parts 0 HALOMCCVR_VERSION_MAJOR)
 list(GET halomccvr_version_parts 1 HALOMCCVR_VERSION_MINOR)
 list(GET halomccvr_version_parts 2 HALOMCCVR_VERSION_PATCH)
 function(halomccvr_version_resource target file_name description file_type)
+    if(ARGC GREATER 4)   # a version of its own: major.minor.patch
+        set(HALOMCCVR_VERSION "${ARGV4}")
+        string(REPLACE "." ";" own_parts "${ARGV4}")
+        list(GET own_parts 0 HALOMCCVR_VERSION_MAJOR)
+        list(GET own_parts 1 HALOMCCVR_VERSION_MINOR)
+        list(GET own_parts 2 HALOMCCVR_VERSION_PATCH)
+    endif()
     set(HALOMCCVR_RC_FILE_NAME "${file_name}")
     set(HALOMCCVR_RC_DESCRIPTION "${description}")
     set(HALOMCCVR_RC_FILE_TYPE "${file_type}")
@@ -504,6 +521,8 @@ halomccvr_version_resource(halo3xr_reclaimer_launcher "HaloMCCVRReclaimerLaunche
 halomccvr_version_resource(halomccvr_settings "HaloMCCVRSettings.exe" "Halo MCC VR settings" VFT_APP)
 halomccvr_version_resource(halomccvr_reclaimer_relay "HaloMCCVRReclaimerRelay.dll"
     "Halo MCC VR relay for Project Reclaimer" VFT_DLL)
+# Never the mod's version: a release's version number must not make the injector a new file.
+halomccvr_version_resource(halomccvr_injector "HaloMCCVRInject.exe" "Halo MCC VR mod loader" VFT_APP "1.0.0")
 
 # THE FLAT PROBE (dev preset only; never packaged -- package-candidate.ps1 refuses a dev cache and copies named
 # files only). HaloMCCFlatProbe.dll is the AS SEEN control arm: stock flat Halo 3 measured with the same code as the
@@ -614,6 +633,16 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_updater_archive_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
     target_link_libraries(halomccvr_updater_archive_tests PRIVATE ole32 bcrypt advapi32 winhttp shell32 miniz)
     add_test(NAME halomccvr_updater_archive_tests COMMAND halomccvr_updater_archive_tests)
+    # The injector's rules, and the real program loading a stand-in DLL into a stand-in game.
+    add_library(halomccvr_injector_test_dll SHARED tests/injector_test_dll.cpp)
+    add_executable(halomccvr_injector_test_host tests/injector_test_host.cpp)
+    add_executable(halomccvr_injector_tests tests/injector_tests.cpp)
+    target_compile_definitions(halomccvr_injector_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE
+        "HALOMCCVR_TEST_INJECTOR=L\"$<TARGET_FILE:halomccvr_injector>\""
+        "HALOMCCVR_TEST_DLL=L\"$<TARGET_FILE:halomccvr_injector_test_dll>\""
+        "HALOMCCVR_TEST_HOST=L\"$<TARGET_FILE:halomccvr_injector_test_host>\"")
+    add_dependencies(halomccvr_injector_tests halomccvr_injector halomccvr_injector_test_dll halomccvr_injector_test_host)
+    add_test(NAME halomccvr_injector_tests COMMAND halomccvr_injector_tests)
     add_executable(halomccvr_installer_tests tests/installer_tests.cpp src/launcher/installer.cpp)
     target_compile_definitions(halomccvr_installer_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE
         HALOMCCVR_INSTALLER_TESTS)
@@ -1904,6 +1933,9 @@ install(TARGETS halomccvr_settings
     RUNTIME DESTINATION .
     COMPONENT dist)
 install(TARGETS halomccvr_reclaimer_relay
+    RUNTIME DESTINATION .
+    COMPONENT dist)
+install(TARGETS halomccvr_injector
     RUNTIME DESTINATION .
     COMPONENT dist)
 install(FILES

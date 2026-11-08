@@ -157,6 +157,14 @@ int main()
     CHECK(!IsClientExeName(L"project-reclaimer-clientx-v0.9.23.exe"));
     CHECK(!IsClientExeName(L"project-reclaimer-client-dedicated-v0.9.23.exe"));
     CHECK(VersionOf(L"project-reclaimer-client-v0.9.23.exe").part[2] == 23);
+    {
+        // A version resource's FileVersion text (0.10.1's numeric version still says 0.10.0).
+        const Version text = VersionOfText(L"0.10.1");
+        CHECK(text.known && text.part[0] == 0 && text.part[1] == 10 && text.part[2] == 1);
+        CHECK(VersionOfText(L"0.10.1.0").part[2] == 1);
+        CHECK(!VersionOfText(L"").known);
+        CHECK(!VersionOfText(L"v0.10.1").known);
+    }
     CHECK(!IsClientExeName(L"project-reclaimer-dedicated-v0.9.8.exe"));
     CHECK(!IsClientExeName(L"reclaimer-rcon-v0.9.8.exe"));
     CHECK(!IsClientExeName(L"project-reclaimer-v0.9.8.exe.bak"));
@@ -249,9 +257,11 @@ int main()
         CHECK(!RunsRecompiledEngine(vNotRun));       // 0.9.99
         CHECK(!RunsRecompiledEngine(v098));
         CHECK(!RunsRecompiledEngine(none));
-        CHECK(!Proven(v0100));
-        // Of several, the proven rule alone decides: 0.10.0 is a client like any other the mod has not been run with.
-        const std::vector<ClientCandidate> updated{{L"0.10", v0100, 9}, {L"0.9.23", VersionOf(L"x-v0.9.23.exe"), 1}};
+        CHECK(Proven(v0100));
+        CHECK(Proven(VersionOfText(L"0.10.1")));
+        CHECK(!Proven(VersionOfText(L"0.10.2")));
+        // Of several, the proven rule decides: the mod has been run with 0.10.0, not with 0.9.23.
+        const std::vector<ClientCandidate> updated{{L"0.10", v0100, 1}, {L"0.9.23", VersionOf(L"x-v0.9.23.exe"), 9}};
         CHECK(ChooseClient(updated).chosen == 0);
 
         const wchar_t* client = L"\"G:\\Games\\Project Reclaimer\\0.9.23\\project-reclaimer-client-v0.9.23.exe\"";
