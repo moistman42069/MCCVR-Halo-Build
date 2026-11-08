@@ -37,6 +37,7 @@
 #include "../common/log.h"
 #include "../common/config.h"
 #include "../common/input_preset.h"
+#include "../common/default_controls.h"
 #include "../common/menu_mirror.h"
 #include "../common/roomscale_recenter_logic.h"
 #include "../common/reclaimer_host_logic.h"
@@ -3998,6 +3999,8 @@ namespace
             if (g_resetArmed)
             {
                 g_config = Config{};
+                default_controls::Apply(g_config);
+                strcpy_s(g_config.input_preset, input_preset::kDefaultName);
                 ConfigSave();
                 LOG("config: reset to defaults from the menu");
                 two_hand_lab_runtime::ResetSettings();

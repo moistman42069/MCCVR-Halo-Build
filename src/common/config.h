@@ -465,7 +465,7 @@ struct Config
     // configuration.
     Config();
 
-    int config_version = 6;
+    int config_version = 7;
 
     // Portable OpenXR feedback and pose stabilization. Headset smoothing is a
     // deliberately tiny previous-frame blend (0.03 shipped default, 10% hard maximum)
@@ -763,7 +763,9 @@ struct Config
     // default for now -- the plain route, each VR button as the gamepad button it stands for, is the one that works;
     // the automatic one has known faults.
     bool vr_action_mapping = false;
-    char input_preset[64] = "Default"; // input_preset.h; empty: a scheme no preset named
+    // input_preset.h; empty: a scheme no preset named. The struct's scheme is Legacy Default; a new player starts on
+    // Default (default_controls.h).
+    char input_preset[64] = "Legacy Default";
     // Settings the rows' inputs took over (vr_mapping::ConvertSettingsToInputs), read only from a file or preset written
     // before them: the support trigger gripping air used equipment, and with the hand on the gun zoomed.
     bool trigger_air_equipment = false;

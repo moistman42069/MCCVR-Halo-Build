@@ -3,6 +3,7 @@
 #include "../src/dll/native_vr_actions.h"
 #include "../src/common/config.h"
 #include "../src/common/input_preset.h"
+#include "default_controls_fixture.inl"
 #include "../src/common/roomscale_recenter_logic.h"
 #include "../src/common/weapon_interaction_logic.h"
 #include "../src/common/scope_action_input.h"
@@ -556,14 +557,29 @@ void CheckInputPresets()
     Config described{};
     input_preset::Parse((input_preset::DescriptionLine("turn_snap_deg = 99")+input_preset::Serialize(scheme)).c_str(),described);
     Check(input_preset::SameScheme(described,scheme),"a description never reads as a setting");
-    Config def{},plain{};
+    Config legacyScheme{},plain{};
+    input_preset::BuiltIn(1,legacyScheme);
+    Check(!strcmp(input_preset::BuiltInName(1),"Legacy Default")&&input_preset::SameScheme(legacyScheme,plain)&&
+        !legacyScheme.vr_action_mapping&&legacyScheme.vr_inputs[0]==DefaultInputs(GameTitle::Halo3),
+        "Legacy Default is the struct's scheme: VR Mappings off, the stick as every game starts");
+    Config def{},saved{};
     input_preset::BuiltIn(0,def);
-    Check(input_preset::SameScheme(def,plain)&&!def.vr_action_mapping&&def.vr_inputs[0]==DefaultInputs(GameTitle::Halo3),"Default is the canon: nothing remapped, the stick as every game starts");
+    input_preset::Parse(kDefaultControlsPreset,saved);
+    Check(!strcmp(input_preset::BuiltInName(0),"Default")&&input_preset::SameScheme(def,saved),
+        "Default is the controls preset it was canonized from, setting for setting");
+    Check(def.vr_action_mapping&&def.gesture_melee&&def.gesture_melee_require_grip&&
+        def.vr_bindings[0][Zoom]==SupportTrigger&&def.vr_inputs[0][Zoom].held[0]==HandOnGun&&
+        def.vr_bindings[0][Grenade]==SupportTrigger&&def.vr_inputs[0][Equipment].more[1]==kAirEquipment,
+        "Default: the support trigger zooms on the gun, uses equipment on air, throws a grenade otherwise; melee with the grip");
+    Config defAgain{};
+    input_preset::Parse(input_preset::Serialize(def).c_str(),defAgain);
+    Check(input_preset::SameScheme(def,defAgain),"Default survives being saved as a preset file");
     Config vr{};
-    input_preset::BuiltIn(1,vr);
+    input_preset::BuiltIn(2,vr);
     Check(vr.vr_action_mapping&&vr.vr_bindings[2][Jump]==kDefaults[Jump],"the VR layout is written out in full");
     Check(input_preset::SafeName("  My: preset/1 ")=="My preset1"&&input_preset::SafeName("default").empty()&&
-        input_preset::SafeName("../..")=="","a preset name is a safe file name, and never a built-in's");
+        input_preset::SafeName("legacy default").empty()&&input_preset::SafeName("../..")=="",
+        "a preset name is a safe file name, and never a built-in's");
 }
 
 void CheckScopeAdmission()

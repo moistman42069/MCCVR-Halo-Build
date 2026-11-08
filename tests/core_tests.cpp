@@ -14684,10 +14684,10 @@ int main()
             "Pre-v6 saved OFF is migrated to coherent committed-sample aim ON");
         ConfigSave();
         const std::string migratedAimConfig = ReadTextFile(oldAimConfig);
-        Check(g_config.config_version == 6 &&
-                  CountText(migratedAimConfig, "\nconfig_version = 6") == 1 &&
+        Check(g_config.config_version == 7 &&
+                  CountText(migratedAimConfig, "\nconfig_version = 7") == 1 &&
                   CountText(migratedAimConfig, "\ntwo_hand_coherent_aim = 1") == 1,
-            "Saving the v5 coherent-aim migration persists version 6 and ON");
+            "Saving the v5 coherent-aim migration persists the current version and ON");
         ConfigLoad(oldAimConfig.c_str());
         Check(g_config.two_hand_coherent_aim,
             "Reloading the saved v6 migration keeps coherent committed-sample aim ON");
@@ -14735,6 +14735,25 @@ int main()
             "A first run with no config file derives direct drive ON in every lane");
         ConfigLoad(primary.c_str());
         std::filesystem::remove(driveConfig);
+    }
+    {
+        // A new player starts on the Default controls; a player whose file named "Default" before version 7 was on
+        // the struct's scheme, now Legacy Default, and keeps it under that name.
+        const std::filesystem::path controlsConfig = configDir / L"default-controls.cfg";
+        std::filesystem::remove(controlsConfig);
+        ConfigLoad(controlsConfig.c_str());
+        Check(!strcmp(g_config.input_preset, "Default") && g_config.vr_action_mapping &&
+                  g_config.gesture_melee_require_grip && g_config.title_profiles[0].gun_pitch_deg == -13.0f,
+            "A first run starts on the Default controls, and says so");
+        { std::ofstream file(controlsConfig); file << "config_version = 6\ninput_preset = Default\n"; }
+        ConfigLoad(controlsConfig.c_str());
+        Check(!strcmp(g_config.input_preset, "Legacy Default") && !g_config.vr_action_mapping,
+            "An older file's Default is the scheme it always was, named Legacy Default");
+        { std::ofstream file(controlsConfig); file << "config_version = 7\ninput_preset = Default\n"; }
+        ConfigLoad(controlsConfig.c_str());
+        Check(!strcmp(g_config.input_preset, "Default"), "A current file's Default stays Default");
+        ConfigLoad(primary.c_str());
+        std::filesystem::remove(controlsConfig);
     }
 #if !HALOMCCVR_DEV_DIAGNOSTICS
     {
@@ -14784,7 +14803,7 @@ int main()
                 g_config.virtual_stock_standard_strength == .61f &&
                 g_config.virtual_stock_plus_strength == kVirtualStockPlusStrengthDefault &&
                 g_config.two_hand_smoothing_strength == 25.0f &&
-                g_config.two_hand_coherent_aim && g_config.config_version == 6;
+                g_config.two_hand_coherent_aim && g_config.config_version == 7;
         }, "installer/runtime roundtrip migrates legacy Standard strength, smoothing and v5 coherent aim");
         verifyMerged("config_version=5\nvirtual_stock_rear_reference=3\n"
                      "virtual_stock_strength=0.44\ntwo_hand_smoothing=0\n", [] {

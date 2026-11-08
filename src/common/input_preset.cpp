@@ -1,4 +1,5 @@
 #include "input_preset.h"
+#include "default_controls.h"
 #include "log.h"
 #include "weapon_interaction_logic.h"
 #include "roomscale_recenter_logic.h"
@@ -374,25 +375,28 @@ std::string ParseDescription(const char* text)
     return {};
 }
 
-int BuiltInCount() noexcept { return 2; }
+int BuiltInCount() noexcept { return 3; }
 
 const char* BuiltInDescription(int index) noexcept
 {
-    return index == 0 ? "The game's own button layout, with nothing remapped. A good place to start."
-         : index == 1 ? "Arranged for VR controllers: right grip melees, left grip uses equipment, X reloads and uses, "
+    return index == 0 ? default_controls::kDescription
+         : index == 1 ? "The game's own button layout with VR Mappings off: the scheme new players started on before "
+                        "Default."
+         : index == 2 ? "Arranged for VR controllers: right grip melees, left grip uses equipment, X reloads and uses, "
                         "Y switches weapon, and the stick clicks crouch and zoom."
                       : "";
 }
 
 const char* BuiltInName(int index) noexcept
 {
-    return index == 0 ? kDefaultName : index == 1 ? "VR action layout" : "";
+    return index == 0 ? kDefaultName : index == 1 ? kLegacyDefaultName : index == 2 ? "VR action layout" : "";
 }
 
 void BuiltIn(int index, Config& out)
 {
-    // Default is the struct's own values: the game's button layout, with nothing remapped.
-    if (index != 1) return;
+    if (index == 0) default_controls::Apply(out);
+    // Legacy Default is the struct's own values: the game's button layout, with nothing remapped.
+    if (index != 2) return;
     // The layout the VR Mappings page used to call Automatic.
     out.vr_action_mapping = true;
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)

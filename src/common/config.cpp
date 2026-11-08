@@ -1,4 +1,5 @@
 #include "weapon_alignment.h"
+#include "default_controls.h"
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
@@ -330,7 +331,7 @@ static bool FileExists(const wchar_t* path)
 
 static void Clamp()
 {
-    g_config.config_version = 6;
+    g_config.config_version = 7;
     g_config.haptic_intensity = std::clamp(g_config.haptic_intensity, 0.0f, 1.0f);
     g_config.dpad_head_radius = std::clamp(g_config.dpad_head_radius, 0.10f, 0.50f);
     g_config.headset_smoothing = std::clamp(g_config.headset_smoothing, 0.0f, 0.10f);
@@ -1079,6 +1080,9 @@ void ConfigLoad(const wchar_t* path)
         // profile they belong to before the save stores them back.
         Config_ApplyAimModes();
         ResolveTitleProfiles();
+        // A new player starts on the Default controls, not the struct's Legacy Default.
+        default_controls::Apply(g_config);
+        strcpy_s(g_config.input_preset, "Default");
         ConfigSave();
         return;
     }
@@ -1963,8 +1967,8 @@ void ConfigLoad(const wchar_t* path)
             else
             {
                 loadedConfigVersion = static_cast<int>(parsed);
-                if (parsed > 6)
-                    LOG("config: version %ld is newer than supported version 6; known keys will be loaded", parsed);
+                if (parsed > 7)
+                    LOG("config: version %ld is newer than supported version 7; known keys will be loaded", parsed);
             }
         }
         else if (!strcmp(key, "haptic_intensity"))
@@ -2292,6 +2296,9 @@ void ConfigLoad(const wchar_t* path)
                 if (title[action] == vr_mapping::Automatic)
                     title[action] = vr_mapping::kDefaults[action];
     }
+    // Before version 7, "Default" was the struct's scheme, now Legacy Default: the player keeps it under its new name.
+    if (loadedConfigVersion < 7 && !strcmp(g_config.input_preset, "Default"))
+        strcpy_s(g_config.input_preset, "Legacy Default");
     if (loadedLegacyVirtualStockStrength)
     {
         if (VirtualStockUsesPlusMode(g_config))
