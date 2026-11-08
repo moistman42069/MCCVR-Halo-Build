@@ -45,6 +45,8 @@ struct HudLayoutAltAnchor
     int safeFrameOffset;
     // Named in the scan's log when a record of this shape is found; null: the adapter's own name.
     const char* name = nullptr;
+    // A shape that only tells the scan what is loaded: never a target, never counted.
+    bool markerOnly = false;
 };
 
 struct HudLayoutAdapter
@@ -173,17 +175,16 @@ inline constexpr HudLayoutAdapter kOdstHudLayoutAdapter = {
 // at the game's own size and the crosshair's capture was fitted for a layout the HUD did not use (2026-11-07). Up to
 // two sets are taken there, each record proven as before, and the layout is written to every one: the set the engine
 // draws from has it, whichever it is.
-// ODST's levels there are ODST's tags converted into the engine's, and their HUD is drawn as ODST's engine draws it,
-// from ODST's own record: its motion sensor sits at 2000,2000 where Halo 3's is at 55,661 (halo3odst/maps/sc100.map,
-// 0xE778A88). With only Halo 3's six written, ODST's HUD stayed at the game's size, its grenade display past the edge
-// of the view and the crosshair's capture fitted for a layout it did not use (2026-11-07). ODST's 1280x720 record, the
-// one the ODST adapter writes in MCC, is a second shape here: two sets of Halo 3's three and up to two of ODST's one.
+// ODST's levels there are ODST's tags converted into the engine's, and the engine's tag data then holds ODST's 1280x720
+// record too: its motion sensor sits at 2000,2000 where Halo 3's is at 55,661 (halo3odst/maps/sc100.map, 0xE778A88).
+// Writing it moved nothing (FA, 2026-11-07): the client draws ODST's HUD from its own copy of ODST's record
+// (reclaimer_odst_hud_record.inl). Found in the engine's tag data, it only tells the scan an ODST level is loaded.
 inline constexpr HudLayoutAdapter kHalo3MergedHudLayoutAdapter = [] {
     auto adapter=kHalo3HudLayoutAdapter;
-    adapter.maxBlocks=8;
+    adapter.maxBlocks=6;
     adapter.altAnchors={};
     adapter.altAnchors[0]={kOdstHudLayoutAdapter.anchor, kOdstHudLayoutAdapter.mask,
-                           kOdstHudLayoutAdapter.anchorLength, kOdstHudLayoutAdapter.safeFrameOffset, "ODST"};
+                           kOdstHudLayoutAdapter.anchorLength, kOdstHudLayoutAdapter.safeFrameOffset, "ODST", true};
     adapter.altAnchorCount=1;
     return adapter;
 }();
@@ -315,6 +316,7 @@ struct HudLayoutAnchorView
     const uint8_t* mask;
     int anchorLength;
     int safeFrameOffset;
+    bool markerOnly = false;
 };
 
 inline constexpr int HudLayoutAnchorCount(const HudLayoutAdapter& adapter)
@@ -332,7 +334,7 @@ inline constexpr HudLayoutAnchorView HudLayoutAnchorAt(
     const HudLayoutAltAnchor& alt = adapter.altAnchors[index - 1];
     return HudLayoutAnchorView{
         alt.anchor.data(), alt.mask.data(),
-        alt.anchorLength, alt.safeFrameOffset};
+        alt.anchorLength, alt.safeFrameOffset, alt.markerOnly};
 }
 
 inline constexpr bool HudLayoutHasDepthField(const HudLayoutAdapter& adapter)
@@ -457,4 +459,28 @@ inline constexpr bool HudLayoutCanReacquireFromRemembered(
     const HudLayoutAdapter& adapter, int rememberedCount)
 {
     return HudLayoutAcceptedCountOk(adapter, rememberedCount);
+}
+
+// RECORDS LEFT FROM AN EARLIER LEVEL (Project Reclaimer). A level loads its layout records holding the title's own
+// pair. One the mod found at an earlier level that still holds a pair other than the one it was first found with was
+// not loaded again with this level: its memory kept the old map's copy, with the layout written there. After an ODST
+// level the next Halo 3 level took the ODST level's six from memory without a search, all still matching, and wrote
+// those while the level drew from its own three elsewhere: Halo 3's HUD stayed at the game's size (2026-11-07).
+inline constexpr bool HudLayoutRecordLeftOver(
+    uint32_t horizontal, uint32_t vertical, uint32_t loadedHorizontal, uint32_t loadedVertical)
+{
+    return horizontal != loadedHorizontal || vertical != loadedVertical;
+}
+
+// Whether a scan's left-over records are written along with the level's own. As before whenever the level's own are
+// not a whole set by themselves (a level that did not load its records again keeps them where they were) or both
+// together are still no more than the title can hold; otherwise only the level's own.
+inline constexpr bool HudLayoutTakeLeftOvers(
+    const HudLayoutAdapter& adapter, int own, int leftOver)
+{
+    if (leftOver <= 0)
+        return false;
+    if (!HudLayoutAcceptedCountOk(adapter, own))
+        return true;
+    return own + leftOver <= adapter.maxBlocks;
 }

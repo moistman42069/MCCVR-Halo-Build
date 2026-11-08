@@ -22,6 +22,7 @@ int RunDirectorCameraTests();
 #include "../src/common/session_read_logic.h"
 #include "../src/common/log_archive_logic.h"
 #include "../src/common/camera_copy_logic.h"
+#include "../src/common/reclaimer_odst_hud_logic.h"
 #include "../src/dll/contact_melee_queue.h"
 #include <array>
 #include <cstdlib>
@@ -7657,30 +7658,91 @@ int main()
             "Halo 3 rejects the failed two-record alternate layout candidate");
         const HudLayoutAdapter* mergedHud = HudLayoutAdapterFor(HudLayoutProfile::Halo3, true);
         Check(mergedHud != halo3Hud && HudLayoutAcceptedCountOk(*mergedHud, 3) &&
-                  HudLayoutAcceptedCountOk(*mergedHud, 6) && HudLayoutAcceptedCountOk(*mergedHud, 8) &&
-                  !HudLayoutAcceptedCountOk(*mergedHud, 2) && !HudLayoutAcceptedCountOk(*mergedHud, 9) &&
-                  !mergedHud->scanMappedRegions && HudLayoutAdapterWellFormed(*mergedHud) &&
+                  HudLayoutAcceptedCountOk(*mergedHud, 6) && !HudLayoutAcceptedCountOk(*mergedHud, 2) &&
+                  !HudLayoutAcceptedCountOk(*mergedHud, 7) && !mergedHud->scanMappedRegions &&
+                  HudLayoutAdapterWellFormed(*mergedHud) &&
                   HudLayoutAdapterFor(HudLayoutProfile::Halo3ODST, true) == odstHud,
-            "Project Reclaimer's merged maps: Halo 3 takes both sets of its three records and up to two of ODST's, "
-            "never fewer than one set");
+            "Project Reclaimer's merged maps: Halo 3 takes both sets of its three records, never fewer than one set");
         {
-            // ODST's levels there draw their HUD from ODST's own record, which differs from Halo 3's only in where
-            // the motion sensor sits: both shapes are searched for, each compared in full.
+            // ODST's levels there: the engine's converted copy of ODST's record only tells the scan an ODST level is
+            // loaded. Writing it moved nothing; the client draws from its own copy (reclaimer_odst_hud_record.inl).
             Check(HudLayoutAnchorCount(*mergedHud) == 2 && HudLayoutAnchorCount(*halo3Hud) == 1,
-                "Project Reclaimer's Halo 3 search also takes ODST's record; MCC's Halo 3 search does not");
+                "Project Reclaimer's Halo 3 search also looks for ODST's record; MCC's Halo 3 search does not");
             const HudLayoutAnchorView odstShape = HudLayoutAnchorAt(*mergedHud, 1);
             bool sameAsOdst = odstShape.anchorLength == odstHud->anchorLength &&
-                odstShape.safeFrameOffset == odstHud->safeFrameOffset &&
-                mergedHud->depthFromSlot == odstHud->depthFromSlot;
+                odstShape.safeFrameOffset == odstHud->safeFrameOffset;
             for (int i = 0; sameAsOdst && i < odstShape.anchorLength; ++i)
                 sameAsOdst = odstShape.anchor[i] == odstHud->anchor[i] && odstShape.mask[i] == 0xFF;
-            Check(sameAsOdst && std::strcmp(mergedHud->altAnchors[0].name, "ODST") == 0,
-                "ODST's shape is MCC's ODST record exactly, fully compared, and named in the log");
+            Check(sameAsOdst && odstShape.markerOnly && !HudLayoutAnchorAt(*mergedHud, 0).markerOnly &&
+                      std::strcmp(mergedHud->altAnchors[0].name, "ODST") == 0,
+                "ODST's shape is MCC's ODST record exactly, fully compared, a marker and never a target");
             float sensorX = 0.0f;
             std::memcpy(&sensorX, odstShape.anchor + 8, sizeof(sensorX));
             Check(sensorX == 2000.0f && std::memcmp(odstShape.anchor, mergedHud->anchor.data(), 8) == 0 &&
                       std::memcmp(odstShape.anchor + 8, mergedHud->anchor.data() + 8, 4) != 0,
                 "the two shapes share the 1280x720 prefix and differ at the motion sensor (2000 vs 55)");
+        }
+        {
+            // The client's own copy of ODST's record (FA, 2026-11-07): the list entry {capacity, pointer, length}
+            // that named the live buffer was {0x110, 0x141B5ACFD70, 0x110}.
+            constexpr uint64_t kRecord = 0x141B5ACFD70ull;
+            const uint64_t listed[3] = {0x110, kRecord, 0x110};
+            const uint64_t roomier[3] = {0x200, kRecord, 0x110};
+            const uint64_t shorter[3] = {0x110, kRecord, 0x100};
+            const uint64_t tooRoomy[3] = {0x20000, kRecord, 0x110};
+            Check(reclaimer_odst_hud::ListsRecord(listed, kRecord) && reclaimer_odst_hud::ListsRecord(roomier, kRecord),
+                "a list entry names the buffer when it points at it with ODST's whole record as its length");
+            Check(!reclaimer_odst_hud::ListsRecord(listed, kRecord + 0x10) &&
+                      !reclaimer_odst_hud::ListsRecord(shorter, kRecord) &&
+                      !reclaimer_odst_hud::ListsRecord(tooRoomy, kRecord) && !reclaimer_odst_hud::ListsRecord(listed, 0),
+                "another pointer, a shorter length or an implausible capacity is not ODST's record");
+            const uintptr_t sorted[3] = {0x1000, 0x141B5ACFD70ull, 0x200000000ull};
+            Check(reclaimer_odst_hud::IsCandidate(sorted, 3, kRecord) &&
+                      !reclaimer_odst_hud::IsCandidate(sorted, 3, kRecord + 8) &&
+                      !reclaimer_odst_hud::IsCandidate(sorted, 0, kRecord),
+                "only the buffers that hold ODST's record are candidates");
+            Check(reclaimer_odst_hud::kWidthOffset == 0x94 && reclaimer_odst_hud::kRecordLength == 0x110,
+                "ODST's record: 0x110 bytes, its virtual width 0x94 in");
+            // The one list of the client's that named ODST's whole block; two dozen lone entries named only freed
+            // copies of the 1280x720 record.
+            uint64_t block[15]{};
+            for (int i = 0; i < 5; ++i)
+            {
+                block[3 * i] = 0x110;
+                block[3 * i + 1] = kRecord + 0x120 * static_cast<uint64_t>(i);
+                block[3 * i + 2] = 0x110;
+            }
+            reclaimer_odst_hud::RecordShape shapes[5] = {
+                {1280, 720}, {1600, 580}, {920, 690}, {1180, 470}, {1138, 640}};
+            Check(reclaimer_odst_hud::ListsBlock(block, shapes),
+                "a list naming ODST's five records in ODST's order is the client's block");
+            reclaimer_odst_hud::RecordShape lone[5] = {{1280, 720}, {0, 0}, {0, 0}, {0, 0}, {0, 0}};
+            reclaimer_odst_hud::RecordShape reordered[5] = {
+                {1280, 720}, {920, 690}, {1600, 580}, {1180, 470}, {1138, 640}};
+            uint64_t cut[15]{};
+            std::memcpy(cut, block, sizeof(cut));
+            cut[14] = 0x100;
+            Check(!reclaimer_odst_hud::ListsBlock(block, lone) && !reclaimer_odst_hud::ListsBlock(block, reordered) &&
+                      !reclaimer_odst_hud::ListsBlock(cut, shapes),
+                "a lone entry, another order or an entry that is not a whole record is not the client's block");
+        }
+        {
+            // Records left from an earlier level (Project Reclaimer, 2026-11-07): the ODST level's six still held
+            // the layout written there when Halo 3's Ark loaded its own three elsewhere.
+            constexpr uint32_t kTitleOwn = 0x3F5EB852;   // 0.87, as loaded
+            constexpr uint32_t kWrittenH = 0x3EF9DB23;   // 0.488, the player's layout
+            constexpr uint32_t kWrittenV = 0x3E8E56C3;   // 0.278
+            Check(HudLayoutRecordLeftOver(kWrittenH, kWrittenV, kTitleOwn, kTitleOwn) &&
+                      HudLayoutRecordLeftOver(kTitleOwn, kWrittenV, kTitleOwn, kTitleOwn) &&
+                      !HudLayoutRecordLeftOver(kTitleOwn, kTitleOwn, kTitleOwn, kTitleOwn),
+                "a record holding a layout other than the one it was loaded with is left from an earlier level; "
+                "one loaded again holds the title's own");
+            Check(!HudLayoutTakeLeftOvers(*mergedHud, 3, 6) && !HudLayoutTakeLeftOvers(*mergedHud, 6, 6),
+                "after an ODST level, Halo 3 writes only the records its level loaded when both sets together are "
+                "more than the title holds");
+            Check(HudLayoutTakeLeftOvers(*mergedHud, 3, 3) && HudLayoutTakeLeftOvers(*mergedHud, 0, 6) &&
+                      HudLayoutTakeLeftOvers(*mergedHud, 2, 3) && !HudLayoutTakeLeftOvers(*mergedHud, 3, 0),
+                "as before when there is room for both, or when the level did not load a whole set of its own");
         }
         Check(HudLayoutAcceptedCountOk(*odstHud, 1) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 0) &&
