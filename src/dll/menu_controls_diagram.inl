@@ -140,6 +140,7 @@ void DrawControlsDiagram()
     setup.leftHanded = g_config.left_handed;
     setup.remap = g_config.vr_action_mapping;
     setup.thumbrestDpad = g_config.quest_thumbrest_dpad;
+    setup.reclaimerHeadKeys = g_hostIsProjectReclaimer;
     setup.bindings = &g_config.vr_bindings[title];
     setup.inputs = &g_config.vr_inputs[title];
     setup.extra = &g_config.vr_extra_bindings[title];

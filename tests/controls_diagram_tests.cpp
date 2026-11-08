@@ -190,6 +190,15 @@ void CheckBuiltInsAndGestures()
     gestures.physicalCrouch=false;
     lines=GestureLines(setup,gestures);
     Check(how("Physical crouch")=="(none)","a gesture that is off is not listed");
+    Check(how("Vote")=="(none)"&&how("Scoreboard and voice")=="(none)","no Project Reclaimer head keys in MCC");
+    setup.reclaimerHeadKeys=true;
+    lines=GestureLines(setup,gestures);
+    Check(how("Vote")=="A or B near head to vote yes or no."&&
+        how("Scoreboard and voice")=="Y near head for scoreboard, X near head for voice input.",
+        "Project Reclaimer's head keys are listed there");
+    setup.context=Context::Vehicle;
+    lines=GestureLines(setup,gestures);
+    Check(how("Vote")!="(none)","Project Reclaimer's head keys are listed in a seat too");
 }
 }
 
