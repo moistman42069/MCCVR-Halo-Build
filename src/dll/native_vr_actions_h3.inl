@@ -81,20 +81,30 @@ using InputUpdate = void(__fastcall*)();
 
 // ZOOM, TICK BY TICK (Project Reclaimer 0.10). About one zoom pull in six zoomed in and straight back out within
 // 0.05-0.36 s, the mod pressing zoom once and the hand on the gun throughout (2026-11-07 18:20, 24 of 137 pulls): a
-// second press arose between the mod's press and the game. Each record advance and each read of zoom by the game's
-// player-control builder is kept here, with its thread (this bridge's records are per thread), and the last second
-// is written to the log when the game zooms in and back out within 0.6 s (NativeVrActions_Halo3ZoomBounced).
+// second press arose between the mod's press and the game. Each change in what the bridge advances and gives the
+// game's player-control builder for zoom is kept here, with its thread (this bridge's records are per thread), and so
+// is each change in the trigger, the mapper's zoom and the zoom button the mod's pad hands the game. The last 1.5 s is
+// written to the log when the game's zoom changes with no pull of the trigger just before (NativeVrActions_
+// Halo3ZoomChanged). Only changes are kept: at every tick the first version filled its ring in 0.3 s (2026-11-07 20:12).
 struct ZoomTick {
     uint64_t ms; uint32_t thread;
-    uint8_t kind;       // 0 advance, 1 advance refused, 2 read gave the VR record, 3 read gave the game's own record
-    uint8_t pressed;    // advance: zoom published as held; read: this thread's records were advanced
+    uint8_t kind;       // ZoomTickKind
+    uint8_t pressed;    // advance: zoom published as held; read: this thread's records were advanced; else: down
     uint8_t frames;     // the VR record's held frames
     uint8_t gameFrames; // read: the frames of the record the game got
 };
-constexpr unsigned kZoomTicks=256;
+enum ZoomTickKind : uint8_t { kAdvance, kAdvanceRefused, kReadVr, kReadGame, kPadButton, kMapperZoom, kTrigger,
+    kZoomTickKinds };
+constexpr unsigned kZoomTicks=1024;
 ZoomTick zoomTicks[kZoomTicks];
 std::atomic<uint32_t> zoomTickNext{0};
+std::atomic<uint64_t> zoomTriggerDownMs{0};
 void NoteZoomTick(uint8_t kind,bool pressed,uint8_t frames,uint8_t gameFrames) noexcept {
+    // Per thread and kind, only a change is kept.
+    thread_local uint32_t lastKey[kZoomTickKinds]{};
+    const uint32_t key=0x01000000u|(pressed?0x10000u:0u)|(uint32_t(frames)<<8)|gameFrames;
+    if(kind>=kZoomTickKinds||lastKey[kind]==key) return;
+    lastKey[kind]=key;
     const uint32_t i=zoomTickNext.fetch_add(1,std::memory_order_relaxed)%kZoomTicks;
     zoomTicks[i]={GetTickCount64(),GetCurrentThreadId(),kind,static_cast<uint8_t>(pressed?1:0),frames,gameFrames};
 }
@@ -116,10 +126,10 @@ void AdvanceController0(int elapsedMs) {
             local.records[i].Advance((local.direct||(local.blocked&(1u<<i))) && (local.actions&(1u<<i)),unsigned(elapsedMs));
         local.extra.Advance(local.direct,extras,extrasServed,unsigned(elapsedMs));
         runtime.converted.fetch_add(1,std::memory_order_relaxed);
-        NoteZoomTick(0,(actions>>vr_mapping::Zoom)&1u,local.records[vr_mapping::Zoom].ReadCounters().frames,0);
+        NoteZoomTick(kAdvance,(actions>>vr_mapping::Zoom)&1u,local.records[vr_mapping::Zoom].ReadCounters().frames,0);
     } else {
         local.converted=false;
-        NoteZoomTick(1,false,local.records[vr_mapping::Zoom].ReadCounters().frames,0);
+        NoteZoomTick(kAdvanceRefused,false,local.records[vr_mapping::Zoom].ReadCounters().frames,0);
     }
 }
 
@@ -236,7 +246,7 @@ void* __fastcall ReaderHook(void* state,unsigned action,uintptr_t caller) {
            caller>=runtime.base+consumerBegin && caller<runtime.base+consumerEnd) {
             uint8_t gameFrames=0;
             if(result) ReadFrames(result,gameFrames);
-            NoteZoomTick(result==local.records[vr_mapping::Zoom].bytes.data()?2:3,local.converted,
+            NoteZoomTick(result==local.records[vr_mapping::Zoom].bytes.data()?kReadVr:kReadGame,local.converted,
                 local.records[vr_mapping::Zoom].ReadCounters().frames,gameFrames);
         }
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}

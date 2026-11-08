@@ -5,8 +5,11 @@
 // the converter and owned abstract-state reader have both been observed on
 // the input thread for the current title generation.
 void NativeVrActions_Poll();
-// Halo 3: the game zoomed in at `inMs` and back out at `outMs` (GetTickCount64): log the bridge's last second of zoom.
-void NativeVrActions_Halo3ZoomBounced(uint64_t inMs, uint64_t outMs);
+// Halo 3 on Project Reclaimer, a zoom trace: a change in the zoom button handed to the game (`kind` 0), the mapper's
+// zoom (1) or the support trigger (2); and the game's zoom level changing, which writes the trace out when no pull of
+// the trigger came just before it, or when it zoomed in and back out within 0.6 s.
+void NativeVrActions_NoteZoomInput(unsigned kind, bool down);
+void NativeVrActions_Halo3ZoomChanged(int previous, int level);
 // Worker, right after the Halo 3 core retired its hooks: the Halo 3 bridge lets go of halo3.dll in the same pass,
 // while MCC still owns the DLL, so the next game gets a fresh image.
 void NativeVrActions_Halo3CoreRetired();
