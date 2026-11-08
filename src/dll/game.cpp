@@ -4478,6 +4478,23 @@ namespace
                 static_cast<size_t>(view.anchorLength));
             maxNeed = (std::max)(maxNeed, needs[a]);
         }
+        // Every shape starting with the same eight bytes (Halo 3's, ODST's, both on Project Reclaimer): only the
+        // places one of their rarer bytes appears are compared, found by memchr instead of a compare at every byte.
+        bool sharedPrefix = true;
+        for (int a = 1; a < anchorCount; ++a)
+            sharedPrefix = sharedPrefix && prefixes[a] == prefixes[0];
+        size_t probe = 0;
+        unsigned char probeByte = 0;
+        for (size_t b = 0; b < 8; ++b)
+        {
+            const unsigned char value = static_cast<unsigned char>(prefixes[0] >> (8 * b));
+            if (value != 0xFF && value > probeByte)
+            {
+                probeByte = value;
+                probe = b;
+            }
+        }
+        sharedPrefix = sharedPrefix && probeByte != 0;
         const HANDLE self = GetCurrentProcess();
         size_t pos = 0; // the next candidate's offset in the region
         while (pos + 8 <= len && found < maxOut)
@@ -4504,6 +4521,16 @@ namespace
             size_t i = 0;
             for (; i < limit && found < maxOut; ++i)
             {
+                if (sharedPrefix)
+                {
+                    const void* next = memchr(s_window + i + probe, probeByte, limit - i);
+                    if (!next)
+                    {
+                        i = limit;
+                        break;
+                    }
+                    i = static_cast<size_t>(static_cast<const unsigned char*>(next) - s_window) - probe;
+                }
                 uint64_t here;
                 memcpy(&here, s_window + i, sizeof(here));
                 for (int a = 0; a < anchorCount; ++a)
