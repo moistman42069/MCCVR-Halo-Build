@@ -110,10 +110,11 @@ struct InstallMutex {
 
 void ThrowIfAntivirus(const fs::path& path, bool write) {
     // Opened again only to ask Windows why it refused: the answer from the failed stream is not kept.
+    const bool existed = IsFile(path);
     const HANDLE handle = CreateFileW(path.c_str(), write ? GENERIC_WRITE : GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                      write ? OPEN_ALWAYS : OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                                      write && !existed ? CREATE_NEW : OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     const DWORD error = handle == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
-    if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+    if (handle != INVALID_HANDLE_VALUE) { CloseHandle(handle); if (!existed) DeleteFileW(path.c_str()); }
     if (IsAntivirusError(error)) throw AntivirusBlocked(path);
 }
 
@@ -330,7 +331,9 @@ InstallResult InstallPayload(const fs::path& payload, const GameInstall& game, b
             const auto aside = existed ? StepAsideIfRunning(destination, suffix) : fs::path{};
             if (!MoveFileExW((stage / relative).c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
                 // Not yet among the written files the rollback restores: the launcher that stepped aside goes back.
-                if (!aside.empty()) MoveFileExW(aside.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH);
+                if (!aside.empty() && !MoveFileExW(aside.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH))
+                    throw std::runtime_error("Cannot replace the launcher, and it could not be put back: it is " + aside.string() +
+                                             ". Rename it to " + destination.filename().string() + ".");
                 throw std::runtime_error("Cannot replace a mod file. Close other launchers and check folder write permissions.");
             }
             written.push_back({relative, existed});
@@ -397,7 +400,9 @@ bool RefreshLauncherCopy(const fs::path& installedLauncher, const fs::path& payl
             if (Sha256File(next) != Sha256File(installedLauncher)) throw std::runtime_error("The launcher copy could not be verified.");
             const auto aside = StepAsideIfRunning(copy, suffix);
             if (!MoveFileExW(next.c_str(), copy.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-                if (!aside.empty()) MoveFileExW(aside.c_str(), copy.c_str(), MOVEFILE_WRITE_THROUGH);
+                if (!aside.empty() && !MoveFileExW(aside.c_str(), copy.c_str(), MOVEFILE_WRITE_THROUGH))
+                    throw std::runtime_error("The launcher could not be replaced, nor put back: it is " + aside.string() +
+                                             ". Rename it to " + copy.filename().string() + ".");
                 throw std::runtime_error("The launcher could not be replaced.");
             }
             if (package) {

@@ -97,14 +97,15 @@ void ExtractArchive(const fs::path& archive, const fs::path& output) {
             throw std::runtime_error("Unsafe ZIP path.");
         std::replace(name.begin(), name.end(), L'/', L'\\');
         if (name.empty() || name.size() > 240 || name.front() == L'\\' ||
-            std::any_of(name.begin(), name.end(), [](wchar_t c) { return c < 0x20 || wcschr(L":<>\"|?*", c); }))
+            std::any_of(name.begin(), name.end(), [](wchar_t c) { return c < 0x20 || c > 0x7E || wcschr(L":<>\"|?*", c); }))
             throw std::runtime_error("Unsafe ZIP path.");
         std::wstring trimmed = name;
         while (!trimmed.empty() && trimmed.back() == L'\\') trimmed.pop_back();
         for (size_t at = 0; at <= trimmed.size();) {
             const size_t next = std::min(trimmed.find(L'\\', at), trimmed.size());
             const std::wstring part = trimmed.substr(at, next - at), upper = [&] { std::wstring u = part; CharUpperBuffW(u.data(), static_cast<DWORD>(u.size())); return u; }();
-            const std::wstring stem = upper.substr(0, upper.find(L'.'));
+            std::wstring stem = upper.substr(0, upper.find(L'.'));
+            while (!stem.empty() && stem.back() == L' ') stem.pop_back();   // "NUL .txt" is the device too
             const bool reserved = stem == L"CON" || stem == L"PRN" || stem == L"AUX" || stem == L"NUL" ||
                 (stem.size() == 4 && (stem.starts_with(L"COM") || stem.starts_with(L"LPT")) && iswdigit(stem[3]));
             if (part.empty() || part == L"." || part == L".." || part.back() == L'.' || part.back() == L' ' || reserved)
@@ -113,12 +114,22 @@ void ExtractArchive(const fs::path& archive, const fs::path& output) {
         }
         wchar_t full[MAX_PATH * 4]{};
         if (!GetFullPathNameW((base + name).c_str(), static_cast<DWORD>(std::size(full)), full, nullptr)) throw std::runtime_error("Unsafe ZIP path.");
-        const std::wstring target = full, targetFolded = folded(target);
+        std::wstring target = full;
+        while (target.size() > base.size() && target.back() == L'\\') target.pop_back();   // "a/" and "a" are one path
+        const std::wstring targetFolded = folded(target);
         if (!targetFolded.starts_with(baseFolded) || !seen.insert(targetFolded).second) throw std::runtime_error("Conflicting ZIP path.");
         if (((stat.m_external_attr >> 16) & 0xF000) == 0xA000) throw std::runtime_error("ZIP symlink is not allowed.");
+        if (!stat.m_is_directory && stat.m_comp_size == 0 && stat.m_uncomp_size != 0) throw std::runtime_error("A ZIP entry is damaged.");
         total += stat.m_uncomp_size;
         if (total > 1073741824ull || stat.m_uncomp_size > 536870912ull) throw std::runtime_error("ZIP expanded size exceeded.");
         plan.push_back({i, target, stat.m_is_directory != 0 || name.back() == L'\\'});
+    }
+    // A file another entry would need as its folder ("a" beside "a/b") is a clash too: checked before any write.
+    for (const auto& entry : plan) {
+        if (entry.directory) continue;
+        const std::wstring prefix = folded(entry.target) + L'\\';
+        for (const auto& other : seen)
+            if (other.starts_with(prefix)) throw std::runtime_error("Conflicting ZIP path.");
     }
     fs::create_directories(base);
     for (const auto& entry : plan) {
@@ -132,7 +143,10 @@ void ExtractArchive(const fs::path& archive, const fs::path& output) {
             out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
             return out ? size : 0;
         };
-        if (!mz_zip_reader_extract_to_callback(&reader.zip, entry.index, write, &file, 0)) throw std::runtime_error("A ZIP entry is damaged.");
+        if (!mz_zip_reader_extract_to_callback(&reader.zip, entry.index, write, &file, 0)) {
+            file.close(); ThrowIfAntivirus(entry.target);
+            throw std::runtime_error("A ZIP entry is damaged.");
+        }
         file.close();
         if (!file) { ThrowIfAntivirus(entry.target); throw std::runtime_error("Cannot finish an extracted file."); }
     }

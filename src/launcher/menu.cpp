@@ -249,7 +249,7 @@ struct Menu {
 // how to check the download and let it through, instead of the bare error.
 void ExplainAntivirus(HWND window, const fs::path& file) {
     const std::wstring text =
-        L"Windows Security (or your antivirus) blocked this file, so the install stopped and your current build was kept:\n" +
+        L"Windows Security (or your antivirus) blocked this file, so the install stopped:\n" +
         file.wstring() + L"\n\n"
         L"Why: the Halo MCC VR launcher is not code-signed, and it downloads updates, replaces itself and loads the VR mod "
         L"into the game. Malware does those things too, so antivirus that guesses with machine learning can report it as a "

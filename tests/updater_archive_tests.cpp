@@ -53,7 +53,11 @@ int main() {
         const std::vector<std::vector<Entry>> malicious = {
             {{"../escaped.txt", "bad", 0}}, {{"/absolute.txt", "bad", 0}}, {{"C:\\escape.txt", "bad", 0}},
             {{"same.txt", "one", 0}, {"SAME.txt", "two", 0}}, {{"link", "../outside", 0xA0000000}},
-            {{"assets/NUL.txt", "bad", 0}}, {{"assets/..\\escaped.txt", "bad", 0}}};
+            {{"assets/NUL.txt", "bad", 0}}, {{"assets/..\\escaped.txt", "bad", 0}},
+            // Spaces before the extension still name the device; only plain ASCII names, so case folding cannot merge
+            // two; a file another entry needs as its folder, and a folder entry beside a file of its name.
+            {{"assets/NUL .txt", "bad", 0}}, {{"caf\xC3\xA9.txt", "bad", 0}},
+            {{"a", "one", 0}, {"a/b", "two", 0}}, {{"a/", "", 0}, {"a", "two", 0}}};
         for (size_t i = 0; i < malicious.size(); ++i) {
             const auto archive = root / ("bad" + std::to_string(i) + ".zip"), output = root / ("bad" + std::to_string(i));
             Zip(archive, malicious[i]); bool rejected = false;
