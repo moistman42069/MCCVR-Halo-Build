@@ -50,6 +50,14 @@ bool NoReparse(const fs::path& path) {
     }
     return true;
 }
+#ifdef HALOMCCVR_INSTALLER_TESTS
+// The tests install into synthetic folders, which an MCC running on the machine does not touch: they say whether the
+// game runs, so a build can be tested while it is played.
+} // namespace
+bool g_testGameRunning = false;
+namespace {
+bool GameRunning() { return g_testGameRunning; }
+#else
 bool GameRunning() {
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) return true; // Can't prove files are idle.
@@ -62,6 +70,7 @@ bool GameRunning() {
     CloseHandle(snapshot);
     return running;
 }
+#endif
 struct HashProvider {
     BCRYPT_ALG_HANDLE algorithm{};
     HashProvider() { if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) throw std::runtime_error("SHA-256 is unavailable."); }

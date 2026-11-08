@@ -6,6 +6,8 @@
 // only forwards. Halo 3 in MCC and in Project Reclaimer (which loads the same halo3.dll and enlarges the HUD block the
 // navpoints live in: the draw takes them by pointer, so nothing here depends on that block's size), and ODST, whose
 // draw is the same per entry (halo3_player_tags::kOdstDraw). Each title has its own lane and detour; the code is one.
+// Project Reclaimer 0.10 runs a navpoint draw of its own besides the game's, for its 212 entries; that one is hooked
+// too (PROJECT RECLAIMER 0.10'S OWN NAVPOINT DRAW, below).
 //
 // PROOF (resolved + guarded, nothing hardcoded): the draw by its entry signature and again by its one caller's call
 // operand; the projection by the draw's own call; the view by the projection's own read; the entry layout by the
@@ -40,8 +42,16 @@ struct Halo3PlayerTagsLane
     std::atomic<uint32_t> appliedFingerprint{0};
     uint32_t reportedFingerprint = 0;
     std::atomic<uint32_t> lastPlayerTags{0}, lastHidden{0};
+    // What the last draw held besides the teammates' tags (left as the game draws them), and the highest entry in use.
+    std::atomic<uint32_t> lastOthers{0};
+    std::atomic<int> lastHighest{-1};
+    std::atomic<int> lastCount{0};       // the entries the last draw's settings were applied to
+    uint32_t reportedCounts = ~0u;
+    uint64_t reportedCountsMs = 0;
     // The census: each navpoint kind (KindKey) a level showed while the settings were applied, a line per new one.
-    static constexpr int kKinds = 8;
+    // Eight filled with teammates' kinds alone in a co-op game of nine (2026-11-07), so a kind the settings skipped
+    // went unseen.
+    static constexpr int kKinds = 32;
     std::atomic<uint64_t> kinds[kKinds]{};
     int reportedKinds = 0;
 };
@@ -147,12 +157,13 @@ void Halo3PlayerTagsCensus(Halo3PlayerTagsLane& lane, uint64_t key)
     }
 }
 
-// Applies the settings to every player tag. Guarded: no C++ object here.
+// Applies the settings to every player tag among the first `count` entries. Guarded: no C++ object here.
 void Halo3PlayerTagsApply(Halo3PlayerTagsLane& lane, uint8_t* navpoints, const halo3_player_tags::Settings& s,
-                          Halo3PlayerTagsSaved& saved)
+                          Halo3PlayerTagsSaved& saved, int count)
 {
     using namespace halo3_player_tags;
-    uint32_t players = 0, hidden = 0;
+    uint32_t players = 0, hidden = 0, others = 0;
+    int highest = -1;
     __try
     {
         float eye[3]{};
@@ -166,7 +177,6 @@ void Halo3PlayerTagsApply(Halo3PlayerTagsLane& lane, uint8_t* navpoints, const h
                 haveEye = std::isfinite(eye[0]) && std::isfinite(eye[1]) && std::isfinite(eye[2]);
             }
         }
-        const int count = lane.count.load(std::memory_order_relaxed);
         for (int i = 0; i < count && i < kMaxEntryCount; ++i)
         {
             uint8_t* entry = navpoints + i * kEntryStride;
@@ -174,13 +184,17 @@ void Halo3PlayerTagsApply(Halo3PlayerTagsLane& lane, uint8_t* navpoints, const h
             saved.scanned = i + 1;
             if (!entry[kValidOffset])
                 continue;
+            highest = i;
             int32_t icon = 0;
             uint32_t flags = 0;
             std::memcpy(&icon, entry + kIconOffset, sizeof(icon));
             std::memcpy(&flags, entry + kFlagsOffset, sizeof(flags));
             Halo3PlayerTagsCensus(lane, KindKey(icon, flags));
             if (!IsPlayerTag(icon, flags))
+            {
+                ++others;
                 continue;
+            }
             ++players;
             float distanceM = -1.0f;
             if (haveEye)
@@ -210,6 +224,9 @@ void Halo3PlayerTagsApply(Halo3PlayerTagsLane& lane, uint8_t* navpoints, const h
     }
     lane.lastPlayerTags.store(players, std::memory_order_relaxed);
     lane.lastHidden.store(hidden, std::memory_order_relaxed);
+    lane.lastOthers.store(others, std::memory_order_relaxed);
+    lane.lastHighest.store(highest, std::memory_order_relaxed);
+    lane.lastCount.store(count, std::memory_order_relaxed);
 }
 
 // Puts back each written field that still holds what was written. Guarded: no C++ object here.
@@ -242,6 +259,14 @@ void Halo3PlayerTagsRestore(Halo3PlayerTagsLane& lane, uint8_t* navpoints, const
 // The hook itself, one instantiation per title's lane. It must be a function with a stack frame: retiring the hook asks
 // the unwind data where the detour's code lies, and a forwarding stub that only jumps here has none, so that check could
 // never pass and the title's whole teardown would retry for good (InstallPlayerTags refuses such a detour).
+// Project Reclaimer: the entries its HUD keeps a user, 0 elsewhere (defined with its own draw's hook below).
+int ReclaimerPlayerTagsCount();
+
+// PROJECT RECLAIMER'S 212 ENTRIES. Reclaimer 0.10 grows each user's navpoints from 20 to 212 (its log's [capacity]
+// hud.markers: 0x14 -> 0xd4), and the game's draw it runs walks all of them, while the count read from halo3.dll's code
+// is the stock 20. In a game of about 100 players the draw held 20 of 20 entries in use and every tag past the first 20
+// went unset (2026-11-07 18:05): its own draw sets all 212 and then hands them back, unset, to this one. Here the
+// greater count is taken.
 template <Halo3PlayerTagsLane& Lane>
 __declspec(noinline) void __fastcall PlayerTagsDetour(uint8_t* navpoints, int user)
 {
@@ -254,7 +279,8 @@ __declspec(noinline) void __fastcall PlayerTagsDetour(uint8_t* navpoints, int us
         Halo3PlayerTagsSaved saved;
         if (apply)
         {
-            Halo3PlayerTagsApply(Lane, navpoints, settings, saved);
+            Halo3PlayerTagsApply(Lane, navpoints, settings, saved,
+                                 (std::max)(Lane.count.load(std::memory_order_relaxed), ReclaimerPlayerTagsCount()));
             Lane.appliedFingerprint.store(halo3_player_tags::Fingerprint(settings), std::memory_order_relaxed);
         }
         if (Lane.original)
@@ -380,6 +406,184 @@ bool RemovePlayerTags(Halo3PlayerTagsLane& lane, void* detour)
     return true;
 }
 
+// PROJECT RECLAIMER 0.10'S OWN NAVPOINT DRAW (halo3_player_tags_logic.h has its signatures). Where it draws, the
+// translated body above never runs, and it draws every one of its 212 entries: an Infection game of about a hundred
+// players showed the settings on some teammates' tags and not on the rest (2026-11-07). Around it every entry up to
+// its own count gets what the settings give its alpha (show, opacity, distance); it sizes the tags itself, so the size
+// setting reaches only the game's own draw. Halo 3's lane keeps the census and the counts for both.
+using ReclaimerNavpointsDrawFn = bool(__fastcall*)(uint8_t* navpoints, int user);
+struct ReclaimerPlayerTagsHook
+{
+    void* target = nullptr;
+    ReclaimerNavpointsDrawFn original = nullptr;
+    uint64_t* const* countBlock = nullptr;  // the global holding the address of the block whose first word is the count
+    std::atomic<bool> ready{false};
+    std::atomic<uint32_t> callbacks{0};
+    std::atomic<uint32_t> calls{0}, drew{0};   // for the report: its calls, and those it drew itself
+};
+ReclaimerPlayerTagsHook g_reclaimerPlayerTags;
+
+// The count its draw walks now, or 0. Guarded: no C++ object here.
+int ReclaimerPlayerTagsCount()
+{
+    __try
+    {
+        const uint64_t* block = g_reclaimerPlayerTags.countBlock ? *g_reclaimerPlayerTags.countBlock : nullptr;
+        return block ? halo3_player_tags::HostEntryCount(*block) : 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 0;
+    }
+}
+
+__declspec(noinline) bool __fastcall ReclaimerPlayerTagsDetour(uint8_t* navpoints, int user)
+{
+    ReclaimerPlayerTagsHook& hook = g_reclaimerPlayerTags;
+    hook.callbacks.fetch_add(1, std::memory_order_acq_rel);
+    bool drew = false;
+    __try
+    {
+        const halo3_player_tags::Settings settings = Halo3PlayerTagsSettings();
+        const int count = navpoints && hook.ready.load(std::memory_order_acquire) &&
+                                  !halo3_player_tags::IsStock(settings)
+                              ? ReclaimerPlayerTagsCount()
+                              : 0;
+        Halo3PlayerTagsSaved saved;
+        if (count)
+        {
+            Halo3PlayerTagsApply(g_halo3PlayerTags, navpoints, settings, saved, count);
+            g_halo3PlayerTags.appliedFingerprint.store(halo3_player_tags::Fingerprint(settings),
+                                                       std::memory_order_relaxed);
+        }
+        if (hook.original)
+            drew = hook.original(navpoints, user);
+        if (count)
+            Halo3PlayerTagsRestore(g_halo3PlayerTags, navpoints, saved);
+        hook.calls.fetch_add(1, std::memory_order_relaxed);
+        if (drew)
+            hook.drew.fetch_add(1, std::memory_order_relaxed);
+    }
+    __finally
+    {
+        hook.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+    }
+    return drew;
+}
+
+// Install thread, after the hook on the translated body (`guestDraw`). Any miss leaves that hook alone, said once.
+bool InstallReclaimerPlayerTags(void* guestDraw)
+{
+    using namespace halo3_player_tags;
+    ReclaimerPlayerTagsHook& hook = g_reclaimerPlayerTags;
+    hook.ready.store(false, std::memory_order_release);
+    if (hook.target)
+    {
+        LOG("PLAYER TAGS Halo 3: StockFallback: Project Reclaimer's own navpoint draw is still hooked from before");
+        return false;
+    }
+    const auto version = reinterpret_cast<uintptr_t>(lifted::ClientVersion(guestDraw));
+    if (!version)
+    {
+        LOG("PLAYER TAGS Halo 3: Project Reclaimer has no navpoint draw of its own here; the settings reach the "
+            "game's own draw (%d entries)", g_halo3PlayerTags.count.load(std::memory_order_relaxed));
+        return false;
+    }
+    const char* why = nullptr;
+    uintptr_t draw = 0, countRead = 0;
+    DWORD64 image = 0;
+    const uintptr_t call = mcc_clock::FindUnique(version, kReclaimerVersionBytes, kReclaimerVersionPattern);
+    const PRUNTIME_FUNCTION extent =
+        call ? RtlLookupFunctionEntry(draw = sig::RipTarget(call + kReclaimerVersionCallRel,
+                                                            call + kReclaimerVersionCallRel + 4),
+                                      &image, nullptr)
+             : nullptr;
+    if (!call)
+        why = "the call of its own draw in its version of the navpoint draw";
+    else if (!extent || image + extent->BeginAddress != draw)
+        why = "its own draw's extent";
+    else if (!(countRead = mcc_clock::FindUnique(draw, extent->EndAddress - extent->BeginAddress,
+                                                 kReclaimerCountPattern)))
+        why = "its own draw's read of the entry count";
+    if (why)
+    {
+        LOG("PLAYER TAGS Halo 3: StockFallback: Project Reclaimer's own navpoint draw: %s did not prove; the settings "
+            "reach only the game's own draw (%d entries)", why, g_halo3PlayerTags.count.load(std::memory_order_relaxed));
+        return false;
+    }
+    hook.countBlock = reinterpret_cast<uint64_t* const*>(
+        sig::RipTarget(countRead + kReclaimerCountDisp, countRead + kReclaimerCountDisp + 4));
+    void* const detour = reinterpret_cast<void*>(&ReclaimerPlayerTagsDetour);
+    DWORD64 detourImage = 0;
+    if (!RtlLookupFunctionEntry(reinterpret_cast<DWORD64>(detour), &detourImage, nullptr))
+    {
+        LOG("PLAYER TAGS Halo 3: StockFallback: the detour for Project Reclaimer's own draw has no unwind entry");
+        return false;
+    }
+    void* const target = reinterpret_cast<void*>(draw);
+    if (MH_CreateHook(target, detour, reinterpret_cast<void**>(&hook.original)) != MH_OK)
+    {
+        hook.original = nullptr;
+        LOG("PLAYER TAGS Halo 3: StockFallback: Project Reclaimer's own navpoint draw could not be hooked");
+        return false;
+    }
+    hook.target = target;
+    hook.calls.store(0, std::memory_order_relaxed);
+    hook.drew.store(0, std::memory_order_relaxed);
+    hook.ready.store(true, std::memory_order_release);
+    if (MH_EnableHook(target) != MH_OK)
+    {
+        hook.ready.store(false, std::memory_order_release);
+        (void)MH_RemoveHook(target);
+        hook.target = nullptr;
+        hook.original = nullptr;
+        LOG("PLAYER TAGS Halo 3: StockFallback: the hook on Project Reclaimer's own navpoint draw did not enable");
+        return false;
+    }
+    const auto exe = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    LOG("PLAYER TAGS Halo 3: Installed on Project Reclaimer's own navpoint draw too (exe+0x%llX, called from its "
+        "version exe+0x%llX): it draws %d entries (its count, read from exe+0x%llX) and sizes them itself, so there "
+        "show, opacity and the distance limit apply and the size setting does not",
+        static_cast<unsigned long long>(draw - exe), static_cast<unsigned long long>(version - exe),
+        ReclaimerPlayerTagsCount(),
+        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(hook.countBlock) - exe));
+    return true;
+}
+
+// Worker: retire it (disable, prove nothing is inside, remove). Idempotent; false = try again.
+bool RemoveReclaimerPlayerTags()
+{
+    ReclaimerPlayerTagsHook& hook = g_reclaimerPlayerTags;
+    hook.ready.store(false, std::memory_order_release);
+    if (!hook.target)
+        return true;
+    const auto status = MCCVR_DisableHookForRetirement(hook.target);
+    if (status != MH_OK && status != MH_ERROR_DISABLED && status != MH_ERROR_NOT_CREATED)
+    {
+        LOG("PLAYER TAGS Halo 3 CleanupRequired: the hook on Project Reclaimer's own draw did not disable (%d)",
+            static_cast<int>(status));
+        return false;
+    }
+    const void* functions[]{reinterpret_cast<const void*>(&ReclaimerPlayerTagsDetour)};
+    const void* trampolines[]{reinterpret_cast<const void*>(hook.original)};
+    if (!WaitForNativeDetourQuiescence(functions, trampolines, 1, hook.callbacks))
+    {
+        LOG("PLAYER TAGS Halo 3 CleanupRequired: the detour on Project Reclaimer's own draw is busy");
+        return false;
+    }
+    const auto removed = MH_RemoveHook(hook.target);
+    if (removed != MH_OK && removed != MH_ERROR_NOT_CREATED)
+    {
+        LOG("PLAYER TAGS Halo 3 CleanupRequired: the hook on Project Reclaimer's own draw was not removed (%d)",
+            static_cast<int>(removed));
+        return false;
+    }
+    hook.target = nullptr;
+    hook.original = nullptr;
+    hook.countBlock = nullptr;
+    return true;
+}
+
 // Cold worker: one line per new navpoint kind, and one when the applied settings change, with what the last draw saw.
 void ReportPlayerTags(Halo3PlayerTagsLane& lane)
 {
@@ -394,7 +598,22 @@ void ReportPlayerTags(Halo3PlayerTagsLane& lane)
         const uint32_t flags = halo3_player_tags::KindFlags(key);
         LOG("PLAYER TAGS %s: navpoint kind icon %d flags 0x%X: %s", lane.profile->title, icon, flags,
             halo3_player_tags::IsPlayerTag(icon, flags) ? "a teammate's tag (the settings apply)"
-                                                         : "an objective or carrier (left as the game draws it)");
+                                                         : "an objective (left as the game draws it)");
+    }
+    // What the draws hold, when that changes (at most every 10 s): which markers the settings reach and which not.
+    const uint32_t players = lane.lastPlayerTags.load(std::memory_order_relaxed);
+    const uint32_t others = lane.lastOthers.load(std::memory_order_relaxed);
+    const int highest = lane.lastHighest.load(std::memory_order_relaxed);
+    const uint32_t counts = (players & 0xFF) | (others & 0xFF) << 8 | static_cast<uint32_t>(highest & 0xFFFF) << 16;
+    const uint64_t now = GetTickCount64();
+    if (lane.appliedFingerprint.load(std::memory_order_relaxed) && counts != lane.reportedCounts &&
+        now - lane.reportedCountsMs >= 10000)
+    {
+        lane.reportedCounts = counts;
+        lane.reportedCountsMs = now;
+        LOG("PLAYER TAGS %s: the last draw held %u teammate tag(s) set by the settings and %u other marker(s) left as "
+            "the game draws them; the highest entry in use %d of %d",
+            lane.profile->title, players, others, highest, lane.lastCount.load(std::memory_order_relaxed));
     }
     const uint32_t applied = lane.appliedFingerprint.load(std::memory_order_relaxed);
     if (!applied || applied == lane.reportedFingerprint)
@@ -411,16 +630,38 @@ void ReportPlayerTags(Halo3PlayerTagsLane& lane)
 
 bool InstallHalo3PlayerTags(uintptr_t base, size_t size, uint32_t generation)
 {
-    return InstallPlayerTags(g_halo3PlayerTags, halo3_player_tags::kHalo3Draw,
-                             reinterpret_cast<void*>(&PlayerTagsDetour<g_halo3PlayerTags>), base, size, generation);
+    const bool installed = InstallPlayerTags(g_halo3PlayerTags, halo3_player_tags::kHalo3Draw,
+                                             reinterpret_cast<void*>(&PlayerTagsDetour<g_halo3PlayerTags>), base, size,
+                                             generation);
+    if (installed && lifted::Active())
+        (void)InstallReclaimerPlayerTags(g_halo3PlayerTags.target);
+    return installed;
 }
 bool RemoveHalo3PlayerTags()
 {
-    return RemovePlayerTags(g_halo3PlayerTags, reinterpret_cast<void*>(&PlayerTagsDetour<g_halo3PlayerTags>));
+    return RemoveReclaimerPlayerTags() &&
+           RemovePlayerTags(g_halo3PlayerTags, reinterpret_cast<void*>(&PlayerTagsDetour<g_halo3PlayerTags>));
 }
 void ReportHalo3PlayerTags()
 {
     ReportPlayerTags(g_halo3PlayerTags);
+    // Project Reclaimer's own draw: whether it drew the tags itself, when that changes (at most every 10 s).
+    ReclaimerPlayerTagsHook& hook = g_reclaimerPlayerTags;
+    static uint64_t reportedMs = 0;
+    static int reportedState = -1;
+    const uint32_t calls = hook.calls.load(std::memory_order_relaxed);
+    const uint64_t now = GetTickCount64();
+    if (!hook.target || !calls || now - reportedMs < 10000)
+        return;
+    const uint32_t drew = hook.drew.exchange(0, std::memory_order_relaxed);
+    hook.calls.fetch_sub(calls, std::memory_order_relaxed);
+    const int state = drew == 0 ? 0 : drew == calls ? 2 : 1;
+    if (state == reportedState)
+        return;
+    reportedState = state;
+    reportedMs = now;
+    LOG("PLAYER TAGS Halo 3: Project Reclaimer's own navpoint draw drew the tags itself in %u of its last %u calls "
+        "(%d entries); the game's own draw had the rest", drew, calls, ReclaimerPlayerTagsCount());
 }
 bool InstallOdstPlayerTags(uintptr_t base, size_t size, uint32_t generation)
 {

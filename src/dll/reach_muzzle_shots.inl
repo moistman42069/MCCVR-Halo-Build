@@ -115,6 +115,10 @@ __declspec(noinline) void __fastcall ReachMuzzleQueryDetour(int32_t inputUser,ui
     const bool capture=feature.enabled.load()&&!feature.faulted.load()&&(Sight_GunBarrelAim()||Sight_MuzzleShotsConverge())&&
         inputUser>=0&&inputUser<4&&!(flags&1)&&direction&&control&&targeting;
     g_reachBarrelCapture.active=capture;
+    // The game's own zoom level for the local player (Aim Frame Zoom): the ordinary query only, never ours. Read only;
+    // the native callers load it from the control record (+0x5EF26), which also writes -1 for not zoomed (+0x5FBB9).
+    if(inputUser==0&&!(flags&1)&&!g_legacyCollisionOwnedQuery&&feature.enabled.load(std::memory_order_acquire))
+        NoteGameZoomLevel(GameTitle::HaloReach,zoom,feature.generation);
     __try
     {
         if(!feature.queryOriginal)__leave;

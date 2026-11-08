@@ -1,3 +1,4 @@
+#include "game_tls.h"
 // H3EK 411390 / retail 13B08C: native acquisition. This implementation keeps
 // the older early-helper-only experiment above dormant. Native query parameters
 // originate on the same engine thread; no input/output-user mapping is assumed.
@@ -54,7 +55,7 @@ __declspec(noinline) int32_t __fastcall Halo3IndependentCameraDetour(
     {
         if(!feature.cameraOriginal)__leave;
         result=feature.cameraOriginal(unit,position,direction);
-        const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
+        const auto caller=HALOMCCVR_GAME_RETURN_ADDRESS();
         if(caller==feature.base+0x13B1DC && g_halo3QueryCapture.active)
         {
             g_halo3QueryCapture.unit=unit;
@@ -403,7 +404,7 @@ __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
         // preparation/query/marker passes call the same helper but return to
         // other addresses, and they are not shots.
         const bool firingCall=
-            reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x368B97;
+            HALOMCCVR_GAME_RETURN_ADDRESS()==feature.base+0x368B97;
         // The shot line names the shooter: the OCCUPANT (0x368B82 walks the gunner chain +0x2A4 down to it), so two
         // players in one vehicle are told apart. Its fire's crosshair query (the assist, 0x368DFE) comes after it.
         if(firingCall)

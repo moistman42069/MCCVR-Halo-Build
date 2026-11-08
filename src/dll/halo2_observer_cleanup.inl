@@ -30,6 +30,7 @@ bool RemoveCore(const char* reason) noexcept
     if (!RemoveHalo2Drive()) return false;
     g_footViewEngagedMs.store(0,std::memory_order_release);
     g_seatViewEngagedMs.store(0,std::memory_order_release);
+    g_zoomedSinceMs.store(0,std::memory_order_release);
     Halo2RetirementHook hooks[]{
         {&g_target,&g_originalAddress,reinterpret_cast<const void*>(&Halo2ObserverFinalTransformDetour),&g_activeCallbacks},
         {&g_interpFrameTarget,&g_interpFrameOriginal,reinterpret_cast<const void*>(&Halo2InterpolatedFrameDetour),&g_interpFrameActiveCallbacks},

@@ -13,6 +13,7 @@
 #include "../dll/native_menu_pointer.h"
 #include "../dll/host_unload_gate.h"
 #include "../dll/native_vehicle_first_person.h"
+#include "../dll/lifted_engine.h"
 #include "../common/config.h"
 
 static void Blank(char* out, size_t size)
@@ -23,6 +24,8 @@ static void Blank(char* out, size_t size)
 bool D3D_BeginLiveResize(unsigned&, unsigned&) { return false; }
 bool D3D_CanLiveResize() { return false; }
 bool D3D_FitActive() { return false; }
+bool D3D_HostFitWindow() { return false; }
+intptr_t D3D_MapMouseMessageToRender(unsigned, intptr_t lp) { return lp; }
 bool D3D_HostNativeRenderAnswer(unsigned, unsigned, unsigned&, unsigned&, int&) { return false; }
 int D3D_LiveResizeState(unsigned& width, unsigned& height) { width = height = 0; return 0; }
 HWND D3D_GameWindow() { return nullptr; }
@@ -42,6 +45,7 @@ bool Game_ReadZoomLevel(int&) { return false; }
 bool Game_IsHeadTrackingApplied() { return false; }
 bool Game_IsStereoGeometryOnlyBringup() { return false; }
 bool Game_ReadVrActionBindings(vr_mapping::Transports&, uint64_t, unsigned) { return false; }
+bool Game_ReadVrExtraBindings(vr_mapping::ExtraTransports&, uint64_t) { return false; }
 bool Game_UsesHalo2NativeHudLayout() { return false; }
 bool Game_VehicleBoom(float&, float&, float&, bool&, bool&) { return false; }
 bool Game_VehicleCameraLag(float&, float&, bool&) { return false; }
@@ -72,7 +76,7 @@ void Game_VehicleCameraStep(int, int) {}
 
 bool Input_PhysicalCrouchRiseCapped() { return false; }
 void Input_RequestPauseToggle() {}
-bool NativeMenuPointer_Message(UINT) { return false; }
+bool NativeMenuPointer_Message(UINT, LPARAM) { return false; }
 void NativeMenuPointer_Init(HWND) {}
 bool NativeVehicleFirstPerson_TrimTarget(GameTitle, uint64_t&, int&) noexcept { return false; }
 void HostUnloadGate_HostClosing(bool) noexcept {}
@@ -105,6 +109,11 @@ void VR_SetGameHaptics(float) {}
 void VR_SetScopeActive(bool) {}
 void VR_ToggleScreenFollow() {}
 void VR_ToggleStereo() {}
+
+namespace lifted
+{
+bool Active() { return false; }
+}
 
 namespace two_hand_lab_runtime
 {

@@ -14,8 +14,12 @@
 
 namespace hud_note
 {
-// The game's queue copies at most 96 characters, its terminator among them.
+// The game's queue copies at most 96 characters, its terminator among them (Halo 3, ODST, Reach, Halo 4).
 inline constexpr std::size_t kMaxChars = 95;
+// Halo CE's message slot copies at most 63 characters, and none as a terminator when there are that many.
+inline constexpr std::size_t kHaloCEMaxChars = 62;
+// Halo 2's slot copies at most 63, its terminator among them (wcsncpy_s with truncation).
+inline constexpr std::size_t kHalo2MaxChars = 62;
 // Asks closer together than this post once: the last of them.
 inline constexpr uint64_t kSettleMs = 250;
 // A note the game has not taken by then goes to the mod's panel.
@@ -54,8 +58,8 @@ inline bool SessionAllows(bool oneMachineChangesAllowed, bool hostIsProjectRecla
 }
 
 // The note as the HUD's font draws it: the separator " \u00B7 " as " - ", anything else outside printable ASCII as
-// '?', no more than kMaxChars (a longer note ends in "..."), no spaces at either end.
-inline std::wstring ForGameHud(const std::wstring& note)
+// '?', no more than `maxChars` (a longer note ends in "..."), no spaces at either end.
+inline std::wstring ForGameHud(const std::wstring& note, std::size_t maxChars = kMaxChars)
 {
     std::wstring out;
     out.reserve(note.size());
@@ -77,9 +81,9 @@ inline std::wstring ForGameHud(const std::wstring& note)
         out.erase(0, lead);
     };
     trim();
-    if (out.size() > kMaxChars)
+    if (out.size() > maxChars && maxChars > 3)
     {
-        out.resize(kMaxChars - 3);
+        out.resize(maxChars - 3);
         trim();
         out += L"...";
     }

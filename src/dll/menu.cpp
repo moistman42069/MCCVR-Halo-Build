@@ -13,6 +13,7 @@
 #include <imgui_internal.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
+#include "lifted_engine.h"
 #include "menu.h"
 #include "../common/hotkey_logic.h"
 #include "../common/flashlight_input.h"
@@ -32,14 +33,19 @@
 #include "two_hand_lab_runtime.h"
 #include "menu_font.generated.h"
 #include "menu_style.h"
+#include "menu_stick_scroll.h"
 #include "../common/log.h"
 #include "../common/config.h"
 #include "../common/input_preset.h"
+#include "../common/default_controls.h"
 #include "../common/menu_mirror.h"
 #include "../common/roomscale_recenter_logic.h"
 #include "../common/reclaimer_host_logic.h"
 #include "../common/weapon_interaction_logic.h"
 #include "../common/vr_action_passthrough.h"
+#include "../common/controls_diagram_logic.h"
+#include "../common/credits_file.h"
+#include "launcher_credits.generated.h"
 #include "../common/halo2_vehicle_identity.h"
 #include "../common/window_focus_policy.h"
 
@@ -61,8 +67,10 @@ namespace
         float u = 0.0f;
         float v = 0.0f;
         float scrollY = 0.0f;
+        float stick = 0.0f;   // the right stick's push, scrolling smoothly (Menu_SetVrStickScroll)
     };
     VrPointerInput g_vrPointer;
+    menu_stick_scroll::Scroller g_stickScroll;
     bool g_resetArmed = false; // "reset all settings" needs a second click
     bool g_virtualStockResetArmed = false;
     // Panel drag state. The panel is otherwise completely locked; the grab
@@ -93,21 +101,17 @@ namespace
     //  readable rather than being cut off.
     // ===================================================================
     constexpr const char* kWelcomeMessage =
-        "Hi everyone, pancreations here!\n"
-        "Thank you for taking the time to get this up and running.\n"
-        "If you have any issues please reach out and let me know.\n"
-        "Expect the rest of the collection to be added over time.\n\n"
-        "Pass-on/community build maintained by @MeWhenINameMyself.\n"
+        "Halo MCC VR is a collaborative effort! Please see the credits to the right and consider supporting "
+        "collaborators through their links in the launcher.\n\n"
         "Join the Flat2VR Discord to report bugs or share feedback.";
 
     constexpr const char* kWelcomeCloseHint =
-        "Press L3+R3 (both analog sticks) to recenter and close the menu";
+        "Press L3+R3 (both analog sticks) to recenter and toggle this menu's visibility.";
 
     enum MenuCategory
     {
         Cat_Welcome = 0,
         Cat_Status,
-        Cat_QualityOfLife,
         Cat_Comfort,
         Cat_Theatre,
         Cat_Controls,
@@ -115,14 +119,11 @@ namespace
         Cat_WeaponAim,
         Cat_VirtualStockLab,
         Cat_TwoHandLab,
-        Cat_Crosshair,
         Cat_BodyHands,
         Cat_Picture,
         Cat_Hud,
         Cat_Subtitles,
-        Cat_Desktop,
         Cat_Scope,
-        Cat_Telemetry,
         Cat_Advanced,
         Cat_Count
     };
@@ -138,22 +139,18 @@ namespace
     constexpr CategoryRow kCategories[Cat_Count] = {
         {"Welcome",       "Read me first."},
         {"Status",        "What the mod is doing right now, and the switches you reach for mid-game."},
-        {"Quality of Life", "VR comfort and immersion settings, collected here from their usual sections."},
         {"Comfort",       "The flat screen you see in menus, and how head motion feels."},
         {"3D Theatre",    "A room-fixed stereo screen used only when the game locks the cinematic camera."},
-        {"Controls",      "Your control scheme: presets, button mappings, movement, turning and gestures."},
+        {"Controls",      "Your control scheme: presets, button mappings, movement, roomscale, turning, gestures and vibration."},
         {"Vehicles",      "First-person driving: sit in the seat instead of floating behind the vehicle."},
         {"Weapon & Aim",  "Gun placement, per-title calibration, muzzle alignment, and two-handed aiming."},
         {"Virtual Stock Lab", "Experimental virtual shoulder aiming and proximity release."},
         {"Two-Handed Lab", "Experimental two-hand anchor, authority and damping rig (runtime-only)."},
-        {"Crosshair & Trajectory",     "The floating reticle that shows where the weapon really shoots."},
         {"Body & Hands",  "Arms, shoulders, and how much of Chief you can see."},
         {"Picture",       "Render resolution, sharpening, anti-aliasing and brightness."},
         {"HUD",           "Size and position of the active game's HUD."},
         {"Subtitles",     "Localized dialogue in gameplay and 3D theatre."},
-        {"Desktop",       "The window on your monitor, not the headset."},
         {"Scope",         "Experimental gun-mounted zoom screen."},
-        {"Telemetry Recorder", "Records controller, headset and aim-solver data for troubleshooting."},
         {"Advanced",      "Aim internals, tracking calibration, panel placement, and starting over."},
     };
     static_assert(sizeof(kCategories) / sizeof(kCategories[0]) == Cat_Count,
@@ -208,7 +205,7 @@ namespace
         bool visible=false,scoped=false;
         explicit CategorySection(MenuCategory category,MenuCategory alsoIn=Cat_Count)
         {
-            if(g_activeCategory!=category&&g_activeCategory!=alsoIn&&g_activeCategory!=Cat_QualityOfLife)return;
+            if(g_activeCategory!=category&&g_activeCategory!=alsoIn)return;
             ImGui::PushID(static_cast<int>(category));scoped=true;
             visible=true;
             g_sectionOwners.push_back(category);
@@ -258,6 +255,137 @@ namespace
     {
         NamedDropdown named(label);
         return ImGui::BeginCombo(label,preview,flags);
+    }
+    // VR Mappings' controls in a dropdown's order: Automatic (a row's own press only), Unbound, then every control a row
+    // may list (vr_mapping::ListedSource). A required held input calls Unbound "None".
+    enum class MappingList { Own, Listed, Held };
+    struct MappingChoices
+    {
+        int sources[vr_mapping::SourceCount]{};
+        const char* names[vr_mapping::SourceCount]{};
+        int count=0;
+        explicit MappingChoices(MappingList list)
+        {
+            for(int source=list==MappingList::Own?vr_mapping::Automatic:vr_mapping::Unbound;
+                source<vr_mapping::SourceCount;++source)
+                if(source==vr_mapping::Automatic||vr_mapping::ListedSource(source))
+                {
+                    sources[count]=source;
+                    names[count]=list==MappingList::Held&&source==vr_mapping::Unbound?"None":vr_mapping::kSourceNames[source];
+                    ++count;
+                }
+        }
+    };
+    // Two thirds of the width, so the buttons beside it stay in reach. The action names the group the dropdown is in, so the
+    // label is usually hidden ("##...").
+    bool MappingCombo(const char* label,int& source,MappingList list)
+    {
+        static const MappingChoices own(MappingList::Own),listed(MappingList::Listed),held(MappingList::Held);
+        const auto& choices=list==MappingList::Own?own:list==MappingList::Listed?listed:held;
+        int index=0;
+        for(int i=0;i<choices.count;++i) if(choices.sources[i]==source) index=i;
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x*2.0f/3.0f);
+        if(!Combo(label,&index,choices.names,choices.count)) return false;
+        source=choices.sources[index];
+        return true;
+    }
+    void SettingGap();
+    // A setting's description under it, greyed and wrapped to the panel.
+    void OptionNote(const char* text)
+    {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("%s",text);
+        ImGui::PopTextWrapPos();
+    }
+    // An input's options under its dropdown, each titled above and described below: the inputs required held first (a
+    // second appears once the first is chosen) and Hold or Toggle. Behind "Options"; a summary while closed.
+    bool InputOptions(vr_mapping::HeldControls& held,vr_mapping::InputMode& mode,bool& open)
+    {
+        bool changed=false;
+        ImGui::SameLine();
+        if(ImGui::SmallButton(open?"Close options":"Options")) open=!open;
+        if(!open)
+        {
+            std::string summary;
+            for(const int source:held)
+                if(source!=vr_mapping::Unbound)
+                    summary+=std::string(summary.empty()?"Requires holding: ":" + ")+vr_mapping::kSourceNames[source];
+            if(mode==vr_mapping::InputMode::Toggle) summary+=summary.empty()?"Toggle":"; toggle";
+            if(!summary.empty()) ImGui::TextDisabled("%s",summary.c_str());
+            return false;
+        }
+        ImGui::Indent();
+        ImGui::PushID("held");
+        ImGui::TextUnformatted("Required Held Input");
+        changed|=MappingCombo("##first",held[0],MappingList::Held);
+        OptionNote("Other input that needs to be held down first for this input to register.");
+        if(held[0]!=vr_mapping::Unbound||held[1]!=vr_mapping::Unbound)
+        {
+            SettingGap();
+            ImGui::TextUnformatted("Second Required Held Input");
+            changed|=MappingCombo("##second",held[1],MappingList::Held);
+            OptionNote("Optional: another input that must also be held down first.");
+        }
+        ImGui::PopID();
+        // Held inputs stay first.
+        if(held[0]==vr_mapping::Unbound&&held[1]!=vr_mapping::Unbound) std::swap(held[0],held[1]);
+        SettingGap();
+        ImGui::TextUnformatted("Activation Mode");
+        if(ImGui::RadioButton("Hold",mode==vr_mapping::InputMode::Hold)) {mode=vr_mapping::InputMode::Hold;changed=true;}
+        ImGui::SameLine();
+        if(ImGui::RadioButton("Toggle",mode==vr_mapping::InputMode::Toggle)) {mode=vr_mapping::InputMode::Toggle;changed=true;}
+        OptionNote("Hold: the action lasts while you hold the input. Toggle: one press turns the action on, and the next "
+            "press turns it off.");
+        ImGui::Unindent();
+        return changed;
+    }
+    // A row's further inputs (VR Mappings), under its own in the action's group: each with its dropdown, Remove and its
+    // options, then "Add an input" while there is room. Inputs stay first; `open` counts the ones shown, one just added
+    // still empty among them.
+    bool MoreInputsList(vr_mapping::Input* inputs,unsigned count,int& open,bool* optionsOpen)
+    {
+        bool changed=false;
+        unsigned listed=0;
+        while(listed<count&&inputs[listed].press!=vr_mapping::Unbound) ++listed;
+        const unsigned shown=std::min(count,std::max(listed,static_cast<unsigned>(std::max(open,0))));
+        for(unsigned i=0;i<shown;++i)
+        {
+            ImGui::PushID(static_cast<int>(i+1));
+            if(MappingCombo("##input",inputs[i].press,MappingList::Listed))
+            {
+                // No press, no input: what it held first goes too.
+                if(inputs[i].press==vr_mapping::Unbound) {inputs[i]=vr_mapping::Input{};optionsOpen[i]=false;}
+                changed=true;
+            }
+            ImGui::SameLine();
+            if(ImGui::SmallButton("Remove"))
+            {
+                for(unsigned j=i;j+1<count;++j) {inputs[j]=inputs[j+1];optionsOpen[j]=optionsOpen[j+1];}
+                inputs[count-1]=vr_mapping::Input{};
+                optionsOpen[count-1]=false;
+                open=static_cast<int>(shown)-1;
+                changed=true;
+                ImGui::PopID();
+                continue;
+            }
+            changed|=InputOptions(inputs[i].held,inputs[i].mode,optionsOpen[i]);
+            ImGui::PopID();
+        }
+        if(shown<count&&ImGui::SmallButton("Add an input")) open=static_cast<int>(shown)+1;
+        // An input emptied before a listed one closes up, its options panel with it.
+        if(changed)
+        {
+            unsigned kept=0;
+            for(unsigned i=0;i<count;++i)
+            {
+                if(inputs[i].press==vr_mapping::Unbound) continue;
+                inputs[kept]=inputs[i];
+                optionsOpen[kept]=optionsOpen[i];
+                ++kept;
+            }
+            for(;kept<count;++kept) {inputs[kept]=vr_mapping::Input{};optionsOpen[kept]=false;}
+        }
+        return changed;
     }
 
     // While the index is built, Dear ImGui's log keeps the text it draws. A setting's notes are the text after it, up to
@@ -482,6 +610,67 @@ namespace
     }
 
     // Choosing a preset applies it at once; the file or built-in stays as it was until the player saves over it.
+    // The VR Mappings page's open state: per game and row, how many further inputs are shown (one just added may still be
+    // empty) and which inputs have their options open. An empty input shown counts as a change to the controls preset,
+    // so Undo changes takes it away with the rest; saving or choosing a preset closes it, as a file keeps none.
+    struct MappingPageState
+    {
+        static constexpr unsigned kRows=vr_mapping::Count+vr_mapping::ExtraCount;
+        int moreOpen[6][kRows]{};
+        bool optionsOpen[6][kRows][vr_mapping::kRowInputs]{};
+        // The mod's own rows, every game's.
+        int modMoreOpen[vr_mapping::ModCount]{};
+        bool modOptionsOpen[vr_mapping::ModCount][vr_mapping::kRowInputs]{};
+        // "Settings for": the game whose rows are shown, here and in the controls diagram. It follows the game that
+        // starts, and stays where the player puts it until another does.
+        int selectedTitle=0;
+        GameTitle previousTitle=GameTitle::None;
+    } g_mappingPage;
+    int MappingTitle()
+    {
+        const auto active=TitleAdapter_GetActiveTitle();
+        const int activeIndex=weapon_interaction::TitleIndex(active);
+        if(active!=g_mappingPage.previousTitle&&activeIndex>=0) g_mappingPage.selectedTitle=activeIndex;
+        g_mappingPage.previousTitle=active;
+        return g_mappingPage.selectedTitle;
+    }
+    bool EmptyInputShown()
+    {
+        for(unsigned title=0;title<6;++title)
+            for(unsigned row=0;row<MappingPageState::kRows;++row)
+            {
+                const bool seat=row>=vr_mapping::Count;
+                unsigned listed=0;
+                for(unsigned i=0;i<vr_mapping::kMoreInputs;++i)
+                {
+                    const int press=seat?g_config.vr_extra_bindings[title][row-vr_mapping::Count][1+i].press:
+                        g_config.vr_inputs[title][row].more[i].press;
+                    if(press!=vr_mapping::Unbound) ++listed;
+                }
+                if(g_mappingPage.moreOpen[title][row]>static_cast<int>(listed)) return true;
+            }
+        for(unsigned row=0;row<vr_mapping::ModCount;++row)
+        {
+            unsigned listed=0;
+            for(unsigned i=0;i<vr_mapping::kMoreInputs;++i)
+                if(g_config.vr_mod_bindings[row][1+i].press!=vr_mapping::Unbound) ++listed;
+            if(g_mappingPage.modMoreOpen[row]>static_cast<int>(listed)) return true;
+        }
+        return false;
+    }
+    void CloseEmptyInputs()
+    {
+        for(auto& title:g_mappingPage.moreOpen) for(int& open:title) open=0;
+        for(int& open:g_mappingPage.modMoreOpen) open=0;
+    }
+
+    // The settings as they start, built once: a Config is large, and the page draws on the game's render thread.
+    const Config& DefaultConfig()
+    {
+        static const Config defaults{};
+        return defaults;
+    }
+
     void DrawInputPresets(bool& changed)
     {
         static std::vector<std::string> saved;
@@ -513,8 +702,12 @@ namespace
         {
             Config scheme{};
             if(!input_preset::Find(chosen,scheme)) return;
+            // The running game's aim angles are live copies of its profile: kept first, taken from the preset after.
+            Config_StoreLiveTunables();
             input_preset::CopyScheme(g_config,scheme);
+            Config_RefreshLiveTunables();
             strncpy_s(g_config.input_preset,chosen.c_str(),_TRUNCATE);
+            CloseEmptyInputs();
             baselineFound=false;
             changed=true;
         };
@@ -530,7 +723,9 @@ namespace
             if(!chosen.empty()) apply(chosen);
             ImGui::EndCombo();
         }
-        const bool modified=baselineFound&&!input_preset::SameScheme(g_config,baseline);
+        // A slider just moved edits the live copy of the running game's aim angles; its profile is what presets hold.
+        Config_StoreLiveTunables();
+        const bool modified=baselineFound&&(!input_preset::SameScheme(g_config,baseline)||EmptyInputShown());
         for(int i=0;i<input_preset::BuiltInCount();++i)
             if(active==input_preset::BuiltInName(i)) ImGui::TextWrapped("%s",input_preset::BuiltInDescription(i));
         // A built-in cannot be saved over: once its settings change, the name moves on to the player's own.
@@ -551,6 +746,7 @@ namespace
         if(ImGui::Button(targetSaved?"Save over preset":"Save as new preset")&&input_preset::Save(target,g_config,description))
         {
             strncpy_s(g_config.input_preset,target.c_str(),_TRUNCATE);
+            CloseEmptyInputs();
             listed=false;
             baselineFound=false;
             changed=true;
@@ -571,8 +767,9 @@ namespace
         else if(!baselineFound&&!active.empty()&&std::find(saved.begin(),saved.end(),active)==saved.end())
             ImGui::TextDisabled("This preset's file is gone. Your settings stay as they are.");
         ImGui::PushStyleColor(ImGuiCol_Text,ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-        ImGui::TextWrapped("Saves your buttons, turning, movement, left-handed play, two-handed aiming, gestures, reload and "
-            "holsters (where they sit on you too), but not your weapon aim. "
+        ImGui::TextWrapped("Saves your buttons, turning, movement, roomscale, controller vibration, left-handed play, "
+            "two-handed aiming, gestures, reload and holsters (where they sit on you too), and each game's crosshair "
+            "and bullet direction, but not where the gun sits in your hand. "
             "Presets are files in Controls Presets beside halomccvr.cfg, so you can share them.");
         ImGui::PopStyleColor();
     }
@@ -633,6 +830,49 @@ namespace
         unsigned rw=0,rh=0,ow=0,oh=0;bool dlss=false,runtime=false;
         D3D_GetRenderPlan(rw,rh,ow,oh,dlss,runtime);
         return rw&&rh?float(rw)/float(rh):float(kNativeRenderWidth)/float(kNativeRenderHeight);
+    }
+    // The shape a fitted window keeps: Project Reclaimer's that of the picture it is told it has, MCC's the render's.
+    float FitAspect()
+    {
+        unsigned fw=0,fh=0;
+        if(D3D_HostFitWindow()) D3D_GetForcedRenderSize(fw,fh);
+        return fw&&fh?float(fw)/float(fh):RenderAspect();
+    }
+
+    // Project Reclaimer 0.10's window inside the monitor's work area at its picture's shape (D3D_HostFitWindow). Its
+    // own style is left as it is: only the visible window changes, and the WM_SIZE this sends is answered with the
+    // picture's size (WndProcHook). Runs on the UI thread.
+    void FitHostWindow(HWND hwnd)
+    {
+        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO mi{sizeof(mi)};
+        if (!GetMonitorInfo(mon, &mi))
+            return;
+        const int workW = mi.rcWork.right - mi.rcWork.left;
+        const int workH = mi.rcWork.bottom - mi.rcWork.top;
+        if (workW <= 0 || workH <= 0)
+            return;
+        const float aspect = FitAspect();
+        int w = workW;
+        int h = (int)((float)w / aspect + 0.5f);
+        if (h > workH)
+        {
+            h = workH;
+            w = (int)((float)h * aspect + 0.5f);
+        }
+        const int x = mi.rcWork.left + (workW - w) / 2;
+        const int y = mi.rcWork.top + (workH - h) / 2;
+        if (!SetWindowPos(hwnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE))
+        {
+            LOG("fit: Project Reclaimer's window was not fitted to the monitor (SetWindowPos %lu)",
+                static_cast<unsigned long>(GetLastError()));
+            return;
+        }
+        unsigned fw = 0, fh = 0;
+        D3D_GetForcedRenderSize(fw, fh);
+        LOG("fit: Project Reclaimer's window fitted inside the monitor: %dx%d at (%d,%d); it is still told it is %ux%u "
+            "and draws that, stretched into the window (reclaimer_fit_to_display = 0 leaves the window that size)",
+            w, h, x, y, fw, fh);
     }
 
     // Fit the game window inside the primary monitor's work area, preserving the
@@ -698,7 +938,7 @@ namespace
     LRESULT CALLBACK WndProcHook(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     {
         if(msg==WM_SIZE&&g_liveResizeBatch.SuppressesSize(hwnd)) return 0;
-        if (NativeMenuPointer_Message(msg)) return 0;
+        if (NativeMenuPointer_Message(msg, lp)) return 0;
         // MCC is closing: nothing may hold its shutdown back (host_unload_gate.cpp).
         if (msg == WM_CLOSE || msg == WM_DESTROY) HostUnloadGate_HostClosing(msg == WM_DESTROY);
         if(msg==kLiveResizeMsg)
@@ -722,7 +962,10 @@ namespace
         // Fit request (posted from Menu_Init) -- run it here on the UI thread.
         if (msg == kFitGameWindowMsg)
         {
-            FitGameWindow(hwnd);
+            if (D3D_HostFitWindow())
+                FitHostWindow(hwnd);
+            else
+                FitGameWindow(hwnd);
             return 0;
         }
         // Keep the game rendering and processing input while the user is in the
@@ -733,7 +976,7 @@ namespace
         // Shell/authentication keeps genuine focus so native text dialogs can
         // acquire/release keyboard input normally.
         const auto focusAction=DecideWindowFocus(TitleAdapter_GetActiveTitle(),
-            TitleAdapter_GetRuntimeMode(),msg);
+            TitleAdapter_GetRuntimeMode(),msg,g_hostIsProjectReclaimer&&lifted::Active());
         switch (msg)
         {
         case WM_ACTIVATEAPP:
@@ -756,12 +999,14 @@ namespace
             if(focusAction==WindowFocusAction::ActivateMouse)return MA_ACTIVATE;
             break;
         case WM_WINDOWPOSCHANGING:
-            if (D3D_FitActive())
+            if (D3D_FitActive() || D3D_HostFitWindow())
             {
                 // MCC believes its client is full-size (we tell it so), so it may
                 // try to size the WINDOW to match and grow it back off-screen.
                 // Clamp any oversize request to a monitor fit. Genuine size
                 // changes only (user drags with SWP_NOSIZE are left alone).
+                // Project Reclaimer sizes its window to the monitor it is told
+                // of, the picture's size: the same clamp keeps it fitted.
                 WINDOWPOS* pos = (WINDOWPOS*)lp;
                 if (pos && !(pos->flags & SWP_NOSIZE))
                 {
@@ -773,7 +1018,7 @@ namespace
                         const int workH = mi.rcWork.bottom - mi.rcWork.top;
                         if (workW > 0 && workH > 0 && (pos->cx > workW || pos->cy > workH))
                         {
-                            const float aspect = RenderAspect();
+                            const float aspect = FitAspect();
                             int w = workW;
                             int h = (int)((float)w / aspect + 0.5f);
                             if (h > workH) { h = workH; w = (int)((float)h * aspect + 0.5f); }
@@ -788,6 +1033,15 @@ namespace
             }
             break;
         case WM_SIZE:
+            if (D3D_HostFitWindow() && wp != SIZE_MINIMIZED)
+            {
+                // Project Reclaimer takes its picture's size from this message's
+                // own numbers: its fitted window is answered with the picture's.
+                unsigned fw = 0, fh = 0;
+                D3D_GetForcedRenderSize(fw, fh);
+                if (fw && fh)
+                    return CallWindowProcW(g_origWndProc, hwnd, msg, wp, MAKELPARAM((WORD)fw, (WORD)fh));
+            }
             if (D3D_CanLiveResize() && wp != SIZE_MINIMIZED)
             {
                 // The window is smaller than the render. Tell MCC its client is
@@ -872,7 +1126,7 @@ namespace
                 GetClientRect(hwnd, &rc);
                 const float cw = (float)(rc.right > 0 ? rc.right : 1);
                 const float ch = (float)(rc.bottom > 0 ? rc.bottom : 1);
-                ImGui::GetIO().AddMousePosEvent(GET_X_LPARAM(lp) * MENU_W / cw,
+                ImGui::GetIO().AddMousePosEvent(GET_X_LPARAM(lp) * MENU_TEX_W / cw,
                                                 GET_Y_LPARAM(lp) * MENU_H / ch);
             }
             else
@@ -888,11 +1142,11 @@ namespace
                 !(msg == WM_SYSKEYDOWN && wp == VK_F4))
                 return 0;
         }
-        // Keep native mouse messages in MCC's stock physical client domain. The
-        // prior fit scaled only this path while its separately polled cursor stayed
-        // physical. This candidate tests whether restoring one coordinate domain
-        // stops mouse hover from displacing keyboard/controller menu focus.
-        return CallWindowProcW(g_origWndProc, hwnd, msg, wp, lp);
+        // A press in the space MCC's hover is in: with the window fitted to the monitor MCC's cursor reads are scaled
+        // to the render size (d3d11_hook.cpp GetCursorPosHook), and a button or wheel message carries its own
+        // position, which MCC takes for the press. Left physical, a press landed nearer the window's top-left than the
+        // item hovered, and the menu dropped it (the VR pointer's clicks and the desktop mouse's alike).
+        return CallWindowProcW(g_origWndProc, hwnd, msg, wp, D3D_MapMouseMessageToRender(msg, lp));
     }
 
     // The page chosen in the sidebar.
@@ -902,18 +1156,6 @@ namespace
         g_currentSection.clear();
         if (g_activeCategory == Cat_Welcome)
         {
-        bool dontShow = !g_config.show_welcome;
-        if (ImGui::Checkbox("Never show again", &dontShow))
-        {
-            g_config.show_welcome = !dontShow;
-            changed = true;
-        }
-        changed |= ImGui::Checkbox(
-            "Stereo 3D Theatre for cutscenes",
-            &g_config.cutscene_theater_enabled);
-        ImGui::TextDisabled(
-            "On by default. Player-controlled cameras always stay immersive.\n"
-            "Open 3D Theatre in the left column for depth and screen controls.");
         ImGui::Spacing();
         ImGui::TextUnformatted(kWelcomeCloseHint);
         ImGui::Separator();
@@ -982,9 +1224,6 @@ namespace
         ImGui::Spacing();
         ImGui::TextDisabled("L3+R3 recenters and closes this menu; F1 only closes it.");
         }
-
-        if (g_activeCategory == Cat_QualityOfLife)
-            ImGui::TextWrapped("Expand a section to adjust its settings. These are the same controls as their individual pages.");
 
         if (CategorySection section{Cat_Comfort}; section.visible)
         {
@@ -1058,69 +1297,6 @@ namespace
         ImGui::TextDisabled("Raw by default. Try 5%% only for micro-jitter; capped at 10%% for comfort.");
         ImGui::Spacing();
         ImGui::Separator();
-        }
-        if (SectionHeader("Roomscale##section", ImGuiTreeNodeFlags_None))
-        {
-        changed |= ImGui::Checkbox("Roomscale body movement", &g_config.roomscale_movement);
-        ImGui::TextDisabled("Physical steps move your character while on foot. Walking follows your head.\n"
-            "Controller aiming is preserved. Enable head tracking and positional tracking.\n"
-            "The movement stick takes priority. Physical steps are retained and the body catches up once movement settles. "
-            "Recenter with F3 when needed.");
-        if (g_config.roomscale_movement)
-        {
-            // A/B: switches live; each switch starts the follow afresh from where you stand.
-            ImGui::Text("Follow:");
-            ImGui::SameLine();
-            changed |= ImGui::RadioButton("Hysteresis (A)", &g_config.roomscale_follow_law, 1);
-            ImGui::SameLine();
-            changed |= ImGui::RadioButton("Threshold (B)", &g_config.roomscale_follow_law, 0);
-            ImGui::TextDisabled(g_config.roomscale_follow_law
-                ? "Hysteresis: a lean under 3 cm never walks, the body brakes by letting go instead of backing up, "
-                  "and a distance you walked away during a tracking gap is still caught up."
-                : "Threshold: walks from 1.5 cm and brakes by reversing. Kept as it shipped in Alpha 0.6.0, "
-                  "for comparison.");
-            // The view recenter (roomscale_recenter_logic.h): three independent options, all on by default.
-            ImGui::Spacing();
-            {
-            SettingGroup recenter("Bring the view back over your character (steadier aim)");
-            changed |= ImGui::Checkbox("On a jump", &g_config.roomscale_recenter_jump);
-            if (g_config.roomscale_recenter_jump)
-                changed |= vr_menu::SliderFloat("Jump slide time", &g_config.roomscale_recenter_jump_s,
-                    roomscale_recenter::kMinSeconds, roomscale_recenter::kMaxSeconds, "%.2f s");
-            changed |= ImGui::Checkbox("When you start moving with the stick", &g_config.roomscale_recenter_move_start);
-            if (g_config.roomscale_recenter_move_start)
-                changed |= vr_menu::SliderFloat("Start-moving slide time", &g_config.roomscale_recenter_move_start_s,
-                    roomscale_recenter::kMinSeconds, roomscale_recenter::kMaxSeconds, "%.2f s");
-            changed |= ImGui::Checkbox("Gradually while moving with the stick", &g_config.roomscale_recenter_moving);
-            if (g_config.roomscale_recenter_moving)
-                changed |= vr_menu::SliderFloat("Slide speed while moving", &g_config.roomscale_recenter_moving_speed,
-                    roomscale_recenter::kMinSpeed, roomscale_recenter::kMaxSpeed, "%.2f m/s");
-            ImGui::TextDisabled(
-                "In the air, and while the stick moves you, your character cannot step under your head, "
-                "so your view sits away from where the game aims and shoots from. These slide the view back "
-                "over the character while that motion hides it. They never turn the view or change your "
-                "height, and your hands and reticle move with it.\n"
-                "On a jump / when you start moving: one quick slide, over the time you set.\n"
-                "Gradually while moving: a steady slide at the speed you set, for as long as the stick is "
-                "held. It need not finish: once you stand still, your legs walk to you as before.");
-            }
-        }
-        }
-        if (SectionHeader("Controller vibration##section", ImGuiTreeNodeFlags_None))
-        {
-        float hapticPercent = g_config.haptic_intensity * 100.0f;
-        if (vr_menu::SliderFloat("Controller vibration", &hapticPercent,
-                               0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_None))
-        {
-            g_config.haptic_intensity = hapticPercent / 100.0f;
-            if (g_config.haptic_intensity <= 0.0f)
-                VR_SetGameHaptics(0.0f);
-            changed = true;
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Adjust vibration strength; 0%% disables it.\n"
-                              "Supported weapon feedback follows the holding hand, sharing recoil while supporting the gun.\n"
-                              "Damage and vehicle feedback can use both controllers.");
         }
         if (SectionHeader("Sound##section", ImGuiTreeNodeFlags_None))
         {
@@ -1289,11 +1465,73 @@ namespace
             ImGui::Unindent();
         }
         SettingGap();
-        changed |= ImGui::Checkbox("Right stick crouches and sprints", &g_config.right_stick_crouch);
-        ImGui::TextDisabled("On foot: push the right stick down to crouch, and down again to stand. Hold it up to "
-            "sprint; in Reach, where sprint is an armor ability, that uses your armor ability. Needs MCC's "
-            "hold-to-crouch setting. The game's own crouch and sprint buttons still work.");
+        ImGui::TextDisabled("The right stick's crouch and sprint are inputs under VR Mappings: every game starts with "
+            "right stick down toggling Crouch, and right stick up held for Sprint (Reach: your armor ability; Halo 3: "
+            "your equipment; ODST: VISR). Needs MCC's hold-to-crouch setting.");
         ImGui::Spacing();
+        }
+        if (SectionHeader("Roomscale##section", ImGuiTreeNodeFlags_None))
+        {
+        changed |= ImGui::Checkbox("Roomscale body movement", &g_config.roomscale_movement);
+        ImGui::TextDisabled("Physical steps move your character while on foot. Walking follows your head.\n"
+            "Controller aiming is preserved. Enable head tracking and positional tracking.\n"
+            "The movement stick takes priority. Physical steps are retained and the body catches up once movement settles. "
+            "Recenter with F3 when needed.");
+        if (g_config.roomscale_movement)
+        {
+            // A/B: switches live; each switch starts the follow afresh from where you stand.
+            ImGui::Text("Follow:");
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("Hysteresis (A)", &g_config.roomscale_follow_law, 1);
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("Threshold (B)", &g_config.roomscale_follow_law, 0);
+            ImGui::TextDisabled(g_config.roomscale_follow_law
+                ? "Hysteresis: a lean under 3 cm never walks, the body brakes by letting go instead of backing up, "
+                  "and a distance you walked away during a tracking gap is still caught up."
+                : "Threshold: walks from 1.5 cm and brakes by reversing. Kept as it shipped in Alpha 0.6.0, "
+                  "for comparison.");
+            // The view recenter (roomscale_recenter_logic.h): three independent options, all on by default.
+            ImGui::Spacing();
+            {
+            SettingGroup recenter("Bring the view back over your character (steadier aim)");
+            changed |= ImGui::Checkbox("On a jump", &g_config.roomscale_recenter_jump);
+            if (g_config.roomscale_recenter_jump)
+                changed |= vr_menu::SliderFloat("Jump slide time", &g_config.roomscale_recenter_jump_s,
+                    roomscale_recenter::kMinSeconds, roomscale_recenter::kMaxSeconds, "%.2f s");
+            changed |= ImGui::Checkbox("When you start moving with the stick", &g_config.roomscale_recenter_move_start);
+            if (g_config.roomscale_recenter_move_start)
+                changed |= vr_menu::SliderFloat("Start-moving slide time", &g_config.roomscale_recenter_move_start_s,
+                    roomscale_recenter::kMinSeconds, roomscale_recenter::kMaxSeconds, "%.2f s");
+            changed |= ImGui::Checkbox("Gradually while moving with the stick", &g_config.roomscale_recenter_moving);
+            if (g_config.roomscale_recenter_moving)
+                changed |= vr_menu::SliderFloat("Slide speed while moving", &g_config.roomscale_recenter_moving_speed,
+                    roomscale_recenter::kMinSpeed, roomscale_recenter::kMaxSpeed, "%.2f m/s");
+            ImGui::TextDisabled(
+                "In the air, and while the stick moves you, your character cannot step under your head, "
+                "so your view sits away from where the game aims and shoots from. These slide the view back "
+                "over the character while that motion hides it. They never turn the view or change your "
+                "height, and your hands and reticle move with it.\n"
+                "On a jump / when you start moving: one quick slide, over the time you set.\n"
+                "Gradually while moving: a steady slide at the speed you set, for as long as the stick is "
+                "held. It need not finish: once you stand still, your legs walk to you as before.");
+            }
+        }
+        }
+        if (SectionHeader("Controller vibration##section", ImGuiTreeNodeFlags_None))
+        {
+        float hapticPercent = g_config.haptic_intensity * 100.0f;
+        if (vr_menu::SliderFloat("Controller vibration", &hapticPercent,
+                               0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_None))
+        {
+            g_config.haptic_intensity = hapticPercent / 100.0f;
+            if (g_config.haptic_intensity <= 0.0f)
+                VR_SetGameHaptics(0.0f);
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Adjust vibration strength; 0%% disables it.\n"
+                              "Supported weapon feedback follows the holding hand, sharing recoil while supporting the gun.\n"
+                              "Damage and vehicle feedback can use both controllers.");
         }
         if (SectionHeader("VR turning (right controller stick)##section", ImGuiTreeNodeFlags_None))
         {
@@ -1323,6 +1561,15 @@ namespace
         }
 
         ImGui::Spacing();
+        }
+        // Project Reclaimer only: how its flyers climb and dive (game.cpp, reclaimer_flight.inl). Saved in presets.
+        if (g_hostIsProjectReclaimer && SectionHeader("Project Reclaimer flying##section", ImGuiTreeNodeFlags_None))
+        {
+            changed |= ImGui::Checkbox("Climb and dive with buttons", &g_config.reclaimer_flight_buttons);
+            ImGui::TextDisabled("On: Hornet-class flyers climb and dive with Ascend and Descend, as in MCC.\n"
+                                "Off: Project Reclaimer's classic Halo 3 controls: aim up or down to climb or dive.");
+            ImGui::TextDisabled("%s", Game_ReclaimerFlightStatus());
+            ImGui::Spacing();
         }
         if (SectionHeader("D-pad gesture (hold controller next to head)##section", ImGuiTreeNodeFlags_None))
         {
@@ -1364,81 +1611,61 @@ namespace
             ImGui::SetTooltip("Touch the physical left controller's thumb rest, then move the physical right stick.\n"
                               "These controls stay on the same physical hands in left-handed mode.");
         }
-        if (SectionHeader("Input combinations##section", ImGuiTreeNodeFlags_None))
-        {
-        changed |= ImGui::Checkbox("Y + B sends Start (pause / resume)",
-                                   &g_config.y_b_start_chord);
-        ImGui::TextDisabled("On by default. Turn it off if you prefer Y and B to stay separate.");
-        ImGui::TextDisabled("L3+R3 recenters and toggles this menu; the right trigger clicks the VR pointer.");
-        SettingGap();
-        // Read from the rows themselves, so the box can't disagree with them: on only while all six games use it.
-        bool contextualTrigger=true;
-        for(const auto& title:g_config.vr_bindings)
-            contextualTrigger=contextualTrigger&&title[vr_mapping::Grenade]==vr_mapping::SupportTriggerFree&&
-                title[vr_mapping::Zoom]==vr_mapping::SupportTriggerOnGun;
-        if(ImGui::Checkbox("Grip-contextual Trigger",&contextualTrigger))
-        {
-            for(auto& title:g_config.vr_bindings)
-            {
-                title[vr_mapping::Grenade]=contextualTrigger?vr_mapping::SupportTriggerFree:vr_mapping::Automatic;
-                title[vr_mapping::Zoom]=contextualTrigger?vr_mapping::SupportTriggerOnGun:vr_mapping::Automatic;
-            }
-            if(contextualTrigger) g_config.vr_action_mapping=true;
-            changed=true;
-        }
-        ImGui::TextWrapped("Free hand: grenade. Gripping the gun: zoom. Sets the Grenade and Zoom rows under VR Mappings "
-            "for all six games, and turning it off puts them back on Automatic. Reload and holster grips send nothing. "
-            "Dual wielding and vehicle seats keep the plain trigger.");
-        SettingGap();
-        ImGui::BeginDisabled(!contextualTrigger);
-        if(ImGui::Checkbox("Empty Grip + Trigger uses Equipment",&g_config.trigger_air_equipment))
-        {
-            for(auto& title:g_config.vr_bindings)
-                if(g_config.trigger_air_equipment) title[vr_mapping::Equipment]=vr_mapping::SupportTriggerAir;
-                else if(title[vr_mapping::Equipment]==vr_mapping::SupportTriggerAir)
-                    title[vr_mapping::Equipment]=vr_mapping::Automatic;
-            if(g_config.trigger_air_equipment) g_config.vr_action_mapping=true;
-            changed=true;
-        }
-        ImGui::TextWrapped("Squeeze the grip with nothing in that hand, then pull the trigger, to use your equipment. "
-            "Off, or in a game without equipment, that pull throws a grenade. Sets the Equipment row under VR Mappings.");
-        ImGui::EndDisabled();
-        }
         if (SectionHeader("VR Mappings##section", ImGuiTreeNodeFlags_None))
         {
-            static int selectedTitle=0;
-            static GameTitle previousTitle=GameTitle::None;
-            const auto active=TitleAdapter_GetActiveTitle();
-            const int activeIndex=weapon_interaction::TitleIndex(active);
-            if(active!=previousTitle&&activeIndex>=0) selectedTitle=activeIndex;
-            previousTitle=active;
+            MappingTitle();
+            int& selectedTitle=g_mappingPage.selectedTitle;
+            auto& moreOpen=g_mappingPage.moreOpen;
+            auto& optionsOpen=g_mappingPage.optionsOpen;
+            const int activeIndex=weapon_interaction::TitleIndex(TitleAdapter_GetActiveTitle());
             ImGui::Text("Detected left: %s",VR_ControllerProfileName(true));
             ImGui::Text("Detected right: %s",VR_ControllerProfileName(false));
             changed|=ImGui::Checkbox("Remap buttons (off: every button is the game's own)",&g_config.vr_action_mapping);
-            ImGui::TextWrapped("Automatic keeps an action where the game's own button layout has it. Choosing anything "
-                "else for a row turns remapping on. Physical gestures remain separate.");
+            ImGui::TextWrapped("Each action has its own input and up to three more. An input's Options set a Required "
+                "Held Input (held down first, then the input: grip, then trigger) and its Activation Mode (Hold or "
+                "Toggle). The input that completes a held combination does nothing else until let go. Automatic keeps "
+                "an action where the game's own button layout has it. Choosing anything else turns remapping on; inputs "
+                "that use only the right stick or the support hand on the gun work with it off too. Physical gestures "
+                "remain separate.");
             ImGui::Spacing();
             Combo("Settings for",&selectedTitle,weapon_interaction::kTitleNames,6);
             ImGui::TextWrapped("All six games support separate actions while direct VR routing is available. "
                 "Games using the MCC layout fallback can link actions sharing a native button. "
                 "If the direct route is unavailable, Reload and Use may still share a button.");
             const auto selectedGame=static_cast<GameTitle>(selectedTitle+1);
-            if(vr_mapping::DirectPassthroughActions(selectedGame))
-                ImGui::TextWrapped("Halo 2: Reload and Use device always send their MCC button, so the game's "
-                    "own tap and hold choose reload, pick up, board or use.");
+            if(selectedGame==GameTitle::Halo2)
+                ImGui::TextWrapped("Halo 2: Reload, Use device and Switch weapon always send their MCC button, so the "
+                    "game's own tap and hold choose reload, pick up, board, use or dual wield.");
+            else if(selectedGame==GameTitle::HaloReach)
+                ImGui::TextWrapped("Reach: Jump always sends its MCC button, so jumping again in the air fires the "
+                    "jetpack when MCC's own setting for it is on (it is off unless you turn it on).");
+            else if(selectedGame==GameTitle::Halo4)
+                ImGui::TextWrapped("Halo 4: jumping again in the air fires the jetpack when MCC's own setting for it "
+                    "is on (it is off unless you turn it on).");
+            if(selectedGame==GameTitle::Halo3||selectedGame==GameTitle::HaloReach||selectedGame==GameTitle::Halo4)
+                ImGui::TextWrapped("Forge: as the Monitor the controllers are a plain gamepad (A, B, X and Y as themselves, "
+                    "the grips as the bumpers), so B backs out of Forge's menus. In Halo 3 the grips turn their pages.");
+            ImGui::TextWrapped("Right stick up and down count on foot only. Crouch on a toggled input needs MCC's "
+                "hold-to-crouch setting.");
             vr_mapping::Transports bindings{};
             const bool haveBindings=activeIndex==selectedTitle&&Game_ReadVrActionBindings(bindings,GetTickCount64());
             for(unsigned action=0;action<vr_mapping::Count;++action)
             {
                 ImGui::PushID(static_cast<int>(action));
                 SettingGap();
-                // Laid out like every other dropdown, its action named beside it, so it is one setting for search too.
-                if(Combo(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)),
-                    &g_config.vr_bindings[selectedTitle][action],
-                    vr_mapping::kSourceNames,vr_mapping::SourceCount))
+                // Each action is a group named for it, its inputs under it: one setting for search, found by its name.
+                const char* name=vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action));
+                SettingGroup group(name);
+                auto& row=g_config.vr_inputs[selectedTitle][action];
+                if(MappingCombo("##own",g_config.vr_bindings[selectedTitle][action],MappingList::Own))
                 {
                     if(g_config.vr_bindings[selectedTitle][action]!=vr_mapping::Automatic)
                         g_config.vr_action_mapping=true;
+                    changed=true;
+                }
+                if(InputOptions(row.held,row.mode,optionsOpen[selectedTitle][action][0]))
+                {
+                    g_config.vr_action_mapping=true;
                     changed=true;
                 }
                 if(g_config.vr_bindings[selectedTitle][action]==vr_mapping::Automatic)
@@ -1450,10 +1677,136 @@ namespace
                         ImGui::TextDisabled("Follows the game's own layout.");
                 }
                 if(haveBindings&&!bindings[action]) ImGui::TextDisabled("No native action binding available in this title.");
+                if(MoreInputsList(row.more.data(),vr_mapping::kMoreInputs,moreOpen[selectedTitle][action],
+                    &optionsOpen[selectedTitle][action][1]))
+                {
+                    for(const auto& more:row.more)
+                        if(more.press!=vr_mapping::Unbound&&
+                           ((vr_mapping::Bit(more.press)|vr_mapping::HeldBits(more.held))&~vr_mapping::kOwnControls))
+                            g_config.vr_action_mapping=true;
+                    changed=true;
+                }
                 ImGui::PopID();
             }
+            // The extra rows, under where each counts: inputs as a row has. Automatic leaves the action on the game's
+            // own button, pressed whenever another row sends that button.
+            static constexpr const char* kContextNotes[static_cast<unsigned>(vr_mapping::ExtraContext::Count)]{
+                "In a vehicle seat: these press the game's own button for the action, beside whatever the rows above "
+                "press. In Halo 3, ODST, Reach and Halo 4, where that button also carries an action on other controls "
+                "(Halo 3's A is Jump, a flyer's climb and the Banshee's brake), the row presses its own action alone. "
+                "Left X, left Y and the left stick "
+                "click stay the vehicle cameras' in a seat, so a control on one of them does nothing there.",
+                "On foot: these press the game's own button for the action, beside whatever the rows above press.",
+                "Anywhere in play, on foot or in a seat: these press the game's own button for the action, beside "
+                "whatever the rows above press."};
+            vr_mapping::ExtraTransports extraBindings{};
+            const bool haveExtra=activeIndex==selectedTitle&&Game_ReadVrExtraBindings(extraBindings,GetTickCount64());
+            for(unsigned context=0;context<static_cast<unsigned>(vr_mapping::ExtraContext::Count);++context)
+            {
+                bool noted=false;
+                for(unsigned action=0;action<vr_mapping::ExtraCount;++action)
+                {
+                    if(static_cast<unsigned>(vr_mapping::kExtraContexts[action])!=context) continue;
+                    if(!noted) {SettingGap();ImGui::TextWrapped("%s",kContextNotes[context]);noted=true;}
+                    const auto extraAction=static_cast<vr_mapping::ExtraAction>(action);
+                    const char* name=vr_mapping::ExtraName(selectedGame,extraAction);
+                    const unsigned native=vr_mapping::NativeExtraAction(selectedGame,extraAction);
+                    if(native==vr_mapping::kNoAction)
+                    {
+                        ImGui::TextDisabled("%s: not in this game.",name);
+                        continue;
+                    }
+                    // The game's own action may be one another row already names here (Reach's Banshee bomb is its
+                    // vehicles' secondary fire): say so, and keep the row.
+                    const char* sameAs=nullptr;
+                    for(unsigned other=0;other<vr_mapping::Count&&!sameAs;++other)
+                        if(vr_mapping::NativeAction(selectedGame,static_cast<vr_mapping::Action>(other))==native)
+                            sameAs=vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(other));
+                    for(unsigned other=0;other<action&&!sameAs;++other)
+                        if(vr_mapping::NativeExtraAction(selectedGame,static_cast<vr_mapping::ExtraAction>(other))==native)
+                            sameAs=vr_mapping::ExtraName(selectedGame,static_cast<vr_mapping::ExtraAction>(other));
+                    ImGui::PushID(static_cast<int>(100+action));
+                    SettingGap();
+                    SettingGroup group(name);
+                    if(sameAs) ImGui::TextDisabled("In this game this is the same action as %s.",sameAs);
+                    auto& row=g_config.vr_extra_bindings[selectedTitle][action];
+                    bool* open=optionsOpen[selectedTitle][vr_mapping::Count+action];
+                    bool extraChanged=MappingCombo("##own",row[0].press,MappingList::Own);
+                    if(extraChanged&&(row[0].press==vr_mapping::Unbound||row[0].press==vr_mapping::Automatic))
+                    {
+                        row[0]=vr_mapping::Input{vr_mapping::kNoneHeld,row[0].press};
+                        open[0]=false;
+                    }
+                    if(row[0].press==vr_mapping::Automatic)
+                    {
+                        if(haveExtra&&extraBindings[action])
+                            ImGui::TextDisabled("The game has this on: %s",
+                                vr_mapping::kSourceNames[vr_mapping::LayoutSource(extraBindings[action])]);
+                        else
+                            ImGui::TextDisabled("Stays on the game's own button.");
+                    }
+                    else
+                        extraChanged|=InputOptions(row[0].held,row[0].mode,open[0]);
+                    extraChanged|=MoreInputsList(row.data()+1,vr_mapping::kMoreInputs,
+                        moreOpen[selectedTitle][vr_mapping::Count+action],open+1);
+                    if(extraChanged)
+                    {
+                        if(vr_mapping::ExtraControlBits(row)) g_config.vr_action_mapping=true;
+                        changed=true;
+                    }
+                    ImGui::PopID();
+                }
+            }
             if(ImGui::Button("Reset this game's mappings"))
-            {g_config.vr_bindings[selectedTitle]={};changed=true;}
+            {
+                g_config.vr_bindings[selectedTitle]={};
+                g_config.vr_inputs[selectedTitle]=vr_mapping::DefaultInputs(selectedGame);
+                g_config.vr_extra_bindings[selectedTitle]=vr_mapping::ExtraDefaults(selectedGame);
+                for(int& open:moreOpen[selectedTitle]) open=0;
+                changed=true;
+            }
+            ImGui::SameLine();
+            const std::string copyLabel=std::string("Copy ")+weapon_interaction::kTitleNames[selectedTitle]+
+                "'s mappings to every game";
+            if(ImGui::Button(copyLabel.c_str()))
+            {
+                const auto source=g_config.vr_bindings[selectedTitle];
+                for(auto& title:g_config.vr_bindings) title=source;
+                const auto inputs=g_config.vr_inputs[selectedTitle];
+                for(auto& title:g_config.vr_inputs) title=inputs;
+                const auto seat=g_config.vr_extra_bindings[selectedTitle];
+                for(auto& title:g_config.vr_extra_bindings) title=seat;
+                for(int row:source) if(row!=vr_mapping::Automatic) g_config.vr_action_mapping=true;
+                changed=true;
+            }
+            ImGui::TextDisabled("Copy: the other five games take these rows as they are. A row for an action a game "
+                "does not have does nothing there. Reset brings back the game's own layout and its right stick.");
+            // The mod's own rows: every game's, so neither Reset nor Copy above touches them.
+            SettingGap();
+            ImGui::TextWrapped("In every game: these are the mod's own, the same whichever game is chosen above.");
+            for(unsigned action=0;action<vr_mapping::ModCount;++action)
+            {
+                ImGui::PushID(static_cast<int>(200+action));
+                SettingGap();
+                SettingGroup group(vr_mapping::kModNames[action]);
+                auto& row=g_config.vr_mod_bindings[action];
+                bool* open=g_mappingPage.modOptionsOpen[action];
+                bool modChanged=MappingCombo("##own",row[0].press,MappingList::Listed);
+                if(modChanged&&row[0].press==vr_mapping::Unbound) {row[0]=vr_mapping::Input{};open[0]=false;}
+                modChanged|=InputOptions(row[0].held,row[0].mode,open[0]);
+                modChanged|=MoreInputsList(row.data()+1,vr_mapping::kMoreInputs,g_mappingPage.modMoreOpen[action],open+1);
+                if(action==vr_mapping::Pause)
+                    OptionNote("The pause view and Start, as the controller's menu button gives them. It starts with Y "
+                        "held and B pressed, or B held and Y pressed; while it is on, those two press nothing else.");
+                if(modChanged) changed=true;
+                ImGui::PopID();
+            }
+            if(ImGui::Button("Reset the mod's own rows"))
+            {
+                g_config.vr_mod_bindings=vr_mapping::kModDefaults;
+                for(int& more:g_mappingPage.modMoreOpen) more=0;
+                changed=true;
+            }
         }
         if (SectionHeader("Flashlight##section", ImGuiTreeNodeFlags_None))
         {
@@ -1467,7 +1820,7 @@ namespace
 
         if (CategorySection section{Cat_Vehicles}; section.visible)
         {
-        if (SectionHeader("First-person vehicle camera##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Vehicle Seat View##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Sit in the seat (first person)",
                                    &g_config.vehicle_first_person);
@@ -1477,17 +1830,6 @@ namespace
         ImGui::TextDisabled(
             "OFF restores the stock behind-the-vehicle view instantly.");
         ImGui::Spacing();
-        // Project Reclaimer only: how its flyers climb and dive (game.cpp, reclaimer_flight.inl).
-        if (g_hostIsProjectReclaimer)
-        {
-            ImGui::Text("Project Reclaimer flying");
-            changed |= ImGui::Checkbox("Climb and dive with buttons", &g_config.reclaimer_flight_buttons);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("On: Hornet-class flyers climb and dive with Ascend and Descend, as in MCC.\n"
-                                  "Off: Project Reclaimer's classic Halo 3 controls: aim up or down to climb or dive.");
-            ImGui::TextDisabled("%s", Game_ReclaimerFlightStatus());
-            ImGui::Spacing();
-        }
         {
         SettingGroup seatCamera("Seat camera position", SettingGroup::kNameOnly);
         static int vehicleGame=0;
@@ -1840,7 +2182,7 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
-        if (SectionHeader("How you control a seat (Halo 3)##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("How you control a seat (Halo 3, ODST, Reach)##section", ImGuiTreeNodeFlags_None))
         {
         changed |= Combo("Seat controls", &g_config.vehicle_control,
                                 "As before\0Motion: your hand\0Stick\0Wheel\0");
@@ -1856,7 +2198,10 @@ namespace
             "As before: your hand aims, except that the stick or wheel steers "
             "those vehicles while the view turns with them.\n"
             "With vehicle cameras on, the left stick click changes this for the "
-            "seat you are in, and each seat keeps its own choice.");
+            "seat you are in, and each seat keeps its own choice.\n"
+            "ODST: only with vehicle cameras on.\n"
+            "Reach: only with vehicle cameras on, and Motion or Wheel only (Stick "
+            "keeps Reach's own rule there).");
         {
         SettingGroup aimBehind("Ignore aim behind the vehicle", SettingGroup::kNameOnly);
         changed |= vr_menu::SliderFloat("Ignore aim behind, within (m)",
@@ -1889,11 +2234,11 @@ namespace
             &g_config.vehicle_wheel_max_deg, 30.0f, 180.0f, "%.0f");
         changed |= vr_menu::SliderFloat("Wheel deadzone (deg)",
             &g_config.vehicle_wheel_deadzone_deg, 0.0f, 30.0f, "%.0f");
-        ImGui::Spacing();
-        ImGui::Separator();
+        }
+        if (SectionHeader("Vehicle cameras (every title)##section", ImGuiTreeNodeFlags_None))
         {
-        SettingGroup vehicleCameras("Vehicle cameras (Halo 3)", SettingGroup::kNameOnly);
-        ImGui::Text("Vehicle cameras (Halo 3)");
+        {
+        SettingGroup vehicleCameras("Vehicle cameras", SettingGroup::kNameOnly);
         changed |= ImGui::Checkbox("Cameras from halomccvr_vehicle_cameras.json",
                                    &g_config.vehicle_cameras);
         changed |= Combo("Note when the camera changes", &g_config.vehicle_camera_note,
@@ -1917,7 +2262,11 @@ namespace
             "either held a second = re-centre the view, left stick click = next "
             "way to control the seat. Right B then uses, gets out and reloads, "
             "and a passenger's support trigger switches weapon. Each seat keeps "
-            "its last camera, mode and controls. Needs first-person vehicles on.");
+            "its last camera, mode and controls. Needs first-person vehicles on.\n"
+            "Reach: the note is on the mod's panel, and the glass and body keys "
+            "are Halo 3's only for now.\n"
+            "Halo 4: the same, and its seats steer by your hand (no Stick or "
+            "Wheel); a camera turns with the vehicle's heading only.");
         }
         if (g_config.vehicle_cameras)
         {
@@ -2008,7 +2357,8 @@ namespace
             changed |= vr_menu::SliderFloat("Minimum shake stroke (m)##dualreload",
                 &g_config.weapon_shake_travel_m,0.06f,0.20f,"%.2f");
             ImGui::TextDisabled("Shake a hand back and forth once: it presses that hand's reload button.\n"
-                "Halo 3: either hand. Halo 2: the right-hand gun only for now.\n"
+                "Halo 3: each hand reloads its own gun.\n"
+                "Halo 2: either hand presses Reload, which reloads both guns.\n"
                 "Let the hand settle before shaking again.");
         }
         }
@@ -2094,7 +2444,7 @@ namespace
         SettingGap();
         if (ImGui::Checkbox("Over-the-shoulder weapon switch", &overShoulder))
         {
-            const Config defaults{};
+            const Config& defaults=DefaultConfig();
             g_config.weapon_holsters = true;
             g_config.weapon_holster_location = overShoulder ? 2 : defaults.weapon_holster_location;
             g_config.weapon_holster_click = overShoulder ? true : defaults.weapon_holster_click;
@@ -2328,7 +2678,7 @@ namespace
                                           0.1f, 100.0f, "%.1f");
             if (ImGui::Button("Defaults##handsmoothing"))
             {
-                const Config defaults{};
+                const Config& defaults=DefaultConfig();
                 g_config.hand_smoothing_hands = defaults.hand_smoothing_hands;
                 g_config.hand_smoothing_pos_min_hz = defaults.hand_smoothing_pos_min_hz;
                 g_config.hand_smoothing_pos_beta = defaults.hand_smoothing_pos_beta;
@@ -2510,8 +2860,6 @@ namespace
 
 #include "virtual_stock_menu.inl"
 
-        ImGui::Spacing();
-        ImGui::Separator();
         if (SectionHeader("Hand-held weapon##section", ImGuiTreeNodeFlags_None))
         {
         if(ImGui::Checkbox("Per-gun alignment",&g_config.per_gun_alignment))
@@ -2635,7 +2983,9 @@ namespace
         }
         }
 
-        if (CategorySection section{Cat_Crosshair}; section.visible)
+        // The crosshair and the shot's direction against the controller are how the player aims: a controls preset's,
+        // each game's own angles included.
+        if (CategorySection section{Cat_Controls}; section.visible)
         {
         if (SectionHeader("Crosshair and bullet direction##section", ImGuiTreeNodeFlags_None))
         {
@@ -2661,13 +3011,18 @@ namespace
             g_config.gun_roll_deg = 0.0f;
             changed = true;
         }
-        ImGui::TextDisabled("Adjusts the aiming ray used by shots and the reticle, even when hidden.\n"
-                            "Visual gun alignment and gun-stock offsets are in Weapon & Aim.");
+        ImGui::TextDisabled("Adjusts the aiming ray used by shots and the reticle, even when hidden. Saved separately\n"
+                            "for each game. Visual gun alignment and gun-stock offsets are on Weapon & Aim.");
         }
         ImGui::Spacing();
         }
+        }
+
+        if (CategorySection section{Cat_WeaponAim}; section.visible)
+        {
         if (SectionHeader("Authored weapon crosshair (stereo)##section", ImGuiTreeNodeFlags_None))
         {
+        ImGui::TextDisabled("The floating reticle that shows where the weapon really shoots.");
         changed |= ImGui::Checkbox("Show a crosshair where the weapon shoots", &g_config.crosshair);
         if (g_config.crosshair)
         {
@@ -2769,9 +3124,11 @@ namespace
                 ImGui::Indent();
                 changed |= vr_menu::SliderInt(
                     "Refresh every N frames", &g_config.crosshair_animation_frames,
-                    6, 60, "%d");
+                    1, 60, "%d");
                 ImGui::TextDisabled("Lower = smoother shooting animation and faster "
                                     "red/green target colors. Higher = cheaper.\n"
+                                    "1 = every frame. Below 6 applies only where your headset\n"
+                                    "makes an update cheap; otherwise the crosshair keeps to 6.\n"
                                     "Turn it off if you feel any frame-rate cost.");
                 ImGui::Unindent();
             }
@@ -2800,13 +3157,15 @@ namespace
 
         if (CategorySection section{Cat_Scope}; section.visible)
         {
-        if (SectionHeader("Aim Frame Zoom (Halo 3 and ODST)##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Aim Frame Zoom (every game)##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Aim Frame Zoom##aimframe", &g_config.aim_frame_zoom);
         ImGui::TextDisabled("While the game is zoomed, the headset shows the game's zoomed picture as a frame "
                             "centred on your aim instead of the 3D view, like playing it on a flat screen. The "
                             "zoom button reaches the game, so the lens below is not offered there while this "
-                            "is on. Halo 3 (MCC and Project Reclaimer) and ODST. On by default. Live.");
+                            "is on. Halo CE (on foot) and Halo 2, in Classic and Anniversary graphics; Halo 3 "
+                            "(MCC and Project Reclaimer), ODST, Reach and Halo 4. Where a game cannot draw it, its "
+                            "zoom works as it does without this (the lens, where there is one). On by default. Live.");
         if (g_config.aim_frame_zoom)
         {
             ImGui::Indent();
@@ -2836,11 +3195,31 @@ namespace
             changed |= vr_menu::SliderFloat("Move time (s)##aimframe", &g_config.aim_frame_move_s,
                                           0.0f, 1.0f, "%.2f");
             ImGui::TextDisabled("How long the frame takes to grow out of the view and back. 0 = at once.");
+            {
+            SettingGroup frameHud("HUD in the frame", SettingGroup::kNameOnly);
+            changed |= vr_menu::SliderFloat("HUD size in the frame##aimframe", &g_config.aim_frame_hud_size,
+                                          0.5f, 1.25f, "%.2f");
+            changed |= vr_menu::SliderFloat("HUD width in the frame##aimframe", &g_config.aim_frame_hud_width_scale,
+                                          0.5f, 1.5f, "%.2f");
+            changed |= vr_menu::SliderFloat("HUD height in the frame##aimframe", &g_config.aim_frame_hud_height_scale,
+                                          0.5f, 1.5f, "%.2f");
+            ImGui::TextDisabled("Only while the frame is up. Your HUD layout (HUD tab) and the Halo 4 helmet frame "
+                                "are separate and stay as they are.\n"
+                                "1.00 = the game's own HUD, as on a flat screen: its blue edge art at the frame's "
+                                "edges. Lower pulls it in from the edges, higher pushes it out. Size changes both "
+                                "ways; width only side to side; height only top to bottom. The game's crosshair "
+                                "and zoom art in the frame change with it. Live.");
+            }
             ImGui::Unindent();
         }
         }
         if (SectionHeader("Gun-mounted circular zoom lens##section", ImGuiTreeNodeFlags_None))
         {
+        // Aim Frame Zoom takes the zoom button to the game's own zoom: the lens is not offered while it is on.
+        if (g_config.aim_frame_zoom)
+            ImGui::TextColored(Rgb(kWarning), "Not used while Aim Frame Zoom is on (Scope > Aim Frame Zoom (every game)): "
+                "the zoom button goes to the game's own zoom, shown as a frame. Turn Aim Frame Zoom off to use the lens.");
+        ImGui::BeginDisabled(g_config.aim_frame_zoom);
         ImGui::TextDisabled("Halo 2, Halo 3, ODST, Reach and Halo 4. CE uses native zoom.");
         if (ImGui::Checkbox("Enable R3 zoom lens", &g_config.scope_enabled))
         {
@@ -2885,6 +3264,7 @@ namespace
             ImGui::TextDisabled("The lens refreshes every frame for a consistent render workload.");
             ImGui::Unindent();
         }
+        ImGui::EndDisabled();
         }
         }
 
@@ -2937,7 +3317,7 @@ namespace
         {
         changed |= ImGui::Checkbox("True physical melee (experimental)",
                                    &g_config.physical_melee);
-        SingleplayerOnly("In co-op, a swing presses the game's melee instead, automatically. Halo CE: it does nothing.");
+        SingleplayerOnly("In co-op, a swing presses the game's melee instead, automatically.");
         ImGui::TextDisabled("Strike a target with either hand or its held gun. Works with world collision on or off.");
         SettingGap();
         changed |= ImGui::Checkbox("Gesture melee", &g_config.gesture_melee);
@@ -3015,6 +3395,11 @@ namespace
         }
         if (SectionHeader("Waypoints##section", ImGuiTreeNodeFlags_None))
         {
+        changed |= ImGui::Checkbox("Markers follow your head, not your gun", &g_config.nav_markers_follow_head);
+        ImGui::TextDisabled("ON: an objective marker shows when you look toward it, and its off-screen arrow "
+                            "when you look away, wherever the gun points.\n"
+                            "OFF: as before: the marker shows only while the gun points near the objective.\n"
+                            "Halo: Reach and Halo 4. Live.");
         changed |= ImGui::Checkbox("Markers use the headset's field of view", &g_config.nav_markers_on_target);
         ImGui::TextDisabled("ON: objective markers are projected with the field of view each eye is drawn with, "
                             "so a marker stays on its point when you turn your head.\n"
@@ -3045,8 +3430,8 @@ namespace
         SettingGroup tags("Player tags", SettingGroup::kNameOnly);
         ImGui::Text("Player tags");
         changed |= ImGui::Checkbox("Show player tags", &g_config.player_tags_show);
-        ImGui::TextDisabled("The service tag and arrow over each teammate. Objective markers and flag, ball and "
-                            "bomb carriers are not changed. Halo 3 (MCC and Project Reclaimer) and ODST. Live.");
+        ImGui::TextDisabled("The service tag and arrow over each player, a flag, ball or bomb carrier's too. Objective "
+                            "markers are not changed. Halo 3 (MCC and Project Reclaimer) and ODST. Live.");
         if (g_config.player_tags_show)
         {
             float tagScalePercent = g_config.player_tags_scale * 100.0f;
@@ -3246,6 +3631,8 @@ namespace
                 ImGui::SetTooltip("Keeps Project Reclaimer's picture no larger than your monitor. A picture larger\n"
                                   "than the screen is suspected of stopping the graphics card on some PCs. Off gives\n"
                                   "the full size above, which is sharper in the headset when your monitor is smaller.\n"
+                                  "From Project Reclaimer 0.10 the picture keeps the full size and only its window is\n"
+                                  "fitted inside your monitor, for recording and streaming; off leaves it larger.\n"
                                   "Applies at Project Reclaimer's next start.");
             unsigned hostW=(unsigned)nextWidth,hostH=(unsigned)nextHeight;
             int clientModeValue=0;
@@ -3420,9 +3807,10 @@ namespace
                 "Unsupported native feeds retain the existing subtitle view.");
         }
 
-        if (CategorySection section{Cat_Desktop}; section.visible)
+        // The window on the monitor, last on the Picture page.
+        if (CategorySection section{Cat_Picture}; section.visible)
         {
-        if (SectionHeader("The window on your monitor##section", ImGuiTreeNodeFlags_None))
+        if (SectionHeader("Desktop Spectator View##section", ImGuiTreeNodeFlags_None))
         {
         changed |= ImGui::Checkbox("Show the headset's picture on my monitor",&g_config.desktop_mirror);
         if(ImGui::IsItemHovered())
@@ -3444,9 +3832,10 @@ namespace
         }
         }
 
-        if (g_activeCategory == Cat_Telemetry &&
+        if (g_activeCategory == Cat_Advanced &&
             SectionHeader("Telemetry Recorder##section", ImGuiTreeNodeFlags_None))
         {
+        ImGui::TextDisabled("Records controller, headset and aim-solver data for troubleshooting.");
         const TelemetryStatusSnapshot telemetry = Telemetry_GetStatus();
         const bool active = telemetry.state == TelemetryRecorderState::Starting ||
             telemetry.state == TelemetryRecorderState::Recording;
@@ -3517,8 +3906,8 @@ namespace
                             "ALWAYS: nothing the mod does changes a shot as it is fired, so every player's game "
                             "fires it the same way and a campaign co-op or Spartan Ops session stays together. Your "
                             "hand still aims; shots leave your eye. In Halo 2 your hand aims only with Direct drive "
-                            "on, True physical melee presses the game's melee instead of striking on contact (Halo "
-                            "CE: it does nothing), and seats in Halo CE and ODST and passenger seats in Reach keep "
+                            "on, True physical melee presses the game's melee instead of striking on contact, and "
+                            "seats in Halo CE and ODST and passenger seats in Reach keep "
                             "the game's own camera.\n"
                             "OFF is for playing alone: shots can leave the visible muzzle and are re-aimed as they "
                             "are fired. With it off, your first shot in a co-op session ends it for everyone. Live.");
@@ -3561,13 +3950,15 @@ namespace
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Aim your primary controller at MCC's main or pause menu, then pull its trigger to click.\n"
                               "A white ring marks the cursor and shrinks when clicked. MCC must have desktop focus.\n"
+                              "The right stick scrolls the list it points at like a mouse wheel: up or left goes back,\n"
+                              "down or right goes on (map and game type lists run sideways).\n"
                               "Release the trigger before your first click. Off preserves normal menu controls.");
         ImGui::TextDisabled("Currently %.2f m away, %.2f m wide, %+.2f m high, %+.2f m across.",
                             g_config.menu_distance_m, g_config.menu_width_m,
                             g_config.menu_height_m, g_config.menu_side_m);
         if (ImGui::Button("Reset panel position"))
         {
-            const Config defaults{};
+            const Config& defaults=DefaultConfig();
             g_config.menu_distance_m = defaults.menu_distance_m;
             g_config.menu_width_m = defaults.menu_width_m;
             g_config.menu_height_m = defaults.menu_height_m;
@@ -3608,6 +3999,8 @@ namespace
             if (g_resetArmed)
             {
                 g_config = Config{};
+                default_controls::Apply(g_config);
+                strcpy_s(g_config.input_preset, input_preset::kDefaultName);
                 ConfigSave();
                 LOG("config: reset to defaults from the menu");
                 two_hand_lab_runtime::ResetSettings();
@@ -3644,8 +4037,8 @@ namespace
     {
         ImGuiContext& g=*GImGui;
         if(g_indexNextPage==0) {g_settingIndex.clear();g_resultLayouts.clear();}
-        // Quality of Life gathers other pages' sections, and the labs are not in the sidebar.
-        const auto skipped=[](int page){return page==Cat_QualityOfLife||page==Cat_VirtualStockLab||page==Cat_TwoHandLab;};
+        // The labs are not in the sidebar.
+        const auto skipped=[](int page){return page==Cat_VirtualStockLab||page==Cat_TwoHandLab;};
         while(g_indexNextPage<Cat_Count&&skipped(g_indexNextPage)) ++g_indexNextPage;
         if(g_indexNextPage>=Cat_Count) {g_indexBuilt=true;return;}
         const int page=g_indexNextPage++,shownPage=g_activeCategory;
@@ -3803,6 +4196,8 @@ namespace
         ImGui::TextDisabled("Words can come in any order. \"Quotes\" keep words together, -word leaves one out, and OR finds either.");
     }
 
+#include "menu_controls_diagram.inl"
+
     void DrawUI()
     {
         // The search index is built from the first frame something is typed, and again each time searching starts over.
@@ -3825,7 +4220,12 @@ namespace
 
         // Search, across the whole menu: results replace the page until the box is emptied or a page is chosen.
         ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputTextWithHint("##settingsearch", "Search settings", g_searchQuery, sizeof(g_searchQuery));
+        // A touch smaller than the menu's text, so the whole hint fits the box.
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.9f);
+        ImGui::InputTextWithHint("##settingsearch",
+            "Search settings - Fuzzy search supported (spaces between search terms), quotations for \"exact phrase\", "
+            "\"-\" excludes", g_searchQuery, sizeof(g_searchQuery));
+        ImGui::PopFont();
         ImGui::Spacing();
 
         bool changed = false;
@@ -3876,6 +4276,20 @@ namespace
         const bool searching = g_searchQuery[0] != 0;
         ImGui::TextColored(Rgb(kAccent), "%s", searching ? "Search" : kCategories[g_activeCategory].label);
         ImGui::PopFont();
+        if (!searching && g_activeCategory == Cat_Welcome)
+        {
+            // On the heading's line, at the right of the page.
+            const char* label = "Never show again";
+            const float width = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x +
+                ImGui::CalcTextSize(label).x;
+            ImGui::SameLine(ImGui::GetContentRegionMax().x - width);
+            bool dontShow = !g_config.show_welcome;
+            if (ImGui::Checkbox(label, &dontShow))
+            {
+                g_config.show_welcome = !dontShow;
+                changed = true;
+            }
+        }
         ImGui::TextDisabled("%s", searching ? "Settings whose name, section or page match. Change them here, or use the button on the left to go to one."
                                             : kCategories[g_activeCategory].blurb);
         ImGui::Separator();
@@ -3910,8 +4324,19 @@ namespace
         ImGui::Separator();
         ImGui::TextDisabled("L3+R3 recenters and closes this menu; F1 only closes it. Settings save automatically.");
         ImGui::End();
+
+        // The side panel, to the right of the menu in the same picture: shown in the headset only while it has
+        // something for the page (Menu_SidePanelShown).
+        g_sidePanelShown = (g_activeCategory == Cat_Controls || g_activeCategory == Cat_Welcome) && !searching &&
+            !g_jump.active;
+        DrawSidePanel();
     }
 } // namespace
+
+bool Menu_SidePanelShown()
+{
+    return g_ready && g_open && g_sidePanelShown;
+}
 
 void Menu_PostLiveResize()
 {
@@ -3970,7 +4395,7 @@ bool Menu_Init(HWND gameWindow, ID3D11Device* device, ID3D11DeviceContext* conte
     InitializeCriticalSection(&g_cs);
 
     D3D11_TEXTURE2D_DESC td{};
-    td.Width = MENU_W;
+    td.Width = MENU_TEX_W;
     td.Height = MENU_H;
     td.MipLevels = 1;
     td.ArraySize = 1;
@@ -4023,7 +4448,7 @@ bool Menu_Init(HWND gameWindow, ID3D11Device* device, ID3D11DeviceContext* conte
     // small monitors and put the menu off-screen); the shrink keeps MCC drawing
     // the full-size backbuffer while only the visible window fits. Posted so it
     // runs on the UI thread.
-    if (D3D_FitActive())
+    if (D3D_FitActive() || D3D_HostFitWindow())
         PostMessageW(gameWindow, kFitGameWindowMsg, 0, 0);
 
     NativeMenuPointer_Init(gameWindow);
@@ -4100,6 +4525,16 @@ void Menu_SetVrPointer(bool hit, float u, float v, bool pressed, float scrollY)
 void Menu_ClearVrPointer()
 {
     Menu_SetVrPointer(false, 0.0f, 0.0f, false, 0.0f);
+    Menu_SetVrStickScroll(0.0f);
+}
+
+void Menu_SetVrStickScroll(float stick)
+{
+    if (!g_ready)
+        return;
+    EnterCriticalSection(&g_cs);
+    g_vrPointer.stick = stick;
+    LeaveCriticalSection(&g_cs);
 }
 
 ID3D11Texture2D* Menu_Render()
@@ -4110,7 +4545,7 @@ ID3D11Texture2D* Menu_Render()
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
-    ImGui::GetIO().DisplaySize = ImVec2((float)MENU_W, (float)MENU_H); // our texture, not the window
+    ImGui::GetIO().DisplaySize = ImVec2((float)MENU_TEX_W, (float)MENU_H); // our texture, not the window
     // The Win32 backend updates the desktop mouse during NewFrame. Apply the
     // VR ray afterward so it is the final pointer sample ImGui consumes.
     ImGuiIO& io = ImGui::GetIO();
@@ -4147,7 +4582,7 @@ ID3D11Texture2D* Menu_Render()
     }
 #endif
     if (pointerHit)
-        io.AddMousePosEvent(pointerU * MENU_W, pointerV * MENU_H);
+        io.AddMousePosEvent(pointerU * MENU_TEX_W, pointerV * MENU_H);
     else
         io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     static bool previousVrPressed = false;
@@ -4160,15 +4595,24 @@ ID3D11Texture2D* Menu_Render()
         io.AddMouseWheelEvent(0.0f, pointerScroll);
     g_vrPointer.scrollY = 0.0f;
     ImGui::NewFrame();
+    // The right stick scrolls the panel under the VR pointer, straight to its scroll (menu_stick_scroll.h).
+    if (g_vrPointer.hit && g_vrPointer.stick != 0.0f)
+        g_stickScroll.Apply(g_vrPointer.stick, io.DeltaTime);
+    else
+        g_stickScroll.Reset();
     DrawUI();
     ImGui::Render();
+#if !HALOMCCVR_SETTINGS_WINDOW
+    if (g_mirror)
+        g_mirror->sidePanel.store(g_sidePanelShown ? 1u : 0u, std::memory_order_relaxed);
+#endif
 
     D3DStateBackup backup;
     backup.Capture(g_ctx);
     const float clear[4] = {0, 0, 0, 0}; // transparent: only the window itself shows on the panel
     g_ctx->OMSetRenderTargets(1, &g_rtv, nullptr);
     g_ctx->ClearRenderTargetView(g_rtv, clear);
-    D3D11_VIEWPORT vp{0, 0, (float)MENU_W, (float)MENU_H, 0, 1};
+    D3D11_VIEWPORT vp{0, 0, (float)MENU_TEX_W, (float)MENU_H, 0, 1};
     g_ctx->RSSetViewports(1, &vp);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     backup.Restore(g_ctx);

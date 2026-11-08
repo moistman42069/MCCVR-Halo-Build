@@ -27,9 +27,10 @@
 //   entries) and replaces the draw's own count check. So the count is never assumed: it is read from those two
 //   displacements in the running code, which must agree with each other and with the stride.
 //
-//   A PLAYER navpoint (a teammate's service tag and arrow) has icon #1 0, 1 or none and none of flags 0x01 / 0x40.
-//   Objectives write icon #1 = 2 and flags 0x41 / 0xC1; a flag, ball or bomb carrier sets 0x01 and keeps its
-//   marker, so carriers are left as the game draws them.
+//   A PLAYER navpoint (a teammate's service tag and arrow) has icon #1 0, 1 or none and not the radar flag 0x40.
+//   Objectives write icon #1 = 2 and flags 0x41 / 0xC1. A player on the off-screen ring (0x01: a flag, ball or bomb
+//   carrier, and the players an Infection game of about a hundred marks so, 3 or 4 a draw) keeps a player's icon and
+//   is a player's tag too: left as the game draws them, they were the tags the settings did not reach (2026-11-07).
 //
 // THE SEAM: chud_draw_navpoints. Around the original, each player entry's alpha multiplier and distance scale are
 // set from the player's settings and put back afterwards (only where they still hold what was written, so an update
@@ -118,6 +119,21 @@ inline constexpr size_t kOdstDrawBodyBytes = 0xC88; // the draw's extent in .pda
 inline constexpr char kOdstViewReadPattern[] = "48 8B 05 ?? ?? ?? ?? F3 0F 10 49 08 48 8D 78 08";
 inline constexpr int kOdstViewReadDisp = 3;
 
+// ---- Project Reclaimer 0.10's own draw (its client executable, 0.10.0; each matches exactly once where searched) ----
+// 0.10 keeps 212 navpoints a HUD ([capacity] hud.markers: 0x14 -> 0xd4). The game's callers reach the client's own
+// version of chud_draw_navpoints (lifted::ClientVersion), which first calls a draw of the client's: it draws every
+// entry up to a count it keeps in a global, reading each entry's alpha (+0x14) and fade but sizing them itself (it never
+// reads +0x38), and says whether it drew. Only when it did not does the 20-entry translated body run.
+//   The version: mov rbx,[rcx+8] (the navpoints); mov rdi,[rcx+0x10] (the user); mov rcx,rbx; mov edx,edi;
+//   call <its own draw>; test al,al; jnz. The call's rel32 at +14. Searched in its first kReclaimerVersionBytes.
+inline constexpr char kReclaimerVersionPattern[] = "48 8B 59 08 48 8B 79 10 48 89 D9 89 FA E8 ?? ?? ?? ?? 84 C0 75";
+inline constexpr int kReclaimerVersionCallRel = 14;
+inline constexpr size_t kReclaimerVersionBytes = 0x40;
+//   In its own draw: mov rdi,[rip+<count block>]; test rdi,rdi; jz; imul rax,[rdi],0x74 (the block's first word, times
+//   the entry stride). Its disp32 at +3. Searched in the draw's extent in .pdata.
+inline constexpr char kReclaimerCountPattern[] = "48 8B 3D ?? ?? ?? ?? 48 85 FF 0F 84 ?? ?? ?? ?? 48 6B 07 74";
+inline constexpr int kReclaimerCountDisp = 3;
+
 // ---- the entry (ADDR-HYGIENE: structural; proven in place by the patterns above, see the header) ----
 inline constexpr int kStockEntryCount = 20;
 inline constexpr int kMaxEntryCount = 256;           // more than this is refused, not adjusted
@@ -130,7 +146,7 @@ inline constexpr size_t kAlphaOffset = 0x14;
 inline constexpr size_t kPositionOffset = 0x24;
 inline constexpr size_t kValidOffset = 0x30;
 inline constexpr size_t kScaleOffset = 0x38;
-inline constexpr uint32_t kObjectiveFlags = 0x41; // the off-screen ring and the radar: objectives and carriers
+inline constexpr uint32_t kRadarFlag = 0x40;       // the radar: objectives (with the off-screen ring, 0x41)
 inline constexpr int32_t kObjectiveIcon = 2;
 // The view the projection reads: the camera's position, three floats at +8.
 inline constexpr size_t kViewPositionOffset = 0x08;
@@ -154,10 +170,19 @@ inline int EntryCountFromLayout(uint32_t gamertagDisp, uint32_t focusIndexDisp,
                : 0;
 }
 
-// A teammate's service tag and arrow, not an objective or a carrier.
+// The count Project Reclaimer's own draw walks, as read from its block: believed from twenty to kMaxEntryCount, 0
+// otherwise.
+inline int HostEntryCount(uint64_t value) noexcept
+{
+    return value >= static_cast<uint64_t>(kStockEntryCount) && value <= static_cast<uint64_t>(kMaxEntryCount)
+               ? static_cast<int>(value)
+               : 0;
+}
+
+// A player's service tag and arrow, not an objective.
 inline bool IsPlayerTag(int32_t icon, uint32_t flags) noexcept
 {
-    return icon != kObjectiveIcon && (flags & kObjectiveFlags) == 0;
+    return icon != kObjectiveIcon && (flags & kRadarFlag) == 0;
 }
 
 struct Settings

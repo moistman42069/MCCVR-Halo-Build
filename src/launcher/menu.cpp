@@ -33,7 +33,9 @@ constexpr int kReclaimerLeft = 38, kReclaimerTop = 706, kReclaimerRight = 942, k
 constexpr UINT kDone = WM_APP + 20, kTroubleshootingFound = WM_APP + 21;
 enum Id { Games = 100, Browse, Scan, Retain, Install, Launch, Check, Update, Folder, ReleasePage, Channel,
           ReclaimerPath, ReclaimerBrowse, ReclaimerDetect, ReclaimerLaunch, Settings, Latest, Version, UpdateSelf,
-          Troubleshooting };
+          Troubleshooting, Discord };
+// The community's channel for the mod on the Flat2VR Discord.
+constexpr const wchar_t* kDiscordPage = L"https://discord.com/channels/747967102895390741/1546190376405049415";
 // The window's client size at 96 dpi.
 constexpr int kMenuWidth = 1400, kMenuHeight = kReclaimerBottom + 26;
 // The credits column, right of the divider, at 96 dpi: the title stays put and the list below it scrolls. It sits as
@@ -619,16 +621,25 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         menu->updateSelf = Control(*menu, L"BUTTON", L"Update this launcher from the selected release", BS_OWNERDRAW | WS_TABSTOP, 38, 434, 850, 30, UpdateSelf);
         menu->retain = Control(*menu, L"BUTTON", L"Keep my settings and add new options when updating", BS_OWNERDRAW | WS_TABSTOP, 38, 464, 850, 30, Retain);
         Label(*menu, L"03  /  YOUR VR SETUP", 38, 513, 570);
-        // At the right of the heading, over LAUNCH MCC, and as wide as its words, so only they open the page.
+        // At the right of the heading, over LAUNCH MCC: Troubleshooting, then Discord at the end. Each is as wide as its
+        // words, so only they open the page; made left to right, so Tab reaches them in that order.
         {
-            const wchar_t* words = L"Troubleshooting";
+            constexpr std::pair<const wchar_t*, Id> kLinks[]{{L"Troubleshooting", Troubleshooting}, {L"Discord", Discord}};
+            SIZE sizes[std::size(kLinks)]{};
             HDC dc = GetDC(window); const auto before = SelectObject(dc, menu->smallFont);
-            SIZE size{}; GetTextExtentPoint32W(dc, words, static_cast<int>(wcslen(words)), &size);
+            for (size_t i = 0; i < std::size(kLinks); ++i)
+                GetTextExtentPoint32W(dc, kLinks[i].first, static_cast<int>(wcslen(kLinks[i].first)), &sizes[i]);
             SelectObject(dc, before); ReleaseDC(window, dc);
-            const auto link = CreateWindowExW(0, L"BUTTON", words, WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
-                menu->Px(942) - size.cx, menu->Px(513), size.cx, menu->Px(22), window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(Troubleshooting)), menu->instance, nullptr);
-            SendMessageW(link, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
+            const int gap = menu->Px(24);
+            int left = menu->Px(942) + gap;
+            for (const auto& size : sizes) left -= size.cx + gap;
+            for (size_t i = 0; i < std::size(kLinks); ++i) {
+                const auto link = CreateWindowExW(0, L"BUTTON", kLinks[i].first, WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
+                    left, menu->Px(513), sizes[i].cx, menu->Px(22), window,
+                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLinks[i].second)), menu->instance, nullptr);
+                SendMessageW(link, WM_SETFONT, reinterpret_cast<WPARAM>(menu->smallFont), TRUE);
+                left += sizes[i].cx + gap;
+            }
         }
         Control(*menu, L"BUTTON", L"VR SETTINGS", BS_OWNERDRAW | WS_TABSTOP, 38, 542, 270, 48, Settings);
         Control(*menu, L"BUTTON", L"MOD FOLDER", BS_OWNERDRAW | WS_TABSTOP, 324, 542, 200, 48, Folder);
@@ -735,16 +746,21 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             RECT rect = item.rcItem; rect.left += menu->Px(8); rect.right -= menu->Px(4); DrawTextW(item.hDC, text.c_str(), -1, &rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         } else if (item.CtlID == Retain) DrawCheckbox(*menu, item, menu->keepSettings);
         else if (item.CtlID == UpdateSelf) DrawCheckbox(*menu, item, menu->UpdateSelfShown());
-        else if (item.CtlID == Troubleshooting) DrawLink(*menu, item);
+        else if (item.CtlID == Troubleshooting || item.CtlID == Discord) DrawLink(*menu, item);
         else DrawButton(*menu, item);
         return TRUE;
     }
     case WM_SETCURSOR:
-        if (reinterpret_cast<HWND>(wParam) == GetDlgItem(window, Troubleshooting)) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; }
+        if (reinterpret_cast<HWND>(wParam) == GetDlgItem(window, Troubleshooting) ||
+            reinterpret_cast<HWND>(wParam) == GetDlgItem(window, Discord)) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; }
         break;
     case WM_COMMAND: {
         // Opening the page changes nothing, so it works during a download or install too. GitHub is asked only when the
         // link is pressed, off this thread, and the answer opens the page (kTroubleshootingFound).
+        if (LOWORD(wParam) == Discord) {
+            ShellExecuteW(window, L"open", kDiscordPage, nullptr, nullptr, SW_SHOWNORMAL);
+            return 0;
+        }
         if (LOWORD(wParam) == Troubleshooting) {
             const auto& own = kReleaseChannels[ReleaseChannelIndex(HALOMCCVR_RELEASE_CHANNEL)];
             if (!AsksForTroubleshootingPage(own)) ShellExecuteW(window, L"open", kFallbackTroubleshootingPage, nullptr, nullptr, SW_SHOWNORMAL);

@@ -1,4 +1,5 @@
 #include "../src/common/weapon_alignment.h"
+#include "../src/common/fit_mouse_logic.h"
 #include "../src/common/reach_wind_replay.h"
 int RunRoomscaleInputTests();
 int RunRoomscaleRecenterTests();
@@ -19,6 +20,10 @@ int RunDirectorCameraTests();
 #include "../src/common/weapon_order_diagnostic_logic.h"
 #include "../src/common/contact_melee_motion.h"
 #include "../src/common/session_read_logic.h"
+#include "../src/common/log_archive_logic.h"
+#include "../src/common/camera_copy_logic.h"
+#include "../src/common/reclaimer_odst_hud_logic.h"
+#include "../src/common/zoom_pull_audit_logic.h"
 #include "../src/dll/contact_melee_queue.h"
 #include <array>
 #include <cstdlib>
@@ -217,6 +222,26 @@ namespace
 
 int main()
 {
+    {
+        // The fitted window (2657 x 1916 shown, 2912 x 2100 drawn): a press is scaled as the cursor read is.
+        long x = 0, y = 0;
+        Check(fit_mouse::MapClientOffset(1328, 958, 2657, 1916, 2912, 2100, x, y) && x == 1455 && y == 1050,
+              "fit mouse: a press at the window's middle lands at the render's middle");
+        Check(fit_mouse::MapClientOffset(0, 0, 2657, 1916, 2912, 2100, x, y) && x == 0 && y == 0,
+              "fit mouse: the window's corner is the render's corner");
+        Check(fit_mouse::MapClientOffset(400, 1100, 2657, 1916, 2912, 2100, x, y) && x == 438 && y == 1206,
+              "fit mouse: a press is scaled about the window's top-left, as the cursor read is");
+        x = y = 7;
+        Check(!fit_mouse::MapClientOffset(2657, 10, 2657, 1916, 2912, 2100, x, y) &&
+                  !fit_mouse::MapClientOffset(-1, 10, 2657, 1916, 2912, 2100, x, y) &&
+                  !fit_mouse::MapClientOffset(10, 1916, 2657, 1916, 2912, 2100, x, y) && x == 7 && y == 7,
+              "fit mouse: a point outside the window is left as it is");
+        Check(!fit_mouse::MapClientOffset(10, 10, 0, 1916, 2912, 2100, x, y) &&
+                  !fit_mouse::MapClientOffset(10, 10, 2657, 1916, 0, 2100, x, y),
+              "fit mouse: no window or no render size maps nothing");
+        Check(fit_mouse::MapClientOffset(500, 400, 2912, 2100, 2912, 2100, x, y) && x == 500 && y == 400,
+              "fit mouse: a window the render's size leaves the point where it is");
+    }
     {
         using namespace halo4_reticle_alpha;
         const uint8_t all = 15, rgb = 7;
@@ -441,6 +466,22 @@ int main()
         published.footReferenceValid=false;
         Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,9,inHand))+.7f)<1e-6f,
               "H2 self-tracked frame in a seat without the foot heading still takes the seat's");
+        // A seat eye the vehicle cameras moved (a chase camera's place) stays where the publication put it from the
+        // camera in hand; one they did not move keeps the camera in hand's position.
+        published.vehicleReference.position[0]=published.stock.position[0]+3.f;
+        published.vehicleReference.position[2]=published.stock.position[2]+1.f;
+        Check(Halo2SelfTrackBase(true,published,9,inHand).position[0]==inHand.position[0],
+              "H2 self-tracked seat frame keeps the camera in hand's position while the eye is not moved");
+        published.vehicleEyeMoved=true;
+        {
+            const auto moved=Halo2SelfTrackBase(true,published,9,inHand);
+            Check(std::fabs(moved.position[0]-(inHand.position[0]+3.f))<1e-5f&&
+                      std::fabs(moved.position[2]-(inHand.position[2]+1.f))<1e-5f&&moved.position[1]==7.f,
+                  "H2 self-tracked seat frame keeps a moved eye's offset from the camera in hand");
+        }
+        published.vehicleEyeMoved=false;
+        published.vehicleReference.position[0]=published.stock.position[0];
+        published.vehicleReference.position[2]=published.stock.position[2];
         published.vehicleReferenceValid=false;
         Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,9,inHand))-2.05f)<1e-6f,
               "H2 self-tracked frame without the drive's heading is untouched");
@@ -1965,6 +2006,67 @@ int main()
               "capture follow: the window stops at its limit");
     }
     {
+        // How far a capture's art reaches, and how much of the view the next capture takes in to hold it.
+        constexpr uint32_t size = 64;
+        constexpr size_t pitch = size * 4;
+        const auto ring = [&](uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1) {
+            std::array<uint8_t, pitch * size> rows{};
+            for (uint32_t y = y0; y <= y1; ++y)
+                for (uint32_t x = x0; x <= x1; ++x)
+                    if (y == y0 || y == y1 || x == x0 || x == x1)
+                        rows[y * pitch + x * 4 + 1] = 200;
+            return MeasureAuthoredReticleArtCentre(rows.data(), pitch, size, true, 2);
+        };
+        // Rows 24..39 of 64: the ring's bounding box spans 24..40, eight texels either side of 32.
+        const AuthoredReticleArtCentre inside = ring(24, 24, 39, 39);
+        Check(inside.valid && std::fabs(inside.reach - 0.25f) < 1.0e-6f && !inside.touchesEdge,
+              "art reach: a centred ring a quarter of the texture across reaches a quarter of the way out");
+        // The same ring well below the centre: its far side sets the reach.
+        const AuthoredReticleArtCentre low = ring(24, 40, 39, 55);
+        Check(low.valid && std::fabs(low.reach - 0.75f) < 1.0e-6f && !low.touchesEdge,
+              "art reach: art off the centre reaches as far as its farthest side");
+        const AuthoredReticleArtCentre cut = ring(4, 0, 59, 63);
+        Check(cut.valid && cut.reach == 1.0f && cut.touchesEdge, "art reach: art at the edge was cut by it");
+
+        const auto reaching = [](float reach, bool touches) {
+            AuthoredReticleArtCentre c{};
+            c.u = c.v = 0.5f;
+            c.reach = reach;
+            c.touchesEdge = touches;
+            c.ink = 1000;
+            c.valid = true;
+            return c;
+        };
+        ReticleCaptureFit fit{};
+        Check(!fit.Step(inside, 1.0f, 0.75f, 0.25f, 2) && !fit.Step(inside, 1.0f, 0.75f, 0.25f, 2) && fit.zoom == 1.0f,
+              "capture fit: art well inside the capture keeps the framing");
+        Check(!fit.Step(reaching(0.9f, false), 1.0f, 0.75f, 0.25f, 2) && fit.zoom == 1.0f,
+              "capture fit: one capture reaching past the fill does not widen it");
+        Check(!fit.Step(inside, 1.0f, 0.75f, 0.25f, 2) && !fit.Step(reaching(0.9f, false), 1.0f, 0.75f, 0.25f, 2) &&
+                  fit.zoom == 1.0f,
+              "capture fit: reaching past the fill must hold over consecutive captures");
+        Check(fit.Step(reaching(0.9f, false), 1.0f, 0.75f, 0.25f, 2) && std::fabs(fit.zoom - 0.75f / 0.9f) < 1.0e-6f,
+              "capture fit: art reaching 90% widens the capture to hold it at 75%");
+        // Bloom spreading further, measured in a capture drawn at the new zoom, cut by the edge.
+        const float before = fit.zoom;
+        Check(fit.Step(reaching(1.0f, true), before, 0.75f, 0.25f, 2) &&
+                  std::fabs(fit.zoom - before * 0.75f) < 1.0e-6f,
+              "capture fit: art cut off by the edge widens it again on the next capture");
+        // The bloom shrinking back, or a capture still drawn at the old zoom, never narrows it.
+        const float widened = fit.zoom;
+        Check(!fit.Step(inside, widened, 0.75f, 0.25f, 2) && !fit.Step(reaching(0.9f, false), 1.0f, 0.75f, 0.25f, 2) &&
+                  !fit.Step(reaching(0.9f, false), 1.0f, 0.75f, 0.25f, 2) && fit.zoom == widened && fit.widenings == 2,
+              "capture fit: the framing never narrows again, whatever is measured");
+        ReticleCaptureFit floored{};
+        (void)floored.Step(reaching(1.0f, true), 0.3f, 0.75f, 0.25f, 1);
+        Check(floored.zoom == 0.25f && !floored.Step(reaching(1.0f, true), 0.25f, 0.75f, 0.25f, 1),
+              "capture fit: the capture is never drawn smaller than its floor");
+        ReticleCaptureFit none{};
+        Check(!none.Step({}, 1.0f, 0.75f, 0.25f, 1) && !none.Step(reaching(0.9f, false), 0.0f, 0.75f, 0.25f, 1) &&
+                  none.zoom == 1.0f,
+              "capture fit: no measurement, or no zoom to measure it against, changes nothing");
+    }
+    {
         // A seat camera's point is carried from the vehicle as simulated to the vehicle as drawn.
         using seat_camera_ride::CarryPoint;
         const auto frame = [](float x, float y, float z, float yawDeg) {
@@ -2237,6 +2339,33 @@ int main()
                   ResolveAuthoredAnimationGapFrames(0) == 0 &&
                   ResolveAuthoredAnimationGapFrames(-4) == 0,
               "authored animation cadence clamp");
+        Check(ResolveAuthoredAnimationGapFrames(1, 1) == 1 && ResolveAuthoredAnimationGapFrames(3, 1) == 3 &&
+                  ResolveAuthoredAnimationGapFrames(1, 6) == 6 && ResolveAuthoredAnimationGapFrames(0, 1) == 0 &&
+                  ResolveAuthoredAnimationGapFrames(2, 0) == 2,
+              "authored animation cadence follows the upload floor in force");
+
+        // The upload floor follows what a publish was measured to cost (2026-11-06 Quest numbers, and Halo 3's
+        // 4-5 ms).
+        Check(AuthoredReticleUploadGapForCost(6, 24, 0.007, 0.11) == 1,
+              "a window of cheap publishes lets the next one publish every frame");
+        Check(AuthoredReticleUploadGapForCost(1, 72, 4.5, 6.0) == kMinimumUploadGapFrames &&
+                  AuthoredReticleUploadGapForCost(1, 72, 0.1, 3.0) == kMinimumUploadGapFrames,
+              "a costly mean or a costly spike restores the six-frame floor");
+        Check(AuthoredReticleUploadGapForCost(6, 0, 0.0, 0.0) == 6 && AuthoredReticleUploadGapForCost(1, 0, 9.0, 9.0) == 1 &&
+                  AuthoredReticleUploadGapForCost(6, 3, 0.007, 0.01) == 6,
+              "no publishes, or too few, change nothing");
+        {
+            AuthoredReticleRefreshState everyFrame{};
+            int count = 0;
+            for (uint64_t serial = 1; serial <= 72; ++serial)
+                if (ShouldUploadAuthoredReticle(AuthoredReticleRefreshPolicy::BoundedAnimation, true, true, 1, 0, 0,
+                                                serial, 1, everyFrame, 1))
+                {
+                    MarkAuthoredReticleUploaded(everyFrame, 1, 0, 0, serial);
+                    ++count;
+                }
+            Check(count == 72, "a one-frame floor publishes every frame");
+        }
 
         // A Halo 3 sample publishes on the frame it was captured on, every
         // time, so the animation cadence the player sets is the cadence they
@@ -2261,6 +2390,37 @@ int main()
             }
         }
         Check(published == 20, "every animated sample publishes");
+
+        // The coverage readback publishes a capture on a later frame than it was taken. The floor counts from the
+        // capture, so every sample still publishes; counted from the publish frame, only every other one did.
+        const auto pipelined = [gap](uint64_t readbackFrames, bool markCaptureFrame) {
+            AuthoredReticleRefreshState state{};
+            uint64_t lastSampled = 0, pendingCapture = 0, publishAt = 0;
+            int count = 0;
+            for (uint64_t serial = 1; serial <= 144; ++serial)
+            {
+                if (pendingCapture && serial == publishAt)
+                {
+                    MarkAuthoredReticleUploaded(state, 1, 0, 0, markCaptureFrame ? pendingCapture : serial);
+                    pendingCapture = 0;
+                    ++count;
+                }
+                // No capture while its readback is in flight, as VR_ShouldCaptureAuthoredReticleThisFrame.
+                if (pendingCapture || !ShouldSampleAuthoredCapture(gap, lastSampled, serial))
+                    continue;
+                lastSampled = serial;
+                if (ShouldUploadAuthoredReticle(AuthoredReticleRefreshPolicy::BoundedAnimation, true, true, 1, 0, 0,
+                                                serial, 1, state))
+                {
+                    pendingCapture = serial;
+                    publishAt = serial + readbackFrames;
+                }
+            }
+            return count;
+        };
+        Check(pipelined(1, true) == 24 && pipelined(2, true) == 24,
+              "a capture published after its readback keeps the one-in-six cadence");
+        Check(pipelined(1, false) == 12, "counted from the publish frame, every other capture was refused");
 
         // Halo 4 has no proven stable weapon-art identity, so animation=0
         // holds the fixed key between slow probes rather than freezing it for
@@ -7497,6 +7657,166 @@ int main()
                   !HudLayoutAcceptedCountOk(*halo3Hud, 2) &&
                   !HudLayoutAcceptedCountOk(*halo3Hud, 4),
             "Halo 3 rejects the failed two-record alternate layout candidate");
+        const HudLayoutAdapter* mergedHud = HudLayoutAdapterFor(HudLayoutProfile::Halo3, true);
+        Check(mergedHud != halo3Hud && HudLayoutAcceptedCountOk(*mergedHud, 3) &&
+                  HudLayoutAcceptedCountOk(*mergedHud, 6) && !HudLayoutAcceptedCountOk(*mergedHud, 2) &&
+                  !HudLayoutAcceptedCountOk(*mergedHud, 7) && !mergedHud->scanMappedRegions &&
+                  HudLayoutAdapterWellFormed(*mergedHud) &&
+                  HudLayoutAdapterFor(HudLayoutProfile::Halo3ODST, true) == odstHud,
+            "Project Reclaimer's merged maps: Halo 3 takes both sets of its three records, never fewer than one set");
+        {
+            // ODST's levels there: the engine's converted copy of ODST's record only tells the scan an ODST level is
+            // loaded. Writing it moved nothing; the client draws from its own copy (reclaimer_odst_hud_record.inl).
+            Check(HudLayoutAnchorCount(*mergedHud) == 2 && HudLayoutAnchorCount(*halo3Hud) == 1,
+                "Project Reclaimer's Halo 3 search also looks for ODST's record; MCC's Halo 3 search does not");
+            const HudLayoutAnchorView odstShape = HudLayoutAnchorAt(*mergedHud, 1);
+            bool sameAsOdst = odstShape.anchorLength == odstHud->anchorLength &&
+                odstShape.safeFrameOffset == odstHud->safeFrameOffset;
+            for (int i = 0; sameAsOdst && i < odstShape.anchorLength; ++i)
+                sameAsOdst = odstShape.anchor[i] == odstHud->anchor[i] && odstShape.mask[i] == 0xFF;
+            Check(sameAsOdst && odstShape.markerOnly && !HudLayoutAnchorAt(*mergedHud, 0).markerOnly &&
+                      std::strcmp(mergedHud->altAnchors[0].name, "ODST") == 0,
+                "ODST's shape is MCC's ODST record exactly, fully compared, a marker and never a target");
+            float sensorX = 0.0f;
+            std::memcpy(&sensorX, odstShape.anchor + 8, sizeof(sensorX));
+            Check(sensorX == 2000.0f && std::memcmp(odstShape.anchor, mergedHud->anchor.data(), 8) == 0 &&
+                      std::memcmp(odstShape.anchor + 8, mergedHud->anchor.data() + 8, 4) != 0,
+                "the two shapes share the 1280x720 prefix and differ at the motion sensor (2000 vs 55)");
+        }
+        {
+            // The client's own copy of ODST's record (FA, 2026-11-07): the list entry {capacity, pointer, length}
+            // that named the live buffer was {0x110, 0x141B5ACFD70, 0x110}.
+            constexpr uint64_t kRecord = 0x141B5ACFD70ull;
+            const uint64_t listed[3] = {0x110, kRecord, 0x110};
+            const uint64_t roomier[3] = {0x200, kRecord, 0x110};
+            const uint64_t shorter[3] = {0x110, kRecord, 0x100};
+            const uint64_t tooRoomy[3] = {0x20000, kRecord, 0x110};
+            Check(reclaimer_odst_hud::ListsRecord(listed, kRecord) && reclaimer_odst_hud::ListsRecord(roomier, kRecord),
+                "a list entry names the buffer when it points at it with ODST's whole record as its length");
+            Check(!reclaimer_odst_hud::ListsRecord(listed, kRecord + 0x10) &&
+                      !reclaimer_odst_hud::ListsRecord(shorter, kRecord) &&
+                      !reclaimer_odst_hud::ListsRecord(tooRoomy, kRecord) && !reclaimer_odst_hud::ListsRecord(listed, 0),
+                "another pointer, a shorter length or an implausible capacity is not ODST's record");
+            const uintptr_t sorted[3] = {0x1000, 0x141B5ACFD70ull, 0x200000000ull};
+            Check(reclaimer_odst_hud::IsCandidate(sorted, 3, kRecord) &&
+                      !reclaimer_odst_hud::IsCandidate(sorted, 3, kRecord + 8) &&
+                      !reclaimer_odst_hud::IsCandidate(sorted, 0, kRecord),
+                "only the buffers that hold ODST's record are candidates");
+            Check(reclaimer_odst_hud::kWidthOffset == 0x94 && reclaimer_odst_hud::kRecordLength == 0x110,
+                "ODST's record: 0x110 bytes, its virtual width 0x94 in");
+            // The one list of the client's that named ODST's whole block; two dozen lone entries named only freed
+            // copies of the 1280x720 record.
+            uint64_t block[15]{};
+            for (int i = 0; i < 5; ++i)
+            {
+                block[3 * i] = 0x110;
+                block[3 * i + 1] = kRecord + 0x120 * static_cast<uint64_t>(i);
+                block[3 * i + 2] = 0x110;
+            }
+            reclaimer_odst_hud::RecordShape shapes[5] = {
+                {1280, 720}, {1600, 580}, {920, 690}, {1180, 470}, {1138, 640}};
+            Check(reclaimer_odst_hud::ListsBlock(block, shapes),
+                "a list naming ODST's five records in ODST's order is the client's block");
+            reclaimer_odst_hud::RecordShape lone[5] = {{1280, 720}, {0, 0}, {0, 0}, {0, 0}, {0, 0}};
+            reclaimer_odst_hud::RecordShape reordered[5] = {
+                {1280, 720}, {920, 690}, {1600, 580}, {1180, 470}, {1138, 640}};
+            uint64_t cut[15]{};
+            std::memcpy(cut, block, sizeof(cut));
+            cut[14] = 0x100;
+            Check(!reclaimer_odst_hud::ListsBlock(block, lone) && !reclaimer_odst_hud::ListsBlock(block, reordered) &&
+                      !reclaimer_odst_hud::ListsBlock(cut, shapes),
+                "a lone entry, another order or an entry that is not a whole record is not the client's block");
+        }
+        {
+            // Records left from an earlier level (Project Reclaimer, 2026-11-07): the ODST level's six still held
+            // the layout written there when Halo 3's Ark loaded its own three elsewhere.
+            constexpr uint32_t kTitleOwn = 0x3F5EB852;   // 0.87, as loaded
+            constexpr uint32_t kWrittenH = 0x3EF9DB23;   // 0.488, the player's layout
+            constexpr uint32_t kWrittenV = 0x3E8E56C3;   // 0.278
+            Check(HudLayoutRecordLeftOver(kWrittenH, kWrittenV, kTitleOwn, kTitleOwn) &&
+                      HudLayoutRecordLeftOver(kTitleOwn, kWrittenV, kTitleOwn, kTitleOwn) &&
+                      !HudLayoutRecordLeftOver(kTitleOwn, kTitleOwn, kTitleOwn, kTitleOwn),
+                "a record holding a layout other than the one it was loaded with is left from an earlier level; "
+                "one loaded again holds the title's own");
+            Check(!HudLayoutTakeLeftOvers(*mergedHud, 3, 6) && !HudLayoutTakeLeftOvers(*mergedHud, 6, 6),
+                "after an ODST level, Halo 3 writes only the records its level loaded when both sets together are "
+                "more than the title holds");
+            Check(HudLayoutTakeLeftOvers(*mergedHud, 3, 3) && HudLayoutTakeLeftOvers(*mergedHud, 0, 6) &&
+                      HudLayoutTakeLeftOvers(*mergedHud, 2, 3) && !HudLayoutTakeLeftOvers(*mergedHud, 3, 0),
+                "as before when there is room for both, or when the level did not load a whole set of its own");
+            // The Ark found while it loaded (2026-11-07 17:52): none of its own, its three remembered, six of the ODST
+            // level's beside them.
+            Check(HudLayoutTakeRememberedLeftOvers(*mergedHud, 0, 3) &&
+                      HudLayoutTakeRememberedLeftOvers(*mergedHud, 0, 6),
+                "a level with none of its own takes the left-over records the last scan proved, when they are a set");
+            Check(!HudLayoutTakeRememberedLeftOvers(*mergedHud, 3, 3) &&
+                      !HudLayoutTakeRememberedLeftOvers(*mergedHud, 0, 2) &&
+                      !HudLayoutTakeRememberedLeftOvers(*mergedHud, 0, 7) &&
+                      !HudLayoutTakeRememberedLeftOvers(*mergedHud, 0, 0),
+                "not when the level has its own, nor when the remembered ones are no whole set");
+            // Two levels back (ODST, the menu, then the Ark, 2026-11-07 16:57): the ODST level's records are no
+            // longer remembered, but they hold a pair the mod wrote.
+            constexpr uint32_t kFrameH = 0x3F2DB8BBu;    // 0.6786, the Aim Frame's
+            uint64_t pairs[kHudLayoutWrittenPairs]{};
+            int pairCount = HudLayoutNotePairWritten(pairs, 0, kWrittenH, kWrittenV);
+            pairCount = HudLayoutNotePairWritten(pairs, pairCount, kFrameH, kTitleOwn);
+            pairCount = HudLayoutNotePairWritten(pairs, pairCount, kWrittenH, kWrittenV);
+            Check(pairCount == 2 && HudLayoutPairWritten(pairs, pairCount, kWrittenH, kWrittenV) &&
+                      HudLayoutPairWritten(pairs, pairCount, kFrameH, kTitleOwn) &&
+                      !HudLayoutPairWritten(pairs, pairCount, kTitleOwn, kTitleOwn) &&
+                      !HudLayoutPairWritten(pairs, pairCount, kWrittenV, kWrittenH),
+                "a record holding a pair written this session, either way round only as written, is left over; "
+                "one holding the title's own is not");
+            constexpr uint32_t kLast = 0x3F000000u + static_cast<uint32_t>(kHudLayoutWrittenPairs) - 1;
+            for (int i = 0; i < kHudLayoutWrittenPairs; ++i)
+                pairCount = HudLayoutNotePairWritten(pairs, pairCount, 0x3F000000u + static_cast<uint32_t>(i), kTitleOwn);
+            Check(pairCount == kHudLayoutWrittenPairs && !HudLayoutPairWritten(pairs, pairCount, kWrittenH, kWrittenV) &&
+                      HudLayoutPairWritten(pairs, pairCount, kLast, kTitleOwn),
+                "a full history drops its oldest pair and keeps the newest");
+        }
+        {
+            // ODST's levels on Project Reclaimer are named by their scenario: the header of the map Reclaimer serves
+            // read levels\atlas\sc100\sc100 on Tayari Plaza (2026-11-07).
+            Check(reclaimer_odst_hud::IsOdstScenarioPath("levels\\atlas\\sc100\\sc100") &&
+                      reclaimer_odst_hud::IsOdstScenarioPath("Levels\\Atlas\\c100\\c100") &&
+                      !reclaimer_odst_hud::IsOdstScenarioPath("levels\\solo\\070_waste\\070_waste") &&
+                      !reclaimer_odst_hud::IsOdstScenarioPath("levels\\atla") &&
+                      !reclaimer_odst_hud::IsOdstScenarioPath(""),
+                "ODST's scenarios lie under levels\\atlas\\; Halo 3's do not");
+        }
+        {
+            // Each support-trigger pull, one report (zoom_pull_audit_logic.h).
+            zoom_pull_audit::Audit audit;
+            zoom_pull_audit::Report report{};
+            // A zoom pulled on the gun, answered: the level goes from -1 to 0.
+            bool due = audit.Step(1000, true, true, true, false, true, false, false, true, -1, report);
+            due = due || audit.Step(1100, true, true, true, false, true, false, false, true, -1, report);
+            due = due || audit.Step(1200, false, true, true, false, false, false, false, true, 0, report);
+            Check(!due && !audit.Step(1400, false, true, true, false, false, false, false, true, 0, report),
+                "a pull reports only once its answer time has passed");
+            Check(audit.Step(1500, false, true, true, false, false, false, false, true, 0, report) && report.zoom &&
+                      report.handOnGun && report.levelBefore == -1 && report.levelAfter == 0 && report.heldMs == 200 &&
+                      !zoom_pull_audit::Audit::Unanswered(report),
+                "an answered zoom: pressed, the level changed, held 200 ms");
+            // A zoom pressed and never answered.
+            audit.Step(2000, true, true, true, false, true, false, false, true, 0, report);
+            audit.Step(2100, false, true, true, false, false, false, false, true, 0, report);
+            Check(audit.Step(2600, false, true, true, false, false, false, false, true, 0, report) &&
+                      zoom_pull_audit::Audit::Unanswered(report),
+                "a zoom the game's level never answered is reported as such");
+            // The hand not counted on the gun: a grenade.
+            audit.Step(3000, true, false, false, false, false, true, false, true, -1, report);
+            audit.Step(3100, false, false, false, false, false, false, false, true, -1, report);
+            Check(audit.Step(3600, false, false, false, false, false, false, false, true, -1, report) &&
+                      !report.handOnGun && report.grenade && !report.zoom && !zoom_pull_audit::Audit::Unanswered(report),
+                "a pull with the hand off the gun reports the grenade it pressed");
+            // A pull held past the answer time reports at its release.
+            audit.Step(4000, true, true, true, false, true, false, false, true, -1, report);
+            Check(!audit.Step(4700, true, true, true, false, true, false, false, true, 0, report) &&
+                      audit.Step(4800, false, true, true, false, false, false, false, true, 0, report) &&
+                      report.heldMs == 800,
+                "a long pull reports when it ends");
+        }
         Check(HudLayoutAcceptedCountOk(*odstHud, 1) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 0) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 2),
@@ -14499,10 +14819,10 @@ int main()
             "Pre-v6 saved OFF is migrated to coherent committed-sample aim ON");
         ConfigSave();
         const std::string migratedAimConfig = ReadTextFile(oldAimConfig);
-        Check(g_config.config_version == 6 &&
-                  CountText(migratedAimConfig, "\nconfig_version = 6") == 1 &&
+        Check(g_config.config_version == 7 &&
+                  CountText(migratedAimConfig, "\nconfig_version = 7") == 1 &&
                   CountText(migratedAimConfig, "\ntwo_hand_coherent_aim = 1") == 1,
-            "Saving the v5 coherent-aim migration persists version 6 and ON");
+            "Saving the v5 coherent-aim migration persists the current version and ON");
         ConfigLoad(oldAimConfig.c_str());
         Check(g_config.two_hand_coherent_aim,
             "Reloading the saved v6 migration keeps coherent committed-sample aim ON");
@@ -14550,6 +14870,25 @@ int main()
             "A first run with no config file derives direct drive ON in every lane");
         ConfigLoad(primary.c_str());
         std::filesystem::remove(driveConfig);
+    }
+    {
+        // A new player starts on the Default controls; a player whose file named "Default" before version 7 was on
+        // the struct's scheme, now Legacy Default, and keeps it under that name.
+        const std::filesystem::path controlsConfig = configDir / L"default-controls.cfg";
+        std::filesystem::remove(controlsConfig);
+        ConfigLoad(controlsConfig.c_str());
+        Check(!strcmp(g_config.input_preset, "Default") && g_config.vr_action_mapping &&
+                  g_config.gesture_melee_require_grip && g_config.title_profiles[0].gun_pitch_deg == -13.0f,
+            "A first run starts on the Default controls, and says so");
+        { std::ofstream file(controlsConfig); file << "config_version = 6\ninput_preset = Default\n"; }
+        ConfigLoad(controlsConfig.c_str());
+        Check(!strcmp(g_config.input_preset, "Legacy Default") && !g_config.vr_action_mapping,
+            "An older file's Default is the scheme it always was, named Legacy Default");
+        { std::ofstream file(controlsConfig); file << "config_version = 7\ninput_preset = Default\n"; }
+        ConfigLoad(controlsConfig.c_str());
+        Check(!strcmp(g_config.input_preset, "Default"), "A current file's Default stays Default");
+        ConfigLoad(primary.c_str());
+        std::filesystem::remove(controlsConfig);
     }
 #if !HALOMCCVR_DEV_DIAGNOSTICS
     {
@@ -14599,7 +14938,7 @@ int main()
                 g_config.virtual_stock_standard_strength == .61f &&
                 g_config.virtual_stock_plus_strength == kVirtualStockPlusStrengthDefault &&
                 g_config.two_hand_smoothing_strength == 25.0f &&
-                g_config.two_hand_coherent_aim && g_config.config_version == 6;
+                g_config.two_hand_coherent_aim && g_config.config_version == 7;
         }, "installer/runtime roundtrip migrates legacy Standard strength, smoothing and v5 coherent aim");
         verifyMerged("config_version=5\nvirtual_stock_rear_reference=3\n"
                      "virtual_stock_strength=0.44\ntwo_hand_smoothing=0\n", [] {
@@ -15651,14 +15990,20 @@ int main()
                   untouched.title_profiles[4].hud_vertical_offset == -200.0f &&
                   untouched.title_profiles[5].hud_size == 0.34f &&
                   untouched.title_profiles[5].hud_vertical_offset == -200.0f &&
-                  untouched.title_profiles[0].hud_size == 0.43f &&
+                  untouched.title_profiles[0].hud_size == 0.40f &&
                   untouched.title_profiles[0].hud_aspect == 1.22f &&
-                  untouched.title_profiles[0].hud_vertical_offset == 16.0f,
-              "HUD per game: a fresh configuration starts Reach and both Halo 2s at the tester's layouts and the rest "
-              "at the shared one");
+                  untouched.title_profiles[0].hud_vertical_offset == -200.0f &&
+                  untouched.title_profiles[1].hud_size == 0.46f &&
+                  untouched.title_profiles[1].hud_aspect == 1.22f &&
+                  untouched.title_profiles[1].hud_vertical_offset == -150.0f &&
+                  untouched.title_profiles[6].hud_size == 0.50f &&
+                  untouched.title_profiles[6].hud_aspect == 0.75f &&
+                  untouched.title_profiles[6].hud_vertical_offset == -125.0f,
+              "HUD per game: a fresh configuration starts Halo 3, ODST, Reach, both Halo 2s and Halo CE at the "
+              "tester's layouts");
         Check(untouched.title_profiles[kTitleProfileHalo4].hud_size == 0.41f &&
                   untouched.title_profiles[kTitleProfileHalo4].hud_aspect == 1.00f &&
-                  untouched.title_profiles[kTitleProfileHalo4].hud_vertical_offset == -200.0f,
+                  untouched.title_profiles[kTitleProfileHalo4].hud_vertical_offset == -117.0f,
               "HUD per game: a fresh configuration starts Halo 4 at the tester's layout");
         // Halo 4's HUD height once ran the other way: a file written before the correction is turned over once,
         // and one written since is not.
@@ -15681,19 +16026,23 @@ int main()
         {
             std::ofstream file(crosshairPath);
             file << "config_version = 6\n";
-            file << "hud_size = 0.50\n";
+            file << "hud_size = 0.55\n";
             file << "hud_aspect = 1.10\n";
+            file << "hud_curvature = 0.40\n";
             file << "reach_hud_size = 0.39\n";
             file << "halo3_hud_aspect = 0.91\n";
         }
         ConfigLoad(crosshairPath.c_str());
-        // Reach names its own size; its aspect starts at Reach's own start, not the shared key.
+        // Reach names its own size; its aspect starts at Reach's own start, not the shared key. Halo 3's and Halo CE's
+        // sizes start at their own starts; a curvature no game has a start of its own for, at the shared key.
         Check(g_config.hud_size == 0.39f && g_config.hud_aspect == kHudStarts[kTitleProfileReach].aspect &&
-                  g_config.base_tunables.hud_size == 0.50f && g_config.title_profiles[0].hud_size == 0.50f &&
-                  g_config.title_profiles[0].hud_aspect == 0.91f,
+                  g_config.base_tunables.hud_size == 0.55f && g_config.title_profiles[0].hud_size == 0.40f &&
+                  g_config.title_profiles[0].hud_aspect == 0.91f && g_config.title_profiles[6].hud_size == 0.50f &&
+                  g_config.title_profiles[6].hud_aspect == 0.75f &&
+                  std::abs(g_config.title_profiles[6].hud_curvature - 0.40f) < .0001f,
               "HUD per game: with no game running the live HUD layout is Reach's");
         Config_ApplyTitleProfile(0);
-        Check(g_config.hud_size == 0.50f && g_config.hud_aspect == 0.91f,
+        Check(g_config.hud_size == 0.40f && g_config.hud_aspect == 0.91f,
               "HUD per game: a running game's own layout goes live");
         Config_ApplyTitleProfile(-1);
         g_config.hud_size = 0.60f;
@@ -15701,12 +16050,13 @@ int main()
         ConfigSave();
         Check(g_config.title_profiles[kTitleProfileReach].hud_size == 0.60f &&
                   g_config.title_profiles[kTitleProfileReach].hud_vertical_offset == -8.0f &&
-                  g_config.base_tunables.hud_size == 0.50f && g_config.title_profiles[0].hud_size == 0.50f,
+                  g_config.base_tunables.hud_size == 0.55f && g_config.title_profiles[6].hud_size == 0.50f,
               "HUD per game: an edit with no game running lands in Reach's profile, not the shared key");
         const std::string hudSaved = ReadTextFile(crosshairPath);
-        Check(CountText(hudSaved, "\nhud_size = 0.50") == 1 &&
+        Check(CountText(hudSaved, "\nhud_size = 0.55") == 1 &&
                   CountText(hudSaved, "\nreach_hud_size = 0.6000") == 1 &&
-                  CountText(hudSaved, "\nhalo3_hud_size = 0.5000") == 1,
+                  CountText(hudSaved, "\nhalo3_hud_size = 0.4000") == 1 &&
+                  CountText(hudSaved, "\nhalo1_hud_size = 0.5000") == 1,
               "HUD per game: the file keeps the shared size and each game's own");
         // A first run, with no file yet, writes the same thing.
         std::filesystem::remove(crosshairPath);
@@ -15789,7 +16139,7 @@ int main()
         "cutscene_theater_enabled", "cutscene_theater_depth",
         "cutscene_theater_flip_depth", "cutscene_theater_width_m",
         "cutscene_theater_distance_m",
-        "turn_smooth", "vehicle_smooth_turn", "turn_snap_deg", "turn_smooth_deg_s", "y_b_start_chord", "dpad_hand",
+        "turn_smooth", "vehicle_smooth_turn", "turn_snap_deg", "turn_smooth_deg_s", "vr_bind_pause", "dpad_hand",
         "dpad_head_radius", "quest_thumbrest_dpad",
         "vehicle_first_person", "vehicle_cam_forward_m", "vehicle_cam_up_m",
         "vehicle_cam_right_m",
@@ -16083,8 +16433,8 @@ int main()
     Check(!g_config.physical_melee && !g_config.gesture_melee &&
               g_config.physical_melee_swing_speed == 5.0f,
         "legacy configs inherit the opt-in physical-melee defaults");
-    Check(g_config.y_b_start_chord,
-        "legacy configs inherit the enabled Y+B Start chord default");
+    Check(g_config.vr_mod_bindings == vr_mapping::kModDefaults,
+        "legacy configs inherit the Pause row: Y + B either way round");
 
     {
         {
@@ -16345,12 +16695,13 @@ int main()
         file << "y_b_start_chord = 0\n";
     }
     ConfigLoad(primary.c_str());
-    Check(!g_config.y_b_start_chord,
-        "The Y+B Start chord can be disabled in the config");
+    Check(!vr_mapping::HoldsTogether(g_config.vr_mod_bindings[vr_mapping::Pause], vr_mapping::Y, vr_mapping::B) &&
+              g_config.vr_mod_bindings[vr_mapping::Pause][0].press == vr_mapping::Unbound,
+        "Y+B Start turned off in an older config leaves the Pause row empty");
     ConfigSave();
     ConfigLoad(primary.c_str());
-    Check(!g_config.y_b_start_chord,
-        "The Y+B Start chord setting survives a save/load round trip");
+    Check(g_config.vr_mod_bindings[vr_mapping::Pause][0].press == vr_mapping::Unbound,
+        "The emptied Pause row survives a save/load round trip");
 
     // C13 per-SEAT trim. An override exists only for the axis and SEAT
     // actually written; every other axis, seat, vehicle and on-foot read
@@ -16899,8 +17250,8 @@ int main()
     }
     ConfigLoad(primary.c_str());
     const float migratedCurvature = (0.30f - 1.25f * 0.1f) / 0.60f;
-    // Halo 3 starts from the shared HUD keys (Reach, the no-game profile, has a layout of its own).
-    const TitleTunables& sharedHud = g_config.title_profiles[0];
+    // The shared HUD keys themselves: every game has a layout of its own (Reach's is the no-game profile's).
+    const TitleTunables& sharedHud = g_config.base_tunables;
     Check(std::abs(sharedHud.hud_curvature - migratedCurvature) < 0.0001f &&
           sharedHud.hud_aspect == 1.35f &&
           sharedHud.hud_vertical_offset == -125.0f,
@@ -16919,9 +17270,11 @@ int main()
         file << "hud_vertical_offset = -999\n";
     }
     ConfigLoad(primary.c_str());
-    Check(g_config.title_profiles[0].hud_curvature == kHudCurvatureMax &&
-          g_config.title_profiles[0].hud_aspect == kHudAspectMax &&
-          g_config.title_profiles[0].hud_vertical_offset == kHudHeightMin,
+    // Halo CE's curvature, like every game's, starts from the shared key.
+    Check(g_config.base_tunables.hud_curvature == kHudCurvatureMax &&
+          g_config.base_tunables.hud_aspect == kHudAspectMax &&
+          g_config.base_tunables.hud_vertical_offset == kHudHeightMin &&
+          g_config.title_profiles[6].hud_curvature == kHudCurvatureMax,
         "Excessive HUD curvature, aspect, and height values are safely clamped");
 
     {
@@ -21230,6 +21583,47 @@ int main()
         Check(std::strcmp(TypeName(3), "sync-server") == 0 && std::strcmp(TypeName(2), "sync-client") == 0 &&
             std::strcmp(TypeName(4), "dist-client") == 0 && std::strcmp(TypeName(9), "unknown") == 0,
             "session: the type names are the game's own");
+    }
+    {
+        // A camera copy that is not a view is left to the game: no direction, or exactly the default +X.
+        using camera_copy::ForwardIsView;
+        Check(ForwardIsView(0.6f, -0.8f, 0.0f) && ForwardIsView(0.0f, 0.0f, 1.0f) && ForwardIsView(1.0f, 0.001f, 0.0f),
+              "camera copy: a view's unit forward is a view");
+        Check(!ForwardIsView(0.0f, 0.0f, 0.0f) && !ForwardIsView(1.0f, 0.0f, 0.0f) && !ForwardIsView(-1.0f, 0.0f, 0.0f),
+              "camera copy: no direction, or exactly the default axis, is not a view");
+        Check(!ForwardIsView(0.3f, 0.3f, 0.0f) && !ForwardIsView(2.0f, 1.0f, 0.0f) &&
+                  !ForwardIsView(std::numeric_limits<float>::quiet_NaN(), 0.0f, 1.0f),
+              "camera copy: a forward that is not a unit vector is not a view");
+    }
+    {
+        // The last runs' logs: named for when each run started, the newest few kept.
+        using namespace log_archive;
+        const Stamp ended{2026, 11, 7, 13, 24, 36};
+        Stamp start{};
+        const char line[] = "[13:15:21.282] HaloMCCVR loaded into pid 252608";
+        Check(RunStart(line, sizeof(line) - 1, ended, start) && start.year == 2026 && start.month == 11 &&
+                  start.day == 7 && start.hour == 13 && start.minute == 15 && start.second == 21,
+              "log archive: a run starts at its first line's time, on its last write's day");
+        const char lateLine[] = "[23:50:02.000] HaloMCCVR loaded";
+        Check(RunStart(lateLine, sizeof(lateLine) - 1, Stamp{2026, 3, 1, 0, 20, 0}, start) && start.year == 2026 &&
+                  start.month == 2 && start.day == 28 && start.hour == 23,
+              "log archive: a run past midnight started the day before");
+        Check(RunStart(lateLine, sizeof(lateLine) - 1, Stamp{2025, 1, 1, 0, 5, 0}, start) && start.year == 2024 &&
+                  start.month == 12 && start.day == 31,
+              "log archive: and the year before on New Year's Day");
+        Check(!RunStart("HaloMCCVR", 9, ended, start) && !RunStart("[1x:15:21", 9, ended, start) &&
+                  !RunStart("[13:15", 6, ended, start) && !RunStart(nullptr, 0, ended, start),
+              "log archive: a first line without a time gives no start");
+        Check(ArchiveName(L"HaloMCCVR", Stamp{2026, 11, 7, 9, 5, 1}) == L"HaloMCCVR 2026-11-07 09-05-01.log",
+              "log archive: the name sorts by time");
+        const std::vector<std::wstring> prune =
+            ToPrune({L"HaloMCCVR 2026-11-07 13-24-36.log", L"HaloMCCVR 2026-11-06 22-00-00.log",
+                     L"HaloMCCVR 2026-11-07 13-15-21.log", L"HaloMCCVR 2026-11-07 09-00-00.log"},
+                    2);
+        Check(prune.size() == 2 && prune[0] == L"HaloMCCVR 2026-11-06 22-00-00.log" &&
+                  prune[1] == L"HaloMCCVR 2026-11-07 09-00-00.log",
+              "log archive: the oldest go, the newest stay");
+        Check(ToPrune({L"HaloMCCVR 2026-11-07 13-24-36.log"}, 10).empty(), "log archive: nothing goes under the limit");
     }
     g_failures += RunRoomscaleInputTests();
     g_failures += RunRoomscaleRecenterTests();

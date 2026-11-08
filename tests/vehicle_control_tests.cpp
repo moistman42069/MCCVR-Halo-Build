@@ -76,6 +76,15 @@ static void TestNext()
     Check(Next(Mode::Automatic, true) == Mode::Stick && Next(Mode::Automatic, false) == Mode::Stick,
           "from as before, the click moves on as from Motion");
     Check(Name(Mode::Stick)[0] == 'S' && Name(Mode::Automatic)[0] == 'A', "each mode has a name for the readout");
+
+    // A game that cannot give a seat to the stick yet (Reach): Motion and the wheel only.
+    Check(Next(Mode::Motion, true, false) == Mode::Wheel && Next(Mode::Wheel, true, false) == Mode::Motion,
+          "without the stick, a seat with a wheel goes between Motion and Wheel");
+    Check(Next(Mode::Motion, false, false) == Mode::Motion && Next(Mode::Automatic, false, false) == Mode::Motion,
+          "and a seat without one stays in Motion");
+    Check(Next(Mode::Stick, true, false) == Mode::Wheel && Next(Mode::Stick, false, false) == Mode::Motion &&
+              Next(Mode::Wheel, false, false) == Mode::Motion,
+          "a stick or wheel chosen elsewhere moves on to what the seat can take");
 }
 
 static void TestWheelOnOffer()

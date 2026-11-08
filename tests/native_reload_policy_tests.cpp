@@ -26,6 +26,7 @@ uint32_t TitleAdapter_GetGeneration(GameTitle) {return activeGeneration;}
 const TitleDescriptor* TitleRegistry_Find(GameTitle) {return nullptr;}
 void* Game_ReloadPolicyWeapon(GameTitle title,uint32_t weapon)
 {return own && title==activeTitle && weapon==localWeapon ? object : nullptr;}
+void Game_Halo3FpStrides(uint32_t& userStride,uint32_t& slotStride) {userStride=0x2430;slotStride=0x11BC;}
 namespace sig { uintptr_t Find(uintptr_t,size_t,const char*) {return 0;} }
 bool WaitForNativeDetourQuiescence(const void* const*,const void* const*,size_t,const std::atomic<uint32_t>& callbacks)
 {return callbacks.load()==0;}

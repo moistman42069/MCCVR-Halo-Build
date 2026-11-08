@@ -15,6 +15,7 @@
 #include "../common/weapon_muzzle.h"
 #include "../common/visual_hand_config.h"
 #include "../common/vr_turn_mode.h"
+#include "../common/aim_frame_logic.h"
 #include "../common/camera_recovery_logic.h"
 #include "../common/dual_weapon_aim_logic.h"
 #include "../common/native_shot_target_lease.h"
@@ -70,6 +71,7 @@
 #include <string>
 #include <vector>
 #include <MinHook.h>
+#include "lifted_minhook.h"
 #include "game.h"
 #include "native_fault_probe.h"
 #include "haloce_network_input.h"
@@ -84,10 +86,12 @@
 #include "haloce_orientation.h"
 #include "haloce_head_relative.h"
 #include "haloce_unit_control.h"
+#include "haloce_vehicle_cameras.h"
 #include "title_reentry_probe.h"
 #include "roomscale.h"
 #include "sight_layer.h"
 #include "../common/session_read_logic.h"
+#include "../common/camera_copy_logic.h"
 #include "seat_limit_publication.h"
 #include "telemetry_recorder.h"
 #include "../common/support_diagnostics.h"
@@ -121,6 +125,12 @@
 #include "../common/reach_render_logic.h"
 #include "../common/halo3_held_palette_logic.h"
 #include "../common/reach_vehicle_logic.h"
+#include "../common/reach_vehicle_camera_logic.h"
+#include "../common/halo4_vehicle_camera_logic.h"
+#include "../common/halo2_vehicle_camera_logic.h"
+#include "../common/halo2_vehicle_identity.h"
+#include "halo2_vehicle_cameras.h"
+#include "../common/haloce_vehicle_camera_logic.h"
 #include "../common/reach_hand_shot_logic.h"
 #include "../common/aim_no_unit_logic.h"
 #include "../common/title_runtime_state.h"
@@ -410,12 +420,14 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
 #include "halo4_cold_observation.h"
 #include "../common/halo4_head_relative_logic.h"
 #include "../common/halo4_sound_listener_logic.h"
+#include "../common/halo4_nav_marker_logic.h"
 #include "../common/odst_bringup_logic.h"
 #include "../common/odst_modded_fp_logic.h"
 #include "../common/odst_fp_map_probe.h"
 #include "../common/odst_mythic_layout.h"
 #include "../common/odst_elite_layout.h"
 #include "../common/odst_vehicle_logic.h"
+#include "../common/odst_vehicle_camera_logic.h"
 #include "../common/scope_logic.h"
 #include "../common/two_hand_ik_logic.h"
 #include "../common/gesture_melee_logic.h"
@@ -672,10 +684,10 @@ namespace
     std::atomic<float> g_projectionTanX{1.091595f};
     std::atomic<float> g_projectionTanY{1.114286f};
     std::atomic<float> g_zoomFactor{1.0f}; // >1 while the player is zoomed (scope)
-    // AIM FRAME ZOOM (config.h aim_frame_zoom), Halo 3 and ODST. The zoom level the game hands its own aim-assist
-    // query for the local player -- the unit's current zoom level, -1 while not zoomed -- and when, written by
-    // Halo3IndependentQueryDetour or OdstMuzzleQueryDetour on the simulation thread (both titles' callers load it
-    // from the same field: halo3.dll +0xF4C9E, halo3odst.dll +0x1106F2). It is the game's own state: it follows
+    // AIM FRAME ZOOM (config.h aim_frame_zoom). The zoom level the game hands its own aim-assist query for the local
+    // player -- the unit's current zoom level, -1 while not zoomed -- and when, written by each title's query detour
+    // on the simulation thread (their callers load it from the player's control record: halo3.dll +0xF4C9E,
+    // halo3odst.dll +0x1106F2, haloreach.dll +0x5EF26, halo4.dll +0xA363D). It is the game's own state: it follows
     // toggles, cancels on a weapon switch and re-arms as the game decides, which the button cannot tell.
     std::atomic<int> g_gameZoomLevel{-1};
     std::atomic<int> g_gameZoomTitle{-1};
@@ -703,12 +715,27 @@ namespace
     std::atomic<uint32_t> g_halo3TitleSafeFrameBits{0};
     bool AimFrameAllowed(GameTitle title);
     bool GameZoomed(GameTitle title, int& level);
+    // The generation a title's zoom level is noted under (0: not read here), and whether a title that came later
+    // than Halo 3 and ODST can draw the frame now. Defined after every title's runtime, by Game_AimFrameZoomOwnsZoom.
+    uint32_t AimFrameZoomGeneration(GameTitle title);
+    bool AimFrameLaterTitleLive(GameTitle title);
     std::atomic<bool> g_aimFramePass{false};
     // What the frame's passes actually drew: HUD widgets, and how many of those were the crosshair's predicate asking.
     std::atomic<uint32_t> g_aimFrameWidgets{0}, g_aimFrameCrosshairAsks{0};
     std::atomic<uint64_t> g_gameZoomMs{0};
     std::atomic<uint32_t> g_gameZoomGeneration{0};
-    const char* AimFrameTitleName(GameTitle title) { return title == GameTitle::Halo3ODST ? "ODST" : "Halo 3"; }
+    const char* AimFrameTitleName(GameTitle title)
+    {
+        switch (title)
+        {
+        case GameTitle::Halo3ODST: return "ODST";
+        case GameTitle::HaloReach: return "Reach";
+        case GameTitle::Halo4: return "Halo 4";
+        case GameTitle::Halo2: return "Halo 2";
+        case GameTitle::HaloCE: return "Halo CE";
+        default: return "Halo 3";
+        }
+    }
     void NoteGameZoomLevel(GameTitle title, int16_t level, uint32_t generation)
     {
         const int previous = g_gameZoomLevel.exchange(level, std::memory_order_relaxed);
@@ -1182,7 +1209,7 @@ namespace
         int32_t m = -1, p = -1;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             const uint32_t index = *b.tlsIndex;
             const auto* tls = slots && index < 0x200 ? static_cast<const uint8_t*>(slots[index]) : nullptr;
             const auto* block = tls ? *reinterpret_cast<const uint8_t* const*>(tls + b.blockOffset) : nullptr;
@@ -1276,8 +1303,8 @@ namespace
                 SandboxEditorBindName(result));
             return false;
         }
-        b.playerGetter = reinterpret_cast<Halo3OutputUserPlayerFn>(base + static_cast<uintptr_t>(sites.playerGetterRva));
-        b.predicate = reinterpret_cast<Halo3SandboxEditorFn>(base + static_cast<uintptr_t>(sites.predicateRva));
+        b.playerGetter = lifted::Callable(reinterpret_cast<Halo3OutputUserPlayerFn>(base + static_cast<uintptr_t>(sites.playerGetterRva)));
+        b.predicate = lifted::Callable(reinterpret_cast<Halo3SandboxEditorFn>(base + static_cast<uintptr_t>(sites.predicateRva)));
         b.generation.store(generation, std::memory_order_release);
         b.bound.store(true, std::memory_order_release);
         LOG("Roomscale admission Halo 3: Forge Monitor check bound: the game's own sandbox-editor predicate +0x%llX "
@@ -1390,7 +1417,7 @@ namespace
             return false;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             const uint32_t index = *b.tlsIndex;
             const auto* tls = slots && index < 0x200 ? static_cast<const uint8_t*>(slots[index]) : nullptr;
             const auto* block = tls ? *reinterpret_cast<const uint8_t* const*>(tls + b.blockOffset) : nullptr;
@@ -1534,8 +1561,8 @@ namespace
                 "model is drawn, as before", title, EditorBindName(editorResult));
             return true;
         }
-        editor.playerGetter = reinterpret_cast<Halo3OutputUserPlayerFn>(base + static_cast<uintptr_t>(sites.playerGetterRva));
-        editor.predicate = reinterpret_cast<Halo3SandboxEditorFn>(base + static_cast<uintptr_t>(sites.predicateRva));
+        editor.playerGetter = lifted::Callable(reinterpret_cast<Halo3OutputUserPlayerFn>(base + static_cast<uintptr_t>(sites.playerGetterRva)));
+        editor.predicate = lifted::Callable(reinterpret_cast<Halo3SandboxEditorFn>(base + static_cast<uintptr_t>(sites.predicateRva)));
         editor.generation.store(generation, std::memory_order_release);
         editor.bound.store(true, std::memory_order_release);
         LOG("First-person camera %s: Forge Monitor check bound: the game's own sandbox-editor predicate +0x%llX "
@@ -2546,6 +2573,9 @@ namespace
     void ReportReachMuzzle();
     void ReportReachHeadRelative();  // reach_head_relative.inl: the motion tracker follows the head
     void ReportReachNavProjection(); // reach_nav_projection.inl: the marker projection's own hook
+    // reach_head_relative.inl: the head of the last committed frame, any thread; also read by the HUD's off-screen
+    // tests (reach_nav_markers.inl), which are defined before it.
+    bool ReachReadHeadSample(head_relative::HeadSample& sample, bool& cinematic, float* position = nullptr) noexcept;
     // Weapon-order diagnostic tranche: read-only semantic-primary
     // observations reusing the title readers below. Defined after those
     // readers; called from the FP interpolate/palette hooks above them.
@@ -2805,6 +2835,25 @@ namespace
     void ReportOdstPlayerTags();
     void Halo3VehicleNoteShow(const std::wstring& text, float seconds);
     void Halo3VehicleNoteTick();
+    // The vehicle camera note in Halo CE's own HUD messages (halo3_hud_note.inl): bound by the cold worker, posted from
+    // the unit control hook (Game_HaloCEHudNotePost).
+    void HaloCEHudNotePoll(uintptr_t base, size_t size, uint32_t generation, bool active);
+    void HaloCEHudNotePost();
+    void HaloCEVehicleNoteShow(const std::wstring& text, float seconds);
+    // ...in Halo 2's, posted from the direct drive's control-update hook (Game_Halo2HudNotePost); and in Reach's,
+    // posted from the motion tracker's hook (reach_head_relative.inl).
+    void Halo2HudNotePoll(uintptr_t base, size_t size, uint32_t generation, bool active);
+    void Halo2HudNotePost();
+    void Halo2VehicleNoteShow(const std::wstring& text, float seconds);
+    void ReachVehicleNoteShow(const std::wstring& text, float seconds);
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    // ...and in Halo 4's, posted from the sound listener hook (halo4_sound_listener.inl).
+    bool InstallHalo4HudNote(uintptr_t base, size_t size, uint32_t generation, const uint32_t* tlsIndex,
+                             uintptr_t listenerUpdate, uint32_t updateFrameBytes);
+    void RemoveHalo4HudNote();
+    void Halo4HudNotePost(const uint8_t* entry);
+    void Halo4VehicleNoteShow(const std::wstring& text, float seconds);
+#endif
     // The tracker's blips move with the HUD height (halo3_tracker_hud_height.inl): one hook on the blip draw.
     bool InstallHalo3TrackerHudHeight(uintptr_t base, size_t size, uint32_t generation);
     bool RemoveHalo3TrackerHudHeight();
@@ -2815,6 +2864,11 @@ namespace
     // The same two seams in ODST (halo3_head_relative.inl; not confirmed in game).
     bool InstallOdstHeadRelative(uintptr_t base, size_t size, uint32_t generation);
     bool RemoveOdstHeadRelative();
+    // The vehicle camera note in ODST's own HUD messages (halo3_hud_note.inl): posted from ODST's listener hook.
+    bool InstallOdstHudNote(uintptr_t base, size_t size, uint32_t generation);
+    void RemoveOdstHudNote();
+    void OdstHudNotePost();
+    void OdstVehicleNoteShow(const std::wstring& text, float seconds);
     void OdstHeadRelativePublish(const float* forward, const float* up, bool gameplay);
     void OdstHeadRelativeReport();
 #endif
@@ -3100,6 +3154,12 @@ namespace
     HudDrawWidgetFn g_realHudDrawWidget = nullptr;
     HudPlaceFn g_realHudPlace = nullptr;
     thread_local bool g_insideHudDrawWidget = false;
+    // Project Reclaimer 0.10 opens the class gate (the install below) without its byte patch: halo3.dll's own code never
+    // runs there. The client's version of the widget draw asks the playback check once, first, and uses the answer only
+    // for the crosshair's class. Inside a widget draw that one call is answered yes, which is what the opened gate does.
+    GameIsPlaybackFn g_realGameIsPlaybackGate = nullptr;
+    bool g_halo3LiftedClassGate = false;
+    thread_local bool t_halo3ClassGateAsk = false;
     // Identity of the crosshair art most recently captured, for ANY title.
     // The compositor re-uploads the authored reticle only when this changes, so
     // a static crosshair costs no swapchain work at all.
@@ -3260,9 +3320,10 @@ namespace
         const bool hideHud=VR_HudHidden()&&g_enabled.load()&&VR_IsStereoEnabled()&&
             Game_MoveStickIsLocomotion();
         if(hideHud) ++hud_visibility::depth;
+        t_halo3ClassGateAsk = g_halo3LiftedClassGate;
         __try { g_realHudDrawWidget(userIndex, descriptor, widgetIndex,
                             useAlternatePath, drawState); }
-        __finally { if(hideHud) --hud_visibility::depth; }
+        __finally { if(hideHud) --hud_visibility::depth; t_halo3ClassGateAsk = false; }
         if (g_authoredReticleCaptureStarted)
         {
             // This widget's art was redirected into the authored texture, so
@@ -3485,7 +3546,7 @@ namespace
     // often, with which flag. Phase A then invokes it per eye ourselves.
     FpDriverFn g_origFpDriver = nullptr;
     int32_t* g_fpDriverGuard = nullptr; // zero-init global gating call site 1
-    constexpr size_t kMaxInstalledGameHooks = 16;
+    constexpr size_t kMaxInstalledGameHooks = 32;
     void* g_installedGameHooks[kMaxInstalledGameHooks]{};
     size_t g_installedGameHookCount = 0;
     unsigned char* g_halo3OwnedClassGate = nullptr;
@@ -3499,6 +3560,10 @@ namespace
                 return;
         if (g_installedGameHookCount < kMaxInstalledGameHooks)
             g_installedGameHooks[g_installedGameHookCount++] = target;
+        else
+            // Never silent: a hook left out here is never taken out at teardown, and its next install fails.
+            LOG("Halo 3 core: more than %zu hooks to retire; the hook at %p is not retired with the core",
+                kMaxInstalledGameHooks, target);
     }
 
     bool RemoveInstalledGameHooks();
@@ -4196,6 +4261,10 @@ namespace
     {
         std::atomic<uintptr_t> slots[kMaxSafeFrameHits]{};
         std::atomic<uint32_t> baseCurvatureBits[kMaxSafeFrameHits]{};
+        // The safe-frame pair each record held when first scanned, before any write of ours: Reach's Aim Frame Zoom
+        // puts the title's own layout back while the frame is up (HudLayoutWanted).
+        std::atomic<uint32_t> baseHorizontalBits[kMaxSafeFrameHits]{};
+        std::atomic<uint32_t> baseVerticalBits[kMaxSafeFrameHits]{};
         std::atomic<int> count{0};
     };
     // Keep each title's authored curvature baseline across teardown and title
@@ -4233,6 +4302,33 @@ namespace
     // attempts have to retry quickly; the long cooldown only makes sense once
     // the title has been settled for a while.
     std::atomic<uint64_t> g_hudLayoutOwnerSinceMs{0};
+
+    // The safe-frame pairs written this session (HudLayoutPairWritten): written on the Present thread, read by the
+    // scan's, under their lock.
+    uint64_t g_hudWrittenPairs[kHudLayoutWrittenPairs]{};
+    std::atomic<int> g_hudWrittenPairCount{0};
+    SRWLOCK g_hudWrittenPairsLock = SRWLOCK_INIT;
+
+    static void NoteHudLayoutPairWritten(float horizontal, float vertical)
+    {
+        uint32_t h = 0, v = 0;
+        memcpy(&h, &horizontal, sizeof(h));
+        memcpy(&v, &vertical, sizeof(v));
+        AcquireSRWLockExclusive(&g_hudWrittenPairsLock);
+        g_hudWrittenPairCount.store(
+            HudLayoutNotePairWritten(g_hudWrittenPairs, g_hudWrittenPairCount.load(std::memory_order_relaxed), h, v),
+            std::memory_order_relaxed);
+        ReleaseSRWLockExclusive(&g_hudWrittenPairsLock);
+    }
+
+    static bool HudLayoutPairWrittenThisSession(uint32_t horizontal, uint32_t vertical)
+    {
+        AcquireSRWLockShared(&g_hudWrittenPairsLock);
+        const bool written = HudLayoutPairWritten(
+            g_hudWrittenPairs, g_hudWrittenPairCount.load(std::memory_order_relaxed), horizontal, vertical);
+        ReleaseSRWLockShared(&g_hudWrittenPairsLock);
+        return written;
+    }
 
     static void ClearHudLayoutSlots()
     {
@@ -4272,7 +4368,7 @@ namespace
 
     static uint32_t EnsureHudLayoutProfile(HudLayoutProfile profile)
     {
-        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
+        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile, g_hostIsProjectReclaimer);
         if (!adapter)
             return 0;
         if (g_hudLayoutOwner.load(std::memory_order_acquire) == profile)
@@ -4345,9 +4441,12 @@ namespace
     // Matches every resolution-class anchor the adapter carries, not only the
     // primary one. Reach authors one curvature record per screen shape and the
     // engine picks by aspect, so the widescreen record alone is not enough.
+    // With a generation, it stops between windows once that level is gone: one region of tag data takes seconds,
+    // and a scan left from the level before held up the next level's own by 3 s (Project Reclaimer, 2026-11-07).
     static int SafeFrameScanRegion(
         uintptr_t regionBase, size_t len, const HudLayoutAdapter& adapter,
-        uintptr_t* out, int maxOut)
+        uintptr_t* out, int maxOut, int* outAnchor = nullptr,
+        HudLayoutProfile profile = HudLayoutProfile::None, uint32_t generation = 0)
     {
         // The region is COPIED OUT through ReadProcessMemory, a window at a time,
         // and the copy is scanned. The game can decommit a region between
@@ -4383,10 +4482,29 @@ namespace
                 static_cast<size_t>(view.anchorLength));
             maxNeed = (std::max)(maxNeed, needs[a]);
         }
+        // Every shape starting with the same eight bytes (Halo 3's, ODST's, both on Project Reclaimer): only the
+        // places one of their rarer bytes appears are compared, found by memchr instead of a compare at every byte.
+        bool sharedPrefix = true;
+        for (int a = 1; a < anchorCount; ++a)
+            sharedPrefix = sharedPrefix && prefixes[a] == prefixes[0];
+        size_t probe = 0;
+        unsigned char probeByte = 0;
+        for (size_t b = 0; b < 8; ++b)
+        {
+            const unsigned char value = static_cast<unsigned char>(prefixes[0] >> (8 * b));
+            if (value != 0xFF && value > probeByte)
+            {
+                probeByte = value;
+                probe = b;
+            }
+        }
+        sharedPrefix = sharedPrefix && probeByte != 0;
         const HANDLE self = GetCurrentProcess();
         size_t pos = 0; // the next candidate's offset in the region
         while (pos + 8 <= len && found < maxOut)
         {
+            if (generation && !HudLayoutContextMatches(profile, generation))
+                return found;
             const size_t want = (std::min)(len - pos, kWindow);
             SIZE_T got = 0;
             ReadProcessMemory(self, p + pos, s_window, want, &got);
@@ -4407,6 +4525,16 @@ namespace
             size_t i = 0;
             for (; i < limit && found < maxOut; ++i)
             {
+                if (sharedPrefix)
+                {
+                    const void* next = memchr(s_window + i + probe, probeByte, limit - i);
+                    if (!next)
+                    {
+                        i = limit;
+                        break;
+                    }
+                    i = static_cast<size_t>(static_cast<const unsigned char*>(next) - s_window) - probe;
+                }
                 uint64_t here;
                 memcpy(&here, s_window + i, sizeof(here));
                 for (int a = 0; a < anchorCount; ++a)
@@ -4417,6 +4545,8 @@ namespace
                         HudLayoutAnchorAt(adapter, a);
                     if (!SafeFrameAnchorEquals(s_window + i, view))
                         continue;
+                    if (outAnchor)
+                        outAnchor[found] = a;
                     out[found++] = regionBase + pos + i +
                         static_cast<size_t>(view.safeFrameOffset);
                     // Skip the matched identity only: two curvature records
@@ -4528,6 +4658,8 @@ namespace
             for (int a = 0; a < anchorCount && !matched; ++a)
             {
                 const HudLayoutAnchorView view = HudLayoutAnchorAt(adapter, a);
+                if (view.markerOnly)
+                    continue;
                 const uintptr_t anchorAddress =
                     slot - static_cast<uintptr_t>(view.safeFrameOffset);
                 if (memcmp(reinterpret_cast<const void*>(anchorAddress),
@@ -4586,6 +4718,65 @@ namespace
         return fallback;
     }
 
+    // Whether `slot` is among the records the last whole scan proved.
+    static bool RememberedHudSlot(HudLayoutProfile profile, uintptr_t slot)
+    {
+        HudLayoutRememberedCache* remembered = HudLayoutRememberedFor(profile);
+        if (!remembered)
+            return false;
+        const int count = remembered->count.load(std::memory_order_acquire);
+        for (int i = 0; i < count && i < kMaxSafeFrameHits; ++i)
+        {
+            if (remembered->slots[i].load(std::memory_order_relaxed) == slot)
+                return true;
+        }
+        return false;
+    }
+
+    // The safe-frame pair `slot` held when first scanned, before any write of ours; a record not yet remembered keeps
+    // what the scan has just read.
+    static void RememberedHudSafeFrameBaseline(
+        HudLayoutProfile profile, uintptr_t slot, uint32_t& horizontal, uint32_t& vertical)
+    {
+        HudLayoutRememberedCache* remembered = HudLayoutRememberedFor(profile);
+        if (!remembered)
+            return;
+        const int count = remembered->count.load(std::memory_order_acquire);
+        for (int i = 0; i < count && i < kMaxSafeFrameHits; ++i)
+        {
+            if (remembered->slots[i].load(std::memory_order_relaxed) == slot)
+            {
+                horizontal = remembered->baseHorizontalBits[i].load(std::memory_order_relaxed);
+                vertical = remembered->baseVerticalBits[i].load(std::memory_order_relaxed);
+                return;
+            }
+        }
+    }
+
+    // The title's own safe-frame pair for its `index`th remembered record, or for the record at `slot` if one is
+    // given. False: none held. Present thread.
+    static bool RememberedHudStockPair(HudLayoutProfile profile, int index, float& horizontal, float& vertical,
+                                       uintptr_t slot = 0)
+    {
+        HudLayoutRememberedCache* remembered = HudLayoutRememberedFor(profile);
+        if (!remembered)
+            return false;
+        const int count = remembered->count.load(std::memory_order_acquire);
+        for (int i = slot ? 0 : index; i < count && i < kMaxSafeFrameHits; ++i)
+        {
+            if (slot && remembered->slots[i].load(std::memory_order_relaxed) != slot)
+                continue;
+            const uint32_t h = remembered->baseHorizontalBits[i].load(std::memory_order_relaxed);
+            const uint32_t v = remembered->baseVerticalBits[i].load(std::memory_order_relaxed);
+            if (!h || !v || !SafeFramePairPlausible(h, v))
+                return false;
+            memcpy(&horizontal, &h, sizeof(horizontal));
+            memcpy(&vertical, &v, sizeof(vertical));
+            return true;
+        }
+        return false;
+    }
+
     // Halo builds its native HUD for the game render surface's pixel aspect.
     // Match Halo 3's headset-confirmed correction and user-facing aspect trim
     // identically for every title adapter.
@@ -4621,15 +4812,43 @@ namespace
 
     // The layout the HUD should have now: the player's (hud_size, hud_aspect, hud_curvature, with the headset's
     // correction), or, while the title's aim frame is up, the flat game's own -- stock size, square aspect, the
-    // authored curvature and no headset correction, because the frame's picture has the game's own proportions.
-    // `aimFrameUsed`: whether this is the aim frame's layout (the frame read once, here).
+    // authored curvature and no headset correction, because the frame's picture has the game's own proportions;
+    // only the frame's own HUD settings (aim_frame_hud_*) scale it. `aimFrameUsed`: whether this is the aim frame's layout (the frame read once, here).
     static void HudLayoutWanted(HudLayoutProfile profile, float& size, float& aspect, float& curvature,
                                 float& horizontal, float& vertical, bool* aimFrameUsed = nullptr)
     {
-        const bool aimFrame = (profile == HudLayoutProfile::Halo3 || profile == HudLayoutProfile::Halo3ODST) &&
-            g_aimFrameUp.load(std::memory_order_acquire);
+        // Reach's own values are not Halo 3's: its frame's layout is the one the scan read from the title
+        // (RememberedHudStockPair), and if none is held the player's stays.
+        float reachStockH = 0.0f, reachStockV = 0.0f;
+        const bool reachFrame = profile == HudLayoutProfile::HaloReach && g_aimFrameUp.load(std::memory_order_acquire) &&
+            RememberedHudStockPair(profile, 0, reachStockH, reachStockV);
+        const bool aimFrame = reachFrame ||
+            ((profile == HudLayoutProfile::Halo3 || profile == HudLayoutProfile::Halo3ODST) &&
+             g_aimFrameUp.load(std::memory_order_acquire));
         if (aimFrameUsed)
             *aimFrameUsed = aimFrame;
+        // The frame's own HUD settings (aim_frame_logic.h HudScale) scale the frame's layout; at 1 it is as below.
+        const auto frameHudScale = [&]
+        {
+            float scaleH = 1.0f, scaleV = 1.0f;
+            aim_frame::HudScale(g_config.aim_frame_hud_size, g_config.aim_frame_hud_width_scale,
+                                g_config.aim_frame_hud_height_scale, scaleH, scaleV);
+            if (scaleH != 1.0f)
+                horizontal = fmaxf(0.15f, fminf(horizontal * scaleH, 1.05f));
+            if (scaleV != 1.0f)
+                vertical = fmaxf(0.15f, fminf(vertical * scaleV, 1.05f));
+        };
+        if (reachFrame)
+        {
+            // The picture has the render surface's own shape, so no correction: the record as the title authored it.
+            size = fmaxf(0.30f, fminf(reachStockH, 1.0f));
+            aspect = 1.0f;
+            curvature = 0.5f;
+            horizontal = reachStockH;
+            vertical = reachStockV;
+            frameHudScale();
+            return;
+        }
         if (aimFrame)
         {
             size = 0.87f;
@@ -4651,9 +4870,12 @@ namespace
                 }
             }
             // Project Reclaimer's HUD and zoom art come out narrower in the frame under that correction; this
-            // width was set by eye in a headset. MCC's are right without it.
-            if (g_hostIsProjectReclaimer)
+            // width was set by eye in a headset. MCC's are right without it, and so are those of Reclaimer 0.10's
+            // recompiled engine, which lays its HUD out as MCC's does (its own layout reads 0.87, not 0.9's 0.97):
+            // there the width stretched the frame's crosshair.
+            if (g_hostIsProjectReclaimer && !lifted::Active())
                 horizontal *= kAimFrameReclaimerHudWidth;
+            frameHudScale();
             return;
         }
         size = g_config.hud_size;
@@ -4671,13 +4893,15 @@ namespace
             static_cast<uint32_t>(profile);
     }
 
+#include "reclaimer_odst_hud_record.inl"
+
     DWORD WINAPI SafeFrameScanThread(LPVOID parameter)
     {
         const uintptr_t token = reinterpret_cast<uintptr_t>(parameter);
         const auto profile =
             static_cast<HudLayoutProfile>(static_cast<uint32_t>(token));
         const uint32_t generation = static_cast<uint32_t>(token >> 32);
-        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
+        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile, g_hostIsProjectReclaimer);
         if (!adapter)
         {
             g_safeFrameScanInFlight.store(false, std::memory_order_release);
@@ -4696,7 +4920,19 @@ namespace
 
         uintptr_t acceptedSlots[kMaxSafeFrameHits]{};
         uint32_t acceptedBaselines[kMaxSafeFrameHits]{};
+        uint32_t acceptedBaseH[kMaxSafeFrameHits]{};
+        uint32_t acceptedBaseV[kMaxSafeFrameHits]{};
         int accepted = 0;
+        // Project Reclaimer: records left from an earlier level (HudLayoutRecordLeftOver), kept apart from the
+        // level's own until the count is settled.
+        uintptr_t leftOverSlots[kMaxSafeFrameHits]{};
+        uint32_t leftOverBaselines[kMaxSafeFrameHits]{};
+        uint32_t leftOverBaseH[kMaxSafeFrameHits]{};
+        uint32_t leftOverBaseV[kMaxSafeFrameHits]{};
+        bool leftOverRemembered[kMaxSafeFrameHits]{};
+        int leftOvers = 0, rememberedLeftOvers = 0;
+        // Project Reclaimer: an ODST level's converted record in the engine's tag data (kHalo3MergedHudLayoutAdapter).
+        bool odstLevel = false;
         int rawHits = 0;
         bool cancelled = false;
         SYSTEM_INFO si;
@@ -4795,13 +5031,26 @@ namespace
                     regionBase < selfBase + selfSize;
                 if (candidate && !self)
                 {
-                    uintptr_t hits[kMaxSafeFrameHits]{};
+                    // More than a title's records: on Project Reclaimer one region of tag data also holds the
+                    // copies left from earlier levels, which a cap of 16 could put ahead of the level's own.
+                    constexpr int kRegionHits = 64;
+                    uintptr_t hits[kRegionHits]{};
+                    int shapes[kRegionHits]{};
                     const int n = SafeFrameScanRegion(
                         regionBase, mbi.RegionSize, *adapter,
-                        hits, kMaxSafeFrameHits);
+                        hits, kRegionHits, shapes, profile, generation);
                     for (int k = 0; k < n; ++k)
                     {
                         ++rawHits;
+                        if (shapes[k] > 0 && adapter->altAnchors[shapes[k] - 1].markerOnly)
+                        {
+                            if (tagSpanPass && !odstLevel)
+                                LOG("SAFEFRAME [%s]: %s's layout record in the engine's tag data at %p: an %s level "
+                                    "is loaded", adapter->name, adapter->altAnchors[shapes[k] - 1].name,
+                                    reinterpret_cast<void*>(hits[k]), adapter->altAnchors[shapes[k] - 1].name);
+                            odstLevel = odstLevel || tagSpanPass;
+                            continue;
+                        }
                         uint32_t destinationZ = 0, h = 0, v = 0;
                         if (!SafeFrameReadLayout(
                                 hits[k], *adapter, &destinationZ, &h, &v))
@@ -4809,19 +5058,43 @@ namespace
                         const bool payloadOk =
                             SafeFramePairPlausible(h, v) &&
                             HudDestinationPlausible(destinationZ);
+                        uint32_t loadedH = h, loadedV = v;
+                        if (payloadOk)
+                            RememberedHudSafeFrameBaseline(profile, hits[k], loadedH, loadedV);
+                        const bool leftOver = payloadOk && g_hostIsProjectReclaimer &&
+                            (HudLayoutRecordLeftOver(h, v, loadedH, loadedV) ||
+                             HudLayoutPairWrittenThisSession(h, v));
                         LOG("SAFEFRAME [%s]: anchor at %p (type 0x%X protect "
-                            "0x%X) destination-Z %08X, safe frame %08X/%08X -> %s",
+                            "0x%X) destination-Z %08X, safe frame %08X/%08X -> %s%s",
                             adapter->name, reinterpret_cast<void*>(hits[k]),
                             static_cast<unsigned>(mbi.Type),
                             static_cast<unsigned>(mbi.Protect),
                             destinationZ, h, v,
                             payloadOk ? "VERIFIED" :
-                                "payload implausible, REJECTED");
-                        if (payloadOk && accepted < kMaxSafeFrameHits)
+                                "payload implausible, REJECTED",
+                            leftOver ? ", left from an earlier level (it holds the layout written there, not the "
+                                       "one it was loaded with)" : "");
+                        if (leftOver)
+                        {
+                            if (leftOvers < kMaxSafeFrameHits)
+                            {
+                                leftOverSlots[leftOvers] = hits[k];
+                                leftOverBaselines[leftOvers] =
+                                    RememberedHudCurvatureBaseline(profile, hits[k], destinationZ);
+                                leftOverBaseH[leftOvers] = loadedH;
+                                leftOverBaseV[leftOvers] = loadedV;
+                                leftOverRemembered[leftOvers] = RememberedHudSlot(profile, hits[k]);
+                                rememberedLeftOvers += leftOverRemembered[leftOvers] ? 1 : 0;
+                                ++leftOvers;
+                            }
+                        }
+                        else if (payloadOk && accepted < kMaxSafeFrameHits)
                         {
                             acceptedSlots[accepted] = hits[k];
                             acceptedBaselines[accepted] =
                                 RememberedHudCurvatureBaseline(profile, hits[k], destinationZ);
+                            acceptedBaseH[accepted] = loadedH;
+                            acceptedBaseV[accepted] = loadedV;
                             ++accepted;
                         }
                     }
@@ -4838,16 +5111,29 @@ namespace
             }
             if (cancelled || !tagSpanPass)
                 break;
-            if (HudLayoutAcceptedCountOk(*adapter, accepted))
+            if (HudLayoutAcceptedCountOk(*adapter, accepted) ||
+                HudLayoutAcceptedCountOk(*adapter, accepted + leftOvers) ||
+                HudLayoutTakeRememberedLeftOvers(*adapter, accepted, rememberedLeftOvers))
             {
                 LOG("SAFEFRAME [%s]: %d record(s) found in the engine's tag data in %llu ms", adapter->name,
                     accepted, static_cast<unsigned long long>(GetTickCount64() - t0));
+                break;
+            }
+            // Project Reclaimer: the engine's records all lie in its tag data; what memory holds elsewhere is the
+            // client's copies (hundreds of ODST's, a dozen of Halo 3's), and a search there wrote the wrong ones.
+            if (g_hostIsProjectReclaimer)
+            {
+                LOG("SAFEFRAME [%s]: the engine's tag data held %d record(s) of this level's and %d left from an "
+                    "earlier level (%d remembered), not the title's %d; not searching the client's copies",
+                    adapter->name, accepted, leftOvers, rememberedLeftOvers, adapter->expectedBlocks);
                 break;
             }
             LOG("SAFEFRAME [%s]: the engine's tag data held %d record(s), not the title's %d; searching all memory",
                 adapter->name, accepted, adapter->expectedBlocks);
             tagSpanPass = false;
             accepted = 0;
+            leftOvers = 0;
+            rememberedLeftOvers = 0;
             rawHits = 0;
             addr = addrMin;
             scanEnd = addrMax;
@@ -4859,6 +5145,26 @@ namespace
                 "cancelling before the next memory region", adapter->name);
             g_safeFrameScanInFlight.store(false, std::memory_order_release);
             return 0;
+        }
+
+        if (leftOvers > 0)
+        {
+            const bool rememberedOnly = HudLayoutTakeRememberedLeftOvers(*adapter, accepted, rememberedLeftOvers);
+            const bool take = rememberedOnly || HudLayoutTakeLeftOvers(*adapter, accepted, leftOvers);
+            LOG("SAFEFRAME [%s]: %d record(s) loaded with this level and %d left from an earlier level -> %s",
+                adapter->name, accepted, leftOvers,
+                rememberedOnly ? "the ones the last scan proved are written: the level was found while it loaded"
+                               : take ? "all written, as before" : "only this level's own are written");
+            for (int i = 0; take && i < leftOvers && accepted < kMaxSafeFrameHits; ++i)
+            {
+                if (rememberedOnly && !leftOverRemembered[i])
+                    continue;
+                acceptedSlots[accepted] = leftOverSlots[i];
+                acceptedBaselines[accepted] = leftOverBaselines[i];
+                acceptedBaseH[accepted] = leftOverBaseH[i];
+                acceptedBaseV[accepted] = leftOverBaseV[i];
+                ++accepted;
+            }
         }
 
         // MORE RECORDS THAN THE TITLE HAS (Halo 3). A host can hold a second copy of the level's tag data in
@@ -4875,6 +5181,8 @@ namespace
             const uintptr_t tagBase = Halo3TagDataBaseValue();
             uintptr_t keptSlots[kMaxSafeFrameHits]{};
             uint32_t keptBaselines[kMaxSafeFrameHits]{};
+            uint32_t keptBaseH[kMaxSafeFrameHits]{};
+            uint32_t keptBaseV[kMaxSafeFrameHits]{};
             int kept = 0;
             for (int i = 0; tagBase && i < accepted; ++i)
             {
@@ -4884,6 +5192,8 @@ namespace
                 {
                     keptSlots[kept] = slot;
                     keptBaselines[kept] = acceptedBaselines[i];
+                    keptBaseH[kept] = acceptedBaseH[i];
+                    keptBaseV[kept] = acceptedBaseV[i];
                     ++kept;
                 }
             }
@@ -4899,6 +5209,8 @@ namespace
                 {
                     acceptedSlots[i] = keptSlots[i];
                     acceptedBaselines[i] = keptBaselines[i];
+                    acceptedBaseH[i] = keptBaseH[i];
+                    acceptedBaseV[i] = keptBaseV[i];
                 }
                 accepted = kept;
             }
@@ -4951,6 +5263,12 @@ namespace
                     remembered->baseCurvatureBits[i].store(
                         i < accepted ? acceptedBaselines[i] : 0,
                         std::memory_order_relaxed);
+                    remembered->baseHorizontalBits[i].store(
+                        i < accepted ? acceptedBaseH[i] : 0,
+                        std::memory_order_relaxed);
+                    remembered->baseVerticalBits[i].store(
+                        i < accepted ? acceptedBaseV[i] : 0,
+                        std::memory_order_relaxed);
                 }
                 remembered->count.store(
                     accepted, std::memory_order_release);
@@ -4969,6 +5287,14 @@ namespace
                           "engine: its curvature is folded into a derived "
                           "basis when the tag block loads, so the slider is "
                           "deliberately not written");
+            // Project Reclaimer: an ODST level, should its scenario not have said so (ReclaimerOdstHudTick).
+            if (g_hostIsProjectReclaimer && profile == HudLayoutProfile::Halo3)
+            {
+                if (odstLevel)
+                    g_reclaimerOdstHudMarkerGeneration.store(generation, std::memory_order_relaxed);
+                else if (g_reclaimerOdstHud.generation.load(std::memory_order_relaxed) != generation)
+                    g_reclaimerOdstHud.record.store(0, std::memory_order_relaxed);
+            }
         }
         else
         {
@@ -4981,7 +5307,7 @@ namespace
 
     void LaunchSafeFrameScan(HudLayoutProfile profile, const char* why)
     {
-        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
+        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile, g_hostIsProjectReclaimer);
         const uint32_t generation = EnsureHudLayoutProfile(profile);
         if (!adapter || !generation)
             return;
@@ -5025,7 +5351,7 @@ namespace
     // Present and verified slots are rechecked once per second for map reloads.
     void ApplyHudLayoutOnce(HudLayoutProfile profile)
     {
-        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
+        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile, g_hostIsProjectReclaimer);
         const uint32_t generation =
             g_hudLayoutGeneration.load(std::memory_order_acquire);
         if (!adapter || !HudLayoutContextMatches(profile, generation) ||
@@ -5147,10 +5473,16 @@ namespace
             const bool stillOwned =
                 HudLayoutContextMatches(profile, generation) &&
                 HudLayoutResultsMatch(profile, generation);
+            // Reach's frame: each record its own pair as the title authored it.
+            float slotH = wantH, slotV = wantV;
+            if (wantForAimFrame && profile == HudLayoutProfile::HaloReach)
+                (void)RememberedHudStockPair(profile, 0, slotH, slotV, slot);
             const bool wrote = stillOwned &&
                 SafeFrameWriteLayout(
-                    slot, *adapter, targetDestinationZ, wantH, wantV);
+                    slot, *adapter, targetDestinationZ, slotH, slotV);
             ReleaseSRWLockShared(&g_hudLayoutWriteLock);
+            if (wrote)
+                NoteHudLayoutPairWritten(slotH, slotV);
             if (!stillOwned)
                 return;
             if (wrote)
@@ -5159,7 +5491,8 @@ namespace
 
         if (live == n)
         {
-            if (profile == HudLayoutProfile::Halo3 || profile == HudLayoutProfile::Halo3ODST)
+            if (profile == HudLayoutProfile::Halo3 || profile == HudLayoutProfile::Halo3ODST ||
+                profile == HudLayoutProfile::HaloReach)
                 g_layoutAppliedForFrame.store(wantForAimFrame ? 1 : 0, std::memory_order_release);
             g_hudAppliedBits.store(
                 wantBits, std::memory_order_relaxed);
@@ -5192,13 +5525,17 @@ namespace
 
     bool TryReacquireSafeFrames(HudLayoutProfile profile)
     {
-        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
+        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile, g_hostIsProjectReclaimer);
         HudLayoutRememberedCache* remembered =
             HudLayoutRememberedFor(profile);
         const uint32_t generation =
             g_hudLayoutGeneration.load(std::memory_order_acquire);
         if (!adapter || !remembered ||
             !HudLayoutContextMatches(profile, generation))
+            return false;
+        // Project Reclaimer: an ODST level's own record is found only by a search (reclaimer_odst_hud_record.inl).
+        if (g_hostIsProjectReclaimer && g_reclaimerOdstHud.record.load(std::memory_order_relaxed) &&
+            g_reclaimerOdstHud.generation.load(std::memory_order_relaxed) != generation)
             return false;
 
         const int count = remembered->count.load(std::memory_order_acquire);
@@ -5222,6 +5559,23 @@ namespace
                 HudDestinationPlausible(destinationZ) &&
                 HudDestinationPlausible(baseline))
             {
+                // Project Reclaimer: a record not loaded again with this level is a copy left from an earlier one;
+                // the level's own are elsewhere, so it is searched for (HudLayoutRecordLeftOver).
+                if (g_hostIsProjectReclaimer &&
+                    HudLayoutRecordLeftOver(
+                        h, v, remembered->baseHorizontalBits[i].load(std::memory_order_relaxed),
+                        remembered->baseVerticalBits[i].load(std::memory_order_relaxed)))
+                {
+                    static uint32_t s_loggedGeneration = 0;
+                    if (s_loggedGeneration != generation)
+                    {
+                        s_loggedGeneration = generation;
+                        LOG("SAFEFRAME [%s]: the record remembered at %p still holds the layout written at an "
+                            "earlier level, not the one it was loaded with: this level's records are elsewhere; "
+                            "searching", adapter->name, reinterpret_cast<void*>(slot));
+                    }
+                    return false;
+                }
                 slots[accepted] = slot;
                 baselines[accepted] = baseline;
                 ++accepted;
@@ -5274,9 +5628,11 @@ namespace
         // No layout of ours in the game: the HUD draws at the game's own, which is what the capture expects then.
         if (g_safeFrameHitCount.load(std::memory_order_acquire) <= 0)
             return true;
-        // ODST: only the frame's own layout still in the game holds the capture, and only just after the frame:
-        // this runs for every ODST crosshair, Aim Frame Zoom or not, and must never leave one without its art.
-        if (title == GameTitle::Halo3ODST)
+        // ODST, Reach, Halo 4, Halo 2 and Halo CE (whose HUDs have no layout record of this kind): only the frame's own
+        // layout still in the game holds the capture, and only just after the frame: this runs for every crosshair
+        // there, Aim Frame Zoom or not, and must never leave one without its art.
+        if (title == GameTitle::Halo3ODST || title == GameTitle::HaloReach || title == GameTitle::Halo4 ||
+            title == GameTitle::Halo2 || title == GameTitle::HaloCE)
             return g_layoutAppliedForFrame.load(std::memory_order_acquire) != 1 ||
                 !down || GetTickCount64() - down >= 2000;
         return g_layoutAppliedForFrame.load(std::memory_order_acquire) ==
@@ -5300,7 +5656,7 @@ namespace
             if(profile==HudLayoutProfile::Halo3&&(adjusted||native))LOG("H3 live HUD layout: selected-record adjusted=%llu native=%llu; stock scanner independent",adjusted,native);
         }
 
-        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
+        const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile, g_hostIsProjectReclaimer);
         const uint32_t generation = EnsureHudLayoutProfile(profile);
         if (!adapter || !generation)
             return;
@@ -5352,6 +5708,8 @@ namespace
 #endif
         if (!HudLayoutTitleFrameLive(lastCam, now))
             return;
+        if (profile == HudLayoutProfile::Halo3 && g_hostIsProjectReclaimer)
+            ReclaimerOdstHudTick(generation, now, wantH, wantV, wantCurvature);
         if (count > 0)
         {
             const uint64_t lastVerify =
@@ -5365,7 +5723,8 @@ namespace
             // The aim frame coming up or down changes the layout at once, even where the player's settings
             // read the same as the frame's (HudLayoutWanted).
             static bool appliedForAimFrame = false;
-            const bool aimFrameUp = (profile == HudLayoutProfile::Halo3 || profile == HudLayoutProfile::Halo3ODST) &&
+            const bool aimFrameUp = (profile == HudLayoutProfile::Halo3 || profile == HudLayoutProfile::Halo3ODST ||
+                                     profile == HudLayoutProfile::HaloReach) &&
                 g_aimFrameUp.load(std::memory_order_acquire);
             const bool aimFrameChanged = aimFrameUp != appliedForAimFrame;
             appliedForAimFrame = aimFrameUp;
@@ -5531,20 +5890,82 @@ namespace
         }
     }
 
+    // HALO 3'S FIRST-PERSON BLOCK (engine TLS +0x568): per player, two weapon slots, then the player's render root. A
+    // slot is a 0x4A4-byte header (the node count at +0x49C), a bone array of the build's node capacity (0x34 bytes a
+    // node) and 0x18 bytes more, the first of them the selected node. Retail Halo 3 holds 64 nodes; Project Reclaimer
+    // 0.10 holds 128 (its log: fp_nodes=128), which moves every field after the bone array: the left-hand weapon of
+    // a dual wield was never found there, and the render root read empty. The capacity is proven on the composed
+    // primary weapon (Halo3ProveFpLayout); until it is, retail's stands.
+    struct Halo3FpLayout { uint32_t nodes, slotStride, selectedNode, userStride, renderRoot; };
+    constexpr Halo3FpLayout Halo3FpLayoutFor(uint32_t nodes)
+    {
+        const uint32_t slot = 0x4A4 + nodes * 0x34 + 0x18;
+        return {nodes, slot, 0x4A4 + nodes * 0x34, 2 * slot + 0xB8, 2 * slot + 0x78};
+    }
+    static_assert(Halo3FpLayoutFor(64).slotStride == 0x11BC && Halo3FpLayoutFor(64).selectedNode == 0x11A4 &&
+                  Halo3FpLayoutFor(64).userStride == 0x2430 && Halo3FpLayoutFor(64).renderRoot == 0x23F0);
+    std::atomic<uint32_t> g_halo3FpNodes{0}; // proven node capacity; 0 until proven (retail's 64 stands)
+    Halo3FpLayout Halo3FpLayoutNow()
+    {
+        const uint32_t nodes = g_halo3FpNodes.load(std::memory_order_acquire);
+        return Halo3FpLayoutFor(nodes ? nodes : 64);
+    }
+    // Game thread, on the composed primary weapon of player 0 (`users` is the block's start). A capacity holds when the
+    // slot's selected node is one of its nodes (or none) and the render root after the two slots is a real
+    // transform. Retail's 64 is tried first; at 64 nodes Reclaimer 0.10's root reads all zero.
+    __declspec(noinline) void Halo3ProveFpLayout(const uint8_t* users)
+    {
+        if (g_halo3FpNodes.load(std::memory_order_acquire))
+            return;
+        static uint64_t nextMs = 0;
+        const uint64_t now = GetTickCount64();
+        if (now < nextMs)
+            return;
+        nextMs = now + 1000;
+        for (const uint32_t nodes : {64u, 128u})
+        {
+            const Halo3FpLayout layout = Halo3FpLayoutFor(nodes);
+            int32_t count = 0, selected = 0;
+            float root[13]{};
+            __try
+            {
+                memcpy(&count, users + 0x49C, sizeof(count));
+                memcpy(&selected, users + layout.selectedNode, sizeof(selected));
+                memcpy(root, users + layout.renderRoot, sizeof(root));
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                continue;
+            }
+            bool finite = true;
+            for (const float value : root)
+                finite = finite && std::isfinite(value);
+            if (count <= 0 || count > static_cast<int32_t>(nodes) || selected < -1 || selected >= count || !finite ||
+                !(root[0] > 0.01f && root[0] < 100.0f))
+                continue;
+            g_halo3FpNodes.store(nodes, std::memory_order_release);
+            LOG("Halo 3 first-person block: %u nodes a weapon (selected node %d of %d; render root scale %.3f): weapon "
+                "slots 0x%X apart, players 0x%X", nodes, selected, count, root[0], layout.slotStride,
+                layout.userStride);
+            return;
+        }
+    }
+
     // Locate the first-person weapon slot that owns a composed bone array.
     // Pointer compares only, so it is safe to call before composition too.
     bool FindFirstPersonWeapon(BoneMatrix* bones, int& outSlot, unsigned char*& outWeapon)
     {
         if (!bones || !g_engineTlsIndex) return false;
-        auto** slots=reinterpret_cast<void**>(__readgsqword(0x58));
+        auto** slots=reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
         if (!slots) return false;
         auto* tls=reinterpret_cast<unsigned char*>(slots[*g_engineTlsIndex]);
         if (!tls) return false;
         auto* weapons=*reinterpret_cast<unsigned char**>(tls+0x568);
         if (!weapons) return false;
+        const uint32_t slotStride=Halo3FpLayoutNow().slotStride;
         for(int candidate=0;candidate<2;++candidate)
         {
-            auto* w=weapons+candidate*0x11BC;
+            auto* w=weapons+candidate*slotStride;
             if (reinterpret_cast<BoneMatrix*>(w+0x4A4)==bones)
             { outSlot=candidate; outWeapon=w; return true; }
         }
@@ -5988,7 +6409,7 @@ namespace
         // Cache the authored alignment nodes for the render-thread
         // interpolator. Publish the count last so an acquiring reader never
         // observes indices from a half-updated skeleton.
-        const int selectedIndex=*reinterpret_cast<int*>(weapon+0x11A4);
+        const int selectedIndex=*reinterpret_cast<int*>(weapon+Halo3FpLayoutNow().selectedNode);
         const int orientationIndex=
             selectedIndex>=0&&selectedIndex<count?selectedIndex:wristIndex;
         // Arm-IK chain: elbow = parent(wrist), shoulder = parent(elbow).
@@ -6220,7 +6641,7 @@ namespace
         // midway between head and hand â€” the reported "weird in-between
         // state". Write the sibling half too (banks at TLS+0x560, one 0x1000
         // bank per slot, two 0x800 halves of 64 records each).
-        auto** tlsSlots=reinterpret_cast<void**>(__readgsqword(0x58));
+        auto** tlsSlots=reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
         auto* tls2=tlsSlots?reinterpret_cast<unsigned char*>(tlsSlots[*g_engineTlsIndex]):nullptr;
         auto* banks=tls2?*reinterpret_cast<unsigned char**>(tls2+0x560):nullptr;
         if (banks)
@@ -6271,7 +6692,7 @@ namespace
         if (g_fpInterpolatorHooked.load(std::memory_order_acquire)) return false;
         if (!model || !bones || !g_engineTlsIndex || !g_animationTagData || !*g_animationTagData)
             return false;
-        auto** slots=reinterpret_cast<void**>(__readgsqword(0x58));
+        auto** slots=reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
         if (!slots) return false;
         auto* tls=reinterpret_cast<unsigned char*>(slots[*g_engineTlsIndex]);
         if (!tls) return false;
@@ -6279,9 +6700,10 @@ namespace
         if (!weapons) return false;
         int slot=-1;
         unsigned char* weapon=nullptr;
+        const uint32_t slotStride=Halo3FpLayoutNow().slotStride;
         for(int candidate=0;candidate<2;++candidate)
         {
-            auto* w=weapons+candidate*0x11BC;
+            auto* w=weapons+candidate*slotStride;
             if (reinterpret_cast<BoneMatrix*>(w+0x4A4)==bones) { slot=candidate; weapon=w; break; }
         }
         if (!weapon) return false;
@@ -6322,7 +6744,7 @@ namespace
         // itself and stores its bone index here. Unlike a guessed `gun` name,
         // this exists in the live 43-node skeleton and follows each weapon's
         // authored barrel orientation.
-        const int selectedIndex=*reinterpret_cast<int*>(weapon+0x11A4);
+        const int selectedIndex=*reinterpret_cast<int*>(weapon+Halo3FpLayoutNow().selectedNode);
         const int orientationIndex=selectedIndex>=0&&selectedIndex<count?selectedIndex:wristIndex;
 
         // Proven offline (2026-07-15): the root transform handed to the composer
@@ -6414,18 +6836,36 @@ namespace
         return true;
     }
 
+    // Project Reclaimer 0.10 draws the first-person view with its own version of the render (0x1854C8), which never
+    // fills the cache LoadCachedRenderRoot reads (its writer +0x2C0D20 is below it). Every caller takes the root's
+    // pose from the live camera and only its scale from the cache: there the scale of the root the visible palette
+    // was last drawn with (FpVisiblePaletteHook) stands in, per player.
+    std::atomic<float> g_paletteRootScale[4]{};
+
     bool LoadCachedRenderRoot(int player, BoneMatrix& root)
     {
         if (player<0 || player>=4 || !g_engineTlsIndex) return false;
-        auto** tlsSlots=reinterpret_cast<void**>(__readgsqword(0x58));
+        auto** tlsSlots=reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
         if (!tlsSlots) return false;
         auto* tls=reinterpret_cast<unsigned char*>(tlsSlots[*g_engineTlsIndex]);
         if (!tls) return false;
         auto* renderPlayers=*reinterpret_cast<unsigned char**>(tls+0x568);
         if (!renderPlayers) return false;
+        const Halo3FpLayout layout=Halo3FpLayoutNow();
         root=*reinterpret_cast<const BoneMatrix*>(
-            renderPlayers+static_cast<uintptr_t>(player)*0x2430+0x23F0);
-        return isfinite(root.scale) && fabsf(root.scale)>0.001f;
+            renderPlayers+static_cast<uintptr_t>(player)*layout.userStride+layout.renderRoot);
+        if (isfinite(root.scale) && fabsf(root.scale)>0.001f) return true;
+        const float scale=g_paletteRootScale[player].load(std::memory_order_relaxed);
+        float camera[9];
+        if (!lifted::Active() || !isfinite(scale) || fabsf(scale)<=0.001f ||
+            !g_camValid.load() || !LoadCameraBasis(camera))
+            return false;
+        root.scale=scale;
+        memcpy(root.rotation,camera,sizeof(camera));
+        root.translation[0]=g_camX.load();
+        root.translation[1]=g_camY.load();
+        root.translation[2]=g_camZ.load();
+        return true;
     }
 
     // AUTO BARREL ALIGNMENT source data. In the authored first-person pose the
@@ -6781,11 +7221,11 @@ namespace
                 {
                     if(feature.fourArgumentResolver)
                         resolved=reinterpret_cast<ReachCollisionResolveFn>(
-                            feature.resolver)(worker.accepted[sample],
+                            lifted::Callable(feature.resolver))(worker.accepted[sample],
                                 desired[sample],accepted,ignoredObject)!=0;
                     else
                         resolved=reinterpret_cast<LegacyCollisionResolveFn>(
-                            feature.resolver)(worker.accepted[sample],
+                            lifted::Callable(feature.resolver))(worker.accepted[sample],
                                 desired[sample],accepted,ignoredObject,-1);
                 }
                 __except(EXCEPTION_EXECUTE_HANDLER)
@@ -8507,6 +8947,9 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                 break;
             }
         H3SecondaryVisualScope secondaryMotionScope(context);
+        if (root && context.valid && context.player>=0 && context.player<4 &&
+            isfinite(root->scale) && fabsf(root->scale)>0.001f)
+            g_paletteRootScale[context.player].store(root->scale,std::memory_order_relaxed);
         // A modded gun can be parented to base instead of either wrist.
         // Resolve its actual model outputs before IK, scaling and visibility.
         if (context.valid)
@@ -8693,7 +9136,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     void ChudProbe()
     {
         if (!g_config.hud_probe || !g_engineTlsIndex) return;
-        auto** slots=reinterpret_cast<void**>(__readgsqword(0x58));
+        auto** slots=reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
         if (!slots) return;
         auto* tls=reinterpret_cast<unsigned char*>(slots[*g_engineTlsIndex]);
         if (!tls) return;
@@ -9017,6 +9460,12 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     void __fastcall ComposeBonesHook(void* model, int start, int count, BoneMatrix* output,
                                      void* source, void* defaults)
     {
+        if (!g_halo3FpNodes.load(std::memory_order_acquire))
+        {
+            int proveSlot = -1; unsigned char* proveWeapon = nullptr;
+            if (FindFirstPersonWeapon(output, proveSlot, proveWeapon) && proveSlot == 0)
+                Halo3ProveFpLayout(proveWeapon);
+        }
         if (!g_insideSpecialCompose)
         {
             g_fpSkipBounds[0]=g_fpSkipBounds[1]=g_fpSkipBounds[2]=g_fpSkipBounds[3]=0;
@@ -9078,7 +9527,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             return CinematicControlState::Unknown;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             if (!slots)
                 return CinematicControlState::Unknown;
             auto* tls = reinterpret_cast<unsigned char*>(
@@ -9121,7 +9570,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             g_odstCamera.cinematicCameraTlsMemberOffset;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             if (slots && g_cinematicTlsIndex &&
                 *g_cinematicTlsIndex < 256 && cameraMemberOffset)
             {
@@ -9197,6 +9646,10 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     // owns the view (vehicle_steady_exposure); Halo 3's while the camera in use says "eyeAdjust": false.
     EngineExposureLock g_odstExposure{"ODST vehicle exposure"};
     EngineExposureLock g_halo3Exposure{"Halo 3 vehicle exposure"};
+    // Reach's, while the vehicle camera in use for its seat says "eyeAdjust": false (reach_vehicle_cameras.inl).
+    EngineExposureLock g_reachExposure{"Reach vehicle exposure"};
+    // Halo 4's, while the vehicle camera in use for its seat says "eyeAdjust": false (halo4_vehicle_cameras.inl).
+    EngineExposureLock g_halo4Exposure{"Halo 4 vehicle exposure"};
     // Whether the vehicle camera in use for the seat the player is in holds the exposure (vehicle_cameras.inl).
     bool Halo3VehicleCameraHoldsExposure();
 
@@ -9538,6 +9991,9 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     std::atomic<uint8_t> g_halo3VehicleBinding{
         static_cast<uint8_t>(Halo3VehicleBindingState::NotInstalled)};
     Halo3PlayerUnitGetterFn g_halo3PlayerUnitGetter = nullptr;
+    // Its address in the image, for checks that read its code (Project Reclaimer 0.10's lifted::Callable gives the
+    // pointer above an entry of its own).
+    uintptr_t g_halo3PlayerUnitGetterAt = 0;
     Halo3UnitInVehicleFn g_halo3UnitInVehicle = nullptr;
     Halo3VehicleTypeFn g_halo3VehicleTypeAccessor = nullptr;
     Halo3InterpolatedNodesFn g_halo3InterpolatedNodes = nullptr;
@@ -9652,6 +10108,15 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         float floats[kHalo3ObserverCaptureFloats];
     };
     Halo3ObserverCapture g_halo3ObserverCapture;
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+    // ODST's observer, captured the same way (OdstCaptureObserver) for the vehicle cameras: the game's own camera and
+    // the pivot it turns about (vehicle_cameras.inl's Halo3ReadObserverCamera). The engine TLS slot of the observer
+    // array is decoded from the matched effect function at install (odst_vehicle_logic.h: OdstDecodeObserverSlot);
+    // 0 = not decoded, and nothing is captured.
+    Halo3ObserverCapture g_odstObserverCapture;
+    std::atomic<uint32_t> g_odstObserverSlot{0};
+    std::atomic<uint32_t> g_odstObserverFaults{0};
+#endif
 
     // C4 transform probe capture (log-only): a bounded window of the seated
     // DIRECT parent's object data, so the worker can measure the vehicle's
@@ -10585,7 +11050,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             if (unit != -1)
             {
                 auto** slots =
-                    reinterpret_cast<void**>(__readgsqword(0x58));
+                    reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
                 auto* tls = slots ? reinterpret_cast<unsigned char*>(
                     slots[*g_engineTlsIndex]) : nullptr;
                 unsigned char* table = tls
@@ -11481,7 +11946,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         bool faulted = false;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             auto* tls = slots ? reinterpret_cast<unsigned char*>(
                 slots[*g_engineTlsIndex]) : nullptr;
             unsigned char* observer = tls
@@ -11505,7 +11970,18 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             faulted = true;
         }
         if (faulted)
+        {
+            // A fault inside the copy leaves the window torn and the sequence odd. The capture is marked not valid
+            // first, then the sequence is closed, so a capture after the probe is armed again reads as stable while
+            // the torn window never does: a reader that sees the closed sequence also sees `valid` cleared (its
+            // re-check after the copy). One writer: this camera thread.
+            Halo3ObserverCapture& cap = g_halo3ObserverCapture;
+            cap.valid.store(0, std::memory_order_relaxed);
+            cap.captureMs.store(0, std::memory_order_relaxed);
+            if (cap.seq.load(std::memory_order_relaxed) & 1u)
+                cap.seq.fetch_add(1, std::memory_order_release);
             Halo3DisableVehicleProbe("observer capture fault");
+        }
     }
 
     // C3: read the engine-evaluated per-seat camera pivot (observer record
@@ -11530,7 +12006,11 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         const float a0 = cap.floats[focusIndex];
         const float a1 = cap.floats[focusIndex + 1];
         const float a2 = cap.floats[focusIndex + 2];
+        std::atomic_thread_fence(std::memory_order_acquire);
         if (cap.seq.load(std::memory_order_acquire) != seq)
+            return false;
+        // A capture that faulted is closed with `valid` already cleared (Halo3CaptureObserver).
+        if (!cap.valid.load(std::memory_order_relaxed))
             return false;
         if (!isfinite(a0) || !isfinite(a1) || !isfinite(a2))
             return false;
@@ -11774,6 +12254,8 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
 
     #include "halo3_vehicle_boom.inl"
     #include "vehicle_cameras.inl"
+    #include "halo2_vehicle_cameras.inl"
+    #include "haloce_vehicle_cameras.inl"
 
     // ---- C9: the view turns with the vehicle -------------------------------
     // "the camera does not rotate with the car" (user, 2026-07-31). C8 put the
@@ -12282,6 +12764,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     // the plain flight stick, not a wheel.
     bool OdstSeatUsesWheel();
     bool OdstSeatAuthorsSteeringNow();
+    bool OdstSeatStickAimsNow();
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     bool ReachSeatUsesWheel();
     bool ReachSeatAuthorsSteeringNow();
@@ -12335,10 +12818,16 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     }
 
     // Re-checks the live Halo 3 gate, as the flag above does: the camera thread that clears it stops with the
-    // title.
+    // title. ODST's seat answers for itself (its camera thread's flag, its own live gate), as for the steering.
     bool Halo3SeatStickAimsNow()
     {
-        return g_halo3SeatStickAims.load(std::memory_order_acquire) != 0 && Halo3VehicleFpActive();
+        if (g_halo3SeatStickAims.load(std::memory_order_acquire) != 0 && Halo3VehicleFpActive())
+            return true;
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+        return OdstSeatStickAimsNow();
+#else
+        return false;
+#endif
     }
 
     const char* Halo3VehicleIdName(uint32_t id);
@@ -13174,6 +13663,33 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         }
     }
 
+    // Camera copies left to the game (camera_copy_logic.h): the first of a level with what it held, then a count every
+    // 10 s while they keep coming. The camera thread only.
+    void NoteHalo3NonViewCameraCopy(const void* dst, const void* src, const float* forward, uint64_t nowMs)
+    {
+        static uint32_t loggedGeneration = 0, skipped = 0;
+        static uint64_t windowStartMs = 0;
+        const uint32_t generation = g_halo3RuntimeGeneration.load(std::memory_order_relaxed);
+        if (generation != loggedGeneration)
+        {
+            loggedGeneration = generation;
+            const float* pos = reinterpret_cast<const float*>(static_cast<const char*>(src) + kSrcPos);
+            LOG("Halo 3 camera: a copy of a camera that is not a view (to %p from %p: forward %.3f %.3f %.3f, at %.1f "
+                "%.1f %.1f) is left to the game; the aim, head look, zoom and motion tracker come from the view's "
+                "copy only", dst, src, forward[0], forward[1], forward[2], pos[0], pos[1], pos[2]);
+        }
+        ++skipped;
+        if (!windowStartMs)
+            windowStartMs = nowMs;
+        if (nowMs - windowStartMs >= 10000)
+        {
+            LOG("Halo 3 camera: %u copies of cameras that are not views left to the game in the last %llu ms", skipped,
+                static_cast<unsigned long long>(nowMs - windowStartMs));
+            skipped = 0;
+            windowStartMs = nowMs;
+        }
+    }
+
     void* __fastcall CamCopyHook(void* dst, void* src)
     {
         VR_NotifyCameraTransform();
@@ -13212,6 +13728,16 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         ApplyMotionBlurSetting();
         ProbeBulletOrigin();
         ApplyBodySetting();
+        // A copy of a camera that is not a view (camera_copy_logic.h): the game's own, with nothing taken from it.
+        if (src)
+        {
+            const float* forward = reinterpret_cast<const float*>(static_cast<const char*>(src) + kSrcFwd);
+            if (!camera_copy::ForwardIsView(forward[0], forward[1], forward[2]))
+            {
+                NoteHalo3NonViewCameraCopy(dst, src, forward, cameraNowMs);
+                return g_origCamCopy(dst, src);
+            }
+        }
         // M2 tracing: this function copies src+0x68/+0x6C into the compact
         // render camera at dst+0x28/+0x2C. Record only the first few calls so
         // we can distinguish world, weapon, and other camera passes without
@@ -13491,7 +14017,8 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         return g_config.aim_frame_zoom && g_enabled.load(std::memory_order_relaxed) && VR_IsStereoEnabled() &&
             TitleAdapter_GetActiveTitle() == title &&
             // ODST's own eye renderer draws the frame; that is its camera-only context, Halo 3's never.
-            (title == GameTitle::Halo3ODST || (title == GameTitle::Halo3 && !Game_IsCameraOnlyBringup())) &&
+            (title == GameTitle::Halo3ODST || (title == GameTitle::Halo3 && !Game_IsCameraOnlyBringup()) ||
+             AimFrameLaterTitleLive(title)) &&
             !VR_IsCutsceneTheaterActive() && !VR_IsPausePresentation() && !VR_IsPausePresentationTarget() &&
             // DLSS keeps a history per eye; a picture along another axis would be blended into it.
             !VR_DlssWantsEyeCamera();
@@ -13500,8 +14027,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     // The game's own zoom level for the local player, read within the last half second of this generation.
     bool GameZoomed(GameTitle title, int& level)
     {
-        const uint32_t generation = (title == GameTitle::Halo3ODST ? g_odstRuntimeGeneration : g_halo3RuntimeGeneration)
-            .load(std::memory_order_acquire);
+        const uint32_t generation = AimFrameZoomGeneration(title);
         const uint64_t ms = g_gameZoomMs.load(std::memory_order_acquire);
         const uint64_t now = GetTickCount64();
         level = g_gameZoomLevel.load(std::memory_order_relaxed);
@@ -13511,9 +14037,12 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     }
 
     // `native`: the game's own view this frame, its half-angle tangents, if the title's eye renderer could read
-    // them. `savedUp`: the game camera's up, the fallback for an aim straight along the world's.
+    // them. `savedUp`: the game camera's up, the fallback for an aim straight along the world's. `aimForward`: where
+    // the title knows the aim better than the shared ray and the aim feedback do; null reads those. `pictureShape`:
+    // the engine derives the picture's aspect itself (Reach, Halo 4), so the frame takes the shape of the game's own
+    // view instead of the flat game's 16:9.
     bool AimFrameThisFrame(GameTitle title, bool native, float nativeX, float nativeY, const float* savedUp,
-                           AimFrame& out)
+                           AimFrame& out, const float* aimForward = nullptr, bool pictureShape = false)
     {
         auto& s = g_aimFrameState;
         const uint64_t nowUs = Sight_NowUs();
@@ -13535,7 +14064,9 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             // The aim: the intent ray the converged aim and direct drive write the game's aim from (it starts at
             // this same rendered centre eye), else the game's own aim forward.
             SightRay ray{};
-            if (Sight_ReadRay(title, TitleAdapter_GetGeneration(title), kSightRayFreshMs, ray))
+            if (aimForward)
+                memcpy(forward, aimForward, sizeof(forward));
+            else if (Sight_ReadRay(title, TitleAdapter_GetGeneration(title), kSightRayFreshMs, ray))
                 memcpy(forward, ray.dir, sizeof(forward));
             else
             {
@@ -13610,20 +14141,24 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                     g_config.aim_frame_size_deg[s.level]);
             }
         }
-        out.tanY = out.tanX / kAimFrameAspect;
+        out.tanY = pictureShape ? out.tanX * nativeY / nativeX : out.tanX / kAimFrameAspect;
         memcpy(out.forward, forward, sizeof(forward));
         memcpy(out.up, up, sizeof(up));
         out.level = s.level;
         const float trueDeg = 2.0f * atanf(out.tanX) * 57.29578f;
         const float eased = s.t * s.t * (3.0f - 2.0f * s.t);
-        out.widthDeg = trueDeg + (g_config.aim_frame_size_deg[s.level] - trueDeg) * eased;
+        const float shownDeg = pictureShape
+            ? aim_frame::ShownWidthDeg(g_config.aim_frame_size_deg[s.level], out.tanX, out.tanY, kAimFrameAspect)
+            : g_config.aim_frame_size_deg[s.level];
+        out.widthDeg = trueDeg + (shownDeg - trueDeg) * eased;
         return true;
     }
 
     // 3D in the frame: the two eyes meet at the point the aim is on (the converged aim's smoothed range, from the
     // same centre eye): it and the game's crosshair, drawn alike in both, sit at the frame's own depth. The frame is
-    // narrow, so turning each eye in has no keystone to speak of. 0, no range: the eyes look parallel.
-    float AimFrameMeetWu(GameTitle title, bool stereo, float spacing)
+    // narrow, so turning each eye in has no keystone to speak of. 0, no range: the eyes look parallel. `titleRangeWu`:
+    // the range from a title's own trace (positive), where the shared one is not published.
+    float AimFrameMeetWu(GameTitle title, bool stereo, float spacing, float titleRangeWu = 0.0f)
     {
         static bool logged = false;   // the render thread
         if (!stereo)
@@ -13633,7 +14168,9 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         }
         float meetWu = 0.0f;
         SightTrace trace{};
-        if (Sight_ReadTrace(title, TitleAdapter_GetGeneration(title), kSightFreshMs, trace))
+        if (titleRangeWu > 0.3f && std::isfinite(titleRangeWu))
+            meetWu = std::min(titleRangeWu, 2000.0f);
+        else if (Sight_ReadTrace(title, TitleAdapter_GetGeneration(title), kSightFreshMs, trace))
         {
             const float range = trace.AimRangeWu();
             if (std::isfinite(range) && range > 0.3f)
@@ -14572,6 +15109,31 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         // The OCCUPIED seat's own flags: whether the occupant fires a personal
         // weapon from here decides whether their shots leave their own eye.
         uint32_t occupiedSeatFlags = 0;
+        // For the vehicle cameras (vehicle_cameras.inl, through OdstReadCameraSeat): the live seat node's frame, the
+        // seat's parent's definition, whether the seated object rides a carrier and the carrier's identity, and the
+        // vehicle's frame as the game moves it, its bounds and its drawn root node (OdstCameraSeatFrame).
+        float nodePos[3]{};
+        float nodeUp[3]{};
+        uint32_t definitionIndex = 0xFFFFFFFFu;
+        uint32_t carrierDefinitionIndex = 0xFFFFFFFFu;
+        uint32_t cameraOnCarrier = 0;
+        uint32_t carrierVehicleId = static_cast<uint32_t>(OdstVehicleId::Unknown);
+        uint32_t cameraFrameSampled = 0; // this sample looked for the cameras' frame (they were on): hullValid answers
+        uint32_t hullValid = 0;
+        float hullPos[3]{};
+        float hullFwd[3]{};
+        float hullUp[3]{};
+        float boundsRadius = 0.0f;
+        uint32_t rootValid = 0;
+        float rootPos[3]{};
+        float rootFwd[3]{};
+        float rootLeft[3]{};
+        float rootUp[3]{};
+        // The occupant's head as a frame: the seat node's live frame turned as far as the head has turned in it since
+        // it settled (vehicle_camera_frame::TurnedSince), for a camera measured from the head.
+        uint32_t headFrameValid = 0;
+        float headFwd[3]{};
+        float headUp[3]{};
     };
     OdstVehicleTransform g_odstVehicleTransform;
     std::atomic<uint64_t> g_odstVehicleSampleMs{0};
@@ -14613,6 +15175,10 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         bool interpolateNodes = false;
         bool nodeInterpolated = false;
         Halo3HeadSettleLatch settle{};
+        // The head's turn in the seat node's frame when it settled: what a camera measured from the head turns from
+        // (the vehicle cameras' "playerhead", as Halo 3's Halo3HeadReference::headRest).
+        bool headRestValid = false;
+        vehicle_camera_frame::Basis headRest{};
     };
     OdstHeadReference g_odstHeadReference;
 
@@ -14775,7 +15341,8 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     // The occupant's animated head marker, in world space. Optional: losing it
     // costs the seat bounce, never the seat.
     bool OdstReadPhaseMatchedHead(int unitHandle, bool interpolateNodes,
-                                  float outWorld[3])
+                                  float outWorld[3],
+                                  Halo3Matrix4x3* outMatrix = nullptr)
     {
         if (g_odstNodeBinding.load(std::memory_order_acquire) !=
                 static_cast<uint8_t>(OdstVehicleBindingState::Installed) ||
@@ -14795,6 +15362,8 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                 outWorld[2] = marker.matrix.position[2];
                 ok = std::isfinite(outWorld[0]) &&
                     std::isfinite(outWorld[1]) && std::isfinite(outWorld[2]);
+                if (outMatrix)
+                    *outMatrix = marker.matrix;
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -14844,6 +15413,8 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             seat.carrierHandle = xf.carrierHandle;
             seat.identity = static_cast<OdstVehicleId>(xf.vehicleId);
             seat.mounted = xf.mountedTurret != 0;
+            // Read from the aim and render threads too: the copy above is ordered before the check.
+            std::atomic_thread_fence(std::memory_order_acquire);
             if (xf.seq.load(std::memory_order_acquire) != before)
                 continue;
             const uint64_t nowMs = GetTickCount64();
@@ -14875,6 +15446,155 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             g_odstVehicleSampleMs.load(std::memory_order_relaxed);
         const uint64_t nowMs = GetTickCount64();
         return sampleMs && nowMs >= sampleMs && nowMs - sampleMs <= 500;
+    }
+
+    // THE ODST SEAT AS THE VEHICLE CAMERAS READ IT (vehicle_cameras.inl's LegacyReadSeat): Halo 3's snapshot shape,
+    // filled from ODST's sampler. pos/fwd/up are the live seat node's frame; hull* the vehicle's object frame (the
+    // carrier's for a gun riding one); `mounted` is whether the seated object rides a carrier (the cameras' sense, apart
+    // from the first-person seat's, which ODST never sets); `identity` is ODST's own (OdstVehicleId); the head frame
+    // once the occupant's head has settled. False: not in a seat with an eye, or stale (100 ms), torn or not a frame.
+    // `carrierId`: the carrier's identity, when asked for. `frameless`, when asked for: set where the seat's sample is
+    // fresh but carries no vehicle frame the cameras can use (OdstSampleCameraFrame), which lasts while the seat does.
+    bool OdstReadCameraSeat(Halo3SeatSnapshot& out, OdstVehicleId* carrierId, bool* frameless)
+    {
+        if (frameless)
+            *frameless = false;
+        OdstVehicleTransform& xf = g_odstVehicleTransform;
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            const uint32_t before = xf.seq.load(std::memory_order_acquire);
+            if (before & 1u)
+                continue;
+            if (!xf.valid.load(std::memory_order_relaxed))
+                return false;
+            const uint64_t sampleMs = xf.sampleMs.load(std::memory_order_relaxed);
+            Halo3SeatSnapshot seat{};
+            memcpy(seat.pos, xf.nodePos, sizeof(seat.pos));
+            memcpy(seat.fwd, xf.rawFwd, sizeof(seat.fwd));
+            memcpy(seat.rawFwd, xf.rawFwd, sizeof(seat.rawFwd));
+            memcpy(seat.up, xf.nodeUp, sizeof(seat.up));
+            memcpy(seat.anchor, xf.anchor, sizeof(seat.anchor));
+            memcpy(seat.anchorBase, xf.anchorBase, sizeof(seat.anchorBase));
+            seat.anchorValid = xf.anchorValid != 0;
+            seat.anchorBaseValid = xf.anchorBaseValid != 0;
+            seat.headParented = xf.headParented != 0;
+            seat.seatIndex = xf.seatIndex;
+            seat.parentHandle = xf.parentHandle;
+            seat.carrierHandle = xf.carrierHandle;
+            seat.identity = xf.vehicleId;
+            seat.mounted = xf.cameraOnCarrier != 0;
+            const bool hullValid = xf.hullValid != 0;
+            const bool frameSampled = xf.cameraFrameSampled != 0;
+            memcpy(seat.hullPos, xf.hullPos, sizeof(seat.hullPos));
+            memcpy(seat.hullFwd, xf.hullFwd, sizeof(seat.hullFwd));
+            memcpy(seat.hullUp, xf.hullUp, sizeof(seat.hullUp));
+            seat.definitionIndex = xf.definitionIndex;
+            seat.carrierDefinitionIndex = xf.carrierDefinitionIndex;
+            seat.boundsRadiusWu = xf.boundsRadius;
+            seat.rootValid = xf.rootValid != 0;
+            memcpy(seat.rootPos, xf.rootPos, sizeof(seat.rootPos));
+            memcpy(seat.rootFwd, xf.rootFwd, sizeof(seat.rootFwd));
+            memcpy(seat.rootLeft, xf.rootLeft, sizeof(seat.rootLeft));
+            memcpy(seat.rootUp, xf.rootUp, sizeof(seat.rootUp));
+            seat.headFrameValid = xf.headFrameValid != 0;
+            memcpy(seat.headFwd, xf.headFwd, sizeof(seat.headFwd));
+            memcpy(seat.headUp, xf.headUp, sizeof(seat.headUp));
+            const OdstVehicleId carrier = static_cast<OdstVehicleId>(xf.carrierVehicleId);
+            // Read from other threads than the sampler's (aim, render): the copy above is ordered before the check.
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (xf.seq.load(std::memory_order_relaxed) != before)
+                continue;
+            const uint64_t nowMs = GetTickCount64();
+            if (!sampleMs || nowMs < sampleMs || nowMs - sampleMs > 100)
+                return false;
+            if (!hullValid)
+            {
+                // Frameless only where the frame was looked for: a sample from before the cameras were switched on
+                // carries none, and is a moment stale rather than a seat without a frame.
+                if (frameless && frameSampled)
+                    *frameless = true;
+                return false;
+            }
+            for (int i = 0; i < 3 && seat.rootValid; ++i)
+                if (!std::isfinite(seat.rootPos[i]) || !std::isfinite(seat.rootFwd[i]) ||
+                    !std::isfinite(seat.rootLeft[i]) || !std::isfinite(seat.rootUp[i]))
+                    seat.rootValid = false;
+            for (int i = 0; i < 3 && seat.headFrameValid; ++i)
+                if (!std::isfinite(seat.headFwd[i]) || !std::isfinite(seat.headUp[i]))
+                    seat.headFrameValid = false;
+            Halo3Frame node{}, hull{};
+            memcpy(node.pos, seat.pos, sizeof(node.pos));
+            memcpy(node.fwd, seat.fwd, sizeof(node.fwd));
+            memcpy(node.up, seat.up, sizeof(node.up));
+            memcpy(hull.pos, seat.hullPos, sizeof(hull.pos));
+            memcpy(hull.fwd, seat.hullFwd, sizeof(hull.fwd));
+            memcpy(hull.up, seat.hullUp, sizeof(hull.up));
+            if (!Halo3FrameOrthonormal(node) || !Halo3FrameOrthonormal(hull))
+                return false;
+            for (int i = 0; i < 3; ++i)
+                if ((seat.anchorValid && !std::isfinite(seat.anchor[i])) ||
+                    (seat.anchorBaseValid && !std::isfinite(seat.anchorBase[i])))
+                    return false;
+            out = seat;
+            if (carrierId)
+                *carrierId = carrier;
+            return true;
+        }
+        return false;
+    }
+
+    // The seat the player is in, for the vehicle cameras' cold worker (vehicle_cameras.inl): the vehicle's name and the
+    // seat's role as the camera file finds them (odst_vehicle_camera_logic.h), and the key every reader matches a
+    // camera to. OnFoot: not in a seat the ODST seat view runs in, or in one with no vehicle frame the cameras can use
+    // (the seat keeps the first-person seat view, and no camera or seat button is left over from the seat before).
+    // Unknown: the seat's snapshot is a moment stale.
+    VehicleCameraSeatRead OdstVehicleCameraSeat(VehicleCameraSeatKey& key, const char*& name, uint8_t& seatBits,
+                                               bool& seatView, bool& wheelSeat, uint32_t& definitionIndex)
+    {
+        static bool s_framelessLogged = false; // once a stint in the seats
+        if (!OdstVehicleFpActive())
+        {
+            s_framelessLogged = false;
+            return VehicleCameraSeatRead::OnFoot;
+        }
+        Halo3SeatSnapshot seat;
+        OdstVehicleId carrier = OdstVehicleId::Unknown;
+        bool frameless = false;
+        if (!OdstReadCameraSeat(seat, &carrier, &frameless))
+        {
+            if (!frameless)
+                return VehicleCameraSeatRead::Unknown;
+            if (!s_framelessLogged)
+            {
+                s_framelessLogged = true;
+                LOG("Vehicle cameras (ODST): this seat has no vehicle frame the cameras can use (a vehicle riding "
+                    "another, or a frame that did not check out); it keeps the first-person seat view");
+            }
+            return VehicleCameraSeatRead::OnFoot;
+        }
+        const auto id = static_cast<OdstVehicleId>(seat.identity);
+        key = VehicleCameraSeatKey{g_odstRuntimeGeneration.load(std::memory_order_relaxed), seat.parentHandle,
+                                   seat.seatIndex, seat.identity, seat.mounted, odst_vehicle_camera::kSeatKeyTitle};
+        name = odst_vehicle_camera::SeatVehicleName(id, seat.mounted, carrier);
+        seatBits = odst_vehicle_camera::SeatBits(id, seat.seatIndex, seat.mounted);
+        seatView = true; // every ODST seat the seat view runs in has an eye
+        wheelSeat = odst_vehicle_camera::WheelSeat(id, seat.seatIndex, seat.mounted);
+        definitionIndex = seat.definitionIndex;
+
+        // Once per seat: what the seat is.
+        static VehicleCameraSeatKey logged{};
+        if (!(logged == key))
+        {
+            logged = key;
+            LOG("Vehicle cameras (ODST): %s, seat %d (%s): identity %s, definition %04X, bounds radius %.3f wu%s%s",
+                name, seat.seatIndex, vehicle_camera_file::SeatText(seatBits).c_str(), OdstVehicleIdName(id),
+                seat.definitionIndex & 0xFFFFu, static_cast<double>(seat.boundsRadiusWu),
+                seat.mounted ? (carrier != OdstVehicleId::Unknown ? ", riding a carrier the mod knows"
+                                                                  : ", riding a carrier")
+                             : "",
+                seat.rootValid ? "" : ", its drawn root node not taken (the object frame is used)");
+        }
+        return VehicleCameraSeatRead::Seated;
     }
 
     #include "vr_turn_vehicle_state.inl"
@@ -14965,9 +15685,10 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             /*unitAim=*/false, finalOrigin, absentDirection);
     }
 
-    // Runs on the engine's own weapon path. Everything here is a relaxed load
-    // of our own state plus three float stores: no locks, no allocation, no
-    // logging, no engine reads beyond the point the original just wrote.
+    // Runs on the engine's own weapon path. Everything here is atomic loads of
+    // our own state, a tick read and three float stores: no locks, no
+    // allocation, no logging, no engine reads beyond the point the original
+    // just wrote.
     __declspec(noinline) void __fastcall OdstUnitCameraPositionHook(
         int32_t unitIndex, float* out, uint8_t flags)
     {
@@ -15019,6 +15740,19 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                 PublishOdstShotDiagnostic(unitIndex, out, false);
             return;                       // driver/mounted gun fires from a barrel
         }
+        // A chase camera of the vehicle cameras' is chosen: the rendered eye is that camera, metres behind or above
+        // the vehicle, and a shot from it could leave past cover. A firstperson camera with an offset moves the eye
+        // too (up to the vehicle's bounds and a margin), so a shot from it could leave outside the hull. A seat the
+        // right stick aims (vehicle_control = stick) aims along the game's own line from the game's eye, where its
+        // reticle is drawn: a shot from the rendered eye would fly parallel to it. In all three the game's own origin
+        // stays.
+        if (g_vehicleCameraPublished.chase.load(std::memory_order_acquire) ||
+            g_vehicleCameraPublished.eyeNudge.load(std::memory_order_acquire) || OdstSeatStickAimsNow())
+        {
+            if (telemetryAccepting)
+                PublishOdstShotDiagnostic(unitIndex, out, false);
+            return;
+        }
         if (!g_camValid.load(std::memory_order_acquire))
         {
             if (telemetryAccepting)
@@ -15044,15 +15778,34 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     }
 
     // True while O6 above hands the local seated player's own-weapon shot the rendered eye: the hook is
-    // installed, no authored camera holds the view, the seat fires the occupant's weapon, and the rendered eye
-    // is valid. The seat's converged aim solves from that eye while this holds (Game_ComputeAimStick).
+    // installed, no authored camera holds the view, no camera of the vehicle cameras' moves the eye (a chase camera, a
+    // firstperson offset), the right stick does not aim the seat, the seat fires the occupant's weapon, and the
+    // rendered eye is valid. The seat's converged aim solves from that eye while this holds (Game_ComputeAimStick).
     bool OdstFiringOriginFromEye()
     {
         return g_odstFiringOriginReturn != 0 &&
             !g_odstCinematicLocked.load(std::memory_order_relaxed) &&
+            !g_vehicleCameraPublished.chase.load(std::memory_order_acquire) &&
+            !g_vehicleCameraPublished.eyeNudge.load(std::memory_order_acquire) && !OdstSeatStickAimsNow() &&
             g_odstSeatedPlayerUnit.load(std::memory_order_relaxed) != -1 &&
             OdstSeatFiresPersonalWeapon() &&
             g_camValid.load(std::memory_order_acquire);
+    }
+
+    // The seat sampler's last decision for the seat it sampled: a chase camera of the vehicle cameras' shows it (the
+    // seat's first-person flag not taken or given back). Camera thread writes; the aim reads it, so the aim follows
+    // what the game is drawing, the sampler's hold over a torn read included.
+    std::atomic<uint32_t> g_odstChaseShown{0};
+
+    // The ODST seat's view is the mod's: C20 holds the seat in the game's own first-person camera, or the sampler
+    // shows it from a chase camera of the vehicle cameras'. Under a chase camera the seat keeps the game's
+    // third-person camera, which is where a stock seat is aimed from, and the mod places the view at a pitch of its
+    // own, never the aim's: the same as a Halo 3 seat under one, whose view stays owned.
+    bool OdstSeatViewOwned()
+    {
+        return g_odstNativeSeatState.load(std::memory_order_acquire) ==
+                   static_cast<uint32_t>(OdstNativeSeatState::Active) ||
+            (g_odstChaseShown.load(std::memory_order_acquire) != 0 && OdstVehicleFpActive());
     }
 
     // O3: the follow gate for the shared reader. ODST answers only when its
@@ -15074,6 +15827,9 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     Halo3SeatYaw g_odstSeatYaw;
     Halo3SeatPositionKey g_odstYawSeat;
     std::atomic<uint32_t> g_odstSeatAuthorsSteering{0};
+    // The right stick aims this seat on both axes and the hand aims nothing: Stick chosen for a seat the vehicle
+    // cameras run in (Halo 3's g_halo3SeatStickAims). Written with the flag above, on the camera thread.
+    std::atomic<uint32_t> g_odstSeatStickAims{0};
 
     // O3: integrate the rendered hull's yaw into the VR heading reference and
     // publish its roll-free pitch. Runs where Halo 3 runs its equivalent: on
@@ -15086,11 +15842,28 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             fpActive && OdstReadSeatSnapshot(seat) && seat.anchorValid;
         const bool active = haveSeat &&
             OdstSeatFollowsHull(seat.identity, seat.seatIndex, seat.mounted);
-        const bool followEnabled = g_config.vehicle_view_follow;
-        const bool pitchEligible = active &&
+        // How the view turns in this seat. A chase camera from the vehicle camera file says for itself, by its mode's
+        // rotationTracking (vehicle_cameras.inl, as in Halo 3); every other seat view follows the setting.
+        bool followEnabled = g_config.vehicle_view_follow;
+        bool pitchWanted = true;
+        Halo3VehicleCameraViewTurn(followEnabled, pitchWanted);
+        const bool pitchEligible = active && pitchWanted &&
             OdstSeatFollowsPitch(seat.identity, seat.seatIndex, seat.mounted);
         const uint32_t generation =
             g_odstRuntimeGeneration.load(std::memory_order_acquire);
+        // HOW THE SEAT IS STEERED while the vehicle cameras run in it (vehicle_control, chosen per seat with the left
+        // stick click): the hand or the wheel, whatever the view does, as in Halo 3. Without the cameras, or "As
+        // before", ODST's own rule: the stick or wheel steers a look-steered driver whose view follows.
+        const int chosenControl = g_vehicleControlEffective.load(std::memory_order_acquire);
+        const vehicle_control::Mode controlMode = vehicle_control::FromConfig(chosenControl);
+        const bool controlChosen =
+            chosenControl >= 0 && controlMode != vehicle_control::Mode::Automatic && fpActive && haveSeat;
+        const bool lookSteeredDriver = haveSeat &&
+            OdstSeatIsDriver(seat.identity, seat.seatIndex, seat.mounted) &&
+            OdstVehicleIsLookSteered(seat.identity);
+        // Stick, in any seat the cameras run in: a gunner's, a passenger's, a tank driver's (as Halo 3's).
+        g_odstSeatStickAims.store(controlChosen && vehicle_control::StickAims(controlMode) ? 1u : 0u,
+                                  std::memory_order_release);
 
         if (!fpActive || !followEnabled || !active)
         {
@@ -15100,7 +15873,14 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             if (g_odstSeatYaw.armed)
                 g_odstSeatYaw = {};
             g_odstYawSeat = {};
-            g_odstSeatAuthorsSteering.store(0, std::memory_order_release);
+            const bool authorsStill =
+                controlChosen && vehicle_control::Authored(controlMode, lookSteeredDriver, false);
+            if (!authorsStill)
+            {
+                g_halo3SteerAxis.store(0.0f, std::memory_order_relaxed);
+                g_halo3WheelDriving.store(0, std::memory_order_relaxed);
+            }
+            g_odstSeatAuthorsSteering.store(authorsStill ? 1u : 0u, std::memory_order_release);
             Halo3ClearRollStableFollow();
             return;
         }
@@ -15139,8 +15919,9 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             Halo3ClearRollStableFollow();
         }
 
-        const bool authors = OdstSeatAuthorsSteering(
-            seat.identity, seat.seatIndex, seat.mounted, followEnabled);
+        const bool authors = controlChosen
+            ? vehicle_control::Authored(controlMode, lookSteeredDriver, true)
+            : OdstSeatAuthorsSteering(seat.identity, seat.seatIndex, seat.mounted, followEnabled);
         if (!authors)
         {
             g_halo3SteerAxis.store(0.0f, std::memory_order_relaxed);
@@ -15157,6 +15938,11 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     {
         return g_odstSeatAuthorsSteering.load(std::memory_order_acquire) != 0 &&
             OdstVehicleFpActive();
+    }
+
+    bool OdstSeatStickAimsNow()
+    {
+        return g_odstSeatStickAims.load(std::memory_order_acquire) != 0 && OdstVehicleFpActive();
     }
 
     bool OdstSeatUsesWheel()
@@ -15180,6 +15966,239 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             return false;
         memcpy(out, seat.anchorBase, sizeof(seat.anchorBase));
         return true;
+    }
+
+    // The two discriminators a physics type leaves open, read from the definition's own physics record: a jeep's
+    // engine moment (Warthog or Mongoose), a scout's specific type (Ghost, Wraith or Prowler). Guarded.
+    void OdstReadDefinitionDiscriminators(uint32_t defIndex, OdstDefinitionFields& fields)
+    {
+        if (fields.physicsType == 1)
+        {
+            // Jeep cousins are separated by engine moment, read from the
+            // definition's own physics record.
+            __try
+            {
+                unsigned char* definition =
+                    OdstLoadedTagDefinition(defIndex);
+                void** baseSlot = g_odstTagDataBase;
+                auto* tagBase = baseSlot
+                    ? static_cast<unsigned char*>(*baseSlot) : nullptr;
+                if (definition && tagBase)
+                {
+                    unsigned char* block = definition +
+                        kOdstVehiclePhysicsBlocksOffset +
+                        1 * kOdstVehiclePhysicsRecordStride;   // human_jeep
+                    const uint32_t address =
+                        *reinterpret_cast<const uint32_t*>(block + 4);
+                    if (address)
+                    {
+                        const unsigned char* element = tagBase +
+                            static_cast<size_t>(address) * 4;
+                        fields.engineMoment =
+                            *reinterpret_cast<const float*>(
+                                element + kOdstJeepEngineMomentOffset);
+                        fields.jeepValid =
+                            std::isfinite(fields.engineMoment);
+                    }
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                fields.jeepValid = false;
+            }
+        }
+        else if (fields.physicsType == 3)
+        {
+            __try
+            {
+                unsigned char* definition =
+                    OdstLoadedTagDefinition(defIndex);
+                void** baseSlot = g_odstTagDataBase;
+                auto* tagBase = baseSlot
+                    ? static_cast<unsigned char*>(*baseSlot) : nullptr;
+                if (definition && tagBase)
+                {
+                    unsigned char* block = definition +
+                        kOdstVehiclePhysicsBlocksOffset +
+                        3 * kOdstVehiclePhysicsRecordStride;  // alien_scout
+                    const uint32_t address =
+                        *reinterpret_cast<const uint32_t*>(block + 4);
+                    if (address)
+                    {
+                        const unsigned char* element = tagBase +
+                            static_cast<size_t>(address) * 4;
+                        fields.specificType = *reinterpret_cast<const int8_t*>(
+                            element + kOdstScoutSpecificTypeOffset);
+                        fields.scoutValid = true;
+                    }
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                fields.scoutValid = false;
+            }
+        }
+    }
+
+    // THE SEAT'S VEHICLE FOR THE VEHICLE CAMERAS (vehicle_cameras.inl). A gun riding a vehicle (the Warthog's, the
+    // Scorpion's, the Wraith's: their own objects in ODST) stores its frame relative to the carrier's attachment node,
+    // so the vehicle is the carrier, which must be a root object -- as Halo 3 takes it for a mounted turret
+    // (Halo3FrameStatus::Carrier). Only a gun, or a seated object the mod does not know, takes a carrier's frame
+    // (odst_vehicle_camera::GunOnCarrier); any other vehicle riding something has no frame here, and its seat no
+    // camera. Everything else sits on a root vehicle, its parent. Camera thread.
+    struct OdstCameraSeatFrame
+    {
+        bool onCarrier = false;
+        OdstVehicleId carrierId = OdstVehicleId::Unknown;
+        bool hullValid = false;
+        Halo3Frame hull{};          // the vehicle's object frame (kOdstObjectPositionOffset ...), as the game moves it
+        float boundsCenter[3]{};
+        float boundsRadius = 0.0f;
+        bool rootValid = false;
+        Halo3Matrix4x3 root{};      // the vehicle's root node as it is drawn
+    };
+
+    // The carrier's identity, resolved once per carrier object a level (camera thread). A read that fails is tried
+    // again on the next frames, up to kOdstCarrierReadTries, before Unknown is kept (the gun is then named by its own
+    // identity).
+    struct OdstCarrierIdentityCache
+    {
+        uint32_t generation = 0;
+        int carrier = -1;
+        OdstVehicleId id = OdstVehicleId::Unknown;
+        bool known = false;
+        uint32_t failures = 0;
+    };
+    inline constexpr uint32_t kOdstCarrierReadTries = 30;
+    OdstCarrierIdentityCache g_odstCarrierIdentity;
+
+    OdstVehicleId OdstCameraCarrierIdentity(uint32_t generation, int carrier, uint32_t carrierDefIndex)
+    {
+        OdstCarrierIdentityCache& cache = g_odstCarrierIdentity;
+        if (cache.generation != generation || cache.carrier != carrier)
+        {
+            cache = OdstCarrierIdentityCache{};
+            cache.generation = generation;
+            cache.carrier = carrier;
+        }
+        if (cache.known)
+            return cache.id;
+        OdstDefinitionFields fields{};
+        fields.inVehicle = true; // a carrier is a vehicle in its own right
+        bool read = false;
+        __try
+        {
+            if (carrierDefIndex <= 0xFFFFu && g_odstVehicleTypeAccessor)
+            {
+                fields.physicsType = g_odstVehicleTypeAccessor(static_cast<unsigned short>(carrierDefIndex));
+                read = true;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            read = false;
+        }
+        if (read)
+            OdstReadDefinitionDiscriminators(carrierDefIndex, fields);
+        cache.id = read ? OdstResolveVehicleId(fields) : OdstVehicleId::Unknown;
+        cache.known = read || ++cache.failures >= kOdstCarrierReadTries;
+        return cache.id;
+    }
+
+    void OdstSampleCameraFrame(uint32_t generation, int parent, unsigned char* parentData, OdstVehicleId seated,
+                               int carrier, unsigned char* carrierData, uint32_t carrierDefIndex, bool carrierIsRoot,
+                               OdstCameraSeatFrame& out)
+    {
+        out = {};
+        int owner = -1;
+        unsigned char* ownerData = nullptr;
+        if (carrier == -1)
+        {
+            owner = parent;
+            ownerData = parentData;
+        }
+        else if (carrierData && carrierIsRoot && odst_vehicle_camera::GunOnCarrier(seated, true))
+        {
+            owner = carrier;
+            ownerData = carrierData;
+            out.onCarrier = true;
+            out.carrierId = OdstCameraCarrierIdentity(generation, carrier, carrierDefIndex);
+        }
+        if (!ownerData)
+            return;
+        bool read = false;
+        __try
+        {
+            memcpy(out.hull.pos, ownerData + kOdstObjectPositionOffset, sizeof(out.hull.pos));
+            memcpy(out.hull.fwd, ownerData + kOdstObjectForwardOffset, sizeof(out.hull.fwd));
+            memcpy(out.hull.up, ownerData + kOdstObjectUpOffset, sizeof(out.hull.up));
+            memcpy(out.boundsCenter, ownerData + kOdstObjectBoundsCenterOffset, sizeof(out.boundsCenter));
+            memcpy(&out.boundsRadius, ownerData + kOdstObjectBoundsRadiusOffset, sizeof(out.boundsRadius));
+            read = true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            read = false;
+        }
+        // The frame is used only where it is a frame, its origin inside its own bounding sphere (as Halo 3's sampler
+        // checks its own): proof on this build that the fields are where they are read.
+        out.hullValid = read && Halo3FrameOrthonormal(out.hull) && out.boundsRadius > 0.0f &&
+                        Halo3AnchorWithinBounds(out.hull.pos, out.boundsCenter, out.boundsRadius, 2.0f);
+        if (!out.hullValid)
+            return;
+        // The root node as drawn, taken only where it stands in for the object frame: inside the bounds, within a world
+        // unit of the object's origin, facing within 20 degrees of it (Halo 3's rule).
+        bool interpolated = false;
+        if (OdstReadLiveNodeMatrix(owner, ownerData, 0, out.root, interpolated))
+        {
+            const float away[3] = {out.root.position[0] - out.hull.pos[0], out.root.position[1] - out.hull.pos[1],
+                                   out.root.position[2] - out.hull.pos[2]};
+            out.rootValid =
+                Halo3AnchorWithinBounds(out.root.position, out.boundsCenter, out.boundsRadius, 2.0f) &&
+                away[0] * away[0] + away[1] * away[1] + away[2] * away[2] <= 1.0f &&
+                out.root.forward[0] * out.hull.fwd[0] + out.root.forward[1] * out.hull.fwd[1] +
+                        out.root.forward[2] * out.hull.fwd[2] > 0.94f &&
+                out.root.up[0] * out.hull.up[0] + out.root.up[1] * out.hull.up[1] + out.root.up[2] * out.hull.up[2] >
+                    0.94f;
+        }
+    }
+
+    // The vehicle a seated gun rides, for the vehicle cameras: its entry's salt and kind checked as the parent's handle
+    // names it, its object data, its definition, and whether it is a root object itself. Guarded on its own, so a
+    // fault drops only the carrier (the seat sampler's own fault disarms the whole ODST seat). Camera thread.
+    void OdstReadSeatCarrier(unsigned char* entries, int carrier, unsigned char*& data, uint32_t& definitionIndex,
+                             bool& isRoot)
+    {
+        data = nullptr;
+        definitionIndex = 0xFFFFFFFFu;
+        isRoot = false;
+        if (!entries || carrier == -1 || static_cast<uint32_t>(carrier & 0xFFFF) >= kOdstObjectTableCapacity)
+            return;
+        unsigned char* found = nullptr;
+        uint32_t foundDefinition = 0xFFFFFFFFu;
+        bool foundRoot = false;
+        __try
+        {
+            unsigned char* entry = entries + static_cast<size_t>(carrier & 0xFFFF) * kOdstObjectEntryStride;
+            if (*reinterpret_cast<const uint16_t*>(entry + kOdstObjectEntryIdentifierOffset) ==
+                    static_cast<uint16_t>(static_cast<uint32_t>(carrier) >> 16) &&
+                *(entry + kOdstObjectEntryKindOffset) == kOdstObjectKindVehicle)
+            {
+                found = *reinterpret_cast<unsigned char**>(entry + kOdstObjectEntryDataOffset);
+                if (found)
+                {
+                    foundDefinition = *reinterpret_cast<const uint16_t*>(found);
+                    foundRoot = *reinterpret_cast<const int32_t*>(found + kOdstObjectParentOffset) == -1;
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return;
+        }
+        data = found;
+        definitionIndex = found ? foundDefinition : 0xFFFFFFFFu;
+        isRoot = found && foundRoot;
     }
 
     void OdstSampleVehicleState(uint64_t nowMs)
@@ -15209,6 +16228,11 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         unsigned parentKind = 0;
         unsigned native = 0;
         uint32_t defIndex = 0xFFFFFFFFu;
+        // The vehicle a seated gun rides (read only while the vehicle cameras are on): its object data, definition,
+        // and whether it is a root object itself.
+        unsigned char* carrierObjectData = nullptr;
+        uint32_t carrierDefIndex = 0xFFFFFFFFu;
+        bool carrierIsRoot = false;
         int physicsType = -1;
         int unitParentNode = -1;
         unsigned char* parentObjectData = nullptr;
@@ -15219,7 +16243,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         bool unseatedProven = false;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             auto* tls = slots ? reinterpret_cast<unsigned char*>(
                 slots[*g_odstEngineTlsIndex]) : nullptr;
             unsigned char* table = tls
@@ -15250,7 +16274,10 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                             data + kOdstObjectParentNodeOffset);
                         parent = *reinterpret_cast<const int32_t*>(
                             data + kOdstObjectParentOffset);
-                        if (parent != -1)
+                        // An index past the object table's capacity is not an entry: the unit reads as unseated
+                        // (no parent data) rather than a read past the table, whose fault disarms the whole seat.
+                        if (parent != -1 &&
+                            static_cast<uint32_t>(parent & 0xFFFF) < kOdstObjectTableCapacity)
                         {
                             unsigned char* parentEntry = entries +
                                 static_cast<size_t>(parent & 0xFFFF) *
@@ -15266,6 +16293,11 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                                 parentObjectData = parentData;
                                 carrier = *reinterpret_cast<const int32_t*>(
                                     parentData + kOdstObjectParentOffset);
+                                // The vehicle a gun rides, for the vehicle cameras alone: guarded on its own
+                                // (OdstReadSeatCarrier), so a fault there drops the carrier and nothing else.
+                                if (g_config.vehicle_cameras && carrier != -1)
+                                    OdstReadSeatCarrier(entries, carrier, carrierObjectData, carrierDefIndex,
+                                                        carrierIsRoot);
                                 const uint16_t definitionIndex =
                                     *reinterpret_cast<const uint16_t*>(
                                         parentData);
@@ -15326,6 +16358,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             // A fault here means an offset is wrong for this build. Disarm the
             // whole ODST vehicle transaction loudly rather than keep reading.
             OdstRestoreNativeSeatPatch();
+            g_odstChaseShown.store(0, std::memory_order_release);
             g_odstVehicleTransform.valid.store(0, std::memory_order_relaxed);
             g_odstVehicleFpStable.store(
                 static_cast<uint32_t>(Halo3VehicleState::Unknown),
@@ -15363,83 +16396,47 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         fields.seatFlagsValid = seatFlagsValid;
         fields.seat0Flags = seat0Flags;
         fields.inVehicle = native != 0;
-        if (physicsType == 1)
-        {
-            // Jeep cousins are separated by engine moment, read from the
-            // definition's own physics record.
-            __try
-            {
-                unsigned char* definition =
-                    OdstLoadedTagDefinition(defIndex);
-                void** baseSlot = g_odstTagDataBase;
-                auto* tagBase = baseSlot
-                    ? static_cast<unsigned char*>(*baseSlot) : nullptr;
-                if (definition && tagBase)
-                {
-                    unsigned char* block = definition +
-                        kOdstVehiclePhysicsBlocksOffset +
-                        1 * kOdstVehiclePhysicsRecordStride;   // human_jeep
-                    const uint32_t address =
-                        *reinterpret_cast<const uint32_t*>(block + 4);
-                    if (address)
-                    {
-                        const unsigned char* element = tagBase +
-                            static_cast<size_t>(address) * 4;
-                        fields.engineMoment =
-                            *reinterpret_cast<const float*>(
-                                element + kOdstJeepEngineMomentOffset);
-                        fields.jeepValid =
-                            std::isfinite(fields.engineMoment);
-                    }
-                }
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                fields.jeepValid = false;
-            }
-        }
-        else if (physicsType == 3)
-        {
-            __try
-            {
-                unsigned char* definition =
-                    OdstLoadedTagDefinition(defIndex);
-                void** baseSlot = g_odstTagDataBase;
-                auto* tagBase = baseSlot
-                    ? static_cast<unsigned char*>(*baseSlot) : nullptr;
-                if (definition && tagBase)
-                {
-                    unsigned char* block = definition +
-                        kOdstVehiclePhysicsBlocksOffset +
-                        3 * kOdstVehiclePhysicsRecordStride;  // alien_scout
-                    const uint32_t address =
-                        *reinterpret_cast<const uint32_t*>(block + 4);
-                    if (address)
-                    {
-                        const unsigned char* element = tagBase +
-                            static_cast<size_t>(address) * 4;
-                        fields.specificType = *reinterpret_cast<const int8_t*>(
-                            element + kOdstScoutSpecificTypeOffset);
-                        fields.scoutValid = true;
-                    }
-                }
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                fields.scoutValid = false;
-            }
-        }
+        OdstReadDefinitionDiscriminators(defIndex, fields);
         const OdstVehicleId anchorId = seated
             ? OdstResolveVehicleId(fields) : OdstVehicleId::Unknown;
 
-        if (seated)
+        // THE VEHICLE CAMERAS' VIEW OF THE SEAT (vehicle_cameras.inl): the vehicle's frame as the game moves it (the
+        // carrier's, for a gun riding one), its bounds and its drawn root node. Only while they are on.
+        OdstCameraSeatFrame cameraFrame{};
+        const bool cameraFrameSampled = seated && g_config.vehicle_cameras;
+        if (cameraFrameSampled)
+            OdstSampleCameraFrame(generation, parent, parentObjectData, anchorId, carrier, carrierObjectData,
+                                  carrierDefIndex, carrierIsRoot, cameraFrame);
+        const VehicleCameraSeatKey cameraKey{generation, parent, seat, static_cast<uint32_t>(anchorId),
+                                             cameraFrame.onCarrier, odst_vehicle_camera::kSeatKeyTitle};
+
+        // A chase camera of the mod's own shows the seat from outside: the seat keeps the game's own third-person
+        // camera (its first-person flag is not taken, or is given back), so the game draws the player's character,
+        // and that camera is where a "thirdperson" camera stands. A read that finds the publication mid-write twice
+        // keeps this seat's last answer, so the flag never flips for a frame. A seat the flag patch refused is left as
+        // it is: nothing of it was written, and its record of natively lacking the flag stays published for the
+        // aim frame (seat_aim_world_frame.inl).
+        static VehicleCameraSeatKey s_chaseSeat{}; // this sampler's thread only
+        static bool s_chaseShown = false;
+        bool chaseTorn = false;
+        bool chaseShown = seated && VehicleCameraChaseChosenFor(cameraKey, &chaseTorn);
+        if (chaseTorn)
+            chaseShown = s_chaseShown && s_chaseSeat == cameraKey;
+        s_chaseSeat = cameraKey;
+        s_chaseShown = chaseShown;
+        g_odstChaseShown.store(chaseShown ? 1u : 0u, std::memory_order_release);
+        if (seated && !chaseShown)
             OdstEnsureFirstPersonSeatFlag(defIndex, seat, generation);
-        else
+        else if (!(seated && OdstSeatPatchRefused(defIndex, seat, generation)))
             OdstRestoreNativeSeatPatch();
 
         float cameraAnchor[3] = {};
         float bodyAnchor[3] = {};
         float rawFwd[3] = {};
+        float nodePos[3] = {};
+        float nodeUp[3] = {};
+        vehicle_camera_frame::Basis headFrame{};
+        bool headFrameValid = false;
         bool anchorValid = false;
         bool headParented = false;
         bool nodeInterpolated = false;
@@ -15474,6 +16471,8 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             if (haveLiveNode)
             {
                 memcpy(rawFwd, liveNode.forward, sizeof(rawFwd));
+                memcpy(nodePos, liveNode.position, sizeof(nodePos));
+                memcpy(nodeUp, liveNode.up, sizeof(nodeUp));
                 anchorValid = Halo3MatrixTransformPoint(
                     liveNode, authoredNodeLocal, cameraAnchor);
                 memcpy(bodyAnchor, cameraAnchor, sizeof(bodyAnchor));
@@ -15506,14 +16505,17 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                 }
                 float headWorld[3] = {};
                 float currentHeadLocal[3] = {};
+                Halo3Matrix4x3 headMatrix{};
                 if (anchorValid && stableSeat &&
                     OdstReadPhaseMatchedHead(unit, nodeInterpolated,
-                                             headWorld) &&
+                                             headWorld, &headMatrix) &&
                     Halo3MatrixInverseTransformPoint(liveNode, headWorld,
                                                      currentHeadLocal))
                 {
                     float headAnchor[3] = {};
-                    if (headRef.settle.Update(nowMs, currentHeadLocal) &&
+                    const bool settled =
+                        headRef.settle.Update(nowMs, currentHeadLocal);
+                    if (settled &&
                         Halo3ComputeHeadParentedPoint(
                             liveNode, headWorld, headRef.settle.reference,
                             authoredNodeLocal, g_config.vehicle_bounce,
@@ -15523,10 +16525,67 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                                sizeof(cameraAnchor));
                         headParented = true;
                     }
+                    // THE HEAD AS A FRAME, as Halo 3's: its turn in the seat node's frame, taken against the node of
+                    // the same bank the head came from, its rest latched when it settles (with the cameras off too, as
+                    // Halo 3's, so turning them on in the seat does not take the head's turn then for its rest), and
+                    // from then on the seat node turned as far as the head has turned in it since (a camera measured
+                    // from the head).
+                    if (settled && (g_config.vehicle_cameras || !headRef.headRestValid))
+                    {
+                        const auto basisOf = [](const Halo3Matrix4x3& m) {
+                            vehicle_camera_frame::Basis b{};
+                            memcpy(b.forward, m.forward, sizeof(b.forward));
+                            memcpy(b.left, m.left, sizeof(b.left));
+                            memcpy(b.up, m.up, sizeof(b.up));
+                            return b;
+                        };
+                        const vehicle_camera_frame::Basis liveBasis = basisOf(liveNode);
+                        const vehicle_camera_frame::Basis headBasis = basisOf(headMatrix);
+                        if (vehicle_camera_frame::Usable(liveBasis) && vehicle_camera_frame::Usable(headBasis))
+                        {
+                            const vehicle_camera_frame::Basis headInSeat =
+                                vehicle_camera_frame::InFrame(liveBasis, headBasis);
+                            if (!headRef.headRestValid)
+                            {
+                                headRef.headRest = headInSeat;
+                                headRef.headRestValid = true;
+                            }
+                            if (g_config.vehicle_cameras)
+                            {
+                                headFrame =
+                                    vehicle_camera_frame::TurnedSince(liveBasis, headInSeat, headRef.headRest);
+                                headFrameValid = vehicle_camera_frame::Usable(headFrame);
+                            }
+                        }
+                    }
                 }
                 else if (!headRef.settle.valid)
                 {
                     headRef.settle = {};
+                }
+
+                // THE CAMERA FILE'S FIRSTPERSON OFFSET, as Halo 3's: the seat's eye moved forward, right and up in
+                // the vehicle's own frame, eye and hands together, and only where it is still inside the vehicle's
+                // bounds and a margin.
+                float nudge[3];
+                if (anchorValid && cameraFrame.hullValid && VehicleCameraEyeNudgeFor(cameraKey, nudge))
+                {
+                    const Halo3Frame& hull = cameraFrame.hull;
+                    const float right[3] = {hull.fwd[1] * hull.up[2] - hull.fwd[2] * hull.up[1],
+                                            hull.fwd[2] * hull.up[0] - hull.fwd[0] * hull.up[2],
+                                            hull.fwd[0] * hull.up[1] - hull.fwd[1] * hull.up[0]};
+                    float moved[3], eye[3];
+                    for (int i = 0; i < 3; ++i)
+                    {
+                        moved[i] = hull.fwd[i] * nudge[0] + right[i] * nudge[1] + hull.up[i] * nudge[2];
+                        eye[i] = cameraAnchor[i] + moved[i];
+                    }
+                    if (Halo3AnchorWithinBounds(eye, cameraFrame.boundsCenter, cameraFrame.boundsRadius, 2.0f))
+                        for (int i = 0; i < 3; ++i)
+                        {
+                            cameraAnchor[i] += moved[i];
+                            bodyAnchor[i] += moved[i];
+                        }
                 }
             }
             else
@@ -15556,6 +16615,26 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             xf.vehicleId = static_cast<uint32_t>(anchorId);
             xf.mountedTurret = 0;
             xf.occupiedSeatFlags = occupiedSeatFlags;
+            memcpy(xf.nodePos, nodePos, sizeof(xf.nodePos));
+            memcpy(xf.nodeUp, nodeUp, sizeof(xf.nodeUp));
+            xf.definitionIndex = defIndex;
+            xf.carrierDefinitionIndex = cameraFrame.onCarrier ? carrierDefIndex : 0xFFFFFFFFu;
+            xf.cameraOnCarrier = cameraFrame.onCarrier ? 1u : 0u;
+            xf.carrierVehicleId = static_cast<uint32_t>(cameraFrame.carrierId);
+            xf.cameraFrameSampled = cameraFrameSampled ? 1u : 0u;
+            xf.hullValid = cameraFrame.hullValid ? 1u : 0u;
+            memcpy(xf.hullPos, cameraFrame.hull.pos, sizeof(xf.hullPos));
+            memcpy(xf.hullFwd, cameraFrame.hull.fwd, sizeof(xf.hullFwd));
+            memcpy(xf.hullUp, cameraFrame.hull.up, sizeof(xf.hullUp));
+            xf.boundsRadius = cameraFrame.hullValid ? cameraFrame.boundsRadius : 0.0f;
+            xf.rootValid = cameraFrame.rootValid ? 1u : 0u;
+            memcpy(xf.rootPos, cameraFrame.root.position, sizeof(xf.rootPos));
+            memcpy(xf.rootFwd, cameraFrame.root.forward, sizeof(xf.rootFwd));
+            memcpy(xf.rootLeft, cameraFrame.root.left, sizeof(xf.rootLeft));
+            memcpy(xf.rootUp, cameraFrame.root.up, sizeof(xf.rootUp));
+            xf.headFrameValid = headFrameValid ? 1u : 0u;
+            memcpy(xf.headFwd, headFrame.forward, sizeof(xf.headFwd));
+            memcpy(xf.headUp, headFrame.up, sizeof(xf.headUp));
             xf.valid.store(1, std::memory_order_relaxed);
             xf.sampleMs.store(nowMs, std::memory_order_relaxed);
         }
@@ -15564,6 +16643,11 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             xf.anchorValid = 0;
             xf.anchorBaseValid = 0;
             xf.headParented = 0;
+            xf.cameraFrameSampled = 0;
+            xf.hullValid = 0;
+            xf.rootValid = 0;
+            xf.cameraOnCarrier = 0;
+            xf.headFrameValid = 0;
             xf.valid.store(0, std::memory_order_relaxed);
         }
         xf.seq.fetch_add(1, std::memory_order_release);
@@ -15783,10 +16867,13 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         // works from the seat. The authored point already carries the trims,
         // the live rendered node and the occupant bounce, so consuming it here
         // is a plain overwrite. A cutscene keeps the authored camera.
+        // A chase camera chosen for this seat (vehicle_cameras.inl, Halo 3's code on ODST's seat) stands in for
+        // the seat's own point; without one, or when it cannot be placed this frame, the seat's point as before.
+        Halo3VehicleCameraBeginPass();
         if (!cinematic && OdstVehicleFpActive())
         {
             float anchor[3];
-            if (OdstComputeAuthoredAnchor(anchor))
+            if (Halo3VehicleCameraPlace(g_gameYawRef, anchor) || OdstComputeAuthoredAnchor(anchor))
                 memcpy(position, anchor, sizeof(anchor));
         }
 
@@ -15826,6 +16913,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             // deliberately zero here: the orientation above already applied
             // them, and applying them twice double-pitches the lean.
             bool leanFollowed = false;
+            float lean[3] = {0.0f, 0.0f, 0.0f};
             if (rotationFollows)
             {
                 const float trackedYawDelta =
@@ -15840,22 +16928,29 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                     Halo3TransformBasisVector(positionBasis, roomLocal,
                                               positionWorld))
                 {
-                    position[0] += Clamp(positionWorld[0] * scale, -1.5f, 1.5f);
-                    position[1] += Clamp(positionWorld[1] * scale, -1.5f, 1.5f);
-                    position[2] += Clamp(positionWorld[2] * scale, -1.5f, 1.5f);
+                    lean[0] = Clamp(positionWorld[0] * scale, -1.5f, 1.5f);
+                    lean[1] = Clamp(positionWorld[1] * scale, -1.5f, 1.5f);
+                    lean[2] = Clamp(positionWorld[2] * scale, -1.5f, 1.5f);
                     leanFollowed = true;
                 }
             }
             if (!leanFollowed)
             {
-                position[0] += Clamp(
+                lean[0] = Clamp(
                     (cosYaw * forwardMove + sinYaw * rightMove) * scale,
                     -1.5f, 1.5f);
-                position[1] += Clamp(
+                lean[1] = Clamp(
                     (sinYaw * forwardMove - cosYaw * rightMove) * scale,
                     -1.5f, 1.5f);
-                position[2] += Clamp(dy * scale, -1.5f, 1.5f);
+                lean[2] = Clamp(dy * scale, -1.5f, 1.5f);
             }
+            // A chase camera's own leash (vehicle_cameras.inl): the head moves the view only inside the box the camera
+            // sets, so a lean cannot take the eyes through what the camera sits beside.
+            if (!cinematic)
+                Halo3VehicleCameraLeashHead(lean);
+            position[0] += lean[0];
+            position[1] += lean[1];
+            position[2] += lean[2];
             // THE LEASH BELOW THE CHARACTER'S EYE, as Halo 3's ApplyHeadLook: at most
             // head_leash_below_eye_m below his CURRENT eye, on foot and player-controlled only.
             const float leash = g_config.head_leash_below_eye_m;
@@ -15871,6 +16966,9 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
             }
         }
         viewLift.value = viewLiftZ;
+        // The ring where the vehicle aims (vehicle_cameras.inl), from the eye this view is drawn from and through the
+        // frame its rotation was composed in. A pass that placed no chase camera takes it down.
+        Halo3VehicleAimMarkerStep(position, rotationFollows, hullYaw, hullPitch);
     }
 
     // O1: ODST vehicle evidence probe. Read-only and inert â€” it publishes
@@ -15924,7 +17022,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         bool faulted = false;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             auto* tls = slots ? reinterpret_cast<unsigned char*>(
                 slots[*g_odstEngineTlsIndex]) : nullptr;
             unsigned char* table = tls
@@ -16117,7 +17215,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         bool faulted = false;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             auto* tls = slots ? reinterpret_cast<unsigned char*>(
                 slots[*g_odstEngineTlsIndex]) : nullptr;
             unsigned char* table = tls
@@ -16371,8 +17469,16 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                         OdstVehicleBindingState::Installed) &&
                 g_odstVehicleFpStable.load(std::memory_order_relaxed) ==
                     static_cast<uint32_t>(Halo3VehicleState::Vehicle);
-            OdstApplyExposureLock(g_config.vehicle_steady_exposure &&
-                                  seatOwnsView);
+            // The vehicle cameras (vehicle_cameras.inl): a chase camera chosen for this seat looks at no dashboard,
+            // so the game's eye adapts there as it does in Halo 3's, unless the camera says "eyeAdjust": false --
+            // which holds it in any camera, a first-person one included. Outside an authored cinematic.
+            const bool chaseCamera = seatOwnsView && Halo3VehicleCameraThirdPerson();
+            const bool cameraHolds = seatOwnsView &&
+                !g_odstCinematicLocked.load(std::memory_order_relaxed) &&
+                Halo3VehicleCameraHoldsExposure();
+            OdstApplyExposureLock((g_config.vehicle_steady_exposure &&
+                                   seatOwnsView && !chaseCamera) ||
+                                  cameraHolds);
             ApplyOdstMotionBlurSetting();
             // Exact Halo 3 control ownership: publish the source camera's
             // pre-head-look forward for every active camera copy. Vehicles
@@ -16521,10 +17627,55 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         return result;
     }
 
+    // Slot 0's observer record window, as Halo3CaptureObserver takes Halo 3's (a 160-byte copy, guarded), for the
+    // vehicle cameras only. A fault turns it off for the rest of the module's life and is counted for the log.
+    void OdstCaptureObserver()
+    {
+        const uint32_t slot = g_odstObserverSlot.load(std::memory_order_acquire);
+        if (!slot || !g_config.vehicle_cameras || !g_odstEngineTlsIndex)
+            return;
+        bool faulted = false;
+        __try
+        {
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
+            auto* tls = slots ? reinterpret_cast<unsigned char*>(slots[*g_odstEngineTlsIndex]) : nullptr;
+            unsigned char* observer = tls ? *reinterpret_cast<unsigned char**>(tls + slot) : nullptr;
+            if (observer)
+            {
+                Halo3ObserverCapture& cap = g_odstObserverCapture;
+                cap.seq.fetch_add(1, std::memory_order_acq_rel);
+                memcpy(cap.floats, observer + kHalo3ObserverCaptureBase, sizeof(cap.floats));
+                cap.valid.store(1, std::memory_order_relaxed);
+                cap.captureMs.store(GetTickCount64(), std::memory_order_relaxed);
+                cap.seq.fetch_add(1, std::memory_order_release);
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            faulted = true;
+        }
+        if (faulted)
+        {
+            // A fault inside the copy leaves the window torn and the sequence odd: marked not valid first, then
+            // closed, as Halo 3's (Halo3CaptureObserver), so a capture after ODST loads again reads as stable and the
+            // torn window never does. One writer: this camera thread.
+            Halo3ObserverCapture& cap = g_odstObserverCapture;
+            cap.valid.store(0, std::memory_order_relaxed);
+            cap.captureMs.store(0, std::memory_order_relaxed);
+            if (cap.seq.load(std::memory_order_relaxed) & 1u)
+                cap.seq.fetch_add(1, std::memory_order_release);
+            g_odstObserverSlot.store(0, std::memory_order_release);
+            g_odstObserverFaults.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
     __declspec(noinline) void __fastcall OdstObserverCameraEffectHook(
         int userIndex)
     {
         g_odstCamera.activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        // Before the effect, as Halo 3 captures: the stable camera.
+        if (userIndex == 0)
+            OdstCaptureObserver();
         ObserverCameraEffectFn original =
             g_odstCamera.originalObserverCameraEffect;
         const bool suppress =
@@ -18261,14 +19412,12 @@ static constexpr bool kOdstMappedFpEnabled = false;
             return;
         }
 
-        const int32_t getterDisp =
-            *reinterpret_cast<const int32_t*>(getter + 2);
-        const int32_t setterDisp =
-            *reinterpret_cast<const int32_t*>(setter + 0x1B);
+        // Through sig::RipTarget: the getter's displacement lies in its first five bytes, which Project Reclaimer
+        // 0.10 overwrites in the image with a call to its trap (the scan shadow keeps halo3.dll's own bytes).
         auto* getterIndex =
-            reinterpret_cast<uint32_t*>(getter + 6 + getterDisp);
+            reinterpret_cast<uint32_t*>(sig::RipTarget(getter + 2, getter + 6));
         auto* setterIndex =
-            reinterpret_cast<uint32_t*>(setter + 0x1F + setterDisp);
+            reinterpret_cast<uint32_t*>(sig::RipTarget(setter + 0x1B, setter + 0x1F));
         const uintptr_t getterAddress =
             reinterpret_cast<uintptr_t>(getterIndex);
         const uintptr_t setterAddress =
@@ -18516,7 +19665,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
     halo3_live_hud::Record g_h3HudRecordCopies[4][32]{};
     __declspec(noinline) const halo3_live_hud::Record* __fastcall H3HudRecordHook(int user,int resolution)
     {
-        const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
+        const auto caller=HALOMCCVR_GAME_RETURN_ADDRESS();
         g_halo3CoreCallbacks.fetch_add(1,std::memory_order_acq_rel);
         __try {
             const auto* native=g_realH3HudRecord(user,resolution);
@@ -18604,6 +19753,47 @@ static constexpr bool kOdstMappedFpEnabled = false;
         }
     }
 
+    // Project Reclaimer 0.10: the native weapon-IK decision (the two-byte patch in the install) cannot be patched in
+    // code that never runs. The mode call it leads to is hooked instead, and from that one call site it gets the
+    // no-weapon-IK branch's arguments (mode 1, 3, the branch's blend constant), which is what the patch does.
+    using WeaponIkModeFn = uint64_t(__fastcall*)(void*, int, int, float);
+    WeaponIkModeFn g_realWeaponIkMode = nullptr;
+    uintptr_t g_weaponIkModeReturn = 0;   // the decision's mode call's guest return address
+    float g_weaponIkNoIkBlend = 0.0f;
+    __declspec(noinline) uint64_t __fastcall GuardedWeaponIkModeHook(void* state, int mode, int mode2, float blend)
+    {
+        g_halo3CoreCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        __try
+        {
+            if (g_weaponIkModeReturn && HALOMCCVR_GAME_RETURN_ADDRESS() == g_weaponIkModeReturn)
+                return g_realWeaponIkMode(state, 1, 3, g_weaponIkNoIkBlend);
+            return g_realWeaponIkMode(state, mode, mode2, blend);
+        }
+        __finally
+        {
+            g_halo3CoreCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+        }
+    }
+
+    // Project Reclaimer 0.10's class gate (g_halo3LiftedClassGate): the widget draw's first ask answered yes.
+    __declspec(noinline) bool __fastcall GuardedGameIsPlaybackGateHook()
+    {
+        g_halo3CoreCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        __try
+        {
+            if (t_halo3ClassGateAsk)
+            {
+                t_halo3ClassGateAsk = false;
+                return true;
+            }
+            return g_realGameIsPlaybackGate();
+        }
+        __finally
+        {
+            g_halo3CoreCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+        }
+    }
+
     __declspec(noinline) void __fastcall GuardedHudDrawWidgetHook(int userIndex, void* descriptor,
                                       unsigned short widgetIndex,
                                       unsigned char useAlternatePath,
@@ -18658,6 +19848,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
     bool RemoveInstalledGameHooks()
     {
         g_halo3InstallReady.store(false, std::memory_order_release);
+        g_halo3LiftedClassGate = false;
+        g_weaponIkModeReturn = 0;
         g_halo3WorldCollision.runtimeBoundsProven.store(false,std::memory_order_release);
         g_halo3WorldCollision.installed.store(false, std::memory_order_release);
         bool disabled = true;
@@ -18703,6 +19895,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 reinterpret_cast<const void*>(&GuardedHudPlaceHook),
                 reinterpret_cast<const void*>(&GuardedHudCrosshairVisibleHook),
                 reinterpret_cast<const void*>(&GuardedHudDrawWidgetHook),
+                reinterpret_cast<const void*>(&GuardedGameIsPlaybackGateHook),
+                reinterpret_cast<const void*>(&GuardedWeaponIkModeHook),
                 reinterpret_cast<const void*>(&GuardedFpDriverHook),
                 reinterpret_cast<const void*>(&GuardedRenderViewHook)};
             const void* originals[]{reinterpret_cast<const void*>(g_realH3HudRecord),
@@ -18711,6 +19905,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 reinterpret_cast<const void*>(g_realHudPlace),
                 reinterpret_cast<const void*>(g_realHudCrosshairVisible),
                 reinterpret_cast<const void*>(g_realHudDrawWidget),
+                reinterpret_cast<const void*>(g_realGameIsPlaybackGate),
+                reinterpret_cast<const void*>(g_realWeaponIkMode),
                 reinterpret_cast<const void*>(g_origFpDriver),
                 reinterpret_cast<const void*>(g_origRenderView)};
             if (!WaitForNativeDetourQuiescence(functions, originals,
@@ -19213,6 +20409,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 std::memory_order_release);
             g_halo3VehicleSnapshot.store(0, std::memory_order_release);
             g_halo3PlayerUnitGetter = nullptr;
+            g_halo3PlayerUnitGetterAt = 0;
             g_halo3UnitInVehicle = nullptr;
             g_halo3VehicleTypeAccessor = nullptr;
             g_halo3InterpolatedNodes = nullptr;
@@ -19238,22 +20435,24 @@ static constexpr bool kOdstMappedFpEnabled = false;
             if (nativeUnique && getterUnique && typeUnique)
             {
                 g_halo3UnitInVehicle =
-                    reinterpret_cast<Halo3UnitInVehicleFn>(nativeHit);
+                    lifted::Callable(reinterpret_cast<Halo3UnitInVehicleFn>(nativeHit));
                 g_halo3PlayerUnitGetter =
-                    reinterpret_cast<Halo3PlayerUnitGetterFn>(getterHit);
+                    lifted::Callable(reinterpret_cast<Halo3PlayerUnitGetterFn>(getterHit));
+                g_halo3PlayerUnitGetterAt = getterHit;
                 g_halo3VehicleTypeAccessor =
-                    reinterpret_cast<Halo3VehicleTypeFn>(typeHit);
+                    lifted::Callable(reinterpret_cast<Halo3VehicleTypeFn>(typeHit));
                 // C7: decode the two rip-relative globals from the matched
                 // accessor body (E4 instruction layout: mov rax,[rip+d] at
                 // +0 ends +7 = tag instance table; mov rax,[rip+d] at +22
                 // ends +29 = tag data base). Self-anchoring, no absolute
-                // address is shipped.
+                // address is shipped. Through sig::RipTarget: the first
+                // displacement lies in the body's first five bytes, which
+                // Project Reclaimer 0.10 overwrites in the image with a call to
+                // its trap (the scan shadow keeps halo3.dll's own bytes).
                 g_halo3TagInstanceTable = reinterpret_cast<void**>(
-                    typeHit + 7 +
-                    *reinterpret_cast<const int32_t*>(typeHit + 3));
+                    sig::RipTarget(typeHit + 3, typeHit + 7));
                 g_halo3TagDataBase = reinterpret_cast<void**>(
-                    typeHit + 29 +
-                    *reinterpret_cast<const int32_t*>(typeHit + 25));
+                    sig::RipTarget(typeHit + 25, typeHit + 29));
                 g_halo3VehicleProbeKey.store(~0ull, std::memory_order_relaxed);
                 g_halo3VehicleBinding.store(
                     static_cast<uint8_t>(Halo3VehicleBindingState::Installed),
@@ -19299,7 +20498,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             if (nodeUnique)
             {
                 g_halo3InterpolatedNodes =
-                    reinterpret_cast<Halo3InterpolatedNodesFn>(nodeHit);
+                    lifted::Callable(reinterpret_cast<Halo3InterpolatedNodesFn>(nodeHit));
                 g_halo3NodeBinding.store(
                     static_cast<uint8_t>(Halo3NodeBindingState::Installed),
                     std::memory_order_release);
@@ -19333,7 +20532,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             if (markerUnique)
             {
                 g_halo3MarkersInternal =
-                    reinterpret_cast<Halo3MarkersInternalFn>(markerHit);
+                    lifted::Callable(reinterpret_cast<Halo3MarkersInternalFn>(markerHit));
                 g_halo3HeadBinding.store(
                     static_cast<uint8_t>(Halo3NodeBindingState::Installed),
                     std::memory_order_release);
@@ -19446,6 +20645,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
         bool visiblePathOk=false;
         if (uniqueInterpolate && uniqueVisiblePalette)
         {
+            // The palette detour hands the original a source of its own, the fifth argument: in Project Reclaimer
+            // 0.10 that reaches the game only as a stack argument written back (lifted_engine.h).
+            lifted::SetStackArguments(reinterpret_cast<void*>(visiblePaletteHit), 2);
             const MH_STATUS createInterpolate=MH_CreateHook(
                 reinterpret_cast<void*>(interpolateHit),
                 reinterpret_cast<void*>(&GuardedFpInterpolateHook),
@@ -19506,7 +20708,38 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 if (branch[0]==0x74 && branch[1]==0x05)
                 {
                     DWORD oldProtect=0;
-                    if (VirtualProtect(branch,2,PAGE_EXECUTE_READWRITE,&oldProtect))
+                    // Project Reclaimer 0.10 (GuardedWeaponIkModeHook): the decision's mode call at +0x38 and the
+                    // no-weapon-IK branch's blend load (movss xmm3, [rip+disp]) at +0x1D are read, not patched.
+                    const auto* bytes=reinterpret_cast<const unsigned char*>(decision);
+                    if (lifted::Active())
+                    {
+                        const bool shape=bytes[0x38]==0xE8 && bytes[0x1D]==0xF3 && bytes[0x1E]==0x0F &&
+                            bytes[0x1F]==0x10 && bytes[0x20]==0x1D;
+                        const uintptr_t mode=shape ? sig::RipTarget(decision+0x39,decision+0x3D) : 0;
+                        const uintptr_t blend=shape ? sig::RipTarget(decision+0x21,decision+0x25) : 0;
+                        // The blend is its fourth argument, a float the detour replaces (lifted_engine.h).
+                        if (mode)
+                            lifted::SetFloatArguments(reinterpret_cast<void*>(mode), 1u << 3);
+                        bool hooked=mode>=base && mode<base+size && blend>=base && blend+4<=base+size &&
+                            MH_CreateHook(reinterpret_cast<void*>(mode),
+                                          reinterpret_cast<void*>(&GuardedWeaponIkModeHook),
+                                          reinterpret_cast<void**>(&g_realWeaponIkMode))==MH_OK;
+                        if (hooked)
+                        {
+                            RememberInstalledGameHook(reinterpret_cast<void*>(mode));
+                            g_weaponIkNoIkBlend=*reinterpret_cast<const float*>(blend);
+                            g_weaponIkModeReturn=decision+0x3D;
+                            hooked=MH_QueueEnableHook(reinterpret_cast<void*>(mode))==MH_OK;
+                        }
+                        if (!hooked)
+                            g_weaponIkModeReturn=0;
+                        LOG(hooked ? "M3 VRIK: native first-person weapon IK disabled through its mode call "
+                                     "halo3.dll+0x%llX (Project Reclaimer 0.10); controller solver owns support arms"
+                                   : "M3 VRIK: native weapon-IK mode call could not be hooked (Project Reclaimer "
+                                     "0.10, halo3.dll+0x%llX); shotgun support hand may stay attached to pump",
+                            (unsigned long long)(mode ? mode-base : decision-base));
+                    }
+                    else if (VirtualProtect(branch,2,PAGE_EXECUTE_READWRITE,&oldProtect))
                     {
                         // JE +5 (conditional native-IK decision) -> JMP +0x18
                         // (the stock no-weapon-IK branch at halo3+0x2C3959).
@@ -19559,7 +20792,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         RememberInstalledGameHook(reinterpret_cast<void*>(fpCamHit));
         if (fpCameraOk)
         {
-            g_fpCameraUpload=reinterpret_cast<FpCameraUploadFn>(fpUploadHit);
+            g_fpCameraUpload=lifted::Callable(reinterpret_cast<FpCameraUploadFn>(fpUploadHit));
             Halo3HookWatchInstalled(Halo3Hook::FpCameraRebuild, fpCamHit);
             LOG("M3: FP camera rebuild hooked at halo3.dll+0x%llX (uploader +0x%llX); "
                 "gun/HUD layer renders per-eye",
@@ -19582,6 +20815,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
             RememberInstalledGameHook(reinterpret_cast<void*>(hudXform));
             if (hudXform && !sig::Find(hudXform+1, base+size-hudXform-1, kHudXformSig))
             {
+                // Its three arguments are floats, and the detour scales two of them (lifted_engine.h).
+                lifted::SetFloatArguments(reinterpret_cast<void*>(hudXform), 0x7);
                 if (MH_CreateHook(reinterpret_cast<void*>(hudXform),
                                   reinterpret_cast<void*>(&GuardedHudXformHook),
                                   reinterpret_cast<void**>(&g_realHudXform)) == MH_OK &&
@@ -19750,7 +20985,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                         RememberInstalledGameHook(
                             reinterpret_cast<void*>(hudElem));
                         g_gameIsPlayback =
-                            reinterpret_cast<GameIsPlaybackFn>(playbackTarget);
+                            lifted::Callable(reinterpret_cast<GameIsPlaybackFn>(playbackTarget));
                         const MH_STATUS createStatus = MH_CreateHook(
                             reinterpret_cast<void*>(visibleTarget),
                             reinterpret_cast<void*>(&GuardedHudCrosshairVisibleHook),
@@ -19776,8 +21011,24 @@ static constexpr bool kOdstMappedFpEnabled = false;
                         if (hookReady)
                         {
                             DWORD oldProtect = 0;
-                            if (VirtualProtect(classGate, 2, PAGE_EXECUTE_READWRITE,
-                                               &oldProtect))
+                            // Project Reclaimer 0.10: the gate is opened by the playback check's hook instead
+                            // (g_halo3LiftedClassGate), which needs the draw hook to say when it asks.
+                            bool gateOpen = false;
+                            if (lifted::Active())
+                            {
+                                gateOpen = drawHookReady &&
+                                    MH_CreateHook(reinterpret_cast<void*>(playbackTarget),
+                                                  reinterpret_cast<void*>(&GuardedGameIsPlaybackGateHook),
+                                                  reinterpret_cast<void**>(&g_realGameIsPlaybackGate)) == MH_OK;
+                                if (gateOpen)
+                                {
+                                    RememberInstalledGameHook(reinterpret_cast<void*>(playbackTarget));
+                                    gateOpen = MH_QueueEnableHook(reinterpret_cast<void*>(playbackTarget)) == MH_OK;
+                                }
+                                g_halo3LiftedClassGate = gateOpen;
+                            }
+                            else if (VirtualProtect(classGate, 2, PAGE_EXECUTE_READWRITE,
+                                                    &oldProtect))
                             {
                                 classGate[0] = 0x90;
                                 classGate[1] = 0x90;
@@ -19786,20 +21037,32 @@ static constexpr bool kOdstMappedFpEnabled = false;
                                                       classGate, 2);
                                 DWORD ignored = 0;
                                 VirtualProtect(classGate, 2, oldProtect, &ignored);
+                                gateOpen = true;
+                            }
+                            if (gateOpen)
+                            {
                                 // The predicate is reached only with the gate open: watched from here on.
                                 Halo3HookWatchInstalled(Halo3Hook::HudCrosshairVisible, visibleTarget);
                                 if (drawHookReady)
                                     Halo3HookWatchInstalled(Halo3Hook::HudDrawWidget, hudElem);
                                 if (drawHookReady)
                                     LOG("M3: authored CHUD crosshair redirect active "
-                                        "at halo3.dll+0x%llX",
-                                        (unsigned long long)(hudElem - base));
+                                        "at halo3.dll+0x%llX%s",
+                                        (unsigned long long)(hudElem - base),
+                                        g_halo3LiftedClassGate ? " (Project Reclaimer 0.10: its class gate is "
+                                                                 "opened by the playback check's hook)" : "");
                                 else
                                     LOG("M3: CHUD class hider active but authored "
                                         "draw wrapper unavailable; using VR fallback");
                             }
                             else
                             {
+                                if (g_realGameIsPlaybackGate)
+                                {
+                                    MH_DisableHook(reinterpret_cast<void*>(playbackTarget));
+                                    MH_RemoveHook(reinterpret_cast<void*>(playbackTarget));
+                                    g_realGameIsPlaybackGate = nullptr;
+                                }
                                 if (drawHookReady)
                                 {
                                     MH_DisableHook(reinterpret_cast<void*>(hudElem));
@@ -19859,7 +21122,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 LOG("Halo 3 call-site already redirected; retaining native callee instead of chaining a relay");
             else
             {
-            g_realFpRoot = reinterpret_cast<FpRootFn>(callInstr + 5 + origRel);
+            g_realFpRoot = lifted::Callable(reinterpret_cast<FpRootFn>(callInstr + 5 + origRel));
             // 12-byte trampoline (mov rax, imm64; jmp rax) within rel32 range
             // of the call site, since our DLL may sit >2GB away.
             unsigned char* tramp = nullptr;
@@ -19917,7 +21180,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 LOG("Halo 3 call-site already redirected; retaining native callee instead of chaining a relay");
             else
             {
-            g_realSwayApply = reinterpret_cast<SwayApplyFn>(callInstr + 5 + origRel);
+            g_realSwayApply = lifted::Callable(reinterpret_cast<SwayApplyFn>(callInstr + 5 + origRel));
             unsigned char* tramp = nullptr;
             for (uintptr_t probe = callInstr & ~0xFFFFull;
                  probe > callInstr - 0x40000000ull && !tramp; probe -= 0x100000)
@@ -20080,8 +21343,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // The record recomposition's first-person eye identity (shot_lag_logic.h 4d): two sites, no hook.
         (void)BindHalo3DirectorCamera(base,size,runtimeGeneration,g_engineTlsIndex);
         // Roomscale's Forge Monitor check (roomscale_admission_logic.h): two sites, two reader calls, no hook.
-        (void)BindHalo3SandboxEditor(base,size,runtimeGeneration,g_engineTlsIndex,
-            reinterpret_cast<uintptr_t>(g_halo3PlayerUnitGetter));
+        (void)BindHalo3SandboxEditor(base,size,runtimeGeneration,g_engineTlsIndex,g_halo3PlayerUnitGetterAt);
         InstallSteps::Mark("chase camera, eye and Forge binds");
         // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook; fails closed alone.
         (void)InstallHalo3GunBand(base,size,runtimeGeneration);
@@ -20140,9 +21402,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 !matricesHit ? "missing" : ambiguous(matricesHit, kBuildMatricesSig) ? "ambiguous" : "ok");
             return true;
         }
-        g_prepareView = reinterpret_cast<PrepareViewFn>(prepareHit);
-        g_buildViewport = reinterpret_cast<BuildViewportFn>(viewportHit);
-        g_buildMatrices = reinterpret_cast<BuildMatricesFn>(matricesHit);
+        g_prepareView = lifted::Callable(reinterpret_cast<PrepareViewFn>(prepareHit));
+        g_buildViewport = lifted::Callable(reinterpret_cast<BuildViewportFn>(viewportHit));
+        g_buildMatrices = lifted::Callable(reinterpret_cast<BuildMatricesFn>(matricesHit));
         if (MH_CreateHook(reinterpret_cast<void*>(renderHit), reinterpret_cast<void*>(&GuardedRenderViewHook),
                           reinterpret_cast<void**>(&g_origRenderView)) != MH_OK ||
             MH_QueueEnableHook(reinterpret_cast<void*>(renderHit)) != MH_OK)
@@ -20623,7 +21885,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         }
 
         g_gameIsPlayback =
-            reinterpret_cast<GameIsPlaybackFn>(playbackTarget);
+            lifted::Callable(reinterpret_cast<GameIsPlaybackFn>(playbackTarget));
         const MH_STATUS visibleQueue =
             MH_QueueEnableHook(
                 reinterpret_cast<void*>(visibleTarget));
@@ -21801,6 +23063,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // quiet must not leave the stereo hooks enabled and the title DLL held while it is retried. By now the
         // camera hook that publishes the head for them is off, so both lanes only forward.
         if(!RemoveOdstHeadRelative())return false;
+        RemoveOdstHudNote();
 
         bool removedAll = true;
         for (size_t i = g_odstCamera.hookTargetCount; i > 0; --i)
@@ -21866,6 +23129,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         }
         RestoreOdstMotionBlurVars();
         ReleaseOdstExposureLock();
+        RetireOdstVehicleBoom();
         ReleaseOdstFiringOriginHook();
         g_odstCamera.installed.store(false, std::memory_order_release);
         ReleaseOdstModuleReferenceAndClearPointers();
@@ -21959,6 +23223,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // O1: the ODST vehicle evidence binding. Optional and read-only â€”
         // failure logs loudly and leaves every camera behavior untouched.
         ResolveOdstVehicleBinding(base, size);
+        // The vehicle cameras' third-person boom: ODST's seat camera and track (halo3_vehicle_boom.inl), against the
+        // tag tables just resolved. Read-only; a part that does not prove leaves the boom an orbit.
+        BindOdstVehicleBoom(base, size, runtimeGeneration);
         // Two-handed aim's camera rung (first_person_view_logic.h): two sites, no hook; fails closed alone.
         (void)BindOdstDirectorCamera(base, size, runtimeGeneration, g_odstEngineTlsIndex);
 
@@ -21969,6 +23236,25 @@ static constexpr bool kOdstMappedFpEnabled = false;
             void* detour;
             void** original;
         };
+        // The observer array's engine TLS slot, from the matched effect function's own instructions
+        // (odst_vehicle_logic.h: OdstDecodeObserverSlot), for the vehicle cameras' "thirdperson" origin and ring.
+        {
+            const auto* effect = reinterpret_cast<const uint8_t*>(resolved.observerCameraEffect);
+            const bool inImage = effect && resolved.observerCameraEffect >= base &&
+                                 resolved.observerCameraEffect + kOdstObserverStrideLoadOffset + 7 <= base + size;
+            const uint32_t slot = inImage
+                ? OdstDecodeObserverSlot(effect + kOdstObserverSlotLoadOffset, effect + kOdstObserverStrideLoadOffset)
+                : 0u;
+            g_odstObserverCapture.valid.store(0, std::memory_order_release);
+            g_odstObserverSlot.store(slot, std::memory_order_release);
+            if (slot)
+                LOG("ODST observer: the observer array is engine TLS +0x%X (records of 0x%X), from the matched camera "
+                    "effect at +0x%llX; the vehicle cameras read the game's own camera from it",
+                    slot, kOdstObserverStride, static_cast<unsigned long long>(resolved.observerCameraEffect - base));
+            else
+                LOG("ODST observer: the matched camera effect does not load the observer array as expected, so the "
+                    "game's own camera is not read; a \"thirdperson\" vehicle camera stands at the mod's stand-in");
+        }
         HookSpec hooks[] = {
             {"camera copy", reinterpret_cast<void*>(resolved.camCopy),
              reinterpret_cast<void*>(&OdstCamCopyHook),
@@ -22152,6 +23438,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
         (void)InstallOdstPlayerTags(base,size,runtimeGeneration);
         // The motion tracker and the sound listener by the head (halo3_head_relative.inl): own transactions.
         (void)InstallOdstHeadRelative(base,size,runtimeGeneration);
+        // The vehicle camera note in the game's HUD messages (halo3_hud_note.inl): no hook of its own, it is posted
+        // from the listener hook above; not bound, the note uses the mod's panel.
+        (void)InstallOdstHudNote(base,size,runtimeGeneration);
 
         // The ownership block that used to sit here now runs the moment the
         // core hooks go live, above. In particular g_odstLastCamCopyMs is NOT
@@ -22225,6 +23514,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         }
         RestoreOdstMotionBlurVars();
         ReleaseOdstExposureLock();
+        RetireOdstVehicleBoom();
         ReleaseOdstFiringOriginHook();
 
         const auto reason = static_cast<OdstFallbackReason>(
@@ -22402,6 +23692,24 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // ReachPublishCompletedFrameFeedback).
         bool nativeCameraValid = false;
         float nativeCameraPoint[3]{};
+        // For the vehicle cameras (reach_vehicle_cameras.inl), all from the same sample: the seated object's root
+        // node as drawn, the seat's own point on it (latched once per occupation), the root of the carrier a gun
+        // rides (an attached gun's, a walk-up gun's on a vehicle), the definition's bounding sphere, and the
+        // identity tuple and physics type the identity was resolved from.
+        bool rootValid = false;
+        float rootPos[3]{};
+        float rootForward[3]{};
+        float rootLeft[3]{};
+        float rootUp[3]{};
+        float seatPoint[3]{};
+        bool carrierRootValid = false;
+        float carrierPos[3]{};
+        float carrierForward[3]{};
+        float carrierLeft[3]{};
+        float carrierUp[3]{};
+        float boundsRadius = 0.0f;
+        ReachVehicleFingerprint fingerprint{};
+        int32_t physicsType = -1;
     };
 
     struct ReachRenderHelpers
@@ -22575,6 +23883,17 @@ static constexpr bool kOdstMappedFpEnabled = false;
     std::atomic<uint32_t> g_reachScopeFaultGeneration{0};
     std::atomic<uint32_t> g_reachScopeFaults{0};
 
+    // AIM FRAME ZOOM (reach_aim_frame.inl): this frame's picture along the aim, in place of the eyes' cameras.
+    struct ReachAimFrame
+    {
+        bool active = false, stereo = false;
+        AimFrame frame{};                 // its tangents as the engine's helpers built them
+        float right[3]{};
+        float eyeOffset[2][3]{};
+        float scale = 1.0f;               // world units per metre of eye offset, the 3D spacing in it
+        float meetWu = 0.0f;
+    };
+
     struct ReachOwnerScope
     {
         bool active = false;
@@ -22609,6 +23928,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // drawn with it.
         bool mono = false;
         ReachScopeFrame scope{};
+        ReachAimFrame aimFrame{};
     };
 
     // Outer and inner hooks run on the same render thread in one synchronous
@@ -22875,6 +24195,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
         std::atomic<uint64_t> sampleMs{0};
         std::atomic<uint8_t> active{0};
         std::atomic<uint8_t> allowsWeapons{0};
+        // A chase camera of the vehicle camera file is chosen for this seat (reach_vehicle_cameras.inl): the sight's
+        // ray starts at the camera, metres from the occupant, so no shot may leave from it.
+        std::atomic<uint8_t> chaseCamera{0};
         std::atomic<int32_t> unitHandle{-1};
         std::atomic<int32_t> directParent{-1};
         std::atomic<uint32_t> definitionDatum{0xFFFFFFFFu};
@@ -23028,7 +24351,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
     }
 
     void ReachPublishShotOccupation(
-        uint32_t generation, const ReachVehicleFrame* frame)
+        uint32_t generation, const ReachVehicleFrame* frame,
+        bool chaseCamera = false)
     {
         const bool active = generation && frame && frame->active;
         auto& published = g_reachShotOccupation;
@@ -23044,6 +24368,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 ? 1u
                 : 0u,
             std::memory_order_relaxed);
+        published.chaseCamera.store(
+            active && chaseCamera ? 1u : 0u, std::memory_order_relaxed);
         published.unitHandle.store(
             active ? frame->unitHandle : -1, std::memory_order_relaxed);
         published.directParent.store(
@@ -23250,6 +24576,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
     std::atomic<uint32_t> g_reachFiringOriginSkipNoSightRay{0};
     // Seated shots whose origin was left stock because trace-and-reaim was live (not a failure).
     std::atomic<uint32_t> g_reachFiringOriginConverged{0};
+    // Seated shots whose origin was left stock because a chase camera was chosen for the seat (not a failure).
+    std::atomic<uint32_t> g_reachFiringOriginChaseKept{0};
     // The occupied seat's own flags word, published by the engine
     // thread that read it so the worker can report it honestly.
     std::atomic<uint32_t> g_reachVehicleSeatFlagsPublished{0};
@@ -23273,6 +24601,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         uint64_t sampleMs = 0;
         bool active = false;
         bool allowsWeapons = false;
+        bool chaseCamera = false;
         ReachSeatLeaseKey key{};
     };
 
@@ -23321,6 +24650,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 published.active.load(std::memory_order_relaxed) != 0;
             sample.allowsWeapons =
                 published.allowsWeapons.load(std::memory_order_relaxed) != 0;
+            sample.chaseCamera =
+                published.chaseCamera.load(std::memory_order_relaxed) != 0;
             sample.key = {
                 sample.generation,
                 published.unitHandle.load(std::memory_order_relaxed),
@@ -23520,6 +24851,13 @@ static constexpr bool kOdstMappedFpEnabled = false;
             else
                 reason = &g_reachFiringOriginSkipStaleEye;
             reason->fetch_add(1, std::memory_order_relaxed);
+            return stockResult;
+        }
+        // A chase camera of the vehicle camera file is chosen for this seat: the sight's ray starts at the camera,
+        // metres behind or above the occupant (and maybe past cover), so the shot leaves from the game's own point.
+        if (occupation.chaseCamera)
+        {
+            g_reachFiringOriginChaseKept.fetch_add(1, std::memory_order_relaxed);
             return stockResult;
         }
         // R-V27: leave from where the SIGHT starts, not from the eye.
@@ -24272,7 +25610,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             const uint32_t index = *indexSlot;
             if (index >= kReachRenderTlsIndexLimit)
                 return nullptr;
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             if (!slots)
                 return nullptr;
             auto* block = reinterpret_cast<unsigned char*>(slots[index]);
@@ -24501,7 +25839,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
     // whether the authored reticle actually needs re-uploading this frame.
     std::atomic<uint64_t> g_reachAuthoredCrosshairKey{0};
 
-    bool ReachOwnsHudStereoTransaction()
+    // Reach's stereo core owns this load and is armed: any thread, inside an
+    // eye's render or not (the HUD update's off-screen tests run outside it).
+    bool ReachStereoCoreOwned()
     {
         if (TitleAdapter_GetActiveTitle() != GameTitle::HaloReach)
             return false;
@@ -24514,8 +25854,14 @@ static constexpr bool kOdstMappedFpEnabled = false;
             g_reachCamera.armed.load(std::memory_order_acquire) &&
             !g_reachCamera.teardownRequested.load(std::memory_order_acquire) &&
             g_enabled.load(std::memory_order_relaxed) &&
-            VR_IsStereoEnabled() && g_reachFpCameraEyeScope.active &&
-            g_reachFpCameraEyeScope.generation == cameraGeneration;
+            VR_IsStereoEnabled();
+    }
+
+    bool ReachOwnsHudStereoTransaction()
+    {
+        return ReachStereoCoreOwned() && g_reachFpCameraEyeScope.active &&
+            g_reachFpCameraEyeScope.generation ==
+                g_reachCamera.generation.load(std::memory_order_acquire);
     }
 
     #include "reach_hud_height.inl"
@@ -25409,14 +26755,16 @@ static constexpr bool kOdstMappedFpEnabled = false;
             // accepted Reach 3D at risk, so it is never corrected.
             if (site == kReachObserverCameraWorldSite)
                 return;
-            if (!ReachOwnsHudStereoTransaction())
-                return;
-            const ReachFpCameraEyeScope& scope = g_reachFpCameraEyeScope;
-            if (!scope.active ||
-                scope.generation != g_reachCamera.generation)
+            if (!ReachNavInEye())
             {
+                // Outside an eye's render the marker projection serves the
+                // HUD update's on/off-screen tests: they get the head of the
+                // last committed frame instead of the aim (reach_nav_markers.inl).
+                if (site == kReachObserverCameraChudSite)
+                    ReachNavOffEyeCamera(static_cast<unsigned char*>(dst));
                 return;
             }
+            const ReachFpCameraEyeScope& scope = g_reachFpCameraEyeScope;
             // Destination and the cached head camera share the compact layout
             // exactly (proven by this function's own copy block), so this is a
             // straight three-field copy: position, forward, up. Field of view
@@ -25460,6 +26808,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         unsigned int useAlternatePath, void* drawState)
     {
         bool captureStarted = false;
+        bool discardStarted = false;
         const bool hideHud=g_reachScopeRendering ||
             (VR_HudHidden()&&ReachOwnsHudStereoTransaction());
         if(hideHud) ++hud_visibility::depth;
@@ -25551,6 +26900,17 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 const uint8_t settled = slot.load(std::memory_order_relaxed);
                 collectionIsFlash = settled >= 3 &&
                     collectionIndexForFlash == settled;
+            }
+            // AIM FRAME ZOOM: the frame is the flat game's picture, so the game draws its own crosshair and zoom reticle
+            // into it where it always does; the lifted crosshair is not shown meanwhile. crosshair=0 still means none.
+            if (ownsStereo && g_aimFramePass.load(std::memory_order_acquire) &&
+                (!isCrosshairClass || g_config.crosshair))
+            {
+                g_aimFrameWidgets.fetch_add(1, std::memory_order_relaxed);
+                if (isCrosshairClass)
+                    g_aimFrameCrosshairAsks.fetch_add(1, std::memory_order_relaxed);
+                original(userIndex, descriptor, widgetIndex, useAlternatePath, drawState);
+                return;
             }
             if (ownsStereo && isCrosshairClass)
                 g_reachFpCameraEyeScope.chudClass2Seen = true;
@@ -25693,7 +27053,15 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 // visibility predicate and its alpha write is inert, that
                 // refusal put the flat stock crosshair back on the eye for
                 // players who asked for none.
-                if (VR_BeginAuthoredReticleRedirect())
+                // AIM FRAME ZOOM: just out of the frame the crosshair is still leaving its zoomed look. It still may
+                // not reach the eye, but the art held from before the zoom stays up until then: this draw goes to
+                // the discard target where that is ready, and into the capture as ever where it is not.
+                if (isCrosshairClass && !AimFrameCrosshairReadyForCapture(GameTitle::HaloReach) &&
+                    VR_BeginPreparedAuthoredReticleSuppression())
+                {
+                    discardStarted = g_reachHudHeightRedirected = true;
+                }
+                else if (VR_BeginAuthoredReticleRedirect())
                 {
                     captureStarted = g_reachHudHeightRedirected = true;
                     // Fold this widget's identity in AFTER the redirect
@@ -25736,6 +27104,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
         {
             if(hideHud) --hud_visibility::depth;
             g_reachHudHeightRedirected = previousHeightRedirected;
+            if (discardStarted && !VR_EndPreparedAuthoredReticleSuppression())
+                ReportReachRedirectUnavailable();
             if (captureStarted)
             {
                 if (VR_EndPreparedAuthoredReticleCapture())
@@ -26352,6 +27722,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
     std::atomic<uint32_t> g_reachCrouchLiftFrames{0};
     std::atomic<uint32_t> g_reachCrouchMaxLiftMm{0};
 
+    bool ReachVehicleCameraLeashHead(float head[3]); // reach_vehicle_cameras.inl
     bool ReachApplyHeadLook(
         unsigned char* cam, const ReachVrRenderSnapshot& tracking,
         const ReachVehicleFrame* vehicle,
@@ -26562,6 +27933,18 @@ static constexpr bool kOdstMappedFpEnabled = false;
             }
             ox = Clamp(ox, -1.5f, 1.5f); oy = Clamp(oy, -1.5f, 1.5f);
             oz = Clamp(oz, -1.5f, 1.5f);
+            // A chase camera of the vehicle camera file holds the head inside its own leash, so a lean cannot
+            // take the view through the hull (reach_vehicle_cameras.inl, placed earlier in this frame).
+            if (vehicle && vehicle->active)
+            {
+                float lean[3] = {ox, oy, oz};
+                if (ReachVehicleCameraLeashHead(lean))
+                {
+                    ox = lean[0];
+                    oy = lean[1];
+                    oz = lean[2];
+                }
+            }
             pos[0] += ox; pos[1] += oy; pos[2] += oz;
             // THE LEASH BELOW THE CHARACTER'S EYE (Halo: Campaign Evolved's heightleash). A physical
             // duck deeper than the character's own crouch took the view inside his chest and legs:
@@ -26806,7 +28189,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             return;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             if (!slots)
             {
                 g_reachCineProbe.sampleFailures.fetch_add(
@@ -27337,7 +28720,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             const uint32_t tlsIndex = *g_reachChudTlsIndex;
             if (tlsIndex >= 1088)
                 return;
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             if (!slots)
                 return;
             auto* tls = reinterpret_cast<unsigned char*>(slots[tlsIndex]);
@@ -27813,6 +29196,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
     }
 
     #include "reach_scope.inl"
+    #include "reach_aim_frame.inl"
 
     bool ReachStereoTransaction(uintptr_t playerView, ReachVrRenderAccess& access)
     {
@@ -27893,7 +29277,13 @@ static constexpr bool kOdstMappedFpEnabled = false;
         const bool rightFirst = g_config.right_eye_first;
         // MONO RENDERING (mono_view_logic.h): the snapshot's two eyes are one camera, and one pass is drawn with
         // it: as the first eye, and as the engine's final window. The theatre keeps its two eyes.
-        const bool monoFrame = g_reachOwnerScope.mono && !g_reachOwnerScope.cutsceneTheater;
+        // AIM FRAME ZOOM (reach_aim_frame.inl): one pass along the aim, or in 3D one for each eye; it wins over mono
+        // rendering, as in Halo 3.
+        const bool aimFrameUp = g_reachOwnerScope.aimFrame.active && !g_reachOwnerScope.cutsceneTheater;
+        const bool aimFrameStereo = aimFrameUp && g_reachOwnerScope.aimFrame.stereo;
+        float aimFrameBuiltX = 0.0f, aimFrameBuiltY = 0.0f;
+        const bool monoFrame = !g_reachOwnerScope.cutsceneTheater &&
+            (aimFrameUp ? !aimFrameStereo : g_reachOwnerScope.mono);
         const uint32_t eyePasses = monoFrame ? 1u : 2u;
         bool completed = false;
         bool transactionValid = true;
@@ -27926,7 +29316,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     g_reachOwnerScope.eyes[policy.eye];
                 const ReachSymmetricFovCover& requestedFov =
                     eyeInput.rasterCover;
-                if (!ReachApplyEyeOffset(
+                if (aimFrameUp)
+                    ReachAimFrameEyeCamera(compact, center, g_reachOwnerScope.aimFrame, policy.eye);
+                else if (!ReachApplyEyeOffset(
                         compact, eyeInput,
                         g_reachOwnerScope.cutsceneTheater))
                 {
@@ -27967,7 +29359,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 const ReachProjectionHalfFovs rasterFov =
                     DecodeReachProjectionHalfFovs(
                         projectionMatrix[0], projectionMatrix[5]);
-                if (!(g_reachOwnerScope.cutsceneTheater
+                // The frame is meant to be narrower than the headset: what it draws is its own picture.
+                if (!(aimFrameUp ? rasterFov.valid
+                    : g_reachOwnerScope.cutsceneTheater
                         ? rasterFov.valid &&
                             CutsceneTheaterProjectionMatchesAspect(
                                 g_reachOwnerScope.cutsceneTheaterAspect,
@@ -28065,6 +29459,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 memcpy(fpCameraScope.derived, primaryDerived,
                        sizeof(fpCameraScope.derived));
                 bool renderReturned = false;
+                g_aimFramePass.store(aimFrameUp, std::memory_order_release);
                 __try
                 {
                     fpCameraScope.active = true;
@@ -28083,6 +29478,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 __finally
                 {
                     fpCameraScope.active = false;
+                    g_aimFramePass.store(false, std::memory_order_release);
                 }
                 // The depth this eye rasterized is complete now, whether or
                 // not the transaction below stays valid.
@@ -28106,6 +29502,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     rasterFov.vertical, std::memory_order_relaxed);
                 g_reachRenderFovSerial[policy.eye].store(
                     access.preparedSerial, std::memory_order_release);
+                aimFrameBuiltX = tanf(rasterFov.horizontal);
+                aimFrameBuiltY = tanf(rasterFov.vertical);
                 ++capturedEyes;
                 if (monoFrame)
                 {
@@ -28130,7 +29528,10 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 (committedOuterCameraEyes & requiredEyes) == requiredEyes;
             if (completed)
             {
-                if (monoFrame)
+                if (aimFrameUp)
+                    VR_NoteAimFrameRendered(GameTitle::HaloReach, aimFrameStereo ? -1 : (rightFirst ? 1 : 0),
+                                            aimFrameBuiltX, aimFrameBuiltY, g_reachOwnerScope.aimFrame.frame.widthDeg);
+                else if (monoFrame)
                     VR_NoteMonoFrameRendered(GameTitle::HaloReach, rightFirst ? 1 : 0);
                 else
                     VR_NoteStereoFrameRendered(GameTitle::HaloReach);
@@ -28251,6 +29652,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
         {
             handled = false;
         }
+        if (g_reachOwnerScope.aimFrame.active)
+            ReachAimFrameNote(!handled);
         if (!handled)
         {
             if (g_reachOwnerScope.mono)
@@ -28935,7 +30338,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         std::atomic<uint32_t> polls{0}, unavailable{0}, invalidVelocity{0};
         std::atomic<uint32_t> crossings{0}, pulses{0}, cooldownBlocks{0}, peakCmPerSecond{0};
     };
-    SharedMeleeTelemetry g_sharedMeleeTelemetry[5];
+    SharedMeleeTelemetry g_sharedMeleeTelemetry[6];
 
     SharedMeleeTelemetry* SharedMeleeForTitle(GameTitle title)
     {
@@ -28946,6 +30349,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         case GameTitle::Halo3ODST: return &g_sharedMeleeTelemetry[2];
         case GameTitle::HaloReach: return &g_sharedMeleeTelemetry[3];
         case GameTitle::Halo4: return &g_sharedMeleeTelemetry[4];
+        case GameTitle::HaloCE: return &g_sharedMeleeTelemetry[5];
         default: return nullptr;
         }
     }
@@ -30438,7 +31842,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         const int16_t wantedSalt = static_cast<int16_t>(handle >> 16);
         if (!wantedSalt)
             return nullptr;
-        auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+        auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
         const auto* tlsIndex = reinterpret_cast<const uint32_t*>(
             g_reachCamera.base + kReachEngineTlsIndexRva);
         if (!slots || !tlsIndex || *tlsIndex >= 0x200)
@@ -32478,7 +33882,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         pc = 0;
         __try
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             const uint32_t index = *reinterpret_cast<const uint32_t*>(g_reachCamera.base + kReachEngineTlsIndexRva);
             auto* tls = (slots && index < 0x200) ? reinterpret_cast<unsigned char*>(slots[index]) : nullptr;
             const uintptr_t globals = tls ? *reinterpret_cast<const uintptr_t*>(tls + kReachPlayerControlTlsOffset) : 0;
@@ -33328,6 +34732,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
     // perspective long enough for the engine to build the first-person weapon
     // models. The value-only key and re-resolve-before-restore safety that
     // R-V20 designed is kept; only the toggling is gone.
+    bool ReachVehicleCameraChaseFor(const ReachVehicleFrame& frame); // reach_vehicle_cameras.inl
     bool ReachEnsureNativeFirstPersonSeat(const ReachVehicleFrame& frame)
     {
         if (!kReachSeatFirstPersonPresentationEnabled)
@@ -33346,8 +34751,10 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // Co-op safe: the seat's flags are data the simulation reads too, so clearing the camera bit changes the
         // game on this machine only. While one-machine changes are not allowed the passenger seat is left as the
         // game built it (and keeps the game's own camera).
+        // A chase camera of the vehicle camera file shows the seat as the flat game does: the seat keeps its own
+        // third-person word, so the game draws the occupant and no first-person weapon.
         if (!frame.active || !g_config.vehicle_first_person || !Sight_FireTimeChangesAllowed() ||
-            (frame.seatFlags & kReachSeatAllowsWeaponsBit) == 0 ||
+            (frame.seatFlags & kReachSeatAllowsWeaponsBit) == 0 || ReachVehicleCameraChaseFor(frame) ||
             g_reachCamera.teardownRequested.load(std::memory_order_acquire) ||
             g_reachCamera.vehicleCameraBindingState.load(
                 std::memory_order_acquire) != static_cast<uint8_t>(
@@ -33912,6 +35319,15 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 frame.definitionDatum = definitionDatum;
                 frame.identity = identity;
                 frame.seatFlags = seatFlags;
+                frame.rootValid = true;
+                memcpy(frame.rootPos, rootMarker.matrix.position, sizeof(frame.rootPos));
+                memcpy(frame.rootForward, rootMarker.matrix.forward, sizeof(frame.rootForward));
+                memcpy(frame.rootLeft, rootMarker.matrix.left, sizeof(frame.rootLeft));
+                memcpy(frame.rootUp, rootMarker.matrix.up, sizeof(frame.rootUp));
+                memcpy(frame.seatPoint, anchorWorld, sizeof(frame.seatPoint));
+                frame.boundsRadius = std::isfinite(boundsRadius) && boundsRadius > 0.0f ? boundsRadius : 0.0f;
+                frame.fingerprint = fingerprint;
+                frame.physicsType = observedType;
                 frame.unitAimValid = unitAimValid;
                 frame.nativeCameraValid = true;   // finite: checked right after the camera-info call
                 memcpy(frame.nativeCameraPoint, info.worldCameraPoint,
@@ -34037,6 +35453,11 @@ static constexpr bool kOdstMappedFpEnabled = false;
                             Halo3MatrixValid(carrierRoot.matrix);
                         if (frame.carrierBasisValid)
                         {
+                            frame.carrierRootValid = true;
+                            memcpy(frame.carrierPos, carrierRoot.matrix.position, sizeof(frame.carrierPos));
+                            memcpy(frame.carrierForward, carrierRoot.matrix.forward, sizeof(frame.carrierForward));
+                            memcpy(frame.carrierLeft, carrierRoot.matrix.left, sizeof(frame.carrierLeft));
+                            memcpy(frame.carrierUp, carrierRoot.matrix.up, sizeof(frame.carrierUp));
                             memcpy(frame.rawCarrierForward,
                                    carrierRoot.matrix.forward,
                                    sizeof(frame.rawCarrierForward));
@@ -34223,7 +35644,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // thread must match it against the independently completed rendered-eye
         // record before substituting a personal-weapon origin.
         ReachPublishShotOccupation(
-            generation, frame.active ? &frame : nullptr);
+            generation, frame.active ? &frame : nullptr,
+            frame.active && ReachVehicleCameraChaseFor(frame));
         // R-V26, the exact shape of Halo 3's accepted C20 sampler: while the
         // seat is occupied, tell Reach that seat is first person; the instant
         // it is not, give the word back. Idempotent - a seat we already own is
@@ -34457,10 +35879,21 @@ static constexpr bool kOdstMappedFpEnabled = false;
             ReachVehicleUsesWheel(identity);
     }
 
+    // The vehicle cameras in Reach's seats (the camera file, the seat's eye moved or stood at a chase camera).
+#include "reach_vehicle_cameras.inl"
+
     void ReachApplySeatYawFollow(const ReachVehicleFrame& frame)
     {
         const uint32_t generation = g_reachCamera.generation.load(
             std::memory_order_relaxed);
+        // A chase camera of the vehicle camera file turns the view by its own mode's rotationTracking in its seat;
+        // every other seat view by the checkbox. Steering follows whichever applies, as it follows the checkbox.
+        bool cameraYaw = false, cameraPitch = false;
+        const bool cameraTurns = ReachVehicleCameraViewTurn(frame, cameraYaw, cameraPitch);
+        const bool followEnabled = cameraTurns ? cameraYaw : g_config.vehicle_view_follow;
+        const bool pitchWanted = !cameraTurns || cameraPitch;
+        if (cameraTurns && cameraYaw)
+            g_reachVehicleCameraFollowMs.store(GetTickCount64(), std::memory_order_release);
         // R-V16: ownership is follow-coupled again, exactly as the accepted
         // Halo 3 title does it. R-V14 handed a ground driver's stick to the
         // hull unconditionally, which cured the resting-hand slide but left
@@ -34472,7 +35905,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // Follow ON keeps R-V14's authored stick steering, which is also what
         // Halo 3 does with the switch on.
         const bool groundDriverAuthors = frame.active &&
-            g_config.vehicle_view_follow &&
+            followEnabled &&
             ReachVehicleSeatIsDriver(frame.identity, frame.seatIndex) &&
             ReachVehicleUsesWheel(frame.identity) &&
             ReachVehicleFpActive();
@@ -34507,16 +35940,29 @@ static constexpr bool kOdstMappedFpEnabled = false;
             frame.carrier != frame.directParent;
         const bool follows = frame.active && ReachVehicleFpActive() &&
             frame.carrierBasisValid &&
-            g_config.vehicle_view_follow &&
+            followEnabled &&
             (ReachVehicleSeatFollowsHull(
                  frame.identity, frame.seatIndex) ||
              mountedWalkUp);
+        // HOW THE SEAT IS STEERED while the vehicle cameras run in it (vehicle_control, chosen per seat with the
+        // left stick click): the hand or the wheel, whatever the view does, as in Halo 3. With the hand steering a
+        // view that turns with the hull, the hand's angle off straight ahead is a turn rate. Without the cameras,
+        // or "As before", Reach's own rule above: the stick or wheel steers a look-steered driver whose view follows.
+        const int chosenControl = g_vehicleControlEffective.load(std::memory_order_acquire);
+        const vehicle_control::Mode controlMode = vehicle_control::FromConfig(chosenControl);
+        const bool controlChosen = chosenControl >= 0 && controlMode != vehicle_control::Mode::Automatic &&
+            frame.active && ReachVehicleFpActive();
+        const bool lookSteeredDriver = ReachVehicleSeatIsDriver(frame.identity, frame.seatIndex) &&
+            ReachVehicleIsLookSteered(frame.identity);
         if (!follows)
         {
             g_reachYawSeat = {};
             g_reachSeatYaw = {};
+            const bool authorsStill = controlChosen
+                ? vehicle_control::Authored(controlMode, lookSteeredDriver, false)
+                : groundDriverAuthors;
             g_reachSeatAuthorsSteering.store(
-                groundDriverAuthors ? 1u : 0u, std::memory_order_release);
+                authorsStill ? 1u : 0u, std::memory_order_release);
             Halo3ClearRollStableFollow();
             return;
         }
@@ -34537,7 +35983,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             g_gameYawRef = WrapPi(g_gameYawRef + delta);
 
         float hullPitch = 0.0f;
-        if (ReachVehicleSeatFollowsPitch(
+        if (pitchWanted && ReachVehicleSeatFollowsPitch(
                 frame.identity, frame.seatIndex) &&
             g_reachSeatYaw.armed &&
             Halo3RollStablePitchFromForward(
@@ -34551,10 +35997,12 @@ static constexpr bool kOdstMappedFpEnabled = false;
         {
             Halo3ClearRollStableFollow();
         }
-        const bool authors = groundDriverAuthors ||
-            ReachVehicleSeatAuthorsSteering(
-                frame.identity, frame.seatIndex,
-                g_config.vehicle_view_follow);
+        const bool authors = controlChosen
+            ? vehicle_control::Authored(controlMode, lookSteeredDriver, true)
+            : groundDriverAuthors ||
+                ReachVehicleSeatAuthorsSteering(
+                    frame.identity, frame.seatIndex,
+                    followEnabled);
         g_reachSeatAuthorsSteering.store(
             authors ? 1u : 0u, std::memory_order_release);
     }
@@ -34688,6 +36136,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
             !ReachRenderCandidate_IsPreflightCurrent(preflight) ||
             !prepared.Ready() || !VR_ReachDisplayReady(epoch))
         {
+            // A frame the mod leaves stock runs no vehicle camera pass: a held exposure goes back to the engine.
+            EngineExposureLockApply(g_reachExposure, false);
             return g_reachOrigMainRenderView(
                 workspace, playerView, windowIndex);
         }
@@ -34698,6 +36148,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         if (!VR_ReachGetRenderSnapshot(prepared, tracking) ||
             tracking.preparedSerial != prepared.Serial())
         {
+            EngineExposureLockApply(g_reachExposure, false);
             return g_reachOrigMainRenderView(
                 workspace, playerView, windowIndex);
         }
@@ -34736,6 +36187,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             memcmp(primaryDerived, secondaryDerived,
                    kReachDerivedBlockSize) != 0)
         {
+            EngineExposureLockApply(g_reachExposure, false);
             return g_reachOrigMainRenderView(
                 workspace, playerView, windowIndex);
         }
@@ -34751,6 +36203,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
         PublishDirectorView(g_reachTwoHandView, g_reachDirectorCamera, g_reachSandboxEditor, GetTickCount64(),
                             epoch.generation);
         ReachApplySeatYawFollow(vehicleFrame);
+        // The vehicle camera file's camera for this seat: the seat's eye moved, or stood at a chase camera's place,
+        // before the head-centre camera is built from it. The stock camera is the game's own for this frame.
+        ReachVehicleCamerasPass(vehicleFrame, primaryCompact);
         const bool stableVehicle =
             g_reachVehicleFpStable.load(std::memory_order_relaxed)==
                 static_cast<uint32_t>(Halo3VehicleState::Vehicle);
@@ -34851,6 +36306,20 @@ static constexpr bool kOdstMappedFpEnabled = false;
         }
 
         ReachPrepareScope(candidate,headDerived,access);
+        ReachPrepareAimFrame(candidate, headDerived, primaryCompact,
+                             reinterpret_cast<const float*>(primaryDerived + kReachDerivedProjectionOffset), tracking);
+
+        // The vehicle camera file's aim ring, against the head-centre camera just built (reach_vehicle_cameras.inl).
+        if (candidate.vehicleViewApplied)
+        {
+            float ringEye[3];
+            memcpy(ringEye, candidate.headCenter + 0x00, sizeof(ringEye));
+            ReachVehicleAimMarkerStep(ringEye);
+        }
+        else
+        {
+            Halo3VehicleAimMarkerClear();
+        }
 
         if (candidate.vehicleViewApplied)
         {
@@ -35069,7 +36538,10 @@ static constexpr bool kOdstMappedFpEnabled = false;
 
         uintptr_t result = 0;
         ReachUnitCameraHideScope bodyHide{};
-        if (candidate.vehicleViewApplied)
+        // A chase camera of the vehicle camera file sees the occupant, as the flat game's own camera does -- once it is
+        // placed this frame. Until then (its place still being measured) the eye is the seat's own and stays hidden.
+        if (candidate.vehicleViewApplied &&
+            !(g_reachVehicleCameraPass.placed && ReachVehicleCameraChaseFor(candidate.vehicle)))
             ReachBeginUnitCameraPlayerHide(candidate.vehicle, bodyHide);
         __try
         {
@@ -36175,6 +37647,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
         }
         if (!DisableAndRemoveReachHooks())
             return false;
+        // A held exposure is a module global that outlives this camera core: give it back to the engine, now that no
+        // render callback is left to engage it again (Halo 3 releases its own after its hooks are removed too).
+        EngineExposureLockRelease(g_reachExposure);
 
         // CleanupLocked won the same atomic race against every callback's
         // Installing claim. Only successful hook removal and quiescence make
@@ -38613,6 +40088,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         g_reachHudHeightEnabled.store(false, std::memory_order_release);
         g_reachHudHeightApplied.store(0, std::memory_order_relaxed);
         g_reachHudHeightRefused.store(0, std::memory_order_relaxed);
+        g_reachHudHeightWorldAnchored.store(0, std::memory_order_relaxed);
         {
             DWORD64 functionBase = 0;
             const PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(
@@ -38842,6 +40318,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // Trace-and-reaim: resolve and value-check the engine's own crosshair-trace flags against this
         // build (fails closed; see reach_sight_trace.inl).
         ReachResolveSightFlags(base, size);
+        // The vehicle cameras' "eyeAdjust": Reach's render_exposure_lock, from two signatures that must agree
+        // (engine_exposure_lock.inl). Missing, only that hold stays off.
+        EngineExposureLockResolve(g_reachExposure, base, size, kReachExposureLockSig);
         InstallReachContactMelee(base,size,generation);
         (void)InstallReachMuzzle(base,size,generation);
         // Optional and feature-local: a refusal leaves the game's own tracker and nothing else changes.
@@ -39355,7 +40834,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         {
             static uint64_t s_nextSeatShotLogMs = 0;
             static uint32_t s_seenConverged = 0, s_seenRedirects = 0, s_seenOrigin = 0,
-                s_seenOriginConverged = 0;
+                s_seenOriginConverged = 0, s_seenOriginChase = 0;
             const uint64_t seatShotNowMs = GetTickCount64();
             if (seatShotNowMs >= s_nextSeatShotLogMs)
             {
@@ -39375,11 +40854,14 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     g_reachFiringOriginMoves.load(std::memory_order_relaxed), s_seenOrigin);
                 const uint32_t originKept = delta(
                     g_reachFiringOriginConverged.load(std::memory_order_relaxed), s_seenOriginConverged);
-                if (converged || redirected || originMoved)
+                const uint32_t originChase = delta(
+                    g_reachFiringOriginChaseKept.load(std::memory_order_relaxed), s_seenOriginChase);
+                if (converged || redirected || originMoved || originChase)
                     LOG("Reach seated shots, last 10 s: %u aimed by trace-and-reaim (Reach's own shot, "
                         "converged; %u passenger origins left stock), %u fallback redirects through the "
-                        "fixed-distance reticle, %u fallback passenger origin swaps",
-                        converged, originKept, redirected, originMoved);
+                        "fixed-distance reticle, %u fallback passenger origin swaps, %u passenger origins left "
+                        "stock under a chase camera",
+                        converged, originKept, redirected, originMoved, originChase);
             }
         }
         if (!loggedPassengerFirstPersonAdmission &&
@@ -40295,11 +41777,16 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 0, std::memory_order_relaxed);
             const auto refused = g_reachHudHeightRefused.exchange(
                 0, std::memory_order_relaxed);
+            const auto onWorld = g_reachHudHeightWorldAnchored.exchange(
+                0, std::memory_order_relaxed);
             LOG("Reach HUD height: %.1f virtual px, %llu native anchors "
-                "translated / %llu local stock refusals; camera core unaffected",
+                "translated / %llu local stock refusals; %llu placed on a "
+                "world point (objective markers and the like) kept on it; "
+                "camera core unaffected",
                 g_config.hud_vertical_offset,
                 static_cast<unsigned long long>(applied),
-                static_cast<unsigned long long>(refused));
+                static_cast<unsigned long long>(refused),
+                static_cast<unsigned long long>(onWorld));
         }
 
         const uint64_t lastClass2 =
@@ -40544,6 +42031,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         LogReachFpCameraUploadIfReady();
         LogReachFpStatusIfNew();
         ReportReachScope();
+        ReachAimFrameColdTick();
         ReachVehicleInputLogTick();
         const bool installed =
             g_reachCamera.installed.load(std::memory_order_acquire);
@@ -41355,7 +42843,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             if (slot >= 1088)
                 return false;
             auto** slots = reinterpret_cast<unsigned char**>(
-                __readgsqword(0x58));
+                HALOMCCVR_GAME_TLS_ARRAY());
             if (!slots)
                 return false;
             unsigned char* tls = slots[slot];
@@ -44483,6 +45971,18 @@ static constexpr bool kOdstMappedFpEnabled = false;
     #include "halo4_head_relative.inl"
     // The sound listener follows the head instead of the aim (the same evidence class, the same head sample).
     #include "halo4_sound_listener.inl"
+    // Objective markers and their arrows are placed from the head instead of the aim (the same evidence class).
+    #include "halo4_nav_markers.inl"
+    // A Halo 4 seat's view is the mod's: the first-person seat override placed its camera, or a chase camera of the
+    // vehicle camera file stood the eye at its own place (halo4_vehicle_cameras.inl, later). Either way the seat's
+    // aim is the hand's as in the seat view: the game's own camera for the seat, which a write would swing round the
+    // hull, is not what the player sees.
+    bool Halo4VehicleCameraOwnsSeatView(uint32_t parent, int seat) noexcept;
+    bool Halo4SeatViewOwned(uint32_t parent, int seat) noexcept
+    {
+        return NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo4, parent, seat) ||
+               Halo4VehicleCameraOwnsSeatView(parent, seat);
+    }
     // Halo 4 seated convergence (every build; the player key halo4_seat_converge): the aim-camera sample, the
     // seated trace and the solve's start.
     #include "halo4_seat_converge.inl"
@@ -46076,7 +47576,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             return CinematicControlState::Unknown;
         }
 
-        auto** const slots = reinterpret_cast<uint8_t**>(__readgsqword(0x58));
+        auto** const slots = reinterpret_cast<uint8_t**>(HALOMCCVR_GAME_TLS_ARRAY());
         uintptr_t tls = 0;
         if (!slots || !Halo4SafeRead(
                 slots + slot, &tls, sizeof(tls)) || !tls)
@@ -46655,8 +48155,13 @@ static constexpr bool kOdstMappedFpEnabled = false;
         for (const size_t index : kTouched)
             if (!std::isfinite(transform[index]))
                 return;
+        // AIM FRAME ZOOM: the frame's picture is the flat game's, so its HUD is the game's own layout (scaled only by
+        // the frame's HUD settings), with its edge art at the picture's edges. The player's layout is for the headset.
         Halo4HudAffine affine{};
-        if (!Halo4ComputeNativeHudAffine(
+        if (g_aimFramePass.load(std::memory_order_acquire))
+            aim_frame::HudScale(g_config.aim_frame_hud_size, g_config.aim_frame_hud_width_scale,
+                                g_config.aim_frame_hud_height_scale, affine.horizontal, affine.vertical);
+        else if (!Halo4ComputeNativeHudAffine(
                 g_config.hud_size, g_config.hud_aspect,
                 g_config.hud_vertical_offset, affine))
             return;
@@ -46670,6 +48175,17 @@ static constexpr bool kOdstMappedFpEnabled = false;
         if (Halo4SafeWrite(entry, transform.data(), 0x34))
             g_halo4Restoration.hudTransforms.fetch_add(
                 1, std::memory_order_relaxed);
+    }
+
+    // halo4_nav_markers.inl: markers placed while this thread draws the CUI get
+    // the affine above undone only when the root is applying it now.
+    bool Halo4NavHudAffineAdmittedNow() noexcept
+    {
+        return g_halo4Restoration.hudInstalled.load(std::memory_order_acquire) &&
+            Halo4NativeHudAdmitsCuiRoot(
+                g_halo4CuiFrontendCallbackDepth,
+                g_halo4CuiReticleEyeScope.captureReplay,
+                VR_IsPausePresentationTarget());
     }
 
     void __fastcall Halo4HudRootDetour(void* renderer)
@@ -46955,6 +48471,17 @@ static constexpr bool kOdstMappedFpEnabled = false;
             __finally {--hud_visibility::depth;}
             return;
         }
+        // AIM FRAME ZOOM: the frame is the flat game's picture, so its HUD and reticle are the game's own. No reticle
+        // eye scope was opened for this pass (crosshair=0 opens one, and takes the path below, to hide its reticle).
+        if (g_aimFramePass.load(std::memory_order_acquire) && caller == expectedCaller && !scope.active)
+        {
+            g_aimFrameWidgets.fetch_add(1, std::memory_order_relaxed);
+            const bool hideFrameHud = VR_HudHidden();
+            if (hideFrameHud) ++hud_visibility::depth;
+            __try {original(windowIndex,renderBufferChannel,viewportBounds,optionalProfileValue,renderMode,flag);}
+            __finally {if (hideFrameHud) --hud_visibility::depth;}
+            return;
+        }
         const bool ownsGameplayPass = caller == expectedCaller &&
             !scope.gameplayPassActive &&
             Halo4OwnsCuiReticleEyeTransaction() &&
@@ -46991,9 +48518,12 @@ static constexpr bool kOdstMappedFpEnabled = false;
             // held through the whole front end. 43j proved Halo 4 batches the
             // descendant draws past the logical 0x29 marker.
             const int captureEye = g_config.right_eye_first ? 1 : 0;
+            // Just out of the frame the crosshair is still leaving its zoomed look: the art from before the zoom
+            // stays up, and the dispatcher below still moves the flat copy off the eye.
             const bool wantsCaptureReplay =
                 scope.eye == captureEye && g_config.crosshair &&
                 g_config.kill_reticle &&
+                AimFrameCrosshairReadyForCapture(GameTitle::Halo4) &&
                 VR_ShouldCaptureAuthoredReticleThisFrame();
             if (wantsCaptureReplay)
             {
@@ -47058,7 +48588,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // sibling visor draws receive the same native HUD transform as radar,
         // shields and ammo. The private reticle replay temporarily clears it
         // inside Halo4CuiGameplayRenderBody and therefore remains stock.
-        if (g_halo4CuiFrontendCallbackDepth == 1)
+        // AIM FRAME ZOOM: not in the frame's passes, whose HUD keeps the game's own shape, as the private replay's does.
+        if (g_halo4CuiFrontendCallbackDepth == 1 && !g_aimFramePass.load(std::memory_order_acquire))
             g_halo4HudGameplayThreadId = GetCurrentThreadId();
         __try
         {
@@ -47662,6 +49193,10 @@ static constexpr bool kOdstMappedFpEnabled = false;
     }
 
     #include "halo4_scope.inl"
+    #include "halo4_aim_frame.inl"
+
+    // The vehicle cameras in Halo 4's seats (the camera file; the seat's eye moved or stood at a chase camera).
+    #include "halo4_vehicle_cameras.inl"
 
     // THE BROADSWORD'S VIEW RIDES ITS COCKPIT, location only. In a seat the observer the eyes are built from is the
     // game's camera director following the point the seat camera was placed at, and the director's position lags:
@@ -47746,10 +49281,11 @@ static constexpr bool kOdstMappedFpEnabled = false;
     // the eye/observer cleanup below.
     Halo4StereoResult Halo4StereoTransaction(
         uintptr_t element, uintptr_t view, uint32_t window,
-        const Halo4SetupArgs& args, bool& frameStarted, bool& monoFrameOut)
+        const Halo4SetupArgs& args, bool& frameStarted, bool& monoFrameOut, bool& aimFrameOut)
     {
         frameStarted = false;
         monoFrameOut = false;
+        aimFrameOut = false;
         Halo4VrRenderSnapshot snapshot{};
         if (!VR_Halo4GetRenderSnapshot(snapshot))
         {
@@ -47772,8 +49308,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
         const bool authoredTheater = VR_IsCutsceneTheaterActive();
         // MONO RENDERING (mono_view_logic.h): the snapshot's two eyes are one camera, and one pass is drawn with
         // it, as the eye the eye-order setting draws first. The theatre keeps its two eyes.
-        const bool monoFrame = snapshot.mono && !authoredTheater;
-        const int eyePasses = monoFrame ? 1 : 2;
+        bool monoFrame = snapshot.mono && !authoredTheater;
+        int eyePasses = monoFrame ? 1 : 2;
         // Read once: the pass below and what is published for it name the same eye.
         const int firstEye = g_config.right_eye_first ? 1 : 0;
         monoFrameOut = monoFrame;
@@ -47807,7 +49343,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // Retain the game body/aim camera before HMD composition.  Hands are
         // controller-owned in this frame; `stock` below becomes the HMD-owned
         // render camera and must not be reused for their placement.
-        const Halo4CameraBasis controllerRoot = stock;
+        Halo4CameraBasis controllerRoot = stock;
         Halo4BroadswordRideCockpit(stock);
 
         // C-H4-9: publish the ENGINE's own look pitch, taken before any of our
@@ -47905,6 +49441,11 @@ static constexpr bool kOdstMappedFpEnabled = false;
             // The game's own first-person answer for this frame (director_camera_logic.h), on the same thread.
             PublishDirectorView(g_halo4TwoHandView, g_halo4DirectorCamera, g_halo4SandboxEditor, GetTickCount64(),
                                 g_halo4Camera.generation.load(std::memory_order_acquire));
+            // The vehicle camera file's camera for this seat (halo4_vehicle_cameras.inl): the seat published for the
+            // cold worker, and the eye moved by a firstperson camera's offset (the hands' camera with it) or stood at
+            // a chase camera's place, before the head pose is composed onto it. `controllerRoot` is still the game's
+            // own camera here.
+            Halo4VehicleCamerasPass(frameSeatRead, frameSeat, controllerRoot, stock);
 #if HALOMCCVR_DEV_DIAGNOSTICS
             seatEyeSeat = frameSeat;
             seatEyeSeatRead = frameSeatRead;
@@ -47957,6 +49498,16 @@ static constexpr bool kOdstMappedFpEnabled = false;
                         snapshot.headPosition[axis] + (axis == 1 ? standingLift : 0.0f),
                         std::memory_order_relaxed);
                 }
+            }
+
+            // A seat the vehicle cameras run in faces the vehicle's nose on boarding (halo4_vehicle_cameras.inl,
+            // Halo4VehicleCameraTakeNose): the heading reference is the nose's from the head's yaw as it stands.
+            float noseYaw = 0.0f;
+            if (decoded && g_halo4Camera.headReferenceValid.load(std::memory_order_acquire) &&
+                Halo4VehicleCameraTakeNose(noseYaw))
+            {
+                g_halo4Camera.gameYawReference.store(noseYaw, std::memory_order_relaxed);
+                g_halo4Camera.headYawReference.store(head.yaw, std::memory_order_relaxed);
             }
 
             if (decoded &&
@@ -48019,6 +49570,10 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 const Halo4CameraBasis beforeHead = stock;
                 if (Halo4ApplyHeadPose(stock, headInput))
                 {
+                    // A chase camera's leash holds the head's movement of the eye (halo4_vehicle_cameras.inl).
+                    Halo4VehicleCameraLeashHead(beforeHead.position, stock.position);
+                    // ...and the ring where the vehicle aims is placed from the eye as it now stands.
+                    Halo4VehicleAimMarkerStep(stock.position);
                     // This frame's seat (read and published above, before the recenter).
                     const bool onFoot = frameSeatRead && !frameSeat.seated && frameSeat.parent == UINT32_MAX;
                     g_halo4OnFootMs.store(onFoot ? GetTickCount64() : 0, std::memory_order_release);
@@ -48173,12 +49728,27 @@ static constexpr bool kOdstMappedFpEnabled = false;
             g_halo4Camera.fovRatio.load(std::memory_order_relaxed);
         calibration.learned =
             g_halo4Camera.fovLearned.load(std::memory_order_acquire);
+        // AIM FRAME ZOOM (halo4_aim_frame.inl): one pass along the aim, or in 3D one for each eye; it wins over mono
+        // rendering, as in Halo 3. A frame's outcome is its own, not a verdict on mono: aimFrameOut, not monoFrameOut.
+        AimFrame aimFrame{};
+        float aimFrameObserverFov = 0.0f;
+        const bool aimFrameUp = Halo4AimFrameCameras(calibration, controllerRoot, stock, snapshot, worldScale,
+                                                     authoredTheater, eyeCameras, aimFrame, aimFrameObserverFov);
+        const bool aimFrameStereo = aimFrameUp && g_config.aim_frame_stereo;
+        if (aimFrameUp)
+        {
+            monoFrame = !aimFrameStereo;
+            eyePasses = monoFrame ? 1 : 2;
+            monoFrameOut = false;
+            aimFrameOut = true;
+        }
+
         float verticalFovWrite[2]{};
         float expectedHalfY[2]{};
         bool widenFov[2] = {false, false};
         for (int eye = 0; eye < 2; ++eye)
         {
-            widenFov[eye] = !authoredTheater &&
+            widenFov[eye] = !authoredTheater && !aimFrameUp &&
                 snapshot.eyes[eye].fovValid &&
                 Halo4SolveCoverVerticalFov(
                     snapshot.eyes[eye].fov, calibration,
@@ -48234,7 +49804,12 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 // retail converter 0x38F094-0x38F0AC scales both fields by one
                 // shared factor, so the vertical write is the whole handle and
                 // touching the ratio as well would double-apply.
-                if (widenFov[eye])
+                if (aimFrameUp)
+                {
+                    memcpy(eyeObserver + kHalo4ObserverVerticalFovOffset,
+                           &aimFrameObserverFov, sizeof(aimFrameObserverFov));
+                }
+                else if (widenFov[eye])
                 {
                     memcpy(eyeObserver + kHalo4ObserverVerticalFovOffset,
                            &verticalFovWrite[eye],
@@ -48327,6 +49902,14 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 lastCenterY = centerY;
                 g_halo4Camera.projectionReadbacks.fetch_add(
                     1, std::memory_order_relaxed);
+                // The frame shows what the engine built, whatever its shape; a zoom far from the game's own means the
+                // gain no longer answers as it was measured to, and this is not the picture asked for. The lens holds
+                // its own pass to 1%; this allows the zoom's own moving a little between read and build.
+                if (aimFrameUp && !aim_frame::TangentsAgree(aimFrame.tanY, tanf(halfFovY[eye]), 0.05f))
+                {
+                    rejection = Halo4StereoRejection::ProjectionInvalid;
+                    break;
+                }
                 // Optional DLSS: the camera and the row-vector projection the
                 // engine holds for this eye, exactly as read back above (a
                 // proven perspective with zero centre terms). Halo 4 builds
@@ -48348,7 +49931,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 // instead of resting on an assumed field meaning: if the engine
                 // answers a write differently than expected, the next frame's
                 // solve already uses the corrected gain and ratio.
-                const float writtenVerticalFov = widenFov[eye]
+                const float writtenVerticalFov = aimFrameUp
+                    ? aimFrameObserverFov
+                    : widenFov[eye]
                     ? verticalFovWrite[eye]
                     : stock.verticalFov;
                 // Measure retail's converter scale from the engine's own two
@@ -48369,7 +49954,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                         elementVerticalFov / writtenVerticalFov,
                         std::memory_order_relaxed);
                 }
-                if (Halo4LearnFovCalibration(
+                // The frame's narrow pass teaches nothing the cover needs: the gain stays the eye passes' measure.
+                if (!aimFrameUp && Halo4LearnFovCalibration(
                         writtenVerticalFov, halfFovX[eye], halfFovY[eye],
                         calibration))
                 {
@@ -48380,7 +49966,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     g_halo4Camera.fovLearned.store(
                         true, std::memory_order_release);
                 }
-                if (snapshot.eyes[eye].fovValid)
+                if (!aimFrameUp && snapshot.eyes[eye].fovValid)
                 {
                     const bool contained = Halo4CoverContainsFov(
                         halfFovX[eye], halfFovY[eye], snapshot.eyes[eye].fov);
@@ -48409,13 +49995,18 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 // Placement is owned entirely by the existing OpenXR reticle
                 // quad. No CUI screen coordinate or game-space target enters
                 // the authored-art transaction.
-                Halo4BeginCuiReticleEye(eye, snapshot.preparedSerial);
+                // AIM FRAME ZOOM: not in the frame's passes, where the game draws its own reticle and zoom art into
+                // the picture where it always does (crosshair=0 still means none).
+                if (!aimFrameUp || !g_config.crosshair)
+                    Halo4BeginCuiReticleEye(eye, snapshot.preparedSerial);
+                g_aimFramePass.store(aimFrameUp, std::memory_order_release);
                 __try
                 {
                     g_halo4OrigWrapper(element, view, window);
                 }
                 __finally
                 {
+                    g_aimFramePass.store(false, std::memory_order_release);
                     // The type-0x29 marker normally closes the redirect. This
                     // same-thread scope exit is the last-resort state restore
                     // for malformed/exceptional command streams.
@@ -48456,12 +50047,16 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 // present's pair check, its image and its frame serial.
                 halfFovX[1 - firstEye] = halfFovX[firstEye];
                 halfFovY[1 - firstEye] = halfFovY[firstEye];
-                VR_NoteMonoFrameRendered(GameTitle::Halo4, firstEye);
+                if (!aimFrameUp)
+                    VR_NoteMonoFrameRendered(GameTitle::Halo4, firstEye);
             }
-            else
+            else if (!aimFrameUp)
             {
                 VR_NoteStereoFrameRendered(GameTitle::Halo4);
             }
+            if (aimFrameUp)
+                VR_NoteAimFrameRendered(GameTitle::Halo4, aimFrameStereo ? -1 : firstEye, tanf(halfFovX[firstEye]),
+                                        tanf(halfFovY[firstEye]), aimFrame.widthDeg);
             for (int eye = 0; eye < 2; ++eye)
             {
                 g_halo4RenderHalfFovX[eye].store(
@@ -48584,11 +50179,12 @@ static constexpr bool kOdstMappedFpEnabled = false;
         Halo4StereoResult result = Halo4StereoResult::NotStarted;
         bool frameStarted = false;
         bool monoFrame = false;
+        bool aimFrame = false;
         bool transactionException = false;
         __try
         {
             result = Halo4StereoTransaction(
-                element, view, window, args, frameStarted, monoFrame);
+                element, view, window, args, frameStarted, monoFrame, aimFrame);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -48607,6 +50203,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // a single pass turned down (mono_view::MonoRejections sorts out whether mono was the reason).
         if (monoFrame && result != Halo4StereoResult::Complete)
             VR_NoteMonoFrameRejected(GameTitle::Halo4);
+        if (aimFrame)
+            Halo4AimFrameNote(result != Halo4StereoResult::Complete);
         if (result == Halo4StereoResult::NotStarted)
         {
             // Ownership never began, so the untouched stock wrapper is safe.
@@ -48625,7 +50223,13 @@ static constexpr bool kOdstMappedFpEnabled = false;
         g_halo4Camera.activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
         __try
         {
+            // The vehicle cameras' exposure hold is asked for afresh by each frame of the player's window
+            // (halo4_vehicle_cameras.inl), and applied whichever way the frame went.
+            if (window == 0)
+                g_halo4ExposureHoldWanted = g_halo4ExposurePassAsked = false;
             Halo4WrapperBody(element, view, window, returnAddress);
+            if (window == 0)
+                Halo4VehicleCameraExposureFrame();
         }
         __finally
         {
@@ -49607,8 +51211,11 @@ static constexpr bool kOdstMappedFpEnabled = false;
         { LOG("Halo 4 teardown: optional muzzle hooks need cleanup retry; retaining native dependencies");return false; }
         if(!RemoveHalo4HeadRelative())
         { LOG("Halo 4 teardown: the head-relative tracker hook needs cleanup retry; retaining native dependencies");return false; }
+        RemoveHalo4HudNote();   // posted only from inside the listener hook, drained below
         if(!RemoveHalo4SoundListener())
         { LOG("Halo 4 teardown: the head-relative sound listener hook needs cleanup retry; retaining native dependencies");return false; }
+        if(!RemoveHalo4NavMarkers())
+        { LOG("Halo 4 teardown: the head-relative marker hook needs cleanup retry; retaining native dependencies");return false; }
         const uint32_t generation =
             g_halo4Camera.generation.load(std::memory_order_acquire);
         // The module can stay resident across levels, so capability withdrawal
@@ -49695,6 +51302,12 @@ static constexpr bool kOdstMappedFpEnabled = false;
             g_halo4Camera.cuiReticleCleanupRequired = true;
             return false;
         }
+        // A held exposure is a module global that outlives this camera core: give it back to the engine now that no
+        // frame of the wrapper can hold it again, and before the module reference goes. The next game starts with
+        // nothing held.
+        EngineExposureLockRelease(g_halo4Exposure);
+        g_halo4ExposureHeld = false;
+        g_halo4ExposureStockFrames = 0;
         // Put Halo 4's own first-person FOV squish back exactly as it was, and
         // only if we were the one who changed it. Done after the hooks are
         // quiescent and before the module reference is released, so the write
@@ -50049,8 +51662,18 @@ static constexpr bool kOdstMappedFpEnabled = false;
         (void)InstallHalo4HeadRelative(base,size,generation);
         // The same for the sound listener: it binds or refuses on its own, and neither gates the other.
         (void)InstallHalo4SoundListener(base,size,generation);
+        // And for the HUD's objective markers: a refusal leaves the game's own placement.
+        (void)InstallHalo4NavMarkers(base,size,generation);
+        // The vehicle camera note in the game's HUD messages (halo3_hud_note.inl): no hook of its own, it is posted
+        // from the listener hook above; not bound, the note uses the mod's panel.
+        (void)InstallHalo4HudNote(base,size,generation,g_halo4EngineTlsIndex,
+            g_halo4ListenerHead.target?base+static_cast<uintptr_t>(g_halo4ListenerHead.sites.updateRva):0,
+            g_halo4ListenerHead.sites.updateFrameBytes);
         InstallHalo4FireEye(base,size,generation);   // flat parity's measured fire eye (halo4_fire_eye.inl)
         InstallHalo4SeatConverge(base,size,generation);   // after the muzzle lane: its view detour carries the sample
+        // The vehicle cameras' "eyeAdjust": Halo 4's render_exposure_lock, from two signatures that must agree
+        // (engine_exposure_lock.inl). Missing, only that hold stays off.
+        EngineExposureLockResolve(g_halo4Exposure, base, size, kHalo4ExposureLockSig);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         InstallHalo4SeatSight(base,size,generation);   // after the muzzle lane: its bindings and view detour
         (void)InstallHalo4ImpactWitness(base,size);    // AS SEEN (dev): after the muzzle lane, whose aim names the shooter
@@ -50213,6 +51836,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             reportedBodyIkRollbackFailures=bodyIkRollbackFailures;
             reportedBodyIkSehFailures=bodyIkSehFailures;
         }
+        Halo4AimFrameColdTick();
         static uint32_t reportedScopeFaults=0;
         const auto scopeFaults=g_halo4ScopeFaults.load();
         if(scopeFaults!=reportedScopeFaults)
@@ -50443,6 +52067,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         ReportHalo4Muzzle();
         ReportHalo4HeadRelative();
         ReportHalo4SoundListener();
+        ReportHalo4NavMarkers();
         ReportHalo4FireEye();
 #if HALOMCCVR_DEV_DIAGNOSTICS
         ReportHalo4AsSeen();
@@ -51433,7 +53058,12 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 // reads the local player's state through them.
                 (void)HaloCEHeadRelative_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCENetworkInput_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
+                // The vehicle camera note in the game's HUD messages (halo3_hud_note.inl): withdrawn before the unit
+                // control hook it is posted from retires.
+                HaloCEHudNotePoll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCEUnitControl_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
+                // The vehicle cameras' chase cameras (haloce_vehicle_cameras.cpp): installed only while they are on.
+                (void)HaloCEVehicleCameras_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
             }
             if (!halo2Active)
                 Halo2ColdObservation_Rearm();
@@ -51446,6 +53076,11 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 const bool halo2ObserverVrAvailable =
                     !g_vrRuntimeFailureLatched.load(
                         std::memory_order_acquire);
+                // The vehicle camera note in the game's HUD messages (halo3_hud_note.inl): withdrawn before the
+                // control-update hook it is posted from retires with the observer.
+                Halo2HudNotePoll(halo2GateBase, halo2GateSize, halo2ObserverGeneration,
+                                 halo2Active && halo2GateSampled && activeLevelRunning &&
+                                     Halo2ColdObservation_Passed(halo2ObserverGeneration));
                 (void)Halo2Observer6Dof_Poll(
                     halo2GateBase, halo2GateSize, halo2ObserverGeneration,
                     halo2Active && halo2GateSampled &&
@@ -52275,6 +53910,9 @@ static void TitleImageUnloading(uintptr_t base, size_t size)
         g_odstNativePauseFlag.store(0, std::memory_order_release);
         ++retired;
     }
+    // The vehicle cameras' boom reads ODST's tags through the tables in that image (halo3_vehicle_boom.inl).
+    if (OdstVehicleBoomRetireWithin(base, size))
+        ++retired;
 #endif
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     if (title_image_guard::Within(g_reachNativePauseFlag.load(std::memory_order_acquire), base, size))
@@ -52286,7 +53924,7 @@ static void TitleImageUnloading(uintptr_t base, size_t size)
 #endif
     // The engine exposure locks (engine_exposure_lock.inl): a teardown that gives the hold back after the image is
     // gone would read and write an unmapped byte.
-    for (EngineExposureLock* lock : {&g_halo3Exposure, &g_odstExposure})
+    for (EngineExposureLock* lock : {&g_halo3Exposure, &g_odstExposure, &g_reachExposure, &g_halo4Exposure})
         if (EngineExposureLockRetireWithin(*lock, base, size))
             ++retired;
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
@@ -52431,6 +54069,74 @@ bool Game_HasScopeRenderer()
 #endif
     return false;
 }
+namespace
+{
+    // AIM FRAME ZOOM in the titles whose renderers live outside this file (Game_AimFrameForEyes): the level on which a
+    // title's frame kept being refused, how often that happened, and the run of refusals (the render thread).
+    struct OutsideAimFrame
+    {
+        std::atomic<uint32_t> offGeneration{0};
+        std::atomic<uint32_t> givenBack{0};
+        aim_frame::RefusalRun refusals;
+    };
+    OutsideAimFrame g_halo2AimFrame, g_haloCEAimFrame;
+    OutsideAimFrame* OutsideAimFrameOf(GameTitle title)
+    {
+        return title == GameTitle::Halo2 ? &g_halo2AimFrame : title == GameTitle::HaloCE ? &g_haloCEAimFrame : nullptr;
+    }
+    uint32_t AimFrameZoomGeneration(GameTitle title)
+    {
+        switch (title)
+        {
+        case GameTitle::Halo3ODST: return g_odstRuntimeGeneration.load(std::memory_order_acquire);
+        case GameTitle::Halo3: return g_halo3RuntimeGeneration.load(std::memory_order_acquire);
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+        case GameTitle::HaloReach:
+            return g_reachBarrel.enabled.load(std::memory_order_acquire) ? g_reachBarrel.generation : 0;
+#endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        case GameTitle::Halo4:
+            return g_halo4Barrel.enabled.load(std::memory_order_acquire) ? g_halo4Barrel.generation : 0;
+#endif
+#if HALOMCCVR_HALO2_STEREO6DOF
+        case GameTitle::Halo2:
+            return Halo2Observer6Dof_ZoomReaderInstalled() ? TitleAdapter_GetGeneration(GameTitle::Halo2) : 0;
+#endif
+        // Halo CE: its renderer reads the zoom level from player control each frame while it owns the eyes.
+        case GameTitle::HaloCE: return HaloCE_Armed() ? TitleAdapter_GetGeneration(GameTitle::HaloCE) : 0;
+        default: return 0;
+        }
+    }
+    // Their zoom readers are their muzzle lanes' query hooks: without the lane, or once the frame has been refused
+    // for good on this level, the lens keeps the zoom.
+    bool AimFrameLaterTitleLive(GameTitle title)
+    {
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+        if (title == GameTitle::HaloReach)
+            return g_reachBarrel.enabled.load(std::memory_order_acquire) &&
+                g_reachAimFrameOffGeneration.load(std::memory_order_acquire) != g_reachBarrel.generation;
+#endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        if (title == GameTitle::Halo4)
+            return g_halo4Barrel.enabled.load(std::memory_order_acquire) &&
+                g_halo4AimFrameOffGeneration.load(std::memory_order_acquire) != g_halo4Barrel.generation;
+#endif
+#if HALOMCCVR_HALO2_STEREO6DOF
+        // Halo 2: its zoom reader is the control-update hook; either renderer draws the frame while it owns the eyes.
+        if (title == GameTitle::Halo2)
+            return Halo2Observer6Dof_ZoomReaderInstalled() &&
+                (Halo2Stereo_Armed() || Halo2AnniversaryStereo_Armed()) &&
+                g_halo2AimFrame.offGeneration.load(std::memory_order_acquire) !=
+                    TitleAdapter_GetGeneration(GameTitle::Halo2);
+#endif
+        // Halo CE: either renderer draws the frame while the stereo core owns the eyes.
+        if (title == GameTitle::HaloCE)
+            return HaloCE_Armed() &&
+                g_haloCEAimFrame.offGeneration.load(std::memory_order_acquire) !=
+                    TitleAdapter_GetGeneration(GameTitle::HaloCE);
+        return false;
+    }
+}
 bool Game_AimFrameZoomOwnsZoom()
 {
     if (!g_config.aim_frame_zoom || !g_enabled.load())
@@ -52440,21 +54146,103 @@ bool Game_AimFrameZoomOwnsZoom()
         return true;
     // ODST reads the game's zoom level from its muzzle lane's query hook, and DLSS keeps the frame from being drawn:
     // without either, the gun-mounted lens stays its zoom.
-    return title == GameTitle::Halo3ODST && g_odstMuzzle.enabled.load(std::memory_order_acquire) &&
-        !VR_DlssWantsEyeCamera();
+    if (title == GameTitle::Halo3ODST)
+        return g_odstMuzzle.enabled.load(std::memory_order_acquire) && !VR_DlssWantsEyeCamera();
+    return AimFrameLaterTitleLive(title) && !VR_DlssWantsEyeCamera();
 }
 bool Game_ReadZoomLevel(int& level)
 {
     const GameTitle title = TitleAdapter_GetActiveTitle();
-    if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST)
-        return false;
-    const uint32_t generation = (title == GameTitle::Halo3ODST ? g_odstRuntimeGeneration : g_halo3RuntimeGeneration)
-        .load(std::memory_order_acquire);
+    const uint32_t generation = AimFrameZoomGeneration(title);
     const uint64_t ms = g_gameZoomMs.load(std::memory_order_acquire);
     const uint64_t now = GetTickCount64();
     level = g_gameZoomLevel.load(std::memory_order_relaxed);
     return generation && g_gameZoomTitle.load(std::memory_order_relaxed) == static_cast<int>(title) &&
         g_gameZoomGeneration.load(std::memory_order_relaxed) == generation && ms && now >= ms && now - ms <= 500;
+}
+void Game_HaloCEHudNotePost() { HaloCEHudNotePost(); }
+void Game_Halo2HudNotePost() { Halo2HudNotePost(); }
+void Game_SetAimFramePass(bool on) { g_aimFramePass.store(on, std::memory_order_release); }
+bool Game_IsAimFramePass() { return g_aimFramePass.load(std::memory_order_acquire); }
+void Game_AimFrameHudScale(float& horizontal, float& vertical)
+{
+    aim_frame::HudScale(g_config.aim_frame_hud_size, g_config.aim_frame_hud_width_scale,
+                        g_config.aim_frame_hud_height_scale, horizontal, vertical);
+}
+bool Game_AimFrameCrosshairReadyForCapture(GameTitle title) { return AimFrameCrosshairReadyForCapture(title); }
+// AIM FRAME ZOOM in the titles whose renderers live outside this file (game.h). The zoom level is the player control
+// record's own: Halo 2's control-update hook (halo2_direct_drive.inl), Halo CE's renderer (haloce_stereo_core.cpp).
+void Game_NoteZoomLevel(GameTitle title, int16_t level)
+{
+    if (TitleAdapter_GetActiveTitle() == title)
+        NoteGameZoomLevel(title, level, TitleAdapter_GetGeneration(title));
+}
+// These renderers build their eyes from a tracked centre and each eye's offset, as Halo 4's does, so the frame's cameras
+// are built the same way: from the centre along the aim, upright to the world, at the game's own zoomed view over the
+// level's strength; in 3D each eye stands at its own offset (times the 3D strength) and turns in to meet at the aimed
+// point.
+bool Game_AimFrameForEyes(GameTitle title, const float centre[3], const float centreUp[3], const float eyeOffset[2][3],
+                          float nativeX, float nativeY, const float* aimForward, GameAimFramePass& out)
+{
+    const bool native = std::isfinite(nativeX) && std::isfinite(nativeY) && nativeX > 1.0e-4f && nativeY > 1.0e-4f;
+    float convergedForward[3]{};
+    const bool converged = !aimForward && g_config.aim_frame_zoom &&
+        Sight_ScopeConvergedDirection(title, convergedForward);
+    AimFrame frame{};
+    if (!AimFrameThisFrame(title, native, nativeX, nativeY, centreUp, frame,
+                           aimForward ? aimForward : converged ? convergedForward : nullptr, true))
+    {
+        (void)AimFrameMeetWu(title, false, 1.0f);
+        return false;
+    }
+    const bool stereo = g_config.aim_frame_stereo;
+    const float spacing = stereo ? g_config.aim_frame_3d_strength : 1.0f;
+    const float meetWu = AimFrameMeetWu(title, stereo, spacing);
+    const float right[3]{frame.forward[1] * frame.up[2] - frame.forward[2] * frame.up[1],
+                         frame.forward[2] * frame.up[0] - frame.forward[0] * frame.up[2],
+                         frame.forward[0] * frame.up[1] - frame.forward[1] * frame.up[0]};
+    for (int eye = 0; eye < 2; ++eye)
+    {
+        memcpy(out.position[eye], centre, sizeof(out.position[eye]));
+        memcpy(out.forward[eye], frame.forward, sizeof(out.forward[eye]));
+        memcpy(out.up[eye], frame.up, sizeof(out.up[eye]));
+        if (!stereo)
+            continue;
+        aim_frame::EyePosition(centre, right, frame.up, frame.forward, eyeOffset[eye],
+                               Game_GetWorldScale() * spacing, out.position[eye]);
+        if (meetWu > 0.0f)
+            AimFrameTurnEyeIn(centre, out.position[eye], frame, meetWu, out.forward[eye], out.up[eye]);
+    }
+    out.tanX = frame.tanX;
+    out.tanY = frame.tanY;
+    out.widthDeg = frame.widthDeg;
+    out.stereo = stereo;
+    return true;
+}
+void Game_AimFrameOutcome(GameTitle title, bool refused)
+{
+    OutsideAimFrame* state = OutsideAimFrameOf(title);
+    if (!state || !state->refusals.Note(refused))
+        return;
+    state->offGeneration.store(TitleAdapter_GetGeneration(title), std::memory_order_release);
+    state->givenBack.fetch_add(1, std::memory_order_relaxed);
+    if (title == GameTitle::Halo2)
+        LOG("Halo 2 Aim Frame Zoom StockFallback: the frame kept being refused; the lens has the zoom for this level "
+            "and the stereo core is retained");
+    else
+        LOG("%s Aim Frame Zoom StockFallback: the frame kept being refused; the game's zoom stays in the immersive "
+            "view for this level and the stereo core is retained", AimFrameTitleName(title));
+}
+// Before the frame's picture is published (the present must never show its narrow picture as the immersive view).
+void Game_Halo2AimFrameDrawn(int eye, float tanX, float tanY, float widthDeg)
+{
+    Game_AimFrameOutcome(GameTitle::Halo2, false);
+    VR_PrepareAimFramePicture(GameTitle::Halo2, eye, tanX, tanY, widthDeg);
+}
+void Game_Halo2AimFrameRefused()
+{
+    VR_PrepareAimFramePicture(GameTitle::Halo2, -1, 0.0f, 0.0f, 0.0f);
+    Game_AimFrameOutcome(GameTitle::Halo2, true);
 }
 bool Game_IsScopeRendering(){return g_scopeRenderActive.load(std::memory_order_acquire);}
 bool Game_SetScopeRendering(bool active){return g_scopeRenderActive.exchange(active,std::memory_order_acq_rel);}
@@ -52787,8 +54575,8 @@ static std::atomic<float> g_gestureMeleeAimSwing[3]{};
 uint32_t Game_GestureMeleeInput(uint64_t nowMs)
 {
     const GameTitle title = TitleAdapter_GetActiveTitle();
-    if (title != GameTitle::Halo2 && title != GameTitle::Halo3 &&
-        title != GameTitle::Halo3ODST && title != GameTitle::HaloReach && title != GameTitle::Halo4)
+    if (title != GameTitle::Halo2 && title != GameTitle::Halo3 && title != GameTitle::Halo3ODST &&
+        title != GameTitle::HaloReach && title != GameTitle::Halo4 && title != GameTitle::HaloCE)
         return 0;
     // XInput's VR transport owns slot zero. Binding snapshots are read by the
     // cold worker and expire across title/generation changes and load gates.
@@ -52839,11 +54627,14 @@ uint32_t Game_GestureMeleeInput(uint64_t nowMs)
         return false;
     }
 
-    // In a seat the swing is not a melee. Halo 3 and ODST have left RuntimeMode::Gameplay by then; these three report
-    // Gameplay in a seat too, so each asks its own on-foot state, as the physical crouch does.
+    // In a seat the swing is not a melee. Halo 3, ODST and Halo CE have left RuntimeMode::Gameplay by then; these three
+    // report Gameplay in a seat too, so each asks its own on-foot state, as the physical crouch does.
     bool titleArmed = false;
     switch (title)
     {
+    case GameTitle::HaloCE:
+        titleArmed = HaloCE_Armed();
+        break;
     case GameTitle::Halo2:
 #if HALOMCCVR_HALO2_STEREO6DOF
         titleArmed = Halo2Observer6Dof_Armed() &&
@@ -53535,7 +55326,7 @@ void Game_LocateHudSafeFrames()
     if (profile == HudLayoutProfile::None &&
         Game_AllowsSharedGameplayFeatures())
         profile = HudLayoutProfile::Halo3;
-    const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
+    const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile, g_hostIsProjectReclaimer);
     if (!adapter)
     {
         LOG("SAFEFRAME: manual rescan skipped; no title-owned HUD layout adapter");
@@ -56047,7 +57838,7 @@ static void ReachPcApply(int user, const uint8_t* entryRsp, const ReachApplySite
         unsigned char* tls = nullptr;
         if (user == 0 && g_reachCamera.base)
         {
-            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
             const uint32_t index = *reinterpret_cast<const uint32_t*>(g_reachCamera.base + kReachEngineTlsIndexRva);
             tls = (slots && index < 0x200) ? reinterpret_cast<unsigned char*>(slots[index]) : nullptr;
             const uintptr_t globals = tls ? *reinterpret_cast<const uintptr_t*>(tls + kReachPlayerControlTlsOffset) : 0;
@@ -56585,6 +58376,25 @@ static bool ReachSeatAimFrameBindingInstalled()
 #include "seat_aim_world_frame.inl"
 #include "halo3_seat_view.inl"
 #include "legacy_direct_drive.inl"
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+namespace
+{
+// halo4_vehicle_cameras.inl: the occupied seat's flags word, read as the seat frame reader reads it for the Halo 4
+// drive (seat_frame_reader.h), on the calling engine thread. False: the drive's reader is not bound, or a link of the
+// read did not read.
+bool Halo4SeatFlagsRead(uint32_t unit, uint32_t& flags)
+{
+    const int slot = LegacyDriveSlot(GameTitle::Halo4);
+    if (slot < 0)
+        return false;
+    const seat_frame_rt::Live live = seat_frame_rt::Read(g_legacyDrive[slot].frame, nullptr, unit);
+    if (!live.flagsKnown)
+        return false;
+    flags = live.flags;
+    return true;
+}
+} // namespace
+#endif
 #include "halo3_hook_watch.inl"
 // The Halo 4 tracker lane's proof reference (declared with the legacy drive's other accessors, above): the yaw
 // the input thread last published for the direct drive to write. Only while the drive is LIVE (armed on its own
@@ -58050,7 +59860,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             // reach_vehicle_aim = 0 (cfg only; F1's Converged aim covers seats) keeps every seat's old aim.
             // ...and only while C20 actually holds that seat in the first-person camera (vehicle_hide_body): without
             // it the engine renders its chase camera, g_baseCam is that camera, and a solve from it would bend
-            // the shot for an eye the seat does not fire from.
+            // the shot for an eye the seat does not fire from -- while the mod shows a FIRST-PERSON view there. Under
+            // a chase camera of the vehicle cameras' that chase camera is what the seat is aimed from, so the seat is
+            // named and solved from it (below; Halo 3 keeps its patch Active then, ODST asks OdstSeatViewOwned).
             if (seated && g_config.reach_vehicle_aim > 0)
             {
                 // (The witness's reason until a seat whose view is ours names its vehicle.)
@@ -58069,9 +59881,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                     }
                 }
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
-                else if (sightTitle == GameTitle::Halo3ODST && OdstVehicleFpActive() &&
-                         g_odstNativeSeatState.load(std::memory_order_acquire) ==
-                             static_cast<uint32_t>(OdstNativeSeatState::Active))
+                // ODST: also under a chase camera of the vehicle cameras' (OdstSeatViewOwned), where the seat keeps
+                // the game's third-person camera: a stock seat is aimed from that camera, so g_baseCam is the eye
+                // the seat fires from, as in a Halo 3 seat under one. Its trace is what a "collide" camera and the
+                // aim ring's depth read.
+                else if (sightTitle == GameTitle::Halo3ODST && OdstVehicleFpActive() && OdstSeatViewOwned())
                 {
                     convergeWhy = converge::ConvergeOff::SeatUnnamed;
                     OdstSeatSnapshot seat;
@@ -58703,15 +60517,20 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                     if (OdstReadSeatSnapshot(seat) && seat.parentHandle != -1)
                     {
                         seatFacts.identified = seat.identity != OdstVehicleId::Unknown;
-                        seatFacts.view_owned = g_odstNativeSeatState.load(std::memory_order_acquire) ==
-                            static_cast<uint32_t>(OdstNativeSeatState::Active);
+                        // Owned while C20 holds the seat, and under a chase camera of the vehicle cameras' (as a Halo 3
+                        // seat under one): the view is then the mod's, at a pitch of its own (OdstSeatViewOwned).
+                        seatFacts.view_owned = OdstSeatViewOwned();
                         seatFacts.driver = OdstSeatIsDriver(seat.identity, seat.seatIndex, seat.mounted);
                         seatFacts.look_steered = OdstVehicleIsLookSteered(seat.identity);
                         seatAircraft = seat.identity == OdstVehicleId::Banshee || seat.identity == OdstVehicleId::Hornet;
                         seatKey = seat_drive::SeatKey(seat.parentHandle, seat.seatIndex, seat.mounted);
-                        gunSlavedSeat = seatFacts.view_owned &&
+                        // As Halo 3's: a seat whose camera is slaved to its gun is paced while the view is ours; the
+                        // game's own first-person seat camera is that gun camera only while C20 holds the seat.
+                        gunCameraSeat = seatFacts.view_owned &&
                             gun_slaved::CameraSlavedToGun(OdstOccupiedSeatFlags());
-                        gunCameraSeat = gunSlavedSeat;
+                        gunSlavedSeat = gunCameraSeat &&
+                            g_odstNativeSeatState.load(std::memory_order_acquire) ==
+                                static_cast<uint32_t>(OdstNativeSeatState::Active);
                         gunSlavedKey = seatKey;
                     }
                 }
@@ -58734,7 +60553,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 {
                     seatFacts.identified = true;
                     seatFacts.view_owned =
-                        NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo4, seat.parent, seat.seat);
+                        Halo4SeatViewOwned(seat.parent, seat.seat);
                     seatFacts.driver = true;
                     seatFacts.look_steered = true;
                     seatKey = seat_drive::SeatKey(static_cast<int>(seat.parent), seat.seat, false);
@@ -58756,7 +60575,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 seatAxes.pitch = false;
             // A seat the right stick aims (vehicle_control = stick): the hand's aim is not written into it on
             // either axis. The stick is passed through, and the reticle placed, where the poll ends.
-            if (driveSeated && driveTitle == GameTitle::Halo3 && Halo3SeatStickAimsNow())
+            if (driveSeated && (driveTitle == GameTitle::Halo3 || driveTitle == GameTitle::Halo3ODST) &&
+                Halo3SeatStickAimsNow())
                 seatAxes = seat_drive::Axes{};
             if (!driveSeated)
                 gunSlavedSeat = gunCameraSeat = false;
@@ -59255,7 +61075,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // aim on both axes, as on a flat screen, and the hand aims nothing -- its aim is not written (above) and
     // not steered toward. The reticle goes where the game's own crosshair is (SeatStickReticleStep).
     const bool seatAuthored = Halo3SeatAuthorsSteeringNow();
-    const bool stickSeat = TitleAdapter_GetActiveTitle() == GameTitle::Halo3 && Halo3SeatStickAimsNow();
+    // Halo 3 and ODST (the same engine: the game's own camera is their observer's, read per title).
+    const GameTitle stickTitle = TitleAdapter_GetActiveTitle();
+    const bool stickSeat =
+        (stickTitle == GameTitle::Halo3 || stickTitle == GameTitle::Halo3ODST) && Halo3SeatStickAimsNow();
     if (!freeCamera && (seatAuthored || stickSeat))
     {
         if (seatAuthored && Game_Halo3VehicleWheelActive())
@@ -59284,11 +61107,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         if (stickSeat)
         {
             float cameraAt[3], cameraAbout[3], cameraForward[3];
-            if (Halo3ReadObserverCamera(cameraAt, cameraAbout, cameraForward))
+            if (Halo3ReadObserverCamera(cameraAt, cameraAbout, cameraForward, stickTitle))
             {
                 SeatLimitPoll stickPoll{};
-                stickPoll.title = GameTitle::Halo3;
-                stickPoll.eyes = limitEyes && limitEyesTitle == GameTitle::Halo3;
+                stickPoll.title = stickTitle;
+                stickPoll.eyes = limitEyes && limitEyesTitle == stickTitle;
                 memcpy(stickPoll.head, limitHead, sizeof(stickPoll.head));
                 stickPoll.followed = followedVehicleFrame;
                 stickPoll.hullYaw = hullYaw;
@@ -59743,11 +61566,100 @@ void Game_VehicleCameraStep(int cameraDirection, int modeDirection)
     VehicleCameraRequestStep(cameraDirection, modeDirection);
 }
 
-bool Game_VehicleSeatButtonsLive(bool& passenger)
+bool Game_VehicleSeatButtonsLive(bool& passenger, bool& controlModes)
 {
     const uint32_t seat = g_vehicleSeatButtons.load(std::memory_order_acquire);
     passenger = (seat & kVehicleSeatPassenger) != 0;
+    controlModes = (seat & kVehicleSeatOneControl) == 0;
     return (seat & kVehicleSeatButtonsLive) != 0;
+}
+
+// Halo CE's vehicle cameras (haloce_vehicle_cameras.h): the shared runtime's answers for the game's own camera code.
+bool Game_HaloCEChaseAny() noexcept
+{
+    return g_vehicleCameraPublished.chase.load(std::memory_order_acquire) != 0 &&
+           TitleAdapter_GetActiveTitle() == GameTitle::HaloCE;
+}
+
+bool Game_HaloCEChaseHead() noexcept
+{
+    return g_vehicleCameraPublished.chaseHead.load(std::memory_order_acquire) != 0 &&
+           TitleAdapter_GetActiveTitle() == GameTitle::HaloCE;
+}
+
+// The last seat given a chase camera, and when: a call the light seat read refuses (one frame of a transient state
+// read) keeps that answer a moment, so the director is not sent to the first-person camera and back, resetting its
+// following camera both times. It answers only for the same unit, and only while the chosen chase camera is still for
+// that generation, vehicle and seat; a unit that has left its seat is not seated (the selector's own seat state), so
+// it never holds a chase seat open past the seat. Selector calls only; the fields may be seen out of step, which costs
+// at most one frame's answer.
+static std::atomic<uint32_t> s_haloceChaseUnit{UINT32_MAX};
+static std::atomic<uint32_t> s_haloceChaseGeneration{0};
+static std::atomic<uint32_t> s_haloceChaseParent{UINT32_MAX};
+static std::atomic<int32_t> s_haloceChaseSeat{-1};
+static std::atomic<uint64_t> s_haloceChaseMs{0};
+inline constexpr uint64_t kHaloCEChaseSeatHoldMs = 250;
+
+bool Game_HaloCEChaseSeat(uint32_t unit) noexcept
+{
+    if (!Game_HaloCEChaseAny())
+        return false;
+    vehicle_camera_select::ActiveCamera camera;
+    VehicleCameraSeatKey key;
+    HaloCEVehicleSeatNow now{};
+    if (!HaloCEControls_ReadVehicleSeatNow(now))
+    {
+        const uint64_t at = s_haloceChaseMs.load(std::memory_order_acquire);
+        const uint64_t ms = GetTickCount64();
+        return at && ms >= at && ms - at <= kHaloCEChaseSeatHoldMs &&
+               s_haloceChaseUnit.load(std::memory_order_relaxed) == unit &&
+               HaloCEVehicleCameraChosen(s_haloceChaseGeneration.load(std::memory_order_relaxed),
+                                         s_haloceChaseParent.load(std::memory_order_relaxed),
+                                         static_cast<int16_t>(s_haloceChaseSeat.load(std::memory_order_relaxed)),
+                                         camera, key) &&
+               HaloCEVehicleCameras_FollowingLive();
+    }
+    if (now.unit != unit)
+        return false;
+    const bool chase = HaloCEVehicleCameraChosen(now.generation, now.parent, now.seat, camera, key) &&
+                       HaloCEVehicleCameras_FollowingLive();
+    s_haloceChaseUnit.store(unit, std::memory_order_relaxed);
+    s_haloceChaseGeneration.store(now.generation, std::memory_order_relaxed);
+    s_haloceChaseParent.store(now.parent, std::memory_order_relaxed);
+    s_haloceChaseSeat.store(now.seat, std::memory_order_relaxed);
+    s_haloceChaseMs.store(chase ? GetTickCount64() : 0, std::memory_order_release);
+    return chase;
+}
+
+bool Game_HaloCEEyeNudgeWorld(uint32_t generation, uint32_t parent, int16_t seat, float point[3]) noexcept
+{
+    return HaloCEVehicleCameraEyeNudge(generation, parent, seat, point);
+}
+
+bool Game_HaloCEChasePlace(const HaloCEChaseFrame& frame, float out[3]) noexcept
+{
+    return HaloCEVehicleCameraPlace(frame, out);
+}
+
+bool Game_HaloCEVehicleCameraLeash(uint32_t generation, vehicle_camera_frame::Basis& carrier,
+                                   vehicle_camera_frame::LeashBox& box) noexcept
+{
+    return HaloCEVehicleCameraLeashRead(generation, carrier, box);
+}
+
+void Game_HaloCEVehicleCameraLeashHeld() noexcept
+{
+    g_haloceVehicleCameraLeashHeldFrames.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool Game_HaloCEVehicleCameraFollow(uint32_t generation, uint32_t parent, int16_t seat, bool& yaw) noexcept
+{
+    vehicle_camera_select::ActiveCamera camera;
+    VehicleCameraSeatKey key;
+    if (!HaloCEVehicleCameraChosen(generation, parent, seat, camera, key))
+        return false;
+    yaw = camera.rotYaw;
+    return true;
 }
 
 void Game_VehicleControlStep()
@@ -59818,7 +61730,9 @@ bool Game_GetVehicleAimMarker(float outDir[3], float& outDistanceM)
 {
     outDistanceM = 0.0f;
     float yaw = 0.0f, pitch = 0.0f, distance = 0.0f;
-    if (!outDir || TitleAdapter_GetActiveTitle() != GameTitle::Halo3 ||
+    const GameTitle title = TitleAdapter_GetActiveTitle();
+    if (!outDir || (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST && title != GameTitle::HaloReach &&
+                    title != GameTitle::Halo4 && title != GameTitle::Halo2) ||
         !Halo3VehicleAimMarkerRead(yaw, pitch, distance))
         return false;
     const float cp = cosf(pitch);
@@ -60343,6 +62257,15 @@ bool Game_TitleCoreState(GameTitle title, GameTitleCoreState& out) noexcept
         out.tearingDown = Halo2Observer6Dof_TeardownRequested();
         return true;
     }
+    if (title == GameTitle::HaloCE)
+    {
+        // Halo CE's camera keeps stamping through a pause; the gate asks for the teardown when MCC loads halo1.dll
+        // by name after it has been still for half a second (haloce_stereo_core.cpp teardownRequested).
+        out.installed = HaloCE_Installed();
+        out.tearingDown = HaloCE_TeardownRequested();
+        out.lastFrameMs = HaloCE_LastFrameMs();
+        return true;
+    }
     return false;
 }
 
@@ -60366,6 +62289,18 @@ void Game_Halo4CameraOwnerReport() noexcept
 #else
 #define MCCVR_H4_OWNER_WHY(n) ((void)0)
 #endif
+
+bool Game_VehicleCameraChaseSeat(GameTitle title, uint32_t parent, int seat) noexcept
+{
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    if (title == GameTitle::Halo4 && g_config.vehicle_cameras)
+        return Halo4VehicleCameraChaseChosen(TitleAdapter_GetGeneration(GameTitle::Halo4), parent, seat);
+#endif
+    (void)title;
+    (void)parent;
+    (void)seat;
+    return false;
+}
 
 bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& owner) noexcept
 {
@@ -60394,7 +62329,7 @@ bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& owner
         Halo4VehicleInputState seat{};
         if (!Halo4ReadVehicleInput(seat)) {MCCVR_H4_OWNER_WHY(2);return false;}
         if (!seat.seated) {MCCVR_H4_OWNER_WHY(3);return false;}
-        const auto** slots=reinterpret_cast<const uint8_t**>(__readgsqword(0x58));
+        const auto** slots=reinterpret_cast<const uint8_t**>(HALOMCCVR_GAME_TLS_ARRAY());
         const auto* tls=slots?slots[*g_halo4EngineTlsIndex]:nullptr;
         if (!tls) {MCCVR_H4_OWNER_WHY(4);return false;}
         const auto* table=Halo4VehicleRead<const uint8_t*>(tls,0x18);
@@ -60424,6 +62359,13 @@ bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& owner
 
 // Called on the title's native weapon/action thread (engine TLS is valid here).
 // Unknown owner/cinematic evidence disables this optional feature only.
+void Game_Halo3FpStrides(uint32_t& userStride, uint32_t& slotStride)
+{
+    const Halo3FpLayout layout = Halo3FpLayoutNow();
+    userStride = layout.userStride;
+    slotStride = layout.slotStride;
+}
+
 void* Game_ReloadPolicyWeapon(GameTitle title, uint32_t weapon)
 {
     if (weapon==UINT32_MAX || !(weapon>>16) || title!=TitleAdapter_GetActiveTitle() ||
@@ -60620,7 +62562,7 @@ namespace
         // raw; the FP commit requires it.
         if (g_engineTlsIndex && *g_engineTlsIndex < 0x200)
         {
-            auto** slots = reinterpret_cast<uint8_t**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<uint8_t**>(HALOMCCVR_GAME_TLS_ARRAY());
             const auto* tls = slots ? slots[*g_engineTlsIndex] : nullptr;
             const auto* users = tls ?
                 *reinterpret_cast<const uint8_t* const*>(tls + 0x568) :
@@ -60667,7 +62609,7 @@ namespace
         detailOut = (weapons[1] != UINT32_MAX) ? 1u : 0u;
         if (g_odstEngineTlsIndex && *g_odstEngineTlsIndex < 0x200)
         {
-            auto** slots = reinterpret_cast<uint8_t**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<uint8_t**>(HALOMCCVR_GAME_TLS_ARRAY());
             const auto* tls = slots ? slots[*g_odstEngineTlsIndex] : nullptr;
             const auto* users = tls ?
                 *reinterpret_cast<const uint8_t* const*>(tls + 0x598) :
@@ -60712,7 +62654,7 @@ namespace
         detailOut = (weapons[1] != UINT32_MAX) ? 1u : 0u;
         if (g_reachCamera.base)
         {
-            auto** slots = reinterpret_cast<uint8_t**>(__readgsqword(0x58));
+            auto** slots = reinterpret_cast<uint8_t**>(HALOMCCVR_GAME_TLS_ARRAY());
             const uint32_t index = *reinterpret_cast<const uint32_t*>(
                 g_reachCamera.base + kReachEngineTlsIndexRva);
             const auto* tls =
@@ -61970,4 +63912,56 @@ roomscale_admission::Verdict Game_RoomscaleCameraVerdict(GameTitle title)
 bool Game_RoomscaleCameraAllowed(GameTitle title)
 {
     return Game_RoomscaleCameraVerdict(title).Admitted();
+}
+
+// ---- the vehicle cameras in Halo 2's seats (halo2_vehicle_cameras.h; halo2_vehicle_cameras.inl has the work) ----
+
+bool Game_Halo2VehicleCamerasBegin(const Halo2VehicleCameraSeatSample& seat, bool& followHull) noexcept
+{
+    return Halo2VehicleCamerasBegin(seat, followHull);
+}
+
+bool Game_Halo2VehicleCamerasPlace(const Halo2VehicleCameraSeatSample& seat, float viewYaw, float eye[3]) noexcept
+{
+    return Halo2VehicleCamerasPlace(seat, viewYaw, eye);
+}
+
+bool Game_Halo2VehicleCameraLeash(float head[3]) noexcept
+{
+    const Halo2VehicleCameraPassRecord& pass = g_halo2VehicleCameraPass;
+    return head && pass.placed && vehicle_camera_place::LeashHead(pass.camera, pass.where, pass.reach, head);
+}
+
+bool Game_Halo2VehicleCameraPlacedSeat(uint32_t parent, int16_t seat) noexcept
+{
+    const uint64_t at = g_halo2VehicleCameraPlacedMs.load(std::memory_order_acquire);
+    const uint64_t now = GetTickCount64();
+    return at && now >= at && now - at <= 100 && parent != UINT32_MAX && seat >= 0 &&
+           g_halo2VehicleCameraPlacedParent.load(std::memory_order_relaxed) == parent &&
+           g_halo2VehicleCameraPlacedSeat.load(std::memory_order_relaxed) == seat;
+}
+
+void Game_Halo2VehicleAimMarkerStep(const float eye[3], const float forward[3], const float up[3],
+                                    const float headQuat[4]) noexcept
+{
+    Halo2VehicleAimMarkerStep(eye, forward, up, headQuat);
+}
+
+void Game_Halo2VehicleCamerasOnFoot(uint32_t generation) noexcept
+{
+    g_halo2VehicleCameraPass.placed = false;
+    Halo2VehicleCameraPublishSeat(nullptr, generation);
+}
+
+bool Game_Halo2VehicleCameraChase(const NativeVehicleCameraOwner& owner) noexcept
+{
+    if (owner.parent == UINT32_MAX || owner.seat < 0)
+        return false;
+    // The seat by its object and index (the salted handle names the object for the generation): the owner's model
+    // identity is a fresh read each call, and a read that fails once must not flash the seat's view to first person.
+    vehicle_camera_select::ActiveCamera camera;
+    VehicleCameraSeatKey chosenFor;
+    return VehicleCameraRead(camera, chosenFor) && chosenFor.generation == owner.generation &&
+           chosenFor.vehicle == static_cast<int32_t>(owner.parent) && chosenFor.seatIndex == owner.seat &&
+           chosenFor.mounted == (owner.root != UINT32_MAX && owner.root != owner.parent);
 }

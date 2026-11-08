@@ -83,6 +83,9 @@ void PublishShotDiagnostic(GameTitle,uint32_t,uint32_t,uint32_t,uint8_t,uint8_t,
     bool,bool,bool,bool,const float*,const float*) noexcept {}
 #include "../src/dll/halo4_muzzle_ownership.inl"
 #include "../src/dll/halo4_muzzle_publication.inl"
+static int g_notedZoomLevel=-2;
+static bool g_zoomLevelQueries=false;   // the queries that exercise the zoom reader carry their own user and level
+static void NoteGameZoomLevel(GameTitle,int16_t level,uint32_t){g_notedZoomLevel=level;}
 #include "../src/dll/halo4_muzzle_shots.inl"
 #undef __readgsqword
 #undef _ReturnAddress
@@ -123,7 +126,7 @@ static void __fastcall NativeView(uint32_t unit,uint8_t flags,uintptr_t,float* p
 }
 static void __fastcall NativeQuery(int32_t input,uint8_t flags,float* direction,int16_t zoom,float* control,void* out)
 {
-    ++queryCalls;Check(input==2&&zoom==3,"native input/zoom context retained");
+    ++queryCalls;Check(g_zoomLevelQueries||(input==2&&zoom==3),"native input/zoom context retained");
     if(queryFault)RaiseException(0xE0421111,0,0,nullptr);
     const bool active=g_halo4BarrelShot.query;float point[3]{},view[3]{},camera[3]{};
     const auto previous=caller;caller=imageBase+0x1DB9A6;
@@ -257,6 +260,15 @@ static void ShotTests()
     Reset();fireFault=true;Check(FaultingShot()&&fireCalls==1&&*reinterpret_cast<uint32_t*>(unitBytes+0x5B0)==0x44440007,"native fire exception restores lease once");
     Reset();nativeChangesTarget=true;Shoot();Check(*reinterpret_cast<uint32_t*>(unitBytes+0x5B0)==0xABCD0006,"new native target survives lease release");
     Reset();g_halo4BarrelQueryContext={};float direction[3]{0,1,0},control[3]{};uint8_t output[0x28]{};
+    // The game's zoom level for Aim Frame Zoom: the local player's ordinary query only, while the lane is in.
+    g_zoomLevelQueries=true;
+    g_notedZoomLevel=-2;Halo4MuzzleQueryDetour(2,0,direction,3,control,output);Check(g_notedZoomLevel==-2,"another player's query is not the zoom level");
+    Halo4MuzzleQueryDetour(0,1,direction,1,control,output);Check(g_notedZoomLevel==-2,"a lead-only query is not the zoom level");
+    g_halo4MuzzleOwnedQuery=true;Halo4MuzzleQueryDetour(0,0,direction,1,control,output);g_halo4MuzzleOwnedQuery=false;Check(g_notedZoomLevel==-2,"our own query is not the zoom level");
+    g_halo4Barrel.enabled=false;Halo4MuzzleQueryDetour(0,0,direction,1,control,output);g_halo4Barrel.enabled=true;Check(g_notedZoomLevel==-2,"no zoom level before the lane is in");
+    Halo4MuzzleQueryDetour(0,0,direction,1,control,output);Check(g_notedZoomLevel==1,"the local player's query is the zoom level");
+    Halo4MuzzleQueryDetour(0,0,direction,-1,control,output);Check(g_notedZoomLevel==-1,"not zoomed is -1");
+    g_zoomLevelQueries=false;
     Halo4MuzzleQueryDetour(2,0,direction,3,control,output);Check(g_halo4BarrelQueryContext.unit==owner,"ordinary native query captures actual view owner");
     g_halo4BarrelQueryContext={};Halo4MuzzleQueryDetour(2,1,direction,3,control,output);Check(!g_halo4BarrelQueryContext.sampleMs,"fallback query cannot seed shot context");
     g_halo4BarrelQueryContext={owner,7,2,0,3,GetTickCount64()};std::thread worker([]{Check(!g_halo4BarrelQueryContext.sampleMs,"native query context stays on native thread");});worker.join();

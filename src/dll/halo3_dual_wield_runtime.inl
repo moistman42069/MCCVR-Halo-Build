@@ -1,3 +1,4 @@
+#include "game_tls.h"
 // H3EK A844A0 weapon_barrel_fire -> firing-data helper; pinned retail
 // 3683A0 -> 3524B0 at 368B92. H3's five-argument outer ABI is distinct from
 // H2 and ODST. See DUAL-WIELD-REFINEMENT-2026-09-09.md and offline verifier.
@@ -170,7 +171,7 @@ __declspec(noinline) void __fastcall Halo3DualAimDetour(uint32_t unit,
         if (!feature.aimOriginal) __leave;
         feature.aimOriginal(unit, origin, direction, marker, offset, projectOrigin, useUnitAim);
         if (!feature.enabled.load(std::memory_order_acquire) || feature.faulted.load() ||
-            reinterpret_cast<uintptr_t>(_ReturnAddress()) != feature.base + 0x368B97 ||
+            HALOMCCVR_GAME_RETURN_ADDRESS() != feature.base + 0x368B97 ||
             !origin || !direction || !g_vrAim.load() || !g_enabled.load() ||
             !VR_IsStereoEnabled() || TitleAdapter_GetActiveTitle() != GameTitle::Halo3 ||
             feature.generation != g_halo3RuntimeGeneration.load()) __leave;

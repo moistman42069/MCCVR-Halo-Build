@@ -43,6 +43,10 @@ struct HudLayoutAltAnchor
     std::array<uint8_t, kHudLayoutMaxAnchor> mask;
     int anchorLength;
     int safeFrameOffset;
+    // Named in the scan's log when a record of this shape is found; null: the adapter's own name.
+    const char* name = nullptr;
+    // A shape that only tells the scan what is loaded: never a target, never counted.
+    bool markerOnly = false;
 };
 
 struct HudLayoutAdapter
@@ -140,6 +144,7 @@ inline constexpr HudLayoutAdapter kHalo3HudLayoutAdapter = [] {
     return adapter;
 }();
 
+
 inline constexpr HudLayoutAdapter kOdstHudLayoutAdapter = {
     HudLayoutProfile::Halo3ODST,
     "Halo 3: ODST",
@@ -163,6 +168,26 @@ inline constexpr HudLayoutAdapter kOdstHudLayoutAdapter = {
     0,
     false,
 };
+
+// Project Reclaimer 0.10's merged maps: the engine's own tag data holds two maps' tags at once (an ODST level on
+// Halo 3's base map, the menus' scenery merged with the multiplayer characters), so it holds Halo 3's three layout
+// records twice. Exactly three rejected all six on every scan, for as long as such a map was loaded: the HUD stayed
+// at the game's own size and the crosshair's capture was fitted for a layout the HUD did not use (2026-11-07). Up to
+// two sets are taken there, each record proven as before, and the layout is written to every one: the set the engine
+// draws from has it, whichever it is.
+// ODST's levels there are ODST's tags converted into the engine's, and the engine's tag data then holds ODST's 1280x720
+// record too: its motion sensor sits at 2000,2000 where Halo 3's is at 55,661 (halo3odst/maps/sc100.map, 0xE778A88).
+// Writing it moved nothing (FA, 2026-11-07): the client draws ODST's HUD from its own copy of ODST's record
+// (reclaimer_odst_hud_record.inl). Found in the engine's tag data, it only tells the scan an ODST level is loaded.
+inline constexpr HudLayoutAdapter kHalo3MergedHudLayoutAdapter = [] {
+    auto adapter=kHalo3HudLayoutAdapter;
+    adapter.maxBlocks=6;
+    adapter.altAnchors={};
+    adapter.altAnchors[0]={kOdstHudLayoutAdapter.anchor, kOdstHudLayoutAdapter.mask,
+                           kOdstHudLayoutAdapter.anchorLength, kOdstHudLayoutAdapter.safeFrameOffset, "ODST", true};
+    adapter.altAnchorCount=1;
+    return adapter;
+}();
 
 // Halo: Reach's own record, from official HREK evidence only. The block's
 // load-time postprocess function (reach_tag_test.exe 0x8E7170, the code behind
@@ -267,13 +292,14 @@ inline constexpr HudLayoutAdapter kReachHudLayoutAdapter = {
     true,
 };
 
+// `mergedMaps`: the host keeps merged maps (Project Reclaimer; kHalo3MergedHudLayoutAdapter).
 inline constexpr const HudLayoutAdapter* HudLayoutAdapterFor(
-    HudLayoutProfile profile)
+    HudLayoutProfile profile, bool mergedMaps = false)
 {
     switch (profile)
     {
     case HudLayoutProfile::Halo3:
-        return &kHalo3HudLayoutAdapter;
+        return mergedMaps ? &kHalo3MergedHudLayoutAdapter : &kHalo3HudLayoutAdapter;
     case HudLayoutProfile::Halo3ODST:
         return &kOdstHudLayoutAdapter;
     case HudLayoutProfile::HaloReach:
@@ -290,6 +316,7 @@ struct HudLayoutAnchorView
     const uint8_t* mask;
     int anchorLength;
     int safeFrameOffset;
+    bool markerOnly = false;
 };
 
 inline constexpr int HudLayoutAnchorCount(const HudLayoutAdapter& adapter)
@@ -307,7 +334,7 @@ inline constexpr HudLayoutAnchorView HudLayoutAnchorAt(
     const HudLayoutAltAnchor& alt = adapter.altAnchors[index - 1];
     return HudLayoutAnchorView{
         alt.anchor.data(), alt.mask.data(),
-        alt.anchorLength, alt.safeFrameOffset};
+        alt.anchorLength, alt.safeFrameOffset, alt.markerOnly};
 }
 
 inline constexpr bool HudLayoutHasDepthField(const HudLayoutAdapter& adapter)
@@ -384,6 +411,7 @@ inline constexpr int HudLayoutScanSpan(const HudLayoutAnchorView& view)
 }
 
 static_assert(HudLayoutAdapterWellFormed(kHalo3HudLayoutAdapter));
+static_assert(HudLayoutAdapterWellFormed(kHalo3MergedHudLayoutAdapter));
 static_assert(HudLayoutAdapterWellFormed(kOdstHudLayoutAdapter));
 static_assert(HudLayoutAdapterWellFormed(kReachHudLayoutAdapter));
 
@@ -431,4 +459,79 @@ inline constexpr bool HudLayoutCanReacquireFromRemembered(
     const HudLayoutAdapter& adapter, int rememberedCount)
 {
     return HudLayoutAcceptedCountOk(adapter, rememberedCount);
+}
+
+// RECORDS LEFT FROM AN EARLIER LEVEL (Project Reclaimer). A level loads its layout records holding the title's own
+// pair. One the mod found at an earlier level that still holds a pair other than the one it was first found with was
+// not loaded again with this level: its memory kept the old map's copy, with the layout written there. After an ODST
+// level the next Halo 3 level took the ODST level's six from memory without a search, all still matching, and wrote
+// those while the level drew from its own three elsewhere: Halo 3's HUD stayed at the game's size (2026-11-07).
+inline constexpr bool HudLayoutRecordLeftOver(
+    uint32_t horizontal, uint32_t vertical, uint32_t loadedHorizontal, uint32_t loadedVertical)
+{
+    return horizontal != loadedHorizontal || vertical != loadedVertical;
+}
+
+// A record left from two levels back is not among the ones remembered, so the pair it was found with is the one it
+// holds: after ODST, the menu, then the Ark, the ODST level's six counted as the Ark's own, nine in all, and the
+// search of all memory that followed wrote the ODST level's copies instead of the Ark's (2026-11-07 16:57). A record
+// holding exactly a pair the mod wrote this session, the player's layout or the Aim Frame's, was not loaded with the
+// level it is found in either. The session's pairs, newest last; a full list drops its oldest.
+inline constexpr int kHudLayoutWrittenPairs = 32;
+
+inline constexpr uint64_t HudLayoutPairKey(uint32_t horizontal, uint32_t vertical)
+{
+    return (static_cast<uint64_t>(horizontal) << 32) | vertical;
+}
+
+inline constexpr bool HudLayoutPairWritten(
+    const uint64_t* pairs, int count, uint32_t horizontal, uint32_t vertical)
+{
+    for (int i = 0; i < count && i < kHudLayoutWrittenPairs; ++i)
+    {
+        if (pairs[i] == HudLayoutPairKey(horizontal, vertical))
+            return true;
+    }
+    return false;
+}
+
+// Adds a written pair unless it is there already. Returns the new count.
+inline constexpr int HudLayoutNotePairWritten(
+    uint64_t* pairs, int count, uint32_t horizontal, uint32_t vertical)
+{
+    if (HudLayoutPairWritten(pairs, count, horizontal, vertical))
+        return count;
+    if (count >= kHudLayoutWrittenPairs)
+    {
+        for (int i = 1; i < kHudLayoutWrittenPairs; ++i)
+            pairs[i - 1] = pairs[i];
+        count = kHudLayoutWrittenPairs - 1;
+    }
+    pairs[count] = HudLayoutPairKey(horizontal, vertical);
+    return count + 1;
+}
+
+// Whether a scan's left-over records are written along with the level's own. As before whenever the level's own are
+// not a whole set by themselves (a level that did not load its records again keeps them where they were) or both
+// together are still no more than the title can hold; otherwise only the level's own.
+inline constexpr bool HudLayoutTakeLeftOvers(
+    const HudLayoutAdapter& adapter, int own, int leftOver)
+{
+    if (leftOver <= 0)
+        return false;
+    if (!HudLayoutAcceptedCountOk(adapter, own))
+        return true;
+    return own + leftOver <= adapter.maxBlocks;
+}
+
+// A LEVEL FOUND WHILE IT LOADED. Reclaimer starts loading the next level while the last one's generation still owns
+// the layout: the scan of that generation found the Ark's three records and wrote them, so by the Ark's own generation
+// they held the mod's layout and counted as left over. None of its own, nine left over: the search of all memory that
+// followed chose the ODST level's copies, which took the Aim Frame's layout while the Ark's records kept the player's,
+// and the Aim Frame's HUD came out squashed (2026-11-07 17:52). With none of the level's own, the left-over records the
+// last scan proved, when they are a whole set, are taken alone: they are the level's.
+inline constexpr bool HudLayoutTakeRememberedLeftOvers(
+    const HudLayoutAdapter& adapter, int own, int rememberedLeftOver)
+{
+    return own == 0 && HudLayoutAcceptedCountOk(adapter, rememberedLeftOver);
 }

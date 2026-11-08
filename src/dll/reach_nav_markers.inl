@@ -15,8 +15,13 @@
 //
 // It rides a hook that already exists; no new hook, and nothing but the marker projection's own stack camera is
 // written. A refusal leaves that call the game's own field of view, counted by reason.
+//
+// PART 3 (reach_nav_marker_logic.h): the same camera built OUTSIDE an eye's render serves the HUD update's
+// on/off-screen tests, which decide whether an objective shows its marker or its arrow. It is given the head of the
+// last committed frame (nav_markers_follow_head), not left on the aim, counted by reason.
 
 constexpr size_t kReachNavFovCount = static_cast<size_t>(reach_nav_markers::Fov::Count);
+constexpr size_t kReachNavTestCount = static_cast<size_t>(head_relative::Use::Count);
 struct ReachNavMarkersRuntime
 {
     std::atomic<bool> installed{false};  // the observer-camera hook this rides is active for this load
@@ -24,10 +29,91 @@ struct ReachNavMarkersRuntime
     std::atomic<uint32_t> fov[kReachNavFovCount]{};
     // The last pair seen at the call site: the game's own vertical field of view and the eye's (radians).
     std::atomic<float> lastGameFov{0.0f}, lastEyeFov{0.0f};
+    // Part 3: every marker projection built OUTSIDE an eye's render (the HUD update's off-screen tests) lands in
+    // exactly one of these. The last one handed the head: how far the head's forward was from the game's.
+    std::atomic<uint32_t> test[kReachNavTestCount]{};
+    std::atomic<float> lastTestTurnDeg{0.0f};
     // The report's thread only.
     int reportedSwitch = -1;
-    bool reportedFirstUse = false, reportedFirstRefusal = false;
+    bool reportedFirstUse = false, reportedFirstRefusal = false, reportedFirstTest = false;
 } g_reachNavMarkers;
+
+// PART 3 (reach_nav_marker_logic.h): one projection's head, decided once. The projection's own detour
+// (reach_nav_projection.inl) decides it before the game projects, so that its ring and the camera the CHUD site
+// builds inside the same call use the same head; without that hook the CHUD site decides alone. One thread, one
+// call: plain data.
+struct ReachNavTestHead
+{
+    bool decided = false;
+    head_relative::Use use = head_relative::Use::NoSample;
+    reach_nav_markers::Camera head;
+};
+thread_local ReachNavTestHead g_reachNavTestHead;
+
+// Is this thread inside an eye's own render? The observer-camera hook's own test for handing a camera the eye.
+bool ReachNavInEye() noexcept
+{
+    const ReachFpCameraEyeScope& scope = g_reachFpCameraEyeScope;
+    return ReachOwnsHudStereoTransaction() && scope.active && scope.generation == g_reachCamera.generation;
+}
+// Any thread. The head of the last committed frame, if this projection may use it.
+head_relative::Use ReachNavDecideTestHead(reach_nav_markers::Camera& head) noexcept
+{
+    head_relative::HeadSample sample;
+    bool cinematic = false;
+    float position[3]{};
+    const bool read = ReachReadHeadSample(sample, cinematic, position);
+    // Not ReachOwnsHudStereoTransaction: that one also asks for an eye's render, which these calls are outside of.
+    const head_relative::Use use = reach_nav_markers::TestHeadUse(
+        g_config.nav_markers_follow_head, ReachStereoCoreOwned(), read, cinematic, sample, position,
+        g_reachCamera.generation.load(std::memory_order_acquire), Sight_NowUs());
+    if (use == head_relative::Use::Ok)
+        head = reach_nav_markers::HeadCamera(sample, position);
+    return use;
+}
+// The projection's detour, around one projection outside an eye's render.
+void ReachNavTestHeadBegin() noexcept
+{
+    ReachNavTestHead& test = g_reachNavTestHead;
+    test.use = ReachNavDecideTestHead(test.head);
+    test.decided = true;
+}
+void ReachNavTestHeadEnd() noexcept { g_reachNavTestHead.decided = false; }
+
+// The render or the update thread, inside the observer-camera hook at the marker projection's call site, outside
+// an eye's render, after the game built `camera` from its own observer camera (the aim). Hands it the head's pose
+// and, under part 1's switch, the eye's vertical field of view. No allocation, no logging, no lock.
+void ReachNavOffEyeCamera(unsigned char* camera) noexcept
+{
+    using namespace reach_nav_markers;
+    auto& feature = g_reachNavMarkers;
+    ReachNavTestHead& test = g_reachNavTestHead;
+    Camera head;
+    head_relative::Use use = head_relative::Use::SwitchOff;
+    if (feature.installed.load(std::memory_order_acquire))
+    {
+        if (test.decided)
+        {
+            use = test.use;
+            head = test.head;
+        }
+        else
+            use = ReachNavDecideTestHead(head);
+    }
+    if (use == head_relative::Use::Ok)
+    {
+        float gameFov = 0.0f, gameForward[3]{}, fov = 0.0f;
+        memcpy(&gameFov, camera + kCameraVerticalFovOffset, sizeof(gameFov));
+        memcpy(gameForward, camera + 0x0C, sizeof(gameForward));
+        (void)EyeFov(g_config.nav_markers_on_target, gameFov, feature.lastEyeFov.load(std::memory_order_relaxed),
+                     fov);
+        WriteHeadCamera(camera, head, fov);
+        float c = Dot(gameForward, head.forward);
+        c = c > 1.0f ? 1.0f : c < -1.0f ? -1.0f : c;
+        feature.lastTestTurnDeg.store(acosf(c) * kRadToDeg, std::memory_order_relaxed);
+    }
+    feature.test[static_cast<size_t>(use)].fetch_add(1, std::memory_order_relaxed);
+}
 
 // The render thread, inside the observer-camera hook at the marker projection's call site, after the game built
 // `camera` and the hook gave it the eye's position, forward and up. `eyeCompact` is the camera this eye was
@@ -57,8 +143,10 @@ void InstallReachNavMarkers(bool observerCameraHookActive, uintptr_t chudSiteRet
     auto& feature = g_reachNavMarkers;
     for (auto& count : feature.fov)
         count.store(0, std::memory_order_relaxed);
+    for (auto& count : feature.test)
+        count.store(0, std::memory_order_relaxed);
     feature.reportedSwitch = -1;
-    feature.reportedFirstUse = feature.reportedFirstRefusal = false;
+    feature.reportedFirstUse = feature.reportedFirstRefusal = feature.reportedFirstTest = false;
     feature.installed.store(observerCameraHookActive, std::memory_order_release);
     if (!observerCameraHookActive)
     {
@@ -69,15 +157,20 @@ void InstallReachNavMarkers(bool observerCameraHookActive, uintptr_t chudSiteRet
     }
     LOG("NAV MARKERS Reach: Installed: the HUD's marker projection (the observer-camera hook's call site returning "
         "to haloreach.dll+0x%llX) is given the eye's vertical field of view (camera +0x%X) as well as its position, "
-        "forward and up; switch=%d",
+        "forward and up; switch=%d. Outside an eye's render (the HUD's on/off-screen tests) it is given the head's "
+        "pose instead of the aim's; follow-head switch=%d",
         static_cast<unsigned long long>(chudSiteReturnRva), reach_nav_markers::kCameraVerticalFovOffset,
-        g_config.nav_markers_on_target ? 1 : 0);
+        g_config.nav_markers_on_target ? 1 : 0, g_config.nav_markers_follow_head ? 1 : 0);
 }
 void RemoveReachNavMarkers() { g_reachNavMarkers.installed.store(false, std::memory_order_release); }
 
 const char* ReachNavFovName(size_t use)
 {
     return reach_nav_markers::FovName(static_cast<reach_nav_markers::Fov>(use));
+}
+const char* ReachNavTestName(size_t use)
+{
+    return head_relative::UseName(static_cast<head_relative::Use>(use));
 }
 // The worker's two-second report. Every build: one line when the switch changes, and one the first time a
 // marker is projected with the eye's field of view (or first refused) after an install. Dev builds: the window.
@@ -95,6 +188,34 @@ void ReportReachNavMarkers()
                 switchNow ? "the eye's own field of view" : "the game's flat-screen field of view, as before");
         feature.reportedSwitch = switchNow;
     }
+    // Part 3: the HUD update's off-screen tests.
+    uint32_t tests[kReachNavTestCount]{}, testTotal = 0;
+    for (size_t i = 0; i < kReachNavTestCount; ++i)
+    {
+        tests[i] = feature.test[i].exchange(0, std::memory_order_relaxed);
+        testTotal += tests[i];
+    }
+    const uint32_t testsUsed = tests[static_cast<size_t>(head_relative::Use::Ok)];
+    if (testsUsed && !feature.reportedFirstTest)
+    {
+        feature.reportedFirstTest = true;
+        LOG("NAV MARKERS Reach: the HUD's on/off-screen tests (objective markers and their arrows) now look from the "
+            "head, not the gun (the first one: the head faced %.1f deg away from the aim)",
+            feature.lastTestTurnDeg.load(std::memory_order_relaxed));
+    }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (testTotal)
+    {
+        char testReasons[256];
+        const int testLength = ReachHeadRelativeReasons(testReasons, sizeof(testReasons), tests, kReachNavTestCount,
+                                                        static_cast<size_t>(head_relative::Use::Ok),
+                                                        &ReachNavTestName);
+        LOG("NAV MARKERS Reach (dev): %u marker projections outside an eye's render (the HUD's off-screen tests); "
+            "%u given the head (last: %.1f deg from the aim); the others: %s; follow-head switch=%d",
+            testTotal, testsUsed, feature.lastTestTurnDeg.load(std::memory_order_relaxed),
+            testLength ? testReasons : "none", g_config.nav_markers_follow_head ? 1 : 0);
+    }
+#endif
     uint32_t uses[kReachNavFovCount]{}, refused = 0;
     for (size_t i = 0; i < kReachNavFovCount; ++i)
     {

@@ -15,6 +15,7 @@
 
 #include "../common/config.h"
 #include "../common/scope_logic.h"
+#include "../common/aim_frame_logic.h"
 #include "../common/halo2_render_logic.h"
 #include "../common/log.h"
 #include "game.h"
@@ -127,6 +128,8 @@ namespace
     // MONO RENDERING: the eye the frame at g_lastCompletedSerial was drawn as when it was one pass; -1 a pair.
     // Stored before that serial, read after it.
     std::atomic<int> g_lastCompletedMonoEye{-1};
+    // AIM FRAME ZOOM: the last completed frame was the aim frame's picture (the HUD replay over it is the frame's).
+    std::atomic<bool> g_lastCompletedAimFrame{false};
     std::atomic<uint64_t> g_monoFrames{0};
     std::atomic<uint64_t> g_monoDrops{0};
     // Of the HUD replays, those over a mono frame's one picture (drawn once, not per eye).
@@ -200,6 +203,7 @@ namespace
         PairCompleteRefused,
         NotMainView,
         ViewSlotsEmptied,
+        AimFrameNotAsAsked,
         Count
     };
     constexpr const char* kBailNames[] = {
@@ -211,7 +215,7 @@ namespace
         "coverFovInvalid", "finalRtvNull", "pairBeginRefused", "secondPassPreambleFaulted",
         "eyeApplyFailed", "eyeBeginRefused", "sceneRenderFaulted",
         "eyeCompleteRefused", "cameraRestoreFailed", "pairCompleteRefused",
-        "notMainView", "viewSlotsEmptied"};
+        "notMainView", "viewSlotsEmptied", "aimFrameNotAsAsked"};
     static_assert(sizeof(kBailNames) / sizeof(kBailNames[0]) ==
         static_cast<size_t>(Bail::Count));
     std::atomic<uint64_t> g_bails[static_cast<size_t>(Bail::Count)]{};
@@ -824,8 +828,8 @@ namespace
             CallStock(original, ctx, rdx, viewIndex);
             return;
         }
-        const float halfFovX = cover.halfHorizontalRadians;
-        const float halfFovY = cover.halfVerticalRadians;
+        float halfFovX = cover.halfHorizontalRadians;
+        float halfFovY = cover.halfVerticalRadians;
         if (g_coverLoggedGeneration.load(std::memory_order_acquire) != generation)
         {
             g_coverLoggedGeneration.store(generation, std::memory_order_release);
@@ -874,7 +878,63 @@ namespace
         // from the tracked centre: the midpoint of the eyes, turned the head's way, under the same cover. Each eye
         // is still submitted at its own pose.
         bool mono = false;
-        if (VR_Halo2CaptureSourceSettled())
+        // AIM FRAME ZOOM (game.cpp Game_AimFrameForEyes): while the game is zoomed, this frame is its zoomed picture along
+        // the aim, at the game's own field of view (the observer's, before the headset's cover widened it), aspect-locked
+        // to the camera's own +0x158 as every eye is. It wins over mono rendering, and a single pass waits, as mono
+        // does, for the capture source to be settled.
+        bool aimFrame = false;
+        bool aimFrameStereo = false;
+        float aimFrameTanY = 0.0f;
+        float aimFrameWidthDeg = 0.0f;
+        float aimFramePictureTan[2]{};
+        // The frame looks along the hand's aim; without it this frame is the immersive view, never another aim's frame.
+        float aimFrameForward[3]{};
+        if ((g_config.aim_frame_stereo || VR_Halo2CaptureSourceSettled()) &&
+            Halo2Observer6Dof_AimFrameForward(aimFrameForward))
+        {
+            float stockVerticalFov = 0.0f;
+            const float nativeY = Halo2Observer6Dof_ReadStockVerticalFov(stockVerticalFov)
+                ? std::tan(stockVerticalFov * 0.5f) : 0.0f;
+            float offsets[kHalo2EyeCount][3]{};
+            for (int eye = 0; eye < kHalo2EyeCount; ++eye)
+                if (eyeOffsetPosition[eye])
+                    std::memcpy(offsets[eye], eyeOffsetPosition[eye], sizeof(offsets[eye]));
+            GameAimFramePass frame{};
+            if (Game_AimFrameForEyes(GameTitle::Halo2, tracked.position, tracked.up, offsets,
+                                     stockAspect > 1.0e-3f ? nativeY / stockAspect : 0.0f, nativeY, aimFrameForward,
+                                     frame))
+            {
+                Halo2SaberEyeCover frameCover{};
+                frameCover.halfVerticalRadians = std::atan(frame.tanY);
+                frameCover.verticalDegrees = 2.0f * frameCover.halfVerticalRadians * 57.2957795f;
+                if (Halo2SaberHorizontalFovDegreesFromVertical(
+                        frameCover.verticalDegrees, stockAspect, frameCover.horizontalDegrees))
+                {
+                    frameCover.halfHorizontalRadians = frameCover.horizontalDegrees * 0.5f * 0.0174532925f;
+                    aimFrame = true;
+                    aimFrameStereo = frame.stereo;
+                    mono = !frame.stereo;
+                    aimFrameTanY = frame.tanY;
+                    aimFrameWidthDeg = frame.widthDeg;
+                    cover = frameCover;
+                    halfFovX = cover.halfHorizontalRadians;
+                    halfFovY = cover.halfVerticalRadians;
+                    for (int eye = 0; eye < kHalo2EyeCount; ++eye)
+                    {
+                        const int from = frame.stereo ? eye : 0;
+                        eyes[eye] = tracked;
+                        std::memcpy(eyes[eye].position, frame.position[from], sizeof(eyes[eye].position));
+                        std::memcpy(eyes[eye].forward, frame.forward[from], sizeof(eyes[eye].forward));
+                        std::memcpy(eyes[eye].up, frame.up[from], sizeof(eyes[eye].up));
+                    }
+                }
+                else
+                {
+                    Game_Halo2AimFrameRefused();
+                }
+            }
+        }
+        if (!aimFrame && VR_Halo2CaptureSourceSettled())
         {
             float monoCover[4]{};
             mono = VR_MonoRenderThisFrame(GameTitle::Halo2, monoCover);
@@ -1082,6 +1142,22 @@ namespace
                     g_projectionReadbackStatus.store(3u, std::memory_order_release);
                 }
             }
+            // AIM FRAME ZOOM: the frame shows what the engine built; a picture far from the one asked for is not the
+            // game's zoom (the zoom itself may move a little between the read and the build).
+            if (aimFrame)
+            {
+                if (!aim_frame::TangentsAgree(aimFrameTanY, std::tan(eyeHalfFovY), 0.05f))
+                {
+                    CountBail(Bail::AimFrameNotAsAsked);
+                    ok = false;
+                    break;
+                }
+                if (eye == 0)
+                {
+                    aimFramePictureTan[0] = std::tan(eyeHalfFovX);
+                    aimFramePictureTan[1] = std::tan(eyeHalfFovY);
+                }
+            }
             // E-H2-18: what the engine holds NOW for the weapon: the
             // first-person projection must equal the world projection the
             // scene was rasterised with, or a rebuild this core did not see
@@ -1118,15 +1194,26 @@ namespace
             CountBail(Bail::CameraRestoreFailed);
         if (ok && restored)
         {
+            // AIM FRAME ZOOM: what this picture is, said before it is published; a mono picture is not the frame's.
+            if (aimFrame)
+                Game_Halo2AimFrameDrawn(aimFrameStereo ? 2 : 0, aimFramePictureTan[0], aimFramePictureTan[1],
+                                        aimFrameWidthDeg);
+            else if (mono)
+                VR_PrepareAimFramePicture(GameTitle::Halo2, -1, 0.0f, 0.0f, 0.0f);
             if (mono
                     ? VR_Halo2CompleteSynchronousMonoPair(
                           generation, serial, 0, submitPosition[1], submitOrientation[1])
                     : VR_Halo2CompleteSynchronousPair(generation, serial))
             {
                 g_lastCompletedMonoEye.store(mono ? 0 : -1, std::memory_order_release);
+                g_lastCompletedAimFrame.store(aimFrame, std::memory_order_release);
                 g_lastCompletedSerial.store(serial, std::memory_order_release);
                 g_pairs.fetch_add(1, std::memory_order_relaxed);
-                if (mono)
+                if (aimFrame)
+                {
+                    // the frame's own: neither a mono frame nor an immersive pair
+                }
+                else if (mono)
                     g_monoFrames.fetch_add(1, std::memory_order_relaxed);
                 else
                     VR_NoteStereoFrameRendered(GameTitle::Halo2);
@@ -1144,7 +1231,9 @@ namespace
 
         VR_Halo2InvalidateSynchronousPair(generation, serial);
         g_drops.fetch_add(1, std::memory_order_relaxed);
-        if (mono)
+        if (aimFrame)
+            Game_Halo2AimFrameRefused();
+        else if (mono)
         {
             g_monoDrops.fetch_add(1, std::memory_order_relaxed);
             VR_NoteMonoFrameRejected(GameTitle::Halo2);
@@ -1305,6 +1394,9 @@ namespace
             return;
         }
         bool ok = true;
+        // AIM FRAME ZOOM: over the frame's picture the HUD keeps the game's own layout and the game draws its crosshair
+        // into it (d3d11_hook.cpp, this core's CHUD draw).
+        Game_SetAimFramePass(g_lastCompletedAimFrame.load(std::memory_order_acquire));
         __try
         {
             if (monoEye == 0 || monoEye == 1)
@@ -1361,6 +1453,7 @@ namespace
             ok = false;
             reason = "replay faulted";
         }
+        Game_SetAimFramePass(false);
         if (ok)
         {
             g_hudReplays.fetch_add(1, std::memory_order_relaxed);

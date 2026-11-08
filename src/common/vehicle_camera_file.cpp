@@ -972,9 +972,10 @@ const char* const kGuide[] = {
     "                    game seats it, all of it but your head; false is the game's own first-person seat, which",
     "                    shows your legs only. Left out: on in a driver's or gunner's seat, off in a passenger's",
     "                    (a passenger may hold a weapon, and its arms would be drawn twice)",
-    "  eyeAdjust         true | false (Halo 3): false holds the game's eye adaptation while this camera is in",
-    "                    use, so the exposure stays as it was when the camera was chosen -- a dark cockpit then",
-    "                    cannot brighten the view outside. Left out: true (the game adapts as it does)",
+    "  eyeAdjust         true | false (Halo 3, ODST, Reach, Halo 4): false holds the game's eye adaptation while",
+    "                    this camera is in use, so the exposure stays as it was when the camera was chosen -- a",
+    "                    dark cockpit then cannot brighten the view outside. Left out: true (the game adapts as it",
+    "                    does; ODST's first-person seat view holds it anyway, vehicle_steady_exposure)",
     "  hideRegions       [\"canopy\", ...] (Halo 3): parts of your own vehicle this camera does not draw, by",
     "                    the region names halomccvr_vehicle_parts.txt lists for it (or their numbers there) --",
     "                    e.g. a tinted canopy in front of a first-person seat. Left out: the vehicle drawn whole",
@@ -1482,6 +1483,222 @@ Table DefaultTable()
                     halo3.vehicles.push_back(vehicle);
     halo3.vehicles.push_back(AnyVehicle());
 
+    // Halo: Reach: the vehicles the mod names by their identity (ReachVehicleCameraName: the stock tag's own word,
+    // "warthog", "warthog_chaingun", "space_banshee"). A gun mounted on a vehicle is named by its own tag, which
+    // carries the vehicle's word ("warthog_gauss", "wraith_gunner", "scorpion_anti_infantry"), or -- a walk-up gun
+    // riding a carrier, as the Falcon's side guns do -- by the carrier's. Sizes follow Reach's own bounds: the
+    // Falcon stands about 9 m across and the Sabre's bounds about 16 m.
+    // The Warthog's seat cameras stand higher and further back than Halo 3's: Reach's seat point sits low in the seat,
+    // so Halo 3's values put the driver's and the passenger's camera behind the turret post and the gunner's against
+    // his own back (three placements a seat compared in game).
+    Game reach;
+    reach.key = kGameKeys[2];
+    reach.vehicles = {
+        Entry("Warthog", "warthog", driver,
+              {Chase("Over the Shoulder", Origin::Seat, -160, 0, 160, true, 0.15f),
+               Chase("Left Side", Origin::Seat, 0, -140, 40, true, 0.0f)}),
+        Entry("Warthog passenger", "warthog", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -160, 0, 160, true, 0.15f),
+               Chase("Right Side", Origin::Seat, 0, 140, 40, true, 0.0f)}),
+        Entry("Warthog gunner", "warthog", gunner, {Chase("Behind the Gun", Origin::Seat, -280, 0, 160, true, 0.1f)}),
+        Entry("Mongoose", "mongoose", driver, {Chase("Over the Shoulder", Origin::Seat, -170, 80, 70, true, 0.15f)}),
+        Entry("Mongoose passenger", "mongoose", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, -80, 70, true, 0.15f)}),
+        Entry("Ghost", "ghost", driver,
+              {Chase("Follow", Origin::Vehicle, -450, 0, 220, true, 0.25f),
+               Chase("Over the Shoulder", Origin::Vehicle, -10, 60, 135, true, 0.1f)}),
+        Entry("Revenant", "revenant", driver,
+              {Chase("Follow", Origin::Vehicle, -500, 0, 250, true, 0.25f),
+               Chase("Over the Shoulder", Origin::Seat, -170, 80, 80, true, 0.15f)}),
+        Entry("Revenant passenger", "revenant", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, -80, 80, true, 0.15f)}),
+        Entry("Banshee", "banshee", driver,
+              {Chase("Over the Shoulder", Origin::Vehicle, -350, 150, 200, false, 0.2f),
+               Chase("Chase", Origin::Vehicle, -600, 0, 150, false, 0.3f)}),
+        Entry("Falcon", "falcon", driver,
+              {Chase("Over the Shoulder", Origin::Seat, -300, 150, 120, false, 0.2f),
+               Chase("Chase", Origin::Vehicle, -1300, 0, 450, false, 0.3f)}),
+        Entry("Falcon passenger", "falcon", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, 0, 80, false, 0.15f)}),
+        Entry("Falcon gunner", "falcon", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, false, 0.1f)}),
+        Entry("Sabre", "sabre", driver,
+              {Chase("Chase", Origin::Vehicle, -1800, 0, 450, false, 0.3f),
+               Chase("Over the Shoulder", Origin::Seat, -400, 150, 150, false, 0.2f)}),
+        Entry("Scorpion", "scorpion", driver, {Chase("High", Origin::Vehicle, -700, 0, 700, true, 0.3f)}),
+        Entry("Scorpion gunner", "scorpion", gunner,
+              {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+        Entry("Wraith", "wraith", driver, {Chase("High", Origin::Vehicle, -700, 100, 700, true, 0.3f)}),
+        Entry("Wraith gunner", "wraith", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+        AlsoMatching(AlsoMatching(AlsoMatching(Entry("Turret", "turret", 0,
+                                                     {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+                                               "shade"),
+                                  "machinegun"),
+                     "cannon"),
+        AnyVehicle(),
+    };
+
+    // Halo 3: ODST: the vehicles the mod names by their identity (odst_vehicle_camera_logic.h: OdstVehicleIdName's
+    // words, Halo 3's). ODST ships Halo 3's vehicles with the same models, seats and seat markers, so their cameras
+    // are Halo 3's. Its own: the Scorpion's four riders on the tread covers (passengers, who fire their own weapons)
+    // and the Shade the player drives and fires from its one seat. A gunner on a vehicle's gun is named by the
+    // vehicle, as in Halo 3.
+    Game odst;
+    odst.key = kGameKeys[1];
+    odst.vehicles = {
+        Entry("Warthog", "warthog", driver,
+              {Chase("Over the Shoulder", Origin::Seat, -90, -100, 50, true, 0.15f),
+               Chase("Left Side", Origin::Seat, 0, -140, 40, true, 0.0f)}),
+        Entry("Warthog passenger", "warthog", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, 0, 90, 10, true, 0.15f),
+               Chase("Right Side", Origin::Seat, 0, 140, 40, true, 0.0f)}),
+        RaisedThirdPerson(Entry("Warthog gunner", "warthog", gunner,
+                                {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+                          300),
+        Entry("Mongoose", "mongoose", driver, {Chase("Over the Shoulder", Origin::Seat, -170, 80, 70, true, 0.15f)}),
+        Entry("Mongoose passenger", "mongoose", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, -80, 70, true, 0.15f)}),
+        Entry("Ghost", "ghost", driver,
+              {Chase("Follow", Origin::Vehicle, -450, 0, 220, true, 0.25f),
+               Chase("Over the Shoulder", Origin::Vehicle, -70, 90, 100, true, 0.1f)}),
+        RaisedThirdPerson(Entry("Chopper", "chopper", driver, {Chase("Follow", Origin::Vehicle, -500, 0, 250, true, 0.25f)}),
+                          300),
+        AlsoMatching(Entry("Prowler", "prowler", driver, {Chase("Follow", Origin::Vehicle, -550, 0, 300, true, 0.25f)}),
+                     "mauler"),
+        AlsoMatching(Entry("Prowler gunner", "prowler", gunner,
+                           {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+                     "mauler"),
+        Entry("Banshee", "banshee", driver,
+              {Chase("Over the Shoulder", Origin::Vehicle, -300, 200, 350, false, 0.2f),
+               Chase("Chase", Origin::Vehicle, -600, 0, 150, false, 0.3f)}),
+        Entry("Hornet", "hornet", driver,
+              {Chase("Over the Shoulder", Origin::Vehicle, -350, 150, 250, false, 0.2f),
+               Chase("Chase", Origin::Vehicle, -700, 0, 250, false, 0.3f)}),
+        Entry("Scorpion", "scorpion", driver, {Chase("High", Origin::Vehicle, -700, 0, 700, true, 0.3f)}),
+        Entry("Scorpion gunner", "scorpion", gunner,
+              {Chase("Over the Shoulder", Origin::Seat, -100, 50, 10, true, 0.1f)}),
+        Entry("Scorpion rider", "scorpion", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -200, 0, 100, true, 0.15f)}),
+        Entry("Wraith", "wraith", driver, {Chase("High", Origin::Vehicle, -700, 100, 700, true, 0.3f)}),
+        Entry("Wraith gunner", "wraith", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+        Entry("Shade", "shade", 0, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+        Entry("Turret", "turret", 0, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+        AnyVehicle(),
+    };
+
+    // Halo 4: the vehicles the mod names by their render model (halo4_vehicle_camera_logic.h: the stock vehicle's
+    // word for each model measured in game). A gun mounted on a vehicle goes by the vehicle carrying it, so the
+    // Warthog's turret, of any kind, finds the Warthog gunner's entry. The placements start from Halo 3's for the
+    // same kinds of seat.
+    Game halo4;
+    halo4.key = kGameKeys[3];
+    halo4.vehicles = {
+        Entry("Warthog", "warthog", driver,
+              {Chase("Over the Shoulder", Origin::Seat, -200, 90, 70, true, 0.15f),
+               Chase("Left Side", Origin::Seat, 0, -140, 40, true, 0.0f)}),
+        Entry("Warthog passenger", "warthog", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -200, -90, 70, true, 0.15f),
+               Chase("Right Side", Origin::Seat, 0, 140, 40, true, 0.0f)}),
+        Entry("Warthog gunner", "warthog", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+        Entry("Mongoose", "mongoose", driver, {Chase("Over the Shoulder", Origin::Seat, -170, 80, 70, true, 0.15f)}),
+        Entry("Mongoose passenger", "mongoose", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, -80, 70, true, 0.15f)}),
+        Entry("Ghost", "ghost", driver,
+              {Chase("Follow", Origin::Vehicle, -450, 0, 220, true, 0.25f),
+               Chase("Over the Shoulder", Origin::Vehicle, -10, 60, 135, true, 0.1f)}),
+        Entry("Banshee", "banshee", driver,
+              {Chase("Over the Shoulder", Origin::Vehicle, -350, 150, 200, false, 0.2f),
+               Chase("Chase", Origin::Vehicle, -600, 0, 150, false, 0.3f)}),
+        Entry("Scorpion", "scorpion", driver, {Chase("High", Origin::Vehicle, -700, 0, 700, true, 0.3f)}),
+        Entry("Scorpion gunner", "scorpion", gunner,
+              {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+        Entry("Wraith", "wraith", driver, {Chase("High", Origin::Vehicle, -700, 100, 700, true, 0.3f)}),
+        Entry("Wraith gunner", "wraith", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+        Entry("Mantis", "mantis", driver,
+              {Chase("Over the Shoulder", Origin::Seat, -250, 120, 60, true, 0.15f),
+               Chase("Follow", Origin::Vehicle, -700, 0, 500, true, 0.25f)}),
+        Entry("Broadsword", "broadsword", driver,
+              {Chase("Chase", Origin::Vehicle, -1800, 0, 450, false, 0.3f),
+               Chase("Over the Shoulder", Origin::Seat, -400, 150, 150, false, 0.2f)}),
+        Entry("Turret", "turret", 0, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+        AnyVehicle(),
+    };
+
+    // Halo 2: the vehicles the mod names by their render model (halo2_vehicle_camera_logic.h: the model's name in
+    // lower case, "warthog", "ghost"). A gun mounted on a vehicle is its own object, whose model's name carries its
+    // vehicle's ("warthog_chaingun", "warthog_gauss", "wraith_minigun", "spectre_plasma"), so its gunner finds the
+    // vehicle's gunner entry. The walk-up guns are "c_turret_ap", "h_turret_ap" and the Covenant gun tower. A seat's
+    // origin is the occupant's head where it settled in the seat, so the seat cameras stand off it as Halo 3's stand
+    // off its seat eye. The Warthog's front seats look over the occupant's own shoulder from straight behind and well
+    // above it (placed from pictures in game): nearer the hull's centre line its gun and roll bar fill the view.
+    Game halo2;
+    halo2.key = kGameKeys[4];
+    halo2.vehicles = {
+        Entry("Warthog", "warthog", driver,
+              {Chase("Over the Shoulder", Origin::Seat, -250, 0, 140, true, 0.15f),
+               Chase("Left Side", Origin::Seat, 0, -140, 40, true, 0.0f)}),
+        Entry("Warthog passenger", "warthog", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -250, 0, 140, true, 0.15f),
+               Chase("Right Side", Origin::Seat, 0, 140, 40, true, 0.0f)}),
+        Entry("Warthog gunner", "warthog", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+        Entry("Mongoose", "mongoose", driver, {Chase("Over the Shoulder", Origin::Seat, -170, 80, 70, true, 0.15f)}),
+        Entry("Mongoose passenger", "mongoose", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, -80, 70, true, 0.15f)}),
+        Entry("Ghost", "ghost", driver,
+              {Chase("Follow", Origin::Vehicle, -450, 0, 220, true, 0.25f),
+               Chase("Over the Shoulder", Origin::Vehicle, -10, 60, 135, true, 0.1f)}),
+        Entry("Spectre", "spectre", driver, {Chase("Follow", Origin::Vehicle, -500, 0, 250, true, 0.25f)}),
+        Entry("Spectre passenger", "spectre", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, -80, 80, true, 0.15f)}),
+        Entry("Spectre gunner", "spectre", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+        Entry("Banshee", "banshee", driver,
+              {Chase("Over the Shoulder", Origin::Vehicle, -350, 150, 200, false, 0.2f),
+               Chase("Chase", Origin::Vehicle, -600, 0, 150, false, 0.3f)}),
+        Entry("Scorpion", "scorpion", driver, {Chase("High", Origin::Vehicle, -700, 0, 700, true, 0.3f)}),
+        Entry("Scorpion passenger", "scorpion", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -200, 0, 120, true, 0.15f)}),
+        Entry("Scorpion gunner", "scorpion", gunner,
+              {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+        Entry("Wraith", "wraith", driver, {Chase("High", Origin::Vehicle, -700, 100, 700, true, 0.3f)}),
+        Entry("Wraith gunner", "wraith", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
+        AlsoMatching(Entry("Turret", "turret", 0, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+                     "guntower"),
+        AnyVehicle(),
+    };
+
+    // Halo: Combat Evolved: the vehicles the mod names by their tag (haloce_vehicle_camera::NameFromTagPath: the stock
+    // folder's word, "warthog", "rocket_warthog", "ghost", "shade"). The rocket Warthog finds the Warthog's entries
+    // ("warthog" is in its name). A Ghost's, a Banshee's, a Shade's one seat drives and fires; the Scorpion's driver
+    // fires its cannon, and its riders sit on its sides. CE's vehicles are Halo 3's size, so the cameras start from Halo 3's;
+    // a seat's point is its occupant's root node, at the hips, so the Warthog's over-the-shoulder cameras stand higher
+    // than Halo 3's and over the outer shoulder, clear of the gun's mount behind the seats.
+    Game halo1;
+    halo1.key = kGameKeys[5];
+    halo1.vehicles = {
+        Entry("Warthog", "warthog", driver,
+              {Chase("Over the Shoulder", Origin::Seat, -170, -30, 140, true, 0.15f),
+               Chase("Left Side", Origin::Seat, 0, -140, 40, true, 0.0f)}),
+        Entry("Warthog passenger", "warthog", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, 30, 140, true, 0.15f),
+               Chase("Right Side", Origin::Seat, 0, 140, 40, true, 0.0f)}),
+        Entry("Warthog gunner", "warthog", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 90, true, 0.1f)}),
+        Entry("Ghost", "ghost", driver,
+              {Chase("Follow", Origin::Vehicle, -450, 0, 220, true, 0.25f),
+               Chase("Over the Shoulder", Origin::Vehicle, -10, 60, 135, true, 0.1f)}),
+        Entry("Banshee", "banshee", driver,
+              {Chase("Over the Shoulder", Origin::Vehicle, -350, 150, 200, false, 0.2f),
+               Chase("Chase", Origin::Vehicle, -600, 0, 150, false, 0.3f)}),
+        Entry("Scorpion", "scorpion", driver, {Chase("High", Origin::Vehicle, -700, 0, 700, true, 0.3f)}),
+        Entry("Scorpion passenger", "scorpion", passenger,
+              {Chase("Over the Shoulder", Origin::Seat, -170, 0, 80, true, 0.15f)}),
+        Entry("Wraith", "wraith", driver, {Chase("High", Origin::Vehicle, -700, 100, 700, true, 0.3f)}),
+        AlsoMatching(Entry("Shade", "shade", 0, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
+                     "turret"),
+        AnyVehicle(),
+    };
+    // CE draws no ring where the vehicle aims (its crosshair is its own HUD's): its built-in cameras ask for none.
+    for (Vehicle& vehicle : halo1.vehicles)
+        vehicle.aimMarker = 0;
+
     // Every other game, until it has cameras of its own.
     Game game;
     game.key = kDefaultKey;
@@ -1489,6 +1706,11 @@ Table DefaultTable()
 
     Table table;
     table.games.push_back(std::move(halo3));
+    table.games.push_back(std::move(reach));
+    table.games.push_back(std::move(odst));
+    table.games.push_back(std::move(halo4));
+    table.games.push_back(std::move(halo2));
+    table.games.push_back(std::move(halo1));
     table.games.push_back(std::move(game));
     return table;
 }

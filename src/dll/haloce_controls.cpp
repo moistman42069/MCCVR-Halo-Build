@@ -3,7 +3,9 @@
 #include "../common/physical_crouch_native_read.h"
 #include "../common/haloce_crouch_contract.h"
 #include "../common/haloce_vehicle_identity_contract.h"
+#include "../common/haloce_vehicle_camera_contract.h"
 #include "native_vehicle_first_person.h"
+#include "haloce_vehicle_cameras.h"
 #include "haloce_stereo_core.h"
 #include "haloce_native_bindings.h"
 #include "hook_quiescence.h"
@@ -51,6 +53,19 @@ bool StateCurrent() noexcept
 bool TurnCurrent() noexcept
 { return turnReady.load(std::memory_order_acquire)&&StateCurrent(); }
 #include "haloce_vehicle_identity.inl"
+// The vehicle cameras' seat facts (HaloCEControls_ReadVehicleSeatFacts): the tag path and seat-flag reads proven by
+// their own contract (haloce_vehicle_camera_contract.h) at admission.
+std::atomic<bool> vehicleCameraFactsReady{};
+void PrepareVehicleCameraFacts(uintptr_t base,size_t size,uint32_t gen) noexcept
+{
+    const char* failure{};
+    const NativeContractSet proof{vehicle_camera_contract::entries,vehicle_camera_contract::witnesses,
+        vehicle_camera_contract::relatives,vehicle_camera_contract::pointers};
+    const bool ready=VerifyNativeFeatureBindings(base,size,gen,proof,failure);
+    vehicleCameraFactsReady.store(ready,std::memory_order_release);
+    LOG("CE vehicle cameras' seat facts: %s%s%s",ready?"verified (tag path, seat flags, occupant slots)":"stock",
+        failure?"; ":"",failure?failure:"");
+}
 
 static bool ReadNativePaused(bool& paused) noexcept
 {
@@ -244,7 +259,14 @@ void TurnBody(int32_t inputUser,float yawDelta,float pitchDelta,uintptr_t caller
     }
     float turn=turnState.Step(context,true,nowSeconds,seated);
     if (seated)
-        turn+=vehicleFollow.Step(context,state.unit,state.parent,seat,hullYaw,nowSeconds);
+    {
+        // A chase camera of the vehicle camera file turns the view by its own mode's rotationTracking yaw in its
+        // seat (haloce_vehicle_cameras.h); every other seat view by the setting, vehicle_view_follow.
+        RenderContext follow=context;bool yaw=false;
+        if (Game_HaloCEVehicleCameraFollow(state.generation,state.parent,seat,yaw))
+            follow.tracking.controllers.vehicleViewFollow=yaw;
+        turn+=vehicleFollow.Step(follow,state.unit,state.parent,seat,hullYaw,nowSeconds);
+    }
     else vehicleFollow={};
     if (!TurnCurrent()||!HaloCE_RenderContextCurrent(context))
     { lastOwned=0;original(inputUser,yawDelta,pitchDelta);return; }
@@ -287,7 +309,8 @@ __declspec(noinline) void __fastcall TurnHook(int32_t inputUser,float yawDelta,f
 
 bool Remove() noexcept
 {
-    active=false;retiring=true;stateReady=false;turnReady=false;vehicleViewReady=false;vehicleIdentityReady=false;lastOwned=0;
+    active=false;retiring=true;stateReady=false;turnReady=false;vehicleViewReady=false;vehicleIdentityReady=false;
+    vehicleCameraFactsReady=false;lastOwned=0;
     if (turnTarget&&turnEnabled)
     {
         const auto result=MCCVR_DisableHookForRetirement(turnTarget);
@@ -304,8 +327,12 @@ bool Remove() noexcept
         reinterpret_cast<const void*>(&HaloCEControls_GetNativePaused),
         reinterpret_cast<const void*>(&HaloCEControls_PhysicalCrouchCorrection),
         reinterpret_cast<const void*>(&HaloCEControls_ReadVehicleCameraOwner),
-        reinterpret_cast<const void*>(&HaloCEControls_SeatHeading)};
-    const void* trampolines[]{turnOriginal,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
+        reinterpret_cast<const void*>(&HaloCEControls_SeatHeading),
+        reinterpret_cast<const void*>(&HaloCEControls_ReadVehicleSeatFacts),
+        reinterpret_cast<const void*>(&HaloCEControls_ReadVehicleSeatNow),
+        reinterpret_cast<const void*>(&HaloCEControls_ReadVehicleSeatTrack)};
+    const void* trampolines[]{turnOriginal,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,
+        nullptr,nullptr,nullptr};
     if (!WaitForNativeDetourQuiescence(functions,trampolines,std::size(functions),callbacks)) return false;
     if (turnTarget&&MH_RemoveHook(turnTarget)!=MH_OK) return false;
     turnTarget=turnOriginal=nullptr;
@@ -328,6 +355,7 @@ bool InstallState(uintptr_t base,size_t size,uint32_t gen) noexcept
     qpcSeconds=1.0/static_cast<double>(frequency.QuadPart);
     PrepareCrouchCamera(base,size,gen);
     PrepareVehicleIdentity(base,size,gen);
+    PrepareVehicleCameraFacts(base,size,gen);
     moduleBase=base;generation=gen;active=true;retiring=false;stateReady=true;
     LOG("CE native control state verified independently: player/input/output ownership and native admission flags");
     return true;
@@ -410,6 +438,208 @@ static bool ReadVehicleCameraOwnerBody(NativeVehicleCameraOwner& owner) noexcept
 }
 bool HaloCEControls_ReadVehicleCameraOwner(NativeVehicleCameraOwner& owner) noexcept
 { Callback callback;return ReadVehicleCameraOwnerBody(owner); }
+// THE SEAT'S FACTS for the vehicle cameras (haloce_controls.h). Every address is one vehicle_camera_contract proved at
+// admission (vehicleCameraFactsReady); every pointer is the engine's own accessor's answer, read guarded, and the
+// owner is checked again after the reads.
+static HaloCEVehicleSeatRead ReadVehicleSeatFactsBody(HaloCEVehicleSeatFacts& facts) noexcept
+{
+    HaloCELocalPlayerState state{};
+    if (!ReadLocalPlayerState(state)) return HaloCEVehicleSeatRead::Unknown;
+    if (!state.hasControlledUnit||state.onFoot) return HaloCEVehicleSeatRead::OnFoot;
+    if (!vehicleCameraFactsReady.load(std::memory_order_acquire)||state.parent==UINT32_MAX||!(state.parent>>16))
+        return HaloCEVehicleSeatRead::Unknown;
+    HaloCEVehicleSeatFacts out{};
+    out.generation=state.generation;out.unit=state.unit;out.parent=state.parent;
+    uintptr_t parentObject{};
+    __try
+    {
+        const auto get=reinterpret_cast<ObjectGetFn>(moduleBase+contract::player_state::state_object_try_get);
+        const uintptr_t unit=get(state.unit,1),parent=get(state.parent,2);
+        if (!unit||!parent||*reinterpret_cast<const uint32_t*>(unit+0xd8)!=state.parent)
+            return HaloCEVehicleSeatRead::Unknown;
+        parentObject=parent;
+        out.seat=*reinterpret_cast<const int16_t*>(unit+0x2d0);
+        if (out.seat<0) return HaloCEVehicleSeatRead::Unknown;
+        out.definition=*reinterpret_cast<const uint32_t*>(parent);
+        // E-CE-VEHICLE-CONTROL-1: the vehicle takes facing and throttle from the occupant at +0x304, its aim from +0x308.
+        out.drivesIt=*reinterpret_cast<const uint32_t*>(parent+0x304)==state.unit;
+        out.aimsIt=*reinterpret_cast<const uint32_t*>(parent+0x308)==state.unit;
+        // The hierarchy's top: the vehicle itself unless it rides another object. Bounded.
+        uint32_t at=state.parent;
+        for (int depth=0;depth<8;++depth)
+        {
+            const uintptr_t object=get(at,UINT32_MAX);
+            if (!object) break;
+            const uint32_t up=*reinterpret_cast<const uint32_t*>(object+0xd8);
+            if (up==UINT32_MAX) { out.root=at;break; }
+            at=up;
+        }
+        const intptr_t virtualBase=*reinterpret_cast<const intptr_t*>(moduleBase+vehicle_camera_contract::cacheVirtualBase);
+        const intptr_t mappedBase=*reinterpret_cast<const intptr_t*>(moduleBase+vehicle_camera_contract::cacheMappedBase);
+        if (out.definition!=UINT32_MAX&&(out.definition&0xffffu)<0x8000u&&mappedBase>0&&virtualBase>=0)
+        {
+            using TagGet=uintptr_t(__fastcall*)(uint32_t);
+            const uintptr_t definition=reinterpret_cast<TagGet>(moduleBase+vehicle_camera_contract::tag)(out.definition);
+            if (definition)
+            {
+                // object_definition: bounding radius +4 (world units).
+                const float radius=*reinterpret_cast<const float*>(definition+4);
+                if (std::isfinite(radius)&&radius>0&&radius<1000) out.boundsRadius=radius;
+                // unit_definition seats: a block at +0x2E4 (count) / +0x2E8 (cache pointer), 0x11C a seat, flags at +0.
+                const int32_t count=*reinterpret_cast<const int32_t*>(definition+0x2e4);
+                const int32_t address=*reinterpret_cast<const int32_t*>(definition+0x2e8);
+                if (count>0&&count<=64&&out.seat<count&&address)
+                {
+                    const uintptr_t seats=static_cast<uintptr_t>(static_cast<intptr_t>(address)-virtualBase+mappedBase);
+                    out.seatFlags=*reinterpret_cast<const uint32_t*>(seats+size_t(out.seat)*0x11c);
+                    out.seatFlagsRead=true;
+                }
+            }
+            // The tag instance's path: entry +0x10 of the 0x20-byte instance, a cache pointer like its data's.
+            const uintptr_t table=*reinterpret_cast<const uintptr_t*>(moduleBase+vehicle_camera_contract::tagInstances);
+            if (table)
+            {
+                const int32_t path=*reinterpret_cast<const int32_t*>(table+size_t(out.definition&0xffffu)*0x20+0x10);
+                if (path)
+                {
+                    const auto* text=reinterpret_cast<const char*>(static_cast<intptr_t>(path)-virtualBase+mappedBase);
+                    size_t n=0;
+                    for (;n+1<sizeof(out.tagPath)&&text[n];++n)
+                    {
+                        const unsigned char c=static_cast<unsigned char>(text[n]);
+                        if (c<32||c>126) { n=0;break; }
+                        out.tagPath[n]=text[n];
+                    }
+                    out.tagPath[n]='\0';
+                }
+            }
+        }
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    { exceptions.fetch_add(1,std::memory_order_relaxed);return HaloCEVehicleSeatRead::Unknown; }
+    out.modelIdentity=ReadVehicleModelIdentity(parentObject);
+    if (!StateCurrent()||state.generation!=generation.load(std::memory_order_acquire))
+        return HaloCEVehicleSeatRead::Unknown;
+    facts=out;
+    return HaloCEVehicleSeatRead::Seated;
+}
+HaloCEVehicleSeatRead HaloCEControls_ReadVehicleSeatFacts(HaloCEVehicleSeatFacts& facts) noexcept
+{ Callback callback;return ReadVehicleSeatFactsBody(facts); }
+static bool ReadVehicleSeatNowBody(HaloCEVehicleSeatNow& seat) noexcept
+{
+    HaloCELocalPlayerState state{};
+    if (!vehicleCameraFactsReady.load(std::memory_order_acquire)||!ReadLocalPlayerState(state)||
+        !state.hasControlledUnit||state.onFoot||state.nativeCinematicFlag||state.parent==UINT32_MAX||
+        !(state.parent>>16))
+        return false;
+    HaloCEVehicleSeatNow out{};
+    out.generation=state.generation;out.unit=state.unit;out.parent=state.parent;
+    __try
+    {
+        const auto get=reinterpret_cast<ObjectGetFn>(moduleBase+contract::player_state::state_object_try_get);
+        const uintptr_t unit=get(state.unit,1),parent=get(state.parent,2);
+        if (!unit||!parent||*reinterpret_cast<const uint32_t*>(unit+0xd8)!=state.parent) return false;
+        out.seat=*reinterpret_cast<const int16_t*>(unit+0x2d0);
+        if (out.seat<0) return false;
+        out.definition=*reinterpret_cast<const uint32_t*>(parent);
+        uint32_t at=state.parent;
+        for (int depth=0;depth<8;++depth)
+        {
+            const uintptr_t object=get(at,UINT32_MAX);
+            if (!object) break;
+            const uint32_t up=*reinterpret_cast<const uint32_t*>(object+0xd8);
+            if (up==UINT32_MAX) { out.root=at;break; }
+            at=up;
+        }
+        if (out.definition!=UINT32_MAX&&(out.definition&0xffffu)<0x8000u)
+        {
+            using TagGet=uintptr_t(__fastcall*)(uint32_t);
+            const uintptr_t definition=reinterpret_cast<TagGet>(moduleBase+vehicle_camera_contract::tag)(out.definition);
+            const float radius=definition?*reinterpret_cast<const float*>(definition+4):0.0f;
+            if (std::isfinite(radius)&&radius>0&&radius<1000) out.boundsRadius=radius;
+        }
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
+    if (out.root==UINT32_MAX||!StateCurrent()||state.generation!=generation.load(std::memory_order_acquire))
+        return false;
+    seat=out;
+    return true;
+}
+bool HaloCEControls_ReadVehicleSeatNow(HaloCEVehicleSeatNow& seat) noexcept
+{ Callback callback;return ReadVehicleSeatNowBody(seat); }
+// THE SEAT CAMERA'S TRACK (haloce_controls.h). Every address and field is one vehicle_camera_contract proved at
+// admission: the seat camera (unit_get_camera_info), its tracks and the default (camera_track_splut). Guarded.
+static bool ReadVehicleSeatTrackBody(uint32_t gen,uint32_t parentDatum,int16_t seat,HaloCEVehicleSeatTrack& out) noexcept
+{
+    if (!vehicleCameraFactsReady.load(std::memory_order_acquire)||!StateCurrent()||
+        gen!=generation.load(std::memory_order_acquire)||seat<0||parentDatum==UINT32_MAX||!(parentDatum>>16))
+        return false;
+    HaloCEVehicleSeatTrack read{};
+    __try
+    {
+        const auto get=reinterpret_cast<ObjectGetFn>(moduleBase+contract::player_state::state_object_try_get);
+        const uintptr_t parent=get(parentDatum,2);
+        if (!parent) return false;
+        const uint32_t definitionDatum=*reinterpret_cast<const uint32_t*>(parent);
+        const intptr_t virtualBase=*reinterpret_cast<const intptr_t*>(moduleBase+vehicle_camera_contract::cacheVirtualBase);
+        const intptr_t mappedBase=*reinterpret_cast<const intptr_t*>(moduleBase+vehicle_camera_contract::cacheMappedBase);
+        if (definitionDatum==UINT32_MAX||(definitionDatum&0xffffu)>=0x8000u||mappedBase<=0||virtualBase<0) return false;
+        const auto relocate=[virtualBase,mappedBase](int32_t address) noexcept {
+            return address?static_cast<uintptr_t>(static_cast<intptr_t>(address)-virtualBase+mappedBase):uintptr_t{0}; };
+        using TagGet=uintptr_t(__fastcall*)(uint32_t);
+        const auto tag=reinterpret_cast<TagGet>(moduleBase+vehicle_camera_contract::tag);
+        const uintptr_t definition=tag(definitionDatum);
+        if (!definition) return false;
+        // The seat's camera: the vehicle definition's seat block (+0x2E4 count, +0x2E8 address, 0x11C a seat) at +0x84.
+        const int32_t seats=*reinterpret_cast<const int32_t*>(definition+0x2e4);
+        const uintptr_t seatBlock=relocate(*reinterpret_cast<const int32_t*>(definition+0x2e8));
+        if (seats<=0||seats>64||seat>=seats||!seatBlock) return false;
+        const uintptr_t camera=seatBlock+size_t(seat)*0x11c+0x84;
+        // Its look limits (+0x44 lowest, +0x48 highest), as the player's look update holds the pitch to them.
+        read.pitchMin=*reinterpret_cast<const float*>(camera+0x44);
+        read.pitchMax=*reinterpret_cast<const float*>(camera+0x48);
+        // Its first track's reference (+0x4C count, +0x50 address, the datum at +0xC), else the globals' default.
+        read.tracks=*reinterpret_cast<const int32_t*>(camera+0x4c);
+        uint32_t trackDatum=UINT32_MAX;
+        if (read.tracks>0)
+        {
+            const uintptr_t first=relocate(*reinterpret_cast<const int32_t*>(camera+0x50));
+            if (first) trackDatum=*reinterpret_cast<const uint32_t*>(first+0xc);
+        }
+        if (trackDatum==UINT32_MAX)
+        {
+            const uintptr_t globals=*reinterpret_cast<const uintptr_t*>(moduleBase+vehicle_camera_contract::globals);
+            const uintptr_t reference=globals?relocate(*reinterpret_cast<const int32_t*>(globals+0x108)):0;
+            if (!reference) return false;
+            trackDatum=*reinterpret_cast<const uint32_t*>(reference+0xc);
+            read.defaultTrack=true;
+        }
+        if (trackDatum==UINT32_MAX||(trackDatum&0xffffu)>=0x8000u) return false;
+        const uintptr_t track=tag(trackDatum);
+        if (!track) return false;
+        // The track's control points: +4 count, +8 address, 0x3C a point (position, then orientation i j k w).
+        read.points=*reinterpret_cast<const int32_t*>(track+4);
+        const uintptr_t points=relocate(*reinterpret_cast<const int32_t*>(track+8));
+        if (points&&read.points>=vehicle_boom::kMinTrackPoints&&read.points<=vehicle_boom::kMaxTrackPoints)
+        {
+            for (int32_t i=0;i<read.points;++i)
+            {
+                const auto* point=reinterpret_cast<const float*>(points+size_t(i)*0x3c);
+                for (int k=0;k<3;++k) read.track.points[i].position[k]=point[k];
+                for (int k=0;k<4;++k) read.track.points[i].orientation[k]=point[3+k];
+            }
+            read.track.count=read.points;
+        }
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
+    if (!StateCurrent()||gen!=generation.load(std::memory_order_acquire)) return false;
+    out=read;
+    return true;
+}
+bool HaloCEControls_ReadVehicleSeatTrack(uint32_t gen,uint32_t parent,int16_t seat,HaloCEVehicleSeatTrack& track) noexcept
+{ Callback callback;return ReadVehicleSeatTrackBody(gen,parent,seat,track); }
 // THE SEAT'S VIEW HEADING (halo_ce::Reference::seatHeading; haloce_render_logic.h has the why and the measurement).
 // The player's control record for input user N sits at control + 0x14 + N * 0x58, with its unit handle 4 bytes
 // before it; its yaw and pitch are the two floats at +8 / +0xC -- the pair CE's own action builder copies into the
@@ -444,6 +674,34 @@ static bool SeatHeadingBody(uint32_t expectedGeneration,halo_ce::Vec3& heading) 
 }
 bool HaloCEControls_SeatHeading(uint32_t expectedGeneration,halo_ce::Vec3& heading) noexcept
 { Callback callback;return SeatHeadingBody(expectedGeneration,heading); }
+// AIM FRAME ZOOM (game.cpp): the local player's zoom level from the same control record, the int16 at
+// control + 0x34 + N * 0x58. The control update (+0xA9915C) owns it: -1 on a weapon change and whenever the player
+// cannot act (paused, a cinematic, no unit), the weapon's next level when the zoom button asks; the aim-assist query
+// (+0xA97CF4) reads the game's zoom from it. ADDR-HYGIENE: guarded as the seat heading is (the record's unit handle
+// must be the local player's unit). The frame is drawn on foot only: in a seat this answers -1.
+static bool ZoomLevelBody(uint32_t expectedGeneration,int16_t& level) noexcept
+{
+    HaloCELocalPlayerState state{};
+    if (!ReadLocalPlayerState(state)||state.generation!=expectedGeneration||!state.hasControlledUnit||
+        state.inputUser<0||state.inputUser>=4)
+        return false;
+    int16_t value=-1;
+    __try
+    {
+        const uintptr_t control=*reinterpret_cast<const uintptr_t*>(moduleBase+0x2d8fe70);
+        if (!control) return false;
+        const uintptr_t record=control+size_t(state.inputUser)*0x58;
+        if (*reinterpret_cast<const uint32_t*>(record+0x10)!=state.unit) return false;
+        value=*reinterpret_cast<const int16_t*>(record+0x34);
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
+    if (!StateCurrent()||state.generation!=generation.load(std::memory_order_acquire)) return false;
+    level=state.onFoot&&value>=0?value:-1;
+    return true;
+}
+bool HaloCEControls_ZoomLevel(uint32_t expectedGeneration,int16_t& level) noexcept
+{ Callback callback;return ZoomLevelBody(expectedGeneration,level); }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t expectedGeneration,uint64_t epoch,
     float physicalDown,bool allowed) noexcept
 { Callback callback;return CrouchCameraBody(expectedGeneration,epoch,physicalDown,allowed); }

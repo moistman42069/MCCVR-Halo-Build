@@ -112,13 +112,23 @@ def config_values(data: bytes) -> dict[str, str]:
     return result
 
 
+# A VR Mappings input as halomccvr.cfg writes it (vr_mapping::FormatInput): up to two held controls, then the press, each
+# a vr_mapping::Source number, and " toggle" for a toggle.
+SOURCE_COUNT = 22
+INPUT_PATTERN = re.compile(r"(\d+\+){0,2}\d+( toggle)?")
+
+
+def valid_input(value: str) -> bool:
+    return (INPUT_PATTERN.fullmatch(value) is not None and
+            all(int(part) < SOURCE_COUNT for part in value.removesuffix(" toggle").split("+")))
+
+
 def check_config(data: bytes) -> int:
     values = config_values(data)
     for title in TITLES:
         for action in ACTIONS:
             key = f"vr_bind_{title}_{action}"
-            require(key in values and values[key].isdigit() and 0 <= int(values[key]) < 16,
-                    f"Missing or invalid per-game binding: {key}")
+            require(key in values and valid_input(values[key]), f"Missing or invalid per-game binding: {key}")
         key = f"hide_muzzle_flash_{title}"
         require(values.get(key) in ("0", "1"), f"Missing per-game muzzle-flash setting: {key}")
         key = f"bloom_enabled_{title}"

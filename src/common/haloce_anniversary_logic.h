@@ -110,4 +110,27 @@ inline bool StageSaberEye(const SaberCamera& stock,const Tracking& tracking,
     cover=candidateCover;
     return true;
 }
+
+// AIM FRAME ZOOM: an eye of the frame (BuildAimFrameCamera from `centre`, the centre eye built from this same stock
+// camera), staged as StageSaberEye stages an eye: the pose and both angles are the picture's, and so is the cover the
+// finished construction holds the rebuilt camera to (ViewConstruction::Finish).
+inline bool StageSaberAimFrameEye(const SaberCamera& stock,const Camera& centre,const AimFrameEyes& frame,int eye,
+    SaberCamera& out,Cover& cover)
+{
+    Camera posed{};
+    Cover candidateCover{};
+    SaberPose candidatePose{};
+    if (!AimFrameCover(frame,candidateCover)||!BuildAimFrameCamera(centre,frame,eye,{},posed)||
+        !BuildSaberPose(posed,{},0,candidatePose))
+        return false;
+    SaberCamera candidate=stock;
+    candidate.pose=candidatePose;
+    constexpr float radiansToDegrees=57.29577951308232f;
+    candidate.horizontalFovDegrees=2*candidateCover.halfX*radiansToDegrees;
+    candidate.verticalFovDegrees=2*candidateCover.halfY*radiansToDegrees;
+    candidate.aspectRatio=stock.viewportHeight/stock.viewportWidth;
+    out=candidate;
+    cover=candidateCover;
+    return true;
+}
 }

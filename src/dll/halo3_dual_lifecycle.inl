@@ -94,7 +94,7 @@ void BindHalo3ChaseCamera(uintptr_t base, size_t size, uint32_t generation)
         return;
     }
     feature.chaseGeneration.store(generation, std::memory_order_release);
-    feature.chaseCamera.store(reinterpret_cast<Halo3ChaseCameraFn>(chase), std::memory_order_release);
+    feature.chaseCamera.store(lifted::Callable(reinterpret_cast<Halo3ChaseCameraFn>(chase)), std::memory_order_release);
     LOG("Halo 3 seat stock camera: the evaluator's chase path bound at +0x%llX (from the evaluator's call +0x2121D2); "
         "a seat's record is solved from it at every control pass",
         static_cast<unsigned long long>(chase - base));

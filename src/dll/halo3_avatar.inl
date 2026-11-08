@@ -280,7 +280,7 @@ bool InstallHalo3Avatar(uintptr_t base,size_t size,uint32_t generation) {
                !call(0x2B550D,0x2AFB88)||!call(0x2B5533,0x2AFC14)))) {
         LOG("Halo 3 avatar StockFallback: own native call-site identity mismatch");return false;}
     r.base=base;r.size=size;r.generation.store(generation);r.faulted.store(false);
-    r.world=reinterpret_cast<WorldFn>(base+0x28B0C8);
+    r.world=lifted::Callable(reinterpret_cast<WorldFn>(base+0x28B0C8));
     void* hooks[]{reinterpret_cast<void*>(ExcludeHook),reinterpret_cast<void*>(ProducerHook),
         reinterpret_cast<void*>(RegionsHook),reinterpret_cast<void*>(UploadHook),
         reinterpret_cast<void*>(MapHook),reinterpret_cast<void*>(CommitHook),

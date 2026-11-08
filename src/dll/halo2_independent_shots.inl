@@ -58,11 +58,21 @@ __declspec(noinline) int32_t __fastcall Halo2IndependentCameraDetour(
         // Co-op safe: at a fire the evaluator answers the line the crosshair test starts on, from the unit's seat
         // camera. The first-person seat override places that camera on this machine only, so for this call it
         // stands down and the line is the one every machine computes.
-        if(reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x7597BD&&!Sight_FireTimeChangesAllowed())
+        // The fire's own ask is for the seat's aim (NativeVehicleFirstPerson_SetSeatAskOnThisThread): it never counts
+        // as the frame's seat view, and it would keep the first-person answer under the chase-camera stand-down
+        // (kHalo2ChaseStandDown, off). The players update's ask is the player's camera for the frame.
+        const bool fireAsk=reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x7597BD;
+        if(fireAsk&&!Sight_FireTimeChangesAllowed())
         {
             NativeVehicleFirstPerson_SetStockOnThisThread(true);
             __try {result=feature.cameraOriginal(unit,position,direction);}
             __finally {NativeVehicleFirstPerson_SetStockOnThisThread(false);}
+        }
+        else if(fireAsk)
+        {
+            const bool seatAskWas=NativeVehicleFirstPerson_SetSeatAskOnThisThread(true);
+            __try {result=feature.cameraOriginal(unit,position,direction);}
+            __finally {NativeVehicleFirstPerson_SetSeatAskOnThisThread(seatAskWas);}
         }
         else
             result=feature.cameraOriginal(unit,position,direction);

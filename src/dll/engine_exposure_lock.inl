@@ -26,8 +26,30 @@
 // play and the next level: every teardown path releases it (EngineExposureLockRelease). Authored and scripted
 // cinematic exposure changes bypass the lock and still work.
 
+//
+// REACH has the same construct, compiled with other registers: its adaptation test compares the byte against r15b
+// (not bpl) and blends from xmm5 (not xmm4), so it has a signature of its own (kReachExposureLockSig); the
+// settings-block copy is byte-for-byte the shared one. Measured offline on the retail haloreach.dll: the test at
+// +0x25E163 and the copy at +0xC3593 (inside main_render_view) each found exactly once, the copy naming the internal
+// lock +0xB43E00 (block +0xB43DD0 + 0x30) that the test reads, and the editable source +0x29F2B68 (+0x29F2B38 + 0x30).
+// The test is followed by the same blend and the same `jne` past the exposure write.
+//
+// HALO 4 has the same settings block and the same per-frame copy (the shared signature, found once in the retail
+// halo4.dll at +0x1228D9, inside the frame's render): the copy names the internal block +0xE84F40 and the editable one
+// +0x30AAAF8, each with its last field at +0x30. Halo 4's adaptation step tests that internal byte (+0xE84F70) against
+// bpl and jumps straight past the step when it is set (`cmp byte [lock], bpl; jne`), before it averages its
+// luminance history and moves the exposure toward it at a capped rate -- the same lock read in the same place in the
+// step, laid out differently, so it has a signature of its own (kHalo4ExposureLockSig, found once at +0x359A28).
+// Matched offline on the retail module, not read from an editing kit (none is installed here): the two signatures
+// must name the same byte at block + 0x30, as for the other titles, else the hold stays off.
+// ADDR-HYGIENE: resolved -- both bytes are decoded from two unique signatures that must name the same lock, and the
+// copy must lay both out at block + 0x30; any disagreement leaves the hold off. No address is recorded in code.
 inline constexpr const char* kEngineExposureLockSig =
     "40 38 2D ?? ?? ?? ?? 0F 57 C9 0F 28 C4 F3 0F 5C C6 F3 0F 5A C8";
+inline constexpr const char* kReachExposureLockSig =
+    "44 38 3D ?? ?? ?? ?? 0F 57 C9 0F 28 C5 F3 0F 5C C6 F3 0F 5A C8";
+inline constexpr const char* kHalo4ExposureLockSig =
+    "40 38 2D ?? ?? ?? ?? 75 ?? 45 84 C0 74 ?? F3 0F 10 57 0C";
 inline constexpr const char* kEnginePostprocessAcceptSig =
     "0F 10 05 ?? ?? ?? ?? 0F 11 05 ?? ?? ?? ?? 0F 10 0D ?? ?? ?? ?? "
     "0F 11 0D ?? ?? ?? ?? 0F 10 05 ?? ?? ?? ?? 0F 11 05 ?? ?? ?? ?? "
@@ -53,14 +75,15 @@ struct EngineExposureLock
 };
 
 // Both copies of the lock in the module at `base` / `size`, or neither (logged either way). Losing it costs only the
-// held exposure.
-inline bool EngineExposureLockResolve(EngineExposureLock& lock, uintptr_t base, size_t size)
+// held exposure. `adaptationSig`: the title's adaptation test (Halo 3's and ODST's by default, Reach's its own).
+inline bool EngineExposureLockResolve(EngineExposureLock& lock, uintptr_t base, size_t size,
+                                      const char* adaptationSig = kEngineExposureLockSig)
 {
     lock.internal.store(nullptr, std::memory_order_release);
     lock.editable.store(nullptr, std::memory_order_release);
-    const uintptr_t exposureHit = sig::Find(base, size, kEngineExposureLockSig);
+    const uintptr_t exposureHit = sig::Find(base, size, adaptationSig);
     const bool exposureUnique = exposureHit &&
-        !sig::Find(exposureHit + 1, base + size - exposureHit - 1, kEngineExposureLockSig);
+        !sig::Find(exposureHit + 1, base + size - exposureHit - 1, adaptationSig);
     uintptr_t testLock = 0;
     if (exposureUnique)
     {

@@ -1,3 +1,4 @@
+#include "game_tls.h"
 // Included in game.cpp (inside its anonymous namespace) right after halo3_dual_wield_runtime.inl: it reads the firing
 // weapon (g_halo3FiringWeapon, Halo3WeaponOwner) that lane keeps, and the gun band's summary (halo3_vehicle_gun_band.inl).
 //
@@ -140,7 +141,7 @@ __declspec(noinline) uint64_t __fastcall Halo3AssistWitnessDetour(uint64_t a1, u
         auto* direction = reinterpret_cast<float*>(a7);
         const auto* origin = reinterpret_cast<const float*>(a5);
         float pre[3]{};
-        const bool measure = reinterpret_cast<uintptr_t>(_ReturnAddress()) == w.fireReturn && direction && origin;
+        const bool measure = HALOMCCVR_GAME_RETURN_ADDRESS() == w.fireReturn && direction && origin;
         if (measure)
         {
             memcpy(pre, direction, sizeof(pre));

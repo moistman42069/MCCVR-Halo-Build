@@ -17,6 +17,9 @@ void D3D_NoteDeviceLoss(const char* where, long result, ID3D11Device* device);
 uint32_t D3D_TakeFrameDrawCalls(uint32_t& smallDraws);
 // A host that owns the render size, and no frame for a second has drawn like a game engine: what it presents is its
 // own screen, with no eye pass to show. Always false in MCC.
+// A mouse message for MCC's window in the space its cursor reads are given: with the window fitted to the monitor, a
+// button or wheel message's position scaled up to the render size (fit_mouse_logic.h); otherwise as it came.
+intptr_t D3D_MapMouseMessageToRender(unsigned msg, intptr_t lp);
 bool D3D_HostEngineQuiet();
 // True while the host itself is drawing over the game's frame: a screen of its own (a menu, a loading screen)
 // or an overlay during play. Always false in MCC. See HostScreenNoteBind in d3d11_hook.cpp; which of the two it
@@ -35,6 +38,7 @@ struct D3DHostUiPicture
     ID3D11Texture2D* texture = nullptr;
     uint32_t width = 0, height = 0;
     bool opaque = false;
+    uint32_t draws = 0;   // the host's draws in it
 };
 bool D3D_HostUiPicture(D3DHostUiPicture& out);
 // Any thread: a frame was presented with such a picture in the last 300 ms, and the panel has not been given up.
@@ -87,6 +91,9 @@ void D3D_GetForcedRenderSize(unsigned& width, unsigned& height);
 // Window fitting remains optional; headset render sizing works independently.
 bool D3D_FitActive();
 bool D3D_CanLiveResize();
+// Project Reclaimer 0.10's window is fitted inside the monitor while its picture keeps the forced size
+// (reclaimer_fit_to_display; d3d11_hook.cpp says how).
+bool D3D_HostFitWindow();
 
 // menu.cpp brackets the game's own WM_SIZE handling with this. While set, our
 // GetClientRect hook returns the full render size to the game's resize code on

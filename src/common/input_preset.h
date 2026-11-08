@@ -9,7 +9,8 @@
 // preset saved by an older build still means the same thing.
 namespace input_preset
 {
-inline constexpr const char* kDefaultName = "Default";
+inline constexpr const char* kDefaultName = "Default";               // default_controls.h
+inline constexpr const char* kLegacyDefaultName = "Legacy Default";  // the struct's own values
 
 // Copies the control scheme only; every other setting of `to` is left alone.
 void CopyScheme(Config& to, const Config& from) noexcept;

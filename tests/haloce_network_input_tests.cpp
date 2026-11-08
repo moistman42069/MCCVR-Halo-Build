@@ -184,26 +184,30 @@ int main(int argc,char** argv)
     Check(result==seed,"seat transition rejects stale basis");
     {
         // SEAT CONVERGENCE upstream of replication: a gunner's or a passenger's outgoing direction is the aim bent
-        // through the traced point (here straight up the world's +Z, nothing like the controller's forward); a
-        // seat that drives keeps the hand's forward, because CE's one network direction steers the hull.
-        const auto seatedAction=[&](bool driver) {
+        // through the traced point (here straight up the world's +Z, nothing like the controller's forward), and so
+        // is that of a seat that drives and fires (the Banshee, the Ghost, the Scorpion); a seat that only drives
+        // keeps the hand's forward, because CE's one network direction steers the hull and it fires nothing.
+        const auto seatedAction=[&](bool driver,bool gunner) {
             Reset();player.onFoot=false;player.parent=parentId;player.nativePerspective=0;
             WriteAction(seed,4,.2f);
             seatSolve={};seatSolve.why=seat_converge::Why::Converged;seatSolve.sight.parent=parentId;
             seatSolve.sight.seat=0;seatSolve.sight.role.known=true;seatSolve.sight.role.driver=driver;
-            seatSolve.sight.role.gunner=true;seatSolve.aim[2]=1;
+            seatSolve.sight.role.gunner=gunner;seatSolve.aim[2]=1;
             seatSolved=true;seatApplied=seatAppliedConverged=0;
             ActionBody(Source(),&result,moduleBase+0xa9988d);
             seatSolved=false;seatSolve={};
             return ReadAction<float>(result,8);
         };
-        const float gunnerPitch=seatedAction(false);
+        const float gunnerPitch=seatedAction(false,true);
         Check(Near(gunnerPitch,1.570796327f)&&seatApplied==1&&seatAppliedConverged==1,
             "a gunner's outgoing action carries the converged aim, through the native seat transform's inverse");
-        const float driverPitch=seatedAction(true);
+        const float armedDriverPitch=seatedAction(true,true);
+        Check(Near(armedDriverPitch,1.570796327f)&&seatApplied==1&&seatAppliedConverged==1,
+            "a seat that drives and fires sends the converged aim too: nothing else brings its shots to the point");
+        const float driverPitch=seatedAction(true,false);
         Check(Near(driverPitch,0.f)&&seatApplied==1&&!seatAppliedConverged&&
             seatAppliedWhy==seat_converge::Why::PolicyOff,
-            "a driving seat's one direction keeps the hand's forward (it steers the hull), counted as policy");
+            "a seat that only drives keeps the hand's forward (it steers the hull), counted as policy");
         Reset();
     }
     Reset();nativeFault=true;const auto before=calls;

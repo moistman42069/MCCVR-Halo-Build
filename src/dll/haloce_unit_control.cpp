@@ -4,6 +4,7 @@
 #include "haloce_network_input.h"
 #include "haloce_stereo_core.h"
 #include "haloce_native_bindings.h"
+#include "game.h"
 #include "hook_quiescence.h"
 #include "sight_layer.h"
 #include "title_adapter.h"
@@ -400,7 +401,13 @@ __declspec(noinline) void __fastcall UnitControlHook(uint32_t unit,const UnitCon
     callbacks.fetch_add(1,std::memory_order_acq_rel);
     // A unit's control runs once per simulation tick: the measured tick a flat-parity muzzle shot carries the eye by.
     Sight_NoteTitleTick(GameTitle::HaloCE);
-    __try { UnitControlBody(unit,packet,clientUpdate,caller); }
+    __try
+    {
+        UnitControlBody(unit,packet,clientUpdate,caller);
+        // The vehicle camera note in the game's own HUD messages (game.cpp, halo3_hud_note.inl): the control update
+        // prints the game's own lines here too.
+        if (caller==moduleBase+0xad0d5b) Game_HaloCEHudNotePost();
+    }
     __finally
     {
         if (AbnormalTermination()) exceptions.fetch_add(1,std::memory_order_relaxed);

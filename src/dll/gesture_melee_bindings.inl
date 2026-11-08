@@ -10,12 +10,14 @@ struct GestureBindingCache
     std::atomic<uint64_t> value[4]{};
     std::atomic<uint64_t> actions[4][vr_mapping::Count]{};
     std::atomic<uint64_t> secondaryReload[4]{};
+    std::atomic<uint64_t> vehicle[4][vr_mapping::ExtraCount]{};
     std::atomic<uint64_t> observedMs{0};
     std::atomic<uint64_t> sequence{0};
     uintptr_t attemptedBase=0, state=0;
     uint32_t attemptedGeneration=0;
     GameTitle attemptedTitle=GameTitle::None;
     uint32_t lastTransport[4]{UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+    bool rowCleared=false;
 } g_gestureBinding;
 
 bool GestureUniqueAt(uintptr_t base,size_t size,uintptr_t rva,const char* pattern)
@@ -35,7 +37,9 @@ void RefreshGestureMeleeBinding(const TitleDescriptor* title,bool levelRunning,u
     // Pin only while this cold read/verification runs. No module pointer is
     // exposed to the input hook and no reference survives the worker tick.
     HMODULE pinned=nullptr;
-    if(!GetModuleHandleExW(0,title->moduleName,&pinned))
+    // Project Reclaimer 0.10 loads no halo3.dll: its image inside the client stands in (lifted_engine.h).
+    if(!GetModuleHandleExW(0,title->moduleName,&pinned) &&
+       !(title->title==GameTitle::Halo3 && (pinned=lifted::Halo3Module())))
     { g_gestureBinding.observedMs.store(0,std::memory_order_release); return; }
     uintptr_t base=0; size_t size=0;
     const uint32_t generation=TitleAdapter_GetGeneration(title->title);
@@ -61,7 +65,16 @@ void RefreshGestureMeleeBinding(const TitleDescriptor* title,bool levelRunning,u
         LOG("Gesture melee %s: active binding reader %s; generation %u",title->displayName,
             g_gestureBinding.state ? "verified (read only)" : "unavailable; gesture stays stock",generation);
     }
-    readable=readable && g_gestureBinding.state && GestureReadNativeBindings(d,g_gestureBinding.state,transport,d.action);
+    // The player's row cleared at a level's end is no layout: unread until it is back, never every action on LT.
+    const bool cleared=readable && g_gestureBinding.state && GestureRowCleared(d,g_gestureBinding.state,0);
+    if(cleared!=g_gestureBinding.rowCleared)
+    {
+        g_gestureBinding.rowCleared=cleared;
+        LOG(cleared?"Gesture melee %s: the player's button layout reads all zero (a level ending); unread until it is back":
+            "Gesture melee %s: the player's button layout reads again",title->displayName);
+    }
+    readable=readable && g_gestureBinding.state && !cleared &&
+        GestureReadNativeBindings(d,g_gestureBinding.state,transport,d.action);
     uint32_t actions[vr_mapping::Count][4]{};
     for(unsigned action=0;readable&&action<vr_mapping::Count;++action)
         readable=GestureReadNativeBindings(d,g_gestureBinding.state,actions[action],
@@ -81,7 +94,15 @@ void RefreshGestureMeleeBinding(const TitleDescriptor* title,bool levelRunning,u
             for(unsigned controller=0;controller<4;++controller)
                 if(!secondaryReload[controller]) secondaryReload[controller]=alias[controller];
     }
-    FreeLibrary(pinned);
+    // The extra rows: each game's own action for each (vr_mapping::NativeExtraAction); 0 where it has none.
+    uint32_t vehicle[vr_mapping::ExtraCount][4]{};
+    for(unsigned action=0;readable&&action<vr_mapping::ExtraCount;++action)
+    {
+        const unsigned native=vr_mapping::NativeExtraAction(d.title,static_cast<vr_mapping::ExtraAction>(action));
+        if(native!=vr_mapping::kNoAction&&!GestureReadNativeBindings(d,g_gestureBinding.state,vehicle[action],native))
+            for(auto& transport:vehicle[action]) transport=0;
+    }
+    if(pinned!=lifted::Halo3Module()) FreeLibrary(pinned);
     if(!readable) { g_gestureBinding.observedMs.store(0,std::memory_order_release); return; }
     g_gestureBinding.sequence.fetch_add(1,std::memory_order_acq_rel);
     for(unsigned controller=0;controller<4;++controller)
@@ -100,6 +121,10 @@ void RefreshGestureMeleeBinding(const TitleDescriptor* title,bool levelRunning,u
         for(unsigned action=0;action<vr_mapping::Count;++action)
             g_gestureBinding.actions[controller][action].store(
                 (uint64_t(generation)<<32)|(uint64_t(title->title)<<24)|actions[action][controller],
+                std::memory_order_release);
+        for(unsigned action=0;action<vr_mapping::ExtraCount;++action)
+            g_gestureBinding.vehicle[controller][action].store(
+                (uint64_t(generation)<<32)|(uint64_t(title->title)<<24)|vehicle[action][controller],
                 std::memory_order_release);
     }
     g_gestureBinding.observedMs.store(now,std::memory_order_release);
@@ -147,6 +172,24 @@ uint32_t Game_SecondaryReloadTransport(GameTitle title,uint64_t now)
     const uint64_t value=g_gestureBinding.secondaryReload[0].load(std::memory_order_acquire);
     if(uint32_t(value>>32)!=TitleAdapter_GetGeneration(title)||((value>>24)&0xFF)!=uint64_t(title)) return 0;
     return uint32_t(value)&0x3FFFF;
+}
+
+bool Game_ReadVrExtraBindings(vr_mapping::ExtraTransports& out,uint64_t now)
+{
+    out={};
+    const GameTitle title=TitleAdapter_GetActiveTitle();
+    const uint64_t observed=g_gestureBinding.observedMs.load(std::memory_order_acquire);
+    if(!observed||now<observed||now-observed>150) return false;
+    const auto sequence=g_gestureBinding.sequence.load(std::memory_order_acquire);
+    if(sequence&1) return false;
+    for(unsigned action=0;action<vr_mapping::ExtraCount;++action)
+    {
+        const uint64_t value=g_gestureBinding.vehicle[0][action].load(std::memory_order_acquire);
+        if(uint32_t(value>>32)!=TitleAdapter_GetGeneration(title)||((value>>24)&0xFF)!=uint64_t(title)) {out={};return false;}
+        out[action]=uint32_t(value)&0x3FFFF;
+    }
+    if(sequence!=g_gestureBinding.sequence.load(std::memory_order_acquire)) {out={};return false;}
+    return true;
 }
 
 uint32_t Game_VrActionTransport(vr_mapping::Action action,uint64_t now)

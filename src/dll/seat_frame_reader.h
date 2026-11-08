@@ -1,4 +1,5 @@
 #pragma once
+#include "game_tls.h"
 // SEAT FRAME READER, live (src/common/seat_frame_sites.h has the table and the read; seat_frame_logic.h the math).
 // Included by game.cpp (Halo 3, ODST, Reach, Halo 4) and halo2_observer_6dof.cpp (Halo 2).
 //
@@ -169,7 +170,7 @@ struct RawMem
         uint32_t index = 0;
         if (!U32(b->globals.tlsIndex, index) || index >= 1088)
             return 0;
-        auto** slots = reinterpret_cast<uint8_t**>(__readgsqword(0x58));
+        auto** slots = reinterpret_cast<uint8_t**>(HALOMCCVR_GAME_TLS_ARRAY());
         const uint8_t* tls = slots ? slots[index] : nullptr;
         uint64_t table = 0, entries = 0, data = 0;
         if (!tls || !U64(reinterpret_cast<uintptr_t>(tls) + site.objectTls, table) || !table ||

@@ -5,15 +5,18 @@
 #include <cstdint>
 
 namespace game_menu_pointer {
-// The right stick as a mouse wheel over what the pointer is on: whole notches, faster the further it is pushed, from
-// the time it was held. Positive is up, away from the player.
+// The right stick as a mouse wheel over what the pointer is on, faster the further it is pushed, from the time it was
+// held. Positive is up, away from the player. Step answers in steps of 1/stepsPerNotch of a notch; more of them, each
+// smaller, scroll more smoothly where the receiver takes part notches.
 struct StickWheel
 {
+    float notchesPerSecond = 10.0f;
+    int stepsPerNotch = 1;
     float pending = 0.0f;
     uint32_t lastMs = 0;
     int Step(float stick, uint32_t now) noexcept
     {
-        constexpr float kDeadzone = 0.25f, kNotchesPerSecond = 10.0f;
+        constexpr float kDeadzone = 0.25f;
         const uint32_t elapsed = lastMs ? std::min<uint32_t>(now - lastMs, 100u) : 0u;
         lastMs = now;
         if (!std::isfinite(stick) || std::fabs(stick) < kDeadzone)
@@ -21,19 +24,26 @@ struct StickWheel
             pending = 0.0f;
             return 0;
         }
-        // The first touch moves one notch at once, so a flick always scrolls.
+        // The first touch moves one whole notch at once, so a flick always scrolls.
         if (pending == 0.0f)
-            pending = stick > 0.0f ? 1.0f : -1.0f;
+            pending = float(stick > 0.0f ? stepsPerNotch : -stepsPerNotch);
         else
-            pending += stick * kNotchesPerSecond * float(elapsed) * 0.001f;
-        const int notches = int(pending);
-        pending -= float(notches);
+            pending += stick * notchesPerSecond * float(stepsPerNotch) * float(elapsed) * 0.001f;
+        const int steps = int(pending);
+        pending -= float(steps);
         if (pending == 0.0f)
             pending = stick > 0.0f ? 1e-4f : -1e-4f;
-        return notches;
+        return steps;
     }
     void Reset() noexcept { pending = 0.0f; lastMs = 0; }
 };
+
+// MCC's map and game type lists run sideways: right goes on down the list, left back up it. Whichever way the stick
+// is pushed further is the wheel.
+inline float StickWheelAxis(float x, float y) noexcept
+{
+    return std::fabs(x) > std::fabs(y) ? -x : y;
+}
 
 inline bool MenuMode(RuntimeMode mode, bool pauseScreen) noexcept
 {

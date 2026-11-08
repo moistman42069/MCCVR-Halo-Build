@@ -5,6 +5,7 @@
 #include "title_adapter.h"
 #include "sigscan.h"
 #include "hook_quiescence.h"
+#include "host_unload_gate.h"
 #include "../common/native_action_button.h"
 #include "../common/config.h"
 #include "../common/log.h"
@@ -12,6 +13,7 @@
 #include <windows.h>
 #include <intrin.h>
 #include <MinHook.h>
+#include "lifted_minhook.h"
 #include <atomic>
 
 // The hooked native READERS are leaves whose LTCG callers keep volatile registers live across the call
@@ -49,25 +51,65 @@ constexpr const char* consumerEntryPattern=
     "48 8B C4 55 53 56 57 41 54 41 55 41 56 41 57 48 8D A8 E8 FD FF FF 48 81 EC D8 02 00 00";
 constexpr const char* consumerReloadPattern=
     "BB 3E 00 00 00 48 8B CE 8B D3 E8 DC 03 07 00 48 8B C8 E8 9C C6 FF FF 44 8A C0 8D 53 D2 49 8B CC";
+// MCC's jump-in-the-air jetpack: the builder reads jump (action 0) here only after the profile's jump-to-jetpack byte
+// (+0x69) and its armor-ability checks pass, and a held jump then fires the jetpack while airborne. Counted only, by
+// the read's return address: whether the game ran that check, and whether it saw jump held.
+constexpr uintptr_t jetpackJumpRva=0x5FD2D,jetpackJumpReturn=0x5FD43;
+constexpr const char* jetpackJumpPattern=
+    "38 88 8E 00 00 00 0F 85 A0 00 00 00 33 D2 48 8B CE E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? 41 8B 0E 84 C0 0F 95 44 24 31";
+// Before that check the builder reads the ability button (action 5) on one of two paths, chosen by the held ability's
+// own definition: the jetpack's path (which then tests the profile's byte) or every other ability's plain press.
+constexpr uintptr_t jetpackAbilityRva=0x5FCB3,jetpackAbilityReturn=0x5FCBE,plainAbilityRva=0x5FDF8,plainAbilityReturn=0x5FE05;
+constexpr const char* jetpackAbilityPattern=
+    "8D 57 05 48 8B CE E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? 84 C0 48 8B 44 24 78 0F 95 C3 40 38 78 69 0F 84";
+constexpr const char* plainAbilityPattern=
+    "BA 05 00 00 00 48 8B CE E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? BB 01 00 00 00 3A C3";
+// The consumer's profile: controller c's at +0x2A03C58 + c*0xAB8 while that profile is in use, else the default one.
+constexpr uintptr_t profileLoadRva=0x5E0B6;
+constexpr const char* profileLoadPattern=
+    "48 69 CE B8 0A 00 00 48 8D 05 ?? ?? ?? ?? 48 8D 98 ?? ?? ?? ?? 48 03 D9 48 8D 3D ?? ?? ?? ?? 48 8B CB E8";
 struct Runtime {
     HMODULE module{};
-    uintptr_t base{}, state{}, padState{};
+    uintptr_t base{}, state{}, padState{}, profiles{}, defaultProfile{};
     std::atomic<uint32_t> generation{};
     void* target[2]{}, *original[2]{};
-    bool enabled[2]{}, attempted{};
+    bool enabled[2]{}, attempted{}, jetpackCounted{};
     std::atomic<bool> admitted{}, faulted{};
     std::atomic<uint32_t> callbacks{};
-    std::atomic<uint64_t> converted{}, routed{}, readerAt{};
+    std::atomic<uint64_t> converted{}, routed{}, readerAt{}, jetpackChecks{}, jetpackHeld{}, jetpackAbility{}, plainAbility{};
     uint64_t reportAt{};
 } runtime;
 uint32_t blockedGeneration{}; // worker-only: a fault is not retried every poll
 struct Publication {
     std::atomic<uint64_t> sequence{}, stamp{}, cancelEpoch{};
-    std::atomic<uint32_t> generation{}, actions{}, blocked{};
+    std::atomic<uint32_t> generation{}, actions{}, blocked{}, extras{}, extrasServed{};
     std::atomic<bool> direct{};
     std::atomic<GameTitle> title{GameTitle::None};
 } publication;
 thread_local bool pollPublished{};
+// THE EXTRA ROWS A TITLE'S BRIDGE CARRIES (vr_mapping::ExtraBridgeOnly, NativeVrActions_RoutesExtras): a record per row,
+// advanced at the converter with the action rows, and returned at the player-control builder's read of the row's own
+// action while it is pressed -- and the game's own button is not held, as the direct route does for an action row.
+struct ExtraRecords {
+    uint32_t served{};
+    native_action_button::Record records[vr_mapping::ExtraCount]{};
+    void Reset(GameTitle game) noexcept {
+        served=0;
+        for(unsigned i=0;i<vr_mapping::ExtraCount;++i)
+            records[i].Reset(game,vr_mapping::NativeExtraAction(game,static_cast<vr_mapping::ExtraAction>(i)));
+    }
+    void Advance(bool direct,uint32_t pressed,uint32_t extrasServed,unsigned elapsedMs) noexcept {
+        served=direct?extrasServed:0u;
+        for(unsigned i=0;i<vr_mapping::ExtraCount;++i) records[i].Advance(((pressed&served)>>i)&1u,elapsedMs);
+    }
+    // The record for the builder's read of `action` while its row is pressed, or nullptr: the game's own.
+    native_action_button::Record* Pressed(GameTitle game,unsigned action) noexcept {
+        for(unsigned i=0;i<vr_mapping::ExtraCount;++i)
+            if(((served>>i)&1u)&&vr_mapping::NativeExtraAction(game,static_cast<vr_mapping::ExtraAction>(i))==action)
+                return records[i].ReadCounters().frames?&records[i]:nullptr;
+        return nullptr;
+    }
+};
 struct ThreadState {
     uint32_t generation{};
     uint64_t publishedAt{}, converterAt{}, cancelEpoch{};
@@ -75,11 +117,13 @@ struct ThreadState {
     uint32_t blocked{};
     bool direct{}, converted{};
     native_action_button::Record records[vr_mapping::Count]{};
+    ExtraRecords extra;
     void Reset(uint32_t next) noexcept {
         generation=next; publishedAt=converterAt=cancelEpoch=0;
         actions=0;direct=converted=false;
         for(unsigned i=0;i<vr_mapping::Count;++i)
             records[i].Reset(title,vr_mapping::NativeAction(title,static_cast<vr_mapping::Action>(i)));
+        extra.Reset(title);
     }
 } thread_local local;
 bool Current() noexcept {
@@ -92,7 +136,8 @@ bool Fresh(uint64_t stamp,uint64_t now) noexcept {
     return stamp && now>=stamp && now-stamp<=150;
 }
 bool ReadPublication(uint64_t now,uint32_t& actions,bool& direct,uint64_t* observedAt=nullptr,
-    GameTitle expectedTitle=title,uint32_t expectedGeneration=0,uint32_t* blocked=nullptr) noexcept {
+    GameTitle expectedTitle=title,uint32_t expectedGeneration=0,uint32_t* blocked=nullptr,
+    uint32_t* extras=nullptr,uint32_t* extrasServed=nullptr) noexcept {
     // Every payload member is atomic; rejected/torn attempts never access
     // native memory. Writers claim an odd sequence with a bounded CAS.
     for(unsigned attempt=0;attempt<3;++attempt) {
@@ -104,10 +149,14 @@ bool ReadPublication(uint64_t now,uint32_t& actions,bool& direct,uint64_t* obser
         const auto suppress=publication.blocked.load(std::memory_order_relaxed);
         const auto route=publication.direct.load(std::memory_order_relaxed);
         const auto publishedTitle=publication.title.load(std::memory_order_relaxed);
+        const auto extraBits=publication.extras.load(std::memory_order_relaxed);
+        const auto served=publication.extrasServed.load(std::memory_order_relaxed);
         if(before!=publication.sequence.load(std::memory_order_acquire)) continue;
         if(publishedTitle!=expectedTitle || generation!=(expectedGeneration?expectedGeneration:
             runtime.generation.load(std::memory_order_acquire))||!Fresh(stamp,now))return false;
-        actions=bits;direct=route;if(blocked)*blocked=suppress;if(observedAt)*observedAt=stamp;return true;
+        actions=bits;direct=route;if(blocked)*blocked=suppress;if(observedAt)*observedAt=stamp;
+        if(extras)*extras=extraBits;if(extrasServed)*extrasServed=served;
+        return true;
     }
     return false;
 }
@@ -121,13 +170,14 @@ void __fastcall ConverterHook(uintptr_t unused,int elapsedMs,const void* raw,
         reinterpret_cast<Convert>(runtime.original[0])(unused,elapsedMs,raw,output,axes,activity);
         const auto now=GetTickCount64();
         const auto cancelEpoch=publication.cancelEpoch.load(std::memory_order_acquire);
-        uint32_t actions=0,blocked=0;bool direct=false;uint64_t publishedAt=0;
+        uint32_t actions=0,blocked=0,extras=0,extrasServed=0;bool direct=false;uint64_t publishedAt=0;
         // Both official input paths target raw-pad base + controller*0x3c:
         // direct XInput and the MCC host's copied gamepad packet. Output row
         // zero proves ownership even when XInput was polled on another thread.
         // RCX is unused by the optimized converter and is never an owner ID.
         if(Current() && reinterpret_cast<uintptr_t>(output)==runtime.padState &&
-            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(),&blocked) && elapsedMs>=0 && elapsedMs<=1000 &&
+            ReadPublication(now,actions,direct,&publishedAt,title,runtime.generation.load(),&blocked,&extras,&extrasServed) &&
+            elapsedMs>=0 && elapsedMs<=1000 &&
             cancelEpoch==publication.cancelEpoch.load(std::memory_order_acquire)) {
             if(local.generation!=runtime.generation) local.Reset(runtime.generation);
             local.publishedAt=publishedAt;local.actions=actions;local.direct=direct;local.blocked=blocked;
@@ -135,6 +185,7 @@ void __fastcall ConverterHook(uintptr_t unused,int elapsedMs,const void* raw,
             local.converterAt=now;local.converted=true;
             for(unsigned i=0;i<vr_mapping::Count;++i)
                 local.records[i].Advance((local.direct||(local.blocked&(1u<<i))) && (local.actions&(1u<<i)),unsigned(elapsedMs));
+            local.extra.Advance(local.direct,extras,extrasServed,unsigned(elapsedMs));
             runtime.converted.fetch_add(1,std::memory_order_relaxed);
         } else if(reinterpret_cast<uintptr_t>(output)==runtime.padState) local.converted=false;
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
@@ -163,6 +214,15 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
             publication.generation.load(std::memory_order_acquire)!=local.generation ||
             local.cancelEpoch!=publication.cancelEpoch.load(std::memory_order_acquire)) return native;
         runtime.readerAt.store(now,std::memory_order_release);
+        if(auto* extra=local.direct?local.extra.Pressed(title,action):nullptr) {
+            if(native) {
+                uint8_t frames=0;
+                if(!ReadFrames(native,frames)){runtime.faulted=true;return native;}
+                if(frames)return native;
+            }
+            runtime.routed.fetch_add(1,std::memory_order_relaxed);
+            return extra->bytes.data();
+        }
         const int semantic=native_action_button::SemanticAction(title,action);
         if(semantic<0) return native;
         auto& record=local.records[semantic];
@@ -183,12 +243,35 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
         runtime.routed.fetch_add(1,std::memory_order_relaxed);
         return record.bytes.data();
 }
+// The game's own test of the record it was given (+0x5D31C): not consumed (+3 bit 0), its owner (+0xC) open (0x7F) or
+// this context's (+8), then held frames (+2).
+__declspec(noinline) void NoteJetpackJump(const void* record) noexcept {
+    runtime.jetpackChecks.fetch_add(1,std::memory_order_relaxed);
+    if(!record) return;
+    __try {
+        const auto* bytes=reinterpret_cast<const volatile uint8_t*>(record);
+        const int32_t owner=*reinterpret_cast<const volatile int32_t*>(bytes+0xC);
+        if(!(bytes[3]&1)&&(owner==0x7F||owner==*reinterpret_cast<const volatile int32_t*>(bytes+8))&&bytes[2])
+            runtime.jetpackHeld.fetch_add(1,std::memory_order_relaxed);
+    } __except(EXCEPTION_EXECUTE_HANDLER){}
+}
+// The double-press jump-to-jetpack byte (+0x69) the jetpack's path tests; -1 when unknown or unreadable.
+int ProfileByte(uintptr_t profile) noexcept {
+    if(!profile) return -1;
+    __try { return *reinterpret_cast<const volatile uint8_t*>(profile+0x69); }
+    __except(EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
 void* __fastcall ReaderHook(void* state,unsigned action,uintptr_t caller) {
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
     void* result=nullptr;
     __try {
         result=reinterpret_cast<Read>(runtime.original[1])(state,action);
         result=ReadOwned(state,action,result,caller);
+        if(runtime.jetpackCounted) {
+            if(caller==runtime.base+jetpackJumpReturn) NoteJetpackJump(result);
+            else if(caller==runtime.base+jetpackAbilityReturn) runtime.jetpackAbility.fetch_add(1,std::memory_order_relaxed);
+            else if(caller==runtime.base+plainAbilityReturn) runtime.plainAbility.fetch_add(1,std::memory_order_relaxed);
+        }
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
     return result;
 }
@@ -214,17 +297,19 @@ bool Retire() {
         runtime.enabled[i]=false;
     }
     const void* functions[]{hooks[0],hooks[1],reinterpret_cast<void*>(&ReaderHook),reinterpret_cast<void*>(&ReadOwned),
-        reinterpret_cast<void*>(&Current),reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames)};
-    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr,nullptr};
-    if(!WaitForNativeDetourQuiescence(functions,trampolines,7,runtime.callbacks)) return false;
+        reinterpret_cast<void*>(&Current),reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames),
+        reinterpret_cast<void*>(&NoteJetpackJump)};
+    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
+    if(!WaitForNativeDetourQuiescence(functions,trampolines,8,runtime.callbacks)) return false;
     for(unsigned i=0;i<2;++i) if(runtime.target[i]) {
         if(MH_RemoveHook(runtime.target[i])!=MH_OK) return false;
         runtime.target[i]=runtime.original[i]=nullptr;
     }
     if(runtime.module) FreeLibrary(runtime.module);
-    runtime.module=nullptr;runtime.base=runtime.state=runtime.padState=0;runtime.generation=0;
+    runtime.module=nullptr;runtime.base=runtime.state=runtime.padState=runtime.profiles=runtime.defaultProfile=0;
+    runtime.generation=0;
     runtime.readerAt.store(0,std::memory_order_release);
-    runtime.attempted=false;runtime.faulted=false;
+    runtime.attempted=false;runtime.faulted=false;runtime.jetpackCounted=false;
     return true;
 }
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -292,7 +377,7 @@ bool NativeVrActions_CanRoute(GameTitle requested,uint64_t now) noexcept {
         Fresh(runtime.readerAt.load(std::memory_order_acquire),now);
 }
 void NativeVrActions_Publish(const void* raw,GameTitle requested,uint64_t now,
-    uint32_t actions,bool direct,uint32_t blockedActions) noexcept {
+    uint32_t actions,bool direct,uint32_t blockedActions,uint32_t extras,uint32_t extrasServed) noexcept {
     const auto generation=GenerationForTitle(requested);
     if(!generation || !CurrentForTitle(requested)) return;
     (void)raw; // converter ownership is the proven native output row, not an input address
@@ -311,6 +396,9 @@ void NativeVrActions_Publish(const void* raw,GameTitle requested,uint64_t now,
     publication.actions.store(actions&((1u<<vr_mapping::Count)-1),std::memory_order_relaxed);
     publication.blocked.store(blockedActions&manual_weapon_input::Blocked(true,true,true),std::memory_order_relaxed);
     publication.direct.store(direct,std::memory_order_relaxed);
+    const uint32_t served=NativeVrActions_RoutesExtras(requested)&&direct?extrasServed&((1u<<vr_mapping::ExtraCount)-1):0u;
+    publication.extrasServed.store(served,std::memory_order_relaxed);
+    publication.extras.store(extras&served,std::memory_order_relaxed);
     publication.stamp.store(now,std::memory_order_relaxed);
     publication.sequence.store(before+2,std::memory_order_release);
     pollPublished=true;
@@ -367,6 +455,15 @@ void NativeVrActions_Poll() {
             runtime.padState=sig::RipTarget(base+padProofRva+10,base+padProofRva+14);
             proved=proved && runtime.padState>=base && runtime.padState-base<size && size-(runtime.padState-base)>=4*0x3c;
         }
+        runtime.jetpackCounted=proved&&Prove(base,size,jetpackJumpRva,jetpackJumpPattern)&&
+            Prove(base,size,jetpackAbilityRva,jetpackAbilityPattern)&&Prove(base,size,plainAbilityRva,plainAbilityPattern);
+        if(runtime.jetpackCounted&&Prove(base,size,profileLoadRva,profileLoadPattern)) {
+            const uintptr_t profiles=sig::RipTarget(base+profileLoadRva+10,base+profileLoadRva+14)+
+                *reinterpret_cast<const int32_t*>(base+profileLoadRva+17);
+            const uintptr_t fallback=sig::RipTarget(base+profileLoadRva+27,base+profileLoadRva+31);
+            if(profiles>=base&&profiles-base<size&&size-(profiles-base)>=4*0xAB8) runtime.profiles=profiles;
+            if(fallback>=base&&fallback-base<size&&size-(fallback-base)>=0xAB8) runtime.defaultProfile=fallback;
+        }
         const uintptr_t rvas[]{converterRva,d.readerRva};
         for(unsigned i=0;proved&&i<2;++i) {
             auto* target=reinterpret_cast<void*>(base+rvas[i]);
@@ -391,7 +488,12 @@ void NativeVrActions_Poll() {
     const auto now=GetTickCount64();
     if(now>=runtime.reportAt) {
         runtime.reportAt=now+5000;
-        LOG("Native VR action bridge Reach: converter=%llu directReads=%llu%s",
-            runtime.converted.load(),runtime.routed.load(),runtime.faulted.load()?" TRANSPORT FALLBACK (guarded access fault)":"");
+        LOG("Native VR action bridge Reach: converter=%llu directReads=%llu%s; jump-in-the-air jetpack check %s: ran %llu, "
+            "saw jump held %llu; ability button read on the jetpack's path %llu, on any other ability's %llu; "
+            "double-press jump to jetpack byte: player 1's profile %d, default profile %d (-1 unread)",
+            runtime.converted.load(),runtime.routed.load(),runtime.faulted.load()?" TRANSPORT FALLBACK (guarded access fault)":"",
+            runtime.jetpackCounted?"counted":"not proven",runtime.jetpackChecks.load(),runtime.jetpackHeld.load(),
+            runtime.jetpackAbility.load(),runtime.plainAbility.load(),ProfileByte(runtime.profiles),
+            ProfileByte(runtime.defaultProfile));
     }
 }

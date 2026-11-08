@@ -59,9 +59,13 @@ inline constexpr bool StickAims(Mode mode) noexcept
 
 // THE LEFT STICK CLICK'S NEXT CHOICE for a seat now controlled by `current`: Motion, then Stick, then -- in a
 // seat that can take the wheel (`wheelSeat`: a look-steered ground vehicle's driver) -- Wheel, and round again.
-// Automatic is where the seat was before any choice; the click moves it on as from Motion.
-inline constexpr Mode Next(Mode current, bool wheelSeat) noexcept
+// Automatic is where the seat was before any choice; the click moves it on as from Motion. `stickOffered` false:
+// the game cannot give the seat to the stick yet (Reach), so the cycle is Motion and Wheel alone; a seat with no
+// wheel then stays in Motion.
+inline constexpr Mode Next(Mode current, bool wheelSeat, bool stickOffered = true) noexcept
 {
+    if (!stickOffered)
+        return current != Mode::Wheel && wheelSeat ? Mode::Wheel : Mode::Motion;
     switch (current)
     {
     case Mode::Stick:

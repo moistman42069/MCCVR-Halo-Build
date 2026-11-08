@@ -76,6 +76,9 @@ the mod into the game. Check your ZIP against the release's `SHA256.txt` and all
 
 ## Project Reclaimer
 
+**Project Reclaimer 0.10.0 and later are experimental:** they run their own rebuilt copy of Halo 3 instead of
+MCC's, and the mod is being ported to it. Some of its Halo 3 features may not work there yet; the log says which.
+
 1. Install as above, and run Project Reclaimer once on its own first.
 2. In the launcher's **Project Reclaimer** section, press **Detect** (it picks the version you ran last), or
    **Browse** to `project-reclaimer-client-v<version>.exe`.

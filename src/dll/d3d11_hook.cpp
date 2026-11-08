@@ -1,5 +1,6 @@
 #include "../common/hud_visibility.h"
 #include <windows.h>
+#include <windowsx.h>
 #include <shlobj.h>
 #include <d3d11.h>
 #include <d3d11_1.h>
@@ -30,6 +31,8 @@
 #include "halo2_stereo_core.h"
 #include "../common/halo2_hud_logic.h"
 #include "../common/halo2_hud_shader_logic.h"
+#include "../common/aim_frame_logic.h"
+#include "../common/fit_mouse_logic.h"
 #endif
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
 #include "../common/halo4_helmet_shader_logic.h"
@@ -44,6 +47,7 @@
 #include "../common/host_ui_layer_blend.h"
 #include "../common/hook_cost_scope.h"
 #include "../common/present_owner_logic.h"
+#include "lifted_engine.h"
 
 // THE MOD'S OWN COST IN THE CALLS IT HOOKS (hook_cost_logic.h; hook_cost_frames in the settings file). One frame
 // in N, every context hook below reads the processor's cycle counter around itself and around the game's real
@@ -344,9 +348,21 @@ static Halo2HudDrawMutation BeginHalo2HudDraw(
     if((Game_IsScopeRendering()||(VR_HudHidden()&&Game_IsHeadTracking()&&Game_MoveStickIsLocomotion()))&&
         (role==halo2_hud_shader::Role::Crosshair||role==halo2_hud_shader::Role::GameplayHud))
     { mutation.kind=Halo2HudDrawMutation::Kind::Hidden;return mutation; }
+    // AIM FRAME ZOOM: the frame is the flat game's picture. The game draws its crosshair into it where it always does
+    // (crosshair 0 still means none), and the HUD keeps the game's layout, scaled only by the frame's own settings.
+    const bool aimFramePass = Game_IsAimFramePass();
     if (role == halo2_hud_shader::Role::Crosshair)
     {
-        if (VR_BeginAuthoredReticleCapture())
+        if (aimFramePass)
+        {
+            if (!g_config.crosshair)
+                mutation.kind = Halo2HudDrawMutation::Kind::Hidden;
+            return mutation;
+        }
+        // Zoomed, or just out of the frame, the crosshair is still the zoom's: the art from before it stays up.
+        if (!Game_AimFrameCrosshairReadyForCapture(GameTitle::Halo2))
+            mutation.kind = Halo2HudDrawMutation::Kind::Hidden;
+        else if (VR_BeginAuthoredReticleCapture())
             mutation.kind = Halo2HudDrawMutation::Kind::NativeCrosshair;
         return mutation;
     }
@@ -371,18 +387,24 @@ static Halo2HudDrawMutation BeginHalo2HudDraw(
 
     std::array<D3D11_VIEWPORT,
         D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE> adjusted{};
-    const float scaleY = std::clamp(
+    float scaleY = std::clamp(
         g_config.hud_size,
         halo2_hud::kMinimumLayoutFraction,
         halo2_hud::kMaximumLayoutFraction);
-    const float scaleX = std::clamp(
+    float scaleX = std::clamp(
         g_config.hud_size * g_config.hud_aspect,
         halo2_hud::kMinimumLayoutFraction,
         halo2_hud::kMaximumLayoutFraction);
-    const float verticalOffset = std::clamp(
+    float verticalOffset = std::clamp(
         g_config.hud_vertical_offset,
         -halo2_hud::kMaximumVerticalOffset,
         halo2_hud::kMaximumVerticalOffset);
+    if (aimFramePass)
+    {
+        aim_frame::HudScale(g_config.aim_frame_hud_size, g_config.aim_frame_hud_width_scale,
+                            g_config.aim_frame_hud_height_scale, scaleX, scaleY);
+        verticalOffset = 0.0f;
+    }
     for (UINT index = 0; index < mutation.viewportCount; ++index)
     {
         adjusted[index] = mutation.viewports[index];
@@ -894,6 +916,38 @@ bool D3D_FitActive()
 
 bool D3D_CanLiveResize() { return g_renderSizeActive; }
 
+// PROJECT RECLAIMER 0.10'S WINDOW, FITTED. 0.10 takes its picture's size from the WM_SIZE it is sent and sizes its
+// window from the monitor it is told of, the Picture panel's size (GetMonitorInfoWHook), so its window was larger than
+// the monitor: hard to record or stream, and the desktop mouse reached only part of it. With reclaimer_fit_to_display
+// on, menu.cpp fits the window inside the monitor at the picture's shape and keeps telling the client through WM_SIZE
+// that it is the picture's size. Its own size reads already say so (GetClientRectHook, GetWindowRectHook), the swapchain
+// keeps that size (ResizeBuffersBody) and the present stretches it into the window, as MCC's fit does. The cursor's
+// reads and moves, its clip and the mouse messages are mapped between window and picture as for MCC
+// (CursorRemapActive). Decided once a launch, when the recompiled engine is first found: the setting applies at
+// Project Reclaimer's next start, and a window that stopped being answered with the picture's size mid-game would
+// shrink the picture with it.
+bool D3D_HostFitWindow()
+{
+    static std::atomic<int> decided{0}; // 0 not yet, 1 fitted, 2 not
+    const int state = decided.load(std::memory_order_acquire);
+    if (state)
+        return state == 1;
+    if (!g_hostOwnsRenderSize || !g_hostIsProjectReclaimer || !lifted::Active())
+        return false; // not yet known: asked again later
+    const bool fit = g_config.reclaimer_fit_to_display && g_forcedRenderW && g_forcedRenderH;
+    int expected = 0;
+    if (decided.compare_exchange_strong(expected, fit ? 1 : 2, std::memory_order_acq_rel))
+        LOG("fit: Project Reclaimer 0.10's window %s (reclaimer_fit_to_display = %d)",
+            fit ? "is fitted inside the monitor; its picture keeps the forced size" : "keeps the picture's size",
+            g_config.reclaimer_fit_to_display ? 1 : 0);
+    return decided.load(std::memory_order_acquire) == 1;
+}
+// The cursor and mouse-message mapping of a window smaller than its picture: MCC's fit, and Project Reclaimer's.
+static bool CursorRemapActive()
+{
+    return g_renderSizeActive || D3D_HostFitWindow();
+}
+
 void D3D_SetForcedClientLie(bool on)
 {
     g_lieClientToGame = on;
@@ -1214,6 +1268,19 @@ static BOOL CALLBACK LogMonitor(HMONITOR monitor, HDC, LPRECT rect, LPARAM)
     return TRUE;
 }
 
+// A Project Reclaimer client of 0.10 or later (its version resource): its swapchain is sized by the mod, as MCC's is.
+static bool HostSwapchainForced()
+{
+    if (!g_hostOwnsRenderSize)
+        return false;
+    const HMODULE exe = GetModuleHandleW(nullptr);
+    const HRSRC found = FindResourceW(exe, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(16)); // RT_VERSION
+    const HGLOBAL loaded = found ? LoadResource(exe, found) : nullptr;
+    const void* resource = loaded ? LockResource(loaded) : nullptr;
+    return reclaimer_host::RunsRecompiledEngine(reclaimer_host::VersionFromVersionResource(
+        static_cast<const uint8_t*>(resource), resource ? SizeofResource(exe, found) : 0));
+}
+
 static void InitForcedRenderSize()
 {
     LOG("display: %d monitor(s)", GetSystemMetrics(SM_CMONITORS));
@@ -1221,6 +1288,18 @@ static void InitForcedRenderSize()
     // The plan already folded in the launcher's exact numbers when present
     // and otherwise replicated the launcher's arithmetic, so the two can never
     // disagree. Config is loaded before this (dllmain InitThread order).
+    if (HostSwapchainForced())
+    {
+        // Project Reclaimer 0.10 takes Native from its window, not the display mode the mod answers (it reads only
+        // the refresh rate there), so it drew a 16:9 picture the headset showed stretched: its swapchain is created
+        // and resized at the Picture panel's size, as MCC's is. Its screens and menus stay the host's own.
+        g_forcedRenderW = g_planRenderW.load();
+        g_forcedRenderH = g_planRenderH.load();
+        LOG("Live render sizing: Project Reclaimer 0.10 or later: its swapchain is sized to the Picture panel's "
+            "%ux%u, as MCC's is (its Native render resolution follows its window, not the display mode)",
+            g_forcedRenderW.load(), g_forcedRenderH.load());
+        return;
+    }
     if (g_hostOwnsRenderSize)
     {
         // The forced size stays 0, which is this file's pass-through: the swapchain is created and resized as
@@ -1301,16 +1380,32 @@ using EnumDisplaySettingsWFn = BOOL(WINAPI*)(LPCWSTR, DWORD, DEVMODEW*);
 static EnumDisplaySettingsWFn g_hostPrevEnumDisplaySettingsW = nullptr;
 static std::atomic<uint32_t> g_hostAnswers{0};
 
-// The client's display mode as its settings.json (Documents\My Games\Project Reclaimer) states it now. Read only when
-// the client reads its display mode, which it does as it starts and when its own settings change.
+// The client's display mode as its settings.json (reclaimer_host::SettingsFolder: Documents\My Games\Project Reclaimer
+// up to 0.9, %LOCALAPPDATA%\ProjectReclaimer from 0.10) states it now. Read only when the client reads its display
+// mode, which it does as it starts and when its own settings change.
+static std::wstring HostKnownFolder(REFKNOWNFOLDERID id)
+{
+    PWSTR path = nullptr;
+    std::wstring out;
+    if (SUCCEEDED(SHGetKnownFolderPath(id, 0, nullptr, &path)) && path)
+        out = path;
+    CoTaskMemFree(path);
+    return out;
+}
 static reclaimer_host::ClientDisplayMode ReadHostClientDisplayMode()
 {
-    PWSTR documents = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &documents)) || !documents)
+    // The client's own version, from its version resource.
+    const HMODULE exe = GetModuleHandleW(nullptr);
+    const HRSRC found = FindResourceW(exe, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(16)); // RT_VERSION
+    const HGLOBAL loaded = found ? LoadResource(exe, found) : nullptr;
+    const void* resource = loaded ? LockResource(loaded) : nullptr;
+    const bool recompiled = reclaimer_host::RunsRecompiledEngine(reclaimer_host::VersionFromVersionResource(
+        static_cast<const uint8_t*>(resource), resource ? SizeofResource(exe, found) : 0));
+    const std::wstring folder = reclaimer_host::SettingsFolder(
+        recompiled, HostKnownFolder(FOLDERID_Documents), HostKnownFolder(FOLDERID_LocalAppData));
+    if (folder.empty())
         return reclaimer_host::ClientDisplayMode::Unknown;
-    std::wstring path = documents;
-    CoTaskMemFree(documents);
-    path += L"\\My Games\\Project Reclaimer\\settings.json";
+    const std::wstring path = folder + L"\\settings.json";
     const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                     nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE)
@@ -1640,7 +1735,7 @@ static BOOL WINAPI GetCursorPosHook(LPPOINT p)
 {
     const void* caller = _ReturnAddress();
     const BOOL ok = g_origGetCursorPos(p);
-    if (!ok || !p || !g_renderSizeActive || !g_forcedRenderW || !g_forcedRenderH ||
+    if (!ok || !p || !CursorRemapActive() || !g_forcedRenderW || !g_forcedRenderH ||
         !CallerInExe(caller))
         return ok;
     POINT origin{};
@@ -1676,10 +1771,41 @@ static BOOL WINAPI GetCursorPosHook(LPPOINT p)
     return ok;
 }
 
+// A mouse message for MCC's window, in the space MCC's cursor reads are given (GetCursorPosHook): with the window
+// fitted to the monitor, a button message's client point and a wheel message's screen point are scaled up to the
+// render size as the cursor is (fit_mouse_logic.h), so MCC's press and its hover name the same item. Otherwise, or
+// outside the window, the message is MCC's as it came. Project Reclaimer's fitted window (D3D_HostFitWindow): its
+// menus hover by the move message's own point, not by the cursor, so moves are scaled too.
+LPARAM D3D_MapMouseMessageToRender(UINT msg, LPARAM lp)
+{
+    const bool button = (msg >= WM_LBUTTONDOWN && msg <= WM_MBUTTONDBLCLK) ||
+                        (msg >= WM_XBUTTONDOWN && msg <= WM_XBUTTONDBLCLK);
+    const bool wheel = msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL;
+    const bool hostMove = msg == WM_MOUSEMOVE && D3D_HostFitWindow();
+    if ((!button && !wheel && !hostMove) || !CursorRemapActive() || !g_forcedRenderW || !g_forcedRenderH)
+        return lp;
+    POINT origin{};
+    LONG cw = 0, ch = 0;
+    if (!FitClientMetrics(origin, cw, ch))
+        return lp;
+    // Button messages carry the client point, wheel messages the screen point.
+    const LONG x = GET_X_LPARAM(lp) - (wheel ? origin.x : 0);
+    const LONG y = GET_Y_LPARAM(lp) - (wheel ? origin.y : 0);
+    long mappedX = 0, mappedY = 0;
+    if (!fit_mouse::MapClientOffset(x, y, cw, ch, g_forcedRenderW, g_forcedRenderH, mappedX, mappedY))
+        return lp;
+    if (wheel)
+    {
+        mappedX += origin.x;
+        mappedY += origin.y;
+    }
+    return MAKELPARAM(static_cast<WORD>(static_cast<short>(mappedX)), static_cast<WORD>(static_cast<short>(mappedY)));
+}
+
 static BOOL WINAPI SetCursorPosHook(int X, int Y)
 {
     const void* caller = _ReturnAddress();
-    if (!g_renderSizeActive || !g_forcedRenderW || !g_forcedRenderH ||
+    if (!CursorRemapActive() || !g_forcedRenderW || !g_forcedRenderH ||
         !CallerInExe(caller))
         return g_origSetCursorPos(X, Y);
     POINT origin{};
@@ -1718,7 +1844,7 @@ static BOOL WINAPI SetCursorPosHook(int X, int Y)
 // unexpected we pass the request through untouched.
 static BOOL WINAPI ClipCursorHook(const RECT* rc)
 {
-    if (!g_renderSizeActive || !g_forcedRenderW || !g_forcedRenderH || !rc)
+    if (!CursorRemapActive() || !g_forcedRenderW || !g_forcedRenderH || !rc)
         return g_origClipCursor(rc);
     POINT origin{};
     LONG cw = 0, ch = 0;
@@ -1761,7 +1887,7 @@ static HWND WINAPI WindowFromPointHook(POINT pt)
     // to still land on the small top-left slice work. Map ANY point inside the
     // render rectangle back down into the real window client before the OS
     // answers, so every menu item resolves to the game window like it should.
-    if (g_renderSizeActive && g_forcedRenderW && g_forcedRenderH)
+    if (CursorRemapActive() && g_forcedRenderW && g_forcedRenderH)
     {
         POINT origin{};
         LONG cw = 0, ch = 0;
@@ -3201,6 +3327,7 @@ bool D3D_HostUiPicture(D3DHostUiPicture& out)
     out.texture = layer.texture;
     out.width = layer.width;
     out.height = layer.height;
+    out.draws = layer.readyDraws;
     uint32_t permille = 0;
     const bool measured = D3D_HostUiCoverage(permille);
     out.opaque = reclaimer_host::PanelAlphaFor(layer.readyDraws, layer.readyUnblended, measured, permille) ==
@@ -3915,7 +4042,7 @@ bool InstallD3D11Hooks()
     // Install the complete size/metrics transaction for either window preference.
     InitRenderPlan();
     InitForcedRenderSize();
-    if (g_hostOwnsRenderSize)
+    if (g_hostOwnsRenderSize && !g_forcedRenderW)
         ClaimHostDisplayModeImport();
 
     WNDCLASSEXW wc{};
@@ -4302,8 +4429,11 @@ bool InstallD3D11Hooks()
         // are in place. If either failed, we leave the window at full size (the
         // previous overflow behavior) rather than risk shrinking it into a crop.
         g_renderSizeActive = forceHookOk && clientRectHookOk && !g_hostOwnsRenderSize;
-        if (g_hostOwnsRenderSize) {
+        if (g_hostOwnsRenderSize && !HostSwapchainForced()) {
             g_forcedRenderW=0;g_forcedRenderH=0;
+        } else if (g_hostOwnsRenderSize) {
+            // Project Reclaimer 0.10: the swapchain keeps the Picture panel's size (InitForcedRenderSize); its window
+            // and client rectangle stay the client's own.
         } else if (!g_renderSizeActive) {
             g_forcedRenderW=0;g_forcedRenderH=0;
             LOG("Live render sizing unavailable: a required hook is missing; native window and render sizes retained");

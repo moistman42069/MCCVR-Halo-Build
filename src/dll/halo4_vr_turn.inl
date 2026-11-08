@@ -1,3 +1,14 @@
+// The heading reference turned by `delta` (radians): an add, so a turn of the reference elsewhere in the same moment
+// (the vehicle cameras' tethering, on the render thread) is never overwritten.
+void Halo4AddGameYawReference(float delta)
+{
+    float reference = g_halo4Camera.gameYawReference.load(std::memory_order_relaxed);
+    while (!g_halo4Camera.gameYawReference.compare_exchange_weak(reference, WrapPi(reference + delta),
+                                                                 std::memory_order_relaxed))
+    {
+    }
+}
+
 void Halo4ApplyVrTurn(const VrPadState& pad)
 {
     if (!Halo4ControllerAimActive() || !pad.valid)
@@ -18,8 +29,6 @@ void Halo4ApplyVrTurn(const VrPadState& pad)
 
     const float x = pad.turnX; // stick right = turn right = yaw decreases
     static bool snapLatched = false;
-    float reference =
-        g_halo4Camera.gameYawReference.load(std::memory_order_relaxed);
     Halo4VehicleInputState seat{};
     // The camera hook's seat stamp: this input-side caller has no engine TLS of its own to read the seat with.
     const bool seated=g_config.vehicle_smooth_turn&&Halo4ReadSeatStamp(seat)&&seat.seated;
@@ -28,19 +37,13 @@ void Halo4ApplyVrTurn(const VrPadState& pad)
         Halo3ConsumeSnapTurn(false, x, snapLatched);
         if (fabsf(x) > 0.15f)
         {
-            reference = WrapPi(reference -
-                x * (g_config.turn_smooth_deg_s / 57.2958f) * dt);
-            g_halo4Camera.gameYawReference.store(
-                reference, std::memory_order_relaxed);
+            Halo4AddGameYawReference(-x * (g_config.turn_smooth_deg_s / 57.2958f) * dt);
             g_halo4Camera.vrTurns.fetch_add(1, std::memory_order_relaxed);
         }
     }
     else if (Halo3ConsumeSnapTurn(true, x, snapLatched))
     {
-        reference = WrapPi(reference -
-            (x > 0 ? 1.0f : -1.0f) * g_config.turn_snap_deg / 57.2958f);
-        g_halo4Camera.gameYawReference.store(
-            reference, std::memory_order_relaxed);
+        Halo4AddGameYawReference(-(x > 0 ? 1.0f : -1.0f) * g_config.turn_snap_deg / 57.2958f);
         g_halo4Camera.vrTurns.fetch_add(1, std::memory_order_relaxed);
     }
 }

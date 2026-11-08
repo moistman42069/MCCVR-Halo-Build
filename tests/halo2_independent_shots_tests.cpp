@@ -36,6 +36,11 @@ void VR_DualWieldObserveOwner(GameTitle,uint32_t,uint32_t,const uint32_t[2]) noe
 // Fire-time changes allowed (the co-op switch off), and the first-person seat override's stand-down a no-op.
 [[maybe_unused]] static bool Sight_FireTimeChangesAllowed(){return true;}
 [[maybe_unused]] static void NativeVehicleFirstPerson_SetStockOnThisThread(bool) noexcept{}
+// The seat-aim flag the evaluator's detour raises around the calls it forwards (a chase camera's stand-down does not
+// apply to them): counted.
+static unsigned seatAskRaised=0;static bool seatAskUp=false;
+[[maybe_unused]] static bool NativeVehicleFirstPerson_SetSeatAskOnThisThread(bool up) noexcept
+{const bool was=seatAskUp;if(up)++seatAskRaised;seatAskUp=up;return was;}
 // Shots from the muzzle (sight_layer.h): admitted only with the barrel aim off; the converged point itself is
 // sight_layer's (aim_solve_tests), so here it keeps the barrel's direction and counts the asks.
 static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;
@@ -273,6 +278,17 @@ int main()
     Check(Halo2IndependentCameraDetour(owner,position,direction)==0x12345678&&direction[0]==1,"unrelated camera caller remains native");
     caller=g_halo2Dual.base+0x7597BD;
     Check(Halo2IndependentCameraDetour(owner+0x10000,position,direction)==0x12345678&&direction[0]==1,"remote salted unit retains native camera ray");
+    {
+        // The fire's ask is for the seat's aim and is flagged so; any other caller's (the players update: the camera
+        // the frame is drawn from) is not.
+        const unsigned raised=seatAskRaised;
+        caller=g_halo2Dual.base+0x7597BE;
+        (void)Halo2IndependentCameraDetour(owner,position,direction);
+        Check(seatAskRaised==raised&&!seatAskUp,"another caller's evaluator call is not a seat-aim ask");
+        caller=g_halo2Dual.base+0x7597BD;
+        (void)Halo2IndependentCameraDetour(owner,position,direction);
+        Check(seatAskRaised==raised+1&&!seatAskUp,"the fire's evaluator call is a seat-aim ask, the flag down after it");
+    }
     Reset();nested=true;Shoot();Check(fireCalls==2,"nested simultaneous roles fire once each");
     Reset();queryFault=true;Shoot();Check(fireCalls==1&&g_halo2Dual.faulted&&observedTarget[0]==0x44440007,"optional query failure is isolated");
     Reset();fireFault=true;Check(FaultingShot()&&fireCalls==1,"native firing exception never replayed");

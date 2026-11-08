@@ -226,13 +226,71 @@ int main()
         const std::vector<ClientCandidate> proven{{L"older", v098, 9}, {L"newer", v0910, 1}, {L"new", vNotRun, 5}};
         const ClientChoice higher = ChooseClient(proven);
         CHECK(higher.chosen == 1 && higher.passedOver == 2);    // of two proven clients, the higher version
-        const std::vector<ClientCandidate> unproven{{L"a", vNotRun, 1}, {L"b", v1, 1}, {L"c", none, 9}};
+        const Version v0923 = VersionOf(L"project-reclaimer-client-v0.9.23.exe");
+        const std::vector<ClientCandidate> unproven{{L"a", v0923, 1}, {L"b", vNotRun, 1}, {L"c", none, 9}};
         const ClientChoice newest = ChooseClient(unproven);
         CHECK(newest.chosen == 1 && newest.passedOver == -1);   // none proven: the highest version
         const std::vector<ClientCandidate> copies{{L"old copy", v098, 1}, {L"new copy", v098, 7}};
         CHECK(ChooseClient(copies).chosen == 1 && ChooseClient(copies).passedOver == -1);   // the newer file
         const std::vector<ClientCandidate> unnamed{{L"x", none, 1}, {L"y", none, 3}};
         CHECK(ChooseClient(unnamed).chosen == 1);
+    }
+
+    // 0.10.0 and later run their own recompiled engine in the client itself: the mod goes into the client, never
+    // into a server process it starts.
+    {
+        const Version v0100 = {{0, 10, 0}, true};   // what the file's version resource says after an in-place update
+        CHECK(RunsRecompiledEngine(v0100));
+        CHECK(RunsRecompiledEngine(VersionOf(L"project-reclaimer-client-v0.10.0.exe")));
+        CHECK(RunsRecompiledEngine(VersionOf(L"project-reclaimer-client-v0.10.3.exe")));
+        CHECK(RunsRecompiledEngine(VersionOf(L"project-reclaimer-client-v0.11.0.exe")));
+        CHECK(RunsRecompiledEngine(v1));
+        CHECK(!RunsRecompiledEngine(VersionOf(L"project-reclaimer-client-v0.9.23.exe")));
+        CHECK(!RunsRecompiledEngine(vNotRun));       // 0.9.99
+        CHECK(!RunsRecompiledEngine(v098));
+        CHECK(!RunsRecompiledEngine(none));
+        CHECK(!Proven(v0100));
+        // Of several, the proven rule alone decides: 0.10.0 is a client like any other the mod has not been run with.
+        const std::vector<ClientCandidate> updated{{L"0.10", v0100, 9}, {L"0.9.23", VersionOf(L"x-v0.9.23.exe"), 1}};
+        CHECK(ChooseClient(updated).chosen == 0);
+
+        const wchar_t* client = L"\"G:\\Games\\Project Reclaimer\\0.9.23\\project-reclaimer-client-v0.9.23.exe\"";
+        CHECK(RoleOf(client) == Role::Supervisor);
+        CHECK(TakesMod(RoleOf(client), true));        // 0.10: the client itself
+        CHECK(!TakesMod(RoleOf(client), false));      // 0.9: never the supervisor
+        const std::wstring server = std::wstring(client) + L" --server-worker --name \"Reclaimer Slayer\"";
+        CHECK(RoleOf(server) == Role::OtherWorker && !TakesMod(RoleOf(server), true));
+        CHECK(!TakesMod(RoleOf(std::wstring(client) + L" --headless"), true));
+        const std::wstring worker = std::wstring(client) +
+            L" probe-engine-worker \"D:\\MCC\\halo3\\halo3.dll\" --guardian-slayer --client-window --startup";
+        CHECK(TakesMod(RoleOf(worker), false) && !TakesMod(RoleOf(worker), true));
+        // "--headless" inside a quoted path is not the argument.
+        CHECK(RoleOf(L"\"D:\\a --headless b\\project-reclaimer-client.exe\"") == Role::Supervisor);
+    }
+
+    // Where the settings are: 0.9 in Documents, 0.10 in the local app data folder it moved them to.
+    CHECK(SettingsFolder(false, L"F:\\OneDrive\\Documents", L"C:\\Users\\p\\AppData\\Local") ==
+          L"F:\\OneDrive\\Documents\\My Games\\Project Reclaimer");
+    CHECK(SettingsFolder(true, L"F:\\OneDrive\\Documents", L"C:\\Users\\p\\AppData\\Local") ==
+          L"C:\\Users\\p\\AppData\\Local\\ProjectReclaimer");
+    CHECK(SettingsFolder(true, L"F:\\Docs", L"").empty() && SettingsFolder(false, L"", L"C:\\L").empty());
+
+    // The version resource, read without version.dll: VS_FIXEDFILEINFO by its signature.
+    {
+        uint8_t resource[160]{};
+        const uint32_t signature = 0xFEEF04BD, structVersion = 0x10000, ms = (0u << 16) | 10u, ls = (2u << 16) | 7u;
+        std::memcpy(resource + 40, &signature, 4);
+        std::memcpy(resource + 44, &structVersion, 4);
+        std::memcpy(resource + 48, &ms, 4);
+        std::memcpy(resource + 52, &ls, 4);
+        const Version v = VersionFromVersionResource(resource, sizeof(resource));
+        CHECK(v.known && v.part[0] == 0 && v.part[1] == 10 && v.part[2] == 2);
+        CHECK(RunsRecompiledEngine(v));
+        CHECK(!VersionFromVersionResource(resource, 60).known);    // cut short before the fixed part ends
+        CHECK(!VersionFromVersionResource(nullptr, 0).known);
+        uint8_t blank[160]{};
+        std::memcpy(blank + 40, &signature, 4);
+        CHECK(!VersionFromVersionResource(blank, sizeof(blank)).known);   // a zero version is no version
     }
 
     // The early-hooks event's name: the same for the relay and the mod, bounded by the buffer.
@@ -464,6 +522,17 @@ int main()
         CHECK(!ScreenShownAsPanel(true, false, true));      // the host's own menu: no frame of the game under it
         CHECK(!ScreenShownAsPanel(true, true, false));      // no panel: the flat picture, as before
         CHECK(!ScreenShownAsPanel(false, true, true));
+        // A frame that lost a piece of the host's drawing shows the last picture again, for at most three frames.
+        FewerDrawsHold hold;
+        CHECK(!hold.Hold(9));                    // the first picture is shown
+        CHECK(hold.Hold(8));                     // a piece missing: the last one again
+        CHECK(!hold.Hold(9));                    // whole again
+        CHECK(!hold.Hold(10));                   // more pieces are shown at once
+        CHECK(hold.Hold(7) && hold.Hold(7) && hold.Hold(7));
+        CHECK(!hold.Hold(7));                    // a menu that really lost pieces shows it three frames late
+        CHECK(!hold.Hold(7));
+        hold.Reset();
+        CHECK(!hold.Hold(3));                    // nothing shown yet: whatever comes is shown
     }
 
     {

@@ -12,6 +12,18 @@ std::vector<ID3D11Texture2D*> g_hostUiImages;
 std::vector<ID3D11RenderTargetView*> g_hostUiRtvs;
 uint32_t g_hostUiImageW = 0, g_hostUiImageH = 0;
 uint32_t g_hostUiImageMisses = 0;
+// When the panel's image last received a picture (GetTickCount64), for a frame of the host's that drew none.
+uint64_t g_hostUiShownMs = 0;
+// A frame of the host's with no picture of its own may show the last one for this long.
+constexpr uint64_t kHostUiPanelHoldMs = 250;
+// A frame whose picture lost a piece of the host's drawing shows the last one (reclaimer_host::FewerDrawsHold); the
+// frames it did so since the last report (the present's thread).
+reclaimer_host::FewerDrawsHold g_hostUiFewerDraws;
+uint32_t g_hostUiFewerDrawsHeld = 0;
+uint64_t g_hostUiFewerDrawsReportMs = 0;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+uint32_t g_hostUiHeldFramesDev = 0; // frames that showed the last picture again (the PANEL dev line)
+#endif
 ID3D11PixelShader* g_hostUiPs = nullptr;
 ID3D11Buffer* g_hostUiCb = nullptr;
 
@@ -100,7 +112,22 @@ bool PrepareHostUiPanel(XrCompositionLayerQuad& quad)
         return false;
     D3DHostUiPicture picture{};
     if (!D3D_HostUiPicture(picture) || !picture.texture)
-        return false;
+    {
+        // The host presented a frame without drawing its UI, between frames that did (Project Reclaimer 0.10's pause
+        // menu, 1 or 2 frames every few seconds): the panel's image keeps the last picture for that frame instead of
+        // vanishing from it, which showed as a flicker and dropped the menu pointer for a moment.
+        const uint64_t now = GetTickCount64();
+        if (g_hostUiChain == XR_NULL_HANDLE || !g_hostUiShownMs || now < g_hostUiShownMs ||
+            now - g_hostUiShownMs > kHostUiPanelHoldMs || !D3D_HostUiPanelUsable())
+            return false;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        ++g_hostUiHeldFramesDev;
+#endif
+        quad = MakeQuad(g_hostUiChain, static_cast<int32_t>(g_hostUiImageW), static_cast<int32_t>(g_hostUiImageH),
+                        g_config.host_ui_panel_width_m, g_config.host_ui_panel_distance_m, 0.0f,
+                        XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT, true);
+        return true;
+    }
     ID3D11Device* pictureDevice = nullptr;
     picture.texture->GetDevice(&pictureDevice);
     const bool sameDevice = pictureDevice == g_device;
@@ -118,6 +145,7 @@ bool PrepareHostUiPanel(XrCompositionLayerQuad& quad)
     if (g_hostUiChain == XR_NULL_HANDLE || g_hostUiImageW != width || g_hostUiImageH != height)
     {
         DestroyChain(g_hostUiChain, g_hostUiImages, g_hostUiRtvs);
+        g_hostUiShownMs = 0;
         g_hostUiImageW = g_hostUiImageH = 0;
         if (!CreateChain(width, height, g_hostUiChain, g_hostUiImages, g_hostUiRtvs, "host UI panel"))
         {
@@ -126,6 +154,24 @@ bool PrepareHostUiPanel(XrCompositionLayerQuad& quad)
         }
         g_hostUiImageW = width;
         g_hostUiImageH = height;
+    }
+    if (!g_hostUiShownMs)
+        g_hostUiFewerDraws.Reset();
+    if (g_hostUiFewerDraws.Hold(picture.draws))
+    {
+        ++g_hostUiFewerDrawsHeld;
+        quad = MakeQuad(g_hostUiChain, static_cast<int32_t>(width), static_cast<int32_t>(height),
+                        g_config.host_ui_panel_width_m, g_config.host_ui_panel_distance_m, 0.0f,
+                        XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT, true);
+        return true;
+    }
+    const uint64_t reportNow = GetTickCount64();
+    if (g_hostUiFewerDrawsHeld && reportNow - g_hostUiFewerDrawsReportMs >= 10000)
+    {
+        LOG("host UI panel: %u frame(s) in the last 10 s had fewer of the host's draws than the picture shown; it "
+            "was shown again for them", g_hostUiFewerDrawsHeld);
+        g_hostUiFewerDrawsHeld = 0;
+        g_hostUiFewerDrawsReportMs = reportNow;
     }
     uint32_t index = 0;
     XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
@@ -139,6 +185,7 @@ bool PrepareHostUiPanel(XrCompositionLayerQuad& quad)
         // An image that did not come stays acquired, so this set of images is done: a new one next frame, and
         // after three the panel is given up.
         DestroyChain(g_hostUiChain, g_hostUiImages, g_hostUiRtvs);
+        g_hostUiShownMs = 0;
         g_hostUiImageW = g_hostUiImageH = 0;
         if (++g_hostUiImageMisses >= 3)
             D3D_HostUiPanelGiveUp("its image did not become ready three times");
@@ -154,6 +201,7 @@ bool PrepareHostUiPanel(XrCompositionLayerQuad& quad)
                                     : "the picture could not be drawn into its image");
         return false;
     }
+    g_hostUiShownMs = GetTickCount64();
     // Colour already multiplied by alpha: the source-alpha flag alone.
     quad = MakeQuad(g_hostUiChain, static_cast<int32_t>(width), static_cast<int32_t>(height),
                     g_config.host_ui_panel_width_m, g_config.host_ui_panel_distance_m, 0.0f,

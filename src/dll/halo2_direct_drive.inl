@@ -649,6 +649,25 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
             // The game ran the owned user's control update (it skips this call while the director holds the
             // player: a cinematic). One reader: the head-relative motion tracker (halo2_head_relative.inl).
             st.controlMs.store(GetTickCount64(), std::memory_order_release);
+            // The vehicle camera note in the game's HUD messages: printed from here, where MCC's control update
+            // prints its own line, whatever the drive's setting (halo3_hud_note.inl).
+            Game_Halo2HudNotePost();
+            // AIM FRAME ZOOM (game.cpp): the player's zoom level, -1 not zoomed, from the record this update works on.
+            // Read only; whatever the drive's own setting.
+            if (st.zoomProven.load(std::memory_order_acquire) && st.slot)
+            {
+                const uintptr_t zoomGlobals = *reinterpret_cast<const uintptr_t*>(st.slot);
+                if (zoomGlobals)
+                {
+                    const int16_t zoom = *reinterpret_cast<const int16_t*>(
+                        zoomGlobals + static_cast<uintptr_t>(user) * kHalo2PcStride + kHalo2PcZoomLevel);
+                    Game_NoteZoomLevel(GameTitle::Halo2, zoom);
+                    if (zoom < 0)
+                        g_zoomedSinceMs.store(0, std::memory_order_release);
+                    else if (!g_zoomedSinceMs.load(std::memory_order_acquire))
+                        g_zoomedSinceMs.store(GetTickCount64(), std::memory_order_release);
+                }
+            }
             if (!g_config.aim_direct_drive || !st.installed.load(std::memory_order_acquire) || !st.slot ||
                 !g_armed.load(std::memory_order_acquire) || !g_levelLive.load(std::memory_order_acquire) ||
                 g_teardownRequested.load(std::memory_order_acquire))
@@ -699,12 +718,15 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 facts.identified = occupancy > 0;
                 // ...and the native first-person seat view placed THIS seat: the vehicle reference keeps the
                 // stock camera's POSITION, which in a chase seat is pushed out along this very aim, so a write
-                // there would swing the view round the hull (vehicle_first_person = 0 keeps the servo).
+                // there would swing the view round the hull (vehicle_first_person = 0 keeps the servo). A chase
+                // camera of the vehicle camera file places the view itself, off the vehicle and not off the aim,
+                // so its seat is owned too (halo2_vehicle_cameras.inl): it aims as its seat view does.
                 facts.view_owned = havePublication && publication.vehicleReferenceValid &&
                     publication.vehicleUnit == Halo2OwnedUnit() && publication.vehicleParent == seatParent &&
                     publication.vehicleSeat == seatIndex && seatViewAt && now >= seatViewAt &&
                     now - seatViewAt <= 100 &&
-                    NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo2, seatParent, seatIndex);
+                    (NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo2, seatParent, seatIndex) ||
+                     Game_Halo2VehicleCameraPlacedSeat(seatParent, seatIndex));
                 // THE SEAT'S FRAME AND ROLE, read as the rebase reads them (see the header): the occupied seat's live
                 // flags word carries the role too (seat_converge_logic.h: bit 2 driver, bit 3 gunner -- the engine's
                 // own sibling predicates 0x8FC99C / 0x8FCA5C and its aiming-unit test 0x8F8C00). A seat that does NOT
@@ -715,7 +737,12 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 const seat_converge::Role seatRole = seat_converge::RoleFromSeatFlags(
                     occupancy > 0 && seatFrame.flagsKnown, seatFrame.flags);
                 facts.driver = facts.look_steered = !seatRole.known || seatRole.driver;
-                const seat_drive::Axes axes = g_config.vehicle_view_follow ? seat_drive::Axes{}
+                // The view the observer built for the seat follows the hull: a chase camera's tethering stands in for the
+                // setting in its seat. The observer's word while it publishes the seat's view, else the setting.
+                const bool viewPublished = seatViewAt && now >= seatViewAt && now - seatViewAt <= 100;
+                const bool viewFollows = viewPublished ? g_vehicleViewFollows.load(std::memory_order_acquire)
+                                                       : g_config.vehicle_view_follow;
+                const seat_drive::Axes axes = viewFollows ? seat_drive::Axes{}
                     : seat_drive::Decide(facts, g_config.reach_vehicle_aim, g_config.seat_direct_drive != 0);
                 const uint32_t key = seat_drive::SeatKey(static_cast<int>(seatParent), seatIndex, false);
                 // The seat's account for the SIGHT ... seat line (every update that does not end in a converged
@@ -786,7 +813,7 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                     // nothing -- when the seat, its policy and everything but the view are unchanged.
                     seat_drive::Seat viewed = facts;
                     viewed.view_owned = true;
-                    const bool onlyTheView = !facts.view_owned && !g_config.vehicle_view_follow &&
+                    const bool onlyTheView = !facts.view_owned && !viewFollows &&
                         seat_drive::Decide(viewed, g_config.reach_vehicle_aim, g_config.seat_direct_drive != 0).any();
                     if (onlyTheView && facts.identified && st.stintActive && st.stintKey == key &&
                         ++st.stintStaleUpdates <= kHalo2StintStaleUpdates)
@@ -1121,6 +1148,37 @@ bool InstallHalo2Drive(uintptr_t base, size_t size) noexcept
     st.controlMs.store(0, std::memory_order_release);
     st.slot = slot;
     st.controlReturn = call + 5;
+    // AIM FRAME ZOOM: the game's own zoom getter (player_control_get_zoom_level, +0x6C3C10: -1 for no user, else the
+    // record's +0x56 as a word; its unzoom +0x6C4C60 writes -1 there), found once in the module and loading THIS slot.
+    {
+        static constexpr char kZoomGetter[] =
+            "B8 FF FF FF FF 3B C8 74 16 48 63 C1 48 69 C8 B8 00 00 00 48 8B 05 ?? ?? ?? ?? 0F B7 44 01 56 C3";
+        constexpr size_t kSlotLoad = 19;   // the mov rax,[rip+disp32]
+        uintptr_t getter = 0;
+        uint32_t matches = 0;
+        bool proven = false;
+        if (CountPatternMatches(base, size, kZoomGetter, getter, matches) && matches == 1)
+        {
+            __try
+            {
+                int32_t disp = 0;
+                std::memcpy(&disp, reinterpret_cast<const void*>(getter + kSlotLoad + 3), sizeof(disp));
+                proven = getter + kSlotLoad + 7 + static_cast<intptr_t>(disp) == slot;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                proven = false;
+            }
+        }
+        st.zoomProven.store(proven, std::memory_order_release);
+        if (proven)
+            LOG("Halo 2 DRIVE: the zoom level is read from player control +0x%X (the game's own getter at +0x%llX "
+                "loads this slot)", static_cast<unsigned>(kHalo2PcZoomLevel),
+                static_cast<unsigned long long>(getter - base));
+        else
+            LOG("Halo 2 DRIVE: the game's zoom getter was not proven (%u match(es)); Aim Frame Zoom is off in Halo 2 "
+                "and the zoom stays with the lens", matches);
+    }
     // The seat's frame: the vehicle-tilt rebase 0x8F0D20's gate and up getter, proven here (seat_frame_reader.h).
     const char* frameWhy = nullptr;
     bool frameBound = seat_frame_rt::Bind(g_halo2SeatFrame, seat_frame::kHalo2Reader, base, size, frameWhy);
@@ -1194,6 +1252,7 @@ bool RemoveHalo2Drive() noexcept
     g_halo2PcOrig = nullptr;
     st.slot = 0;
     st.controlReturn = 0;
+    st.zoomProven.store(false, std::memory_order_release);
     seat_frame_rt::Unbind(g_halo2SeatFrame);
     return true;
 }

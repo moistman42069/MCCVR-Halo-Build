@@ -15,6 +15,7 @@
 #include "dev_pad.h"
 #include "drive_cascade.h"
 #include "install_search_cache.h"
+#include "lifted_engine.h"
 #include "title_adapter.h"
 #include "telemetry_recorder.h"
 
@@ -157,7 +158,8 @@ static DWORD WINAPI InitThread(LPVOID)
     std::wstring dir(path);
     dir.resize(dir.find_last_of(L'\\') + 1);
 
-    LogInit((dir + L"HaloMCCVR.log").c_str());
+    // The last ten runs' logs stay in Logs\ beside it, named for when each run started.
+    LogInit((dir + L"HaloMCCVR.log").c_str(), 10);
     // Commit + compile option identify source/configuration. The timestamp is
     // context only; verify the installed DLL's SHA-256 separately.
     LOG("HaloMCCVR loaded into pid %lu (source %s, ODST %s, Reach %s, "
@@ -234,6 +236,10 @@ static DWORD WINAPI InitThread(LPVOID)
     }
     sig::SetHookPatchSource(&EnabledHookPatches);
     sig::SetProofThroughHookObserver(&ProofReadThroughOurHook);
+    // Project Reclaimer 0.10 keeps halo3.dll's image without loading the DLL, with a trap over the start of every
+    // function (lifted_engine.h).
+    sig::SetModuleRangeFallback(&lifted::ModuleRangeFallback);
+    sig::SetScanShadow(&lifted::ScanShadow);
     // MCC's reload of a game DLL after a game waits for a title core that still holds it (host_unload_gate.cpp).
     (void)HostUnloadGate_Install();
     if (!InstallD3D11Hooks())

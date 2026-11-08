@@ -17,12 +17,17 @@ static PRUNTIME_FUNCTION WINAPI MockLookup(DWORD64,PDWORD64,PUNWIND_HISTORY_TABL
 #define FreeLibrary MockFree
 #define _ReturnAddress MockReturnAddress
 #define RtlLookupFunctionEntry MockLookup
+#define HALOMCCVR_LIFTED_SHIM_OFF
 #include "../src/dll/native_vr_actions.cpp"
 #undef GetTickCount64
 #undef GetModuleHandleExW
 #undef FreeLibrary
 #undef _ReturnAddress
 #undef RtlLookupFunctionEntry
+// lifted_engine.h's: no Project Reclaimer 0.10 engine in this test.
+HMODULE lifted::Halo3Module() { return nullptr; }
+bool lifted::Active() { return false; }
+void* lifted::Callable(void* target) { return target; }
 
 Config::Config()=default;
 Config g_config{};
@@ -45,6 +50,15 @@ static bool supportPickupBlocked=false;
 bool Game_BlockHalo3SupportPickup() noexcept {return supportPickupBlocked;}
 static bool halo3CoreIn=true;
 bool Game_IsHooked() {return halo3CoreIn;}
+// Halo 4's and Halo 2's camera cores as the bridges are told them (game.h GameTitleCoreState): no title says, unless
+// a test does.
+static bool coreSays=false,coreInstalled=false;
+static std::atomic<bool> coreTearingDown{false};
+static unsigned pinned=0,unpinned=0;
+bool Game_TitleCoreState(GameTitle,GameTitleCoreState& out) noexcept
+{out={};if(!coreSays)return false;out.installed=coreInstalled;out.tearingDown=&coreTearingDown;return true;}
+void HostUnloadGate_Pin(HMODULE,std::atomic<bool>*,const std::atomic<uint64_t>*,const char*,bool) {++pinned;}
+void HostUnloadGate_Unpin(HMODULE) {++unpinned;}
 void Logf(const char*,...){}
 bool Game_ReadVrActionBindings(vr_mapping::Transports& out,uint64_t,unsigned){out.fill(0x4000);return fallbackVerified;}
 GameTitle TitleAdapter_GetActiveTitle(){
@@ -68,6 +82,8 @@ static PRUNTIME_FUNCTION WINAPI MockLookup(DWORD64 address,PDWORD64 base,PUNWIND
     if(address==*base+native_odst::consumerBegin)return &odst;
     static RUNTIME_FUNCTION h4{static_cast<DWORD>(native_h4::consumerBegin),static_cast<DWORD>(native_h4::consumerEnd),0};
     if(address==*base+native_h4::consumerBegin)return &h4;
+    static RUNTIME_FUNCTION h4Ability{static_cast<DWORD>(native_h4::abilityBegin),static_cast<DWORD>(native_h4::abilityEnd),0};
+    if(address==*base+native_h4::abilityBegin)return &h4Ability;
     static RUNTIME_FUNCTION h2{static_cast<DWORD>(native_h2::consumerBegin),static_cast<DWORD>(native_h2::consumerEnd),0};
     if(address==*base+native_h2::consumerBegin)return &h2;
     return address==*base+native_ce::consumerRva?&ce:&function;
@@ -90,6 +106,10 @@ uintptr_t Find(uintptr_t base,size_t,const char* pattern){
         if(pattern==native_h4::controllerLoopPattern)return base+native_h4::controllerLoopRva;
         if(pattern==native_h4::consumerEntryPattern)return base+native_h4::consumerBegin;
         if(pattern==native_h4::consumerReloadPattern)return base+native_h4::consumerReloadRva;
+        if(pattern==native_h4::abilityEntryPattern)return base+native_h4::abilityBegin;
+        if(pattern==native_h4::abilitySelectPattern)return base+native_h4::abilitySelectRva;
+        if(pattern==native_h4::abilityEquipmentSitePattern)return base+native_h4::abilityEquipmentSiteRva;
+        if(pattern==native_h4::abilitySprintSitePattern)return base+native_h4::abilitySprintSiteRva;
         const auto& d=kGestureBindings[native_h4::readerIndex];
         if(pattern==d.readerPattern)return base+d.readerRva;
         if(pattern==d.statePattern)return base+d.stateLoadRva;
@@ -288,7 +308,24 @@ static void TestCe(){
     quiescent=true;NativeVrActions_Poll();Check(!native_ce::runtime.module,"CE optional fault cleans up independently");
     ++testGeneration;creates=0;failCreate=2;NativeVrActions_Poll();
     Check(!native_ce::runtime.module&&!native_ce::runtime.admitted,"CE partial install failure leaves transport fallback");
-    failCreate=0;testTitle=GameTitle::None;
+    // halo1.dll is held only while the Halo CE core is installed: a game's end lets it go in the same title and
+    // generation, and the unload gate is told, so MCC's reload gives the next game a fresh image.
+    failCreate=0;++testGeneration;coreSays=coreInstalled=true;coreTearingDown=false;
+    const unsigned pinnedBefore=pinned;
+    NativeVrActions_Poll();
+    Check(native_ce::runtime.module&&native_ce::runtime.admitted&&pinned==pinnedBefore+1,
+        "CE installs while the core is in, its reference registered with the unload gate");
+    const unsigned freedBefore=frees,unpinnedBefore=unpinned;
+    coreInstalled=false;NativeVrActions_Poll();
+    Check(!native_ce::runtime.module&&frees==freedBefore+1&&unpinned==unpinnedBefore+1,
+        "CE lets go of halo1.dll when the core is out, and tells the unload gate");
+    NativeVrActions_Poll();
+    Check(!native_ce::runtime.module&&frees==freedBefore+1,"CE takes no reference while the core is out");
+    coreInstalled=true;NativeVrActions_Poll();
+    Check(native_ce::runtime.module&&native_ce::runtime.admitted,"CE installs again with the next core");
+    coreSays=false;testTitle=GameTitle::None;NativeVrActions_Poll();
+    Check(!native_ce::runtime.module,"CE lets go when another title is active");
+    failCreate=0;
 }
 static void H3Poll(uint32_t actions,bool direct,uint32_t blocked=0){
     ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);
@@ -480,11 +517,21 @@ static native_action_button::LaterRecord* H4Read(vr_mapping::Action action){
     return static_cast<native_action_button::LaterRecord*>(native_h4::ReaderHook(image.data()+0x120000,
         native_action_button::ConsumerAction(GameTitle::Halo4,action),reinterpret_cast<uintptr_t>(MockReturnAddress())));
 }
+// The builder's two calls of its ability helper, as the image holds them: each rel32 lands on the helper.
+static void WriteH4AbilityCalls(int32_t skew=0){
+    for(const auto site:{std::pair<uintptr_t,uintptr_t>{native_h4::abilityEquipmentSiteRva,native_h4::abilityEquipmentCallRel},
+                         std::pair<uintptr_t,uintptr_t>{native_h4::abilitySprintSiteRva,native_h4::abilitySprintCallRel}}){
+        const int32_t rel=static_cast<int32_t>(native_h4::abilityBegin)-static_cast<int32_t>(site.first+site.second+4)+skew;
+        std::memcpy(image.data()+site.first+site.second,&rel,sizeof(rel));
+    }
+}
 static void TestH4(){
     testTitle=GameTitle::Halo4;++testGeneration;creates=0;failCreate=failEnable=0;
+    WriteH4AbilityCalls();
     *reinterpret_cast<unsigned*>(image.data()+0x120000+0x7E4)=0;
     NativeVrActions_Poll();mockCallerRva=native_h4::consumerBegin+0x10;
     Check(native_h4::runtime.admitted,"H4 admits independent converter/output-row/consumer proofs");
+    Check(native_h4::runtime.abilityAdmitted,"H4 admits the builder's ability helper once its calls and bounds prove");
     H4Poll(1u<<vr_mapping::Reload,false);
     Check(H4Read(vr_mapping::Reload)==&h4Physical&&NativeVrActions_CanRoute(testTitle,clockNow),"H4 warmup retains native state before direct routing");
     // Suppression is semantic, leaves Use alone, and admits gesture pulses.
@@ -512,6 +559,16 @@ static void TestH4(){
     Check(reload->state.flags==0&&reload->state.frames==1,"H4 release clears consumed flag before a new press");
     H4Poll(1u<<vr_mapping::Interact,true);
     Check(H4Read(vr_mapping::Interact)!=&h4Physical&&H4Read(vr_mapping::Reload)==&h4Physical,"H4 Use and Reload remain separately bindable");
+    // The armor ability and sprint are read by the builder's helper: its reads take the VR records too, and a
+    // caller past its end does not.
+    H4Poll((1u<<vr_mapping::Equipment)|(1u<<vr_mapping::Sprint),true);
+    mockCallerRva=native_h4::abilityBegin+0x185;
+    Check(H4Read(vr_mapping::Equipment)!=&h4Physical&&H4Read(vr_mapping::Sprint)!=&h4Physical,
+        "H4 the ability helper's reads of the armor ability and sprint take the VR records");
+    mockCallerRva=native_h4::abilityEnd;
+    Check(H4Read(vr_mapping::Equipment)==&h4Physical,"H4 a caller past the ability helper keeps the native record");
+    mockCallerRva=native_h4::consumerBegin+0x10;
+    H4Poll(1u<<vr_mapping::Interact,true);
     h4Physical.state.frames=7;h4Physical.state.amount=.5f;
     Check(H4Read(vr_mapping::Interact)==&h4Physical&&h4Physical.state.amount==.5f,"H4 physical input retains native analog and consumption record");
     h4Physical.state={};mockCallerRva=0;
@@ -533,7 +590,29 @@ static void TestH4(){
     quiescent=true;NativeVrActions_Poll();Check(!native_h4::runtime.module,"H4 fault retirement frees only after quiescence");
     ++testGeneration;creates=0;failCreate=2;NativeVrActions_Poll();
     Check(!native_h4::runtime.module&&!native_h4::runtime.admitted,"H4 partial hook failure leaves transport fallback");
-    failCreate=0;testTitle=GameTitle::None;
+    // A helper whose call does not land on it is not admitted; the builder still is.
+    failCreate=0;++testGeneration;WriteH4AbilityCalls(1);NativeVrActions_Poll();
+    mockCallerRva=native_h4::abilityBegin+0x185;
+    Check(native_h4::runtime.admitted&&!native_h4::runtime.abilityAdmitted&&H4Read(vr_mapping::Equipment)==&h4Physical,
+        "H4 an unproven ability helper keeps the game's own record; the builder stays admitted");
+    WriteH4AbilityCalls();mockCallerRva=native_h4::consumerBegin+0x10;
+    // halo4.dll is held only while the Halo 4 core is installed: a game's end lets it go in the same title and
+    // generation, and the unload gate is told, so MCC's reload gives the next game a fresh image.
+    failCreate=0;++testGeneration;coreSays=coreInstalled=true;coreTearingDown=false;
+    const unsigned pinnedBefore=pinned;
+    NativeVrActions_Poll();
+    Check(native_h4::runtime.module&&native_h4::runtime.admitted&&pinned==pinnedBefore+1,
+        "H4 installs while the core is in, its reference registered with the unload gate");
+    const unsigned freedBefore=frees,unpinnedBefore=unpinned;
+    coreInstalled=false;NativeVrActions_Poll();
+    Check(!native_h4::runtime.module&&frees==freedBefore+1&&unpinned==unpinnedBefore+1,
+        "H4 lets go of halo4.dll when the core is out, and tells the unload gate");
+    NativeVrActions_Poll();
+    Check(!native_h4::runtime.module&&frees==freedBefore+1,"H4 takes no reference while the core is out");
+    coreInstalled=true;NativeVrActions_Poll();
+    Check(native_h4::runtime.module&&native_h4::runtime.admitted,"H4 installs again with the next core");
+    coreSays=false;testTitle=GameTitle::None;NativeVrActions_Poll();
+    Check(!native_h4::runtime.module,"H4 lets go when another title is active");
 }
 static void H2Poll(uint32_t actions,bool direct,uint32_t blocked=0){
     ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);

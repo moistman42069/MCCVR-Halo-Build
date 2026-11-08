@@ -261,8 +261,18 @@ bool WriteCacheLocked()
     const bool whole = WriteFile(handle, g_cacheText, static_cast<DWORD>(length), &written, nullptr) &&
                        written == length && FlushFileBuffers(handle);
     CloseHandle(handle);
-    if (whole && MoveFileExW(temporary, g_cachePath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-        return true;
+    // A virus scanner or the search indexer may hold the cache open for a moment after it was written, and the
+    // step is refused while it does (access denied, or a sharing violation). That moment is waited out, a quarter
+    // of a second at most, on this cold worker; a program that holds the file longer leaves it unsaved as before.
+    for (int attempt = 0; whole; ++attempt)
+    {
+        if (MoveFileExW(temporary, g_cachePath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            return true;
+        const DWORD error = GetLastError();
+        if (attempt == 9 || (error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION))
+            break;
+        Sleep(25);
+    }
     DeleteFileW(temporary);
     return false;
 }

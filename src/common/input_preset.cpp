@@ -1,6 +1,8 @@
 #include "input_preset.h"
+#include "default_controls.h"
 #include "log.h"
 #include "weapon_interaction_logic.h"
+#include "roomscale_recenter_logic.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -21,17 +23,14 @@ struct FloatField { const char* key; float Config::*member; };
 
 constexpr BoolField kBools[] = {
     {"vr_action_mapping", &Config::vr_action_mapping},
-    {"trigger_air_equipment", &Config::trigger_air_equipment},
     {"disable_flashlight_input", &Config::disable_flashlight_input},
     {"flashlight_suppress_on_two_hand", &Config::flashlight_suppress_on_two_hand},
-    {"y_b_start_chord", &Config::y_b_start_chord},
     {"turn_smooth", &Config::turn_smooth},
     {"vehicle_smooth_turn", &Config::vehicle_smooth_turn},
     {"dpad_keep_moving", &Config::dpad_keep_moving},
     {"quest_thumbrest_dpad", &Config::quest_thumbrest_dpad},
     {"physical_running", &Config::physical_running},
     {"physical_crouch", &Config::physical_crouch},
-    {"right_stick_crouch", &Config::right_stick_crouch},
     {"physical_melee", &Config::physical_melee},
     {"gesture_melee", &Config::gesture_melee},
     {"two_handed_aim", &Config::two_handed_aim},
@@ -56,11 +55,21 @@ constexpr BoolField kBools[] = {
     {"gesture_only_weapon_input", &Config::gesture_only_weapon_input},
     {"dual_wield_shake_reload", &Config::dual_wield_shake_reload},
     {"weapon_needler_shake", &Config::weapon_needler_shake},
+    {"reclaimer_flight_buttons", &Config::reclaimer_flight_buttons},
+    // Crosshair and bullet direction.
+    {"independent_dual_aim", &Config::independent_dual_aim},
+    {"gun_barrel_aim", &Config::gun_barrel_aim},
+    // Roomscale body movement and how the view is brought back over the character.
+    {"roomscale_movement", &Config::roomscale_movement},
+    {"roomscale_recenter_jump", &Config::roomscale_recenter_jump},
+    {"roomscale_recenter_move_start", &Config::roomscale_recenter_move_start},
+    {"roomscale_recenter_moving", &Config::roomscale_recenter_moving},
 };
 constexpr IntField kInts[] = {
     {"dpad_hand", &Config::dpad_hand},
     {"weapon_holster_location", &Config::weapon_holster_location},
     {"weapon_pouch_location", &Config::weapon_pouch_location},
+    {"roomscale_follow_law", &Config::roomscale_follow_law},
 };
 constexpr FloatField kFloats[] = {
     {"gesture_melee_speed", &Config::gesture_melee_speed},
@@ -94,7 +103,22 @@ constexpr FloatField kFloats[] = {
     {"weapon_pouch_offset_x_m", &Config::weapon_pouch_offset_x_m},
     {"weapon_pouch_offset_y_m", &Config::weapon_pouch_offset_y_m},
     {"weapon_pouch_offset_z_m", &Config::weapon_pouch_offset_z_m},
+    {"roomscale_recenter_jump_s", &Config::roomscale_recenter_jump_s},
+    {"roomscale_recenter_move_start_s", &Config::roomscale_recenter_move_start_s},
+    {"roomscale_recenter_moving_speed", &Config::roomscale_recenter_moving_speed},
+    {"haptic_intensity", &Config::haptic_intensity},
 };
+// The crosshair's direction against the controller, kept for each game (title_profiles): halo3_gun_pitch_deg and so
+// on, the same keys halomccvr.cfg uses. The live copies follow the running game (Config_RefreshLiveTunables).
+struct TitleFloatField { const char* suffix; float TitleTunables::*member; };
+constexpr TitleFloatField kTitleFloats[] = {
+    {"gun_pitch_deg", &TitleTunables::gun_pitch_deg},
+    {"gun_yaw_deg", &TitleTunables::gun_yaw_deg},
+    {"gun_roll_deg", &TitleTunables::gun_roll_deg},
+};
+constexpr const char* kProfilePrefixes[] = {"halo3_", "odst_", "reach_", "halo4_", "halo2a_", "halo2c_", "halo1_"};
+static_assert(sizeof(kProfilePrefixes) / sizeof(kProfilePrefixes[0]) == kTitleProfileCount,
+              "one prefix for each game's profile, as in halomccvr.cfg");
 
 std::filesystem::path Folder()
 {
@@ -117,8 +141,16 @@ void CopyScheme(Config& to, const Config& from) noexcept
     for (const auto& f : kBools) to.*f.member = from.*f.member;
     for (const auto& f : kInts) to.*f.member = from.*f.member;
     for (const auto& f : kFloats) to.*f.member = from.*f.member;
+    for (int profile = 0; profile < kTitleProfileCount; ++profile)
+        for (const auto& f : kTitleFloats)
+            to.title_profiles[profile].*f.member = from.title_profiles[profile].*f.member;
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
+    {
         to.vr_bindings[title] = from.vr_bindings[title];
+        to.vr_inputs[title] = from.vr_inputs[title];
+        to.vr_extra_bindings[title] = from.vr_extra_bindings[title];
+    }
+    to.vr_mod_bindings = from.vr_mod_bindings;
 }
 
 bool SameScheme(const Config& a, const Config& b) noexcept
@@ -127,15 +159,20 @@ bool SameScheme(const Config& a, const Config& b) noexcept
     for (const auto& f : kInts) if (a.*f.member != b.*f.member) return false;
     // A file keeps three decimals, so a loaded preset can differ from what was saved by rounding alone.
     for (const auto& f : kFloats) if (std::fabs(a.*f.member - b.*f.member) > 0.002f) return false;
+    for (int profile = 0; profile < kTitleProfileCount; ++profile)
+        for (const auto& f : kTitleFloats)
+            if (std::fabs(a.title_profiles[profile].*f.member - b.title_profiles[profile].*f.member) > 0.002f)
+                return false;
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
-        if (a.vr_bindings[title] != b.vr_bindings[title]) return false;
-    return true;
+        if (a.vr_bindings[title] != b.vr_bindings[title] || a.vr_inputs[title] != b.vr_inputs[title] ||
+            a.vr_extra_bindings[title] != b.vr_extra_bindings[title]) return false;
+    return a.vr_mod_bindings == b.vr_mod_bindings;
 }
 
 std::string Serialize(const Config& scheme)
 {
     std::string text = "# Halo MCC VR controls preset\n";
-    char line[128];
+    char line[160];
     for (const auto& f : kBools)
     {
         sprintf_s(line, "%s = %d\n", f.key, scheme.*f.member ? 1 : 0);
@@ -151,11 +188,55 @@ std::string Serialize(const Config& scheme)
         sprintf_s(line, "%s = %.3f\n", f.key, scheme.*f.member);
         text += line;
     }
+    for (int profile = 0; profile < kTitleProfileCount; ++profile)
+        for (const auto& f : kTitleFloats)
+        {
+            sprintf_s(line, "%s%s = %.3f\n", kProfilePrefixes[profile], f.suffix, scheme.title_profiles[profile].*f.member);
+            text += line;
+        }
+    // The rows' inputs (vr_mapping::FormatInput): a row's further ones only where they differ from its game's start, all
+    // three then (Parse starts from that start).
+    text += "vr_inputs_version = 2\n";
+    char input[32];
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
+    {
+        const auto start = vr_mapping::DefaultInputs(static_cast<GameTitle>(title + 1));
         for (unsigned action = 0; action < vr_mapping::Count; ++action)
         {
-            sprintf_s(line, "vr_bind_%s_%s = %d\n", weapon_interaction::kTitleKeys[title], vr_mapping::kKeys[action],
-                      scheme.vr_bindings[title][action]);
+            const auto& row = scheme.vr_inputs[title][action];
+            vr_mapping::FormatInput(input, row.held, scheme.vr_bindings[title][action], row.mode);
+            sprintf_s(line, "vr_bind_%s_%s = %s\n", weapon_interaction::kTitleKeys[title], vr_mapping::kKeys[action], input);
+            text += line;
+            if (row.more == start[action].more) continue;
+            for (unsigned slot = 1; slot < vr_mapping::kRowInputs; ++slot)
+            {
+                const auto& more = row.more[slot - 1];
+                vr_mapping::FormatInput(input, more.held, more.press, more.mode);
+                sprintf_s(line, "vr_bind_%s_%s%s = %s\n", weapon_interaction::kTitleKeys[title], vr_mapping::kKeys[action],
+                          vr_mapping::kControlSuffix[slot], input);
+                text += line;
+            }
+        }
+    }
+    // An extra row only where it differs from its default, then all its inputs.
+    for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
+        for (unsigned action = 0; action < vr_mapping::ExtraCount; ++action)
+            for (unsigned slot = 0; slot < vr_mapping::kRowInputs &&
+                 scheme.vr_extra_bindings[title][action] !=
+                     vr_mapping::ExtraDefaults(static_cast<GameTitle>(title + 1))[action]; ++slot)
+            {
+                const auto& seat = scheme.vr_extra_bindings[title][action][slot];
+                vr_mapping::FormatInput(input, seat.held, seat.press, seat.mode);
+                sprintf_s(line, "vr_bind_%s_%s%s = %s\n", weapon_interaction::kTitleKeys[title],
+                          vr_mapping::kExtraKeys[action], vr_mapping::kControlSuffix[slot], input);
+                text += line;
+            }
+    for (unsigned action = 0; action < vr_mapping::ModCount; ++action)
+        for (unsigned slot = 0; slot < vr_mapping::kRowInputs; ++slot)
+        {
+            const auto& mod = scheme.vr_mod_bindings[action][slot];
+            vr_mapping::FormatInput(input, mod.held, mod.press, mod.mode);
+            sprintf_s(line, "vr_bind_%s%s = %s\n", vr_mapping::kModKeys[action], vr_mapping::kControlSuffix[slot], input);
             text += line;
         }
     return text;
@@ -165,6 +246,9 @@ void Parse(const char* text, Config& out)
 {
     std::istringstream lines(text ? text : "");
     std::string line;
+    // A preset from before the rows held inputs names the settings they took over; read only to convert.
+    int inputsVersion = 0;
+    bool stick = Config{}.right_stick_crouch, gunZoom = false, airEquipment = false, yb = Config{}.y_b_start_chord;
     while (std::getline(lines, line))
     {
         const auto hash = line.find('#');
@@ -174,6 +258,11 @@ void Parse(const char* text, Config& out)
         std::string key = line.substr(0, eq);
         key.erase(std::remove_if(key.begin(), key.end(), [](unsigned char c) { return std::isspace(c) != 0; }), key.end());
         const char* value = line.c_str() + eq + 1;
+        if (key == "vr_inputs_version") { inputsVersion = atoi(value); continue; }
+        if (key == "right_stick_crouch") { stick = atoi(value) != 0; continue; }
+        if (key == "grip_contextual_trigger") { gunZoom = atoi(value) != 0; continue; }
+        if (key == "trigger_air_equipment") { airEquipment = atoi(value) != 0; continue; }
+        if (key == "y_b_start_chord") { yb = atoi(value) != 0; continue; }
         bool done = false;
         for (const auto& f : kBools)
             if (key == f.key) { out.*f.member = atoi(value) != 0; done = true; break; }
@@ -189,20 +278,76 @@ void Parse(const char* text, Config& out)
                 done = true;
                 break;
             }
+        for (int profile = 0; profile < kTitleProfileCount && !done; ++profile)
+            for (const auto& f : kTitleFloats)
+                if (key == std::string(kProfilePrefixes[profile]) + f.suffix)
+                {
+                    const float parsed = static_cast<float>(atof(value));
+                    if (std::isfinite(parsed)) out.title_profiles[profile].*f.member = std::clamp(parsed, -180.0f, 180.0f);
+                    done = true;
+                    break;
+                }
         if (done) continue;
+        // A row's inputs (vr_mapping::ParseInput): its own (may be Automatic) and further ones, and the extra rows'.
         char expected[96];
         for (unsigned title = 0; title < weapon_interaction::kTitleCount && !done; ++title)
-            for (unsigned action = 0; action < vr_mapping::Count; ++action)
+            for (unsigned action = 0; action < vr_mapping::Count + vr_mapping::ExtraCount && !done; ++action)
             {
-                sprintf_s(expected, "vr_bind_%s_%s", weapon_interaction::kTitleKeys[title], vr_mapping::kKeys[action]);
+                const bool seat = action >= vr_mapping::Count;
+                for (unsigned slot = 0; slot < vr_mapping::kRowInputs && !done; ++slot)
+                {
+                    sprintf_s(expected, "vr_bind_%s_%s%s", weapon_interaction::kTitleKeys[title],
+                              seat ? vr_mapping::kExtraKeys[action - vr_mapping::Count] : vr_mapping::kKeys[action],
+                              vr_mapping::kControlSuffix[slot]);
+                    if (key != expected) continue;
+                    done = true;
+                    if (seat)
+                    {
+                        auto& input = out.vr_extra_bindings[title][action - vr_mapping::Count][slot];
+                        vr_mapping::ParseExtraInput(value, input, slot == 0);
+                    }
+                    else if (slot == 0)
+                    {
+                        auto& row = out.vr_inputs[title][action];
+                        vr_mapping::ParseInput(value, row.held, out.vr_bindings[title][action], row.mode, true);
+                    }
+                    else
+                    {
+                        auto& input = out.vr_inputs[title][action].more[slot - 1];
+                        vr_mapping::ParseInput(value, input.held, input.press, input.mode, false);
+                    }
+                }
+            }
+        // The mod's own rows, every game's.
+        for (unsigned action = 0; action < vr_mapping::ModCount && !done; ++action)
+            for (unsigned slot = 0; slot < vr_mapping::kRowInputs && !done; ++slot)
+            {
+                sprintf_s(expected, "vr_bind_%s%s", vr_mapping::kModKeys[action], vr_mapping::kControlSuffix[slot]);
                 if (key != expected) continue;
-                const int source = atoi(value);
-                if (source >= 0 && source < vr_mapping::SourceCount)
-                    out.vr_bindings[title][action] = source;
                 done = true;
-                break;
+                auto& input = out.vr_mod_bindings[action][slot];
+                vr_mapping::ParseInput(value, input.held, input.press, input.mode, false);
             }
     }
+    // Rows saved while the support trigger's contexts were rows' choices, then the settings that followed them, become
+    // the inputs they stood for.
+    for (auto& row : out.vr_bindings)
+        vr_mapping::ConvertContextRows(row, gunZoom, airEquipment);
+    if (inputsVersion < 1)
+        for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
+            vr_mapping::ConvertSettingsToInputs(out.vr_inputs[title], static_cast<GameTitle>(title + 1), stick, gunZoom,
+                                                airEquipment);
+    if (inputsVersion < 2 && !yb) out.vr_mod_bindings[vr_mapping::Pause] = {};
+    // Within the ranges halomccvr.cfg keeps them in.
+    const Config defaults{};
+    out.roomscale_follow_law = out.roomscale_follow_law != 0 ? 1 : 0;
+    out.roomscale_recenter_jump_s = roomscale_recenter::ClampSeconds(out.roomscale_recenter_jump_s,
+        defaults.roomscale_recenter_jump_s);
+    out.roomscale_recenter_move_start_s = roomscale_recenter::ClampSeconds(out.roomscale_recenter_move_start_s,
+        defaults.roomscale_recenter_move_start_s);
+    out.roomscale_recenter_moving_speed = roomscale_recenter::ClampSpeed(out.roomscale_recenter_moving_speed,
+        defaults.roomscale_recenter_moving_speed);
+    out.haptic_intensity = std::clamp(out.haptic_intensity, 0.0f, 1.0f);
 }
 
 std::string DescriptionLine(const std::string& description)
@@ -230,25 +375,28 @@ std::string ParseDescription(const char* text)
     return {};
 }
 
-int BuiltInCount() noexcept { return 2; }
+int BuiltInCount() noexcept { return 3; }
 
 const char* BuiltInDescription(int index) noexcept
 {
-    return index == 0 ? "The game's own button layout, with nothing remapped. A good place to start."
-         : index == 1 ? "Arranged for VR controllers: right grip melees, left grip uses equipment, X reloads and uses, "
+    return index == 0 ? default_controls::kDescription
+         : index == 1 ? "The game's own button layout with VR Mappings off: the scheme new players started on before "
+                        "Default."
+         : index == 2 ? "Arranged for VR controllers: right grip melees, left grip uses equipment, X reloads and uses, "
                         "Y switches weapon, and the stick clicks crouch and zoom."
                       : "";
 }
 
 const char* BuiltInName(int index) noexcept
 {
-    return index == 0 ? kDefaultName : index == 1 ? "VR action layout" : "";
+    return index == 0 ? kDefaultName : index == 1 ? kLegacyDefaultName : index == 2 ? "VR action layout" : "";
 }
 
 void BuiltIn(int index, Config& out)
 {
-    // Default is the struct's own values: the game's button layout, with nothing remapped.
-    if (index != 1) return;
+    if (index == 0) default_controls::Apply(out);
+    // Legacy Default is the struct's own values: the game's button layout, with nothing remapped.
+    if (index != 2) return;
     // The layout the VR Mappings page used to call Automatic.
     out.vr_action_mapping = true;
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)

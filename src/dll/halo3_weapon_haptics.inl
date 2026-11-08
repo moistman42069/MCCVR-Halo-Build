@@ -1,3 +1,4 @@
+#include "game_tls.h"
 // Halo 3's authored firing recoil is nested in the damage-response worker.
 // The worker also performs visual effects, so this adapter retires only its
 // exact newly written vibration slot after a private copy was staged.
@@ -93,7 +94,7 @@ bool Halo3WeaponHapticQueue(uint32_t user, uint8_t*& queue) noexcept
 {
     queue = nullptr;
     if (user >= 4 || !g_engineTlsIndex || *g_engineTlsIndex >= 0x200) return false;
-    auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+    auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
     if (!slots) return false;
     const auto* tls = static_cast<const uint8_t*>(slots[*g_engineTlsIndex]);
     if (!tls) return false;
@@ -131,7 +132,7 @@ __declspec(noinline) void __fastcall Halo3WeaponHapticShotDetour(uint32_t weapon
     const auto previous = g_halo3WeaponHapticSource;
     Halo3WeaponHapticSource captured{};
     volatile bool sourceReadFault = false;
-    const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    const uintptr_t caller = HALOMCCVR_GAME_RETURN_ADDRESS();
     __try
     {
         __try
@@ -223,7 +224,7 @@ __declspec(noinline) void __fastcall Halo3WeaponHapticDamageWrapperDetour(
     auto& feature = g_halo3WeaponHaptics;
     feature.callbacks.fetch_add(1, std::memory_order_acq_rel);
     const bool previous = g_halo3WeaponHapticFireEffectScope;
-    const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    const uintptr_t caller = HALOMCCVR_GAME_RETURN_ADDRESS();
     const auto source = g_halo3WeaponHapticSource;
     g_halo3WeaponHapticFireEffectScope = source.valid && owner == source.owner &&
         datum != UINT32_MAX && Halo3WeaponHapticIsOwnerEffectCaller(feature.base, caller);
@@ -246,7 +247,7 @@ __declspec(noinline) void __fastcall Halo3WeaponHapticEffectDetour(uint32_t owne
     auto& feature = g_halo3WeaponHaptics;
     feature.callbacks.fetch_add(1, std::memory_order_acq_rel);
     const bool previous = g_halo3WeaponHapticFireEffectScope;
-    const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    const uintptr_t caller = HALOMCCVR_GAME_RETURN_ADDRESS();
     g_halo3WeaponHapticFireEffectScope =
         (previous && caller == feature.base + halo3_haptic_contract::wrapper_player_effect_return) ||
         (g_halo3WeaponHapticChargeEffectScope &&
@@ -443,7 +444,7 @@ __declspec(noinline) void __fastcall Halo3WeaponHapticWorkerDetour(uint32_t owne
     __try
     {
         Halo3WeaponHapticWorkerBody(owner,user,datum,fourth,fifth,sixth,scale,
-            eighth,reinterpret_cast<uintptr_t>(_ReturnAddress()));
+            eighth,HALOMCCVR_GAME_RETURN_ADDRESS());
     }
     __finally { feature.callbacks.fetch_sub(1, std::memory_order_release); }
 }
@@ -529,8 +530,8 @@ void Halo3WeaponHapticsTick(float dt) noexcept
             { voice = {}; continue; }
             float low = 0, high = 0;
             if (!halo3_haptics::Sample(voice,
-                    reinterpret_cast<halo3_haptics::CurveFunction>(
-                        feature.base + halo3_haptic_contract::haptic_curve), low, high))
+                    lifted::Callable(reinterpret_cast<halo3_haptics::CurveFunction>(
+                        feature.base + halo3_haptic_contract::haptic_curve)), low, high))
             { voice = {}; continue; }
             const unsigned slot = voice.slot;
             lowSum[slot] += low;

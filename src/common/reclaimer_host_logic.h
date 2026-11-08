@@ -4,6 +4,7 @@
 // shell. Its executable is one file run in several roles (measured on 0.9.8):
 //
 // (0.9.23 names it project-reclaimer-client-v0.9.23.exe; IsClientExeName takes both names.)
+// (0.10.0 runs no halo3.dll and no engine worker at all: RunsRecompiledEngine, TakesMod.)
 //
 //   project-reclaimer-v0.9.8.exe                       what the player starts; it starts itself again and exits
 //     project-reclaimer-v0.9.8.exe                     the supervisor: menus' owner, no engine
@@ -283,7 +284,7 @@ inline const char* RoleName(Role role)
 
 inline Role RoleOf(std::wstring_view commandLine)
 {
-    bool worker = false, window = false;
+    bool worker = false, window = false, server = false;
     const std::vector<std::wstring> arguments = Arguments(commandLine);
     for (size_t i = 1; i < arguments.size(); ++i) // [0] is the program
     {
@@ -291,7 +292,12 @@ inline Role RoleOf(std::wstring_view commandLine)
             worker = true;
         else if (arguments[i] == L"--client-window")
             window = true;
+        // 0.10's own server processes (strings in its executable: --server-worker, --headless).
+        else if (arguments[i] == L"--server-worker" || arguments[i] == L"--headless")
+            server = true;
     }
+    if (server)
+        return Role::OtherWorker;
     if (!worker)
         return Role::Supervisor;
     return window ? Role::ClientWorker : Role::OtherWorker;
@@ -360,6 +366,63 @@ inline bool Proven(const Version& version)
             proven.part[2] == version.part[2])
             return true;
     return false;
+}
+
+// 0.10.0 AND LATER RUN A RECOMPILED HALO 3 (docs/RECLAIMER-0.10-ENGINE-EVIDENCE.md). 0.10.0 ("rcl-engine") no longer
+// runs MCC's halo3.dll: it translates the DLL's code into its own once (Cache\native\retail-engine\engine.code) and
+// runs that inside the client the player starts ("[host] linked recompiled engine, image at ...", "[host] engine
+// thread started"), with no engine worker. So the mod goes into the client itself, and its Halo 3 hooks go on the
+// translated functions (src/dll/lifted_engine.h). Measured on 0.10.0; a later version is taken to be the same until
+// one is shown not to be.
+inline constexpr Version kFirstRecompiledEngine{{0, 10, 0}, true};
+inline bool RunsRecompiledEngine(const Version& version)
+{
+    return version.known && !Newer(kFirstRecompiledEngine, version);
+}
+
+// The folder that holds the client's settings.json. Up to 0.9: Documents\My Games\Project Reclaimer. 0.10 moves the
+// player's files to %LOCALAPPDATA%\ProjectReclaimer on its first start and no longer reads the old folder (its note
+// "Your files moved.txt" there says so; 0.9 goes on using the old one). Empty when the base folder is unknown.
+inline std::wstring SettingsFolder(bool recompiledEngine, const std::wstring& documents,
+                                   const std::wstring& localAppData)
+{
+    if (recompiledEngine)
+        return localAppData.empty() ? std::wstring() : localAppData + L"\\ProjectReclaimer";
+    return documents.empty() ? std::wstring() : documents + L"\\My Games\\Project Reclaimer";
+}
+
+// Which client process gets the mod: up to 0.9, the engine worker with the player's window; from 0.10, the client
+// itself (a process started without a worker's or a server's arguments).
+inline bool TakesMod(Role role, bool recompiledEngine)
+{
+    return recompiledEngine ? role == Role::Supervisor : role == Role::ClientWorker;
+}
+
+// A program's version from its version resource (VS_VERSIONINFO, as FindResource/LoadResource give it), without
+// version.dll: its VS_FIXEDFILEINFO is found by its signature. Unknown when there is none.
+inline Version VersionFromVersionResource(const uint8_t* data, size_t size)
+{
+    Version version;
+    if (!data)
+        return version;
+    for (size_t at = 0; at + 52 <= size; at += 4)
+    {
+        uint32_t signature = 0;
+        std::memcpy(&signature, data + at, 4);
+        if (signature != 0xFEEF04BD)
+            continue;
+        uint32_t ms = 0, ls = 0;
+        std::memcpy(&ms, data + at + 8, 4);
+        std::memcpy(&ls, data + at + 12, 4);
+        if (!ms && !ls)
+            return version;
+        version.part[0] = static_cast<int>(ms >> 16);
+        version.part[1] = static_cast<int>(ms & 0xFFFF);
+        version.part[2] = static_cast<int>(ls >> 16);
+        version.known = true;
+        return version;
+    }
+    return version;
 }
 
 // One client found on disk. `time` is its file time in any unit that orders (the newer file is the larger).
@@ -602,6 +665,32 @@ inline bool ScreenShownAsPanel(bool screen, bool gameFrame, bool panelUsable)
 {
     return screen && gameFrame && panelUsable;
 }
+// A FRAME THAT LOST A PIECE OF THE HOST'S DRAWING. Measured on 0.10 (2026-11-07): a menu drawn in 9 pieces a frame
+// averaged 8.95, one piece missing from about one frame in twenty, and in the headset parts of the menu blinked out,
+// each at its own times. A picture with fewer of the host's draws than the one shown keeps the one shown instead, for
+// at most kFrames frames in a row; a menu that really lost a piece (a list closed, a highlight gone) shows it that
+// many frames late. Hold() is asked once a frame with that frame's draws; Reset() when nothing has been shown yet.
+class FewerDrawsHold
+{
+public:
+    static constexpr uint32_t kFrames = 3;
+    // True: show the last picture again instead of this one.
+    bool Hold(uint32_t draws) noexcept
+    {
+        if (shown_ && draws < shown_ && held_ < kFrames)
+        {
+            ++held_;
+            return true;
+        }
+        shown_ = draws;
+        held_ = 0;
+        return false;
+    }
+    void Reset() noexcept { shown_ = held_ = 0; }
+
+private:
+    uint32_t shown_ = 0, held_ = 0;
+};
 
 // How many texels differ between two readbacks of the same size (rows `beforePitch` / `afterPitch` bytes apart,
 // `bytesPerTexel` each). The two are the same rows of the frame just before the host drew into it and just

@@ -55,4 +55,19 @@ private:
     bool left_=false;
     std::array<uint32_t,2> weapons_{UINT32_MAX,UINT32_MAX};
 };
+
+// The buttons one frame's shaken slots press: `reload` is the game's Reload binding, `secondaryReload` Halo 3's own
+// left-weapon reload binding (0 where unbound or unread). Halo 2 has no left-gun reload control: its Reload starts
+// both guns' reloads together (HALO2-DUAL-SHAKE-RELOAD-2026-11-06.md), so either hand's shake presses Reload there.
+struct ReloadPress { uint32_t buttons=0; bool secondaryUnbound=false; };
+inline ReloadPress ReloadButtons(GameTitle title,unsigned slots,uint32_t reload,uint32_t secondaryReload) noexcept
+{
+    ReloadPress press{};
+    if(slots&1u) press.buttons|=reload;
+    if(slots&2u) {
+        const uint32_t left=title==GameTitle::Halo2?reload:secondaryReload;
+        if(left) press.buttons|=left; else press.secondaryUnbound=true;
+    }
+    return press;
+}
 }

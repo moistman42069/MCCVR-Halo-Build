@@ -56,14 +56,15 @@ int main()
 {
     using namespace halo3_player_tags;
 
-    // Teammates' tags against objectives and carriers, as the producers write them.
+    // Players' tags against objectives, as the producers write them.
     Check(IsPlayerTag(0, 0x00), "a teammate, no state");
     Check(IsPlayerTag(1, 0x04), "a teammate firing");
     Check(IsPlayerTag(-1, 0x10), "a teammate speaking, no icon");
     Check(IsPlayerTag(0, 0x3C), "every player state flag");
     Check(!IsPlayerTag(2, 0x41), "a CTF objective");
     Check(!IsPlayerTag(2, 0xC1), "an objective with its distance text");
-    Check(!IsPlayerTag(0, 0x01), "a carrier on the off-screen ring");
+    Check(IsPlayerTag(0, 0x01), "a carrier on the off-screen ring is a player's tag");
+    Check(IsPlayerTag(0, 0x09) && IsPlayerTag(0, 0x21), "players an Infection game puts on the off-screen ring");
     Check(!IsPlayerTag(1, 0x40), "a radar entry");
 
     // Settings into range.
@@ -172,6 +173,19 @@ int main()
     Check(kOdstDraw.alphaReadPattern == kAlphaReadPattern && kOdstDraw.stridePattern == kStridePattern &&
               kOdstDraw.gamertagPastEntries == kOdstGamertagPastEntries && kHalo3Draw.gamertagPastEntries == 0xC,
           "each title's profile names its own fields");
+
+    // Project Reclaimer 0.10's own draw: found from its version's call, its count read from its own global.
+    const auto version = Tokens(kReclaimerVersionPattern);
+    Check(version[kReclaimerVersionCallRel - 1] == 0xE8 && Wild(version, kReclaimerVersionCallRel, 4) &&
+              version[kReclaimerVersionCallRel + 4] == 0x84 && version[kReclaimerVersionCallRel + 5] == 0xC0,
+          "Reclaimer: its version calls its own draw and tests what it says");
+    const auto countRead = Tokens(kReclaimerCountPattern);
+    Check(countRead[0] == 0x48 && countRead[1] == 0x8B && countRead[2] == 0x3D &&
+              Wild(countRead, kReclaimerCountDisp, 4) && countRead.back() == static_cast<int>(kEntryStride),
+          "Reclaimer: the count is read rip-relative and multiplied by the entry stride");
+    Check(HostEntryCount(212) == 212 && HostEntryCount(20) == 20 && HostEntryCount(19) == 0 &&
+              HostEntryCount(257) == 0 && HostEntryCount(0x1000000D4ull) == 0,
+          "Reclaimer: its count is believed from twenty to the maximum");
 
     // The census key round-trips, and a teammate with no flags is never an empty slot.
     Check(KindKey(0, 0) != 0, "a kind is never an empty census slot");

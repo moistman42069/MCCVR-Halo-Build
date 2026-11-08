@@ -17,6 +17,8 @@ BOOL WINAPI ReleaseModule(HMODULE) { ++releases;return TRUE; }
 #include "../src/dll/haloce_unit_control.cpp"
 #undef GetModuleHandleExW
 #undef FreeLibrary
+// The vehicle camera note's post (game.cpp) is not linked here.
+void Game_HaloCEHudNotePost() {}
 
 namespace
 {

@@ -208,6 +208,16 @@ void RemoveHalo3TagNames()
     Halo3TagNamesForget(true);
 }
 
+// Whether the loaded map's scenario is one of ODST's, from the game's own header copy (reclaimer_odst_hud_record.inl).
+// Only the path's start is read: this runs every frame of a level until ODST's record is found.
+bool Halo3LoadedScenarioIsOdst()
+{
+    char path[16]{};
+    return g_halo3TagNames.header &&
+        Halo3TagNamesCopy(path, g_halo3TagNames.header + halo3_tag_names::kScenarioPathOffset, sizeof(path) - 1) &&
+        reclaimer_odst_hud::IsOdstScenarioPath(path);
+}
+
 // Copies the loaded map's table and proves it is that map's; then publishes the verdicts. Empty = done; else why not.
 std::string Halo3TagNamesLoad(uint32_t generation)
 {

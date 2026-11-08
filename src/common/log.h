@@ -4,7 +4,9 @@
 // halo3xr.log next to the DLL so users can send us the file when something
 // goes wrong on a machine we can't see.
 
-void LogInit(const wchar_t* filePath);
+// `keepRuns` > 0: the log a run before left is first copied into a Logs folder beside it, named for when that run
+// started, and only the newest `keepRuns` such copies are kept (log_archive_logic.h).
+void LogInit(const wchar_t* filePath, unsigned keepRuns = 0);
 // Directory of the log file (trailing separator included), for evidence
 // files written next to it. Empty until LogInit ran.
 const wchar_t* LogDirectory();

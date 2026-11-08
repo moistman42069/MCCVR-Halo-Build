@@ -1,3 +1,4 @@
+#include "game_tls.h"
 // Halo 3 native contact adapter. Included after the title-owned native getters.
 // H3EK mappings and native ABI proof: PHYSICAL-CONTACT-MELEE-WORK.md.
 using Halo3ContactUpdateFn=uint8_t(__fastcall*)(uint32_t);
@@ -46,7 +47,7 @@ bool Halo3ContactMeleeReady()
 const uint8_t* Halo3ContactTls()
 {
     if(!g_engineTlsIndex || *g_engineTlsIndex>=0x200) return nullptr;
-    auto** slots=reinterpret_cast<void**>(__readgsqword(0x58));
+    auto** slots=reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
     return slots ? static_cast<const uint8_t*>(slots[*g_engineTlsIndex]) : nullptr;
 }
 
@@ -163,7 +164,7 @@ __declspec(noinline) void __fastcall Halo3ContactDamageDetour(void* event,uint32
     {
         auto& scope=g_halo3ContactScope;
         auto* bytes=static_cast<uint8_t*>(event);
-        const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
+        const uintptr_t caller=HALOMCCVR_GAME_RETURN_ADDRESS();
         const bool own=scope.active && caller==g_halo3Contact.base+0x35C102;
         if(!own || (bytes && *reinterpret_cast<const uint32_t*>(bytes+0x18)==scope.owner &&
             target==scope.target && Halo3ContactObject(target)))
@@ -386,8 +387,8 @@ bool InstallHalo3ContactMelee(uintptr_t base,size_t size,uint32_t generation)
     g_halo3Contact.base=base;
     g_halo3Contact.generation=generation;
     g_halo3Contact.flags=reinterpret_cast<const uint64_t*>(flags);
-    g_halo3Contact.melee=reinterpret_cast<Halo3ContactMeleeFn>(base+0x35AE34);
-    g_halo3Contact.playback=reinterpret_cast<GameIsPlaybackFn>(base+0xF01A0);
+    g_halo3Contact.melee=lifted::Callable(reinterpret_cast<Halo3ContactMeleeFn>(base+0x35AE34));
+    g_halo3Contact.playback=lifted::Callable(reinterpret_cast<GameIsPlaybackFn>(base+0xF01A0));
     g_halo3Contact.faulted.store(false);
     g_halo3Contact.processing.store(false);
     g_halo3Contact.secondaryAtMs.store(0);

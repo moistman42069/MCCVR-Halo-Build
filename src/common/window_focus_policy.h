@@ -3,7 +3,12 @@
 #include <windows.h>
 
 enum class WindowFocusAction { PassThrough, KeepActive, SuppressLoss, ActivateMouse };
-inline WindowFocusAction DecideWindowFocus(GameTitle title,RuntimeMode mode,UINT message) noexcept {
+// `hostTracksFocus`: a host that keeps its game running out of focus and tracks focus its own way (Project Reclaimer
+// 0.10). Hiding a focus loss from it left its game deaf to every control after a pause, a switch away and back, and
+// the unpause; it gets the genuine transitions.
+inline WindowFocusAction DecideWindowFocus(GameTitle title,RuntimeMode mode,UINT message,
+                                           bool hostTracksFocus=false) noexcept {
+    if(hostTracksFocus)return WindowFocusAction::PassThrough;
     const bool known=title==GameTitle::HaloCE||title==GameTitle::Halo2||title==GameTitle::Halo3||
         title==GameTitle::Halo3ODST||title==GameTitle::HaloReach||title==GameTitle::Halo4;
     // Native shell/authentication dialogs need genuine OS focus transitions.

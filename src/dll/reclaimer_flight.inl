@@ -86,7 +86,8 @@ void ReclaimerFlightPoll(const TitleDescriptor* title)
         return;
     }
     HMODULE pinned = nullptr;
-    if (!GetModuleHandleExW(0, title->moduleName, &pinned))
+    // Project Reclaimer 0.10 loads no halo3.dll: its image inside the client stands in (lifted_engine.h).
+    if (!GetModuleHandleExW(0, title->moduleName, &pinned) && !(pinned = lifted::Halo3Module()))
     {
         g_reclaimerFlightStatus.store(0, std::memory_order_relaxed);
         return;
@@ -147,7 +148,8 @@ void ReclaimerFlightPoll(const TitleDescriptor* title)
             g_reclaimerFlightStatus.store(buttons ? 1 : 2, std::memory_order_relaxed);
         }
     }
-    FreeLibrary(pinned);
+    if (pinned != lifted::Halo3Module())
+        FreeLibrary(pinned);
 }
 }
 

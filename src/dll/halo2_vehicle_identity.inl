@@ -14,39 +14,50 @@ bool VerifyHalo2VehicleIdentity(uintptr_t base,size_t size) noexcept {
     }
     return true;
 }
-uint64_t ReadHalo2VehicleIdentity(uint32_t parentHandle) noexcept {
-    if(!g_vehicleIdentityVerified.load(std::memory_order_acquire)) return 0;
+// The vehicle's render model as the identity is matched from it: its compressed bounds and node count, read through the
+// same native chain, and `identity` the model the mod knows by them (0 when it is none). False when the chain did not
+// read or changed under the read; `identity` is then 0.
+bool ReadHalo2VehicleModel(uint32_t parentHandle,uint64_t& identityOut,float boundsOut[6],unsigned& nodesOut) noexcept {
+    identityOut=0;nodesOut=0;
+    if(!g_vehicleIdentityVerified.load(std::memory_order_acquire)) return false;
     const auto get=reinterpret_cast<Halo2GraphDefinitionGetFn>(g_graphDefinitionGet.load(std::memory_order_acquire));
     const auto slot=reinterpret_cast<const uint8_t* const*>(g_halo2TagDataBaseSlot.load(std::memory_order_acquire));
-    if(!get||!slot) return 0;
+    if(!get||!slot||!boundsOut) return false;
     __try {
         const auto* parent=static_cast<const uint8_t*>(Halo2ObjectFromIndex(parentHandle));
-        if(!parent||parent[0xAA]!=1||!*slot) return 0;
+        if(!parent||parent[0xAA]!=1||!*slot) return false;
         const auto definition=*reinterpret_cast<const uint16_t*>(parent);
         const auto* object=static_cast<const uint8_t*>(get(definition));
-        if(!object) return 0;
+        if(!object) return false;
         const auto modelTag=*reinterpret_cast<const uint32_t*>(object+0x38);
-        if(modelTag==UINT32_MAX) return 0;
+        if(modelTag==UINT32_MAX) return false;
         const auto* model=static_cast<const uint8_t*>(get(modelTag));
-        if(!model) return 0;
+        if(!model) return false;
         const auto renderTag=*reinterpret_cast<const uint32_t*>(model+4);
-        if(renderTag==UINT32_MAX) return 0;
+        if(renderTag==UINT32_MAX) return false;
         const auto* render=static_cast<const uint8_t*>(get(renderTag));
         int32_t offset=0;
-        if(!render||!Halo2ReadWeaponCompressionHeader(std::span<const uint8_t>(render,0x1C),offset)) return 0;
+        if(!render||!Halo2ReadWeaponCompressionHeader(std::span<const uint8_t>(render,0x1C),offset)) return false;
         // Native 8D12EA..8D1303 divides this matrix byte count by 0x34.
         const auto nodeBytes=*reinterpret_cast<const int16_t*>(parent+0x118);
-        if(nodeBytes<=0||nodeBytes%0x34||nodeBytes/0x34>255) return 0;
+        if(nodeBytes<=0||nodeBytes%0x34||nodeBytes/0x34>255) return false;
         const auto base=reinterpret_cast<uintptr_t>(*slot);
         const auto address=static_cast<int64_t>(base)+static_cast<int64_t>(offset);
-        if(address<=0||static_cast<uint64_t>(address)>UINTPTR_MAX-24) return 0;
+        if(address<=0||static_cast<uint64_t>(address)>UINTPTR_MAX-24) return false;
         float bounds[6]{};std::memcpy(bounds,reinterpret_cast<const void*>(address),sizeof(bounds));
         const auto* identity=halo2_vehicle_identity::Find(bounds,nodeBytes/0x34);
-        if(!identity||parent!=Halo2ObjectFromIndex(parentHandle)||
+        if(parent!=Halo2ObjectFromIndex(parentHandle)||
             *reinterpret_cast<const uint16_t*>(parent)!=definition||
             *reinterpret_cast<const int16_t*>(parent+0x118)!=nodeBytes||
             *reinterpret_cast<const uint32_t*>(object+0x38)!=modelTag||
-            *reinterpret_cast<const uint32_t*>(model+4)!=renderTag) return 0;
-        return identity->identity;
-    } __except(EXCEPTION_EXECUTE_HANDLER) {return 0;}
+            *reinterpret_cast<const uint32_t*>(model+4)!=renderTag) return false;
+        std::memcpy(boundsOut,bounds,sizeof(bounds));
+        nodesOut=static_cast<unsigned>(nodeBytes/0x34);
+        identityOut=identity?identity->identity:0;
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {identityOut=0;nodesOut=0;return false;}
+}
+uint64_t ReadHalo2VehicleIdentity(uint32_t parentHandle) noexcept {
+    uint64_t identity=0;float bounds[6]{};unsigned nodes=0;
+    return ReadHalo2VehicleModel(parentHandle,identity,bounds,nodes)?identity:0;
 }

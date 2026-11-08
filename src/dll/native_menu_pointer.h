@@ -11,4 +11,4 @@ void NativeMenuPointer_FrameStatus(const char* status); // static literal, atomi
 bool NativeMenuPointer_ReadVisual(float& u, float& v, bool& pressed);
 void NativeMenuPointer_CursorFailed(); // atomic report; retires optional layer only
 // Called before ImGui/native processing, on the window thread.
-bool NativeMenuPointer_Message(UINT message);
+bool NativeMenuPointer_Message(UINT message, LPARAM lParam = 0);

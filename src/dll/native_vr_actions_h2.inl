@@ -142,7 +142,9 @@ bool Retire() {
         if(MH_RemoveHook(runtime.target[i])!=MH_OK) return false;
         runtime.target[i]=runtime.original[i]=nullptr;
     }
-    if(runtime.module) FreeLibrary(runtime.module);
+    // The reference goes last, and the unload gate is told after it has gone: a load of this DLL that was waiting for
+    // this teardown may go on, and finds the old image unloaded.
+    if(runtime.module) { const HMODULE held=runtime.module;FreeLibrary(held);HostUnloadGate_Unpin(held); }
     runtime.module=nullptr;runtime.base=runtime.state=runtime.elapsed=0;runtime.generation=0;
     runtime.readerAt.store(0,std::memory_order_release);
     runtime.attempted=false;runtime.faulted=false;
@@ -165,9 +167,16 @@ void Poll() {
         if(!Retire()) return;
         LOG("Native VR action bridge H2: retired faulted optional hooks; transport routing retained");
     }
-    if(runtime.module && (active!=title || generation!=runtime.generation))
+    // THE REFERENCE ON THE GAME DLL IS HELD ONLY WHILE THE TITLE'S CAMERA CORE IS INSTALLED (game.h GameTitleCoreState),
+    // as the first-person seat view's is. Held until another title started, it kept a game's DLL past the game's end:
+    // MCC's reload for its menus took the old image, and the next game of the same title started in a module whose
+    // shutdown had already run (the unload gate's "the old image was STILL LOADED"; Halo 4 crashed on the next start).
+    GameTitleCoreState core{};
+    const bool coreSays=Game_TitleCoreState(title,core);
+    if(runtime.module && (active!=title || generation!=runtime.generation || (coreSays&&!core.installed)))
         if(!Retire()) return;
-    if(active!=title || !generation || generation==blockedGeneration || !(g_config.vr_action_mapping||Config_GestureOnlyWeaponInput())) return;
+    if(active!=title || !generation || (coreSays&&!core.installed) || generation==blockedGeneration ||
+        !(g_config.vr_action_mapping||Config_GestureOnlyWeaponInput())) return;
     if(!runtime.attempted) {
         // The preexisting read-only transport resolver must verify the reader
         // before MinHook changes its prologue. Retain that cache so optional
@@ -176,6 +185,10 @@ void Poll() {
         if(!Game_ReadVrActionBindings(fallback,GetTickCount64())) return;
         const auto* descriptor=TitleRegistry_Find(title);
         if(!descriptor || !GetModuleHandleExW(0,descriptor->moduleName,&runtime.module)) return;
+        // MCC's reload of this DLL at the game's end waits for the core's teardown and this lane's.
+        if(coreSays&&core.tearingDown)
+            HostUnloadGate_Pin(runtime.module,core.tearingDown,core.lastFrameMs,descriptor->displayName,
+                               core.lastFrameMs!=nullptr);
         runtime.attempted=true;runtime.base=reinterpret_cast<uintptr_t>(runtime.module);
         runtime.generation=generation;
         uintptr_t base=0;size_t size=0;

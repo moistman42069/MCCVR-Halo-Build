@@ -1,12 +1,15 @@
 #include "native_menu_pointer.h"
 #include "../common/game_menu_pointer.h"
 #include "../common/config.h"
+#include "../common/exclusive_input.h"
 #include "../common/log.h"
 #include "d3d11_hook.h"
 #include "menu.h"
 #include "title_adapter.h"
 #include "vr.h"
+#include <algorithm>
 #include <atomic>
+#include <iterator>
 
 namespace {
 HWND window = nullptr;
@@ -17,14 +20,28 @@ std::atomic<bool> delivered{false};
 std::atomic<unsigned> postFailures{0};
 std::atomic<uint64_t> visual{0};
 std::atomic<unsigned> moveCount{0}, clickCount{0};
+// Posted delivery: moves not sent because the hand rested, and moves the window was sent by anything but the pointer.
+std::atomic<unsigned> restingCount{0}, foreignMoves{0};
 std::atomic<unsigned> cursorFailures{0};
 std::atomic<const char*> frameStatus{"no-screen"}, deliveryStatus{"idle"};
 std::atomic<float> scrollStick{0.0f};
 // All remaining state belongs exclusively to MCC's window thread.
 game_menu_pointer::Pointer pointer;
-game_menu_pointer::StickWheel stickWheel;
+// Eighths of a notch, many a second, so MCC's lists glide rather than jump; 10 notches a second when pushed fully, the
+// speed whole notches had (15 was too sensitive in the headset).
+constexpr int kWheelStepsPerNotch = 8;
+game_menu_pointer::StickWheel stickWheel{10.0f, kWheelStepsPerNotch};
 UINT_PTR timer = 0;
 bool mouseDown = false;
+bool mouseDownPosted = false; // the down went to the window as a message (PostsMessages), so its release does too
+LPARAM lastClientPoint = 0;   // where the last posted move was, in client coordinates
+bool pointPosted = false;     // a point has been sent (posted, or the cursor set) since the pointer last started
+bool pointsPosted = false;    // and it was posted (PostsMessages), so the window's own moves can be told apart
+int lastX = 0, lastY = 0;     // lastClientPoint's coordinates
+// A move closer than this to the last one sent is not sent (posted delivery).
+constexpr int kRestPixels = 3;
+LPARAM sentPoints[8]{};       // the last moves posted, to tell them from the window's other moves
+unsigned sentNext = 0;
 bool faultLogged = false;
 
 bool Allowed()
@@ -36,14 +53,36 @@ bool Allowed()
         !VR_IsCutsceneTheaterActive() && window &&
         GetForegroundWindow() == window && !IsIconic(window);
 }
-bool Button(bool down)
+// Project Reclaimer reads its screens' mouse from the window's own messages, and its window can be larger than the
+// monitor (0.10's is the Picture panel's size), where the real cursor cannot go: only the window's top-left part was
+// reachable. For such a window the pointer posts the messages, at the client point itself, instead of moving the
+// cursor. MCC reads the cursor itself (d3d11_hook.cpp GetCursorPosHook) and keeps the cursor.
+bool PostsMessages()
+{
+    if (!g_hostIsProjectReclaimer) return false;
+    RECT client{};
+    if (!GetClientRect(window, &client)) return false;
+    POINT first{client.left, client.top}, last{client.right - 1, client.bottom - 1};
+    MONITORINFO monitor{sizeof(monitor)};
+    if (!ClientToScreen(window, &first) || !ClientToScreen(window, &last) ||
+        !GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor)) return false;
+    return first.x < monitor.rcMonitor.left || first.y < monitor.rcMonitor.top ||
+        last.x >= monitor.rcMonitor.right || last.y >= monitor.rcMonitor.bottom;
+}
+bool Button(bool down, bool posted = false)
 {
     if (mouseDown == down) return true;
-    INPUT input{};
-    input.type = INPUT_MOUSE;
-    input.mi.dwFlags = down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
-    if (SendInput(1, &input, sizeof(input)) != 1) return false;
+    if (down ? posted : mouseDownPosted) {
+        if (!PostMessageW(window, down ? WM_LBUTTONDOWN : WM_LBUTTONUP, down ? MK_LBUTTON : 0, lastClientPoint))
+            return false;
+    } else {
+        INPUT input{};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+        if (SendInput(1, &input, sizeof(input)) != 1) return false;
+    }
     mouseDown = down;
+    mouseDownPosted = down && posted;
     if (down) clickCount.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
@@ -62,6 +101,7 @@ void Cancel()
     pointer.Reset();
     stickWheel.Reset();
     if (!Button(false)) Fault();
+    pointPosted = false;
     // Retry a failed release on the existing timer. Never forget a sent down.
     if (timer && !mouseDown) { KillTimer(nullptr, timer); timer = 0; }
 }
@@ -82,19 +122,46 @@ void Apply()
     if (!mouseDown && (GetAsyncKeyState(VK_LBUTTON) & 0x8000)) { deliveryStatus.store("physical-drag"); Cancel(); return; }
     POINT target{result.x, result.y};
     if (!ClientToScreen(window, &target)) { Cancel(); Fault(); return; }
-    const HWND under = WindowFromPoint(target);
-    if (under != window && !IsChild(window, under)) { deliveryStatus.store("window-covered"); Cancel(); return; }
+    const bool posted = PostsMessages();
+    if (!posted) {
+        // A message goes to the window whatever covers it; the cursor's click goes to what is under it.
+        const HWND under = WindowFromPoint(target);
+        if (under != window && !IsChild(window, under)) { deliveryStatus.store("window-covered"); Cancel(); return; }
+    }
     if (!timer) timer = SetTimer(nullptr, 0, 50, Watchdog);
     if (!timer) { Cancel(); Fault(); return; }
-    // Our DLL caller bypasses MCC's fitted-window coordinate remap. Send
-    // physical client coordinates once; the existing MCC read hook scales them.
-    POINT actual{};
-    if (!SetCursorPos(target.x, target.y) || !GetCursorPos(&actual) ||
-        std::abs(actual.x-target.x)>2 || std::abs(actual.y-target.y)>2) {
-        Cancel(); Fault(); return;
+    // A mouse at rest sends no moves, and the window acts on each one it is sent. Project Reclaimer's menus, sent one
+    // every frame by a pointer held on an item, played their cursor sound every second or two. So a hand that rests
+    // sends none either: a move goes only once the point is kRestPixels from the last one sent. A posted press goes to
+    // that point. The cursor rests the same way for Project Reclaimer (its fitted window, D3D_HostFitWindow), and
+    // is set again for a press or a release, which goes where the cursor is; MCC's is set every frame, as before.
+    const bool resting = pointPosted && std::abs(result.x - lastX) < kRestPixels &&
+        std::abs(result.y - lastY) < kRestPixels && (posted || (g_hostIsProjectReclaimer && result.pressed == mouseDown));
+    if (resting)
+        restingCount.fetch_add(1, std::memory_order_relaxed);
+    else if (posted) {
+        lastClientPoint = MAKELPARAM(static_cast<WORD>(result.x), static_cast<WORD>(result.y));
+        if (!PostMessageW(window, WM_MOUSEMOVE, mouseDown ? MK_LBUTTON : 0, lastClientPoint)) {
+            Cancel(); Fault(); return;
+        }
+        sentPoints[sentNext++ % std::size(sentPoints)] = lastClientPoint;
+    } else {
+        // Our DLL caller bypasses MCC's fitted-window coordinate remap. Send
+        // physical client coordinates once; the existing MCC read hook scales them.
+        POINT actual{};
+        if (!SetCursorPos(target.x, target.y) || !GetCursorPos(&actual) ||
+            std::abs(actual.x-target.x)>2 || std::abs(actual.y-target.y)>2) {
+            Cancel(); Fault(); return;
+        }
+    }
+    if (!resting) {
+        lastX = result.x;
+        lastY = result.y;
+        pointPosted = true;
+        pointsPosted = posted;
     }
     const bool wasDown = mouseDown;
-    if (!Button(result.pressed)) { Cancel(); Fault(); }
+    if (!Button(result.pressed, posted)) { Cancel(); Fault(); }
     else {
         // Each click and where it landed, to set beside what the player says it did not press.
         if (mouseDown != wasDown)
@@ -102,18 +169,22 @@ void Apply()
                 int(result.y), int(client.right-client.left), int(client.bottom-client.top));
         moveCount.fetch_add(1, std::memory_order_relaxed);
         // The cursor is on the target now, so the wheel goes to what is under it. Not during a drag.
-        const int notches = stickWheel.Step(scrollStick.load(std::memory_order_acquire), GetTickCount());
-        if (notches && !mouseDown) {
+        const int steps = stickWheel.Step(scrollStick.load(std::memory_order_acquire), GetTickCount());
+        if (steps && !mouseDown) {
             INPUT wheel{};
             wheel.type = INPUT_MOUSE;
             wheel.mi.dwFlags = MOUSEEVENTF_WHEEL;
-            wheel.mi.mouseData = static_cast<DWORD>(notches * WHEEL_DELTA);
-            if (SendInput(1, &wheel, sizeof(wheel)) != 1) Fault();
+            const int delta = steps * (WHEEL_DELTA / kWheelStepsPerNotch);
+            wheel.mi.mouseData = static_cast<DWORD>(delta);
+            // A posted wheel message carries the screen point.
+            if (posted ? !PostMessageW(window, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(delta)),
+                                       MAKELPARAM(static_cast<WORD>(target.x), static_cast<WORD>(target.y)))
+                       : SendInput(1, &wheel, sizeof(wheel)) != 1) Fault();
             // What a screen that does not scroll was sent, to set beside the report.
             static unsigned wheelLogs = 0;
             if (wheelLogs < 24 && ++wheelLogs)
-                LOG("game menu pointer: wheel %d notch(es) at %d,%d of %dx%d", notches, int(result.x), int(result.y),
-                    int(client.right-client.left), int(client.bottom-client.top));
+                LOG("game menu pointer: wheel %d/%d notch at %d,%d of %dx%d", steps, kWheelStepsPerNotch,
+                    int(result.x), int(result.y), int(client.right-client.left), int(client.bottom-client.top));
         }
         deliveryStatus.store("delivered");
         visual.store(game_menu_pointer::Pack(GetTickCount(), true,
@@ -159,16 +230,41 @@ void NativeMenuPointer_ReportFailures()
         LOG("game menu cursor: frame submission rejected; optional ring disabled for this session, native input and core VR retained");
     const unsigned failures = postFailures.exchange(0, std::memory_order_relaxed);
     if (failures) LOG("game menu pointer: %u window-message delivery failures; native controls retained", failures);
+    // Whether the game's window is in front, each time that changes, and what is in front instead: to set beside a
+    // report of the controls going dead around a switch to another window.
+    if (window) {
+        static HWND lastFront = reinterpret_cast<HWND>(-1);
+        const HWND front = GetForegroundWindow();
+        if (front != lastFront) {
+            lastFront = front;
+            if (front == window) LOG("game window: in front");
+            else {
+                wchar_t name[64] = L"no window";
+                DWORD pid = 0;
+                if (front) {
+                    GetClassNameW(front, name, 64);
+                    GetWindowThreadProcessId(front, &pid);
+                }
+                LOG("game window: not in front (%ls, process %lu%s)", name, static_cast<unsigned long>(pid),
+                    pid == GetCurrentProcessId() ? ", this game's" : "");
+            }
+        }
+    }
     static DWORD lastReport = 0;
     static int lastEnabled = -1;
     const int enabled = g_config.game_menu_pointer ? 1 : 0;
     const DWORD now = GetTickCount();
     if (lastEnabled != enabled || (enabled && DWORD(now-lastReport) >= 2000)) {
         lastReport = now; lastEnabled = enabled;
-        LOG("game menu pointer: enabled=%d hand=%s mode=%u frame=%s delivery=%s active=%d moves=%u clicks=%u",
-            enabled, g_config.left_handed ? "left" : "right", unsigned(TitleAdapter_GetRuntimeMode()),
-            frameStatus.load(), deliveryStatus.load(),
-            int(game_menu_pointer::FreshActive(visual.load(), now)), moveCount.load(), clickCount.load());
+        // withheld: the game's pad is blank but for the menu's buttons (a menu or the pointer owns the controls).
+        // resting / foreign (posted delivery): moves not sent while the hand rested; moves the window got from
+        // anything but the pointer while it pointed.
+        LOG("game menu pointer: enabled=%d hand=%s mode=%u frame=%s delivery=%s active=%d moves=%u clicks=%u "
+            "withheld=%d resting=%u foreign=%u", enabled, g_config.left_handed ? "left" : "right",
+            unsigned(TitleAdapter_GetRuntimeMode()), frameStatus.load(), deliveryStatus.load(),
+            int(game_menu_pointer::FreshActive(visual.load(), now)), moveCount.load(), clickCount.load(),
+            int(exclusive_input::Active()), restingCount.load(std::memory_order_relaxed),
+            foreignMoves.load(std::memory_order_relaxed));
     }
 }
 void NativeMenuPointer_FrameStatus(const char* status) { frameStatus.store(status, std::memory_order_relaxed); }
@@ -183,13 +279,16 @@ bool NativeMenuPointer_ReadVisual(float& u, float& v, bool& pressed)
     pressed = (packet & (1ull << 30)) != 0;
     return true;
 }
-bool NativeMenuPointer_Message(UINT msg)
+bool NativeMenuPointer_Message(UINT msg, LPARAM lParam)
 {
     if (messageId && msg == messageId) {
         queued.store(false, std::memory_order_release);
         Apply();
         return true;
     }
+    if (msg == WM_MOUSEMOVE && pointPosted && pointsPosted &&
+        std::find(std::begin(sentPoints), std::end(sentPoints), lParam) == std::end(sentPoints))
+        foreignMoves.fetch_add(1, std::memory_order_relaxed);
     if (msg == WM_KILLFOCUS || msg == WM_DESTROY) {
         sample.store(0, std::memory_order_release);
         Cancel();

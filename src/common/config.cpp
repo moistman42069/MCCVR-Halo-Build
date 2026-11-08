@@ -1,4 +1,5 @@
 #include "weapon_alignment.h"
+#include "default_controls.h"
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
@@ -330,7 +331,7 @@ static bool FileExists(const wchar_t* path)
 
 static void Clamp()
 {
-    g_config.config_version = 6;
+    g_config.config_version = 7;
     g_config.haptic_intensity = std::clamp(g_config.haptic_intensity, 0.0f, 1.0f);
     g_config.dpad_head_radius = std::clamp(g_config.dpad_head_radius, 0.10f, 0.50f);
     g_config.headset_smoothing = std::clamp(g_config.headset_smoothing, 0.0f, 0.10f);
@@ -486,11 +487,11 @@ static void Clamp()
     g_config.reticle_min_scale_dist_m =
         std::clamp(g_config.reticle_min_scale_dist_m, 0.0f, g_config.reticle_max_dist_m - 0.1f);
     g_config.reticle_min_scale = std::clamp(g_config.reticle_min_scale, 0.001f, 1.0f);
-    // 0 stays 0 (hold one image); every other value is clamped into the range
-    // the publish floor can actually honour.
+    // 0 stays 0 (hold one image). Below 6 is honoured only where a publish is
+    // measured cheap (authored_reticle_logic.h, AuthoredReticleUploadGapForCost).
     if (g_config.crosshair_animation_frames != 0)
         g_config.crosshair_animation_frames =
-            std::clamp(g_config.crosshair_animation_frames, 6, 60);
+            std::clamp(g_config.crosshair_animation_frames, 1, 60);
     g_config.reticle_r = std::clamp(g_config.reticle_r, 0.0f, 1.0f);
     g_config.reticle_g = std::clamp(g_config.reticle_g, 0.0f, 1.0f);
     g_config.reticle_b = std::clamp(g_config.reticle_b, 0.0f, 1.0f);
@@ -712,6 +713,12 @@ static void Clamp()
         ? std::clamp(g_config.two_hand_one_hand_range_m, 0.06f, 0.48f) : 0.24f;
     g_config.aim_frame_move_s = std::isfinite(g_config.aim_frame_move_s)
         ? std::clamp(g_config.aim_frame_move_s, 0.0f, 1.0f) : 0.12f;
+    g_config.aim_frame_hud_size = std::isfinite(g_config.aim_frame_hud_size)
+        ? std::clamp(g_config.aim_frame_hud_size, 0.5f, 1.25f) : 1.0f;
+    g_config.aim_frame_hud_width_scale = std::isfinite(g_config.aim_frame_hud_width_scale)
+        ? std::clamp(g_config.aim_frame_hud_width_scale, 0.5f, 1.5f) : 1.0f;
+    g_config.aim_frame_hud_height_scale = std::isfinite(g_config.aim_frame_hud_height_scale)
+        ? std::clamp(g_config.aim_frame_hud_height_scale, 0.5f, 1.5f) : 1.0f;
     g_config.scope_screen_width_m = std::clamp(g_config.scope_screen_width_m, 0.04f, 0.25f);
     g_config.scope_screen_right_m = std::clamp(g_config.scope_screen_right_m, -0.30f, 0.30f);
     g_config.scope_screen_up_m = std::clamp(g_config.scope_screen_up_m, -0.20f, 0.30f);
@@ -1004,6 +1011,18 @@ void Config_StoreLiveTunables()
     }
 }
 
+void Config_RefreshLiveTunables()
+{
+    const std::lock_guard lock(g_profileMutex);
+    const int active = g_activeTitleProfile.load(std::memory_order_acquire);
+    for (int field = 0; field < kTunableFieldCount; ++field)
+    {
+        const TunableField& descriptor = kTunableFields[field];
+        if(g_activeWeaponProfile>=0&&WeaponAlignmentFieldIndex(descriptor.live)>=0) continue;
+        g_config.*descriptor.live = ProfileFor(active, descriptor).*descriptor.member;
+    }
+}
+
 const char* Config_ActiveWeaponProfileName()
 { return g_activeWeaponName.load(std::memory_order_acquire); }
 
@@ -1061,6 +1080,9 @@ void ConfigLoad(const wchar_t* path)
         // profile they belong to before the save stores them back.
         Config_ApplyAimModes();
         ResolveTitleProfiles();
+        // A new player starts on the Default controls, not the struct's Legacy Default.
+        default_controls::Apply(g_config);
+        strcpy_s(g_config.input_preset, "Default");
         ConfigSave();
         return;
     }
@@ -1072,6 +1094,7 @@ void ConfigLoad(const wchar_t* path)
     bool loadedHolsterRadius = false;
     bool flashlightMappingV2 = false;
     bool loadedInputPreset = false;
+    int inputsVersion = 0; // vr_inputs_version: 0, a file from before the rows held inputs
     bool leftHandForwardResetV1 = false;
     bool halo4HudHeightV2 = false;   // halo4_hud_height_version >= 2: Halo 4's HUD height is already up = positive
     bool loadedSharedLeftHandForward = false;
@@ -1126,19 +1149,52 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key,"two_hand_zone_right_m")) loadedTwoHandZoneRight=true;
         if (ParseWeaponAlignmentKey(key,val)||ParseTitleProfileKey(key, val))
             continue;
+        if(!strcmp(key,"vr_inputs_version")) {inputsVersion=atoi(val);continue;}
+        // A row's inputs (vr_mapping::ParseInput): its own (the key alone, which may be Automatic) and further ones (_2
+        // on), and the extra rows' (their own may be Automatic too).
         bool vrBindingKey=false;
         for(unsigned title=0;title<weapon_interaction::kTitleCount&&!vrBindingKey;++title)
-            for(unsigned action=0;action<vr_mapping::Count;++action)
+            for(unsigned action=0;action<vr_mapping::Count+vr_mapping::ExtraCount&&!vrBindingKey;++action)
+            {
+                const bool seat=action>=vr_mapping::Count;
+                const char* row=seat?vr_mapping::kExtraKeys[action-vr_mapping::Count]:vr_mapping::kKeys[action];
+                for(unsigned slot=0;slot<vr_mapping::kRowInputs&&!vrBindingKey;++slot)
+                {
+                    char bindingKey[96]{};
+                    sprintf_s(bindingKey,"vr_bind_%s_%s%s",weapon_interaction::kTitleKeys[title],row,
+                        vr_mapping::kControlSuffix[slot]);
+                    if(strcmp(key,bindingKey)) continue;
+                    vrBindingKey=true;
+                    bool read=false;
+                    if(seat)
+                    {
+                        auto& input=g_config.vr_extra_bindings[title][action-vr_mapping::Count][slot];
+                        read=vr_mapping::ParseExtraInput(val,input,slot==0);
+                    }
+                    else if(slot==0)
+                    {
+                        auto& inputs=g_config.vr_inputs[title][action];
+                        read=vr_mapping::ParseInput(val,inputs.held,g_config.vr_bindings[title][action],inputs.mode,true);
+                    }
+                    else
+                    {
+                        auto& input=g_config.vr_inputs[title][action].more[slot-1];
+                        read=vr_mapping::ParseInput(val,input.held,input.press,input.mode,false);
+                    }
+                    if(!read) LOG("config: invalid VR binding '%s' ignored",key);
+                }
+            }
+        // The mod's own rows, every game's: vr_bind_pause and _2 on.
+        for(unsigned action=0;action<vr_mapping::ModCount&&!vrBindingKey;++action)
+            for(unsigned slot=0;slot<vr_mapping::kRowInputs&&!vrBindingKey;++slot)
             {
                 char bindingKey[96]{};
-                sprintf_s(bindingKey,"vr_bind_%s_%s",weapon_interaction::kTitleKeys[title],vr_mapping::kKeys[action]);
+                sprintf_s(bindingKey,"vr_bind_%s%s",vr_mapping::kModKeys[action],vr_mapping::kControlSuffix[slot]);
                 if(strcmp(key,bindingKey)) continue;
-                char* end=nullptr;
-                const long value=strtol(val,&end,10);
-                if(end!=val&&end&&*end==0&&value>=0&&value<vr_mapping::SourceCount)
-                    g_config.vr_bindings[title][action]=static_cast<int>(value);
-                else LOG("config: invalid VR binding '%s' ignored",key);
-                vrBindingKey=true;break;
+                vrBindingKey=true;
+                auto& input=g_config.vr_mod_bindings[action][slot];
+                if(!vr_mapping::ParseInput(val,input.held,input.press,input.mode,false))
+                    LOG("config: invalid VR binding '%s' ignored",key);
             }
         if(vrBindingKey) continue;
         if(!strcmp(key,"experimental_body_ik")) {g_config.experimental_body_ik=atoi(val)!=0;continue;}
@@ -1224,6 +1280,7 @@ void ConfigLoad(const wchar_t* path)
         if(!strcmp(key,"gesture_melee_max_reach")) {ParseFloatSetting(key,val,g_config.gesture_melee_max_reach);continue;}
         if(!strcmp(key,"input_preset")) {strncpy_s(g_config.input_preset,val,_TRUNCATE);loadedInputPreset=true;continue;}
         if(!strcmp(key,"trigger_air_equipment")) {g_config.trigger_air_equipment=atoi(val)!=0;continue;}
+        if(!strcmp(key,"grip_contextual_trigger")) {g_config.grip_contextual_trigger=atoi(val)!=0;continue;}
         if(!strcmp(key,"right_stick_crouch")) {g_config.right_stick_crouch=atoi(val)!=0;continue;}
         if(!strcmp(key,"flashlight_suppress_on_two_hand")) {g_config.flashlight_suppress_on_two_hand=atoi(val)!=0;continue;}
         if(!strcmp(key,"upscaler")) {g_config.upscaler=atoi(val)==1?1:0;continue;}
@@ -1544,6 +1601,9 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "aim_frame_strength_1")) { g_config.aim_frame_strength[0] = (float)atof(val); continue; }
         if (!strcmp(key, "aim_frame_strength_2")) { g_config.aim_frame_strength[1] = (float)atof(val); continue; }
         if (!strcmp(key, "aim_frame_move_s")) { g_config.aim_frame_move_s = (float)atof(val); continue; }
+        if (!strcmp(key, "aim_frame_hud_size")) { g_config.aim_frame_hud_size = (float)atof(val); continue; }
+        if (!strcmp(key, "aim_frame_hud_width_scale")) { g_config.aim_frame_hud_width_scale = (float)atof(val); continue; }
+        if (!strcmp(key, "aim_frame_hud_height_scale")) { g_config.aim_frame_hud_height_scale = (float)atof(val); continue; }
         if (!strcmp(key, "hook_cost_frames"))
         {
             const int frames = atoi(val);
@@ -1700,6 +1760,7 @@ void ConfigLoad(const wchar_t* path)
             continue;
         }
         if (!strcmp(key, "nav_markers_on_target")) { g_config.nav_markers_on_target = atoi(val) != 0; continue; }
+        if (!strcmp(key, "nav_markers_follow_head")) { g_config.nav_markers_follow_head = atoi(val) != 0; continue; }
         if (!strcmp(key, "nav_marker_arrow_in_view")) { g_config.nav_marker_arrow_in_view = atoi(val) != 0; continue; }
         if (!strcmp(key, "nav_marker_ring"))
         {
@@ -1906,8 +1967,8 @@ void ConfigLoad(const wchar_t* path)
             else
             {
                 loadedConfigVersion = static_cast<int>(parsed);
-                if (parsed > 6)
-                    LOG("config: version %ld is newer than supported version 6; known keys will be loaded", parsed);
+                if (parsed > 7)
+                    LOG("config: version %ld is newer than supported version 7; known keys will be loaded", parsed);
             }
         }
         else if (!strcmp(key, "haptic_intensity"))
@@ -2235,6 +2296,9 @@ void ConfigLoad(const wchar_t* path)
                 if (title[action] == vr_mapping::Automatic)
                     title[action] = vr_mapping::kDefaults[action];
     }
+    // Before version 7, "Default" was the struct's scheme, now Legacy Default: the player keeps it under its new name.
+    if (loadedConfigVersion < 7 && !strcmp(g_config.input_preset, "Default"))
+        strcpy_s(g_config.input_preset, "Legacy Default");
     if (loadedLegacyVirtualStockStrength)
     {
         if (VirtualStockUsesPlusMode(g_config))
@@ -2335,6 +2399,32 @@ void ConfigLoad(const wchar_t* path)
                 for (int profile=0;profile<kTitleProfileCount;++profile)
                     if (g_profileFieldSet[profile][field])
                         g_config.title_profiles[profile].left_hand_forward_m-=kLegacyLeftHandForward;
+    }
+    // Rows saved while the support trigger's contexts were rows' choices become the Input combinations they stood for.
+    {
+        bool converted=false;
+        for(auto& row:g_config.vr_bindings)
+            converted|=vr_mapping::ConvertContextRows(row,g_config.grip_contextual_trigger,g_config.trigger_air_equipment);
+        if(converted)
+            LOG("config: VR Mappings rows on the support trigger by hand became Input combinations (gun zooms %d, "
+                "air uses equipment %d)",g_config.grip_contextual_trigger?1:0,g_config.trigger_air_equipment?1:0);
+    }
+    // A file from before the rows held inputs: the right stick's crouch and sprint and the two Input combinations become
+    // the inputs they stood for, in every game's rows (vr_mapping::ConvertSettingsToInputs). The settings are not read again.
+    if(inputsVersion<1)
+    {
+        for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+            vr_mapping::ConvertSettingsToInputs(g_config.vr_inputs[title],static_cast<GameTitle>(title+1),
+                g_config.right_stick_crouch,g_config.grip_contextual_trigger,g_config.trigger_air_equipment);
+        LOG("config: VR Mappings rows now hold the right stick (crouch and sprint %d), the gun grip's zoom (%d) and the "
+            "empty grip's equipment (%d) as inputs",g_config.right_stick_crouch?1:0,
+            g_config.grip_contextual_trigger?1:0,g_config.trigger_air_equipment?1:0);
+    }
+    // A file from before the Pause row: Y + B sending Start turned off leaves the row empty.
+    if(inputsVersion<2&&!g_config.y_b_start_chord)
+    {
+        g_config.vr_mod_bindings[vr_mapping::Pause]={};
+        LOG("config: Y + B sending Start was off, so the Pause row has no inputs");
     }
     if (!halo4HudHeightV2) {
         // Halo 4's HUD height ran the other way until it was corrected (a positive value lowered the HUD), so a
@@ -2560,7 +2650,9 @@ void ConfigSave()
     fprintf(f, "# Project Reclaimer: keep its picture no larger than your monitor (Display\n");
     fprintf(f, "# mode Borderless, Render resolution Native). A picture larger than the\n");
     fprintf(f, "# screen is suspected of stopping the graphics card on some PCs; 0 gives it\n");
-    fprintf(f, "# the Picture panel's full size. Applies at Project Reclaimer's next start.\n");
+    fprintf(f, "# the Picture panel's full size. From 0.10 the picture keeps the full size\n");
+    fprintf(f, "# and only the window is fitted inside your monitor (0 leaves the window\n");
+    fprintf(f, "# larger than the monitor). Applies at Project Reclaimer's next start.\n");
     fprintf(f, "reclaimer_fit_to_display = %d\n\n", g_config.reclaimer_fit_to_display ? 1 : 0);
     fprintf(f, "# Project Reclaimer: show a game it starts after the first (ODST, after Halo 3's menu) in the\n");
     fprintf(f, "# headset, by giving it the headset's graphics device. 0 = that game freezes in the headset.\n");
@@ -2647,6 +2739,11 @@ void ConfigSave()
     fprintf(f, "# untested (log: NAV MARKERS <game>). Live in F1 > HUD. (default %d)\n",
         d.nav_markers_on_target ? 1 : 0);
     fprintf(f, "nav_markers_on_target = %d\n", g_config.nav_markers_on_target ? 1 : 0);
+    fprintf(f, "# Markers follow your head, not your gun. 1 = whether an objective marker shows, or its\n");
+    fprintf(f, "# off-screen arrow does, depends on where you look. 0 = on where the gun points, as before.\n");
+    fprintf(f, "# Halo: Reach and Halo 4 (log: NAV MARKERS <game>). Live in F1 > HUD > Waypoints. (default %d)\n",
+        d.nav_markers_follow_head ? 1 : 0);
+    fprintf(f, "nav_markers_follow_head = %d\n", g_config.nav_markers_follow_head ? 1 : 0);
     fprintf(f, "# Off-screen arrows stay in view. 1 = when an objective marker or a marked player is out of\n");
     fprintf(f, "# view, its arrow is drawn on a ring around where your head faces, at most 30 degrees out, in\n");
     fprintf(f, "# one place for both eyes. 0 = the game's own ring, which is far enough out that only one eye\n");
@@ -2661,7 +2758,8 @@ void ConfigSave()
     fprintf(f, "# Live in F1 > HUD > Waypoints. (default %.2f, range 0 to 1)\n", d.nav_marker_ring);
     fprintf(f, "nav_marker_ring = %.2f\n\n", g_config.nav_marker_ring);
     fprintf(f, "# Player tags: the service tag and arrow over each teammate. Halo 3 (MCC and Project\n");
-    fprintf(f, "# Reclaimer) and ODST. Objective markers and flag, ball and bomb carriers are not changed.\n");
+    fprintf(f, "# Reclaimer) and ODST. Objective markers are not changed; a flag, ball or bomb carrier's\n");
+    fprintf(f, "# tag is a player's tag and is.\n");
     fprintf(f, "# Live in F1 > HUD > Waypoints.\n");
     fprintf(f, "# Show them at all. (default %d)\n", d.player_tags_show ? 1 : 0);
     fprintf(f, "player_tags_show = %d\n", g_config.player_tags_show ? 1 : 0);
@@ -2678,9 +2776,6 @@ void ConfigSave()
     fprintf(f, "# Smooth turn speed in degrees per second.\n");
     fprintf(f, "# (default %.0f, range 30 to 360)\n", d.turn_smooth_deg_s);
     fprintf(f, "turn_smooth_deg_s = %.0f\n\n", g_config.turn_smooth_deg_s);
-    fprintf(f, "# Press Y+B together to send Start (pause/resume) in supported titles.\n");
-    fprintf(f, "# (default %d)\n", d.y_b_start_chord ? 1 : 0);
-    fprintf(f, "y_b_start_chord = %d\n\n", g_config.y_b_start_chord ? 1 : 0);
     fprintf(f, "# Halo 2 only: the gamepad's Back/View button is MCC's instant\n");
     fprintf(f, "# Classic <-> Anniversary graphics switch. 0 = the mod swallows that\n");
     fprintf(f, "# button in Halo 2 so a physical pad (Steam Controller) cannot flip the\n");
@@ -2769,7 +2864,7 @@ void ConfigSave()
                "# 1 = ALWAYS: nothing changes a shot as it is fired (no muzzle or barrel origin, no fire-time re-aim, no\n"
                "# separate dual-wield aim, no seat redirect), so every player's game fires it the same way.\n"
                "# Your hand still aims; shots leave the eye. True physical melee presses the game's melee\n"
-               "# instead of striking on contact (Halo CE: it does nothing), in Halo 2 your hand aims only with\n"
+               "# instead of striking on contact, in Halo 2 your hand aims only with\n"
                "# direct drive on, and seats in Halo CE and ODST and passenger seats in Reach keep the game's\n"
                "# own camera.\n"
                "# 0 = OFF, for playing alone only: with it off, your first shot in a campaign co-op or Spartan Ops\n"
@@ -2851,8 +2946,9 @@ void ConfigSave()
     fprintf(f, "# How often the VR crosshair re-reads the game's own crosshair art,\n");
     fprintf(f, "# in frames. This makes Halo 3 and Halo 4 authored crosshairs animate:\n");
     fprintf(f, "# when you shoot, and the red/green target colors. Lower is more\n");
-    fprintf(f, "# responsive, higher is cheaper. 0 holds animation.\n");
-    fprintf(f, "# Halo 3 and Halo 4. (default %d, 0 or 6 to 60)\n",
+    fprintf(f, "# responsive, higher is cheaper. 0 holds animation. Below 6 only where\n");
+    fprintf(f, "# the headset runtime makes an update cheap; otherwise 6 is used.\n");
+    fprintf(f, "# Halo 3 and Halo 4. (default %d, 0 or 1 to 60)\n",
              d.crosshair_animation_frames);
     fprintf(f, "crosshair_animation_frames = %d\n\n",
              g_config.crosshair_animation_frames);
@@ -3355,9 +3451,10 @@ void ConfigSave()
     fprintf(f, "# their Tethered modes). 0 = never shown, whatever the file says.\n");
     fprintf(f, "# (default %d)\n", d.vehicle_aim_marker ? 1 : 0);
     fprintf(f, "vehicle_aim_marker = %d\n\n", g_config.vehicle_aim_marker ? 1 : 0);
-    fprintf(f, "# How you control a vehicle seat (Halo 3 for now). This is apart from\n");
-    fprintf(f, "# how your view turns: each works with a view the world holds still\n");
-    fprintf(f, "# and with one that turns with the vehicle.\n");
+    fprintf(f, "# How you control a vehicle seat (Halo 3; ODST and Reach with vehicle\n");
+    fprintf(f, "# cameras on, Reach without Stick). This is apart from how your view\n");
+    fprintf(f, "# turns: each works with a view the world holds still and with one\n");
+    fprintf(f, "# that turns with the vehicle.\n");
     fprintf(f, "#   1 = Motion: your hand aims in every seat, and a Warthog, Mongoose,\n");
     fprintf(f, "#       Ghost, Prowler, Chopper, Banshee or Hornet turns toward it.\n");
     fprintf(f, "#       With a view that turns with the vehicle, pointing aside keeps\n");
@@ -3434,7 +3531,8 @@ void ConfigSave()
     fprintf(f, "# converged_aim and the aim written (direct drive). Live in F1 > Scope. (default %d)\n",
             d.scope_converge);
     fprintf(f, "scope_converge = %d\n\n", g_config.scope_converge);
-    fprintf(f, "# Aim Frame Zoom (Halo 3, MCC and Project Reclaimer, and ODST): while the game is zoomed, the\n");
+    fprintf(f, "# Aim Frame Zoom (Halo CE, Halo 2, Halo 3 in MCC and Project Reclaimer, ODST, Reach and Halo 4):\n");
+    fprintf(f, "# while the game is zoomed, the\n");
     fprintf(f, "# headset shows the game's zoomed picture as a frame centred on your aim instead of the\n");
     fprintf(f, "# immersive view. The zoom button then reaches the game, so the lens above is not offered in\n");
     fprintf(f, "# those games while this is on. 1 = on. (default %d)\n", d.aim_frame_zoom ? 1 : 0);
@@ -3456,6 +3554,14 @@ void ConfigSave()
     fprintf(f, "# Seconds the frame takes to move between the normal view and the frame. 0 = at once.\n");
     fprintf(f, "# (default %.2f, range 0 to 1)\n", d.aim_frame_move_s);
     fprintf(f, "aim_frame_move_s = %.2f\n\n", g_config.aim_frame_move_s);
+    fprintf(f, "# The HUD inside the frame only, apart from the HUD layout and the Halo 4 helmet frame. 1 = the\n");
+    fprintf(f, "# game's own layout, as on a flat screen, its edge art at the frame's edges. Size scales it whole;\n");
+    fprintf(f, "# width and height stretch it side to side and top to bottom. Live in F1 > Scope.\n");
+    fprintf(f, "# (default %.2f / %.2f / %.2f, size 0.5 to 1.25, width and height 0.5 to 1.5)\n",
+            d.aim_frame_hud_size, d.aim_frame_hud_width_scale, d.aim_frame_hud_height_scale);
+    fprintf(f, "aim_frame_hud_size = %.2f\n", g_config.aim_frame_hud_size);
+    fprintf(f, "aim_frame_hud_width_scale = %.2f\n", g_config.aim_frame_hud_width_scale);
+    fprintf(f, "aim_frame_hud_height_scale = %.2f\n\n", g_config.aim_frame_hud_height_scale);
     fprintf(f, "# Default experimental magnification used for every weapon.\n");
     fprintf(f, "# Initial zoom restored whenever R3 opens the scope; right-stick Y adjusts it.\n");
     fprintf(f, "# (default %.2f, range 6.0 to 24.0)\n", d.scope_zoom);
@@ -3686,9 +3792,6 @@ void ConfigSave()
     fprintf(f,"# (Halo 3, ODST, Reach, Halo 4; on foot). 0 = as before. No menu control (log: VIEW HEIGHT).\n");
     fprintf(f,"# (default %d)\n",d.view_follows_standing_height?1:0);
     fprintf(f,"view_follows_standing_height = %d\n",g_config.view_follows_standing_height?1:0);
-    fprintf(f,"# On foot, right stick down toggles crouch and held up sprints (Reach: armor ability). It needs MCC's\n"
-              "# hold-to-crouch setting. (default %d)\n"
-              "right_stick_crouch = %d\n",d.right_stick_crouch?1:0,g_config.right_stick_crouch?1:0);
     fprintf(f,"# Arm-swing locomotion: speed is a fraction of native maximum movement.\n");
     fprintf(f,"physical_running = %d\nphysical_running_speed = %.3f\nphysical_running_sensitivity = %.3f\n",
         g_config.physical_running?1:0,g_config.physical_running_speed,g_config.physical_running_sensitivity);
@@ -3696,12 +3799,50 @@ void ConfigSave()
         g_config.vr_action_mapping?1:0,g_config.flashlight_suppress_on_two_hand?1:0);
     fprintf(f,"# The controls preset last chosen in F1 > Controls. (default %s)\ninput_preset = %s\n",
         d.input_preset,g_config.input_preset);
-    fprintf(f,"# The support trigger with the support grip held on nothing uses equipment. (default %d)\n"
-              "trigger_air_equipment = %d\n",d.trigger_air_equipment?1:0,g_config.trigger_air_equipment?1:0);
+    fprintf(f,"# VR Mappings: each row's inputs. An input is its held controls and its press joined by '+', the press\n"
+              "# last, then \" toggle\" for a toggle. A row's own input is its key alone (0 = Automatic); its further\n"
+              "# ones are _2 to _4 (%d = none), written for a row that differs from its game's start.\n"
+              "vr_inputs_version = 2\n",vr_mapping::Unbound);
+    char input[32];
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+    {
+        const auto start=vr_mapping::DefaultInputs(static_cast<GameTitle>(title+1));
         for(unsigned action=0;action<vr_mapping::Count;++action)
-            fprintf(f,"vr_bind_%s_%s = %d\n",weapon_interaction::kTitleKeys[title],
-                vr_mapping::kKeys[action],g_config.vr_bindings[title][action]);
+        {
+            const auto& row=g_config.vr_inputs[title][action];
+            vr_mapping::FormatInput(input,row.held,g_config.vr_bindings[title][action],row.mode);
+            fprintf(f,"vr_bind_%s_%s = %s\n",weapon_interaction::kTitleKeys[title],vr_mapping::kKeys[action],input);
+            if(row.more==start[action].more) continue;
+            for(unsigned slot=1;slot<vr_mapping::kRowInputs;++slot)
+            {
+                const auto& more=row.more[slot-1];
+                vr_mapping::FormatInput(input,more.held,more.press,more.mode);
+                fprintf(f,"vr_bind_%s_%s%s = %s\n",weapon_interaction::kTitleKeys[title],vr_mapping::kKeys[action],
+                    vr_mapping::kControlSuffix[slot],input);
+            }
+        }
+    }
+    fprintf(f,"# The extra rows: each game's actions no row above names, their inputs (_2 to _4 further ones), each in its\n"
+        "# context; only those that differ from their default.\n");
+    for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+        for(unsigned action=0;action<vr_mapping::ExtraCount;++action)
+            for(unsigned slot=0;slot<vr_mapping::kRowInputs&&
+                g_config.vr_extra_bindings[title][action]!=
+                    vr_mapping::ExtraDefaults(static_cast<GameTitle>(title+1))[action];++slot)
+            {
+                const auto& seat=g_config.vr_extra_bindings[title][action][slot];
+                vr_mapping::FormatInput(input,seat.held,seat.press,seat.mode);
+                fprintf(f,"vr_bind_%s_%s%s = %s\n",weapon_interaction::kTitleKeys[title],vr_mapping::kExtraKeys[action],
+                    vr_mapping::kControlSuffix[slot],input);
+            }
+    fprintf(f,"# The mod's own rows, every game's: Pause (the pause view and Start), its inputs (_2 to _4 further ones).\n");
+    for(unsigned action=0;action<vr_mapping::ModCount;++action)
+        for(unsigned slot=0;slot<vr_mapping::kRowInputs;++slot)
+        {
+            const auto& mod=g_config.vr_mod_bindings[action][slot];
+            vr_mapping::FormatInput(input,mod.held,mod.press,mod.mode);
+            fprintf(f,"vr_bind_%s%s = %s\n",vr_mapping::kModKeys[action],vr_mapping::kControlSuffix[slot],input);
+        }
     fprintf(f,"\n# Native localized subtitles: independent gameplay and theatre placement.\n");
     fprintf(f,"# Per-game muzzle-flash hiding. Supported paths: H2 Original and H4.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)

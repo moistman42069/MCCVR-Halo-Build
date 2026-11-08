@@ -84,31 +84,32 @@ int main()
             "radius preserves strict boundary, limits and invalid-setting fallback");
     }
     {
-        StickCrouch stick;
-        Check(!stick.Step(0.0f, -0.5f, true), "a part push does nothing");
-        Check(stick.Step(0.1f, -0.9f, true), "down crouches");
-        Check(stick.Step(0.0f, -0.9f, true), "held down, it stays one push");
-        Check(stick.Step(0.0f, 0.0f, true), "and the crouch stays with the stick let go");
-        Check(!stick.Step(0.0f, -0.9f, true), "down again stands");
-        Check(!stick.Step(0.0f, 0.0f, true), "and stays standing");
-        Check(!stick.Step(0.9f, -0.75f, true), "a mostly sideways push is a turn");
-        stick.Step(0.0f, 0.0f, true);
-        Check(!stick.Step(0.0f, 0.9f, true) && stick.sprinting, "up sprints without crouching");
-        stick.Step(0.0f, 0.5f, true);
-        Check(stick.sprinting, "a sprint lasts while the stick is still up");
+        StickDirections stick;
+        stick.Step(0.0f, -0.5f, true);
+        Check(!stick.down && !stick.up, "a part push does nothing");
+        stick.Step(0.1f, -0.9f, true);
+        Check(stick.down && !stick.up, "down is down");
+        stick.Step(0.0f, -0.5f, true);
+        Check(stick.down, "it stays down while the stick is still pushed");
         stick.Step(0.0f, 0.1f, true);
-        Check(!stick.sprinting, "and ends when it comes back");
-        Check(stick.Step(0.0f, -0.9f, true), "down again");
+        Check(!stick.down, "and lets go when it comes back");
+        stick.Step(0.9f, -0.75f, true);
+        Check(!stick.down, "a mostly sideways push is a turn");
         stick.Step(0.0f, 0.0f, true);
-        Check(stick.Step(0.0f, 0.9f, true) && stick.sprinting, "sprinting keeps a crouch the stick set");
+        stick.Step(0.0f, 0.9f, true);
+        Check(stick.up && !stick.down, "up is up");
+        stick.Step(0.0f, -0.9f, true);
+        Check(stick.up && !stick.down, "swinging straight through without coming back is still the first push");
         stick.Step(0.0f, 0.0f, true);
-        Check(stick.Step(0.0f, -0.9f, true, false) && !stick.sprinting, "a scope keeps the crouch and reads nothing");
+        stick.Step(0.0f, -0.9f, false);
+        Check(!stick.down, "not free (off foot, a lens, the thumb-rest D-pad): nothing");
+        stick.Step(0.0f, -0.9f, true);
+        Check(!stick.down, "a stick still held down when it is free again does not count");
         stick.Step(0.0f, 0.0f, true);
-        Check(stick.crouched, "and the stick coming back changes nothing");
-        Check(!stick.Step(0.0f, -0.9f, false), "a seat stands the player");
-        Check(!stick.Step(0.0f, -0.9f, true), "a stick still held down on the way out does not crouch");
-        stick.Step(0.0f, 0.0f, true);
-        Check(stick.Step(0.0f, -0.9f, true), "until it comes back");
+        stick.Step(0.0f, -0.9f, true);
+        Check(stick.down, "until it comes back");
+        stick.Step(NAN, NAN, true);
+        Check(!stick.down && !stick.up, "a broken reading is a stick at rest");
     }
     {
         using Key = HeadKeyGesture::Key;
@@ -259,9 +260,10 @@ int main()
         p.b=p.x=p.y=p.clickL=p.clickR=true;
         p.thumbrestDpad=!pointer;p.dpadY=.9f;
         holds.ApplyVr(p,true,pointer);
-        Check(p.valid&&!p.moveY&&!p.turnX&&!p.trigR&&!p.gripL&&p.a==pointer&&
-            !p.b&&!p.x&&!p.y&&!p.clickL&&!p.clickR&&!p.menu&&!p.weaponButtons,
-            "pointer preserves A only; D-pad suppresses all other gameplay without disconnecting controllers");
+        Check(p.valid&&!p.moveY&&!p.turnX&&!p.trigR&&(p.gripL>0)==pointer&&p.a==pointer&&
+            p.b==pointer&&p.x==pointer&&p.y==pointer&&!p.clickL&&!p.clickR&&!p.menu&&!p.weaponButtons,
+            "pointer preserves A, B, X, Y and the grips only; D-pad suppresses all other gameplay without disconnecting "
+            "controllers");
         Check(p.dpadY==.9f,"D-pad direction survives exclusive filtering");
         p.moveY=1;p.turnX=.8f;p.trigR=1;p.gripL=1;p.a=p.menu=true;
         holds.ApplyVr(p,false);
@@ -272,8 +274,10 @@ int main()
         Check(p.moveY==1&&p.trigR==1&&p.a,"release then fresh input resumes normally");
         XINPUT_GAMEPAD raw{};raw.wButtons=0xffff;raw.sThumbLX=31000;raw.sThumbRY=-29000;
         raw.bLeftTrigger=raw.bRightTrigger=255;physical.ApplyPhysical(raw,true,pointer);
-        Check(raw.wButtons==(pointer?XINPUT_GAMEPAD_A:0)&&!raw.sThumbLX&&!raw.sThumbRY&&!raw.bLeftTrigger&&!raw.bRightTrigger,
-            "physical pointer confirmation passes A only; D-pad still suppresses it");
+        constexpr WORD face=XINPUT_GAMEPAD_A|XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_X|XINPUT_GAMEPAD_Y|
+            XINPUT_GAMEPAD_LEFT_SHOULDER|XINPUT_GAMEPAD_RIGHT_SHOULDER;
+        Check(raw.wButtons==(pointer?face:0)&&!raw.sThumbLX&&!raw.sThumbRY&&!raw.bLeftTrigger&&!raw.bRightTrigger,
+            "physical pointer passes A, B, X, Y and the bumpers only; D-pad still suppresses them");
         raw.wButtons=0xffff;raw.sThumbLX=31000;raw.bRightTrigger=255;physical.ApplyPhysical(raw,false);
         Check(!raw.wButtons&&!raw.sThumbLX&&!raw.bRightTrigger,"physical holds drain independently");
     }

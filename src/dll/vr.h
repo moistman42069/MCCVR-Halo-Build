@@ -458,6 +458,8 @@ struct Halo4VrRenderSnapshot
     // MONO RENDERING (src/common/mono_view_logic.h): this frame is one pass. Both `eyes` are then the one camera:
     // no offset, no cant, and the frustum that covers either eye. Last, so the offsets asserted below stand.
     bool mono = false;
+    // The eyes' real offsets whatever `eyes` holds in a mono frame: Aim Frame Zoom's 3D stands the eyes along the aim.
+    float stereoEyePosition[2][3]{};
 };
 
 static_assert(sizeof(Halo4VrEyeSnapshot) == 0x30);
@@ -863,6 +865,8 @@ AuthoredReticlePreparationResult VR_PrepareAuthoredReticleResources();
 // an authored no-crosshair state cannot inherit an earlier attempt's texture.
 void VR_InvalidatePreparedAuthoredReticleCapture();
 bool VR_BeginPreparedAuthoredReticleCapture();
+// CE: the next capture's art draws this fraction of the HUD's height above its centre (0: centred).
+void VR_SetCeAuthoredReticleLift(float heightFraction);
 // CE's native HUD must draw on the shared immediate context and the same XR
 // serial before borrowing prepared capture resources; no context discovery.
 bool VR_CeAuthoredReticleFrameMatches(ID3D11DeviceContext* context,uint64_t serial);
@@ -1085,6 +1089,9 @@ void VR_NoteStereoFrameRendered(GameTitle title);
 // Aim Frame Zoom: `title`'s frame was drawn along the aim at the half-angle tangents `tanX` and `tanY`, as one
 // pass captured as `eye`, or (eye -1) as a pair; the present shows it as a frame `widthDeg` wide on the aim.
 void VR_NoteAimFrameRendered(GameTitle title, int eye, float tanX, float tanY, float widthDeg);
+// ...for a title that publishes its frames through its own pair calls (Halo 2), before the frame is published: eye -1
+// not the frame's, 0 or 1 the one pass's eye, 2 a pair (3D).
+void VR_PrepareAimFramePicture(GameTitle title, int eye, float tanX, float tanY, float widthDeg);
 // `title`'s renderer turned a single pass down (its own checks on the frame failed, or it faulted). A run of them
 // is answered with a probe pair; single passes dropped where pairs are drawn leave the title in stereo.
 void VR_NoteMonoFrameRejected(GameTitle title);
@@ -1157,6 +1164,8 @@ uint64_t VR_GetWeaponModelIdentity(GameTitle title,uint32_t generation,uint64_t 
 struct ReachVrEyeSnapshot
 {
     float position[3]{};
+    // The eye's real offset whatever `position` holds in a mono frame: Aim Frame Zoom's 3D stands the eyes along the aim.
+    float stereoPosition[3]{};
     float orientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float fov[4]{}; // left, right, up, down
 };

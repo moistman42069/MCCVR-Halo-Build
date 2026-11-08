@@ -1761,6 +1761,9 @@ struct Halo2ObserverPosePublication
     uint32_t vehicleUnit=UINT32_MAX,vehicleParent=UINT32_MAX;
     int16_t vehicleSeat=-1;
     Halo2CameraBasis vehicleReference{};
+    // The vehicle cameras moved the seat view's eye off the stock camera (a firstperson camera's offset, a chase
+    // camera's place): vehicleReference's position is then not the stock camera's (halo2_vehicle_cameras.inl).
+    bool vehicleEyeMoved=false;
     // On foot under direct drive the stock camera follows the HAND (the drive writes player control's
     // desired angles), so the view and the controller take the mod's own heading instead
     // (halo2_foot_view.h): the stock camera's position at that heading, level.
@@ -1828,6 +1831,12 @@ inline Halo2CameraBasis Halo2SelfTrackBase(
         return base;
     if (std::isfinite(publication.viewLiftZ) && publication.viewLiftZ > 0.0f && publication.viewLiftZ <= 1.5f)
         base.position[2] += publication.viewLiftZ;
+    // A seat's eye the vehicle cameras moved (a chase camera stands metres from the game's own camera) keeps where
+    // the publication put it from the camera in hand.
+    if (publication.vehicleReferenceValid && publication.vehicleEyeMoved &&
+        Halo2ValidateCameraBasis(publication.vehicleReference))
+        for (int axis = 0; axis < 3; ++axis)
+            base.position[axis] += publication.vehicleReference.position[axis] - publication.stock.position[axis];
     const Halo2CameraBasis* heading =
         publication.vehicleReferenceValid && Halo2ValidateCameraBasis(publication.vehicleReference)
             ? &publication.vehicleReference

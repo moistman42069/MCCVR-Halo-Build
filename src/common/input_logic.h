@@ -132,37 +132,35 @@ struct HeadYChord
     }
 };
 
-// The right stick's up and down: each push down toggles a crouch, which stays until the next, and holding it up holds
-// sprint until the stick comes back. A push must be mostly vertical, so turning with a stick that drifts never crouches,
-// and the stick must come back before it counts again. `onFoot` false stands the player up: a seat ends a crouch, and it
-// does not come back on the way out. `stickFree` false (the stick is wanted for something else) reads nothing and lets
-// go of sprint, but keeps a crouch.
-struct StickCrouch
+// The right stick's up and down as controls for VR Mappings' rows (Right stick up, Right stick down; every game starts
+// with down toggling a crouch and up held for sprint). A push must be mostly vertical, so turning with a stick that drifts
+// presses neither, and it stays down until the stick comes back near centre, which it must before it counts again.
+// `free` false (off foot, or the stick wanted for something else) presses neither until the stick has come back.
+struct StickDirections
 {
     static constexpr float kPush = 0.7f, kRearm = 0.4f, kVerticalOverHorizontal = 1.5f;
-    bool crouched = false;
-    bool sprinting = false;
+    bool up = false;
+    bool down = false;
     bool armed = true;
-    bool Step(float x, float y, bool onFoot, bool stickFree = true) noexcept
+    void Step(float x, float y, bool free) noexcept
     {
-        if (!onFoot || !stickFree)
+        if (!std::isfinite(x) || !std::isfinite(y)) x = y = 0.0f;
+        if (!free)
         {
-            crouched = crouched && onFoot;
-            sprinting = false;
+            up = down = false;
             armed = false;
         }
         else if (armed && std::fabs(y) >= kPush && std::fabs(y) > std::fabs(x) * kVerticalOverHorizontal)
         {
-            if (y < 0.0f) crouched = !crouched;
-            else sprinting = true;
+            up = y > 0.0f;
+            down = y < 0.0f;
             armed = false;
         }
         if (std::fabs(y) < kRearm)
         {
             armed = true;
-            sprinting = false;
+            up = down = false;
         }
-        return crouched;
     }
 };
 
