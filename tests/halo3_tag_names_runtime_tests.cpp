@@ -71,6 +71,7 @@ uintptr_t FindUnique(uintptr_t base, size_t size, const char* pattern)
 }
 } // namespace mcc_clock
 
+#include "../src/common/reclaimer_odst_hud_logic.h"
 #include "../src/dll/halo3_tag_names.inl"
 
 namespace
