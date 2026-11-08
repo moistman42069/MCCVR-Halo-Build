@@ -474,6 +474,30 @@ target_compile_definitions(halo3xr_reclaimer_launcher PRIVATE
     HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>)
 target_link_libraries(halo3xr_reclaimer_launcher PRIVATE ole32 bcrypt advapi32 winhttp shell32 uxtheme miniz)
 
+# Version information for each program and DLL the mod ships (src/common/version.rc.in): the details Windows shows,
+# and what tells antivirus who a program is. Major.minor.patch only, never the commit, so that an unchanged program
+# builds to the same file from one release to the next.
+set(HALOMCCVR_VERSION "0.7.0" CACHE STRING "The version the mod's programs and DLLs carry: major.minor.patch")
+string(REPLACE "." ";" halomccvr_version_parts "${HALOMCCVR_VERSION}")
+list(GET halomccvr_version_parts 0 HALOMCCVR_VERSION_MAJOR)
+list(GET halomccvr_version_parts 1 HALOMCCVR_VERSION_MINOR)
+list(GET halomccvr_version_parts 2 HALOMCCVR_VERSION_PATCH)
+function(halomccvr_version_resource target file_name description file_type)
+    set(HALOMCCVR_RC_FILE_NAME "${file_name}")
+    set(HALOMCCVR_RC_DESCRIPTION "${description}")
+    set(HALOMCCVR_RC_FILE_TYPE "${file_type}")
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/common/version.rc.in"
+        "${HALOMCCVR_GENERATED_DIR}/version_${target}.rc" @ONLY)
+    target_sources(${target} PRIVATE "${HALOMCCVR_GENERATED_DIR}/version_${target}.rc")
+endfunction()
+halomccvr_version_resource(halo3xr "HaloMCCVR.dll" "Halo MCC VR mod" VFT_DLL)
+halomccvr_version_resource(halo3xr_launcher "HaloMCCVRLauncher.exe" "Halo MCC VR launcher" VFT_APP)
+halomccvr_version_resource(halo3xr_reclaimer_launcher "HaloMCCVRReclaimerLauncher.exe"
+    "Halo MCC VR launcher for Project Reclaimer" VFT_APP)
+halomccvr_version_resource(halomccvr_settings "HaloMCCVRSettings.exe" "Halo MCC VR settings" VFT_APP)
+halomccvr_version_resource(halomccvr_reclaimer_relay "HaloMCCVRReclaimerRelay.dll"
+    "Halo MCC VR relay for Project Reclaimer" VFT_DLL)
+
 # THE FLAT PROBE (dev preset only; never packaged -- package-candidate.ps1 refuses a dev cache and copies named
 # files only). HaloMCCFlatProbe.dll is the AS SEEN control arm: stock flat Halo 3 measured with the same code as the
 # VR witness (src/common/as_seen_logic.h). OBSERVE ONLY: no OpenXR, no stereo, no presentation change, no writes.
