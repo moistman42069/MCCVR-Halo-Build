@@ -4437,9 +4437,12 @@ namespace
     // Matches every resolution-class anchor the adapter carries, not only the
     // primary one. Reach authors one curvature record per screen shape and the
     // engine picks by aspect, so the widescreen record alone is not enough.
+    // With a generation, it stops between windows once that level is gone: one region of tag data takes seconds,
+    // and a scan left from the level before held up the next level's own by 3 s (Project Reclaimer, 2026-11-07).
     static int SafeFrameScanRegion(
         uintptr_t regionBase, size_t len, const HudLayoutAdapter& adapter,
-        uintptr_t* out, int maxOut, int* outAnchor = nullptr)
+        uintptr_t* out, int maxOut, int* outAnchor = nullptr,
+        HudLayoutProfile profile = HudLayoutProfile::None, uint32_t generation = 0)
     {
         // The region is COPIED OUT through ReadProcessMemory, a window at a time,
         // and the copy is scanned. The game can decommit a region between
@@ -4479,6 +4482,8 @@ namespace
         size_t pos = 0; // the next candidate's offset in the region
         while (pos + 8 <= len && found < maxOut)
         {
+            if (generation && !HudLayoutContextMatches(profile, generation))
+                return found;
             const size_t want = (std::min)(len - pos, kWindow);
             SIZE_T got = 0;
             ReadProcessMemory(self, p + pos, s_window, want, &got);
@@ -4986,7 +4991,7 @@ namespace
                     int shapes[kRegionHits]{};
                     const int n = SafeFrameScanRegion(
                         regionBase, mbi.RegionSize, *adapter,
-                        hits, kRegionHits, shapes);
+                        hits, kRegionHits, shapes, profile, generation);
                     for (int k = 0; k < n; ++k)
                     {
                         ++rawHits;
