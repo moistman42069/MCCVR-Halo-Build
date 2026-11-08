@@ -115,6 +115,8 @@ struct Menu {
     fs::path downloaded;
     // After an update: the launcher it installed, to start in this one's place, and what to tell the player first.
     fs::path updatedLauncher; std::wstring updateResult;
+    // The file an antivirus stopped during the last install or update, to explain once it is over.
+    fs::path antivirusBlocked;
     int dpi = 96;
     int Px(int value) const { return MulDiv(value, dpi, 96); }
     GameInstall* Selected() { const auto index = SendMessageW(games, CB_GETCURSEL, 0, 0); return index >= 0 && static_cast<size_t>(index) < installs.size() ? &installs[static_cast<size_t>(index)] : nullptr; }
@@ -233,13 +235,33 @@ struct Menu {
         busy = true; work = kind; operationMessage.clear(); notice.clear(); Refresh();
         worker = std::thread([this, operation = std::move(operation)] {
             try { operation(); }
-            catch (const std::exception& error) {
+            catch (const AntivirusBlocked& blocked) {
+                antivirusBlocked = blocked.file;
+                operationMessage = L"Your antivirus blocked a file of the update. Your current build was kept.";
+            } catch (const std::exception& error) {
                 const std::string message = error.what(); operationMessage.assign(message.begin(), message.end());
             } catch (...) { operationMessage = L"The operation could not finish. Your game has not been launched."; }
             PostMessageW(window, kDone, 0, 0);
         });
     }
 };
+// An antivirus stopped one of the mod's own files. Said plainly, with what to expect and why, and the page that explains
+// how to check the download and let it through, instead of the bare error.
+void ExplainAntivirus(HWND window, const fs::path& file) {
+    const std::wstring text =
+        L"Windows Security (or your antivirus) blocked this file, so the install stopped and your current build was kept:\n" +
+        file.wstring() + L"\n\n"
+        L"Why: the Halo MCC VR launcher is not code-signed, and it downloads updates, replaces itself and loads the VR mod "
+        L"into the game. Malware does those things too, so antivirus that guesses with machine learning can report it as a "
+        L"threat, for example \"Trojan:Win32/Bearfoos.A!ml\" or \"Behavior:Win32/DefenseEvasion.A!ml\". The \"!ml\" at the end "
+        L"means a machine-learning guess, not a known virus.\n\n"
+        L"You can check that your download is genuine: its SHA-256 checksums are in SHA256.txt on the release page, and "
+        L"the mod's full source is published there too.\n\n"
+        L"Open the page that explains how to check the files and let them through?";
+    if (MessageBoxW(window, text.c_str(), L"Halo MCC VR: blocked by antivirus", MB_YESNO | MB_ICONWARNING) == IDYES)
+        ShellExecuteW(window, L"open", (std::wstring(kFallbackTroubleshootingPage) + L"#antivirus-flags-the-launcher").c_str(),
+                      nullptr, nullptr, SW_SHOWNORMAL);
+}
 int CALLBACK FontExists(const LOGFONTW*, const TEXTMETRICW*, DWORD, LPARAM found) { *reinterpret_cast<bool*>(found) = true; return 0; }
 HFONT Font(Menu& menu, int size, int weight, const wchar_t* face) { return CreateFontW(-menu.Px(size), 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, face); }
 HWND Control(Menu& menu, const wchar_t* type, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id = 0) {
@@ -831,7 +853,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             menu->Start(Menu::Work::Install, [menu, target, payload, retain] {
                 const auto result = InstallPayload(payload, target, retain);
                 // Success needs no message: the Installed line shows the new build.
-                if (!result.success) menu->operationMessage = result.message;
+                if (!result.success) { menu->operationMessage = result.message; menu->antivirusBlocked = result.antivirusBlocked; }
             });
         } else if (game && menu->updateReady) {
             // All in this launcher, no other program started: download and check the release, install it, and bring this
@@ -848,7 +870,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                     saved << "release=" << release.tag << "\npublished=" << release.published.substr(0, 10) << "\nbuild=" << ReadIdentity(menu->downloaded).tag << "\n";
                 }
                 const auto installed = InstallPayload(menu->downloaded, target, retain);
-                if (!installed.success) { menu->operationMessage = installed.message; return; }
+                if (!installed.success) { menu->operationMessage = installed.message; menu->antivirusBlocked = installed.antivirusBlocked; return; }
                 std::error_code savedError;
                 fs::copy_file(installedRelease, target.root / L"Halo_MCC_VR" / L"INSTALLED-RELEASE.txt", fs::copy_options::overwrite_existing, savedError);
                 menu->updatedLauncher = target.root / L"Halo_MCC_VR" / L"HaloMCCVRLauncher.exe";
@@ -891,6 +913,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             }
             menu->operationMessage = L"The update is installed. Open HaloMCCVRLauncher.exe in Halo_MCC_VR.";
         }
+        if (!menu->antivirusBlocked.empty()) { ExplainAntivirus(window, menu->antivirusBlocked); menu->antivirusBlocked.clear(); }
         menu->notice = menu->operationMessage; menu->Refresh(); return 0;
     case WM_CLOSE: if (!menu->busy) DestroyWindow(window); return 0;
     case WM_MOUSEWHEEL: {

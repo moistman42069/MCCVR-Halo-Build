@@ -108,6 +108,15 @@ struct InstallMutex {
 };
 }
 
+void ThrowIfAntivirus(const fs::path& path, bool write) {
+    // Opened again only to ask Windows why it refused: the answer from the failed stream is not kept.
+    const HANDLE handle = CreateFileW(path.c_str(), write ? GENERIC_WRITE : GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                      write ? OPEN_ALWAYS : OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    const DWORD error = handle == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+    if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+    if (IsAntivirusError(error)) throw AntivirusBlocked(path);
+}
+
 // Shared with updater: digest check is against GitHub's asset digest as well
 // as the per-file manifest, never just the archive filename.
 std::string Sha256File(const fs::path& path) {
@@ -117,7 +126,7 @@ std::string Sha256File(const fs::path& path) {
     std::array<unsigned char, 32> digest{};
     try {
         std::ifstream file(path, std::ios::binary);
-        if (!file) throw std::runtime_error("Cannot read file for SHA-256.");
+        if (!file) { ThrowIfAntivirus(path); throw std::runtime_error("Cannot read file for SHA-256."); }
         std::array<char, 65536> buffer{};
         while (file) {
             file.read(buffer.data(), buffer.size());
@@ -337,6 +346,10 @@ InstallResult InstallPayload(const fs::path& payload, const GameInstall& game, b
             } else if (!DeleteFileW((target / it->relative).c_str())) restored = false;
         }
         result.message = Wide(error.what());
+        if (const auto* blocked = dynamic_cast<const AntivirusBlocked*>(&error)) result.antivirusBlocked = blocked->file;
+        else if (const auto* failed = dynamic_cast<const fs::filesystem_error*>(&error);
+                 failed && IsAntivirusError(static_cast<DWORD>(failed->code().value())))
+            result.antivirusBlocked = failed->path1();
         // The launcher does not ask for administrator rights, so a folder Windows protects refuses the first
         // write. Say what gets past it, and that the game should not be started from that elevated launcher.
         if (const auto* refused = dynamic_cast<const fs::filesystem_error*>(&error);

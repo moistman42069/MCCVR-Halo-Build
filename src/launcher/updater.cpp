@@ -126,7 +126,7 @@ void ExtractArchive(const fs::path& archive, const fs::path& output) {
         fs::create_directories(fs::path(entry.target).parent_path());
         if (fs::exists(entry.target)) throw std::runtime_error("Conflicting ZIP path.");
         std::ofstream file(entry.target, std::ios::binary);
-        if (!file) throw std::runtime_error("Cannot write an extracted file.");
+        if (!file) { ThrowIfAntivirus(entry.target, true); throw std::runtime_error("Cannot write an extracted file."); }
         const auto write = [](void* opaque, mz_uint64, const void* data, size_t size) -> size_t {
             auto& out = *static_cast<std::ofstream*>(opaque);
             out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
@@ -134,7 +134,7 @@ void ExtractArchive(const fs::path& archive, const fs::path& output) {
         };
         if (!mz_zip_reader_extract_to_callback(&reader.zip, entry.index, write, &file, 0)) throw std::runtime_error("A ZIP entry is damaged.");
         file.close();
-        if (!file) throw std::runtime_error("Cannot finish an extracted file.");
+        if (!file) { ThrowIfAntivirus(entry.target); throw std::runtime_error("Cannot finish an extracted file."); }
     }
 }
 }

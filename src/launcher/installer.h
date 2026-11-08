@@ -1,12 +1,25 @@
 #pragma once
 #include <windows.h>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace mcc_installer {
 struct GameInstall { std::filesystem::path root; bool store = false; };
-struct InstallResult { bool success = false; std::wstring message; size_t addedKeys = 0; std::filesystem::path backup; };
+// A file Windows Security or another antivirus would not let be read or written. The launcher says what that means
+// instead of failing with the bare error (menu.cpp, ExplainAntivirus).
+inline bool IsAntivirusError(DWORD error) noexcept { return error == ERROR_VIRUS_INFECTED || error == ERROR_VIRUS_DELETED; }
+struct AntivirusBlocked : std::runtime_error {
+    std::filesystem::path file;
+    explicit AntivirusBlocked(const std::filesystem::path& blocked) : std::runtime_error("Antivirus blocked a file."), file(blocked) {}
+};
+// The reason opening `path` failed just now, from Windows: throws AntivirusBlocked when an antivirus stopped it.
+void ThrowIfAntivirus(const std::filesystem::path& path, bool write = false);
+struct InstallResult {
+    bool success = false; std::wstring message; size_t addedKeys = 0; std::filesystem::path backup;
+    std::filesystem::path antivirusBlocked;   // the file an antivirus stopped, when that is why it failed
+};
 bool ProbeInstall(const std::filesystem::path& candidate, GameInstall& result);
 std::vector<GameInstall> DetectInstalls(const std::filesystem::path& launcherDir);
 InstallResult InstallPayload(const std::filesystem::path& payload, const GameInstall& game, bool retainConfig);
