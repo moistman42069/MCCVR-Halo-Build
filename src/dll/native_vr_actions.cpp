@@ -335,35 +335,42 @@ __declspec(noinline) void WitnessNativeRecord(GameTitle requested,unsigned actio
 #include "native_vr_actions_h2.inl"
 }
 
-// The last second of zoom ticks (native_h3::ZoomTick), as runs of equal ticks, after the game zoomed in and out.
-void NativeVrActions_Halo3ZoomBounced(uint64_t inMs,uint64_t outMs) {
+void NativeVrActions_NoteZoomInput(unsigned kind,bool down) {
     using namespace native_h3;
-    constexpr const char* kKinds[]{"adv","adv-refused","read-vr","read-game"};
+    const uint8_t which=kind==0?kPadButton:kind==1?kMapperZoom:kTrigger;
+    if(which==kTrigger&&down) zoomTriggerDownMs.store(GetTickCount64(),std::memory_order_relaxed);
+    NoteZoomTick(which,down,0,0);
+}
+
+// The last 1.5 s of zoom changes (native_h3::ZoomTick), when the game's zoom changed with no pull just before it, or
+// zoomed in and back out within 0.6 s.
+void NativeVrActions_Halo3ZoomChanged(int previous,int level) {
+    using namespace native_h3;
+    static uint64_t zoomedInMs=0;
+    static uint32_t written=0;
     const uint64_t now=GetTickCount64();
+    const uint64_t pulled=zoomTriggerDownMs.load(std::memory_order_relaxed);
+    const bool unprompted=!pulled||now-pulled>150;
+    const bool bounced=previous>=0&&level<0&&zoomedInMs&&now-zoomedInMs<=600;
+    if(previous<0&&level>=0) zoomedInMs=now;
+    if(!(unprompted||bounced)||written>=40) return;
+    ++written;
+    constexpr const char* kKinds[]{"adv","adv-refused","read-vr","read-game","pad-zoom","mapper-zoom","trigger"};
     const uint32_t next=zoomTickNext.load(std::memory_order_relaxed);
     char line[900];
-    int used=std::snprintf(line,sizeof(line),"ZOOM TICKS Halo 3: zoomed in at -%llu ms, out at -%llu ms; t(ms) thread kind "
-        "pressed/frames/gameFrames xN:",static_cast<unsigned long long>(now-inMs),static_cast<unsigned long long>(now-outMs));
-    ZoomTick run{};
-    unsigned count=0;
-    const auto flush=[&](bool last) {
-        if(count) {
-            const int n=std::snprintf(line+used,sizeof(line)-used," [%lld %u %s %u/%u/%u x%u]",
-                static_cast<long long>(run.ms)-static_cast<long long>(now),run.thread,kKinds[run.kind&3],run.pressed,
-                run.frames,run.gameFrames,count);
-            if(n>0) used+=n;
-        }
-        if(last||used>760) {LOG("%s",line);used=std::snprintf(line,sizeof(line),"ZOOM TICKS Halo 3 (cont.):");}
-    };
+    int used=std::snprintf(line,sizeof(line),"ZOOM TICKS Halo 3: the game's zoom %d -> %d, %s (the trigger last pulled "
+        "%lld ms ago); t(ms) thread kind pressed/frames/gameFrames:",previous,level,
+        unprompted?"with no pull just before":"zoomed in and back out",pulled?static_cast<long long>(now-pulled):-1ll);
     for(uint32_t k=0;k<kZoomTicks;++k) {
         const ZoomTick t=zoomTicks[(next+k)%kZoomTicks];
-        if(!t.ms||t.ms+1200<now) continue;
-        if(count&&t.thread==run.thread&&t.kind==run.kind&&t.pressed==run.pressed&&t.frames==run.frames&&
-           t.gameFrames==run.gameFrames) {++count;continue;}
-        flush(false);
-        run=t;count=1;
+        if(!t.ms||t.ms+1500<now) continue;
+        const int n=std::snprintf(line+used,sizeof(line)-used," [%lld %u %s %u/%u/%u]",
+            static_cast<long long>(t.ms)-static_cast<long long>(now),t.thread,kKinds[t.kind<7?t.kind:0],t.pressed,
+            t.frames,t.gameFrames);
+        if(n>0) used+=n;
+        if(used>780) {LOG("%s",line);used=std::snprintf(line,sizeof(line),"ZOOM TICKS Halo 3 (cont.):");}
     }
-    flush(true);
+    LOG("%s",line);
 }
 namespace {
 bool CurrentForTitle(GameTitle requested) noexcept {
