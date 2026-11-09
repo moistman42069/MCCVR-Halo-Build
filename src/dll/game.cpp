@@ -1,4 +1,5 @@
 #include "../common/legacy_weapon_visual_defaults.h"
+#include "../common/fp_arm_fallback_logic.h"
 #include "../common/reach_weapon_defaults.h"
 #include "../common/visual_aim.h"
 #include "../common/weapon_alignment.h"
@@ -2538,6 +2539,9 @@ namespace
     // palette hook matches its `source` pointer against both, so any
     // interpolate/palette call ordering pairs correctly.
     thread_local FpInterpolationContext g_fpInterpolationContexts[2];
+    // Why each Halo 3 first-person palette was or was not posed (fp_arm_fallback_logic.h). Present reports them.
+    thread_local fp_arm_fallback::ThreadTrace g_fpArmTrace;
+    std::atomic<uint64_t> g_fpArmOutcomes[static_cast<size_t>(fp_arm_fallback::Outcome::Count)]{};
     weapon_muzzle::Store g_halo3Muzzles;
     std::atomic<bool> g_halo3MuzzleBindingsReady{false};
     bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept;
@@ -7727,6 +7731,9 @@ namespace
         if (slot==0 || slot==1)
         {
         g_fpInterpolationContexts[slot]={};
+        ++g_fpArmTrace.interpolations;
+        g_fpArmTrace.lastResult=result && outBones && outCount && *outBones;
+        g_fpArmTrace.lastContextBuilt=false;
         if (result && outBones && outCount && *outBones)
         {
             const int count=*outCount;
@@ -7738,6 +7745,7 @@ namespace
             if (count>0 && count<=64 && cached==count &&
                 wrist>=0 && wrist<count && cameraControl>=0 && cameraControl<count)
             {
+                g_fpArmTrace.lastContextBuilt=true;
                 auto& context=g_fpInterpolationContexts[slot];
                 context.source=*outBones;
                 context.generation=g_halo3RuntimeGeneration.load(std::memory_order_acquire);
@@ -8969,6 +8977,14 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         if (root && source)
             reconstructed=ReconstructVisiblePaletteSource(
                 tag,context,*root,source,selectedSource);
+        if (source)
+        {
+            const uint64_t frame=VR_CurrentPreparedSerial();
+            const auto outcome=fp_arm_fallback::Classify(context.valid,reconstructed,g_fpArmTrace,source,frame);
+            g_fpArmOutcomes[static_cast<size_t>(outcome)].fetch_add(1,std::memory_order_relaxed);
+            if (context.valid) {g_fpArmTrace.lastConsumed=source;g_fpArmTrace.consumedFrame=frame;}
+            g_fpArmTrace.interpolations=0;
+        }
         FpInterpolationContext contactContext = context;
         if (reconstructed && root && selectedSource == g_fpPaletteScratch &&
             g_fpStereoSolveScope.anatomicalTracking.handAlignment)
@@ -56358,6 +56374,46 @@ void Game_AutoVrTick()
             else if (side==2)
                 LOG("M3 VRIK SAFE-DIAG: left arm not applied (%s)",
                     why?why:"pre-solve");
+        }
+    }
+    {
+        // First-person palettes drawn with the game's own arms, by cause, every 5 s while any appear.
+        constexpr size_t kOutcomes=static_cast<size_t>(fp_arm_fallback::Outcome::Count);
+        static uint64_t reported[kOutcomes]{};
+        static uint64_t windowStartMs=0;
+        static uint32_t presents=0;
+        ++presents;
+        const uint64_t reportNow=GetTickCount64();
+        if (!windowStartMs) windowStartMs=reportNow;
+        if (reportNow-windowStartMs>=5000)
+        {
+            uint64_t delta[kOutcomes]{};
+            uint64_t unposed=0;
+            for (size_t i=0;i<kOutcomes;++i)
+            {
+                const uint64_t total=g_fpArmOutcomes[i].load(std::memory_order_relaxed);
+                delta[i]=total-reported[i];reported[i]=total;
+                if (i!=static_cast<size_t>(fp_arm_fallback::Outcome::Posed) &&
+                    i!=static_cast<size_t>(fp_arm_fallback::Outcome::RepeatSubmission)) unposed+=delta[i];
+            }
+            if (unposed)
+            {
+                using fp_arm_fallback::Outcome;
+                auto at=[&](Outcome o){return static_cast<unsigned long long>(delta[static_cast<size_t>(o)]);};
+                LOG("Halo 3 arms: %llu of %llu first-person palettes used the game's own arms in %.1f s "
+                    "(%.1f game frames/s): %s %llu, %s %llu, %s %llu, %s %llu, %s %llu; %s %llu, %s %llu",
+                    static_cast<unsigned long long>(unposed),
+                    static_cast<unsigned long long>(unposed+at(Outcome::Posed)),
+                    (reportNow-windowStartMs)/1000.0,presents*1000.0/(reportNow-windowStartMs),
+                    Name(Outcome::NoInterpolation),at(Outcome::NoInterpolation),
+                    Name(Outcome::InterpolationFailed),at(Outcome::InterpolationFailed),
+                    Name(Outcome::ContextRejected),at(Outcome::ContextRejected),
+                    Name(Outcome::SourceMismatch),at(Outcome::SourceMismatch),
+                    Name(Outcome::SolveFailed),at(Outcome::SolveFailed),
+                    Name(Outcome::Posed),at(Outcome::Posed),
+                    Name(Outcome::RepeatSubmission),at(Outcome::RepeatSubmission));
+            }
+            windowStartMs=reportNow;presents=0;
         }
     }
     {

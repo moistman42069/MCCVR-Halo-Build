@@ -15242,6 +15242,43 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 #endif
     }
 
+    // Frames in which the right controller gave no usable pose, by cause; logged every 5 s while any frame lost
+    // it. Without that pose the arms fall back to the game's own, so a player's log can say whether the runtime
+    // stopped giving input (the sync failed or the action went inactive, as when the session is not focused) or
+    // located the controller without valid flags.
+    enum class ControllerPoseLoss : uint8_t { None, SyncFailed, Inactive, LocateFailed, NotValid, Count };
+    struct ControllerPoseLossWindow
+    {
+        uint32_t frames{}, lost[static_cast<size_t>(ControllerPoseLoss::Count)]{};
+        XrResult lastResult{XR_SUCCESS};
+        XrSpaceLocationFlags lastFlags{};
+        uint64_t startMs{};
+    };
+    ControllerPoseLossWindow g_controllerPoseLoss;
+
+    void NoteControllerPoseLoss(ControllerPoseLoss loss, XrResult result = XR_SUCCESS, XrSpaceLocationFlags flags = 0)
+    {
+        auto& w = g_controllerPoseLoss;
+        const uint64_t now = GetTickCount64();
+        if (!w.startMs) w.startMs = now;
+        ++w.frames;
+        ++w.lost[static_cast<size_t>(loss)];
+        if (loss == ControllerPoseLoss::SyncFailed || loss == ControllerPoseLoss::LocateFailed) w.lastResult = result;
+        if (loss == ControllerPoseLoss::NotValid) w.lastFlags = flags;
+        if (now - w.startMs < 5000) return;
+        const uint32_t lostFrames = w.frames - w.lost[static_cast<size_t>(ControllerPoseLoss::None)];
+        if (lostFrames)
+            LOG("Right controller: no usable pose in %u of %u frames in %.1f s (session %s): sync failed %u, "
+                "action inactive %u, locate failed %u (last %s), not valid %u (last flags 0x%llX)",
+                lostFrames, w.frames, (now - w.startMs) / 1000.0, SessionStateName(g_sessionState),
+                w.lost[static_cast<size_t>(ControllerPoseLoss::SyncFailed)],
+                w.lost[static_cast<size_t>(ControllerPoseLoss::Inactive)],
+                w.lost[static_cast<size_t>(ControllerPoseLoss::LocateFailed)], XrStr(w.lastResult),
+                w.lost[static_cast<size_t>(ControllerPoseLoss::NotValid)],
+                static_cast<unsigned long long>(w.lastFlags));
+        w = {};
+    }
+
     bool CaptureRightControllerPose(XrTime time)
     {
         g_controllerFingerSample={};
@@ -15258,8 +15295,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};
         sync.countActiveActionSets = 1;
         sync.activeActionSets = &active;
-        if (XR_FAILED(xrSyncActions(g_session, &sync)))
+        if (const XrResult synced = xrSyncActions(g_session, &sync); XR_FAILED(synced))
         {
+            NoteControllerPoseLoss(ControllerPoseLoss::SyncFailed, synced);
             g_thumbrestDpadSampleMs.store(0, std::memory_order_release);
             g_supportGripPoseFresh.store(false, std::memory_order_release);
             InvalidateWeaponInteractionSample();
@@ -15272,13 +15310,19 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         bool valid = false;
         XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
         XrSpaceLocation location{XR_TYPE_SPACE_LOCATION, &velocity};
-        if (XR_SUCCEEDED(xrGetActionStatePose(g_session, &get, &state)) && state.isActive &&
-            XR_SUCCEEDED(xrLocateSpace(g_rightAimSpace, g_localSpace, time, &location)))
+        if (!XR_SUCCEEDED(xrGetActionStatePose(g_session, &get, &state)) || !state.isActive)
+            NoteControllerPoseLoss(ControllerPoseLoss::Inactive);
+        else if (const XrResult located = xrLocateSpace(g_rightAimSpace, g_localSpace, time, &location);
+                 XR_FAILED(located))
+            NoteControllerPoseLoss(ControllerPoseLoss::LocateFailed, located);
+        else
         {
             constexpr XrSpaceLocationFlags required =
                 XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
             valid = (location.locationFlags & required) == required &&
                     NormalizeTrackedPose(location.pose);
+            NoteControllerPoseLoss(valid ? ControllerPoseLoss::None : ControllerPoseLoss::NotValid,
+                XR_SUCCESS, location.locationFlags);
         }
         // Left hand: position only matters (D-pad gesture), same locate path.
         bool leftValid = false;
