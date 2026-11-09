@@ -1,5 +1,6 @@
 #include "../common/legacy_weapon_visual_defaults.h"
 #include "../common/fp_arm_fallback_logic.h"
+#include "../common/held_controller_pose.h"
 #include "../common/reach_weapon_defaults.h"
 #include "../common/visual_aim.h"
 #include "../common/weapon_alignment.h"
@@ -9252,6 +9253,12 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     // bounds (compose -> sway loop), so there is no race.
     alignas(8) volatile uintptr_t g_fpSkipBounds[4] = {0, 0, 0, 0}; // lo0,hi0,lo1,hi1
 
+    // The last tracked pose of each controller ([0] the weapon hand, [1] the other), for the frames the runtime
+    // gives none (held_controller_pose.h). Arm solves run on the game's render threads, hence the lock.
+    SRWLOCK g_heldControllerLock = SRWLOCK_INIT;
+    held_controller_pose::Hold g_heldController[2];
+    std::atomic<uint64_t> g_heldControllerSolves[2]{};
+
     bool ControllerWorldPoseEx(bool left, float basis[9], float pos[3], float& scale)
     {
         if (!g_vrAim.load() || !g_enabled.load() || !g_camValid.load() ||
@@ -9273,7 +9280,24 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                                  : VR_GetAimPose(cq, cp);
         if (oneHandOverride)
             VR_SetSupportInvocationUntrusted(false);
-        if (!poseOk) return false;
+        // No pose this frame (the runtime gave no controller input or tracking): keep the hand where it last was
+        // rather than return the arm to the game's own animation.
+        const bool leftHanded = g_config.left_handed;
+        auto& held = g_heldController[left ? 1 : 0];
+        if (poseOk)
+        {
+            AcquireSRWLockExclusive(&g_heldControllerLock);
+            held.Store(cq, cp, leftHanded);
+            ReleaseSRWLockExclusive(&g_heldControllerLock);
+        }
+        else
+        {
+            AcquireSRWLockShared(&g_heldControllerLock);
+            const bool heldOk = held.Load(cq, cp, leftHanded);
+            ReleaseSRWLockShared(&g_heldControllerLock);
+            if (!heldOk) return false;
+            g_heldControllerSolves[left ? 1 : 0].fetch_add(1, std::memory_order_relaxed);
+        }
         float hullYaw = 0.0f, hullPitch = 0.0f;
         const bool followValid =
             Halo3ReadRollStableFollow(hullYaw, hullPitch);
@@ -56413,6 +56437,15 @@ void Game_AutoVrTick()
                     Name(Outcome::Posed),at(Outcome::Posed),
                     Name(Outcome::RepeatSubmission),at(Outcome::RepeatSubmission));
             }
+            static uint64_t heldReported[2]{};
+            const uint64_t heldRight=g_heldControllerSolves[0].load(std::memory_order_relaxed)-heldReported[0];
+            const uint64_t heldLeft=g_heldControllerSolves[1].load(std::memory_order_relaxed)-heldReported[1];
+            heldReported[0]+=heldRight;heldReported[1]+=heldLeft;
+            if (heldRight||heldLeft)
+                LOG("Halo 3 arms: the controller gave no pose, so %llu weapon-hand and %llu other-hand arm solves "
+                    "in %.1f s kept the hand where it was last tracked",
+                    static_cast<unsigned long long>(heldRight),static_cast<unsigned long long>(heldLeft),
+                    (reportNow-windowStartMs)/1000.0);
             windowStartMs=reportNow;presents=0;
         }
     }
