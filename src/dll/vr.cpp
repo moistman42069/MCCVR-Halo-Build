@@ -447,6 +447,9 @@ namespace
     constexpr uint32_t kAuthoredReticleCentreProbeSize = 64;
     // Two texels of the 512 capture: below it a centroid change is noise.
     constexpr float kAuthoredReticleCentreDeadband = 2.0f / 512.0f;
+    // A move of the centre holds this many published captures first (about half a second in Halo 4).
+    constexpr uint32_t kAuthoredReticleCentreConfirm = 4;
+    AuthoredReticleCentreSettle g_authoredReticleCentreSettle{};
     bool g_authoredReticleCentreQueued = false;
     // Halo 4 publishes every frame where the floor allows it: a capture is copied aside when its readback is
     // queued, so the next frame's capture can be drawn while that readback is in flight, and the copy is what
@@ -10057,10 +10060,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 g_authoredReticleGoodInk = ink;
             }
             source = g_authoredReticleGoodTexture;
-            publishedCentre = SettleAuthoredReticleArtCentre(
+            publishedCentre = g_authoredReticleCentreSettle.Step(
                 g_authoredReticlePublishedCentre,
                 g_authoredReticleMeasuredCentre,
-                kAuthoredReticleCentreDeadband);
+                kAuthoredReticleCentreDeadband, kAuthoredReticleCentreConfirm);
         }
 
         uint32_t index = 0;
@@ -23405,6 +23408,7 @@ void VR_DetachGamePresentation()
     g_authoredReticleUploadedSerial = 0;
     g_reticleContainsAuthored = false;
     g_authoredReticlePublishedCentre = {};
+    g_authoredReticleCentreSettle = {};
     g_authoredReticleLatestMeasured = {};
     g_authoredReticleMeasuredCentre = {};
     g_authoredReticleCentreQueued = false;

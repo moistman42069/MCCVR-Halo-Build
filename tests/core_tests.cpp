@@ -1951,18 +1951,42 @@ int main()
               "art centre: no measurement leaves the quad centred");
 
         // Bloom shuffles the centroid by a texel; the centre in use holds until
-        // a measurement moves it past the deadband, and a gap keeps it.
+        // a measurement moves it past the deadband for `confirm` samples, and a gap keeps it.
+        constexpr float deadband = 2.0f / 512.0f;
+        constexpr uint32_t confirm = 4;
         AuthoredReticleArtCentre nudged = byColour;
         nudged.v += 1.0f / 512.0f;
-        Check(SettleAuthoredReticleArtCentre(byColour, nudged, 2.0f / 512.0f).v == byColour.v,
+        AuthoredReticleCentreSettle settle{};
+        Check(settle.Step(byColour, nudged, deadband, confirm).v == byColour.v,
               "art centre: a texel of jitter does not move the quad");
         AuthoredReticleArtCentre moved = byColour;
         moved.v += 5.0f / 512.0f;
-        Check(SettleAuthoredReticleArtCentre(byColour, moved, 2.0f / 512.0f).v == moved.v,
-              "art centre: a real move is followed at once");
-        Check(SettleAuthoredReticleArtCentre(byColour, {}, 2.0f / 512.0f).v == byColour.v &&
-                  SettleAuthoredReticleArtCentre({}, byColour, 2.0f / 512.0f).valid,
-              "art centre: an unmeasured sample keeps the centre; the first one sets it");
+        settle = {};
+        bool heldThenMoved = true;
+        for (uint32_t i = 1; i < confirm; ++i)
+            heldThenMoved = heldThenMoved && settle.Step(byColour, moved, deadband, confirm).v == byColour.v;
+        Check(heldThenMoved && settle.Step(byColour, moved, deadband, confirm).v == moved.v,
+              "art centre: a real move is followed once it has held for the confirm count");
+        settle = {};
+        AuthoredReticleArtCentre passing = byColour;
+        passing.v -= 0.25f;
+        for (uint32_t i = 1; i < confirm; ++i)
+            (void)settle.Step(byColour, passing, deadband, confirm);
+        Check(settle.Step(byColour, byColour, deadband, confirm).v == byColour.v &&
+                  settle.Step(byColour, passing, deadband, confirm).v == byColour.v,
+              "art centre: art that passes through for fewer than the confirm count does not move the quad");
+        settle = {};
+        AuthoredReticleArtCentre cutOff = passing;
+        cutOff.touchesEdge = true;
+        bool cutOffHeld = true;
+        for (uint32_t i = 0; i < confirm * 3; ++i)
+            cutOffHeld = cutOffHeld && settle.Step(byColour, cutOff, deadband, confirm).v == byColour.v;
+        Check(cutOffHeld, "art centre: art cut off by the capture's edge never moves the quad, however long it stays");
+        settle = {};
+        Check(settle.Step(byColour, {}, deadband, confirm).v == byColour.v &&
+                  settle.Step({}, byColour, deadband, confirm).valid &&
+                  settle.Step({}, cutOff, deadband, confirm).v == cutOff.v,
+              "art centre: an unmeasured sample keeps the centre; the first one sets it, cut off or not");
     }
     {
         // The capture window follows art drawn away from the view's centre (a Halo 2 vehicle's reticle).

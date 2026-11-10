@@ -470,19 +470,52 @@ inline AuthoredReticleArtCentre MeasureAuthoredReticleArtCentre(
 // Bloom and anti-aliasing move a capture's centroid by a texel or so from one
 // sample to the next. The centre in use only follows a measurement that moves
 // it by more than `deadband` (a fraction of the texture), so the quad does not
-// shimmer with them; a new weapon or layout moves it at once. A sample that
-// could not be measured keeps the centre in use.
-inline AuthoredReticleArtCentre SettleAuthoredReticleArtCentre(
-    const AuthoredReticleArtCentre& applied,
-    const AuthoredReticleArtCentre& measured, float deadband)
+// shimmer with them. A sample that could not be measured keeps the centre in use.
+//
+// Art the crosshair does not own lands in the capture too: in Halo 4 combat,
+// art reaching the capture's edge (cut off by it) put the centroid 0.12 to 0.32
+// of the texture above the crosshair's own (headset log: 37 of 38 such samples;
+// the other lasted one sample), and the quad moved the crosshair down by as
+// much until it went. A capture whose art touches the edge never moves the centre (its centroid
+// is short of the art that was cut away), and any move has to hold for `confirm`
+// consecutive samples, each within `deadband` of the first, so a passing piece
+// of art does not carry the crosshair with it. A new weapon or layout holds, and
+// moves it once confirmed. The first measurement sets it outright.
+struct AuthoredReticleCentreSettle
 {
-    if (!measured.valid)
-        return applied;
-    if (!applied.valid || std::fabs(measured.u - applied.u) > deadband ||
-        std::fabs(measured.v - applied.v) > deadband)
+    AuthoredReticleArtCentre candidate{};
+    uint32_t run = 0;   // consecutive samples that agree with `candidate`
+
+    AuthoredReticleArtCentre Step(const AuthoredReticleArtCentre& applied,
+                                  const AuthoredReticleArtCentre& measured, float deadband,
+                                  uint32_t confirm) noexcept
+    {
+        if (!measured.valid)
+            return applied;
+        if (!applied.valid)
+        {
+            run = 0;
+            return measured;
+        }
+        const auto within = [deadband](const AuthoredReticleArtCentre& a, const AuthoredReticleArtCentre& b) {
+            return std::fabs(a.u - b.u) <= deadband && std::fabs(a.v - b.v) <= deadband;
+        };
+        if (measured.touchesEdge || within(measured, applied))
+        {
+            run = 0;
+            return applied;
+        }
+        if (run == 0 || !within(measured, candidate))
+        {
+            candidate = measured;
+            run = 0;
+        }
+        if (++run < confirm)
+            return applied;
+        run = 0;
         return measured;
-    return applied;
-}
+    }
+};
 
 // The shift that puts the art's centre, not the texture's, on the quad's
 // intended centre: metres along the quad's own right and up axes, for a square
