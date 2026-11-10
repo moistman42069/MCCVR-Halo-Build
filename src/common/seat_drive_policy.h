@@ -290,4 +290,43 @@ struct ArmPitchRun {
     }
 };
 
+// THE SERVO'S PITCH ON FOOT (Halo 3, ODST, Halo 4; game.cpp). While the hook is not writing the record the
+// servo steers the game's aim onto the hand with the stick, reading that aim as the camera's forward. With
+// MCC's crosshair location not centred the camera sits a steady angle above the record (about 7 deg, headset
+// logs 2026-11-09), and the shots follow the record: closing the camera on the hand put every shot that far
+// below the reticle. The offset is the hook's own reading, record minus camera pitch, once it has held within
+// `tolerance` of one value for `need` updates in a row (the mean of that run). A turn's frame of lag between the
+// two breaks a run without moving the offset; it stays until another run replaces it. Larger than `max_offset`
+// is not this offset and starts no run.
+struct SteadyPitchOffset {
+    float value = 0.0f;   // the offset in force, rad
+    float first = 0.0f;
+    float sum = 0.0f;
+    uint32_t run = 0;
+
+    // One update's record minus camera pitch. True when the offset in force moved by `tolerance` or more.
+    bool step(float offset, float tolerance, float max_offset, uint32_t need)
+    {
+        if (!std::isfinite(offset) || std::fabs(offset) > max_offset) {
+            run = 0;
+            return false;
+        }
+        if (run == 0 || std::fabs(offset - first) >= tolerance) {
+            first = sum = offset;
+            run = 1;
+            return need <= 1 && adopt(offset, tolerance);
+        }
+        sum += offset;
+        return ++run == need && adopt(sum / static_cast<float>(run), tolerance);
+    }
+
+private:
+    bool adopt(float mean, float tolerance)
+    {
+        const bool moved = std::fabs(mean - value) >= tolerance;
+        value = mean;
+        return moved;
+    }
+};
+
 } // namespace seat_drive
