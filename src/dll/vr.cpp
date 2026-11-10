@@ -22013,7 +22013,10 @@ bool VR_Halo2CompleteSynchronousMonoPair(
     {
         return false;
     }
-    VR_NoteMonoFrameRendered(GameTitle::Halo2, eye);
+    // AIM FRAME ZOOM in one pass (3D in the frame off): the core said this picture was the frame's before publishing
+    // it. Cleared here, the frame was never shown and the zoom showed nothing.
+    VR_NoteMonoFrameRendered(GameTitle::Halo2, eye,
+                             g_aimFramePicture.eye.load(std::memory_order_acquire) == eye);
     return true;
 }
 
@@ -27057,9 +27060,10 @@ bool VR_MonoRenderThisFrame(GameTitle title, float coverFov[4])
 // The one pass of a mono frame of `title` has been drawn and captured as `eye`: its picture is both eyes' for this
 // frame. What the present asks of a pair before it shows one (an image for each eye, each eye's frame serial) is
 // answered for the other eye by this one's.
-void VR_NoteMonoFrameRendered(GameTitle title, int eye)
+void VR_NoteMonoFrameRendered(GameTitle title, int eye, bool aimFramePicture)
 {
-    g_aimFramePicture.eye.store(-1, std::memory_order_release);
+    if (!aimFramePicture)
+        g_aimFramePicture.eye.store(-1, std::memory_order_release);
     if (eye != 0 && eye != 1)
         return;
     const int other = 1 - eye;
