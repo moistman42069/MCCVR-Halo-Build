@@ -460,10 +460,11 @@ namespace
     // The prepared-frame serial of the capture the queued centre readback copied.
     uint64_t g_authoredReticleCentreSerial = 0;
     AuthoredReticleArtCentre g_authoredReticleMeasuredCentre{};
-    // Halo 2's capture window follows its art (authored_reticle_logic.h, ReticleCaptureFollow). The follower is
-    // stepped where the centre is measured; the capture, on the thread that draws the HUD, reads the pair below.
-    ReticleCaptureFollow g_halo2ReticleFollow{};
-    std::atomic<float> g_halo2ReticleWindowX{0.0f}, g_halo2ReticleWindowY{0.0f};
+    // The capture window follows its art in Halo 2, Halo 3 and ODST (authored_reticle_logic.h, ReticleCaptureFollow;
+    // ReticleCaptureFollowsArt). The follower is stepped where the centre is measured; the capture, on the thread
+    // that draws the HUD, reads the pair below, in texels of the capture texture.
+    ReticleCaptureFollow g_reticleFollow{};
+    std::atomic<float> g_reticleWindowX{0.0f}, g_reticleWindowY{0.0f};
     // Halo 4's capture takes in as much of the view as its art reaches (authored_reticle_logic.h,
     // ReticleCaptureFit), stepped where the centre is measured. `g_halo4ReticleZoom` is what the next capture is
     // drawn at; each capture keeps the zoom it was drawn at, the readback and the published art theirs.
@@ -504,10 +505,18 @@ namespace
     std::atomic<float> g_authoredReticleFitAcross{1.0f}, g_authoredReticleFitDown{1.0f};
     // The last capture's magnification of the raster (Halo3ReticleCaptureScale for Halo 3 and ODST).
     std::atomic<float> g_authoredReticleCaptureScale{1.0f};
-    constexpr float kHalo2ReticleFollowEngage = 32.0f;     // texels: nearer the middle than this is centred art
-    constexpr float kHalo2ReticleFollowDeadband = 6.0f;    // texels: a moved window holds the art this close
-    constexpr float kHalo2ReticleFollowLimit = 768.0f;     // view pixels: no reticle is drawn farther out
-    constexpr uint32_t kHalo2ReticleFollowBlankLimit = 8;
+    constexpr float kReticleFollowEngage = 32.0f;     // texels: nearer the middle than this is centred art
+    constexpr float kReticleFollowDeadband = 6.0f;    // texels: a moved window holds the art this close
+    constexpr float kReticleFollowLimit = 768.0f;     // texels: no reticle is drawn farther out
+    constexpr uint32_t kReticleFollowBlankLimit = 8;
+    // The titles whose capture window follows its art. Halo 2 draws a vehicle's reticle well below the view's centre;
+    // Halo 3 and ODST draw every crosshair below it when MCC's own crosshair location is not centred, the camera
+    // then pitched above the aim. The setting is the player's, kept for flat play: the capture follows the art rather
+    // than the mod changing it.
+    bool ReticleCaptureFollowsArt(GameTitle title)
+    {
+        return title == GameTitle::Halo2 || title == GameTitle::Halo3 || title == GameTitle::Halo3ODST;
+    }
     // The centre of the art now in the swapchain; invalid while it holds
     // procedural art or art nobody measured.
     AuthoredReticleArtCentre g_authoredReticlePublishedCentre{};
@@ -9744,15 +9753,15 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         g_authoredReticleMeasuredCentre.touchesEdge ? " and was cut off by it" : "",
                         g_authoredReticleCentreZoom, g_halo4ReticleFit.zoom, g_halo4ReticleFit.widenings);
                 }
-                // Halo 2: the capture window follows the art it has just been shown.
-                if (TitleAdapter_GetActiveTitle() == GameTitle::Halo2 &&
-                    g_halo2ReticleFollow.Step(g_authoredReticleMeasuredCentre, g_authoredReticleCentreSerial,
-                                              g_preparedFrame.serial, static_cast<float>(kReticleSize),
-                                              kHalo2ReticleFollowEngage, kHalo2ReticleFollowDeadband,
-                                              kHalo2ReticleFollowLimit, kHalo2ReticleFollowBlankLimit))
+                // Halo 2, Halo 3 and ODST: the capture window follows the art it has just been shown.
+                if (ReticleCaptureFollowsArt(TitleAdapter_GetActiveTitle()) &&
+                    g_reticleFollow.Step(g_authoredReticleMeasuredCentre, g_authoredReticleCentreSerial,
+                                         g_preparedFrame.serial, static_cast<float>(kReticleSize),
+                                         kReticleFollowEngage, kReticleFollowDeadband,
+                                         kReticleFollowLimit, kReticleFollowBlankLimit))
                 {
-                    g_halo2ReticleWindowX.store(g_halo2ReticleFollow.x, std::memory_order_relaxed);
-                    g_halo2ReticleWindowY.store(g_halo2ReticleFollow.y, std::memory_order_relaxed);
+                    g_reticleWindowX.store(g_reticleFollow.x, std::memory_order_relaxed);
+                    g_reticleWindowY.store(g_reticleFollow.y, std::memory_order_relaxed);
                 }
             }
         }
@@ -19469,14 +19478,15 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 // The other titles' quads are centred on the texture: the line says how
                                 // far that leaves the art from the aim point (degrees of the crosshair's
                                 // configured size, which the quad keeps at every distance).
-                                else if (reticleTitle == GameTitle::Halo2 &&
+                                else if (ReticleCaptureFollowsArt(reticleTitle) &&
                                          g_authoredReticlePublishedCentre.valid)
                                     LOG("RETICLE art centre (title %d): %+.3f right, %+.3f down of the "
                                         "texture centre = %+.2f deg right, %+.2f deg down of the aim point "
                                         "for a %.2f deg crosshair (ink %llu); the capture window follows the "
-                                        "art: it sits %+.0f px right, %+.0f px down of the view's centre "
+                                        "art: it sits %+.0f right, %+.0f down of the view's centre (texels) "
                                         "after %u moves; the latest capture's art is %.2f times as wide as "
-                                        "it is tall (ink %llu, spread %.3f across, %.3f down)",
+                                        "it is tall (ink %llu, spread %.3f across, %.3f down) and reaches "
+                                        "%.0f%% of the way to the texture's edge%s",
                                         static_cast<int>(reticleTitle),
                                         g_authoredReticlePublishedCentre.u - 0.5f,
                                         g_authoredReticlePublishedCentre.v - 0.5f,
@@ -19487,12 +19497,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                         g_config.crosshair_size_deg,
                                         static_cast<unsigned long long>(
                                             g_authoredReticlePublishedCentre.ink),
-                                        g_halo2ReticleFollow.x, g_halo2ReticleFollow.y,
-                                        g_halo2ReticleFollow.moves,
+                                        g_reticleFollow.x, g_reticleFollow.y,
+                                        g_reticleFollow.moves,
                                         AuthoredReticleArtAspect(g_authoredReticleLatestMeasured),
                                         static_cast<unsigned long long>(g_authoredReticleLatestMeasured.ink),
                                         g_authoredReticleLatestMeasured.spreadU,
-                                        g_authoredReticleLatestMeasured.spreadV);
+                                        g_authoredReticleLatestMeasured.spreadV,
+                                        g_authoredReticleLatestMeasured.reach * 100.0f,
+                                        g_authoredReticleLatestMeasured.touchesEdge ? " (cut off by it)" : "");
                                 else if (g_authoredReticlePublishedCentre.valid)
                                     LOG("RETICLE art centre (title %d): %+.3f right, %+.3f down of the "
                                         "texture centre = %+.2f deg right, %+.2f deg down of the aim point "
@@ -23356,9 +23368,9 @@ void VR_DetachGamePresentation()
     g_authoredReticleLatestMeasured = {};
     g_authoredReticleMeasuredCentre = {};
     g_authoredReticleCentreQueued = false;
-    g_halo2ReticleFollow = {};
-    g_halo2ReticleWindowX.store(0.0f, std::memory_order_relaxed);
-    g_halo2ReticleWindowY.store(0.0f, std::memory_order_relaxed);
+    g_reticleFollow = {};
+    g_reticleWindowX.store(0.0f, std::memory_order_relaxed);
+    g_reticleWindowY.store(0.0f, std::memory_order_relaxed);
     g_halo4ReticleFit = {};
     g_halo4ReticleZoom.store(1.0f, std::memory_order_relaxed);
     g_authoredReticleCaptureZoom.store(1.0f, std::memory_order_relaxed);
@@ -26238,12 +26250,13 @@ static bool BeginAuthoredReticleCaptureInternal(
         (static_cast<float>(kReticleSize) - captureViewport.Width) * 0.5f;
     captureViewport.TopLeftY =
         (static_cast<float>(kReticleSize) - captureViewport.Height) * 0.5f;
-    // Halo 2 draws some reticles away from the view's centre (a vehicle's sits well below it); its window is
-    // cut about the point the art was last measured at instead (ReticleCaptureFollow).
-    if (captureTitle == GameTitle::Halo2)
+    // Halo 2 draws some reticles away from the view's centre (a vehicle's sits well below it), and Halo 3 and ODST
+    // every crosshair when MCC's crosshair location is not centred; their window is cut about the point the art was
+    // last measured at instead (ReticleCaptureFollow).
+    if (ReticleCaptureFollowsArt(captureTitle))
     {
-        captureViewport.TopLeftX -= g_halo2ReticleWindowX.load(std::memory_order_relaxed);
-        captureViewport.TopLeftY -= g_halo2ReticleWindowY.load(std::memory_order_relaxed);
+        captureViewport.TopLeftX -= g_reticleWindowX.load(std::memory_order_relaxed);
+        captureViewport.TopLeftY -= g_reticleWindowY.load(std::memory_order_relaxed);
     }
     if (ceCapture)
         captureViewport.TopLeftY += captureViewport.Height * g_ceReticleLift.load(std::memory_order_relaxed);

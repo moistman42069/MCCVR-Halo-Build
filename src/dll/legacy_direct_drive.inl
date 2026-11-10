@@ -31,7 +31,9 @@
 // code has moved from them. Anything not found, or ambiguous: no hook, said once; the servo keeps aiming.
 // ARM GATE (ValueAgreement): installed disarmed; the hook writes only after the record it resolved has
 // held the game's own aim (the camera forward the servo closes on) within 1.7 deg for 30 consecutive
-// updates, and only while every later update resolves the same record. A different record disarms it.
+// updates, and only while every later update resolves the same record. A different record disarms it. On foot in
+// Halo 3 and ODST the occupant's own aim vector proves it as well: with MCC's crosshair location not centred the
+// camera sits above the aim and never holds the record.
 //
 // SEATS (seat_direct_drive). Every seat of these titles keeps its aim in this same record, updated by this
 // same accumulator from the same call site as on foot, with the seat's limits applied inside it (the one
@@ -199,6 +201,10 @@ struct LegacyDriveState
     std::atomic<bool> armed{false};
     std::atomic<uintptr_t> expected{0};
     uint32_t agree = 0;                      // sim thread only
+    // Arms on foot proven against the occupant's own aim vector instead of the camera (MCC's crosshair location not
+    // centred), and the camera's pitch above that aim at the last of them, in degrees; for the log.
+    std::atomic<uint32_t> footOccupantArms{0};
+    std::atomic<float> footCameraAboveDeg{0.0f};
     std::atomic<uint64_t> liveMs{0};         // last update that ran armed on the validated record
     // Setpoint and the game's aim, from the input thread (seqlock).
     std::atomic<uint32_t> seq{0};
@@ -2229,16 +2235,37 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                 // ValueAgreement: the record must hold the game's own aim before it is ever written -- both
                 // axes on foot; yaw in a seat, whose pitch need not (its own check decides that axis).
                 // A gun-slaved seat may arm on the occupant's own aim as well as the gun's.
+                // ON FOOT WITH MCC'S CROSSHAIR NOT CENTRED (Halo 3, ODST): the game draws its crosshair below the
+                // view's centre and pitches the camera above the aim, so the camera never holds the record and the
+                // drive would never arm. The record then proves itself against the occupant's own aim vector -- the
+                // field the control update re-derives it from -- as a gun-slaved seat's does. The setting stays the
+                // player's; the written record still aims the game's shots where the hand points.
+                bool footOccupantAgrees = false;
+                float footOccupantPitch = 0.0f;
+                if (!seatWrite && onFoot && !agrees && fresh && st.unitAimOffset)
+                {
+                    float footOccupantYaw = 0.0f;
+                    footOccupantAgrees =
+                        LegacyDriveReadOccupantAim(st, LegacyDriveSeatUnit(slot, st, pc), footOccupantYaw,
+                                                   footOccupantPitch) &&
+                        LegacyDriveAgrees(fresh, nativeYaw, nativePitch, footOccupantYaw, footOccupantPitch);
+                }
                 const bool armAgree = seatWrite
                     ? (LegacyDriveYawAgrees(fresh, nativeYaw, aimYaw) ||
                        (occupantRead && LegacyDriveYawAgrees(fresh, nativeYaw, occupantYaw)))
-                    : agrees;
+                    : (agrees || footOccupantAgrees);
                 st.agree = armAgree ? st.agree + 1 : 0;
                 if (st.agree >= kLegacyDriveAgreeUpdates)
                 {
                     st.expected.store(pc, std::memory_order_release);
                     st.armed.store(true, std::memory_order_release);
                     st.arms.fetch_add(1, std::memory_order_relaxed);
+                    if (footOccupantAgrees)
+                    {
+                        st.footOccupantArms.fetch_add(1, std::memory_order_relaxed);
+                        st.footCameraAboveDeg.store((aimPitch - footOccupantPitch) * 57.29578f,
+                                                    std::memory_order_relaxed);
+                    }
                 }
                 LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveArming);
                 break;
@@ -2728,6 +2755,11 @@ void LegacyDriveReport()
                 name, st.armed.load() ? 1 : 0, calls, st.writes.exchange(0), st.arms.exchange(0),
                 st.disarms.exchange(0), st.seatedSkips.exchange(0), st.faults.exchange(0), st.nativeYaw.load(),
                 st.nativePitch.load(), st.aimYaw.load(), st.aimPitch.load(), st.yawWrapped.exchange(0), callers);
+            if (const uint32_t footOccupantArms = st.footOccupantArms.exchange(0))
+                LOG("DRIVE %s: armed %u time(s) on foot on the character's own aim, the camera %.1f deg above it: "
+                    "MCC's crosshair location is not centred (the game draws its crosshair below the view's centre); "
+                    "the hand aims the shots all the same",
+                    name, footOccupantArms, st.footCameraAboveDeg.load(std::memory_order_relaxed));
             const uint32_t stints = st.seatStints.exchange(0), yawWrites = st.seatYawWrites.exchange(0),
                            pitchWrites = st.seatPitchWrites.exchange(0), unverified = st.seatUnverified.exchange(0),
                            yawChecks = st.seatYawChecks.exchange(0), pitchChecks = st.seatPitchChecks.exchange(0),
