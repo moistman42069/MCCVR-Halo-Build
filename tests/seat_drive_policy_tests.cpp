@@ -430,6 +430,30 @@ void TestOutcomeGate()
         Check(g.step(0.05f, false, 1260), "and then completes");
     }
 }
+void TestArmPitchRun()
+{
+    constexpr float tol = 0.03f, maxOffset = 0.21f;
+    constexpr float deg = 0.0174533f;
+    // The VD log's camera pitches with the record 6.8 deg below: the run starts on the first sample and holds.
+    seat_drive::ArmPitchRun run;
+    Check(!run.step(-0.151f, -0.020f, tol, maxOffset), "the first sample starts a run");
+    int held = 0;
+    for (int i = 0; i < 30; ++i)
+        held += run.step(-0.151f + i * 0.01f, -0.020f + i * 0.01f + (i % 2 ? 0.5f : -0.5f) * deg, tol, maxOffset);
+    Check(held == 30, "a record a steady 7.5 deg below a moving camera holds the run");
+    // Agreement is an offset of 0.
+    seat_drive::ArmPitchRun level;
+    Check(!level.step(0.10f, 0.10f, tol, maxOffset) && level.step(0.12f, 0.12f, tol, maxOffset),
+          "an agreeing pitch holds too");
+    // The offset changing by more than the tolerance restarts the run at the new offset.
+    Check(!run.step(0.0f, 0.0f, tol, maxOffset) && run.step(0.01f, 0.01f, tol, maxOffset),
+          "a changed offset starts a new run");
+    // Too large an offset is no run at all.
+    seat_drive::ArmPitchRun far;
+    Check(!far.step(-0.40f, 0.0f, tol, maxOffset) && !far.step(-0.40f, 0.0f, tol, maxOffset),
+          "a 23 deg offset never holds");
+    Check(!far.step(NAN, 0.0f, tol, maxOffset) && !far.started, "a non-finite pitch ends the run");
+}
 } // namespace
 
 int main()
@@ -438,6 +462,7 @@ int main()
     TestStintCheck();
     TestCombineStints();
     TestOutcomeGate();
+    TestArmPitchRun();
     std::printf("Seat drive policy: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }
