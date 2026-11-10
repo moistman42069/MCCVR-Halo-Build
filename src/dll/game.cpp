@@ -3386,6 +3386,21 @@ namespace
 
             const int eye = g_stereoEye.load(std::memory_order_relaxed);
             const int captureEye = g_config.right_eye_first ? 1 : 0;
+            // A PASS OUTSIDE THE EYES while the eyes draw the HUD (a headless pass, 2026-11-09: in some frames a
+            // pass at eye -1 with a widget viewport 1760 tall beside the eyes' 2100) is not the headset's. Its
+            // crosshair went into the same capture as the eye's: one place with MCC's crosshair centred, but with
+            // it lowered, the drop is a share of each viewport's height and the capture held two crosshairs. Such
+            // a pass neither captures nor draws one while an eye pass has drawn one in the last half second.
+            static std::atomic<uint64_t> s_eyeCrosshairMs{0};
+            const uint64_t nowMs = GetTickCount64();
+            if (eye == captureEye)
+                s_eyeCrosshairMs.store(nowMs, std::memory_order_relaxed);
+            else if (eye < 0)
+            {
+                const uint64_t eyeMs = s_eyeCrosshairMs.load(std::memory_order_relaxed);
+                if (eyeMs && nowMs >= eyeMs && nowMs - eyeMs <= 500)
+                    return false;
+            }
             if (eye < 0 || eye == captureEye)
             {
                 if (!VR_ShouldCaptureAuthoredReticleThisFrame())
