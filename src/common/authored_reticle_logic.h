@@ -514,7 +514,8 @@ inline AuthoredReticleQuadShift AuthoredReticleArtCentreShift(
 
 // WHERE A CAPTURE LOOKS. A title whose capture cuts a fixed window out of the view (Halo 2: the texture's own
 // size in view pixels, one to one, about the view's centre) holds its art only when the HUD draws the crosshair
-// in the middle of the view. A reticle drawn elsewhere (Halo 2 draws a vehicle's well below the middle) lands
+// in the middle of the view. A reticle drawn elsewhere (Halo 2 draws a vehicle's well below the middle; Halo 3 and
+// ODST every crosshair when MCC's own crosshair location is not centred) lands
 // off the texture's centre, cut by its edge when it is far enough, and the player aims with art that is not on
 // the aim point: a Scorpion's shells land a degree and a half above its crosshair. The window follows the art
 // instead: the measured centre of each capture moves it, so the art comes to rest in the middle, whole.
