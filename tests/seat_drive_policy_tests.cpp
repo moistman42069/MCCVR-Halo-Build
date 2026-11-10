@@ -454,6 +454,39 @@ void TestArmPitchRun()
           "a 23 deg offset never holds");
     Check(!far.step(NAN, 0.0f, tol, maxOffset) && !far.started, "a non-finite pitch ends the run");
 }
+void TestSteadyPitchOffset()
+{
+    constexpr float tol = 0.03f, maxOffset = 0.21f;
+    constexpr uint32_t need = 30;
+    // MCC's crosshair lowered: the record a steady 7 deg below the camera is adopted on the 30th update, as the
+    // run's mean.
+    seat_drive::SteadyPitchOffset lowered;
+    bool moved = false;
+    for (uint32_t i = 0; i < need; ++i)
+    {
+        Check(!moved, "nothing is adopted before the run is long enough");
+        moved = lowered.step(-0.122f + (i % 2 ? 0.004f : -0.004f), tol, maxOffset, need);
+    }
+    Check(moved && std::fabs(lowered.value + 0.122f) < 0.002f, "a steady 7 deg offset is adopted");
+    Check(!lowered.step(-0.122f, tol, maxOffset, need), "a longer run adopts it only once");
+    // A turn's lag breaks the run; the offset in force stays.
+    Check(!lowered.step(-0.05f, tol, maxOffset, need) && std::fabs(lowered.value + 0.122f) < 0.002f,
+          "a passing disagreement keeps the offset");
+    Check(!lowered.step(0.5f, tol, maxOffset, need) && std::fabs(lowered.value + 0.122f) < 0.002f,
+          "an offset too large to be the crosshair's keeps it too");
+    // The crosshair centred again: a run at 0 replaces it.
+    moved = false;
+    for (uint32_t i = 0; i < need; ++i)
+        moved = lowered.step(0.001f, tol, maxOffset, need) || moved;
+    Check(moved && std::fabs(lowered.value) < 0.002f, "a steady agreement takes the offset back to 0");
+    // Centred from the start: nothing moves.
+    seat_drive::SteadyPitchOffset centred;
+    moved = false;
+    for (uint32_t i = 0; i < 2 * need; ++i)
+        moved = centred.step(0.0f, tol, maxOffset, need) || moved;
+    Check(!moved && centred.value == 0.0f, "an agreeing record never moves the offset");
+    Check(!centred.step(NAN, tol, maxOffset, need) && centred.value == 0.0f, "a non-finite reading is no reading");
+}
 } // namespace
 
 int main()
@@ -463,6 +496,7 @@ int main()
     TestCombineStints();
     TestOutcomeGate();
     TestArmPitchRun();
+    TestSteadyPitchOffset();
     std::printf("Seat drive policy: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

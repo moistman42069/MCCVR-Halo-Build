@@ -209,6 +209,12 @@ struct LegacyDriveState
     std::atomic<float> footCameraAboveDeg{0.0f};
     seat_drive::ArmPitchRun armPitch;        // sim thread only: Halo 4 on foot (seat_drive_policy.h)
     std::atomic<float> armedPitchOffset{0.0f};   // record minus camera pitch, rad, when it last armed on foot
+    // The servo's pitch on foot (seat_drive::SteadyPitchOffset): the record's steady pitch minus the camera's, rad,
+    // measured on the sim thread and read by the input thread's servo (LegacyDriveFootPitchOffset).
+    seat_drive::SteadyPitchOffset footPitch;  // sim thread only
+    std::atomic<float> footPitchOffset{0.0f};
+    std::atomic<uint64_t> footPitchMs{0};     // the last on-foot update that read it
+    std::atomic<uint32_t> footPitchMoves{0};
     std::atomic<uint64_t> liveMs{0};         // last update that ran armed on the validated record
     // Setpoint and the game's aim, from the input thread (seqlock).
     std::atomic<uint32_t> seq{0};
@@ -913,6 +919,19 @@ bool LegacyDriveLive(GameTitle title)
     const uint64_t live = st.liveMs.load(std::memory_order_acquire);
     const uint64_t now = GetTickCount64();
     return st.armed.load(std::memory_order_acquire) && live && now >= live && now - live <= 150;
+}
+
+// Input thread: on foot, the record's steady pitch minus the camera's (seat_drive::SteadyPitchOffset) as the hook
+// read it within 500 ms; 0 when it has not.
+float LegacyDriveFootPitchOffset(GameTitle title)
+{
+    const int slot = LegacyDriveSlot(title);
+    if (slot < 0)
+        return 0.0f;
+    const auto& st = g_legacyDrive[slot];
+    const uint64_t at = st.footPitchMs.load(std::memory_order_acquire);
+    const uint64_t now = GetTickCount64();
+    return at && now >= at && now - at <= 500 ? st.footPitchOffset.load(std::memory_order_relaxed) : 0.0f;
 }
 
 // Input thread: which axes of a SEAT the hook wrote within 150 ms (seat_direct_drive) -- the servo stands down
@@ -2237,6 +2256,15 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                 }
 #endif
             }
+            // The servo's pitch on foot, armed or not: the camera rides the record either way.
+            if (onFoot && !seatWrite && fresh)
+            {
+                if (st.footPitch.step(nativePitch - aimPitch, kLegacyDriveAgreeRad, kLegacyDriveArmPitchOffsetRad,
+                                      kLegacyDriveAgreeUpdates))
+                    st.footPitchMoves.fetch_add(1, std::memory_order_relaxed);
+                st.footPitchOffset.store(st.footPitch.value, std::memory_order_relaxed);
+                st.footPitchMs.store(now, std::memory_order_release);
+            }
             if (!st.armed.load(std::memory_order_acquire))
             {
                 // ValueAgreement: the record must hold the game's own aim before it is ever written -- both
@@ -2779,6 +2807,14 @@ void LegacyDriveReport()
                     "MCC's crosshair location is not centred (the game draws its crosshair below the view's centre); "
                     "the hand aims the shots all the same",
                     name, footOccupantArms, st.footCameraAboveDeg.load(std::memory_order_relaxed));
+            if (const uint32_t footPitchMoves = st.footPitchMoves.exchange(0))
+            {
+                const float footPitchDeg = st.footPitchOffset.load(std::memory_order_relaxed) * 57.2957795f;
+                LOG("DRIVE %s: on foot the character's aim now holds %+.1f deg from the camera's pitch%s; the servo "
+                    "steers that aim, not the camera, onto the hand",
+                    name, footPitchDeg,
+                    std::fabs(footPitchDeg) >= 1.0f ? " (MCC's crosshair location is not centred)" : "");
+            }
             const uint32_t stints = st.seatStints.exchange(0), yawWrites = st.seatYawWrites.exchange(0),
                            pitchWrites = st.seatPitchWrites.exchange(0), unverified = st.seatUnverified.exchange(0),
                            yawChecks = st.seatYawChecks.exchange(0), pitchChecks = st.seatPitchChecks.exchange(0),

@@ -302,6 +302,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
 bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size);
 bool LegacyDriveRemove(GameTitle title);
 bool LegacyDriveLive(GameTitle title);
+float LegacyDriveFootPitchOffset(GameTitle title);
 void LegacyDriveReport();
 // Halo 3's own hooks, each watched for "installed but never called" (halo3_hook_watch.inl). Cold worker, every loop.
 void Halo3HookWatchReport(uint64_t nowMs);
@@ -60496,6 +60497,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     bool gunOffsetOn = false;
     float gunOffsetYaw = 0.0f, gunOffsetPitch = 0.0f;
     float driveAimYaw = aimYaw, driveAimPitch = aimPitch;
+    // On foot, the record's steady pitch minus the camera's (LegacyDriveFootPitchOffset); the servo's feedback below.
+    float footRecordPitchOffset = 0.0f;
     // A HALO 3 LOOK-STEERED LAND DRIVER's gun band (halo3_vehicle_gun_band.inl): the hull frame, the band and the
     // guns' world origin, when the band is current for the seat's own vehicle.
     bool bandValid = false;
@@ -60696,6 +60699,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             }
             LegacyDrivePublish(driveTitle, desiredYaw, desiredPitch, driveAimYaw, driveAimPitch, true, driveSeated,
                                seatAxes, seat_drive::PitchLatches(seatFacts), seatKey, gunSlavedSeat, gunCameraSeat);
+            if (!driveSeated)
+                footRecordPitchOffset = LegacyDriveFootPitchOffset(driveTitle);
             if (!driveSeated && LegacyDriveLive(driveTitle))
             {
                 // The game's aim IS the written target now. A converged target is then the game's aim itself,
@@ -60913,7 +60918,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // hook) once it has agreed with the record for gun_slaved::kServoTrustSamples samples this stint; until then, or
     // with no fresh read, on the gun as before. Either way the gun-slaved servo is paced (gun_slaved::ServoPacer).
     // (A Halo 3 gun-slaved seat with its camera's offset fed forward reads the gun minus it: driveAim*.)
-    float servoAimYaw = driveAimYaw, servoAimPitch = driveAimPitch;
+    // ON FOOT the pitch is the record's, the camera's plus the steady offset the hook reads between them
+    // (seat_drive::SteadyPitchOffset): with MCC's crosshair location not centred the camera sits above the record the
+    // shots follow, and closing the camera on the hand put them that far below the reticle. Centred, it is 0.
+    float servoAimYaw = driveAimYaw, servoAimPitch = driveAimPitch + footRecordPitchOffset;
     const bool gunSlavedServo = gunCameraSeat && !halo4Aim && !freeCamera;
 #if HALOMCCVR_DEV_DIAGNOSTICS
     int servoFeedback[2]{-1, -1};   // per axis: 1 the occupant, 0 the gun, -1 not steered (dev witness)

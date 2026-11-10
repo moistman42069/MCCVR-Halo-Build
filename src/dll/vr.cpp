@@ -465,6 +465,21 @@ namespace
     // that draws the HUD, reads the pair below, in texels of the capture texture.
     ReticleCaptureFollow g_reticleFollow{};
     std::atomic<float> g_reticleWindowX{0.0f}, g_reticleWindowY{0.0f};
+    // HOW MANY CAPTURES ONE DISPLAYED FRAME TOOK, where the window follows the art (for the log). Each crosshair
+    // widget draw begins one, all into the one texture, cleared once a frame. Kept by the thread that captures:
+    // this frame's count, and its first and latest capture's raster eye and widget viewport (top, height).
+    struct ReticleCaptureTally
+    {
+        uint64_t serial = 0;
+        uint32_t count = 0;
+        int eye[2]{-1, -1};
+        float top[2]{}, height[2]{};
+    };
+    ReticleCaptureTally g_reticleTally{};
+    // For the log: the most in one frame, how many frames took more than one, and the last such frame's pair.
+    std::atomic<uint32_t> g_reticleTallyMost{0}, g_reticleTallyMulti{0};
+    std::atomic<int> g_reticleTallyEye[2]{-1, -1};
+    std::atomic<float> g_reticleTallyTop[2]{}, g_reticleTallyHeight[2]{};
     // Halo 4's capture takes in as much of the view as its art reaches (authored_reticle_logic.h,
     // ReticleCaptureFit), stepped where the centre is measured. `g_halo4ReticleZoom` is what the next capture is
     // drawn at; each capture keeps the zoom it was drawn at, the readback and the published art theirs.
@@ -510,12 +525,13 @@ namespace
     constexpr float kReticleFollowLimit = 768.0f;     // texels: no reticle is drawn farther out
     constexpr uint32_t kReticleFollowBlankLimit = 8;
     // The titles whose capture window follows its art. Halo 2 draws a vehicle's reticle well below the view's centre;
-    // Halo 3 and ODST draw every crosshair below it when MCC's own crosshair location is not centred, the camera
-    // then pitched above the aim. The setting is the player's, kept for flat play: the capture follows the art rather
-    // than the mod changing it.
+    // Halo 3, ODST and Reach draw every crosshair below it when MCC's own crosshair location is not centred (Reach's
+    // 0.37 of the texture low and cut off at its edge, 3.9 deg below the aim point: headset log 2026-11-09). The
+    // setting is the player's, kept for flat play: the capture follows the art rather than the mod changing it.
     bool ReticleCaptureFollowsArt(GameTitle title)
     {
-        return title == GameTitle::Halo2 || title == GameTitle::Halo3 || title == GameTitle::Halo3ODST;
+        return title == GameTitle::Halo2 || title == GameTitle::Halo3 || title == GameTitle::Halo3ODST ||
+               title == GameTitle::HaloReach;
     }
     // The centre of the art now in the swapchain; invalid while it holds
     // procedural art or art nobody measured.
@@ -9753,7 +9769,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         g_authoredReticleMeasuredCentre.touchesEdge ? " and was cut off by it" : "",
                         g_authoredReticleCentreZoom, g_halo4ReticleFit.zoom, g_halo4ReticleFit.widenings);
                 }
-                // Halo 2, Halo 3 and ODST: the capture window follows the art it has just been shown.
+                // Halo 2, Halo 3, ODST and Reach: the capture window follows the art it has just been shown.
                 if (ReticleCaptureFollowsArt(TitleAdapter_GetActiveTitle()) &&
                     g_reticleFollow.Step(g_authoredReticleMeasuredCentre, g_authoredReticleCentreSerial,
                                          g_preparedFrame.serial, static_cast<float>(kReticleSize),
@@ -19538,6 +19554,26 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                         g_authoredReticleCentreStaging
                                             ? "no measured art on the quad yet"
                                             : "art-centre readback unavailable");
+                                if (ReticleCaptureFollowsArt(reticleTitle))
+                                {
+                                    const uint32_t most = g_reticleTallyMost.exchange(0, std::memory_order_relaxed);
+                                    const uint32_t multi = g_reticleTallyMulti.exchange(0, std::memory_order_relaxed);
+                                    if (multi)
+                                        LOG("RETICLE captures (title %d): up to %u in one displayed frame, %u "
+                                            "frame(s) with more than one; the last such frame's first in eye %d "
+                                            "(widget viewport top %.0f, height %.0f), its latest in eye %d (top "
+                                            "%.0f, height %.0f)",
+                                            static_cast<int>(reticleTitle), most, multi,
+                                            g_reticleTallyEye[0].load(std::memory_order_relaxed),
+                                            g_reticleTallyTop[0].load(std::memory_order_relaxed),
+                                            g_reticleTallyHeight[0].load(std::memory_order_relaxed),
+                                            g_reticleTallyEye[1].load(std::memory_order_relaxed),
+                                            g_reticleTallyTop[1].load(std::memory_order_relaxed),
+                                            g_reticleTallyHeight[1].load(std::memory_order_relaxed));
+                                    else if (most)
+                                        LOG("RETICLE captures (title %d): one per displayed frame",
+                                            static_cast<int>(reticleTitle));
+                                }
                                 g_authoredReticleBlankHeld = 0;
                                 s_uploadsDone = 0;
                                 s_uploadsSkipped = 0;
@@ -26162,6 +26198,30 @@ static bool BeginAuthoredReticleCaptureInternal(
             D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
         g_context->RSGetScissorRects(&saved.scissorCount, saved.scissors);
     }
+    if (publishAuthored && saved.viewportCount && ReticleCaptureFollowsArt(captureTitle))
+    {
+        auto& tally = g_reticleTally;
+        if (tally.serial != serial)
+            tally = {serial};
+        const uint32_t slot = tally.count ? 1u : 0u;
+        tally.eye[slot] = g_rasterEye.load(std::memory_order_relaxed);
+        tally.top[slot] = saved.viewports[0].TopLeftY;
+        tally.height[slot] = saved.viewports[0].Height;
+        ++tally.count;
+        if (tally.count > g_reticleTallyMost.load(std::memory_order_relaxed))
+            g_reticleTallyMost.store(tally.count, std::memory_order_relaxed);
+        if (tally.count >= 2)
+        {
+            if (tally.count == 2)
+                g_reticleTallyMulti.fetch_add(1, std::memory_order_relaxed);
+            for (int i = 0; i < 2; ++i)
+            {
+                g_reticleTallyEye[i].store(tally.eye[i], std::memory_order_relaxed);
+                g_reticleTallyTop[i].store(tally.top[i], std::memory_order_relaxed);
+                g_reticleTallyHeight[i].store(tally.height[i], std::memory_order_relaxed);
+            }
+        }
+    }
 
     D3D11_VIEWPORT captureViewport{};
     // Halo 3/ODST/Reach hook a widget-scoped draw, so the viewport already
@@ -26250,8 +26310,8 @@ static bool BeginAuthoredReticleCaptureInternal(
         (static_cast<float>(kReticleSize) - captureViewport.Width) * 0.5f;
     captureViewport.TopLeftY =
         (static_cast<float>(kReticleSize) - captureViewport.Height) * 0.5f;
-    // Halo 2 draws some reticles away from the view's centre (a vehicle's sits well below it), and Halo 3 and ODST
-    // every crosshair when MCC's crosshair location is not centred; their window is cut about the point the art was
+    // Halo 2 draws some reticles away from the view's centre (a vehicle's sits well below it), and Halo 3, ODST and
+    // Reach every crosshair when MCC's crosshair location is not centred; their window is cut about the point the art was
     // last measured at instead (ReticleCaptureFollow).
     if (ReticleCaptureFollowsArt(captureTitle))
     {
