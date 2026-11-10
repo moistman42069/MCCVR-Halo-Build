@@ -525,13 +525,14 @@ namespace
     constexpr float kReticleFollowLimit = 768.0f;     // texels: no reticle is drawn farther out
     constexpr uint32_t kReticleFollowBlankLimit = 8;
     // The titles whose capture window follows its art. Halo 2 draws a vehicle's reticle well below the view's centre;
-    // Halo 3, ODST and Reach draw every crosshair below it when MCC's own crosshair location is not centred (Reach's
-    // 0.37 of the texture low and cut off at its edge, 3.9 deg below the aim point: headset log 2026-11-09). The
-    // setting is the player's, kept for flat play: the capture follows the art rather than the mod changing it.
+    // Halo 3, ODST, Reach and CE draw every crosshair below it when MCC's own crosshair location is not centred
+    // (Reach's 0.37 of the texture low and cut off at its edge, 3.9 deg below the aim point; CE's 0.40 low, 2.9 deg:
+    // headset log 2026-11-09). The setting is the player's, kept for flat play: the capture follows the art rather
+    // than the mod changing it. CE's seat lift (g_ceReticleLift) still places a driver's chevron first.
     bool ReticleCaptureFollowsArt(GameTitle title)
     {
         return title == GameTitle::Halo2 || title == GameTitle::Halo3 || title == GameTitle::Halo3ODST ||
-               title == GameTitle::HaloReach;
+               title == GameTitle::HaloReach || title == GameTitle::HaloCE;
     }
     // The centre of the art now in the swapchain; invalid while it holds
     // procedural art or art nobody measured.
@@ -9769,7 +9770,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         g_authoredReticleMeasuredCentre.touchesEdge ? " and was cut off by it" : "",
                         g_authoredReticleCentreZoom, g_halo4ReticleFit.zoom, g_halo4ReticleFit.widenings);
                 }
-                // Halo 2, Halo 3, ODST and Reach: the capture window follows the art it has just been shown.
+                // Halo 2, Halo 3, ODST, Reach and CE: the capture window follows the art it has just been shown.
                 if (ReticleCaptureFollowsArt(TitleAdapter_GetActiveTitle()) &&
                     g_reticleFollow.Step(g_authoredReticleMeasuredCentre, g_authoredReticleCentreSerial,
                                          g_preparedFrame.serial, static_cast<float>(kReticleSize),
@@ -26313,8 +26314,8 @@ static bool BeginAuthoredReticleCaptureInternal(
         (static_cast<float>(kReticleSize) - captureViewport.Width) * 0.5f;
     captureViewport.TopLeftY =
         (static_cast<float>(kReticleSize) - captureViewport.Height) * 0.5f;
-    // Halo 2 draws some reticles away from the view's centre (a vehicle's sits well below it), and Halo 3, ODST and
-    // Reach every crosshair when MCC's crosshair location is not centred; their window is cut about the point the art was
+    // Halo 2 draws some reticles away from the view's centre (a vehicle's sits well below it), and Halo 3, ODST,
+    // Reach and CE every crosshair when MCC's crosshair location is not centred; their window is cut about the point the art was
     // last measured at instead (ReticleCaptureFollow).
     if (ReticleCaptureFollowsArt(captureTitle))
     {
