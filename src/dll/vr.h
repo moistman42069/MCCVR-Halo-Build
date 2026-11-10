@@ -1082,8 +1082,10 @@ bool VR_GetEyeFov(int eye, float outFov[4]);
 // before its eye passes. True: draw the world ONCE, as the eye the eye-order setting draws first, from the
 // midpoint of the eyes (no eye offset, no cant) with the symmetric frustum `coverFov` (left, right, up, down;
 // radians), capture it, and call VR_NoteMonoFrameRendered with that eye. False: both eyes as usual.
+// `aimFramePicture`: the pass was the Aim Frame Zoom's, already said so (VR_PrepareAimFramePicture); it stays the
+// frame's picture instead of becoming the immersive view.
 bool VR_MonoRenderThisFrame(GameTitle title, float coverFov[4]);
-void VR_NoteMonoFrameRendered(GameTitle title, int eye);
+void VR_NoteMonoFrameRendered(GameTitle title, int eye, bool aimFramePicture = false);
 // `title` drew a pair: the latest picture is two eyes' again.
 void VR_NoteStereoFrameRendered(GameTitle title);
 // Aim Frame Zoom: `title`'s frame was drawn along the aim at the half-angle tangents `tanX` and `tanY`, as one
