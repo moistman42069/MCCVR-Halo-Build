@@ -2287,14 +2287,17 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                         LegacyDriveAgrees(fresh, nativeYaw, nativePitch, footOccupantYaw, footOccupantPitch);
                 }
                 // Halo 4 on foot: yaw agrees, and the pitch holds the record's camera offset
-                // (seat_drive::ArmPitchRun).
-                if (!st.agree)
+                // (seat_drive::ArmPitchRun). The pitch run restarts itself on a changed offset, and only a yaw that
+                // disagrees restarts it from here: restarting it whenever the count stood at 0 restarted it before
+                // every update, as its first sample never counts, and Halo 4 never armed.
+                const bool halo4YawAgrees = slot == 2 && LegacyDriveYawAgrees(fresh, nativeYaw, aimYaw);
+                if (slot == 2 && !halo4YawAgrees)
                     st.armPitch = {};
                 const bool armAgree = seatWrite
                     ? (LegacyDriveYawAgrees(fresh, nativeYaw, aimYaw) ||
                        (occupantRead && LegacyDriveYawAgrees(fresh, nativeYaw, occupantYaw)))
                     : slot == 2
-                    ? LegacyDriveYawAgrees(fresh, nativeYaw, aimYaw) &&
+                    ? halo4YawAgrees &&
                           st.armPitch.step(nativePitch, aimPitch, kLegacyDriveAgreeRad, kLegacyDriveArmPitchOffsetRad)
                     : (agrees || footOccupantAgrees);
                 st.agree = armAgree ? st.agree + 1 : 0;
