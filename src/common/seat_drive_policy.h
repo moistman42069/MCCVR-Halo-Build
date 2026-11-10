@@ -260,4 +260,34 @@ struct OutcomeGate {
     }
 };
 
+// THE ON-FOOT ARM GATE'S PITCH, Halo 4 (legacy_direct_drive.inl). Before the hook ever writes the record it
+// must hold the game's own aim, the camera's forward: yaw and pitch within 1.7 deg for 30 updates in a row.
+// Halo 4's first-person camera sits a steady few degrees above the record's pitch for most of a session
+// (headset logs 2026-11-09, on foot: 5.3 to 7.5 deg in every Steam and Microsoft Store run through Link,
+// SteamVR and Virtual Desktop), so the pitch half passed only where the two happened to agree, which on most
+// runs is the moment after spawning. A session without such a moment (Store edition through Virtual Desktop,
+// every run) never armed; the servo then closed the CAMERA on the hand, and every shot landed that far below
+// the reticle. Yaw must still agree. The pitch may instead hold one offset, no larger than `max_offset`,
+// within `tolerance` for the whole run: a record that moves with the camera, a fixed angle apart.
+struct ArmPitchRun {
+    float offset = 0.0f;
+    bool started = false;
+
+    // One update. True while the run holds; false starts a new run at this sample (the caller's count
+    // restarts), or none when the offset is out of bounds.
+    bool step(float record_pitch, float aim_pitch, float tolerance, float max_offset)
+    {
+        const float d = record_pitch - aim_pitch;
+        if (!std::isfinite(d) || std::fabs(d) > max_offset) {
+            started = false;
+            return false;
+        }
+        if (started && std::fabs(d - offset) < tolerance)
+            return true;
+        offset = d;
+        started = true;
+        return false;
+    }
+};
+
 } // namespace seat_drive
