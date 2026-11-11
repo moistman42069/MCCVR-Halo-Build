@@ -20331,7 +20331,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
 
     bool InstallHookBody(uintptr_t base, size_t size, uint32_t runtimeGeneration)
     {
-        InstallCentredCrosshair(GameTitle::Halo3, base, size);
+        InstallCentredCrosshair(GameTitle::Halo3, base, size, runtimeGeneration);
         if (!runtimeGeneration)
             return false;
         // A new install for the hook watch (halo3_hook_watch.inl): none of the core's hooks is in yet.
@@ -23219,7 +23219,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             LOG("ODST camera preflight: exact title mapping is no longer current");
             return OdstInstallResult::Failed;
         }
-        InstallCentredCrosshair(GameTitle::Halo3ODST, base, size);
+        InstallCentredCrosshair(GameTitle::Halo3ODST, base, size, runtimeGeneration);
 
         OdstResolvedCameraRuntime resolved{};
         const OdstInstallResult preflight =
@@ -39072,6 +39072,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             return true;
         if (!base || !generation || size != kReachRetailImageSize)
             return false;
+        InstallCentredCrosshair(GameTitle::HaloReach, base, size, generation);
         if (g_reachChudParityFailedGeneration.load(
                 std::memory_order_acquire) == generation)
         {
@@ -51448,6 +51449,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             return false;
         if (!Halo4Adapter_RuntimeHooksPermitted())
             return false;
+        InstallCentredCrosshair(GameTitle::Halo4, base, size, generation);
         // C-H4-2's verdict for THIS module instance is the entry condition.
         if (!Halo4ColdObservation_Passed(generation))
             return false;

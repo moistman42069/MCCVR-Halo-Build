@@ -1,81 +1,123 @@
-// ALWAYS THE CENTRED CROSSHAIR in Halo 3 and ODST (centred_crosshair_logic.h). Run at each title install, before the
-// camera transaction, and on its own: the patch is one byte of the game's settings fill, not a hook, and selects the
-// game's own Centered arm. Anything not proven leaves that title on the player's setting (the Lowered fallbacks stay:
-// seat_drive::SteadyPitchOffset, the capture window that follows the art). Project Reclaimer 0.10 runs a recompiled
-// Halo 3 whose code this does not reach; the launcher turns on its own Centered crosshair instead.
-void InstallCentredCrosshair(GameTitle title, uintptr_t base, size_t size)
+// ALWAYS THE CENTRED CROSSHAIR in Halo 3, ODST, Reach and Halo 4 (centred_crosshair_logic.h). Run at each title's
+// install, on its own: the patch is a few bytes of the game's settings fills, not a hook, and selects the game's own
+// Centered arm. A title is patched whole or not at all; anything not proven leaves it on the player's setting (the
+// Lowered fallbacks stay: seat_drive::SteadyPitchOffset, the capture window that follows the art, Halo 4's Aim Frame
+// Zoom recentre wait). Project Reclaimer 0.10 runs a recompiled Halo 3 whose code this does not reach; the launcher
+// turns on its own Centered crosshair instead.
+void InstallCentredCrosshair(GameTitle title, uintptr_t base, size_t size, uint32_t generation)
 {
-    const char* const name = title == GameTitle::Halo3ODST ? "ODST" : "Halo 3";
-    // One report per loaded module (installs are retried) and per patch made (a reloaded module can land at the same base).
-    static uintptr_t s_reportedBase[2]{};
-    uintptr_t& reported = s_reportedBase[title == GameTitle::Halo3ODST ? 1 : 0];
-    const bool report = reported != base;
-    reported = base;
+    using namespace centred_crosshair;
+    const Title* t = nullptr;
+    size_t slot = 0;
+    switch (title)
+    {
+    case GameTitle::Halo3: t = &kHalo3, slot = 0; break;
+    case GameTitle::Halo3ODST: t = &kOdst, slot = 1; break;
+    case GameTitle::HaloReach: t = &kReach, slot = 2; break;
+    case GameTitle::Halo4: t = &kHalo4, slot = 3; break;
+    default: return;
+    }
+    // Once per loaded module: installs are retried, and a module reloaded at the same base is a new generation.
+    static struct
+    {
+        uintptr_t base;
+        uint32_t generation;
+    } s_done[4]{};
+    if (s_done[slot].base == base && s_done[slot].generation == generation)
+        return;
+    s_done[slot] = {base, generation};
     if (title == GameTitle::Halo3 && lifted::Active())
     {
-        if (report)
-            LOG("%s crosshair location: Project Reclaimer's own setting applies (its Centered crosshair)", name);
+        LOG("%s crosshair location: Project Reclaimer's own setting applies (its Centered crosshair)", t->name);
         return;
     }
-    const uintptr_t fill = mcc_clock::FindUnique(base, size, centred_crosshair::kFillPattern);
-    uint8_t before[centred_crosshair::kFillCompareSearch]{};
-    uint8_t jump[centred_crosshair::kFillPatternBytes]{};
-    bool patched = false;
-    uint8_t field = 0;
-    if (!fill || fill < base + sizeof(before) ||
-        !mcc_clock::CopyCode(fill - sizeof(before), before, sizeof(before)) ||
-        !mcc_clock::CopyCode(fill, jump, sizeof(jump)) ||
-        !centred_crosshair::DecodeFill(jump, before, patched, field))
+
+    struct Found
     {
-        if (report)
-            LOG("%s crosshair location: the settings fill was not found; MCC's setting applies as the player set it",
-                name);
+        uintptr_t at;
+        uint8_t centred[kMostPatchBytes];
+        size_t length;
+        bool patched;
+    };
+    Found found[2]{};
+    if (t->siteCount > sizeof(found) / sizeof(found[0]))
         return;
-    }
-    if (!patched)
+    for (size_t i = 0; i < t->siteCount; ++i)
     {
-        auto* branch = reinterpret_cast<uint8_t*>(fill);
-        DWORD oldProtect = 0;
-        if (!VirtualProtect(branch, 1, PAGE_EXECUTE_READWRITE, &oldProtect))
+        const Site& site = t->sites[i];
+        const size_t bytes = PatternBytes(site.pattern);
+        const uintptr_t match = mcc_clock::FindUnique(base, size, site.pattern);
+        uint8_t code[64]{};
+        uint8_t callee[kCalleeBytes]{};
+        uintptr_t target = 0;
+        const bool ok = match && bytes <= sizeof(code) && mcc_clock::CopyCode(match, code, bytes) &&
+            CentredBytes(site.patch, code + site.patchOffset, found[i].centred, found[i].length, found[i].patched) &&
+            (!site.callee ||
+             ((target = CallTarget(code + site.callOffset, match + site.callOffset)) >= base &&
+              target + kCalleeBytes <= base + size && mcc_clock::CopyCode(target, callee, kCalleeBytes) &&
+              Matches(callee, site.callee)));
+        if (!ok)
         {
-            if (report)
-                LOG("%s crosshair location: the settings fill could not be written; MCC's setting applies", name);
+            LOG("%s crosshair location: settings fill %zu of %zu was not found; MCC's setting applies as the player "
+                "set it",
+                t->name, i + 1, t->siteCount);
             return;
         }
-        branch[0] = 0xEB;   // je +5 -> jmp +5: the Centered arm
-        FlushInstructionCache(GetCurrentProcess(), branch, 1);
-        DWORD ignored = 0;
-        VirtualProtect(branch, 1, oldProtect, &ignored);
+        found[i].at = match + site.patchOffset;
     }
+
+    size_t madeNow = 0;
+    for (size_t i = 0; i < t->siteCount; ++i)
+    {
+        if (found[i].patched)
+            continue;
+        auto* code = reinterpret_cast<uint8_t*>(found[i].at);
+        DWORD oldProtect = 0;
+        if (!VirtualProtect(code, found[i].length, PAGE_EXECUTE_READWRITE, &oldProtect))
+        {
+            LOG("%s crosshair location: settings fill %zu could not be written; %s", t->name, i + 1,
+                madeNow ? "the fills before it are Centered, the rest follow MCC's setting"
+                        : "MCC's setting applies");
+            return;
+        }
+        std::memcpy(code, found[i].centred, found[i].length);
+        FlushInstructionCache(GetCurrentProcess(), code, found[i].length);
+        DWORD ignored = 0;
+        VirtualProtect(code, found[i].length, oldProtect, &ignored);
+        ++madeNow;
+    }
+
     // The profiles the game filled before this: set directly, one int each.
-    const uintptr_t arrayMatch = mcc_clock::FindUnique(base, size, centred_crosshair::kArrayPattern);
-    uint8_t arrayBytes[centred_crosshair::kArrayStrideOffset + sizeof(uint32_t)]{};
+    const uintptr_t arrayMatch = mcc_clock::FindUnique(base, size, t->array.pattern);
+    uint8_t arrayBytes[32]{};
     uintptr_t array = 0;
     uint32_t stride = 0;
     uint32_t set = 0;
-    const bool arrayFound = arrayMatch && mcc_clock::CopyCode(arrayMatch, arrayBytes, sizeof(arrayBytes)) &&
-        centred_crosshair::DecodeArray(arrayBytes, arrayMatch, field, array, stride) && array >= base &&
-        centred_crosshair::FieldAddress(array, stride, centred_crosshair::kUsers - 1, field) + sizeof(int32_t) <=
-            base + size;
+    const bool arrayFound = arrayMatch && t->array.strideOffset + sizeof(uint32_t) <= sizeof(arrayBytes) &&
+        mcc_clock::CopyCode(arrayMatch, arrayBytes, t->array.strideOffset + sizeof(uint32_t)) &&
+        DecodeArray(t->array, arrayBytes, arrayMatch, t->field, array, stride) && array >= base &&
+        FieldAddress(array, stride, kUsers - 1, t->field) + sizeof(int32_t) <= base + size;
     if (arrayFound)
     {
-        for (uint32_t user = 0; user < centred_crosshair::kUsers; ++user)
+        for (uint32_t user = 0; user < kUsers; ++user)
         {
-            auto* value = reinterpret_cast<volatile int32_t*>(
-                centred_crosshair::FieldAddress(array, stride, user, field));
+            auto* value = reinterpret_cast<volatile int32_t*>(FieldAddress(array, stride, user, t->field));
             if (*value == 0)
             {
-                *value = centred_crosshair::kCentred;
+                *value = kCentred;
                 ++set;
             }
         }
     }
-    if (report || !patched)
-        LOG("%s crosshair location: Centered, whatever the player's MCC setting (the settings fill at +0x%llX takes "
-            "the Centered arm%s; profile field +0x%X; %s)",
-            name, static_cast<unsigned long long>(fill - base), patched ? ", already patched" : "",
-            static_cast<unsigned>(field),
-            !arrayFound ? "the profiles already filled were not found; they keep their setting until MCC fills them again"
-            : set       ? "the profiles already filled are Centered now"
-                        : "no profile already filled was Lowered");
+    char fills[48]{};
+    std::snprintf(fills, sizeof(fills), t->siteCount == 1 ? "+0x%llX" : "+0x%llX and +0x%llX",
+                  static_cast<unsigned long long>(found[0].at - base),
+                  static_cast<unsigned long long>(found[t->siteCount - 1].at - base));
+    LOG("%s crosshair location: Centered, whatever the player's MCC setting (the settings fill%s at %s take%s the "
+        "Centered arm%s; profile field +0x%X; %s)",
+        t->name, t->siteCount == 1 ? "" : "s", fills, t->siteCount == 1 ? "s" : "",
+        madeNow ? "" : ", already patched", static_cast<unsigned>(t->field),
+        !arrayFound ? "the profiles already filled were not found; they keep their setting until MCC fills them again"
+        : set       ? "the profiles already filled are Centered now"
+                    : "no profile already filled was Lowered");
 }
