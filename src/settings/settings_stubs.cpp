@@ -52,6 +52,7 @@ bool Game_VehicleCameraLag(float&, float&, bool&) { return false; }
 bool Game_VehicleCameraReadout(char* out, size_t size) { Blank(out, size); return false; }
 const char* Game_ManualVrRecoveryStatus() { return "No game is running."; }
 const char* Game_ReclaimerFlightStatus() { return ""; }
+bool Game_ReclaimerOdstLevel() noexcept { return false; }
 const char* Game_VehicleSeatTrimName(int, VehicleTrimBank) { return ""; }
 float Game_GetPitchSign() { return 1.0f; }
 float Game_GetWorldScale() { return g_config.world_scale; }

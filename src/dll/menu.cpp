@@ -628,7 +628,7 @@ namespace
     } g_mappingPage;
     int MappingTitle()
     {
-        const auto active=TitleAdapter_GetActiveTitle();
+        const auto active=Game_ControlsTitle(TitleAdapter_GetActiveTitle());
         const int activeIndex=weapon_interaction::TitleIndex(active);
         if(active!=g_mappingPage.previousTitle&&activeIndex>=0) g_mappingPage.selectedTitle=activeIndex;
         g_mappingPage.previousTitle=active;
@@ -1617,7 +1617,7 @@ namespace
             int& selectedTitle=g_mappingPage.selectedTitle;
             auto& moreOpen=g_mappingPage.moreOpen;
             auto& optionsOpen=g_mappingPage.optionsOpen;
-            const int activeIndex=weapon_interaction::TitleIndex(TitleAdapter_GetActiveTitle());
+            const int activeIndex=weapon_interaction::TitleIndex(Game_ControlsTitle(TitleAdapter_GetActiveTitle()));
             ImGui::Text("Detected left: %s",VR_ControllerProfileName(true));
             ImGui::Text("Detected right: %s",VR_ControllerProfileName(false));
             changed|=ImGui::Checkbox("Remap buttons (off: every button is the game's own)",&g_config.vr_action_mapping);

@@ -64117,3 +64117,8 @@ bool Game_Halo2VehicleCameraChase(const NativeVehicleCameraOwner& owner) noexcep
            chosenFor.vehicle == static_cast<int32_t>(owner.parent) && chosenFor.seatIndex == owner.seat &&
            chosenFor.mounted == (owner.root != UINT32_MAX && owner.root != owner.parent);
 }
+
+bool Game_ReclaimerOdstLevel() noexcept
+{
+    return g_hostIsProjectReclaimer && g_reclaimerOdstLevel.load(std::memory_order_relaxed);
+}

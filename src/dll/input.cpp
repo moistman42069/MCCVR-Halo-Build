@@ -378,7 +378,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             buttons.supportTrigger = pad.trigL;
             // Does the action mapper bind right B to anything in this game? (By default it binds it to nothing.)
             bool bBound = false;
-            const int seatTitle = weapon_interaction::TitleIndex(TitleAdapter_GetActiveTitle());
+            const int seatTitle = weapon_interaction::TitleIndex(Game_ControlsTitle(TitleAdapter_GetActiveTitle()));
             if (seatTitle >= 0 && g_config.vr_action_mapping)
             {
                 vr_mapping::Transports layout{};
@@ -504,12 +504,14 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         }
 
         const auto currentTitle=TitleAdapter_GetActiveTitle();
-        const int mappingTitle=weapon_interaction::TitleIndex(currentTitle);
+        // The rows are the controls title's (Project Reclaimer's ODST levels: ODST's); the engine stays currentTitle.
+        const auto controlsTitle=Game_ControlsTitle(currentTitle);
+        const int mappingTitle=weapon_interaction::TitleIndex(controlsTitle);
         const auto inputMode=TitleAdapter_GetRuntimeMode();
         const bool gameplayMode=(inputMode==RuntimeMode::Gameplay||inputMode==RuntimeMode::Vehicle||inputMode==RuntimeMode::Turret)&&
             !VR_IsPausePresentation()&&!VR_IsPausePresentationTarget()&&!VR_IsCutsceneTheaterActive();
         const uint64_t mappingEpoch=(uint64_t(TitleAdapter_GetGeneration(currentTitle))<<32)|
-            (uint64_t(currentTitle)<<24)|pad.profileEpoch;
+            (uint64_t(controlsTitle)<<24)|pad.profileEpoch;
         const bool scopeFeatureAvailable=g_config.scope_enabled&&Game_IsHeadTracking()&&Game_HasScopeRenderer()&&
             !Game_AimFrameZoomOwnsZoom();
         const bool scopeAvailable=scopeFeatureAvailable&&gameplayMode;
@@ -531,7 +533,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
         if(mappingTitle>=0&&g_config.vr_action_mapping&&gameLayoutKnown)
         {
             static std::atomic<uint64_t> logged{0};
-            const uint64_t shown=vr_mapping::Fingerprint(effectiveBindings,gameLayout)^(uint64_t(currentTitle)<<56)^
+            const uint64_t shown=vr_mapping::Fingerprint(effectiveBindings,gameLayout)^(uint64_t(controlsTitle)<<56)^
                 vr_mapping::Fingerprint(*rowInputs)*37u;
             if(logged.exchange(shown,std::memory_order_relaxed)!=shown)
             {
@@ -707,7 +709,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             if(pad.thumbrestDpad)
             {
                 const auto title=TitleAdapter_GetActiveTitle();
-                const int index=weapon_interaction::TitleIndex(title);
+                const int index=weapon_interaction::TitleIndex(Game_ControlsTitle(title));
                 if(g_config.vr_action_mapping&&index>=0&&
                     gameplayMode)
                 {
@@ -967,7 +969,7 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             extraPublished=extraPressed&extraServed;
             // What the extra rows press in this game, and the game's own button behind each: once each time it changes.
             static uint64_t shownSeatRows=0;
-            uint64_t shown=uint64_t(currentTitle)<<56;
+            uint64_t shown=uint64_t(controlsTitle)<<56;
             char input[32];
             for(unsigned action=0;mappingTitle>=0&&action<vr_mapping::ExtraCount;++action)
             {

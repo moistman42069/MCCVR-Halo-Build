@@ -236,11 +236,20 @@ static bool ApplyReclaimerOdstHudRecord(uint32_t generation, float horizontal, f
     return true;
 }
 
+// Whether the running level is ODST's (Game_ReclaimerOdstLevel, end of game.cpp), as the HUD tick below last judged it.
+std::atomic<bool> g_reclaimerOdstLevel{false};
+
 // Present thread, from HudLayoutAutoTick while a Halo 3 level runs on Project Reclaimer: starts the search on an ODST
 // level, then keeps the record holding the layout the player's settings and the Aim Frame want.
 static void ReclaimerOdstHudTick(uint32_t generation, uint64_t now, float horizontal, float vertical,
                                  float curvature)
 {
+    g_reclaimerOdstLevel.store(
+        (g_reclaimerOdstHud.record.load(std::memory_order_relaxed) &&
+         g_reclaimerOdstHud.generation.load(std::memory_order_acquire) == generation) ||
+            g_reclaimerOdstHudMarkerGeneration.load(std::memory_order_relaxed) == generation ||
+            Halo3LoadedScenarioIsOdst(),
+        std::memory_order_relaxed);
     if (g_reclaimerOdstHud.record.load(std::memory_order_relaxed) &&
         g_reclaimerOdstHud.generation.load(std::memory_order_acquire) == generation)
     {
