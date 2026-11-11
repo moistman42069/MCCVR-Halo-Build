@@ -25,6 +25,9 @@ std::atomic<unsigned> restingCount{0}, foreignMoves{0};
 std::atomic<unsigned> cursorFailures{0};
 std::atomic<const char*> frameStatus{"no-screen"}, deliveryStatus{"idle"};
 std::atomic<HWND> coveredBy{nullptr}; // the window last found over the game's at the pointed point
+// The ray is on the game's screen but another window covers the point: nothing is sent, and the pad stays the
+// pointer's (NativeMenuPointer_ConsumesTrigger), so the trigger and stick do not reach the menu as its own buttons.
+std::atomic<bool> pointCovered{false};
 std::atomic<float> scrollStick{0.0f};
 // All remaining state belongs exclusively to MCC's window thread.
 game_menu_pointer::Pointer pointer;
@@ -117,10 +120,16 @@ void Apply()
     const bool allowed = Allowed() && GetClientRect(window, &client);
     const auto result = pointer.Update(sample.load(std::memory_order_acquire),
         GetTickCount(), allowed, client.right-client.left, client.bottom-client.top);
-    if (!result.move) { deliveryStatus.store(allowed ? "inactive-ray" : "focus-or-menu-gate"); Cancel(); return; }
+    if (!result.move) {
+        pointCovered.store(false, std::memory_order_release);
+        deliveryStatus.store(allowed ? "inactive-ray" : "focus-or-menu-gate"); Cancel(); return;
+    }
     // Do not take over a physical mouse drag. An injected down is tracked
     // separately and always balanced on miss, focus loss, F1 or stale input.
-    if (!mouseDown && (GetAsyncKeyState(VK_LBUTTON) & 0x8000)) { deliveryStatus.store("physical-drag"); Cancel(); return; }
+    if (!mouseDown && (GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
+        pointCovered.store(false, std::memory_order_release);
+        deliveryStatus.store("physical-drag"); Cancel(); return;
+    }
     POINT target{result.x, result.y};
     if (!ClientToScreen(window, &target)) { Cancel(); Fault(); return; }
     const bool posted = PostsMessages();
@@ -129,6 +138,7 @@ void Apply()
         const HWND under = WindowFromPoint(target);
         if (under != window && !IsChild(window, under)) {
             coveredBy.store(under, std::memory_order_relaxed);
+            pointCovered.store(true, std::memory_order_release);
             deliveryStatus.store("window-covered"); Cancel(); return;
         }
     }
@@ -190,6 +200,7 @@ void Apply()
                 LOG("game menu pointer: wheel %d/%d notch at %d,%d of %dx%d", steps, kWheelStepsPerNotch,
                     int(result.x), int(result.y), int(client.right-client.left), int(client.bottom-client.top));
         }
+        pointCovered.store(false, std::memory_order_release);
         deliveryStatus.store("delivered");
         visual.store(game_menu_pointer::Pack(GetTickCount(), true,
             float(result.x) / (client.right-client.left),
@@ -225,7 +236,7 @@ void NativeMenuPointer_PublishScroll(float stick)
 }
 bool NativeMenuPointer_ConsumesTrigger()
 {
-    return delivered.load(std::memory_order_acquire) && Allowed() &&
+    return (delivered.load(std::memory_order_acquire) || pointCovered.load(std::memory_order_acquire)) && Allowed() &&
         game_menu_pointer::FreshActive(sample.load(), GetTickCount());
 }
 void NativeMenuPointer_ReportFailures()
