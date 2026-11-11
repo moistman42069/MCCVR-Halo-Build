@@ -1671,10 +1671,10 @@ namespace
                 if(g_config.vr_bindings[selectedTitle][action]==vr_mapping::Automatic)
                 {
                     if(haveBindings)
-                        ImGui::TextDisabled("The game has this on: %s",
+                        ImGui::TextDisabled("Your MCC layout has this on: %s",
                             vr_mapping::kSourceNames[vr_mapping::LayoutSource(bindings[action])]);
                     else
-                        ImGui::TextDisabled("Follows the game's own layout.");
+                        ImGui::TextDisabled("Follows your MCC controller layout for this game.");
                 }
                 if(haveBindings&&!bindings[action]) ImGui::TextDisabled("No native action binding available in this title.");
                 if(MoreInputsList(row.more.data(),vr_mapping::kMoreInputs,moreOpen[selectedTitle][action],
@@ -1688,9 +1688,8 @@ namespace
                 }
                 ImGui::PopID();
             }
-            // The extra rows, under where each counts: inputs as a row has. Automatic in a seat follows the game's button
-            // (vr_mapping::EffectiveExtraBindings); elsewhere it leaves the action on the game's own button, pressed
-            // whenever another row sends that button.
+            // The extra rows, under where each counts: inputs as a row has. Automatic follows the player's MCC layout
+            // (vr_mapping::EffectiveExtraBindings), as an action row's does.
             static constexpr const char* kContextNotes[static_cast<unsigned>(vr_mapping::ExtraContext::Count)]{
                 "In a vehicle seat: these press the game's own button for the action, beside whatever the rows above "
                 "press. In Halo 3, ODST, Reach and Halo 4, where that button also carries an action on other controls "
@@ -1740,15 +1739,11 @@ namespace
                     }
                     if(row[0].press==vr_mapping::Automatic)
                     {
-                        if(haveExtra&&extraBindings[action]&&
-                           vr_mapping::kExtraContexts[action]==vr_mapping::ExtraContext::Seat)
-                            ImGui::TextDisabled("Follows the game: %s",
-                                vr_mapping::kSourceNames[vr_mapping::LayoutSource(extraBindings[action])]);
-                        else if(haveExtra&&extraBindings[action])
-                            ImGui::TextDisabled("The game has this on: %s",
+                        if(haveExtra&&extraBindings[action])
+                            ImGui::TextDisabled("Your MCC layout has this on: %s",
                                 vr_mapping::kSourceNames[vr_mapping::LayoutSource(extraBindings[action])]);
                         else
-                            ImGui::TextDisabled("Stays on the game's own button.");
+                            ImGui::TextDisabled("Follows your MCC controller layout for this game.");
                     }
                     else
                         extraChanged|=InputOptions(row[0].held,row[0].mode,open[0]);
@@ -1764,9 +1759,9 @@ namespace
             }
             if(ImGui::Button("Reset this game's mappings"))
             {
-                g_config.vr_bindings[selectedTitle]={};
-                g_config.vr_inputs[selectedTitle]=vr_mapping::DefaultInputs(selectedGame);
-                g_config.vr_extra_bindings[selectedTitle]=vr_mapping::ExtraDefaults(selectedGame);
+                // The default controls' rows, never the player's flat layout.
+                default_controls::Rows(selectedGame,g_config.vr_bindings[selectedTitle],g_config.vr_inputs[selectedTitle],
+                    g_config.vr_extra_bindings[selectedTitle]);
                 for(int& open:moreOpen[selectedTitle]) open=0;
                 changed=true;
             }

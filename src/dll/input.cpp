@@ -959,8 +959,8 @@ std::atomic<uint32_t> g_menuPressSerial{0};
             extraServed=extraDirect?vr_mapping::ExtraBridgeOnly(g_config.vr_extra_bindings[mappingTitle],seatTransports,
                 gameLayout,effectiveBindings,rowInputs):0u;
             uint32_t extraPressed=0;
-            // A seat's Automatic rows press their own button from the VR control at its place (EffectiveExtraBindings);
-            // the bridge's share above is decided on the rows as set, so those rows always press the real button.
+            // Automatic rows press their own button from the VR control at its place (EffectiveExtraBindings); the
+            // bridge's share above is decided on the rows as set, so those rows always press the real button.
             seatButtons=seatRows.Apply(actionSources,contexts,vr_mapping::EffectiveExtraBindings(
                 mappingTitle>=0?g_config.vr_extra_bindings[mappingTitle]:vr_mapping::kExtraDefaults,seatTransports,
                 seatLayoutKnown),seatTransports,~0u,&extraPressed,extraServed);

@@ -79,7 +79,9 @@ HaloMCCVRSettings.exe in this folder. It saves only while the game is closed.
 Point your main-hand controller at the VR settings panel and use its trigger.
 Controls holds controls presets, which save your control scheme under a name, and
 VR Mappings, which detects the advertised controller profile and stores optional
-overrides separately per game, including Unbound. The current
+overrides separately per game, including Unbound. Every action starts on the
+same VR control for everyone, whatever your flat MCC controller layout; choose
+Follow my MCC layout on a row to copy your flat layout there instead. The current
 native transport still couples actions that share a native MCC button/action,
 so reload and use may not unbind independently.
 Controls holds only what a controls preset saves, left-handed play, two-handed

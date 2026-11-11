@@ -23,7 +23,9 @@ inline constexpr const char* kKeys[Count]{"fire","grenade","jump","melee","reloa
 inline constexpr const char* kNames[Count]{"Fire","Grenade / secondary fire","Jump","Melee",
     "Reload","Use / pick up","Switch weapon","Switch grenade","Equipment / ability",
     "Crouch","Zoom","Flashlight / night vision","Sprint"};
-inline constexpr const char* kSourceNames[SourceCount]{"Automatic","Unbound","Primary trigger",
+// Automatic shows as what it does: the row follows the player's own MCC controller layout. The default controls name
+// a control for every row (default_controls.h), so it is only ever a player's choice.
+inline constexpr const char* kSourceNames[SourceCount]{"Follow my MCC layout","Unbound","Primary trigger",
     "Support trigger","Primary grip","Support grip","Right A / lower face","Right B / upper face",
     "Left X / lower face","Left Y / upper face","Left stick / pad click","Right stick / pad click",
     "D-pad gesture up","D-pad gesture down","D-pad gesture left","D-pad gesture right",
@@ -626,20 +628,18 @@ struct ExtraMapper
     }
 };
 
-// A seat's extra row left on Automatic follows the game's own button for its action, as an action row does
-// (EffectiveOverrides): its own input becomes the VR control at that button's place. Before, it pressed nothing and its
-// action waited on an action row sending the same button -- a vehicle's boost (Halo 4's and a Mantis's missiles too)
-// rode Grenade's left trigger, and was lost with a layout or a mapping that moved Grenade. On foot an Automatic row
-// still presses nothing: the grips there hold the gun with two hands. Until the layout is known the rows stay as set.
+// An extra row on Automatic follows the game's own button for its action, as an action row does (EffectiveOverrides):
+// its own input becomes the VR control at that button's place. Once it pressed nothing and its action waited on an
+// action row sending the same button -- a vehicle's boost (Halo 4's and a Mantis's missiles too) rode Grenade's left
+// trigger, and was lost with a layout or a mapping that moved Grenade. Until the layout is known the rows stay as set.
 inline ExtraBindings EffectiveExtraBindings(const ExtraBindings& bindings,const ExtraTransports& layout,
     bool layoutKnown) noexcept
 {
     ExtraBindings effective=bindings;
     if(layoutKnown)
         for(unsigned x=0;x<ExtraCount;++x)
-            if(kExtraContexts[x]==ExtraContext::Seat)
-                for(auto& input:effective[x])
-                    if(input.press==Automatic) input.press=LayoutSource(layout[x]);
+            for(auto& input:effective[x])
+                if(input.press==Automatic) input.press=LayoutSource(layout[x]);
     return effective;
 }
 
