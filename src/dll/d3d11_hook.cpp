@@ -1773,16 +1773,18 @@ static BOOL WINAPI GetCursorPosHook(LPPOINT p)
 
 // A mouse message for MCC's window, in the space MCC's cursor reads are given (GetCursorPosHook): with the window
 // fitted to the monitor, a button message's client point and a wheel message's screen point are scaled up to the
-// render size as the cursor is (fit_mouse_logic.h), so MCC's press and its hover name the same item. Otherwise, or
-// outside the window, the message is MCC's as it came. Project Reclaimer's fitted window (D3D_HostFitWindow): its
-// menus hover by the move message's own point, not by the cursor, so moves are scaled too.
+// render size as the cursor is (fit_mouse_logic.h), so MCC's press and its hover name the same item. A move message's
+// client point is scaled too: some menus hover by it, not by the cursor read -- MCC's mission carousel lit the tile at
+// the window's share of the pointed point (1772/2912 of the way from the top-left on a 1440p monitor) while the press
+// went where the cursor was -- and so do Project Reclaimer's (D3D_HostFitWindow). Otherwise, or outside the window, the
+// message is MCC's as it came.
 LPARAM D3D_MapMouseMessageToRender(UINT msg, LPARAM lp)
 {
     const bool button = (msg >= WM_LBUTTONDOWN && msg <= WM_MBUTTONDBLCLK) ||
                         (msg >= WM_XBUTTONDOWN && msg <= WM_XBUTTONDBLCLK);
     const bool wheel = msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL;
-    const bool hostMove = msg == WM_MOUSEMOVE && D3D_HostFitWindow();
-    if ((!button && !wheel && !hostMove) || !CursorRemapActive() || !g_forcedRenderW || !g_forcedRenderH)
+    const bool move = msg == WM_MOUSEMOVE;
+    if ((!button && !wheel && !move) || !CursorRemapActive() || !g_forcedRenderW || !g_forcedRenderH)
         return lp;
     POINT origin{};
     LONG cw = 0, ch = 0;
