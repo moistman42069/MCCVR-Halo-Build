@@ -1887,7 +1887,8 @@ static HWND WINAPI WindowFromPointHook(POINT pt)
     // to still land on the small top-left slice work. Map ANY point inside the
     // render rectangle back down into the real window client before the OS
     // answers, so every menu item resolves to the game window like it should.
-    if (CursorRemapActive() && g_forcedRenderW && g_forcedRenderH)
+    // Only the game's own asks are in render space: the menu pointer asks about the real point it moves the cursor to.
+    if (CursorRemapActive() && g_forcedRenderW && g_forcedRenderH && CallerInExe(_ReturnAddress()))
     {
         POINT origin{};
         LONG cw = 0, ch = 0;
