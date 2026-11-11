@@ -11045,6 +11045,12 @@ int main()
                       Halo2SaberViewSlotsIntact(0xFFF, 0xFFF) && Halo2SaberViewSlotsIntact(0x0F0, 0xFFF) &&
                       !Halo2SaberViewSlotsIntact(0xFFF, 0xFFE) && !Halo2SaberViewSlotsIntact(0x0F0, 0),
                 "an eye pass waits while any slot seen filled this level is empty");
+            Check(kHalo2SaberViewTargetsDrawRva == 0x004719B0 &&
+                      Halo2SaberViewTargetSlot(0, 0, 0) == 0 && Halo2SaberViewTargetSlot(1, 0, 1) == 3 &&
+                      Halo2SaberViewTargetSlot(0, 2, 1) == 10 && Halo2SaberViewTargetSlot(1, 2, 1) == 11 &&
+                      Halo2SaberViewTargetSlot(0, 1, 0) == 4 && Halo2SaberViewTargetSlot(2, 2, 1) == 12 &&
+                      Halo2SaberViewTargetSlot(0, -1, 0) == UINT64_MAX,
+                "the view-target draw reads slot offset + half*2 + group*4 (Outskirts' load faulted on one)");
             float a[16]{1,0,0,0, 0,1,0,0, 0,0,1,0, 1.0f,2.0f,3.0f,1};
             float b[16]{1,0,0,0, 0,1,0,0, 0,0,1,0, 1.0f,2.0f,3.0f,1};
             Check(Halo2SaberViewMatricesMatch(a, b, 2.0e-3f, 0.02f),
