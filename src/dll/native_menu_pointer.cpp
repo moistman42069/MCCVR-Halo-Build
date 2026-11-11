@@ -24,6 +24,7 @@ std::atomic<unsigned> moveCount{0}, clickCount{0};
 std::atomic<unsigned> restingCount{0}, foreignMoves{0};
 std::atomic<unsigned> cursorFailures{0};
 std::atomic<const char*> frameStatus{"no-screen"}, deliveryStatus{"idle"};
+std::atomic<HWND> coveredBy{nullptr}; // the window last found over the game's at the pointed point
 std::atomic<float> scrollStick{0.0f};
 // All remaining state belongs exclusively to MCC's window thread.
 game_menu_pointer::Pointer pointer;
@@ -126,7 +127,10 @@ void Apply()
     if (!posted) {
         // A message goes to the window whatever covers it; the cursor's click goes to what is under it.
         const HWND under = WindowFromPoint(target);
-        if (under != window && !IsChild(window, under)) { deliveryStatus.store("window-covered"); Cancel(); return; }
+        if (under != window && !IsChild(window, under)) {
+            coveredBy.store(under, std::memory_order_relaxed);
+            deliveryStatus.store("window-covered"); Cancel(); return;
+        }
     }
     if (!timer) timer = SetTimer(nullptr, 0, 50, Watchdog);
     if (!timer) { Cancel(); Fault(); return; }
@@ -248,6 +252,30 @@ void NativeMenuPointer_ReportFailures()
                 LOG("game window: not in front (%ls, process %lu%s)", name, static_cast<unsigned long>(pid),
                     pid == GetCurrentProcessId() ? ", this game's" : "");
             }
+        }
+    }
+    // What covered the game's window where the pointer pointed, each time that changes: the pointer cannot use a
+    // point another window is over, since the cursor's click would go to that window.
+    if (const HWND covering = coveredBy.load(std::memory_order_relaxed)) {
+        static HWND lastCovering = nullptr;
+        if (covering != lastCovering) {
+            lastCovering = covering;
+            wchar_t name[64] = L"no class";
+            DWORD pid = 0;
+            GetClassNameW(covering, name, 64);
+            GetWindowThreadProcessId(covering, &pid);
+            wchar_t image[MAX_PATH] = L"";
+            if (const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+                DWORD size = MAX_PATH;
+                if (!QueryFullProcessImageNameW(process, 0, image, &size)) image[0] = 0;
+                CloseHandle(process);
+            }
+            const wchar_t* file = wcsrchr(image, L'\\');
+            RECT rect{};
+            GetWindowRect(covering, &rect);
+            LOG("game menu pointer: another window covers the game's where it points (%ls, process %lu %ls%s, "
+                "at %ld,%ld-%ld,%ld)", name, static_cast<unsigned long>(pid), file ? file + 1 : image,
+                pid == GetCurrentProcessId() ? ", this game's" : "", rect.left, rect.top, rect.right, rect.bottom);
         }
     }
     static DWORD lastReport = 0;
