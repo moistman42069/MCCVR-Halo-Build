@@ -125,10 +125,13 @@ def valid_input(value: str) -> bool:
 
 def check_config(data: bytes) -> int:
     values = config_values(data)
+    # From vr_inputs_version 3 the file names only the rows that differ from the default controls; a row it names must
+    # be a valid input.
+    require(values.get("vr_inputs_version") == "3", "The packaged config must be vr_inputs_version 3")
     for title in TITLES:
         for action in ACTIONS:
             key = f"vr_bind_{title}_{action}"
-            require(key in values and valid_input(values[key]), f"Missing or invalid per-game binding: {key}")
+            require(key not in values or valid_input(values[key]), f"Invalid per-game binding: {key}")
         key = f"hide_muzzle_flash_{title}"
         require(values.get(key) in ("0", "1"), f"Missing per-game muzzle-flash setting: {key}")
         key = f"bloom_enabled_{title}"
