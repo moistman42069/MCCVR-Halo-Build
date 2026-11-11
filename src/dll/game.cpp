@@ -371,6 +371,7 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
 #include "../common/aim_write_logic.h"
 #include "../common/aim_caller_logic.h"
 #include "../common/seat_drive_policy.h"
+#include "../common/centred_crosshair_logic.h"
 #include "../common/gun_slaved_seat_logic.h"
 #include "../common/seat_upstream_logic.h"
 #include "../common/vehicle_gun_band_logic.h"
@@ -20306,6 +20307,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
     // Halo 3's hooks are retired when the game stops copying its camera for two seconds (a level ending, a
     // loading screen; the pause menu keeps the camera running) and installed again when the next level is live,
     // within one load of halo3.dll: a campaign session meets this at every new level.
+#include "centred_crosshair.inl"
+
     bool InstallHook(uintptr_t base, size_t size, uint32_t runtimeGeneration)
     {
         InstallSearches searches("Halo 3", g_halo3InstallSearchMemo, base, size, runtimeGeneration,
@@ -20328,6 +20331,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
 
     bool InstallHookBody(uintptr_t base, size_t size, uint32_t runtimeGeneration)
     {
+        InstallCentredCrosshair(GameTitle::Halo3, base, size);
         if (!runtimeGeneration)
             return false;
         // A new install for the hook watch (halo3_hook_watch.inl): none of the core's hooks is in yet.
@@ -23215,6 +23219,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             LOG("ODST camera preflight: exact title mapping is no longer current");
             return OdstInstallResult::Failed;
         }
+        InstallCentredCrosshair(GameTitle::Halo3ODST, base, size);
 
         OdstResolvedCameraRuntime resolved{};
         const OdstInstallResult preflight =

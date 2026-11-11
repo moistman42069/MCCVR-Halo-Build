@@ -1430,6 +1430,9 @@ if(BUILD_TESTING)
     add_executable(halomccvr_aim_frame_logic_tests tests/aim_frame_logic_tests.cpp)
     target_include_directories(halomccvr_aim_frame_logic_tests PRIVATE src/common)
     add_test(NAME halomccvr_aim_frame_logic_tests COMMAND halomccvr_aim_frame_logic_tests)
+    add_executable(halomccvr_centred_crosshair_tests tests/centred_crosshair_tests.cpp)
+    target_include_directories(halomccvr_centred_crosshair_tests PRIVATE src/common)
+    add_test(NAME halomccvr_centred_crosshair_tests COMMAND halomccvr_centred_crosshair_tests)
     # The written aim's lead (src/common/aim_lead_logic.h): a steady sweep written where it will be one lead
     # time on; a step, a gap, a stop and an aim at rest written unchanged; the cap; and the stated noise bound.
     add_executable(halomccvr_aim_lead_tests tests/aim_lead_tests.cpp)
