@@ -119,9 +119,7 @@ bool Halo4FireEyeSample(uint32_t generation, uint64_t nowUs, SightIntent& intent
 bool Halo4FireEyeEligible(int32_t unit, int& reason)
 {
     reason = 0;
-    const uint64_t now = GetTickCount64();
-    const uint64_t at = g_halo4SightUnitAtMs.load(std::memory_order_acquire);
-    if (unit == -1 || !at || now < at || now - at > 250 || unit != g_halo4SightUnit.load(std::memory_order_relaxed))
+    if (unit == -1 || !Halo4SightUnitFresh(GetTickCount64()) || unit != g_halo4SightUnit.load(std::memory_order_relaxed))
         reason = 1;
     else
     {

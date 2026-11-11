@@ -213,9 +213,7 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
     constexpr GameTitle kTitle=GameTitle::Halo4;
     if(!LegacySight(kTitle).flags.load(std::memory_order_acquire) || !g_halo4Contact.flags ||
         !g_halo4WorldCollision.originalRayCast || TitleAdapter_GetActiveTitle()!=kTitle) return;
-    const uint64_t now=GetTickCount64();
-    const uint64_t unitAt=g_halo4SightUnitAtMs.load(std::memory_order_acquire);
-    if(!unitAt || now<unitAt || now-unitAt>250 ||
+    if(!Halo4SightUnitFresh(GetTickCount64()) ||
         unit!=static_cast<uint32_t>(g_halo4SightUnit.load(std::memory_order_relaxed))) return;
     Sight_NoteTitleTick(kTitle);   // the measured tick (flat parity's carry; the dev SHOT LAG line's too)
     if(Sight_TraceFaulted(kTitle) || !Sight_TraceDue(kTitle,Sight_NowMs())) return;

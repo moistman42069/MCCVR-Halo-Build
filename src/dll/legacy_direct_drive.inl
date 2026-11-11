@@ -559,9 +559,7 @@ bool LegacyDriveLocalOnFoot(int slot)
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
         if (slot == 2)
         {
-            const uint64_t at = g_halo4SightUnitAtMs.load(std::memory_order_acquire);
-            const uint64_t now = GetTickCount64();
-            if (!at || now < at || now - at > 250)
+            if (!Halo4SightUnitFresh(GetTickCount64()))
                 return false;
             const auto* biped = Halo4ContactBiped(static_cast<uint32_t>(g_halo4SightUnit.load(std::memory_order_relaxed)));
             return biped && *reinterpret_cast<const int32_t*>(biped + 0x24) == -1;

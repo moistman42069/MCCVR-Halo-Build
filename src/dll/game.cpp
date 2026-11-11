@@ -729,6 +729,9 @@ namespace
     std::atomic<uint32_t> g_aimFrameWidgets{0}, g_aimFrameCrosshairAsks{0};
     std::atomic<uint64_t> g_gameZoomMs{0};
     std::atomic<uint32_t> g_gameZoomGeneration{0};
+    // When the zoom now noted began (GetTickCount64): the note that took it from not zoomed, or from another title or
+    // generation, to a zoom level.
+    std::atomic<uint64_t> g_gameZoomSinceMs{0};
     const char* AimFrameTitleName(GameTitle title)
     {
         switch (title)
@@ -744,9 +747,12 @@ namespace
     void NoteGameZoomLevel(GameTitle title, int16_t level, uint32_t generation)
     {
         const int previous = g_gameZoomLevel.exchange(level, std::memory_order_relaxed);
-        g_gameZoomTitle.store(static_cast<int>(title), std::memory_order_relaxed);
-        g_gameZoomGeneration.store(generation, std::memory_order_relaxed);
-        g_gameZoomMs.store(GetTickCount64(), std::memory_order_release);
+        const int previousTitle = g_gameZoomTitle.exchange(static_cast<int>(title), std::memory_order_relaxed);
+        const uint32_t previousGeneration = g_gameZoomGeneration.exchange(generation, std::memory_order_relaxed);
+        const uint64_t now = GetTickCount64();
+        if (level >= 0 && (previous < 0 || previousTitle != static_cast<int>(title) || previousGeneration != generation))
+            g_gameZoomSinceMs.store(now, std::memory_order_relaxed);
+        g_gameZoomMs.store(now, std::memory_order_release);
         if (previous != level && g_config.aim_frame_zoom)
             LOG("%s zoom: the game's zoom level is %d%s", AimFrameTitleName(title), static_cast<int>(level),
                 level < 0 ? " (not zoomed)" : "");
@@ -43526,6 +43532,25 @@ static constexpr bool kOdstMappedFpEnabled = false;
     // melee lane, which otherwise publishes it.
     std::atomic<int32_t> g_halo4SightUnit{-1};
     std::atomic<uint64_t> g_halo4SightUnitAtMs{0};
+    // Whether g_halo4SightUnit still names our unit at `now`: stamped within 250 ms, or through a zoom of the game's
+    // that began while it was. The game stops drawing the first-person body once its zoom is in (no body records
+    // while zoomed), and the stamp going stale there dropped the trace, the drive and the fire eye mid-zoom: the aim
+    // stepped off the traced point about a quarter second after the zoom settled. Each reader still proves the unit
+    // on foot.
+    bool Halo4SightUnitFresh(uint64_t now)
+    {
+        const uint64_t at = g_halo4SightUnitAtMs.load(std::memory_order_acquire);
+        if (!at || now < at)
+            return false;
+        if (now - at <= 250)
+            return true;
+        int level = -1;
+        if (!GameZoomed(GameTitle::Halo4, level))
+            return false;
+        const uint64_t since = g_gameZoomSinceMs.load(std::memory_order_relaxed);
+        // Fresh when the zoom began, or stamped since (the body is still drawn while the zoom comes in).
+        return since && at + 250 >= since;
+    }
     // Flat parity's fire eye, Halo 4 (halo4_fire_eye.inl, every build): the proof's per-tick sample at rest.
     void Halo4NoteFireEyeTick(uint32_t unit, bool onFoot);
 #if HALOMCCVR_DEV_DIAGNOSTICS
