@@ -1688,8 +1688,9 @@ namespace
                 }
                 ImGui::PopID();
             }
-            // The extra rows, under where each counts: inputs as a row has. Automatic leaves the action on the game's
-            // own button, pressed whenever another row sends that button.
+            // The extra rows, under where each counts: inputs as a row has. Automatic in a seat follows the game's button
+            // (vr_mapping::EffectiveExtraBindings); elsewhere it leaves the action on the game's own button, pressed
+            // whenever another row sends that button.
             static constexpr const char* kContextNotes[static_cast<unsigned>(vr_mapping::ExtraContext::Count)]{
                 "In a vehicle seat: these press the game's own button for the action, beside whatever the rows above "
                 "press. In Halo 3, ODST, Reach and Halo 4, where that button also carries an action on other controls "
@@ -1739,7 +1740,11 @@ namespace
                     }
                     if(row[0].press==vr_mapping::Automatic)
                     {
-                        if(haveExtra&&extraBindings[action])
+                        if(haveExtra&&extraBindings[action]&&
+                           vr_mapping::kExtraContexts[action]==vr_mapping::ExtraContext::Seat)
+                            ImGui::TextDisabled("Follows the game: %s",
+                                vr_mapping::kSourceNames[vr_mapping::LayoutSource(extraBindings[action])]);
+                        else if(haveExtra&&extraBindings[action])
                             ImGui::TextDisabled("The game has this on: %s",
                                 vr_mapping::kSourceNames[vr_mapping::LayoutSource(extraBindings[action])]);
                         else

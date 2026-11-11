@@ -349,6 +349,26 @@ void CheckInputPresets()
         riding.Apply(0,seated,automatic,native);
         Check(riding.Apply(Bit(PrimaryGrip)|Bit(A)|Bit(RightClick),seated,automatic,native)==0&&
             ExtraControlBits(kAutomaticRow)==0,"an Automatic row presses nothing of its own and takes no control");
+        // With the game's layout known, a seat's Automatic row follows it: boost on the left trigger is pressed by the
+        // VR support trigger whatever the action rows press. An on-foot row and an unknown layout stay as set.
+        {
+            ExtraTransports layout{};
+            layout[VehicleSecondary]=1u<<16;layout[FlyDown]=0x100;layout[ReloadLeft]=0x100;
+            const auto followed=EffectiveExtraBindings(automatic,layout,true);
+            Check(followed[VehicleSecondary][0].press==SupportTrigger&&followed[FlyDown][0].press==SupportGrip,
+                "a seat's Automatic row takes the VR control at the game's button");
+            Check(followed[ReloadLeft]==kAutomaticRow&&EffectiveExtraBindings(automatic,layout,false)==automatic,
+                "an on-foot row and an unknown layout stay Automatic");
+            ExtraMapper boost;
+            boost.Apply(0,seated,followed,layout);
+            Check(boost.Apply(Bit(SupportTrigger),seated,followed,layout)==(1u<<16),
+                "boost presses the game's boost button on its own");
+            Check(boost.Apply(Bit(SupportTrigger),ContextBit(ExtraContext::OnFoot),followed,layout)==0,
+                "and only in a seat");
+            ExtraBindings set=automatic;
+            set[VehicleSecondary][0]=Input{kNoneHeld,B};
+            Check(EffectiveExtraBindings(set,layout,true)[VehicleSecondary][0].press==B,"a row set by the player stays");
+        }
         // The other extra rows start Automatic, and each counts in its own context.
         bool automaticRows=true;
         for(unsigned a=BansheeTrick+1;a<ExtraCount;++a) automaticRows=automaticRows&&kExtraDefaults[a]==kAutomaticRow;

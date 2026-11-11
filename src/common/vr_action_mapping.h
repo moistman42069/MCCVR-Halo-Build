@@ -626,6 +626,23 @@ struct ExtraMapper
     }
 };
 
+// A seat's extra row left on Automatic follows the game's own button for its action, as an action row does
+// (EffectiveOverrides): its own input becomes the VR control at that button's place. Before, it pressed nothing and its
+// action waited on an action row sending the same button -- a vehicle's boost (Halo 4's and a Mantis's missiles too)
+// rode Grenade's left trigger, and was lost with a layout or a mapping that moved Grenade. On foot an Automatic row
+// still presses nothing: the grips there hold the gun with two hands. Until the layout is known the rows stay as set.
+inline ExtraBindings EffectiveExtraBindings(const ExtraBindings& bindings,const ExtraTransports& layout,
+    bool layoutKnown) noexcept
+{
+    ExtraBindings effective=bindings;
+    if(layoutKnown)
+        for(unsigned x=0;x<ExtraCount;++x)
+            if(kExtraContexts[x]==ExtraContext::Seat)
+                for(auto& input:effective[x])
+                    if(input.press==Automatic) input.press=LayoutSource(layout[x]);
+    return effective;
+}
+
 // An extra row's inputs as one number, the way InputsSignature numbers an action row's: an Automatic own input is none.
 inline uint64_t ExtraInputsSignature(const ExtraRow& row) noexcept
 {
