@@ -19,6 +19,15 @@
 // profile filled before the patch is set directly: the copies are four array elements (Halo 3's per-user tick loops
 // `cmp ebx, 4`), each holding its profile at +8 (`lea rcx, [element + 8]` before the fill), the array found from the
 // fill's caller (`lea rax, [rip + array]; imul reg, user, stride`).
+//
+// Halo CE and Halo 2 (no kit names the setting: MCC added it; retail only, 2026-11-11) copy MCC's whole profile
+// (0xACC bytes) per user and read byte +0x1C in one place each, a check of whether the crosshair is centred right
+// now. The check is made to read Centered:
+//     CE:      cmp byte ptr [rax + rcx], 1   ; copy + 0x1C          Halo 2: cmp byte ptr [rdx + rax], 1
+//              je  <answer true>             ; <- NearJump: jmp           jne <answer false>  ; <- Fallthrough
+// CE's check answers true for Centered (and for Lowered while the unit's +0x2D0 is set); its callers then skip the
+// Lowered offsets. Halo 2's answers true for Centered while the unit's +0x210 is clear; its callers then take the
+// Lowered offsets out. The copies themselves are left alone.
 #pragma once
 
 #include <cstddef>
@@ -28,8 +37,10 @@ namespace centred_crosshair
 {
     enum class Patch : uint8_t
     {
-        Jump,   // je rel8 -> jmp rel8: the opcode alone
-        Load,   // movzx r32, byte ptr [r64 + 0x1C] (REX.B) -> mov r32, 1: five bytes
+        Jump,          // je rel8 -> jmp rel8: the opcode alone
+        Load,          // movzx r32, byte ptr [r64 + 0x1C] (REX.B) -> mov r32, 1: five bytes
+        NearJump,      // je rel32 (0F 84) -> nop; jmp rel32 (90 E9): the same target
+        Fallthrough,   // jne rel8 -> two nops
     };
 
     // One fill. The pattern is the stock bytes with the patched instruction wildcarded, so a module the mod already
@@ -44,7 +55,8 @@ namespace centred_crosshair
         const char* callee = nullptr;
     };
 
-    // The fill's caller: `lea rax, [rip + array]` and `imul reg, user, stride`.
+    // The fill's caller: `lea rax, [rip + array]` and `imul reg, user, stride`. No pattern: the title's check is
+    // patched instead and there is no setting of its own to set.
     struct ProfileArray
     {
         const char* pattern;
@@ -59,7 +71,7 @@ namespace centred_crosshair
         const Site* sites;
         size_t siteCount;
         ProfileArray array;
-        uint32_t field;   // the setting's offset in the profile
+        uint32_t field;   // the setting's offset in the game's profile; 0 where there is none
     };
 
     inline constexpr uint32_t kUsers = 4;
@@ -99,6 +111,19 @@ namespace centred_crosshair
          "E8 ?? ?? ?? ?? 89 BB 90 00 00 00"},
     };
 
+    // halo1.dll +0xBF8B7: the check's compare and jump at +0x1D.
+    inline constexpr Site kHaloCESites[]{
+        {"0F BF C9 E8 ?? ?? ?? ?? 48 63 D0 48 8D 0D ?? ?? ?? ?? 48 69 C2 CC 0A 00 00 80 3C 08 01 ?? ?? ?? 00 00 00 48 0F "
+         "BF C3 48 6B C8 58",
+         29, Patch::NearJump},
+    };
+    // halo2.dll +0x3C1E2: the check's compare and jump at +0x1A.
+    inline constexpr Site kHalo2Sites[]{
+        {"83 F9 03 77 ?? 48 63 C1 48 69 D0 CC 0A 00 00 48 8D 05 ?? ?? ?? ?? 80 3C 02 01 ?? ?? E8 ?? ?? ?? ?? 84 C0 0F B6 "
+         "CB BA 01 00 00 00 0F 44 CA",
+         26, Patch::Fallthrough},
+    };
+
     inline constexpr Title kHalo3{"Halo 3", kHalo3Sites, 1,
                                   {"4C 63 CA 48 8D 05 ?? ?? ?? ?? 49 69 F9 ?? ?? 00 00 48 8B D9 48 03 F8 48 8B CF", 6, 10, 13},
                                   0x68};
@@ -111,6 +136,8 @@ namespace centred_crosshair
     inline constexpr Title kHalo4{"Halo 4", kHalo4Sites, 2,
                                   {"4C 63 E2 48 8D 05 ?? ?? ?? ?? 48 8B F9 49 69 F4 ?? ?? 00 00 48 03 F0 48 8B CE", 6, 10, 16},
                                   0x90};
+    inline constexpr Title kHaloCE{"Halo CE", kHaloCESites, 1, {nullptr, 0, 0, 0}, 0};
+    inline constexpr Title kHalo2{"Halo 2", kHalo2Sites, 1, {nullptr, 0, 0, 0}, 0};
 
     // How many bytes a pattern spans.
     inline constexpr size_t PatternBytes(const char* pattern) noexcept
@@ -162,6 +189,31 @@ namespace centred_crosshair
     {
         if (!at)
             return false;
+        if (patch == Patch::NearJump)
+        {
+            if (at[0] == 0x90 && at[1] == 0xE9)
+                patched = true;
+            else if (at[0] == 0x0F && at[1] == 0x84)
+                patched = false;
+            else
+                return false;
+            centred[0] = 0x90;
+            centred[1] = 0xE9;
+            length = 2;
+            return true;
+        }
+        if (patch == Patch::Fallthrough)
+        {
+            if (at[0] == 0x90 && at[1] == 0x90)
+                patched = true;
+            else if (at[0] == 0x75)
+                patched = false;
+            else
+                return false;
+            centred[0] = centred[1] = 0x90;
+            length = 2;
+            return true;
+        }
         if (patch == Patch::Jump)
         {
             if (at[0] != 0x74 && at[0] != 0xEB)

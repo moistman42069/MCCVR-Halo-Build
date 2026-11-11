@@ -1,5 +1,5 @@
-// Always the centred crosshair (src/common/centred_crosshair_logic.h): each title's settings fills match the retail
-// modules' own bytes, stock or patched, and their patch is the game's Centered arm; anything else at the patch site is
+// Always the centred crosshair (src/common/centred_crosshair_logic.h): each title's settings fills (CE and Halo 2: its
+// centred check) match the retail modules' own bytes, stock or patched, and their patch is the game's Centered arm; anything else at the patch site is
 // refused; Halo 4's setter is the one the call reaches; the profile arrays decode to their address and stride.
 #include "centred_crosshair_logic.h"
 
@@ -50,6 +50,13 @@ const uint8_t kHalo4Setter[kCalleeBytes]{
     0xFA, 0x48, 0x8B, 0xD9, 0x33, 0xD2, 0x45, 0x84, 0xC0, 0x74, 0x0A, 0x3B, 0xB9, 0x90, 0x00, 0x00,
     0x00, 0x74, 0x02, 0xB2, 0x01, 0xE8, 0x16, 0x14, 0x00, 0x00, 0x89, 0xBB, 0x90, 0x00, 0x00, 0x00,
     0x48, 0x8B, 0x5C, 0x24, 0x30, 0x48, 0x83, 0xC4, 0x20, 0x5F, 0xC3, 0xCC, 0x33, 0xC0, 0x4C, 0x8B};
+// halo1.dll +0xBF8B7 and halo2.dll +0x3C1E2: the centred checks.
+const uint8_t kHaloCECheck[]{0x0F, 0xBF, 0xC9, 0xE8, 0xA9, 0x70, 0xA2, 0x00, 0x48, 0x63, 0xD0, 0x48, 0x8D, 0x0D, 0x53,
+                             0x59, 0xA4, 0x02, 0x48, 0x69, 0xC2, 0xCC, 0x0A, 0x00, 0x00, 0x80, 0x3C, 0x08, 0x01, 0x0F,
+                             0x84, 0xAA, 0x00, 0x00, 0x00, 0x48, 0x0F, 0xBF, 0xC3, 0x48, 0x6B, 0xC8, 0x58};
+const uint8_t kHalo2Check[]{0x83, 0xF9, 0x03, 0x77, 0x32, 0x48, 0x63, 0xC1, 0x48, 0x69, 0xD0, 0xCC, 0x0A, 0x00, 0x00, 0x48,
+                            0x8D, 0x05, 0x94, 0x53, 0xA4, 0x01, 0x80, 0x3C, 0x02, 0x01, 0x75, 0x1B, 0xE8, 0x2D, 0x8D, 0x68,
+                            0x00, 0x84, 0xC0, 0x0F, 0xB6, 0xCB, 0xBA, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x44, 0xCA};
 
 // Each site's bytes: they match, the stock instruction is recognised and its patch is what the comment says; once
 // patched they still match and are recognised as patched.
@@ -85,6 +92,12 @@ void Sites()
     const uint8_t movEdx1[]{0xBA, 0x01, 0x00, 0x00, 0x00};
     CheckSite(kHalo4.sites[1], kHalo4Change, sizeof(kHalo4Change), movEdx1, 5, "Halo 4's changed setting: mov edx, 1");
 
+    const uint8_t nopJmp[]{0x90, 0xE9};
+    CheckSite(kHaloCE.sites[0], kHaloCECheck, sizeof(kHaloCECheck), nopJmp, 2, "Halo CE's check: always the centred answer");
+    const uint8_t nops[]{0x90, 0x90};
+    CheckSite(kHalo2.sites[0], kHalo2Check, sizeof(kHalo2Check), nops, 2, "Halo 2's check: on to the centred answer");
+    Check(!kHaloCE.array.pattern && !kHalo2.array.pattern, "CE and Halo 2 have no profile copy of their own to set");
+
     // The fields the titles name are the ones their stores write.
     Check(kHalo3.field == 0x68 && kOdst.field == 0x5C && kReach.field == 0x80 && kHalo4.field == 0x90,
           "each title's profile field");
@@ -109,6 +122,10 @@ void Refusals()
           "a load into r8-r15 (no five-byte mov) is refused");
     const uint8_t movEbx2[]{0xBB, 0x02, 0x00, 0x00, 0x00};
     Check(!CentredBytes(Patch::Load, movEbx2, centred, length, patched), "a mov of any other value is not the patch");
+    const uint8_t jneNear[]{0x0F, 0x85, 0xAA, 0x00, 0x00, 0x00};
+    Check(!CentredBytes(Patch::NearJump, jneNear, centred, length, patched), "a near jne is not CE's check");
+    const uint8_t je[]{0x74, 0x1B};
+    Check(!CentredBytes(Patch::Fallthrough, je, centred, length, patched), "a je is not Halo 2's check");
     Check(!CentredBytes(Patch::Jump, nullptr, centred, length, patched), "no bytes, no fill");
 
     uint8_t other[sizeof(kReachFill)];

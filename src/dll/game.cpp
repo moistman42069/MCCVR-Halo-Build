@@ -53064,6 +53064,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                         }
                         activeLevelRunning = Halo2ColdObservation_Poll(
                             gateBase, gateSize, gateGeneration);
+                        if (activeLevelRunning)
+                            InstallCentredCrosshair(GameTitle::Halo2, gateBase, gateSize, gateGeneration);
                         halo2GateBase = gateBase;
                         halo2GateSize = gateSize;
                         halo2GateSampled = true;
@@ -53114,6 +53116,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 // Feature transactions retire independently. A missing hand
                 // graph or HUD target must never disarm CE's camera core.
                 const auto ceGeneration=TitleAdapter_GetGeneration(GameTitle::HaloCE);
+                if (ceActive&&ceBase&&HaloCE_Armed())
+                    InstallCentredCrosshair(GameTitle::HaloCE,ceBase,ceSize,ceGeneration);
                 (void)HaloCEControls_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCEFirstPerson_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCEContact_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());

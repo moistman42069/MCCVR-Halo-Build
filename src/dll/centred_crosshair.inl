@@ -1,6 +1,6 @@
-// ALWAYS THE CENTRED CROSSHAIR in Halo 3, ODST, Reach and Halo 4 (centred_crosshair_logic.h). Run at each title's
-// install, on its own: the patch is a few bytes of the game's settings fills, not a hook, and selects the game's own
-// Centered arm. A title is patched whole or not at all; anything not proven leaves it on the player's setting (the
+// ALWAYS THE CENTRED CROSSHAIR in every title (centred_crosshair_logic.h). Run at each title's install, on its own: the
+// patch is a few bytes of the game's settings fills (CE and Halo 2: its centred check), not a hook, and selects the
+// game's own Centered arm. A title is patched whole or not at all; anything not proven leaves it on the player's setting (the
 // Lowered fallbacks stay: seat_drive::SteadyPitchOffset, the capture window that follows the art, Halo 4's Aim Frame
 // Zoom recentre wait). Project Reclaimer 0.10 runs a recompiled Halo 3 whose code this does not reach; the launcher
 // turns on its own Centered crosshair instead.
@@ -15,6 +15,8 @@ void InstallCentredCrosshair(GameTitle title, uintptr_t base, size_t size, uint3
     case GameTitle::Halo3ODST: t = &kOdst, slot = 1; break;
     case GameTitle::HaloReach: t = &kReach, slot = 2; break;
     case GameTitle::Halo4: t = &kHalo4, slot = 3; break;
+    case GameTitle::HaloCE: t = &kHaloCE, slot = 4; break;
+    case GameTitle::Halo2: t = &kHalo2, slot = 5; break;
     default: return;
     }
     // Once per loaded module: installs are retried, and a module reloaded at the same base is a new generation.
@@ -22,7 +24,7 @@ void InstallCentredCrosshair(GameTitle title, uintptr_t base, size_t size, uint3
     {
         uintptr_t base;
         uint32_t generation;
-    } s_done[4]{};
+    } s_done[6]{};
     if (s_done[slot].base == base && s_done[slot].generation == generation)
         return;
     s_done[slot] = {base, generation};
@@ -58,9 +60,8 @@ void InstallCentredCrosshair(GameTitle title, uintptr_t base, size_t size, uint3
               Matches(callee, site.callee)));
         if (!ok)
         {
-            LOG("%s crosshair location: settings fill %zu of %zu was not found; MCC's setting applies as the player "
-                "set it",
-                t->name, i + 1, t->siteCount);
+            LOG("%s crosshair location: %s %zu of %zu was not found; MCC's setting applies as the player set it",
+                t->name, t->array.pattern ? "settings fill" : "centred check", i + 1, t->siteCount);
             return;
         }
         found[i].at = match + site.patchOffset;
@@ -87,8 +88,8 @@ void InstallCentredCrosshair(GameTitle title, uintptr_t base, size_t size, uint3
         ++madeNow;
     }
 
-    // The profiles the game filled before this: set directly, one int each.
-    const uintptr_t arrayMatch = mcc_clock::FindUnique(base, size, t->array.pattern);
+    // The profiles the game filled before this: set directly, one int each. CE and Halo 2 have no copy of their own.
+    const uintptr_t arrayMatch = t->array.pattern ? mcc_clock::FindUnique(base, size, t->array.pattern) : 0;
     uint8_t arrayBytes[32]{};
     uintptr_t array = 0;
     uint32_t stride = 0;
@@ -113,6 +114,13 @@ void InstallCentredCrosshair(GameTitle title, uintptr_t base, size_t size, uint3
     std::snprintf(fills, sizeof(fills), t->siteCount == 1 ? "+0x%llX" : "+0x%llX and +0x%llX",
                   static_cast<unsigned long long>(found[0].at - base),
                   static_cast<unsigned long long>(found[t->siteCount - 1].at - base));
+    if (!t->array.pattern)
+    {
+        LOG("%s crosshair location: Centered, whatever the player's MCC setting (the game's centred check at %s reads "
+            "Centered%s)",
+            t->name, fills, madeNow ? "" : ", already patched");
+        return;
+    }
     LOG("%s crosshair location: Centered, whatever the player's MCC setting (the settings fill%s at %s take%s the "
         "Centered arm%s; profile field +0x%X; %s)",
         t->name, t->siteCount == 1 ? "" : "s", fills, t->siteCount == 1 ? "s" : "",
