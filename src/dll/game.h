@@ -233,6 +233,13 @@ void Game_GetHudSafeFrameStatus(int& matches, bool& scanning);
 bool Game_GetAppliedHudSafeFrame(float& horizontal, float& vertical, float* size = nullptr);
 // Project Reclaimer: what reclaimer_flight_buttons does there right now, for the Vehicles panel.
 const char* Game_ReclaimerFlightStatus();
+// Project Reclaimer runs ODST's levels as Halo 3 maps (Halo 3's engine, ODST's scenario). There the controls are ODST's
+// own, its VR Mappings rows, while everything that speaks to the engine stays Halo 3's.
+bool Game_ReclaimerOdstLevel() noexcept;
+inline GameTitle Game_ControlsTitle(GameTitle active) noexcept
+{
+    return active == GameTitle::Halo3 && Game_ReclaimerOdstLevel() ? GameTitle::Halo3ODST : active;
+}
 
 // Head-tracking controls, driven by hotkeys so we can tune it live in-headset.
 void Game_ToggleHeadTracking(); // F2
