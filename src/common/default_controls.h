@@ -57,14 +57,15 @@ inline void Rows(GameTitle game, vr_mapping::Overrides& rows, vr_mapping::Inputs
 
     // The extra rows, each named too. A row whose game has no such action, or whose standard button has no VR control
     // (Back's scoreboard; Halo 3's, ODST's, Halo CE's and Halo 2's seat switch on left Y, the vehicle cameras' there),
-    // is on none.
+    // is on none. So is Fire left weapon: its game button is Grenade's left trigger, which Grenade's row already presses
+    // (the left gun fires while dual wielding), and an extra row of its own on the support trigger pressed it under the
+    // gun-gripped zoom chord too -- Halo 2's Aim Frame Zoom threw a grenade.
     const auto on = [](int press) { return ExtraRow{Input{kNoneHeld, press}, Input{}, Input{}, Input{}}; };
     const ExtraRow none = on(Unbound);
     extra = ExtraDefaults(game);
     for (auto& row : extra)
         if (row == kAutomaticRow) row = none;
     const auto has = [game](ExtraAction action) { return NativeExtraAction(game, action) != kNoAction; };
-    if (has(FireLeft)) extra[FireLeft] = on(SupportTrigger);
     // Halo 3's left gun reloads, and a second gun is picked up, on one button: left Y.
     if (has(ReloadLeft)) extra[ReloadLeft] = on(Y);
     if (game == GameTitle::Halo3) extra[DualWield] = on(Y);

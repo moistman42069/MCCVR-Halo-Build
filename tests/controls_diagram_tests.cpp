@@ -42,7 +42,7 @@ void CheckDefaults()
 {
     Rows rows;
     const Labels foot=Build(rows.Make(Context::OnFoot));
-    Check(Has(foot,RightTrigger,"Fire")&&Has(foot,LeftTrigger,"Grenade / secondary fire")&&Has(foot,A,"Jump")&&
+    Check(Has(foot,RightTrigger,"Fire")&&Has(foot,LeftTrigger,"Grenade / left gun (dual wielding)")&&Has(foot,A,"Jump")&&
         Has(foot,RightGrip,"Melee"),"Automatic rows take the usual layout until the game is running");
     Check(Has(foot,X,"Reload")&&Has(foot,X,"Use / pick up"),"two actions on one control are both listed");
     Check(Has(foot,RightStick,"Down: Crouch (toggle)")&&Has(foot,RightStick,"Up: Equipment / ability"),

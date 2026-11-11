@@ -1706,7 +1706,8 @@ namespace
                 bool noted=false;
                 for(unsigned action=0;action<vr_mapping::ExtraCount;++action)
                 {
-                    if(static_cast<unsigned>(vr_mapping::kExtraContexts[action])!=context) continue;
+                    if(static_cast<unsigned>(vr_mapping::kExtraContexts[action])!=context||
+                       vr_mapping::RetiredExtra(static_cast<vr_mapping::ExtraAction>(action))) continue;
                     if(!noted) {SettingGap();ImGui::TextWrapped("%s",kContextNotes[context]);noted=true;}
                     const auto extraAction=static_cast<vr_mapping::ExtraAction>(action);
                     const char* name=vr_mapping::ExtraName(selectedGame,extraAction);

@@ -512,6 +512,11 @@ inline constexpr ExtraContext kExtraContexts[ExtraCount]{ExtraContext::Seat,Extr
     ExtraContext::OnFoot,ExtraContext::OnFoot,ExtraContext::OnFoot,ExtraContext::OnFoot,ExtraContext::Seat,
     ExtraContext::Seat,ExtraContext::Seat,ExtraContext::Seat,ExtraContext::Anywhere,ExtraContext::Anywhere,
     ExtraContext::Seat};
+// A row no longer offered: Fire left weapon is Grenade's left trigger in Halo 3 and Halo 2, the left gun firing while
+// dual wielding, so it goes with Grenade's row (ActionName says so) and cannot be put on other controls. A row of its own
+// on the support trigger pressed that button under the gun-gripped zoom chord too: Halo 2's Aim Frame Zoom threw a
+// grenade. Its key stays in kExtraKeys so old files still parse; nothing presses it and the menu does not show it.
+inline constexpr bool RetiredExtra(ExtraAction action) noexcept { return action==FireLeft; }
 using ExtraRow=std::array<Input,kRowInputs>;
 using ExtraBindings=std::array<ExtraRow,ExtraCount>;
 using ExtraTransports=std::array<uint32_t,ExtraCount>;
@@ -606,7 +611,7 @@ struct ExtraMapper
         for(unsigned a=0;a<ExtraCount;++a)
         {
             const unsigned c=static_cast<unsigned>(kExtraContexts[a]);
-            if(!live[c]) continue;
+            if(!live[c]||RetiredExtra(static_cast<ExtraAction>(a))) continue;
             for(unsigned i=0;i<kRowInputs;++i)
             {
                 const auto& input=bindings[a][i];
@@ -668,6 +673,7 @@ inline uint32_t ExtraBridgeOnly(const ExtraBindings& extra,const ExtraTransports
     uint32_t only=0;
     for(unsigned x=0;x<ExtraCount;++x)
     {
+        if(RetiredExtra(static_cast<ExtraAction>(x))) continue;
         if(!ExtraControlBits(extra[x])) continue;   // Automatic, or nothing: the game's own button
         const uint32_t button=extraNative[x];
         if(!button) continue;
