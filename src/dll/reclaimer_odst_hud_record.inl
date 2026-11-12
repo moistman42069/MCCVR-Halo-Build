@@ -7,8 +7,14 @@
 // converted copy moved nothing; writing it to the 1280x720 buffer the list names shrank the HUD at once, and putting
 // the title's value back there brought the full-size HUD back (FA, 2026-11-07). The heap also holds hundreds of freed
 // buffers with the same bytes and two dozen lone entries naming them, and writing such copies closed the game, so only
-// the 1280x720 buffer of the one list that names ODST's whole block is written, and the list is read again before
-// every write.
+// the buffers of the one list that names ODST's whole block are written, and the list is read again before every write.
+//
+// ALL FIVE OF THEM. Through 0.10.1 the client drew one player's HUD from the block's first record (1280x720). 0.10.2
+// reworked ODST's split-screen HUD (each of up to four players gets the whole HUD), and on its first run the HUD was
+// the game's size again with the list found and the 1280x720 buffer holding the written layout (2026-11-11): the
+// client now draws from another of the block's records, plausibly the one nearest its screen's shape (the mod's
+// 2912x2100 is nearer 920x690's than 1280x720's). Every record of that one list gets the layout, as Halo 3's records
+// do, each keeping its own depth.
 //
 // ON ITS OWN, FROM THE LEVEL'S START. The first build searched only after Halo 3's layout scan (6 s) and read all of
 // memory twice (13 s): ODST's HUD kept the game's size for about 20 s of every level (2026-11-07 16:55). The search now
@@ -25,13 +31,13 @@ struct ReclaimerOdstHudRecord
     std::atomic<uintptr_t> listEntry{0};
     std::atomic<uintptr_t> record{0};
     std::atomic<uint32_t> generation{0};
-    std::atomic<uint32_t> baseDepthBits{0};
+    std::atomic<uint32_t> baseDepthBits[reclaimer_odst_hud::kBlockRecords]{};
 };
 ReclaimerOdstHudRecord g_reclaimerOdstHud{};
 // The depth field the last record found held when first found: the same buffer found again keeps it, so the curvature
 // setting never compounds.
 std::atomic<uintptr_t> g_reclaimerOdstHudRememberedRecord{0};
-std::atomic<uint32_t> g_reclaimerOdstHudRememberedDepthBits{0};
+std::atomic<uint32_t> g_reclaimerOdstHudRememberedDepthBits[reclaimer_odst_hud::kBlockRecords]{};
 // The search: one at a time, a few tries a level (the client's parse may not be listed yet at the very start).
 std::atomic<bool> g_reclaimerOdstHudSearchInFlight{false};
 std::atomic<uint32_t> g_reclaimerOdstHudSearchGeneration{0};
@@ -75,6 +81,23 @@ static bool ReclaimerOdstHudRecordHolds(uintptr_t listEntry, uintptr_t record)
     unsigned char anchor[kHudLayoutMaxAnchor]{};
     return ReadOwnMemory(record + reclaimer_odst_hud::kWidthOffset, anchor, static_cast<size_t>(view.anchorLength)) &&
         memcmp(anchor, view.anchor, 8) == 0 && SafeFrameAnchorEquals(anchor, view);
+}
+
+// The five records the list at `listEntry` names, in the block's order.
+static bool ReclaimerOdstHudBlockRecords(uintptr_t listEntry, uintptr_t (&records)[reclaimer_odst_hud::kBlockRecords])
+{
+    uint64_t words[3 * reclaimer_odst_hud::kBlockRecords]{};
+    if (!listEntry || !ReadOwnMemory(listEntry, words, sizeof(words)))
+        return false;
+    for (int i = 0; i < reclaimer_odst_hud::kBlockRecords; ++i)
+        records[i] = static_cast<uintptr_t>(words[3 * i + 1]);
+    return true;
+}
+
+// Where a record's safe-frame pair sits.
+static uintptr_t ReclaimerOdstHudSlot(uintptr_t record)
+{
+    return record + reclaimer_odst_hud::kWidthOffset + static_cast<uintptr_t>(kOdstHudLayoutAdapter.safeFrameOffset);
 }
 
 // Calls `visit(base, size)` for each committed private read-write region outside this module. False: the level
@@ -166,23 +189,31 @@ static void FindReclaimerOdstHudRecord(uint32_t generation, int attempt)
             static_cast<unsigned long long>(GetTickCount64() - t0));
         return;
     }
-    const uintptr_t slot = record + reclaimer_odst_hud::kWidthOffset +
-        static_cast<uintptr_t>(kOdstHudLayoutAdapter.safeFrameOffset);
-    uint32_t depth = 0;
-    if (!ReadOwnMemory(slot + kOdstHudLayoutAdapter.depthFromSlot, &depth, sizeof(depth)) ||
-        !HudDestinationPlausible(depth) || !HudLayoutContextMatches(HudLayoutProfile::Halo3, generation))
+    uintptr_t records[reclaimer_odst_hud::kBlockRecords]{};
+    uint32_t depths[reclaimer_odst_hud::kBlockRecords]{};
+    if (!ReclaimerOdstHudBlockRecords(listEntry, records))
         return;
-    if (g_reclaimerOdstHudRememberedRecord.exchange(record, std::memory_order_relaxed) == record)
-        depth = g_reclaimerOdstHudRememberedDepthBits.load(std::memory_order_relaxed);
-    else
-        g_reclaimerOdstHudRememberedDepthBits.store(depth, std::memory_order_relaxed);
+    for (int i = 0; i < reclaimer_odst_hud::kBlockRecords; ++i)
+        if (!ReadOwnMemory(ReclaimerOdstHudSlot(records[i]) + kOdstHudLayoutAdapter.depthFromSlot, &depths[i],
+                           sizeof(depths[i])) || !HudDestinationPlausible(depths[i]))
+            return;
+    if (!HudLayoutContextMatches(HudLayoutProfile::Halo3, generation))
+        return;
+    const bool remembered = g_reclaimerOdstHudRememberedRecord.exchange(record, std::memory_order_relaxed) == record;
+    for (int i = 0; i < reclaimer_odst_hud::kBlockRecords; ++i)
+    {
+        if (remembered)
+            depths[i] = g_reclaimerOdstHudRememberedDepthBits[i].load(std::memory_order_relaxed);
+        else
+            g_reclaimerOdstHudRememberedDepthBits[i].store(depths[i], std::memory_order_relaxed);
+        g_reclaimerOdstHud.baseDepthBits[i].store(depths[i], std::memory_order_relaxed);
+    }
     g_reclaimerOdstHud.listEntry.store(listEntry, std::memory_order_relaxed);
     g_reclaimerOdstHud.record.store(record, std::memory_order_relaxed);
-    g_reclaimerOdstHud.baseDepthBits.store(depth, std::memory_order_relaxed);
     g_reclaimerOdstHud.generation.store(generation, std::memory_order_release);
     LOG("SAFEFRAME [Halo 3]: ODST's level on Project Reclaimer: the client draws its HUD from its own copy of ODST's "
-        "layout record at %p (first of ODST's block listed at %p; try %d, %llu MB of the client's memory read); the "
-        "layout is written there (%llu ms)", reinterpret_cast<void*>(record), reinterpret_cast<void*>(listEntry),
+        "layout records, the first at %p (ODST's block listed at %p; try %d, %llu MB of the client's memory read); the "
+        "layout is written to all five (%llu ms)", reinterpret_cast<void*>(record), reinterpret_cast<void*>(listEntry),
         attempt, static_cast<unsigned long long>(scanned >> 20),
         static_cast<unsigned long long>(GetTickCount64() - t0));
 }
@@ -208,31 +239,43 @@ static bool ApplyReclaimerOdstHudRecord(uint32_t generation, float horizontal, f
             reinterpret_cast<void*>(record));
         return false;
     }
-    const uintptr_t slot = record + reclaimer_odst_hud::kWidthOffset +
-        static_cast<uintptr_t>(kOdstHudLayoutAdapter.safeFrameOffset);
-    float pair[2]{};
-    uint32_t depthBits = 0;
-    if (!ReadOwnMemory(slot, pair, sizeof(pair)) ||
-        !ReadOwnMemory(slot + kOdstHudLayoutAdapter.depthFromSlot, &depthBits, sizeof(depthBits)))
+    uintptr_t records[reclaimer_odst_hud::kBlockRecords]{};
+    if (!ReclaimerOdstHudBlockRecords(listEntry, records))
         return true;
-    float baseDepth = 0.0f;
-    const uint32_t baseBits = g_reclaimerOdstHud.baseDepthBits.load(std::memory_order_relaxed);
-    memcpy(&baseDepth, &baseBits, sizeof(baseDepth));
-    // As the records ApplyHudLayoutOnce writes: 0 flat, 1 fully curved, 0.5 the authored value.
-    const float depth = baseDepth + (0.30f - 0.60f * curvature);
-    uint32_t targetBits = 0;
-    memcpy(&targetBits, &depth, sizeof(targetBits));
-    if (!HudDestinationPlausible(targetBits))
-        return true;
+    int holding = 0;
+    for (int i = 0; i < reclaimer_odst_hud::kBlockRecords; ++i)
+    {
+        const uintptr_t slot = ReclaimerOdstHudSlot(records[i]);
+        float pair[2]{};
+        uint32_t depthBits = 0;
+        if (!ReadOwnMemory(slot, pair, sizeof(pair)) ||
+            !ReadOwnMemory(slot + kOdstHudLayoutAdapter.depthFromSlot, &depthBits, sizeof(depthBits)))
+            continue;
+        float baseDepth = 0.0f;
+        const uint32_t baseBits = g_reclaimerOdstHud.baseDepthBits[i].load(std::memory_order_relaxed);
+        memcpy(&baseDepth, &baseBits, sizeof(baseDepth));
+        // As the records ApplyHudLayoutOnce writes: 0 flat, 1 fully curved, 0.5 the authored value.
+        const float depth = baseDepth + (0.30f - 0.60f * curvature);
+        uint32_t targetBits = 0;
+        memcpy(&targetBits, &depth, sizeof(targetBits));
+        if (!HudDestinationPlausible(targetBits))
+            continue;
+        if (reportReadback && i == 0)
+            LOG("SAFEFRAME [Halo 3]: Project Reclaimer's ODST record at %p reads %.4f/%.4f, writing %.4f/%.4f to "
+                "all five", reinterpret_cast<void*>(records[i]), pair[0], pair[1], horizontal, vertical);
+        if (pair[0] == horizontal && pair[1] == vertical && depthBits == targetBits)
+        {
+            ++holding;
+            continue;
+        }
+        AcquireSRWLockShared(&g_hudLayoutWriteLock);
+        if (HudLayoutContextMatches(HudLayoutProfile::Halo3, generation))
+            SafeFrameStoreLayout(slot, kOdstHudLayoutAdapter, depth, horizontal, vertical);
+        ReleaseSRWLockShared(&g_hudLayoutWriteLock);
+    }
     if (reportReadback)
-        LOG("SAFEFRAME [Halo 3]: Project Reclaimer's ODST record at %p reads %.4f/%.4f, writing %.4f/%.4f",
-            reinterpret_cast<void*>(record), pair[0], pair[1], horizontal, vertical);
-    if (pair[0] == horizontal && pair[1] == vertical && depthBits == targetBits)
-        return true;
-    AcquireSRWLockShared(&g_hudLayoutWriteLock);
-    if (HudLayoutContextMatches(HudLayoutProfile::Halo3, generation))
-        SafeFrameStoreLayout(slot, kOdstHudLayoutAdapter, depth, horizontal, vertical);
-    ReleaseSRWLockShared(&g_hudLayoutWriteLock);
+        LOG("SAFEFRAME [Halo 3]: Project Reclaimer's ODST records: %d of %d already held the layout", holding,
+            reclaimer_odst_hud::kBlockRecords);
     return true;
 }
 
