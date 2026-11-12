@@ -86,8 +86,10 @@ namespace
     // slot they were about to read was empty; the last such slot and group for the cold report.
     std::atomic<uintptr_t> g_originalViewTargets{0};
     std::atomic<uint64_t> g_viewTargetSkips{0};
+    // The last skipped view: its list entry's slot offset and the draw's group and half.
     std::atomic<uint32_t> g_viewTargetSkipSlot{0};
     std::atomic<int32_t> g_viewTargetSkipGroup{0};
+    std::atomic<uint32_t> g_viewTargetSkipHalf{0};
     uint64_t g_viewTargetSkipsReported = 0;
     std::atomic<uint64_t> g_nativeChudDraws{0};
     std::atomic<uint64_t> g_nativeChudFailures{0};
@@ -1504,29 +1506,27 @@ namespace
         }
     }
 
-    // Whether every slot the view-target draw is about to read for `list` holds its pointer. A slot the arguments do
-    // not name, or a list that cannot be read, is left to the game as before.
+    // Whether every pointer the view-target draw is about to read for `list` is there: the very address the game reads
+    // for each view (Halo2SaberViewTargetPointerOffset), inside the twelve slots or not. A list with no views is the
+    // game's to draw; one whose entries cannot be read, or a view whose pointer cannot be read or is empty, is not.
     bool ViewTargetsPresent(uintptr_t base, uintptr_t list, int32_t group, uint8_t half, uint32_t& emptySlot) noexcept
     {
         int32_t count = 0;
         uintptr_t entries = 0;
-        if (!ReadGuarded(list + kHalo2SaberViewListCountOffset, count) || count <= 0 ||
-            !ReadGuarded(list + kHalo2SaberViewListEntriesOffset, entries))
+        if (!ReadGuarded(list + kHalo2SaberViewListCountOffset, count) || count <= 0)
             return true;
-        for (int32_t i = 0; i < count && i < 64; ++i)
+        if (!ReadGuarded(list + kHalo2SaberViewListEntriesOffset, entries))
+            return false;
+        for (int32_t i = 0; i < count; ++i)
         {
             uint32_t slotOffset = 0;
-            if (!ReadGuarded(entries + static_cast<uintptr_t>(i) * kHalo2SaberViewListEntryStride +
-                                 kHalo2SaberViewListEntrySlotOffset, slotOffset))
-                return true;
-            const uint64_t slot = Halo2SaberViewTargetSlot(slotOffset, group, half);
-            if (slot >= kHalo2SaberViewSlotCount)
-                continue;
             uintptr_t pointer = 0;
-            if (ReadGuarded(base + kHalo2SaberViewSlotsRva + static_cast<uintptr_t>(slot) * kHalo2SaberViewSlotStride +
-                                kHalo2SaberViewSlotPointerOffset, pointer) && !pointer)
+            if (!ReadGuarded(entries + static_cast<uintptr_t>(i) * kHalo2SaberViewListEntryStride +
+                                 kHalo2SaberViewListEntrySlotOffset, slotOffset) ||
+                !ReadGuarded(base + static_cast<uintptr_t>(Halo2SaberViewTargetPointerOffset(slotOffset, group, half)),
+                             pointer) || !pointer)
             {
-                emptySlot = static_cast<uint32_t>(slot);
+                emptySlot = slotOffset;
                 return false;
             }
         }
@@ -1553,6 +1553,7 @@ namespace
             {
                 g_viewTargetSkipSlot.store(emptySlot, std::memory_order_relaxed);
                 g_viewTargetSkipGroup.store(static_cast<int32_t>(group), std::memory_order_relaxed);
+                g_viewTargetSkipHalf.store(static_cast<uint8_t>(half), std::memory_order_relaxed);
                 g_viewTargetSkips.fetch_add(1, std::memory_order_relaxed);
             }
             else
@@ -1861,11 +1862,12 @@ namespace
         if (viewTargetSkips != g_viewTargetSkipsReported)
         {
             g_viewTargetSkipsReported = viewTargetSkips;
-            LOG("Halo 2 Anniversary view-target check: %llu view groups not drawn because the game had emptied a "
-                "target slot they read (last: slot %u, group %d); each would have faulted at +0x107449",
-                static_cast<unsigned long long>(viewTargetSkips),
+            LOG("Halo 2 Anniversary view-target check: %llu view groups not drawn because a target they read was "
+                "empty or unreadable (last: entry slot offset %u, group %d, half %u); each would have faulted at "
+                "+0x107449", static_cast<unsigned long long>(viewTargetSkips),
                 g_viewTargetSkipSlot.load(std::memory_order_relaxed),
-                g_viewTargetSkipGroup.load(std::memory_order_relaxed));
+                g_viewTargetSkipGroup.load(std::memory_order_relaxed),
+                g_viewTargetSkipHalf.load(std::memory_order_relaxed));
         }
         const uint64_t pairs = g_pairs.load(std::memory_order_relaxed);
         const uint64_t callbacks = g_callbacks.load(std::memory_order_relaxed);
