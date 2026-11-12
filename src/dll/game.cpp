@@ -19745,9 +19745,14 @@ static constexpr bool kOdstMappedFpEnabled = false;
             // Native frame setup publishes one shared record pointer for its pass.
             // Per-user/class copies survive that pass in our image,
             // which the stock scanner excludes. Never retain or modify tag pointers.
-            float h=0,v=0;ComputeHudSafeFramePair(g_config.hud_size,g_config.hud_aspect,h,v);
+            // The layout is the one the scanner writes to the stock records (HudLayoutWanted): the player's, or the
+            // aim frame's while it is up. Project Reclaimer draws an ODST level's HUD from such a copy, which with the
+            // player's layout in the frame came out squashed top to bottom (0.49 x 0.28 for the frame's 0.68 x 0.87).
+            float size=0,aspect=0,curvature=0,h=0,v=0;
+            HudLayoutWanted(HudLayoutProfile::Halo3,size,aspect,curvature,h,v);
+            h=fminf(h,1.0f);v=fminf(v,1.0f);
             __try {
-                if(halo3_live_hud::Transform(*native,h,v,g_config.hud_curvature,g_h3HudRecordCopies[user][resolution])) {
+                if(halo3_live_hud::Transform(*native,h,v,curvature,g_h3HudRecordCopies[user][resolution])) {
                     g_h3HudRecordAdjusted.fetch_add(1,std::memory_order_relaxed);
                     return &g_h3HudRecordCopies[user][resolution];
                 }
